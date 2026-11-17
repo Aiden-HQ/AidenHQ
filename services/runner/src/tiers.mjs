@@ -248,12 +248,13 @@ function agentDefPart(key, base, head, s) {
  * The modules a product bump or a `modules:` edit changes (spec §5.7): `s.modules` is each module's def before and after and
  * whether its code changed (the runner read them at both product commits); `s.modulesError` when it couldn't. Every module
  * change is the AI reviewer's first (the panel's when code changed); new authority adds the owner after it.
- * The instance's third-party marketplace changes are read here from both instance.yaml sides; a new one is the owner's.
+ * The instance's third-party marketplace changes are read here from both instance.yaml sides; a new one is the owner's. With a
+ * release, `s.effective` is each side with the release's official marketplace (the runner read it at its distro sha).
  */
 function moduleAuthorityParts(s, base, head) {
   if (s.modulesError || !s.modules) return [REJECT("unknown-content", `couldn't read the module changes${s.modulesError ? ` (${s.modulesError})` : ""}; try again`)];
   let markets;
-  try { markets = marketplaceChanges(base, head); } catch (err) { return [REJECT("unparseable", `instance.yaml marketplaces: ${String(err.message ?? err).slice(0, 200)}`)]; }
+  try { markets = marketplaceChanges(s.effective?.base ?? base, s.effective?.head ?? head); } catch (err) { return [REJECT("unparseable", `instance.yaml marketplaces: ${String(err.message ?? err).slice(0, 200)}`)]; }
   const diffs = [...markets, ...diffAll(s.modules)];
   // The official marketplace moving with every module's folder tree id unchanged (the 5b switch): no authority, the reviewer's.
   if (!diffs.length) return changedKeys(base, head).includes("marketplaces") ? [T(1, "marketplace-same-trees", "the official marketplace moves; every module's folder tree id is unchanged")] : [];
@@ -267,9 +268,10 @@ function instanceParts(s) {
   if (!base || !head) return [REJECT("unparseable", "instance.yaml doesn't parse")];
   const parts = [];
   const keys = changedKeys(base, head);
-  if (["product", "modules", "marketplaces"].some((k) => keys.includes(k))) parts.push(...moduleAuthorityParts(s, base, head));
+  if (["product", "modules", "marketplaces", "release"].some((k) => keys.includes(k))) parts.push(...moduleAuthorityParts(s, base, head));
+  if (keys.includes("release") && !parts.length) parts.push(T(1, "release-pin", "the release pin moves; what it resolves to (the kernel, the official marketplace) is unchanged"));
   for (const k of keys) {
-    if (k === "modules" || k === "marketplaces") continue; // the module parts above
+    if (k === "modules" || k === "marketplaces" || k === "release") continue; // the module parts above (a release by what it resolves to)
     // A rollback can undo a security fix: the panel's. A pin off product main is refused.
     if (k === "product") parts.push(s.pin?.forward ? T(1, "pin-forward", "the product pin moves forward along product main") : s.pin?.back ? PANEL("pin-backwards", "the product pin moves backwards (a rollback)") : REJECT("pin-unknown", "the product pin moves, and not along product main"));
     else if (k === "settings") {

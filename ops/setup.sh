@@ -308,6 +308,14 @@ if [ -n "$RESTORE" ]; then
 fi
 
 # ---------------------------------------------------------------- 5. the instance repo: local git, no GitHub
+# The release the installer verified (spec §6.8): AIDENHQ_RELEASE (name), AIDENHQ_RELEASE_REPO (the distro repo) and
+# AIDENHQ_RELEASE_SHA (its commit), all three or none; the apply then resolves it and checks `product:` is its kernel.
+RELEASE_LINE=""
+if [ -n "${AIDENHQ_RELEASE:-}${AIDENHQ_RELEASE_REPO:-}${AIDENHQ_RELEASE_SHA:-}" ]; then
+  [[ "${AIDENHQ_RELEASE:-}" =~ ^[0-9]{4}\.[0-9]{1,2}(\.[0-9]+)?$ ]] && [[ "${AIDENHQ_RELEASE_REPO:-}" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] && [[ "${AIDENHQ_RELEASE_SHA:-}" =~ ^[0-9a-f]{40}$ ]] \
+    || die "AIDENHQ_RELEASE, AIDENHQ_RELEASE_REPO and AIDENHQ_RELEASE_SHA must all be set: a YYYY.MM name, <owner>/<repo> and a 40-character sha"
+  RELEASE_LINE="release: { name: \"$AIDENHQ_RELEASE\", source: { source: github, repo: $AIDENHQ_RELEASE_REPO }, sha: $AIDENHQ_RELEASE_SHA }"
+fi
 if [ ! -d "$INST/.git" ]; then
   say "Instance repo $INST (origin: $REMOTE)"
   # The official modules (their own repository since 5b) at the product's pin, put at ./modules; the instance's default
@@ -323,6 +331,7 @@ if [ ! -d "$INST/.git" ]; then
   write_user_file "$INST/instance.yaml" 644 <<EOF
 # $OWNER_NAME's AidenHQ. Changed through the Platform Engineer and your approval; see docs/USAGE.md.
 product: $PRODUCT
+$RELEASE_LINE
 marketplaces:
   - $market
 modules: [$mods]

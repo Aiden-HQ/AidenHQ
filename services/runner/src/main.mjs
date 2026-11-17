@@ -13,6 +13,7 @@ import { applyCardArgs, asApproval, branchCardArgs, cardOf, cardText, planOf } f
 import { applyCard, repoKey } from "../../../kernel/src/kinds.ts";
 import { authorityLines, diffAll, marketplaceChanges, moduleInputs } from "../../../kernel/src/loader/authority.ts";
 import { hostFetch, officialSides, remoteCodeText, withRemote } from "../../../kernel/src/loader/sources.ts";
+import { effective } from "../../../kernel/src/loader/release.ts";
 import { cowRoot, engineState, followJob, kernelJobs, readEngines, removeLayers, gatewayApi, jobcapServers, jobcapsFor, launcher, modelToken, observes, releaseBox, viaGateway } from "./engines.mjs";
 import { hiding, jailProblem } from "../../../kernel/src/sandbox.ts";
 import { sandboxConfig } from "../../../kernel/src/sandbox-config.ts";
@@ -1935,14 +1936,17 @@ async function moduleTierState(baseText, headText) {
   if (baseText === undefined || headText === undefined) return {};
   try {
     const [bi, hi] = [YAML.parse(baseText) ?? {}, YAML.parse(headText) ?? {}];
-    if (["product", "modules", "marketplaces"].every((k) => JSON.stringify(bi[k] ?? null) === JSON.stringify(hi[k] ?? null))) return {};
+    if (["product", "modules", "marketplaces", "release"].every((k) => JSON.stringify(bi[k] ?? null) === JSON.stringify(hi[k] ?? null))) return {};
     const [from, to] = [String(bi.product ?? ""), String(hi.product ?? "")];
     if (![from, to].every((x) => /^[0-9a-f]{40}$/.test(x))) return { modulesError: "the product pin isn't a full commit on both sides" };
     // The official modules by folder tree id (the product's ./modules, or the `aidenhq` marketplace from 5b); third-party
     // modules (instance.yaml marketplaces:), fetched at their pinned shas; a new marketplace is the owner's.
     const fetch = { ...hostFetch(REPO_ROOT), parse: (t) => YAML.parse(t) };
-    const sides = withRemote({ baseInstance: bi, headInstance: hi, ...officialSides(bi, hi, from, to, REPO_ROOT, fetch) }, fetch);
-    return { modules: moduleInputs({ ...sides, always: [] }), marketplaces: marketplaceChanges(bi, hi) };
+    // A release supplies the official marketplace, read at its distro sha on both sides (product: off the release's kernel
+    // fails closed here): the change is classified by the modules it resolves to.
+    const [eb, eh] = [effective(bi, fetch), effective(hi, fetch)];
+    const sides = withRemote({ baseInstance: eb, headInstance: eh, ...officialSides(eb, eh, from, to, REPO_ROOT, fetch) }, fetch);
+    return { modules: moduleInputs({ ...sides, always: [] }), marketplaces: marketplaceChanges(eb, eh), effective: { base: eb, head: eh } };
   } catch (err) {
     return { modulesError: String(err.message ?? err).split("\n")[0].slice(0, 200) };
   }

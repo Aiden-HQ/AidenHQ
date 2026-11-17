@@ -359,6 +359,10 @@ validate() {
   if [ -f kernel/src/signin.ts ] && COMPOSE_FILE="$files" docker compose config board 2>/dev/null | grep -qE '^[[:space:]]+published: "?3129"?$'; then
     why="the board still publishes 3129 (compose.override.yaml?): the kernel's sign-in listener binds it; drop that port from the override"; return 1
   fi
+  # A pinned release (instance.yaml release:, spec §6.8) is read from the distro repo at its sha; `product:` must be its kernel.
+  if [ -f kernel/src/loader/release.ts ]; then
+    node kernel/src/loader/release.ts "$inst/instance.yaml" || { why="the release in instance.yaml could not be resolved"; return 1; }
+  fi
   # The authority diff (kernel/src/loader/authority-cli.ts): one `apply authority:` line per module change. A hand apply is
   # the owner's own act, so it is printed, not filed; an unreadable diff refuses.
   if [ -f kernel/src/loader/authority-cli.ts ]; then

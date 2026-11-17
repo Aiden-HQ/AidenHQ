@@ -9,6 +9,7 @@ import { createRequire } from "node:module";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { authorityLines, diffAll, marketplaceChanges, moduleInputs } from "./authority.ts";
+import { effective } from "./release.ts";
 import { hostFetch, officialSides, withRemote } from "./sources.ts";
 
 const repo = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
@@ -30,10 +31,13 @@ function main(argv: string[]) {
   try {
     const d = process.env.AIDENHQ_INSTANCE_DIR;
     const current = d && existsSync(join(d, "instance.yaml")) ? yaml(readFileSync(join(d, "instance.yaml"), "utf8")) : undefined;
-    let [baseInstance, headInstance] = inst !== undefined ? [yaml(git(inst, "show", `${ib}:instance.yaml`)), yaml(git(inst, "show", `${ih}:instance.yaml`))] : [current ?? {}, current ?? {}];
+    const fetch = { ...hostFetch(repo), parse: YAML.parse };
+    // A release (instance.yaml release:) supplies the official marketplace, read at its distro sha on both sides; a refusal
+    // (product: off its kernel) exits 2.
+    const [rawBase, rawHead] = inst !== undefined ? [yaml(git(inst, "show", `${ib}:instance.yaml`)), yaml(git(inst, "show", `${ih}:instance.yaml`))] : [current ?? {}, current ?? {}];
+    let [baseInstance, headInstance] = [effective(rawBase, fetch), effective(rawHead, fetch)];
     // The official modules by folder tree id (the product's ./modules, or the `aidenhq` marketplace from 5b); third-party ones
     // (instance.yaml marketplaces:) are fetched at their pinned shas through the host's credential helper.
-    const fetch = { ...hostFetch(repo), parse: YAML.parse };
     const official = officialSides(baseInstance, headInstance, from!, to!, product, fetch);
     // No instance at all: every module, on both sides.
     if (inst === undefined && !current) baseInstance = headInstance = { modules: [...new Set([...Object.keys(official.baseDefs), ...Object.keys(official.headDefs)])] };
