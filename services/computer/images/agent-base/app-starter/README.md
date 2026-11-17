@@ -18,10 +18,14 @@ npm test          # component tests (Vitest), then builds, serves and checks the
 npm run screens   # Playwright: starts the seeded preview, screenshots every feature-map page at 1440 and 390 in light and dark, runs e2e/ flows, stops it
 npm run preview   # build, then serve dist/ and the API with the sample data on 4173 (what `screens` starts)
 npm run build     # typecheck + production build into dist/
-npm start         # serves dist/ and the API on PORT (8080)
+npm start         # serves dist/ and the API on PORT (8080; compose.yaml publishes it on the host's loopback, see below)
 npm run dev       # Vite with hot reload; run `npm start` alongside it for the API (proxied from /api)
 npm run catalog   # the starter's dev-only component catalog (catalog.html): every piece, variant, shell and preset
 ```
+
+## Publishing the port
+
+`compose.yaml` publishes the app on the host's loopback: `127.0.0.1:<port>:8080`. Keep that `<port>` equal to the app's `port:` in `apps.yaml` (pick a free one; 8080 is only the example). That port is what makes the app reachable: the board's Open link, the tailnet node and the checks all use it.
 
 ## What's where
 
