@@ -1021,7 +1021,7 @@ async function advanceMerges({ minute = true } = {}) {
       const done = planned.get(issueId);
       if (done?.error) throw done.error;
       step = done ?? (await merges.advance(queue, { github: mergeGithub, timeoutMinutes: cfg.merges?.timeout_minutes ?? 90, cardIsReview: ownRepo }));
-      queue.errors = 0;
+      step.queue.errors = 0;
     } catch (err) {
       // GitHub or the network: try again next minute, and give up after ten in a row.
       queue.errors = (queue.errors ?? 0) + 1;
@@ -1269,7 +1269,7 @@ const mergeGithub = {
   async deleteBranch(repo, branch) {
     await githubWrite(repo, `repos/${repo}/git/refs/heads/${branch}`, {}, "DELETE");
   },
-  /** A merge train's branch, made at `sha` (only a `merge-train/<n>` branch). */
+  /** A merge train's branch, made at `sha` (only a `merge-train/<n>` or `merge-build/<n>` branch). */
   async createRef(repo, branch, sha) {
     if (!merges.TRAIN_BRANCH.test(branch)) throw new Error(`not a merge train branch: ${branch}`);
     await githubWrite(repo, `repos/${repo}/git/refs`, { ref: `refs/heads/${branch}`, sha }, "POST", mergePermissions(repo, cfg.productRepo));

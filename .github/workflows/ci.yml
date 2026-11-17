@@ -8,7 +8,8 @@ name: ci
 on:
   pull_request:
   push:
-    # merge-train/<n>: the merge queue's trains (modules/codehost-github merge-gate.mjs), main plus the PRs it tests together.
+    # merge-train/<n>: the merge queue's trains (modules/codehost-github merge-gate.mjs), main plus the PRs it tests together,
+    # made in one push at the finished commit (they are built on merge-build/<n>, which runs nothing).
     branches: [main, "merge-train/**"]
 
 permissions:
