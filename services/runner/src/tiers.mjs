@@ -264,6 +264,11 @@ function moduleAuthorityParts(s, base, head) {
   // Forks (spec §6.9b): read here from both sides, so entering one is the owner's whatever its code diff reads as.
   try { forks = forkChanges(base, head); } catch (err) { return [REJECT("unparseable", `instance.yaml forks: ${String(err.message ?? err).slice(0, 200)}`)]; }
   const diffs = [...markets, ...forks, ...diffAll(s.modules)];
+  // A grants override that moved but reached no module's diff was not judged: the owner's.
+  const [bo, ho] = [grantOverrides(base), grantOverrides(head)];
+  const moved = changedKeys(bo, ho);
+  const folded = (key) => Object.values(s.modules).some((i) => i.base?.agents?.[key] && i.head?.agents?.[key] && !eq(i.base.agents[key].connections, i.head.agents[key].connections));
+  if (moved.some((key) => !folded(key))) return [OWNER_AFTER_REVIEW("grants-unjudged", `the grants override of ${moved.filter((k) => !folded(k)).join(", ")} changes, and no module's authority diff covers it`)];
   // The official marketplace moving with every module's folder tree id unchanged (the 5b switch): no authority, the reviewer's.
   if (!diffs.length) return changedKeys(base, head).includes("marketplaces") ? [T(1, "marketplace-same-trees", "the official marketplace moves; every module's folder tree id is unchanged")] : [];
   const c = classifyModules(diffs);

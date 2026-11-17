@@ -525,7 +525,7 @@ test("board-typed changes: a handbook fork, a grants override, a per-module pin"
   const ops = { name: "ops", agents: { scout: { connections: { crm: "read" } } } };
   const grants = (tools) => (tools ? `overrides:\n  agents:\n    scout:\n      connections:\n        crm: ${JSON.stringify(tools)}\n` : "");
   const run = (from, to) => {
-    const [bi, hi] = [YAML.parse(inst({}, grants(from))), YAML.parse(inst({}, grants(to)))];
+    const [bi, hi] = [YAML.parse(inst({}, grants(from))), YAML.parse(inst({}, grants(to)))].map((x) => ({ ...x, modules: ["crm", "ops"] }));
     const modules = moduleInputs({ baseInstance: { modules: ["crm", "ops"] }, headInstance: { modules: ["crm", "ops"] }, baseDefs: withGrantOverrides({ crm, ops }, bi), headDefs: withGrantOverrides({ crm, ops }, hi), changed: [] });
     return apply(["instance.yaml"], { "instance.yaml": inst({}, grants(from)) }, { "instance.yaml": inst({}, grants(to)) }, { modules });
   };
@@ -540,4 +540,17 @@ test("board-typed changes: a handbook fork, a grants override, a per-module pin"
   const t = apply(["instance.yaml"], { "instance.yaml": pinned(["crm"]) }, { "instance.yaml": pinned([{ id: "crm", sha: PIN_B }]) }, { modules: atPin });
   assert.deepEqual([t.tier, t.reviewFirst, t.panel, t.rule], [2, true, true, "module-authority"]);
   assert.equal(tierOf(apply(["instance.yaml"], { "instance.yaml": pinned(["crm"]) }, { "instance.yaml": pinned([{ id: "crm", sha: PIN_B }]) }, {})), "reject", "unread: refused");
+});
+
+test("a grants override no module input folded is the owner's, never unjudged", () => {
+  const i = (g) => `product: ${PIN_A}\nmodules: [crm]\n${g ? `overrides:\n  agents:\n    scout:\n      connections:\n        crm: [crm_update]\n` : ""}`;
+  const crm = { name: "crm", agents: { scout: { connections: { crm: "read" } } } };
+  // The inputs as read without the fold (e.g. the agent's module wasn't the one changed): nothing covers the override.
+  const t = apply(["instance.yaml"], { "instance.yaml": i(false) }, { "instance.yaml": i(true) }, { modules: moduleInputs({ baseInstance: { modules: ["crm"] }, headInstance: { modules: ["crm"] }, baseDefs: { crm }, headDefs: { crm }, changed: [] }) });
+  assert.deepEqual([t.tier, t.rule], [2, "grants-unjudged"]);
+  // The override's target is the enabled module defining the agent, never another listed def.
+  const other = { name: "other", agents: { scout: { connections: {} } } };
+  const folded = withGrantOverrides({ crm, other }, YAML.parse(i(true)));
+  assert.deepEqual([folded.crm.agents.scout.connections.crm, folded.other.agents.scout.connections.crm], [["crm_update"], undefined]);
+  assert.throws(() => withGrantOverrides({ crm, other }, { ...YAML.parse(i(true)), modules: ["crm", "other"] }), /all define agent scout/);
 });

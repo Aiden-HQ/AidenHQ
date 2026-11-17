@@ -197,8 +197,9 @@ export function officialSides(baseInstance: Dict, headInstance: Dict, from: stri
     for (const p of pinsOf(instance).filter((x) => x.marketplace === OFFICIAL && trees[x.name])) {
       const pw = { ...w, path: posix.join(w.path, p.name), sha: p.sha };
       if (w.url === product) throw new Error(`${p.name}: a per-module pin needs the official modules repository (an \`${OFFICIAL}\` marketplace or modules-pin.json)`);
-      defs[p.name] = (f.parse(readFileSync(join(checkout(pw, f), "module.yaml"), "utf8")) ?? {}) as Dict;
-      forks[p.name] = { at: pw, origin: `${OFFICIAL} pinned at ${p.sha.slice(0, 12)}` };
+      const root = checkout(pw, f);
+      defs[p.name] = (f.parse(readFileSync(join(root, "module.yaml"), "utf8")) ?? {}) as Dict;
+      forks[p.name] = { at: pw, origin: onOfficialMain(pw, f) ? `${OFFICIAL} pinned at ${p.sha.slice(0, 12)}` : `${OFFICIAL} pinned at ${p.sha.slice(0, 12)}, unreviewed: not on its main (tier ${f.kit?.(root, defs[p.name]!, pw) ? "conformant" : "declared"})` };
     }
     for (const k of forksOf(instance).filter((x) => x.target !== "kernel" && trees[x.target])) {
       const fw = onFork({ ...w, path: posix.join(w.path, k.target) }, k, f);
@@ -292,6 +293,21 @@ export function pinsOf(instance: Dict): { name: string; marketplace: string; sha
     out.push({ name: name!, marketplace: mkt || OFFICIAL, sha: String(m.sha) });
   }
   return out;
+}
+
+/**
+ * Whether a pinned commit is on the official repository's main, so reviewed code. GitHub serves a fork's or a PR's commits
+ * through the upstream URL too, so a sha alone proves nothing: one off main is treated as a fork (computed tier, the owner's).
+ */
+export function onOfficialMain(w: Where, f: Fetch): boolean {
+  try {
+    const repo = repoAt(w, f);
+    git(f, repo, ["fetch", "-q", "--no-tags", "--no-recurse-submodules", "--", w.url, "+refs/heads/main:refs/remotes/official/main"], { owned: w.owned === true, timeout: 120_000 });
+    git(f, repo, ["merge-base", "--is-ancestor", w.sha, "refs/remotes/official/main"]);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 /** instance.yaml `modules:` entries naming a third-party marketplace (`name@marketplace`), by marketplace. */

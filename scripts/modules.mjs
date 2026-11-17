@@ -11,7 +11,7 @@ import { urlSettingProblem } from "../services/shared/url-setting.ts";
 import { generateCompose, ownSecrets } from "../kernel/src/loader/services.ts";
 import { capabilityProblems, conflictProblems, danglingBindings } from "../kernel/src/loader/bindings.ts";
 import { MANIFEST_KEYS, moduleName } from "../kernel/src/loader/authority.ts";
-import { checkout, forkBase, forksOf, hostFetch, marketplaceEntries, marketplacesOf, OFFICIAL, onFork, pinsOf, remoteModules, sourceOf } from "../kernel/src/loader/sources.ts";
+import { checkout, forkBase, forksOf, hostFetch, marketplaceEntries, marketplacesOf, OFFICIAL, onFork, onOfficialMain, pinsOf, remoteModules, sourceOf } from "../kernel/src/loader/sources.ts";
 import { effective } from "../kernel/src/loader/release.ts";
 import { compilePoints } from "../kernel/src/loader/points.ts";
 import { gateMode } from "../kernel/src/gates.ts";
@@ -320,14 +320,16 @@ function discover(productDir, instance, fetch) {
   // repository at that sha; the others follow the marketplace.
   for (const p of pins) {
     if (!out.has(p.name)) fail(`modules: ${p.name} is pinned but the official marketplace has no such module`);
-    const pin = JSON.parse(readFileSync(join(productDir, "modules-pin.json"), "utf8"));
-    const w = marketplacesOf(resolved).find((m) => m.name === OFFICIAL)?.at ?? sourceOf({ source: "github", repo: pin.repo }, "modules-pin.json", undefined, pin.sha, true);
+    const pinFile = () => JSON.parse(readFileSync(join(productDir, "modules-pin.json"), "utf8"));
+    const w = marketplacesOf(resolved).find((m) => m.name === OFFICIAL)?.at ?? sourceOf({ source: "github", repo: pinFile().repo }, "modules-pin.json", undefined, pinFile().sha, true);
     const at = { ...w, path: join(w.path, p.name), sha: p.sha };
     const r = checkout(at, fetch);
     const def = readYaml(join(r, "module.yaml"));
     if (def.name !== p.name) fail(`${p.name}: its module.yaml at ${p.sha.slice(0, 12)} names ${def.name}`);
     if (def.apps != null || Object.values(def.services?.run ?? {}).some((s) => s?.build != null)) fail(`${p.name}: apps and service builds from a per-module pin aren't supported yet; pin the marketplace`);
-    out.set(p.name, { ...out.get(p.name), root: r, def, sha: p.sha, pinned: p.sha, source: { url: at.url, path: at.path } });
+    // Official only when the sha is on the official repository's main; otherwise a computed tier, as a fork's.
+    const tier = onOfficialMain(at, fetch) ? "official" : fetch.kit?.(r, def, at) ? "conformant" : "declared";
+    out.set(p.name, { ...out.get(p.name), root: r, def, tier, sha: p.sha, pinned: p.sha, source: { url: at.url, path: at.path } });
   }
   for (const k of forks) {
     const at = onFork(forkBase(resolved, k, productDir, { ...fetch, parse }), k, fetch);

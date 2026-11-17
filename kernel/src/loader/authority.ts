@@ -122,8 +122,10 @@ export function authorityDiff(name: string, base: ModuleDef | undefined, head: M
     return { module: name, changes, code: false };
   }
   const b = base ?? {};
-  if (!base && !replacing) review(`installed${origin.head ? ` from ${origin.head}` : ""}`);
-  else if (origin.head && origin.head !== origin.base) review(`now from ${origin.head}`);
+  // Code from off the official repository's main (sources.ts onOfficialMain: "unreviewed") is the owner's, as a fork is.
+  const from = origin.head && /, unreviewed:/.test(origin.head) ? owner : review;
+  if (!base && !replacing) from(`installed${origin.head ? ` from ${origin.head}` : ""}`);
+  else if (origin.head && origin.head !== origin.base) from(`now from ${origin.head}`);
   // Enforcement it drops (a check, its reviewer or executor provider) is authority too: the owner's, as on a remove. A check
   // moved to observe mode (gates.ts) no longer enforces, so it counts as dropped.
   const checkIds = (x: Dict) => list(x.checks).filter((c) => !(isMap(c) && c.mode === "observe")).map((c) => JSON.stringify(isMap(c) ? c.id ?? c : c));
@@ -348,11 +350,14 @@ export const diffAll = (inputs: Record<string, ModuleInput>) => Object.entries(i
  */
 export function withGrantOverrides(defs: Record<string, ModuleDef>, instance: Dict): Record<string, ModuleDef> {
   const out = { ...defs };
+  // The module the compiler takes the agent from: one enabled on this side (two defining it don't compile).
+  const enabled = enabledModules(instance, defs);
   for (const [key, o] of Object.entries(map(map(instance.overrides).agents))) {
     if (map(o).connections == null) continue;
     if (!isMap(map(o).connections)) throw new Error(`overrides.agents.${key}.connections must be a map`);
-    const m = Object.keys(out).find((n) => isMap(map(out[n]!.agents)[key]));
-    if (!m) throw new Error(`overrides.agents.${key}.connections: no module defines agent ${key}`);
+    const found = enabled.filter((n) => isMap(map(out[n]?.agents)[key]));
+    if (found.length !== 1) throw new Error(`overrides.agents.${key}.connections: ${found.length ? `modules ${found.join(", ")} all define` : "no enabled module defines"} agent ${key}`);
+    const m = found[0]!;
     const def = out[m]!;
     const a = map(map(def.agents)[key]);
     const conns = { ...map(a.connections) };
