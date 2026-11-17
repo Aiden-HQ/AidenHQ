@@ -23,6 +23,7 @@ import { SettingsView, isCategory, type Category } from "./Settings";
 import { ApprovalsView } from "./Chat";
 import { clearCache, load, peek, setAccount } from "./cache";
 import { subscribe } from "./events";
+import type { AgentTab } from "./AgentPage";
 import { VIEW_CHUNKS, prefetchView } from "./queries";
 import { ChatWorkspace } from "./Workspace";
 import { askForNotifications, notificationsSupported, watchNeedsYou } from "./notify";
@@ -37,12 +38,13 @@ const ActivityView = lazy(() => VIEW_CHUNKS.activity().then((m) => ({ default: m
 const AppsView = lazy(() => VIEW_CHUNKS.apps().then((m) => ({ default: m.AppsView })));
 const CostsView = lazy(() => VIEW_CHUNKS.costs().then((m) => ({ default: m.CostsView })));
 const CrewView = lazy(() => VIEW_CHUNKS.agents().then((m) => ({ default: m.CrewView })));
+const AgentPage = lazy(() => VIEW_CHUNKS.agentPage().then((m) => ({ default: m.AgentPage })));
 const RunPage = lazy(() => VIEW_CHUNKS.run().then((m) => ({ default: m.RunPage })));
 /** A page's place while its code arrives (rarely seen: it is warmed early). No spinner: the page paints in a moment. */
 const PageLoading = () => <main className="page wide" aria-busy="true" />;
 
 type Items = Record<Bucket, Card[]>;
-type Route = { kind: "board" } | { kind: "chat"; ref: string | null } | { kind: "view"; view: View } | { kind: "settings"; cat: Category | null } | { kind: "task"; ref: string; focus?: string } | { kind: "run"; id: string } | { kind: "brief" } | { kind: "help" };
+type Route = { kind: "board" } | { kind: "chat"; ref: string | null } | { kind: "view"; view: View } | { kind: "settings"; cat: Category | null } | { kind: "agent"; key: string; tab: AgentTab } | { kind: "task"; ref: string; focus?: string } | { kind: "run"; id: string } | { kind: "brief" } | { kind: "help" };
 
 const HINTS: Record<Bucket, string> = {
   triage: "New tasks land here",
@@ -92,6 +94,10 @@ function parseRoute(): Route {
     const [ref = "", focus] = h.slice(2).split("/");
     return { kind: "task", ref, ...(focus ? { focus } : {}) };
   }
+  // #/agents/<key>[/overview|chats|settings] opens an agent's page. The old #/settings/agents lands on the Agents list.
+  const agent = /^agents\/([a-z0-9-]+)(?:\/(overview|chats|settings))?$/.exec(h);
+  if (agent) return { kind: "agent", key: agent[1]!, tab: (agent[2] as AgentTab | undefined) ?? "overview" };
+  if (h === "settings/agents") return { kind: "view", view: "agents" };
   // #/r/<run id> opens a run's trace.
   if (/^r\/[0-9a-f-]{36}$/.test(h)) return { kind: "run", id: h.slice(2) };
   // #/c/ starts a new chat; #/c/WOR-12 opens that chat in the chat workspace.
@@ -260,6 +266,7 @@ export function App() {
       // A chat link opens the Chat tab; a tab link opens that tab.
       if (r.kind === "chat") setView("chat");
       if (r.kind === "view") setView(r.view);
+      if (r.kind === "agent") setView("agents");
       if (r.kind === "settings") setView("settings");
     };
     hash();
@@ -473,7 +480,7 @@ export function App() {
       if (e.key === "Escape") {
         if (creating) return setCreating(false);
         if (typing) return el.blur();
-        if (route.kind !== "board" && route.kind !== "chat" && route.kind !== "view" && route.kind !== "settings") return go("#/");
+        if (route.kind !== "board" && route.kind !== "chat" && route.kind !== "view" && route.kind !== "agent" && route.kind !== "settings") return go("#/");
         if (query) return setQuery("");
         return setSelected(null);
       }
@@ -668,7 +675,8 @@ export function App() {
       {view === "settings" && <SettingsView cat={route.kind === "settings" ? route.cat : null} mobile={mobile} session={session} go={go} onSignIn={signInNeeded} can={{ signIn: local, google: googleConnect }} />}
       {view === "apps" && <Suspense fallback={<PageLoading />}><AppsView onSignIn={signInNeeded} /></Suspense>}
       {view === "costs" && <Suspense fallback={<PageLoading />}><CostsView onSignIn={signInNeeded} /></Suspense>}
-      {view === "agents" && <Suspense fallback={<PageLoading />}><CrewView crew={board.assignees} onSignIn={signInNeeded} /></Suspense>}
+      {view === "agents" && route.kind === "agent" && <Suspense fallback={<PageLoading />}><AgentPage key={route.key} agentKey={route.key} tab={route.tab} go={go} onSignIn={signInNeeded} /></Suspense>}
+      {view === "agents" && route.kind !== "agent" && <Suspense fallback={<PageLoading />}><CrewView crew={board.assignees} onSignIn={signInNeeded} /></Suspense>}
       <main className="columns" hidden={view !== "board"}>
         <DndContext sensors={sensors} collisionDetection={collision} onDragStart={onDragStart} onDragOver={onDragOver} onDragEnd={onDragEnd} onDragCancel={() => (setActiveId(null), (dragFrom.current = null), void refresh(true))}>
           {visibleBuckets.map((b) => (

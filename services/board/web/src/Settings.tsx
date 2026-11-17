@@ -5,7 +5,6 @@ import { PoweredBy } from "./components";
 import { needsAttention, type ConnectionsData } from "./connections";
 import { askForNotifications, notificationsSupported } from "./notify";
 import { ConnectionsPage, RowsSkeleton } from "./SettingsConnections";
-import { AgentsPage } from "./SettingsAgents";
 import { parseInput, shown } from "./settings-format";
 import { ChangePreview, ChangeProgress, Changes, Group, IN_FLIGHT, Page, Row, Segmented, StatusPill, Switch, Toasts, useFiled } from "./settings-ui";
 import type { Advisory, FiledChange, ModuleRow, SettingChange, SettingRow, SettingsData } from "./types";
@@ -19,7 +18,6 @@ import "./settings.css";
 
 export const CATEGORIES = [
   { key: "connections", name: "Connections", group: "Connect" },
-  { key: "agents", name: "Agents and models", group: "Fleet" },
   { key: "approvals", name: "Approvals and autonomy", group: "Fleet" },
   { key: "spend", name: "Spend caps", group: "Fleet" },
   { key: "switches", name: "Kill switches", group: "Fleet" },
@@ -177,7 +175,6 @@ function Pane({ cat, data, conns, session, onSignIn, can, checking, check }: { c
       </Page>
     );
   const rows = (keys: string[]) => keys.map((k) => data.settings.find((s) => s.key === k)).filter((s): s is SettingRow => Boolean(s));
-  if (cat === "agents") return <AgentsPage data={data} />;
   if (cat === "approvals") return <ApprovalsPage data={data} rows={rows} />;
   if (cat === "spend") return <SpendPage data={data} />;
   if (cat === "switches") {

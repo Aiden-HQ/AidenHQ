@@ -3,7 +3,7 @@ import { AgentAvatar } from "./AgentAvatar";
 import { SignInRequired, api } from "./api";
 import { Plan, PlusIcon } from "./components";
 import { useEvents } from "./events";
-import { QUERIES, scorecardQuery, useQuery } from "./queries";
+import { QUERIES, agentOpenQuery, scorecardQuery, useQuery } from "./queries";
 import { Bone, FleetSkeleton, SkeletonLines, Updating } from "./Skeleton";
 import type { Assignee, Finished, RosterAgent, Session, TaskRef } from "./types";
 import { ago, elapsed } from "./util";
@@ -326,18 +326,30 @@ function AgentRow({ a, assignee, sessions, finished, runsLoaded, now, open, togg
           <section>
             <h4>About</h4>
             {a.title && <p className="fleet-route">{a.title}</p>}
-            {a.model && (
-              <dl className="fleet-facts">
-                <dt>Model</dt>
-                <dd>{a.model}</dd>
-              </dl>
-            )}
-            {/* A paused agent takes no chats (the chat list leaves it out). */}
-            {a.status !== "paused" && (
-              <a className="btn" href={`#/c/?to=${encodeURIComponent(a.id)}`}>
-                Chat with {a.name}
-              </a>
-            )}
+            <dl className="fleet-facts">
+              {a.model && (
+                <>
+                  <dt>Model</dt>
+                  <dd>{a.model}</dd>
+                </>
+              )}
+              <dt>Set up</dt>
+              <dd>{a.system ? "Platform agent" : "Your agent"}</dd>
+            </dl>
+            {a.key && <NeedsYouLine agentKey={a.key} />}
+            <div className="ap-bar">
+              {a.key && (
+                <a className="btn primary" href={`#/agents/${a.key}`}>
+                  Open {a.name}'s page
+                </a>
+              )}
+              {/* A paused agent takes no chats (the chat list leaves it out). */}
+              {a.status !== "paused" && (
+                <a className="btn" href={`#/c/?to=${encodeURIComponent(a.id)}`}>
+                  Chat with {a.name}
+                </a>
+              )}
+            </div>
           </section>
           <section>
             <h4>Schedules</h4>
@@ -378,34 +390,24 @@ function AgentRow({ a, assignee, sessions, finished, runsLoaded, now, open, togg
               <p className="fleet-empty">Nothing right now.</p>
             )}
           </section>
-          <section>
-            <h4>Recent runs</h4>
-            {recent.length ? (
-              <div className="agent-recent">
-                {recent.slice(0, 8).map(({ f, count, failed }) => {
-                  const s = runStatus(f.status);
-                  return (
-                    <div key={f.id} className="recent-row" title={f.detail}>
-                      {f.id.startsWith("runner:") ? <span className={`run-status run-${s.tone}`}>{s.text}</span> : <a className={`run-status run-${s.tone}`} href={`#/r/${f.id}`} title="Open the run's trace">{s.text}</a>}
-                      <Tasks tasks={f.tasks} fallback={f.run} inline />
-                      {count > 1 && (
-                        <span className="recent-count" title={failed ? `${failed} of ${count} failed` : `${count} runs`}>
-                          ×{count}
-                        </span>
-                      )}
-                      <span className="time">{f.finishedAt ? ago(f.finishedAt, now) : ""}</span>
-                    </div>
-                  );
-                })}
-              </div>
-            ) : (
-              <p className="fleet-empty">No runs in the last 12 hours.</p>
-            )}
-          </section>
           <Scorecard id={a.id} />
         </div>
       )}
     </div>
+  );
+}
+
+/** The quick look's first line: how many of the agent's tasks wait on the owner, and the first of them. */
+function NeedsYouLine({ agentKey }: { agentKey: string }) {
+  const { data } = useQuery(agentOpenQuery(agentKey));
+  if (!data) return null;
+  const first = data.needs[0];
+  return first ? (
+    <p className="fleet-route">
+      <b>{data.needs.length} need{data.needs.length === 1 ? "s" : ""} you:</b> <a href={`#/t/${first.identifier}`}>{first.identifier} {first.title}</a>
+    </p>
+  ) : (
+    <p className="fleet-empty">Nothing needs you.</p>
   );
 }
 
