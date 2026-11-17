@@ -32,6 +32,25 @@ export class SignInRequired extends Error {
   }
 }
 
+/** One module's setup flow as GET /api/setup-flows returns it (services/board/src/setup-flows.ts). */
+export interface SetupFlowView {
+  module: string;
+  order: number;
+  title: string;
+  why: string;
+  effort: string;
+  wizard?: boolean;
+  steps: string;
+  secrets?: string[];
+  signin?: string;
+  pair_url?: string;
+  present: Record<string, boolean>;
+  signedIn: boolean;
+  paired: boolean;
+  done: boolean;
+  dismissed: boolean;
+}
+
 export interface Session {
   mode: "lan";
   account?: { id: string; email: string; name: string; role: "admin" | "user"; owner: boolean } | null;
@@ -113,6 +132,11 @@ export const api = {
     return call<{ rows: TaskRow[]; next: number | null }>("GET", `/api/agents/by-key/${encodeURIComponent(key)}/tasks?${p}`);
   },
   scorecard: (id: string) => call<Scorecard>("GET", `/api/agents/${encodeURIComponent(id)}/scorecard`),
+  setupFlows: () => call<{ flows: SetupFlowView[] }>("GET", "/api/setup-flows"),
+  setupSecret: (module: string, secret: string, value: string) => call<{ ok: boolean }>("POST", `/api/setup-flows/${module}/secret`, { secret, value }),
+  setupDismiss: (module: string) => call<{ ok: boolean }>("POST", `/api/setup-flows/${module}/dismiss`, {}),
+  setupPair: (module: string) => call<{ code: string; link?: string }>("POST", `/api/setup-flows/${module}/pair`, {}),
+  setupPaired: (module: string) => call<{ paired: boolean }>("GET", `/api/setup-flows/${module}/pair`),
   modules: () => call<{ modules: ModuleRow[]; advisories: Advisory[] }>("GET", "/api/modules"),
   settings: () => call<SettingsData>("GET", "/api/settings"),
   connections: (fresh = false) => call<ConnectionsData>("GET", `/api/settings/connections${fresh ? "?fresh" : ""}`),

@@ -2,6 +2,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { parse as parseYaml } from "yaml";
 import { z } from "zod";
+import { setupFlowPoints, type SetupFlowPoint } from "./setup-flows.js";
 import { WEEKDAYS, type Weekday } from "./recurrence.js";
 
 const SystemSchema = z.object({
@@ -44,6 +45,7 @@ export interface Config {
   google?: { url: string; token: string };
   /** The modules' board.signins (config/points/board.json): each one whose `<id>_auth_token` is mounted. */
   signIns: SignInPoint[];
+  setupFlows: { flows: (SetupFlowPoint & { token?: string })[] };
   /** Where Paperclip keeps its Codex session logs (read-only mount), and the computer launcher for agents in their own computers. */
   sessions?: { dir?: string; launcher?: { url: string; token: string } };
   /** The kernel's admin listener at its front door (AIDENHQ_ADMIN_URL): sign-in, the handoff to the board, admin links. */
@@ -74,6 +76,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     internal: internalConfig(env),
     google: signIn(env.GOOGLE_AUTH_TOKEN_FILE ?? "/run/secrets/google_auth_token", env.GOOGLE_WORKSPACE_URL ?? "http://google-workspace-mcp:8081"),
     signIns: signInPoints(env.BOARD_POINTS_FILE ?? "/config/points/board.json", env.BOARD_SECRETS_DIR ?? "/run/secrets"),
+    setupFlows: { flows: setupFlowPoints(env.BOARD_POINTS_FILE ?? "/config/points/board.json", env.BOARD_SECRETS_DIR ?? "/run/secrets") },
     sessions: sessionsConfig(env),
     gateway: env.AIDENHQ_GATEWAY_URL && keyFile(env.GATEWAY_BOARD_KEY_FILE ?? "/run/secrets/gateway_board_key") ? { url: env.AIDENHQ_GATEWAY_URL.replace(/\/+$/, ""), token: keyFile(env.GATEWAY_BOARD_KEY_FILE ?? "/run/secrets/gateway_board_key")! } : undefined,
     accounts: accountsConfig(env),
