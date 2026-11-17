@@ -364,6 +364,24 @@ test("merge in the agents org", () => {
   assert.equal(tierOf(merge({ repo: "acme/bor", checks: [{ name: "test", ok: false }] })), "reject", "outside, red: friction first");
 });
 
+test("merge outside the agents org: the bound head is compared, and a moved one is still refused", () => {
+  const outside = (p = {}) => merge({ repo: "acme/bor", ...p });
+  const ok = outside();
+  assert.equal(ok.reject, undefined, "a green outside PR with the head that was asked for is not refused");
+  assert.equal(ok.tier, 1, "the reviewer's, never merged at once");
+  assert.equal(ok.rule, "outside-merge", "the outside-repo rule, not head-moved");
+  assert.equal(ok.panel, true, "a panel review, not Tier 0");
+  const moved = outside({ headMatches: false });
+  assert.equal(moved.reject, true, "a head that differs from the asked-for one is refused");
+  assert.equal(moved.rule, "head-moved");
+  assert.match(moved.reason, /moved since it was asked for/);
+  // Own repos resolve exactly as before: the agents org merges at once on a green head, the product repo is the reviewer's.
+  assert.equal(tierOf(merge({ headMatches: true })), 0, "an agents-org PR: Tier 0 as today");
+  assert.equal(merge({ headMatches: true }).rule, "agents-org-merge");
+  assert.equal(tierOf(merge({ repo: base.productRepo, headMatches: true }, P)), 1, "a product PR: the reviewer's as today");
+  assert.equal(merge({ repo: base.productRepo, headMatches: true }, P).rule, "product-merge");
+});
+
 test("apply: agents", () => {
   const trial = def({ name: "Chaser", trial: true, connections: { github: "read" } });
   const grad = def({ name: "Chaser", connections: { github: "read" } });
