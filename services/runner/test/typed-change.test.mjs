@@ -61,5 +61,46 @@ test("instance.yaml is edited in place: comments stay, and fork then unfork leav
   assert.equal(unfork.get("agents/scout/AGENTS.md"), null);
   // A pin and its release, by the module's own entry.
   const pin = planFiles([{ kind: "pin", name: "ops", sha: "b".repeat(40) }], { read: (p) => (p === "instance.yaml" ? yaml : undefined), isInstance });
-  assert.match(pin.get("instance.yaml"), /{id: ops, sha: b{40}}/);
+  assert.match(pin.get("instance.yaml"), /\{ ?id: ops, sha: b{40} ?\}/);
+});
+
+test("a realistic instance.yaml keeps every other line as it was", () => {
+  const yaml = `# The instance
+product: ${"a".repeat(40)}
+modules:
+  - core
+  - { id: ops, sha: ${"b".repeat(40)} }
+settings:
+  owner_name: Sam # who it serves
+  glean_mcp_url: "https://acme-be.glean.com/mcp/default?tools=all&and=a-rather-long-query-string-that-runs-past-eighty-columns"
+  slack_post_channels: [C1, C2]
+overrides:
+  agents:
+    scout: { model: m1 }
+`;
+  const out = planFiles([{ kind: "agent", agent: "scout", field: "reasoning_effort", value: "high" }], { read: (p) => (p === "instance.yaml" ? yaml : undefined), isInstance }).get("instance.yaml");
+  const changed = out.split("\n").filter((l) => !yaml.split("\n").includes(l));
+  assert.deepEqual(changed, ["    scout: { model: m1, reasoning_effort: high }"]);
+});
+
+test("a branch made by git plumbing (no checkout) is a branch of the task, as the apply path finds it", async () => {
+  const { execFileSync } = await import("node:child_process");
+  const { mkdtempSync, writeFileSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  const { findBranches } = await import("../../../modules/codehost-github/src/workspace.ts");
+  const origin = mkdtempSync(join(tmpdir(), "inst-origin-"));
+  const env = { ...process.env, GIT_AUTHOR_NAME: "t", GIT_AUTHOR_EMAIL: "t@example.com", GIT_COMMITTER_NAME: "t", GIT_COMMITTER_EMAIL: "t@example.com" };
+  const g = (cwd, args, input) => execFileSync("git", args, { cwd, env: { ...env, GIT_INDEX_FILE: join(cwd, ".git", "typed-index") }, input }).toString().trim();
+  g(origin, ["init", "-q", "-b", "main"]);
+  writeFileSync(join(origin, "instance.yaml"), "product: x\n");
+  execFileSync("git", ["add", "."], { cwd: origin, env }), execFileSync("git", ["commit", "-qm", "init"], { cwd: origin, env });
+  const path = mkdtempSync(join(tmpdir(), "inst-clone-"));
+  execFileSync("git", ["clone", "-q", origin, path], { env });
+  const tip = g(path, ["rev-parse", "origin/main"]);
+  g(path, ["read-tree", tip]);
+  g(path, ["update-index", "--add", "--cacheinfo", `100644,${g(path, ["hash-object", "-w", "--stdin"], "product: y\n")},instance.yaml`]);
+  const sha = g(path, ["commit-tree", g(path, ["write-tree"]), "-p", tip, "-m", "settings"]);
+  g(path, ["branch", "-f", "fleet/settings-wor-1", sha]);
+  assert.deepEqual((await findBranches(path, { base: "main" })).map((b) => b.branch), ["fleet/settings-wor-1"]);
 });

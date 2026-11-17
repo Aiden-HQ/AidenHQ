@@ -278,7 +278,11 @@ export function planFiles(changes, { read, isInstance, moduleHandbook }) {
   }
   if (yamlTouched) {
     if (YAML.isMap(doc.get("overrides", true)) && !doc.get("overrides", true).items.length) doc.delete("overrides");
-    out.set("instance.yaml", doc.toString({ flowCollectionPadding: false }));
+    // No re-folding of long lines; a line that differs from one in the file only by its flow spacing ({ a } or {a}) is
+    // written as the file had it, so the diff is only the lines the change makes.
+    const flat = (l) => l.replace(/([[{]) +/g, "$1").replace(/ +([\]}])/g, "$1");
+    const had = new Map(docText.split("\n").map((l) => [flat(l), l]));
+    out.set("instance.yaml", doc.toString({ lineWidth: 0 }).split("\n").map((l) => had.get(flat(l)) ?? l).join("\n"));
   }
   // Only real changes: a file written as it already is, or deleted when absent, is no change.
   for (const [p, t] of out) if (t === (read(p) ?? null)) out.delete(p);

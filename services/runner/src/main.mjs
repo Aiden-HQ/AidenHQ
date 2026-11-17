@@ -293,7 +293,10 @@ async function writeTypedChange(t) {
     const sha = await commitTyped(issue, changes, src);
     const workspace = state.task(issue.id).workspace;
     const said = await showFleetDiff(issue, workspace);
-    if (!said) throw new Error("the change was committed but no card came of it");
+    // A card filed, or a Tier 0 landing queued, is the change written. A read that failed ("try again") or a card that
+    // couldn't be filed is tried again next poll; any other refusal is final and closes the task with its reason.
+    if (!said || /Couldn't file the approval card|try again/.test(said)) throw new Error(`no card yet: ${said.split("\n")[0].slice(0, 200) || "nothing said"}`);
+    if (!/^\*\*(Fleet change|Runs at once|Handbook edit to an agent in trial)/.test(said)) throw new TypedRefused(said.replace(/\*\*/g, "").split("\n")[0].slice(0, 500).replace(/\.$/, ""));
     state.set(`typed:${issue.id}`, sha);
     await pc.comment(issue.id, said);
     log("typed settings change written", { issue: issue.identifier, sha, kinds: changes.map((c) => c.kind) });
