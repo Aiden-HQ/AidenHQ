@@ -217,7 +217,7 @@ test("the web for every codex agent: live search by default (an agent may opt do
   }
   // Runner agents get no tools added; one in a computer (the App Engineer) has exactly what it grants itself.
   for (const [key, a] of Object.entries(r.paperclip.agents)) if (a.dispatch === "runner" && !a.image) assert.ok(!a.mcp_servers.includes("apps"), key);
-  assert.deepEqual(r.paperclip.agents["app-engineer"].enabled_tools, { apps: ["app_list", "app_status", "app_view", "app_check", "web_view"], github: ["github_whoami", "github_project_read", "github_issue_read", "github_search_issues"] });
+  assert.deepEqual(r.paperclip.agents["app-engineer"].enabled_tools, { apps: ["app_list", "app_status", "app_view", "app_check", "web_view"], github: ["github_whoami", "github_project_read", "github_issue_read", "github_search_issues", "github_app_issue_status"] });
   assert.equal(r.paperclip.agents["review-chaser"].web_search, "disabled");
   assert.equal(r.paperclip.agents.assistant.web_search, undefined);
 });
