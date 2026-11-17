@@ -100,7 +100,9 @@ function signals(task: Issue, kids: Issue[], cards: Approval[], grades: GradesVi
     const g = grades[k.id];
     // A settled row (not_graded: the task closed before the grader decided, a cancellation included) is no signal at all:
     // it must never read as "open", or a cancelled task's escalated row settling would wake its delegator with "grade: open".
-    if (g && g.state !== "not_graded") {
+    // A sub-task at a terminal status takes no decision either: a verdict recorded against it after it closed (a pass that
+    // was already running) is never presented as an escalation waiting on the delegator.
+    if (g && g.state !== "not_graded" && st === "open") {
       // A grade sending the work back is the assignee's to act on, not the delegator's: only satisfied and escalated are news.
       // Its own key (not `grade:`), so a cursor saved before this rule is dropped, never read as a change.
       const gs = ["satisfied", "escalated"].includes(g.state) ? g.state : "open";
@@ -193,7 +195,8 @@ export async function wakeTick(deps: WakeDeps, recent: Recent, now = Date.now())
   for (const t of tasks) {
     const agent = t.assigneeAgentId!;
     const was = state.cursors[t.id];
-    const sig = signals(t, ownKids(t), cardsOf.get(t.id) ?? [], grades ?? {}, prs);
+    const kids = ownKids(t);
+    const sig = signals(t, kids, cardsOf.get(t.id) ?? [], grades ?? {}, prs);
     const next: Record<string, string> = {};
     // A source's first sighting is its baseline; a source that went away (a pruned card, an old closed sub-task) is dropped.
     const changed: [string, Signal][] = [];
@@ -208,9 +211,14 @@ export async function wakeTick(deps: WakeDeps, recent: Recent, now = Date.now())
     if (!found) for (const [k, v] of Object.entries(was ?? {})) if (k.startsWith("pr:")) next[k] ??= v;
     // The grading module didn't answer: its graded: signals keep their cursors (a merge meanwhile is still news next tick).
     if (!grades) for (const [k, v] of Object.entries(was ?? {})) if (k.startsWith("graded:")) next[k] ??= v;
-    // A settled row (not_graded) leaves signals() for the same reason a closed sub-task does: its cursor stays, so the task
-    // reopened, graded again and escalated is still news.
-    if (grades) for (const [k, v] of Object.entries(was ?? {})) if (k.startsWith("graded:") && grades[k.slice("graded:".length)]?.state === "not_graded") next[k] ??= v;
+    // A grade signals() stopped presenting (its row settled, or its sub-task closed) keeps its cursor for the same reason a
+    // closed sub-task does: the task reopened, graded again and escalated is still news. A sub-task that has dropped out of
+    // the closed window is known closed by its own cursor, so its grade's cursor is kept too.
+    const quiet = new Set([
+      ...kids.filter((k) => childState(k.status) !== "open" || grades?.[k.id]?.state === "not_graded").map((k) => k.id),
+      ...Object.entries(was ?? {}).flatMap(([k, v]) => (k.startsWith("child:") && (v === "done" || v === "cancelled") ? [k.slice("child:".length)] : [])),
+    ]);
+    if (grades) for (const [k, v] of Object.entries(was ?? {})) if (k.startsWith("graded:") && quiet.has(k.slice("graded:".length))) next[k] ??= v;
     // A closed sub-task leaves the closed list after a while: its cursor stays, so reopening it later is still news.
     for (const [k, v] of Object.entries(was ?? {})) if (k.startsWith("child:") && (v === "done" || v === "cancelled")) next[k] ??= v;
     cursors[t.id] = next;
