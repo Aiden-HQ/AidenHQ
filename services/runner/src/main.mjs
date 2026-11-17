@@ -24,7 +24,8 @@ import { ISOLATED_ENV, SAFE_GIT_ARGS, changeBase, defaultBranch, ensureClone, en
 import { DEFAULT_IDENTITY, READ, WRITE, appClient, appRemoteUrl, ghOptions, identityEnv, inOrg, jobGhToken, mergeOptions, mergePermissions, ownRepo as appOwnRepo, pushPermissions } from "../../../modules/codehost-github/src/github-app.ts";
 import { codexModels, readApproval, resolveModelAlias, resolveOpenRouterModel, withParent } from "./intake.ts";
 import { splitAnswered } from "./answered.ts";
-import { ALL_STATUSES, Paperclip, origins } from "./paperclip.ts";
+import { ALL_STATUSES, Paperclip, blockedRefusal, origins, unresolvedBlockers } from "./paperclip.ts";
+import { park, parkedJobs, ready, unpark } from "./parked.ts";
 import { isTransient, retryTransient, shouldRetryTurn } from "./retry.ts";
 import { branchGuidance, checkBranchName, chooseBranchName, exampleBranches } from "./branch.ts";
 import { cleanMessages, existingPrUrl, leakIn, leaksInternal, stripAttribution, writePrDescription } from "./describe.ts";
@@ -157,6 +158,8 @@ async function poll() {
   if (engineers.length) agentCaps = new Map(engineers.filter((a) => Number.isInteger(a.metadata?.maxParallel)).map((a) => [a.id, a.metadata.maxParallel]));
   for (const a of engineers) for (const i of await pc.assignedIssues(a.id, updatedSince)) byId.set(i.id, i);
   const engineerIds = new Set(engineers.map((a) => a.id));
+  // A task parked on a blocker is not in the updated window when the blocker closes: it is read here every poll.
+  await dispatchParked().catch((err) => log("parked task check failed", { err: String(err.message ?? err).slice(0, 300) }));
   // The overlap window lists each update for about seven polls: an issue already handled at this updatedAt (a comment
   // bumps it) is skipped, which saves Paperclip a comments read (and often an issue read) per issue per poll.
   for (const issue of byId.values()) {
@@ -811,6 +814,26 @@ async function dispatch(job) {
     await pc.comment(issue.id, `Queued: ${running.size} job(s) already running.`);
   } else {
     void startJob(job);
+  }
+}
+
+/**
+ * A parked task whose blockers have all closed starts now: the task's own update needn't come, so nothing else would.
+ * A task closed meanwhile, or deleted, is dropped.
+ */
+async function dispatchParked() {
+  for (const job of parkedJobs(state)) {
+    const { issueId, instructions } = job;
+    if (!ready(job)) continue;
+    const full = await pc.issue(issueId).catch(() => undefined);
+    if (!full || CLOSED.includes(full.status)) {
+      unpark(state, issueId);
+      continue;
+    }
+    if (unresolvedBlockers(full).length) continue;
+    unpark(state, issueId);
+    log("blocker resolved: dispatching", { issue: full.identifier ?? issueId });
+    await dispatch({ issue: full, instructions });
   }
 }
 
@@ -3418,15 +3441,17 @@ async function startJob({ issue, instructions }) {
   let box; // a box job's box (POST /job): released before anything inspects the workspace
   let handedOver = false; // started just as the runner stops: the next runner follows it
   try {
-    // Recorded before any setup can fail: a job that died while preparing its workspace still counts as having run
-    // (its delegator's follow-up is only read on a task with history).
-    remember(issue.id, instructions);
     const full = await pc.issue(issue.id);
     // Queued, then closed before a slot freed: the job no longer has a task to do (a cancelled TEST task opened a PR).
     if (["cancelled", "done"].includes(full.status)) {
       log("queued job dropped: task closed", { issue: issue.identifier, status: full.status });
       return;
     }
+    // A task whose blocker is still unresolved is asleep: dispatching it only gets its own status write refused.
+    if (unresolvedBlockers(full).length) return void (park(state, { issueId: full.id, instructions }), log("job parked: its task is blocked", { issue: full.identifier }));
+    // Recorded before any setup can fail: a job that died while preparing its workspace still counts as having run
+    // (its delegator's follow-up is only read on a task with history).
+    remember(issue.id, instructions);
     // Every repository the request, the task and the task it is part of name joins the workspace
     //; the first leads. None named: the workspace starts empty, and the agent clones what it needs.
     const parent = await crewParent(full).catch(() => undefined);
@@ -3555,6 +3580,12 @@ async function startJob({ issue, instructions }) {
     launched = { issue, full, workspace, engine, jobId, logPath, tipsBefore, tools, gcp, helper, watch, box, keep: box && keepBox(issue, box, helper) };
   } catch (err) {
     if (stopping) return;
+    // Paperclip refusing "in progress" on a task blocked meanwhile is no failure: nothing was attempted, so the job is
+    // parked (closed as cancelled when its row was already made) until the blocker resolves.
+    if (blockedRefusal(err)) {
+      if (jobId) state.finishJob(jobId, "cancelled", "blocked");
+      return void (park(state, { issueId: issue.id, instructions, retryAfter: new Date(Date.now() + 5_000).toISOString() }), log("job parked: its task is blocked", { issue: issue.identifier }));
+    }
     if (jobId) state.finishJob(jobId, "failed", String(err).slice(0, 500));
     // A turn that failed before its run started (its workspace couldn't be prepared) is still this task's latest job:
     // recorded, it reads as failed, never as the run before it ("Done, nothing changed", on a task that did nothing).

@@ -24,10 +24,12 @@ agent while limits live in code.
 ## Shape
 
 ```text
-user comment -> runner: is a turn running on this task?
-                  no  -> start a turn (resume the Engineer's session, or start fresh with the whole thread)
-                  yes -> Claude Code: hand the comment to the running session
-                         others: queue it for the next turn; "stop" interrupts
+user comment -> runner: does the task wait on an unresolved blocker?
+                  yes -> park it: a turn could only get its own "in progress" write refused (422)
+                  no  -> is a turn running on this task?
+                           no  -> start a turn (resume the Engineer's session, or start fresh with the whole thread)
+                           yes -> Claude Code: hand the comment to the running session
+                                  others: queue it for the next turn; "stop" interrupts
 
 a turn -> engine (Claude Code, Codex or opencode) in the workspace
             aidenhq <command>   (CLI -> runner loopback endpoint, per-turn token)

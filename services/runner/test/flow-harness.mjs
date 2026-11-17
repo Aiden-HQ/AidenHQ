@@ -82,7 +82,7 @@ const gitEnv = {
 };
 
 /** A Paperclip with one parent task (the user's) and one part of it for Ada. */
-export function fakePaperclip({ parent, part, engineers, parentComments = [], partComments = [], others = [], grades = new Map(), gateDelayMs = 0, onIssueCreated, ownerFallback = false, config, secrets, repos = {}, jobs }) {
+export function fakePaperclip({ parent, part, engineers, parentComments = [], partComments = [], others = [], grades = new Map(), gateDelayMs = 0, onIssueCreated, ownerFallback = false, config, secrets, repos = {}, jobs, refuseStart = new Map() }) {
   const gradeLog = [];
   const graderCalls = [];
   const graderAnswers = [];
@@ -157,6 +157,8 @@ export function fakePaperclip({ parent, part, engineers, parentComments = [], pa
     if (i && ["todo", "in_progress", "blocked"].includes(i.status)) dispatch(i, { body });
   };
   const find = (ref) => issues.get(ref) ?? [...issues.values()].find((i) => i.identifier === ref);
+  // Paperclip serves a task's blockers resolved, so a blocker whose status changes reads as resolved everywhere.
+  const served = (i) => (i.blockedBy ? { ...i, blockedBy: i.blockedBy.map((b) => find(b.id) ?? b) } : i);
   /**
    * Paperclip's wake of an agent on a task it holds (a real Paperclip here, as CLAUDE.md's "Paperclip quirks" describes it).
    * A task filed already assigned starts nothing: it waits in `todo` until a comment on it (or its heartbeat) wakes the agent,
@@ -219,7 +221,7 @@ export function fakePaperclip({ parent, part, engineers, parentComments = [], pa
       if (q.get("assigneeUserId")) list = list.filter((i) => i.assigneeUserId === (q.get("assigneeUserId") === "me" ? USER : q.get("assigneeUserId")));
       if (q.get("parentId")) list = list.filter((i) => i.parentId === q.get("parentId"));
       if (q.get("q")) list = list.filter((i) => `${i.title}\n${i.description}`.toLowerCase().includes(q.get("q").toLowerCase()));
-      return send(list);
+      return send(list.map(served));
     }
     if (req.method === "GET" && path === "/api/cli-auth/me") return send({ userId: USER });
     if (req.method === "POST" && path === `/api/companies/${COMPANY}/issues`) {
@@ -262,12 +264,19 @@ export function fakePaperclip({ parent, part, engineers, parentComments = [], pa
       if (req.method === "PATCH") {
         const fields = JSON.parse(body);
         patches.push({ issue: i.identifier, ...fields });
+        // Paperclip refuses "in progress" on a task with an unresolved blocker; `refuseStart` plays the same race once
+        // without the blocker being visible on reads.
+        const left = refuseStart.get(i.id) ?? 0;
+        if (fields.status === "in_progress" && (left > 0 || (i.blockedBy ?? []).some((b) => !["done", "cancelled"].includes(find(b.id)?.status ?? b.status)))) {
+          if (left > 0) refuseStart.set(i.id, left - 1);
+          return send({ error: "Issue is blocked by unresolved blockers" }, 422);
+        }
         const { comment, ...rest } = fields;
         Object.assign(i, rest, { updatedAt: new Date().toISOString() });
         if (comment) addComment(i.id, comment);
         return send(i);
       }
-      if (req.method === "GET") return send(i);
+      if (req.method === "GET") return send(served(i));
     }
     // Graded done: the grading module's contract (modules/grading/service/src/grades.ts), simplified, and a scripted grader
     // model; the runner's own closes ask the kernel's finish gate (/v1/finish), which the grading check answers.
@@ -329,14 +338,14 @@ export function fakePaperclip({ parent, part, engineers, parentComments = [], pa
     assert.equal(typeof out, "object", String(out));
     return view(kdb.get(r.id));
   };
-  return { server, comments, patches, activity, held, passed, attached, unknown, addComment, approvals, records, autos, decide, kdb, kw, notices, issues, grades, gradeLog, graderCalls, graderAnswers, created, filings, runs, wakes, hang, failRead };
+  return { server, comments, patches, activity, held, passed, attached, unknown, addComment, approvals, records, autos, decide, kdb, kw, notices, issues, grades, gradeLog, graderCalls, graderAnswers, created, filings, runs, wakes, hang, failRead, refuseStart };
 }
 
 /**
  * Call inside a describe: starts a fake Paperclip and the real runner for it, stops both after. `env`: more runner
  * environment; `runnerYaml`: more lines for config/runner.yaml.
  */
-export function flow({ parent: parentOver, part: partOver, alfredPart: alfredOver, siblings = [], grants, grades, partComments: partCommentsOver = [], env = {}, runnerYaml = "", replies = false, step: initialStep, computers = [], moreEngineers = [], onIssueCreated, ownerFallback = false, setup } = {}) {
+export function flow({ parent: parentOver, part: partOver, alfredPart: alfredOver, siblings = [], grants, grades, partComments: partCommentsOver = [], env = {}, runnerYaml = "", replies = false, step: initialStep, computers = [], moreEngineers = [], onIssueCreated, ownerFallback = false, setup, refuseStart } = {}) {
   let dir, runner, runnerEnv, paperclip, jobs, output = "";
   /** The kernel's job half (a test may stop it and start it again: a kernel restart). */
   const startJobs = () => (jobs = jobsHost(runnerEnv, join(dir, "kernel.db")));
@@ -466,7 +475,7 @@ ${runnerYaml}`,
     Object.assign(part, partOver);
     // Agents in a computer (`image:` in the module): Paperclip runs them, and a task they get must have a folder of its own.
     const inComputers = computers.map((id) => ({ id, name: id, status: "idle", adapterType: "codex_local", adapterConfig: {}, defaultEnvironmentId: "env-computer", metadata: { setupKey: `aidenhq:${id}` } }));
-    paperclip = fakePaperclip({ parent, part, engineers: [...engineers, alfred, ...inComputers], parentComments, partComments: partCommentsOver, others: [{ issue: alfredPart, comments: alfredChat }, ...siblings], grades: new Map(Object.entries(grades ?? {}).map(([id, g]) => [id, { issueId: id, attempts: 0, state: "open", verdicts: [], updatedAt: new Date(0).toISOString(), ...g }])), onIssueCreated, ownerFallback, config, secrets, jobs: () => jobs.port, repos: { agentsOrg: env.AIDENHQ_GITHUB_AGENTS_ORG ?? "acme", ...(env.AIDENHQ_PRODUCT_REPO ? { product: env.AIDENHQ_PRODUCT_REPO } : {}), ...(/apply:\n {2}repo: (\S+)/.exec(runnerYaml)?.[1] ? { instance: /apply:\n {2}repo: (\S+)/.exec(runnerYaml)[1] } : {}) } });
+    paperclip = fakePaperclip({ parent, part, engineers: [...engineers, alfred, ...inComputers], parentComments, partComments: partCommentsOver, others: [{ issue: alfredPart, comments: alfredChat }, ...siblings], grades: new Map(Object.entries(grades ?? {}).map(([id, g]) => [id, { issueId: id, attempts: 0, state: "open", verdicts: [], updatedAt: new Date(0).toISOString(), ...g }])), onIssueCreated, ownerFallback, config, secrets, jobs: () => jobs.port, refuseStart, repos: { agentsOrg: env.AIDENHQ_GITHUB_AGENTS_ORG ?? "acme", ...(env.AIDENHQ_PRODUCT_REPO ? { product: env.AIDENHQ_PRODUCT_REPO } : {}), ...(/apply:\n {2}repo: (\S+)/.exec(runnerYaml)?.[1] ? { instance: /apply:\n {2}repo: (\S+)/.exec(runnerYaml)[1] } : {}) } });
     await new Promise((r) => paperclip.server.listen(0, "127.0.0.1", r));
     const url = `http://127.0.0.1:${paperclip.server.address().port}`;
 
