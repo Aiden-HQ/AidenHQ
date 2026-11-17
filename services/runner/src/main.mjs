@@ -1333,7 +1333,7 @@ const TURNED_WHY = {
   "checks-not-green": "named checks failed on its head",
   "head-moved": "its head isn't the commit that was reviewed, or isn't published",
   queue: "the merge queue turned it away",
-  eval: "it changes the AI reviewer's own code, and the reviewer eval on its head didn't pass (95% and every attack case) (the failing cases are in the task's \"Stopped the merges\" comment)",
+  eval: "it changes the AI reviewer's own code, and the reviewer eval on its head didn't pass (95% of the base cases, every miss a false block) (the failing cases are in the task's \"Stopped the merges\" comment)",
 };
 async function wakeForTurnedAway(issueId, f) {
   if (f.key === "checks-not-green" && (await redHead({ id: issueId, identifier: issueId }, f).catch((err) => log("red head unread", { pr: f.url, err: String(err.message ?? err).slice(0, 200) })))) return;

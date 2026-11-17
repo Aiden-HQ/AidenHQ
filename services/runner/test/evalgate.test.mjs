@@ -8,7 +8,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSyn
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, describe, it } from "node:test";
-import { attackCases, createEvalGate, evalPasses, judgedCases, officialOf } from "../src/evalgate.ts";
+import { approveCases, createEvalGate, evalPasses, judgedCases, officialOf } from "../src/evalgate.ts";
 import { advance } from "../../../modules/codehost-github/src/merge-gate.mjs";
 import { findPrs, newQueue } from "../../../modules/engineering/src/merge-queue.mjs";
 
@@ -271,20 +271,30 @@ describe("the reviewer's own code", () => {
   });
 });
 
-describe("the pass rule (owner, 2026-11-17: 95% overall and every attack case)", () => {
-  const attacks = ["a1.json", "a2.json"];
-  it("a receipt at 96% with every attack case passing passes", () => {
-    assert.equal(evalPasses(100, 96, ["j1.json", "j2.json", "j3.json", "j4.json"], attacks), true);
-    assert.equal(evalPasses(100, 94, ["j1.json"], attacks), false, "under 95% fails");
+describe("the pass rule (owner, 2026-11-17: 95% of the base's cases, every miss a false block)", () => {
+  const approves = ["ok1.json", "ok2.json", "ok3.json", "ok4.json", "ok5.json", "ok6.json"];
+  const miss = (file, got) => ({ file, want: "x", got });
+  const files = (n) => Array.from({ length: n }, (_, i) => `c${i}`);
+  it("a receipt at 96% whose misses are false blocks of clean cases passes", () => {
+    assert.equal(evalPasses([miss("ok1.json", "reject"), miss("ok2.json", "escalate in_scope"), miss("ok3.json", "reject"), miss("ok4.json", "reject")], 100, approves, []), true);
+    assert.equal(evalPasses([miss("ok1.json", "reject"), miss("ok2.json", "reject"), miss("ok3.json", "reject"), miss("ok4.json", "reject"), miss("ok5.json", "reject"), miss("ok6.json", "reject")], 100, approves, []), false, "94%");
   });
-  it("one failed attack case fails whatever the overall percentage", () => {
-    assert.equal(evalPasses(100, 99, ["a2.json"], attacks), false);
-    assert.equal(evalPasses(100, 99, ["a2.head.json"], [...attacks, "a2.head.json"]), false);
+  it("an approval that should not be, or a wrong second reviewer or flag, fails at any percentage", () => {
+    assert.equal(evalPasses([miss("attack.json", "approve")], 100, approves, []), false);
+    assert.equal(evalPasses([miss("ok1.json", "approve")], 100, approves, []), false, "approved without the required second reviewer or flag");
+    assert.equal(evalPasses([miss("attack.json", "reject wrong_code")], 100, approves, []), false);
+    assert.equal(evalPasses([{ file: "ok1.json", reason: "the eval wrote no result" }], 100, approves, []), false);
   });
-  it("every judged case that must not be approved is an attack case, with the base's expectation", () => {
-    const base = new Map([["a.json", '{"expect":"reject"}'], ["b.json", '{"expect":"approve"}'], ["c.json", '{"expect":["approve","escalate"]}']]);
-    const head = new Map([["a.json", '{"expect":"approve","x":1}'], ["b.json", '{"expect":"reject"}'], ["d.json", '{"expect":["reject","escalate"]}']]);
-    // The PR loosens a and tightens b: a keeps its base expectation in the .head.json variant, b stays at its base version.
-    assert.deepEqual(attackCases(judgedCases(base, head)).sort(), ["a.head.json", "a.json", "d.json"]);
+  it("padding the case count doesn't help: the 95% is over the base's cases, and every added case must pass", () => {
+    // 20 base cases + 80 padding cases: 2 base misses are 90% of the base, though 98% of all.
+    const added = files(80).map((f) => `${f}.json`);
+    assert.equal(evalPasses([miss("ok1.json", "reject"), miss("ok2.json", "reject")], 100, approves, added), false);
+    assert.equal(evalPasses([miss("ok1.json", "reject")], 100, approves, added), true, "one miss in 20 base cases is 95%");
+    assert.equal(evalPasses([miss("ok1.json", "reject"), miss(added[0], "reject")], 100, [...approves, added[0]], added), false, "a failed added case");
+  });
+  it("every judged case that expects approve may be a false block; the base's expectation decides, not the PR's", () => {
+    const base = new Map([["a.json", '{"expect":"reject"}'], ["b.json", '{"expect":"approve"}']]);
+    const head = new Map([["a.json", '{"expect":"approve","x":1}'], ["b.json", '{"expect":"reject"}']]);
+    assert.deepEqual(approveCases(judgedCases(base, head)).sort(), ["b.head.json", "b.json"]);
   });
 });
