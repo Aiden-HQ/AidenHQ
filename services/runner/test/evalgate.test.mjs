@@ -8,7 +8,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSyn
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, describe, it } from "node:test";
-import { approveCases, createEvalGate, evalPasses, judgedCases, officialOf } from "../src/evalgate.ts";
+import { addedCases, approveCases, createEvalGate, evalPasses, judgedCases, officialOf } from "../src/evalgate.ts";
 import { advance } from "../../../modules/codehost-github/src/merge-gate.mjs";
 import { findPrs, newQueue } from "../../../modules/engineering/src/merge-queue.mjs";
 
@@ -296,5 +296,12 @@ describe("the pass rule (owner, 2026-11-17: 95% of the base's cases, every miss 
     const base = new Map([["a.json", '{"expect":"reject"}'], ["b.json", '{"expect":"approve"}']]);
     const head = new Map([["a.json", '{"expect":"approve","x":1}'], ["b.json", '{"expect":"reject"}']]);
     assert.deepEqual(approveCases(judgedCases(base, head)).sort(), ["b.head.json", "b.json"]);
+  });
+  it("a case named like a generated variant can't pass as one: it is rejected, and only truly new names are added", () => {
+    const base = new Map([["a.json", '{"expect":"reject"}'], ["b.json", '{"expect":"approve"}']]);
+    assert.throws(() => judgedCases(base, new Map([["a.head.json", '{"expect":"approve"}']])), /reserved/);
+    const head = new Map([["a.json", '{"expect":"reject","x":1}'], ["b.json", '{"expect":"approve"}'], ["c.json", '{"expect":"approve"}']]);
+    assert.deepEqual(addedCases(base, head), ["c.json"], "a changed case's generated a.head.json is not an added case");
+    assert.deepEqual([...judgedCases(base, head).keys()].sort(), ["a.head.json", "a.json", "b.json", "c.json"]);
   });
 });

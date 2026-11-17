@@ -73,6 +73,10 @@ const REVIEWER_TREE = ["ai-reviewer", "codehost-github/src/plan.mjs", "platform/
 const MODULE = "ai-reviewer";
 const CASES = `${MODULE}/test/reviewer-cases`;
 const JUDGE = ["ai-reviewer/scripts/reviewer-eval.mjs", "ai-reviewer/test/case-pad.mjs", "ai-reviewer/scripts/pass-rule.mjs"];
+/** The names of the cases the PR adds: judged, but neither the base's nor a variant the gate generated for a changed case. */
+export function addedCases(base: Map<string, string>, head: Map<string, string>): string[] {
+  return [...head].filter(([n]) => !base.has(n)).map(([n]) => n);
+}
 /** The judged cases whose expectation (the base's) includes approve: the only ones a miss of may be covered by the 5%. */
 export function approveCases(judged: Map<string, string>): string[] {
   const approves = (text: string) => { try { return [JSON.parse(text).expect].flat().includes("approve"); } catch { return false; } };
@@ -88,6 +92,7 @@ const EXPECT = ["expect", "expect_code", "expect_second", "expect_flag", "expect
 export function judgedCases(base: Map<string, string>, head: Map<string, string>): Map<string, string> {
   const out = new Map(base);
   for (const [name, text] of head) {
+    if (name.endsWith(".head.json")) throw new Error(`${name}: \`.head.json\` is reserved for the gate's own variants of changed cases`);
     const was = base.get(name);
     if (was === undefined) out.set(name, text);
     else if (was !== text) {
@@ -280,13 +285,13 @@ export function createEvalGate(d: GateDeps) {
       noLinks(tree, f);
       writeFileSync(join(tree, f), `${await d.git(path, "show", `${base}:${f}`)}\n`);
     }
-    const baseCases = await casesAt(path, base);
-    const cases = judgedCases(baseCases, await casesAt(path, head));
+    const [baseCases, headCases] = [await casesAt(path, base), await casesAt(path, head)];
+    const cases = judgedCases(baseCases, headCases);
     mkdirSync(join(dir, "cases"));
     for (const [n, text] of cases) writeFileSync(join(dir, "cases", n), text);
     // The policy as git has it at the head (its tree id), never as the extracted folder says.
     const policy = (await d.git(path, "rev-parse", `${head}:${MODULE}/service/security`).catch(() => "none")).slice(0, 12);
-    return { dir, cases: [...cases.keys()], approves: approveCases(cases), added: [...cases.keys()].filter((n) => !baseCases.has(n) && !(n.endsWith('.head.json') && baseCases.has(n.replace(/\.head\.json$/, '.json')))), policy };
+    return { dir, cases: [...cases.keys()], approves: approveCases(cases), added: addedCases(baseCases, headCases), policy };
   }
 
   function finish(run: Run, r: Omit<Receipt, "head" | "base" | "modules" | "reviewer" | "policy" | "at">): Receipt {
