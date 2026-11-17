@@ -5,7 +5,7 @@
 // Lines are built from code-chosen words and ids cleaned to [\w.:@/-], never from manifest prose, because they are shown on
 // the owner's card and in the apply log.
 import { ownSecrets } from "./services.ts";
-import { marketplacesOf } from "./sources.ts";
+import { marketplacesOf, OFFICIAL, OFFICIAL_URL } from "./sources.ts";
 
 type Dict = Record<string, unknown>;
 export type ModuleDef = Dict;
@@ -336,12 +336,17 @@ export const diffAll = (inputs: Record<string, ModuleInput>) => Object.entries(i
 /**
  * instance.yaml `marketplaces:` changes (spec §5.7, §6.4): a new marketplace, or one moved to another repository or folder,
  * is where code comes from, so the owner's; a sha bump is only the AI reviewer's here, its modules' own diffs carry their
- * authority; a removal is the reviewer's (compile refuses one whose modules are still listed).
+ * authority; a removal is the reviewer's (compile refuses one whose modules are still listed). The official `aidenhq`
+ * marketplace moving between the product's ./modules and the official repository, or along it, is no line of its own: its
+ * modules' diffs (by folder tree id, sources.ts officialSides) carry every change; pointed anywhere else, it is the owner's.
  */
 export function marketplaceChanges(base: Dict, head: Dict): ModuleDiff[] {
   const [b, h] = [marketplacesOf(base), marketplacesOf(head)].map((l) => new Map(l.map((m) => [m.name, m.at])));
   const changes: Change[] = [];
   const at = (w: { url: string; path: string; sha: string }) => `${id(w.url)}${w.path ? `:${id(w.path)}` : ""} at ${w.sha.slice(0, 12)}`;
+  const [ob, oh] = [b!.get(OFFICIAL), h!.get(OFFICIAL)];
+  if (oh && (oh.url !== OFFICIAL_URL || oh.path) && (ob?.url !== oh.url || ob?.path !== oh.path)) changes.push({ what: `moves marketplace ${OFFICIAL} to ${at(oh)}`, owner: true });
+  [b!, h!].forEach((m) => m.delete(OFFICIAL));
   for (const [n, w] of h!) {
     const was = b!.get(n);
     if (!was) changes.push({ what: `adds marketplace ${id(n)} (${at(w)})`, owner: true });
