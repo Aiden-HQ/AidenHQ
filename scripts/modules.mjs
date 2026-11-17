@@ -11,7 +11,7 @@ import { urlSettingProblem } from "../services/shared/url-setting.ts";
 import { generateCompose, ownSecrets } from "../kernel/src/loader/services.ts";
 import { capabilityProblems, conflictProblems, danglingBindings } from "../kernel/src/loader/bindings.ts";
 import { MANIFEST_KEYS, moduleName } from "../kernel/src/loader/authority.ts";
-import { checkout, hostFetch, marketplaceEntries, OFFICIAL, remoteModules, sourceOf } from "../kernel/src/loader/sources.ts";
+import { hostFetch, marketplaceEntries, OFFICIAL, remoteModules } from "../kernel/src/loader/sources.ts";
 
 const PROFILES = ["trusted", "untrusted", "code-exec"];
 // image: the agent's computer (scripts/computers.mjs); the instance turns it on or off per agent.
@@ -282,8 +282,8 @@ function settingDefs(file, def) {
 }
 
 /**
- * modules/marketplace.json: the modules this product ships, each `{ name, source: "./<name>" }` or a remote source at a
- * 40-char sha (kernel/src/loader/sources.ts). Unknown fields are ignored.
+ * modules/marketplace.json: the modules this product ships, each `{ name, source: "./<name>" }`. Unknown fields are ignored.
+ * A remote source belongs in a third-party marketplace (instance.yaml marketplaces:) until the modules repository (5b).
  */
 export function readMarketplace(productDir) {
   const file = join(productDir, "modules", "marketplace.json");
@@ -292,7 +292,7 @@ export function readMarketplace(productDir) {
   const plugins = marketplaceEntries(m, "modules/marketplace.json");
   for (const p of plugins) {
     if (typeof p.source === "string" && p.source !== `./${p.name}`) fail(`modules/marketplace.json: ${p.name}: source is ${p.source}, expected ./${p.name}`);
-    if (typeof p.source !== "string") sourceOf(p.source, `modules/marketplace.json: ${p.name}`);
+    if (typeof p.source !== "string") fail(`modules/marketplace.json: ${p.name}: a remote source belongs in a third-party marketplace (instance.yaml marketplaces:)`);
   }
   return { ...m, plugins };
 }
@@ -311,13 +311,12 @@ function discover(productDir, instance, fetch) {
   const out = new Map();
   for (const p of [...plugins].sort((a, b) => a.name.localeCompare(b.name))) {
     const { name } = p;
-    const at = typeof p.source === "string" ? undefined : sourceOf(p.source, `modules/marketplace.json: ${name}`);
-    const root = at ? checkout(at, fetch) : join(dir, name);
+    const root = join(dir, name);
     const file = join(root, "module.yaml");
     if (!existsSync(file)) fail(`modules/marketplace.json: ${name} has no module.yaml`);
     const def = readYaml(file);
     if (def.name !== name) fail(`modules/${name}/module.yaml: name is ${def.name}, expected ${name}`);
-    out.set(name, { name, root, def, marketplace: OFFICIAL, tier: "official", ...(at ? { sha: at.sha } : {}) });
+    out.set(name, { name, root, def, marketplace: OFFICIAL, tier: "official" });
   }
   for (const r of remoteModules(instance, { ...fetch, parse: (t) => YAML.parse(t) })) {
     if (out.has(r.name)) fail(`${r.name}@${r.marketplace}: a module named ${r.name} is already installed from ${out.get(r.name).marketplace}`);

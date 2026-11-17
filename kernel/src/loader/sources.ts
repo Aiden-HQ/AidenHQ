@@ -12,8 +12,12 @@ import { join, posix, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 type Dict = Record<string, unknown>;
-/** Where a module or marketplace is: a git repository (https URL or a local absolute path), a folder in it, a commit. */
-export type Where = { url: string; path: string; sha: string };
+/**
+ * Where a module or marketplace is: a git repository (https URL or a local absolute path), a folder in it, a commit. `owned`:
+ * the owner's instance.yaml names this repository itself, so the host's credential helper may be used for it; a URL taken
+ * from a third-party marketplace.json never gets it.
+ */
+export type Where = { url: string; path: string; sha: string; owned?: boolean };
 export type Fetch = { cacheDir: string; credentialHelper?: string };
 export type Tier = "declared" | "conformant" | "official";
 /** `market`: where its marketplace is (advisories are read from that repository's head). */
@@ -25,6 +29,9 @@ const NAME = /^[a-z][a-z0-9-]{0,62}$/;
 const isMap = (v: unknown): v is Dict => !!v && typeof v === "object" && !Array.isArray(v);
 const hash = (s: string) => createHash("sha256").update(s).digest("hex").slice(0, 16);
 
+/** Hosts a third-party marketplace.json may point a module at (https only, never a local path, never the host's credentials). */
+const THIRD_PARTY_HOSTS = ["github.com"];
+
 /** The default cache: outside the product checkout and the data dir (fetched trees are rebuildable from their shas). */
 export const defaultCache = () => process.env.AIDENHQ_SOURCES_DIR ?? join(homedir(), ".cache/aidenhq/sources");
 
@@ -35,14 +42,23 @@ function relPath(p: unknown, where: string): string {
 }
 
 /**
- * A source as marketplace.json or instance.yaml writes it, as a Where. `within`: the marketplace a relative path is in.
- * `sha`: the entry's own sha when the source object carries none (instance.yaml's marketplace entries).
+ * A source as marketplace.json or instance.yaml writes it, as a Where. `within`: the marketplace a relative path is in (it
+ * keeps that marketplace's `owned`). `sha`: the entry's own sha when the source object carries none (instance.yaml's
+ * marketplace entries). `owned`: the owner's instance.yaml wrote it; otherwise (a third-party marketplace.json) a remote
+ * source must be https on THIRD_PARTY_HOSTS.
  */
-export function sourceOf(src: unknown, where: string, within?: Where, sha?: unknown): Where {
+export function sourceOf(src: unknown, where: string, within?: Where, sha?: unknown, owned = false): Where {
   if (typeof src === "string") {
     if (!within || !src.startsWith("./")) throw new Error(`${where}: a relative source (./<folder>) is only allowed inside a marketplace`);
-    return { url: within.url, path: posix.join(within.path, relPath(src, where)).replace(/^\.$/, ""), sha: within.sha };
+    return { url: within.url, path: posix.join(within.path, relPath(src, where)).replace(/^\.$/, ""), sha: within.sha, ...(within.owned ? { owned: true } : {}) };
   }
+  const w = remoteOf(src, where, sha);
+  if (owned) return { ...w, owned: true };
+  if (!THIRD_PARTY_HOSTS.includes(/^https:\/\/([\w.-]+)\//.exec(w.url)?.[1] ?? "")) throw new Error(`${where}: a marketplace may point a module only at https on ${THIRD_PARTY_HOSTS.join(", ")} (got ${w.url})`);
+  return w;
+}
+
+function remoteOf(src: unknown, where: string, sha?: unknown): Where {
   if (!isMap(src)) throw new Error(`${where}: source must be a relative path or a { source, ..., sha } object`);
   const at = String(src.sha ?? sha ?? "");
   if (!SHA.test(at)) throw new Error(`${where}: a remote source needs a 40-character sha (a ref alone is refused)`);
@@ -83,14 +99,15 @@ export function marketplacesOf(instance: Dict): { name: string; at: Where }[] {
     if (name === OFFICIAL) throw new Error(`${where}: ${OFFICIAL} is the official marketplace (the product's ./modules), not a third-party one`);
     if (seen.has(name)) throw new Error(`${where}: ${name} is listed twice`);
     seen.add(name);
-    return { name, at: sourceOf((m as Dict).source, where, undefined, (m as Dict).sha) };
+    return { name, at: sourceOf((m as Dict).source, where, undefined, (m as Dict).sha, true) };
   });
 }
 
-function git(f: Fetch, repo: string, args: string[], input?: Buffer) {
-  const cred = f.credentialHelper ? ["-c", `credential.helper=${f.credentialHelper}`, "-c", "credential.useHttpPath=true"] : [];
-  return execFileSync("git", ["-c", "protocol.allow=never", "-c", "protocol.https.allow=always", "-c", "protocol.file.allow=always", "-c", "credential.helper=", ...cred, "--git-dir", repo, ...args], {
-    maxBuffer: 256 << 20, input, stdio: ["pipe", "pipe", "pipe"], env: { ...process.env, GIT_TERMINAL_PROMPT: "0", GIT_DIR: undefined, GIT_WORK_TREE: undefined },
+/** Git on a cache repo, bounded in time; the credential helper and local paths only for a repository the owner named. */
+function git(f: Fetch, repo: string, args: string[], { input, owned = false, timeout = 30_000 }: { input?: Buffer; owned?: boolean; timeout?: number } = {}) {
+  const cred = owned && f.credentialHelper ? ["-c", `credential.helper=${f.credentialHelper}`, "-c", "credential.useHttpPath=true"] : [];
+  return execFileSync("git", ["-c", "protocol.allow=never", "-c", "protocol.https.allow=always", "-c", `protocol.file.allow=${owned ? "always" : "never"}`, "-c", "credential.helper=", ...cred, "--git-dir", repo, ...args], {
+    maxBuffer: 256 << 20, input, timeout, stdio: ["pipe", "pipe", "pipe"], env: { ...process.env, GIT_TERMINAL_PROMPT: "0", GIT_DIR: undefined, GIT_WORK_TREE: undefined },
   });
 }
 const has = (f: Fetch, repo: string, sha: string) => { try { git(f, repo, ["cat-file", "-e", `${sha}^{commit}`]); return true; } catch { return false; } };
@@ -106,7 +123,8 @@ export function repoAt(w: Where, f: Fetch): string {
     execFileSync("git", ["init", "-q", "--bare", repo]);
   }
   if (!has(f, repo, w.sha)) {
-    try { git(f, repo, ["fetch", "-q", "--no-tags", "--no-recurse-submodules", "--", w.url, w.sha]); } catch { git(f, repo, ["fetch", "-q", "--no-tags", "--no-recurse-submodules", "--", w.url, "+refs/heads/*:refs/remotes/source/*"]); }
+    const net = { owned: w.owned === true, timeout: 120_000 };
+    try { git(f, repo, ["fetch", "-q", "--no-tags", "--no-recurse-submodules", "--", w.url, w.sha], net); } catch { git(f, repo, ["fetch", "-q", "--no-tags", "--no-recurse-submodules", "--", w.url, "+refs/heads/*:refs/remotes/source/*"], net); }
   }
   if (!has(f, repo, w.sha) || git(f, repo, ["rev-parse", "--verify", `${w.sha}^{commit}`]).toString().trim() !== w.sha) throw new Error(`${w.url} has no commit ${w.sha}`);
   return repo;
@@ -125,7 +143,7 @@ export function checkout(w: Where, f: Fetch): string {
   const tmp = `${dest}.tmp-${process.pid}`;
   rmSync(tmp, { recursive: true, force: true });
   mkdirSync(tmp, { recursive: true });
-  execFileSync("tar", ["-x", "-C", tmp], { input: git(f, repo, ["archive", "--format=tar", tree]), maxBuffer: 256 << 20 });
+  execFileSync("tar", ["-x", "-C", tmp], { input: git(f, repo, ["archive", "--format=tar", tree], { timeout: 120_000 }), maxBuffer: 256 << 20, timeout: 120_000 });
   renameSync(tmp, dest);
   return dest;
 }
@@ -211,9 +229,10 @@ export function withRemote<T extends { baseInstance: Dict; headInstance: Dict; b
   };
   const origin = (l: Remote[]) => Object.fromEntries(l.map((r) => [r.name, `${r.marketplace} at ${r.at.sha.slice(0, 12)} (tier ${r.tier})`]));
   const changed = [...a.changed];
+  // An install brings code that runs, as a code change does (the panel reviews it).
   for (const h of rh) {
     const b = rb.find((x) => x.name === h.name);
-    if (b) changed.push(...changedFiles(b.at, h.at, f).map((p) => `modules/${h.name}/${p}`));
+    changed.push(...(b ? changedFiles(b.at, h.at, f) : ["(installed)"]).map((p) => `modules/${h.name}/${p}`));
   }
   return { ...a, baseDefs: defs(a.baseDefs, rb), headDefs: defs(a.headDefs, rh), changed, origins: { base: origin(rb), head: origin(rh) } };
 }
@@ -227,12 +246,12 @@ export function kitInJail(cacheDir: string) {
   return (root: string, def: Dict, at: Where) => {
     if (!isMap(def.providers) || def.providers.engine == null || process.platform !== "linux") return false;
     const mark = join(cacheDir, "kit", `${at.sha}-${hash(`${at.url}\0${at.path}`)}`);
-    if (existsSync(mark)) return readFileSync(mark, "utf8") === "pass";
+    if (existsSync(mark)) return true;
     const r = spawnSync(process.execPath, ["--disable-warning=ExperimentalWarning", fileURLToPath(import.meta.url), root], { encoding: "utf8", timeout: 120_000 });
-    if (r.status === 3) return false; // no jail here: try again next time
+    if (r.status !== 0) return false; // failed, or no jail here: run again next time
     mkdirSync(join(cacheDir, "kit"), { recursive: true });
-    writeFileSync(mark, r.status === 0 ? "pass" : "fail");
-    return r.status === 0;
+    writeFileSync(mark, "pass");
+    return true;
   };
 }
 
@@ -245,7 +264,7 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
   const cfg = sandboxConfig();
   const yaml = join(repo, "kernel/node_modules");
   if (spawnSync(cfg.bwrap, ["--version"]).status !== 0) process.exit(3);
-  const argv = [cfg.bwrap, ...layout(cfg, { ro: [root, join(repo, "kernel/sdk"), yaml] }), "--unshare-net", "--die-with-parent", "--setenv", "NODE_PATH", yaml, "--", process.execPath, "--disable-warning=ExperimentalWarning", join(repo, "kernel/sdk/bin/aidenhq-module-test.ts"), root];
+  const argv = [cfg.bwrap, ...layout(cfg, { ro: [root, join(repo, "kernel/sdk"), yaml] }), "--unshare-net", "--die-with-parent", "--clearenv", "--setenv", "PATH", "/usr/local/bin:/usr/bin:/bin", "--setenv", "HOME", homedir(), "--setenv", "NODE_PATH", yaml, "--", process.execPath, "--disable-warning=ExperimentalWarning", join(repo, "kernel/sdk/bin/aidenhq-module-test.ts"), root];
   const r = spawnSync(argv[0]!, argv.slice(1), { stdio: "inherit", timeout: 110_000 });
   process.exit(r.status === 0 ? 0 : 1);
 }

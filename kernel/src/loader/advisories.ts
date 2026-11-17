@@ -98,7 +98,8 @@ export function createAdvisories({ db, repo, catalog, ownerLine, log = () => {},
       await g(["fetch", "-q", "--no-tags", "--", src.url, `+HEAD:${LOCAL_REF}`]).catch((e: Error) => log(`advisories: ${name}: fetch failed; reading the last head`, { err: e.message.slice(0, 300) }));
       const t = await g(["show", `${LOCAL_REF}:${posix.join(src.path, "advisories.json")}`]).catch(() => undefined);
       if (t === undefined) continue;
-      try { open.push(...await openIn(g, t, mine.map((m) => m.name), Object.fromEntries(mine.map((m) => [m.name, m.revision!])))); } catch (e) { log(`advisories: ${name}: the file is malformed; ignored`, { err: (e as Error).message }); return undefined; }
+      // Ids are namespaced by marketplace, so one can't shadow another's (or an official) advisory or its notice.
+      try { open.push(...(await openIn(g, t, mine.map((m) => m.name), Object.fromEntries(mine.map((m) => [m.name, m.revision!])))).map((o) => ({ ...o, id: `${name}:${o.id}` }))); } catch (e) { log(`advisories: ${name}: the file is malformed; ignored`, { err: (e as Error).message }); }
     }
     db.exec("BEGIN");
     try {

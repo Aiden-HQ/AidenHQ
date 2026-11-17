@@ -5,7 +5,7 @@ import YAML from "yaml";
 import { classify, newGrants } from "../src/tiers.mjs";
 import { dependabotCommits } from "../../../modules/platform/src/check.mjs";
 import { afterReview, priorDecisions, rejectedSince, routineCap } from "../../../kernel/src/tier.ts";
-import { marketplaceChanges, moduleInputs } from "../../../kernel/src/loader/authority.ts";
+import { moduleInputs } from "../../../kernel/src/loader/authority.ts";
 import { origins } from "../src/paperclip.ts";
 
 test("a replayed approval: only a later no on its branches (or a merge, or the owner's veto) outranks it", () => {
@@ -461,7 +461,7 @@ test("a new marketplace is the owner's after the reviewer; a sha bump without ne
   const run = (bi, hi, changed, origins) => {
     const [b, h] = [YAML.parse(bi), YAML.parse(hi)];
     const modules = moduleInputs({ baseInstance: b, headInstance: h, baseDefs: b.modules.length ? { twin } : {}, headDefs: { twin }, changed, origins });
-    return apply(["instance.yaml"], { "instance.yaml": bi }, { "instance.yaml": hi }, { modules, marketplaces: marketplaceChanges(b, h) });
+    return apply(["instance.yaml"], { "instance.yaml": bi }, { "instance.yaml": hi }, { modules });
   };
   const add = run(side([], []), side(["twin@acme"], [mkt("1".repeat(40))]), [], { base: {}, head: { twin: "acme at 111111111111 (tier declared)" } });
   assert.deepEqual([add.tier, add.reviewFirst, add.rule], [2, true, "module-authority"]);
@@ -469,6 +469,8 @@ test("a new marketplace is the owner's after the reviewer; a sha bump without ne
   const bump = run(side(["twin@acme"], [mkt("1".repeat(40))]), side(["twin@acme"], [mkt("2".repeat(40))]), ["modules/twin/bin/engine"], { base: { twin: "acme at 111111111111 (tier declared)" }, head: { twin: "acme at 222222222222 (tier declared)" } });
   assert.deepEqual([bump.tier, Boolean(bump.reviewFirst), bump.panel], [1, false, true], "code changed, no new authority: the panel, never the owner");
   assert.match(bump.reason, /twin: now from acme at 222222222222 \(tier declared\), code changes/);
+  // A marketplace entry that doesn't parse is refused by code, never passed on.
+  assert.equal(tierOf(run(side([], []), side([], [{ name: "acme", source: { source: "url", url: "ftp://x" }, sha: "1".repeat(40) }]), [], { base: {}, head: {} })), "reject");
 });
 
 test("a reviewer reject on a module change is final: no owner card", () => {

@@ -10,7 +10,7 @@ import { fileURLToPath } from "node:url";
 import YAML from "yaml";
 import { compile } from "../modules.mjs";
 import { classifyModules, diffAll, marketplaceChanges, moduleInputs } from "../../kernel/src/loader/authority.ts";
-import { withRemote } from "../../kernel/src/loader/sources.ts";
+import { sourceOf, withRemote } from "../../kernel/src/loader/sources.ts";
 
 const repo = fileURLToPath(new URL("../..", import.meta.url));
 const mods = join(repo, "scripts/test/fixtures/mods");
@@ -51,8 +51,9 @@ test("the twin installs from a throwaway local marketplace (unknown marketplace.
     `marketplaces: adds marketplace acme (${m.dir.replace(/[^\w.:@/~-]/g, "_").slice(0, 80)} at ${m.sha.slice(0, 12)}) (owner)`,
     `twin: installed from acme at ${m.sha.slice(0, 12)} (tier conformant)`,
     "twin: adds engine twin",
+    "twin: code changes",
   ]);
-  assert.deepEqual([classifyModules(diffs).tier, classifyModules(diffs).reviewFirst], [2, true]);
+  assert.deepEqual([classifyModules(diffs).tier, classifyModules(diffs).reviewFirst, classifyModules(diffs).panel], [2, true, true], "new code runs: the panel first");
 
   // An update without new authority (the engine's code changes): the AI reviewer alone.
   writeFileSync(join(m.dir, "twin/bin/engine"), "#!/usr/bin/env node\n// v2\n");
@@ -76,9 +77,24 @@ test("an unknown module.yaml key fails compile; a ref without a sha and an unkno
 
 test("a third-party module named like an official one is refused, and one is untrusted unless it says otherwise", () => {
   const m = marketplace({ plugins: [{ name: "core", source: "./twin" }] });
-  assert.throws(() => compile(mods, instance(["core@acme"], [{ name: "acme", source: { source: "url", url: m.dir }, sha: m.sha }]), { fetch: fetch() }), /module.yaml name is twin, expected core/);
+  writeFileSync(join(m.dir, "twin/module.yaml"), "name: core\ndescription: x\nlicense: MIT\nkernel: { engine: 1 }\n");
+  git(m.dir, "commit", "-qam", "core");
+  assert.throws(() => compile(mods, instance(["core@acme"], [{ name: "acme", source: { source: "url", url: m.dir }, sha: git(m.dir, "rev-parse", "HEAD") }]), { fetch: fetch() }), /core@acme: a module named core is already installed from aidenhq/);
   const t = marketplace();
   const f = fetch();
   const sides = withRemote({ baseInstance: {}, headInstance: { modules: ["twin@acme"], marketplaces: [{ name: "acme", source: { source: "url", url: t.dir }, sha: t.sha }] }, baseDefs: {}, headDefs: {}, changed: [] }, f);
   assert.equal(sides.headDefs.twin.isolation, "untrusted");
+});
+
+test("a third-party marketplace may point a module only at https on an allowed host, never a local path, and never with the host's credentials", () => {
+  const sha = "1".repeat(40);
+  for (const source of [{ source: "url", url: "/home/me/private-repo", sha }, { source: "git-subdir", url: "/srv/git/x.git", path: "m", sha }, { source: "url", url: "https://git.internal.example/x.git", sha }]) {
+    const m = marketplace({ plugins: [{ name: "twin", source }] });
+    assert.throws(() => compile(mods, instance(["twin@acme"], [{ name: "acme", source: { source: "url", url: m.dir }, sha: m.sha }]), { fetch: fetch() }), /a marketplace may point a module only at https on github.com/);
+  }
+  // Only what the owner's instance.yaml names gets the credential helper (and local paths); a URL from marketplace.json never does.
+  const owned = sourceOf({ source: "url", url: "/srv/mkt.git" }, "instance.yaml marketplaces[0]", undefined, sha, true);
+  assert.equal(owned.owned, true);
+  assert.equal(sourceOf("./twin", "marketplace acme: twin", owned).owned, true, "a folder of the owner's marketplace repo");
+  assert.equal(sourceOf({ source: "github", repo: "acme/twin", sha }, "marketplace acme: twin", owned).owned, undefined);
 });

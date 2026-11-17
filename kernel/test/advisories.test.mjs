@@ -88,7 +88,7 @@ test("A16: a third-party marketplace's advisories.json flags only the module ins
   git(mkt, "add", "-A");
   const pinned = commit(mkt, "twin");
   const fetch = { cacheDir: join(dir, "cache") };
-  checkout({ url: mkt, path: "", sha: pinned }, fetch); // what the install fetched
+  checkout({ url: mkt, path: "", sha: pinned, owned: true }, fetch); // what the install fetched
   // Published after the pin, on the marketplace's head: one advisory for its own module, one naming an official module.
   writeFileSync(join(mkt, "advisories.json"), JSON.stringify({ advisories: [
     { id: "ACME-2026-1", module: "twin", affected: [pinned], severity: "high", summary: "Twin leaks." },
@@ -103,8 +103,35 @@ test("A16: a third-party marketplace's advisories.json flags only the module ins
   const db = new DatabaseSync(":memory:");
   const sent = [];
   const adv = createAdvisories({ db, repo: s.repo, catalog, ownerLine: (l) => sent.push(l), fetch });
-  assert.deepEqual((await adv.check()).map((o) => [o.id, o.module]), [["ACME-2026-1", "twin"]]);
+  assert.deepEqual((await adv.check()).map((o) => [o.id, o.module]), [["acme:ACME-2026-1", "twin"]]);
   assert.equal(sent.length, 1);
+});
+
+test("a third-party file can neither hide official advisories (malformed) nor shadow one (same id)", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "advisories-mkt-"));
+  const mkt = join(dir, "mkt");
+  git(dir, "init", "-q", "-b", "main", mkt);
+  writeFileSync(join(mkt, "marketplace.json"), JSON.stringify({ name: "acme", plugins: [{ name: "twin", source: "./twin" }] }));
+  mkdirSync(join(mkt, "twin"));
+  writeFileSync(join(mkt, "twin/module.yaml"), "name: twin\n");
+  git(mkt, "add", "-A");
+  const pinned = commit(mkt, "twin");
+  const fetch = { cacheDir: join(dir, "cache") };
+  checkout({ url: mkt, path: "", sha: pinned, owned: true }, fetch);
+  const s = setup();
+  s.publish({ advisories: [advisory(s)] });
+  const catalog = join(dir, "modules.json");
+  writeFileSync(catalog, JSON.stringify([{ name: "widget", enabled: true, revision: s.between }, { name: "twin", enabled: true, revision: pinned, marketplace: "acme", source: { url: mkt, path: "" } }]));
+  const run = async (file) => {
+    writeFileSync(join(mkt, "advisories.json"), typeof file === "string" ? file : JSON.stringify(file));
+    git(mkt, "add", "-A");
+    commit(mkt, "advisories");
+    const sent = [];
+    const adv = createAdvisories({ db: new DatabaseSync(":memory:"), repo: s.repo, catalog, ownerLine: (l) => sent.push(l), fetch });
+    return { ids: (await adv.check()).map((o) => o.id).sort(), sent: sent.length };
+  };
+  assert.deepEqual(await run("not json"), { ids: ["AHQ-2026-001"], sent: 1 });
+  assert.deepEqual(await run({ advisories: [{ id: "AHQ-2026-001", module: "twin", affected: [pinned], severity: "high", summary: "Same id." }] }), { ids: ["AHQ-2026-001", "acme:AHQ-2026-001"], sent: 2 });
 });
 
 test("a malformed file is ignored and logged, leaving the last read; a summary is fenced", async (t) => {

@@ -8,7 +8,7 @@
 // records the platform check's (modules/platform/src/check.mjs); this file combines them with the module and apply rules,
 // and the shared rules (kernel/src/tier.ts: earlier decisions and the caps).
 import YAML from "yaml";
-import { classifyModules, diffAll } from "../../../kernel/src/loader/authority.ts";
+import { classifyModules, diffAll, marketplaceChanges } from "../../../kernel/src/loader/authority.ts";
 import { REJECT, T, highest, meritOwner, priorDecisions, priorPart, requestKey, requestPatches, routineCapped } from "../../../kernel/src/tier.ts";
 import { planParts } from "../../../modules/codehost-github/src/plan.mjs";
 import { COMPOSE, GATE_CORE, ROLE_AGENTS, check, imageRepo } from "../../../modules/platform/src/check.mjs";
@@ -248,11 +248,13 @@ function agentDefPart(key, base, head, s) {
  * The modules a product bump or a `modules:` edit changes (spec §5.7): `s.modules` is each module's def before and after and
  * whether its code changed (the runner read them at both product commits); `s.modulesError` when it couldn't. Every module
  * change is the AI reviewer's first (the panel's when code changed); new authority adds the owner after it.
- * `s.marketplaces`: the instance's third-party marketplace changes (authority.ts marketplaceChanges); a new one is the owner's.
+ * The instance's third-party marketplace changes are read here from both instance.yaml sides; a new one is the owner's.
  */
-function moduleAuthorityParts(s) {
+function moduleAuthorityParts(s, base, head) {
   if (s.modulesError || !s.modules) return [REJECT("unknown-content", `couldn't read the module changes${s.modulesError ? ` (${s.modulesError})` : ""}; try again`)];
-  const diffs = [...(s.marketplaces ?? []), ...diffAll(s.modules)];
+  let markets;
+  try { markets = marketplaceChanges(base, head); } catch (err) { return [REJECT("unparseable", `instance.yaml marketplaces: ${String(err.message ?? err).slice(0, 200)}`)]; }
+  const diffs = [...markets, ...diffAll(s.modules)];
   if (!diffs.length) return [];
   const c = classifyModules(diffs);
   return [c.reviewFirst ? OWNER_AFTER_REVIEW(c.rule, c.reason, c.panel) : c.panel ? PANEL(c.rule, c.reason) : T(1, c.rule, c.reason)];
@@ -264,7 +266,7 @@ function instanceParts(s) {
   if (!base || !head) return [REJECT("unparseable", "instance.yaml doesn't parse")];
   const parts = [];
   const keys = changedKeys(base, head);
-  if (["product", "modules", "marketplaces"].some((k) => keys.includes(k))) parts.push(...moduleAuthorityParts(s));
+  if (["product", "modules", "marketplaces"].some((k) => keys.includes(k))) parts.push(...moduleAuthorityParts(s, base, head));
   for (const k of keys) {
     if (k === "modules" || k === "marketplaces") continue; // the module parts above
     // A rollback can undo a security fix: the panel's. A pin off product main is refused.
