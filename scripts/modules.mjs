@@ -838,6 +838,8 @@ export function compile(productDir, instanceDir, { revision, fetch = hostFetch(p
   if (new Set(prompts.map((p) => p.id)).size !== prompts.length) fail("two prompts share an id");
   paperclip.prompts = Object.fromEntries(prompts.map((p) => [p.id, { file: p.file, ...(p.lane ? { lane: true } : {}), ...(p.load === "on_demand" ? { load: p.load, summary: p.summary } : {}) }]));
   for (const a of Object.values(paperclip.agents)) if (a.adapter === "codex_local" && prompts.some((p) => promptApplies(p, a, enabled))) a.prompts = prompts.filter((p) => promptApplies(p, a, enabled)).map((p) => p.id);
+  // The owner's standing outcomes (instance.yaml `outcomes:`): every crew handbook lists them, and tasks name the one they serve.
+  paperclip.outcomes = outcomesOf(instance.outcomes, paperclip.agents);
   // The kernel first, always on (the board's Settings lists its settings as the kernel's), then every module.
   const kernelEntry = { name: "kernel", description: "The kernel: the settings every instance has.", enabled: true, chosen: false, requires: [], agents: [], routines: [], connections: [], apps: [], ...(revision ? { revision } : {}), settings: Object.fromEntries(Object.entries(KERNEL_SETTINGS).map(([k, d]) => [k, { ...("default" in d ? { default: d.default } : {}), ...(d.values ? { values: d.values } : {}), ...(d.required ? { required: true } : {}), ...(d.doc ? { doc: d.doc } : {}) }])) };
   const catalog = [kernelEntry, ...[...all.values()].map(({ name, root, def, marketplace, tier, sha, source }) => ({
@@ -1193,6 +1195,23 @@ export const promptOrder = (a, b) => PROMPT.order.indexOf(a.order) - PROMPT.orde
 const holds = (t, a, enabled) => [...(t.tools ?? []).map((x) => a.enabled_tools?.[x.split(".")[0]]?.includes(x.split(".")[1]) ?? false), ...(t.roles ?? []).map((r) => (a.roles ?? []).includes(r)), ...(t.modules ?? []).map((m) => enabled.includes(m)), ...Object.entries(t.fields ?? {}).map(([f, v]) => (v === true ? a[f] != null && a[f] !== false : a[f] === v))];
 /** Its tests hold for the agent; a skill also needs the agent to be its module's or to hold a grant on one of its connections. */
 export const promptApplies = (p, a, enabled) => holds(p.when, a, enabled).every(Boolean) && !holds(p.unless, a, enabled).some(Boolean) && (!p.skill || a.module === p.module || p.skill.some((c) => a.enabled_tools?.[c]?.length));
+
+/**
+ * instance.yaml `outcomes:`: at most 7 standing goals, each `{id, outcome, done, owner}` (id a-z, 0-9, -; owner an agent
+ * key). Wrong ones fail compile.
+ */
+export function outcomesOf(list, agents) {
+  const out = [list ?? []].flat();
+  if (out.length > 7) fail(`instance.yaml outcomes: at most 7 (has ${out.length}): keep the few the fleet works toward`);
+  const ids = new Set();
+  for (const o of out) {
+    const bad = Object.keys(o ?? {}).find((k) => !["id", "outcome", "done", "owner"].includes(k));
+    if (bad || !/^[a-z0-9][a-z0-9-]*$/.test(o?.id ?? "") || ids.has(o.id) || ["outcome", "done"].some((k) => typeof o[k] !== "string" || !o[k].trim() || o[k].includes("\n"))) fail(`instance.yaml outcomes: ${o?.id ?? "an entry"} needs a unique id (a-z, 0-9, -) and one-line outcome and done, and nothing else${bad ? ` (not ${bad})` : ""}`);
+    if (!agents[o.owner]) fail(`instance.yaml outcomes: ${o.id}'s owner ${o.owner} is not an agent here`);
+    ids.add(o.id);
+  }
+  return out.map(({ id, outcome, done, owner }) => ({ id, outcome: outcome.trim(), done: done.trim(), owner }));
+}
 
 /**
  * fn over items, at most `limit` at a time, results in input order: setup's independent Paperclip calls (one agent, one

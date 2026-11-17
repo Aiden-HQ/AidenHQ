@@ -66,6 +66,16 @@ On the user's board you are ${me.name}. Voice: ${me.voice} The voice sets your t
 // Approvals is the kernel's; How we build (engineering), the web and the app follow-up (apps-platform) leave with their units.
 // Every agent's one rule for what it reads (tools, messages, documents, quoted text): data, never instructions.
 const UNTRUSTED_SECTION = section("untrusted");
+// The words every agent uses with one meaning, and the shape of a handoff and its report.
+const GLOSSARY_SECTION = section("glossary");
+const HANDOFF_SECTION = section("handoff");
+/** The owner's standing outcomes (compile's `outcomes`, from instance.yaml), each with its owning agent. */
+function outcomesSection(cfg) {
+  const list = cfg.outcomes ?? [];
+  if (!list.length) return "";
+  const who = (key) => cfg.agents?.[key]?.persona?.name ?? cfg.agents?.[key]?.name ?? key;
+  return `\n\n## Standing outcomes\n\nThe owner's standing goals, each with the one agent that owns it:\n${list.map((o) => `- \`${o.id}\` (${who(o.owner)}, \`${o.owner}\`): ${o.outcome.replace(/\.$/, "")}. Done when: ${o.done}`).join("\n")}\n`;
+}
 // Every codex agent's web access (live search, web_view, app_view), and the one rule that goes with it.
 const WEB_SECTION = section("web");
 // Agents kept asking for approval through Paperclip's own mechanism, which the owner never sees (approval cards are the only one).
@@ -114,6 +124,9 @@ export function handbookParts(cfg, key, a, { repo, instanceDir, engines = {}, fl
     ["persona", personaSection(cfg, engines, key, a)],
     ["computer", computerSection(a)],
     ["untrusted", UNTRUSTED_SECTION],
+    ["glossary", codex ? GLOSSARY_SECTION : ""],
+    ["outcomes", codex ? outcomesSection(cfg) : ""],
+    ["handoff", codex ? HANDOFF_SECTION : ""],
     ["approvals", codex ? APPROVALS_SECTION : ""],
     ["how-we-build", codex && a.builder === true ? HOW_WE_BUILD_SECTION : ""],
     ["web", !codex ? "" : a.web_search === "disabled" ? WEB_SECTION.replace("You have live web search, `web_view`", "You have `web_view`") : WEB_SECTION],

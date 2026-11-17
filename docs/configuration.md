@@ -59,7 +59,14 @@ settings:
 overrides:
   agents:   { assistant: { model: moonshotai/kimi-k3.1-pro } }
   routines: { daily-brief: { status: paused } }
+outcomes:
+  - { id: ship-weekly, outcome: "The team's app ships every week.", done: "a release each week, linked on the board", owner: chief-of-staff }
 ```
+
+- **Outcomes** are the owner's standing goals (at most 7), each `{id, outcome, done, owner}` with one owning agent (an
+  agent key). Every crew handbook lists them under "Standing outcomes", next to the shared words ("Shared words",
+  `scripts/prompts/glossary.md`) and the handoff shape ("Handing work on", `handoff.md`): a task names the outcome it
+  serves, and a report leads with what moved. A wrong entry or an owner that isn't an agent fails compile.
 
 - **Overrides** change a fixed set of fields on things that exist: agents (`model`, `reasoning_effort`, `timeout_sec`,
   `image`, `max_parallel` for a bigger host) and routines (`schedules`, `status`, `model`, `autonomy`). Anything else is refused.
