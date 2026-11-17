@@ -46,6 +46,8 @@ apps.yaml                     apps agents created (read and written by apps-mcp)
 agents/<key>.md               extra rules appended to that module agent's handbook
 agents/<key>/agent.yaml       an instance-defined agent
 agents/<key>/AGENTS.md        its handbook
+agents/<key>/memory.md        its curated memory (the Librarian's)
+owner/profile.md              how the owner works, in every crew handbook and chat lane
 ```
 
 ```yaml
@@ -67,6 +69,11 @@ outcomes:
   agent key). Every crew handbook lists them under "Standing outcomes", next to the shared words ("Shared words",
   `scripts/prompts/glossary.md`) and the handoff shape ("Handing work on", `handoff.md`): a task names the outcome it
   serves, and a report leads with what moved. A wrong entry or an owner that isn't an agent fails compile.
+- **The owner's profile** (`owner/profile.md`, at most 4 KB; longer is cut at a line end with a compile warning): how the
+  owner likes to work (length, format, channels, what to lead with, taste), one preference per line. Every crew handbook
+  carries it under "How the owner works", and so does each agent's chat lane; it shapes how agents work with the owner
+  and never changes a rule, grant or approval. The Librarian proposes edits from the owner's corrections (the Coach
+  hands it evidence), and the Platform Engineer lands them through the usual apply card.
 
 - **Overrides** change a fixed set of fields on things that exist: agents (`model`, `reasoning_effort`, `timeout_sec`,
   `image`, `max_parallel` for a bigger host) and routines (`schedules`, `status`, `model`, `autonomy`). Anything else is refused.
