@@ -1,6 +1,8 @@
 # Guided Setup Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** run the lanes below in parallel, one subagent per task, each in its own worktree. Per the
+> owner's standing direction there is no per-task review gate: build the lanes, then do one integration review and
+> test pass at the end (Task 18). Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** A non-technical person pastes one prompt into their AI, watches the install's progress, and opens one link. A short
 first-run page and an optional three-step wizard take them to the full Aiden. Every module that needs user setup gets a
@@ -48,6 +50,12 @@ PR with a Conventional Commit title. A modules change reaches the product throug
   attempts per minute. Only a signed-in admin with an authenticator mints one.
 - **Progress line format:** `AIDENHQ_PROGRESS=<n>/<total> <percent>% <step> ~<minutes left>`.
 - **Board tests:** run `npx tsc -p tsconfig.build.json --noEmit` for every board change.
+- **The live instance upgrades without losing a channel.**
+  - A value that moves out of `.env` or a file is read once from its old place when the new store is empty (Tasks 8–10).
+  - An existing `data/board/welcome-sent` marker counts as the wizard finished (Task 6).
+- **Other agents are building the marketplace page and module settings pages** in the same board files (`App.tsx`,
+  `Settings.tsx`, board points). Rebase often, and keep this work's board changes in its own new files where possible.
+- **Before starting, send Aiden a heads-up** in his operator chat (`~/aiden-msg.sh`); send the PRs when they merge.
 
 ## Review Focus
 
@@ -72,8 +80,7 @@ PR with a Conventional Commit title. A modules change reaches the product throug
 **Files:**
 - Create: `docs/design/guided-setup-spike.md` (product)
 
-- [ ] **Step 1: Measure a cold install.** On a fresh 4-core, 8 GB Ubuntu 24.04 VM (a throwaway on the EX44's Proxmox or a
-  cloud), run today's `get.aidenhq.ai` unattended install. Record wall time per `==>` stage and per image (transfer,
+- [ ] **Step 1: Measure a cold install.** On a fresh, throwaway 4-core, 8 GB Ubuntu 24.04 VM, run today's `get.aidenhq.ai` unattended install. Record wall time per `==>` stage and per image (transfer,
   extract). Separately, `docker pull` every image the release uses, in parallel, and record the total.
 - [ ] **Step 2: OpenRouter PKCE callbacks.** With a test account, start
   `https://openrouter.ai/auth?callback_url=<url>&code_challenge=…&code_challenge_method=S256` for three callbacks:
@@ -161,8 +168,11 @@ interface SetupFlow {
   - `POST /v1/accounts/save_secret {token, module, secret, value}` → `{ ok: true, restarted: string[] } | 4xx {error}`
   - `POST /v1/accounts/setup_status {token, module}` → `{ secrets: Record<string, boolean> }`
   - `createModuleSecrets(deps: { fields: () => SetupField[], services: (module: string) => string[], save: (name: string, value: string) => void, has: (name: string) => boolean, recreate: (services: string[]) => Promise<void>, log }): { save(module: string, secret: string, value: string): Promise<{ restarted: string[] }>, status(module: string): Record<string, boolean> }`
-  - `recreate` runs `docker compose -p $COMPOSE_PROJECT_NAME up -d --force-recreate --no-deps <services>` while holding
-    `data/apply.lock`, the same lock as `ops/apply-config.sh`, via `flock -w 600`.
+  - `recreate` runs `docker compose up -d --force-recreate --no-deps <services>` with `cwd` = `$AIDENHQ_DIR` (the
+    checkout, which the kernel unit already gets from `~/.config/aidenhq-checkout.env`).
+    - It uses compose's default file set there: `compose.yaml`, `compose.modules.yaml`, `compose.override.yaml` when
+      present, and `.env`, the same as `ops/apply-config-work.sh` outside staging.
+    - It runs while holding `data/apply.lock` (`flock -w 600`), the lock `ops/apply-config.sh` takes.
 
 - [ ] **Step 1: Write the failing tests:**
   - `save_secret writes a declared secret and recreates its module's services`: assert that the file mode is 0600, the
@@ -184,7 +194,7 @@ interface SetupFlow {
 
 **Files:**
 - Modify: `kernel/src/admin.ts` (routes `GET /recovery-key` admin, `POST /recovery-key` admin+csrf; drop the
-  recovery-key box from `setupPage`)
+  recovery-key box from `setupPage`), `kernel/src/auth-api.ts` (the `recovery_key_waiting` op)
 - Test: `kernel/test/recovery-key.test.mjs`
 
 **Interfaces:**
@@ -193,7 +203,8 @@ interface SetupFlow {
   - `GET /recovery-key` shows the key, Copy, Download (a `data:` link to `aidenhq-recovery-key.txt`), and a form with
     `choice=saved|decline`. With no key, it shows "No recovery key is waiting."
   - `POST` with either choice deletes the key and redirects to `${boardUrl}/#/welcome`.
-  - `GET /api/recovery-key-waiting` (admin) → `{ waiting: boolean }`, for the board.
+  - The account op `POST /v1/accounts/recovery_key_waiting {token}` → `{ waiting: boolean }`, for the board, which
+    calls it through `accounts.call`. The board server can't reach the admin listener.
 
 - [ ] **Step 1: Write the failing test** `recovery key shows to an admin and is gone after saved`. Assert that a GET
   contains the 64-hex key; after POST `choice=saved`, the file is gone and a GET says no key is waiting. Also: a
@@ -214,6 +225,9 @@ interface SetupFlow {
 **Interfaces:**
 - Consumes: `firstRun.save`, and the gateway's model call path (`gw`) for the check.
 - Produces:
+  - `GET /setup/model` and `POST /setup/model` (auth `admin+csrf`; the setup token is consumed when the account is
+    created, so the model step runs on the new admin's session) and `GET /setup/openrouter` (the PKCE callback, admin).
+  - The account op `POST /v1/accounts/model_ready {token}` → `{ ready: boolean }` (a model key is in the vault).
   - `startPkce(callback: string): { url: string, verifier: string }`
   - `exchange(code: string, verifier: string, fetchImpl?): Promise<string>` (the key)
   - `checkModel(key: string): Promise<"ok" | "no_credit" | "error">`: one max-1-token call to the default model.
@@ -239,6 +253,7 @@ Tests:
   - `openrouter error keeps the account`: the callback has `?error=access_denied`; the account exists, and the model
     step shows again with the error and no new account form.
   - `no credit shows retry`: `checkModel` returns `no_credit`; the page contains "Add credit" and a Retry form.
+  - `model step needs the admin session`: a GET of `/setup/model` without a session gets 401.
 - [ ] **Step 2: Run them and see them fail:** `cd kernel && node --test test/setup-openrouter.test.mjs`.
 - [ ] **Step 3: Implement.** Use the exact endpoints from Task 0's report. If PKCE failed for this exposure, show the
   paste field first.
@@ -315,6 +330,11 @@ Tests:
 
   Every screen has **Meet Aiden now**, a progress row of dots (one per screen) and **Later**. Leaving the wizard any
   way calls `/api/welcome/finish` once.
+  - **Model gate.** While `model_ready` (Task 4) is false, every board route shows one full-screen "Connect a model to
+    start" with a button to the kernel's `/setup/model`; no wizard and no chat. This covers an owner who left the
+    OpenRouter step.
+  - **Existing instances.** A present `data/board/welcome-sent` marker counts as `welcome_finished`, so a running
+    instance never sees the wizard.
 
   The welcome text, verbatim:
 
@@ -329,6 +349,8 @@ Tests:
 - [ ] **Step 1: Write the failing tests:**
   - `finish posts one welcome with done and skipped`: a second call posts nothing.
   - `wizard lists only wizard flows in order`.
+  - `no model key shows only the connect-a-model screen`.
+  - `an existing welcome-sent marker skips the wizard`.
 - [ ] **Step 2: Run them and see them fail:** `cd services/board && npx vitest run test/welcome.test.ts`.
 - [ ] **Step 3: Implement.** Remove the welcome step from `ops/setup.sh` and update `scripts/test/setup.test.mjs` if it
   asserts the step.
@@ -360,8 +382,7 @@ the modules repo's tests for that module, `npm test && npm run typecheck`.
 
 **Files:**
 - Modify: `channel-telegram/module.yaml` (`board.setup_flows` with `wizard: true`, order 20,
-  `secrets: [telegram_notify_bot_token]`, `pair_url: http://channel-telegram-telegram:<port>/pair`; drop
-  `TELEGRAM_OWNER_CHAT_ID` from env)
+  `secrets: [telegram_notify_bot_token]`, `pair_url: http://channel-telegram-telegram:<port>/pair`)
 - Create: `channel-telegram/connections/telegram/src/pair.ts`
 - Modify: `channel-telegram/connections/telegram/src/main.ts` (`/pair` routes; the owner chat comes from
   `store.ownerChat()`), `approvals.ts:62-66` (compare against the stored owner chat)
@@ -374,12 +395,17 @@ the modules repo's tests for that module, `npm test && npm run typecheck`.
   - Telegram `/start <code>` from any chat: on a valid code, the chat becomes the owner chat, the old chat (if any) gets
     "This chat is no longer paired with AidenHQ.", and the new chat gets "Paired. Say hi to Aiden."
   - `createPairing(store, now = Date.now): { mint(): string, redeem(code: string, chatId: number): boolean, paired(): boolean }`
+  - **Upgrade:** when the store has no owner chat and `TELEGRAM_OWNER_CHAT_ID` is set, the service stores it once at
+    start and logs `owner chat seeded from env`. The env line then leaves the module's compose block in a follow-up
+    once the live instance has run it.
 
 - [ ] **Step 1: Write the failing tests:**
   - `a fresh code pairs the sending chat`
   - `a used code pairs nobody`
   - `an expired code pairs nobody`: 15 minutes and 1 ms.
-  - `six wrong codes in a minute are refused`
+  - `six wrong codes in a minute from one chat are refused, another chat still pairs`: the limit is per chat, so a
+    stranger can't lock pairing out.
+  - `an existing env chat id is seeded once`
   - `re-pairing notifies the old chat`
 - [ ] **Step 2: Run them and see them fail.**
 - [ ] **Step 3: Implement.** The code is `randomBytes(16).toString("base64url")`, stored hashed, consumed in one
@@ -395,7 +421,8 @@ the modules repo's tests for that module, `npm test && npm run typecheck`.
 - `wizard: true`, order 30;
 - the steps start with the manifest pre-fill link (Task 0 confirms the URL);
 - pairing by DMing the bot the code;
-- `OWNER_SLACK_USER_ID` and `OWNER_COMMAND_CHANNEL` leave `.env`; the command channel is the paired DM;
+- `OWNER_SLACK_USER_ID` and `OWNER_COMMAND_CHANNEL` leave `.env`; the command channel is the paired DM. They are
+  seeded once from `.env` when present, as in Task 8;
 - add `channel-slack` to `marketplace.json`'s `bundle`.
 
 **Tests:** `a DMed code pairs that user` and `a code posted in a channel pairs nobody`.
@@ -405,17 +432,20 @@ the modules repo's tests for that module, `npm test && npm run typecheck`.
 ### Task 10: Guided Google flow
 
 **Files:**
-- Modify: `google/module.yaml` (a flow with `wizard: false`, order 40; `secrets: [google_oauth_client]` with a `setup:`
-  pattern for `<id>.apps.googleusercontent.com|<secret>`; `signin` = the Google connect)
-- Modify: `google/connections/google-workspace-mcp/src/auth.ts` (read the client from the new secret, keeping `accounts`
-  in `google_oauth.json`)
+- Modify: `google/module.yaml` (a flow with `wizard: false`, order 40; `secrets: [google_client_id,
+  google_client_secret]`, patterns `^[0-9]+-[a-z0-9]+\.apps\.googleusercontent\.com$` and `^GOCSPX-[A-Za-z0-9_-]{20,60}$`,
+  checked against a real client in Task 0; `signin` = the Google connect)
+- Modify: `google/connections/google-workspace-mcp/src/auth.ts`:
+  - read the client from the two secrets, keeping `accounts` in `google_oauth.json`;
+  - when the secrets are empty, use the client already in `google_oauth.json` (the live instance's).
 - Modify: `marketplace.json` (`google` joins the bundle)
 - Modify (product): `ops/setup.sh` (stop writing `google_oauth.json` from `person.env`, unless given)
 
 The steps are the spec's Part 3b. The redirect URI is shown from the board's address. When the board has no name
 (bare IP, and no free name per Task 0), the steps say why and stop there.
 
-**Tests:** `a pasted client keeps stored accounts` and `bare-IP board shows the name requirement`.
+**Tests:** `a pasted client keeps stored accounts`, `an existing google_oauth.json client still works` and
+`bare-IP board shows the name requirement`.
 
 - [ ] Steps as in Task 8. Commit as PR `feat(google): guided own-client setup from the board`.
 
@@ -431,11 +461,13 @@ script.
   - **host-only:** an `.env` value that must stay host-controlled.
 
   Write the table into the PR description. List the host-only values for the owner.
-- [ ] **Step 2: Add flows in batches.** Each module whose flow needs a URL setting (glean, grafana, clickhouse) sets it
-  through the existing settings-change path. Check `services/board/src/settings-change.ts`: if an owner-made change
-  becomes a card, the flow shows that card's Approve inline (reuse the existing card component). A sign-in step stays
-  disabled until the setting is applied, so nothing half-works. Each batch is one PR,
-  `feat(<module>): setup flow`, with the module's tests.
+- [ ] **Step 2: Add flows in batches.** A URL a flow asks for (glean, grafana, clickhouse) becomes a `setup:` value like
+  a secret, saved with `save_secret` and read by the service at start. It stops being an `instance.yaml` setting that
+  needs an apply:
+  - On upgrade, the service reads the old setting's env value once when the new value is empty.
+  - The `host:` pattern the setting had (e.g. `*.grafana.net`) becomes the value's `pattern`.
+  - The sign-in step stays disabled until the value is saved, so nothing half-works.
+  - Each batch is one PR, `feat(<module>): setup flow`, with the module's tests.
 - [ ] **Step 3: Replace `scripts/slack-auth.sh` and similar host scripts** where the flow now covers them. Delete the
   script and its docs.
 
@@ -477,11 +509,14 @@ script.
 
 ### Task 14: Public HTTPS front door (U2)
 
-Build unit U2 exactly as `docs/design/minimal-core-install.md` sections 4.1 to 4.3 specify:
-- a Caddy `caddy:2.11.9` container pinned by digest, with the IP certificate on the `shortlived` profile;
-- the board learning the real client address;
-- the per-address ban, the new-sign-in notice and the mode-aware firewall;
-- its exit check, a live issuance against Let's Encrypt staging.
+Build unit U2 of `docs/design/minimal-core-install.md` (section 4.1). U1, the real client address and sign-in limits
+(#125), and the mode-aware firewall (#128) are already merged; this task is only what is missing:
+- compile generates a `caddy` service (`caddy:2.11.9` pinned by digest) when `exposure: public`;
+- it uses an IP certificate on the `shortlived` profile;
+- it sends `X-AidenHQ-Edge` = `edge_board_secret` and `X-AidenHQ-Client-IP`, as #125 expects;
+- its exit check is a live issuance against Let's Encrypt staging.
+
+Check `gh pr list` for an open U2 branch first, and continue it if one exists.
 
 If Task 0 showed the free name works, Caddy also serves `<ip-dashes>.sslip.io`, and that becomes the board's address.
 PR: `feat(ops): public HTTPS front door`.
@@ -527,7 +562,13 @@ PR: `feat(ops): public HTTPS front door`.
 
 ## Integration (after Lanes A–D land)
 
-### Task 17: End-to-end and docs
+### Task 17: Release candidate
+
+- [ ] Bump the modules pin in the product, then cut a release candidate in the distro (`releases/<version>-rc.json`, with
+  the Task 12 images). Point `get.aidenhq.ai` at it through the installer's existing release-selection flag, so Task 18
+  installs this work and not the old release. Commit as PR `chore(release): guided setup release candidate`.
+
+### Task 18: End-to-end, integration review and docs
 
 **Files:**
 - Modify: `ops/test/unattended-install.sh` (walks install → `/setup` with a stubbed OpenRouter → `/recovery-key` saved →
@@ -538,9 +579,11 @@ PR: `feat(ops): public HTTPS front door`.
 - [ ] **Step 1: Extend the test and run it** in a container per its header. Expected: all `ok`.
 - [ ] **Step 2: Rewrite `SETUP.md` and move the manual path.** Run `cd scripts && npm test` (the setup-skill test reads
   `SETUP.md`).
-- [ ] **Step 3: Live check.** On a fresh VM (the home `agents-old` reinstall is queued for exactly this), run the prompt
-  end to end with a stopwatch. Record time to link and time to first reply in the spike report.
-- [ ] **Step 4: Commit** as PR `docs(setup): the one-prompt install is the default path`.
+- [ ] **Step 3: Live check.** On a fresh VM, run the prompt end to end against the release candidate with a stopwatch.
+  Record time to link and time to first reply in the spike report.
+- [ ] **Step 4: One integration review** of everything merged for this plan: `/code-review` at high effort over the
+  combined diff, plus `scripts/verify-security.sh` on the test VM. Fix what it finds.
+- [ ] **Step 5: Commit** as PR `docs(setup): the one-prompt install is the default path`.
 
 ## Order and parallelism
 
@@ -551,6 +594,6 @@ PR: `feat(ops): public HTTPS front door`.
   - Lane E (16).
 - **After Tasks 1 and 2:** Lane B (5→6) and Lane C (7–11, in parallel, each after Task 1; 8–10 also need Task 5 to try
   them in the board).
-- **Last:** Task 17.
+- **Last:** Tasks 17 then 18.
 
 About 12 subagents in total, most on Sonnet; Opus for Tasks 2, 8 and 16 (security boundaries and the code-host design).
