@@ -1,5 +1,9 @@
 name: fleet-ops
 description: "Fleet Ops: watches the fleet (stuck or failing runs, sources and apps down), nudges, files fixes through the normal tiers and tells the owner."
+roles:
+  declares:
+    - { id: product-issues, description: "Product bugs as issues on the product repo, as the GitHub App (github-mcp github_app_issue)." }
+  requests: [ fleet-read ]
 settings:
   # Minutes between the board's detector checks (lower while developing). The detector wakes Fleet Ops only when a
   # threshold trips or recovers, at most once per 30 minutes unless an app or apps-mcp is down or a critical alert fires

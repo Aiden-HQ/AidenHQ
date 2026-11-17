@@ -97,7 +97,7 @@ describe("POST /api/settings/change", () => {
 
   it("needs a signed-in admin", async () => {
     session = { accountId: "u", role: "user" };
-    expect((await post({ changes: [{ kind: "setting", key: "grading", value: "off" }] })).status).toBe(403);
+    expect((await post({ changes: [{ kind: "setting", key: "autonomy", value: "tier0" }] })).status).toBe(403);
     session = { accountId: "owner", role: "admin" };
   });
 });

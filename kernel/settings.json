@@ -1,0 +1,42 @@
+{
+  "owner_name": {
+    "required": true,
+    "doc": "The owner's name: handbooks say \"the owner\", and one line names them."
+  },
+  "owner_email": {
+    "required": true,
+    "doc": "The owner's board account (the only one setup creates, ops/setup.sh)."
+  },
+  "timezone": {
+    "required": true,
+    "doc": "The instance's timezone (schedules and the owner's day)."
+  },
+  "company_name": {
+    "default": "work",
+    "doc": "The Paperclip company this instance runs."
+  },
+  "instance_name": {
+    "doc": "Short name of this AidenHQ; the agents org (where an approved create_repo card creates repos) is aidenhq-<instance_name> unless github_agents_org names another."
+  },
+  "autonomy": {
+    "default": "off",
+    "values": [
+      "off",
+      "tier0",
+      "full"
+    ],
+    "doc": "Tiered approvals: \"off\" = every write is the owner's card, the AI reviewer reading Tier 1 first (its reject is final; also the pause switch); \"tier0\" = Tier 0 runs at once and the AI reviewer only comments on Tier 1; \"full\" = the reviewer decides Tier 1. Full only after reviewer-eval scores 100%."
+  },
+  "backup_repository": {
+    "doc": "Off-host backup (ops/backup-offsite.sh): a restic repository, e.g. sftp://u12345@u12345.your-storagebox.de:23/aidenhq. Set, apply installs a nightly timer (03:00 UTC); its password is the vault's restic_password. Unset = no off-host backup."
+  },
+  "exposure": {
+    "values": [
+      "public",
+      "tailscale",
+      "cloudflare",
+      "local"
+    ],
+    "doc": "How the board is reached, and so what the host firewall opens on the public interface (ops/vm/public-fw.sh): public = HTTPS on 443 (tcp 22, 443); tailscale = the tailnet (tcp 22, udp 41641); cloudflare = a Cloudflare tunnel, local = loopback through an SSH tunnel (tcp 22 only). Unset = tailscale; ops/setup.sh writes it. A change reaches the firewall when ops/vm/setup.sh runs again (root)."
+  }
+}

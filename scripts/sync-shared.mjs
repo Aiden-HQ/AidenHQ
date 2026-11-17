@@ -56,10 +56,10 @@ export const SHARED = {
   // App identity (docs/design/app-identity.md): the middleware every app copies, from the app template.
   "services/shared/aidenhq-identity.mjs": ["modules/apps-platform/starter/aidenhq-identity.mjs"],
   // The supply-chain checks, version picker and image scan, for app repos (the app CI template is copied into each as it is).
-  "scripts/supply-chain/best-version.mjs": ["modules/core/templates/ci/.github/supply-chain/best-version.mjs"],
-  "scripts/supply-chain/pins.mjs": ["modules/core/templates/ci/.github/supply-chain/pins.mjs"],
-  "scripts/supply-chain/npm-age.mjs": ["modules/core/templates/ci/.github/supply-chain/npm-age.mjs"],
-  "scripts/supply-chain/image-scan.mjs": ["modules/core/templates/ci/.github/supply-chain/image-scan.mjs"],
+  "scripts/supply-chain/best-version.mjs": ["modules/ci/template/.github/supply-chain/best-version.mjs"],
+  "scripts/supply-chain/pins.mjs": ["modules/ci/template/.github/supply-chain/pins.mjs"],
+  "scripts/supply-chain/npm-age.mjs": ["modules/ci/template/.github/supply-chain/npm-age.mjs"],
+  "scripts/supply-chain/image-scan.mjs": ["modules/ci/template/.github/supply-chain/image-scan.mjs"],
   // The design system: the app starter vendors its theme (tokens.css, shadcn.css), and the agent computers carry it all at
   // /opt/aidenhq/design-system. components.css and kit.js are the deprecated plain-CSS kit (its README).
   ...Object.fromEntries(

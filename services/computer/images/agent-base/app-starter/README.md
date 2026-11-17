@@ -8,7 +8,7 @@ no-match and unknown-value states, in light and dark and every palette and prese
 library to import from: an app's build carries only what it imports (the e2e test checks the example's bundle).
 
 Copy this folder into the new repo (without `node_modules`, `dist`, `catalog.html` and `src/catalog/`), add the CI template
-(`modules/core/templates/ci/`), then replace the sample data, the example page and the shell with what fits the app. The shell, the example and the
+(`modules/ci/template/`), then replace the sample data, the example page and the shell with what fits the app. The shell, the example and the
 blocks are a starting point, not a required look.
 
 ```sh

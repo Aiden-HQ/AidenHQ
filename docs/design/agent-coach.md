@@ -58,8 +58,8 @@ No per-agent eval harness beyond the existing correction cases; no auto-apply ou
 operational health.
 
 ## Rollout
-Core module agent + routine + `coach_due` + health `checks` in the detector and templates. Kill switch: `coach: off`
-(instance setting). Cost bound: the usual caps ($2/run, $30/agent/day).
+Core module agent + routine + `coach_due` + health `checks` in the detector and templates. Installing or removing the coach
+module is the switch. Cost bound: the usual caps ($2/run, $30/agent/day).
 
 ## Refinements after Codex review (2026-11-13)
 - **Coverage:** 4 runs/day × 1 agent = 28 reviews/week, not enough once onboarding and incidents are added. A run takes

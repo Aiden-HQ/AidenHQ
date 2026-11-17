@@ -44,7 +44,7 @@ export async function directory() {
     const res = await fetch(`${KERNEL}/v1/agents`, { headers: { authorization: `Bearer ${SERVICE_KEY}` }, signal: AbortSignal.timeout(10_000) });
     if (!res.ok) throw new Error(String(res.status));
     const j = await res.json();
-    dirCache = { agents: j.agents ?? {}, settings: j.settings ?? {} };
+    dirCache = { agents: j.agents ?? {} };
     dirAt = Date.now();
   } catch (err) {
     if (!dirCache) throw new Error(`Refused: the agent directory is unavailable (${String(err.message ?? err).slice(0, 100)}).`);
@@ -472,8 +472,6 @@ const GRADING = (process.env.GRADING_URL || "http://grading:8096").replace(/\/$/
 const DELIVERABLES = ["pr", "app", "apply", "file", "report", "none"];
 const GRADING_NOTE = "Held for grading: the grader checks this task against its rubric, then closes it or reopens it with the unmet criteria. Nothing more to do now: end your turn.";
 const gradedAgent = (id) => dirAgents()[id]?.graded === true;
-/** Graded done's kill switch (instance setting `grading`, in the directory): off, nothing is filed or required. */
-const gradingOff = () => cx().dir.settings?.grading === "off";
 // A criterion that is purely a negative ("No app code ... change was made", "the live sha is unchanged") can never be shown,
 // so it fails grading every time: one that starts with No/Nothing/Never or claims something unchanged is refused, unless it
 // is about what the grader does see in facts or pages (errors, warnings, incidents, failing checks, findings, CVEs, overflow).
@@ -494,7 +492,6 @@ const PAGE_PATH = /(?<![\w:/.~-])\/[A-Za-z0-9._~-]/;
 const noFact = (c) => NO_FACT.find(([re], i) => re.test(c) && !(i === 1 && PAGE_PATH.test(c)))?.[1];
 /** The rubric to file for a delegation to `target`, or undefined (not graded); throws when a graded assignee gets no deliverable. */
 function gradeFor(target, rubric, deliverable) {
-  if (gradingOff()) return undefined;
   const kind = deliverable?.kind;
   if (kind != null && !DELIVERABLES.includes(kind)) throw new Error(`deliverable.kind is one of ${DELIVERABLES.join(", ")}`);
   const list = (Array.isArray(rubric) ? rubric : []).map((c) => String(c).trim()).filter(Boolean);
@@ -1365,7 +1362,7 @@ const REF_ID = /^[A-Za-z0-9_.#/-]{1,80}$/;
 Object.assign(TOOLS, {
   coach_due: {
     description:
-      "Agent Coach: the agents to review this run (at most 3, in order), computed in code from agent ages, your review log, owner corrections and health-flag changes: each with its reasons and last review. Never you. `off: true` means the Coach is switched off: close the run.",
+      "Agent Coach: the agents to review this run (at most 3, in order), computed in code from agent ages, your review log, owner corrections and health-flag changes: each with its reasons and last review. Never you.",
     inputSchema: { type: "object", properties: {}, additionalProperties: false },
     annotations: { readOnlyHint: true, openWorldHint: false },
     run: async () => (await requireRole("fleet-audit", "read the review list"), boardApi("/internal/coach/due", {}, 60_000)),

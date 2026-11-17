@@ -11,7 +11,7 @@ import YAML from "yaml";
 import { classifyModules, diffAll, marketplaceChanges } from "../../../kernel/src/loader/authority.ts";
 import { REJECT, T, highest, meritOwner, priorDecisions, priorPart, requestKey, requestPatches, routineCapped } from "../../../kernel/src/tier.ts";
 import { planParts } from "../../../modules/codehost-github/src/plan.mjs";
-import { COMPOSE, GATE_CORE, ROLE_AGENTS, check, imageRepo } from "../../../modules/platform/src/check.mjs";
+import { COMPOSE, GATE_CORE, check, imageRepo } from "../../../modules/platform/src/check.mjs";
 
 /** Authority-expanding: the reviewer and a second reviewer on another model family must both approve. */
 const PANEL = (rule, reason) => ({ tier: 1, rule, reason, panel: true });
@@ -198,12 +198,12 @@ function applyParts(s) {
     } else if ((m = /^agents\/([a-z0-9][a-z0-9-]*)\/agent\.yaml$/.exec(f))) parts.push(agentDefPart(m[1], parse(def(m[1], "base")), parse(def(m[1], "head")), s));
     // A curated memory (the Librarian's proposal; compiled into the agent's handbook as facts, never instructions): the
     // reviewer decides, for a role holder too (owner, 2026-11-14), and flags one that redirects authority.
-    else if ((m = /^agents\/([a-z0-9][a-z0-9-]*)\/memory\.md$/.exec(f))) parts.push(ROLE_AGENTS.has(m[1]) || (s.roles?.[m[1]] ?? []).length ? T(1, "role-memory", `memory of ${m[1]}, which holds a role`) : T(1, "agent-memory", `memory of ${m[1]}, an agent without a role`));
+    else if ((m = /^agents\/([a-z0-9][a-z0-9-]*)\/memory\.md$/.exec(f))) parts.push((s.roles?.[m[1]] ?? []).length ? T(1, "role-memory", `memory of ${m[1]}, which holds a role`) : T(1, "agent-memory", `memory of ${m[1]}, an agent without a role`));
     else if ((m = /^agents\/([a-z0-9][a-z0-9-]*)\/AGENTS\.md$/.exec(f))) {
       const key = m[1];
       const base = parse(def(key, "base"));
       const head = parse(def(key, "head"));
-      if (ROLE_AGENTS.has(key) || (s.roles?.[key] ?? []).length) parts.push(T(1, "role-handbook", `handbook of ${key}, which holds a role`));
+      if ((s.roles?.[key] ?? []).length) parts.push(T(1, "role-handbook", `handbook of ${key}, which holds a role`));
       else if (base === undefined) {
         // A new agent's handbook: only alongside its new agent.yaml, in trial, in this same change; anything else is refused.
         const added = (s.files ?? []).includes(`agents/${key}/agent.yaml`) && head?.trial === true;
@@ -213,7 +213,7 @@ function applyParts(s) {
       else parts.push(T(1, "agent-handbook", `handbook of ${key}, a graduated agent without a role`));
     } else if ((m = /^agents\/([\w.-]+)\.md$/.exec(f))) {
       const roles = s.roles?.[m[1]] ?? [];
-      parts.push(ROLE_AGENTS.has(m[1]) || roles.length ? T(1, "role-handbook", `handbook of ${m[1]}, which holds a role`) : T(1, "module-handbook", `handbook additions for ${m[1]}, an agent without a role`));
+      parts.push(roles.length ? T(1, "role-handbook", `handbook of ${m[1]}, which holds a role`) : T(1, "module-handbook", `handbook additions for ${m[1]}, an agent without a role`));
     } else parts.push(PANEL("unrecognised-file", `${f} isn't a file apply recognises`));
   }
   return parts;

@@ -48,7 +48,7 @@ startDetector(paperclip, store, grading, log);
 // The owner's app alerts (app-watch.ts): owner lines a channel collects through the kernel. apps-mcp unreachable: skipped.
 const appWatch = () => void appWatchTick({ apps: () => appsApi<AppStatus[]>("/internal/status"), diskPct: async () => (await appsApi<{ disk_pct: number }>("/internal/host")).disk_pct, store, notify: (line) => queueOwnerLine(store, line) }).catch((err) => log.warn({ err: String(err) }, "app alerts tick failed"));
 setInterval(appWatch, 2 * 60_000).unref();
-// Event wake-ups for heartbeat agents (wake.ts): on unless the instance setting wake_ups is off.
+// Event wake-ups for heartbeat agents (wake.ts).
 startWake(paperclip, store, records, grading, log);
 // Long-lived tasks move to a successor before Paperclip's fresh-session prompt outgrows the model's input (rollover.ts).
 startRollover(paperclip, store, records, grading, log);

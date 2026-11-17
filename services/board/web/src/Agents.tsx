@@ -41,7 +41,7 @@ const FLAT_UNDER = 6;
 /** The chief of staff leads its department, as "Your chief of staff". */
 const FRONT = "chief-of-staff";
 
-/** Agents by department, in the registry's order (compile resolves it: modules/core/module.yaml `departments:`). */
+/** Agents by department, in the registry's order (compile resolves it: kernel/defaults.json `departments`). */
 function byDepartment(agents: RosterAgent[]): { dept: Department; members: RosterAgent[] }[] {
   const groups = new Map<string, { dept: Department; members: RosterAgent[] }>();
   for (const a of agents) {

@@ -234,7 +234,7 @@ export const cancelledRun = (rollup) => {
 
 /** Conclusions that say a check never judged the commit: its job was cancelled, ran out of time or never started. */
 const INFRA = new Set(["CANCELLED", "TIMED_OUT", "STARTUP_FAILURE"]);
-/** The app CI's AI code review (modules/core/templates/ci): its gate keeps one PR comment, starting with MARKER, per head. */
+/** The app CI's AI code review (modules/ci/template): its gate keeps one PR comment, starting with MARKER, per head. */
 export const CODE_REVIEW = { name: "code-review", marker: "<!-- ci:code-review -->" };
 
 /**

@@ -3,11 +3,9 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { DatabaseSync } from "node:sqlite";
-import { GRADER_RETRY_MS, MAX_GRADER_FAILURES, Grades, completionGate as gate, gradePassed as passed, settleClosedGrades } from "../service/src/grades.ts";
+import { GRADER_RETRY_MS, MAX_GRADER_FAILURES, Grades, completionGate, gradePassed, settleClosedGrades } from "../service/src/grades.ts";
 
 class Store { constructor() { this.grades = new Grades(new DatabaseSync(":memory:")); } }
-const completionGate = (g, id, via, o = {}) => gate(g, id, via, { on: true, ...o });
-const gradePassed = (g, id, on = true) => passed(g, id, on);
 /** vitest's matchers this file used, over node:assert. */
 const partial = (a, e) => { if (e && typeof e === "object" && !Array.isArray(e)) { for (const [k, v] of Object.entries(e)) partial(a?.[k], v); } else if (Array.isArray(e)) { assert.equal(a?.length, e.length); e.forEach((v, i) => partial(a[i], v)); } else assert.deepStrictEqual(a, e); };
 const expect = (a) => ({ toBe: (e) => assert.strictEqual(a, e), toEqual: (e) => assert.deepStrictEqual(a, e), toMatchObject: (e) => partial(a, e), toHaveLength: (n) => assert.equal(a.length, n), toBeUndefined: () => assert.equal(a, undefined) });
@@ -89,14 +87,13 @@ describe("graded done", () => {
     expect(completionGate(grades, "t", "finish_turn")).toEqual({ pass: false, state: "grading_failed", label: "grading" });
   });
 
-  it("escalates a rejected version handed in again unchanged, and passes everything with grading off", () => {
+  it("escalates a rejected version handed in again unchanged", () => {
     const { grades } = new Store();
     grades.file("t", [], { kind: "report", ref: "" });
     completionGate(grades, "t", "task_finish");
     grades.record("t", { version: "c1", outcome: "needs_revision", model: "glm", criteria: [] });
     completionGate(grades, "t", "task_finish");
     expect(grades.record("t", { version: "c1", outcome: "needs_revision", model: "glm", criteria: [] })).toMatchObject({ state: "escalated", attempts: 1 });
-    expect(completionGate(grades, "t", "task_finish", { on: false })).toEqual({ pass: true });
   });
 
   it("retries a failed grader pass on the 1, 5, 15, 60 minute ladder, then escalates once and stops", () => {

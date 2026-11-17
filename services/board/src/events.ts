@@ -3,7 +3,6 @@
 // of on their next poll. Events carry names and ids only, never content; the reader refetches through the usual routes.
 // One hub per Store: the local, LAN and internal listeners share it, so a Telegram decision (internal) reaches the board.
 // Other code emits through `store.events.emit`: what agents change in Paperclip arrives through the live watch (watch.ts).
-import { readFileSync } from "node:fs";
 import type { IncomingMessage, ServerResponse } from "node:http";
 
 /**
@@ -45,8 +44,7 @@ export class Events {
     res.flushHeaders();
     res.write("retry: 5000\nevent: ping\ndata: {}\n\n");
     this.streams.add(res);
-    // The setting switched off: open streams end at the next beat, and the browser's reconnect is refused.
-    const beat = setInterval(() => (liveUpdatesOn() ? res.write("event: ping\ndata: {}\n\n") : res.end()), HEARTBEAT_MS);
+    const beat = setInterval(() => res.write("event: ping\ndata: {}\n\n"), HEARTBEAT_MS);
     beat.unref();
     const done = () => {
       clearInterval(beat);
@@ -55,14 +53,5 @@ export class Events {
     req.on("close", done);
     res.on("close", done);
     res.on("error", done);
-  }
-}
-
-/** The instance's `live_updates` setting (grants table, read per stream): off is the kill switch; the boards poll as before. */
-export function liveUpdatesOn(grantsFile = process.env.AIDENHQ_GRANTS_FILE): boolean {
-  try {
-    return JSON.parse(readFileSync(grantsFile ?? "", "utf8"))?.live_updates !== "off";
-  } catch {
-    return true;
   }
 }

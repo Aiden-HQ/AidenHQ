@@ -66,5 +66,5 @@ test("an apply is never guarded: the instance's main can be ahead of what the ho
   const main = readFileSync(join(import.meta.dirname, "../src/main.mjs"), "utf8");
   const start = main.indexOf("async function showFleetDiff");
   assert.ok(start > 0);
-  assert.doesNotMatch(main.slice(start, main.indexOf("\n}\n", start)), /onMain|guardBranch|dupGuardOn|ALREADY_APPLIED/);
+  assert.doesNotMatch(main.slice(start, main.indexOf("\n}\n", start)), /onMain|guardBranch|ALREADY_APPLIED/);
 });

@@ -820,10 +820,9 @@ const routineAutonomy = (() => {
 
 function writeGrants(agents, memoryInboxes = {}, reviewLogs = {}) {
   if (!isWork) return;
-  // autonomy: the board and the runner read the tiered-approvals switch here, fresh on every use; grading: graded done's kill switch.
+  // autonomy: the board and the runner read the tiered-approvals switch here, fresh on every use.
   // agents_org, product_repo: the repos a graded PR deliverable may name (the board refuses others; the runner agrees).
-  const table = { autonomy: cfg.autonomy ?? "off", grading: cfg.grading ?? "on", dup_guard: cfg.dup_guard ?? "on", coach: cfg.coach ?? "on", agents_org: cfg.github_agents_org ?? "", product_repo: productRepo(), agents: Object.fromEntries(Object.entries(agents).map(([key, a]) => [a.id, { key, roles: cfg.agents[key].roles ?? [], tools: cfg.agents[key].enabled_tools ?? {}, ...grantEntry(key, cfg.agents[key], cfg.routines), rev: revOf(key), ...(cfg.agents[key].trial ? { trial: true } : {}), ...(cfg.agents[key].delegate_to ? { delegate_to: cfg.agents[key].delegate_to } : {}), ...(cfg.agents[key].image ? { image: cfg.agents[key].image } : {}) }])) };
-  Object.assign(table, { live_updates: cfg.live_updates ?? "on", batch_approvals: cfg.batch_approvals ?? "on", wake_ups: cfg.wake_ups ?? "on", loop_brake: cfg.loop_brake ?? "on" }); // the board's kill switches, read per use
+  const table = { autonomy: cfg.autonomy ?? "off", agents_org: cfg.github_agents_org ?? "", product_repo: productRepo(), agents: Object.fromEntries(Object.entries(agents).map(([key, a]) => [a.id, { key, roles: cfg.agents[key].roles ?? [], tools: cfg.agents[key].enabled_tools ?? {}, ...grantEntry(key, cfg.agents[key], cfg.routines), rev: revOf(key), ...(cfg.agents[key].trial ? { trial: true } : {}), ...(cfg.agents[key].delegate_to ? { delegate_to: cfg.agents[key].delegate_to } : {}), ...(cfg.agents[key].image ? { image: cfg.agents[key].image } : {}) }])) };
   table.routines = { ...routineAutonomy };
   // Each agent's memory inbox issue id (ensureMemoryInboxes): memory_note posts there, the tasks bridge guards it.
   for (const [key, a] of Object.entries(agents)) if (memoryInboxes[key]) table.agents[a.id].memory_inbox = memoryInboxes[key];

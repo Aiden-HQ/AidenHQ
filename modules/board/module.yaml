@@ -4,3 +4,10 @@ description: "The owner's board (still the root compose's board service): the po
 # (…/auth/start, …/auth/finish) with the module's `<id>_auth_token`, mounted on the board.
 points:
   signins: { schema: schemas/signins.json }
+# The board's buckets and markers.
+labels:
+  - { name: needs-review, color: "#d97706" }
+  - { name: daily-brief, color: "#059669" }
+  - { name: todo, color: "#0891b2" }
+  - { name: needs-response, color: "#e11d48" }
+  - { name: recurring, color: "#0d9488" }

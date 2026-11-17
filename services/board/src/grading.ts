@@ -30,17 +30,14 @@ export interface Grade {
   updatedAt: string;
 }
 /**
- * `on`: the grading kill switch (false: every grade check passes); `grades`: every task asked about, by id: its row, or null
- * when it has none. An id missing from `grades` is unknown (never asked, or not answered), which is never "ungraded".
+ * `grades`: every task asked about, by id: its row, or null when it has none. An id missing from `grades` is unknown (never asked, or not answered), which is never "ungraded".
  */
 export interface GradesView {
-  on: boolean;
   grades: Record<string, Grade | null>;
 }
-export const noGrades: GradesView = { on: true, grades: {} };
 
-/** True when grading is off, the module said the task has no row, or its row is satisfied. Unknown: false (fail closed). */
-export const gradePassed = (view: GradesView, id: string): boolean => !view.on || (Object.hasOwn(view.grades, id) && (view.grades[id] === null || view.grades[id]!.state === "satisfied"));
+/** True when the module said the task has no row, or its row is satisfied. Unknown: false (fail closed). */
+export const gradePassed = (view: GradesView, id: string): boolean => Object.hasOwn(view.grades, id) && (view.grades[id] === null || view.grades[id]!.state === "satisfied");
 /** The module's answer per request: at most this many ids. */
 export const GRADES_BATCH = 500;
 
@@ -65,10 +62,9 @@ export function createGrading({ url = process.env.GRADING_URL ?? "http://grading
   return {
     // Every id, in batches the module takes; one failed batch fails the whole read (callers fail closed).
     grades: async (ids) => {
-      const out: GradesView = { on: true, grades: {} };
+      const out: GradesView = { grades: {} };
       for (let i = 0; i < ids.length; i += GRADES_BATCH) {
         const v = await call<GradesView>("POST", "/board/grades", { ids: ids.slice(i, i + GRADES_BATCH) });
-        out.on &&= v.on;
         Object.assign(out.grades, v.grades);
       }
       return out;

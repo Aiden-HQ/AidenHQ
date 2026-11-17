@@ -28,7 +28,7 @@ import { compile, ensureOptionalSecrets, hostMounts } from "./modules.mjs";
 import { computersConfig } from "./computers.mjs";
 import { checkIngress } from "./edge.mjs";
 import { ensureIdentityKeys } from "./identity.mjs";
-import { checkOn, report, staticCheck } from "./agent-check.mjs";
+import { report, staticCheck } from "./agent-check.mjs";
 import { checkDataVersion } from "../kernel/src/loader/data-version.ts";
 
 const repo = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -54,7 +54,7 @@ try { revision = execFileSync("git", ["-C", repo, "rev-parse", "HEAD"], { encodi
 let out, computers;
 try { out = compile(repo, instanceDir, { revision }); computers = computersConfig(out.paperclip, repo); } catch (e) { die(e.message); }
 // The pre-launch agent check (scripts/agent-check.mjs): before anything is written, so a failing agent never launches.
-if (checkOn(instanceDir) && report("agent-check", staticCheck(out.paperclip))) die("the agent check failed (above); fix the agent, or set settings.agent_check: off");
+if (report("agent-check", staticCheck(out.paperclip))) die("the agent check failed (above); fix the agent");
 
 // Host paths come from the host's .env, never from instance.yaml (agents can edit that through apply): ops-mcp's config,
 // transcripts, vault folders and knowledge bases. A module can't declare a host mount; these are the host's own.

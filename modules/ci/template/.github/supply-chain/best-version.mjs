@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // Which version may we use? The newest one published at least N days ago (the 7-day rule), from the public registries.
-// No dependencies, Node 22+. A byte-identical copy lives in modules/core/templates/ci/.github/supply-chain/ for app
+// No dependencies, Node 22+. A byte-identical copy lives in modules/ci/template/.github/supply-chain/ for app
 // repos (scripts/sync-shared.mjs).
 //
 //   node best-version.mjs npm <package>                     time[version] from the npm registry

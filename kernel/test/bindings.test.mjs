@@ -46,8 +46,9 @@ test("A13: replacing A with B leaves a binding unprovided → refused, naming wh
     ["requires", without("engine-a"), "module user", "engine"],
   ];
   for (const [binding, enabled, owner, missing] of cases) assert.deepEqual(danglingBindings(enabled, {}).filter((d) => d.binding === binding), [{ binding, owner, missing }], binding);
-  // Optional grants (`?`) are allowed to be missing; the kernel's roles and the compiler's plain ones need no declaring module.
-  assert.deepEqual(danglingBindings({ "acme-x": { agents: { a: { connections: { "gone?": "read" }, jobcaps: ["gone?"], roles: ["fleet-read", "kernel.audit"] } } } }, {}), []);
+  // Optional grants (`?`) are allowed to be missing; the kernel's roles need no declaring module, every other role does.
+  assert.deepEqual(danglingBindings({ "acme-x": { agents: { a: { connections: { "gone?": "read" }, jobcaps: ["gone?"], roles: ["kernel.audit"] } } } }, {}), []);
+  assert.deepEqual(danglingBindings({ "acme-x": { agents: { a: { roles: ["fleet-read"] } } } }, {}), [{ binding: "agent roles", owner: "agent a", missing: "role fleet-read" }]);
   // The instance's own bindings: its reviewer and its write floor raises.
   const inst = danglingBindings(ok, { reviewer: { primary: "acme-crm" }, writes: { "acme-crm.publish": { floor: 2 } }, agents: { mine: { engine: "omega" } } });
   assert.deepEqual(inst.map((d) => d.binding), ["agent engine", "instance reviewer", "instance writes"]);

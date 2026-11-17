@@ -1670,8 +1670,6 @@ async function fileApproval(issue, { action, args, diff, ts, carries }) {
  * full (the reviewer decides Tier 1).
  */
 const autonomyNow = () => (["tier0", "full"].includes(readGrants()?.autonomy) ? readGrants().autonomy : "off");
-/** The duplicate-card guard's kill switch (instance setting `dup_guard`, in the grants table next to `autonomy`). */
-const dupGuardOn = () => readGrants()?.dup_guard !== "off";
 /** The guard found the change already satisfied on the target: no card; the evidence goes back to the agent instead. */
 class AlreadyApplied extends Error {}
 /**
@@ -1803,14 +1801,14 @@ const inAgentsOrg = (repo) => Boolean(cfg.agentsOrg) && String(repo).split("/")[
 /**
  * Whether commit `sha` of `slug` carries exactly the product's CI template as its `.github/` (tiers.mjs `ciTemplate`, Tier 0):
  * its `.github` tree, read in the runner's own clone (sent there from the workspace `from`, or fetched from GitHub's PR head
- * `pr`: git's transfer hashes every object), is the same tree object as `modules/core/templates/ci/.github` at the product
+ * `pr`: git's transfer hashes every object), is the same tree object as `modules/ci/template/.github` at the product
  * commit this host runs (the runner's own checkout's HEAD, never anything an agent wrote). Equal trees: the same paths, modes
  * and bytes, so no symlink, no extra or missing workflow file. False on anything else, or when it can't be read.
  */
 async function ciTemplateCopy(slug, sha, { from, pr } = {}) {
   try {
     if (!/^[0-9a-f]{40}$/.test(sha ?? "")) return false;
-    const want = await git(REPO_ROOT, "rev-parse", "--verify", "HEAD:modules/core/templates/ci/.github");
+    const want = await git(REPO_ROOT, "rev-parse", "--verify", "HEAD:modules/ci/template/.github");
     const main = await githubDefault(slug);
     return await withTrusted(slug, [main], async (path, _, out) => {
       if (from) await git(from, "push", "--quiet", "--no-verify", "--force", path, `${sha}:${out}`);
@@ -1947,7 +1945,7 @@ async function moduleTierState(baseText, headText) {
     const changed = from === to ? [] : (await git(REPO_ROOT, "diff", "--name-only", "--no-renames", from, to, "--", "modules")).split("\n").filter(Boolean);
     // Third-party modules (instance.yaml marketplaces:), fetched at their pinned shas; a new marketplace is the owner's.
     const sides = withRemote({ baseInstance: bi, headInstance: hi, baseDefs: await defs(from), headDefs: await defs(to), changed }, { ...hostFetch(REPO_ROOT), parse: (t) => YAML.parse(t) });
-    return { modules: moduleInputs({ ...sides, always: ["core"] }), marketplaces: marketplaceChanges(bi, hi) };
+    return { modules: moduleInputs({ ...sides, always: [] }), marketplaces: marketplaceChanges(bi, hi) };
   } catch (err) {
     return { modulesError: String(err.message ?? err).split("\n")[0].slice(0, 200) };
   }
@@ -2890,11 +2888,9 @@ async function agentPublish(ctx, command, args) {
         // exactly these commits once every named check and the base branch are green (mergeAfterPublish); the card says so.
         const merge = carriesMerge(command, ordered);
         // Every branch already satisfied on its repo's current default branch (after a fresh fetch): no card, evidence instead.
-        if (dupGuardOn()) {
-          for (const r of new Map(ordered.map((r) => [r.path, r])).values()) await git(r.path, "fetch", "--quiet", "origin", r.defaultBase).catch(() => "");
-          const on = await Promise.all(ordered.map((r, i) => guardBranch(git, r, branches[i].sha)));
-          if (on.every((o) => o.satisfied)) throw new AlreadyApplied(await alreadyApplied(ctx.issue, command, branches.map((b) => b.sha).join(","), on.map((o, i) => `${branches[i].repo} \`${branches[i].branch}\`: ${o.evidence}`).join("; ")));
-        }
+        for (const r of new Map(ordered.map((r) => [r.path, r])).values()) await git(r.path, "fetch", "--quiet", "origin", r.defaultBase).catch(() => "");
+        const on = await Promise.all(ordered.map((r, i) => guardBranch(git, r, branches[i].sha)));
+        if (on.every((o) => o.satisfied)) throw new AlreadyApplied(await alreadyApplied(ctx.issue, command, branches.map((b) => b.sha).join(","), on.map((o, i) => `${branches[i].repo} \`${branches[i].branch}\`: ${o.evidence}`).join("; ")));
         await bindBranches(ordered, branches);
         // The card's args, built from the branches as bound: the board's schema decides what a card may carry (cards.ts).
         const cardArgs = branchCardArgs(branches, { text, merge });
@@ -3220,11 +3216,9 @@ async function agentMerge(ctx, args) {
   if (outside.length) throw new UserError(`Only PRs in ${cfg.allowed_orgs.join(", ")} can be merged: ${outside.map((p) => p.url).join(", ")}.`);
   const gap = Number.isInteger(args.gap) && args.gap >= 0 && args.gap <= 720 ? args.gap : undefined;
   // Every PR already merged: no card, evidence instead.
-  if (dupGuardOn()) {
-    const read = await Promise.all(prs.map((p) => mergeGithub.pr(p.repo, p.number).then((d) => d?.repository?.pullRequest, () => null)));
-    if (read.every((pr) => pr?.state === "MERGED"))
-      return alreadyApplied(ctx.issue, "merge", prs.map((p) => p.url).join(","), prs.map((p, i) => `${p.url} is already merged${read[i].mergeCommit?.oid ? ` (merge commit \`${read[i].mergeCommit.oid.slice(0, 12)}\`)` : ""}`).join("; "));
-  }
+  const read = await Promise.all(prs.map((p) => mergeGithub.pr(p.repo, p.number).then((d) => d?.repository?.pullRequest, () => null)));
+  if (read.every((pr) => pr?.state === "MERGED"))
+    return alreadyApplied(ctx.issue, "merge", prs.map((p) => p.url).join(","), prs.map((p, i) => `${p.url} is already merged${read[i].mergeCommit?.oid ? ` (merge commit \`${read[i].mergeCommit.oid.slice(0, 12)}\`)` : ""}`).join("; "));
   // Each card is bound to the PR's current head; in the agents org and the product repo the tap (or the reviewer's
   // approval) is the review (merges.prDecision).
   const bound = [];

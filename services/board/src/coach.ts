@@ -32,16 +32,14 @@ const clip = (s: unknown, n: number) => {
   return t.length > n ? `${t.slice(0, n - 1)}…` : t;
 };
 
-/** The grants table, read fresh (the kill switch and the review log's id live there). */
-function grants(file = process.env.AIDENHQ_GRANTS_FILE): { coach?: string; agents?: Record<string, { key?: string; roles?: string[]; tools?: Record<string, string[]>; review_log?: string; [k: string]: unknown }> } {
+/** The grants table, read fresh (the review log's id lives there). */
+function grants(file = process.env.AIDENHQ_GRANTS_FILE): { agents?: Record<string, { key?: string; roles?: string[]; tools?: Record<string, string[]>; review_log?: string; [k: string]: unknown }> } {
   try {
     return JSON.parse(readFileSync(file ?? "", "utf8"));
   } catch {
     return {};
   }
 }
-/** The kill switch (instance setting `coach`): off = nothing is due and no evidence is read. */
-export const coachOff = (file?: string) => grants(file).coach === "off";
 
 export interface Review { agentId: string; at: string; outcome: "reviewed" | "inconclusive" }
 
@@ -158,10 +156,9 @@ async function reviewLog(pc: Paperclip, logId: string, coachId: string, now: num
 
 const liveAgents = (agents: Agent[]) => agents.filter((a) => !["terminated", "paused"].includes(a.status));
 
-/** coach_due: the agents to review this run (or nothing, with the switch off). */
+/** coach_due: the agents to review this run. */
 export async function coachDue(pc: Paperclip, store: Pick<Store, "meta">, caller: Agent, now = Date.now()) {
   const g = grants();
-  if (g.coach === "off") return { off: true, due: [], note: "The Agent Coach is switched off (instance setting coach: off): close the run with one line." };
   const logId = g.agents?.[caller.id]?.review_log;
   if (!logId) throw new Error("no review log in the grants table yet: it is made by the next fleet apply");
   const agents = liveAgents(await pc.request<Agent[]>("GET", `/api/companies/${pc.companyId}/agents`)) as (Agent & { createdAt?: string })[];
@@ -244,7 +241,6 @@ export function packEvidence(p: EvidenceParts) {
 
 /** coach_evidence: the packet for one agent (by key), read from Paperclip, the board's ledger and the apps platform. */
 export async function coachEvidence(pc: Paperclip, store: Pick<Store, "meta" | "usageDaily">, records: Pick<Records, "list">, grading: Pick<Grading, "grades">, runOf: (id: string) => Promise<RunView | null>, agentKey: string, caller: Pick<Agent, "id">, now = Date.now()) {
-  if (coachOff()) return { off: true, note: "The Agent Coach is switched off (instance setting coach: off)." };
   const agents = (await pc.request<Agent[]>("GET", `/api/companies/${pc.companyId}/agents`)) as (Agent & { createdAt?: string })[];
   const a = agents.find((x) => x.status !== "terminated" && keyOf(x) === agentKey.trim());
   if (!a) throw new Error(`no agent with key "${agentKey}"`);

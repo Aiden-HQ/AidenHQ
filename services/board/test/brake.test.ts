@@ -1,12 +1,8 @@
-import { mkdtempSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import { expect, it } from "vitest";
 import { Store } from "../src/store.js";
 import { WAKE_LIMIT, wakeCheck } from "../src/brake.js";
 
 const t0 = Date.parse("2026-11-12T10:00:00Z");
-const noGrants = "/nonexistent";
 const log = { info() {} };
 
 /** Paperclip: Aiden's task t1, an Engineer's task t2; every comment queues a run of the task's agent that names it. */
@@ -45,7 +41,7 @@ function fake() {
 it("loop brake: past a commenter's daily limit on a task, the wake its comment caused is cancelled", async () => {
   const f = fake();
   const store = new Store(":memory:");
-  const opts = { now: t0, grantsFile: noGrants, waitMs: 1 };
+  const opts = { now: t0, waitMs: 1 };
   for (let i = 0; i < WAKE_LIMIT; i++) expect(await wakeCheck(f.pc, store, "t1", f.post("runner"), "runner", log, opts)).toEqual({ woke: true });
   const over = f.post("runner");
   expect(await wakeCheck(f.pc, store, "t1", over, "runner", log, opts)).toEqual({ woke: false, cancelled: true });
@@ -64,10 +60,7 @@ it("loop brake: past a commenter's daily limit on a task, the wake its comment c
   // An Engineer's task: Paperclip never wakes it on a comment, so nothing is counted or cancelled.
   expect(await wakeCheck(f.pc, store, "t2", f.post("runner"), "runner", log, opts)).toEqual({ woke: false });
 
-  // The next UTC day starts over; the kill switch never cancels.
+  // The next UTC day starts over.
   expect(await wakeCheck(f.pc, store, "t1", f.post("runner"), "runner", log, { ...opts, now: Date.parse("2026-11-13T00:05:00Z") })).toEqual({ woke: true });
-  const off = join(mkdtempSync(join(tmpdir(), "brake-")), "grants.json");
-  writeFileSync(off, JSON.stringify({ loop_brake: "off" }));
-  for (let i = 0; i < WAKE_LIMIT + 2; i++) await wakeCheck(f.pc, store, "t1", f.post("arch"), "arch", log, { ...opts, grantsFile: off });
   expect(f.cancelled).toHaveLength(1);
 });

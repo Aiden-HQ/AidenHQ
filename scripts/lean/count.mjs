@@ -60,7 +60,7 @@ export function measure(repo) {
   };
   const coupling = tracked.filter((f) => f.startsWith("kernel/") && !f.includes("/node_modules/")).reduce((n, f) => n + hits(f), 0);
 
-  const coreSettings = Object.keys(yamlOf(repo, "modules/core/module.yaml").settings ?? {}).length;
+  const coreSettings = existsSync(join(repo, "modules/core/module.yaml")) ? Object.keys(yamlOf(repo, "modules/core/module.yaml").settings ?? {}).length : 0;
   const kernelSettings = existsSync(join(repo, "kernel/settings.json")) ? Object.keys(JSON.parse(read("kernel/settings.json"))).length : 0;
   const onOff = (d) => {
     const v = Array.isArray(d?.values) ? d.values.map(String) : [];

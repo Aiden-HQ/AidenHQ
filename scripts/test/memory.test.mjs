@@ -1,4 +1,4 @@
-// Agent memory (wave 1, item 6): compile puts an agent's curated agents/<key>/memory.md into its handbook, bounded; memory_note
+// Agent memory (wave 1, item 6; the memory module's prompt shows it): compile puts an agent's curated agents/<key>/memory.md into its handbook, bounded; memory_note
 // writes only to the caller's own inbox (tested in modules/tasks/connections/tasks-mcp); and setup's inboxes.
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -14,13 +14,13 @@ const mods = join(here, "fixtures/mods");
 
 function inst(settings = {}, memory) {
   const dir = mkdtempSync(join(tmpdir(), "inst-"));
-  writeFileSync(join(dir, "instance.yaml"), YAML.stringify({ product: "0".repeat(40), modules: ["a"], settings: { timezone: "Europe/London", owner_email: "me@example.com", ...settings } }));
+  writeFileSync(join(dir, "instance.yaml"), YAML.stringify({ product: "0".repeat(40), modules: ["core", "a"], settings: { timezone: "Europe/London", owner_name: "Sam", owner_email: "me@example.com", ...settings } }));
   mkdirSync(join(dir, "agents", "x"), { recursive: true });
   if (memory != null) writeFileSync(join(dir, "agents", "x", "memory.md"), memory);
   return dir;
 }
 
-test("compile: memory.md becomes the agent's memory section; over 4 KB it is cut at a line end with a warning; agent_memory off drops it", () => {
+test("compile: memory.md becomes the agent's memory section; over 4 KB it is cut at a line end with a warning", () => {
   const r = compile(mods, inst({}, "- Slack search lags 5 min (WOR-12, 2026-11-01)\n"));
   assert.match(r.paperclip.agents.x.memory, /Slack search lags 5 min/);
   assert.equal(compile(mods, inst()).paperclip.agents.x.memory, undefined);
@@ -29,7 +29,6 @@ test("compile: memory.md becomes the agent's memory section; over 4 KB it is cut
   assert.ok(Buffer.byteLength(c.paperclip.agents.x.memory) <= MEMORY_MAX);
   assert.match(c.paperclip.agents.x.memory, /- fact 0 /);
   assert.match(c.warnings.join("\n"), /agents\/x\/memory\.md is over 4096 bytes/);
-  assert.equal(compile(mods, inst({ agent_memory: "off" }, "- a fact\n")).paperclip.agents.x.memory, undefined);
 });
 
 test("setup: an inbox is only a task it created and nobody holds; the ids go to the grants table", async () => {

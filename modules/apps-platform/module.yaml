@@ -1,5 +1,9 @@
 name: apps-platform
 description: "The apps platform: the DevOps Engineer, apps-mcp (the apps connection and the deploy, run, restart, rollback and app API write kinds, each a kernel record it executes), the gate, the app starter and the design system. Always installed (core requires it)."
+roles:
+  declares:
+    - { id: app-incidents, description: "Change any app with an open incident." }
+    - { id: app-requests, description: "In-app requests and people roles of every shared app (apps-mcp app_requests, app_role_set)." }
 # The apps connection: apps-mcp, still in the root compose until 4c moves it here.
 connections:
   apps:
@@ -116,3 +120,10 @@ optional_secrets:
   # The app-request routine's webhook, for the kernel (paperclip-setup.mjs fills it; empty = no wake).
   - app_request_webhook_url
   - app_request_webhook_secret
+settings:
+  # Shared apps' sign-in (with `edge`): "access" = Cloudflare Access on every gate host; "password" =
+  # the gate signs people in with their AidenHQ account (the kernel's sign-in listener); a host with an Access aud keeps Access too;
+  # "header-jwt" = a front door's signed identity header over the tailnet (settings.edge.identity, edge.front).
+  app_login:
+    default: access
+    values: [access, password, header-jwt]

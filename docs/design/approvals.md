@@ -93,7 +93,7 @@ Typical assignments in `tiers.mjs` (read the file for the full rules):
 | Request | Tier |
 |---|---|
 | Push or draft PR of an ordinary branch in the agents org (not the default or deploy branch, not an empty repo, no `.github/` change other than an exact CI template copy) | 0 |
-| A `.github/` that is exactly the product's CI template (`modules/core/templates/ci/.github` at the deployed product commit: the same git tree, read in the runner's own clone, so no symlink, no extra workflow), in the agents org | 0 |
+| A `.github/` that is exactly the product's CI template (`modules/ci/template/.github` at the deployed product commit: the same git tree, read in the runner's own clone, so no symlink, no extra workflow), in the agents org | 0 |
 | Close a PR in the agents org | 0 |
 | Merge in the agents org: every named check green (or still running) on the exact head, head pushed by the runner, no other `.github/` change, app not sensitive | 0 (merged only once green) |
 | Same merge with a head the runner didn't push, another `.github/` change, or a sensitive app; any other `.github/` change; an empty repo's first push | 1 |
@@ -159,7 +159,7 @@ reason_code, reason, second_review}`.
 
 ## Autonomy
 
-The instance setting `autonomy` (`modules/core/module.yaml`) controls how far this goes. The runner reads it fresh each
+The instance setting `autonomy` (a kernel setting, `kernel/settings.json`) controls how far this goes. The runner reads it fresh each
 time, so it is also the pause switch.
 
 - `off` (default): the owner decides every write, but the AI review still runs first (every install and update is

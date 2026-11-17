@@ -9,6 +9,7 @@ import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import YAML from "yaml";
 import { compile, grantEntry, TRIAL_WRITE_ALLOWED } from "../modules.mjs";
+import { BUNDLE } from "./bundle.mjs";
 
 const product = join(dirname(fileURLToPath(import.meta.url)), "../..");
 const template = join(product, "modules/agent-builder/templates/pr-review-chaser");
@@ -17,7 +18,7 @@ const owner = { timezone: "Europe/London", owner_name: "Sam", owner_email: "o@x"
 /** An instance with agents/<key>/ folders: { key: { yaml (merged over the template; undefined drops a field), md } }. */
 function withAgents(folders, modules = []) {
   const dir = mkdtempSync(join(tmpdir(), "inst-"));
-  writeFileSync(join(dir, "instance.yaml"), YAML.stringify({ product: "0".repeat(40), modules, settings: owner }));
+  writeFileSync(join(dir, "instance.yaml"), YAML.stringify({ product: "0".repeat(40), modules: [...BUNDLE, ...modules], settings: owner }));
   mkdirSync(join(dir, "agents"));
   for (const [key, { yaml = {}, md } = {}] of Object.entries(folders)) {
     mkdirSync(join(dir, "agents", key));
@@ -197,7 +198,7 @@ test("the codex-model launcher swaps the routine's model in for the agent's, and
 
 test("the web for every codex agent: live search by default (an agent may opt down), web_view and app_view granted; never runner agents", () => {
   const dir = withAgents({ "review-chaser": { yaml: { web_search: "disabled" } } }, ["slack", "github", "open-loops", "meetings", "engineering", "primer"]);
-  writeFileSync(join(dir, "instance.yaml"), YAML.stringify({ product: "0".repeat(40), modules: ["slack", "github", "open-loops", "meetings", "engineering", "primer"], settings: { ...owner, owner_slack_user_id: "U1", owner_email: "e@x", product_repo: "acme/aidenhq" } }));
+  writeFileSync(join(dir, "instance.yaml"), YAML.stringify({ product: "0".repeat(40), modules: [...BUNDLE, "slack", "github", "open-loops", "meetings", "engineering", "primer"], settings: { ...owner, owner_slack_user_id: "U1", owner_email: "e@x", product_repo: "acme/aidenhq" } }));
   const r = compile(product, dir);
   const args = r.paperclip.codex_args.join(" ");
   assert.match(args, /web_search="live"/);
@@ -206,6 +207,7 @@ test("the web for every codex agent: live search by default (an agent may opt do
   assert.ok(codex.length >= 8);
   // Every codex agent can view apps; web_view goes to all but those with web search off (the email/Slack scouts).
   for (const [key, a] of codex) {
+    if (key === "fleet-ops") continue; // reads app status and logs only
     assert.ok(a.enabled_tools.apps?.includes("app_view"), `${key} lacks app_view`);
     if (a.web_search !== "disabled") assert.ok(a.enabled_tools.apps?.includes("web_view"), `${key} lacks web_view`);
   }

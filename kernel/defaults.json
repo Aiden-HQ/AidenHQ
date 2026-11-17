@@ -1,0 +1,64 @@
+{
+  "company_description": "Personal operations control plane",
+  "departments": [
+    {
+      "id": "leadership",
+      "name": "Leadership",
+      "description": "Coordinates work and prepares research, drafts and reports for you"
+    },
+    {
+      "id": "intake",
+      "name": "Intake",
+      "description": "Watches your sources and keeps knowledge"
+    },
+    {
+      "id": "outreach",
+      "name": "Outreach",
+      "description": "Works with people other than you"
+    },
+    {
+      "id": "engineering",
+      "name": "Engineering",
+      "description": "Builds software and design"
+    },
+    {
+      "id": "agents",
+      "name": "Agents",
+      "description": "Builds and improves agents"
+    },
+    {
+      "id": "platform",
+      "name": "Platform",
+      "description": "Keeps the system running"
+    },
+    {
+      "id": "security",
+      "name": "Security",
+      "description": "Finds and verifies security weaknesses in your applications and agents"
+    },
+    {
+      "id": "product",
+      "name": "Product",
+      "description": "Roadmaps, priorities and what ships"
+    },
+    {
+      "id": "general",
+      "name": "General",
+      "description": "Agents without a department"
+    }
+  ],
+  "generated_secrets": [
+    "computer_launcher_token",
+    "board_internal_token",
+    "gate_board_secret",
+    "edge_board_secret",
+    "computer_progress_token",
+    "reviewer_key",
+    "runner_writes_key",
+    "board_operator_key",
+    "gateway_job_secret",
+    "gateway_board_key",
+    "gateway_source_key",
+    "gateway_harness_key"
+  ]
+}

@@ -7,3 +7,9 @@ license: AGPL-3.0-only
 # executor@1 plan. Outside the agents org it is PR-only (no merge, no creation, no workflows), except product-repo merges the
 # reviewer or the owner approved.
 privileged: [ git-credential ]
+settings:
+  # The agents org (where an approved create_repo card creates repos): aidenhq-<instance_name> unless this names another.
+  github_agents_org:
+  # GitHub orgs/users (besides the agents org) whose repos the apps platform may build trusted apps from.
+  github_orgs:
+    default: []

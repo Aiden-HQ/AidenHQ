@@ -3,9 +3,9 @@
 //   POST /check/finish                     the kernel (grading_check_key): the task.finish check (kernel/src/checks.ts)
 //   POST /grades                           the tasks module, as the delegating agent (its caller assertion, aud tasks): file a rubric
 //   GET  /internal/grades[/<task>]         the runner (grading_runner_key): the rows to grade, one task's state
-//   POST /internal/grades/<task>/{verdict,resubmit,release}   the runner: a pass's outcome, a resubmission, grading off
+//   POST /internal/grades/<task>/{verdict,resubmit}   the runner: a pass's outcome, a resubmission
 //   POST /board/grades, GET /board/grades/stale, POST /board/grades/<task>/settle   the board (grading_board_key): its reads
-// It reads tasks and the kill switch from the kernel with its own token (kernel.cp-read) and releases its label there
+// It reads tasks and settings from the kernel with its own token (kernel.cp-read) and releases its label there
 // (POST /v1/checks/:task); it never writes to the control plane itself. Every five minutes it settles rows whose task closed.
 import http from "node:http";
 import { timingSafeEqual } from "node:crypto";
@@ -17,7 +17,7 @@ type Issue = { id: string; identifier?: string; status: string; assigneeAgentId?
 /** The kernel as this module: its control-plane reads, its directory's settings, and its label released on a task. */
 export type Kernel = {
   issue: (ref: string) => Promise<Issue>;
-  settings: () => Promise<{ grading?: string; agents_org?: string; product_repo?: string }>;
+  settings: () => Promise<{ agents_org?: string; product_repo?: string }>;
   release: (task: string) => Promise<void>;
 };
 class HttpError extends Error { status: number; constructor(status: number, message: string) { super(message); this.status = status; } }
@@ -30,7 +30,6 @@ export function createGrading({ db, kernel, keys, jwks = kernelJwks(), log = () 
   log?: (msg: string, f?: Record<string, unknown>) => void;
 }) {
   const grades = new Grades(db);
-  const on = async () => (await kernel.settings()).grading !== "off";
   const keyed = (req: http.IncomingMessage, key: string) => {
     const a = Buffer.from(String(req.headers.authorization ?? "").replace(/^Bearer\s+/i, "")), b = Buffer.from(key);
     if (!(b.length > 0 && a.length === b.length && timingSafeEqual(a, b))) throw new HttpError(403, "forbidden");
@@ -40,8 +39,8 @@ export function createGrading({ db, kernel, keys, jwks = kernelJwks(), log = () 
   async function finish(b: { task?: Issue; agent?: string | null; via?: string }) {
     const issue = b.task!;
     if (!issue?.id || typeof b.via !== "string") throw new HttpError(400, "send {task, agent, via}");
-    // Ungraded (no row) or grading off: pass before anything else, so the gate never blocks other closes.
-    if (!grades.get(issue.id) || !(await on())) return { verdict: "ok" };
+    // Ungraded (no row): pass before anything else, so the gate never blocks other closes.
+    if (!grades.get(issue.id)) return { verdict: "ok" };
     const runner = b.via === "finish_turn" || b.via === "finish_merges";
     if (!runner && !b.agent) return { verdict: "deny", status: 403, reason: "only an agent's own close or the runner's moves a graded task" };
     // A cancelled task is never graded or moved by a late close: its row ends, and the close is refused before the hold
@@ -65,7 +64,7 @@ export function createGrading({ db, kernel, keys, jwks = kernelJwks(), log = () 
       if (g && !(g.state === "satisfied" && issue.status === "done")) return { verdict: "deny", status: 403, reason: "this task is graded: the grader closes it once its rubric is met (only its assignee finishes it)" };
       return { verdict: "ok" };
     }
-    const r = completionGate(grades, issue.id, b.via as CompletionPath, { done: issue.status === "done", on: true });
+    const r = completionGate(grades, issue.id, b.via as CompletionPath, { done: issue.status === "done" });
     if (r.pass) return { verdict: "ok" };
     log("completion held for grading", { task: issue.identifier, via: b.via, state: r.state });
     return { verdict: "pending", state: r.state, reason: NOTE, until: new Date(Date.now() + GRADE_CHECK_MS).toISOString() };
@@ -86,11 +85,11 @@ export function createGrading({ db, kernel, keys, jwks = kernelJwks(), log = () 
   }
 
   async function runner(method: string, path: string, body: unknown) {
-    if (method === "GET" && path === "/internal/grades") return { on: await on(), grades: grades.due(), resubmitted: grades.resubmitted() };
+    if (method === "GET" && path === "/internal/grades") return { grades: grades.due(), resubmitted: grades.resubmitted() };
     const one = /^\/internal\/grades\/([0-9a-f-]{36})$/i.exec(path);
-    // One task's grade state (null: ungraded, or grading off): a sub-task whose grade will speak keeps its progress to itself.
-    if (method === "GET" && one) return { state: ((await on()) && grades.get(one[1]!)?.state) || null };
-    const m = /^\/internal\/grades\/([^/]+)\/(verdict|resubmit|release)$/.exec(path);
+    // One task's grade state (null: ungraded): a sub-task whose grade will speak keeps its progress to itself.
+    if (method === "GET" && one) return { state: grades.get(one[1]!)?.state || null };
+    const m = /^\/internal\/grades\/([^/]+)\/(verdict|resubmit)$/.exec(path);
     if (method !== "POST" || !m) throw new HttpError(404, "no such route");
     const issue = await kernel.issue(decodeURIComponent(m[1]!));
     if (m[2] === "resubmit") {
@@ -98,13 +97,6 @@ export function createGrading({ db, kernel, keys, jwks = kernelJwks(), log = () 
       if (!g) throw new HttpError(404, "no grade for this task");
       log("escalated grade resubmitted", { task: issue.identifier, state: g.state });
       return g;
-    }
-    if (m[2] === "release") {
-      if (await on()) throw new HttpError(409, "grading is on");
-      await kernel.release(issue.id);
-      grades.release(issue.id);
-      log("grade released (grading off)", { task: issue.identifier });
-      return { ok: true };
     }
     const v = parseVerdict(body);
     if (!grades.get(issue.id)) throw new HttpError(404, "no grade for this task");
@@ -125,7 +117,7 @@ export function createGrading({ db, kernel, keys, jwks = kernelJwks(), log = () 
       const ids = (body as { ids?: unknown })?.ids;
       if (!Array.isArray(ids) || ids.length > 500) throw new HttpError(400, "send {ids} (at most 500)");
       // Every id asked about: its row, or null for none (the board reads an id it wasn't answered as unknown).
-      return { on: await on(), grades: Object.fromEntries(ids.map((id) => [String(id), grades.get(String(id)) ?? null])) };
+      return { grades: Object.fromEntries(ids.map((id) => [String(id), grades.get(String(id)) ?? null])) };
     }
     if (method === "GET" && path === "/board/grades/stale") {
       await settleClosedGrades(grades, (id) => kernel.issue(id));

@@ -191,7 +191,7 @@ function Pane({ cat, data, conns, session, onSignIn, can, checking, check }: { c
   }
   if (cat === "notifications") return <NotificationsPage rows={rows(["channels", "telegram_fyi", "slack_post_channels", "owner_slack_user_id"])} conns={conns} />;
   if (cat === "general") {
-    const elsewhere = new Set(["autonomy", "batch_approvals", "dup_guard", "grading", "channels", "telegram_fyi", "slack_post_channels", "owner_slack_user_id"]);
+    const elsewhere = new Set(["autonomy", "channels", "telegram_fyi", "slack_post_channels", "owner_slack_user_id"]);
     const general = data.settings.filter((s) => !s.switch && !elsewhere.has(s.key) && s.type !== "url");
     return (
       <Page title="General" sub={data.owner.name ? `This AidenHQ belongs to ${data.owner.name}. The board's own Today and Tomorrow use ${data.instance.boardTimezone}.` : `Who this AidenHQ belongs to, and how it is named. The board's own Today and Tomorrow use ${data.instance.boardTimezone}.`}>
@@ -347,9 +347,6 @@ function ApprovalsPage({ data, rows }: { data: SettingsData; rows: (keys: string
       <p className="st-note">{data.approvals.pending ? <><a href="#/approvals">{data.approvals.pending} waiting on you</a> in Approvals.</> : "Nothing is waiting on you."}</p>
       <Group title="Settings">
         {autonomy && <SettingItem s={autonomy} />}
-        {rows(["batch_approvals", "dup_guard", "grading"]).map((s) => (
-          <SettingItem key={s.key} s={s} />
-        ))}
       </Group>
     </Page>
   );

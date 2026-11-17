@@ -1,4 +1,4 @@
-// The app CI template's code review (modules/core/templates/ci/.github): the gate (codegenie-gate.mjs, what blocks a merge),
+// The app CI template's code review (modules/ci/template/.github): the gate (codegenie-gate.mjs, what blocks a merge),
 // the Review step, the reviewer (code-review.mjs, codex with its shell off) and its only tools (review-tools.mjs).
 import assert from "node:assert/strict";
 import { test } from "node:test";
@@ -7,8 +7,8 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, wr
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import YAML from "yaml";
-import { verdict } from "../../modules/core/templates/ci/.github/codegenie-gate.mjs";
-import { decide, STATE } from "../../modules/core/templates/ci/.github/codegenie-prior.mjs";
+import { verdict } from "../../modules/ci/template/.github/codegenie-gate.mjs";
+import { decide, STATE } from "../../modules/ci/template/.github/codegenie-prior.mjs";
 
 const finding = (severity, title) => ({ severity, title, path: "src/a.ts", anchor: { line: 3 }, finalBody: `${title} body` });
 const review = (findings, extra = {}) => JSON.stringify({ findings, summaryOnlyFindings: [], coverage: { partial: false }, health: { status: "completed" }, ...extra });
@@ -82,7 +82,7 @@ test("questions the reviewer couldn't settle (health unresolved) don't block: th
 // The workflow's Review and Verdict steps, run as bash in a scratch repo (npm is a stub; the base's code-review.mjs a stub
 // that records being called).
 test("the Review step skips a tiny PR, never a delta, and picks depth from critical paths; Verdict runs the gate from the default branch tip; Record needs a review", () => {
-  const steps = YAML.parse(readFileSync(new URL("../../modules/core/templates/ci/.github/workflows/ci.yml", import.meta.url), "utf8")).jobs["code-review"].steps;
+  const steps = YAML.parse(readFileSync(new URL("../../modules/ci/template/.github/workflows/ci.yml", import.meta.url), "utf8")).jobs["code-review"].steps;
   const script = (name) => steps.find((s) => s.name === name).run;
   // One scratch repo: main holds the gate as it was at the PR's base, then a newer one; the PR branch is a 5-line change.
   const dir = mkdtempSync(join(tmpdir(), "ci-gate-"));
@@ -191,7 +191,7 @@ test("the Review step skips a tiny PR, never a delta, and picks depth from criti
 });
 
 test("lockfile changes: a swapped source, a spoofed name or an unreadable format is critical; a hoist is not; names are plain", async () => {
-  const { lockChanges, lockSummary } = await import("../../modules/core/templates/ci/.github/code-review.mjs");
+  const { lockChanges, lockSummary } = await import("../../modules/ci/template/.github/code-review.mjs");
   const a = { version: "1.0.0", resolved: "https://registry.example.com/a-1.0.0.tgz", integrity: "sha512-A" };
   const lock = (packages, v = 3) => JSON.stringify({ lockfileVersion: v, packages: { "": {}, ...packages } });
   const base = lock({ "node_modules/a": a });
@@ -209,7 +209,7 @@ test("lockfile changes: a swapped source, a spoofed name or an unreadable format
 });
 
 test("the Evidence step: only screenshots and reports in .aidenhq/out/, and no app code reading from it", () => {
-  const script = YAML.parse(readFileSync(new URL("../../modules/core/templates/ci/.github/workflows/ci.yml", import.meta.url), "utf8")).jobs.tests.steps.find((s) => s.name === "Evidence").run;
+  const script = YAML.parse(readFileSync(new URL("../../modules/ci/template/.github/workflows/ci.yml", import.meta.url), "utf8")).jobs.tests.steps.find((s) => s.name === "Evidence").run;
   const dir = mkdtempSync(join(tmpdir(), "ci-evidence-"));
   const g = (...a) => execFileSync("git", ["-c", "user.name=t", "-c", "user.email=t@t", ...a], { cwd: dir }).toString().trim();
   g("init", "-q", "-b", "main");
@@ -231,12 +231,12 @@ test("the Evidence step: only screenshots and reports in .aidenhq/out/, and no a
 
 // The Review step around the base's code-review.mjs (a stub that records its env and plays the next exit code).
 test("the Review step runs the base's reviewer: the higher effort on a critical path, one retry without a verdict, a refusal final, a base without it skipped", () => {
-  const script = YAML.parse(readFileSync(new URL("../../modules/core/templates/ci/.github/workflows/ci.yml", import.meta.url), "utf8")).jobs["code-review"].steps.find((s) => s.name === "Review").run;
+  const script = YAML.parse(readFileSync(new URL("../../modules/ci/template/.github/workflows/ci.yml", import.meta.url), "utf8")).jobs["code-review"].steps.find((s) => s.name === "Review").run;
   const dir = mkdtempSync(join(tmpdir(), "ci-review-"));
   const g = (...a) => execFileSync("git", ["-c", "user.name=t", "-c", "user.email=t@t", ...a], { cwd: dir }).toString().trim();
   g("init", "-q", "-b", "main");
   mkdirSync(join(dir, ".github"));
-  const real = new URL("../../modules/core/templates/ci/.github/code-review.mjs", import.meta.url).pathname;
+  const real = new URL("../../modules/ci/template/.github/code-review.mjs", import.meta.url).pathname;
   writeFileSync(join(dir, ".github", "code-review.mjs"), `import { appendFileSync, readFileSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 if (process.argv[2] === "--lockfiles") process.exit(spawnSync(process.execPath, [${JSON.stringify(real)}, ...process.argv.slice(2)], { stdio: "inherit" }).status);
@@ -329,7 +329,7 @@ process.exit(code);
 
 // code-review.mjs end to end with a fake codex on PATH: what it is given, and its answer in the gate's shape.
 test("the reviewer runs codex with its shell off, the repo tools only and no GitHub token; its answer is the gate's JSON", () => {
-  const reviewer = new URL("../../modules/core/templates/ci/.github/code-review.mjs", import.meta.url).pathname;
+  const reviewer = new URL("../../modules/ci/template/.github/code-review.mjs", import.meta.url).pathname;
   const dir = mkdtempSync(join(tmpdir(), "ci-codex-"));
   const g = (...a) => execFileSync("git", ["-c", "user.name=t", "-c", "user.email=t@t", ...a], { cwd: dir }).toString().trim();
   g("init", "-q", "-b", "main");
@@ -426,7 +426,7 @@ sed "s#ROOT#$(dirname "$(pwd)")/pr#g" "${join(bin, "answer")}" > "$out"; echo '{
 });
 
 test("the review tools read the PR's tree and history only: nothing outside the checkout, no .git, no options smuggled in", async () => {
-  const { tools } = await import("../../modules/core/templates/ci/.github/review-tools.mjs");
+  const { tools } = await import("../../modules/ci/template/.github/review-tools.mjs");
   const dir = mkdtempSync(join(tmpdir(), "ci-tools-"));
   const g = (...a) => execFileSync("git", ["-c", "user.name=t", "-c", "user.email=t@t", ...a], { cwd: dir }).toString().trim();
   g("init", "-q", "-b", "main");

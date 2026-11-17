@@ -65,8 +65,8 @@ export function danglingBindings(enabled: Record<string, ModuleDef>, instance: I
   const kinds = new Set(Object.entries(enabled).flatMap(([n, d]) => Object.keys(map(d.writes)).map((k) => (k.includes(".") ? k : `${n}.${k}`))));
   const providers = virtualProviders(enabled);
   const add = (binding: string, owner: string, missing: string) => out.push({ binding, owner, missing });
-  // A namespaced role (`<module>.<id>`) needs its declaring module; plain ones are the compiler's closed table, kernel.* the kernel's.
-  const role = (r: string) => !r.includes(".") || r.startsWith("kernel.") || roles.has(r);
+  // A role needs the module that declares it (roles.declares); kernel.* are the kernel's.
+  const role = (r: string) => r.startsWith("kernel.") || roles.has(r);
 
   const agents: [string, Dict][] = [...Object.values(enabled).flatMap((d) => Object.entries(map(d.agents))), ...Object.entries(instance.agents ?? {})].map(([k, a]) => [k, map(a)]);
   for (const [key, a] of agents) {

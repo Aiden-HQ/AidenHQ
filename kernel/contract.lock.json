@@ -106,10 +106,6 @@
       "state": "experimental",
       "fp": ""
     },
-    "manifest key company": {
-      "state": "experimental",
-      "fp": ""
-    },
     "manifest key conflicts": {
       "state": "experimental",
       "fp": ""
@@ -126,7 +122,7 @@
       "state": "experimental",
       "fp": ""
     },
-    "manifest key departments": {
+    "manifest key default_grants": {
       "state": "experimental",
       "fp": ""
     },

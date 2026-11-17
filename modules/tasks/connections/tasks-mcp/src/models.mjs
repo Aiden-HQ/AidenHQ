@@ -6,7 +6,7 @@
 //
 // Limits: 5 advisor calls per run, every one on ADVISOR_MODEL (GPT Sol, the owner's pick after a blind bake-off, 2026-11-13).
 // ADVISOR_MODEL is the one place it is set. Fan-out takes at most 25 items of 8,000 characters, 8 at a time.
-// Kill switch: settings.model_tools: off (compile drops both tools from every agent's grants).
+// Granted while the model-tools module is on (advisor_ask: the tasks module's default grant).
 
 export const ADVISOR_MODEL = "~openai/gpt-sol-latest";
 export const FLASH = "~deepseek/deepseek-flash-latest";

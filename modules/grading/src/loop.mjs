@@ -1,6 +1,5 @@
 // The grade loop (graded done), moved out of the runner's main.mjs (lean-core 3h) unchanged: the grading module's waiting rows
-// are graded one at a time per task, escalated tasks finished again are checked for a new version, and with grading off every
-// held task is let go. The host runner runs it, because what the grader reads is the runner's (job state, merge queues,
+// are graded one at a time per task and escalated tasks finished again are checked for a new version. The host runner runs it, because what the grader reads is the runner's (job state, merge queues,
 // GitHub through the App: gradeDeps) and the grader's model call goes through the gateway with the runner's grader token;
 // `api` is this module's service with the runner's key. Each verdict's control-plane move (done, todo, a note) is the
 // runner's, as before; the service releases its own label.
@@ -11,8 +10,7 @@ export function createGradeLoop({ api, pc, log, state, gather, grade, escalation
   const gradeLooked = new Map(); // issueId → when its evidence was last looked at while waiting
   /** The board's waiting rows: grade each (one at a time per task), and check escalated tasks finished again for a new version. */
   async function runGrades() {
-    const { on, grades = [], resubmitted = [] } = await api.get("/internal/grades");
-    if (!on) return releaseGrades(grades);
+    const { grades = [], resubmitted = [] } = await api.get("/internal/grades");
     for (const g of resubmitted) {
       // The mark stays until a version is found: look again once a minute.
       if (Date.now() - (gradeLooked.get(g.issueId) ?? 0) < 60_000) continue;
@@ -46,29 +44,6 @@ export function createGradeLoop({ api, pc, log, state, gather, grade, escalation
         log("grading a task failed", { issue: g.issueId, err: String(err.message ?? err).slice(0, 300) });
       } finally {
         grading.delete(g.issueId);
-      }
-    }
-  }
-
-  /**
-   * Grading switched off (the kill switch): every held task ends where it would have ungraded. A bridge agent's held task
-   * is in review only because it finished and the gate held it, so it closes as done; a runner Engineer's turn ends in
-   * review anyway, so it stays there for the owner; a task someone has moved since keeps its status. Then the board drops
-   * the row and the `grading` label. Status first: a failed write is retried on the next poll.
-   */
-  async function releaseGrades(grades) {
-    const engineers = grades.length ? (await pc.engineerAgents()).map((a) => a.id) : [];
-    for (const g of grades) {
-      try {
-        const issue = await pc.issue(g.issueId);
-        if (issue.status === "in_review" && !engineers.includes(issue.assigneeAgentId)) {
-          await pc.setStatus(issue.id, "done", `Grading is switched off: closed as its assignee finished it, ungraded.`);
-          await tellParent(issue, "done", `${issue.identifier} is done (grading is off, so it closed ungraded): ${issue.title}. Its result is on ${issue.identifier}.`).catch(() => {});
-        }
-        await api.post(`/internal/grades/${encodeURIComponent(g.issueId)}/release`, {});
-        log("grade released", { issue: issue.identifier, status: issue.status });
-      } catch (err) {
-        log("releasing a grade failed", { issue: g.issueId, err: String(err.message ?? err).slice(0, 300) });
       }
     }
   }

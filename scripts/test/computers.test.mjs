@@ -9,11 +9,12 @@ import YAML from "yaml";
 import { compile } from "../modules.mjs";
 import { computerAdapterConfig, computerSection, computersConfig, ensureComputers, runnerBox, validateImages, GATEWAY_URL } from "../computers.mjs";
 import { assertNoShell } from "../no-shell.mjs";
+import { BUNDLE } from "./bundle.mjs";
 
 const product = join(dirname(fileURLToPath(import.meta.url)), "../..");
 function inst(overrides) {
   const dir = mkdtempSync(join(tmpdir(), "inst-"));
-  writeFileSync(join(dir, "instance.yaml"), YAML.stringify({ product: "0".repeat(40), modules: [], settings: { timezone: "Europe/London", owner_name: "Sam", owner_email: "o@x" }, overrides }));
+  writeFileSync(join(dir, "instance.yaml"), YAML.stringify({ product: "0".repeat(40), modules: [...BUNDLE], settings: { timezone: "Europe/London", owner_name: "Sam", owner_email: "o@x", product_repo: "acme/aidenhq" }, overrides }));
   mkdirSync(join(dir, "agents"));
   return dir;
 }
@@ -41,7 +42,7 @@ test("not yet in a computer: an agent in trial (its limits run inside the box); 
 
 test("the design module: designer and reviewer run in computers with repo-checkout; only the reviewer may post design-review", () => {
   const dir = inst();
-  writeFileSync(join(dir, "instance.yaml"), YAML.stringify({ product: "0".repeat(40), modules: ["design"], settings: { timezone: "Europe/London", owner_name: "Sam", instance_name: "acme", owner_email: "o@x", product_repo: "acme/aidenhq" } }));
+  writeFileSync(join(dir, "instance.yaml"), YAML.stringify({ product: "0".repeat(40), modules: [...BUNDLE, "design"], settings: { timezone: "Europe/London", owner_name: "Sam", instance_name: "acme", owner_email: "o@x", product_repo: "acme/aidenhq" } }));
   const r = compile(product, dir);
   const d = r.paperclip.agents["ui-designer"], v = r.paperclip.agents["ui-reviewer"];
   assert.equal(d.image, "agent-base");
@@ -76,7 +77,7 @@ test("a box Engineer never holds private data, untrusted input and a way out at 
 
 test("a runner agent in a computer: its grants and image reach the grants table, box: true reaches the runner, and Paperclip gives it no environment", async () => {
   const dir = mkdtempSync(join(tmpdir(), "inst-"));
-  writeFileSync(join(dir, "instance.yaml"), YAML.stringify({ modules: ["boxeng"], settings: { timezone: "UTC", owner_email: "o@example.com" } }));
+  writeFileSync(join(dir, "instance.yaml"), YAML.stringify({ modules: ["core", "boxeng"], settings: { timezone: "UTC", owner_name: "Sam", owner_email: "o@example.com" } }));
   const r = compile(join(dirname(fileURLToPath(import.meta.url)), "fixtures/mods"), dir);
   const a = r.paperclip.agents.appeng;
   // What setup's writeGrants puts in the table (tools, image) and its runner metadata reads (runnerBox → metadata.box).

@@ -37,3 +37,8 @@ services:
 generated_secrets:
   - tasks_service_key
 data_version: 0 # its data dir's format: bumped by each forward-only migration (docs/configuration.md)
+# With model-tools, every crew agent can consult the advisor; with memory, note a fact for the Librarian. Not from a computer,
+# which can't reach the model gateway yet.
+default_grants:
+  - { tools: [ paperclip_tasks.advisor_ask ], when: { fields: { adapter: codex_local }, modules: [ model-tools ] }, unless: { fields: { image: true } } }
+  - { tools: [ paperclip_tasks.memory_note ], when: { fields: { adapter: codex_local }, modules: [ memory ] }, unless: { fields: { image: true } } }

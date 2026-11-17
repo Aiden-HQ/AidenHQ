@@ -1,5 +1,7 @@
 name: core
 description: Core
+roles:
+  declares: [ { id: fleet-admin, description: declared here, so another module may not grant it } ]
 settings:
   timezone: { required: true }
   company_name: { default: work }

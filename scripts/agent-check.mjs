@@ -13,13 +13,12 @@
 //   - each connection an agent is granted answers its /healthz (which also reports sign-in: 503 until signed in), from the host.
 //   A failing connection is an error (exit 1) where it is newly granted since --since (a new agent: all of its
 //   connections); a warning where it was granted before, so one vendor being down doesn't fail every apply.
-// Kill switch: instance setting `agent_check: off` (both steps print that they're off and pass).
 //
 //   node scripts/agent-check.mjs [--config config/paperclip.yaml]              the compile checks on a compiled config
 //   node scripts/agent-check.mjs live [--config ...] [--since <old paperclip.yaml>]
 import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import YAML from "yaml";
 import { knownTools, namedTools } from "./handbook-tools.mjs";
@@ -118,15 +117,6 @@ export function connectionHealth(cfg, repo) {
   return JSON.parse(out.trim().split("\n").at(-1));
 }
 
-/** Whether the check is on: the instance's `agent_check` setting (off = the kill switch). */
-export function checkOn(instanceDir) {
-  try {
-    return String(YAML.parse(readFileSync(join(instanceDir, "instance.yaml"), "utf8"))?.settings?.agent_check ?? "on") !== "off";
-  } catch {
-    return true;
-  }
-}
-
 /** Prints the result; returns the exit code. */
 export function report(label, { errors, warnings }) {
   for (const w of warnings) console.log(`  ${label} warning: ${w}`);
@@ -139,11 +129,6 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
   const args = process.argv.slice(2);
   const opt = (name) => (args.includes(name) ? args[args.indexOf(name) + 1] : undefined);
   const live = args[0] === "live";
-  const instanceDir = process.env.AIDENHQ_INSTANCE_DIR;
-  if (instanceDir && !checkOn(instanceDir)) {
-    console.log("agent-check: off (settings.agent_check)");
-    process.exit(0);
-  }
   const cfg = YAML.parse(readFileSync(resolve(repo, opt("--config") ?? "config/paperclip.yaml"), "utf8"));
   if (!live) process.exit(report("agent-check", staticCheck(cfg)));
   const since = opt("--since");

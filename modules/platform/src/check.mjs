@@ -162,8 +162,6 @@ export function coverageProblems(files, core = GATE_CORE, outside = OUTSIDE_GATE
  * panel-approved PR can never record its own approval.
  */
 export const OWNER_APPROVAL_FILE = ".github/supply-chain-source-exceptions.yaml";
-/** Module agents that hold roles (besides any agent whose grants list roles). */
-export const ROLE_AGENTS = new Set(["chief-of-staff", "architect", "fleet-engineer"]);
 /**
  * Whether a PR's commits (GitHub REST, oldest first: [{ sha, author, committer, verified }]) are all Dependabot's and end at
  * `head`: author dependabot[bot], signed by GitHub (verified) and committed by web-flow or dependabot[bot]. Any other
@@ -330,7 +328,7 @@ function productFileParts(files, texts = {}, s) {
   for (const f of files) {
     let m;
     if (GATE_CORE.some((g) => g.test(f))) parts.push(PANEL("gate-core", `it changes the gate's own core (${f})`));
-    else if ((m = /^modules\/[^/]+\/agents\/([a-z0-9][a-z0-9-]*)\/AGENTS\.md$/.exec(f)) && (ROLE_AGENTS.has(m[1]) || (s.roles?.[m[1]] ?? []).length)) parts.push(T(1, "role-handbook", `handbook of ${m[1]}, which holds a role`));
+    else if ((m = /^modules\/[^/]+\/agents\/([a-z0-9][a-z0-9-]*)\/AGENTS\.md$/.exec(f)) && (s.roles?.[m[1]] ?? []).length) parts.push(T(1, "role-handbook", `handbook of ${m[1]}, which holds a role`));
     else if (COMPOSE.test(f)) {
       const t = texts?.[f];
       parts.push(...(t ? composeParts(f, t.baseDoc, t.headDoc) : [REJECT("unknown-content", `couldn't read ${f} on both sides; try again`)]));

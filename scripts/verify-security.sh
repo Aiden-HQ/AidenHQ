@@ -802,7 +802,7 @@ rreview="modules/ai-reviewer/service/src/review.mjs"
   && grep -qF 'if (v.decision === "reject" && r.review_first === "owner" && !FINAL_CODES.includes(v.code ?? "")) return' kernel/src/records.ts \
   && grep -qF 'const migration = touchesMigrations(com.diff);' modules/apps-platform/apps-mcp/src/executor.ts && grep -qF 'raise: { tier: 1, panel: migration, rule:' modules/apps-platform/apps-mcp/src/executor.ts \
   && grep -qF 'return { tier, merit, panel: panel || raise?.panel === true' kernel/src/tier.ts && grep -qF 'if (r.panel && v.decision === "approve" && !v.by.includes("+")) return' kernel/src/records.ts \
-  && grep -qF '"HEAD:modules/core/templates/ci/.github"' "$rmain" && grep -qF 'return treeIs(path, sha, ".github", want);' "$rmain" && grep -qF 'return Boolean(want) && got === want;' modules/codehost-github/src/git.mjs \
+  && grep -qF '"HEAD:modules/ci/template/.github"' "$rmain" && grep -qF 'return treeIs(path, sha, ".github", want);' "$rmain" && grep -qF 'return Boolean(want) && got === want;' modules/codehost-github/src/git.mjs \
   && grep -qF 'if (workflow && !(inAgents && b.ciTemplate === true)) parts.push(T(1, "github-dir"' "$rplan" \
   && pass "runner and board: the owner decides only vetoes, panel splits, autonomy caps and spend caps, each after the AI reviewer; the gate's core goes to two reviewers of different families, checked by the runner and the kernel; a CI template copy is Tier 0 only by tree identity with the deployed product ($rtiers, $rreview)" \
   || fail "runner or board: who decides a write changed (tiers.mjs Tier 2 rules, the gate core list, the panel, or the kernel's panel check)"

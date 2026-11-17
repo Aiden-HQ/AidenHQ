@@ -1,5 +1,8 @@
 name: librarian
 description: "Knowledge Librarian: keeps the notes vault, the people directory and the agents' rules tidy, and reports weekly."
+roles:
+  declares:
+    - { id: librarian, description: "Read every handbook, decide proposed identity links, hand rule proposals to the Platform Engineer (tasks bridge, apps-mcp)." }
 requires:
   - meetings
   - warehouse
