@@ -7,12 +7,12 @@ import { existsSync, mkdirSync, readFileSync, rmSync } from "node:fs";
 import { basename, dirname, join, relative } from "node:path";
 import { promisify } from "node:util";
 import { FOR_OTHERS, RUNNER_MARKER, deliveredFrom, finishedStatus, hasMarker, isAgentSubtask, isRuleProposal, isUserPart, ownRequest, runsUnasked, findRepos, mentionedRepos, isClaudeModel, openrouterModels, crewNames, personaFor, parseCommand, pickedEngine, pickerFor, engineKinds, engineLabel, engineOf, modelPrefix, repoAllowed, resolveEngine, stripHidden, useEngines } from "./agents.mjs";
-import { REPO_ROOT, loadConfig } from "./config.mjs";
+import { REPO_ROOT, githubSlug, loadConfig } from "./config.mjs";
 import { applyWaitingForLock, architectFollowUps, bumpTitle, definitionsOf, ownerMade, productPin, strayFiles, trialEditsText, trialHandbookOnly, trialNoTapBy, untrialedNewAgents } from "./apply.ts";
 import { applyCardArgs, asApproval, branchCardArgs, cardOf, cardText, planOf } from "./cards.ts";
 import { applyCard, repoKey } from "../../../kernel/src/kinds.ts";
 import { authorityLines, diffAll, forkChanges, marketplaceChanges, moduleInputs } from "../../../kernel/src/loader/authority.ts";
-import { forksOf, hostFetch, officialSides, remoteCodeText, withRemote } from "../../../kernel/src/loader/sources.ts";
+import { OFFICIAL_URL, forksOf, hostFetch, officialSides, remoteCodeText, withRemote } from "../../../kernel/src/loader/sources.ts";
 import { effective } from "../../../kernel/src/loader/release.ts";
 import { cowRoot, engineState, followJob, kernelJobs, readEngines, removeLayers, gatewayApi, jobcapServers, jobcapsFor, launcher, modelToken, observes, releaseBox, viaGateway } from "./engines.mjs";
 import { hiding, jailProblem } from "../../../kernel/src/sandbox.ts";
@@ -27,7 +27,7 @@ import { splitAnswered } from "./answered.ts";
 import { ALL_STATUSES, Paperclip, blockedRefusal, origins, unresolvedBlockers } from "./paperclip.ts";
 import { isTransient, retryTransient, shouldRetryTurn } from "./retry.ts";
 import { branchGuidance, checkBranchName, chooseBranchName, exampleBranches } from "./branch.ts";
-import { cleanMessages, evidenceOf, existingPrUrl, leakIn, leaksInternal, sameOrg, stripAttribution, withEvidence, writePrDescription } from "./describe.ts";
+import { cleanMessages, evidenceOf, existingPrUrl, isRepoIn, leakIn, leaksInternal, stripAttribution, withEvidence, writePrDescription } from "./describe.ts";
 import { branchesFooter, slackSources, firstPrompt, followUpPrompt, latestReport, prSummary, prTitle, subtaskSummary, summaryGist, appliedNote, runOutcome, coversHead } from "./prompt.ts";
 import { staleHead, staleRef } from "./progress.ts";
 import { PRIMER_FILES, primerLink, publishedRef, readDocument } from "./primer.ts";
@@ -90,8 +90,8 @@ const gho = async (slug, perms, extra) => ghOptions(await appFor(slug), slug, pe
 /** One repository however written (kernel/src/kinds.ts repoKey: the kernel holds the runner's writes with the same key). */
 const sameRepo = (a, b) => Boolean(repoKey(a)) && repoKey(a) === repoKey(b);
 const ownRepo = (slug) => appOwnRepo(slug, cfg.agentsOrg, cfg.productRepo);
-/** Where our tooling's names may appear in commits and PR text: our own repos and the product's other repos (its modules and distro). Permissions stay on ownRepo. */
-const ourText = (slug) => ownRepo(slug) || sameOrg(slug, cfg.productRepo);
+/** Where our tooling's names may appear in commits and PR text: our own repos and the official modules repo (the kernel pins the `aidenhq` marketplace to OFFICIAL_URL; any other is the owner's). Never a whole org. Permissions stay on ownRepo. */
+const ourText = (slug) => ownRepo(slug) || isRepoIn(slug, [githubSlug(OFFICIAL_URL)]);
 const ghoMerge = async (slug, extra, perms = WRITE) => mergeOptions(await appFor(slug), slug, { agentsOrg: cfg.agentsOrg, productRepo: cfg.productRepo }, perms, extra);
 /** A re-run's token: only this (the App needs Actions: write; without it the re-run is refused and the check's failure stands). */
 const RERUN = { actions: "write" };

@@ -16,8 +16,8 @@ const INTERNAL = /aidenhq|paperclip|\bPEN-\d+\b|\/home\/|~\/|\bworktree\b|\bopen
 
 /** True when text mentions our tooling, task numbers or local paths. */
 export const leaksInternal = (text: unknown) => INTERNAL.test(String(text ?? ""));
-/** Another repository in the same GitHub org as `ref` (the product repo): its modules and distro are ours too. */
-export const sameOrg = (slug: string | undefined, ref: string | undefined) => Boolean(slug && ref) && slug!.split("/")[0]!.toLowerCase() === ref!.split("/")[0]!.toLowerCase();
+/** `slug` is one of `repos` (owner/name, any case): the repositories whose text may name our tooling. */
+export const isRepoIn = (slug: string | undefined, repos: (string | undefined)[]) => Boolean(slug) && repos.some((r) => r?.toLowerCase() === slug!.toLowerCase());
 
 /** The first internal name in text, for telling the agent what to reword. */
 export const leakIn = (text: unknown) => String(text ?? "").match(INTERNAL)?.[0];
