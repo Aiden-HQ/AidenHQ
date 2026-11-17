@@ -8,7 +8,8 @@ import { MAX_REJECTS, priorDecisions } from "../../../../kernel/src/tier.ts";
 import { app, botIdentity, cfg, execFileP, gho, log, pc, running, state } from "./context.ts";
 import { dispatch } from "./dispatch.ts";
 import { mergeGithub } from "./merge.ts";
-import { commonTierState, findRealGh, mayClose, prFiles, readGrants, rebaseInCode, stopped } from "./unsplit.ts";
+import { stopped } from "./breaker.ts";
+import { commonTierState, findRealGh, mayClose, prFiles, readGrants, rebaseInCode } from "./unsplit.ts";
 
 let githubLogin;
 

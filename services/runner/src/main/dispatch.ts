@@ -11,7 +11,8 @@ import { normalizeRepo } from "../../../../modules/codehost-github/src/repos.ts"
 import { cfg, execFileP, gho, log, pc, queue, running, state } from "./context.ts";
 import { agentCaps } from "./poll.ts";
 import { mergeQueue, stopMerges } from "./merge.ts";
-import { branchRows, breakerKey, checksFromKey, checksOf, findRealGh, handleParentPr, logTail, readGrants, reportError, runCommand, startJob, stopped, stopping } from "./unsplit.ts";
+import { breakerKey, stopped } from "./breaker.ts";
+import { branchRows, checksFromKey, checksOf, findRealGh, handleParentPr, logTail, readGrants, reportError, runCommand, startJob, stopping } from "./unsplit.ts";
 
 async function handleIssue(issue: any, engineerIds: any) {
   const known = state.task(issue.id);

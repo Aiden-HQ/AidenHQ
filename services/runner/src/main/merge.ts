@@ -14,7 +14,8 @@ import { normalizeRepo } from "../../../../modules/codehost-github/src/repos.ts"
 import { RERUN, STATUS, appFor, botIdentity, cfg, evalSandbox, execFileP, gho, ghoMerge, log, ownRepo, pc, running, state } from "./context.ts";
 import { reportActivity, reportUsage } from "./activity.ts";
 import { designReviewer, fileDesignReviewTask } from "./watch.ts";
-import { autonomyNow, fileApproval, findRealGh, graded, mayClose, mergeTierState, redHead, refusedForGood, reportOutcome, stopped, tellParent, tierFor, wakeForRedChecks, wakeForTurnedAway, withTrusted } from "./unsplit.ts";
+import { redHead, stopped, wakeForRedChecks, wakeForTurnedAway } from "./breaker.ts";
+import { autonomyNow, fileApproval, findRealGh, graded, mayClose, mergeTierState, refusedForGood, reportOutcome, tellParent, tierFor, withTrusted } from "./unsplit.ts";
 
 // ------------------------------------------------------------------ merges
 
