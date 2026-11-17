@@ -178,7 +178,7 @@ const age = (t: string | null | undefined, now: number) => (t ? now - Date.parse
 const mins = (ms: number) => `${Math.round(ms / MIN)} min`;
 
 /** The owner's alert list, as checks. */
-export function checks(pc: Paperclip, store: Pick<Store, "meta" | "setMeta" | "refusalsSince">, grading: Pick<Grading, "stale">, now = () => Date.now(), env: NodeJS.ProcessEnv = process.env, warn?: (o: object, m: string) => void): Record<string, Check> {
+export function checks(pc: Paperclip, store: Pick<Store, "meta" | "setMeta" | "refusalsSince">, grading: Pick<Grading, "stale">, now = () => Date.now(), warn?: (o: object, m: string) => void): Record<string, Check> {
   let appsOkAt = now(); // apps-mcp's last answer: a restart (an apply) is not an outage
   return {
     async run() {
@@ -206,7 +206,7 @@ export function checks(pc: Paperclip, store: Pick<Store, "meta" | "setMeta" | "r
     async missed() {
       return missedFires(await pc.request<RoutineRow[]>("GET", `/api/companies/${pc.companyId}/routines`), now());
     },
-    // 3 hard failures in a row: flag it and (unless the kill switch FLEET_OPS_AUTOPAUSE=off) pause the routine until the owner resumes it.
+    // 3 hard failures in a row: flag it and pause the routine until the owner resumes it.
     async routine() {
       const co = `/api/companies/${pc.companyId}`;
       const [routines, issues, runs] = await Promise.all([
@@ -233,14 +233,14 @@ export function checks(pc: Paperclip, store: Pick<Store, "meta" | "setMeta" | "r
       const failing = failingRoutines(routines, rr, since);
       for (const { routine, failures } of failing) {
         if (routine.status === "paused") {
-          // Paused by the owner (or while autopause was off): the resume must not re-pause on these old failures.
+          // Paused by the owner (or by hand): the resume must not re-pause on these old failures.
           if (!since[routine.id]) {
             since[routine.id] = new Date(t).toISOString();
             store.setMeta("routine_paused_at", JSON.stringify(since));
           }
           continue;
         }
-        if (env.FLEET_OPS_AUTOPAUSE === "off" || fleetWide) continue;
+        if (fleetWide) continue;
         await pc.request("PATCH", `/api/routines/${routine.id}`, { status: "paused" });
         since[routine.id] = new Date(t).toISOString();
         store.setMeta("routine_paused_at", JSON.stringify(since));
@@ -338,7 +338,7 @@ export const kickDetector = () => runNow();
 export function startDetector(pc: Paperclip, store: Store, grading: Grading, log: { info(o: object, m: string): void; warn(o: object, m: string): void }, env: NodeJS.ProcessEnv = process.env): void {
   const minutes = Number(env.FLEET_OPS_INTERVAL_MINUTES);
   if (!(minutes > 0)) return;
-  const all = checks(pc, store, grading, undefined, env, (o, m) => log.warn(o, m));
+  const all = checks(pc, store, grading, undefined, (o, m) => log.warn(o, m));
   let busy = false;
   const run = async () => {
     if (busy || !readFile(env.FLEET_OPS_WEBHOOK_URL_FILE)) return; // not wired yet: setup writes the webhook after compose starts

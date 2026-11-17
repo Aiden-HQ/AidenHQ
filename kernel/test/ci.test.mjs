@@ -21,7 +21,7 @@ test("gateway: CI code review trades a GitHub OIDC token for a scoped, capped, a
   const settingsFile = join(dir, "gateway.json");
   // A review call reserves 4096 output tokens at $25 per million: $0.1024 (and a little for its input).
   const models = { "~deepseek/deepseek-flash-latest": { in: 0, cached_in: 0, out: 25, peak: 1, max_output: 4096 } };
-  const settings = (ci) => writeFileSync(settingsFile, JSON.stringify({ models, ci: { enabled: true, orgs: ["acme-agents"], models: ["~deepseek/deepseek-flash-latest"], review: { model: "~deepseek/deepseek-flash-latest", effort: "high" }, repo_day_usd: 0.22, day_usd: 1, ...ci } }));
+  const settings = (ci) => writeFileSync(settingsFile, JSON.stringify({ models, ci: { orgs: ["acme-agents"], models: ["~deepseek/deepseek-flash-latest"], review: { model: "~deepseek/deepseek-flash-latest", effort: "high" }, repo_day_usd: 0.22, day_usd: 1, ...ci } }));
   settings({});
 
   const { publicKey, privateKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
@@ -128,8 +128,8 @@ test("gateway: CI code review trades a GitHub OIDC token for a scoped, capped, a
   assert.equal((await review((await exchange(oidc({ repository: "acme-agents/other" }))).json.token)).status, 200);
   assert.equal((await usage()).filter((r) => r.status === "cap_reached").length, 1);
 
-  // Off: no new tokens and every issued one refused at once. On again, a token still expires after its 2 hours.
-  settings({ enabled: false });
+  // Module removed (no ci block): no new tokens and every issued one refused at once. Back, a token still expires after its 2 hours.
+  writeFileSync(settingsFile, JSON.stringify({ models }));
   assert.equal((await exchange(oidc())).status, 403);
   assert.equal((await review(tok)).status, 403);
   settings({ repo_day_usd: 5, day_usd: 5 });
@@ -146,7 +146,7 @@ test("gateway: CI's Responses route (a CLI reviewer): ZDR, priced models only, r
   const settingsFile = join(dir, "gateway.json");
   // $25 per million output tokens, input free: a call reserves 4096 output tokens, $0.1024. acme/unpriced is allowed, not priced.
   const models = { "~deepseek/deepseek-flash-latest": { in: 0, cached_in: 0, out: 25, peak: 1, max_output: 4096 } };
-  const settings = (ci) => writeFileSync(settingsFile, JSON.stringify({ models, ci: { enabled: true, orgs: ["acme-agents"], models: ["~deepseek/deepseek-flash-latest", "acme/unpriced"], repo_day_usd: 5, day_usd: 5, ...ci } }));
+  const settings = (ci) => writeFileSync(settingsFile, JSON.stringify({ models, ci: { orgs: ["acme-agents"], models: ["~deepseek/deepseek-flash-latest", "acme/unpriced"], repo_day_usd: 5, day_usd: 5, ...ci } }));
   settings({});
   const { publicKey, privateKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
   const github = await serve((req, res) => res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ keys: [{ ...publicKey.export({ format: "jwk" }), kid: "k1", alg: "RS256", use: "sig" }] })));

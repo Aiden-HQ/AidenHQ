@@ -616,7 +616,7 @@ fi
 # Live, from a container on the CI runners' network (modules/ci): the model gateway's CI listener (10.231.4.1:8201) is the
 # only host listener it reaches, and it takes CI tokens only and serves no other route; the Internet works.
 if docker network inspect aidenhq-ci >/dev/null 2>&1 && docker image inspect aidenhq/ci-runner:local >/dev/null 2>&1; then
-  ci_on="$(node -e 'try { process.stdout.write(String(require("./config/gateway.json").ci?.enabled === true)) } catch { process.stdout.write("false") }')"
+  ci_on="$(node -e 'try { process.stdout.write(String(!!require("./config/gateway.json").ci)) } catch { process.stdout.write("false") }')"
   ci_targets=""
   for a in $(ip -4 -o addr | awk '{ split($4, x, "/"); print x[1] }' | grep -v '^127\.'); do
     for p in $(ss -ltnH | awk '{ n = split($4, x, ":"); print x[n] }' | sort -un); do

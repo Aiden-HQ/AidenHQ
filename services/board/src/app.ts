@@ -1101,7 +1101,6 @@ export function createApp(opts: AppOptions): Server {
     const pending = await records.list("owner");
     return settingsView({
       ...readSources(settingsFiles()),
-      autopause: process.env.FLEET_OPS_AUTOPAUSE || undefined,
       boardTimezone: opts.timezone,
       pendingRaises: pending.filter((a) => a.action === "raise_cap").length,
       pendingApprovals: pending.length,

@@ -339,10 +339,10 @@ once. The repo and PR come from that signed token, and the answer names the revi
 (`settings.ci_review_model`). The CI token works only on the CI listener, only for `responses` (and `chat/completions`
 for repos on the older template) with `settings.ci_review_model` or `settings.ci_review_models`, no fallbacks, plugins,
 server tools or stored responses, zero data retention forced, under CI's own caps (`ci_review_repo_day_usd`,
-`ci_review_day_usd`; always on; a refusal fails the review, no retry). Each call reserves its worst case before it goes
+`ci_review_day_usd`; a refusal fails the review, no retry). Each call reserves its worst case before it goes
 out and settles at what was billed (a Responses stream at its `response.completed`); a cut stream keeps its reservation.
 Every call lands in the ledger as kind `ci-code-review` with `<owner>/<repo>#<pr>` and the head the job sent (advisory):
-the Costs tab's "App CI code review" line. Revoke: `settings.ci_review: off` refuses every CI token at once.
+the Costs tab's "App CI code review" line. Revoke: removing the `ci` module refuses every CI token at once.
 The reviewer is codex with codex review's guidelines (`.github/code-review.mjs`, pinned `@openai/codex`), at the model's effort (critical paths
 too), one higher (xhigh) only with the `deep-review` label or text addressed to a reviewer. codex runs with its shell off: the
 runner container can't give it its sandbox (bubblewrap needs user namespaces, which Docker and the host's AppArmor refuse

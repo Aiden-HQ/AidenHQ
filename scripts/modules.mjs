@@ -384,7 +384,7 @@ function ciReview(settings) {
   };
   const want = String(settings.ci_review_model ?? "~deepseek/deepseek-flash-latest:high").trim(), bare = (m) => String(m).trim().replace(/^openrouter\//, "").replace(/:(minimal|low|medium|high|xhigh|max)$/, "");
   const review = { model: bare(want), effort: /:(minimal|low|medium|high|xhigh)$/.exec(want)?.[1] ?? "high" }, models = [...new Set([...[settings.ci_review_models ?? []].flat().map(bare), review.model])].filter(Boolean);
-  return { enabled: String(settings.ci_review ?? "on") !== "off", orgs: [agentsOrg(settings)].filter(Boolean), models, review, repo_day_usd: usd("ci_review_repo_day_usd"), day_usd: usd("ci_review_day_usd") };
+  return { orgs: [agentsOrg(settings)].filter(Boolean), models, review, repo_day_usd: usd("ci_review_repo_day_usd"), day_usd: usd("ci_review_day_usd") };
 }
 
 /**
