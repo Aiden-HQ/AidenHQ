@@ -23,7 +23,7 @@ URL); no whitespace or control characters; at most 500 characters; a public-look
 not an IP literal), and the declared host pattern when there is one; no fragment; no query parameter whose name looks
 like a credential (`token`, `key`, `secret`, `sig`, `password`, `auth`, `code`, `session`, `credential`). Other query
 parameters stay allowed (Atlassian's default carries `?tools=all`). The board's check is for the owner's feedback; the
-compiler's is the gate, since an agent writes the commit.
+compiler's is the last gate.
 
 ## The path
 
@@ -34,25 +34,27 @@ compiler's is the gate, since an agent writes the commit.
    the compiled config and the module catalog (the setting exists, the value is one of its `values`, a URL passes the
    check, the agent exists, the effort is a known level, the heartbeat is one of the compiler's hours and the agent is
    not runner-dispatched).
-2. The board writes the task text itself, from the typed change (never free text), and files it as the owner's own task
-   assigned to the Platform Engineer: the exact `instance.yaml` lines, "change nothing else". An owner-made task runs at
-   once (the runner's `ownRequest`).
-3. The Platform Engineer commits it on a `fleet/` branch of the instance repo. When its turn ends the runner shows the
-   real diff and files the apply card, tiered by `services/runner/src/tiers.mjs` unchanged: a `settings` change is
-   Tier 2 (the owner taps), an agent's `model` / `reasoning_effort` / `heartbeat` override is Tier 1 (the AI reviewer when
-   autonomy is full, else the owner).
+2. The board files it as the owner's own task (label `settings-change`, no assignee, so no agent wakes) and keeps the
+   typed change in its own store by task id. The task's text is only a description; the runner never reads the change from it.
+3. The runner (`services/runner/src/typed-change.mjs`) picks the task up: made by the owner's Paperclip user, by no agent,
+   held by no agent; it reads the typed change back from the board with its own key (`GET /internal/settings-changes/:id`),
+   checks it again against the compiled config and catalog, and writes exactly the files its kind allows (`PATHS`:
+   `instance.yaml` edited through the yaml Document API, so comments stay; handbook texts verbatim) as one commit built
+   from the instance repo's main with git plumbing, on a `fleet/` branch of the task. The commit's files are checked
+   against the kind's list again, and the card is filed as for any fleet change, tiered by `services/runner/src/tiers.mjs`
+   unchanged: a `settings` change is Tier 2 (the owner taps), an agent's `model` / `reasoning_effort` / `heartbeat`
+   override is Tier 1, a grants override is judged by the module authority diff (a new write tool is the owner's), a fork
+   like the agent's handbook additions. Writes are serialised in the runner.
 4. On approval the runner lands exactly that commit and runs `ops/apply-config.sh`: compile (the URL check again), then
    `docker compose up -d`, which recreates only the services whose environment changed (the one connection).
 5. The board shows the change's progress from the task and its card (filed, waiting for approval, applying, applied or
    failed), then the connection's live status; for a sign-in connection, Connect becomes the next step.
 
-## Why the Platform Engineer writes the commit
+## Why the runner writes the commit
 
-The runner could write the commit itself (deterministic, no model). That is a new code path that writes the instance
-repo outside a task's own branch, for one benefit: removing a model from a two-line YAML edit whose result the owner (or
-the reviewer, within the tiers that already allow it) sees as the exact diff before anything lands. The card is the gate;
-the board's typed change only makes the request precise. If the Platform Engineer ever writes something else, the card
-shows it and the compiler refuses a bad URL.
+The Platform Engineer used to write these commits from the task text. A model added nothing to a typed edit and could drift
+from it; the runner now writes it deterministically from the change the board kept, and the card shows the exact diff
+before anything lands. The board's check is the owner's feedback; the runner's is the gate, and the compiler's the last.
 
 ## Open points (from the architecture cross-check)
 
@@ -62,8 +64,6 @@ shows it and the compiler refuses a bad URL.
   a change) is the fix, in the proxies.
 - **The compiler's check runs after the commit lands.** A bad value the owner approved anyway lands on main and fails
   the apply (revert to undo). A compile of the change before landing (in the runner's apply path) would stop it first.
-- **Deterministic commits.** If the Platform Engineer ever drifts from the typed change, the runner can write the commit
-  itself on the task's branch from the hidden typed change; the card and tiers stay as they are.
 - DNS rebinding to private addresses is not checked (the URL is the owner's own input, approved on a card).
 
 ## The move from .env

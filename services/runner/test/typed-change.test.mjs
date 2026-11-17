@@ -4,21 +4,26 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { TypedRefused, allowedPaths, assertOnly, blobSha, checkTyped, planFiles, typedTaskChanges } from "../src/typed-change.mjs";
 
-const marked = (changes, over = {}) => ({ description: `Settings\n\n<!-- aidenhq-settings-change ${Buffer.from(JSON.stringify(changes)).toString("base64")} -->`, createdByUserId: "u1", createdByAgentId: null, assigneeAgentId: null, ...over });
+const task = (over = {}) => ({ id: "i1", description: "anything: never read", createdByUserId: "owner", createdByAgentId: null, assigneeAgentId: null, ...over });
 const src = {
   compiled: { agents: { scout: { module: "ops" }, helper: { module: "instance" } }, mcp_servers: { crm: { tools: { read: ["crm_find"], write: ["crm_update"] } } }, routines: { digest: {} }, settings: {} },
   catalog: [{ name: "ops", enabled: true, chosen: true }],
 };
 const isInstance = (k) => src.compiled.agents[k]?.module === "instance";
 
-test("only the owner's own, unassigned settings task is the runner's to write", () => {
+test("only the owner's own, unassigned settings task, and only the change the board stored for it", () => {
   const ch = [{ kind: "unfork", agent: "scout" }];
-  assert.deepEqual(typedTaskChanges(marked(ch)), ch);
-  assert.throws(() => typedTaskChanges(marked(ch, { createdByAgentId: "ag1" })), TypedRefused, "an agent filed it");
-  assert.throws(() => typedTaskChanges(marked(ch, { createdByUserId: null })), TypedRefused);
-  assert.throws(() => typedTaskChanges(marked(ch), { runnerMade: true }), TypedRefused, "the runner made it");
-  assert.throws(() => typedTaskChanges(marked(ch, { assigneeAgentId: "pe" })), TypedRefused, "an agent holds it");
-  assert.equal(typedTaskChanges({ description: "no marker", createdByUserId: "u1" }), undefined);
+  const at = (over, opts = {}) => typedTaskChanges(task(over), { owner: "owner", stored: ch, ...opts });
+  assert.deepEqual(at({}), ch);
+  assert.throws(() => at({ createdByUserId: "another-admin-or-agent-user" }), TypedRefused, "another user");
+  assert.throws(() => at({ createdByAgentId: "ag1" }), TypedRefused, "an agent filed it");
+  assert.throws(() => at({ createdByUserId: null }), TypedRefused);
+  assert.throws(() => at({}, { owner: undefined }), TypedRefused, "owner unknown");
+  assert.throws(() => at({}, { runnerMade: true }), TypedRefused, "the runner made it");
+  assert.throws(() => at({ assigneeAgentId: "pe" }), TypedRefused, "an agent holds it");
+  // A marker in the description (which others may edit) is never the change: without the board's stored copy, nothing.
+  const forged = `<!-- aidenhq-settings-change ${Buffer.from(JSON.stringify(ch)).toString("base64")} -->`;
+  assert.throws(() => at({ description: forged }, { stored: null }), /board holds no typed change/);
 });
 
 test("each kind writes only its files; anything else, or a name that isn't a key, is refused", () => {

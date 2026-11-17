@@ -276,11 +276,18 @@ function typedSources() {
 
 async function writeTypedChange(t) {
   if (state.get(`typed:${t.id}`)) return;
-  const issue = await pc.issue(t.id); // the list cuts descriptions short
+  const issue = await pc.issue(t.id);
   if (issue.assigneeAgentId || CLOSED.includes(issue.status)) return;
   try {
-    const changes = typedTaskChanges(issue, { runnerMade: runnerMade(issue.id) });
-    if (!changes) return;
+    if (!boardApi) throw new Error("the board isn't reachable (no board token): typed changes wait for it");
+    // The change as the board stored it when the owner filed it, read with the runner's key: never the description.
+    const stored = await boardApi.get(`/internal/settings-changes/${encodeURIComponent(issue.id)}`).then((r) => r.changes, (err) => {
+      if (!/→ 404/.test(String(err.message))) throw err;
+      return null;
+    });
+    // The board stores it right after filing the task: a moment's gap is waited out, a task it never stored is refused.
+    if (!stored && Date.now() - Date.parse(issue.createdAt) < 10 * 60_000) return;
+    const changes = typedTaskChanges(issue, { owner: await pc.me(), stored, runnerMade: runnerMade(issue.id) });
     const src = typedSources();
     for (const ch of changes) checkTyped(ch, src);
     const sha = await commitTyped(issue, changes, src);

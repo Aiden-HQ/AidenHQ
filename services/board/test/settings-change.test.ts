@@ -1,5 +1,5 @@
-// A settings change from the board: refused unless it checks out, otherwise filed as the owner's task for the Platform
-// Engineer with the exact instance.yaml lines (docs/design/settings-changes.md).
+// A settings change from the board: refused unless it checks out, otherwise filed as the owner's own task with no assignee,
+// the typed change kept by the board for the runner to read with its key (docs/design/settings-changes.md).
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { request } from "node:http";
 import type { AddressInfo } from "node:net";
@@ -18,7 +18,9 @@ writeFileSync(
   join(dir, "paperclip.yaml"),
   stringify({
     settings: { glean_mcp_url: { value: "", set: false }, grading: { value: "on", set: false } },
-    agents: { "chief-of-staff": { name: "Aiden", adapter: "codex_local", model: "openrouter/a" }, "fleet-engineer": { name: "Platform Engineer", adapter: "opencode_local", dispatch: "runner" } },
+    agents: { "chief-of-staff": { name: "Aiden", module: "chief-of-staff", adapter: "codex_local", model: "openrouter/a" }, "fleet-engineer": { name: "Platform Engineer", adapter: "opencode_local", dispatch: "runner" }, helper: { name: "Helper", module: "instance" } },
+    mcp_servers: { crm: { tools: { read: ["crm_find"], write: ["crm_update"] } } },
+    routines: { digest: { title: "Digest" } },
   }),
 );
 writeFileSync(join(dir, "modules.json"), JSON.stringify([{ name: "glean", enabled: true, settings: { glean_mcp_url: { default: "", type: "url", host: "*.glean.com" } } }, { name: "core", enabled: true, settings: { grading: { default: "on", values: ["on", "off"] } } }]));
@@ -41,7 +43,8 @@ const pc = {
 
 describe("POST /api/settings/change", () => {
   let session: { accountId: string; role: "admin" | "user" } | null = { accountId: "owner", role: "admin" };
-  const app = createApp({ paperclip: pc, store: new Store(":memory:"), log: pino({ level: "silent" }), allowedHosts: ["localhost:3120"], staticDir: "/nonexistent", timezone: "UTC", session: () => session });
+  const store = new Store(":memory:");
+  const app = createApp({ paperclip: pc, store, log: pino({ level: "silent" }), allowedHosts: ["localhost:3120"], staticDir: "/nonexistent", timezone: "UTC", session: () => session });
   let port = 0;
   beforeAll(async () => {
     await new Promise<void>((r) => app.listen(0, "127.0.0.1", r));
@@ -69,16 +72,29 @@ describe("POST /api/settings/change", () => {
     expect(created).toHaveLength(0);
   });
 
-  it("files the owner's task for the Platform Engineer with the exact lines", async () => {
+  it("refuses new kinds that name nothing real, or the wrong kind of agent", async () => {
+    for (const ch of [
+      { kind: "grants", agent: "chief-of-staff", connection: "crm", tools: ["crm_drop"] },
+      { kind: "grants", agent: "helper", connection: "crm", tools: ["crm_find"] },
+      { kind: "handbook", agent: "helper", text: "x" },
+      { kind: "unfork", agent: "chief-of-staff" },
+      { kind: "routine", routine: "nope", field: "status", value: "paused" },
+      { kind: "pin", name: "glean", sha: "main" },
+      { kind: "marketplace", op: "add", name: "acme", sha: "a".repeat(40) },
+    ]) expect((await post({ changes: [ch] })).status, JSON.stringify(ch)).toBe(400);
+    expect(created).toHaveLength(0);
+  });
+
+  it("files the owner's own task with no assignee, and keeps the typed change for the runner", async () => {
     const url = "https://acme-be.glean.com/mcp/default";
-    const r = await post({ changes: [{ kind: "setting", key: "glean_mcp_url", value: url }, { kind: "agent", agent: "chief-of-staff", field: "reasoning_effort", value: "high" }] });
+    const changes = [{ kind: "setting", key: "glean_mcp_url", value: url }, { kind: "agent", agent: "chief-of-staff", field: "reasoning_effort", value: "high" }, { kind: "grants", agent: "chief-of-staff", connection: "crm", tools: ["crm_find"] }];
+    const r = await post({ changes });
     expect(r).toMatchObject({ status: 200, body: { identifier: "WOR-9" } });
     const t = created.at(-1)!;
-    expect(t).toMatchObject({ assigneeAgentId: "pe", labelIds: ["l1"], status: "todo" });
-    expect(t.description).toContain(`settings:\n  glean_mcp_url: "${url}"\noverrides:\n  agents:\n    chief-of-staff:\n      reasoning_effort: "high"`);
-    // No source marker: the runner's ownRequest takes an owner-made task's description as the request.
-    expect(t.description).not.toMatch(/<!--\s*source:/);
-    expect(changesOf(t.description)?.map((c) => c.kind)).toEqual(["setting", "agent"]);
+    expect(t).toMatchObject({ labelIds: ["l1"], status: "todo" });
+    expect(t.assigneeAgentId).toBeUndefined();
+    expect(changesOf(t.description)?.map((c) => c.kind)).toEqual(["setting", "agent", "grants"]);
+    expect(store.meta("settings-change:i1")).toBe(JSON.stringify(changes));
   });
 
   it("lists a filed change with where it stands", async () => {
@@ -92,7 +108,7 @@ describe("POST /api/settings/change", () => {
       req.end();
     });
     expect(r.status).toBe(200);
-    expect(r.body.changes[0]).toMatchObject({ identifier: "WOR-9", stage: "working", items: [{ kind: "setting", key: "glean_mcp_url" }, { kind: "agent", field: "reasoning_effort" }] });
+    expect(r.body.changes[0]).toMatchObject({ identifier: "WOR-9", stage: "working", items: [{ kind: "setting", key: "glean_mcp_url" }, { kind: "agent", field: "reasoning_effort" }, { kind: "grants", connection: "crm" }] });
   });
 
   it("needs a signed-in admin", async () => {

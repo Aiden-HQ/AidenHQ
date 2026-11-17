@@ -12,7 +12,7 @@ import { urlSettingProblem } from "../../src/url-setting";
 import "./settings.css";
 
 // Settings: categories in a side nav (a selector at phone width), each a page of grouped rows (#/settings/<category>).
-// Instance settings live in git (instance.yaml): a change made here is filed as the Platform Engineer's task, and lands
+// Instance settings live in git (instance.yaml): a change made here is filed as the owner's task the runner writes, and lands
 // only through its apply card (docs/design/settings-changes.md). What the board owns (accounts, sign-ins, browser
 // notifications) changes right here.
 

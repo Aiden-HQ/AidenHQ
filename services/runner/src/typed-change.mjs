@@ -1,38 +1,29 @@
 // The board's typed settings changes (docs/design/settings-changes.md): the owner files one from a board page as their own
-// task (label settings-change, no assignee, the change hidden in its description), and the runner writes exactly the files
+// task (label settings-change, no assignee; the board keeps the typed change itself, by task id), and the runner writes exactly the files
 // that change names on a fleet/ branch of the instance repo, then files the usual apply card. No model writes the commit.
 // This file is the gate's pure half: who may file one, what each kind may be, and the files each kind may touch.
 // The board checks the same shapes for the owner's feedback (services/board/src/settings-change.ts); this check is the gate.
 import { createHash } from "node:crypto";
 import YAML from "yaml";
-import { urlSettingProblem } from "../../shared/url-setting.ts";
+import { urlSettingProblem } from "./url-setting.ts";
 
 export class TypedRefused extends Error {}
 const refuse = (msg) => {
   throw new TypedRefused(msg);
 };
 
-/** The hidden marker the board writes into the task's description (services/board/src/settings-change.ts taskFor). */
-const MARK = /<!-- aidenhq-settings-change ([A-Za-z0-9+/=]+) -->/;
 export const SETTINGS_LABEL = "settings-change";
 
 /**
- * The typed changes of a settings task, or undefined when it isn't one. Only the owner's own task counts: made by a user
- * (never an agent, never the runner) and held by no agent. Anything else carrying the marker is refused.
+ * The typed changes of a settings task, as the board stored them when the owner filed it (GET /internal/settings-changes/:id,
+ * the runner's key): never the task's description, which others may edit. Only the owner's own task counts: made by the
+ * owner's Paperclip user (`owner`, the key the board files with), by no agent and not by the runner, and held by no agent.
  */
-export function typedTaskChanges(issue, { runnerMade = false } = {}) {
-  const m = MARK.exec(issue?.description ?? "");
-  if (!m) return undefined;
-  if (!issue.createdByUserId || issue.createdByAgentId || runnerMade) refuse("only the owner's own settings task is written by the runner; this one wasn't made by the owner");
+export function typedTaskChanges(issue, { owner, stored, runnerMade = false }) {
+  if (!owner || issue?.createdByUserId !== owner || issue.createdByAgentId || runnerMade) refuse("only the owner's own settings task is written by the runner; this one wasn't made by the owner");
   if (issue.assigneeAgentId) refuse("a settings task held by an agent is the agent's to do, not the runner's");
-  let changes;
-  try {
-    changes = JSON.parse(Buffer.from(m[1], "base64").toString("utf8"));
-  } catch {
-    refuse("its typed change doesn't parse");
-  }
-  if (!Array.isArray(changes) || !changes.length || changes.length > 10) refuse("a settings task carries 1 to 10 changes");
-  return changes;
+  if (!Array.isArray(stored) || !stored.length || stored.length > 10) refuse("the board holds no typed change for this task");
+  return stored;
 }
 
 const KEY = /^[a-z][a-z0-9_]{0,60}$/;

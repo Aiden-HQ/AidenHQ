@@ -49,6 +49,8 @@ interface CompiledRoutine {
 interface CompiledAgent {
   name?: string;
   module?: string;
+  /** Set when the instance forked this module agent's handbook (the module blob it was copied from). */
+  handbook_fork?: string;
   adapter?: string;
   /** A runner Engineer's engine, when not its adapter's (module.yaml `engine:`). */
   engine?: string;

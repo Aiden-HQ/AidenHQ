@@ -26,7 +26,7 @@ import { gatherFacts, scorecard, statusSummary } from "./fleet-stats.js";
 import { coachDue, coachEvidence } from "./coach.js";
 import { moduleStates } from "./modules.js";
 import { connectionsView, probe, readSources, settingsView, type Probe } from "./settings.js";
-import { ChangeRefused, ChangesSchema, SETTINGS_LABEL, changesOf, checkChange, stageOf, taskFor } from "./settings-change.js";
+import { ChangeRefused, ChangesSchema, SETTINGS_LABEL, changesOf, checkChange, stageOf, taskFor, type Change } from "./settings-change.js";
 import { createGrading, gradePassed, type Grading } from "./grading.js";
 import { UsageSchema, WINDOWS, costs, keyUsage, prices, type CostWindow } from "./costs.js";
 import { ledgerRange, ledgerSummary, ledgerTop } from "./cost-ledger.js";
@@ -1049,6 +1049,17 @@ export function createApp(opts: AppOptions): Server {
       },
     },
     {
+      // A typed settings change as the owner filed it (POST /api/settings/change): the runner's to write, so only its key reads it.
+      method: "GET",
+      path: /^\/internal\/settings-changes\/([^/]+)$/,
+      handle: async (m, _b, _u, req) => {
+        requireRunner(req, "reads the typed settings changes");
+        const kept = store.meta(`settings-change:${decodeURIComponent(m[1]!)}`);
+        if (!kept) throw new HttpError(404, "no typed change for that task");
+        return { changes: JSON.parse(kept) };
+      },
+    },
+    {
       // Model usage Paperclip doesn't see (the runner's Engineer jobs and AI reviewer): one record per job or call, deduped by key.
       method: "POST",
       path: /^\/internal\/usage$/,
@@ -1446,8 +1457,9 @@ export function createApp(opts: AppOptions): Server {
     { method: "GET", path: /^\/api\/settings$/, handle: async () => settingsData() },
     { method: "GET", path: /^\/api\/settings\/connections$/, handle: async (_m, _b, url) => connectionsData(url.searchParams.has("fresh")) },
     {
-      // A settings change (a connection's URL, a switch, an agent's model, effort or heartbeat): checked here, then filed as
-      // the owner's task for the Platform Engineer, whose commit becomes the tiered apply card (docs/design/settings-changes.md).
+      // A typed settings change (docs/design/settings-changes.md): checked here, filed as the owner's own task with no
+      // assignee, and kept here by task id. The runner reads it back with its key (/internal/settings-changes/:id), checks it
+      // again, writes exactly its files and files the apply card on the task.
       method: "POST",
       path: /^\/api\/settings\/change$/,
       handle: async (_m, body) => {
@@ -1460,12 +1472,11 @@ export function createApp(opts: AppOptions): Server {
           throw e;
         }
         const ctx = await context();
-        const engineer = ctx.agents.find((a) => holdsRole(a.id, "platform-engineer") && a.status !== "terminated");
-        if (!engineer) throw new HttpError(409, "there is no Platform Engineer to make the change");
         const label = await labelNamed(ctx, SETTINGS_LABEL, "#7048e8");
-        const { title, description } = taskFor(changes, compiled, catalog.filter((m) => m.chosen).map((m) => m.name));
-        const issue = await pc.createIssue({ title, description, status: "todo", priority: "medium", assigneeAgentId: engineer.id, labelIds: [label.id] });
-        log.info({ issue: issue.identifier, changes: changes.map((c) => (c.kind === "setting" ? c.key : c.kind === "module" ? `module ${c.name}` : c.kind === "caps" ? `${c.agent}.caps` : `${c.agent}.${c.field}`)) }, "settings change filed");
+        const { title, description } = taskFor(changes, compiled);
+        const issue = await pc.createIssue({ title, description, status: "todo", priority: "medium", labelIds: [label.id] });
+        store.setMeta(`settings-change:${issue.id}`, JSON.stringify(changes));
+        log.info({ issue: issue.identifier, changes: changes.map((c) => c.kind) }, "settings change filed");
         return { identifier: issue.identifier };
       },
     },
@@ -1484,7 +1495,8 @@ export function createApp(opts: AppOptions): Server {
         const changes = (
           await Promise.all(
             full.map(async (i) => {
-              const items = changesOf(i.description);
+              const kept = store.meta(`settings-change:${i.id}`);
+              const items = kept ? (JSON.parse(kept) as Change[]) : changesOf(i.description);
               return items ? [{ identifier: i.identifier, title: i.title, createdAt: i.createdAt, items, ...stageOf(i.status, await records.list("recent", { task: i.identifier, limit: 50 })) }] : [];
             }),
           )
