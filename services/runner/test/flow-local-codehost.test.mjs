@@ -29,7 +29,7 @@ describe("flow-local-codehost", () => {
       bare = join(dir, "data", "codehost", "local", "app.git");
       mkdirSync(join(dir, "data", "codehost", "local"), { recursive: true });
       git(dir, "clone", "-q", "--bare", src, bare);
-      writeFileSync(join(dir, "bin", "gitleaks"), "#!/bin/sh\nexit 0\n");
+      writeFileSync(join(dir, "bin", "gitleaks"), '#!/bin/sh\necho "INF 1 commits scanned."\nexit 0\n');
       chmodSync(join(dir, "bin", "gitleaks"), 0o755);
       t.runnerEnv.AIDENHQ_DATA_DIR = join(dir, "data");
     },
