@@ -26,7 +26,7 @@ pieces fit together.
 
 Every agent runs on its module handbook (`modules/<m>/agents/<key>/AGENTS.md`), the instance's additions
 (`agents/<key>.md`, or an instance agent's own `agents/<key>/AGENTS.md`) and the shared sections setup appends
-(`scripts/paperclip-setup.mjs`). Its first paragraph is its routing contract: `task_team` and `fleet_catalog` show it to
+(the kernel's Approvals in `scripts/paperclip-setup.mjs`, then the modules' `prompts:`, `modules/<m>/prompts/<id>.md`). Its first paragraph is its routing contract: `task_team` and `fleet_catalog` show it to
 agents choosing whom to hand work to. Agents never edit a handbook; changes flow through one owner, the Agent Architect:
 
 1. **Evidence.** The owner's "Not right" on a task (label `correction`, comment `Not right: …`), an agent's own repeated

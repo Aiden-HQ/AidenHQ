@@ -8,3 +8,24 @@ checks:
   - id: product-gate
     at: write.filed
     kinds: [ codehost-github.push, codehost-github.pr, codehost-github.merge ]
+agents:
+  fleet-engineer:
+    department: platform
+    # platform-engineer: settings changes, rule proposals and Dependabot tasks are filed to the agent holding it.
+    roles: [ platform-engineer ]
+    brief: true
+    graded: true
+    adapter: opencode_local
+    engine: codex-openrouter # Codex through the model gateway; `engine: openrouter` falls back to opencode
+    reasoning_effort: high
+    model: openrouter/~deepseek/deepseek-flash-latest
+    dispatch: runner
+    isolation: code-exec
+    max_parallel: 3 # independent product and instance changes run side by side, each in its own task workspace
+    jobcaps: [ primer-read? ] # Primer through the model gateway, when the primer module is on
+# Improving the rules: proposals go to the Platform Engineer (agents that can file one; the Librarian has its own tool). With
+# fleet-ops, product defects are reported upstream through it.
+prompts:
+  - { id: improving, file: prompts/improving.md, order: first, when: { tools: [ paperclip_tasks.task_create ] }, unless: { tools: [ paperclip_tasks.task_propose_rule ], fields: { trial: true } } }
+  - { id: improving-fleet-ops, file: prompts/improving-fleet-ops.md, order: first, when: { tools: [ paperclip_tasks.task_create ], modules: [ fleet-ops ] }, unless: { tools: [ paperclip_tasks.task_propose_rule ], fields: { trial: true, module: fleet-ops } } }
+  - { id: dependencies, file: prompts/dependencies.md }

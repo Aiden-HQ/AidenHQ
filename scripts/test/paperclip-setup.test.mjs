@@ -22,8 +22,8 @@ test("paperclip-setup.mjs passes a syntax check", () => {
   execFileSync(process.execPath, ["--check", script], { encoding: "utf8" });
 });
 
-/** The section setup emits, built from the declaration the script carries (and checked to parse first). */
-function section(name = "DELEGATING_SECTION") {
+/** A section setup itself still emits, built from the declaration the script carries (and checked to parse first). */
+function literal(name) {
   const declaration = readFileSync(script, "utf8").split("\n").find((l) => l.startsWith(`const ${name} = `));
   assert.ok(declaration, `${name} is missing`);
   const out = join(mkdtempSync(join(tmpdir(), "setup-section-")), "section.mjs");
@@ -31,6 +31,9 @@ function section(name = "DELEGATING_SECTION") {
   execFileSync(process.execPath, ["--check", out], { encoding: "utf8" });
   return execFileSync(process.execPath, [out], { encoding: "utf8" });
 }
+/** A module's prompt contribution (modules/<module>/prompts/<id>.md), as setup appends it: verbatim. */
+const prompt = (id) => readFileSync(join(dirname(script), "../modules", id.split(".")[0], "prompts", `${id.split(".")[1]}.md`), "utf8");
+const section = () => prompt("engineering.delegating");
 
 test("the generated handing-work section parses and keeps its heading", () => {
   const text = section();
@@ -46,7 +49,7 @@ test("a merge job's rubric is worded on the merge, never on a card id", () => {
 });
 
 test("an app change is checked live an hour and a day after it deploys, and data-app migrations only add", () => {
-  const followup = section("APP_FOLLOWUP_SECTION");
+  const followup = literal("APP_FOLLOWUP_SECTION");
   assert.match(followup, /\n\n## Checking an app change once it is live\n\n/);
   for (const t of ["`in 1 hour`", "`in 1 day`", "`app_logs`", "`warehouse_query`", "`rolled_back` incident"]) assert.ok(followup.includes(t), t);
   assert.ok(section().includes("migrates its schema by adding"));
@@ -54,14 +57,8 @@ test("an app change is checked live an hour and a day after it deploys, and data
   assert.match(engineer, /A data app's migrations add: new tables/);
 });
 
-/** The rule an agent proposes a correction with: the improving-rules text, as the script emits it. */
-function improving() {
-  const line = readFileSync(script, "utf8").split("\n").find((l) => l.startsWith('  return "\\n\\n## Improving the rules'));
-  assert.ok(line, "improvingSection's text is missing");
-  const out = join(mkdtempSync(join(tmpdir(), "setup-section-")), "section.mjs");
-  writeFileSync(out, `process.stdout.write(${line.trim().replace(/^return /, "").replace(/;$/, "")});\n`);
-  return execFileSync(process.execPath, [out], { encoding: "utf8" });
-}
+/** The rule an agent proposes a correction with: the platform module's improving-rules prompt. */
+const improving = () => prompt("platform.improving");
 
 test("a recurring correction becomes a fast static check, and the fleet handbook carries the same rule", () => {
   // The rule: fix the cause in code or the starter, add a fast lint rule that says how to fix the root cause,
@@ -73,19 +70,19 @@ test("a recurring correction becomes a fast static check, and the fleet handbook
   assert.doesNotMatch(text, /fix the work first|the same problem twice/);
   const rule = text.match(/A recurring correction is fixed in code first:[^.]*\./)?.[0];
   assert.ok(rule && rule.includes("real judgment calls"), rule);
-  const handbook = readFileSync(join(dirname(script), "../modules/core/agents/fleet-engineer/AGENTS.md"), "utf8");
+  const handbook = readFileSync(join(dirname(script), "../modules/platform/agents/fleet-engineer/AGENTS.md"), "utf8");
   assert.ok(handbook.includes(rule), "the fleet handbook carries the same rule in the same wording");
 });
 
 test("every agent gets how we work, builders also how we build, and asking the owner defers to it", () => {
-  const work = section("HOW_WE_WORK_SECTION");
+  const work = prompt("chief-of-staff.how-we-work");
   assert.match(work, /\n\n## How we work\n\n/);
   assert.ok(work.includes("Bring the owner the calls that are genuinely theirs: spend, a veto, a choice of taste"));
-  assert.match(section("HOW_WE_BUILD_SECTION"), /\n\n## How we build\n\n/);
+  assert.match(literal("HOW_WE_BUILD_SECTION"), /\n\n## How we build\n\n/);
   assert.match(readFileSync(script, "utf8"), /\n    metadata: \{[^\n]*build: HOW_WE_BUILD_SECTION/);
-  assert.match(section("HOW_WE_BUILD_SECTION"), /Large rewrites hold the files they replace/);
-  assert.ok(section("HOW_WE_BUILD_SECTION").includes("- Comments: code is self-explanatory to agents; a comment only where the why is not visible in the code."));
-  assert.ok(section("ASKING_SECTION").includes("When a call is the owner's (How we work), ask before acting on it"));
+  assert.match(literal("HOW_WE_BUILD_SECTION"), /Large rewrites hold the files they replace/);
+  assert.ok(literal("HOW_WE_BUILD_SECTION").includes("- Comments: code is self-explanatory to agents; a comment only where the why is not visible in the code."));
+  assert.ok(prompt("chief-of-staff.asking").includes("When a call is the owner's (How we work), ask before acting on it"));
 });
 
 test("a UI task's rubric names the brand, the shells and every clickable element acting", () => {

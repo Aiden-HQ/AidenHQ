@@ -55,3 +55,7 @@ agents:
     connections:
       apps: [ app_list, app_status, app_view, app_check, web_view ]
       github: read
+# How every crew agent hands code work to an Engineer; with the design module, how UI work goes through the designer and the UI Reviewer.
+prompts:
+  - { id: delegating, file: prompts/delegating.md }
+  - { id: delegating-design, file: prompts/delegating-design.md, when: { modules: [ design ] }, unless: { fields: { module: design } } }

@@ -1,0 +1,94 @@
+name: chief-of-staff
+description: "Aiden (the chief of staff the owner talks to, who delegates and follows up), the Researcher (long research, drafts, task replies and recurring reports) and the daily brief."
+agents:
+  chief-of-staff:
+    department: leadership
+    adapter: codex_local
+    # The owner's message must not queue behind a long wake on another task: on 2026-11-14 a Telegram question waited
+    # 5m48s for two runs on Aiden's notice chat (WOR-2275). Paperclip still runs one at a time per task.
+    max_parallel: 2
+    model: ~deepseek/deepseek-flash-latest
+    reasoning_effort: high
+    timeout_sec: 1200
+    # Grants: `connection: read | write | [tools]`; `name?` = only when that module is installed.
+    connections:
+      google_workspace?: [ calendar_list_events, calendar_get_event ]
+      # A quick lookup answered in the owner's chat, not delegated (reads only): Drive, Confluence, Jira and Slack in one search.
+      glean?: [ search, read_document ]
+      telegram: [ notify_owner ]
+      apps: [ app_list, app_status, app_view, web_view, warehouse_query, source_new, source_ack ]
+      paperclip_tasks: [ task_current, task_get, task_comments, task_search, task_list, task_approvals, task_create, task_update, task_comment, task_handoff, task_set_status, task_finish, task_team, task_delegate, fleet_status, fleet_costs, fleet_control, fleet_catalog, task_relay_owner_words, app_request_from_owner ]
+    # Woken every heartbeat_hours to check the work it waits on (modules/chief-of-staff/heartbeat.md); events wake it sooner (board wake.ts).
+    heartbeat: true
+    # fleet-admin: the board's fleet tools and relaying the owner's words (services/board/src/fleet.ts).
+    roles: [ fleet-admin ]
+  assistant:
+    department: leadership
+    # The crew member's board identity: name, a one-line voice for tone only, and the
+    # avatar bundled with the board (services/board/web/public/crew/<avatar>.svg).
+    persona: { name: Alfred, voice: "Measured and dry; leads with the answer, then the sources.", avatar: alfred }
+    adapter: codex_local
+    max_parallel: 2 # research asks are independent
+    model: ~deepseek/deepseek-flash-latest
+    reasoning_effort: high
+    # Recurring runs read many channels, docs and notes.
+    timeout_sec: 3600
+    connections:
+      # Public web pages, and the apps' live pages (reads only).
+      apps: [ app_list, web_view, app_view ]
+      # knowledge_*: reference docs mounted from the meetings knowledge_mounts setting.
+      ops_mcp?: [ obsidian_search, obsidian_read, obsidian_read_document_map, meeting_note_correct, voice_note_read, voice_note_add, knowledge_list, knowledge_index, knowledge_search, knowledge_read ]
+      glean?: read
+      # Jira through Atlassian's MCP server, signed in as the owner (jira module): reads only.
+      # Not granted: getJiraBoardConfig, getJiraProjectVersionRelatedWork (tool-budget slimming, 2026-11-13).
+      jira?: [ searchJiraIssuesUsingJql, getJiraIssue, listJiraIssueChangelogs, listJiraIssueComments, listJiraProjects, getJiraProjectVersions, listJiraBoards, listJiraBoardSprints, lookupJiraAccountId, searchConfluence, getConfluenceContent ]
+      # Reads, plus slack_send_message_draft: a draft for the user to send, only when asked.
+      slack?: write
+      # Writes only when the user asks, in GITHUB_COMMENT_ORGS.
+      # (Not commit_status_set: that is the CI gate's.)
+      github?: [ github_whoami, github_project_read, github_issue_read, github_search_issues, github_issue_comment, github_issue_create, github_issue_update, github_pr_review, github_rerun_failed ]
+      google_workspace?: [ docs_read, drive_search_files, drive_read_file, drive_list_recent_files, calendar_list_events, calendar_search_events, calendar_get_event, gmail_search, gmail_read_thread ]
+      primer?: [ primer_whoami, primer_resolve_url, primer_get_document, primer_get_version_content, primer_list_versions, primer_get_comments, primer_list_documents, primer_find_document, primer_create_document, primer_add_version ]
+      # task_create_engineer_task: Engineer sub-tasks that wait for the user's go-ahead.
+      # task_schedule, task_recurring: board moves on a date and recurring tasks. task_merge: merging tasks.
+      paperclip_tasks: [ task_current, task_get, task_comments, task_files, task_file_read, task_search, task_list, task_create, task_update, task_comment, task_handoff, task_set_status, task_create_engineer_task, task_schedule, task_recurring, task_pass_on, task_merge, task_finish, fanout_map ]
+    # board-writer: board moves and recurring tasks; engineer-dispatch: Engineer sub-tasks (paperclip-tasks-mcp).
+    roles: [ board-writer, engineer-dispatch ]
+routines:
+  daily-brief:
+    title: Prepare daily brief
+    agent: chief-of-staff
+    description: |
+      Today is {{date}}. Prepare today's daily brief following your instructions: gather open tasks and
+      today's calendar, create or update today's "Daily Brief" task, close yesterday's,
+      then close this task with a one-line summary.
+    concurrency: skip_if_active
+    schedules:
+      - { cron: "30 8 * * 1-5", timezone: "${settings.timezone}", label: "weekday morning" }
+  task-replies:
+    title: Process task replies
+    agent: assistant
+    # Started by aidenhq-runner when you comment on your tasks (no schedule).
+    description: |
+      Today is {{date}}. Process replies on: {{tasks}}
+      Follow "B. Processing the user's replies" in your instructions. Then close this task with one line saying what you did.
+    concurrency: always_enqueue
+  recurring-run:
+    title: Run recurring task
+    agent: assistant
+    # Started by aidenhq-runner when a recurring task is due; the schedule lives on the board.
+    description: |
+      Recurring task {{definition}} is due. Its instructions are that task's description.
+      Write this period's result into {{task}}, the user's task for it (already on top of their Today).
+      Period: {{since}} to {{until}} ({{timezone}}). Previous period's task: {{previous}}.
+      Follow "D. Running a recurring task" in your instructions. Then close this task with one line saying what you did.
+    concurrency: always_enqueue
+# How every crew agent works with the owner and the fleet (spec §2.1: workflow prose, not the kernel's).
+prompts:
+  - { id: how-we-work, file: prompts/how-we-work.md, order: first }
+  - { id: progress, file: prompts/progress.md, order: first }
+  - { id: replying, file: prompts/replying.md, order: first }
+  - { id: asking, file: prompts/asking.md, order: first, when: { tools: [ telegram.notify_owner ] } }
+  - { id: privacy, file: prompts/privacy.md }
+  # {{fleet_issues}}: the "Fleet issues" task where heartbeat runs note missed wake-ups (setup finds or creates it).
+  - { id: heartbeat, file: prompts/heartbeat.md, order: last, when: { fields: { heartbeat: true } } }
