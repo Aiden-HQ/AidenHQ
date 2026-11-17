@@ -191,7 +191,7 @@ export interface EvidenceParts {
   scorecard?: unknown;
   corrections?: { task: string; title: string; at: string; text: string }[];
   flags?: { key: string; state: "open" | "recovered"; at: string; reason: string }[];
-  fixes?: { task: string; title: string; status: string; updatedAt: string }[];
+  fixes?: { task: string; marker: string; title: string; status: string; updatedAt: string }[];
   identifiers?: { apps: { name: string; repo?: string; url?: string; status?: string; sources?: unknown }[]; connections: string[] };
   window: { from: string; to: string };
   runsScanned: number;
@@ -292,11 +292,23 @@ export async function coachEvidence(pc: Paperclip, store: Pick<Store, "meta" | "
   const apps = ((await part("apps", () => appsApi<{ name: string; owner?: string; repo?: string; url?: string; status?: string; sources?: unknown; access?: { roles?: string[] } }[]>("/internal/apps"))) ?? []).filter((x) => !x.access?.roles?.length || x.access.roles.some((r) => roles.includes(r)));
   const keys = [...Object.entries(s.open).map(([key, o]) => ({ key, at: o.at, reason: o.reason, state: "open" as const })), ...s.recovered.map((r) => ({ key: r.key, at: r.at, reason: r.reason, state: "recovered" as const }))];
   const mineKeys = new Set(flagsByAgent(keys, [{ id: a.id, key: keyOf(a) }], allRoutines, apps).map((f) => `${f.key}@${f.at}`));
-  // Earlier Coach fixes for this agent, open and closed (a declined one stays declined): by the marker in the description.
+  // Open Coach fixes for this agent, by the marker in the description; a declined one stays declined through the marker dedup the filing tool does.
+  // The marker is the task's last line, after the text a list row cuts off, so a cut row is read in full before it is checked.
   const earlierFixes = await part("earlier fixes", async () => {
-    const q = new URLSearchParams({ q: keyOf(a), status: "backlog,todo,in_progress,in_review,blocked,done,cancelled", limit: "100", excludeRoutineExecutions: "true" });
-    const needle = `<!-- source:coach:${keyOf(a)}:`;
-    return (await pc.request<Issue[]>("GET", `/api/companies/${pc.companyId}/issues?${q}`)).filter((i) => String(i.description ?? "").includes(needle)).map((i) => ({ task: i.identifier, title: i.title, status: i.status, updatedAt: i.updatedAt }));
+    const q = new URLSearchParams({ q: keyOf(a), status: "backlog,todo,in_progress,in_review,blocked", limit: "100", excludeRoutineExecutions: "true" });
+    const prefix = "<!-- source:";
+    const needle = `${prefix}coach:${keyOf(a)}:`;
+    const rows = await pc.request<Issue[]>("GET", `/api/companies/${pc.companyId}/issues?${q}`);
+    const out: NonNullable<EvidenceParts["fixes"]> = [];
+    for (const row of rows) {
+      const i = row.descriptionTruncated ? await pc.issue(row.id) : row;
+      const text = String(i.description ?? "");
+      const at = text.indexOf(needle);
+      const end = at < 0 ? -1 : text.indexOf(" -->", at);
+      if (end < 0) continue;
+      out.push({ task: i.identifier, marker: text.slice(at + prefix.length, end), title: i.title, status: i.status, updatedAt: i.updatedAt });
+    }
+    return out;
   });
   return packEvidence({
     agent: { key: keyOf(a), name: a.name, id: a.id, status: a.status, createdAt: a.createdAt ?? null, adapter: a.adapterType, model: (a.adapterConfig?.model as string | undefined) ?? null },
