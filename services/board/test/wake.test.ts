@@ -155,6 +155,27 @@ describe("event wake-ups", () => {
     expect(f.comments[0]!.body).toContain("WOR-2's grade: escalated.");
   });
 
+  it("a cancelled sub-task's settled grade row is no news, and its task reopened and graded again still wakes", async () => {
+    const f = fake();
+    const store = new Store(":memory:");
+    const recent: Recent = new Map();
+    f.put({ id: "1", assigneeAgentId: "a", status: "in_progress" }, t0 - 60 * MIN);
+    f.put({ id: "2", parentId: "1", assigneeAgentId: "e", status: "in_review" }, t0 - 60 * MIN);
+    // WOR-5551's shape: an escalated grade its delegator cancelled, which the grading module settled not_graded.
+    const grading = fakeGrading({ "2": { state: "escalated" } });
+    await wakeTick(deps(f, store, fakeRecords(), grading), recent, t0); // the baseline: escalated is already news, told once
+    expect(await wakeTick(deps(f, store, fakeRecords(), grading), recent, t0 + 20 * MIN)).toEqual([]);
+
+    grading.rows["2"] = { state: "not_graded", closedReason: "the task was cancelled before the grader settled it", updatedAt: iso(t0 + 21 * MIN) };
+    for (const at of [25, 40, 60]) expect(await wakeTick(deps(f, store, fakeRecords(), grading), recent, t0 + at * MIN)).toEqual([]);
+    expect(f.comments).toHaveLength(0);
+
+    // The cursor is kept, not rebaselined: a later verdict is a change against the row that settled, not a first sighting.
+    grading.rows["2"] = { state: "satisfied", updatedAt: iso(t0 + 61 * MIN) };
+    expect(await wakeTick(deps(f, store, fakeRecords(), grading), recent, t0 + 65 * MIN)).toEqual(["1"]);
+    expect(f.comments[0]!.body).toContain("WOR-2's grade: satisfied.");
+  });
+
   it("coalesces blockers that close in the same tick into one wake", async () => {
     const f = fake();
     const store = new Store(":memory:");

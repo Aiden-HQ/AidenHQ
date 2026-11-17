@@ -98,7 +98,9 @@ function signals(task: Issue, kids: Issue[], cards: Approval[], grades: GradesVi
     const st = childState(k.status);
     out.set(`child:${k.id}`, { value: st, at: latest(k.completedAt, k.cancelledAt, k.updatedAt), line: (was) => `${k.identifier} is ${was === "done" || was === "cancelled" ? `reopened (${k.status})` : `now ${k.status}`}.` });
     const g = grades[k.id];
-    if (g) {
+    // A settled row (not_graded: the task closed before the grader decided, a cancellation included) is no signal at all:
+    // it must never read as "open", or a cancelled task's escalated row settling would wake its delegator with "grade: open".
+    if (g && g.state !== "not_graded") {
       // A grade sending the work back is the assignee's to act on, not the delegator's: only satisfied and escalated are news.
       // Its own key (not `grade:`), so a cursor saved before this rule is dropped, never read as a change.
       const gs = ["satisfied", "escalated"].includes(g.state) ? g.state : "open";
@@ -204,8 +206,11 @@ export async function wakeTick(deps: WakeDeps, recent: Recent, now = Date.now())
     }
     // The warehouse didn't answer: its PRs keep their cursors (a merge meanwhile is still news next tick).
     if (!found) for (const [k, v] of Object.entries(was ?? {})) if (k.startsWith("pr:")) next[k] ??= v;
-    // The grading module didn't answer: its graded: signals keep their cursors.
+    // The grading module didn't answer: its graded: signals keep their cursors (a merge meanwhile is still news next tick).
     if (!grades) for (const [k, v] of Object.entries(was ?? {})) if (k.startsWith("graded:")) next[k] ??= v;
+    // A settled row (not_graded) leaves signals() for the same reason a closed sub-task does: its cursor stays, so the task
+    // reopened, graded again and escalated is still news.
+    if (grades) for (const [k, v] of Object.entries(was ?? {})) if (k.startsWith("graded:") && grades[k.slice("graded:".length)]?.state === "not_graded") next[k] ??= v;
     // A closed sub-task leaves the closed list after a while: its cursor stays, so reopening it later is still news.
     for (const [k, v] of Object.entries(was ?? {})) if (k.startsWith("child:") && (v === "done" || v === "cancelled")) next[k] ??= v;
     cursors[t.id] = next;
