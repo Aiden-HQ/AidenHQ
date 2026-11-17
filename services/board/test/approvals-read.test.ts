@@ -16,9 +16,11 @@ const record = {
   decided_by: null, outcome: null, created_at: "2026-11-16T10:00:00.000Z", updated_at: "2026-11-16T10:00:00.000Z",
   card: { sentence: "Deploy crm", changes: "crm", reads: "", cost: "", details: "" }, requester: { agent: "a1", key: "devops", name: "DevOps Engineer" },
 };
+// A Tier 0 run (a connection's write tool, made at once): only a tier0=1 list has it.
+const ran = { ...record, id: "k-00000000000000aa", kind: "conn.tool", args: { connection: "slack", tool: "post_message", arguments: {} }, tier: 0, state: "done", review: null, outcome: { ok: true, text: "posted" }, card: { ...record.card, sentence: "Post in #general" } };
 const kernel = createServer((req, res) => {
   seen.push(`${req.headers.authorization} ${req.url}`);
-  res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ records: [record] }));
+  res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ records: req.url!.includes("tier0=1") ? [ran, record] : [record] }));
 });
 let app: ReturnType<typeof createApp>;
 beforeAll(async () => {
@@ -28,7 +30,7 @@ beforeAll(async () => {
 });
 afterAll(() => (app.close(), kernel.close()));
 
-it("shows the kernel's records read from /v1/writes", async () => {
+it("shows the kernel's records read from /v1/writes, and Tier 0 runs after the fact", async () => {
   const json = await new Promise<any>((resolve, reject) => {
     request({ host: "127.0.0.1", port: (app.address() as AddressInfo).port, path: "/api/approvals", headers: { host: "localhost:3121" } }, (res) => {
       let t = "";
@@ -37,6 +39,9 @@ it("shows the kernel's records read from /v1/writes", async () => {
     }).on("error", reject).end();
   });
   expect(json.error).toBeUndefined();
-  expect(seen).toEqual([`Bearer ${KEY} /v1/writes?state=recent&limit=100`]);
-  expect(json.approvals).toEqual([expect.objectContaining({ id: record.id, action: "deploy_app", state: "pending", tier: 2, sentence: "Deploy crm", digest: record.digest })]);
+  expect(seen.sort()).toEqual([`Bearer ${KEY} /v1/writes?state=recent&limit=100`, `Bearer ${KEY} /v1/writes?state=recent&limit=100&tier0=1`]);
+  expect(json.approvals).toEqual([
+    expect.objectContaining({ id: record.id, action: "deploy_app", state: "pending", tier: 2, sentence: "Deploy crm", digest: record.digest }),
+    expect.objectContaining({ id: ran.id, action: "conn.tool", state: "auto", tier: 0, outcome: "applied", sentence: "Post in #general" }),
+  ]);
 });

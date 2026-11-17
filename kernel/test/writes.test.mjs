@@ -170,6 +170,9 @@ test("a Tier 0 conn.tool call leaves a completed record whose outcome is the MCP
   assert.deepEqual(rec.args, { connection: "twin", tool: "note_write", arguments: { text: "x" } });
   assert.match(rec.outcome.text, /note_write done/);
   assert.equal(rec.outcome.ok, true);
+  // The board's history shows it after the fact (tier0=1); the card lists leave it out.
+  assert.deepEqual((await k.v1("GET", "/v1/writes?state=recent&tier0=1")).json.records.map((r) => [r.id, r.tier, r.state]), [[rec.id, 0, "done"]]);
+  assert.deepEqual((await k.v1("GET", "/v1/writes?state=recent")).json.records, []);
   // A read is no record.
   await tool("note_read");
   assert.equal(k.records.list(["done"]).length, 1);
