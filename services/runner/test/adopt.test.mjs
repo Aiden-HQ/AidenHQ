@@ -129,9 +129,9 @@ test("a runner and a kernel restart leave a running job alone; the next kernel a
   let pid;
   jobs = jobsHost(env, join(dir, "kernel.db"));
   let runner = start();
-  t.after(() => {
+  t.after(async () => {
     runner.kill("SIGKILL");
-    jobs.p.kill("SIGKILL");
+    await jobs.stop();
     try {
       if (pid) process.kill(-pid, "SIGKILL");
     } catch {}
@@ -152,9 +152,7 @@ test("a runner and a kernel restart leave a running job alone; the next kernel a
   assert.equal(replies().length, 0, "no reply for a turn still going");
 
   // The kernel restarts too (its SIGUSR2 or a stop: KillMode=process): the job runs on, and the next kernel adopts it.
-  const kernelExited = new Promise((r) => jobs.p.once("exit", r));
-  jobs.p.kill("SIGUSR2");
-  await kernelExited;
+  await jobs.stop("SIGUSR2");
   process.kill(pid, 0); // still running
   jobs = jobsHost(env, join(dir, "kernel.db"));
   await jobs.port;

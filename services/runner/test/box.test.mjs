@@ -139,9 +139,9 @@ describe("box jobs", () => {
     jobs = jobsHost(env, join(dir, "kernel.db"));
     start();
   });
-  after(() => {
+  after(async () => {
     runner?.kill("SIGKILL");
-    jobs?.p.kill("SIGKILL");
+    await jobs?.stop();
     paperclip?.server.close();
     boxLauncher?.server.close();
     if (dir) rmSync(dir, { recursive: true, force: true });

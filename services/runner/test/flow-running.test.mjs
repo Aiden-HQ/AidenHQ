@@ -95,9 +95,7 @@ describe("flow-running", () => {
       const job = state.lastJob("part");
       state.db.close();
       assert.equal(job.status, "running", "left to the next runner");
-      const kernelExited = new Promise((r) => t.jobs.p.once("exit", r));
-      t.jobs.p.kill("SIGKILL");
-      await kernelExited;
+      await t.jobs.stop();
       // Killed while nothing follows it (a reboot): its shell records the signal, and the next runner resumes it.
       process.kill(-JSON.parse(job.run_json).pid, "SIGTERM");
       for (const end = Date.now() + 15_000; !existsSync(`${job.log_path}.exit`) && Date.now() < end; ) await new Promise((r) => setTimeout(r, 50));

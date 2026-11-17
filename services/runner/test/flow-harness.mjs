@@ -31,13 +31,30 @@ export function jobsHost(env, db) {
   const p = spawn(process.execPath, ["--disable-warning=ExperimentalWarning", JOBS_HOST], { env: { ...env, JOBS_DB: db, JOBS_MODULE: "engineering" }, stdio: ["ignore", "pipe", "pipe"] });
   let log = "";
   p.stderr.on("data", (d) => (log += d));
+  const exited = new Promise((r) => p.once("exit", r));
   const port = new Promise((res, rej) => { p.stdout.once("data", (d) => res(Number(String(d).trim()))); p.once("exit", (c) => rej(new Error(`the jobs host exited (${c}): ${log}`))); });
-  port.catch(() => {}); // a host stopped by teardown before it printed its port is not an unhandled rejection
-  return { p, port, log: () => log };
+  // A host stopped before anything asked for its port (a flow that never starts a job) is no failure; a caller that awaits
+  // the port still gets the error.
+  port.catch(() => {});
+  /** Kills it and resolves once it has exited. */
+  const stop = (signal = "SIGKILL") => { if (p.exitCode === null && p.signalCode === null) p.kill(signal); return exited; };
+  return { p, port, stop, log: () => log };
 }
 
-/** A free loopback port: each flow's runner gets its own helper port (runner.yaml helper_port), which the kernel holds it to. */
-export const freePort = () => new Promise((r) => { const s = createServer().listen(0, "127.0.0.1", () => { const p = s.address().port; s.close(() => r(p)); }); });
+/**
+ * A loopback port for a runner's helper (runner.yaml helper_port, which the kernel holds it to), claimed for this test process.
+ * It is below every OS's ephemeral range (Linux 32768+, macOS 49152+), so no client socket takes it before the runner binds
+ * it, and claimed with an exclusive mkdir, so flows running side by side never pick the same one.
+ */
+export async function freePort() {
+  for (let port = 20000 + Math.floor(Math.random() * 12000); ; port = port + 1 < 32000 ? port + 1 : 20000) {
+    const claim = join(tmpdir(), `aidenhq-helper-port-${port}`);
+    try { mkdirSync(claim); } catch { continue; }
+    process.once("exit", () => rmSync(claim, { recursive: true, force: true }));
+    const free = await new Promise((r) => { const s = createServer().once("error", () => r(false)).listen(port, "127.0.0.1", () => s.close(() => r(true))); });
+    if (free) return port;
+  }
+}
 
 /** Forward a request to the job host at `port` (the runner's /v1/jobs calls, as the kernel's backplane takes them). */
 export async function forwardJobs(port, req, body, res) {
@@ -475,9 +492,11 @@ ${runnerYaml}`,
     startJobs();
     startRunner();
   });
-  after(() => {
+  after(async () => {
+    // Both are gone before the hook ends, so neither's exit lands after the test as async activity.
+    const runnerGone = runner && runner.exitCode === null && runner.signalCode === null ? new Promise((r) => runner.once("exit", r)) : undefined;
     runner?.kill("SIGKILL");
-    jobs?.p.kill("SIGKILL");
+    await Promise.all([runnerGone, jobs?.stop()]);
     paperclip?.server.close();
     // A job the runner left going (jobs are detached) may still be writing here: retried, so a failed flow ends instead of
     // throwing here and skipping the file's later after hooks (a server left listening keeps the process alive).
