@@ -16,7 +16,8 @@ import { checksFromKey, checksOf } from "./card-review.ts";
 import { readGrants } from "./apply-path.ts";
 import { runCommand } from "./commands.ts";
 import { startJob } from "./jobs.ts";
-import { branchRows, findRealGh, handleParentPr, logTail, reportError, stopping } from "./unsplit.ts";
+import { handleParentPr } from "./report.ts";
+import { branchRows, findRealGh, logTail, reportError, stopping } from "./unsplit.ts";
 
 async function handleIssue(issue: any, engineerIds: any) {
   const known = state.task(issue.id);
