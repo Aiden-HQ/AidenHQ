@@ -1,6 +1,7 @@
 // End to end (see flow-harness.mjs): the design review of a UI change request on this server (codehost-local §5). A change
 // has no commit status, so the UI Reviewer's verdict is a comment on its review task; the runner records it as the change's
-// `design-review` check only from the role holder and only for the change's current head.
+// `design-review` check only from the role holder and only for the change's current head. A failure wakes the change's
+// Engineer as a red check does; a success, its other checks green, has its merge requested.
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { chmodSync, mkdirSync, writeFileSync } from "node:fs";
@@ -38,7 +39,8 @@ describe("flow-local-design-review", () => {
   const { waitFor, partComments, toolRuns, step, turn, settled, publish, idle } = t;
   const g = (...a) => git(t.dir, "--git-dir", bare, ...a);
   const receipt = (sha) => { try { return JSON.parse(g("notes", "--ref=checks", "show", sha)); } catch { return []; } };
-  const reviewTask = () => t.paperclip.created.find((c) => c.title === "Design review: local/app#1");
+  const reviewTaskOf = (n) => t.paperclip.created.find((c) => c.title === `Design review: local/app#${n}`);
+  const reviewTask = () => reviewTaskOf(1);
   const comment = (taskId, agentId, body) => t.paperclip.comments.get(taskId).push({ id: `c-${Math.random()}`, authorType: "agent", authorAgentId: agentId, body, createdAt: new Date().toISOString() });
 
   it("a UI change waits for its design review; only the role holder's verdict for the current head lets it merge", async () => {
@@ -70,6 +72,40 @@ describe("flow-local-design-review", () => {
     comment(reviewTask().id, "designer-1", `design-review: success ${head}\n\nNo major breakage.`);
     await waitFor("the merge", () => partComments().some((c) => c.startsWith("**Merged** codehost:local/app/change/1")), 60_000);
     assert.ok(receipt(head).some((c) => c.name === "design-review" && c.ok && c.change === 1));
+    assert.notEqual(g("rev-parse", "main"), main);
+  });
+
+  it("a failure verdict wakes the change's Engineer once, with the reviewer's findings, and requests no merge", async () => {
+    step("ui-card");
+    await turn("Add a card style.");
+    await publish();
+    await waitFor("the review task", () => Boolean(reviewTaskOf(2)));
+    const head = g("rev-parse", "refs/changes/2/head");
+    await waitFor("green tests and secrets", () => ["tests", "secrets"].every((n) => receipt(head).some((c) => c.name === n && c.ok)), 120_000);
+    const runs = t.claudeRuns().length;
+    comment(reviewTaskOf(2).id, "designer-1", `design-review: failure ${head}\n\nThe card overflows its column.`);
+    const woken = () => t.claudeRuns().slice(runs).filter((r) => /codehost:local\/app\/change\/2: its checks failed/.test(r.prompt));
+    await waitFor("the wake", () => woken().length > 0, 60_000);
+    assert.match(woken()[0].prompt, /`design-review` failed[\s\S]*The card overflows its column\./);
+    await idle(25_000);
+    assert.equal(woken().length, 1, "woken once");
+    assert.ok(!partComments().some((c) => c.startsWith("Merging requested: codehost:local/app/change/2")), "no merge requested on a red head");
+  });
+
+  it("a success verdict, its checks green, leads to a merge request and the merge", async () => {
+    step("write feat/ui-list web/list.css .list { gap: 4px }");
+    await turn("Add a list style.");
+    await publish();
+    await waitFor("the review task", () => Boolean(reviewTaskOf(3)));
+    const head = g("rev-parse", "refs/changes/3/head");
+    await waitFor("green tests and secrets", () => ["tests", "secrets"].every((n) => receipt(head).some((c) => c.name === n && c.ok)), 120_000);
+    await idle(3000);
+    assert.ok(!partComments().some((c) => c.startsWith("Merging requested: codehost:local/app/change/3")), "the merge waits for the design review");
+    comment(reviewTaskOf(3).id, "designer-1", `design-review: success ${head}`);
+    await waitFor("the merge request", () => partComments().some((c) => c.startsWith(`Merging requested: codehost:local/app/change/3 is green on \`${head.slice(0, 12)}\``)), 60_000);
+    const main = g("rev-parse", "main");
+    t.paperclip.decide("merge", "approved");
+    await waitFor("the merge", () => partComments().some((c) => c.startsWith("**Merged** codehost:local/app/change/3")), 60_000);
     assert.notEqual(g("rev-parse", "main"), main);
   });
 

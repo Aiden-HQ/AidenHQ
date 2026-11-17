@@ -1,6 +1,6 @@
 // End to end (see flow-harness.mjs) on the on-server code host (codehost-local, docs/design/codehost-local.md): a repo of
 // the org `local` is a bare repo under the data dir; `pr` opens a change request, its checks run here at the exact head, a
-// merge card is approved and the change lands as one squash commit. A head that moved after the card is refused; a red
+// merge is requested once they are green, its card is approved and the change lands as one squash commit. A head that moved after the card is refused; a red
 // check wakes the task's Engineer with its log tail.
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
@@ -35,7 +35,7 @@ describe("flow-local-codehost", () => {
     },
     runnerYaml: "codehost:\n  gitleaks: gitleaks\n",
   });
-  const { waitFor, partComments, toolRuns, step, turn, settled, publish, claudeRuns } = t;
+  const { waitFor, partComments, step, turn, settled, publish, claudeRuns } = t;
   const receipt = (sha) => {
     try {
       return JSON.parse(git(t.dir, "--git-dir", bare, "notes", "--ref=checks", "show", sha));
@@ -46,16 +46,15 @@ describe("flow-local-codehost", () => {
   const head = (n) => git(t.dir, "--git-dir", bare, "rev-parse", `refs/changes/${n}/head`);
   const green = (n) => ["tests", "secrets"].every((name) => receipt(head(n)).some((c) => c.name === name && c.ok));
 
-  it("pr opens a change request, its checks run green, and an approved merge lands it as one squash commit", async () => {
+  it("pr opens a change request, its checks run green, its merge is requested on its own and lands as one squash commit", async () => {
     await settled();
     // GitHub is off here (codehost-local alone): the Engineer is told its new repos go in `local`, never the GitHub org.
     assert.match(claudeRuns()[0].prompt, /in the agents org \(on this instance: `local`, e\.g\. `aidenhq create-repo local\/<name>`/);
     await publish();
     assert.ok(partComments().some((c) => /opened draft change request codehost:local\/app\/change\/1/i.test(c)), t.context());
     await waitFor("green checks on change 1", () => green(1), 120_000);
-    step("none\naidenhq merge codehost:local/app/change/1");
-    await turn("Merge it.");
-    assert.match(toolRuns().at(-1).out, /Dana's approval/);
+    // Green with no design review: the runner requests the merge, no `aidenhq merge` needed (as an agents-org PR's on GitHub).
+    await waitFor("the merge request", () => partComments().some((c) => c.startsWith(`Merging requested: codehost:local/app/change/1 is green on \`${head(1).slice(0, 12)}\``)), 90_000);
     const card = [...t.paperclip.approvals.values()].find((x) => x.action === "merge" && x.state === "pending");
     assert.match(JSON.stringify(card), /\+chain/, "the merge card carries the change's diff");
     const before = git(t.dir, "--git-dir", bare, "rev-parse", "main");
@@ -72,8 +71,7 @@ describe("flow-local-codehost", () => {
     await turn("Add the second change.");
     await publish();
     await waitFor("green checks on change 2", () => green(2), 120_000);
-    step("none\naidenhq merge codehost:local/app/change/2");
-    await turn("Merge it.");
+    await waitFor("the merge request", () => partComments().some((c) => c.startsWith("Merging requested: codehost:local/app/change/2")), 90_000);
     step("write feat/two two.txt more");
     await turn("One more thing on it.");
     await publish();
