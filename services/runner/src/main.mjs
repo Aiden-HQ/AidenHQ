@@ -94,6 +94,8 @@ const gho = async (slug, perms, extra) => ghOptions(await appFor(slug), slug, pe
 // are fine there too.
 /** One repository however written (kernel/src/kinds.ts repoKey: the kernel holds the runner's writes with the same key). */
 const sameRepo = (a, b) => Boolean(repoKey(a)) && repoKey(a) === repoKey(b);
+/** The repositories that are one product: the product repo and the official modules repo (what the reviewer reads as in scope together). */
+const productRepos = () => [cfg.productRepo, cfg.modulesRepo].filter(Boolean);
 const ownRepo = (slug) => appOwnRepo(slug, cfg.agentsOrg, cfg.productRepo);
 /** Where our tooling's names may appear in commits and PR text: our own repos and the official modules repo (the kernel pins the `aidenhq` marketplace to OFFICIAL_URL; any other is the owner's). Never a whole org. Permissions stay on ownRepo. */
 const ourText = (slug) => ownRepo(slug) || isRepoIn(slug, [githubSlug(OFFICIAL_URL)]);
@@ -2283,7 +2285,7 @@ async function reviewOne(a) {
   // What the reviewer reads, only when it is asked: code's own verdicts (refused, the owner's now) read nothing.
   const asked = !codeVerdict(held, LUNA);
   const chain = asked ? await prRequest(await pc.issue(issue.id)).catch(() => "") : "";
-  const request = asked ? reviewRequest(a, input, chain, { requesterModel: state.task(issue.id)?.engine?.model ?? "", previous: checkFindings(issue.id, a.action), ...(await cardContext(issue, a.action === "merge" ? { prs: a.args.prs } : { branches: a.args.only }, input.bases)) }) : {};
+  const request = asked ? reviewRequest(a, input, chain, { product: productRepos(), requesterModel: state.task(issue.id)?.engine?.model ?? "", previous: checkFindings(issue.id, a.action), ...(await cardContext(issue, a.action === "merge" ? { prs: a.args.prs } : { branches: a.args.only }, input.bases)) }) : {};
   const { diff: _d, files: _f, previous: _p, relift: _r, bases: _b, full: _full, evidence: _e, ...tierInput } = input;
   // Kept until the answer is handled: a lost answer (a restart, a timeout) still gets its follow-up (reviewsLeftOver).
   inFlight((ids) => [...ids, a.id]);
@@ -3217,7 +3219,7 @@ async function agentReview(ctx, args) {
         const chain = await prRequest(await pc.issue(ctx.issue.id)).catch(() => "");
         const context = await cardContext(ctx.issue, { branches: branches.map((x) => ({ repo: x.repo, branch: x.branch })) }, input.bases);
         // The same request a card's review sends (reviewRequest), through the kernel's reviewer slot; a failed call is no verdict.
-        const v = await requestReview({ kernelUrl: cfg.kernelUrl, key: keyIn(cfg.reviewerKeyFile) }, reviewRequest(card, input, chain, { component: "AI reviewer check", requesterModel: state.task(ctx.issue.id)?.engine?.model ?? "", previous: checkFindings(ctx.issue.id, card.action), ...context })).then(({ panel_marked: _m, ...x }) => x, (err) => ({ decision: "escalate", code: "reviewer_failed", reason: `the reviewer failed (${String(err.message ?? err).slice(0, 160)})`, model: LUNA }));
+        const v = await requestReview({ kernelUrl: cfg.kernelUrl, key: keyIn(cfg.reviewerKeyFile) }, reviewRequest(card, input, chain, { component: "AI reviewer check", product: productRepos(), requesterModel: state.task(ctx.issue.id)?.engine?.model ?? "", previous: checkFindings(ctx.issue.id, card.action), ...context })).then(({ panel_marked: _m, ...x }) => x, (err) => ({ decision: "escalate", code: "reviewer_failed", reason: `the reviewer failed (${String(err.message ?? err).slice(0, 160)})`, model: LUNA }));
         log("review checked", { issue: ctx.issue.identifier, action: command, decision: v.decision, code: v.code, model: v.model, second: v.second, used: n + 1, target: card.target.slice(0, 300) });
         // No verdict (the call failed): the check doesn't count. Otherwise it is kept with its finding.
         const rest = checksOf(ctx.issue.id).filter((c) => c.at !== entry.at || c.target !== entry.target);

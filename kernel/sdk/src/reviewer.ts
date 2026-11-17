@@ -19,7 +19,9 @@
 import { timingSafeEqual } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
 
-export interface ReviewCard { action: string; rule: string; target?: string; sentence?: string; reason?: string }
+export interface ReviewCard { action: string; rule: string; target?: string; sentence?: string; reason?: string;
+  /** The repositories that are one product for scope (the product repo and the official modules repo): code's own. */
+  product?: string[] }
 export interface Files { text: string; leftOut: string[]; oversized: string[] }
 export interface SourceRecords { where: string; records: Record<string, unknown>[] }
 /** One Tier 1 request as the reviewer reads it. Everything but `card.action`, `card.rule` and `panel` is data an agent or a stranger wrote. */
