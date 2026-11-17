@@ -2,6 +2,7 @@
 // AidenHQ runner: turns your comments on Paperclip tasks labelled "engineer" into
 // coding jobs (an engine module on engine@1) in runner-owned git worktrees on this machine.
 import { cfg, log } from "./main/context.ts";
+import "./main/poll.ts";
 import { adoptRuns, loop, reportActivity, saveMetrics, shutdown } from "./main/unsplit.ts";
 
 // ------------------------------------------------------------------ main
