@@ -25,6 +25,7 @@ import { wakeCheck } from "./brake.js";
 import { gatherFacts, scorecard, statusSummary } from "./fleet-stats.js";
 import { coachDue, coachEvidence } from "./coach.js";
 import { moduleStates } from "./modules.js";
+import { agentGrants, browseModules, marketplacesOf } from "./marketplace.js";
 import { connectionsView, probe, readSources, settingsView, type Probe } from "./settings.js";
 import { ChangeRefused, ChangesSchema, SETTINGS_LABEL, changesOf, checkChange, stageOf, taskFor } from "./settings-change.js";
 import { createGrading, gradePassed, type Grading } from "./grading.js";
@@ -1442,6 +1443,17 @@ export function createApp(opts: AppOptions): Server {
     },
     // Read-only module catalog (compiled config/modules.json), for Settings > Modules.
     { method: "GET", path: /^\/api\/modules$/, handle: async () => ({ modules: moduleStates(readFileSync(process.env.BOARD_MODULES_FILE ?? "/config/modules.json", "utf8")), advisories: await records.advisories().catch(() => []) }) },
+    // Browse, marketplaces and an agent's grants (lane E, src/marketplace.ts), read from the compiled catalog and config.
+    { method: "GET", path: /^\/api\/modules\/browse$/, handle: async (_m, _b, url) => browseModules(readSources(settingsFiles()).catalog, url.searchParams.get("q") ?? "", url.searchParams.get("kind") ?? "") },
+    { method: "GET", path: /^\/api\/marketplaces$/, handle: async () => marketplacesOf(readSources(settingsFiles()).catalog) },
+    {
+      method: "GET",
+      path: /^\/api\/agents\/by-key\/([a-z0-9-]+)\/grants$/,
+      handle: async (m) => {
+        const { compiled, catalog } = readSources(settingsFiles());
+        return agentGrants(compiled, catalog, m[1]!) ?? Promise.reject(new HttpError(404, "no such agent"));
+      },
+    },
     // Settings (web/src/Settings.tsx): the compiled config, read-only, with what the board can see live. Edits go through git.
     { method: "GET", path: /^\/api\/settings$/, handle: async () => settingsData() },
     { method: "GET", path: /^\/api\/settings\/connections$/, handle: async (_m, _b, url) => connectionsData(url.searchParams.has("fresh")) },
