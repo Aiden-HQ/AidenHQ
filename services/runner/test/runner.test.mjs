@@ -570,6 +570,14 @@ describe("public PR text", async () => {
     for (const t of ["Draft opened by AidenHQ for Paperclip task PEN-406.", "see PEN-12", "[README](/home/dana/aidenhq/tasks/PEN-406/README.md)", "generated with opencode"]) assert.equal(leaksInternal(t), true, t);
     assert.equal(leaksInternal("chore: add deprecation notice\n\nAdds a deprecation notice ahead of archiving this repository."), false);
   });
+  it("lets commits to the product's own org name AidenHQ, and keeps third-party repos clean", async () => {
+    const { sameOrg } = await import("../src/describe.ts");
+    const msg = "fix(monitoring): a retired CI runner unit is not reported missing\n\nThe aidenhq-runner unit is listed.";
+    assert.equal(leaksInternal(msg), true);
+    assert.equal(sameOrg("Aiden-HQ/aidenhq-modules", "Aiden-HQ/AidenHQ"), true);
+    assert.equal(sameOrg("acme/api", "Aiden-HQ/AidenHQ"), false);
+    assert.equal(sameOrg(undefined, "Aiden-HQ/AidenHQ"), false);
+  });
   it("falls back to a Conventional Commit title, which a squash merge makes the commit", async () => {
     const { prTitle } = await import("../src/prompt.ts");
     assert.equal(prTitle("a1b2c3d fix(board): keep the drawer open", "Drawer closes"), "fix(board): keep the drawer open");
