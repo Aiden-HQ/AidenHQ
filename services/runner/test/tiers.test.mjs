@@ -477,6 +477,19 @@ test("a new marketplace is the owner's after the reviewer; a sha bump without ne
   assert.deepEqual([moved.tier, Boolean(moved.reviewFirst), moved.rule], [1, false, "marketplace-same-trees"]);
 });
 
+// Releases (spec §6.8, lean-core 5c): a `release:` move counts by what it resolves to (the runner's s.effective: each side
+// with the release's official marketplace), not by the key.
+test("a release move is tiered by the modules it resolves to", () => {
+  const rel = (sha) => `product: ${PIN_A}\nrelease: { name: "2026.11", source: { source: github, repo: acme/aidenhq-distro }, sha: ${sha} }\nmodules: []\n`;
+  const run = (st) => apply(["instance.yaml"], { "instance.yaml": `product: ${PIN_A}\nmodules: []\n` }, { "instance.yaml": rel("1".repeat(40)) }, { modules: {}, ...st });
+  const same = run({});
+  assert.deepEqual([same.tier, Boolean(same.panel), Boolean(same.reviewFirst), same.rule], [1, false, false, "release-pin"], "the same modules: AI review only");
+  const official = (repo) => ({ product: PIN_A, modules: [], marketplaces: [{ name: "aidenhq", source: { source: "github", repo }, sha: "2".repeat(40) }] });
+  const moved = run({ effective: { base: { product: PIN_A, modules: [] }, head: official("evil/modules") } });
+  assert.deepEqual([moved.tier, moved.reviewFirst], [2, true], "a release whose official marketplace is another repository: the owner's");
+  assert.equal(tierOf(run({ modulesError: "release 2026.11: product: is a, the release's kernel is b" })), "reject");
+});
+
 test("a reviewer reject on a module change is final: no owner card", () => {
   const t = bump({ ...crmMod, secrets: { provided: [{ name: "openai_api_key" }] } });
   assert.equal(t.reviewFirst, true);

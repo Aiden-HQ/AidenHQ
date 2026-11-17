@@ -84,6 +84,12 @@
     "test": "kernel/test/advisories.test.mjs"
   },
   {
+    "id": "A17",
+    "attack": "An installer run against a release file whose kernel or module sha does not match the fetched checkout (the installer's half is installer/test.sh in the distro repo)",
+    "unit": "5c",
+    "test": "kernel/test/release.test.mjs"
+  },
+  {
     "id": "A18",
     "attack": "An upstream issue or PR carrying the owner's name, a hostname, an IP or a secret",
     "unit": "4f",
