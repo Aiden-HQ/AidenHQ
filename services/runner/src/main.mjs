@@ -30,6 +30,7 @@ import { branchGuidance, checkBranchName, chooseBranchName, exampleBranches } fr
 import { cleanMessages, existingPrUrl, leakIn, leaksInternal, stripAttribution, writePrDescription } from "./describe.ts";
 import { branchesFooter, slackSources, firstPrompt, followUpPrompt, latestReport, prSummary, prTitle, subtaskSummary, summaryGist, appliedNote, runOutcome, coversHead } from "./prompt.ts";
 import { staleRef } from "./progress.ts";
+import { staleHead } from "./stored-pr.ts";
 import { PRIMER_FILES, primerLink, publishedRef, readDocument } from "./primer.ts";
 import { startRepoHelper } from "./repohelper.ts";
 import { jobAdvise } from "./advise.ts";
@@ -956,8 +957,19 @@ async function runAutoMerges() {
       const gone = [];
       const read = [];
       for (const p of todo) {
-        const pr = (await mergeGithub.pr(p.repo, p.number))?.repository?.pullRequest;
+        let pr;
+        try {
+          pr = (await mergeGithub.pr(p.repo, p.number))?.repository?.pullRequest;
+        } catch (err) {
+          // A blip keeps today's retry. Unreadable for good (gone, or no access) and this task stored the number: its stale
+          // line, and the request is dropped.
+          if (isTransient(err) || !(await staleStoredPr(issueId, { url: p.url, headRefName: undefined }))) throw err;
+          gone.push(p);
+          continue;
+        }
         if (pr?.state === "MERGED" || pr?.state === "CLOSED") gone.push(p);
+        // A stored number that names another change now never becomes a merge request or a card: it is said once, dropped.
+        else if (await staleStoredPr(issueId, { url: p.url, headRefName: pr?.headRefName })) gone.push(p);
         else if (!/^[0-9a-f]{40}$/.test(pr?.headRefOid ?? "")) throw new UserError(`couldn't read ${p.url} on GitHub`);
         else read.push({ repo: p.repo, number: p.number, url: p.url, head: pr.headRefOid, noReview: true });
       }
@@ -1021,6 +1033,27 @@ async function runAutoMerges() {
       await pc.comment(issueId, `**The merge wasn't requested:** ${String(err instanceof UserError ? err.message : err.stderr || err.message || err).trim().slice(0, 1000)}${refused ? " Nothing is waiting on your tap: fix it and publish again, or ask for the merge again." : ""}`).catch(() => {});
     }
   }
+}
+
+/**
+ * A PR number the task stored, checked against GitHub before anything acts on it (a merge request, a card, a rebase or a
+ * state report): the repository was recreated once and numbering restarted, so a number kept from before then names another
+ * change now. The task's recorded branch for that url must be the PR's real head branch; when it differs, or the head can't be
+ * read, this says so once on the task and the caller does nothing with the PR. A url this task didn't store is not its stored
+ * number and is left to the caller's own checks.
+ */
+async function staleStoredPr(issueId, { url, headRefName }) {
+  const row = state.branches(issueId).find((b) => String(b.pr_url ?? "").toLowerCase() === String(url).toLowerCase());
+  if (!row) return undefined;
+  const why = staleHead(row.branch, headRefName);
+  if (!why) return undefined;
+  const once = `stale-pr:${issueId}:${String(url).toLowerCase()}`;
+  if (!state.get(once)) {
+    state.set(once, new Date().toISOString());
+    log("stale stored PR number", { issue: issueId, pr: url, recorded: row.branch, head: headRefName ?? null });
+    await pc.comment(issueId, `The PR number stored on this task for ${url} is stale: ${why}. Nothing was done with it: no rebase request, merge or card.`).catch((err) => log("stale PR note failed", { issue: issueId, pr: url, err: String(err.message ?? err).slice(0, 200) }));
+  }
+  return why;
 }
 
 /** Add a request to the task's history (the first turn on a task also takes its own description). */
@@ -3313,9 +3346,14 @@ async function agentMerge(ctx, args) {
       bound.push({ repo, number, url }); // GitHub's own review gates these
       continue;
     }
-    const head = (await mergeGithub.pr(repo, number))?.repository?.pullRequest?.headRefOid;
-    if (!/^[0-9a-f]{40}$/.test(head ?? "")) throw new UserError(`Couldn't read ${url} on GitHub.`);
-    bound.push({ repo, number, url, head, noReview: true });
+    const pr = await mergeGithub.pr(repo, number).then((d) => d?.repository?.pullRequest, (err) => {
+      if (isTransient(err)) throw err; // a blip: the agent can ask again
+      return undefined;
+    });
+    // This task stored the number, and GitHub can't confirm it (unreadable, or another branch's): said once, nothing merged.
+    if (await staleStoredPr(ctx.issue.id, { url, headRefName: pr?.headRefName })) throw new UserError(`Not merged: the PR number stored on this task is stale, so ${url} is not this task's change.`);
+    if (!/^[0-9a-f]{40}$/.test(pr?.headRefOid ?? "")) throw new UserError(`Couldn't read ${url} on GitHub.`);
+    bound.push({ repo, number, url, head: pr.headRefOid, noReview: true });
   }
   // Tier 0 (agents org, named checks green or running on the exact head) starts at once, each PR merged on its own
   // once green (owner, 2026-11-12); the rest go on one card, as before.
@@ -4522,12 +4560,17 @@ async function leaveFinishedPrs(issue, workspace) {
   for (const b of state.branches(issue.id).filter((b) => b.pr_url && !b.merged)) {
     let pr;
     try {
-      const { stdout } = await execFileP(await findRealGh(), ["pr", "view", b.pr_url, "--json", "state,number,headRefOid"], await gho(b.repo, READ));
+      const { stdout } = await execFileP(await findRealGh(), ["pr", "view", b.pr_url, "--json", "state,number,headRefOid,headRefName"], await gho(b.repo, READ));
       pr = JSON.parse(stdout);
     } catch (err) {
       log("pr state check failed", { issue: issue.identifier, err: String(err.stderr || err.message).slice(0, 300) });
+      // A number GitHub can't be read for at all is stale too (nothing else will ever read it), and the task that stored it
+      // is told once. A blip is not: the next run reads it again.
+      if (!isTransient(err)) await staleStoredPr(issue.id, { url: b.pr_url, headRefName: undefined });
       continue;
     }
+    // Another change's PR under a stored number is left alone: it is neither read as this branch's merged nor reopened.
+    if (await staleStoredPr(issue.id, { url: b.pr_url, headRefName: pr.headRefName })) continue;
     if (pr.state === "OPEN") continue;
     if (pr.state === "CLOSED") {
       // Closed without merging: remembered as closed, so a receipt leaves the finished work out. `pr` still opens a new one:
