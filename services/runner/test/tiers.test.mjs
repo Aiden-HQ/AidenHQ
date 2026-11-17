@@ -1,6 +1,7 @@
 // The tier table, row by row, from verified state; plus the four real rejects of 2026-11-10/11.
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import YAML from "yaml";
 import { classify, newGrants } from "../src/tiers.mjs";
 import { dependabotCommits } from "../../../modules/platform/src/check.mjs";
@@ -621,4 +622,14 @@ test("a grants override no module input folded is the owner's, never unjudged", 
   const folded = withGrantOverrides({ crm, other }, YAML.parse(i(true)));
   assert.deepEqual([folded.crm.agents.scout.connections.crm, folded.other.agents.scout.connections.crm], [["crm_update"], undefined]);
   assert.throws(() => withGrantOverrides({ crm, other }, { ...YAML.parse(i(true)), modules: ["crm", "other"] }), /all define agent scout/);
+});
+
+// The runner's side of create_repo (moved from codehost-github's tests: it reads this repo's main.mjs).
+test("the runner creates a repo only in createRepoApproved; cloning a missing one is an error", () => {
+  const main = readFileSync(new URL("../src/main.mjs", import.meta.url), "utf8");
+  const fn = (name) => main.slice(main.indexOf(`async function ${name}(`)).split("\n}\n")[0];
+  assert.equal(main.split("\n").filter((l) => l.includes("createRepo(")).length, 1);
+  // GitHub's App, or this server's code host for local/* (codehost-local): still only on an approved create_repo card.
+  assert.ok(fn("createRepoApproved").includes("app.createRepo(slug)") && fn("createRepoApproved").includes("localHost.createRepo(slug)"));
+  assert.ok(fn("addRepo").includes("if (await missingRepo(repo.slug)) throw new UserError(missingRepoText(repo.slug));"));
 });
