@@ -79,7 +79,12 @@ export function changeLines(ch: SettingChange, was: unknown): { path: string; fr
   if (ch.kind === "module") return { path: "modules", from: ch.on ? "(without it)" : `(with ${ch.name})`, to: ch.on ? `+ ${ch.name}` : `- ${ch.name}` };
   if (ch.kind === "caps") return { path: `overrides.agents.${ch.agent}.caps`, from: yamlValue(was), to: yamlValue(ch.value) };
   if (ch.kind === "routine") return { path: `overrides.routines.${ch.routine}.${ch.field}`, from: yamlValue(was), to: yamlValue(ch.value) };
-  return { path: `overrides.agents.${ch.agent}.${ch.field}`, from: yamlValue(was), to: yamlValue(ch.value) };
+  if (ch.kind === "agent") return { path: `overrides.agents.${ch.agent}.${ch.field}`, from: yamlValue(was), to: yamlValue(ch.value) };
+  if (ch.kind === "pin") return { path: `modules.${ch.name}`, from: yamlValue(was), to: ch.sha ?? "(follows its marketplace)" };
+  if (ch.kind === "grants") return { path: `overrides.agents.${ch.agent}.connections.${ch.connection}`, from: yamlValue(was), to: ch.tools === null ? "(the module's)" : yamlValue(ch.tools) };
+  if (ch.kind === "marketplace") return { path: `marketplaces.${ch.name}`, from: yamlValue(was), to: ch.op };
+  if (ch.kind === "unfork") return { path: `overrides.agents.${ch.agent}.handbook_fork`, from: "(own copy)", to: "(the module's handbook)" };
+  return { path: ch.kind === "rules" ? `agents/${ch.agent}.md` : `agents/${ch.agent}/AGENTS.md`, from: yamlValue(was), to: ch.text.slice(0, 80) };
 }
 
 /** Who usually decides the card, as the runner's tiers put it (services/runner/src/tiers.mjs decides; this only says). */

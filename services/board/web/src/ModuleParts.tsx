@@ -1,6 +1,6 @@
 // Shared by the Modules list and a module's page: the on/off switch with its turn-off confirm, and which modules need setup.
 import { useEffect, useState, type ReactNode } from "react";
-import { api } from "./api";
+import { flows } from "./SetupButton";
 import { ChangePreview, ChangeProgress, IN_FLIGHT, StatusPill, Switch, useFiled } from "./settings-ui";
 import type { ModuleRow } from "./types";
 
@@ -8,7 +8,7 @@ import type { ModuleRow } from "./types";
 export function useSetupNeeded(): Set<string> {
   const [needed, setNeeded] = useState<Set<string>>(new Set());
   useEffect(() => {
-    api.setupFlows().then((r) => setNeeded(new Set((r.flows ?? []).map((f) => f.module))), () => {});
+    void flows().then((l) => setNeeded(new Set(l.filter((f) => !f.done).map((f) => f.module))));
   }, []);
   return needed;
 }

@@ -100,7 +100,7 @@ export function AgentDetails({ a, data }: { a: AgentSettings; data: SettingsData
   const agentField = (f: "model" | "reasoning_effort" | "heartbeat") => (c: SettingChange) => c.kind === "agent" && c.agent === a.key && c.field === f;
   const dflt = (f: "model" | "reasoning_effort" | "heartbeat", now: unknown, text: (v: unknown) => ReactNode) =>
     f in d && d[f] !== undefined && JSON.stringify(d[f] ?? null) !== JSON.stringify(now ?? null) && d[f] !== null
-      ? { text: text(d[f]), reset: { item: { kind: "agent", agent: a.key, field: f, value: d[f] as string | number | boolean } as SettingChange, was: now } }
+      ? { text: text(d[f]), reset: { item: { kind: "agent" as const, agent: a.key, field: f, value: d[f] as string | number | boolean }, was: now } }
       : null;
   const fModel = useFiled(agentField("model"));
   const fEffort = useFiled(agentField("reasoning_effort"));
@@ -149,7 +149,7 @@ export function AgentDetails({ a, data }: { a: AgentSettings; data: SettingsData
 function RoutineField({ r, models }: { r: Routine; models: string[] }) {
   const filed = useFiled((c) => c.kind === "routine" && c.routine === r.key);
   const [sched, setSched] = useState(r.schedules.map((s) => ({ ...s })));
-  const [status, setStatus] = useState(r.status === "paused" ? "paused" : "active");
+  const [status, setStatus] = useState<"active" | "paused">(r.status === "paused" ? "paused" : "active");
   const [model, setModel] = useState(r.model ?? "");
   const [review, setReview] = useState(false);
   const own = r.defaults ?? {};
@@ -191,7 +191,7 @@ function RoutineField({ r, models }: { r: Routine; models: string[] }) {
               ))}
               <label className="st-field">
                 <span className="st-field-label">Status</span>
-                <select className="st-select" value={status} onChange={(e) => (setStatus(e.target.value), setReview(false))}>
+                <select className="st-select" value={status} onChange={(e) => (setStatus(e.target.value as "active" | "paused"), setReview(false))}>
                   <option value="active">active</option>
                   <option value="paused">paused</option>
                 </select>
@@ -228,7 +228,7 @@ function RoutineField({ r, models }: { r: Routine; models: string[] }) {
 function ResetRoutine({ r, field, value }: { r: Routine; field: "schedules" | "status" | "model"; value: unknown }) {
   const [on, setOn] = useState(false);
   return on ? (
-    <ChangePreview items={[{ kind: "routine", routine: r.key, field, value }]} was={[(r as unknown as Record<string, unknown>)[field] ?? null]} onCancel={() => setOn(false)} onDone={() => setOn(false)} note={`Back to the module's ${field}: ${shown(value)}.`} />
+    <ChangePreview items={[{ kind: "routine", routine: r.key, field, value } as SettingChange]} was={[(r as unknown as Record<string, unknown>)[field] ?? null]} onCancel={() => setOn(false)} onDone={() => setOn(false)} note={`Back to the module's ${field}: ${shown(value)}.`} />
   ) : (
     <button className="btn" type="button" onClick={() => setOn(true)}>
       Reset {field} to default

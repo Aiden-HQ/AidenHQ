@@ -652,8 +652,15 @@ export type SettingChange =
   | { kind: "agent"; agent: string; field: "model" | "reasoning_effort" | "heartbeat"; value: string | number | boolean }
   | { kind: "caps"; agent: string; value: Partial<Record<"run_usd" | "task_usd" | "day_usd", number>> }
   | { kind: "module"; name: string; on: boolean }
-  // Lane B: a routine's schedule, status or model (overrides.routines.<key>.<field>).
-  | { kind: "routine"; routine: string; field: "schedules" | "status" | "model"; value: unknown };
+  | { kind: "routine"; routine: string; field: "schedules"; value: { cron: string; timezone?: string; label?: string }[] }
+  | { kind: "routine"; routine: string; field: "status"; value: "active" | "paused" }
+  | { kind: "routine"; routine: string; field: "model"; value: string }
+  | { kind: "rules"; agent: string; text: string }
+  | { kind: "handbook"; agent: string; text: string }
+  | { kind: "unfork"; agent: string }
+  | { kind: "pin"; name: string; sha: string | null }
+  | { kind: "marketplace"; op: "add" | "update" | "remove"; name: string; source?: { source: "github"; repo: string }; sha?: string }
+  | { kind: "grants"; agent: string; connection: string; tools: string[] | null };
 export type ChangeStage = "working" | "waiting" | "applying" | "applied" | "failed" | "rejected" | "closed";
 export interface FiledChange {
   identifier: string;
@@ -722,7 +729,6 @@ export interface SettingsData {
 }
 
 // Lane D: the pin change (lane A's schema, settings-change.ts).
-export type PinChange = { kind: "pin"; name: string; sha: string | null };
 // Lane E: GET /api/modules/browse, /api/marketplaces and /api/agents/by-key/:key/grants (services/board/src/marketplace.ts).
 export interface BrowseModule {
   name: string;

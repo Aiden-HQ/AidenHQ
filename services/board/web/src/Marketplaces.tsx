@@ -6,7 +6,7 @@ import { ChangeProgress, Group, IN_FLIGHT, Row, useChanges, useFiled } from "./s
 import type { MarketplaceRow, SettingChange } from "./types";
 import "./settings.css";
 
-type Op = { kind: "marketplace"; op: "add" | "update" | "remove"; name: string; source?: { source: "github"; repo: string }; sha?: string };
+type Op = Extract<SettingChange, { kind: "marketplace" }>;
 
 export function Marketplaces({ onSignIn }: { onSignIn: () => void }) {
   const [rows, setRows] = useState<MarketplaceRow[] | null>(null);
@@ -39,7 +39,7 @@ function useOp() {
     setBusy(true);
     setError("");
     try {
-      toast(`Filed (${await file([op as unknown as SettingChange])}).`);
+      toast(`Filed (${await file([op])}).`);
       done?.();
     } catch (e) {
       setError((e as Error).message);
@@ -65,7 +65,7 @@ function AddMarketplace() {
 }
 
 function MarketplaceItem({ m }: { m: MarketplaceRow }) {
-  const filed = useFiled((c) => (c as unknown as Op).kind === "marketplace" && (c as unknown as Op).name === m.name);
+  const filed = useFiled((c) => c.kind === "marketplace" && c.name === m.name);
   const { run, busy, error } = useOp();
   const [confirm, setConfirm] = useState(false);
   const inFlight = Boolean(filed && IN_FLIGHT.includes(filed.stage));

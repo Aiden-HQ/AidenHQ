@@ -19,11 +19,9 @@ export interface HandbookHistory {
   rows: { sha: string; at: string; subject: string; files: string[]; source: "instance" | "module"; kind?: "rules" | "handbook"; after?: string | null; before?: string | null }[];
   note?: string;
 }
-type HandbookChange = { kind: "rules" | "handbook"; agent: string; text: string } | { kind: "unfork"; agent: string };
-// The change schema learns these kinds in the settings-change flow; the board client types it more narrowly.
-const asChange = (c: HandbookChange) => c as unknown as SettingChange;
-const kindOf = (c: SettingChange) => (c as { kind: string }).kind;
-const agentOf = (c: SettingChange) => (c as { agent?: string }).agent;
+type HandbookChange = Extract<SettingChange, { kind: "rules" | "handbook" | "unfork" }>;
+const kindOf = (c: SettingChange) => c.kind;
+const agentOf = (c: SettingChange) => ("agent" in c ? c.agent : undefined);
 
 /** A line diff (longest common subsequence), good enough for handbooks of a few hundred lines. */
 export function lineDiff(a: string, b: string): { t: " " | "+" | "-"; s: string }[] {
@@ -62,7 +60,7 @@ function Preview({ change, was, onDone, onCancel, note }: { change: HandbookChan
     setBusy(true);
     setError("");
     try {
-      const task = await file([asChange(change)]);
+      const task = await file([change]);
       toast(`Change filed (${task}). You'll see it here as it moves.`);
       onDone();
     } catch (e) {

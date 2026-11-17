@@ -24,11 +24,11 @@ export function AgentGrants({ agentKey, onSignIn }: { agentKey: string; onSignIn
   );
 }
 
-const grantChange = (agent: string, connection: string, tools: string[] | null) => ({ kind: "grants", agent, connection, tools }) as unknown as SettingChange;
+const grantChange = (agent: string, connection: string, tools: string[] | null): SettingChange => ({ kind: "grants", agent, connection, tools });
 
 function ConnectionGrant({ agentKey, c }: { agentKey: string; c: GrantConnection }) {
   const { file, toast } = useChanges();
-  const filed = useFiled((x) => (x as unknown as { kind: string; agent?: string; connection?: string }).kind === "grants" && (x as unknown as { agent: string }).agent === agentKey && (x as unknown as { connection: string }).connection === c.id);
+  const filed = useFiled((x) => x.kind === "grants" && x.agent === agentKey && x.connection === c.id);
   const [picked, setPicked] = useState<Set<string>>(() => new Set(c.tools.filter((t) => t.granted).map((t) => t.name)));
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");

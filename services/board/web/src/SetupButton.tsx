@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 import { api } from "./api";
 
-interface Flow {
+export interface Flow {
   module: string;
   title?: string;
   done?: boolean;
@@ -11,7 +11,7 @@ interface Flow {
 
 let cache: Promise<Flow[]> | undefined;
 /** The flows, fetched once per page load and shared. */
-function flows(): Promise<Flow[]> {
+export function flows(): Promise<Flow[]> {
   cache ??= api.setupFlows().then(
     (r) => {
       const list = Array.isArray(r) ? r : (r as { flows?: unknown })?.flows;

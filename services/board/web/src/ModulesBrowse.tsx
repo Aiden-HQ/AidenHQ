@@ -106,7 +106,7 @@ function InstallCard({ m, onClose }: { m: BrowseModule; onClose: () => void }) {
   const go = async () => {
     setBusy(true);
     try {
-      const task = await file([{ kind: "module", name: m.name, on: true } as SettingChange]);
+      const task = await file([{ kind: "module", name: m.name, on: true }]);
       toast(`Install requested (${task}).`);
       onClose();
     } catch (e) {

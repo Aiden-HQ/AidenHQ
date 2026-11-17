@@ -8,7 +8,7 @@ import { SettingItem } from "./Settings";
 import { ChangePreview, ChangesScope, Group, StatusPill, useChanges } from "./settings-ui";
 import { SetupButton } from "./SetupButton";
 import { SkeletonLines } from "./Skeleton";
-import type { ModuleDetail, ModuleRow, PinChange, SettingChange, SettingRow, TaskRow } from "./types";
+import type { ModuleDetail, ModuleRow, SettingChange, SettingRow, TaskRow } from "./types";
 import { ago } from "./util";
 import "./settings.css";
 
@@ -80,7 +80,7 @@ function Loaded({ d, tab, go, onSignIn, setup }: { d: ModuleDetail; tab: ModuleT
 function Pin({ m }: { m: ModuleRow }) {
   const [open, setOpen] = useState(false);
   if (!m.pinned) return null;
-  const change = { kind: "pin", name: m.name, sha: null } satisfies PinChange as unknown as SettingChange;
+  const change: SettingChange = { kind: "pin", name: m.name, sha: null };
   return (
     <div className="st-banner">
       Pinned at {m.pinned}: this module stays there when its marketplace moves.{" "}

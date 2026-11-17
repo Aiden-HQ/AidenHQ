@@ -119,7 +119,6 @@ export const api = {
   modules: () => call<{ modules: ModuleRow[]; advisories: Advisory[] }>("GET", "/api/modules"),
   module: (name: string) => call<ModuleDetail>("GET", `/api/modules/${encodeURIComponent(name)}`),
   /** Installed modules whose setup flow isn't done (docs/design/guided-setup.md); a 404 means no flows. */
-  setupFlows: () => call<{ flows?: { module: string }[] }>("GET", "/api/setup-flows"),
   settings: () => call<SettingsData>("GET", "/api/settings"),
   connections: (fresh = false) => call<ConnectionsData>("GET", `/api/settings/connections${fresh ? "?fresh" : ""}`),
   /** Files a settings change as the Platform Engineer's task; its commit becomes an apply card. */
