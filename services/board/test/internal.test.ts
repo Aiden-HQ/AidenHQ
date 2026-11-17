@@ -118,10 +118,10 @@ describe("internal listener", () => {
     writeFileSync(file, JSON.stringify({ n: 2, at: "2026-01-02T00:00:00Z", product: "b".repeat(40), health: "good", data_versions: { meetings: 3 } }) + "\n");
     process.env.AIDENHQ_GENERATIONS_FILE = file;
     try {
-      const res = await post("/internal/fleet/generations", {});
+      const res = await post("/internal/fleet/generation_status", {});
       expect(res.status).toBe(200);
       expect(await res.json()).toMatchObject({ pin: "b".repeat(40), generations: [{ n: 2, product: "b".repeat(40), health: "good", data_versions: { meetings: 3 } }] });
-      expect((await post("/internal/fleet/generations", {}, asAgent("scout"))).status).toBe(403);
+      expect((await post("/internal/fleet/generation_status", {}, asAgent("scout"))).status).toBe(403);
     } finally {
       delete process.env.AIDENHQ_GENERATIONS_FILE;
     }

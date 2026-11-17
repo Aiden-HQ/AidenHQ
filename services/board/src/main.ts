@@ -54,6 +54,7 @@ startWake(paperclip, store, records, grading, log);
 // The Maintainer's issue wake-up (maintainer.ts): off until setup has written the routine's webhook.
 const maintainer = maintainerWake();
 if (maintainer) startMaintainer({ issues: maintainerIssues(), fire: maintainer, store, log });
+else log.info({}, "maintainer issue watcher off: its routine webhook is not written yet");
 // Long-lived tasks move to a successor before Paperclip's fresh-session prompt outgrows the model's input (rollover.ts).
 startRollover(paperclip, store, records, grading, log);
 // The Costs tab: model calls with what OpenRouter billed for each, from the model gateway (kernel/src/gateway), agent

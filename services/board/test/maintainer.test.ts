@@ -1,5 +1,5 @@
-import { describe, expect, it } from "vitest";
-import { maintainerTick, type MaintainerBatch, type MaintainerIssue } from "../src/maintainer.js";
+import { describe, expect, it, vi } from "vitest";
+import { maintainerTick, startMaintainer, type MaintainerBatch, type MaintainerIssue } from "../src/maintainer.js";
 
 const kv = () => {
   const m = new Map<string, string>();
@@ -73,6 +73,30 @@ describe("the Maintainer's issue watcher", () => {
     expect(fired).toEqual([]);
     expect(log.warnLines).toHaveLength(1);
     expect(JSON.parse(store.meta("maintainer_issues")!).cursor).toBe("c1");
+  });
+
+  it("polls every 5 minutes by default and skips a tick while the last call is still in flight", async () => {
+    vi.useFakeTimers();
+    try {
+      delete process.env.MAINTAINER_POLL_MINUTES;
+      let calls = 0;
+      let release = () => {};
+      const issues = async () => {
+        calls++;
+        await new Promise<void>((r) => (release = r));
+        return { issues: [], cursor: `c${calls}` };
+      };
+      startMaintainer({ issues, fire: async () => true, store: kv(), log: logs() });
+      await vi.advanceTimersByTimeAsync(60_000); // the first look, a minute after start
+      expect(calls).toBe(1);
+      await vi.advanceTimersByTimeAsync(60_000); // still in flight: this tick does nothing
+      expect(calls).toBe(1);
+      release();
+      await vi.advanceTimersByTimeAsync(5 * 60_000); // the default interval, not 1 minute
+      expect(calls).toBe(2);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("a refused webhook holds the cursor and is retried, without delivering the earlier ones again", async () => {

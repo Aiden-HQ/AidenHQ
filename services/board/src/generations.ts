@@ -1,7 +1,8 @@
 /**
- * The host's apply generations (`ops/lib/generations.sh`: `generations.jsonl`, one line per apply, newest last), read for
- * the Maintainer: the current product pin and the last generations, so a fix that rolled back is visible without the
- * host. Read-only, no arguments, and never a guess: a missing or unreadable file is an explicit error, not an empty list.
+ * `fleet_generation_status`: the host's apply generations (`ops/lib/generations.sh`: `generations.jsonl`, one line per
+ * apply, newest last), read for the Maintainer: the current product pin and the last generations, so a fix that rolled
+ * back is visible without the host. Read-only, no arguments, and never a guess: a missing or unreadable file is an
+ * explicit error, not an empty list.
  */
 import { readFileSync } from "node:fs";
 
@@ -24,8 +25,9 @@ export interface FleetGenerations {
   /** The product commit the newest generation applied; null before the first one. */
   pin: string | null;
   generations: Generation[];
-  error?: string;
 }
+/** No answer: the file is missing or unreadable, said plainly instead of an empty history. */
+export interface GenerationsError { error: string }
 
 const one = (r: Record<string, unknown>): Generation => ({
   n: typeof r.n === "number" ? r.n : null,
@@ -39,20 +41,22 @@ const one = (r: Record<string, unknown>): Generation => ({
   data_versions: r.data_versions && typeof r.data_versions === "object" ? (r.data_versions as Record<string, number>) : null,
 });
 
-export function fleetGenerationStatus(file = generationsFile()): FleetGenerations {
+export function fleetGenerationStatus(file = generationsFile()): FleetGenerations | GenerationsError {
   let text: string;
   try {
     text = readFileSync(file, "utf8");
   } catch (err) {
-    return { pin: null, generations: [], error: `cannot read ${file}: ${(err as NodeJS.ErrnoException).code ?? String(err)}` };
+    return { error: `cannot read ${file}: ${(err as NodeJS.ErrnoException).code ?? String(err)}` };
   }
   const lines = text.split("\n").filter((l) => l.trim());
   let rows: Record<string, unknown>[];
   try {
     rows = lines.map((l) => JSON.parse(l) as Record<string, unknown>);
   } catch (err) {
-    return { pin: null, generations: [], error: `${file} is not JSON lines: ${String(err).slice(0, 200)}` };
+    return { error: `${file} is not JSON lines: ${String(err).slice(0, 200)}` };
   }
   const generations = rows.slice(-GENERATIONS_KEPT).reverse().map(one);
-  return { pin: generations[0]?.product ?? null, generations };
+  // A refused apply switched nothing, so it names no pin: the newest generation that got past validation does.
+  const pin = rows.slice().reverse().map(one).find((g) => g.health !== "refused")?.product ?? null;
+  return { pin, generations };
 }

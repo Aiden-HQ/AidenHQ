@@ -113,12 +113,13 @@ It is idempotent. The Platform Engineer runs it for you after you approve a chan
   Not moved while a run or a card is on it, nor graded, runner Engineer or agent-made tasks; the detector names such a task
   in its "runs failed" flag.
 
-- The Maintainer (`services/board/src/maintainer.ts`): every `maintainer_poll_minutes` (default 5) the board asks
+- The Maintainer (`services/board/src/maintainer.ts`): every `maintainer_poll_minutes` (default 5; the board reads
+  `MAINTAINER_POLL_MINUTES`) the board asks
   github-mcp for the product issues labelled since its cursor and fires the "Maintainer: issue" webhook once per trusted
   issue, with `{{number}}` and `{{title}}`. A label from anyone else is logged once and starts nothing. Cursor and fired
   issues are in the board's store (meta `maintainer_issues`), so a restart repeats and skips none. It reads the host's
-  `generations.jsonl` read-only (`AIDENHQ_STATE_DIR`, mounted at `/generations`) for `fleet_generation_status`: the current
-  pin and the last 20 generations, newest first.
+  `generations.jsonl` read-only (`AIDENHQ_STATE_DIR`, mounted at `/generations`) for the `fleet_generation_status` tool: the
+  current pin (the newest generation that got past validation) and the last 20 generations, newest first.
 
 - Monitoring (module `monitoring`, [docs/design/monitoring.md](design/monitoring.md)): Prometheus, node-exporter, cAdvisor,
   Alertmanager and Grafana. Every alert becomes a detector incident (group `alert`), so Fleet Ops works it; `DiskNearlyFull`

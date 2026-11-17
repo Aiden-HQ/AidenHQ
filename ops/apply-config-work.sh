@@ -44,6 +44,9 @@ main() {
   [ -z "$gen" ] || { [ -z "$want" ] && [ "$retry" = 0 ] && [ "$recover" = 0 ]; } || { echo "refusing: --generation takes no other argument" >&2; exit 1; }
   [ "$recover" = 0 ] || { [ -z "$want" ] && [ "$retry" = 0 ]; } || { echo "refusing: --recover takes no other argument" >&2; exit 1; }
   set -a; [ -f .env ] && . ./.env; set +a
+  # The apply generations (ops/lib/generations.sh), read-only into the board; an older .env predates the variable.
+  export AIDENHQ_STATE_DIR="${AIDENHQ_STATE_DIR:-$HOME/.local/state/aidenhq}"
+  mkdir -p "$AIDENHQ_STATE_DIR" # the board mounts it read-only; created here so Docker never makes it as root
   local inst="${AIDENHQ_INSTANCE_DIR:?set AIDENHQ_INSTANCE_DIR in .env (your instance checkout)}"
 
   # Tracked files must be clean in both checkouts (untracked ones such as compose.override.yaml are left alone).
