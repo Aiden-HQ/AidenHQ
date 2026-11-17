@@ -3,6 +3,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { kernel, moduleServer, readBody, serve } from "./helpers.mjs";
+import { HARD_GATES } from "../src/gates.ts";
 
 const conn = (url, module, tools) => ({ url: `${url}/mcp`, auth_secret: `${module}_service_key`, module, returns: "trusted", tools: { read: [], write: [], destructive: [], ...tools } });
 const agents = { "run-jwt-ada": { id: "ag-ada", name: "Ada" } };
@@ -157,7 +158,7 @@ test("checksFile: a missing or unparsable file throws; a map loads and is reread
   assert.deepEqual(Object.keys(read()), ["judge.finish"]);
 });
 
-test("observe mode (gates.ts): a check's deny becomes a would-block entry and the close goes ahead; the same check enforcing refuses; a security gate can't observe", async (t) => {
+test("observe mode (gates.ts): a check's deny becomes a would-block entry and the close goes ahead; the same check enforcing refuses; a hard gate can't observe", async (t) => {
   const judge = (url, mode) => ({ "judge.finish": { module: "judge", at: "task.finish", url: `${url}/check/finish`, auth_secret: "judge_check_key", label: "held", ...(mode ? { mode } : {}) } });
   const deny = () => ({ verdict: "deny", reason: "no rubric attached" });
   // Observing: asked, recorded, never blocks or touches the task as the owner.
@@ -173,9 +174,10 @@ test("observe mode (gates.ts): a check's deny becomes a would-block entry and th
   s = await setup(t, deny, { checks: judge(url) });
   assert.equal((await s.finish({ status: "done" })).status, 403);
   assert.deepEqual(s.writes, []);
-  // A security gate set to observe doesn't load: every close is refused, never let through.
-  s = await setup(t, deny, { checks: { "platform.product-gate": { ...judge(url)["judge.finish"], module: "platform", mode: "observe" } } });
+  // A hard gate set to observe doesn't load: every close is refused, never let through.
+  const hard = [...HARD_GATES][0];
+  s = await setup(t, deny, { checks: { [hard]: { ...judge(url)["judge.finish"], module: hard.split(".")[0], mode: "observe" } } });
   const r = await s.finish({ status: "done" });
   assert.equal(r.status, 503);
-  assert.match(r.json.error.message, /platform\.product-gate is a security gate: it always enforces/);
+  assert.match(r.json.error.message, /is a hard gate: it always enforces/);
 });
