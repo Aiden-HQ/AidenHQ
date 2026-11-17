@@ -25,8 +25,9 @@ larger build, done with subagents, to get this ideal result.
      VM). The user may decide with their AI, or let the AI decide: we don't care which.
    - The AI asks the user only that choice and their email (the AI usually knows it already).
    - The install ends with one clickable link.
-   - **Aiden first, the rest in the background.** The link works as soon as the parts needed to chat with Aiden are up.
-     Everything else keeps installing behind it.
+   - **Aiden first, the rest in the background.** The link works as soon as the full Aiden is up (Paperclip included).
+     Modules Aiden doesn't need keep installing behind it. Their features stay hidden until they are fully ready, then
+     appear.
 2. **First browser screen = account, authenticator, model.** Nothing else blocks reaching Aiden.
 3. **Wizard, in the board, at first sign-in.** Three steps, each skippable ("Later"):
    - save the vault recovery key;
@@ -54,6 +55,9 @@ larger build, done with subagents, to get this ideal result.
 
 ## Anti-goals (failure even if it works)
 
+- **Half-baked features.** Owner's rule: a feature is either offered in full or not offered until its setup is done.
+  Nothing shows up partly working, degraded, or as "still setting up, try later". In particular, Aiden's first chat is
+  the full Aiden, running through Paperclip with all his tools.
 - Anything in install or first run that asks for a GitHub token, GitHub org or GitHub App. GitHub is optional: it's
   only for syncing work off the server. Without it everything stays on the server.
 - A step the person must finish before they can talk to Aiden, other than the account, authenticator and model.
@@ -118,36 +122,30 @@ Paperclip image alone is 17 GB), so it takes far longer than minutes. Two change
   and pinned by digest in the release file. The installer pulls them; it builds nothing. Local builds stay for
   development and forks.
 - **Staged start.**
-  - *Stage 1* starts only what a chat with Aiden needs: the kernel (accounts, vault, model gateway), the board, and
-    Aiden's reply path. Then it prints the link.
-  - *Stage 2* continues in the background: everything else, such as the apps platform, the warehouse, Engineer
-    tooling, computers and browser.
-  - The board shows a quiet "finishing setup" line until stage 2 is done. Anything that needs stage 2 says so instead
-    of failing.
-  - The prompt hands over the link at the end of stage 1 and tells the user the rest finishes on its own.
+  - *Stage 1* starts everything the full Aiden needs: the kernel (accounts, vault, model gateway), Paperclip, the board,
+    the chat lane, and the modules behind Aiden's own tools. Then it prints the link.
+  - *Stage 2* continues in the background: modules Aiden doesn't need for his own work, such as the apps platform, the
+    warehouse, Engineer tooling, computers and browser.
+  - A stage-2 feature isn't offered until it's fully ready. Its tab, its tools and Aiden's offers of it appear only
+    then; nothing shows half-working. If the owner asks Aiden for it early, Aiden says plainly it's still installing
+    and when, the way he would for any module that isn't on.
+  - The prompt hands over the link at the end of stage 1.
 
-**Aiden's first replies come from the chat lane.** The lane's reply loop calls the kernel's model gateway directly;
-Paperclip doesn't generate those replies. Today, though, the bootstrap is tied to Paperclip (checked with Codex):
-- stock Aiden has no `chat:` block;
-- the lane's config is written by `scripts/paperclip-setup.mjs` from Paperclip agent ids and keys;
-- the board needs a company UUID;
-- `/api/chats` loads Paperclip context before it picks the lane.
-
-So staging containers alone can't deliver a fast first chat. This work:
-- gives Aiden a `chat:` block;
-- lets the lane, the board config and `/api/chats` start from the kernel's own agent identity, with Paperclip context
-  joining once it is up.
-
-The alternative, keeping Paperclip in stage 1, makes its 17 GB image the floor on time to first chat.
+**Aiden runs through Paperclip from the first message (owner's decision).** No bootstrap lane without Paperclip.
+Paperclip is therefore in stage 1, and its image (17 GB today) is the main cost in time to first chat. The spike
+measures it, and the ways to cut it are, in order:
+1. prebuilt images pulled in parallel;
+2. a maintained server image with everything cached;
+3. on a Mac, images pre-pulled into the Lima VM image.
 
 **Builder's first spike.** Measure a cold install, bare server to first successful reply, on a 4-core, 8 GB server:
 - infrastructure time, reported separately from human time (buying a server, the authenticator, OpenRouter payment);
 - the transfer and extraction time of each image;
-- whether stage 1 without Paperclip is reachable.
+- the smallest full-Aiden stage 1 (which modules Aiden's own tools need).
 
 The target is two minutes of infrastructure time from install start to the link working, and seconds from the link to
-the first reply. If the measurement says that can't be reached, the spike reports options; a maintained server image
-with dependencies and images cached is the fallback guarantee. Stage 2 runs as a durable, retrying unit with resource
+the first reply. If pulling Paperclip makes that unreachable, the spike reports the measured time and the options
+above for the owner to pick. Stage 2 runs as a durable, retrying unit with resource
 limits, so its downloads never starve the chat.
 
 ### Part 2: first-run page (kernel `/setup`)
@@ -453,6 +451,8 @@ form.
 - Google is not a wizard step. A guided own-client setup is built and triggered later, by Aiden or the marketplace. A shared
   AidenHQ client was rejected: Google's paid restricted-scope assessment, and a relay that would see users' tokens.
 - GitHub is fully optional, and the on-server code host is part of this work.
+- Aiden's first chat is the full Aiden through Paperclip. A feature is offered in full or not until its setup is done;
+  never half-working.
 - Setup is one general per-module flow, opened at `/setup/<module>`. This work builds a flow for every module that needs
   user setup. When the marketplace (built in other work) triggers it is decided with that page. Modules that need no
   user setup get no flow; their settings page is separate work.
@@ -462,8 +462,8 @@ form.
 ## Calls made in writing this (owner to check)
 
 - The AI still asks for the email: many parts read `owner_email`, and asking costs the user nothing.
-- Prebuilt release images and a staged start, to make "a couple of minutes" possible. Aiden's first chat is decoupled
-  from Paperclip, through the chat lane.
+- Prebuilt release images and a staged start, to make "a couple of minutes" possible; stage 1 is the full Aiden with
+  Paperclip.
 - Wizard steps are module setup flows (instructions, the existing `setup:` fields, optional Connect or pairing), with
   completion read from real connection status. "Meet Aiden now" is always one click away.
 - The on-server code host builds on the existing local bare repos and `repo_sources`, not a new forge.
@@ -477,7 +477,7 @@ form.
 ## Unverified: the builder checks these first
 
 - The free per-server name (sslip.io or similar): rate limits, Google redirect acceptance, trust.
-- Which services Aiden's first reply needs (chat lane or Paperclip), and the real time to first chat today.
+- The real time to the full Aiden's first reply today, and how much of it is the Paperclip image.
 - OpenRouter's PKCE flow accepts `http://127.0.0.1:3121/...` (Mac) and a bare-IP HTTPS callback. If not, the paste field
   becomes primary there.
 - The `google` module runs idle with no OAuth client.
