@@ -10,7 +10,7 @@ import { fileURLToPath } from "node:url";
 import YAML from "yaml";
 import { compile } from "../modules.mjs";
 import { classifyModules, diffAll, marketplaceChanges, moduleInputs } from "../../kernel/src/loader/authority.ts";
-import { sourceOf, withRemote } from "../../kernel/src/loader/sources.ts";
+import { remoteCodeText, sourceOf, withRemote } from "../../kernel/src/loader/sources.ts";
 
 const repo = fileURLToPath(new URL("../..", import.meta.url));
 const mods = join(repo, "scripts/test/fixtures/mods");
@@ -63,6 +63,8 @@ test("the twin installs from a throwaway local marketplace (unknown marketplace.
   const upd = [...marketplaceChanges(hi, { ...hi, marketplaces: next }), ...diffAll(moduleInputs(up))];
   assert.deepEqual([classifyModules(upd).tier, classifyModules(upd).panel], [1, true]);
   assert.match(classifyModules(upd).reason, /module changes without new authority: .*twin: now from acme at \w{12} \(tier conformant\), code changes/);
+  // The reviewer reads the code itself: the card's diff carries the module's git diff.
+  assert.match(remoteCodeText(hi, { ...hi, marketplaces: next }, f), /Module twin@acme code, \w{12} → \w{12}:\n[\s\S]*\+\/\/ v2/);
 });
 
 test("an unknown module.yaml key fails compile; a ref without a sha and an unknown marketplace are refused", () => {

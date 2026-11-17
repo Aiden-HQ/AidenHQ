@@ -12,7 +12,7 @@ import { applyWaitingForLock, architectFollowUps, bumpTitle, definitionsOf, owne
 import { applyCardArgs, asApproval, branchCardArgs, cardOf, cardText, planOf } from "./cards.ts";
 import { applyCard, repoKey } from "../../../kernel/src/kinds.ts";
 import { authorityLines, diffAll, marketplaceChanges, moduleInputs } from "../../../kernel/src/loader/authority.ts";
-import { hostFetch, withRemote } from "../../../kernel/src/loader/sources.ts";
+import { hostFetch, remoteCodeText, withRemote } from "../../../kernel/src/loader/sources.ts";
 import { cowRoot, engineState, followJob, kernelJobs, readEngines, removeLayers, gatewayApi, jobcapServers, jobcapsFor, launcher, modelToken, observes, releaseBox, viaGateway } from "./engines.mjs";
 import { hiding, jailProblem } from "../../../kernel/src/sandbox.ts";
 import { sandboxConfig } from "../../../kernel/src/sandbox-config.ts";
@@ -3082,7 +3082,19 @@ async function productBump(c) {
 async function fleetDiffText(c, bump) {
   const diff = await c.diff();
   const trial = await trialEditsText(c.r.path, c.base, c.files, await agentTexts(c)).catch((e) => `Trial edits: couldn't be read (${String(e.message ?? e).split("\n")[0].slice(0, 150)}); check Activity before approving.`);
-  return [diff, bump && `${bump.title.replaceAll("`", "")}:\n${bump.log}`, trial].filter(Boolean).join("\n\n");
+  return [diff, bump && `${bump.title.replaceAll("`", "")}:\n${bump.log}`, await remoteCode(c), trial].filter(Boolean).join("\n\n");
+}
+
+/** The third-party module code an instance.yaml change brings (sources.ts remoteCodeText), for the reviewer to read. */
+async function remoteCode(c) {
+  if (!c.files.includes("instance.yaml")) return "";
+  try {
+    const [bi, hi] = await Promise.all([c.base, c.sha].map(async (rev) => YAML.parse(await git(c.r.path, "show", `${rev}:instance.yaml`).catch(() => "")) ?? {}));
+    if (!bi.marketplaces && !hi.marketplaces) return "";
+    return remoteCodeText(bi, hi, { ...hostFetch(REPO_ROOT), parse: (t) => YAML.parse(t) });
+  } catch (err) {
+    return `Third-party module code: couldn't be read (${String(err.message ?? err).split("\n")[0].slice(0, 150)}).`;
+  }
 }
 
 /**

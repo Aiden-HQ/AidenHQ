@@ -238,6 +238,25 @@ export function withRemote<T extends { baseInstance: Dict; headInstance: Dict; b
 }
 
 /**
+ * What a reviewer reads of third-party module code an apply brings (the card's diff): each updated module's git diff, each
+ * installed module's file list, at most `max` characters. Content of a third-party repository: untrusted text, read as data.
+ */
+export function remoteCodeText(baseInstance: Dict, headInstance: Dict, f: Fetch & { parse: (s: string) => unknown }, max = 40_000): string {
+  const [rb, rh] = [remoteModules(baseInstance, f), remoteModules(headInstance, f)];
+  const parts: string[] = [];
+  for (const h of rh) {
+    const b = rb.find((x) => x.name === h.name);
+    if (b && b.at.sha === h.at.sha && b.at.url === h.at.url && b.at.path === h.at.path) continue;
+    const repo = repoAt(h.at, f);
+    const spec = h.at.path ? [h.at.path] : [];
+    if (b && b.at.url === h.at.url && b.at.path === h.at.path) parts.push(`Module ${h.name}@${h.marketplace} code, ${b.at.sha.slice(0, 12)} → ${h.at.sha.slice(0, 12)}:\n${git(f, repo, ["diff", "--no-color", "--no-ext-diff", b.at.sha, h.at.sha, "--", ...spec]).toString()}`);
+    else parts.push(`Module ${h.name}@${h.marketplace} installed at ${h.at.sha.slice(0, 12)}, files:\n${git(f, repo, ["ls-tree", "-r", "--name-only", h.at.path ? `${h.at.sha}:${h.at.path}` : h.at.sha]).toString()}`);
+  }
+  const text = parts.join("\n");
+  return text.length > max ? `${text.slice(0, max)}\n… (cut at ${max} characters)` : text;
+}
+
+/**
  * The contract kit (kernel/sdk) on a third-party module, in the job sandbox with no network: true only when it ran and
  * passed. The kit covers engine@1, so a module with no engine is not conformant yet. Nowhere to jail it (no bwrap, not
  * Linux) is not conformant either. One run per sha, remembered in the cache.
