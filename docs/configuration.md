@@ -48,6 +48,7 @@ agents/<key>/agent.yaml       an instance-defined agent
 agents/<key>/AGENTS.md        its handbook
 agents/<key>/memory.md        its curated memory (the Librarian's)
 owner/profile.md              how the owner works, in every crew handbook and chat lane
+decisions.md                  product decisions and "not building" entries the AI reviewer holds changes to
 ```
 
 ```yaml
@@ -134,6 +135,10 @@ outcomes:
   `node scripts/compile.mjs --sizes` prints each crew agent's handbook bytes per section (`scripts/handbook.mjs`) and
   writes nothing.
 - Disabling a module pauses its agents and routines; nothing is deleted.
+- **`decisions.md`** (optional; template `config/decisions.example.md`): the owner's product decisions, including what not to
+  build, one dated line each. The runner reads it from the instance repo's default branch (`apply.repo`) for every review,
+  never from the change, and the AI reviewer rejects a change that brings back what an entry rules out or reverses a
+  decision, unless the owner's own words in the request chain ask for it (policy: "Recorded product decisions").
 
 ## Compile and apply
 

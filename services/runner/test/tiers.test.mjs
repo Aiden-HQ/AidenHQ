@@ -427,6 +427,7 @@ test("apply: instance settings, pin and apps", () => {
   assert.equal(tierOf(apply(["apps.yaml"], { "apps.yaml": apps([]) }, { "apps.yaml": apps([{ ...app, caps: ["NET_ADMIN"] }]) })), "panel", "caps");
   const shared = { name: "dash", share: { host: "dash.example.com", aud: "x", viewers: ["a@x.com"] } };
   assert.equal(tierOf(apply(["apps.yaml"], { "apps.yaml": apps([]) }, { "apps.yaml": apps([{ ...app, share: shared.share }]) })), "panel", "share: a wider human audience is the owner's");
+  assert.equal(tierOf(apply(["apps.yaml"], { "apps.yaml": apps([app]) }, { "apps.yaml": apps([{ ...app, panel: "Reading list" }]) })), "panel", "panel: a pin in the owner's nav");
   assert.equal(tierOf(apply(["apps.yaml"], { "apps.yaml": apps([{ ...app, name: "dash", share: shared.share }]) }, { "apps.yaml": apps([{ ...app, name: "dash", share: shared.share }, { ...app, connects: ["dash"] }]) })), "panel", "connects to a shared app");
   // apps-mcp's isSensitive decides; only `database: warehouse` alone is carved out to Tier 1.
   assert.equal(tierOf(apply(["apps.yaml"], { "apps.yaml": apps([]) }, { "apps.yaml": apps([{ ...app, stateful: true }]) })), "panel", "stateful is sensitive");

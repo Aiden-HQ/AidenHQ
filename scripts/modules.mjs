@@ -663,6 +663,7 @@ export function compile(productDir, instanceDir, { revision, fetch = hostFetch(p
     for (const app of def.apps ?? []) {
       const { isolation: iso, ...rest } = app;
       const untrusted = isolationOf(iso ?? def.isolation, `app ${app.name}`, ["trusted", "untrusted"]) === "untrusted";
+      if (app.panel != null) fail(`app ${app.name}: panel (a board nav pin) is set only in the instance apps.yaml, never by a module`);
       if (apps.some((x) => x.name === app.name)) fail(`duplicate app: ${app.name}`);
       if (instanceApps.includes(app.name)) fail(`app ${app.name} is already in the instance apps.yaml; rename that app before enabling ${name}`);
       apps.push({ ...rest, path: relative(productDir, join(root, app.path)), ...(untrusted ? { untrusted: true } : {}), module: name, ...(revision ? { pin: revision } : {}) });

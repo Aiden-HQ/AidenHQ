@@ -484,6 +484,8 @@ export interface AppRow {
   deploys?: { sha: string; at: string; by: string; status: string }[];
   owner?: string;
   url?: string;
+  /** Pinned into the nav under this label (apps.yaml `panel`). */
+  panel?: string;
   incident?: { opened_at: string; kind: string; detail: string };
   stats?: { cpu_pct: number; mem_bytes: number; mem_limit_bytes: number };
 }

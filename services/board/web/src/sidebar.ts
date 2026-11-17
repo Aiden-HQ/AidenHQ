@@ -85,3 +85,8 @@ export function groupChats(rows: ChatRow[], agents: ChatAgent[]): { front: Agent
 
 /** A sidebar group's lane agent: groups are keyed by the Paperclip agent id, the lane's own key is its short name (`aria`). */
 export const laneOf = <T extends { id: string }>(lane: T[], agentId: string): T | undefined => lane.find((l) => l.id === agentId);
+
+/** The apps pinned into the nav (apps.yaml `panel`): links to each app's own https URL, never frames (a shared app signs in at the gate). */
+export function panelsOf(apps: { name: string; panel?: string; url?: string }[]): { name: string; label: string; url: string }[] {
+  return apps.flatMap((a) => (a.panel && a.url?.startsWith("https://") ? [{ name: a.name, label: a.panel, url: a.url }] : []));
+}

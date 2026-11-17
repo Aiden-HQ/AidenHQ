@@ -659,6 +659,11 @@ kbd {
 .app.mobile .topbar-tools { flex: 1; min-width: 0; flex-wrap: wrap; justify-content: flex-end; row-gap: 6px; }
 .main-tabs .btn { flex: none; white-space: nowrap; }
 @media (max-width: 1240px) { .main-tabs { margin-left: 4px; } .main-tabs .btn { padding: 5px 9px; } }
+/* Apps pinned into the nav (apps.yaml panel): plain links that open the app's own host in a tab, set off from the board's sections. */
+.main-tabs .panel-link { text-decoration: none; display: inline-flex; align-items: center; gap: 4px; }
+.main-tabs .panel-link:first-of-type { margin-left: 6px; border-left: 1px solid var(--border); border-radius: 0 6px 6px 0; padding-left: 14px; }
+.main-tabs .panel-link span { color: var(--muted); font-size: 11px; }
+.tabs .panel-link { flex: none; padding: 6px 12px; border-radius: 999px; border: 1px dashed var(--border); font-size: 13px; color: inherit; text-decoration: none; }
 .main-tabs .needs-dot { width: 7px; height: 7px; }
 .topbar { gap: 10px; padding-left: clamp(16px, 1.4vw, 28px); padding-right: clamp(16px, 1.4vw, 28px); }
 .page { max-width: clamp(860px, 55vw, 1100px); margin: 0 auto; padding: 16px; width: 100%; box-sizing: border-box; display: grid; gap: 12px; align-content: start; }

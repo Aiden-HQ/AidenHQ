@@ -330,6 +330,7 @@ export function sensitiveTraits(app, all) {
   return [
     app.access && "access",
     app.share && "share (people outside the tailnet)",
+    app.panel && "panel (owner's nav pin)",
     app.database && "database",
     app.stateful && "stateful",
     app.untrusted && "untrusted",
