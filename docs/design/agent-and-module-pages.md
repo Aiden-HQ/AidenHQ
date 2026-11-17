@@ -105,9 +105,28 @@ Pause asks what to do with a running task: let it finish, or stop it now.
 - **Marketplaces**: each with source, pinned sha, module count, newer-version flag and Update; Add marketplace (a repo
   URL); Remove.
 
+A module's one action button follows its state everywhere it is listed (Browse, Installed, the module page header):
+**Install** → In review / Waiting for your tap → Applying → **Set up** (only if it has a setup flow that isn't done) →
+Installed (or **Update to X** when one is available). A failed or rejected step shows its reason and **Try again**.
+
+**Install** edits `instance.yaml modules` (adds the name, or `{ name, sha }`); the card is the lean-core install card.
+**Turn off** (owner's label) removes it from `modules` through the same review. Its confirm dialog lists what stops (its
+agents and routines), what stays (their tasks; its data on disk, so turning it back on resumes) and is refused, with the
+reason, when another installed module requires it. Core modules and dependencies have no Turn off. Deleting a module's
+data for good is a separate, explicit purge, not part of this work.
+
+**Setup flows** come from `docs/design/guided-setup.md` (other work): a module's `setup_flow:` block, compiled into the
+catalog; the board opens it at `/setup/<module>`; `GET /api/setup-flows` lists installed modules whose flow isn't done
+(done = the module's real connection status). These pages only trigger it:
+- Browse shows "Needs setup after install: <flow title>" on modules that declare a flow.
+- Installed rows and the module page show **Set up** (primary) and a "Needs setup" badge while the flow isn't done;
+  afterwards the module page keeps a quiet **Run setup again**.
+- When an install goes live while the owner is still on the Modules page or that module's page, the board opens its
+  setup flow automatically (owner's call); otherwise the Set up button waits.
+
 ### Module page (`#/settings/modules/<name>[/<tab>]`)
 
-Header: name, version · marketplace · tier, one-line description; actions Update to X, Turn off (or Install).
+Header: name, version · marketplace · tier, one-line description; one action button (Install, Set up, Update to X; see above) and Turn off.
 
 - **Overview**: its agents (linking to agent pages), then the ongoing work of all its agents (same task rows), then
   what it may do (write kinds and their tier, secrets), needs / needed by, and what turning it off does (agents that
