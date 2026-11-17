@@ -29,6 +29,7 @@ import { ChangeRefused, ChangesSchema, SETTINGS_LABEL, changesOf, checkChange, s
 import { createGrading, gradePassed, type Grading } from "./grading.js";
 import { UsageSchema, WINDOWS, costs, keyUsage, prices, type CostWindow } from "./costs.js";
 import { ledgerRange, ledgerSummary, ledgerTop } from "./cost-ledger.js";
+import { descendants, featureCost, recentFeatures } from "./feature-cost.js";
 import { MergeSchema, mergedDescription } from "./merge.js";
 import { McpAuthFailed, type McpAuth } from "./mcpauth.js";
 import { GoogleAuthFailed, loopbackPort, type GoogleAuth } from "./google.js";
@@ -1384,6 +1385,29 @@ export function createApp(opts: AppOptions): Server {
       path: /^\/api\/costs\/top$/,
       handle: async (_m, _b, url) =>
         ledgerTop({ store, agents: () => pc.agents(), issue: (id) => pc.issueSummary(id) }, ledgerRange(url.searchParams), { agentId: url.searchParams.get("agent") ?? undefined, model: url.searchParams.get("model") ?? undefined }),
+    },
+    // What each feature (a top-level task and its delegated tree) cost and how long it took (feature-cost.ts): the last 14 days...
+    {
+      method: "GET",
+      path: /^\/api\/costs\/features$/,
+      handle: async () => {
+        const now = Date.now();
+        const from = new Date(now - 14 * 864e5).toISOString();
+        const [open, closed, approvals] = await Promise.all([pc.openIssues(), pc.closedSince(from, "500"), records.list("recent", { limit: 1000 })]);
+        return recentFeatures([...open, ...closed], store.usageByRun(from), approvals, now);
+      },
+    },
+    // ...and one task's own tree, for its page: null when nothing is delegated under it.
+    {
+      method: "GET",
+      path: /^\/api\/issues\/([^/]+)\/feature-cost$/,
+      handle: async (m) => {
+        const { issue } = await ownIssue(decodeURIComponent(m[1]!));
+        const { tasks, truncated } = await descendants(issue, (id) => pc.children(id));
+        if (!tasks.length) return { cost: null };
+        const ids = [issue, ...tasks].flatMap((i) => [i.id, i.identifier]);
+        return { cost: featureCost(issue, tasks, store.usageByRun("", ids), await records.list("recent", { limit: 1000 }), Date.now(), truncated) };
+      },
     },
     // Read-only module catalog (compiled config/modules.json), for Settings > Modules.
     { method: "GET", path: /^\/api\/modules$/, handle: async () => ({ modules: moduleStates(readFileSync(process.env.BOARD_MODULES_FILE ?? "/config/modules.json", "utf8")), advisories: await records.advisories().catch(() => []) }) },

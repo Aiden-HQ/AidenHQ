@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { SignInRequired, api } from "./api";
-import type { CostLedger, CostRow, CostTop, CostWindow, Costs, LedgerMetrics, LedgerPeriod } from "./types";
+import { duration } from "./FeatureCost";
+import type { FeatureCost, CostLedger, CostRow, CostTop, CostWindow, Costs, LedgerMetrics, LedgerPeriod } from "./types";
 
 // The Costs tab: billed spend from the model gateway's ledger (src/cost-ledger.ts), aggregated on the board.
 //  1. Overview: today / 7 / 30 days against the period before, the OpenRouter key's limit, agents nearest their day cap.
@@ -222,6 +223,7 @@ export function CostsView({ onSignIn }: { onSignIn: () => void }) {
               <DepartmentCard d={d} />
             </div>
             <WastedCard d={d} />
+            <FeaturesCard onSignIn={onSignIn} />
             <section ref={drill} className="cost-drill-anchor">
               {focus && <Drill top={top.key === topKey ? top.data : null} loading={top.loading} error={top.error} label={view.agent ? (d.agents.find((a) => a.agentId === view.agent)?.name ?? "This agent") : short(view.model!)} onClose={() => set({ agent: null, model: null })} />}
             </section>
@@ -754,6 +756,52 @@ function TaskCard({ d }: { d: CostLedger }) {
           </li>
         ))}
       </ol>
+    </section>
+  );
+}
+
+/** The last 14 days' features (a top-level task and what was delegated under it): what each cost and how long it took. */
+function FeaturesCard({ onSignIn }: { onSignIn: () => void }) {
+  const { data, error } = useLoad("features", () => api.features(), onSignIn);
+  const cols: Col<FeatureCost>[] = [
+    { key: "name", label: "Feature", cls: "ct-name", value: (r) => r.createdAt, render: (r) => (
+      <a href={`#/t/${encodeURIComponent(r.identifier)}`} className="ct-strong" title={r.title}>
+        <span className="cost-top-id">{r.identifier}</span> {r.title}
+      </a>
+    ) },
+    { key: "usd", label: "Spend", cls: "ct-usd", value: (r) => r.usd, render: (r) => usd(r.usd) },
+    { key: "elapsed", label: "Elapsed", value: (r) => r.elapsedMs, render: (r) => `${duration(r.elapsedMs)}${r.running ? " so far" : ""}`, title: "From the first task's creation to the last completion or merge (to now while work is open)" },
+    { key: "jobs", label: "Jobs", value: (r) => r.jobs, render: (r) => String(r.jobs) },
+    { key: "jobtime", label: "Job time", cls: "ct-wide", value: (r) => r.jobMs, render: (r) => (r.jobs ? duration(r.jobMs) : "—"), title: "The time Engineer jobs ran: the span of each job's model calls" },
+    { key: "prs", label: "PRs merged", value: (r) => r.prs, render: (r) => String(r.prs) },
+    { key: "tasks", label: "Tasks", cls: "ct-wide", value: (r) => r.tasks, render: (r) => String(r.tasks) },
+  ];
+  const { head, sorted } = useSort(cols, "name");
+  return (
+    <section className="cost-card" aria-labelledby="cost-features">
+      <div className="cost-card-head">
+        <h2 id="cost-features">Features, last 14 days</h2>
+        <p className="muted">
+          A task with everything delegated under it.
+          {data && data.unattributed.calls > 0 && ` ${compact(data.unattributed.calls)} calls (${usd(data.unattributed.usd)}) named no task and are in none.`}
+        </p>
+      </div>
+      {error && <div className="offline cost-error">Couldn't load features: {error}</div>}
+      {data && !data.features.length && <p className="muted">No task with delegated work was started in the last 14 days.</p>}
+      {data && data.features.length > 0 && (
+        <div className="ct ct-features" role="table" aria-label="Features">
+          {head}
+          {sorted(data.features).map((r) => (
+            <div key={r.identifier} role="row" className="ct-row">
+              {cols.map((c) => (
+                <span key={c.key} role="cell" className={c.cls}>
+                  {c.render ? c.render(r) : String(c.value(r))}
+                </span>
+              ))}
+            </div>
+          ))}
+        </div>
+      )}
     </section>
   );
 }

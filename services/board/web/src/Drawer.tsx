@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { FeatureCostStrip } from "./FeatureCost";
 import { LineageStrip } from "./Lineage";
 import { api } from "./api";
 import { Avatar, Chips, CloseIcon, CrewAvatar, MergeMenu, MoveMenu, Plan, SnoozeMenu, memberIssue } from "./components";
@@ -251,6 +252,7 @@ function IssueBody({ issue, focus, board, busy, update, setStatus, onClose, onMo
         </div>
       </div>
       <LineageStrip refId={issue.identifier} title={issue.title} agent={(issue.assignee && who(issue.assignee)?.name) || "you"} crew={board.assignees} prefix={board.prefix} href={(id) => `#/t/${id}`} onSignIn={() => undefined} />
+      <FeatureCostStrip refId={issue.identifier} />
       {(issue.crew.length > 0 || (mine && editable && !closed)) && (
         <nav className="task-tabs" aria-label="The crew on this task">
           <button className={`task-tab${tab === "overview" ? " on" : ""}`} onClick={() => pick("overview")}>

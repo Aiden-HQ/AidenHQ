@@ -1249,6 +1249,8 @@ button.live-toggle:focus-visible { outline: 2px solid var(--accent); border-radi
 .ct-bad { color: var(--bad-text); font-weight: 600; }
 .ct-models .ct-row { grid-template-columns: minmax(140px, 2fr) 76px 52px 60px repeat(3, minmax(56px, 0.7fr)) 70px 80px 52px; }
 .ct-agents .ct-row { grid-template-columns: minmax(0, 2fr) 72px 56px 66px 112px; }
+.ct-features .ct-row { grid-template-columns: minmax(0, 2.4fr) 72px 96px 48px 72px 84px 52px; }
+.ct-features .ct-name a { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: inherit; text-decoration: none; }
 .ct-reconcile .ct-row { grid-template-columns: minmax(0, 2.4fr) 56px 76px 110px; }
 .ct-capcell { display: inline-flex; align-items: center; justify-content: flex-end; gap: 8px; width: 100%; }
 .ct-minibar { flex: 1 1 auto; max-width: 64px; height: 4px; border-radius: 999px; background: var(--cost-meter-track); overflow: hidden; }
@@ -1333,7 +1335,8 @@ a.cost-top-name:focus-visible { outline: 2px solid var(--accent); outline-offset
   .cost-overview { grid-template-columns: repeat(3, minmax(0, 1fr)); grid-template-rows: auto; }
   .cost-limits { grid-column: 1 / -1; grid-row: auto; }
   .cost-split, .cost-drill-grid { grid-template-columns: minmax(0, 1fr); }
-  .ct-models .ct-wide { display: none; }
+  .ct-models .ct-wide, .ct-features .ct-wide { display: none; }
+  .ct-features .ct-row { grid-template-columns: minmax(0, 2fr) 72px 96px 48px 84px; }
   .ct-models .ct-row { grid-template-columns: minmax(120px, 2fr) 76px 52px 60px 70px 52px; }
 }
 @media (max-width: 760px) {
@@ -1465,6 +1468,7 @@ a.cost-top-name:focus-visible { outline: 2px solid var(--accent); outline-offset
 .lin-badge.s-waiting::before { background: transparent; border: 1.5px solid currentColor; box-sizing: border-box; }
 
 .lin-strip { display: flex; align-items: center; gap: 6px; padding: 7px 20px; border-bottom: 1px solid var(--border); background: var(--surface-2); flex: none; min-width: 0; }
+.fc-strip { gap: 14px; }
 .lin-lead { font-size: 12.5px; font-weight: 600; white-space: nowrap; margin-right: 6px; }
 .lin-num { font-weight: 500; color: var(--muted); font-variant-numeric: tabular-nums; }
 .lin-chips { display: flex; gap: 6px; min-width: 0; overflow: hidden; flex: 0 1 auto; }

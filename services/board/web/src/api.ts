@@ -1,4 +1,4 @@
-import type { Advisory, ActivityItem, Agents, AsideMessage, Lineage, SettledItem, AppRow, Approval, Board, Bucket, Cadence, ChatAgent, ChatDetail, LaneAgent, LaneMessage, ChatRow, CostLedger, CostTop, CostWindow, Costs, IssueView, Models, ModuleRow, NeedsYou, RecurringView, RosterAgent, RunTrace, Scorecard, SettingChange, FiledChange, SettingsData, Update } from "./types";
+import type { FeatureCost, Features, Advisory, ActivityItem, Agents, AsideMessage, Lineage, SettledItem, AppRow, Approval, Board, Bucket, Cadence, ChatAgent, ChatDetail, LaneAgent, LaneMessage, ChatRow, CostLedger, CostTop, CostWindow, Costs, IssueView, Models, ModuleRow, NeedsYou, RecurringView, RosterAgent, RunTrace, Scorecard, SettingChange, FiledChange, SettingsData, Update } from "./types";
 import type { ConnectionsData } from "./connections";
 
 async function call<T>(method: string, path: string, body?: unknown): Promise<T> {
@@ -116,6 +116,8 @@ export const api = {
   apps: () => call<{ apps: AppRow[]; error?: string }>("GET", "/api/apps"),
   costs: (window: CostWindow) => call<Costs>("GET", `/api/costs?window=${window}`),
   costLedger: (q: URLSearchParams) => call<CostLedger>("GET", `/api/costs/ledger?${q}`),
+  featureCost: (ref: string) => call<{ cost: FeatureCost | null }>("GET", `/api/issues/${encodeURIComponent(ref)}/feature-cost`),
+  features: () => call<Features>("GET", "/api/costs/features"),
   costTop: (q: URLSearchParams) => call<CostTop>("GET", `/api/costs/top?${q}`),
   run: (id: string) => call<RunTrace>("GET", `/api/runs/${encodeURIComponent(id)}`),
   issue: (ref: string) => call<IssueView>("GET", `/api/issues/${encodeURIComponent(ref)}`),
