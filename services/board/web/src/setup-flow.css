@@ -16,3 +16,12 @@
 .setup-code { font: 600 28px/1.1 ui-monospace, SFMono-Regular, Menlo, monospace; letter-spacing: 0.08em; padding: 14px 16px; border-radius: 8px; background: var(--surface-2); border: 1px dashed var(--border-strong); user-select: all; }
 .setup-hint { margin: 0; font-size: 12.5px; color: var(--muted); }
 .setup-card > .btn { justify-self: start; }
+.setup-help, .setup-bad { font-size: 12px; font-weight: 400; }
+.setup-help { color: var(--muted); }
+.setup-bad { color: var(--bad-text); }
+.setup-field input[aria-invalid="true"] { border-color: var(--danger); }
+.setup-steps code { padding: 1px 5px; border-radius: 5px; background: var(--surface-2); border: 1px solid var(--border); font-size: 12.5px; word-break: break-all; }
+.setup-copy { margin-left: 6px; padding: 1px 7px; border-radius: 5px; border: 1px solid var(--border-strong); background: var(--surface); color: var(--accent); font: 600 11.5px/1.5 inherit; cursor: pointer; vertical-align: 1px; }
+.setup-copy:hover { background: var(--accent-soft); }
+.setup-stop p { margin: 0; font-size: 14px; line-height: 1.55; }
+.setup-paired { align-items: center; justify-content: space-between; }

@@ -2,6 +2,7 @@
 // saved by the kernel (account ops save_secret and setup_status, as the signed-in admin); pairing is the module service's own
 // endpoint, reached with the module's pair token (read from the vault by name, never sent to the browser).
 import { existsSync, readFileSync } from "node:fs";
+import { isIP } from "node:net";
 import { z } from "zod";
 import { AccountError, type AccountSession, type KernelAuth } from "./kernel-auth.js";
 import type { Store } from "./store.js";
@@ -16,9 +17,21 @@ export interface SetupFlowPoint {
   wizard?: boolean;
   steps: string;
   secrets?: string[];
+  /** Each secret's paste field (compile fills it from the secret's `setup:`): the board shows the label and help and checks the pattern. */
+  fields?: { secret: string; label: string; pattern: string; help?: string }[];
   signin?: string;
+  /** A connect path the board serves for a connection that isn't a board.signins entry. */
+  connect_url?: string;
+  /** Shown instead of the steps and fields when the board's address is a bare IP. */
+  needs_name?: string;
   pair_url?: string;
   pair_token?: string;
+}
+
+/** Whether a host has a name: not an IP literal, loopback excepted (OAuth providers accept http://127.0.0.1 redirects). */
+export function namedHost(host: string): boolean {
+  const h = host.replace(/^\[(.*)\](:\d+)?$/, "$1").replace(/^([^:]+):\d+$/, "$1");
+  return !isIP(h) || h === "::1" || h.startsWith("127.");
 }
 
 /** The compiled board.setup_flows, ordered; the pair token's value is read once from `<secrets>/<pair_token>`. */
@@ -38,10 +51,14 @@ export interface SetupFlowDeps {
   store: Store;
   /** The sign-in state of a flow's `signin` id: true when connected. */
   signedIn: (id: string) => Promise<boolean>;
+  /** A connect path's connection: true when signed in, undefined when the board serves no such path. */
+  connected: (path: string) => Promise<boolean | undefined>;
+  /** The board's own address, where its sign-ins return (the flows' {board_url}). */
+  boardUrl: (host: string) => string;
   fetchImpl?: typeof fetch;
 }
 
-export type SetupRoute = { method: string; path: RegExp; handle: (m: RegExpMatchArray, body: unknown, who: AccountSession) => Promise<unknown> };
+export type SetupRoute = { method: string; path: RegExp; handle: (m: RegExpMatchArray, body: unknown, who: AccountSession, host: string) => Promise<unknown> };
 
 const DISMISSED = "setup_dismissed";
 
@@ -76,19 +93,22 @@ export function setupFlowRoutes(d: SetupFlowDeps): SetupRoute[] {
     {
       method: "GET",
       path: /^\/api\/setup-flows$/,
-      handle: async (_m, _b, who) => {
+      handle: async (_m, _b, who, host) => {
         const gone = new Set(dismissed());
         const flows = await Promise.all(
-          d.flows.map(async ({ token: _t, pair_token: _p, ...f }) => {
+          d.flows.map(async ({ token: _t, pair_token: _p, connect_url, ...f }) => {
             const full = d.flows.find((x) => x.module === f.module)!;
             const present = f.secrets?.length ? (await d.accounts.call<{ secrets: Record<string, boolean> }>("setup_status", who, { module: f.module })).secrets : {};
-            const signedIn = f.signin ? await d.signedIn(f.signin) : true;
+            // A connect path counts only if the board serves it; then its connection's state is the sign-in's.
+            const connected = connect_url ? await d.connected(connect_url) : undefined;
+            const signedIn = f.signin ? await d.signedIn(f.signin) : connect_url ? connected === true : true;
             const paired = await pairedOf(full);
             const done = (f.secrets ?? []).every((s) => present[s]) && signedIn && paired;
-            return { ...f, present, signedIn, paired, done, dismissed: gone.has(f.module) };
+            return { ...f, ...(connected !== undefined ? { connect_url } : {}), present, signedIn, paired, done, dismissed: gone.has(f.module) };
           }),
         );
-        return { flows };
+        const boardUrl = d.boardUrl(host);
+        return { flows, board_url: boardUrl, named: namedHost(new URL(boardUrl).host) };
       },
     },
     {
@@ -118,15 +138,20 @@ export function setupFlowRoutes(d: SetupFlowDeps): SetupRoute[] {
       handle: async (m, _b, who) => {
         // Like the kernel's save_secret: only the owner pairs a channel.
         if (!who.account.owner) throw new AccountError(403, "only the owner can pair a channel");
+        // minted_at (the board's clock, like the service's paired_at): a pairing after it is this code's, so a re-pair shows.
+        const minted_at = Date.now();
         const { code, link } = (await pairCall(flow(m[1]!), "POST")) as { code?: string; link?: string };
-        return { code, ...(link ? { link } : {}) };
+        return { code, ...(link ? { link } : {}), minted_at };
       },
     },
     {
       method: "GET",
       path: /^\/api\/setup-flows\/([a-z0-9-]{1,63})\/pair$/,
-      handle: async (m) => ({ paired: Boolean((await pairCall(flow(m[1]!), "GET")).paired) }),
+      handle: async (m) => {
+        const { paired, paired_at } = await pairCall(flow(m[1]!), "GET");
+        return { paired: Boolean(paired), ...(paired_at != null ? { paired_at } : {}) };
+      },
     },
   ];
-  return routes.map((r) => ({ ...r, handle: async (m, b, who) => (ready(who), r.handle(m, b, who)) }));
+  return routes.map((r) => ({ ...r, handle: async (m, b, who, host) => (ready(who), r.handle(m, b, who, host)) }));
 }

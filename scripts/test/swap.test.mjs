@@ -18,6 +18,7 @@ const COUPLED = {
   "chief-of-staff": "agents in other modules report to chief-of-staff (reports_to names an agent, not a capability)",
   platform: "coach delegates to fleet-engineer by key (delegate_to names an agent, not a capability)",
   grading: "tasks-mcp joins grading's network (3h): its stub needs a service",
+  "channel-telegram": "chat-lane's lane joins channel-telegram's network to ask which chat is paired (GET /owner-chat): its stub needs a service",
 };
 
 test("each essential module swapped for a stub of its contract: the rest compile", () => {

@@ -48,9 +48,10 @@ export function kernelCardDiff(a) {
  * (agentReview) both build it here, so the check sees exactly what the card will. `a`: { action, target, sentence, panel? };
  * `input`: the runner's tier input with the diff; `previous`: its own checks' findings for the action on the task.
  */
-export function reviewRequest(a, input, chain, { component = "AI reviewer", siblings, sources, requesterModel = "", previous = [] } = {}) {
+export function reviewRequest(a, input, chain, { component = "AI reviewer", siblings, sources, requesterModel = "", previous = [], product = [] } = {}) {
   return {
-    card: { action: a.action, rule: input.rule, target: a.target, sentence: a.sentence, reason: input.reason },
+    // `product`: the repositories that are one product for scope (the product repo and the official modules repo), code's own.
+    card: { action: a.action, rule: input.rule, target: a.target, sentence: a.sentence, reason: input.reason, ...(product.length ? { product } : {}) },
     diff: input.diff,
     files: input.files,
     chain,

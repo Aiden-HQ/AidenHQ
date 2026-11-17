@@ -78,6 +78,10 @@
       "source": "./flowok"
     },
     {
+      "name": "flowstray",
+      "source": "./flowstray"
+    },
+    {
       "name": "glean",
       "source": "./glean"
     },
