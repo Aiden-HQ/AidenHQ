@@ -75,13 +75,19 @@ $0); use the OpenRouter key limit instead.
 
 ## Modules and the instance
 
-AidenHQ is a small core (Aiden, Researcher, DevOps Engineer, Agent Architect, Agent Coach, Platform Engineer, board, runner,
-`apps-mcp`, `tasks`, the owner channel) plus optional modules in `modules/<name>/`: `open-loops`,
-`meetings`, `engineering`, `design`, `security`, `fleet-ops`, `librarian`, `ci`, `warehouse`, and the connections
-`slack`, `google`, `github`, `glean`, `jira`, `primer`, `grafana`, `clickhouse`. Your configuration lives in a
-separate private **instance repo**: `instance.yaml` (pinned `product:` commit, `modules`, `settings`, limited
-`overrides`), `apps.yaml` and `agents/`. To enable a module, add it to `modules:` in `instance.yaml` and apply. See
-[docs/configuration.md](docs/configuration.md).
+This repo is the kernel: gates, identity, sandbox, metering, the runner, the board and setup. The agents, connections,
+apps, engines and channels are modules in a separate repo,
+[aidenhq-modules](https://github.com/Aiden-HQ/aidenhq-modules) (the official marketplace). Releases and the installer
+live in a third repo, [aidenhq-distro](https://github.com/Aiden-HQ/aidenhq-distro): its `releases/<release>.json`
+manifests pin a kernel sha, a modules sha and each module's sha.
+
+`modules-pin.json` here names the modules repo and the commit this product is tested against.
+`scripts/modules-repo/materialize.mjs` puts that tree at `modules/` (gitignored) for the compiler, builds and CI. An
+instance can pin its own sha with an `aidenhq` marketplace entry in `instance.yaml`, which wins over the pin.
+
+Your configuration lives in a separate private **instance repo**: `instance.yaml` (pinned `product:` commit, `modules`,
+`marketplaces`, `settings`, limited `overrides`), `apps.yaml` and `agents/`. To enable a module, add it to `modules:` in
+`instance.yaml` and apply. See [docs/configuration.md](docs/configuration.md).
 
 ## Security posture
 
