@@ -6,30 +6,29 @@
 // Cursor writes go through the superuser psql path apps-mcp already uses, with values passed as psql variables;
 // `readonly` has no write grant.
 import { createHash } from "node:crypto";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import pg from "pg";
 import { WAREHOUSE } from "./database.js";
 
-/** The views source_new serves and which columns its filters use (tsv: full-text `q`). */
-export const VIEWS: Record<string, { time: string; channel?: string; repo?: string; project?: string; tsv?: boolean; skip?: string }> = {
-  "src_slack.messages": { time: "ingested_at", channel: "channel_id", tsv: true },
-  "src_slack.threads": { time: "ingested_at", channel: "channel_id" },
-  "src_slack.changes": { time: "observed_at", channel: "channel_id" },
-  "src_github.issues": { time: "ingested_at", repo: "repo", tsv: true },
-  "src_github.project_items": { time: "ingested_at", repo: "repo", project: "project", tsv: true },
-  "src_github.changes": { time: "observed_at", repo: "scope", project: "scope" },
-  "src_jira.issues": { time: "ingested_at", project: "project", tsv: true },
-  "src_jira.sprints": { time: "ingested_at" },
-  "src_jira.confluence_pages": { time: "ingested_at", project: "space", tsv: true },
-  "src_jira.changes": { time: "observed_at", project: "scope" },
-  "src_meetings.meetings": { time: "ingested_at", tsv: true },
-  "src_meetings.changes": { time: "observed_at" },
-  "src_docs.docs": { time: "ingested_at", project: "container", tsv: true },
-  "src_docs.changes": { time: "observed_at", project: "scope" },
-  // A reviewed false positive (verdict not-affected, current until the finding changes) isn't new work.
-  "src_security.findings": { time: "ingested_at", project: "target", tsv: true, skip: "verdict IS DISTINCT FROM 'not-affected'" },
-  "src_security.changes": { time: "observed_at", project: "scope" },
-};
+type View = { time: string; channel?: string; repo?: string; project?: string; tsv?: boolean; skip?: string };
+/** One source as its module contributes it to the warehouse's point (modules/warehouse/schemas/sources.json). */
+export type Source = { schema: string; about: string; identity?: "users"; module: string; views: ({ name: string; exclude?: { column: string; value: string } } & Omit<View, "skip">)[] };
+
+/** The sources compiled to config/points/warehouse.json (`sources`); none when the warehouse module is off. */
+export const SOURCES: Source[] = (() => {
+  const file = process.env.WAREHOUSE_POINTS_FILE ?? "/config/points/warehouse.json";
+  const list: Source[] = existsSync(file) ? (JSON.parse(readFileSync(file, "utf8")).sources ?? []) : [];
+  for (const s of list) if (s.schema === "src_meta" || list.filter((x) => x.schema === s.schema).length > 1) throw new Error(`warehouse.sources: ${s.schema} is contributed twice or is the warehouse's own: one module per schema`);
+  return list;
+})();
+
+/**
+ * The views source_new serves and which columns its filters use (tsv: full-text `q`). The schema checks every name as an
+ * identifier and an exclude value as a plain word, so the SQL built from them carries nothing a module wrote freely.
+ */
+export const VIEWS: Record<string, View> = Object.fromEntries(SOURCES.flatMap((s) => s.views.map(({ name, exclude, ...v }) => [
+  `${s.schema}.${name}`, { ...v, ...(exclude ? { skip: `${exclude.column} IS DISTINCT FROM '${exclude.value}'` } : {}) },
+])));
 
 export interface Filter { channels?: string[]; repos?: string[]; projects?: string[]; q?: string; include_baseline?: boolean }
 

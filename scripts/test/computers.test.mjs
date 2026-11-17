@@ -41,7 +41,7 @@ test("not yet in a computer: an agent in trial (its limits run inside the box); 
 
 test("the design module: designer and reviewer run in computers with repo-checkout; only the reviewer may post design-review", () => {
   const dir = inst();
-  writeFileSync(join(dir, "instance.yaml"), YAML.stringify({ product: "0".repeat(40), modules: ["design"], settings: { timezone: "Europe/London", owner_name: "Sam", instance_name: "acme", owner_email: "o@x" } }));
+  writeFileSync(join(dir, "instance.yaml"), YAML.stringify({ product: "0".repeat(40), modules: ["design"], settings: { timezone: "Europe/London", owner_name: "Sam", instance_name: "acme", owner_email: "o@x", product_repo: "acme/aidenhq" } }));
   const r = compile(product, dir);
   const d = r.paperclip.agents["ui-designer"], v = r.paperclip.agents["ui-reviewer"];
   assert.equal(d.image, "agent-base");

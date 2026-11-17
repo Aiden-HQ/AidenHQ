@@ -493,8 +493,7 @@ export function GoogleBanner({ google, canReconnect }: { google: Board["google"]
 }
 
 /**
- * A banner when AidenHQ isn't signed in to a service behind an MCP proxy yet (Glean, Grafana, ClickHouse,
- * Jira), or it stopped accepting the sign-in, with Connect / Reconnect on the laptop (it returns to its loopback address).
+ * A banner when AidenHQ isn't signed in to a service behind an MCP proxy yet (a module's board.signins), or it stopped accepting the sign-in, with Connect / Reconnect on the laptop (it returns to its loopback address).
  */
 function SignInBanner({ name, path, status, canConnect, missing, stopped }: { name: string; path: string; status: SignInStatus | null; canConnect: boolean; missing: string; stopped: string }) {
   if (!status?.configured || (status.state !== "missing" && status.state !== "expired")) return null;
@@ -527,10 +526,9 @@ function SignInBanner({ name, path, status, canConnect, missing, stopped }: { na
 export function SignInBanners({ board, canConnect }: { board: Board; canConnect: boolean }) {
   return (
     <>
-      <SignInBanner name="Glean" path="glean" status={board.glean} canConnect={canConnect} missing="The Researcher can't search company knowledge until it is." stopped="The Researcher's company search is paused." />
-      <SignInBanner name="Grafana" path="grafana" status={board.grafana} canConnect={canConnect} missing="The Engineers can't read logs and metrics until it is." stopped="The Engineers can't read logs and metrics." />
-      <SignInBanner name="ClickHouse" path="clickhouse" status={board.clickhouse} canConnect={canConnect} missing="The Engineers can't query it until it is." stopped="The Engineers can't query it." />
-      <SignInBanner name="Jira" path="jira" status={board.jira} canConnect={canConnect} missing="The agents can't read it until it is." stopped="The agents can't read it." />
+      {(board.signIns ?? []).map((s) => (
+        <SignInBanner key={s.id} name={s.label} path={s.id} status={s.status} canConnect={canConnect} missing={s.missing} stopped={s.stopped} />
+      ))}
     </>
   );
 }

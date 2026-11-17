@@ -15,5 +15,5 @@ for name in browser agent-base engineer; do
   echo "building computer image $tag"
   docker build --quiet ${base:+--build-arg BASE="$base"} -t "$tag" "services/computer/images/$name" >/dev/null
 done
-# apps-mcp's renderer runs the browser image by this name (services/apps-mcp/src/main.ts): it always names the current build.
+# apps-mcp's renderer runs the browser image by this name (modules/apps-platform/apps-mcp/src/main.ts): it always names the current build.
 docker tag "$(jq -r '.images.browser' config/computers.json)" aidenhq/computer-browser:current

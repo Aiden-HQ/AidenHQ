@@ -1,5 +1,15 @@
 name: google
 description: "Google Workspace: Gmail, Calendar, Drive and Docs (reads)."
+requires:
+  - warehouse # its source schema lives in the shared warehouse
+# Its schema and the views agents read with source_new (the warehouse's point, modules/warehouse/schemas/sources.json).
+contributes:
+  warehouse.sources:
+    - schema: src_docs
+      about: "src_docs.docs (Drive metadata + a cheap summary: a pointer, never evidence; read the doc live before acting) / changes"
+      views:
+        - { name: docs, time: ingested_at, project: container, tsv: true }
+        - { name: changes, time: observed_at, project: scope }
 connections:
   google_workspace:
     setup: "Press Connect Google on the board (on an ops/setup.sh host, from its https address; otherwise from http://127.0.0.1:3121). By hand: `scripts/google-auth.sh <client.json>` once per account (`--email`, `--primary`)."

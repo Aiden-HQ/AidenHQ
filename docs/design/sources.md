@@ -55,7 +55,7 @@ All writers share one `SourceStore` (a byte-identical copy lives in each connect
 
 ## Reading
 
-apps-mcp (`services/apps-mcp/src/sources.ts`) gives agents three tools:
+apps-mcp (`modules/apps-platform/apps-mcp/src/sources.ts`) gives agents three tools:
 
 - `warehouse_query`: one read-only SELECT as the `readonly` login (15 s limit, 200 rows, size-capped). Grants are the
   real control. Rows are untrusted data.

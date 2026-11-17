@@ -289,7 +289,7 @@ function instanceParts(s) {
 }
 
 /**
- * An app entry as apps-mcp's AppSchema leaves it (services/apps-mcp/src/registry.ts): defaults, and `database` / `api` adding
+ * An app entry as apps-mcp's AppSchema leaves it (modules/apps-platform/apps-mcp/src/registry.ts): defaults, and `database` / `api` adding
  * their network and secrets. Kept in step with it by hand; the tiers test pins the cases.
  */
 export function normalizeApp(raw) {

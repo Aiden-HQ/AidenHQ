@@ -95,7 +95,7 @@ COMMENT ON TABLE src_meta.cursor IS 'Each consumer agent''s read position (src_m
 GRANT SELECT ON src_meta.cursor TO agents_open;
 
 -- People across sources: one row per human, and each source identity (src_<source>.users) linked to one. apps-mcp
--- (services/apps-mcp/src/people.ts) is the one writer: it proposes links only on an exact email match across sources,
+-- (modules/apps-platform/apps-mcp/src/people.ts) is the one writer: it proposes links only on an exact email match across sources,
 -- never on names. Approving (or rejecting) is the owner's alone; a proposal is never overwritten.
 CREATE TABLE IF NOT EXISTS src_meta.person (
   person_id bigserial PRIMARY KEY,

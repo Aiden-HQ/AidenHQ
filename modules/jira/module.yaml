@@ -1,5 +1,23 @@
 name: jira
 description: "Jira (and Confluence reads) through Atlassian's remote MCP server, signed in as the owner on the board."
+requires:
+  - warehouse # its source schema lives in the shared warehouse
+  - board # its sign-in banner
+# Its sign-in on the board (modules/board/schemas/signins.json), and its schema and the views agents read with source_new
+# (modules/warehouse/schemas/sources.json).
+contributes:
+  board.signins:
+    - { id: jira, label: Jira, status_url: "http://jira-mcp:8091/auth/status", connect_url: /jira/connect, callback: /jira/callback,
+        missing: "The agents can't read it until it is.", stopped: "The agents can't read it." }
+  warehouse.sources:
+    - schema: src_jira
+      about: "src_jira.issues / sprints / confluence_pages (Confluence page metadata + a cheap summary: a pointer, never evidence; read the page live) / changes / users"
+      identity: users
+      views:
+        - { name: issues, time: ingested_at, project: project, tsv: true }
+        - { name: sprints, time: ingested_at }
+        - { name: confluence_pages, time: ingested_at, project: space, tsv: true }
+        - { name: changes, time: observed_at, project: scope }
 settings:
   # The Atlassian site every call is pinned to (its cloudId is looked up from the signed-in account's sites).
   jira_url:

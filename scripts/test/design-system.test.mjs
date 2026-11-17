@@ -4,7 +4,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readdirSync, readFileSync } from "node:fs";
 
-const dir = new URL("../../modules/core/design-system/", import.meta.url);
+const dir = new URL("../../modules/apps-platform/design-system/", import.meta.url);
 const tokens = readFileSync(new URL("tokens.css", dir), "utf8");
 const lum = (h) => {
   const c = [1, 3, 5].map((i) => parseInt(h.slice(i, i + 2), 16) / 255).map((v) => (v <= 0.03928 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4));
@@ -87,7 +87,7 @@ test("the shadcn theme reads only variables that tokens.css or the theme itself 
   assert.ok(read.length > 40);
   for (const v of read) assert.ok(defined.has(v), `shadcn.css reads ${v}, which nothing defines`);
   // Every shadcn colour the starter's components use has a Tailwind colour.
-  const ui = new URL("../templates/app/src/components/ui/", dir);
+  const ui = new URL("../starter/src/components/ui/", dir);
   const colours = new Set([...theme.matchAll(/--color-([\w-]+):/g)].map((m) => m[1]));
   for (const f of readdirSync(ui)) {
     const src = readFileSync(new URL(f, ui), "utf8");

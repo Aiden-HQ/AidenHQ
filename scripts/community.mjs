@@ -7,7 +7,7 @@ const API = "https://api.github.com";
 const MARKER = "<!-- aidenhq-triage -->";
 const LABEL = "community";
 const TITLE = /^(feat|fix|docs|chore|test|refactor|perf|ci|build|style|revert)(\([a-z0-9][a-z0-9._/-]*\))?!?: \S/;
-const GATE = [/^services\/runner\/src\/(tiers|review)\./, /^kernel\//, /^services\/gate\//, /^ops\//, /^scripts\/paperclip-setup\.mjs$/, /^\.github\//];
+const GATE = [/^services\/runner\/src\/(tiers|review)\./, /^kernel\//, /^modules\/apps-platform\/gate\//, /^ops\//, /^scripts\/paperclip-setup\.mjs$/, /^\.github\//];
 
 const strip = (body) => (body ?? "").replace(/<!--[\s\S]*?-->/g, "");
 

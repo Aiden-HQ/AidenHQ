@@ -72,5 +72,5 @@ passing (it builds, serves and checks the CSP), and an existing app's server mus
 - A seed or sample-data mode still runs the app locally (you and the reviewer screenshot it), and new states are reachable with
   `?preview=loading|error|empty` or the seed.
 
-In the product repo the source is `modules/core/design-system/` and `modules/core/templates/app/`; after changing either
+In the product repo the source is `modules/apps-platform/design-system/` and `modules/apps-platform/starter/`; after changing either
 run `node scripts/sync-shared.mjs` (the computers carry copies).

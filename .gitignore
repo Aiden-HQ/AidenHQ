@@ -35,6 +35,7 @@ config/cloudflared.yml
 config/module-data.json
 config/exposure
 config/kernel/
+config/points/
 
 # Personal, untracked notes for coding agents
 CLAUDE.local.md

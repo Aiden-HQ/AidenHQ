@@ -1,5 +1,17 @@
 name: channel-slack
 description: "The instance's Slack app: the live listener (Socket Mode) that feeds triage and src_slack, the owner's Slack command channel as chat with Aiden, notify_owner as a Slack DM, and slack_post (the channel-slack.post write kind)."
+requires:
+  - warehouse # its source schema lives in the shared warehouse
+# Its schema and the views agents read with source_new (the warehouse's point, modules/warehouse/schemas/sources.json).
+contributes:
+  warehouse.sources:
+    - schema: src_slack
+      about: "src_slack.messages / threads / changes / users"
+      identity: users
+      views:
+        - { name: messages, time: ingested_at, channel: channel_id, tsv: true }
+        - { name: threads, time: ingested_at, channel: channel_id }
+        - { name: changes, time: observed_at, channel: channel_id }
 # A channel (channel@1): what the owner writes in their command channel is posted as theirs (stamped [slack]).
 privileged: [ speaks-as-owner ]
 providers:

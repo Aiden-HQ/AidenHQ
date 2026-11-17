@@ -2,6 +2,15 @@ name: security
 description: "Security Watch (CVE scans of everything we run, verified with the web, fix tasks) and the Red Teamer (attacks our own apps and agents, reports with a proof of concept, never patches)."
 requires:
   - warehouse
+# Its schema and the views agents read with source_new (the warehouse's point, modules/warehouse/schemas/sources.json).
+# A reviewed false positive (verdict not-affected, current until the finding changes) isn't new work.
+contributes:
+  warehouse.sources:
+    - schema: src_security
+      about: "src_security.findings (CVE and App Auditor findings in what we run, by target) / changes"
+      views:
+        - { name: findings, time: ingested_at, project: target, tsv: true, exclude: { column: verdict, value: not-affected } }
+        - { name: changes, time: observed_at, project: scope }
 settings:
   # An App Auditor MCP server behind Cloudflare Access (optional). Used only when this URL is set and its Access service
   # token is in the vault (app_auditor_cf_client_id / _secret); empty = off.

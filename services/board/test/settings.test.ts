@@ -50,7 +50,7 @@ const app = createApp({
   staticDir: "/nonexistent",
   timezone: "Europe/London",
   session: (req) => (req.headers.cookie === "signed-in" ? { accountId: "owner", role: "admin" as const } : null),
-  glean: { status: async () => ({ state: "missing", configured: false, since: "2026-11-13T00:00:00Z", detail: "GLEAN_MCP_URL not set" }) } as never,
+  signIns: [{ id: "glean", label: "Glean", connect: "/glean/connect", callback: "/callback", missing: "m", stopped: "s", auth: { status: async () => ({ state: "missing", configured: false, since: "2026-11-13T00:00:00Z", detail: "GLEAN_MCP_URL not set" }) } as never }],
 });
 let port = 0;
 beforeAll(async () => {

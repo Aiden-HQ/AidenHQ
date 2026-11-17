@@ -1,5 +1,12 @@
 name: grafana
 description: Grafana for the runner's Engineer jobs (loopback MCP).
+requires:
+  - board # its sign-in banner
+# Its sign-in on the board (the board's point, modules/board/schemas/signins.json).
+contributes:
+  board.signins:
+    - { id: grafana, label: Grafana, status_url: "http://grafana-mcp:8087/auth/status", connect_url: /grafana/connect, callback: /grafana/callback,
+        missing: "The Engineers can't read logs and metrics until it is.", stopped: "The Engineers can't read logs and metrics." }
 settings:
   # Your Grafana Cloud stack, e.g. https://acme.grafana.net. Set it on the board (Settings, Connections); empty: Grafana is off.
   grafana_url:

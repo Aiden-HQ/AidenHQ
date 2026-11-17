@@ -71,7 +71,7 @@ closed list, and each costs a pinned image, never a host package. Decision D5 as
 | **passt (pasta)** | Each job gets its own network namespace | Engineer jobs | **Should be no** (today: a warning on 22.04) | Jobs share the host network: they reach the board's loopback listener, Paperclip 3100, the gate, apps and the LAN. | **Load-bearing.** The board's "every loopback route needs a session" rule exists because jobs can reach loopback. In public mode a job would also reach the host's own public 443. Recommend refusing Engineer jobs without pasta, so 22.04 runs no Engineer jobs (D3). |
 | **nftables** (and `aidenhq-public-fw`) | Host firewall: the public interface's allowlist | Every host with a public address; the computer and CI nets | **No** (more load-bearing in public mode) | Docker-published ports and every host listener become reachable on the public IP. | Required. The rule set changes per mode (section 4.2). |
 | **ufw** | Not installed by us | n/a | n/a | n/a | When ufw is already active, its default deny drops 443. Setup detects `ufw status` = active and adds `ufw allow 443/tcp` in public mode (or tells the owner). It never installs ufw. |
-| **gVisor `runsc`** (gVisor apt repo) | Docker runtime for untrusted apps (`runtime: runsc`, `services/apps-mcp/src/policy.ts:148`) | apps-platform, `untrusted` apps only | **Yes, as part of apps-platform** (a default module, so installed by default) | Deploying an `untrusted` app fails (Docker: unknown runtime). That is a fail-closed failure, which is right. | None as long as there is no fallback to `runc`. Keep `verify-security` checking that every untrusted app runs `runsc`. |
+| **gVisor `runsc`** (gVisor apt repo) | Docker runtime for untrusted apps (`runtime: runsc`, `modules/apps-platform/apps-mcp/src/policy.ts:148`) | apps-platform, `untrusted` apps only | **Yes, as part of apps-platform** (a default module, so installed by default) | Deploying an `untrusted` app fails (Docker: unknown runtime). That is a fail-closed failure, which is right. | None as long as there is no fallback to `runc`. Keep `verify-security` checking that every untrusted app runs `runsc`. |
 | **Tailscale (host package `tailscale`, apt repo, `tailscale set --operator`)** | Tailnet node for the board, plus SSH | Today: the board's HTTPS address, setup's `BOARD_HOST`, `tailscale serve` | **Yes, as an exposure mode, run as a container** (no host package) | Nothing in public or local mode. The board is reached by IP or tunnel. | Without it the board is on the Internet behind password and TOTP; section 4 is the mitigation. The containerised node can't proxy the host's SSH. Owners who want SSH on the tailnet install host Tailscale themselves (`--host-tailscale`, documented, not default). |
 | **`tailscale/tailscale` image (`apps-edge`)** | The apps' own tailnet node | Exposed non-shared apps | **Yes** (generated only in `tailscale` mode; today it sits in `compose.yaml` unconditionally) | Unshared apps aren't reachable. In public mode they go through the gate instead (section 4.6). | None, provided `AIDENHQ_ANONYMOUS=tailnet` is set **only** for apps behind this node (section 4.6). |
 | **cloudflared image** | Tunnel for shared apps (exists) | `settings.edge` with `access` or `password` login | **Yes** (already) | Shared apps via Cloudflare | none |
@@ -326,9 +326,9 @@ touches `tiers.mjs`, so U5 needs the paid reviewer eval at 100%.
 
 Today:
 - An exposed, unshared app is served by `apps-edge` at `https://<user>-apps.<tailnet>:<port>`.
-- It runs with `AIDENHQ_ANONYMOUS=tailnet` (`services/apps-mcp/src/policy.ts:166-179`): token-less callers are
+- It runs with `AIDENHQ_ANONYMOUS=tailnet` (`modules/apps-platform/apps-mcp/src/policy.ts:166-179`): token-less callers are
   accepted as anonymous, and the tailnet is the perimeter.
-- Shared apps go through the gate (`services/gate/gate.ts`), which maps by `Host` and has the `password` login.
+- Shared apps go through the gate (`modules/apps-platform/gate/gate.ts`), which maps by `Host` and has the `password` login.
 
 In public mode:
 - **With a domain**, every app goes through the gate. No app is exposed directly.
@@ -533,8 +533,8 @@ Migration of existing instances:
 | `compose.yaml` board `BOARD_LAN_HOSTS` default `aidenhq.local` | LAN or mDNS | Derived from the mode (U2) |
 | `services/board/src/accounts.ts:290, 514` | Peer = socket ("behind `tailscale serve` everyone shares one") | Trusted edge address (U1) |
 | `services/board/src/accounts.ts:732` `forwardedProto` | Anyone reaching 3121 may claim https | Kept; 3121 is loopback-only, asserted (U8) |
-| `services/apps-mcp/src/tailnet.ts`, `policy.ts:166-179` (`AIDENHQ_ANONYMOUS=tailnet`) | Exposure means the tailnet, and the tailnet is the perimeter | Anonymous only for `apps-edge` apps (U6) |
-| `services/gate/gate.ts:270` | `cf-connecting-ip` comes from cloudflared | Edge-secret-bound address (U6) |
+| `modules/apps-platform/apps-mcp/src/tailnet.ts`, `policy.ts:166-179` (`AIDENHQ_ANONYMOUS=tailnet`) | Exposure means the tailnet, and the tailnet is the perimeter | Anonymous only for `apps-edge` apps (U6) |
+| `modules/apps-platform/gate/gate.ts:270` | `cf-connecting-ip` comes from cloudflared | Edge-secret-bound address (U6) |
 | `scripts/edge.mjs` `header-jwt` `edge.front` | The front door reaches the gate over the tailnet | Kept (an opt-in mode) |
 | `scripts/host-serve.mjs`, `ops/apply-config.sh` prune, `verify-security.sh` "Tailnet" section | Host `tailscale serve` | Run against `edge-tailscale` in `tailscale` mode; skipped otherwise (U8) |
 | `ops/github-app-setup.mjs:29-83` | A LAN or tailnet address on `0.0.0.0:8765` | Loopback plus a tunnel (U3) |

@@ -43,6 +43,9 @@ import { addDays, nextWorkday, type Weekday } from "./recurrence.js";
 import { BUCKETS, isBucket, localDate, type Store } from "./store.js";
 import { AsideSchema, askGateway, asideMessages, holdsActive, lineageStatus, lineageTotal, modelOf, settleable, stillSettled, type LineageRow } from "./lineage.js";
 
+/** One module sign-in (board.signins), with its proxy client. */
+export interface SignIn { id: string; label: string; connect: string; callback: string; missing: string; stopped: string; auth: McpAuth }
+
 export interface AppOptions {
   /** The board key's client: every read and every write (all admins write as the owner, 2026-11-12). */
   paperclip: Paperclip;
@@ -78,14 +81,8 @@ export interface AppOptions {
   sessions?: SessionSources;
   /** Google sign-in state and re-consent; no banner and no reconnect without it. */
   google?: GoogleAuth;
-  /** Glean sign-in state and sign-in; no banner and no sign-in without it. */
-  glean?: McpAuth;
-  /** Grafana sign-in state and sign-in; no banner and no sign-in without it. */
-  grafana?: McpAuth;
-  /** ClickHouse sign-in state and sign-in; no banner and no sign-in without it. */
-  clickhouse?: McpAuth;
-  /** Jira sign-in state and sign-in; no banner and no sign-in without it (the jira module is off). */
-  jira?: McpAuth;
+  /** The modules' sign-ins through their MCP proxies (board.signins, config.ts): a banner and a Connect each. */
+  signIns?: SignIn[];
   /** The grading module's client (grading.ts); default: built from GRADING_URL and GRADING_BOARD_KEY_FILE. */
   grading?: Grading;
   /** "internal" mode: the runner's key (secret reviewer_key): its routes (grades, usage, jobs), never agents'. */
@@ -1122,20 +1119,20 @@ export function createApp(opts: AppOptions): Server {
       for (const [n, p] of results) if (p.ok) lastOk.set(n, p.checkedAt);
       probed = { at: Date.now(), probes: Object.fromEntries(results.map(([n, p]) => [n, { ...p, ...(lastOk.has(n) ? { lastOkAt: lastOk.get(n) } : {}) }])) };
     }
-    const [google, glean, grafana, clickhouse, jira, sources] = await Promise.all([
+    const [google, states, sources] = await Promise.all([
       opts.google?.status(),
-      opts.glean?.status(),
-      opts.grafana?.status(),
-      opts.clickhouse?.status(),
-      opts.jira?.status(),
+      signInStates(),
       appsApi<{ sources?: { source: string; last_ok: string | null; failing: boolean }[] }>("/internal/sources", undefined, { auth: true, timeoutMs: 5000 }).then(
         (r) => r.sources ?? [],
         () => null,
       ),
     ]);
-    const signIns = { glean, grafana, clickhouse, jira };
+    const signIns = Object.fromEntries(states.map((s) => [s.id, s.status]));
     return connectionsView({ compiled, catalog, probes: probed.probes, signIns, google, sources, staleSources: new Set(staleSources(sources ?? [], Date.now()).map((s) => s.key)) });
   }
+
+  /** Each module sign-in's state (McpAuth caches it for a minute); undefined where the proxy can't be asked. */
+  const signInStates = () => Promise.all((opts.signIns ?? []).map(async (x) => ({ ...x, status: await x.auth.status() })));
 
   const routes: { method: string; path: RegExp; maxBody?: number; handle: (m: RegExpMatchArray, body: unknown, url: URL, req: IncomingMessage) => Promise<unknown> }[] = [
     {
@@ -1145,7 +1142,7 @@ export function createApp(opts: AppOptions): Server {
         const ctx = await context();
         const since = new Date(Date.now() - RECENT_MS).toISOString();
         // Who is working and the connections' states don't depend on the tasks: started with them, not after.
-        const extras = Promise.all([working(ctx), opts.google?.status(), opts.glean?.status(), opts.grafana?.status(), opts.clickhouse?.status(), opts.jira?.status(), bylines()]);
+        const extras = Promise.all([working(ctx), opts.google?.status(), signInStates(), bylines()]);
         extras.catch(() => {}); // awaited below; this only keeps a failure there from going unhandled meanwhile
         const settledAt = store.settledAt();
         // A settled task stays off the board until something happens on it.
@@ -1161,7 +1158,7 @@ export function createApp(opts: AppOptions): Server {
         const folded = foldedChildren([...open, ...closed], ctx.assignees);
         store.placeNew(open.filter((i) => !folded.has(i.id)).map((i) => ({ id: i.id, createdAt: i.createdAt, status: i.status })));
         const recurring = new Map([...store.allRecurring()].map(([id, r]) => [id, { summary: recurringView(r, opts.timezone).summary, nextRun: r.nextRun, paused: r.paused }]));
-        const [busy, google, glean, grafana, clickhouse, jira, names] = await extras;
+        const [busy, google, signIns, names] = await extras;
         const board = buildBoard({ open, closed, placements: store.placements(), seen: store.allSeen(), schedules: store.schedules(), recurring, installedAt: store.meta("installed_at")!, assignees: ctx.assignees, crew: { working: busy.map, jobs: latestJobs(shared.runner) } });
         for (const card of [...Object.values(board.buckets).flat(), ...board.recurring]) {
           const w = busy.map.get(card.identifier);
@@ -1174,7 +1171,7 @@ export function createApp(opts: AppOptions): Server {
         // When Tomorrow next rolls into Today: the next calendar day, except before days off.
         const today = localDate(opts.timezone);
         const rollsOn = nextWorkday(today, opts.workdays ?? WORKWEEK);
-        return { ...board, assignees: ctx.assignees, labels: ctx.labels, prefix: ctx.prefix, timezone: opts.timezone, slackTeams: opts.slackTeams ?? {}, rollsOn, rollsTomorrow: rollsOn === addDays(today, 1), buckets: board.buckets, agentsActive: busy.active, google: google ?? null, glean: glean ?? null, grafana: grafana ?? null, clickhouse: clickhouse ?? null, jira: jira ?? null };
+        return { ...board, assignees: ctx.assignees, labels: ctx.labels, prefix: ctx.prefix, timezone: opts.timezone, slackTeams: opts.slackTeams ?? {}, rollsOn, rollsTomorrow: rollsOn === addDays(today, 1), buckets: board.buckets, agentsActive: busy.active, google: google ?? null, signIns: signIns.map(({ id, label, missing, stopped, status }) => ({ id, label, missing, stopped, status: status ?? null })) };
       },
     },
     { method: "GET", path: /^\/api\/issues\/([^/]+)$/, handle: async (m) => issueView(decodeURIComponent(m[1]!)) },
@@ -1763,7 +1760,7 @@ export function createApp(opts: AppOptions): Server {
     const s = opts.session ? await opts.session(req) : accountSession(await opts.accounts!.sessionOf(req));
     return s?.role === "admin";
   };
-  const isConnect = (path: string) => path === "/google/connect" || Object.values(SIGN_INS).some((s) => s.connect === path);
+  const isConnect = (path: string) => path === "/google/connect" || (opts.signIns ?? []).some((s) => s.connect === path);
 
   /**
    * Connect a Google account, or reconnect an expired one: /google/connect sends the browser to Google's
@@ -1802,25 +1799,15 @@ export function createApp(opts: AppOptions): Server {
   }
 
   /**
-   * Sign in to Glean, Grafana, ClickHouse or Jira: /<service>/connect sends the browser to
-   * the service's sign-in, which sends it back to the callback, and the proxy keeps the token. On the
-   * laptop's loopback address only, like Google's Reconnect: the sign-in client is registered for that
-   * redirect. Glean's callback is plain /callback because the organization's Glean only permits
-   * loopback redirects of that shape; the others are /<service>/callback.
+   * A module's sign-in (board.signins): /<id>/connect sends the browser to the service's sign-in, which sends it back to
+   * the callback, and the proxy keeps the token. On the laptop's loopback address only, like Google's Reconnect: the
+   * sign-in client is registered for that redirect (a vendor may permit only the bare /callback shape).
    */
-  const SIGN_INS = {
-    glean: { name: "Glean", secret: "glean_auth_token", connect: "/glean/connect", callback: "/callback" },
-    grafana: { name: "Grafana", secret: "grafana_auth_token", connect: "/grafana/connect", callback: "/grafana/callback" },
-    clickhouse: { name: "ClickHouse", secret: "clickhouse_auth_token", connect: "/clickhouse/connect", callback: "/clickhouse/callback" },
-    jira: { name: "Jira", secret: "jira_auth_token", connect: "/jira/connect", callback: "/jira/callback" },
-  } as const;
-  const signInFor = (path: string) => (Object.keys(SIGN_INS) as (keyof typeof SIGN_INS)[]).find((k) => SIGN_INS[k].connect === path || SIGN_INS[k].callback === path);
+  const signInFor = (path: string) => (opts.signIns ?? []).find((s) => s.connect === path || s.callback === path);
 
-  async function handleSignIn(req: IncomingMessage, res: ServerResponse, url: URL, key: keyof typeof SIGN_INS) {
-    const { name, secret, connect, callback } = SIGN_INS[key];
-    const auth = opts[key];
+  async function handleSignIn(req: IncomingMessage, res: ServerResponse, url: URL, s: SignIn) {
+    const { label: name, connect, callback, auth } = s;
     const port = loopbackPort(req.headers.host);
-    if (!auth) throw new HttpError(404, `${name} sign-in isn't set up on the board (no ${secret})`);
     if (!port) throw new HttpError(403, `sign in to ${name} from ${TUNNEL}`);
     const host = String(req.headers.host).toLowerCase();
     try {

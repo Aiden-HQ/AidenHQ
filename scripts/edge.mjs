@@ -8,12 +8,12 @@
 // its Access application and the Access token; `password` = the gate signs people in through the kernel's sign-in listener
 // (AUTH_URL) and Access becomes optional per host (a host with an `aud` still needs it: password never removes Access).
 // In password mode sign-in lives only on the my-apps host; each app host gets its own host-only session cookie through a
-// one-time handoff code (services/gate/gate.ts), and the gate strips auth cookies before any app.
+// one-time handoff code (modules/apps-platform/gate/gate.ts), and the gate strips auth cookies before any app.
 // `header-jwt` = a front door in front of the gate (a hosting service's identity-aware proxy, reaching the gate over the
 // tailnet): the gate verifies its signed ES256 token (settings.edge.identity: header, issuer, jwks_url, auth_method?) for the
 // host's `aud`, and also listens on settings.edge.front (a tailnet address and port). No tunnel, no Access team, no
 // cloudflared; every host needs its aud. The login is instance-wide.
-// settings.edge.previews: true: pull request previews of shared apps (services/apps-mcp/src/previews.ts) at
+// settings.edge.previews: true: pull request previews of shared apps (modules/apps-platform/apps-mcp/src/previews.ts) at
 // pr-<n>.<host> under each share.host, through the gate, with the parent's access: one ingress rule *.<host> per shared
 // app behind the parent's own aud (its Access application must cover *.<host> too). apps-mcp writes which previews run
 // (data/previews/previews.json); the gate takes only ports in PREVIEW_PORTS from it.
@@ -23,7 +23,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import YAML from "yaml";
 
-export const GATE_PORT = 3130; // services/apps-mcp/src/tailnet.ts reserves the same port
+export const GATE_PORT = 3130; // modules/apps-platform/apps-mcp/src/tailnet.ts reserves the same port
 export const GATE_URL = `http://127.0.0.1:${GATE_PORT}`;
 // cloudflared's way to the gate: a unix socket in a directory only the two of them mount (data/gate/socket), so the gate
 // believes CF-Connecting-IP there and nowhere else (anything on the host's loopback reaches GATE_URL).
@@ -37,7 +37,7 @@ export const AUTH_SECRET_FILE = "/secrets/auth_listener"; // gate_board_secret i
 export const LOGINS = ["access", "password", "header-jwt"];
 export const IDENTITY_KEY_FILE = "/secrets/identity_key"; // the vault's identity/gate.pem in the gate: it mints app identity tokens
 export const PREVIEWS_FILE = "/previews/previews.json"; // apps-mcp's running previews (data/previews), mounted read-only
-export const PREVIEW_PORTS = [39100, 39399]; // services/apps-mcp/src/registry.ts PREVIEW_PORTS
+export const PREVIEW_PORTS = [39100, 39399]; // modules/apps-platform/apps-mcp/src/registry.ts PREVIEW_PORTS
 // cloudflared 2026.10.7 (multi-arch index), pinned by digest.
 const CLOUDFLARED_IMAGE = "cloudflare/cloudflared:2026.10.7@sha256:4955524aeaa379e154023d5a027c250f7b35041a2e7e950cf13f144bc9b9c5ba";
 const HOST = /^(?=.{1,253}$)([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/;
@@ -153,7 +153,7 @@ export function edgeConfig(settings, instanceApps, moduleApps) {
       // Its signing key (vault identity/gate.pem, read-only; compile creates it) and nothing else of the identity dir.
       // The kernel's account map is the one file of data/ it sees (never data/kernel: no sessions, hashes or TOTP secrets).
       gate: {
-        ...hardening, build: "./services/gate", image: "aidenhq/gate:local", network_mode: "host", environment: { GATE_CONFIG: "/config/gate.json" },
+        ...hardening, build: "./modules/apps-platform/gate", image: "aidenhq/gate:local", network_mode: "host", environment: { GATE_CONFIG: "/config/gate.json" },
         volumes: [
           "./config/gate.json:/config/gate.json:ro", `\${AIDENHQ_DATA_DIR:-./data}/gate/accounts.json:${ACCOUNTS_FILE}:ro`,
           `\${AIDENHQ_SECRETS_DIR}/identity/gate.pem:${IDENTITY_KEY_FILE}:ro`,

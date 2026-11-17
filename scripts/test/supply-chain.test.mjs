@@ -95,7 +95,7 @@ test("npm-age fails closed on a lockfile it can't fully check, and passes the re
   assert.match(lockProblems("package-lock.json", JSON.stringify({ lockfileVersion: 2, packages: pkg, dependencies: { a: { dependencies: { b: {} } } } }))[0], /node_modules\/a\/node_modules\/b has no matching/);
   // The product's and the app starter's real lockfiles still pass.
   const root = new URL("../../", import.meta.url);
-  for (const f of ["scripts/package-lock.json", "services/computer/images/agent-base/app-starter/package-lock.json", "modules/core/templates/app/package-lock.json"]) {
+  for (const f of ["scripts/package-lock.json", "services/computer/images/agent-base/app-starter/package-lock.json", "modules/apps-platform/starter/package-lock.json"]) {
     assert.deepEqual(lockProblems(f, readFileSync(new URL(f, root), "utf8")), [], f);
   }
 });

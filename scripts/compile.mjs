@@ -14,6 +14,7 @@
 //   config/kernel/modules.json → the kernel: modules' kernel roles, privileged entries, own tokens and channels (stamp, settings)
 //   config/exposure           → ops/vm/setup.sh (root) and verify-security: settings.exposure, one word
 //   config/module-data.json    → the apply (ops/lib/generations.sh): each data module's data_version and services digest
+//   config/points/<module>.json → that module's own services only: the contributions to its points (spec §3.6)
 //   config/gate.json, config/cloudflared.yml → the gate and the tunnel (shared access; only with settings.edge, scripts/edge.mjs)
 // Staging (`--stage`, or AIDENHQ_COMPILE_STAGE=1; ops/apply-config-work.sh validates a generation with it before anything
 // restarts): the same files go to config.next/ and compose.modules.next.yaml, and nothing else on the host is touched (no
@@ -102,6 +103,8 @@ writeFileSync(join(cfgOut, "kernel/modules.json"), JSON.stringify(out.kernelModu
 writeFileSync(join(cfgOut, "engines.json"), JSON.stringify(out.engines, null, 2) + "\n");
 writeFileSync(join(cfgOut, "exposure"), `${out.exposure}\n`);
 writeFileSync(join(cfgOut, "module-data.json"), JSON.stringify(out.dataModules, null, 2) + "\n");
+mkdirSync(join(cfgOut, "points"), { recursive: true });
+for (const [m, p] of Object.entries(out.points)) writeFileSync(join(cfgOut, "points", `${m}.json`), JSON.stringify(p, null, 2) + "\n");
 if (out.edge) {
   if (out.edge.cloudflared) try { checkIngress(out.edge.cloudflared, { login: out.edge.gate.login }); } catch (e) { die(e.message); }
   // The kernel's account map for the gate: the kernel rewrites it on every account change. It starts

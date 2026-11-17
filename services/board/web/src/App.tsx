@@ -572,7 +572,7 @@ export function App() {
   const chatFull = mobile && ((view === "chat" && route.kind === "chat") || (view === "settings" && route.kind === "settings" && route.cat !== null));
   const local = ["localhost", "127.0.0.1"].includes(location.hostname); // a tunnel to 3121: the loopback sign-ins work
   const googleConnect = local || !!session?.googleConnect;
-  const connectionsOk = !board.google?.error && !board.google?.accounts.some((a) => a.state === "expired") && [board.glean, board.grafana, board.clickhouse, board.jira].every((c) => !c || !c.configured || c.state === "ok" || c.state === "unknown");
+  const connectionsOk = !board.google?.error && !board.google?.accounts.some((a) => a.state === "expired") && (board.signIns ?? []).map((s) => s.status).every((c) => !c || !c.configured || c.state === "ok" || c.state === "unknown");
   const openCard = (c: Card) => {
     setSelected(c.id);
     go(`#/t/${c.identifier}`);

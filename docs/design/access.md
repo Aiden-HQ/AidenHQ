@@ -117,7 +117,7 @@ administration, apps-mcp's in-app requests, `ops/setup.sh`'s setup link and rese
 
 ## Shared apps: the gate
 
-`services/gate/gate.ts` is unprivileged: no Docker socket, a read-only compiled config (`config/gate.json`) and the
+`modules/apps-platform/gate/gate.ts` is unprivileged: no Docker socket, a read-only compiled config (`config/gate.json`) and the
 board's account map (`accounts.json`), its signing key (the vault's `identity/gate.pem`), and reach only to the apps'
 loopback ports. `scripts/edge.mjs` generates its
 config and cloudflared's ingress (every `share.host` to the gate, then a 404), and apply refuses any ingress rule whose
@@ -138,7 +138,7 @@ Anything the gate cannot read or verify (keys, accounts, sessions) refuses with 
 ## Pull request previews
 
 With `settings.edge.previews: true`, each open PR on a shared app's repo also runs as a preview
-([previews.ts](../../services/apps-mcp/src/previews.ts)) at `pr-<n>.<share.host>`, with exactly the app's access:
+([previews.ts](../../modules/apps-platform/apps-mcp/src/previews.ts)) at `pr-<n>.<share.host>`, with exactly the app's access:
 
 - Compile adds one ingress rule `*.<share.host>` → the gate per shared app, after the exact hosts, behind that app's own
   `aud`; the app's Access application must list `*.<share.host>` as a second domain, so the same policy admits the same
@@ -160,7 +160,7 @@ Each mode is a sign-in adapter in the gate (`authenticate(req) → { email, idp 
 new identity provider is one more adapter.
 
 `settings.app_login` chooses how people sign in (the "gate sign-in listener" is the kernel's on 127.0.0.1:3129; the gate
-serves the sign-in pages itself, `services/gate/signin-pages.ts`, and passes only their steps on):
+serves the sign-in pages itself, `modules/apps-platform/gate/signin-pages.ts`, and passes only their steps on):
 
 - **`access` (default).** The Access token for the host's audience tag (`share.aud`) is required and verified against
   the team's JWKS (signature, issuer, audience, expiry). The identity provider is configured in Access by the
@@ -220,7 +220,7 @@ roles:                 # custom roles; at most 10
 default_role: member   # optional: blocked, member or a declared role, never admin
 ```
 
-It is app-authored, so it is untrusted and validated strictly (`services/apps-mcp/src/manifest.ts`); an invalid manifest
+It is app-authored, so it is untrusted and validated strictly (`modules/apps-platform/apps-mcp/src/manifest.ts`); an invalid manifest
 refuses the deploy. apps-mcp reads it at the commit that is actually running and serves it to the board, which re-fetches
 every minute and keeps the last good copy. A failed fetch changes nothing; before the first good fetch no custom role is
 known.
@@ -262,7 +262,7 @@ run, without the text leaving the app and without giving app users' words a priv
      `memory_note`): any other tool, a read included, fails, and so does that agent in another app's `api.callers`;
    - apps-mcp refuses it any app but the ones that name it, with any tool (`feedbackOnly`), and an app may give it narrower
      API paths than its other callers (`api.callers: [{agent, paths}]`), down to exact routes: `GET /api/agent/intake` and
-     `POST /api/agent/intake/{reference}/decision` (the method, then `{name}` for one segment; `services/apps-mcp/src/api.ts`);
+     `POST /api/agent/intake/{reference}/decision` (the method, then `{name}` for one segment; `modules/apps-platform/apps-mcp/src/api.ts`);
    - what it delegates or comments for others starts with `(From app feedback, untrusted: …)` (tasks-mcp, from the grants
      table's `feedback_for`); the runner then shows the task to the Engineer as a person's suggestion, as untrusted input,
      never as the agent's or the owner's request, and the AI reviewer sees the mark in the request chain;

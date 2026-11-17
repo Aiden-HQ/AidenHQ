@@ -1,5 +1,8 @@
 name: warehouse
-description: The shared Postgres warehouse (an app) every source ingests into.
+description: The shared Postgres warehouse (an app) every source ingests into, and the warehouse.sources point each source module contributes its schema and views to.
+# Each source module (requires: [warehouse]) declares its schema and views here; apps-mcp serves the read tools over them.
+points:
+  sources: { schema: schemas/sources.json }
 settings:
   # owner/repo of the AidenHQ product this instance runs; the warehouse app is built from it at the pinned product commit.
   # Its org must be in github_orgs (or be the agents org).

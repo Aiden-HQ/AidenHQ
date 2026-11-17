@@ -69,6 +69,6 @@ providers:
         - { from: codex-home/AGENTS.md, to: AGENTS.md }
         - { from: codex-home/skills, to: skills }
         # The skills' resources (a job can't read the product checkout): the design system, the app starter, the version picker.
-        - { from: /modules/core/design-system, to: skills/design-system/files }
-        - { from: /modules/core/templates/app, to: skills/design-system/starter }
+        - { from: /modules/apps-platform/design-system, to: skills/design-system/files }
+        - { from: /modules/apps-platform/starter, to: skills/design-system/starter }
         - { from: /scripts/supply-chain/best-version.mjs, to: skills/supply-chain/best-version.mjs }

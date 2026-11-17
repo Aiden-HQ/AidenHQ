@@ -1,5 +1,17 @@
 name: github
 description: "GitHub issues and pull requests: read, and comment when asked."
+requires:
+  - warehouse # its source schema lives in the shared warehouse
+# Its schema and the views agents read with source_new (the warehouse's point, modules/warehouse/schemas/sources.json).
+contributes:
+  warehouse.sources:
+    - schema: src_github
+      about: "src_github.issues / projects / project_items / changes / users"
+      identity: users
+      views:
+        - { name: issues, time: ingested_at, repo: repo, tsv: true }
+        - { name: project_items, time: ingested_at, repo: repo, project: project, tsv: true }
+        - { name: changes, time: observed_at, repo: scope, project: scope }
 settings:
   # owner/repo of the AidenHQ product this instance runs (the warehouse module requires it): where Fleet Ops reports product
   # bugs. Unset (null) leaves github_app_issue refusing.

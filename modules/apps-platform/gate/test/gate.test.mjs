@@ -8,8 +8,8 @@ import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { accessPage, authHeaders, createGate, mint, myAppsPage, requestsPage, signingKey, subOf, verifyToken } from "../gate.ts";
-import { createIdentity } from "../../shared/aidenhq-identity.mjs";
-import { ensureIdentityKeys } from "../../../scripts/identity.mjs";
+import { createIdentity } from "../../../../services/shared/aidenhq-identity.mjs";
+import { ensureIdentityKeys } from "../../../../scripts/identity.mjs";
 
 const { privateKey, publicKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
 const ISSUER = "https://team.cloudflareaccess.com";

@@ -37,7 +37,7 @@ person later gets an account. It is opaque so apps key data on it rather than on
 
 ## Identity providers (the gate's adapters)
 
-`services/gate/gate.ts` has one interface per sign-in method:
+`modules/apps-platform/gate/gate.ts` has one interface per sign-in method:
 
 ```js
 adapter.authenticate(req, ctx) → { email, name?, idp } | null   // null: no credential; throws Refused(status, msg)
@@ -63,7 +63,7 @@ write, per-user data and history, keyed by `req.user.sub` and `req.user.role`.
 
 ## The middleware
 
-`services/shared/aidenhq-identity.mjs`, copied byte-identical to `modules/core/templates/app/aidenhq-identity.mjs` by
+`services/shared/aidenhq-identity.mjs`, copied byte-identical to `modules/apps-platform/starter/aidenhq-identity.mjs` by
 `scripts/sync-shared.mjs` (an app's Engineer copies it into the app; drift in the product is a test failure). About 50
 lines, no dependencies:
 

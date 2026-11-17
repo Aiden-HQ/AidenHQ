@@ -66,7 +66,7 @@ export function readGate(file: string): GateInfo | undefined {
 
 /**
  * An app host the gate serves: one of gate.json's, or (with previews) a preview of one, `pr-<n>.<host>`, as
- * services/gate/gate.ts derives it. Whether that preview runs is the gate's to check.
+ * modules/apps-platform/gate/gate.ts derives it. Whether that preview runs is the gate's to check.
  */
 export function isAppHost(g: GateInfo | undefined, host: string): boolean {
   if (!g) return false;

@@ -1,7 +1,7 @@
 # AidenHQ design system
 
 The default look and behaviour of every app agents build. Apps are **shadcn/ui + Tailwind CSS** (Radix primitives, lucide
-icons) on Vite + React, started from the app starter (`modules/core/templates/app/`). This folder holds the theme those
+icons) on Vite + React, started from the app starter (`modules/apps-platform/starter/`). This folder holds the theme those
 components wear, the rules, and the review checklist.
 
 | File | What it is |

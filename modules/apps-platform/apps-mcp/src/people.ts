@@ -3,13 +3,14 @@
 // sources themselves agree: the same email (exact, case-insensitive) on users of two or more sources. Everything else stays
 // unlinked, and names, above all model-extracted ones, never link anyone. A proposal is never overwritten; deciding one
 // (person_identity_decide) is the librarian's, by role, and records who and why.
-import type { WarehouseDeps } from "./sources.js";
+import { SOURCES as ALL, type WarehouseDeps } from "./sources.js";
 
 export interface SourceUser { source: string; user_id: string; email: string | null; display_name: string | null; is_bot: boolean | null }
 export interface Linked { source: string; source_user_id: string; person_id: number }
 export interface Proposal { email: string; display_name: string | null; person_id: number | null; members: { source: string; user_id: string; display_name: string | null }[] }
 
-const SOURCES = ["slack", "github", "jira"];
+// Sources with a users table (warehouse.sources `identity: users`), by name without the src_ prefix.
+const SOURCES = ALL.filter((s) => s.identity === "users").map((s) => s.schema.slice(4));
 const SKIP = /^(no-?reply|notifications?|bot|mailer-daemon)@|@users\.noreply\.github\.com$/;
 
 /**

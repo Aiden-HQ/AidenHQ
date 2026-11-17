@@ -111,8 +111,8 @@ separate private **instance repo**: `instance.yaml` (pinned `product:` commit, `
 
 AidenHQ is free software under the [GNU Affero General Public License, version 3 only](LICENSE)
 (`AGPL-3.0-only`). You may use, modify and run it for any purpose. If you modify it and let others use it over a
-network, offer them its source under the same licence. The app starter (`modules/core/templates/app/`) and the design
-system (`modules/core/design-system/`) are MIT, so the apps your agents build from them carry no AGPL obligations.
+network, offer them its source under the same licence. The app starter (`modules/apps-platform/starter/`) and the design
+system (`modules/apps-platform/design-system/`) are MIT, so the apps your agents build from them carry no AGPL obligations.
 Contributions are accepted under the
 [CLA](CLA.md). Other licensing arrangements, including commercial licences, are available on request.
 Third-party notices are in [NOTICE](NOTICE) and [LICENSES/](LICENSES/).

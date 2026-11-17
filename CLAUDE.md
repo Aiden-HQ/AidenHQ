@@ -23,9 +23,9 @@ never in this file.
   `agents/<key>/AGENTS.md` handbooks, `connections/<svc>/` MCP servers and `apps/<app>/`. `modules/core` is always installed.
 - `kernel/`: the `aidenhq-kernel` host service (the model gateway and the tool proxy in front of every connection: grants,
   caller assertions, fencing) and the module SDK (`kernel/sdk`).
-- `services/`: `board` (owner UI and approvals), `runner` (host coding jobs and git gates), `apps-mcp`,
-  `paperclip-tasks-mcp` (the `codex-model` launcher), `computer` (agent computers), `gate` (shared-app door),
-  `shared` (code synced into services).
+- `services/`: `board` (owner UI and approvals), `runner` (host coding jobs and git gates),
+  `paperclip-tasks-mcp` (the `codex-model` launcher), `computer` (agent computers), `shared` (code synced into services).
+  `modules/apps-platform/` holds `apps-mcp`, `gate` (shared-app door), the app starter and the design system.
 - `scripts/`: compiler (`compile.mjs`, `modules.mjs`), Paperclip setup (`paperclip-setup.mjs`), account auth,
   health, backup and restore.
 - `ops/`: apply, install (`setup.sh`), systemd units, vault, VM provisioning, GitHub App setup.
@@ -41,17 +41,17 @@ On macOS the `flock` apply-lock tests (scripts, runner) fail; that's expected, a
 cd scripts && npm test                       # compiler, setup, sync-shared drift
 cd services/runner && npm test
 cd services/computer && node --test test/*.test.mjs
-cd services/gate && npm test && npm run typecheck
+cd modules/apps-platform/gate && npm test && npm run typecheck
 cd services/board && npx vitest run && npx tsc -p tsconfig.build.json --noEmit && npm run typecheck && npm run build
-# kernel, services/apps-mcp, modules/*/connections/*, modules/security/scanner:
+# kernel, modules/apps-platform/apps-mcp, modules/*/connections/*, modules/security/scanner:
 npm test && npm run typecheck
 ```
 
 The board's Docker build is stricter than vitest: always run `tsc -p tsconfig.build.json` for board changes. After
-editing `kernel/sdk/src/caller.ts` or `fence.ts`, `services/shared/source-store.ts`, `modules/core/design-system/` or the app starter (`modules/core/templates/app/`), run `node scripts/sync-shared.mjs` (a
+editing `kernel/sdk/src/caller.ts` or `fence.ts`, `services/shared/source-store.ts`, `modules/apps-platform/design-system/` or the app starter (`modules/apps-platform/starter/`), run `node scripts/sync-shared.mjs` (a
 test fails on drift). CI (`.github/workflows/ci.yml`) runs all of the above on every PR.
 
-The app starter (`modules/core/templates/app/`) is Vite + shadcn: `npm ci && npm run build` before serving it (apps-mcp's
+The app starter (`modules/apps-platform/starter/`) is Vite + shadcn: `npm ci && npm run build` before serving it (apps-mcp's
 render test skips without `dist/`). Copying files from macOS with `tar`, set `COPYFILE_DISABLE=1` (else `._*` files break
 the reviewer eval's case loader).
 

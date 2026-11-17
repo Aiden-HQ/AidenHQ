@@ -6,9 +6,9 @@ AidenHQ is licensed under the GNU Affero General Public License, version 3 only
 (see LICENSE). Other licensing arrangements are available from the copyright
 holder.
 
-Exception: the app starter (modules/core/templates/app/, and its copy in
+Exception: the app starter (modules/apps-platform/starter/, and its copy in
 services/computer/images/agent-base/app-starter/) and the design system
-(modules/core/design-system/, and its copy in
+(modules/apps-platform/design-system/, and its copy in
 services/computer/images/agent-base/design-system/) are licensed under the MIT
 License (see the LICENSE file in each). Apps built from them carry no AGPL
 obligations.
@@ -42,7 +42,7 @@ contributors, under the AGPL as above.
 This product runs Paperclip (https://github.com/paperclipai/paperclip) as a separate component,
 Copyright (c) 2025 Paperclip AI, used under the MIT License (see LICENSES/paperclip-MIT.txt).
 
-The app starter (modules/core/templates/app/) includes code and designs from shadcn/ui, Origin UI,
+The app starter (modules/apps-platform/starter/) includes code and designs from shadcn/ui, Origin UI,
 Radix Colors, cmdk, react-day-picker (MIT), Tremor and tweakcn (Apache-2.0); its THIRD_PARTY.md
 lists each file and its licence. npm, container and other dependencies keep their own licences.
 
