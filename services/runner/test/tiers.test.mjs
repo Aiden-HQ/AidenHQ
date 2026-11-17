@@ -548,6 +548,10 @@ test("a grants override no module input folded is the owner's, never unjudged", 
   // The inputs as read without the fold (e.g. the agent's module wasn't the one changed): nothing covers the override.
   const t = apply(["instance.yaml"], { "instance.yaml": i(false) }, { "instance.yaml": i(true) }, { modules: moduleInputs({ baseInstance: { modules: ["crm"] }, headInstance: { modules: ["crm"] }, baseDefs: { crm }, headDefs: { crm }, changed: [] }) });
   assert.deepEqual([t.tier, t.rule], [2, "grants-unjudged"]);
+  // Beside a code change elsewhere, the panel it requires stays.
+  const code = moduleInputs({ baseInstance: { modules: ["crm", "ops"] }, headInstance: { modules: ["crm", "ops"] }, baseDefs: { crm, ops: { name: "ops" } }, headDefs: { crm, ops: { name: "ops" } }, changed: ["modules/ops/src/a.ts"] });
+  const both = apply(["instance.yaml"], { "instance.yaml": i(false) }, { "instance.yaml": i(true) }, { modules: code });
+  assert.deepEqual([both.tier, both.reviewFirst, both.panel], [2, true, true]);
   // The override's target is the enabled module defining the agent, never another listed def.
   const other = { name: "other", agents: { scout: { connections: {} } } };
   const folded = withGrantOverrides({ crm, other }, YAML.parse(i(true)));

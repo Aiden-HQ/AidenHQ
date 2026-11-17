@@ -268,11 +268,13 @@ function moduleAuthorityParts(s, base, head) {
   const [bo, ho] = [grantOverrides(base), grantOverrides(head)];
   const moved = changedKeys(bo, ho);
   const folded = (key) => Object.values(s.modules).some((i) => i.base?.agents?.[key] && i.head?.agents?.[key] && !eq(i.base.agents[key].connections, i.head.agents[key].connections));
-  if (moved.some((key) => !folded(key))) return [OWNER_AFTER_REVIEW("grants-unjudged", `the grants override of ${moved.filter((k) => !folded(k)).join(", ")} changes, and no module's authority diff covers it`)];
+  const unjudged = moved.filter((k) => !folded(k));
+  // Not judged by any module's diff: the owner's, beside (never instead of) what the diffs say, panel included.
+  const extra = unjudged.length ? [OWNER_AFTER_REVIEW("grants-unjudged", `the grants override of ${unjudged.join(", ")} changes, and no module's authority diff covers it`, diffs.some((d) => d.code))] : [];
   // The official marketplace moving with every module's folder tree id unchanged (the 5b switch): no authority, the reviewer's.
-  if (!diffs.length) return changedKeys(base, head).includes("marketplaces") ? [T(1, "marketplace-same-trees", "the official marketplace moves; every module's folder tree id is unchanged")] : [];
+  if (!diffs.length) return [...extra, ...(changedKeys(base, head).includes("marketplaces") ? [T(1, "marketplace-same-trees", "the official marketplace moves; every module's folder tree id is unchanged")] : [])];
   const c = classifyModules(diffs);
-  return [c.reviewFirst ? OWNER_AFTER_REVIEW(c.rule, c.reason, c.panel) : c.panel ? PANEL(c.rule, c.reason) : T(1, c.rule, c.reason)];
+  return [...extra, c.reviewFirst ? OWNER_AFTER_REVIEW(c.rule, c.reason, c.panel) : c.panel ? PANEL(c.rule, c.reason) : T(1, c.rule, c.reason)];
 }
 
 function instanceParts(s) {
