@@ -23,7 +23,7 @@ import { checkLauncher, computerAdapterConfig, ensureComputers, runnerBox } from
 import { assertNoShell } from "./no-shell.mjs";
 import { handbookParts, HOW_WE_BUILD_SECTION, laneHandbook, onDemandSections, personaOf, readInstructions as readHandbook } from "./handbook.mjs";
 import { recoverStalePid } from "./paperclip-recover.mjs";
-import { probeConfig } from "./agent-probe.mjs";
+import { awaitVerified, probeConfig } from "./agent-probe.mjs";
 import { officialRepo } from "./official-repo.mjs";
 
 const repo = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -331,13 +331,15 @@ async function dropOldOpenRouterSecret() {
   }
 }
 
-async function awaitVerified(id, name) {
-  for (let i = 0; i < 36; i++) {
-    const a = (await api("GET", `/api/agents/${id}`)).json;
-    if (!["preparing", "verifying"].includes(a.lifecycleState)) return;
-    await new Promise((r) => setTimeout(r, 5000));
-  }
-  console.warn(`! ${name}: still being verified by Paperclip after 3 min; re-run setup later`);
+// Paperclip's check of a new or reconfigured agent is a Codex hello probe (up to 45 s) through the model gateway. Without a model
+// key it can only fail, so setup doesn't wait for it: the agent stays unverified (Paperclip shows it paused, never working)
+// until the kernel's model step saves a key that works and runs this setup again (kernel/src/main.ts verifyAgents).
+const modelKey = Boolean(readSecret("openrouter_key"));
+async function verified(id, name) {
+  if (!modelKey) return false;
+  const r = await awaitVerified(async () => (await api("GET", `/api/agents/${id}`)).json);
+  if (r !== "verified") console.warn(`! ${name}: Paperclip's check ${r === "failed" ? "failed (Configuration in Paperclip shows why)" : "is still running after 3 min"}; it is verified on the next setup run`);
+  return r === "verified";
 }
 
 // The owner watches a Codex agent's plan live on the board (services/board/src/codex-activity.ts reads update_plan calls).
@@ -390,28 +392,31 @@ async function ensureAgents(companyId, fleetIssues) {
     const adapterConfig = body.adapterType === "opencode_local" ? { ...body.adapterConfig, env: {} } : body.adapterConfig;
     await api("PATCH", `/api/agents/${agent.id}`, { name: body.name, title: body.title, runner: "legacy", adapterConfig, runtimeConfig: body.runtimeConfig, metadata: body.metadata, budgetMonthlyCents: body.budgetMonthlyCents });
   };
-  // An agent that is new, still verifying or paused by setup is handled whole, one at a time (each new one waits out its
-  // Paperclip probe): created or verified on the probe's unscoped config, scoped right after, and only then resumed, so no
-  // agent runs unscoped while others are set up. Rare after the first apply.
-  for (const p of plans) {
+  // An agent that is new, still verifying or paused by setup is handled whole, each on its own (side by side: each new one
+  // waits out its own Paperclip probe): created or verified on the probe's unscoped config, scoped as soon as its probe ends,
+  // and only then resumed. An unverified agent can't run (Paperclip keeps it paused), so scoping it right after its own probe
+  // means no agent ever runs unscoped. One that isn't verified keeps its scoped config and is checked again by the next run.
+  // Rare after the first apply.
+  await mapLimit(plans, 8, async (p) => {
     const { a, body, unscoped, instructions } = p;
     // Configured again (a module re-enabled): resume what setup paused. An agent the owner paused by hand has no pausedBy.
     const resume = p.agent?.status === "paused" && p.agent.metadata?.pausedBy === "setup";
     if (!p.agent) {
       p.agent = (await api("POST", `/api/companies/${companyId}/agents`, { ...body, adapterConfig: unscoped, runner: "legacy", instructionsBundle: { entryFile: "AGENTS.md", files: { "AGENTS.md": instructions } } })).json;
-      step(`Created agent ${a.name}`);
-      await awaitVerified(p.agent.id, a.name);
+      step(`Created agent ${a.name}${modelKey ? "" : " (verified once a model key is set)"}`);
+      await verified(p.agent.id, a.name);
     } else if (["preparing", "verifying"].includes(p.agent.lifecycleState)) {
+      if (!modelKey) return; // nothing to check it with yet: it keeps its scoped config (below)
       await api("PATCH", `/api/agents/${p.agent.id}`, { adapterConfig: unscoped });
-      await awaitVerified(p.agent.id, a.name);
-    } else if (!resume) continue;
+      if (await verified(p.agent.id, a.name)) step(`Verified agent ${a.name}`);
+    } else if (!resume) return;
     await scope(p);
     p.scoped = true;
     if (resume) {
       await api("POST", `/api/agents/${p.agent.id}/resume`, {});
       step(`Resumed ${a.name} (configured again)`);
     }
-  }
+  });
   // Every other agent already runs scoped: its new config replaces the old in one PATCH, so these run a few side by side
   // (three round trips per agent otherwise add up), with the handbook sync and the read-back.
   const updated = await mapLimit(plans, 4, async (p) => {
