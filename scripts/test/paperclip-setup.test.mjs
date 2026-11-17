@@ -1,12 +1,12 @@
 // An apply pushes the instance repo before it runs this script, so a section literal that doesn't parse leaves the
-// instance half-applied. The sections are where shared handbook text lives: keep them parseable and present.
+// instance half-applied. The sections (scripts/prompts/*.md) are where shared handbook text lives: keep them parseable and present.
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
+import { section as promptSection } from "../prompts.mjs";
 
 const script = join(dirname(fileURLToPath(import.meta.url)), "../paperclip-setup.mjs");
 
@@ -22,15 +22,8 @@ test("paperclip-setup.mjs passes a syntax check", () => {
   execFileSync(process.execPath, ["--check", script], { encoding: "utf8" });
 });
 
-/** A section setup itself still emits, built from the declaration the script carries (and checked to parse first). */
-function literal(name) {
-  const declaration = readFileSync(script, "utf8").split("\n").find((l) => l.startsWith(`const ${name} = `));
-  assert.ok(declaration, `${name} is missing`);
-  const out = join(mkdtempSync(join(tmpdir(), "setup-section-")), "section.mjs");
-  writeFileSync(out, `${declaration}\nprocess.stdout.write(${name});\n`);
-  execFileSync(process.execPath, ["--check", out], { encoding: "utf8" });
-  return execFileSync(process.execPath, [out], { encoding: "utf8" });
-}
+/** A section setup itself still emits: its markdown file under scripts/prompts, as setup reads it. */
+const literal = (name) => ({ APP_FOLLOWUP_SECTION: promptSection("app-followup", ""), HOW_WE_BUILD_SECTION: promptSection("how-we-build") })[name];
 /** A module's prompt contribution (modules/<module>/prompts/<id>.md), as setup appends it: verbatim. */
 const prompt = (id) => readFileSync(join(dirname(script), "../modules", id.split(".")[0], "prompts", `${id.split(".")[1]}.md`), "utf8");
 const section = () => prompt("engineering.delegating");
