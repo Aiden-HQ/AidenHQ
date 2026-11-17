@@ -297,14 +297,15 @@ export function createAdmin(d: Deps) {
           if (!d.model || !d.firstRun) throw new Refusal(404, "not found");
           const p = pkce.get(id), code = url.searchParams.get("code") ?? "";
           pkce.delete(id);
-          let outcome = !p && d.model.ready() ? "ok" : "failed"; // no entry but ready: a reload after it worked
+          // No entry (a reload, an old or made-up state): no outcome, so this unauthenticated page says nothing of the vault.
+          let outcome = p ? "failed" : "";
           if (p && code && Date.now() - p.at <= 600_000) {
             const key = await d.model.exchange(code, p.verifier).catch((e: Error) => (log("openrouter exchange failed", { err: e.message.slice(0, 200) }), ""));
             const field = d.firstRun.fields().find((x) => x.secret === MODEL_KEY);
             const r = key && (!field || secretFits(field, key)) ? await takeKey(key, `account:${p.account}`) : "error";
             outcome = r === "ok" ? "ok" : r === "no_credit" ? "credit" : "failed";
           }
-          const to = `/setup/model?connect=${outcome}`;
+          const to = `/setup/model${outcome ? `?connect=${outcome}` : ""}`;
           return send(res, 200, doc("Connecting", `<p>Back from OpenRouter. <a href="${to}">Continue</a></p>`, null, `<meta http-equiv="refresh" content="0;url=${to}">`));
         }
       }

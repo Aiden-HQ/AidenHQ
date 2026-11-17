@@ -145,7 +145,8 @@ One short page, in this order:
 1. **Name, email, password.**
 2. **Authenticator.** The existing enrolment, unchanged.
 3. **Model.** Primary: a **Connect OpenRouter** button using OpenRouter's OAuth PKCE flow:
-   - The kernel builds the auth URL with a `callback_url` back to `/setup/openrouter`, then exchanges the code for a
+   - The kernel builds the auth URL with a `callback_url` back to `/setup/openrouter/<state>` (no session: the return is
+     cross-site, so the Strict cookie isn't sent; the state names a single-use pending entry), then exchanges the code for a
      user-owned key and writes it to the vault.
    - Fallback: a "paste a key instead" link revealing the existing key field.
    - The help line says how much a typical month costs and that they set the spend limit in OpenRouter.

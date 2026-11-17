@@ -73,7 +73,7 @@ test("setup takes account then model", async () => {
   assert.equal(vault.get("openrouter_key"), KEY);
   assert.equal(state.ready(), true);
   assert.equal((await page("GET", "/setup/model?connect=ok")).location, `${BOARD}/#/welcome`);
-  assert.match((await page("GET", `/setup/openrouter/${stateOf(step.body)}?code=c0de`, undefined, new Map())).body, /connect=ok/); // a reload
+  assert.match((await page("GET", `/setup/openrouter/${stateOf(step.body)}?code=c0de`, undefined, new Map())).body, /url=\/setup\/model">/); // a reload: spent, no outcome
   assert.equal(exchanged.length, 1);
 });
 
@@ -95,8 +95,9 @@ test("openrouter error keeps the account", async () => {
   assert.ok(!shown.body.includes("access_denied"));
   assert.equal((await accounts.list()).length, 1);
   // The code from an older page (its state spent) connects nothing.
-  assert.match((await page("GET", `/setup/openrouter/${stateOf(step.body)}?code=c0de`, undefined, new Map())).body, /connect=failed/);
-  assert.match((await page("GET", `/setup/openrouter/${"x".repeat(22)}?code=c0de`, undefined, new Map())).body, /connect=failed/); // a made-up state
+  assert.match((await page("GET", `/setup/openrouter/${stateOf(step.body)}?code=c0de`, undefined, new Map())).body, /url=\/setup\/model">/);
+  assert.match((await page("GET", `/setup/openrouter/${"x".repeat(22)}?code=c0de`, undefined, new Map())).body, /url=\/setup\/model">/); // a made-up state
+  assert.equal(exchanged.length, 1);
   assert.equal(vault.has("openrouter_key"), false);
 });
 
