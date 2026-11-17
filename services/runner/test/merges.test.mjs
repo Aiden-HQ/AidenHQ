@@ -718,6 +718,8 @@ describe("independent merges: Tier 0 in the agents org (owner, 2026-11-12)", () 
     // Over for more than ten minutes: its run is re-run, once.
     await advance(q, { github: gh, now: at(11) });
     assert.deepEqual(gh.writes, [{ rerun: 100, checks: ["image-changes"], whole: true }], "the whole run: the ghost job is not a failed one");
+    assert.deepEqual(gh.comments.map((c) => c.number), [1], "the PR says so");
+    assert.match(gh.comments[0].body, /infrastructure failure[\s\S]*`image-changes`: still pending .*a ghost job/);
     await advance(q, { github: gh, now: at(15) });
     assert.equal(gh.writes.length, 1, "once per head, and the old job still reads in progress: never merged");
     assert.equal(q.state, "running");
@@ -745,6 +747,7 @@ describe("independent merges: Tier 0 in the agents org (owner, 2026-11-12)", () 
     const q = each();
     await advance(q, { github: gh, now: at(0) });
     assert.deepEqual(gh.writes, [{ rerun: 100, checks: ["code-review"] }]);
+    assert.match(gh.comments[0].body, /`code-review`: the code review never finished/);
     await advance(q, { github: gh, now: at(1) });
     assert.equal(q.prs[0].status, "pending", "the old job, its re-run not on GitHub yet");
     gh.prs[1] = at1(1, [tests, run("code-review", null, 11)]);
@@ -759,6 +762,10 @@ describe("independent merges: Tier 0 in the agents org (owner, 2026-11-12)", () 
     real.reviewComments[1] = `<!-- ci:code-review -->\n\n**Code review: 1 blocking finding on \`${H.slice(0, 7)}\`.** Fix these before merging.`;
     assert.match((await advance(each(), { github: real, now: at(0) })).say[0], /Not merged/);
     assert.deepEqual(real.writes, []);
+    // A job that hit its timeout is a hanging test until shown otherwise: fixed, never re-run.
+    const hung = fakeGithub({ 1: at1(1, [tests, run("tests-e2e", "TIMED_OUT", 10)]) });
+    assert.match((await advance(each(), { github: hung, now: at(0) })).say[0], /Not merged/);
+    assert.deepEqual([hung.writes, hung.comments], [[], []]);
     const refused = fakeGithub({ 1: at1(1, [tests, run("code-review", "FAILURE", 10)]) });
     Object.assign(refused, { refuseRerun: true, reviewComments: { 1: timedOut } });
     assert.match((await advance(each(), { github: refused, now: at(0) })).say[0], /Not merged:.*1 named check\(s\) failed on its head/);
@@ -772,6 +779,7 @@ describe("independent merges: Tier 0 in the agents org (owner, 2026-11-12)", () 
     await advance(cq, { github: card, now: at(0) });
     assert.equal(cq.state, "running");
     assert.deepEqual(card.writes, [{ rerun: 200, checks: ["image-scan", "lint"] }]);
+    assert.match(card.comments[0].body, /`image-scan`: cancelled before it finished[\s\S]*`lint`: cancelled/);
     card.prs[2] = at1(2, [tests, run("image-scan", "SUCCESS", 21, 200), run("lint", "SUCCESS", 23, 200)], pr);
     await advance(cq, { github: card, now: at(3) });
     assert.deepEqual(card.writes.at(-1), { merge: 2, sha: H, method: "squash" });
