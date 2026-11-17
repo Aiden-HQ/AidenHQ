@@ -3341,7 +3341,10 @@ async function agentMerge(ctx, args) {
   const gap = Number.isInteger(args.gap) && args.gap >= 0 && args.gap <= 720 ? args.gap : undefined;
   // Every PR already merged: no card, evidence instead. Only after each is confirmed as the task's own PR (a stored number
   // that now names another change is said stale, never counted as this task's merged work).
-  const read = await Promise.all(prs.map((p) => mergeGithub.pr(p.repo, p.number).then((d) => d?.repository?.pullRequest, () => null)));
+  const read = await Promise.all(prs.map((p) => mergeGithub.pr(p.repo, p.number).then((d) => d?.repository?.pullRequest, (err) => {
+    if (isTransient(err)) throw err; // a blip is not a stale number
+    return null;
+  })));
   for (const [i, pr] of read.entries()) {
     if (await staleStoredPr(ctx.issue.id, { url: prs[i].url, headRefName: pr?.headRefName })) throw new UserError(`Not merged: the PR number stored on this task is stale, so ${prs[i].url} is not this task's change.`);
   }
