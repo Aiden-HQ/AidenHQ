@@ -61,7 +61,7 @@ async function runTask(runId: string): Promise<string | undefined> {
   return r.issueId ?? r.contextSnapshot?.issueId ?? undefined;
 }
 // Modules with kernel roles, a privileged entry, a token of their own or a channel (compile).
-const modulesFile = watched(path.join(configDir, "kernel", "modules.json"), (j) => j as ModulesFile & { reviewer?: ReviewerSlot; setup?: SetupField[]; services?: Record<string, string[]> }, {});
+const modulesFile = watched(path.join(configDir, "kernel", "modules.json"), (j) => j as ModulesFile & { reviewer?: ReviewerSlot; setup?: SetupField[]; services?: Record<string, string[]>; mounts?: Record<string, string[]> }, {});
 const whoami = createIdentity({
   grants: () => grantsTable().agents ?? {}, connections, modules: () => modulesFile().modules ?? {},
   jobcaps: watched(path.join(configDir, "jobcaps.json"), (j) => j as Record<string, Jobcap>, {}), // runner jobs' reads (compile)
@@ -167,10 +167,11 @@ const firstRun = {
 // The model step's record of whether the vault's model key last passed its check (model_ready, the first-run redirects).
 const modelState = readiness({ get: secret, exists: (n) => existsSync(path.join(secretsDir, n)), save: firstRun.save });
 // A module's declared setup secrets from the board (save_secret, setup_status): the same vault writes, then that module's
-// services recreated in the checkout under the apply lock.
+// services and every other one mounting the secret recreated in the checkout under the apply lock.
 const moduleSecrets = createModuleSecrets({
   fields: firstRun.fields, has: firstRun.has, save: firstRun.save,
   services: (module) => { const s = modulesFile().services ?? {}; return Object.hasOwn(s, module) ? s[module] : undefined; },
+  mounts: (secret) => { const m = modulesFile().mounts ?? {}; return Object.hasOwn(m, secret) ? m[secret]! : []; },
   recreate: composeRecreate({ dir: env("AIDENHQ_DIR", repo), composeFile: env("COMPOSE_FILE", "") }),
   log,
 });

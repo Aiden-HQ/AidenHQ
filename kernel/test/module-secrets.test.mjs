@@ -14,6 +14,8 @@ const FIELDS = [
   { module: "channel-slack", secret: "slack_bot_token", label: "Slack bot token", pattern: "^xoxb-[A-Za-z0-9-]{20,200}$" },
 ];
 const SERVICES = { "channel-telegram": ["telegram"], "channel-slack": ["slack-live"], google: [] };
+// Who mounts each secret, any module's (compile: `mounts`): another module's service reads the Slack token too.
+const MOUNTS = { telegram_bot_token: ["telegram"], slack_bot_token: ["apps-mcp", "slack-live"] };
 const TOKEN = "123456789:" + "A".repeat(35);
 // The accounts' board sessions as uiSession answers them: the owner, another ready admin, else null (a non-ready admin
 // never gets one).
@@ -26,6 +28,7 @@ function vault(recreate = async () => {}) {
   const secrets = createModuleSecrets({
     fields: () => FIELDS,
     services: (m) => SERVICES[m],
+    mounts: (s) => MOUNTS[s] ?? [],
     save: vaultWriter(dir),
     has: (name) => existsSync(join(dir, name)),
     recreate: async (s, locked) => { calls.push(s); await recreate(s, locked); },
@@ -51,6 +54,15 @@ test("save_secret writes a declared secret and recreates its module's services",
   assert.equal(statSync(f).mode & 0o777, 0o600);
   assert.deepEqual(v.calls, [["telegram"]]);
   assert.ok(!v.lines.join("\n").includes(TOKEN), "the value is never logged");
+});
+
+test("save_secret recreates every service that mounts the secret, not only its module's", async (t) => {
+  const v = vault();
+  const post = await api(t, v);
+  const r = await post("save_secret", { module: "channel-slack", secret: "slack_bot_token", value: "xoxb-" + "a".repeat(30) });
+  assert.equal(r.status, 200, r.body);
+  assert.deepEqual(r.json.restarted, ["apps-mcp", "slack-live"]);
+  assert.deepEqual(v.calls, [["apps-mcp", "slack-live"]]);
 });
 
 test("save_secret refuses an undeclared secret, another module's secret, a pattern mismatch and an off module", async (t) => {

@@ -425,6 +425,16 @@ sed "s#ROOT#$(dirname "$(pwd)")/pr#g" "${join(bin, "answer")}" > "$out"; echo '{
   assert.equal(review("export const add = (a, b) => a | b;\n", { FAIL: "tool error at src/a.ts:512" }).code, 3, "a bare number is no status");
 });
 
+test("the code review's brief carries the items of the base's checklist that the diff triggers, and only those", async () => {
+  const { brief } = await import("../../modules/ci/template/.github/code-review.mjs");
+  const { checklistText, matchChecklist } = await import("../../modules/ci/template/.github/review-checklist.mjs");
+  const items = [{ id: "migration-at-start", trigger: { paths: ["migrations/**"] }, check: "It runs at startup." }];
+  const checks = checklistText(matchChecklist(items, "diff --git a/migrations/001.sql b/migrations/001.sql\n+create table t (id int);\n"));
+  assert.match(brief({ checks }), /Reliability checklist[\s\S]*P1 finding[\s\S]*- migration-at-start: It runs at startup\./);
+  assert.equal(checklistText(matchChecklist(items, "diff --git a/src/a.js b/src/a.js\n+x\n")), "");
+  assert.doesNotMatch(brief({ checks: "" }), /Reliability checklist/);
+});
+
 test("the review tools read the PR's tree and history only: nothing outside the checkout, no .git, no options smuggled in", async () => {
   const { tools } = await import("../../modules/ci/template/.github/review-tools.mjs");
   const dir = mkdtempSync(join(tmpdir(), "ci-tools-"));

@@ -46,7 +46,7 @@ import { MERGE_REQUESTED, REPLY_MARKER, fence, onlyMergesLeft, prSnapshot, state
 import { afterNewWord, checkSignature, roundsTrip, twiceTrip } from "../../../modules/engineering/src/breaker.ts";
 import YAML from "yaml";
 import { classify, normalizeApp, sensitiveTraits } from "./tiers.mjs";
-import { CODE_REJECTS, MAX_REJECTS, autonomyCap, codeVerdict, heldInput, meritOwner, priorDecisions, priorPart, laterRejections, rejectedSince, requestKey, requestPatches, routineCap, routineCapped } from "../../../kernel/src/tier.ts";
+import { CODE_REJECTS, MAX_REJECTS, autonomyCap, codeVerdict, heldInput, meritOwner, priorDecisions, priorPart, laterRejections, rejectedSince, requestKey, requestPatches, requestTargets, routineCap, routineCapped } from "../../../kernel/src/tier.ts";
 import { LUNA, openRouterAsk, openRouterKey } from "./models.mjs";
 import { kernelCardDiff, readCardSourceExceptions, readDecisions, requestReview, reviewRequest, unreadSourceExceptions } from "./review-request.mjs";
 import { UNSURE } from "../../../kernel/sdk/src/reviewer.ts";
@@ -628,8 +628,8 @@ async function watchProductPrs() {
       continue;
     }
     state.set(key, new Date().toISOString());
-    // Parked (the AI reviewer's rejections ran out): its publish is refused, so a rebase is a run for nothing.
-    if (priorDecisions((await commonTierState(issue, "pr")).records, "pr").rejects >= MAX_REJECTS) continue;
+    // Parked (this branch's rejections ran out): its publish is refused, so a rebase is a run for nothing.
+    if (priorDecisions((await commonTierState(issue, "pr")).records, "pr", [], undefined, undefined, undefined, requestTargets("pr", { branches: [{ repo, branch: pr.headRefName }] })).rejects >= MAX_REJECTS) continue;
     state.set(`rebase-asked:${url}`, new Date().toISOString());
     await wakeForRebase(issue, pr, want.why, main);
   }
@@ -2553,7 +2553,7 @@ async function rejectedFollowUp(issue, a, post) {
   if (stopped(full.id)) return;
   // Counted as tiering counts them (an owner's reply since lifts the rejections before it), so parked here is parked there.
   const { records } = await commonTierState(full, a.action);
-  const next = afterRejection({ code: post.code, rejects: priorDecisions(records, a.action).rejects, maxRejects: MAX_REJECTS, unsure: UNSURE });
+  const next = afterRejection({ code: post.code, rejects: priorDecisions(records, a.action, [], undefined, undefined, undefined, requestTargets(a.action, a.args)).rejects, maxRejects: MAX_REJECTS, unsure: UNSURE });
   if (next.tell === "parked") await tellParent(full, "parked", `**${full.identifier} is parked:** the AI reviewer rejected its ${a.action} ${MAX_REJECTS} times, so the runner stops sending it back (its notes are on ${full.identifier}): ${full.title}. Narrow or rewrite the request and reopen it with that, or cancel it.`);
   if (next.tell === "decision") await tellParent(full, "decision", `**Two AI reviewers were unsure about ${full.identifier}'s ${a.action}:** ${full.title}. Their notes are on ${full.identifier}; its Engineer is fixing the change. If the request itself is unclear (the brief or its authorisation), say what you meant there.`);
   const key = `reject-dispatched:${a.id}`;

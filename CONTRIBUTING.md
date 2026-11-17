@@ -11,7 +11,7 @@ Thanks for helping. Contributors have read access to this repository; the mainta
    touched.
 4. **Open a pull request** against `main` here. Fill in the template. CI must be green.
 5. The maintainer reviews and merges. Your own instance picks the change up when you bump `product:` in your instance
-   repo to a commit on `main` (see [SETUP.md](SETUP.md), "Upgrading the product").
+   repo to a commit on `main` (see [docs/setup.md](docs/setup.md), "Upgrading the product").
 
 ### Pull requests and commits
 

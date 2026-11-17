@@ -214,6 +214,7 @@ test("disabling open-loops removes its agents, routines and labels only", () => 
   for (const k of ["chief-of-staff", "assistant", "app-maintainer", "fleet-engineer", "meeting-librarian"]) assert.ok(r.paperclip.agents[k], k);
   assert.ok(!r.paperclip.labels.some((l) => l.name === "waiting-on"));
   assert.ok(r.paperclip.mcp_servers.telegram && r.paperclip.mcp_servers.chat_lane, "the Telegram channel and the chat lane stay: the bundle lists them");
+  assert.ok(r.kernelModules.mounts.github_token.includes("apps-mcp"), "a setup secret's services include other modules' that mount it");
 });
 // Lean-core 3h: graded done is the grading module: its finish check for the kernel, its own token, the
 // board's read key and the tasks module on its network; nothing of the control plane's.

@@ -33,12 +33,12 @@
 # TS_APPS_AUTHKEY (the apps' own tailnet node: a reusable, tagged, pre-authorized key; docs/setup.md),
 # BOARD_HOST (default: this VM's tailnet name), PAPERCLIP_PASSWORD
 # (with --restore: the old VM's paperclip_owner_password; otherwise one is generated), GITHUB_AGENTS_ORG (the GitHub
-# org for agent-built repos, which must exist and be owned by you; SETUP.md step 8), MAX_CONCURRENT and TIMEOUT_MINUTES
+# org for agent-built repos, which must exist and be owned by you; docs/setup.md step 8), MAX_CONCURRENT and TIMEOUT_MINUTES
 # (the runner's jobs at once and minutes per job, into config/runner.yaml), CI_RUNNERS (CI runner units, started once
 # the GitHub App and the ci module are set up). An unquoted value ends at ' #'.
 # The settings that aren't secrets may come from the environment instead (the file wins): AIDENHQ_USER, OWNER_NAME,
 # OWNER_EMAIL, TIMEZONE, COMPANY_NAME, MODULES, BOARD_HOST, GITHUB_AGENTS_ORG, MAX_CONCURRENT, TIMEOUT_MINUTES, CI_RUNNERS.
-# What it makes: see SETUP.md. It holds secrets: delete person.env when setup is done.
+# What it makes: see docs/setup.md. It holds secrets: delete person.env when setup is done.
 # Run as root, it first copies the checkout's commit to root-owned /opt/aidenhq/kernel/<sha> and runs again from there
 # (--checkout names the user's checkout): root's own steps run only from that verified copy.
 set -euo pipefail
