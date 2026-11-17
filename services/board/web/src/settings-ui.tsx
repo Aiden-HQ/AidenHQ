@@ -1,7 +1,8 @@
 // Settings' building blocks, shared by every page: the page header, grouped rows that open in place, controls (switch,
 // segmented choice), and the one way a change leaves the page: a preview of the exact instance.yaml lines, filed as the
 // Platform Engineer's task, then followed on the row (task, card, applying, live). Nothing here applies anything.
-import { createContext, useContext, useEffect, useId, useState, type ReactNode } from "react";
+import { createContext, useCallback, useContext, useEffect, useId, useMemo, useState, type ReactNode } from "react";
+import { SignInRequired, api } from "./api";
 import type { ChangeStage, FiledChange, SettingChange } from "./types";
 import { changeLines, whoDecides } from "./settings-format";
 
@@ -92,8 +93,9 @@ export function StatusPill({ tone, children }: { tone: "ok" | "warn" | "bad" | "
   );
 }
 
-export function Switch({ on, onChange, label, disabled }: { on: boolean; onChange: (on: boolean) => void; label: string; disabled?: boolean }) {
-  return <button className={`st-switch${on ? " on" : ""}`} role="switch" aria-checked={on} aria-label={label} disabled={disabled} onClick={() => onChange(!on)} />;
+/** `redOff`: an off switch is red, for a module on/off where off is a decision (green on, red off). */
+export function Switch({ on, onChange, label, disabled, redOff }: { on: boolean; onChange: (on: boolean) => void; label: string; disabled?: boolean; redOff?: boolean }) {
+  return <button className={`st-switch${on ? " on" : redOff ? " off-red" : ""}`} role="switch" aria-checked={on} aria-label={label} disabled={disabled} onClick={() => onChange(!on)} />;
 }
 
 export function Segmented<T extends string | number>({ value, options, onChange, label }: { value: T; options: { value: T; label: string }[]; onChange: (v: T) => void; label: string }) {
@@ -258,4 +260,43 @@ export function usePoll(run: () => void, ms: number) {
     const t = setInterval(() => document.visibilityState === "visible" && run(), ms);
     return () => clearInterval(t);
   }, [run, ms]);
+}
+
+/** The change context (filed changes, how to file one, toasts) for a page outside Settings that edits settings. */
+export function ChangesScope({ onSignIn, children }: { onSignIn: () => void; children: ReactNode }) {
+  const [changes, setChanges] = useState<FiledChange[]>([]);
+  const [toasts, setToasts] = useState<{ id: number; text: string; tone?: "ok" | "bad" }[]>([]);
+  const loadChanges = useCallback(() => api.settingsChanges().then((r) => setChanges(r.changes), () => {}), []);
+  useEffect(() => {
+    void loadChanges();
+    const t = setInterval(() => document.visibilityState === "visible" && void loadChanges(), 10_000);
+    return () => clearInterval(t);
+  }, [loadChanges]);
+  const ctx = useMemo(
+    () => ({
+      changes,
+      file: async (items: SettingChange[]) => {
+        try {
+          const { identifier } = await api.changeSettings(items);
+          void loadChanges();
+          return identifier;
+        } catch (e) {
+          if (e instanceof SignInRequired) onSignIn();
+          throw e;
+        }
+      },
+      toast: (text: string, tone?: "ok" | "bad") => {
+        const id = Date.now() + Math.random();
+        setToasts((t) => [...t, { id, text, tone }]);
+        setTimeout(() => setToasts((t) => t.filter((x) => x.id !== id)), 4_500);
+      },
+    }),
+    [changes, loadChanges, onSignIn],
+  );
+  return (
+    <Changes.Provider value={ctx}>
+      {children}
+      <Toasts items={toasts} />
+    </Changes.Provider>
+  );
 }

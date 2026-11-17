@@ -13,6 +13,8 @@ export interface Agent {
   /** The agent's one-line routing description (setup writes it from the agent definition). */
   title?: string | null;
   status: string;
+  /** The agent it reports to (the org chart). */
+  reportsTo?: string | null;
   adapterType: string;
   adapterConfig?: Record<string, unknown>;
   metadata?: { setupKey?: string; module?: unknown; trial?: unknown; models?: unknown; persona?: unknown; avatar?: unknown; runnerEngine?: unknown; engine?: unknown; department?: unknown } | null;
@@ -288,6 +290,13 @@ export class Paperclip {
 
   closedSince(since: string, limit = "100"): Promise<Issue[]> {
     return this.list("done,cancelled", since, limit);
+  }
+
+  /** One page of an agent's finished tasks, newest first (Paperclip filters, searches and pages; the assignee is checked here too). */
+  async closedFor(agentId: string, opts: { q?: string; status?: "done" | "cancelled"; offset?: number; limit?: number } = {}): Promise<Issue[]> {
+    const p = new URLSearchParams({ assigneeAgentId: agentId, status: opts.status ?? "done,cancelled", limit: String(opts.limit ?? 30), offset: String(opts.offset ?? 0), excludeRoutineExecutions: "true" });
+    if (opts.q?.trim()) p.set("q", opts.q.trim());
+    return (await this.request<Issue[]>("GET", `/api/companies/${this.companyId}/issues?${p}`)).filter((i) => i.assigneeAgentId === agentId);
   }
 
   private list(status: string, updatedSince?: string, limit = "500"): Promise<Issue[]> {

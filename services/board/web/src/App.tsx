@@ -23,6 +23,7 @@ import { SettingsView, isCategory, type Category } from "./Settings";
 import { ApprovalsView } from "./Chat";
 import { clearCache, load, peek, setAccount } from "./cache";
 import { subscribe } from "./events";
+import type { AgentTab } from "./AgentPage";
 import { VIEW_CHUNKS, prefetchView } from "./queries";
 import { ChatWorkspace } from "./Workspace";
 import { askForNotifications, notificationsSupported, watchNeedsYou } from "./notify";
@@ -37,12 +38,14 @@ const ActivityView = lazy(() => VIEW_CHUNKS.activity().then((m) => ({ default: m
 const AppsView = lazy(() => VIEW_CHUNKS.apps().then((m) => ({ default: m.AppsView })));
 const CostsView = lazy(() => VIEW_CHUNKS.costs().then((m) => ({ default: m.CostsView })));
 const CrewView = lazy(() => VIEW_CHUNKS.agents().then((m) => ({ default: m.CrewView })));
+const ModulesView = lazy(() => VIEW_CHUNKS.modules().then((m) => ({ default: m.ModulesView })));
+const AgentPage = lazy(() => VIEW_CHUNKS.agentPage().then((m) => ({ default: m.AgentPage })));
 const RunPage = lazy(() => VIEW_CHUNKS.run().then((m) => ({ default: m.RunPage })));
 /** A page's place while its code arrives (rarely seen: it is warmed early). No spinner: the page paints in a moment. */
 const PageLoading = () => <main className="page wide" aria-busy="true" />;
 
 type Items = Record<Bucket, Card[]>;
-type Route = { kind: "board" } | { kind: "chat"; ref: string | null } | { kind: "view"; view: View } | { kind: "settings"; cat: Category | null } | { kind: "task"; ref: string; focus?: string } | { kind: "run"; id: string } | { kind: "brief" } | { kind: "help" };
+type Route = { kind: "board" } | { kind: "chat"; ref: string | null } | { kind: "view"; view: View } | { kind: "settings"; cat: Category | null } | { kind: "agent"; key: string; tab: AgentTab } | { kind: "task"; ref: string; focus?: string } | { kind: "run"; id: string } | { kind: "brief" } | { kind: "help" };
 
 const HINTS: Record<Bucket, string> = {
   triage: "New tasks land here",
@@ -92,16 +95,21 @@ function parseRoute(): Route {
     const [ref = "", focus] = h.slice(2).split("/");
     return { kind: "task", ref, ...(focus ? { focus } : {}) };
   }
+  // #/agents/<key>[/overview|chats|settings] opens an agent's page. The old #/settings/agents lands on the Agents list.
+  const agent = /^agents\/([a-z0-9-]+)(?:\/(overview|chats|settings))?$/.exec(h);
+  if (agent) return { kind: "agent", key: agent[1]!, tab: (agent[2] as AgentTab | undefined) ?? "overview" };
+  if (h === "settings/agents") return { kind: "view", view: "agents" };
   // #/r/<run id> opens a run's trace.
   if (/^r\/[0-9a-f-]{36}$/.test(h)) return { kind: "run", id: h.slice(2) };
   // #/c/ starts a new chat; #/c/WOR-12 opens that chat in the chat workspace.
   if (h === "c" || h.startsWith("c/")) return { kind: "chat", ref: h.slice(2).split("?")[0] || null };
-  // #/settings/<category> opens Settings there; the old tabs (#/connections, #/modules, #/accounts) are categories now.
+  if (h === "settings/modules" || h === "modules") return { kind: "view", view: "modules" };
+  // #/settings/<category> opens Settings there; the old tabs (#/connections, #/accounts) are categories now.
   if (h === "settings" || h.startsWith("settings/")) {
     const cat = h.slice("settings/".length);
     return { kind: "settings", cat: isCategory(cat) ? cat : null };
   }
-  if (h === "connections" || h === "modules" || h === "accounts") return { kind: "settings", cat: h };
+  if (h === "connections" || h === "accounts") return { kind: "settings", cat: h };
   // #/approvals, #/activity, ...: deep links to a tab.
   // A tab link may carry the tab's own state after "?" (#/costs?range=7d).
   if ((VIEWS as string[]).includes(h.split("?")[0]!)) return { kind: "view", view: h.split("?")[0] as View };
@@ -124,15 +132,15 @@ function useMedia(query: string) {
   return on;
 }
 
-type View = "chat" | "agents" | "approvals" | "activity" | "board" | "apps" | "costs" | "settings";
-const VIEWS: View[] = ["chat", "agents", "approvals", "activity", "board", "apps", "costs", "settings"];
-// Daily work in the bar; configuration (connections, modules, accounts, instance settings) is behind the Settings gear.
-const TABS: [View, string][] = [["chat", "Chat"], ["approvals", "Approvals"], ["agents", "Agents"], ["apps", "Apps"], ["board", "Tasks"], ["activity", "Activity"], ["costs", "Costs"]];
+type View = "chat" | "agents" | "modules" | "approvals" | "activity" | "board" | "apps" | "costs" | "settings";
+const VIEWS: View[] = ["chat", "agents", "modules", "approvals", "activity", "board", "apps", "costs", "settings"];
+// Daily work in the bar; configuration (connections, accounts, instance settings) is behind the Settings gear.
+const TABS: [View, string][] = [["chat", "Chat"], ["approvals", "Approvals"], ["agents", "Agents"], ["modules", "Modules"], ["apps", "Apps"], ["board", "Tasks"], ["activity", "Activity"], ["costs", "Costs"]];
 const VIEW_KEY = "aidenhq.view";
 const savedView = (): View => {
   try {
     const v = localStorage.getItem(VIEW_KEY);
-    if (v === "connections" || v === "modules" || v === "accounts") return "settings"; // tabs that moved into Settings
+    if (v === "connections" || v === "accounts") return "settings"; // tabs that moved into Settings
     return v && (VIEWS as string[]).includes(v) ? (v as View) : "chat";
   } catch {
     return "chat";
@@ -260,6 +268,7 @@ export function App() {
       // A chat link opens the Chat tab; a tab link opens that tab.
       if (r.kind === "chat") setView("chat");
       if (r.kind === "view") setView(r.view);
+      if (r.kind === "agent") setView("agents");
       if (r.kind === "settings") setView("settings");
     };
     hash();
@@ -473,7 +482,7 @@ export function App() {
       if (e.key === "Escape") {
         if (creating) return setCreating(false);
         if (typing) return el.blur();
-        if (route.kind !== "board" && route.kind !== "chat" && route.kind !== "view" && route.kind !== "settings") return go("#/");
+        if (route.kind !== "board" && route.kind !== "chat" && route.kind !== "view" && route.kind !== "agent" && route.kind !== "settings") return go("#/");
         if (query) return setQuery("");
         return setSelected(null);
       }
@@ -588,7 +597,7 @@ export function App() {
         {!mobile && (
           <nav className="main-tabs" aria-label="Sections">
             {tabs.map(([v, name]) => (
-              <button key={v} className={`btn${view === v ? " on" : ""}`} aria-current={view === v ? "page" : undefined} onClick={() => setView(v)} onPointerEnter={() => prefetchView(v)} onFocus={() => prefetchView(v)}>
+              <button key={v} className={`btn${view === v ? " on" : ""}`} aria-current={view === v ? "page" : undefined} onClick={() => (v === "agents" || v === "modules" ? go(`#/${v}`) : setView(v))} onPointerEnter={() => prefetchView(v)} onFocus={() => prefetchView(v)}>
                 {v === "agents" && board.agentsActive > 0 && <span className="live-dot" title={`${board.agentsActive} working`} />}
                 {name}
                 {v === "approvals" && approvalsOpen > 0 && <span className="btn-count needs">{approvalsOpen}</span>}
@@ -648,7 +657,7 @@ export function App() {
       {mobile && !chatFull && (
         <nav className="tabs">
           {tabs.filter(([v]) => v !== "board").map(([v, name]) => (
-            <button key={v} className={view === v ? "on" : ""} onClick={() => setView(v)} onPointerEnter={() => prefetchView(v)} onFocus={() => prefetchView(v)}>
+            <button key={v} className={view === v ? "on" : ""} onClick={() => (v === "agents" || v === "modules" ? go(`#/${v}`) : setView(v))} onPointerEnter={() => prefetchView(v)} onFocus={() => prefetchView(v)}>
               {name}
               {v === "approvals" && approvalsOpen > 0 && <span className="count">{approvalsOpen}</span>}
             </button>
@@ -666,9 +675,11 @@ export function App() {
       {view === "approvals" && <ApprovalsView open={openChat} onSignIn={signInNeeded} />}
       {view === "activity" && <Suspense fallback={<PageLoading />}><ActivityView onSignIn={signInNeeded} /></Suspense>}
       {view === "settings" && <SettingsView cat={route.kind === "settings" ? route.cat : null} mobile={mobile} session={session} go={go} onSignIn={signInNeeded} can={{ signIn: local, google: googleConnect }} />}
+      {view === "modules" && <Suspense fallback={<PageLoading />}><ModulesView onSignIn={signInNeeded} /></Suspense>}
       {view === "apps" && <Suspense fallback={<PageLoading />}><AppsView onSignIn={signInNeeded} /></Suspense>}
       {view === "costs" && <Suspense fallback={<PageLoading />}><CostsView onSignIn={signInNeeded} /></Suspense>}
-      {view === "agents" && <Suspense fallback={<PageLoading />}><CrewView crew={board.assignees} onSignIn={signInNeeded} /></Suspense>}
+      {view === "agents" && route.kind === "agent" && <Suspense fallback={<PageLoading />}><AgentPage key={route.key} agentKey={route.key} tab={route.tab} go={go} onSignIn={signInNeeded} /></Suspense>}
+      {view === "agents" && route.kind !== "agent" && <Suspense fallback={<PageLoading />}><CrewView crew={board.assignees} onSignIn={signInNeeded} /></Suspense>}
       <main className="columns" hidden={view !== "board"}>
         <DndContext sensors={sensors} collisionDetection={collision} onDragStart={onDragStart} onDragOver={onDragOver} onDragEnd={onDragEnd} onDragCancel={() => (setActiveId(null), (dragFrom.current = null), void refresh(true))}>
           {visibleBuckets.map((b) => (
