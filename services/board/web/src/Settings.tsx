@@ -503,7 +503,7 @@ function ModulesPage({ onSignIn }: { onSignIn: () => void }) {
               </a>
             </>
           )}
-          . The fix is an ordinary update to a newer product pin.
+          . The fix is an ordinary update to a newer pin.
         </div>
       ))}
       <Group title="On" count={on.length}>
@@ -546,6 +546,10 @@ function ModuleItem({ m }: { m: ModuleRow }) {
               <dd>{m.agents.length ? m.agents.join(", ") : <span className="muted">none</span>}</dd>
               <dt>Needs</dt>
               <dd>{m.requires.length ? m.requires.join(", ") : <span className="muted">nothing</span>}</dd>
+              <dt>From</dt>
+              <dd>
+                {m.marketplace} <span className="st-chip">{m.tier}</span>
+              </dd>
             </dl>
           )}
         </>

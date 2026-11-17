@@ -10,6 +10,8 @@ import { AUTH_PORT, checkPorts, edgeConfig, GATE_PORT } from "./edge.mjs";
 import { urlSettingProblem } from "../services/shared/url-setting.ts";
 import { generateCompose, ownSecrets } from "../kernel/src/loader/services.ts";
 import { capabilityProblems, conflictProblems, danglingBindings } from "../kernel/src/loader/bindings.ts";
+import { MANIFEST_KEYS, moduleName } from "../kernel/src/loader/authority.ts";
+import { hostFetch, marketplaceEntries, OFFICIAL, remoteModules } from "../kernel/src/loader/sources.ts";
 
 const PROFILES = ["trusted", "untrusted", "code-exec"];
 // image: the agent's computer (scripts/computers.mjs); the instance turns it on or off per agent.
@@ -279,33 +281,51 @@ function settingDefs(file, def) {
   return Object.fromEntries(Object.entries(def.settings ?? {}).filter(([k]) => !/token|secret|password/i.test(k)).map(([k, d]) => [k, { ...(d && "default" in d ? { default: d.default } : {}), ...(d?.values ? { values: d.values } : {}), ...(d?.required ? { required: true } : {}), ...(d?.type ? { type: d.type } : {}), ...(d?.host ? { host: d.host } : {}), ...(docs[k] ? { doc: docs[k] } : {}) }]));
 }
 
-/** modules/marketplace.json: the modules this product ships, each `{ name, source: "./<name>" }`. Unknown fields are ignored. */
+/**
+ * modules/marketplace.json: the modules this product ships, each `{ name, source: "./<name>" }`. Unknown fields are ignored.
+ * A remote source belongs in a third-party marketplace (instance.yaml marketplaces:) until the modules repository (5b).
+ */
 export function readMarketplace(productDir) {
   const file = join(productDir, "modules", "marketplace.json");
   if (!existsSync(file)) fail("modules/marketplace.json is missing");
   const m = JSON.parse(readFileSync(file, "utf8"));
-  if (!Array.isArray(m.plugins)) fail("modules/marketplace.json: plugins must be a list");
-  for (const p of m.plugins) {
-    if (typeof p.source !== "string" || !p.source.startsWith("./")) fail(`modules/marketplace.json: ${p.name}: remote sources are not supported yet (unit 5a)`);
-    if (p.source !== `./${p.name}`) fail(`modules/marketplace.json: ${p.name}: source is ${p.source}, expected ./${p.name}`);
+  const plugins = marketplaceEntries(m, "modules/marketplace.json");
+  for (const p of plugins) {
+    if (typeof p.source === "string" && p.source !== `./${p.name}`) fail(`modules/marketplace.json: ${p.name}: source is ${p.source}, expected ./${p.name}`);
+    if (typeof p.source !== "string") fail(`modules/marketplace.json: ${p.name}: a remote source belongs in a third-party marketplace (instance.yaml marketplaces:)`);
   }
-  return m;
+  return { ...m, plugins };
 }
 
-/** Every module in modules/marketplace.json, as { name, root, def }, in name order. */
-function discover(productDir) {
+/**
+ * Every module of modules/marketplace.json and every module instance.yaml installs from a third-party marketplace, as
+ * { name, root, def, marketplace, tier, sha? }, in name order. Names are unique across marketplaces. module.yaml is strict.
+ */
+function discover(productDir, instance, fetch) {
   const dir = join(productDir, "modules");
-  const listed = new Set(readMarketplace(productDir).plugins.map((p) => p.name));
+  const plugins = readMarketplace(productDir).plugins;
+  const listed = new Set(plugins.map((p) => p.name));
   for (const name of readdirSync(dir)) {
     if (existsSync(join(dir, name, "module.yaml")) && !listed.has(name)) fail(`modules/${name} is not in modules/marketplace.json`);
   }
   const out = new Map();
-  for (const name of [...listed].sort()) {
-    const file = join(dir, name, "module.yaml");
-    if (!existsSync(file)) fail(`modules/marketplace.json: ${name} has no modules/${name}/module.yaml`);
+  for (const p of [...plugins].sort((a, b) => a.name.localeCompare(b.name))) {
+    const { name } = p;
+    const root = join(dir, name);
+    const file = join(root, "module.yaml");
+    if (!existsSync(file)) fail(`modules/marketplace.json: ${name} has no module.yaml`);
     const def = readYaml(file);
     if (def.name !== name) fail(`modules/${name}/module.yaml: name is ${def.name}, expected ${name}`);
-    out.set(name, { name, root: join(dir, name), def });
+    out.set(name, { name, root, def, marketplace: OFFICIAL, tier: "official" });
+  }
+  for (const r of remoteModules(instance, { ...fetch, parse: (t) => YAML.parse(t) })) {
+    if (out.has(r.name)) fail(`${r.name}@${r.marketplace}: a module named ${r.name} is already installed from ${out.get(r.name).marketplace}`);
+    if (r.def.apps != null || Object.values(r.def.services?.run ?? {}).some((s) => s?.build != null)) fail(`${r.name}@${r.marketplace}: apps and service builds from a remote source aren't supported yet`);
+    out.set(r.name, { name: r.name, root: r.root, def: r.def, marketplace: r.marketplace, tier: r.tier, sha: r.at.sha, source: { url: r.market.url, path: r.market.path } });
+  }
+  for (const m of out.values()) {
+    const unknown = Object.keys(m.def).filter((k) => !MANIFEST_KEYS.has(k) && k !== "compose");
+    if (unknown.length) fail(`module ${m.name}: unknown module.yaml key${unknown.length === 1 ? "" : "s"} ${unknown.join(", ")}`);
   }
   return out;
 }
@@ -438,15 +458,16 @@ function put(target, key, value, kind) {
  * productDir holds modules/<name>/module.yaml; instanceDir holds instance.yaml, agents/<key>.md additions to a module
  * agent's handbook, and agents/<key>/ folders (agent.yaml + AGENTS.md): the instance's own agents.
  */
-export function compile(productDir, instanceDir, { revision } = {}) {
+export function compile(productDir, instanceDir, { revision, fetch = hostFetch(productDir) } = {}) {
   const instFile = join(instanceDir, "instance.yaml");
   if (!existsSync(instFile)) fail(`no instance.yaml in ${instanceDir}: set AIDENHQ_INSTANCE_DIR to your instance checkout (see docs/USAGE.md)`);
   const instance = readYaml(instFile);
-  const all = discover(productDir);
+  const all = discover(productDir, instance, fetch);
   if (!all.has("core")) fail("modules/core is missing");
   const problems = capabilityProblems(Object.fromEntries([...all].map(([n, m]) => [n, m.def])));
   if (problems.length) fail(problems.join("; "));
-  const enabled = resolveEnabled(all, instance.modules ?? []);
+  const chosen = (instance.modules ?? []).map(moduleName);
+  const enabled = resolveEnabled(all, chosen);
   const enabledDefs = Object.fromEntries(enabled.map((n) => [n, all.get(n).def]));
   const conflicts = conflictProblems(enabledDefs);
   if (conflicts.length) fail(conflicts.join("; "));
@@ -821,10 +842,12 @@ export function compile(productDir, instanceDir, { revision } = {}) {
     ...(c.model_as_caller === true ? { model_as_caller: true } : {}),
   }]));
 
-  const catalog = [...all.values()].map(({ name, root, def }) => ({
-    name, description: def.description ?? "", enabled: enabled.includes(name), chosen: (instance.modules ?? []).includes(name), requires: def.requires ?? [],
+  const catalog = [...all.values()].map(({ name, root, def, marketplace, tier, sha, source }) => ({
+    name, description: def.description ?? "", enabled: enabled.includes(name), chosen: chosen.includes(name), requires: def.requires ?? [],
     agents: Object.keys(def.agents ?? {}), routines: Object.keys(def.routines ?? {}), connections: Object.keys(def.connections ?? {}),
-    apps: (def.apps ?? []).map((a) => a.name), ...(revision ? { revision } : {}),
+    apps: (def.apps ?? []).map((a) => a.name), ...(sha ? { revision: sha } : revision ? { revision } : {}),
+    // Where it comes from and its computed tier (spec §6.5): Settings > Modules and the advisories read them.
+    marketplace, tier, ...(source ? { source } : {}),
     // The board's Settings: each setting's default, allowed values and the comment above it in module.yaml; `setup`, how to set
     // up a module that serves the runner rather than agents' connections (Grafana, ClickHouse).
     settings: settingDefs(join(root, "module.yaml"), def), ...(def.setup ? { setup: String(def.setup).trim() } : {}),

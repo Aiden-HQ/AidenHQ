@@ -11,7 +11,8 @@ import { REPO_ROOT, loadConfig } from "./config.mjs";
 import { applyWaitingForLock, architectFollowUps, bumpTitle, definitionsOf, ownerMade, productPin, strayFiles, trialEditsText, trialHandbookOnly, trialNoTapBy, untrialedNewAgents } from "./apply.ts";
 import { applyCardArgs, asApproval, branchCardArgs, cardOf, cardText, planOf } from "./cards.ts";
 import { applyCard, repoKey } from "../../../kernel/src/kinds.ts";
-import { authorityLines, diffAll, moduleInputs } from "../../../kernel/src/loader/authority.ts";
+import { authorityLines, diffAll, marketplaceChanges, moduleInputs } from "../../../kernel/src/loader/authority.ts";
+import { hostFetch, remoteCodeText, withRemote } from "../../../kernel/src/loader/sources.ts";
 import { cowRoot, engineState, followJob, kernelJobs, readEngines, removeLayers, gatewayApi, jobcapServers, jobcapsFor, launcher, modelToken, observes, releaseBox, viaGateway } from "./engines.mjs";
 import { hiding, jailProblem } from "../../../kernel/src/sandbox.ts";
 import { sandboxConfig } from "../../../kernel/src/sandbox-config.ts";
@@ -1936,7 +1937,7 @@ async function moduleTierState(baseText, headText) {
   if (baseText === undefined || headText === undefined) return {};
   try {
     const [bi, hi] = [YAML.parse(baseText) ?? {}, YAML.parse(headText) ?? {}];
-    if (JSON.stringify(bi.product ?? null) === JSON.stringify(hi.product ?? null) && JSON.stringify(bi.modules ?? null) === JSON.stringify(hi.modules ?? null)) return {};
+    if (["product", "modules", "marketplaces"].every((k) => JSON.stringify(bi[k] ?? null) === JSON.stringify(hi[k] ?? null))) return {};
     const [from, to] = [String(bi.product ?? ""), String(hi.product ?? "")];
     if (![from, to].every((x) => /^[0-9a-f]{40}$/.test(x))) return { modulesError: "the product pin isn't a full commit on both sides" };
     const defs = async (rev) => {
@@ -1944,7 +1945,9 @@ async function moduleTierState(baseText, headText) {
       return Object.fromEntries(await Promise.all(files.map(async (f) => [f.split("/")[1], YAML.parse(await git(REPO_ROOT, "show", `${rev}:${f}`)) ?? {}])));
     };
     const changed = from === to ? [] : (await git(REPO_ROOT, "diff", "--name-only", "--no-renames", from, to, "--", "modules")).split("\n").filter(Boolean);
-    return { modules: moduleInputs({ baseInstance: bi, headInstance: hi, baseDefs: await defs(from), headDefs: await defs(to), changed, always: ["core"] }) };
+    // Third-party modules (instance.yaml marketplaces:), fetched at their pinned shas; a new marketplace is the owner's.
+    const sides = withRemote({ baseInstance: bi, headInstance: hi, baseDefs: await defs(from), headDefs: await defs(to), changed }, { ...hostFetch(REPO_ROOT), parse: (t) => YAML.parse(t) });
+    return { modules: moduleInputs({ ...sides, always: ["core"] }), marketplaces: marketplaceChanges(bi, hi) };
   } catch (err) {
     return { modulesError: String(err.message ?? err).split("\n")[0].slice(0, 200) };
   }
@@ -1952,7 +1955,7 @@ async function moduleTierState(baseText, headText) {
 
 /** The authority lines an apply card carries (its args, so in its digest): one per module change, code-chosen words only. */
 const authorityOf = (st) => {
-  const diffs = st?.modules ? diffAll(st.modules) : [];
+  const diffs = st?.modules ? [...(st.marketplaces ?? []), ...diffAll(st.modules)] : [];
   return [authorityLines(diffs), diffs.some((d) => d.changes.some((c) => c.owner))];
 };
 
@@ -3079,7 +3082,19 @@ async function productBump(c) {
 async function fleetDiffText(c, bump) {
   const diff = await c.diff();
   const trial = await trialEditsText(c.r.path, c.base, c.files, await agentTexts(c)).catch((e) => `Trial edits: couldn't be read (${String(e.message ?? e).split("\n")[0].slice(0, 150)}); check Activity before approving.`);
-  return [diff, bump && `${bump.title.replaceAll("`", "")}:\n${bump.log}`, trial].filter(Boolean).join("\n\n");
+  return [diff, bump && `${bump.title.replaceAll("`", "")}:\n${bump.log}`, await remoteCode(c), trial].filter(Boolean).join("\n\n");
+}
+
+/** The third-party module code an instance.yaml change brings (sources.ts remoteCodeText), for the reviewer to read. */
+async function remoteCode(c) {
+  if (!c.files.includes("instance.yaml")) return "";
+  try {
+    const [bi, hi] = await Promise.all([c.base, c.sha].map(async (rev) => YAML.parse(await git(c.r.path, "show", `${rev}:instance.yaml`).catch(() => "")) ?? {}));
+    if (!bi.marketplaces && !hi.marketplaces) return "";
+    return remoteCodeText(bi, hi, { ...hostFetch(REPO_ROOT), parse: (t) => YAML.parse(t) });
+  } catch (err) {
+    return `Third-party module code: couldn't be read (${String(err.message ?? err).split("\n")[0].slice(0, 150)}).`;
+  }
 }
 
 /**

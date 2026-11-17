@@ -252,6 +252,7 @@ jobs:
           services/runner|(its own job)|services/runner services/computer kernel services/shared modules scripts kernel/sdk fixtures services/board/src/app.ts services/board/src/fleet.ts services/board/src/kernel-auth.ts services/board/src/session.ts
           services/runner#flows|(its own jobs)|services/runner services/shared modules/engine-codex modules/engine-claude modules/engine-opencode modules/ai-reviewer modules/codehost-github modules/platform modules/engineering modules/grading kernel/sdk kernel/src kernel/test/fixtures kernel/package-lock.json fixtures/engine-echo|services/runner/src/prompt.ts modules/engine-codex/codex-home/AGENTS.md
           kernel/sdk|(cd ../../services/runner && npm ci) && npm test|kernel/sdk fixtures/engine-echo modules/engine-codex modules/engine-claude modules/engine-opencode
+          fixtures/twin|d=$(mktemp -d) && y=$(cd ../../scripts/node_modules && pwd) && cp -R . "$d" && (cd ../../kernel/sdk && npm pack --silent --pack-destination "$d") && cd "$d" && npm install --no-audit --no-fund && NODE_PATH="$y" npm test|fixtures/twin kernel/sdk scripts/sdk-pack.mjs
           services/computer|node --test test/*.test.mjs|services/computer services/runner/src services/runner/bin modules/core/design-system modules/design
           kernel|npm ci && npm test && npm run typecheck|kernel services/computer modules/tasks fixtures services/gate
           modules/core/templates/app|npm ci && npm test && npm run build|modules/core/templates/app modules/core/design-system
@@ -280,6 +281,8 @@ jobs:
           modules/security/scanner|npm ci && npm test && npm run typecheck|modules/security
           PACKAGES
           )
+          # fixtures/twin is the third-party twin: copied out of the tree to a temp dir, it installs the local `npm pack`
+          # tarball of kernel/sdk (no npm publish yet) and runs the contract kit from it, as an outside author would.
           # A changed file under no package's paths (ops/, compose files, root files, a new directory…) runs them all:
           # the filter never fails open. Docs and Markdown alone change no test. The runner's end-to-end flows (`#flows`: the
           # flow-*, box and adopt files) run for anything under services/runner or services/shared except the prompt text and
