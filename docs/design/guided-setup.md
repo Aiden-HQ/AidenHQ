@@ -33,12 +33,14 @@ larger build, done with subagents, to get this ideal result.
    - Aiden on your phone (Telegram);
    - connect Slack.
 
-   Google is not a wizard step. A **guided Google setup** (create your own OAuth client, then connect) is built as a step
-   card Aiden or Settings opens later.
+   Google is not a wizard step. A **guided Google setup** (create your own OAuth client, then connect) is built as
+   Google's setup flow, opened later.
 4. **It ends in Aiden's chat with a short tour.**
    - What Aiden does, how approvals work, how to ask for an agent or an app.
    - Aiden names skipped steps, Google, and further modules (Jira, GitHub, Glean, ...) and offers to set them up.
-5. **Everything skipped stays reachable.** It shows in Settings and Aiden can raise it, never as a nag.
+5. **Every module that needs user setup has a setup flow,** one generic component opened at `/setup/<module>`. The
+   wizard uses three of them, Aiden links to them, and the marketplace (other work) triggers them after install or
+   enable. Skipped ones stay reachable that way, never as a nag.
 6. **No GitHub needed, apps included.** A new on-server code host (`codehost-local`) lets agents build, review, merge
    and deploy apps with git repos on the server. GitHub becomes an optional add-on for syncing off the server.
 
@@ -46,7 +48,8 @@ larger build, done with subagents, to get this ideal result.
 
 - Multi-tenant or hosted onboarding (the later team product).
 - Windows.
-- Redesigning the Settings pages beyond reusing the wizard's step cards there.
+- The marketplace page and when it triggers a flow (other work).
+- Settings pages for modules that need no user setup (other work).
 - Changing what any connection can do once connected.
 
 ## Anti-goals (failure even if it works)
@@ -78,7 +81,7 @@ larger build, done with subagents, to get this ideal result.
 
 - **A. Board wizard driven by module-declared steps (picked).**
   - The kernel's `/setup` shrinks to account, authenticator and model.
-  - The board runs the wizard at first sign-in, one screen per module card marked `wizard: true`.
+  - The board runs the wizard at first sign-in, one screen per module setup flow marked `wizard: true`.
   - It ends in Aiden's chat.
   - Reuses the board's UI, design system and Google connect flow.
 - **B. Grow the kernel's `/setup` into the whole wizard.** Rejected: plain server-rendered HTML, and it pulls sign-in
@@ -172,33 +175,58 @@ wizard. On finish, the kernel signs them in and sends them to the board, which o
 ### Part 3: the wizard (board)
 
 **Where.** A full-screen board route `/welcome`, shown on the owner's first board load until the wizard is finished or
-skipped as a whole. It is reopenable from Settings ("Setup guide"). Its state is stored per instance (board data): each
+skipped as a whole. Its state is stored per instance (board data): each
 step `done | skipped | pending`.
 
-**Steps are module cards.** No step mini-language. A module adds a `card:` block to `module.yaml`; compile copies it
-into `config/modules.json`, which the board already reads:
+**Steps are module setup flows.** A setup flow is the general way any module asks its user for setup. The first-run
+wizard is just three of them in a row. Only modules that can't work without the user's input (a token, a sign-in, a
+pairing) have one. Modules that work out of the box have none; their settings get a separate settings page, built in
+other work.
+
+A module adds a `setup_flow:` block to `module.yaml`; compile copies it into `config/modules.json`, which the board
+already reads:
 
 ```yaml
-card:
+setup_flow:
   order: 20
   title: Aiden on your phone
   why: Chat with Aiden and approve things from Telegram.
-  wizard: true                    # false: Settings and Aiden only (Google)
+  wizard: true                    # in the first-run wizard (only the three below)
   steps: |                        # short markdown instructions, with links
     1. In Telegram, open [BotFather](https://t.me/BotFather), send /newbot, pick a name.
     2. Paste the token below.
-  # The card's paste fields are the module's existing `setup:` secrets.
+  # The flow's paste fields are the module's existing `setup:` secrets.
   connect: /google/connect        # optional: a sign-in button
   pair: true                      # optional: show a one-time pairing code after the secrets are saved
 ```
 
-The board renders every card with one component: instructions, then paste fields, then Connect or the pairing code.
+The board renders every flow with one component: instructions, then paste fields, then Connect or the pairing code.
 - **Completion** comes from the module's real connection status (the board already reads it). The board stores only
   "dismissed".
-- **The same card** appears in Settings → Setup guide, and Aiden links to it.
-- **Where a card shows.** A card is in the wizard only when its module is on and `wizard: true`. Modules that are off
-  are offered by Aiden at the end.
+- **Triggering.** Any flow opens at a stable board route, `/setup/<module>`, and the board exposes which installed
+  modules have a flow that isn't done (`GET /api/setup-flows`). That's the whole contract:
+  - The marketplace page, built in other work, opens it after install or enable; how and when is decided with that
+    page.
+  - Aiden links to it.
+  - The first-run wizard strings three of them together.
+- **In the wizard.** A flow is in the wizard only when its module is on and `wizard: true`. Modules that are off are
+  offered by Aiden at the end.
 - **Meet Aiden now** is on every wizard screen. The wizard is optional; the tour runs whenever they leave it.
+
+**Every module that needs one gets a flow in this work.** The candidates, from the modules repo's credentials and
+`connections.<x>.setup` texts:
+- **Channels:** `channel-telegram`, `channel-slack`.
+- **Connections:** `google` (the guided own-client flow), `slack` (read, signed in as the owner), `github`, `glean`,
+  `jira` (Atlassian sign-in), `primer`, `meetings`, `grafana`, `clickhouse`.
+- **Code and engines:** `codehost-github` (the GitHub App and the bot token: "connect GitHub"), `engine-claude` (a
+  subscription token), `engine-codex` (its own sign-in, when not on OpenRouter).
+- **Monitoring:** `monitoring` and `security`, if they need user keys.
+
+The builder confirms the list module by module: a module whose only inputs have working defaults gets no flow.
+- Today's shell-only setup (`.env` values, `scripts/*-auth.sh` over a tunnel, `docker compose ... --force-recreate`) is
+  replaced by the flow: values a user gives become vault secrets or module state.
+- A host-level `.env` value that must stay host-controlled is the exception, and the builder lists each one for the
+  owner.
 
 **Saving a pasted secret** needs a new **kernel secret-write endpoint**:
 - It is admin-only and CSRF-checked, and writes only secrets a module declared with `setup:` (the same allowlist
@@ -217,13 +245,13 @@ The card is done when paired.
     notice.
 
 **The three steps.**
-1. **Save your recovery key** (a kernel-provided card, not a module):
+1. **Save your recovery key** (kernel-provided, not a module flow):
    - The step opens a **kernel-rendered** page (`/recovery-key` on the kernel's admin listener). The key never passes
      through the board.
    - The page shows the key once, with Copy and Download, and an "I saved it" tick, which deletes the kernel's readable
      copy.
    - Skip keeps the readable copy where unattended setup already puts it: inside the vault, as `vault_recovery_key`,
-     moved out of `/root`. It also leaves a reminder in Settings. "I don't want it" deletes it: the vault still opens
+     moved out of `/root`. Aiden reminds the owner later, once. "I don't want it" deletes it: the vault still opens
      with its sealed password, but there is no recovery if that is lost.
 2. **Aiden on your phone** (`channel-telegram`, `secret` then `pair`):
    - The step reads: "In Telegram, open BotFather, send /newbot, choose a name, paste the token here", then "Tap this link
@@ -247,7 +275,7 @@ wizard counts as skipping the rest.
 - `channel-slack` joins the default bundle. It is idle until its tokens are saved, as `channel-telegram` already is;
   checked: with no tokens it starts and only reports Slack as not set up.
 - `google` joins the bundle too, idle until the guided setup runs.
-- So no step or card needs a module-change card first.
+- So no wizard step needs a module-change card first.
 
 **Saving a secret applies it directly.** The kernel's secret-write endpoint writes the vault file, then recreates only
 the containers of the module that declared that secret (`docker compose up -d --force-recreate <its services>`). It does
@@ -256,7 +284,7 @@ for secrets. This is a new privileged kernel action, so:
 - It is owner-only (a signed-in admin with an authenticator), CSRF-checked and logged.
 - The secret's path and its consuming services come only from the compiled module declarations. The caller names a
   declared secret, never a path or a service.
-- A recreate takes the apply lock, so it never races an apply. A failed restart is shown on the card, never
+- A recreate takes the apply lock, so it never races an apply. A failed restart is shown in the flow, never
   swallowed.
 - A structured secret (Google's client) has a bounded schema, and a save keeps the fields it doesn't set, such as
   stored refresh tokens.
@@ -264,8 +292,8 @@ for secrets. This is a new privileged kernel action, so:
 
 ### Part 3b: guided Google setup (later, not in the wizard)
 
-The `google` module card (instructions, the client id and secret as a structured secret, then Connect; `wizard: false`),
-opened from Settings → Setup guide or by Aiden ("set up Google"). It works like this:
+The `google` module's setup flow (instructions, the client id and secret as a structured secret, then Connect;
+`wizard: false`), opened at `/setup/google` by Aiden ("set up Google") or the marketplace. It works like this:
 1. If the board has no name (bare IP), it explains why Google needs one and offers Tailscale or a domain; it stops there.
 2. Otherwise it gives numbered steps with screenshots and copy buttons:
    - create a Google Cloud project;
@@ -277,12 +305,12 @@ opened from Settings → Setup guide or by Aiden ("set up Google"). It works lik
    secret).
 4. Then one **Connect Google** button runs the existing `/google/connect` flow.
 
-**Honest effort.** Each card says up front how long it takes and what it needs: "about 2 minutes, needs the Telegram
+**Honest effort.** Each flow says up front how long it takes and what it needs: "about 2 minutes, needs the Telegram
 app" or "about 5 minutes, a Slack workspace admin may need to approve". Neither channel is presented as a quick
 connect.
 
 **Look.** The board's design system (owner's taste: Stripe polish, Linear crispness, colour, moderate radius, little
-white space). One card per screen, with a progress row of three dots, the "why" in one sentence, and the action as the
+white space). One flow per screen, with a progress row of three dots, the "why" in one sentence, and the action as the
 one primary button.
 
 ### Part 4: Aiden's tour
@@ -301,8 +329,8 @@ worth, in one reply plus follow-ups only when asked:
    (Jira, GitHub to sync your work off the server, Glean, ...).
 5. "Ask me anything."
 
-Aiden sets up later modules by filing the existing module-change card (Settings → Modules flow) and pointing the owner
-at the module's wizard card in Settings for any secret.
+Aiden sets up later modules by filing the existing module-change card, then linking the owner to the module's
+`/setup/<module>` flow once it's on.
 
 ### Part 4b: on-server code host (`codehost-local`)
 
@@ -371,7 +399,7 @@ or token until SETUP.md step 8. So steps 1 to 5 of the order don't wait on it.
 
 ### Part 5: the "Getting started" page
 
-A short page on aidenhq.ai (`/start`) and the same text as the board's Settings → "Setup guide" intro. One screen:
+A short page on aidenhq.ai (`/start`), one screen:
 1. Install with your AI.
 2. Open the link.
 3. Three quick steps.
@@ -388,9 +416,9 @@ The prompt's final message links to it.
 | `ops/setup.sh --unattended`, `ops/apply-config.sh` | pull instead of build, staged start, public exposure default with Caddy (U2), recovery key shown by the kernel |
 | kernel `/setup` | account, authenticator, OpenRouter PKCE (+ paste fallback); recovery key and `github_bot_token` move out |
 | kernel | admin secret-write endpoint for declared `setup:` secrets, recreating that module's containers; `/recovery-key` show-once page |
-| `scripts/modules.mjs`, compile | `card:` block validated and copied into `config/modules.json` |
-| board | `/welcome` wizard, one card component, Settings → Setup guide, welcome note to Aiden at the end |
-| modules: channel-telegram, channel-slack, google | `card:` blocks; Telegram and Slack pairing; Slack `setup:` fields; Slack and Google join the bundle; Google guided-setup card |
+| `scripts/modules.mjs`, compile | `setup_flow:` block validated and copied into `config/modules.json` |
+| board | `/setup/<module>` flow component, `GET /api/setup-flows`, `/welcome` wizard, welcome note to Aiden at the end |
+| modules needing user setup (list above) | `setup_flow:` blocks and `setup:` fields replacing shell-only setup; Telegram and Slack pairing; Slack and Google join the bundle |
 | modules: codehost role | new `codehost-local`; `codehost-github` provides `codehost`; engineering requires `codehost`; GitHub modules leave the bundle |
 | apps platform, runner, ci | read repos and run checks through the code host role |
 | modules: chief-of-staff | onboarding tour text in the handbook |
@@ -401,9 +429,11 @@ The prompt's final message links to it.
 1. The fast-first-chat spike, then prebuilt images, the staged start, the Caddy front door (U2) and the installer and
    prompt changes: the one-link, two-minute install.
 2. Kernel `/setup` slimmed, with OpenRouter PKCE.
-3. Kernel secret-write endpoint, `card:` schema, board wizard with the recovery-key step.
-4. Telegram pairing and the Slack step.
-5. Aiden's tour, the guided Google setup and the `/start` page.
+3. Kernel secret-write endpoint, the `setup_flow:` schema, the board's flow component and route, the wizard with the
+   recovery-key step.
+4. The setup flows: Telegram and Slack pairing first (the wizard's), then every other module on the list, in parallel
+   lanes.
+5. Aiden's tour, the guided Google flow and the `/start` page.
 6. `codehost-local` and the code host role (can run in parallel with 2 to 5). GitHub leaves the bundle only when it
    lands.
 
@@ -420,9 +450,12 @@ form.
 
 ## Decided with the owner
 
-- Google is not a wizard step. A guided own-client setup is built and triggered later from Aiden or Settings. A shared
+- Google is not a wizard step. A guided own-client setup is built and triggered later, by Aiden or the marketplace. A shared
   AidenHQ client was rejected: Google's paid restricted-scope assessment, and a relay that would see users' tokens.
 - GitHub is fully optional, and the on-server code host is part of this work.
+- Setup is one general per-module flow, opened at `/setup/<module>`. This work builds a flow for every module that needs
+  user setup. When the marketplace (built in other work) triggers it is decided with that page. Modules that need no
+  user setup get no flow; their settings page is separate work.
 
 - Aim for chatting within a couple of minutes; a larger build with subagents is fine.
 
@@ -431,7 +464,7 @@ form.
 - The AI still asks for the email: many parts read `owner_email`, and asking costs the user nothing.
 - Prebuilt release images and a staged start, to make "a couple of minutes" possible. Aiden's first chat is decoupled
   from Paperclip, through the chat lane.
-- Wizard steps are simple module cards (instructions, the existing `setup:` fields, optional Connect or pairing), with
+- Wizard steps are module setup flows (instructions, the existing `setup:` fields, optional Connect or pairing), with
   completion read from real connection status. "Meet Aiden now" is always one click away.
 - The on-server code host builds on the existing local bare repos and `repo_sources`, not a new forge.
 - `channel-slack` and `google` join the default bundle, idle until connected.
