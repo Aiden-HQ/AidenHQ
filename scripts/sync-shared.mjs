@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 // Copies shared code into the services that use it. Each service is its own Docker build context, so it holds a
-// byte-identical copy; scripts/test/shared.test.mjs fails when one in this repository drifts, and the official modules' CI
-// (.github/ci/shared-copies.mjs) when one of theirs differs from the product they pin.
+// byte-identical copy; scripts/test/shared.test.mjs fails when one in this repository drifts, or one in the official modules
+// (at modules-pin.json) when the change moves either side (checksModuleCopies); the modules' CI checks theirs against the
+// product they pin (.github/ci/shared-copies.mjs).
 //   kernel/sdk/src/{caller,fence}.ts the caller assertion check and the fence, in every module server (src/aidenhq-sdk/)
 //   kernel/sdk/src/executor.ts       the executor side of write kinds, in each module server with an executor
 //   kernel/sdk/src/reviewer.ts       the reviewer side of reviewer@1, in the reviewer module's service
@@ -95,6 +96,17 @@ export const SHARED_DIRS = {
   "modules/apps-platform/starter": ["services/computer/images/agent-base/app-starter"],
 };
 const SKIP = new Set(["node_modules", "dist"]);
+
+/**
+ * Whether a change must compare the official modules' copies with this repo's canonicals: when it moves either side of
+ * the deployed pair, i.e. it touches modules-pin.json or a canonical file with a copy under modules/. `changed` is the
+ * list of changed paths, or "all" (a push to main: always compare).
+ */
+export function checksModuleCopies(changed) {
+  if (changed === "all") return true;
+  const moved = new Set(["modules-pin.json", ...Object.entries(SHARED).filter(([, copies]) => copies.some((c) => c.startsWith("modules/"))).map(([canonical]) => canonical)]);
+  return changed.some((f) => moved.has(f));
+}
 
 /** Files under a folder, relative and sorted, without node_modules and dist. */
 export function listFiles(dir, sub = "") {

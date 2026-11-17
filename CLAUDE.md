@@ -50,8 +50,8 @@ npm test && npm run typecheck
 
 The board's Docker build is stricter than vitest: always run `tsc -p tsconfig.build.json` for board changes. After
 editing `kernel/sdk/src/caller.ts` or `fence.ts`, `services/shared/source-store.ts`, `modules/apps-platform/design-system/` or the app starter (`modules/apps-platform/starter/`), run `node scripts/sync-shared.mjs` (a
-test fails on drift; copies under `modules/` are checked in the modules repo against its `product-pin.json`, so they land
-there with its next pin bump). Each repo tests only against the other's pinned commit (`modules-pin.json` here,
+test fails on drift; copies under `modules/` are checked here only when the change touches `modules-pin.json` or a
+canonical they copy, and in the modules repo against its `product-pin.json`, so they land there with its next pin bump). Each repo tests only against the other's pinned commit (`modules-pin.json` here,
 `product-pin.json` there): a change that needs both lands one side first, then bumps the other's pin. CI (`.github/workflows/ci.yml`) runs the suites a PR touches (map: `.github/ci/areas.json`, read from
 the base; a new top-level path needs a suite there or it runs everything) and all of them on main.
 

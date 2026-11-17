@@ -140,6 +140,7 @@ jobs:
       - name: Test
         env:
           TESTS: ${{ needs.image-changes.outputs.tests }}
+          CHANGED_FILES: ${{ needs.image-changes.outputs.changed }}
           SHARD: ${{ matrix.shard }}
           # Seconds each suite took (GitHub-hosted, 2026-11-17), for balancing; a suite not listed counts 30. The selected
           # suites go heaviest first into the lighter shard.
@@ -303,6 +304,7 @@ jobs:
       dockerfiles: ${{ steps.find.outputs.dockerfiles }}
       tests: ${{ steps.tests.outputs.tests }}
       packages: ${{ steps.tests.outputs.packages }}
+      changed: ${{ steps.tests.outputs.changed }}
     env:
       PR_BASE: ${{ github.event.pull_request.base.sha }}
       PUSH_BEFORE: ${{ github.event.before }}
@@ -347,6 +349,9 @@ jobs:
           echo "Suites to test: $(jq -r 'map(.name) | join(" ")' <<< "$tests")"
           echo "tests=$tests" >> "$GITHUB_OUTPUT"
           echo "packages=$(jq -r .packages <<< "$out")" >> "$GITHUB_OUTPUT"
+          # The changed files for the scripts suite's shared-copies test (it compares the modules' copies when the diff moves
+          # either side); `all` on a push to main or a merge train.
+          if [ -n "$ALL" ]; then echo "changed=all" >> "$GITHUB_OUTPUT"; else echo "changed=$(git diff --name-only "$base" "$HEAD_SHA" | jq -Rsc 'split("\n") | map(select(length > 0))')" >> "$GITHUB_OUTPUT"; fi
 
       - id: find
         run: |
