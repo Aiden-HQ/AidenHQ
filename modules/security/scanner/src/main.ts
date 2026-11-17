@@ -5,7 +5,7 @@
 // After a pass that wrote anything, it fires the Security Watch routine's signed webhook (coalesced by Paperclip).
 import { execFile } from "node:child_process";
 import { createHmac } from "node:crypto";
-import { readFileSync, statSync } from "node:fs";
+import { mkdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import YAML from "yaml";
@@ -26,6 +26,8 @@ const log = (msg: string, extra: Record<string, unknown> = {}) => console.log(JS
 
 const SBOM = join(env("SBOM_DIR", "/sbom"), "current");
 const GRYPE_ENV = { ...process.env, GRYPE_DB_AUTO_UPDATE: "false", GRYPE_CHECK_FOR_APP_UPDATE: "false" };
+// The cache is a bind-mounted module data folder, so the image's own folders under it are hidden: create them here.
+for (const k of ["GRYPE_DB_CACHE_DIR", "TMPDIR"]) if (process.env[k]) mkdirSync(process.env[k]!, { recursive: true });
 
 async function readBatch(): Promise<Batch> {
   const index = join(SBOM, "targets.tsv");
