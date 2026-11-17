@@ -27,6 +27,7 @@ main() {
   requireApplyLock
   # Sourced before any checkout: these functions stay whatever a checkout below does to the file.
   . ops/lib/generations.sh
+  . ops/lib/progress.sh
   local want="" retry=0 gen="" recover=0
   while [ $# -gt 0 ]; do
     case "$1" in
@@ -44,6 +45,9 @@ main() {
   [ -z "$gen" ] || { [ -z "$want" ] && [ "$retry" = 0 ] && [ "$recover" = 0 ]; } || { echo "refusing: --generation takes no other argument" >&2; exit 1; }
   [ "$recover" = 0 ] || { [ -z "$want" ] && [ "$retry" = 0 ]; } || { echo "refusing: --recover takes no other argument" >&2; exit 1; }
   set -a; [ -f .env ] && . ./.env; set +a
+  # The apply generations (ops/lib/generations.sh), read-only into the board; an older .env predates the variable.
+  export AIDENHQ_STATE_DIR="${AIDENHQ_STATE_DIR:-$HOME/.local/state/aidenhq}"
+  export AIDENHQ_GENERATIONS_MIRROR="${AIDENHQ_GENERATIONS_MIRROR:-$AIDENHQ_STATE_DIR/board/generations.jsonl}"
   local inst="${AIDENHQ_INSTANCE_DIR:?set AIDENHQ_INSTANCE_DIR in .env (your instance checkout)}"
 
   # Tracked files must be clean in both checkouts (untracked ones such as compose.override.yaml are left alone).
@@ -51,6 +55,7 @@ main() {
     [ -z "$(git -C "$d" status --porcelain --untracked-files=no)" ] || { echo "refusing: $d has local changes to tracked files" >&2; exit 1; }
   done
 
+  progress_line APPLY_PHASES instance
   git -C "$inst" fetch --quiet origin main
   git fetch --quiet origin main
   if [ -n "$gen" ]; then applyGeneration; return; fi
@@ -402,7 +407,7 @@ validate() {
 }
 
 # The generated files: the staged copy must be exactly what the real compile wrote.
-GENERATED=(paperclip.yaml apps.modules.yaml modules.json computers.json gateway.json jobcaps.json kernel/connections.json kernel/writes.json engines.json gate.json cloudflared.yml module-data.json)
+GENERATED=(paperclip.yaml apps.modules.yaml modules.json computers.json gateway.json jobcaps.json kernel/connections.json kernel/writes.json engines.json gate.json cloudflared.yml module-data.json Caddyfile)
 sameAsStaged() {
   local f
   cmp -s compose.modules.next.yaml compose.modules.yaml || { echo "compose.modules.yaml differs from the validated one" >&2; return 1; }
@@ -457,7 +462,17 @@ switchOver() {
   elif [ "$before" != "$product" ] && ! git diff --quiet "$before" "$product" -- kernel ops/units/aidenhq-kernel.service; then
     systemctl --user restart aidenhq-kernel && echo "kernel code changed: restarted"
   fi
+  # The board mounts this mirror's directory read-only, so it must exist before compose starts (a first apply on a fresh host).
+  mkdir -p "$(dirname "$AIDENHQ_GENERATIONS_MIRROR")"
+  [ -e "$AIDENHQ_GENERATIONS_MIRROR" ] || : > "$AIDENHQ_GENERATIONS_MIRROR"
   ops/compose-recreate.sh # build what moved, recreate only those services, and clean up what this config dropped
+  # The public front door this config dropped (exposure no longer public): compose-recreate leaves a dropped service's running
+  # container alone, but Caddy would keep serving 443 and 8446. The firewall closes them when ops/vm/setup.sh runs again.
+  if ! grep -qx '  caddy:' compose.modules.yaml; then
+    for id in $(docker ps -aq --filter "label=com.docker.compose.project=${COMPOSE_PROJECT_NAME:-aidenhq}" --filter label=com.docker.compose.service=caddy); do
+      docker rm -f "$id" >/dev/null && echo "caddy: removed (exposure is no longer public)"
+    done
+  fi
   # The host's own tailnet name keeps Paperclip and the board only; apps are on their own node (compose.yaml apps-edge).
   node scripts/host-serve.mjs prune
   lap compose # the gateway check, then compose: builds (cached unless a context changed) and recreates what changed
@@ -581,6 +596,16 @@ requireApplyLock() {
 apply_now() { local t="${EPOCHREALTIME:-$(date +%s).000000}"; echo "${t//[!0-9]/}"; }
 apply_secs() { local us=$(( $(apply_now) - $1 )); printf '%d.%d' $((us / 1000000)) $((us % 1000000 / 100000)); }
 apply_t0="$(apply_now)"; apply_lap="$apply_t0"
-lap() { echo "apply timing: $1 $(apply_secs "$apply_lap")s"; apply_lap="$(apply_now)"; }
+lap() { echo "apply timing: $1 $(apply_secs "$apply_lap")s"; apply_lap="$(apply_now)"; progress_after APPLY_PHASES "$1"; }
+# Install progress (ops/lib/progress.sh; the installer sets AIDENHQ_PROGRESS_BASE): the phases above in run order, each line
+# printed as the phase starts, with its estimated seconds (compose is the images' parallel pull) and what the owner is told.
+# shellcheck disable=SC2034  # read through progress.sh's nameref
+APPLY_PHASES=(
+  "instance|3|checking your instance" "product|3|updating AidenHQ's code" "npm|20|installing tooling"
+  "validate|5|checking the configuration" "reconcile|2|checking what changed" "snapshot|5|taking a safety snapshot"
+  "compile|10|preparing the services" "computer-images|40|preparing agent computers" "compose|240|downloading and starting the services"
+  "setup|90|setting up Aiden and the agents" "warehouse|20|preparing the data warehouse" "units|5|starting background services"
+  "prune|5|tidying up" "health|60|waiting for the services to be healthy" "agent-check|20|checking the agents"
+)
 # The whole script is read before it runs: the checkout above may rewrite this file.
 main "$@"; exit

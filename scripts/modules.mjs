@@ -8,7 +8,7 @@ import YAML from "yaml";
 import { validateImages } from "./computers.mjs";
 import { AUTH_PORT, checkPorts, edgeConfig, GATE_PORT } from "./edge.mjs";
 import { urlSettingProblem } from "../services/shared/url-setting.ts";
-import { generateCompose, ownSecrets } from "../kernel/src/loader/services.ts";
+import { generateCompose, ownSecrets, subnetFor } from "../kernel/src/loader/services.ts";
 import { capabilityProblems, conflictProblems, danglingBindings } from "../kernel/src/loader/bindings.ts";
 import { MANIFEST_KEYS, moduleName } from "../kernel/src/loader/authority.ts";
 import { checkout, forkBase, forksOf, hostFetch, marketplaceEntries, OFFICIAL, onFork, remoteModules } from "../kernel/src/loader/sources.ts";
@@ -466,8 +466,13 @@ export function setupFlows(defs, compiled) {
   for (const f of flows) {
     const where = `module ${f.module}: setup_flows`;
     if (flows.filter((x) => x.module === f.module).length > 1) fail(`${where}: one flow per module`);
-    const declared = [defs[f.module].secrets?.provided ?? []].flat().filter((p) => p?.setup != null).map((p) => p.name);
-    for (const s of f.secrets ?? []) if (!declared.includes(s)) fail(`${where} names a secret without setup: ${s} (give it \`setup:\` under secrets.provided)`);
+    const declared = [defs[f.module].secrets?.provided ?? []].flat().filter((p) => p?.setup != null);
+    // Each paste field's label, pattern and help, from the secret's `setup:` (the board shows and checks them; the kernel checks again).
+    f.fields = (f.secrets ?? []).map((s) => {
+      const p = declared.find((x) => x.name === s);
+      if (!p) fail(`${where} names a secret without setup: ${s} (give it \`setup:\` under secrets.provided)`);
+      return { secret: s, label: p.setup.label, pattern: p.setup.pattern, ...(p.setup.help ? { help: p.setup.help } : {}) };
+    });
     if (f.signin != null && !(compiled.board.signins ?? []).some((x) => x.module === f.module && x.id === f.signin)) fail(`${where}: signin ${f.signin} is not one of its board.signins`);
     if (f.pair_url == null) continue;
     const token = `${f.module.replace(/-/g, "_")}_pair_token`;
@@ -475,6 +480,32 @@ export function setupFlows(defs, compiled) {
     def.generated_secrets = [...new Set([...(def.generated_secrets ?? []), token])];
     def.board_env = { ...def.board_env, [`${token.toUpperCase()}_FILE`]: `\${secrets.${token}}` };
     f.pair_token = token;
+  }
+}
+
+/**
+ * The board calls a flow's pair_url, so it shares a network with that service: the same one a board link makes
+ * (aidenhq-mod-<module>-board, internal), and `board` joins the service's aidenhq.links label (scripts/verify-security.sh).
+ * The host must be one of the declaring module's own services (its compose name or alias).
+ */
+export function linkPairServices(flows, compose, serviceModule, networkModule) {
+  for (const f of flows) {
+    if (f.pair_url == null) continue;
+    const host = new URL(f.pair_url).hostname;
+    const key = Object.keys(serviceModule).find((k) => serviceModule[k].module === f.module && (k === host || serviceModule[k].alias === host));
+    if (!key) fail(`module ${f.module}: setup_flows pair_url ${f.pair_url} is not one of its services`);
+    const k = `mod-${f.module}-board`;
+    if (!compose.networks[k]) {
+      const name = `aidenhq-mod-${f.module}-board`;
+      if (Object.values(compose.networks).some((n) => n.name === name)) fail(`module ${f.module}: its network ${name} is already another module's`);
+      compose.networks[k] = { name, internal: true, ipam: { config: [{ subnet: subnetFor(name) }] } };
+      networkModule[k] = f.module;
+    }
+    const s = compose.services[key];
+    s.networks[k] ??= key === serviceModule[key].alias ? {} : { aliases: [serviceModule[key].alias] };
+    const links = String(s.labels["aidenhq.links"] ?? "").split(",").filter(Boolean);
+    if (!links.includes("board")) s.labels["aidenhq.links"] = [...links, "board"].join(",");
+    mergeService(compose.services, "board", { secrets: [], networks: [k] });
   }
 }
 
@@ -648,6 +679,7 @@ export function compile(productDir, instanceDir, { revision, fetch = hostFetch(p
       if (networkModule[`mod-${j}`] !== j) fail(`module ${v.module}: ${k} joins ${j}, which defines no network of its own`);
     }
   }
+  linkPairServices(points.board?.setup_flows ?? [], compose, serviceModule, networkModule);
   // Networks get fixed subnets (Docker's default pools run out); two with one subnet fail here, never at compose up.
   const subnets = {};
   for (const [k, n] of Object.entries(compose.networks)) {
@@ -914,7 +946,10 @@ export function compile(productDir, instanceDir, { revision, fetch = hostFetch(p
   if (dangling.length) fail(`refusing: ${dangling.map((d) => `${d.owner} (${d.binding}) names ${d.missing}, which no enabled module provides`).join("; ")}`);
   const reviewer = reviewerSlot(enabledDefs, instance.reviewer);
   const setup = setupSecrets(enabledDefs, generatedSecrets);
-  const kernelModules = { owner: { name: String(settings.owner_name ?? ""), email: String(settings.owner_email).trim().toLowerCase(), timezone: String(settings.timezone ?? "UTC") }, modules: kernelModuleTable(enabledDefs, settings), ...(reviewer ? { reviewer } : {}), ...(setup.length ? { setup } : {}) };
+  // Every enabled module's own compose services (their keys): what the kernel recreates when the owner saves one of its
+  // `setup:` secrets from the board (kernel/src/module-secrets.ts); a module not listed here is off.
+  const services = Object.fromEntries(enabled.map((m) => [m, Object.keys(serviceModule).filter((k) => serviceModule[k].module === m).sort()]));
+  const kernelModules = { owner: { name: String(settings.owner_name ?? ""), email: String(settings.owner_email).trim().toLowerCase(), timezone: String(settings.timezone ?? "UTC") }, modules: kernelModuleTable(enabledDefs, settings), services, ...(reviewer ? { reviewer } : {}), ...(setup.length ? { setup } : {}) };
   // The engine-run agents (`dispatch: runner`, any module's or the instance's) are the job dispatcher's: the one enabled module
   // with kernel.jobs. The kernel starts a job only for an agent its requester dispatches (kernel/src/jobs.ts).
   const dispatchers = Object.entries(kernelModules.modules).filter(([, m]) => (m.roles ?? []).includes("kernel.jobs")).map(([n]) => n);
@@ -931,8 +966,8 @@ export function compile(productDir, instanceDir, { revision, fetch = hostFetch(p
  * the stamp its decisions carry, whether it may close stale cards, and its own settings (a host CLI channel reads them here).
  */
 /**
- * The first-run page's fields (spec §6.10): a module's provided secrets with `setup: { label, pattern, help?, required? }`, which
- * the owner may give on /setup; each is written to the vault under its own name once it matches its anchored pattern, `required`
+ * Modules' setup fields (spec §6.10): a module's provided secrets with `setup: { label, pattern, help?, required? }`, which
+ * the owner gives in the board's setup flows (the model key on the kernel's /setup/model); each is written to the vault under its own name once it matches its anchored pattern, `required`
  * ones while the vault has none. Never a generated secret, and each one asked for by one module.
  */
 export function setupSecrets(defs, generated) {

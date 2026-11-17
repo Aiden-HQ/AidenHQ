@@ -221,6 +221,7 @@ test("the grading module: its finish check, its token, the board's key, tasks on
   assert.deepEqual(r.checks["grading.finish"], { module: "grading", at: "task.finish", url: "http://grading:8096/check/finish", auth_secret: "grading_check_key", label: "grading" });
   assert.equal(r.kernelModules.modules.grading.token, "grading_token");
   assert.deepEqual(r.kernelModules.modules.grading.roles, ["kernel.cp-read"]);
+  assert.deepEqual(r.kernelModules.services.grading, ["grading-grading"], "the services the kernel recreates for its setup secrets");
   const g = r.compose.services["grading-grading"];
   assert.ok(g && !g.ports && !JSON.stringify(g).includes("paperclip_board_key"), "no published port, no control-plane key");
   assert.equal(r.compose.services.board.environment.GRADING_URL, "http://grading:8096");
@@ -274,7 +275,8 @@ test("the default bundle compiles without the slack module", () => {
   const r = compile(product, pinst([], owner));
   assert.equal(r.compose.services["slack-mcp"], undefined);
   assert.ok(r.compose.services["channel-telegram-telegram"] && r.compose.services["chat-lane-lane"]);
-  assert.equal(r.paperclip.mcp_servers.slack_live, undefined, "channel-slack is optional");
+  // channel-slack joined the bundle (set up from the board): its connection is declared, but it needs no secret to compile.
+  assert.ok(r.paperclip.mcp_servers.slack_live?.setup, "channel-slack is in the bundle and says how to set it up");
   assert.ok(r.compose.secrets.telegram_notify_bot_token, "channel-telegram declares its secrets");
   assert.deepEqual(Object.keys(r.compose.services["channel-telegram-whisper"].networks), ["mod-channel-telegram", "mod-channel-telegram-egress"]);
 });
@@ -362,7 +364,7 @@ test("enumeration (spec §9): every shipped write or destructive tool maps to a 
   const kindOf = Object.fromEntries(writes.map(([ct, floor]) => [ct, routed[ct] ?? `conn.tool@${floor}`]));
   assert.deepEqual(["apps.app_deploy", "apps.app_run_request", "apps.app_restart", "apps.app_rollback", "apps.app_api", "apps.app_remove", "apps.app_create"].map((ct) => kindOf[ct]),
     ["apps-platform.deploy", "apps-platform.run", "apps-platform.restart", "apps-platform.rollback", "apps-platform.api_write", "conn.tool@1", "conn.tool@0"]);
-  assert.deepEqual(Object.fromEntries(Object.entries(kinds).map(([id, k]) => [id, k.floor])), { "apps-platform.deploy": 0, "apps-platform.run": 1, "apps-platform.restart": 0, "apps-platform.rollback": 0, "apps-platform.api_write": 0, "primer.publish": 1, "channel-slack.post": 1 });
+  assert.deepEqual(Object.fromEntries(Object.entries(kinds).map(([id, k]) => [id, k.floor])), { "apps-platform.deploy": 0, "apps-platform.run": 1, "apps-platform.restart": 0, "apps-platform.rollback": 0, "apps-platform.api_write": 0, "primer.publish": 1, "channel-slack.post": 1, "channel-slack.bind": 0 });
   assert.deepEqual(["primer.primer_create_document", "primer.primer_add_version"].map((ct) => kindOf[ct]), ["primer.publish", "primer.publish"]);
   assert.equal(kindOf["slack_live.slack_post"], "channel-slack.post");
   // A kind naming a tool that isn't one of its module's writes, or one another kind took, fails compile.

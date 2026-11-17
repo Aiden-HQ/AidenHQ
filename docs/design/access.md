@@ -23,7 +23,7 @@ interface, input and forward) lets in. Everything else on that interface is drop
 
 | Mode | Front door | Open on the public interface |
 |---|---|---|
-| `public` | Caddy on 443 with a Let's Encrypt certificate (unit U2) | tcp 22, 443 |
+| `public` | Caddy with a Let's Encrypt certificate for the host's public IPv4: the board on 443, the admin listener on 8446 | tcp 22, 443, 8446 |
 | `tailscale` | `tailscale serve` to 127.0.0.1:3121 | tcp 22, udp 41641 |
 | `cloudflare` | cloudflared (outbound only) behind Cloudflare Access | tcp 22 |
 | `local` | none: an SSH tunnel to 127.0.0.1:3121 | tcp 22 |
@@ -31,9 +31,9 @@ interface, input and forward) lets in. Everything else on that interface is drop
 - **Admin and board listeners stay loopback** (the kernel's 3120 and 3129; the board's 3121, 3122). The front door reaches
   3121 and 3120 on loopback. The one
   exception: a LAN-only VM in `local` mode with `AIDENHQ_PUBLIC_IF=none` may publish 3121 on the LAN.
-- **443 opens only once a Caddy front door is compiled** (a `caddy` service in `compose.modules.yaml`). Until then
-  `public` keeps the firewall at `local`, and setup says so. An active ufw gets `allow 443/tcp` in that case, and only
-  then.
+- **443 and 8446 open only once a Caddy front door is compiled** (a `caddy` service in `compose.modules.yaml`). Until
+  then `public` keeps the firewall at `local`, and setup says so (it reruns the firewall step after its apply). An active
+  ufw gets `allow 443/tcp` and `8446/tcp` in that case, and only then.
 - **Applying a mode.** Compile writes it to `config/exposure`. The firewall changes when `sudo bash ops/vm/setup.sh`
   runs again; it writes the mode beside `PUBLIC_IF` in `/etc/default/aidenhq-public-fw`, and the boot-time unit
   reapplies it. An unknown mode there gets SSH only.
@@ -42,6 +42,34 @@ interface, input and forward) lets in. Everything else on that interface is drop
 
 The full design, including the switch from public to Tailscale or Cloudflare, is
 [minimal-core-install.md](minimal-core-install.md).
+
+### The public front door (Caddy)
+
+`scripts/front-door.mjs`, compiled only with `exposure: public`, for the IPv4 in `.env` (`AIDENHQ_PUBLIC_IP`; never
+`instance.yaml`, which agents can change through an apply):
+- **Two sites on one name**, the `tailscale serve` layout: `https://<ip>` → the board (3121) and `https://<ip>:8446` → the
+  kernel's admin listener (3120), which needs its own origin for its forms. `.env` holds both URLs (`BOARD_LAN_URL`,
+  `AIDENHQ_ADMIN_URL`), where the kernel reads them for its hosts, origins and the board's handoff origin; compile refuses
+  a `.env` that disagrees with the IP.
+- **Certificate.** Let's Encrypt, the `shortlived` profile (160 hours), over TLS-ALPN-01 on 443: no listener on 80, no
+  HTTP/3, no admin API. Each site names its ACME issuer, so Caddy's local CA is never served. `default_sni` names the IP
+  for clients that send no SNI (every browser, for an IP). The exit check is `ops/test/caddy-staging-issuance.sh`, on a
+  throwaway host with a public IPv4.
+- **Headers.** On 8446 Caddy sets `X-AidenHQ-Client-IP` (the socket's address) and `X-AidenHQ-Edge` (read per request
+  from the compose secret `edge_board_secret`); a set replaces a client's value, duplicates included. On 443 it deletes
+  both. Both sites delete `Forwarded`, `X-Real-IP`, the other `X-Forwarded-*` it doesn't set and `Tailscale-User-*`.
+- **Container.** `services/caddy` (the pinned image, built so the image scan sees it), host network, the owner's uid,
+  read-only root, `cap_drop: ALL` plus `NET_BIND_SERVICE`, `no-new-privileges`; writable only `data/caddy` (0700). A
+  label holding the Caddyfile's hash recreates it when the file changes.
+- **Setup proves it or falls back.** `ops/setup.sh` waits up to 3 minutes for both sites to answer over a trusted
+  certificate (the proof 443 is reachable). Without one, or without a public IPv4 of the host's own, it says so loudly
+  and falls back to `local`: the instance's `exposure: local` (committed), loopback URLs in `.env`, an apply that drops
+  Caddy, a kernel restart, the firewall closed again, and the SSH tunnel printed (`AIDENHQ_SSH_TUNNEL=`). Never a
+  half-working public address.
+- **Leaving public mode.** An apply whose config has no `caddy` service removes a running Caddy (compose-recreate leaves
+  dropped services' running containers alone); the firewall closes 443 and 8446 when `ops/vm/setup.sh` runs again.
+- **Certificate watch.** The kernel checks `https://<ip>` hourly with a verified handshake (`kernel/src/front-door.ts`):
+  under 48 hours left, or a certificate that fails to verify, tells the owner, at most once every 12 hours.
 
 ## Accounts and sign-in
 

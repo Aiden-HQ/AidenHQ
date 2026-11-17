@@ -207,15 +207,20 @@ export function usageTap(sse: boolean): { feed(text: string): void; done(): Usag
   };
 }
 
+const RETRY_STATUS = new Set([429, 500, 502, 503, 504, 524]);
+const RETRY_DELAYS_MS = [1000, 3000, 9000, 20000];
+
 /**
  * The gateway: handle(req, res). `secret(name)` reads a secret file (fresh each time, so a rotation needs no restart);
  * `upstream` is OpenRouter's API base; Paperclip and the board's internal API as URLs.
  */
-export function createGateway({ dbFile, legacyDbFile, grantsFile, settingsFile, tools, asCaller, secret, upstream = "https://openrouter.ai/api/v1", paperclipUrl, fileRaiseCap, launcherUrl, githubJwksUrl, log = () => {}, now = Date.now }: {
+export function createGateway({ dbFile, legacyDbFile, grantsFile, settingsFile, tools, asCaller, secret, upstream = "https://openrouter.ai/api/v1", paperclipUrl, fileRaiseCap, launcherUrl, githubJwksUrl, log = () => {}, now = Date.now, retryDelaysMs = RETRY_DELAYS_MS }: {
   dbFile: string; legacyDbFile?: string; grantsFile: string; settingsFile: string; tools?: (req: IncomingMessage, res: ServerResponse, connection: string, o: { jobs: boolean }) => Promise<void>;
   /** A module's model call for the agent whose tool call it serves (module token + caller assertion): that caller's own credential. */
   asCaller?: (req: IncomingMessage) => Promise<string | undefined>; secret: (name: string) => string; upstream?: string; paperclipUrl?: string;
   launcherUrl?: string; githubJwksUrl?: string; log?: Log; now?: () => number;
+  /** Waits between attempts at a transient OpenRouter failure (tests pass zeros). */
+  retryDelaysMs?: number[];
   /** Files a kernel.raise_cap record (writes.ts fileNative): the owner's, after the AI reviewer. */
   fileRaiseCap?: (b: { task: string; scope: string; agentId: string; subject: string; cap: number; spent: number }) => Promise<void>;
 }) {
@@ -538,8 +543,21 @@ export function createGateway({ dbFile, legacyDbFile, grantsFile, settingsFile, 
       try { q.settle.run(u?.key ?? id, ...row); } catch { q.settle.run(id, ...row); } // a generation id already used keeps the reservation's key
     };
     let up: Response;
+    const post = () => fetch(`${upstream}/${path}`, { method: "POST", headers: { "content-type": "application/json", accept: req.headers.accept ?? "*/*", authorization: `Bearer ${upKey}` }, body: JSON.stringify(body) });
     try {
-      up = await fetch(`${upstream}/${path}`, { method: "POST", headers: { "content-type": "application/json", accept: req.headers.accept ?? "*/*", authorization: `Bearer ${upKey}` }, body: JSON.stringify(body) });
+      // A transient refusal (rate limit, "high demand" 502, a reset) is retried with backoff before any byte reaches the caller.
+      for (let n = 0; ; n++) {
+        let err: unknown;
+        up = undefined as unknown as Response;
+        try { up = await post(); } catch (e) { err = e; }
+        const transient = err ? !["ECONNREFUSED", "ENOTFOUND"].includes(String(((err as Error).cause as { code?: string } | undefined)?.code)) : RETRY_STATUS.has(up.status);
+        if (!transient || n >= retryDelaysMs.length) { if (err) throw err; break; }
+        const after = Number(up?.headers.get("retry-after"));
+        const wait = Math.min(Number.isFinite(after) && after > 0 ? after * 1000 : retryDelaysMs[n]! * (0.75 + Math.random() / 2), 20_000);
+        log("upstream retry", { model: body.model, attempt: n + 1, status: up?.status ?? String((err as Error).message).slice(0, 100), wait_ms: Math.round(wait) });
+        await up?.body?.cancel().catch(() => {});
+        await new Promise((r) => setTimeout(r, wait));
+      }
     } catch (e) {
       // Refused before the request left (nothing reached OpenRouter): free. Any other failure may have been billed.
       settle("upstream_error", undefined, ["ECONNREFUSED", "ENOTFOUND", "EAI_AGAIN"].includes(String(((e as Error).cause as { code?: string } | undefined)?.code)));

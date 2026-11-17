@@ -16,12 +16,16 @@ export async function fakeKernel(): Promise<{
   /** The kernel-side session ends (a sign-out, disable or reset there). */
   end: (token: string) => void;
   calls: { path: string; body: any }[];
+  /** Answers for other account ops by path (a status and a body); anything unlisted is a 404. */
+  ops: Record<string, [number, unknown]>;
   close: () => void;
 }> {
   const codes = new Map<string, { account: FakeAccount; origin: string; state: string }>();
   const sessions = new Map<string, FakeAccount>();
   const accounts = new Map<string, FakeAccount>();
   const calls: { path: string; body: any }[] = [];
+  const saved: Record<string, boolean> = {};
+  const ops: Record<string, [number, unknown]> = {};
   const server: Server = createServer(async (req, res) => {
     let text = "";
     for await (const c of req) text += c;
@@ -42,6 +46,12 @@ export async function fakeKernel(): Promise<{
         const a = sessions.get(body.token);
         return a ? send(200, { account: a, session: { id: `s-${a.id}`, expiresAt: new Date(Date.now() + 3_600_000).toISOString() } }) : send(401, { error: { message: "no session" } });
       }
+      case "/v1/accounts/save_secret":
+      case "/v1/accounts/setup_status": {
+        if (!sessions.get(body.token)) return send(401, { error: { message: "sign in" } });
+        if (req.url!.endsWith("save_secret")) return body.value === "bad" ? send(400, { error: { message: "that doesn't look like a bot token" } }) : (saved[body.secret] = true, send(200, { ok: true, restarted: [body.module] }));
+        return send(200, { secrets: { ...saved } });
+      }
       case "/v1/auth/sign_out":
         sessions.delete(body.token);
         return send(200, { ok: true });
@@ -52,6 +62,7 @@ export async function fakeKernel(): Promise<{
         return a ? send(200, { accounts: [...accounts.values()], me: a.id }) : send(401, { error: { message: "sign in" } });
       }
     }
+    if (ops[String(req.url)]) return send(ops[String(req.url)]![0], ops[String(req.url)]![0] < 400 ? ops[String(req.url)]![1] : { error: { message: "refused" } });
     send(404, { error: { message: "no such route" } });
   });
   await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
@@ -71,6 +82,7 @@ export async function fakeKernel(): Promise<{
     },
     end: (token) => void sessions.delete(token),
     calls,
+    ops,
     close: () => server.close(),
   };
 }

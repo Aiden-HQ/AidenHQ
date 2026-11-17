@@ -14,6 +14,11 @@
 #                                                      prints (AIDENHQ_SSH_TUNNEL=...), never a public port.
 #                                                      --kernel-token-file: a read token for a private kernel repo, used
 #                                                      only for setup's fetch of it, never written into the checkout.
+#                                                      AIDENHQ_EXPOSURE=public: the board on this host's public IPv4
+#                                                      over HTTPS (Caddy, scripts/front-door.mjs; AIDENHQ_PUBLIC_IP, else
+#                                                      the default route's), no tailnet. A rerun keeps the compiled mode.
+#                                                      No certificate within 3 minutes (443 blocked upstream) or no
+#                                                      public IPv4: a loud fallback to local and the SSH tunnel.
 #   sudo ops/setup.sh --config person.env --restore backups/aidenhq-….tar.gz
 #                                                      a new VM from a backup (scripts/backup.sh)
 #   sudo ops/setup.sh --config person.env --link       only the owner's one-time setup link, while no owner account exists
@@ -24,7 +29,7 @@
 #   ops/setup.sh --config person.env --dry-run         print what it would do; changes nothing
 # person.env (KEY=value, read here, never printed): OWNER_NAME, OWNER_EMAIL, TIMEZONE (required); AIDENHQ_USER (default
 # the sudo user), COMPANY_NAME (work), MODULES (google), OPENROUTER_MANAGEMENT_KEY + OPENROUTER_LIMIT_USD (50) or
-# OPENROUTER_KEY, GOOGLE_CLIENT_ID + GOOGLE_CLIENT_SECRET (the company OAuth app), TS_AUTHKEY (tailnet join key),
+# OPENROUTER_KEY, GOOGLE_CLIENT_ID + GOOGLE_CLIENT_SECRET (optional: an OAuth app you already have; otherwise the board's Google setup asks), TS_AUTHKEY (tailnet join key),
 # TS_APPS_AUTHKEY (the apps' own tailnet node: a reusable, tagged, pre-authorized key; docs/setup.md),
 # BOARD_HOST (default: this VM's tailnet name), PAPERCLIP_PASSWORD
 # (with --restore: the old VM's paperclip_owner_password; otherwise one is generated), GITHUB_AGENTS_ORG (the GitHub
@@ -58,6 +63,15 @@ done
 REPO="${CHECKOUT:-$SRC}"   # the user's checkout: its .env, config and data, and everything that runs as the user
 
 say() { printf '• %s\n' "$*"; }
+# Install progress for the installer (ops/lib/progress.sh): this run's phases in order, estimated seconds (to be replaced by
+# measured ones), and the apply's own lines nested inside the apply phase.
+. "$SRC/ops/lib/progress.sh"
+# shellcheck disable=SC2034  # read through progress.sh's nameref
+SETUP_PHASES=(
+  "packages|180|installing the system packages" "host|10|writing the host config" "secrets|30|preparing the vault and data folders"
+  "apply|530|downloading and starting AidenHQ" "units|15|starting the background services" "link|15|making your setup link"
+)
+phase() { progress_line SETUP_PHASES "$1"; }
 die() { printf 'setup: %s\n' "$*" >&2; exit 1; }
 if [ -n "$CONFIG" ]; then [ -f "$CONFIG" ] || die "no config file $CONFIG"
 elif [ "$UNATTENDED" = 0 ]; then die "--config <file> is required, or --unattended (see the header of this script)"; fi
@@ -140,11 +154,6 @@ set_env() { # KEY VALUE: sets KEY in .env (replacing a commented or old line, el
 }
 json() { local s="${1//\\/\\\\}"; printf '"%s"' "${s//\"/\\\"}"; }   # a JSON string, without node (a dry run has none)
 read_secret() { [ -s "$SECRETS/$1" ] && cat "$SECRETS/$1" || true; }
-board() { # METHOD PATH [JSON]: the board's internal listener, with the operator's key (the welcome chat)
-  # The keys go in on stdin (-H @-), never in argv where other processes could read them.
-  printf 'x-operator-key: %s\nauthorization: Bearer %s\n' "$(read_secret board_operator_key)" "$(read_secret board_internal_token)" \
-    | curl -sS -X "$1" "http://127.0.0.1:3122$2" -H 'host: 127.0.0.1:3122' -H 'content-type: application/json' -H @- ${3:+--data "$3"} "${@:4}"
-}
 operator() { # OP [JSON]: the kernel's accounts (its backplane, POST /v1/operator/<op>) with the operator's key: setup link, resets
   printf 'x-operator-key: %s\n' "$(read_secret board_operator_key)" \
     | curl -sS -X POST "http://${AIDENHQ_KERNEL_BACKPLANE:-10.231.0.1:3130}/v1/operator/$1" -H 'content-type: application/json' -H @- ${2:+--data "$2"} "${@:3}"
@@ -175,8 +184,12 @@ elif [ "$DRY" = 0 ]; then
   [ "$(ugit -C "$REPO" rev-parse HEAD)" = "$(basename "$SRC")" ] || die "the checkout ($REPO) isn't at $(basename "$SRC"), the commit this copy is"
 fi
 
+# Public (settings.exposure: public, from AIDENHQ_EXPOSURE or this checkout's last compile): Caddy serves the board on this
+# host's public IPv4, so no tailnet.
+PUBLIC=0 PUBLIC_IP=""
+case "${AIDENHQ_EXPOSURE:-$(head -c 32 "$REPO/config/exposure" 2>/dev/null | tr -d '[:space:]')}" in public) PUBLIC=1; NO_TS=1 ;; esac
 # The board's address on the tailnet: the link, Google's redirect and the apps all hang off it.
-BOARD_HOST="$(cfg BOARD_HOST)"
+BOARD_HOST="$(cfg BOARD_HOST)"; [ "$PUBLIC" = 0 ] || BOARD_HOST=""
 if [ -z "$BOARD_HOST" ] && [ "$NO_TS" = 0 ] && command -v tailscale >/dev/null && tailscale status >/dev/null 2>&1; then
   BOARD_HOST="$(tailscale status --json | jq -r '.Self.DNSName' | sed 's/\.$//')"
 fi
@@ -239,10 +252,11 @@ if [ -n "$RESET" ]; then
 fi
 
 # ---------------------------------------------------------------- 1. the machine (root)
+phase packages
 say "System packages, Docker, gVisor, Tailscale"
 # The exposure mode this setup builds (settings.exposure, written into a new instance.yaml): the tailnet, or without
 # Tailscale an SSH tunnel to loopback. The machine step opens the host firewall for it (ops/vm/public-fw.sh).
-EXPOSURE=tailscale; [ "$NO_TS" = 0 ] || EXPOSURE=local
+EXPOSURE=tailscale; [ "$NO_TS" = 0 ] || EXPOSURE=local; [ "$PUBLIC" = 0 ] || EXPOSURE=public
 run env AIDENHQ_EXPOSURE="$EXPOSURE" AIDENHQ_NO_TAILSCALE="$NO_TS" AIDENHQ_USER="$U" AIDENHQ_CHECKOUT="$REPO" bash "$SRC/ops/vm/setup.sh"
 # The runner's engines on the host: Codex (the primary engine, codex-openrouter) and opencode (the fallback) (engines.mjs).
 command -v codex >/dev/null || run npm install -g --silent @openai/codex@0.166.0
@@ -277,6 +291,32 @@ if [ -n "$BOARD_HOST" ]; then ADMIN_URL="https://$BOARD_HOST:8446"; else ADMIN_U
 say "Board address: $BOARD_URL (sign-in and approvals: $ADMIN_URL)"
 # The machine step installs node; everything after it needs it.
 [ "$DRY" = 1 ] || command -v node >/dev/null || die "node is missing after the machine step: ops/vm/setup.sh installs it (NodeSource); see its output above"
+# Public mode that can't work here falls back to local, loudly: the board on loopback through the SSH tunnel (printed at the
+# end), the instance's settings.exposure set to local, never a half-working public address.
+fall_back_local() { # WHY
+  echo; echo "!!! PUBLIC MODE IS NOT WORKING: $1"
+  echo "!!! The board stays on this host's loopback instead, reached through the SSH tunnel printed at the end."
+  echo "!!! To try public again once that is fixed: sudo AIDENHQ_EXPOSURE=public ops/setup.sh (with the same options)"; echo
+  PUBLIC=0 PUBLIC_IP="" EXPOSURE=local
+  BOARD_URL="http://127.0.0.1:3121"; ADMIN_URL="http://127.0.0.1:3120"
+  if [ "$DRY" = 0 ] && grep -qx '  exposure: public' "$INST/instance.yaml" 2>/dev/null; then
+    as_user sed -i 's/^  exposure: public$/  exposure: local/' "$INST/instance.yaml"
+    as_user git -C "$INST" -c user.name=setup -c user.email=setup@aidenhq.invalid commit --quiet -m "exposure: local (public mode got no certificate)" -- instance.yaml
+    as_user git -C "$INST" push --quiet origin main
+  fi
+}
+# Public: both on the host's public IPv4 through Caddy, the admin listener on its own port (compile checks .env agrees).
+if [ "$PUBLIC" = 1 ]; then
+  PUBLIC_IP="${AIDENHQ_PUBLIC_IP:-$(sed -n 's/^AIDENHQ_PUBLIC_IP=//p' "$ENVF" 2>/dev/null | tail -1)}"
+  if [ -z "$PUBLIC_IP" ] && [ "$DRY" = 1 ]; then PUBLIC_IP="<this host's public IPv4>"
+  elif [ -z "$PUBLIC_IP" ]; then PUBLIC_IP="$(node "$SRC/scripts/front-door.mjs" detect)" || true; fi
+fi
+if [ "$PUBLIC" = 1 ] && [ -z "$PUBLIC_IP" ]; then
+  fall_back_local "this host has no public IPv4 of its own (above: behind NAT, or only a private address). Set AIDENHQ_PUBLIC_IP if the address that forwards 443 and 8446 here is known."
+elif [ "$PUBLIC" = 1 ]; then
+  BOARD_URL="https://$PUBLIC_IP"; ADMIN_URL="https://$PUBLIC_IP:8446"
+  say "Public: board $BOARD_URL, sign-in and approvals $ADMIN_URL (Caddy, a Let's Encrypt certificate for the IP)"
+fi
 
 # ---------------------------------------------------------------- 2. the product (its main is what may run here)
 if ! ugit -C "$REPO" remote get-url origin >/dev/null 2>&1; then
@@ -299,6 +339,7 @@ PRODUCT="$(ugit -C "$REPO" rev-parse HEAD)"
 [ "$DRY" = 1 ] || ugit -C "$REPO" merge-base --is-ancestor "$PRODUCT" origin/main || die "the checkout ($PRODUCT) isn't on the product's main"
 
 # ---------------------------------------------------------------- 3. host config
+phase host
 say "Host config (.env, config/runner.yaml)"
 if [ ! -f "$ENVF" ]; then
   if [ "$DRY" = 1 ]; then echo "  + write $ENVF (from .env.example)"
@@ -307,21 +348,30 @@ fi
 set_env PUID "$(id -u "$U" 2>/dev/null || echo 1000)"
 set_env PGID "$(id -g "$U" 2>/dev/null || echo 1000)"
 set_env AIDENHQ_SECRETS_DIR "$SECRETS"
+# The host's apply state (generations.jsonl): the board reads it, read-only, for fleet_generation_status.
+set_env AIDENHQ_STATE_DIR "$H/.local/state/aidenhq"
 set_env AIDENHQ_INSTANCE_DIR "$INST"
 set_env AIDENHQ_INSTANCE_REMOTE "$REMOTE"        # apps-mcp mounts it (compose.yaml)
 set_env AIDENHQ_INSTANCE_PUSH_URL "$REMOTE"      # apps-mcp pushes registry commits here, not to GitHub
 set_env VAULT_FOLDERS ""
 # The board for this person's devices: signed-in admins only, behind `tailscale serve` (3121).
-set_env BOARD_LAN_HOSTS "${BOARD_HOST:-127.0.0.1:3121,localhost:3121}"
+set_env BOARD_LAN_HOSTS "${BOARD_HOST:-${PUBLIC_IP:+$PUBLIC_IP,}127.0.0.1:3121,localhost:3121}"
+# The kernel reads these at start: a running one restarts below when they change (its jobs keep running).
+kernel_urls="$(grep -E '^(BOARD_LAN_URL|AIDENHQ_ADMIN_URL|AIDENHQ_LINK_TTL_HOURS)=' "$ENVF" 2>/dev/null || true)"
 set_env BOARD_LAN_URL "$BOARD_URL"
 set_env AIDENHQ_ADMIN_URL "$ADMIN_URL"
+# Public: Caddy's address (compile writes config/Caddyfile for it), and one-time links last 24 hours (decision D9).
+[ "$PUBLIC" = 0 ] || set_env AIDENHQ_PUBLIC_IP "$PUBLIC_IP"
+set_env AIDENHQ_LINK_TTL_HOURS "$( [ "$PUBLIC" = 0 ] || echo 24)"
+[ "$DRY" = 1 ] || [ "$kernel_urls" = "$(grep -E '^(BOARD_LAN_URL|AIDENHQ_ADMIN_URL|AIDENHQ_LINK_TTL_HOURS)=' "$ENVF" 2>/dev/null || true)" ] || KERNEL_RESTART=1
 # Apps get their own tailnet node and name (compose.yaml apps-edge), never the board's: browsers send a name's cookies
 # to every port of it. Without Tailscale there is no apps node yet.
 if [ -n "$BOARD_HOST" ]; then
   set_env APPS_TS_HOSTNAME "aidenhq-$U-apps"
   set_env APPS_URL_BASE "https://aidenhq-$U-apps.${BOARD_HOST#*.}"
 fi
-set_env BOARD_GOOGLE_CONNECT 1                   # Connect Google from the board (the company's Web-app client)
+# Connect Google from the board (the company's Web-app client); Google refuses a bare IP as a redirect, so not in public.
+set_env BOARD_GOOGLE_CONNECT "$( [ "$PUBLIC" = 1 ] || echo 1)"
 grep -q '^WORK_COMPANY_ID=.' "$ENVF" 2>/dev/null || set_env WORK_COMPANY_ID pending   # known after Paperclip's setup
 if [ ! -f "$REPO/config/runner.yaml" ]; then
   # The runner changes only this person's local instance repo; it clones it from the VM, not GitHub.
@@ -350,6 +400,7 @@ runner_set timeout_minutes "$TIMEOUT_MINUTES"
 # user, so Docker doesn't create a root-owned directory in its place.
 as_user sh -c 'mkdir -p -m 700 "$1/.ssh" && { [ -e "$1/.ssh/aidenhq_instance_deploy" ] || install -m 600 /dev/null "$1/.ssh/aidenhq_instance_deploy"; }' _ "$H"
 
+phase secrets
 say "Secrets directory, data directories (scripts/bootstrap.sh)"
 as_user bash "$REPO/scripts/bootstrap.sh"
 # The owner in config/system.yaml (timezone, names, emails), as the user, once (while names is still empty).
@@ -427,9 +478,8 @@ if [ -z "$(read_secret openrouter_key)" ]; then
   else die "set OPENROUTER_MANAGEMENT_KEY (or OPENROUTER_KEY) in $CONFIG"; fi
 fi
 # Fail now on a rejected key, not after an apply that waits minutes per agent. (A dry run only says what it would check.)
-HAS_KEY=1
 if [ "$DRY" = 1 ]; then echo "  + check the OpenRouter key against openrouter.ai (GET /api/v1/key); stop if it is rejected"
-elif [ -z "$(read_secret openrouter_key)" ]; then HAS_KEY=0
+elif [ -z "$(read_secret openrouter_key)" ]; then :   # no key yet: the board asks for the model on first sign-in
 else as_user AIDENHQ_SECRETS_DIR="$SECRETS" node "$REPO/scripts/openrouter-key.mjs" check || die "the OpenRouter key was rejected (see above)"; fi
 if [ -n "$(cfg GOOGLE_CLIENT_ID)" ] && ! grep -q '"client_id"' "$SECRETS/modules/google/google_oauth.json" 2>/dev/null; then
   say "Google: the company OAuth app behind Connect"
@@ -454,9 +504,10 @@ if [ ! -e "$H/.local/share/aidenhq/vault.enc" ]; then
 fi
 
 # ---------------------------------------------------------------- 7. the stack
+phase apply
 say "Apply: compile, start, Paperclip (ops/apply-config.sh)"
 PW="$( [ "$DRY" = 1 ] || read_secret paperclip_owner_password)"
-as_user PAPERCLIP_EMAIL="$OWNER_EMAIL" PAPERCLIP_PASSWORD="$PW" PAPERCLIP_NAME="$OWNER_NAME" bash "$REPO/ops/apply-config.sh"
+as_user AIDENHQ_PROGRESS_BASE="$(progress_slice SETUP_PHASES apply)" PAPERCLIP_EMAIL="$OWNER_EMAIL" PAPERCLIP_PASSWORD="$PW" PAPERCLIP_NAME="$OWNER_NAME" bash "$REPO/ops/apply-config.sh"
 if [ "$DRY" = 1 ]; then echo "  + .env: WORK_COMPANY_ID=<from config/system.yaml>, PAPERCLIP_DISABLE_SIGN_UP=true; docker compose up -d"
 else
   company="$(sed -n 's/^ *company_id: *"\{0,1\}\([0-9a-f-]\{36\}\)"\{0,1\}.*/\1/p' "$REPO/config/system.yaml" | head -1)"
@@ -468,6 +519,13 @@ else
   as_user bash -c "cd '$REPO' && docker compose up -d --no-deps --force-recreate board"
 fi
 [ -z "$BOARD_HOST" ] || { run tailscale serve --bg --https=443 http://127.0.0.1:3121; run tailscale serve --bg --https=8446 http://127.0.0.1:3120; }
+# Public: the machine step ran before this apply compiled the `caddy` service, so it kept 443 and 8446 closed; open them now.
+if [ "$PUBLIC" = 1 ] && [ "$DRY" = 0 ] && ! grep -qx 'EXPOSURE=public' /etc/default/aidenhq-public-fw 2>/dev/null; then
+  run env AIDENHQ_EXPOSURE=public AIDENHQ_NO_TAILSCALE=1 AIDENHQ_USER="$U" AIDENHQ_CHECKOUT="$REPO" bash "$SRC/ops/vm/setup.sh"
+  # Caddy's first ACME attempt met the closed port and backs off for minutes: a fresh start tries again now.
+  as_user bash -c "cd '$REPO' && docker compose restart caddy"
+fi
+phase units
 say "Runner, model gateway and run pruning (user units)"
 as_user mkdir -p "$H/.config/systemd/user"
 # Where the units find this checkout (their default is ~/aidenhq).
@@ -481,6 +539,7 @@ runner_up=0; [ "$DRY" = 1 ] || ! as_user systemctl --user is-active --quiet aide
 as_user systemctl --user enable --now aidenhq-kernel aidenhq-runner aidenhq-computers prune-runs.timer prune-docker.timer
 # aidenhq-apply-recover: at boot, finishes an apply that died mid-run (ops/apply-config.sh --recover).
 as_user systemctl --user enable aidenhq-apply-recover
+[ "${KERNEL_RESTART:-0}" = 0 ] || as_user systemctl --user restart aidenhq-kernel
 if [ "$RUNNER_RESIZED" = 1 ] && [ "$runner_up" = 1 ]; then as_user systemctl --user kill --kill-whom=main -s SIGUSR2 aidenhq-runner || true; fi
 # CI runners (modules/ci): AIDENHQ_CI_RUNNERS units, once the GitHub App exists and the instance has the ci module (each
 # unit mints its token from the App); until then a rerun of setup starts them.
@@ -495,34 +554,48 @@ if [ "$ci_n" -gt 0 ]; then
   else say "CI runners: $ci_n once the GitHub App (ops/github-app-setup.mjs) and the ci module are set up; then run setup again"; fi
 fi
 
+# Public: the certificate is the proof that 443 is reachable from the Internet (behind NAT, a cloud security group or a
+# provider firewall it never comes). Up to 3 minutes; without it, local: the instance and .env say so, an apply drops
+# Caddy, the kernel restarts on loopback URLs and the firewall closes 443 and 8446 again.
+if [ "$PUBLIC" = 1 ] && [ "$DRY" = 0 ]; then
+  say "Waiting for the HTTPS certificate for $PUBLIC_IP (Let's Encrypt; up to 3 minutes)"
+  if ! node "$SRC/scripts/front-door.mjs" wait "$PUBLIC_IP" 180; then
+    as_user bash -c "cd '$REPO' && docker compose logs --tail 200 caddy 2>&1" | grep -iE '"level":"(error|warn)"' | tail -5 || true
+    fall_back_local "Let's Encrypt couldn't reach https://$PUBLIC_IP within 3 minutes (above: Caddy's last errors). Usually tcp 443 is blocked before this host (a cloud security group or the provider's firewall), or the address isn't this host's."
+    set_env BOARD_LAN_HOSTS "127.0.0.1:3121,localhost:3121"
+    set_env BOARD_LAN_URL "$BOARD_URL"
+    set_env AIDENHQ_ADMIN_URL "$ADMIN_URL"
+    set_env AIDENHQ_LINK_TTL_HOURS ""
+    set_env BOARD_GOOGLE_CONNECT 1
+    as_user PAPERCLIP_EMAIL="$OWNER_EMAIL" PAPERCLIP_PASSWORD="$PW" PAPERCLIP_NAME="$OWNER_NAME" bash "$REPO/ops/apply-config.sh"
+    as_user systemctl --user restart aidenhq-kernel
+    run env AIDENHQ_EXPOSURE=local AIDENHQ_NO_TAILSCALE=1 AIDENHQ_USER="$U" AIDENHQ_CHECKOUT="$REPO" bash "$SRC/ops/vm/setup.sh"
+  else say "Public: $BOARD_URL answers with a trusted certificate"; fi
+fi
+
 # ---------------------------------------------------------------- 8. the first ten minutes
+# Aiden's welcome is the board's first-run wizard's last step; a restored AidenHQ has had it (its marker).
 marker="$REPO/data/board/welcome-sent"
 if [ -n "$RESTORE" ]; then as_user touch "$marker"   # a restored AidenHQ has had its welcome
-elif [ ! -e "$marker" ]; then
-  say "Aiden's welcome chat"
-  text="Welcome"$'\n\n'"[setup] $OWNER_NAME's AidenHQ is new. Start the first chat with a new owner (your handbook)."
-  if [ "$DRY" = 1 ]; then echo "  + board: new chat to Aiden, \"Welcome\""
-  elif [ "$HAS_KEY" = 0 ]; then say "Aiden's welcome waits for the model key (a rerun of setup with it sends it)"
-  else
-    for _ in $(seq 60); do curl -fsS -o /dev/null http://127.0.0.1:3121/healthz 2>/dev/null && break; sleep 2; done
-    board POST /internal/owner/welcome "{\"text\":$(json "$text")}" -f >/dev/null
-    as_user touch "$marker"
-  fi
 fi
 
 echo
-echo "Once, in the company's Google OAuth app (Web application), add the redirect URI:"
-echo "  $BOARD_URL/google/callback"
+if [ -n "$(cfg GOOGLE_CLIENT_ID)" ] && [ "$PUBLIC" = 0 ]; then
+  echo "Once, in the company's Google OAuth app (Web application), add the redirect URI:"
+  echo "  $BOARD_URL/google/callback"
+else
+  echo "Google: when you want it, ask Aiden to set it up, or open $BOARD_URL/#/setup/google (steps and a place to paste the client)."
+fi
 [ -z "$CONFIG" ] || echo "Delete $CONFIG: it holds secrets (the OpenRouter key)."
 if [ "$UNATTENDED" = 0 ] && [ -e /root/aidenhq-vault-recovery.txt ]; then echo "Vault recovery key: /root/aidenhq-vault-recovery.txt. Store it, then: sudo shred -u /root/aidenhq-vault-recovery.txt"; fi
-if [ -z "$BOARD_HOST" ]; then
+if [ -z "$BOARD_HOST" ] && [ "$PUBLIC" = 0 ]; then
   tunnel="ssh -N -L 3121:127.0.0.1:3121 -L 3120:127.0.0.1:3120 $U@$(hostname -f 2>/dev/null || hostname)"
   echo "The board listens on this host's loopback only. From $OWNER_NAME's laptop, open a tunnel first and leave it open:"
   echo "  $tunnel"
   [ "$UNATTENDED" = 0 ] || echo "AIDENHQ_SSH_TUNNEL=$tunnel"
 fi
-if [ "$UNATTENDED" = 1 ]; then setup_link   # last: its AIDENHQ_SETUP_URL line ends the output
+if [ "$UNATTENDED" = 1 ]; then phase link; setup_link   # last: its AIDENHQ_SETUP_URL line ends the output
 else
-  echo "Done. Send $OWNER_NAME this link ($( [ -n "$BOARD_HOST" ] && echo 'their laptop must be on the tailnet' || echo 'through the tunnel' ); one use; a new one: --reset $OWNER_EMAIL):"
+  echo "Done. Send $OWNER_NAME this link ($( [ -n "$BOARD_HOST" ] && echo 'their laptop must be on the tailnet' || { [ "$PUBLIC" = 1 ] && echo 'it opens from anywhere'; } || echo 'through the tunnel' ); one use; a new one: --reset $OWNER_EMAIL):"
   owner_link
 fi

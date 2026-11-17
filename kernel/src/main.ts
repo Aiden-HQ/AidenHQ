@@ -11,7 +11,6 @@
 // - The admin listener (127.0.0.1:3120, admin.ts): admins' sign-in (accounts.ts, data/kernel/auth/) and the approval pages.
 // - The sign-in listener (127.0.0.1:3129, signin.ts): the gate's half of shared apps' sign-in (Better Auth's steps, handoffs,
 //   app access). The kernel is the only process that opens the accounts file (lean 3g).
-import { randomBytes } from "node:crypto";
 import http from "node:http";
 import { existsSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
@@ -19,6 +18,8 @@ import { configDir, dataDir, env, repo, secret } from "./env.ts";
 import { createGateway, watched } from "./gateway/lib.ts";
 import { createAdmin, type SetupField } from "./admin.ts";
 import { createAuthApi } from "./auth-api.ts";
+import { checkModel, exchange, readiness, startPkce } from "./openrouter-pkce.ts";
+import { composeRecreate, createModuleSecrets, vaultWriter } from "./module-secrets.ts";
 import { readGate } from "./accounts.ts";
 import { routineWake, webhookWake, type Manifest } from "./app-access.ts";
 import { createSignin } from "./signin.ts";
@@ -37,10 +38,11 @@ import { openRecords } from "./records.ts";
 import { createReviews, type ReviewerSlot } from "./reviews.ts";
 import { mintToken } from "./gateway/token.ts";
 import { createWrites, type Kind } from "./writes.ts";
-import { KERNEL_KINDS, raiseCapCard } from "./kinds.ts";
+import { KERNEL_KINDS, LOCAL_ORG, raiseCapCard } from "./kinds.ts";
 import { createJobs, dispatchesFrom } from "./jobs.ts";
 import { jailProblem, overlayProblem } from "./sandbox.ts";
 import { sandboxConfig } from "./sandbox-config.ts";
+import { createCertWatch } from "./front-door.ts";
 import { BOX_EXEC_WRAP } from "../../services/computer/lib.mjs";
 
 const log = (msg: string, fields: Record<string, unknown> = {}) => console.log(new Date().toISOString(), msg, JSON.stringify(fields));
@@ -59,7 +61,7 @@ async function runTask(runId: string): Promise<string | undefined> {
   return r.issueId ?? r.contextSnapshot?.issueId ?? undefined;
 }
 // Modules with kernel roles, a privileged entry, a token of their own or a channel (compile).
-const modulesFile = watched(path.join(configDir, "kernel", "modules.json"), (j) => j as ModulesFile & { reviewer?: ReviewerSlot; setup?: SetupField[] }, {});
+const modulesFile = watched(path.join(configDir, "kernel", "modules.json"), (j) => j as ModulesFile & { reviewer?: ReviewerSlot; setup?: SetupField[]; services?: Record<string, string[]> }, {});
 const whoami = createIdentity({
   grants: () => grantsTable().agents ?? {}, connections, modules: () => modulesFile().modules ?? {},
   jobcaps: watched(path.join(configDir, "jobcaps.json"), (j) => j as Record<string, Jobcap>, {}), // runner jobs' reads (compile)
@@ -86,13 +88,16 @@ let replay: (r: never) => Promise<{ ok: boolean; text: string }> = async () => (
 const instanceSettings = (() => { try { return readFileSync(path.join(env("AIDENHQ_INSTANCE_DIR", "").replace(/^~(?=\/)/, process.env.HOME ?? ""), "instance.yaml"), "utf8"); } catch { return ""; } })();
 const setting = (k: string) => new RegExp(`^\\s+${k}:\\s*["']?([\\w.-]+)`, "m").exec(instanceSettings)?.[1];
 const agentsOrg = env("AIDENHQ_GITHUB_AGENTS_ORG") || setting("github_agents_org") || (setting("instance_name") ? `aidenhq-${setting("instance_name")}` : undefined);
-const repos = { product: env("AIDENHQ_PRODUCT_REPO") || undefined, instance: env("AIDENHQ_INSTANCE_REPO") || undefined, agentsOrg };
-log(repos.product && repos.instance ? "runner kinds' repositories" : "runner kinds: AIDENHQ_PRODUCT_REPO or AIDENHQ_INSTANCE_REPO isn't set, so every runner write is the owner's", repos);
+// With codehost-local enabled (the compiled catalog), its org `local` is an agents org too (docs/design/codehost-local.md §2).
+const localHost = watched(path.join(configDir, "modules.json"), (j) => Array.isArray(j) && j.some((m: { name?: string; enabled?: boolean }) => m?.name === "codehost-local" && m.enabled === true), false);
+const baseRepos = { product: env("AIDENHQ_PRODUCT_REPO") || undefined, instance: env("AIDENHQ_INSTANCE_REPO") || undefined, agentsOrg };
+const repos = () => ({ ...baseRepos, agentsOrgs: [agentsOrg, ...(localHost() ? [LOCAL_ORG] : [])].filter((o): o is string => Boolean(o)) });
+log(baseRepos.product && baseRepos.instance ? "runner kinds' repositories" : "runner kinds: AIDENHQ_PRODUCT_REPO or AIDENHQ_INSTANCE_REPO isn't set, so every runner write is the owner's", repos());
 // The bound reviewer module (reviewer@1): its model calls go through this gateway on a reviewer token minted per review.
 const reviews = createReviews({ slot: () => modulesFile().reviewer, secret, resolver, log, modelToken: (component) => mintToken(secret("gateway_job_secret"), { kind: "reviewer", component, ttlMs: 3600_000 }) });
 let raiseCap: (r: { scope: string; agentId: string; subject: string; cap: number; spent: number; to: number }) => Promise<string> = async () => { throw new Error("the model gateway isn't up"); };
 const writes = createWrites({
-  records, registry, connections, secret, resolver, reviews, onTask, log, replay: (r) => replay(r as never), repos: () => repos,
+  records, registry, connections, secret, resolver, reviews, onTask, log, replay: (r) => replay(r as never), repos,
   autonomy: () => (["off", "tier0", "full"].includes(grantsTable().autonomy as string) ? grantsTable().autonomy : "off") as never,
   // An approved raise_cap: the gateway's cap for that scope and subject becomes the card's doubled cap.
   native: { "kernel.raise_cap": async (r) => ({ ok: true, text: await raiseCap(r.args as never) }) },
@@ -112,14 +117,21 @@ const channels = createChannels({ db: records.db, records, writes, board: boardA
 const advisories = createAdvisories({ db: records.db, repo, catalog: path.join(configDir, "modules.json"), ownerLine: channels.ownerLine, log, ref: env("AIDENHQ_ADVISORY_REF", "main"), fetch: hostFetch(repo) });
 setInterval(() => void advisories.tick(), 10 * 60_000).unref();
 setTimeout(() => void advisories.tick(), 30_000).unref();
+// The public front door's certificate (exposure public, compiled into config/exposure; the IP is the host's .env): hourly.
+const certWatch = createCertWatch({
+  ip: () => { try { return readFileSync(path.join(configDir, "exposure"), "utf8").trim() === "public" ? env("AIDENHQ_PUBLIC_IP") || undefined : undefined; } catch { return undefined; } },
+  notify: channels.ownerLine,
+});
+setInterval(() => void certWatch.tick(), 3_600_000).unref();
+setTimeout(() => void certWatch.tick(), 10 * 60_000).unref();
 const brake = createBrake({ db: records.db, owner: ownerApi });
-// Jobs: the sandbox as configured here. Without a network jail that works, jobs would share the host's network (every loopback
-// service): loudly, so scripts/verify-security.sh and the journal both say so. Build caches without overlay support are shared.
+// Jobs: the sandbox as configured here. A known no-jail condition is fatal, with the reason in the journal: a job must never
+// share the host's network (every loopback service). Build caches without overlay support are shared.
 const sandbox = sandboxConfig(env);
 const jailIssue = jailProblem(sandbox);
 if (jailIssue) {
-  sandbox.pasta = undefined;
-  log("WARNING: jobs share the host's network (every loopback service, the LAN)", { reason: jailIssue });
+  log("ERROR: jobs cannot be jailed here", { reason: jailIssue });
+  process.exit(1);
 }
 if (sandbox.sandbox?.extra_writable_roots?.length) {
   const overlayIssue = overlayProblem(sandbox);
@@ -141,7 +153,28 @@ jobs.adopt();
 for (const sig of ["SIGTERM", "SIGINT", "SIGUSR2"] as const) process.on(sig, () => { log("stopping: jobs left running for the next kernel", { signal: sig, jobs: jobs.running() }); jobs.detach(); process.exit(0); });
 // The finish gate (checks.ts): modules' task.finish checks (compile), holds placed as the owner.
 const checks = createChecks({ db: records.db, registry: checksFile(path.join(configDir, "kernel", "checks.json")), owner: ownerApi, secret, resolver, log, agentKey: (id) => grantsTable().agents?.[id]?.key, graded: (id) => grantsTable().agents?.[id]?.graded === true });
-const backplane = createBackplane({ checks, whoami, asserter, grantsFile: grantsTable, log, writes, records, channels, brake, owner: ownerApi, modules: modulesFile, boardKey: () => secret("gateway_board_key"), reviews, runnerKey: () => secret("runner_writes_key"), reviewerKey: () => secret("reviewer_key"), jobs, advisories: advisories.list, accounts: createAuthApi({ accounts: () => accounts, whoami, recoveryKeyWaiting: () => Boolean(firstRun.recoveryKey()), boardKey: () => secret("gateway_board_key"), operatorKey: () => secret("board_operator_key") }), proxy: (req, res, c) => proxy(req, res, c!), cp: createCp({ whoami, asserter, controlUrl, launcherUrl, checks, log }) as never });
+// First-run setup (/setup): the keys the modules ask for go into the vault view (AIDENHQ_SECRETS_DIR) as new 0600 files renamed into place; the
+// vault's recovery key waits there (ops/setup.sh --unattended moves it out of root's home) until the owner has seen it.
+const secretsDir = env("AIDENHQ_SECRETS_DIR", "");
+const firstRun = {
+  ownerEmail: () => modulesFile().owner?.email || undefined,
+  recoveryKey: () => (/^[0-9a-f-]{64,80}$/.test(secret("vault_recovery_key")) ? secret("vault_recovery_key") : ""),
+  fields: () => modulesFile().setup ?? [], // the modules' provided secrets with `setup:` (compile)
+  has: (name: string) => Boolean(secret(name)),
+  save: vaultWriter(secretsDir),
+  forgetRecoveryKey: () => rmSync(path.join(secretsDir, "vault_recovery_key"), { force: true }),
+};
+// The model step's record of whether the vault's model key last passed its check (model_ready, the first-run redirects).
+const modelState = readiness({ get: secret, exists: (n) => existsSync(path.join(secretsDir, n)), save: firstRun.save });
+// A module's declared setup secrets from the board (save_secret, setup_status): the same vault writes, then that module's
+// services recreated in the checkout under the apply lock.
+const moduleSecrets = createModuleSecrets({
+  fields: firstRun.fields, has: firstRun.has, save: firstRun.save,
+  services: (module) => { const s = modulesFile().services ?? {}; return Object.hasOwn(s, module) ? s[module] : undefined; },
+  recreate: composeRecreate({ dir: env("AIDENHQ_DIR", repo), composeFile: env("COMPOSE_FILE", "") }),
+  log,
+});
+const backplane = createBackplane({ checks, whoami, asserter, grantsFile: grantsTable, log, writes, records, channels, brake, owner: ownerApi, modules: modulesFile, boardKey: () => secret("gateway_board_key"), reviews, runnerKey: () => secret("runner_writes_key"), reviewerKey: () => secret("reviewer_key"), jobs, advisories: advisories.list, accounts: createAuthApi({ accounts: () => accounts, whoami, boardKey: () => secret("gateway_board_key"), recoveryKeyWaiting: () => Boolean(firstRun.recoveryKey()), modelReady: modelState.ready, operatorKey: () => secret("board_operator_key"), secrets: moduleSecrets }), proxy: (req, res, c) => proxy(req, res, c!), cp: createCp({ whoami, asserter, controlUrl, launcherUrl, checks, log }) as never });
 // The admin listener's accounts (data/kernel/auth/auth.db) and pages. Accounts not moved yet, or a malformed URL setting: the
 // listener refuses while every other part of the kernel serves.
 const urlOf = (v: string) => { try { return v ? new URL(v) : undefined; } catch { log("ignoring a malformed URL setting", { value: v.slice(0, 100) }); return undefined; } };
@@ -187,18 +220,18 @@ if (accounts) {
 const boardOrigins = env("AIDENHQ_BOARD_ORIGINS", [boardUrl?.origin, "http://127.0.0.1:3121", "http://localhost:3121"].filter(Boolean).join(",")).split(",").map((o) => o.trim()).filter(Boolean);
 // The board's origins are the module UI origins a session may be handed to (/auth/handoff).
 const uiOrigins = () => Object.fromEntries(boardOrigins.map((o) => [o, "board"]));
-// First-run setup (/setup): the keys the modules ask for go into the vault view (AIDENHQ_SECRETS_DIR) as new 0600 files renamed into place; the
-// vault's recovery key waits there (ops/setup.sh --unattended moves it out of root's home) until the owner has seen it.
-const secretsDir = env("AIDENHQ_SECRETS_DIR", "");
-const firstRun = {
-  ownerEmail: () => modulesFile().owner?.email || undefined,
-  recoveryKey: () => (/^[0-9a-f-]{64,80}$/.test(secret("vault_recovery_key")) ? secret("vault_recovery_key") : ""),
-  fields: () => modulesFile().setup ?? [], // the modules' provided secrets with `setup:` (compile)
-  has: (name: string) => Boolean(secret(name)),
-  save: (name: string, value: string) => { const f = path.join(secretsDir, name), tmp = `${f}.${randomBytes(6).toString("hex")}.tmp`; writeFileSync(tmp, value, { mode: 0o600, flag: "wx" }); renameSync(tmp, f); },
-  forgetRecoveryKey: () => rmSync(path.join(secretsDir, "vault_recovery_key"), { force: true }),
+// The first run's model step (/setup/model): OpenRouter's PKCE and a 1-token check on the gateway's upstream, against the first
+// model the modules price (config/gateway.json, in the order the modules list them: the default first).
+const upstream = env("AIDENHQ_GATEWAY_UPSTREAM", "https://openrouter.ai/api/v1");
+const gatewaySettings = watched(path.join(configDir, "gateway.json"), (j) => j as { models?: Record<string, unknown> }, {});
+const model = {
+  start: (callback: string, state: string) => startPkce(callback, { upstream, state }),
+  exchange: (code: string, verifier: string) => exchange(code, verifier, fetch, upstream),
+  check: (key: string) => checkModel(key, { model: Object.keys(gatewaySettings().models ?? {})[0] ?? "~deepseek/deepseek-flash-latest", upstream }),
+  saved: () => secret("openrouter_key"),
+  ...modelState,
 };
-const admin = accounts && createAdmin({ accounts, firstRun, uiOrigins, boardUrl: () => boardOrigins[0], cards: channels, ownerMessage: (b) => channels.ownerMessageAs("web", b, () => Object.entries(grantsTable().agents ?? {}).find(([, g]) => g.key === "chief-of-staff")?.[0]), owner: ownerApi, hosts: () => adminHosts, origins: () => adminOrigins, frameOrigins: () => boardOrigins, log });
+const admin = accounts && createAdmin({ accounts, firstRun, model, uiOrigins, boardUrl: () => boardOrigins[0], cards: channels, ownerMessage: (b) => channels.ownerMessageAs("web", b, () => Object.entries(grantsTable().agents ?? {}).find(([, g]) => g.key === "chief-of-staff")?.[0]), owner: ownerApi, hosts: () => adminHosts, origins: () => adminOrigins, frameOrigins: () => boardOrigins, log });
 
 // Claimed records a restart left without an outcome: their executors say how they went (never replayed). Executors may
 // still be starting at boot, so once, a minute in.
@@ -212,7 +245,7 @@ const gw = createGateway({
   tools: proxy, // runner jobs' reads of connections (POST /c/<connection>/mcp, job tokens only)
   asCaller: createAsCaller({ whoami, connections, asserter, log }), // a module's model calls for its caller (cp.ts)
   secret,
-  upstream: env("AIDENHQ_GATEWAY_UPSTREAM", "https://openrouter.ai/api/v1"),
+  upstream,
   paperclipUrl: controlUrl,
   // The numbers are the gateway's ledger; the task's identifier and the agent's name are looked up here.
   fileRaiseCap: async ({ task, ...r }) => {

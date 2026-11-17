@@ -32,6 +32,36 @@ export class SignInRequired extends Error {
   }
 }
 
+/** One module's setup flow as GET /api/setup-flows returns it (services/board/src/setup-flows.ts). */
+/** The first-run wizard (Welcome.tsx): what to show a new owner, from the board. */
+export interface WelcomeState {
+  finished: boolean;
+  modelReady: boolean;
+  recoveryKeyWaiting: boolean;
+  wizard: string[];
+}
+
+export interface SetupFlowView {
+  module: string;
+  order: number;
+  title: string;
+  why: string;
+  effort: string;
+  wizard?: boolean;
+  steps: string;
+  secrets?: string[];
+  fields?: { secret: string; label: string; pattern: string; help?: string }[];
+  signin?: string;
+  connect_url?: string;
+  needs_name?: string;
+  pair_url?: string;
+  present: Record<string, boolean>;
+  signedIn: boolean;
+  paired: boolean;
+  done: boolean;
+  dismissed: boolean;
+}
+
 export interface Session {
   mode: "lan";
   account?: { id: string; email: string; name: string; role: "admin" | "user"; owner: boolean } | null;
@@ -113,6 +143,13 @@ export const api = {
     return call<{ rows: TaskRow[]; next: number | null }>("GET", `/api/agents/by-key/${encodeURIComponent(key)}/tasks?${p}`);
   },
   scorecard: (id: string) => call<Scorecard>("GET", `/api/agents/${encodeURIComponent(id)}/scorecard`),
+  setupFlows: () => call<{ flows: SetupFlowView[]; board_url: string; named: boolean }>("GET", "/api/setup-flows"),
+  setupSecret: (module: string, secret: string, value: string) => call<{ ok: boolean }>("POST", `/api/setup-flows/${module}/secret`, { secret, value }),
+  setupDismiss: (module: string) => call<{ ok: boolean }>("POST", `/api/setup-flows/${module}/dismiss`, {}),
+  setupPair: (module: string) => call<{ code: string; link?: string; minted_at: number }>("POST", `/api/setup-flows/${module}/pair`, {}),
+  setupPaired: (module: string) => call<{ paired: boolean; paired_at?: string | number }>("GET", `/api/setup-flows/${module}/pair`),
+  welcome: () => call<WelcomeState>("GET", "/api/welcome"),
+  welcomeFinish: (done: string[], skipped: string[]) => call<{ ok: boolean; identifier?: string }>("POST", "/api/welcome/finish", { done, skipped }),
   modules: () => call<{ modules: ModuleRow[]; advisories: Advisory[] }>("GET", "/api/modules"),
   settings: () => call<SettingsData>("GET", "/api/settings"),
   connections: (fresh = false) => call<ConnectionsData>("GET", `/api/settings/connections${fresh ? "?fresh" : ""}`),

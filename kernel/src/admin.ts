@@ -8,11 +8,14 @@
 //   the owner typed into it (A7). Every one-click owner action happens on a top-level page here.
 // - /setup (spec §6.10, A42): the first-run page, only with the single-use token ops/setup.sh --unattended prints and only
 //   while no admin exists. A GET changes nothing; the submit is checked in full, then spends the token, makes the owner's
-//   account, writes the keys to the vault and hands over to /auth/enrol for the authenticator.
-import { createHmac, timingSafeEqual } from "node:crypto";
+//   account and hands over to /auth/enrol for the authenticator. The owner then picks the model on /setup/model: Connect
+//   OpenRouter (PKCE: the verifier and a state kept here per session, the callback /setup/openrouter) or a pasted key, then one
+//   1-token call; on success the key goes into the vault and the owner on to the board's welcome.
+import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type { AdminSession, Step } from "./accounts.ts";
 import type { Api } from "./channels.ts";
+import { secretFits } from "./module-secrets.ts";
 
 type Card = Record<string, any>;
 type Deps = {
@@ -37,7 +40,9 @@ type Deps = {
   frameOrigins: () => string[];
   /** Module UI origins a session may be handed to (/auth/handoff), each with its module: the board's origins. */
   uiOrigins?: () => Record<string, string>;
-  /** The board's front door: /recovery-key sends the owner on to its welcome. */
+  /** The model step: OpenRouter's PKCE start and exchange, the 1-token check, and the key the vault holds (for Retry). */
+  model?: { start: (callback: string, state: string) => { url: string; verifier: string }; exchange: (code: string, verifier: string) => Promise<string>; check: (key: string) => Promise<"ok" | "no_credit" | "error">; saved: () => string; ready: () => boolean; checked: (key: string, ok: boolean) => void };
+  /** The board's front door: /recovery-key and the model step send the owner on to its welcome. */
   boardUrl?: () => string | undefined;
   log?: (msg: string, f?: Record<string, unknown>) => void;
 };
@@ -59,6 +64,9 @@ export const ROUTES = [
   { method: "POST", path: "/auth/password", auth: "admin+csrf" },
   { method: "POST", path: "/auth/sign-out", auth: "origin" },
   { method: "GET", path: "/auth/handoff", auth: "admin" },
+  { method: "GET", path: "/setup/model", auth: "admin" },
+  { method: "POST", path: "/setup/model", auth: "admin+csrf" },
+  { method: "GET", path: "/setup/openrouter", auth: "admin" },
   { method: "GET", path: "/recovery-key", auth: "admin" },
   { method: "POST", path: "/recovery-key", auth: "admin+csrf" },
   { method: "GET", path: "/", auth: "admin" },
@@ -76,6 +84,9 @@ const STATUSES = ["backlog", "todo", "in_progress", "in_review", "blocked", "don
 
 /** A secret a module asks for on /setup (its provided secret's `setup:`, compiled into config/kernel/modules.json `setup`). */
 export type SetupField = { module: string; secret: string; label: string; pattern: string; help?: string; required?: boolean };
+/** The gateway's model key: the one module secret the first run still asks for, on the model step. */
+const MODEL_KEY = "openrouter_key";
+const CREDITS = "https://openrouter.ai/settings/credits";
 const esc = (v: unknown) => String(v ?? "").replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
 class Refusal extends Error {
   status: number;
@@ -92,8 +103,9 @@ header form{margin-left:auto}.card{background:var(--surface);border:1px solid va
 code{background:var(--surface-2);padding:1px 4px;border-radius:4px;overflow-wrap:anywhere}
 input,textarea,select{font:inherit;color:var(--text);background:var(--surface);padding:8px 10px;border:1px solid var(--line);border-radius:6px;width:100%}label{display:block;margin:8px 0}
 input[type=checkbox]{accent-color:var(--accent);margin-right:6px;vertical-align:middle}
-button.b{font:inherit;font-weight:500;padding:8px 14px;border-radius:6px;border:1px solid var(--accent);background:var(--accent);color:var(--on-accent);cursor:pointer}button.b:hover{background:var(--accent-hover)}button.r{background:transparent;color:var(--danger);border-color:var(--danger)}button.r:hover{background:var(--danger-soft)}
+a.b{display:inline-block;text-decoration:none}button.b,a.b{font:inherit;font-weight:500;padding:8px 14px;border-radius:6px;border:1px solid var(--accent);background:var(--accent);color:var(--on-accent);cursor:pointer}button.b:hover,a.b:hover{background:var(--accent-hover)}button.r{background:transparent;color:var(--danger);border-color:var(--danger)}button.r:hover{background:var(--danger-soft)}
 :focus-visible{outline:2px solid var(--accent);outline-offset:2px}input:focus-visible,textarea:focus-visible{outline-offset:0;border-color:var(--accent)}
+.pick{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:12px;align-items:start}.pick .card{margin:0}.pick h2{margin:0 0 4px}
 @media(max-width:600px){button.b{min-height:44px}}`;
 
 export function createAdmin(d: Deps) {
@@ -119,7 +131,7 @@ export function createAdmin(d: Deps) {
   const redirect = (res: ServerResponse, to: string, cookies: string[] = []) =>
     void res.writeHead(303, { location: to, "cache-control": "no-store", ...(cookies.length ? { "set-cookie": cookies } : {}) }).end();
   const form = (action: string, inner: string, s?: AdminSession | null) => `<form method="post" action="${esc(action)}">${s ? `<input type="hidden" name="csrf" value="${csrf(s)}">` : ""}${inner}</form>`;
-  const safeNext = (n: string | null) => (n && (/^\/(approvals|owner)[\w/?=&.-]*$/.test(n) || /^\/auth\/handoff\?[\w=&.%:-]*$/.test(n)) ? n : "/approvals");
+  const safeNext = (n: string | null) => (n && (/^\/(approvals|owner|setup\/model)[\w/?=&.-]*$/.test(n) || /^\/auth\/handoff\?[\w=&.%:-]*$/.test(n)) ? n : "/approvals");
 
   async function body(req: IncomingMessage): Promise<URLSearchParams> {
     const chunks: Buffer[] = [];
@@ -135,20 +147,48 @@ export function createAdmin(d: Deps) {
     setPassword: (token: string, msg = "") => doc("Set your password", `<h1>Set your password</h1>${msg}${form("/auth/set-password", `<input type="hidden" name="token" value="${esc(token)}"><label>New password (12 characters or more)<input name="password" type="password" autocomplete="new-password" minlength="12" required></label><button class="b">Set password</button>`)}`),
   };
   const err = (m: string) => `<p class="err">${esc(m)}</p>`;
-  // Never re-renders a submitted secret: only the email and name come back after a refusal.
+  // Never re-renders the password: only the email and name come back after a refusal.
   const setupPage = (token: string, fr: NonNullable<Deps["firstRun"]>, msg = "", v: { email?: string; name?: string } = {}) => {
     const fixed = fr.ownerEmail();
-    const field = (f: SetupField) => {
-      const need = f.required && !fr.has(f.secret);
-      return `<label>${esc(f.label)}${need ? "" : " (optional)"}<input name="secret_${esc(f.secret)}" type="password" autocomplete="off" maxlength="300"${need ? " required" : ""}></label><p class="muted">${fr.has(f.secret) ? "One is already in the vault; leave this empty to keep it. " : ""}${esc(f.help ?? "")}</p>`;
-    };
     return doc("Set up AidenHQ", `<h1>Set up AidenHQ</h1>${msg}${form("/setup", `<input type="hidden" name="token" value="${esc(token)}">
 <h2>Your account</h2><label>Email<input name="email" type="email" autocomplete="username" maxlength="200" required value="${esc(fixed ?? v.email ?? "")}"${fixed ? " readonly" : ""}></label>
 <label>Name<input name="name" maxlength="100" value="${esc(v.name ?? "")}"></label><label>Password (12 characters or more)<input name="password" type="password" autocomplete="new-password" minlength="12" maxlength="128" required></label>
-<p class="muted">An authenticator app is set up next: admins sign in with a code from it.</p>
-<h2>Keys and channels</h2><p class="muted">Each key goes into the vault, read only by the part that uses it.</p>${fr.fields().map(field).join("")}
-<button class="b">Finish setup</button>`)}`);
+<p class="muted">Next: an authenticator app (admins sign in with a code from it), then the AI model your agents use.</p>
+<button class="b">Create account</button>`)}`);
   };
+  // The model step. Connect needs a callback OpenRouter takes: https, or localhost on any port; elsewhere the paste field leads.
+  const pkce = new Map<string, { verifier: string; state: string; at: number }>();
+  const welcome = () => (d.boardUrl?.() ? `${d.boardUrl()}/#/welcome` : "/approvals");
+  const afterEnrol = (s: AdminSession) => (d.model && s.account.owner && !d.model.ready() ? "/setup/model" : "/approvals");
+  const modelPage = (req: IncomingMessage, s: AdminSession, msg = "", credit = false) => {
+    const host = String(req.headers.host ?? "").toLowerCase();
+    const origin = d.origins().find((o) => new URL(o).host === host || new URL(o).hostname === host); // proxies differ in the Host they pass on
+    const callable = origin && (origin.startsWith("https://") || new URL(origin).hostname === "localhost");
+    // Two equal ways: a key the owner already has, and (where OpenRouter can call back) Connect.
+    let connect = "";
+    if (callable) {
+      for (const [k, v] of pkce) if (Date.now() - v.at > 600_000) pkce.delete(k);
+      const state = randomBytes(16).toString("base64url");
+      const { url, verifier } = d.model!.start(`${origin}/setup/openrouter`, state);
+      pkce.set(s.session.id, { verifier, state, at: Date.now() });
+      connect = `<div class="card"><h2>Connect your account</h2><p class="muted">Sign in to OpenRouter (or make an account) and approve; you come straight back here.</p><a class="b" href="${esc(url)}">Connect OpenRouter</a></div>`;
+    }
+    const field = d.firstRun?.fields().find((f) => f.secret === MODEL_KEY);
+    const paste = `<div class="card"><h2>Use your API key</h2><p class="muted">Paste a key you have, or make one at <a href="https://openrouter.ai/settings/keys" target="_blank" rel="noopener">openrouter.ai/settings/keys</a>.</p>${form("/setup/model", `<input type="hidden" name="action" value="paste"><label>${esc(field?.label ?? "OpenRouter API key")}<input name="${MODEL_KEY}" type="password" autocomplete="off" maxlength="300" placeholder="sk-or-…" required></label><button class="b">Save</button>`, s)}</div>`;
+    const retry = credit ? `<div class="card"><p>Your OpenRouter account needs credit before agents can run.</p><p><a href="${CREDITS}" target="_blank" rel="noopener">Add credit in OpenRouter</a>, then retry.</p>${form("/setup/model", `<input type="hidden" name="action" value="retry"><button class="b">Retry</button>`, s)}</div>` : "";
+    const has = d.model?.ready() && !credit ? `<p class="muted">A working key is already in the vault; saving or connecting replaces it. <a href="${esc(welcome())}">Continue</a></p>` : "";
+    return doc("Connect a model", `<h1>Connect a model</h1><p>Your agents think with AI models on OpenRouter. The key goes into the vault, read only by the kernel's model gateway.</p>${msg}${retry}${has}${credit ? "" : `<div class="pick">${paste}${connect}</div>`}`, s);
+  };
+  /** One 1-token call with the key; saved when it works or only lacks credit (Retry then needs no new key). */
+  async function useKey(req: IncomingMessage, res: ServerResponse, s: AdminSession, key: string) {
+    const r = await d.model!.check(key);
+    if (r === "error") return send(res, 400, modelPage(req, s, err("OpenRouter didn't accept a call with that key. Try again, or paste another key.")));
+    d.firstRun!.save(MODEL_KEY, key);
+    d.model!.checked(key, r === "ok"); // ready only once a check of this key passed (no credit: Retry checks it again)
+    log("model key saved", { by: `account:${s.account.id}`, check: r });
+    if (r === "no_credit") return send(res, 200, modelPage(req, s, "", true));
+    return redirect(res, welcome());
+  }
   function cardHtml(a: Card, s: AdminSession, full: boolean) {
     const head = `<div class="muted">${esc(a.identifier)} · ${esc(a.action ?? a.kind)} · Tier ${esc(a.tier)}${a.panel ? " · panel" : ""} · asked by ${esc(a.requestedBy)}</div><b>${esc(a.sentence)}</b>`;
     if (!full) return `<div class="card">${head}<div><a href="/approvals/${esc(a.id)}">Open</a></div></div>`;
@@ -186,21 +226,13 @@ export function createAdmin(d: Deps) {
           if (!fr || !/^[\w-]{43}$/.test(token) || !d.accounts.setupOpen(token)) throw new Refusal(410, "This setup link was used or has expired. While no admin exists, sudo ops/setup.sh --unattended on the server prints a new one.");
           if (req.method === "GET") return send(res, 200, setupPage(token, fr));
           const email = (f.get("email") ?? "").trim(), name = (f.get("name") ?? "").trim(), password = f.get("password") ?? "";
-          const fields = fr.fields().filter((x) => /^[a-z][a-z0-9_]{1,63}$/.test(x.secret));
-          const keys = fields.map((x) => ({ ...x, value: (f.get(`secret_${x.secret}`) ?? "").trim() }));
-          const invalid = keys.find((k) => k.value && (k.value.length > 300 || !new RegExp(k.pattern).test(k.value)));
-          const missing = keys.find((k) => !k.value && k.required && !fr.has(k.secret));
           const bad =
             !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) || email.length > 200 ? "Enter an email address."
             : name.length > 100 || /[\p{Cc}\p{Cf}]/u.test(name) ? "The name has characters it can't take."
-            : password.length < 12 || password.length > 128 ? "The password needs 12 to 128 characters."
-            : invalid ? `That isn't a valid ${invalid.label}.`
-            : missing ? `Enter the ${missing.label}.` : "";
+            : password.length < 12 || password.length > 128 ? "The password needs 12 to 128 characters." : "";
           if (bad) return send(res, 400, setupPage(token, fr, err(bad), { email, name }));
           const account = await d.accounts.claimSetup(token, { email, name, password }).catch((e: Error & { status?: number }) => { throw new Refusal(e.status ?? 500, e.message); });
-          const given = keys.filter((k) => k.value);
-          for (const k of given) fr.save(k.secret, k.value);
-          log("first-run setup done", { account: account.id, secrets: given.map((k) => k.secret) });
+          log("first-run account made", { account: account.id });
           const r = await step(req, "/sign-in/email", { email, password });
           return redirect(res, r.ok ? "/auth/enrol" : "/auth/sign-in", r.cookies);
         }
@@ -227,20 +259,20 @@ export function createAdmin(d: Deps) {
         case "GET /auth/enrol": case "POST /auth/enrol": {
           const s = await d.accounts.sessionOf(req);
           if (!s || s.account.role !== "admin") return redirect(res, "/auth/sign-in");
-          if (s.ready) return redirect(res, "/approvals");
-          const ask = (m = "") => send(res, 200, doc("Set up an authenticator", `<h1>Set up an authenticator</h1><p>Admins sign in with a code from an authenticator app.</p>${m}${form("/auth/enrol", `<label>Your password<input name="password" type="password" autocomplete="current-password" required></label><button class="b">Show the key</button>`, s)}`));
+          if (s.ready) return redirect(res, afterEnrol(s));
+          const ask = (m = "") => send(res, 200, doc("Set up an authenticator", `<h1>Set up an authenticator</h1><p>Admins sign in with a code from an authenticator app: an app on your phone, like Google Authenticator, that shows a 6-digit code.</p>${m}${form("/auth/enrol", `<label>Your password<input name="password" type="password" autocomplete="current-password" required></label><button class="b">Show the key</button>`, s)}`));
           if (req.method === "GET") return ask();
           const f = await body(req);
           checkCsrf(s, f);
           if (f.get("code")) {
             const r = await step(req, "/two-factor/verify-totp", { code: f.get("code") });
-            return r.ok ? redirect(res, "/approvals", r.cookies) : ask(err(r.error));
+            return r.ok ? redirect(res, afterEnrol(s), r.cookies) : ask(err(r.error));
           }
           const r = await step(req, "/two-factor/enable", { password: f.get("password") ?? "" });
           if (!r.ok) return ask(err(r.error));
           const uri = String(r.json.totpURI ?? "");
           const key = new URL(uri).searchParams.get("secret") ?? "";
-          return send(res, 200, doc("Set up an authenticator", `<h1>Add this key to your authenticator</h1><p>Key: <code>${esc(key.replace(/(.{4})/g, "$1 ").trim())}</code> (time-based, 6 digits) or <a href="${esc(uri)}">open it in an authenticator app</a>.</p>${form("/auth/enrol", `<label>The code it shows<input name="code" inputmode="numeric" pattern="[0-9]{6}" required></label><button class="b">Finish</button>`, s)}`), undefined, r.cookies.length ? { "set-cookie": r.cookies } : {});
+          return send(res, 200, doc("Set up an authenticator", `<h1>Add AidenHQ to your authenticator</h1><p>An app on your phone, like Google Authenticator, that shows a 6-digit code. In it, add an account and scan this code.</p><div style="width:220px;max-width:100%">${(await import("uqr")).renderSVG(uri)}</div><p>Can't scan it? Enter this key by hand. Key: <code>${esc(key.replace(/(.{4})/g, "$1 ").trim())}</code> (time-based, 6 digits), or <a href="${esc(uri)}">open it in an authenticator app</a> on this device.</p>${form("/auth/enrol", `<label>The code it shows<input name="code" inputmode="numeric" pattern="[0-9]{6}" required></label><button class="b">Finish</button>`, s)}`), undefined, r.cookies.length ? { "set-cookie": r.cookies } : {});
         }
         case "POST /auth/sign-out": {
           const r = await step(req, "/sign-out", {});
@@ -261,6 +293,29 @@ export function createAdmin(d: Deps) {
           log("session handed to a module", { module, origin: to, by });
           return redirect(res, `${to}/auth/handoff?${new URLSearchParams({ code, state })}`);
         }
+        case "GET /setup/model": case "POST /setup/model": case "GET /setup/openrouter": {
+          if (!d.model || !d.firstRun) throw new Refusal(404, "not found");
+          if (!s.account.owner) throw new Refusal(403, "only the owner picks the model");
+          if (hit.path === "/setup/model" && req.method === "GET") return send(res, 200, modelPage(req, s));
+          if (req.method === "POST") {
+            const action = f.get("action");
+            if (action === "retry") return useKey(req, res, s, d.model.saved());
+            if (action !== "paste") throw new Refusal(400, "paste or retry");
+            const key = (f.get(MODEL_KEY) ?? "").trim(), field = d.firstRun.fields().find((x) => x.secret === MODEL_KEY);
+            if (!key || key.length > 300 || /\s/.test(key) || (field && !secretFits(field, key))) return send(res, 400, modelPage(req, s, err(`That isn't a valid ${field?.label ?? "OpenRouter API key"}.`)));
+            return useKey(req, res, s, key);
+          }
+          // The callback: single-use, bound to this session and the state it was sent with; a denial carries no code.
+          const p = pkce.get(s.session.id), code = url.searchParams.get("code") ?? "";
+          pkce.delete(s.session.id);
+          if (!p && d.model.ready()) return redirect(res, welcome()); // a reload after it worked
+          const fresh = p && Date.now() - p.at <= 600_000 && url.searchParams.get("state") === p.state;
+          if (!code || !fresh) return send(res, 400, modelPage(req, s, err("OpenRouter didn't connect (cancelled, expired or from another page). Try again.")));
+          const key = await d.model.exchange(code, p.verifier).catch((e: Error) => (log("openrouter exchange failed", { err: e.message.slice(0, 200) }), ""));
+          const field = d.firstRun.fields().find((x) => x.secret === MODEL_KEY);
+          if (!key || (field && !secretFits(field, key))) return send(res, 400, modelPage(req, s, err("OpenRouter didn't hand over a key. Try again.")));
+          return useKey(req, res, s, key);
+        }
         case "GET /recovery-key": {
           if (!s.account.owner) throw new Refusal(403, "only the owner sees the recovery key");
           const rk = d.firstRun?.recoveryKey();
@@ -274,7 +329,7 @@ export function createAdmin(d: Deps) {
           if (choice !== "saved" && choice !== "decline") throw new Refusal(400, "choose saved or decline");
           d.firstRun?.forgetRecoveryKey();
           log("recovery key shown once", { choice, by });
-          return redirect(res, d.boardUrl?.() ? `${d.boardUrl()}/#/welcome` : "/approvals");
+          return redirect(res, welcome());
         }
         case "GET /auth/password": return send(res, 200, doc("Change password", `<h1>Change password</h1>${form("/auth/password", `<label>Current password<input name="current" type="password" autocomplete="current-password" required></label><label>New password (12 characters or more)<input name="password" type="password" minlength="12" autocomplete="new-password" required></label><button class="b">Change</button>`, s)}`, s));
         case "POST /auth/password": {

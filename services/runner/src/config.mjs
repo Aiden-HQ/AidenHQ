@@ -4,6 +4,7 @@ import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parse as parseYaml } from "yaml";
+import { officialRepo } from "../../../scripts/official-repo.mjs";
 
 export const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
 
@@ -42,6 +43,15 @@ function productRepoOf(dir) {
   }
 }
 
+/** Whether the compiled module catalog (config/modules.json) has `name` enabled; false when it can't be read. */
+function enabledIn(file, name) {
+  try {
+    return JSON.parse(readFileSync(file, "utf8")).some((m) => m?.name === name && m.enabled === true);
+  } catch {
+    return false;
+  }
+}
+
 /** Runner configuration: config/runner.yaml (or the example) plus .env and system.yaml. */
 export function loadConfig() {
   const env = { ...loadEnv(process.env.AIDENHQ_ENV_FILE ?? join(REPO_ROOT, ".env")), ...process.env };
@@ -56,18 +66,28 @@ export function loadConfig() {
   // The instance's GitHub App, from the vault; the agents org (where it may create repos): AIDENHQ_GITHUB_AGENTS_ORG,
   // else the instance's settings (github_agents_org, or aidenhq-<instance_name>).
   const inst = env.AIDENHQ_INSTANCE_DIR && join(expand(env.AIDENHQ_INSTANCE_DIR), "instance.yaml");
-  const agentsOrg = env.AIDENHQ_GITHUB_AGENTS_ORG || agentsOrgOf(inst && existsSync(inst) ? parseYaml(readFileSync(inst, "utf8"))?.settings : undefined);
+  const instance = inst && existsSync(inst) ? parseYaml(readFileSync(inst, "utf8")) : undefined;
+  const agentsOrg = env.AIDENHQ_GITHUB_AGENTS_ORG || agentsOrgOf(instance?.settings);
   const githubApp = { appIdFile: join(secrets, "github-app", "app_id"), keyFile: join(secrets, "github-app", "key.pem") };
   const appOn = existsSync(githubApp.appIdFile) && existsSync(githubApp.keyFile);
   const allowed = [...(cfg.allowed_orgs ?? [])];
   if (appOn && agentsOrg && !allowed.some((o) => o.toLowerCase() === agentsOrg.toLowerCase())) allowed.push(agentsOrg); // the agents org is the runner's to change
   const stateDir = expand(cfg.state_dir ?? "~/.local/state/aidenhq-runner");
+  // The on-server code host (codehost-local, enabled in the compiled catalog): its org `local` is an agents org too, and
+  // its bare repos live under <data dir>/codehost (docs/design/codehost-local.md).
+  const dataDir = resolve(REPO_ROOT, expand(env.AIDENHQ_DATA_DIR ?? "data"));
+  const localHost = enabledIn(join(configDir, "modules.json"), "codehost-local");
+  if (localHost && !allowed.some((o) => o.toLowerCase() === "local")) allowed.push("local");
   const gcpCredentials =expand(cfg.gcp?.credentials ?? join(secrets, "gcloud/application_default_credentials.json"));
   return {
     ...cfg,
     allowed_orgs: allowed,
     githubApp: appOn ? githubApp : undefined,
     agentsOrg,
+    // One agents org per enabled code host: tiering (tiers.mjs, plan.mjs) and the kernel (kinds.ts) take the list.
+    agentsOrgs: [...(agentsOrg ? [agentsOrg] : []), ...(localHost ? ["local"] : [])],
+    localHost,
+    dataDir,
     file,
     companyId,
     selfName,
@@ -80,6 +100,8 @@ export function loadConfig() {
     // The product repo (owner/name): AIDENHQ_PRODUCT_REPO (setup records it; the kernel reads only that), else this
     // checkout's origin. Tiering treats it apart.
     productRepo: env.AIDENHQ_PRODUCT_REPO || productRepoOf(REPO_ROOT),
+    // The official modules repository: part of the product (the reviewer's scope, the grader's repos).
+    modulesRepo: officialRepo(instance, REPO_ROOT),
     /** GitHub token that adds deploy keys (modules/codehost-github/src/repos.ts); optional, never in an agent's sandbox. */
     githubAdminTokenFile: join(secrets, "github_admin_token"),
     repoAccessScript: join(REPO_ROOT, "ops/vm/add-deploy-key.sh"),
@@ -109,6 +131,6 @@ export function loadConfig() {
     workDir: expand(cfg.work_dir ?? "~/aidenhq-work"),
     stateDir,
     // The monitoring module's textfile directory (node-exporter reads it): the runner's metrics (metrics.ts).
-    metricsFile: join(resolve(REPO_ROOT, expand(env.AIDENHQ_DATA_DIR ?? "data")), "modules", "monitoring", "textfile", "runner.prom"),
+    metricsFile: join(dataDir, "modules", "monitoring", "textfile", "runner.prom"),
   };
 }

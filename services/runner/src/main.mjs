@@ -61,6 +61,7 @@ import { fastChecks } from "../../../kernel/src/fastcheck.ts";
 import { afterRejection, graderSpeaks, summaryKind, wakesParent } from "./notices.ts";
 import { readBusy } from "./busy.ts";
 import { normalizeRepo, repoAccess } from "../../../modules/codehost-github/src/repos.ts";
+import { host as githubCodehost } from "../../../modules/codehost-github/src/host.mjs";
 import { dependabotCommits } from "../../../modules/platform/src/check.mjs";
 
 const execFileP = promisify(execFile);
@@ -70,9 +71,14 @@ const state = new State(cfg.stateDir);
 const log = (msg, extra = {}) => console.log(JSON.stringify({ t: new Date().toISOString(), msg, ...extra }));
 // Engineer jobs run in the kernel (kernel/src/jobs.ts): the runner asks for them and follows them.
 const jobsApi = kernelJobs(cfg);
-// The reviewer-eval gate's runs (evalgate.ts) use the same sandbox, launched here: in its own network when that works.
+// The reviewer-eval gate's runs (evalgate.ts) use the same sandbox, launched here in its own network: a known no-jail
+// condition is fatal, with the reason in the journal.
 const evalSandbox = sandboxConfig();
-if (jailProblem(evalSandbox)) evalSandbox.pasta = undefined;
+const evalJailIssue = jailProblem(evalSandbox);
+if (evalJailIssue) {
+  log("ERROR: reviewer eval runs cannot be jailed here", { reason: evalJailIssue });
+  process.exit(1);
+}
 // The instance's GitHub App: its key stays in this process; tokens go only to the git/gh child that needs one,
 // and a read-only one for its task's repos to each job's gh (jobGhToken).
 const app = cfg.githubApp && appClient({ appId: readFileSync(cfg.githubApp.appIdFile, "utf8").trim(), key: readFileSync(cfg.githubApp.keyFile, "utf8"), log });
@@ -89,6 +95,8 @@ const gho = async (slug, perms, extra) => ghOptions(await appFor(slug), slug, pe
 // are fine there too.
 /** One repository however written (kernel/src/kinds.ts repoKey: the kernel holds the runner's writes with the same key). */
 const sameRepo = (a, b) => Boolean(repoKey(a)) && repoKey(a) === repoKey(b);
+/** The repositories that are one product: the product repo and the official modules repo (what the reviewer reads as in scope together). */
+const productRepos = () => [cfg.productRepo, cfg.modulesRepo].filter(Boolean);
 const ownRepo = (slug) => appOwnRepo(slug, cfg.agentsOrg, cfg.productRepo);
 /** Where our tooling's names may appear in commits and PR text: our own repos and the official modules repo (the kernel pins the `aidenhq` marketplace to OFFICIAL_URL; any other is the owner's). Never a whole org. Permissions stay on ownRepo. */
 const ourText = (slug) => ownRepo(slug) || isRepoIn(slug, [githubSlug(OFFICIAL_URL)]);
@@ -107,6 +115,21 @@ if (app) {
   });
   log("github app on", { agents_org: cfg.agentsOrg });
 }
+/**
+ * The code host of a repository (docs/design/codehost-local.md §2): each org has exactly one, so this is the one place a
+ * slug is routed. GitHub's wraps today's code (the App where an installation covers the repo, else the host's gh login).
+ */
+const githubHost = githubCodehost({
+  appFor,
+  repoSources: cfg.repo_sources ?? {},
+  git,
+  gh: async (slug, write, args, opts = {}) => (await execFileP(await findRealGh(), args, await gho(slug, write ? WRITE : READ, opts))).stdout,
+  mergeGate: async () => {
+    throw new Error("GitHub merges run through the merge queue");
+  },
+});
+const hostOf = (_slug) => githubHost;
+
 // The task folders' clones are the agents' to write (.git included): the runner's git scrubs their config before using them.
 setUntrusted({ tasksDir: join(cfg.workDir, "tasks"), hooksDir: join(cfg.workDir, ".guard-hooks") });
 const logsDir = join(cfg.stateDir, "logs");
@@ -1360,7 +1383,7 @@ const evalGate = createEvalGate({
   productRoot: REPO_ROOT,
   state,
   git,
-  clone: async (slug) => ensureClone(cfg.workDir, normalizeRepo(slug), cfg.repo_sources?.[slug] ?? ((await appFor(slug)) ? appRemoteUrl(slug) : undefined)),
+  clone: async (slug) => ensureClone(cfg.workDir, normalizeRepo(slug), await hostOf(slug).source(slug)),
   jail: (argv, paths) => hiding(evalSandbox, argv, [], paths),
   log,
   usage: reportUsage,
@@ -1923,6 +1946,7 @@ async function commonTierState(issue, action, also = []) {
     answers: split.answers,
     requestChain: chainHash(await prRequest(full).catch(() => "")),
     agentsOrg: cfg.agentsOrg,
+    agentsOrgs: cfg.agentsOrgs,
     productRepo: cfg.productRepo,
     instanceRepo: cfg.apply?.repo,
     // The Platform Engineer, a task the Agent Architect made, or the owner's own task (ruling: the owner may always ask).
@@ -2278,7 +2302,7 @@ async function reviewOne(a) {
   // What the reviewer reads, only when it is asked: code's own verdicts (refused, the owner's now) read nothing.
   const asked = !codeVerdict(held, LUNA);
   const chain = asked ? await prRequest(await pc.issue(issue.id)).catch(() => "") : "";
-  const request = asked ? reviewRequest(a, input, chain, { requesterModel: state.task(issue.id)?.engine?.model ?? "", previous: checkFindings(issue.id, a.action), ...(await cardContext(issue, a.action === "merge" ? { prs: a.args.prs } : { branches: a.args.only }, input.bases)) }) : {};
+  const request = asked ? reviewRequest(a, input, chain, { product: productRepos(), requesterModel: state.task(issue.id)?.engine?.model ?? "", previous: checkFindings(issue.id, a.action), ...(await cardContext(issue, a.action === "merge" ? { prs: a.args.prs } : { branches: a.args.only }, input.bases)) }) : {};
   const { diff: _d, files: _f, previous: _p, relift: _r, bases: _b, full: _full, evidence: _e, ...tierInput } = input;
   // Kept until the answer is handled: a lost answer (a restart, a timeout) still gets its follow-up (reviewsLeftOver).
   inFlight((ids) => [...ids, a.id]);
@@ -2444,16 +2468,15 @@ async function checkRepo(slug) {
     mkdirSync(path, { recursive: true });
     await execFileP("git", [...SAFE_GIT_ARGS, "init", "-q", path], { env: ISOLATED_ENV });
   }
-  const url = (await appFor(slug)) ? appRemoteUrl(slug) : `git@github.com:${slug}.git`;
+  const url = await hostOf(slug).source(slug);
   await execFileP("git", [...SAFE_GIT_ARGS, "-C", path, "config", "remote.origin.url", url], { env: ISOLATED_ENV });
   return path;
 }
 
 const BRANCH_NAME = /^[A-Za-z0-9_][A-Za-z0-9_./-]*$/;
-/** The repository's default branch, from GitHub (never the workspace's idea of it). */
+/** The repository's default branch, from its code host (never the workspace's idea of it). */
 async function githubDefault(slug) {
-  const { stdout } = await execFileP(await findRealGh(), ["api", `repos/${slug}`, "--jq", ".default_branch"], await gho(slug, READ));
-  const name = stdout.trim();
+  const name = await hostOf(slug).defaultBranch(slug);
   if (!BRANCH_NAME.test(name)) throw new Error("no default branch");
   return name;
 }
@@ -3212,7 +3235,7 @@ async function agentReview(ctx, args) {
         const chain = await prRequest(await pc.issue(ctx.issue.id)).catch(() => "");
         const context = await cardContext(ctx.issue, { branches: branches.map((x) => ({ repo: x.repo, branch: x.branch })) }, input.bases);
         // The same request a card's review sends (reviewRequest), through the kernel's reviewer slot; a failed call is no verdict.
-        const v = await requestReview({ kernelUrl: cfg.kernelUrl, key: keyIn(cfg.reviewerKeyFile) }, reviewRequest(card, input, chain, { component: "AI reviewer check", requesterModel: state.task(ctx.issue.id)?.engine?.model ?? "", previous: checkFindings(ctx.issue.id, card.action), ...context })).then(({ panel_marked: _m, ...x }) => x, (err) => ({ decision: "escalate", code: "reviewer_failed", reason: `the reviewer failed (${String(err.message ?? err).slice(0, 160)})`, model: LUNA }));
+        const v = await requestReview({ kernelUrl: cfg.kernelUrl, key: keyIn(cfg.reviewerKeyFile) }, reviewRequest(card, input, chain, { component: "AI reviewer check", product: productRepos(), requesterModel: state.task(ctx.issue.id)?.engine?.model ?? "", previous: checkFindings(ctx.issue.id, card.action), ...context })).then(({ panel_marked: _m, ...x }) => x, (err) => ({ decision: "escalate", code: "reviewer_failed", reason: `the reviewer failed (${String(err.message ?? err).slice(0, 160)})`, model: LUNA }));
         log("review checked", { issue: ctx.issue.identifier, action: command, decision: v.decision, code: v.code, model: v.model, second: v.second, used: n + 1, target: card.target.slice(0, 300) });
         // No verdict (the call failed): the check doesn't count. Otherwise it is kept with its finding.
         const rest = checksOf(ctx.issue.id).filter((c) => c.at !== entry.at || c.target !== entry.target);
@@ -3439,23 +3462,22 @@ async function agentMerge(ctx, args) {
   }
   if (read.every((pr) => pr?.state === "MERGED"))
     return alreadyApplied(ctx.issue, "merge", prs.map((p) => p.url).join(","), prs.map((p, i) => `${p.url} is already merged${read[i].mergeCommit?.oid ? ` (merge commit \`${read[i].mergeCommit.oid.slice(0, 12)}\`)` : ""}`).join("; "));
-  // Each card is bound to the PR's current head; in the agents org and the product repo the tap (or the reviewer's
-  // approval) is the review (merges.prDecision).
+  // Each card is bound to the PR's current head, inside the agents org and out: a missing head is not a moved one, and
+  // headMatches would refuse every merge outside. In the agents org and the product repo the tap (or the reviewer's
+  // approval) is the review (merges.prDecision); elsewhere GitHub's own review gates the merge.
   const bound = [];
   for (const { repo, number, url } of prs) {
-    if (!ownRepo(repo)) {
-      bound.push({ repo, number, url }); // GitHub's own review gates these
-      continue;
-    }
     const pr = await mergeGithub.pr(repo, number).then((d) => d?.repository?.pullRequest, (err) => {
       if (isTransient(err)) throw err; // a blip: the agent can ask again
       return undefined;
     });
     // This task stored the number, and GitHub can't confirm it (unreadable, or another branch's): said once, nothing merged.
-    const stored = await staleStoredPr(ctx.issue.id, { url, headRefName: pr?.headRefName });
-    if (stored) throw new UserError(staleRefusal(stored, url));
+    if (ownRepo(repo)) {
+      const stored = await staleStoredPr(ctx.issue.id, { url, headRefName: pr?.headRefName });
+      if (stored) throw new UserError(staleRefusal(stored, url));
+    }
     if (!/^[0-9a-f]{40}$/.test(pr?.headRefOid ?? "")) throw new UserError(`Couldn't read ${url} on GitHub.`);
-    bound.push({ repo, number, url, head: pr.headRefOid, noReview: true });
+    bound.push({ repo, number, url, head: pr.headRefOid, ...(ownRepo(repo) ? { noReview: true } : {}) });
   }
   // Tier 0 (agents org, named checks green or running on the exact head) starts at once, each PR merged on its own
   // once green (owner, 2026-11-12); the rest go on one card, as before.
@@ -4467,14 +4489,13 @@ const missingRepoText = (slug) =>
 /** Clone one repository into a workspace (from the runner's cache clone). */
 async function addRepo(workspace, slug, { copy = false } = {}) {
   const repo = normalizeRepo(slug);
-  const local = cfg.repo_sources?.[repo.slug];
   // Never created here: a repo named in a task, added by the agent or detected in text that doesn't exist (a typo, a path,
   // a probe) is an error. A new app's repo comes only from an approved create_repo card (`aidenhq create-repo`).
   if (await missingRepo(repo.slug)) throw new UserError(missingRepoText(repo.slug));
-  // A repo an App covers goes over HTTPS with its tokens.
-  const source = local ?? ((await appFor(repo.slug)) ? appRemoteUrl(repo.slug) : undefined);
+  // From its code host: a repo an App covers goes over HTTPS with its tokens, a local one from its bare repo on this server.
+  const source = await hostOf(repo.slug).source(repo.slug);
   const cache = await ensureClone(cfg.workDir, repo, source);
-  return ensureRepo(workspace, repo, { cache, copy, hooksDir: ensureGuardHooks(cfg.workDir), ...(source ? { remoteUrl: source } : {}) });
+  return ensureRepo(workspace, repo, { cache, copy, hooksDir: ensureGuardHooks(cfg.workDir), ...(source !== `git@github.com:${repo.slug}.git` ? { remoteUrl: source } : {}) });
 }
 
 /**

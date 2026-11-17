@@ -19,7 +19,9 @@
 import { timingSafeEqual } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
 
-export interface ReviewCard { action: string; rule: string; target?: string; sentence?: string; reason?: string }
+export interface ReviewCard { action: string; rule: string; target?: string; sentence?: string; reason?: string;
+  /** The repositories that are one product for scope (the product repo and the official modules repo): code's own. */
+  product?: string[] }
 export interface Files { text: string; leftOut: string[]; oversized: string[] }
 export interface SourceRecords { where: string; records: Record<string, unknown>[] }
 /** One Tier 1 request as the reviewer reads it. Everything but `card.action`, `card.rule` and `panel` is data an agent or a stranger wrote. */
@@ -28,6 +30,8 @@ export interface ReviewRequest {
   requesterModel?: string; panel?: boolean; previous?: string[]; relift?: string;
   /** A PR's Evidence section (the author's account of how it verified the change): sent for pr and merge cards only. */
   evidence?: string;
+  /** `decisions`: the instance's decisions.md, read by the requester from the instance repo's default branch. */
+  decisions?: { where: string; text: string };
   /** The ledger's name for the model calls (the card's review, or an agent's check before filing). */
   component?: string;
 }
@@ -35,7 +39,7 @@ export interface Verdict { decision: "approve" | "reject" | "escalate"; code?: s
 /** The model's "I can't tell" (a second reviewer decides; both unsure, the request goes back to the agent). */
 export const UNSURE = "reviewer_unsure";
 /** The request fields a reviewer reads; anything else in a request (a policy, a model) is dropped. */
-export const REQUEST_FIELDS = ["card", "diff", "files", "chain", "siblings", "sources", "requesterModel", "panel", "previous", "relift", "evidence"] as const;
+export const REQUEST_FIELDS = ["card", "diff", "files", "chain", "siblings", "sources", "decisions", "requesterModel", "panel", "previous", "relift", "evidence"] as const;
 
 /** The module's reviewer: one request in, one verdict out. `onPanel` records that the change needs a second reviewer. */
 export type Review = (req: ReviewRequest, ctx: { modelToken: string; onPanel: () => Promise<void> }) => Promise<Verdict>;
