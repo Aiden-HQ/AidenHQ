@@ -99,7 +99,7 @@ export type Failure = { file: string; want?: string; got?: string; reason?: stri
 export type EvalResult = { total: number; passed: number; failed: Failure[]; costUsd?: number; tokens?: { prompt: number; completion: number }; broken?: true };
 /** `head`: what the receipt is for (a PR's head, or a modules commit); `modules`/`base`: the modules commits run and judging; `reviewer`: its reviewer content. */
 export type Receipt = { head: string; base: string; modules: string; reviewer: string; policy: string; cases: number; passed: number; failed: Failure[]; rerun?: { cases: string[]; failed: Failure[] }; ok: boolean; costUsd: number; at: string };
-type Run = { head: string; base: string; modules: string; reviewer: string; policy: string; dir: string; cases: string[]; runs: 1 | 2; first?: EvalResult; costUsd: number; started: string };
+type Run = { key: string; head: string; base: string; modules: string; reviewer: string; policy: string; dir: string; cases: string[]; runs: 1 | 2; first?: EvalResult; costUsd: number; started: string };
 
 /**
  * The judge's result file, checked against the cases it was given: the same count, every failure one of those cases. It is
@@ -186,9 +186,11 @@ export function officialOf(instanceText: string, productRoot: string): ModulesAt
  * and `run-<n>.log`/`.exit` (written outside the jail; the jail never sees them).
  */
 export function createEvalGate(d: GateDeps) {
-  const key = (head: string) => `eval:${head}`;
-  const read = (head: string): any => JSON.parse(d.state.get(key(head)) || "null");
-  const save = (head: string, v: object) => d.state.set(key(head), JSON.stringify(v));
+  // State keys, one namespace per way in, so nothing written for one can answer another: `eval-pr:<repo>:<head>` (a PR's run
+  // and receipt), `eval-skip:<repo>:<base>:<head>` (that PR at that base brings no reviewer code), `eval-bump:<modules sha>` (a
+  // pin bump's own run and receipt) and `eval-reviewer:<content>` (a 100% receipt for that reviewer content, from any of them).
+  const read = (k: string): any => JSON.parse(d.state.get(k) || "null");
+  const save = (k: string, v: object) => d.state.set(k, JSON.stringify(v));
 
   /** The modules repo's cache clone, holding these commits (fetched by sha when it doesn't yet). */
   async function modulesClone(...shas: string[]): Promise<string> {
@@ -240,7 +242,7 @@ export function createEvalGate(d: GateDeps) {
 
   /** The scratch tree: modules commit `head`, with the judging commit's (`base`) judge laid over it. */
   async function prepare(path: string, key: string, head: string, base: string): Promise<{ dir: string; cases: string[]; policy: string }> {
-    const dir = join(d.workDir, "evals", key);
+    const dir = join(d.workDir, "evals", createHash("sha256").update(key).digest("hex").slice(0, 24));
     rmSync(dir, { recursive: true, force: true });
     const tree = join(dir, "tree");
     mkdirSync(tree, { recursive: true });
@@ -261,7 +263,7 @@ export function createEvalGate(d: GateDeps) {
 
   function finish(run: Run, r: Omit<Receipt, "head" | "base" | "modules" | "reviewer" | "policy" | "at">): Receipt {
     const receipt: Receipt = { head: run.head, base: run.base, modules: run.modules, reviewer: run.reviewer, policy: run.policy, at: new Date().toISOString(), ...r };
-    save(run.head, { receipt });
+    save(run.key, { receipt });
     // A 100% receipt vouches for this reviewer content wherever it is pinned next (a squash merge, a pin bump).
     if (receipt.ok) d.state.set(`eval-reviewer:${run.reviewer}`, JSON.stringify({ head: run.head, modules: run.modules, at: receipt.at }));
     d.log("reviewer eval receipt", { head: run.head, ok: receipt.ok, passed: receipt.passed, cases: receipt.cases, rerun: receipt.rerun?.cases.length ?? 0, cost: receipt.costUsd });
@@ -282,33 +284,32 @@ export function createEvalGate(d: GateDeps) {
     if (run.runs === 1) {
       // The one partial re-run: only the failed cases, from the runner's own copies.
       const next: Run = { ...run, runs: 2, first: r, costUsd };
-      save(run.head, { run: next });
+      save(run.key, { run: next });
       start(next, r.failed.map((f) => f.file), apiKey);
       return undefined;
     }
     return finish(run, { cases: run.first!.total, passed: run.first!.passed, failed: run.first!.failed, rerun: { cases, failed: r.failed }, ok: !r.failed.length, costUsd });
   }
 
-  /** A receipt already on file for `key`, or the run under way there: undefined when there is neither. */
+  /** The receipt on file at `key`, or the run under way there; "none" when there is neither. */
   function onFile(key: string, apiKey: string): Gate | "none" {
     const had = read(key);
-    if (had?.skip) return undefined;
     if (had?.receipt) return had.receipt.ok ? undefined : { stop: receiptText(had.receipt) };
     if (!had?.run) return "none";
     if (!apiKey) return { stop: `the reviewer eval's key (${d.keyFile}) is missing, so its eval can't finish` };
     const done = step(had.run, apiKey);
-    if (!done) return { wait: `the reviewer eval is running on \`${key.slice(0, 12)}\` (it brings the AI reviewer's own code)` };
+    if (!done) return { wait: `the reviewer eval is running on \`${had.run.head.slice(0, 12)}\` (it brings the AI reviewer's own code)` };
     return done.ok ? undefined : { stop: receiptText(done) };
   }
 
-  /** Starts the eval of modules commit `modules`, judged by `judge`, its receipt for `key`. Recorded before it starts: a restart never buys a key a second full run. */
-  async function begin(key: string, path: string, modules: string, judge: string, apiKey: string): Promise<Gate> {
+  /** Starts the eval of modules commit `modules`, judged by `judge`, its receipt for `head` at `key`. Recorded before it starts: a restart never buys a key a second full run. */
+  async function begin(key: string, head: string, path: string, modules: string, judge: string, apiKey: string): Promise<Gate> {
     if (!apiKey) return { stop: `it brings the AI reviewer's own code, which lands only on a 100% reviewer-eval receipt, and the eval's key (${d.keyFile}) is missing` };
     const prepared = await prepare(path, key, modules, judge);
-    const run: Run = { head: key, base: judge, modules, reviewer: await reviewerAt(path, modules), policy: prepared.policy, dir: prepared.dir, cases: prepared.cases, runs: 1, costUsd: 0, started: new Date().toISOString() };
+    const run: Run = { key, head, base: judge, modules, reviewer: await reviewerAt(path, modules), policy: prepared.policy, dir: prepared.dir, cases: prepared.cases, runs: 1, costUsd: 0, started: new Date().toISOString() };
     save(key, { run });
     start(run, prepared.cases, apiKey);
-    return { wait: `the reviewer eval started on \`${key.slice(0, 12)}\` (it brings the AI reviewer's own code, modules \`${modules.slice(0, 12)}\`: it lands only on a 100% receipt)` };
+    return { wait: `the reviewer eval started on \`${head.slice(0, 12)}\` (it brings the AI reviewer's own code, modules \`${modules.slice(0, 12)}\`: it lands only on a 100% receipt)` };
   }
 
   const failClosed = (err: unknown): Gate => ({ stop: `the reviewer-eval gate couldn't read it (${String((err as Error).message ?? err).split("\n")[0]!.slice(0, 200)})` });
@@ -316,7 +317,8 @@ export function createEvalGate(d: GateDeps) {
 
   /**
    * A modules pin moving from `from` to `to` (a product PR's modules-pin.json, an instance apply): undefined when the AI reviewer's
-   * content is the same, or a 100% receipt covers the new content (any head that held it); else its eval, receipt for `to`.
+   * content is the same, or a 100% receipt covers the new content (any head that held it); else its own eval, receipt for `to`
+   * in its own namespace. Nothing else on file for `to` (a PR's skip there) counts.
    */
   async function bump(from: ModulesAt, to: ModulesAt, what = "the change"): Promise<Gate> {
     if (sameSlug(from.repo, to.repo) && from.sha === to.sha) return undefined;
@@ -327,8 +329,9 @@ export function createEvalGate(d: GateDeps) {
       const path = await modulesClone(from.sha, to.sha);
       const reviewer = await reviewerAt(path, to.sha);
       if (reviewer === (await reviewerAt(path, from.sha)) || passed(reviewer)) return undefined;
-      const had = onFile(to.sha, apiKey);
-      return had === "none" ? await begin(to.sha, path, to.sha, from.sha, apiKey) : had;
+      const key = `eval-bump:${to.sha}`;
+      const had = onFile(key, apiKey);
+      return had === "none" ? await begin(key, to.sha, path, to.sha, from.sha, apiKey) : had;
     } catch (err) {
       return failClosed(err);
     }
@@ -345,7 +348,8 @@ export function createEvalGate(d: GateDeps) {
     const head = pr.headRefOid;
     if (!SHA.test(head ?? "")) return { stop: "its head commit couldn't be read for the reviewer-eval gate" };
     const apiKey = apiKeyNow();
-    const had = onFile(head, apiKey);
+    const key = `eval-pr:${repo.toLowerCase()}:${head}`;
+    const had = onFile(key, apiKey);
     if (had !== "none") return had;
     if (!/^[\w][\w./-]{0,200}$/.test(pr.baseRefName ?? "") || pr.baseRefName.includes("..") || !Number.isInteger(pr.number)) return { stop: "its base branch can't be read for the reviewer-eval gate" };
     try {
@@ -355,22 +359,25 @@ export function createEvalGate(d: GateDeps) {
       await d.git(path, "fetch", "--quiet", "origin", `+refs/pull/${pr.number}/head:refs/aidenhq-eval/head`).catch(() => /^[\w][\w./-]{0,200}$/.test(pr.headRefName ?? "") && !pr.headRefName.includes("..") ? d.git(path, "fetch", "--quiet", "origin", `+refs/heads/${pr.headRefName}:refs/aidenhq-eval/head`) : Promise.reject(new Error("no head ref")));
       if ((await d.git(path, "rev-parse", "refs/aidenhq-eval/head")) !== head) return { wait: `#${pr.number}'s head isn't at \`${head.slice(0, 12)}\` yet` };
       const base = await d.git(path, "rev-parse", "refs/aidenhq-eval/base");
+      const skip = `eval-skip:${repo.toLowerCase()}:${base}:${head}`;
+      if (d.state.get(skip)) return undefined;
       const changed = await files(path, base, head);
       if (!product) {
         // A modules PR: its head, judged by its base branch.
-        if (!touchesModulesReviewer(changed)) return (save(head, { skip: true }), undefined);
-        return await begin(head, await modulesClone(base, head), head, base, apiKey);
+        if (!touchesModulesReviewer(changed)) return (d.state.set(skip, "1"), undefined);
+        return await begin(key, head, await modulesClone(base, head), head, base, apiKey);
       }
       // A product PR: what its merge would pin (the head's pin when the PR moves it, else the base's), judged by the base's pin.
+      if (!changed.includes("modules-pin.json") && !touchesReviewer(changed)) return (d.state.set(skip, "1"), undefined);
       const judge = await pinAt(d.git, path, base);
       const lands = changed.includes("modules-pin.json") ? await pinAt(d.git, path, head) : judge;
       if (touchesReviewer(changed)) {
         const notOfficial = official(judge, `#${pr.number}'s base`) ?? official(lands, `#${pr.number}`);
         if (notOfficial) return notOfficial;
-        return await begin(head, await modulesClone(judge.sha, lands.sha), lands.sha, judge.sha, apiKey);
+        return await begin(key, head, await modulesClone(judge.sha, lands.sha), lands.sha, judge.sha, apiKey);
       }
       const moved = await bump(judge, lands, `#${pr.number}`);
-      if (!moved) save(head, { skip: true });
+      if (!moved) d.state.set(skip, "1");
       return moved;
     } catch (err) {
       // Fails closed: nothing was run or recorded, so the next request tries again.

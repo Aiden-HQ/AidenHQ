@@ -816,13 +816,15 @@ gate_before_merge() { awk "/^$1/,/^}/" "$rm_" | grep -nE 'await github\.evalGate
 { git -C "$repo" cat-file -e "HEAD:modules/ai-reviewer/scripts/reviewer-eval.mjs" 2>/dev/null || grep -qF 'modules-pin.json' "$rgate"; } \
   && grep -q 'modulesRepo' "$rgate" && ! grep -qF 'if (!d.productRepo || !sameSlug(repo, d.productRepo)) return undefined;' "$rgate" \
   && pass "runner: the reviewer-eval gate reads the AI reviewer from the product tree or the modules pin, and no longer skips every repo but the product ($rgate)" \
-  || fail "runner: the reviewer-eval gate can't see the AI reviewer in the official modules repo (since #213): it reads modules/ai-reviewer from the product, which no longer has it (reviewer-code product PRs stop), and skips every repo but the product (modules-repo PRs changing the reviewer merge with no receipt) ($rgate; fix in flight: WOR-6726)"
+  || fail "runner: the reviewer-eval gate can't see the AI reviewer in the official modules repo (since #213): it reads modules/ai-reviewer from the product, which no longer has it (reviewer-code product PRs stop), and skips every repo but the product (modules-repo PRs changing the reviewer merge with no receipt) ($rgate)"
 # A pin bump brings reviewer code too: a product PR moving modules-pin.json, or an apply moving the instance's `aidenhq`
 # marketplace (or the product, so its pin), to a modules commit whose reviewer (the module, plan.mjs, check.mjs by object id)
 # differs lands only on a 100% receipt for that reviewer: the passed modules PR's (keyed by content, so its squash merge needs
-# no second eval), else an eval of the new commit. The apply asks at its card and again right before it lands.
+# no second eval), else its own eval of the new commit, in its own namespace: no PR's skip or receipt answers a bump. The apply
+# asks at its card and again right before it lands.
 grep -qF '      const moved = await bump(judge, lands, `#${pr.number}`);' "$rgate" \
   && grep -qF 'if (reviewer === (await reviewerAt(path, from.sha)) || passed(reviewer)) return undefined;' "$rgate" \
+  && grep -qF '      const key = `eval-bump:${to.sha}`;' "$rgate" && ! grep -qF 'skip: true' "$rgate" \
   && grep -qF 'const REVIEWER_TREE = ["ai-reviewer", "codehost-github/src/plan.mjs", "platform/src/check.mjs"];' "$rgate" \
   && [ "$(awk '/^async function landFleet\(/,/^}/' "$rmain" | grep -nE 'await evalGateApply\(|whileApplying\(' | cut -d: -f2- | sed 's/^ *//' | cut -c1-22 | tr '\n' '|')" = 'await evalGateApply(r,|return whileApplying(i|' ] \
   && grep -qF '  if (!files.includes("instance.yaml")) return;' "$rmain" \

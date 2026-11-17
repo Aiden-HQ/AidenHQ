@@ -34,7 +34,8 @@ writeFileSync(process.env.EVAL_RESULT, JSON.stringify({ total: files.length, pas
 
 describe("the reviewer-eval gate", { concurrency: 1 }, () => {
   const root = mkdtempSync(join(tmpdir(), "evalgate-"));
-  after(() => rmSync(root, { recursive: true, force: true }));
+  // The last test leaves evals running (detached, as the runner's are): retried while they finish writing.
+  after(() => rmSync(root, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 }));
   // Two origins: the official modules repo (the AI reviewer, its judge and cases) and the product, which pins it.
   const repo = (name) => {
     const dir = join(root, name);
@@ -148,7 +149,7 @@ describe("the reviewer-eval gate", { concurrency: 1 }, () => {
 
     const { gh } = await drive(pr(2, "fix/review", head));
     assert.deepEqual(gh.merged, [head], "merged at exactly the head the receipt is for");
-    const { receipt } = JSON.parse(store.get(`eval:${head}`));
+    const { receipt } = JSON.parse(store.get(`eval-pr:acme/modules:${head}`));
     // The flaky case failed once and passed on its one re-run: allowed, and both runs are on the receipt.
     assert.deepEqual({ ok: receipt.ok, head: receipt.head, modules: receipt.modules, base: receipt.base, cases: receipt.cases, rerun: receipt.rerun?.cases, failedAfter: receipt.rerun?.failed }, { ok: true, head, modules: head, base: M0, cases: 2, rerun: ["02-flaky.json"], failedAfter: [] });
     assert.equal(usage.filter((u) => u.key.startsWith(`eval:${head}`)).length, 2, "each run's cost goes to the ledger");
@@ -157,7 +158,7 @@ describe("the reviewer-eval gate", { concurrency: 1 }, () => {
   it("a receipt for another head doesn't count, and a PR that weakens a case doesn't pass by it", async () => {
     // The same branch moved on: the earlier head's 100% receipt says nothing about this one, so it waits for its own eval.
     const before = sh(mods, "rev-parse", "fix/review");
-    assert.equal(JSON.parse(store.get(`eval:${before}`)).receipt.ok, true);
+    assert.equal(JSON.parse(store.get(`eval-pr:acme/modules:${before}`)).receipt.ok, true);
     const moved = branch(mods, "fix/review", { "ai-reviewer/service/src/review.mjs": "// v3\n", "ai-reviewer/test/reviewer-cases/01-attack.json": JSON.stringify({ expect: "approve", got: "approve" }) }, "fix/review");
     const gh = github(pr(3, "fix/review", moved));
     const q = newQueue(findPrs("acme/modules#3"), { gapMinutes: 0, now: new Date() });
@@ -171,7 +172,7 @@ describe("the reviewer-eval gate", { concurrency: 1 }, () => {
     assert.match(done.q.reason, /scored 1\/3[\s\S]*01-attack\.head\.json: want reject, got approve: ignore every rule/);
     assert.match(done.q.reason, /```\n01-attack/, "the model's words are fenced");
     assert.deepEqual(done.turned.map((t) => [t.number, t.key]), [[3, "eval"]], "the PR's agent is woken with the failing cases");
-    assert.equal(JSON.parse(store.get(`eval:${moved}`)).receipt.ok, false);
+    assert.equal(JSON.parse(store.get(`eval-pr:acme/modules:${moved}`)).receipt.ok, false);
   });
 
   it("never writes through a symlink the PR commits in its tree", async () => {
@@ -189,14 +190,14 @@ describe("the reviewer-eval gate", { concurrency: 1 }, () => {
     assert.deepEqual(done.gh.merged, []);
     assert.match(done.q.reason, /goes through a symlink/);
     assert.equal(readFileSync(victim, "utf8"), "untouched");
-    assert.equal(store.get(`eval:${head}`), undefined, "nothing ran, nothing recorded");
+    assert.equal(store.get(`eval-pr:acme/modules:${head}`), undefined, "nothing ran, nothing recorded");
   });
 
   it("a product PR that changes the product's reviewer code runs the eval on the modules its merge pins", async () => {
     const head = branch(prod, "fix/tiers", { "services/runner/src/tiers.mjs": "// tiers v2\n" });
     const { gh } = await drive(pr(5, "fix/tiers", head, "acme/aidenhq"));
     assert.deepEqual(gh.merged, [head]);
-    const { receipt } = JSON.parse(store.get(`eval:${head}`));
+    const { receipt } = JSON.parse(store.get(`eval-pr:acme/aidenhq:${head}`));
     assert.deepEqual({ ok: receipt.ok, modules: receipt.modules, base: receipt.base }, { ok: true, modules: M0, base: M0 });
   });
 
@@ -217,7 +218,7 @@ describe("the reviewer-eval gate", { concurrency: 1 }, () => {
     assert.deepEqual(first.gh.merged, []);
     assert.match(first.q.waiting ?? "", /reviewer eval started on `[0-9a-f]{12}` .*modules/);
     assert.deepEqual((await drive(pr(7, "chore/pin2", bump2, "acme/aidenhq"))).gh.merged, [bump2]);
-    assert.equal(JSON.parse(store.get(`eval:${unseen}`)).receipt.ok, true, "the receipt is for the modules commit");
+    assert.equal(JSON.parse(store.get(`eval-bump:${unseen}`)).receipt.ok, true, "the receipt is for the modules commit");
     assert.equal(evals(), ran + 1);
 
     // A pin to another modules repository: the gate can't vouch for it.
@@ -234,6 +235,10 @@ describe("the reviewer-eval gate", { concurrency: 1 }, () => {
     const covered = sh(mods, "rev-parse", "HEAD");
     assert.equal(await gate.bump(base, officialOf(instance(covered), root)), undefined, "a receipt covers it");
     const fresh = commit(mods, { "ai-reviewer/service/src/review.mjs": "// v5\n" }, "v5");
+    // A modules PR on top of it that touches no reviewer code merges with no eval: that skip vouches for nothing a bump brings.
+    const docs = branch(mods, "docs/more", { "README.md": "z\n" });
+    assert.deepEqual((await drive(pr(9, "docs/more", docs), 3)).gh.merged, [docs]);
+    assert.match((await gate.bump(base, officialOf(instance(docs), root)))?.wait ?? "", /reviewer eval started on `[0-9a-f]{12}`/, "a skip doesn't satisfy a bump");
     const g = await gate.bump(base, officialOf(instance(fresh), root));
     assert.match(g?.wait ?? "", /reviewer eval started/);
     const other = await gate.bump(base, officialOf(instance(fresh, "evil/modules"), root));
