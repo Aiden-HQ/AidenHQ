@@ -4815,7 +4815,7 @@ async function publishLocal(issue, full, r, command, rows, text, pin) {
     await ensureClone(cfg.workDir, normalizeRepo(r.repo), localHost.bare(r.repo)).catch((err) => log("cache refresh failed", { repo: r.repo, err: String(err.message ?? err).slice(0, 200) }));
     await fileDesignReviewTask({ repo: r.repo, number, url, head: change.head }).catch((err) => log("design review task failed", { pr: url, err: String(err.message ?? err).slice(0, 300) }));
   }
-  const then = `Its checks (\`tests\`, \`secrets\`${designReviewer() && merges.touchesUi(change.files) ? ", and the UI Reviewer's \`design-review\`" : ""}) run now on this server; \`aidenhq status\` shows them. Once they are all green, its merge is requested on its own.`;
+  const then = `Its checks (\`tests\`, \`secrets\`${designReviewer() && merges.touchesUi(change.files) ? ", and the UI Reviewer's \`design-review\`" : ""}) run now on this server; \`aidenhq status\` shows them. Once \`tests\` and \`secrets\` are green its merge is requested on its own${designReviewer() && merges.touchesUi(change.files) ? ", and it merges once its design review is green too" : ""}.`;
   if (r.prUrl) return `${pushed || "Up to date"}${own ? ", updated its title and description" : ""}. Change request: ${url}. ${then}`;
   return `${pushed ? `${pushed}, opened` : "Opened"} draft change request ${url}. ${then}`;
 }
@@ -4871,17 +4871,17 @@ async function recheckLocal() {
 }
 
 /**
- * A local change green on its head, every check it needs (its design review too, when it has one): its merge is requested,
- * as an agents-org PR's is after its publish on GitHub (requestAutoMerge), with the card `aidenhq merge` files, once per head
- * and said on the task. Not while the task's run goes on (a GitHub card waits for its end too), nor on a stopped or finished
- * task, nor when that head already has its card or waits in an approved one.
+ * A local change whose `tests` and `secrets` are green on its head: its merge is requested, as an agents-org PR's is on GitHub
+ * (requestAutoMerge, filed once its named checks are green), with the card `aidenhq merge` files, once per head and said on the
+ * task. A UI change's approved card then waits for its design review in runLocalMerges (asked again, then parked), as GitHub's
+ * queue does. Not while the task's run goes on (a GitHub card waits for its end too), nor on a stopped or finished task, nor
+ * when that head already has its card or waits in an approved one.
  */
 const localMergeAsked = (p) => `local-merge-asked:${p.url.toLowerCase()}@${p.head}`;
 async function requestLocalMerge(issueId, c, got) {
   const key = localMergeAsked(c);
   if (state.get(key) || running.has(issueId) || stopped(issueId)) return;
-  const required = await localRequired(c);
-  if (!required.every((n) => got.some((x) => x.name === n && x.ok))) return;
+  if (!LOCAL_REQUIRED.every((n) => got.some((x) => x.name === n && x.ok))) return;
   const queued = Object.values(JSON.parse(state.get("local_merges") || "{}")).some((q) => q.prs.some((p) => p.url.toLowerCase() === c.url.toLowerCase() && p.head === c.head));
   if (queued) return;
   const issue = await pc.issue(issueId);
@@ -5058,7 +5058,6 @@ async function readLocalDesignVerdicts() {
       await localHost.writeCheck(want.repo, c.head, { name: merges.DESIGN_REVIEW.name, ok: m[1] === "success", change: c.number, base: c.base, log_tail: String(k.body).slice(0, 4000) });
       log("local design review", { url: c.url, head: c.head.slice(0, 12), verdict: m[1], by: k.authorAgentId });
       if (m[1] === "failure") failed.push([c, String(k.body).slice(0, 4000)]);
-      else lastRecheck = 0; // its merge is requested on the next poll, once its other checks are green
       delete box[issueId];
       break;
     }

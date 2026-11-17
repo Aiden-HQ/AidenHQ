@@ -1,7 +1,7 @@
 // End to end (see flow-harness.mjs): the design review of a UI change request on this server (codehost-local §5). A change
 // has no commit status, so the UI Reviewer's verdict is a comment on its review task; the runner records it as the change's
 // `design-review` check only from the role holder and only for the change's current head. A failure wakes the change's
-// Engineer as a red check does; a success, its other checks green, has its merge requested.
+// Engineer as a red check does; its merge, requested once its other checks are green, lands on a success.
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { chmodSync, mkdirSync, writeFileSync } from "node:fs";
@@ -75,7 +75,7 @@ describe("flow-local-design-review", () => {
     assert.notEqual(g("rev-parse", "main"), main);
   });
 
-  it("a failure verdict wakes the change's Engineer once, with the reviewer's findings, and requests no merge", async () => {
+  it("a failure verdict wakes the change's Engineer once, with the reviewer's findings", async () => {
     step("ui-card");
     await turn("Add a card style.");
     await publish();
@@ -89,22 +89,21 @@ describe("flow-local-design-review", () => {
     assert.match(woken()[0].prompt, /`design-review` failed[\s\S]*The card overflows its column\./);
     await idle(25_000);
     assert.equal(woken().length, 1, "woken once");
-    assert.ok(!partComments().some((c) => c.startsWith("Merging requested: codehost:local/app/change/2")), "no merge requested on a red head");
   });
 
-  it("a success verdict, its checks green, leads to a merge request and the merge", async () => {
+  it("green checks request the merge; the approved card merges once a success verdict is in, with no `aidenhq merge`", async () => {
     step("write feat/ui-list web/list.css .list { gap: 4px }");
     await turn("Add a list style.");
     await publish();
     await waitFor("the review task", () => Boolean(reviewTaskOf(3)));
     const head = g("rev-parse", "refs/changes/3/head");
     await waitFor("green tests and secrets", () => ["tests", "secrets"].every((n) => receipt(head).some((c) => c.name === n && c.ok)), 120_000);
-    await idle(3000);
-    assert.ok(!partComments().some((c) => c.startsWith("Merging requested: codehost:local/app/change/3")), "the merge waits for the design review");
-    comment(reviewTaskOf(3).id, "designer-1", `design-review: success ${head}`);
-    await waitFor("the merge request", () => partComments().some((c) => c.startsWith(`Merging requested: codehost:local/app/change/3 is green on \`${head.slice(0, 12)}\``)), 60_000);
+    await waitFor("the merge request", () => partComments().some((c) => c.startsWith(`Merging requested: codehost:local/app/change/3 is green on \`${head.slice(0, 12)}\``)), 90_000);
     const main = g("rev-parse", "main");
     t.paperclip.decide("merge", "approved");
+    await idle(1500);
+    assert.equal(g("rev-parse", "main"), main, "not merged without its design review");
+    comment(reviewTaskOf(3).id, "designer-1", `design-review: success ${head}`);
     await waitFor("the merge", () => partComments().some((c) => c.startsWith("**Merged** codehost:local/app/change/3")), 60_000);
     assert.notEqual(g("rev-parse", "main"), main);
   });
