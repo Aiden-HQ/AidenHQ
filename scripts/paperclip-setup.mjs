@@ -107,7 +107,9 @@ async function api(method, path, body, { auth = "board", allow = [] } = {}) {
 
 // ------------------------------------------------------------------ prompts
 
+// Never waits on a terminal that isn't there (an unattended install, ops/apply-config.sh from a script): it stops, saying what is missing.
 function ask(question, { hidden = false } = {}) {
+  if (!process.stdin.isTTY) fail(`no terminal to ask "${question.trim()}": set PAPERCLIP_EMAIL, PAPERCLIP_PASSWORD and PAPERCLIP_NAME (ops/setup.sh passes them)`);
   return new Promise((resolveAnswer) => {
     const rl = createInterface({ input: process.stdin, output: process.stdout, terminal: true });
     if (hidden) {
@@ -151,12 +153,13 @@ async function ensureBoardKey(health) {
     }
     boardKey = "";
   }
-  const email = env("PAPERCLIP_EMAIL") || (await ask("Paperclip email: "));
-  const password = env("PAPERCLIP_PASSWORD") || (await ask("Paperclip password (8+ chars): ", { hidden: true }));
+  // The owner's Paperclip login: the environment, else what ops/setup.sh made it from (the owner's email, the vault's password).
+  const email = env("PAPERCLIP_EMAIL") || cfg.settings?.owner_email?.value || (await ask("Paperclip email: "));
+  const password = env("PAPERCLIP_PASSWORD") || readSecret("paperclip_owner_password") || (await ask("Paperclip password (8+ chars): ", { hidden: true }));
   let res = await api("POST", "/api/auth/sign-in/email", { email, password, rememberMe: true }, { auth: "none", allow: [401] });
   if (res.status === 401) {
     if (health.bootstrapStatus !== "bootstrap_pending") fail("sign-in failed (wrong password?)");
-    const name = env("PAPERCLIP_NAME") || (await ask("No account yet. Your name: "));
+    const name = env("PAPERCLIP_NAME") || cfg.owner_name || (await ask("No account yet. Your name: "));
     step("Creating your Paperclip account");
     await sleep(3500); // auth endpoints allow 3 requests / 10 s
     res = await api("POST", "/api/auth/sign-up/email", { name, email, password, rememberMe: true }, { auth: "none" });
