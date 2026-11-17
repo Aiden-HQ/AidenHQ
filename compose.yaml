@@ -227,7 +227,12 @@ services:
       # The model gateway (kernel/src/gateway, on the host's backplane address): the board pulls its billed ledger and it files
       # raise_cap here, each with gateway_board_key.
       AIDENHQ_GATEWAY_URL: "${AIDENHQ_GATEWAY_URL:-http://10.231.0.1:8201}"
+      # The Handbook tab reads module handbooks and the instance's own files (read-only mounts below).
+      BOARD_MODULES_DIR: /handbooks/modules
+      BOARD_INSTANCE_DIR: /handbooks/instance
     volumes:
+      - ./modules:/handbooks/modules:ro
+      - ${AIDENHQ_INSTANCE_DIR:?set AIDENHQ_INSTANCE_DIR in .env}:/handbooks/instance:ro
       - ${AIDENHQ_CONFIG_DIR:-./config}/system.yaml:/config/system.yaml:ro
       - ${AIDENHQ_CONFIG_DIR:-./config}/modules.json:/config/modules.json:ro # Settings: Modules, setting defaults and docs
       - ${AIDENHQ_CONFIG_DIR:-./config}/paperclip.yaml:/config/paperclip.yaml:ro # Settings: settings, agents, connections (no secrets)
