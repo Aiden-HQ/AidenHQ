@@ -59,7 +59,7 @@ Line numbers are at product `26a5bd5e` and modules `b2b31f1` (`modules/` is the 
 | `apps-mcp/src/git.ts:198-212` | Registry push: the App URL or a plain URL. This already works locally (`AIDENHQ_INSTANCE_PUSH_URL`). |
 | `apps-mcp/src/main.ts:63` | The default registry URL is the agents org's GitHub repo. |
 | `apps-mcp/src/main.ts:137-164` | `/internal/open-prs` and `/internal/pr-states` read the warehouse `src_github` (the `github` read module). |
-| `apps-mcp/src/previews.ts:48-71,251-253` | PR previews: GitHub REST list and comment, App token only. |
+| `apps-mcp/src/previews.ts:48-71`, `main.ts:251-253` | PR previews: GitHub REST list and comment, App token only. |
 | `platform/module.yaml:13` | The `product-gate` check is bound to `codehost-github.{push,pr,merge}`. |
 | `platform/src/check.mjs:41,166` | Dependabot verification from GitHub's commit signatures. |
 | `platform/prompts/improving.md` | Self-improvement lands product changes as product-repo PRs, which needs GitHub upstream. |
@@ -73,6 +73,7 @@ Line numbers are at product `26a5bd5e` and modules `b2b31f1` (`modules/` is the 
 | `kinds.ts:83-105` (`runnerFacts`) | One `agentsOrg`; floor 0 only inside it. |
 | `services/runner/src/tiers.mjs:50` | An unknown product repo, instance repo or agents org goes to Tier 2. |
 | `kernel/src/tier.ts:145-172` | Content keys are branch shas and PR heads. Already host-neutral. |
+| `kernel/src/writes.ts:186,271` | Carried `runner.push`/`runner.pr` records; the stale-record text says "GitHub has no branch and no PR". |
 | `kernel/src/loader/bindings.ts:17-20` | `codehost` is neither reserved nor a slot, so a plain `provides: [codehost]` works today. |
 | `kernel/src/sandbox-config.ts:34-38` | `hidden` includes the data dir. Bare repos under it are invisible to every job. |
 | `services/board/src/fleet-ops.ts:31,314` | "Open PRs" come from apps-mcp `/internal/open-prs`. |
@@ -96,8 +97,11 @@ jail through `hiding`. `codehost-local` generalises these three pieces.
 
 - `codehost-github` and `codehost-local` each declare `provides: [ codehost ]`. Neither is a slot, so there is no
   `providers:` entry and no binding-table change.
-- `engineering` requires `codehost` (any provider) in place of `github` and `codehost-github`. `design` keeps
-  `requires: [github]`; it is added with "connect GitHub" (see §7).
+- `engineering` requires `codehost` (any provider) in place of `github` and `codehost-github`. Its app-engineer's
+  `github: read` grant (`engineering/module.yaml:57`) becomes optional (`github?: read`), so the compiler's dangling-binding
+  check (`scripts/modules.mjs:891`) passes with `github` off. In the bundle, only `engineering` grants `github` without
+  `?`. `design` keeps `requires: [github]`; it is added with "connect GitHub" (see §7). The builder confirms that
+  platform's `product-gate` check, bound to `codehost-github.*` kinds, compiles with `codehost-github` off.
 - **The bundle** (`modules/marketplace.json`):
   - `codehost-local` joins.
   - `codehost-github` and `github` leave only when this build lands.
@@ -120,6 +124,10 @@ jail through `hiding`. `codehost-local` generalises these three pieces.
   - `createRepo(slug)`;
   - `diff(slug, n)`.
   - `codehost-github`'s implementation wraps today's code unchanged; its merge keeps `merge-gate.mjs`.
+- **Shared and transport code:** the host-neutral parts stay where they are and both providers import them:
+  `codehost-github/src/plan.mjs` (tiering), `git.mjs` (hardened git, `ensureClone`, `landOnMain`, `replayOnto`) and
+  `workspace.ts`. Moving them to a shared module is a later rename, not part of this build. `codehost-local/src` joins
+  the eval-gated path list (`evalgate.ts:42`) and the platform check's core paths (`platform/src/check.mjs:72-76,129`).
 - **The agents org per provider:** `local` for `codehost-local`, `aidenhq-<instance_name>` for GitHub. Where code holds
   one `agentsOrg` today (`plan.mjs`, `kinds.ts runnerFacts`, `tiers.mjs:50`, `apps-mcp checkOrg`), it takes the list of
   the enabled providers' orgs.
@@ -156,17 +164,18 @@ decisions live in kernel records. Nothing else stores it.
   - `kinds.ts:27` accepts it beside the GitHub form, and `urlRepo` parses both.
   - The board, wake and quality regexes (`wake.ts:76`, `quality.ts:26`) and `findPrs` (`merge-queue.mjs`) accept it as
     well as `org/name#n`.
-- **Kinds:** the same `runner.push`, `runner.pr`, `runner.merge`, `runner.close` and `runner.create_repo`, filed with
-  the same args. `pr` opens or updates change `n`, and `merge` names it.
+- **Kinds:** the same `runner.push`, `runner.pr`, `runner.merge` and `runner.create_repo` records, filed with the same
+  args. `pr` opens or updates change `n`, and `merge` names it with `head`. Closing stays what it is today: a Tier 0 runner
+  action with no record (`aidenhq close`, `main.mjs:3485-3495`), which writes `refs/changes/<n>/closed`.
   - The platform `product-gate` check keeps its `codehost-github.*` kinds. The product repo is always on GitHub, so it
     never sees a local repo.
   - When the code host files its own kinds (lean-core 3d), the role's kinds become `codehost.*`, and `plan()` strips
     either prefix.
 - **Diff on the card:** the `pr` and `merge` cards carry the diff text, as `apply` does (`fleetDiffText`), read from
-  `git diff base...head` in the runner's cache clone. The board already shows a record's card and diff, so it needs no
-  new view.
+  `git diff base...head` in the runner's cache clone. The board renders a record's `card.details`
+  (`services/board/src/records.ts:57`, `web/src/Chat.tsx:145-148`), so approval cards need no new view.
 - **Board PR lists:** apps-mcp's `/internal/open-prs` and `/internal/pr-states` also answer for `local/*` repos from
-  `refs/changes/*` (read-only mount, §6). The board code doesn't change.
+  `refs/changes/*` (read-only mount, §6). The board's only change is the URL regexes above.
 
 ## 5. Checks and merge
 
@@ -177,12 +186,13 @@ decisions live in kernel records. Nothing else stores it.
 - **Where:** in `hiding(evalSandbox, …)`, the same jail as `fastcheck.ts`:
   - the worktree is the only writable path;
   - the env is minimal, with no tokens;
-  - pasta networking is on for `npm ci`.
-- **What it runs:** the named checks, the local counterpart of the CI template's `tests` and `secrets` jobs. The
-  definitions come from the base commit's `.github/` (the template already ships them), so a change can't loosen its own
-  checks.
+  - network for `npm ci` through pasta;
+  - a limit of 20 minutes per check (the fast check's 90 s is for lint and types only).
+- **What it runs:** the named checks, the local counterpart of the CI template's `tests` and `secrets` jobs. The check
+  scripts come from the host's product checkout, never from the change, so a change can't loosen its own checks.
   - `tests` runs:
-    1. supply chain (`npm-age.mjs`, `pins.mjs` base..head);
+    1. supply chain (the product's `scripts/supply-chain/npm-age.mjs` and `pins.mjs`, base..head, with the base's
+       `.github/supply-chain-exceptions.yaml`);
     2. the evidence rule;
     3. `npm ci && npm run --if-present lint && npm test && npm run --if-present build`.
   - `secrets` runs pinned gitleaks over base..head, with the config from the base. The binary is installed by
@@ -208,22 +218,23 @@ Existing rule ids and reason strings stay byte-identical; local behaviour only a
 
 The merge executes only when all of these hold:
 1. the record is approved, or at Tier 0;
-2. `refs/changes/<n>/head` equals the record's target `commit`;
+2. `refs/changes/<n>/head` equals the record's `args.prs[].head`;
 3. its receipt is green on that sha.
 
 Then:
 - **Land:** `landOnMain`'s squash: `merge-tree` of the change against the current `main`, then one new commit with
   `main` as its parent.
-- **Moved main:** the push is replaced by a compare-and-swap in the bare repo:
-  `git update-ref refs/heads/main <new> <old-main>`.
-  - If `main` moved in between, the CAS fails and the squash is redone once on the new `main`. A conflict refuses it
-    back to the task.
+- **Moved main:** `landOnMain` builds the commit in the cache clone and pushes it to the bare repo without force.
+  receive-pack updates `refs/heads/main` under its ref lock and refuses a non-fast-forward, so that push is the
+  compare-and-swap.
+  - If `main` moved in between, the push fails and the squash is redone once on the new `main` (`landOnMain`'s retry).
+    A conflict refuses it back to the task.
   - Checks are bound to the head, as on GitHub's non-strict merges.
-- **Head moved after approval:** the kernel's target revalidation closes the record as stale (`plan()` targets).
+- **Head moved after approval:** condition 2 refuses it, and the agent asks again for the new head (`head-moved`).
 - **After the merge:** the runner writes `refs/changes/<n>/merged` and deletes the task branch ref. The apps platform
   deploys `main` as it does today.
 
-### Not carried over locally (owner decides, §8)
+### Not carried over locally (owner decides, §9)
 
 - merge trains;
 - Actions re-runs and environment retries;
@@ -241,7 +252,7 @@ Then:
   - The PAT header and App tokens apply only to GitHub URLs.
   - `checkOrg` accepts the enabled providers' orgs.
 - **`checkoutPr`** reads `refs/changes/<n>/head` for a local app. Previews stay off for local apps until the owner turns
-  them on (§8).
+  them on (§9).
 - **Registry:** the instance repo push already goes to `AIDENHQ_INSTANCE_PUSH_URL`, so it doesn't change. The default at
   `main.ts:63` picks the GitHub URL only when the GitHub provider is on.
 
@@ -261,7 +272,17 @@ Then:
 - **Product contributions** (the Platform Engineer's product PRs, upstream issues) keep needing GitHub and stay off
   until it is connected. Instance changes keep working locally through `apply`.
 
-## 8. Owner decides
+## 8. Unverified: the builder checks these first
+
+- Engineer jobs get network through pasta (`sandbox-config.ts:28`); confirm `npm ci` from the npm registry works in
+  `hiding` with the eval sandbox's config, and how long a starter app's `npm ci && test && build` takes there.
+- Tier 0 records: confirm the board lists their card and diff after the fact (approval cards are shown; Tier 0 runs may
+  show only in activity).
+- `landOnMain` on a bare file remote: confirm the fetch, push and one retry behave as on GitHub (tests in
+  `services/runner/test/land.test.mjs` use local remotes already).
+- The gitleaks binary on the host: confirm `ops/vm/setup.sh` can pin it by sha256 within the supply-chain rules.
+
+## 9. Owner decides
 
 1. **Tier of a local agents-org merge:**
    - **(recommended)** Tier 1, the AI reviewer (`local-merge`), in place of CI's code-review job;
@@ -280,11 +301,12 @@ Then:
    - **(recommended)** yes;
    - or a `conflicts: [codehost]` single provider (simpler, but "connect GitHub" then moves every repo).
 
-## 9. Build order (for the plan written after approval)
+## 10. Build order (for the plan written after approval)
 
 1. **Role and routing.** `provides`/`requires` changes, `hostOf(slug)`, and `codehost-github/src/host.mjs` wrapping
    today's code. No behaviour change.
-2. **Kinds, the org list and the eval cases** (`kinds.ts` URL form and org list, `plan.mjs` `local-merge`). These fall
+2. **Kinds, the org list and the eval cases** (`kinds.ts` URL form and org list, `plan.mjs` `local-merge`, `tiers.mjs:50`,
+   card text `cards.ts:93,100,103`). These fall
    under the reviewer-eval rule, so the eval must hold at 100% on the PR head.
 3. **Core of `codehost-local`:** bare repos, create, publish, change refs, diff on cards.
 4. **Checks:** jail runner, gitleaks pin, notes receipt, `aidenhq wait/status`.
@@ -295,9 +317,9 @@ Then:
 **Tests:** one end-to-end runner test on temp bare repos (create, publish, change, checks, merge, moved-main CAS), plus
 the reviewer cases below.
 
-## 10. Reviewer-eval cases (`modules/ai-reviewer/test/reviewer-cases/`)
+## 11. Reviewer-eval cases (`modules/ai-reviewer/test/reviewer-cases/`)
 
-The `plan.mjs` and `kinds.ts` changes fall under the reviewer-eval rule. Every existing case keeps passing unchanged.
+The `plan.mjs`, `kinds.ts`, `tiers.mjs` and `cards.ts` changes fall under the reviewer-eval rule. Every existing case keeps passing unchanged.
 The new cases are:
 
 | Case file | Card | Expect |
