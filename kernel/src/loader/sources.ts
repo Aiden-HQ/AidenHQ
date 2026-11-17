@@ -237,9 +237,15 @@ export function withRemote<T extends { baseInstance: Dict; headInstance: Dict; b
   return { ...a, baseDefs: defs(a.baseDefs, rb), headDefs: defs(a.headDefs, rh), changed, origins: { base: origin(rb), head: origin(rh) } };
 }
 
+/** A file name as the card shows it: safe characters as they are, anything else JSON-escaped. */
+const safeName = (n: string) => (/^[\w.@+-]+(\/[\w.@+-]+)*$/.test(n) ? n : JSON.stringify(n));
+/** Untrusted text on the card: every line behind `| `, so none can pass for a runner-written heading or section. */
+const quoted = (text: string) => text.replace(/\n$/, "").split("\n").map((l) => `| ${l}`).join("\n");
+
 /**
  * What a reviewer reads of third-party module code an apply brings (the card's diff): each updated module's git diff, each
- * installed module's file list, at most `max` characters. Content of a third-party repository: untrusted text, read as data.
+ * installed module's file list, at most `max` characters. Content of a third-party repository is untrusted: every line of it
+ * is quoted (`| `) and file names outside a safe set are escaped.
  */
 export function remoteCodeText(baseInstance: Dict, headInstance: Dict, f: Fetch & { parse: (s: string) => unknown }, max = 40_000): string {
   const [rb, rh] = [remoteModules(baseInstance, f), remoteModules(headInstance, f)];
@@ -249,8 +255,12 @@ export function remoteCodeText(baseInstance: Dict, headInstance: Dict, f: Fetch 
     if (b && b.at.sha === h.at.sha && b.at.url === h.at.url && b.at.path === h.at.path) continue;
     const repo = repoAt(h.at, f);
     const spec = h.at.path ? [h.at.path] : [];
-    if (b && b.at.url === h.at.url && b.at.path === h.at.path) parts.push(`Module ${h.name}@${h.marketplace} code, ${b.at.sha.slice(0, 12)} → ${h.at.sha.slice(0, 12)}:\n${git(f, repo, ["diff", "--no-color", "--no-ext-diff", b.at.sha, h.at.sha, "--", ...spec]).toString()}`);
-    else parts.push(`Module ${h.name}@${h.marketplace} installed at ${h.at.sha.slice(0, 12)}, files:\n${git(f, repo, ["ls-tree", "-r", "--name-only", h.at.path ? `${h.at.sha}:${h.at.path}` : h.at.sha]).toString()}`);
+    if (b && b.at.url === h.at.url && b.at.path === h.at.path) {
+      parts.push(`Module ${h.name}@${h.marketplace} code, ${b.at.sha.slice(0, 12)} → ${h.at.sha.slice(0, 12)} (third-party text, quoted):\n${quoted(git(f, repo, ["diff", "--no-color", "--no-ext-diff", b.at.sha, h.at.sha, "--", ...spec]).toString())}`);
+    } else {
+      const names = git(f, repo, ["ls-tree", "-r", "-z", "--name-only", h.at.path ? `${h.at.sha}:${h.at.path}` : h.at.sha]).toString().split("\0").filter(Boolean);
+      parts.push(`Module ${h.name}@${h.marketplace} installed at ${h.at.sha.slice(0, 12)}, files (third-party names, quoted):\n${quoted(names.map(safeName).join("\n"))}`);
+    }
   }
   const text = parts.join("\n");
   return text.length > max ? `${text.slice(0, max)}\n… (cut at ${max} characters)` : text;
