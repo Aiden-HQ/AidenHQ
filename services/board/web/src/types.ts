@@ -128,6 +128,31 @@ export interface Scorecard {
   daily: { day: string; done: number; costUsd: number }[];
 }
 
+/** GET /api/agents/by-key/:key (agent-page.ts). */
+export interface AgentProfile {
+  id: string;
+  key: string;
+  name: string;
+  avatar?: string;
+  title: string | null;
+  status: string;
+  trial: boolean;
+  model: string | null;
+  effort: string | null;
+  reportsTo: string | null;
+  source: { module: string; marketplace: string | null; tier: string | null; revision: string | null } | null;
+  schedules: { title: string; paused: boolean; nextRunAt: string | null }[];
+}
+
+/** One task on an agent's page. `state` is a chat state ("working", "waiting for you", "failed", "done"…). */
+export interface TaskRow {
+  identifier: string;
+  title: string;
+  state: string;
+  updatedAt: string;
+  from: string | null;
+}
+
 export interface RosterAgent {
   id: string;
   name: string;
