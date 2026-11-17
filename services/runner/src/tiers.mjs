@@ -304,6 +304,8 @@ function instanceParts(s) {
           const fields = kind === "agents" ? all.filter((x) => x !== "connections" && x !== "handbook_fork") : all;
           if (kind === "agents" && all.includes("handbook_fork")) parts.push((s.roles?.[name] ?? []).length ? T(1, "role-handbook", `handbook fork of ${name}, which holds a role`) : T(1, "module-handbook", `handbook fork of ${name}, an agent without a role`));
           if (!fields.length) continue;
+          if (kind === "agents" && fields.includes("caps")) parts.push(OWNER_AFTER_REVIEW("agent-caps", `overrides agents ${name}: spend caps are the owner's authority`));
+          if (kind === "agents" && fields.includes("caps") && fields.length === 1) continue;
           parts.push(safe && fields.every((x) => safe.has(x)) ? T(1, kind === "agents" ? "model-change" : "routine-schedule", `${kind} ${name}: ${fields.join(", ")}`) : PANEL("overrides", `overrides ${kind} ${name}: ${fields.join(", ")}`));
         }
       }
