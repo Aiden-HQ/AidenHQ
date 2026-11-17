@@ -24,7 +24,8 @@ import { ownerMadeTask, trialNoTap } from "./watch.ts";
 import { mergeGithub } from "./merge.ts";
 import { cardBases, githubDefault, withTrusted } from "./approvals.ts";
 import { fleetBranch, fleetDiffText, productBump, readGrants } from "./apply-path.ts";
-import { MovedHead, branchRows, createRepoText, findRealGh, prRequest, prepareWorkspace } from "./unsplit.ts";
+import { prRequest } from "./pr-path.ts";
+import { MovedHead, branchRows, createRepoText, findRealGh, prepareWorkspace } from "./unsplit.ts";
 
 // ------------------------------------------------------------------ approval records
 

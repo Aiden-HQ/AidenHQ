@@ -20,7 +20,8 @@ import { mergeGithub, startMerges } from "./merge.ts";
 import { graded, tellParent } from "./grading.ts";
 import { autonomyNow, branchTierState, currentTier, fileApproval, kernel, recordsOn, tierFor } from "./tier-state.ts";
 import { applyApproved } from "./apply-path.ts";
-import { branchRows, createRepoApproved, findRealGh, prepareWorkspace, publish } from "./unsplit.ts";
+import { publish } from "./pr-path.ts";
+import { branchRows, createRepoApproved, findRealGh, prepareWorkspace } from "./unsplit.ts";
 
 /** Busy on the task while an approved write runs: no agent turn starts, and the board shows it. */
 async function whileApplying(issue: any, mode: any, fn: any) {
