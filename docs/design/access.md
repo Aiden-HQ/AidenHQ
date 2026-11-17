@@ -163,6 +163,21 @@ target is not the gate. Per request the gate:
 
 Anything the gate cannot read or verify (keys, accounts, sessions) refuses with a 503.
 
+## Board panels
+
+An app can be pinned into the board's nav: its instance `apps.yaml` entry sets `panel: <label>` (1-24 characters). The board
+shows the label in the top bar (and the phone tab strip) as a link to the app's own URL, taken from apps-mcp's status row
+(`https://<share.host>` for a shared app), and opens it in a new tab.
+
+- **A link, never a frame.** The board's CSP has no `frame-src` and sends `frame-ancestors 'none'`; the gate's sign-in pages
+  and the handoff do too, and the `__Host-` cookies are `SameSite=Lax`, so a cross-site frame could neither start nor finish a
+  handoff. Opening the app's host at top level is the existing flow unchanged: the my-apps sign-in, the one-time code bound to
+  that host and browser, the host-only cookie. No cookie is shared and the gate learns nothing new. An app without
+  `share.host` is a link to the apps node on the tailnet, as on the Apps tab.
+- **Who pins.** `panel` is a sensitive field (`isSensitive`): `app_create` refuses it, so an agent proposes a pin and the
+  Platform Engineer applies it as an `apps.yaml` change through the normal card. A module app may not set it (compile refuses it,
+  as with `share`): the owner's nav is the owner's. Unpinning is deleting the line.
+
 ## Pull request previews
 
 With `settings.edge.previews: true`, each open PR on a shared app's repo also runs as a preview
