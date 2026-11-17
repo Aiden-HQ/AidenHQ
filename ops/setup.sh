@@ -24,7 +24,7 @@
 #   ops/setup.sh --config person.env --dry-run         print what it would do; changes nothing
 # person.env (KEY=value, read here, never printed): OWNER_NAME, OWNER_EMAIL, TIMEZONE (required); AIDENHQ_USER (default
 # the sudo user), COMPANY_NAME (work), MODULES (google), OPENROUTER_MANAGEMENT_KEY + OPENROUTER_LIMIT_USD (50) or
-# OPENROUTER_KEY, GOOGLE_CLIENT_ID + GOOGLE_CLIENT_SECRET (the company OAuth app), TS_AUTHKEY (tailnet join key),
+# OPENROUTER_KEY, GOOGLE_CLIENT_ID + GOOGLE_CLIENT_SECRET (optional: an OAuth app you already have; otherwise the board's Google setup asks), TS_AUTHKEY (tailnet join key),
 # TS_APPS_AUTHKEY (the apps' own tailnet node: a reusable, tagged, pre-authorized key; docs/setup.md),
 # BOARD_HOST (default: this VM's tailnet name), PAPERCLIP_PASSWORD
 # (with --restore: the old VM's paperclip_owner_password; otherwise one is generated), GITHUB_AGENTS_ORG (the GitHub
@@ -511,8 +511,12 @@ elif [ ! -e "$marker" ]; then
 fi
 
 echo
-echo "Once, in the company's Google OAuth app (Web application), add the redirect URI:"
-echo "  $BOARD_URL/google/callback"
+if [ -n "$(cfg GOOGLE_CLIENT_ID)" ]; then
+  echo "Once, in the company's Google OAuth app (Web application), add the redirect URI:"
+  echo "  $BOARD_URL/google/callback"
+else
+  echo "Google: when you want it, ask Aiden to set it up, or open $BOARD_URL/#/setup/google (steps and a place to paste the client)."
+fi
 [ -z "$CONFIG" ] || echo "Delete $CONFIG: it holds secrets (the OpenRouter key)."
 if [ "$UNATTENDED" = 0 ] && [ -e /root/aidenhq-vault-recovery.txt ]; then echo "Vault recovery key: /root/aidenhq-vault-recovery.txt. Store it, then: sudo shred -u /root/aidenhq-vault-recovery.txt"; fi
 if [ -z "$BOARD_HOST" ]; then
