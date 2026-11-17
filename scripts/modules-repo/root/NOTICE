@@ -2,10 +2,9 @@ AidenHQ official modules
 Copyright (c) 2026 Mudit Gupta and the AidenHQ contributors
 https://github.com/Aiden-HQ/aidenhq-modules
 
-The official modules are licensed under the MIT License (see LICENSE), except a module whose module.yaml `license`
-field names another licence: that licence then covers that module's folder (and its own LICENSE file, when it has one).
-These folders were cut from the AidenHQ product repository (AGPL-3.0-only) with their history; the copyright holders
-relicensed them under the CLA's relicensing grant.
+The official modules are all licensed under the MIT License (see LICENSE). They were cut from the AidenHQ product
+repository (AGPL-3.0-only; the kernel stays AGPL-3.0-only) with their history; the copyright holders relicensed them
+as MIT under the CLA's relicensing grant.
 
 Third-party software
 --------------------
