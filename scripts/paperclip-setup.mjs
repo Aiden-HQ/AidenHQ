@@ -21,7 +21,7 @@ import { codexMcpBlock, ensureFleetIssues, ensureMemoryInboxes, ensureReviewLogs
 import { routineStatus } from "./setup-paused.mjs";
 import { checkLauncher, computerAdapterConfig, ensureComputers, runnerBox } from "./computers.mjs";
 import { assertNoShell } from "./no-shell.mjs";
-import { handbookParts, HOW_WE_BUILD_SECTION, personaOf, promptParts, readInstructions as readHandbook } from "./handbook.mjs";
+import { handbookParts, HOW_WE_BUILD_SECTION, laneHandbook, onDemandSections, personaOf, readInstructions as readHandbook } from "./handbook.mjs";
 import { recoverStalePid } from "./paperclip-recover.mjs";
 import { probeConfig } from "./agent-probe.mjs";
 
@@ -343,6 +343,15 @@ async function awaitVerified(id, name) {
 const WEB_SEARCH = ["live", "cached", "disabled"];
 const SERVER_SECRETS = ["BETTER_AUTH_SECRET", "PAPERCLIP_AGENT_JWT_SECRET", "PAPERCLIP_SECRETS_MASTER_KEY_FILE"];
 
+// Each agent's on-demand handbook sections, by its Paperclip id: the tasks module's handbook_section reads the caller's file
+// (its data dir's catalog folder, mounted read-only), so an agent reads only the sections that apply to it.
+function writeSections(agentId, sections) {
+  if (!/^[\w-]+$/.test(agentId)) fail(`agent id ${agentId} is not a plain id`);
+  const dir = join(resolve(repo, env("AIDENHQ_DATA_DIR", "./data")), "modules", "tasks", "catalog", "sections");
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, `${agentId}.json`), JSON.stringify(sections));
+}
+
 const revInputs = {};
 const handbooks = {}; // each agent's compiled AGENTS.md (the fast lane's prompt)
 async function ensureAgents(companyId, fleetIssues) {
@@ -350,13 +359,18 @@ async function ensureAgents(companyId, fleetIssues) {
   const { json: agents } = await api("GET", `/api/companies/${companyId}/agents`);
   // Everything that needs no Paperclip call first, in config order (revInputs and handbooks stay keyed by config).
   const plans = Object.entries(cfg.agents ?? {}).map(([key, a]) => {
-    let instructions;
-    try { instructions = handbookParts(cfg, key, a, { repo, instanceDir, engines: ENGINES, fleetIssues }).map(([, t]) => t).join(""); } catch (e) { fail(e.message); }
+    let instructions, sections, lane;
+    try {
+      instructions = handbookParts(cfg, key, a, { repo, instanceDir, engines: ENGINES, fleetIssues }).map(([, t]) => t).join("");
+      sections = onDemandSections(cfg, a, { repo, fleetIssues });
+      lane = laneHandbook(cfg, a, { repo, instanceDir, fleetIssues });
+    } catch (e) { fail(e.message); }
     const agent = agents.find((x) => x.metadata?.setupKey === `aidenhq:${key}` && x.status !== "terminated") ?? agents.find((x) => x.name === a.name && x.status !== "terminated");
     const body = agentBody(key, a, agent);
-    revInputs[key] = instructions + JSON.stringify(body.adapterConfig); // the rev's text (revOf)
-    // The lane gets the agent's own handbook and the prompts marked for it (memory), not the shared run sections (task flow, notify_owner replies).
-    handbooks[key] = readInstructions(a) + promptParts(cfg, a, { repo, fleetIssues, lane: true }).map(([, t]) => t).join("");
+    revInputs[key] = instructions + JSON.stringify(sections) + JSON.stringify(body.adapterConfig); // the rev's text (revOf)
+    // The lane gets the agent's own handbook, the untrusted-text rule and the prompts marked for it (memory), not the shared
+    // run sections (task flow, notify_owner replies).
+    handbooks[key] = lane;
     if (agent && agent.adapterType !== body.adapterType) fail(`agent ${a.name}: adapter is ${agent.adapterType} in Paperclip, ${body.adapterType} in the config`);
     // runner: "legacy" — since 2026.1106 new agents default to the native Paperclip Runner (adapterType
     // paperclip_runner), which drops our extraArgs (MCP scoping, sandbox). Pin legacy on create and update.
@@ -368,7 +382,7 @@ async function ensureAgents(companyId, fleetIssues) {
     // agent verifies with opencode on the model gateway (agent-probe.mjs), and the update below drops that env again.
     const probeBody = a.image && !runnerBox(a) ? agentBody(key, { ...a, image: undefined }, agent) : body;
     const unscoped = probeConfig(body.adapterType, probeBody.adapterConfig, { codexArgs: cfg.codex_args, harnessSecretId });
-    return { key, a, agent, body, unscoped, instructions };
+    return { key, a, agent, body, unscoped, instructions, sections };
   });
   // The agent's real (scoped) config. Paperclip merges adapterConfig: an OpenCode runner agent's probe env (the harness key) is cleared here.
   const scope = async ({ agent, body }) => {
@@ -400,11 +414,12 @@ async function ensureAgents(companyId, fleetIssues) {
   // Every other agent already runs scoped: its new config replaces the old in one PATCH, so these run a few side by side
   // (three round trips per agent otherwise add up), with the handbook sync and the read-back.
   const updated = await mapLimit(plans, 4, async (p) => {
-    const { a, body, instructions } = p;
+    const { a, body, instructions, sections } = p;
     if (!p.scoped) await scope(p);
     // Instructions are revisioned (2026.1106): write against the current revision, and only when changed.
     const cur = (await api("GET", `/api/agents/${p.agent.id}/instructions-bundle/file?path=AGENTS.md`, undefined, { allow: [404] })).json;
     if (cur.content !== instructions) await api("PUT", `/api/agents/${p.agent.id}/instructions-bundle/file`, { path: "AGENTS.md", content: instructions, baseRevisionId: cur.revision?.id ?? null });
+    writeSections(p.agent.id, sections);
     step(`Updated agent ${a.name}`);
     const agent = (await api("GET", `/api/agents/${p.agent.id}`)).json;
     if (agent.adapterType !== body.adapterType) fail(`agent ${a.name}: Paperclip has adapter ${agent.adapterType} after setup, expected ${body.adapterType} on the legacy runner`);

@@ -109,6 +109,13 @@ overrides:
   (`connection.tool` granted), `roles`, `modules` (enabled) and `fields` (an agent field: `true` means set and not false,
   anything else equal): every `when` test holds and no `unless` test. Ordered first, normal, last, then by module, then id.
   `lane: true` adds it to the fast chat lane's prompt too. A section that serves only some agents says so in `when`.
+  A section file may open with frontmatter: `load: on_demand` with a one-line `summary` keeps its text out of the
+  handbook; the handbook lists `id: summary` under "Sections on demand" and the agent reads the text with
+  `handbook_section` (tasks module) when its work calls for it. `load: always` (the default) is for rules that guard
+  risk and for what applies to every turn.
+- `skills/<name>/SKILL.md` in a module: a skill in Codex's format (`name`, `description`, optional `when`/`unless`), an
+  on-demand section `<module>.<name>` (its description is the summary) for the agents the module defines and those
+  granted one of its connections.
   `node scripts/compile.mjs --sizes` prints each crew agent's handbook bytes per section (`scripts/handbook.mjs`) and
   writes nothing.
 - Disabling a module pauses its agents and routines; nothing is deleted.
