@@ -78,7 +78,7 @@ larger build, done with subagents, to get this ideal result.
 
 - **A. Board wizard driven by module-declared steps (picked).**
   - The kernel's `/setup` shrinks to account, authenticator and model.
-  - The board runs the wizard at first sign-in, one screen per step a module marks `wizard:`.
+  - The board runs the wizard at first sign-in, one screen per module card marked `wizard: true`.
   - It ends in Aiden's chat.
   - Reuses the board's UI, design system and Google connect flow.
 - **B. Grow the kernel's `/setup` into the whole wizard.** Rejected: plain server-rendered HTML, and it pulls sign-in
@@ -388,9 +388,9 @@ The prompt's final message links to it.
 | `ops/setup.sh --unattended`, `ops/apply-config.sh` | pull instead of build, staged start, public exposure default with Caddy (U2), recovery key shown by the kernel |
 | kernel `/setup` | account, authenticator, OpenRouter PKCE (+ paste fallback); recovery key and `github_bot_token` move out |
 | kernel | admin secret-write endpoint for declared `setup:` secrets, recreating that module's containers; `/recovery-key` show-once page |
-| `scripts/modules.mjs`, compile | `wizard:` block validated and copied into `config/modules.json` |
-| board | `/welcome` wizard, three step kinds, Settings → Setup guide, welcome note to Aiden at the end |
-| modules: channel-telegram, channel-slack, google | `wizard:` blocks; Telegram and Slack pairing; Slack `setup:` fields; Slack and Google join the bundle; Google guided-setup card |
+| `scripts/modules.mjs`, compile | `card:` block validated and copied into `config/modules.json` |
+| board | `/welcome` wizard, one card component, Settings → Setup guide, welcome note to Aiden at the end |
+| modules: channel-telegram, channel-slack, google | `card:` blocks; Telegram and Slack pairing; Slack `setup:` fields; Slack and Google join the bundle; Google guided-setup card |
 | modules: codehost role | new `codehost-local`; `codehost-github` provides `codehost`; engineering requires `codehost`; GitHub modules leave the bundle |
 | apps platform, runner, ci | read repos and run checks through the code host role |
 | modules: chief-of-staff | onboarding tour text in the handbook |
@@ -401,7 +401,7 @@ The prompt's final message links to it.
 1. The fast-first-chat spike, then prebuilt images, the staged start, the Caddy front door (U2) and the installer and
    prompt changes: the one-link, two-minute install.
 2. Kernel `/setup` slimmed, with OpenRouter PKCE.
-3. Kernel secret-write endpoint, `wizard:` schema, board wizard with the recovery-key step.
+3. Kernel secret-write endpoint, `card:` schema, board wizard with the recovery-key step.
 4. Telegram pairing and the Slack step.
 5. Aiden's tour, the guided Google setup and the `/start` page.
 6. `codehost-local` and the code host role (can run in parallel with 2 to 5). GitHub leaves the bundle only when it
