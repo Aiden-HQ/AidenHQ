@@ -16,7 +16,9 @@
 #   sudo bash ops/test/unattended-install.sh   (root, git, node 24, kernel/ and scripts/ npm ci'd; it adds a user and
 #                                               /opt/aidenhq, so it runs only where /.dockerenv exists or CI is set)
 # Not in CI: our runners' job containers set no-new-privileges, so sudo can't reach root there. Run it in a container,
-# e.g. a Node 24 Debian image with the checkout mounted, after npm ci in kernel/ and scripts/.
+# e.g. a Node 24 Debian image with the checkout mounted, after npm ci in kernel/ and scripts/. The kernel refuses to start
+# where jobs can't be jailed, so the container runs --privileged with passt, bubblewrap and iproute2 installed. The release
+# names the official marketplace at modules-pin.json's sha, which compile fetches from GitHub (public, anonymous).
 set -euo pipefail
 src="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 [ "$(id -u)" = 0 ] || exec sudo -n env PATH="$PATH" CI="${CI:-}" bash "$0" "$@"
@@ -51,7 +53,8 @@ g -C "$work/k" init -q && g -C "$work/k" add -A && g -C "$work/k" commit -qm ker
 g clone -q --bare "$work/k" "$work/git/kernel.git"
 KSHA="$(git -C "$work/k" rev-parse HEAD)"
 mkdir -p "$work/d/releases"
-printf '{ "name": "AidenHQ", "release": "2026.11", "kernel": "%s" }\n' "$KSHA" > "$work/d/releases/2026.11.json"
+MSHA="$(sed -n 's/.*"sha": *"\([0-9a-f]*\)".*/\1/p' "$src/modules-pin.json")"   # the official marketplace at the product's pin
+printf '{ "name": "AidenHQ", "release": "2026.11", "kernel": "%s", "marketplace": { "name": "aidenhq", "source": { "source": "github", "repo": "Aiden-HQ/aidenhq-modules" }, "sha": "%s" }, "modules": {} }\n' "$KSHA" "$MSHA" > "$work/d/releases/2026.11.json"
 g -C "$work/d" init -q && g -C "$work/d" add -A && g -C "$work/d" commit -qm release
 g clone -q --bare "$work/d" "$work/git/distro.git"
 RSHA="$(git -C "$work/d" rev-parse HEAD)"
@@ -120,7 +123,13 @@ EOF
 printf '#!/bin/sh\ncase "$1" in info) echo "[]" ;; esac\nexit 0\n' > "$work/bin/docker"
 # git: notes whether a fetch carries the kernel token's header for github.com (that it is set, never its value).
 : > "$work/git-auth.log"; chmod 0666 "$work/git-auth.log"
-printf '#!/bin/sh\ncase " $* " in *" fetch "*) [ -n "${GIT_CONFIG_VALUE_0:-}" ] && echo "fetch $GIT_CONFIG_KEY_0" >> %s/git-auth.log ;; esac\nexec %s "$@"\n' "$work" "$(command -v git)" > "$work/bin/git"
+# The release's repository (compile resolves instance.yaml's release from it) is the local bare one, offline.
+cat > "$work/bin/git" <<EOF
+#!/usr/bin/env bash
+case " \$* " in *" fetch "*) [ -n "\${GIT_CONFIG_VALUE_0:-}" ] && echo "fetch \$GIT_CONFIG_KEY_0" >> $work/git-auth.log ;; esac
+a=(); for x in "\$@"; do [ "\$x" = https://github.com/acme/aidenhq-distro.git ] && x=$work/git/distro.git; a+=("\$x"); done
+exec $(command -v git) "\${a[@]}"
+EOF
 printf '#!/bin/sh\nexit 0\n' > "$work/bin/codex"; cp "$work/bin/codex" "$work/bin/opencode"
 chmod 0755 "$work/bin"/*
 
