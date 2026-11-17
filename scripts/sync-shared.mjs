@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 // Copies shared code into the services that use it. Each service is its own Docker build context, so it holds a
-// byte-identical copy; scripts/test/shared.test.mjs fails when one drifts.
+// byte-identical copy; scripts/test/shared.test.mjs fails when one in this repository drifts, and the official modules' CI
+// (.github/ci/shared-copies.mjs) when one of theirs differs from the product they pin.
 //   kernel/sdk/src/{caller,fence}.ts the caller assertion check and the fence, in every module server (src/aidenhq-sdk/)
 //   kernel/sdk/src/executor.ts       the executor side of write kinds, in each module server with an executor
 //   kernel/sdk/src/reviewer.ts       the reviewer side of reviewer@1, in the reviewer module's service
