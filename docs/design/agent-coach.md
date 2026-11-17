@@ -10,7 +10,7 @@ right, and an agent can't see its own blind spots. The owner's corrections becom
 regress (the "no invented plans" rule broke again the same day).
 
 ## What
-A core agent, `coach` ("Agent Coach"), reviews other agents' outcomes and files fixes through the existing paths.
+An agent of the `coach` module (`modules/coach`), `coach` ("Agent Coach"), reviews other agents' outcomes and files fixes through the existing paths.
 
 - **Model:** DeepSeek Flash; `advisor_ask` (GPT Sol) for hard calls.
 - **Schedule:** routine every 6 hours. Each run reviews the agents setup lists as due (at least one): an agent is due when
@@ -58,7 +58,7 @@ No per-agent eval harness beyond the existing correction cases; no auto-apply ou
 operational health.
 
 ## Rollout
-Core module agent + routine + `coach_due` + health `checks` in the detector and templates. Installing or removing the coach
+Module agent (`modules/coach`) + routine + `coach_due` + health `checks` in the detector and templates. Installing or removing the coach
 module is the switch. Cost bound: the usual caps ($2/run, $30/agent/day).
 
 ## Refinements after Codex review (2026-11-13)

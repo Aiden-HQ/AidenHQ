@@ -34,8 +34,8 @@ Commands run as `<you>` on the host named in the step, unless a step says `sudo`
 |---|---|---|
 | Product checkout, with `.env`, `compose.override.yaml`, `config/` and `data/` | `~/aidenhq` | rsync: pre-seed live, then a cold final pass |
 | Paperclip (embedded Postgres, codex homes, workspaces) | `data/paperclip/` | Same rsync. The `db/` folder counts only from the cold pass. |
-| Board (data) and accounts (auth secret) | `data/board/` (`board.sqlite`), `data/kernel/auth/` (`auth.db`, `auth.secret`) | Same rsync, cold |
-| Gateway ledger, apps-mcp, ops-mcp, slack-live, apps-edge node state | `data/gateway/`, `data/apps-mcp/`, `data/ops-mcp/`, `data/slack-live/`, `data/apps-edge/` | Same rsync, cold |
+| Board (data), and the kernel's records, ledger and accounts (auth secret) | `data/board/` (`board.sqlite`), `data/kernel/` (`kernel.db`: approval records, jobs, the spend ledger; `auth/`: `auth.db`, `auth.secret`) | Same rsync, cold |
+| apps-mcp, ops-mcp, slack-live, apps-edge node state | `data/apps-mcp/`, `data/ops-mcp/`, `data/slack-live/`, `data/apps-edge/` | Same rsync, cold |
 | App data (the warehouse and other stateful apps) | Docker volumes `app-<name>_<vol>` | Streamed with tar, cold, before the app's first deploy on the new host |
 | Secrets | The vault view `~/.config/aidenhq` | Plaintext over SSH into the new host's mounted view, which encrypts it under the new vault |
 | Runner state and Engineer work dirs | `~/.local/state/aidenhq-runner`, `~/.local/state/aidenhq-computers`, `~/aidenhq-work` | rsync, cold final pass |
@@ -421,16 +421,16 @@ Telegram task links and the app links people have.
    This:
    - checks out the pinned product;
    - compiles;
-   - installs and starts the gateway;
+   - installs and starts the kernel unit (`aidenhq-kernel`: approvals, jobs, spend caps, the model gateway);
    - runs `docker compose up -d --build`, against the restored data;
    - runs `paperclip-setup.mjs`;
    - runs `ops/warehouse-sources.sh`, which skips while the warehouse is down.
 2. Install and enable the same user units the old host had:
 
    ```sh
-   cp ops/units/{aidenhq-runner,aidenhq-computers,prune-runs,prune-docker,aidenhq-security-sbom}.* ops/units/aidenhq-ci-runner@.service ~/.config/systemd/user/
+   cp ops/units/{aidenhq-kernel,aidenhq-runner,aidenhq-computers,prune-runs,prune-docker,aidenhq-security-sbom}.* ops/units/aidenhq-ci-runner@.service ~/.config/systemd/user/
    systemctl --user daemon-reload
-   systemctl --user enable --now aidenhq-runner aidenhq-computers prune-runs.timer prune-docker.timer aidenhq-security-sbom.timer
+   systemctl --user enable --now aidenhq-kernel aidenhq-runner aidenhq-computers prune-runs.timer prune-docker.timer aidenhq-security-sbom.timer
    systemctl --user enable --now aidenhq-ci-runner@1 aidenhq-ci-runner@2   # the instances the old host had
    ```
 
@@ -488,7 +488,7 @@ clean: scheduled routines fire, agents finish their tasks, backups run (step 10)
    containers, re-enable its user units and serve routes, then run `node scripts/fleet-pause.mjs resume` (its own
    `data/fleet-paused.json` is still there).
 
-Rollback loses everything written on the new host since the cutover: Paperclip tasks and comments, board approvals and
+Rollback loses everything written on the new host since the cutover: Paperclip tasks and comments, approval records and
 chats, warehouse rows and app data. The source writers' gap syncs refill Slack, GitHub and Jira; the rest has to be
 redone. Never run both hosts at once.
 
@@ -507,7 +507,7 @@ every night with restic.
 **What it sends:**
 
 - `scripts/backup.sh --plain`. This covers the whole data dir, with every SQLite database copied online, Paperclip's
-  hourly dumps in place of its live `db/`, and the board's accounts and `auth.secret`. It also covers the runner's
+  hourly dumps in place of its live `db/`, and the kernel's accounts and `auth.secret`. It also covers the runner's
   state, every `app-*` volume (the warehouse through its nightly dump volume, not its live `pgdata`), the YAML config and
   the instance repo bundle.
 - The vault's ciphertext, `~/.local/share/aidenhq/vault.enc`. It is safe off-host: without the TPM, the host key or

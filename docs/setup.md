@@ -16,7 +16,7 @@ scripts/bootstrap.sh                 # secrets dir, data dirs
 # create your private instance repo (instance.yaml, apps.yaml, agents/), check it out, and set
 # AIDENHQ_INSTANCE_DIR=<checkout> in .env
 ops/apply-config.sh                  # instance -> pinned product -> compile -> compose up -> setup
-mkdir -p ~/.config/systemd/user && cp ops/units/aidenhq-{gateway,runner,computers}.service ops/units/prune-runs.* ops/units/prune-docker.* ~/.config/systemd/user/
+mkdir -p ~/.config/systemd/user && cp ops/units/aidenhq-{kernel,runner,computers}.service ops/units/prune-runs.* ops/units/prune-docker.* ~/.config/systemd/user/
 systemctl --user enable --now aidenhq-kernel aidenhq-runner aidenhq-computers prune-runs.timer prune-docker.timer
 ```
 
@@ -70,7 +70,7 @@ runner owns); a repository in another org gets Contents only.
 
 ## Board accounts
 
-Every board route, reads included, needs a signed-in admin with an authenticator app (design: [design/access.md](design/access.md)). The owner's account is `settings.owner_email`.
+Every board route, reads included, needs a signed-in admin with an authenticator app (design: [design/access.md](design/access.md)). The owner's account is `settings.owner_email`. Accounts live in the kernel (`kernel/src/accounts.ts`; auth db `data/kernel/auth/auth.db`), and the kernel's admin pages on `127.0.0.1:3120` administer them; the board links there.
 
 1. Setup prints the owner's one-time link at the end (72 hours, for `OWNER_EMAIL`, which must equal
    `settings.owner_email`). That makes the account, so a later link comes from `--reset <email>` (below), not `--link`.
@@ -125,7 +125,7 @@ If your organisation wants change control on Access policies, agree the process 
       default_role: member   # optional: what people get with no role set (else the app's manifest, else blocked)
   ```
 
-  Who may use the app is set per app, not here: the owner names the app's admins on the board (Accounts, App admins),
+  Who may use the app is set per app, not here: the owner names the app's admins on the kernel's admin pages (Accounts, App admins),
   and they assign roles on the app's Access page (see [App access](configuration.md#app-access)).
 
 Then apply. Compile writes `config/gate.json` and `config/cloudflared.yml` (every `share.host` → the gate, then a 404),
@@ -137,17 +137,17 @@ once after the apply, so it stops taking anonymous tailnet callers (`AIDENHQ_ANO
 
 ### Accounts and sign-in mode
 
-The gate reads the board's account map, `data/gate/accounts.json` (accounts: email, name, role, disabled; each shared
-app's default role and role assignments; no secrets; the board rewrites it on every change and every minute). It is the
+The gate reads the kernel's account map, `data/gate/accounts.json` (accounts: email, name, role, disabled; each shared
+app's default role and role assignments; no secrets; the kernel rewrites it on every change and every minute). It is the
 only file of `data/` the gate mounts. A disabled account is refused on every app, and every enabled admin account is an
 admin of every shared app. If the gate can't read the file it refuses everyone (503).
 
 `settings.app_login` picks how visitors sign in:
 - `access` (default): as above, Cloudflare Access on every host.
 - `password`: for owners without an identity provider in Access. Sign-in is served only on the my-apps host
-  (`edge.my_apps.host`, required): the gate passes a fixed set of `/.auth/*` pages and endpoints there to the board's
-  auth listener on `127.0.0.1:3129`, and never the session or token endpoints. An app host without a session sends the
-  visitor to the my-apps host, which (once signed in) gets a one-time code from the board, bound to that app host and
+  (`edge.my_apps.host`, required): the gate passes a fixed set of `/.auth/*` pages and endpoints there to the kernel's
+  sign-in listener on `127.0.0.1:3129`, and never the session or token endpoints. An app host without a session sends the
+  visitor to the my-apps host, which (once signed in) gets a one-time code from the kernel, bound to that app host and
   valid for 60 s and to the browser that started it (a state nonce in a short-lived cookie on the app host); the app
   host's `/.auth/handoff` redeems it server-side and sets its own host-only `__Host-better-auth.session_token` cookie.
   `POST /.auth/sign-out` on an app host revokes that host's session; signing out on the my-apps host revokes all of them. No cookie is shared across hosts, the gate never passes an auth cookie to an

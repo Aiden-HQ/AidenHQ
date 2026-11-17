@@ -1,5 +1,7 @@
 # The codex-openrouter engine
 
+(Since lean core: the engine is `modules/engine-codex`; the gateway is the kernel's, `kernel/src/gateway/`; the job sandbox is the kernel's `kernel/src/sandbox.ts` (`layout()`), and jobs run through its `/v1/jobs`; the crew's Codex args are `providers.engine[].crew.args` in `modules/engine-codex/module.yaml`. The private-read endpoints and ports in the table below are the original design; agents now reach every connection through the kernel's tool proxy at `/c/<connection>/mcp`.)
+
 Status: built 2026-11-13. The primary engine for runner jobs (the Software and Platform Engineers, light: no private reads).
 
 ## What it is
@@ -8,8 +10,8 @@ Status: built 2026-11-13. The primary engine for runner jobs (the Software and P
 the model gateway. It is the `codex` engine with a different model provider:
 
 - **Provider.** `-c model_provider="or"` with `model_providers.or` = the gateway's `/api/v1`, `wire_api="responses"`,
-  `env_key="AIDENHQ_GATEWAY_KEY"`. That is the same provider wiring Paperclip-hosted agents use (`codex_args` in
-  `modules/core/module.yaml`). The key is the job's `modelToken` (kind `agent`, the Engineer's id, the task id, a TTL of
+  `env_key="AIDENHQ_GATEWAY_KEY"`. That is the same provider wiring Paperclip-hosted agents use (the crew args in
+  `modules/engine-codex/module.yaml`). The key is the job's `modelToken` (kind `agent`, the Engineer's id, the task id, a TTL of
   the job timeout plus an hour), exactly what the `openrouter` engine gives opencode. The OpenRouter key never reaches
   the job. `shell_environment_policy.exclude` keeps the key and the read tokens (`*_MCP_TOKEN`) out of every command
   Codex runs; the smoke run confirmed none is visible to a tool call.
@@ -33,7 +35,7 @@ Engineer without the flag, gets none. Every engine can carry them (opencode too,
 
 Owner decision, 2026-11-13: the Software and Platform Engineers are **light** Engineers, with no private reads: Primer
 and web search only. A separate strong App Engineer will opt in later. Any engine may get private reads because the
-gateway forces Zero Data Retention routing on every OpenRouter call (`provider.zdr = true` in `services/gateway/lib.ts`)
+gateway forces Zero Data Retention routing on every OpenRouter call (`provider.zdr = true` in `kernel/src/gateway/lib.ts`)
 and OpenRouter ZDR is approved for all data.
 
 **Web search.** A light job gets `web_search="live"` (package docs). A job with private reads gets none, so private data
@@ -56,7 +58,7 @@ engine.
 ## The host sandbox: an allowlist (every engine)
 
 Jobs used to run under `bwrap --dev-bind / /` with a list of masked paths: a job could read anything not on the list
-(other tasks' folders, the product checkout, logs, the home directory). Now `layout()` in `engines.mjs` binds only:
+(other tasks' folders, the product checkout, logs, the home directory). Now `layout()` in `kernel/src/sandbox.ts` binds only:
 
 - read-write: the task folder, the engine's state (this engine's Codex home; opencode's and Claude Code's dirs for the
   others; the host's `~/.codex` for `codex`, whose login lives there), the job's gcloud dir and the run's last-message
@@ -103,7 +105,7 @@ The product's `codex-home` contains:
   `design-system` (building UI with `modules/apps-platform/design-system/`).
 
 **MCP servers.** The agent's jobcaps (Primer; the four private reads for an Engineer with `private_reads`), each at the
-model gateway's `/c/<connection>/mcp` with the job token (`AIDENHQ_JOB_TOKEN`), each with `default_tools_approval_mode="approve"` (the same as
+kernel's `/c/<connection>/mcp` with the job token (`AIDENHQ_JOB_TOKEN`), each with `default_tools_approval_mode="approve"` (the same as
 `codex`). There are no local stdio servers. A stdio MCP server is a child of Codex, outside the tool sandbox, so any
 server that executes repository code (a language server does) would escape the write boundary.
 

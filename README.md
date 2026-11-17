@@ -13,10 +13,11 @@ turns what you ask for into work for the right agent, chases it, and brings you 
 | Block | What it is |
 |---|---|
 | **Chief of staff (Aiden)** | The one agent you talk to. Turns chat and forwards into tasks, delegates, chases, sends the daily brief, relays your approvals word for word. |
-| **Crews** | Specialist agents on schedules and events. Core: Aiden, Researcher, DevOps Engineer, Agent Architect, Agent Coach, Platform Engineer. Modules add the rest (Follow-up Tracker with its Slack and inbox scouts, Meeting Librarian, Engineers, Security Watch, ...). Each is a `module.yaml` entry plus a handbook (`modules/<m>/agents/<key>/AGENTS.md`). |
+| **Crews** | Specialist agents on schedules and events. The default bundle brings Aiden, Researcher, DevOps Engineer, Agent Architect, Agent Coach and Platform Engineer; other modules add the rest (Follow-up Tracker with its Slack and inbox scouts, Meeting Librarian, Engineers, Security Watch, ...). Each is a `module.yaml` entry plus a handbook (`modules/<m>/agents/<key>/AGENTS.md`). |
 | **Control plane** | [Paperclip](https://github.com/paperclipai/paperclip): tasks, routines, budgets, approvals, run history. Agents run on Codex via OpenRouter. |
 | **Shared connections** | MCP servers any agent can be granted: Google Workspace, Slack, Glean, Jira, GitHub, Primer, tasks, apps (Grafana and ClickHouse are runner-only). Each optional one is a module (`modules/<m>/connections/`). Tools are tagged read or write; every call is checked against the agent's grants. |
-| **Runner** | Host service for coding jobs. Pushes, PRs and merges happen only on the owner's own words, enforced in code. |
+| **Kernel** | The small trusted host service every agent call crosses: the tool proxy and grants, approval records and tiers, Engineer jobs in a sandbox, the model gateway and spend caps, accounts and the approval pages. It knows no workflow; everything else is a module ([docs/modules.md](docs/modules.md)). |
+| **Runner** | Host service that dispatches Engineer coding jobs and proposes git writes. Pushes, PRs and merges are kernel approval records, tiered in code. |
 | **Apps platform** | Long-running services agents deploy and maintain (`apps-mcp`; registry is the instance's `apps.yaml` plus module apps), each sandboxed: no host access unless its registry entry grants it. |
 | **Warehouse** | Shared Postgres app for sources and apps (`modules/warehouse/apps/warehouse`). |
 | **Roles** | Agent roles decide which tools and restricted apps each agent may use. |
@@ -26,24 +27,25 @@ turns what you ask for into work for the right agent, chases it, and brings you 
 ## Architecture
 
 ```
- You ── Telegram / Slack ──► owner channels (Telegram, Slack) ──► Aiden (chief of staff)
-                                                                   │ delegates
- Board (daily view) ────────┐                                      ▼
- Paperclip UI (fleet) ──────┼───────────── Paperclip (tasks, routines, runs) ── crews (Codex on OpenRouter)
-                            │                         │                          │ MCP
-                            │                         │              shared connections (Google, Slack, GitHub, ...)
-                            │                         ▼
-                            │                 runner (host, systemd) ── coding jobs, git gates
-                            └──────────────── apps-mcp ── sandboxed apps (warehouse, ...)
+ You ── Telegram / Slack ──► channel modules ──┐
+ You ── browser ──► board module ──────────────┤ /v1
+ You ── browser ──► kernel approval pages ─────┤
+                                               ▼
+                 kernel (host): tool proxy, grants, records, tiers, jobs, gateway, accounts
+                    │ reconciles          ▲ every tool and model call          │ proxies, calls
+                    ▼                     │                                    ▼
+          Paperclip (tasks, routines) ── agents from modules (Codex on OpenRouter)   connection, engine,
+                                                                                     reviewer and check modules
 ```
 
-Everything runs in Docker Compose on one host, plus the runner as a systemd user unit. Inbound is LAN/Tailscale
-only. See [docs/architecture.md](docs/architecture.md).
+The kernel, the runner and the computer launcher are systemd user units; Paperclip, the board and every module's
+containers run in Docker Compose on the same host. Inbound comes only through the front door the `exposure` setting
+picks (Tailscale by default). See [docs/architecture.md](docs/architecture.md).
 
 ## Get started
 
-- **Concepts:** [docs/concepts.md](docs/concepts.md) explains Aiden, crews, modules, connections, grants, apps, the
-  warehouse, the runner and the approval tiers in one page.
+- **Concepts:** [docs/concepts.md](docs/concepts.md) explains Aiden, crews, the kernel, modules, connections, grants,
+  apps, the warehouse, the runner and the approval tiers in one page.
 - **Set up your own instance:** [SETUP.md](SETUP.md) walks a person or Claude Code from a fresh Ubuntu VM to a working
   instance, with a check after every step (in Claude Code, ask it to "set up AidenHQ": the `setup-aidenhq` skill walks
   it). Each person runs their own server, instance repo and keys.
@@ -75,17 +77,19 @@ $0); use the OpenRouter key limit instead.
 
 ## Modules and the instance
 
-AidenHQ is a small core (Aiden, Researcher, DevOps Engineer, Agent Architect, Agent Coach, Platform Engineer, board, runner,
-`apps-mcp`, `tasks`, the owner channel) plus optional modules in `modules/<name>/`: `open-loops`,
-`meetings`, `engineering`, `design`, `security`, `fleet-ops`, `librarian`, `ci`, `warehouse`, and the connections
-`slack`, `google`, `github`, `glean`, `jira`, `primer`, `grafana`, `clickhouse`. Your configuration lives in a
-separate private **instance repo**: `instance.yaml` (pinned `product:` commit, `modules`, `settings`, limited
-`overrides`), `apps.yaml` and `agents/`. To enable a module, add it to `modules:` in `instance.yaml` and apply. See
-[docs/configuration.md](docs/configuration.md).
+AidenHQ is a small kernel plus modules in `modules/<name>/`. Everything you see is a module: Aiden (`chief-of-staff`),
+the board, the owner channels, `tasks`, engines, the AI reviewer, grading, the apps platform, the warehouse, the crews
+(`open-loops`, `meetings`, `engineering`, `design`, `security`, `fleet-ops`, `librarian`, `coach`, `platform`, ...) and the
+connections (`slack`, `google`, `github`, `glean`, `jira`, `primer`, `grafana`, `clickhouse`). Your configuration lives in
+a separate private **instance repo**: `instance.yaml` (pinned `product:` commit, `modules`, `settings`, limited
+`overrides`), `apps.yaml` and `agents/`. An instance runs exactly the modules `instance.yaml` lists (plus what they
+require); a new one starts from the default bundle in `modules/marketplace.json`. To add a module, list it and apply;
+removing it turns it off. Modules can also come from third-party marketplaces at a pinned commit. See
+[docs/configuration.md](docs/configuration.md); to write one, [docs/modules.md](docs/modules.md).
 
 ## Security posture
 
-- **Inbound is private:** LAN or Tailscale only; board accounts with password and TOTP; shared apps behind Cloudflare
+- **Inbound is private:** one front door (Tailscale by default); accounts with password and TOTP; shared apps behind Cloudflare
   Access and the gate.
 - **Outbound is open** by design: agents may call any service they are granted.
 - **Gates in code:** tool grants, git writes and approvals are enforced below the model, tiered by code.
@@ -100,7 +104,8 @@ separate private **instance repo**: `instance.yaml` (pinned `product:` commit, `
 | [docs/USAGE.md](docs/USAGE.md) | How to use it day to day |
 | [docs/setup.md](docs/setup.md) | Setup reference: by-hand install, connections, shared access |
 | [docs/configuration.md](docs/configuration.md) | Modules, the instance repo, settings, grants, the compile pipeline |
-| [docs/architecture.md](docs/architecture.md) | Components, data flow and trust boundaries |
+| [docs/architecture.md](docs/architecture.md) | The kernel, the modules, data flow and trust boundaries |
+| [docs/modules.md](docs/modules.md) | Writing a module: every `module.yaml` key, what the kernel provides, testing |
 | [docs/core-components.md](docs/core-components.md) | Our core components and what each adds over Paperclip |
 | [docs/operations.md](docs/operations.md) | Apply, upgrade, rollback, health, backups, pruning, debugging |
 | [docs/design/](docs/design/) | Design notes: approvals, access, sources, the Engineer conversations |

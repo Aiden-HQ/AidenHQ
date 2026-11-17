@@ -126,7 +126,7 @@ One run sets up the whole machine. It is idempotent: if it stops partway, fix th
    folders);
 4. creates your **instance repo**: a local git repo at `~/aidenhq-instance`, whose `origin` is a bare repo at
    `~/aidenhq-instance.git` on the same VM (no GitHub needed). It contains `instance.yaml` (pinned to the product
-   commit you checked out, your name, email, timezone and modules), an empty `apps.yaml` and `agents/`. There is no
+   commit you checked out, your name, email, timezone and the default set of modules, the `bundle` in `modules/marketplace.json`; `instance.yaml` `modules:` lists every module the instance runs), an empty `apps.yaml` and `agents/`. There is no
    separate template: setup writes these files itself;
 5. makes your OpenRouter key: with `OPENROUTER_MANAGEMENT_KEY`, a new key named `aidenhq-<you>` with a monthly limit
    of `OPENROUTER_LIMIT_USD` (default 50); with `OPENROUTER_KEY`, that key as given;
@@ -135,7 +135,7 @@ One run sets up the whole machine. It is idempotent: if it stops partway, fix th
 8. runs `ops/apply-config.sh`: compiles the modules, starts the stack, creates your Paperclip account and company,
    then turns off Paperclip sign-up;
 9. publishes the board on your tailnet (`tailscale serve --bg --https=443 http://127.0.0.1:3121`), installs the
-   model gateway, runner, agent-computer launcher and run-pruning user units, and opens a Welcome chat with Aiden;
+   kernel (approvals, jobs, spend caps and the model gateway), runner, agent-computer launcher and run-pruning user units, and opens a Welcome chat with Aiden;
 10. prints your one-time board setup link.
 
 Write `~/person.env` (it holds secrets; never commit it, and delete it at the end):
@@ -242,7 +242,7 @@ in at `http://localhost:3100` shows your company with Aiden in its org chart.
 ### The runner's request reader
 
 Engineer jobs (the runner) read each request with a short `codex exec` call on the host. By default that goes through
-OpenRouter (the gateway, model `~deepseek/deepseek-flash-latest`), so a fresh install needs nothing here. To use a
+OpenRouter (the kernel's model gateway, model `~deepseek/deepseek-flash-latest`), so a fresh install needs nothing here. To use a
 ChatGPT login instead, run `codex login --device-auth` and set `intake: {codex_args: []}` in `config/runner.yaml` (not
 tracked in git), then `systemctl --user restart aidenhq-runner`.
 
@@ -254,7 +254,7 @@ Engineer task.
 
 Change config in one of two ways. Prefer the first:
 
-- **Ask Aiden.** "Install the slack module" or "set channels to web and telegram". The Platform Engineer edits the
+- **Ask Aiden.** "Install the slack module" or "remove the channel-telegram module". The Platform Engineer edits the
   instance repo and you approve the change with one tap.
 - **By hand.** Edit `~/aidenhq-instance/instance.yaml`, then
   `git -C ~/aidenhq-instance commit -am '<why>' && git -C ~/aidenhq-instance push origin main`, then
@@ -288,7 +288,7 @@ read -rs V && printf '%s' "$V" > ~/.config/aidenhq/<name> && chmod 600 ~/.config
    ```
 3. Save the token as `telegram_notify_bot_token` in the vault (snippet above), and add your chat id to `.env`:
    `echo 'TELEGRAM_OWNER_CHAT_ID=<chat id>' >> ~/aidenhq/.env`. Only that chat is accepted.
-4. Add `telegram` to `channels:` in `instance.yaml` (see [docs/configuration.md](docs/configuration.md)) and apply.
+4. Make sure `channel-telegram` is in `modules:` in `instance.yaml` (it is in the default set; see [docs/configuration.md](docs/configuration.md)) and apply.
 5. Restart the service that holds the token: `cd ~/aidenhq && docker compose up -d --force-recreate channel-telegram-telegram`.
 
 **Check:** `docker compose exec channel-telegram-telegram printenv TELEGRAM_OWNER_CHAT_ID` prints your chat id, and sending the
@@ -340,7 +340,7 @@ acts on GitHub as an App owned by an **agents org**, never as you.
 1. [org admin: GitHub] Create a GitHub organization for agent-built repos, for example `acme-agents`. You must be an
    owner of it.
 2. Name it: if `GITHUB_AGENTS_ORG=acme-agents` was in `person.env`, setup already wrote it. Otherwise add
-   `github_agents_org: acme-agents` to `instance.yaml` under `settings:`, commit, push and apply (step 7). The runner
+   `github_agents_org: acme-agents` (a `codehost-github` setting) to `instance.yaml` under `settings:`, commit, push and apply (step 7). The runner
    and the setup script both read the org from this setting.
 3. Create the App. The script serves a one-time plain-http page on port 8765, so give it an address your browser
    can reach, such as the server's tailnet IP:
@@ -367,7 +367,7 @@ New agents come from the **Agent Architect**. Open the board's Agents tab and pr
    design in plain words: what it does, what it can read, what it may change later, its schedule. Press
    **Build it**.
 2. The Platform Engineer writes the change. **Tap 1** creates the agent **in trial**: it can only read and report.
-   With the default `autonomy: off` this is an approval card on the board's Approvals page (and in Telegram), after the
+   With the default `autonomy: off` this is an approval card on the kernel's approval pages (linked from the board, and sent to Telegram), after the
    AI reviewer has read it when it is Tier 1. Other
    `autonomy` settings let some changes apply without you: see [docs/design/approvals.md](docs/design/approvals.md).
 3. The Architect reviews its work during the trial and fixes its handbook. After it passes your examples and two

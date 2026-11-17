@@ -1,7 +1,7 @@
 # Approvals: tiers, the AI reviewer and autonomy
 
-Every write with lasting effect (push, pull request, merge, close, fleet apply, app deploy) is an approval record on the
-board, not an agent's own action. Code assigns each record a tier from verified state. Routine, low-risk changes run at
+Every write with lasting effect (push, pull request, merge, close, fleet apply, app deploy) is an approval record in the
+kernel (`kernel/src/records.ts`), not an agent's own action. The board only reads the records and links to the kernel's pages. Code assigns each record a tier from verified state. Routine, low-risk changes run at
 once, everything else is decided by an AI reviewer, and authority-expanding changes by two reviewers on different model
 families who must both approve. The owner decides only when those two disagree, or after their own veto: about two
 decisions a week (owner, 2026-11-14). Friction (red checks, a moved head, a change too large to read) goes back to the
@@ -9,22 +9,21 @@ agent, never to the owner.
 
 ## Principles
 
-- **Code assigns the tier, never the request.** `services/runner/src/tiers.mjs` is pure (no I/O). It computes the tier
+- **Code assigns the tier, never the request.** The kernel's `kernel/src/tier.ts` is the generic tier function (pure): it takes each requester's proposed floor and raise, then applies the instance floor, check raises, the owner's earlier vetoes, `autonomy` and routine caps. Every term only raises. The runner's `services/runner/src/tiers.mjs` (also pure, no I/O) proposes the tier for the runner's own kinds
   from state the runner looked up itself: the authenticated requester, the real repos, bases and heads, the files in the
   actual diff, and the compiled config diff for `apply`. It runs when the request is filed and again just before it
   executes. A request with several parts takes its highest part (the panel above plain Tier 1), and anything unrecognized
   is Tier 2 (default deny).
 - **The reviewer can only escalate.** It may approve or reject a Tier 1 card, add the second reviewer (`second_review`),
   or hand it to the owner. It never lowers a tier, never removes code's panel flag and never decides Tier 2.
-- **The board is the audit trail.** Each record stores `tier`, `reason` and `decided_by`, which the board stamps
+- **The kernel's records are the audit trail.** Each record stores `tier`, `reason` and `decided_by`, which the kernel stamps
   server-side from the credential used (`owner:board`, `owner:telegram`, `owner:reply`, `account:<id>`,
   `reviewer:<model>`, `reviewer:<model>+<second>` for the panel, `auto:<rule>`), never from a caller-supplied field.
 - **Earlier decisions (replaced "sticky", 2026-11-14).** The owner's rejection of an action on a task is a veto: every
   later request of it there is the owner's until they approve one. The reviewer's rejection holds for exactly that content
   (the same commits are refused by code, under any branch name); changed content is reviewed afresh with every earlier
   note on the task attached; after three reviewer rejections on the task since the owner's last yes (a rejected change
-  approved later no longer counts), the action is parked with a note to the agent. Code's own refusals (moved, unreadable, too large) never count; a card closed because its head moved is stored `stale`, not `rejected`. `tiers.mjs` `priorDecisions`; the board keeps
-  its own check of the owner's veto.
+  approved later no longer counts), the action is parked with a note to the agent. Code's own refusals (moved, unreadable, too large) never count; a card closed because its head moved is stored `stale`, not `rejected`. `priorDecisions` in `tier.ts` and `tiers.mjs`; the kernel enforces the owner's veto.
 - **A rejected head stays inspectable.** A `pr` card's head is reviewed before anything is pushed, so a rejection that
   held to its content would otherwise have nothing left to read: the runner keeps each reviewed head in its cache clone as
   `refs/reviewed/<approval>/<branch>` when the card is filed, the rejection names that ref, and a later task's clone
@@ -34,14 +33,13 @@ agent, never to the owner.
   authentication, sandbox or secret control, changes who can approve, widens credentials, grants, public access, data
   destinations or spending, or edits the gate's own core. Code decides most of it (`GATE_CORE` in the platform check,
   `modules/platform/src/check.mjs`, the git rules in `modules/codehost-github/src/plan.mjs`, the module and apply rules in
-  `tiers.mjs`, `panel: true`): the runner's `tiers`, `review-request`, `siblings`, `apply`, `netjail`, `state`, `config`,
+  `tiers.mjs`, `panel: true`; the kernel's loader classifies a module's authority diff in `kernel/src/loader/authority.ts`): the runner's `tiers`, `review-request`, `siblings`, `apply`, `netjail`, `state`, `config`,
   `main`, the code host module (`modules/codehost-github/`: the GitHub App, git, workspaces, the merge gate and the git
   rules), the platform check, the merge queue, and what a job can reach: `engines` (its sandbox, mounts and env),
   `files`, `commands` (repo access, the owner's words, private reads) and `scripts/computers.mjs`; the AI reviewer module (`modules/ai-reviewer/`: its service, policy, eval cases and
-  `scripts/reviewer-eval.mjs`); `agent-auth.ts`, `scripts/modules.mjs`, `scripts/paperclip-setup.mjs` and
-  `scripts/no-shell.mjs`; the board's `approvals`, `app`, `fleet`, `accounts` and `session`; `services/computer/`; the
-  gateway; `ops/`; `scripts/verify-security.sh`, `scripts/supply-chain/`, `.gitleaks.toml` and the product's `.github/`;
-  and by content new grants, tools, roles, models, images, settings, credentials, `codex_args`, sensitive apps, compose
+  `scripts/reviewer-eval.mjs`); `kernel/` (records, tier, the tool proxy, the gateway, accounts, the loader), `scripts/modules.mjs`, `scripts/paperclip-setup.mjs` and
+  `scripts/no-shell.mjs`; the board's `app`, `fleet` and `session`; `services/computer/`; `ops/`; `scripts/verify-security.sh`, `scripts/supply-chain/`, `.gitleaks.toml` and the product's `.github/`;
+  and by content new grants, tools, roles, models, images, settings, credentials, an engine's sandbox args (`providers.engine[].crew.args`), sensitive apps, compose
   beyond image versions, routine autonomy and a backward pin. Where code can't tell, the first reviewer flags it. Other
   gate code (the runner's `primer`), a role holder's
   handbook or memory, and the rest of the product are Tier 1.
@@ -52,28 +50,28 @@ agent, never to the owner.
   There is no card and no ping.
 - **Tier 1: AI reviewer.** A card is filed and the reviewer decides. With `panel`, a second reviewer (another model
   family than the first's and the requester's) answers the same question blind to the first's verdict: both approving runs
-  it, the first rejecting sends it back, anything else is a split for the owner. The board refuses a reviewer approval of
+  it, the first rejecting sends it back, anything else is a split for the owner. The kernel refuses a reviewer approval of
   a panel card that names no second reviewer. A call error or timeout is retried with backoff and, after six tries, goes
   back to the agent; a diff too large, missing or with files the reviewer can't read goes back too. A first reviewer's
   "unsure" goes to a second reviewer (another family), given the first's note: its approve or reject decides (one approval
   on a panel card is a split), and a second "unsure" sends the request back to the agent with both notes, not to the
   owner. The same commits are reviewed again once, after the request chain changed; unsure twice again on that
   re-review goes to the owner with both rounds' notes.
-- **Tier 2: owner.** A board card plus a message on the owner channel: a panel split, a reviewer's
+- **Tier 2: owner.** A card on the kernel's approval pages plus a message on the owner channel: a panel split, a reviewer's
   "escalate" (a destructive migration), the owner's own veto, a routine's or the instance's autonomy cap, a spend-cap
   raise, or nothing recognised. The AI reviewer reads every one first (owner, 2026-11-16: every write is reviewed before it
   reaches the owner), and its verdict is on the owner's card:
   - **Tier 2 on its merits** (the owner's veto, a spend-cap raise, an owner-approval record, unknown repos, nothing
-    recognised; `tiers.mjs` `meritOwner`, `byMerit`): the reviewer's approve and its reject both go on to the owner
+    recognised; `meritOwner`, `byMerit` in `tier.ts`): the reviewer's approve and its reject both go on to the owner
     (`owner_tier`). Only code's own refusals (the head moved, `refused_by_code`) close it, and a reviewer that keeps failing
-    hands it to the owner with that note. The board refuses a reviewer approve or reject on such a card (`review_first =
-    owner`), and its own owner-veto check files the card for the reviewer first.
+    hands it to the owner with that note. The kernel refuses a reviewer approve or reject on such a card (`review_first =
+    owner`), and files a vetoed card for the reviewer first.
   - **A cap on a Tier 1 write** (a routine's autonomy, `routineCapped`, code `routine_autonomy`; the instance's, `autonomyCap`,
-    `autonomy_off`): Tier 1 semantics, so the reviewer's reject is final and its approve goes on to the owner. The board
+    `autonomy_off`; both in `tier.ts`): Tier 1 semantics, so the reviewer's reject is final and its approve goes on to the owner. The kernel
     refuses a reviewer approve on it (`review_first = final`).
   - A capped Tier 0 write (autonomy off, or a routine's `off`) still waits for the owner's tap without a review.
 
-  The kernel's records do the same: each keeps its tier before the autonomy caps (`merit`), and a merit-2 record's reject goes
+  Every kernel record works this way: it keeps its tier before the autonomy caps (`merit`), and a merit-2 record's reject goes
   to the owner (`records.ts` `review`).
 
 Some requests are refused by code before any review, with the reason to the agent: a request on a cancelled or done
@@ -88,7 +86,7 @@ the Agent Architect made, or the owner's own task. Only this line writes to the 
 that another agent delegated to (e.g. WOR-3514, a Software Engineer on a DevOps Engineer's task) is outside it: its
 product push stays Tier 2. Product code changes go to the Platform Engineer, never to another Engineer.
 
-Typical assignments in `tiers.mjs` (read the file for the full rules):
+Typical assignments in `tiers.mjs` for the runner's kinds (read the file for the full rules; the kernel then raises, never lowers):
 
 | Request | Tier |
 |---|---|
@@ -100,7 +98,7 @@ Typical assignments in `tiers.mjs` (read the file for the full rules):
 | Merge outside the agents org (no red or missing checks, head unmoved) | 1 + panel |
 | Push to an agents-org repo's default or deploy branch | 1 + panel |
 | Merge with no named checks, red checks or a moved head; the instance repo | refused (back to the agent) |
-| Product repo, Platform Engineer's line: push of a non-default branch, PR, or merge (any head, no red named check) | 1 (a role holder's handbook included); + panel for the gate's core, grants, tools, models, roles, images, settings, credentials or `codex_args` in a `module.yaml`, compose beyond image versions |
+| Product repo, Platform Engineer's line: push of a non-default branch, PR, or merge (any head, no red named check) | 1 (a role holder's handbook included); + panel for the gate's core, grants, tools, models, roles, images, settings, credentials or sandbox args in a `module.yaml`, compose beyond image versions |
 | Product repo: push to the default branch; any push or merge from outside the line | refused |
 | `apply`: new trial agent on a task the owner started | 0 |
 | `apply`: any handbook or memory (a role holder's too), graduation that adds no tools, model or schedule change, non-sensitive app registry change, removing an agent or app, forward product pin | 1 |
@@ -121,8 +119,7 @@ it only once approved, claimed and revalidated (a changed target is stale and fi
 at Tier 0 (a destructive one at Tier 1, replayed once). The apps platform's kinds (`modules/apps-platform`): a stateful
 `app_deploy` is Tier 1, with the panel when it touches a migration or schema file (the policy has the reviewers escalate
 a destructive one), refused when it is too large to review, and an `app_run_request` is Tier 1; restarts, rollbacks and
-app API writes are Tier 0. Until 2f and 3a the board lists these records with its own cards, and the reviewer's verdicts and
-the owner's decisions on them (`k-` ids) are forwarded to the kernel. With `autonomy: off` the reviewer may only escalate or reject them.
+app API writes are Tier 0. With `autonomy: off` the reviewer may only escalate or reject them.
 
 ## The reviewer
 
@@ -151,20 +148,20 @@ reason_code, reason, second_review}`.
   request chain, and the notes of earlier rejections of the same target on the task. Everything an agent or stranger
   wrote is fenced as data. The reviewer never sees the author's own account of the change. A diff over the size cap goes
   back to the agent as too large.
-- **Binding.** The runner posts the verdict to the board's internal endpoint with its own `reviewer_key`, which agents
-  never hold. The board accepts it only for a pending Tier 1 record whose digest matches the card, then stamps
+- **Binding.** The verdict comes back to the kernel (`kernel/src/reviews.ts`) on a one-use review token that agents
+  never hold. The kernel accepts it only for a pending Tier 1 record whose digest matches the card, then stamps
   `reviewer:<model>` (`+<second>` for the panel). A rejection is posted on the task so the agent can fix and refile.
-- **Digest.** Once a day, after a fixed hour in the owner's timezone, the board sends the owner a summary of what ran at
+- **Digest.** Once a day, from 21:00 in the owner's timezone, the kernel hands the owner channel a summary (`kernel/src/channels.ts`) of what ran at
   once, what the reviewer decided, and what was escalated.
 
 ## Autonomy
 
-The instance setting `autonomy` (a kernel setting, `kernel/settings.json`) controls how far this goes. The runner reads it fresh each
+The instance setting `autonomy` (a kernel setting, `kernel/settings.json`) controls how far this goes. The kernel reads it fresh each
 time, so it is also the pause switch.
 
 - `off` (default): the owner decides every write, but the AI review still runs first (every install and update is
   reviewed regardless). Tier 0 is a card for the owner; Tier 1 goes to the reviewer first: its reject is final, its
-  approve goes on to the owner's card with its verdict (`tiers.mjs` `autonomyCap`). Tier 2 is reviewed first too, then the owner decides.
+  approve goes on to the owner's card with its verdict (`autonomyCap` in `tier.ts`). Tier 2 is reviewed first too, then the owner decides.
 - `tier0`: Tier 0 runs. On Tier 1, the reviewer comments with what it would do and the owner decides (shadow mode).
 - `full`: the reviewer decides Tier 1.
 

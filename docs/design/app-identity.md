@@ -44,7 +44,7 @@ adapter.authenticate(req, ctx) → { email, name?, idp } | null   // null: no cr
 ```
 
 - `access`: the Cloudflare Access JWT for the host's audience tag (RS256, team JWKS), as today.
-- `password`: the board's Better Auth session through the auth listener (3129), as today.
+- `password`: the kernel's Better Auth session through the sign-in listener (3129), as today.
 
 The gate's `login` setting and the host's `aud` decide which adapters run; **all of them must pass** (a password host with an
 `aud` still needs Access, checked before `/.auth` routing; the session after), exactly the current order. The gate then maps

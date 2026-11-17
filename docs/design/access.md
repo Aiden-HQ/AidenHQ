@@ -17,7 +17,7 @@ instance `apps.yaml` has `share.host`; modules cannot declare `share`, and chang
 
 ## Exposure modes
 
-How admins reach the board is one core setting, `settings.exposure` in `instance.yaml` (unset: `tailscale`, as every
+How admins reach the board is one kernel setting, `settings.exposure` in `instance.yaml` (unset: `tailscale`, as every
 install made before it). It also decides what the host firewall (`ops/vm/public-fw.sh`, our own nft table on the public
 interface, input and forward) lets in. Everything else on that interface is dropped, and 80 is closed in every mode.
 
@@ -187,24 +187,24 @@ serves the sign-in pages itself, `modules/apps-platform/gate/signin-pages.ts`, a
 The my-apps host (`edge.my_apps.host`, required with `edge`) serves the catalog of apps the visitor is not blocked from,
 and each app's Access page. A user invite link lands there to set a password.
 
-The board writes `accounts.json` (email, name, role, disabled, plus each app's default and role assignments) on every
+The kernel writes `accounts.json` (email, name, role, disabled, plus each app's default and role assignments) on every
 change. Exports are serialized, and a block, demotion, removal or disable returns only after the gate's file has it.
 
 ## Per-app roles
 
 The gate enforces one thing: `blocked`. The app decides the rest from the headers.
 
-- **Core roles:** `blocked`, `member`, `admin`. An app may declare custom roles in its manifest.
+- **Built-in roles:** `blocked`, `member`, `admin`. An app may declare custom roles in its manifest.
 - **Resolution** for a visitor: `admin` for an AidenHQ admin account; else the app's assignment for that email; else the
   app's default; else `blocked`. A role the running manifest no longer declares resolves to `blocked` (fail closed), and
   the assignment is kept so it can be repaired.
 - **Default role.** A new app defaults to `blocked` unless `share.default_role` or the manifest's `default_role` says
   otherwise. An app's admins can change it, never to `admin`.
 - **Who manages roles.** AidenHQ admins are admins of every app and cannot be blocked or removed. They name an app's
-  admins on the board (Accounts, App admins); an app admin can set any role on any email for their own app, never on an
+  admins on the kernel's admin pages (Accounts, App admins); an app admin can set any role on any email for their own app, never on an
   AidenHQ admin, and cannot create accounts or links.
 - **Access page** (`/access?app=<name>` on the my-apps host, also reachable at `/.aidenhq/access` on the app host): plain
-  forms where an app's admins set roles and the default, with the last 50 changes. The board decides every change; writes
+  forms where an app's admins set roles and the default, with the last 50 changes. The kernel decides every change; writes
   need the exact `Origin`.
 - Data lives in `auth.db` (`app_roles`, `app_defaults`, `app_requests`, `app_access_log`), keyed by app name. When an app
   leaves `gate.json`, all its rows are deleted within a minute.
@@ -215,7 +215,7 @@ An app may ship `aidenhq-app.yaml` at its `path` in its repo:
 
 ```yaml
 roles:                 # custom roles; at most 10
-  - name: editor       # [a-z][a-z0-9-]{1,30}, not a core role
+  - name: editor       # [a-z][a-z0-9-]{1,30}, not a built-in role
     meaning: Can edit roadmap items.   # one line, at most 120 characters
 default_role: member   # optional: blocked, member or a declared role, never admin
 ```
@@ -230,7 +230,7 @@ known.
 People ask the app's maintaining agent for changes without any access to the board.
 
 1. The app's UI posts `/.aidenhq/request` (text up to 4000 characters) on its own host. The gate serves this path itself
-   and attaches the verified email; the board re-resolves the role, stores the request and wakes the maintainer through
+   and attaches the verified email; the kernel re-resolves the role, stores the request and wakes the maintainer through
    the `app-request` routine. Only the app name and a count reach Paperclip; the text does not. Limits: 20 requests an
    hour per person per app and 50 open per app. `/.aidenhq/requests` shows a person their own requests and replies.
 2. The maintainer (the app's owning agent, or an agent with the `app-requests` role) uses apps-mcp tools:

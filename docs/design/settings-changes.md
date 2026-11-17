@@ -1,6 +1,6 @@
 # Changing settings from the board
 
-The owner changes instance settings (a connection's URL, a kill switch, an agent's model, effort or heartbeat) from the
+The owner changes instance settings (a connection's URL, a module setting, an agent's model, effort or heartbeat) from the
 board's Settings pages instead of editing `.env` or `instance.yaml` by hand. Nothing new is privileged: the change still
 lands as an instance-repo commit through the fleet apply card, tiered by the existing code.
 
@@ -38,7 +38,7 @@ compiler's is the gate, since an agent writes the commit.
    assigned to the Platform Engineer: the exact `instance.yaml` lines, "change nothing else". An owner-made task runs at
    once (the runner's `ownRequest`).
 3. The Platform Engineer commits it on a `fleet/` branch of the instance repo. When its turn ends the runner shows the
-   real diff and files the apply card, tiered by `services/runner/src/tiers.mjs` unchanged: a `settings` change is
+   real diff and files the apply card, tiered by the runner's `services/runner/src/tiers.mjs`, then raised and enforced by the kernel's `kernel/src/tier.ts`, unchanged: a `settings` change is
    Tier 2 (the owner taps), an agent's `model` / `reasoning_effort` / `heartbeat` override is Tier 1 (the AI reviewer when
    autonomy is full, else the owner).
 4. On approval the runner lands exactly that commit and runs `ops/apply-config.sh`: compile (the URL check again), then

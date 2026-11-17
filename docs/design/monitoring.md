@@ -16,7 +16,7 @@ two critical ones also tell the owner.
 | Grafana (no anonymous access, admin password in the vault) | `aidenhq-mod-monitoring` + `-egress` | `127.0.0.1:3131`, tailnet via `tailscale serve` |
 | mcp-grafana (read tools only, Viewer token from the vault) | `aidenhq-mod-monitoring` + `aidenhq-mod-grafana` (join) | `mcp-grafana:8000`, grafana-mcp only |
 | Board `/internal/metrics`, `/internal/alerts` | board's internal listener | `board:3122`, monitoring token only |
-| Gateway metrics | `data/modules/monitoring/textfile/gateway.prom`, every 30 s | node-exporter's textfile collector |
+| Gateway metrics (the kernel's gateway) | `data/modules/monitoring/textfile/gateway.prom`, every 30 s | node-exporter's textfile collector |
 | Runner metrics | `data/modules/monitoring/textfile/runner.prom`, every 30 s | the same |
 | Unit and container states | `ops/host-metrics.sh` (user timer `aidenhq-host-metrics`, every 30 s) | the same |
 
@@ -27,7 +27,7 @@ the module's services on the backplane. node-exporter and cAdvisor's read-only h
 entry, `host-metrics`. Alertmanager's API (silences), Prometheus and mcp-grafana take no auth of their own, so these networks are
 their boundary; `scripts/verify-security.sh` checks it.
 
-The host processes (runner, gateway) and the systemd/container states are textfiles, not listeners: no new port on the host, no new privilege
+The host processes (runner, kernel) and the systemd/container states are textfiles, not listeners: no new port on the host, no new privilege
 (`systemctl [--user] list-units` and `docker inspect` as the owner's user, who runs the runner already). A stale textfile
 is itself an alert: `HostMetricsStale` for every textfile but the unit snapshot, `HostMetricsExporterStale` for the unit
 snapshot (`units.prom`), whose freshness also gates the unit alerts.

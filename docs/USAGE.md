@@ -8,7 +8,7 @@ pushes things to you. You rarely need to open anything else.
 | Where | For |
 |---|---|
 | Your Telegram bot or Slack DM with Aiden | Everything day to day: asks, forwards, answers, decisions |
-| The board (`https://<board-host>`, on your tailnet) | Reviewing: today's tasks, chase drafts, approvals, longer threads with an agent |
+| The board (`https://<board-host>`, on your tailnet) | Reviewing: today's tasks, chase drafts, approvals (each links to the kernel's approval page), longer threads with an agent |
 | Paperclip (`http://localhost:3100` through an SSH port-forward; see [SETUP.md](../SETUP.md)) | Inspecting the fleet: org chart, runs, costs, routines |
 
 ## Daily rhythm
@@ -33,7 +33,7 @@ pushes things to you. You rarely need to open anything else.
   hands it to the Platform Engineer, which edits your instance repo (`instance.yaml`, `apps.yaml`, `agents/`) and
   shows you the diff. Nothing changes until you approve.
 - **"Install X"** means enable module X: the Engineer adds it to `modules:` in `instance.yaml` (and any settings it
-  needs) and you approve. Disabling pauses the module's agents and routines; nothing is deleted.
+  needs) and you approve. Removing a module from `modules:` is its off switch (the modules it requires come with it when you add one; see [modules.md](modules.md)).
 - **Upgrading the product** is a `product:` bump in `instance.yaml`. The Engineer shows the product commits between the
   old and new pin; the new commit must be on product main.
 - **New agents:** ask the Agent Architect for one; it designs the agent and hands the change to the Platform Engineer.

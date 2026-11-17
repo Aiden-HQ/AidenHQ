@@ -24,10 +24,17 @@ webhooks) or a task assigned to them; they don't loop.
 agents, tasks, routines, run history. Its UI is the fleet console. AidenHQ generates Paperclip's configuration and
 applies it idempotently; edits made in Paperclip's UI are overwritten by the next apply.
 
-**Modules.** Product features ship as `modules/<name>/`: a `module.yaml` (settings, agents, routines), agent
-handbooks, connection services, apps and a `compose.yaml`. `core`, `channel-telegram` and `chat-lane` are always installed; the rest
-(`open-loops`, `meetings`, `engineering`, `design`, `security`, `fleet-ops`, `librarian`, `ci`, `warehouse`, and the
-connection modules) are switched on per instance.
+**Kernel.** The small trusted part (`kernel/`, the host service `aidenhq-kernel`) that enforces everything and knows no
+workflow: the tool proxy in front of every connection, approval records and their tiers, Engineer jobs and their
+sandbox, the model gateway and spend caps, owner and admin accounts with the approval pages, the finish gate, and the
+loader that compiles modules and tiers every module change. It holds the Paperclip board key; modules never do.
+
+**Modules.** Everything else ships as `modules/<name>/`: a `module.yaml` (settings, agents, routines, connections,
+services, write kinds, providers, checks, points), agent handbooks, MCP servers and apps. The agents (Aiden included),
+engines, the AI reviewer, grading, GitHub, the board, the owner channels, the apps platform and the warehouse are all
+modules. There is no core module and no kill switch: `instance.yaml` `modules:` lists what the instance runs (plus what
+those require), and installing or removing a module is the switch. `modules/marketplace.json` `bundle` is the default
+set. Modules can also come from third-party marketplaces at a pinned commit. See [modules.md](modules.md).
 
 **Instance repo.** Your private repo holding everything specific to your deployment: `instance.yaml` (the pinned
 `product:` commit, enabled `modules`, `settings`, limited `overrides`), `apps.yaml` (your apps) and `agents/<key>/`
@@ -37,22 +44,29 @@ neither: they live in the vault on the server.
 **Connections.** Each external system (Google Workspace, Slack, GitHub, Glean, Jira, Primer, Grafana, ClickHouse) is
 an MCP server that holds one sign-in. Agents never see the credentials; they call the connection's tools.
 
-**Grants and roles.** Every tool is tagged read or write. An agent is granted `connection: read | write | [tool list]`
-and optional roles. Every tool call is checked in code against the grants table that setup writes
-(`kernel/src/proxy.ts`), using the caller's Paperclip identity. Roles gate a few extra powers, such as fleet
-tools or deploying apps.
+**Grants and roles.** Every tool is tagged read, write or destructive in its module's manifest. An agent is granted
+`connection: read | write | [tool list]` and optional roles. Every tool call goes through the kernel's proxy
+(`kernel/src/proxy.ts`), which checks it against the grants table setup writes, using the caller's Paperclip identity.
+Roles are declared by the module that checks them (`roles.declares`) and requested by others (`roles.requests`); they
+gate a few extra powers, such as fleet tools or deploying apps.
 
-**Runner.** A host service (`services/runner`) that runs coding jobs for the Engineer agents in sandboxed per-task
-workspaces, and owns every git write: pushes, pull requests and merges. It checks each write in code before it
-happens. See [design/conversational-engineers.md](design/conversational-engineers.md).
+**Runner and Engineers.** Engineer agents do coding work as jobs the kernel runs in sandboxed per-task workspaces, on an
+engine an engine module provides (Codex, opencode, Claude Code). The host runner (`services/runner`, used by the
+`engineering` and `codehost-github` modules) dispatches the jobs and proposes the git writes: pushes, pull requests and
+merges. See [design/conversational-engineers.md](design/conversational-engineers.md).
 
-**Approvals and tiers.** Every write that matters (push, PR, merge, fleet change, app deploy) is an *approval record*
-on the board: the exact request, decided once, outcome on the card. Code assigns the tier from verified state, never
-from text an agent wrote ([`services/runner/src/tiers.mjs`](../services/runner/src/tiers.mjs)):
+**Approvals and tiers.** Every write (push, PR, merge, fleet change, app deploy, publish, a write tool) is a kernel
+*approval record*: the exact request, decided once, outcome on the card. The tier comes from code and verified state,
+never from text an agent wrote: the kind's floor, the requester's plan (the runner's `services/runner/src/tiers.mjs` for
+git writes, a module's executor for its kinds) and any check can raise it; the kernel (`kernel/src/tier.ts`) combines
+them and nothing lowers it:
 - **Tier 0** runs at once (for example a green merge in the agents org on a branch the runner pushed).
-- **Tier 1** is decided by an AI reviewer model with a written policy.
-- **Tier 2** is the owner's tap on the board or the owner channel, or an exact typed reply such as `apply WOR-184`, after the
-  AI reviewer has read it (its verdict is on the card).
+- **Tier 1** is decided by the AI reviewer module with a written policy.
+- **Tier 2** is the owner's tap on the kernel's approval page or the owner channel, or an exact typed reply such as
+  `apply WOR-184`, after the AI reviewer has read it (its verdict is on the card).
+
+A module change is tiered by its authority diff: new authority (a write tool, a secret, a role, outbound network) is the
+owner's; anything else the reviewer's.
 
 **Autonomy.** The `autonomy` setting chooses how much of that runs without the owner: `off` (every write is the
 owner's card, after the AI review of Tier 1, whose reject is final; also the pause switch), `tier0` (Tier 0 runs, the reviewer only comments), `full` (the reviewer decides
@@ -67,12 +81,13 @@ can be shared with colleagues through the gate. See [design/access.md](design/ac
 `src_github`, `src_jira`, `src_docs`, `src_meetings`, ...) and apps can read. Agents query it read-only. See
 [design/sources.md](design/sources.md).
 
-**Board.** The owner's daily web surface (`services/board`): tasks, chats with agents, approvals, connections, apps,
-costs and the fleet. Sign-in is a board account with password and TOTP.
+**Board.** The owner's daily web surface (the `board` module, served by `services/board`): tasks, chats with agents,
+approvals, connections, apps, costs and the fleet. It reads approval records from the kernel and links each card to the
+kernel's page, where it is decided. Sign-in is a kernel account with password and TOTP.
 
 **Agent computers.** Optional gVisor containers (`services/computer`) for agents that run code or a browser; an agent
 gets one when its definition sets `image:`.
 
-**Trust model.** Inbound is private (LAN or Tailscale; board accounts with TOTP; Cloudflare Access for shared apps).
+**Trust model.** Inbound comes only through the front door `exposure` picks (Tailscale by default); accounts have password and TOTP; shared apps sit behind the gate.
 Outbound is open by design. Untrusted text (Slack, email, documents, forwards) is data, never instructions. Gates live
 in code below the model, and nothing is ever sent as the owner's own account.

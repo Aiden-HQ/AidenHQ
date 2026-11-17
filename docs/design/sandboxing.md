@@ -1,5 +1,7 @@
 # Sandboxing agents
 
+(Since lean core: the Engineer jail (bwrap and the pasta network jail) is the kernel's, `kernel/src/sandbox.ts` and `netjail.ts`, and the runner dispatches jobs through the kernel's `/v1/jobs`; grants are checked by the kernel's tool proxy, `kernel/src/proxy.ts`; the gateway is `kernel/src/gateway/`; `modules/core` is gone, so the Codex args below are the crew args in `modules/engine-codex/module.yaml`.)
+
 Status: proposed. Decision: **tiered (option b).** An agent runs in an agent computer, a per-run gVisor box, when it
 needs a shell, a browser or files. Tool-only agents stay in Paperclip with no shell. Engineer jobs stay in the runner's
 bubblewrap and passt jail. Tonight's work is not a migration. It hardens the tool-only tier and puts the sandbox
@@ -9,11 +11,11 @@ definition under the owner's approval.
 
 **What actually stops harm.** The main threat is untrusted text (Slack, email, forwards, web pages) injecting a prompt
 that misuses a tool the agent was granted. A sandbox does nothing against that. Grants checked in code
-(`agent-auth.ts`), tiered approvals and the per-tool limits do. A sandbox protects against two other things: code the
+(the kernel's tool proxy, `kernel/src/proxy.ts`), tiered approvals and the per-tool limits do. A sandbox protects against two other things: code the
 agent runs reaching the host, and secrets that sit next to the agent.
 
 **What tool-only agents can do.** These agents run Codex with `features.shell_tool=false`,
-`features.unified_exec=false` and `features.apps=false` (`modules/core/module.yaml`, `codex_args`). Their rollout logs
+`features.unified_exec=false` and `features.apps=false` (`modules/engine-codex/module.yaml`, `providers.engine[].crew.args`). Their rollout logs
 show only MCP calls. They cannot run code, so a box would have little to contain.
 
 **Codex's own sandbox is not working.** Inside the Paperclip container, bwrap cannot create a namespace. A probe of
@@ -58,8 +60,7 @@ shell-off box variant for agents that read untrusted text and would gain from le
    - no `danger-full-access`, and no bypass of approvals or the sandbox.
 
    Add one test in `scripts/test`. This is the boundary, so it must not depend on a config line staying put.
-2. **Gate the sandbox definition.** `services/runner/src/tiers.mjs` `PRODUCT_GATES` gains `^modules/core/module\.yaml$`
-   (where `codex_args` lives), `^scripts/computers\.mjs$`, `^services/computer/` and `^compose\.yaml$`. An instance diff
+2. **Gate the sandbox definition.** The gate list (`GATE_CORE` in `modules/platform/src/check.mjs`; it covers `modules/engine-*/`, where the crew args live) gains `^scripts/computers\.mjs$`, `^services/computer/` and `^compose\.yaml$`. An instance diff
    that adds or removes `image:` already falls to Tier 2 (`instance-key`); keep it that way. `node
    modules/ai-reviewer/scripts/reviewer-eval.mjs` must stay at 100%.
 3. **Probe, then trim the env.** Check that a local Codex child does not carry server secrets. Read a live codex
@@ -112,7 +113,7 @@ instance change), one agent at a time.
 - **Shared container.** Tool-only Codex and the stdio tasks bridge share the Paperclip container. A Codex or MCP bug
   could reach anything in that container's environment until item 3 lands.
 - **Egress is open.** Neither tier stops exfiltration through tools or web search. Grants and approvals carry that load.
-- **Merge order.** Items 1 and 2 touch `paperclip-setup.mjs` and `tiers.mjs`, which the gateway work also edits. Merge
+- **Merge order.** Items 1 and 2 touch `paperclip-setup.mjs` and the gate list, which the gateway work also edits. Merge
   after it.
 
 ## Decided 2026-11-13: no separate user per run

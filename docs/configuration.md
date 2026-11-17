@@ -8,33 +8,23 @@ Configuration has two sources: **modules** in the product repo (`modules/<name>/
 A module is a folder with a `module.yaml` and any of `agents/<key>/AGENTS.md`, `connections/<svc>/` and `apps/<app>/`. It
 ships no compose file: compile generates its services from `services:`. There is no core module: `instance.yaml` `modules:` lists every module the instance runs (closed over `requires`); `modules/marketplace.json` `bundle` is the default set `ops/setup.sh` writes. The kernel's own settings (`owner_name`, `owner_email`, `timezone`, `company_name`, `instance_name`, `autonomy`, `backup_repository`, `exposure`) are declared in `kernel/settings.json`; the department registry and the kernel's generated secrets in `kernel/defaults.json`.
 
-`module.yaml` fields:
+Every `module.yaml` key, what it does and whether changing it needs the owner's tap or only the AI reviewer is in
+[modules.md](modules.md), the module author's guide. In short:
 
-| Field | Meaning |
-|---|---|
-| `name`, `description` | Identity; shown in the catalog. |
-| `requires` | Modules that must also be enabled. |
-| `settings` | Values the instance supplies: `required`, `default`, `values` (allowed choices). |
-| `agents` | Agent definitions: `adapter`, `model`, `reasoning_effort`, `timeout_sec`, `connections` (grants), `roles`, `persona`, `heartbeat`, `image`, `isolation`. |
-| `routines` | Scheduled or webhook-triggered runs for an agent: `title`, `agent`, `description`, `concurrency`, `schedules`, `status`, and `model` (see below). |
-| `connections` | MCP servers: `url` (or `command`/`args`), `bearer_token_env_var`, `guide` (shown to agents), `setup` (how to set it up, shown on the board's Settings, Connections), and `tools: { read: [...], write: [...], destructive: [...] }` (`destructive`, optional: tools that delete; compile refuses a tool named like delete, trash, remove or purge under `read` or `write`). |
-| `apps` | Apps for `apps-mcp`: `name`, `owner`, `port`, `stateful`, `expose`, `caps`, `secrets`, `repo`, `path`. |
-| `services` | Its containers (spec §5.11, `kernel/schemas/services.json`; any other field fails compile): `run: { <svc>: { image (by digest) or build (a folder in the module), command, entrypoint, env, secrets, port, ui_port (127.0.0.1 only), tmp, user, read_only, data, state, egress, links, join, on_demand, cpus, memory, pids } }` and `data: true`. Each becomes `<module>-<svc>` (the old name stays a network alias) with all capabilities dropped, `no-new-privileges`, a read-only root, the module's own network `aidenhq-mod-<module>` (internal) and, with `egress`, its own egress network. `data` mounts folders of `data/modules/<module>/`; `state` the module's own vault dir (`secrets.state: true`); `env` reads `${secrets.<own>}` (its file path). `join` names a module it `requires`; `links` (root services and networks) come only from the closed lists in `scripts/modules.mjs`. |
-| `secrets` | `provided` (secrets the module owns but doesn't generate) and `state: true` (its vault dir `modules/<module>/`, read-write). A secret is one module's; a root secret only through the legacy list. |
-| `data_version` | With `services.data: true`: the format of `data/modules/<module>/`, an integer (default 0). The module migrates its own data at startup, forward only, and bumps this with each migration. Compile writes it to `data/modules/<module>/.data_version` before compose starts the module and refuses to start code whose `data_version` is below that marker; an apply snapshots the dir first, and `ops/rollback.sh` puts it back ([operations](operations.md#apply-upgrade-rollback)). |
-| `checks` | Checks (spec §3.5): `[{id, at: write.filed \| task.finish, kinds, agents, post, auth, label}]`. A `task.finish` check is asked by the kernel's finish gate on every move to done (an agent's own through `/v1/cp/agent`, the runner's through `/v1/finish`): `post` is its `http://<service>:<port>/<path>`, `auth` one of the module's own secrets, `label` the label a hold adds. It answers `ok` (optionally `unlabel`), `pending`/`hold` (the kernel puts the task in review as the owner, with the label and a scheduled check), `reopen` or `deny` (the close is refused). Any check failing, `config/kernel/checks.json` missing, or a graded agent's task no check covers refuses the close. The module releases its label, or resolves a hold it placed, with `POST /v1/checks/:task` and its own token. |
-| `points` | Extension points it owns (spec §3.6): `{ <point>: { schema: schemas/<file>.json } }`. Compile writes every contribution to its points to `config/points/<module>.json`, which only its own services mount. First-party points: `warehouse.sources` (a source's schema and the views `source_new` serves), `board.signins` (a vendor sign-in on the board). |
-| `contributes` | `{ "<module>.<point>": [ ... ] }`: entries for another module's point, which needs `requires: [<module>]`. Each entry is validated against that module's schema, so a bad one is a compile error naming the contributor. An `id` is unique per point. |
-| `board_env` | Environment (and its `${secrets.x}`) added to the root board service, until the board is a module. |
-| `privileged` | Entries of the closed list (spec §5.6); `host-metrics` allows `host_mounts` (read-only `/`, `/sys`, `/proc`). |
-| `optional_secrets` | Secret files created empty when missing (an empty value means "not configured"). |
-| `generated_secrets` | Secret files compile creates randomly when missing. |
+- identity and dependencies: `name`, `description`, `requires`, `provides`, `conflicts`, `replaces`, `isolation`;
+- behaviour: `settings`, `agents`, `routines`, `prompts`, `apps`, `checks`, `points`, `contributes`, `models`, `jobcaps`;
+- authority: `connections`, `writes`, `providers`, `privileged`, `roles`, `default_grants`, `services`, `secrets`,
+  `generated_secrets`, `optional_secrets`.
 
-Any string may use `${settings.<name>}`, replaced with the instance's value (or the default).
+Any string may use `${settings.<name>}`, replaced with the instance's value (or the default). `module.yaml` is strict: an
+unknown key fails compile.
 
 An agent's `connections` map names a connection and a grant: `read`, `write` (read plus write tools, never `destructive` ones) or an explicit
 tool list, the only way to grant a destructive tool. A trailing `?` (`github?: read`) grants it only when that module is enabled. A handbook is the agent's
-`AGENTS.md`; keep it generic and put workflow in prose, not core code.
+`AGENTS.md`; keep it generic and put workflow in prose, not kernel code.
+
+**Third-party modules.** `instance.yaml` may add `marketplaces:` (a name, a source and a 40-character `sha`) and list their
+modules as `<name>@<marketplace>` under `modules:`. See [modules.md](modules.md#remote-modules-and-marketplaces).
 
 ## The instance repo
 
@@ -50,11 +40,11 @@ agents/<key>/AGENTS.md        its handbook
 
 ```yaml
 product: 0123456789abcdef0123456789abcdef01234567   # full sha; must be on product main
-modules: [open-loops, google, slack, github]
+modules: [board, chief-of-staff, tasks, channel-telegram, open-loops, google, slack, github]   # every module it runs
 settings:
   owner_name: Alice Doe
+  owner_email: alice@example.com
   timezone: Europe/London
-  channels: [web, telegram]
   instance_name: acme
 overrides:
   agents:   { assistant: { model: moonshotai/kimi-k3.1-pro } }
@@ -74,7 +64,7 @@ overrides:
   `overrides.routines.<key>.autonomy`) caps the approval cards of the tasks its runs start: the run task itself and every
   task traced back to it, through parents and through Paperclip's `originRunId` (the run that created an issue, which no
   agent sets), so an unparented `task_create` from a routine's run keeps the cap. The strictest of the routines found and
-  the instance's `autonomy` applies, in code (`services/runner/src/tiers.mjs` `routineCap`, `paperclip.ts` `origins`):
+  the instance's `autonomy` applies, in code (the runner traces it, `services/runner/src/paperclip.ts` `origins`; the kernel applies the cap, `kernel/src/tier.ts` `routineCapped`):
   `tier0` makes Tier 1 the owner's after the AI reviewer has read it (its reject is final; Tier 0 still runs),
   `off` makes Tier 0 the owner's too, `full` adds no cap. The default is `full` for scheduled and owner-started
   routines (today's behaviour: the AI reviewer decides Tier 1 when the instance runs `full`) and `tier0` for a
@@ -104,18 +94,15 @@ overrides:
   agent (the Engineers, the Platform Engineer) it caps that agent's parallel runner jobs, each in its own task workspace,
   within the host's `max_concurrent` (config/runner.yaml); unset, only the host's cap applies.
 - `prompts:` in a module: handbook sections it adds to every crew (`codex_local`) agent's handbook, after the kernel's
-  Approvals: `{id, file: prompts/<id>.md, order: first|normal|last, when, unless, lane}`. The file goes in verbatim (its
-  leading blank lines included); `{{memory}}` and `{{fleet_issues}}` are filled in. `when` and `unless` test `tools`
-  (`connection.tool` granted), `roles`, `modules` (enabled) and `fields` (an agent field: `true` means set and not false,
-  anything else equal): every `when` test holds and no `unless` test. Ordered first, normal, last, then by module, then id.
-  `lane: true` adds it to the fast chat lane's prompt too.
-- Disabling a module pauses its agents and routines; nothing is deleted.
+  Approvals ([modules.md](modules.md#prompts)); `{{memory}}` and `{{fleet_issues}}` are filled in.
+- Removing a module from `modules:` pauses its agents and routines; nothing is deleted.
 
 ## Compile and apply
 
-1. `scripts/compile.mjs` reads `modules/` and the instance and writes `config/paperclip.yaml` (company, agents,
-   routines, labels, MCP servers), `config/apps.modules.yaml`, `compose.modules.yaml`, `config/modules.json` (the
-   catalog) and `config/computers.json`. These are generated: edit the module or instance instead.
+1. `scripts/compile.mjs` reads `modules/`, any third-party marketplaces and the instance and writes `config/paperclip.yaml`
+   (company, agents, routines, labels, MCP servers), `config/apps.modules.yaml`, `compose.modules.yaml`, `config/kernel/`
+   (modules, write kinds, checks), `config/points/`, `config/modules.json` (the catalog) and `config/computers.json`. These
+   are generated: edit the module or instance instead.
 2. `docker compose up -d --build --remove-orphans` starts the services (`COMPOSE_FILE=compose.yaml:compose.modules.yaml`).
 3. `scripts/paperclip-setup.mjs` applies the Paperclip config idempotently and writes `config/grants/grants.json`.
 
@@ -123,17 +110,18 @@ overrides:
 
 ## Grants and roles
 
-Every tool call to a connection is checked against `config/grants/grants.json`, keyed by the caller's Paperclip agent
-id: the tools it may use per connection and its roles. Roles gate a few capabilities and may be granted only by the
-modules the registry allows: `fleet-admin` (the board's fleet tools), `board-writer`, `engineer-dispatch`,
-`app-incidents`, `security-verdict` (security-watch records finding verdicts), `ops-key`, `architect`, `fleet-read` (fleet-ops and core: the board's fleet status only) and `fleet-audit` (core: any agent's evidence packet and its own review log, the Agent Coach's `coach_due`, `coach_evidence`, `coach_record`). Instance agents get none. A module agent may set `delegate_to: [<agent key>, <key>?, app-owners]`: the tasks bridge then
+Every tool call to a connection goes through the kernel's proxy (`kernel/src/proxy.ts`) and is checked against
+`config/grants/grants.json`, keyed by the caller's Paperclip agent id: the tools it may use per connection and its roles.
+Roles gate a few capabilities. Each is declared by the module that checks it (`roles.declares`, for example
+chief-of-staff's `fleet-admin`, `board-writer` and `engineer-dispatch`); an agent may hold a role its own module declares
+or one its module lists under `roles.requests`. Kernel roles (`kernel.jobs`, `kernel.cp-read`, `kernel.wake`) are
+requested by modules for their own services. Instance agents get none. A module agent may set `delegate_to: [<agent key>, <key>?, app-owners]`: the tasks bridge then
 refuses its `task_create` and `task_delegate` to anyone else (`key?` only when that agent is on; `app-owners`: any agent that
-owns an app); the Agent Coach has one. After editing `kernel/src/proxy.ts`,
-run `node scripts/sync-shared.mjs`.
+owns an app); the Agent Coach has one.
 
 ## The web and apps' pages
 
-- **Web search** is live for every codex agent (`web_search="live"` in core's `codex_args`).
+- **Web search** is live for every codex agent (`web_search="live"` in engine-codex's crew args, `modules/engine-codex/module.yaml`).
   An agent may set `web_search: cached` or `disabled` (module or instance `agent.yaml`); computers inherit both.
 - **`web_view(url, screenshot?, width?)`** and **`app_view(name, path?, screenshot?, width?)`** (apps-mcp, read tools):
   every codex agent is granted both explicitly (`apps: [web_view, app_view]`). One renderer
@@ -180,35 +168,41 @@ Set under `settings:` in `instance.yaml`. The board's Settings page (gear in the
 
 | Setting | Module | Required | Default | Meaning |
 |---|---|---|---|---|
-| `owner_name` | core | yes | | The owner's name. |
-| `timezone` | core | yes | | IANA timezone for schedules, for example `Europe/London`. |
-| `channels` | core | no | `[web]` | Owner channels: any of `web`, `telegram`, `slack`. |
-| `company_name` | core | no | `work` | The Paperclip company name. |
-| `instance_name` | core | no | | Short name of this AidenHQ; the agents org is `aidenhq-<instance_name>`. |
-| `github_agents_org` | core | no | derived | The GitHub org where the runner works and, on an approved `create-repo` card, creates repositories; overrides the derived name. |
-| `github_orgs` | core | no | `[]` | GitHub orgs or users, besides the agents org, whose repos apps may be deployed from. |
-| `autonomy` | core | no | `off` | Tiered approvals: `off` = every write is the owner's card, the AI reviewer reading Tier 1 first (its reject is final; also the pause switch); `tier0` = Tier 0 runs at once, the AI reviewer only notes its verdict on Tier 1; `full` = the reviewer decides Tier 1. Move to `full` only after `modules/ai-reviewer/scripts/reviewer-eval.mjs` prints 100%. Changing it is itself a Tier 2 apply. |
-| `heartbeat_hours` | core | no | `4` | Hours between each `heartbeat: true` agent's "Heartbeat: <key>" routine run (1, 2, 3, 4, 6, 8, 12 or 24; DeepSeek Flash at low effort). An agent's `heartbeat: <hours>` or `overrides.agents.<key>.heartbeat` sets its own; `false` turns it off for that agent. |
-| `agent_memory` | core | no | `on` | Agent memory: every Codex agent has `memory_note` (a fact and its source, to its own `Memory inbox: <key>` task, 10 a run); the Librarian curates the inboxes daily against run history and proposes `agents/<key>/memory.md` (max 4 KB, cut at a line end past that) through the Platform Engineer and an apply (Tier 1 for an agent without a role, Tier 2 for one with); compile adds it to the handbook as "What you've learned". `off` is the kill switch: no tool, no section (the files stay in git). |
+| `owner_name` | kernel | yes | | The owner's name. |
+| `owner_email` | kernel | yes | | The owner's email address: the only board account `ops/setup.sh` can make the owner's ([setup](setup.md#board-accounts)). With `edge`, the owner's account (like every admin account) is an admin of every shared app; the email alone grants nothing at the gate. |
+| `timezone` | kernel | yes | | IANA timezone for schedules, for example `Europe/London`. |
+| `company_name` | kernel | no | `work` | The Paperclip company name. |
+| `instance_name` | kernel | no | | Short name of this AidenHQ; the agents org is `aidenhq-<instance_name>`. |
+| `autonomy` | kernel | no | `off` | Tiered approvals: `off` = every write is the owner's card, the AI reviewer reading Tier 1 first (its reject is final; also the pause switch); `tier0` = Tier 0 runs at once, the AI reviewer only notes its verdict on Tier 1; `full` = the reviewer decides Tier 1. Move to `full` only after `modules/ai-reviewer/scripts/reviewer-eval.mjs` prints 100%. Changing it is itself a Tier 2 apply. |
+| `backup_repository` | kernel | no | | Off-host backup: a restic repository URL, for example a Hetzner Storage Box at `sftp://u12345@u12345.your-storagebox.de:23/aidenhq`. Set, `ops/apply-config.sh` installs `aidenhq-backup.timer` (nightly at 03:00 UTC, after the warehouse dump), which runs `ops/backup-offsite.sh`: `scripts/backup.sh --plain`, then restic with the vault ciphertext, `.env`, `compose.override.yaml`, `config/` and the notes vault; it keeps 7 daily, 4 weekly and 6 monthly snapshots. The password is the vault secret `restic_password` (keep a copy off the host); the host user's SSH key must be authorised on the target. Unset, the timer is removed. |
+| `exposure` | kernel | no | `tailscale` | How the board is reached, and so what the host firewall (`ops/vm/public-fw.sh`) opens on the public interface ([access](design/access.md#exposure-modes)): `public` = HTTPS on 443 (tcp 22, 443; port 80 stays closed), `tailscale` = the tailnet (tcp 22, udp 41641), `cloudflare` = a Cloudflare tunnel (tcp 22), `local` = loopback, reached through an SSH tunnel (tcp 22). Unset is `tailscale`, as every install made before the setting; `ops/setup.sh` writes `tailscale`, or `local` with `--no-tailscale`. Compile writes it to `config/exposure`. A change reaches the firewall when `sudo bash ops/vm/setup.sh` runs again. Until a Caddy front door is compiled (unit U2), `public` keeps 443 closed and the firewall acts as `local`. |
+| `edge` | (instance) | no | off | Shared access ([setup](setup.md#shared-access-apps-for-people-beyond-the-tailnet)), read by `scripts/edge.mjs`: `{ team_domain: <team>.cloudflareaccess.com, tunnel_id: <tunnel UUID>, my_apps: { host, aud } }`. Turns on the gate and cloudflared. `previews: true` also serves shared apps' PR previews at `pr-<n>.<share.host>` with each app's own access ([access](design/access.md#pull-request-previews)): a wildcard DNS record, certificate and Access domain `*.<share.host>` per shared app. `my_apps` is the gate's page listing the apps a visitor may open (optional with `access`; required with `password`, where it is also the one sign-in host); `aud` is its Access application's tag. `team_domain` and every `aud` may be left out only with `app_login: password`. With `app_login: header-jwt` there is no `tunnel_id` or `team_domain`; instead `identity: { header, issuer, jwks_url, auth_method? }` (the front door's token: a lowercase header name, https issuer and JWKS URL, optionally the one `auth_method` claim to accept) and `front: { address, port }` (the tailnet IPv4 address in 100.64.0.0/10 and port, 1024-65535, the gate also listens on), and every host needs its `aud`. Changing it is a Tier 2 apply. |
+| `app_login` | apps-platform | no | `access` | How visitors sign in to shared apps (with `edge`). `access`: Cloudflare Access on every gate host; the token's email is mapped to the AidenHQ accounts (a disabled account is refused; an admin account is an admin of every shared app). `password`: the gate signs people in with their AidenHQ account through the kernel's sign-in listener (127.0.0.1:3129); a host that still has an `aud` needs Access too. `header-jwt`: the gate trusts a front door's signed identity header (for example Depoly's `x-depoly-identity`, ES256, per-host `aud`) reached over the tailnet at `edge.front`, with no tunnel or cloudflared and no public inbound port ([access](design/access.md#app-login-modes)). In every mode each app's admins set its roles on the my-apps host's Access page (see [App access](#app-access)). |
+| `github_agents_org` | codehost-github | no | derived | The GitHub org where the runner works and, on an approved `create-repo` card, creates repositories; overrides the derived name. |
+| `github_orgs` | codehost-github | no | `[]` | GitHub orgs or users, besides the agents org, whose repos apps may be deployed from. |
+| `heartbeat_hours` | chief-of-staff | no | `4` | Hours between each `heartbeat: true` agent's "Heartbeat: <key>" routine run (1, 2, 3, 4, 6, 8, 12 or 24; DeepSeek Flash at low effort). An agent's `heartbeat: <hours>` or `overrides.agents.<key>.heartbeat` sets its own; `false` turns it off for that agent. |
 | `ci_review` | ci | no | `on` | App CI code review through the model gateway (`kernel/src/gateway/ci.ts`; docs/operations.md, "CI runners"): `on` = the template's `code-review` job trades its GitHub OIDC token for a 2-hour CI token bound to its repo and PR; `off` = every CI token refused at once (reviews fail; no fallback to a key). |
 | `ci_review_model` | ci | no | `~deepseek/deepseek-flash-latest:high` | The template's code review (codex review): `<OpenRouter id>:<effort>` (minimal, low, medium, high, xhigh), handed to the job with its CI token; critical paths run one effort higher. Always allowed. |
 | `ci_review_models` | ci | no | `[~deepseek/deepseek-flash-latest]` | Models a CI token may call besides `ci_review_model`: repos still on the older template (OpenRouter ids; codegenie's `openrouter/` and `:<reasoning>` are dropped). |
 | `ci_review_repo_day_usd`, `ci_review_day_usd` | ci | no | `5`, `20` | CI code review's spend caps per UTC day: each repo's, and all repos' together. Always enforced; past one, reviews fail until the next day. |
-| `backup_repository` | core | no | | Off-host backup: a restic repository URL, for example a Hetzner Storage Box at `sftp://u12345@u12345.your-storagebox.de:23/aidenhq`. Set, `ops/apply-config.sh` installs `aidenhq-backup.timer` (nightly at 03:00 UTC, after the warehouse dump), which runs `ops/backup-offsite.sh`: `scripts/backup.sh --plain`, then restic with the vault ciphertext, `.env`, `compose.override.yaml`, `config/` and the notes vault; it keeps 7 daily, 4 weekly and 6 monthly snapshots. The password is the vault secret `restic_password` (keep a copy off the host); the host user's SSH key must be authorised on the target. Unset, the timer is removed. |
 | `slack_post_channels` | channel-slack | no | `[]` | Slack channel ids agents may post to with `slack_post` (the tool must also be granted); a post to any other channel is Tier 2 (the owner decides). |
 | `telegram_fyi` | channel-telegram | no | `send` | `notify_owner` messages of `kind: fyi` on Telegram: `send`, or `mute` (they still land on the board's chat and in Slack; returns reason `muted` when nothing else got them). `decision` and `done` messages are never muted. Set on the board's Notifications page. |
+| `telegram_decide` | channel-telegram | no | `all` | Which cards may be decided in Telegram: `all`, `standard` (all but Tier 2 panel cards and applies) or `none`. |
+| `telegram_batch` | channel-telegram | no | `on` | Approve all / Reject all on a list of two or more waiting cards (each still decided on its own token). |
+| `operator_decide` | channel-operator | no | `all` | Which cards the operator channel may decide: `all`, `standard` or `none`. |
 | `owner_slack_user_id` | open-loops | yes | | The owner's Slack user id: decides whose words count and who is paged. |
-| `owner_email` | core | yes | | The owner's email address: the only board account `ops/setup.sh` can make the owner's ([setup](setup.md#board-accounts)). With `edge`, the owner's account (like every admin account) is an admin of every shared app; the email alone grants nothing at the gate. |
-| `exposure` | core | no | `tailscale` | How the board is reached, and so what the host firewall (`ops/vm/public-fw.sh`) opens on the public interface ([access](design/access.md#exposure-modes)): `public` = HTTPS on 443 (tcp 22, 443; port 80 stays closed), `tailscale` = the tailnet (tcp 22, udp 41641), `cloudflare` = a Cloudflare tunnel (tcp 22), `local` = loopback, reached through an SSH tunnel (tcp 22). Unset is `tailscale`, as every install made before the setting; `ops/setup.sh` writes `tailscale`, or `local` with `--no-tailscale`. Compile writes it to `config/exposure`. A change reaches the firewall when `sudo bash ops/vm/setup.sh` runs again. Until a Caddy front door is compiled (unit U2), `public` keeps 443 closed and the firewall acts as `local`. |
-| `edge` | core | no | off | Shared access ([setup](setup.md#shared-access-apps-for-people-beyond-the-tailnet)): `{ team_domain: <team>.cloudflareaccess.com, tunnel_id: <tunnel UUID>, my_apps: { host, aud } }`. Turns on the gate and cloudflared. `previews: true` also serves shared apps' PR previews at `pr-<n>.<share.host>` with each app's own access ([access](design/access.md#pull-request-previews)): a wildcard DNS record, certificate and Access domain `*.<share.host>` per shared app. `my_apps` is the gate's page listing the apps a visitor may open (optional with `access`; required with `password`, where it is also the one sign-in host); `aud` is its Access application's tag. `team_domain` and every `aud` may be left out only with `app_login: password`. With `app_login: header-jwt` there is no `tunnel_id` or `team_domain`; instead `identity: { header, issuer, jwks_url, auth_method? }` (the front door's token: a lowercase header name, https issuer and JWKS URL, optionally the one `auth_method` claim to accept) and `front: { address, port }` (the tailnet IPv4 address in 100.64.0.0/10 and port, 1024-65535, the gate also listens on), and every host needs its `aud`. Changing it is a Tier 2 apply. |
-| `app_login` | core | no | `access` | How visitors sign in to shared apps (with `edge`). `access`: Cloudflare Access on every gate host; the token's email is mapped to the AidenHQ accounts (a disabled account is refused; an admin account is an admin of every shared app). `password`: the gate signs people in with their AidenHQ account through the kernel's sign-in listener (127.0.0.1:3129); a host that still has an `aud` needs Access too. `header-jwt`: the gate trusts a front door's signed identity header (for example Depoly's `x-depoly-identity`, ES256, per-host `aud`) reached over the tailnet at `edge.front`, with no tunnel or cloudflared and no public inbound port ([access](design/access.md#app-login-modes)). In every mode each app's admins set its roles on the my-apps host's Access page (see [App access](#app-access)). |
 | `jira_url` | jira | yes | | Your Atlassian site URL, for example `https://your-company.atlassian.net`. All calls are pinned to it. |
 | `history_projects` | jira | no | `[]` | Jira project keys whose history to backfill once (for quiet projects the live sync's 30-day window misses). Each project is read back `history_days`, resumably, as baseline rows (hidden from `source_new` unless `include_baseline`, visible to `warehouse_query`), and never again; a newly listed project is picked up on the next pass. |
 | `history_days` | jira | no | `365` | How far back the `history_projects` backfill reaches (read when a project is first backfilled). |
 | `atlassian_mcp_url` | jira | no | Atlassian's v2 MCP URL | Atlassian's remote MCP server. |
 | `fleet_ops_interval_minutes` | fleet-ops | no | `10` | Minutes between the board's Fleet Ops detector checks (lower while developing). |
-| `product_repo` | warehouse | yes | | `owner/repo` of your AidenHQ product checkout; the warehouse app is built from it at the pinned commit. Its org must be in `github_orgs` or be the agents org. |
+| `health_autopause` | fleet-ops | no | `on` | `on`: the detector also pauses a routine after 3 hard failures in a row (the owner resumes it); `off`: flags only. |
+| `product_repo` | warehouse, github | yes (warehouse) | | `owner/repo` of your AidenHQ product checkout; the warehouse app is built from it at the pinned commit. Its org must be in `github_orgs` or be the agents org. |
 | `upstream` | github | no | `issues` | `off`, `issues` or `prs`: whether agents may report product bugs upstream as issues on `product_repo` (`off` grants none of the upstream tools). Every report is refused while it holds owner data (names, emails, hosts, IPs, ids, credentials). `prs` acts as `issues` until upstream PRs exist. |
+
+Connection URLs (`glean_mcp_url`, `grafana_url`, `grafana_mcp_url`, `grafana_source`, `clickhouse_mcp_url`,
+`primer_mcp_url`), `monitoring_retention`, `grafana_root_url` and `app_auditor_url` are set on the board's Settings; the
+comment above each in its `module.yaml` explains it.
 
 ## App access
 

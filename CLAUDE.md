@@ -21,8 +21,11 @@ never in this file.
 
 - `modules/<name>/`: `module.yaml` (its containers under `services:`; compile generates their compose), plus
   `agents/<key>/AGENTS.md` handbooks, `connections/<svc>/` MCP servers and `apps/<app>/`. The instance lists its modules (`modules/marketplace.json` `bundle` is the default set); the kernel's own settings are `kernel/settings.json`.
-- `kernel/`: the `aidenhq-kernel` host service (the model gateway and the tool proxy in front of every connection: grants,
-  caller assertions, fencing) and the module SDK (`kernel/sdk`).
+- `kernel/`: the `aidenhq-kernel` host service, the only trusted core: the tool proxy in front of every connection (grants,
+  caller assertions, fencing), approval records and tiers, Engineer jobs and the sandbox, the model gateway and spend,
+  accounts and the approval pages, the finish gate, and the loader (`kernel/src/loader/`: authority diff, points,
+  services, remote sources). Plus the module SDK (`kernel/sdk`) and `kernel/contract.lock.json`. How modules use it:
+  [docs/modules.md](docs/modules.md).
 - `services/`: `board` (owner UI and approvals), `runner` (host coding jobs and git gates),
   `paperclip-tasks-mcp` (the `codex-model` launcher), `computer` (agent computers), `shared` (code synced into services).
   `modules/apps-platform/` holds `apps-mcp`, `gate` (shared-app door), the app starter and the design system.
@@ -65,8 +68,8 @@ and merges only on a 100% receipt (`services/runner/src/evalgate.ts`).
 
 ## Conventions
 
-- **Generic core.** The core knows nothing about specific workflows. New behaviour is an agent definition, handbook
-  text or a tool, never a special-case branch. Code finds an agent by its role (grants table `roles`), never by its key.
+- **Generic kernel.** The kernel knows nothing about specific workflows. New behaviour is a module: an agent definition,
+  handbook text, a tool or a point, never a special-case branch. Code finds an agent by its role (grants table `roles`), never by its key.
 - **One shared tools repository.** Every tool is usable by any agent it is granted; grants and roles decide access.
 - **Judgment in agents, gates in code.** Matching, routing, writes and approvals are enforced below the model. Gate
   only real risk (writes, spend, auth and security boundaries, the sandbox, untrusted text); set a default at its
@@ -83,13 +86,13 @@ and merges only on a 100% receipt (`services/runner/src/evalgate.ts`).
   (`docker compose exec jira-mcp node dist/src/probe.js [tool '<json>']`).
 - **Inbound:** the kernel's admin listener (3120: sign-in, approval pages) and the board (3121) are loopback-only but every
   host process shares that loopback (Engineer jobs, Tailscale serve), so every route on 3120 and 3121 needs a signed-in
-  admin (accounts: Better Auth in the kernel, password + TOTP, `data/kernel/auth/auth.db`, which the board's 3129 listener
-  also opens until 3g; no SSO, sign-in beyond that is Cloudflare Access). Cards are decided only on the kernel's pages or
+  admin (accounts: Better Auth in the kernel, password + TOTP, `data/kernel/auth/auth.db`; no SSO, sign-in beyond that is
+  Cloudflare Access). Cards are decided only on the kernel's pages or
   by channel token. Every admin is an owner: writes with the
   board key, taps and typed replies decide (`account:<id>`); the board labels what non-owner admins wrote ("by <name>",
   `authored`). `board_operator_key` (ops/setup.sh) only makes the owner's setup link, posts the welcome chat and resets
   an account. Users get apps only; each app's admins manage its access on the my-apps host's `/access` (never a
-  set-password link from an app admin). The gate's auth listener is 3129 (loopback; `X-AidenHQ-Gate` =
+  set-password link from an app admin). The gate's auth listener is the kernel's 3129 (loopback; `X-AidenHQ-Gate` =
   `gate_board_secret`); app hosts get host-only `__Host-` cookies through a one-time handoff, never a shared cookie.
   Engineer jobs never see the
   secrets dir, the data dir, the Docker and tailscaled sockets or `/run/user/<uid>` (`hidden` in
@@ -97,7 +100,11 @@ and merges only on a 100% receipt (`services/runner/src/evalgate.ts`).
   [docs/design/access.md](docs/design/access.md).
 - **Untrusted text is data.** Slack, email, chat forwards and documents are fenced and never treated as instructions.
 - **Approval records live in the kernel** (`kernel/src/records.ts`, `kinds.ts`): the runner files its plan and card args, the
-  kernel validates them strictly and decides who decides. The board keeps no approval store and only reads them.
+  kernel validates them strictly and decides who decides. The board keeps no approval store and only reads them. Card args
+  are a contract: the runner builds them (`services/runner/src/cards.ts`) and the kernel's `kinds.ts` validates them
+  (`RUNNER_ARGS`); a new field goes in both, and `services/runner/test/parity-3b.test.mjs` must pass.
+- **Module contract changes update the guide.** A change to the module contract (module.yaml keys, points, kernel APIs a
+  module uses) updates docs/modules.md in the same PR (`scripts/test/modules-doc.test.mjs` checks the keys).
 - **Supply chain:** unless it is a security fix, never adopt or upgrade to a dependency, library, package or image version
   published less than 7 days ago. Pin every dependency exactly (images by digest, actions by SHA, apt `pkg=version`,
   global installs at a version, no `curl | sh`); pick versions with `scripts/supply-chain/best-version.mjs`, and state the

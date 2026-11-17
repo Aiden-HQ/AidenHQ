@@ -1,47 +1,78 @@
 # Architecture
 
-AidenHQ runs on one host. Docker Compose holds the control plane, the board and the connection services; the runner
-and the computer launcher are systemd user units on the host itself.
+AidenHQ runs on one host. It is a small **kernel** plus **modules**. The kernel (`kernel/`, the systemd user unit
+`aidenhq-kernel`) enforces: identity, grants, approval records and tiers, jobs, spend, accounts. Modules do the work:
+agents, connections, engines, the AI reviewer, grading, the board, channels, the apps platform. Paperclip is the control
+plane. Docker Compose runs Paperclip, the board and every module's containers; the kernel, the runner and the computer
+launcher are systemd user units on the host.
 
+```mermaid
+flowchart LR
+  Owner -- Telegram / Slack --> CH[channel modules]
+  Owner -- browser --> B[board module]
+  Owner -- browser --> KA[kernel admin pages: sign-in, approvals]
+  CH -- decisions, owner messages --> K
+  B -- reads /v1 --> K
+  KA --- K[kernel]
+  K -- reconciles, acts as owner --> P[Paperclip: tasks, routines, runs]
+  P -- runs --> A[agents from modules, Codex on OpenRouter]
+  A -- tool calls, model calls --> K
+  K -- proxy with grants --> C[connection modules: MCP servers]
+  K -- reviewer@1, executor@1, checks --> M[provider and check modules]
+  K -- jobs in the sandbox --> E[engine modules]
+  R[runner: dispatch, git writes] -- /v1/jobs, /v1/writes --> K
 ```
- Owner ── Telegram / Slack ──► owner channels (Telegram, Slack) ──► Aiden (chief of staff)
-                                                                     │ delegates
- Board (daily view, approvals) ┐                                     ▼
- Paperclip UI (fleet console) ─┼────────── Paperclip (tasks, routines, runs) ── crews (Codex on OpenRouter)
-                               │                       │                           │ MCP, per-agent grants
-                               │                       │               shared connections (Google, Slack, Glean,
-                               │                       │               Jira, GitHub, Primer, tasks, apps)
-                               │                       ▼
-                               │               runner (host) ── coding jobs, push/merge gates
-                               └────────────── apps-mcp ── sandboxed apps (warehouse, ...)
-```
+
+Every agent call crosses the kernel twice at most: once at the tool proxy (`/c/<connection>/mcp`) and once at the model
+gateway. Every write becomes a kernel record before anything happens.
 
 ## Components
 
-For what each component adds over Paperclip, see [core-components.md](core-components.md).
+For what each component adds over Paperclip, see [core-components.md](core-components.md). How a module declares its
+part: [modules.md](modules.md).
 
-**Paperclip (control plane).** The source of truth for companies, agents, tasks, routines, approvals and run
-history. Its UI is the fleet console. Agents run with the Codex adapter against OpenRouter. The generated
+**Kernel.** One host process with three loopback-or-backplane listeners: the backplane (`10.231.0.1:3130`: the tool
+proxy, `/v1` for modules, the runner and the board), the admin listener (`127.0.0.1:3120`: sign-in and the approval
+pages) and the gate's sign-in listener (`127.0.0.1:3129`), plus the model gateway (`8201`). Its parts:
+
+| Part | Where |
+|---|---|
+| Caller identity and the tool proxy: grant check, tool tags, fencing, signed caller assertions | `kernel/src/identity.ts`, `proxy.ts`, `assert.ts` |
+| Approval records and the write lifecycle (file, tier, review, decide, claim once, execute, outcome) | `kernel/src/records.ts`, `writes.ts`, `kinds.ts`, `reviews.ts` |
+| The tier function, autonomy and routine caps | `kernel/src/tier.ts` |
+| Engineer jobs and the sandbox (bwrap, namespaces, network jail) | `kernel/src/jobs.ts`, `sandbox.ts`, `netjail.ts` |
+| The model gateway, spend caps and the ledger | `kernel/src/gateway/` |
+| Accounts (password and TOTP) and the approval pages | `kernel/src/accounts.ts`, `admin.ts`, `signin.ts` |
+| The finish gate (`task.finish` checks) | `kernel/src/checks.ts` |
+| Channels: decision tokens, owner messages, the notify brake | `kernel/src/channels.ts`, `brake.ts` |
+| Paperclip binding: reconcile, reads and agent actions for modules | `kernel/src/reconcile.ts`, `cp.ts` |
+| The loader: authority diff, points, services, remote sources, advisories | `kernel/src/loader/` |
+
+Restarts never interrupt agents: jobs run detached and the next kernel adopts them.
+
+**Paperclip (control plane).** The source of truth for companies, agents, tasks, routines and run history. Its UI is
+the fleet console. Agents run with the Codex adapter against OpenRouter through the kernel's gateway. The generated
 `config/paperclip.yaml` is applied to it idempotently by `scripts/paperclip-setup.mjs`.
 
-**Chief of staff and crews.** Aiden is the single entry point: it reads widely and delegates writes. Crews are
-specialist agents woken by schedules (Paperclip routines), events (routine webhooks) or the runner. Every agent is a
-`module.yaml` entry plus an `AGENTS.md` handbook, so new behaviour is configuration and prose, not core code. A
-`heartbeat: true` agent is also woken when work it waits on changes (a sub-task, an approval card, a grade, a PR: the
-board's `wake.ts`) and, as a backstop, by a "Heartbeat: <key>" routine every `heartbeat_hours` (default 4). This is not
-Paperclip's own heartbeat: Paperclip calls every agent run a "heartbeat run" and has a per-agent heartbeat timer, which
-AidenHQ keeps off.
+**Chief of staff and crews.** Aiden (the `chief-of-staff` module) is the single entry point: it reads widely and
+delegates writes. Crews are specialist agents woken by schedules (Paperclip routines), events (routine webhooks) or the
+runner. Every agent is a `module.yaml` entry plus an `AGENTS.md` handbook, so new behaviour is configuration and prose,
+not kernel code. A `heartbeat: true` agent is also woken when work it waits on changes (a sub-task, an approval card, a
+grade, a PR: the board's `wake.ts`) and, as a backstop, by a "Heartbeat: <key>" routine every `heartbeat_hours`
+(default 4). This is not Paperclip's own heartbeat: Paperclip calls every agent run a "heartbeat run" and has a
+per-agent heartbeat timer, which AidenHQ keeps off.
 
-**Shared connections.** Each external system (Google, Slack, Glean, Jira, GitHub, Primer, Grafana, ClickHouse) is an
-MCP server that holds one login, so credentials are connected once and never given to agents. Every tool is tagged
-read or write. On each call the service asks who the caller is (Paperclip's run key, or a launcher-issued token inside
-an agent computer) and checks that agent's grant in `config/grants/grants.json`. Grants are written by setup from the
-module and agent definitions; the check lives in `kernel/src/proxy.ts`. Roles gate a few extra capabilities
-(for example the board's fleet tools, or changing any app with an open incident).
+**Shared connections.** Each external system (Google, Slack, Glean, Jira, GitHub, Primer, Grafana, ClickHouse) is a
+module whose MCP server holds one login, so credentials are connected once and never given to agents. Agents reach a
+connection only through the kernel's proxy (`http://10.231.0.1:3130/c/<connection>/mcp`), which looks the tool up in the
+manifest (read, write or destructive), checks the caller's grant in the grants table setup writes, routes writes into
+records, and forwards reads with the connection's service key. Roles, declared by the modules that check them, gate a
+few extra capabilities (for example the board's fleet tools, or changing any app with an open incident).
 
-**Runner.** A host service that picks up Paperclip tasks labelled `engineer`, runs coding engines (Codex, OpenRouter
-models, Claude Code) in sandboxed per-task workspaces, and exposes a small `aidenhq` CLI to the Engineer
-([design](design/conversational-engineers.md)). Each job runs under bwrap with an allowlist of the host's files (its
+**Runner and Engineers.** The host runner (`services/runner`) picks up Paperclip tasks labelled `engineer` and
+dispatches each as a kernel job (`POST /v1/jobs`; the `engineering` module holds `kernel.jobs`). The kernel runs the
+engine an engine module provides (`engine-codex`, `engine-opencode`, `engine-claude`) in a sandboxed per-task workspace;
+the Engineer gets a small `aidenhq` CLI ([design](design/conversational-engineers.md)). Each job runs under bwrap with an allowlist of the host's files (its
 task folder, the toolchains, its engine's state), in its own PID, IPC and network namespaces (pasta).
 
 | Engine | Harness | Model access | Effort |
@@ -54,11 +85,12 @@ task folder, the toolchains, its engine's state), in its own PID, IPC and networ
 Every job gets Primer read-only. Private reads (Grafana, Slack, Glean, ClickHouse, gcloud, other tasks) go only to an
 Engineer whose definition sets `private_reads: true`, on any engine, and such a job has no web search. See [the codex-openrouter design](design/codex-openrouter-engine.md). Pushes, pull requests and merges are checked in code: allowed
 organizations only, branch and leak checks, a lease on rewritten branches, and a merge queue that requires approved,
-green, mergeable PRs. Each write is an approval record tiered by code from verified state (`services/runner/src/tiers.mjs`):
-Tier 0 runs at once, the AI reviewer decides Tier 1, the owner decides Tier 2; the tier is never taken from untrusted
-text.
+green, mergeable PRs (the git rules are `codehost-github`'s). Each write is a kernel record: the runner proposes its tier
+from verified state (`services/runner/src/tiers.mjs`), the kernel combines it with the kind's floor, autonomy and earlier
+vetoes (`kernel/src/tier.ts`) and never lowers it. Tier 0 runs at once, the AI reviewer decides Tier 1, the owner decides
+Tier 2; the tier is never taken from untrusted text.
 
-**Apps platform (`apps-mcp`).** Long-running services that agents deploy and maintain. The registry is the instance's
+**Apps platform (`modules/apps-platform`, `apps-mcp`).** Long-running services that agents deploy and maintain. The registry is the instance's
 `apps.yaml` plus module apps. Each app runs sandboxed (no host access, no extra privileges) unless its registry entry
 grants it; apps that keep data or declare restricted roles deploy only on the owner's approval. App secrets are files
 mounted at `/run/secrets/<KEY>`, never environment variables. The DevOps Engineer owns app health.
@@ -75,13 +107,14 @@ the gate, with the app's own Access audience and roles, once `settings.edge.prev
 **Warehouse.** A shared Postgres app (`modules/warehouse`) that sources and apps ingest into, with a read-only role for
 consumers.
 
-**Board.** The owner's daily surface (`services/board`): today's tasks, chats with agents, the Approvals page,
-connections, apps and the fleet. Approvals are board records: the exact request, one tap by a signed-in admin or from
-the owner channel, or an exact typed reply. Each is claimed once and the outcome is shown on the card.
+**Board.** The owner's daily surface (the `board` module, served by `services/board`): today's tasks, chats with
+agents, the Approvals page, connections, apps and the fleet. Approvals are kernel records; the board lists them from the
+kernel's `/v1` and links each card to the kernel's own page, where a signed-in admin decides it (or the owner channel, or
+an exact typed reply). Each is claimed once and the outcome is shown on the card.
 
-**Owner channels.** `channel-telegram` (the Telegram owner bot, always installed) and `channel-slack` (optional: one
+**Owner channels.** `channel-telegram` (the Telegram owner bot, in the default bundle) and `channel-slack` (optional: one
 Slack Socket Mode listener) bridge the owner to Aiden and provide `notify_owner`, the way agents reach the owner.
-`chat-lane` (always installed) is the fast chat lane. Approval cards are decided with per-card, per-channel,
+`chat-lane` is the fast chat lane. Approval cards are decided with per-card, per-channel,
 single-use decision tokens that the kernel mints (bound to the card's digest) at `/v1/channel/cards` and
 `/v1/channel/decide`. Owner messages from a channel go through the kernel's `/v1/channel/owner-message`; only the
 kernel holds the Paperclip board key.
@@ -94,20 +127,23 @@ issues each run a token. Off unless an agent definition sets `image:`.
 
 ## Configuration flow
 
-`modules/` (product) and the instance repo (yours) compile into `config/paperclip.yaml`, `config/apps.modules.yaml`,
-`compose.modules.yaml`, `config/modules.json` and `config/computers.json`. Compose runs the services and setup applies
-the Paperclip config and grants table. See [configuration.md](configuration.md).
+`modules/` (product), any third-party marketplaces and the instance repo (yours) compile into `config/paperclip.yaml`,
+`config/apps.modules.yaml`, `compose.modules.yaml` (every module's containers, generated from `services:`),
+`config/kernel/*.json` (modules, write kinds, checks), `config/points/<module>.json`, `config/modules.json` and
+`config/computers.json`. Compose runs the services, setup applies the Paperclip config and writes the grants table, and
+the kernel rereads its files. Each module change is tiered by its authority diff before the apply runs. See
+[configuration.md](configuration.md) and [modules.md](modules.md).
 
 ## Trust and data boundaries
 
-- **Inbound is private.** Nothing listens on a public port; the board and Paperclip are reachable on the LAN or the
-  tailnet, and Paperclip runs in authenticated mode. Outbound traffic is not restricted.
+- **Inbound is private.** Every listener binds loopback or a private backplane; the front door the `exposure` setting picks
+  (Tailscale by default) is the only way in, and Paperclip runs in authenticated mode. Outbound traffic is not restricted.
 - **Untrusted text is data.** Slack messages, email, forwards and documents are fenced and never act as instructions.
   Admin actions run only on the owner's own words.
 - **Gates live in code.** Tool grants, push and merge gates, approvals and deploy rules are enforced below the model.
   No agent holds the token that decides an approval.
-- **Approvals are records.** Pushes, PRs, merges, fleet changes and sensitive app deploys are approval records, tiered
-  by code (Tier 2 is the owner's tap); an agent's change to its own configuration lands in the instance repo only through
+- **Approvals are records.** Pushes, PRs, merges, fleet changes, module changes, app deploys and every write tool are
+  kernel approval records, tiered by code (Tier 2 is the owner's tap); an agent's change to its own configuration lands in the instance repo only through
   one.
 - **Separation of config.** Product code and handbooks live in the product repo; per-deployment choices live in the
   private instance repo; secrets live only in the vault; host paths stay in the host `.env`, never in

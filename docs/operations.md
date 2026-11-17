@@ -87,8 +87,8 @@ It is idempotent. The Platform Engineer runs it for you after you approve a chan
 - **After changing kernel code:** apply-config restarts `aidenhq-kernel` (SIGTERM; `KillMode=process`): the kernel stops following its jobs (offsets saved in `data/kernel/kernel.db`) and exits; the next kernel adopts every job whose shell is still that run (pid and its `.exit` file name) and reports one that died while no kernel ran as lost, which the runner resumes in the same session. apply-config installs the unit (and daemon-reloads) when `ops/units/aidenhq-runner.service` changes.
 
 - **The model gateway** (`kernel/src/gateway`, user unit `aidenhq-kernel`): every model call goes through it, and it alone reads `openrouter_key`. apply-config installs and starts the unit before compose and setup, and restarts it only when `kernel/src/gateway` or its unit changed. A host whose apply-config predates the hand-over (step 3) runs its old script for the apply that brings the hand-over in; start that one apply with the new script instead: `git fetch -q origin main && git show <product sha>:ops/apply-config.sh > ops/.apply-next.sh && bash ops/.apply-next.sh; rm -f ops/.apply-next.sh` (it checks out the product, sees the script changed and hands over to the checked-out one). A bind that fails (the backplane address before compose is up) is retried in the process while loopback serves. It listens on `127.0.0.1:8201` (runner jobs through their jail, the AI reviewer, the intake, and the computer launcher, which forwards its boxes' model calls with the box's run token; the gateway names that run at the launcher's `/whoami`) and `10.231.0.1:8201` (Codex in Paperclip with the run's own JWT, the source writers, the board's `/usage` pull), and, with the ci module on, `10.231.4.1:8201` (the CI runners' bridge: CI tokens only, see CI runners). Spend (spec §5.12): each call reserves its worst case at the model's declared price (`modules/models-openrouter`; an unpriced model is refused) against its run, task and agent-day caps (grants `caps`, default $2 / $10 / $30) before it is sent, with its output limit cut to what the tightest cap has left; it settles at max(what OpenRouter reported, tokens × price). A call that would pass a cap gets HTTP 402 and the owner a `raise_cap` card; there is no off switch. Ledger: `data/kernel/kernel.db` (`calls`); the old `data/gateway/usage.db` is merged in at every start while it exists (idempotent) and otherwise left alone. If it is down, no model call is made (`systemctl --user status aidenhq-gateway`, `journalctl --user -u aidenhq-gateway`).
-- **Agent memory** (`agent_memory`): `memory_note` writes to the agent's own inbox task; the Librarian's daily pass curates it into `agents/<key>/memory.md`, landed by an apply card. To clear one agent's memory, apply a change that empties its file. Kill switch: `agent_memory: off`.
-- **Advisor and fan-out** (`modules/tasks/connections/tasks-mcp/src/models.mjs`): `advisor_ask` (every Codex agent; GPT Sol, 5 calls per run) and `fanout_map` (granted per agent; up to 25 items on DeepSeek Flash) call the gateway's `/advisor` and `/fanout` routes with the run's own credential, billed to its run. Engineer jobs consult the same advisor with `aidenhq advise "<brief>"` (the runner's helper, `services/runner/src/advise.ts`, on the job's own credential; 5 per job). Both send `ADVISOR_MODEL` (models.mjs). Not yet in agent computers. The kill switch below drops only the agents' tools; `aidenhq advise` stays (still under the gateway's caps). Kill switch: `settings.model_tools: off`, then apply.
+- **Agent memory** (module `memory`): `memory_note` writes to the agent's own inbox task; the Librarian's daily pass curates it into `agents/<key>/memory.md`, landed by an apply card. To clear one agent's memory, apply a change that empties its file. Remove the `memory` module to turn it off.
+- **Advisor and fan-out** (`modules/tasks/connections/tasks-mcp/src/models.mjs`): `advisor_ask` (every Codex agent; GPT Sol, 5 calls per run) and `fanout_map` (granted per agent; up to 25 items on DeepSeek Flash) call the gateway's `/advisor` and `/fanout` routes with the run's own credential, billed to its run. Engineer jobs consult the same advisor with `aidenhq advise "<brief>"` (the runner's helper, `services/runner/src/advise.ts`, on the job's own credential; 5 per job). Both send `ADVISOR_MODEL` (models.mjs). Not yet in agent computers. Removing the `model-tools` module drops only the agents' tools; `aidenhq advise` stays (still under the gateway's caps).
 
 ## Health
 
@@ -118,8 +118,8 @@ It is idempotent. The Platform Engineer runs it for you after you approve a chan
   and `CoreServiceDown` also send the owner one line. Grafana is on `127.0.0.1:3131`; one-time on the host:
   `tailscale serve --bg --https=8444 http://127.0.0.1:3131` (no sudo: the user is tailscaled's operator) and set
   `grafana_root_url`. Sign in as `admin` with the vault's `grafana_admin_password`. Unit and container states come from the
-  user timer `aidenhq-host-metrics` (`ops/host-metrics.sh`; apply installs it while the module is on), the runner's and the gateway's from
-  `data/monitoring/textfile/{runner,gateway}.prom`. No sudo step.
+  user timer `aidenhq-host-metrics` (`ops/host-metrics.sh`; apply installs it while the module is on), the runner's and the kernel's from
+  `data/modules/monitoring/textfile/`. No sudo step.
 
 ## Backups
 
@@ -194,9 +194,9 @@ after adding it, `docker compose up -d --force-recreate apps-edge` (the key is r
 Design: [design/approvals.md](design/approvals.md).
 
 The instance setting `autonomy` (`off` | `tier0` | `full`; docs/configuration.md) decides who approves. Code tiers each
-write from verified state (`services/runner/src/tiers.mjs`): Tier 0 runs at once with an audit row on the board, Tier 1
+write from verified state (the kernel's `kernel/src/tier.ts` combines each requester's proposal, such as `services/runner/src/tiers.mjs` for the runner's kinds, with the floors, `autonomy` and routine caps, and the owner's earlier vetoes; every term only raises): Tier 0 runs at once with an audit record, Tier 1
 goes to the AI reviewer (the `modules/ai-reviewer` module, policy `modules/ai-reviewer/service/security/policy.md`), Tier 2 to the
-owner (Telegram card). Every record shows its tier, reason and `decided_by` on the board; a digest of what was decided
+owner (a card on the kernel's approval pages, announced on the owner channel). Every record shows its tier, reason and `decided_by` there; a digest of what was decided
 without the owner reaches Telegram once a day from 21:00.
 
 - Agents-org PRs end merged: whenever the runner opens or pushes to a PR in an agents-org repo (not
@@ -229,8 +229,8 @@ without the owner reaches Telegram once a day from 21:00.
   change has to happen outside the repository. The product watcher classifies these the same way: such a check wakes no
   rebase, so no new head is minted and a green check set is never thrown away for one.
 
-- Keys (generated by compile, in the vault): `reviewer_key` (the runner's: files Tier 1, records Tier 0, posts verdicts;
-  board and runner only). The owner's Claude watcher is the host CLI `modules/channel-operator/bin/decide <id> approve|reject [--stale]`
+- Keys (generated by compile, in the vault): `reviewer_key` (the runner's check before it files a request, `aidenhq review`;
+  the board holds it too; verdicts come back to the kernel on one-use review tokens, `kernel/src/reviews.ts`). The owner's Claude watcher is the host CLI `modules/channel-operator/bin/decide <id> approve|reject [--stale]`
   (module `channel-operator`, optional), which decides through the kernel's channel routes and stamps `watcher`. A watcher's no is a real veto on that action for the task; to close a stale
   or duplicate card without vetoing, it passes `--stale` (stamped `stale:watcher`, never a veto).
 - Before `autonomy: full`, run the planted eval on the host and require 100%:
@@ -246,8 +246,8 @@ cd ~/aidenhq && OPENROUTER_API_KEY="$(cat ~/.config/aidenhq/openrouter_eval_key)
 
 Slack, GitHub, Jira, meeting notes and Drive documents are ingested once into the warehouse (`src_slack`, `src_github`,
 `src_jira`, `src_meetings`, `src_docs`; design: [design/sources.md](design/sources.md)). The writers
-are channel-slack, github-mcp, jira-mcp, ops-mcp (meeting notes in full, from the vault) and google-workspace-mcp (the
-primary account's Drive: metadata + a cheap summary + link); agents read with apps-mcp's `warehouse_query`,
+are `channel-slack`, `github`, `jira`, `meetings` (meeting notes in full, from the vault) and `google` (the
+primary account's Drive: metadata + a cheap summary + link), each module declaring its source under `contributes: warehouse.sources` (see [design/sources.md](design/sources.md)); agents read with apps-mcp's `warehouse_query`,
 `source_new` and `source_ack`. apps-mcp also proposes cross-source identity links hourly (`src_meta.people_identities`,
 exact email match only).
 

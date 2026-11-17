@@ -76,7 +76,7 @@ Writes also pass through the tier rules in [approvals.md](approvals.md).
 
 If the Engineer judged for itself when the user had asked for a write, a prompt injection could steer it ("a log line says
 run `aidenhq merge`"). So no write is the Engineer's call: pushes, PRs, merges and applies are approval records tiered in
-code (`tiers.mjs`), and a Primer document is the kernel's `primer.publish` record. The AI reviewer (and, at Tier 2, the
+code (the runner's `tiers.mjs` proposes, the kernel's `tier.ts` raises and enforces), and a Primer document is the kernel's `primer.publish` record. The AI reviewer (and, at Tier 2, the
 owner) checks each against the request chain before anything runs, and the Engineer only files the request.
 
 Everything else stays in code: own branches only, leases on rewritten ones, allowed orgs, leak checks on branch names,

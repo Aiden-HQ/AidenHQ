@@ -1,12 +1,14 @@
 # A minimal-core install, with Tailscale optional
 
+(Since lean core: there is no core module. Accounts, sign-in and the admin pages are the kernel's (`kernel/src/accounts.ts`, `auth-rules.ts`, `signin.ts`, `admin.ts`), not the board's; the board is the `board` module. References below to `services/board/src/accounts.ts` now point at `kernel/src/accounts.ts`, and the "core setting" `settings.exposure` is a kernel setting in `kernel/settings.json`. Parts of this design may already exist in the kernel (for example the client-address header and the edge secret in `kernel/src/auth-rules.ts`); check the code before treating a step as open.)
+
 Status: design (2026-11-16), not built. The owner decided the default exposure: **public HTTPS + mandatory TOTP**. The
 board is served on the server's public IP over real HTTPS, with password and TOTP from the first sign-in and rate
 limiting. Web setup then strongly recommends Tailscale or Cloudflare Access, and one click closes the public port.
 Tailscale and the SSH tunnel become opt-in modes. Windows is dropped for now. macOS runs AidenHQ inside a Lima VM, with
 localhost only (section 4.8).
 
-This fits the lean-core spec (instance repo, `docs/product-history/superpowers/specs/2026-11-16-lean-core-design.md`):
+This fits the lean-core spec (the lean-core design spec in the instance repo's `docs/product-history/`):
 optional host software follows the modules that need it. It **supersedes** the lean-core text that says first-run setup
 is "never a public port" (section 10).
 
@@ -43,7 +45,7 @@ Pushback, said plainly:
 
 ## 2. Exposure modes
 
-One core setting, `settings.exposure`, in `instance.yaml`. Compile generates the matching front-door container. None
+One kernel setting, `settings.exposure`, in `instance.yaml`. Compile generates the matching front-door container. None
 of these needs a host package.
 
 | Mode | Default for | Front door (generated container) | Board URL | Public inbound ports |
@@ -53,7 +55,7 @@ of these needs a host package.
 | `cloudflare` | opt-in | `cloudflared` (exists today for shared apps; extended to the board's host) behind Cloudflare Access | `https://board.<domain>` | 22 |
 | `local` | Lima on macOS, LAN VMs, and SSH-tunnel users (today's `--no-tailscale`) | none | `http://aidenhq.localhost:3121` (Lima) or a tunnel to `127.0.0.1:3121` | 22 |
 
-**Why one core setting rather than exposure modules.** The front door is part of the trusted base, like the gate. A
+**Why one kernel setting rather than exposure modules.** The front door is part of the trusted base, like the gate. A
 mode switch also changes a root-owned firewall (section 4.4), which modules must never touch. The four modes are a
 closed list, and each costs a pinned image, never a host package. Decision D5 asks whether to turn them into
 `provides: exposure` modules later.
@@ -71,7 +73,7 @@ closed list, and each costs a pinned image, never a host package. Decision D5 as
 | **passt (pasta)** | Each job gets its own network namespace | Engineer jobs | **Should be no** (today: a warning on 22.04) | Jobs share the host network: they reach the board's loopback listener, Paperclip 3100, the gate, apps and the LAN. | **Load-bearing.** The board's "every loopback route needs a session" rule exists because jobs can reach loopback. In public mode a job would also reach the host's own public 443. Recommend refusing Engineer jobs without pasta, so 22.04 runs no Engineer jobs (D3). |
 | **nftables** (and `aidenhq-public-fw`) | Host firewall: the public interface's allowlist | Every host with a public address; the computer and CI nets | **No** (more load-bearing in public mode) | Docker-published ports and every host listener become reachable on the public IP. | Required. The rule set changes per mode (section 4.2). |
 | **ufw** | Not installed by us | n/a | n/a | n/a | When ufw is already active, its default deny drops 443. Setup detects `ufw status` = active and adds `ufw allow 443/tcp` in public mode (or tells the owner). It never installs ufw. |
-| **gVisor `runsc`** (gVisor apt repo) | Docker runtime for untrusted apps (`runtime: runsc`, `modules/apps-platform/apps-mcp/src/policy.ts:148`) | apps-platform, `untrusted` apps only | **Yes, as part of apps-platform** (a default module, so installed by default) | Deploying an `untrusted` app fails (Docker: unknown runtime). That is a fail-closed failure, which is right. | None as long as there is no fallback to `runc`. Keep `verify-security` checking that every untrusted app runs `runsc`. |
+| **gVisor `runsc`** (gVisor apt repo) | Docker runtime for untrusted apps (`runtime: runsc`, `modules/apps-platform/apps-mcp/src/policy.ts`) | apps-platform, `untrusted` apps only | **Yes, as part of apps-platform** (a default module, so installed by default) | Deploying an `untrusted` app fails (Docker: unknown runtime). That is a fail-closed failure, which is right. | None as long as there is no fallback to `runc`. Keep `verify-security` checking that every untrusted app runs `runsc`. |
 | **Tailscale (host package `tailscale`, apt repo, `tailscale set --operator`)** | Tailnet node for the board, plus SSH | Today: the board's HTTPS address, setup's `BOARD_HOST`, `tailscale serve` | **Yes, as an exposure mode, run as a container** (no host package) | Nothing in public or local mode. The board is reached by IP or tunnel. | Without it the board is on the Internet behind password and TOTP; section 4 is the mitigation. The containerised node can't proxy the host's SSH. Owners who want SSH on the tailnet install host Tailscale themselves (`--host-tailscale`, documented, not default). |
 | **`tailscale/tailscale` image (`apps-edge`)** | The apps' own tailnet node | Exposed non-shared apps | **Yes** (generated only in `tailscale` mode; today it sits in `compose.yaml` unconditionally) | Unshared apps aren't reachable. In public mode they go through the gate instead (section 4.6). | None, provided `AIDENHQ_ANONYMOUS=tailnet` is set **only** for apps behind this node (section 4.6). |
 | **cloudflared image** | Tunnel for shared apps (exists) | `settings.edge` with `access` or `password` login | **Yes** (already) | Shared apps via Cloudflare | none |
@@ -80,7 +82,7 @@ closed list, and each costs a pinned image, never a host package. Decision D5 as
 | **fail2ban + python3-systemd** | Bans repeated SSH failures | SSH on the public interface | **Yes** (a setting, default on) | More SSH log noise. SSH is already key-only. | Low: key-only SSH can't be guessed. The board's own bans are in-app (section 4.3), not fail2ban. |
 | **Chrome for Testing + agent-browser + ~16 shared libs** (`/opt/aidenhq/browser`) | Headless browser for Engineer jobs (`aidenhq-browse`) | `engineering` and `design` (screenshots and click-throughs) | **Yes, as a module feature (`browser`)** | Engineers can't screenshot the apps they build; the UI review loses its evidence. | none |
 | **gh CLI** (checksummed .deb) | GitHub CLI in the runner's cache clone | `codehost-github` (default bundle) | **Yes, as a module feature (`gh`)** | No PRs or merges through gh | none |
-| **Codex CLI, opencode CLI** (`npm -g`, `ops/setup.sh:188-189`) | Engine binaries | `engine-codex` (default), `engine-opencode` (optional) | **Yes, per engine module** (features `codex-cli`, `opencode-cli`) | That engine can't run | none. Today opencode is installed even when unused. |
+| **Codex CLI, opencode CLI** (`npm -g`, `ops/setup.sh`) | Engine binaries | `engine-codex` (default), `engine-opencode` (optional) | **Yes, per engine module** (features `codex-cli`, `opencode-cli`) | That engine can't run | none. Today opencode is installed even when unused. |
 | **whisper** (built from `modules/channel-telegram/whisper`, 2 GB RAM) | Local speech-to-text for Telegram voice notes | Voice notes on the owner channel | **Yes, as its own `voice` module** (today it is in `channel-telegram`, which is always installed, so it is built and run on every instance) | Voice notes aren't transcribed; text still works. | none (audio stays on the host either way) |
 | **computer-net and ci-net units** (nft rules) | Keep agent computers and CI runners off the host, LAN and tailnet | `computer`, `ci` modules | **Yes, as module features** | Nothing until those modules are on | None, provided the units are installed *before* the module's containers start (the root step runs first; section 5). |
 | **unattended-upgrades** | Distro security updates | The host | **No** (keep; free) | Unpatched host | Removing it is a real risk for an Internet-facing host |
@@ -140,7 +142,7 @@ Generated Caddyfile (compile writes it, from the detected public IP):
 
 - **Header order.** No wildcard delete (`-X-AidenHQ-*`). Whether Caddy applies deletes before or after sets is
   unverified, and a delete that runs last would strip the two headers just set. `set` already replaces a client's
-  value, and the board drops every other inbound `x-aidenhq-*` (`accounts.ts:507`). U2 tests that a client-sent
+  value, and the board drops every other inbound `x-aidenhq-*` (`kernel/src/accounts.ts`). U2 tests that a client-sent
   `X-AidenHQ-Edge` never reaches the board.
 - **Container.** `caddy`, host network, `cap_drop: ALL` plus `cap_add: NET_BIND_SERVICE`, read-only root, and the cert
   store in `data/caddy`. `EDGE_BOARD_SECRET` is read from the vault by the entrypoint, the same pattern as Paperclip's
@@ -202,14 +204,14 @@ rule, never a Docker DNAT. Compile refuses any `0.0.0.0` publish in every mode.
 **The board listener in public mode.**
 - Setup sets `BOARD_LAN_HOSTS=203.0.113.7` (or `board.<domain>`) and `BOARD_LAN_URL=https://203.0.113.7`.
 - The board already uses `__Host-` cookies with `Secure` when `X-Forwarded-Proto` is `https`
-  (`services/board/src/accounts.ts:121-146`). It trusts that header from whoever reaches 3121. That stays acceptable
+  (`kernel/src/accounts.ts`). It trusts that header from whoever reaches 3121. That stays acceptable
   only because 3121 binds to loopback; `verify-security` asserts it in every mode.
 
 ### 4.3 Sign-in hardening
 
 What already holds:
 - **Admins can't use the board before TOTP.** An admin session is refused on every route except enrolment until TOTP is
-  set up (`accounts.ts:317`, the `ready` flag).
+  set up (`kernel/src/accounts.ts`, the `ready` flag).
 - **Credentials.** Passwords are argon2id with at least 12 characters. TOTP codes are single-use (a replay cache).
   Sessions last 30 days, sliding.
 - **Lockout.** 5 failures in 15 minutes per (email, listener, address) pause new sign-ins for 15 minutes.
@@ -218,7 +220,7 @@ What already holds:
 - **Writes.** Same-origin `Origin`, `Sec-Fetch-Site` same-origin or none, JSON only, and the `x-aidenhq-board` header.
 
 What breaks behind a proxy, and must be fixed first (**U1, before any public port opens**):
-- **The address is the socket's.** `accounts.ts:514` keys the lockout and the limiter on `req.socket.remoteAddress`
+- **The address is the socket's.** `kernel/src/accounts.ts` keys the lockout and the limiter on `req.socket.remoteAddress`
   (3129 is the exception, where it trusts the gate's header with the gate secret). Behind Caddy, and behind Docker's
   port publishing too, every client is one address. A stranger's 5 bad guesses would then lock the owner out for 15
   minutes, and 20 guesses a minute would exhaust the sign-in bucket for everyone. The code comment already notes this
@@ -287,7 +289,7 @@ reappears weekly):
 **Cloudflare Access** uses the same two phases. It needs a domain and a tunnel token, and confirming must come from a
 request carrying a valid Access JWT for the board's audience.
 
-**Who may change exposure.** `settings.exposure` is classified in `tiers.mjs` as **Tier 2, owner only**. It is never
+**Who may change exposure.** `settings.exposure` is Tier 2, owner only (the tier rules are `services/runner/src/tiers.mjs` and the kernel's `kernel/src/tier.ts`). It is never
 decided by AI review, whoever proposes it. The owner's own click on the card is that tap; an agent-proposed change
 waits for the owner. Widening (to `public`) and narrowing are classified alike, so the classifier stays simple. This
 touches `tiers.mjs`, so U5 needs the paid reviewer eval at 100%.
@@ -326,7 +328,7 @@ touches `tiers.mjs`, so U5 needs the paid reviewer eval at 100%.
 
 Today:
 - An exposed, unshared app is served by `apps-edge` at `https://<user>-apps.<tailnet>:<port>`.
-- It runs with `AIDENHQ_ANONYMOUS=tailnet` (`modules/apps-platform/apps-mcp/src/policy.ts:166-179`): token-less callers are
+- It runs with `AIDENHQ_ANONYMOUS=tailnet` (`modules/apps-platform/apps-mcp/src/policy.ts`): token-less callers are
   accepted as anonymous, and the tailnet is the perimeter.
 - Shared apps go through the gate (`modules/apps-platform/gate/gate.ts`), which maps by `Host` and has the `password` login.
 
@@ -348,7 +350,7 @@ In public mode:
     on the IP's host, not on `localhost`.
 - **`AIDENHQ_ANONYMOUS=tailnet` is set only when the app's exposure is the tailnet apps node.** In any other mode every
   app requires a gate token. `verify-security` checks this per app.
-- **The gate's client address.** `gate.ts:270` reads `cf-connecting-ip` unconditionally. Under Caddy, a client could
+- **The gate's client address.** `modules/apps-platform/gate/gate.ts` reads `cf-connecting-ip` unconditionally. Under Caddy, a client could
   forge it. Change: the gate takes the client address from a header only when the front door's edge secret accompanies
   it (as the board will). Caddy sets `X-AidenHQ-Client-IP` and the secret, and strips both from the client.
 - **Same-site siblings.** With a domain, apps and the board share a registrable domain, so they are same-site.
@@ -442,7 +444,7 @@ There is no public port, no Caddy and no certificate.
   channel-telegram `WHISPER_URL` becomes optional (unset: voice notes get "voice notes are off; install the voice module").
   Default off (D7).
 - **browser, gh, Codex and opencode CLIs.** Feature tags on `engineering`/`design`, `codehost-github`, `engine-codex`
-  and `engine-opencode`. `ops/setup.sh:188-189` and the browser block in `ops/vm/setup.sh` move under their features.
+  and `engine-opencode`. `ops/setup.sh` and the browser block in `ops/vm/setup.sh` move under their features.
 - **gVisor.** The `runsc` feature on apps-platform (core's apps-mcp today). The `daemon.json` registration runs only
   when the feature is present.
 - **fail2ban.** The `fail2ban` feature, on by default (the `settings.host.fail2ban: false` opt-out). The SSH hardening
@@ -459,7 +461,7 @@ Order: U1 → (U2, U3 in parallel) → U4 → U5, U6 → U7, U8. No public port 
 
 | Unit | PR title | What changes | Tests | Notes |
 |---|---|---|---|---|
-| **U1** | `feat(board): trusted client address from the front door, address bans and sign-in notices` | `accounts.ts` changes: <br>- `X-AidenHQ-Client-IP` on 3121 only with `edge_board_secret` (a new generated secret in compile); <br>- a per-address ban (20 in 15 minutes → 1 hour); <br>- an account-wide alert (no lock); <br>- a new-session notice; <br>- setup-link TTL 24 hours in public mode; <br>- `--reset` prints on the terminal while the owner has never enrolled TOTP. | Two vitest cases: a forged address without the secret locks only the socket address, and 20 failures from one address across emails get banned. | Board sign-in is gate core: panel review and the paid reviewer eval apply. |
+| **U1** | `feat(board): trusted client address from the front door, address bans and sign-in notices` | `kernel/src/accounts.ts` changes: <br>- `X-AidenHQ-Client-IP` on 3121 only with `edge_board_secret` (a new generated secret in compile); <br>- a per-address ban (20 in 15 minutes → 1 hour); <br>- an account-wide alert (no lock); <br>- a new-session notice; <br>- setup-link TTL 24 hours in public mode; <br>- `--reset` prints on the terminal while the owner has never enrolled TOTP. | Two vitest cases: a forged address without the secret locks only the socket address, and 20 failures from one address across emails get banned. | Board sign-in is gate core: panel review and the paid reviewer eval apply. |
 | **U2** | `feat(ops): the exposure setting and a Caddy front door with an IP certificate` | `settings.exposure` in `modules.mjs` and `compile.mjs`; generated `caddy` service and Caddyfile; `BOARD_LAN_*` derived from the mode; `apps-edge` moved into generated compose for `tailscale` only. | `scripts/test` compile cases per mode. | Exit check: live staging issuance of an IPv4 certificate over TLS-ALPN-01 on a throwaway VM. |
 | **U3** | `feat(ops): mode-aware public firewall and host features from pins.json` | `public-fw.sh` renders its ports from the mode. `pins.json` gains `features`; `ops/vm/setup.sh` installs the compiled union. Tailscale is out of the base. Also: ufw detection, the root helper units, and `github-app-setup.mjs` bound to loopback. | A `pins.mjs` CI check over `features`; `public-fw.sh --check` per mode. | Supply chain: `pins.mjs` dates every feature pin. |
 | **U4** | `feat(ops): install public by default, Tailscale and tunnel opt-in` | `ops/setup.sh` changes: <br>- default `public`, plus `--exposure tailscale\|local\|cloudflare`; `--no-tailscale` keeps its promise of no public port and means `--exposure local`; <br>- detects the public IPv4 and waits for the certificate; <br>- falls back to `local` loudly; <br>- prints `https://<ip>` and the link. <br>`distro/install.sh`: messages and flags; uninstall removes Caddy and the helper. | The installer's container test runs with `--exposure local`; a live VM test for public. | Lean-core 5d's exit check changes (section 10). |
@@ -512,7 +514,7 @@ Migration of existing instances:
   (b) keep the warning and let jobs share the host network.
 - **D4 The vault.** (a) Stays on by default, with an opt-out setting (recommended); (b) off by default, with an opt-in;
   (c) remove it.
-- **D5 Where exposure lives.** (a) One core setting that generates a pinned container per mode (recommended); (b) four
+- **D5 Where exposure lives.** (a) One kernel setting that generates a pinned container per mode (recommended); (b) four
   `provides: exposure` modules.
 - **D6 Tailscale mode.** (a) A containerised userspace node with no host package, plus `--host-tailscale` for tailnet
   SSH (recommended); (b) keep the host package for the Tailscale mode.
@@ -531,13 +533,13 @@ Migration of existing instances:
 | `ops/setup.sh:137-146, 199-221, 252-259, 382, 427-435` | `BOARD_HOST` comes from `tailscale status`; unattended setup dies without TS; `tailscale serve`; `APPS_TS_HOSTNAME`; "on the tailnet" messages | Mode-driven (U4) |
 | `compose.yaml` `apps-edge` (with the `tailscale_apps_authkey` secret) and board comments | The apps node always exists | Generated only in `tailscale` mode (U2) |
 | `compose.yaml` board `BOARD_LAN_HOSTS` default `aidenhq.local` | LAN or mDNS | Derived from the mode (U2) |
-| `services/board/src/accounts.ts:290, 514` | Peer = socket ("behind `tailscale serve` everyone shares one") | Trusted edge address (U1) |
-| `services/board/src/accounts.ts:732` `forwardedProto` | Anyone reaching 3121 may claim https | Kept; 3121 is loopback-only, asserted (U8) |
+| `kernel/src/accounts.ts, `kernel/src/auth-rules.ts`` | Peer = socket ("behind `tailscale serve` everyone shares one") | Trusted edge address (U1) |
+| `kernel/src/accounts.ts` `forwardedProto` | Anyone reaching 3121 may claim https | Kept; 3121 is loopback-only, asserted (U8) |
 | `modules/apps-platform/apps-mcp/src/tailnet.ts`, `policy.ts:166-179` (`AIDENHQ_ANONYMOUS=tailnet`) | Exposure means the tailnet, and the tailnet is the perimeter | Anonymous only for `apps-edge` apps (U6) |
-| `modules/apps-platform/gate/gate.ts:270` | `cf-connecting-ip` comes from cloudflared | Edge-secret-bound address (U6) |
+| `modules/apps-platform/gate/gate.ts` | `cf-connecting-ip` comes from cloudflared | Edge-secret-bound address (U6) |
 | `scripts/edge.mjs` `header-jwt` `edge.front` | The front door reaches the gate over the tailnet | Kept (an opt-in mode) |
 | `scripts/host-serve.mjs`, `ops/apply-config.sh` prune, `verify-security.sh` "Tailnet" section | Host `tailscale serve` | Run against `edge-tailscale` in `tailscale` mode; skipped otherwise (U8) |
-| `ops/github-app-setup.mjs:29-83` | A LAN or tailnet address on `0.0.0.0:8765` | Loopback plus a tunnel (U3) |
+| `ops/github-app-setup.mjs` | A LAN or tailnet address on `0.0.0.0:8765` | Loopback plus a tunnel (U3) |
 | `distro/install.sh:13, 259, 482, 536-545, 570` | Tailscale default; "same tailnet"; `tailscale serve off` on uninstall | Mode-driven (U4) |
 | `docs/design/access.md` ("the host keeps zero inbound ports"; "An instance without the `edge` setting stays tailnet-only") | | Rewritten (U8) |
 | `SETUP.md:32-34, 57, 137, 183, 215` ("No inbound ports are needed") | | Rewritten (U8) |

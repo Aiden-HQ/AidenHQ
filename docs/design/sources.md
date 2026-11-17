@@ -17,14 +17,16 @@ Each source has exactly one writer. A writer logs in to the warehouse as its own
 `src_<source>`, creates its tables and views at start and grants SELECT on its views to `agents_open`. The roles, schemas
 and shared `src_meta` tables are set up by `modules/warehouse/apps/warehouse/sources.sql`.
 
+A source is declared by its own module, not by an edit to apps-mcp: a `contributes: { warehouse.sources: [...] }` entry (schema, `about`, optional `identity: users`, and the views `source_new` serves with the columns its filters use). See `modules/github/module.yaml` for an example and `modules/warehouse/schemas/sources.json` for the schema. Compile writes the list to `config/points/warehouse.json`, apps-mcp reads it, and a schema contributed twice, or `src_meta`, is refused. The writer's password is a `generated_secrets` entry (`warehouse_src_<source>_password`). Adding a source or any other point entry: [../modules.md](../modules.md).
+
 | Schema | Writer | Covers |
 |---|---|---|
-| `src_slack` | channel-slack | Every Socket Mode event the owner's token receives, before any filtering: bot posts, thread replies, edits (a new revision; old text goes to the change log), deletes (tombstones). A 15-minute gap sync (`conversations.history`, plus replies for active threads) covers disconnects; a weekly full re-read of the last week tombstones what Slack no longer returns. |
-| `src_github` | github-mcp | Issues and PRs in the configured orgs, and every Projects v2 board found in them (items and field values), using the GitHub App token. Every 15 minutes. |
-| `src_jira` | jira-mcp | Issues, sprints and boards for the configured site, and Confluence pages (metadata and a search excerpt). Runs inside jira-mcp so there is one OAuth token pair and one refresh. |
-| `src_docs` | google-workspace-mcp | Drive file metadata for the primary account (30-day baseline, then every change). A separate pass stores a short summary of Docs and Slides. |
-| `src_meetings` | ops-mcp | Every published meeting note, read from ops-mcp's own records (full note, capped, with a tombstone if it disappears). |
-| `src_security` | security scanner | Findings in what the instance runs, by target. |
+| `src_slack` | `channel-slack` | Every Socket Mode event the owner's token receives, before any filtering: bot posts, thread replies, edits (a new revision; old text goes to the change log), deletes (tombstones). A 15-minute gap sync (`conversations.history`, plus replies for active threads) covers disconnects; a weekly full re-read of the last week tombstones what Slack no longer returns. |
+| `src_github` | `github` module (github-mcp) | Issues and PRs in the configured orgs, and every Projects v2 board found in them (items and field values), using the GitHub App token. Every 15 minutes. |
+| `src_jira` | `jira` module (jira-mcp) | Issues, sprints and boards for the configured site, and Confluence pages (metadata and a search excerpt). Runs inside jira-mcp so there is one OAuth token pair and one refresh. |
+| `src_docs` | `google` module (google-workspace-mcp) | Drive file metadata for the primary account (30-day baseline, then every change). A separate pass stores a short summary of Docs and Slides. |
+| `src_meetings` | `meetings` module (ops-mcp) | Every published meeting note, read from ops-mcp's own records (full note, capped, with a tombstone if it disappears). |
+| `src_security` | `security` module (scanner) | Findings in what the instance runs, by target. |
 | `src_meta` | apps-mcp and sources.sql | Shared tables, below. |
 
 Slack is stored in full, including DMs and private channels, and is readable by every agent with warehouse read.
@@ -70,7 +72,7 @@ Cursors live in `src_meta.cursor`, keyed by the agent's Paperclip identity (neve
 filter (`filter_key`: empty when unfiltered, else a hash of the scopes and `q`, carried in the cursor token as
 `<seq>.<key>`), and only apps-mcp writes them. Acking a filtered read therefore never moves another read's cursor past rows
 it didn't return; a filtered read starts after the later of its own cursor and the unfiltered one. A channel, repo or project with no row
-in any view of that source is refused, with the nearest real values, so a guessed scope can't read nothing silently. The set of views `source_new` serves is the `VIEWS` table in that file. A security finding that was
+in any view of that source is refused, with the nearest real values, so a guessed scope can't read nothing silently. The set of views `source_new` serves is `VIEWS` in that file, built from the contributed sources. A security finding that was
 reviewed as not affected is excluded from `src_security.findings`.
 
 ## People

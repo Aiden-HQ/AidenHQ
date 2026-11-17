@@ -20,7 +20,7 @@ Thanks for helping. Contributors have read access to this repository; the mainta
 - **The PR title follows [Conventional Commits](https://www.conventionalcommits.org/)** and becomes the squash
   commit's subject: `type(scope): summary`, lower-case type, the scope optional, `!` before the colon for a breaking
   change. Types: `feat`, `fix`, `docs`, `chore`, `test`, `refactor`, `perf`, `ci`, plus `build`, `style` and `revert`.
-  The scope is the area touched: `runner`, `board`, `gate`, `computer`, `apps-mcp`, `scripts`, `ops`, a module's name.
+  The scope is the area touched: `kernel`, `runner`, `board`, `gate`, `computer`, `apps-mcp`, `scripts`, `ops`, a module's name.
   For example `feat(runner): retry a merge after a flaky check`, `fix(board): keep the drawer open on refresh`,
   `docs: explain instance pins`. The `pr-title` CI check enforces it; after fixing a title, re-run the failed jobs.
 - **The PR body says why**: the problem, and why this is the fix. The diff already shows what.
@@ -52,7 +52,7 @@ No live instance and no paid keys are needed. Use Node 24 and run `npm ci` once 
 | `services/runner` | `npm test` |
 | `services/computer` | `node --test test/*.test.mjs` |
 | `modules/apps-platform/gate` | `npm test && npm run typecheck` |
-| `services/gateway` | `npm test && npm run typecheck` |
+| `kernel` | `npm test && npm run typecheck` |
 | `services/board` | `npx vitest run && npx tsc -p tsconfig.build.json --noEmit && npm run typecheck && npm run build` |
 | `modules/apps-platform/apps-mcp`, `modules/*/connections/*`, `modules/security/scanner` | `npm test && npm run typecheck` |
 
@@ -70,7 +70,7 @@ No live instance and no paid keys are needed. Use Node 24 and run `npm ci` once 
 
 Read [CLAUDE.md](CLAUDE.md) first; it is also the guide coding agents follow. In short:
 
-- **Generic core.** New behaviour is an agent definition, handbook text or a tool, not a special-case branch.
+- **Generic.** New behaviour is an agent definition, handbook text or a tool, not a special-case branch. To add a module, source, point or connection, follow [docs/modules.md](docs/modules.md).
 - **Gates in code.** Writes, approvals and access checks are enforced below the model. Don't move a gate into a
   prompt. Changes to gate files (`services/runner/src/tiers.mjs`, `kernel/`, `modules/apps-platform/gate/`,
   `ops/`, `scripts/paperclip-setup.mjs`) get extra review.
