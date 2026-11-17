@@ -2890,9 +2890,13 @@ async function applyApproved(issue, a) {
   // What lands must be what the card showed: the same diff (and product move) as approved, recomputed here.
   if ((await fleetDiffText(c, bump)) !== a.details || c.files.join("\n") !== a.args.files.join("\n")) throw new UserError("the change no longer matches the diff that was approved; it needs a new approval");
   const out = await landFleet(issue, r, a.args.sha, c.files, `approval ${a.id}`, `Applied on ${cfg.selfName}'s approval ${a.id} (${issue.identifier})`);
-  // A typed settings change has no agent to close its task: it is done once live.
-  if (out.ok && state.get(`typed:${issue.id}`)) await pc.setStatus(issue.id, "done").catch((err) => log("couldn't close the settings task", { issue: issue.identifier, err: String(err.message ?? err).slice(0, 200) }));
+  await closeTyped(issue, out);
   return out;
+}
+
+/** A typed settings change has no agent to close its task: it is done once live (a card's apply or a Tier 0 landing). */
+async function closeTyped(issue, out) {
+  if (out.ok && state.get(`typed:${issue.id}`)) await pc.setStatus(issue.id, "done").catch((err) => log("couldn't close the settings task", { issue: issue.identifier, err: String(err.message ?? err).slice(0, 200) }));
 }
 
 /** Lands a checked fleet commit on the latest main (no force), then re-applies the instance on this host. */
@@ -2979,7 +2983,9 @@ async function runTrialEdits() {
         // Its record first: an apply is read by the AI reviewer at least (the kernel's floor), so it lands once approved.
         const rec = await fileApproval(issue, { action: "apply", args: { repo: b.r.repo, branch: b.r.branch, sha: b.sha, files: b.files }, diff: await fleetDiffText(b, bump), ts: [t] });
         if (rec.state !== "used") { await pc.comment(issueId, waitingFor(rec, issue)); continue; }
-        await reportOutcome(rec.id, await landFleet(issue, b.r, b.sha, b.files, `Tier 0: ${t.reason}`, `Tier 0 change (${issue.identifier}): ${t.rule}`, guard));
+        const out = await landFleet(issue, b.r, b.sha, b.files, `Tier 0: ${t.reason}`, `Tier 0 change (${issue.identifier}): ${t.rule}`, guard);
+        await reportOutcome(rec.id, out);
+        await closeTyped(issue, out);
         continue;
       }
       if (!trialNoTap(await pc.issue(issueId), readGrants()) || !trialHandbookOnly(b.files, (await agentTexts(b)).base)) throw new UserError("it's no longer a handbook-only edit to an agent in trial, so it needs a tap");
