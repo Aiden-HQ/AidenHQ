@@ -108,8 +108,8 @@ export const api = {
   roster: () => call<{ roster: RosterAgent[] }>("GET", "/api/agents/roster"),
   agentProfile: (key: string) => call<{ profile: AgentProfile }>("GET", `/api/agents/by-key/${encodeURIComponent(key)}`),
   agentOpenTasks: (key: string) => call<{ needs: TaskRow[]; ongoing: TaskRow[] }>("GET", `/api/agents/by-key/${encodeURIComponent(key)}/tasks?view=open`),
-  agentHistory: (key: string, opts: { q?: string; offset?: number } = {}) => {
-    const p = new URLSearchParams({ view: "history", ...(opts.q ? { q: opts.q } : {}), ...(opts.offset ? { offset: String(opts.offset) } : {}) });
+  agentHistory: (key: string, opts: { q?: string; status?: "done" | "cancelled"; offset?: number } = {}) => {
+    const p = new URLSearchParams({ view: "history", ...(opts.q ? { q: opts.q } : {}), ...(opts.status ? { status: opts.status } : {}), ...(opts.offset ? { offset: String(opts.offset) } : {}) });
     return call<{ rows: TaskRow[]; next: number | null }>("GET", `/api/agents/by-key/${encodeURIComponent(key)}/tasks?${p}`);
   },
   scorecard: (id: string) => call<Scorecard>("GET", `/api/agents/${encodeURIComponent(id)}/scorecard`),

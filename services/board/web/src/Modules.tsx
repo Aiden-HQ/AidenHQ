@@ -96,7 +96,7 @@ function ModuleItem({ m }: { m: ModuleRow }) {
       title={m.name}
       sub={m.description}
       meta={filed && IN_FLIGHT.includes(filed.stage) ? <StatusPill tone="busy">Changing</StatusPill> : m.state === "core" ? <span className="st-chip">always on</span> : m.state === "dependency" ? <span className="st-chip">needed by another</span> : undefined}
-      action={!fixed ? <Switch on={want ?? isOn} label={`${m.name}: ${isOn ? "on" : "off"}`} redOff disabled={Boolean(filed && IN_FLIGHT.includes(filed.stage))} onChange={(v) => (v ? setWant(true) : setConfirmOff(true))} /> : undefined}
+      action={!fixed ? <Switch on={want ?? isOn} label={`${m.name}: ${isOn ? "on" : "off"}`} redOff disabled={Boolean(filed && IN_FLIGHT.includes(filed.stage))} onChange={(v) => (v ? setWant(true) : !isOn ? setWant(null) : setConfirmOff(true))} /> : undefined}
       open={want !== null || undefined}
       onToggle={(o) => !o && setWant(null)}
       details={

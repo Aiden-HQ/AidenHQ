@@ -1,6 +1,6 @@
 // An agent's page (#/agents/<key>/<tab>): who it is, its work (needs you, ongoing, past: each task opens its thread),
 // its general chats and its settings. Reads: agent-page.ts; writes: the settings editor's (SettingsAgents AgentDetails).
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Scorecard } from "./Agents";
 import { AgentAvatar } from "./AgentAvatar";
 import { SignInRequired, api } from "./api";
@@ -59,7 +59,7 @@ export function AgentPage({ agentKey, tab, go, onSignIn }: { agentKey: string; t
         <>
           <section><h4>Needs you</h4><TaskList rows={open.data?.needs} empty="Nothing needs you." /></section>
           <section><h4>Ongoing</h4><TaskList rows={open.data?.ongoing} empty="Nothing running." /></section>
-          <History agentKey={agentKey} />
+          <History agentKey={agentKey} onSignIn={onSignIn} />
           <Scorecard id={profile.id} />
         </>
       )}
@@ -87,39 +87,54 @@ function TaskList({ rows, empty }: { rows: TaskRow[] | undefined; empty: string 
   );
 }
 
-function History({ agentKey }: { agentKey: string }) {
-  const [filter, setFilter] = useState<"all" | "done" | "failed">("all");
+function History({ agentKey, onSignIn }: { agentKey: string; onSignIn: () => void }) {
+  const [status, setStatus] = useState<"" | "done" | "cancelled">("");
   const [text, setText] = useState("");
   const [q, setQ] = useState("");
   const [rows, setRows] = useState<TaskRow[] | null>(null);
   const [next, setNext] = useState<number | null>(null);
   const [error, setError] = useState("");
+  const seq = useRef(0);
   useEffect(() => {
     const t = setTimeout(() => setQ(text), 300);
     return () => clearTimeout(t);
   }, [text]);
+  // Only the newest request may change what is shown: a slow answer to an old search, or a Load more begun before the term changed, is dropped.
   const load = useCallback(
-    (offset?: number) =>
-      api.agentHistory(agentKey, { q, ...(offset ? { offset } : {}) }).then(
-        (r) => (setError(""), setRows((old) => (offset && old ? [...old, ...r.rows] : r.rows)), setNext(r.next)),
-        (e) => setError((e as Error).message),
-      ),
-    [agentKey, q],
+    (offset?: number) => {
+      const mine = ++seq.current;
+      return api.agentHistory(agentKey, { q, ...(status ? { status } : {}), ...(offset ? { offset } : {}) }).then(
+        (r) => {
+          if (mine !== seq.current) return;
+          setError("");
+          setRows((old) => (offset && old ? [...old, ...r.rows] : r.rows));
+          setNext(r.next);
+        },
+        (e) => {
+          if (mine !== seq.current) return;
+          if (e instanceof SignInRequired) onSignIn();
+          else setError((e as Error).message);
+        },
+      );
+    },
+    [agentKey, q, status, onSignIn],
   );
-  useEffect(() => void load(), [load]);
-  const shown = rows?.filter((r) => filter === "all" || r.state === filter);
+  useEffect(() => {
+    void load();
+    return () => void seq.current++;
+  }, [load]);
   return (
     <section>
       <h4>History</h4>
       <div className="st-filters">
-        {(["all", "done", "failed"] as const).map((f) => (
-          <button key={f} className={`st-filter${filter === f ? " on" : ""}`} aria-pressed={filter === f} onClick={() => setFilter(f)}>
-            {f === "all" ? "All" : f === "done" ? "Done" : "Failed"}
+        {([["", "All"], ["done", "Done"], ["cancelled", "Stopped"]] as const).map(([v, name]) => (
+          <button key={v} className={`st-filter${status === v ? " on" : ""}`} aria-pressed={status === v} onClick={() => setStatus(v)}>
+            {name}
           </button>
         ))}
         <input className="st-search small" type="search" placeholder="Search tasks" value={text} onChange={(e) => setText(e.target.value)} aria-label="Search finished tasks" />
       </div>
-      {error ? <p className="fleet-empty">Couldn't load: {error}</p> : <TaskList rows={shown ?? undefined} empty="No finished tasks yet." />}
+      {error ? <p className="fleet-empty">Couldn't load: {error}</p> : <TaskList rows={rows ?? undefined} empty="No finished tasks yet." />}
       {next !== null && <button className="btn" onClick={() => void load(next)}>Load more</button>}
     </section>
   );

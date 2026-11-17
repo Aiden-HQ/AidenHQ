@@ -597,7 +597,7 @@ export function App() {
         {!mobile && (
           <nav className="main-tabs" aria-label="Sections">
             {tabs.map(([v, name]) => (
-              <button key={v} className={`btn${view === v ? " on" : ""}`} aria-current={view === v ? "page" : undefined} onClick={() => setView(v)} onPointerEnter={() => prefetchView(v)} onFocus={() => prefetchView(v)}>
+              <button key={v} className={`btn${view === v ? " on" : ""}`} aria-current={view === v ? "page" : undefined} onClick={() => (v === "agents" || v === "modules" ? go(`#/${v}`) : setView(v))} onPointerEnter={() => prefetchView(v)} onFocus={() => prefetchView(v)}>
                 {v === "agents" && board.agentsActive > 0 && <span className="live-dot" title={`${board.agentsActive} working`} />}
                 {name}
                 {v === "approvals" && approvalsOpen > 0 && <span className="btn-count needs">{approvalsOpen}</span>}
@@ -657,7 +657,7 @@ export function App() {
       {mobile && !chatFull && (
         <nav className="tabs">
           {tabs.filter(([v]) => v !== "board").map(([v, name]) => (
-            <button key={v} className={view === v ? "on" : ""} onClick={() => setView(v)} onPointerEnter={() => prefetchView(v)} onFocus={() => prefetchView(v)}>
+            <button key={v} className={view === v ? "on" : ""} onClick={() => (v === "agents" || v === "modules" ? go(`#/${v}`) : setView(v))} onPointerEnter={() => prefetchView(v)} onFocus={() => prefetchView(v)}>
               {name}
               {v === "approvals" && approvalsOpen > 0 && <span className="count">{approvalsOpen}</span>}
             </button>
