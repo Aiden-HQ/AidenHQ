@@ -330,7 +330,9 @@ export function branchesFooter(rows: any[]) {
       : "Nothing new to publish: GitHub already has every commit."
     : withPr.length === pending.length
       ? `Reply **push** to add them to the open PR${pending.length === 1 ? "" : "s"}.`
-      : `Reply **push** to publish ${pending.length === 1 ? "it" : `all ${pending.length}`} to GitHub, or **pr** to also open draft PRs${withPr.length ? " (open PRs just get the new commits)" : ""}.`;
+      : pending.every((r) => /^local\//i.test(r.repo))
+        ? `Reply **push** to publish ${pending.length === 1 ? "it" : `all ${pending.length}`} to this server, or **pr** to also open draft change requests${withPr.length ? " (open ones get the new commits)" : ""}.`
+        : `Reply **push** to publish ${pending.length === 1 ? "it" : `all ${pending.length}`} to GitHub, or **pr** to also open draft PRs${withPr.length ? " (open PRs just get the new commits)" : ""}.`;
   return [
     `\n**Branches** (${live.length})`,
     "",
