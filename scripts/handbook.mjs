@@ -28,12 +28,19 @@ export function readInstructions(cfg, a, { repo, instanceDir = "" }) {
   const mod = a.module === "instance" || a.handbook_fork ? join(instanceDir, "agents") : String(a.instructions).startsWith(trees + sep) ? trees : a.module && /^[a-z0-9-]+$/.test(a.module) ? join(repo, "modules", a.module, "agents") : "";
   // Handbooks say "the owner"; one line names them.
   const owner = cfg.owner_name ? `This AidenHQ belongs to ${cfg.owner_name}: wherever this handbook says "the owner", it means ${cfg.owner_name}.\n\n` : "";
-  // Where agent-built repos live: handbooks say "the agents org".
-  const org = cfg.github_agents_org ? `This AidenHQ's agents org on GitHub is \`${cfg.github_agents_org}\`.\n\n` : "";
+  // Where agent-built repos live: handbooks say "the agents org", one per enabled code host (compile's agents_orgs).
+  const org = orgLine(cfg.agents_orgs ?? (cfg.github_agents_org ? [{ org: cfg.github_agents_org, host: "github" }] : []));
   const own = owner + org + readInside(mod, a.instructions, `agent ${a.name}: instructions`).replace(/^---\n[\s\S]*?\n---\n?/, "").trim();
   if (!a.instructions_extra) return own + "\n";
   const extra = readInside(join(instanceDir, "agents"), a.instructions_extra, `agent ${a.name}: instance rules`).trim();
   return `${own}\n\n## Instance rules\n\n${extra}\n`;
+}
+
+/** The handbook's line naming the agents org(s): on GitHub, and `local` for repositories on this server. */
+function orgLine(orgs) {
+  const named = orgs.map((o) => (o.host === "local" ? "`local` on this server (its repositories are `local/<name>`)" : `\`${o.org}\` on GitHub`));
+  if (!named.length) return "";
+  return `This AidenHQ's agents org${named.length > 1 ? "s are" : " is"} ${named.join(" and ")}${named.length > 1 ? "; a new app's repository goes in the one its task names" : ""}.\n\n`;
 }
 
 /** The crew member's board identity, stored in the agent's metadata for the board and the runner. */

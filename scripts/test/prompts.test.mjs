@@ -111,3 +111,19 @@ test("the owner's profile (owner/profile.md) is in every crew handbook and the c
   const out = compile(product, dir);
   assert.ok(Buffer.byteLength(out.paperclip.owner_profile) <= 4096 && out.warnings.some((w) => w.startsWith("owner/profile.md is over 4096 bytes")));
 });
+
+// An instance with no GitHub (codehost-local in place of codehost-github and github): it compiles with the design module on,
+// and every handbook names `local` as the agents org, so agents ask for `local/<name>` instead of guessing a GitHub org.
+test("with no GitHub, design compiles on codehost-local and the handbooks name the agents org `local`", () => {
+  const dir = instance(["codehost-local", "design"]);
+  const file = join(dir, "instance.yaml");
+  const y = YAML.parse(readFileSync(file, "utf8"));
+  writeFileSync(file, YAML.stringify({ ...y, settings: { ...y.settings, instance_name: "acme" }, modules: y.modules.filter((m) => !["codehost-github", "github"].includes(m)) }));
+  const { paperclip: p, catalog } = compile(product, dir);
+  assert.deepEqual(["codehost-local", "design", "github", "codehost-github"].map((n) => catalog.find((m) => m.name === n)?.enabled === true), [true, true, false, false]);
+  for (const key of ["chief-of-staff", "ui-reviewer"]) {
+    const text = handbookParts(p, key, p.agents[key], { repo: product, instanceDir: dir, fleetIssues: "WOR-1" }).map(([, t]) => t).join("");
+    assert.match(text, /This AidenHQ's agents org is `local` on this server \(its repositories are `local\/<name>`\)\./, key);
+    assert.doesNotMatch(text, /agents org is `aidenhq-acme`/, key);
+  }
+});
