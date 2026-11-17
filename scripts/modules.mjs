@@ -59,6 +59,8 @@ export const TRIAL_WRITE_ALLOWED = ["paperclip_tasks.task_create", "chat_lane.wa
 export const DESTRUCTIVE_NAME = /delete|trash|remove|purge/i;
 /** A connection's write tools, destructive included (trial, untrusted and handbook checks treat both as writes). */
 export const writeTools = (c) => [...(c?.tools?.write ?? []), ...(c?.tools?.destructive ?? [])];
+/** A connection's tools a read shorthand reaches: its `read` tools, less the ones it also tags `named` (a grant must name those). */
+export const readTools = (c) => (c?.tools?.read ?? []).filter((t) => !(c?.tools?.named ?? []).includes(t));
 // Every connection is reached through the kernel's tool proxy, which holds the grants and the service keys.
 export const KERNEL_URL = "http://10.231.0.1:3130";
 
@@ -230,7 +232,7 @@ export function jobcapEntries(name, def) {
     for (const f of Object.keys(j ?? {})) if (!JOBCAP_FIELDS.includes(f)) fail(`${where}: unknown field ${f} (known: ${JOBCAP_FIELDS.join(", ")})`);
     if (!/^[a-z][a-z0-9-]{0,40}$/.test(j?.id ?? "")) fail(`module ${name}: a jobcap needs an id (a-z, 0-9, -)`);
     if (!/^[a-z0-9_]{1,40}$/.test(j.connection ?? "")) fail(`${where}: connection must be a name (a-z, 0-9, _)`);
-    const tools = j.tools === "read" ? def.connections?.[j.connection]?.tools?.read ?? fail(`${where}: tools: read, but ${name} has no connection ${j.connection}`) : j.tools;
+    const tools = j.tools === "read" ? readTools(def.connections?.[j.connection] ?? fail(`${where}: tools: read, but ${name} has no connection ${j.connection}`)) : j.tools;
     if (!Array.isArray(tools) || !tools.length || tools.some((t) => typeof t !== "string" || !t)) fail(`${where}: tools must list its tools (or be read)`);
     const writes = writeTools(def.connections?.[j.connection]).filter((t) => tools.includes(t));
     if (writes.length) fail(`${where}: a jobcap reads only; ${writes.join(", ")} ${writes.length === 1 ? "is a write" : "are writes"}`);
@@ -629,6 +631,15 @@ export function compile(productDir, instanceDir, { revision, fetch = hostFetch(p
     for (const [k, c] of Object.entries(def.connections ?? {})) {
       if (!Array.isArray(c.tools?.read) || !Array.isArray(c.tools?.write)) fail(`connection ${k}: tools.read and tools.write must list its tools`);
       if (c.tools.destructive != null && !Array.isArray(c.tools.destructive)) fail(`connection ${k}: tools.destructive must be a list`);
+      if (c.tools.named != null && (!Array.isArray(c.tools.named) || c.tools.named.some((t) => typeof t !== "string" || !t))) fail(`connection ${k}: tools.named must be a list of its read tools`);
+      // `named` only narrows a read tool out of the read shorthand (never a fourth group): a tool tagged `named` is still a
+      // read, on the read path, and only a grant that names it reaches it. Tagging a write or destructive tool named, or a
+      // tool named without read, would make the tag stand for a tool the read path then forwards: refused at compile.
+      for (const t of c.tools.named ?? []) {
+        const group = ["write", "destructive"].find((g) => (c.tools[g] ?? []).includes(t));
+        if (group) fail(`connection ${k}: ${t} is tagged ${group} and named: named only narrows a read tool`);
+        if (!c.tools.read.includes(t)) fail(`connection ${k}: ${t} is tagged named without read: named only narrows a read tool`);
+      }
       const looks = [...c.tools.read, ...c.tools.write].filter((t) => DESTRUCTIVE_NAME.test(t));
       if (looks.length) fail(`connection ${k}: ${looks.join(", ")} look${looks.length === 1 ? "s" : ""} destructive (delete, trash, remove, purge): tag ${looks.length === 1 ? "it" : "them"} destructive, granted only by name`);
       // Agents reach it only through the kernel's proxy, which forwards with the service key `auth` names (compile creates it).
@@ -792,7 +803,7 @@ export function compile(productDir, instanceDir, { revision, fetch = hostFetch(p
         fail(`${key}: grant to ${name}, which is not enabled (enable its module, or write "${name}?" to make the grant optional)`);
       }
       const all = [...c.tools.read, ...c.tools.write, ...(c.tools.destructive ?? [])];
-      const list = grant === "read" ? c.tools.read : grant === "write" ? [...c.tools.read, ...c.tools.write] : Array.isArray(grant) ? grant : fail(`${key}: grant to ${name} must be read, write or a list of tools`);
+      const list = grant === "read" ? readTools(c) : grant === "write" ? [...readTools(c), ...c.tools.write] : Array.isArray(grant) ? grant : fail(`${key}: grant to ${name} must be read, write or a list of tools`);
       for (const t of list) if (!all.includes(t)) fail(`${key}: ${name} has no tool ${t}`);
       // A connection's `upstream` tools file to the product's upstream repos: granted only while the upstream setting
       // allows issues (spec §6.9a; off grants none of them).
@@ -948,7 +959,7 @@ export function compile(productDir, instanceDir, { revision, fetch = hostFetch(p
   // The kernel's connection table (config/kernel/connections.json): where each connection is and with which key.
   const connections = Object.fromEntries(Object.entries(paperclip.mcp_servers).map(([k, c]) => [k, {
     url: c.url, auth_secret: c.auth, module: c.module, returns: c.returns ?? "untrusted",
-    tools: { read: [...c.tools.read], write: [...c.tools.write], destructive: [...(c.tools.destructive ?? [])] }, ...(c.tool_timeout_sec ? { tool_timeout_s: c.tool_timeout_sec } : {}),
+    tools: { read: [...c.tools.read], write: [...c.tools.write], destructive: [...(c.tools.destructive ?? [])], ...(c.tools.named?.length ? { named: [...c.tools.named] } : {}) }, ...(c.tool_timeout_sec ? { tool_timeout_s: c.tool_timeout_sec } : {}),
     ...(c.model_as_caller === true ? { model_as_caller: true } : {}),
   }]));
 

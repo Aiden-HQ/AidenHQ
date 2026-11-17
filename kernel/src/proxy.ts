@@ -61,16 +61,20 @@ export function mapMessages(body: string, sse: boolean, fn: (m: Record<string, a
 /**
  * The tools a caller may use on a connection, and the tools it lists. An agent: its granted tools the manifest lists. A job:
  * its jobcaps' tools (declared in the manifests, compile-checked), never one the connection tags write or destructive.
+ * A tool the connection tags `named` is a read the `read` shorthand never reaches: it is listed only to a caller whose grant
+ * (a jobcap's tool list included) names it, so to everyone else the manifest does not hold it.
  */
 export function toolsFor(who: Identity, connection: string, conn: Connection | undefined): { listed: Set<string>; allowed: Set<string> } {
-  const tagged = conn ? [...conn.tools.read, ...conn.tools.write, ...conn.tools.destructive] : [];
+  const granted = new Set(who.tools[connection] ?? []);
+  const named = new Set(conn?.tools.named ?? []);
+  const tagged = conn ? [...conn.tools.read, ...conn.tools.write, ...conn.tools.destructive].filter((t) => !named.has(t) || granted.has(t)) : [];
   if (who.kind === "job") {
     const writes = new Set(conn ? [...conn.tools.write, ...conn.tools.destructive] : []);
-    const reads = new Set((who.tools[connection] ?? []).filter((t) => !writes.has(t)));
+    const reads = new Set([...granted].filter((t) => !writes.has(t)));
     return { listed: new Set([...tagged, ...reads]), allowed: reads };
   }
   const listed = new Set(tagged);
-  return { listed, allowed: new Set((who.tools[connection] ?? []).filter((t) => listed.has(t))) };
+  return { listed, allowed: new Set([...granted].filter((t) => listed.has(t))) };
 }
 
 /** An untrusted tools/call answer as the agent may see it: every string in it fenced, anything it can't fence dropped. */
