@@ -12,6 +12,8 @@
 #   - /setup takes the account, the TOTP enrolment, the keys and the recovery-key tick; a second /setup is refused.
 #   sudo bash ops/test/unattended-install.sh   (root, git, node 24, kernel/ and scripts/ npm ci'd; it adds a user and
 #                                               /opt/aidenhq, so it runs only where /.dockerenv exists or CI is set)
+# Not in CI: our runners' job containers set no-new-privileges, so sudo can't reach root there. Run it in a container,
+# e.g. a Node 24 Debian image with the checkout mounted, after npm ci in kernel/ and scripts/.
 set -euo pipefail
 src="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 [ "$(id -u)" = 0 ] || exec sudo -n env PATH="$PATH" CI="${CI:-}" bash "$0" "$@"
