@@ -2,7 +2,8 @@
 //   POST /v1/auth/{exchange,session,sign_out}  (the board's key) a module UI's one-time code → its session token; that
 //              token → its ready admin (or 401); that session ends. The board checks its session here on every request.
 //   POST /v1/accounts/<op>   (the board's key + {token}: a live module UI session's admin acts) account admin: list, sessions,
-//              revoke_session, invite, role, disable, enable, link, app_admins, app_admin_set, recovery_key_waiting; `names` and `owner_request` (the
+//              revoke_session, invite, role, disable, enable, link, app_admins, app_admin_set, recovery_key_waiting, save_secret
+//              (the owner's) and setup_status (a module's declared `setup:` secrets: module-secrets.ts); `names` and `owner_request` (the
 //              owner's chat words Aiden relays as his in-app request) with the key alone.
 //   POST /v1/apps/<op>       (the apps-platform module's own token) in-app requests and roles for agents: requests, reply,
 //              roles, role_set (apps-mcp checked the calling agent may, and names it).
@@ -13,14 +14,17 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import { AccountError, type Accounts, type Role } from "./accounts.ts";
 import { AccessError, assertNamesApp } from "./app-access.ts";
 import type { Whoami } from "./identity.ts";
+import type { ModuleSecrets } from "./module-secrets.ts";
 import { fail } from "./proxy.ts";
 
 const EMAIL = (v: unknown) => typeof v === "string" && v.length <= 200;
 const APP = (v: unknown) => typeof v === "string" && /^[a-z][a-z0-9-]{1,30}$/.test(v);
 const ID = (v: unknown) => typeof v === "string" && /^[\w-]{1,64}$/.test(v);
 const ROLE = (v: unknown) => v === "admin" || v === "user";
+const MODULE = (v: unknown) => typeof v === "string" && /^[a-z][a-z0-9-]{0,62}$/.test(v);
+const SECRET = (v: unknown) => typeof v === "string" && /^[a-z][a-z0-9_]{1,63}$/.test(v);
 
-export function createAuthApi({ accounts, whoami, boardKey, operatorKey, recoveryKeyWaiting = () => false }: { accounts: () => Accounts | undefined; whoami: Whoami; boardKey: () => string; operatorKey: () => string; recoveryKeyWaiting?: () => boolean }) {
+export function createAuthApi({ accounts, whoami, boardKey, operatorKey, recoveryKeyWaiting = () => false, secrets }: { accounts: () => Accounts | undefined; whoami: Whoami; boardKey: () => string; operatorKey: () => string; recoveryKeyWaiting?: () => boolean; secrets?: ModuleSecrets }) {
   const bearer = (req: IncomingMessage) => String(req.headers.authorization ?? "").replace(/^Bearer\s+/i, "").trim();
   const is = (given: string, key: string) => { const a = Buffer.from(given), b = Buffer.from(key); return b.length > 0 && a.length === b.length && timingSafeEqual(a, b); };
   const send = (res: ServerResponse, status: number, body: unknown): void => void res.writeHead(status, { "content-type": "application/json", "cache-control": "no-store" }).end(JSON.stringify(body));
@@ -99,6 +103,15 @@ export function createAuthApi({ accounts, whoami, boardKey, operatorKey, recover
           case "recovery_key_waiting": if (!by.owner) throw fail(403, "forbidden", "only the owner"); return send(res, 200, { waiting: recoveryKeyWaiting() });
           case "app_admins": return send(res, 200, { apps: a.apps.adminsByApp() });
           case "app_admin_set": return send(res, 200, await a.apps.assign(by.email, need(b, "app", APP), need(b, "email", EMAIL), need(b, "admin", (v) => typeof v === "boolean") ? "admin" : null));
+          // A module's declared secrets: any ready admin sees which are set; only the owner replaces one (a channel's token
+          // decides approvals). The kernel picks the file and the services.
+          case "save_secret": case "setup_status": {
+            if (!secrets) throw fail(503, "unavailable", "module secrets are off");
+            const module = need(b, "module", MODULE);
+            if (op === "setup_status") return send(res, 200, { secrets: secrets.status(module) });
+            if (!by.owner) throw fail(403, "forbidden", "only the owner");
+            return send(res, 200, { ok: true, ...(await secrets.save(module, need(b, "secret", SECRET), need(b, "value", (v) => typeof v === "string" && v.length <= 1000))) });
+          }
         }
         throw fail(404, "not_found", "no such accounts call");
       }

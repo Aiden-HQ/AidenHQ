@@ -914,7 +914,10 @@ export function compile(productDir, instanceDir, { revision, fetch = hostFetch(p
   if (dangling.length) fail(`refusing: ${dangling.map((d) => `${d.owner} (${d.binding}) names ${d.missing}, which no enabled module provides`).join("; ")}`);
   const reviewer = reviewerSlot(enabledDefs, instance.reviewer);
   const setup = setupSecrets(enabledDefs, generatedSecrets);
-  const kernelModules = { owner: { name: String(settings.owner_name ?? ""), email: String(settings.owner_email).trim().toLowerCase(), timezone: String(settings.timezone ?? "UTC") }, modules: kernelModuleTable(enabledDefs, settings), ...(reviewer ? { reviewer } : {}), ...(setup.length ? { setup } : {}) };
+  // Every enabled module's own compose services (their keys): what the kernel recreates when the owner saves one of its
+  // `setup:` secrets from the board (kernel/src/module-secrets.ts); a module not listed here is off.
+  const services = Object.fromEntries(enabled.map((m) => [m, Object.keys(serviceModule).filter((k) => serviceModule[k].module === m).sort()]));
+  const kernelModules = { owner: { name: String(settings.owner_name ?? ""), email: String(settings.owner_email).trim().toLowerCase(), timezone: String(settings.timezone ?? "UTC") }, modules: kernelModuleTable(enabledDefs, settings), services, ...(reviewer ? { reviewer } : {}), ...(setup.length ? { setup } : {}) };
   // The engine-run agents (`dispatch: runner`, any module's or the instance's) are the job dispatcher's: the one enabled module
   // with kernel.jobs. The kernel starts a job only for an agent its requester dispatches (kernel/src/jobs.ts).
   const dispatchers = Object.entries(kernelModules.modules).filter(([, m]) => (m.roles ?? []).includes("kernel.jobs")).map(([n]) => n);

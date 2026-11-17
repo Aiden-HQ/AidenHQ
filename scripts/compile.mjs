@@ -11,7 +11,8 @@
 //   config/kernel/connections.json → the kernel's tool proxy: each connection's endpoint, service key secret, module and tool tags
 //   config/kernel/writes.json  → the kernel's write kinds (modules' `writes:`): floor, card, args schema, executor, routed tools
 //   config/kernel/checks.json  → the kernel's finish gate: modules' task.finish checks (url, key secret, label, scope)
-//   config/kernel/modules.json → the kernel: modules' kernel roles, privileged entries, own tokens and channels (stamp, settings)
+//   config/kernel/modules.json → the kernel: modules' kernel roles, privileged entries, own tokens and channels (stamp, settings),
+//                                each enabled module's compose services and its setup secrets
 //   config/exposure           → ops/vm/setup.sh (root) and verify-security: settings.exposure, one word
 //   config/module-data.json    → the apply (ops/lib/generations.sh): each data module's data_version and services digest
 //   config/points/<module>.json → that module's own services only: the contributions to its points (spec §3.6)
