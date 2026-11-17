@@ -7,6 +7,8 @@
 // The IP comes from the host's .env (AIDENHQ_PUBLIC_IP, which ops/setup.sh writes), never from instance.yaml: agents can
 // edit that through an apply. Compile (scripts/compile.mjs) writes config/Caddyfile and the `caddy` service from it.
 //   node scripts/front-door.mjs detect                  the default route's public IPv4, or exit 1 saying why there is none
+//   node scripts/front-door.mjs wait <ip> [seconds]     wait (default 180) until both sites answer over a publicly trusted
+//                                                       certificate (Node's root store); exit 1 if they never do
 //   node scripts/front-door.mjs caddyfile <ip> [<acme directory>]
 //                                                       print the Caddyfile (a directory: ops/test/caddy-staging-issuance.sh)
 import { execFileSync } from "node:child_process";
@@ -111,6 +113,17 @@ ${directory ? `			dir ${directory}\n` : ""}			profile shortlived
 ${site(0, "127.0.0.1:3121", false)}${site(ADMIN_PORT, "127.0.0.1:3120", true)}`;
 }
 
+/** Whether https://<ip> and https://<ip>:8446 both answer (any status) over a verified certificate within `seconds`. */
+export async function waitForCertificate(ip, seconds = 180) {
+  const until = Date.now() + seconds * 1000;
+  const up = (url) => fetch(url, { redirect: "manual", signal: AbortSignal.timeout(10_000) }).then(() => true, () => false);
+  for (;;) {
+    if ((await up(`https://${ip}/`)) && (await up(`https://${ip}:${ADMIN_PORT}/`))) return true;
+    if (Date.now() > until) return false;
+    await new Promise((r) => setTimeout(r, 5000));
+  }
+}
+
 /** The `caddy` compose service for a Caddyfile (compile writes the file to config/Caddyfile). */
 export function caddyService(file) {
   return {
@@ -129,7 +142,11 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
   try {
     if (cmd === "detect") console.log(detectPublicIPv4());
     else if (cmd === "caddyfile") process.stdout.write(caddyfile(ip, dir));
-    else fail("usage: front-door.mjs detect | caddyfile <ip> [<acme directory>]");
+    else if (cmd === "wait") {
+      const problem = publicIPv4Problem(ip);
+      if (problem) fail(problem);
+      if (!(await waitForCertificate(ip, Number(dir) || 180))) fail(`https://${ip} has no publicly trusted certificate yet`);
+    } else fail("usage: front-door.mjs detect | wait <ip> [seconds] | caddyfile <ip> [<acme directory>]");
   } catch (e) {
     console.error(`front-door: ${e.message}`);
     process.exit(1);
