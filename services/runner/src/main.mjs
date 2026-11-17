@@ -48,7 +48,7 @@ import YAML from "yaml";
 import { classify, normalizeApp, sensitiveTraits } from "./tiers.mjs";
 import { CODE_REJECTS, MAX_REJECTS, autonomyCap, codeVerdict, heldInput, meritOwner, priorDecisions, priorPart, laterRejections, rejectedSince, requestKey, requestPatches, routineCap, routineCapped } from "../../../kernel/src/tier.ts";
 import { LUNA, openRouterAsk, openRouterKey } from "./models.mjs";
-import { kernelCardDiff, readCardSourceExceptions, requestReview, reviewRequest, unreadSourceExceptions } from "./review-request.mjs";
+import { kernelCardDiff, readCardSourceExceptions, readDecisions, requestReview, reviewRequest, unreadSourceExceptions } from "./review-request.mjs";
 import { UNSURE } from "../../../kernel/sdk/src/reviewer.ts";
 import { fileContext } from "../../shared/review-files.mjs";
 import { GRADE_SCHEMA, escalationFor, gather, grade, gradeNote, template } from "./grade.ts";
@@ -2566,10 +2566,8 @@ async function cardBases({ branches = [], prs = [] } = {}) {
 async function cardSources(bases) {
   if (!bases.length) return undefined;
   try {
-    const gh = await findRealGh();
     // A base code could not name (a merge card's unreadable PR) is never guessed: readCardSourceExceptions skips it.
-    const read = async (repo, url) => (await execFileP(gh, ["api", "-H", "Accept: application/vnd.github.raw", url], await gho(repo, READ, { maxBuffer: 4 * 1024 * 1024 }))).stdout;
-    return await readCardSourceExceptions(bases, read);
+    return await readCardSourceExceptions(bases, ghRaw);
   } catch (err) {
     log("source exceptions unread", { err: String(err.message ?? err).slice(0, 200) });
     return unreadSourceExceptions();
@@ -2598,13 +2596,19 @@ async function cardSiblings(issue, bases) {
   }
 }
 
+/** One file's raw text from GitHub's contents API (`url` names the ref), read with the repo's narrowed token. */
+const ghRaw = async (repo, url) => (await execFileP(await findRealGh(), ["api", "-H", "Accept: application/vnd.github.raw", url], await gho(repo, READ, { maxBuffer: 4 * 1024 * 1024 }))).stdout;
+
 /**
- * What the reviewer reads from the base, never from the branch under review: the task's merged siblings and the owner's
- * recorded source approvals. Read once, so both the card's review and the pre-filing check see the same two blocks.
+ * What the reviewer reads from trusted ground, never from the branch under review: the task's merged siblings and the owner's
+ * recorded source approvals (from the card's bases), and the instance's decisions (from the instance repo's default branch).
+ * Read once, so both the card's review and the pre-filing check see the same blocks.
  */
 async function cardContext(issue, target, known) {
   const bases = known ?? (await cardBases(target));
-  return { siblings: await cardSiblings(issue, bases), sources: await cardSources(bases) };
+  // The decisions digest (readDecisions): from the instance repo's default branch, whatever the card's base; unread is none.
+  const decisions = await readDecisions(cfg.apply?.repo, githubDefault, ghRaw).catch((err) => void log("decisions unread", { err: String(err.message ?? err).slice(0, 200) }));
+  return { siblings: await cardSiblings(issue, bases), sources: await cardSources(bases), decisions };
 }
 
 /** `fn(path, oids, out)` with GitHub's `branches` fetched into the runner's clone (their tips: `oids`); `out` is a spare ref. */

@@ -1,6 +1,6 @@
 // What the AI reviewer reads (reviewer@1, kernel/sdk/src/reviewer.ts), as the runner gathers it until 3e: the diff, the
-// changed files shaped by fileContext, the request chain, the base's source records, earlier findings, and a PR's Evidence
-// section. A record's review
+// changed files shaped by fileContext, the request chain, the base's source records, the instance's decisions digest,
+// earlier findings, and a PR's Evidence section. A record's review
 // goes to the kernel with its record (POST /v1/writes/:id/review), which asks the bound reviewer module and applies the
 // verdict; the Engineer's check before filing goes to POST /v1/reviews with the same request.
 import { readExceptions } from "../../../scripts/supply-chain/best-version.mjs";
@@ -31,6 +31,20 @@ export async function readCardSourceExceptions(bases, read) {
   return { where: known.map((b) => `${b.repo} ${b.base} ${SOURCE_EXCEPTIONS_FILE}`).join("; "), records: rows.flat() };
 }
 
+/** The instance's product decisions (what the owner decided, and decided not to build), at the instance repo's root. */
+export const DECISIONS_FILE = "decisions.md";
+
+/**
+ * The instance's decisions digest for the reviewer: read from the instance repo's default branch, never from a card's base
+ * or branch, so a change (an edit to decisions.md included) is always judged against the digest already on main. No
+ * instance repo, no file or a failed read is no block (undefined): the digest only ever adds grounds to reject.
+ */
+export async function readDecisions(instanceRepo, defaultBranch, read) {
+  const branch = instanceRepo && (await defaultBranch(instanceRepo));
+  const text = branch && String(await read(instanceRepo, `repos/${instanceRepo}/contents/${DECISIONS_FILE}?ref=${encodeURIComponent(branch)}`)).trim();
+  return text ? { where: `${instanceRepo} ${branch} ${DECISIONS_FILE}`, text } : undefined;
+}
+
 /**
  * The diff of a kernel record's card (a module write kind's), from the card's details. Only deploy_app's card carries a
  * marker: the author's commit message after it is cut off, so it never reaches the reviewer inside the DIFF fence (the
@@ -48,7 +62,7 @@ export function kernelCardDiff(a) {
  * (agentReview) both build it here, so the check sees exactly what the card will. `a`: { action, target, sentence, panel? };
  * `input`: the runner's tier input with the diff; `previous`: its own checks' findings for the action on the task.
  */
-export function reviewRequest(a, input, chain, { component = "AI reviewer", siblings, sources, requesterModel = "", previous = [], product = [] } = {}) {
+export function reviewRequest(a, input, chain, { component = "AI reviewer", siblings, sources, decisions, requesterModel = "", previous = [], product = [] } = {}) {
   return {
     // `product`: the repositories that are one product for scope (the product repo and the official modules repo), code's own.
     card: { action: a.action, rule: input.rule, target: a.target, sentence: a.sentence, reason: input.reason, ...(product.length ? { product } : {}) },
@@ -57,6 +71,7 @@ export function reviewRequest(a, input, chain, { component = "AI reviewer", sibl
     chain,
     siblings,
     sources,
+    decisions,
     requesterModel,
     // Code's flag now, or one the card already carries (a first reviewer's, recorded on an earlier try).
     panel: Boolean(input.panel || a.panel),
