@@ -124,8 +124,9 @@ export function authorityDiff(name: string, base: ModuleDef | undefined, head: M
   const b = base ?? {};
   if (!base && !replacing) review(`installed${origin.head ? ` from ${origin.head}` : ""}`);
   else if (origin.head && origin.head !== origin.base) review(`now from ${origin.head}`);
-  // Enforcement it drops (a check, its reviewer or executor provider) is authority too: the owner's, as on a remove.
-  const checkIds = (x: Dict) => list(x.checks).map((c) => JSON.stringify(isMap(c) ? c.id ?? c : c));
+  // Enforcement it drops (a check, its reviewer or executor provider) is authority too: the owner's, as on a remove. A check
+  // moved to observe mode (gates.ts) no longer enforces, so it counts as dropped.
+  const checkIds = (x: Dict) => list(x.checks).filter((c) => !(isMap(c) && c.mode === "observe")).map((c) => JSON.stringify(isMap(c) ? c.id ?? c : c));
   const gone = checkIds(b).filter((c) => !checkIds(head).includes(c));
   if (gone.length) owner(`drops ${gone.length} check${gone.length === 1 ? "" : "s"}`);
   for (const k of ["reviewer", "executor"]) if (map(b.providers)[k] && !map(head.providers)[k]) owner(`drops its ${k} provider`);
