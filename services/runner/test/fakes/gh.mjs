@@ -6,6 +6,8 @@
 // `mergeable`: CONFLICTING for a conflict with main; `base`: the base branch (main when unset), stacked on another PR's branch.
 // `checks` may also be NONE (no checks on the head yet); `title` and `body` are the PR's own text, as GitHub returns it. Also
 // the default branch, a branch's PRs, a retarget, a close, a comment, and an update of a PR's head with its base (a merge commit).
+// `red: [<word>…]` (in place of `checks`): the PR's nth head has one Actions check run, `test`, failed with "Error: expected
+// <nth word>" in its job log; the word `lost` is a job whose runner died instead (GitHub's annotation, and no step failed).
 import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -67,7 +69,17 @@ const rollup = (state, statuses = []) => {
   const worst = all.some((n) => n.conclusion === "FAILURE" || n.state === "FAILURE") ? "FAILURE" : all.some((n) => n.state === "PENDING" || n.status === "IN_PROGRESS") ? "PENDING" : "SUCCESS";
   return { state: worst, contexts: { nodes: all } };
 };
-const commits = (p) => ({ nodes: [{ commit: { parents: { nodes: [] }, signature: null, statusCheckRollup: rollup(p.checks, written(p)) } }] });
+// `red`: each head the PR has had, in order (kept in the fixture), and the check run on it. Its id says which head and word.
+const redRun = (p, head) => {
+  if (!(p.heads ??= []).includes(head)) {
+    p.heads.push(head);
+    writeFileSync(fixture, JSON.stringify(prs));
+  }
+  const i = p.heads.indexOf(head);
+  return { __typename: "CheckRun", name: "test", status: "COMPLETED", conclusion: "FAILURE", databaseId: 7000 + i, checkSuite: { workflowRun: { databaseId: 8000 + i } } };
+};
+const redWord = (id) => Object.values(prs).find((p) => p.red)?.red[id % 1000];
+const commits = (p) => ({ nodes: [{ commit: { parents: { nodes: [] }, signature: null, statusCheckRollup: p.red ? { state: "FAILURE", contexts: { nodes: [redRun(p, tip(p.branch))] } } : rollup(p.checks, written(p)) } }] });
 
 if (field("query")?.includes("pullRequests(states: OPEN")) {
   const nodes = Object.entries(prs)
@@ -77,6 +89,30 @@ if (field("query")?.includes("pullRequests(states: OPEN")) {
       headRefName: p.branch, headRefOid: tip(p.branch), author: p.author === "dependabot" ? { __typename: "Bot", login: "dependabot" } : { __typename: "User", login: "test" }, commits: commits(p),
     }));
   console.log(JSON.stringify({ data: { repository: { defaultBranchRef: { name: "main", target: { oid: tip("main"), statusCheckRollup: rollup("SUCCESS") } }, pullRequests: { nodes } } } }));
+  process.exit(0);
+}
+// `red`: a head's failed check runs, a workflow run's jobs, a check run's failure annotations and a job's log.
+const apiPath = args.find((a) => a.startsWith("repos/acme/app/")) ?? "";
+const redRoute = (re) => re.exec(apiPath);
+let m;
+if ((m = redRoute(/^repos\/acme\/app\/commits\/([0-9a-f]{40})\/check-runs/))) {
+  const p = Object.values(prs).find((q) => q.red && q.heads?.includes(m[1]));
+  const r = p && redRun(p, m[1]);
+  console.log(JSON.stringify(r ? [{ id: r.databaseId, name: r.name, title: null, summary: null }] : []));
+  process.exit(0);
+}
+if ((m = redRoute(/^repos\/acme\/app\/actions\/runs\/(\d+)\/jobs/))) {
+  const id = Number(m[1]) - 1000;
+  console.log(JSON.stringify({ id, name: "test", check_run_url: `https://api.github.com/repos/acme/app/check-runs/${id}`, steps: [{ name: "test", conclusion: redWord(id) === "lost" ? "success" : "failure" }] }));
+  process.exit(0);
+}
+if ((m = redRoute(/^repos\/acme\/app\/check-runs\/(\d+)\/annotations$/))) {
+  const notes = redWord(Number(m[1])) === "lost" ? [{ annotation_level: "failure", message: "The self-hosted runner: box-1 lost communication with the server." }] : [];
+  console.log(JSON.stringify(args.includes("--jq") ? notes.map((a) => a.message) : notes));
+  process.exit(0);
+}
+if ((m = redRoute(/^repos\/acme\/app\/actions\/jobs\/(\d+)\/logs$/))) {
+  console.log(`Error: expected ${redWord(Number(m[1]))}\nnot ok - ${redWord(Number(m[1]))}`);
   process.exit(0);
 }
 const bare = (...a) => execFileSync("git", ["--git-dir", join(dir, "github/acme/app.git"), ...a], { stdio: ["ignore", "pipe", "ignore"] }).toString().trim();

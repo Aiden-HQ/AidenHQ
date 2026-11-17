@@ -74,7 +74,7 @@ export function StatStrip({
               <Skeleton className="my-1 h-8 w-12" />
             ) : (
               <span className="flex w-full items-end justify-between gap-3">
-                <span className={cn("text-3xl font-bold tracking-tight tabular-nums", s.tone && TONE[s.tone].value)}>{s.value}</span>
+                <span className={cn("text-3xl font-bold tracking-tight tabular-nums", s.tone && TONE[s.tone].value)}>{typeof s.value === "number" ? s.value.toLocaleString() : s.value}</span>
                 {s.trend && s.trend.length > 1 && <Sparkline values={s.trend} className={cn("mb-1", s.tone ? TONE[s.tone].value : "text-chart-1")} />}
               </span>
             )}

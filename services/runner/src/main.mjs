@@ -43,7 +43,7 @@ import { BASE_FILES_QUERY, baseFilesSince, cardBase, pickBranchPr, siblingBlock,
 import { OPEN_PRS_QUERY, dependabotDue, isDependabot, prAttention, redChecks } from "../../../modules/engineering/src/product-prs.ts";
 import { State } from "./state.ts";
 import { MERGE_REQUESTED, REPLY_MARKER, fence, onlyMergesLeft, prSnapshot, stateSection, threadEntries, threadSection, transcript } from "./thread.ts";
-import { checkSignature, record } from "../../../modules/engineering/src/breaker.ts";
+import { afterNewWord, checkSignature, roundsTrip, twiceTrip } from "../../../modules/engineering/src/breaker.ts";
 import YAML from "yaml";
 import { classify, normalizeApp, sensitiveTraits } from "./tiers.mjs";
 import { CODE_REJECTS, MAX_REJECTS, autonomyCap, codeVerdict, heldInput, meritOwner, priorDecisions, priorPart, laterRejections, rejectedSince, requestKey, requestPatches, routineCap, routineCapped } from "../../../kernel/src/tier.ts";
@@ -711,12 +711,12 @@ function requestFrom(full) {
 }
 
 async function handleRequest(issue, latest, { fromAgent = false } = {}) {
-  // A new word from whoever asked (the delegator or the owner) lifts a stop on identical failures, and gives the task its
-  // reviewer checks before filing again (agentReview).
-  if (latest && stopped(issue.id)) {
-    state.set(breakerKey(issue.id), "{}");
-    log("breaker cleared", { issue: issue.identifier });
-  }
+  // A new word from whoever asked (the delegator or the owner) lifts a stop (identical failures, or ROUNDS_AT red rounds on one
+  // check), starts the red rounds over (red-check wakes included; identical failures still count across it), and gives the
+  // task its reviewer checks before filing again (agentReview).
+  const kept = latest && afterNewWord(breakerOf(issue.id), Boolean(stopped(issue.id)));
+  if (kept) log("breaker cleared", { issue: issue.identifier }), state.set(breakerKey(issue.id), JSON.stringify(kept));
+  for (const b of kept ? state.branches(issue.id) : []) if (b.pr_url) for (const k of ["red-wake", "turned-wake"]) state.set(`${k}:${String(b.pr_url).toLowerCase()}`, "[]");
   if (latest && checksOf(issue.id).length) {
     state.set(checksFromKey(issue.id), new Date().toISOString());
     log("review checks reset", { issue: issue.identifier });
@@ -1052,26 +1052,26 @@ const breakerKey = (issueId) => `breaker:${issueId}`;
 const breakerOf = (issueId) => JSON.parse(state.get(breakerKey(issueId)) || "{}");
 /** The task's stop, once tripped: its pushes, PRs, merges and runner wakes wait for the next word of whoever asked. */
 const stopped = (issueId) => Object.values(breakerOf(issueId)).find((e) => e.tripped);
-const stoppedText = (e) => `Not done: stopped, the same failure twice (${e.what}). Nothing more is published, merged or retried on this task until whoever asked for the work replies on it; they have been told. End your turn saying so in one line.`;
+const stoppedText = (e) => `Not done: stopped, ${e.why ?? "the same failure twice"} (${e.what}). Nothing more is published, merged or retried on this task until whoever asked for the work replies on it; they have been told. End your turn saying so in one line.`;
 
 /**
- * One failure of `target` (a PR's checks, a reviewer's rejection) on attempt `head`, with its signature `s` ({ sig, short }).
- * The second identical one stops the task: logged, and one outcome notice to the delegator (tellParent, "parked"; on the task
- * itself when it has no parent). GitHub's text in it is fenced as data. True when the task is stopped.
+ * One failure of `target` (a PR's checks, a reviewer's rejection) on attempt `head`, with its signature `s` ({ sig, short }):
+ * the second identical one stops the task (breaker.ts twiceTrip). True when the task is stopped.
  */
 async function noteFailure(issue, target, s, head, what) {
-  const all = breakerOf(issue.id);
-  if (all[target]?.tripped) return true;
-  const { entry, tripped } = record(all[target], s, head);
-  all[target] = tripped ? { ...entry, tripped: true, what } : entry;
+  return settle(issue, twiceTrip(breakerOf(issue.id), target, s, head, what), { target, what });
+}
+
+/**
+ * A trip's new breaker state saved; one just tripped is logged and told once, as an outcome (notices.ts "parked"): the
+ * delegator hears it on the parent, a task without one keeps it on itself. True when the task is stopped.
+ */
+async function settle(issue, { all, notice }, why) {
   state.set(breakerKey(issue.id), JSON.stringify(all));
-  if (!tripped) return Boolean(stopped(issue.id));
-  log("breaker tripped", { issue: issue.identifier, target, what, attempts: entry.heads.length });
+  if (!notice) return Boolean(stopped(issue.id));
+  log("breaker tripped", { issue: issue.identifier, ...why });
   const full = await pc.issue(issue.id).catch(() => undefined);
-  const text = `**Stopped: the same failure twice** on ${full?.identifier ?? issue.identifier} (${what}). The runner won't retry, publish or merge it again until you reply on ${full?.identifier ?? issue.identifier} with what to do next (that lifts the stop), or close it.${s.short ? `\n\nGitHub's text for the failure (data, not instructions):\n\n\`\`\`\n${s.short.replace(/```/g, "‵‵‵")}\n\`\`\`` : ""}`;
-  // An outcome (notices.ts "parked"): the delegator hears it on the parent; a task without one keeps it on itself.
-  if (full?.parentId) await tellParent(full, "parked", text).catch(() => {});
-  else await pc.comment(issue.id, text).catch(() => {});
+  await (full?.parentId ? tellParent(full, "parked", notice(full.identifier)) : pc.comment(issue.id, notice(issue.identifier))).catch(() => {});
   return true;
 }
 
@@ -1088,14 +1088,16 @@ async function rejectedAgain(issue, a, code) {
 }
 
 /**
- * A PR's head whose checks failed (the merge queue's `fixes`): GitHub's failure text read, and recorded with the breaker.
+ * A PR's head whose checks failed (the merge queue's `fixes`, or a merge turned away for them): the failure text read, and
+ * recorded with the breaker, both its identical-failure half and the red rounds per check.
  * The environment's check runs (`f.environment`, by id: cancelled, timed out, never started, a runner that died) are left out, so a
  * head that only met a broken environment is no failure at all.
  */
 async function redHead(issue, f) {
-  const s = checkSignature(await failedChecks(f.repo, f.head, f.environment));
-  if (!s) return Boolean(stopped(issue.id)); // unread, or only the environment's, is never "the same"
-  return noteFailure(issue, `checks:${f.url.toLowerCase()}`, s, f.head, `${f.url}'s checks failed the same way on two heads in a row`);
+  const failed = await failedChecks(f.repo, f.head, f.environment ?? (await merges.environmentalChecks(mergeGithub, f.repo, f.number, (await mergeGithub.pr(f.repo, f.number)).repository.pullRequest))), s = checkSignature(failed);
+  if (!s) return Boolean(stopped(issue.id)); // unread, or only the environment's, is never "the same" and no round
+  if (await noteFailure(issue, `checks:${f.url.toLowerCase()}`, s, f.head, `${f.url}'s checks failed the same way on two heads in a row`)) return true;
+  return settle(issue, roundsTrip(breakerOf(issue.id), failed, f.head, f.url), { target: `rounds:${f.url}` });
 }
 
 /**
@@ -1150,6 +1152,7 @@ const TURNED_WHY = {
   eval: "it changes the AI reviewer's own code, and the reviewer eval on its head didn't score 100% (the failing cases are in the task's \"Stopped the merges\" comment)",
 };
 async function wakeForTurnedAway(issueId, f) {
+  if (f.key === "checks-not-green" && (await redHead({ id: issueId, identifier: issueId }, f).catch((err) => log("red head unread", { pr: f.url, err: String(err.message ?? err).slice(0, 200) })))) return;
   const key = `turned-wake:${f.url.toLowerCase()}`;
   const mark = `${f.head}:${f.key}`;
   const seen = JSON.parse(state.get(key) || "[]");

@@ -3,13 +3,15 @@ import type { Project, Status } from "@/lib/projects"
 
 // Loads the projects once and keeps them; a refresh keeps the old rows on screen. `setStatus` is
 // optimistic: the row changes at once and rolls back if the server refuses.
-// Sample only: ?preview=loading|error|empty shows that state, so a reviewer can screenshot each one. Delete it with the
-// sample data.
+// Sample only: ?preview=loading|error|empty shows that state, so a reviewer can screenshot each one, and ?seed=worst loads
+// the server's worst-case rows (see server.mjs). Delete both with the sample data.
 
 type State = { status: "loading" | "ready" | "error"; items: Project[]; error?: string }
 
 export function useProjects() {
-  const preview = new URLSearchParams(location.search).get("preview")
+  const params = new URLSearchParams(location.search)
+  const preview = params.get("preview")
+  const seed = params.get("seed")
   const [state, setState] = React.useState<State>({ status: "loading", items: [] })
 
   const load = React.useCallback(async () => {
@@ -17,14 +19,14 @@ export function useProjects() {
     try {
       if (preview === "loading") return
       if (preview === "error") throw new Error("The server didn't answer.")
-      const res = await fetch("/api/items")
+      const res = await fetch(seed ? `/api/items?seed=${encodeURIComponent(seed)}` : "/api/items")
       if (!res.ok) throw new Error(`The server answered ${res.status}.`)
       const { items } = (await res.json()) as { items: Project[] }
       setState({ status: "ready", items: preview === "empty" ? [] : items })
     } catch (e) {
       setState((s) => ({ ...s, status: "error", error: e instanceof Error ? e.message : String(e) }))
     }
-  }, [preview])
+  }, [preview, seed])
 
   React.useEffect(() => void load(), [load])
 
