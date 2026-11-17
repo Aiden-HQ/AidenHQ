@@ -1,638 +1,163 @@
 {
   "version": 1,
   "entries": {
-    "admin route GET /": {
-      "state": "experimental",
-      "fp": "auth=admin"
-    },
-    "admin route GET /approvals": {
-      "state": "experimental",
-      "fp": "auth=admin"
-    },
-    "admin route GET /approvals/:id": {
-      "state": "experimental",
-      "fp": "auth=admin"
-    },
-    "admin route GET /auth/enrol": {
-      "state": "experimental",
-      "fp": "auth=session"
-    },
-    "admin route GET /auth/handoff": {
-      "state": "experimental",
-      "fp": "auth=admin"
-    },
-    "admin route GET /auth/password": {
-      "state": "experimental",
-      "fp": "auth=admin"
-    },
-    "admin route GET /auth/set-password": {
-      "state": "experimental",
-      "fp": "auth=none"
-    },
-    "admin route GET /auth/sign-in": {
-      "state": "experimental",
-      "fp": "auth=none"
-    },
-    "admin route GET /auth/totp": {
-      "state": "experimental",
-      "fp": "auth=none"
-    },
-    "admin route GET /healthz": {
-      "state": "experimental",
-      "fp": "auth=none"
-    },
-    "admin route GET /owner/confirm": {
-      "state": "experimental",
-      "fp": "auth=admin"
-    },
-    "admin route GET /owner/message": {
-      "state": "experimental",
-      "fp": "auth=admin"
-    },
-    "admin route POST /approvals/:id/decide": {
-      "state": "experimental",
-      "fp": "auth=admin+csrf"
-    },
-    "admin route POST /approvals/batch": {
-      "state": "experimental",
-      "fp": "auth=admin+csrf"
-    },
-    "admin route POST /auth/enrol": {
-      "state": "experimental",
-      "fp": "auth=session+csrf"
-    },
-    "admin route POST /auth/password": {
-      "state": "experimental",
-      "fp": "auth=admin+csrf"
-    },
-    "admin route POST /auth/set-password": {
-      "state": "experimental",
-      "fp": "auth=origin"
-    },
-    "admin route POST /auth/sign-in": {
-      "state": "experimental",
-      "fp": "auth=origin"
-    },
-    "admin route POST /auth/sign-out": {
-      "state": "experimental",
-      "fp": "auth=origin"
-    },
-    "admin route POST /auth/totp": {
-      "state": "experimental",
-      "fp": "auth=origin"
-    },
-    "admin route POST /owner/confirm": {
-      "state": "experimental",
-      "fp": "auth=admin+csrf"
-    },
-    "admin route POST /owner/message": {
-      "state": "experimental",
-      "fp": "auth=admin+csrf"
-    },
-    "manifest key agents": {
-      "state": "experimental",
-      "fp": ""
-    },
-    "manifest key apps": {
-      "state": "experimental",
-      "fp": ""
-    },
-    "manifest key board_env": {
-      "state": "obsolete",
-      "fp": "",
-      "remove_after": null
-    },
-    "manifest key checks": {
-      "state": "experimental",
-      "fp": ""
-    },
-    "manifest key conflicts": {
-      "state": "experimental",
-      "fp": ""
-    },
-    "manifest key connections": {
-      "state": "experimental",
-      "fp": ""
-    },
-    "manifest key contributes": {
-      "state": "experimental",
-      "fp": ""
-    },
-    "manifest key data_version": {
-      "state": "experimental",
-      "fp": ""
-    },
-    "manifest key default_grants": {
-      "state": "experimental",
-      "fp": ""
-    },
-    "manifest key description": {
-      "state": "experimental",
-      "fp": ""
-    },
-    "manifest key generated_secrets": {
-      "state": "experimental",
-      "fp": ""
-    },
-    "manifest key isolation": {
-      "state": "experimental",
-      "fp": ""
-    },
-    "manifest key jobcaps": {
-      "state": "experimental",
-      "fp": ""
-    },
-    "manifest key kernel": {
-      "state": "experimental",
-      "fp": ""
-    },
-    "manifest key labels": {
-      "state": "experimental",
-      "fp": ""
-    },
-    "manifest key license": {
-      "state": "experimental",
-      "fp": ""
-    },
-    "manifest key models": {
-      "state": "experimental",
-      "fp": ""
-    },
-    "manifest key name": {
-      "state": "experimental",
-      "fp": ""
-    },
-    "manifest key optional_secrets": {
-      "state": "experimental",
-      "fp": ""
-    },
-    "manifest key points": {
-      "state": "experimental",
-      "fp": ""
-    },
-    "manifest key privileged": {
-      "state": "experimental",
-      "fp": ""
-    },
-    "manifest key prompts": {
-      "state": "experimental",
-      "fp": ""
-    },
-    "manifest key providers": {
-      "state": "experimental",
-      "fp": ""
-    },
-    "manifest key provides": {
-      "state": "experimental",
-      "fp": ""
-    },
-    "manifest key replaces": {
-      "state": "experimental",
-      "fp": ""
-    },
-    "manifest key requires": {
-      "state": "experimental",
-      "fp": ""
-    },
-    "manifest key roles": {
-      "state": "experimental",
-      "fp": ""
-    },
-    "manifest key routines": {
-      "state": "experimental",
-      "fp": ""
-    },
-    "manifest key secrets": {
-      "state": "experimental",
-      "fp": ""
-    },
-    "manifest key services": {
-      "state": "experimental",
-      "fp": ""
-    },
-    "manifest key settings": {
-      "state": "experimental",
-      "fp": ""
-    },
-    "manifest key setup": {
-      "state": "experimental",
-      "fp": ""
-    },
-    "manifest key writes": {
-      "state": "experimental",
-      "fp": ""
-    },
-    "provider engine@1": {
-      "state": "stable",
-      "fp": ""
-    },
-    "provider executor@1": {
-      "state": "experimental",
-      "fp": ""
-    },
-    "provider reviewer@1": {
-      "state": "experimental",
-      "fp": ""
-    },
-    "route ANY /v1/cp/agent/*": {
-      "state": "experimental",
-      "fp": "auth=module+assertion"
-    },
-    "route DELETE /c/:connection/mcp": {
-      "state": "stable",
-      "fp": "auth=bearer"
-    },
-    "route DELETE /v1/jobs/:job": {
-      "state": "experimental",
-      "fp": "auth=module"
-    },
-    "route GET /healthz": {
-      "state": "stable",
-      "fp": "auth=none"
-    },
-    "route GET /v1/advisories": {
-      "state": "experimental",
-      "fp": "auth=board"
-    },
-    "route GET /v1/agents": {
-      "state": "experimental",
-      "fp": "auth=module"
-    },
-    "route GET /v1/channel/cards": {
-      "state": "experimental",
-      "fp": "auth=module"
-    },
-    "route GET /v1/channel/notices": {
-      "state": "experimental",
-      "fp": "auth=module"
-    },
-    "route GET /v1/channel/outbox": {
-      "state": "experimental",
-      "fp": "auth=module"
-    },
-    "route GET /v1/cp/read/*": {
-      "state": "experimental",
-      "fp": "auth=module"
-    },
-    "route GET /v1/jobs/:job": {
-      "state": "experimental",
-      "fp": "auth=module"
-    },
-    "route GET /v1/jwks": {
-      "state": "stable",
-      "fp": "auth=none"
-    },
-    "route GET /v1/whoami": {
-      "state": "experimental",
-      "fp": "auth=bearer"
-    },
-    "route GET /v1/writes": {
-      "state": "experimental",
-      "fp": "auth=board|runner"
-    },
-    "route GET /v1/writes/:id": {
-      "state": "experimental",
-      "fp": "auth=bearer"
-    },
-    "route POST /c/:connection/mcp": {
-      "state": "stable",
-      "fp": "auth=bearer"
-    },
-    "route POST /v1/accounts/:op": {
-      "state": "experimental",
-      "fp": "auth=board+session"
-    },
-    "route POST /v1/apps/:op": {
-      "state": "experimental",
-      "fp": "auth=module"
-    },
-    "route POST /v1/auth/:op": {
-      "state": "experimental",
-      "fp": "auth=board"
-    },
-    "route POST /v1/brake/notify": {
-      "state": "experimental",
-      "fp": "auth=module"
-    },
-    "route POST /v1/channel/decide": {
-      "state": "experimental",
-      "fp": "auth=module"
-    },
-    "route POST /v1/channel/outbox": {
-      "state": "experimental",
-      "fp": "auth=module"
-    },
-    "route POST /v1/channel/owner-message": {
-      "state": "experimental",
-      "fp": "auth=module"
-    },
-    "route POST /v1/channel/stop": {
-      "state": "experimental",
-      "fp": "auth=module"
-    },
-    "route POST /v1/checks/:task": {
-      "state": "experimental",
-      "fp": "auth=module"
-    },
-    "route POST /v1/finish": {
-      "state": "experimental",
-      "fp": "auth=runner"
-    },
-    "route POST /v1/jobs": {
-      "state": "experimental",
-      "fp": "auth=module"
-    },
-    "route POST /v1/jobs/:job/input": {
-      "state": "experimental",
-      "fp": "auth=module"
-    },
-    "route POST /v1/operator/:op": {
-      "state": "experimental",
-      "fp": "auth=operator-key"
-    },
-    "route POST /v1/reviews": {
-      "state": "experimental",
-      "fp": "auth=reviewer-key"
-    },
-    "route POST /v1/reviews/:review": {
-      "state": "experimental",
-      "fp": "auth=review-token"
-    },
-    "route POST /v1/wake": {
-      "state": "experimental",
-      "fp": "auth=module"
-    },
-    "route POST /v1/writes": {
-      "state": "experimental",
-      "fp": "auth=bearer"
-    },
-    "route POST /v1/writes/:id/claim": {
-      "state": "experimental",
-      "fp": "auth=runner"
-    },
-    "route POST /v1/writes/:id/outcome": {
-      "state": "experimental",
-      "fp": "auth=module|runner"
-    },
-    "route POST /v1/writes/:id/review": {
-      "state": "experimental",
-      "fp": "auth=runner"
-    },
-    "schema advisories.json": {
-      "state": "experimental",
-      "fp": "{\"req\":true,\"closed\":true,\"type\":\"object\"}"
-    },
-    "schema advisories.json.advisories": {
-      "state": "experimental",
-      "fp": "{\"req\":true,\"type\":\"array\"}"
-    },
-    "schema advisories.json.advisories[]": {
-      "state": "experimental",
-      "fp": "{\"req\":false,\"closed\":true,\"type\":\"object\"}"
-    },
-    "schema advisories.json.advisories[].affected": {
-      "state": "experimental",
-      "fp": "{\"req\":true,\"type\":\"array\"}"
-    },
-    "schema advisories.json.advisories[].affected[]": {
-      "state": "experimental",
-      "fp": "{\"req\":false,\"type\":\"string\",\"pattern\":\"^[0-9a-f]{40}$\"}"
-    },
-    "schema advisories.json.advisories[].fixed": {
-      "state": "experimental",
-      "fp": "{\"req\":false,\"type\":\"string\",\"pattern\":\"^[0-9a-f]{40}$\"}"
-    },
-    "schema advisories.json.advisories[].id": {
-      "state": "experimental",
-      "fp": "{\"req\":true,\"type\":\"string\",\"pattern\":\"^[A-Z][A-Z0-9]{1,15}-\\\\d{4}-\\\\d{1,6}$\"}"
-    },
-    "schema advisories.json.advisories[].module": {
-      "state": "experimental",
-      "fp": "{\"req\":true,\"type\":\"string\",\"pattern\":\"^[a-z][a-z0-9-]{0,63}$\"}"
-    },
-    "schema advisories.json.advisories[].severity": {
-      "state": "experimental",
-      "fp": "{\"req\":true,\"type\":\"string\",\"enum\":[\"low\",\"medium\",\"high\",\"critical\"]}"
-    },
-    "schema advisories.json.advisories[].summary": {
-      "state": "experimental",
-      "fp": "{\"req\":true,\"type\":\"string\",\"minLength\":1,\"maxLength\":2000}"
-    },
-    "schema advisories.json.advisories[].url": {
-      "state": "experimental",
-      "fp": "{\"req\":false,\"type\":\"string\",\"pattern\":\"^https://[A-Za-z0-9.~:/?#@!$&+,;=%_-]{1,500}$\"}"
-    },
-    "schema services.json": {
-      "state": "experimental",
-      "fp": "{\"req\":true,\"closed\":true,\"type\":\"object\"}"
-    },
-    "schema services.json.data": {
-      "state": "experimental",
-      "fp": "{\"req\":false,\"type\":\"boolean\"}"
-    },
-    "schema services.json.run": {
-      "state": "experimental",
-      "fp": "{\"req\":true,\"type\":\"object\",\"minProperties\":1,\"propertyNames\":{\"pattern\":\"^[a-z][a-z0-9-]{0,40}$\"}}"
-    },
-    "schema services.json.run.*": {
-      "state": "experimental",
-      "fp": "{\"req\":false,\"closed\":true,\"type\":\"object\"}"
-    },
-    "schema services.json.run.*.build": {
-      "state": "experimental",
-      "fp": "{\"req\":false,\"type\":\"string\",\"pattern\":\"^\\\\./[\\\\w./-]+$\"}"
-    },
-    "schema services.json.run.*.command": {
-      "state": "experimental",
-      "fp": "{\"req\":false,\"type\":\"array\"}"
-    },
-    "schema services.json.run.*.command[]": {
-      "state": "experimental",
-      "fp": "{\"req\":false,\"type\":\"string\"}"
-    },
-    "schema services.json.run.*.cpus": {
-      "state": "experimental",
-      "fp": "{\"req\":false,\"type\":\"number\",\"exclusiveMinimum\":0,\"maximum\":64}"
-    },
-    "schema services.json.run.*.data": {
-      "state": "experimental",
-      "fp": "{\"req\":false,\"type\":\"array\"}"
-    },
-    "schema services.json.run.*.data[]": {
-      "state": "experimental",
-      "fp": "{\"req\":false,\"type\":\"string\",\"pattern\":\"^[a-z0-9][a-z0-9_-]*:/[^:]+(:ro)?$\"}"
-    },
-    "schema services.json.run.*.egress": {
-      "state": "experimental",
-      "fp": "{\"req\":false,\"type\":\"boolean\"}"
-    },
-    "schema services.json.run.*.entrypoint": {
-      "state": "experimental",
-      "fp": "{\"req\":false,\"type\":\"array\"}"
-    },
-    "schema services.json.run.*.entrypoint[]": {
-      "state": "experimental",
-      "fp": "{\"req\":false,\"type\":\"string\"}"
-    },
-    "schema services.json.run.*.env": {
-      "state": "experimental",
-      "fp": "{\"req\":false,\"type\":\"object\"}"
-    },
-    "schema services.json.run.*.env.*": {
-      "state": "experimental",
-      "fp": "{\"req\":false,\"type\":[\"string\",\"number\",\"boolean\"]}"
-    },
-    "schema services.json.run.*.healthcheck": {
-      "state": "experimental",
-      "fp": "{\"req\":false,\"closed\":true,\"type\":\"object\"}"
-    },
-    "schema services.json.run.*.healthcheck.interval": {
-      "state": "experimental",
-      "fp": "{\"req\":false,\"type\":\"string\"}"
-    },
-    "schema services.json.run.*.healthcheck.retries": {
-      "state": "experimental",
-      "fp": "{\"req\":false,\"type\":\"integer\"}"
-    },
-    "schema services.json.run.*.healthcheck.start_period": {
-      "state": "experimental",
-      "fp": "{\"req\":false,\"type\":\"string\"}"
-    },
-    "schema services.json.run.*.healthcheck.test": {
-      "state": "experimental",
-      "fp": "{\"req\":true,\"type\":\"array\"}"
-    },
-    "schema services.json.run.*.healthcheck.test[]": {
-      "state": "experimental",
-      "fp": "{\"req\":false,\"type\":\"string\"}"
-    },
-    "schema services.json.run.*.healthcheck.timeout": {
-      "state": "experimental",
-      "fp": "{\"req\":false,\"type\":\"string\"}"
-    },
-    "schema services.json.run.*.host_mounts": {
-      "state": "experimental",
-      "fp": "{\"req\":false,\"type\":\"array\"}"
-    },
-    "schema services.json.run.*.host_mounts[]": {
-      "state": "experimental",
-      "fp": "{\"req\":false,\"type\":\"string\",\"pattern\":\"^(/|/sys|/proc):/[\\\\w./-]+:ro(,rslave)?$\"}"
-    },
-    "schema services.json.run.*.image": {
-      "state": "experimental",
-      "fp": "{\"req\":false,\"type\":\"string\",\"pattern\":\"^[a-z0-9][a-z0-9./_-]*(:[\\\\w.-]+)?@sha256:[0-9a-f]{64}$\"}"
-    },
-    "schema services.json.run.*.join": {
-      "state": "experimental",
-      "fp": "{\"req\":false,\"type\":\"array\"}"
-    },
-    "schema services.json.run.*.join[]": {
-      "state": "experimental",
-      "fp": "{\"req\":false,\"type\":\"string\"}"
-    },
-    "schema services.json.run.*.links": {
-      "state": "experimental",
-      "fp": "{\"req\":false,\"type\":\"array\"}"
-    },
-    "schema services.json.run.*.links[]": {
-      "state": "experimental",
-      "fp": "{\"req\":false,\"type\":\"string\"}"
-    },
-    "schema services.json.run.*.memory": {
-      "state": "experimental",
-      "fp": "{\"req\":false,\"type\":\"string\",\"pattern\":\"^\\\\d{1,5}[mg]$\"}"
-    },
-    "schema services.json.run.*.on_demand": {
-      "state": "experimental",
-      "fp": "{\"req\":false,\"type\":\"boolean\"}"
-    },
-    "schema services.json.run.*.pids": {
-      "state": "experimental",
-      "fp": "{\"req\":false,\"type\":\"integer\",\"minimum\":1}"
-    },
-    "schema services.json.run.*.port": {
-      "state": "experimental",
-      "fp": "{\"req\":false,\"type\":\"integer\",\"minimum\":1,\"maximum\":65535}"
-    },
-    "schema services.json.run.*.read_only": {
-      "state": "experimental",
-      "fp": "{\"req\":false,\"type\":\"boolean\",\"default\":true}"
-    },
-    "schema services.json.run.*.secrets": {
-      "state": "experimental",
-      "fp": "{\"req\":false,\"type\":\"array\"}"
-    },
-    "schema services.json.run.*.secrets[]": {
-      "state": "experimental",
-      "fp": "{\"req\":false,\"type\":\"string\",\"pattern\":\"^[a-z0-9_]{1,64}$\"}"
-    },
-    "schema services.json.run.*.state": {
-      "state": "experimental",
-      "fp": "{\"req\":false,\"type\":\"string\",\"pattern\":\"^/[^:]+(:ro)?$\"}"
-    },
-    "schema services.json.run.*.tmp": {
-      "state": "experimental",
-      "fp": "{\"req\":false,\"type\":\"string\",\"pattern\":\"^\\\\d{1,5}[mg]$\"}"
-    },
-    "schema services.json.run.*.ui_port": {
-      "state": "experimental",
-      "fp": "{\"req\":false,\"type\":\"integer\",\"minimum\":1024,\"maximum\":65535}"
-    },
-    "schema services.json.run.*.user": {
-      "state": "experimental",
-      "fp": "{\"req\":false,\"enum\":[\"owner\",\"nobody\",\"image\"],\"default\":\"owner\"}"
-    },
-    "schema writes.json": {
-      "state": "experimental",
-      "fp": "{\"req\":true,\"type\":\"object\",\"propertyNames\":{\"pattern\":\"^[a-z][a-z0-9_]{0,40}$\"}}"
-    },
-    "schema writes.json.*": {
-      "state": "experimental",
-      "fp": "{\"req\":false,\"closed\":true,\"type\":\"object\"}"
-    },
-    "schema writes.json.*.args": {
-      "state": "experimental",
-      "fp": "{\"req\":false,\"type\":\"string\",\"pattern\":\"^schemas/[\\\\w.-]+\\\\.json$\"}"
-    },
-    "schema writes.json.*.card": {
-      "state": "experimental",
-      "fp": "{\"req\":false,\"closed\":true,\"type\":\"object\"}"
-    },
-    "schema writes.json.*.card.changes": {
-      "state": "experimental",
-      "fp": "{\"req\":false,\"type\":\"string\"}"
-    },
-    "schema writes.json.*.card.cost": {
-      "state": "experimental",
-      "fp": "{\"req\":false,\"type\":\"string\"}"
-    },
-    "schema writes.json.*.card.details": {
-      "state": "experimental",
-      "fp": "{\"req\":false,\"type\":\"string\"}"
-    },
-    "schema writes.json.*.card.reads": {
-      "state": "experimental",
-      "fp": "{\"req\":false,\"type\":\"string\"}"
-    },
-    "schema writes.json.*.card.sentence": {
-      "state": "experimental",
-      "fp": "{\"req\":false,\"type\":\"string\"}"
-    },
-    "schema writes.json.*.floor": {
-      "state": "experimental",
-      "fp": "{\"req\":true,\"enum\":[0,1,2]}"
-    },
-    "schema writes.json.*.panel": {
-      "state": "experimental",
-      "fp": "{\"req\":false,\"type\":\"boolean\"}"
-    },
-    "schema writes.json.*.tools": {
-      "state": "experimental",
-      "fp": "{\"req\":false,\"type\":\"array\"}"
-    },
-    "schema writes.json.*.tools[]": {
-      "state": "experimental",
-      "fp": "{\"req\":false,\"type\":\"string\"}"
-    }
+    "admin route GET /": {"state":"experimental","fp":"auth=admin"},
+    "admin route GET /approvals": {"state":"experimental","fp":"auth=admin"},
+    "admin route GET /approvals/:id": {"state":"experimental","fp":"auth=admin"},
+    "admin route GET /auth/enrol": {"state":"experimental","fp":"auth=session"},
+    "admin route GET /auth/handoff": {"state":"experimental","fp":"auth=admin"},
+    "admin route GET /auth/password": {"state":"experimental","fp":"auth=admin"},
+    "admin route GET /auth/set-password": {"state":"experimental","fp":"auth=none"},
+    "admin route GET /auth/sign-in": {"state":"experimental","fp":"auth=none"},
+    "admin route GET /auth/totp": {"state":"experimental","fp":"auth=none"},
+    "admin route GET /healthz": {"state":"experimental","fp":"auth=none"},
+    "admin route GET /owner/confirm": {"state":"experimental","fp":"auth=admin"},
+    "admin route GET /owner/message": {"state":"experimental","fp":"auth=admin"},
+    "admin route POST /approvals/:id/decide": {"state":"experimental","fp":"auth=admin+csrf"},
+    "admin route POST /approvals/batch": {"state":"experimental","fp":"auth=admin+csrf"},
+    "admin route POST /auth/enrol": {"state":"experimental","fp":"auth=session+csrf"},
+    "admin route POST /auth/password": {"state":"experimental","fp":"auth=admin+csrf"},
+    "admin route POST /auth/set-password": {"state":"experimental","fp":"auth=origin"},
+    "admin route POST /auth/sign-in": {"state":"experimental","fp":"auth=origin"},
+    "admin route POST /auth/sign-out": {"state":"experimental","fp":"auth=origin"},
+    "admin route POST /auth/totp": {"state":"experimental","fp":"auth=origin"},
+    "admin route POST /owner/confirm": {"state":"experimental","fp":"auth=admin+csrf"},
+    "admin route POST /owner/message": {"state":"experimental","fp":"auth=admin+csrf"},
+    "manifest key agents": {"state":"experimental","fp":""},
+    "manifest key apps": {"state":"experimental","fp":""},
+    "manifest key board_env": {"state":"obsolete","fp":"","remove_after":null},
+    "manifest key checks": {"state":"experimental","fp":""},
+    "manifest key conflicts": {"state":"experimental","fp":""},
+    "manifest key connections": {"state":"experimental","fp":""},
+    "manifest key contributes": {"state":"experimental","fp":""},
+    "manifest key data_version": {"state":"experimental","fp":""},
+    "manifest key default_grants": {"state":"experimental","fp":""},
+    "manifest key description": {"state":"experimental","fp":""},
+    "manifest key generated_secrets": {"state":"experimental","fp":""},
+    "manifest key isolation": {"state":"experimental","fp":""},
+    "manifest key jobcaps": {"state":"experimental","fp":""},
+    "manifest key kernel": {"state":"experimental","fp":""},
+    "manifest key labels": {"state":"experimental","fp":""},
+    "manifest key license": {"state":"experimental","fp":""},
+    "manifest key models": {"state":"experimental","fp":""},
+    "manifest key name": {"state":"experimental","fp":""},
+    "manifest key optional_secrets": {"state":"experimental","fp":""},
+    "manifest key points": {"state":"experimental","fp":""},
+    "manifest key privileged": {"state":"experimental","fp":""},
+    "manifest key prompts": {"state":"experimental","fp":""},
+    "manifest key providers": {"state":"experimental","fp":""},
+    "manifest key provides": {"state":"experimental","fp":""},
+    "manifest key replaces": {"state":"experimental","fp":""},
+    "manifest key requires": {"state":"experimental","fp":""},
+    "manifest key roles": {"state":"experimental","fp":""},
+    "manifest key routines": {"state":"experimental","fp":""},
+    "manifest key secrets": {"state":"experimental","fp":""},
+    "manifest key services": {"state":"experimental","fp":""},
+    "manifest key settings": {"state":"experimental","fp":""},
+    "manifest key setup": {"state":"experimental","fp":""},
+    "manifest key writes": {"state":"experimental","fp":""},
+    "provider engine@1": {"state":"stable","fp":""},
+    "provider executor@1": {"state":"experimental","fp":""},
+    "provider reviewer@1": {"state":"experimental","fp":""},
+    "route ANY /v1/cp/agent/*": {"state":"experimental","fp":"auth=module+assertion"},
+    "route DELETE /c/:connection/mcp": {"state":"stable","fp":"auth=bearer"},
+    "route DELETE /v1/jobs/:job": {"state":"experimental","fp":"auth=module"},
+    "route GET /healthz": {"state":"stable","fp":"auth=none"},
+    "route GET /v1/advisories": {"state":"experimental","fp":"auth=board"},
+    "route GET /v1/agents": {"state":"experimental","fp":"auth=module"},
+    "route GET /v1/channel/cards": {"state":"experimental","fp":"auth=module"},
+    "route GET /v1/channel/notices": {"state":"experimental","fp":"auth=module"},
+    "route GET /v1/channel/outbox": {"state":"experimental","fp":"auth=module"},
+    "route GET /v1/cp/read/*": {"state":"experimental","fp":"auth=module"},
+    "route GET /v1/jobs/:job": {"state":"experimental","fp":"auth=module"},
+    "route GET /v1/jwks": {"state":"stable","fp":"auth=none"},
+    "route GET /v1/whoami": {"state":"experimental","fp":"auth=bearer"},
+    "route GET /v1/writes": {"state":"experimental","fp":"auth=board|runner"},
+    "route GET /v1/writes/:id": {"state":"experimental","fp":"auth=bearer"},
+    "route POST /c/:connection/mcp": {"state":"stable","fp":"auth=bearer"},
+    "route POST /v1/accounts/:op": {"state":"experimental","fp":"auth=board+session"},
+    "route POST /v1/apps/:op": {"state":"experimental","fp":"auth=module"},
+    "route POST /v1/auth/:op": {"state":"experimental","fp":"auth=board"},
+    "route POST /v1/brake/notify": {"state":"experimental","fp":"auth=module"},
+    "route POST /v1/channel/decide": {"state":"experimental","fp":"auth=module"},
+    "route POST /v1/channel/outbox": {"state":"experimental","fp":"auth=module"},
+    "route POST /v1/channel/owner-message": {"state":"experimental","fp":"auth=module"},
+    "route POST /v1/channel/stop": {"state":"experimental","fp":"auth=module"},
+    "route POST /v1/checks/:task": {"state":"experimental","fp":"auth=module"},
+    "route POST /v1/finish": {"state":"experimental","fp":"auth=runner"},
+    "route POST /v1/jobs": {"state":"experimental","fp":"auth=module"},
+    "route POST /v1/jobs/:job/input": {"state":"experimental","fp":"auth=module"},
+    "route POST /v1/operator/:op": {"state":"experimental","fp":"auth=operator-key"},
+    "route POST /v1/reviews": {"state":"experimental","fp":"auth=reviewer-key"},
+    "route POST /v1/reviews/:review": {"state":"experimental","fp":"auth=review-token"},
+    "route POST /v1/wake": {"state":"experimental","fp":"auth=module"},
+    "route POST /v1/writes": {"state":"experimental","fp":"auth=bearer"},
+    "route POST /v1/writes/:id/claim": {"state":"experimental","fp":"auth=runner"},
+    "route POST /v1/writes/:id/outcome": {"state":"experimental","fp":"auth=module|runner"},
+    "route POST /v1/writes/:id/review": {"state":"experimental","fp":"auth=runner"},
+    "schema advisories.json": {"state":"experimental","fp":"{\"req\":true,\"closed\":true,\"type\":\"object\"}"},
+    "schema advisories.json.advisories": {"state":"experimental","fp":"{\"req\":true,\"type\":\"array\"}"},
+    "schema advisories.json.advisories[]": {"state":"experimental","fp":"{\"req\":false,\"closed\":true,\"type\":\"object\"}"},
+    "schema advisories.json.advisories[].affected": {"state":"experimental","fp":"{\"req\":true,\"type\":\"array\"}"},
+    "schema advisories.json.advisories[].affected[]": {"state":"experimental","fp":"{\"req\":false,\"type\":\"string\",\"pattern\":\"^[0-9a-f]{40}$\"}"},
+    "schema advisories.json.advisories[].fixed": {"state":"experimental","fp":"{\"req\":false,\"type\":\"string\",\"pattern\":\"^[0-9a-f]{40}$\"}"},
+    "schema advisories.json.advisories[].id": {"state":"experimental","fp":"{\"req\":true,\"type\":\"string\",\"pattern\":\"^[A-Z][A-Z0-9]{1,15}-\\\\d{4}-\\\\d{1,6}$\"}"},
+    "schema advisories.json.advisories[].module": {"state":"experimental","fp":"{\"req\":true,\"type\":\"string\",\"pattern\":\"^[a-z][a-z0-9-]{0,63}$\"}"},
+    "schema advisories.json.advisories[].severity": {"state":"experimental","fp":"{\"req\":true,\"type\":\"string\",\"enum\":[\"low\",\"medium\",\"high\",\"critical\"]}"},
+    "schema advisories.json.advisories[].summary": {"state":"experimental","fp":"{\"req\":true,\"type\":\"string\",\"minLength\":1,\"maxLength\":2000}"},
+    "schema advisories.json.advisories[].url": {"state":"experimental","fp":"{\"req\":false,\"type\":\"string\",\"pattern\":\"^https://[A-Za-z0-9.~:/?#@!$&+,;=%_-]{1,500}$\"}"},
+    "schema services.json": {"state":"experimental","fp":"{\"req\":true,\"closed\":true,\"type\":\"object\"}"},
+    "schema services.json.data": {"state":"experimental","fp":"{\"req\":false,\"type\":\"boolean\"}"},
+    "schema services.json.run": {"state":"experimental","fp":"{\"req\":true,\"type\":\"object\",\"minProperties\":1,\"propertyNames\":{\"pattern\":\"^[a-z][a-z0-9-]{0,40}$\"}}"},
+    "schema services.json.run.*": {"state":"experimental","fp":"{\"req\":false,\"closed\":true,\"type\":\"object\"}"},
+    "schema services.json.run.*.build": {"state":"experimental","fp":"{\"req\":false,\"type\":\"string\",\"pattern\":\"^\\\\./[\\\\w./-]+$\"}"},
+    "schema services.json.run.*.command": {"state":"experimental","fp":"{\"req\":false,\"type\":\"array\"}"},
+    "schema services.json.run.*.command[]": {"state":"experimental","fp":"{\"req\":false,\"type\":\"string\"}"},
+    "schema services.json.run.*.cpus": {"state":"experimental","fp":"{\"req\":false,\"type\":\"number\",\"exclusiveMinimum\":0,\"maximum\":64}"},
+    "schema services.json.run.*.data": {"state":"experimental","fp":"{\"req\":false,\"type\":\"array\"}"},
+    "schema services.json.run.*.data[]": {"state":"experimental","fp":"{\"req\":false,\"type\":\"string\",\"pattern\":\"^[a-z0-9][a-z0-9_-]*:/[^:]+(:ro)?$\"}"},
+    "schema services.json.run.*.egress": {"state":"experimental","fp":"{\"req\":false,\"type\":\"boolean\"}"},
+    "schema services.json.run.*.entrypoint": {"state":"experimental","fp":"{\"req\":false,\"type\":\"array\"}"},
+    "schema services.json.run.*.entrypoint[]": {"state":"experimental","fp":"{\"req\":false,\"type\":\"string\"}"},
+    "schema services.json.run.*.env": {"state":"experimental","fp":"{\"req\":false,\"type\":\"object\"}"},
+    "schema services.json.run.*.env.*": {"state":"experimental","fp":"{\"req\":false,\"type\":[\"string\",\"number\",\"boolean\"]}"},
+    "schema services.json.run.*.healthcheck": {"state":"experimental","fp":"{\"req\":false,\"closed\":true,\"type\":\"object\"}"},
+    "schema services.json.run.*.healthcheck.interval": {"state":"experimental","fp":"{\"req\":false,\"type\":\"string\"}"},
+    "schema services.json.run.*.healthcheck.retries": {"state":"experimental","fp":"{\"req\":false,\"type\":\"integer\"}"},
+    "schema services.json.run.*.healthcheck.start_period": {"state":"experimental","fp":"{\"req\":false,\"type\":\"string\"}"},
+    "schema services.json.run.*.healthcheck.test": {"state":"experimental","fp":"{\"req\":true,\"type\":\"array\"}"},
+    "schema services.json.run.*.healthcheck.test[]": {"state":"experimental","fp":"{\"req\":false,\"type\":\"string\"}"},
+    "schema services.json.run.*.healthcheck.timeout": {"state":"experimental","fp":"{\"req\":false,\"type\":\"string\"}"},
+    "schema services.json.run.*.host_mounts": {"state":"experimental","fp":"{\"req\":false,\"type\":\"array\"}"},
+    "schema services.json.run.*.host_mounts[]": {"state":"experimental","fp":"{\"req\":false,\"type\":\"string\",\"pattern\":\"^(/|/sys|/proc):/[\\\\w./-]+:ro(,rslave)?$\"}"},
+    "schema services.json.run.*.image": {"state":"experimental","fp":"{\"req\":false,\"type\":\"string\",\"pattern\":\"^[a-z0-9][a-z0-9./_-]*(:[\\\\w.-]+)?@sha256:[0-9a-f]{64}$\"}"},
+    "schema services.json.run.*.join": {"state":"experimental","fp":"{\"req\":false,\"type\":\"array\"}"},
+    "schema services.json.run.*.join[]": {"state":"experimental","fp":"{\"req\":false,\"type\":\"string\"}"},
+    "schema services.json.run.*.links": {"state":"experimental","fp":"{\"req\":false,\"type\":\"array\"}"},
+    "schema services.json.run.*.links[]": {"state":"experimental","fp":"{\"req\":false,\"type\":\"string\"}"},
+    "schema services.json.run.*.memory": {"state":"experimental","fp":"{\"req\":false,\"type\":\"string\",\"pattern\":\"^\\\\d{1,5}[mg]$\"}"},
+    "schema services.json.run.*.on_demand": {"state":"experimental","fp":"{\"req\":false,\"type\":\"boolean\"}"},
+    "schema services.json.run.*.pids": {"state":"experimental","fp":"{\"req\":false,\"type\":\"integer\",\"minimum\":1}"},
+    "schema services.json.run.*.port": {"state":"experimental","fp":"{\"req\":false,\"type\":\"integer\",\"minimum\":1,\"maximum\":65535}"},
+    "schema services.json.run.*.read_only": {"state":"experimental","fp":"{\"req\":false,\"type\":\"boolean\",\"default\":true}"},
+    "schema services.json.run.*.secrets": {"state":"experimental","fp":"{\"req\":false,\"type\":\"array\"}"},
+    "schema services.json.run.*.secrets[]": {"state":"experimental","fp":"{\"req\":false,\"type\":\"string\",\"pattern\":\"^[a-z0-9_]{1,64}$\"}"},
+    "schema services.json.run.*.state": {"state":"experimental","fp":"{\"req\":false,\"type\":\"string\",\"pattern\":\"^/[^:]+(:ro)?$\"}"},
+    "schema services.json.run.*.tmp": {"state":"experimental","fp":"{\"req\":false,\"type\":\"string\",\"pattern\":\"^\\\\d{1,5}[mg]$\"}"},
+    "schema services.json.run.*.ui_port": {"state":"experimental","fp":"{\"req\":false,\"type\":\"integer\",\"minimum\":1024,\"maximum\":65535}"},
+    "schema services.json.run.*.user": {"state":"experimental","fp":"{\"req\":false,\"enum\":[\"owner\",\"nobody\",\"image\"],\"default\":\"owner\"}"},
+    "schema writes.json": {"state":"experimental","fp":"{\"req\":true,\"type\":\"object\",\"propertyNames\":{\"pattern\":\"^[a-z][a-z0-9_]{0,40}$\"}}"},
+    "schema writes.json.*": {"state":"experimental","fp":"{\"req\":false,\"closed\":true,\"type\":\"object\"}"},
+    "schema writes.json.*.args": {"state":"experimental","fp":"{\"req\":false,\"type\":\"string\",\"pattern\":\"^schemas/[\\\\w.-]+\\\\.json$\"}"},
+    "schema writes.json.*.card": {"state":"experimental","fp":"{\"req\":false,\"closed\":true,\"type\":\"object\"}"},
+    "schema writes.json.*.card.changes": {"state":"experimental","fp":"{\"req\":false,\"type\":\"string\"}"},
+    "schema writes.json.*.card.cost": {"state":"experimental","fp":"{\"req\":false,\"type\":\"string\"}"},
+    "schema writes.json.*.card.details": {"state":"experimental","fp":"{\"req\":false,\"type\":\"string\"}"},
+    "schema writes.json.*.card.reads": {"state":"experimental","fp":"{\"req\":false,\"type\":\"string\"}"},
+    "schema writes.json.*.card.sentence": {"state":"experimental","fp":"{\"req\":false,\"type\":\"string\"}"},
+    "schema writes.json.*.floor": {"state":"experimental","fp":"{\"req\":true,\"enum\":[0,1,2]}"},
+    "schema writes.json.*.panel": {"state":"experimental","fp":"{\"req\":false,\"type\":\"boolean\"}"},
+    "schema writes.json.*.tools": {"state":"experimental","fp":"{\"req\":false,\"type\":\"array\"}"},
+    "schema writes.json.*.tools[]": {"state":"experimental","fp":"{\"req\":false,\"type\":\"string\"}"}
   }
 }
