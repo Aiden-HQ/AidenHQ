@@ -6,11 +6,13 @@
     {
       "name": "services/runner",
       "job": "runner-unit",
+      "run": "(cd ../../kernel && npm ci) && npm ci && npm run test:unit",
       "paths": ["services/runner", "services/computer", "kernel", "scripts", "fixtures", "services/board/src/app.ts", "services/board/src/fleet.ts", "services/board/src/kernel-auth.ts", "services/board/src/session.ts"]
     },
     {
       "name": "services/runner#flows",
       "job": "runner-flows",
+      "run": "(cd ../../kernel && npm ci) && npm ci && npm run test:flows",
       "paths": ["services/runner", "kernel/sdk", "kernel/src", "kernel/test/fixtures", "kernel/package-lock.json", "fixtures/engine-echo"],
       "ignore": ["services/runner/src/prompt.ts"]
     },
@@ -22,6 +24,6 @@
     },
     { "name": "services/computer", "run": "node --test test/*.test.mjs", "paths": ["services/computer", "services/runner/src", "services/runner/bin"] },
     { "name": "kernel", "run": "npm ci && npm test && npm run typecheck", "paths": ["kernel", "services/computer", "fixtures"] },
-    { "name": "services/board", "job": "board", "paths": ["services/board", "services/runner/src", "scripts/identity.mjs"] }
+    { "name": "services/board", "job": "board", "run": "npm ci && npx vitest run && npm run typecheck && npm run build", "paths": ["services/board", "services/runner/src", "scripts/identity.mjs"] }
   ]
 }

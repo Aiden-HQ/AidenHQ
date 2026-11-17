@@ -44,6 +44,10 @@ get its permission first. Pull requests without the box ticked fail the `communi
 
 ## Running the tests
 
+Before you push, run `node scripts/ci-local.mjs`: it runs the suites CI would run for your diff, with CI's own selection
+and commands (`--list` shows the selection only, `--base <ref>` changes the base, default `origin/main`). On macOS the
+`flock` apply tests fail and are shown as expected; CI judges them.
+
 No live instance and no paid keys are needed. Use Node 24 and run `npm ci` once in each package.
 
 | Package | Commands |

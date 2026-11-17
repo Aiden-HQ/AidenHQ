@@ -32,3 +32,9 @@ test("a rebased head re-runs only the suites main's new commits also touch", () 
   assert.deepEqual(reuse(map, pr, ["services/runner/src/land.mjs"]), ["scripts", "services/board"]);
   assert.deepEqual(reuse(map, pr, ["ops/x.sh"]), ["scripts", "services/board"], "an unknown gained path re-runs all of the PR's");
 });
+
+test("ci-local reports the selection CI's selector returns for a diff", async () => {
+  const { select } = await import("../ci-local.mjs");
+  const files = ["services/board/web/App.tsx", "docs/x.md"];
+  assert.deepEqual(select(files).names, suitesFor(map, files).names);
+});

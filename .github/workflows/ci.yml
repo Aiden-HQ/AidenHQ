@@ -202,8 +202,8 @@ jobs:
         run: git config --global user.name ci && git config --global user.email ci@example.com
       - name: Test
         working-directory: services/runner
-        # The kernel's packages too: the runner imports the job sandbox's settings (kernel/src/sandbox-config.ts).
-        run: (cd ../../kernel && npm ci) && npm ci && npm run test:unit
+        # The command is the suite's `run` in .github/ci/areas.json (scripts/ci-local.mjs runs the same one).
+        run: bash -eo pipefail -c "$(jq -r '.suites[] | select(.name == "services/runner") | .run' ../../.github/ci/areas.json)"
 
   runner-flows:
     name: runner-flows (${{ matrix.shard }}/4)
@@ -288,9 +288,8 @@ jobs:
         run: git config --global user.name ci && git config --global user.email ci@example.com
       - name: Test
         working-directory: services/board
-        # build runs `tsc -p tsconfig.build.json` (src alone, stricter than the full project) and then Vite; typecheck
-        # checks the full project and web. A separate `tsc -p tsconfig.build.json --noEmit` only repeated build's.
-        run: npm ci && npx vitest run && npm run typecheck && npm run build
+        # The command is the suite's `run` in .github/ci/areas.json (scripts/ci-local.mjs runs the same one).
+        run: bash -eo pipefail -c "$(jq -r '.suites[] | select(.name == "services/board") | .run' ../../.github/ci/areas.json)"
 
   # Which images this change could alter: each Dockerfile it changes, or whose directory gets a changed dependency manifest
   # or lockfile. Every one is listed, whatever its FROM: a FROM that can't be resolved fails the scan, never skips it.
