@@ -31,8 +31,7 @@ export function welcomeRoutes(d: WelcomeDeps): SetupRoute[] {
       method: "GET",
       path: /^\/api\/welcome$/,
       handle: async (_m, _b, who) => {
-        // Kernels before the model step existed have no such op: nothing to gate.
-        const ready = await d.accounts.call<{ ready: boolean }>("model_ready", who).then((r) => r.ready, (e) => (e instanceof AccountError && e.status === 404 ? true : Promise.reject(e)));
+        const ready = (await d.accounts.call<{ ready: boolean }>("model_ready", who)).ready;
         // Only the owner is walked through setup (saving a secret and pairing are the owner's).
         const owner = who.account.owner;
         const waiting = owner && !finished() ? (await d.accounts.call<{ waiting: boolean }>("recovery_key_waiting", who).catch(() => ({ waiting: false }))).waiting : false;

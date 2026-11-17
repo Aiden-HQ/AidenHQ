@@ -3,13 +3,16 @@
 # come from local bare repos; the kernel is checked out the way the installer does; then ops/setup.sh --unattended runs for
 # real, with stand-ins only for what a container can't do: the host packages, the vault's FUSE mount and the stack's apply
 # (recorders in the fixture commit), Docker and systemd (shims on PATH; the systemctl shim starts the real kernel). The
-# kernel's /setup is then completed over HTTP: account, TOTP code, a fake model key. It asserts:
+# kernel's /setup is then completed over HTTP: account, TOTP code, then the model step with a pasted key, checked against a
+# stubbed OpenRouter (the kernel's AIDENHQ_GATEWAY_UPSTREAM; it answers 402 once, so Retry is exercised). It asserts:
 #   - one AIDENHQ_SETUP_URL line, the last; without a tailnet the SSH-tunnel route and a loopback URL;
 #   - root's steps ran from root-owned /opt/aidenhq/kernel/<sha>, never from the user's checkout (its ops/setup.sh and
 #     ops/vm/setup.sh tampered after the copy);
 #   - the kernel token reaches setup's fetch, and never the checkout or the output; no key in the kernel's log;
 #   - the kernel answers from the checkout at the release's kernel sha, and the instance pins that release;
-#   - /setup takes the account, the TOTP enrolment, the keys; the recovery key then shows once on /recovery-key; a second /setup is refused.
+#   - /setup takes the account only, then the TOTP enrolment, then /setup/model the model key (paste first on a plain-http
+#     loopback address, "Add credit" and Retry on a 402, then the board's welcome); the recovery key then shows once on
+#     /recovery-key; a second /setup is refused.
 #   sudo bash ops/test/unattended-install.sh   (root, git, node 24, kernel/ and scripts/ npm ci'd; it adds a user and
 #                                               /opt/aidenhq, so it runs only where /.dockerenv exists or CI is set)
 # Not in CI: our runners' job containers set no-new-privileges, so sudo can't reach root there. Run it in a container,
@@ -22,9 +25,9 @@ src="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 U=alice H=/home/alice
 work="$(mktemp -d /tmp/unattended.XXXXXX)"; chmod 0755 "$work"
 ok() { echo "ok   $*"; }
-fail() { echo "FAIL $*"; for f in setup.out kernel.log; do [ -s "$work/$f" ] && { echo "--- $f"; tail -40 "$work/$f"; }; done; exit 1; }
+fail() { echo "FAIL $*"; for f in setup.out kernel.log openrouter.log; do [ -s "$work/$f" ] && { echo "--- $f"; tail -40 "$work/$f"; }; done; exit 1; }
 kernel_pid() { local p; for p in /proc/[0-9]*; do [ "$(stat -c %U "$p" 2>/dev/null)" = "$U" ] && tr '\0' ' ' < "$p/cmdline" 2>/dev/null | grep -q '^node .*kernel/src/main\.ts' && { echo "${p#/proc/}"; return; }; done; }
-cleanup() { local p; p="$(kernel_pid)"; [ -z "$p" ] || kill "$p" 2>/dev/null || true; }
+cleanup() { local p; p="$(kernel_pid)"; [ -z "$p" ] || kill "$p" 2>/dev/null || true; [ -z "${stub_pid:-}" ] || kill "$stub_pid" 2>/dev/null || true; }
 trap cleanup EXIT
 g() { git -c user.name=t -c user.email=t@example.com -c init.defaultBranch=main "$@"; }
 
@@ -75,6 +78,28 @@ chown -R root:root "$work/tree" && chmod -R u+rwX,go+rX,go-w "$work/tree" && mv 
 # The user's checkout is writable by the user: what root runs must not come from it, setup itself included.
 for f in ops/setup.sh ops/vm/setup.sh; do echo 'echo TAMPERED >> '"$work"'/root-steps.log; exit 0' > "$H/aidenhq/$f"; done
 
+# ---------------------------------------------------------------- a stubbed OpenRouter (the model step's 1-token check)
+# Logs each call's path and whether it carried the expected key (never the key); the first chat call answers 402 (no credit).
+cat > "$work/openrouter.mjs" <<'EOF'
+import http from "node:http";
+import { appendFileSync } from "node:fs";
+const [port, log, key] = process.argv.slice(2);
+let calls = 0;
+http.createServer((req, res) => {
+  let b = ""; req.on("data", (c) => (b += c)); req.on("end", () => {
+    const chat = req.url === "/api/v1/chat/completions", n = chat ? ++calls : 0;
+    appendFileSync(log, `${req.method} ${req.url} key=${req.headers.authorization === `Bearer ${key}`} max_tokens=${JSON.parse(b || "{}").max_tokens}\n`);
+    if (!chat) return void res.writeHead(404).end();
+    if (n === 1) return void res.writeHead(402, { "content-type": "application/json" }).end(JSON.stringify({ error: { code: 402, message: "Insufficient credits" } }));
+    res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ choices: [{ message: { content: "ok" } }] }));
+  });
+}).listen(Number(port), "127.0.0.1");
+EOF
+MODEL_KEY="sk-or-v1-$(printf 'f%.0s' $(seq 64))"
+STUB_PORT=3999
+: > "$work/openrouter.log"; chmod 0666 "$work/openrouter.log"
+node "$work/openrouter.mjs" "$STUB_PORT" "$work/openrouter.log" "$MODEL_KEY" & stub_pid=$!
+
 # ---------------------------------------------------------------- shims: systemd and Docker
 mkdir -p "$work/bin"
 : > "$work/kernel.log"; : > "$work/systemctl.log"; : > "$work/root-steps.log"; chmod 0666 "$work/kernel.log" "$work/systemctl.log" "$work/root-steps.log"
@@ -87,6 +112,7 @@ case "\$*" in
   *"enable --now"*aidenhq-kernel*)
     dir="\$(sed -n 's/^AIDENHQ_DIR=//p' "\$HOME/.config/aidenhq-checkout.env")"
     cd "\$dir" && AIDENHQ_KERNEL_BACKPLANE=127.0.0.1:3130 AIDENHQ_GATEWAY_LISTEN=127.0.0.1:8201 AIDENHQ_GATEWAY_CI_LISTEN= \\
+      AIDENHQ_GATEWAY_UPSTREAM=http://127.0.0.1:$STUB_PORT/api/v1 \\
       setsid nohup node --disable-warning=ExperimentalWarning kernel/src/main.ts >> $work/kernel.log 2>&1 < /dev/null & ;;
 esac
 exit 0
@@ -130,12 +156,10 @@ cwd="$(runuser -u "$U" -- readlink "/proc/${pid:-0}/cwd" 2>/dev/null || true)"  
 ok "the kernel runs from the checkout at the release's kernel sha $KSHA; instance.yaml pins release $RSHA"
 
 # ---------------------------------------------------------------- /setup over HTTP
-MODEL_KEY="sk-or-v1-$(printf 'f%.0s' $(seq 64))"
-GH_KEY="github_pat_$(printf 'A%.0s' $(seq 40))"
 cat > "$work/http.mjs" <<'EOF'
 import { request } from "node:http";
 import { totp } from "./totp.mjs";
-const [url, modelKey, ghKey] = process.argv.slice(2);
+const [url, modelKey] = process.argv.slice(2);
 const u = new URL(url), token = u.searchParams.get("token"), jar = new Map();
 const call = (method, path, form) => new Promise((resolve, reject) => {
   const body = form ? new URLSearchParams(form).toString() : undefined;
@@ -146,13 +170,13 @@ const call = (method, path, form) => new Promise((resolve, reject) => {
   req.on("error", reject); req.end(body);
 });
 const want = (cond, what) => { if (!cond) { console.error(`FAIL ${what}`); process.exit(1); } console.log(`ok   ${what}`); };
-const account = { token, email: "owner@example.com", name: "Owner", password: "correct horse battery staple", secret_openrouter_key: modelKey, secret_github_bot_token: ghKey };
+const account = { token, email: "owner@example.com", name: "Owner", password: "correct horse battery staple" };
 
 const page = await call("GET", u.pathname + u.search);
 want(page.status === 200 && !page.text.includes("01234567") && !page.text.includes('name="saved"'), "GET /setup shows the form, and no recovery key");
-want(['name="secret_openrouter_key" type="password" autocomplete="off" maxlength="300" required', 'name="secret_github_bot_token"', 'name="secret_telegram_notify_bot_token"'].every((f) => page.text.includes(f)), "it asks for the keys the modules declare (the model key required)");
-const badKey = await call("POST", "/setup", { ...account, secret_openrouter_key: "not-a-key" });
-want(badKey.status === 400 && /valid OpenRouter API key/.test(badKey.text) && (await call("GET", u.pathname + u.search)).status === 200, "a malformed model key is refused and the token stays unspent");
+want(page.text.includes('name="password"') && !page.text.includes('name="secret_'), "it asks for the account only: no module keys");
+const badPassword = await call("POST", "/setup", { ...account, password: "short" });
+want(badPassword.status === 400 && (await call("GET", u.pathname + u.search)).status === 200, "a short password is refused and the token stays unspent");
 const done = await call("POST", "/setup", account);
 want(done.status === 303 && done.location === "/auth/enrol", `the submit makes the account and hands over to the authenticator (${done.status} ${done.location})`);
 want((await call("GET", u.pathname + u.search)).status === 410, "a second GET /setup is refused");
@@ -163,7 +187,15 @@ const shown = await call("POST", "/auth/enrol", { csrf: csrfOf(enrol.text), pass
 const key = /Key: <code>([A-Z2-7 ]+)<\/code>/.exec(shown.text)?.[1]?.replace(/ /g, "");
 want(shown.status === 200 && key, "the authenticator key is shown");
 const fin = await call("POST", "/auth/enrol", { csrf: csrfOf(shown.text), code: totp(key) });
-want(fin.status === 303 && fin.location === "/approvals", "the TOTP code finishes enrolment");
+want(fin.status === 303 && fin.location === "/setup/model", "the TOTP code finishes enrolment and leads to the model step");
+const step = await call("GET", "/setup/model");
+want(step.status === 200 && step.text.includes("<details open><summary>Paste a key instead") && !step.text.includes(">Connect OpenRouter</a>"), "on plain-http 127.0.0.1 the paste field leads (OpenRouter calls back only to https or localhost)");
+const bad = await call("POST", "/setup/model", { csrf: csrfOf(step.text), action: "paste", openrouter_key: "not-a-key" });
+want(bad.status === 400 && /valid OpenRouter API key/.test(bad.text), "a malformed model key is refused");
+const credit = await call("POST", "/setup/model", { csrf: csrfOf(step.text), action: "paste", openrouter_key: modelKey });
+want(credit.status === 200 && credit.text.includes("Add credit in OpenRouter") && credit.text.includes('value="retry"'), "a 402 from OpenRouter asks for credit, with Retry");
+const retried = await call("POST", "/setup/model", { csrf: csrfOf(credit.text), action: "retry" });
+want(retried.status === 303 && /\/#\/welcome$/.test(retried.location), `Retry passes and goes on to the board's welcome (${retried.location})`);
 const rk = await call("GET", "/recovery-key");
 want(rk.status === 200 && rk.text.includes("01234567 89abcdef"), "the recovery key shows on its own page after sign-in");
 const rkDone = await call("POST", "/recovery-key", { csrf: csrfOf(rk.text), choice: "saved" });
@@ -173,12 +205,13 @@ want((await call("GET", "/auth/password")).status === 200, "the owner is a signe
 EOF
 # The RFC 6238 code, as the kernel's tests compute it (no dependency).
 sed -n '/^export function totp/,/^}/p' "$src/kernel/test/auth-helpers.mjs" | sed '1i import { createHmac } from "node:crypto";' > "$work/totp.mjs"
-node "$work/http.mjs" "$URL" "$MODEL_KEY" "$GH_KEY" || fail "/setup over HTTP"
+node "$work/http.mjs" "$URL" "$MODEL_KEY" || fail "/setup over HTTP"
 
 S="$H/.config/aidenhq"
 [ "$(cat "$S/openrouter_key")" = "$MODEL_KEY" ] && [ "$(stat -c '%U %a' "$S/openrouter_key")" = "$U 600" ] || fail "the model key isn't in the vault as $U, 0600"
-[ "$(cat "$S/github_bot_token")" = "$GH_KEY" ] || fail "the GitHub bot token isn't codehost-github's github_bot_token"
+[ ! -e "$S/github_bot_token" ] || fail "the first run asked for a GitHub token"
+[ "$(grep -c 'POST /api/v1/chat/completions key=true max_tokens=1' "$work/openrouter.log")" = 2 ] || fail "the model check didn't make two 1-token calls with the key: $(cat "$work/openrouter.log")"
 [ ! -e "$S/vault_recovery_key" ] && [ ! -e /root/aidenhq-vault-recovery.txt ] || fail "the recovery key is still on disk after it was shown"
-grep -qF -e "$MODEL_KEY" -e "$GH_KEY" -e "${URL#*token=}" "$work/kernel.log" && fail "the kernel logged a secret"
+grep -qF -e "$MODEL_KEY" -e "${URL#*token=}" "$work/kernel.log" && fail "the kernel logged a secret"
 ok "the keys are in the vault (0600), the recovery key is gone, and the kernel's log holds no secret"
 echo "all passed"

@@ -2,7 +2,7 @@
 //   POST /v1/auth/{exchange,session,sign_out}  (the board's key) a module UI's one-time code → its session token; that
 //              token → its ready admin (or 401); that session ends. The board checks its session here on every request.
 //   POST /v1/accounts/<op>   (the board's key + {token}: a live module UI session's admin acts) account admin: list, sessions,
-//              revoke_session, invite, role, disable, enable, link, app_admins, app_admin_set, recovery_key_waiting, save_secret
+//              revoke_session, invite, role, disable, enable, link, app_admins, app_admin_set, recovery_key_waiting, model_ready (a model key is in the vault), save_secret
 //              (the owner's) and setup_status (a module's declared `setup:` secrets: module-secrets.ts); `names` and `owner_request` (the
 //              owner's chat words Aiden relays as his in-app request) with the key alone.
 //   POST /v1/apps/<op>       (the apps-platform module's own token) in-app requests and roles for agents: requests, reply,
@@ -24,7 +24,7 @@ const ROLE = (v: unknown) => v === "admin" || v === "user";
 const MODULE = (v: unknown) => typeof v === "string" && /^[a-z][a-z0-9-]{0,62}$/.test(v);
 const SECRET = (v: unknown) => typeof v === "string" && /^[a-z][a-z0-9_]{1,63}$/.test(v);
 
-export function createAuthApi({ accounts, whoami, boardKey, operatorKey, recoveryKeyWaiting = () => false, secrets }: { accounts: () => Accounts | undefined; whoami: Whoami; boardKey: () => string; operatorKey: () => string; recoveryKeyWaiting?: () => boolean; secrets?: ModuleSecrets }) {
+export function createAuthApi({ accounts, whoami, boardKey, operatorKey, recoveryKeyWaiting = () => false, modelReady = () => true, secrets }: { accounts: () => Accounts | undefined; whoami: Whoami; boardKey: () => string; operatorKey: () => string; recoveryKeyWaiting?: () => boolean; modelReady?: () => boolean; secrets?: ModuleSecrets }) {
   const bearer = (req: IncomingMessage) => String(req.headers.authorization ?? "").replace(/^Bearer\s+/i, "").trim();
   const is = (given: string, key: string) => { const a = Buffer.from(given), b = Buffer.from(key); return b.length > 0 && a.length === b.length && timingSafeEqual(a, b); };
   const send = (res: ServerResponse, status: number, body: unknown): void => void res.writeHead(status, { "content-type": "application/json", "cache-control": "no-store" }).end(JSON.stringify(body));
@@ -101,6 +101,7 @@ export function createAuthApi({ accounts, whoami, boardKey, operatorKey, recover
           case "disable": case "enable": return send(res, 200, await a.setDisabled(by, need(b, "id", ID), op === "disable"));
           case "link": return send(res, 200, await a.newLink(by, need(b, "id", ID)));
           case "recovery_key_waiting": if (!by.owner) throw fail(403, "forbidden", "only the owner"); return send(res, 200, { waiting: recoveryKeyWaiting() });
+          case "model_ready": return send(res, 200, { ready: modelReady() });
           case "app_admins": return send(res, 200, { apps: a.apps.adminsByApp() });
           case "app_admin_set": return send(res, 200, await a.apps.assign(by.email, need(b, "app", APP), need(b, "email", EMAIL), need(b, "admin", (v) => typeof v === "boolean") ? "admin" : null));
           // A module's declared secrets: any ready admin sees which are set; only the owner replaces one (a channel's token

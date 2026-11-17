@@ -193,7 +193,7 @@ shell doesn't have it yet (setup restarts your systemd user manager itself, so t
 
 ## 4. Finish the secrets
 
-1. **Vault recovery key** [human] (an unattended install shows it once on the first-run page instead, and keeps no copy): copy `/root/aidenhq-vault-recovery.txt` (64 hex characters) into your password
+1. **Vault recovery key** [human] (an unattended install shows it once on `/recovery-key` after the owner signs in instead, and keeps no copy): copy `/root/aidenhq-vault-recovery.txt` (64 hex characters) into your password
    manager over your own SSH session (`sudo cat /root/aidenhq-vault-recovery.txt`), then
    `sudo shred -u /root/aidenhq-vault-recovery.txt`. This key is the only way in if the TPM state is lost.
 2. **Reboot test** [human]: `sudo reboot`, SSH back in, and run the vault and container checks from step 3 again.
