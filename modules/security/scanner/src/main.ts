@@ -41,7 +41,7 @@ async function readBatch(): Promise<Batch> {
 }
 
 async function grype(sbomFile: string): Promise<unknown> {
-  const { stdout } = await run("grype", [`sbom:${sbomFile}`, "-o", "json", "-q"], { env: GRYPE_ENV, timeout: 15 * 60_000, maxBuffer: 512 * 1024 * 1024 });
+  const { stdout } = await run("grype", [`sbom:${sbomFile}`, "-o", "json", "-q"], { env: GRYPE_ENV, timeout: 45 * 60_000, maxBuffer: 512 * 1024 * 1024 });
   return JSON.parse(stdout);
 }
 
