@@ -62,7 +62,8 @@ applies to changes to the module (its service, policy `service/security/`, cases
 `kernel/sdk/src/reviewer.ts`, the tier function and write lifecycle (`services/runner/src/tiers.mjs`, `cards.ts`,
 `review-request.mjs`, `kernel/src/{tier,writes,records,reviews,kinds}.ts`, the code host's git rules
 `modules/codehost-github/src/plan.mjs`, the platform check `modules/platform/src/check.mjs`) or the authority-diff classifier (`kernel/src/loader/authority.ts`); the runner's merge queue runs it on the PR's exact head
-and merges only on a 100% receipt (`services/runner/src/evalgate.ts`).
+(product and official modules repo) and merges only on a 100% receipt (`services/runner/src/evalgate.ts`); a modules pin bump
+(`modules-pin.json`, the instance's `aidenhq` marketplace) that changes the reviewer needs a receipt for that reviewer too.
 
 ## Conventions
 

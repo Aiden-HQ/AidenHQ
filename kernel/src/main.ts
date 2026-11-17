@@ -38,7 +38,7 @@ import { openRecords } from "./records.ts";
 import { createReviews, type ReviewerSlot } from "./reviews.ts";
 import { mintToken } from "./gateway/token.ts";
 import { createWrites, type Kind } from "./writes.ts";
-import { KERNEL_KINDS, raiseCapCard } from "./kinds.ts";
+import { KERNEL_KINDS, LOCAL_ORG, raiseCapCard } from "./kinds.ts";
 import { createJobs, dispatchesFrom } from "./jobs.ts";
 import { jailProblem, overlayProblem } from "./sandbox.ts";
 import { sandboxConfig } from "./sandbox-config.ts";
@@ -88,13 +88,16 @@ let replay: (r: never) => Promise<{ ok: boolean; text: string }> = async () => (
 const instanceSettings = (() => { try { return readFileSync(path.join(env("AIDENHQ_INSTANCE_DIR", "").replace(/^~(?=\/)/, process.env.HOME ?? ""), "instance.yaml"), "utf8"); } catch { return ""; } })();
 const setting = (k: string) => new RegExp(`^\\s+${k}:\\s*["']?([\\w.-]+)`, "m").exec(instanceSettings)?.[1];
 const agentsOrg = env("AIDENHQ_GITHUB_AGENTS_ORG") || setting("github_agents_org") || (setting("instance_name") ? `aidenhq-${setting("instance_name")}` : undefined);
-const repos = { product: env("AIDENHQ_PRODUCT_REPO") || undefined, instance: env("AIDENHQ_INSTANCE_REPO") || undefined, agentsOrg };
-log(repos.product && repos.instance ? "runner kinds' repositories" : "runner kinds: AIDENHQ_PRODUCT_REPO or AIDENHQ_INSTANCE_REPO isn't set, so every runner write is the owner's", repos);
+// With codehost-local enabled (the compiled catalog), its org `local` is an agents org too (docs/design/codehost-local.md §2).
+const localHost = watched(path.join(configDir, "modules.json"), (j) => Array.isArray(j) && j.some((m: { name?: string; enabled?: boolean }) => m?.name === "codehost-local" && m.enabled === true), false);
+const baseRepos = { product: env("AIDENHQ_PRODUCT_REPO") || undefined, instance: env("AIDENHQ_INSTANCE_REPO") || undefined, agentsOrg };
+const repos = () => ({ ...baseRepos, agentsOrgs: [agentsOrg, ...(localHost() ? [LOCAL_ORG] : [])].filter((o): o is string => Boolean(o)) });
+log(baseRepos.product && baseRepos.instance ? "runner kinds' repositories" : "runner kinds: AIDENHQ_PRODUCT_REPO or AIDENHQ_INSTANCE_REPO isn't set, so every runner write is the owner's", repos());
 // The bound reviewer module (reviewer@1): its model calls go through this gateway on a reviewer token minted per review.
 const reviews = createReviews({ slot: () => modulesFile().reviewer, secret, resolver, log, modelToken: (component) => mintToken(secret("gateway_job_secret"), { kind: "reviewer", component, ttlMs: 3600_000 }) });
 let raiseCap: (r: { scope: string; agentId: string; subject: string; cap: number; spent: number; to: number }) => Promise<string> = async () => { throw new Error("the model gateway isn't up"); };
 const writes = createWrites({
-  records, registry, connections, secret, resolver, reviews, onTask, log, replay: (r) => replay(r as never), repos: () => repos,
+  records, registry, connections, secret, resolver, reviews, onTask, log, replay: (r) => replay(r as never), repos,
   autonomy: () => (["off", "tier0", "full"].includes(grantsTable().autonomy as string) ? grantsTable().autonomy : "off") as never,
   // An approved raise_cap: the gateway's cap for that scope and subject becomes the card's doubled cap.
   native: { "kernel.raise_cap": async (r) => ({ ok: true, text: await raiseCap(r.args as never) }) },

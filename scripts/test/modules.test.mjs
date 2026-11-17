@@ -6,7 +6,8 @@ import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import YAML from "yaml";
 import { BUNDLE } from "./bundle.mjs";
-import { checkEntries, compile, writeKinds, ensureOptionalSecrets, grantEntry, healthProbeAgent, hostMounts, LEGACY_HOST_ENV, LEGACY_LINKS, LEGACY_SECRETS, mapLimit, OPS_NETWORKS } from "../modules.mjs";
+import { ensureIdentityKeys } from "../identity.mjs";
+import { checkEntries, compile, composeSecretFiles, ensureMountedSecrets, writeKinds, ensureOptionalSecrets, grantEntry, healthProbeAgent, hostMounts, LEGACY_HOST_ENV, LEGACY_LINKS, LEGACY_SECRETS, mapLimit, OPS_NETWORKS } from "../modules.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const mods = join(here, "fixtures/mods");
@@ -289,6 +290,37 @@ test("optional secrets are created only where the secrets dir is really there (n
   assert.deepEqual(ensureOptionalSecrets(dir, ["primer_service_key"], "slack_live_mcp_token", true), ["primer_service_key"]);
   assert.match(readFileSync(join(dir, "primer_service_key"), "utf8"), /^[0-9a-f]{64}$/);
 });
+test("an install with no model key: an optional mounted secret starts empty, a missing auth secret fails loudly", () => {
+  const r = compile(product, pinst([], owner));
+  const mounts = composeSecretFiles(YAML.parse(readFileSync(join(product, "compose.yaml"), "utf8")), r.compose);
+  assert.ok(mounts.openrouter_key.includes("board"), "the board mounts the model key");
+  assert.equal(mounts.github_app, undefined, "a folder mounted under another name is left alone");
+  const dir = mkdtempSync(join(tmpdir(), "sec-"));
+  writeFileSync(join(dir, "paperclip_auth_secret"), "x");
+  writeFileSync(join(dir, "telegram_service_key"), ""); // made empty earlier: still generated
+  ensureOptionalSecrets(dir, r.generatedSecrets, "paperclip_auth_secret", true);
+  assert.match(readFileSync(join(dir, "telegram_service_key"), "utf8"), /^[0-9a-f]{64}$/);
+  const optional = [...r.optionalSecrets, ...r.askedSecrets];
+  const { created, missing } = ensureMountedSecrets(dir, mounts, optional, "paperclip_auth_secret");
+  assert.ok(created.includes("openrouter_key"));
+  assert.equal(readFileSync(join(dir, "openrouter_key"), "utf8"), "");
+  // A missing auth secret is never made empty: it is named, with what mounts it.
+  const jwt = missing.find((m) => m.secret === "paperclip_agent_jwt_secret");
+  assert.ok(jwt && jwt.services.includes("paperclip"), JSON.stringify(missing));
+  assert.ok(!missing.some((m) => optional.includes(m.secret)));
+  assert.throws(() => readFileSync(join(dir, "paperclip_agent_jwt_secret")));
+  // A fresh host after scripts/bootstrap.sh and compile's own steps misses nothing: the bundle, and setup's default (+ google).
+  for (const extra of [[], ["google"]]) {
+    const g = compile(product, pinst(extra, owner));
+    const m = composeSecretFiles(YAML.parse(readFileSync(join(product, "compose.yaml"), "utf8")), g.compose);
+    const fresh = mkdtempSync(join(tmpdir(), "sec-"));
+    for (const [, n] of readFileSync(join(product, "scripts/bootstrap.sh"), "utf8").matchAll(/^(?:gen_secret|placeholder) ([a-z_]+)\s/gm)) writeFileSync(join(fresh, n), "x");
+    ensureOptionalSecrets(fresh, g.optionalSecrets, "paperclip_auth_secret");
+    ensureOptionalSecrets(fresh, g.generatedSecrets, "paperclip_auth_secret", true);
+    ensureIdentityKeys(fresh);
+    assert.deepEqual(ensureMountedSecrets(fresh, m, [...g.optionalSecrets, ...g.askedSecrets], "paperclip_auth_secret").missing, [], extra.join());
+  }
+});
 test("secrets the setup must not leave to a manual step are generated", () => {
   const g = compile(product, pinst(["primer"], owner)).generatedSecrets;
   for (const k of ["primer_service_key", "telegram_service_key", "computer_launcher_token"]) assert.ok(g.includes(k), k);
@@ -364,7 +396,7 @@ test("enumeration (spec §9): every shipped write or destructive tool maps to a 
   const kindOf = Object.fromEntries(writes.map(([ct, floor]) => [ct, routed[ct] ?? `conn.tool@${floor}`]));
   assert.deepEqual(["apps.app_deploy", "apps.app_run_request", "apps.app_restart", "apps.app_rollback", "apps.app_api", "apps.app_remove", "apps.app_create"].map((ct) => kindOf[ct]),
     ["apps-platform.deploy", "apps-platform.run", "apps-platform.restart", "apps-platform.rollback", "apps-platform.api_write", "conn.tool@1", "conn.tool@0"]);
-  assert.deepEqual(Object.fromEntries(Object.entries(kinds).map(([id, k]) => [id, k.floor])), { "apps-platform.deploy": 0, "apps-platform.run": 1, "apps-platform.restart": 0, "apps-platform.rollback": 0, "apps-platform.api_write": 0, "primer.publish": 1, "channel-slack.post": 1 });
+  assert.deepEqual(Object.fromEntries(Object.entries(kinds).map(([id, k]) => [id, k.floor])), { "apps-platform.deploy": 0, "apps-platform.run": 1, "apps-platform.restart": 0, "apps-platform.rollback": 0, "apps-platform.api_write": 0, "primer.publish": 1, "channel-slack.post": 1, "channel-slack.bind": 0 });
   assert.deepEqual(["primer.primer_create_document", "primer.primer_add_version"].map((ct) => kindOf[ct]), ["primer.publish", "primer.publish"]);
   assert.equal(kindOf["slack_live.slack_post"], "channel-slack.post");
   // A kind naming a tool that isn't one of its module's writes, or one another kind took, fails compile.

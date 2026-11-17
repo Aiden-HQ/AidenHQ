@@ -3,7 +3,7 @@
 // reviewer module's (modules/ai-reviewer), imported here only to check what the runner sends it.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { kernelCardDiff, reviewRequest, readCardSourceExceptions, readSourceExceptions, unreadSourceExceptions } from "../src/review-request.mjs";
+import { kernelCardDiff, readCardSourceExceptions, readDecisions, readSourceExceptions, reviewRequest, unreadSourceExceptions } from "../src/review-request.mjs";
 import { siblingBlock } from "../src/siblings.ts";
 import { review, reviewPrompt, sourcesInDiff } from "../../../modules/ai-reviewer/service/src/review.mjs";
 
@@ -53,6 +53,19 @@ test("the records that lookup reads reach the reviewer as its only source except
   const sources = await readCardSourceExceptions([{ repo: "acme/app", base: "main" }], async () => sourceFile([ghRecord]));
   const v = await review({ card, diff, policy: "p", sources, ask: async (_m, { user }) => (/<<<APPROVED_SOURCE_EXCEPTIONS\nacme\/app main \.github\/supply-chain-source-exceptions\.yaml\n[\s\S]*\[the diff adds this source\][\s\S]*APPROVED_SOURCE_EXCEPTIONS>>>/.test(user) ? ok : no) });
   assert.deepEqual([v.decision, v.code], ["approve", "in_scope"]);
+});
+
+test("the decisions digest is read from the instance repo's default branch, never the change's, and goes in the request", async () => {
+  // main.mjs' cardContext reads it this way: a change that edits decisions.md (or any change on a stacked base) is judged
+  // against the default branch's copy. No instance repo or an empty file is no block.
+  const asked = [];
+  const digest = "## Not building\n- A fax connection: nobody sends faxes. (2026-01-12, owner)";
+  const decisions = await readDecisions("acme/aidenhq-instance", async () => "main", async (repo, url) => (asked.push([repo, url]), digest));
+  assert.deepEqual(asked, [["acme/aidenhq-instance", "repos/acme/aidenhq-instance/contents/decisions.md?ref=main"]]);
+  assert.deepEqual(decisions, { where: "acme/aidenhq-instance main decisions.md", text: digest });
+  assert.equal(await readDecisions(undefined, async () => "main", async () => digest), undefined);
+  assert.equal(await readDecisions("acme/aidenhq-instance", async () => "main", async () => "\n"), undefined);
+  assert.deepEqual(reviewRequest({ action: "push", target: "acme/aidenhq-instance fleet/x", sentence: "Push" }, { rule: "r", diff: "+x" }, "chain", { decisions }).decisions, decisions);
 });
 
 // The task's merged siblings: the reviewer sees that the chain's earlier half is already on the base. The block is PR text,

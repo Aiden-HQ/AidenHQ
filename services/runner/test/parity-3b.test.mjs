@@ -194,6 +194,16 @@ test("the card contract: every field the runner's card args carry is one the ker
   validate(KERNEL_KINDS["runner.merge"].args, { prs: [{ repo: "acme/app", number: 4, url: "https://github.com/acme/app/pull/4", head: "f".repeat(40), noReview: true, patch: "c".repeat(64) }], gap: 5 });
   validate(KERNEL_KINDS["kernel.apply"].args, applyCardArgs({ r: { repo: "acme-agents/aidenhq-instance", branch: "fleet/x" }, sha: "1".repeat(40), files: ["instance.yaml"] }, ["engine-claude: secrets x (owner)"], true));
   assert.throws(() => validate(KERNEL_KINDS["runner.push"].args, { only: [{ ...branch, extra: 1 }] }), /has no field extra/);
+  // A local change request (codehost-local): its URL is one the kernel takes, and its cards say "this server" and
+  // "change request" in the words the planted reviewer cases use (modules/ai-reviewer/test/reviewer-cases/*local*).
+  const local = { prs: [{ repo: "local/expense-tracker", number: 3, url: "codehost:local/expense-tracker/change/3", head: "f".repeat(40) }] };
+  validate(KERNEL_KINDS["runner.merge"].args, local);
+  assert.deepEqual(pick(cardOf("merge", local), ["target", "sentence"]), { target: "codehost:local/expense-tracker/change/3", sentence: "Merge 1 change request, one at a time." });
+  const lb = [{ ...branch, repo: "local/expense-tracker" }];
+  assert.equal(cardOf("push", branchCardArgs(lb)).sentence, "Push 1 branch to this server.");
+  assert.equal(cardOf("pr", branchCardArgs(lb)).sentence, "Push and open (or update) a draft change request for 1 branch.");
+  assert.equal(cardOf("create_repo", { repo: "local/expense-tracker" }).sentence, "Create the repository local/expense-tracker.");
+  assert.equal(cardOf("push", branchCardArgs([branch])).sentence, "Push 1 branch to GitHub.");
 });
 
 test("a replay is carried only by an approval of the same change: same kind, target, merge flag and patch", () => {

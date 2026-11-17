@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { VISIBLE, groupChats, laneOf, groupTasks, taskSummary } from "../web/src/sidebar.js";
+import { VISIBLE, groupChats, laneOf, groupTasks, panelsOf, taskSummary } from "../web/src/sidebar.js";
 import type { ChatRow } from "../web/src/types.js";
 
 const row = (n: number, o: Partial<ChatRow> = {}): ChatRow => ({ identifier: `WOR-${n}`, title: `c${n}`, open: true, agent: { key: "a", name: "Aiden" }, state: "idle", updatedAt: `2026-11-${String(10 + (n % 15)).padStart(2, "0")}T00:00:00Z`, unread: false, ...o });
@@ -30,5 +30,17 @@ describe("laneOf", () => {
     const lane = [{ key: "aria", id: "0d9c-uuid", name: "Aria" }];
     const { others } = groupChats([], [{ key: "0d9c-uuid", name: "Aria" }]);
     expect(laneOf(lane, others[0]!.agent.key)?.key).toBe("aria");
+  });
+});
+
+describe("panelsOf", () => {
+  it("pins only apps that set a panel and have an https URL of their own", () => {
+    const apps = [
+      { name: "reading", panel: "Reading list", url: "https://reading.example.com" },
+      { name: "notes", url: "https://notes.example.com" },
+      { name: "tailnet", panel: "Tailnet", url: "http://apps.example.ts.net:4100" },
+      { name: "down", panel: "Down" },
+    ];
+    expect(panelsOf(apps)).toEqual([{ name: "reading", label: "Reading list", url: "https://reading.example.com" }]);
   });
 });

@@ -311,7 +311,7 @@ secrets:
     file: ${AIDENHQ_SECRETS_DIR}/grafana_auth_token
   clickhouse_auth_token:
     file: ${AIDENHQ_SECRETS_DIR}/clickhouse_auth_token
-  # The user's gh token (scripts/github-auth.sh), for github-mcp only.
+  # The user's GitHub token (the github module's setup flow), for github-mcp only.
   github_token:
     file: ${AIDENHQ_SECRETS_DIR}/github_token
   paperclip_board_key:

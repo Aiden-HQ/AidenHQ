@@ -15,7 +15,7 @@
 //   GET  /v1/writes            (the board's or the runner's key) records by state or task
 //   POST /v1/writes/:id/claim  (the runner's key) an approved record of its kinds, claimed once
 //   POST /v1/writes/:id/review (the runner's key) a record's review: its tier input and what the reviewer reads (writes.ts)
-//   GET  /v1/channel/cards, POST /v1/channel/{decide,owner-message,stop}, GET /v1/channel/notices  (a speaks-as-owner
+//   GET  /v1/channel/cards, POST /v1/channel/{decide,owner-message,stop,thread}, GET /v1/channel/notices  (a speaks-as-owner
 //                              channel's token) cards with decision tokens, a token spent, the owner's words, notices (channels.ts)
 //   POST /v1/channel/outbox, GET /v1/channel/outbox  (a channel) a message for the owner handed to another channel; drained by it
 //   GET  /v1/cp/read/<path>    (a channel, or a module with role kernel.cp-read) the control plane's read routes, as the owner
@@ -66,6 +66,7 @@ export const ROUTES = [
   { method: "POST", path: "/v1/channel/decide", auth: "module" },
   { method: "POST", path: "/v1/channel/owner-message", auth: "module" },
   { method: "POST", path: "/v1/channel/stop", auth: "module" },
+  { method: "POST", path: "/v1/channel/thread", auth: "module" },
   { method: "GET", path: "/v1/channel/notices", auth: "module" },
   { method: "POST", path: "/v1/channel/outbox", auth: "module" },
   { method: "GET", path: "/v1/channel/outbox", auth: "module" },
@@ -176,6 +177,10 @@ export function createBackplane({ whoami, asserter, proxy, cp, grantsFile, write
           case "GET /v1/channel/cards": return send(res, 200, await channels.cards(mod, new URLSearchParams(q ?? "").get("resync") === "1"));
           case "POST /v1/channel/decide": return send(res, 200, await channels.decide(mod, await json(req)));
           case "POST /v1/channel/owner-message": return send(res, 200, await channels.ownerMessage(mod, await json(req), cos));
+          case "POST /v1/channel/thread": {
+            const b = await json(req);
+            return send(res, 200, await channels.thread(mod, b, (key) => { const e = Object.entries(grantsFile().agents ?? {}).find(([, g]) => key && g.key === key); return e && { id: e[0], trial: Boolean(e[1].trial) }; }));
+          }
           case "POST /v1/channel/stop": return send(res, 200, await channels.stop(mod, await json(req)));
           case "GET /v1/channel/notices": return send(res, 200, await channels.notices(mod));
           case "POST /v1/channel/outbox": return send(res, 200, channels.file(mod, await json(req)));

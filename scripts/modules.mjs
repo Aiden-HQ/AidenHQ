@@ -2,7 +2,7 @@
 // module apps (apps-mcp), compose services (compose.modules.yaml) and the module catalog. Pure: reads files, writes
 // nothing (scripts/compile.mjs writes). See docs/configuration.md.
 import { createHash, randomBytes } from "node:crypto";
-import { existsSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { join, relative, resolve } from "node:path";
 import YAML from "yaml";
 import { validateImages } from "./computers.mjs";
@@ -637,6 +637,7 @@ export function compile(productDir, instanceDir, { revision, fetch = hostFetch(p
     for (const app of def.apps ?? []) {
       const { isolation: iso, ...rest } = app;
       const untrusted = isolationOf(iso ?? def.isolation, `app ${app.name}`, ["trusted", "untrusted"]) === "untrusted";
+      if (app.panel != null) fail(`app ${app.name}: panel (a board nav pin) is set only in the instance apps.yaml, never by a module`);
       if (apps.some((x) => x.name === app.name)) fail(`duplicate app: ${app.name}`);
       if (instanceApps.includes(app.name)) fail(`app ${app.name} is already in the instance apps.yaml; rename that app before enabling ${name}`);
       apps.push({ ...rest, path: relative(productDir, join(root, app.path)), ...(untrusted ? { untrusted: true } : {}), module: name, ...(revision ? { pin: revision } : {}) });
@@ -956,7 +957,7 @@ export function compile(productDir, instanceDir, { revision, fetch = hostFetch(p
   const runAgents = Object.entries(paperclip.agents).filter(([, a]) => a.dispatch === "runner").map(([k]) => k).sort();
   if (dispatchers.length > 1) fail(`modules ${dispatchers.join(", ")} all request kernel.jobs: one job dispatcher at a time`);
   if (dispatchers.length) kernelModules.modules[dispatchers[0]].dispatches = runAgents;
-  return { paperclip, apps: { apps }, points, compose, catalog, warnings, optionalSecrets, generatedSecrets, dataDirs, dataModules, gateway, jobcaps, engines, connections, writes, checks, kernelModules, exposure: settings.exposure, edge: edge && { gate: edge.gate, cloudflared: edge.cloudflared } };
+  return { paperclip, apps: { apps }, points, compose, catalog, warnings, optionalSecrets, askedSecrets: setup.map((f) => f.secret), generatedSecrets, dataDirs, dataModules, gateway, jobcaps, engines, connections, writes, checks, kernelModules, exposure: settings.exposure, edge: edge && { gate: edge.gate, cloudflared: edge.cloudflared } };
 }
 
 /**
@@ -1412,9 +1413,41 @@ export function hostMounts(env) {
  */
 export function ensureOptionalSecrets(dir, names, known, generate = false) {
   if (!existsSync(join(dir, known))) return [];
-  const made = names.filter((n) => !existsSync(join(dir, n)));
+  // A generated token is never left empty (a file made empty earlier, before its module generated it).
+  const made = names.filter((n) => !existsSync(join(dir, n)) || (generate && statSync(join(dir, n)).size === 0));
   for (const n of made) writeFileSync(join(dir, n), generate ? randomBytes(32).toString("hex") : "", { mode: 0o600 });
   return made;
+}
+
+/**
+ * The secret files compose mounts as `<name>: { file: ${AIDENHQ_SECRETS_DIR}/<name> }` in the given compose files, each with
+ * the services that mount it. A secret mounted from another path (a folder such as github-app) is left to whatever makes it.
+ */
+export function composeSecretFiles(...composes) {
+  const file = /^\$\{AIDENHQ_SECRETS_DIR(?::?[-?][^}]*)?\}\/([A-Za-z0-9_.-]+)$/;
+  const out = {};
+  for (const c of composes) {
+    for (const [k, v] of Object.entries(c?.secrets ?? {})) if (file.exec(String(v?.file ?? ""))?.[1] === k) out[k] ??= [];
+    for (const [svc, d] of Object.entries(c?.services ?? {})) for (const m of d?.secrets ?? []) { const n = typeof m === "string" ? m : m?.source; if (out[n] && !out[n].includes(svc)) out[n].push(svc); }
+  }
+  return out;
+}
+
+/**
+ * Before compose: each secret file a service mounts must exist, or compose refuses to start it. Missing ones that are
+ * declared optional (`optional_secrets`, and a secret the owner is asked for on a setup page (`secrets.provided` with `setup:`), such as the
+ * model key before the first-run page) are created empty: not set up yet. Any other missing one is an error naming it and
+ * the services that mount it, never an empty auth or signing secret. Runs after the generated tokens and identity keys.
+ * Returns { created, missing: [{ secret, services }] }; nothing at all while the vault looks locked (`known` absent).
+ */
+export function ensureMountedSecrets(dir, mounts, optional, known) {
+  if (!existsSync(join(dir, known))) return { created: [], missing: [] };
+  const absent = Object.keys(mounts).filter((n) => mounts[n].length && !existsSync(join(dir, n))); // only what a service mounts
+  const ok = new Set(optional);
+  return {
+    created: ensureOptionalSecrets(dir, absent.filter((n) => ok.has(n)), known),
+    missing: absent.filter((n) => !ok.has(n)).map((n) => ({ secret: n, services: mounts[n] })),
+  };
 }
 
 /**

@@ -48,6 +48,7 @@ agents/<key>/agent.yaml       an instance-defined agent
 agents/<key>/AGENTS.md        its handbook
 agents/<key>/memory.md        its curated memory (the Librarian's)
 owner/profile.md              how the owner works, in every crew handbook and chat lane
+decisions.md                  product decisions and "not building" entries the AI reviewer holds changes to
 ```
 
 ```yaml
@@ -134,6 +135,10 @@ outcomes:
   `node scripts/compile.mjs --sizes` prints each crew agent's handbook bytes per section (`scripts/handbook.mjs`) and
   writes nothing.
 - Disabling a module pauses its agents and routines; nothing is deleted.
+- **`decisions.md`** (optional; template `config/decisions.example.md`): the owner's product decisions, including what not to
+  build, one dated line each. The runner reads it from the instance repo's default branch (`apply.repo`) for every review,
+  never from the change, and the AI reviewer rejects a change that brings back what an entry rules out or reverses a
+  decision, unless the owner's own words in the request chain ask for it (policy: "Recorded product decisions").
 
 ## Compile and apply
 
@@ -280,10 +285,12 @@ Copy `.env.example` to `.env`. It holds host paths and endpoints, never agent-ed
 - Apps: `DOCKER_GID`, `WORK_COMPANY_ID`, `APPS_URL_BASE` (apps are served at `<base>:<port>`: the apps node's address,
   `https://<APPS_TS_HOSTNAME>.<tailnet>.ts.net`), `APPS_TS_HOSTNAME` (the apps' own tailnet node, default `aidenhq-apps`).
 - Meetings: `TRANSCRIPTS_DIR`, `VAULT_DIR`, `VAULT_FOLDERS`, `KNOWLEDGE_BASES`.
-- Connection endpoints: `SLACK_CLIENT_ID`, `GITHUB_COMMENT_ORGS`. Leave one empty to skip that connection. The other
-  connections' URLs are instance settings (`glean_mcp_url`, `grafana_url`, `clickhouse_mcp_url`, `primer_mcp_url`,
-  `jira_url`): set them on the board (Settings, Connections), which files the change as an apply card
-  (docs/design/settings-changes.md).
+- Connection endpoints: `GITHUB_COMMENT_ORGS` (and the legacy `SLACK_CLIENT_ID`). Leave one empty to skip that connection. The other
+  connection's URL is an instance setting (`jira_url`): set it on the board (Settings, Connections), which files the change
+  as an apply card (docs/design/settings-changes.md). Primer's, Glean's, Grafana's and ClickHouse's addresses (and Slack's
+  client id) are setup values saved from the module's setup flow (`#/setup/<module>`) into the vault, with no apply; an old
+  `primer_mcp_url`, `glean_mcp_url`, `grafana_url`, `clickhouse_mcp_url` setting or `SLACK_CLIENT_ID` is read only while that
+  value is empty.
 - Board: `BOARD_ALLOWED_HOSTS`, and the second listener's (3121: behind the front door, `tailscale serve` today;
   signed-in admins only) `BOARD_LAN_BIND`, `BOARD_LAN_PORT`, `BOARD_LAN_HOSTS`, `BOARD_LAN_URL`. It stays on loopback:
   it trusts `X-Forwarded-Proto` from whoever reaches it. Only a LAN-only VM in `local` exposure with

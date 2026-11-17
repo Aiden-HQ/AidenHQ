@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { test } from "node:test";
@@ -90,4 +90,12 @@ test("--unattended, exposure public: the IP's https URLs and 24-hour links, no t
   for (const want of ["env AIDENHQ_EXPOSURE=public AIDENHQ_NO_TAILSCALE=1", ".env: BOARD_LAN_URL=https://203.0.113.7", ".env: AIDENHQ_ADMIN_URL=https://203.0.113.7:8446", ".env: AIDENHQ_PUBLIC_IP=203.0.113.7", ".env: AIDENHQ_LINK_TTL_HOURS=24"])
     assert.ok(out.includes(want), `missing: ${want}\n${out}`);
   for (const not of ["tailscale serve", "AIDENHQ_SSH_TUNNEL"]) assert.ok(!out.includes(not), `unexpected: ${not}\n${out}`);
+});
+test("a rerun of an unattended install: units before the apply, its own failed generation retried, a umask of its own", () => {
+  const out = execFileSync("bash", ["-c", `umask 077; exec bash "$0" --dry-run --unattended --no-tailscale`, setup], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], env: { PATH: process.env.PATH, AIDENHQ_USER: "alice", OWNER_EMAIL: "alice@example.com" } });
+  const at = (s) => { const i = out.indexOf(s); assert.ok(i >= 0, `missing: ${s}\n${out}`); return i; };
+  // The apply's agent setup needs the computer launcher answering: its unit is installed and started first.
+  assert.ok(at("enable --now aidenhq-computers") < at("ops/apply-config.sh --retry"), out);
+  assert.ok(at("aidenhq-computers.service") < at("ops/apply-config.sh"), out);
+  assert.match(readFileSync(setup, "utf8"), /^set -euo pipefail\n(#.*\n)*umask 022\n/m, "setup sets its own umask before writing anything");
 });
