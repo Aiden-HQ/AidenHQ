@@ -42,6 +42,6 @@ it("shows the kernel's records read from /v1/writes, and Tier 0 runs after the f
   expect(seen.sort()).toEqual([`Bearer ${KEY} /v1/writes?state=recent&limit=100`, `Bearer ${KEY} /v1/writes?state=recent&limit=100&tier0=1`]);
   expect(json.approvals).toEqual([
     expect.objectContaining({ id: record.id, action: "deploy_app", state: "pending", tier: 2, sentence: "Deploy crm", digest: record.digest }),
-    expect.objectContaining({ id: ran.id, action: "conn.tool", state: "auto", tier: 0, outcome: "applied", sentence: "Post in #general" }),
+    expect.objectContaining({ id: ran.id, action: "conn.tool", target: "slack.post_message", state: "auto", tier: 0, outcome: "applied", sentence: "Post in #general" }),
   ]);
 });

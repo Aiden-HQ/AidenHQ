@@ -77,6 +77,8 @@ export function loadConfig() {
   // its bare repos live under <data dir>/codehost (docs/design/codehost-local.md).
   const dataDir = resolve(REPO_ROOT, expand(env.AIDENHQ_DATA_DIR ?? "data"));
   const localHost = enabledIn(join(configDir, "modules.json"), "codehost-local");
+  // GitHub is a code host unless the catalog has codehost-local on and codehost-github off (an instance with no GitHub).
+  const githubHost = !localHost || enabledIn(join(configDir, "modules.json"), "codehost-github");
   if (localHost && !allowed.some((o) => o.toLowerCase() === "local")) allowed.push("local");
   const gcpCredentials =expand(cfg.gcp?.credentials ?? join(secrets, "gcloud/application_default_credentials.json"));
   return {
@@ -87,8 +89,9 @@ export function loadConfig() {
     // One agents org per enabled code host: tiering (tiers.mjs, plan.mjs) and the kernel (kinds.ts) take the list.
     agentsOrgs: [...(agentsOrg ? [agentsOrg] : []), ...(localHost ? ["local"] : [])],
     localHost,
-    // GitHub is a code host unless the catalog has codehost-local on and codehost-github off (an instance with no GitHub).
-    githubHost: !localHost || enabledIn(join(configDir, "modules.json"), "codehost-github"),
+    githubHost,
+    // The orgs agents name new repos in (prompts, refusals): one per enabled code host.
+    hostOrgs: [...(githubHost && agentsOrg ? [agentsOrg] : []), ...(localHost ? ["local"] : [])],
     dataDir,
     file,
     companyId,

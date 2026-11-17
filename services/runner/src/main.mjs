@@ -1894,7 +1894,7 @@ function drainQueue() {
 // ------------------------------------------------------------------ jobs
 
 /** How a repository is named: org/name, with this instance's agents orgs as the examples (local/<name>: this server's). */
-const REPO_FORM = () => `name it as <org>/<name>${cfg.agentsOrgs.length ? `, such as ${cfg.agentsOrgs.map((o) => `\`${o}/<name>\``).join(" or ")}` : ""}`;
+const REPO_FORM = () => `name it as <org>/<name>${cfg.hostOrgs.length ? `, such as ${cfg.hostOrgs.map((o) => `\`${o}/<name>\``).join(" or ")}` : ""}`;
 
 /** The task's main repository, for a task that has none yet: the others join its workspace. */
 async function setMainRepo(issue, slug) {
@@ -4027,7 +4027,7 @@ async function startJob({ issue, instructions }) {
     const seen = engine.box ? { workspace: "/workspace", repos: repos.map((r) => ({ ...r, path: r.path.replace(workspace, "/workspace") })) } : { workspace, repos };
     const prompt = resumed
       ? followUpPrompt({ user: cfg.selfName, instructions, ...seen, branches, files, primer, crew, observe, thread, stand, brief })
-      : firstPrompt({ user: cfg.selfName, task: full, ...seen, branches, instructions, files, primer, persona, crew, observe, thread, stand, team: crewNames(engineers), brief, build, orgs: cfg.agentsOrgs });
+      : firstPrompt({ user: cfg.selfName, task: full, ...seen, branches, instructions, files, primer, persona, crew, observe, thread, stand, team: crewNames(engineers), brief, build, orgs: cfg.hostOrgs });
     const tipsBefore = await branchTips(workspace);
     const identity = await botIdentity();
     const ghToken = await jobGhToken(app, repos.map((r) => r.slug), appFor).catch((err) => (log("no gh token for the job", { issue: issue.identifier, err: String(err.message ?? err).slice(0, 200) }), undefined));

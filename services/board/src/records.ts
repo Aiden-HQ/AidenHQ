@@ -52,9 +52,15 @@ const KIND: Record<string, string> = { "apps-platform.deploy": "deploy_app", "ap
 const STATE: Record<string, State> = { review: "pending", owner: "pending", approved: "approved", claimed: "used", done: "used", failed: "used", unknown: "used", rejected: "rejected", stale: "stale", cancelled: "expired" };
 const RAN = ["claimed", "done", "failed", "unknown"];
 
+/** What a record acts on when its card doesn't say: a tool call's connection.tool, else the args' name, else its kind. */
+function targetOf(r: KernelRecord): string {
+  const a = (r.args ?? {}) as { name?: unknown; connection?: unknown; tool?: unknown };
+  return r.kind === "conn.tool" && a.connection && a.tool ? `${a.connection}.${a.tool}` : String(a.name ?? r.kind);
+}
+
 export function recordApproval(r: KernelRecord): Approval {
   return {
-    id: r.id, issueId: r.task, identifier: r.identifier || r.task, action: KIND[r.kind] ?? r.kind.replace(/^(runner|kernel)\./, ""), target: r.card.target ?? String((r.args as { name?: unknown })?.name ?? r.kind),
+    id: r.id, issueId: r.task, identifier: r.identifier || r.task, action: KIND[r.kind] ?? r.kind.replace(/^(runner|kernel)\./, ""), target: r.card.target ?? targetOf(r),
     digest: r.digest, args: r.args, sentence: r.card.sentence, reads: r.card.reads, changes: r.card.changes, cost: r.card.cost, details: r.card.details, requestedBy: r.requester.name || r.requester.key,
     requesterId: r.requester.agent || null, tier: r.state === "review" ? 1 : r.state === "owner" ? 2 : r.tier, reason: r.card.reason ?? "", reasonCode: r.rule ?? null, review: r.review,
     reviewCode: (r.review_code as ReviewCode | null | undefined) ?? null, state: r.tier === 0 && ["approved", ...RAN].includes(r.state) ? "auto" : (STATE[r.state] ?? "expired"), decidedBy: r.decided_by, decidedAt: r.decided_at ?? null,

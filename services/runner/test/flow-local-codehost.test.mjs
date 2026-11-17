@@ -48,6 +48,8 @@ describe("flow-local-codehost", () => {
 
   it("pr opens a change request, its checks run green, and an approved merge lands it as one squash commit", async () => {
     await settled();
+    // GitHub is off here (codehost-local alone): the Engineer is told its new repos go in `local`, never the GitHub org.
+    assert.match(claudeRuns()[0].prompt, /in the agents org \(on this instance: `local`, e\.g\. `aidenhq create-repo local\/<name>`/);
     await publish();
     assert.ok(partComments().some((c) => /opened draft change request codehost:local\/app\/change\/1/i.test(c)), t.context());
     await waitFor("green checks on change 1", () => green(1), 120_000);
