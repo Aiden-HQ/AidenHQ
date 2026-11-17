@@ -5,7 +5,7 @@ import YAML from "yaml";
 import { classify, newGrants } from "../src/tiers.mjs";
 import { dependabotCommits } from "../../../modules/platform/src/check.mjs";
 import { afterReview, priorDecisions, rejectedSince, routineCap } from "../../../kernel/src/tier.ts";
-import { moduleInputs } from "../../../kernel/src/loader/authority.ts";
+import { moduleInputs, withGrantOverrides } from "../../../kernel/src/loader/authority.ts";
 import { origins } from "../src/paperclip.ts";
 
 test("a replayed approval: only a later no on its branches (or a merge, or the owner's veto) outranks it", () => {
@@ -506,4 +506,38 @@ test("a text-only module change: AI review only", () => {
   const i = (pin) => `product: ${pin}\nmodules: [acme-crm]\n`;
   assert.equal(tierOf(apply(["instance.yaml"], { "instance.yaml": i(PIN_A) }, { "instance.yaml": i(PIN_B) }, { pin: { forward: true }, modulesError: "x" })), "reject");
   assert.equal(tierOf(apply(["instance.yaml"], { "instance.yaml": i(PIN_A) }, { "instance.yaml": i(PIN_B) }, { pin: { forward: true } })), "reject");
+});
+
+test("board-typed changes: a handbook fork, a grants override, a per-module pin", () => {
+  const roles = { "chief-of-staff": ["fleet-admin"] };
+  // A module agent's fork: its AGENTS.md with handbook_fork, then an edit of it alone, then dropping both: its handbook rule.
+  const forked = inst({}, `overrides:\n  agents:\n    scout:\n      handbook_fork: ${"c".repeat(40)}\n`);
+  for (const [files, b, h] of [
+    [["agents/scout/AGENTS.md", "instance.yaml"], { "instance.yaml": inst() }, { "instance.yaml": forked, "agents/scout/AGENTS.md": "# Mine" }],
+    [["agents/scout/AGENTS.md"], { "instance.yaml": forked, "agents/scout/AGENTS.md": "# Mine" }, { "instance.yaml": forked, "agents/scout/AGENTS.md": "# Mine, again" }],
+    [["agents/scout/AGENTS.md", "instance.yaml"], { "instance.yaml": forked, "agents/scout/AGENTS.md": "# Mine" }, { "instance.yaml": inst() }],
+  ]) assert.deepEqual([tierOf(apply(files, b, h, { roles })), apply(files, b, h, { roles }).rule], [1, "module-handbook"]);
+  // Without the override it is still a handbook with no agent.
+  assert.equal(tierOf(apply(["agents/scout/AGENTS.md"], {}, { "agents/scout/AGENTS.md": "# Mine" }, { roles })), "reject");
+
+  // Grants override: folded into the module's def, so the authority diff judges it (another module's connection by its tags).
+  const crm = { name: "crm", connections: { crm: { tools: { read: ["crm_find"], write: ["crm_update"] } } } };
+  const ops = { name: "ops", agents: { scout: { connections: { crm: "read" } } } };
+  const grants = (tools) => (tools ? `overrides:\n  agents:\n    scout:\n      connections:\n        crm: ${JSON.stringify(tools)}\n` : "");
+  const run = (from, to) => {
+    const [bi, hi] = [YAML.parse(inst({}, grants(from))), YAML.parse(inst({}, grants(to)))];
+    const modules = moduleInputs({ baseInstance: { modules: ["crm", "ops"] }, headInstance: { modules: ["crm", "ops"] }, baseDefs: withGrantOverrides({ crm, ops }, bi), headDefs: withGrantOverrides({ crm, ops }, hi), changed: [] });
+    return apply(["instance.yaml"], { "instance.yaml": inst({}, grants(from)) }, { "instance.yaml": inst({}, grants(to)) }, { modules });
+  };
+  const write = run(null, ["crm_find", "crm_update"]);
+  assert.deepEqual([write.tier, write.reviewFirst, write.rule], [2, true, "module-authority"], "adds a write tool: the owner's");
+  assert.deepEqual([tierOf(run(["crm_find", "crm_update"], ["crm_find"])), run(null, ["crm_find"]).rule], [1, "module-config"], "fewer tools, or reads only: the reviewer's");
+  assert.equal(tierOf(apply(["instance.yaml"], { "instance.yaml": inst() }, { "instance.yaml": inst({}, grants(["crm_find"])) }, {})), "reject", "module defs unread: refused");
+
+  // A per-module pin moves the modules: entry, so the module classifier runs on the module at that sha.
+  const pinned = (m) => `product: ${PIN_A}\nmodules: ${JSON.stringify(m)}\n`;
+  const atPin = moduleInputs({ baseInstance: { modules: ["crm"] }, headInstance: { modules: [{ id: "crm", sha: PIN_B }] }, baseDefs: { crm }, headDefs: { crm: { ...crm, privileged: ["docker"] } }, changed: ["modules/crm/src/a.ts"] });
+  const t = apply(["instance.yaml"], { "instance.yaml": pinned(["crm"]) }, { "instance.yaml": pinned([{ id: "crm", sha: PIN_B }]) }, { modules: atPin });
+  assert.deepEqual([t.tier, t.reviewFirst, t.panel, t.rule], [2, true, true, "module-authority"]);
+  assert.equal(tierOf(apply(["instance.yaml"], { "instance.yaml": pinned(["crm"]) }, { "instance.yaml": pinned([{ id: "crm", sha: PIN_B }]) }, {})), "reject", "unread: refused");
 });

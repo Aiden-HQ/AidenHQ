@@ -8,7 +8,7 @@
 // records the platform check's (modules/platform/src/check.mjs); this file combines them with the module and apply rules,
 // and the shared rules (kernel/src/tier.ts: earlier decisions and the caps).
 import YAML from "yaml";
-import { classifyModules, diffAll, forkChanges, marketplaceChanges } from "../../../kernel/src/loader/authority.ts";
+import { classifyModules, diffAll, forkChanges, grantOverrides, marketplaceChanges } from "../../../kernel/src/loader/authority.ts";
 import { REJECT, T, highest, meritOwner, priorDecisions, priorPart, requestKey, requestPatches, routineCapped } from "../../../kernel/src/tier.ts";
 import { planParts } from "../../../modules/codehost-github/src/plan.mjs";
 import { COMPOSE, GATE_CORE, check, imageRepo } from "../../../modules/platform/src/check.mjs";
@@ -204,6 +204,9 @@ function applyParts(s) {
       const base = parse(def(key, "base"));
       const head = parse(def(key, "head"));
       if ((s.roles?.[key] ?? []).length) parts.push(T(1, "role-handbook", `handbook of ${key}, which holds a role`));
+      // A module agent's forked handbook (overrides.agents.<key>.handbook_fork, on either side: made, edited or dropped):
+      // a handbook change like its additions; a handbook grants no authority.
+      else if (base === undefined && head === undefined && forked(s, key)) parts.push(T(1, "module-handbook", `forked handbook of ${key}, an agent without a role`));
       else if (base === undefined) {
         // A new agent's handbook: only alongside its new agent.yaml, in trial, in this same change; anything else is refused.
         const added = (s.files ?? []).includes(`agents/${key}/agent.yaml`) && head?.trial === true;
@@ -218,6 +221,9 @@ function applyParts(s) {
   }
   return parts;
 }
+
+/** Whether instance.yaml on either side forks this module agent's handbook (overrides.agents.<key>.handbook_fork). */
+const forked = (s, key) => ["base", "head"].some((side) => parse(s[side]?.["instance.yaml"])?.overrides?.agents?.[key]?.handbook_fork != null);
 
 function agentDefPart(key, base, head, s) {
   if (base === null || head === null) return REJECT("unparseable", `agents/${key}/agent.yaml doesn't parse`);
@@ -270,7 +276,9 @@ function instanceParts(s) {
   if (!base || !head) return [REJECT("unparseable", "instance.yaml doesn't parse")];
   const parts = [];
   const keys = changedKeys(base, head);
-  if (["product", "modules", "marketplaces", "release", "product_fork"].some((k) => keys.includes(k))) parts.push(...moduleAuthorityParts(s, base, head));
+  // Module authority: what the modules hand out moves with the pins and lists, and with an agent's grants override
+  // (overrides.agents.<key>.connections, folded into its module's def, so the authority diff judges it like a module grant).
+  if (["product", "modules", "marketplaces", "release", "product_fork"].some((k) => keys.includes(k)) || !eq(grantOverrides(base), grantOverrides(head))) parts.push(...moduleAuthorityParts(s, base, head));
   if (keys.includes("release") && !parts.length) parts.push(T(1, "release-pin", "the release pin moves; what it resolves to (the kernel, the official marketplace) is unchanged"));
   for (const k of keys) {
     if (k === "modules" || k === "marketplaces" || k === "release" || k === "product_fork") continue; // the module parts above (a release by what it resolves to)
@@ -284,7 +292,11 @@ function instanceParts(s) {
       for (const kind of changedKeys(base.overrides, head.overrides)) {
         const safe = OVERRIDE_SAFE[kind];
         for (const name of changedKeys(base.overrides?.[kind], head.overrides?.[kind])) {
-          const fields = changedKeys(base.overrides?.[kind]?.[name], head.overrides?.[kind]?.[name]);
+          const all = changedKeys(base.overrides?.[kind]?.[name], head.overrides?.[kind]?.[name]);
+          // An agent's grants are the module parts' (above); its handbook fork is a handbook change like its additions.
+          const fields = kind === "agents" ? all.filter((x) => x !== "connections" && x !== "handbook_fork") : all;
+          if (kind === "agents" && all.includes("handbook_fork")) parts.push((s.roles?.[name] ?? []).length ? T(1, "role-handbook", `handbook fork of ${name}, which holds a role`) : T(1, "module-handbook", `handbook fork of ${name}, an agent without a role`));
+          if (!fields.length) continue;
           parts.push(safe && fields.every((x) => safe.has(x)) ? T(1, kind === "agents" ? "model-change" : "routine-schedule", `${kind} ${name}: ${fields.join(", ")}`) : PANEL("overrides", `overrides ${kind} ${name}: ${fields.join(", ")}`));
         }
       }

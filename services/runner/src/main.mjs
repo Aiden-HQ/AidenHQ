@@ -11,7 +11,7 @@ import { REPO_ROOT, githubSlug, loadConfig } from "./config.mjs";
 import { applyWaitingForLock, architectFollowUps, bumpTitle, definitionsOf, ownerMade, productPin, strayFiles, trialEditsText, trialHandbookOnly, trialNoTapBy, untrialedNewAgents } from "./apply.ts";
 import { applyCardArgs, asApproval, branchCardArgs, cardOf, cardText, planOf } from "./cards.ts";
 import { applyCard, repoKey } from "../../../kernel/src/kinds.ts";
-import { authorityLines, diffAll, forkChanges, marketplaceChanges, moduleInputs } from "../../../kernel/src/loader/authority.ts";
+import { authorityLines, diffAll, forkChanges, grantOverrides, marketplaceChanges, moduleInputs, withGrantOverrides } from "../../../kernel/src/loader/authority.ts";
 import { OFFICIAL_URL, forksOf, hostFetch, officialSides, remoteCodeText, withRemote } from "../../../kernel/src/loader/sources.ts";
 import { effective } from "../../../kernel/src/loader/release.ts";
 import { cowRoot, engineState, followJob, kernelJobs, readEngines, removeLayers, gatewayApi, jobcapServers, jobcapsFor, launcher, modelToken, observes, releaseBox, viaGateway } from "./engines.mjs";
@@ -2104,7 +2104,8 @@ async function dependabotPr(repo, number, pr) {
 
 /** The instance change as tiering sees it: every changed file (and the agent.yaml of each handbook) at `baseRev` and at the change. */
 async function applyTierState(b, bump, baseRev = b.base) {
-  const paths = [...new Set([...b.files, ...definitionsOf(b.files)])];
+  // instance.yaml beside any handbook: whether it is a module agent's fork (overrides.agents.<key>.handbook_fork) is read there.
+  const paths = [...new Set([...b.files, ...definitionsOf(b.files), ...(b.files.some((f) => /^agents\/[^/]+\/AGENTS\.md$/.test(f)) ? ["instance.yaml"] : [])])];
   const at = async (rev) => Object.fromEntries((await Promise.all(paths.map(async (p) => [p, await git(b.r.path, "show", `${rev}:${p}`).catch(() => undefined)]))).filter(([, t]) => t !== undefined));
   const [base, head] = [await at(baseRev), await at(b.sha)];
   return { sha: b.sha, files: b.files, base, head, pin: bump && !bump.error ? { forward: Boolean(bump.forward), back: Boolean(bump.back) } : null, ...(await moduleTierState(base["instance.yaml"], head["instance.yaml"])) };
@@ -2119,7 +2120,7 @@ async function moduleTierState(baseText, headText) {
   if (baseText === undefined || headText === undefined) return {};
   try {
     const [bi, hi] = [YAML.parse(baseText) ?? {}, YAML.parse(headText) ?? {}];
-    if (["product", "modules", "marketplaces", "release", "product_fork"].every((k) => JSON.stringify(bi[k] ?? null) === JSON.stringify(hi[k] ?? null))) return {};
+    if (["product", "modules", "marketplaces", "release", "product_fork"].every((k) => JSON.stringify(bi[k] ?? null) === JSON.stringify(hi[k] ?? null)) && JSON.stringify(grantOverrides(bi)) === JSON.stringify(grantOverrides(hi))) return {};
     const [from, to] = [String(bi.product ?? ""), String(hi.product ?? "")];
     if (![from, to].every((x) => /^[0-9a-f]{40}$/.test(x))) return { modulesError: "the product pin isn't a full commit on both sides" };
     // The official modules by folder tree id (the product's ./modules, or the `aidenhq` marketplace from 5b); third-party
@@ -2128,7 +2129,9 @@ async function moduleTierState(baseText, headText) {
     // A release supplies the official marketplace, read at its distro sha on both sides (product: off the release's kernel
     // fails closed here): the change is classified by the modules it resolves to. A fork sits on top of what it resolves to.
     const [eb, eh] = [effective(bi, fetch), effective(hi, fetch)];
-    const sides = withRemote({ baseInstance: eb, headInstance: eh, ...officialSides(eb, eh, from, to, REPO_ROOT, fetch) }, fetch);
+    const read = withRemote({ baseInstance: eb, headInstance: eh, ...officialSides(eb, eh, from, to, REPO_ROOT, fetch) }, fetch);
+    // Each side's agent grants overrides folded into its module defs: the authority diff judges them like module grants.
+    const sides = { ...read, baseDefs: withGrantOverrides(read.baseDefs, bi), headDefs: withGrantOverrides(read.headDefs, hi) };
     return { modules: moduleInputs({ ...sides, always: [] }), marketplaces: [...marketplaceChanges(eb, eh), ...forkChanges(bi, hi)], effective: { base: eb, head: eh } };
   } catch (err) {
     return { modulesError: String(err.message ?? err).split("\n")[0].slice(0, 200) };

@@ -193,6 +193,13 @@ export function officialSides(baseInstance: Dict, headInstance: Dict, from: stri
     // A forked official module (spec §6.9b) is the fork's tree on top of its official folder: its def, and a computed tier
     // that is never official.
     const forks: Record<string, { at: Where; origin: string }> = {};
+    // A per-module pin: the module's folder at its own commit of the official repository (pinsOf).
+    for (const p of pinsOf(instance).filter((x) => x.marketplace === OFFICIAL && trees[x.name])) {
+      const pw = { ...w, path: posix.join(w.path, p.name), sha: p.sha };
+      if (w.url === product) throw new Error(`${p.name}: a per-module pin needs the official modules repository (an \`${OFFICIAL}\` marketplace or modules-pin.json)`);
+      defs[p.name] = (f.parse(readFileSync(join(checkout(pw, f), "module.yaml"), "utf8")) ?? {}) as Dict;
+      forks[p.name] = { at: pw, origin: `${OFFICIAL} pinned at ${p.sha.slice(0, 12)}` };
+    }
     for (const k of forksOf(instance).filter((x) => x.target !== "kernel" && trees[x.target])) {
       const fw = onFork({ ...w, path: posix.join(w.path, k.target) }, k, f);
       const root = checkout(fw, f);
@@ -271,11 +278,26 @@ export function changedFiles(a: Where, b: Where, f: Fetch): string[] {
   return out.split("\n").filter(Boolean).map((p) => (b.path ? p.slice(b.path.length + 1) : p));
 }
 
+/**
+ * Per-module pins (`modules: - { id, sha }`): the module's folder, as its marketplace names it, read at that commit of the
+ * same repository instead of the marketplace's pin. Every other module keeps following its marketplace. Not with a fork.
+ */
+export function pinsOf(instance: Dict): { name: string; marketplace: string; sha: string }[] {
+  const out: { name: string; marketplace: string; sha: string }[] = [];
+  for (const m of Array.isArray(instance.modules) ? instance.modules : []) {
+    if (!isMap(m) || m.sha == null) continue;
+    const [name, mkt] = String(m.id).split("@");
+    if (!SHA.test(String(m.sha))) throw new Error(`instance.yaml modules: ${name}: sha must be a 40-character commit`);
+    if (m.fork != null) throw new Error(`instance.yaml modules: ${name}: a fork and a sha can't both be set`);
+    out.push({ name: name!, marketplace: mkt || OFFICIAL, sha: String(m.sha) });
+  }
+  return out;
+}
+
 /** instance.yaml `modules:` entries naming a third-party marketplace (`name@marketplace`), by marketplace. */
 function wantedRemote(instance: Dict): Map<string, string[]> {
   const out = new Map<string, string[]>();
   for (const m of Array.isArray(instance.modules) ? instance.modules : []) {
-    if (isMap(m) && m.sha != null) throw new Error(`instance.yaml modules: ${String(m.id)}: a per-module sha is not supported yet; pin the marketplace`);
     const [name, mkt] = String(isMap(m) ? m.id : m).split("@");
     if (mkt && mkt !== OFFICIAL) out.set(mkt, [...(out.get(mkt) ?? []), name!]);
   }
@@ -290,6 +312,7 @@ function wantedRemote(instance: Dict): Map<string, string[]> {
 export function remoteModules(instance: Dict, f: Fetch & { parse: (s: string) => unknown; kit?: (root: string, def: Dict, at: Where) => boolean }, withForks = true): Remote[] {
   const mkts = new Map(marketplacesOf(instance).map((m) => [m.name, m.at]));
   const forks = withForks ? forksOf(instance) : [];
+  const pins = pinsOf(instance);
   const out: Remote[] = [];
   for (const [mkt, names] of wantedRemote(instance)) {
     const at = mkts.get(mkt);
@@ -302,7 +325,8 @@ export function remoteModules(instance: Dict, f: Fetch & { parse: (s: string) =>
       const e = entries.find((x) => x.name === name);
       if (!e) throw new Error(`marketplace ${mkt} lists no module ${name}`);
       const fork = forks.find((x) => x.target === name);
-      const listed = sourceOf(e.source, `marketplace ${mkt}: ${name}`, at);
+      const pin = pins.find((x) => x.name === name && x.marketplace === mkt);
+      const listed = { ...sourceOf(e.source, `marketplace ${mkt}: ${name}`, at), ...(pin ? { sha: pin.sha } : {}) };
       const w = fork ? onFork(listed, fork, f) : listed;
       const root = checkout(w, f);
       if (!existsSync(join(root, "module.yaml"))) throw new Error(`${name}@${mkt}: no module.yaml at ${w.url}@${w.sha}${w.path ? `:${w.path}` : ""}`);
