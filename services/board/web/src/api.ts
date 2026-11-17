@@ -108,9 +108,9 @@ export const api = {
   roster: () => call<{ roster: RosterAgent[] }>("GET", "/api/agents/roster"),
   agentProfile: (key: string) => call<{ profile: AgentProfile }>("GET", `/api/agents/by-key/${encodeURIComponent(key)}`),
   agentOpenTasks: (key: string) => call<{ needs: TaskRow[]; ongoing: TaskRow[] }>("GET", `/api/agents/by-key/${encodeURIComponent(key)}/tasks?view=open`),
-  agentHistory: (key: string, opts: { q?: string; before?: string } = {}) => {
-    const p = new URLSearchParams({ view: "history", ...(opts.q ? { q: opts.q } : {}), ...(opts.before ? { before: opts.before } : {}) });
-    return call<{ rows: TaskRow[]; next: string | null }>("GET", `/api/agents/by-key/${encodeURIComponent(key)}/tasks?${p}`);
+  agentHistory: (key: string, opts: { q?: string; offset?: number } = {}) => {
+    const p = new URLSearchParams({ view: "history", ...(opts.q ? { q: opts.q } : {}), ...(opts.offset ? { offset: String(opts.offset) } : {}) });
+    return call<{ rows: TaskRow[]; next: number | null }>("GET", `/api/agents/by-key/${encodeURIComponent(key)}/tasks?${p}`);
   },
   scorecard: (id: string) => call<Scorecard>("GET", `/api/agents/${encodeURIComponent(id)}/scorecard`),
   modules: () => call<{ modules: ModuleRow[]; advisories: Advisory[] }>("GET", "/api/modules"),

@@ -29,7 +29,9 @@ const pc = {
     issue(102, { labelIds: ["chat-label"] }),
     issue(103, { assigneeAgentId: "someone-else" }),
   ],
-  closedFor: async () => [...closed].reverse(),
+  // Paperclip's own filter, search and paging, newest first.
+  closedFor: async (_id: string, o: { q?: string; offset?: number; limit?: number }) =>
+    [...closed].reverse().filter((i) => !o.q || `${i.identifier} ${i.title}`.toLowerCase().includes(o.q.toLowerCase())).slice(o.offset ?? 0, (o.offset ?? 0) + (o.limit ?? 30)),
   liveRuns: async () => [],
   recentRuns: async () => [{ id: "r1", status: "failed", agentId: "keeper", issueId: "i100", startedAt: "2026-11-01T00:00:00Z", finishedAt: "2026-11-01T00:01:00Z", error: "boom" }],
   lastRuns: async () => new Map(),
@@ -79,8 +81,8 @@ describe("agent page routes", () => {
     const first = (await get("/api/agents/by-key/roadmap-keeper/tasks?view=history")).body;
     expect(first.rows).toHaveLength(30);
     expect(first.rows[0].identifier).toBe("WOR-35");
-    expect(first.next).toBe(first.rows[29].updatedAt);
-    const second = (await get(`/api/agents/by-key/roadmap-keeper/tasks?view=history&before=${encodeURIComponent(first.next)}`)).body;
+    expect(first.next).toBe(30);
+    const second = (await get("/api/agents/by-key/roadmap-keeper/tasks?view=history&offset=30")).body;
     expect(second.rows.map((r: any) => r.identifier)).toEqual(["WOR-5", "WOR-4", "WOR-3", "WOR-2", "WOR-1"]);
     expect(second.next).toBeNull();
     const found = (await get("/api/agents/by-key/roadmap-keeper/tasks?view=history&q=wor-7")).body;

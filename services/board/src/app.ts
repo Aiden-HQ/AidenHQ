@@ -8,7 +8,7 @@ import { promisify } from "node:util";
 import { brotliCompress, constants as zlibConstants, gzip } from "node:zlib";
 import type { Logger } from "pino";
 import { z } from "zod";
-import { agentByKey, agentProfile, historyPage, splitTasks } from "./agent-page.js";
+import { HISTORY_PAGE, agentByKey, agentProfile, historyPage, splitTasks } from "./agent-page.js";
 import { liveActivity, type SessionSources } from "./live-activity.js";
 import { makeRuns } from "./runs.js";
 import { RunnerReportSchema, agentsView, roster, runTasks, workingOn, type RunContext, type RunnerReport, type TaskRef, type Working } from "./activity.js";
@@ -1209,7 +1209,8 @@ export function createApp(opts: AppOptions): Server {
         if (url.searchParams.get("view") === "history") {
           // A cancelled task shows as failed only when its last run failed.
           const stateOf = (i: Issue) => (i.status === "cancelled" && ["failed", "timed_out"].includes(lastRun(i)?.status ?? "") ? "failed" : "done");
-          return historyPage(await pc.closedFor(agent.id), agent.id, url.searchParams.get("q") ?? "", url.searchParams.get("before") ?? undefined, stateOf, ctx.agents);
+          const offset = Math.max(0, Number(url.searchParams.get("offset")) || 0);
+          return historyPage(await pc.closedFor(agent.id, { q: url.searchParams.get("q") ?? "", offset, limit: HISTORY_PAGE }), offset, stateOf, ctx.agents);
         }
         const [open, awaiting] = await Promise.all([pc.openIssues(), records.awaiting().catch(() => new Set<string>())]);
         const chat = ctx.labels.find((l) => l.name === "chat");

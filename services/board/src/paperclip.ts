@@ -292,13 +292,11 @@ export class Paperclip {
     return this.list("done,cancelled", since, limit);
   }
 
-  /**
-   * One agent's finished tasks, newest first. Paperclip's list has no assignee filter the board trusts (see children()) and
-   * only `updatedSince`, so this reads the company's newest finished tasks and keeps the agent's own: older ones than the
-   * newest 500 company-wide are out of reach.
-   */
-  async closedFor(agentId: string): Promise<Issue[]> {
-    return (await this.list("done,cancelled")).filter((i) => i.assigneeAgentId === agentId);
+  /** One page of an agent's finished tasks, newest first (Paperclip filters, searches and pages; the assignee is checked here too). */
+  async closedFor(agentId: string, opts: { q?: string; offset?: number; limit?: number } = {}): Promise<Issue[]> {
+    const p = new URLSearchParams({ assigneeAgentId: agentId, status: "done,cancelled", limit: String(opts.limit ?? 30), offset: String(opts.offset ?? 0), excludeRoutineExecutions: "true" });
+    if (opts.q?.trim()) p.set("q", opts.q.trim());
+    return (await this.request<Issue[]>("GET", `/api/companies/${this.companyId}/issues?${p}`)).filter((i) => i.assigneeAgentId === agentId);
   }
 
   private list(status: string, updatedSince?: string, limit = "500"): Promise<Issue[]> {

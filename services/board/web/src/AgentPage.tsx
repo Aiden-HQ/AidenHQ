@@ -92,16 +92,16 @@ function History({ agentKey }: { agentKey: string }) {
   const [text, setText] = useState("");
   const [q, setQ] = useState("");
   const [rows, setRows] = useState<TaskRow[] | null>(null);
-  const [next, setNext] = useState<string | null>(null);
+  const [next, setNext] = useState<number | null>(null);
   const [error, setError] = useState("");
   useEffect(() => {
     const t = setTimeout(() => setQ(text), 300);
     return () => clearTimeout(t);
   }, [text]);
   const load = useCallback(
-    (before?: string) =>
-      api.agentHistory(agentKey, { q, ...(before ? { before } : {}) }).then(
-        (r) => (setError(""), setRows((old) => (before && old ? [...old, ...r.rows] : r.rows)), setNext(r.next)),
+    (offset?: number) =>
+      api.agentHistory(agentKey, { q, ...(offset ? { offset } : {}) }).then(
+        (r) => (setError(""), setRows((old) => (offset && old ? [...old, ...r.rows] : r.rows)), setNext(r.next)),
         (e) => setError((e as Error).message),
       ),
     [agentKey, q],
@@ -120,7 +120,7 @@ function History({ agentKey }: { agentKey: string }) {
         <input className="st-search small" type="search" placeholder="Search tasks" value={text} onChange={(e) => setText(e.target.value)} aria-label="Search finished tasks" />
       </div>
       {error ? <p className="fleet-empty">Couldn't load: {error}</p> : <TaskList rows={shown ?? undefined} empty="No finished tasks yet." />}
-      {next && <button className="btn" onClick={() => void load(next)}>Load more</button>}
+      {next !== null && <button className="btn" onClick={() => void load(next)}>Load more</button>}
     </section>
   );
 }

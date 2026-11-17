@@ -53,15 +53,9 @@ export function splitTasks(issues: Issue[], agentId: string, chatLabelId: string
   return { needs: rows.filter((r) => NEEDS.includes(r.state)), ongoing: rows.filter((r) => !NEEDS.includes(r.state)) };
 }
 
-/** One page of finished tasks strictly older than `before`, matching `q` on identifier or title. */
-export function historyPage(closed: Issue[], agentId: string, q: string, before: string | undefined, stateOf: (i: Issue) => ChatState, agents: Agent[] = []): { rows: TaskRow[]; next: string | null } {
-  const needle = q.trim().toLowerCase();
-  const rows = closed
-    .filter((i) => i.assigneeAgentId === agentId && (!before || i.updatedAt < before) && (!needle || `${i.identifier} ${i.title}`.toLowerCase().includes(needle)))
-    .map((i) => taskRow(i, stateOf(i), agents, i.updatedAt))
-    .sort(newest)
-    .slice(0, HISTORY_PAGE);
-  return { rows, next: rows.length === HISTORY_PAGE ? rows[rows.length - 1]!.updatedAt : null };
+/** One page of finished tasks (Paperclip filtered and paged them); `next` is the offset of the following page, if this one was full. */
+export function historyPage(closed: Issue[], offset: number, stateOf: (i: Issue) => ChatState, agents: Agent[] = []): { rows: TaskRow[]; next: number | null } {
+  return { rows: closed.map((i) => taskRow(i, stateOf(i), agents, i.updatedAt)), next: closed.length === HISTORY_PAGE ? offset + HISTORY_PAGE : null };
 }
 
 export interface ProfileInputs {
