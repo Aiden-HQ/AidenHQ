@@ -23,7 +23,6 @@ export const CATEGORIES = [
   { key: "switches", name: "Kill switches", group: "Fleet" },
   { key: "notifications", name: "Notifications", group: "You" },
   { key: "accounts", name: "Accounts and access", group: "You" },
-  { key: "modules", name: "Modules", group: "System" },
   { key: "general", name: "General", group: "System" },
   { key: "instance", name: "Instance", group: "System" },
 ] as const;
@@ -149,7 +148,7 @@ export function SettingsView({ cat, mobile, session, go, onSignIn, can }: Props)
               </button>
             </div>
           )}
-          {data && !data.compiled && current !== "accounts" && current !== "modules" && (
+          {data && !data.compiled && current !== "accounts" && (
             <div className="st-banner">This board can't read the compiled config yet (config/paperclip.yaml): the next apply on the host mounts it.</div>
           )}
           <div className="st-page-in" key={current}>
@@ -165,7 +164,6 @@ export function SettingsView({ cat, mobile, session, go, onSignIn, can }: Props)
 
 function Pane({ cat, data, conns, session, onSignIn, can, checking, check }: { cat: Category; data: SettingsData | null; conns: ConnectionsData | null; session: Session | null; onSignIn: () => void; can: Props["can"]; checking: boolean; check: () => void }) {
   if (cat === "accounts") return session ? <div className="st-embedded"><AccountsView session={session} onSignIn={onSignIn} /></div> : null;
-  if (cat === "modules") return <ModulesPage onSignIn={onSignIn} />;
   if (cat === "connections") return <ConnectionsPage conns={conns} can={can} refresh={checking} onRefresh={check} />;
   const title = CATEGORIES.find((c) => c.key === cat)!.name;
   if (!data)
@@ -463,92 +461,6 @@ function NotificationsPage({ rows, conns }: { rows: SettingRow[]; conns: Connect
         </Group>
       )}
     </Page>
-  );
-}
-
-function ModulesPage({ onSignIn }: { onSignIn: () => void }) {
-  const [mods, setMods] = useState<ModuleRow[] | null>(null);
-  const [advisories, setAdvisories] = useState<Advisory[]>([]);
-  const [error, setError] = useState("");
-  useEffect(() => {
-    api.modules().then(
-      (r) => (setMods(r.modules), setAdvisories(r.advisories ?? [])),
-      (e) => (e instanceof SignInRequired ? onSignIn() : setError((e as Error).message)),
-    );
-  }, [onSignIn]);
-  if (!mods)
-    return (
-      <Page title="Modules" sub={error ? `Couldn't load modules: ${error}` : "Loading…"}>
-        {!error && <RowsSkeleton />}
-      </Page>
-    );
-  const on = mods.filter((m) => m.state !== "off");
-  const off = mods.filter((m) => m.state === "off");
-  return (
-    <Page title="Modules" sub={`${on.length} on, ${off.length} available. A module brings its agents, connections and apps; turning one on or off is a change you approve.`}>
-      {advisories.map((a) => (
-        <div key={a.id} className={`st-banner${a.severity === "high" || a.severity === "critical" ? " bad" : ""}`} role="alert">
-          <strong>Advisory {a.id}</strong> ({a.severity}) affects the installed {a.module}: {a.summary.replace(/^`|`$/g, "")}
-          {a.url && (
-            <>
-              {" "}
-              <a href={a.url} target="_blank" rel="noreferrer noopener">
-                Details
-              </a>
-            </>
-          )}
-          . The fix is an ordinary update to a newer pin.
-        </div>
-      ))}
-      <Group title="On" count={on.length}>
-        {on.map((m) => (
-          <ModuleItem key={m.name} m={m} />
-        ))}
-      </Group>
-      {off.length > 0 && (
-        <Group title="Available" count={off.length}>
-          {off.map((m) => (
-            <ModuleItem key={m.name} m={m} />
-          ))}
-        </Group>
-      )}
-    </Page>
-  );
-}
-
-function ModuleItem({ m }: { m: ModuleRow }) {
-  const filed = useFiled((c) => c.kind === "module" && c.name === m.name);
-  const [want, setWant] = useState<boolean | null>(null);
-  const isOn = m.state !== "off";
-  const fixed = m.state === "core" || m.state === "dependency";
-  return (
-    <Row
-      title={m.name}
-      sub={m.description}
-      meta={filed && IN_FLIGHT.includes(filed.stage) ? <StatusPill tone="busy">Changing</StatusPill> : m.state === "core" ? <span className="st-chip">always on</span> : m.state === "dependency" ? <span className="st-chip">needed by another</span> : undefined}
-      action={!fixed ? <Switch on={want ?? isOn} label={`${m.name}: ${isOn ? "on" : "off"}`} disabled={Boolean(filed && IN_FLIGHT.includes(filed.stage))} onChange={(v) => setWant(v)} /> : undefined}
-      open={want !== null || undefined}
-      onToggle={(o) => !o && setWant(null)}
-      details={
-        <>
-          {filed && <ChangeProgress f={filed} />}
-          {want !== null && want !== isOn ? (
-            <ChangePreview items={[{ kind: "module", name: m.name, on: want }]} was={[isOn]} onCancel={() => setWant(null)} onDone={() => setWant(null)} note={want ? "You approve it on the card. A module that needs settings (a URL, a site) asks for them on its page once it is on." : "You approve it on the card. Its agents stop and its connections close."} />
-          ) : (
-            <dl className="st-facts compact">
-              <dt>Agents</dt>
-              <dd>{m.agents.length ? m.agents.join(", ") : <span className="muted">none</span>}</dd>
-              <dt>Needs</dt>
-              <dd>{m.requires.length ? m.requires.join(", ") : <span className="muted">nothing</span>}</dd>
-              <dt>From</dt>
-              <dd>
-                {m.marketplace} <span className="st-chip">{m.tier}</span>
-              </dd>
-            </dl>
-          )}
-        </>
-      }
-    />
   );
 }
 

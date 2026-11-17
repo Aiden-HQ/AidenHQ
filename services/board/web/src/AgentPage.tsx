@@ -1,14 +1,14 @@
 // An agent's page (#/agents/<key>/<tab>): who it is, its work (needs you, ongoing, past: each task opens its thread),
 // its general chats and its settings. Reads: agent-page.ts; writes: the settings editor's (SettingsAgents AgentDetails).
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { Scorecard } from "./Agents";
 import { AgentAvatar } from "./AgentAvatar";
 import { SignInRequired, api } from "./api";
 import { agentOpenQuery, agentProfileQuery, QUERIES, useQuery } from "./queries";
 import { AgentDetails } from "./SettingsAgents";
-import { Changes, Toasts } from "./settings-ui";
+import { ChangesScope } from "./settings-ui";
 import { SkeletonLines } from "./Skeleton";
-import type { AgentProfile, FiledChange, SettingChange, SettingsData, TaskRow } from "./types";
+import type { AgentProfile, SettingsData, TaskRow } from "./types";
 import { ago } from "./util";
 import "./settings.css";
 
@@ -155,45 +155,16 @@ function ChatsTab({ profile, onSignIn }: { profile: AgentProfile; onSignIn: () =
 /** Today's editor from Settings > Agents and models, inside the change context that page provides. */
 function SettingsTab({ agentKey, onSignIn }: { agentKey: string; onSignIn: () => void }) {
   const [data, setData] = useState<SettingsData | null>(null);
-  const [changes, setChanges] = useState<FiledChange[]>([]);
   const [error, setError] = useState("");
-  const [toasts, setToasts] = useState<{ id: number; text: string; tone?: "ok" | "bad" }[]>([]);
-  const fail = useCallback((e: unknown) => (e instanceof SignInRequired ? onSignIn() : setError((e as Error).message)), [onSignIn]);
-  const loadChanges = useCallback(() => api.settingsChanges().then((r) => setChanges(r.changes), () => {}), []);
   useEffect(() => {
-    void api.settings().then(setData, fail);
-    void loadChanges();
-    const t = setInterval(() => document.visibilityState === "visible" && void loadChanges(), 10_000);
-    return () => clearInterval(t);
-  }, [fail, loadChanges]);
-  const ctx = useMemo(
-    () => ({
-      changes,
-      file: async (items: SettingChange[]) => {
-        try {
-          const { identifier } = await api.changeSettings(items);
-          void loadChanges();
-          return identifier;
-        } catch (e) {
-          if (e instanceof SignInRequired) onSignIn();
-          throw e;
-        }
-      },
-      toast: (text: string, tone?: "ok" | "bad") => {
-        const id = Date.now() + Math.random();
-        setToasts((t) => [...t, { id, text, tone }]);
-        setTimeout(() => setToasts((t) => t.filter((x) => x.id !== id)), 4_500);
-      },
-    }),
-    [changes, loadChanges, onSignIn],
-  );
+    void api.settings().then(setData, (e) => (e instanceof SignInRequired ? onSignIn() : setError((e as Error).message)));
+  }, [onSignIn]);
   const a = data?.agents.find((x) => x.key === agentKey);
   return (
-    <Changes.Provider value={ctx}>
+    <ChangesScope onSignIn={onSignIn}>
       <section className="st-embedded">
         {error ? <p className="fleet-empty">Couldn't load settings: {error}</p> : !data ? <SkeletonLines lines={4} /> : a ? <AgentDetails a={a} data={data} /> : <p className="fleet-empty">This agent has no settings in the compiled config yet.</p>}
       </section>
-      <Toasts items={toasts} />
-    </Changes.Provider>
+    </ChangesScope>
   );
 }
