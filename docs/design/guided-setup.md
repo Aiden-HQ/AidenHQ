@@ -109,7 +109,7 @@ ideal result.
 
 **Installer and `ops/setup.sh --unattended`.**
 - The default exposure on a server with a public IPv4 is `public`, served by Caddy (U2, built as part of this work, per
-  minimal-core sections 4.1 to 4.3). The link is `https://<ip>/setup?token=…`.
+  minimal-core sections 4.1 to 4.3). On a bare IP the setup link is `https://<ip>:8446/setup?token=…` (the kernel's admin listener needs its own origin; owner-approved 2026-11-17), and the board is `https://<ip>`.
 - A Mac or a server without a public IP stays `local`:
   - On a Mac, the link is `http://127.0.0.1:3121/...`, opened on the Mac itself.
   - On a server without a public IP, the tunnel stays, as the documented fallback.
