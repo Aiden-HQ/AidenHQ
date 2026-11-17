@@ -60,7 +60,7 @@ let revision;
 try { revision = execFileSync("git", ["-C", repo, "rev-parse", "HEAD"], { encoding: "utf8" }).trim(); } catch {}
 
 let out, computers;
-try { out = compile(repo, instanceDir, { revision }); computers = computersConfig(out.paperclip, repo); } catch (e) { die(e.message); }
+try { out = compile(repo, instanceDir, { revision }); computers = computersConfig(out.paperclip, repo, out.catalog.filter((m) => m.enabled).map((m) => m.name)); } catch (e) { die(e.message); }
 if (process.argv.includes("--sizes")) {
   try { console.log(sizesReport(out.paperclip, { repo, instanceDir, engines: out.engines })); } catch (e) { die(e.message); }
   process.exit(0);

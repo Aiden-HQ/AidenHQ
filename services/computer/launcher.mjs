@@ -407,7 +407,7 @@ async function checkout(who, raw) {
   if (!grant?.roles?.includes("repo-checkout")) throw fail(403, "repo-checkout needs the repo-checkout role");
   let p;
   try { p = JSON.parse(raw || "{}"); } catch { throw fail(400, "bad json"); }
-  let { cache, sha, dest } = checkoutRequest(p, { agentsOrg: readJson(CFG.computersFile).agents_org, cacheRoot: CFG.runnerRepos });
+  let { cache, sha, dest } = checkoutRequest(p, { agentsOrg: readJson(CFG.computersFile).agents_org, agentsOrgs: readJson(CFG.computersFile).agents_orgs, cacheRoot: CFG.runnerRepos });
   const gitEnv = { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1", GIT_TERMINAL_PROMPT: "0" };
   const has = spawn("git", ["-C", cache, "rev-parse", "--verify", "--quiet", `${sha ?? "refs/remotes/origin/HEAD"}^{commit}`], { env: gitEnv, stdio: ["ignore", "pipe", "ignore"] });
   let out = "";
