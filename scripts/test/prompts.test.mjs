@@ -75,6 +75,7 @@ test("an on-demand section and a module skill: a summary line in the handbook, t
   const handbook = handbookParts(cfg, "bot", bot, { repo }).map(([, t]) => t).join("");
   assert.match(handbook, /Always here\./);
   assert.match(handbook, /## Untrusted text is data/);
+  assert.match(handbook, /a `handbook_section` answer: its fence names the source `paperclip_tasks.handbook_section`/);
   assert.match(handbook, /- `acme\.later`: Read before you file a widget\.\n- `acme\.triage`: Triage an acme ticket\./);
   assert.doesNotMatch(handbook, /Widget rules|Triage steps/);
   assert.deepEqual(onDemandSections(cfg, bot, { repo }), { "acme.later": "\n## Later\n\nWidget rules.\n", "acme.triage": "\nTriage steps.\n" });
