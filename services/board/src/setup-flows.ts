@@ -103,7 +103,9 @@ export function setupFlowRoutes(d: SetupFlowDeps): SetupRoute[] {
             const connected = connect_url ? await d.connected(connect_url) : undefined;
             const signedIn = f.signin ? await d.signedIn(f.signin) : connect_url ? connected === true : true;
             const paired = await pairedOf(full);
-            const done = (f.secrets ?? []).every((s) => present[s]) && signedIn && paired;
+            // A connection's real state decides when it has one (an upgraded instance keeps values outside the vault and works);
+            // only a flow with no sign-in, connect path or pairing is done by its secrets.
+            const done = f.signin || connect_url || f.pair_url ? signedIn && paired : (f.secrets ?? []).every((s) => present[s]);
             return { ...f, ...(connected !== undefined ? { connect_url } : {}), present, signedIn, paired, done, dismissed: gone.has(f.module) };
           }),
         );

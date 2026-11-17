@@ -53,7 +53,7 @@ function FlowBody({ flow, board, reload, onDone, onSignIn }: { flow: SetupFlowVi
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
   const fields = flow.fields ?? [];
-  const secretsDone = fields.every((f) => flow.present[f.secret]);
+  const secretsDone = flow.done || fields.every((f) => flow.present[f.secret]);
   const filled = fields.filter((f) => values[f.secret]?.trim());
   const bad = new Set(filled.filter((f) => !valid(f.pattern, values[f.secret]!.trim())).map((f) => f.secret));
   const fail = (e: unknown) => (e instanceof SignInRequired ? onSignIn() : setError((e as Error).message));
@@ -108,7 +108,7 @@ function FlowBody({ flow, board, reload, onDone, onSignIn }: { flow: SetupFlowVi
                 autoComplete="off"
                 spellCheck={false}
                 aria-invalid={bad.has(f.secret)}
-                placeholder={flow.present[f.secret] ? "Paste to replace" : "Paste here"}
+                placeholder={flow.present[f.secret] ? "Paste to replace" : flow.done ? "Set elsewhere; paste to change" : "Paste here"}
                 value={values[f.secret] ?? ""}
                 onChange={(e) => setValues({ ...values, [f.secret]: e.target.value })}
               />
