@@ -281,9 +281,10 @@ Copy `.env.example` to `.env`. It holds host paths and endpoints, never agent-ed
   `https://<APPS_TS_HOSTNAME>.<tailnet>.ts.net`), `APPS_TS_HOSTNAME` (the apps' own tailnet node, default `aidenhq-apps`).
 - Meetings: `TRANSCRIPTS_DIR`, `VAULT_DIR`, `VAULT_FOLDERS`, `KNOWLEDGE_BASES`.
 - Connection endpoints: `SLACK_CLIENT_ID`, `GITHUB_COMMENT_ORGS`. Leave one empty to skip that connection. The other
-  connections' URLs are instance settings (`glean_mcp_url`, `grafana_url`, `clickhouse_mcp_url`, `primer_mcp_url`,
-  `jira_url`): set them on the board (Settings, Connections), which files the change as an apply card
-  (docs/design/settings-changes.md).
+  connections' URLs are instance settings (`primer_mcp_url`, `jira_url`): set them on the board (Settings, Connections),
+  which files the change as an apply card (docs/design/settings-changes.md). Glean's, Grafana's and ClickHouse's addresses are
+  setup values saved from the module's setup flow (`#/setup/<module>`) into the vault, with no apply; an old
+  `glean_mcp_url`, `grafana_url` or `clickhouse_mcp_url` setting is read only while that value is empty.
 - Board: `BOARD_ALLOWED_HOSTS`, and the second listener's (3121: behind the front door, `tailscale serve` today;
   signed-in admins only) `BOARD_LAN_BIND`, `BOARD_LAN_PORT`, `BOARD_LAN_HOSTS`, `BOARD_LAN_URL`. It stays on loopback:
   it trusts `X-Forwarded-Proto` from whoever reaches it. Only a LAN-only VM in `local` exposure with
