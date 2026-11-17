@@ -740,3 +740,28 @@ test("a pr's screenshots count only when stamped with its own code: the head, or
   assert.equal(ev.images.length, 2); // taken before the commit (its tree is the agent's commit's), and the unstamped mockup
   assert.match(facts, /file_2: a screenshot stamped as taken at commit bbbbbbbbbbbb \(tree 000000000000\), which is not the code under review \(hhhhhhhhhhhh\): not sent/);
 });
+
+const applyCard = (over = {}) => ({ id: "A-1", action: "apply", state: "used", outcome: "applied", outcomeText: "generation 12 healthy", details: "+## Rule\n+Coach nudges daily.", args: { repo: "acme/acme-instance", sha: "a".repeat(40), files: ["agents/coach/AGENTS.md"] }, ...over });
+const answer = (verdict, met = "yes") => ({ content: JSON.stringify({ criteria: [{ id: "1", met, evidence: "the diff adds it" }], verdict }) });
+
+test("an apply with a visible diff is judged, a model that cannot judge it hands on, and a missing apply still escalates", async () => {
+  const ev = await gather({ kind: "apply", ref: "" }, deps({ approvals: async () => [applyCard()] }));
+  assert.equal(ev.version, "A-1");
+  assert.equal(ev.data.APPLY_CHANGE, "+## Rule\n+Coach nudges daily.");
+  assert.ok(ev.facts.some((f) => /landed aaaaaaaaaaaa on acme\/acme-instance, files: agents\/coach\/AGENTS\.md/.test(f)), ev.facts.join("\n"));
+  const asked = [];
+  const ask = (verdicts) => async (model) => (asked.push(model), verdicts.shift());
+  const args = { rubric: ["the coach handbook tells it to nudge daily"], deliverable: { kind: "apply", ref: "" }, facts: ev.facts, data: ev.data, request: "x" };
+  const judged = await grade({ ...args, ask: ask([answer("cannot_judge", "unknown"), answer("satisfied")]) });
+  assert.equal(judged.outcome, "satisfied");
+  assert.equal(asked.length, 2, "the first model's cannot_judge went to the next model");
+  assert.equal((await grade({ ...args, ask: ask([answer("cannot_judge", "unknown"), answer("cannot_judge", "unknown")]) })).outcome, "cannot_judge", "never a pass");
+  assert.equal((await grade({ ...args, ask: ask([answer("cannot_judge", "unknown"), { refusal: "no" }]) })).outcome, "cannot_judge", "a later refusal keeps it");
+  assert.match(gradePrompt(args).system, /APPLY_CHANGE is the exact diff/);
+  // A diff nobody can see is not retried: its cannot_judge stands.
+  assert.equal((await grade({ ...args, data: {}, ask: ask([answer("cannot_judge", "unknown")]) })).outcome, "cannot_judge");
+  // No apply filed: nothing to judge, the row escalates as missing.
+  const none = await gather({ kind: "apply", ref: "" }, deps());
+  assert.equal(none.missing, true);
+  assert.match((await escalationFor(none, { kind: "apply", ref: "" }, deps())).reason, /finished without its deliverable/);
+});
