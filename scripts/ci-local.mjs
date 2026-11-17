@@ -6,7 +6,7 @@
 import { execFileSync, spawn } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { suitesFor } from "../.github/ci/select.mjs";
 
@@ -14,6 +14,9 @@ const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const args = process.argv.slice(2);
 const list = args.includes("--list");
 const base = args.includes("--base") ? args[args.indexOf("--base") + 1] : "origin/main";
+
+// The tests that need flock(1), absent on macOS: scripts' apply-*.test.mjs and the runner's apply.test.mjs (paths from the repo root).
+const MAC_EXPECTED = /^(scripts\/test\/apply-[^/]+\.test\.mjs|services\/runner\/test\/apply\.test\.mjs)$/;
 
 const git = (...a) => execFileSync("git", a, { cwd: root, encoding: "utf8", maxBuffer: 64 << 20 }).trim();
 const lines = (s) => s.split("\n").filter(Boolean);
@@ -71,12 +74,13 @@ async function main() {
   const env = {
     ...process.env,
     PATH: `${shim}:${process.env.PATH}`,
-    GIT_AUTHOR_NAME: "ci", GIT_AUTHOR_EMAIL: "ci@example.com", GIT_COMMITTER_NAME: "ci", GIT_COMMITTER_EMAIL: "ci@example.com",
+    // CI's global git identity (the tests make commits), as config so a test's own author still wins.
+    GIT_CONFIG_COUNT: "2", GIT_CONFIG_KEY_0: "user.name", GIT_CONFIG_VALUE_0: "ci", GIT_CONFIG_KEY_1: "user.email", GIT_CONFIG_VALUE_1: "ci@example.com",
   };
 
   const jobs = sel.suites.map((s) => ({ name: s.name, cwd: join(root, s.name.split("#")[0]), cmd: s.run ?? "npm test" }));
   jobs.push({ name: "supply-chain", cwd: root, cmd: `s=0; node scripts/supply-chain/npm-age.mjs ${mergeBase} HEAD || s=1; node scripts/supply-chain/pins.mjs ${mergeBase} HEAD || s=1; exit $s` });
-  const results = await Promise.all(jobs.map((j) => new Promise((done) => {
+  const run = (j) => new Promise((done) => {
     const log = join(tmp, `${j.name.replace(/\W/g, "_")}.log`);
     const t0 = Date.now();
     const out = [];
@@ -86,15 +90,17 @@ async function main() {
     p.on("close", (code) => {
       const text = Buffer.concat(out).toString();
       writeFileSync(log, text);
-      const failed = text.split("\n").filter((l) => /^\s*✖/.test(l));
-      // The flock apply tests can't pass on macOS: shown, never hidden, and judged by CI.
-      const expected = code !== 0 && process.platform === "darwin" && failed.length > 0 && failed.every((l) => /flock|apply/i.test(l));
+      // The flock apply tests can't pass on macOS: shown, never hidden, and judged by CI. Only failures in these files count.
+      const failedIn = [...text.matchAll(/^test at (\S+?):\d+:\d+$/gm)].map((m) => m[1]);
+      const expected = code !== 0 && process.platform === "darwin" && failedIn.length > 0 && failedIn.every((f) => MAC_EXPECTED.test(relative(root, resolve(j.cwd, f))));
       const secs = ((Date.now() - t0) / 1000).toFixed(0);
       console.log(`${code === 0 ? "ok  " : expected ? "EXPECTED on macOS (flock apply tests, judged in CI)" : "FAIL"} ${j.name} (${secs}s)${code === 0 ? "" : ` log: ${log}`}`);
       if (code !== 0 && !expected) console.log(text.split("\n").slice(-30).join("\n"));
       done(code === 0 || expected);
     });
-  })));
+  });
+  // The end-to-end flows are timing-sensitive (CI gives them their own hosts): they run alone, after everything else.
+  const results = [...(await Promise.all(jobs.filter((j) => !j.name.endsWith("#flows")).map(run))), ...(await Promise.all(jobs.filter((j) => j.name.endsWith("#flows")).map(run)))];
   const bad = results.filter((r) => !r).length;
   console.log(bad ? `${bad} suite(s) failed` : "All selected suites passed");
   process.exitCode = bad ? 1 : 0;
