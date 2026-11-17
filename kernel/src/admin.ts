@@ -6,6 +6,9 @@
 //   refused here), and, signed in, a token bound to the session that only a page from this origin carries (A6).
 // - Every page sends frame-ancestors 'none', except /owner/message, which the board's origins may frame: it only sends what
 //   the owner typed into it (A7). Every one-click owner action happens on a top-level page here.
+// - /setup (spec §6.10, A42): the first-run page, only with the single-use token ops/setup.sh --unattended prints and only
+//   while no admin exists. A GET changes nothing; the submit is checked in full, then spends the token, makes the owner's
+//   account, writes the keys to the vault and hands over to /auth/enrol for the authenticator.
 import { createHmac, timingSafeEqual } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type { AdminSession, Step } from "./accounts.ts";
@@ -16,7 +19,10 @@ type Deps = {
   accounts: {
     sessionOf: (req: IncomingMessage) => Promise<AdminSession | null>; step: (req: IncomingMessage, sub: string, body: Record<string, unknown>) => Promise<Step>; secret: string;
     mintUiCode: (who: AdminSession, module: string, origin: string, state: string) => string;
+    setupOpen: (token: string) => boolean; claimSetup: (token: string, input: { email: string; name: string; password: string }) => Promise<{ id: string }>;
   };
+  /** First-run setup's vault side: the owner email settings fix, the recovery key shown once, and secret writes. */
+  firstRun?: { ownerEmail: () => string | undefined; recoveryKey: () => string; fields: () => SetupField[]; has: (secret: string) => boolean; save: (secret: string, value: string) => void; forgetRecoveryKey: () => void };
   cards: { ownerCards: () => Promise<{ live: Card[]; finished: Card[] }>; decideCard: (id: string, digest: string, decision: "approve" | "reject", by: string, via: string) => Promise<{ identifier: string; sentence: string; state: string }> };
   ownerMessage: (b: { text?: unknown; task?: unknown }) => Promise<{ task: { identifier: string } }>;
   /** The control plane as the owner (a confirmed status change). */
@@ -37,6 +43,8 @@ type Deps = {
 /** What the listener serves: the router dispatches from this table and scripts/lean/contract-lock.mjs reads it. */
 export const ROUTES = [
   { method: "GET", path: "/healthz", auth: "none" },
+  { method: "GET", path: "/setup", auth: "setup-token" },
+  { method: "POST", path: "/setup", auth: "origin+setup-token" },
   { method: "GET", path: "/auth/sign-in", auth: "none" },
   { method: "POST", path: "/auth/sign-in", auth: "origin" },
   { method: "GET", path: "/auth/totp", auth: "none" },
@@ -62,6 +70,8 @@ export const ROUTES = [
 const compiled = ROUTES.map((r) => ({ ...r, re: new RegExp(`^${r.path.replace(":id", "(k-[0-9a-f]{16})")}$`) }));
 const STATUSES = ["backlog", "todo", "in_progress", "in_review", "blocked", "done", "cancelled"];
 
+/** A secret a module asks for on /setup (its provided secret's `setup:`, compiled into config/kernel/modules.json `setup`). */
+export type SetupField = { module: string; secret: string; label: string; pattern: string; help?: string; required?: boolean };
 const esc = (v: unknown) => String(v ?? "").replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
 class Refusal extends Error {
   status: number;
@@ -114,7 +124,21 @@ export function createAdmin(d: Deps) {
     setPassword: (token: string, msg = "") => doc("Set your password", `<h1>Set your password</h1>${msg}${form("/auth/set-password", `<input type="hidden" name="token" value="${esc(token)}"><label>New password (12 characters or more)<input name="password" type="password" autocomplete="new-password" minlength="12" required></label><button class="b">Set password</button>`)}`),
   };
   const err = (m: string) => `<p class="err">${esc(m)}</p>`;
-
+  // Never re-renders a submitted secret: only the email and name come back after a refusal.
+  const setupPage = (token: string, fr: NonNullable<Deps["firstRun"]>, msg = "", v: { email?: string; name?: string } = {}) => {
+    const fixed = fr.ownerEmail(), rk = fr.recoveryKey();
+    const field = (f: SetupField) => {
+      const need = f.required && !fr.has(f.secret);
+      return `<label>${esc(f.label)}${need ? "" : " (optional)"}<input name="secret_${esc(f.secret)}" type="password" autocomplete="off" maxlength="300"${need ? " required" : ""}></label><p class="muted">${fr.has(f.secret) ? "One is already in the vault; leave this empty to keep it. " : ""}${esc(f.help ?? "")}</p>`;
+    };
+    return doc("Set up AidenHQ", `<h1>Set up AidenHQ</h1>${msg}${form("/setup", `<input type="hidden" name="token" value="${esc(token)}">
+<h2>Your account</h2><label>Email<input name="email" type="email" autocomplete="username" maxlength="200" required value="${esc(fixed ?? v.email ?? "")}"${fixed ? " readonly" : ""}></label>
+<label>Name<input name="name" maxlength="100" value="${esc(v.name ?? "")}"></label><label>Password (12 characters or more)<input name="password" type="password" autocomplete="new-password" minlength="12" maxlength="128" required></label>
+<p class="muted">An authenticator app is set up next: admins sign in with a code from it.</p>
+<h2>Keys and channels</h2><p class="muted">Each key goes into the vault, read only by the part that uses it.</p>${fr.fields().map(field).join("")}
+${rk ? `<h2>Vault recovery key</h2><p>Shown once. Without it, a vault whose sealed password is lost can't be opened.</p><pre>${esc(rk.replace(/(.{8})/g, "$1 ").trim())}</pre><label><input type="checkbox" name="saved" value="yes" required style="width:auto"> I saved the recovery key somewhere safe</label>` : ""}
+<button class="b">Finish setup</button>`)}`);
+  };
   function cardHtml(a: Card, s: AdminSession, full: boolean) {
     const head = `<div class="muted">${esc(a.identifier)} · ${esc(a.action ?? a.kind)} · Tier ${esc(a.tier)}${a.panel ? " · panel" : ""} · asked by ${esc(a.requestedBy)}</div><b>${esc(a.sentence)}</b>`;
     if (!full) return `<div class="card">${head}<div><a href="/approvals/${esc(a.id)}">Open</a></div></div>`;
@@ -145,6 +169,33 @@ export function createAdmin(d: Deps) {
       if (req.method === "POST" && !d.origins().includes(String(req.headers.origin ?? ""))) throw new Refusal(403, "this form didn't come from this page's own address");
       const next = url.searchParams.get("next") ?? "";
       switch (`${hit.method} ${hit.path}`) {
+        case "GET /setup": case "POST /setup": {
+          const fr = d.firstRun;
+          const f = req.method === "POST" ? await body(req) : url.searchParams;
+          const token = f.get("token") ?? "";
+          if (!fr || !/^[\w-]{43}$/.test(token) || !d.accounts.setupOpen(token)) throw new Refusal(410, "This setup link was used or has expired. While no admin exists, sudo ops/setup.sh --unattended on the server prints a new one.");
+          if (req.method === "GET") return send(res, 200, setupPage(token, fr));
+          const email = (f.get("email") ?? "").trim(), name = (f.get("name") ?? "").trim(), password = f.get("password") ?? "";
+          const fields = fr.fields().filter((x) => /^[a-z][a-z0-9_]{1,63}$/.test(x.secret));
+          const keys = fields.map((x) => ({ ...x, value: (f.get(`secret_${x.secret}`) ?? "").trim() }));
+          const invalid = keys.find((k) => k.value && (k.value.length > 300 || !new RegExp(k.pattern).test(k.value)));
+          const missing = keys.find((k) => !k.value && k.required && !fr.has(k.secret));
+          const bad =
+            !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) || email.length > 200 ? "Enter an email address."
+            : name.length > 100 || /[\p{Cc}\p{Cf}]/u.test(name) ? "The name has characters it can't take."
+            : password.length < 12 || password.length > 128 ? "The password needs 12 to 128 characters."
+            : invalid ? `That isn't a valid ${invalid.label}.`
+            : missing ? `Enter the ${missing.label}.`
+            : fr.recoveryKey() && f.get("saved") !== "yes" ? "Tick that you saved the vault recovery key." : "";
+          if (bad) return send(res, 400, setupPage(token, fr, err(bad), { email, name }));
+          const account = await d.accounts.claimSetup(token, { email, name, password }).catch((e: Error & { status?: number }) => { throw new Refusal(e.status ?? 500, e.message); });
+          const given = keys.filter((k) => k.value);
+          for (const k of given) fr.save(k.secret, k.value);
+          fr.forgetRecoveryKey();
+          log("first-run setup done", { account: account.id, secrets: given.map((k) => k.secret) });
+          const r = await step(req, "/sign-in/email", { email, password });
+          return redirect(res, r.ok ? "/auth/enrol" : "/auth/sign-in", r.cookies);
+        }
         case "GET /auth/sign-in": return send(res, 200, pages.signIn("", next));
         case "POST /auth/sign-in": {
           const f = await body(req);

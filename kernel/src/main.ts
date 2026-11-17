@@ -11,12 +11,13 @@
 // - The admin listener (127.0.0.1:3120, admin.ts): admins' sign-in (accounts.ts, data/kernel/auth/) and the approval pages.
 // - The sign-in listener (127.0.0.1:3129, signin.ts): the gate's half of shared apps' sign-in (Better Auth's steps, handoffs,
 //   app access). The kernel is the only process that opens the accounts file (lean 3g).
+import { randomBytes } from "node:crypto";
 import http from "node:http";
-import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { configDir, dataDir, env, repo, secret } from "./env.ts";
 import { createGateway, watched } from "./gateway/lib.ts";
-import { createAdmin } from "./admin.ts";
+import { createAdmin, type SetupField } from "./admin.ts";
 import { createAuthApi } from "./auth-api.ts";
 import { readGate } from "./accounts.ts";
 import { routineWake, webhookWake, type Manifest } from "./app-access.ts";
@@ -58,7 +59,7 @@ async function runTask(runId: string): Promise<string | undefined> {
   return r.issueId ?? r.contextSnapshot?.issueId ?? undefined;
 }
 // Modules with kernel roles, a privileged entry, a token of their own or a channel (compile).
-const modulesFile = watched(path.join(configDir, "kernel", "modules.json"), (j) => j as ModulesFile & { reviewer?: ReviewerSlot }, {});
+const modulesFile = watched(path.join(configDir, "kernel", "modules.json"), (j) => j as ModulesFile & { reviewer?: ReviewerSlot; setup?: SetupField[] }, {});
 const whoami = createIdentity({
   grants: () => grantsTable().agents ?? {}, connections, modules: () => modulesFile().modules ?? {},
   jobcaps: watched(path.join(configDir, "jobcaps.json"), (j) => j as Record<string, Jobcap>, {}), // runner jobs' reads (compile)
@@ -186,7 +187,18 @@ if (accounts) {
 const boardOrigins = env("AIDENHQ_BOARD_ORIGINS", [boardUrl?.origin, "http://127.0.0.1:3121", "http://localhost:3121"].filter(Boolean).join(",")).split(",").map((o) => o.trim()).filter(Boolean);
 // The board's origins are the module UI origins a session may be handed to (/auth/handoff).
 const uiOrigins = () => Object.fromEntries(boardOrigins.map((o) => [o, "board"]));
-const admin = accounts && createAdmin({ accounts, uiOrigins, cards: channels, ownerMessage: (b) => channels.ownerMessageAs("web", b, () => Object.entries(grantsTable().agents ?? {}).find(([, g]) => g.key === "chief-of-staff")?.[0]), owner: ownerApi, hosts: () => adminHosts, origins: () => adminOrigins, frameOrigins: () => boardOrigins, log });
+// First-run setup (/setup): the keys the modules ask for go into the vault view (AIDENHQ_SECRETS_DIR) as new 0600 files renamed into place; the
+// vault's recovery key waits there (ops/setup.sh --unattended moves it out of root's home) until the owner has seen it.
+const secretsDir = env("AIDENHQ_SECRETS_DIR", "");
+const firstRun = {
+  ownerEmail: () => modulesFile().owner?.email || undefined,
+  recoveryKey: () => (/^[0-9a-f-]{64,80}$/.test(secret("vault_recovery_key")) ? secret("vault_recovery_key") : ""),
+  fields: () => modulesFile().setup ?? [], // the modules' provided secrets with `setup:` (compile)
+  has: (name: string) => Boolean(secret(name)),
+  save: (name: string, value: string) => { const f = path.join(secretsDir, name), tmp = `${f}.${randomBytes(6).toString("hex")}.tmp`; writeFileSync(tmp, value, { mode: 0o600, flag: "wx" }); renameSync(tmp, f); },
+  forgetRecoveryKey: () => rmSync(path.join(secretsDir, "vault_recovery_key"), { force: true }),
+};
+const admin = accounts && createAdmin({ accounts, firstRun, uiOrigins, cards: channels, ownerMessage: (b) => channels.ownerMessageAs("web", b, () => Object.entries(grantsTable().agents ?? {}).find(([, g]) => g.key === "chief-of-staff")?.[0]), owner: ownerApi, hosts: () => adminHosts, origins: () => adminOrigins, frameOrigins: () => boardOrigins, log });
 
 // Claimed records a restart left without an outcome: their executors say how they went (never replayed). Executors may
 // still be starting at boot, so once, a minute in.
