@@ -21,6 +21,10 @@
 // click, Back/Forward and reload, and every visible button must visibly act)
 // --commit <sha> (the commit the app was built from; default: the current folder's git HEAD and working tree).
 //
+// Two non-blocking report lines per page, never a failure: "One system" (how many distinct button shapes, border radii,
+// card styles and heading sizes the page uses, and how many boxes sit more than 2 deep) and "Copy" (filler words, invented
+// figures, exclamation marks and chat residue in the rendered text; the word lists are in ui-review-copy.json).
+//
 // Every screenshot is stamped with that commit, its URL, width and mode and the time (an `aidenhq` PNG text chunk), so a
 // grader or reviewer can tell a picture of the head under review from an older one.
 //
@@ -91,6 +95,38 @@ function stampPng(file, stamp) {
   writeFileSync(file, Buffer.concat([buf.subarray(0, 33), len, body, crc, buf.subarray(33)]));
 }
 
+// Reads the rendered page for the two non-blocking checks: the distinct styles in use (as keys), nesting depth, and the visible text.
+const SYSTEM = `/*system*/(() => {
+  const visible = (e) => { const r = e.getBoundingClientRect(), s = getComputedStyle(e); return r.width > 0 && r.height > 0 && s.visibility !== "hidden" && !e.closest("[hidden],dialog:not([open])"); };
+  const all = [...document.body.querySelectorAll("*")].filter(visible), cs = new Map(all.map((e) => [e, getComputedStyle(e)]));
+  const clear = (c) => c === "rgba(0, 0, 0, 0)" || c === "transparent";
+  const box = (e) => { const s = cs.get(e), p = e.parentElement && cs.get(e.parentElement); return parseFloat(s.borderTopWidth) > 0 || s.boxShadow !== "none" || (!clear(s.backgroundColor) && (!p || p.backgroundColor !== s.backgroundColor)); };
+  const boxes = all.filter(box), isBox = new Set(boxes);
+  const round = (r) => /%|999/.test(r) || parseFloat(r) > 50;
+  const set = (list, key) => [...new Set(list.map(key))];
+  const texts = [...document.body.querySelectorAll("h1,h2,h3,h4,h5,h6,p,li,td,th,label,button,a,summary,figcaption,[role=button],[role=heading]")].filter(visible).map((e) => e.innerText.trim().replace(/\\s+/g, " ")).filter(Boolean).slice(0, 400);
+  return JSON.stringify({
+    buttons: set(all.filter((e) => e.matches("button,[role=button],[data-slot=button]")), (e) => cs.get(e).borderRadius + " / " + Math.round(e.getBoundingClientRect().height) + "px"),
+    radii: set(boxes.filter((e) => !round(cs.get(e).borderRadius) && parseFloat(cs.get(e).borderRadius) > 0), (e) => cs.get(e).borderRadius),
+    cards: set(all.filter((e) => e.matches("[data-slot=card],[class*=card]")), (e) => { const s = cs.get(e); return [s.borderRadius, s.borderTopWidth, s.boxShadow === "none" ? "flat" : "shadow", s.backgroundColor].join(" "); }),
+    headings: set(all.filter((e) => e.matches("h1,h2,h3,h4,h5,h6,[role=heading]")), (e) => cs.get(e).fontSize),
+    nested: boxes.filter((e) => { let n = 0; for (let p = e.parentElement; p; p = p.parentElement) if (isBox.has(p)) n++; return n > 2; }).length,
+    texts,
+  });
+})()`;
+
+// The copy check's word lists live in one data file next to this script: filler and chat words, and patterns for invented figures.
+const COPY = JSON.parse(readFileSync(join(__dirname, "ui-review-copy.json"), "utf8"));
+const copyFindings = (texts) => {
+  const hits = [], note = (what, t) => hits.push(`${what}: "${t.slice(0, 80)}"`);
+  const has = (list, t) => list.find((w) => new RegExp(`\\b${w}\\b`, "i").test(t));
+  for (const t of texts) {
+    const f = has(COPY.filler, t), c = COPY.chat.find((w) => t.toLowerCase().includes(w.toLowerCase())), n = COPY.figures.find((re) => new RegExp(re, "i").test(t));
+    if (f) note(`filler word "${f}"`, t); if (c) note("chat residue", t); if (n) note("invented-looking figure", t); if (t.includes("!")) note("exclamation mark", t);
+  }
+  return [...new Set(hits)].slice(0, 12);
+};
+
 const AB = process.env.AGENT_BROWSER || "agent-browser";
 // The image's pinned Chrome, when the shell lost the image's environment (else agent-browser downloads a Chrome of its own).
 if (!process.env.AGENT_BROWSER_EXECUTABLE_PATH && existsSync("/opt/chrome/chrome")) process.env.AGENT_BROWSER_EXECUTABLE_PATH = "/opt/chrome/chrome";
@@ -155,6 +191,11 @@ for (const path of paths) for (const palette of variants) {
         page.a11y[mode] = { violations: a.violations.map((v) => ({ id: v.id, impact: v.impact, help: v.help, nodes: v.nodeCount, targets: v.nodes.slice(0, 5).map((n) => n.target.join(" ")) })), incomplete: a.incomplete.map((v) => v.id) };
         for (const v of a.violations) if (v.impact === "serious" || v.impact === "critical") blocking.push(`${path}${palette ? ` [${palette}]` : ""} ${mode}: axe ${v.id} (${v.impact}, ${v.nodeCount}x): ${v.help} at ${v.nodes.slice(0, 3).map((n) => n.target.join(" ")).join("; ")}`);
         if (mode === modes[0]) {
+          try {
+            const sys = JSON.parse(run(SYSTEM));
+            page.system = { buttonShapes: sys.buttons.length, radii: sys.radii.length, cardStyles: sys.cards.length, headingSizes: sys.headings.length, deepBoxes: sys.nested };
+            page.copy = copyFindings(sys.texts);
+          } catch (e) { page.system = null; page.copy = [`not checked: ${String(e.message).split("\n")[0]}`]; }
           const vt = abJson("vitals", url);
           page.vitals = { lcp_ms: vt.lcp?.startTime ?? null, cls: vt.cls?.score ?? null, fcp_ms: vt.fcp ?? null, ttfb_ms: vt.ttfb ?? null, inp_ms: vt.inp ?? null };
           if ((page.vitals.lcp_ms ?? 0) > 2500) blocking.push(`${path}: LCP ${Math.round(page.vitals.lcp_ms)} ms (over 2.5 s)`);
@@ -444,6 +485,8 @@ function finish() {
     lines.push(`### ${p.path}${p.palette ? ` [${p.palette}]` : ""}${typeof shows === "string" && shows ? ` — ${shows}` : ""}`, "");
     if (p.vitals) lines.push(`Vitals: LCP ${p.vitals.lcp_ms ?? "–"} ms · CLS ${p.vitals.cls ?? "–"} · FCP ${p.vitals.fcp_ms ?? "–"} ms · TTFB ${p.vitals.ttfb_ms ?? "–"} ms`);
     for (const [mode, a] of Object.entries(p.a11y)) lines.push(`Accessibility (${mode}): ${a.violations.length ? a.violations.map((v) => `${v.id} ${v.impact} ×${v.nodes}`).join(", ") : "no violations"}${a.incomplete.length ? `; check by eye: ${a.incomplete.join(", ")}` : ""}`);
+    if (p.system) lines.push(`One system (not a failure; fewer is better): ${p.system.buttonShapes} button shapes · ${p.system.radii} border radii · ${p.system.cardStyles} card styles · ${p.system.headingSizes} heading sizes · ${p.system.deepBoxes} boxes nested more than 2 deep`);
+    if (p.copy?.length) lines.push("Copy (not a failure; fix what reads wrong):", ...p.copy.map((c) => `- ${c}`));
     const small = Object.entries(p.layout).filter(([k, l]) => k.startsWith(String(Math.min(...widths))) && l.small).map(([, l]) => l.small)[0];
     if (small) lines.push(`Phone: ${small} controls are 24-43px tall (44px is the phone rule; check the main ones).`);
     lines.push("", "Screenshots (open each one):", ...p.shots.map((s) => `- ${s.name}${s.compare ? ` · before|after: ${s.compare.compare ?? "–"} · diff: ${s.compare.diff} (${s.compare.diffResult})` : ""}`), "");
