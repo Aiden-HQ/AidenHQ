@@ -27,7 +27,7 @@ import { wakeCheck } from "./brake.js";
 import { gatherFacts, scorecard, statusSummary } from "./fleet-stats.js";
 import { coachDue, coachEvidence } from "./coach.js";
 import { moduleAuthority, moduleStates } from "./modules.js";
-import { agentGrants, browseModules, marketplacesOf } from "./marketplace.js";
+import { CommitUnreadable, agentGrants, browseModules, createResolver, marketplacesOf } from "./marketplace.js";
 import { connectionsView, probe, readSources, settingsView, type Probe } from "./settings.js";
 import { ChangeRefused, ChangesSchema, SETTINGS_LABEL, changesOf, checkChange, stageOf, taskFor, type Change } from "./settings-change.js";
 import { createGrading, gradePassed, type Grading } from "./grading.js";
@@ -72,6 +72,8 @@ export interface AppOptions {
    * kernel's admin listener, 3120). "internal": the tasks bridge, the runner and the kernel, with a bearer token, /internal/ only.
    */
   mode?: "lan" | "internal";
+  /** GitHub's REST API for a marketplace's newest pinnable commit (tests: a fake). */
+  fetch?: typeof fetch;
   /** The kernel's admin listener (AIDENHQ_ADMIN_URL): sign-in, and the approval page where every card is decided. */
   adminUrl?: string;
   /** googleConnect: Google's Connect from the board's https address `url` (a Web-app OAuth client, ops/setup.sh). */
@@ -178,6 +180,7 @@ export function createApp(opts: AppOptions): Server {
   const mode = opts.mode ?? "lan";
   if (mode !== "internal" && !opts.accounts && !opts.session) throw new Error(`the ${mode} listener needs board accounts`);
   const grading = opts.grading ?? createGrading();
+  const resolveCommit = createResolver(opts.fetch ?? fetch);
   /** The grades of these tasks; the grading module unreachable: undefined, so the caller leaves its graded closes undone. */
   const gradesOf = (ids: string[]) => grading.grades(ids).catch((err) => (log.warn({ err: String(err) }, "grading module unreachable; not closing graded parts as done"), undefined));
 
@@ -1518,7 +1521,9 @@ export function createApp(opts: AppOptions): Server {
     { method: "GET", path: /^\/api\/modules$/, handle: async () => ({ modules: moduleStates(readFileSync(process.env.BOARD_MODULES_FILE ?? "/config/modules.json", "utf8")), advisories: await records.advisories().catch(() => []) }) },
     // Browse, marketplaces and an agent's grants (lane E, src/marketplace.ts), read from the compiled catalog and config.
     { method: "GET", path: /^\/api\/modules\/browse$/, handle: async (_m, _b, url) => browseModules(readSources(settingsFiles()).catalog, url.searchParams.get("q") ?? "", url.searchParams.get("kind") ?? "") },
-    { method: "GET", path: /^\/api\/marketplaces$/, handle: async () => marketplacesOf(readSources(settingsFiles()).catalog) },
+    { method: "GET", path: /^\/api\/marketplaces$/, handle: async () => marketplacesOf(readSources(settingsFiles()).catalog, resolveCommit) },
+    // The commit a marketplace would be pinned at (the newest 7+ days old), for the owner to see before filing add or update.
+    { method: "POST", path: /^\/api\/marketplaces\/resolve$/, handle: async (_m, body) => resolveCommit(parse(z.object({ repo: z.string().regex(/^[\w.-]+\/[\w.-]+$/) }).strict(), body).repo).catch((e) => Promise.reject(e instanceof CommitUnreadable ? new HttpError(422, e.message) : e)) },
     {
       method: "GET",
       path: /^\/api\/agents\/by-key\/([a-z0-9-]+)\/grants$/,

@@ -6,6 +6,7 @@ import { join } from "node:path";
 import pino from "pino";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createApp } from "../src/app.js";
+import { createResolver } from "../src/marketplace.js";
 import type { Paperclip } from "../src/paperclip.js";
 import { Store } from "../src/store.js";
 
@@ -24,8 +25,15 @@ writeFileSync(join(dir, "paperclip.yaml"), [
 process.env.BOARD_MODULES_FILE = join(dir, "modules.json");
 process.env.BOARD_PAPERCLIP_CONFIG = join(dir, "paperclip.yaml");
 
+const asked: string[] = [];
+const fakeGithub = async (url: string) => {
+  asked.push(url);
+  if (url.includes("/repos/acme/private/")) return { ok: false, status: 404, json: async () => ({}) };
+  return { ok: true, status: 200, json: async () => [{ sha: "b".repeat(40), commit: { committer: { date: "2026-11-01T00:00:00Z" } } }] };
+};
+
 describe("browse, marketplaces and grants routes", () => {
-  const app = createApp({ paperclip: {} as Paperclip, store: new Store(":memory:"), log: pino({ level: "silent" }), allowedHosts: ["localhost:3120"], staticDir: "/nonexistent", timezone: "UTC", session: () => ({ accountId: "owner", role: "admin" as const }) });
+  const app = createApp({ paperclip: {} as Paperclip, store: new Store(":memory:"), log: pino({ level: "silent" }), allowedHosts: ["localhost:3120"], staticDir: "/nonexistent", timezone: "UTC", fetch: fakeGithub as unknown as typeof fetch, session: () => ({ accountId: "owner", role: "admin" as const }) });
   let port = 0;
   beforeAll(async () => {
     await new Promise<void>((r) => app.listen(0, "127.0.0.1", r));
@@ -59,7 +67,7 @@ describe("browse, marketplaces and grants routes", () => {
 
   it("lists marketplaces with pinned sha and module count", async () => {
     const { marketplaces } = (await get("/api/marketplaces")).body;
-    expect(marketplaces.find((m: any) => m.name === "acme-agents")).toEqual({ name: "acme-agents", source: "https://github.com/acme/agents.git", sha: "a".repeat(40), modules: 1, newer: false });
+    expect(marketplaces.find((m: any) => m.name === "acme-agents")).toEqual({ name: "acme-agents", source: "https://github.com/acme/agents.git", sha: "a".repeat(40), modules: 1, newer: true, latest: { sha: "b".repeat(40), date: "2026-11-01T00:00:00Z" } });
   });
 
   it("an agent's grants carry each tool's class", async () => {
@@ -68,4 +76,28 @@ describe("browse, marketplaces and grants routes", () => {
     expect(body.connections).toEqual([{ id: "acme", module: "channel-acme", tools: [{ name: "list", class: "read", granted: true, default: true }, { name: "post", class: "write", granted: true, default: true }, { name: "wipe", class: "destructive", granted: false, default: false }] }]);
     expect((await get("/api/agents/by-key/nobody/grants")).status).toBe(404);
   });
+
+  it("resolve gives the commit to pin, or says the repository can't be read", async () => {
+    const post = (repo: string) =>
+      new Promise<{ status: number; body: any }>((resolve, reject) => {
+        const req = request({ host: "127.0.0.1", port, method: "POST", path: "/api/marketplaces/resolve", headers: { host: "localhost:3120", "content-type": "application/json", "x-aidenhq-board": "1" } }, (res) => {
+          let text = "";
+          res.on("data", (c) => (text += c));
+          res.on("end", () => resolve({ status: res.statusCode ?? 0, body: JSON.parse(text) }));
+        });
+        req.on("error", reject);
+        req.end(JSON.stringify({ repo }));
+      });
+    expect(await post("acme/agents")).toEqual({ status: 200, body: { sha: "b".repeat(40), date: "2026-11-01T00:00:00Z" } });
+    expect((await post("acme/private")).status).toBe(422);
+  });
+});
+
+it("the resolver asks for commits until seven days ago, and caches", async () => {
+  const urls: string[] = [];
+  const now = Date.parse("2026-11-17T12:00:00Z");
+  const resolve = createResolver((async (u: string) => (urls.push(u), { ok: true, json: async () => [{ sha: "c".repeat(40), commit: { author: { date: "2026-11-09T00:00:00Z" } } }] })) as unknown as typeof fetch, () => now);
+  expect(await resolve("acme/x")).toEqual({ sha: "c".repeat(40), date: "2026-11-09T00:00:00Z" });
+  await resolve("acme/x");
+  expect(urls).toEqual([`https://api.github.com/repos/acme/x/commits?until=${encodeURIComponent("2026-11-10T12:00:00Z")}&per_page=1`]);
 });

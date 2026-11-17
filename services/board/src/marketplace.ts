@@ -65,9 +65,41 @@ export function browseModules(catalog: Entry[], q: string, kind: string) {
   };
 }
 
-/** The marketplaces compile has read, from the catalog. `newer` is false: nothing here knows a marketplace's newest commit. */
-export function marketplacesOf(catalog: Entry[]) {
-  const by = new Map<string, { name: string; source: string; sha: string; modules: number; newer: boolean }>();
+export class CommitUnreadable extends Error {}
+
+export type Resolve = (repo: string) => Promise<{ sha: string; date: string }>;
+const MIN_AGE_MS = 7 * 24 * 3600_000;
+const TTL_MS = 10 * 60_000;
+
+/**
+ * The commit the board pins a marketplace at: the newest on the repo's default branch that is at least 7 days old (the
+ * supply-chain rule), from GitHub's commit metadata only (unauthenticated). Cached about ten minutes.
+ */
+export function createResolver(fetchFn: typeof fetch, now: () => number = Date.now): Resolve {
+  const cache = new Map<string, { at: number; value: Promise<{ sha: string; date: string }> }>();
+  const lookup = async (repo: string) => {
+    const until = new Date(now() - MIN_AGE_MS).toISOString().replace(/\.\d+Z$/, "Z");
+    const res = await fetchFn(`https://api.github.com/repos/${repo}/commits?until=${encodeURIComponent(until)}&per_page=1`, { headers: { accept: "application/vnd.github+json", "user-agent": "aidenhq-board" } }).catch(() => null);
+    if (!res?.ok) throw new CommitUnreadable("can't read that repository's commits; it must be public or reachable");
+    const [c] = (await res.json()) as { sha?: string; commit?: { committer?: { date?: string }; author?: { date?: string } } }[];
+    if (!c?.sha) throw new CommitUnreadable("that repository has no commit older than 7 days to pin");
+    return { sha: c.sha, date: c.commit?.committer?.date ?? c.commit?.author?.date ?? "" };
+  };
+  return (repo) => {
+    const hit = cache.get(repo);
+    if (hit && now() - hit.at < TTL_MS) return hit.value;
+    const value = lookup(repo);
+    cache.set(repo, { at: now(), value });
+    value.catch(() => cache.delete(repo));
+    return value;
+  };
+}
+
+const repoOf = (url?: string) => /^https:\/\/github\.com\/([\w.-]+\/[\w.-]+?)(?:\.git)?$/.exec(url ?? "")?.[1];
+
+/** The marketplaces compile has read, from the catalog. `latest` is the newest commit old enough to pin; `newer` is whether it differs from the pin. */
+export async function marketplacesOf(catalog: Entry[], resolve: Resolve) {
+  const by = new Map<string, { name: string; source: string; sha: string; modules: number; newer: boolean; latest?: { sha: string; date: string } }>();
   for (const m of catalog.filter((x) => x.name !== "kernel")) {
     const name = m.marketplace ?? "aidenhq";
     const row = by.get(name) ?? { name, source: "", sha: "", modules: 0, newer: false };
@@ -76,7 +108,13 @@ export function marketplacesOf(catalog: Entry[]) {
     row.sha ||= m.revision ?? "";
     by.set(name, row);
   }
-  return { marketplaces: [...by.values()] };
+  const rows = [...by.values()];
+  await Promise.all(rows.map(async (row) => {
+    const repo = repoOf(row.source);
+    const latest = repo && row.sha ? await resolve(repo).catch(() => undefined) : undefined;
+    if (latest) Object.assign(row, { latest, newer: latest.sha !== row.sha });
+  }));
+  return { marketplaces: rows };
 }
 
 /** The tools its module grants an agent on one connection (module.yaml as written), or null for an agent without one (an instance agent's). */

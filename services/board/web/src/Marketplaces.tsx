@@ -50,16 +50,33 @@ function useOp() {
   return { run, busy, error };
 }
 
+const shortDate = (d: string) => (d ? new Date(d).toLocaleDateString() : "an unknown date");
+
 function AddMarketplace() {
   const [repo, setRepo] = useState("");
+  const [pin, setPin] = useState<{ sha: string; date: string } | null>(null);
+  const [looking, setLooking] = useState(false);
   const { run, busy, error } = useOp();
+  const [problem, setProblem] = useState("");
   const ok = /^[\w.-]+\/[\w.-]+$/.test(repo.trim());
+  const look = async () => {
+    setLooking(true);
+    setProblem("");
+    try {
+      setPin(await api.resolveMarketplace(repo.trim()));
+    } catch (e) {
+      setProblem((e as Error).message);
+    } finally {
+      setLooking(false);
+    }
+  };
+  const add = () => pin && void run({ kind: "marketplace", op: "add", name: repo.trim().split("/")[1]!.toLowerCase().replace(/[^a-z0-9-]/g, "-"), source: { source: "github", repo: repo.trim() }, sha: pin.sha }, () => (setRepo(""), setPin(null)));
   return (
-    <form className="br-add" onSubmit={(e) => (e.preventDefault(), ok && void run({ kind: "marketplace", op: "add", name: repo.trim().split("/")[1]!.toLowerCase().replace(/[^a-z0-9-]/g, "-"), source: { source: "github", repo: repo.trim() } }, () => setRepo("")))}>
-      <input className="br-search" placeholder="github owner/repo" aria-label="GitHub repository" value={repo} onChange={(e) => setRepo(e.target.value)} />
-      <button className="btn primary" disabled={!ok || busy}>Add marketplace</button>
-      <p className="muted">Reviewed by AI, then needs your tap.</p>
-      {error && <p className="st-error" role="alert">{error}</p>}
+    <form className="br-add" onSubmit={(e) => (e.preventDefault(), ok && (pin ? add() : void look()))}>
+      <input className="br-search" placeholder="github owner/repo" aria-label="GitHub repository" value={repo} onChange={(e) => (setRepo(e.target.value), setPin(null))} />
+      <button className="btn primary" disabled={!ok || busy || looking}>{pin ? "Add marketplace" : "Check repository"}</button>
+      {pin ? <p className="muted">Pinning {pin.sha.slice(0, 7)} from {shortDate(pin.date)} (the newest commit at least 7 days old). Reviewed by AI, then needs your tap.</p> : <p className="muted">Pinned at its newest commit that is at least 7 days old. Reviewed by AI, then needs your tap.</p>}
+      {(problem || error) && <p className="st-error" role="alert">{problem || error}</p>}
     </form>
   );
 }
@@ -96,7 +113,7 @@ function MarketplaceItem({ m }: { m: MarketplaceRow }) {
         }
         action={
           <>
-            {m.newer && <button className="btn" disabled={busy || inFlight} onClick={() => void run({ kind: "marketplace", op: "update", name: m.name })}>Update</button>}
+            {m.newer && m.latest && <button className="btn" title={`Pin ${m.latest.sha.slice(0, 7)} from ${shortDate(m.latest.date)}`} disabled={busy || inFlight} onClick={() => void run({ kind: "marketplace", op: "update", name: m.name, sha: m.latest!.sha })}>Update to {m.latest.sha.slice(0, 7)}</button>}
             {m.name !== "aidenhq" && <button className="btn" disabled={busy || inFlight} onClick={() => setConfirm(true)}>Remove</button>}
           </>
         }

@@ -745,6 +745,8 @@ export interface MarketplaceRow {
   sha: string;
   modules: number;
   newer: boolean;
+  /** The newest commit at least 7 days old: what Add and Update pin. */
+  latest?: { sha: string; date: string };
 }
 export interface GrantConnection {
   id: string;

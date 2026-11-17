@@ -160,6 +160,7 @@ export const api = {
   handbookHistory: (key: string) => call<import("./AgentHandbook").HandbookHistory>("GET", `/api/agents/by-key/${encodeURIComponent(key)}/handbook/history`),
   // Lane E: Browse, marketplaces, an agent's grants, and the setup flows other work adds (a 404 means none).
   browse: (q: string, kind: string) => call<{ modules: BrowseModule[] }>("GET", `/api/modules/browse?${new URLSearchParams({ q, kind })}`),
+  resolveMarketplace: (repo: string) => call<{ sha: string; date: string }>("POST", "/api/marketplaces/resolve", { repo }),
   marketplaces: () => call<{ marketplaces: MarketplaceRow[] }>("GET", "/api/marketplaces"),
   agentGrants: (key: string) => call<{ connections: GrantConnection[] }>("GET", `/api/agents/by-key/${encodeURIComponent(key)}/grants`),
   setupFlows: () => call<unknown>("GET", "/api/setup-flows"),
