@@ -713,7 +713,10 @@ gh_mutations="$(sed -n '/^export const GRAPHQL/,/^} as const;/p' modules/github/
 # singular agents org (allowedWrite above). The runner is the only writer of the bare repos (under the data dir, hidden from
 # jobs), one call site each: a close only after its own tierFor and a Tier 0 check (agentClose's local branch, the same
 # closePart rules: agents-org-close, never the instance repo), a push fast-forward only (publishLocal, after publish's tiering),
-# check receipts only from runLocalChecks (the checks run in the jail), and a merge only from runLocalMerges, i.e. only on an
+# check receipts only from runLocalChecks (the checks run in the jail) and, for the design-review entry alone, from
+# readLocalDesignVerdicts (product #336 d047e4aa: a verdict line counts only from an agent holding the design-review role in
+# the grants table, by Paperclip id, naming the change's current head; the GitHub path's equivalent is the reviewer's own
+# commit status), and a merge only from runLocalMerges, i.e. only on an
 # approved card (executeApproval -> mergeLocalApproved), at the card's head with every required check green (host.mjs refuses
 # head-moved and checks-not-green itself).
 rm_="modules/codehost-github/src/merge-gate.mjs"; rq="modules/engineering/src/merge-queue.mjs"; rmain="services/runner/src/main.mjs"; rtiers="services/runner/src/tiers.mjs"
@@ -791,7 +794,11 @@ merge_calls="$(awk '/^const mergeGithub = \{/,/^};/' "$rmain" | grep -oE 'github
   && grep -qF 'agentsOrgs: [...(agentsOrg ? [agentsOrg] : []), ...(localHost ? ["local"] : [])],' services/runner/src/config.mjs && grep -qF 'const localHost = enabledIn(join(configDir, "modules.json"), "codehost-local");' services/runner/src/config.mjs \
   && grep -qF 'agentsOrgs: [agentsOrg, ...(localHost() ? [LOCAL_ORG] : [])]' kernel/src/main.ts \
   && grep -qF 'const isLocal = (slug) => Boolean(localHost) && String(slug ?? "").split("/")[0].toLowerCase() === LOCAL_ORG;' "$rmain" \
-  && [ "$(grep -c 'localHost\.close(' "$rmain")" = 1 ] && [ "$(grep -c 'localHost\.publish(' "$rmain")" = 1 ] && [ "$(grep -c 'localHost\.merge(' "$rmain")" = 1 ] && [ "$(grep -c 'localHost\.writeCheck(' "$rmain")" = 3 ] \
+  && [ "$(grep -c 'localHost\.close(' "$rmain")" = 1 ] && [ "$(grep -c 'localHost\.publish(' "$rmain")" = 1 ] && [ "$(grep -c 'localHost\.merge(' "$rmain")" = 1 ] && [ "$(grep -c 'localHost\.writeCheck(' "$rmain")" = 4 ] \
+  && [ "$(awk '/^async function readLocalDesignVerdicts\(/,/^}/' "$rmain" | grep -c 'localHost\.writeCheck(')" = 1 ] \
+  && awk '/^async function readLocalDesignVerdicts\(/,/^}/' "$rmain" | grep -F '      if (k.authorType !== "agent" || !(roles[k.authorAgentId]?.roles ?? []).includes("design-review")) continue;' >/dev/null \
+  && awk '/^async function readLocalDesignVerdicts\(/,/^}/' "$rmain" | grep -F '      if (!m || m[2] !== c.head) continue;' >/dev/null \
+  && awk '/^async function readLocalDesignVerdicts\(/,/^}/' "$rmain" | grep -F '      await localHost.writeCheck(want.repo, c.head, { name: merges.DESIGN_REVIEW.name, ok: m[1] === "success", change: c.number, base: c.base,' >/dev/null \
   && [ "$(awk '/^async function publishLocal\(/,/^}/' "$rmain" | grep -c 'localHost\.publish(')" = 1 ] && [ "$(awk '/^async function runLocalChecks\(/,/^}/' "$rmain" | grep -c 'localHost\.writeCheck(')" = 3 ] \
   && awk '/^async function runLocalMerges\(/,/^}/' "$rmain" | grep -F 'const { sha } = await localHost.merge(p.repo, p.number, p.head, { required,' >/dev/null \
   && [ "$(grep -c 'mergeLocalApproved(' "$rmain")" = 2 ] && grep -qF '  if (a.action === "merge" && a.args.prs.every((p) => isLocal(p.repo))) return mergeLocalApproved(issue, a);' "$rmain" \
