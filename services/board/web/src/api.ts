@@ -1,5 +1,6 @@
 import type { AgentProfile, TaskRow, FeatureCost, Features, Advisory, ActivityItem, Agents, AsideMessage, Lineage, SettledItem, AppRow, Approval, Board, Bucket, Cadence, ChatAgent, ChatDetail, LaneAgent, LaneMessage, ChatRow, CostLedger, CostTop, CostWindow, Costs, IssueView, Models, ModuleDetail, ModuleRow, NeedsYou, RecurringView, RosterAgent, RunTrace, Scorecard, SettingChange, FiledChange, SettingsData, Update } from "./types";
 import type { ConnectionsData } from "./connections";
+import type { BrowseModule, GrantConnection, MarketplaceRow } from "./types";
 
 async function call<T>(method: string, path: string, body?: unknown): Promise<T> {
   const res = await fetch(path, {
@@ -158,4 +159,9 @@ export const api = {
   // Lane C: the agent page's Handbook tab.
   handbook: (key: string) => call<import("./AgentHandbook").HandbookData>("GET", `/api/agents/by-key/${encodeURIComponent(key)}/handbook`),
   handbookHistory: (key: string) => call<import("./AgentHandbook").HandbookHistory>("GET", `/api/agents/by-key/${encodeURIComponent(key)}/handbook/history`),
+  // Lane E: Browse, marketplaces, an agent's grants, and the setup flows other work adds (a 404 means none).
+  browse: (q: string, kind: string) => call<{ modules: BrowseModule[] }>("GET", `/api/modules/browse?${new URLSearchParams({ q, kind })}`),
+  marketplaces: () => call<{ marketplaces: MarketplaceRow[] }>("GET", "/api/marketplaces"),
+  agentGrants: (key: string) => call<{ connections: GrantConnection[] }>("GET", `/api/agents/by-key/${encodeURIComponent(key)}/grants`),
+  setupFlows: () => call<unknown>("GET", "/api/setup-flows"),
 };

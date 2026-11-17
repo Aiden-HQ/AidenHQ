@@ -723,3 +723,25 @@ export interface SettingsData {
 
 // Lane D: the pin change (lane A's schema, settings-change.ts).
 export type PinChange = { kind: "pin"; name: string; sha: string | null };
+// Lane E: GET /api/modules/browse, /api/marketplaces and /api/agents/by-key/:key/grants (services/board/src/marketplace.ts).
+export interface BrowseModule {
+  name: string;
+  description: string;
+  marketplace: string;
+  tier: string;
+  adds: string[];
+  installed: boolean;
+  setupFlow?: { title: string };
+}
+export interface MarketplaceRow {
+  name: string;
+  source: string;
+  sha: string;
+  modules: number;
+  newer: boolean;
+}
+export interface GrantConnection {
+  id: string;
+  module: string;
+  tools: { name: string; class: "read" | "write" | "destructive"; granted: boolean; default: boolean }[];
+}
