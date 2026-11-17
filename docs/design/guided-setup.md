@@ -174,7 +174,7 @@ other work.
 
 A module declares it as a board point, `board.setup_flows`, the same way it declares `board.signins` today; compile
 writes it into `config/points/board.json`, which the board already reads. The exact fields are in the plan
-(`docs/superpowers/plans/2026-11-17-guided-setup.md`, Task 1). In outline:
+(Task 1 of the implementation plan). In outline:
 
 ```yaml
 board.setup_flows:
