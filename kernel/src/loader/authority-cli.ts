@@ -8,7 +8,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { authorityLines, diffAll, marketplaceChanges, moduleInputs } from "./authority.ts";
+import { authorityLines, diffAll, forkChanges, marketplaceChanges, moduleInputs } from "./authority.ts";
 import { effective } from "./release.ts";
 import { hostFetch, officialSides, withRemote } from "./sources.ts";
 
@@ -42,7 +42,7 @@ function main(argv: string[]) {
     // No instance at all: every module, on both sides.
     if (inst === undefined && !current) baseInstance = headInstance = { modules: [...new Set([...Object.keys(official.baseDefs), ...Object.keys(official.headDefs)])] };
     const sides = withRemote({ baseInstance, headInstance, ...official }, fetch);
-    const lines = authorityLines([...marketplaceChanges(baseInstance, headInstance), ...diffAll(moduleInputs({ ...sides, always: [] }))]);
+    const lines = authorityLines([...marketplaceChanges(baseInstance, headInstance), ...forkChanges(baseInstance, headInstance), ...diffAll(moduleInputs({ ...sides, always: [] }))]);
     for (const l of lines.length ? lines : ["none"]) console.log(`apply authority: ${l}`);
     return 0;
   } catch (e) {

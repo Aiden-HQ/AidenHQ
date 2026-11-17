@@ -165,8 +165,15 @@ export async function applyWaitingForLock(run: () => Promise<any>, repoPath: str
   }
 }
 
-// `node apply.ts product-pin <instance.yaml>`: the pin, for ops/apply-config.sh (one parser for both).
-if (process.argv[1] && import.meta.url === new URL(`file://${process.argv[1]}`).href && process.argv[2] === "product-pin") {
+// `node apply.ts product-pin <instance.yaml>`: the pin, for ops/apply-config.sh (one parser for both). `product-fork`: the
+// kernel's fork (product_fork:, spec §6.9b) as "<url> <sha>", or nothing; a malformed one exits 1.
+if (process.argv[1] && import.meta.url === new URL(`file://${process.argv[1]}`).href && ["product-pin", "product-fork"].includes(process.argv[2]!)) {
   const { readFileSync } = await import("node:fs");
-  process.stdout.write(productPin(readFileSync(process.argv[3]!, "utf8")) ?? "");
+  const text = readFileSync(process.argv[3]!, "utf8");
+  if (process.argv[2] === "product-pin") process.stdout.write(productPin(text) ?? "");
+  else {
+    const { forksOf } = await import("../../../kernel/src/loader/sources.ts");
+    const k = forksOf(YAML.parse(text) ?? {}).find((x) => x.target === "kernel");
+    process.stdout.write(k ? `${k.at.url} ${k.at.sha}` : "");
+  }
 }

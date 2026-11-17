@@ -20,8 +20,8 @@ type Dict = Record<string, unknown>;
 export type Where = { url: string; path: string; sha: string; owned?: boolean };
 export type Fetch = { cacheDir: string; credentialHelper?: string };
 export type Tier = "declared" | "conformant" | "official";
-/** `market`: where its marketplace is (advisories are read from that repository's head). */
-export type Remote = { name: string; marketplace: string; market: Where; at: Where; root: string; def: Dict; tier: Tier };
+/** `market`: where its marketplace is (advisories are read from that repository's head); `fork`: the owner's fork it runs. */
+export type Remote = { name: string; marketplace: string; market: Where; at: Where; root: string; def: Dict; tier: Tier; fork?: Fork };
 
 export const OFFICIAL = "aidenhq";
 const SHA = /^[0-9a-f]{40}$/;
@@ -106,6 +106,73 @@ export function marketplacesOf(instance: Dict): { name: string; at: Where }[] {
 export const OFFICIAL_URL = "https://github.com/Aiden-HQ/aidenhq-modules.git";
 
 /**
+ * A carry-your-patch fork (spec §6.9b): `product_fork:` (target `kernel`) or a `modules:` entry's `fork:`, as the owner's
+ * instance.yaml writes it. Only the sha resolves; `branch` and `upstream_pr` are for the switch-back routine and the card.
+ * The fork's repository is not the host's: it is fetched over https only, anonymously (no credential helper, no local
+ * path or file protocol), and its content is untrusted (quoted on cards, nothing run on the host).
+ */
+export type Fork = { target: string; at: Where; branch?: string; upstream_pr?: string };
+const PR = /^https:\/\/[\w.-]+\/[\w.-]+\/[\w.-]+\/pull\/\d{1,9}$/;
+function forkEntry(v: unknown, target: string, where: string, pr: unknown): Fork {
+  if (!isMap(v)) throw new Error(`${where}: fork must be { source, repo | url, sha, branch? }`);
+  if (v.branch != null && !/^[\w][\w./-]{0,99}$/.test(String(v.branch))) throw new Error(`${where}: branch must be a plain branch name`);
+  if (pr != null && !PR.test(String(pr))) throw new Error(`${where}: upstream_pr must be an https pull request URL (https://<host>/<owner>/<repo>/pull/<n>)`);
+  const at = remoteOf(v, where);
+  if (!at.url.startsWith("https://")) throw new Error(`${where}: a fork is fetched over https only (got ${at.url})`);
+  return { target, at, ...(v.branch != null ? { branch: String(v.branch) } : {}), ...(pr != null ? { upstream_pr: String(pr) } : {}) };
+}
+
+/** instance.yaml's forks, checked: the kernel's (`product_fork:`) and each module's (`modules: - { id, fork, upstream_pr }`). */
+export function forksOf(instance: Dict): Fork[] {
+  const out: Fork[] = [];
+  if (instance.product_fork != null) out.push(forkEntry(instance.product_fork, "kernel", "instance.yaml product_fork", (instance.product_fork as Dict)?.upstream_pr));
+  for (const m of Array.isArray(instance.modules) ? instance.modules : []) {
+    if (!isMap(m) || (m.fork == null && m.upstream_pr == null)) continue;
+    const name = String(m.id).split("@")[0]!;
+    if (m.fork == null) throw new Error(`instance.yaml modules: ${name}: upstream_pr without a fork`);
+    out.push(forkEntry(m.fork, name, `instance.yaml modules: ${name}`, m.upstream_pr));
+  }
+  return out;
+}
+
+/**
+ * The fork's tree at `base`'s folder. Refused unless the fork sha descends from `base.sha` (the sha the release, the
+ * marketplace pin or `product:` gives), so the patch is exactly base..fork. Fetched into the cache by sha, never checked out
+ * on the host.
+ */
+export function onFork(base: Where, fork: Fork, f: Fetch): Where {
+  const at = { ...fork.at, path: base.path };
+  const repo = repoAt(at, f);
+  let ok = has(f, repo, base.sha);
+  if (ok) try { git(f, repo, ["merge-base", "--is-ancestor", base.sha, at.sha]); } catch { ok = false; }
+  if (!ok) throw new Error(`${fork.target}: fork ${at.url} at ${at.sha.slice(0, 12)} does not descend from ${base.sha.slice(0, 12)} (what it runs on top of); refused`);
+  return at;
+}
+
+/**
+ * Where the official modules folder is for an instance at product sha `sha`: the instance's `aidenhq` marketplace entry
+ * (5b), else the modules repository commit the product pins (modules-pin.json), else the product's ./modules: the kernel's
+ * fork's (product_fork:) when there is one, checked to descend from `sha`.
+ */
+export function officialAt(instance: Dict, sha: string, product: string, f: Fetch): Where {
+  const local = (args: string[]) => execFileSync("git", ["-C", product, ...args], { maxBuffer: 256 << 20, stdio: ["ignore", "pipe", "pipe"] }).toString();
+  const pinned = () => { try { const p = JSON.parse(local(["show", `${sha}:modules-pin.json`])); return sourceOf({ source: "github", repo: p.repo }, "modules-pin.json", undefined, p.sha, true); } catch { return undefined; } };
+  const kernel = forksOf(instance).find((x) => x.target === "kernel");
+  const own: Where = { url: product, path: "modules", sha, owned: true };
+  return marketplacesOf(instance).find((m) => m.name === OFFICIAL)?.at ?? pinned() ?? (kernel ? onFork(own, kernel, f) : own);
+}
+
+/** What a fork is on top of: `product:` for the kernel, else the module's folder in the official modules or its marketplace. */
+export function forkBase(instance: Dict, fork: Fork, product: string, f: Fetch & { parse: (s: string) => unknown }): Where {
+  const sha = String(instance.product ?? "");
+  if (fork.target === "kernel") return { url: product, path: "", sha, owned: true };
+  const remote = remoteModules(instance, f, false).find((r) => r.name === fork.target);
+  if (remote) return remote.at;
+  const w = officialAt(instance, sha, product, f);
+  return { ...w, path: posix.join(w.path, fork.target) };
+}
+
+/**
  * Each official module's module.yaml and folder tree id, on both sides of an apply: the instance's `aidenhq` marketplace entry
  * (from 5b), else the modules repository commit the product pins (modules-pin.json, from 5b), else the product checkout's own
  * ./modules at that side's product sha. A module whose folder tree id is the same
@@ -113,23 +180,36 @@ export const OFFICIAL_URL = "https://github.com/Aiden-HQ/aidenhq-modules.git";
  * move is an empty authority diff, nothing rebuilt). Otherwise its changed files: a git diff within one repository, the whole
  * folder across two.
  */
-export function officialSides(baseInstance: Dict, headInstance: Dict, from: string, to: string, product: string, f: Fetch & { parse: (s: string) => unknown }) {
+export function officialSides(baseInstance: Dict, headInstance: Dict, from: string, to: string, product: string, f: Fetch & { parse: (s: string) => unknown; kit?: (root: string, def: Dict, at: Where) => boolean }) {
   const local = (args: string[]) => execFileSync("git", ["-C", product, ...args], { maxBuffer: 256 << 20, stdio: ["ignore", "pipe", "pipe"] }).toString();
-  const pinned = (sha: string) => { try { const p = JSON.parse(local(["show", `${sha}:modules-pin.json`])); return sourceOf({ source: "github", repo: p.repo }, "modules-pin.json", undefined, p.sha, true); } catch { return undefined; } };
   const side = (instance: Dict, sha: string) => {
-    const w = marketplacesOf(instance).find((m) => m.name === OFFICIAL)?.at ?? pinned(sha) ?? { url: product, path: "modules", sha, owned: true };
+    const w = officialAt(instance, sha, product, f);
     const repo = w.url === product ? "" : repoAt(w, f);
     const run = (args: string[]) => (repo ? git(f, repo, args, { owned: true }).toString() : local(args));
     const at = (rel: string) => `${w.sha}:${posix.join(w.path, rel)}`.replace(/:\.$/, ":");
     const top = (() => { try { return run(["ls-tree", "-z", at(".")]); } catch { return ""; } })(); // no modules/ at that commit: none
     const trees = Object.fromEntries(top.split("\0").map((e) => /^040000 tree ([0-9a-f]{40})\t([a-z0-9][a-z0-9-]*)$/.exec(e)).filter((m) => m && run(["ls-tree", at(m[2]!), "module.yaml"])).map((m) => [m![2]!, m![1]!]));
-    return { w, run, trees, defs: Object.fromEntries(Object.keys(trees).map((m) => [m, (f.parse(run(["show", at(`${m}/module.yaml`)])) ?? {}) as Dict])) };
+    const defs = Object.fromEntries(Object.keys(trees).map((m) => [m, (f.parse(run(["show", at(`${m}/module.yaml`)])) ?? {}) as Dict]));
+    // A forked official module (spec §6.9b) is the fork's tree on top of its official folder: its def, and a computed tier
+    // that is never official.
+    const forks: Record<string, { at: Where; origin: string }> = {};
+    for (const k of forksOf(instance).filter((x) => x.target !== "kernel" && trees[x.target])) {
+      const fw = onFork({ ...w, path: posix.join(w.path, k.target) }, k, f);
+      const root = checkout(fw, f);
+      defs[k.target] = (f.parse(readFileSync(join(root, "module.yaml"), "utf8")) ?? {}) as Dict;
+      forks[k.target] = { at: fw, origin: `fork ${fw.url} at ${fw.sha.slice(0, 12)} (tier ${f.kit?.(root, defs[k.target]!, fw) ? "conformant" : "declared"})` };
+    }
+    return { w, run, trees, defs, forks };
   };
   const [b, h] = [side(baseInstance, from), side(headInstance, to)];
-  const moved = [...new Set([...Object.keys(b.trees), ...Object.keys(h.trees)])].filter((m) => b.trees[m] !== h.trees[m]);
+  const forked = new Set([...Object.keys(b.forks), ...Object.keys(h.forks)]);
+  const moved = [...new Set([...Object.keys(b.trees), ...Object.keys(h.trees)])].filter((m) => !forked.has(m) && b.trees[m] !== h.trees[m]);
   const changed = !moved.length ? [] : b.w.url !== h.w.url || b.w.path !== h.w.path ? moved.map((m) => `modules/${m}/(source moved)`)
     : h.run(["diff", "--name-only", "--no-renames", b.w.sha, h.w.sha, "--", ...moved.map((m) => posix.join(h.w.path, m))]).split("\n").filter(Boolean).map((p) => `modules/${h.w.path ? p.slice(h.w.path.length + 1) : p}`);
-  return { baseDefs: b.defs, headDefs: h.defs, changed };
+  const where = (s: typeof b, m: string): Where => s.forks[m]?.at ?? { ...s.w, path: posix.join(s.w.path, m) };
+  for (const m of forked) if (b.trees[m] && h.trees[m]) changed.push(...changedFiles(where(b, m), where(h, m), f).map((p) => `modules/${m}/${p}`));
+  const origins = (s: typeof b) => Object.fromEntries(Object.entries(s.forks).map(([m, x]) => [m, x.origin]));
+  return { baseDefs: b.defs, headDefs: h.defs, changed, origins: { base: origins(b), head: origins(h) } };
 }
 
 /** Git on a cache repo, bounded in time; the credential helper and local paths only for a repository the owner named. */
@@ -183,9 +263,10 @@ export function checkout(w: Where, f: Fetch): string {
  */
 export function changedFiles(a: Where, b: Where, f: Fetch): string[] {
   if (a.sha === b.sha && a.url === b.url && a.path === b.path) return [];
-  if (a.url !== b.url || a.path !== b.path) return ["(source moved)"];
-  const repo = repoAt(b, f);
-  repoAt(a, f);
+  if (a.path !== b.path) return ["(source moved)"];
+  // Across two repositories (a fork and what it is on top of): diffed in the fetched one that holds both commits.
+  const repo = a.url === b.url ? (repoAt(a, f), repoAt(b, f)) : [b, a].map((w) => cacheRepo(w.url, f)).find((r) => existsSync(r) && has(f, r, a.sha) && has(f, r, b.sha));
+  if (!repo) return ["(source moved)"];
   const out = git(f, repo, ["diff", "--name-only", "--no-renames", a.sha, b.sha, "--", ...(b.path ? [b.path] : [])]).toString();
   return out.split("\n").filter(Boolean).map((p) => (b.path ? p.slice(b.path.length + 1) : p));
 }
@@ -206,8 +287,9 @@ function wantedRemote(instance: Dict): Map<string, string[]> {
  * compiler's); `kit`: whether a module passes the contract kit (conformant). A module from a third-party marketplace is
  * `untrusted` unless its manifest says otherwise (spec §4.1); saying otherwise is new authority (the authority diff).
  */
-export function remoteModules(instance: Dict, f: Fetch & { parse: (s: string) => unknown; kit?: (root: string, def: Dict, at: Where) => boolean }): Remote[] {
+export function remoteModules(instance: Dict, f: Fetch & { parse: (s: string) => unknown; kit?: (root: string, def: Dict, at: Where) => boolean }, withForks = true): Remote[] {
   const mkts = new Map(marketplacesOf(instance).map((m) => [m.name, m.at]));
+  const forks = withForks ? forksOf(instance) : [];
   const out: Remote[] = [];
   for (const [mkt, names] of wantedRemote(instance)) {
     const at = mkts.get(mkt);
@@ -219,13 +301,15 @@ export function remoteModules(instance: Dict, f: Fetch & { parse: (s: string) =>
     for (const name of names) {
       const e = entries.find((x) => x.name === name);
       if (!e) throw new Error(`marketplace ${mkt} lists no module ${name}`);
-      const w = sourceOf(e.source, `marketplace ${mkt}: ${name}`, at);
+      const fork = forks.find((x) => x.target === name);
+      const listed = sourceOf(e.source, `marketplace ${mkt}: ${name}`, at);
+      const w = fork ? onFork(listed, fork, f) : listed;
       const root = checkout(w, f);
       if (!existsSync(join(root, "module.yaml"))) throw new Error(`${name}@${mkt}: no module.yaml at ${w.url}@${w.sha}${w.path ? `:${w.path}` : ""}`);
       const def = (f.parse(readFileSync(join(root, "module.yaml"), "utf8")) ?? {}) as Dict;
       if (def.name !== name) throw new Error(`${name}@${mkt}: module.yaml name is ${String(def.name)}, expected ${name}`);
       def.isolation ??= "untrusted";
-      out.push({ name, marketplace: mkt, market: at, at: w, root, def, tier: f.kit?.(root, def, w) ? "conformant" : "declared" });
+      out.push({ name, marketplace: mkt, market: at, at: w, root, def, tier: f.kit?.(root, def, w) ? "conformant" : "declared", ...(fork ? { fork } : {}) });
     }
   }
   return out;
@@ -246,7 +330,7 @@ export function hostFetch(repo: string): Fetch & { kit: ReturnType<typeof kitInJ
  * third-party modules that side's instance.yaml installs, the files those changed between the sides (as modules/<name>/…
  * paths, as the product's own diff names them), and where each comes from (marketplace, sha, tier) for the card.
  */
-export function withRemote<T extends { baseInstance: Dict; headInstance: Dict; baseDefs: Record<string, Dict>; headDefs: Record<string, Dict>; changed: string[] }>(a: T, f: Fetch & { parse: (s: string) => unknown; kit?: (root: string, def: Dict, at: Where) => boolean }) {
+export function withRemote<T extends { baseInstance: Dict; headInstance: Dict; baseDefs: Record<string, Dict>; headDefs: Record<string, Dict>; changed: string[]; origins?: { base: Record<string, string>; head: Record<string, string> } }>(a: T, f: Fetch & { parse: (s: string) => unknown; kit?: (root: string, def: Dict, at: Where) => boolean }) {
   const [rb, rh] = [remoteModules(a.baseInstance, f), remoteModules(a.headInstance, f)];
   const defs = (official: Record<string, Dict>, remote: Remote[]) => {
     const out = { ...official };
@@ -256,14 +340,14 @@ export function withRemote<T extends { baseInstance: Dict; headInstance: Dict; b
     }
     return out;
   };
-  const origin = (l: Remote[]) => Object.fromEntries(l.map((r) => [r.name, `${r.marketplace} at ${r.at.sha.slice(0, 12)} (tier ${r.tier})`]));
+  const origin = (l: Remote[]) => Object.fromEntries(l.map((r) => [r.name, `${r.fork ? `fork ${r.at.url} on ` : ""}${r.marketplace} at ${r.at.sha.slice(0, 12)} (tier ${r.tier})`]));
   const changed = [...a.changed];
   // An install brings code that runs, as a code change does (the panel reviews it).
   for (const h of rh) {
     const b = rb.find((x) => x.name === h.name);
     changed.push(...(b ? changedFiles(b.at, h.at, f) : ["(installed)"]).map((p) => `modules/${h.name}/${p}`));
   }
-  return { ...a, baseDefs: defs(a.baseDefs, rb), headDefs: defs(a.headDefs, rh), changed, origins: { base: origin(rb), head: origin(rh) } };
+  return { ...a, baseDefs: defs(a.baseDefs, rb), headDefs: defs(a.headDefs, rh), changed, origins: { base: { ...a.origins?.base, ...origin(rb) }, head: { ...a.origins?.head, ...origin(rh) } } };
 }
 
 /** A file name as the card shows it: safe characters as they are, anything else JSON-escaped. */
@@ -276,14 +360,26 @@ const safeName = (n: string) => (/^[\w.@+-]+(\/[\w.@+-]+)*$/.test(n) ? n : JSON.
 const quoted = (text: string) => text.replace(/\r?\n$/, "").split(/\r\n|[\n\r\v\f\u0085\u2028\u2029]/).map((l) => `| ${l.replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu, (c) => (c === "\t" ? c : `\\u${c.charCodeAt(0).toString(16).padStart(4, "0")}`))}`).join("\n");
 
 /**
- * What a reviewer reads of third-party module code an apply brings (the card's diff): each updated module's git diff, each
- * installed module's file list, at most `max` characters. Content of a third-party repository is untrusted: every line of it
- * is quoted (`| `) and file names outside a safe set are escaped.
+ * What a reviewer reads of third-party module code an apply brings (the card's diff): each fork it enters or moves (the
+ * kernel's or a module's) as its patch on what it runs on top of, each updated module's git diff, each installed module's
+ * file list, at most `max` characters. `product`: the product checkout (where the kernel and the official modules are).
+ * Content of a fork or a third-party repository is untrusted: every line of it is quoted (`| `) and file names outside a
+ * safe set are escaped.
  */
-export function remoteCodeText(baseInstance: Dict, headInstance: Dict, f: Fetch & { parse: (s: string) => unknown }, max = 40_000): string {
-  const [rb, rh] = [remoteModules(baseInstance, f), remoteModules(headInstance, f)];
+export function remoteCodeText(baseInstance: Dict, headInstance: Dict, f: Fetch & { parse: (s: string) => unknown }, product = "", max = 40_000): string {
   const parts: string[] = [];
+  const was = forksOf(baseInstance);
+  for (const k of forksOf(headInstance)) {
+    const b = was.find((x) => x.target === k.target);
+    if (b && b.at.url === k.at.url && b.at.sha === k.at.sha) continue;
+    const base = forkBase(headInstance, k, product, f);
+    const fw = onFork(base, k, f);
+    const patch = git(f, repoAt(fw, f), ["diff", "--no-color", "--no-ext-diff", base.sha, fw.sha, "--", ...(fw.path ? [fw.path] : [])]).toString();
+    parts.push(`Fork of ${k.target}: ${fw.url} at ${fw.sha.slice(0, 12)}, its patch on ${base.sha.slice(0, 12)}${k.upstream_pr ? ` (upstream ${k.upstream_pr})` : ""} (fork text, quoted):\n${quoted(patch)}`);
+  }
+  const [rb, rh] = [remoteModules(baseInstance, f), remoteModules(headInstance, f)];
   for (const h of rh) {
+    if (h.fork) continue; // its patch is above
     const b = rb.find((x) => x.name === h.name);
     if (b && b.at.sha === h.at.sha && b.at.url === h.at.url && b.at.path === h.at.path) continue;
     const repo = repoAt(h.at, f);

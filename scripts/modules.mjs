@@ -11,7 +11,8 @@ import { urlSettingProblem } from "../services/shared/url-setting.ts";
 import { generateCompose, ownSecrets } from "../kernel/src/loader/services.ts";
 import { capabilityProblems, conflictProblems, danglingBindings } from "../kernel/src/loader/bindings.ts";
 import { MANIFEST_KEYS, moduleName } from "../kernel/src/loader/authority.ts";
-import { hostFetch, marketplaceEntries, OFFICIAL, remoteModules } from "../kernel/src/loader/sources.ts";
+import { checkout, forkBase, forksOf, hostFetch, marketplaceEntries, OFFICIAL, onFork, remoteModules } from "../kernel/src/loader/sources.ts";
+import { effective } from "../kernel/src/loader/release.ts";
 import { compilePoints } from "../kernel/src/loader/points.ts";
 import { gateMode } from "../kernel/src/gates.ts";
 
@@ -307,6 +308,19 @@ function discover(productDir, instance, fetch) {
     if (def.name !== name) fail(`modules/${name}/module.yaml: name is ${def.name}, expected ${name}`);
     out.set(name, { name, root, def, marketplace: OFFICIAL, tier: "official" });
   }
+  // An official module the instance runs from its own fork (spec §6.9b): the fork's tree, on top of the official folder, at a
+  // computed tier that is never official.
+  const parse = (t) => YAML.parse(t);
+  const forks = forksOf(instance).filter((x) => x.target !== "kernel" && out.has(x.target));
+  const resolved = forks.length ? effective(instance, fetch) : instance; // on top of what the release (if any) resolves to
+  for (const k of forks) {
+    const at = onFork(forkBase(resolved, k, productDir, { ...fetch, parse }), k, fetch);
+    const r = checkout(at, fetch);
+    const def = readYaml(join(r, "module.yaml"));
+    if (def.name !== k.target) fail(`${k.target}: its fork's module.yaml name is ${def.name}`);
+    if (def.apps != null || Object.values(def.services?.run ?? {}).some((s) => s?.build != null)) fail(`${k.target}: apps and service builds from a fork aren't supported yet`);
+    out.set(k.target, { name: k.target, root: r, def, marketplace: OFFICIAL, tier: fetch.kit?.(r, def, at) ? "conformant" : "declared", sha: at.sha, source: { url: at.url, path: at.path } });
+  }
   for (const r of remoteModules(instance, { ...fetch, parse: (t) => YAML.parse(t) })) {
     if (out.has(r.name)) fail(`${r.name}@${r.marketplace}: a module named ${r.name} is already installed from ${out.get(r.name).marketplace}`);
     if (r.def.apps != null || Object.values(r.def.services?.run ?? {}).some((s) => s?.build != null)) fail(`${r.name}@${r.marketplace}: apps and service builds from a remote source aren't supported yet`);
@@ -558,9 +572,12 @@ export function compile(productDir, instanceDir, { revision, fetch = hostFetch(p
         ...(existsSync(extra) ? { instructions_extra: extra } : {}),
       }, "agent");
     }
-    for (const [key, r] of Object.entries(def.routines ?? {})) {
+    for (const [key, { when, ...r }] of Object.entries(def.routines ?? {})) {
       if (routineTitles.has(r.title)) fail(`duplicate routine title: ${r.title}`);
       routineTitles.add(r.title);
+      // `when: { forks: true }`: only while instance.yaml runs a fork (spec §6.9b); no routine, and no run, otherwise.
+      if (when != null && JSON.stringify(when) !== '{"forks":true}') fail(`routine ${key}: when must be { forks: true }`);
+      if (when && !forksOf(instance).length) continue;
       put(paperclip.routines, key, r, "routine");
     }
     for (const app of def.apps ?? []) {
