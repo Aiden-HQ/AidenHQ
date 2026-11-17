@@ -66,6 +66,29 @@ test("a refusal goes to the other model; the model that decided is named", async
   assert.deepEqual(asked, [LUNA, DEEPSEEK]);
 });
 
+test("severity: only a must-fix finding the change brings can reject; nits and pre-existing ones are reported, never block", async () => {
+  const answer = (decision, findings, second_review = false) => ({ content: JSON.stringify({ decision, reason_code: decision === "reject" ? "policy_other" : "in_scope", reason: "the note", second_review, findings }) });
+  const pre = { severity: "pre_existing", finding: "the query already interpolates req.query.days" };
+  const stages = [];
+  let r = asker([answer("reject", [pre, { severity: "nit", finding: "log wording" }])]);
+  const passed = await review({ card, diff: "+x", policy: "p", ask: r.ask, onStage: (s, v) => stages.push([s, v.decision, v.findings.length]) });
+  assert.deepEqual([passed.decision, passed.code, passed.findings], ["approve", "in_scope", undefined], "approved, and the verdict keeps its shape");
+  assert.match(passed.reason, /Reported, not blocking: \[pre-existing\] the query already interpolates req\.query\.days; \[nit\] log wording/);
+  assert.deepEqual(stages, [["first", "approve", 2]]);
+  // A must-fix stands; a reject that lists nothing, or a finding code can't read, stands too.
+  for (const findings of [[pre, { severity: "must_fix", finding: "any caller can list every invoice" }], [], [pre, { severity: "blocker", finding: "x" }]]) {
+    r = asker([answer("reject", findings)]);
+    assert.equal((await review({ card, diff: "+x", policy: "p", ask: r.ask })).decision, "reject", JSON.stringify(findings));
+  }
+  // Approved by code on a reviewer-flagged change still needs the panel's second reviewer.
+  r = asker([answer("reject", [pre], true), answer("approve", [pre])]);
+  const panel = await review({ card, diff: "+x", policy: "p", ask: r.ask });
+  assert.deepEqual([panel.decision, panel.second], ["approve", GLM]);
+  // An approve carries what it reported.
+  r = asker([answer("approve", [pre])]);
+  assert.match((await review({ card, diff: "+x", policy: "p", ask: r.ask })).reason, /^the note Reported, not blocking: \[pre-existing\]/);
+});
+
 test("unsure: a second reviewer decides with the first's note; unsure twice goes back to the agent, never the owner", async () => {
   const unsure = (reason) => ({ content: JSON.stringify({ decision: "unsure", reason_code: "reviewer_unsure", reason, second_review: false }) });
   // Unsure twice: rejected (back to the agent) with both notes, decided by the second reviewer (GLM after Luna).

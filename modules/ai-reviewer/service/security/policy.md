@@ -300,6 +300,20 @@ request to a local test server and asserts the patched code rejects it is fine. 
 third-party host is not. A payload address the test expects the code to block (a metadata IP such as 169.254.169.254, localhost)
 is the thing under test, not a target: that the check might regress is what the test is for, not a reason to reject it.
 
+## Findings and severity
+
+List each problem you see in `findings`, tagged with one severity:
+
+- must_fix: this request or its diff brings it, and this policy rejects it: out of scope, a secret, a weakened gate, an
+  injection, a stale request, a security bug the diff adds or makes worse. A reject rests on its must_fix findings.
+- nit: worth telling the agent, and never a reason to reject: wording, style, a test that could be sharper.
+- pre_existing: it is already at the base, and the diff neither adds it nor makes it worse: it sits in unchanged context
+  lines or files the change only touches nearby. However serious, it is reported, and the change is judged on what it
+  adds. A diff that reaches into the faulty code and keeps the fault is still pre_existing; one that copies the fault
+  somewhere new, widens it or depends on it for what it adds is must_fix.
+
+Code holds you to it: a reject whose findings carry no must_fix is approved, with the findings reported to the agent.
+
 ## What a good reason looks like
 
 One or two sentences. Name the file or the fact that decided it. For a reject, say what to change so the agent can refile.
