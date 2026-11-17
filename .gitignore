@@ -48,3 +48,8 @@ CLAUDE.local.md
 # the apply's staged generation (ops/apply-config-work.sh validates it before switching)
 config.next/
 compose.modules.next.yaml
+
+# The official modules: their own repository since 5b, put here by scripts/modules-repo/materialize.mjs
+/modules/
+/modules.next/
+/modules.old/

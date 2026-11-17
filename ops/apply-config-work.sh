@@ -104,6 +104,14 @@ main() {
     if [ ! -d "$d/node_modules" ] || ! git diff --quiet "$before" "$product" -- "$d/package-lock.json"; then npm ci --prefix "$d" --silent; fi
   done
   lap npm
+  # The official modules, their own repository since 5b (modules-pin.json): the instance's `aidenhq` marketplace at its sha
+  # (else the pin), put at ./modules.
+  local mods_before mods_after
+  mods_before="$(cat modules/.sha 2>/dev/null || true)"
+  if [ -f modules-pin.json ]; then
+    node scripts/modules-repo/materialize.mjs . "$inst/instance.yaml" || { restoreCheckouts; echo "refusing: the official modules could not be fetched" >&2; exit 1; }
+  fi
+  mods_after="$(cat modules/.sha 2>/dev/null || true)"
 
   # Held at the last known good: a pair that failed its health check is not applied again until main moves, unless the
   # owner asks from their shell (--retry; the runner never passes it).
@@ -312,6 +320,8 @@ restoreCheckouts() {
     git diff --quiet "$before" "$product" -- "$d/package-lock.json" || npm ci --prefix "$d" --silent || true
   done
   if [ -n "${inst_before:-}" ] && [ "$(git -C "$inst" rev-parse HEAD)" != "$inst_before" ]; then git -C "$inst" checkout --quiet --detach "$inst_before"; fi
+  # The official modules of the restored pair (a product that still tracks modules/ has them from the checkout).
+  if [ -f modules-pin.json ]; then node scripts/modules-repo/materialize.mjs . "$inst/instance.yaml" || true; fi
 }
 
 # The board stopped, or the apply stops: the accounts file is never moved under a board that still writes it.
@@ -437,7 +447,7 @@ switchOver() {
   # The runner is running this script: restart it only after the apply in flight has reported back. SIGUSR2 to its main
   # process only: it takes no new jobs, leaves the agents' runs going (the new runner adopts them and reports their
   # turns), exits as soon as nothing is half done (a reply being posted, a publish, this apply) and systemd starts it again.
-  if [ "$before" != "$product" ] && ! git diff --quiet "$before" "$product" -- services/runner kernel/sdk kernel/src/sandbox.ts kernel/src/jobs.ts modules/codehost-github modules/platform modules/engineering/src ops/units/aidenhq-runner.service; then
+  if { [ "$before" != "$product" ] && ! git diff --quiet "$before" "$product" -- services/runner kernel/sdk kernel/src/sandbox.ts kernel/src/jobs.ts ops/units/aidenhq-runner.service; } || [ "$mods_before" != "$mods_after" ]; then
     systemd-run --user --quiet --on-active=30 systemctl --user kill --kill-whom=main -s SIGUSR2 aidenhq-runner && echo "runner code changed: restart once idle, from 30s"
   fi
   # The computer launcher holds live run tokens in memory: restart it only when its code changed (running computers get new tokens next run).

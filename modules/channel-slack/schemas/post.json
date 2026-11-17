@@ -1,7 +1,0 @@
-{
-  "type": "object", "additionalProperties": false, "required": ["channel", "text", "agent"],
-  "properties": {
-    "channel": { "type": "string", "pattern": "^[CG][A-Z0-9]{6,}$" }, "text": { "type": "string", "minLength": 1, "maxLength": 3000 },
-    "thread_ts": { "type": "string", "pattern": "^[0-9]{6,}\\.[0-9]{1,8}$" }, "agent": { "type": "string", "minLength": 1, "maxLength": 100 }
-  }
-}

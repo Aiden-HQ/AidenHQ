@@ -1,5 +1,0 @@
-name: model-tools
-description: "The advisor (advisor_ask: a stronger model on a hard call) and fan-out workers (fanout_map: cheap tool-less workers over many items), and how agents use them."
-prompts:
-  - { id: advisor, file: prompts/advisor.md, when: { tools: [ paperclip_tasks.advisor_ask ] } }
-  - { id: fanout, file: prompts/fanout.md, when: { tools: [ paperclip_tasks.fanout_map ] } }

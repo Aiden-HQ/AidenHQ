@@ -95,6 +95,16 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      # The official modules, their own repository since 5b, at the product's pin (modules-pin.json), where the tree had them.
+      - id: modules-pin
+        run: echo "sha=$(jq -r .sha modules-pin.json)" >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: Aiden-HQ/aidenhq-modules
+          ref: ${{ steps.modules-pin.outputs.sha }}
+          token: ${{ secrets.AIDENHQ_MODULES_READ }}
+          path: modules
+          persist-credentials: false
       # Node 24 is in our runner image's tool cache (modules/ci/runner): found there, nothing is downloaded.
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
@@ -144,6 +154,16 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      # The official modules, their own repository since 5b, at the product's pin (modules-pin.json), where the tree had them.
+      - id: modules-pin
+        run: echo "sha=$(jq -r .sha modules-pin.json)" >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: Aiden-HQ/aidenhq-modules
+          ref: ${{ steps.modules-pin.outputs.sha }}
+          token: ${{ secrets.AIDENHQ_MODULES_READ }}
+          path: modules
+          persist-credentials: false
       # Node 24 is in our runner image's tool cache (modules/ci/runner): found there, nothing is downloaded.
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
@@ -168,6 +188,16 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          persist-credentials: false
+      # The official modules, their own repository since 5b, at the product's pin (modules-pin.json), where the tree had them.
+      - id: modules-pin
+        run: echo "sha=$(jq -r .sha modules-pin.json)" >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: Aiden-HQ/aidenhq-modules
+          ref: ${{ steps.modules-pin.outputs.sha }}
+          token: ${{ secrets.AIDENHQ_MODULES_READ }}
+          path: modules
           persist-credentials: false
       # Node 24 is in our runner image's tool cache (modules/ci/runner): found there, nothing is downloaded.
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
@@ -203,6 +233,16 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          persist-credentials: false
+      # The official modules, their own repository since 5b, at the product's pin (modules-pin.json), where the tree had them.
+      - id: modules-pin
+        run: echo "sha=$(jq -r .sha modules-pin.json)" >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: Aiden-HQ/aidenhq-modules
+          ref: ${{ steps.modules-pin.outputs.sha }}
+          token: ${{ secrets.AIDENHQ_MODULES_READ }}
+          path: modules
           persist-credentials: false
       # Node 24 is in our runner image's tool cache (modules/ci/runner): found there, nothing is downloaded.
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
@@ -255,30 +295,7 @@ jobs:
           fixtures/twin|d=$(mktemp -d) && y=$(cd ../../scripts/node_modules && pwd) && cp -R . "$d" && (cd ../../kernel/sdk && npm pack --silent --pack-destination "$d") && cd "$d" && npm install --no-audit --no-fund && NODE_PATH="$y" npm test|fixtures/twin kernel/sdk scripts/sdk-pack.mjs
           services/computer|node --test test/*.test.mjs|services/computer services/runner/src services/runner/bin modules/apps-platform/design-system modules/design
           kernel|npm ci && npm test && npm run typecheck|kernel services/computer modules/tasks fixtures modules/apps-platform/gate
-          modules/apps-platform/starter|npm ci && npm test && npm run build|modules/apps-platform/starter modules/apps-platform/design-system
-          modules/apps-platform/gate|npm ci && npm test && npm run typecheck|modules/apps-platform/gate services/shared scripts/identity.mjs
           services/board|(its own job)|services/board modules/apps-platform/gate services/runner/src services/shared scripts/identity.mjs modules/apps-platform/design-system modules/tasks
-          modules/apps-platform/apps-mcp|npm ci --ignore-scripts && npm test && npm run typecheck|modules/apps-platform/apps-mcp services/shared modules/apps-platform/starter modules/apps-platform/design-system scripts/identity.mjs
-          modules/clickhouse/connections/clickhouse-mcp|npm ci && npm test && npm run typecheck|modules/clickhouse
-          modules/github/connections/github-mcp|npm ci && npm test && npm run typecheck|modules/github
-          modules/glean/connections/glean-mcp|npm ci && npm test && npm run typecheck|modules/glean
-          modules/google/connections/google-workspace-mcp|npm ci && npm test && npm run typecheck|modules/google
-          modules/grafana/connections/grafana-mcp|npm ci && npm test && npm run typecheck|modules/grafana
-          modules/jira/connections/jira-mcp|npm ci && npm test && npm run typecheck|modules/jira
-          modules/meetings/connections/ops-mcp|npm ci && npm test && npm run typecheck|modules/meetings
-          modules/channel-slack/connections/slack|npm ci --ignore-scripts && npm test && npm run typecheck|modules/channel-slack
-          modules/channel-telegram/connections/telegram|npm ci --ignore-scripts && npm test && npm run typecheck|modules/channel-telegram
-          modules/chat-lane/connections/lane|npm ci --ignore-scripts && npm test && npm run typecheck|modules/chat-lane
-          modules/channel-operator|node --test test/*.test.mjs|modules/channel-operator
-          modules/ai-reviewer|npm test|modules/ai-reviewer kernel services/shared modules/apps-platform/starter
-          modules/codehost-github|npm test|modules/codehost-github modules/engineering kernel services/runner/src/main.mjs
-          modules/platform|npm test|modules/platform
-          modules/engineering|npm test|modules/engineering modules/codehost-github
-          modules/grading|npm test|modules/grading kernel/src ops/grades-move.mjs
-          modules/primer/connections/primer-mcp|npm ci && npm test && npm run typecheck|modules/primer
-          modules/slack/connections/slack-mcp|npm ci && npm test && npm run typecheck|modules/slack
-          modules/tasks/connections/tasks-mcp|npm ci && npm test|modules/tasks kernel/sdk
-          modules/security/scanner|npm ci && npm test && npm run typecheck|modules/security
           PACKAGES
           )
           # fixtures/twin is the third-party twin: copied out of the tree to a temp dir, it installs the local `npm pack`
