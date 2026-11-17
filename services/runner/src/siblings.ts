@@ -198,3 +198,75 @@ export function siblingCandidates(runs: any[] = [], own = new Set<string>()) {
   }
   return out;
 }
+
+/** How much of a merged sibling's file list the follow-up note names: whole paths only, so a long merge never floods the prompt. */
+export const MAX_SCOPE_FILES = 40;
+
+/**
+ * The runner's own grader notes on a task (grade.ts `GRADER_MARKER`), newest last, from its comments. Only a note the runner
+ * itself posted is read: Paperclip stores every comment the runner makes (`comment`, `setStatus`) as the runner's own user
+ * (`authorType: "user"`, `authorUserId` = the runner's id), and no agent's comment carries that id. A note an agent or a
+ * stranger wrote, whatever marker it copies, is not one. `authorUserId` is passed in, so an unread runner id reads nothing.
+ */
+export function graderNotes(comments: any[] = [], { authorUserId, marker }: { authorUserId?: string; marker: string }) {
+  if (!authorUserId) return [];
+  return (Array.isArray(comments) ? comments : [])
+    .filter((c) => c?.authorType === "user" && String(c.authorUserId ?? "") === String(authorUserId) && String(c.body ?? "").includes(marker))
+    .sort((a, b) => String(a.createdAt ?? "").localeCompare(String(b.createdAt ?? "")))
+    .map((c) => String(c.body ?? ""));
+}
+
+const OUTCOME_LINE = /^\*\*Graded: ([^*]+)\*\*/m;
+/** One grader note's outcome as its own words name it: needs_revision (the only one with criteria left to do), satisfied, or another. */
+export function gradeOutcome(note: string) {
+  const said = OUTCOME_LINE.exec(String(note ?? ""))?.[1]?.trim() ?? "";
+  return /^needs revision/i.test(said) ? "needs_revision" : /^done/i.test(said) ? "satisfied" : said ? "other" : "";
+}
+
+/**
+ * The criteria a grader note names as not met ("- **not met**: …"), each on one line, the grader's own words. `**not
+ * shown**` is not read: the grader couldn't check it, which is no instruction to anyone.
+ */
+export function unmetCriteria(note: string): string[] {
+  const out: string[] = [];
+  for (const line of String(note ?? "").split("\n")) {
+    const m = /^- \*\*not met\*\*: (.+)$/.exec(line.trim());
+    const text = m?.[1]?.trim();
+    if (text && !out.includes(text)) out.push(text);
+  }
+  return out;
+}
+
+/**
+ * What a follow-up's reviewer is told about the work that already merged, appended to the request chain rather than in place of
+ * it. Without it the reviewer saw the whole request and a diff that cannot hold its earlier half, and read that half as missing:
+ * the merged-PR table names a sibling's files only when the base changed them again, so a merge nothing else touched named none.
+ * Two parts, both in code's words: the merged part (a PR is named only when GitHub says it merged into this base, with its merge
+ * commit and the files it changed, each read as a path, so the work is recognisable), and the criteria the task's grader named
+ * as still unmet when it sent the work back (its words, as data). The chain stays whole: a rubric holds a few checkable criteria
+ * (grading's own rule), not every requirement the request states, so narrowing to them would leave the rest unchecked. Plain
+ * text, because it goes inside the reviewer's own REQUEST_CHAIN fence, which neutralises any marker text it holds. Empty when
+ * nothing proves the merged part: no sibling in this base, or no path to name.
+ */
+export function followUpNote({ siblings = [], criteria = [], base }: { siblings?: Sibling[]; criteria?: string[]; base?: string }) {
+  const proved = (siblings ?? []).filter((s) => s.mergeCommit && base && s.base && s.base.toLowerCase() === String(base).toLowerCase() && Array.isArray(s.files));
+  if (!base || !proved.length) return "";
+  const named = proved.filter((s) => s.files!.length).flatMap((s) => s.files!);
+  if (!named.length) return "";
+  const lines: string[] = [];
+  let left = MAX_SCOPE_FILES;
+  for (const s of proved) {
+    if (!s.files!.length) continue;
+    const take = s.files!.slice(0, left);
+    const more = s.files!.length - take.length;
+    if (take.length) lines.push(`- ${encodeName(s.repo, "path")}#${s.number} at ${encodeName(s.mergeCommit.slice(0, 12), "commit")}, merged into ${encodeName(base, "branch")}: ${take.map((f) => encodeName(f, "path")).join(", ")}${more > 0 ? ` (${more} more not named)` : ""}`);
+    left -= take.length;
+    if (left <= 0) break;
+  }
+  const merged = `Parts of this request are already on ${encodeName(base, "branch")} from these merged pull requests, with the files each one changed. That work is done, and it is not missing from this diff:\n${lines.join("\n")}`;
+  if (!(criteria ?? []).length) return merged;
+  // The grader's own words, one line each: a newline inside a criterion becomes a space, so a criterion can never read as a
+  // line of this block's own (numbered, at the start of a line).
+  const grader = `The task's grader named these criteria as not met when it sent the work back, one per line (the grader's words; the rest of the request is not narrowed to them):\n${criteria.map((c, i) => `${i + 1}. ${String(c).replace(/\s*\n\s*/g, " ").trim()}`).join("\n")}`;
+  return `${merged}\n\n${grader}`;
+}
