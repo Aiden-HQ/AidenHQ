@@ -77,6 +77,7 @@ outcomes:
 
 - **Overrides** change a fixed set of fields on things that exist: agents (`model`, `reasoning_effort`, `timeout_sec`,
   `image`, `max_parallel` for a bigger host) and routines (`schedules`, `status`, `model`, `autonomy`). Anything else is refused.
+- **Missed schedule ticks:** setup sets every routine to catch up (`enqueue_missed_with_cap`), so a tick Paperclip lost (a stalled scheduler, a restart) runs on the next one instead of being dropped. Paperclip enqueues one run per missed tick (at most 25; one for crons that fire 24+ times a day); `always_enqueue` routines skip missed ticks.
 - **A model per routine:** `model: <id>` on a routine runs its tasks on that model instead of the agent's (e.g. a cheap
   model for a frequent sweep, the agent's stronger one for everything else). Setup puts it in the routine's env
   (`AIDENHQ_MODEL`), Paperclip passes that env to the routine's runs, and the agent's Codex is started through
