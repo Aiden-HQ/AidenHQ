@@ -156,3 +156,26 @@ test("checksFile: a missing or unparsable file throws; a map loads and is reread
   writeFileSync(f, JSON.stringify({ "judge.finish": { module: "judge", at: "task.finish", url: "http://judge:8096/check/finish", auth_secret: "k" } }));
   assert.deepEqual(Object.keys(read()), ["judge.finish"]);
 });
+
+test("observe mode (gates.ts): a check's deny becomes a would-block entry and the close goes ahead; the same check enforcing refuses; a security gate can't observe", async (t) => {
+  const judge = (url, mode) => ({ "judge.finish": { module: "judge", at: "task.finish", url: `${url}/check/finish`, auth_secret: "judge_check_key", label: "held", ...(mode ? { mode } : {}) } });
+  const deny = () => ({ verdict: "deny", reason: "no rubric attached" });
+  // Observing: asked, recorded, never blocks or touches the task as the owner.
+  const check = await serve((req, res) => res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify(deny())));
+  t.after(() => check.s.close());
+  const url = check.url;
+  let s = await setup(t, deny, { checks: judge(url, "observe") });
+  assert.equal((await s.finish({ status: "done" })).status, 200);
+  assert.deepEqual(s.writes, [{ as: "run-jwt-ada", body: { status: "done" } }]);
+  const rows = s.k.records.db.prepare("SELECT data FROM events WHERE type = 'gate.would_block'").all().map((r) => JSON.parse(r.data));
+  assert.deepEqual(rows, [{ gate: "judge.finish", task: "WOR-1", verdict: "deny", reason: "no rubric attached", via: "task_finish" }]);
+  // Enforcing: the same deny refuses.
+  s = await setup(t, deny, { checks: judge(url) });
+  assert.equal((await s.finish({ status: "done" })).status, 403);
+  assert.deepEqual(s.writes, []);
+  // A security gate set to observe doesn't load: every close is refused, never let through.
+  s = await setup(t, deny, { checks: { "platform.product-gate": { ...judge(url)["judge.finish"], module: "platform", mode: "observe" } } });
+  const r = await s.finish({ status: "done" });
+  assert.equal(r.status, 503);
+  assert.match(r.json.error.message, /platform\.product-gate is a security gate: it always enforces/);
+});

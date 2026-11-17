@@ -71,6 +71,9 @@ and merges only on a 100% receipt (`services/runner/src/evalgate.ts`).
 - **Judgment in agents, gates in code.** Matching, routing, writes and approvals are enforced below the model. Gate
   only real risk (writes, spend, auth and security boundaries, the sandbox, untrusted text); set a default at its
   source, never re-enforce it downstream.
+  A new non-security gate ships in observe mode (`mode: observe` on a module check, `kernel/src/gates.ts`): it logs what it would
+  block (`gate.would_block` events) without blocking; promote it to enforce after reviewing those entries. Security gates
+  (secrets, outbound sends, unapproved merges and pushes, credential scoping) enforce from day one.
   Writes are kernel records tiered in code (`kernel/src/tier.ts`, the runner's `tiers.mjs` proposing for its kinds, the
   kernel enforcing floors, owner authority and vetoes itself): Tier 0 runs, Tier 1 the AI reviewer
   decides, Tier 2 the owner; setting `autonomy`. Every reviewer false reject becomes a planted case in
