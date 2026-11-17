@@ -97,10 +97,11 @@ jail through `hiding`. `codehost-local` generalises these three pieces.
 
 - `codehost-github` and `codehost-local` each declare `provides: [ codehost ]`. Neither is a slot, so there is no
   `providers:` entry and no binding-table change.
-- `engineering` requires `codehost` (any provider) in place of `github` and `codehost-github`. Its app-engineer's
+- `engineering` and `design` require `codehost` (any provider) in place of `github` and `codehost-github`. Its app-engineer's
   `github: read` grant (`engineering/module.yaml:57`) becomes optional (`github?: read`), so the compiler's dangling-binding
   check (`scripts/modules.mjs:891`) passes with `github` off. In the bundle, only `engineering` grants `github` without
-  `?`. `design` keeps `requires: [github]`; it is added with "connect GitHub" (see §7). The builder confirms that
+  `?`; `design`'s `github` grants (`design/module.yaml:27,48`) become `github?` too, so the UI Reviewer works on either
+  host (§5, design review). The builder confirms that
   platform's `product-gate` check, bound to `codehost-github.*` kinds, compiles with `codehost-github` off.
 - **The bundle** (`modules/marketplace.json`):
   - `codehost-local` joins.
@@ -126,8 +127,9 @@ jail through `hiding`. `codehost-local` generalises these three pieces.
   - `codehost-github`'s implementation wraps today's code unchanged; its merge keeps `merge-gate.mjs`.
 - **Shared and transport code:** the host-neutral parts stay where they are and both providers import them:
   `codehost-github/src/plan.mjs` (tiering), `git.mjs` (hardened git, `ensureClone`, `landOnMain`, `replayOnto`) and
-  `workspace.ts`. Moving them to a shared module is a later rename, not part of this build. `codehost-local/src` joins
-  the eval-gated path list (`evalgate.ts:42`) and the platform check's core paths (`platform/src/check.mjs:72-76,129`).
+  `workspace.ts`. Moving them to a shared module is a later rename, not part of this build. `codehost-local` tiers
+  through `plan.mjs` and adds no tiering of its own, so the eval-gated path list (`evalgate.ts:42`) stays as it is;
+  `modules/codehost-local/` joins the platform check's core paths (`platform/src/check.mjs:72-76,129`).
 - **The agents org per provider:** `local` for `codehost-local`, `aidenhq-<instance_name>` for GitHub. Where code holds
   one `agentsOrg` today (`plan.mjs`, `kinds.ts runnerFacts`, `tiers.mjs:50`, `apps-mcp checkOrg`), it takes the list of
   the enabled providers' orgs.
@@ -214,12 +216,41 @@ local substitute is built. A local merge instead gets the kernel's AI reviewer t
 
 Existing rule ids and reason strings stay byte-identical; local behaviour only adds rules.
 
+### Design review (the UI Reviewer, adapted)
+
+The same flow as on GitHub, with the verdict carried by the task instead of a commit status. No new tool.
+- **Asking:** a local change that touches UI files (`merge-gate.mjs` `touchesUi`), with a design reviewer in the fleet
+  (`main.mjs:485`), gets the same "Design review" task the runner files today (`fileDesignReviewTask`, `main.mjs:503`),
+  naming `local/<app>`, change `n` and its head sha. `repo-checkout` already places that head from the runner's cache
+  clone (`services/computer/launcher.mjs:402-410`); its org check takes the providers' org list.
+- **The verdict:** the UI Reviewer's handbook gains a short local section: for a `local/*` change, it ends its review
+  with a comment of exactly `design-review: success <sha>` or `design-review: failure <sha>` plus its findings, on that
+  task, using the task tools it already has.
+- **The hand-off adapter (runner):** on that task, the runner reads only comments whose Paperclip author holds the
+  `design-review` role (grants), with `<sha>` equal to the change's current head. It writes `design-review` with
+  `{ ok, at }` into the checks note on that sha. Any other comment or sha is ignored.
+- **The gate:** a local UI change merges only with `design-review` green in the note, and the 2-hour fallback to the
+  owner applies as on GitHub (`DESIGN_REVIEW.minutes`).
+
+### Previews (apps-mcp, adapted)
+
+- **Source:** `startPreviews` takes a local implementation of its `GitHub` interface (`previews.ts:48-53`) for
+  `local/*` apps:
+  - `openPrs(repo)` lists the open changes from `refs/changes/*` (`number`, head `sha`, `base`);
+  - `comment(...)` stores the preview's URL and status on the preview row (the row already keeps `comment_id`) and
+    posts nothing.
+- **Checkout:** `checkoutPr` reads `refs/changes/<n>/head` from the read-only mount. Everything else in previews (the
+  derived app, its sandbox, PER_APP, removal on merge or close) runs unchanged.
+- **The link:** `/internal/open-prs` returns each change's `preview_url`, and the board's Fleet Ops open-PR row
+  (`fleet-ops.ts:314`) shows it as a link.
+
 ### Atomic squash merge
 
 The merge executes only when all of these hold:
 1. the record is approved, or at Tier 0;
 2. `refs/changes/<n>/head` equals the record's `args.prs[].head`;
-3. its receipt is green on that sha.
+3. its receipt is green on that sha: `tests`, `secrets`, and `design-review` when the change touches UI and the fleet
+   has a design reviewer.
 
 Then:
 - **Land:** `landOnMain`'s squash: `merge-tree` of the change against the current `main`, then one new commit with
@@ -234,14 +265,11 @@ Then:
 - **After the merge:** the runner writes `refs/changes/<n>/merged` and deletes the task branch ref. The apps platform
   deploys `main` as it does today.
 
-### Not carried over locally (owner decides, §9)
+### Not carried over locally
 
-- merge trains;
-- Actions re-runs and environment retries;
-- Dependabot;
-- PR previews;
-- the design-review status;
-- the image scan.
+- merge trains and Actions re-runs (they serve GitHub CI's queueing and runner faults);
+- Dependabot (a GitHub service);
+- the image scan: it comes in a later build (owner, 2026-11-17).
 
 ## 6. Apps platform reads through the role
 
@@ -251,15 +279,14 @@ Then:
     otherwise.
   - The PAT header and App tokens apply only to GitHub URLs.
   - `checkOrg` accepts the enabled providers' orgs.
-- **`checkoutPr`** reads `refs/changes/<n>/head` for a local app. Previews stay off for local apps until the owner turns
-  them on (§9).
+- **`checkoutPr`** reads `refs/changes/<n>/head` for a local app; previews run for local apps (§5).
 - **Registry:** the instance repo push already goes to `AIDENHQ_INSTANCE_PUSH_URL`, so it doesn't change. The default at
   `main.ts:63` picks the GitHub URL only when the GitHub provider is on.
 
 ## 7. GitHub later
 
 - **"Connect GitHub" (via Aiden):**
-  - enables `codehost-github`, `github` and `design`;
+  - enables `codehost-github` and `github`;
   - collects `github_bot_token`;
   - runs the App setup.
   - Local repos keep their host. New repos go where `create_repo` names them.
@@ -282,45 +309,39 @@ Then:
   `services/runner/test/land.test.mjs` use local remotes already).
 - The gitleaks binary on the host: confirm `ops/vm/setup.sh` can pin it by sha256 within the supply-chain rules.
 
-## 9. Owner decides
+## 9. Decided (owner, 2026-11-17)
 
-1. **Tier of a local agents-org merge:**
-   - **(recommended)** Tier 1, the AI reviewer (`local-merge`), in place of CI's code-review job;
-   - or Tier 0 with no AI review (faster, no review at all).
-2. **Image scan for local apps:**
-   - **(recommended)** run apps-mcp's existing build, then scan before deploy (a later step) and ship without it first;
-   - or block local merges that change a Dockerfile until it exists.
-3. **Design review on local UI changes:**
-   - **(recommended)** later: the UI Reviewer's verdict becomes a `design-review` entry in the checks note through an
-     `aidenhq` command;
-   - or now, in this build.
-4. **PR previews for local apps:**
-   - **(recommended)** later, on `refs/changes/<n>/head`;
-   - or never.
-5. **Both providers on at once,** routed by org:
-   - **(recommended)** yes;
-   - or a `conflicts: [codehost]` single provider (simpler, but "connect GitHub" then moves every repo).
+1. A local agents-org merge goes to the AI reviewer at Tier 1 (`local-merge`).
+2. The image scan for local apps comes in a later build.
+3. Design review and previews for local apps are in this build, through the two hand-off adapters in §5.
+4. Both providers run together, each repo routed by its org.
 
-## 10. Build order (for the plan written after approval)
+A feature is offered in full or not at all: the bundle swap (unit 8) lands only after the end-to-end run passes.
 
-1. **Role and routing.** `provides`/`requires` changes, `hostOf(slug)`, and `codehost-github/src/host.mjs` wrapping
-   today's code. No behaviour change.
-2. **Kinds, the org list and the eval cases** (`kinds.ts` URL form and org list, `plan.mjs` `local-merge`, `tiers.mjs:50`,
-   card text `cards.ts:93,100,103`). These fall
-   under the reviewer-eval rule, so the eval must hold at 100% on the PR head.
-3. **Core of `codehost-local`:** bare repos, create, publish, change refs, diff on cards.
-4. **Checks:** jail runner, gitleaks pin, notes receipt, `aidenhq wait/status`.
-5. **Merge:** CAS squash, plus the merged and closed refs.
-6. **Apps platform:** apps-mcp mount, `git.ts` URLs, open-prs and pr-states for `local/*`.
-7. **Bundle swap**, after an end-to-end run on a fresh VM with no GitHub: create, build, review, merge, deploy one app.
+## 10. Build order
 
-**Tests:** one end-to-end runner test on temp bare repos (create, publish, change, checks, merge, moved-main CAS), plus
-the reviewer cases below.
+One PR per unit. "modules" is `Aiden-HQ/aidenhq-modules`, "product" is `Aiden-HQ/AidenHQ`. A product unit that needs
+module changes bumps `modules-pin.json` to the merged modules commit. **Eval** marks the units that touch
+reviewer-eval files: the reviewer eval (paid key, on the server) must be at 100% on their exact head before merge.
+
+| # | Repo | Unit | Depends on | Tests | Eval |
+|---|---|---|---|---|---|
+| 1 | modules | **Role.** `provides: [codehost]` on `codehost-github`; `engineering` and `design` require `codehost`; their `github` grants become optional; `codehost-github/src/host.mjs` wraps today's code behind the §2 interface; an empty `codehost-local` module (not in the bundle). | – | `codehost-github`: `host.mjs` returns today's sources and default branch for a GitHub slug. | no |
+| 2 | modules | **Tiering.** `plan.mjs`: the agents org becomes a list; new rule `local-merge` (Tier 1); existing rules and reasons byte-identical. The §11 cases in `ai-reviewer/test/reviewer-cases/`. | 1 | `codehost-github/test` plan: a `local/*` merge is `local-merge` Tier 1; a GitHub agents-org merge is still `agents-org-merge`. | **yes** (`plan.mjs`, cases) |
+| 3 | product | **Kernel and runner routing.** `kinds.ts` (local URL form, org list), `tiers.mjs:50`, `cards.ts:93,100,103` and `writes.ts:271` wording per host, `hostOf(slug)` at every §1 call site, pin to 1+2. GitHub behaviour unchanged. | 2 | kernel kinds test: a `codehost:local/x/change/3` merge is accepted and its floor is 1; runner card-contract test; the existing runner suites unchanged. | **yes** (`kinds.ts`, `tiers.mjs`, `cards.ts`) |
+| 4 | modules | **`codehost-local` core.** Bare repos under the data dir, `createRepo`, `publish`, change refs (open, update, read, diff, close), the checks note read/write, and the CAS squash merge (`landOnMain`). | 1 | `codehost-local/test`, on temp bare repos: create, publish, open change, update it, merge, a moved `main` redone once, a conflict refused, close. | no |
+| 5 | product | **Runner on local repos.** Publishing and change requests through `hostOf`, cards with the diff, checks in the jail after each publish (`tests`, `secrets`), the gitleaks pin in `ops/vm/setup.sh`, red-check wakes, `aidenhq wait`/`status`, merge execution with the three conditions, pin to 4. | 3, 4 | One runner flow test on temp bare repos: create, publish, `pr`, checks green, Tier 1 approval (stubbed reviewer), merge; a moved head refused; a red check wakes the task. | no |
+| 6 | modules + product | **Design-review adapter.** modules: the UI Reviewer's local handbook section and the `design-review` role description. product: the runner files the task for local UI changes, reads the role-holder's verdict comment and writes the note; `launcher.mjs` org list; pin. | 5 | runner flow test: a UI change waits; a `design-review: success <sha>` from the role-holder makes it merge; the same line from another agent or for an old sha does nothing. | no |
+| 7 | modules + product | **Apps platform.** modules: apps-mcp mount, `git.ts` URLs and org list, `/internal/open-prs` and `/internal/pr-states` for `local/*`, the local previews source with `preview_url`. product: board regexes (`wake.ts:76`, `quality.ts:26`, `merge-queue.mjs findPrs` in modules), the Fleet Ops preview link; pin. | 4 | apps-mcp: deploy a `local/*` app from a temp bare repo; a preview of change `n` comes up and is removed on merge. board: `npx vitest run`, `tsc -p tsconfig.build.json`. | no |
+| 8 | modules + product | **Bundle swap.** `marketplace.json`: `codehost-local` in, `codehost-github` and `github` out; "connect GitHub" offered by Aiden; pin. Lands only after a fresh-VM run with no GitHub: create, build, checks, design review, preview, review, merge and deploy one app. | 5, 6, 7 | `ops/test/unattended-install.sh` installs with the new bundle; `scripts` compile test with no `github` module. | no |
+
+Units 4 and 3 can run in parallel after 2; 6 and 7 in parallel after 5 (7 needs only 4).
 
 ## 11. Reviewer-eval cases (`modules/ai-reviewer/test/reviewer-cases/`)
 
-The `plan.mjs`, `kinds.ts`, `tiers.mjs` and `cards.ts` changes fall under the reviewer-eval rule. Every existing case keeps passing unchanged.
-The new cases are:
+The `plan.mjs`, `kinds.ts`, `tiers.mjs` and `cards.ts` changes (units 2 and 3) fall under the reviewer-eval rule. Every
+existing case keeps passing unchanged. Unit 2 adds the first six cases; the two mirror cases come with the mirror's
+own build (§7).
 
 | Case file | Card | Expect |
 |---|---|---|
