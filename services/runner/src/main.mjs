@@ -27,7 +27,7 @@ import { splitAnswered } from "./answered.ts";
 import { ALL_STATUSES, Paperclip, blockedRefusal, origins, unresolvedBlockers } from "./paperclip.ts";
 import { isTransient, retryTransient, shouldRetryTurn } from "./retry.ts";
 import { branchGuidance, checkBranchName, chooseBranchName, exampleBranches } from "./branch.ts";
-import { cleanMessages, existingPrUrl, leakIn, leaksInternal, stripAttribution, writePrDescription } from "./describe.ts";
+import { cleanMessages, existingPrUrl, leakIn, leaksInternal, sameOrg, stripAttribution, writePrDescription } from "./describe.ts";
 import { branchesFooter, slackSources, firstPrompt, followUpPrompt, latestReport, prSummary, prTitle, subtaskSummary, summaryGist, appliedNote, runOutcome, coversHead } from "./prompt.ts";
 import { staleHead, staleRef } from "./progress.ts";
 import { PRIMER_FILES, primerLink, publishedRef, readDocument } from "./primer.ts";
@@ -90,6 +90,8 @@ const gho = async (slug, perms, extra) => ghOptions(await appFor(slug), slug, pe
 /** One repository however written (kernel/src/kinds.ts repoKey: the kernel holds the runner's writes with the same key). */
 const sameRepo = (a, b) => Boolean(repoKey(a)) && repoKey(a) === repoKey(b);
 const ownRepo = (slug) => appOwnRepo(slug, cfg.agentsOrg, cfg.productRepo);
+/** Where our tooling's names may appear in commits and PR text: our own repos and the product's other repos (its modules and distro). Permissions stay on ownRepo. */
+const ourText = (slug) => ownRepo(slug) || sameOrg(slug, cfg.productRepo);
 const ghoMerge = async (slug, extra, perms = WRITE) => mergeOptions(await appFor(slug), slug, { agentsOrg: cfg.agentsOrg, productRepo: cfg.productRepo }, perms, extra);
 /** A re-run's token: only this (the App needs Actions: write; without it the re-run is refused and the check's failure stands). */
 const RERUN = { actions: "write" };
@@ -4254,7 +4256,7 @@ async function publish(issue, workspace, command, signal, { only = [], text, che
   const editing = command === "pr" && Boolean(text) && rows.filter((r) => named(r) && !r.merged).length === 1;
   const publishable = rows.filter((r) => named(r) && !r.merged && (r.unpublished.length || (command === "pr" && !r.prUrl) || (editing && r.prUrl)));
   // Outside reviewers mustn't see our internal names; our own repos (the product, the agents org) are about them.
-  const leak = text && !publishable.every((r) => ownRepo(r.repo)) ? leakIn(`${text.title}\n${text.body}`) : undefined;
+  const leak = text && !publishable.every((r) => ourText(r.repo)) ? leakIn(`${text.title}\n${text.body}`) : undefined;
   if (leak) throw new UserError(`Not done: the PR title or description mentions "${leak}". The repository's reviewers mustn't see internal names, tools, task numbers or local paths; reword it and run the command again.`);
   if (!publishable.length) {
     const open = rows.filter((r) => named(r) && r.prUrl && !r.merged);
@@ -4335,7 +4337,7 @@ async function publishBranch(issue, full, r, command, rows, text, pin) {
   if (r.branch === r.defaultBase ? !empty : !checkBranchName(r.branch, { base: r.defaultBase, defaultBranch: r.defaultBase })) throw new UserError(`not a branch name I'd publish`);
   // Only the commits being published: what's already on GitHub (other people's work) isn't ours to judge.
   const unpublishedMessages = (await git(r.path, "log", "--format=%B%x1e", r.branch, "--not", "--remotes=origin").catch(() => "")).split("\x1e");
-  const leaky = ownRepo(r.repo) ? undefined : unpublishedMessages.find((m) => leaksInternal(m));
+  const leaky = ourText(r.repo) ? undefined : unpublishedMessages.find((m) => leaksInternal(m));
   if (r.unpublished.length && leaky) throw new UserError(`a commit message mentions internal names ("${leaky.split("\n")[0].slice(0, 80)}"). Ask me to reword it`);
   const viaApp = Boolean(await appFor(r.repo));
   if (!viaApp) await access().ensureWritable(r.repo); // its own write deploy key, the first time the runner pushes to it
@@ -4379,7 +4381,7 @@ async function publishBranch(issue, full, r, command, rows, text, pin) {
   const fallbackTitle = prTitle(oneline, rows.filter((x) => !x.merged).length > 1 || leaksInternal(full.title) ? subject : full.title);
   const siblings = rows.filter((x) => x !== r && !x.merged);
   // The agent's own title and description (it knows the conversation), unless they mention internal names.
-  const own = text?.title && (ownRepo(r.repo) || !leaksInternal(`${text.title}\n${text.body ?? ""}`)) ? { title: String(text.title).slice(0, 200), body: String(text.body ?? "").slice(0, 60_000), generated: false } : undefined;
+  const own = text?.title && (ourText(r.repo) || !leaksInternal(`${text.title}\n${text.body ?? ""}`)) ? { title: String(text.title).slice(0, 200), body: String(text.body ?? "").slice(0, 60_000), generated: false } : undefined;
   const pr = own ?? await writePrDescription({
     cfg, repo: r.repo, base,
     request: [
@@ -4390,7 +4392,7 @@ async function publishBranch(issue, full, r, command, rows, text, pin) {
     messages, stat, diff, report: siblings.length ? undefined : await lastReport(issue.id).catch(() => undefined), fallbackTitle,
   });
   // Our own repos' PRs may name our tools and paths (an Evidence section's .aidenhq/out/ screenshots), as `own` above allows.
-  const body = !ownRepo(r.repo) && leaksInternal(pr.body) ? "" : pr.body;
+  const body = !ourText(r.repo) && leaksInternal(pr.body) ? "" : pr.body;
   log("pr description", { issue: issue.identifier, branch: r.branch, generated: pr.generated, rejected: Boolean(pr.rejected), own: Boolean(own), ownRefused: Boolean(text?.title && !own) });
   let adopted;
   const { stdout } = await execFileP(await findRealGh(), ["pr", "create", "--draft", "--repo", r.repo, "--head", r.branch, "--base", base, "--title", pr.title, "--body", body], await gho(r.repo, WRITE, { cwd: r.path })).catch((err) => {
