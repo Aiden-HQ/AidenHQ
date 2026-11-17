@@ -1,3 +1,4 @@
+# Job budgets (timeout-minutes): about 2x the slowest hosted run seen on 2026-11-17 (rounded up to whole minutes), so a job that blows its budget fails loudly. A failed job is never retried.
 # Tests and typechecks for every package, on pull requests and pushes to main. Offline: no secrets are used.
 # Every job runs on a GitHub-hosted runner (this repository is public, so it costs nothing). The self-hosted runners
 # (modules/ci) serve the private agents-org repositories only.
@@ -25,7 +26,7 @@ jobs:
   # base) covers them; and every one of them is pinned (scripts/supply-chain/pins.mjs).
   supply-chain:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 3
     permissions:
       contents: read
       packages: read # ghcr.io images are dated by the GitHub Packages API
@@ -64,7 +65,7 @@ jobs:
   pr-title:
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 2
     permissions:
       pull-requests: read
     steps:
@@ -96,7 +97,7 @@ jobs:
     needs: image-changes
     if: needs.image-changes.outputs.packages == 'true'
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 3
     strategy:
       fail-fast: false
       matrix:
@@ -175,7 +176,7 @@ jobs:
     needs: image-changes
     if: contains(fromJSON(needs.image-changes.outputs.tests).*.name, 'services/runner')
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 2
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -209,7 +210,7 @@ jobs:
     needs: image-changes
     if: contains(fromJSON(needs.image-changes.outputs.tests).*.name, 'services/runner#flows')
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 3
     strategy:
       fail-fast: false
       matrix:
@@ -261,7 +262,7 @@ jobs:
     needs: image-changes
     if: contains(fromJSON(needs.image-changes.outputs.tests).*.name, 'services/board')
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 2
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -295,7 +296,7 @@ jobs:
   # or lockfile. Every one is listed, whatever its FROM: a FROM that can't be resolved fails the scan, never skips it.
   image-changes:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 2
     permissions:
       contents: read
       actions: read # the earlier green runs of a rebased PR (.github/ci/select.mjs)
@@ -443,7 +444,7 @@ jobs:
     if: always()
     needs: [supply-chain, pr-title, image-changes, packages, runner-unit, runner-flows, board, image-scan]
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 2
     steps:
       - env:
           RESULTS: ${{ toJSON(needs) }}
