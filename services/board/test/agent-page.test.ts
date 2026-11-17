@@ -17,6 +17,7 @@ const issue = (n: number, o: Record<string, unknown> = {}) => ({
 });
 // 35 finished tasks, WOR-1 the oldest.
 const closed = Array.from({ length: 35 }, (_, k) => issue(k + 1, { status: "done", updatedAt: new Date(Date.UTC(2026, 10, 1, 0, k)).toISOString() }));
+closed.push(issue(200, { status: "done", labelIds: ["chat-label"], updatedAt: "2026-10-01T00:00:00Z" })); // a finished chat
 const pc = {
   me: async () => "owner-user",
   company: async () => ({ issuePrefix: "WOR" }),
@@ -31,7 +32,7 @@ const pc = {
   ],
   // Paperclip's own filter, search and paging, newest first.
   closedFor: async (_id: string, o: { q?: string; offset?: number; limit?: number }) =>
-    [...closed].reverse().filter((i) => !o.q || `${i.identifier} ${i.title}`.toLowerCase().includes(o.q.toLowerCase())).slice(o.offset ?? 0, (o.offset ?? 0) + (o.limit ?? 30)),
+    [...closed].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)).filter((i) => !o.q || `${i.identifier} ${i.title}`.toLowerCase().includes(o.q.toLowerCase())).slice(o.offset ?? 0, (o.offset ?? 0) + (o.limit ?? 30)),
   liveRuns: async () => [],
   recentRuns: async () => [{ id: "r1", status: "failed", agentId: "keeper", issueId: "i100", startedAt: "2026-11-01T00:00:00Z", finishedAt: "2026-11-01T00:01:00Z", error: "boom" }],
   lastRuns: async () => new Map(),
@@ -83,7 +84,7 @@ describe("agent page routes", () => {
     expect(first.rows[0].identifier).toBe("WOR-35");
     expect(first.next).toBe(30);
     const second = (await get("/api/agents/by-key/roadmap-keeper/tasks?view=history&offset=30")).body;
-    expect(second.rows.map((r: any) => r.identifier)).toEqual(["WOR-5", "WOR-4", "WOR-3", "WOR-2", "WOR-1"]);
+    expect(second.rows.map((r: any) => r.identifier)).toEqual(["WOR-5", "WOR-4", "WOR-3", "WOR-2", "WOR-1"]); // WOR-200, a finished chat, is left out
     expect(second.next).toBeNull();
     const found = (await get("/api/agents/by-key/roadmap-keeper/tasks?view=history&q=wor-7")).body;
     expect(found.rows.map((r: any) => r.identifier)).toEqual(["WOR-7"]);

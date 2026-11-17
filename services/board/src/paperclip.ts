@@ -293,8 +293,8 @@ export class Paperclip {
   }
 
   /** One page of an agent's finished tasks, newest first (Paperclip filters, searches and pages; the assignee is checked here too). */
-  async closedFor(agentId: string, opts: { q?: string; offset?: number; limit?: number } = {}): Promise<Issue[]> {
-    const p = new URLSearchParams({ assigneeAgentId: agentId, status: "done,cancelled", limit: String(opts.limit ?? 30), offset: String(opts.offset ?? 0), excludeRoutineExecutions: "true" });
+  async closedFor(agentId: string, opts: { q?: string; status?: "done" | "cancelled"; offset?: number; limit?: number } = {}): Promise<Issue[]> {
+    const p = new URLSearchParams({ assigneeAgentId: agentId, status: opts.status ?? "done,cancelled", limit: String(opts.limit ?? 30), offset: String(opts.offset ?? 0), excludeRoutineExecutions: "true" });
     if (opts.q?.trim()) p.set("q", opts.q.trim());
     return (await this.request<Issue[]>("GET", `/api/companies/${this.companyId}/issues?${p}`)).filter((i) => i.assigneeAgentId === agentId);
   }

@@ -1204,16 +1204,15 @@ export function createApp(opts: AppOptions): Server {
         const ctx = await context();
         const agent = agentByKey(ctx.agents, m[1]!);
         if (!agent) throw new HttpError(404, "no such agent");
+        const chat = ctx.labels.find((l) => l.name === "chat");
+        if (url.searchParams.get("view") === "history") {
+          const offset = Math.max(0, Number(url.searchParams.get("offset")) || 0);
+          const status = url.searchParams.get("status");
+          return historyPage(await pc.closedFor(agent.id, { q: url.searchParams.get("q") ?? "", ...(status === "done" || status === "cancelled" ? { status } : {}), offset, limit: HISTORY_PAGE }), offset, chat?.id, ctx.agents);
+        }
         const [live, runs] = await Promise.all([pc.liveRuns(), pc.recentRuns(100)]);
         const lastRun = (i: Issue) => runs.find((r) => r.issueId === i.id && r.finishedAt);
-        if (url.searchParams.get("view") === "history") {
-          // A cancelled task shows as failed only when its last run failed.
-          const stateOf = (i: Issue) => (i.status === "cancelled" && ["failed", "timed_out"].includes(lastRun(i)?.status ?? "") ? "failed" : "done");
-          const offset = Math.max(0, Number(url.searchParams.get("offset")) || 0);
-          return historyPage(await pc.closedFor(agent.id, { q: url.searchParams.get("q") ?? "", offset, limit: HISTORY_PAGE }), offset, stateOf, ctx.agents);
-        }
         const [open, awaiting] = await Promise.all([pc.openIssues(), records.awaiting().catch(() => new Set<string>())]);
-        const chat = ctx.labels.find((l) => l.name === "chat");
         return splitTasks(open, agent.id, chat?.id, (i) => chatState(i, live, lastRun(i), ctx.me, awaiting).state, ctx.agents);
       },
     },

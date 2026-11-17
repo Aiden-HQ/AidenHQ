@@ -22,14 +22,15 @@ export interface AgentProfile {
 export interface TaskRow {
   identifier: string;
   title: string;
-  state: ChatState;
+  /** "stopped": a cancelled task (history). */
+  state: ChatState | "stopped";
   updatedAt: string;
   /** The creator: an agent's name, "You" for the owner, null if unknown. */
   from: string | null;
 }
 
 /** States that wait on the owner. */
-const NEEDS: ChatState[] = ["waiting for you", "waiting for approval", "failed"];
+const NEEDS: string[] = ["waiting for you", "waiting for approval", "failed"];
 export const HISTORY_PAGE = 30;
 
 export function agentByKey(agents: Agent[], key: string): Agent | undefined {
@@ -39,7 +40,7 @@ export function agentByKey(agents: Agent[], key: string): Agent | undefined {
 const when = (i: Issue) => i.lastActivityAt ?? i.updatedAt;
 const newest = (a: { updatedAt: string }, b: { updatedAt: string }) => b.updatedAt.localeCompare(a.updatedAt);
 
-export function taskRow(i: Issue, state: ChatState, agents: Agent[], updatedAt = when(i)): TaskRow {
+export function taskRow(i: Issue, state: TaskRow["state"], agents: Agent[], updatedAt = when(i)): TaskRow {
   const from = i.createdByAgentId ? (agents.find((a) => a.id === i.createdByAgentId)?.name ?? null) : i.createdByUserId ? "You" : null;
   return { identifier: i.identifier, title: i.title, state, updatedAt, from };
 }
@@ -53,9 +54,13 @@ export function splitTasks(issues: Issue[], agentId: string, chatLabelId: string
   return { needs: rows.filter((r) => NEEDS.includes(r.state)), ongoing: rows.filter((r) => !NEEDS.includes(r.state)) };
 }
 
-/** One page of finished tasks (Paperclip filtered and paged them); `next` is the offset of the following page, if this one was full. */
-export function historyPage(closed: Issue[], offset: number, stateOf: (i: Issue) => ChatState, agents: Agent[] = []): { rows: TaskRow[]; next: number | null } {
-  return { rows: closed.map((i) => taskRow(i, stateOf(i), agents, i.updatedAt)), next: closed.length === HISTORY_PAGE ? offset + HISTORY_PAGE : null };
+/** One page of finished tasks (Paperclip filtered and paged them), chats left out; `next` is the following offset when the raw page was full. */
+export function historyPage(closed: Issue[], offset: number, chatLabelId: string | undefined, agents: Agent[] = []): { rows: TaskRow[]; next: number | null } {
+  const isChat = (i: Issue) => Boolean(chatLabelId && (i.labelIds?.includes(chatLabelId) || i.labels?.some((l) => l.id === chatLabelId)));
+  return {
+    rows: closed.filter((i) => !isChat(i)).map((i) => taskRow(i, i.status === "cancelled" ? "stopped" : "done", agents, i.updatedAt)),
+    next: closed.length === HISTORY_PAGE ? offset + HISTORY_PAGE : null,
+  };
 }
 
 export interface ProfileInputs {
