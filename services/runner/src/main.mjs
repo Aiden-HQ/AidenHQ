@@ -58,7 +58,7 @@ import { ALREADY_APPLIED, guardBranch } from "./evidence.ts";
 import { jobUsage } from "./usage.ts";
 import { createEvalGate } from "./evalgate.ts";
 import { fastChecks } from "../../../kernel/src/fastcheck.ts";
-import { localCheckRuns } from "./local-checks.ts";
+import { localCheckRuns } from "../../../modules/codehost-local/src/checks.ts";
 import { afterRejection, graderSpeaks, summaryKind, wakesParent } from "./notices.ts";
 import { readBusy } from "./busy.ts";
 import { normalizeRepo, repoAccess } from "../../../modules/codehost-github/src/repos.ts";
@@ -2217,7 +2217,7 @@ async function currentTier(issue, a, { withDiff = false, bases } = {}) {
     const t = await tierFor(issue, "merge", { prs });
     if (!withDiff) return t;
     const read = bases ?? (await cardBases({ prs: a.args.prs }));
-    const diffs = await Promise.all(prs.map(async (p, i) => `### ${p.url}${read[i]?.base ? ` base ${read[i].base}` : ""}\n${await localHost.diff(p.repo, p.number).catch(() => "")}`));
+    const diffs = await Promise.all(prs.map(async (p, i) => `### ${p.url}${read[i]?.base ? ` base ${read[i].base}` : ""}\n${await localHost.diff(p.repo, p.number, { head: a.args.prs[i].head }).catch(() => "")}`));
     const g = (slug, ...args) => execFileP("git", [...SAFE_GIT_ARGS, "--git-dir", localHost.bare(slug), ...args], { env: ISOLATED_ENV, maxBuffer: 16 * 1024 * 1024 }).then((o) => o.stdout);
     const files = prs.flatMap((p, i) => (p.files ?? []).map((f) => ({ name: `${p.repo} ${f}`, read: () => g(p.repo, "show", `${a.args.prs[i].head}:${f}`) })));
     return { ...t, diff: diffs.join("\n\n"), files: await readFiles(files), bases: read, evidence: prs.map((p) => `### ${p.url}\n${evidenceOf(p.body)}`).join("\n\n") };
@@ -4663,7 +4663,10 @@ async function agentMergeLocal(ctx, prs, gap) {
   states.forEach((s, i) => s.patch && (bound[i].patch = s.patch));
   const bad = tiers.find((t) => t.reject);
   if (bad) throw new UserError(`Not done: ${bad.reason}.`);
-  const diff = (await Promise.all(bound.map(async (p) => `### ${p.url} at ${p.head.slice(0, 12)}\n${await localHost.diff(p.repo, p.number)}`))).join("\n\n");
+  // The card shows exactly the bound heads' diffs, and only while each change is still at its bound head.
+  const diff = (await Promise.all(bound.map(async (p) => `### ${p.url} at ${p.head.slice(0, 12)}\n${await localHost.diff(p.repo, p.number, { head: p.head })}`))).join("\n\n");
+  const moved = (await Promise.all(bound.map((p) => localHost.readChange(p.repo, p.number)))).filter((c, i) => c.head !== bound[i].head);
+  if (moved.length) throw new UserError(`Not done: ${moved.map((c) => c.url).join(", ")} moved while the card was being filed; ask again.`);
   const a = await fileApproval(ctx.issue, { action: "merge", args: { prs: bound, ...(gap !== undefined ? { gap } : {}) }, diff, ts: tiers });
   return `${waitingFor(a, ctx.issue)} Once approved, ${bound.map((p) => p.url).join(", ")} merge one at a time, each only at the commit the card shows and once its checks are green on it.`;
 }
