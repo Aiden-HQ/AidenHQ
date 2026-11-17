@@ -570,13 +570,18 @@ describe("public PR text", async () => {
     for (const t of ["Draft opened by AidenHQ for Paperclip task PEN-406.", "see PEN-12", "[README](/home/dana/aidenhq/tasks/PEN-406/README.md)", "generated with opencode"]) assert.equal(leaksInternal(t), true, t);
     assert.equal(leaksInternal("chore: add deprecation notice\n\nAdds a deprecation notice ahead of archiving this repository."), false);
   });
-  it("lets commits to the product's own org name AidenHQ, and keeps third-party repos clean", async () => {
-    const { sameOrg } = await import("../src/describe.ts");
+  it("lets only the official modules repo name AidenHQ besides our own repos; the rest of its org stays clean", async () => {
+    const { isRepoIn } = await import("../src/describe.ts");
+    const { githubSlug } = await import("../src/config.mjs");
+    const { OFFICIAL_URL } = await import("../../../kernel/src/loader/sources.ts");
+    const official = [githubSlug(OFFICIAL_URL)];
     const msg = "fix(monitoring): a retired CI runner unit is not reported missing\n\nThe aidenhq-runner unit is listed.";
     assert.equal(leaksInternal(msg), true);
-    assert.equal(sameOrg("Aiden-HQ/aidenhq-modules", "Aiden-HQ/AidenHQ"), true);
-    assert.equal(sameOrg("acme/api", "Aiden-HQ/AidenHQ"), false);
-    assert.equal(sameOrg(undefined, "Aiden-HQ/AidenHQ"), false);
+    assert.equal(isRepoIn("Aiden-HQ/aidenhq-modules", official), true);
+    assert.equal(isRepoIn("aiden-hq/AidenHQ-Modules", official), true);
+    assert.equal(isRepoIn("Aiden-HQ/other", official), false);
+    assert.equal(isRepoIn("acme/api", official), false);
+    assert.equal(isRepoIn(undefined, official), false);
   });
   it("falls back to a Conventional Commit title, which a squash merge makes the commit", async () => {
     const { prTitle } = await import("../src/prompt.ts");
