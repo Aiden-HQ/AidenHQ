@@ -56,7 +56,8 @@ Images (pinned by digest; `scripts/supply-chain/best-version.mjs`, release dates
   `aidenhq_gateway_ci_day_cap_usd`, `aidenhq_gateway_inflight`. Labels are agent keys.
 - Runner: `aidenhq_runner_queue_depth`, `_running_jobs`, `_oldest_job_seconds`, `_job_duration_seconds` (histogram, since
   the runner started), `_merge_queues{state}`, `_merge_prs_waiting`.
-- Host: `aidenhq_unit_active|failed{scope,unit}`, `aidenhq_fleet_draining`, `aidenhq_container_running|restarts|unhealthy{id,project,service,name}`.
+- Host: `aidenhq_unit_active|failed{scope,unit}`, `aidenhq_unit_declared{scope="user",unit}` (the enabled set an apply keeps
+  running, so `CiRunnerUnitMissing` ignores a retired unit), `aidenhq_fleet_draining`, `aidenhq_container_running|restarts|unhealthy{id,project,service,name}`.
   A planned drain records the units it stopped in `data/fleet-paused.json`, and `aidenhq_unit_failed` stays 0 for them while
   that record exists: `UnitFailed` and `CiRunnersDown` (which also needs `aidenhq_fleet_draining == 0`) page on a crash, not on
   maintenance. Both also need a fresh `units.prom` (written within 3 minutes), so a dead exporter is a freshness alert
