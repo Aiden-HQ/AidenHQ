@@ -88,7 +88,7 @@ applies to changes to the module (its service, policy `service/security/`, cases
   (`docker compose exec jira-mcp node dist/src/probe.js [tool '<json>']`).
 - **Inbound:** the kernel's admin listener (3120: sign-in, approval pages) and the board (3121) are loopback-only but every
   host process shares that loopback (Engineer jobs, Tailscale serve), so every route on 3120 and 3121 needs a signed-in
-  admin (accounts: Better Auth in the kernel, password + TOTP, `data/kernel/auth/auth.db`, which the board's 3129 listener
+  admin (beyond sign-in, only OpenRouter's PKCE callback, by a single-use state) (accounts: Better Auth in the kernel, password + TOTP, `data/kernel/auth/auth.db`, which the board's 3129 listener
   also opens until 3g; no SSO, sign-in beyond that is Cloudflare Access). Cards are decided only on the kernel's pages or
   by channel token. Every admin is an owner: writes with the
   board key, taps and typed replies decide (`account:<id>`); the board labels what non-owner admins wrote ("by <name>",
