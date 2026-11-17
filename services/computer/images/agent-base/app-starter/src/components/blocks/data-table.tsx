@@ -73,7 +73,7 @@ export function Pagination({
   return (
     <nav aria-label="Pagination" className="flex items-center justify-between gap-4">
       <p className="text-sm text-muted-foreground tabular-nums">
-        {from}–{to} of {total}
+        {from.toLocaleString()}–{to.toLocaleString()} of {total.toLocaleString()}
       </p>
       <div className="flex items-center gap-2">
         <Button variant="outline" disabled={page <= 1} onClick={() => onPage(page - 1)}>

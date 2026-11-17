@@ -58,10 +58,10 @@ export function TeamsPage() {
                   </TableCell>
                   {shown.map((s) => (
                     <TableCell key={s} className="text-right tabular-nums">
-                      {t.count(s)}
+                      {t.count(s).toLocaleString()}
                     </TableCell>
                   ))}
-                  <TableCell className="pr-4 text-right tabular-nums">{t.total}</TableCell>
+                  <TableCell className="pr-4 text-right tabular-nums">{t.total.toLocaleString()}</TableCell>
                 </TableRow>
               ))}
             </TableBody>

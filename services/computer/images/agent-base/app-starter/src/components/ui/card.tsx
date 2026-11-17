@@ -2,7 +2,10 @@ import * as React from "react"
 import { cva, type VariantProps } from "class-variance-authority"
 import { cn } from "@/lib/utils"
 
-const cardVariants = cva("flex flex-col gap-6 rounded-xl bg-card py-6 text-card-foreground", {
+// A card inside a link lifts 1px with a soft shadow on hover (it enters slower than it leaves).
+const linked = "transition-[translate,box-shadow] duration-(--duration-exit) ease-(--ease) [a:hover_&]:-translate-y-px [a:hover_&]:shadow-(--shadow) [a:hover_&]:duration-(--duration) [a:hover_&]:ease-(--ease-out)"
+
+const cardVariants = cva(`flex flex-col gap-6 rounded-xl bg-card py-6 text-card-foreground ${linked}`, {
   variants: {
     variant: {
       default: "border shadow-sm",

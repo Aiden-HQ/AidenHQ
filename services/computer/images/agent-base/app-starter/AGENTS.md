@@ -62,6 +62,13 @@ these commands in the same PR, as it does `feature-map.json`.
   imports. The README lists every piece. Pick the shell that fits the app's navigation (`TopBarShell`, `SidebarShell`,
   `BareShell`, or none). The example page is one sample. Need a control? Use or add a shadcn component (README) before
   writing your own.
+- **React habits for a Vite app:**
+  - Define each component at module level, so state survives a re-render.
+  - Derive a value while rendering; keep `useEffect` for syncing with the outside world.
+  - Update state from the previous state with the functional form: `setCount((n) => n + 1)`.
+  - Write `count > 0 ? <List /> : null`, so a 0 renders nothing instead of printing "0".
+  - Load heavy views (charts, editors, maps) with `React.lazy`.
+  - Virtualise a list that can pass 50 rows.
 - **"Powered by AidenHQ".** Every shell renders `PoweredBy` (`src/components/powered-by.tsx`) at the foot of the
   page by default. It is not required: the app's owner may move or remove it.
 - **Theme:** keep the default palette, pick a preset (`src/styles/presets/`: import it after `shadcn.css` and set

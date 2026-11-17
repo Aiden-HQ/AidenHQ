@@ -10,7 +10,7 @@ export function BareShell({ variant = "full", children }: { variant?: "full" | "
     <main
       id="content"
       data-variant={variant}
-      className={cn("min-w-0", variant === "centered" && "flex min-h-svh items-center justify-center bg-page px-4 py-10")}
+      className={cn("min-w-0", variant === "centered" && "flex min-h-dvh items-center justify-center bg-page px-4 py-10")}
     >
       {variant === "centered" ? (
         <div className="w-full max-w-md">

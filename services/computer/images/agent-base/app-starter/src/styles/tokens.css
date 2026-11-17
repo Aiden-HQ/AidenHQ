@@ -3,7 +3,7 @@
    <html data-theme="light|dark">. Colour values are Radix Colors 3.0.0 steps (MIT, (c) 2021 Radix; github.com/radix-ui/colors):
    1-2 app backgrounds, 3-5 component backgrounds, 6-8 borders, 9-10 solid fills, 11-12 text.
    Apps vendor this file unchanged (keep the version line); brand or instance overrides go in a theme.css loaded after it. */
-/* design-system version: 3.0.0 */
+/* design-system version: 3.1.0 */
 
 :root {
   color-scheme: light dark;
@@ -54,13 +54,19 @@
   --border: 1px;
   --focus-width: 2px;
 
-  /* Motion: smooth and fast, 150-250ms, never bouncy. Enter decelerates, exit accelerates. */
+  /* Motion: smooth and fast, 150-250ms, never bouncy. An enter starts fast and settles (--ease-out), and an exit is
+     shorter than its enter. A press is the quickest of all (90ms) and only ever scales to .985. Under reduced motion
+     the durations, fades, colour and shadow changes, the press and small lifts all stay; only big movement goes:
+     --motion-distance scales every slide and translation of more than a few px (1 normally, 0 when reduced). */
+  --motion-distance: 1;
+  --duration-press: 90ms;
+  --duration-exit: 120ms;
   --duration-fast: 150ms;
   --duration: 180ms;
   --duration-slow: 240ms;
   --ease: cubic-bezier(0.2, 0, 0, 1);
-  --ease-enter: cubic-bezier(0.05, 0.7, 0.1, 1);
-  --ease-exit: cubic-bezier(0.3, 0, 0.8, 0.15);
+  --ease-out: cubic-bezier(0.23, 1, 0.32, 1);
+  --ease-press: cubic-bezier(0.4, 0, 0.2, 1);
 
   /* Layout and stacking */
   --gutter: 16px;
@@ -81,7 +87,7 @@
   :root { --control-h: var(--tap); --control-h-sm: 40px; }
 }
 @media (prefers-reduced-motion: reduce) {
-  :root { --duration-fast: 0ms; --duration: 0ms; --duration-slow: 0ms; }
+  :root { --motion-distance: 0; }
 }
 
 /* Dense data theme: smaller type and tighter cells on desktop; touch targets stay 44px on touch screens. */

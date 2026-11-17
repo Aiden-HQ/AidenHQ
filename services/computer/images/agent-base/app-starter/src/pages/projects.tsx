@@ -175,7 +175,7 @@ export function ProjectsPage() {
             </Button>
           )}
           <p className="w-full text-sm text-muted-foreground tabular-nums sm:ml-auto sm:w-auto" aria-live="polite">
-            {ready && `${rows.length} of ${items.length} projects`}
+            {ready && `${rows.length.toLocaleString()} of ${items.length.toLocaleString()} projects`}
           </p>
         </div>
 
@@ -260,14 +260,14 @@ export function ProjectsPage() {
                       {/* The meta line under the name instead of a low-value column of its own. */}
                       <div className="mt-0.5 text-xs text-muted-foreground">
                         {p.team}
-                        <span className="md:hidden"> · {p.owner}</span>
+                        <span className="md:hidden"> · {p.owner || "Unassigned"}</span>
                       </div>
                     </TableCell>
                     <TableCell>
                       <StatusBadge status={p.status} />
                     </TableCell>
-                    <TableCell className="hidden md:table-cell">
-                      {p.owner}
+                    <TableCell className="hidden max-w-56 truncate md:table-cell" title={p.owner}>
+                      {p.owner || <span className="text-muted-foreground">Unassigned</span>}
                     </TableCell>
                     <TableCell className="pr-4 text-right tabular-nums">
                       <div>{formatDate(p.due)}</div>
