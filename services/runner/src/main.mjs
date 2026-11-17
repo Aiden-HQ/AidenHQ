@@ -4155,7 +4155,8 @@ async function publishBranch(issue, full, r, command, rows, text, pin) {
     ].filter(Boolean).join("\n\n"),
     messages, stat, diff, report: siblings.length ? undefined : await lastReport(issue.id).catch(() => undefined), fallbackTitle,
   });
-  const body = leaksInternal(pr.body) ? "" : pr.body;
+  // Our own repos' PRs may name our tools and paths (an Evidence section's .aidenhq/out/ screenshots), as `own` above allows.
+  const body = !ownRepo(r.repo) && leaksInternal(pr.body) ? "" : pr.body;
   log("pr description", { issue: issue.identifier, branch: r.branch, generated: pr.generated, rejected: Boolean(pr.rejected), own: Boolean(own), ownRefused: Boolean(text?.title && !own) });
   let adopted;
   const { stdout } = await execFileP(await findRealGh(), ["pr", "create", "--draft", "--repo", r.repo, "--head", r.branch, "--base", base, "--title", pr.title, "--body", body], await gho(r.repo, WRITE, { cwd: r.path })).catch((err) => {

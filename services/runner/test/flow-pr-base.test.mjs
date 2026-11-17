@@ -47,3 +47,29 @@ describe("flow-pr-base", () => {
 
   it("never errors along the way", () => t.noErrors());
 });
+
+// A PR's description names our paths (an Evidence section's .aidenhq/out/ screenshots): kept as written in our own repos,
+// sent back to the agent for a repository outside them.
+for (const [org, own] of [["acme", true], ["acme-agents", false]]) {
+  describe(`flow-pr-base, the agent's description in ${own ? "our own" : "an outside"} repository`, () => {
+    const t = flow({ grants: { autonomy: "off", agents: {} }, env: { FAKE_PR_CREATE: "1", AIDENHQ_GITHUB_AGENTS_ORG: org } });
+    const creates = () => t.fakeLog().filter((e) => e.kind === "gh" && e.data[0] === "pr" && e.data[1] === "create").map((e) => e.data);
+
+    it(own ? "opens the PR with it" : "goes back to the agent, and no PR opens", async () => {
+      await t.settled();
+      const bodyFile = join(t.dir, "pr-body.md");
+      writeFileSync(bodyFile, "Adds the change.\n\nScreenshots: .aidenhq/out/home-390-light.png\n");
+      t.step(`second\naidenhq pr acme/app feat/second --title feat:-second --body-file ${bodyFile}`);
+      await t.turn("Open a PR for the second change.");
+      const out = t.toolRuns().at(-1).out;
+      if (!own) {
+        assert.match(out, /mentions "aidenhq"/, out);
+        return assert.equal(creates().length, 0);
+      }
+      t.paperclip.decide("pr", "approved");
+      await t.waitFor("the PR", () => creates().length === 1);
+      const args = creates()[0];
+      assert.match(args[args.indexOf("--body") + 1], /Screenshots: \.aidenhq\/out\/home-390-light\.png/, out);
+    });
+  });
+}
