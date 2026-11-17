@@ -112,7 +112,7 @@ function AgentRow({ a, data }: { a: AgentSettings; data: SettingsData }) {
   );
 }
 
-function AgentDetails({ a, data }: { a: AgentSettings; data: SettingsData }) {
+export function AgentDetails({ a, data }: { a: AgentSettings; data: SettingsData }) {
   const filed = useFiled((c) => (c.kind === "agent" || c.kind === "caps") && c.agent === a.key);
   const routines = a.routines.filter((r) => !r.key.startsWith("heartbeat-"));
   return (

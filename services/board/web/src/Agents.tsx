@@ -417,7 +417,7 @@ const spark = (xs: number[]) => {
 const usd = (n: number) => `$${n < 1 ? n.toFixed(3) : n.toFixed(2)}`;
 
 /** The week's diagnostics for one agent: done, sent back (grades), cards rejected, failed runs, billed cost per task; a 7-day trend. Not a ranking. */
-function Scorecard({ id }: { id: string }) {
+export function Scorecard({ id }: { id: string }) {
   const { data: s, error } = useQuery(scorecardQuery(id));
   if (!s && error) return <section><h4>Last 7 days</h4><p className="fleet-empty">Couldn't load the scorecard.</p></section>;
   if (!s) return <section><h4>Last 7 days</h4><SkeletonLines lines={5} /></section>;
