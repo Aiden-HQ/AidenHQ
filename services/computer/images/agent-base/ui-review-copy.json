@@ -1,0 +1,5 @@
+{
+  "filler": ["seamless", "seamlessly", "elevate", "unleash", "supercharge", "revolutionize", "revolutionary", "cutting-edge", "next-gen", "game-changing", "world-class", "leverage", "delve", "effortless", "effortlessly", "lorem", "ipsum"],
+  "chat": ["Certainly!", "Sure!", "Of course!", "As an AI", "I'm sorry", "I hope this helps", "Let me know if"],
+  "figures": ["\\b\\d{2,3}(\\.\\d+)?% (faster|uptime|more|less|better|growth)\\b", "\\b\\d+x (faster|more|better)\\b", "\\b\\d+[kKmM]\\+ (users|customers|teams|companies)\\b", "\\btrusted by \\d"]
+}

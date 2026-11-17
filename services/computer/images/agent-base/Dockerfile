@@ -26,6 +26,7 @@ COPY --chmod=755 repo-checkout /usr/local/bin/repo-checkout
 # (synced from modules/apps-platform/design-system by scripts/sync-shared.mjs) as the review reference; the app starter (synced from
 # modules/apps-platform/starter: shadcn/ui on Vite + React) to scaffold new apps and mockups from, and to serve /catalog.
 COPY --chmod=755 ui-review /usr/local/bin/ui-review
+COPY ui-review-copy.json /usr/local/bin/ui-review-copy.json
 COPY design-system /opt/aidenhq/design-system
 COPY app-starter /opt/aidenhq/app-starter
 # The starter's dependencies, installed once from its lockfile (exact pins, nothing new), so a mockup or a review's

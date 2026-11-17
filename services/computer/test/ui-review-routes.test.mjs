@@ -115,3 +115,16 @@ test("a checkbox whose tick changes only its live checked state visibly acts", (
   assert.equal(r.code, 0, r.md);
   assert.deepEqual(r.json.routes.find((x) => x.what?.startsWith("checkbox")).problems, []);
 });
+
+test("the one-system score and the copy check are report lines, never a failure", () => {
+  const system = { buttons: ["6px / 36px", "9999px / 40px"], radii: ["6px", "8px", "12px"], cards: ["8px 1px flat rgb(255, 255, 255)"], headings: ["28px", "22px"], nested: 3, texts: ["Save changes", "Seamlessly unlock 99% uptime!", "Certainly! Here you go", "Trusted by 10k+ teams"] };
+  const r = review({ STUB_SYSTEM: JSON.stringify(system) });
+  assert.equal(r.code, 0, r.md);
+  assert.deepEqual(r.json.pages[0].system, { buttonShapes: 2, radii: 3, cardStyles: 1, headingSizes: 2, deepBoxes: 3 });
+  assert.match(r.md, /One system .*2 button shapes · 3 border radii · 1 card styles · 2 heading sizes · 3 boxes nested more than 2 deep/);
+  assert.match(r.md, /filler word "seamlessly"/);
+  assert.match(r.md, /chat residue: "Certainly! Here you go"/);
+  assert.match(r.md, /invented-looking figure: "Trusted by 10k\+ teams"/);
+  assert.match(r.md, /exclamation mark/);
+  assert.doesNotMatch(r.md, /"Save changes"/);
+});

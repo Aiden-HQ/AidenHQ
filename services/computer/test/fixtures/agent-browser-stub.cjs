@@ -11,7 +11,7 @@
 // markup; STUB_SAME_LINK=1 gives every page a "Home" link to the page it is on that scrolls to the top, and
 // STUB_DEAD_SAME_LINK=1 one that does nothing; STUB_PRESSED=1 gives it a pressed toggle ("On track") whose click opens
 // the details, and STUB_DEAD_PRESSED=1 one that does nothing. So a test can plant a dead click, its opposite, and a
-// live-state-only effect.
+// live-state-only effect. STUB_SYSTEM='<json>' is what the one-system and copy check read from the page.
 "use strict";
 const { existsSync, mkdirSync, readFileSync, writeFileSync } = require("node:fs");
 const { dirname } = require("node:path");
@@ -57,6 +57,8 @@ else if (["open", "click", "back", "forward"].includes(cmd)) {
   else if (args[1].startsWith("/*routes:clicks*/"))
     reply({ result: JSON.stringify(process.env.STUB_CHECKBOX ? [{ label: "Subscribe", kind: "checkbox" }] : process.env.STUB_PRESSED || process.env.STUB_DEAD_PRESSED ? [{ label: "On track", kind: "button" }] : process.env.STUB_DEAD_BUTTON || process.env.STUB_BUTTON ? [{ label: "Refresh", kind: "button" }] : []) });
   else reply({ result: JSON.stringify({ at, status: pages && ((process.env.STUB_404 ?? "").split(",").includes(at) || !pages[at]) ? 404 : 200, text: st.text }) });
+} else if (cmd === "eval" && args[1].startsWith("/*system*/")) {
+  reply({ result: process.env.STUB_SYSTEM ?? JSON.stringify({ buttons: [], radii: [], cards: [], headings: [], nested: 0, texts: [] }) });
 } else if (cmd === "eval") {
   const tiny = Number(process.env.STUB_TINY ?? 0), overflow = Number(process.env.STUB_OVERFLOW ?? 0);
   const tinyText = process.env.STUB_TINY_TEXT ? process.env.STUB_TINY_TEXT.split(",") : Array.from({ length: tiny }, (_, i) => `.tiny-${i}`);
