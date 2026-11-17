@@ -108,8 +108,8 @@ export function cardOf(action: "push" | "pr" | "merge" | "create_repo", args: an
     return { ...base, target: urls.join(", ").slice(0, 500), sentence: `Merge ${urls.length} ${local ? "change" : "pull"} request${urls.length === 1 ? "" : "s"}, one at a time${args.gap ? `, ${args.gap} minutes apart` : ""}.`, changes: `Merges, in this order, only at these commits and with green checks:\n${lines.join("\n")}`, details: lines.join("\n") };
   }
   const what = onServer(args.repo)
-    ? `Creates the repository ${args.repo} (with a README) on this server. It adds a repository to the agents org; nothing else changes.`
-    : `Creates the private repository ${args.repo} (with a README) through the instance's GitHub App. It adds a repository to the agents org; nothing else changes.`;
+    ? `Creates the repository ${args.repo} (with the product's app starter on main) on this server. It adds a repository to the agents org; nothing else changes.`
+    : `Creates the private repository ${args.repo} (with the product's app starter on main) through the instance's GitHub App. It adds a repository to the agents org; nothing else changes.`;
   return { ...base, target: args.repo, sentence: `Create the repository ${args.repo}.`, changes: what, details: what };
 }
 

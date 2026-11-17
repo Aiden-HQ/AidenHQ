@@ -5,6 +5,7 @@ import { createHash, randomBytes } from "node:crypto";
 import { execFile, spawn } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { basename, dirname, join, relative } from "node:path";
+import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { FOR_OTHERS, RUNNER_MARKER, deliveredFrom, finishedStatus, hasMarker, isAgentSubtask, isRuleProposal, isUserPart, ownRequest, runsUnasked, findRepos, mentionedRepos, isClaudeModel, openrouterModels, crewNames, personaFor, parseCommand, pickedEngine, pickerFor, engineKinds, engineLabel, engineOf, modelPrefix, repoAllowed, resolveEngine, stripHidden, useEngines } from "./agents.mjs";
 import { REPO_ROOT, githubSlug, loadConfig } from "./config.mjs";
@@ -3798,8 +3799,8 @@ async function agentClose(ctx, args) {
 
 /**
  * `aidenhq create-repo <org/name>`: a new app's repository in the agents org, the only way the runner creates one. It grows
- * the org, so it is an approval card (tiers.mjs: the panel); once approved the runner creates it, private with a README, and
- * it joins the task's workspace on its next run.
+ * the org, so it is an approval card (tiers.mjs: the panel); once approved the runner creates it, private with the app starter
+ * on its default branch, and it joins the task's workspace on its next run.
  */
 async function agentCreateRepo(ctx, args) {
   const repo = normalizeRepo(String(args.repo ?? ""));
@@ -3811,13 +3812,13 @@ async function agentCreateRepo(ctx, args) {
   const t = await tierFor(ctx.issue, "create_repo", { repo: repo.slug });
   if (t.reject) throw new UserError(`Not done: ${t.reason}.`);
   const a = await fileApproval(ctx.issue, { action: "create_repo", args: { repo: repo.slug }, ts: [t] });
-  return `${waitingFor(a, ctx.issue)} Once approved, ${repo.slug} is created (${local ? "on this server" : "private"}, with a README) and is in the workspace on this task's next run.`;
+  return `${waitingFor(a, ctx.issue)} Once approved, ${repo.slug} is created (${local ? "on this server" : "private"}, with the app starter on main) and is in the workspace on this task's next run.`;
 }
 
 /** What a create_repo card does, for the reviewer: exactly the one repository, nothing else. */
 const createRepoText = (slug) => isLocal(slug)
-  ? `Create a new repository on this server: ${slug}\n- a bare repository in the agents org ${LOCAL_ORG}, with a README on main\n- created by the runner; no code, settings or access change anywhere else`
-  : `Create a new GitHub repository: ${slug}\n- private, in the agents org ${slug.split("/")[0]}, with a README on its default branch\n- created by the instance's GitHub App; no code, settings or access change anywhere else`;
+  ? `Create a new repository on this server: ${slug}\n- a bare repository in the agents org ${LOCAL_ORG}, with the product's app starter committed on main\n- created by the runner; no code, settings or access change anywhere else`
+  : `Create a new GitHub repository: ${slug}\n- private, in the agents org ${slug.split("/")[0]}, with the product's app starter committed on its default branch\n- created by the instance's GitHub App; no other code, settings or access change anywhere else`;
 
 /** An approved create_repo card: the repo is created (or already there) and remembered for the task's next run, which it starts. */
 async function createRepoApproved(issue, a) {
@@ -3825,9 +3826,39 @@ async function createRepoApproved(issue, a) {
   const local = isLocal(slug);
   if (!local && (!app || !inOrg(cfg.agentsOrg, slug))) throw new UserError(`${slug} is outside the agents org`);
   const done = await (local ? localHost.createRepo(slug) : app.createRepo(slug));
-  log("repo created", { issue: issue.identifier, repo: slug, approval: a.id, result: done });
+  // A repository that already existed is never touched; a new one gets the starter. A failed seed is reported, not hidden.
+  const seeded = done === "created" ? await seedStarter(slug).then(() => "", (err) => String(err.message ?? err).slice(0, 300)) : "";
+  log("repo created", { issue: issue.identifier, repo: slug, approval: a.id, result: done, ...(seeded ? { seed_failed: seeded } : {}) });
   rememberRepos(issue.id, [slug]);
-  return { ok: true, next: true, text: done === "created" ? `Created ${slug} (${local ? "on this server" : "private"}, with a README). It is in the workspace on this task's next run (\`aidenhq repo ${slug}\` clones it now).` : `${slug} already exists; nothing was created.` };
+  if (done !== "created") return { ok: true, next: true, text: `${slug} already exists; nothing was created.` };
+  const where = local ? "on this server" : "private";
+  return { ok: true, next: true, text: seeded
+    ? `Created ${slug} (${where}, with a README only: adding the app starter failed: ${seeded}). Copy the app starter in as its own first commit before your app's work. It is in the workspace on this task's next run (\`aidenhq repo ${slug}\` clones it now).`
+    : `Created ${slug} (${where}, with the app starter on main: build on it; your first change holds only the app's own work). It is in the workspace on this task's next run (\`aidenhq repo ${slug}\` clones it now).` };
+}
+
+/** The app starter a new app repository starts from (apps-platform is always installed). */
+const APP_STARTER = fileURLToPath(new URL("../../../modules/apps-platform/starter", import.meta.url));
+
+/**
+ * Commits the app starter onto a new repository's default branch (its .gitignore keeps node_modules and dist out), through the
+ * runner's cache clone and the code host's fast-forward publish. So an app's first change request holds only the app's own work,
+ * and the reviewer never reads the starter's files (its identity check, its pages, its lock file) as the agent's additions.
+ */
+async function seedStarter(slug) {
+  const clone = await ensureClone(cfg.workDir, normalizeRepo(slug), await hostOf(slug).source(slug));
+  const branch = await defaultBranch(clone);
+  const parent = await git(clone, "rev-parse", "--verify", `origin/${branch}^{commit}`);
+  const index = join(cfg.workDir, `seed-${randomBytes(8).toString("hex")}.index`);
+  const env = { ...ISOLATED_ENV, ...identityEnv(isLocal(slug) ? DEFAULT_IDENTITY : await botIdentity()), GIT_INDEX_FILE: index };
+  const g = async (...args) => (await execFileP("git", [...SAFE_GIT_ARGS, "--git-dir", join(clone, ".git"), "--work-tree", APP_STARTER, ...args], { env, maxBuffer: 32 * 1024 * 1024 })).stdout.trim();
+  try {
+    await g("add", "--all", ".");
+    const sha = await g("commit-tree", await g("write-tree"), "-p", parent, "-m", "chore: start from the app starter");
+    await hostOf(slug).publish({ path: clone, slug, sha, branch });
+  } finally {
+    rmSync(index, { force: true });
+  }
 }
 
 /** The user's task an Engineer's part belongs to, or undefined. */

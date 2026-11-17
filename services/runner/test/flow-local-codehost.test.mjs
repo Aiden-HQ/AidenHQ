@@ -6,6 +6,7 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { chmodSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { flow, git } from "./flow-harness.mjs";
 
 const PKG = (test) => JSON.stringify({ name: "app", version: "1.0.0", private: true, scripts: { test } });
@@ -103,6 +104,18 @@ describe("flow-local-codehost", () => {
     await t.idle();
     assert.equal(claudeRuns().length, runs + 1, "one run, not more");
     assert.ok(t.toolRuns().some((r) => r.line.startsWith("find") && /hello/.test(r.out)), t.context());
+  });
+
+  it("a new repository's main holds the app starter, so the first change diffs only the app's own work", () => {
+    const hello = join(t.dir, "data", "codehost", "local", "hello.git");
+    const starter = fileURLToPath(new URL("../../../modules/apps-platform/starter", import.meta.url));
+    const tracked = (dir) => git(dir, "ls-files", "--cached", "--others", "--exclude-standard").split("\n").filter(Boolean).sort();
+    assert.deepEqual(git(t.dir, "--git-dir", hello, "ls-tree", "-r", "--name-only", "main").split("\n").sort(), tracked(starter));
+    const work = join(t.dir, "hello-first-change");
+    git(t.dir, "clone", "-q", hello, work);
+    writeFileSync(join(work, "README.md"), "# hello\n");
+    git(work, "-c", "user.name=t", "-c", "user.email=t@example.com", "commit", "-qam", "feat: hello");
+    assert.deepEqual(git(work, "diff", "--name-only", "origin/main", "HEAD").split("\n"), ["README.md"]);
   });
 
   it("never errors or asks for a repository along the way", () => t.noErrors());

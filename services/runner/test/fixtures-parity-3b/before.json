@@ -9017,10 +9017,10 @@
   "create repo": {
    "target": "acme-agents/sales-board",
    "sentence": "Create the repository acme-agents/sales-board.",
-   "changes": "Creates the private repository acme-agents/sales-board (with a README) through the instance's GitHub App. It adds a repository to the agents org; nothing else changes.",
+   "changes": "Creates the private repository acme-agents/sales-board (with the product's app starter on main) through the instance's GitHub App. It adds a repository to the agents org; nothing else changes.",
    "reads": "Nothing new.",
    "cost": "No model cost.",
-   "details": "Creates the private repository acme-agents/sales-board (with a README) through the instance's GitHub App. It adds a repository to the agents org; nothing else changes."
+   "details": "Creates the private repository acme-agents/sales-board (with the product's app starter on main) through the instance's GitHub App. It adds a repository to the agents org; nothing else changes."
   },
   "apply": {
    "target": "acme-agents/aidenhq-instance fleet/x",
