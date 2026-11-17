@@ -20,7 +20,7 @@ import { stopped, stoppedText } from "./breaker.ts";
 import { DEPENDABOT, alreadyApplied, fileApproval, mergeTierState, prAuthor, tierFor, waitingFor } from "./tier-state.ts";
 import { publish } from "./pr-path.ts";
 import { primerRecord, savePrimer, saveTools } from "./jobs.ts";
-import { prepareWorkspace, rememberRepos } from "./unsplit.ts";
+import { prepareWorkspace, rememberRepos } from "./github.ts";
 
 /** `aidenhq engine <claude|codex|codex-openrouter|openrouter> [model]`: this request again, on another engine or model. */
 async function agentEngine(ctx: any, args: any) {

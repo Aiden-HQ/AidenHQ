@@ -27,7 +27,7 @@ import { fleetBranch, fleetDiffText, productBump, readGrants } from "./apply-pat
 import { prRequest } from "./pr-path.ts";
 import { createRepoText } from "./commands.ts";
 import { MovedHead } from "./jobs.ts";
-import { branchRows, findRealGh, prepareWorkspace } from "./unsplit.ts";
+import { branchRows, findRealGh, prepareWorkspace } from "./github.ts";
 
 // ------------------------------------------------------------------ approval records
 

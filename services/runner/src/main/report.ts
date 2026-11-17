@@ -11,7 +11,7 @@ import { graded, tellParent } from "./grading.ts";
 import { recordsOn } from "./tier-state.ts";
 import { runCommand } from "./commands.ts";
 import { kernelWrites, ownerAskedToUpdate, primerRecord, savePrimer } from "./jobs.ts";
-import { reportError, taskHasCommits } from "./unsplit.ts";
+import { reportError, taskHasCommits } from "./github.ts";
 
 /**
  * After a finished run on a task that asked for Primer: file the agent's document as a primer.publish record if it changed

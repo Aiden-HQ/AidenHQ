@@ -11,7 +11,7 @@ import { botIdentity, cfg, execFileP, log, pc, running, state } from "./context.
 import { trialNoTap } from "./watch.ts";
 import { applyTierState, authorityOf, autonomyNow, fileApproval, tierFor, waitingFor } from "./tier-state.ts";
 import { reportOutcome, whileApplying } from "./approvals.ts";
-import { branchRows, prepareWorkspace } from "./unsplit.ts";
+import { branchRows, prepareWorkspace } from "./github.ts";
 
 /** Approved fleet change: lands exactly the approved commit, re-checked, then re-applies the instance on this host. */
 async function applyApproved(issue: any, a: any) {

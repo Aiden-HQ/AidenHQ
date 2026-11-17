@@ -13,7 +13,7 @@ import { boardApi, cfg, execFileP, gho, log, ownRepo, pc, queue, running, state 
 import { dispatch } from "./dispatch.ts";
 import { mergeGithub, mergeQueue } from "./merge.ts";
 import { kernel, keyIn, recordsOn } from "./tier-state.ts";
-import { findRealGh } from "./unsplit.ts";
+import { findRealGh } from "./github.ts";
 
 // ------------------------------------------------------------------ graded done
 

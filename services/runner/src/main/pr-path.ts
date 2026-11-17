@@ -22,7 +22,7 @@ import { stopped, stoppedText } from "./breaker.ts";
 import { AlreadyApplied, AwaitingApproval, alreadyApplied, autonomyNow, branchTierState, currentTier, fileApproval, inAgentsOrg, keyIn, tierFor, trustedPatch, waitingFor } from "./tier-state.ts";
 import { checkFindings, checksKey, checksOf, checksUsed } from "./card-review.ts";
 import { approvedRecord, bindBase, cardContext, mergeAfterPublish, pinKey, rebuild, refuseRewritten, refusedForGood, reportOutcome } from "./approvals.ts";
-import { access, branchRows, findRealGh, lastReport, leaveFinishedPrs, tidyBranches } from "./unsplit.ts";
+import { access, branchRows, findRealGh, lastReport, leaveFinishedPrs, tidyBranches } from "./github.ts";
 
 /** The runner's cache clone of one repository, from its "org/name". */
 const cacheClone = (slug: any) => join(cfg.workDir, "repos", ...String(slug).split("/"));

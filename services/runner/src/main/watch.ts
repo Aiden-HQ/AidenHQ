@@ -13,7 +13,7 @@ import { mayClose } from "./grading.ts";
 import { commonTierState, prFiles } from "./tier-state.ts";
 import { rebaseInCode } from "./approvals.ts";
 import { readGrants } from "./apply-path.ts";
-import { findRealGh } from "./unsplit.ts";
+import { findRealGh } from "./github.ts";
 
 let githubLogin;
 

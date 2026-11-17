@@ -4,7 +4,7 @@ import { checkSignature, record } from "../../../../modules/engineering/src/brea
 import { cfg, execFileP, gho, log, pc, state } from "./context.ts";
 import { dispatch } from "./dispatch.ts";
 import { tellParent } from "./grading.ts";
-import { findRealGh } from "./unsplit.ts";
+import { findRealGh } from "./github.ts";
 
 // ------------------------------------------------------------------ the breaker on identical failures (breaker.ts)
 

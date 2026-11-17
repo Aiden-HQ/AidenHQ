@@ -18,7 +18,7 @@ import { redHead, stopped, wakeForRedChecks, wakeForTurnedAway } from "./breaker
 import { graded, mayClose, tellParent } from "./grading.ts";
 import { autonomyNow, fileApproval, mergeTierState, tierFor } from "./tier-state.ts";
 import { refusedForGood, reportOutcome, withTrusted } from "./approvals.ts";
-import { findRealGh } from "./unsplit.ts";
+import { findRealGh } from "./github.ts";
 
 // ------------------------------------------------------------------ merges
 

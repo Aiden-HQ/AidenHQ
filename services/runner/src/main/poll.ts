@@ -9,7 +9,8 @@ import { runGrades } from "./grading.ts";
 import { runReviews } from "./card-review.ts";
 import { runApprovals } from "./approvals.ts";
 import { runTrialEdits } from "./apply-path.ts";
-import { RESUME_KEY, reportError, resumeInterrupted, stopping } from "./unsplit.ts";
+import { reportError } from "./github.ts";
+import { RESUME_KEY, resumeInterrupted, stopping } from "./unsplit.ts";
 
 // ------------------------------------------------------------------ polling
 

@@ -17,6 +17,7 @@ import "./main/pr-path.ts";
 import "./main/commands.ts";
 import "./main/jobs.ts";
 import "./main/report.ts";
+import "./main/github.ts";
 import { adoptRuns, loop, saveMetrics, shutdown } from "./main/unsplit.ts";
 
 // ------------------------------------------------------------------ main

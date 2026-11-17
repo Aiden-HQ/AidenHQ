@@ -22,7 +22,7 @@ import { autonomyNow, branchTierState, currentTier, fileApproval, kernel, record
 import { applyApproved } from "./apply-path.ts";
 import { publish } from "./pr-path.ts";
 import { createRepoApproved } from "./commands.ts";
-import { branchRows, findRealGh, prepareWorkspace } from "./unsplit.ts";
+import { branchRows, findRealGh, prepareWorkspace } from "./github.ts";
 
 /** Busy on the task while an approved write runs: no agent turn starts, and the board shows it. */
 async function whileApplying(issue: any, mode: any, fn: any) {
