@@ -27,7 +27,7 @@ import { existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } 
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import YAML from "yaml";
-import { compile, composeSecretFiles, ensureOptionalSecrets, hostMounts } from "./modules.mjs";
+import { compile, composeSecretFiles, ensureMountedSecrets, ensureOptionalSecrets, hostMounts } from "./modules.mjs";
 import { computersConfig } from "./computers.mjs";
 import { checkIngress } from "./edge.mjs";
 import { caddyfile, caddyService, publicUrls } from "./front-door.mjs";
@@ -83,8 +83,13 @@ if (secretsDir && !stage) for (const n of ensureOptionalSecrets(secretsDir, out.
 // App identity keys (docs/design/app-identity.md): the gate's and apps-mcp's signing keys and the public keys.json every app
 // mounts. Before compose: a missing bind source would become a directory.
 if (secretsDir && !stage) for (const n of ensureIdentityKeys(secretsDir)) console.log(`  created key ${n}`);
-// Last: every other secret file a service mounts, empty when missing (not set up yet), so compose can start every service.
-if (secretsDir && !stage) ensureOptionalSecrets(secretsDir, composeSecretFiles(YAML.parse(readFileSync(join(repo, "compose.yaml"), "utf8")), out.compose), "paperclip_auth_secret");
+// Last: every other secret file a service mounts must exist before compose. The optional and owner-provided ones start empty
+// (not set up yet: the model key before the first-run page); a missing auth or signing secret stops here, never empty.
+if (secretsDir && !stage) {
+  const mounts = composeSecretFiles(YAML.parse(readFileSync(join(repo, "compose.yaml"), "utf8")), out.compose);
+  const { missing } = ensureMountedSecrets(secretsDir, mounts, [...out.optionalSecrets, ...out.askedSecrets], "paperclip_auth_secret");
+  if (missing.length) die(`missing secret files in ${secretsDir}: ${missing.map((m) => `${m.secret} (mounted by ${m.services.join(", ") || "no service"})`).join("; ")}. Run scripts/bootstrap.sh, or put the secret there.`);
+}
 
 // The grants table's directory exists before compose mounts it (Docker would create a root-owned one setup can't write).
 if (!stage) mkdirSync(join(resolve(repo, env("AIDENHQ_CONFIG_DIR") ?? "config"), "grants"), { recursive: true });
