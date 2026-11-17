@@ -1,7 +1,7 @@
 // End to end (see flow-harness.mjs) on the on-server code host (codehost-local, docs/design/codehost-local.md): a repo of
 // the org `local` is a bare repo under the data dir; `pr` opens a change request, its checks run here at the exact head, a
 // merge is requested once they are green, its card is approved and the change lands as one squash commit. A head that moved after the card is refused; a red
-// check wakes the task's Engineer with its log tail.
+// check wakes the task's Engineer with its log tail. An approved create_repo starts the Engineer's next run.
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { chmodSync, mkdirSync, writeFileSync } from "node:fs";
@@ -88,6 +88,21 @@ describe("flow-local-codehost", () => {
     await publish();
     await waitFor("the wake", () => claudeRuns().slice(runs).some((r) => /codehost:local\/app\/change\/3: its checks failed/.test(r.prompt)), 120_000);
     assert.ok(receipt(head(3)).some((c) => c.name === "tests" && c.ok === false));
+  });
+
+  it("an approved create_repo starts the Engineer's next run once, with the new repository in its workspace", async () => {
+    await t.settled();
+    step("look\naidenhq create-repo local/hello");
+    await turn("Build the hello app in a new repository.");
+    const runs = claudeRuns().length;
+    // The next run's step is read when it starts: it looks for the new repository in its workspace.
+    step("look\nfind . -maxdepth 2 -name hello -type d");
+    t.paperclip.decide("create_repo", "approved");
+    await waitFor("the next run", () => claudeRuns().slice(runs).some((r) => /Your create_repo card .* was approved and applied: Created local\/hello/.test(r.prompt)));
+    await t.settled();
+    await t.idle();
+    assert.equal(claudeRuns().length, runs + 1, "one run, not more");
+    assert.ok(t.toolRuns().some((r) => r.line.startsWith("find") && /hello/.test(r.out)), t.context());
   });
 
   it("never errors or asks for a repository along the way", () => t.noErrors());
