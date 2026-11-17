@@ -28,7 +28,7 @@ function marketplace(extra = {}) {
 }
 function instance(modules, marketplaces) {
   const dir = mkdtempSync(join(tmpdir(), "inst-"));
-  writeFileSync(join(dir, "instance.yaml"), YAML.stringify({ product: "0".repeat(40), modules, ...(marketplaces ? { marketplaces } : {}), settings: { timezone: "UTC", owner_email: "me@example.com" } }));
+  writeFileSync(join(dir, "instance.yaml"), YAML.stringify({ product: "0".repeat(40), modules: ["core", ...modules], ...(marketplaces ? { marketplaces } : {}), settings: { timezone: "UTC", owner_name: "Sam", owner_email: "me@example.com" } }));
   mkdirSync(join(dir, "agents"));
   return dir;
 }
