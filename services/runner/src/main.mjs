@@ -56,7 +56,7 @@ import { createGradeLoop } from "../../../modules/grading/src/loop.mjs";
 import { createResolver } from "../../../kernel/src/net.ts";
 import { ALREADY_APPLIED, guardBranch } from "./evidence.ts";
 import { jobUsage } from "./usage.ts";
-import { createEvalGate } from "./evalgate.ts";
+import { createEvalGate, officialOf } from "./evalgate.ts";
 import { fastChecks } from "../../../kernel/src/fastcheck.ts";
 import { localCheckRuns } from "../../../modules/codehost-local/src/checks.ts";
 import { afterRejection, graderSpeaks, summaryKind, wakesParent } from "./notices.ts";
@@ -1380,14 +1380,15 @@ async function finishMerges(issueId, queue, say, { posted = false } = {}) {
 }
 
 /**
- * The reviewer-eval gate on product merges (evalgate.ts): a PR that changes the AI reviewer's own code merges only on a 100%
- * receipt for its head. The eval runs in the job jail with its own key (secrets `openrouter_eval_key`), never the fleet's.
+ * The reviewer-eval gate (evalgate.ts): a product or official-modules PR, or an apply, that brings the AI reviewer's own code
+ * lands only on a 100% receipt for it. The eval runs in the job jail with its own key (secrets `openrouter_eval_key`), never
+ * the fleet's.
  */
 const evalGate = createEvalGate({
   productRepo: cfg.productRepo,
+  modulesRepo: cfg.modulesRepo,
   workDir: cfg.workDir,
   keyFile: join(cfg.secretsDir, "openrouter_eval_key"),
-  productRoot: REPO_ROOT,
   state,
   git,
   clone: async (slug) => ensureClone(cfg.workDir, normalizeRepo(slug), await hostOf(slug).source(slug)),
@@ -2239,6 +2240,8 @@ async function currentTier(issue, a, { withDiff = false, bases } = {}) {
     if (b.sha !== a.args.sha) throw new MovedHead("the fleet branch moved since the card");
     const bump = await productBump(b);
     if (bump?.error) throw new UserError(bump.error);
+    // Asked here too, so the eval of a new AI reviewer starts with the card, not after the tap (landFleet asks again).
+    await evalGateApply(b.r, b.sha, b.files);
     const st = await applyTierState(b, bump);
     const t = await tierFor(issue, "apply", st);
     // The module changes the card lists (and its digest covers) must be the ones recomputed now.
@@ -2807,8 +2810,21 @@ async function applyApproved(issue, a) {
   return landFleet(issue, r, a.args.sha, c.files, `approval ${a.id}`, `Applied on ${cfg.selfName}'s approval ${a.id} (${issue.identifier})`);
 }
 
+/**
+ * An instance change that moves the official modules it runs (its `aidenhq` marketplace, its release or its product's pin)
+ * to a different AI reviewer lands only on a 100% reviewer-eval receipt for that reviewer (evalgate.ts bump): the merged
+ * modules PR's own receipt, else an eval of the new modules commit, started here.
+ */
+async function evalGateApply(r, sha, files) {
+  if (!files.includes("instance.yaml")) return;
+  const { base } = await fleetChange(r, sha);
+  const g = await evalGate.bump(...(await Promise.all([base, sha].map(async (rev) => officialOf(await git(r.path, "show", `${rev}:instance.yaml`), REPO_ROOT)))), "the instance change");
+  if (g) throw new UserError("stop" in g ? g.stop : `${g.wait}; ask for the apply again once it passes`);
+}
+
 /** Lands a checked fleet commit on the latest main (no force), then re-applies the instance on this host. */
-function landFleet(issue, r, approvedSha, files, why, message, guard) {
+async function landFleet(issue, r, approvedSha, files, why, message, guard) {
+  await evalGateApply(r, approvedSha, files);
   return whileApplying(issue, "applying the fleet change", async () => {
     const sha = await landOnMain(r.path, r.defaultBase, approvedSha, message, { guard, identity: await botIdentity() });
     if (!sha) throw new UserError(`the change conflicts with ${r.defaultBase}; the Platform Engineer must rebase${why.startsWith("approval") ? ", and the new diff needs a new approval" : ""}`);

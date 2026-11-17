@@ -183,14 +183,24 @@ and prints the pass rate. `autonomy: full` is only appropriate when it scores 10
 failure even though it escalates safely. Every false reject the reviewer makes in use is added as a new case, and the
 score must stay at 100%.
 
-**The eval-receipt gate** (`services/runner/src/evalgate.ts`, owner 2026-11-16). A product PR that changes the reviewer's
-own code merges only on a 100% receipt for its exact head. The reviewer's own code is the whole `modules/ai-reviewer`
-module (service, policy, cases, `case-pad.mjs`, `reviewer-eval.mjs`), `kernel/sdk/src/reviewer.ts`, `tiers.mjs`, the kernel's `tier.ts`
-and the authority-diff classifier (`kernel/src/loader/authority.ts`).
+**The eval-receipt gate** (`services/runner/src/evalgate.ts`, owner 2026-11-16). Reviewer code reaches the fleet only on a
+100% receipt. The reviewer's own code is the whole `ai-reviewer` module (service, policy, cases, `case-pad.mjs`,
+`reviewer-eval.mjs`), `kernel/sdk/src/reviewer.ts`, `tiers.mjs`, the kernel's `tier.ts` and the authority-diff classifier
+(`kernel/src/loader/authority.ts`). The module lives in the official modules repo since 5b, so the eval always runs a commit
+of that repo, judged by an earlier one:
 
-- **When it runs.** Both merge sites of the queue ask the gate right before GitHub's merge. On a head it hasn't seen, the
+- a modules-repo PR that changes the reviewer: its head, judged by its base branch, receipt for its head;
+- a product PR that changes the product's reviewer code: the modules commit its merge pins, judged by the base's pin,
+  receipt for the product head;
+- a pin bump (a product PR moving `modules-pin.json`, an apply moving the instance's `aidenhq` marketplace, release or
+  product) whose reviewer differs, by object id of the module, `plan.mjs` and `check.mjs`: covered by any 100% receipt for
+  that same reviewer (so a passed modules PR's squash merge needs no second eval), else the new modules commit runs once,
+  judged by the old one, receipt for that commit. The apply asks when its card is checked and again right before it lands.
+
+- **When it runs.** Every merge site of the queue asks the gate right before GitHub's merge. On a head it hasn't seen, the
   runner fetches the head and the PR's base branch into its cache clone and reads the changed files itself. If no reviewer
-  code changed, the merge goes ahead.
+  code changed, the merge goes ahead. Anything it can't read (a pin, a modules commit, a modules repo other than the
+  official one) stops it.
 - **How it runs.** Otherwise the runner builds a scratch tree and runs the judge there, detached and in the job jail. Its
   only secret is the eval's own key (secrets `openrouter_eval_key`), never the fleet's. A missing key stops the merge.
 - **The receipt.** The runner writes it itself: head, base, policy hash, score, failures, re-run and cost. The merge goes on
