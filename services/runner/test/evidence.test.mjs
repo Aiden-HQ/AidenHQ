@@ -3,7 +3,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { guardBranch, onMain } from "../src/evidence.ts";
@@ -63,7 +63,9 @@ test("already on main by ancestry or identical files; a real change is not", asy
 });
 
 test("an apply is never guarded: the instance's main can be ahead of what the host runs", () => {
-  const main = readFileSync(join(import.meta.dirname, "../src/main.mjs"), "utf8");
+  // the runner's entry and the modules it is split into (src/main/)
+  const src = join(import.meta.dirname, "../src");
+  const main = [join(src, "main.mjs"), ...readdirSync(join(src, "main")).map((f) => join(src, "main", f))].map((f) => readFileSync(f, "utf8")).join("\n");
   const start = main.indexOf("async function showFleetDiff");
   assert.ok(start > 0);
   assert.doesNotMatch(main.slice(start, main.indexOf("\n}\n", start)), /onMain|guardBranch|ALREADY_APPLIED/);
