@@ -27,6 +27,7 @@ main() {
   requireApplyLock
   # Sourced before any checkout: these functions stay whatever a checkout below does to the file.
   . ops/lib/generations.sh
+  . ops/lib/progress.sh
   local want="" retry=0 gen="" recover=0
   while [ $# -gt 0 ]; do
     case "$1" in
@@ -54,6 +55,7 @@ main() {
     [ -z "$(git -C "$d" status --porcelain --untracked-files=no)" ] || { echo "refusing: $d has local changes to tracked files" >&2; exit 1; }
   done
 
+  progress_line APPLY_PHASES instance
   git -C "$inst" fetch --quiet origin main
   git fetch --quiet origin main
   if [ -n "$gen" ]; then applyGeneration; return; fi
@@ -587,6 +589,16 @@ requireApplyLock() {
 apply_now() { local t="${EPOCHREALTIME:-$(date +%s).000000}"; echo "${t//[!0-9]/}"; }
 apply_secs() { local us=$(( $(apply_now) - $1 )); printf '%d.%d' $((us / 1000000)) $((us % 1000000 / 100000)); }
 apply_t0="$(apply_now)"; apply_lap="$apply_t0"
-lap() { echo "apply timing: $1 $(apply_secs "$apply_lap")s"; apply_lap="$(apply_now)"; }
+lap() { echo "apply timing: $1 $(apply_secs "$apply_lap")s"; apply_lap="$(apply_now)"; progress_after APPLY_PHASES "$1"; }
+# Install progress (ops/lib/progress.sh; the installer sets AIDENHQ_PROGRESS_BASE): the phases above in run order, each line
+# printed as the phase starts, with its estimated seconds (compose is the images' parallel pull) and what the owner is told.
+# shellcheck disable=SC2034  # read through progress.sh's nameref
+APPLY_PHASES=(
+  "instance|3|checking your instance" "product|3|updating AidenHQ's code" "npm|20|installing tooling"
+  "validate|5|checking the configuration" "reconcile|2|checking what changed" "snapshot|5|taking a safety snapshot"
+  "compile|10|preparing the services" "computer-images|40|preparing agent computers" "compose|240|downloading and starting the services"
+  "setup|90|setting up Aiden and the agents" "warehouse|20|preparing the data warehouse" "units|5|starting background services"
+  "prune|5|tidying up" "health|60|waiting for the services to be healthy" "agent-check|20|checking the agents"
+)
 # The whole script is read before it runs: the checkout above may rewrite this file.
 main "$@"; exit
