@@ -1,0 +1,62 @@
+name: Module request
+description: A new module (a connection, agent role or app) that the modules repository should carry.
+title: "feat(modules): <module name>"
+labels: [module-request]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Search first for the fingerprint token and for the same module; comment on an existing request instead of filing a duplicate.
+        Remove names, emails, hostnames, IPs, ids and tokens from everything below.
+  - type: input
+    id: version
+    attributes:
+      label: Product version
+      description: "A release tag or the product sha from `instance.yaml` (`product:`)."
+    validations:
+      required: true
+  - type: input
+    id: module
+    attributes:
+      label: Module name
+      description: "The proposed module key (lowercase, hyphens), and the closest existing module if any."
+      placeholder: "crm-sync (like hubspot-sync)"
+    validations:
+      required: true
+  - type: textarea
+    id: need
+    attributes:
+      label: What it does and why
+      description: The tools, agents or apps it provides, and why it helps owners in general, not one workflow.
+    validations:
+      required: true
+  - type: textarea
+    id: shape
+    attributes:
+      label: Shape
+      description: "What it needs: the vendor's MCP server or API and its sign-in, the grants (read or write) it would declare, any secrets it would hold, and which existing modules it requires."
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Evidence
+      description: How often the need came up, what it cost, a working prototype or link (scrubbed).
+    validations:
+      required: true
+  - type: input
+    id: origin
+    attributes:
+      label: Origin
+      description: "Where this was filed from: `instance=<instance_name> agent=<agent_key>` for an AidenHQ agent, or `human`."
+      placeholder: "instance=acme agent=platform-engineer"
+    validations:
+      required: true
+  - type: input
+    id: fingerprint
+    attributes:
+      label: Fingerprint
+      description: "Dedupe token: `aidenhq-fp:` plus the first 16 hex characters of sha256 of `<module>|<normalised symptom>` (CONTRIBUTING.md). Agents also append it as a hidden `<!-- aidenhq-fingerprint: ... -->` line."
+      placeholder: "aidenhq-fp:0123456789abcdef"
+    validations:
+      required: true

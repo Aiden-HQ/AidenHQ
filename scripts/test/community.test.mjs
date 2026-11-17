@@ -1,7 +1,9 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync, readdirSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import YAML from "yaml";
+import { lint, lintDir } from "../supply-chain/fork-lint.mjs";
 import { claTicked, exempt, section, triageComment } from "../community.mjs";
 
 const body = (cla) => `## What changed\nx\n\n## Why\n<!-- hint -->\nbecause\n\n## Evidence\nnpm test ok\n\n## Origin\ninstance=acme agent=eng\n\n## Checklist\n\n- [${cla}] I have read [CLA.md](../CLA.md) and agree\n`;
@@ -28,21 +30,32 @@ test("triage lists facts and never approves", () => {
   assert.doesNotMatch(bad, /approved|lgtm/i);
 });
 
-// A fork's PR must never reach a self-hosted runner: any job that can name one guards it on the fork check, and PR-target
-// workflows run only on GitHub-hosted runners without checking out the PR.
+// A fork's PR must never reach a self-hosted runner (scripts/supply-chain/fork-lint.mjs): our workflows pass, a job that
+// can name one without the fork guard fails, and the triage path holds no review or merge call.
+const wfs = (jobs, on = { pull_request: null }) => YAML.stringify({ on, jobs });
 test("workflow lint: fork PRs stay off self-hosted runners", () => {
-  const dir = new URL("../../.github/workflows/", import.meta.url);
-  for (const f of readdirSync(dir).filter((n) => n.endsWith(".yml"))) {
-    const text = readFileSync(new URL(f, dir), "utf8");
-    const wf = YAML.parse(text);
-    const target = Object.keys(wf.on ?? wf[true] ?? {}).includes("pull_request_target");
-    for (const [name, job] of Object.entries(wf.jobs)) {
-      const runs = JSON.stringify(job["runs-on"]);
-      if (target) {
-        assert.equal(runs, '"ubuntu-latest"', `${f}/${name}: pull_request_target must use a GitHub-hosted runner`);
-        for (const s of job.steps ?? []) assert.ok(!/head\.(sha|ref)/.test(JSON.stringify(s.with ?? {})), `${f}/${name}: never check out the PR head`);
-      }
-      if (runs.includes("self-hosted")) assert.match(runs, /head\.repo\.full_name != github\.repository && 'ubuntu-latest'/, `${f}/${name}: needs the fork guard`);
-    }
+  assert.deepEqual(lintDir(fileURLToPath(new URL("../../.github/workflows", import.meta.url))), []);
+  const ours = "${{ fromJSON('[\"self-hosted\", \"aidenhq\"]') }}";
+  const guarded = "${{ github.event.pull_request.head.repo.full_name != github.repository && 'ubuntu-latest' || fromJSON('[\"self-hosted\"]') }}";
+  assert.equal(lint(wfs({ a: { "runs-on": ["self-hosted", "aidenhq"] } })).length, 1);
+  assert.equal(lint(wfs({ a: { "runs-on": ours } })).length, 1);
+  assert.equal(lint(wfs({ a: { "runs-on": guarded } })).length, 0);
+  assert.equal(lint(wfs({ a: { "runs-on": ours, if: "github.event.pull_request.head.repo.full_name == github.repository" } })).length, 0);
+  assert.equal(lint(wfs({ a: { "runs-on": "ubuntu-latest" } })).length, 0);
+  assert.equal(lint(wfs({ a: { "runs-on": ours } }, { push: null })).length, 0);
+  assert.equal(lint(wfs({ a: { "runs-on": guarded } }, { pull_request_target: null })).length, 1);
+  assert.equal(lint(wfs({ a: { "runs-on": "ubuntu-latest", steps: [{ uses: "x", with: { ref: "${{ github.event.pull_request.head.sha }}" } }] } }, { pull_request_target: null })).length, 1);
+});
+
+test("the triage path labels and comments; it has no review or merge call", () => {
+  const src = readFileSync(new URL("../community.mjs", import.meta.url), "utf8");
+  assert.doesNotMatch(src, /\/(reviews|merge)\b|"APPROVE"/);
+});
+
+test("the issue forms parse and the module request form exists", () => {
+  const dir = new URL("../../.github/ISSUE_TEMPLATE/", import.meta.url);
+  for (const f of ["bug-report", "feature-request", "module-request"]) {
+    const form = YAML.parse(readFileSync(new URL(`${f}.yml`, dir), "utf8"));
+    assert.ok(form.name && form.body.some((b) => b.type === "textarea" && b.validations?.required), f);
   }
 });
