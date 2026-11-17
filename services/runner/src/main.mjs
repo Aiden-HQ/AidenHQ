@@ -70,9 +70,14 @@ const state = new State(cfg.stateDir);
 const log = (msg, extra = {}) => console.log(JSON.stringify({ t: new Date().toISOString(), msg, ...extra }));
 // Engineer jobs run in the kernel (kernel/src/jobs.ts): the runner asks for them and follows them.
 const jobsApi = kernelJobs(cfg);
-// The reviewer-eval gate's runs (evalgate.ts) use the same sandbox, launched here: in its own network when that works.
+// The reviewer-eval gate's runs (evalgate.ts) use the same sandbox, launched here in its own network: a known no-jail
+// condition is fatal, with the reason in the journal.
 const evalSandbox = sandboxConfig();
-if (jailProblem(evalSandbox)) evalSandbox.pasta = undefined;
+const evalJailIssue = jailProblem(evalSandbox);
+if (evalJailIssue) {
+  log("ERROR: reviewer eval runs cannot be jailed here", { reason: evalJailIssue });
+  process.exit(1);
+}
 // The instance's GitHub App: its key stays in this process; tokens go only to the git/gh child that needs one,
 // and a read-only one for its task's repos to each job's gh (jobGhToken).
 const app = cfg.githubApp && appClient({ appId: readFileSync(cfg.githubApp.appIdFile, "utf8").trim(), key: readFileSync(cfg.githubApp.keyFile, "utf8"), log });

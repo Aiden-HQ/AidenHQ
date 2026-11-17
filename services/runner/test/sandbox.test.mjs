@@ -8,7 +8,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it } from "node:test";
 import { fileURLToPath } from "node:url";
-import { buildJob, cowRoot, layout, removeLayers } from "../../../kernel/src/sandbox.ts";
+import { buildJob, cowRoot, jailProblem, layout, removeLayers } from "../../../kernel/src/sandbox.ts";
 import { sandboxConfig } from "../../../kernel/src/sandbox-config.ts";
 import { readEvents } from "../../../kernel/src/jobs.ts";
 import { appendLine } from "../../../kernel/sdk/src/engine-io.ts";
@@ -193,6 +193,21 @@ describe("the job sandbox", () => {
     // The model gateway's port for its model calls; a job with neither jobcaps nor gateway models gets only its helper.
     assert.equal(or[3], "8201,41000");
     assert.equal(codex[3], "41000");
+  });
+
+  it("reports a reason instead of throwing when no link candidate is free", () => {
+    const { dir, c } = setup();
+    mkdirSync(join(dir, "bin"));
+    writeFileSync(join(dir, "bin/ip"), "#!/bin/sh\ncase \"$*\" in *route*) exit 0;; esac\nfor n in 10.0.2.1 172.31.254.1 192.168.254.1 100.127.254.1; do echo \"1: eth0    inet $n/24 scope global eth0\"; done\n");
+    chmodSync(join(dir, "bin/ip"), 0o755);
+    const path = process.env.PATH;
+    process.env.PATH = `${join(dir, "bin")}:${path}`;
+    try {
+      const reason = jailProblem({ ...c, bwrap: "bwrap", pasta: "/usr/bin/pasta", binDir: join(dir, "bin"), browserDir: "/opt/aidenhq/browser" });
+      assert.match(reason ?? "", /no free subnet for the job's network link: every candidate overlaps a host network/);
+    } finally {
+      process.env.PATH = path;
+    }
   });
 
   it("masks the runner's state db (every run's helper token) but not the state dir, where a job's cloud session lives", () => {
