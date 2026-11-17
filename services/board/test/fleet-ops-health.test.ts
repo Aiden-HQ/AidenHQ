@@ -49,7 +49,7 @@ describe("health flags", () => {
         return runs;
       },
     };
-    const check = checks(pc as never, store as never, fakeGrading(), () => now, {}).routine!;
+    const check = checks(pc as never, store as never, fakeGrading(), () => now).routine!;
 
     expect(await check()).toHaveLength(1);
     expect(patches).toEqual([{ status: "paused" }]);
@@ -66,15 +66,6 @@ describe("health flags", () => {
     expect(patches).toHaveLength(2); // three new failures pause it again
   });
 
-  it("the kill switch leaves the routine running but still flags it", async () => {
-    const store = new Store(":memory:");
-    const runs = [run("r1", "failed", 30), run("r2", "failed", 29), run("r3", "failed", 28)];
-    const patches: unknown[] = [];
-    const pc = { companyId: "co", async request(m: string, p: string, body?: unknown) { if (m === "PATCH") patches.push(body); return p.includes("/routines") ? [{ id: "rt", title: "D", status: "active" }] : p.includes("/issues") ? runs.map((r) => ({ id: r.contextSnapshot.issueId, originId: "rt" })) : runs; } };
-    expect(await checks(pc as never, store as never, fakeGrading(), () => now, { FLEET_OPS_AUTOPAUSE: "off" }).routine!()).toHaveLength(1);
-    expect(patches).toHaveLength(0);
-  });
-
   const routinePc = (runs: ReturnType<typeof run>[], status: () => string, patches: unknown[]) => ({
     companyId: "co",
     async request(m: string, p: string, body?: unknown) {
@@ -89,7 +80,7 @@ describe("health flags", () => {
     const store = new Store(":memory:");
     for (const id of ["r1", "r2"]) refuse(store, id, 300); // old, so not fleet-wide
     const patches: unknown[] = [];
-    expect(await checks(routinePc(fails(), () => "active", patches) as never, store as never, fakeGrading(), () => now, {}).routine!()).toHaveLength(0);
+    expect(await checks(routinePc(fails(), () => "active", patches) as never, store as never, fakeGrading(), () => now).routine!()).toHaveLength(0);
     expect(patches).toHaveLength(0);
   });
 
@@ -97,7 +88,7 @@ describe("health flags", () => {
     const store = new Store(":memory:");
     refuse(store, "someone-else", 20);
     const patches: unknown[] = [];
-    expect(await checks(routinePc(fails(), () => "active", patches) as never, store as never, fakeGrading(), () => now, {}).routine!()).toHaveLength(1);
+    expect(await checks(routinePc(fails(), () => "active", patches) as never, store as never, fakeGrading(), () => now).routine!()).toHaveLength(1);
     expect(patches).toHaveLength(0);
   });
 
@@ -105,14 +96,14 @@ describe("health flags", () => {
     const store = new Store(":memory:");
     const same = [run("r1", "failed", 30), run("r2", "failed", 29), run("r3", "failed", 28)].map((r) => ({ ...r, contextSnapshot: { issueId: "one" } }));
     const patches: unknown[] = [];
-    expect(await checks(routinePc(same, () => "active", patches) as never, store as never, fakeGrading(), () => now, {}).routine!()).toHaveLength(0);
+    expect(await checks(routinePc(same, () => "active", patches) as never, store as never, fakeGrading(), () => now).routine!()).toHaveLength(0);
   });
 
   it("a routine the owner paused is not re-paused by its old failures when resumed", async () => {
     const store = new Store(":memory:");
     let status = "paused";
     const patches: unknown[] = [];
-    const check = checks(routinePc(fails(), () => status, patches) as never, store as never, fakeGrading(), () => now, {}).routine!;
+    const check = checks(routinePc(fails(), () => status, patches) as never, store as never, fakeGrading(), () => now).routine!;
     expect(await check()).toHaveLength(1); // seen paused: flagged, since is set
     status = "active";
     expect(await check()).toHaveLength(0);
@@ -128,21 +119,21 @@ describe("health flags", () => {
       request: async () => runs,
       runLog: async () => ({ text: "", truncated: false }),
     };
-    const found = await checks(pc as never, store as never, fakeGrading(), () => now, {}).silent!();
+    const found = await checks(pc as never, store as never, fakeGrading(), () => now).silent!();
     expect(found!.map((i) => i.key)).toEqual(["cx"]); // oc is not codex; cy has one
   });
 
   it("the grade check reports the grading module's stale rows over a day old, and nothing (no page) when it is unreachable", async () => {
     const day = (min: number) => iso(min);
     const grading = fakeGrading({}, { staleRows: [{ issueId: "i-old", state: "awaiting_evidence", updatedAt: day(3 * 24 * 60) }, { issueId: "i-fresh", state: "pending", updatedAt: day(30) }, { issueId: "i-esc", state: "escalated", updatedAt: day(2 * 24 * 60) }] });
-    const found = await checks({} as never, new Store(":memory:"), grading, () => now, {}).grade!();
+    const found = await checks({} as never, new Store(":memory:"), grading, () => now).grade!();
     expect(found).toEqual([
       { key: "i-old", reason: "graded task i-old awaiting_evidence for 4320 min" },
       { key: "i-esc", reason: "graded task i-esc escalated for 2880 min" },
     ]);
     grading.down = true;
     const warned: string[] = [];
-    expect(await checks({} as never, new Store(":memory:"), grading, () => now, {}, (_o, m) => warned.push(m)).grade!()).toEqual([]);
+    expect(await checks({} as never, new Store(":memory:"), grading, () => now, (_o, m) => warned.push(m)).grade!()).toEqual([]);
     expect(warned).toHaveLength(1);
   });
 
@@ -154,7 +145,7 @@ describe("health flags", () => {
     expect(Object.keys(detectorState(store).open)).toHaveLength(2);
 
     const fired: unknown[] = [];
-    await tick(store, { grade: checks({} as never, store, fakeGrading(), () => now, {}).grade! }, async (body) => (fired.push(body), true), new Date(now));
+    await tick(store, { grade: checks({} as never, store, fakeGrading(), () => now).grade! }, async (body) => (fired.push(body), true), new Date(now));
 
     // Neither task is reported any more, and both keys are gone from `open` (Fleet Ops hears they recovered).
     expect(detectorState(store).open).toEqual({});

@@ -88,8 +88,6 @@ export interface Sources {
   grants: Grants | null;
   /** The last line of the grants table's revs.jsonl: the last applied change to any agent. */
   lastRev: { at?: string; product_sha?: string; instance_sha?: string } | null;
-  /** FLEET_OPS_AUTOPAUSE in the board's environment (fleet-ops module), if set. */
-  autopause?: string;
   boardTimezone: string;
   pendingRaises: number;
   pendingApprovals: number;
@@ -124,13 +122,7 @@ export function settingsView(s: Sources) {
       const d = defs.get(k);
       const e = effective[k];
       // What the running system reads now, where the board can see it: the grants table.
-      // health_autopause: the board's own environment (fleet-ops compose), set at the last apply.
-      const live =
-        LIVE_IN_GRANTS.includes(k) && s.grants && typeof s.grants[k] === "string"
-          ? (s.grants[k] as string)
-          : k === "health_autopause" && s.autopause
-            ? s.autopause
-            : undefined;
+      const live = LIVE_IN_GRANTS.includes(k) && s.grants && typeof s.grants[k] === "string" ? (s.grants[k] as string) : undefined;
       return {
         key: k,
         module: d?.module ?? "instance",

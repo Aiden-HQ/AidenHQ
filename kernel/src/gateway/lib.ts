@@ -53,7 +53,7 @@ type Caps = { run_usd: number; task_usd: number; day_usd: number };
 /** config/grants/grants.json `agents`, by Paperclip id (setup writes it). */
 type Grants = Record<string, { rev?: string; key?: string; caps?: Partial<Caps> }>;
 /** config/gateway.json `ci` (compile writes it from the ci module's settings). */
-type CiConf = { enabled?: boolean; orgs?: unknown; models?: unknown; review?: unknown; repo_day_usd?: unknown; day_usd?: unknown };
+type CiConf = { orgs?: unknown; models?: unknown; review?: unknown; repo_day_usd?: unknown; day_usd?: unknown };
 /** A run key's settled identity (the runs table), or the same fields resolved for one call. */
 type RunRow = { run_key: string; agent_id: string | null; run_id: string | null; issue_id: string | null; rev: string | null; perpetual: number; at: string };
 type RunIdentity = Pick<RunRow, "agent_id" | "run_id" | "issue_id" | "rev"> & { perpetual: number | boolean };
@@ -225,7 +225,7 @@ export function createGateway({ dbFile, legacyDbFile, grantsFile, settingsFile, 
   db.prepare("UPDATE calls SET status = 'unsettled', at = ? WHERE status = 'reserved'").run(new Date(now()).toISOString());
   const grants = watched(grantsFile, (j) => (j.agents ?? {}) as Grants, {});
   const prices = watched(settingsFile, (j) => (j.models && typeof j.models === "object" ? (j.models as Record<string, Price>) : {}), {});
-  // CI code review (compile writes it from the ci module's settings): { enabled, orgs, models, repo_day_usd, day_usd } or null.
+  // CI code review (compile writes it from the ci module's settings): { orgs, models, repo_day_usd, day_usd } or null.
   const ciConf = watched<CiConf | null>(settingsFile, (j) => (j.ci && typeof j.ci === "object" ? (j.ci as CiConf) : null), null);
   const keyFor = githubKeys(githubJwksUrl, now);
   const q = {
@@ -419,10 +419,10 @@ export function createGateway({ dbFile, legacyDbFile, grantsFile, settingsFile, 
     }
   }
 
-  /** The CI settings, when CI is on; else a 403 (settings.ci_review: off refuses every CI token at once). */
+  /** The CI settings, when CI is on; else a 403 (taking the module out refuses every CI token at once). */
   function ciOn(): CiConf {
     const c = ciConf();
-    if (!c?.enabled) throw fail(403, "ci_off", "CI code review through the model gateway is off on this instance");
+    if (!c) throw fail(403, "ci_off", "CI code review through the model gateway is off on this instance");
     return c;
   }
 
@@ -594,7 +594,7 @@ export function createGateway({ dbFile, legacyDbFile, grantsFile, settingsFile, 
     metric("aidenhq_gateway_cap_refusals_today", "Runs or CI reviews refused over a spend cap since 00:00 UTC (one per run, scope and cap).", refused.map((r) => [{ agent: keyOf(r.agent_id), kind: r.kind }, r.n]));
     const ci = ciConf();
     metric("aidenhq_gateway_ci_spend_usd_today", "App CI code review spend since 00:00 UTC.", [[{}, (q.ciSpent.get(today) as Sum).s]]);
-    metric("aidenhq_gateway_ci_day_cap_usd", "App CI code review's all-repos day cap (0: CI review off).", [[{}, ci?.enabled ? Number(ci.day_usd) || 0 : 0]]);
+    metric("aidenhq_gateway_ci_day_cap_usd", "App CI code review's all-repos day cap (0: CI review off).", [[{}, ci ? Number(ci.day_usd) || 0 : 0]]);
     metric("aidenhq_gateway_inflight", "Model calls in flight.", [[{}, (q.inflight.get() as { n: number }).n]]);
     return out.join("\n") + "\n";
   }
@@ -643,5 +643,5 @@ export function createGateway({ dbFile, legacyDbFile, grantsFile, settingsFile, 
     q.setCap.run(scope, agentId, subject, cap, new Date(now()).toISOString());
     log("cap set", { scope, agent: agentId, subject, cap });
   };
-  return { handle, db, metricsText, setCap, ciEnabled: () => Boolean(ciConf()?.enabled), close: () => { clearInterval(pruner); db.close(); } };
+  return { handle, db, metricsText, setCap, ciEnabled: () => Boolean(ciConf()), close: () => { clearInterval(pruner); db.close(); } };
 }
