@@ -912,6 +912,15 @@ export function compile(productDir, instanceDir, { revision, fetch = hostFetch(p
     // The board's Settings: each setting's default, allowed values and the comment above it in module.yaml; `setup`, how to set
     // up a module that serves the runner rather than agents' connections (Grafana, ClickHouse).
     settings: settingDefs(join(root, "module.yaml"), def), ...(def.setup ? { setup: String(def.setup).trim() } : {}),
+    // For the board's module and agent pages: what the module may write (kind → floor, the instance's raise included), the
+    // secret names it mounts, its handbook sections, the start of its README, and its own defaults for every agent and
+    // routine it declares (module.yaml as written, before instance overrides: what "reset to default" goes back to).
+    writes: Object.fromEntries(Object.entries(writes).filter(([, w]) => w.module === name).map(([k, w]) => [k, { floor: w.floor, ...(w.panel ? { panel: true } : {}) }])),
+    secrets: ownSecrets(def),
+    ...(def.setup_flow != null ? { setup_flow: def.setup_flow } : {}),
+    prompts: promptEntries(name, def, root).map((p) => ({ id: p.id, file: relative(root, p.file) })),
+    ...(existsSync(join(root, "README.md")) ? { readme: readFileSync(join(root, "README.md"), "utf8").slice(0, 4096) } : {}),
+    defaults: { agents: def.agents ?? {}, routines: Object.fromEntries(Object.entries(def.routines ?? {}).map(([k, { when: _w, ...r }]) => [k, r])) },
   }))];
   // Secrets of channels the owner may not use: created empty when missing so compose starts (compile.mjs).
   const optionalSecrets = enabled.flatMap((name) => all.get(name).def.optional_secrets ?? []);
