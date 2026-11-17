@@ -113,13 +113,13 @@ const advisories = createAdvisories({ db: records.db, repo, catalog: path.join(c
 setInterval(() => void advisories.tick(), 10 * 60_000).unref();
 setTimeout(() => void advisories.tick(), 30_000).unref();
 const brake = createBrake({ db: records.db, owner: ownerApi });
-// Jobs: the sandbox as configured here. Without a network jail that works, jobs would share the host's network (every loopback
-// service): loudly, so scripts/verify-security.sh and the journal both say so. Build caches without overlay support are shared.
+// Jobs: the sandbox as configured here. A known no-jail condition is fatal, with the reason in the journal: a job must never
+// share the host's network (every loopback service). Build caches without overlay support are shared.
 const sandbox = sandboxConfig(env);
 const jailIssue = jailProblem(sandbox);
 if (jailIssue) {
-  sandbox.pasta = undefined;
-  log("WARNING: jobs share the host's network (every loopback service, the LAN)", { reason: jailIssue });
+  log("ERROR: jobs cannot be jailed here", { reason: jailIssue });
+  process.exit(1);
 }
 if (sandbox.sandbox?.extra_writable_roots?.length) {
   const overlayIssue = overlayProblem(sandbox);

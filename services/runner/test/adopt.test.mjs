@@ -13,6 +13,7 @@ import { dirname, join } from "node:path";
 import { State } from "../src/state.ts";
 import { readLog } from "./fakes/lib.mjs";
 import { registry } from "./fakes/engines.mjs";
+import { fakeJail } from "./fakes/jail.mjs";
 import { forwardJobs, freePort, jobsHost } from "./flow-harness.mjs";
 
 const RUNNER = join(import.meta.dirname, "../src/main.mjs");
@@ -72,6 +73,7 @@ test("a runner and a kernel restart leave a running job alone; the next kernel a
     writeFileSync(join(bin, name), name === "bwrap" || name === "codex" ? `#!/bin/sh\n${exports}exec "${join(FAKES, `${name}.sh`)}" "$@"\n` : `#!/bin/sh\n${exports}exec "${process.execPath}" "${join(FAKES, `${name}.mjs`)}" "$@"\n`);
     chmodSync(join(bin, name), 0o755);
   }
+  fakeJail(bin, join(dir, "fake.log"));
   writeFileSync(join(config, "system.yaml"), `paperclip:\n  company_id: "${COMPANY}"\nuser:\n  names: ["Dana"]\n`);
   writeFileSync(join(config, "engines.json"), JSON.stringify(registry()));
   writeFileSync(

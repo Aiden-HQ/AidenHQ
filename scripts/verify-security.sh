@@ -749,7 +749,7 @@ merge_calls="$(awk '/^const mergeGithub = \{/,/^};/' "$rmain" | grep -oE 'github
 # sites in the queue ask the gate (src/evalgate.ts) right before GitHub's merge; the gate runs the eval with the eval's own
 # key (secrets openrouter_eval_key, never the fleet's openrouter_key), the base's judge (eval script and case-pad), in the
 # job jail (kernel/src/sandbox.ts hiding over the kernel's own sandboxConfig: Engineer jobs' layout and hidden paths, its
-# own network when that works; never unconfined), the tree read-only, one writable folder whose result is read as a small
+# own network, required at startup; never unconfined), the tree read-only, one writable folder whose result is read as a small
 # regular file, and the runner writes the receipt.
 rgate="services/runner/src/evalgate.ts"
 gate_before_merge() { awk "/^$1/,/^}/" "$rm_" | grep -nE 'await github\.evalGate\(|await github\.merge\(' | cut -d: -f2- | sed 's/^ *//' | cut -c1-24 | tr '\n' '|'; }
@@ -762,7 +762,7 @@ gate_before_merge() { awk "/^$1/,/^}/" "$rm_" | grep -nE 'await github\.evalGate
   && grep -qF 'const argv = d.jail([process.execPath, "scripts/reviewer-eval.mjs"], { rw: [out], ro: [tree, ...nm] });' "$rgate" \
   && grep -qF 'r = JSON.parse(smallFile(file, 4 * 1024 * 1024) ?? "");' "$rgate" \
   && grep -qF '  /^modules\/codehost-github\/src\/plan\.mjs$/,' "$rgate" && grep -qF '  /^modules\/platform\/src\/check\.mjs$/,' "$rgate" \
-  && grep -qF '  jail: (argv, paths) => hiding(evalSandbox, argv, [], paths),' "$rmain" && grep -qF 'import { hiding, jailProblem } from "../../../kernel/src/sandbox.ts";' "$rmain" && [ "$(grep -E 'evalSandbox( =|\.[a-zA-Z]+ =)' "$rmain" | tr '\n' '|')" = 'const evalSandbox = sandboxConfig();|if (jailProblem(evalSandbox)) evalSandbox.pasta = undefined;|' ] && ! grep -q 'unconfined' "$rmain" \
+  && grep -qF '  jail: (argv, paths) => hiding(evalSandbox, argv, [], paths),' "$rmain" && grep -qF 'import { hiding, jailProblem } from "../../../kernel/src/sandbox.ts";' "$rmain" && [ "$(grep -E 'evalSandbox( =|\.[a-zA-Z]+ =)' "$rmain" | tr '\n' '|')" = 'const evalSandbox = sandboxConfig();|' ] && grep -qF 'const evalJailIssue = jailProblem(evalSandbox);' "$rmain" && grep -qF '  log("ERROR: reviewer eval runs cannot be jailed here", { reason: evalJailIssue });' "$rmain" && grep -qF '  process.exit(1);' "$rmain" && ! grep -q 'unconfined' "$rmain" \
   && pass "runner: a product PR that changes the AI reviewer's code merges only on a 100% eval receipt for its exact head (base judge, eval key, jailed; $rgate)" \
   || fail "runner: the reviewer-eval receipt gate on product merges changed ($rgate, $rm_)"
 # Who decides a write (owner, 2026-11-14): the owner only for their own veto, a split panel, a routine's or the instance's
