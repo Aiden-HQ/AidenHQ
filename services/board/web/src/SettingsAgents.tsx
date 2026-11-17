@@ -159,7 +159,7 @@ function RoutineField({ r, models }: { r: Routine; models: string[] }) {
   if (!same(sched, r.schedules)) (items.push({ kind: "routine", routine: r.key, field: "schedules", value: sched.map((s) => ({ cron: s.cron.trim(), ...(s.timezone.trim() ? { timezone: s.timezone.trim() } : {}), ...(s.label ? { label: s.label } : {}) })) }), was.push(r.schedules.map((s) => ({ cron: s.cron, timezone: s.timezone }))));
   if (status !== (r.status === "paused" ? "paused" : "active")) (items.push({ kind: "routine", routine: r.key, field: "status", value: status }), was.push(r.status ?? "active"));
   if (model.trim() !== (r.model ?? "")) (items.push({ kind: "routine", routine: r.key, field: "model", value: model.trim() }), was.push(r.model ?? null));
-  const diff = Object.keys(own).filter((f) => !same(own[f], (r as unknown as Record<string, unknown>)[f] ?? null) && own[f] !== null);
+  const diff = Object.keys(own).filter((f) => !same(own[f], f === "schedules" ? r.schedules.map((x) => ({ cron: x.cron, ...(x.timezone ? { timezone: x.timezone } : {}), ...(x.label ? { label: x.label } : {}) })) : (r as unknown as Record<string, unknown>)[f] ?? null) && own[f] !== null);
   const busy = Boolean(filed && IN_FLIGHT.includes(filed.stage));
   const when = r.schedules.length ? r.schedules.map((s) => cronText(s.cron)).join(", ") : r.webhook ? "on an event" : "when asked";
   const listId = `rm-${r.key}`;

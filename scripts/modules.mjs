@@ -446,6 +446,13 @@ function substitute(value, settings, compose = false) {
   return value;
 }
 
+/** A module's own agent and routine values as the compiled config would have them without overrides (settings substituted; a module whose settings aren't set keeps them raw). */
+function moduleDefaults(def, settings) {
+  let d = def;
+  try { d = substitute(def, settings); } catch { /* a disabled module's settings may be unset */ }
+  return { agents: d.agents ?? {}, routines: Object.fromEntries(Object.entries(d.routines ?? {}).map(([k, { when: _w, ...r }]) => [k, r])) };
+}
+
 const isolationOf = (v, where, allowed = PROFILES) => {
   const p = v ?? "trusted";
   if (!allowed.includes(p)) fail(`${where}: isolation must be one of ${allowed.join(", ")} (got ${p})`);
@@ -920,7 +927,7 @@ export function compile(productDir, instanceDir, { revision, fetch = hostFetch(p
     ...(def.setup_flow != null ? { setup_flow: def.setup_flow } : {}),
     prompts: promptEntries(name, def, root).map((p) => ({ id: p.id, file: relative(root, p.file) })),
     ...(existsSync(join(root, "README.md")) ? { readme: readFileSync(join(root, "README.md"), "utf8").slice(0, 4096) } : {}),
-    defaults: { agents: def.agents ?? {}, routines: Object.fromEntries(Object.entries(def.routines ?? {}).map(([k, { when: _w, ...r }]) => [k, r])) },
+    defaults: moduleDefaults(def, settings),
   }))];
   // Secrets of channels the owner may not use: created empty when missing so compose starts (compile.mjs).
   const optionalSecrets = enabled.flatMap((name) => all.get(name).def.optional_secrets ?? []);

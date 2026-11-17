@@ -150,7 +150,7 @@ export function settingsView(s: Sources) {
   /** The module's own value (module.yaml as written) for each field it sets on one agent or routine: what Reset goes back to. */
   const defaultsOf = (kind: "agents" | "routines", key: string, fields: string[]) => {
     const own = s.catalog.find((m) => m.defaults?.[kind]?.[key])?.defaults?.[kind]?.[key] ?? {};
-    return Object.fromEntries(fields.filter((f) => own[f] !== undefined).map((f) => [f, f === "schedules" ? ((own[f] as Schedule[]) ?? []).map((x) => ({ cron: x.cron ?? "", timezone: x.timezone ?? "", label: x.label ?? "" })) : own[f]]));
+    return Object.fromEntries(fields.filter((f) => own[f] !== undefined).map((f) => [f, f === "schedules" ? ((own[f] as Schedule[]) ?? []).map((x) => ({ cron: x.cron ?? "", ...(x.timezone ? { timezone: x.timezone } : {}), ...(x.label ? { label: x.label } : {}) })) : own[f]]));
   };
   const agents = Object.entries(c.agents ?? {}).map(([key, a]) => {
     const g = grantsByKey.get(key);

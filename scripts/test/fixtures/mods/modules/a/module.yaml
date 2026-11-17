@@ -8,7 +8,7 @@ connections:
 agents:
   x: { adapter: codex_local, model: m1, connections: { tasks: [t], "glean?": [search], bconn: read, aconn: write } }
 routines:
-  r: { title: R, agent: x, description: "Today is {{date}}; mail ${settings.owner_email}" }
+  r: { title: R, agent: x, description: "Today is {{date}}; mail ${settings.owner_email}", schedules: [{ cron: "0 9 * * *", timezone: "${settings.timezone}" }] }
 generated_secrets: [a_mcp_token]
 services:
   data: true
