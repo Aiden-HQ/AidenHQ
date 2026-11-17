@@ -143,6 +143,9 @@ jobs:
           # scripts/node_modules is read by the scripts suite and the kernel's authority CLI: install it once, here, since two
           # parallel `npm ci` in one directory delete each other's files (ENOTEMPTY, then "Cannot find module yaml").
           grep -qE '^(scripts|kernel)[[:space:]]' "$logs/list" && (cd scripts && npm ci)
+          # The scripts suite's forks test runs the runner's tier function (services/runner/src/tiers.mjs), which reads its own
+          # node_modules: install them too (no services/runner package runs in this job, so nothing races it).
+          grep -qE '^scripts[[:space:]]' "$logs/list" && (cd services/runner && npm ci)
           tr '\n' '\0' < "$logs/list" | xargs -0 -r -P 4 -I{} bash -c 'one "$1"' _ {}
           status=0
           while IFS=$'\t' read -r dir cmd; do
