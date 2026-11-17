@@ -238,8 +238,10 @@ services:
       # The board's points (compile): the modules' sign-ins (board.signins).
       - ${AIDENHQ_CONFIG_DIR:-./config}/points/board.json:/config/points/board.json:ro
       - ${AIDENHQ_DATA_DIR:-./data}/board:/data/board
-      # The board's copy of the apply generations (ops/lib/generations.sh), read-only: fleet_generation_status.
-      - ${AIDENHQ_STATE_DIR:-./data/state}/board/generations.jsonl:/generations/generations.jsonl:ro
+      # The board's copy of the apply generations (ops/lib/generations.sh), read-only: fleet_generation_status. Its own
+      # directory, which holds that one file: the apply replaces the file by rename, so a bind mount of the file itself
+      # would keep the old inode.
+      - ${AIDENHQ_STATE_DIR:-./data/state}/board:/generations:ro
       # No accounts file: admins sign in on the kernel, which hands the board its own session (lean 3g).
     secrets:
       - paperclip_board_key

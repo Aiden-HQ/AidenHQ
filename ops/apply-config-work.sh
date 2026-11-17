@@ -458,7 +458,7 @@ switchOver() {
   elif [ "$before" != "$product" ] && ! git diff --quiet "$before" "$product" -- kernel ops/units/aidenhq-kernel.service; then
     systemctl --user restart aidenhq-kernel && echo "kernel code changed: restarted"
   fi
-  # The board mounts this mirror read-only, so it must exist before compose starts (a first apply on a fresh host).
+  # The board mounts this mirror's directory read-only, so it must exist before compose starts (a first apply on a fresh host).
   mkdir -p "$(dirname "$AIDENHQ_GENERATIONS_MIRROR")"
   [ -e "$AIDENHQ_GENERATIONS_MIRROR" ] || : > "$AIDENHQ_GENERATIONS_MIRROR"
   ops/compose-recreate.sh # build what moved, recreate only those services, and clean up what this config dropped

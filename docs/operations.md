@@ -118,7 +118,7 @@ It is idempotent. The Platform Engineer runs it for you after you approve a chan
   github-mcp for the product issues labelled since its cursor and fires the "Maintainer: issue" webhook once per trusted
   issue, with `{{number}}` and `{{title}}`. A label from anyone else is logged once and starts nothing. Cursor and fired
   issues are in the board's store (meta `maintainer_issues`), so a restart repeats and skips none. It reads the host's
-  `generations.jsonl` read-only (`AIDENHQ_STATE_DIR`, one file mounted at `/generations/generations.jsonl`) for the
+  `generations.jsonl` read-only (`AIDENHQ_STATE_DIR`, its mirror in `board/` mounted at `/generations`) for the
   `fleet_generation_status` tool: the current pin (the newest generation that got past validation) and the last 20
   generations, newest first. The watcher is off until a module supplies `MAINTAINER_ISSUES_TOKEN_FILE` (github-mcp's
   internal read's own token) and the routine's `MAINTAINER_WEBHOOK_URL_FILE`/`_SECRET_FILE`, as `board_env` does for

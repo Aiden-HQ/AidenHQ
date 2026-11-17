@@ -26,7 +26,7 @@ const fs = require("node:fs");
 const [file, op, ...a] = process.argv.slice(1);
 const all = () => (fs.existsSync(file) ? fs.readFileSync(file, "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l)) : []);
 const write = (rows) => { fs.writeFileSync(file + ".tmp", rows.map((r) => JSON.stringify(r) + "\n").join("")); fs.renameSync(file + ".tmp", file); };
-// The board mounts a one-file mirror: a rename here leaves a bind mount on the old inode.
+// The copy the board reads, in its own directory: mounting the file itself would pin the inode a rename replaces.
 const mirror = (text, mode) => { if (process.env.AIDENHQ_GENERATIONS_MIRROR) { fs.mkdirSync(require("node:path").dirname(process.env.AIDENHQ_GENERATIONS_MIRROR), { recursive: true }); fs.writeFileSync(process.env.AIDENHQ_GENERATIONS_MIRROR + ".tmp", text, { mode }); fs.renameSync(process.env.AIDENHQ_GENERATIONS_MIRROR + ".tmp", process.env.AIDENHQ_GENERATIONS_MIRROR); } };
 const rows = all();
 const next = rows.reduce((m, r) => Math.max(m, r.n), 0) + 1;
