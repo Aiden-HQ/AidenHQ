@@ -56,6 +56,7 @@ import { createResolver } from "../../../kernel/src/net.ts";
 import { ALREADY_APPLIED, guardBranch } from "./evidence.ts";
 import { jobUsage } from "./usage.ts";
 import { createEvalGate } from "./evalgate.ts";
+import { fastChecks } from "../../../kernel/src/fastcheck.ts";
 import { afterRejection, graderSpeaks, summaryKind, wakesParent } from "./notices.ts";
 import { readBusy } from "./busy.ts";
 import { normalizeRepo, repoAccess } from "../../../modules/codehost-github/src/repos.ts";
@@ -2878,6 +2879,9 @@ async function agentPublish(ctx, command, args) {
       only,
       text,
       check: async (ordered) => {
+        // The repo's own fast check (kernel/src/fastcheck.ts), in the job sandbox, before any card: a failure goes back to the agent.
+        const refused = ctx.box ? void log("fast check skipped: a computer job", { issue: ctx.issue.identifier }) : await fastChecks({ cfg: evalSandbox, log, git }, ordered);
+        if (refused) throw new UserError(refused);
         // History rewritten in place (replace refs, grafts, shallow) shows one commit and publishes another: refused before tiering.
         await refuseRewritten(ordered);
         const branches = await branchHeads(ordered);
