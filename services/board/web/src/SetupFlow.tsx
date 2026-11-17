@@ -190,15 +190,16 @@ function Steps({ text }: { text: string }) {
 const ms = (t: string | number | undefined) => (typeof t === "number" ? (t < 1e12 ? t * 1000 : t) : t ? Date.parse(t) : NaN);
 
 function Pairing({ flow, reload, fail }: { flow: SetupFlowView; reload: () => Promise<void>; fail: (e: unknown) => void }) {
-  const [pair, setPair] = useState<{ code: string; link?: string; minted_at: number } | null>(null);
+  // `was`: paired already when minted. Then only a pairing time after the mint shows the re-pair; with no time, keep waiting.
+  const [pair, setPair] = useState<{ code: string; link?: string; minted_at: number; was: boolean } | null>(null);
   useEffect(() => {
     if (!pair) return;
-    // Paired by this code: a pairing after it was minted (a re-pair), or any pairing when the service gives no time.
+    // Paired by this code: a pairing after it was minted, or, from unpaired, any pairing when the service gives no time.
     const t = setInterval(
       () =>
         api.setupPaired(flow.module).then(
           (r) => {
-            if (r.paired && (r.paired_at == null || ms(r.paired_at) >= pair.minted_at)) {
+            if (r.paired && (r.paired_at != null ? ms(r.paired_at) >= pair.minted_at : !pair.was)) {
               setPair(null);
               void reload();
             }
@@ -209,7 +210,7 @@ function Pairing({ flow, reload, fail }: { flow: SetupFlowView; reload: () => Pr
     );
     return () => clearInterval(t);
   }, [pair, flow.module, reload]);
-  const mint = () => api.setupPair(flow.module).then(setPair, fail);
+  const mint = () => api.setupPair(flow.module).then((r) => setPair({ ...r, was: flow.paired }), fail);
   if (!pair) {
     return (
       <section className="setup-card">
