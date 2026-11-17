@@ -1,6 +1,7 @@
 // A module's setup secrets from the board (guided setup): a ready admin pastes a value for a secret the module declared with
 // `setup:` (compile: config/kernel/modules.json `setup`), the kernel writes it to the vault under the declared name and
-// recreates that module's own compose services (`services`) so they read it. The caller names only the module and the
+// recreates that module's own compose services (`services`) and every other service that mounts the secret (`mounts`), so
+// they read it (a file secret is a bind mount of the old file until its container is recreated). The caller names only the module and the
 // secret; never a path or a service. Values are never logged, echoed or put on a command line.
 import { spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
@@ -25,6 +26,8 @@ export function createModuleSecrets(deps: {
   fields: () => SetupField[];
   /** An enabled module's compose services; undefined for a module that is off. */
   services: (module: string) => string[] | undefined;
+  /** Every compose service that mounts the secret, any module's. */
+  mounts: (secret: string) => string[];
   save: (name: string, value: string) => void;
   has: (name: string) => boolean;
   /** Recreates the services; calls `locked` once it holds the apply lock (from then on it may have read the files). */
@@ -36,28 +39,30 @@ export function createModuleSecrets(deps: {
     if (!Array.isArray(services)) throw fail(404, "not_found", "no such module, or it is off");
     return services;
   };
-  // One recreate per module at a time that hasn't taken the lock yet: saves arriving while it waits (an apply running, a
-  // second paste) join it, since it reads the files only after the lock; a save after that starts the next one.
+  // One recreate per set of services at a time that hasn't taken the lock yet: saves arriving while it waits (an apply
+  // running, a second paste) join it, since it reads the files only after the lock; a save after that starts the next one.
   const waiting = new Map<string, Promise<void>>();
-  const recreate = (module: string, services: string[]) => {
-    const joined = waiting.get(module);
+  const recreate = (services: string[]) => {
+    const k = services.join(" ");
+    const joined = waiting.get(k);
     if (joined) return joined;
-    const p = deps.recreate(services, () => { if (waiting.get(module) === p) waiting.delete(module); });
-    waiting.set(module, p);
-    void p.catch(() => {}).finally(() => { if (waiting.get(module) === p) waiting.delete(module); });
+    const p = deps.recreate(services, () => { if (waiting.get(k) === p) waiting.delete(k); });
+    waiting.set(k, p);
+    void p.catch(() => {}).finally(() => { if (waiting.get(k) === p) waiting.delete(k); });
     return p;
   };
   return {
     async save(module: string, secret: string, raw: string): Promise<{ restarted: string[] }> {
-      const services = on(module);
+      const own = on(module);
       const field = deps.fields().find((f) => f.module === module && f.secret === secret);
       if (!field) throw fail(400, "bad_request", "this module asks for no such secret");
       const value = raw.trim();
       if (!secretFits(field, value)) throw fail(400, "bad_request", `that doesn't look like a ${field.label}`);
+      const services = [...new Set([...own, ...deps.mounts(field.secret)])].sort();
       // Written first, so the last value saved is the one every later recreate reads.
       deps.save(field.secret, value);
       try {
-        if (services.length) await recreate(module, services);
+        if (services.length) await recreate(services);
       } catch (e) {
         deps.log("module secret saved; recreate failed", { module, secret: field.secret, err: String((e as Error).message).slice(0, 300) });
         throw fail(502, "bad_gateway", `saved, but its services didn't restart: ${String((e as Error).message).slice(0, 300)}`);
