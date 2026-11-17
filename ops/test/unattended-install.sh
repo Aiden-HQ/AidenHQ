@@ -18,7 +18,7 @@ set -euo pipefail
 src="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 [ "$(id -u)" = 0 ] || exec sudo -n env PATH="$PATH" CI="${CI:-}" bash "$0" "$@"
 [ -f /.dockerenv ] || [ -n "${CI:-}" ] || { echo "refusing: this test adds a user and /opt/aidenhq; run it in a throwaway container" >&2; exit 1; }
-[ -d "$src/kernel/node_modules" ] && [ -d "$src/scripts/node_modules" ] || { echo "npm ci in kernel/ and scripts/ first" >&2; exit 1; }
+[ -d "$src/kernel/node_modules" ] && [ -d "$src/scripts/node_modules" ] && [ -d "$src/modules" ] || { echo "npm ci in kernel/ and scripts/, and materialize ./modules (modules-pin.json), first" >&2; exit 1; }
 U=alice H=/home/alice
 work="$(mktemp -d /tmp/unattended.XXXXXX)"; chmod 0755 "$work"
 ok() { echo "ok   $*"; }
@@ -59,6 +59,10 @@ chown -R "$U:$U" "$work/git"   # as a remote it fetches from: git refuses a repo
 runuser -u "$U" -- git clone -q "file://$work/git/kernel.git" "$H/aidenhq"
 runuser -u "$U" -- git -C "$H/aidenhq" -c advice.detachedHead=false checkout -q --detach "$(git --git-dir="$work/git/distro.git" show "$RSHA:releases/2026.11.json" | sed -n 's/.*"kernel": "\([0-9a-f]*\)".*/\1/p')"
 for d in kernel scripts; do cp -a "$src/$d/node_modules" "$H/aidenhq/$d/" && chown -R "$U:$U" "$H/aidenhq/$d/node_modules"; done
+# The official modules: this tree's ./modules (gitignored), marked as materialized at modules-pin.json's sha so setup
+# keeps them rather than fetching the pin; the modules under test stand in for the pinned ones.
+cp -a "$src/modules" "$H/aidenhq/modules" && sed -n 's/.*"sha": *"\([0-9a-f]*\)".*/\1/p' "$src/modules-pin.json" > "$H/aidenhq/modules/.sha"
+chown -R "$U:$U" "$H/aidenhq/modules"
 TOKEN="ghp_$(head -c 18 /dev/urandom | od -An -tx1 | tr -d ' \n')"   # random: this file is in the checkout too
 (umask 077; printf '%s\n' "$TOKEN" > "$work/ktoken")
 # Root's copy, as install.sh's root_verify makes it: a --no-local clone of the checkout, the release's sha exported into
