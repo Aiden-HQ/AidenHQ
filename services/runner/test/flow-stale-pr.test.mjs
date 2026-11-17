@@ -102,6 +102,33 @@ scenario("a merge request", ({ t, setPrs, stored, stale, merged, mergeCards }) =
     assert.ok(!t.toolRuns().at(-1).out.includes("is already merged"), "another change's merge is not this task's evidence");
   });
 
+  it("a blip posting the stale line is retried, and the line lands once", async () => {
+    await t.settled();
+    stored("feat/ours", url(26));
+    setPrs({}); // unreadable, so the line is due
+    t.paperclip.failComment.set("part", [503]);
+    t.step("none\naidenhq merge https://github.com/acme/app/pull/26");
+    await t.turn("Merge it.");
+    assert.equal(t.toolRuns().at(-1).code, 1);
+    assert.equal(stale(26).length, 1, "the retried post lands, once");
+    await t.idle(800);
+    assert.equal(stale(26).length, 1);
+  });
+
+  it("a post the board refuses is not recorded as sent: the next check says it", async () => {
+    stored("feat/ours", url(27));
+    setPrs({});
+    t.paperclip.failComment.set("part", [422, 422, 422]); // every post this turn makes
+    t.step("none\naidenhq merge https://github.com/acme/app/pull/27");
+    await t.turn("Merge it.");
+    assert.equal(t.toolRuns().at(-1).code, 1, "nothing is merged on an unconfirmed number");
+    assert.equal(stale(27).length, 0, "a post the board refuses is not recorded as sent");
+    t.paperclip.failComment.set("part", []);
+    t.step("none\naidenhq merge https://github.com/acme/app/pull/27");
+    await t.turn("Try again.");
+    assert.equal(stale(27).length, 1, "said once the board takes it");
+  });
+
   it("a stored number that still names the task's branch gets its merge card as before", async () => {
     stored("feat/ours", url(14));
     setPrs({ 14: { branch: "feat/ours", files: ["x.txt"], checks: "SUCCESS" } });

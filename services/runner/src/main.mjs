@@ -1049,9 +1049,17 @@ async function staleStoredPr(issueId, { url, headRefName }) {
   if (!why) return undefined;
   const once = `stale-pr:${issueId}:${String(url).toLowerCase()}`;
   if (!state.get(once)) {
-    state.set(once, new Date().toISOString());
-    log("stale stored PR number", { issue: issueId, pr: url, recorded: row.branch, head: headRefName ?? null });
-    await pc.comment(issueId, `The PR number stored on this task for ${url} is stale: ${why}. Nothing was done with it: no rebase request, merge or card.`).catch((err) => log("stale PR note failed", { issue: issueId, pr: url, err: String(err.message ?? err).slice(0, 200) }));
+    const line = `The PR number stored on this task for ${url} is stale: ${why}. Nothing was done with it: no rebase request, merge or card.`;
+    // Recorded only once the task has the line: a Paperclip blip is retried here, and a post that still fails leaves the
+    // marker unset so the next check says it, never a report lost to one bad minute.
+    const said = await retryTransient(() => pc.comment(issueId, line)).then(
+      () => true,
+      (err) => (log("stale PR note failed", { issue: issueId, pr: url, err: String(err.message ?? err).slice(0, 200) }), false),
+    );
+    if (said) {
+      state.set(once, new Date().toISOString());
+      log("stale stored PR number", { issue: issueId, pr: url, recorded: row.branch, head: headRefName ?? null });
+    }
   }
   return why;
 }
