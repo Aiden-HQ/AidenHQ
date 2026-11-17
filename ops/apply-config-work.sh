@@ -392,7 +392,9 @@ validate() {
     local inst_args=(); [ -z "$inst_before" ] || inst_args=("$inst" "$inst_before" "$want")
     node kernel/src/loader/authority-cli.ts "$before" "$product" "${inst_args[@]}" || { why="the authority diff could not be computed"; return 1; }
   fi
-  # Images build beside the running containers (a build never touches one).
+  # A release's prebuilt images (compile swapped them in for the builds) are pulled, all at once, by digest; what is already
+  # here is kept. Then the images still built locally build beside the running containers (a build never touches one).
+  COMPOSE_FILE="$files" docker compose pull --policy missing --ignore-buildable --quiet || { why="a release image failed to pull"; return 1; }
   COMPOSE_FILE="$files" docker compose build || { why="an image failed to build"; return 1; }
   # The health baseline: only checks passing now count after the switch.
   scripts/healthcheck.sh > "$baseline" 2>&1 || true
