@@ -806,6 +806,8 @@ async function dispatch(job) {
     waiting.instructions = `${waiting.instructions}\n\n${job.instructions}`;
     return;
   }
+  // A task whose blocker is unresolved is asleep: Paperclip refuses its status write, so a run could only fail.
+  if (await parkIfBlocked(issue, job.instructions)) return;
   if (running.has(issue.id)) {
     queue.push(job);
     await pc.comment(issue.id, "Noted: I'll read this as soon as the current run on this task finishes.");
@@ -835,6 +837,20 @@ async function dispatchParked() {
     log("blocker resolved: dispatching", { issue: full.identifier ?? issueId });
     await dispatch({ issue: full, instructions });
   }
+}
+
+/**
+ * A task whose blocker is unresolved is asleep: Paperclip refuses its status write with a 422 and the run would be
+ * counted as a failure, so its job waits in the runner's state until every blocker is done or cancelled. True when it
+ * parked. `issue` need not carry its blockers (a list row): read them when it doesn't.
+ */
+async function parkIfBlocked(issue, instructions) {
+  const full = issue.blockedBy === undefined ? await pc.issue(issue.id).catch(() => undefined) : issue;
+  const blockers = unresolvedBlockers(full);
+  if (!blockers.length) return false;
+  park(state, { issueId: issue.id, instructions });
+  log("job parked: its task is blocked", { issue: issue.identifier, blockers: blockers.map((b) => b.identifier ?? b.id) });
+  return true;
 }
 
 // ------------------------------------------------------------------ merges
@@ -3448,7 +3464,7 @@ async function startJob({ issue, instructions }) {
       return;
     }
     // A task whose blocker is still unresolved is asleep: dispatching it only gets its own status write refused.
-    if (unresolvedBlockers(full).length) return void (park(state, { issueId: full.id, instructions }), log("job parked: its task is blocked", { issue: full.identifier }));
+    if (await parkIfBlocked(full, instructions)) return;
     // Recorded before any setup can fail: a job that died while preparing its workspace still counts as having run
     // (its delegator's follow-up is only read on a task with history).
     remember(issue.id, instructions);
