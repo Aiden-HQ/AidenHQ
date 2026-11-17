@@ -1,5 +1,5 @@
 // The first run end to end on the admin listener: /setup makes the account, the authenticator is enrolled, then the model
-// step (/setup/model) connects OpenRouter (PKCE callback /setup/openrouter) or takes a pasted key, checks it with one call and
+// step (/setup/model) connects OpenRouter (PKCE callback /setup/openrouter/<state>, which needs no session) or takes a pasted key, checks it with one call and
 // sends the owner on to the board's welcome. OpenRouter is stubbed.
 import { test, after, before } from "node:test";
 import assert from "node:assert/strict";
@@ -62,30 +62,41 @@ test("setup takes account then model", async () => {
   const step = await page("GET", "/setup/model");
   assert.equal(step.status, 200);
   assert.match(step.body, /Connect OpenRouter/);
-  assert.match(step.body, /callback_url=http%3A%2F%2Flocalhost%3A3120%2Fsetup%2Fopenrouter/);
+  assert.match(step.body, /callback_url=http%3A%2F%2Flocalhost%3A3120%2Fsetup%2Fopenrouter%2F[\w-]{22}&/);
   assert.match(step.body, /Use your API key[\s\S]*name="openrouter_key"[\s\S]*>Save<\/button>[\s\S]*Connect OpenRouter<\/a>/); // both, as equals
   assert.match(step.body, /https:\/\/openrouter\.ai\/settings\/keys/);
-  const back = await page("GET", `/setup/openrouter?code=c0de&state=${stateOf(step.body)}`);
-  assert.equal(back.status, 303, /class="err">[^<]*/.exec(back.body)?.[0]);
-  assert.equal(back.location, `${BOARD}/#/welcome`);
+  // OpenRouter's return is cross-site: the SameSite=Strict session cookie doesn't come with it.
+  const back = await page("GET", `/setup/openrouter/${stateOf(step.body)}?code=c0de`, undefined, new Map());
+  assert.equal(back.status, 200);
+  assert.match(back.body, /<meta http-equiv="refresh" content="0;url=\/setup\/model\?connect=ok">/); // a same-site move on, with the cookie
   assert.deepEqual(exchanged, [["c0de", "v".repeat(43)]]);
   assert.equal(vault.get("openrouter_key"), KEY);
   assert.equal(state.ready(), true);
-  assert.equal((await page("GET", `/setup/openrouter?code=c0de&state=${stateOf(step.body)}`)).location, `${BOARD}/#/welcome`); // a reload
+  assert.equal((await page("GET", "/setup/model?connect=ok")).location, `${BOARD}/#/welcome`);
+  assert.match((await page("GET", `/setup/openrouter/${stateOf(step.body)}?code=c0de`, undefined, new Map())).body, /connect=ok/); // a reload
   assert.equal(exchanged.length, 1);
+});
+
+test("with a working model key, the authenticator leads on to the welcome", async () => {
+  // As a finished enrolment does (afterEnrol): the welcome shows the recovery key and the modules' flows, not /approvals.
+  assert.ok(state.ready());
+  assert.equal((await page("GET", "/auth/enrol")).location, `${BOARD}/#/welcome`);
 });
 
 test("openrouter error keeps the account", async () => {
   vault.clear();
   const step = await page("GET", "/setup/model");
-  const back = await page("GET", `/setup/openrouter?error=access_denied`);
-  assert.equal(back.status, 400);
-  assert.match(back.body, /OpenRouter didn&#39;t connect/);
-  assert.ok(back.body.includes("Connect a model") && !back.body.includes('name="password"'));
-  assert.ok(!back.body.includes("access_denied"));
+  const back = await page("GET", `/setup/openrouter/${stateOf(step.body)}?error=access_denied`, undefined, new Map());
+  assert.match(back.body, /connect=failed/);
+  const shown = await page("GET", "/setup/model?connect=failed");
+  assert.equal(shown.status, 400);
+  assert.match(shown.body, /OpenRouter didn&#39;t connect/);
+  assert.ok(shown.body.includes("Connect a model") && !shown.body.includes('name="password"'));
+  assert.ok(!shown.body.includes("access_denied"));
   assert.equal((await accounts.list()).length, 1);
   // The code from an older page (its state spent) connects nothing.
-  assert.equal((await page("GET", `/setup/openrouter?code=c0de&state=${stateOf(step.body)}`)).status, 400);
+  assert.match((await page("GET", `/setup/openrouter/${stateOf(step.body)}?code=c0de`, undefined, new Map())).body, /connect=failed/);
+  assert.match((await page("GET", `/setup/openrouter/${"x".repeat(22)}?code=c0de`, undefined, new Map())).body, /connect=failed/); // a made-up state
   assert.equal(vault.has("openrouter_key"), false);
 });
 

@@ -16,7 +16,7 @@
     "admin route GET /recovery-key": {"state":"experimental","fp":"auth=admin"},
     "admin route GET /setup": {"state":"experimental","fp":"auth=setup-token"},
     "admin route GET /setup/model": {"state":"experimental","fp":"auth=admin"},
-    "admin route GET /setup/openrouter": {"state":"experimental","fp":"auth=admin"},
+    "admin route GET /setup/openrouter/:state": {"state":"experimental","fp":"auth=pkce-state"},
     "admin route POST /approvals/:id/decide": {"state":"experimental","fp":"auth=admin+csrf"},
     "admin route POST /approvals/batch": {"state":"experimental","fp":"auth=admin+csrf"},
     "admin route POST /auth/enrol": {"state":"experimental","fp":"auth=session+csrf"},

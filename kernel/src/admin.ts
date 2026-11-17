@@ -1,7 +1,7 @@
 // K4 kernel pages on the admin listener (127.0.0.1:3120; spec §2.3, §2.5; lean 3a): sign-in, the approval list and card
 // pages, decide and batch decide, the owner's confirmation page and the owner message frame. Server-rendered, no script.
-// - Every request names an allowed Host (DNS rebinding); every route but /healthz and sign-in needs a ready admin's session
-//   (TOTP enrolled), stamped `account:<id>` from the session, never from the request.
+// - Every request names an allowed Host (DNS rebinding); every route but /healthz, sign-in and OpenRouter's callback needs a
+//   ready admin's session (TOTP enrolled), stamped `account:<id>` from the session, never from the request.
 // - Every POST carries this listener's own Origin, exactly (cookies ignore ports, so the board's origin on the same host is
 //   refused here), and, signed in, a token bound to the session that only a page from this origin carries (A6).
 // - Every page sends frame-ancestors 'none', except /owner/message, which the board's origins may frame: it only sends what
@@ -9,8 +9,11 @@
 // - /setup (spec §6.10, A42): the first-run page, only with the single-use token ops/setup.sh --unattended prints and only
 //   while no admin exists. A GET changes nothing; the submit is checked in full, then spends the token, makes the owner's
 //   account and hands over to /auth/enrol for the authenticator. The owner then picks the model on /setup/model: Connect
-//   OpenRouter (PKCE: the verifier and a state kept here per session, the callback /setup/openrouter) or a pasted key, then one
-//   1-token call; on success the key goes into the vault and the owner on to the board's welcome.
+//   OpenRouter (PKCE) or a pasted key, then one 1-token call; on success the key goes into the vault and the owner on to the
+//   board's welcome. OpenRouter's return is a cross-site navigation, so the SameSite=Strict session cookie isn't sent: the
+//   callback /setup/openrouter/<state> needs no session. The random state in its path names a pending entry the owner's
+//   model page made (verifier, account), spent on first use and gone after 10 minutes. It answers with a page that moves on
+//   to /setup/model itself (a same-site navigation, so the cookie comes back) with the outcome.
 import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type { AdminSession, Step } from "./accounts.ts";
@@ -66,7 +69,7 @@ export const ROUTES = [
   { method: "GET", path: "/auth/handoff", auth: "admin" },
   { method: "GET", path: "/setup/model", auth: "admin" },
   { method: "POST", path: "/setup/model", auth: "admin+csrf" },
-  { method: "GET", path: "/setup/openrouter", auth: "admin" },
+  { method: "GET", path: "/setup/openrouter/:state", auth: "pkce-state" },
   { method: "GET", path: "/recovery-key", auth: "admin" },
   { method: "POST", path: "/recovery-key", auth: "admin+csrf" },
   { method: "GET", path: "/", auth: "admin" },
@@ -79,7 +82,7 @@ export const ROUTES = [
   { method: "GET", path: "/owner/confirm", auth: "admin" },
   { method: "POST", path: "/owner/confirm", auth: "admin+csrf" },
 ] as const;
-const compiled = ROUTES.map((r) => ({ ...r, re: new RegExp(`^${r.path.replace(":id", "(k-[0-9a-f]{16})")}$`) }));
+const compiled = ROUTES.map((r) => ({ ...r, re: new RegExp(`^${r.path.replace(":id", "(k-[0-9a-f]{16})").replace(":state", "([\\w-]{22})")}$`) }));
 const STATUSES = ["backlog", "todo", "in_progress", "in_review", "blocked", "done", "cancelled"];
 
 /** A secret a module asks for on /setup (its provided secret's `setup:`, compiled into config/kernel/modules.json `setup`). */
@@ -124,8 +127,8 @@ export function createAdmin(d: Deps) {
       ...extra,
     }).end(html);
   }
-  const doc = (title: string, body: string, s?: AdminSession | null) =>
-    `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${esc(title)} · AidenHQ</title><style>${CSS}</style></head><body>` +
+  const doc = (title: string, body: string, s?: AdminSession | null, head = "") =>
+    `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">${head}<title>${esc(title)} · AidenHQ</title><style>${CSS}</style></head><body>` +
     (s?.ready ? `<header><b>AidenHQ</b><a href="/approvals">Approvals</a><a href="/owner/message">Message</a><a href="/auth/password">Password</a><form method="post" action="/auth/sign-out"><button>Sign out</button></form></header>` : "") +
     `<main>${body}</main></body></html>`;
   const redirect = (res: ServerResponse, to: string, cookies: string[] = []) =>
@@ -157,9 +160,13 @@ export function createAdmin(d: Deps) {
 <button class="b">Create account</button>`)}`);
   };
   // The model step. Connect needs a callback OpenRouter takes: https, or localhost on any port; elsewhere the paste field leads.
-  const pkce = new Map<string, { verifier: string; state: string; at: number }>();
+  // Pending Connects, by their state: the verifier and the owner who started it.
+  const pkce = new Map<string, { verifier: string; account: string; at: number }>();
   const welcome = () => (d.boardUrl?.() ? `${d.boardUrl()}/#/welcome` : "/approvals");
-  const afterEnrol = (s: AdminSession) => (d.model && s.account.owner && !d.model.ready() ? "/setup/model" : "/approvals");
+  // The owner goes on to the model step, or (a model key given at install) straight to the board's welcome, which shows the
+  // recovery key and the modules' flows until it is finished.
+  const afterEnrol = (s: AdminSession) => (d.model && s.account.owner ? (d.model.ready() ? welcome() : "/setup/model") : "/approvals");
+  const NOT_CONNECTED = "OpenRouter didn't connect (cancelled, expired or from another page). Try again.";
   const modelPage = (req: IncomingMessage, s: AdminSession, msg = "", credit = false) => {
     const host = String(req.headers.host ?? "").toLowerCase();
     const origin = d.origins().find((o) => new URL(o).host === host || new URL(o).hostname === host); // proxies differ in the Host they pass on
@@ -169,8 +176,8 @@ export function createAdmin(d: Deps) {
     if (callable) {
       for (const [k, v] of pkce) if (Date.now() - v.at > 600_000) pkce.delete(k);
       const state = randomBytes(16).toString("base64url");
-      const { url, verifier } = d.model!.start(`${origin}/setup/openrouter`, state);
-      pkce.set(s.session.id, { verifier, state, at: Date.now() });
+      const { url, verifier } = d.model!.start(`${origin}/setup/openrouter/${state}`, state);
+      pkce.set(state, { verifier, account: s.account.id, at: Date.now() });
       connect = `<div class="card"><h2>Connect your account</h2><p class="muted">Sign in to OpenRouter (or make an account) and approve; you come straight back here.</p><a class="b" href="${esc(url)}">Connect OpenRouter</a></div>`;
     }
     const field = d.firstRun?.fields().find((f) => f.secret === MODEL_KEY);
@@ -180,14 +187,19 @@ export function createAdmin(d: Deps) {
     return doc("Connect a model", `<h1>Connect a model</h1><p>Your agents think with AI models on OpenRouter. The key goes into the vault, read only by the kernel's model gateway.</p>${msg}${retry}${has}${credit ? "" : `<div class="pick">${paste}${connect}</div>`}`, s);
   };
   /** One 1-token call with the key; saved when it works or only lacks credit (Retry then needs no new key). */
-  async function useKey(req: IncomingMessage, res: ServerResponse, s: AdminSession, key: string) {
+  async function takeKey(key: string, by: string) {
     const r = await d.model!.check(key);
-    if (r === "error") return send(res, 400, modelPage(req, s, err("OpenRouter didn't accept a call with that key. Try again, or paste another key.")));
+    if (r === "error") return r;
     d.firstRun!.save(MODEL_KEY, key);
     d.model!.checked(key, r === "ok"); // ready only once a check of this key passed (no credit: Retry checks it again)
-    log("model key saved", { by: `account:${s.account.id}`, check: r });
+    log("model key saved", { by, check: r });
     // The agents setup created before there was a key are still unverified (Paperclip shows them paused): setup checks them now.
     if (r === "ok") d.model!.verifyAgents?.();
+    return r;
+  }
+  async function useKey(req: IncomingMessage, res: ServerResponse, s: AdminSession, key: string) {
+    const r = await takeKey(key, `account:${s.account.id}`);
+    if (r === "error") return send(res, 400, modelPage(req, s, err("OpenRouter didn't accept a call with that key. Try again, or paste another key.")));
     if (r === "no_credit") return send(res, 200, modelPage(req, s, "", true));
     return redirect(res, welcome());
   }
@@ -280,6 +292,21 @@ export function createAdmin(d: Deps) {
           const r = await step(req, "/sign-out", {});
           return redirect(res, "/auth/sign-in", r.cookies);
         }
+        case "GET /setup/openrouter/:state": {
+          // OpenRouter's callback (header): no session; the state's pending entry, single-use and fresh; a denial carries no code.
+          if (!d.model || !d.firstRun) throw new Refusal(404, "not found");
+          const p = pkce.get(id), code = url.searchParams.get("code") ?? "";
+          pkce.delete(id);
+          let outcome = !p && d.model.ready() ? "ok" : "failed"; // no entry but ready: a reload after it worked
+          if (p && code && Date.now() - p.at <= 600_000) {
+            const key = await d.model.exchange(code, p.verifier).catch((e: Error) => (log("openrouter exchange failed", { err: e.message.slice(0, 200) }), ""));
+            const field = d.firstRun.fields().find((x) => x.secret === MODEL_KEY);
+            const r = key && (!field || secretFits(field, key)) ? await takeKey(key, `account:${p.account}`) : "error";
+            outcome = r === "ok" ? "ok" : r === "no_credit" ? "credit" : "failed";
+          }
+          const to = `/setup/model?connect=${outcome}`;
+          return send(res, 200, doc("Connecting", `<p>Back from OpenRouter. <a href="${to}">Continue</a></p>`, null, `<meta http-equiv="refresh" content="0;url=${to}">`));
+        }
       }
       // Everything below: a ready admin.
       const s = await admin(req);
@@ -295,27 +322,21 @@ export function createAdmin(d: Deps) {
           log("session handed to a module", { module, origin: to, by });
           return redirect(res, `${to}/auth/handoff?${new URLSearchParams({ code, state })}`);
         }
-        case "GET /setup/model": case "POST /setup/model": case "GET /setup/openrouter": {
+        case "GET /setup/model": case "POST /setup/model": {
           if (!d.model || !d.firstRun) throw new Refusal(404, "not found");
           if (!s.account.owner) throw new Refusal(403, "only the owner picks the model");
-          if (hit.path === "/setup/model" && req.method === "GET") return send(res, 200, modelPage(req, s));
-          if (req.method === "POST") {
-            const action = f.get("action");
-            if (action === "retry") return useKey(req, res, s, d.model.saved());
-            if (action !== "paste") throw new Refusal(400, "paste or retry");
-            const key = (f.get(MODEL_KEY) ?? "").trim(), field = d.firstRun.fields().find((x) => x.secret === MODEL_KEY);
-            if (!key || key.length > 300 || /\s/.test(key) || (field && !secretFits(field, key))) return send(res, 400, modelPage(req, s, err(`That isn't a valid ${field?.label ?? "OpenRouter API key"}.`)));
-            return useKey(req, res, s, key);
+          if (req.method === "GET") {
+            // `connect`: the outcome OpenRouter's callback came back with (only which message shows; the vault says what's true).
+            const connect = url.searchParams.get("connect");
+            if (connect === "ok" && d.model.ready()) return redirect(res, welcome());
+            if (connect === "credit") return send(res, 200, modelPage(req, s, "", true));
+            return send(res, connect === "failed" ? 400 : 200, modelPage(req, s, connect === "failed" ? err(NOT_CONNECTED) : ""));
           }
-          // The callback: single-use, bound to this session and the state it was sent with; a denial carries no code.
-          const p = pkce.get(s.session.id), code = url.searchParams.get("code") ?? "";
-          pkce.delete(s.session.id);
-          if (!p && d.model.ready()) return redirect(res, welcome()); // a reload after it worked
-          const fresh = p && Date.now() - p.at <= 600_000 && url.searchParams.get("state") === p.state;
-          if (!code || !fresh) return send(res, 400, modelPage(req, s, err("OpenRouter didn't connect (cancelled, expired or from another page). Try again.")));
-          const key = await d.model.exchange(code, p.verifier).catch((e: Error) => (log("openrouter exchange failed", { err: e.message.slice(0, 200) }), ""));
-          const field = d.firstRun.fields().find((x) => x.secret === MODEL_KEY);
-          if (!key || (field && !secretFits(field, key))) return send(res, 400, modelPage(req, s, err("OpenRouter didn't hand over a key. Try again.")));
+          const action = f.get("action");
+          if (action === "retry") return useKey(req, res, s, d.model.saved());
+          if (action !== "paste") throw new Refusal(400, "paste or retry");
+          const key = (f.get(MODEL_KEY) ?? "").trim(), field = d.firstRun.fields().find((x) => x.secret === MODEL_KEY);
+          if (!key || key.length > 300 || /\s/.test(key) || (field && !secretFits(field, key))) return send(res, 400, modelPage(req, s, err(`That isn't a valid ${field?.label ?? "OpenRouter API key"}.`)));
           return useKey(req, res, s, key);
         }
         case "GET /recovery-key": {
