@@ -137,9 +137,9 @@ function Overview({ d }: { d: ModuleDetail }) {
           <dt>Connections</dt>
           <dd>{connections.length ? connections.join(", ") : <span className="muted">none</span>}</dd>
           <dt>Writes</dt>
-          <dd>{writes.length ? writes.map((w) => `${w.kind}${w.tier != null ? ` (tier ${w.tier})` : ""}`).join(", ") : <span className="muted">none declared</span>}</dd>
+          <dd>{writes.length ? writes.map((w) => `${w.kind}${w.tier != null ? ` (tier ${w.tier})` : ""}`).join(", ") : <span className="muted">none</span>}</dd>
           <dt>Secrets</dt>
-          <dd>{secrets.length ? secrets.join(", ") : <span className="muted">none declared</span>}</dd>
+          <dd>{secrets.length ? secrets.join(", ") : <span className="muted">none</span>}</dd>
         </dl>
       </section>
       <section>
@@ -187,6 +187,8 @@ function Contents({ d, onSignIn }: { d: ModuleDetail; onSignIn: () => void }) {
           </div>
         )}
       </section>
+      <section><h4>Handbook sections</h4>{d.authority.prompts.length ? <p>{d.authority.prompts.map((p) => p.id).join(", ")}</p> : <p className="fleet-empty">None.</p>}</section>
+      {d.authority.readme && <section><h4>README</h4><pre className="muted" style={{ whiteSpace: "pre-wrap" }}>{d.authority.readme}</pre></section>}
       <section><h4>Routines</h4>{m.routines.length ? <p>{m.routines.join(", ")}</p> : <p className="fleet-empty">None.</p>}</section>
       <section><h4>Apps</h4>{m.apps.length ? <p>{m.apps.join(", ")}</p> : <p className="fleet-empty">None.</p>}</section>
       {m.source && <p className="muted">Source: {m.source.url} · {m.source.path}</p>}

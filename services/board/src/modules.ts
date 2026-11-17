@@ -20,8 +20,11 @@ interface CatalogEntry {
   /** The sha instance.yaml pins this module at (`modules: [{ name, sha }]`), when it does. */
   pinned?: string | null;
   /** What it may write (kind and tier) and the secrets it needs, where the compile records them. */
-  writes?: { kind: string; tier?: number }[];
+  writes?: Record<string, { floor: number; panel?: boolean }>;
   secrets?: string[];
+  /** Its handbook sections (id and file) and the start of its README. */
+  prompts?: { id: string; file: string }[];
+  readme?: string;
   /** Where it comes from and its computed tier (spec §6.5: declared, conformant or official). */
   marketplace?: string;
   tier?: string;
@@ -55,5 +58,11 @@ export type ModuleRow = ReturnType<typeof moduleStates>[number];
 /** What a module may do, as far as the catalog says: its connections, the write kinds it declares and its secrets. */
 export function moduleAuthority(catalogJson: string, name: string) {
   const m = (JSON.parse(catalogJson) as CatalogEntry[]).find((e) => e.name === name);
-  return { connections: m?.connections ?? [], writes: m?.writes ?? [], secrets: m?.secrets ?? [] };
+  return {
+    connections: m?.connections ?? [],
+    writes: Object.entries(m?.writes ?? {}).map(([kind, w]) => ({ kind, tier: w.floor, ...(w.panel ? { panel: true } : {}) })),
+    secrets: m?.secrets ?? [],
+    prompts: m?.prompts ?? [],
+    readme: m?.readme ?? null,
+  };
 }

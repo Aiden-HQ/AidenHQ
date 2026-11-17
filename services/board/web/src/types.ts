@@ -363,7 +363,7 @@ export interface ModuleDetail {
   module: ModuleRow;
   agents: AgentProfile[];
   ongoing: TaskRow[];
-  authority: { connections: string[]; writes: { kind: string; tier?: number }[]; secrets: string[] };
+  authority: { connections: string[]; writes: { kind: string; tier?: number }[]; secrets: string[]; prompts: { id: string; file: string }[]; readme: string | null };
   neededBy: string[];
   requires: string[];
 }
