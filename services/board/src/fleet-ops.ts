@@ -268,11 +268,19 @@ export function checks(pc: Paperclip, store: Pick<Store, "meta" | "setMeta" | "r
       return [...byAgent].filter(([, n]) => n >= SILENT_RUNS).map(([agentId, n]) => ({ key: agentId, reason: `agent ${agentId}: ${n} runs in 24h ended with no tool calls and no output` }));
     },
     // A graded task waiting on grading, or escalated, for over a day (the grading module settles closed tasks first and
-    // answers the due and escalated rows). Module unreachable: no findings, not a page.
+    // answers the due and escalated rows). A row whose task has closed since is no waiting work: the module settles it on its
+    // next tick, and until then a pass that recorded an escalation after the close must not read as a decision outstanding.
+    // Module unreachable: no findings, not a page.
     async grade() {
       const t = now();
-      const stale = await grading.stale().catch((err) => (warn?.({ err: String(err) }, "fleet-ops: grading module unreachable; no grade findings"), [] as Grade[]));
-      return stale.filter((g) => age(g.updatedAt, t) > DAY_MS).map((g) => ({ key: g.issueId, reason: `graded task ${g.issueId} ${g.state} for ${mins(age(g.updatedAt, t))}` }));
+      const stale = (await grading.stale().catch((err) => (warn?.({ err: String(err) }, "fleet-ops: grading module unreachable; no grade findings"), [] as Grade[]))).filter((g) => age(g.updatedAt, t) > DAY_MS);
+      const open: Grade[] = [];
+      for (const g of stale) {
+        // An unreadable task is left for the next tick, as the grading module's own sweep leaves it.
+        const status = await pc.issue(g.issueId).then((i) => i.status, () => undefined);
+        if (status && status !== "done" && status !== "cancelled") open.push(g);
+      }
+      return open.map((g) => ({ key: g.issueId, reason: `graded task ${g.issueId} ${g.state} for ${mins(age(g.updatedAt, t))}` }));
     },
     async app() {
       const t = now();

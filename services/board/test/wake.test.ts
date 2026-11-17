@@ -176,6 +176,33 @@ describe("event wake-ups", () => {
     expect(f.comments[0]!.body).toContain("WOR-2's grade: satisfied.");
   });
 
+  it("a grade escalated on a sub-task that closed before the notice went out is not presented as waiting on the delegator", async () => {
+    const f = fake();
+    const store = new Store(":memory:");
+    const recent: Recent = new Map();
+    f.put({ id: "1", assigneeAgentId: "a", status: "in_progress" }, t0 - 60 * MIN);
+    f.put({ id: "2", parentId: "1", assigneeAgentId: "e", status: "in_review" }, t0 - 60 * MIN);
+    // The escalation is recorded, and the task closes moments later: the verdict lands after the close.
+    const grading = fakeGrading({ "2": { state: "open" } });
+    await wakeTick(deps(f, store, fakeRecords(), grading), recent, t0); // the baseline
+    grading.rows["2"] = { state: "escalated", updatedAt: iso(t0 + 11 * MIN) };
+    f.put({ id: "2", status: "done", completedAt: iso(t0 + 12 * MIN) }, t0 + 12 * MIN);
+    expect(await wakeTick(deps(f, store, fakeRecords(), grading), recent, t0 + 16 * MIN)).toEqual(["1"]);
+    expect(f.comments[0]!.body).toContain("WOR-2 is now done.");
+    expect(f.comments[0]!.body).not.toContain("escalated");
+
+    // A verdict landing after the close cannot escalate it either: there is no decision left to present.
+    grading.rows["2"] = { state: "escalated", updatedAt: iso(t0 + 20 * MIN) };
+    for (const at of [25, 30]) expect(await wakeTick(deps(f, store, fakeRecords(), grading), recent, t0 + at * MIN)).toEqual([]);
+    expect(f.comments).toHaveLength(1);
+
+    // Reopened and escalated again: still news, so the suppressed signal is not a lost cursor.
+    f.put({ id: "2", status: "in_review" }, t0 + 31 * MIN);
+    grading.rows["2"] = { state: "escalated", updatedAt: iso(t0 + 32 * MIN) };
+    expect(await wakeTick(deps(f, store, fakeRecords(), grading), recent, t0 + 36 * MIN)).toEqual(["1"]);
+    expect(f.comments[1]!.body).toContain("WOR-2's grade: escalated.");
+  });
+
   it("coalesces blockers that close in the same tick into one wake", async () => {
     const f = fake();
     const store = new Store(":memory:");

@@ -126,15 +126,27 @@ describe("health flags", () => {
   it("the grade check reports the grading module's stale rows over a day old, and nothing (no page) when it is unreachable", async () => {
     const day = (min: number) => iso(min);
     const grading = fakeGrading({}, { staleRows: [{ issueId: "i-old", state: "awaiting_evidence", updatedAt: day(3 * 24 * 60) }, { issueId: "i-fresh", state: "pending", updatedAt: day(30) }, { issueId: "i-esc", state: "escalated", updatedAt: day(2 * 24 * 60) }] });
-    const found = await checks({} as never, new Store(":memory:"), grading, () => now).grade!();
+    const pc = { issue: async () => ({ status: "in_review" }) };
+    const found = await checks(pc as never, new Store(":memory:"), grading, () => now).grade!();
     expect(found).toEqual([
       { key: "i-old", reason: "graded task i-old awaiting_evidence for 4320 min" },
       { key: "i-esc", reason: "graded task i-esc escalated for 2880 min" },
     ]);
     grading.down = true;
     const warned: string[] = [];
-    expect(await checks({} as never, new Store(":memory:"), grading, () => now, (_o, m) => warned.push(m)).grade!()).toEqual([]);
+    expect(await checks(pc as never, new Store(":memory:"), grading, () => now, (_o, m) => warned.push(m)).grade!()).toEqual([]);
     expect(warned).toHaveLength(1);
+  });
+
+  it("a row whose task has closed since it escalated is never reported as stuck grading", async () => {
+    // An escalation recorded moments before its task closed done, which the grading module's sweep settles on its next
+    // tick. Until then the detector must not present it as a decision still outstanding.
+    const grading = fakeGrading({}, { staleRows: [{ issueId: "i-closed", state: "escalated", updatedAt: iso(2 * 24 * 60) }, { issueId: "i-cancelled", state: "pending", updatedAt: iso(3 * 24 * 60) }, { issueId: "i-open", state: "escalated", updatedAt: iso(2 * 24 * 60) }] });
+    const status: Record<string, string> = { "i-closed": "done", "i-cancelled": "cancelled", "i-open": "in_review" };
+    const pc = { issue: async (id: string) => ({ status: status[id] }) };
+    expect(await checks(pc as never, new Store(":memory:"), grading, () => now).grade!()).toEqual([{ key: "i-open", reason: "graded task i-open escalated for 2880 min" }]);
+    // A task that can't be read is left for the next tick, not reported.
+    expect(await checks({ issue: async () => Promise.reject(new Error("404")) } as never, new Store(":memory:"), grading, () => now).grade!()).toEqual([]);
   });
 
   it("a grade: key whose row the module has since settled leaves detector.open on the next tick", async () => {
