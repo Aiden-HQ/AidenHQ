@@ -3,6 +3,8 @@ import { useEffect, useState } from "react";
 import { SignInRequired, api } from "./api";
 import { RowsSkeleton } from "./SettingsConnections";
 import { ChangePreview, ChangeProgress, ChangesScope, Group, IN_FLIGHT, Page, Row, StatusPill, Switch, useFiled } from "./settings-ui";
+import { Marketplaces } from "./Marketplaces";
+import { ModulesBrowse } from "./ModulesBrowse";
 import type { Advisory, ModuleRow } from "./types";
 import "./settings.css";
 
@@ -12,11 +14,33 @@ export function ModulesView({ onSignIn }: { onSignIn: () => void }) {
       <div className="st-shell">
         <div className="st-pane">
           <div className="page wide">
-            <ModulesPage onSignIn={onSignIn} />
+            <ModulesTabs onSignIn={onSignIn} />
           </div>
         </div>
       </div>
     </ChangesScope>
+  );
+}
+
+type ModulesTab = "installed" | "browse" | "marketplaces";
+const MODULE_TABS: [ModulesTab, string][] = [["installed", "Installed"], ["browse", "Browse"], ["marketplaces", "Marketplaces"]];
+
+/** Installed (lane D), Browse and Marketplaces (lane E). */
+function ModulesTabs({ onSignIn }: { onSignIn: () => void }) {
+  const [tab, setTab] = useState<ModulesTab>("installed");
+  return (
+    <>
+      <div className="st-seg" role="tablist">
+        {MODULE_TABS.map(([t, name]) => (
+          <button key={t} role="tab" aria-selected={tab === t} className={tab === t ? "on" : ""} onClick={() => setTab(t)}>
+            {name}
+          </button>
+        ))}
+      </div>
+      {tab === "installed" && <ModulesPage onSignIn={onSignIn} />}
+      {tab === "browse" && <ModulesBrowse onSignIn={onSignIn} />}
+      {tab === "marketplaces" && <Marketplaces onSignIn={onSignIn} />}
+    </>
   );
 }
 

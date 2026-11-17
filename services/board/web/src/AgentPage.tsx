@@ -5,15 +5,15 @@ import { Scorecard } from "./Agents";
 import { AgentAvatar } from "./AgentAvatar";
 import { SignInRequired, api } from "./api";
 import { agentOpenQuery, agentProfileQuery, QUERIES, useQuery } from "./queries";
-import { AgentDetails } from "./SettingsAgents";
-import { ChangesScope } from "./settings-ui";
+import { AgentHandbook } from "./AgentHandbook";
+import { AgentSettings } from "./AgentSettings";
 import { SkeletonLines } from "./Skeleton";
-import type { AgentProfile, SettingsData, TaskRow } from "./types";
+import type { AgentProfile, TaskRow } from "./types";
 import { ago } from "./util";
 import "./settings.css";
 
-export type AgentTab = "overview" | "chats" | "settings";
-const TABS: [AgentTab, string][] = [["overview", "Overview"], ["chats", "Chats"], ["settings", "Settings"]];
+export type AgentTab = "overview" | "chats" | "handbook" | "settings";
+const TABS: [AgentTab, string][] = [["overview", "Overview"], ["chats", "Chats"], ["handbook", "Handbook"], ["settings", "Settings"]];
 
 const tone = (state: string) => (state === "failed" ? "failed" : state === "working" || state === "queued" ? "working" : state.startsWith("waiting") ? "needs" : "");
 const Pill = ({ state }: { state: string }) => <span className={`pill${tone(state) ? ` pill-${tone(state)}` : ""}`}>{state}</span>;
@@ -64,7 +64,8 @@ export function AgentPage({ agentKey, tab, go, onSignIn }: { agentKey: string; t
         </>
       )}
       {tab === "chats" && <ChatsTab profile={profile} onSignIn={onSignIn} />}
-      {tab === "settings" && <SettingsTab agentKey={agentKey} onSignIn={onSignIn} />}
+      {tab === "handbook" && <AgentHandbook agentKey={agentKey} onSignIn={onSignIn} />}
+      {tab === "settings" && <AgentSettings agentKey={agentKey} onSignIn={onSignIn} />}
     </main>
   );
 }
@@ -164,22 +165,5 @@ function ChatsTab({ profile, onSignIn }: { profile: AgentProfile; onSignIn: () =
         </div>
       )}
     </section>
-  );
-}
-
-/** Today's editor from Settings > Agents and models, inside the change context that page provides. */
-function SettingsTab({ agentKey, onSignIn }: { agentKey: string; onSignIn: () => void }) {
-  const [data, setData] = useState<SettingsData | null>(null);
-  const [error, setError] = useState("");
-  useEffect(() => {
-    void api.settings().then(setData, (e) => (e instanceof SignInRequired ? onSignIn() : setError((e as Error).message)));
-  }, [onSignIn]);
-  const a = data?.agents.find((x) => x.key === agentKey);
-  return (
-    <ChangesScope onSignIn={onSignIn}>
-      <section className="st-embedded">
-        {error ? <p className="fleet-empty">Couldn't load settings: {error}</p> : !data ? <SkeletonLines lines={4} /> : a ? <AgentDetails a={a} data={data} /> : <p className="fleet-empty">This agent has no settings in the compiled config yet.</p>}
-      </section>
-    </ChangesScope>
   );
 }

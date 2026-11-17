@@ -59,6 +59,7 @@ export const VIEW_CHUNKS = {
   agents: () => import("./Agents"),
   modules: () => import("./Modules"),
   agentPage: () => import("./AgentPage"),
+  modulePage: () => import("./ModulePage"),
   run: () => import("./Run"),
 };
 
