@@ -9,6 +9,7 @@ import "./main/dispatch.ts";
 import "./main/merge.ts";
 import "./main/breaker.ts";
 import "./main/grading.ts";
+import "./main/tier-state.ts";
 import { adoptRuns, loop, saveMetrics, shutdown } from "./main/unsplit.ts";
 
 // ------------------------------------------------------------------ main

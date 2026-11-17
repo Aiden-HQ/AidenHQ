@@ -16,7 +16,8 @@ import { reportActivity, reportUsage } from "./activity.ts";
 import { designReviewer, fileDesignReviewTask } from "./watch.ts";
 import { redHead, stopped, wakeForRedChecks, wakeForTurnedAway } from "./breaker.ts";
 import { graded, mayClose, tellParent } from "./grading.ts";
-import { autonomyNow, fileApproval, findRealGh, mergeTierState, refusedForGood, reportOutcome, tierFor, withTrusted } from "./unsplit.ts";
+import { autonomyNow, fileApproval, mergeTierState, tierFor } from "./tier-state.ts";
+import { findRealGh, refusedForGood, reportOutcome, withTrusted } from "./unsplit.ts";
 
 // ------------------------------------------------------------------ merges
 

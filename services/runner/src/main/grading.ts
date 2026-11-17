@@ -12,7 +12,8 @@ import { graderSpeaks, wakesParent } from "../notices.ts";
 import { boardApi, cfg, execFileP, gho, log, ownRepo, pc, queue, running, state } from "./context.ts";
 import { dispatch } from "./dispatch.ts";
 import { mergeGithub, mergeQueue } from "./merge.ts";
-import { findRealGh, kernel, keyIn, recordsOn } from "./unsplit.ts";
+import { kernel, keyIn, recordsOn } from "./tier-state.ts";
+import { findRealGh } from "./unsplit.ts";
 
 // ------------------------------------------------------------------ graded done
 
