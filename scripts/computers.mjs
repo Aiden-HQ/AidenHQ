@@ -84,14 +84,16 @@ export function validateImages(agents) {
   }
 }
 
-export function computersConfig(paperclip, productDir) {
+export function computersConfig(paperclip, productDir, enabled = []) {
   validateImages(paperclip.agents);
   const used = [...new Set(Object.values(paperclip.agents).map((a) => a.image).filter(Boolean))];
   const connections = {};
   // Every connection is reached through the kernel's proxy (the launcher forwards a box's calls there with its run token).
   for (const [name, c] of Object.entries(paperclip.mcp_servers)) connections[name] = { tool_timeout_sec: c.tool_timeout_sec ?? 300 };
-  // agents_org: the only org a box's repo-checkout may name (the launcher's POST /repo).
-  return { images: imageTags(productDir, ["browser", ...used]), connections, ...(paperclip.github_agents_org ? { agents_org: paperclip.github_agents_org } : {}) };
+  // agents_org(s): the only orgs a box's repo-checkout may name (the launcher's POST /repo): the GitHub agents org, and `local`
+  // (this server's repos) while codehost-local is enabled.
+  const orgs = [...(paperclip.github_agents_org ? [paperclip.github_agents_org] : []), ...(enabled.includes("codehost-local") ? ["local"] : [])];
+  return { images: imageTags(productDir, ["browser", ...used]), connections, ...(paperclip.github_agents_org ? { agents_org: paperclip.github_agents_org } : {}), ...(orgs.length ? { agents_orgs: orgs } : {}) };
 }
 
 const COMPUTER_SECTION = `

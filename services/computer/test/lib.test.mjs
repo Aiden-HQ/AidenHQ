@@ -134,6 +134,10 @@ test("repo-checkout: only the agents org, only a full SHA; the launcher picks th
     assert.throws(() => checkoutRequest(bad, opts));
   }
   assert.throws(() => checkoutRequest({ repo: "acme-agents/x", sha }, { cacheRoot: "/w/repos" }), /agents org/);
+  // With codehost-local on, this server's repos are checked out from the runner's cache clone too.
+  const both = { agentsOrg: "acme-agents", agentsOrgs: ["acme-agents", "local"], cacheRoot: "/w/repos" };
+  assert.deepEqual(checkoutRequest({ repo: "local/expense-tracker", sha }, both), { cache: "/w/repos/local/expense-tracker", sha, dest: "/workspace/repos/expense-tracker" });
+  assert.throws(() => checkoutRequest({ repo: "local/expense-tracker", sha }, opts), /agents org/);
 });
 
 // A design review passed on PNGs an earlier PR had committed under .aidenhq/out/: the checkout carried them as if they
