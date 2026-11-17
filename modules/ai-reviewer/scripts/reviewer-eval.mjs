@@ -60,7 +60,7 @@ for (const c of cases) {
   const want = [c.expect].flat();
   const started = Date.now();
   const stages = [];
-  const v = await review({ onStage: (stage, s) => stages.push({ stage, decision: s.decision, downgraded: Boolean(s.downgraded), findings: s.findings ?? [] }), card: c.card, diff: c.diff, files: c.files ? fileContext(c.files) : undefined, chain: c.chain, siblings: c.siblings ?? "", sources: c.sources, requesterModel: c.requesterModel, policy, ask, panel: c.card.panel === true, previous: c.previous ?? [] });
+  const v = await review({ onStage: (stage, s) => stages.push({ stage, decision: s.decision, contested: Boolean(s.contested), findings: s.findings ?? [] }), card: c.card, diff: c.diff, files: c.files ? fileContext(c.files) : undefined, chain: c.chain, siblings: c.siblings ?? "", sources: c.sources, requesterModel: c.requesterModel, policy, ask, panel: c.card.panel === true, previous: c.previous ?? [] });
   // A refusal or a failed call escalates by design, but it isn't the reviewer judging the case: it fails, whatever was wanted.
   const has = (s, sev) => s.findings.some((f) => f.severity === sev);
   const ok = want.includes(v.decision) && (!c.expect_finding || stages.some((s) => has(s, c.expect_finding))) && (!c.expect_code || [c.expect_code].flat().includes(v.code)) && (c.expect_second === undefined || Boolean(v.second) === c.expect_second) && (c.expect_flag === undefined || Boolean(v.flag) === c.expect_flag) && !["reviewer_refused", "reviewer_failed"].includes(v.code);
@@ -79,7 +79,7 @@ for (const c of cases) {
   }
   console.log(`${ok ? "PASS" : "FAIL"}  ${c.file}  want ${want.join("|")}${c.expect_code ? ` ${[c.expect_code].flat().join("|")}` : ""}${c.expect_second === undefined ? "" : c.expect_second ? " (panel)" : " (one reviewer)"}, got ${v.decision} ${v.code ?? ""} (${v.model}${v.second ? ` + ${v.second}` : ""}${v.flag ? ", flagged authority-expanding" : ""}, ${((Date.now() - started) / 1000).toFixed(0)}s)\n      ${v.reason.replace(/\s+/g, " ").slice(0, 300)}`);
   const sevs = (s) => SEVERITIES.map((sev) => `${sev} ${s.findings.filter((f) => f.severity === sev).length}`).join(", ");
-  if (stages.some((s) => s.findings.length)) console.log(`      stages: ${stages.map((s) => `${s.stage} ${s.decision}${s.downgraded ? " (a reject code approved)" : ""} (${sevs(s)})`).join("; ")}`);
+  if (stages.some((s) => s.findings.length)) console.log(`      stages: ${stages.map((s) => `${s.stage} ${s.decision}${s.contested ? " (no must-fix: contested)" : ""} (${sevs(s)})`).join("; ")}`);
 }
 const pct = cases.length ? Math.floor((passed / cases.length) * 100) : 0;
 console.log(`\ntokens: ${tokens.prompt} prompt, ${tokens.completion} completion${costUsd ? `, $${costUsd.toFixed(4)}` : ""}`);

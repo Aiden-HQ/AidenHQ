@@ -312,7 +312,8 @@ List each problem you see in `findings`, tagged with one severity:
   adds. A diff that reaches into the faulty code and keeps the fault is still pre_existing; one that copies the fault
   somewhere new, widens it or depends on it for what it adds is must_fix.
 
-Code holds you to it: a reject whose findings carry no must_fix is approved, with the findings reported to the agent.
+A reject names its policy ground in `reason_code`. A reject coded only `policy_other` whose findings carry no must_fix
+goes to a second reviewer with those findings, and passes only if that reviewer approves.
 
 ## What a good reason looks like
 

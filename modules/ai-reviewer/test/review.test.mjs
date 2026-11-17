@@ -66,24 +66,33 @@ test("a refusal goes to the other model; the model that decided is named", async
   assert.deepEqual(asked, [LUNA, DEEPSEEK]);
 });
 
-test("severity: only a must-fix finding the change brings can reject; nits and pre-existing ones are reported, never block", async () => {
-  const answer = (decision, findings, second_review = false) => ({ content: JSON.stringify({ decision, reason_code: decision === "reject" ? "policy_other" : "in_scope", reason: "the note", second_review, findings }) });
+test("severity: code never approves a reject; a generic one on only nits or pre-existing findings goes to a second reviewer", async () => {
+  const answer = (decision, findings, reason_code = decision === "reject" ? "policy_other" : "in_scope") => ({ content: JSON.stringify({ decision, reason_code, reason: "the note", second_review: false, findings }) });
   const pre = { severity: "pre_existing", finding: "the query already interpolates req.query.days" };
-  const stages = [];
-  let r = asker([answer("reject", [pre, { severity: "nit", finding: "log wording" }])]);
-  const passed = await review({ card, diff: "+x", policy: "p", ask: r.ask, onStage: (s, v) => stages.push([s, v.decision, v.findings.length]) });
-  assert.deepEqual([passed.decision, passed.code, passed.findings], ["approve", "in_scope", undefined], "approved, and the verdict keeps its shape");
-  assert.match(passed.reason, /Reported, not blocking: \[pre-existing\] the query already interpolates req\.query\.days; \[nit\] log wording/);
-  assert.deepEqual(stages, [["first", "approve", 2]]);
-  // A must-fix stands; a reject that lists nothing, or a finding code can't read, stands too.
+  const nit = { severity: "nit", finding: "log wording" };
+  // A reject on a named policy ground stands on nits alone: no second reviewer.
+  let r = asker([answer("reject", [nit], "gate_change")]);
+  const named = await review({ card, diff: "+x", policy: "p", ask: r.ask });
+  assert.deepEqual([named.decision, named.code, r.asked.length], ["reject", "gate_change", 1]);
+  // A must-fix, an empty list or a finding code can't read: the generic reject stands too.
   for (const findings of [[pre, { severity: "must_fix", finding: "any caller can list every invoice" }], [], [pre, { severity: "blocker", finding: "x" }]]) {
     r = asker([answer("reject", findings)]);
-    assert.equal((await review({ card, diff: "+x", policy: "p", ask: r.ask })).decision, "reject", JSON.stringify(findings));
+    assert.deepEqual([(await review({ card, diff: "+x", policy: "p", ask: r.ask })).decision, r.asked.length], ["reject", 1], JSON.stringify(findings));
   }
-  // Approved by code on a reviewer-flagged change still needs the panel's second reviewer.
-  r = asker([answer("reject", [pre], true), answer("approve", [pre])]);
-  const panel = await review({ card, diff: "+x", policy: "p", ask: r.ask });
-  assert.deepEqual([panel.decision, panel.second], ["approve", GLM]);
+  // Generic, only pre-existing and nits: the second reviewer reads the findings and decides; only its approve passes.
+  const stages = [];
+  let prompt;
+  r = asker([answer("reject", [pre, nit]), answer("approve", [])]);
+  const passed = await review({ card, diff: "+x", policy: "p", ask: async (m, p) => (r.asked.length && (prompt = p), r.ask(m, p)), onStage: (s, v) => stages.push([s, v.decision]) });
+  assert.deepEqual([passed.decision, passed.second, stages], ["approve", GLM, [["first", "reject"], ["second", "approve"]]]);
+  assert.match(passed.reason, /Reported, not blocking: \[pre-existing\] the query already interpolates req\.query\.days; \[nit\] log wording/);
+  assert.match(prompt.user, /<<<FIRST_REVIEWER_FINDINGS\n\[pre-existing\] the query/);
+  assert.equal(passed.findings, undefined, "the verdict keeps its shape");
+  r = asker([answer("reject", [pre]), answer("reject", [{ severity: "must_fix", finding: "it widens the injection" }])]);
+  assert.equal((await review({ card, diff: "+x", policy: "p", ask: r.ask })).decision, "reject");
+  let calls = 0;
+  const timeout = async () => (++calls === 1 ? answer("reject", [pre]) : Promise.reject(new Error("timeout")));
+  assert.equal((await review({ card, diff: "+x", policy: "p", ask: timeout })).decision, "reject", "a failed second keeps the reject");
   // An approve carries what it reported.
   r = asker([answer("approve", [pre])]);
   assert.match((await review({ card, diff: "+x", policy: "p", ask: r.ask })).reason, /^the note Reported, not blocking: \[pre-existing\]/);
