@@ -7,7 +7,7 @@ import { useCached } from "./cache";
 import { QUERIES, agentOpenQuery, agentProfileQuery, scorecardQuery, useQuery } from "./queries";
 import { Bone, FleetSkeleton, SkeletonLines, Updating } from "./Skeleton";
 import type { Assignee, Finished, RosterAgent, Session, TaskRef } from "./types";
-import { ago, elapsed } from "./util";
+import { ago, agoLabel, elapsed } from "./util";
 
 const STATUS: Record<string, { text: string; tone: "ok" | "bad" | "meh" }> = {
   succeeded: { text: "Done", tone: "ok" },
@@ -190,7 +190,7 @@ export function CrewView({ crew, onSignIn }: { crew: Assignee[]; onSignIn: () =>
       {error && <div className="offline">Offline: {error}. Retrying…</div>}
       {data?.runner.stale && (
         <p className="agents-note">
-          {data.runner.reportedAt ? `The runner last reported ${ago(data.runner.reportedAt, now)} ago, so Engineer jobs may be missing.` : "The runner hasn't reported yet, so Engineer jobs aren't shown."}
+          {data.runner.reportedAt ? `The runner last reported ${agoLabel(data.runner.reportedAt, now)}, so Engineer jobs may be missing.` : "The runner hasn't reported yet, so Engineer jobs aren't shown."}
         </p>
       )}
       {platform.length > 0 && table("Platform agents", platform, true)}

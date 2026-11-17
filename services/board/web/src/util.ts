@@ -1,4 +1,4 @@
-import type { Assignee, Card } from "./types";
+import type { Assignee, Card } from "./types.js";
 
 export function ago(iso: string, now = Date.now()): string {
   const s = Math.max(0, (now - Date.parse(iso)) / 1000);
@@ -7,6 +7,12 @@ export function ago(iso: string, now = Date.now()): string {
   if (s < 86_400) return `${Math.floor(s / 3600)}h`;
   if (s < 7 * 86_400) return `${Math.floor(s / 86_400)}d`;
   return new Date(iso).toLocaleDateString(undefined, { month: "short", day: "numeric" });
+}
+
+/** "5m ago", or the date ("Nov 18") once `ago` has fallen back to one. */
+export function agoLabel(iso: string, now = Date.now()): string {
+  const a = ago(iso, now);
+  return a === "now" ? "just now" : /^\d+[mhd]$/.test(a) ? `${a} ago` : a;
 }
 
 /** How long something has been running: "40s", "12m", "1h 5m". */

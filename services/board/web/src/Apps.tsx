@@ -1,7 +1,7 @@
 import { useEffect } from "react";
 import { QUERIES, useQuery } from "./queries";
 import { CardGridSkeleton, Updating } from "./Skeleton";
-import { ago } from "./util";
+import { agoLabel } from "./util";
 
 /** A loopback app link (an instance on no tailnet): on a server, its port needs an SSH tunnel first. */
 const tunnelHint = (url: string) => {
@@ -63,7 +63,7 @@ export function AppsView({ onSignIn }: { onSignIn: () => void }) {
                     <dt>Version</dt>
                     <dd className="mono">
                       {a.sha.slice(0, 8)}
-                      {a.deployed_at && <span className="muted"> · deployed {ago(a.deployed_at)} ago</span>}
+                      {a.deployed_at && <span className="muted"> · deployed {agoLabel(a.deployed_at)}</span>}
                     </dd>
                   </>
                 )}
@@ -81,7 +81,7 @@ export function AppsView({ onSignIn }: { onSignIn: () => void }) {
               </dl>
               {a.incident && (
                 <p className="app-incident">
-                  <b>Incident ({a.incident.kind})</b>, open {ago(a.incident.opened_at)}: {a.incident.detail}
+                  <b>Incident ({a.incident.kind})</b>, opened {agoLabel(a.incident.opened_at)}: {a.incident.detail}
                 </p>
               )}
             </article>

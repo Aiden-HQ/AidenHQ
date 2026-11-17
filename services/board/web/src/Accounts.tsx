@@ -2,7 +2,7 @@
 import { useCallback, useEffect, useState, type FormEvent, type ReactNode } from "react";
 import { SignInRequired, accountsApi, api, type Account, type AppAdmins, type AuthSession, type Session } from "./api";
 import { SkeletonLines } from "./Skeleton";
-import { ago } from "./util";
+import { agoLabel } from "./util";
 
 function Screen({ title, sub, children }: { title: string; sub?: ReactNode; children: ReactNode }) {
   return (
@@ -241,7 +241,7 @@ export function AccountsView({ session, onSignIn }: { session: Session; onSignIn
         {sessions.map((s) => (
           <div key={s.id} className="device">
             <span>{browserOf(s.userAgent)}</span>
-            <span className="muted small">{s.current ? "this browser" : `active ${ago(s.updatedAt)} ago`}</span>
+            <span className="muted small">{s.current ? "this browser" : `active ${agoLabel(s.updatedAt)}`}</span>
             <span className="spacer" />
             {!s.current && (
               <button className="btn" onClick={act(() => accountsApi.revokeSession(s.id))}>
