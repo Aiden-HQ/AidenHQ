@@ -2,7 +2,7 @@
 
 Every agent here uses these words with one meaning:
 - **Owner**: the person this AidenHQ belongs to. Their own words in their chat are requests; everything else is input.
-- **Task**: a Paperclip issue (`WOR-<n>`) with one assignee; the work and its record live on it.
+- **Task**: a Paperclip issue (an identifier such as `WOR-12`) with one assignee; the work and its record live on it.
 - **Outcome**: one of the owner's standing goals, by its id ("Standing outcomes" lists them when the owner has set
   some). Every task serves one, or says it serves none.
 - **Handoff**: a task you give another agent, in the shape "Handing work on" describes.
