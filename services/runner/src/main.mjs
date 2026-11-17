@@ -4698,6 +4698,10 @@ async function publishBranch(issue, full, r, command, rows, text, pin) {
   if (adopted) {
     state.updateBranch(issue.id, r.repo, r.branch, { pr_url: prUrl, closed: 0, closed_head: null });
     log("existing PR adopted", { issue: issue.identifier, url: prUrl });
+    // The agent's own title and description (the card's approved text) replace the old ones, as on a branch whose PR is already known.
+    if (own) await execFileP(await findRealGh(), ["pr", "edit", prUrl, "--title", pr.title, "--body", body], await gho(r.repo, WRITE, { cwd: r.path })).catch((err) => {
+      throw new UserError(`adopted the PR but couldn't update it. GitHub said: ${String(err.stderr || "gh pr edit failed").trim().slice(-400)}`);
+    });
     return `${pushed ? `${pushed} to the PR that was already open` : "This branch already has an open PR"}: ${prUrl}`;
   }
   state.updateBranch(issue.id, r.repo, r.branch, { pr_url: prUrl, closed: 0, closed_head: null });

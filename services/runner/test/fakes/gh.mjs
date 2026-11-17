@@ -20,6 +20,12 @@ if (args[0] === "pr" && args[1] === "edit") {
   log("gh", args);
   process.exit(0);
 }
+// A new PR that already exists (opt-in, FAKE_PR_EXISTS=1): the branch already has this PR, as gh says it.
+if (args[0] === "pr" && args[1] === "create" && process.env.FAKE_PR_EXISTS) {
+  log("gh", args);
+  console.error("a pull request for branch \"feat/stacked\" into branch \"main\" already exists:\nhttps://github.com/acme/app/pull/99");
+  process.exit(1);
+}
 // A new PR (a publish), opt-in (FAKE_PR_CREATE=1): logged with the base it was asked for, and its URL printed.
 if (args[0] === "pr" && args[1] === "create" && process.env.FAKE_PR_CREATE) {
   log("gh", args);

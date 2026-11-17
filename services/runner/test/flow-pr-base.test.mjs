@@ -50,6 +50,23 @@ describe("flow-pr-base", () => {
   it("never errors along the way", () => t.noErrors());
 });
 
+// A branch whose PR is already open (another task opened it) is adopted, and the card's approved title and body go onto it.
+describe("flow-pr-adopt", () => {
+  const t = flow({ grants: { autonomy: "off", agents: {} }, env: { FAKE_PR_EXISTS: "1" } });
+  it("an adopted PR gets the approved title and description", async () => {
+    await t.settled();
+    t.step("second");
+    await t.turn("Add the second change.");
+    t.step("describe\naidenhq pr acme/app feat/second --title fix:-new-title --body-file .aidenhq/pr-body.md");
+    await t.turn("Ship it.");
+    const card = t.paperclip.decide("pr", "approved");
+    await t.waitFor("the PR edit", () => t.fakeLog().some((e) => e.kind === "gh" && e.data[1] === "edit"));
+    const edit = t.fakeLog().find((e) => e.kind === "gh" && e.data[1] === "edit").data;
+    assert.deepEqual(edit.slice(0, 5), ["pr", "edit", "https://github.com/acme/app/pull/99", "--title", card.args.text.title]);
+    assert.match(edit[6], /^## Why/);
+  });
+});
+
 // A PR's description names our paths (an Evidence section's .aidenhq/out/ screenshots): kept as written in our own repos,
 // sent back to the agent for a repository outside them.
 for (const [org, own] of [["acme", true], ["acme-agents", false]]) {
