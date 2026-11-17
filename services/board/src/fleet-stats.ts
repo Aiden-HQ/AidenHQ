@@ -5,6 +5,7 @@ import type { Approval, Records } from "./records.js";
 import type { Grade, Grading } from "./grading.js";
 import type { Issue, Paperclip, PastRun } from "./paperclip.js";
 import type { Store } from "./store.js";
+import { oneLine, report, type Row } from "./quality.js";
 
 const DAY = 864e5;
 const day = (t: number) => new Date(t).toISOString().slice(0, 10);
@@ -65,6 +66,8 @@ export interface FleetSummary {
   /** Cards waiting on the owner and blocked tasks. */
   waiting: { cards: { id: string; action: string; target: string; task: string; ageHours: number }[]; blocked: { identifier: string; title: string; link: string }[] };
   spend: { yesterdayUsd: number; avg7dUsd: number; top: { agent: string; usd: number }[] };
+  /** Reverts by who approved the change over the window (the cards of the last 14 days; reverts the fleet opened itself): the line for the owner's weekly digest. */
+  quality: { line: string; reverted: { change: string; tier: string; link: string; revert: string }[] };
 }
 
 /** The whole fleet in a few lists. `blocked` is the open blocked tasks; `names` maps agent ids to names. */
@@ -81,8 +84,11 @@ export function fleetSummary(f: Facts, o: { window: "24h" | "7d"; blocked: Issue
   const week = Array.from({ length: 7 }, (_, k) => day(today - (k + 1) * DAY));
   const perAgent = new Map<string, number>();
   for (const c of f.cost) if (c.day === yesterday && c.agentId) perAgent.set(c.agentId, (perAgent.get(c.agentId) ?? 0) + c.costUsd);
+  const rows: Row[] = f.approvals.map((a) => ({ id: a.id, kind: a.action, args: a.args, tier: a.tier, panel: a.panel, by: a.decidedBy, state: a.outcome === "applied" ? "done" : a.outcome === "failed" ? "failed" : a.state, at: a.usedAt ?? a.createdAt, outcome: a.outcomeText, identifier: a.identifier }));
+  const quality = report(rows, {}, now, [o.window === "24h" ? 1 : 7]);
   return {
     window: o.window,
+    quality: { line: oneLine(quality), reverted: quality.reverted },
     shipped: {
       tasks: f.closed.filter((i) => i.status === "done" && doneAt(i) >= since).map((i) => ({ identifier: i.identifier, title: i.title, agent: (i.assigneeAgentId && o.names.get(i.assigneeAgentId)) || "someone", link: link(i.identifier) })),
       landed: recent.filter((a) => landed.includes(a.action) && a.outcome === "applied").map(card),

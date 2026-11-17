@@ -20,7 +20,7 @@ describe("Fleet Ops detector", () => {
       agents: [],
       routines: [],
       stuck: long(500),
-      summary: { window: "7d", shipped: { tasks: long(500), landed: [] }, failed: { outcomes: [], runs: 0 }, waiting: { cards: [], blocked: [] }, spend: { yesterdayUsd: 0, avg7dUsd: 0, top: [] } },
+      summary: { window: "7d", quality: { line: "", reverted: [] }, shipped: { tasks: long(500), landed: [] }, failed: { outcomes: [], runs: 0 }, waiting: { cards: [], blocked: [] }, spend: { yesterdayUsd: 0, avg7dUsd: 0, top: [] } },
     }) as unknown as { detector: ReturnType<typeof detectorState>; stuck: unknown[]; truncated: string[] };
     const text = JSON.stringify(reply);
     expect(text.length).toBeLessThanOrEqual(24_000);
