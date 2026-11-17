@@ -4,18 +4,18 @@
 // that used to throw or stay silent: a merge request, the automatic merges, and the finished-PR check before a run.
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { writeFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { flow, git } from "./flow-harness.mjs";
 import { State } from "../src/state.ts";
 
 const url = (n) => `https://github.com/acme/app/pull/${n}`;
 
-const scenario = (name, body) =>
+const scenario = (name, body, { env = {} } = {}) =>
   describe(`flow-stale-pr: ${name}`, { concurrency: 1 }, () => {
     const t = flow({
       grants: { autonomy: "off", agents: {} },
-      env: { AIDENHQ_PRODUCT_REPO: "acme/app", AIDENHQ_GITHUB_AGENTS_ORG: "acme-agents" },
+      env: { AIDENHQ_PRODUCT_REPO: "acme/app", AIDENHQ_GITHUB_AGENTS_ORG: "acme-agents", ...env },
       runnerYaml: "apply:\n  repo: acme/aidenhq-instance\n",
     });
     const setPrs = (prs) => writeFileSync(join(t.dir, "github-prs.json"), JSON.stringify(prs));
@@ -197,6 +197,30 @@ scenario("the finished-PR check", ({ t, setPrs, stored, row, stale, onGithub }) 
     await t.turn("Look again.");
     await t.waitFor("the merge read", () => row("feat/landed").merged === 1);
     assert.equal(stale(20).length, 0);
+  });
+
+  it("never errors or asks for a repository along the way", () => t.noErrors());
+});
+
+// A published PR whose merge follows the card (the product repo's `aidenhq pr` with merge): a GitHub read that fails
+// transiently is retried, never called stale — saying stale would skip a live PR's merge on a lie.
+scenario("a published PR's merge after its card", ({ t, setPrs, stored, stale }) => {
+  it("a transient read failure is not reported stale, and the merge is requested", async () => {
+    await t.settled();
+    stored("fix/remove-legacy", url(23));
+    setPrs({ 23: { branch: "fix/remove-legacy", files: ["x.txt"], checks: "PENDING" } });
+    t.step("commit\naidenhq pr acme/app fix/remove-legacy");
+    await t.turn("Ship it.");
+    assert.equal(t.toolRuns().at(-1).code, 0, t.toolRuns().at(-1).out);
+    // The card's merge reads the PR next, and that read fails once as a blip does before it is retried.
+    writeFileSync(join(t.dir, "pr-read-failures.json"), JSON.stringify({ n: 1 }));
+    const card = t.paperclip.decide("pr", "approved");
+    await t.waitFor("the card's outcome", () => Boolean(t.paperclip.approvals.get(card.id)?.outcome));
+    const outcome = t.paperclip.approvals.get(card.id).outcome;
+    assert.ok(outcome.ok, outcome.text);
+    assert.doesNotMatch(outcome.text, /stale/, "a blip is not a stale number");
+    assert.equal(stale(23).length, 0);
+    assert.equal(JSON.parse(readFileSync(join(t.dir, "pr-read-failures.json"), "utf8")).n, 0, "the blip was hit, then retried");
   });
 
   it("never errors or asks for a repository along the way", () => t.noErrors());

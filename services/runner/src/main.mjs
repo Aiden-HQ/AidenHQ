@@ -2815,18 +2815,31 @@ async function mergeAfterPublish(issue, a, out) {
   const prs = [];
   const missing = [];
   const stale = [];
+  const unread = [];
   for (const b of a.args.only) {
     const row = sameRepo(b.repo, cfg.productRepo) ? state.branches(issue.id).find((x) => sameRepo(x.repo, b.repo) && x.branch === b.branch) : undefined;
     const pr = row?.pr_url && !row.merged ? prQueue.findPrs(row.pr_url)[0] : undefined;
     // The row's url is a stored number: one that names another change now is said stale, and never merged on this approval.
-    const real = pr ? (await mergeGithub.pr(pr.repo, pr.number).then((d) => d?.repository?.pullRequest, () => undefined)) : undefined;
-    if (pr && (await staleStoredPr(issue.id, { url: pr.url, headRefName: real?.headRefName }))) stale.push(`${b.repo} \`${b.branch}\``);
+    // A blip is not stale (saying so would skip a live PR's merge on a lie): it is retried, and one that outlasts the retries
+    // is said as not confirmed. `unreadable`: GitHub answered and refused the number, which is the stale case.
+    let read = "none";
+    let real;
+    if (pr) {
+      try {
+        real = (await retryTransient(() => mergeGithub.pr(pr.repo, pr.number)))?.repository?.pullRequest;
+        read = real ? "ok" : "unreadable";
+      } catch (err) {
+        read = isTransient(err) ? "unconfirmed" : "unreadable";
+      }
+    }
+    if (read === "unconfirmed") unread.push(`${b.repo} \`${b.branch}\``);
+    else if (read === "unreadable" || (read === "ok" && (await staleStoredPr(issue.id, { url: pr.url, headRefName: real.headRefName })))) stale.push(`${b.repo} \`${b.branch}\``);
     else if (pr) prs.push({ ...pr, head: b.sha, noReview: true });
     else missing.push(`${b.repo} \`${b.branch}\``);
   }
   const started = prs.length ? Boolean(await startMerges(issue, { prs, strict: true, during: true })) : false;
-  const said = [prs.length ? (started ? `Merging ${prs.map((p) => p.url).join(", ")} once green on the approved commit.` : "The merge didn't start (said on the task).") : "", missing.length ? `Not merged (no open PR): ${missing.join(", ")}.` : "", stale.length ? `Not merged (the stored PR number is stale, said above): ${stale.join(", ")}.` : ""].filter(Boolean).join(" ");
-  return { ok: !missing.length && !stale.length && (started || !prs.length), text: `${out.text}\n\n${said}` };
+  const said = [prs.length ? (started ? `Merging ${prs.map((p) => p.url).join(", ")} once green on the approved commit.` : "The merge didn't start (said on the task).") : "", missing.length ? `Not merged (no open PR): ${missing.join(", ")}.` : "", stale.length ? `Not merged (the stored PR number is stale, said above): ${stale.join(", ")}.` : "", unread.length ? `Not merged (GitHub couldn't be read just now, so the PR couldn't be confirmed): ${unread.join(", ")}. Ask for the merge again.` : ""].filter(Boolean).join(" ");
+  return { ok: !missing.length && !stale.length && !unread.length && (started || !prs.length), text: `${out.text}\n\n${said}` };
 }
 
 /** Outcomes wait here until the kernel takes them (an apply restarts it): kept in state, retried every poll. */

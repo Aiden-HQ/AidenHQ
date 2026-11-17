@@ -210,6 +210,15 @@ if (args.includes("PATCH") && field("state") === "closed") {
 } else if (route) {
   console.log(p.files.length);
 } else if (field("query")?.includes("pullRequest(number")) {
+  // A transient read failure (opt-in, counted down: a pr-read-failures.json { "n": 2 } next to $FAKE_LOG fails that many
+  // reads with "fetch failed", as a network blip or a restarting API does).
+  const blip = join(dir, "pr-read-failures.json");
+  if (existsSync(blip) && JSON.parse(readFileSync(blip, "utf8")).n > 0) {
+    const left = JSON.parse(readFileSync(blip, "utf8")).n;
+    writeFileSync(blip, JSON.stringify({ n: left - 1 }));
+    console.error("fetch failed");
+    process.exit(1);
+  }
   const pullRequest = {
     id: `PR_${number}`, number: Number(number), title: p.title ?? `PR ${number}`, body: p.body ?? "", url: `https://github.com/acme/app/pull/${number}`, state: p.merged ? "MERGED" : "OPEN", isDraft: false, reviewDecision: null,
     mergeStateStatus: p.mergeable === "CONFLICTING" ? "DIRTY" : "CLEAN", headRefOid: tip(p.branch), headRefName: p.branch, isCrossRepository: false, baseRefName: p.base ?? "main", latestOpinionatedReviews: { nodes: [] },
