@@ -232,16 +232,19 @@ systemctl restart aidenhq-computer-net aidenhq-ci-net
 # The mode (settings.exposure): the compiled config/exposure, else AIDENHQ_EXPOSURE (ops/setup.sh's first run, before any
 # compile), else tailscale (local without Tailscale). A rerun after a mode change rewrites the rule. Public opens 443 only
 # once a Caddy front door is compiled (a `caddy` service in compose.modules.yaml): until then nothing safe listens there.
-exposure="$(head -c 32 "$src/../../config/exposure" 2>/dev/null | tr -d '[:space:]' || true)"
+# Generated files are read from the user's checkout (AIDENHQ_CHECKOUT, ops/setup.sh): this script itself may run from root's
+# verified copy of the kernel (/opt/aidenhq/kernel/<sha>), which has none of them. Data only: nothing there runs.
+checkout="${AIDENHQ_CHECKOUT:-$src/../..}"
+exposure="$(head -c 32 "$checkout/config/exposure" 2>/dev/null | tr -d '[:space:]' || true)"
 [ -n "$exposure" ] || exposure="${AIDENHQ_EXPOSURE:-}"
 if [ -z "$exposure" ]; then if [ "$NO_TS" = 1 ]; then exposure=local; else exposure=tailscale; fi; fi
 case "$exposure" in public|tailscale|cloudflare|local) ;; *) die "exposure '$exposure' is not public, tailscale, cloudflare or local" ;; esac
 fw_mode="$exposure"
-if [ "$exposure" = public ] && ! grep -qx '  caddy:' "$src/../../compose.modules.yaml" 2>/dev/null; then
+if [ "$exposure" = public ] && ! grep -qx '  caddy:' "$checkout/compose.modules.yaml" 2>/dev/null; then
   fw_mode=local
   echo "exposure public: no HTTPS front door (Caddy) is configured yet, so 443 stays closed; it arrives with unit U2"
 fi
-env_setting() { sed -n "s/^[[:space:]]*$1[[:space:]]*=[[:space:]]*[\"']\{0,1\}\([A-Za-z0-9_.@-]*\).*/\1/p" "$src/../../.env" 2>/dev/null | tail -1 || true; } # no .env yet on a fresh host
+env_setting() { sed -n "s/^[[:space:]]*$1[[:space:]]*=[[:space:]]*[\"']\{0,1\}\([A-Za-z0-9_.@-]*\).*/\1/p" "$checkout/.env" 2>/dev/null | tail -1 || true; } # no .env yet on a fresh host
 default_route_if() {
   local fam dev
   for fam in -4 -6; do

@@ -120,6 +120,8 @@ export async function openAccounts(o: AccountsOptions) {
   const db = openAuthDb(dbPath);
   // Module UI sessions (the board's): the token's hash, the admin listener's session it came from, the module and its origin.
   db.exec("CREATE TABLE IF NOT EXISTS ui_session (hash TEXT PRIMARY KEY, parent_id TEXT NOT NULL, module TEXT NOT NULL, origin TEXT NOT NULL)");
+  // First-run setup's single-use token (/setup, spec §6.10): its hash only, at most one row.
+  db.exec("CREATE TABLE IF NOT EXISTS setup_token (hash TEXT NOT NULL, expires INTEGER NOT NULL)");
   const https = (req: Pick<IncomingMessage, "headers">) => forwardedProto(req) === "https";
 
   /**
@@ -250,12 +252,12 @@ export async function openAccounts(o: AccountsOptions) {
     db.prepare("DELETE FROM handoff_session WHERE token = ?").run(token);
   };
 
-  async function create(input: { email: string; name: string; role: Role; owner?: boolean }): Promise<Account> {
+  async function create(input: { email: string; name: string; role: Role; owner?: boolean; password?: string }): Promise<Account> {
     const email = input.email.trim().toLowerCase();
     if (await ctx.internalAdapter.findUserByEmail(email)) throw new AccountError(409, "an account with this email already exists");
     const user = await ctx.internalAdapter.createUser({ email, name: input.name || email, emailVerified: true, role: input.role, owner: Boolean(input.owner) }, { method: "admin" });
-    // An unusable random password: the link sets the real one.
-    await ctx.internalAdapter.linkAccount({ providerId: "credential", accountId: user.id, userId: user.id, password: await ctx.password.hash(randomBytes(32).toString("base64url")) });
+    // Without a password (invites, setup links), an unusable random one: the link sets the real one.
+    await ctx.internalAdapter.linkAccount({ providerId: "credential", accountId: user.id, userId: user.id, password: await ctx.password.hash(input.password ?? randomBytes(32).toString("base64url")) });
     void changed().catch(() => {}); // nobody signs in with it before its link is claimed (that exports again)
     return find(user.id);
   }
@@ -462,6 +464,41 @@ export async function openAccounts(o: AccountsOptions) {
 
     hasOwner(): boolean {
       return Boolean(db.prepare("SELECT 1 FROM user WHERE owner = 1 LIMIT 1").get());
+    },
+
+    hasAdmin(): boolean {
+      return Boolean(db.prepare("SELECT 1 FROM user WHERE role = 'admin' LIMIT 1").get());
+    },
+
+    /** First run (ops/setup.sh --unattended, operator key): a single-use /setup link, while no admin exists; it replaces an older one. */
+    mintSetup(): { url: string } {
+      if (accounts.hasAdmin()) throw new AccountError(409, "an admin exists: first-run setup is over (a lost owner: ops/setup.sh --reset)");
+      const token = randomBytes(32).toString("base64url");
+      db.exec("DELETE FROM setup_token");
+      db.prepare("INSERT INTO setup_token (hash, expires) VALUES (?, ?)").run(sha(token), Date.now() + LINK_TTL_MS);
+      log.info({}, "first-run setup link minted");
+      return { url: `${o.adminUrl ?? "http://127.0.0.1:3120"}/setup?token=${token}` };
+    },
+
+    /** `token` is the live setup token: no admin yet, unexpired, its hash compared in constant time. */
+    setupOpen(token: string): boolean {
+      if (accounts.hasAdmin()) return false;
+      const row = db.prepare("SELECT hash, expires FROM setup_token").get() as { hash: string; expires: number } | undefined;
+      return Boolean(row && row.expires > Date.now() && same(row.hash, sha(token)));
+    },
+
+    /**
+     * /setup's submit: checks and spends the token in one synchronous step (before any await, so one request wins), then
+     * makes the owner's account with the password they chose (an admin, TOTP next on /auth/enrol).
+     */
+    async claimSetup(token: string, input: { email: string; name: string; password: string }): Promise<Account> {
+      const ownerEmail = o.ownerEmail?.()?.trim().toLowerCase();
+      if (ownerEmail && input.email.trim().toLowerCase() !== ownerEmail) throw new AccountError(400, "the owner's account is settings.owner_email");
+      if (!accounts.setupOpen(token)) throw new AccountError(410, "this setup link was used or has expired");
+      db.exec("DELETE FROM setup_token");
+      const account = await create({ ...input, role: "admin", owner: true });
+      log.info({ account: account.id }, "owner account created on the first-run page");
+      return account;
     },
 
     async list(): Promise<Account[]> {

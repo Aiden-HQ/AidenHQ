@@ -29,7 +29,7 @@ test("dry run prints the plan and no secrets", () => {
   const out = dry(conf(person));
   for (const want of [
     "DRY RUN",
-    "env AIDENHQ_EXPOSURE=tailscale AIDENHQ_NO_TAILSCALE=0 AIDENHQ_USER=alice bash", // the machine, for this user, on the tailnet
+    "env AIDENHQ_EXPOSURE=tailscale AIDENHQ_NO_TAILSCALE=0 AIDENHQ_USER=alice AIDENHQ_CHECKOUT=", // the machine, for this user, on the tailnet
     "git init --quiet --bare -b main /home/alice/aidenhq-instance.git", // the local instance repo
     ".env: AIDENHQ_INSTANCE_PUSH_URL=/home/alice/aidenhq-instance.git",
     ".env: BOARD_LAN_URL=https://alice.tail1234.ts.net",
@@ -73,13 +73,14 @@ test("--unattended: no config file, settings from the environment, the SSH-tunne
   const run = (env, ...args) => execFileSync("bash", [setup, "--dry-run", "--unattended", ...args], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], env: { PATH: process.env.PATH, AIDENHQ_USER: "alice", ...env } });
   const out = run({ OWNER_EMAIL: "alice@example.com", MAX_CONCURRENT: "8", TIMEOUT_MINUTES: "120", CI_RUNNERS: "2", OPENROUTER_KEY: "sk-SECRET" }, "--no-tailscale");
   for (const want of [
-    "env AIDENHQ_EXPOSURE=local AIDENHQ_NO_TAILSCALE=1 AIDENHQ_USER=alice bash", // the machine without Tailscale
+    "env AIDENHQ_EXPOSURE=local AIDENHQ_NO_TAILSCALE=1 AIDENHQ_USER=alice AIDENHQ_CHECKOUT=", // the machine without Tailscale
     ".env: BOARD_LAN_URL=http://127.0.0.1:3121",
     "config/runner.yaml: max_concurrent: 8",
     "config/runner.yaml: timeout_minutes: 120",
     "CI runners: aidenhq-ci-runner@1..2",
     "Model key: none yet", // secrets never come from the environment
     "AIDENHQ_SSH_TUNNEL=ssh -N -L 3121:127.0.0.1:3121 -L 3120:127.0.0.1:3120 alice@",
+    "kernel: the first-run page's one-time link, last: AIDENHQ_SETUP_URL=", // the full run: ops/test/unattended-install.sh
   ]) assert.ok(out.includes(want), `missing: ${want}\n${out}`);
   for (const not of ["tailscale serve", "APPS_URL_BASE", "sk-SECRET"]) assert.ok(!out.includes(not), `unexpected: ${not}\n${out}`);
   assert.throws(() => run({}), /--unattended needs OWNER_EMAIL/);

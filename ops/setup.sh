@@ -2,13 +2,18 @@
 # One AidenHQ for one person, on a fresh Ubuntu or Debian host (ops/vm/setup.sh lists the releases). Run from the product
 # checkout, wherever it is (the user units find it through ~/.config/aidenhq-checkout.env):
 #   sudo ops/setup.sh --config person.env              set up (or finish, or repair: every step is idempotent)
-#   sudo OWNER_EMAIL=<email> ops/setup.sh --unattended [--no-tailscale]
+#   sudo OWNER_EMAIL=<email> ops/setup.sh --unattended [--no-tailscale] [--kernel-token-file <file>]
 #                                                      the same with no config file and no questions (the installer's
-#                                                      handover): defaults for everything, no model key yet, and a last
-#                                                      line AIDENHQ_SETUP_URL=<the owner's one-time link>. Tailscale: a
-#                                                      host already on the tailnet, TS_AUTHKEY (--config), or its sign-in
-#                                                      link on the terminal; --no-tailscale skips it and prints the SSH
-#                                                      tunnel to the board on loopback instead (AIDENHQ_SSH_TUNNEL=...).
+#                                                      handover): defaults for everything, and a last line
+#                                                      AIDENHQ_SETUP_URL=<url> (exactly one): the kernel's first-run page
+#                                                      /setup?token=… (single use), which takes the owner's password and
+#                                                      authenticator, the model key, channels and a GitHub bot token, and
+#                                                      shows the vault's recovery key once. Tailscale: a host already on
+#                                                      the tailnet or TS_AUTHKEY (--config); otherwise (or --no-tailscale)
+#                                                      the board stays on loopback, reached through the SSH tunnel it
+#                                                      prints (AIDENHQ_SSH_TUNNEL=...), never a public port.
+#                                                      --kernel-token-file: a read token for a private kernel repo, used
+#                                                      only for setup's fetch of it, never written into the checkout.
 #   sudo ops/setup.sh --config person.env --restore backups/aidenhq-….tar.gz
 #                                                      a new VM from a backup (scripts/backup.sh)
 #   sudo ops/setup.sh --config person.env --link       only the owner's one-time setup link, while no owner account exists
@@ -29,22 +34,28 @@
 # The settings that aren't secrets may come from the environment instead (the file wins): AIDENHQ_USER, OWNER_NAME,
 # OWNER_EMAIL, TIMEZONE, COMPANY_NAME, MODULES, BOARD_HOST, GITHUB_AGENTS_ORG, MAX_CONCURRENT, TIMEOUT_MINUTES, CI_RUNNERS.
 # What it makes: see SETUP.md. It holds secrets: delete person.env when setup is done.
+# Run as root, it first copies the checkout's commit to root-owned /opt/aidenhq/kernel/<sha> and runs again from there
+# (--checkout names the user's checkout): root's own steps run only from that verified copy.
 set -euo pipefail
 
-REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-DRY=0 CONFIG="" RESTORE="" LINK_ONLY=0 RESET="" UNATTENDED=0 NO_TS=0
+SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"   # the code this run executes: root's verified copy, or the checkout
+ARGS=("$@")
+DRY=0 CONFIG="" RESTORE="" LINK_ONLY=0 RESET="" UNATTENDED=0 NO_TS=0 KTOKEN="" CHECKOUT=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --dry-run) DRY=1; shift ;;
     --unattended) UNATTENDED=1; shift ;;
     --no-tailscale) NO_TS=1; shift ;;
     --config) CONFIG="$2"; shift 2 ;;
+    --kernel-token-file) KTOKEN="$2"; shift 2 ;;
+    --checkout) CHECKOUT="$2"; shift 2 ;;
     --restore) RESTORE="$2"; shift 2 ;;
     --link) LINK_ONLY=1; shift ;;
     --reset) RESET="${2:-}"; shift 2 ;;
-    *) echo "usage: ops/setup.sh (--config person.env | --unattended [--config person.env]) [--no-tailscale] [--dry-run] [--restore <backup.tar.gz>] [--link] [--reset <email>]" >&2; exit 2 ;;
+    *) echo "usage: ops/setup.sh (--config person.env | --unattended [--config person.env]) [--no-tailscale] [--kernel-token-file <file>] [--dry-run] [--restore <backup.tar.gz>] [--link] [--reset <email>]" >&2; exit 2 ;;
   esac
 done
+REPO="${CHECKOUT:-$SRC}"   # the user's checkout: its .env, config and data, and everything that runs as the user
 
 say() { printf '• %s\n' "$*"; }
 die() { printf 'setup: %s\n' "$*" >&2; exit 1; }
@@ -109,12 +120,14 @@ run() { if [ "$DRY" = 1 ]; then echo "  + $*"; else "$@"; fi; }
 as_user() ( # [VAR=value…] cmd…: runs cmd as the owner, with only the named variables passed in (a subshell: they
   # never reach later steps)
   keep=""
-  while [[ "${1:-}" =~ ^[A-Z_]+= ]]; do export "${1?}"; keep="${keep:+$keep,}${1%%=*}"; shift; done
+  while [[ "${1:-}" =~ ^[A-Z_][A-Z0-9_]*= ]]; do export "${1?}"; keep="${keep:+$keep,}${1%%=*}"; shift; done
   if [ "$DRY" = 1 ]; then echo "  + (as $U${keep:+, with $keep}) $*"; exit 0; fi
   cd "$H"
   if [ -n "$keep" ]; then exec runuser -w "$keep" -u "$U" -- env HOME="$H" XDG_RUNTIME_DIR="/run/user/$(id -u "$U")" "$@"; fi
   exec runuser -u "$U" -- env HOME="$H" XDG_RUNTIME_DIR="/run/user/$(id -u "$U")" "$@"
 )
+# Reads of the user's repo run as the user too: git refuses a repository owned by someone else ("dubious ownership").
+ugit() { if [ "$DRY" = 1 ]; then git "$@"; else DRY=0 as_user git "$@"; fi; }
 # Files in the user's directories are written by the user (never by root: no symlink there can redirect a root write),
 # through a temp file in the same directory and a rename.
 write_user_file() { # path mode < content (content never printed)
@@ -137,16 +150,37 @@ operator() { # OP [JSON]: the kernel's accounts (its backplane, POST /v1/operato
     | curl -sS -X POST "http://${AIDENHQ_KERNEL_BACKPLANE:-10.231.0.1:3130}/v1/operator/$1" -H 'content-type: application/json' -H @- ${2:+--data "$2"} "${@:3}"
 }
 
+# ---------------------------------------------------------------- 0. root's verified copy (spec §6.10)
+# Root never runs code from the user-writable checkout: the checkout's commit, cloned --no-local (git rehashes every object it
+# receives; replace refs ignored) and exported at that sha into /opt/aidenhq/kernel/<sha> (root:root, 0755, nothing writable
+# by anyone else), then this script runs again from there. Uncommitted changes in the checkout never reach root.
+KROOT=/opt/aidenhq/kernel
+if [ "$DRY" = 0 ] && [[ "$SRC" != "$KROOT/"* ]]; then
+  sha="$(ugit -C "$REPO" rev-parse HEAD)"
+  [[ "$sha" =~ ^[0-9a-f]{40}$ ]] || die "can't read the checkout's commit ($REPO)"
+  if [ ! -d "$KROOT/$sha" ]; then
+    say "Kernel $sha: a root-owned copy for setup's root steps ($KROOT/$sha)"
+    install -d -m 0755 -o root -g root /opt/aidenhq "$KROOT"
+    tmp="$(mktemp -d "$KROOT/.new.XXXXXX")"
+    GIT_NO_REPLACE_OBJECTS=1 git -c safe.directory='*' clone -q --bare --no-local "$REPO" "$tmp/k.git" || die "can't clone $REPO for root's copy"
+    mkdir -m 0755 "$tmp/tree"
+    GIT_NO_REPLACE_OBJECTS=1 git --git-dir="$tmp/k.git" archive "$sha" | tar -x --no-same-owner --no-same-permissions -C "$tmp/tree" || die "can't export $sha"
+    chown -R root:root "$tmp/tree" && chmod -R u+rwX,go+rX,go-w "$tmp/tree"
+    mv "$tmp/tree" "$KROOT/$sha" && rm -rf "$tmp"
+  fi
+  exec bash "$KROOT/$sha/ops/setup.sh" --checkout "$REPO" "${ARGS[@]}"
+fi
+
 # The board's address on the tailnet: the link, Google's redirect and the apps all hang off it.
 BOARD_HOST="$(cfg BOARD_HOST)"
 if [ -z "$BOARD_HOST" ] && [ "$NO_TS" = 0 ] && command -v tailscale >/dev/null && tailscale status >/dev/null 2>&1; then
   BOARD_HOST="$(tailscale status --json | jq -r '.Self.DNSName' | sed 's/\.$//')"
 fi
-# Unattended, joining the tailnet needs TS_AUTHKEY or a terminal for Tailscale's sign-in link: decided now, before
-# anything changes. Without Tailscale the board stays on loopback, reached through an SSH tunnel (never a public port).
-has_tty() { (: </dev/tty) 2>/dev/null; }
-if [ "$UNATTENDED" = 1 ] && [ "$DRY" = 0 ] && [ "$NO_TS" = 0 ] && [ -z "$BOARD_HOST" ] && [ -z "$(cfg TS_AUTHKEY)" ] && ! has_tty; then
-  die "this host isn't on the tailnet and there's no terminal for Tailscale's sign-in: set TS_AUTHKEY (--config), or pass --no-tailscale for the SSH-tunnel route"
+# Unattended, nothing waits on a terminal: the tailnet when this host is on it or TS_AUTHKEY joins it, else the board stays
+# on loopback, reached through an SSH tunnel (never a public port). Decided now: the machine step opens the firewall for it.
+if [ "$UNATTENDED" = 1 ] && [ "$NO_TS" = 0 ] && [ -z "$BOARD_HOST" ] && [ -z "$(cfg TS_AUTHKEY)" ]; then
+  say "Not on a tailnet and no TS_AUTHKEY: the board stays on this host's loopback (the SSH-tunnel route)"
+  NO_TS=1
 fi
 
 # The owner's way in: the one-time setup link for OWNER_EMAIL (it sets a password; the board then asks for an
@@ -160,13 +194,32 @@ owner_link() {
   code="${resp##*$'\n'}"; url="$(printf '%s' "${resp%$'\n'*}" | jq -r '.url // empty' 2>/dev/null || true)"
   if [ "$code" = 200 ] && [[ "$url" =~ ^https?://[^[:space:]]+$ ]]; then
     echo "$url"
-    # The installer reads this line (the last one wins).
-    [ "$UNATTENDED" = 0 ] || echo "AIDENHQ_SETUP_URL=$url"
   elif [ "$code" = 409 ]; then echo "(the owner's account already exists; a new link goes to the owner's Telegram: sudo ops/setup.sh ${CONFIG:+--config $CONFIG }--reset $OWNER_EMAIL)"
   else die "the kernel gave no setup link for $OWNER_EMAIL (HTTP ${code:-none}; is it up? systemctl --user status aidenhq-kernel)"; fi
 }
 
+# Unattended: the kernel's first-run page (/setup), its single-use link the last line of the output, exactly once, for the
+# installer to read: AIDENHQ_SETUP_URL=<url>. The vault's recovery key moves from root's home into the vault for that page,
+# which shows it once.
+setup_link() {
+  if [ "$DRY" = 1 ]; then echo "  + kernel: the first-run page's one-time link, last: AIDENHQ_SETUP_URL=<url>"; return 0; fi
+  for _ in $(seq 60); do curl -fsS -o /dev/null "http://${AIDENHQ_KERNEL_BACKPLANE:-10.231.0.1:3130}/healthz" 2>/dev/null && break; sleep 2; done
+  local resp code url
+  resp="$(operator setup_token "" -w '\n%{http_code}' 2>/dev/null || true)"
+  code="${resp##*$'\n'}"; url="$(printf '%s' "${resp%$'\n'*}" | sed -n 's/.*"url":"\([^"]*\)".*/\1/p')"
+  if [ "$code" = 200 ] && [[ "$url" =~ ^https?://[^[:space:]\"]+/setup\?token=[A-Za-z0-9_-]+$ ]]; then
+    if [ -e /root/aidenhq-vault-recovery.txt ]; then
+      tr -d '[:space:]' < /root/aidenhq-vault-recovery.txt | write_user_file "$SECRETS/vault_recovery_key" 600
+      shred -u /root/aidenhq-vault-recovery.txt
+    fi
+    echo "Open this page to finish: your account and authenticator, the model key, channels (one use; until an admin exists, a rerun prints a new one):"
+    echo "AIDENHQ_SETUP_URL=$url"
+  elif [ "$code" = 409 ]; then echo "(an admin exists, so first-run setup is over: sign in at $ADMIN_URL; a lost owner: sudo ops/setup.sh --reset $OWNER_EMAIL)"
+  else die "the kernel gave no first-run link (HTTP ${code:-none}; is it up? systemctl --user status aidenhq-kernel)"; fi
+}
+
 if [ "$LINK_ONLY" = 1 ]; then
+  if [ "$UNATTENDED" = 1 ]; then ADMIN_URL="${AIDENHQ_ADMIN_URL:-http://127.0.0.1:3120}"; setup_link; exit 0; fi
   echo "Link for $OWNER_NAME (open it on their laptop, on the tailnet; one use):"
   owner_link
   exit 0
@@ -186,7 +239,7 @@ say "System packages, Docker, gVisor, Tailscale"
 # The exposure mode this setup builds (settings.exposure, written into a new instance.yaml): the tailnet, or without
 # Tailscale an SSH tunnel to loopback. The machine step opens the host firewall for it (ops/vm/public-fw.sh).
 EXPOSURE=tailscale; [ "$NO_TS" = 0 ] || EXPOSURE=local
-run env AIDENHQ_EXPOSURE="$EXPOSURE" AIDENHQ_NO_TAILSCALE="$NO_TS" AIDENHQ_USER="$U" bash "$REPO/ops/vm/setup.sh"
+run env AIDENHQ_EXPOSURE="$EXPOSURE" AIDENHQ_NO_TAILSCALE="$NO_TS" AIDENHQ_USER="$U" AIDENHQ_CHECKOUT="$REPO" bash "$SRC/ops/vm/setup.sh"
 # The runner's engines on the host: Codex (the primary engine, codex-openrouter) and opencode (the fallback) (engines.mjs).
 command -v codex >/dev/null || run npm install -g --silent @openai/codex@0.166.0
 command -v opencode >/dev/null || run npm install -g --silent opencode-ai@1.19.5
@@ -211,13 +264,6 @@ if [ -z "$BOARD_HOST" ] && [ "$NO_TS" = 0 ]; then
     tailscale up --auth-key="file:$keyfile" --hostname="aidenhq-$U"
     rm -f "$keyfile"
     BOARD_HOST="$(tailscale status --json | jq -r '.Self.DNSName' | sed 's/\.$//')"
-  elif [ "$UNATTENDED" = 1 ] && tailscale status >/dev/null 2>&1; then
-    BOARD_HOST="$(tailscale status --json | jq -r '.Self.DNSName' | sed 's/\.$//')"
-  elif [ "$UNATTENDED" = 1 ] && has_tty; then
-    # The sign-in link goes to the terminal itself: an installer reading this script's output shows only its steps.
-    say "Tailscale: open the link it prints to add this server to your tailnet (it waits)"
-    tailscale up --hostname="aidenhq-$U" </dev/tty >/dev/tty 2>&1 || die "tailscale up failed"
-    BOARD_HOST="$(tailscale status --json | jq -r '.Self.DNSName' | sed 's/\.$//')"
   else die "this VM isn't on the tailnet: set TS_AUTHKEY in ${CONFIG:-a --config file}, or run 'sudo tailscale up', then run setup again"; fi
 fi
 # The board's URL for links: its tailnet name over https, or (no Tailscale) loopback, reached through an SSH tunnel.
@@ -229,14 +275,22 @@ say "Board address: $BOARD_URL (sign-in and approvals: $ADMIN_URL)"
 [ "$DRY" = 1 ] || command -v node >/dev/null || die "node is missing after the machine step: ops/vm/setup.sh installs it (NodeSource); see its output above"
 
 # ---------------------------------------------------------------- 2. the product (its main is what may run here)
-# Reads of the user's repo run as the user too: git refuses a repository owned by someone else ("dubious ownership").
-ugit() { if [ "$DRY" = 1 ]; then git "$@"; else DRY=0 as_user git "$@"; fi; }
 if ! ugit -C "$REPO" remote get-url origin >/dev/null 2>&1; then
   say "Product: a local mirror as origin ($H/aidenhq-product.git); upgrades are pushed there"
   as_user git clone --quiet --bare "$REPO" "$H/aidenhq-product.git"
   as_user git -C "$REPO" remote add origin "$H/aidenhq-product.git"
 fi
-as_user git -C "$REPO" fetch --quiet origin main
+# A private kernel repo: the read token rides in git's environment for this one fetch (never argv, never a file in the checkout).
+if [ -n "$KTOKEN" ] && [ "$DRY" = 0 ]; then
+  [ -f "$KTOKEN" ] || die "no kernel token file $KTOKEN"
+  ktok="$(head -c 400 "$KTOKEN" | tr -d '[:space:]')"
+  [[ "$ktok" =~ ^[A-Za-z0-9_]{20,300}$ ]] || die "$KTOKEN doesn't hold a GitHub token"
+  as_user GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0="http.https://github.com/.extraheader" GIT_CONFIG_VALUE_0="Authorization: Basic $(printf 'x-access-token:%s' "$ktok" | base64 -w0)" \
+    git -C "$REPO" fetch --quiet origin main
+  unset ktok
+else
+  as_user git -C "$REPO" fetch --quiet origin main
+fi
 PRODUCT="$(ugit -C "$REPO" rev-parse HEAD)"
 [ "$DRY" = 1 ] || ugit -C "$REPO" merge-base --is-ancestor "$PRODUCT" origin/main || die "the checkout ($PRODUCT) isn't on the product's main"
 
@@ -364,7 +418,7 @@ if [ -z "$(read_secret openrouter_key)" ]; then
   elif [ -n "$(cfg OPENROUTER_MANAGEMENT_KEY)" ]; then
     say "OpenRouter key: a new one for $U, limit \$$LIMIT a month"
     as_user OPENROUTER_MANAGEMENT_KEY="$(cfg OPENROUTER_MANAGEMENT_KEY)" AIDENHQ_SECRETS_DIR="$SECRETS" node "$REPO/scripts/openrouter-key.mjs" create "aidenhq-$U" "$LIMIT"
-  elif [ "$UNATTENDED" = 1 ]; then say "Model key: none yet (agents can't run until one is added; see the end)"
+  elif [ "$UNATTENDED" = 1 ]; then say "Model key: none yet (the setup page asks for it)"
   elif [ "$DRY" = 1 ]; then echo "  ! would fail: set OPENROUTER_MANAGEMENT_KEY (or OPENROUTER_KEY) in $CONFIG"
   else die "set OPENROUTER_MANAGEMENT_KEY (or OPENROUTER_KEY) in $CONFIG"; fi
 fi
@@ -392,7 +446,7 @@ fi
 
 if [ ! -e "$H/.local/share/aidenhq/vault.enc" ]; then
   say "Secret vault (ops/vault): encrypts $SECRETS, unlocked at boot by this VM's TPM"
-  run env AIDENHQ_USER="$U" bash "$REPO/ops/vault/init.sh"
+  run env AIDENHQ_USER="$U" bash "$SRC/ops/vault/init.sh"
 fi
 
 # ---------------------------------------------------------------- 7. the stack
@@ -453,21 +507,18 @@ elif [ ! -e "$marker" ]; then
 fi
 
 echo
-if [ "$HAS_KEY" = 0 ]; then
-  echo "No model key yet: put OPENROUTER_KEY=<key> in a root-only file and run: sudo OWNER_EMAIL=$OWNER_EMAIL ops/setup.sh --unattended --config <that file>$( [ "$NO_TS" = 1 ] && echo ' --no-tailscale')"
-fi
-if [ -n "$BOARD_HOST" ]; then
-  echo "Done. Send $OWNER_NAME this link (their laptop must be on the tailnet; one use; a new one: --reset $OWNER_EMAIL):"
-else
-  tunnel="ssh -N -L 3121:127.0.0.1:3121 -L 3120:127.0.0.1:3120 $U@$(hostname -f 2>/dev/null || hostname)"
-  echo "Done. The board listens on this host's loopback only. From $OWNER_NAME's laptop, open a tunnel first:"
-  echo "  $tunnel"
-  [ "$UNATTENDED" = 0 ] || echo "AIDENHQ_SSH_TUNNEL=$tunnel"
-  echo "then open this link there (one use; a new one: --reset $OWNER_EMAIL):"
-fi
-owner_link
-echo
 echo "Once, in the company's Google OAuth app (Web application), add the redirect URI:"
 echo "  $BOARD_URL/google/callback"
-if [ -e /root/aidenhq-vault-recovery.txt ]; then echo "Vault recovery key: /root/aidenhq-vault-recovery.txt. Store it, then: sudo shred -u /root/aidenhq-vault-recovery.txt"; fi
 [ -z "$CONFIG" ] || echo "Delete $CONFIG: it holds secrets (the OpenRouter key)."
+if [ "$UNATTENDED" = 0 ] && [ -e /root/aidenhq-vault-recovery.txt ]; then echo "Vault recovery key: /root/aidenhq-vault-recovery.txt. Store it, then: sudo shred -u /root/aidenhq-vault-recovery.txt"; fi
+if [ -z "$BOARD_HOST" ]; then
+  tunnel="ssh -N -L 3121:127.0.0.1:3121 -L 3120:127.0.0.1:3120 $U@$(hostname -f 2>/dev/null || hostname)"
+  echo "The board listens on this host's loopback only. From $OWNER_NAME's laptop, open a tunnel first and leave it open:"
+  echo "  $tunnel"
+  [ "$UNATTENDED" = 0 ] || echo "AIDENHQ_SSH_TUNNEL=$tunnel"
+fi
+if [ "$UNATTENDED" = 1 ]; then setup_link   # last: its AIDENHQ_SETUP_URL line ends the output
+else
+  echo "Done. Send $OWNER_NAME this link ($( [ -n "$BOARD_HOST" ] && echo 'their laptop must be on the tailnet' || echo 'through the tunnel' ); one use; a new one: --reset $OWNER_EMAIL):"
+  owner_link
+fi

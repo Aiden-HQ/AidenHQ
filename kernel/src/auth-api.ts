@@ -6,7 +6,8 @@
 //              owner's chat words Aiden relays as his in-app request) with the key alone.
 //   POST /v1/apps/<op>       (the apps-platform module's own token) in-app requests and roles for agents: requests, reply,
 //              roles, role_set (apps-mcp checked the calling agent may, and names it).
-//   POST /v1/operator/<op>   (x-operator-key: board_operator_key) ops/setup.sh's owner setup link and account resets.
+//   POST /v1/operator/<op>   (x-operator-key: board_operator_key) ops/setup.sh's owner setup link, first-run
+//              /setup link (setup_token) and account resets.
 import { timingSafeEqual } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { AccountError, type Accounts, type Role } from "./accounts.ts";
@@ -43,6 +44,7 @@ export function createAuthApi({ accounts, whoami, boardKey, operatorKey }: { acc
         const b = await json(req);
         if (op === "setup") return send(res, 200, await a.setup(need(b, "email", EMAIL), typeof b.name === "string" ? b.name.slice(0, 100) : ""));
         if (op === "reset") { await a.reset(need(b, "email", EMAIL)); return send(res, 200, { ok: true }); }
+        if (op === "setup_token") return send(res, 200, a.mintSetup());
         throw fail(404, "not_found", "no such operator call");
       }
       if (group === "apps") {

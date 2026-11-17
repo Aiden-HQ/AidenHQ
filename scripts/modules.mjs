@@ -868,7 +868,8 @@ export function compile(productDir, instanceDir, { revision, fetch = hostFetch(p
   const dangling = danglingBindings(enabledDefs, { reviewer: instance.reviewer, writes: instance.writes, agents: Object.fromEntries(Object.entries(paperclip.agents).filter(([, a]) => a.module === "instance")) });
   if (dangling.length) fail(`refusing: ${dangling.map((d) => `${d.owner} (${d.binding}) names ${d.missing}, which no enabled module provides`).join("; ")}`);
   const reviewer = reviewerSlot(enabledDefs, instance.reviewer);
-  const kernelModules = { owner: { name: String(settings.owner_name ?? ""), email: String(settings.owner_email).trim().toLowerCase(), timezone: String(settings.timezone ?? "UTC") }, modules: kernelModuleTable(enabledDefs, settings), ...(reviewer ? { reviewer } : {}) };
+  const setup = setupSecrets(enabledDefs, generatedSecrets);
+  const kernelModules = { owner: { name: String(settings.owner_name ?? ""), email: String(settings.owner_email).trim().toLowerCase(), timezone: String(settings.timezone ?? "UTC") }, modules: kernelModuleTable(enabledDefs, settings), ...(reviewer ? { reviewer } : {}), ...(setup.length ? { setup } : {}) };
   // The engine-run agents (`dispatch: runner`, any module's or the instance's) are the job dispatcher's: the one enabled module
   // with kernel.jobs. The kernel starts a job only for an agent its requester dispatches (kernel/src/jobs.ts).
   const dispatchers = Object.entries(kernelModules.modules).filter(([, m]) => (m.roles ?? []).includes("kernel.jobs")).map(([n]) => n);
@@ -884,6 +885,29 @@ export function compile(productDir, instanceDir, { revision, fetch = hostFetch(p
  * `<module>_token`, dashes as underscores) and, for a channel (`providers.channel`, which needs privileged speaks-as-owner),
  * the stamp its decisions carry, whether it may close stale cards, and its own settings (a host CLI channel reads them here).
  */
+/**
+ * The first-run page's fields (spec §6.10): a module's provided secrets with `setup: { label, pattern, help?, required? }`, which
+ * the owner may give on /setup; each is written to the vault under its own name once it matches its anchored pattern, `required`
+ * ones while the vault has none. Never a generated secret, and each one asked for by one module.
+ */
+export function setupSecrets(defs, generated) {
+  const out = [];
+  for (const [module, def] of Object.entries(defs)) {
+    for (const p of [def.secrets?.provided ?? []].flat()) {
+      const s = p?.setup;
+      if (s == null) continue;
+      const where = `module ${module}: secrets.provided ${p.name} setup`;
+      if (!/^[a-z][a-z0-9_]{1,63}$/.test(String(p.name))) fail(`${where}: the secret's name is lowercase letters, digits and _`);
+      if (generated.includes(p.name) || out.some((o) => o.secret === p.name)) fail(`${where}: a generated secret, or one another module asks for`);
+      if (typeof s.label !== "string" || !s.label || s.label.length > 60) fail(`${where}: label is a short text`);
+      if (typeof s.pattern !== "string" || !/^\^.*\$$/.test(s.pattern) || s.pattern.length > 200) fail(`${where}: pattern is an anchored regular expression (^…$), 200 characters at most`);
+      try { new RegExp(s.pattern); } catch { fail(`${where}: pattern isn't a regular expression`); }
+      out.push({ module, secret: p.name, label: s.label, pattern: s.pattern, ...(s.help ? { help: String(s.help).slice(0, 400) } : {}), ...(s.required === true ? { required: true } : {}) });
+    }
+  }
+  return out;
+}
+
 export function kernelModuleTable(defs, settings = {}) {
   const out = {};
   for (const [name, def] of Object.entries(defs)) {
