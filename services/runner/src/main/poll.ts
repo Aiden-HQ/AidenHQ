@@ -8,7 +8,8 @@ import { advanceMerges, mergeCheck, runAutoMerges } from "./merge.ts";
 import { runGrades } from "./grading.ts";
 import { runReviews } from "./card-review.ts";
 import { runApprovals } from "./approvals.ts";
-import { RESUME_KEY, reportError, resumeInterrupted, runTrialEdits, stopping } from "./unsplit.ts";
+import { runTrialEdits } from "./apply-path.ts";
+import { RESUME_KEY, reportError, resumeInterrupted, stopping } from "./unsplit.ts";
 
 // ------------------------------------------------------------------ polling
 

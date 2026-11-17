@@ -23,7 +23,8 @@ import { app, cfg, execFileP, gho, log, pc, sameRepo, state } from "./context.ts
 import { ownerMadeTask, trialNoTap } from "./watch.ts";
 import { mergeGithub } from "./merge.ts";
 import { cardBases, githubDefault, withTrusted } from "./approvals.ts";
-import { MovedHead, branchRows, createRepoText, findRealGh, fleetBranch, fleetDiffText, prRequest, prepareWorkspace, productBump, readGrants } from "./unsplit.ts";
+import { fleetBranch, fleetDiffText, productBump, readGrants } from "./apply-path.ts";
+import { MovedHead, branchRows, createRepoText, findRealGh, prRequest, prepareWorkspace } from "./unsplit.ts";
 
 // ------------------------------------------------------------------ approval records
 
