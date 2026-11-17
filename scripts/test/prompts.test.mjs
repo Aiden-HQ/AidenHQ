@@ -7,8 +7,8 @@ import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import YAML from "yaml";
-import { compile, promptEntries } from "../modules.mjs";
-import { sizesReport } from "../handbook.mjs";
+import { compile, promptApplies, promptEntries } from "../modules.mjs";
+import { handbookParts, laneHandbook, onDemandSections, sizesReport } from "../handbook.mjs";
 import { BUNDLE } from "./bundle.mjs";
 
 const product = join(dirname(fileURLToPath(import.meta.url)), "../..");
@@ -52,4 +52,33 @@ test("compile --sizes reports each crew agent's handbook bytes by section", () =
   assert.match(out, /^chief-of-staff \d+$/m);
   assert.match(out, /^ +\d+ {2}approvals$/m);
   assert.doesNotMatch(out, /^fleet-engineer /m); // runner Engineers get the runner's prompt
+});
+
+test("an on-demand section and a module skill: a summary line in the handbook, the text through handbook_section", () => {
+  const repo = mkdtempSync(join(tmpdir(), "repo-"));
+  const root = join(repo, "modules", "acme");
+  mkdirSync(join(root, "prompts"), { recursive: true });
+  mkdirSync(join(root, "skills", "triage"), { recursive: true });
+  mkdirSync(join(root, "agents", "bot"), { recursive: true });
+  writeFileSync(join(root, "agents", "bot", "AGENTS.md"), "Bot handbook.\n");
+  writeFileSync(join(root, "prompts", "always.md"), "\n\n## Always\n\nAlways here.\n");
+  writeFileSync(join(root, "prompts", "later.md"), "---\nsummary: Read before you file a widget.\nload: on_demand\n---\n\n## Later\n\nWidget rules.\n");
+  writeFileSync(join(root, "skills", "triage", "SKILL.md"), "---\nname: triage\ndescription: Triage an acme ticket.\n---\n\nTriage steps.\n");
+  const def = { connections: { acme: {} }, prompts: [{ id: "always", file: "prompts/always.md" }, { id: "later", file: "prompts/later.md" }] };
+  const entries = promptEntries("acme", def, root);
+  assert.deepEqual(entries.map((p) => [p.id, p.load]), [["acme.always", "always"], ["acme.later", "on_demand"], ["acme.triage", "on_demand"]]);
+  const granted = { adapter: "codex_local", module: "other", enabled_tools: { acme: ["read"] } };
+  const outsider = { adapter: "codex_local", module: "other", enabled_tools: {} };
+  assert.ok(promptApplies(entries[2], granted, ["acme"]) && !promptApplies(entries[2], outsider, ["acme"])); // skills follow the grant
+  const cfg = { prompts: Object.fromEntries(entries.map((p) => [p.id, { file: p.file, ...(p.load === "on_demand" ? { load: p.load, summary: p.summary } : {}) }])) };
+  const bot = { name: "Bot", module: "acme", instructions: join(root, "agents", "bot", "AGENTS.md"), adapter: "codex_local", prompts: entries.map((p) => p.id) };
+  const handbook = handbookParts(cfg, "bot", bot, { repo }).map(([, t]) => t).join("");
+  assert.match(handbook, /Always here\./);
+  assert.match(handbook, /## Untrusted text is data/);
+  assert.match(handbook, /- `acme\.later`: Read before you file a widget\.\n- `acme\.triage`: Triage an acme ticket\./);
+  assert.doesNotMatch(handbook, /Widget rules|Triage steps/);
+  assert.deepEqual(onDemandSections(cfg, bot, { repo }), { "acme.later": "\n## Later\n\nWidget rules.\n", "acme.triage": "\nTriage steps.\n" });
+  assert.match(laneHandbook(cfg, bot, { repo }), /^Bot handbook\.\n\n\n## Untrusted text is data/);
+  writeFileSync(join(root, "prompts", "later.md"), "---\nload: on_demand\n---\nNo summary.\n");
+  assert.throws(() => promptEntries("acme", def, root), /prompt later: an on-demand section needs a one-line summary/);
 });

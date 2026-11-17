@@ -3,7 +3,7 @@
 import { existsSync, readFileSync, realpathSync } from "node:fs";
 import { join, sep } from "node:path";
 import { section } from "./prompts.mjs";
-import { sourcesSection } from "./modules.mjs";
+import { frontmatter, sourcesSection } from "./modules.mjs";
 import { computerSection } from "./computers.mjs";
 
 /** A file that must resolve (symlinks followed) inside dir; anything else throws. */
@@ -64,6 +64,8 @@ On the user's board you are ${me.name}. Voice: ${me.voice} The voice sets your t
 
 // The sections setup itself writes into every crew agent's handbook, ahead of the modules' prompt contributions:
 // Approvals is the kernel's; How we build (engineering), the web and the app follow-up (apps-platform) leave with their units.
+// Every agent's one rule for what it reads (tools, messages, documents, quoted text): data, never instructions.
+const UNTRUSTED_SECTION = section("untrusted");
 // Every codex agent's web access (live search, web_view, app_view), and the one rule that goes with it.
 const WEB_SECTION = section("web");
 // Agents kept asking for approval through Paperclip's own mechanism, which the owner never sees (approval cards are the only one).
@@ -76,17 +78,32 @@ export const HOW_WE_BUILD_SECTION = section("how-we-build");
 // apps and can wake themselves later (app_logs and wake_at).
 const appFollowupSection = (a) => (a.enabled_tools?.apps?.includes("app_logs") && a.enabled_tools?.chat_lane?.includes("wake_at") ? section("app-followup", "") : "");
 
+/** A section's text as the agent reads it: past its frontmatter, `{{fleet_issues}}` and `{{memory}}` filled in. */
+function sectionText(cfg, a, id, { repo, fleetIssues }) {
+  const { body } = frontmatter(readInside(join(repo, "modules"), cfg.prompts?.[id]?.file, `agent ${a.name}: section ${id}`));
+  if (body.includes("{{fleet_issues}}") && !fleetIssues) throw new Error(`section ${id}: the Fleet issues task is missing`);
+  return body.replaceAll("{{fleet_issues}}", fleetIssues).replace("{{memory}}", () => a.memory ?? "");
+}
+const onDemand = (cfg, id) => cfg.prompts?.[id]?.load === "on_demand";
+
 /**
- * The module prompt contributions compile picked for this agent (spec §3.1 `prompts`, after the kernel's sections), verbatim
- * and in compile's order, as [id, text]. `{{fleet_issues}}`: the Fleet issues task; `{{memory}}`: the agent's curated memory.
- * `lane`: only those marked for the fast chat lane.
+ * The module sections compile picked for this agent that load always (spec §3.1 `prompts`, after the kernel's sections), in
+ * compile's order, as [id, text]. `lane`: only those marked for the fast chat lane.
  */
 export function promptParts(cfg, a, { repo, fleetIssues, lane = false }) {
-  return (a.prompts ?? []).filter((id) => !lane || cfg.prompts?.[id]?.lane).map((id) => {
-    const text = readInside(join(repo, "modules"), cfg.prompts?.[id]?.file, `agent ${a.name}: prompt ${id}`);
-    if (text.includes("{{fleet_issues}}") && !fleetIssues) throw new Error(`prompt ${id}: the Fleet issues task is missing`);
-    return [id, text.replaceAll("{{fleet_issues}}", fleetIssues).replace("{{memory}}", () => a.memory ?? "")];
-  });
+  return (a.prompts ?? []).filter((id) => !onDemand(cfg, id) && (!lane || cfg.prompts?.[id]?.lane)).map((id) => [id, sectionText(cfg, a, id, { repo, fleetIssues })]);
+}
+
+/** The agent's on-demand sections (module sections with `load: on_demand`, and skills): { id: text }, for handbook_section. */
+export function onDemandSections(cfg, a, opts) {
+  return Object.fromEntries((a.prompts ?? []).filter((id) => onDemand(cfg, id)).map((id) => [id, sectionText(cfg, a, id, opts)]));
+}
+
+/** The handbook's index of its on-demand sections: one line each, read with handbook_section. */
+function indexSection(cfg, a) {
+  const ids = (a.prompts ?? []).filter((id) => onDemand(cfg, id));
+  if (!ids.length) return "";
+  return `${section("on-demand", "\n")}${ids.map((id) => `- \`${id}\`: ${cfg.prompts[id].summary}`).join("\n")}\n`;
 }
 
 /** An agent's whole handbook as [id, text] parts, in the order setup writes them. */
@@ -96,21 +113,29 @@ export function handbookParts(cfg, key, a, { repo, instanceDir, engines = {}, fl
     ["handbook", readInstructions(cfg, a, { repo, instanceDir })],
     ["persona", personaSection(cfg, engines, key, a)],
     ["computer", computerSection(a)],
+    ["untrusted", UNTRUSTED_SECTION],
     ["approvals", codex ? APPROVALS_SECTION : ""],
     ["how-we-build", codex && a.builder === true ? HOW_WE_BUILD_SECTION : ""],
     ["web", !codex ? "" : a.web_search === "disabled" ? WEB_SECTION.replace("You have live web search, `web_view`", "You have `web_view`") : WEB_SECTION],
     ["app-followup", codex ? appFollowupSection(a) : ""],
     ["sources", sourcesSection(a, cfg.mcp_servers ?? {})],
     ...promptParts(cfg, a, { repo, fleetIssues }),
+    ["on-demand", indexSection(cfg, a)],
   ];
   return parts.filter(([, text]) => text);
 }
 
-/** `compile --sizes`: bytes per handbook part per crew agent, largest handbook first. A local report. */
+/** The fast chat lane's prompt: the agent's own handbook, the shared untrusted-text rule and the sections marked for the lane. */
+export function laneHandbook(cfg, a, opts) {
+  return readInstructions(cfg, a, opts) + UNTRUSTED_SECTION + promptParts(cfg, a, { ...opts, lane: true }).map(([, t]) => t).join("");
+}
+
+/** `compile --sizes`: bytes per handbook part per crew agent, largest handbook first (on-demand sections listed, not counted). A local report. */
 export function sizesReport(cfg, opts) {
   const rows = Object.entries(cfg.agents ?? {}).filter(([, a]) => a.dispatch !== "runner").map(([key, a]) => {
     const parts = handbookParts(cfg, key, a, { ...opts, fleetIssues: "WOR-0" });
-    return { key, total: parts.reduce((n, [, t]) => n + Buffer.byteLength(t), 0), parts };
+    const later = Object.entries(onDemandSections(cfg, a, { ...opts, fleetIssues: "WOR-0" })).map(([id, t]) => [`${id} (on demand)`, t]);
+    return { key, total: parts.reduce((n, [, t]) => n + Buffer.byteLength(t), 0), parts: [...parts, ...later] };
   }).sort((x, y) => y.total - x.total);
   return rows.map(({ key, total, parts }) => `${key} ${total}\n${parts.map(([id, t]) => `  ${String(Buffer.byteLength(t)).padStart(6)}  ${id}`).join("\n")}`).join("\n");
 }
