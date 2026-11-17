@@ -14,9 +14,10 @@ The owner's direction: the initial setup is extremely light and only gets the pe
 covers the most common and useful setup, every step skippable. It ends in Aiden's chat with a short tour, where Aiden
 invites them to ask anything and to continue setup (more modules).
 
-Success: a person who has never used SSH pastes one prompt into their own AI (Claude Code, Codex, ...). Within a couple
-of minutes they are chatting with Aiden. They meet no key, file or command they have to understand. The owner accepts a
-larger build, done with subagents, to get this ideal result.
+Success: a person who has never used SSH pastes one prompt into their own AI (Claude Code, Codex, ...). They watch the
+install's progress in their AI. Within a couple of minutes of opening the link they are chatting with Aiden. They meet
+no key, file or command they have to understand. The owner accepts a larger build, done with subagents, to get this
+ideal result.
 
 ## Goals
 
@@ -25,9 +26,8 @@ larger build, done with subagents, to get this ideal result.
      VM). The user may decide with their AI, or let the AI decide: we don't care which.
    - The AI asks the user only that choice and their email (the AI usually knows it already).
    - The install ends with one clickable link.
-   - **Aiden first, the rest in the background.** The link works as soon as the full Aiden is up (Paperclip included).
-     Modules Aiden doesn't need keep installing behind it. Their features stay hidden until they are fully ready, then
-     appear.
+   - **Everything installs before the link, with visible progress.** No background stage: when the link arrives,
+     everything works.
 2. **First browser screen = account, authenticator, model.** Nothing else blocks reaching Aiden.
 3. **Wizard, in the board, at first sign-in.** Three steps, each skippable ("Later"):
    - save the vault recovery key;
@@ -116,37 +116,28 @@ larger build, done with subagents, to get this ideal result.
 - The vault recovery key is no longer written to `/root/aidenhq-vault-recovery.txt` for the person to fetch. The kernel
   shows it once, from the wizard step (Part 3); today `/setup` already shows it once on unattended installs.
 
-**A fast first chat.** Today the first install builds the board and app images locally and pulls about 25 GB (the
-Paperclip image alone is 17 GB), so it takes far longer than minutes. Two changes:
+**A short, visible wait.** Today the first install builds the board and app images locally and pulls about 25 GB
+(the Paperclip image alone is 17 GB). Aiden runs through Paperclip from the first message (owner's decision), so
+everything installs before the link: there is no background stage, and when the link arrives everything works.
 - **Prebuilt images.** Each release publishes its images (board, apps-mcp, module services) to a registry, built by CI
-  and pinned by digest in the release file. The installer pulls them; it builds nothing. Local builds stay for
-  development and forks.
-- **Staged start.**
-  - *Stage 1* starts everything the full Aiden needs: the kernel (accounts, vault, model gateway), Paperclip, the board,
-    the chat lane, and the modules behind Aiden's own tools. Then it prints the link.
-  - *Stage 2* continues in the background: modules Aiden doesn't need for his own work, such as the apps platform, the
-    warehouse, Engineer tooling, computers and browser.
-  - A stage-2 feature isn't offered until it's fully ready. Its tab, its tools and Aiden's offers of it appear only
-    then; nothing shows half-working. If the owner asks Aiden for it early, Aiden says plainly it's still installing
-    and when, the way he would for any module that isn't on.
-  - The prompt hands over the link at the end of stage 1.
+  and pinned by digest in the release file. The installer pulls them in parallel; it builds nothing. Local builds stay
+  for development and forks.
+- **Progress.** The installer prints numbered progress lines
+  (`AIDENHQ_PROGRESS=<n>/<total> <percent>% <step> ~<minutes left>`). The prompt tells the user's AI to relay them as
+  one short progress line, so the person watches it fill in their AI. The link arrives only once the health checks
+  pass.
+- **If the wait is still long,** the next options, in order:
+  1. a maintained server image with everything cached;
+  2. on a Mac, images pre-pulled into the Lima VM image.
 
-**Aiden runs through Paperclip from the first message (owner's decision).** No bootstrap lane without Paperclip.
-Paperclip is therefore in stage 1, and its image (17 GB today) is the main cost in time to first chat. The spike
-measures it, and the ways to cut it are, in order:
-1. prebuilt images pulled in parallel;
-2. a maintained server image with everything cached;
-3. on a Mac, images pre-pulled into the Lima VM image.
-
-**Builder's first spike.** Measure a cold install, bare server to first successful reply, on a 4-core, 8 GB server:
+**Builder's first spike.** Measure a cold install, from bare server to first successful reply, on a 4-core, 8 GB
+server:
 - infrastructure time, reported separately from human time (buying a server, the authenticator, OpenRouter payment);
-- the transfer and extraction time of each image;
-- the smallest full-Aiden stage 1 (which modules Aiden's own tools need).
+- the transfer and extraction time of each image.
 
-The target is two minutes of infrastructure time from install start to the link working, and seconds from the link to
-the first reply. If pulling Paperclip makes that unreachable, the spike reports the measured time and the options
-above for the owner to pick. Stage 2 runs as a durable, retrying unit with resource
-limits, so its downloads never starve the chat.
+The target is a short, honest wait: as few minutes as the measurement allows from install start to the link, and
+seconds from the link to the first reply. The spike reports the measured time and whether the options above are
+needed, for the owner to pick.
 
 ### Part 2: first-run page (kernel `/setup`)
 
@@ -409,9 +400,9 @@ The prompt's final message links to it.
 
 | Area | Change |
 |---|---|
-| `aidenhq-distro` prompt, installer, site | shorter prompt (choice + email only), no token/Tailscale asks, link at the end of stage 1, `/start` page |
+| `aidenhq-distro` prompt, installer, site | shorter prompt (choice + email only), no token/Tailscale asks, progress lines relayed by the AI, link only when everything is healthy, `/start` page |
 | release pipeline | prebuilt images per release, pinned by digest in the release file |
-| `ops/setup.sh --unattended`, `ops/apply-config.sh` | pull instead of build, staged start, public exposure default with Caddy (U2), recovery key shown by the kernel |
+| `ops/setup.sh --unattended`, `ops/apply-config.sh` | parallel pulls instead of builds, progress lines, public exposure default with Caddy (U2), recovery key shown by the kernel |
 | kernel `/setup` | account, authenticator, OpenRouter PKCE (+ paste fallback); recovery key and `github_bot_token` move out |
 | kernel | admin secret-write endpoint for declared `setup:` secrets, recreating that module's containers; `/recovery-key` show-once page |
 | `scripts/modules.mjs`, compile | `setup_flow:` block validated and copied into `config/modules.json` |
@@ -424,7 +415,7 @@ The prompt's final message links to it.
 
 ## Order
 
-1. The fast-first-chat spike, then prebuilt images, the staged start, the Caddy front door (U2) and the installer and
+1. The install-time spike, then prebuilt images, progress lines, the Caddy front door (U2) and the installer and
    prompt changes: the one-link, two-minute install.
 2. Kernel `/setup` slimmed, with OpenRouter PKCE.
 3. Kernel secret-write endpoint, the `setup_flow:` schema, the board's flow component and route, the wizard with the
@@ -453,6 +444,7 @@ form.
 - GitHub is fully optional, and the on-server code host is part of this work.
 - Aiden's first chat is the full Aiden through Paperclip. A feature is offered in full or not until its setup is done;
   never half-working.
+- No background install stage: everything installs first, with visible progress, then the link.
 - Setup is one general per-module flow, opened at `/setup/<module>`. This work builds a flow for every module that needs
   user setup. When the marketplace (built in other work) triggers it is decided with that page. Modules that need no
   user setup get no flow; their settings page is separate work.
@@ -462,8 +454,7 @@ form.
 ## Calls made in writing this (owner to check)
 
 - The AI still asks for the email: many parts read `owner_email`, and asking costs the user nothing.
-- Prebuilt release images and a staged start, to make "a couple of minutes" possible; stage 1 is the full Aiden with
-  Paperclip.
+- Prebuilt release images pulled in parallel, and progress lines the user's AI relays.
 - Wizard steps are module setup flows (instructions, the existing `setup:` fields, optional Connect or pairing), with
   completion read from real connection status. "Meet Aiden now" is always one click away.
 - The on-server code host builds on the existing local bare repos and `repo_sources`, not a new forge.
