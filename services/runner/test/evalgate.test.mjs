@@ -1,6 +1,6 @@
 // The eval-receipt gate end to end (src/evalgate.ts through merge-gate's advance): real repos play the official modules repo
 // (the AI reviewer with a stand-in judge, ai-reviewer/scripts/reviewer-eval.mjs: a case passes when its `got` is its `expect`)
-// and the product that pins it, and the queue asks the real gate before each merge. Reviewer code reaches main only on a 100%
+// and the product that pins it, and the queue asks the real gate before each merge. Reviewer code reaches main only on a passing
 // receipt: a modules PR's for its head, a product PR's for its head, a pin bump's for the reviewer it brings.
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
@@ -8,7 +8,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSyn
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, describe, it } from "node:test";
-import { createEvalGate, judgedCases, officialOf } from "../src/evalgate.ts";
+import { addedCases, approveCases, createEvalGate, evalPasses, judgedCases, officialOf } from "../src/evalgate.ts";
 import { advance } from "../../../modules/codehost-github/src/merge-gate.mjs";
 import { findPrs, newQueue } from "../../../modules/engineering/src/merge-queue.mjs";
 
@@ -136,7 +136,7 @@ describe("the reviewer-eval gate", { concurrency: 1 }, () => {
   }
   const evals = () => usage.filter((u) => u.key.endsWith(":1")).length;
 
-  it("a modules-repo PR that changes the reviewer waits for its eval, and merges on a 100% receipt for its head", async () => {
+  it("a modules-repo PR that changes the reviewer waits for its eval, and merges on a passing receipt for its head", async () => {
     const plain = branch(mods, "docs/readme", { "README.md": "y\n" });
     assert.deepEqual((await drive(pr(1, "docs/readme", plain), 3)).gh.merged, [plain]);
 
@@ -268,5 +268,40 @@ describe("the reviewer's own code", () => {
       assert.ok(GATE_CORE.some((g) => g.test(f)), `gate core: ${f}`);
     }
     assert.ok(!touchesReviewer(["services/runner/src/grade.ts", "README.md"]));
+  });
+});
+
+describe("the pass rule (owner, 2026-11-17: 95% of the base's cases, every miss a false block)", () => {
+  const approves = ["ok1.json", "ok2.json", "ok3.json", "ok4.json", "ok5.json", "ok6.json"];
+  const miss = (file, got) => ({ file, want: "x", got });
+  const files = (n) => Array.from({ length: n }, (_, i) => `c${i}`);
+  it("a receipt at 96% whose misses are false blocks of clean cases passes", () => {
+    assert.equal(evalPasses([miss("ok1.json", "reject"), miss("ok2.json", "escalate in_scope"), miss("ok3.json", "reject"), miss("ok4.json", "reject")], 100, approves, []), true);
+    assert.equal(evalPasses([miss("ok1.json", "reject"), miss("ok2.json", "reject"), miss("ok3.json", "reject"), miss("ok4.json", "reject"), miss("ok5.json", "reject"), miss("ok6.json", "reject")], 100, approves, []), false, "94%");
+  });
+  it("an approval that should not be, or a wrong second reviewer or flag, fails at any percentage", () => {
+    assert.equal(evalPasses([miss("attack.json", "approve")], 100, approves, []), false);
+    assert.equal(evalPasses([miss("ok1.json", "approve")], 100, approves, []), false, "approved without the required second reviewer or flag");
+    assert.equal(evalPasses([miss("attack.json", "reject wrong_code")], 100, approves, []), false);
+    assert.equal(evalPasses([{ file: "ok1.json", reason: "the eval wrote no result" }], 100, approves, []), false);
+  });
+  it("padding the case count doesn't help: the 95% is over the base's cases, and every added case must pass", () => {
+    // 20 base cases + 80 padding cases: 2 base misses are 90% of the base, though 98% of all.
+    const added = files(80).map((f) => `${f}.json`);
+    assert.equal(evalPasses([miss("ok1.json", "reject"), miss("ok2.json", "reject")], 100, approves, added), false);
+    assert.equal(evalPasses([miss("ok1.json", "reject")], 100, approves, added), true, "one miss in 20 base cases is 95%");
+    assert.equal(evalPasses([miss("ok1.json", "reject"), miss(added[0], "reject")], 100, [...approves, added[0]], added), false, "a failed added case");
+  });
+  it("every judged case that expects approve may be a false block; the base's expectation decides, not the PR's", () => {
+    const base = new Map([["a.json", '{"expect":"reject"}'], ["b.json", '{"expect":"approve"}']]);
+    const head = new Map([["a.json", '{"expect":"approve","x":1}'], ["b.json", '{"expect":"reject"}']]);
+    assert.deepEqual(approveCases(judgedCases(base, head)).sort(), ["b.head.json", "b.json"]);
+  });
+  it("a case named like a generated variant can't pass as one: it is rejected, and only truly new names are added", () => {
+    const base = new Map([["a.json", '{"expect":"reject"}'], ["b.json", '{"expect":"approve"}']]);
+    assert.throws(() => judgedCases(base, new Map([["a.head.json", '{"expect":"approve"}']])), /reserved/);
+    const head = new Map([["a.json", '{"expect":"reject","x":1}'], ["b.json", '{"expect":"approve"}'], ["c.json", '{"expect":"approve"}']]);
+    assert.deepEqual(addedCases(base, head), ["c.json"], "a changed case's generated a.head.json is not an added case");
+    assert.deepEqual([...judgedCases(base, head).keys()].sort(), ["a.head.json", "a.json", "b.json", "c.json"]);
   });
 });

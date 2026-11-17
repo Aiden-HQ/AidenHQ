@@ -322,7 +322,7 @@ A feature is offered in full or not at all: the bundle swap (unit 8) lands only 
 
 One PR per unit. "modules" is `Aiden-HQ/aidenhq-modules`, "product" is `Aiden-HQ/AidenHQ`. A product unit that needs
 module changes bumps `modules-pin.json` to the merged modules commit. **Eval** marks the units that touch
-reviewer-eval files: the reviewer eval (paid key, on the server) must be at 100% on their exact head before merge.
+reviewer-eval files: the reviewer eval (paid key, on the server) must pass (95%, every miss a false block) on their exact head before merge.
 
 | # | Repo | Unit | Depends on | Tests | Eval |
 |---|---|---|---|---|---|

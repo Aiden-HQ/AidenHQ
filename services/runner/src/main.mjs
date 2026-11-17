@@ -1475,7 +1475,7 @@ const TURNED_WHY = {
   "checks-not-green": "named checks failed on its head",
   "head-moved": "its head isn't the commit that was reviewed, or isn't published",
   queue: "the merge queue turned it away",
-  eval: "it changes the AI reviewer's own code, and the reviewer eval on its head didn't score 100% (the failing cases are in the task's \"Stopped the merges\" comment)",
+  eval: "it changes the AI reviewer's own code, and the reviewer eval on its head didn't pass (95% of the base cases, every miss a false block) (the failing cases are in the task's \"Stopped the merges\" comment)",
 };
 async function wakeForTurnedAway(issueId, f) {
   if (f.key === "checks-not-green" && (await redHead({ id: issueId, identifier: issueId }, f).catch((err) => log("red head unread", { pr: f.url, err: String(err.message ?? err).slice(0, 200) })))) return;
@@ -1523,7 +1523,7 @@ async function finishMerges(issueId, queue, say, { posted = false } = {}) {
 
 /**
  * The reviewer-eval gate (evalgate.ts): a product or official-modules PR, or an apply, that brings the AI reviewer's own code
- * lands only on a 100% receipt for it. The eval runs in the job jail with its own key (secrets `openrouter_eval_key`), never
+ * lands only on a passing receipt for it. The eval runs in the job jail with its own key (secrets `openrouter_eval_key`), never
  * the fleet's.
  */
 const evalGate = createEvalGate({
@@ -2968,7 +2968,7 @@ async function closeTyped(issue, out) {
 
 /**
  * An instance change that moves the official modules it runs (its `aidenhq` marketplace, its release or its product's pin)
- * to a different AI reviewer lands only on a 100% reviewer-eval receipt for that reviewer (evalgate.ts bump): the merged
+ * to a different AI reviewer lands only on a passing reviewer-eval receipt for that reviewer (evalgate.ts bump): the merged
  * modules PR's own receipt, else an eval of the new modules commit, started here.
  */
 async function evalGateApply(r, sha, files) {
