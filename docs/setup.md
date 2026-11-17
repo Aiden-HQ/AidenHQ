@@ -308,8 +308,8 @@ Slack has two parts, both served by one Slack app.
 2. Save three tokens in the vault: the app-level token (`xapp-`, scope `connections:write`, under Basic Information,
    App-Level Tokens) as `slack_live_app_token`, the bot token (`xoxb-`) as `slack_live_bot_token`, and your user token
    (`xoxp-`) as `slack_live_user_token`.
-3. Set your Slack member id (Slack profile, *Copy member ID*) in `.env`: replace the `OWNER_SLACK_USER_ID=U00000000`
-   line. It decides whose words count and who gets paged.
+3. Set your Slack member id (Slack profile, *Copy member ID*) in `.env`: uncomment the `# OWNER_SLACK_USER_ID=U00000000`
+   line and put your id in it, or pair on the board instead. It decides whose words count and who gets paged.
 4. Add `channel-slack` to `modules:` in `instance.yaml`, apply, then
    `docker compose up -d --force-recreate channel-slack-slack`.
 
