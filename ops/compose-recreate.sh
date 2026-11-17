@@ -7,7 +7,10 @@
 #   4. only the services whose image, compose config or mounted secret content moved are recreated; every other container
 #      keeps running;
 #   5. compose's leftovers for services this config dropped are removed, and never a CI job's runner;
-#   6. a service still left `created` (never started) is started.
+#   6. a service still left `created` (never started) is started;
+#   7. a container still running a service this config dropped (a removed module's, or Caddy once exposure is no longer
+#      public) is stopped and removed: compose's own service container only (com.docker.compose.oneoff=False), so a CI
+#      job's runner (a one-off) is never one.
 #
 # Not `docker compose up --remove-orphans`: a CI job's runner is a one-off of this same compose project under the
 # inactive `ci` profile (`docker compose run --rm` in ops/ci-runner.sh), so compose counted a finished job's
@@ -232,6 +235,17 @@ step() {
   done <<< "$(leftovers "$desired")"
 }
 
+# A service container (never a one-off) of this project, running a service this config no longer defines: "<id> <service>".
+dropped() {
+  local desired="$1" id oneoff service
+  for id in $(docker ps -q --filter "label=com.docker.compose.project=$project" --filter label=com.docker.compose.oneoff=False); do
+    read -r oneoff service <<< "$(docker inspect -f '{{index .Config.Labels "com.docker.compose.oneoff"}} {{index .Config.Labels "com.docker.compose.service"}}' "$id" 2>/dev/null)" || continue
+    [ "$oneoff" = False ] && [ -n "$service" ] || continue
+    grep -qxF -- "$service" <<< "$desired" && continue
+    printf '%s %s\n' "$id" "$service"
+  done
+}
+
 # One line per service in this config: recreated, or kept (and when a kept one is not up, that too), so every apply's
 # log shows the stack it left. A cleaned leftover printed its own line as it was removed.
 summary() {
@@ -278,4 +292,9 @@ for service in $desired; do
   [ "$(docker compose ps -a --format '{{.State}}' "$service" 2>/dev/null | head -1)" = created ] || continue
   docker compose start "$service" && echo "compose: $service was left created: started"
 done
+# What this config dropped stops running: a removed module's container would otherwise keep running (and serving) forever.
+while read -r id service; do
+  [ -n "$id" ] || continue
+  docker rm -f "$id" >/dev/null && echo "compose: $service removed (no longer in the config)"
+done <<< "$(dropped "$desired")"
 summary "$desired"
