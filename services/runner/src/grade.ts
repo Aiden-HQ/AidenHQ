@@ -227,29 +227,29 @@ ${Object.entries(data)
 }
 
 /**
- * A usable answer, or undefined (a refusal, prose, a bad schema, or criteria that don't match the rubric).
- * Every rubric criterion must come back once, numbered 1..n, with its own non-empty evidence: a verdict built from
- * corrupt ids or fragments has no assessable requirement, so it is not an answer at all.
+ * A usable answer; undefined for a refusal or no content; or { unusable } saying why an answer that came back is not one (prose,
+ * a bad schema, or criteria that don't match the rubric). Every rubric criterion must come back once, numbered 1..n, with its
+ * own non-empty evidence: a verdict built from corrupt ids or fragments has no assessable requirement, so it is not an answer.
  */
-function answerOf(raw: any, n: number) {
+function answerOf(raw: any, n: number): { verdict: string; criteria: { id: string; met: string; evidence: string }[] } | { unusable: string } | undefined {
   if (!raw || raw.refusal || !String(raw.content ?? "").trim()) return undefined;
   let v: any;
   try {
     v = JSON.parse(String(raw.content).trim().replace(/^```(?:json)?\s*|\s*```$/g, ""));
   } catch {
-    return undefined;
+    return { unusable: "not JSON" };
   }
-  if (!v || !["satisfied", "needs_revision", "cannot_judge"].includes(v.verdict) || !Array.isArray(v.criteria)) return undefined;
-  if (v.criteria.length !== n) return undefined;
+  if (!v || !["satisfied", "needs_revision", "cannot_judge"].includes(v.verdict) || !Array.isArray(v.criteria)) return { unusable: "no verdict or criteria list" };
+  if (v.criteria.length !== n) return { unusable: `${v.criteria.length} criteria for a rubric of ${n}` };
   const seen = new Set<string>();
   const criteria: { id: string; met: string; evidence: string }[] = [];
   for (const c of v.criteria) {
-    if (!c || !["yes", "no", "unknown"].includes(c.met)) return undefined;
-    const id = String(c.id ?? "").trim();
-    if (!/^\d+$/.test(id) || Number(id) < 1 || Number(id) > n || seen.has(id)) return undefined;
+    const id = String(c?.id ?? "").trim();
+    if (!c || !["yes", "no", "unknown"].includes(c.met)) return { unusable: `criterion ${JSON.stringify(id.slice(0, 20))} has no yes/no/unknown` };
+    if (!/^\d+$/.test(id) || Number(id) < 1 || Number(id) > n || seen.has(id)) return { unusable: `criterion id ${JSON.stringify(id.slice(0, 20))} is not one of 1-${n} once` };
     seen.add(id);
     const evidence = String(c.evidence ?? "").trim();
-    if (!evidence) return undefined;
+    if (!evidence) return { unusable: `criterion ${id} has no evidence` };
     criteria.push({ id, met: c.met, evidence: evidence.slice(0, 1000) });
   }
   criteria.sort((a, b) => Number(a.id) - Number(b.id));
@@ -270,8 +270,7 @@ export async function grade({ rubric, deliverable, facts, data, request, images 
   if (!rubric.length) return { outcome: "grading_failed", model: "", criteria: [], reason: "the rubric has no criteria to grade" };
   const prompt = gradePrompt({ rubric, deliverable, facts, data, request, images });
   let failure: { model: string; reason: string } | undefined;
-  let corrupt = false;
-  let corruptModel = "";
+  let corrupt: { model: string; why: string } | undefined;
   let cannotJudge: { model: string; criteria: any[] } | undefined;
   for (const model of models) {
     let raw: any;
@@ -282,6 +281,10 @@ export async function grade({ rubric, deliverable, facts, data, request, images 
       continue;
     }
     const a = answerOf(raw, rubric.length);
+    if (a && "unusable" in a) {
+      corrupt = { model, why: a.unusable };
+      continue;
+    }
     // An apply's diff is in front of every model: one that cannot judge it is asked of the next, and if none judges it the
     // verdict stays cannot_judge (it escalates, never passes).
     if (a?.verdict === "cannot_judge" && deliverable.kind === "apply" && data.APPLY_CHANGE && model !== models.at(-1)) {
@@ -289,14 +292,10 @@ export async function grade({ rubric, deliverable, facts, data, request, images 
       continue;
     }
     if (a) return { outcome: a.verdict, model, criteria: a.criteria };
-    if (raw && !raw.refusal && String(raw.content ?? "").trim()) {
-      corrupt = true;
-      corruptModel = model;
-    }
   }
   if (cannotJudge) return { outcome: "cannot_judge", ...cannotJudge };
   if (failure) return { outcome: "grading_failed", model: failure.model, criteria: [], reason: failure.reason };
-  if (corrupt) return { outcome: "grading_failed", model: corruptModel, criteria: [], reason: "the grader returned no usable criteria" };
+  if (corrupt) return { outcome: "grading_failed", model: corrupt.model, criteria: [], reason: `the grader returned no usable criteria (${corrupt.why})` };
   return { outcome: "error", model: models.at(-1), criteria: [], reason: "every grader model refused" };
 }
 
@@ -338,7 +337,7 @@ export function gradeNote(g: any, rubric: string[], outcome: string, { version, 
         : outcome === "grading_failed"
           ? `**Grading failed; retrying.** (${reason ?? g.reason ?? "the grader failed or returned no usable criteria"}). No rubric verdict yet: the grader runs again shortly.`
           : outcome === "escalated" && g.outcome === "grading_failed"
-            ? `**Grading failed; escalated to the delegator.** The grader failed 5 times and no rubric criterion was assessed. The delegator judges the work from its evidence: closing the task accepts it; reopening it with what to change sends a new version to the grader.`
+            ? `**Grading failed; escalated to the delegator.** The grader failed 5 times${g.reason ? ` (last: ${g.reason})` : ""} and no rubric criterion was assessed. The delegator judges the work from its evidence: closing the task accepts it; reopening it with what to change sends a new version to the grader.`
             : outcome === "escalated" && unverifiedOnly(g.criteria)
               ? "**Graded: unverified, so it is the delegator's call.** Nothing was shown unmet, but the evidence the grader is given doesn't show the criteria marked not shown. The delegator decides: closing the task accepts it; reopening it with what to change sends a new version to the grader."
               : `**Graded: escalated to the delegator** (${reason ?? (g.outcome === "cannot_judge" ? "the grader couldn't judge it" : "too many rejected versions")}). The delegator decides: closing the task accepts it; reopening it with what to change sends a new version to the grader.`;

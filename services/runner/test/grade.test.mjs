@@ -243,7 +243,7 @@ test("a grader timeout goes to the next model; when every model fails it is a re
 
 test("a grader that keeps failing escalates to the delegator with honest wording", () => {
   const note = gradeNote({ outcome: "grading_failed", model: "glm", criteria: [], reason: "the grader failed (timeout)" }, [], "escalated", { version: "v1" });
-  assert.match(note, /failed 5 times/);
+  assert.match(note, /failed 5 times \(last: the grader failed \(timeout\)\)/);
   assert.match(note, /no rubric criterion was assessed/);
   assert.match(note, /delegator judges the work from its evidence/);
 });
@@ -258,6 +258,7 @@ test("corrupt or empty criteria are a retryable grading failure, never a verdict
   const v = await grade({ rubric, deliverable: { kind: "pr", ref: "" }, facts: [], data: {}, request: "", authorModel: "openrouter/~deepseek/deepseek-flash-latest", ask });
   assert.equal(v.outcome, "grading_failed");
   assert.deepEqual(v.criteria, []);
+  assert.match(v.reason, /no usable criteria \(criterion id "criterion is this\.\.\." is not one of 1-3 once\)/, "the reason names the rule the answer broke");
 
   for (const criteria of [
     [],
