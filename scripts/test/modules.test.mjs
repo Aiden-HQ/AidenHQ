@@ -221,6 +221,7 @@ test("the grading module: its finish check, its token, the board's key, tasks on
   assert.deepEqual(r.checks["grading.finish"], { module: "grading", at: "task.finish", url: "http://grading:8096/check/finish", auth_secret: "grading_check_key", label: "grading" });
   assert.equal(r.kernelModules.modules.grading.token, "grading_token");
   assert.deepEqual(r.kernelModules.modules.grading.roles, ["kernel.cp-read"]);
+  assert.deepEqual(r.kernelModules.services.grading, ["grading-grading"], "the services the kernel recreates for its setup secrets");
   const g = r.compose.services["grading-grading"];
   assert.ok(g && !g.ports && !JSON.stringify(g).includes("paperclip_board_key"), "no published port, no control-plane key");
   assert.equal(r.compose.services.board.environment.GRADING_URL, "http://grading:8096");

@@ -13,6 +13,7 @@ import { createHmac, timingSafeEqual } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type { AdminSession, Step } from "./accounts.ts";
 import type { Api } from "./channels.ts";
+import { secretFits } from "./module-secrets.ts";
 
 type Card = Record<string, any>;
 type Deps = {
@@ -188,7 +189,7 @@ export function createAdmin(d: Deps) {
           const email = (f.get("email") ?? "").trim(), name = (f.get("name") ?? "").trim(), password = f.get("password") ?? "";
           const fields = fr.fields().filter((x) => /^[a-z][a-z0-9_]{1,63}$/.test(x.secret));
           const keys = fields.map((x) => ({ ...x, value: (f.get(`secret_${x.secret}`) ?? "").trim() }));
-          const invalid = keys.find((k) => k.value && (k.value.length > 300 || !new RegExp(k.pattern).test(k.value)));
+          const invalid = keys.find((k) => k.value && !secretFits(k, k.value));
           const missing = keys.find((k) => !k.value && k.required && !fr.has(k.secret));
           const bad =
             !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) || email.length > 200 ? "Enter an email address."
