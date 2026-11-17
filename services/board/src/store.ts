@@ -89,6 +89,17 @@ export type LedgerFilter = { agentId?: string; model?: string };
 const METRICS = `COALESCE(SUM(cost_usd), 0) AS usd, COUNT(*) AS calls, COALESCE(SUM(input), 0) AS input, COALESCE(SUM(cached), 0) AS cached,
   COALESCE(SUM(output), 0) AS output, COALESCE(SUM(status IS NOT NULL AND status <> 'ok'), 0) AS errors,
   COALESCE(SUM(CASE WHEN COALESCE(status, 'ok') = 'ok' THEN ms END), 0) AS msSum, COUNT(CASE WHEN COALESCE(status, 'ok') = 'ok' THEN ms END) AS msN`;
+/** One run's calls on one task (store.usageByRun); engineer is 1 for an Engineer job. */
+export interface RunUsage {
+  issueId: string | null;
+  run: string;
+  engineer: number;
+  calls: number;
+  usd: number;
+  first: string;
+  last: string;
+}
+
 export interface LedgerMetrics {
   usd: number;
   calls: number;
@@ -603,6 +614,21 @@ export class Store {
       .prepare(`SELECT issue_id, SUM(input + cached + output) AS tokens, SUM(cost_usd) AS usd FROM usage WHERE issue_id IN (${ids.map(() => "?").join(",")}) GROUP BY issue_id`)
       .all(...ids) as { issue_id: string; tokens: number; usd: number | null }[];
     return new Map(rows.map((r) => [r.issue_id, { tokens: r.tokens, usd: r.usd }]));
+  }
+
+  /**
+   * Model calls since `from`, one row per run (an Engineer job's runner-reported record counts as its own run) and task, for the
+   * feature roll-up (feature-cost.ts). `ids` narrows to those tasks (ids or identifiers); calls without a task have a null issueId.
+   */
+  usageByRun(from: string, ids?: string[]): RunUsage[] {
+    const where = ["at >= ?"];
+    if (ids) where.push(`issue_id IN (${ids.map(() => "?").join(",") || "NULL"})`);
+    return this.db
+      .prepare(
+        `SELECT issue_id AS issueId, COALESCE(run_key, key) AS run, component = 'Engineer jobs' AS engineer, COUNT(*) AS calls, COALESCE(SUM(cost_usd), 0) AS usd, MIN(at) AS first, MAX(at) AS last
+         FROM usage WHERE ${where.join(" AND ")} GROUP BY 1, 2, 3`,
+      )
+      .all(from, ...(ids ?? [])) as unknown as RunUsage[];
   }
 
   seenAt(issueId: string): string {

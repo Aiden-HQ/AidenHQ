@@ -10,6 +10,7 @@ import { QUERIES, chatQuery, peekingChat, prefetchChat, useQuery } from "./queri
 import { ChatListSkeleton, SkeletonLines } from "./Skeleton";
 import { ApprovalCard, StateChip } from "./Chat";
 import { LaneChat } from "./LaneChat";
+import { FeatureCostStrip } from "./FeatureCost";
 import { LineageStrip } from "./Lineage";
 import { live as streaming, useEvents } from "./events";
 import { CloseIcon, Plan, PlusIcon } from "./components";
@@ -734,6 +735,7 @@ function Conversation({ refId, row, mobile, crew, prefix, go, onSignIn, toast, p
           </div>
         )}
         <LineageStrip refId={chat.identifier} title={chat.title} agent={chat.agent.name} crew={crew} prefix={prefix} href={(id) => `#/c/${id}`} onSignIn={onSignIn} />
+        <FeatureCostStrip refId={chat.identifier} />
         <div
           className="conv-scroll"
           ref={scroller}

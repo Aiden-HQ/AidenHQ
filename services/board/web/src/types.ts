@@ -482,6 +482,25 @@ export interface Lineage {
   children: LineageRow[];
   total: { tasks: number; running: number; needs: number; blocked: number; tokens: number; usd: number; ms: number };
 }
+/** What a feature (a task and everything delegated under it) cost and how long it took. */
+export interface FeatureCost {
+  identifier: string;
+  title: string;
+  createdAt: string;
+  tasks: number;
+  usd: number;
+  calls: number;
+  jobs: number;
+  jobMs: number;
+  elapsedMs: number;
+  running: boolean;
+  prs: number;
+  truncated: boolean;
+}
+export interface Features {
+  features: FeatureCost[];
+  unattributed: { usd: number; calls: number };
+}
 export interface SettledItem {
   issueId: string;
   identifier: string;
