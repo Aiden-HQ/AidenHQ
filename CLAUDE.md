@@ -123,7 +123,8 @@ and merges only on a 100% receipt (`services/runner/src/evalgate.ts`).
 
 ## Contributing flow
 
-Contributors have read access: fork, branch, open a PR against `main`, get CI green; the maintainer reviews and
+The repo is public. Contributors fork, branch and open a PR against `main`; CI (self-hosted) runs only for pushes and
+same-repo PRs, so fork PRs get none for now and the contributor runs the checks locally; the maintainer reviews and
 squash-merges. The PR title is a Conventional Commit (`type(scope): summary`; CI's `pr-title` check) and becomes the
 commit on `main`; the body says why. Never push to `main`. Instances pin product commits that are on `main`, so a change reaches an instance only
 after it is merged and that instance's owner bumps the pin.

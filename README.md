@@ -49,8 +49,8 @@ picks (Tailscale by default). See [docs/architecture.md](docs/architecture.md).
 - **Set up your own instance:** [SETUP.md](SETUP.md) walks a person or Claude Code from a fresh Ubuntu VM to a working
   instance, with a check after every step (in Claude Code, ask it to "set up AidenHQ": the `setup-aidenhq` skill walks
   it). Each person runs their own server, instance repo and keys.
-- **Contribute:** [CONTRIBUTING.md](CONTRIBUTING.md). Contributors have read access: fork the repo and open a pull
-  request; the maintainer reviews and merges.
+- **Contribute:** [CONTRIBUTING.md](CONTRIBUTING.md). The repo is public: fork it and open a pull request; the
+  maintainer reviews and merges. CI runs only for pushes and same-repo PRs, so fork PRs get none for now.
 
 ## Models and cost
 

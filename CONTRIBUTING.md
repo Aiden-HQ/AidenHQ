@@ -1,6 +1,7 @@
 # Contributing to AidenHQ
 
-Thanks for helping. Contributors have read access to this repository; the maintainer reviews and merges.
+Thanks for helping. The repository is public: anyone may fork it and open a pull request; the maintainer reviews and
+merges.
 
 ## Workflow
 
@@ -9,7 +10,7 @@ Thanks for helping. Contributors have read access to this repository; the mainta
    `fix/board-approval-race`).
 3. Make the change, with tests where they prove something (see below), and run the checks for every package you
    touched.
-4. **Open a pull request** against `main` here. Fill in the template. CI must be green.
+4. **Open a pull request** against `main` here. Fill in the template. CI must be green before merge (fork PRs: the maintainer runs it, see below).
 5. The maintainer reviews and merges. Your own instance picks the change up when you bump `product:` in your instance
    repo to a commit on `main` (see [SETUP.md](SETUP.md), "Upgrading the product").
 
@@ -141,8 +142,9 @@ checks.
 - **Sign the CLA** by ticking its box in the PR description. The `community / cla` check fails until it is ticked, and
   re-runs when you edit the description. Your owner agrees to [CLA.md](CLA.md) on your behalf in the instance's setup, so
   only open PRs the owner has authorised.
-- **CI for fork PRs runs on GitHub-hosted runners only**, with no secrets and no access to our self-hosted runners. Don't
-  expect a deploy, a reviewer-eval or anything else that needs a secret to run on your PR; the maintainer runs those.
+- **Fork PRs get no CI for now.** Our CI runs on self-hosted runners, only for pushes and pull requests from branches of
+  this repository (the owner's choice). Run the checks for every package you touched yourself before opening the PR;
+  the maintainer runs CI (and anything that needs a secret, such as the reviewer eval) before merging.
 
 ### How community PRs are reviewed
 

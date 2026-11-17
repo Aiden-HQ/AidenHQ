@@ -354,8 +354,9 @@ modules:
   module's own diff carries its authority. The card names the marketplace, sha and tier.
 - Advisories in a marketplace's `advisories.json` notify the owner of a vulnerable pinned module.
 
-Coming: the official modules move to their own repository, releases are pinned from a distribution repository, an
-unattended install with a `/setup` page, and forks.
+Coming: the official modules move to their own public repository, `Aiden-HQ/aidenhq-modules` (until then they are this
+repo's `modules/`); releases pinned from `Aiden-HQ/aidenhq-distro`; an unattended install with a `/setup` page; and
+forks.
 
 ## Testing a module
 

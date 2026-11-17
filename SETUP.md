@@ -34,7 +34,7 @@ other connections, board account recovery and shared access for colleagues.
 | A Tailscale auth key for the apps node (`TS_APPS_AUTHKEY`): reusable, pre-approved, tagged (for example `tag:aidenhq-apps` under `tagOwners`). Optional: without it, agent-built apps run but nobody can reach them | [org admin] Tailscale | step 3 |
 | An OpenRouter **management (provisioning) key**, or a normal OpenRouter API key you made yourself | OpenRouter account admin | step 3 |
 | A Google OAuth client of type *Web application*, with the Calendar, Drive and Gmail APIs enabled. Not needed to finish step 3: without it, add `GOOGLE_CLIENT_ID`/`GOOGLE_CLIENT_SECRET` to `person.env` later and run setup again | [org admin] Google Workspace | step 3, step 7 |
-| Read access to the AidenHQ product repo on GitHub (to clone it or fork it) | the repo owner | step 2 |
+| A GitHub account, only if you will fork the product repo or contribute (the repo is public) | you | step 2 |
 | Optional, later: Cloudflare Access, a tunnel and DNS records, to share apps with people outside your tailnet | [org admin] Cloudflare | [docs/setup.md](docs/setup.md#shared-access-apps-for-people-beyond-the-tailnet) |
 
 **Google OAuth client** [org admin]: in the Google Cloud console, create a project, enable the Google Calendar,
@@ -100,13 +100,12 @@ Choose where your copy of the product comes from. This matters later, because bo
 - **No `origin` at all.** `ops/setup.sh` then makes a local bare mirror at `~/aidenhq-product.git` and uses it as
   `origin`; to upgrade, you push new commits there yourself.
 
-The repo is private, so the VM needs GitHub credentials to clone and later fetch it. The simplest way is `gh`:
+The product repo (`Aiden-HQ/AidenHQ`) and the official modules are public, so cloning needs no credentials. Your
+instance repo stays private; setup handles its access later.
 
 ```sh
-sudo apt-get update && sudo apt-get install -y git gh     # [human] sudo (if your release lacks gh, install it from GitHub's apt repo)
-gh auth login                                             # [human] browser or device code
-gh auth setup-git
-gh repo clone <your-github-user>/aidenhq ~/aidenhq        # your fork; or <upstream-owner>/aidenhq
+sudo apt-get update && sudo apt-get install -y git        # [human] sudo
+git clone https://github.com/<your-github-user>/AidenHQ.git ~/aidenhq   # your fork; or https://github.com/Aiden-HQ/AidenHQ.git
 git config --global user.name "Alex Doe"                 # later steps commit to the instance repo
 git config --global user.email alex@example.com
 ```
