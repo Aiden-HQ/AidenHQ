@@ -279,7 +279,15 @@ test("the default bundle compiles without the slack module", () => {
   // channel-slack joined the bundle (set up from the board): its connection is declared, but it needs no secret to compile.
   assert.ok(r.paperclip.mcp_servers.slack_live?.setup, "channel-slack is in the bundle and says how to set it up");
   assert.ok(r.compose.secrets.telegram_notify_bot_token, "channel-telegram declares its secrets");
-  assert.deepEqual(Object.keys(r.compose.services["channel-telegram-whisper"].networks), ["mod-channel-telegram", "mod-channel-telegram-egress"]);
+  // Voice notes are their own module, off by default: the default install builds no speech-to-text image.
+  assert.ok(!Object.keys(r.compose.services).some((k) => k.includes("whisper")), "no whisper in the default install");
+});
+test("voice notes, once turned on: Whisper joins channel-telegram's network under the name its WHISPER_URL uses", () => {
+  const r = compile(product, pinst(["voice"], owner));
+  const w = r.compose.services["voice-whisper"];
+  assert.ok(w, Object.keys(r.compose.services).join(", "));
+  assert.deepEqual(w.networks["mod-channel-telegram"], { aliases: ["whisper"] });
+  assert.equal(r.compose.services["channel-telegram-telegram"].environment.WHISPER_URL, "http://whisper:9000");
 });
 test("optional secrets are created only where the secrets dir is really there (never into a locked vault's bare mountpoint)", () => {
   const dir = mkdtempSync(join(tmpdir(), "sec-"));
