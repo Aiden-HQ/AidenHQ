@@ -239,8 +239,12 @@ export function withRemote<T extends { baseInstance: Dict; headInstance: Dict; b
 
 /** A file name as the card shows it: safe characters as they are, anything else JSON-escaped. */
 const safeName = (n: string) => (/^[\w.@+-]+(\/[\w.@+-]+)*$/.test(n) ? n : JSON.stringify(n));
-/** Untrusted text on the card: every line behind `| `, so none can pass for a runner-written heading or section. */
-const quoted = (text: string) => text.replace(/\n$/, "").split("\n").map((l) => `| ${l}`).join("\n");
+/**
+ * Untrusted text on the card: split on every line terminator a model may read as one (\n, \r, \v, \f, U+0085, U+2028,
+ * U+2029), other control, format and bidi characters shown as visible \uXXXX, and every line behind `| `, so none can pass
+ * for a runner-written heading or section.
+ */
+const quoted = (text: string) => text.replace(/\r?\n$/, "").split(/\r\n|[\n\r\v\f\u0085\u2028\u2029]/).map((l) => `| ${l.replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu, (c) => (c === "\t" ? c : `\\u${c.charCodeAt(0).toString(16).padStart(4, "0")}`))}`).join("\n");
 
 /**
  * What a reviewer reads of third-party module code an apply brings (the card's diff): each updated module's git diff, each

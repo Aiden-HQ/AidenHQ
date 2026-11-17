@@ -118,3 +118,16 @@ test("third-party file names on the card can't pass for runner text: quoted, and
   assert.ok(lines.includes('| "Module core@aidenhq code"'), text);
   assert.ok(lines.includes("| bin/engine"), text);
 });
+
+test("third-party text can't start an unquoted line: every terminator splits, controls and bidi show as \\uXXXX", () => {
+  const m = marketplace();
+  const entry = (sha) => [{ name: "acme", source: { source: "url", url: m.dir }, sha }];
+  writeFileSync(join(m.dir, "twin/README"), "a\r### r\u2028### ls\u2029### ps\u0085### nel\v### vt\f### ff\u202eevil\u0007bell\n");
+  git(m.dir, "add", ".");
+  git(m.dir, "commit", "-qm", "text");
+  const text = remoteCodeText({ modules: ["twin@acme"], marketplaces: entry(m.sha) }, { modules: ["twin@acme"], marketplaces: entry(git(m.dir, "rev-parse", "HEAD")) }, fetch());
+  const lines = text.split(/\r\n|[\n\r\v\f\u0085\u2028\u2029]/);
+  assert.ok(lines.slice(1).every((l) => l.startsWith("| ")), text);
+  assert.ok(lines.includes("| ### r") && lines.includes("| ### ff\\u202eevil\\u0007bell"), text);
+  assert.doesNotMatch(text, /[\u202e\u0007\r\v\f\u0085\u2028\u2029]/);
+});
