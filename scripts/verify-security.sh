@@ -817,9 +817,9 @@ gate_before_merge() { awk "/^$1/,/^}/" "$rm_" | grep -nE 'await github\.evalGate
 # bump is neither reviewer code nor gate core. Passes once the gate reads the reviewer from the modules repo (or the product
 # carries modules/ again) and covers that repo's own PRs. Fix in flight: WOR-6726, branch fix/eval-gate-reads-modules-repo.
 { git -C "$repo" cat-file -e "HEAD:modules/ai-reviewer/scripts/reviewer-eval.mjs" 2>/dev/null || grep -qF 'modules-pin.json' "$rgate"; } \
-  && grep -q 'modulesRepo' "$rgate" \
-  && pass "runner: the reviewer-eval gate reads the AI reviewer where it lives (the official modules repo) and gates that repo's PRs too ($rgate)" \
-  || fail "runner: the reviewer-eval gate can't see the AI reviewer in the official modules repo (since #213): product PRs touching reviewer code stop, modules-repo PRs changing the reviewer merge with no receipt, and a modules-pin.json bump isn't reviewer code ($rgate; fix in flight: WOR-6726)"
+  && grep -q 'modulesRepo' "$rgate" && ! grep -qF 'if (!d.productRepo || !sameSlug(repo, d.productRepo)) return undefined;' "$rgate" \
+  && pass "runner: the reviewer-eval gate reads the AI reviewer from the product tree or the modules pin, and no longer skips every repo but the product ($rgate)" \
+  || fail "runner: the reviewer-eval gate can't see the AI reviewer in the official modules repo (since #213): it reads modules/ai-reviewer from the product, which no longer has it (reviewer-code product PRs stop), and skips every repo but the product (modules-repo PRs changing the reviewer merge with no receipt) ($rgate; fix in flight: WOR-6726)"
 # Who decides a write (owner, 2026-11-14): the owner only for their own veto, a split panel, a routine's or the instance's
 # autonomy cap (autonomy off: after the AI review, #110), an owner-recorded source exception (#101), a spend-cap raise or nothing recognised (the only Tier 2 rules left in tiers.mjs).
 # Every one of them is AI-reviewed before it reaches the owner (owner, 2026-11-16): classify() makes a Tier 2-by-merit
