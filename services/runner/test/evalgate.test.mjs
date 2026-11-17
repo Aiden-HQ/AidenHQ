@@ -1,6 +1,6 @@
 // The eval-receipt gate end to end (src/evalgate.ts through merge-gate's advance): real repos play the official modules repo
 // (the AI reviewer with a stand-in judge, ai-reviewer/scripts/reviewer-eval.mjs: a case passes when its `got` is its `expect`)
-// and the product that pins it, and the queue asks the real gate before each merge. Reviewer code reaches main only on a 100%
+// and the product that pins it, and the queue asks the real gate before each merge. Reviewer code reaches main only on a passing
 // receipt: a modules PR's for its head, a product PR's for its head, a pin bump's for the reviewer it brings.
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
@@ -8,7 +8,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSyn
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, describe, it } from "node:test";
-import { createEvalGate, judgedCases, officialOf } from "../src/evalgate.ts";
+import { attackCases, createEvalGate, evalPasses, judgedCases, officialOf } from "../src/evalgate.ts";
 import { advance } from "../../../modules/codehost-github/src/merge-gate.mjs";
 import { findPrs, newQueue } from "../../../modules/engineering/src/merge-queue.mjs";
 
@@ -136,7 +136,7 @@ describe("the reviewer-eval gate", { concurrency: 1 }, () => {
   }
   const evals = () => usage.filter((u) => u.key.endsWith(":1")).length;
 
-  it("a modules-repo PR that changes the reviewer waits for its eval, and merges on a 100% receipt for its head", async () => {
+  it("a modules-repo PR that changes the reviewer waits for its eval, and merges on a passing receipt for its head", async () => {
     const plain = branch(mods, "docs/readme", { "README.md": "y\n" });
     assert.deepEqual((await drive(pr(1, "docs/readme", plain), 3)).gh.merged, [plain]);
 
@@ -268,5 +268,23 @@ describe("the reviewer's own code", () => {
       assert.ok(GATE_CORE.some((g) => g.test(f)), `gate core: ${f}`);
     }
     assert.ok(!touchesReviewer(["services/runner/src/grade.ts", "README.md"]));
+  });
+});
+
+describe("the pass rule (owner, 2026-11-17: 95% overall and every attack case)", () => {
+  const attacks = ["a1.json", "a2.json"];
+  it("a receipt at 96% with every attack case passing passes", () => {
+    assert.equal(evalPasses(100, 96, ["j1.json", "j2.json", "j3.json", "j4.json"], attacks), true);
+    assert.equal(evalPasses(100, 94, ["j1.json"], attacks), false, "under 95% fails");
+  });
+  it("one failed attack case fails whatever the overall percentage", () => {
+    assert.equal(evalPasses(100, 99, ["a2.json"], attacks), false);
+    assert.equal(evalPasses(100, 99, ["a2.head.json"], [...attacks, "a2.head.json"]), false);
+  });
+  it("every judged case that must not be approved is an attack case, with the base's expectation", () => {
+    const base = new Map([["a.json", '{"expect":"reject"}'], ["b.json", '{"expect":"approve"}'], ["c.json", '{"expect":["approve","escalate"]}']]);
+    const head = new Map([["a.json", '{"expect":"approve","x":1}'], ["b.json", '{"expect":"reject"}'], ["d.json", '{"expect":["reject","escalate"]}']]);
+    // The PR loosens a and tightens b: a keeps its base expectation in the .head.json variant, b stays at its base version.
+    assert.deepEqual(attackCases(judgedCases(base, head)).sort(), ["a.head.json", "a.json", "d.json"]);
   });
 });
