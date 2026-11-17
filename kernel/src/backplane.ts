@@ -12,7 +12,7 @@
 //                              of its kinds (or kernel.apply) with its plan; GET /v1/writes/:id its record (own only; the board
 //                              and the runner: any)
 //   POST /v1/writes/:id/outcome (the kind's executor module, or the runner for its kinds) the outcome of an execute
-//   GET  /v1/writes            (the board's or the runner's key) records by state or task
+//   GET  /v1/writes            (the board's or the runner's key) records by state or task (`tier0=1`: Tier 0 runs too)
 //   POST /v1/writes/:id/claim  (the runner's key) an approved record of its kinds, claimed once
 //   POST /v1/writes/:id/review (the runner's key) a record's review: its tier input and what the reviewer reads (writes.ts)
 //   GET  /v1/channel/cards, POST /v1/channel/{decide,owner-message,stop,thread}, GET /v1/channel/notices  (a speaks-as-owner
@@ -273,9 +273,10 @@ export function createBackplane({ whoami, asserter, proxy, cp, grantsFile, write
             const list = LISTS[p.get("state") ?? ""];
             if (!list) throw fail(400, "bad_request", `state=${Object.keys(LISTS).join(", ")}`);
             const task = p.get("task") || undefined;
-            // The reviewed ones only (every Tier 0 write is a record too, and would crowd the cards out); the runner's
-            // approved list is its own kinds, and its review list says which wait out a failed review's backoff.
-            const rows = records.list(list, Math.min(Number(p.get("limit")) || 100, 1000), { reviewed: true, ...(task ? { task } : {}) });
+            // The reviewed ones only (every Tier 0 write is a record too, and would crowd the cards out), unless `tier0=1`
+            // asks for every record (the board's history shows Tier 0 runs after the fact); the runner's approved list is its
+            // own kinds, and its review list says which wait out a failed review's backoff.
+            const rows = records.list(list, Math.min(Number(p.get("limit")) || 100, 1000), { reviewed: p.get("tier0") !== "1", ...(task ? { task } : {}) });
             const shown = asRunner && list === LISTS.approved ? rows.filter((r) => writes.isRunnerKind(r.kind)) : rows;
             return send(res, 200, { records: shown.map((r) => ({ ...r, state: records.shownState(r), ...(writes.retryAt(r.id) ? { retry_at: writes.retryAt(r.id) } : {}) })) });
           }

@@ -372,6 +372,11 @@ function resolveEnabled(all, wanted) {
   return [...enabled].sort((a, b) => a.localeCompare(b));
 }
 
+/**
+ * Where agent-built repos live, one org per enabled code host (the handbooks name them): `local` while codehost-local is on
+ * (this server's repos), the GitHub agents org while codehost-github is.
+ */
+const codehostOrgs = (enabled, settings) => [...(enabled.includes("codehost-github") && agentsOrg(settings) ? [{ org: agentsOrg(settings), host: "github" }] : []), ...(enabled.includes("codehost-local") ? [{ org: "local", host: "local" }] : [])];
 /** The agents org: github_agents_org, else aidenhq-<instance_name> (services/runner/src/config.mjs agrees). */
 const agentsOrg = (settings) => settings.github_agents_org || (settings.instance_name ? `aidenhq-${settings.instance_name}` : "");
 
@@ -600,7 +605,7 @@ export function compile(productDir, instanceDir, { revision, fetch = hostFetch(p
   // Derived for upstream contributions (spec §6.9): the owner-data scrub's literals (ownerTerms).
   settings.owner_terms = ownerTerms(instance.settings ?? {}, settings, declaredSettings.map(([, defs]) => defs));
 
-  const paperclip = { company: { name: String(settings.company_name), description: KERNEL_DEFAULTS.company_description }, ...(settings.owner_name ? { owner_name: String(settings.owner_name) } : {}), ...(agentsOrg(settings) ? { github_agents_org: agentsOrg(settings) } : {}), autonomy: String(settings.autonomy ?? "off"), settings: shownSettings, labels: [], mcp_servers: {}, codex_args: [], agents: {}, routines: {} };
+  const paperclip = { company: { name: String(settings.company_name), description: KERNEL_DEFAULTS.company_description }, ...(settings.owner_name ? { owner_name: String(settings.owner_name) } : {}), ...(agentsOrg(settings) ? { github_agents_org: agentsOrg(settings) } : {}), agents_orgs: codehostOrgs(enabled, settings), autonomy: String(settings.autonomy ?? "off"), settings: shownSettings, labels: [], mcp_servers: {}, codex_args: [], agents: {}, routines: {} };
   const apps = [];
   const instanceAppDefs = existsSync(join(instanceDir, "apps.yaml")) ? (readYaml(join(instanceDir, "apps.yaml")).apps ?? []) : [];
   const instanceApps = instanceAppDefs.map((a) => a.name);

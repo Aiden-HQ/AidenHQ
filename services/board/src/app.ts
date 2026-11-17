@@ -1390,9 +1390,19 @@ export function createApp(opts: AppOptions): Server {
         return { count: items.length, items, approvals: (await records.list("owner")).length };
       },
     },
-    // Approvals: the cards, open ones first, then the newest decided ones with their outcome. Read-only: every card is decided on
-    // the kernel's approval page (or in a channel).
-    { method: "GET", path: /^\/api\/approvals$/, handle: async () => { const names = await bylines(); return { approvals: (await cardsOf("recent", { limit: 100 })).map((a) => shownApproval(names, a)) }; } },
+    // Approvals: the cards, open ones first, then the newest decided ones with their outcome, and the newest Tier 0 runs (made
+    // at once, shown after the fact; read apart so they never crowd the cards out). Read-only: every card is decided on the
+    // kernel's approval page (or in a channel).
+    {
+      method: "GET",
+      path: /^\/api\/approvals$/,
+      handle: async () => {
+        const names = await bylines();
+        const [cards, all] = await Promise.all([cardsOf("recent", { limit: 100 }), cardsOf("recent", { limit: 100, tier0: true })]);
+        const ran = all.filter((a) => a.state === "auto" && !cards.some((c) => c.id === a.id));
+        return { approvals: [...cards, ...ran].map((a) => shownApproval(names, a)) };
+      },
+    },
     {
       // A new chat: with the agent named (body.agent or a leading @name), else Aiden.
       method: "POST",
