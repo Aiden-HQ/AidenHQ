@@ -19,6 +19,18 @@ density, depth, motion) is the designer's, made for each app's people and job. W
 - **Plan, then mockup.** A new app, a new screen or a major UI change starts with the UI/UX Designer's plan and mockup,
   and the build matches the mockup. Small edits go straight to the build.
 
+## Words and motion
+
+- **Buttons say what happens:** a verb plus its object ("Save changes", "Invite teammate", "Export report"). Headings
+  name the thing the section holds ("Open invoices", "Team members"). Numbers come from the data, and copy is written
+  for this app's people in the plain voice of a colleague.
+- **Motion is quiet feedback:** a button steps on hover and presses to scale .985 for 90ms (`--duration-press`); a card
+  inside a link lifts 1px with a soft shadow; a field's focus ring is 3px. Enters ease out (`--ease-out`) over
+  `--duration`, exits take `--duration-exit` (shorter).
+- **Reduced motion keeps what it can:** with `prefers-reduced-motion` the durations, fades, colour and shadow changes,
+  the press and small lifts all stay, and only large movement goes (slides and translations over about 8px, parallax,
+  looping animation, big scale-ins); size a slide as `calc(24px * var(--motion-distance))`, which is 0 there.
+
 ## Floors
 
 - **Readable contrast in both themes:** text, icons, control borders and focus rings stand out clearly from what is

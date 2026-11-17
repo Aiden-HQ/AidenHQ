@@ -52,6 +52,16 @@ let ITEMS = [
   item("status-page", "Status page", "Platform", "Lena Ortiz", "at-risk", 7, 12, "Pick a hosting option.", "PLAT-95", [[12, "Hosting option still open", "PLAT-95"]]),
 ];
 
+// The worst case, served on ?seed=worst: a long name with diacritics, a very long email as the owner, a one-letter name,
+// a project without an owner, one with an empty history, a team of one project and a team of 1,284. The page must hold up.
+const WORST = [
+  item("worst-long", "Überprüfung der Zahlungsabwicklung für Kundenkonten in São Paulo, Zürich und Kraków (Phase 2: Wiederholungsversuche)", "Zahlungsverkehr-Übergreifend", "Zoë-Charlotte Ñuñez-Bjørnsdóttir", "at-risk", 3, 4, "Klären, wer die Rückbuchungen für Ägypten freigibt.", "PAY-1", [[4, "Zuständigkeit offen", "PAY-1"]]),
+  item("worst-email", "Email owner", "Platform", "very.long.email.address.of.a.contractor+project-updates@subdomain.example-company-with-a-long-name.example.com", "late", -2, 9, "Reply to the vendor.", "PLAT-2", [[9, "Missed its due date", "PLAT-2"]]),
+  item("worst-one", "Q", "Solo", "Ø", "on-track", 30, 1, "", "SOLO-1", [[1, "Started", "SOLO-1"]]),
+  { ...item("worst-bare", "No owner yet", "Data", "", "on-track", 12, 2, "", "DATA-3", []), history: [] },
+  ...Array.from({ length: 1284 }, (_, i) => item(`bulk-${i + 1}`, `Bulk project ${String(i + 1).padStart(4, "0")}`, "Bulk team", "Ana Silva", ["on-track", "at-risk", "late", "done"][i % 4], 5 + (i % 40), i % 90, "", `BULK-${i + 1}`, [])),
+];
+
 const json = (res, code, body) => (res.writeHead(code, { "content-type": "application/json", "cache-control": "no-store", ...SECURITY }), res.end(JSON.stringify(body)));
 
 async function body(req) {
@@ -61,7 +71,7 @@ async function body(req) {
 }
 
 async function api(req, res, path) {
-  if (path === "/api/items" && req.method === "GET") return json(res, 200, { items: ITEMS });
+  if (path === "/api/items" && req.method === "GET") return json(res, 200, { items: new URL(req.url, "http://localhost").searchParams.get("seed") === "worst" ? WORST : ITEMS });
   const m = /^\/api\/items\/([\w-]+)$/.exec(path);
   const found = m && ITEMS.find((i) => i.id === m[1]);
   if (m && !found) return json(res, 404, { error: "No project with that id." });

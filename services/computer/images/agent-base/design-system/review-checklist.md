@@ -57,4 +57,7 @@ better, suggest a mockup from the UI/UX Designer.
       check reports every link as rendering.
 - [ ] The header brand is `Link href="/"`, opens home at the top from every page, and every visible control acts:
       `ui-review` reports the brand and each control it clicks, with no dead click.
+- [ ] Forms and async work: a button that starts work shows it is pending and is disabled until it ends; an error sits
+      under the field it belongs to; a destructive action asks to confirm or offers undo; a toast announces without
+      taking focus.
 - [ ] A seed or fixture mode runs the app locally with realistic data, so a reviewer can screenshot it.

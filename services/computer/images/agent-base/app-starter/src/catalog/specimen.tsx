@@ -104,13 +104,13 @@ const bell = (
 export function Specimen({ kind, palette }: { kind: string; palette?: string }) {
   if (kind === "preset")
     return (
-      <div className="min-h-svh bg-page p-5">
+      <div className="min-h-dvh bg-page p-5">
         <Sample name={palette} />
       </div>
     )
   if (kind === "topbar" || kind === "topbar-brand")
     return (
-      <div className="min-h-svh bg-page">
+      <div className="min-h-dvh bg-page">
         <TopBarShell appName="Acme Projects" logo={LOGO} nav={NAV.slice(0, 3).map(({ href, label }) => ({ href, label }))} path="/projects" actions={bell} variant={kind === "topbar" ? "plain" : "brand"}>
           <Page>
             <Sample />

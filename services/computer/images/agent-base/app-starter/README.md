@@ -113,7 +113,9 @@ stay out unless an app needs them (guidelines: the stack).
 - **Dependencies:** pinned exactly, each published at least 7 days ago (`node .github/supply-chain/best-version.mjs npm
   <pkg>` from the CI template), installed with `npm install --save-exact --before=<7 days ago>` so transitive versions
   pass too, lockfile committed.
-- **Review states:** `?preview=loading|error|empty` shows that state of the example page with the sample data, so
+- **Review states:** `?preview=loading|error|empty` shows that state of the example page with the sample data, and
+  `?seed=worst` serves the worst-case rows (long diacritic name, very long email, one-letter name, a missing owner, counts
+  of 1 and 1,284), so
   `ui-review` can screenshot it. Remove it with the sample data, and give the real app a seed mode instead: `npm run
   preview` serves the app with fixture data (an in-memory store, no database) on port 4173, and `playwright.config.ts`
   starts it for `npm run screens`.
