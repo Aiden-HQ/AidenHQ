@@ -129,6 +129,6 @@
     "id": "H6",
     "attack": "Hostile module asks for a model-provider key as its own secret",
     "unit": "2c",
-    "test": "modules/ai-reviewer/test/reviewer-cases/42-module-asks-model-key.json"
+    "test": "modules/ai-reviewer/test/reviewer-cases/module-asks-model-key.json"
   }
 ]

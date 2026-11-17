@@ -991,6 +991,9 @@ async function stopMerges(issue, why) {
  * (`minute`), independent ones every poll.
  */
 async function advanceMerges({ minute = true } = {}) {
+  const opts = { github: mergeGithub, timeoutMinutes: cfg.merges?.timeout_minutes ?? 90, cardIsReview: ownRepo };
+  // Card queues on the product repository go through merge trains (merge-gate.mjs advanceTrains).
+  const planned = minute ? await merges.advanceCards(activeMerges().map((key) => ({ key, queue: mergeQueue(key) })), state, { ...opts, train: (r) => r.toLowerCase() === cfg.productRepo?.toLowerCase() }) : new Map();
   for (const issueId of activeMerges()) {
     const queue = mergeQueue(issueId);
     // An independent queue that finished during the task's run: its status change waits for the run's end.
@@ -1010,8 +1013,8 @@ async function advanceMerges({ minute = true } = {}) {
     if (!queue.independent && !minute) continue;
     let step;
     try {
-      step = await merges.advance(queue, { github: mergeGithub, timeoutMinutes: cfg.merges?.timeout_minutes ?? 90, cardIsReview: ownRepo });
-      queue.errors = 0;
+      step = planned.has(issueId) ? merges.unwrap(planned.get(issueId)) : await merges.advance(queue, opts);
+      step.queue.errors = 0;
     } catch (err) {
       // GitHub or the network: try again next minute, and give up after ten in a row.
       queue.errors = (queue.errors ?? 0) + 1;
@@ -1255,9 +1258,8 @@ const mergeGithub = {
       return re.tip;
     });
   },
-  async deleteBranch(repo, branch) {
-    await githubWrite(repo, `repos/${repo}/git/refs/heads/${branch}`, {}, "DELETE");
-  },
+  // A merged head's branch deleted, and a merge train's branches (merge-gate.mjs branchWrites).
+  ...merges.branchWrites((repo, path, fields, method) => githubWrite(repo, path, fields, method, mergePermissions(repo, cfg.productRepo))),
   async comment(repo, number, body) {
     await githubWrite(repo, `repos/${repo}/issues/${number}/comments`, { body }, "POST");
   },
