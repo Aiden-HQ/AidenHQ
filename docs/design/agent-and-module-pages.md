@@ -38,7 +38,7 @@ board at all. This makes creating, running and managing agents easier for any ow
   the lean-core rules: AI review always first; owner tap when the change adds authority (write kinds, secrets, roles,
   privileged entries, a marketplace, write/destructive grants).
 - Board routes need a signed-in admin. Board build: `tsc -p tsconfig.build.json`.
-- Configuration stays behind Settings (`App.tsx` keeps daily work in the bar). Agents stays in the bar.
+- Agents and Modules are top-bar tabs (owner: the marketplace deserves a first-class link). Settings → Modules goes away; `#/settings/modules` and the old `#/modules` alias open the Modules tab; it sits right after Agents. Other configuration stays behind Settings.
 - Reuse the board's components and styles: `settings.css` rows (`st-row`), `ChangePreview` / `ChangeProgress`, the
   fleet table, the task drawer, `LaneChat` / chat. No new visual language.
 
@@ -64,8 +64,8 @@ reasoning held for two-line YAML edits, not for handbook text and a dozen kinds.
 
 Keeps today's table (Now / Next / Last, department grouping, Platform and Your agents). The row expansion becomes a
 quick look: needs-you, this week (done, sent back, cost, sparkline), today's spend against the day cap, model and
-source module, and buttons **Open page**, Chat, Give it a task. The header gets a **Modules** button
-(`#/settings/modules`).
+source module, and buttons **Open page**, Chat, Give it a task.
+
 
 ### Agent page (`#/agents/<key>[/<tab>]`)
 
@@ -95,7 +95,7 @@ Tabs:
 
 Pause asks what to do with a running task: let it finish, or stop it now.
 
-### Settings → Modules (`#/settings/modules[?tab=browse|marketplaces]`)
+### Modules (`#/modules[?tab=browse|marketplaces]`), a top-bar tab
 
 - **Installed**: "Chosen by you" and "Core and dependencies" (why each dependency is on). A row shows description,
   agent and connection counts, marketplace · tier, health (connection sign-in state), update available.
@@ -124,7 +124,7 @@ catalog; the board opens it at `/setup/<module>`; `GET /api/setup-flows` lists i
 - When an install goes live while the owner is still on the Modules page or that module's page, the board opens its
   setup flow automatically (owner's call); otherwise the Set up button waits.
 
-### Module page (`#/settings/modules/<name>[/<tab>]`)
+### Module page (`#/modules/<name>[/<tab>]`)
 
 Header: name, version · marketplace · tier, one-line description; one action button (Install, Set up, Update to X; see above) and Turn off.
 
