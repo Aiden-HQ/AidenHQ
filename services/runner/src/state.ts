@@ -196,4 +196,22 @@ export class State {
   set(key: string, value: any) {
     this.db.prepare("INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)").run(key, value);
   }
+
+  /**
+   * Jobs waiting for their task's blockers to close: Paperclip refuses a status write on a task with an unresolved
+   * blocker, so a run started then would only be counted as a failure. A later request on a task replaces its job.
+   */
+  park({ issueId, instructions, retryAfter }: { issueId: string; instructions: string; retryAfter?: string }) {
+    this.set(PARKED, JSON.stringify([...this.parked().filter((p) => p.issueId !== issueId), { issueId, instructions, ...(retryAfter ? { retryAfter } : {}) }]));
+  }
+
+  parked(): { issueId: string; instructions: string; retryAfter?: string }[] {
+    return JSON.parse(this.get(PARKED) || "[]");
+  }
+
+  unpark(issueId: string) {
+    this.set(PARKED, JSON.stringify(this.parked().filter((p) => p.issueId !== issueId)));
+  }
 }
+
+const PARKED = "parked_jobs";

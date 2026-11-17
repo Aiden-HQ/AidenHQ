@@ -202,13 +202,19 @@ export class Paperclip {
       await this.setStatus(issueId, status, comment);
       return false;
     } catch (err: any) {
-      if (!/→ 422:.*blocked by unresolved blockers/i.test(String(err.message))) throw err;
+      if (!blockedRefusal(err)) throw err;
       console.log(JSON.stringify({ t: new Date().toISOString(), msg: "final status refused: task is blocked", issue: issueId, status }));
       if (comment) await this.comment(issueId, comment);
       return true;
     }
   }
 }
+
+/** The blockers Paperclip still counts as unresolved: while one is open the task is asleep, not dispatchable. */
+export const unresolvedBlockers = (issue: any): any[] => (issue?.blockedBy ?? []).filter((b: any) => !["done", "cancelled"].includes(b?.status));
+
+/** Paperclip refuses a status write on a task with an unresolved blocker with a 422; that is no run failure. */
+export const blockedRefusal = (err: any) => /→ 422:.*blocked by unresolved blockers/i.test(String(err?.message ?? err));
 
 const ORIGIN_MAX = 24;
 /**
