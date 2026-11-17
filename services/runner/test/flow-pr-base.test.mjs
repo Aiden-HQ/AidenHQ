@@ -43,6 +43,8 @@ describe("flow-pr-base", () => {
     const args = creates()[0];
     assert.equal(baseArg(args), "main", `the PR opens into main, not the deleted base: ${args.join(" ")}`);
     assert.ok(args.includes("--head") && args[args.indexOf("--head") + 1] === "feat/stacked");
+    // A description without an Evidence section gets the runner's one stub line; the PR still opens.
+    assert.match(args[args.indexOf("--body") + 1], /\n?Evidence: none given$/);
   });
 
   it("never errors along the way", () => t.noErrors());

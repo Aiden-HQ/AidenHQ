@@ -37,7 +37,7 @@ describe("flow-autonomy", { concurrency: true }, () => {
       await waitFor("the PR update", () => partComments().slice(n).some((c) => /Updated the title and description of https:\/\/github.com\/acme\/app\/pull\/7/.test(c)));
       const edit = edits().at(-1).data;
       assert.deepEqual(edit.slice(0, 5), ["pr", "edit", "https://github.com/acme/app/pull/7", "--title", "fix:-drop-Legacy"]);
-      assert.equal(edit[6], "## Why\n\nLegacy is gone.", "the agent's text, without the footer");
+      assert.equal(edit[6], "## Why\n\nLegacy is gone.\n\nEvidence: none given", "the agent's text, without the footer, with the stub for its missing Evidence section");
     });
 
     it("never errors or asks for a repository along the way", () => t.noErrors());

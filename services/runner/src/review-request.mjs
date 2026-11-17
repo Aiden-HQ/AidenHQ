@@ -1,5 +1,6 @@
 // What the AI reviewer reads (reviewer@1, kernel/sdk/src/reviewer.ts), as the runner gathers it until 3e: the diff, the
-// changed files shaped by fileContext, the request chain, the base's source records, earlier findings. A record's review
+// changed files shaped by fileContext, the request chain, the base's source records, earlier findings, and a PR's Evidence
+// section. A record's review
 // goes to the kernel with its record (POST /v1/writes/:id/review), which asks the bound reviewer module and applies the
 // verdict; the Engineer's check before filing goes to POST /v1/reviews with the same request.
 import { readExceptions } from "../../../scripts/supply-chain/best-version.mjs";
@@ -60,6 +61,8 @@ export function reviewRequest(a, input, chain, { component = "AI reviewer", sibl
     panel: Boolean(input.panel || a.panel),
     previous: [...(input.previous ?? []), ...previous],
     relift: input.relift,
+    // A pr or merge card's Evidence section (the author's words, fenced by the reviewer); absent for other actions.
+    evidence: input.evidence,
     component,
   };
 }

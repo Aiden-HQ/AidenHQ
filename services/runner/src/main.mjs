@@ -27,7 +27,7 @@ import { splitAnswered } from "./answered.ts";
 import { ALL_STATUSES, Paperclip, blockedRefusal, origins, unresolvedBlockers } from "./paperclip.ts";
 import { isTransient, retryTransient, shouldRetryTurn } from "./retry.ts";
 import { branchGuidance, checkBranchName, chooseBranchName, exampleBranches } from "./branch.ts";
-import { cleanMessages, existingPrUrl, leakIn, leaksInternal, sameOrg, stripAttribution, writePrDescription } from "./describe.ts";
+import { cleanMessages, evidenceOf, existingPrUrl, leakIn, leaksInternal, sameOrg, stripAttribution, withEvidence, writePrDescription } from "./describe.ts";
 import { branchesFooter, slackSources, firstPrompt, followUpPrompt, latestReport, prSummary, prTitle, subtaskSummary, summaryGist, appliedNote, runOutcome, coversHead } from "./prompt.ts";
 import { staleHead, staleRef } from "./progress.ts";
 import { PRIMER_FILES, primerLink, publishedRef, readDocument } from "./primer.ts";
@@ -2061,7 +2061,7 @@ async function mergeTierState(prs) {
       // The PR's content key at exactly the card's head, fetched into the runner's own clone (the owner's veto binds to it);
       // a head that moved or can't be read gives none, which fails closed against a veto.
       const patch = pr && p.head ? await trustedPatch(p.repo, p.head, { pr: p.number }) : undefined;
-      return { repo: p.repo, number: p.number, url: p.url, head: p.head, ...(patch ? { patch } : {}), files, ...(texts ? { texts } : {}), ...(ciTemplate ? { ciTemplate } : {}), checks, headMatches: Boolean(p.head) && pr?.headRefOid === p.head, ownHead, sensitive, ...(dependabot ? { dependabot } : {}) };
+      return { repo: p.repo, number: p.number, url: p.url, head: p.head, body: String(pr?.body ?? ""), ...(patch ? { patch } : {}), files, ...(texts ? { texts } : {}), ...(ciTemplate ? { ciTemplate } : {}), checks, headMatches: Boolean(p.head) && pr?.headRefOid === p.head, ownHead, sensitive, ...(dependabot ? { dependabot } : {}) };
     }),
   );
 }
@@ -2154,8 +2154,8 @@ async function tierFor(issue, action, own, also = []) {
 
 /**
  * The current tier of a recorded request (just before running a reviewer-approved one, and before reviewing): from the
- * same verified state as when it was filed. { tier, reason, rule, diff?, files? }. The agent's PR text is not part of it:
- * the reviewer is reasoning-blind (modules/ai-reviewer).
+ * same verified state as when it was filed. { tier, reason, rule, diff?, files?, evidence? }. Of the agent's PR text only its
+ * Evidence section goes to the reviewer (`evidence`: a merge's PRs, or a pr card that carries its text); the rest stays out.
  */
 async function currentTier(issue, a, { withDiff = false, bases } = {}) {
   if (a.action === "push" || a.action === "pr") {
@@ -2176,7 +2176,7 @@ async function currentTier(issue, a, { withDiff = false, bases } = {}) {
     const read = bases ?? (await cardBases({ branches: a.args.only }));
     const diffs = await Promise.all(branches.map(async (b, i) => `### ${b.repo} ${b.branch} (${b.sha.slice(0, 12)})${read[i]?.base ? ` base ${read[i].base}` : ""}\n${b.base ? await git(b.path, "-c", "core.attributesFile=/dev/null", "diff", "--no-ext-diff", "--no-textconv", "--text", "--no-renames", b.base, b.sha).catch(() => "") : "(no base to diff against)"}`));
     const files = branches.flatMap((b) => (b.files ?? []).map((f) => ({ name: `${b.repo} ${f}`, read: () => git(b.path, "show", `${b.sha}:${f}`) })));
-    return { ...t, diff: diffs.join("\n\n"), files: await readFiles(files), bases: read };
+    return { ...t, diff: diffs.join("\n\n"), files: await readFiles(files), bases: read, ...(a.action === "pr" && a.args.text ? { evidence: evidenceOf(a.args.text.body) } : {}) };
   }
   if (a.action === "merge") {
     const prs = await mergeTierState(a.args.prs);
@@ -2186,7 +2186,7 @@ async function currentTier(issue, a, { withDiff = false, bases } = {}) {
     const diffs = await Promise.all(prs.map(async (p, i) => `### ${p.url}${read[i]?.base ? ` base ${read[i].base}` : ""}\n${(await execFileP(await findRealGh(), ["pr", "diff", p.url], await gho(p.repo, READ, { maxBuffer: 32 * 1024 * 1024 })).catch(() => ({ stdout: "" }))).stdout}`));
     const gh = await findRealGh();
     const files = prs.flatMap((p, i) => (p.files ?? []).map((f) => ({ name: `${p.repo} ${f}`, read: async () => (await execFileP(gh, ["api", "-H", "Accept: application/vnd.github.raw", `repos/${p.repo}/contents/${f.split("/").map(encodeURIComponent).join("/")}?ref=${a.args.prs[i].head}`], await gho(p.repo, READ, { maxBuffer: 16 * 1024 * 1024 }))).stdout })));
-    return { ...t, diff: diffs.join("\n\n"), files: await readFiles(files), bases: read };
+    return { ...t, diff: diffs.join("\n\n"), files: await readFiles(files), bases: read, evidence: prs.map((p) => `### ${p.url}\n${evidenceOf(p.body)}`).join("\n\n") };
   }
   if (a.action === "apply") {
     const workspace = await prepareWorkspace(issue, state.task(issue.id), { clone: false });
@@ -2279,7 +2279,7 @@ async function reviewOne(a) {
   const asked = !codeVerdict(held, LUNA);
   const chain = asked ? await prRequest(await pc.issue(issue.id)).catch(() => "") : "";
   const request = asked ? reviewRequest(a, input, chain, { requesterModel: state.task(issue.id)?.engine?.model ?? "", previous: checkFindings(issue.id, a.action), ...(await cardContext(issue, a.action === "merge" ? { prs: a.args.prs } : { branches: a.args.only }, input.bases)) }) : {};
-  const { diff: _d, files: _f, previous: _p, relift: _r, bases: _b, full: _full, ...tierInput } = input;
+  const { diff: _d, files: _f, previous: _p, relift: _r, bases: _b, full: _full, evidence: _e, ...tierInput } = input;
   // Kept until the answer is handled: a lost answer (a restart, a timeout) still gets its follow-up (reviewsLeftOver).
   inFlight((ids) => [...ids, a.id]);
   const out = await kernel("POST", `/v1/writes/${a.id}/review`, { input: { ...tierInput, model: LUNA }, request }, { ms: 46 * 60_000 });
@@ -3193,7 +3193,8 @@ async function agentReview(ctx, args) {
         await refuseRewritten(ordered);
         const branches = await branchHeads(ordered);
         await bindBranches(ordered, branches);
-        const a = { action: command, args: branchCardArgs(branches, { merge: carriesMerge(command, ordered) }) };
+        // With `--body-file`, the description the card would carry, so the check reads the same Evidence section.
+        const a = { action: command, args: branchCardArgs(branches, { merge: carriesMerge(command, ordered), text: command === "pr" && args.body ? { title: String(args.title ?? ""), body: String(args.body) } : undefined }) };
         const mode = autonomyNow();
         const input = await currentTier(ctx.issue, a, { withDiff: true });
         const n = checksUsed(ctx.issue.id);
@@ -4361,7 +4362,7 @@ async function publishBranch(issue, full, r, command, rows, text, pin) {
   const moved = open?.state === "OPEN" ? await retargetBase(r.path, { branch: r.branch, base: r.base, current: open.baseRefName, defaultBranch: r.defaultBase }) : "";
   const onto = moved ? `, moved onto \`${moved}\`` : "";
   if (r.prUrl && command === "pr" && (text?.title || moved)) {
-    await execFileP(await findRealGh(), ["pr", "edit", r.prUrl, ...(text?.title ? ["--title", text.title, "--body", text.body] : []), ...(moved ? ["--base", moved] : [])], await gho(r.repo, WRITE, { cwd: r.path })).catch((err) => {
+    await execFileP(await findRealGh(), ["pr", "edit", r.prUrl, ...(text?.title ? ["--title", text.title, "--body", withEvidence(text.body)] : []), ...(moved ? ["--base", moved] : [])], await gho(r.repo, WRITE, { cwd: r.path })).catch((err) => {
       throw new UserError(`couldn't update the PR. GitHub said: ${String(err.stderr || "gh pr edit failed").trim().slice(-400)}`);
     });
     log("pr updated", { issue: issue.identifier, url: r.prUrl, ...(moved ? { from: open.baseRefName, to: moved } : {}) });
@@ -4392,7 +4393,7 @@ async function publishBranch(issue, full, r, command, rows, text, pin) {
     messages, stat, diff, report: siblings.length ? undefined : await lastReport(issue.id).catch(() => undefined), fallbackTitle,
   });
   // Our own repos' PRs may name our tools and paths (an Evidence section's .aidenhq/out/ screenshots), as `own` above allows.
-  const body = !ourText(r.repo) && leaksInternal(pr.body) ? "" : pr.body;
+  const body = withEvidence(!ourText(r.repo) && leaksInternal(pr.body) ? "" : pr.body);
   log("pr description", { issue: issue.identifier, branch: r.branch, generated: pr.generated, rejected: Boolean(pr.rejected), own: Boolean(own), ownRefused: Boolean(text?.title && !own) });
   let adopted;
   const { stdout } = await execFileP(await findRealGh(), ["pr", "create", "--draft", "--repo", r.repo, "--head", r.branch, "--base", base, "--title", pr.title, "--body", body], await gho(r.repo, WRITE, { cwd: r.path })).catch((err) => {

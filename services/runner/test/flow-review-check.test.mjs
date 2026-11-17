@@ -43,7 +43,10 @@ describe("flow-review-check", { concurrency: 1 }, () => {
       { decision: "approve", reason_code: "in_scope", reason: "Does what was asked.", second_review: false },
       { decision: "approve", reason_code: "in_scope", reason: "Does what was asked.", second_review: false },
     );
-    t.step("second\naidenhq review\naidenhq review acme/app feat/second\naidenhq review\naidenhq review");
+    // The second check passes the description it would file: the reviewer reads its Evidence section, fenced.
+    const bodyFile = join(t.dir, "pr-body.md");
+    writeFileSync(bodyFile, "Adds the second file.\n\n## Evidence\n\n- `npm test`: 3 passed\n");
+    t.step(`second\naidenhq review\naidenhq review acme/app feat/second --body-file ${bodyFile}\naidenhq review\naidenhq review`);
     // Four checks in one turn (a new comment would reset the count), each the whole publish path short of pushing: 1-3 s
     // alone, but 15-20 s on a loaded CI host, past the default minute. Under the runner's own two-minute job timeout.
     await t.turn("Add the second change, then check it with the reviewer.", 110_000);
@@ -74,6 +77,8 @@ describe("flow-review-check", { concurrency: 1 }, () => {
     assert.match(calls[2].messages[1].content, /EARLIER_REJECTIONS[\s\S]*A check before filing, not a card, at acme\/app [^\n]*: the reviewer would have rejected it \(out_of_scope\)\./);
     assert.doesNotMatch(calls[2].messages[1].content, /second\.txt isn't part of the request/);
     assert.doesNotMatch(calls[0].messages[1].content, /EARLIER_REJECTIONS/);
+    assert.match(calls[1].messages[1].content, /<<<EVIDENCE\n- `npm test`: 3 passed\nEVIDENCE>>>/);
+    assert.doesNotMatch(user, /EVIDENCE/, "no description given, so no Evidence block");
     for (const o of outs) assert.doesNotMatch(o.out, /luna|deepseek|glm|gpt/i, "the agent never learns which models judged");
 
     assert.equal(t.paperclip.approvals.size, 0, "no card filed");
