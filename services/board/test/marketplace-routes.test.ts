@@ -11,9 +11,9 @@ import { Store } from "../src/store.js";
 
 const dir = mkdtempSync(join(tmpdir(), "mkt-"));
 writeFileSync(join(dir, "modules.json"), JSON.stringify([
-  { name: "kernel", description: "The kernel", enabled: true },
-  { name: "channel-acme", description: "Chat on Acme", enabled: false, agents: [], connections: ["acme"], marketplace: "aidenhq", tier: "official", setup_flow: { title: "Acme token" } },
-  { name: "notes", description: "Keeps notes", enabled: true, agents: ["scribe"], connections: [], apps: ["notes-app"], marketplace: "acme-agents", tier: "declared", revision: "a".repeat(40), source: { url: "https://github.com/acme/agents.git" } },
+  { name: "kernel", description: "The kernel", enabled: true, requires: [], agents: [] },
+  { name: "channel-acme", description: "Chat on Acme", enabled: false, requires: [], agents: [], connections: ["acme"], marketplace: "aidenhq", tier: "official", setup_flow: { title: "Acme token" } },
+  { name: "notes", description: "Keeps notes", enabled: true, requires: [], agents: ["scribe"], connections: [], apps: ["notes-app"], marketplace: "acme-agents", tier: "declared", revision: "a".repeat(40), source: { url: "https://github.com/acme/agents.git" } },
 ]));
 writeFileSync(join(dir, "paperclip.yaml"), [
   "mcp_servers:",
@@ -49,6 +49,12 @@ describe("browse, marketplaces and grants routes", () => {
     const apps = (await get("/api/modules/browse?kind=apps")).body.modules;
     expect(apps.map((m: any) => [m.name, m.installed, m.adds[0]])).toEqual([["notes", true, "1 agent: scribe"]]);
     expect((await get("/api/modules/browse?kind=channels")).body.modules[0].setupFlow).toEqual({ title: "Acme token" });
+  });
+
+  it("browse is not taken for a module's own page, and that page is still reached", async () => {
+    expect((await get("/api/modules/browse")).body.modules).toBeDefined();
+    const missing = await get("/api/modules/nope");
+    expect([missing.status, missing.body.error]).toEqual([404, "no such module"]);
   });
 
   it("lists marketplaces with pinned sha and module count", async () => {
