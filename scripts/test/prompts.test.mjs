@@ -97,3 +97,17 @@ test("the owner's standing outcomes, the glossary and the handoff shape are in e
   writeFileSync(file, YAML.stringify({ ...y, outcomes: [{ id: "ship-acme", outcome: "x", done: "y", owner: "nobody" }] }));
   assert.throws(() => compile(product, dir), /ship-acme's owner nobody is not an agent here/);
 });
+
+test("the owner's profile (owner/profile.md) is in every crew handbook and the chat lane, cut at 4 KB", () => {
+  const dir = instance();
+  mkdirSync(join(dir, "owner"));
+  writeFileSync(join(dir, "owner", "profile.md"), "- Reads briefs, not dashboards: lead with the decision.\n");
+  const { paperclip: p } = compile(product, dir);
+  const opts = { repo: product, instanceDir: dir, fleetIssues: "WOR-1" };
+  const want = /## How the owner works\n\n[^\n]+\n\n- Reads briefs, not dashboards: lead with the decision\.\n/;
+  assert.match(handbookParts(p, "chief-of-staff", p.agents["chief-of-staff"], opts).map(([, t]) => t).join(""), want);
+  assert.match(laneHandbook(p, p.agents["chief-of-staff"], opts), want);
+  writeFileSync(join(dir, "owner", "profile.md"), "- a line of style\n".repeat(400));
+  const out = compile(product, dir);
+  assert.ok(Buffer.byteLength(out.paperclip.owner_profile) <= 4096 && out.warnings.some((w) => w.startsWith("owner/profile.md is over 4096 bytes")));
+});

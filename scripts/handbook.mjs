@@ -76,6 +76,8 @@ function outcomesSection(cfg) {
   const who = (key) => cfg.agents?.[key]?.persona?.name ?? cfg.agents?.[key]?.name ?? key;
   return `\n\n## Standing outcomes\n\nThe owner's standing goals, each with the one agent that owns it:\n${list.map((o) => `- \`${o.id}\` (${who(o.owner)}, \`${o.owner}\`): ${o.outcome.replace(/\.$/, "")}. Done when: ${o.done}`).join("\n")}\n`;
 }
+/** How the owner works (compile's `owner_profile`, from the instance's owner/profile.md), in every crew handbook and the lane. */
+const profileSection = (cfg) => (cfg.owner_profile ? `${section("profile")}\n${cfg.owner_profile}\n` : "");
 // Every codex agent's web access (live search, web_view, app_view), and the one rule that goes with it.
 const WEB_SECTION = section("web");
 // Agents kept asking for approval through Paperclip's own mechanism, which the owner never sees (approval cards are the only one).
@@ -123,6 +125,7 @@ export function handbookParts(cfg, key, a, { repo, instanceDir, engines = {}, fl
     ["handbook", readInstructions(cfg, a, { repo, instanceDir })],
     ["persona", personaSection(cfg, engines, key, a)],
     ["computer", computerSection(a)],
+    ["profile", codex ? profileSection(cfg) : ""],
     ["untrusted", UNTRUSTED_SECTION],
     ["glossary", codex ? GLOSSARY_SECTION : ""],
     ["outcomes", codex ? outcomesSection(cfg) : ""],
@@ -138,9 +141,9 @@ export function handbookParts(cfg, key, a, { repo, instanceDir, engines = {}, fl
   return parts.filter(([, text]) => text);
 }
 
-/** The fast chat lane's prompt: the agent's own handbook, the shared untrusted-text rule and the sections marked for the lane. */
+/** The fast chat lane's prompt: the agent's own handbook, how the owner works, the untrusted-text rule and the lane's sections. */
 export function laneHandbook(cfg, a, opts) {
-  return readInstructions(cfg, a, opts) + UNTRUSTED_SECTION + promptParts(cfg, a, { ...opts, lane: true }).map(([, t]) => t).join("");
+  return readInstructions(cfg, a, opts) + profileSection(cfg) + UNTRUSTED_SECTION + promptParts(cfg, a, { ...opts, lane: true }).map(([, t]) => t).join("");
 }
 
 /** `compile --sizes`: bytes per handbook part per crew agent, largest handbook first (on-demand sections listed, not counted). A local report. */
