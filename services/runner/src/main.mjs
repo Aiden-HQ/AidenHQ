@@ -8,6 +8,7 @@ import "./main/watch.ts";
 import "./main/dispatch.ts";
 import "./main/merge.ts";
 import "./main/breaker.ts";
+import "./main/grading.ts";
 import { adoptRuns, loop, saveMetrics, shutdown } from "./main/unsplit.ts";
 
 // ------------------------------------------------------------------ main

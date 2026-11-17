@@ -15,7 +15,8 @@ import { RERUN, STATUS, appFor, botIdentity, cfg, evalSandbox, execFileP, gho, g
 import { reportActivity, reportUsage } from "./activity.ts";
 import { designReviewer, fileDesignReviewTask } from "./watch.ts";
 import { redHead, stopped, wakeForRedChecks, wakeForTurnedAway } from "./breaker.ts";
-import { autonomyNow, fileApproval, findRealGh, graded, mayClose, mergeTierState, refusedForGood, reportOutcome, tellParent, tierFor, withTrusted } from "./unsplit.ts";
+import { graded, mayClose, tellParent } from "./grading.ts";
+import { autonomyNow, fileApproval, findRealGh, mergeTierState, refusedForGood, reportOutcome, tierFor, withTrusted } from "./unsplit.ts";
 
 // ------------------------------------------------------------------ merges
 

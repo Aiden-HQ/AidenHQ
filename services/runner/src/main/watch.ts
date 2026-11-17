@@ -9,7 +9,8 @@ import { app, botIdentity, cfg, execFileP, gho, log, pc, running, state } from "
 import { dispatch } from "./dispatch.ts";
 import { mergeGithub } from "./merge.ts";
 import { stopped } from "./breaker.ts";
-import { commonTierState, findRealGh, mayClose, prFiles, readGrants, rebaseInCode } from "./unsplit.ts";
+import { mayClose } from "./grading.ts";
+import { commonTierState, findRealGh, prFiles, readGrants, rebaseInCode } from "./unsplit.ts";
 
 let githubLogin;
 

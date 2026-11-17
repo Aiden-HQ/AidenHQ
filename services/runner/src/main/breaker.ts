@@ -3,7 +3,8 @@ import { READ } from "../../../../modules/codehost-github/src/github-app.ts";
 import { checkSignature, record } from "../../../../modules/engineering/src/breaker.ts";
 import { cfg, execFileP, gho, log, pc, state } from "./context.ts";
 import { dispatch } from "./dispatch.ts";
-import { findRealGh, tellParent } from "./unsplit.ts";
+import { tellParent } from "./grading.ts";
+import { findRealGh } from "./unsplit.ts";
 
 // ------------------------------------------------------------------ the breaker on identical failures (breaker.ts)
 
