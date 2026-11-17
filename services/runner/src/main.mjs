@@ -3439,23 +3439,22 @@ async function agentMerge(ctx, args) {
   }
   if (read.every((pr) => pr?.state === "MERGED"))
     return alreadyApplied(ctx.issue, "merge", prs.map((p) => p.url).join(","), prs.map((p, i) => `${p.url} is already merged${read[i].mergeCommit?.oid ? ` (merge commit \`${read[i].mergeCommit.oid.slice(0, 12)}\`)` : ""}`).join("; "));
-  // Each card is bound to the PR's current head; in the agents org and the product repo the tap (or the reviewer's
-  // approval) is the review (merges.prDecision).
+  // Each card is bound to the PR's current head, inside the agents org and out: a missing head is not a moved one, and
+  // headMatches would refuse every merge outside. In the agents org and the product repo the tap (or the reviewer's
+  // approval) is the review (merges.prDecision); elsewhere GitHub's own review gates the merge.
   const bound = [];
   for (const { repo, number, url } of prs) {
-    if (!ownRepo(repo)) {
-      bound.push({ repo, number, url }); // GitHub's own review gates these
-      continue;
-    }
     const pr = await mergeGithub.pr(repo, number).then((d) => d?.repository?.pullRequest, (err) => {
       if (isTransient(err)) throw err; // a blip: the agent can ask again
       return undefined;
     });
     // This task stored the number, and GitHub can't confirm it (unreadable, or another branch's): said once, nothing merged.
-    const stored = await staleStoredPr(ctx.issue.id, { url, headRefName: pr?.headRefName });
-    if (stored) throw new UserError(staleRefusal(stored, url));
+    if (ownRepo(repo)) {
+      const stored = await staleStoredPr(ctx.issue.id, { url, headRefName: pr?.headRefName });
+      if (stored) throw new UserError(staleRefusal(stored, url));
+    }
     if (!/^[0-9a-f]{40}$/.test(pr?.headRefOid ?? "")) throw new UserError(`Couldn't read ${url} on GitHub.`);
-    bound.push({ repo, number, url, head: pr.headRefOid, noReview: true });
+    bound.push({ repo, number, url, head: pr.headRefOid, ...(ownRepo(repo) ? { noReview: true } : {}) });
   }
   // Tier 0 (agents org, named checks green or running on the exact head) starts at once, each PR merged on its own
   // once green (owner, 2026-11-12); the rest go on one card, as before.
