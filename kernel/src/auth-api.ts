@@ -2,7 +2,7 @@
 //   POST /v1/auth/{exchange,session,sign_out}  (the board's key) a module UI's one-time code → its session token; that
 //              token → its ready admin (or 401); that session ends. The board checks its session here on every request.
 //   POST /v1/accounts/<op>   (the board's key + {token}: a live module UI session's admin acts) account admin: list, sessions,
-//              revoke_session, invite, role, disable, enable, link, app_admins, app_admin_set; `names` and `owner_request` (the
+//              revoke_session, invite, role, disable, enable, link, app_admins, app_admin_set, recovery_key_waiting; `names` and `owner_request` (the
 //              owner's chat words Aiden relays as his in-app request) with the key alone.
 //   POST /v1/apps/<op>       (the apps-platform module's own token) in-app requests and roles for agents: requests, reply,
 //              roles, role_set (apps-mcp checked the calling agent may, and names it).
@@ -20,7 +20,7 @@ const APP = (v: unknown) => typeof v === "string" && /^[a-z][a-z0-9-]{1,30}$/.te
 const ID = (v: unknown) => typeof v === "string" && /^[\w-]{1,64}$/.test(v);
 const ROLE = (v: unknown) => v === "admin" || v === "user";
 
-export function createAuthApi({ accounts, whoami, boardKey, operatorKey }: { accounts: () => Accounts | undefined; whoami: Whoami; boardKey: () => string; operatorKey: () => string }) {
+export function createAuthApi({ accounts, whoami, boardKey, operatorKey, recoveryKeyWaiting = () => false }: { accounts: () => Accounts | undefined; whoami: Whoami; boardKey: () => string; operatorKey: () => string; recoveryKeyWaiting?: () => boolean }) {
   const bearer = (req: IncomingMessage) => String(req.headers.authorization ?? "").replace(/^Bearer\s+/i, "").trim();
   const is = (given: string, key: string) => { const a = Buffer.from(given), b = Buffer.from(key); return b.length > 0 && a.length === b.length && timingSafeEqual(a, b); };
   const send = (res: ServerResponse, status: number, body: unknown): void => void res.writeHead(status, { "content-type": "application/json", "cache-control": "no-store" }).end(JSON.stringify(body));
@@ -96,6 +96,7 @@ export function createAuthApi({ accounts, whoami, boardKey, operatorKey }: { acc
           case "role": return send(res, 200, await a.setRole(by, need(b, "id", ID), need(b, "role", ROLE) as Role));
           case "disable": case "enable": return send(res, 200, await a.setDisabled(by, need(b, "id", ID), op === "disable"));
           case "link": return send(res, 200, await a.newLink(by, need(b, "id", ID)));
+          case "recovery_key_waiting": if (!by.owner) throw fail(403, "forbidden", "only the owner"); return send(res, 200, { waiting: recoveryKeyWaiting() });
           case "app_admins": return send(res, 200, { apps: a.apps.adminsByApp() });
           case "app_admin_set": return send(res, 200, await a.apps.assign(by.email, need(b, "app", APP), need(b, "email", EMAIL), need(b, "admin", (v) => typeof v === "boolean") ? "admin" : null));
         }

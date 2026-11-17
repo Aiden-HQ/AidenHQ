@@ -9,7 +9,7 @@
 #     ops/vm/setup.sh tampered after the copy);
 #   - the kernel token reaches setup's fetch, and never the checkout or the output; no key in the kernel's log;
 #   - the kernel answers from the checkout at the release's kernel sha, and the instance pins that release;
-#   - /setup takes the account, the TOTP enrolment, the keys and the recovery-key tick; a second /setup is refused.
+#   - /setup takes the account, the TOTP enrolment, the keys; the recovery key then shows once on /recovery-key; a second /setup is refused.
 #   sudo bash ops/test/unattended-install.sh   (root, git, node 24, kernel/ and scripts/ npm ci'd; it adds a user and
 #                                               /opt/aidenhq, so it runs only where /.dockerenv exists or CI is set)
 # Not in CI: our runners' job containers set no-new-privileges, so sudo can't reach root there. Run it in a container,
@@ -149,16 +149,14 @@ const want = (cond, what) => { if (!cond) { console.error(`FAIL ${what}`); proce
 const account = { token, email: "owner@example.com", name: "Owner", password: "correct horse battery staple", secret_openrouter_key: modelKey, secret_github_bot_token: ghKey };
 
 const page = await call("GET", u.pathname + u.search);
-want(page.status === 200 && page.text.includes("01234567 89abcdef") && page.text.includes('name="saved"'), "GET /setup shows the form and the vault recovery key");
+want(page.status === 200 && !page.text.includes("01234567") && !page.text.includes('name="saved"'), "GET /setup shows the form, and no recovery key");
 want(['name="secret_openrouter_key" type="password" autocomplete="off" maxlength="300" required', 'name="secret_github_bot_token"', 'name="secret_telegram_notify_bot_token"'].every((f) => page.text.includes(f)), "it asks for the keys the modules declare (the model key required)");
-const untick = await call("POST", "/setup", account);
-want(untick.status === 400 && /recovery key/.test(untick.text) && !untick.text.includes(modelKey), "a submit without the recovery-key tick is refused, the key not echoed");
-const badKey = await call("POST", "/setup", { ...account, saved: "yes", secret_openrouter_key: "not-a-key" });
+const badKey = await call("POST", "/setup", { ...account, secret_openrouter_key: "not-a-key" });
 want(badKey.status === 400 && /valid OpenRouter API key/.test(badKey.text) && (await call("GET", u.pathname + u.search)).status === 200, "a malformed model key is refused and the token stays unspent");
-const done = await call("POST", "/setup", { ...account, saved: "yes" });
+const done = await call("POST", "/setup", account);
 want(done.status === 303 && done.location === "/auth/enrol", `the submit makes the account and hands over to the authenticator (${done.status} ${done.location})`);
 want((await call("GET", u.pathname + u.search)).status === 410, "a second GET /setup is refused");
-want((await call("POST", "/setup", { ...account, saved: "yes" })).status === 410, "a second POST /setup is refused");
+want((await call("POST", "/setup", account)).status === 410, "a second POST /setup is refused");
 const csrfOf = (t) => /name="csrf" value="([0-9a-f]+)"/.exec(t)?.[1];
 const enrol = await call("GET", "/auth/enrol");
 const shown = await call("POST", "/auth/enrol", { csrf: csrfOf(enrol.text), password: account.password });
@@ -166,6 +164,11 @@ const key = /Key: <code>([A-Z2-7 ]+)<\/code>/.exec(shown.text)?.[1]?.replace(/ /
 want(shown.status === 200 && key, "the authenticator key is shown");
 const fin = await call("POST", "/auth/enrol", { csrf: csrfOf(shown.text), code: totp(key) });
 want(fin.status === 303 && fin.location === "/approvals", "the TOTP code finishes enrolment");
+const rk = await call("GET", "/recovery-key");
+want(rk.status === 200 && rk.text.includes("01234567 89abcdef"), "the recovery key shows on its own page after sign-in");
+const rkDone = await call("POST", "/recovery-key", { csrf: csrfOf(rk.text), choice: "saved" });
+want(rkDone.status === 303, "saving it redirects on");
+want(/No recovery key is waiting/.test((await call("GET", "/recovery-key")).text), "it is shown once");
 want((await call("GET", "/auth/password")).status === 200, "the owner is a signed-in admin with an authenticator");
 EOF
 # The RFC 6238 code, as the kernel's tests compute it (no dependency).

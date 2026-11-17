@@ -141,7 +141,7 @@ jobs.adopt();
 for (const sig of ["SIGTERM", "SIGINT", "SIGUSR2"] as const) process.on(sig, () => { log("stopping: jobs left running for the next kernel", { signal: sig, jobs: jobs.running() }); jobs.detach(); process.exit(0); });
 // The finish gate (checks.ts): modules' task.finish checks (compile), holds placed as the owner.
 const checks = createChecks({ db: records.db, registry: checksFile(path.join(configDir, "kernel", "checks.json")), owner: ownerApi, secret, resolver, log, agentKey: (id) => grantsTable().agents?.[id]?.key, graded: (id) => grantsTable().agents?.[id]?.graded === true });
-const backplane = createBackplane({ checks, whoami, asserter, grantsFile: grantsTable, log, writes, records, channels, brake, owner: ownerApi, modules: modulesFile, boardKey: () => secret("gateway_board_key"), reviews, runnerKey: () => secret("runner_writes_key"), reviewerKey: () => secret("reviewer_key"), jobs, advisories: advisories.list, accounts: createAuthApi({ accounts: () => accounts, whoami, boardKey: () => secret("gateway_board_key"), operatorKey: () => secret("board_operator_key") }), proxy: (req, res, c) => proxy(req, res, c!), cp: createCp({ whoami, asserter, controlUrl, launcherUrl, checks, log }) as never });
+const backplane = createBackplane({ checks, whoami, asserter, grantsFile: grantsTable, log, writes, records, channels, brake, owner: ownerApi, modules: modulesFile, boardKey: () => secret("gateway_board_key"), reviews, runnerKey: () => secret("runner_writes_key"), reviewerKey: () => secret("reviewer_key"), jobs, advisories: advisories.list, accounts: createAuthApi({ accounts: () => accounts, whoami, recoveryKeyWaiting: () => Boolean(firstRun.recoveryKey()), boardKey: () => secret("gateway_board_key"), operatorKey: () => secret("board_operator_key") }), proxy: (req, res, c) => proxy(req, res, c!), cp: createCp({ whoami, asserter, controlUrl, launcherUrl, checks, log }) as never });
 // The admin listener's accounts (data/kernel/auth/auth.db) and pages. Accounts not moved yet, or a malformed URL setting: the
 // listener refuses while every other part of the kernel serves.
 const urlOf = (v: string) => { try { return v ? new URL(v) : undefined; } catch { log("ignoring a malformed URL setting", { value: v.slice(0, 100) }); return undefined; } };
@@ -198,7 +198,7 @@ const firstRun = {
   save: (name: string, value: string) => { const f = path.join(secretsDir, name), tmp = `${f}.${randomBytes(6).toString("hex")}.tmp`; writeFileSync(tmp, value, { mode: 0o600, flag: "wx" }); renameSync(tmp, f); },
   forgetRecoveryKey: () => rmSync(path.join(secretsDir, "vault_recovery_key"), { force: true }),
 };
-const admin = accounts && createAdmin({ accounts, firstRun, uiOrigins, cards: channels, ownerMessage: (b) => channels.ownerMessageAs("web", b, () => Object.entries(grantsTable().agents ?? {}).find(([, g]) => g.key === "chief-of-staff")?.[0]), owner: ownerApi, hosts: () => adminHosts, origins: () => adminOrigins, frameOrigins: () => boardOrigins, log });
+const admin = accounts && createAdmin({ accounts, firstRun, uiOrigins, boardUrl: () => boardOrigins[0], cards: channels, ownerMessage: (b) => channels.ownerMessageAs("web", b, () => Object.entries(grantsTable().agents ?? {}).find(([, g]) => g.key === "chief-of-staff")?.[0]), owner: ownerApi, hosts: () => adminHosts, origins: () => adminOrigins, frameOrigins: () => boardOrigins, log });
 
 // Claimed records a restart left without an outcome: their executors say how they went (never replayed). Executors may
 // still be starting at boot, so once, a minute in.
