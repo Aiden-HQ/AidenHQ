@@ -6,7 +6,7 @@ import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import YAML from "yaml";
 import { BUNDLE } from "./bundle.mjs";
-import { checkEntries, compile, writeKinds, ensureOptionalSecrets, grantEntry, healthProbeAgent, hostMounts, LEGACY_HOST_ENV, LEGACY_LINKS, LEGACY_SECRETS, mapLimit, OPS_NETWORKS } from "../modules.mjs";
+import { checkEntries, compile, composeSecretFiles, writeKinds, ensureOptionalSecrets, grantEntry, healthProbeAgent, hostMounts, LEGACY_HOST_ENV, LEGACY_LINKS, LEGACY_SECRETS, mapLimit, OPS_NETWORKS } from "../modules.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const mods = join(here, "fixtures/mods");
@@ -288,6 +288,21 @@ test("optional secrets are created only where the secrets dir is really there (n
   assert.equal(readFileSync(join(dir, "telegram_notify_bot_token"), "utf8"), "");
   assert.deepEqual(ensureOptionalSecrets(dir, ["primer_service_key"], "slack_live_mcp_token", true), ["primer_service_key"]);
   assert.match(readFileSync(join(dir, "primer_service_key"), "utf8"), /^[0-9a-f]{64}$/);
+});
+test("an install with no model key: every secret file a service mounts exists before compose, the model key empty", () => {
+  const r = compile(product, pinst([], owner));
+  const files = composeSecretFiles(YAML.parse(readFileSync(join(product, "compose.yaml"), "utf8")), r.compose);
+  assert.ok(files.includes("openrouter_key"), "the board mounts the model key");
+  assert.ok(!files.includes("github_app"), "a folder mounted under another name is left alone");
+  const dir = mkdtempSync(join(tmpdir(), "sec-"));
+  writeFileSync(join(dir, "paperclip_auth_secret"), "x");
+  ensureOptionalSecrets(dir, r.generatedSecrets, "paperclip_auth_secret", true);
+  writeFileSync(join(dir, "telegram_service_key"), ""); // made empty earlier: still generated
+  ensureOptionalSecrets(dir, r.generatedSecrets, "paperclip_auth_secret", true);
+  ensureOptionalSecrets(dir, files, "paperclip_auth_secret");
+  assert.equal(readFileSync(join(dir, "openrouter_key"), "utf8"), "");
+  assert.match(readFileSync(join(dir, "telegram_service_key"), "utf8"), /^[0-9a-f]{64}$/);
+  for (const f of files) assert.doesNotThrow(() => readFileSync(join(dir, f)), f); // compose can mount every one
 });
 test("secrets the setup must not leave to a manual step are generated", () => {
   const g = compile(product, pinst(["primer"], owner)).generatedSecrets;

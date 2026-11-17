@@ -2,7 +2,7 @@
 // module apps (apps-mcp), compose services (compose.modules.yaml) and the module catalog. Pure: reads files, writes
 // nothing (scripts/compile.mjs writes). See docs/configuration.md.
 import { createHash, randomBytes } from "node:crypto";
-import { existsSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { join, relative, resolve } from "node:path";
 import YAML from "yaml";
 import { validateImages } from "./computers.mjs";
@@ -1412,9 +1412,21 @@ export function hostMounts(env) {
  */
 export function ensureOptionalSecrets(dir, names, known, generate = false) {
   if (!existsSync(join(dir, known))) return [];
-  const made = names.filter((n) => !existsSync(join(dir, n)));
+  // A generated token is never left empty (a file made empty earlier, before its module generated it).
+  const made = names.filter((n) => !existsSync(join(dir, n)) || (generate && statSync(join(dir, n)).size === 0));
   for (const n of made) writeFileSync(join(dir, n), generate ? randomBytes(32).toString("hex") : "", { mode: 0o600 });
   return made;
+}
+
+/**
+ * The secret files compose mounts as `<name>: { file: ${AIDENHQ_SECRETS_DIR}/<name> }`, from the given compose files. Each
+ * must exist before compose starts, or the service that mounts it can't (compile.mjs creates the missing ones empty: not set
+ * up yet, such as the model key before the first-run page). A secret mounted from another path (a folder such as github-app)
+ * is left to whatever makes it.
+ */
+export function composeSecretFiles(...composes) {
+  const file = /^\$\{AIDENHQ_SECRETS_DIR(?::?[-?][^}]*)?\}\/([A-Za-z0-9_.-]+)$/;
+  return [...new Set(composes.flatMap((c) => Object.entries(c?.secrets ?? {}).filter(([k, v]) => file.exec(String(v?.file ?? ""))?.[1] === k).map(([k]) => k)))];
 }
 
 /**
