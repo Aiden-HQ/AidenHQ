@@ -967,9 +967,10 @@ async function runAutoMerges() {
           gone.push(p);
           continue;
         }
-        if (pr?.state === "MERGED" || pr?.state === "CLOSED") gone.push(p);
-        // A stored number that names another change now never becomes a merge request or a card: it is said once, dropped.
-        else if (await staleStoredPr(issueId, { url: p.url, headRefName: pr?.headRefName })) gone.push(p);
+        // A stored number that names another change now never becomes a merge request or a card (nor reads as this branch's
+        // merge or close): it is said once, dropped. The identity is checked before anything the PR's state says is believed.
+        if (await staleStoredPr(issueId, { url: p.url, headRefName: pr?.headRefName })) gone.push(p);
+        else if (pr?.state === "MERGED" || pr?.state === "CLOSED") gone.push(p);
         else if (!/^[0-9a-f]{40}$/.test(pr?.headRefOid ?? "")) throw new UserError(`couldn't read ${p.url} on GitHub`);
         else read.push({ repo: p.repo, number: p.number, url: p.url, head: pr.headRefOid, noReview: true });
       }
@@ -2813,15 +2814,19 @@ async function executeApproval(a) {
 async function mergeAfterPublish(issue, a, out) {
   const prs = [];
   const missing = [];
+  const stale = [];
   for (const b of a.args.only) {
     const row = sameRepo(b.repo, cfg.productRepo) ? state.branches(issue.id).find((x) => sameRepo(x.repo, b.repo) && x.branch === b.branch) : undefined;
     const pr = row?.pr_url && !row.merged ? prQueue.findPrs(row.pr_url)[0] : undefined;
-    if (pr) prs.push({ ...pr, head: b.sha, noReview: true });
+    // The row's url is a stored number: one that names another change now is said stale, and never merged on this approval.
+    const real = pr ? (await mergeGithub.pr(pr.repo, pr.number).then((d) => d?.repository?.pullRequest, () => undefined)) : undefined;
+    if (pr && (await staleStoredPr(issue.id, { url: pr.url, headRefName: real?.headRefName }))) stale.push(`${b.repo} \`${b.branch}\``);
+    else if (pr) prs.push({ ...pr, head: b.sha, noReview: true });
     else missing.push(`${b.repo} \`${b.branch}\``);
   }
   const started = prs.length ? Boolean(await startMerges(issue, { prs, strict: true, during: true })) : false;
-  const said = [prs.length ? (started ? `Merging ${prs.map((p) => p.url).join(", ")} once green on the approved commit.` : "The merge didn't start (said on the task).") : "", missing.length ? `Not merged (no open PR): ${missing.join(", ")}.` : ""].filter(Boolean).join(" ");
-  return { ok: !missing.length && (started || !prs.length), text: `${out.text}\n\n${said}` };
+  const said = [prs.length ? (started ? `Merging ${prs.map((p) => p.url).join(", ")} once green on the approved commit.` : "The merge didn't start (said on the task).") : "", missing.length ? `Not merged (no open PR): ${missing.join(", ")}.` : "", stale.length ? `Not merged (the stored PR number is stale, said above): ${stale.join(", ")}.` : ""].filter(Boolean).join(" ");
+  return { ok: !missing.length && !stale.length && (started || !prs.length), text: `${out.text}\n\n${said}` };
 }
 
 /** Outcomes wait here until the kernel takes them (an apply restarts it): kept in state, retried every poll. */
@@ -3334,8 +3339,12 @@ async function agentMerge(ctx, args) {
   const outside = prs.filter((p) => !repoAllowed(normalizeRepo(p.repo), cfg.allowed_orgs));
   if (outside.length) throw new UserError(`Only PRs in ${cfg.allowed_orgs.join(", ")} can be merged: ${outside.map((p) => p.url).join(", ")}.`);
   const gap = Number.isInteger(args.gap) && args.gap >= 0 && args.gap <= 720 ? args.gap : undefined;
-  // Every PR already merged: no card, evidence instead.
+  // Every PR already merged: no card, evidence instead. Only after each is confirmed as the task's own PR (a stored number
+  // that now names another change is said stale, never counted as this task's merged work).
   const read = await Promise.all(prs.map((p) => mergeGithub.pr(p.repo, p.number).then((d) => d?.repository?.pullRequest, () => null)));
+  for (const [i, pr] of read.entries()) {
+    if (await staleStoredPr(ctx.issue.id, { url: prs[i].url, headRefName: pr?.headRefName })) throw new UserError(`Not merged: the PR number stored on this task is stale, so ${prs[i].url} is not this task's change.`);
+  }
   if (read.every((pr) => pr?.state === "MERGED"))
     return alreadyApplied(ctx.issue, "merge", prs.map((p) => p.url).join(","), prs.map((p, i) => `${p.url} is already merged${read[i].mergeCommit?.oid ? ` (merge commit \`${read[i].mergeCommit.oid.slice(0, 12)}\`)` : ""}`).join("; "));
   // Each card is bound to the PR's current head; in the agents org and the product repo the tap (or the reviewer's

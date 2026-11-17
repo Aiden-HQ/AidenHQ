@@ -91,6 +91,17 @@ scenario("a merge request", ({ t, setPrs, stored, stale, merged, mergeCards }) =
     assert.equal(mergeCards().length, 0, "no card for a PR this task doesn't own");
   });
 
+  it("a stored number that now names another branch is stale even when that PR reads as merged", async () => {
+    stored("feat/ours", url(21));
+    setPrs({ 21: { branch: "fix/theirs", files: ["x.txt"], checks: "SUCCESS", merged: true } });
+    t.step("none\naidenhq merge https://github.com/acme/app/pull/21");
+    await t.turn("Merge it.");
+    const call = t.toolRuns().at(-1);
+    assert.equal(call.code, 1, call.out);
+    assert.match(stale(21)[0], /its head branch is `fix\/theirs`, not the task's `feat\/ours`/);
+    assert.ok(!t.toolRuns().at(-1).out.includes("is already merged"), "another change's merge is not this task's evidence");
+  });
+
   it("a stored number that still names the task's branch gets its merge card as before", async () => {
     stored("feat/ours", url(14));
     setPrs({ 14: { branch: "feat/ours", files: ["x.txt"], checks: "SUCCESS" } });
@@ -128,6 +139,17 @@ scenario("the automatic merges", ({ t, setPrs, restart, stored, askMerge, stale,
     await t.idle(800);
     assert.match(stale(16)[0], /its head branch is `fix\/theirs`/);
     assert.equal(mergeCards().length, 0, "no card for a PR the task doesn't own");
+  });
+
+  it("a stored number that now names another branch is stale even when that PR reads as merged", async () => {
+    stored("feat/ours", url(22));
+    askMerge(22, url(22));
+    setPrs({ 22: { branch: "fix/theirs", files: ["x.txt"], checks: "SUCCESS", merged: true } });
+    await restart();
+    await t.waitFor("the stale line", () => stale(22).length === 1);
+    await t.idle(800);
+    assert.match(stale(22)[0], /its head branch is `fix\/theirs`/);
+    assert.equal(mergeCards().length, 0);
   });
 
   it("a stored number that still names the task's branch is merged as before", async () => {
