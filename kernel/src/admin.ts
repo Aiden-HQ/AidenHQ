@@ -37,6 +37,8 @@ type Deps = {
   frameOrigins: () => string[];
   /** Module UI origins a session may be handed to (/auth/handoff), each with its module: the board's origins. */
   uiOrigins?: () => Record<string, string>;
+  /** The board's front door: /recovery-key sends the owner on to its welcome. */
+  boardUrl?: () => string | undefined;
   log?: (msg: string, f?: Record<string, unknown>) => void;
 };
 
@@ -57,6 +59,8 @@ export const ROUTES = [
   { method: "POST", path: "/auth/password", auth: "admin+csrf" },
   { method: "POST", path: "/auth/sign-out", auth: "origin" },
   { method: "GET", path: "/auth/handoff", auth: "admin" },
+  { method: "GET", path: "/recovery-key", auth: "admin" },
+  { method: "POST", path: "/recovery-key", auth: "admin+csrf" },
   { method: "GET", path: "/", auth: "admin" },
   { method: "GET", path: "/approvals", auth: "admin" },
   { method: "GET", path: "/approvals/:id", auth: "admin" },
@@ -133,7 +137,7 @@ export function createAdmin(d: Deps) {
   const err = (m: string) => `<p class="err">${esc(m)}</p>`;
   // Never re-renders a submitted secret: only the email and name come back after a refusal.
   const setupPage = (token: string, fr: NonNullable<Deps["firstRun"]>, msg = "", v: { email?: string; name?: string } = {}) => {
-    const fixed = fr.ownerEmail(), rk = fr.recoveryKey();
+    const fixed = fr.ownerEmail();
     const field = (f: SetupField) => {
       const need = f.required && !fr.has(f.secret);
       return `<label>${esc(f.label)}${need ? "" : " (optional)"}<input name="secret_${esc(f.secret)}" type="password" autocomplete="off" maxlength="300"${need ? " required" : ""}></label><p class="muted">${fr.has(f.secret) ? "One is already in the vault; leave this empty to keep it. " : ""}${esc(f.help ?? "")}</p>`;
@@ -143,7 +147,6 @@ export function createAdmin(d: Deps) {
 <label>Name<input name="name" maxlength="100" value="${esc(v.name ?? "")}"></label><label>Password (12 characters or more)<input name="password" type="password" autocomplete="new-password" minlength="12" maxlength="128" required></label>
 <p class="muted">An authenticator app is set up next: admins sign in with a code from it.</p>
 <h2>Keys and channels</h2><p class="muted">Each key goes into the vault, read only by the part that uses it.</p>${fr.fields().map(field).join("")}
-${rk ? `<h2>Vault recovery key</h2><p>Shown once. Without it, a vault whose sealed password is lost can't be opened.</p><pre>${esc(rk.replace(/(.{8})/g, "$1 ").trim())}</pre><label><input type="checkbox" name="saved" value="yes" required style="width:auto"> I saved the recovery key somewhere safe</label>` : ""}
 <button class="b">Finish setup</button>`)}`);
   };
   function cardHtml(a: Card, s: AdminSession, full: boolean) {
@@ -192,13 +195,11 @@ ${rk ? `<h2>Vault recovery key</h2><p>Shown once. Without it, a vault whose seal
             : name.length > 100 || /[\p{Cc}\p{Cf}]/u.test(name) ? "The name has characters it can't take."
             : password.length < 12 || password.length > 128 ? "The password needs 12 to 128 characters."
             : invalid ? `That isn't a valid ${invalid.label}.`
-            : missing ? `Enter the ${missing.label}.`
-            : fr.recoveryKey() && f.get("saved") !== "yes" ? "Tick that you saved the vault recovery key." : "";
+            : missing ? `Enter the ${missing.label}.` : "";
           if (bad) return send(res, 400, setupPage(token, fr, err(bad), { email, name }));
           const account = await d.accounts.claimSetup(token, { email, name, password }).catch((e: Error & { status?: number }) => { throw new Refusal(e.status ?? 500, e.message); });
           const given = keys.filter((k) => k.value);
           for (const k of given) fr.save(k.secret, k.value);
-          fr.forgetRecoveryKey();
           log("first-run setup done", { account: account.id, secrets: given.map((k) => k.secret) });
           const r = await step(req, "/sign-in/email", { email, password });
           return redirect(res, r.ok ? "/auth/enrol" : "/auth/sign-in", r.cookies);
@@ -259,6 +260,21 @@ ${rk ? `<h2>Vault recovery key</h2><p>Shown once. Without it, a vault whose seal
           const code = d.accounts.mintUiCode(s, module, to, state);
           log("session handed to a module", { module, origin: to, by });
           return redirect(res, `${to}/auth/handoff?${new URLSearchParams({ code, state })}`);
+        }
+        case "GET /recovery-key": {
+          if (!s.account.owner) throw new Refusal(403, "only the owner sees the recovery key");
+          const rk = d.firstRun?.recoveryKey();
+          if (!rk) return send(res, 200, doc("Recovery key", `<h1>Vault recovery key</h1><p>No recovery key is waiting.</p>`, s));
+          const file = `AidenHQ vault recovery key\n${rk}\n`;
+          return send(res, 200, doc("Recovery key", `<h1>Vault recovery key</h1><p>Shown once. Without it, a vault whose sealed password is lost can't be opened. Store it somewhere safe, such as a password manager.</p><pre style="user-select:all">${esc(rk.replace(/(.{8})/g, "$1 ").trim())}</pre><p><a href="data:text/plain;charset=utf-8,${encodeURIComponent(file)}" download="aidenhq-recovery-key.txt">Download as a file</a> <span class="muted">(or click the key to select it, then copy)</span></p>${form("/recovery-key", `<label><input type="radio" name="choice" value="saved" required style="width:auto"> I saved it somewhere safe</label><label><input type="radio" name="choice" value="decline" style="width:auto"> I don't want a recovery key</label><button class="b">Continue</button>`, s)}`, s));
+        }
+        case "POST /recovery-key": {
+          if (!s.account.owner) throw new Refusal(403, "only the owner sees the recovery key");
+          const choice = f.get("choice");
+          if (choice !== "saved" && choice !== "decline") throw new Refusal(400, "choose saved or decline");
+          d.firstRun?.forgetRecoveryKey();
+          log("recovery key shown once", { choice, by });
+          return redirect(res, d.boardUrl?.() ? `${d.boardUrl()}/#/welcome` : "/approvals");
         }
         case "GET /auth/password": return send(res, 200, doc("Change password", `<h1>Change password</h1>${form("/auth/password", `<label>Current password<input name="current" type="password" autocomplete="current-password" required></label><label>New password (12 characters or more)<input name="password" type="password" minlength="12" autocomplete="new-password" required></label><button class="b">Change</button>`, s)}`, s));
         case "POST /auth/password": {
