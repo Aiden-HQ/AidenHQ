@@ -10,10 +10,11 @@ import { fileURLToPath } from "node:url";
 import { hostFetch, OFFICIAL, repoAt, sourceOf, type Fetch, type Where } from "./sources.ts";
 
 type Dict = Record<string, unknown>;
-export type Resolved = { name: string; kernel: string; marketplace: { name: string; source: unknown; sha: string }; modules: Record<string, string> };
+export type Resolved = { name: string; kernel: string; marketplace: { name: string; source: unknown; sha: string }; modules: Record<string, string>; images: Record<string, string> };
 
 const SHA = /^[0-9a-f]{40}$/;
 const NAME = /^\d{4}\.\d{1,2}(\.\d+)?$/;
+const IMAGE = /^[a-z0-9][a-z0-9.-]*(:[0-9]+)?(\/[a-z0-9][a-z0-9._-]*)+@sha256:[0-9a-f]{64}$/;
 const isMap = (v: unknown): v is Dict => !!v && typeof v === "object" && !Array.isArray(v);
 const sha = (v: unknown, what: string) => {
   if (typeof v !== "string" || !SHA.test(v)) throw new Error(`release: ${what} must be a 40-character sha (got ${JSON.stringify(v)?.slice(0, 50)})`);
@@ -45,6 +46,13 @@ export function resolveRelease(file: unknown, instance: Dict): Resolved {
   const marketplace = { name: OFFICIAL, source: m.source, sha: sha(m.sha, "marketplace.sha") };
   const modules: Record<string, string> = {};
   for (const [k, v] of Object.entries(file.modules)) modules[k] = sha(v, `modules.${k}`);
+  // images: the prebuilt images of this release (name -> registry/repo@sha256:...), which apply pulls instead of building.
+  const images: Record<string, string> = {};
+  if (file.images != null && !isMap(file.images)) throw new Error("release: images must be a map of name to image@sha256:digest");
+  for (const [k, v] of Object.entries(file.images ?? {})) {
+    if (typeof v !== "string" || !IMAGE.test(v)) throw new Error(`release: images.${k} must be registry/name@sha256:<digest>`);
+    images[k] = v;
+  }
   for (const e of Array.isArray(instance.modules) ? instance.modules : []) {
     if (!isMap(e) || e.sha == null) continue;
     const [name, mkt] = String(e.id).split("@");
@@ -55,7 +63,7 @@ export function resolveRelease(file: unknown, instance: Dict): Resolved {
     const [a, b] = [sourceOf(own.source, "instance.yaml marketplaces", undefined, own.sha, true), sourceOf(marketplace.source, "release marketplace", undefined, marketplace.sha, true)];
     if (a.url !== b.url || a.path !== b.path || a.sha !== b.sha) throw new Error(`release ${file.release}: instance.yaml's ${OFFICIAL} marketplace (${a.url} at ${a.sha.slice(0, 12)}) isn't the release's (${b.url} at ${b.sha.slice(0, 12)})`);
   }
-  return { name: file.release, kernel, marketplace, modules };
+  return { name: file.release, kernel, marketplace, modules, images };
 }
 
 /** The release instance.yaml pins, read from the distro repo at exactly its sha, and resolved; null without one. */
@@ -86,7 +94,7 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
     const { default: YAML } = await import("yaml");
     const instance = (YAML.parse(readFileSync(process.argv[2] ?? "", "utf8")) ?? {}) as Dict;
     const r = readRelease(instance, hostFetch(resolve(import.meta.dirname, "../../..")));
-    console.log(r ? `release: ${r.name}, kernel ${r.kernel.slice(0, 12)}, marketplace ${OFFICIAL} at ${r.marketplace.sha.slice(0, 12)}, ${Object.keys(r.modules).length} modules` : "release: none");
+    console.log(r ? `release: ${r.name}, kernel ${r.kernel.slice(0, 12)}, marketplace ${OFFICIAL} at ${r.marketplace.sha.slice(0, 12)}, ${Object.keys(r.modules).length} modules, ${Object.keys(r.images).length} prebuilt images` : "release: none");
   } catch (e) {
     console.error(`release: refused (${String((e as Error).message ?? e).split("\n")[0]})`);
     process.exitCode = 2;
