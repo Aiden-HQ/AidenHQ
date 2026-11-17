@@ -15,7 +15,7 @@ ENV NODE_ENV=production
 RUN npm install -g npm@11.21.2 && npm cache clean --force
 # pdftotext: attached PDFs get a text version the agents can read. git: the Handbook tab's history of the mounted instance repo
 # (src/agent-handbook.ts; it reads with safe.directory set, as the mount's owner isn't the board's user).
-RUN apt-get update && apt-get install -y --no-install-recommends poppler-utils git=1:2.39.5-0+deb12u3 && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y --no-install-recommends poppler-utils git && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
 COPY --from=build /app/node_modules ./node_modules
 COPY --from=build /app/dist ./dist
