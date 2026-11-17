@@ -4,6 +4,8 @@
 // acme/app read as open (also in the open-PR list), their head the branch's tip on the fake GitHub, and merge (logged; the PR
 // reads as merged after). `checks`: SUCCESS, FAILURE or PENDING (still running); `author`: "dependabot" for Dependabot's;
 // `mergeable`: CONFLICTING for a conflict with main; `base`: the base branch (main when unset), stacked on another PR's branch.
+// `merged: true` reads as GitHub's own merged PR: `mergedAt` and a merge commit (`merge`, else the head's tip). `baseFiles`
+// are the paths the base changed after the merge (none: unchanged since). A branch's PRs come from `gh pr list --head`.
 // `checks` may also be NONE (no checks on the head yet); `title` and `body` are the PR's own text, as GitHub returns it. Also
 // the default branch, a branch's PRs, a retarget, a close, a comment, and an update of a PR's head with its base (a merge commit).
 // `red: [<word>…]` (in place of `checks`): the PR's nth head has one Actions check run, `test`, failed with "Error: expected
@@ -41,6 +43,15 @@ if (args[0] === "pr" && args[1] === "view" && existsSync(move)) {
   log("moved", { branch });
 }
 const fixture = join(dir, "github-prs.json");
+// A branch's PRs (`gh pr list --head <branch> --state all`): the fixture's PRs whose `branch` is that head.
+if (args[0] === "pr" && args[1] === "list" && args.includes("--head") && existsSync(fixture)) {
+  const head = args[args.indexOf("--head") + 1];
+  const found = Object.entries(JSON.parse(readFileSync(fixture, "utf8")))
+    .filter(([, q]) => q.branch === head)
+    .map(([number, q]) => ({ number: Number(number), state: q.merged ? "MERGED" : q.closed ? "CLOSED" : "OPEN" }));
+  console.log(JSON.stringify(found));
+  process.exit(0);
+}
 // The live state a run and `aidenhq status` read (`gh pr view <url> --json state,…`): those PRs read as open, with their checks.
 if (args[0] === "pr" && args[1] === "view" && args[4] === "state,isDraft,reviewDecision,mergeStateStatus,statusCheckRollup" && existsSync(fixture)) {
   const p = JSON.parse(readFileSync(fixture, "utf8"))[/\/pull\/(\d+)$/.exec(args[2])?.[1]];
@@ -158,6 +169,14 @@ if (field("query")?.includes("stacked: pullRequests")) {
   console.log(JSON.stringify({ data: { repository: { ref: /^0+$/.test(tipOf) ? null : { target: { oid: tipOf } }, heads: { pageInfo: { hasNextPage: false }, nodes: heads }, stacked: { totalCount: stacked } } } }));
   process.exit(0);
 }
+// The base's files changed since a merge commit (siblings.ts BASE_FILES_QUERY): main's tip, and the fixture's `baseFiles`
+// changed since the merge (none when the base still sits at it), so a sibling reads as unchanged or named.
+if (field("query")?.includes("qualifiedName: $base") && field("query")?.includes("compare(headRef")) {
+  const base = (field("base") ?? "refs/heads/main").replace(/^refs\/heads\//, "");
+  const files = Object.values(prs).flatMap((q) => q.baseFiles ?? []);
+  console.log(JSON.stringify({ data: { repository: { ref: { target: { oid: tip(base) } }, object: { compare: { files: { pageInfo: { hasNextPage: false }, nodes: files.map((path) => ({ path })) } } } } } }));
+  process.exit(0);
+}
 // A commit's checks (merges.mjs COMMIT_QUERY): green.
 if (field("query")?.includes("object(oid")) {
   console.log(JSON.stringify({ data: { repository: { object: { committedDate: new Date().toISOString(), statusCheckRollup: rollup("SUCCESS") } } } }));
@@ -228,6 +247,8 @@ if (args.includes("PATCH") && field("state") === "closed") {
   }
   const pullRequest = {
     id: `PR_${number}`, number: Number(number), title: p.title ?? `PR ${number}`, body: p.body ?? "", url: `https://github.com/acme/app/pull/${number}`, state: p.merged ? "MERGED" : "OPEN", isDraft: false, reviewDecision: null,
+    mergedAt: p.merged ? (p.mergedAt ?? "2026-11-01T10:00:00Z") : null, mergeCommit: p.merged ? { oid: p.merge ?? tip(p.branch) } : null,
+    files: { pageInfo: { hasNextPage: false }, nodes: (p.files ?? []).map((path) => ({ path })) },
     mergeStateStatus: p.mergeable === "CONFLICTING" ? "DIRTY" : "CLEAN", headRefOid: tip(p.branch), headRefName: p.branch, isCrossRepository: false, baseRefName: p.base ?? "main", latestOpinionatedReviews: { nodes: [] },
     commits: { nodes: [{ commit: { ...commits(p).nodes[0].commit, parents: { nodes: parents(tip(p.branch)) } } }] },
     baseRef: { target: { oid: tip(p.base ?? "main"), statusCheckRollup: rollup("SUCCESS") } },
