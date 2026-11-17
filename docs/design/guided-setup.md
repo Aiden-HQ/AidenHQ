@@ -264,7 +264,7 @@ for secrets. This is a new privileged kernel action, so:
 
 ### Part 3b: guided Google setup (later, not in the wizard)
 
-A step card for `google` (`kind: guide`: numbered instructions, a structured secret, then `oauth`; `in_wizard: false`),
+The `google` module card (instructions, the client id and secret as a structured secret, then Connect; `wizard: false`),
 opened from Settings → Setup guide or by Aiden ("set up Google"). It works like this:
 1. If the board has no name (bare IP), it explains why Google needs one and offers Tailscale or a domain; it stops there.
 2. Otherwise it gives numbered steps with screenshots and copy buttons:
