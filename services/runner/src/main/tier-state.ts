@@ -26,7 +26,8 @@ import { cardBases, githubDefault, withTrusted } from "./approvals.ts";
 import { fleetBranch, fleetDiffText, productBump, readGrants } from "./apply-path.ts";
 import { prRequest } from "./pr-path.ts";
 import { createRepoText } from "./commands.ts";
-import { MovedHead, branchRows, findRealGh, prepareWorkspace } from "./unsplit.ts";
+import { MovedHead } from "./jobs.ts";
+import { branchRows, findRealGh, prepareWorkspace } from "./unsplit.ts";
 
 // ------------------------------------------------------------------ approval records
 

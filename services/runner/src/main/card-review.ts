@@ -13,7 +13,7 @@ import { tellParent } from "./grading.ts";
 import { autonomyNow, commonTierState, currentTier, kernel, keyIn } from "./tier-state.ts";
 import { cardContext } from "./approvals.ts";
 import { prRequest, reviewedLine, reviewedRefsOf } from "./pr-path.ts";
-import { MovedHead } from "./unsplit.ts";
+import { MovedHead } from "./jobs.ts";
 
 /** A module kind's record or kernel.raise_cap: tiered by the kernel, not by classify(). Its diff is its card. */
 const notRunners = (a: any) => !/^(runner\.|kernel\.apply$)/.test(a.kind);

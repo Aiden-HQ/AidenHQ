@@ -15,6 +15,7 @@ import "./main/approvals.ts";
 import "./main/apply-path.ts";
 import "./main/pr-path.ts";
 import "./main/commands.ts";
+import "./main/jobs.ts";
 import { adoptRuns, loop, saveMetrics, shutdown } from "./main/unsplit.ts";
 
 // ------------------------------------------------------------------ main
