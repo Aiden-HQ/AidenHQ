@@ -24,7 +24,7 @@ import { ApprovalsView } from "./Chat";
 import { clearCache, load, peek, setAccount } from "./cache";
 import { subscribe } from "./events";
 import type { AgentTab } from "./AgentPage";
-import { VIEW_CHUNKS, prefetchView } from "./queries";
+import { QUERIES, VIEW_CHUNKS, prefetchView, useQuery } from "./queries";
 import { ChatWorkspace } from "./Workspace";
 import { askForNotifications, notificationsSupported, watchNeedsYou } from "./notify";
 import { CardView, GearIcon, GoogleBanner, PlusIcon, PoweredBy, SignInBanners, SortableCard, memberIssue } from "./components";
@@ -33,6 +33,7 @@ import { SetupFlow } from "./SetupFlow";
 import { Markdown, setSlackTeams } from "./markdown";
 import { BUCKETS, BUCKET_NAMES, type Board, type Bucket, type Card } from "./types";
 import { dayDate, matches } from "./util";
+import { panelsOf } from "./sidebar";
 
 // Pages off the first screen load as their own chunks (warmed on hover and when the browser is idle: queries.ts).
 const ActivityView = lazy(() => VIEW_CHUNKS.activity().then((m) => ({ default: m.ActivityView })));
@@ -579,6 +580,7 @@ export function App() {
   const mergeTargets = BUCKETS.flatMap((b) => items[b]).filter((c) => c.assignee === "me" && !c.recurring);
   const openChat = (identifier: string) => go(`#/c/${identifier}`);
   const tabs = TABS;
+  const panels = panelsOf(useQuery(QUERIES.apps, signInNeeded).data?.apps ?? []);
   const onBoard = view === "board";
   // A chat (or a settings category) open on a phone takes the whole screen (back arrow to the list).
   const chatFull = mobile && ((view === "chat" && route.kind === "chat") || (view === "settings" && route.kind === "settings" && route.cat !== null));
@@ -605,6 +607,12 @@ export function App() {
                 {name}
                 {v === "approvals" && approvalsOpen > 0 && <span className="btn-count needs">{approvalsOpen}</span>}
               </button>
+            ))}
+            {panels.map((p) => (
+              <a key={p.name} className="btn panel-link" href={p.url} target="_blank" rel="noopener noreferrer" title={`${p.label} opens in a new tab`}>
+                {p.label}
+                <span aria-hidden> ↗</span>
+              </a>
             ))}
           </nav>
         )}
@@ -664,6 +672,11 @@ export function App() {
               {name}
               {v === "approvals" && approvalsOpen > 0 && <span className="count">{approvalsOpen}</span>}
             </button>
+          ))}
+          {panels.map((p) => (
+            <a key={p.name} className="panel-link" href={p.url} target="_blank" rel="noopener noreferrer">
+              {p.label} ↗
+            </a>
           ))}
           {BUCKETS.map((b) => (
             <button key={b} className={view === "board" && b === tab ? "on" : ""} onClick={() => (setTab(b), setView("board"))}>
