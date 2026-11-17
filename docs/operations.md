@@ -325,10 +325,8 @@ org) or `aidenhq-ci-runner@<org>-<n>` unit (another org the App is installed on)
 `ops/ci-runner.sh`: it mints a one-hour registration token on the host from the GitHub App
 (`ops/ci-runner-token.mjs [org]`, installation token narrowed to `organization_self_hosted_runners`), then
 `docker compose run --rm ci-runner`: a new container that registers ephemerally, takes one job, exits and is removed;
-the unit then starts the next. Nothing carries between jobs but a read-only npm seed: `ops/ci-runner.sh` fills `data/ci-npm-cache/<org>/<ISO week>` on the host with
-`npm ci --ignore-scripts` over this checkout's lockfiles and gives each job its own throwaway copy as the runner's `~/.npm`, deleted when
-the job ends (no job writes a cache another reads; a new seed each week; per org, since runners are org-level, never per repo;
-`npm ci` also checks each tarball against the lockfile's integrity). The container has no other host mount, no docker socket and none of the instance's secrets; it sits on `aidenhq-ci` (system unit `aidenhq-ci-net`: the public Internet and, on the host,
+the unit then starts the next. Nothing carries between jobs. The container has no host mounts, no docker socket and none
+of the instance's secrets; it sits on `aidenhq-ci` (system unit `aidenhq-ci-net`: the public Internet and, on the host,
 only the model gateway's CI listener `10.231.4.1:8201`; no LAN, tailnet, other host ports or other containers). Limits
 per runner: 4 CPUs, 8 GB.
 
