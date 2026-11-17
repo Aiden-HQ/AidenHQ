@@ -118,7 +118,7 @@ owner's own fork, using the owner's connected GitHub bot account (a fine-grained
 pull requests on public repositories). Humans follow the same rules. Everything below is also what a reviewing agent
 checks.
 
-- **Use the forms.** Issues use `.github/ISSUE_TEMPLATE/` (bug report or feature request); blank issues are off. Write the
+- **Use the forms.** Issues use `.github/ISSUE_TEMPLATE/` (bug report, feature request or module request); blank issues are off. Write the
   body in the form's layout (`### <Field label>` then the value) so it parses, and fill every required field: product
   version or sha (`product:` in `instance.yaml`), module and version, reproduction, evidence, origin and fingerprint.
   PRs fill `.github/pull_request_template.md`.
@@ -143,6 +143,9 @@ checks.
   only open PRs the owner has authorised.
 - **CI for fork PRs runs on GitHub-hosted runners only**, with no secrets and no access to our self-hosted runners. Don't
   expect a deploy, a reviewer-eval or anything else that needs a secret to run on your PR; the maintainer runs those.
+  Those hosted checks are advisory, not required: the maintainer's own review and our self-hosted CI decide the merge.
+  `scripts/supply-chain/fork-lint.mjs` (run by the scripts suite) fails any workflow change that lets a fork PR reach a
+  self-hosted runner.
 
 ### How community PRs are reviewed
 
