@@ -2,9 +2,9 @@
   "kernel": 6030,
   "sdk": 396,
   "core": 17428,
-  "trusted": 36399,
+  "trusted": 26697,
   "coupling": 855,
   "core_coupling": 3141,
   "settings": 8,
-  "killswitches": 3
+  "killswitches": 0
 }

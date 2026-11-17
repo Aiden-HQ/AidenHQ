@@ -1,7 +1,0 @@
-{
-  "type": "object", "additionalProperties": false, "required": ["name", "caller", "method", "path"],
-  "properties": {
-    "name": { "type": "string", "pattern": "^[a-z][a-z0-9-]{1,30}$" }, "caller": { "type": "string", "maxLength": 64 },
-    "method": { "enum": ["GET", "POST", "PUT", "PATCH", "DELETE"] }, "path": { "type": "string", "maxLength": 2000 }, "body": {}
-  }
-}

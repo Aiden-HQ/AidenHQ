@@ -2,11 +2,15 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
+import { readdirSync } from "node:fs";
+import { join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 import { GATE_CORE, coverageProblems } from "../../../modules/platform/src/check.mjs";
 
 const repoRoot = fileURLToPath(new URL("../../..", import.meta.url));
-const files = execFileSync("git", ["ls-files", "-z"], { cwd: repoRoot, maxBuffer: 64 << 20, encoding: "utf8" }).split("\0").filter(Boolean);
+// The product's files and the official modules at ./modules (their own repository since 5b, put there at its pin).
+const modules = readdirSync(join(repoRoot, "modules"), { recursive: true, withFileTypes: true }).filter((e) => e.isFile()).map((e) => relative(repoRoot, join(e.parentPath, e.name))).filter((f) => !/(^|\/)(node_modules|\.git|dist)\//.test(f) && f !== "modules/.sha");
+const files = [...execFileSync("git", ["ls-files", "-z"], { cwd: repoRoot, maxBuffer: 64 << 20, encoding: "utf8" }).split("\0").filter(Boolean), ...modules];
 const moved = (from, to) => files.map((f) => (f === from ? to : f));
 
 test("every gate file is covered and every entry is used", () => assert.deepEqual(coverageProblems(files), []));
