@@ -78,6 +78,7 @@ case "$1" in
   inspect)
     id=$(printf '%s' "\${@: -1}")
     case "$*" in
+      *'compose.oneoff'*) cat "$dir/labels-$id" 2>/dev/null ;;
       *'{{.Name}}'*) cat "$dir/name-$id" 2>/dev/null ;;
       *'{{.State.Running}}'*) cat "$dir/running-$id" 2>/dev/null ;;
       *'com.docker.compose.image'*) cat "$dir/imageof-$id" 2>/dev/null ;;
@@ -97,7 +98,7 @@ exit 0
 `;
 
 /**
- * containers: id → { name, running, image, hash } (what `docker inspect` prints for each).
+ * containers: id → { name, running, image, hash, labels ("<oneoff> <service>") } (what `docker inspect` prints for each).
  * services: the services this config runs; hashes: service → its compose config hash.
  * up: what `docker compose up` does, in order: [output, exit code]. rmFails: id → the error `docker rm` gives.
  */
@@ -113,6 +114,7 @@ function fixture({ containers = {}, services, hashes = {}, up = [["", 0]], rmFai
     writeFileSync(join(dir, `running-${id}`), `${c.running}\n`);
     if (c.image) writeFileSync(join(dir, `imageof-${id}`), `${c.image}\n`);
     if (c.hash) writeFileSync(join(dir, `hashof-${id}`), `${c.hash}\n`);
+    if (c.labels) writeFileSync(join(dir, `labels-${id}`), `${c.labels}\n`);
   }
   for (const [id, err] of Object.entries(rmFails)) writeFileSync(join(dir, `rm-${id}`), `${err}\n`);
   up.forEach(([out, code], i) => {
@@ -181,6 +183,20 @@ test("running containers and services still in the config are left alone", async
   assert.equal(r.status, 0, r.out);
   assert.deepEqual(removals(r), ["docker rm orphan1"], "only the stopped <12hex>_…-1 leftover is removed");
   assert.deepEqual(calls(r, "docker stop "), [], "nothing is stopped");
+});
+
+test("a running container of a service the config dropped is stopped and removed; a CI one-off and kept services never are", async () => {
+  const r = await apply(fixture({
+    services,
+    containers: {
+      board1: { name: "/aidenhq-board-1", running: "true", labels: "False board" },
+      gh1: { name: "/aidenhq-github-mcp-1", running: "true", labels: "False github-mcp" },
+      [ciRunnerId]: { name: `/${ciRunner}`, running: "true", labels: "True ci-runner" },
+    },
+  }));
+  assert.equal(r.status, 0, r.out);
+  assert.deepEqual(removals(r), ["docker rm -f gh1"]);
+  assert.match(r.out, /compose: github-mcp removed \(no longer in the config\)/);
 });
 
 test("a leftover that is already being removed when apply reaches it is tolerated", async () => {

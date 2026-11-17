@@ -36,6 +36,7 @@ const out = stage ? "config.next" : "config";
 fs.mkdirSync(out + "/kernel", { recursive: true });
 fs.writeFileSync(out + "/paperclip.yaml", inst + v);
 fs.writeFileSync(out + "/kernel/connections.json", "{}\\n");
+fs.writeFileSync(out + "/modules.json", JSON.stringify({ modules: /^modules: (.*)$/m.exec(inst)?.[1] ?? "" }) + "\\n");
 fs.writeFileSync(stage ? "compose.modules.next.yaml" : "compose.modules.yaml", "services: {}\\n# " + v);
 const dv = fs.existsSync("DATA_VERSION") ? Number(fs.readFileSync("DATA_VERSION", "utf8")) : 0;
 fs.writeFileSync(out + "/module-data.json", JSON.stringify({ acme: { data_version: dv, services: "s" } }));
@@ -212,6 +213,21 @@ test("a product_fork on top of the pin is what runs (and is recorded); one off t
   const local = await w.run();
   assert.equal(local.status, 1, local.out);
   assert.match(local.out, /refusing: couldn't fetch product_fork/);
+});
+
+test("a change to the instance's module set alone restarts the runner (it reads config/modules.json once)", async () => {
+  const w = world();
+  const restarts = () => (w.calls().match(/systemd-run .*SIGUSR2 aidenhq-runner/g) ?? []).length;
+  assert.equal((await w.run()).status, 0);
+  const first = restarts();
+  w.commitInstance(w.p1, "modules: [codehost-local]\n");
+  const r = await w.run();
+  assert.equal(r.status, 0, r.out);
+  assert.equal(restarts(), first + 1, r.out);
+  assert.match(r.out, /module set changed: restart once idle/);
+  w.commitInstance(w.p1, "modules: [codehost-local]\nnote: unrelated\n");
+  assert.equal((await w.run()).status, 0);
+  assert.equal(restarts(), first + 1, "an instance change that leaves the module set alone restarts nothing");
 });
 
 test("a staged compile failure leaves the running config byte-identical, both checkouts restored and nothing restarted", async () => {

@@ -465,14 +465,7 @@ switchOver() {
   # The board mounts this mirror's directory read-only, so it must exist before compose starts (a first apply on a fresh host).
   mkdir -p "$(dirname "$AIDENHQ_GENERATIONS_MIRROR")"
   [ -e "$AIDENHQ_GENERATIONS_MIRROR" ] || : > "$AIDENHQ_GENERATIONS_MIRROR"
-  ops/compose-recreate.sh # build what moved, recreate only those services, and clean up what this config dropped
-  # The public front door this config dropped (exposure no longer public): compose-recreate leaves a dropped service's running
-  # container alone, but Caddy would keep serving 443 and 8446. The firewall closes them when ops/vm/setup.sh runs again.
-  if ! grep -qx '  caddy:' compose.modules.yaml; then
-    for id in $(docker ps -aq --filter "label=com.docker.compose.project=${COMPOSE_PROJECT_NAME:-aidenhq}" --filter label=com.docker.compose.service=caddy); do
-      docker rm -f "$id" >/dev/null && echo "caddy: removed (exposure is no longer public)"
-    done
-  fi
+  ops/compose-recreate.sh # build what moved, recreate only those services, and stop and remove what this config dropped
   # The host's own tailnet name keeps Paperclip and the board only; apps are on their own node (compose.yaml apps-edge).
   node scripts/host-serve.mjs prune
   lap compose # the gateway check, then compose: builds (cached unless a context changed) and recreates what changed
@@ -495,8 +488,16 @@ switchOver() {
   # The runner is running this script: restart it only after the apply in flight has reported back. SIGUSR2 to its main
   # process only: it takes no new jobs, leaves the agents' runs going (the new runner adopts them and reports their
   # turns), exits as soon as nothing is half done (a reply being posted, a publish, this apply) and systemd starts it again.
-  if { [ "$before" != "$product" ] && ! git diff --quiet "$before" "$product" -- services/runner kernel/sdk kernel/src/sandbox.ts kernel/src/jobs.ts ops/units/aidenhq-runner.service; } || [ "${mods_before:-}" != "${mods_after:-}" ]; then
-    systemd-run --user --quiet --on-active=30 systemctl --user kill --kill-whom=main -s SIGUSR2 aidenhq-runner && echo "runner code changed: restart once idle, from 30s"
+  # The runner reads config/modules.json once at start (the code hosts, codehost-local's org): a change to the instance's module
+  # set restarts it too, compared with the copy taken when the last restart was asked for (so an apply that died after the
+  # compile still restarts it on the next run).
+  local runner_mods="${AIDENHQ_DATA_DIR:-$PWD/data}/runner-modules.json"
+  if { [ "$before" != "$product" ] && ! git diff --quiet "$before" "$product" -- services/runner kernel/sdk kernel/src/sandbox.ts kernel/src/jobs.ts ops/units/aidenhq-runner.service; } || [ "${mods_before:-}" != "${mods_after:-}" ] \
+     || { [ -f config/modules.json ] && ! cmp -s config/modules.json "$runner_mods"; }; then
+    if systemd-run --user --quiet --on-active=30 systemctl --user kill --kill-whom=main -s SIGUSR2 aidenhq-runner; then
+      echo "runner code or module set changed: restart once idle, from 30s"
+      [ ! -f config/modules.json ] || cp config/modules.json "$runner_mods"
+    fi
   fi
   # The computer launcher holds live run tokens in memory: restart it only when its code changed (running computers get new tokens next run).
   if [ "$before" != "$product" ] && ! git diff --quiet "$before" "$product" -- services/computer/launcher.mjs services/computer/lib.mjs \
