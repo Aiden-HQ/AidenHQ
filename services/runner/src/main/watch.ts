@@ -11,7 +11,8 @@ import { mergeGithub } from "./merge.ts";
 import { stopped } from "./breaker.ts";
 import { mayClose } from "./grading.ts";
 import { commonTierState, prFiles } from "./tier-state.ts";
-import { findRealGh, readGrants, rebaseInCode } from "./unsplit.ts";
+import { rebaseInCode } from "./approvals.ts";
+import { findRealGh, readGrants } from "./unsplit.ts";
 
 let githubLogin;
 

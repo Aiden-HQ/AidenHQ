@@ -11,6 +11,7 @@ import "./main/breaker.ts";
 import "./main/grading.ts";
 import "./main/tier-state.ts";
 import "./main/card-review.ts";
+import "./main/approvals.ts";
 import { adoptRuns, loop, saveMetrics, shutdown } from "./main/unsplit.ts";
 
 // ------------------------------------------------------------------ main

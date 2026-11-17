@@ -22,7 +22,8 @@ import { dependabotCommits } from "../../../../modules/platform/src/check.mjs";
 import { app, cfg, execFileP, gho, log, pc, sameRepo, state } from "./context.ts";
 import { ownerMadeTask, trialNoTap } from "./watch.ts";
 import { mergeGithub } from "./merge.ts";
-import { MovedHead, branchRows, cardBases, createRepoText, findRealGh, fleetBranch, fleetDiffText, githubDefault, prRequest, prepareWorkspace, productBump, readGrants, withTrusted } from "./unsplit.ts";
+import { cardBases, githubDefault, withTrusted } from "./approvals.ts";
+import { MovedHead, branchRows, createRepoText, findRealGh, fleetBranch, fleetDiffText, prRequest, prepareWorkspace, productBump, readGrants } from "./unsplit.ts";
 
 // ------------------------------------------------------------------ approval records
 
