@@ -88,7 +88,7 @@ if (secretsDir && !stage) for (const n of ensureIdentityKeys(secretsDir)) consol
 if (secretsDir && !stage) {
   const mounts = composeSecretFiles(YAML.parse(readFileSync(join(repo, "compose.yaml"), "utf8")), out.compose);
   const { missing } = ensureMountedSecrets(secretsDir, mounts, [...out.optionalSecrets, ...out.askedSecrets], "paperclip_auth_secret");
-  if (missing.length) die(`missing secret files in ${secretsDir}: ${missing.map((m) => `${m.secret} (mounted by ${m.services.join(", ") || "no service"})`).join("; ")}. Run scripts/bootstrap.sh, or put the secret there.`);
+  if (missing.length) die(`missing secret files in ${secretsDir}: ${missing.map((m) => `${m.secret} (mounted by ${m.services.join(", ")})`).join("; ")}. Run scripts/bootstrap.sh, or put the secret there.`);
 }
 
 // The grants table's directory exists before compose mounts it (Docker would create a root-owned one setup can't write).

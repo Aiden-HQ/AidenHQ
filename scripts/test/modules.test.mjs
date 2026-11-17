@@ -309,12 +309,17 @@ test("an install with no model key: an optional mounted secret starts empty, a m
   assert.ok(jwt && jwt.services.includes("paperclip"), JSON.stringify(missing));
   assert.ok(!missing.some((m) => optional.includes(m.secret)));
   assert.throws(() => readFileSync(join(dir, "paperclip_agent_jwt_secret")));
-  // A fresh host after scripts/bootstrap.sh and compile's own steps misses nothing.
-  const fresh = mkdtempSync(join(tmpdir(), "sec-"));
-  for (const [, n] of readFileSync(join(product, "scripts/bootstrap.sh"), "utf8").matchAll(/^(?:gen_secret|placeholder) ([a-z_]+)\s/gm)) writeFileSync(join(fresh, n), "x");
-  ensureOptionalSecrets(fresh, r.generatedSecrets, "paperclip_auth_secret", true);
-  ensureIdentityKeys(fresh);
-  assert.deepEqual(ensureMountedSecrets(fresh, mounts, optional, "paperclip_auth_secret").missing, []);
+  // A fresh host after scripts/bootstrap.sh and compile's own steps misses nothing: the bundle, and setup's default (+ google).
+  for (const extra of [[], ["google"]]) {
+    const g = compile(product, pinst(extra, owner));
+    const m = composeSecretFiles(YAML.parse(readFileSync(join(product, "compose.yaml"), "utf8")), g.compose);
+    const fresh = mkdtempSync(join(tmpdir(), "sec-"));
+    for (const [, n] of readFileSync(join(product, "scripts/bootstrap.sh"), "utf8").matchAll(/^(?:gen_secret|placeholder) ([a-z_]+)\s/gm)) writeFileSync(join(fresh, n), "x");
+    ensureOptionalSecrets(fresh, g.optionalSecrets, "paperclip_auth_secret");
+    ensureOptionalSecrets(fresh, g.generatedSecrets, "paperclip_auth_secret", true);
+    ensureIdentityKeys(fresh);
+    assert.deepEqual(ensureMountedSecrets(fresh, m, [...g.optionalSecrets, ...g.askedSecrets], "paperclip_auth_secret").missing, [], extra.join());
+  }
 });
 test("secrets the setup must not leave to a manual step are generated", () => {
   const g = compile(product, pinst(["primer"], owner)).generatedSecrets;

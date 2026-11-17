@@ -1441,7 +1441,7 @@ export function composeSecretFiles(...composes) {
  */
 export function ensureMountedSecrets(dir, mounts, optional, known) {
   if (!existsSync(join(dir, known))) return { created: [], missing: [] };
-  const absent = Object.keys(mounts).filter((n) => !existsSync(join(dir, n)));
+  const absent = Object.keys(mounts).filter((n) => mounts[n].length && !existsSync(join(dir, n))); // only what a service mounts
   const ok = new Set(optional);
   return {
     created: ensureOptionalSecrets(dir, absent.filter((n) => ok.has(n)), known),
