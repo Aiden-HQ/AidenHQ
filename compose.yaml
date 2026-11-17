@@ -238,8 +238,8 @@ services:
       # The board's points (compile): the modules' sign-ins (board.signins).
       - ${AIDENHQ_CONFIG_DIR:-./config}/points/board.json:/config/points/board.json:ro
       - ${AIDENHQ_DATA_DIR:-./data}/board:/data/board
-      # Read-only, and only the apply state's folder: the Maintainer's fleet_generation_status never writes host state.
-      - ${AIDENHQ_STATE_DIR:-./data/state}:/generations:ro
+      # The board's copy of the apply generations (ops/lib/generations.sh), read-only: fleet_generation_status.
+      - ${AIDENHQ_STATE_DIR:-./data/state}/board/generations.jsonl:/generations/generations.jsonl:ro
       # No accounts file: admins sign in on the kernel, which hands the board its own session (lean 3g).
     secrets:
       - paperclip_board_key

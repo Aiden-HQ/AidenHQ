@@ -13,6 +13,9 @@
 # functions stay whatever the checkout does to the file.
 GEN_DIR="${AIDENHQ_STATE_DIR:-$HOME/.local/state/aidenhq}"
 GEN_FILE="$GEN_DIR/generations.jsonl"
+# The board reads a mirror of this file (ops/apply-config-work.sh mounts it): a bind mount follows an inode, and GEN_FILE
+# is replaced by rename. Every write keeps the mirror current; writes to GEN_FILE by hand need the next apply.
+export AIDENHQ_GENERATIONS_MIRROR="${AIDENHQ_GENERATIONS_MIRROR:-$GEN_DIR/board/generations.jsonl}"
 
 # One node program for every read and write (node is on every host that applies), so the file is only ever parsed as JSON.
 genJs() {
@@ -23,6 +26,8 @@ const fs = require("node:fs");
 const [file, op, ...a] = process.argv.slice(1);
 const all = () => (fs.existsSync(file) ? fs.readFileSync(file, "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l)) : []);
 const write = (rows) => { fs.writeFileSync(file + ".tmp", rows.map((r) => JSON.stringify(r) + "\n").join("")); fs.renameSync(file + ".tmp", file); };
+// The board mounts a one-file mirror: a rename here leaves a bind mount on the old inode.
+const mirror = (text, mode) => { if (process.env.AIDENHQ_GENERATIONS_MIRROR) { fs.mkdirSync(require("node:path").dirname(process.env.AIDENHQ_GENERATIONS_MIRROR), { recursive: true }); fs.writeFileSync(process.env.AIDENHQ_GENERATIONS_MIRROR + ".tmp", text, { mode }); fs.renameSync(process.env.AIDENHQ_GENERATIONS_MIRROR + ".tmp", process.env.AIDENHQ_GENERATIONS_MIRROR); } };
 const rows = all();
 const next = rows.reduce((m, r) => Math.max(m, r.n), 0) + 1;
 const out = (v) => v !== undefined && v !== null && v !== "" && process.stdout.write(String(v) + "\n");
@@ -33,9 +38,9 @@ switch (op) {
     const [product, instance, health, reason, revertOf, lkg] = a;
     if (!/^[0-9a-f]{40}$/.test(product) || !/^[0-9a-f]{40}$/.test(instance)) { console.error("generation: product and instance must be full shas"); process.exit(1); }
     const r = { n: next, at: new Date().toISOString(), product, instance, health, ...(reason ? { reason } : {}), ...(revertOf ? { revert_of: Number(revertOf) } : {}), ...(lkg ? { lkg: Number(lkg) } : {}) };
-    fs.appendFileSync(file, JSON.stringify(r) + "\n"); out(r.n); break;
+    fs.appendFileSync(file, JSON.stringify(r) + "\n"); mirror(fs.readFileSync(file, "utf8"), 0o644); out(r.n); break;
   }
-  case "mark": { const [n, health, reason, log] = a; set(n, { health, ...(reason ? { reason } : {}), ...(log ? { log } : {}) }); break; } // n health [reason] [log]
+  case "mark": { const [n, health, reason, log] = a; set(n, { health, ...(reason ? { reason } : {}), ...(log ? { log } : {}) }); mirror(fs.readFileSync(file, "utf8"), 0o644); break; } // n health [reason] [log]
   case "snapshot": set(a[0], { snapshot: a[1], snapshot_at: new Date().toISOString() }); break; // n dir
   case "recovered": set(a[0], { recovered_at: new Date().toISOString() }); break; // n
   // unsettled: "<n> <target>" when the newest generation is one an apply that died left behind: still pending, or marked

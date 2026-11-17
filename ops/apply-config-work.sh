@@ -46,7 +46,10 @@ main() {
   set -a; [ -f .env ] && . ./.env; set +a
   # The apply generations (ops/lib/generations.sh), read-only into the board; an older .env predates the variable.
   export AIDENHQ_STATE_DIR="${AIDENHQ_STATE_DIR:-$HOME/.local/state/aidenhq}"
-  mkdir -p "$AIDENHQ_STATE_DIR" # the board mounts it read-only; created here so Docker never makes it as root
+  export AIDENHQ_GENERATIONS_MIRROR="${AIDENHQ_GENERATIONS_MIRROR:-$AIDENHQ_STATE_DIR/board/generations.jsonl}"
+  # The board mounts this file read-only; it exists before compose starts, and the apply keeps it current.
+  mkdir -p "$AIDENHQ_STATE_DIR/board"
+  [ -e "$AIDENHQ_STATE_DIR/board/generations.jsonl" ] || : > "$AIDENHQ_STATE_DIR/board/generations.jsonl"
   local inst="${AIDENHQ_INSTANCE_DIR:?set AIDENHQ_INSTANCE_DIR in .env (your instance checkout)}"
 
   # Tracked files must be clean in both checkouts (untracked ones such as compose.override.yaml are left alone).

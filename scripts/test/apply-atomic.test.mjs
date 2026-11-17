@@ -171,6 +171,8 @@ test("a first apply seeds the running pair as the last known good, validates, sw
   assert.ok(r.out.indexOf("apply timing: validate") < r.out.indexOf("apply timing: compose"), r.out);
   assert.match(readFileSync(w.d("state/apply-2.log"), "utf8"), /generation 2 is good/);
   assert.ok(!existsSync(w.d("prod/config.next")), "the staged copy is cleaned up after the switch");
+  // The board mounts this mirror; it must match the real file after an append and after a mark (which replaces it by rename).
+  assert.equal(readFileSync(w.d("state/board/generations.jsonl"), "utf8"), readFileSync(w.d("state/generations.jsonl"), "utf8"));
 });
 
 // Lean-core 5e: the kernel the instance runs is its own fork (product_fork:) when that descends from the pin; else refused.
