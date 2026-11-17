@@ -80,7 +80,7 @@ and merges only on a 100% receipt (`services/runner/src/evalgate.ts`).
   decides, Tier 2 the owner; setting `autonomy`. Every reviewer false reject becomes a planted case in
   `modules/ai-reviewer/test/reviewer-cases/`.
 - **Cross-agent behaviour goes in a module's `prompts:`** (`modules/<module>/prompts/<id>.md`: replying in chief-of-staff,
-  delegating in engineering, improving in platform; only the kernel's Approvals stays in `scripts/paperclip-setup.mjs`),
+  delegating in engineering, improving in platform; the kernel's own sections stay in `scripts/prompts/`; `scripts/handbook.mjs` assembles a handbook and `node scripts/compile.mjs --sizes` prints its bytes per section),
   not copied into each handbook. Fix behaviour at the source; don't suppress it afterwards.
 - **Source writers:** one bad item never fails a pass (skip only permanent errors, rethrow transient ones); passes
   are time-bounded. Probe a vendor MCP's real tool shapes live before trusting guessed params

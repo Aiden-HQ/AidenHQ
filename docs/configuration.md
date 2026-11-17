@@ -108,7 +108,9 @@ overrides:
   leading blank lines included); `{{memory}}` and `{{fleet_issues}}` are filled in. `when` and `unless` test `tools`
   (`connection.tool` granted), `roles`, `modules` (enabled) and `fields` (an agent field: `true` means set and not false,
   anything else equal): every `when` test holds and no `unless` test. Ordered first, normal, last, then by module, then id.
-  `lane: true` adds it to the fast chat lane's prompt too.
+  `lane: true` adds it to the fast chat lane's prompt too. A section that serves only some agents says so in `when`.
+  `node scripts/compile.mjs --sizes` prints each crew agent's handbook bytes per section (`scripts/handbook.mjs`) and
+  writes nothing.
 - Disabling a module pauses its agents and routines; nothing is deleted.
 
 ## Compile and apply

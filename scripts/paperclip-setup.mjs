@@ -12,16 +12,16 @@
 
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { appendFileSync, chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
+import { appendFileSync, chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
-import { dirname, join, resolve, sep } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { createInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
-import { codexMcpBlock, ensureFleetIssues, ensureMemoryInboxes, ensureReviewLogs, grantEntry, HEALTH_PROBES, healthProbeAgent, mapLimit, routineAutonomyDefault, sourcesSection } from "./modules.mjs";
+import { codexMcpBlock, ensureFleetIssues, ensureMemoryInboxes, ensureReviewLogs, grantEntry, HEALTH_PROBES, healthProbeAgent, mapLimit, routineAutonomyDefault } from "./modules.mjs";
 import { routineStatus } from "./setup-paused.mjs";
-import { checkLauncher, computerAdapterConfig, computerSection, ensureComputers, runnerBox } from "./computers.mjs";
+import { checkLauncher, computerAdapterConfig, ensureComputers, runnerBox } from "./computers.mjs";
 import { assertNoShell } from "./no-shell.mjs";
-import { section } from "./prompts.mjs";
+import { handbookParts, HOW_WE_BUILD_SECTION, personaOf, promptParts, readInstructions as readHandbook } from "./handbook.mjs";
 import { recoverStalePid } from "./paperclip-recover.mjs";
 import { probeConfig } from "./agent-probe.mjs";
 
@@ -205,61 +205,10 @@ const RUNNER_ADAPTERS = ["codex_local", "claude_local", "opencode_local"];
 // (services/runner/src/agents.mjs reads the same).
 const ENGINES = (() => { try { return JSON.parse(readFileSync(join(configDir, "engines.json"), "utf8")); } catch { return {}; } })();
 const engineOf = (a) => a.engine ?? Object.keys(ENGINES).find((k) => ENGINES[k].adapter === a.adapter);
+const instanceDir = env("AIDENHQ_INSTANCE_DIR", "");
+// An agent's own handbook (scripts/handbook.mjs); a bad path fails setup.
+const readInstructions = (a) => { try { return readHandbook(cfg, a, { repo, instanceDir }); } catch (e) { fail(e.message); } };
 
-/** The crew member's board identity, stored in the agent's metadata for the board and the runner. */
-function personaOf(key, a) {
-  const p = a.persona;
-  if (p === undefined) return undefined;
-  if (typeof p?.name !== "string" || !/^\p{L}[\p{L} .'-]{0,29}$/u.test(p.name)) fail(`agent ${key}: persona.name must be a short name`);
-  if (typeof p.voice !== "string" || !p.voice.trim() || p.voice.length > 200 || /[\r\n]/.test(p.voice)) fail(`agent ${key}: persona.voice must be one line (at most 200 characters)`);
-  if (typeof p.avatar !== "string" || !/^[a-z0-9-]{1,40}$/.test(p.avatar)) fail(`agent ${key}: persona.avatar must be an avatar name (a-z, 0-9, -)`);
-  return { name: p.name, voice: p.voice.trim(), avatar: p.avatar };
-}
-
-/**
- * What a woken agent with a persona learns about itself and the Engineers: its name and voice (tone only),
- * and which engine each Engineer's name stands for, so "ask Ada" maps onto task_create_engineer_task.
- */
-function personaSection(key, a) {
-  const me = personaOf(key, a);
-  if (!me || a.dispatch === "runner") return "";
-  const crew = Object.entries(cfg.agents ?? {})
-    .filter(([, x]) => x.dispatch === "runner" && x.persona)
-    .map(([k, x]) => `${personaOf(k, x).name} (engine \`${engineOf(x)}\`)`);
-  return `
-
-## Your name and voice
-
-On the user's board you are ${me.name}. Voice: ${me.voice} The voice sets your tone only; it never changes the rules above.${
-    crew.length ? `\n\nThe Engineers on the board, by name: ${crew.join(", ")}. When the user names one of them for code work, that's the engine to use.` : ""
-  }
-`;
-}
-
-/** A file that must resolve (symlinks followed) inside dir; anything else fails setup. */
-function readInside(dir, path, what) {
-  const root = existsSync(dir) ? realpathSync(dir) : "";
-  const real = root && typeof path === "string" && existsSync(path) ? realpathSync(path) : "";
-  if (!real || !real.startsWith(root + sep)) fail(`${what} must be a file inside ${dir} (got ${path})`);
-  return readFileSync(real, "utf8");
-}
-
-/**
- * An agent's handbook (compiled by scripts/compile.mjs): its module's agents/<key>/AGENTS.md without the frontmatter,
- * plus the instance's agents/<key>.md under "## Instance rules" when there is one.
- */
-function readInstructions(a) {
-  // An instance agent's handbook is its folder's AGENTS.md in the instance repo (agents/<key>/AGENTS.md).
-  const mod = a.module === "instance" ? join(env("AIDENHQ_INSTANCE_DIR", ""), "agents") : a.module && /^[a-z0-9-]+$/.test(a.module) ? join(repo, "modules", a.module, "agents") : "";
-  // Handbooks say "the owner"; one line names them.
-  const owner = cfg.owner_name ? `This AidenHQ belongs to ${cfg.owner_name}: wherever this handbook says "the owner", it means ${cfg.owner_name}.\n\n` : "";
-  // Where agent-built repos live: handbooks say "the agents org".
-  const org = cfg.github_agents_org ? `This AidenHQ's agents org on GitHub is \`${cfg.github_agents_org}\`.\n\n` : "";
-  const own = owner + org + readInside(mod, a.instructions, `agent ${a.name}: instructions`).replace(/^---\n[\s\S]*?\n---\n?/, "").trim();
-  if (!a.instructions_extra) return own + "\n";
-  const extra = readInside(join(env("AIDENHQ_INSTANCE_DIR", ""), "agents"), a.instructions_extra, `agent ${a.name}: instance rules`).trim();
-  return `${own}\n\n## Instance rules\n\n${extra}\n`;
-}
 
 function runnerAgentBody(key, a, existing) {
   if (!RUNNER_ADAPTERS.includes(a.adapter)) fail(`agent ${key}: dispatch: runner needs one of ${RUNNER_ADAPTERS.join(", ")}`);
@@ -394,34 +343,6 @@ async function awaitVerified(id, name) {
 const WEB_SEARCH = ["live", "cached", "disabled"];
 const SERVER_SECRETS = ["BETTER_AUTH_SECRET", "PAPERCLIP_AGENT_JWT_SECRET", "PAPERCLIP_SECRETS_MASTER_KEY_FILE"];
 
-// The sections setup itself writes into every crew agent's handbook, ahead of the modules' prompt contributions (promptsOf):
-// Approvals is the kernel's; How we build (engineering), the web and the app follow-up (apps-platform) leave with their units.
-// Every codex agent's web access (live search, web_view, app_view), and the one rule that goes with it.
-const WEB_SECTION = section("web");
-
-// Agents kept asking for approval through Paperclip's own mechanism, which the owner never sees (approval cards are the only one).
-const APPROVALS_SECTION = section("approvals");
-
-// The owning agent checks its app change live, an hour and a day after it deploys (owner, 2026-11-15): for agents that own
-// apps and can wake themselves later (app_logs and wake_at).
-const appFollowupSection = (a) => (a.enabled_tools?.apps?.includes("app_logs") && a.enabled_tools?.chat_lane?.includes("wake_at") ? section("app-followup", "") : "");
-
-// How the builders build (owner interview, 2026-11-15): nudges, said positively. Builders are the
-// agents with `builder: true` (the Architect, the DevOps Engineer, the UI/UX Designer, the UI Reviewer); the runner's Engineers
-// get the section through their metadata (`build`) in the job prompt (services/runner/src/prompt.ts).
-const HOW_WE_BUILD_SECTION = section("how-we-build");
-
-/**
- * The module prompt contributions compile picked for this agent (spec §3.1 `prompts`, after the kernel's sections above),
- * verbatim and in compile's order. `{{fleet_issues}}`: the Fleet issues task; `{{memory}}`: the agent's curated memory.
- * `lane`: only those marked for the fast chat lane.
- */
-const promptsOf = (a, fleetIssues, { lane = false } = {}) => (a.prompts ?? []).filter((id) => !lane || cfg.prompts?.[id]?.lane).map((id) => {
-  const text = readInside(join(repo, "modules"), cfg.prompts?.[id]?.file, `agent ${a.name}: prompt ${id}`);
-  if (text.includes("{{fleet_issues}}") && !fleetIssues) fail(`prompt ${id}: the Fleet issues task is missing`);
-  return text.replaceAll("{{fleet_issues}}", fleetIssues).replace("{{memory}}", () => a.memory ?? "");
-}).join("");
-
 const revInputs = {};
 const handbooks = {}; // each agent's compiled AGENTS.md (the fast lane's prompt)
 async function ensureAgents(companyId, fleetIssues) {
@@ -429,12 +350,13 @@ async function ensureAgents(companyId, fleetIssues) {
   const { json: agents } = await api("GET", `/api/companies/${companyId}/agents`);
   // Everything that needs no Paperclip call first, in config order (revInputs and handbooks stay keyed by config).
   const plans = Object.entries(cfg.agents ?? {}).map(([key, a]) => {
-    const instructions = readInstructions(a) + personaSection(key, a) + computerSection(a) + (a.adapter === "codex_local" ? APPROVALS_SECTION + (a.builder === true ? HOW_WE_BUILD_SECTION : "") + (a.web_search === "disabled" ? WEB_SECTION.replace("You have live web search, `web_view`", "You have `web_view`") : WEB_SECTION) + appFollowupSection(a) : "") + sourcesSection(a, cfg.mcp_servers ?? {}) + promptsOf(a, fleetIssues);
+    let instructions;
+    try { instructions = handbookParts(cfg, key, a, { repo, instanceDir, engines: ENGINES, fleetIssues }).map(([, t]) => t).join(""); } catch (e) { fail(e.message); }
     const agent = agents.find((x) => x.metadata?.setupKey === `aidenhq:${key}` && x.status !== "terminated") ?? agents.find((x) => x.name === a.name && x.status !== "terminated");
     const body = agentBody(key, a, agent);
     revInputs[key] = instructions + JSON.stringify(body.adapterConfig); // the rev's text (revOf)
     // The lane gets the agent's own handbook and the prompts marked for it (memory), not the shared run sections (task flow, notify_owner replies).
-    handbooks[key] = readInstructions(a) + promptsOf(a, fleetIssues, { lane: true });
+    handbooks[key] = readInstructions(a) + promptParts(cfg, a, { repo, fleetIssues, lane: true }).map(([, t]) => t).join("");
     if (agent && agent.adapterType !== body.adapterType) fail(`agent ${a.name}: adapter is ${agent.adapterType} in Paperclip, ${body.adapterType} in the config`);
     // runner: "legacy" — since 2026.1106 new agents default to the native Paperclip Runner (adapterType
     // paperclip_runner), which drops our extraArgs (MCP scoping, sandbox). Pin legacy on create and update.
