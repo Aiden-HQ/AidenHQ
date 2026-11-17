@@ -41,7 +41,7 @@ type Deps = {
   /** Module UI origins a session may be handed to (/auth/handoff), each with its module: the board's origins. */
   uiOrigins?: () => Record<string, string>;
   /** The model step: OpenRouter's PKCE start and exchange, the 1-token check, and the key the vault holds (for Retry). */
-  model?: { start: (callback: string, state: string) => { url: string; verifier: string }; exchange: (code: string, verifier: string) => Promise<string>; check: (key: string) => Promise<"ok" | "no_credit" | "error">; saved: () => string; ready: () => boolean; checked: (key: string, ok: boolean) => void };
+  model?: { start: (callback: string, state: string) => { url: string; verifier: string }; exchange: (code: string, verifier: string) => Promise<string>; check: (key: string) => Promise<"ok" | "no_credit" | "error">; saved: () => string; ready: () => boolean; checked: (key: string, ok: boolean) => void; verifyAgents?: () => void };
   /** The board's front door: /recovery-key and the model step send the owner on to its welcome. */
   boardUrl?: () => string | undefined;
   log?: (msg: string, f?: Record<string, unknown>) => void;
@@ -186,6 +186,8 @@ export function createAdmin(d: Deps) {
     d.firstRun!.save(MODEL_KEY, key);
     d.model!.checked(key, r === "ok"); // ready only once a check of this key passed (no credit: Retry checks it again)
     log("model key saved", { by: `account:${s.account.id}`, check: r });
+    // The agents setup created before there was a key are still unverified (Paperclip shows them paused): setup checks them now.
+    if (r === "ok") d.model!.verifyAgents?.();
     if (r === "no_credit") return send(res, 200, modelPage(req, s, "", true));
     return redirect(res, welcome());
   }

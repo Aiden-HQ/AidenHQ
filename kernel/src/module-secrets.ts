@@ -4,7 +4,7 @@
 // secret; never a path or a service. Values are never logged, echoed or put on a command line.
 import { spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { existsSync, renameSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, openSync, renameSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import type { SetupField } from "./admin.ts";
 import { fail } from "./proxy.ts";
@@ -98,4 +98,18 @@ export function composeRecreate({ dir, composeFile, docker = "docker", flock = "
       reject(new Error(last || (held ? `compose exited ${code}` : "the apply lock stayed held")));
     });
   });
+}
+
+/**
+ * Runs the Paperclip setup (scripts/paperclip-setup.mjs) in the checkout `dir`, detached and under the host's apply lock (it
+ * waits for an apply in progress), its output in `log`. The model step calls it once a key works: an install with no key
+ * left its agents unverified, and this run checks them (each scoped as soon as Paperclip verifies it). Fire and forget: a
+ * failure is in the log, and the next apply runs setup again anyway.
+ */
+export function agentSetup({ dir, log, node = process.execPath, flock = "flock", wait = 600 }: { dir: string; log: string; node?: string; flock?: string; wait?: number }) {
+  return () => {
+    mkdirSync(path.dirname(log), { recursive: true });
+    const out = openSync(log, "a", 0o600);
+    spawn(flock, ["-w", String(wait), path.join(dir, "data", "apply.lock"), node, path.join(dir, "scripts", "paperclip-setup.mjs")], { cwd: dir, detached: true, stdio: ["ignore", out, out] }).unref();
+  };
 }
