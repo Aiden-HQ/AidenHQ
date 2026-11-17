@@ -39,7 +39,7 @@ import { ACTIVITY_QUERY, Board, activityComment, activitySearches, formatRepo, s
 import { PR_QUERY, reviewOutcome, reviewTarget } from "./reviews.ts";
 import * as merges from "../../../modules/codehost-github/src/merge-gate.mjs";
 import * as prQueue from "../../../modules/engineering/src/merge-queue.mjs";
-import { BASE_FILES_QUERY, baseFilesSince, cardBase, pickBranchPr, siblingBlock, siblingCandidates, siblingsOf } from "./siblings.ts";
+import { BASE_FILES_QUERY, baseFilesSince, cardBase, followUpNote, gradeOutcome, gradedRevisions, graderNotes, metCriteria, pickBranchPr, siblingBlock, siblingCandidates, siblingsOf, unmetCriteria } from "./siblings.ts";
 import { OPEN_PRS_QUERY, dependabotDue, isDependabot, prAttention, redChecks } from "../../../modules/engineering/src/product-prs.ts";
 import { State } from "./state.ts";
 import { MERGE_REQUESTED, REPLY_MARKER, fence, onlyMergesLeft, prSnapshot, stateSection, threadEntries, threadSection, transcript } from "./thread.ts";
@@ -51,7 +51,7 @@ import { LUNA, openRouterAsk, openRouterKey } from "./models.mjs";
 import { kernelCardDiff, readCardSourceExceptions, readDecisions, requestReview, reviewRequest, unreadSourceExceptions } from "./review-request.mjs";
 import { UNSURE } from "../../../kernel/sdk/src/reviewer.ts";
 import { fileContext } from "../../shared/review-files.mjs";
-import { GRADE_SCHEMA, escalationFor, gather, grade, gradeNote, template } from "./grade.ts";
+import { GRADE_SCHEMA, GRADER_MARKER, escalationFor, gather, grade, gradeNote, template } from "./grade.ts";
 import { createGradeLoop } from "../../../modules/grading/src/loop.mjs";
 import { createResolver } from "../../../kernel/src/net.ts";
 import { ALREADY_APPLIED, guardBranch } from "./evidence.ts";
@@ -2471,7 +2471,9 @@ async function reviewOne(a) {
   // What the reviewer reads, only when it is asked: code's own verdicts (refused, the owner's now) read nothing.
   const asked = !codeVerdict(held, LUNA);
   const chain = asked ? await prRequest(await pc.issue(issue.id)).catch(() => "") : "";
-  const request = asked ? reviewRequest(a, input, chain, { product: productRepos(), requesterModel: state.task(issue.id)?.engine?.model ?? "", previous: checkFindings(issue.id, a.action), ...(await cardContext(issue, a.action === "merge" ? { prs: a.args.prs } : { branches: a.args.only }, input.bases)) }) : {};
+  const context = asked ? await cardContext(issue, a.action === "merge" ? { prs: a.args.prs } : { branches: a.args.only }, input.bases, chain) : {};
+  // What the reviewer judges against: the whole chain, or a follow-up's outstanding criteria with the merged part as given.
+  const request = asked ? reviewRequest(a, input, context.scope, { product: productRepos(), requesterModel: state.task(issue.id)?.engine?.model ?? "", previous: checkFindings(issue.id, a.action), siblings: context.siblings, sources: context.sources, decisions: context.decisions }) : {};
   const { diff: _d, files: _f, previous: _p, relift: _r, bases: _b, full: _full, evidence: _e, ...tierInput } = input;
   // Kept until the answer is handled: a lost answer (a restart, a timeout) still gets its follow-up (reviewsLeftOver).
   inFlight((ids) => [...ids, a.id]);
@@ -2722,41 +2724,72 @@ async function cardSources(bases) {
   }
 }
 
-/** The task's other PRs already merged into the card's bases: every name in the block is encoded, and it is fenced as data. */
-async function cardSiblings(issue, bases) {
-  try {
-    // The task's PRs, and its parent tasks' (the fix may have landed as the delegator's PR): every branch record of the chain.
-    // The card's own PRs are never its siblings: neither a merge card's nor the one its branch already has.
-    const own = new Set(bases.filter((b) => b.own).map((b) => `${b.repo.toLowerCase()}#${b.own}`));
-    const candidates = siblingCandidates(await taskChainRuns(issue), own);
-    const seen = new Map();
-    for (const { repo, base } of bases) {
-      if (!base) continue;
-      for (const s of await siblingsOf({ prs: candidates, base, repo, read: (slug, n) => mergeGithub.pr(slug, n), filesSince: (slug, name, oid) => mergeGithub.prBaseFiles(slug, name, oid) })) {
-        seen.set(`${s.repo.toLowerCase()}#${s.number}`, s);
-      }
-    }
-    return siblingBlock([...seen.values()]);
-  } catch (err) {
-    // Siblings are context, never a reason to refuse a card: an unread table is simply not shown.
-    log("siblings unread", { issue: issue.identifier, err: String(err.message ?? err).slice(0, 200) });
-    return "";
+/**
+ * The task's other PRs already merged into the card's bases: the task's PRs and its parent tasks' (the fix may have landed as
+ * the delegator's PR), never the card's own (neither a merge card's nor the one its branch already has). Read once per card:
+ * the sibling block and a follow-up's scope both come from these rows.
+ */
+async function cardSiblingRows(issue, bases) {
+  const own = new Set(bases.filter((b) => b.own).map((b) => `${b.repo.toLowerCase()}#${b.own}`));
+  const candidates = siblingCandidates(await taskChainRuns(issue), own);
+  const seen = new Map();
+  for (const { repo, base } of bases) {
+    if (!base) continue;
+    for (const s of await siblingsOf({ prs: candidates, base, repo, read: (slug, n) => mergeGithub.pr(slug, n), filesSince: (slug, name, oid) => mergeGithub.prBaseFiles(slug, name, oid) })) seen.set(`${s.repo.toLowerCase()}#${s.number}`, s);
   }
+  return [...seen.values()];
 }
 
 /** One file's raw text from GitHub's contents API (`url` names the ref), read with the repo's narrowed token. */
 const ghRaw = async (repo, url) => (await execFileP(await findRealGh(), ["api", "-H", "Accept: application/vnd.github.raw", url], await gho(repo, READ, { maxBuffer: 4 * 1024 * 1024 }))).stdout;
 
 /**
- * What the reviewer reads from trusted ground, never from the branch under review: the task's merged siblings and the owner's
- * recorded source approvals (from the card's bases), and the instance's decisions (from the instance repo's default branch).
- * Read once, so both the card's review and the pre-filing check see the same blocks.
+ * The scope of a review (what the reviewer judges the change against), and the merged-sibling table. The chain stays whole,
+ * and a follow-up adds followUpNote to it: where the work already merged into its base is, and the task grader's own verdicts
+ * on it. The met verdicts are the account for judging the change against what is still owed instead of re-demanding work
+ * already verified, and they count only for the revision the note says it graded: a sibling the grader did not read at its
+ * merge commit is named as merged but settles nothing, so anything the rubric never assessed stays owed. Neither part is a
+ * claim: a sibling counts only as GitHub's own merge read back off the reviewer's base, and the criteria only from a note the
+ * runner itself posted.
  */
-async function cardContext(issue, target, known) {
+async function reviewScope(issue, chain, bases) {
+  const rows = await cardSiblingRows(issue, bases).catch((err) => {
+    log("siblings unread", { issue: issue.identifier, err: String(err.message ?? err).slice(0, 200) });
+    return [];
+  });
+  const notes = [];
+  try {
+    notes.push(...graderNotes(await pc.comments(issue.id), { authorUserId: await pc.me(), marker: GRADER_MARKER }));
+  } catch (err) {
+    log("grader notes unread", { issue: issue.identifier, err: String(err.message ?? err).slice(0, 200) });
+  }
+  // Both read only from the note that sent this version back: anything else is not what the follow-up owes. The met criteria
+  // are what tie the merged work to the request; the unmet ones are what this change still owes.
+  const last = notes.at(-1) ?? "";
+  const sentBack = gradeOutcome(last) === "needs_revision";
+  const criteria = sentBack ? unmetCriteria(last) : [];
+  const met = sentBack ? metCriteria(last) : [];
+  // The revisions the verdicts were read on, from the note's own version: a criterion counts as settled for a sibling only
+  // when the grader read that PR at its merge commit.
+  const revisions = sentBack ? gradedRevisions(last) : [];
+  // One note per base, appended to the chain: a card of several branches keeps each base's own merged part with it.
+  const blocks = [...new Set(bases.map((b) => b.base).filter(Boolean))].map((base) => followUpNote({ siblings: rows, criteria, met, revisions, base })).filter(Boolean);
+  const scope = blocks.length ? `${chain}\n\n${blocks.join("\n\n")}` : chain;
+  return { scope, siblings: siblingBlock(rows.filter((s) => s.mergeCommit)) };
+}
+
+/**
+ * What the reviewer reads from trusted ground, never from the branch under review: the scope (the chain, or a follow-up's
+ * outstanding criteria), the task's merged siblings, the owner's recorded source approvals (from the card's bases), and the
+ * instance's decisions (from the instance repo's default branch). Read once, so both the card's review and the pre-filing
+ * check see the same blocks.
+ */
+async function cardContext(issue, target, known, chain = "") {
   const bases = known ?? (await cardBases(target));
   // The decisions digest (readDecisions): from the instance repo's default branch, whatever the card's base; unread is none.
   const decisions = await readDecisions(cfg.apply?.repo, githubDefault, ghRaw).catch((err) => void log("decisions unread", { err: String(err.message ?? err).slice(0, 200) }));
-  return { siblings: await cardSiblings(issue, bases), sources: await cardSources(bases), decisions };
+  const { scope, siblings } = await reviewScope(issue, chain, bases);
+  return { scope, siblings, sources: await cardSources(bases), decisions };
 }
 
 /** `fn(path, oids, out)` with GitHub's `branches` fetched into the runner's clone (their tips: `oids`); `out` is a spare ref. */
@@ -3434,9 +3467,9 @@ async function agentReview(ctx, args) {
         const entry = { action: command, target: card.target, at: new Date().toISOString(), decision: "pending", code: "" };
         state.set(checksKey(ctx.issue.id), JSON.stringify([...checksOf(ctx.issue.id), entry]));
         const chain = await prRequest(await pc.issue(ctx.issue.id)).catch(() => "");
-        const context = await cardContext(ctx.issue, { branches: branches.map((x) => ({ repo: x.repo, branch: x.branch })) }, input.bases);
+        const context = await cardContext(ctx.issue, { branches: branches.map((x) => ({ repo: x.repo, branch: x.branch })) }, input.bases, chain);
         // The same request a card's review sends (reviewRequest), through the kernel's reviewer slot; a failed call is no verdict.
-        const v = await requestReview({ kernelUrl: cfg.kernelUrl, key: keyIn(cfg.reviewerKeyFile) }, reviewRequest(card, input, chain, { component: "AI reviewer check", product: productRepos(), requesterModel: state.task(ctx.issue.id)?.engine?.model ?? "", previous: checkFindings(ctx.issue.id, card.action), ...context })).then(({ panel_marked: _m, ...x }) => x, (err) => ({ decision: "escalate", code: "reviewer_failed", reason: `the reviewer failed (${String(err.message ?? err).slice(0, 160)})`, model: LUNA }));
+        const v = await requestReview({ kernelUrl: cfg.kernelUrl, key: keyIn(cfg.reviewerKeyFile) }, reviewRequest(card, input, context.scope, { component: "AI reviewer check", product: productRepos(), requesterModel: state.task(ctx.issue.id)?.engine?.model ?? "", previous: checkFindings(ctx.issue.id, card.action), siblings: context.siblings, sources: context.sources, decisions: context.decisions })).then(({ panel_marked: _m, ...x }) => x, (err) => ({ decision: "escalate", code: "reviewer_failed", reason: `the reviewer failed (${String(err.message ?? err).slice(0, 160)})`, model: LUNA }));
         log("review checked", { issue: ctx.issue.identifier, action: command, decision: v.decision, code: v.code, model: v.model, second: v.second, used: n + 1, target: card.target.slice(0, 300) });
         // No verdict (the call failed): the check doesn't count. Otherwise it is kept with its finding.
         const rest = checksOf(ctx.issue.id).filter((c) => c.at !== entry.at || c.target !== entry.target);

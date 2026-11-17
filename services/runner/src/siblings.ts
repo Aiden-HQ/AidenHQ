@@ -198,3 +198,172 @@ export function siblingCandidates(runs: any[] = [], own = new Set<string>()) {
   }
   return out;
 }
+
+/** How much of a merged sibling's file list the follow-up note names: whole paths only, so a long merge never floods the prompt. */
+export const MAX_SCOPE_FILES = 40;
+
+/**
+ * The runner's own grader notes on a task (grade.ts `GRADER_MARKER`), newest last, from its comments. Only a note the runner
+ * itself posted is read: Paperclip stores every comment the runner makes (`comment`, `setStatus`) as the runner's own user
+ * (`authorType: "user"`, `authorUserId` = the runner's id), and no agent's comment carries that id. A note an agent or a
+ * stranger wrote, whatever marker it copies, is not one. `authorUserId` is passed in, so an unread runner id reads nothing.
+ */
+export function graderNotes(comments: any[] = [], { authorUserId, marker }: { authorUserId?: string; marker: string }) {
+  if (!authorUserId) return [];
+  return (Array.isArray(comments) ? comments : [])
+    .filter((c) => c?.authorType === "user" && String(c.authorUserId ?? "") === String(authorUserId) && String(c.body ?? "").includes(marker))
+    .sort((a, b) => String(a.createdAt ?? "").localeCompare(String(b.createdAt ?? "")))
+    .map((c) => String(c.body ?? ""));
+}
+
+const OUTCOME_LINE = /^\*\*Graded: ([^*]+)\*\*/m;
+/** One grader note's outcome as its own words name it: needs_revision (the only one with criteria left to do), satisfied, or another. */
+export function gradeOutcome(note: string) {
+  const said = OUTCOME_LINE.exec(String(note ?? ""))?.[1]?.trim() ?? "";
+  return /^needs revision/i.test(said) ? "needs_revision" : /^done/i.test(said) ? "satisfied" : said ? "other" : "";
+}
+
+/**
+ * The criteria a grader note names as not met ("- **not met**: …"), each on one line, the grader's own words. `**not
+ * shown**` is not read: the grader couldn't check it, which is no instruction to anyone.
+ */
+export function unmetCriteria(note: string): string[] {
+  return criteriaWhere(note, "**not met**");
+}
+
+/**
+ * The criteria a grader note marks met ("- met: …"), each the grader's own words followed by the evidence it relied on.
+ * This is the only thing that ties the merged work to a requirement: a merged PR's file list says where that work is, never
+ * which requirement it satisfied.
+ */
+export function metCriteria(note: string): string[] {
+  return criteriaWhere(note, "met");
+}
+
+/** The grader note's own footer line (grade.ts `gradeNote`): `_Grader: <model>; version <v>. The grader's words, not the owner's._` */
+const GRADER_VERSION = /^_Grader:[^;\n]*; version (.*?)\. The grader's words, not the owner's\._$/m;
+
+/** A revision a grader note says it graded: one PR at one commit. */
+export interface GradedRevision { repo: string; number: number; sha: string }
+
+/**
+ * The revisions a grader note says it graded, from the version in its footer: the PR evidence binds one `repo#n@<sha>+<hash>`
+ * per graded PR it read (evidence.ts `prEvidence`), `<sha>` being the merge commit of a merged PR and the head of an open one
+ * (a deployed app appends its own sha, which is dropped here). So this is what ties the note's verdicts to a specific
+ * revision: a criterion was marked there, on that commit, and nowhere else. The sha is a full 40-hex commit, as GitHub's own
+ * read gives it: a short prefix names no single commit, so it is not read at all. A version that is a digest (`prs:<hash>`,
+ * several PRs bound), or one the note cut short, reads as no revision and ties nothing.
+ */
+export function gradedRevisions(note: string): GradedRevision[] {
+  const version = GRADER_VERSION.exec(String(note ?? ""))?.[1] ?? "";
+  const out: GradedRevision[] = [];
+  for (const token of version.trim().split(/\s+/)) {
+    const m = /^(.+)#(\d+)@([0-9a-f]{40})(?:\+[0-9a-f]*)*$/.exec(token);
+    const repo = m?.[1], number = Number(m?.[2]), sha = m?.[3];
+    if (!repo || !sha || !Number.isInteger(number) || out.some((r) => r.repo === repo && r.number === number && r.sha === sha)) continue;
+    out.push({ repo, number, sha });
+  }
+  return out;
+}
+
+/** One grader note's `- <label>: …` lines, each on a single line and once, in the grader's words. */
+function criteriaWhere(note: string, label: string) {
+  const out: string[] = [];
+  const wanted = `- ${label}: `;
+  for (const line of String(note ?? "").split("\n")) {
+    const text = line.trim();
+    if (!text.startsWith(wanted)) continue;
+    const criterion = text.slice(wanted.length).trim();
+    if (criterion && !out.includes(criterion)) out.push(criterion);
+  }
+  return out;
+}
+
+/**
+ * What a follow-up's reviewer is told about the work that already merged, appended to the request chain rather than in place of
+ * it. Without it the reviewer saw the whole request and a diff that cannot hold its earlier half, and read that half as missing:
+ * the merged-PR table names a sibling's files only when the base changed them again, so a merge nothing else touched named none.
+ *
+ * What ties a merged change to a requirement is the task's grader, not the change's file list: a path says where work sits,
+ * never which criterion it met. So this note carries both, and claims only what each supports:
+ * - the merged PRs (GitHub says merged into this base, with a merge commit and an unpaged file list), named for where the
+ *   work is and explicitly not for what it did;
+ * - the grader's own verdicts on the work as it stood when it was sent back, which are the evidence: the criteria it marked
+ *   met, with the evidence it relied on, and the ones it marked still unmet, which this change owes.
+ *
+ * Those verdicts are also what lets the note narrow the scope, which is the point of it: the met criteria are the account for
+ * the requirements being taken as given, so the change is judged against what remains unmet rather than against work already
+ * verified on the base. A verdict settles only the revision it was read on, which the note's own version names
+ * (gradedRevisions): the criteria are claimed for a sibling only when the grader read that PR at that sibling's merge commit,
+ * so a verdict about an earlier or a different commit never excuses work the merge does not hold. A rubric holds a few
+ * checkable criteria, not every requirement a request states, so a requirement the grader never assessed is not settled by
+ * it and stays owed: the note says so in as many words, and the whole request stays above it as context. With no `met`
+ * verdict nothing ties the merge to any requirement, so nothing is claimed and the note is empty: the reviewer then judges the
+ * whole chain as before.
+ *
+ * Plain text, and no fence delimiter in it: the block goes inside the reviewer's own REQUEST_CHAIN fence, and the grader's
+ * words are the text a stranger most likely wrote (`- met: …` lines come from a model reading the task). Every `<<<`/`>>>`
+ * they hold is encoded to `%3C%3C%3C`/`%3E%3E%3E` by `quoted` before it is numbered, so the block cannot close that fence
+ * early or open another one whether or not the fence itself also rewrites them: the reviewer reads one chain, not a second
+ * block of the author's making.
+ */
+export function followUpNote({ siblings = [], criteria = [], met = [], revisions = [], base }: { siblings?: Sibling[]; criteria?: string[]; met?: string[]; revisions?: GradedRevision[]; base?: string }) {
+  // A sibling whose merge commit the grader's note names: GitHub's merge read back off the base, and the revision the verdicts
+  // were read on. Either one missing and nothing is claimed for that PR.
+  const graded = (s: Sibling) =>
+    (revisions ?? []).some((r) => r.number === s.number && r.repo.toLowerCase() === s.repo.toLowerCase() && r.sha.length === 40 && s.mergeCommit.toLowerCase() === r.sha.toLowerCase());
+  const proved = (siblings ?? []).filter((s) => s.mergeCommit && base && s.base && s.base.toLowerCase() === String(base).toLowerCase() && Array.isArray(s.files) && graded(s));
+  if (!base || !proved.length) return "";
+  const named = proved.filter((s) => s.files!.length).flatMap((s) => s.files!);
+  if (!named.length) return "";
+  // The grader's verdicts are the tie between the merged work and the request; with none there is no claim to make.
+  const metLines = oneLine(met);
+  if (!metLines.length) return "";
+  const owedLines = oneLine(criteria);
+  const lines: string[] = [];
+  let left = MAX_SCOPE_FILES;
+  for (const s of proved) {
+    if (!s.files!.length) continue;
+    const take = s.files!.slice(0, left);
+    const more = s.files!.length - take.length;
+    if (take.length) lines.push(`- ${encodeName(s.repo, "path")}#${s.number} at ${encodeName(s.mergeCommit.slice(0, 12), "commit")}, merged into ${encodeName(base, "branch")}: ${take.map((f) => encodeName(f, "path")).join(", ")}${more > 0 ? ` (${more} more not named)` : ""}`);
+    left -= take.length;
+    if (left <= 0) break;
+  }
+  const merged = `Parts of this request are already on ${encodeName(base, "branch")}, from these merged pull requests. The files named are where that work is, which is not by itself what it satisfied:\n${lines.join("\n")}`;
+  const at = proved.filter((s) => s.files!.length).map((s) => `${encodeName(s.repo, "path")}#${s.number} at ${encodeName(s.mergeCommit.slice(0, 12), "commit")}`).join(" and ");
+  const satisfied = `The task's grader read that work at ${at}, the merged revision named above and not an earlier one, and marked these met at that revision, giving the evidence it relied on (the grader's words):\n${numbered(metLines)}`;
+  const out = [merged, satisfied];
+  // The narrowing, and what justifies it: the met verdicts are the account for the requirements being set aside, so this
+  // change is judged against what the grader marked still unmet, not against work it has already verified. A requirement the
+  // rubric never assessed is not settled by the note, and the whole request stays above it as context either way.
+  if (!owedLines.length) {
+    out.push("The whole request above is what this change is judged against: the grader named no criterion still unmet, so none is settled here.");
+    return out.join("\n\n");
+  }
+  out.push(`It marked these still not met, and they are what this change owes (the grader's words):\n${numbered(owedLines)}`);
+  out.push("So what this change owes is two things: the criteria the grader marked still unmet, above, and every requirement of the request above that the grader's rubric never assessed, which this note does not settle either way. Only the criteria it marked met are settled by the merged work, and those are not expected in this diff again.");
+  return out.join("\n\n");
+}
+
+/**
+ * Grader words, one numbered line each: a newline inside one becomes a space, so it can never start a line this block did not
+ * number, and every `<` and `>` becomes its percent-encoded byte, so a criterion quoting `<<<REQUEST_CHAIN` cannot close the
+ * reviewer's fence or open another one — no delimiter of any length can form. `%` is encoded first, so an encoded delimiter
+ * can never read back as a raw one.
+ */
+const oneLine = (xs: string[]) => [
+  ...new Set(
+    (xs ?? [])
+      .map((c) =>
+        String(c ?? "")
+          .replace(/\s*\n\s*/g, " ") // one numbered line per criterion, whatever the grader wrote
+          .replace(/%/g, "%25") // the escape's own byte first, so an encoded delimiter can never be mistaken for a raw one
+          .replace(/</g, "%3C")
+          .replace(/>/g, "%3E") // no delimiter of any length can form, so this block can neither close nor open a fence
+          .trim(),
+      )
+      .filter(Boolean),
+  ),
+];
+const numbered = (xs: string[]) => xs.map((c, i) => `${i + 1}. ${c}`).join("\n");
