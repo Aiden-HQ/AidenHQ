@@ -14,7 +14,8 @@ import { mergeQueue, stopMerges } from "./merge.ts";
 import { breakerKey, stopped } from "./breaker.ts";
 import { checksFromKey, checksOf } from "./card-review.ts";
 import { readGrants } from "./apply-path.ts";
-import { branchRows, findRealGh, handleParentPr, logTail, reportError, runCommand, startJob, stopping } from "./unsplit.ts";
+import { runCommand } from "./commands.ts";
+import { branchRows, findRealGh, handleParentPr, logTail, reportError, startJob, stopping } from "./unsplit.ts";
 
 async function handleIssue(issue: any, engineerIds: any) {
   const known = state.task(issue.id);
