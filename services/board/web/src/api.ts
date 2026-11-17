@@ -107,6 +107,8 @@ export const api = {
   /** The fleet without run history: the Agents page's first paint. */
   roster: () => call<{ roster: RosterAgent[] }>("GET", "/api/agents/roster"),
   agentProfile: (key: string) => call<{ profile: AgentProfile }>("GET", `/api/agents/by-key/${encodeURIComponent(key)}`),
+  /** Lane B: pause or resume an agent now; `stop` also cancels its live runs. */
+  pauseAgent: (key: string, body: { paused: boolean; stop?: boolean }) => call<{ status: string; stopped: number }>("POST", `/api/agents/by-key/${encodeURIComponent(key)}/pause`, body),
   agentOpenTasks: (key: string) => call<{ needs: TaskRow[]; ongoing: TaskRow[] }>("GET", `/api/agents/by-key/${encodeURIComponent(key)}/tasks?view=open`),
   agentHistory: (key: string, opts: { q?: string; status?: "done" | "cancelled"; offset?: number } = {}) => {
     const p = new URLSearchParams({ view: "history", ...(opts.q ? { q: opts.q } : {}), ...(opts.status ? { status: opts.status } : {}), ...(opts.offset ? { offset: String(opts.offset) } : {}) });

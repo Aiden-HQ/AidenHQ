@@ -3,7 +3,8 @@ import { AgentAvatar } from "./AgentAvatar";
 import { SignInRequired, api } from "./api";
 import { Plan, PlusIcon } from "./components";
 import { useEvents } from "./events";
-import { QUERIES, agentOpenQuery, scorecardQuery, useQuery } from "./queries";
+import { useCached } from "./cache";
+import { QUERIES, agentOpenQuery, agentProfileQuery, scorecardQuery, useQuery } from "./queries";
 import { Bone, FleetSkeleton, SkeletonLines, Updating } from "./Skeleton";
 import type { Assignee, Finished, RosterAgent, Session, TaskRef } from "./types";
 import { ago, elapsed } from "./util";
@@ -336,6 +337,7 @@ function AgentRow({ a, assignee, sessions, finished, runsLoaded, now, open, togg
               <dt>Set up</dt>
               <dd>{a.system ? "Platform agent" : "Your agent"}</dd>
             </dl>
+            {a.key && <QuickFacts agentKey={a.key} id={a.id} />}
             {a.key && <NeedsYouLine agentKey={a.key} />}
             <div className="ap-bar">
               {a.key && (
@@ -394,6 +396,23 @@ function AgentRow({ a, assignee, sessions, finished, runsLoaded, now, open, togg
         </div>
       )}
     </div>
+  );
+}
+
+/** Where the agent comes from, and today's spend against its day cap (the scorecard's last day; the cap from Settings). */
+function QuickFacts({ agentKey, id }: { agentKey: string; id: string }) {
+  const profile = useQuery(agentProfileQuery(agentKey)).data;
+  const card = useQuery(scorecardQuery(id)).data;
+  const cap = useCached("settings", api.settings, { persist: false }).data?.agents.find((x) => x.key === agentKey)?.caps.day_usd;
+  const today = card?.daily.at(-1)?.costUsd;
+  const src = profile?.source;
+  return (
+    <dl className="fleet-facts">
+      <dt>From</dt>
+      <dd>{profile ? (src ? `${src.module} module${src.revision ? ` ${src.revision}` : ""}` : "Your agent") : "…"}</dd>
+      <dt>Today</dt>
+      <dd>{today === undefined ? "…" : `${usd(today)}${cap ? ` of ${usd(cap)} a day` : ""}`}</dd>
+    </dl>
   );
 }
 

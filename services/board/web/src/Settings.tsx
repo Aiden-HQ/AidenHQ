@@ -369,54 +369,8 @@ function SpendPage({ data }: { data: SettingsData }) {
       <p className="st-note">
         Fleet defaults, in USD (agent-days in UTC). {data.spend.pendingRaises ? <a href="#/approvals">{data.spend.pendingRaises} Raise card{data.spend.pendingRaises === 1 ? "" : "s"} waiting.</a> : "No Raise card is waiting."}
       </p>
-      <Group title="Each agent's caps" hint="Open an agent to set its own caps for good.">
-        {data.agents.map((a) => (
-          <CapsRow key={a.key} name={a.name} agent={a.key} caps={a.caps} defaults={d} />
-        ))}
-      </Group>
+      <p className="st-note">Each agent's own caps live on its page, under Settings, Limits.</p>
     </Page>
-  );
-}
-
-function CapsRow({ name, agent, caps, defaults }: { name: string; agent: string; caps: Record<string, number>; defaults: Record<string, number> }) {
-  const filed = useFiled((c) => c.kind === "caps" && c.agent === agent);
-  const own = CAP_KEYS.some((k) => caps[k] !== defaults[k]);
-  const [v, setV] = useState<Record<string, string>>(Object.fromEntries(CAP_KEYS.map((k) => [k, String(caps[k] ?? defaults[k] ?? "")])));
-  const [review, setReview] = useState(false);
-  const changed = Object.fromEntries(CAP_KEYS.filter((k) => Number(v[k]) !== caps[k]).map((k) => [k, Number(v[k])]));
-  const bad = Object.values(changed).some((n) => !(n > 0) || n > 1000);
-  return (
-    <Row
-      title={name}
-      meta={
-        <>
-          {filed && IN_FLIGHT.includes(filed.stage) && <StatusPill tone="busy">Changing</StatusPill>}
-          <span className={`st-caps${own ? " own" : ""}`}>{CAP_KEYS.map((k) => usd(caps[k] ?? 0)).join(" / ")}</span>
-        </>
-      }
-      details={
-        <>
-          {filed && <ChangeProgress f={filed} />}
-          <form className="st-caps-form" onSubmit={(e) => (e.preventDefault(), Object.keys(changed).length && !bad && setReview(true))}>
-            {CAP_KEYS.map((k) => (
-              <label key={k} className="st-field">
-                <span className="st-field-label">Per {CAP_NAMES[k].replace(/^an? /, "")}</span>
-                <span className="st-money">
-                  $<input inputMode="decimal" value={v[k]} onChange={(e) => (setV({ ...v, [k]: e.target.value }), setReview(false))} aria-label={`${name}: cap per ${CAP_NAMES[k]}`} />
-                </span>
-              </label>
-            ))}
-            {!review && (
-              <button className="btn primary" disabled={!Object.keys(changed).length || bad}>
-                Review change
-              </button>
-            )}
-          </form>
-          {bad && <span className="st-field-help bad">Each cap is above $0 and at most $1000.</span>}
-          {review && <ChangePreview items={[{ kind: "caps", agent, value: changed }]} was={[Object.fromEntries(Object.keys(changed).map((k) => [k, caps[k]]))]} onCancel={() => setReview(false)} onDone={() => setReview(false)} />}
-        </>
-      }
-    />
   );
 }
 
