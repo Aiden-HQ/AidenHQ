@@ -3,13 +3,11 @@
 // the flow (flow-blocked.test.mjs) drives end to end.
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { blockedRefusal, unresolvedBlockers } from "../src/paperclip.ts";
-import { park, parkedJobs, unpark } from "../src/parked.ts";
-
-const memory = () => {
-  const m = new Map();
-  return { get: (k) => m.get(k), set: (k, v) => void m.set(k, v) };
-};
+import { State } from "../src/state.ts";
 
 test("a task with an unresolved blocker is not dispatchable; a resolved one is", () => {
   assert.deepEqual(unresolvedBlockers({ blockedBy: [{ id: "b", status: "in_progress" }] }).map((b) => b.id), ["b"]);
@@ -26,12 +24,13 @@ test("Paperclip's refusal on an unresolved blocker is recognised; anything else 
 });
 
 test("a parked job is kept until its blocker resolves, and a later request replaces it", () => {
-  const s = memory();
-  park(s, { issueId: "i1", instructions: "first" });
-  park(s, { issueId: "i1", instructions: "second" });
-  park(s, { issueId: "i2", instructions: "other" });
-  assert.deepEqual(parkedJobs(s), [{ issueId: "i1", instructions: "second" }, { issueId: "i2", instructions: "other" }]);
-  unpark(s, "i1");
-  assert.deepEqual(parkedJobs(s), [{ issueId: "i2", instructions: "other" }]);
-  assert.deepEqual(parkedJobs(memory()), [], "nothing parked is no job");
+  const state = new State(mkdtempSync(join(tmpdir(), "parked-")));
+  state.park({ issueId: "i1", instructions: "first" });
+  state.park({ issueId: "i1", instructions: "second" });
+  state.park({ issueId: "i2", instructions: "other" });
+  assert.deepEqual(state.parked(), [{ issueId: "i1", instructions: "second" }, { issueId: "i2", instructions: "other" }]);
+  state.unpark("i1");
+  assert.deepEqual(state.parked(), [{ issueId: "i2", instructions: "other" }]);
+  assert.equal(new State(mkdtempSync(join(tmpdir(), "parked-"))).parked().length, 0, "nothing parked is no job");
+  state.db.close();
 });

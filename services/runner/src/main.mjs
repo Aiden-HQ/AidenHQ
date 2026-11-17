@@ -25,7 +25,6 @@ import { DEFAULT_IDENTITY, READ, WRITE, appClient, appRemoteUrl, ghOptions, iden
 import { codexModels, readApproval, resolveModelAlias, resolveOpenRouterModel, withParent } from "./intake.ts";
 import { splitAnswered } from "./answered.ts";
 import { ALL_STATUSES, Paperclip, blockedRefusal, origins, unresolvedBlockers } from "./paperclip.ts";
-import { park, parkedJobs, ready, unpark } from "./parked.ts";
 import { isTransient, retryTransient, shouldRetryTurn } from "./retry.ts";
 import { branchGuidance, checkBranchName, chooseBranchName, exampleBranches } from "./branch.ts";
 import { cleanMessages, existingPrUrl, leakIn, leaksInternal, stripAttribution, writePrDescription } from "./describe.ts";
@@ -821,21 +820,27 @@ async function dispatch(job) {
 
 /**
  * A parked task whose blockers have all closed starts now: the task's own update needn't come, so nothing else would.
- * A task closed meanwhile, or deleted, is dropped.
+ * A task closed meanwhile, deleted, or no longer one the poll selects (its label gone, assigned to someone who isn't an
+ * Engineer) is dropped.
  */
 async function dispatchParked() {
-  for (const job of parkedJobs(state)) {
+  const jobs = state.parked();
+  if (!jobs.length) return;
+  const [engineers, label] = await Promise.all([pc.engineerAgents(), pc.labelId(cfg.label)]);
+  const engineerIds = new Set(engineers.map((a) => a.id));
+  for (const job of jobs) {
     const { issueId, instructions } = job;
-    if (!ready(job)) continue;
+    if (job.retryAfter && Date.parse(job.retryAfter) > Date.now()) continue;
     // A read that fails is no answer: the job stays parked, and is read again next poll.
     const full = await pc.issue(issueId).catch(() => undefined);
     if (!full) continue;
-    if (CLOSED.includes(full.status)) {
-      unpark(state, issueId);
+    const selected = (full.labels ?? []).some((l) => l.id === label) || engineerIds.has(full.assigneeAgentId);
+    if (CLOSED.includes(full.status) || !selected) {
+      state.unpark(issueId);
       continue;
     }
     if (unresolvedBlockers(full).length) continue;
-    unpark(state, issueId);
+    state.unpark(issueId);
     log("blocker resolved: dispatching", { issue: full.identifier ?? issueId });
     await dispatch({ issue: full, instructions });
   }
@@ -850,13 +855,13 @@ async function dispatchParked() {
 async function parkIfBlocked(issue, instructions) {
   const full = issue.blockedBy === undefined ? await pc.issue(issue.id).catch(() => undefined) : issue;
   if (!full) {
-    park(state, { issueId: issue.id, instructions, retryAfter: new Date(Date.now() + 5_000).toISOString() });
+    state.park({ issueId: issue.id, instructions, retryAfter: new Date(Date.now() + 5_000).toISOString() });
     log("job parked: its task couldn't be read, so its blockers are unknown", { issue: issue.identifier });
     return true;
   }
   const blockers = unresolvedBlockers(full);
   if (!blockers.length) return false;
-  park(state, { issueId: issue.id, instructions });
+  state.park({ issueId: issue.id, instructions });
   log("job parked: its task is blocked", { issue: issue.identifier, blockers: blockers.map((b) => b.identifier ?? b.id) });
   return true;
 }
@@ -3608,7 +3613,7 @@ async function startJob({ issue, instructions }) {
     // parked (closed as cancelled when its row was already made) until the blocker resolves.
     if (blockedRefusal(err)) {
       if (jobId) state.finishJob(jobId, "cancelled", "blocked");
-      return void (park(state, { issueId: issue.id, instructions, retryAfter: new Date(Date.now() + 5_000).toISOString() }), log("job parked: its task is blocked", { issue: issue.identifier }));
+      return void (state.park({ issueId: issue.id, instructions, retryAfter: new Date(Date.now() + 5_000).toISOString() }), log("job parked: its task is blocked", { issue: issue.identifier }));
     }
     if (jobId) state.finishJob(jobId, "failed", String(err).slice(0, 500));
     // A turn that failed before its run started (its workspace couldn't be prepared) is still this task's latest job:
