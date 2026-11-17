@@ -1,5 +1,5 @@
 # Community pull requests: a CLA check and a triage label and comment (the product repository's CONTRIBUTING.md, "For agent contributors";
-# scripts/community.mjs). pull_request_target so a fork's PR gets a token that can label and comment; that is safe only
+# .github/scripts/community.mjs). pull_request_target so a fork's PR gets a token that can label and comment; that is safe only
 # because nothing from the PR is checked out or run: the script comes from the base commit and reads the PR's text as
 # data. Always a GitHub-hosted runner, never ours. Triage never approves a merge.
 name: community
