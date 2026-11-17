@@ -14,17 +14,19 @@ The owner's direction: the initial setup is extremely light and only gets the pe
 covers the most common and useful setup, every step skippable. It ends in Aiden's chat with a short tour, where Aiden
 invites them to ask anything and to continue setup (more modules).
 
-Success: a person who has never used SSH pastes one prompt into their own AI (Claude Code, Codex, ...). They open the
-single link it returns and are chatting with Aiden a few minutes after the install finishes. They meet no key, file or
-command they have to understand.
+Success: a person who has never used SSH pastes one prompt into their own AI (Claude Code, Codex, ...). Within a couple
+of minutes they are chatting with Aiden. They meet no key, file or command they have to understand. The owner accepts a
+larger build, done with subagents, to get this ideal result.
 
 ## Goals
 
 1. **Install = one prompt to the user's AI.**
    - The AI either gets a server and runs the installer over SSH, or runs it on the user's Linux machine or Mac (Lima
      VM). The user may decide with their AI, or let the AI decide: we don't care which.
-   - The AI asks the user nothing beyond that choice.
+   - The AI asks the user only that choice and their email (the AI usually knows it already).
    - The install ends with one clickable link.
+   - **Aiden first, the rest in the background.** The link works as soon as the parts needed to chat with Aiden are up.
+     Everything else keeps installing behind it.
 2. **First browser screen = account, authenticator, model.** Nothing else blocks reaching Aiden.
 3. **Wizard, in the board, at first sign-in.** Three steps, each skippable ("Later"):
    - save the vault recovery key;
@@ -91,21 +93,41 @@ command they have to understand.
 **Agent prompt (`aidenhq-distro/site/prompt.md`).**
 - Ask one thing: server (an SSH target, or "get me one": the AI may guide them to create one at a provider) or this
   machine (Linux, or Mac via Lima).
-- Drop the email question; the browser takes it.
+- Keep the email (the AI fills it in when it knows it). `owner_email` is read by Paperclip setup, the gate, Google
+  sources and open-loops, so it stays an install input.
 - Drop `AIDENHQ_GITHUB_TOKEN` once the first public release is cut. The repos are public since 2026-11-17, and the
   token stays only as an optional variable for private forks.
 - Drop the Tailscale question from the default path; it becomes optional later, through Aiden.
 - The final message is the box with one link, plus "keep the Mac awake" on a Mac. No tunnel line, no recovery-key line.
 
 **Installer and `ops/setup.sh --unattended`.**
-- `OWNER_EMAIL` becomes optional: the first-run page asks for it.
 - The default exposure on a server with a public IPv4 is `public`, served by Caddy (U2, built as part of this work, per
   minimal-core sections 4.1 to 4.3). The link is `https://<ip>/setup?token=…`.
 - A Mac or a server without a public IP stays `local`:
   - On a Mac, the link is `http://127.0.0.1:3121/...`, opened on the Mac itself.
   - On a server without a public IP, the tunnel stays, as the documented fallback.
-- The vault recovery key is no longer written to `/root/aidenhq-vault-recovery.txt` for the person to fetch. It stays
-  sealed for the kernel to show once in the wizard (today `/setup` already shows it once on unattended installs).
+- The vault recovery key is no longer written to `/root/aidenhq-vault-recovery.txt` for the person to fetch. The kernel
+  shows it once, from the wizard step (Part 3); today `/setup` already shows it once on unattended installs.
+
+**A fast first chat.** Today the first install builds the board and app images locally and pulls about 25 GB (the
+Paperclip image alone is 17 GB), so it takes far longer than minutes. Two changes:
+- **Prebuilt images.** Each release publishes its images (board, apps-mcp, module services) to a registry, built by CI
+  and pinned by digest in the release file. The installer pulls them; it builds nothing. Local builds stay for
+  development and forks.
+- **Staged start.**
+  - *Stage 1* starts only what a chat with Aiden needs: the kernel (accounts, vault, model gateway), the board, and
+    Aiden's reply path. Then it prints the link.
+  - *Stage 2* continues in the background: everything else, such as the apps platform, the warehouse, Engineer
+    tooling, computers and browser.
+  - The board shows a quiet "finishing setup" line until stage 2 is done. Anything that needs stage 2 says so instead
+    of failing.
+  - The prompt hands over the link at the end of stage 1 and tells the user the rest finishes on its own.
+
+**Builder's first spike.** Measure today's time from a bare server to first chat. Find the smallest service set for
+Aiden's reply: the chat lane (`chat-lane`), or Paperclip, whose image dominates the download. Set stage 1 from that. If
+Aiden's chat needs Paperclip, stage 1 includes it and the spike reports the time it costs, with options for the owner.
+The target: link to first reply in two minutes on a 4-core, 8 GB server, with the slower stage 2 hidden behind the
+chat.
 
 ### Part 2: first-run page (kernel `/setup`)
 
@@ -141,8 +163,9 @@ wizard:
   done: <a status check the board already exposes, e.g. connection `google` ok>
 ```
 
-The board renders each `kind` with one generic component. A module that is off has no step. Only modules in the default
-bundle carry a `wizard:` block. Others are offered by Aiden at the end.
+The board renders each `kind` with one generic component. A step appears in the wizard only when its module is on
+and `in_wizard` is true. Cards with `in_wizard: false` (Google) appear only in Settings → Setup guide and when Aiden
+opens them. Modules that are off are offered by Aiden at the end.
 
 **Step kinds.**
 - `oauth`: one Connect button, which goes to the module's existing connect route (Google: `/google/connect`). Done when
@@ -151,35 +174,48 @@ bundle carry a `wizard:` block. Others are offered by Aiden at the end.
   validated by the module's existing `setup.pattern`, and Save. Saving needs a new **kernel secret-write endpoint**:
   - It is admin-only and CSRF-checked, writing only secrets a module declared with `setup:` (the same allowlist `/setup`
     uses).
-  - It then restarts or recreates the consuming service (the change applies the way a settings change does).
+  - It then recreates the consuming module's containers (below).
   - It is the one new trusted path in this design, and it is a security gate: it enforces from day one.
-- `pair`: after a `secret` (a bot token), the step shows a deep link (`https://t.me/<bot>?start=<one-time code>`). The
-  module's service answers `/start <code>` by recording that chat as the owner's chat. Done when paired.
+- `pair`: after a `secret` (a bot token), the step shows a one-time code and, where the app supports it, a deep link
+  (`https://t.me/<bot>?start=<code>`). The module's service records the chat or user that sends that code as the
+  owner's. Done when paired.
+  - Pairing is security-sensitive: that chat decides approvals and receives account-reset links.
+  - Only a signed-in admin with an authenticator can mint a code, through the board, which asks the service.
+  - A code is single-use and expires in 15 minutes.
+  - Re-pairing goes the same way. It replaces the old chat, and the old chat gets a "this chat is no longer paired"
+    notice.
 
 **The three steps.**
 1. **Save your recovery key** (kernel-provided step, not a module):
-   - shown once, with Copy and Download;
-   - an "I saved it" tick;
-   - Skip leaves a reminder in Settings, since the key stays sealed until shown or the owner declines it.
+   - The step opens a **kernel-rendered** page (`/recovery-key` on the kernel's admin listener). The key never passes
+     through the board.
+   - The page shows the key once, with Copy and Download, and an "I saved it" tick, which deletes the kernel's readable
+     copy.
+   - Skip keeps the readable copy root-only on disk, as today, and leaves a reminder in Settings. "I don't want it"
+     deletes it: the vault still opens with its sealed password, but there is no recovery if that is lost.
 2. **Aiden on your phone** (`channel-telegram`, `secret` then `pair`):
    - The step reads: "In Telegram, open BotFather, send /newbot, choose a name, paste the token here", then "Tap this link
      on your phone".
    - New work: the bot gets a `/start <code>` pairing handler. The paired chat id is the Telegram service's own state
-     (its data dir), not `.env`, the vault or a setting, so pairing needs no apply. The one-time code is minted by the
-     board through the service and expires in 15 minutes.
-3. **Connect Slack** (`channel-slack`, `secret`):
-   - A "Create the Slack app" link that pre-fills the manifest (Slack's `?new_app=1&manifest_json=` URL);
-   - one line on "a workspace admin may need to approve it";
-   - paste two tokens (app-level `xapp-` and bot `xoxb-`), Save;
-   - the owner's Slack id is found by the service from the bot's install, not typed.
+     (its data dir), not `.env`, the vault or a setting, so pairing needs no apply.
+3. **Aiden in Slack** (`channel-slack`, `secret` then `pair`): talk to Aiden and get approvals in Slack.
+   - A "Create the Slack app" link pre-fills the manifest (Slack's `?new_app=1&manifest_json=` URL).
+   - One line says "a workspace admin may need to approve it".
+   - Paste two tokens (app-level `xapp-` and bot `xoxb-`), then Save.
+   - Pair by DMing the bot the one-time code. The owner's Slack id comes from that DM, not typed and not guessed.
    - New work: these secrets get `setup:` fields, and `OWNER_SLACK_USER_ID` and `OWNER_COMMAND_CHANNEL` stop being
-     required `.env` values.
+     required `.env` values (the command channel becomes the paired DM by default).
+   - Reading Slack history (the separate `slack` module, which signs in as the owner) is not this step. Aiden offers it
+     later.
 
 Every step has **Later** (skip). The last screen says what is connected and has one button, **Meet Aiden**. Closing the
 wizard counts as skipping the rest.
 
-**Modules the steps need.** `channel-slack` joins the default bundle, idle until its tokens are saved (as
-`channel-telegram` already is). So no wizard step needs a module-change card.
+**Modules the steps need.**
+- `channel-slack` joins the default bundle. It is idle until its tokens are saved, as `channel-telegram` already is;
+  checked: with no tokens it starts and only reports Slack as not set up.
+- `google` joins the bundle too, idle until the guided setup runs.
+- So no step or card needs a module-change card first.
 
 **Saving a secret applies it directly.** The kernel's secret-write endpoint writes the vault file, then recreates only
 the containers of the module that declared that secret (`docker compose up -d --force-recreate <its services>`). It does
@@ -191,8 +227,8 @@ for secrets. This is a new privileged kernel action, so:
 
 ### Part 3b: guided Google setup (later, not in the wizard)
 
-A step card for `google` (`kind: guide`: numbered instructions, a structured secret, then `oauth`), opened from Settings → Connections or by Aiden ("set up Google").
-It works like this:
+A step card for `google` (`kind: guide`: numbered instructions, a structured secret, then `oauth`; `in_wizard: false`),
+opened from Settings → Setup guide or by Aiden ("set up Google"). It works like this:
 1. If the board has no name (bare IP), it explains why Google needs one and offers Tailscale or a domain; it stops there.
 2. Otherwise it gives numbered steps with screenshots and copy buttons:
    - create a Google Cloud project;
@@ -205,7 +241,7 @@ It works like this:
 4. Then one **Connect Google** button runs the existing `/google/connect` flow.
 
 **Look.** The board's design system (owner's taste: Stripe polish, Linear crispness, colour, moderate radius, little
-white space). One step per screen, with a progress row of four dots, the "why" in one sentence, and the action as the
+white space). One step per screen, with a progress row of three dots, the "why" in one sentence, and the action as the
 one primary button.
 
 ### Part 4: Aiden's tour
@@ -258,10 +294,17 @@ AidenHQ keep needing GitHub (`github_bot_token`), offered with "connect GitHub".
 **Adding GitHub later.** A repo can get a GitHub mirror (push-only sync) without moving its code host. Moving fully to
 `codehost-github` is a later, separate feature.
 
-**Builder's first task.** Map every GitHub assumption in the runner, the apps platform (`apps-mcp`), the `ci` module and
-the platform module's self-improvement flow. Then split the shared part (the write kinds and their tiering in
-`codehost-github/src/plan.mjs`) from the GitHub-specific transport. The plan sizes this part from that map. It is the
-largest piece of this design.
+**This part is a goal and a shape, not yet a buildable design.** It gets its own short spec after a recon pass:
+- Map every GitHub assumption in the runner, the apps platform (`apps-mcp`), the `ci` module and the platform module's
+  self-improvement flow.
+- Then split the shared part (the write kinds and their tiering in `codehost-github/src/plan.mjs`) from the
+  GitHub-specific transport.
+
+It is the largest piece of this design. Changes to `plan.mjs` and the tier function fall under the reviewer-eval rule:
+the eval must stay at 100%.
+
+Until it lands, the GitHub modules stay in the bundle, idle. That already works: installs run today with no GitHub App
+or token until SETUP.md step 8. So steps 1 to 5 of the order don't wait on it.
 
 ### Part 5: the "Getting started" page
 
@@ -277,13 +320,14 @@ The prompt's final message links to it.
 
 | Area | Change |
 |---|---|
-| `aidenhq-distro` prompt, installer, site | shorter prompt, no email/token/Tailscale asks, one-link finish, `/start` page |
-| `ops/setup.sh --unattended` | optional email, public exposure default with Caddy (U2), recovery key not left in /root |
+| `aidenhq-distro` prompt, installer, site | shorter prompt (choice + email only), no token/Tailscale asks, link at the end of stage 1, `/start` page |
+| release pipeline | prebuilt images per release, pinned by digest in the release file |
+| `ops/setup.sh --unattended`, `ops/apply-config.sh` | pull instead of build, staged start, public exposure default with Caddy (U2), recovery key shown by the kernel |
 | kernel `/setup` | account, authenticator, OpenRouter PKCE (+ paste fallback); recovery key and `github_bot_token` move out |
-| kernel | admin secret-write endpoint for declared `setup:` secrets, recreating that module's containers; recovery key show-once API for the board |
+| kernel | admin secret-write endpoint for declared `setup:` secrets, recreating that module's containers; `/recovery-key` show-once page |
 | `scripts/modules.mjs`, compile | `wizard:` block validated and copied into `config/modules.json` |
 | board | `/welcome` wizard, three step kinds, Settings → Setup guide, welcome note to Aiden at the end |
-| modules: channel-telegram, channel-slack, google | `wizard:` blocks; Telegram pairing; Slack `setup:` fields, owner id discovery, joins the bundle; Google guided-setup card |
+| modules: channel-telegram, channel-slack, google | `wizard:` blocks; Telegram and Slack pairing; Slack `setup:` fields; Slack and Google join the bundle; Google guided-setup card |
 | modules: codehost role | new `codehost-local`; `codehost-github` provides `codehost`; engineering requires `codehost`; GitHub modules leave the bundle |
 | apps platform, runner, ci | read repos and run checks through the code host role |
 | modules: chief-of-staff | onboarding tour text in the handbook |
@@ -291,8 +335,9 @@ The prompt's final message links to it.
 
 ## Order
 
-1. Caddy front door (U2) and the installer and prompt changes: the one-link install.
-2. Kernel `/setup` slimmed, with OpenRouter PKCE and the email handling below.
+1. The fast-first-chat spike, then prebuilt images, the staged start, the Caddy front door (U2) and the installer and
+   prompt changes: the one-link, two-minute install.
+2. Kernel `/setup` slimmed, with OpenRouter PKCE.
 3. Kernel secret-write endpoint, `wizard:` schema, board wizard with the recovery-key step.
 4. Telegram pairing and the Slack step.
 5. Aiden's tour, the guided Google setup and the `/start` page.
@@ -302,17 +347,11 @@ The prompt's final message links to it.
 Each lands as its own PR, or several for 6. Steps 1 and 2 alone already remove the tunnel, the GitHub token and the long
 form.
 
-**Owner email without asking up front (my call).** The installer no longer needs it. The kernel's accounts store is
-where the owner's email lives. Paperclip's owner account gets a generated internal login (`owner@<instance>.invalid`,
-password in the vault): it's the machine's control plane, not the owner's daily surface. `/setup` writes the email the
-owner typed into `instance.yaml` (`owner_email`) and commits it to the local instance repo. Anything reading
-`owner_email` before first run treats it as unset.
-
 ## Left to the builder
 
 - Exact copy for each step and for the tour (owner reviews it before merge).
 - The wizard's visual details within the design system.
-- How a secret write triggers the consuming service's restart (reuse the settings-change apply path).
+- How the kernel finds and recreates a module's containers.
 - Test shape: one end-to-end that walks first run → wizard (skip all) → Welcome chat note, plus the unattended-install
   test updated for the shorter `/setup`.
 
@@ -322,11 +361,23 @@ owner typed into `instance.yaml` (`owner_email`) and commits it to the local ins
   AidenHQ client was rejected: Google's paid restricted-scope assessment, and a relay that would see users' tokens.
 - GitHub is fully optional, and the on-server code host is part of this work.
 
+- Aim for chatting within a couple of minutes; a larger build with subagents is fine.
+
 ## Calls made in writing this (owner to check)
 
-- `channel-slack` joins the default bundle, idle until connected.
+- The AI still asks for the email: many parts read `owner_email`, and asking costs the user nothing.
+- Prebuilt release images and a staged start, to make "a couple of minutes" possible.
+- `channel-slack` and `google` join the default bundle, idle until connected.
 - A secret save recreates only that module's containers, directly from the kernel; no settings-change path.
+- The recovery key is shown on a kernel page, never through the board.
+- Telegram and Slack both pair with a one-time code that only a signed-in admin can mint.
 - The board, not `ops/setup.sh`, sends Aiden's welcome, when the wizard ends in any way.
-- The Telegram owner chat is the Telegram service's own paired state.
-- Paperclip's owner login becomes a generated internal identity; the owner's email comes from `/setup`.
 - `github_bot_token` leaves first run and is offered with "connect GitHub".
+
+## Unverified: the builder checks these first
+
+- Which services Aiden's first reply needs (chat lane or Paperclip), and the real time to first chat today.
+- OpenRouter's PKCE flow accepts `http://127.0.0.1:3121/...` (Mac) and a bare-IP HTTPS callback. If not, the paste field
+  becomes primary there.
+- The `google` module runs idle with no OAuth client.
+- Slack's manifest pre-fill URL still works as described.
