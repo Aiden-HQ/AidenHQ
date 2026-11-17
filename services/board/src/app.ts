@@ -35,6 +35,7 @@ import { MergeSchema, mergedDescription } from "./merge.js";
 import { fleetGenerationStatus } from "./generations.js";
 import { McpAuthFailed, type McpAuth } from "./mcpauth.js";
 import { setupFlowRoutes, type SetupFlowPoint } from "./setup-flows.js";
+import { welcomeRoutes } from "./welcome.js";
 import { GoogleAuthFailed, loopbackPort, type GoogleAuth } from "./google.js";
 import { OPEN, Paperclip, PaperclipError, type Agent, type Comment, type Issue, type Label, type LiveRun } from "./paperclip.js";
 import { accountSession, type BoardSession, type SessionOf } from "./session.js";
@@ -88,6 +89,8 @@ export interface AppOptions {
   signIns?: SignIn[];
   /** The modules' setup flows (board.setup_flows, setup-flows.ts), with each pair token read from the vault; fetchImpl stands in for fetch to the module's pairing endpoint. */
   setupFlows?: { flows: (SetupFlowPoint & { token?: string })[]; fetchImpl?: typeof fetch };
+  /** The first-run wizard's finished marker (data/board/welcome-sent): present means the welcome was sent. */
+  welcomeMarker?: string;
   /** The grading module's client (grading.ts); default: built from GRADING_URL and GRADING_BOARD_KEY_FILE. */
   grading?: Grading;
   /** "internal" mode: the runner's key (secret reviewer_key): its routes (grades, usage, jobs), never agents'. */
@@ -1744,6 +1747,18 @@ export function createApp(opts: AppOptions): Server {
     { method: "POST", path: /^\/api\/accounts\/([\w-]{1,64})\/role$/, handle: async (m, body, who) => opts.accounts!.call("role", who, { id: m[1]!, role: parse(z.object({ role: RoleSchema }).strict(), body).role }) },
     { method: "POST", path: /^\/api\/accounts\/([\w-]{1,64})\/(disable|enable)$/, handle: async (m, _b, who) => opts.accounts!.call(m[2]!, who, { id: m[1]! }) },
     { method: "POST", path: /^\/api\/accounts\/([\w-]{1,64})\/link$/, handle: async (m, _b, who) => opts.accounts!.call("link", who, { id: m[1]! }) },
+    ...(opts.accounts && opts.welcomeMarker
+      ? welcomeRoutes({
+          accounts: opts.accounts,
+          store,
+          flows: opts.setupFlows?.flows ?? [],
+          marker: opts.welcomeMarker,
+          post: (text) => {
+            const chats = routes.find((r) => r.method === "POST" && r.path.test("/api/chats"))!;
+            return perRequest.run({ session: OPERATOR }, () => chats.handle([] as unknown as RegExpMatchArray, { text }, undefined as never, undefined as never)) as Promise<{ identifier: string }>;
+          },
+        })
+      : []),
     // App admins (docs/design/access.md, Per-app roles): every shared app, its admins and default; name or remove one.
     ...(opts.setupFlows?.flows.length && opts.accounts
       ? setupFlowRoutes({ ...opts.setupFlows, accounts: opts.accounts, store, signedIn: async (id) => (await signInStates()).find((x) => x.id === id)?.status?.state === "ok" })
