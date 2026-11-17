@@ -364,7 +364,7 @@ test("enumeration (spec §9): every shipped write or destructive tool maps to a 
   const kindOf = Object.fromEntries(writes.map(([ct, floor]) => [ct, routed[ct] ?? `conn.tool@${floor}`]));
   assert.deepEqual(["apps.app_deploy", "apps.app_run_request", "apps.app_restart", "apps.app_rollback", "apps.app_api", "apps.app_remove", "apps.app_create"].map((ct) => kindOf[ct]),
     ["apps-platform.deploy", "apps-platform.run", "apps-platform.restart", "apps-platform.rollback", "apps-platform.api_write", "conn.tool@1", "conn.tool@0"]);
-  assert.deepEqual(Object.fromEntries(Object.entries(kinds).map(([id, k]) => [id, k.floor])), { "apps-platform.deploy": 0, "apps-platform.run": 1, "apps-platform.restart": 0, "apps-platform.rollback": 0, "apps-platform.api_write": 0, "primer.publish": 1, "channel-slack.post": 1 });
+  assert.deepEqual(Object.fromEntries(Object.entries(kinds).map(([id, k]) => [id, k.floor])), { "apps-platform.deploy": 0, "apps-platform.run": 1, "apps-platform.restart": 0, "apps-platform.rollback": 0, "apps-platform.api_write": 0, "primer.publish": 1, "channel-slack.post": 1, "channel-slack.bind": 0 });
   assert.deepEqual(["primer.primer_create_document", "primer.primer_add_version"].map((ct) => kindOf[ct]), ["primer.publish", "primer.publish"]);
   assert.equal(kindOf["slack_live.slack_post"], "channel-slack.post");
   // A kind naming a tool that isn't one of its module's writes, or one another kind took, fails compile.

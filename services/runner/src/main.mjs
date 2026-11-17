@@ -61,6 +61,7 @@ import { fastChecks } from "../../../kernel/src/fastcheck.ts";
 import { afterRejection, graderSpeaks, summaryKind, wakesParent } from "./notices.ts";
 import { readBusy } from "./busy.ts";
 import { normalizeRepo, repoAccess } from "../../../modules/codehost-github/src/repos.ts";
+import { host as githubCodehost } from "../../../modules/codehost-github/src/host.mjs";
 import { dependabotCommits } from "../../../modules/platform/src/check.mjs";
 
 const execFileP = promisify(execFile);
@@ -114,6 +115,21 @@ if (app) {
   });
   log("github app on", { agents_org: cfg.agentsOrg });
 }
+/**
+ * The code host of a repository (docs/design/codehost-local.md §2): each org has exactly one, so this is the one place a
+ * slug is routed. GitHub's wraps today's code (the App where an installation covers the repo, else the host's gh login).
+ */
+const githubHost = githubCodehost({
+  appFor,
+  repoSources: cfg.repo_sources ?? {},
+  git,
+  gh: async (slug, write, args, opts = {}) => (await execFileP(await findRealGh(), args, await gho(slug, write ? WRITE : READ, opts))).stdout,
+  mergeGate: async () => {
+    throw new Error("GitHub merges run through the merge queue");
+  },
+});
+const hostOf = (_slug) => githubHost;
+
 // The task folders' clones are the agents' to write (.git included): the runner's git scrubs their config before using them.
 setUntrusted({ tasksDir: join(cfg.workDir, "tasks"), hooksDir: join(cfg.workDir, ".guard-hooks") });
 const logsDir = join(cfg.stateDir, "logs");
@@ -1367,7 +1383,7 @@ const evalGate = createEvalGate({
   productRoot: REPO_ROOT,
   state,
   git,
-  clone: async (slug) => ensureClone(cfg.workDir, normalizeRepo(slug), cfg.repo_sources?.[slug] ?? ((await appFor(slug)) ? appRemoteUrl(slug) : undefined)),
+  clone: async (slug) => ensureClone(cfg.workDir, normalizeRepo(slug), await hostOf(slug).source(slug)),
   jail: (argv, paths) => hiding(evalSandbox, argv, [], paths),
   log,
   usage: reportUsage,
@@ -1930,6 +1946,7 @@ async function commonTierState(issue, action, also = []) {
     answers: split.answers,
     requestChain: chainHash(await prRequest(full).catch(() => "")),
     agentsOrg: cfg.agentsOrg,
+    agentsOrgs: cfg.agentsOrgs,
     productRepo: cfg.productRepo,
     instanceRepo: cfg.apply?.repo,
     // The Platform Engineer, a task the Agent Architect made, or the owner's own task (ruling: the owner may always ask).
@@ -2451,16 +2468,15 @@ async function checkRepo(slug) {
     mkdirSync(path, { recursive: true });
     await execFileP("git", [...SAFE_GIT_ARGS, "init", "-q", path], { env: ISOLATED_ENV });
   }
-  const url = (await appFor(slug)) ? appRemoteUrl(slug) : `git@github.com:${slug}.git`;
+  const url = await hostOf(slug).source(slug);
   await execFileP("git", [...SAFE_GIT_ARGS, "-C", path, "config", "remote.origin.url", url], { env: ISOLATED_ENV });
   return path;
 }
 
 const BRANCH_NAME = /^[A-Za-z0-9_][A-Za-z0-9_./-]*$/;
-/** The repository's default branch, from GitHub (never the workspace's idea of it). */
+/** The repository's default branch, from its code host (never the workspace's idea of it). */
 async function githubDefault(slug) {
-  const { stdout } = await execFileP(await findRealGh(), ["api", `repos/${slug}`, "--jq", ".default_branch"], await gho(slug, READ));
-  const name = stdout.trim();
+  const name = await hostOf(slug).defaultBranch(slug);
   if (!BRANCH_NAME.test(name)) throw new Error("no default branch");
   return name;
 }
@@ -4473,14 +4489,13 @@ const missingRepoText = (slug) =>
 /** Clone one repository into a workspace (from the runner's cache clone). */
 async function addRepo(workspace, slug, { copy = false } = {}) {
   const repo = normalizeRepo(slug);
-  const local = cfg.repo_sources?.[repo.slug];
   // Never created here: a repo named in a task, added by the agent or detected in text that doesn't exist (a typo, a path,
   // a probe) is an error. A new app's repo comes only from an approved create_repo card (`aidenhq create-repo`).
   if (await missingRepo(repo.slug)) throw new UserError(missingRepoText(repo.slug));
-  // A repo an App covers goes over HTTPS with its tokens.
-  const source = local ?? ((await appFor(repo.slug)) ? appRemoteUrl(repo.slug) : undefined);
+  // From its code host: a repo an App covers goes over HTTPS with its tokens, a local one from its bare repo on this server.
+  const source = await hostOf(repo.slug).source(repo.slug);
   const cache = await ensureClone(cfg.workDir, repo, source);
-  return ensureRepo(workspace, repo, { cache, copy, hooksDir: ensureGuardHooks(cfg.workDir), ...(source ? { remoteUrl: source } : {}) });
+  return ensureRepo(workspace, repo, { cache, copy, hooksDir: ensureGuardHooks(cfg.workDir), ...(source !== `git@github.com:${repo.slug}.git` ? { remoteUrl: source } : {}) });
 }
 
 /**
