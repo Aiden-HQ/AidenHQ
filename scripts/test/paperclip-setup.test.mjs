@@ -74,6 +74,7 @@ test("every agent gets how we work, builders also how we build, and asking the o
   assert.match(literal("HOW_WE_BUILD_SECTION"), /\n\n## How we build\n\n/);
   assert.match(readFileSync(script, "utf8"), /\n    metadata: \{[^\n]*build: HOW_WE_BUILD_SECTION/);
   assert.match(literal("HOW_WE_BUILD_SECTION"), /Large rewrites hold the files they replace/);
+  assert.ok(literal("HOW_WE_BUILD_SECTION").includes("A flaky test gets its root cause fixed in the same change; if the cause can't be found, delete the test and record why in the commit. A red check is re-run only when its log shows an infrastructure failure (runner lost, network), and the PR says so. The one sanctioned exception is the reviewer eval gate's single re-run of its failed cases (model variance, measured on its receipt)."));
   assert.ok(literal("HOW_WE_BUILD_SECTION").includes("- Comments: code is self-explanatory to agents; a comment only where the why is not visible in the code."));
   assert.ok(prompt("chief-of-staff.asking").includes("When a call is the owner's (How we work), ask before acting on it"));
 });

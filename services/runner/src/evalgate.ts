@@ -19,7 +19,8 @@
 //
 // A flaky case may pass alone: after a first run with failures, only the failed cases run once more, and the merge is
 // allowed only if every one of them then passes. So it is one full run and at most one partial re-run per head. Both are
-// recorded on the receipt, and their cost goes to the board's ledger.
+// recorded on the receipt, and their cost goes to the board's ledger. This is the one sanctioned exception to the no-retry rule
+// (How we build: flaky tests get fixed, not re-run): a model's verdicts vary, and the receipt measures that variance.
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync, lstatSync, mkdirSync, readFileSync, rmSync, writeFileSync, symlinkSync } from "node:fs";

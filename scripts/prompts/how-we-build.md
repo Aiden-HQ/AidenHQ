@@ -9,6 +9,10 @@
   When a UI test's harness needs a second workaround (a dialog or portal that won't mount), prove that interaction in the
   browser and keep the test at the server level.
   Judge the work by using it: run it, look at it, click through it.
+- Flaky tests: A flaky test gets its root cause fixed in the same change; if the cause can't be found, delete the test
+  and record why in the commit. A red check is re-run only when its log shows an infrastructure failure (runner lost,
+  network), and the PR says so. The one sanctioned exception is the reviewer eval gate's single re-run of its failed cases
+  (model variance, measured on its receipt).
 - A large build splits into independent parts built side by side (sub-agents, several Engineer tasks), integrated and
   checked once at the end.
 - Work fast, in few big steps.
