@@ -133,6 +133,7 @@ describe("box jobs", () => {
       PAPERCLIP_URL: url,
       BOARD_INTERNAL_URL: url,
       AIDENHQ_KERNEL_URL: url,
+      AIDENHQ_BOX_RELEASE_RETRY_MS: "50",
       FAKE_LOG: join(dir, "fake.log"),
       FAKE_STEP: join(dir, "step"),
       FAKE_BOXES: boxes,

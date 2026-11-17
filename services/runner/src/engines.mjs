@@ -26,7 +26,7 @@ export function launcher(cfg) {
  * nothing may inspect, sign or clean the workspace before this resolves. Retried (launcher down, Docker slow); throws if the box
  * can't be confirmed gone in time (the lease then reaps it within 15 minutes).
  */
-export async function releaseBox(call, container, { everyMs = 2000, forMs = 20 * 60_000 } = {}) {
+export async function releaseBox(call, container, { everyMs = Number(process.env.AIDENHQ_BOX_RELEASE_RETRY_MS) || 2000, forMs = 20 * 60_000 } = {}) {
   let last = "";
   for (const end = Date.now() + forMs; ; ) {
     const r = await call("/job/release", { container }).catch((e) => ({ error: e.message }));
