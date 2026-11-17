@@ -26,8 +26,9 @@ agent, never to the owner.
   change approved later no longer counts), that branch or PR is parked with a note to the agent, and the task's other
   branches are still reviewed on their own merits. A rejection is counted on the branch it was raised against, by its name
   or by the change's content key (a rebased or renamed resubmission keeps its budget); an action that names no branch or PR
-  (an apply, a module digest) has the task as its target. Code's own refusals (moved, unreadable, too large) never count; a card closed because its head moved is stored `stale`, not `rejected`. `tiers.mjs` `priorDecisions`; the board keeps
-  its own check of the owner's veto.
+  (an apply, a module digest) has the task as its target. Code's own refusals (moved, unreadable, too large) never count; a
+  card closed because its head moved is stored `stale`, not `rejected`. `tiers.mjs` `priorDecisions`; the board keeps its
+  own check of the owner's veto.
 - **A rejected head stays inspectable.** A `pr` card's head is reviewed before anything is pushed, so a rejection that
   held to its content would otherwise have nothing left to read: the runner keeps each reviewed head in its cache clone as
   `refs/reviewed/<approval>/<branch>` when the card is filed, the rejection names that ref, and a later task's clone
