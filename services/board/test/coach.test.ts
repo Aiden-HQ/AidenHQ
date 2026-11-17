@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { dueList, LIMITS, packEvidence, parseReviews } from "../src/coach.js";
+import { coachEvidence, dueList, LIMITS, packEvidence, parseReviews } from "../src/coach.js";
 import { detectorState, qualityFindings, tick } from "../src/fleet-ops.js";
 import { Store } from "../src/store.js";
 
@@ -58,6 +58,54 @@ describe("coach_due", () => {
 });
 
 describe("coach_evidence", () => {
+  it("lists the open coach fixes for the agent, reading a cut list row in full to find its marker", async () => {
+    const marker = (key: string, slug: string) => `<!-- source:coach:${key}:${slug} -->`;
+    const coachTask = (id: string, key: string, slug: string, status = "in_review") => ({
+      id,
+      identifier: `WOR-${id}`,
+      title: `Fix ${slug}`,
+      status,
+      priority: "medium",
+      assigneeUserId: null,
+      assigneeAgentId: null,
+      assigneeAdapterOverrides: null,
+      createdAt: ago(30),
+      updatedAt: ago(3),
+      description: `${"Evidence. ".repeat(800)}\n\n${marker(key, slug)}`,
+    });
+    // List rows come back with the description cut before the marker, as Paperclip's do.
+    const cut = (i: ReturnType<typeof coachTask>) => ({ ...i, description: String(i.description).slice(0, 4000), descriptionTruncated: true });
+    // A closed fix is not listed: the filing tool's marker dedup keeps a declined proposal declined.
+    const mine = [coachTask("4412", "open-loops", "chase-handoff"), coachTask("4873", "open-loops", "chase-draft-label"), coachTask("3900", "open-loops", "chase-eta", "cancelled")];
+    const others = [coachTask("4040", "assistant", "read-current-state"), { ...coachTask("5000", "open-loops", "not-coach"), description: "Plain task, no marker." }];
+    const rows = [...mine, ...others];
+    const full = new Map(rows.map((i) => [i.id, i]));
+    const agent = { id: "ag-open-loops", name: "Follow-up Tracker", status: "idle", adapterType: "codex_local", createdAt: ago(1000), metadata: { setupKey: "aidenhq:open-loops" } };
+    const pc = {
+      companyId: "co",
+      request: async (method: string, path: string) => {
+        if (path.endsWith("/agents")) return [agent];
+        if (path.includes("instructions-bundle")) return { content: "# Handbook" };
+        if (path.includes("heartbeat-runs")) return [];
+        if (path.includes("/issues?")) {
+          const statuses = new URLSearchParams(path.split("?")[1]).get("status")!.split(",");
+          return rows.filter((i) => statuses.includes(i.status)).map(cut);
+        }
+        throw new Error(`unexpected ${method} ${path}`);
+      },
+      routines: async () => [],
+      issueSummary: async (id: string) => full.get(id)!,
+      issue: async (id: string) => full.get(id)!,
+      labels: async () => [],
+    };
+    const p = await coachEvidence(pc as never, new Store(":memory:"), { list: async () => [] } as never, { grades: async () => ({ grades: {} }) } as never, async () => null, "open-loops", { id: "coach" }, NOW);
+    expect(p.earlier_fixes?.map((f) => [f.task, f.marker])).toEqual([
+      ["WOR-4412", "coach:open-loops:chase-handoff"],
+      ["WOR-4873", "coach:open-loops:chase-draft-label"],
+    ]);
+    expect(p.earlier_fixes?.[0]!.status).toBe("in_review");
+  });
+
   it("bounds every part and says what it cut", () => {
     const run = (n: number) => ({ id: `r${n}`, status: "succeeded", startedAt: ago(n), finishedAt: ago(n), error: "e".repeat(5000), task: null });
     const p = packEvidence({
