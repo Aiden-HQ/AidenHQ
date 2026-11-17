@@ -41,9 +41,11 @@ fi
 
 ssh "${ssh_opts[@]}" "$target" 'umask 077; cat > /tmp/agents-key.pub' <"$SSH_PUB"
 
-ssh "${ssh_opts[@]}" "$target" bash -s -- "$VM_NAME" "$PVE_STORAGE" "$BRIDGE" "$IMG_BASE" "$IMG_NAME" "$IMG_DIR" "$CORES" "$MEMORY" "$DISK" "$VMID" "$VM_USER" <<'REMOTE'
+# ssh joins the arguments into one command line, so an empty one vanishes: VMID goes last, and the remote side reads its
+# absence as "the next free id".
+ssh "${ssh_opts[@]}" "$target" bash -s -- "$VM_NAME" "$PVE_STORAGE" "$BRIDGE" "$IMG_BASE" "$IMG_NAME" "$IMG_DIR" "$CORES" "$MEMORY" "$DISK" "$VM_USER" "$VMID" <<'REMOTE'
 set -euo pipefail
-VM_NAME=$1 STORAGE=$2 BRIDGE=$3 IMG_BASE=$4 IMG_NAME=$5 IMG_DIR=$6 CORES=$7 MEMORY=$8 DISK=$9 VMID=${10} VM_USER=${11}
+VM_NAME=$1 STORAGE=$2 BRIDGE=$3 IMG_BASE=$4 IMG_NAME=$5 IMG_DIR=$6 CORES=$7 MEMORY=$8 DISK=$9 VM_USER=${10} VMID=${11:-}
 
 existing=$(qm list | awk -v n="$VM_NAME" '$2==n{print $1}')
 if [ -n "$existing" ]; then

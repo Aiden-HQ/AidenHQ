@@ -42,6 +42,9 @@
 # Run as root, it first copies the checkout's commit to root-owned /opt/aidenhq/kernel/<sha> and runs again from there
 # (--checkout names the user's checkout): root's own steps run only from that verified copy.
 set -euo pipefail
+# Whatever umask the caller's shell had (an ssh session may pass 077): the checkout, config and data dirs this writes are
+# read by non-root containers. Secrets are written 0600 / 0700 explicitly.
+umask 022
 
 SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"   # the code this run executes: root's verified copy, or the checkout
 ARGS=("$@")
@@ -504,10 +507,21 @@ if [ ! -e "$H/.local/share/aidenhq/vault.enc" ]; then
 fi
 
 # ---------------------------------------------------------------- 7. the stack
+# The user units go in before the apply: its agent setup needs the computer launcher answering (aidenhq-computers). The
+# rest start after it (step 8).
+as_user mkdir -p "$H/.config/systemd/user"
+# Where the units find this checkout (their default is ~/aidenhq).
+printf 'AIDENHQ_DIR=%s\n' "$REPO" | write_user_file "$H/.config/aidenhq-checkout.env" 644
+as_user cp "$REPO"/ops/units/aidenhq-runner.service "$REPO"/ops/units/aidenhq-computers.service "$REPO"/ops/units/aidenhq-kernel.service "$REPO"/ops/units/prune-runs.service "$REPO"/ops/units/prune-runs.timer "$REPO"/ops/units/prune-docker.service "$REPO"/ops/units/prune-docker.timer "$REPO"/ops/units/aidenhq-apply-recover.service "$H/.config/systemd/user/"
+as_user systemctl --user daemon-reload
+# aidenhq-computers: the agent-computer launcher (services/computer); idle until an agent has an image.
+as_user systemctl --user enable --now aidenhq-computers
 phase apply
 say "Apply: compile, start, Paperclip (ops/apply-config.sh)"
 PW="$( [ "$DRY" = 1 ] || read_secret paperclip_owner_password)"
-as_user AIDENHQ_PROGRESS_BASE="$(progress_slice SETUP_PHASES apply)" PAPERCLIP_EMAIL="$OWNER_EMAIL" PAPERCLIP_PASSWORD="$PW" PAPERCLIP_NAME="$OWNER_NAME" bash "$REPO/ops/apply-config.sh"
+# --retry: setup is the owner's own command, and its contract is "fix the cause and run it again", so a generation an
+# earlier run of it left failed is applied again rather than held (ops/apply-config-work.sh).
+as_user AIDENHQ_PROGRESS_BASE="$(progress_slice SETUP_PHASES apply)" PAPERCLIP_EMAIL="$OWNER_EMAIL" PAPERCLIP_PASSWORD="$PW" PAPERCLIP_NAME="$OWNER_NAME" bash "$REPO/ops/apply-config.sh" --retry
 if [ "$DRY" = 1 ]; then echo "  + .env: WORK_COMPANY_ID=<from config/system.yaml>, PAPERCLIP_DISABLE_SIGN_UP=true; docker compose up -d"
 else
   company="$(sed -n 's/^ *company_id: *"\{0,1\}\([0-9a-f-]\{36\}\)"\{0,1\}.*/\1/p' "$REPO/config/system.yaml" | head -1)"
@@ -527,12 +541,7 @@ if [ "$PUBLIC" = 1 ] && [ "$DRY" = 0 ] && ! grep -qx 'EXPOSURE=public' /etc/defa
 fi
 phase units
 say "Runner, model gateway and run pruning (user units)"
-as_user mkdir -p "$H/.config/systemd/user"
-# Where the units find this checkout (their default is ~/aidenhq).
-printf 'AIDENHQ_DIR=%s\n' "$REPO" | write_user_file "$H/.config/aidenhq-checkout.env" 644
-as_user cp "$REPO"/ops/units/aidenhq-runner.service "$REPO"/ops/units/aidenhq-computers.service "$REPO"/ops/units/aidenhq-kernel.service "$REPO"/ops/units/prune-runs.service "$REPO"/ops/units/prune-runs.timer "$REPO"/ops/units/prune-docker.service "$REPO"/ops/units/prune-docker.timer "$REPO"/ops/units/aidenhq-apply-recover.service "$H/.config/systemd/user/"
-as_user systemctl --user daemon-reload
-# aidenhq-computers: the agent-computer launcher (services/computer); idle until an agent has an image.
+# The units were installed before the apply (step 7).
 # aidenhq-kernel: every model and tool call (kernel/src); the only holder of the OpenRouter key and the connections' keys.
 # A new size reaches a runner that was already running: it exits once nothing is half done (jobs keep running).
 runner_up=0; [ "$DRY" = 1 ] || ! as_user systemctl --user is-active --quiet aidenhq-runner || runner_up=1
@@ -567,7 +576,7 @@ if [ "$PUBLIC" = 1 ] && [ "$DRY" = 0 ]; then
     set_env AIDENHQ_ADMIN_URL "$ADMIN_URL"
     set_env AIDENHQ_LINK_TTL_HOURS ""
     set_env BOARD_GOOGLE_CONNECT 1
-    as_user PAPERCLIP_EMAIL="$OWNER_EMAIL" PAPERCLIP_PASSWORD="$PW" PAPERCLIP_NAME="$OWNER_NAME" bash "$REPO/ops/apply-config.sh"
+    as_user PAPERCLIP_EMAIL="$OWNER_EMAIL" PAPERCLIP_PASSWORD="$PW" PAPERCLIP_NAME="$OWNER_NAME" bash "$REPO/ops/apply-config.sh" --retry
     as_user systemctl --user restart aidenhq-kernel
     run env AIDENHQ_EXPOSURE=local AIDENHQ_NO_TAILSCALE=1 AIDENHQ_USER="$U" AIDENHQ_CHECKOUT="$REPO" bash "$SRC/ops/vm/setup.sh"
   else say "Public: $BOARD_URL answers with a trusted certificate"; fi
