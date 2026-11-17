@@ -20,7 +20,7 @@ const tierOf = (c, mode) => autonomyCap(c.wrap ? TIERS[c.wrap[0]](c.t, c.wrap[1]
 const ARGS = { only: [{ repo: "acme/app", branch: "feat/x", sha: "a".repeat(40), patch: "b".repeat(64) }] };
 
 function kernel(mode, reviewer = async () => { throw new Error("no reviewer"); }, repos = { product: "acme/aidenhq", instance: "acme-agents/aidenhq-instance", agentsOrg: "acme" }) {
-  const records = openRecords(join(mkdtempSync(join(tmpdir(), "parity-")), "kernel.db"));
+  const records = openRecords(":memory:"); // 540 fresh WAL files took minutes on the self-hosted runners
   const writes = createWrites({ records, registry: () => KERNEL_KINDS, connections: () => ({}), secret: () => "", resolver: {}, autonomy: () => mode, repos: () => repos,
     reviews: { request: reviewer }, onTask: { open: async () => true, notify: async () => {} }, replay: async () => ({ ok: true, text: "" }) });
   return { records, writes };
