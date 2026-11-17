@@ -233,6 +233,19 @@ describe("event wake-ups", () => {
     expect(f.comments[0]!.body).toContain("PR org/repo#7 is merged.");
   });
 
+  it("wakes on a merged change request on this server the task names", async () => {
+    const f = fake();
+    const store = new Store(":memory:");
+    const recent: Recent = new Map();
+    let merged: string | null = null;
+    const d = { ...deps(f, store), prStates: async () => [{ repo: "local/app", number: 3, state: merged ? "closed" : "open", merged_at: merged, closed_at: merged }] };
+    f.put({ id: "1", assigneeAgentId: "a", status: "in_progress", description: "Merge codehost:local/app/change/3 once green" }, t0 - 60 * MIN);
+    await wakeTick(d, recent, t0);
+    merged = iso(t0 + MIN);
+    expect(await wakeTick(d, recent, t0 + 5 * MIN)).toEqual(["1"]);
+    expect(f.comments[0]!.body).toContain("PR local/app#3 is merged.");
+  });
+
   it("releases the hold Paperclip's suppressed disposition repair leaves, so the task's own wakes work again", async () => {
     const f = fake();
     const store = new Store(":memory:");

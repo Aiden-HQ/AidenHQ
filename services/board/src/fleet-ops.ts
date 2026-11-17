@@ -30,13 +30,14 @@ export function staleSources(rows: SourceRow[], t: number): { key: string; reaso
 }
 const PR_OPEN_MS = 60 * MIN; // an agents-org pull request open this long without merging (the warehouse lags GitHub by up to 15 minutes)
 
-type PrRow = { repo: string; number: number; opened_at: string; draft: boolean };
+type PrRow = { repo: string; number: number; opened_at: string; draft: boolean; preview_url?: string };
 /** The open agents-org PRs nobody has merged within the allowance; merged or closed ones are no longer in the rows. A draft
  * cannot merge until someone marks it ready, so it is not overdue; only its age once ready counts. */
 export function stalePrs(rows: PrRow[], t: number): { key: string; reason: string }[] {
   return rows
     .filter((x) => !x.draft && age(x.opened_at, t) > PR_OPEN_MS)
-    .map((x) => ({ key: `${x.repo}#${x.number}`, reason: `${x.repo}#${x.number} open ${mins(age(x.opened_at, t))} without merging` }));
+    // A running preview's link (apps-mcp: the PR's, or this server's change request's) rides on the row.
+    .map((x) => ({ key: `${x.repo}#${x.number}`, reason: `${x.repo}#${x.number} open ${mins(age(x.opened_at, t))} without merging${x.preview_url && /^https?:\/\//.test(x.preview_url) ? ` (preview: ${x.preview_url})` : ""}` }));
 }
 // Never a sample: apps-mcp keeps app data behind app_status (per-caller read access); fleet_status shows what the detector holds.
 type QualityRow = { name: string; state: "none" | "ok" | "unknown"; checks?: { name: string; ok: boolean; count: number | null }[] };

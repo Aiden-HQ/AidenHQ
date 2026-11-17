@@ -23,7 +23,10 @@ export function tierOf(r: Pick<Row, "tier" | "panel" | "by">): Tier | undefined 
   return by && !by.startsWith("stale:") ? "owner" : undefined;
 }
 
-const PR_URL = /github\.com\/([\w.-]+\/[\w.-]+)\/pull\/(\d+)/gi;
+// A GitHub PR's URL, or a change request's on this server (codehost:<org>/<name>/change/<n>): both key as <repo>#<n>.
+const PR_URL = /(?:github\.com\/([\w.-]+\/[\w.-]+)\/pull|codehost:([\w.-]+\/[\w.-]+)\/change)\/(\d+)/gi;
+/** Where a PR key links to: GitHub's page, or nowhere for this server's change requests (no web page; the board shows them). */
+const prLink = (pr: string) => (pr.startsWith("record:") || pr.startsWith("local/") ? "" : `https://github.com/${pr.replace("#", "/pull/")}`);
 const SHA = /\b[0-9a-f]{7,40}\b/g;
 
 /** Agent changes that landed (merge, a PR that merges, an apply), one per PR or apply commit however many records carried it. */
@@ -34,11 +37,11 @@ export function changesFrom(rows: Row[]): Change[] {
     const args = (r.args ?? {}) as { prs?: { repo: string; number?: number; url?: string }[]; only?: { repo: string; sha?: string }[]; repo?: string; sha?: string; merge?: boolean };
     const tier = tierOf(r);
     if (r.state !== "done" || !tier || !(a === "merge" || (a === "pr" && args.merge === true) || a === "apply")) continue;
-    const prs = [...(args.prs ?? []).map((p) => (p.number ? `${repoKey(p.repo)}#${p.number}` : "")), ...[...String(r.outcome ?? "").matchAll(PR_URL)].map((m) => `${repoKey(m[1]!)}#${m[2]}`)].filter(Boolean);
+    const prs = [...(args.prs ?? []).map((p) => (p.number ? `${repoKey(p.repo)}#${p.number}` : "")), ...[...String(r.outcome ?? "").matchAll(PR_URL)].map((m) => `${repoKey((m[1] ?? m[2])!)}#${m[3]}`)].filter(Boolean);
     const shas = [args.sha, ...(args.only ?? []).map((b) => b.sha), ...(args.prs ?? []).map((p) => (p as { head?: string }).head)].filter((s): s is string => typeof s === "string").map((s) => s.toLowerCase());
     for (const pr of prs.length ? [...new Set(prs)] : [`record:${r.id}`]) {
       const prev = out.get(pr);
-      out.set(pr, { id: pr, tier, at: r.at, keys: [...new Set([...(prev?.keys ?? []), ...(pr.startsWith("record:") ? [] : [pr]), ...shas])], link: pr.startsWith("record:") ? "" : `https://github.com/${pr.replace("#", "/pull/")}`, label: r.identifier ?? pr });
+      out.set(pr, { id: pr, tier, at: r.at, keys: [...new Set([...(prev?.keys ?? []), ...(pr.startsWith("record:") ? [] : [pr]), ...shas])], link: prLink(pr), label: r.identifier ?? pr });
     }
   }
   return [...out.values()];
@@ -47,7 +50,7 @@ export function changesFrom(rows: Row[]): Change[] {
 /** The PRs and commits a text names; `loose`: it names a bare number outside any repository, or nothing at all. */
 function refs(t: Text) {
   const text = `${t.title}\n${t.body ?? ""}\n${t.url ?? ""}`;
-  const prs = new Set([...text.matchAll(PR_URL)].map((m) => `${repoKey(m[1]!)}#${m[2]}`));
+  const prs = new Set([...text.matchAll(PR_URL)].map((m) => `${repoKey((m[1] ?? m[2])!)}#${m[3]}`));
   for (const m of text.matchAll(/([\w.-]+\/[\w.-]+)#(\d+)/g)) prs.add(`${repoKey(m[1]!)}#${m[2]}`);
   let bare = false;
   for (const m of text.replace(PR_URL, " ").replace(/[\w.-]+\/[\w.-]+#\d+/g, " ").matchAll(/(?:^|[^\w&])#(\d+)\b/g)) {

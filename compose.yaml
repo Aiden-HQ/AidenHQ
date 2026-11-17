@@ -139,6 +139,8 @@ services:
       # A local instance repo (ops/setup.sh): the bare repo the checkout pushes to, at the same path. Unused otherwise.
       - ${AIDENHQ_INSTANCE_REMOTE:-/dev/null}:${AIDENHQ_INSTANCE_REMOTE:-/aidenhq-no-local-remote}
       - ${AIDENHQ_DATA_DIR:-./data}/apps-mcp:/data
+      # This server's repos (codehost-local: bare repos the runner alone writes), read-only: local/* apps build and preview from them.
+      - ${AIDENHQ_DATA_DIR:-./data}/codehost:/codehost:ro
       # The warehouse's point (compile): each source module's schema and the views source_new serves.
       - ${AIDENHQ_CONFIG_DIR:-./config}/points/warehouse.json:/config/points/warehouse.json:ro
       # Read-write, and only this vault dir: apps-mcp writes the DATABASE_URL of `database: warehouse` apps here.
