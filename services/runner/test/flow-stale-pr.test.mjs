@@ -225,9 +225,9 @@ scenario("a published PR's merge after its card", ({ t, setPrs, stored, stale, m
 
   it("a stored number GitHub can't read is said stale, and the merge is not requested", async () => {
     await t.settled();
-    stored("fix/gone", url(24));
-    setPrs({ 24: { branch: "fix/gone", files: ["x.txt"], checks: "SUCCESS" } });
-    t.step("commit\naidenhq pr acme/app fix/gone");
+    stored("feat/second", url(24));
+    setPrs({ 24: { branch: "feat/second", files: ["x.txt"], checks: "PENDING" } });
+    t.step("second\naidenhq pr acme/app feat/second");
     await t.turn("Ship it.");
     setPrs({}); // the number can't be read any more
     const card = t.paperclip.decide("pr", "approved");
@@ -240,15 +240,15 @@ scenario("a published PR's merge after its card", ({ t, setPrs, stored, stale, m
   });
 
   it("a stored number whose head is another branch is said stale, and the merge is not requested", async () => {
-    stored("fix/ours", url(25));
-    setPrs({ 25: { branch: "fix/ours", files: ["x.txt"], checks: "SUCCESS" } });
-    t.step("commit\naidenhq pr acme/app fix/ours");
+    stored("feat/third", url(25));
+    setPrs({ 25: { branch: "feat/third", files: ["x.txt"], checks: "PENDING" } });
+    t.step("third\naidenhq pr acme/app feat/third");
     await t.turn("Ship it.");
     setPrs({ 25: { branch: "fix/theirs", files: ["x.txt"], checks: "SUCCESS" } });
     const card = t.paperclip.decide("pr", "approved");
     await t.waitFor("the card's outcome", () => Boolean(t.paperclip.approvals.get(card.id)?.outcome));
     assert.ok(!t.paperclip.approvals.get(card.id).outcome.ok);
-    assert.match(stale(25)[0], /its head branch is `fix\/theirs`, not the task's `fix\/ours`/);
+    assert.match(stale(25)[0], /its head branch is `fix\/theirs`, not the task's `feat\/third`/);
     assert.equal(merged().length, 0);
   });
 
