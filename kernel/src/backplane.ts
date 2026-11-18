@@ -42,6 +42,8 @@
 //   POST /v1/checks, GET /v1/checks/:check, POST /v1/receipts/verify  (a module with role kernel.checks) a credential-free check
 //                              job of repo@head and its signed receipt (?after=<version>&wait=<ms>), a receipt checked against
 //                              {repo, head, run, judge?, policy?} (checkjobs.ts)
+//   POST /v1/jobtools/:cmd     (a kernel job's own token) reset | engine {engine, model?} | cleanup: what the running job asks of its
+//                              task's next turn (jobtools.ts)
 //   GET  /v1/advisories        (the board's key) the marketplace advisories open against installed modules (loader/advisories.ts)
 //   POST /v1/auth/:op, /v1/accounts/:op, /v1/apps/:op, /v1/operator/:op  the accounts' routes (auth-api.ts): module UI
 //                              sessions and account admin (the board), in-app requests (apps-platform), setup links (operator)
@@ -58,6 +60,7 @@ import type { Jobs } from "./jobs.ts";
 import type { Admission } from "./admission.ts";
 import { JOB_KINDS, type Outcomes } from "./outcomes.ts";
 import { notice, type Notify } from "./notify.ts";
+import type { JobTools } from "./jobtools.ts";
 import { fail } from "./proxy.ts";
 import type { Records, State } from "./records.ts";
 import type { Work } from "./work.ts";
@@ -120,6 +123,7 @@ export const ROUTES = [
   { method: "POST", path: "/v1/checks", auth: "module" },
   { method: "GET", path: "/v1/checks/:check", auth: "module" },
   { method: "POST", path: "/v1/receipts/verify", auth: "module" },
+  { method: "POST", path: "/v1/jobtools/:cmd", auth: "job" },
   { method: "GET", path: "/v1/advisories", auth: "board" },
   { method: "POST", path: "/v1/auth/:op", auth: "board" },
   { method: "POST", path: "/v1/accounts/:op", auth: "board+session" },
@@ -139,7 +143,7 @@ async function json(req: IncomingMessage, max = 1_000_000): Promise<any> {
   try { return JSON.parse(Buffer.concat(chunks).toString("utf8") || "{}"); } catch { throw fail(400, "bad_request", "the body must be JSON"); }
 }
 
-export function createBackplane({ whoami, asserter, proxy, cp, grantsFile, writes, records, channels, brake, notify, owner, modules = () => ({}), boardKey = () => "", reviews, runnerKey = () => "", reviewerKey = () => "", jobs, admission, outcomes, wakes, eventsKey = () => "", work, graderToken = () => "", dropGraderToken = () => {}, advisories = () => [], accounts, checks, checkJobs, ownerRaw, lane, log = () => {} }: {
+export function createBackplane({ whoami, asserter, proxy, cp, grantsFile, writes, records, channels, brake, notify, owner, modules = () => ({}), boardKey = () => "", reviews, runnerKey = () => "", reviewerKey = () => "", jobs, admission, outcomes, wakes, eventsKey = () => "", work, graderToken = () => "", dropGraderToken = () => {}, advisories = () => [], accounts, checks, checkJobs, jobTools, ownerRaw, lane, log = () => {} }: {
   whoami: Whoami; asserter: Asserter; proxy: Handler; cp: Handler; grantsFile: () => { agents?: Record<string, Grant> } & Record<string, unknown>;
   writes?: Writes; records?: Records; boardKey?: () => string; log?: (msg: string, f?: Record<string, unknown>) => void;
   /** The reviewer slot; the runner's key for its kinds (filing, claim, outcome, reads, a record's review: runner_writes_key)
@@ -175,6 +179,8 @@ export function createBackplane({ whoami, asserter, proxy, cp, grantsFile, write
   checks?: Checks;
   /** Check jobs and their receipts (checkjobs.ts). */
   checkJobs?: CheckJobs;
+  /** A running job's requests for its task's next turn (jobtools.ts). */
+  jobTools?: JobTools;
 }) {
   /** The calling module (its own token), or 401. */
   const moduleOf = async (req: IncomingMessage) => {
@@ -240,6 +246,15 @@ export function createBackplane({ whoami, asserter, proxy, cp, grantsFile, write
           const w = await moduleOf(req);
           if (!notify) throw fail(503, "unavailable", "notify is off");
           return send(res, 200, hit!.method === "GET" ? notify.take(w.roles) : await notify.send(w.roles, await json(req)));
+        }
+        case "POST /v1/jobtools/:cmd": {
+          if (!jobTools) throw fail(503, "unavailable", "job tools are off");
+          const b = await json(req);
+          try { return send(res, 200, { text: jobTools.run(bearer(req), m[0]!, b) }); } catch (e) {
+            const j = e as { name?: string; status?: number; code?: string; message: string };
+            if (j.name === "JobToolError") throw fail(j.status!, j.code!, j.message);
+            throw e;
+          }
         }
         case "GET /v1/advisories": if (!isBoard(req)) throw fail(401, "unauthorized", "the board's key is required"); return send(res, 200, { advisories: advisories() });
       }
