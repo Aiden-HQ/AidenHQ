@@ -390,38 +390,50 @@ echo "Capabilities (by construction)"
 pass "ops-mcp exposes no delete/replace/arbitrary-write tools (see modules/meetings/connections/ops-mcp/src/mcp/tools.ts)"
 pass "google-workspace-mcp requests only *.readonly scopes and has GET-only client code"
 # Vendor connections pass the vendor's MCP server through whole (owner, 2026-11-18; modules vendor-mcp/src/vendor/proxy.ts):
-# the gate is the manifest's tags and the kernel. Every tool whose name says it acts is tagged write or destructive, never
-# read; the jobs' read endpoint serves only the manifest's read tags that the vendor also marks read-only (READ_TOOLS equals
+# the gate is the manifest's tags and the kernel. Every read tag is a reading verb or a reviewed exception (fail closed); the jobs' read endpoint serves only the manifest's read tags that the vendor also marks read-only (READ_TOOLS equals
 # the read tags); and the pins stay (Slack's draft arguments, Jira's site, Grafana's untrustworthy families).
 vendor_tags="$(node --input-type=module -e '
   import { existsSync, readFileSync } from "node:fs";
   import YAML from "./scripts/node_modules/yaml/dist/index.js";
   const bad = [], seen = [];
+  // Reviewed read tags whose first word is not a reading verb (read-only upstream, checked 2026-11-18). Add one only after reading the tool.
+  const EXCEPTIONS = {
+    glean: ["employee_search", "meeting_lookup", "code_search", "chat", "user_activity", "memory_schema"],
+    grafana: ["alerting_rules_read", "alerting_silences_read", "generate_deeplink", "render_grafana_app", "suggest_loki_alloy_label_config", "user_info", "validate_provisioning_file"],
+    hubspot: ["tool_guidance"],
+    jira: ["atlassianUserInfo"],
+  };
   for (const { name } of JSON.parse(readFileSync("modules/marketplace.json", "utf8")).plugins) {
     const def = YAML.parse(readFileSync(`modules/${name}/module.yaml`, "utf8"));
     for (const [svc, s] of Object.entries(def.services?.run ?? {})) {
       if (!existsSync(`modules/${name}/${s.build ?? "-"}/src/vendor/proxy.ts`)) continue;
       const [k, c] = Object.entries(def.connections ?? {}).find(([, c]) => new URL(c.url).hostname === svc) ?? [];
-      if (!c) continue;
+      if (!c) { bad.push(`${name}/${svc} has src/vendor/proxy.ts but no connection points at it`); continue; }
       seen.push(k);
-      // A name acts when a word in it is an acting verb, unless it starts with a reading one (slack_get_reactions reads).
+      // Fail closed: a read tag passes only when its first word (vendor prefix stripped) is a reading verb, or the tool is in
+      // the reviewed exception list for its module. Anything else is refused, whatever else its name says.
       const words = (t) => t.replace(/([a-z])([A-Z])/g, "$1_$2").toLowerCase().split("_").filter((w) => !["slack", "primer", "grafana", "github"].includes(w));
-      const READS = /^(get|list|read|search|query|find|lookup|resolve|check|analyze|diff|download|export|show|discover|whoami)$/;
-      const ACTS = /^(send|post|schedule|create|update|edit|upload|share|manage|add|delete|remove|write|publish|complete|set|move|transition|assign|request|invite)$/;
-      const acts = c.tools.read.filter((t) => !READS.test(words(t)[0] ?? "") && words(t).some((w) => ACTS.test(w)));
-      if (acts.length) bad.push(`${k} tags ${acts.join(", ")} read`);
+      const READS = /^(get|list|read|search|query|find|lookup|fetch|describe|show|check|analyze|diff|download|export|discover|whoami|resolve)$/;
+      const unreviewed = c.tools.read.filter((t) => !READS.test(words(t)[0] ?? "") && !(EXCEPTIONS[k] ?? []).includes(t));
+      if (unreviewed.length) bad.push(`${k} tags ${unreviewed.join(", ")} read (not a reading verb, not in the reviewed exceptions)`);
+      if (k === "grafana") {
+        const refused = c.tools.read.filter((t) => /exec|patch|handler|sql|investigation|assistant|gcx/i.test(t));
+        if (refused.length) bad.push(`grafana tags ${refused.join(", ")} read (its refused families)`);
+      }
       if (s.env?.MCP_READ_TOKEN_FILE && s.env?.READ_TOOLS !== c.tools.read.join(",")) bad.push(`${k}: READ_TOOLS is not its read tags`);
     }
   }
+  for (const k of ["glean", "grafana", "jira", "primer", "slack", "hubspot"]) if (!seen.includes(k)) bad.push(`vendor connection ${k} was not checked`);
   console.log(bad.length ? `BAD ${bad.join("; ")}` : `ok ${seen.join(" ")}`);
 ' 2>&1)"
-case "$vendor_tags" in ok*) pass "vendor connections (${vendor_tags#ok }): no acting tool tagged read; each read endpoint serves only its read tags";; *) fail "vendor connections: $vendor_tags";; esac
+case "$vendor_tags" in ok*) pass "vendor connections (${vendor_tags#ok }): every read tag is a reading verb or a reviewed exception; each read endpoint serves only its read tags";; *) fail "vendor connections: $vendor_tags";; esac
 vp="modules/vendor-mcp/src/vendor/proxy.ts"
 grep -qF 'const servesRead = (t: Tool) => reads.has(t.name) && isRead(t);' "$vp" && grep -qF 'if (!tool) throw new Error(`${o.name} doesn'"'"'t offer ${name}`);' "$vp" \
   && grep -qF 'export const DRAFT_ARGS = ["channel_id", "message", "thread_ts"];' modules/slack/connections/slack-mcp/src/slack.ts && grep -qF 'hooks: { args: (name, args) => upstreamArgs(name, args) },' modules/slack/connections/slack-mcp/src/main.ts \
   && grep -qF 'args(_name, { [SITE_ARG]: _caller, ...args }, tool) {' modules/jira/connections/jira-mcp/src/site.ts \
   && grep -qF 'hooks: { deny: /sql|investigation|assistant|gcx/i },' modules/grafana/connections/grafana-mcp/src/main.ts \
-  && pass "vendor proxy: read endpoint = read tags and read-only upstream; unlisted tools refused; Slack draft arguments, Jira site and Grafana deny pinned" \
+  && grep -qF 'scopes: { recommended: ["grafana:read", "grafana:query"] }' modules/grafana/connections/grafana-mcp/src/main.ts \
+  && pass "vendor proxy: read endpoint = read tags and read-only upstream; unlisted tools refused; Slack draft arguments, Jira site and Grafana deny and recommended scopes pinned" \
   || fail "vendor proxy: the read rule or a pin changed ($vp, slack.ts, site.ts, grafana main.ts)"
 for a in config/paperclip.yaml; do   # generated by scripts/compile.mjs
   [ -f "$a" ] || { echo "  skip  $a not generated (run node scripts/compile.mjs)"; continue; }
