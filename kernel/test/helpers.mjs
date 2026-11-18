@@ -9,6 +9,7 @@ import { createBackplane } from "../src/backplane.ts";
 import { createBrake } from "../src/brake.ts";
 import { createChannels } from "../src/channels.ts";
 import { createChecks } from "../src/checks.ts";
+import { createLane } from "../src/lane.ts";
 import { createAsCaller, createCp } from "../src/cp.ts";
 import { createIdentity } from "../src/identity.ts";
 import { createResolver } from "../src/net.ts";
@@ -84,7 +85,13 @@ export async function kernel(t, { agents = {}, boxes = {}, grants = {}, settings
   // The finish gate (checks.ts) over `checks`, config/kernel/checks.json's shape.
   // `checks` is the table, or a function (to stand for a file that fails to load).
   const checks = checkTable ? createChecks({ db: records.db, registry: typeof checkTable === "function" ? checkTable : () => checkTable, owner, secret, resolver: createResolver(), log: logf, agentKey: (id) => grants[id]?.key, graded: (id) => grants[id]?.graded === true, pending: (task) => records.list(["review", "owner", "approved"], 100, { task }) }) : undefined;
-  const backplane = createBackplane({ checks, whoami, asserter, grantsFile: grantsTable, log: logf, writes, records, channels, brake, owner, ownerRaw: (p) => fetch(new URL(p, cpServer.url), { headers: { authorization: "Bearer board-key" } }), modules: modulesFile, boardKey: () => secret("gateway_board_key"), runnerKey: () => secret("runner_writes_key"), reviewerKey: () => secret("reviewer_key"), reviews, jobs: jobsApi, proxy: (req, res, c) => proxy(req, res, c), cp: createCp({ whoami, asserter, controlUrl: cpServer.url, launcherUrl: launcher.url, checks, log: logf }) });
+  // The fast lane's exchanges; agent posts (outcomes.ts's, once per job) are kept in `agentPosts`.
+  const agentPosts = [];
+  const lane = createLane({ db: records.db, owner, grantsFile: grantsTable, postAsAgent: async (agent, task, job, body) => {
+    const i = agentPosts.findIndex((p) => p.job === job);
+    return { id: `ac-${(i >= 0 ? i : agentPosts.push({ agent, task, job, body }) - 1) + 1}` };
+  } });
+  const backplane = createBackplane({ checks, lane, whoami, asserter, grantsFile: grantsTable, log: logf, writes, records, channels, brake, owner, ownerRaw: (p) => fetch(new URL(p, cpServer.url), { headers: { authorization: "Bearer board-key" } }), modules: modulesFile, boardKey: () => secret("gateway_board_key"), runnerKey: () => secret("runner_writes_key"), reviewerKey: () => secret("reviewer_key"), reviews, jobs: jobsApi, proxy: (req, res, c) => proxy(req, res, c), cp: createCp({ whoami, asserter, controlUrl: cpServer.url, launcherUrl: launcher.url, checks, log: logf }) });
   const asCaller = createAsCaller({ whoami, connections: connectionsTable, asserter, log: logf });
   const gw = createGateway({ asCaller, dbFile: join(dir, "usage.db"), grantsFile: join(dir, "grants.json"), settingsFile: join(dir, "gateway.json"), tools: proxy, secret });
   const bp = await serve(backplane);
@@ -96,7 +103,7 @@ export async function kernel(t, { agents = {}, boxes = {}, grants = {}, settings
   });
   /** The backplane's /v1/writes routes, with a bearer (the board's key by default). */
   const v1 = (method, path, body, token = "the-boards-key") => fetch(`${bp.url}${path}`, { method, headers: { authorization: `Bearer ${token}`, "content-type": "application/json" }, ...(body ? { body: JSON.stringify(body) } : {}) }).then(async (r) => ({ status: r.status, json: await r.json() }));
-  return { dir, url: bp.url, jobsUrl: jobs.url, call, control, log, asserter, asCaller, jwks: asserter.jwks, records, writes, notices, v1, boardCalls, reviewed, channels, grantsFile: join(dir, "grants.json") };
+  return { dir, url: bp.url, jobsUrl: jobs.url, call, control, agentPosts, log, asserter, asCaller, jwks: asserter.jwks, records, writes, notices, v1, boardCalls, reviewed, channels, grantsFile: join(dir, "grants.json") };
 }
 
 /** A module's MCP server: answers tools/list with `tools` and tools/call with `answer(msg, req)`; records what it saw. */

@@ -1456,6 +1456,31 @@ export async function ensureMemoryInboxes({ api, companyId, keys, step }) {
 }
 
 /**
+ * One unassigned backlog "Chat with <name>" task per agent with a `chat:` block (marker chat-task:<key>): the fast chat
+ * lane's conversation, where the kernel writes each lane turn (kernel/src/lane.ts). Held by nobody and in backlog, so
+ * nothing in Paperclip or the wake inbox runs on it; the lane answers the owner's words there. Returns { key: issue id }.
+ */
+export async function ensureChatTasks({ api, companyId, agents, ownerName, step }) {
+  const keys = Object.keys(agents);
+  if (!keys.length) return {};
+  const { json: me } = await api("GET", "/api/cli-auth/me");
+  const ids = await mapLimit(keys, 4, async (key) => {
+    const marker = `chat-task:${key}`;
+    const q = new URLSearchParams({ q: key, status: "backlog,todo,in_progress,in_review,blocked", limit: "50", excludeRoutineExecutions: "true" });
+    const { json: open } = await api("GET", `/api/companies/${companyId}/issues?${q}`);
+    const ours = open.find((i) => String(i.description ?? "").includes(`<!-- source:${marker} -->`) && me.userId && i.createdByUserId === me.userId && !i.createdByAgentId && !i.assigneeAgentId && !i.assigneeUserId);
+    if (ours) return ours.id;
+    const { json: made } = await api("POST", `/api/companies/${companyId}/issues`, {
+      title: `Chat with ${agents[key]}`, status: "backlog", priority: "low",
+      description: `${ownerName || "The owner"}'s fast chat with ${agents[key]}: every message and reply, on every channel. Write here to talk to ${agents[key]}.\n\n<!-- source:${marker} -->`,
+    });
+    step(`Created task ${made.identifier} (chat with ${key})`);
+    return made.id;
+  });
+  return Object.fromEntries(keys.map((key, i) => [key, ids[i]]));
+}
+
+/**
  * One unassigned "Agent reviews: <key>" task per fleet-audit agent (marker review-log:<key>): the Agent Coach's review log, one
  * record per review (tasks bridge coach_record), which coach_due reads back (only records that agent authored). Created by
  * this identity, held by nobody, so a review wakes nobody; never touched once made. Returns { key: issue id } for the grants table.
