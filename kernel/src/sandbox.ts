@@ -191,21 +191,47 @@ export function engineState(cfg: Pick<SandboxConfig, "enginesFile" | "stateDir">
   return dir;
 }
 
-/** The skills tree, built in a new folder under the kernel's state root (no job reaches it; same filesystem for the rename). */
+/** An apply swaps the product's modules/ tree in place (materialize.mjs renames it away and back), so a skills build that
+ * lands in the gap is retried for about two seconds, reading the skill folders fresh on each attempt. */
+const SKILL_BUILD_ATTEMPTS = 10;
+const SKILL_BUILD_RETRY_MS = 200;
+const swappedAway = (err: unknown) => { const code = (err as NodeJS.ErrnoException)?.code; return code === "ENOENT" || code === "ESTALE"; };
+const pause = (ms: number) => { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms); };
+
+/**
+ * The skills tree, built in a new folder under the kernel's state root (no job reaches it; same filesystem for the rename).
+ * A failed build leaves nothing behind; a copy error names the skill and the folder it came from, so a real missing or
+ * mis-pinned skill is not read as a swap.
+ */
 function buildSkills(root: string, skills: Skill[]) {
   mkdirSync(root, { recursive: true, mode: 0o700 });
+  for (let attempt = 1; ; attempt++) {
+    try {
+      return copySkills(root, skills);
+    } catch (err) {
+      if (!swappedAway(err) || attempt >= SKILL_BUILD_ATTEMPTS) throw err;
+      pause(SKILL_BUILD_RETRY_MS);
+    }
+  }
+}
+
+function copySkills(root: string, skills: Skill[]) {
   const to = mkdtempSync(join(root, ".skills-"));
   const hash = createHash("sha256");
   try {
     for (const s of [...skills].sort((a, b) => a.id.localeCompare(b.id))) {
       const name = /^[a-z0-9][a-z0-9-]*\.([a-z0-9][a-z0-9-]*)$/.exec(s.id)?.[1];
       if (!name) throw new Error(`skill ${s.id}: not a skill id (<module>.<name>)`);
-      cpSync(s.dir, join(to, name), { recursive: true, errorOnExist: true, filter: (p) => { const st = lstatSync(p); return st.isFile() || st.isDirectory(); } });
-      for (const f of (readdirSync(join(to, name), { recursive: true }) as string[]).sort()) {
-        const file = join(to, name, f);
-        if (!lstatSync(file).isFile()) continue;
-        chmodSync(file, 0o444);
-        hash.update(`${name}/${f}\0`).update(readFileSync(file)).update("\0");
+      try {
+        cpSync(s.dir, join(to, name), { recursive: true, errorOnExist: true, filter: (p) => { const st = lstatSync(p); return st.isFile() || st.isDirectory(); } });
+        for (const f of (readdirSync(join(to, name), { recursive: true }) as string[]).sort()) {
+          const file = join(to, name, f);
+          if (!lstatSync(file).isFile()) continue;
+          chmodSync(file, 0o444);
+          hash.update(`${name}/${f}\0`).update(readFileSync(file)).update("\0");
+        }
+      } catch (err) {
+        throw skillCopyFailure(s, err);
       }
     }
     writeFileSync(join(to, ".hash"), `${hash.digest("hex")}\n`);
@@ -214,6 +240,13 @@ function buildSkills(root: string, skills: Skill[]) {
     rmSync(to, { recursive: true, force: true });
     throw err;
   }
+}
+
+function skillCopyFailure(s: Skill, err: unknown) {
+  const failure = new Error(`skill ${s.id}: cannot copy ${s.dir}: ${err instanceof Error ? err.message : String(err)}`, { cause: err });
+  const code = (err as NodeJS.ErrnoException)?.code;
+  if (code) (failure as NodeJS.ErrnoException).code = code;
+  return failure;
 }
 
 // A session id an engine reported, before it goes on a command line.
