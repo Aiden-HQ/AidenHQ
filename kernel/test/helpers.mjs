@@ -49,7 +49,7 @@ export async function kernel(t, { agents = {}, grants = {}, settings = {}, conne
   writeFileSync(join(dir, "grants.json"), JSON.stringify({ ...settings, agents: grants }));
   writeFileSync(join(dir, "writes.json"), JSON.stringify(kinds));
   writeFileSync(join(dir, "modules.json"), JSON.stringify(modules));
-  const allSecrets = { gateway_job_secret: "job-secret", gateway_lane_secret: "lane-secret", paperclip_board_key: "board-key", gateway_board_key: "the-boards-key", reviewer_key: "the-reviewer-key", board_operator_key: "the-operator-key", ...secrets };
+  const allSecrets = { gateway_job_secret: "job-secret", gateway_lane_secret: "lane-secret", paperclip_board_key: "board-key", gateway_board_key: "the-boards-key", reviewer_key: "the-reviewer-key", board_operator_key: "the-operator-key", health_probe_key: "the-health-key", ...secrets };
   const secret = (n) => allSecrets[n] ?? "";
   // Each alias in `agents`: a running kernel job of its agent, its token minted as the kernel mints one (boxes.ts).
   const aliased = new Map(), tokens = {};
@@ -100,8 +100,8 @@ export async function kernel(t, { agents = {}, grants = {}, settings = {}, conne
     return { id: `ac-${(i >= 0 ? i : agentPosts.push({ agent, task, job, body }) - 1) + 1}` };
   } });
   const notify = createNotify({ db: records.db, modules: modulesFile, secret, resolver: createResolver(), testHosts: true });
-  const healthProbe = createHealthProbe({ grants: () => grantsTable().agents ?? {}, connections: connectionsTable, callAs: proxy.callAs });
-  const backplane = createBackplane({ healthProbe, operatorKey: () => secret("board_operator_key"), checks, checkJobs, lane, whoami, asserter, grantsFile: grantsTable, log: logf, writes, records, channels, brake, notify, owner, ownerRaw: (p) => fetch(new URL(p, cpServer.url), { headers: { authorization: "Bearer board-key" } }), modules: modulesFile, boardKey: () => secret("gateway_board_key"), reviewerKey: () => secret("reviewer_key"), reviews, jobs: jobsApi, proxy: (req, res, c) => proxy(req, res, c), cp: createCp({ whoami, asserter, plugin: createPluginPost({ controlUrl: cpServer.url, agentKey: (id) => secret(`paperclip-agents/${id}`), postKey: () => secret("paperclip_post_key") }), agentKey: (id) => secret(`paperclip-agents/${id}`), grants: () => grantsTable().agents ?? {}, controlUrl: cpServer.url, checks, provenance, log: logf }), boardCp: createBoardCp({ controlUrl: cpServer.url, key: () => secret("paperclip_board_key"), log: logf }) });
+  const healthProbe = createHealthProbe({ grants: () => grantsTable().agents ?? {}, connections: connectionsTable, kindOf: writes.kindOf, callAs: proxy.callAs, log: logf });
+  const backplane = createBackplane({ healthProbe, healthKey: () => secret("health_probe_key"), checks, checkJobs, lane, whoami, asserter, grantsFile: grantsTable, log: logf, writes, records, channels, brake, notify, owner, ownerRaw: (p) => fetch(new URL(p, cpServer.url), { headers: { authorization: "Bearer board-key" } }), modules: modulesFile, boardKey: () => secret("gateway_board_key"), reviewerKey: () => secret("reviewer_key"), reviews, jobs: jobsApi, proxy: (req, res, c) => proxy(req, res, c), cp: createCp({ whoami, asserter, plugin: createPluginPost({ controlUrl: cpServer.url, agentKey: (id) => secret(`paperclip-agents/${id}`), postKey: () => secret("paperclip_post_key") }), agentKey: (id) => secret(`paperclip-agents/${id}`), grants: () => grantsTable().agents ?? {}, controlUrl: cpServer.url, checks, provenance, log: logf }), boardCp: createBoardCp({ controlUrl: cpServer.url, key: () => secret("paperclip_board_key"), log: logf }) });
   const asCaller = createAsCaller({ whoami, connections: connectionsTable, asserter, log: logf });
   const gw = createGateway({ asCaller, dbFile: join(dir, "usage.db"), grantsFile: join(dir, "grants.json"), settingsFile: join(dir, "gateway.json"), tools: proxy, secret });
   const bp = await serve(backplane);
