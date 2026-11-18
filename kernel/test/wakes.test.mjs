@@ -144,3 +144,25 @@ test("the events route takes the plugin's key only, and the plugin forwards a co
   assert.deepEqual(sent, [["http://k/v1/wakes/events", "Bearer ev-key", { type: "issue.comment.created", issueId: "t1", commentId: "c1", reopened: false }]]);
   assert.equal(wakeEvent({ ...e, eventType: "agent.run.finished" }), undefined);
 });
+
+test("a note on a claimed wake's task is posted as its agent, once, tagged; only by the module that claimed it", async () => {
+  const w = world();
+  w.issue("t7");
+  await w.wakes.poll();
+  const [x] = w.wakes.claim("dispatch");
+  const who = { dispatch: { kind: "module", module: "dispatch", roles: ["kernel.jobs"] }, other: { kind: "module", module: "other", roles: ["kernel.jobs"] } };
+  const bp = createBackplane({ whoami: async (t) => who[t] ?? Promise.reject(new Error("no")), asserter: { jwks: {} }, proxy: async () => {}, cp: async () => {}, grantsFile: () => ({}), wakes: w.wakes });
+  const { serve } = await import("./helpers.mjs");
+  const { s, url } = await serve(bp);
+  const note = (key, body = { body: "Ready." }) => fetch(`${url}/v1/wakes/${encodeURIComponent(x.key)}/note`, { method: "POST", headers: { authorization: `Bearer ${key}` }, body: JSON.stringify(body) });
+  try {
+    assert.equal((await note("other")).status, 409, "another module's wake");
+    assert.equal((await note("dispatch", {})).status, 400);
+    assert.equal((await note("dispatch")).status, 200);
+  } finally { s.close(); }
+  assert.equal(w.posts.length, 1);
+  const [p] = w.posts;
+  assert.deepEqual([p.agent, p.task, p.kind, p.body], [AGENT, "t7", "note", "Ready."]);
+  assert.match(p.id, /^w-[0-9a-f]{24}$/, "the plugin's tag takes it as a job id; outcomes posts once per (id, kind)");
+  assert.equal(w.wakes.get(x.key).state, "claimed", "a note doesn't drop the wake");
+});

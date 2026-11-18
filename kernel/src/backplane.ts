@@ -28,6 +28,7 @@
 //   POST /v1/wakes/events      (the paperclip-events plugin's key) a Paperclip event's ids: its task is scanned (wakes.ts)
 //   POST /v1/wakes             (a module with role kernel.wake) a scheduled wake {task, agent?, at?, cause?, id?}
 //   POST /v1/wakes/claim, POST /v1/wakes/:key/drop  (a module with role kernel.jobs) claim inbox rows; give one up
+//   POST /v1/wakes/:key/note   (the module that claimed it) {body}: a note on its task as its agent, once (no job answers it)
 //   POST /v1/reviews           (the runner's reviewer key) a check before filing: one review by the bound reviewer module → its verdict
 //   POST /v1/reviews/:review   (that review's token, once) the reviewer module's verdict
 //   POST /v1/jobs, GET/DELETE /v1/jobs/:job, POST /v1/jobs/:job/input  (a module with role kernel.jobs) start a job in the
@@ -107,6 +108,7 @@ export const ROUTES = [
   { method: "POST", path: "/v1/wakes", auth: "module" },
   { method: "POST", path: "/v1/wakes/claim", auth: "module" },
   { method: "POST", path: "/v1/wakes/:key/drop", auth: "module" },
+  { method: "POST", path: "/v1/wakes/:key/note", auth: "module" },
   { method: "POST", path: "/v1/reviews", auth: "reviewer-key" },
   { method: "POST", path: "/v1/reviews/:review", auth: "review-token" },
   { method: "POST", path: "/v1/jobs", auth: "module" },
@@ -259,6 +261,13 @@ export function createBackplane({ whoami, asserter, proxy, cp, grantsFile, write
         if (!w.roles.includes("kernel.jobs")) throw fail(403, "forbidden", `${w.module} may not claim wakes (role kernel.jobs)`);
         const b = await json(req);
         if (hit.path === "/v1/wakes/claim") return send(res, 200, { wakes: wakes.claim(w.module!, Math.min(Math.max(Number(b.limit) || 20, 1), 100)) });
+        if (hit.path === "/v1/wakes/:key/note") {
+          const r = await wakes.note(w.module!, decodeURIComponent(m[0]!), b.body).catch((e: { name?: string; status?: number; code?: string; message: string }) => {
+            throw e.name === "OutcomeError" ? fail(e.status!, e.code!, e.message) : e;
+          });
+          if ("error" in r) throw fail(r.status, "bad_request", r.error);
+          return send(res, 200, r);
+        }
         return send(res, 200, wakes.drop(w.module!, decodeURIComponent(m[0]!), String(b.why ?? "")));
       }
       if (hit && /^\/v1\/(channel|cp\/read|brake|wake)/.test(hit.path)) {

@@ -8,7 +8,7 @@
 // Polled agents: those the modules that claim wakes dispatch (compile's `dispatches`); a module joins on its first claim.
 // So nothing is polled until a dispatcher claims, and an agent's first scan only wakes for comments after its dispatcher
 // joined or the old executor's last word on the task, whichever is later (the handoff boundary).
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
 import type { Api } from "./channels.ts";
 import type { Outcomes } from "./outcomes.ts";
@@ -202,6 +202,17 @@ export function createWakes({ db, owner, post, dispatches, log = () => {}, now =
       const r = q("UPDATE wakes SET state = 'dropped', until = NULL WHERE key = ? AND state = 'claimed' AND claimed_by = ? AND job IS NULL").run(key, module);
       if (r.changes) log("wake dropped", { key, module, why: why.slice(0, 200) });
       return { dropped: r.changes > 0 };
+    },
+    /**
+     * A note on a claimed wake's task that no job will answer (a redirect, a task with no request), posted as the task's agent
+     * with the kernel's tag (SELF_TAG: it wakes nobody), once per wake. The task and agent are the wake's, never the caller's.
+     */
+    async note(module: string, key: string, body: unknown) {
+      const w = q("SELECT task, agent FROM wakes WHERE key = ? AND state = 'claimed' AND claimed_by = ? AND job IS NULL").get(key, module) as { task: string; agent: string } | undefined;
+      if (!w) return { status: 409, error: `wake ${key} isn't one this module claimed, or a job already answers it` };
+      if (typeof body !== "string" || !body.trim()) return { status: 400, error: "send {body}" };
+      const id = `w-${createHash("sha256").update(key).digest("hex").slice(0, 24)}`;
+      return post({ id, agent: w.agent, task: w.task }, { kind: "note", body: body.slice(0, 20_000) });
     },
     /** A claimed comment delivered into its live job (the input's ack). */
     delivered(module: string, key: string) {
