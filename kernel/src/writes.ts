@@ -13,7 +13,7 @@ import { createHash } from "node:crypto";
 import { neutral } from "./channels.ts";
 import type { Connection, Identity } from "./identity.ts";
 import type { Resolver } from "./net.ts";
-import { canonical, digestOf, type Card, type Rec, type Records, type Requester } from "./records.ts";
+import { UPDATER, canonical, digestOf, type Card, type Rec, type Records, type Requester } from "./records.ts";
 import type { Reviews } from "./reviews.ts";
 import { LOCAL_ORG, repoKey, runnerFacts, type Repos } from "./kinds.ts";
 import { writeRaise, type Inventory } from "./paths.ts";
@@ -162,7 +162,8 @@ export function createWrites({ records, registry, connections, secret, resolver,
    * the routine cap now (traced again; an unreadable trace is off). Tightened since: held for the owner instead (false).
    */
   async function revalidate(r: Rec): Promise<boolean> {
-    if (!r.decided_by?.startsWith("reviewer:")) return true;
+    // The caps limit agents' writes only (computeTier `requester`): the kernel's own isn't held by them.
+    if (!r.decided_by?.startsWith("reviewer:") || r.requester.kind === "kernel") return true;
     const cap = capOverReviewer(await routineOf(r.task));
     if (!cap) return true;
     records.hold(r.id, cap, `since the AI reviewer approved it, ${capText(cap)}, so the owner decides`);
@@ -187,7 +188,7 @@ export function createWrites({ records, registry, connections, secret, resolver,
     const raise = plan.raise && (plan.raise.tier === 1 || plan.raise.tier === 2) ? plan.raise : undefined;
     const byPaths = k.paths ? writeRaise(paths(), plan.paths, repoKindOf) : undefined;
     const reviewFirst: ReviewFirst = plan.review_first === "final" ? "final" : "owner";
-    const t = computeTier({ floor: k.floor, raise, reviewFirst, ...(byPaths ? { checkRaises: [byPaths] } : {}), priorVeto: task ? records.vetoed(task, kind, { digest: digestOf(base) }) : false, autonomy: autonomy(), routine: await routineOf(task), panel: k.panel === true });
+    const t = computeTier({ floor: k.floor, raise, reviewFirst, ...(byPaths ? { checkRaises: [byPaths] } : {}), priorVeto: task ? records.vetoed(task, kind, { digest: digestOf(base) }) : false, autonomy: autonomy(), routine: await routineOf(task), panel: k.panel === true, requester: requester.kind });
     if (t.tier > 0 && !task) throw fail(400, "no_task", `${kind} needs approval: pass your current task`);
     // The same requester's same request still open on the task is that record, never a second card that would run twice,
     // while it is at least as strict (tier and panel). A stricter one replaces it only while it waits for the reviewer; a
@@ -377,6 +378,18 @@ export function createWrites({ records, registry, connections, secret, resolver,
       if (!k?.runner) throw fail(404, "unknown_kind", `no runner kind ${b.kind}`);
       return fileRunner(b.kind, k, b);
     },
+    /**
+     * A kind the kernel plans (kernel.apply), filed by the kernel's release updater (updates.ts): planned and tiered as any
+     * requester's. Its requester kind `kernel` is set only here, never from a token, so the planner can tell the updater's own
+     * filing (a release move it verifies itself) from anyone else's.
+     */
+    async fileUpdater(kind: string, { args, task }: { args: unknown; task: string }): Promise<Rec> {
+      const k = kindOf_(kind);
+      if (!k || k.runner || !Object.hasOwn(planners, kind)) throw fail(404, "unknown_kind", `no kernel-planned kind ${kind}`);
+      const r = await file(kind, k, UPDATER, args, task);
+      if (r.state === "claimed") await execute(r, k);
+      return r;
+    },
     /** kernel.raise_cap, filed by the kernel itself (the model gateway): the owner's tap alone, with no reviewer call (the cap it raises would refuse one). */
     fileNative(kind: string, b: { task: string; identifier?: string; args: unknown; card: Card; reason: string; rule: string }): Rec {
       const k = kindOf_(kind)!;
@@ -465,7 +478,8 @@ export function createWrites({ records, registry, connections, secret, resolver,
           v = failedVerdict(input, v, n);
         }
         retries.delete(id);
-        const post = shadowed(v, autonomy());
+        // The autonomy cap limits agents' writes (computeTier `requester`): the kernel's own record takes the reviewer's verdict as given.
+        const post = shadowed(v, r.requester.kind === "kernel" ? "full" : autonomy());
         if (!MODEL.test(post.model) && post.model !== "kernel/code") return { record: r, refused: "the verdict names no model" };
         if (post.second !== undefined && (!MODEL.test(post.second) || post.second === post.model)) return { record: r, refused: "the second reviewer must be another model" };
         const chain = post.decision === "reject" && post.code === UNSURE && typeof b.request?.chain === "string" && b.request.chain ? hash(b.request.chain).slice(0, 32) : undefined;

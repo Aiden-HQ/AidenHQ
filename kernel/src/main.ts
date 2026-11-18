@@ -64,7 +64,7 @@ import { createWork } from "./work.ts";
 import { jailProblem, readEngines } from "./sandbox.ts";
 import { sandboxConfig } from "./sandbox-config.ts";
 import { createCertWatch } from "./front-door.ts";
-import { createUpdates } from "./updates.ts";
+import { createUpdates, runCheck, runVerify } from "./updates.ts";
 import { BOX_EXEC_WRAP } from "../../services/computer/lib.mjs";
 
 const log = (msg: string, fields: Record<string, unknown> = {}) => console.log(new Date().toISOString(), msg, JSON.stringify(fields));
@@ -134,10 +134,12 @@ log(baseRepos.product && baseRepos.instance ? "runner kinds' repositories" : "ru
 const reviews = createReviews({ slot: () => modulesFile().reviewer, secret, resolver, log, modelToken: (component) => mintToken(secret("gateway_job_secret"), { kind: "reviewer", component, ttlMs: 3600_000 }) });
 let raiseCap: (r: { scope: string; agentId: string; subject: string; cap: number; spent: number; to: number }) => Promise<string> = async () => { throw new Error("the model gateway isn't up"); };
 // kernel.apply's executor (apply.ts): the code host lands the commit, a transient unit runs the apply; a restart resumes it.
-const applyHost = hostApply({ repo, stateDir: env("AIDENHQ_STATE_DIR", path.join(process.env.HOME ?? "", ".local/state/aidenhq")), resolver, codehost: () => { const e = moduleKinds()["codehost-github.push"]?.executor; return e && { url: e.url, key: secret(e.auth_secret) }; } });
+const applyHost = hostApply({ repo, stateDir: env("AIDENHQ_STATE_DIR", path.join(process.env.HOME ?? "", ".local/state/aidenhq")), resolver, codehost: () => { const e = moduleKinds()["codehost-github.push"]?.executor; return e && { url: e.url, key: secret(e.auth_secret) }; },
+  // codehost-local's instance repo: the bare repo setup made on this host (AIDENHQ_INSTANCE_REMOTE).
+  local: () => { const bare = env("AIDENHQ_INSTANCE_REMOTE"), inst = repos().instance; return localHost() && inst && bare?.startsWith("/") ? { bare, repo: inst } : undefined; } });
 const applies = createApply({ db: records.db, log, ...applyHost });
 // Its planner (apply-tier.ts): the same code host read, the product checkout, and the compiled grants, connections and apps.
-const applyPlanner = hostPlanner({ repo, instanceRepo: () => repos().instance, configDir, read: applyHost.codehost.read, grants: () => grantsTable().agents ?? {}, connections });
+const applyPlanner = hostPlanner({ repo, instanceRepo: () => repos().instance, configDir, read: applyHost.codehost.read, grants: () => grantsTable().agents ?? {}, connections, verifyRelease: runVerify(repo) });
 const writes = createWrites({
   records, registry, connections, secret, resolver, reviews, onTask, log, replay: (r) => replay(r as never), repos, paths: pathInventory,
   autonomy: () => (["off", "tier0", "full"].includes(grantsTable().autonomy as string) ? grantsTable().autonomy : "off") as never,
@@ -172,14 +174,27 @@ const certWatch = createCertWatch({
 });
 every(() => void certWatch.tick(), 3_600_000);
 once(() => void certWatch.tick(), 10 * 60_000);
-// Release updates (updates.ts, docs/design/release-updates.md): what ops/update.sh recorded, told to the owner once; Update now
-// starts its unit (outside this process: the install's apply restarts the kernel).
+// Release updates (updates.ts, docs/design/release-updates.md): the check (a child process) prepares a release; the kernel files
+// it as a kernel.apply on a task of its own (the platform engineer's, as the release train's), follows it and tells the owner.
+const moduleTasks = createModuleTasks({ owner: ownerApi, agents: () => grantsTable().agents ?? {}, log });
 const updates = createUpdates({
-  db: records.db, dir: path.join(dataDir, "updates"), ownerLine: channels.ownerLine,
-  start: () => void execFile("systemctl", ["--user", "start", "--no-block", "aidenhq-update.service"], (e) => e && log("update unit didn't start", { err: e.message.slice(0, 300) })),
+  db: records.db, dir: path.join(dataDir, "updates"), board: path.join(env("AIDENHQ_STATE_DIR", path.join(process.env.HOME ?? "", ".local/state/aidenhq")), "board/updates.json"),
+  ownerLine: channels.ownerLine, check: runCheck(repo), log,
+  file: async (r) => {
+    const task = await moduleTasks.file("kernel", { title: `Update AidenHQ to ${r.release}`, role: "platform-engineer", source: `release:${r.release}:${r.sha}`, description: `Installs AidenHQ ${r.release} (from ${r.from}), filed by the release updater as one apply. No agent works on this task; it closes when the apply ends.\n\nWhat changed: ${r.compare}` });
+    try {
+      return { record: (await writes.fileUpdater("kernel.apply", { args: { repo: repos().instance, branch: r.branch, sha: r.sha }, task: task.id })).id, task: task.id };
+    } catch (e) {
+      await moduleTasks.close("kernel", task.id, { status: "cancelled", body: `Not filed: ${(e as Error).message.slice(0, 500)}` }).catch(() => {});
+      throw e;
+    }
+  },
+  record: (id) => records.get(id),
+  close: (task, body) => moduleTasks.close("kernel", task, { status: "done", body }),
 });
-every(() => updates.tick(), 5 * 60_000);
-once(() => updates.tick(), 60_000);
+const updatesTick = () => void updates.tick().catch((e: Error) => log("update pass failed", { err: e.message.slice(0, 300) }));
+every(updatesTick, 5 * 60_000);
+once(updatesTick, 60_000);
 // The kernel's review of every record waiting for the AI reviewer (review-loop.ts). The instance's decisions digest is read
 // from its checkout's origin/main (fetched first, as updates.ts reads instance.yaml), never a branch under review.
 const instanceDir = env("AIDENHQ_INSTANCE_DIR", path.join(process.env.HOME ?? "", "aidenhq-instance"));
@@ -301,7 +316,7 @@ const codehost = createCodehost({ repos: () => ({ instance: baseRepos.instance, 
 // Check jobs (checkjobs.ts): credential-free boxes of the launcher's, snapshots from the module that provides them.
 const checkJobs = checkJobsFrom({ db: records.db, secret, ask: codehost.ask, call: launcherClient(launcherUrl, () => secret("launcher_kernel_key")), workDir: sandbox.workDir, gatewayUrl: `${sandbox.boxGatewayUrl}/api/v1`, log });
 const lane = createLane({ db: records.db, owner: ownerApi, grantsFile: grantsTable, log, postAsAgent: async (agent, task, job, body) => ({ id: String((await outcomes.post({ id: job, agent, task }, { kind: "lane", body })).comment) }) });
-const backplane = createBackplane({ codehost: codehost.op, checks, checkJobs, lane, whoami, asserter, grantsFile: grantsTable, log, writes, records, channels, brake, notify, owner: ownerApi, ownerRaw: (p) => cpApi(p), modules: modulesFile, boardKey: () => secret("gateway_board_key"), reviews, runnerKey: () => secret("runner_writes_key"), reviewerKey: () => secret("reviewer_key"), jobs, admission, outcomes, wakes, tasks: createModuleTasks({ owner: ownerApi, agents: () => grantsTable().agents ?? {}, log }), work, graderToken, dropGraderToken: (task) => graderTokens.delete(task), eventsKey: () => secret("paperclip_events_key"), jobTools, advisories: advisories.list, accounts: createAuthApi({ accounts: () => accounts, whoami, boardKey: () => secret("gateway_board_key"), recoveryKeyWaiting: () => Boolean(firstRun.recoveryKey()), modelReady: modelState.ready, operatorKey: () => secret("board_operator_key"), secrets: moduleSecrets }), proxy: (req, res, c) => proxy(req, res, c!), cp: createCp({ whoami, asserter, controlUrl, launcherUrl, checks, provenance, log }) as never, boardCp: createBoardCp({ controlUrl, key: () => secret("paperclip_board_key"), log }) as never });
+const backplane = createBackplane({ codehost: codehost.op, checks, checkJobs, lane, whoami, asserter, grantsFile: grantsTable, log, writes, records, channels, brake, notify, owner: ownerApi, ownerRaw: (p) => cpApi(p), modules: modulesFile, boardKey: () => secret("gateway_board_key"), reviews, runnerKey: () => secret("runner_writes_key"), reviewerKey: () => secret("reviewer_key"), jobs, admission, outcomes, wakes, tasks: moduleTasks, work, graderToken, dropGraderToken: (task) => graderTokens.delete(task), eventsKey: () => secret("paperclip_events_key"), jobTools, advisories: advisories.list, accounts: createAuthApi({ accounts: () => accounts, whoami, boardKey: () => secret("gateway_board_key"), recoveryKeyWaiting: () => Boolean(firstRun.recoveryKey()), modelReady: modelState.ready, operatorKey: () => secret("board_operator_key"), secrets: moduleSecrets }), proxy: (req, res, c) => proxy(req, res, c!), cp: createCp({ whoami, asserter, controlUrl, launcherUrl, checks, provenance, log }) as never, boardCp: createBoardCp({ controlUrl, key: () => secret("paperclip_board_key"), log }) as never });
 // The admin listener's accounts (data/kernel/auth/auth.db) and pages. Accounts not moved yet, or a malformed URL setting: the
 // listener refuses while every other part of the kernel serves.
 const urlOf = (v: string) => { try { return v ? new URL(v) : undefined; } catch { log("ignoring a malformed URL setting", { value: v.slice(0, 100) }); return undefined; } };

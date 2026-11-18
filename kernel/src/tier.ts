@@ -31,9 +31,12 @@ export const capText = (c: Cap) => (c.by === "autonomy" ? `autonomy is ${c.value
  * final, its approve goes on to the owner); a routine's tier0 does the latter only. The instance's tier0 isn't a cap here:
  * it shadows the reviewer's verdict at review. `cap`: the cap that changed the tier, for the record.
  */
-export function computeTier({ floor, instanceFloor = 0, raise, checkRaises = [], priorVeto = false, reviewFirst = "owner", autonomy, routine, panel = false }: {
+export function computeTier({ floor, instanceFloor = 0, raise, checkRaises = [], priorVeto = false, reviewFirst = "owner", autonomy, routine, panel = false, requester }: {
   floor: Tier; instanceFloor?: Tier; raise?: Raise; checkRaises?: Raise[]; priorVeto?: boolean; reviewFirst?: ReviewFirst | null; autonomy?: Autonomy; routine?: RoutineCap; panel?: boolean;
+  /** The requester's kind: the caps limit what agents do on their own, so a write the kernel itself requests (kind `kernel`, which no token yields; it acts on an owner setting's standing authority) isn't capped. */
+  requester?: string;
 }): { tier: Tier; merit: Tier; panel: boolean; reviewFirst: ReviewFirst | null; cap?: Cap; rule?: string; state: "claimed" | "review" | "owner" } {
+  if (requester === "kernel") { autonomy = undefined; routine = undefined; }
   const merit = Math.max(floor, instanceFloor, raise?.tier ?? 0, ...checkRaises.map((r) => r.tier), priorVeto ? 2 : 0) as Tier;
   // The caps that hold, the routine's first (its label names it when both do).
   const caps = [routine && routine.cap !== "full" ? { by: "routine", value: routine.cap, ...(routine.routine ? { routine: routine.routine } : {}) } : undefined, autonomy === "off" ? { by: "autonomy", value: "off" } : undefined].filter(Boolean) as Cap[];

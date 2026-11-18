@@ -523,16 +523,10 @@ switchOver() {
     systemctl --user disable --now --quiet aidenhq-backup.timer
     rm -f "$units/aidenhq-backup.service" "$units/aidenhq-backup.timer" && systemctl --user daemon-reload && echo "backup timer removed (no backup_repository)"
   fi
-  # Release updates (ops/update.sh, docs/design/release-updates.md): the hourly timer runs while the instance follows a release
-  # from the official distro repo, and is removed once it pins its product by hand.
-  if grep -q '^release:' "$inst/instance.yaml" && grep -q 'Aiden-HQ/aidenhq-distro' "$inst/instance.yaml" && [ -f ops/units/aidenhq-update.timer ]; then
-    if ! cmp -s ops/units/aidenhq-update.service "$units/aidenhq-update.service" || ! cmp -s ops/units/aidenhq-update.timer "$units/aidenhq-update.timer"; then
-      cp ops/units/aidenhq-update.service ops/units/aidenhq-update.timer "$units/" && systemctl --user daemon-reload && echo "release update timer installed/updated"
-    fi
-    systemctl --user enable --now --quiet aidenhq-update.timer
-  elif [ -e "$units/aidenhq-update.timer" ]; then
-    systemctl --user disable --now --quiet aidenhq-update.timer
-    rm -f "$units/aidenhq-update.service" "$units/aidenhq-update.timer" && systemctl --user daemon-reload && echo "release update timer removed (no release followed)"
+  # The release update timer is gone (the kernel checks for releases and files each as an apply): an older host's is removed.
+  if [ -e "$units/aidenhq-update.timer" ] || [ -e "$units/aidenhq-update.service" ]; then
+    systemctl --user disable --now --quiet aidenhq-update.timer 2>/dev/null || true
+    rm -f "$units/aidenhq-update.service" "$units/aidenhq-update.timer" && systemctl --user daemon-reload && echo "release update timer removed (the kernel files releases now)"
   fi
   # The monitoring module's host metrics (ops/host-metrics.sh): its timer runs while compile made the textfile directory
   # (the module is on), and is removed once the module is off. Its last EnvironmentFile= names the checkout this apply

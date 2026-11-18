@@ -570,6 +570,9 @@ test("a release move is tiered by the modules it resolves to, and following one 
   const run = (st) => apply(["instance.yaml"], { "instance.yaml": `product: ${PIN_A}\nmodules: []\n` }, { "instance.yaml": rel("1".repeat(40)) }, { modules: {}, ...st });
   const same = run({});
   assert.deepEqual([same.tier, Boolean(same.reviewFirst), same.rule], [2, true, "release-pin"], "following a release enrols unattended updates: the owner's after the reviewer");
+  // A move filed through the runner is never the release updater's verified one (kernel/test/apply-plan.test.mjs): the owner's.
+  const move = (b, h) => apply(["instance.yaml"], { "instance.yaml": b }, { "instance.yaml": h }, { modules: {} });
+  assert.deepEqual([move(rel("1".repeat(40)), rel("2".repeat(40))).tier, move(rel("1".repeat(40)), rel("2".repeat(40))).rule], [2, "release-pin"], "auto-updates on, but not the updater's verified move");
   const drop = apply(["instance.yaml"], { "instance.yaml": rel("1".repeat(40)) }, { "instance.yaml": `product: ${PIN_A}\nmodules: []\n` }, { modules: {} });
   assert.deepEqual([drop.tier, drop.rule], [1, "release-pin"], "dropping the release: AI review only");
   const official = (repo) => ({ product: PIN_A, modules: [], marketplaces: [{ name: "aidenhq", source: { source: "github", repo }, sha: "2".repeat(40) }] });

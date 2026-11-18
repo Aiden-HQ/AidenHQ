@@ -95,7 +95,7 @@ export interface Sources {
   boardTimezone: string;
   pendingRaises: number;
   pendingApprovals: number;
-  /** Release updates (ops/update.sh's display copy, updates.json beside the generations): null when this instance has none. */
+  /** Release updates (kernel/src/updates.ts's display copy, updates.json beside the generations): null when this instance has none. */
   updates?: UpdatesView | null;
 }
 

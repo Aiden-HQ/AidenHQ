@@ -127,10 +127,10 @@ function updatesPage(u: UpdateState, form: (inner: string) => string): string {
   const last = u.last ? `<div class="card"><b>Last update:</b> ${esc(u.last.release)} ${u.last.outcome === "installed" ? `<span class="ok">installed</span>` : `<span class="err">failed</span>: ${esc(u.last.why ?? "")}`} · ${esc(when(u.last.at))} · by ${esc(u.last.by)}</div>` : "";
   const avail = a
     ? `<div class="card"><h2>${esc(a.name)} is available</h2>${a.notes.length ? `<ul>${a.notes.map((n) => `<li>${esc(n)}</li>`).join("")}</ul>` : ""}<p class="muted">Every change since ${esc(a.from.name)}: <a href="${esc(a.compare)}" target="_blank" rel="noopener">${esc(a.compare)}</a></p>
-<p class="muted">Verified against the official release: its commits, its tested stamp and its image digests. It installs through the normal apply, and a failed health check puts this server back on ${esc(a.from.name)}.</p>
+<p class="muted">Verified against the official release: its commits, its tested stamp and its image digests. Update now files it as an apply, like any change to this server: the AI reviewer checks it while auto-updates are on, else it waits for your approval; a failed health check puts this server back on ${esc(a.from.name)}.</p>
 ${form(`<input type="hidden" name="release" value="${esc(a.name)}"><button class="b">Update now</button>`)}</div>`
     : `<p>${u.error ? `<span class="err">${esc(u.error)}</span>` : "Nothing newer is out."}</p>`;
-  return `<h1>Updates</h1><p>This server runs <b>${esc(u.current.name)}</b>. Auto-updates are <b>${u.auto ? "on" : "off"}</b>${u.auto ? `: a newer release installs between 02:00 and 05:00 (${esc(u.timezone ?? "UTC")})` : ": you're told, and install with Update now"}. Change it in the board's Settings (auto_update). Last checked ${esc(when(u.checkedAt))}.</p>${avail}${last}`;
+  return `<h1>Updates</h1><p>This server runs <b>${esc(u.current.name)}</b>. Auto-updates are <b>${u.auto ? "on" : "off"}</b>${u.auto ? `: a newer release is filed between 02:00 and 05:00 (${esc(u.timezone ?? "UTC")}) and installs on the AI reviewer's yes` : ": you're told, and Update now files it for your approval"}. Change it in the board's Settings (auto_update). Last checked ${esc(when(u.checkedAt))}.</p>${avail}${last}`;
 }
 
 export function createAdmin(d: Deps) {
