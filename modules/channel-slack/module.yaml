@@ -49,7 +49,7 @@ connections:
       # slack_channel_context: a bound channel's history and threads, for the agent it is bound to only (bind.ts).
       read: [ slack_pending_events, slack_owner, slack_channel_context ]
       # slack_post: filed as channel-slack.post; granted per agent.
-      write: [ slack_post ]
+      write: [ slack_post, channel_memory ]
 # Every agent post is a kernel record the AI reviewer reads first; a channel outside slack_post_channels is the owner's too.
 writes:
   post:
@@ -62,6 +62,18 @@ writes:
       reads: "Nothing new: the message below."
       cost: "No model cost."
       details: "{{text}}"
+  # channel_memory: the bound agent's note about its channel (memory.ts). Tier 1: the AI reviewer reads it for private or secret
+  # content; the module's plan allows it only from a thread task of that same channel.
+  memory:
+    args: schemas/memory.json
+    floor: 1
+    tools: [ channel_memory ]
+    card:
+      sentence: "Update the note {{agent}} keeps about {{channel}}."
+      changes: "Replaces the short note the agent reads whenever it works on that channel."
+      reads: "Nothing new: the note below."
+      cost: "No model cost."
+      details: "{{note}}"
   # /aiden assign-channel and unassign-channel (the owner's own command, checked against OWNER_SLACK_USER_ID): the module files it
   # itself, Tier 0 (a record, nothing to approve); no agent tool maps to it, so no agent can bind a channel.
   bind:
@@ -73,7 +85,7 @@ writes:
       changes: "Sets which agent the channel's @mentions wake."
       reads: "Nothing."
       cost: "No model cost."
-# One Slack thread is one task for the bound agent; its text is fenced data. Grant the agent `slack_live: [slack_channel_context, slack_post]`.
+# One Slack thread is one task for the bound agent; its text is fenced data. Grant the agent `slack_live: [slack_channel_context, slack_post, channel_memory]`.
 prompts:
   - { id: slack-threads, file: prompts/slack-threads.md, when: { tools: [ slack_live.slack_channel_context ] } }
 settings:
