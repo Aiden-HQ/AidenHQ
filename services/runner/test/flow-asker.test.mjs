@@ -41,6 +41,14 @@ describe("flow-asker: an agent's task with no parent", () => {
     await t.waitFor("the next run", () => t.agentRuns().length > runs);
     assert.match(t.agentRuns().at(-1).prompt, /## Request from the agent that delegated this task \(not Dana's words\)\n\n[^#]*\n\nKeep the Legacy flag in the config\.\n\n## Your reply/);
   });
+
+  it("a write the AI reviewer approved, held for the owner when it is claimed, leaves one note on its task", async () => {
+    t.paperclip.approvals.set("A50000001", { issueId: "part", identifier: "PEN-2", action: "merge", sentence: "Merge acme/app#50", args: { prs: [{ repo: "acme/app", number: 50, url: "https://github.com/acme/app/pull/50", head: "a".repeat(40) }] }, details: "", state: "approved", decidedBy: "reviewer:~acme/test" });
+    const held = () => t.partComments().filter((c) => c.startsWith("Waiting on Dana's approval: Merge acme/app#50, http://localhost:3120/approvals/k-"));
+    await t.waitFor("the held note", () => held().length > 0);
+    await t.idle(1000);
+    assert.equal(held().length, 1, "once");
+  });
 });
 
 describe("flow-asker: an agent's task whose asker is gone", { concurrency: 1 }, () => {

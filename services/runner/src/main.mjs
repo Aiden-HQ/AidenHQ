@@ -1473,7 +1473,7 @@ async function runAutoMerges() {
         if (rec.state === "used") {
           const started = await startMerges(issue, { prs: zero, strict: true, each: true });
           await reportOutcome(rec.id, started ? { ok: true, text: `Merging ${zero.map((p) => p.url).join(", ")}, each once green on the head shown.` } : { ok: false, text: "The merge didn't start (said on the task)." });
-        } else await pc.comment(issueId, `The merge waits for ${rec.tier === 1 ? "the AI reviewer" : `${cfg.selfName}'s tap`} (${rec.id}).`);
+        } else if (!state.get(`held-noted:${rec.id}`)) await pc.comment(issueId, `The merge waits for ${rec.tier === 1 ? "the AI reviewer" : `${cfg.selfName}'s tap`} (${rec.id}).`);
       }
       if (busy || !rest.length) continue;
       const said = rest.filter(([, t]) => t.reject);
@@ -2318,9 +2318,23 @@ async function fileApproval(issue, { action, args, diff, ts, carries }) {
   // A local change's merge card carries its diff (docs/design/codehost-local.md §4), as an apply's does.
   const card = action === "apply" ? applyCard(args, diff ?? "") : diff ? { ...cardOf(action, args), details: `${cardOf(action, args).details}\n\n${diff}` } : cardOf(action, args);
   const plan = { ...planOf(...ts), card, ...(action === "apply" ? { targets: { diff: createHash("sha256").update(diff ?? "").digest("hex") } } : {}), ...(carries?.length ? { carries } : {}) };
-  const a = asApproval(await kernel("POST", "/v1/writes", { kind: kindOf(action), task: issue.id, identifier: issue.identifier, args, plan }));
+  const r = await kernel("POST", "/v1/writes", { kind: kindOf(action), task: issue.id, identifier: issue.identifier, args, plan });
+  const a = asApproval(r);
   log("approval filed", { issue: issue.identifier, approval: a.id, action, state: a.state, tier: a.tier, panel: a.panel });
+  if (r.state === "owner" && r.cap) await noteHeld(a);
   return a;
+}
+
+/**
+ * A record the kernel holds for the owner (a cap at filing, or the AI reviewer's yes held when it was claimed): one short
+ * note on its task, once per record, as the runner's (Paperclip never wakes an Engineer on it). The owner's decision does
+ * the rest: an approval runs it and starts the task's next run, a rejection's notice reaches the task.
+ */
+async function noteHeld(a) {
+  const key = `held-noted:${a.id}`;
+  if (state.get(key)) return;
+  state.set(key, new Date().toISOString());
+  await pc.comment(a.issueId, `Waiting on ${cfg.selfName}'s approval: ${a.sentence || a.action}, ${cfg.adminUrl}/approvals/${a.id}`).catch(() => {});
 }
 // ------------------------------------------------------------------ tiered approvals
 
@@ -3539,7 +3553,12 @@ async function runApprovals() {
   for (const a of records.map(asApproval)) {
     if (running.has(a.issueId)) continue; // after the run in progress
     const claimed = await kernel("POST", `/v1/writes/${a.id}/claim`).then(asApproval, (err) => void log("approval claim failed", { approval: a.id, err: String(err.message ?? err).slice(0, 200) }));
-    if (!claimed) continue;
+    if (!claimed) {
+      // Held for the owner instead (the kernel revalidates the AI reviewer's yes at the claim): the task hears it once.
+      const now = await kernel("GET", `/v1/writes/${a.id}`).catch(() => undefined);
+      if (now?.state === "owner") await noteHeld(asApproval(now));
+      continue;
+    }
     log("approval claimed", { approval: a.id, issue: a.identifier, action: a.action });
     // One card's trouble is that card's outcome: a claimed record never goes without one, and the others still run this tick.
     await runClaimed(claimed).catch(async (err) => {
