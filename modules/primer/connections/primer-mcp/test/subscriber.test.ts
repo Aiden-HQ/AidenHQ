@@ -73,7 +73,7 @@ describe("the comment wake loop", () => {
     const s = h.make();
     await s.handle({ id: "1", type: "primer.comment.created", data: c("c1") });
     let answer!: (v: { text: string }) => void;
-    const replying = s.guard("primer_reply_to_thread", { thread_id: "th1", body: "Addressed in v2" }, () => new Promise((r) => (answer = r)));
+    const replying = s.guard("primer_reply_to_thread", { thread_id: "th1", body: "Addressed in v2" }, () => new Promise<{ text: string }>((r) => (answer = r)));
     const held = s.handle({ id: "2", type: "primer.comment.created", data: c("c-own") }); // the reply's own event, first
     await settle();
     answer({ text: '{"thread_id":"th1","comment_id":"c-own"}' });
@@ -82,7 +82,7 @@ describe("the comment wake loop", () => {
     expect(h.wakes.map((w) => w.text.match(/comment (\S+);/)?.[1])).toEqual(["c1"]);
     // A version: c1 was pending when it started; c3 arrives mid-publish and waits for the next batch.
     let done!: (v: { text: string }) => void;
-    const publishing = s.guard("primer_add_version", { documentId: "d1", content: "v2" }, () => new Promise((r) => (done = r)));
+    const publishing = s.guard("primer_add_version", { documentId: "d1", content: "v2" }, () => new Promise<{ text: string }>((r) => (done = r)));
     const mid = s.handle({ id: "3", type: "primer.comment.created", data: c("c3", "th3") });
     done({ text: '{"versionId":"v2"}' });
     await publishing;
