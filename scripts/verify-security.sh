@@ -794,6 +794,7 @@ rreview="modules/ai-reviewer/service/src/review.mjs"
   && grep -qF 'if (c && (!c.private || j.authority.reads === true)) tools[c.connection]' kernel/src/identity.ts \
   && grep -q 'export const observes = (engine?: Engine) => engine?.reads === true;' kernel/src/sandbox.ts \
   && grep -qF '...(a.web === false ? { reads: true } : {})' kernel/src/jobs.ts \
+  && grep -qF 'web: g.private_reads !== true && g.web_search !== "disabled",' kernel/src/admission.ts \
   && pass "kernel: jobs hold no connection URL or token, private reads only by opt-in with web search off; Primer publishes are primer.publish records at floor 1" || fail "kernel: jobs' connection reach or the Primer publish kind changed"
 # engine@1: the runner writes `web: false` into job.json for a job holding private data; every engine module keeps such a job
 # off the web (by behaviour: each module's own builder, as its bin/engine runs it).
