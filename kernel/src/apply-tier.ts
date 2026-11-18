@@ -13,7 +13,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import YAML from "yaml";
 import { strayFiles, untrialedNewAgents, productPin, bumpTitle, type Read, type Source } from "./apply.ts";
-import { applyCard } from "./kinds.ts";
+import { applyCard, repoKey } from "./kinds.ts";
 import { authorityLines, classifyModules, diffAll, forkChanges, grantOverrides, marketplaceChanges, moduleInputs, withGrantOverrides, type ModuleInput } from "../../scripts/compiler/authority.ts";
 import { effective } from "../../scripts/compiler/release.ts";
 import { hostFetch, officialSides, remoteCodeText, withRemote } from "../../scripts/compiler/sources.ts";
@@ -360,6 +360,8 @@ export const DETAILS_MAX = 80_000;
  * the requester's words.
  */
 export function createApplyPlanner(h: {
+  /** The instance repo (owner/name, AIDENHQ_INSTANCE_REPO): the only repository an apply lands on. */
+  instanceRepo(): string | undefined;
   read(s: Source): Promise<Read>;
   product: ProductGit;
   /** The module side of an instance.yaml change (moduleTierState over the product checkout). */
@@ -374,7 +376,11 @@ export function createApplyPlanner(h: {
   return async function plan({ args }: { args: unknown }): Promise<ApplyPlan> {
     const a = (args ?? {}) as { repo?: unknown; branch?: unknown; sha?: unknown; workspace?: unknown };
     if (typeof a.repo !== "string" || typeof a.branch !== "string" || typeof a.sha !== "string") throw new Refused("name the commit to apply: {repo, branch, sha}");
-    const src: Source = { repo: a.repo, branch: a.branch, sha: a.sha };
+    // The configured instance repo, never the requester's spelling of it: what is read, tiered by path and landed.
+    const repo = h.instanceRepo();
+    if (!repo || !repoKey(repo)) throw new Refused("the instance repo isn't set here (AIDENHQ_INSTANCE_REPO), so nothing can be applied");
+    if (repoKey(a.repo) !== repoKey(repo)) throw new Refused(`an apply lands only on the instance repo (${repo}), not ${a.repo.slice(0, 100)}`);
+    const src: Source = { repo, branch: a.branch, sha: a.sha };
     const c = await h.read(src);
     if (!c.files.length) throw new Refused("the commit changes nothing against the instance's main");
     const stray = strayFiles(c.files);
@@ -392,11 +398,11 @@ export function createApplyPlanner(h: {
     if (t.reject) throw new Refused(String(t.reason));
     const details = [c.diff, bump && `${bump.title.replaceAll("`", "")}:\n${bump.log}`, st.remote, c.trial].filter(Boolean).join("\n\n");
     if (details.length > DETAILS_MAX) throw new Refused(`the change is too large to review (${details.length} characters with the commits and code it brings): split it into smaller ones`);
-    const full = { repo: a.repo, branch: a.branch, sha: a.sha, files: c.files, ...authorityArgs(st) };
+    const full = { repo, branch: a.branch, sha: a.sha, files: c.files, ...authorityArgs(st) };
     const card = applyCard(full, details);
     return {
       args: full, targets: { diff: createHash("sha256").update(details).digest("hex") }, card: card as unknown as Record<string, string>,
-      paths: [{ repo: a.repo, files: c.files.map((path) => ({ path })) }],
+      paths: [{ repo, files: c.files.map((path) => ({ path })) }],
       ...(t.tier >= 1 ? { raise: { tier: t.tier as 1 | 2, ...(t.panel ? { panel: true } : {}), ...(t.reason ? { reason: String(t.reason) } : {}), ...(t.rule ? { rule: String(t.rule) } : {}) } } : {}),
       ...(t.tier === 2 ? { review_first: (t.byMerit ? "owner" : "final") as ReviewFirst } : {}),
     };
@@ -417,13 +423,13 @@ export const hostProduct = (repo: string): ProductGit => ({
 });
 
 /** The planner on this host: the code host's read, the product checkout, and the compiled grants, connections and apps. */
-export function hostPlanner({ repo, configDir, read, grants, connections }: {
-  repo: string; configDir: string; read: (s: Source) => Promise<Read>;
+export function hostPlanner({ repo, instanceRepo, configDir, read, grants, connections }: {
+  repo: string; instanceRepo: () => string | undefined; configDir: string; read: (s: Source) => Promise<Read>;
   grants: () => Record<string, { key?: string; roles?: string[] } | undefined>;
   connections: () => Record<string, { tools: { read: string[]; write: string[]; destructive: string[] } }>;
 }): ApplyPlanner {
   return createApplyPlanner({
-    read, product: hostProduct(repo), modules: (b, h) => moduleTierState(b, h, repo), connections,
+    instanceRepo, read, product: hostProduct(repo), modules: (b, h) => moduleTierState(b, h, repo), connections,
     roles: () => Object.fromEntries(Object.values(grants()).flatMap((a) => (a?.key ? [[a.key, a.roles ?? []]] : []))),
     moduleApps: () => { try { return ((YAML.parse(readFileSync(join(configDir, "apps.modules.yaml"), "utf8")) ?? {}).apps ?? []).filter(Boolean); } catch { return []; } },
   });

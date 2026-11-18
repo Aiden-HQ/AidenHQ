@@ -175,6 +175,23 @@ test("vault and knowledge mounts come from the host env, validated", () => {
   assert.throws(() => hostMounts({ KNOWLEDGE_BASES: "kb=/k:/etc" }), /invalid KNOWLEDGE_BASES entry/);
 });
 
+test("kernel roles are the kernel's: no module declares one or a write kind's name, and requests only defined ones", () => {
+  const dir = mkdtempSync(join(tmpdir(), "prod-"));
+  cpSync(join(here, "fixtures/mods"), dir, { recursive: true });
+  const file = join(dir, "modules", "a", "module.yaml");
+  const orig = readFileSync(file, "utf8");
+  const roles = (r) => writeFileSync(file, `${orig}\nroles:\n${r}\n`);
+  roles("  declares: [ kernel.apply ]");
+  assert.throws(() => compile(dir, finst(["a"])), /declares role kernel\.apply, which is the kernel's namespace/);
+  roles("  declares: [ codehost-github.merge ]");
+  assert.doesNotThrow(() => compile(dir, finst(["a"])), "no module here has that kind");
+  roles("  declares: [ kernel.raise_cap ]");
+  assert.throws(() => compile(dir, finst(["a"])), /declares role kernel\.raise_cap/);
+  roles("  requests: [ kernel.anything ]");
+  assert.throws(() => compile(dir, finst(["a"])), /requests role kernel\.anything, which the kernel doesn't define/);
+  roles("  requests: [ kernel.apply ]");
+  assert.doesNotThrow(() => compile(dir, finst(["a"])));
+});
 // ------------------------------------------------------------------ the real modules
 const repo = join(here, "../..");
 

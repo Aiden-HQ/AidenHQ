@@ -118,6 +118,12 @@ export function runnerFacts(kind: string, args: any, repos: Repos): { floor: 0 |
   return { floor, owner: unknown, ownerRequired: action === "apply" && args?.ownerRequired === true, ...(target ? { target } : {}), content: p === undefined ? null : p === null ? "?" : p };
 }
 
+/**
+ * The kernel's roles a module may request (module.yaml roles.requests): each opens one backplane route or, for kernel.apply,
+ * filing that kernel kind. No module declares a kernel.* role or a role named after a write kind (compile refuses both).
+ */
+export const KERNEL_ROLES = ["kernel.apply", "kernel.checks", "kernel.cp-read", "kernel.grader", "kernel.jobs", "kernel.lane", "kernel.notify", "kernel.owner-notice", "kernel.tasks", "kernel.wake", "kernel.work-read"];
+
 /** The kernel's kinds, beside the modules' compiled ones (config/kernel/writes.json). */
 export const KERNEL_KINDS: Record<string, Kind> = {
   // An apply is always read by the reviewer first (floor 1); a push, a PR, a merge and a new repo by what they touch (runnerFacts).

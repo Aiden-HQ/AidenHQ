@@ -22,6 +22,7 @@ const NEW_AUTHORITY = { modules: { acme: { base: { name: "acme" }, head: { name:
 function kernel({ modules = { modules: {}, marketplaces: [] }, inventory = { entries: [] }, reviewer = "approve" } = {}) {
   const h = { reads: 0, lands: [], launches: [], units: {} };
   const planner = createApplyPlanner({
+    instanceRepo: () => "acme/aidenhq-instance",
     read: async (s) => (h.reads++, { files: ["instance.yaml"], texts: { base: { "instance.yaml": yaml(OLD) }, head: { "instance.yaml": yaml(NEW) } }, diff: `-product: ${OLD}\n+product: ${NEW}\n`, trial: "" }),
     product: { onMain: async () => true, isAncestor: async (a, b) => a === OLD && b === NEW, log: async () => "bbbbbbb feat: something (#1)" },
     modules: () => modules, roles: () => ({}), connections: () => ({}), moduleApps: () => [],
@@ -60,8 +61,13 @@ test("a release bump files kernel.apply, planned from the code host's read and t
   assert.deepEqual([o.tier, o.rule], [2, "owner-path"]);
   const blind = kernel({ inventory: null });
   assert.equal((await blind.writes.request(codehost, { kind: "kernel.apply", args: BUMP, task: "TASK-1" })).rule, "gate-list-unknown");
-  // Only a module holding the role files it; and until the switch drops `runner`, nobody does through this path.
+  // Only a module holding the role files it, and only for a kernel kind the kernel plans: a role named after another
+  // module's kind grants nothing. Until the switch drops `runner`, nobody files kernel.apply through this path.
   await assert.rejects(k.writes.request({ ...codehost, roles: ["kernel.tasks"] }, { kind: "kernel.apply", args: BUMP, task: "TASK-1" }), /no grant on kernel.apply/);
+  const merge = { module: "codehost-github", floor: 0, tools: [], executor: { url: "http://codehost-github:8100/x", auth_secret: "k" } };
+  const other = createWrites({ records: k.records, registry: () => ({ "codehost-github.merge": merge, "kernel.apply": { ...KERNEL_KINDS["kernel.apply"], runner: undefined } }), connections: () => ({}), secret: () => "", resolver: {}, onTask: { open: async () => true, notify: async () => {} }, replay: async () => ({}) });
+  await assert.rejects(other.request({ kind: "module", module: "acme", roles: ["codehost-github.merge"], tools: {} }, { kind: "codehost-github.merge", args: {}, task: "TASK-1" }), /no grant on codehost-github.merge/);
+  await assert.rejects(other.request({ ...codehost, roles: ["kernel.apply"] }, { kind: "kernel.apply", args: BUMP, task: "TASK-1" }), /no write kind kernel.apply/, "no planner: not filed");
   const before = createWrites({ records: k.records, registry: () => ({ "kernel.apply": KERNEL_KINDS["kernel.apply"] }), connections: () => ({}), secret: () => "", resolver: {}, onTask: { open: async () => true, notify: async () => {} }, replay: async () => ({}), planners: { "kernel.apply": async () => ({}) } });
   await assert.rejects(before.request(codehost, { kind: "kernel.apply", args: BUMP, task: "TASK-1" }), /no write kind kernel.apply/);
 });
@@ -103,10 +109,16 @@ test("no apply runs twice: the same bump filed again is the same record, and run
 test("a change the rules refuse is refused at filing, saying why", async () => {
   // A pin off the product's main, and a file outside the instance config.
   const off = createApplyPlanner({
+    instanceRepo: () => "acme/aidenhq-instance",
     read: async () => ({ files: ["instance.yaml"], texts: { base: { "instance.yaml": yaml(OLD) }, head: { "instance.yaml": yaml(NEW) } }, diff: "x" }),
     product: { onMain: async () => false, isAncestor: async () => false, log: async () => "" }, modules: () => ({}), roles: () => ({}), connections: () => ({}), moduleApps: () => [],
   });
   await assert.rejects(off({ args: BUMP }), /is not on the product's main/);
-  const stray = createApplyPlanner({ read: async () => ({ files: ["ops/apply-config.sh"], texts: { base: {}, head: {} }, diff: "x" }), product: {}, modules: () => ({}), roles: () => ({}), connections: () => ({}), moduleApps: () => [] });
+  const stray = createApplyPlanner({ instanceRepo: () => "acme/aidenhq-instance", read: async () => ({ files: ["ops/apply-config.sh"], texts: { base: {}, head: {} }, diff: "x" }), product: {}, modules: () => ({}), roles: () => ({}), connections: () => ({}), moduleApps: () => [] });
   await assert.rejects(stray({ args: BUMP }), /outside the instance config/);
+  // Only the configured instance repo, whatever the requester names; the record carries the configured spelling.
+  await assert.rejects(stray({ args: { ...BUMP, repo: "acme/aidenhq" } }), /lands only on the instance repo \(acme\/aidenhq-instance\), not acme\/aidenhq/);
+  const k = kernel();
+  await assert.rejects(k.writes.request(codehost, { kind: "kernel.apply", args: { ...BUMP, repo: "evil/aidenhq-instance" }, task: "TASK-1" }), /lands only on the instance repo/);
+  assert.equal((await k.writes.request(codehost, { kind: "kernel.apply", args: { ...BUMP, repo: "ACME/AidenHQ-Instance" }, task: "TASK-1" })).args.repo, "acme/aidenhq-instance");
 });

@@ -353,10 +353,11 @@ export function createWrites({ records, registry, connections, secret, resolver,
       const k = kindOf_(kind);
       if (!k || k.runner || !(k.executor || Object.hasOwn(planners, kind))) throw fail(404, "unknown_kind", `no write kind ${kind}`);
       // A job only by the kinds its token names (its minter names them), on the token's task; its tier is the kind's, as any
-      // requester's (floor, the executor's plan, caps and the routine cap: computeTier). A module files its own kinds, and
-      // another's (the kernel's) only by holding the role named after the kind (kernel.apply), which compile grants from its
-      // manifest's roles.requests and the authority diff judges.
-      const granted = (who.kind === "module" && (who.module === k.module || (who.roles ?? []).includes(kind))) || (who.kind === "job" ? Boolean(who.task && who.writes?.includes(kind)) : k.tools.some((ct) => { const [c, t] = ct.split("."); return who.tools[c!]?.includes(t!); }));
+      // requester's (floor, the executor's plan, caps and the routine cap: computeTier). A module files its own kinds; a kernel
+      // kind the kernel plans itself (kernel.apply) only by holding the kernel role of that name, which compile allows only as
+      // a request of a defined kernel role (KERNEL_ROLES) and the authority diff marks as owner authority.
+      const kernelRole = k.module === "kernel" && Object.hasOwn(planners, kind) && (who.roles ?? []).includes(kind);
+      const granted = (who.kind === "module" && (who.module === k.module || kernelRole)) || (who.kind === "job" ? Boolean(who.task && who.writes?.includes(kind)) : k.tools.some((ct) => { const [c, t] = ct.split("."); return who.tools[c!]?.includes(t!); }));
       if (!granted) throw fail(403, "no-grant", `no grant on ${kind}`);
       // An agent's record is on the task its run is on (its notices land there, as the owner); only a module names one.
       const t = who.kind === "module" && typeof task === "string" && task ? task : who.task ?? "";

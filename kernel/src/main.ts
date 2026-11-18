@@ -136,7 +136,7 @@ let raiseCap: (r: { scope: string; agentId: string; subject: string; cap: number
 const applyHost = hostApply({ repo, stateDir: env("AIDENHQ_STATE_DIR", path.join(process.env.HOME ?? "", ".local/state/aidenhq")), resolver, codehost: () => { const e = moduleKinds()["codehost-github.push"]?.executor; return e && { url: e.url, key: secret(e.auth_secret) }; } });
 const applies = createApply({ db: records.db, log, ...applyHost });
 // Its planner (apply-tier.ts): the same code host read, the product checkout, and the compiled grants, connections and apps.
-const applyPlanner = hostPlanner({ repo, configDir, read: applyHost.codehost.read, grants: () => grantsTable().agents ?? {}, connections });
+const applyPlanner = hostPlanner({ repo, instanceRepo: () => repos().instance, configDir, read: applyHost.codehost.read, grants: () => grantsTable().agents ?? {}, connections });
 const writes = createWrites({
   records, registry, connections, secret, resolver, reviews, onTask, log, replay: (r) => replay(r as never), repos, paths: pathInventory,
   autonomy: () => (["off", "tier0", "full"].includes(grantsTable().autonomy as string) ? grantsTable().autonomy : "off") as never,
