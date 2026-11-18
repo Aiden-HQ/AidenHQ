@@ -177,6 +177,14 @@ test("kernel.apply's land: the instance commit is read and landed on main once, 
   const read = await call("/aidenhq/v1/apply/read", src);
   assert.deepEqual([read.json.files.sort(), read.json.texts], [["agents/chaser/agent.yaml", "instance.yaml"], { base: { "instance.yaml": "product: x\n" }, head: { "agents/chaser/agent.yaml": "trial: true\n", "instance.yaml": "product: y\n" } }]);
   assert.match(read.json.diff, /\+product: y/);
+  // After the review the workspace makes the same sha resolve to other content (a replace ref to another commit): the code host
+  // reads its own fsck-checked copy, never the live workspace, so the re-read is exactly what was reviewed.
+  sh(ws, "checkout", "--quiet", "-b", "evil", "main");
+  writeFileSync(join(ws, "instance.yaml"), "product: z\n");
+  sh(ws, "commit", "--quiet", "-am", "evil");
+  sh(ws, "replace", sha, sh(ws, "rev-parse", "HEAD"));
+  sh(ws, "checkout", "--quiet", "fleet/edit");
+  assert.deepEqual((await call("/aidenhq/v1/apply/read", src)).json, read.json, "the re-read is the reviewed content");
   // The kernel names the official modules' pin on both sides, or nothing lands; a marketplace pin that appears or moves is
   // refused before anything is pushed (the official modules come with the product pin).
   assert.equal((await call("/aidenhq/v1/apply/land", src)).status, 400, "no pin named: refused");

@@ -12,7 +12,7 @@ import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import YAML from "yaml";
-import { strayFiles, untrialedNewAgents, productPin, bumpTitle, type Read, type Source } from "./apply.ts";
+import { readDigest, strayFiles, untrialedNewAgents, productPin, bumpTitle, type Read, type Source } from "./apply.ts";
 import { applyCard, repoKey } from "./kinds.ts";
 import { authorityLines, classifyModules, diffAll, forkChanges, grantOverrides, marketplaceChanges, moduleInputs, withGrantOverrides, type ModuleInput } from "../../scripts/compiler/authority.ts";
 import { effective } from "../../scripts/compiler/release.ts";
@@ -351,7 +351,7 @@ export async function productBump(from: string | undefined, to: string | undefin
 /** What an apply plan returns to writes.ts (its executor@1 plan's shape, planned by the kernel itself). */
 export type ApplyPlan = {
   args: { repo: string; branch: string; sha: string; files: string[]; authority?: string[]; ownerRequired?: true };
-  targets: { diff: string }; card: Record<string, string>; paths: { repo: string; files: { path: string }[] }[];
+  targets: { diff: string; content: string }; card: Record<string, string>; paths: { repo: string; files: { path: string }[] }[];
   raise?: { tier: 1 | 2; panel?: boolean; reason?: string; rule?: string }; review_first?: ReviewFirst;
 };
 export class Refused extends Error {
@@ -424,7 +424,7 @@ export function createApplyPlanner(h: {
     const full = { repo, branch: a.branch, sha: a.sha, files: c.files, ...authorityArgs(st) };
     const card = applyCard(full, details);
     return {
-      args: full, targets: { diff: createHash("sha256").update(details).digest("hex") }, card: card as unknown as Record<string, string>,
+      args: full, targets: { diff: createHash("sha256").update(details).digest("hex"), content: readDigest(c) }, card: card as unknown as Record<string, string>,
       paths: [{ repo, files: c.files.map((path) => ({ path })) }],
       ...(t.tier >= 1 ? { raise: { tier: t.tier as 1 | 2, ...(t.panel ? { panel: true } : {}), ...(t.reason ? { reason: String(t.reason) } : {}), ...(t.rule ? { rule: String(t.rule) } : {}) } } : {}),
       ...(t.tier === 2 ? { review_first: (t.byMerit ? "owner" : "final") as ReviewFirst } : {}),
