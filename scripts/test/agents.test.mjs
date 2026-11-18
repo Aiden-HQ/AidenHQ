@@ -268,3 +268,10 @@ test("the models the runner and the model tools name in code are priced (the gat
   assert.ok(named.length >= 4);
   for (const m of named) assert.ok(priced.includes(m), m);
 });
+test("crew agents hold what the in-box `aidenhq task|tasks` call; advise's advisor_ask stays the tasks module's own default; an engineer without private_reads or a check agent reads no task text", () => {
+  const cli = (yaml) => (compile(product, withAgents({ x: { yaml } }, ["slack"])).paperclip.agents.x.enabled_tools.paperclip_tasks ?? []).filter((t) => ["task_get", "task_search", "advisor_ask"].includes(t)).sort();
+  assert.deepEqual(cli({ connections: { slack: "read" } }), ["advisor_ask", "task_get", "task_search"]);
+  // An agent with its own computer: the module's default grant gives it no advisor_ask, and compile doesn't either.
+  assert.deepEqual(cli({ connections: { slack: "read" }, image: "agent-base", trial: undefined, reports_to: "chief-of-staff" }), ["task_get", "task_search"]);
+  for (const profile of ["engineer", "check"]) assert.deepEqual(cli({ connections: {}, profile }).filter((t) => t !== "advisor_ask"), [], profile);
+});
