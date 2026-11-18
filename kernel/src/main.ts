@@ -32,6 +32,7 @@ import { chiefOfStaff, createBackplane } from "./backplane.ts";
 import { createOutcomes, createPluginPost, delegateIds } from "./outcomes.ts";
 import { createBrake } from "./brake.ts";
 import { createNotify } from "./notify.ts";
+import { createReplyRelay } from "./relay.ts";
 import { createChannels, type Api, type ModulesFile } from "./channels.ts";
 import { createLane } from "./lane.ts";
 import { checksFile, createChecks } from "./checks.ts";
@@ -236,7 +237,7 @@ jobs.adopt();
 const mayDispatch = dispatchesFrom(() => (modulesFile().modules ?? {}) as never, () => grantsTable().agents ?? {});
 // Outcomes posted on a job's task as its agent, once (outcomes.ts): the agent's own Paperclip key, setup's paperclip-agents/<id>.
 const plugin = createPluginPost({ controlUrl, agentKey: (id) => secret(`paperclip-agents/${id}`), postKey: () => secret("paperclip_post_key") });
-const outcomes = createOutcomes({ db: records.db, plugin, provenance, log, delegates: (id) => delegateIds(grantsTable().agents, id), finish: (task, agent) => checks.finish(task, { agent, via: "job_post" }) });
+const outcomes = createOutcomes({ db: records.db, plugin, provenance, log, relay: createReplyRelay({ owner: ownerApi, queue: notify.queue, log }), delegates: (id) => delegateIds(grantsTable().agents, id), finish: (task, agent) => checks.finish(task, { agent, via: "job_post" }) });
 const wakes = createWakes({
   db: records.db, owner: ownerApi, post: outcomes.post, log,
   routineKey: (id) => (grantsTable().routine_keys as Record<string, string> | undefined)?.[id],

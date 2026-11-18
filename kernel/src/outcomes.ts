@@ -73,7 +73,7 @@ export function createPluginPost({ controlUrl, agentKey, postKey, timeoutMs = 30
 }
 export type PluginPost = ReturnType<typeof createPluginPost>;
 
-export function createOutcomes({ db, plugin, delegates, finish, provenance, log = () => {} }: {
+export function createOutcomes({ db, plugin, delegates, finish, provenance, relay, log = () => {} }: {
   db: DatabaseSync; plugin: PluginPost;
   /** The ids of the agents an agent may hand a child task to (grants `delegate_to`). */
   delegates: (agent: string) => string[];
@@ -81,6 +81,8 @@ export function createOutcomes({ db, plugin, delegates, finish, provenance, log 
   finish: (task: string, agent: string) => Promise<Finish>;
   /** A child the job creates gets its provenance row (provenance.ts). */
   provenance: Pick<Provenance, "carried" | "intend" | "record">;
+  /** A reply, once posted, also goes to the channel the owner wrote from (relay.ts). */
+  relay?: (job: { agent: string; task: string }, body: string) => Promise<void>;
   log?: (msg: string, f?: Record<string, unknown>) => void;
 }) {
   const once = createOnce(db);
@@ -109,6 +111,8 @@ export function createOutcomes({ db, plugin, delegates, finish, provenance, log 
       if (r.status >= 300 || !data || data.refused) throw new OutcomeError(r.status >= 300 ? 502 : 422, "refused", data?.refused ?? `the post action answered ${r.status}`);
       if (req.child && data.child) provenance.record(data.child, origin);
       log("outcome posted", { job: job.id, kind: req.kind, task: job.task, status: data.status ?? null, ...(gate && !gate.pass ? { finish: "held" in gate ? "held" : "reopened" } : {}) });
+      // Once, with the post: a reply also goes to the channel the owner wrote from.
+      if (req.kind === "reply" && relay) await relay(job, req.body).catch((e: Error) => log("reply relay failed", { job: job.id, task: job.task, err: e.message }));
       return { comment: data.comment, status: data.status ?? null, ...(gate ? { finish: gate } : {}) };
     });
     return again ? { ...value, again: true } : value;

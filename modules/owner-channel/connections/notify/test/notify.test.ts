@@ -25,6 +25,15 @@ function world(up: Record<string, "up" | "down" | "off"> = { "channel-slack": "u
 }
 
 describe("notify", () => {
+  it("a job's reply the kernel relays goes once, only to the channel the owner wrote from, headed by its agent; never re-posted", async () => {
+    const { d, sent, posted } = world();
+    const relay = { via: "telegram" as const, agentName: "Aiden", issueId: "i-1" };
+    expect(await notify(d, { kind: "done", text: "The budget is approved.", task: "WOR-1", relay })).toEqual({ sent: true });
+    expect(await notify(d, { kind: "done", text: "The budget is approved.", task: "WOR-1", relay })).toMatchObject({ reason: "duplicate" });
+    expect(sent).toEqual([{ to: "channel-telegram", m: { kind: "done", text: "The budget is approved.", head: { agent: "Aiden", task: "WOR-1", issue: "i-1" } } }]);
+    expect(posted).toEqual([]);
+  });
+
   it("the same dedupe_key from two agents reaches the owner once", async () => {
     const { d, sent } = world();
     expect(await notify(d, { kind: "alert", text: "prod is down", dedupe_key: "slack:C1:1.0" }, agent("triage"))).toEqual({ sent: true });
