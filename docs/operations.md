@@ -217,8 +217,9 @@ node's serve config (`data/apps-edge/serve/serve.json`) from the registry and jo
 own network, where the app's port-publishing service answers as `edge-<app>` (an alias only the platform sets; an
 app deployed before it is served after its next deploy). The node joins once with the vault's
 `tailscale_apps_authkey` (a reusable, tagged, pre-authorized key; compile creates the file empty), then keeps its
-identity in `data/apps-edge/state`. Until the key is there it waits, unjoined (`docker compose logs apps-edge`);
-after adding it, `docker compose up -d --force-recreate apps-edge` (the key is read only at start). Set
+identity in `data/apps-edge/state`. `apps-edge` runs only when `config/apps-node` is `tailnet` (the key is in the vault
+and exposure is `tailscale`): otherwise compile takes it out of the stack and the apply removes its container. After adding
+the key, apply again. Set
 `APPS_URL_BASE` in `.env` to its address. The node is the apps' door only in `tailscale` exposure with that key and
 `APPS_URL_BASE` set (compile writes `config/apps-node`: `tailnet` or `none`): only then may an exposed, unshared app take
 token-less callers as anonymous (`AIDENHQ_ANONYMOUS`, set at deploy, so redeploy apps after it changes). Without it every

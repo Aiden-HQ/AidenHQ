@@ -479,8 +479,8 @@ Agent-built apps get their own tailnet node and name (`aidenhq-<user>-apps`), so
 cookies. It needs `TS_APPS_AUTHKEY` (a Tailscale admin makes it): in the Tailscale admin, add a tag (for example
 `tag:aidenhq-apps`, under `tagOwners`; if your policy isn't allow-all, let your devices reach it on the app ports),
 then Settings, Keys, *Generate auth key*: reusable, pre-approved, tagged with it. Without it apps run but aren't
-reachable. To add it later, put the key in the vault as `tailscale_apps_authkey` and run
-`docker compose up -d --force-recreate apps-edge` (it reads the key only at start).
+reachable. To add it later, put the key in the vault as `tailscale_apps_authkey` and apply again (apps-edge runs only
+once the key is there, in `tailscale` exposure).
 
 ## GitHub App for the runner
 
