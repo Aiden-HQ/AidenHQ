@@ -26,6 +26,8 @@ export type Rec = {
   review_first?: ReviewFirst | null;
   /** The tier rule's code (the requester's classifier), the reviewer's reason code, and when it was decided. */
   rule?: string | null; review_code?: string | null; decided_at?: string | null;
+  /** Why the owner rejected it, in their words (optional, up to 500 chars; the requester is told). */
+  owner_reason?: string | null;
   /** The task's identifier as people read it (ACME-12), when the requester knows it. */
   identifier?: string | null;
   /** It replaced an open request on the same task, kind and target: a typed reply can't approve it, only a tap. */
@@ -57,7 +59,7 @@ export const digestOf = (r: Pick<Rec, "kind" | "args" | "targets" | "executor" |
   createHash("sha256").update(canonical({ kind: r.kind, args: r.args, targets: r.targets, executor: r.executor, policy: r.policy })).digest("hex");
 
 /** What filing takes: the content, its tier, and the optional requester fields (tier.ts, the runner's plan). */
-export type Filing = Omit<Rec, "id" | "digest" | "review" | "decided_by" | "via" | "outcome" | "created_at" | "updated_at" | "replaced" | "decided_at" | "review_code">;
+export type Filing = Omit<Rec, "id" | "digest" | "review" | "owner_reason" | "decided_by" | "via" | "outcome" | "created_at" | "updated_at" | "replaced" | "decided_at" | "review_code">;
 
 export function openRecords(file: string, now = () => new Date()) {
   mkdirSync(dirname(file), { recursive: true, mode: 0o700 });
@@ -72,7 +74,7 @@ export function openRecords(file: string, now = () => new Date()) {
     CREATE TABLE IF NOT EXISTS events (id TEXT PRIMARY KEY, type TEXT NOT NULL, at TEXT NOT NULL, data TEXT NOT NULL);`);
   // Columns added since 2d, each additive (older code ignores them, so a rollback keeps working).
   const have = new Set((db.prepare("PRAGMA table_info(records)").all() as { name: string }[]).map((c) => c.name));
-  for (const [c, t] of [["merit", "INTEGER"], ["review_first", "TEXT"], ["rule", "TEXT"], ["review_code", "TEXT"], ["decided_at", "TEXT"], ["identifier", "TEXT"], ["replaced", "INTEGER NOT NULL DEFAULT 0"], ["chain", "TEXT"], ["target", "TEXT"], ["content", "TEXT"]] as const) if (!have.has(c)) db.exec(`ALTER TABLE records ADD COLUMN ${c} ${t}`);
+  for (const [c, t] of [["merit", "INTEGER"], ["review_first", "TEXT"], ["rule", "TEXT"], ["review_code", "TEXT"], ["decided_at", "TEXT"], ["owner_reason", "TEXT"], ["identifier", "TEXT"], ["replaced", "INTEGER NOT NULL DEFAULT 0"], ["chain", "TEXT"], ["target", "TEXT"], ["content", "TEXT"]] as const) if (!have.has(c)) db.exec(`ALTER TABLE records ADD COLUMN ${c} ${t}`);
   const iso = () => now().toISOString();
   const cutoff = () => new Date(now().getTime() - TTL_MS).toISOString();
   const row = (r: any): Rec | undefined => {
@@ -84,7 +86,7 @@ export function openRecords(file: string, now = () => new Date()) {
   const event = (type: string, data: unknown) => db.prepare("INSERT INTO events (id, type, at, data) VALUES (?, ?, ?, ?)").run(`e-${randomBytes(8).toString("hex")}`, type, iso(), JSON.stringify(data));
   const get = (id: string) => row(db.prepare("SELECT * FROM records WHERE id = ?").get(id));
   /** One state move, only from `from` (and, from an open state, only within its 7 days); false when someone moved it first. */
-  const move = (id: string, from: State[], to: State, set: { review?: string; review_code?: string | null; decided_by?: string; via?: string; tier?: number; outcome?: unknown; decided_at?: string; chain?: string | null } = {}, fresh = false): boolean => {
+  const move = (id: string, from: State[], to: State, set: { review?: string; review_code?: string | null; decided_by?: string; via?: string; owner_reason?: string; tier?: number; outcome?: unknown; decided_at?: string; chain?: string | null } = {}, fresh = false): boolean => {
     const cols = Object.keys(set);
     const r = db.prepare(`UPDATE records SET state = ?, updated_at = ?${cols.map((c) => `, ${c} = ?`).join("")} WHERE id = ? AND state IN (${from.map(() => "?").join(",")})${fresh ? " AND created_at > ?" : ""}`)
       .run(to, iso(), ...cols.map((c) => (c === "outcome" ? JSON.stringify((set as any)[c]) : (set as any)[c] ?? null)), id, ...from, ...(fresh ? [cutoff()] : []));
@@ -183,12 +185,12 @@ export function openRecords(file: string, now = () => new Date()) {
       return db.prepare("UPDATE records SET panel = 1 WHERE id = ? AND digest = ? AND state = 'review'").run(id, digest).changes === 1;
     },
     /** The owner's decision on a record waiting for them, bound to its digest. */
-    decide(id: string, digest: string, decision: "approve" | "reject", by: string, via: string): Rec | string {
+    decide(id: string, digest: string, decision: "approve" | "reject", by: string, via: string, reason = ""): Rec | string {
       const r = get(id);
       if (!r) return "no such record";
       if (shownState(r) !== "owner") return `this record is ${r.state === "review" ? "with the AI reviewer" : shownState(r)}`;
       if (r.digest !== digest) return "the digest doesn't match this record";
-      if (!move(id, ["owner"], decision === "approve" ? "approved" : by.startsWith("stale:") ? "stale" : "rejected", { decided_by: by, via, decided_at: iso() }, true)) return "it changed meanwhile";
+      if (!move(id, ["owner"], decision === "approve" ? "approved" : by.startsWith("stale:") ? "stale" : "rejected", { decided_by: by, via, decided_at: iso(), ...(decision === "reject" && reason ? { owner_reason: reason } : {}) }, true)) return "it changed meanwhile";
       event("approval.decided", { record: id, decision, by, via });
       return get(id)!;
     },

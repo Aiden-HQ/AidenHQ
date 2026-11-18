@@ -85,9 +85,9 @@ export function createChannels({ db, records, writes, board, owner, modules, res
     return { live: records.list(["owner"], 200).reverse().map(view), finished: records.list(["done", "failed", "unknown"], 50, { reviewed: true }).map(view) };
   };
   /** One decision on a card, bound to the digest the owner saw. Throws 409 when the card was decided, changed or replaced meanwhile. */
-  const decideCard = async (id: string, digest: string, decision: "approve" | "reject", by: string, via: string): Promise<{ identifier: string; sentence: string; state: string }> => {
+  const decideCard = async (id: string, digest: string, decision: "approve" | "reject", by: string, via: string, reason = ""): Promise<{ identifier: string; sentence: string; state: string }> => {
     if (!KERNEL_ID.test(id)) throw fail(404, "not_found", `no card ${id.slice(0, 40)}`);
-    const r = writes.decide(id, { digest, decision, by, via });
+    const r = writes.decide(id, { digest, decision, by, via, reason });
     if (typeof r === "string") throw fail(409, "conflict", r);
     return { identifier: r.identifier ?? r.task, sentence: r.card.sentence, state: r.state };
   };

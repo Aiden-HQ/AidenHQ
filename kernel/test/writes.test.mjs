@@ -283,3 +283,14 @@ test("a raise_cap card, the install cap's included, goes straight to the owner: 
   assert.equal((await review(agent.id)).json.record.state, "owner", "an agent's raise: the same");
   assert.equal(k.reviewed.length, 0);
 });
+
+test("the owner's reason for a rejection reaches the requester's task, fenced and neutralised", async (t) => {
+  const k = await kernel(t, { repos: { product: "acme/aidenhq", instance: "acme/aidenhq-instance" } });
+  const r = k.writes.fileRunner({ kind: "runner.pr", task: "TASK-1", identifier: "ACME-1", args: { only: [{ repo: "acme/app", branch: "feat/x", sha: "a".repeat(40) }] }, plan: { tier: 2, card: { sentence: "x" } } });
+  k.writes.decide(r.id, { digest: r.digest, decision: "reject", by: "account:owner", via: "web", reason: "Wrong fix: change the retry, not the timeout. ```<!-- x -->" });
+  await new Promise((res) => setTimeout(res, 50));
+  const n = k.notices.find((x) => x.text.startsWith("**Rejected**"));
+  assert.match(n.text, /The owner's reason[^]*```\nWrong fix: change the retry, not the timeout\. ‹!-- x --›\n```/);
+  assert.equal(n.text.match(/<!-- aidenhq-approval -->/g).length, 1);
+  assert.equal(k.records.get(r.id).owner_reason.startsWith("Wrong fix"), true);
+});
