@@ -76,15 +76,13 @@ describe("Glean sign-in routes", () => {
     expect((await get(`${localBase}/glean/connect`, "evil.example")).status).toBe(403);
   });
 
-  it("finishes the sign-in and returns to the board, or explains (escaped) why not", async () => {
+  it("finishes the sign-in and returns to the board, or to its page with why not", async () => {
     expect(await get(`${localBase}/callback?state=s&code=good`, "127.0.0.1:3121")).toMatchObject({ status: 302, location: "/" });
     const bad = await get(`${localBase}/callback?state=s&code=bad`, "127.0.0.1:3121");
-    expect(bad.status).toBe(400);
-    expect(bad.body).toContain("invalid_grant");
-    expect(bad.body).not.toContain("<i>");
+    expect(bad).toMatchObject({ status: 302, location: expect.stringMatching(/^\/#\/connect\/glean\?error=/) });
+    expect(decodeURIComponent(bad.location!)).toContain("invalid_grant");
     const denied = await get(`${localBase}/callback?state=s&error=access_denied`, "127.0.0.1:3121");
-    expect(denied.status).toBe(400);
-    expect(denied.body).toContain("access_denied");
+    expect(denied).toMatchObject({ status: 302, location: expect.stringContaining("access_denied") });
   });
 });
 
@@ -126,8 +124,8 @@ describe("Grafana sign-in routes", () => {
     expect(await get("/grafana/callback?state=s&code=good")).toMatchObject({ status: 302, location: "/" });
     expect(seen.at(-1)).toEqual({ path: "/auth/finish", body: { state: "s", code: "good" } });
     const bad = await get("/grafana/callback?state=s&code=bad");
-    expect(bad.status).toBe(400);
-    expect(bad.body).toContain("connect Grafana: Grafana refused the sign-in");
+    expect(bad).toMatchObject({ status: 302, location: expect.stringMatching(/^\/#\/connect\/grafana\?error=/) });
+    expect(decodeURIComponent(bad.location!)).toContain("connect Grafana: Grafana refused the sign-in");
   });
 
   it("leaves Glean's /callback alone when Glean isn't set up", async () => {

@@ -1207,6 +1207,21 @@ export function createApp(opts: AppOptions): Server {
   const signInStates = () => Promise.all((opts.signIns ?? []).map(async (x) => ({ ...x, status: await x.auth.status() })));
 
   const routes: { method: string; path: RegExp; maxBody?: number; handle: (m: RegExpMatchArray, body: unknown, url: URL, req: IncomingMessage) => Promise<unknown> }[] = [
+    // A sign-in's page (#/connect/<id>): its name, Connect path, the setup flow it belongs to, and the scopes on offer.
+    {
+      method: "GET",
+      path: /^\/api\/sign-ins\/([a-z0-9-]{1,63})$/,
+      handle: async (m) => {
+        const id = m[1]!;
+        const flow = (f: { signin?: string; connect_url?: string }) => (id === "google" ? f.connect_url === "/google/connect" : f.signin === id);
+        const setup = opts.setupFlows?.flows.find(flow)?.module ?? null;
+        if (id === "google" && opts.google) return { id, label: "Google", connect: "/google/connect", setup, scopes: null };
+        const s = (opts.signIns ?? []).find((x) => x.id === id);
+        if (!s) throw new HttpError(404, "no such sign-in");
+        const offer = await s.auth.scopes();
+        return { id, label: s.label, connect: s.connect, setup, scopes: offer && offer.supported.length > 1 ? offer : null };
+      },
+    },
     {
       method: "GET",
       path: /^\/api\/board$/,
@@ -2001,9 +2016,8 @@ export function createApp(opts: AppOptions): Server {
         return;
       }
     } catch (err) {
-      if (!(err instanceof GoogleAuthFailed)) throw err;
-      log.warn({ err: err.message }, "Google sign-in failed");
-      return send(res, 400, page(`Couldn't connect Google: ${err.message}`), "text/html; charset=utf-8");
+      log.warn({ err: String((err as Error).message ?? err).slice(0, 500) }, "Google sign-in failed");
+      return signInFailed(res, "google", `Couldn't connect Google: ${err instanceof GoogleAuthFailed ? err.message : "google-workspace-mcp isn't answering"}`);
     }
     throw new HttpError(404, "not found");
   }
@@ -2039,16 +2053,12 @@ export function createApp(opts: AppOptions): Server {
         return;
       }
       if (url.pathname === connect) {
-        // The owner picks what to grant (owner, 2026-11-18): when the vendor offers a choice of scopes, a short form comes
-        // first with the recommended ones ticked, and comes back here with `picked` and the ticked scopes.
+        // The owner picks what to grant (owner, 2026-11-18): when the vendor offers a choice of scopes, the board's picker
+        // (#/connect/<id>) comes first with the recommended ones ticked, and comes back here with `picked` and its scopes.
         const picked = url.searchParams.has("picked");
-        if (!picked) {
-          const offer = await auth.scopes();
-          if (offer && offer.supported.length > 1) {
-            res.writeHead(200, { ...SECURITY_HEADERS, "content-security-policy": SECURITY_HEADERS["content-security-policy"]!.replace("form-action 'none'", "form-action 'self'"), "content-type": "text/html; charset=utf-8", "cache-control": "no-store" });
-            res.end(scopePage(name, connect, offer));
-            return;
-          }
+        if (!picked && ((await auth.scopes())?.supported.length ?? 0) > 1) {
+          res.writeHead(302, { ...SECURITY_HEADERS, location: `/#/connect/${s.id}`, "cache-control": "no-store" }).end();
+          return;
         }
         const { url: signIn } = await auth.start(`${origin}${callback}`, picked ? url.searchParams.getAll("scope") : undefined);
         log.info(`${name} sign-in started`);
@@ -2066,9 +2076,8 @@ export function createApp(opts: AppOptions): Server {
         return;
       }
     } catch (err) {
-      if (!(err instanceof McpAuthFailed)) throw err;
-      log.warn({ err: err.message }, `${name} sign-in failed`);
-      return send(res, 400, page(`Couldn't connect ${name}: ${err.message}`), "text/html; charset=utf-8");
+      log.warn({ err: String((err as Error).message ?? err).slice(0, 500) }, `${name} sign-in failed`);
+      return signInFailed(res, s.id, `Couldn't connect ${name}: ${err instanceof McpAuthFailed ? err.message : `${name.toLowerCase()}-mcp isn't answering`}`);
     }
     throw new HttpError(404, "not found");
   }
@@ -2191,17 +2200,10 @@ async function readJson(req: IncomingMessage, max = 256_000): Promise<unknown> {
   }
 }
 
-/** A bare page for the sign-in outcome (the CSP allows no inline style or script). */
-const esc = (text: string) => text.replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
-
-/** What to grant a vendor's sign-in: each scope it offers, the recommended ones ticked; the form goes back to `connect`. */
-export function scopePage(name: string, connect: string, offer: { supported: string[]; recommended: string[] }): string {
-  const boxes = offer.supported.map((s) => `<p><label><input type="checkbox" name="scope" value="${esc(s)}"${offer.recommended.includes(s) ? " checked" : ""}> ${esc(s)}</label></p>`).join("");
-  return `<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>AidenHQ</title><h1>Connect ${esc(name)}</h1><p>Pick what agents may do as you in ${esc(name)}. The ticked ones are what they need to read; anything they write is reviewed before it runs.</p><form method="get" action="${esc(connect)}"><input type="hidden" name="picked" value="1">${boxes}<p><button type="submit">Continue to ${esc(name)}</button></p></form><p><a href="/">Back to the board</a></p>`;
-}
-
-function page(text: string): string {
-  return `<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>AidenHQ</title><p>${esc(text)}</p><p><a href="/">Back to the board</a></p>`;
+/** A failed sign-in: back to the board's page for it (#/connect/<id>), which shows why and the way on (kept short: it rides in a header). */
+function signInFailed(res: ServerResponse, id: string, message: string) {
+  const why = message.length > 400 ? `${message.slice(0, 399)}…` : message;
+  res.writeHead(302, { ...SECURITY_HEADERS, location: `/#/connect/${id}?error=${encodeURIComponent(why)}`, "cache-control": "no-store" }).end();
 }
 
 function send(res: ServerResponse, status: number, body: string | Buffer, type: string, cache = "no-store") {

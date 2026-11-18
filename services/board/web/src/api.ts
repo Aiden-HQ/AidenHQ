@@ -33,6 +33,15 @@ export class SignInRequired extends Error {
   }
 }
 
+/** A sign-in's page (#/connect/<id>) as GET /api/sign-ins/<id> returns it: `scopes` only when the vendor offers a choice. */
+export interface SignInView {
+  id: string;
+  label: string;
+  connect: string;
+  setup: string | null;
+  scopes: { supported: string[]; recommended: string[] } | null;
+}
+
 /** One module's setup flow as GET /api/setup-flows returns it (services/board/src/setup-flows.ts). */
 /** The first-run wizard (Welcome.tsx): what to show a new owner, from the board. */
 export interface WelcomeState {
@@ -152,6 +161,7 @@ export const api = {
     return call<{ rows: TaskRow[]; next: number | null }>("GET", `/api/agents/by-key/${encodeURIComponent(key)}/tasks?${p}`);
   },
   scorecard: (id: string) => call<Scorecard>("GET", `/api/agents/${encodeURIComponent(id)}/scorecard`),
+  signIn: (id: string) => call<SignInView>("GET", `/api/sign-ins/${encodeURIComponent(id)}`),
   setupFlows: () => call<{ flows: SetupFlowView[]; board_url: string; named: boolean }>("GET", "/api/setup-flows"),
   setupSecret: (module: string, secret: string, value: string) => call<{ ok: boolean }>("POST", `/api/setup-flows/${module}/secret`, { secret, value }),
   setupDismiss: (module: string) => call<{ ok: boolean }>("POST", `/api/setup-flows/${module}/dismiss`, {}),
