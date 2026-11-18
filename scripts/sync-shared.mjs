@@ -34,13 +34,13 @@ export const SHARED = {
     "modules/jira/connections/jira-mcp/src",
     "modules/meetings/connections/ops-mcp/src",
     "modules/channel-slack/connections/slack/src",
-    "modules/channel-telegram/connections/telegram/src",
     "modules/chat-lane/connections/lane/src",
     "modules/primer/connections/primer-mcp/src",
     "modules/slack/connections/slack-mcp/src",
     "modules/tasks/connections/tasks-mcp/src",
     // The grading service checks the tasks module's assertion when it files a rubric; it fences nothing.
-    ...(f === "caller.ts" ? ["modules/grading/service/src"] : []),
+    // The owner's router checks the assertion on notify; it fences nothing.
+    ...(f === "caller.ts" ? ["modules/grading/service/src", "modules/owner-channel/connections/notify/src"] : []),
   ].map((d) => `${d}/aidenhq-sdk/${f}`)])),
   // The executor side of write kinds (executor@1), in each module server that declares an executor.
   "kernel/sdk/src/executor.ts": ["modules/apps-platform/apps-mcp/src/aidenhq-sdk/executor.ts", "modules/primer/connections/primer-mcp/src/aidenhq-sdk/executor.ts", "modules/channel-slack/connections/slack/src/aidenhq-sdk/executor.ts", "modules/hubspot/connections/hubspot-mcp/src/aidenhq-sdk/executor.ts"],
