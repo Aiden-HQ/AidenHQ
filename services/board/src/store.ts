@@ -87,7 +87,8 @@ export type LedgerGroup = keyof typeof LEDGER_GROUPS;
 export type LedgerFilter = { agentId?: string; model?: string };
 /** Per group: spend, calls, tokens, failed calls, and latency summed over the ok calls that timed themselves (msN of them). */
 const METRICS = `COALESCE(SUM(cost_usd), 0) AS usd, COUNT(*) AS calls, COALESCE(SUM(input), 0) AS input, COALESCE(SUM(cached), 0) AS cached,
-  COALESCE(SUM(output), 0) AS output, COALESCE(SUM(status IS NOT NULL AND status <> 'ok'), 0) AS errors,
+  COALESCE(SUM(output), 0) AS output, COALESCE(SUM(status IS NOT NULL AND status NOT IN ('ok', 'unsettled', 'interrupted')), 0) AS errors,
+  COALESCE(SUM(status IN ('unsettled', 'interrupted')), 0) AS interrupted,
   COALESCE(SUM(CASE WHEN COALESCE(status, 'ok') = 'ok' THEN ms END), 0) AS msSum, COUNT(CASE WHEN COALESCE(status, 'ok') = 'ok' THEN ms END) AS msN`;
 /** One run's calls on one task (store.usageByRun); engineer is 1 for an Engineer job. */
 export interface RunUsage {
@@ -107,6 +108,7 @@ export interface LedgerMetrics {
   cached: number;
   output: number;
   errors: number;
+  interrupted: number;
   msSum: number;
   msN: number;
 }
@@ -251,11 +253,16 @@ export class Store {
     this.db.prepare("DELETE FROM meta WHERE key = ?").run(key);
   }
 
-  /** One usage record; the same key again (a retried report) is ignored. */
+  /**
+   * One usage record; the same key again (a retried report) is ignored, except over an `unsettled` call (the gateway's
+   * reservation for a call a kernel restart cut off), which its trued-up `interrupted` record replaces. An unsettled call's
+   * reserved amount is the gateway's fail-closed hold, not spend: it counts as unpriced here.
+   */
   addUsage(u: UsageRecord): void {
     this.db
-      .prepare("INSERT OR IGNORE INTO usage (key, at, component, model, input, cached, output, cost_usd, agent_id, run_key, run_id, issue_id, rev, kind, ms, status, subject) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
-      .run(u.key, u.at, u.component, u.model, u.input, u.cached, u.output, u.costUsd ?? null, u.agentId ?? null, u.runKey ?? null, u.runId ?? null, u.issueId ?? null, u.rev ?? null, u.kind ?? null, u.ms ?? null, u.status ?? null, u.subject ?? null);
+      .prepare(`INSERT INTO usage (key, at, component, model, input, cached, output, cost_usd, agent_id, run_key, run_id, issue_id, rev, kind, ms, status, subject) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT (key) DO UPDATE SET at = excluded.at, model = excluded.model, input = excluded.input, cached = excluded.cached, output = excluded.output, cost_usd = excluded.cost_usd, ms = excluded.ms, status = excluded.status WHERE usage.status = 'unsettled'`)
+      .run(u.key, u.at, u.component, u.model, u.input, u.cached, u.output, u.status === "unsettled" ? null : (u.costUsd ?? null), u.agentId ?? null, u.runKey ?? null, u.runId ?? null, u.issueId ?? null, u.rev ?? null, u.kind ?? null, u.ms ?? null, u.status ?? null, u.subject ?? null);
   }
 
   /** Usage records older than `before` go (the Costs tab compares 30 days with the 30 before). */

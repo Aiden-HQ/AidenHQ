@@ -414,6 +414,8 @@ export interface LedgerMetrics {
   cached: number;
   output: number;
   errors: number;
+  /** Calls a kernel restart cut off (spend: what OpenRouter billed for them). */
+  interrupted: number;
   /** Mean latency of ok calls that timed themselves. */
   ms: number | null;
 }

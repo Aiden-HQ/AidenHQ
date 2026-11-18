@@ -24,11 +24,13 @@ export interface Metrics {
   cached: number;
   output: number;
   errors: number;
+  /** Calls a kernel restart cut off: their trued-up cost (OpenRouter's record), never an error. */
+  interrupted: number;
   ms: number | null;
 }
-const ZERO: LedgerMetrics = { usd: 0, calls: 0, input: 0, cached: 0, output: 0, errors: 0, msSum: 0, msN: 0 };
-const plus = (a: LedgerMetrics, b: LedgerMetrics): LedgerMetrics => ({ usd: a.usd + b.usd, calls: a.calls + b.calls, input: a.input + b.input, cached: a.cached + b.cached, output: a.output + b.output, errors: a.errors + b.errors, msSum: a.msSum + b.msSum, msN: a.msN + b.msN });
-const metrics = (m: LedgerMetrics = ZERO): Metrics => ({ usd: m.usd, calls: m.calls, input: m.input, cached: m.cached, output: m.output, errors: m.errors, ms: m.msN ? Math.round(m.msSum / m.msN) : null });
+const ZERO: LedgerMetrics = { usd: 0, calls: 0, input: 0, cached: 0, output: 0, errors: 0, interrupted: 0, msSum: 0, msN: 0 };
+const plus = (a: LedgerMetrics, b: LedgerMetrics): LedgerMetrics => ({ usd: a.usd + b.usd, calls: a.calls + b.calls, input: a.input + b.input, cached: a.cached + b.cached, output: a.output + b.output, errors: a.errors + b.errors, interrupted: a.interrupted + b.interrupted, msSum: a.msSum + b.msSum, msN: a.msN + b.msN });
+const metrics = (m: LedgerMetrics = ZERO): Metrics => ({ usd: m.usd, calls: m.calls, input: m.input, cached: m.cached, output: m.output, errors: m.errors, interrupted: m.interrupted, ms: m.msN ? Math.round(m.msSum / m.msN) : null });
 /** Sums cells by key, most spend first. */
 function rollup<T>(cells: T[], key: (c: T) => string, m: (c: T) => LedgerMetrics): [string, LedgerMetrics][] {
   const out = new Map<string, LedgerMetrics>();

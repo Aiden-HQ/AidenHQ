@@ -8,6 +8,9 @@
 //   and assertions, the control plane as the calling agent, and the records of every write (writes.ts, kernel.db).
 // - Jobs (jobs.ts, sandbox.ts): engine runs in the sandbox, detached, so a restart (KillMode=process) leaves them running;
 //   this process adopts them at start and stops following them (offsets saved) on SIGTERM, SIGINT or SIGUSR2.
+// - A restart drains (SIGUSR2, sent by kernel/run.sh, the unit's main process, which exits at once so the next kernel starts):
+//   this kernel stops its jobs' watchers, timers and listeners (the model gateway's after HANDOFF_MS, sharing its port with the
+//   next one meanwhile: reusePort), lets the model calls in flight finish (at most DRAIN_MS) and exits.
 // - The admin listener (127.0.0.1:3120, admin.ts): admins' sign-in (accounts.ts, data/kernel/auth/) and the approval pages.
 // - The sign-in listener (127.0.0.1:3129, signin.ts): the gate's half of shared apps' sign-in (Better Auth's steps, handoffs,
 //   app access). The kernel is the only process that opens the accounts file (lean 3g).
@@ -121,15 +124,19 @@ const boardApi = asApi((p, init) => fetch(new URL(p, env("BOARD_INTERNAL_URL", "
 const channels = createChannels({ db: records.db, records, writes, board: boardApi, owner: ownerApi, modules: modulesFile, resetLinks: () => accounts?.takeResetLinks() ?? [], log });
 // Marketplace advisories (loader/advisories.ts): read at start, then whenever a day has passed or an apply rewrote the catalog.
 const advisories = createAdvisories({ db: records.db, repo, catalog: path.join(configDir, "modules.json"), ownerLine: channels.ownerLine, log, ref: env("AIDENHQ_ADVISORY_REF", "main"), fetch: hostFetch(repo) });
-setInterval(() => void advisories.tick(), 10 * 60_000).unref();
-setTimeout(() => void advisories.tick(), 30_000).unref();
+// Timers a draining kernel stops (the next one runs its own).
+const timers: NodeJS.Timeout[] = [];
+const every = (fn: () => void, ms: number) => timers.push(setInterval(fn, ms).unref());
+const once = (fn: () => void, ms: number) => timers.push(setTimeout(fn, ms).unref());
+every(() => void advisories.tick(), 10 * 60_000);
+once(() => void advisories.tick(), 30_000);
 // The public front door's certificate (exposure public, compiled into config/exposure; the IP is the host's .env): hourly.
 const certWatch = createCertWatch({
   ip: () => { try { return readFileSync(path.join(configDir, "exposure"), "utf8").trim() === "public" ? env("AIDENHQ_PUBLIC_IP") || undefined : undefined; } catch { return undefined; } },
   notify: channels.ownerLine,
 });
-setInterval(() => void certWatch.tick(), 3_600_000).unref();
-setTimeout(() => void certWatch.tick(), 10 * 60_000).unref();
+every(() => void certWatch.tick(), 3_600_000);
+once(() => void certWatch.tick(), 10 * 60_000);
 const brake = createBrake({ db: records.db, owner: ownerApi });
 // The host sandbox as configured here (jobs run in their agents' computers; repo code the host runs itself, fast checks among
 // it, runs in this sandbox). A known no-jail condition is fatal, with the reason in the journal: repo code must never share the
@@ -150,8 +157,9 @@ const jobs = createJobs({
   },
 });
 jobs.adopt();
-// A restart: the jobs go on for the next kernel (KillMode=process); this one stops following them, offsets saved.
-for (const sig of ["SIGTERM", "SIGINT", "SIGUSR2"] as const) process.on(sig, () => { log("stopping: jobs left running for the next kernel", { signal: sig, jobs: jobs.running() }); jobs.detach(); process.exit(0); });
+// A stop: the jobs go on for the next kernel (KillMode=process); this one stops following them, offsets saved. A restart
+// (SIGUSR2) drains first (below).
+for (const sig of ["SIGTERM", "SIGINT"] as const) process.on(sig, () => { log("stopping: jobs left running for the next kernel", { signal: sig, jobs: jobs.running() }); jobs.detach(); process.exit(0); });
 // The finish gate (checks.ts): modules' task.finish checks (compile), holds placed as the owner.
 const checks = createChecks({ db: records.db, registry: checksFile(path.join(configDir, "kernel", "checks.json")), owner: ownerApi, secret, resolver, log, agentKey: (id) => grantsTable().agents?.[id]?.key, graded: (id) => grantsTable().agents?.[id]?.graded === true, pending: (task) => records.list(["review", "owner", "approved"], 100, { task }) });
 // First-run setup (/setup): the keys the modules ask for go into the vault view (AIDENHQ_SECRETS_DIR) as new 0600 files renamed into place; the
@@ -216,7 +224,7 @@ if (accounts) {
   // Apps come and go with applies (config/gate.json): a removed app's rows leave the gate's map within a minute; manifests
   // refresh, undelivered request wakes and a failed write retry on the same beat.
   void accounts.syncGate();
-  setInterval(() => void accounts.syncGate(), 60_000).unref();
+  every(() => void accounts.syncGate(), 60_000);
 }
 // The board's origins: its front door (BOARD_LAN_URL) and its loopback addresses (the SSH tunnel, local mode).
 const boardOrigins = env("AIDENHQ_BOARD_ORIGINS", [boardUrl?.origin, "http://127.0.0.1:3121", "http://localhost:3121"].filter(Boolean).join(",")).split(",").map((o) => o.trim()).filter(Boolean);
@@ -239,7 +247,7 @@ const admin = accounts && createAdmin({ accounts, firstRun, model, uiOrigins, do
 
 // Claimed records a restart left without an outcome: their executors say how they went (never replayed). Executors may
 // still be starting at boot, so once, a minute in.
-setTimeout(() => void writes.reconcile().then((u) => u.length && log("records left unknown", { records: u }), (e: Error) => log("reconcile failed", { err: e.message })), 60_000).unref();
+once(() => void writes.reconcile().then((u) => u.length && log("records left unknown", { records: u }), (e: Error) => log("reconcile failed", { err: e.message })), 60_000);
 
 const gw = createGateway({
   dbFile: path.join(dataDir, "kernel", "kernel.db"),
@@ -281,16 +289,21 @@ raiseCap = async (r) => {
 };
 
 // host:port pairs. Each binds on its own: the backplane address exists only once compose is up, so a failed bind is retried
-// (backoff up to a minute) while the others keep serving.
-function listen(addr: string, ci = false, handler: http.RequestListener = (req, res) => gw.handle(req, res, { ci })) {
+// (backoff up to a minute) while the others keep serving. The model gateway's listeners share their port with a draining
+// kernel (reusePort, Linux), so a restart never leaves model calls without a listener.
+let draining = false;
+const servers: { server: http.Server; gateway: boolean }[] = [];
+function listen(addr: string, ci = false, handler?: http.RequestListener) {
   const i = addr.lastIndexOf(":");
-  const server = http.createServer(handler);
+  const gateway = !handler;
+  const server = http.createServer(handler ?? ((req, res) => gw.handle(req, res, { ci })));
+  servers.push({ server, gateway });
   // A model stream can run for many minutes (requestTimeout covers receiving the request, not the answer). The CI listener
   // faces jobs that run untrusted code: a request must arrive within a minute, and few connections at once.
   server.requestTimeout = ci ? 60_000 : 0;
   if (ci) server.maxConnections = 32;
   let wait = 1000;
-  const bind = () => server.listen(Number(addr.slice(i + 1)), addr.slice(0, i));
+  const bind = () => { if (!draining) server.listen({ port: Number(addr.slice(i + 1)), host: addr.slice(0, i), reusePort: gateway && process.platform === "linux" }); };
   server.on("listening", () => { wait = 1000; log("listening", { addr }); });
   server.on("error", (e) => {
     log("listen failed; retrying", { addr, err: e.message, inMs: wait });
@@ -316,12 +329,12 @@ const ciAddr = env("AIDENHQ_GATEWAY_CI_LISTEN", "10.231.4.1:8201");
 let ciBound = false;
 const ciCheck = () => { if (!ciBound && ciAddr && gw.ciEnabled()) { ciBound = true; listen(ciAddr, true); } };
 ciCheck();
-setInterval(ciCheck, 60_000);
+every(ciCheck, 60_000);
 
 // The monitoring module's metrics (lib.ts metricsText): a node-exporter textfile every 30 seconds, written only while the
 // module's directory exists. A file, not a route: nothing new listens, and a stale file shows the gateway is down.
 const textfile = path.join(dataDir, "modules", "monitoring", "textfile");
-setInterval(() => {
+every(() => {
   if (!existsSync(textfile)) return;
   try {
     const tmp = path.join(textfile, ".gateway.prom.tmp");
@@ -330,4 +343,29 @@ setInterval(() => {
   } catch (e) {
     log("metrics write failed", { err: String((e as Error).message).slice(0, 200) });
   }
-}, 30_000).unref();
+}, 30_000);
+
+// A restart (kernel/run.sh): the next kernel is starting. This one stops its jobs' watchers (offsets saved: the next one adopts
+// them), its timers and every listener but the model gateway's, which it keeps for HANDOFF_MS while the next one binds beside
+// it; then it serves only the model calls it holds (idle connections closed, so callers reconnect to the next one) and exits
+// when they have finished, or at DRAIN_MS (the next kernel settles what is left: lib.ts sweep and true-up).
+const HANDOFF_MS = 10_000;
+const DRAIN_MS = 5 * 60_000;
+process.on("SIGUSR2", () => {
+  if (draining) return;
+  draining = true;
+  const t0 = Date.now();
+  log("draining: the next kernel takes new calls; model calls in flight finish here", { inflight: gw.inflight(), jobs: jobs.running() });
+  jobs.detach();
+  for (const t of timers) clearTimeout(t);
+  const close = (all: boolean) => { for (const { server, gateway } of servers) { if (gateway && !all) continue; if (server.listening) server.close(); server.closeIdleConnections(); } };
+  close(false);
+  setInterval(() => {
+    const t = Date.now() - t0;
+    if (t >= HANDOFF_MS) close(true);
+    if ((t >= HANDOFF_MS && gw.inflight() === 0) || t >= DRAIN_MS) {
+      log("drained: exiting", { inflight: gw.inflight(), ms: t });
+      process.exit(0);
+    }
+  }, 1000);
+});
