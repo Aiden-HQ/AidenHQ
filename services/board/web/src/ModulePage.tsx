@@ -189,10 +189,26 @@ function Contents({ d, onSignIn }: { d: ModuleDetail; onSignIn: () => void }) {
       </section>
       <section><h4>Handbook sections</h4>{d.authority.prompts.length ? <p>{d.authority.prompts.map((p) => p.id).join(", ")}</p> : <p className="fleet-empty">None.</p>}</section>
       {d.authority.readme && <section><h4>README</h4><pre className="muted" style={{ whiteSpace: "pre-wrap" }}>{d.authority.readme}</pre></section>}
-      <section><h4>Routines</h4>{m.routines.length ? <p>{m.routines.join(", ")}</p> : <p className="fleet-empty">None.</p>}</section>
+      <section><h4>Routines</h4><Routines d={d} /></section>
       <section><h4>Apps</h4>{m.apps.length ? <p>{m.apps.join(", ")}</p> : <p className="fleet-empty">None.</p>}</section>
       {m.source && <p className="muted">Source: {m.source.url} · {m.source.path}</p>}
     </>
+  );
+}
+
+/** Each routine on or off; its agent's Settings tab turns it on or off (the routine editor there). */
+function Routines({ d }: { d: ModuleDetail }) {
+  const rows = d.routines ?? [];
+  if (!rows.length) return d.module.routines.length ? <p>{d.module.routines.join(", ")}</p> : <p className="fleet-empty">None.</p>;
+  return (
+    <div className="st-rows">
+      {rows.map((r) => (
+        <a key={r.key} className="ap-row" href={`#/agents/${r.agent}/settings`} title={r.on ? "Change or pause it on its agent's Settings" : "Turn it on from its agent's Settings"}>
+          <span className="ap-title">{r.title}</span>
+          <span className="ap-from">{r.on ? (r.scheduled ? "On" : "On, when something starts it") : "Off"}</span>
+        </a>
+      ))}
+    </div>
   );
 }
 

@@ -656,6 +656,10 @@ kbd {
 .main-tabs { margin-left: 12px; align-items: center; flex: none; flex-wrap: nowrap; }
 .topbar { flex-wrap: wrap; row-gap: 8px; }
 .topbar-tools { display: flex; align-items: center; gap: 8px; margin-left: auto; }
+/* Today's spend against the daily cap: small, quiet, red once the cap is reached. */
+.spend-today { font-size: 12px; color: var(--muted); text-decoration: none; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.spend-today:hover { color: inherit; }
+.spend-today.over { color: var(--danger); font-weight: 600; }
 .app.mobile .topbar-tools { flex: 1; min-width: 0; flex-wrap: wrap; justify-content: flex-end; row-gap: 6px; }
 .main-tabs .btn { flex: none; white-space: nowrap; }
 @media (max-width: 1240px) { .main-tabs { margin-left: 4px; } .main-tabs .btn { padding: 5px 9px; } }

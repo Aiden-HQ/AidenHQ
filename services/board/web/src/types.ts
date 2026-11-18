@@ -203,6 +203,8 @@ export interface Board {
   rollsTomorrow: boolean;
   /** Agent sessions running now. */
   agentsActive: number;
+  /** Today's model spend against the install-wide daily cap (settings.spend_day_usd); null without one. */
+  spend?: { spent: number; cap: number } | null;
   /** Google sign-in per account; null when the board can't ask. */
   google: { accounts: GoogleAccount[]; error?: string } | null;
   /** The modules' sign-ins (board.signins): each one's banner text and state (null when the board can't ask). */
@@ -363,6 +365,8 @@ export interface ModuleDetail {
   module: ModuleRow;
   agents: AgentProfile[];
   ongoing: TaskRow[];
+  /** Its routines as compiled: on or off, and the agent whose Settings tab changes them. */
+  routines?: { key: string; title: string; agent: string; on: boolean; scheduled: boolean }[];
   authority: { connections: string[]; writes: { kind: string; tier?: number }[]; secrets: string[]; prompts: { id: string; file: string }[]; readme: string | null };
   neededBy: string[];
   requires: string[];
