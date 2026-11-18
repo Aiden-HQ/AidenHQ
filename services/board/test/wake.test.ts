@@ -35,6 +35,7 @@ function fake() {
       comments.push({ issue, body });
       return { id: `c${comments.length}` };
     },
+    comments: async (issue: string) => comments.filter((c) => c.issue === issue).map((c, i) => ({ id: `c${i + 1}`, body: c.body, authorAgentId: null, createdAt: iso(t0) })),
     issue: async (id: string) => ({ ...tasks.get(id), executionBlocker: holds.get(id) ?? null }),
     wakeAgent: async (agent: string, _why: string, _key: string, issue?: string) => void woken.push(`${agent}:${issue}`),
     updateIssue: async (id: string, b: { status?: string; blockedByIssueIds?: string[] }) => {
@@ -378,5 +379,34 @@ describe("first-class blockers", () => {
     expect(await wakeTick(d, new Map(), t0 + 30 * MIN)).toEqual([]);
     expect(f.comments).toHaveLength(1);
     expect(store.meta("wake_cursors")).not.toContain("blockers");
+  });
+});
+
+describe("a release that fails part-way", () => {
+  const blocker = (id: string, status: string): Blocker => ({ id, identifier: `WOR-${id}`, status, updatedAt: iso(t0 - 60 * MIN) });
+  it("finishes on a later tick without a second wake or a second notice", async () => {
+    const f = fake();
+    const store = new Store(":memory:");
+    const recent: Recent = new Map();
+    f.put({ id: "2", assigneeAgentId: "e", status: "in_progress" }, t0 - 60 * MIN);
+    f.put({ id: "1", assigneeAgentId: "a", status: "blocked", blockedBy: [blocker("2", "in_progress")] }, t0 - 60 * MIN);
+    const d = deps(f, store);
+    await wakeTick(d, recent, t0);
+    // The blocker closes, but the direct wake fails: the task is todo and the notice is on it.
+    f.put({ id: "2", status: "done", completedAt: iso(t0 + MIN) }, t0 + MIN);
+    for (const t of f.tasks.values()) for (const b of t.blockedBy ?? []) Object.assign(b, { status: "done", updatedAt: iso(t0 + MIN), completedAt: iso(t0 + MIN) });
+    const wakeAgent = f.pc.wakeAgent;
+    f.pc.wakeAgent = async () => { throw new Error("control plane down"); };
+    expect(await wakeTick(d, recent, t0 + 2 * MIN)).toEqual([]);
+    expect(f.tasks.get("1")!.status).toBe("todo"); // it is actionable already
+    expect(f.comments).toHaveLength(1); // the notice landed before the wake failed
+
+    // The next tick completes the release: one wake, no second notice.
+    f.pc.wakeAgent = wakeAgent;
+    expect(await wakeTick(d, recent, t0 + 4 * MIN)).toEqual(["1"]);
+    expect(f.comments).toHaveLength(1);
+    expect(f.woken).toEqual(["a:1"]);
+    expect(await wakeTick(d, recent, t0 + 10 * MIN)).toEqual([]); // and once only
+    expect(f.woken).toHaveLength(1);
   });
 });
