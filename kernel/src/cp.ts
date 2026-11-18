@@ -9,7 +9,8 @@
 //   signs a `scope`; the plugin re-checks what it can see. A job writes on its own task (assigned to it), a task it created,
 //   a child of a task assigned to it, and creates tasks as itself (under such a task, a part of its own under any task, or
 //   top-level). The chief of staff (role fleet-admin) comments on any task of its company; an agent comments on the tasks the
-//   grants table names for it (memory inbox, review log, chat) and a librarian on every memory inbox. Anything else is
+//   grants table names for it (memory inbox, review log, chat), on the shared "Fleet issues" log task (grants `fleet_issues`),
+//   and a librarian on every memory inbox. Anything else is
 //   refused, naming whom to ask. Each write carries a tag (the plugin's once-only key): on the job's own task and the chief of
 //   staff's anywhere-comments the job tag (wakes.ts SELF_TAG: it wakes nobody), elsewhere `aidenhq:op=`, which wakes the
 //   task's assignee as any agent's comment does.
@@ -49,7 +50,7 @@ const PATCH = ["title", "description", "priority", "assigneeAgentId", "assigneeU
 const CREATE = ["title", "description", "priority", "status", "assigneeAgentId", "assigneeUserId", "labelIds", "parentId", "idempotencyKey", "allowDuplicate"];
 type Issue = { id: string; identifier?: string; assigneeAgentId?: string | null; createdByAgentId?: string | null; parentId?: string | null; status?: string };
 
-export function createCp({ whoami, asserter, plugin, once, agentKey, grants, controlUrl, checks, provenance, appOwners, log = () => {} }: {
+export function createCp({ whoami, asserter, plugin, once, agentKey, grants, fleetIssues = () => "", controlUrl, checks, provenance, appOwners, log = () => {} }: {
   whoami: Whoami; asserter: Asserter; plugin: PluginPost;
   /** The one durable once-only write (once.ts): each write is keyed by its call, and a retry returns the first run's result. */
   once: Once;
@@ -57,15 +58,20 @@ export function createCp({ whoami, asserter, plugin, once, agentKey, grants, con
   agentKey: (agent: string) => string;
   /** The grants table's agents: roles, delegation targets and the tasks it names for each agent. */
   grants: () => Record<string, Grant>;
+  /** The shared "Fleet issues" log task's identifier (grants `fleet_issues`; setup's ensureFleetIssues), or "". */
+  fleetIssues?: () => string;
   /** The keys of the agents that own an app (apps-mcp's registry), for a `delegate_to` that names app-owners. */
   appOwners?: () => Promise<string[]>;
   controlUrl: string; checks?: Checks; provenance: Pick<Provenance, "carried" | "intend" | "record">; log?: (msg: string, f?: Record<string, unknown>) => void;
 }) {
-  async function handle(req: IncomingMessage, res: ServerResponse, path: string, query: string): Promise<void> {
+  /** `who`: the module and the agent the call is for, as soon as they are known (a refusal's log line names them). */
+  async function handle(req: IncomingMessage, res: ServerResponse, path: string, query: string, who: { module?: string; agent?: string }): Promise<void> {
     const mod = await whoami(String(req.headers.authorization ?? "").replace(/^Bearer\s+/i, "").trim()).catch(() => undefined);
     if (mod?.kind !== "module" || !mod.module) throw fail(401, "unauthorized", "a module's own token is required");
+    who.module = mod.module;
     const live = await asserter.inFlight(String(req.headers["x-aidenhq-caller"] ?? ""), mod.module);
     if (!live) throw fail(401, "unauthorized", "the caller assertion isn't for a call in flight to this module");
+    who.agent = live.caller.key;
     const method = String(req.method);
     if (!CP_AGENT_PATHS.some(([m, re]) => m === method && re.test(path))) throw fail(403, "forbidden", `${method} ${path} isn't an agent route`);
     // The credential first: only a kernel job (an agent on its task) has one, and nothing runs for a caller without it.
@@ -107,10 +113,12 @@ export function createCp({ whoami, asserter, plugin, once, agentKey, grants, con
       if (t.parentId && (await issue(t.parentId)).assigneeAgentId === agent) return "child";
       return undefined;
     };
-    /** A comment-only write's scope where the job has no other: the grants table's tasks for it, a librarian's inboxes, the chief of staff anywhere. */
+    /** A comment-only write's scope where the job has no other: the grants table's tasks for it, the Fleet issues log, a librarian's inboxes, the chief of staff anywhere. */
     const commentScope = (t: Issue) => {
       const own = table[agent] ?? {};
       if ([own.memory_inbox, own.review_log, own.chat_task].includes(t.id)) return "listed";
+      const fleet = fleetIssues();
+      if (fleet && t.identifier === fleet) return "listed";
       if (roles.includes("librarian") && Object.values(table).some((g) => g.memory_inbox === t.id)) return "listed";
       return roles.includes("fleet-admin") ? "admin" : undefined;
     };
@@ -222,9 +230,10 @@ export function createCp({ whoami, asserter, plugin, once, agentKey, grants, con
   }
   // A refusal is logged where it is raised: the module's answer carries it back as a tool error, and the journal shows it too.
   return async function cp(req: IncomingMessage, res: ServerResponse, path: string, query: string): Promise<void> {
-    try { return await handle(req, res, path, query); } catch (e) {
+    const who: { module?: string; agent?: string } = {};
+    try { return await handle(req, res, path, query, who); } catch (e) {
       const f = e as { status?: number; message?: string };
-      if (typeof f.status === "number") log("cp refused", { method: req.method, path, status: f.status, message: String(f.message).slice(0, 200) });
+      if (typeof f.status === "number") log("cp refused", { ...who, method: req.method, path, status: f.status, message: String(f.message).slice(0, 200) });
       throw e;
     }
   };

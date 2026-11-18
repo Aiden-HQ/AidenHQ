@@ -542,6 +542,8 @@ function writeGrants(agents, memoryInboxes = {}, reviewLogs = {}, chatTasks = {}
   // autonomy: the board and the runner read the tiered-approvals switch here, fresh on every use.
   // agents_org, product_repo: the repos a graded PR deliverable may name (the board refuses others; the runner agrees).
   const table = { autonomy: cfg.autonomy ?? "off", agents_org: cfg.github_agents_org ?? "", product_repo: productRepo(), agents: Object.fromEntries(Object.entries(agents).map(([key, a]) => [a.id, { key, roles: cfg.agents[key].roles ?? [], tools: cfg.agents[key].enabled_tools ?? {}, ...grantEntry(key, cfg.agents[key], cfg.routines), rev: revOf(key), description: cfg.agents[key].description, ...(cfg.agents[key].trial ? { trial: true } : {}), ...(cfg.agents[key].delegate_to ? { delegate_to: cfg.agents[key].delegate_to } : {}), ...(cfg.agents[key].image ? { image: cfg.agents[key].image } : {}) }])) };
+  // The shared "Fleet issues" log task (ensureFleetIssues, its identifier): any agent may comment there (kernel cp.ts).
+  if (fleetIssues) table.fleet_issues = fleetIssues;
   table.routines = { ...routineAutonomy };
   table.routine_keys = { ...routineKeys };
   // Each agent's memory inbox issue id (ensureMemoryInboxes): memory_note posts there, the tasks bridge guards it.
