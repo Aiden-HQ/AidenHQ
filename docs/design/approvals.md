@@ -194,10 +194,8 @@ and prints the pass rate. `autonomy: full` is only appropriate when it passes (a
 failure even though it escalates safely. Every false reject the reviewer makes in use is added as a new case, and the
 score must keep passing.
 
-**The eval-receipt gate** (`services/runner/src/evalgate.ts`, owner 2026-11-16). Reviewer code reaches the fleet only on a
-passing receipt (95% of the base cases, every miss a false block). The reviewer's own code is the whole `ai-reviewer` module (service, policy, cases, `case-pad.mjs`,
-`reviewer-eval.mjs`), `kernel/sdk/src/reviewer.ts`, `tiers.mjs`, the kernel's `tier.ts` and the authority-diff classifier
-(`scripts/compiler/authority.ts`). The module is the product's own `modules/ai-reviewer` (again since 2026-11-18; it lived
+**The eval-receipt gate** (`modules/codehost-github/service/src/evalgate.ts`, owner 2026-11-16). Reviewer code reaches the fleet only on a
+passing receipt (95% of the base cases, every miss a false block). The reviewer's own code is the paths `REVIEWER_CODE` lists in `modules/codehost-github/service/src/evalgate.ts` (the single list). The module is the product's own `modules/ai-reviewer` (again since 2026-11-18; it lived
 in the official modules repo from 5b), so the eval runs a product commit's `modules/` tree, judged by an earlier one:
 
 - a product PR that changes the reviewer's code: its head, judged by its base branch, receipt for its head. A PR that
