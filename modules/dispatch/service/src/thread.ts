@@ -1,6 +1,6 @@
 // Who said what on a task, and whose words start work. Ported from the runner (services/runner/src/{thread.ts,agents.mjs},
 // handleIssue): the asker is whoever created the task. The owner's comments are his words; on a task an agent made, its
-// asker's and the chief of staff's (role fleet-admin in the grants table, never Paperclip metadata) start work as an agent's
+// asker's and a fleet overseer's (the chief of staff, role fleet-admin, or the Fleet Steward, role fleet-audit, in the grants table, never Paperclip metadata) start work as an agent's
 // request; any other agent's comment starts nothing and is told, once, whom to ask.
 import { dataBlock as fence } from "./aidenhq-sdk/fence.ts";
 import { forOthers } from "./aidenhq-sdk/for-others.ts";
@@ -33,7 +33,8 @@ const when = (iso: unknown) => String(iso ?? "").slice(0, 16).replace("T", " ");
 export const moduleMade = (t: Issue) => !t.createdByAgentId && /<!-- aidenhq-module:[\w-]+ -->/.test(String(t.description ?? ""));
 /** A task an agent created: its asker is that agent, and its description is that agent's request. */
 export const agentMade = (t: Issue) => Boolean(t.createdByAgentId && !t.createdByUserId);
-const isChiefOfStaff = (dir: Directory, id?: string | null) => Boolean(id) && (dir[id!]?.roles ?? []).includes("fleet-admin");
+/** Fleet overseers, by role: the chief of staff (fleet-admin) and the Fleet Steward (fleet-audit). */
+const isOverseer = (dir: Directory, id?: string | null) => Boolean(id) && (dir[id!]?.roles ?? []).some((r) => r === "fleet-admin" || r === "fleet-audit");
 
 /** The request in a task the owner wrote himself: created with his key, by no agent, without a generated task's source marker. */
 export function ownRequest(t: Issue) {
@@ -56,7 +57,7 @@ export const spoke = (comments: Comment[], t: Issue) => comments.some((c) => (c.
 export function speaker(c: Comment, t: Issue, dir: Directory): "owner" | "agent" | "notice" | "ours" | "other" {
   if (ours(c, t)) return "ours";
   if (c.authorType !== "agent") return String(c.body ?? "").includes(WAKE_NOTICE) || forOthers(c.body) ? "notice" : "owner";
-  return agentMade(t) && (c.authorAgentId === t.createdByAgentId || isChiefOfStaff(dir, c.authorAgentId)) ? "agent" : "other";
+  return agentMade(t) && (c.authorAgentId === t.createdByAgentId || isOverseer(dir, c.authorAgentId)) ? "agent" : "other";
 }
 
 /**

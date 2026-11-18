@@ -109,6 +109,23 @@ test("on an agent's task, the chief of staff's comment starts work as an agent's
   assert.doesNotMatch(k.started[0].prompt, /Instructions from Dana/);
 });
 
+test("a Fleet Steward-role comment on another agent's task starts a job; the assignee's own role never wakes itself", async () => {
+  const comments = [{ id: "r0", authorType: "agent", authorAgentId: "eng", body: "Working.\n\n<!-- aidenhq:job=j0 kind=reply -->", createdAt: "2026-11-18T09:00:00Z" }];
+  const k = fake({
+    task: { id: "t1", identifier: "WOR-2", title: "Remove Legacy", description: "Remove Legacy from acme/app.", status: "in_progress", assigneeAgentId: "eng", createdByAgentId: "asker", createdByUserId: null },
+    comments,
+    directory: { steward: { key: "steward", roles: ["fleet-read", "fleet-audit"] }, eng: { key: "eng", roles: ["fleet-audit"] } },
+  });
+  comments.push({ id: "c1", authorType: "agent", authorAgentId: "steward", body: "Status check: are you stuck?", createdAt: "2026-11-18T10:00:00Z" });
+  k.inbox.push(wake("comment:c1", "comment"));
+  await k.dispatch.tick();
+  assert.equal(k.started.length, 1);
+  comments.push({ id: "c2", authorType: "agent", authorAgentId: "eng", body: "Not stuck.", createdAt: "2026-11-18T10:01:00Z" });
+  k.inbox.push(wake("comment:c2", "comment"));
+  await k.dispatch.tick();
+  assert.equal(k.started.length, 1, "the assignee holding the role does not wake itself");
+});
+
 test("an agent's task with no request gets one note and starts nothing", async () => {
   const k = fake({ task: { id: "t1", identifier: "WOR-3", title: "Something", description: "", status: "todo", assigneeAgentId: "eng", createdByAgentId: "asker", createdByUserId: null } });
   k.inbox.push(wake("issue:t1:1", "assigned"));
