@@ -1,0 +1,11 @@
+[Unit]
+Description=AidenHQ release updates: hourly check (ops/update.sh)
+
+[Timer]
+OnBootSec=15min
+OnCalendar=hourly
+RandomizedDelaySec=10min
+Persistent=true
+
+[Install]
+WantedBy=timers.target

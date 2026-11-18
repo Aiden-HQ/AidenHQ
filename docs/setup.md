@@ -403,8 +403,27 @@ The instance repo pins the product commit (`product: <sha>` in `instance.yaml`).
 and applying. Never `git pull` in `~/aidenhq` first: apply compares the old checkout with the new pin to decide which
 services to restart, and a pull hides the difference.
 
-The easy way: ask Aiden to "upgrade the product to the latest main". The Platform Engineer shows the commits between
-the old and new pin, and you approve.
+**Installed from a release (get.aidenhq.ai)?** Then `instance.yaml` has `release:` and the server updates itself
+([design](design/release-updates.md)): every hour it looks for a newer release on the distro repo, verifies it (pinned
+shas on each repository's main, the release workflow's tested stamp, image digests, never older than what runs), and
+installs it between 02:00 and 05:00 in your timezone through the normal apply. If the health check after it fails, the
+server goes back to the release before and you're told why; that release isn't tried again on its own. This is
+maintenance, so quiet start doesn't hold it.
+
+- **See what's out:** the board's Settings > Instance shows the release you run, the newer one with what changed, and the
+  last update. You also get a message when one is available, installed or failed. Aiden can tell you too.
+- **Update now:** the button there opens the kernel's Updates page; its Update now installs at once.
+- **Turn auto-updates off:** `settings.auto_update: "off"` (the switch on that page, or Settings > Kill switches). You're
+  still told about each release and install it with Update now.
+- **From 2026.11.2:** run the installer again, the same command as the first time (`curl -fsSL https://get.aidenhq.ai | sh`).
+  It verifies the new release, moves the pin and applies; from 2026.11.3 on, updates come by themselves.
+
+Don't ask Aiden to "upgrade to the latest main" on a release install: main isn't a release, and apply refuses a `product:`
+that isn't the release's kernel.
+
+**Pinned by hand** (no `release:`, e.g. an instance tracking main): nothing updates itself. The easy way: ask Aiden to
+"upgrade the product to the latest main". The Platform Engineer shows the commits between the old and new pin, and you
+approve.
 
 By hand:
 

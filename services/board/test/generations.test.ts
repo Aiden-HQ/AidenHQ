@@ -47,7 +47,14 @@ describe("fleet_generation_status", () => {
   });
 
   it("an empty history is no history yet, not an error", () => {
-    expect(fleetGenerationStatus(file([]))).toEqual({ pin: null, generations: [] });
+    expect(fleetGenerationStatus(file([]))).toEqual({ pin: null, generations: [], release: null });
+  });
+
+  it("carries the release updater's display copy beside it: what is available and what changed", () => {
+    const f = file([]);
+    const u = { current: { name: "2026.11.2", product: "k1" }, auto: true, timezone: "Asia/Dubai", checkedAt: null, available: { name: "2026.11.3", notes: ["Updates"], compare: "https://github.com/x" }, error: null, last: null };
+    writeFileSync(join(f, "..", "updates.json"), JSON.stringify(u));
+    expect(ok(fleetGenerationStatus(f)).release).toEqual(u);
   });
 
   it("a missing file is an explicit error, never an empty list", () => {

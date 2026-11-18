@@ -28,14 +28,14 @@ import { gatherFacts, scorecard, statusSummary } from "./fleet-stats.js";
 import { coachDue, coachEvidence } from "./coach.js";
 import { moduleAuthority, moduleStates } from "./modules.js";
 import { CommitUnreadable, agentGrants, browseModules, createResolver, marketplacesOf } from "./marketplace.js";
-import { connectionsView, probe, readSources, settingsView, type Probe } from "./settings.js";
+import { connectionsView, probe, readSources, readUpdates, settingsView, type Probe } from "./settings.js";
 import { ChangeRefused, ChangesSchema, SETTINGS_LABEL, changesOf, checkChange, stageOf, taskFor, type Change } from "./settings-change.js";
 import { createGrading, gradePassed, type Grading } from "./grading.js";
 import { UsageSchema, WINDOWS, costs, keyUsage, prices, spendToday, type CostWindow } from "./costs.js";
 import { ledgerRange, ledgerSummary, ledgerTop } from "./cost-ledger.js";
 import { descendants, featureCost, recentFeatures } from "./feature-cost.js";
 import { MergeSchema, mergedDescription } from "./merge.js";
-import { fleetGenerationStatus } from "./generations.js";
+import { fleetGenerationStatus, updatesFile } from "./generations.js";
 import { McpAuthFailed, type McpAuth } from "./mcpauth.js";
 import { setupFlowRoutes, type SetupFlowPoint } from "./setup-flows.js";
 import { welcomeRoutes } from "./welcome.js";
@@ -1174,6 +1174,7 @@ export function createApp(opts: AppOptions): Server {
       boardTimezone: opts.timezone,
       pendingRaises: pending.filter((a) => a.action === "raise_cap").length,
       pendingApprovals: pending.length,
+      updates: readUpdates(updatesFile()),
     });
   }
 

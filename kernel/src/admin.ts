@@ -19,6 +19,7 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import type { AdminSession, Step } from "./accounts.ts";
 import type { Api } from "./channels.ts";
 import { secretFits } from "./module-secrets.ts";
+import type { State as UpdateState } from "./updates.ts";
 
 type Card = Record<string, any>;
 type Deps = {
@@ -50,6 +51,8 @@ type Deps = {
   doorSource?: () => string | undefined;
   /** The board's front door: /recovery-key and the model step send the owner on to its welcome. */
   boardUrl?: () => string | undefined;
+  /** Release updates (updates.ts): what the updater recorded, and Update now (an admin's tap) for the release it shows. */
+  updates?: { view: () => UpdateState; requestNow: (release: string, by: string) => string };
   log?: (msg: string, f?: Record<string, unknown>) => void;
 };
 
@@ -84,6 +87,8 @@ export const ROUTES = [
   { method: "POST", path: "/owner/message", auth: "admin+csrf" },
   { method: "GET", path: "/owner/confirm", auth: "admin" },
   { method: "POST", path: "/owner/confirm", auth: "admin+csrf" },
+  { method: "GET", path: "/updates", auth: "admin" },
+  { method: "POST", path: "/updates", auth: "admin+csrf" },
 ] as const;
 const compiled = ROUTES.map((r) => ({ ...r, re: new RegExp(`^${r.path.replace(":id", "(k-[0-9a-f]{16})").replace(":state", "([\\w-]{22})")}$`) }));
 const STATUSES = ["backlog", "todo", "in_progress", "in_review", "blocked", "done", "cancelled"];
@@ -114,6 +119,20 @@ a.b{display:inline-block;text-decoration:none}button.b,a.b{font:inherit;font-wei
 .pick{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:12px;align-items:start}.pick .card{margin:0}.pick h2{margin:0 0 4px}
 @media(max-width:600px){button.b{min-height:44px}}`;
 
+/** The /updates page: the release this server follows, the one available with what changed, the last install, and Update now. */
+function updatesPage(u: UpdateState, form: (inner: string) => string): string {
+  const when = (t?: string | null) => (t ? new Date(t).toISOString().replace("T", " ").slice(0, 16) + " UTC" : "never");
+  if (!u.current) return `<h1>Updates</h1><p>This server doesn't follow a release, so it never updates itself: its product is pinned by hand (docs/setup.md, Upgrading the product).</p>`;
+  const a = u.available;
+  const last = u.last ? `<div class="card"><b>Last update:</b> ${esc(u.last.release)} ${u.last.outcome === "installed" ? `<span class="ok">installed</span>` : `<span class="err">failed</span>: ${esc(u.last.why ?? "")}`} · ${esc(when(u.last.at))} · by ${esc(u.last.by)}</div>` : "";
+  const avail = a
+    ? `<div class="card"><h2>${esc(a.name)} is available</h2>${a.notes.length ? `<ul>${a.notes.map((n) => `<li>${esc(n)}</li>`).join("")}</ul>` : ""}<p class="muted">Every change since ${esc(a.from.name)}: <a href="${esc(a.compare)}" target="_blank" rel="noopener">${esc(a.compare)}</a></p>
+<p class="muted">Verified against the official release: its commits, its tested stamp and its image digests. It installs through the normal apply, and a failed health check puts this server back on ${esc(a.from.name)}.</p>
+${form(`<input type="hidden" name="release" value="${esc(a.name)}"><button class="b">Update now</button>`)}</div>`
+    : `<p>${u.error ? `<span class="err">${esc(u.error)}</span>` : "Nothing newer is out."}</p>`;
+  return `<h1>Updates</h1><p>This server runs <b>${esc(u.current.name)}</b>. Auto-updates are <b>${u.auto ? "on" : "off"}</b>${u.auto ? `: a newer release installs between 02:00 and 05:00 (${esc(u.timezone ?? "UTC")})` : ": you're told, and install with Update now"}. Change it in the board's Settings (auto_update). Last checked ${esc(when(u.checkedAt))}.</p>${avail}${last}`;
+}
+
 export function createAdmin(d: Deps) {
   const log = d.log ?? (() => {});
   const csrf = (s: AdminSession) => createHmac("sha256", d.accounts.secret).update(`csrf:${s.session.id}`).digest("hex");
@@ -136,7 +155,7 @@ export function createAdmin(d: Deps) {
   }
   const doc = (title: string, body: string, s?: AdminSession | null, head = "") =>
     `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">${head}<title>${esc(title)} · AidenHQ</title><style>${CSS}</style></head><body>` +
-    (s?.ready ? `<header><b>AidenHQ</b><a href="/approvals">Approvals</a><a href="/owner/message">Message</a><a href="/auth/password">Password</a><form method="post" action="/auth/sign-out"><button>Sign out</button></form></header>` : "") +
+    (s?.ready ? `<header><b>AidenHQ</b><a href="/approvals">Approvals</a><a href="/owner/message">Message</a>${d.updates?.view().current ? `<a href="/updates">Updates</a>` : ""}<a href="/auth/password">Password</a><form method="post" action="/auth/sign-out"><button>Sign out</button></form></header>` : "") +
     `<main>${body}</main></body></html>`;
   const redirect = (res: ServerResponse, to: string, cookies: string[] = []) =>
     void res.writeHead(303, { location: to, "cache-control": "no-store", ...(cookies.length ? { "set-cookie": cookies } : {}) }).end();
@@ -425,6 +444,19 @@ export function createAdmin(d: Deps) {
           if (r.status >= 300) throw new Refusal(r.status === 404 ? 404 : 502, `the control plane answered ${r.status}`);
           log("owner status change", { task, to, by });
           return send(res, 200, doc("Done", `<p class="ok">${esc(task)} is ${esc(to)}.</p>`, s));
+        }
+        case "GET /updates": {
+          if (!d.updates) throw new Refusal(404, "not found");
+          return send(res, 200, doc("Updates", updatesPage(d.updates.view(), (inner) => form("/updates", inner, s)), s));
+        }
+        case "POST /updates": {
+          if (!d.updates) throw new Refusal(404, "not found");
+          const release = String(f.get("release") ?? "");
+          if (!/^\d{4}\.\d{1,2}(\.\d+)?$/.test(release)) throw new Refusal(400, "which release?");
+          let said: string;
+          try { said = d.updates.requestNow(release, by); } catch (e) { throw new Refusal(409, (e as Error).message); }
+          log("update now", { release, by });
+          return send(res, 200, doc("Updating", `<p class="ok">${esc(said)}</p><a href="/updates">Back to updates</a>`, s));
         }
       }
       throw new Refusal(404, "not found");

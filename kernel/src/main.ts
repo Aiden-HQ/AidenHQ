@@ -14,6 +14,7 @@
 // - The admin listener (127.0.0.1:3120, admin.ts): admins' sign-in (accounts.ts, data/kernel/auth/) and the approval pages.
 // - The sign-in listener (127.0.0.1:3129, signin.ts): the gate's half of shared apps' sign-in (Better Auth's steps, handoffs,
 //   app access). The kernel is the only process that opens the accounts file (lean 3g).
+import { execFile } from "node:child_process";
 import http from "node:http";
 import { existsSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
@@ -59,6 +60,7 @@ import { createWork } from "./work.ts";
 import { jailProblem, readEngines } from "./sandbox.ts";
 import { sandboxConfig } from "./sandbox-config.ts";
 import { createCertWatch } from "./front-door.ts";
+import { createUpdates } from "./updates.ts";
 import { BOX_EXEC_WRAP } from "../../services/computer/lib.mjs";
 
 const log = (msg: string, fields: Record<string, unknown> = {}) => console.log(new Date().toISOString(), msg, JSON.stringify(fields));
@@ -163,6 +165,14 @@ const certWatch = createCertWatch({
 });
 every(() => void certWatch.tick(), 3_600_000);
 once(() => void certWatch.tick(), 10 * 60_000);
+// Release updates (updates.ts, docs/design/release-updates.md): what ops/update.sh recorded, told to the owner once; Update now
+// starts its unit (outside this process: the install's apply restarts the kernel).
+const updates = createUpdates({
+  db: records.db, dir: path.join(dataDir, "updates"), ownerLine: channels.ownerLine,
+  start: () => void execFile("systemctl", ["--user", "start", "--no-block", "aidenhq-update.service"], (e) => e && log("update unit didn't start", { err: e.message.slice(0, 300) })),
+});
+every(() => updates.tick(), 5 * 60_000);
+once(() => updates.tick(), 60_000);
 const brake = createBrake({ db: records.db, owner: ownerApi });
 const notify = createNotify({ db: records.db, modules: modulesFile, secret, resolver, log });
 // The host sandbox as configured here (jobs run in their agents' computers; repo code the host runs itself, fast checks among
@@ -314,7 +324,7 @@ const model = {
   verifyAgents: agentSetup({ dir: env("AIDENHQ_DIR", repo), log: path.join(dataDir, "kernel", "agent-setup.log"), warn: (m, o) => log(m, o as never) }),
   ...modelState,
 };
-const admin = accounts && createAdmin({ accounts, firstRun, model, uiOrigins, doorSource: () => doorSource(gateInfo()), boardUrl: () => boardOrigins[0], cards: channels, ownerMessage: (b) => channels.ownerMessageAs("web", b, () => chiefOfStaff(grantsTable().agents)), owner: ownerApi, hosts: () => adminHosts, origins: () => adminOrigins, frameOrigins: () => boardOrigins, log });
+const admin = accounts && createAdmin({ accounts, firstRun, model, uiOrigins, updates, doorSource: () => doorSource(gateInfo()), boardUrl: () => boardOrigins[0], cards: channels, ownerMessage: (b) => channels.ownerMessageAs("web", b, () => chiefOfStaff(grantsTable().agents)), owner: ownerApi, hosts: () => adminHosts, origins: () => adminOrigins, frameOrigins: () => boardOrigins, log });
 
 // Claimed records a restart left without an outcome: their executors say how they went (never replayed). Executors may
 // still be starting at boot, so once, a minute in.
