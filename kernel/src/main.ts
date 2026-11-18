@@ -15,7 +15,7 @@ import http from "node:http";
 import { existsSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { configDir, dataDir, env, repo, secret } from "./env.ts";
-import { createGateway, watched } from "./gateway/lib.ts";
+import { INSTALL_CAP, createGateway, watched } from "./gateway/lib.ts";
 import { createAdmin, type SetupField } from "./admin.ts";
 import { createAuthApi } from "./auth-api.ts";
 import { checkModel, exchange, readiness, startPkce } from "./openrouter-pkce.ts";
@@ -230,6 +230,7 @@ const model = {
   exchange: (code: string, verifier: string) => exchange(code, verifier, fetch, upstream),
   check: (key: string) => checkModel(key, { model: Object.keys(gatewaySettings().models ?? {})[0] ?? "~deepseek/deepseek-flash-latest", upstream }),
   saved: () => secret("openrouter_key"),
+  dayCap: () => { const n = Number((gatewaySettings() as { install_day_usd?: unknown }).install_day_usd); return n > 0 ? n : undefined; },
   verifyAgents: agentSetup({ dir: env("AIDENHQ_DIR", repo), log: path.join(dataDir, "kernel", "agent-setup.log"), warn: (m, o) => log(m, o as never) }),
   ...modelState,
 };
@@ -250,15 +251,28 @@ const gw = createGateway({
   upstream,
   paperclipUrl: controlUrl,
   // The numbers are the gateway's ledger; the task's identifier and the agent's name are looked up here.
+  // The install cap's card (agent INSTALL_CAP, no task) goes on an unassigned task of the owner's own, so no agent wakes.
   fileRaiseCap: async ({ task, ...r }) => {
-    const [issue, agent] = await Promise.all([issueOf(task), cpApi(`/api/agents/${encodeURIComponent(r.agentId)}`).then((x) => (x.ok ? (x.json() as Promise<{ name?: string }>) : {}))]);
-    if (!issue) throw new Error(`no task ${task}`);
+    const install = r.agentId === INSTALL_CAP;
+    const [issue, agent] = await Promise.all([task ? issueOf(task) : installCapTask(r.subject), install ? { name: "AidenHQ" } : cpApi(`/api/agents/${encodeURIComponent(r.agentId)}`).then((x) => (x.ok ? (x.json() as Promise<{ name?: string }>) : {}))]);
+    if (!issue) throw new Error(`no task ${task ?? "for the install cap"}`);
     const args = { ...r, to: Math.round(r.cap * 200) / 100 };
-    writes.fileNative("kernel.raise_cap", { task: issue.id, identifier: issue.identifier, args, card: raiseCapCard(args, String((agent as { name?: string }).name ?? ""), issue.identifier ?? issue.id), reason: `a ${r.scope} spend cap is the owner's to raise`, rule: "raise-cap" });
+    writes.fileNative("kernel.raise_cap", { task: issue.id, identifier: issue.identifier, args, card: raiseCapCard(args, String((agent as { name?: string }).name ?? ""), issue.identifier ?? issue.id), reason: install ? "the install-wide daily spend cap is the owner's to raise" : `a ${r.scope} spend cap is the owner's to raise`, rule: "raise-cap" });
   },
   launcherUrl,
   log,
 });
+
+/** A new unassigned task for the install cap's raise card, in the company of the instance's agents. */
+async function installCapTask(day: string) {
+  const someAgent = Object.keys(grantsTable().agents ?? {})[0];
+  const a = someAgent ? await cpApi(`/api/agents/${encodeURIComponent(someAgent)}`) : undefined;
+  const company = a?.ok ? String(((await a.json()) as { companyId?: string }).companyId ?? "") : "";
+  if (!company) throw new Error("no company to file the install cap's card in");
+  const r = await cpApi(`/api/companies/${company}/issues`, { method: "POST", body: JSON.stringify({ title: `Daily spend cap reached (${day})`, description: "AidenHQ reached its daily spend cap (settings.spend_day_usd), so model calls are paused until tomorrow (UTC). Approve the card to double today's cap, or change the setting in Settings.", status: "todo" }) });
+  if (!r.ok) throw new Error(`Paperclip answered ${r.status} creating the install cap's task`);
+  return (await r.json()) as { id: string; identifier?: string };
+}
 
 raiseCap = async (r) => {
   gw.setCap(r.scope, r.agentId, r.subject, r.to);
