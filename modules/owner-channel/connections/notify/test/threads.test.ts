@@ -24,11 +24,12 @@ describe("ownerVia: where the owner last wrote in a chat", () => {
 describe("taskForNotify", () => {
   const issue = { id: "i9", assigneeAgentId: "a1" };
   const names = [{ id: "a1", name: "Inbox Agent" }];
-  it("names the agent only while that agent is running on the task", () => {
-    expect(taskForNotify(issue, [{ issueId: "i9", agentId: "a1" }], names)).toEqual({ issueId: "i9", agentId: "a1", agentName: "Inbox Agent" });
+  it("names the agent only while it runs a kernel job on the task", () => {
+    expect(taskForNotify(issue, [{ agent: "a1", state: "running" }], names)).toEqual({ issueId: "i9", agentId: "a1", agentName: "Inbox Agent" });
   });
-  it("refuses a task its agent isn't working on right now (another agent passing someone else's task)", () => {
+  it("refuses a task its agent isn't running a job on right now (an ended job, or another agent passing someone else's task)", () => {
     expect(taskForNotify(issue, [], names)).toBeUndefined();
-    expect(taskForNotify(issue, [{ issueId: "i9", agentId: "a2" }], names)).toBeUndefined();
+    expect(taskForNotify(issue, [{ agent: "a1", state: "done" }], names)).toBeUndefined();
+    expect(taskForNotify(issue, [{ agent: "a2", state: "running" }], names)).toBeUndefined();
   });
 });

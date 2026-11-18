@@ -1,5 +1,5 @@
 // The kernel's routes this router uses, with its own token (its connection's service key): the queued owner messages, the
-// send to one channel's transport, control-plane reads, the loop brake, and an agent's reply posted as that agent.
+// send to one channel's transport, control-plane reads, a task's kernel jobs, the loop brake, and an agent's reply posted as that agent.
 import { kernelClient as baseClient } from "./aidenhq-sdk/kernel-client.js";
 import type { Message } from "./notify.js";
 
@@ -16,6 +16,8 @@ export function kernelClient(url: string, token: string, f: typeof fetch = fetch
       if (r.status !== 200) throw new Error(`POST /v1/notify/send -> ${r.status}`);
       return { sent: r.json.sent === true, off: r.json.off === true };
     },
+    /** A task's kernel jobs, newest first (the job ledger). */
+    work: async (task: string): Promise<{ jobs: { agent: string; state: string }[] }> => call("GET", `/v1/work?task=${encodeURIComponent(task)}`),
     brake: (task: string, agent: string, decision: boolean): Promise<{ allow: boolean; note?: string }> => call("POST", "/v1/brake/notify", { task, agent, ...(decision ? { decision: true } : {}) }),
     /** The agent's reply on its chat, posted by the kernel as that agent (this call's assertion). */
     postReply: async (issueId: string, body: string, assertion: string): Promise<boolean> => {
