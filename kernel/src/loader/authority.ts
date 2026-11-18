@@ -29,8 +29,9 @@ const PLAIN = new Set(["name", "version", "description", "license", "publisher",
 const CHECKED = new Set(["writes", "privileged", "secrets", "generated_secrets", "optional_secrets", "roles", "default_grants", "connections", "services", "agents", "providers", "isolation", "routines", "board_env", "workspaces"]);
 /** Every top-level module.yaml key the kernel knows: any other is a compile error (module.yaml is strict, spec §3.1). */
 export const MANIFEST_KEYS = new Set([...PLAIN, ...CHECKED]);
-/** Agent fields that hand out nothing (model and engine choice, scheduling, presentation). Others are new authority. */
-const AGENT_PLAIN = new Set(["department", "adapter", "max_parallel", "model", "models", "reasoning_effort", "timeout_sec", "heartbeat", "persona", "graded", "brief", "engine", "dispatch", "image", "web_search", "delegate_to", "jobcaps", "builder", "description", "name", "title", "trial"]);
+/** Agent fields that hand out nothing (model and engine choice, scheduling, presentation, the module text it reads: skills, like
+ * prompts). Others are new authority. */
+const AGENT_PLAIN = new Set(["department", "adapter", "max_parallel", "model", "models", "reasoning_effort", "timeout_sec", "heartbeat", "persona", "graded", "brief", "engine", "dispatch", "image", "web_search", "delegate_to", "jobcaps", "builder", "description", "name", "title", "trial", "skills"]);
 /** Service fields that change what runs or how much, not what it may reach (the code diff and the panel judge those). */
 const SERVICE_PLAIN = new Set(["image", "build", "command", "entrypoint", "env", "secrets", "port", "healthcheck", "cpus", "memory", "pids", "tmp", "on_demand"]);
 const ISOLATION_RANK: Record<string, number> = { untrusted: 0, "code-exec": 1, trusted: 2 };
