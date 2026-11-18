@@ -227,6 +227,73 @@ if [ -e "$HOME/.config/systemd/user/aidenhq-backup.timer" ]; then
 else
   printf '  skip  off-host backup (backup_repository not set)\n'
 fi
+if module_on monitoring; then
+  if [ -e "$HOME/.config/systemd/user/aidenhq-host-metrics.timer" ]; then
+    host_metrics_script() {
+      local line path argv_text executable program script applied i
+      local -a argv
+      line="$(systemctl --user show aidenhq-host-metrics.service -p ExecStart --value 2>/dev/null)" \
+        || { echo "could not read aidenhq-host-metrics.service's ExecStart"; return 1; }
+      # systemd prints the executable it starts and its argv. Check that argv[0] is that executable, not only a name in
+      # front of arguments that look right; then follow env to the program it runs and take a shell's first script
+      # argument rather than any later path that happens to end in ops/host-metrics.sh. A command string is refused.
+      path="$(sed -n 's/.*path=\([^ ;]*\).*/\1/p' <<< "$line")"
+      argv_text="$(sed -n 's/.*argv\[\]=\([^;]*\).*/\1/p' <<< "$line")"
+      read -r -a argv <<< "$argv_text"
+      [ -n "$path" ] && [ "${#argv[@]}" -gt 0 ] || { echo "the unit's ExecStart has no executable or argv: $line"; return 1; }
+      executable="$(realpath "$path" 2>/dev/null || printf '%s' "$path")"
+      program="$(realpath "${argv[0]}" 2>/dev/null || command -v "${argv[0]}" 2>/dev/null || printf '%s' "${argv[0]}")"
+      [ "$executable" = "$program" ] \
+        || { echo "the unit starts $executable, but its argv names $program: $line"; return 1; }
+      program="$executable"
+      i=1
+      if [ "$(basename "$program")" = env ]; then
+        while [ "$i" -lt "${#argv[@]}" ]; do
+          case "${argv[i]}" in
+            --) i=$((i + 1)); program="${argv[i]:-}"; i=$((i + 1)); break ;;
+            --unset=*|--chdir=*|--argv0=*|--env0-from=*) i=$((i + 1)) ;;
+            --unset|--chdir|--argv0|-u|-C|-a|-P) i=$((i + 2)) ;;
+            -P?*|-u?*|-C?*|-a?*) i=$((i + 1)) ;;
+            --ignore-environment|-i|-0|--null|-v|--debug|-) i=$((i + 1)) ;;
+            -S|--split-string) echo "cannot resolve the script from env --split-string: $line"; return 1 ;;
+            --*|-*) echo "cannot resolve the script from unsupported env option ${argv[i]}: $line"; return 1 ;;
+            *=*) i=$((i + 1)) ;;
+            *) program="${argv[i]}"; i=$((i + 1)); break ;;
+          esac
+        done
+        [ -n "$program" ] || { echo "the unit's ExecStart names no program after env: $line"; return 1; }
+      fi
+      case "$(basename "$program")" in
+        sh|bash|dash|zsh|ksh)
+          script=""
+          while [ "$i" -lt "${#argv[@]}" ]; do
+            case "${argv[i]}" in
+              --) i=$((i + 1)); script="${argv[i]:-}"; break ;;
+              -c|--command|-s|--stdin|-[!-]*c*) echo "the unit's ExecStart runs a command string, not ops/host-metrics.sh: $line"; return 1 ;;
+              -o|-O|+o|+O) i=$((i + 2)) ;;
+              -*) i=$((i + 1)) ;;
+              *) script="${argv[i]}"; break ;;
+            esac
+          done
+          ;;
+        *) script="$program" ;;
+      esac
+      [ -n "$script" ] || { echo "the unit's ExecStart names no script: $line"; return 1; }
+      case "$script" in
+        */ops/host-metrics.sh) ;;
+        *) echo "the unit runs $script, not ops/host-metrics.sh: $line"; return 1 ;;
+      esac
+      script="$(realpath "$script" 2>/dev/null || printf '%s' "$script")"
+      applied="$(realpath "$repo/ops/host-metrics.sh" 2>/dev/null || printf '%s' "$repo/ops/host-metrics.sh")"
+      [ "$script" = "$applied" ] || { echo "the unit runs $script, not $applied"; return 1; }
+    }
+    check "host metrics timer runs the applied checkout" host_metrics_script
+  else
+    printf '  skip  host metrics (timer not installed)\n'
+  fi
+else
+  printf '  skip  host metrics (monitoring module not installed)\n'
+fi
 
 echo
 [ "${#skipped[@]}" -eq 0 ] || printf 'Skipped (not configured): %s\n' "$(printf '%s; ' "${skipped[@]}" | sed 's/; $//')"
