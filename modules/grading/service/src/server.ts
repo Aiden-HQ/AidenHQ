@@ -17,7 +17,7 @@ type Issue = { id: string; identifier?: string; status: string; assigneeAgentId?
 /** The kernel as this module: its control-plane reads, its directory's settings, and its label released on a task. */
 export type Kernel = {
   issue: (ref: string) => Promise<Issue>;
-  settings: () => Promise<{ agents_org?: string; product_repo?: string; modules_repo?: string }>;
+  settings: () => Promise<{ agents_org?: string; product_repo?: string }>;
   release: (task: string) => Promise<void>;
 };
 class HttpError extends Error { status: number; constructor(status: number, message: string) { super(message); this.status = status; } }

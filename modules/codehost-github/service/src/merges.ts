@@ -28,7 +28,7 @@ export function createMerges(d: {
   /** An installation token narrowed to `repo` and these permissions. */
   token(repo: string, perms: Record<string, string>): Promise<string>;
   gh: Gh;
-  agentsOrg: string; productRepo?: string; modulesRepo?: string;
+  agentsOrg: string; productRepo?: string;
   evalGate: EvalGate;
   /** Files the design reviewer's task for a PR head the queue waits on for its verdict (design-review.ts). */
   designReview?: (ask: { repo: string; number: number; head: string; again?: boolean }) => Promise<unknown>;
@@ -40,7 +40,7 @@ export function createMerges(d: {
 }) {
   const log = d.log ?? (() => {});
   const now = d.now ?? (() => new Date());
-  const platform = [d.productRepo, d.modulesRepo].filter(Boolean) as string[];
+  const platform = [d.productRepo].filter(Boolean) as string[];
   const inAgentsOrg = (repo: string) => same(repo.split("/")[0], d.agentsOrg) && !platform.some((p) => same(p, repo));
   mkdirSync(d.dir, { recursive: true });
   const file = join(d.dir, "merges.json");

@@ -35,19 +35,6 @@ test("outside the agents org and the product repo: PR-only (no App merge, no wor
   assert.throws(() => plan({ kind: "codehost-github.push", args: {} }, { agentsOrg: ORG, productRepo: PRODUCT, instanceRepo: `${ORG}/aidenhq-instance`, branches: [{ repo: "other/lib", branch: "main", defaultBranch: "main", sha: "a".repeat(40), files: ["a"] }] }), /outside the agents org/);
 });
 
-test("the official modules repo is the product's: its PR card merges (Platform Engineer's line, panel) with the App's own writes", () => {
-  const MODULES = "acme/aidenhq-modules", both = [PRODUCT, MODULES];
-  assert.equal(ownRepo(MODULES, ORG, both), true, "the card is the review there");
-  assert.equal(ownRepo(MODULES, ORG, PRODUCT), false, "a bare product repo still names only itself");
-  assert.equal(mergePermissions(MODULES, both).workflows, "write");
-  assert.equal(allowedWrite("POST", `repos/${MODULES}/issues/1/comments`, ORG, both), true);
-  assert.equal(allowedWrite("DELETE", `repos/${MODULES}/git/refs/heads/x`, ORG, both), false, "never a branch delete outside the agents org");
-  const st = { agentsOrg: ORG, productRepo: PRODUCT, modulesRepo: MODULES, instanceRepo: `${ORG}/aidenhq-instance`, also: ["merge"], requester: { platform: true }, branches: [{ repo: MODULES, branch: "fix/x", defaultBranch: "main", sha: "a".repeat(40), files: ["slack/module.yaml"] }] };
-  assert.deepEqual(planParts("pr", st)[0].map((p) => [p.rule, p.tier, Boolean(p.panel)]), [["modules-pr-merge", 1, true]]);
-  assert.equal(planParts("pr", { ...st, requester: {} })[0][0].rule, "modules-merge-requester");
-  assert.equal(planParts("pr", { ...st, also: [] })[0][0].rule, "outside-pr", "a PR that doesn't merge is as before");
-});
-
 test("a merge-queue write mints no App token outside our repos, and one single-repo token inside them", async () => {
   const asked = [];
   const app = { token: async (org, o) => (asked.push({ org, ...o }), "t") };

@@ -79,8 +79,8 @@ export const TRAIN_BRANCH = /^merge-(train|build)\/\d+$/;
 
 /**
  * A write in WRITES; comments, PR edits, job re-runs and branch deletes in the agents org only (outside it the host's gh login
- * writes), plus comments, PR edits, job re-runs and merge trains on the product's repos (`productRepo`: the product repo, or
- * a list with the official modules repo; `aidenhq close` of its Dependabot PRs; the only branch it deletes there is a merge
+ * writes), plus comments, PR edits, job re-runs and merge trains on the product's repos (`productRepo`: the product repo;
+ * `aidenhq close` of its Dependabot PRs; the only branch it deletes there is a merge
  * train's).
  */
 export function allowedWrite(method, path, agentsOrg, productRepo) {

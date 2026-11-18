@@ -45,13 +45,6 @@ function publishParts(action, b, s) {
     if (!s.requester?.platform) return [REJECT("product-push", "only the Platform Engineer's line pushes to the product repo: hand product changes to the Platform Engineer")];
     return [T(1, action === "pr" ? "product-pr" : "product-push-branch", `${action === "pr" ? "a PR" : "a branch push"} to the product repo from the Platform Engineer's line`)];
   }
-  // A PR on the official modules repo that also merges on its card, as a product PR does (owner, 2026-11-18): the Platform
-  // Engineer's line only, and the panel's, as a merge outside the agents org is.
-  if (action === "pr" && s.modulesRepo && (s.also ?? []).includes("merge") && same(b.repo, s.modulesRepo)) {
-    if (!s.requester?.platform) return [REJECT("modules-merge-requester", "only the Platform Engineer's line merges official modules PRs: hand it to the Platform Engineer")];
-    if (b.empty || b.branch === b.defaultBranch) return [REJECT("outside-default-branch", `\`${b.branch}\` is ${b.repo}'s default branch: publish a branch and open a PR`)];
-    return [PANEL("modules-pr-merge", `a PR to the official modules repo from the Platform Engineer's line, merged once every named check is green on its head`)];
-  }
   const workflow = b.files.find((f) => GITHUB.test(f));
   const parts = [];
   // A byte-identical copy of the product's CI template (checked in the runner's own clone) is Tier 0; any other `.github/`

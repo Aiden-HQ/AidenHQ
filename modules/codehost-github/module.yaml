@@ -64,7 +64,6 @@ services:
         TASKS_DIR: /tasks
         PRODUCT_REPO: "${AIDENHQ_PRODUCT_REPO:-}"
         INSTANCE_REPO: "${AIDENHQ_INSTANCE_REPO:-}"
-        MODULES_REPO: "${settings.modules_repo}"
         OWNER_NAME: "${settings.owner_name}"
 # The kernel calls the kinds' plan, execute and status here with the module's own token (executor@1); plan is src/plan.mjs's
 # rules on the state the service reads itself (the workspace, its cache clone, GitHub), never the args.

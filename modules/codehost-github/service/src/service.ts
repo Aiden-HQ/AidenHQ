@@ -43,7 +43,7 @@ export type Options = {
   key: string; kernelUrl: string; cacheDir: string; tasksDir?: string;
   /** The App (src/github-app.ts appClient); undefined without the key: every GitHub action fails, saying so. */
   app?: App; gh: Gh; remoteUrl?: (slug: string) => string;
-  agentsOrg: string; instanceRepo?: string; productRepo?: string; modulesRepo?: string;
+  agentsOrg: string; instanceRepo?: string; productRepo?: string;
   log?: (msg: string, f?: Record<string, unknown>) => void;
   /** The release train's batch window, minutes (the instance's release_window_minutes). */
   releaseWindowMinutes?: number;
@@ -198,7 +198,7 @@ export function createService(o: Options) {
 
   /** The verified state plan.mjs tiers a request on (its `s`): read from the workspace, the cache and GitHub, never the args. */
   async function stateFor(kind: string, a: any) {
-    const base = { agentsOrg: o.agentsOrg, instanceRepo: o.instanceRepo, productRepo: o.productRepo, modulesRepo: o.modulesRepo, requester: { platform: false }, also: [] as string[] };
+    const base = { agentsOrg: o.agentsOrg, instanceRepo: o.instanceRepo, productRepo: o.productRepo, requester: { platform: false }, also: [] as string[] };
     if (kind.endsWith(".create_repo")) return { ...base, repo: slugOf(a.repo).slug };
     if (kind.endsWith(".merge") || kind.endsWith(".close")) {
       const prs = [];
@@ -294,7 +294,7 @@ export function createService(o: Options) {
   const designReviews = o.app ? createDesignReviews({ kernelUrl: o.kernelUrl, key: o.key, cacheDir: o.cacheDir, selfName: o.selfName || "the owner", app: o.app, gh: o.gh, log }) : undefined;
   const merges = createMerges({
     designReview: async (ask) => designReviews?.fileDesignReview(ask),
-    dir: join(o.cacheDir, "merges"), gh: o.gh, agentsOrg: o.agentsOrg, productRepo: o.productRepo, modulesRepo: o.modulesRepo,
+    dir: join(o.cacheDir, "merges"), gh: o.gh, agentsOrg: o.agentsOrg, productRepo: o.productRepo,
     report, log, now: o.now, everyMs: o.mergeEveryMs,
     token: (repo, perms) => tokenFor(slugOf(repo), perms),
     evalGate: (repo, pr) => evalGate(repo, pr),

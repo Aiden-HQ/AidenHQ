@@ -3,7 +3,7 @@
 //   GITHUB_APP_DIR          the App's vault dir (app_id, key.pem); absent: every GitHub action fails, saying so
 //   TASKS_DIR               the job workspaces (work/tasks); absent: push, pr and clone fail, saying so
 //   CACHE_DIR               the bare cache clones (its data dir)
-//   AGENTS_ORG, INSTANCE_REPO, PRODUCT_REPO, MODULES_REPO
+//   AGENTS_ORG, INSTANCE_REPO, PRODUCT_REPO
 //   OWNER_NAME              who the design reviewer's task says approved a merge that doesn't wait for it
 // Its loops start here: the merge queue, the release train, the product repo's PR watch, the design reviews' sweep and the
 // reviewed refs' tidying.
@@ -35,7 +35,7 @@ const gh = async (method: string, path: string, token: string, body?: unknown) =
 const handle = createService({
   key, kernelUrl: env.AIDENHQ_KERNEL_URL ?? "http://10.231.0.1:3130", cacheDir: env.CACHE_DIR ?? "/cache", tasksDir: env.TASKS_DIR || undefined,
   app, gh, agentsOrg, instanceRepo: env.INSTANCE_REPO || undefined,
-  productRepo: env.PRODUCT_REPO || undefined, modulesRepo: env.MODULES_REPO || undefined, selfName: env.OWNER_NAME || undefined,
+  productRepo: env.PRODUCT_REPO || undefined, selfName: env.OWNER_NAME || undefined,
   log,
 });
 log("starting", { app: Boolean(app), tasks: Boolean(env.TASKS_DIR), agentsOrg });

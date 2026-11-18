@@ -610,7 +610,6 @@ export function compile(productDir, instanceDir, { revision, fetch = hostFetch(p
 
   // Derived (not settable): the orgs the src_github sync covers, github_orgs plus the agents org.
   settings.agents_org = agentsOrg(settings); // the only org github-mcp's commit_status_set may write to
-  settings.modules_repo = ""; // no separate official modules repo since 2026-11-18: they are the product's modules/
   settings.github_sync_orgs = [...new Set([...[settings.github_orgs ?? []].flat(), agentsOrg(settings)].filter(Boolean))].join(",");
 
   // What the board's Settings shows (services/board/src/settings.ts): every setting an enabled module declares or the instance

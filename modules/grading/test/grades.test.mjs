@@ -277,9 +277,9 @@ describe("graded done", () => {
 });
 
 describe("prRefAllowed", () => {
-  it("the product repo and the official modules repo are one product; another org's repo is refused", () => {
-    const t = { agents_org: "acme-agents", product_repo: "acme/aidenhq", modules_repo: "acme/aidenhq-modules" };
-    assert.equal(prRefAllowed("acme/aidenhq-modules#12", t), true);
+  it("the product repo and the agents org are allowed; another org's repo is refused", () => {
+    const t = { agents_org: "acme-agents", product_repo: "acme/aidenhq" };
+    assert.equal(prRefAllowed("acme-agents/widget#12", t), true);
     assert.equal(prRefAllowed("https://github.com/acme/aidenhq/pull/3", t), true);
     assert.equal(prRefAllowed("acme/billing-service", t), false);
   });
