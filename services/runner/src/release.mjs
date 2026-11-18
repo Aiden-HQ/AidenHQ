@@ -80,3 +80,23 @@ export function trainDescription({ target, what, carries, windowMinutes, marker 
     `<!-- source:${marker} -->`,
   ].join("\n");
 }
+
+/** The one branch (and so the one PR) every modules pin bump of the product is written on. */
+export const MODULES_PIN_BRANCH = "fleet/modules-pin";
+
+/**
+ * Starts `branch` in `path`'s clone from GitHub's version of it, when GitHub has one: the next commit made on it replaces that
+ * version (publish's lease needs GitHub's tip in the local branch's history) and its open PR is adopted, new title and body
+ * and all, instead of a second PR opening beside it. `git(path, ...args)` runs git there. True when GitHub had the branch.
+ */
+export async function standOnRemote(git, path, branch) {
+  const ref = `refs/remotes/origin/${branch}`;
+  try {
+    await git(path, "fetch", "--quiet", "origin", `+refs/heads/${branch}:${ref}`);
+  } catch {
+    await git(path, "update-ref", "-d", ref).catch(() => {});
+    return false;
+  }
+  await git(path, "branch", "-f", branch, ref);
+  return true;
+}

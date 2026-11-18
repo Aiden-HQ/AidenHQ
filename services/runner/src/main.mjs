@@ -61,7 +61,7 @@ import { localCheckRuns } from "../../../modules/codehost-local/src/checks.ts";
 import { afterRejection, graderSpeaks, summaryKind, wakesParent } from "./notices.ts";
 import { readBusy } from "./busy.ts";
 import { SETTINGS_LABEL, TypedRefused, allowedPaths, assertOnly, checkTyped, planFiles, typedTaskChanges } from "./typed-change.mjs";
-import { asSha, bumpInstance, pinOf, trainDescription, trainStep } from "./release.mjs";
+import { MODULES_PIN_BRANCH, asSha, bumpInstance, pinOf, standOnRemote, trainDescription, trainStep } from "./release.mjs";
 import { normalizeRepo, repoAccess } from "../../../modules/codehost-github/src/repos.ts";
 import { host as githubCodehost } from "../../../modules/codehost-github/src/host.mjs";
 import { LOCAL_ORG, changeUrl, host as localCodehost, parseChangeUrl } from "../../../modules/codehost-local/src/host.mjs";
@@ -606,7 +606,13 @@ async function fileModulesPin(issue, to) {
   const text = await git(r.path, "show", `${tip}:modules-pin.json`);
   const next = text.replace(/("sha"\s*:\s*")[0-9a-f]{40}(")/, `$1${to}$2`);
   if (next === text || JSON.parse(next).sha !== to) throw new UserError("modules-pin.json has no sha to move");
-  const branch = `fleet/modules-pin-${issue.identifier.toLowerCase()}`;
+  // One standing branch and PR: a new bump replaces the commit on it (and re-titles the open PR) rather than opening a PR that
+  // supersedes the last. Its head changes, so the card, CI and the reviewer-eval receipt (all bound to the exact head) run again.
+  const branch = MODULES_PIN_BRANCH;
+  if (await standOnRemote(git, r.path, branch)) {
+    state.saveBranch(issue.id, { repo, branch, base: await defaultBranch(r.path) });
+    state.updateBranch(issue.id, repo, branch, { pushed: 1 });
+  }
   await commitFiles(issue, r.path, tip, branch, { "modules-pin.json": next }, `chore(modules): pin the official modules at ${to.slice(0, 12)}\n\nWritten by the runner's release train on ${issue.identifier}; no agent wrote it.`);
   return agentPublish({ issue, workspace: state.task(issue.id).workspace, box: false }, "pr", { branches: [{ repo, branch }], title: `chore(modules): pin the official modules at ${to.slice(0, 7)}`, body: `Moves \`modules-pin.json\` to ${cfg.modulesRepo}@${to}: the merges ${issue.identifier} lists. Written by the release train.` });
 }
