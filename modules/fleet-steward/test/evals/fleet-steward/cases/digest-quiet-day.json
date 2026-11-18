@@ -5,7 +5,7 @@
  "input": "Run task: \"Fleet Ops: daily digest\". Today is 2026-11-18, now 2026-11-18T14:00:00+04:00.\n\ntask_search \"Fleet issues\" -> [{\"id\":\"T-1\",\"title\":\"Fleet issues\",\"status\":\"todo\"}]\ntask_comments T-1 (today) -> []\nfleet_status -> {\"detector\":{\"open\":[],\"recovered\":[]},\"summary\":{\"failed\":[],\"waiting\":[]}}\ngithub_app_issue_status [] -> []\n",
  "expect": [
   {
-   "tool": "notify_owner",
+   "tool": "notify",
    "count": 1
   }
  ],

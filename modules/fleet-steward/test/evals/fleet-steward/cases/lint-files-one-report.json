@@ -12,7 +12,7 @@
  ],
  "forbid": [
   {
-   "tool": "notify_owner"
+   "tool": "notify"
   }
  ]
 }

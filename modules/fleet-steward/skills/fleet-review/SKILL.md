@@ -38,6 +38,6 @@ Review the week for failures that keep coming back and propose general fixes, ne
 7. **Summarize:** `task_search` the marker `fleet-review:<date>` first: if it exists, this week's summary was already
    filed. Otherwise one `task_create` titled `Fleet review — <date>`, marker `fleet-review:<date>`, `dedupe_closed: true`
    and **no `assignee`** (it lands on the owner's board for reading), with the measures, the causes found, the proposals
-   filed, the existing fixes you matched, and what you left. Then, only when it came back new, one `notify_owner`
-   (priority `normal`): the week's headline in two lines and the summary's identifier.
+   filed, the existing fixes you matched, and what you left. Then, only when it came back new, one `notify`
+   (`kind: digest`): the week's headline in two lines and the summary's identifier.
 8. `task_finish` with one line.

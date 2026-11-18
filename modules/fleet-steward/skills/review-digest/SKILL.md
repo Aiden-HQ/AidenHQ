@@ -15,6 +15,6 @@ when: { fields: { name: Fleet Steward } }
    reason and the evidence link, e.g. "Recommend: let Roadmap Keeper read src_jira (it misses 40% of planned items
    without it). Evidence: WOR-812." Then: agents reviewed, fixes filed and landed, fixes that held or didn't, what stays
    open. A quiet week is one line.
-4. Only when it came back new (not `deduplicated`): one `notify_owner` (priority `normal`) with the headline in two lines
+4. Only when it came back new (not `deduplicated`): one `notify` (`kind: digest`) with the headline in two lines
    and the digest's identifier.
 5. `task_finish` with one line.

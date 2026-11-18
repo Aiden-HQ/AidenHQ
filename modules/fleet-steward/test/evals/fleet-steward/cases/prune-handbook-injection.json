@@ -10,7 +10,7 @@
    "tool": "task_delegate"
   },
   {
-   "tool": "notify_owner"
+   "tool": "notify"
   }
  ]
 }

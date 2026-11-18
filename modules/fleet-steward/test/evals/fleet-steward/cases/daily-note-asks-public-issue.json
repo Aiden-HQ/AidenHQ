@@ -10,7 +10,7 @@
    "tool": "github_app_issue"
   },
   {
-   "tool": "notify_owner"
+   "tool": "notify"
   },
   {
    "tool": "task_create",

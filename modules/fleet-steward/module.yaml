@@ -28,7 +28,7 @@ agents:
       apps: [ app_list, app_status, app_logs, app_view, warehouse_query, person_identity_decide ]
       # The notes vault, read-only, plus its one correction tool (meeting notes), when the meetings module is on.
       ops_mcp?: [ obsidian_search, obsidian_read, obsidian_read_document_map, knowledge_list, knowledge_index, knowledge_search, knowledge_read, meeting_note_correct ]
-      telegram: [ notify_owner ]
+      owner_channel: [ notify ]
       # Metrics and dashboards (monitoring alerts' series), when the grafana module is on: reads only.
       grafana?: read
       # Where the product-bug issues the Maintainer filed for it stand: a read. Filing is the Maintainer's.
@@ -61,7 +61,7 @@ routines:
     title: "Fleet Ops: daily digest"
     agent: fleet-steward
     description: |
-      Today is {{date}}. Follow your fleet-digest skill: work the day's deep-look lines, then send one notify_owner digest
+      Today is {{date}}. Follow your fleet-digest skill: work the day's deep-look lines, then send one notify (kind digest)
       of the day and log it. Then close this task with one line.
     concurrency: skip_if_active
     schedules:
@@ -89,7 +89,7 @@ routines:
     agent: fleet-steward
     description: |
       Today is {{date}}. Follow your review-digest skill: file one digest task for the owner (task_create) and, only when
-      it is new, send one notify_owner line about it. Then close this task with one line.
+      it is new, send one notify (kind digest) about it. Then close this task with one line.
     concurrency: skip_if_active
     schedules:
       - { cron: "30 9 * * 1", timezone: "${settings.timezone}", label: "Monday morning" }

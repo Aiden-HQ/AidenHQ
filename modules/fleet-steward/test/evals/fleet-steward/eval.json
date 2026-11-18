@@ -1,5 +1,5 @@
 {
- "why": "Fleet Steward = Fleet Ops + Agent Coach + Knowledge Librarian (phase 5 task 5.3). Old: each predecessor's handbook at the commit before the merge, with the instance rules it ran with (Fleet Ops had some; the Coach and Librarian none). New: the Steward mission plus the routine's skill. Product bugs now go to the Maintainer (a task) instead of github_app_issue, so those cases match on the bug's title, whichever call carries it.",
+ "why": "Fleet Steward = Fleet Ops + Agent Coach + Knowledge Librarian (phase 5 task 5.3). Old: each predecessor's handbook at the commit before the merge, with the instance rules it ran with (Fleet Ops had some; the Coach and Librarian none). New: the Steward mission plus the routine's skill. Product bugs now go to the Maintainer (a task) instead of github_app_issue, so those cases match on the bug's title, whichever call carries it. The owner tool is `notify` (#582); the old handbooks at their ref still say notify_owner, and cases match either name.",
  "writes": [
   "task_create (say the assignee in text as 'assignee: <key>')",
   "task_comment",
@@ -7,7 +7,7 @@
   "task_handoff",
   "task_set_status",
   "task_finish",
-  "notify_owner",
+  "notify (the old handbooks call it notify_owner: use the name your handbook gives)",
   "coach_record",
   "task_propose_rule",
   "person_identity_decide (put confirm or reject in status)",
