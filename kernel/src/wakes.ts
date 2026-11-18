@@ -3,7 +3,8 @@
 // plugin, at most once and with duplicates) only scans its one task sooner. A dispatcher (role kernel.jobs) claims rows and
 // turns them into jobs; admission binds `job` (unique, so a wake starts at most one job).
 // Keys (never Paperclip's eventId): comment:<commentId>, issue:<issueId>:<updatedAt> (assigned or moved to todo),
-// routine-run:<runId> (a routine run's new task; routine tasks of a non-always_enqueue routine coalesce here), reopen:<issueId>:<statusVersion> (a comment reopened a finished task),
+// routine-run:<runId> (a routine run's new task, cause routine:<key>: the routine's compiled key, so admission applies its own
+// model; routine tasks of a non-always_enqueue routine coalesce here), reopen:<issueId>:<statusVersion> (a comment reopened a finished task),
 // wake_at:<module>.<id> (a module's scheduled wake, due at `until`).
 // Polled agents: those the modules that claim wakes dispatch (compile's `dispatches`); a module joins on its first claim.
 // So nothing is polled until a dispatcher claims, and an agent's first scan only wakes for comments after its dispatcher
@@ -35,7 +36,7 @@ type Comment = { id: string; body?: string; authorAgentId?: string | null; creat
 type Log = (msg: string, f?: Record<string, unknown>) => void;
 const ms = (t?: string) => (t ? Date.parse(t) || 0 : 0);
 
-export function createWakes({ db, owner, post, dispatches, log = () => {}, now = Date.now }: {
+export function createWakes({ db, owner, post, dispatches, routineKey = () => undefined, log = () => {}, now = Date.now }: {
   db: DatabaseSync;
   /** The control plane as the owner (only reads). */
   owner: Api;
@@ -43,6 +44,8 @@ export function createWakes({ db, owner, post, dispatches, log = () => {}, now =
   post: Outcomes["post"];
   /** Whether a module dispatches an agent (jobs.ts dispatchesFrom), and the agents it dispatches (ids). */
   dispatches: { may: (module: string, agent: string) => boolean; agents: (module: string) => string[] };
+  /** A Paperclip routine's compiled key (grants `routine_keys`, setup): none for a routine setup didn't make. */
+  routineKey?: (routine: string) => string | undefined;
   log?: Log; now?: () => number;
 }) {
   db.exec(DDL);
@@ -81,7 +84,8 @@ export function createWakes({ db, owner, post, dispatches, log = () => {}, now =
       log("wake: routine task coalesced", { task: issue.id, into: earlier.id, routine: issue.originId });
       return true;
     }
-    insert(`routine-run:${run.id}`, issue.id, agent, "routine", ms(issue.updatedAt) || now());
+    const key = routineKey(String(issue.originId ?? ""));
+    insert(`routine-run:${run.id}`, issue.id, agent, key ? `routine:${key}` : "routine", ms(issue.updatedAt) || now());
     return true;
   }
 
