@@ -1,5 +1,5 @@
 // Scheduled moves and recurring tasks: the board side. The user (board UI), the Researcher
-// (tasks bridge) and the runner (claims due runs) reach these through app.ts; every decision about
+// (tasks bridge) and the board's own minute loop (recurring-start.ts) reach these through app.ts; every decision about
 // dates and runs is made here, in code.
 import { createHash } from "node:crypto";
 import type { Logger } from "pino";
@@ -12,7 +12,7 @@ import { BUCKETS, localDate, type Recurring, type RecurringRun, type Store } fro
 export const RECURRING_LABEL = "recurring";
 const CLOSED = new Set(["done", "cancelled"]);
 const MAX_AHEAD_DAYS = 366;
-// A claimed run the runner didn't start within this long is handed out again, up to MAX_ATTEMPTS times.
+// A claimed run the board didn't start within this long is handed out again, up to MAX_ATTEMPTS times.
 const STALE_MS = 10 * 60_000;
 const MAX_ATTEMPTS = 3;
 
@@ -156,9 +156,9 @@ export async function changeRecurring(pc: Paperclip, store: Store, ctx: Ctx, iss
   return recurringView(store.recurring(issue.id)!, tz);
 }
 
-// ------------------------------------------------------------------ runs (claimed by the runner)
+// ------------------------------------------------------------------ runs (claimed by the board)
 
-/** What the runner needs to start one run. */
+/** What the board needs to start one run. */
 export interface ClaimedRun {
   definition: string;
   definitionId: string;
@@ -184,7 +184,7 @@ const marker = (definition: string, occurrence: string) => `recurring:${definiti
 const idempotencyKey = (m: string) => `pw-${createHash("sha256").update(m).digest("hex").slice(0, 32)}`;
 
 /**
- * Hand the runner every run that is due: for each, the user's task for this period is created now
+ * Hand out every run that is due: for each, the user's task for this period is created now
  * (top of Today, so a failed run still shows up) and the rule moves on. Runs claimed earlier but never
  * started are handed out again; after a few attempts their task says so.
  */
@@ -257,7 +257,7 @@ export async function claimDue(pc: Paperclip, store: Store, ctx: Ctx, tz: string
   }
   for (const run of store.abandonedRuns(STALE_MS, MAX_ATTEMPTS)) {
     store.setRunState(run.issueId, run.occurrence, "failed");
-    await pc.addComment(run.outputId, `This run couldn't be started after ${run.attempts} attempts, so there's no draft. Check the runner (\`journalctl --user -u aidenhq-runner\`), then use **Run now** on the recurring task.`).catch(() => {});
+    await pc.addComment(run.outputId, `This run couldn't be started after ${run.attempts} attempts, so there's no draft. Check the board's log, then use **Run now** on the recurring task.`).catch(() => {});
     log.error({ output: run.outputIdentifier }, "recurring run abandoned");
   }
   return out;
@@ -286,4 +286,3 @@ const toClaimed = (run: RecurringRun, issue: Issue, r: Recurring, tz: string): C
   attempt: run.attempts,
 });
 
-export const RunStateSchema = z.object({ state: z.enum(["started", "failed"]) }).strict();

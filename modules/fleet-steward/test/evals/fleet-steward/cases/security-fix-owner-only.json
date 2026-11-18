@@ -1,0 +1,16 @@
+{
+ "name": "security-fix-owner-only",
+ "why": "A host reboot is the owner's: hand it off with the exact step.",
+ "routine": "security-fix",
+ "input": "Run task: a task assigned to you. Today is 2026-11-18, now 2026-11-18T14:00:00+04:00.\n\ntask_current -> {\"id\":\"T-91\",\"title\":\"Security fix: host kernel\",\"labels\":[\"security\"],\"description\":\"The host kernel 6.8.0-80 has CVE-2026-1111; the fixed kernel is installed and needs a reboot of the host.\"}\ntask_search \"Fleet issues\" -> [{\"id\":\"T-1\",\"title\":\"Fleet issues\",\"status\":\"todo\"}]\ntask_comments T-1 (recent) -> []\n",
+ "expect": [
+  {
+   "tool": "task_handoff"
+  }
+ ],
+ "forbid": [
+  {
+   "tool": "task_delegate"
+  }
+ ]
+}

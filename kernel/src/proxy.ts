@@ -99,10 +99,9 @@ export function pendingText(r: Rec): string {
   return `${JSON.stringify({ approval: r.id, tier: r.tier, state: r.state })}\nFiled for approval (${r.kind}): ${r.tier === 1 ? "the AI reviewer decides" : "the AI reviewer, then the owner, decide"}. It runs once approved, and the outcome lands on your task. Don't say it is done until then.`;
 }
 
-export function createProxy({ whoami, connections, asserter, resolver, secret, writes, agentKey = () => "", log = () => {} }: {
+export function createProxy({ whoami, connections, asserter, resolver, secret, writes, log = () => {} }: {
   whoami: Whoami; connections: () => Record<string, Connection>; asserter: Asserter; resolver: Resolver; secret: (name: string) => string; writes?: Writes;
-  /** An agent's own control-plane key (setup's paperclip-agents/<id>), or "": what an approved replay acts with at /v1/cp/agent/*. */
-  agentKey?: (agent: string) => string; log?: Log;
+  log?: Log;
 }) {
   /**
    * An approved conn.tool record: its stored call, sent once to the module as its requester (no session: one tools/call).
@@ -115,8 +114,8 @@ export function createProxy({ whoami, connections, asserter, resolver, secret, w
     if (!conn) throw new Error(`no connection ${a.connection}`);
     const q = r.requester;
     const signed = asserter.signCaller({ agent: q.agent, key: q.key, name: q.name, roles: q.roles, ...(r.task ? { task: r.task } : {}), tool: `${a.connection}.${a.tool}`, aud: conn.module, kind: q.kind });
-    const credential = q.kind === "run" && q.agent && q.run ? agentKey(q.agent) : "";
-    asserter.begin(signed.jti, { credential, aud: conn.module, kind: q.kind, ...(credential && q.run ? { run: q.run } : {}) }, conn.tool_timeout_s ?? 300);
+    // The module acts at /v1/cp/agent as the requester (cp.ts: a kernel job's agent on its task, with the kernel-held agent key).
+    asserter.begin(signed.jti, { credential: "", aud: conn.module, kind: q.kind }, conn.tool_timeout_s ?? 300);
     try {
       const to = await resolver.resolve(conn.url);
       const body = Buffer.from(JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: a.tool, arguments: a.arguments } }));
@@ -142,8 +141,9 @@ export function createProxy({ whoami, connections, asserter, resolver, secret, w
     const conn = Object.hasOwn(connections(), connection) ? connections()[connection] : undefined;
     if (!conn && !jobs) throw fail(404, "not_found", `no connection ${connection}`);
     let who: Identity;
+    const callerToken = String(req.headers.authorization ?? "").replace(/^Bearer\s+/i, "").trim();
     try {
-      who = await whoami(String(req.headers.authorization ?? "").replace(/^Bearer\s+/i, "").trim());
+      who = await whoami(callerToken);
     } catch (e) {
       log("proxy", { connection, outcome: (e as { code?: string }).code ?? "denied_unknown_caller", ms: Date.now() - t0 });
       throw fail(e instanceof NoGrants ? 403 : 401, "unauthorized", (e as Error).message);
@@ -225,7 +225,7 @@ export function createProxy({ whoami, connections, asserter, resolver, secret, w
       const signed = asserter.signCaller({ agent: who.agent ?? "", key: who.key ?? "", name: who.name ?? "", roles: who.roles, ...(who.task ? { task: who.task } : {}), ...(who.run ? { run: who.run } : {}), tool: `${connection}.${tool}`, aud: conn!.module, kind: who.kind });
       jti = signed.jti;
       headers["x-aidenhq-caller"] = signed.jwt;
-      asserter.begin(jti, { credential: who.credential, aud: conn!.module, kind: who.kind, ...(who.run ? { run: who.run } : {}) }, target.timeout + 30);
+      asserter.begin(jti, { credential: who.credential, ...(who.kind === "run" ? { bearer: callerToken } : {}), aud: conn!.module, kind: who.kind, ...(who.run ? { run: who.run } : {}) }, target.timeout + 30);
     }
     const to = await resolver.resolve(target.url).catch((e: Error) => { done(false, e.message); throw fail(502, "bad_upstream", e.message); });
     headers.host = new URL(target.url).host;

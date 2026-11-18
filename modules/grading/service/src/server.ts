@@ -2,8 +2,6 @@
 // moves them, each behind its own caller's key:
 //   POST /check/finish                     the kernel (grading_check_key): the task.finish check (kernel/src/checks.ts)
 //   POST /grades                           the tasks module, as the delegating agent (its caller assertion, aud tasks): file a rubric
-//   GET  /internal/grades[/<task>]         the runner (grading_runner_key): the rows to grade, one task's state
-//   POST /internal/grades/<task>/{verdict,resubmit}   the runner: a pass's outcome, a resubmission
 //   POST /board/grades, GET /board/grades/stale, POST /board/grades/<task>/settle   the board (grading_board_key): its reads
 // It reads tasks and settings from the kernel with its own token (kernel.cp-read) and releases its label there
 // (POST /v1/checks/:task); it never writes to the control plane itself. Every five minutes it settles rows whose task closed.
@@ -17,7 +15,7 @@ type Issue = { id: string; identifier?: string; status: string; assigneeAgentId?
 /** The kernel as this module: its control-plane reads, its directory's settings, and its label released on a task. */
 export type Kernel = {
   issue: (ref: string) => Promise<Issue>;
-  settings: () => Promise<{ agents_org?: string; product_repo?: string; modules_repo?: string }>;
+  settings: () => Promise<{ agents_org?: string; product_repo?: string }>;
   release: (task: string) => Promise<void>;
 };
 class HttpError extends Error { status: number; constructor(status: number, message: string) { super(message); this.status = status; } }
@@ -26,7 +24,7 @@ const FILERS = ["task_delegate", "task_propose_rule", "task_create"];
 const NOTE = "The grader checks this task against its rubric.";
 
 export function createGrading({ db, kernel, keys, jwks = kernelJwks(), log = () => {} }: {
-  db: DatabaseSync; kernel: Kernel; keys: { check: string; runner: string; board: string }; jwks?: JWKS | (() => Promise<JWKS>);
+  db: DatabaseSync; kernel: Kernel; keys: { check: string; board: string }; jwks?: JWKS | (() => Promise<JWKS>);
   log?: (msg: string, f?: Record<string, unknown>) => void;
 }) {
   const grades = new Grades(db);
@@ -85,7 +83,7 @@ export function createGrading({ db, kernel, keys, jwks = kernelJwks(), log = () 
     if (!FILERS.includes(tool)) throw new HttpError(403, `only an agent granted one of ${FILERS.join(", ")} may file a rubric`);
     const b = parseFiling(body);
     // The grader reads only the task's own PRs; a ref naming another org's repo is refused here too.
-    if (b.deliverable.kind === "pr" && !prRefAllowed(b.deliverable.ref, await kernel.settings())) throw new HttpError(400, "deliverable.ref: a repo or PR in the agents org, a codehost:local repo or change, the product repo or the official modules repo, or empty for the task's own PRs");
+    if (b.deliverable.kind === "pr" && !prRefAllowed(b.deliverable.ref, await kernel.settings())) throw new HttpError(400, "deliverable.ref: a repo or PR in the agents org, a codehost:local repo or change, or the product repo, or empty for the task's own PRs");
     const issue = await kernel.issue(b.issue);
     if (issue.createdByAgentId !== caller.agent) throw new HttpError(403, "only the agent that delegated a task files its rubric");
     const r = grades.file(issue.id, b.rubric, b.deliverable);
@@ -162,7 +160,6 @@ export function createGrading({ db, kernel, keys, jwks = kernelJwks(), log = () 
       const method = String(req.method);
       if (method === "POST" && path === "/check/finish") return (keyed(req, keys.check), send(200, await finish((body ?? {}) as never)));
       if (method === "POST" && path === "/grades") return send(200, await file(req, body));
-      if (path.startsWith("/internal/grades")) return (keyed(req, keys.runner), send(200, await runner(method, path, body)));
       if (path.startsWith("/board/")) return (keyed(req, keys.board), send(200, await board(method, path, body)));
       send(404, { error: "no such route" });
     } catch (err) {

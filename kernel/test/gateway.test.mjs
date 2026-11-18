@@ -1,4 +1,4 @@
-// End to end against a fake OpenRouter and a fake Paperclip: attribution, billed cost in the ledger, the
+// End to end against a fake OpenRouter and a fake control plane: attribution, billed cost in the ledger, the
 // cap → 402 with one raise_cap filed, the owner's raise, the daily reset of a chat task, system kinds uncapped, and no way
 // to switch the caps off (G10).
 import { test } from "node:test";
@@ -12,8 +12,6 @@ import { mintToken } from "../src/gateway/token.ts";
 
 const serve = (handler) => new Promise((r) => { const s = http.createServer(handler).listen(0, "127.0.0.1", () => r({ s, url: `http://127.0.0.1:${s.address().port}` })); });
 const json = (res, status, body) => res.writeHead(status, { "content-type": "application/json" }).end(JSON.stringify(body));
-const b64 = (o) => Buffer.from(JSON.stringify(o)).toString("base64url");
-const jwt = (sub, runId, exp) => `eyJhbGciOiJIUzI1NiJ9.${b64({ sub, run_id: runId, exp })}.sig`;
 // Declared prices (USD per million tokens): a call reserves about $0.004, well under what the fake upstream bills ($0.03).
 const price = { in: 1, cached_in: 0.1, out: 1, peak: 1, max_output: 4096 };
 const MODELS = { models: { "~deepseek/deepseek-flash-latest": price, breaks: price, m: price } };
@@ -46,18 +44,22 @@ test("gateway: attribution, billed cost, caps, raise_cap once, daily reset, no o
   const runs = { run1: "iss1", run2: "iss1", c1: "chat1", c2: "chat1", c3: "chat1" };
   const paperclip = await serve((req, res) => {
     const auth = String(req.headers.authorization).slice(7);
-    if (req.url === "/api/agents/me") return auth.endsWith(".sig") ? json(res, 200, { id: JSON.parse(Buffer.from(auth.split(".")[1], "base64url")).sub }) : json(res, 401, {});
     if (auth !== "pc-board") return json(res, 403, {});
-    let m = /^\/api\/heartbeat-runs\/(\w+)$/.exec(req.url);
-    if (m) return json(res, 200, { id: m[1], issueId: runs[m[1]] });
-    m = /^\/api\/issues\/(\w+)$/.exec(req.url);
+    const m = /^\/api\/issues\/(\w+)$/.exec(req.url);
     if (m) return json(res, 200, issues[m[1]]);
     json(res, 404, {});
   });
   // kernel.raise_cap, as main.ts files it (writes.ts fileNative): each filing kept.
   const filed = [];
   let now = Date.parse("2026-11-13T10:00:00Z");
-  const gw = createGateway({ dbFile: join(dir, "usage.db"), grantsFile, settingsFile, secret: (n) => secrets[n] ?? "", upstream: upstream.url, paperclipUrl: paperclip.url, fileRaiseCap: async (b) => void filed.push(b), now: () => now });
+  // A kernel job of `agent` on its run's task: one token per job (its hash is the run key), expiring at `exp` (seconds) if given.
+  const T0 = now, minted = new Map();
+  const jobToken = (agent, job, exp) => {
+    const k = `${agent}/${job}/${exp}`;
+    if (!minted.has(k)) minted.set(k, mintToken("job-secret", { kind: "job", job, agentId: agent, issueId: runs[job] ?? null, ttlMs: exp ? exp * 1000 - T0 : 365 * 864e5 }, T0));
+    return minted.get(k);
+  };
+  const gw = createGateway({ dbFile: join(dir, "usage.db"), grantsFile, settingsFile, secret: (n) => secrets[n] ?? "", upstream: upstream.url, paperclipUrl: paperclip.url, fileRaiseCap: async (b) => void filed.push(b), jobLive: () => true, now: () => now });
   const front = await serve((req, res) => gw.handle(req, res));
   t.after(() => { for (const x of [upstream, paperclip, front]) x.s.close(); gw.close(); });
 
@@ -67,8 +69,8 @@ test("gateway: attribution, billed cost, caps, raise_cap once, daily reset, no o
   };
   const usage = async (since = "") => (await (await fetch(`${front.url}/usage`, { method: "POST", headers: { authorization: "Bearer gw-board" }, body: JSON.stringify({ since }) })).json()).records;
 
-  // A Paperclip run: billed, attributed to its agent, run and task, with the rev; the real key goes upstream, ZDR forced.
-  const r1 = await call(jwt("ag1", "run1"));
+  // A kernel job: billed, attributed to its agent, run (the job) and task, with the rev; the real key goes upstream, ZDR forced.
+  const r1 = await call(jobToken("ag1", "run1"));
   assert.equal(r1.status, 200);
   assert.match(r1.text, /\[DONE\]/);
   assert.deepEqual(seen[0], { auth: "Bearer sk-real", zdr: true, url: "/chat/completions" });
@@ -97,27 +99,27 @@ test("gateway: attribution, billed cost, caps, raise_cap once, daily reset, no o
 
   // Run cap $0.05: the second call starts at $0.03 (allowed), the third at $0.06 is refused. A run cap is never filed for
   // raising (the next run has a new key): one ledger row, a message that says the run stops.
-  assert.equal((await call(jwt("ag1", "run1"))).status, 200);
-  const refused = await call(jwt("ag1", "run1"));
+  assert.equal((await call(jobToken("ag1", "run1"))).status, 200);
+  const refused = await call(jobToken("ag1", "run1"));
   assert.equal(refused.status, 402);
   const err = JSON.parse(refused.text).error;
   assert.equal(err.type, "cap_reached");
   assert.match(err.message, /^spend cap reached: run \$0\.06 of \$0\.05; this run stops here; the next run starts with a fresh run cap$/);
   assert.doesNotMatch(err.message, /usage limit|rate limit|try again|quota|capacity/i); // Paperclip would schedule a retry
-  for (let i = 0; i < 5; i++) assert.equal((await call(jwt("ag1", "run1"))).status, 402); // Codex retries a 402 five times
+  for (let i = 0; i < 5; i++) assert.equal((await call(jobToken("ag1", "run1"))).status, 402); // Codex retries a 402 five times
   assert.equal(filed.length, 0);
   assert.equal((await usage()).filter((r) => r.status === "cap_reached").length, 1);
 
   // Task cap $0.08: a new run on iss1 takes it to $0.09, then is refused at the task scope; one raise_cap filed.
-  assert.equal((await call(jwt("ag1", "run2"))).status, 200);
-  for (let i = 0; i < 3; i++) assert.equal((await call(jwt("ag1", "run2"))).status, 402);
+  assert.equal((await call(jobToken("ag1", "run2"))).status, 200);
+  for (let i = 0; i < 3; i++) assert.equal((await call(jobToken("ag1", "run2"))).status, 402);
   assert.equal(filed.length, 1);
   assert.deepEqual(filed[0], { task: "iss1", scope: "task", agentId: "ag1", subject: "iss1", cap: 0.08, spent: 0.09 });
 
   // The owner raised it (the board's write): calls go through again.
   const raise = await fetch(`${front.url}/internal/caps`, { method: "POST", headers: { authorization: "Bearer gw-board" }, body: JSON.stringify({ scope: "task", agentId: "ag1", subject: "iss1", cap: 0.16 }) });
   assert.equal(raise.status, 200);
-  assert.equal((await call(jwt("ag1", "run2"))).status, 200);
+  assert.equal((await call(jobToken("ag1", "run2"))).status, 200);
 
   // The monitoring module's metrics (a textfile gateway.ts writes; no route): agent keys as labels.
   assert.equal((await fetch(`${front.url}/metrics`)).status, 404);
@@ -129,27 +131,27 @@ test("gateway: attribution, billed cost, caps, raise_cap once, daily reset, no o
   assert.doesNotMatch(text, /ag1|sk-real/); // ids and secrets never ride along
   for (const l of text.trim().split("\n")) assert.match(l, /^(# (HELP|TYPE) \w+ .+|[a-z_]+(\{[^}]*\})? -?\d+(\.\d+)?)$/);
 
-  // An expired run JWT is refused even once its run key is settled.
+  // An expired job token is refused even once its run key is settled.
   const exp = Math.floor(now / 1000) + 60;
-  assert.equal((await call(jwt("ag1", "run3", exp))).status, 200);
+  assert.equal((await call(jobToken("ag1", "run3", exp))).status, 200);
   now += 120_000;
-  assert.equal((await call(jwt("ag1", "run3", exp))).status, 401);
+  assert.equal((await call(jobToken("ag1", "run3", exp))).status, 401);
 
   // OpenRouter's stream breaks mid-body: the call still lands in the ledger (upstream_aborted), charged its whole reservation.
-  await call(jwt("ag1", "run4"));
-  await call(jwt("ag1", "run4"), { model: "breaks" }).catch(() => {});
+  await call(jobToken("ag1", "run4"));
+  await call(jobToken("ag1", "run4"), { model: "breaks" }).catch(() => {});
   const aborted = (await usage()).filter((r) => r.status === "upstream_aborted");
   assert.deepEqual(aborted.map((r) => r.runId), ["run4"]);
   assert.ok(aborted[0].costUsd > 0.004 && aborted[0].costUsd < 0.0045, String(aborted[0].costUsd)); // 4096 output tokens + the input
 
   // A chat task's cap counts the UTC day: refused at $0.09 today, open again tomorrow.
-  for (const r of ["c1", "c2", "c3"]) await call(jwt("ag1", r));
-  const chatRefused = await call(jwt("ag1", "c3"));
+  for (const r of ["c1", "c2", "c3"]) await call(jobToken("ag1", r));
+  const chatRefused = await call(jobToken("ag1", "c3"));
   assert.equal(chatRefused.status, 402);
   assert.match(JSON.parse(chatRefused.text).error.message, /task/);
   assert.equal(filed.at(-1).subject, "chat1:2026-11-13");
   now += 864e5;
-  assert.equal((await call(jwt("ag1", "c3"))).status, 200);
+  assert.equal((await call(jobToken("ag1", "c3"))).status, 200);
 
   // The agent-day cap, across tasks; no refusal text may look like a quota or a retry time to Paperclip.
   writeFileSync(grantsFile, JSON.stringify({ agents: { ag1: { key: "aiden", rev: "abc123", caps: { run_usd: 0.05, task_usd: 0.08, day_usd: 30 } }, ag3: { key: "x", caps: { run_usd: 1, task_usd: 1, day_usd: 0.05 } } } }));
@@ -171,7 +173,7 @@ test("gateway: attribution, billed cost, caps, raise_cap once, daily reset, no o
   assert.equal((await call(reviewer)).status, 200);
   assert.equal((await call("src-key")).status, 200);
   writeFileSync(settingsFile, JSON.stringify({ ...MODELS, enforce_caps: false }));
-  assert.equal((await call(jwt("ag1", "run1"))).status, 402);
+  assert.equal((await call(jobToken("ag1", "run1"))).status, 402);
   rows = await usage();
   assert.deepEqual(rows.filter((r) => r.kind === "reviewer").map((r) => r.component), ["AI reviewer", "AI reviewer"]);
   assert.equal(rows.filter((r) => r.kind === "source").length, 1);
@@ -182,76 +184,20 @@ test("gateway: attribution, billed cost, caps, raise_cap once, daily reset, no o
   assert.deepEqual([last.kind, last.agentId, last.issueId], ["advisor", "ag2", "iss9"]);
 });
 
-// An agent computer: box → the launcher's model route (forwardModel) → this gateway, named by the launcher's /whoami. Its
-// calls land in the ledger as the box agent's run and task, are refused at its run cap like any agent's; a run that ended
-// (token revoked) is refused even once its run key is settled.
-test("gateway: an agent computer's calls are attributed and capped through the launcher", async (t) => {
-  const { Tokens, forwardModel } = await import("../../services/computer/lib.mjs");
-  const dir = mkdtempSync(join(tmpdir(), "gw-box-"));
-  const secrets = { openrouter_key: "sk-real", gateway_board_key: "gw-board", paperclip_board_key: "pc-board" };
-  const grantsFile = join(dir, "grants.json");
-  writeFileSync(grantsFile, JSON.stringify({ agents: { box1: { key: "devops", rev: "def456", caps: { run_usd: 0.05, task_usd: 10, day_usd: 30 } } } }));
-  const settingsFile = join(dir, "gateway.json");
-  writeFileSync(settingsFile, JSON.stringify(MODELS));
-  const seen = [];
-  const upstream = await serve((req, res) => {
-    let b = ""; req.on("data", (d) => (b += d)); req.on("end", () => {
-      seen.push(req.headers.authorization);
-      const id = `gen-b${seen.length}`;
-      res.writeHead(200, { "content-type": "text/event-stream" });
-      res.end(`data: ${JSON.stringify({ type: "response.completed", response: { id, model: "deepseek/v4", usage: { input_tokens: 10, output_tokens: 5, cost: 0.03 } } })}\n\n`);
-    });
-  });
-  const paperclip = await serve((req, res) => {
-    if (req.headers.authorization !== "Bearer pc-board") return json(res, 403, {});
-    if (req.url === "/api/heartbeat-runs/prun1") return json(res, 200, { id: "prun1", issueId: "WOR-1" });
-    if (req.url === "/api/issues/WOR-1") return json(res, 200, { labels: [] });
-    json(res, 404, {});
-  });
-  const tokens = new Tokens();
-  const runToken = tokens.issue("aidenhq-computer-x", "box1");
-  let gwUrl;
-  const launcher = await serve((req, res) => {
-    const token = String(req.headers.authorization ?? "").replace(/^Bearer\s+/i, "");
-    const who = tokens.whoami(token);
-    if (req.url === "/whoami") return who ? json(res, 200, { agentId: who.agentId, runId: who.runId, issueId: who.issueId }) : json(res, 401, {});
-    if (!who) return json(res, 401, {});
-    forwardModel(req, res, `${gwUrl}/api/v1/responses`, token);
-  });
-  const gw = createGateway({ dbFile: join(dir, "usage.db"), grantsFile, settingsFile, secret: (n) => secrets[n] ?? "", upstream: upstream.url, paperclipUrl: paperclip.url, launcherUrl: launcher.url });
+test("gateway: a Paperclip run JWT, a launcher run token and the old harness key are no credentials", async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "gw-"));
+  writeFileSync(join(dir, "grants.json"), JSON.stringify({ agents: {} }));
+  writeFileSync(join(dir, "gateway.json"), JSON.stringify(MODELS));
+  const gw = createGateway({ dbFile: join(dir, "usage.db"), grantsFile: join(dir, "grants.json"), settingsFile: join(dir, "gateway.json"), secret: (n) => (n === "gateway_harness_key" ? "harness-key" : "") });
   const front = await serve((req, res) => gw.handle(req, res));
-  gwUrl = front.url;
-  t.after(() => { for (const x of [upstream, paperclip, launcher, front]) x.s.close(); gw.close(); });
-
-  const call = async () => {
-    const res = await fetch(`${launcher.url}/api/v1/responses`, { method: "POST", headers: { authorization: `Bearer ${runToken}`, "content-type": "application/json" }, body: JSON.stringify({ model: "~deepseek/deepseek-flash-latest", stream: true, input: [] }) });
-    return { status: res.status, text: await res.text() };
-  };
-  // Before the launcher knows the Paperclip run, the call is the agent's (run and day caps) but nothing is settled, so the
-  // run is not pinned without its task; once the first exec binds it, the run and task are settled.
-  const early = await call();
-  assert.equal(early.status, 200);
-  assert.match(early.text, /response\.completed/);
-  assert.deepEqual(seen, ["Bearer sk-real"]); // the run token never goes upstream
-  tokens.bind("aidenhq-computer-x", { runId: "prun1", issueId: "WOR-1" });
-  assert.equal((await call()).status, 200); // run cap $0.05: starts at $0.03, allowed
-  const rows = (await (await fetch(`${front.url}/usage`, { method: "POST", headers: { authorization: "Bearer gw-board" }, body: "{}" })).json()).records;
-  assert.deepEqual(rows.map((r) => [r.agentId, r.runId, r.issueId, r.rev, r.kind, r.component, r.costUsd, r.status]), [
-    ["box1", null, null, "def456", "agent", "agent", 0.03, "ok"],
-    ["box1", "prun1", "WOR-1", "def456", "agent", "agent", 0.03, "ok"],
-  ]);
-
-  // The run's third call is refused at its run cap, with the gateway's 402 as it is.
-  const refused = await call();
-  assert.equal(refused.status, 402);
-  assert.equal(JSON.parse(refused.text).error.type, "cap_reached");
-  // A run that ended is refused.
-  tokens.revoke("aidenhq-computer-x");
-  const ended = await fetch(`${front.url}/api/v1/responses`, { method: "POST", headers: { authorization: `Bearer ${runToken}` }, body: JSON.stringify({ model: "m" }) });
-  assert.equal(ended.status, 401);
+  t.after(() => { front.s.close(); gw.close(); });
+  for (const cred of ["eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJhZzEifQ.sig", "ahqc_x", "harness-key"]) {
+    const res = await fetch(`${front.url}/api/v1/chat/completions`, { method: "POST", headers: { authorization: `Bearer ${cred}`, "content-type": "application/json" }, body: JSON.stringify({ model: "m", messages: [] }) });
+    assert.equal(res.status, 401, cred);
+  }
 });
 
-test("gateway: the install cap counts every call of the day, no-agent ones too, and files one raise for the install", async (t) => {
+test("gateway: the install cap counts every call of the day, no-agent ones too, and files one raise for the install; the spend summary", async (t) => {
   const dir = mkdtempSync(join(tmpdir(), "gw-"));
   const secrets = { openrouter_key: "sk-real", gateway_job_secret: "job-secret", gateway_board_key: "gw-board", gateway_source_key: "src-key" };
   const grantsFile = join(dir, "grants.json");
@@ -261,20 +207,25 @@ test("gateway: the install cap counts every call of the day, no-agent ones too, 
   const upstream = await serve((req, res) => { req.resume(); req.on("end", () => json(res, 200, { id: `gen-${Math.random()}`, model: "m", choices: [], usage: { prompt_tokens: 1, completion_tokens: 1, cost: 0.03 } })); });
   const filed = [];
   const now = Date.parse("2026-11-18T10:00:00Z");
-  const gw = createGateway({ dbFile: join(dir, "usage.db"), grantsFile, settingsFile, secret: (n) => secrets[n] ?? "", upstream: upstream.url, fileRaiseCap: async (b) => void filed.push(b), now: () => now });
+  const gw = createGateway({ dbFile: join(dir, "usage.db"), grantsFile, settingsFile, secret: (n) => secrets[n] ?? "", upstream: upstream.url, fileRaiseCap: async (b) => void filed.push(b), jobLive: () => true, now: () => now });
   const front = await serve((req, res) => gw.handle(req, res));
   t.after(() => { upstream.s.close(); front.s.close(); gw.close(); });
   const call = async (cred) => {
     const res = await fetch(`${front.url}/api/v1/chat/completions`, { method: "POST", headers: { authorization: `Bearer ${cred}` }, body: JSON.stringify({ model: "m", max_tokens: 1024, messages: [] }) });
     return { status: res.status, body: await res.json() };
   };
-  const spend = async () => (await fetch(`${front.url}/spend`, { method: "POST", headers: { authorization: "Bearer gw-board" } })).json();
+  const spend = async () => (await fetch(`${front.url}/v1/spend/summary`, { headers: { authorization: "Bearer gw-board" } })).json();
   const reviewer = mintToken("job-secret", { kind: "reviewer" }, now); // a system kind: no agent, never capped per agent
 
-  // Two calls of different callers (an agent's job, then the uncapped reviewer) spend 0.06 of the install's 0.05.
-  assert.equal((await call(mintToken("job-secret", { agentId: "ag1", issueId: "iss1" }, now))).status, 200);
+  // Two calls of different callers (a kernel job of ag1, then the uncapped reviewer) spend 0.06 of the install's 0.05: the
+  // summary has today against the install cap and each agent's day against its own cap (the grants default here).
+  assert.equal((await call(mintToken("job-secret", { kind: "job", job: "j-0123456789abcdef", agentId: "ag1", issueId: "iss1" }, now))).status, 200);
   assert.equal((await call(reviewer)).status, 200);
-  assert.deepEqual(await spend(), { day: "2026-11-18", spent: 0.06, cap: 0.05 });
+  assert.deepEqual(await spend(), { day: "2026-11-18", install: { spent: 0.06, cap: 0.05 }, agents: [{ agent_id: "ag1", spent: 0.03, cap: 30 }] });
+  // A kernel job's calls name the job as their run: the run page's join.
+  const [jobCall] = (await (await fetch(`${front.url}/usage`, { method: "POST", headers: { authorization: "Bearer gw-board" }, body: "{}" })).json()).records.filter((r) => r.agentId === "ag1");
+  assert.equal(jobCall.runId, "j-0123456789abcdef");
+  assert.equal((await fetch(`${front.url}/v1/spend/summary`, { headers: { authorization: "Bearer nope" } })).status, 401);
   // Past it every caller is refused, the reviewer, the source writers and the board's side chat included: one raise, no task.
   for (const cred of [reviewer, "src-key", "gw-board", mintToken("job-secret", { agentId: "ag1", issueId: "iss1" }, now)]) {
     const r = await call(cred);
@@ -286,8 +237,8 @@ test("gateway: the install cap counts every call of the day, no-agent ones too, 
   // The owner's raise (the approved card): calls go through again, and the header shows the raised cap.
   gw.setCap("day", "install", "2026-11-18", 0.1);
   assert.equal((await call(reviewer)).status, 200);
-  assert.equal((await spend()).cap, 0.1);
+  assert.equal((await spend()).install.cap, 0.1);
   // Unset, no install cap at all.
   writeFileSync(settingsFile, JSON.stringify({ models: { m: price } }));
-  assert.equal((await spend()).cap, null);
+  assert.equal((await spend()).install.cap, null);
 });

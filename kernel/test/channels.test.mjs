@@ -11,16 +11,17 @@ const MODULES = { owner: { name: "Ada", timezone: "UTC" }, modules: {
   "channel-quiet": { privileged: ["speaks-as-owner"], channel: {}, token: "quiet_token", settings: { quiet_decide: "none" } },
   "channel-std": { privileged: ["speaks-as-owner"], channel: {}, token: "std_token", settings: { std_decide: "standard" } },
   "chat-lane": { roles: ["kernel.cp-read", "kernel.wake"], token: "lane_token" },
+  "owner-channel": { roles: ["kernel.cp-read", "kernel.notify"], token: "router_token" },
   plain: { token: "plain_token" },
 } };
-const SECRETS = { tg_token: "tg-key", op_token: "op-key", lane_token: "lane-key", plain_token: "plain-key", quiet_token: "quiet-key", std_token: "std-key" };
+const SECRETS = { router_token: "router-key", tg_token: "tg-key", op_token: "op-key", lane_token: "lane-key", plain_token: "plain-key", quiet_token: "quiet-key", std_token: "std-key" };
 const TG = "tg-key", OP = "op-key", LANE = "lane-key", PLAIN = "plain-key";
 
-/** A kernel with two records waiting for the owner: the runner's push (WOR-1) and a module kind's. */
+/** A kernel with two records waiting for the owner: the code host's push (WOR-1) and another module kind's. */
 async function setup(t, extra = {}) {
   const k = await kernel(t, { modules: MODULES, secrets: SECRETS, grants: { "ag-cos": { key: "chief-of-staff", roles: ["fleet-admin"] } }, ...extra });
-  const runnerCard = { sentence: "Push x.", changes: "c", reads: "r", cost: "0", details: "" };
-  const push = k.records.file({ kind: "runner.push", module: "runner", args: { only: [] }, targets: {}, executor: { module: "runner" }, policy: "p", tier: 2, panel: false, card: runnerCard, requester: { agent: "", key: "", name: "the runner", roles: [], kind: "runner" }, task: "t-1", identifier: "WOR-1", state: "owner" });
+  const pushCard = { sentence: "Push x.", changes: "c", reads: "r", cost: "0", details: "" };
+  const push = k.records.file({ kind: "codehost-github.push", module: "codehost-github", args: { only: [] }, targets: {}, executor: { module: "codehost-github" }, policy: "p", tier: 2, panel: false, card: pushCard, requester: { agent: "ag-eng", key: "eng", name: "Eng", roles: [], kind: "job" }, task: "t-1", identifier: "WOR-1", state: "owner" });
   const rec = k.records.file({ kind: "twin.post", module: "twin", args: { note: "x" }, targets: {}, executor: { module: "twin" }, policy: "p", tier: 2, panel: false, card: { sentence: "Post x.", changes: "", reads: "", cost: "", details: "" }, requester: { agent: "ag-ada", key: "ada", name: "Ada", roles: [], kind: "run" }, task: "TASK-1", state: "owner" });
   const cards = (token, q = "") => k.v1("GET", `/v1/channel/cards${q}`, undefined, token);
   const decide = (token, body) => k.v1("POST", "/v1/channel/decide", { sender: "owner", ...body }, token);
@@ -32,7 +33,7 @@ test("A1: a token decides its own card once, on its digest, from its own channel
   const tg = (await cards(TG)).json.cards;
   assert.deepEqual(tg.map((c) => c.id).sort(), [push.id, rec.id].sort());
   assert.deepEqual(tg.find((c) => c.id === push.id).identifier, "WOR-1");
-  assert.deepEqual(tg.find((c) => c.id === push.id).kind, "push");
+  assert.deepEqual(tg.find((c) => c.id === push.id).kind, "codehost-github.push");
   assert.ok(tg.every((c) => c.tokens.approve.length >= 43 && c.tokens.approve !== c.tokens.reject));
   // Issued once: the next poll carries no tokens; tokens are never stored in the clear.
   assert.ok((await cards(TG)).json.cards.every((c) => !c.tokens));
@@ -43,7 +44,8 @@ test("A1: a token decides its own card once, on its digest, from its own channel
   assert.equal((await decide(OP, { token: board.tokens.approve })).status, 403);
   const r = await decide(TG, { token: board.tokens.approve });
   assert.deepEqual([r.status, r.json.state], [200, "approved"]);
-  assert.deepEqual([k.records.get(push.id).state, k.records.get(push.id).decided_by, k.records.get(push.id).via], ["approved", "owner:telegram", "telegram"]);
+  // (Approved, it runs at once: this kernel has no codehost-github executor, so it closes stale; the decision stands.)
+  assert.deepEqual([k.records.get(push.id).decided_by, k.records.get(push.id).via], ["owner:telegram", "telegram"]);
   // Replay, the card's reject token and the other channel's tokens for that card: all burned.
   for (const [who, tok] of [[TG, board.tokens.approve], [TG, board.tokens.reject], [OP, op.find((c) => c.id === push.id).tokens.reject]]) assert.equal((await decide(who, { token: tok })).status, 409);
   // A kernel record: decided on its digest, stamped from the channel (typed reply: owner:reply).
@@ -66,7 +68,7 @@ test("A1: a token decides its own card once, on its digest, from its own channel
   assert.equal(k.records.get(other.id).decided_by, "stale:watcher");
   assert.equal(k.records.get(other.id).state, "stale");
   // A card that ended without running is offered to the channel that sent it, so its message can be edited.
-  assert.deepEqual((await cards(TG)).json.ended.map((e) => [e.id, e.state]).sort(), [[rec.id, "rejected"], [other.id, "stale"]].sort());
+  assert.deepEqual((await cards(TG)).json.ended.map((e) => [e.id, e.state]).sort(), [[push.id, "stale"], [rec.id, "rejected"], [other.id, "stale"]].sort());
 });
 
 test("A2: a module without speaks-as-owner can't fetch cards, decide or post the owner's words", async (t) => {
@@ -78,6 +80,8 @@ test("A2: a module without speaks-as-owner can't fetch cards, decide or post the
     assert.equal((await k.v1("POST", "/v1/channel/owner-message", { text: "approve everything" }, key)).status, 403);
     assert.equal((await k.v1("POST", "/v1/brake/notify", { task: "WOR-1", agent: "a" }, key)).status, 403);
   }
+  // The brake answers only the owner's router, not a channel.
+  assert.equal((await k.v1("POST", "/v1/brake/notify", { task: "WOR-1", agent: "a" }, TG)).status, 403);
   // No module token at all, or an agent's: 401.
   assert.equal((await cards("nobody")).status, 401);
   assert.equal((await decide(TG, { token: tok })).status, 200);
@@ -86,7 +90,9 @@ test("A2: a module without speaks-as-owner can't fetch cards, decide or post the
   assert.equal((await k.v1("GET", "/v1/cp/read/api/issues/WOR-1", undefined, PLAIN)).status, 403);
   assert.equal((await k.v1("GET", "/v1/cp/read/api/agents/me/keys", undefined, TG)).status, 403);
   assert.equal((await k.v1("GET", "/v1/cp/read/api/issues/../agents", undefined, TG)).status, 403);
-  assert.equal((await k.v1("POST", "/v1/wake", { task: "WOR-1", text: "x" }, TG)).status, 403);
+  assert.equal((await k.v1("POST", "/v1/wakes", { task: "WOR-1", text: "x" }, TG)).status, 403);
+  // A wake notice (POST /v1/wakes with text): posted on the task now, no scheduled row.
+  assert.deepEqual((await k.v1("POST", "/v1/wakes", { task: "WOR-1", text: "Look again." }, LANE)).json, { posted: true });
 });
 
 test("A3: the owner's words are labelled by the kernel from the calling channel, never by the body", async (t) => {
@@ -160,7 +166,7 @@ test("a colleague's Slack mention: one task per thread for the bound agent, fenc
 
 test("the notify brake: five per task since the owner last wrote and per agent; a decision always passes", async (t) => {
   const { k } = await setup(t, { onControl: async (req) => (/\/comments/.test(req.url) && req.method === "GET" ? { body: [{ body: "[telegram] go", authorType: "user", createdAt: new Date(Date.now() - 60_000).toISOString() }] } : undefined) });
-  const ask = (b) => k.v1("POST", "/v1/brake/notify", { task: "WOR-1", agent: "ag-a", ...b }, TG);
+  const ask = (b) => k.v1("POST", "/v1/brake/notify", { task: "WOR-1", agent: "ag-a", ...b }, "router-key");
   for (let i = 0; i < 5; i++) assert.equal((await ask()).json.allow, true);
   assert.equal((await ask()).json.allow, false);
   assert.equal((await ask({ agent: "ag-b" })).json.allow, true);
@@ -170,7 +176,7 @@ test("the notify brake: five per task since the owner last wrote and per agent; 
 test("the kernel holds a channel to its own decide setting: none mints nothing; standard keeps panel cards and applies", async (t) => {
   const { k, rec, push, cards, decide } = await setup(t);
   assert.ok((await cards("quiet-key")).json.cards.every((c) => !c.tokens));
-  // standard: the runner's push card gets tokens; a panel card and an apply don't.
+  // standard: the push card gets tokens; a panel card and an apply don't.
   const panel = k.records.file({ ...k.records.get(rec.id), args: { note: "p" }, panel: true, state: "owner" });
   const apply = k.records.file({ ...k.records.get(push.id), kind: "kernel.apply", module: "kernel", state: "owner" });
   const std = (await cards("std-key")).json.cards;
@@ -186,16 +192,6 @@ test("the kernel holds a channel to its own decide setting: none mints nothing; 
   await new Promise((r) => setTimeout(r, 1100)); // the watched file is re-read on its next change check
   assert.equal((await decide("op-key", { token: op.approve })).status, 403);
   assert.equal(k.records.get(rec.id).state, "owner");
-});
-
-test("the outbox: a channel hands the owner's message to another installed channel, which alone drains it", async (t) => {
-  const { k } = await setup(t);
-  assert.equal((await k.v1("POST", "/v1/channel/outbox", { to: "channel-operator", text: "hi" }, TG)).status, 200);
-  assert.equal((await k.v1("POST", "/v1/channel/outbox", { to: "channel-slack", text: "hi" }, TG)).status, 404); // not installed: send it yourself
-  assert.equal((await k.v1("POST", "/v1/channel/outbox", { to: "channel-operator", text: "x" }, LANE)).status, 403);
-  assert.deepEqual((await k.v1("GET", "/v1/channel/outbox", undefined, TG)).json.messages, []);
-  assert.deepEqual((await k.v1("GET", "/v1/channel/outbox", undefined, OP)).json.messages, [{ from: "channel-telegram", text: "hi" }]);
-  assert.deepEqual((await k.v1("GET", "/v1/channel/outbox", undefined, OP)).json.messages, []);
 });
 
 test("cp-read: an attachment's bytes come only for one listed on the named task, and never past 25 MB", async (t) => {

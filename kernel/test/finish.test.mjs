@@ -1,17 +1,19 @@
 // The finish gate (checks.ts): a module's task.finish check on every move to done, a module acting for an agent through
-// /v1/cp/agent and the runner's through /v1/finish; holds placed as the owner, released or resolved by the check's module.
+// /v1/cp/agent; holds placed as the owner, released or resolved by the check's module.
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { kernel, moduleServer, readBody, serve } from "./helpers.mjs";
 import { HARD_GATES } from "../src/gates.ts";
 
 const conn = (url, module, tools) => ({ url: `${url}/mcp`, auth_secret: `${module}_service_key`, module, returns: "trusted", tools: { read: [], write: [], destructive: [], ...tools } });
-const agents = { "run-jwt-ada": { id: "ag-ada", name: "Ada" } };
-const grants = { "ag-ada": { key: "ada", roles: [], tools: { todo: ["task_finish"] } } };
+const ADA = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 const TASK = "11111111-1111-1111-1111-111111111111";
+// A kernel job of Ada's on TASK; the kernel holds her Paperclip key (paperclip-agents/<id>) unless `keyless`.
+const agents = { "run-jwt-ada": { id: ADA, name: "Ada", task: TASK } };
+const grants = { [ADA]: { key: "ada", roles: [], tools: { todo: ["task_finish"] } } };
 
 /** A kernel with a task connection, one finish check answering `verdict(body)`, and a control plane holding one task. */
-async function setup(t, verdict, { agentsScope, checks, graded = false } = {}) {
+async function setup(t, verdict, { agentsScope, checks, graded = false, keyless = false } = {}) {
   const asked = [];
   const check = await serve(async (req, res) => {
     const body = JSON.parse((await readBody(req)) || "{}");
@@ -21,7 +23,7 @@ async function setup(t, verdict, { agentsScope, checks, graded = false } = {}) {
     res.writeHead(v.http ?? 200, { "content-type": "application/json" }).end(JSON.stringify(v.body ?? v));
   });
   t.after(() => check.s.close());
-  const issue = { id: TASK, identifier: "WOR-1", companyId: "co", status: "in_progress", assigneeAgentId: "ag-ada", assigneeUserId: null, createdByAgentId: "ag-cos", parentId: null, labelIds: ["lbl-x"], executionPolicy: { mode: "normal" } };
+  const issue = { id: TASK, identifier: "WOR-1", companyId: "co", status: "in_progress", assigneeAgentId: ADA, assigneeUserId: null, createdByAgentId: "ag-cos", parentId: null, labelIds: ["lbl-x"], executionPolicy: { mode: "normal" } };
   const writes = [];
   let k;
   const todo = await moduleServer(t, { key: "todo-key", tools: ["task_finish"], answer: async (msg, req) => {
@@ -29,7 +31,7 @@ async function setup(t, verdict, { agentsScope, checks, graded = false } = {}) {
     return { content: [{ type: "text", text: JSON.stringify({ status: r.status, json: await r.json() }) }] };
   } });
   k = await kernel(t, {
-    agents, grants: { "ag-ada": { ...grants["ag-ada"], ...(graded ? { graded: true } : {}) } }, secrets: { todo_service_key: "todo-key", judge_check_key: "check-key", judge_token: "judge-tok", other_token: "other-tok" },
+    agents, grants: { [ADA]: { ...grants[ADA], ...(graded ? { graded: true } : {}) } }, secrets: { todo_service_key: "todo-key", judge_check_key: "check-key", judge_token: "judge-tok", other_token: "other-tok", paperclip_post_key: "post-key", ...(keyless ? {} : { [`paperclip-agents/${ADA}`]: "ada-key" }) },
     connections: { todo: conn(todo.url, "todo", { write: ["task_finish"] }) },
     modules: { modules: { judge: { roles: ["kernel.cp-read"], token: "judge_token" }, other: { roles: ["kernel.cp-read"], token: "other_token" } } },
     checks: checks ?? ({ "judge.finish": { module: "judge", at: "task.finish", url: `${check.url}/check/finish`, auth_secret: "judge_check_key", label: "held", ...(agentsScope ? { agents: agentsScope } : {}) } }),
@@ -37,6 +39,9 @@ async function setup(t, verdict, { agentsScope, checks, graded = false } = {}) {
       if (req.method === "GET" && (req.url === `/api/issues/${TASK}` || req.url === "/api/issues/WOR-1")) return { body: issue };
       if (req.method === "GET" && req.url === "/api/companies/co/labels") return { body: [{ id: "lbl-x", name: "x" }, { id: "lbl-held", name: "held" }] };
       if (req.method === "PATCH") { const b = JSON.parse(body); writes.push({ as: auth, body: b }); Object.assign(issue, b); return { body: issue }; }
+      if (req.url === "/api/agents/me" && auth === "ada-key") return { body: { id: ADA, companyId: "co" } };
+      // The agent's own close goes through the plugin's post action (cp.ts): recorded as Ada's write.
+      if (req.url === "/api/plugins/aidenhq.events/actions/post") { const p = JSON.parse(body).params; writes.push({ as: auth, body: { status: p.status, gated: p.gated } }); Object.assign(issue, { status: p.status }); return { body: { data: { comment: null, child: null, found: false, status: p.status } } }; }
     },
   });
   const finish = async (body) => JSON.parse((await (await k.call("todo", "run-jwt-ada", { method: "tools/call", params: { name: "task_finish", arguments: { task: TASK, body } } })).json()).result.content[0].text);
@@ -50,7 +55,7 @@ test("a holding check: the move to done isn't forwarded; the owner holds the tas
   assert.deepEqual(r, { status: 202, json: { held: { state: "pending", reason: "The grader checks this task against its rubric." } } });
   // The check heard who is finishing, with what, on which task; with its own key.
   assert.equal(asked[0].auth, "Bearer check-key");
-  assert.deepEqual(asked[0].body, { task: { id: TASK, identifier: "WOR-1", status: "in_progress", assigneeAgentId: "ag-ada", assigneeUserId: null, createdByAgentId: "ag-cos", parentId: null }, agent: "ag-ada", tool: "task_finish", via: "task_finish" });
+  assert.deepEqual(asked[0].body, { task: { id: TASK, identifier: "WOR-1", status: "in_progress", assigneeAgentId: ADA, assigneeUserId: null, createdByAgentId: "ag-cos", parentId: null }, agent: ADA, tool: "task_finish", via: "task_finish" });
   // One write, as the owner (the board key); the agent's own move to done never reached the control plane.
   assert.deepEqual(writes, [{ as: "board-key", body: { status: "in_review", labelIds: ["lbl-x", "lbl-held"], executionPolicy: { mode: "normal", monitor: { nextCheckAt: until, notes: "The grader checks this task against its rubric." } } } }]);
 });
@@ -73,42 +78,39 @@ test("a deny refuses the close with its status and reason, and a failed check re
   assert.deepEqual(writes, []);
 });
 
-test("ok passes the agent's own change through as the agent; ok with unlabel drops the check's label first; other changes skip the gate", async (t) => {
+test("ok passes the close on: Ada's own write through the plugin, gated; ok with unlabel drops the check's label first; other changes skip the gate", async (t) => {
   let answer = { verdict: "ok" };
   const { asked, writes, issue, finish } = await setup(t, () => answer);
   let r = await finish({ status: "done", comment: "Done." });
   assert.equal(r.status, 200);
-  assert.deepEqual(writes, [{ as: "run-jwt-ada", body: { status: "done", comment: "Done." } }]);
+  assert.deepEqual(writes, [{ as: "ada-key", body: { status: "done", gated: true } }]);
   writes.length = 0;
+  Object.assign(issue, { status: "in_progress" });
   Object.assign(issue, { status: "in_review", labelIds: ["lbl-x", "lbl-held"] });
   answer = { verdict: "ok", unlabel: true };
   await finish({ status: "done" });
-  assert.deepEqual(writes, [{ as: "board-key", body: { labelIds: ["lbl-x"] } }, { as: "run-jwt-ada", body: { status: "done" } }]);
+  assert.deepEqual(writes, [{ as: "board-key", body: { labelIds: ["lbl-x"] } }, { as: "ada-key", body: { status: "done", gated: true } }]);
   const n = asked.length;
   await finish({ status: "blocked" });
   assert.equal(asked.length, n, "only a move to done asks the checks");
 });
 
-test("/v1/finish: the runner's own closes, with its key only", async (t) => {
-  const { k, asked, writes } = await setup(t, () => ({ verdict: "pending", state: "pending", reason: "r", until: "2026-11-17T12:00:00.000Z" }));
-  assert.equal((await k.v1("POST", "/v1/finish", { task: TASK, via: "finish_turn" }, "todo-key")).status, 401);
-  assert.equal((await k.v1("POST", "/v1/finish", { task: TASK, via: "task_finish" }, "the-runners-key")).status, 400);
-  const r = await k.v1("POST", "/v1/finish", { task: TASK, via: "finish_turn" }, "the-runners-key");
-  assert.deepEqual(r.json, { pass: false, state: "pending" });
-  assert.deepEqual(asked.at(-1).body.agent, null);
-  assert.equal(asked.at(-1).body.via, "finish_turn");
-  assert.equal(writes.at(-1).body.status, "in_review");
+test("no control-plane identity: refused before the finish gate runs", async (t) => {
+  const { asked, writes, finish } = await setup(t, () => ({ verdict: "ok" }), { keyless: true });
+  const r = await finish({ status: "done" });
+  assert.equal(r.status, 403);
+  assert.match(r.json.error.message, /no control-plane identity/);
+  assert.deepEqual([asked.length, writes.length], [0, 0]);
 });
-
 test("/v1/checks/:task: only the check's module; release drops its label; ok and reopen only resolve a hold it placed", async (t) => {
-  const { k, writes, issue } = await setup(t, () => ({ verdict: "pending", state: "pending", reason: "r", until: "2026-11-17T12:00:00.000Z" }));
+  const { k, writes, issue, finish } = await setup(t, () => ({ verdict: "pending", state: "pending", reason: "r", until: "2026-11-17T12:00:00.000Z" }));
   const resolve = (body, token = "judge-tok") => k.v1("POST", `/v1/checks/${TASK}`, body, token);
   assert.equal((await resolve({ verdict: "release" }, "other-tok")).status, 403);
   assert.equal((await resolve({ verdict: "ok" })).status, 409, "no hold yet");
   Object.assign(issue, { labelIds: ["lbl-x", "lbl-held"] });
   assert.equal((await resolve({ verdict: "release" })).status, 200);
   assert.deepEqual(writes.at(-1), { as: "board-key", body: { labelIds: ["lbl-x"] } });
-  await k.v1("POST", "/v1/finish", { task: TASK, via: "finish_turn" }, "the-runners-key");
+  await finish({ status: "done" });
   assert.equal((await resolve({ verdict: "ok", comment: "Graded: satisfied." })).status, 200);
   assert.deepEqual(writes.at(-1), { as: "board-key", body: { status: "done", comment: "Graded: satisfied." } });
   assert.equal((await resolve({ verdict: "reopen" })).status, 409, "the hold was resolved once");
@@ -132,7 +134,6 @@ test("the finish gate never fails open: a graded assignee's task with no check c
   r = await s.finish({ status: "done" });
   assert.equal(r.status, 503);
   assert.match(r.json.error.message, /the finish gate is unavailable: the finish checks didn't load \(Unexpected end of JSON input\)/);
-  assert.equal((await s.k.v1("POST", "/v1/finish", { task: TASK, via: "finish_turn" }, "the-runners-key")).status, 503);
   assert.deepEqual(s.writes, []);
 });
 
@@ -155,7 +156,7 @@ test("an undecided approval card of the task refuses the close, whatever the che
       else { s.k.records.decide(rec.id, rec.digest, "approve", "owner:board", "board"); s.k.records.claim(rec.id); s.k.records.finish(rec.id, true, "posted"); }
       r = await s.finish({ status: "done", comment: "Done." });
       assert.equal(r.status, 200, state);
-      assert.deepEqual(s.writes, [{ as: "run-jwt-ada", body: { status: "done", comment: "Done." } }]);
+      assert.deepEqual(s.writes, [{ as: "ada-key", body: { status: "done", gated: true } }]);
     }
   }
 });
@@ -169,7 +170,7 @@ test("observe mode (gates.ts): a check's deny becomes a would-block entry and th
   const url = check.url;
   let s = await setup(t, deny, { checks: judge(url, "observe") });
   assert.equal((await s.finish({ status: "done" })).status, 200);
-  assert.deepEqual(s.writes, [{ as: "run-jwt-ada", body: { status: "done" } }]);
+  assert.deepEqual(s.writes, [{ as: "ada-key", body: { status: "done", gated: true } }], "Ada's own close, never the owner's");
   const rows = s.k.records.db.prepare("SELECT data FROM events WHERE type = 'gate.would_block'").all().map((r) => JSON.parse(r.data));
   assert.deepEqual(rows, [{ gate: "judge.finish", task: "WOR-1", verdict: "deny", reason: "no rubric attached", via: "task_finish" }]);
   // Enforcing: the same deny refuses.

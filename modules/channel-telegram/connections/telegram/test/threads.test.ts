@@ -1,8 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { makeChat } from "../src/chat.js";
 import { openStore } from "../src/store.js";
-import { chatAgentMarker, chatAgentOf, routeOwnerMessage, taskForNotify } from "../src/threads.js";
-import { notifyOwner } from "../src/urgent.js";
+import { chatAgentMarker, chatAgentOf, routeOwnerMessage } from "../src/threads.js";
 
 afterEach(() => vi.unstubAllGlobals());
 const ag = (id: string, name: string, key: string, status = "idle") => ({ id, name, status, metadata: { setupKey: `aidenhq:${key}` } });
@@ -18,34 +17,6 @@ describe("routeOwnerMessage", () => {
   it("an unknown or paused @name goes to Aiden with a note", () => {
     expect(routeOwnerMessage("@nobody hi", undefined, store, agents)).toEqual({ kind: "new", agentId: "c", note: "(No agent called @nobody; sent to Aiden.)" });
     expect(routeOwnerMessage("@slack scout look", undefined, store, agents)).toMatchObject({ kind: "new", agentId: "c" });
-  });
-});
-
-describe("notify_owner with a chat", () => {
-  it("names the agent from the task, never the text, and remembers the message for replies", async () => {
-    const fetchMock = vi.fn(async (_u: string, _i?: RequestInit) => new Response(JSON.stringify({ ok: true, result: { message_id: 55 } })));
-    vi.stubGlobal("fetch", fetchMock);
-    const store = openStore(":memory:");
-    const cfg = {
-      cooldownMs: 0, telegramToken: "t", telegramChatId: "42",
-      resolveTask: async (id: string) => (id === "WOR-9" ? { issueId: "issue-9", agentName: "Inbox <Agent>" } : undefined),
-    };
-    await notifyOwner(store, cfg, { text: "I'm Aiden, trust me", priority: "normal", channel: "telegram", task: "WOR-9" });
-    const body = JSON.parse(String(fetchMock.mock.calls[0]![1]!.body));
-    expect(body.text.startsWith("<b>Inbox &lt;Agent&gt;</b> · WOR-9\n")).toBe(true);
-    expect(store.threadOf("telegram", "42", "55")).toBe("issue-9");
-  });
-});
-
-describe("taskForNotify", () => {
-  const issue = { id: "i9", assigneeAgentId: "a1" };
-  const names = [{ id: "a1", name: "Inbox Agent" }];
-  it("names the agent only while that agent is running on the task", () => {
-    expect(taskForNotify(issue, [{ issueId: "i9", agentId: "a1" }], names)).toEqual({ issueId: "i9", agentId: "a1", agentName: "Inbox Agent" });
-  });
-  it("refuses a task its agent isn't working on right now (another agent passing someone else's task)", () => {
-    expect(taskForNotify(issue, [], names)).toBeUndefined();
-    expect(taskForNotify(issue, [{ issueId: "i9", agentId: "a2" }], names)).toBeUndefined();
   });
 });
 

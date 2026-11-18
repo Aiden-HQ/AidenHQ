@@ -19,7 +19,7 @@ export interface FeatureCost {
   tasks: number;
   usd: number;
   calls: number;
-  /** Engineer jobs, and their wall time: for each, the span of its model calls (a job reported only as one record has none). */
+  /** Kernel jobs (agent runs) on the tree, and their wall time: for each, the span of its model calls. */
   jobs: number;
   jobMs: number;
   /** From the root's creation to the last task's completion or merge; to now while any task is still open. */
@@ -62,7 +62,7 @@ export function featureCost(root: Issue, tree: Issue[], usage: RunUsage[], appro
   const all = [root, ...tree];
   const ours = new Set(all.flatMap((i) => [i.id, i.identifier]));
   const calls = usage.filter((u) => u.issueId !== null && ours.has(u.issueId));
-  const jobs = calls.filter((u) => u.engineer);
+  const jobs = calls.filter((u) => u.job);
   const merged = approvals.filter((a) => a.action === "merge" && a.outcome === "applied" && (ours.has(a.issueId) || ours.has(a.identifier)));
   const running = !all.every(isClosed);
   const last = Math.max(...all.filter(isClosed).map(closedAt), ...merged.map((a) => Date.parse(a.usedAt ?? a.createdAt)));

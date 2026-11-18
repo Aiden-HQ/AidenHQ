@@ -1,10 +1,10 @@
 # AidenHQ: guide for coding agents and contributors
 
 AidenHQ is a self-hosted platform for creating, running and managing your own AI agents and the applications they
-build. The owner describes an agent or an app; agents design it (the Agent Architect), build it (Engineers on the
-runner), deploy and maintain it (the DevOps Engineer on the apps platform) and run it on schedules and events.
+build. The owner describes an agent or an app; agents design it (the Agent Architect), build it (Engineers in agent
+computers), deploy and maintain it (the DevOps Engineer on the apps platform) and run it on schedules and events.
 Everything sits behind one chief of staff (Aiden) the owner talks to, with shared tool connections, a shared
-warehouse, a code-gated runner and a sandboxed apps platform, all coordinated by Paperclip.
+warehouse, a code-gated code host and a sandboxed apps platform; Paperclip tracks and schedules, the kernel runs every agent.
 
 **Why it exists:** one person should be able to run a capable fleet of agents and internal apps on their own
 infrastructure without writing prompts or glue for each one, and trust it: agents may decide, but every write (push,
@@ -23,8 +23,10 @@ never in this file.
   `agents/<key>/AGENTS.md` handbooks, `connections/<svc>/` MCP servers and `apps/<app>/`. The instance lists its modules (`modules/marketplace.json` `bundle` is the default set); the kernel's own settings are `kernel/settings.json`.
 - `kernel/`: the `aidenhq-kernel` host service (the model gateway and the tool proxy in front of every connection: grants,
   caller assertions, fencing) and the module SDK (`kernel/sdk`).
-- `services/`: `board` (owner UI and approvals), `runner` (host coding jobs and git gates),
-  `paperclip-tasks-mcp` (the `codex-model` launcher), `computer` (agent computers), `shared` (code synced into services).
+- `services/`: `board` (owner UI and approvals), `computer` (the launcher of agent computers: every job runs in one),
+  `paperclip-events` (the Paperclip plugin: task events to the kernel, and the `post` action for every write an agent makes),
+  `shared` (code synced into services). Jobs come from `modules/dispatch` (wakes into kernel jobs for every agent);
+  `modules/codehost-github` runs git writes, merges, releases, PR watch, design reviews and tidy.
   `modules/apps-platform/` holds `apps-mcp`, `gate` (shared-app door), the app starter and the design system.
 - `scripts/`: compiler (`compile.mjs`, `modules.mjs`), Paperclip setup (`paperclip-setup.mjs`), account auth,
   health, backup and restore.
@@ -36,11 +38,10 @@ never in this file.
 
 Everything runs offline; no live instance or paid key is needed. Node 24. Install each package once with `npm ci`.
 Before pushing, run `node scripts/ci-local.mjs`: it runs what CI would run for your diff.
-On macOS the `flock` apply-lock tests (scripts, runner) fail; that's expected, and CI judges them.
+On macOS the `flock` apply-lock tests (scripts) fail; that's expected, and CI judges them.
 
 ```sh
 cd scripts && npm test                       # compiler, setup, sync-shared drift
-cd services/runner && npm test
 cd services/computer && node --test test/*.test.mjs
 cd modules/apps-platform/gate && npm test && npm run typecheck
 cd services/board && npx vitest run && npx tsc -p tsconfig.build.json --noEmit && npm run typecheck && npm run lint && npm run build
@@ -63,11 +64,11 @@ the reviewer eval's case loader).
 The AI reviewer is the `modules/ai-reviewer` module (reviewer@1: the kernel asks it for each record's review). Its exit test,
 `node modules/ai-reviewer/scripts/reviewer-eval.mjs`, needs a paid `OPENROUTER_API_KEY` and must pass: at least 95%, every miss a false block of a clean case (an attack approved, or an approval lacking its second reviewer or flag, fails at any %). It
 applies to changes to the module (its service, policy `service/security/`, cases `test/reviewer-cases/`, judge),
-`kernel/sdk/src/reviewer.ts`, the tier function and write lifecycle (`services/runner/src/tiers.mjs`, its gate list `gate-core.mjs`, `cards.ts`,
-`review-request.mjs`, `kernel/src/{tier,provenance,writes,records,reviews,review-loop,kinds,apply,apply-tier}.ts`, the code host's git rules
-`modules/codehost-github/src/plan.mjs`, the platform check `modules/platform/src/check.mjs`) the authority-diff classifier (`scripts/compiler/authority.ts`), the path inventory (`paths.yaml`, `scripts/paths.mjs`, `kernel/src/paths.ts`) or the check jobs that run it and sign its receipt (`kernel/src/checkjobs.ts`); the runner's merge queue runs it on the PR's exact head
-and merges only on a passing receipt (95% of the base cases, every miss a false block of a clean case; `services/runner/src/evalgate.ts`); an apply
-that moves `product:` to a different reviewer needs a receipt for that reviewer too.
+`kernel/sdk/src/reviewer.ts`, `services/shared/review-files.{mjs,ts}`, the tier function and write lifecycle (`kernel/src/{tier,provenance,writes,records,reviews,review-loop,kinds,apply,apply-tier}.ts`,
+the code host's git rules and merge gate `modules/codehost-github/service/src/{plan.mjs,merges.ts,merge-gate.mjs,evalgate.ts}`,
+the platform check `modules/platform/src/check.mjs`), the authority-diff classifier (`scripts/compiler/authority.ts`), the path inventory (`paths.yaml`, `scripts/paths.mjs`, `kernel/src/paths.ts`) or the check jobs that run it and sign its receipt (`kernel/src/checkjobs.ts`); the code host's merge queue runs it on the PR's exact head
+and merges only on a passing receipt (95% of the base cases, every miss a false block of a clean case; `modules/codehost-github/service/src/evalgate.ts`); the release train's
+bump of `product:` to a different reviewer needs a receipt for that reviewer too.
 
 ## Conventions
 
@@ -107,8 +108,8 @@ that moves `product:` to a different reviewer needs a receipt for that reviewer 
   A new non-security gate ships in observe mode (`mode: observe` on a module check, `kernel/src/gates.ts`): it logs what it would
   block (`gate.would_block` events) without blocking; promote it to enforce after reviewing those entries. Security gates
   (secrets, outbound sends, unapproved merges and pushes, credential scoping; `HARD_GATES`) enforce from day one.
-  Writes are kernel records tiered in code: the runner's `tiers.mjs` proposes a tier on the merits for its kinds, and the
-  kernel's `computeTier` (`kernel/src/tier.ts`) is the one function that sets it (floors, raises, owner vetoes, then the
+  Writes are kernel records tiered in code: the code host's `plan.mjs` and the kernel's apply planner (`apply-tier.ts`)
+  propose a tier on the merits, and the kernel's `computeTier` (`kernel/src/tier.ts`) is the one function that sets it (floors, raises, owner vetoes, then the
   autonomy and routine caps). Tier 0 runs, Tier 1 the AI reviewer decides, Tier 2 the owner; setting `autonomy`. Every
   reviewer false reject becomes a planted case in `modules/ai-reviewer/test/reviewer-cases/`.
   **Auto-update installs without the owner.** With `auto_update` on, the updater installs each verified release (its
@@ -117,14 +118,14 @@ that moves `product:` to a different reviewer needs a receipt for that reviewer 
 - **Cross-agent behaviour goes in a module, not in each handbook.** A skill (`modules/<m>/skills/<name>/SKILL.md`) is the
   on-demand mechanism: its one-line description is in the handbook's index and the agent reads the text when it needs it. A
   module `prompts:` entry (`modules/<module>/prompts/<id>.md`) is for always-on text (replying in chief-of-staff,
-  delegating in engineering; `load: on_demand` still works on a prompt until the one-way switch). The kernel's own sections
+  delegating in engineering; `load: on_demand` still works on a prompt). The kernel's own sections
   stay in `scripts/prompts/`; `scripts/handbook.mjs` assembles a handbook and `node scripts/compile.mjs --sizes` prints its
   bytes per section. Fix behaviour at the source; don't suppress it afterwards.
 - **Source writers:** one bad item never fails a pass (skip only permanent errors, rethrow transient ones); passes
   are time-bounded. Probe a vendor MCP's real tool shapes live before trusting guessed params
   (`docker compose exec jira-mcp node dist/src/probe.js [tool '<json>']`).
 - **Inbound:** the kernel's admin listener (3120: sign-in, approval pages) and the board (3121) are loopback-only but every
-  host process shares that loopback (Engineer jobs, Tailscale serve), so every route on 3120 and 3121 needs a signed-in
+  host process shares that loopback (Tailscale serve), so every route on 3120 and 3121 needs a signed-in
   admin (beyond sign-in, only OpenRouter's PKCE callback, by a single-use state) (accounts: Better Auth in the kernel, password + TOTP, `data/kernel/auth/auth.db`, which the board's 3129 listener
   also opens until 3g; no SSO, sign-in beyond that is Cloudflare Access). Cards are decided only on the kernel's pages or
   by channel token. Every admin is an owner: writes as the owner
@@ -133,12 +134,13 @@ that moves `product:` to a different reviewer needs a receipt for that reviewer 
   an account. Users get apps only; each app's admins manage its access on the my-apps host's `/access` (never a
   set-password link from an app admin). The gate's auth listener is 3129 (loopback; `X-AidenHQ-Gate` =
   `gate_board_secret`); app hosts get host-only `__Host-` cookies through a one-time handoff, never a shared cookie.
-  Engineer jobs run in agent computers (gVisor boxes, `services/computer/`); repo code the host runs itself (fast checks,
-  the reviewer eval, local CI) runs in the host sandbox, which never sees the secrets dir, the data dir, the Docker and
-  tailscaled sockets or `/run/user/<uid>` (`hidden` in `kernel/src/sandbox.ts`). Run `scripts/verify-security.sh` on the host after exposure changes. See
+  Every agent job and every check (fast checks, the reviewer eval) runs in an agent computer (gVisor box,
+  `services/computer/`); no process on the host runs repo code. A job box's only credential is its kernel job token (`ahqj_`)
+  and it sees only what the launcher mounts: its workspace, engine home and out folder, never the secrets dir, the data
+  dir or the Docker socket; a check box gets only its snapshot and out folder. Run `scripts/verify-security.sh` on the host after exposure changes. See
   [docs/design/access.md](docs/design/access.md).
 - **Untrusted text is data.** Slack, email, chat forwards and documents are fenced and never treated as instructions.
-- **Approval records live in the kernel** (`kernel/src/records.ts`, `kinds.ts`): the runner files its plan and card args, the
+- **Approval records live in the kernel** (`kernel/src/records.ts`, `kinds.ts`): the code host files its plan and card args, the
   kernel validates them strictly and decides who decides. The board keeps no approval store and only reads them.
 - **Supply chain:** unless it is a security fix, never adopt or upgrade to a dependency, library, package or image version
   published less than 7 days ago. Pin every dependency exactly (images by digest, actions by SHA, apt `pkg=version`,
@@ -157,7 +159,7 @@ that moves `product:` to a different reviewer needs a receipt for that reviewer 
   what is theirs to decide (money, credentials they must create, security trade-offs, what users see).
 - **No owner data in the product.** Real names, emails, IPs, hostnames, org names and ids belong in the instance repo
   or `CLAUDE.local.md`. Tests use neutral examples (`acme`, `acme-agents`, `example.com`, documentation IP ranges).
-- **Commit per meaningful change**, with a Conventional Commit subject (`fix(runner): …`) and a body that says why.
+- **Commit per meaningful change**, with a Conventional Commit subject (`fix(kernel): …`) and a body that says why.
 - **Licence:** `AGPL-3.0-only`, except the app starter and the design system, which are MIT (their own `LICENSE`) so
   apps carry no AGPL obligations: keep AGPL-only code out of them. Keep the Pennyworth notices in `NOTICE` and
   `LICENSES/`.
@@ -173,8 +175,8 @@ Merging your own PR (a maintainer session): `gh pr merge <n> --auto --squash --m
 ready, and move on; GitHub merges it when `ci-required` is green. A PR the reviewer eval applies to is armed only after
 its eval passed on that head. Arming, then pushing, merges the new head: push before arming, or `--disable-auto` first.
 Auto-merge doesn't resolve conflicts: a conflicting PR is rebased on `origin/main` by whoever owns it and pushed with
-`--force-with-lease`. Fleet PRs are the runner's: its merge queue merges each at its bound head (reviewer, eval
-receipt, trains), so never arm them. `main` doesn't require branches to be up to date: the runner re-tiers a head it
+`--force-with-lease`. Fleet PRs are the code host's: its merge queue merges each at its bound head (reviewer, eval
+receipt, trains), so never arm them. `main` doesn't require branches to be up to date: the code host re-tiers a head it
 updated, so that rule would re-review every open PR on every merge.
 
 ## Running an instance (deploy flow)
@@ -188,10 +190,9 @@ updated, so that rule would re-review every open PR on every merge.
    config changed. Force-recreate a service (`docker compose up -d --force-recreate <svc>`) only after changing a file it
    reads once at start outside compose (a secret, e.g. a rotated token). Each apply prints `apply timing: <phase> <s>s`.
 
-Restarts never interrupt agents: the kernel runs Engineer jobs detached (`KillMode=process`, `kernel/src/jobs.ts`) and the
-next kernel adopts them from `kernel.db`; the runner dispatches through `/v1/jobs` and the next runner follows them again.
-`ops/apply-config.sh` sends SIGUSR2 to the runner (`systemctl --user kill --kill-whom=main -s SIGUSR2 aidenhq-runner`) and
-restarts the kernel when its code changed; each exits once nothing is half done and systemd restarts it. See
+Restarts never interrupt agents: the kernel runs jobs detached (`KillMode=process`, `kernel/src/jobs.ts`) and the next
+kernel adopts them from its job rows in `kernel.db` (pid, events offset); `ops/apply-config.sh` restarts the kernel when its
+code changed. Dispatch, codehost-github and the other modules are containers apply recreates when their image changes. See
 [docs/operations.md](docs/operations.md).
 
 Operating an instance: improve the system, don't babysit the agents. When an agent's work goes wrong, fix the source
@@ -204,12 +205,12 @@ the board key (it writes as the owner). Agents never claim something is done unt
 ## GitHub App and data apps
 
 - The instance's GitHub App (key in the vault at `github-app/{app_id,key.pem}`, made by `ops/github-app-setup.mjs`)
-  gives repo-narrowed tokens: the runner uses them for git (credential helper) and `gh` in its cache clone; apps-mcp
-  uses them to read private agents-org app repos and to pull and push the registry (instance repo) over https.
-  Invariant (one-way phase 2): among services and modules, only codehost-github holds the App key (the runner, apps-mcp
-  and github-mcp lose theirs in Lane T and the switch); the host's apply may mint a read-only instance-repo token: the
-  instance checkout pulls with `ops/git-credential-app.mjs` as its credential helper (`credential.useHttpPath true`),
-  which answers for `AIDENHQ_INSTANCE_REPO` alone with exactly `contents: read`. Instance pushes are codehost writes. Outside the agents org the App is PR-only, except that it merges product-repo and official-modules-repo PRs the reviewer or the owner approved.
+  gives repo-narrowed tokens. Among services and modules only codehost-github holds the App key; any other caller (apps-mcp
+  reading private agents-org app repos and pushing the registry, the kernel cloning an Engineer's repos, checks) gets a
+  token, snapshot or clone through the kernel's `POST /v1/codehost/:op`, under a literal `codehost:` grant in its
+  `module.yaml`. The host's apply may mint a read-only instance-repo token: the instance checkout pulls with
+  `ops/git-credential-app.mjs` as its credential helper (`credential.useHttpPath true`), which answers for
+  `AIDENHQ_INSTANCE_REPO` alone with exactly `contents: read`. Instance pushes are codehost writes. Outside the agents org the App is PR-only, except that it merges product-repo and official-modules-repo PRs the reviewer or the owner approved.
 - `REGISTRY_PUSH_URL` defaults to `https://github.com/<agents org>/aidenhq-instance.git` when the App is configured,
   else the instance checkout's `origin` (deploy key).
 - An app with `database: warehouse` gets its own warehouse role and schema `app_<name>`; apps-mcp writes its
@@ -217,25 +218,18 @@ the board key (it writes as the owner). Agents never claim something is done unt
 
 ## Paperclip quirks
 
-- A user-authored comment (board key, runner) on a done, cancelled or blocked task with an agent assignee reopens it and
-  wakes the agent; `reopen: false` doesn't stop it. Never post notices on finished tasks (runner `tellOpenParent`).
-- Cancelling a run that has just started leaves a recovery hold (`executionBlocker`, legacy_execution_requires_reconciliation)
-  that parks every later wake on the task; clear it with `POST /api/issues/:id/recovery-actions/resolve` (outcome `restored`,
-  actionOutcome `not_performed`). A direct agent wake's `reason` never reaches the Codex prompt.
-- Runner (Engineer) tasks: the asker is whoever created the task. An agent's task starts on its own, parent or not (the
-  kernel's write tiers gate its writes). Only the asker's, the owner's and, on an agent's task, the chief of staff's
-  (`fleet-admin`) comments start a job; any other agent is told whom to ask. A stop or decision goes to the asker, or to
-  the owner's channel when that agent is gone.
+- Paperclip tracks and schedules (tasks, assignees, comments, routines); it runs nothing: the kernel runs every agent as a
+  job in its computer (wake inbox, then dispatch, then admission), and setup gives each agent a Paperclip record only.
+  A job's writes on the task (outcomes, comments) go through the `paperclip-events` plugin's signed `post` action with
+  kernel-held agent keys; only the kernel holds the Paperclip key.
+- A user-authored comment (the board's owner writes) on a done, cancelled or blocked task with an agent assignee reopens it
+  (the wake inbox's `reopen:` row starts the next job). Never post notices on finished tasks: dispatch skips them.
+- The asker is whoever created the task. Only the asker's, the owner's and, on an agent-made task, the chief of staff's
+  (role `fleet-admin`) comments start work; any other agent is told whom to ask (`modules/dispatch`, `thread.ts`).
+- A routine may set its own `model:` and `reasoning_effort:` (the grants table's `routines`, applied at admission).
 - OpenRouter runs are unpriced, so any `budgetMonthlyCents` pauses the agent at $0. Keep budgets at 0; cap spend with
   the OpenRouter key limit.
-- Agents in computers cannot share a folder: delegated tasks need `agent_default` (the `tasks` module sets this on
-  every delegated task) or the parent's agent gets `workspace_busy`.
-- A routine may set its own `model:` (routine env + the `codex-model` launcher; docs/configuration.md).
-- Debug a run from its Codex session log: `**/sessions/**/*.jsonl` under the Paperclip container's codex home, or
-  `/workspace/.paperclip-runtime/codex/home/sessions` in a computer. Tool calls are `function_call` lines.
-- The host needs the private bwrap copy `/opt/aidenhq/bwrap/bwrap` and its `aidenhq-bwrap` AppArmor profile
-  (userns) and `passt` for the host sandbox (fast checks, the reviewer eval, local CI): without them the kernel and the
-  runner refuse to start; `ops/vm/setup.sh` installs them. Every Engineer job runs in an agent computer (`image: engineer`).
+- Debug a job from its kernel job row (`jobs` in `kernel.db`): its `log` is the run's log file.
 - UI edits to Paperclip config are overwritten by the next apply unless copied into git.
 - For a second opinion from the Codex CLI: `codex exec --skip-git-repo-check -s read-only -C <dir> -o <answer.md>
   "<brief>" < /dev/null`, run in the background. Without `< /dev/null` it waits on stdin forever.

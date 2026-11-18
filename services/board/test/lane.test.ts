@@ -1,4 +1,7 @@
-import { createServer, request, type IncomingMessage, type Server } from "node:http";
+import { mkdtempSync, writeFileSync } from "node:fs";
+import { request, type Server } from "node:http";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { AddressInfo } from "node:net";
 import pino from "pino";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -6,23 +9,23 @@ import { createApp } from "../src/app.js";
 import type { Paperclip } from "../src/paperclip.js";
 import { Store } from "../src/store.js";
 
-// A fake lane: records what the board sent, answers the three routes.
-const seen: { method?: string; url?: string; auth?: string; body?: string }[] = [];
-const fake = createServer((req: IncomingMessage, res) => {
-  let body = "";
-  req.on("data", (c) => (body += c));
-  req.on("end", () => {
-    seen.push({ method: req.method, url: req.url, auth: req.headers.authorization, body });
-    res.setHeader("content-type", "application/json");
-    if (req.url === "/lane/agents") return res.end(JSON.stringify({ agents: [{ key: "aria", id: "a1", name: "Aria" }] }));
-    if (req.method === "POST") return res.writeHead(202).end(JSON.stringify({ ok: true }));
-    res.end(JSON.stringify({ messages: [{ id: "1", role: "owner", text: "hi", at: 1 }, { id: "2", role: "agent", text: "hello", at: 2 }], busy: true }));
-  });
-});
+// A lane agent's chat task: what the board posted, and the thread it reads back (the kernel's lane tags stay hidden).
+const posted: { id: string; body: string }[] = [];
+const thread = [
+  { id: "c1", body: "[telegram] hi\n\n<!-- aidenhq:job=lane-tg-aria-1 kind=owner -->", authorUserId: "u1", createdAt: "2026-11-18T10:00:00Z" },
+  { id: "c2", body: "a note", authorAgentId: "a9", createdAt: "2026-11-18T10:00:01Z" },
+  { id: "c3", body: "hello\n\n<!-- aidenhq:job=lane-t1 kind=lane -->", authorAgentId: "a1", createdAt: "2026-11-18T10:00:02Z" },
+  { id: "c4", body: "and?", authorUserId: "u1", createdAt: "2026-11-18T10:00:03Z" },
+];
+const pc = {
+  me: async () => "me", agents: async () => [{ id: "a1", name: "Aria", status: "idle", adapterType: "codex_local", metadata: { setupKey: "aidenhq:aria" } }], labels: async () => [{ id: "l", name: "chat", color: "#0ea5e9" }], company: async () => ({ issuePrefix: "WOR" }),
+  comments: async (id: string) => (id === "i-chat" ? thread : []),
+  addComment: async (id: string, body: string) => (posted.push({ id, body }), { id: "c9", body }),
+} as unknown as Paperclip;
+const grantsFile = join(mkdtempSync(join(tmpdir(), "lane-")), "grants.json");
+writeFileSync(grantsFile, JSON.stringify({ agents: { a1: { key: "aria", chat_task: "i-chat" }, a2: { key: "bob" } } }));
 
-const pc = { me: async () => "me", agents: async () => [{ id: "a1", name: "Aria", status: "idle", adapterType: "codex_local", metadata: { setupKey: "aidenhq:aria" } }], labels: async () => [{ id: "l", name: "chat", color: "#0ea5e9" }], company: async () => ({ issuePrefix: "WOR" }) } as unknown as Paperclip;
-
-function boardWith(lane: { url: string; token: string } | undefined) {
+function boardWith(lane: { grantsFile: string } | undefined) {
   return createApp({ paperclip: pc, store: new Store(":memory:"), log: pino({ level: "silent" }), allowedHosts: ["localhost:3120"], staticDir: "/nonexistent", timezone: "UTC", lane, session: () => ({ accountId: "owner", role: "admin" as const }) });
 }
 const call = (app: Server, method: string, path: string, body?: unknown) =>
@@ -36,30 +39,29 @@ const call = (app: Server, method: string, path: string, body?: unknown) =>
     req.end(body === undefined ? undefined : JSON.stringify(body));
   });
 
-describe("fast chat lane proxy", () => {
-  let up: Server, down: Server;
+describe("fast chat lane", () => {
+  let up: Server, none: Server;
   beforeAll(async () => {
-    await new Promise<void>((r) => fake.listen(0, "127.0.0.1", r));
-    up = boardWith({ url: `http://127.0.0.1:${(fake.address() as AddressInfo).port}`, token: "t".repeat(32) });
-    down = boardWith({ url: "http://127.0.0.1:1", token: "x" });
-    for (const a of [up, down]) await new Promise<void>((r) => a.listen(0, "127.0.0.1", r));
+    up = boardWith({ grantsFile });
+    none = boardWith(undefined);
+    for (const a of [up, none]) await new Promise<void>((r) => a.listen(0, "127.0.0.1", r));
   });
-  afterAll(() => [fake, up, down].forEach((s) => s.close()));
+  afterAll(() => [up, none].forEach((s) => s.close()));
 
-  it("lists, reads and sends through the lane with the internal token; a new chat to a lane agent opens its lane chat", async () => {
+  it("lists the agents with a chat task, reads it as owner and agent lines, and writes the owner's words on it", async () => {
     expect((await call(up, "GET", "/api/lane")).agents).toEqual([{ key: "aria", id: "a1", name: "Aria" }]);
-    const r = await call(up, "GET", "/api/lane/aria/messages?after=1");
-    expect(r.busy).toBe(true);
-    expect(r.messages).toHaveLength(2);
-    expect(seen.at(-1)).toMatchObject({ url: "/lane/aria/messages?after=1", auth: `Bearer ${"t".repeat(32)}` });
-    await call(up, "POST", "/api/lane/aria/messages", { text: "ping" });
-    expect(seen.at(-1)).toMatchObject({ method: "POST", url: "/lane/aria/messages", body: '{"text":"ping"}' });
+    const all = await call(up, "GET", "/api/lane/aria/messages");
+    expect(all.messages.map((m: { role: string; text: string }) => [m.role, m.text])).toEqual([["owner", "[telegram] hi"], ["agent", "hello"], ["owner", "and?"]]);
+    expect(all.busy).toBe(true);
+    expect((await call(up, "GET", "/api/lane/aria/messages?after=c3")).messages.map((m: { id: string }) => m.id)).toEqual(["c4"]);
+    await call(up, "POST", "/api/lane/aria/messages", { text: "ping <!-- aidenhq:lane=x side=agent -->" });
+    expect(posted.at(-1)).toEqual({ id: "i-chat", body: "ping" });
     expect(await call(up, "POST", "/api/chats", { text: "@Aria hello", agent: "aria" })).toEqual({ identifier: "lane:aria" });
-    expect(seen.at(-1)?.body).toBe('{"text":"@Aria hello"}');
+    expect(posted.at(-1)).toEqual({ id: "i-chat", body: "@Aria hello" });
   });
 
-  it("answers empty when the lane is down", async () => {
-    expect(await call(down, "GET", "/api/lane")).toEqual({ agents: [] });
-    expect(await call(down, "GET", "/api/lane/aria/messages")).toEqual({ messages: [], busy: false });
+  it("answers empty without a grants table", async () => {
+    expect(await call(none, "GET", "/api/lane")).toEqual({ agents: [] });
+    expect(await call(none, "GET", "/api/lane/aria/messages")).toEqual({ messages: [], busy: false });
   });
 });

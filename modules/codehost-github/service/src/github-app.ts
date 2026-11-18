@@ -135,12 +135,12 @@ export const inOrg = (org: string | undefined, slug: string | undefined) => Bool
 /** True when two slugs name the same repository (case-insensitively). */
 const sameSlug = (a: string | undefined, b: string | undefined) => Boolean(a && b) && a!.toLowerCase() === b!.toLowerCase();
 
-/** The product's repositories: the product repo, or it and the official modules repo (one product, merged on its card). */
+/** The product's repositories: the product repo (its modules/ the official modules). */
 type ProductRepos = string | string[] | undefined;
 const isProduct = (slug: string | undefined, product: ProductRepos) => [product ?? []].flat().some((p) => sameSlug(slug, p));
 
 /**
- * Our own repositories (the agents org's and the product's: the product repo and the official modules repo): the only ones
+ * Our own repositories (the agents org's and the product repo): the only ones
  * the App merges in (product merges as its bot, after the reviewer or the owner). Elsewhere it only pushes and opens PRs;
  * merges there take the host's gh login, behind that repo's own GitHub review.
  */

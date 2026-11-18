@@ -1,5 +1,5 @@
 // The merge queue (engineering): which approved PRs wait to merge, in what order and how far apart. How each one lands
-// (heads, checks, the base branch, GitHub's writes) is the code host's merge gate (modules/codehost-github/src/merge-gate.mjs).
+// (heads, checks, the base branch, GitHub's writes) is the code host's merge gate (modules/codehost-github/service/src/merge-gate.mjs).
 
 /**
  * Pull requests named in free text, in order: links, org/repo#n, or this server's change requests

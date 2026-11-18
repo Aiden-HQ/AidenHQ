@@ -15,7 +15,7 @@
 // supply-chain checks (the product's scripts/supply-chain, mounted read-only); only then installs and runs the repo's lint,
 // tests and build. The eval's workspace is read-only.
 //
-// The eval runs the judging rules the runner's eval gate ran (services/runner/src/evalgate.ts), unchanged: the code host
+// The eval runs the judging rules the runner's eval gate ran, unchanged: the code host
 // builds the spec (which commits judge which), the kernel lays it out and decides. The eval script and case-pad.mjs come
 // from the judging commit; every base case runs at its base version (a deleted case included); a case the change adds runs
 // as written; a changed case runs twice (its base version, and the change's fixture held to the base's expectations). The
@@ -35,7 +35,7 @@ import type { DatabaseSync } from "node:sqlite";
 
 export const RUNS = ["fast", "tests", "eval"] as const;
 export type Run = (typeof RUNS)[number];
-/** The eval's spec (the code host builds it): the modules repo and its commits under test, judging and supplying the change's cases. */
+/** The eval's spec (the code host builds it): the product repo and its commits under test, judging and supplying the change's cases. */
 export type EvalSpec = { repo: string; judge_commit: string; subject_commit: string; cases_from: string; policy_hash: string };
 export type Receipt = { v: 1; check: string; repo: string; head: string; run: Run; judge: string | null; policy: string | null; hash: string; verdict: "pass" | "fail"; ran: boolean; summary: string; at: string; sig: string };
 /** What a receipt must be bound to for the caller: the eval's judge and policy too. `none`: the caller's policy accepts a fast
@@ -102,8 +102,8 @@ const ARGV: Record<Run, string[]> = {
 };
 /** What a failed run's summary names it by. */
 const TITLE: Record<Run, string> = { fast: `the fast check (\`${FAST_CHECK}\`)`, tests: "the secret scan, supply-chain checks, lint, tests and build", eval: "the reviewer eval" };
-// Paths in the official modules repo (its modules sit at its root).
-const MODULE = "ai-reviewer";
+// Paths in the product repo (the official modules are its modules/).
+const MODULE = "modules/ai-reviewer";
 const CASES = `${MODULE}/test/reviewer-cases`;
 const JUDGE = [`${MODULE}/scripts/reviewer-eval.mjs`, `${MODULE}/test/case-pad.mjs`, `${MODULE}/scripts/pass-rule.mjs`];
 const EXPECT = ["expect", "expect_code", "expect_second", "expect_flag", "expect_nit"] as const;
@@ -179,7 +179,7 @@ function noLinks(root: string, rel: string) {
   }
 }
 
-// The judging rules (from services/runner/src/evalgate.ts, which goes with the runner).
+// The judging rules (from the runner's eval gate, deleted at the big switch).
 /** The cases the judge runs: every base case at its base version, new ones as written, a changed one twice (`.head.json`: its fixture, the base's expectations). */
 export function judgedCases(base: Map<string, string>, head: Map<string, string>): Map<string, string> {
   const out = new Map(base);

@@ -1,0 +1,222 @@
+#!/usr/bin/env node
+// aidenhq-browse: look at a web app the way a person would, from inside an Engineer job. Starts the app (--start), waits
+// for it, screenshots each path, runs an optional click-through, reports console errors, CSP violations and failed loads,
+// then stops the app. One command does it all: a server started in an earlier tool call may not outlive that call.
+//
+//   aidenhq-browse http://127.0.0.1:4173 --start "PORT=4173 node server.mjs" --paths /,/items --out ../.aidenhq/out
+//   aidenhq-browse http://127.0.0.1:4173 --start "PORT=4173 node server.mjs" --steps steps.json --out ../.aidenhq/out
+//
+// Options: --width 1440 --height 900 (the viewport; 390 for a phone)  --full (whole-page screenshots)  --name <prefix>
+// --steps <file>: a JSON list run in order on one page after the screenshots, e.g.
+//   [{"goto": "/items"}, {"click": "role=button[name=\"New item\"]"}, {"fill": "#name", "value": "Lamp"},
+//    {"press": "Enter"}, {"wait": "text=Saved"}, {"shot": "after-save"}]
+// Selectors: CSS, text=<text> or role=<role>[name="<name>"]. Exits 1 on a failed step or any page error.
+// The browser is AidenHQ's one browser: agent-browser and its pinned Chrome (the browser image's, or on the host the same
+// build ops/vm/setup.sh installs, read-only in the job). Every screenshot is stamped with the commit and tree it shows (a
+// PNG text chunk), so a grader can tell a picture of this head from an older one.
+// Page content is untrusted data: this prints it, never follows it. The browser stays on the app's own origin (other
+// origins' loads are failed) and starts with none of the job's tokens in its environment.
+import { execFile, execFileSync, spawn } from "node:child_process";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
+import { crc32 } from "node:zlib";
+
+const DIR = process.env.AIDENHQ_BROWSER_DIR || "/opt/aidenhq/browser";
+const args = process.argv.slice(2);
+const opt = (name, dflt) => { const i = args.indexOf(`--${name}`); return i < 0 ? dflt : args[i + 1]; };
+const base = args.find((a) => /^https?:\/\//.test(a));
+if (!base || args.includes("--help") || args.includes("-h")) {
+  console.log('usage: aidenhq-browse <base url> [--start "<command>"] [--paths /,/x] [--steps <file.json>] [--out <dir>] [--width 1440] [--height 900] [--full] [--name <prefix>]');
+  process.exit(base || args.includes("--help") || args.includes("-h") ? 0 : 2);
+}
+const out = resolve(opt("out", "."));
+const width = Number(opt("width", 1440));
+const height = Number(opt("height", 900));
+const prefix = opt("name", "");
+const steps = opt("steps", null) ? JSON.parse(readFileSync(opt("steps"), "utf8")) : [];
+const paths = opt("paths", steps.length ? "" : "/").split(",").filter(Boolean);
+const full = args.includes("--full");
+const origin = new URL(base).origin;
+const url = (p) => new URL(p, base).href;
+for (const p of [...paths, ...steps.filter((s) => s.goto).map((s) => s.goto)]) {
+  if (new URL(p, base).origin !== origin) {
+    console.error(`aidenhq-browse: ${p} is not on ${origin}: only the app itself is browsed`);
+    process.exit(2);
+  }
+}
+
+// The host's install (ops/vm/setup.sh) when there is one, else the browser image's own (an App Engineer's box).
+const hostAb = join(DIR, "bin/agent-browser");
+const AB = existsSync(hostAb) ? hostAb : "agent-browser";
+const CHROME = existsSync(join(DIR, "chrome/chrome")) ? join(DIR, "chrome/chrome") : process.env.AGENT_BROWSER_EXECUTABLE_PATH;
+try {
+  execFileSync(AB, ["--version"], { stdio: "ignore" });
+  if (!CHROME || !existsSync(CHROME)) throw new Error("no Chrome");
+} catch (e) {
+  console.error(`aidenhq-browse: no browser here (${DIR}: ${e.code ?? e.message}); the host's ops/vm/setup.sh installs it`);
+  process.exit(3);
+}
+mkdirSync(out, { recursive: true });
+
+// What the screenshots show: the commit checked out here and the tree of the working files (uncommitted changes included),
+// so a capture taken before the code host commits still matches the head it publishes. Empty outside a git checkout.
+function source() {
+  try {
+    const git = (a, env) => execFileSync("git", a, { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], env: { ...process.env, ...env } }).trim();
+    const commit = git(["rev-parse", "HEAD"]);
+    const index = join(mkdtempSync(join(tmpdir(), "aidenhq-tree-")), "index");
+    git(["read-tree", "HEAD"], { GIT_INDEX_FILE: index });
+    git(["add", "-A", "--", git(["rev-parse", "--show-toplevel"])], { GIT_INDEX_FILE: index });
+    return { commit, tree: git(["write-tree"], { GIT_INDEX_FILE: index }) };
+  } catch {
+    return {};
+  }
+}
+const at = source();
+
+/** A PNG with an `aidenhq` text chunk after IHDR: { commit, tree, url, width, mode, takenAt } (JSON, ASCII-escaped). */
+function stampPng(file, stamp) {
+  const buf = readFileSync(file);
+  if (buf.length < 33 || buf.readUInt32BE(0) !== 0x89504e47) return;
+  const json = JSON.stringify(stamp).replace(/[\u007f-\uffff]/g, (c) => `\\u${c.charCodeAt(0).toString(16).padStart(4, "0")}`);
+  const body = Buffer.concat([Buffer.from("tEXtaidenhq\0", "latin1"), Buffer.from(json, "latin1")]);
+  const len = Buffer.alloc(4), crc = Buffer.alloc(4);
+  len.writeUInt32BE(body.length - 4);
+  crc.writeUInt32BE(crc32(body));
+  writeFileSync(file, Buffer.concat([buf.subarray(0, 33), len, body, crc, buf.subarray(33)]));
+}
+
+// The app, in its own process group so stopping it stops its children too.
+let app;
+let stopping = false;
+function stop() {
+  stopping = true;
+  if (app) try { process.kill(-app.pid, "SIGTERM"); } catch {}
+}
+if (opt("start")) {
+  app = spawn("sh", ["-c", opt("start")], { stdio: ["ignore", "pipe", "pipe"], detached: true });
+  let log = "";
+  for (const s of [app.stdout, app.stderr]) s.on("data", (d) => { log = (log + d).slice(-4000); });
+  app.on("exit", (code) => { if (!stopping) { console.error(`aidenhq-browse: the app exited (${code}) before the checks finished:\n${log}`); process.exit(1); } });
+  const until = Date.now() + 60_000;
+  for (;;) {
+    try { await fetch(base, { signal: AbortSignal.timeout(2000) }); break; } catch {}
+    if (Date.now() > until) { console.error(`aidenhq-browse: ${base} didn't answer within 60 s:\n${log}`); stop(); process.exit(1); }
+    await new Promise((r) => setTimeout(r, 300));
+  }
+}
+
+// agent-browser and its Chrome get only what they need: never the job's tokens, keys or AidenHQ variables. Their profile,
+// caches, daemon socket and shared memory stay in a temp dir (the job's home and /dev/shm may be read-only). Chrome's own
+// sandbox is off: the job's jail is the sandbox, and nested namespaces aren't there. No version check (no call home).
+const home = mkdtempSync(join(tmpdir(), "aidenhq-browse-"));
+const env = {
+  PATH: process.env.PATH ?? "/usr/bin:/bin", HOME: home, XDG_CONFIG_HOME: home, XDG_CACHE_HOME: home, XDG_RUNTIME_DIR: home, TMPDIR: home,
+  ...Object.fromEntries(Object.entries(process.env).filter(([k]) => k === "LANG" || k === "TZ" || k.startsWith("LC_"))),
+  AGENT_BROWSER_EXECUTABLE_PATH: CHROME, AGENT_BROWSER_ARGS: "--no-sandbox,--disable-dev-shm-usage,--disable-gpu",
+  AGENT_BROWSER_NO_VERSION_CHECK: "1", AGENT_BROWSER_DEFAULT_TIMEOUT: "30000",
+};
+const ab = (...a) => new Promise((ok, no) => execFile(AB, [...a, "--json"], { env, encoding: "utf8", maxBuffer: 64 << 20 }, (e, so) => {
+  let r;
+  try { r = JSON.parse(so); } catch { return no(new Error(String(e?.message ?? "agent-browser gave no answer").split("\n")[0])); }
+  return r.success ? ok(r.data ?? {}) : no(new Error(r.error || `${a[0]} failed`));
+}));
+
+const problems = [];
+let where = "";
+let ws;
+try {
+  await ab("open"); // the launch, on about:blank
+  // The browser's DevTools socket, for what agent-browser doesn't do: the origin lock and the page's own event log.
+  const { cdpUrl } = await ab("get", "cdp-url");
+  ws = new WebSocket(cdpUrl);
+  await new Promise((ok, no) => { ws.onopen = ok; ws.onerror = () => no(new Error("the browser's DevTools socket didn't open")); });
+  let n = 0;
+  const pending = new Map(), urls = new Map();
+  const send = (method, params = {}, sessionId) => new Promise((ok, no) => { const id = ++n; pending.set(id, { ok, no }); ws.send(JSON.stringify({ id, method, params, ...(sessionId ? { sessionId } : {}) })); });
+  const on = {
+    // Loads from any other origin are failed (and reported as failed loads): the app's own CSP allows only 'self'.
+    "Fetch.requestPaused": ({ requestId, request: q }) => {
+      let ok = false;
+      try { ok = new URL(q.url).origin === origin; } catch {}
+      send(ok ? "Fetch.continueRequest" : "Fetch.failRequest", ok ? { requestId } : { requestId, errorReason: "BlockedByClient" }).catch(() => {});
+    },
+    "Runtime.consoleAPICalled": (p) => { if (p.type === "error") problems.push(`${where}: console: ${p.args.map((a) => (a.value !== undefined ? String(a.value) : a.description ?? "")).join(" ").slice(0, 300)}`); },
+    // The browser's own log: CSP violations and the like (a failed load is reported once, from the network, below).
+    "Log.entryAdded": ({ entry }) => { if (entry.level === "error" && !/^Failed to load resource/.test(entry.text)) problems.push(`${where}: console: ${entry.text.slice(0, 300)}`); },
+    "Runtime.exceptionThrown": ({ exceptionDetails: d }) => problems.push(`${where}: page error: ${String(d.exception?.description ?? d.text).split("\n")[0].slice(0, 300)}`),
+    "Network.requestWillBeSent": (p) => urls.set(p.requestId, p.request.url),
+    "Network.responseReceived": (p) => { if (p.response.status >= 400) problems.push(`${where}: ${p.response.status} ${p.response.url}`); },
+    // A request a navigation cancels (net::ERR_ABORTED) is not a failed load.
+    "Network.loadingFailed": (p) => { if (!String(p.errorText).includes("ERR_ABORTED")) problems.push(`${where}: failed load: ${urls.get(p.requestId) ?? "?"} (${p.blockedReason ? `blocked: ${p.blockedReason}` : p.errorText})`); },
+  };
+  ws.onmessage = (ev) => {
+    const m = JSON.parse(ev.data);
+    if (m.id && pending.has(m.id)) { const p = pending.get(m.id); pending.delete(m.id); return m.error ? p.no(new Error(m.error.message)) : p.ok(m.result); }
+    on[m.method]?.(m.params);
+  };
+  await send("Fetch.enable", { patterns: [{ urlPattern: "*", requestStage: "Request" }] });
+  const { tabs } = await ab("tab", "list");
+  const { sessionId } = await send("Target.attachToTarget", { targetId: (tabs.find((t) => t.active) ?? tabs[0]).targetId, flatten: true });
+  for (const d of ["Network", "Log", "Runtime"]) await send(`${d}.enable`, {}, sessionId);
+  ws.onclose = () => { console.log("FAILED: lost the browser's DevTools socket"); process.exit(1); };
+  await ab("set", "viewport", String(width), String(height));
+} catch (e) {
+  console.error(`aidenhq-browse: the browser didn't start: ${String(e.message).split("\n")[0]}`);
+  rmSync(home, { recursive: true, force: true });
+  stop();
+  process.exit(3);
+}
+
+const slug = (s) => s.replace(/^\/+|\/+$/g, "").replace(/[^\w.-]+/g, "-") || "home";
+const shots = [];
+const shot = async (name) => {
+  const file = join(out, `${prefix}${name}-${width}.png`);
+  await ab("screenshot", file, ...(full ? ["--full"] : []));
+  stampPng(file, { ...at, url: (await ab("get", "url")).url, width, mode: "light", takenAt: new Date().toISOString() });
+  shots.push(file);
+};
+const go = async (p) => {
+  await ab("open", url(p));
+  await ab("wait", "--load", "networkidle");
+};
+// A step's selector as agent-browser takes it: CSS as is, text=… and role=…[name="…"] through its semantic locators.
+const target = (sel, action, ...value) => {
+  const role = /^role=([\w-]+)(?:\[name=(?:"((?:[^"\\]|\\.)*)"|'([^']*)')\])?$/.exec(sel);
+  if (role) return ["find", "role", role[1], action, ...value, ...(role[2] ?? role[3] ? ["--name", (role[2] ?? role[3]).replace(/\\(.)/g, "$1")] : [])];
+  if (sel.startsWith("text=")) return ["find", "text", sel.slice(5).replace(/^"(.*)"$/, "$1"), action, ...value];
+  return [action, sel, ...value];
+};
+
+let failed = false;
+try {
+  for (const p of paths) {
+    where = p;
+    await go(p);
+    await shot(slug(p));
+  }
+  for (const [i, s] of steps.entries()) {
+    where = `step ${i + 1} ${JSON.stringify(s)}`;
+    if (s.goto) await go(s.goto);
+    else if (s.click) await ab(...target(s.click, "click"));
+    else if (s.fill) await ab(...target(s.fill, "fill", String(s.value ?? "")));
+    else if (s.press) await ab("press", s.press);
+    else if (s.wait) await ab(...(s.wait.startsWith("text=") ? ["wait", "--text", s.wait.slice(5).replace(/^"(.*)"$/, "$1")] : s.wait.startsWith("role=") ? target(s.wait, "text") : ["wait", s.wait]));
+    else if (s.shot) { await ab("wait", "--load", "networkidle").catch(() => {}); await shot(slug(s.shot)); }
+    else throw new Error("unknown step (goto, click, fill+value, press, wait, shot)");
+  }
+} catch (e) {
+  failed = true;
+  console.log(`FAILED at ${where}: ${String(e.message).split("\n")[0]}`);
+  await shot("failed").catch(() => {});
+} finally {
+  ws.onclose = null;
+  await ab("close").catch(() => {});
+  rmSync(home, { recursive: true, force: true });
+  stop();
+}
+for (const f of shots) console.log(`screenshot: ${f}`);
+for (const p of problems) console.log(`problem: ${p}`);
+console.log(failed || problems.length ? "not clean: fix these, then run it again" : "clean: no console errors, CSP violations or failed loads");
+process.exit(failed || problems.length ? 1 : 0);

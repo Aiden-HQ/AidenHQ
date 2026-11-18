@@ -1,18 +1,18 @@
 # Architecture
 
-AidenHQ runs on one host. Docker Compose holds the control plane, the board and the connection services; the runner
+AidenHQ runs on one host. Docker Compose holds the control plane, the board and the connection services; the kernel
 and the computer launcher are systemd user units on the host itself.
 
 ```
  Owner ── Telegram / Slack ──► owner channels (Telegram, Slack) ──► Aiden (chief of staff)
                                                                      │ delegates
  Board (daily view, approvals) ┐                                     ▼
- Paperclip UI (fleet console) ─┼────────── Paperclip (tasks, routines, runs) ── crews (Codex on OpenRouter)
+ Paperclip UI (fleet console) ─┼────────── Paperclip (tasks, routines) ── kernel jobs ── crews (Codex)
                                │                       │                           │ MCP, per-agent grants
                                │                       │               shared connections (Google, Slack, Glean,
                                │                       │               Jira, GitHub, Primer, tasks, apps)
                                │                       ▼
-                               │               runner (host) ── coding jobs, push/merge gates
+                               │               codehost-github ── push/merge gates
                                └────────────── apps-mcp ── sandboxed apps (warehouse, ...)
 ```
 
@@ -21,11 +21,11 @@ and the computer launcher are systemd user units on the host itself.
 For what each component adds over Paperclip, see [core-components.md](core-components.md).
 
 **Paperclip (control plane).** The source of truth for companies, agents, tasks, routines, approvals and run
-history. Its UI is the fleet console. Agents run with the Codex adapter against OpenRouter. The generated
+history. Its UI is the fleet console. It runs nothing: the kernel runs every agent as a job in its computer (Codex on OpenRouter). The generated
 `config/paperclip.yaml` is applied to it idempotently by `scripts/paperclip-setup.mjs`.
 
 **Chief of staff and crews.** Aiden is the single entry point: it reads widely and delegates writes. Crews are
-specialist agents woken by schedules (Paperclip routines), events (routine webhooks) or the runner. Every agent is a
+specialist agents woken by schedules (Paperclip routines) or events (routine webhooks); the wake inbox turns each into a kernel job. Every agent is a
 `module.yaml` entry plus an `AGENTS.md` handbook, so new behaviour is configuration and prose, not core code. A
 `heartbeat: true` agent is also woken when work it waits on changes (a sub-task, an approval card, a grade, a PR: the
 board's `wake.ts`) and, as a backstop, by a "Heartbeat: <key>" routine every `heartbeat_hours` (default 4). This is not
@@ -39,18 +39,16 @@ an agent computer) and checks that agent's grant in `config/grants/grants.json`.
 module and agent definitions; the check lives in `kernel/src/proxy.ts`. Roles gate a few extra capabilities
 (for example the board's fleet tools, or changing any app with an open incident).
 
-**Runner.** A host service that picks up Paperclip tasks labelled `engineer` and runs each turn as a job in the Engineer's
-agent computer (a gVisor box from the computer launcher, with the task's workspace mounted), and exposes a small `aidenhq`
-CLI to the Engineer ([design](design/conversational-engineers.md)). There is one engine, `codex-openrouter`: the Codex CLI
-on OpenRouter models through the box's gateway with the box's run token (ZDR only), a runner-owned Codex home per task with
-the product's skills, effort low to max (max: DeepSeek). Repo code the host runs itself (a fast check outside a job, the
-reviewer eval, local CI) runs under bwrap with an allowlist of the host's files, in its own PID, IPC and network
-namespaces (pasta).
+**Engineers.** The kernel runs each Engineer turn as a job in the Engineer's agent computer (a gVisor box from the computer
+launcher, with the task's workspace mounted) and exposes a small `aidenhq` CLI to it ([design](design/conversational-engineers.md)). There is one engine, `codex-openrouter`: the Codex CLI
+on OpenRouter models through the box's gateway with the box's run token (ZDR only), a kernel-built Codex home per task with
+the product's skills, effort low to max (max: DeepSeek). No repo code runs on the host: a repo's checks and the
+reviewer eval run as check jobs in credential-free boxes.
 
 Every job gets Primer read-only. Private reads (Grafana, Slack, Glean, ClickHouse, other tasks) go only to an Engineer
 whose definition sets `private_reads: true`, and such a job has no web search. See [the codex-openrouter design](design/codex-openrouter-engine.md). Pushes, pull requests and merges are checked in code: allowed
 organizations only, branch and leak checks, a lease on rewritten branches, and a merge queue that requires approved,
-green, mergeable PRs. Each write is an approval record tiered by code from verified state (`services/runner/src/tiers.mjs`):
+green, mergeable PRs. Each write is an approval record tiered by code from verified state (`kernel/src/tier.ts`):
 Tier 0 runs at once, the AI reviewer decides Tier 1, the owner decides Tier 2; the tier is never taken from untrusted
 text.
 
@@ -76,7 +74,9 @@ connections, apps and the fleet. Approvals are kernel records that the board onl
 the owner channel, or an exact typed reply. Each is claimed once and the outcome is shown on the card.
 
 **Owner channels.** `channel-telegram` (the Telegram owner bot, always installed) and `channel-slack` (optional: one
-Slack Socket Mode listener) bridge the owner to Aiden and provide `notify_owner`, the way agents reach the owner.
+Slack Socket Mode listener) bridge the owner to Aiden. `owner-channel`'s `notify` is the one way a message reaches the owner:
+agents call it, and the kernel, the board and the runner queue theirs at the kernel (`/v1/notify`) for it; it routes each
+message once (dedupe, mutes, digest, retry) to the chat on the board and to a channel's transport (`/v1/notify/send`).
 `chat-lane` (always installed) is the fast chat lane. Approval cards are decided with per-card, per-channel,
 single-use decision tokens that the kernel mints (bound to the card's digest) at `/v1/channel/cards` and
 `/v1/channel/decide`. Owner messages from a channel go through the kernel's `/v1/channel/owner-message`; only the

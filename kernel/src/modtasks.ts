@@ -13,8 +13,6 @@ import { neutral, type Api } from "./channels.ts";
 export const MODULE_TASK = (module: string) => `<!-- aidenhq-module:${module} -->`;
 const SOURCE = /^[\w.:/@#-]{1,200}$/;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-// Its own folder: an agent in a computer holds a shared one for its whole run (Paperclip blocks a task that can't get one).
-const OWN_FOLDER = { executionWorkspacePreference: "agent_default", executionWorkspaceSettings: { mode: "agent_default" } };
 
 export class TaskError extends Error {
   name = "TaskError";
@@ -61,7 +59,7 @@ export function createModuleTasks({ owner, agents, log = () => {} }: {
     if (a.json.status === "paused") throw new TaskError(409, `${role || "the"} agent ${agent} is paused`);
     const r = await owner("POST", `/api/companies/${encodeURIComponent(String(a.json.companyId))}/issues`, {
       title, description: `${description}\n\n<!-- source:${b.source} -->\n${MODULE_TASK(module)}`, status: "todo", priority: "medium",
-      assigneeAgentId: agent, assigneeUserId: null, allowDuplicate: true, ...OWN_FOLDER, ...(b.parent ? { parentId: b.parent } : {}),
+      assigneeAgentId: agent, assigneeUserId: null, allowDuplicate: true, ...(b.parent ? { parentId: b.parent } : {}),
       idempotencyKey: `pw-${createHash("sha256").update(b.source).digest("hex").slice(0, 32)}`,
     });
     if (r.status >= 300 || !r.json?.id) throw new TaskError(502, `the control plane answered ${r.status}`);

@@ -1,6 +1,6 @@
 // codehost-github's service end to end against a fake GitHub (a bare repo and an in-process API) and a fake kernel: a job's
 // branch lands from a hostile workspace without any of its hooks, filters or fsmonitor running; an ops token outside the
-// caller's grant is refused; a product-repo merge is refused while lands_platform_repos is off.
+// caller's grant is refused.
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
@@ -9,7 +9,6 @@ import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createService } from "../service/src/service.ts";
-import { SAFE_GIT_ARGS } from "../src/git.mjs";
 
 const sh = (cwd, ...args) => execFileSync("git", args, { cwd, encoding: "utf8", env: { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null", GIT_AUTHOR_NAME: "a", GIT_AUTHOR_EMAIL: "a@example.com", GIT_COMMITTER_NAME: "a", GIT_COMMITTER_EMAIL: "a@example.com" } }).trim();
 const listen = (handler) => new Promise((ok) => { const s = createServer(handler); s.listen(0, "127.0.0.1", () => ok({ s, url: `http://127.0.0.1:${s.address().port}` })); });
@@ -58,7 +57,7 @@ async function setup(t, { routes = () => undefined } = {}) {
   const handle = createService({
     key: "ch-key", kernelUrl: kernel.url, cacheDir: join(root, "cache"), tasksDir: join(root, "tasks"), app, gh,
     remoteUrl: (slug) => join(root, "github", `${slug}.git`), agentsOrg: "acme-agents", instanceRepo: "acme-agents/aidenhq-instance",
-    productRepo: "acme/aidenhq", modulesRepo: "acme/aidenhq-modules", landsPlatformRepos: false
+    productRepo: "acme/aidenhq",
   });
   const svc = await listen((req, res) => void handle(req, res));
   t.after(() => { kernel.s.close(); svc.s.close(); });
@@ -69,13 +68,6 @@ async function setup(t, { routes = () => undefined } = {}) {
   const raw = (path, body, key = "ch-key") => fetch(`${svc.url}${path}`, { method: "POST", headers: { authorization: `Bearer ${key}` }, body: JSON.stringify(body) });
   return { root, ws, marker, origin, sha, outcomes, minted, ghCalls, call, raw };
 }
-
-test("the service's copies are the code host's own rules and git arguments", async () => {
-  const dir = new URL("..", import.meta.url).pathname;
-  for (const f of ["plan.mjs", "github-app.ts"]) assert.equal(readFileSync(join(dir, "service/src", f), "utf8"), readFileSync(join(dir, "src", f), "utf8"), `service/src/${f} differs from src/${f}`);
-  const { SAFE_GIT_ARGS: ours } = await import("../service/src/service.ts");
-  assert.deepEqual(ours, SAFE_GIT_ARGS);
-});
 
 test("a job's branch lands from its workspace; no hook, filter or fsmonitor of the workspace runs", async (t) => {
   const { root, marker, origin, sha, outcomes, minted, call } = await setup(t);
@@ -105,18 +97,6 @@ test("ops answer the kernel only (it checks each module's grant); a token is nar
   assert.deepEqual(minted.at(-1), { org: "acme", permissions: { organization_self_hosted_runners: "write" }, fresh: true });
   assert.equal(org.json.app.slug, "acme-app");
   assert.ok(Date.parse(org.json.expires_at) > Date.now() + 50 * 60_000);
-});
-
-test("a product-repo merge is refused while lands_platform_repos is off, in plan and in execute", async (t) => {
-  const { call, outcomes } = await setup(t);
-  const args = { prs: [{ repo: "acme/aidenhq", number: 7, head: "a".repeat(40) }] };
-  const plan = await call("/aidenhq/v1/executor/plan", { kind: "codehost-github.merge", args, requester: { kind: "job", roles: [] }, task: "t1" });
-  assert.equal(plan.status, 422);
-  assert.match(plan.json.error, /lands_platform_repos/);
-  await call("/aidenhq/v1/executor/execute", { id: "k-00000000000000ff", kind: "codehost-github.merge", args, digest: "d", idempotency_key: "i" });
-  for (let i = 0; i < 300 && !outcomes.length; i++) await new Promise((r) => setTimeout(r, 10));
-  assert.equal(outcomes[0]?.ok, false);
-  assert.match(outcomes[0].text, /lands_platform_repos/);
 });
 
 const pushArgs = (sha) => ({ workspace: "TASK-1", only: [{ repo: "acme-agents/widget", branch: "feature", sha }] });
@@ -156,9 +136,11 @@ test("clone writes only a new folder in the task workspace the kernel resolved, 
   assert.equal((await clone("TASK-3")).status, 400);
   assert.equal((await clone("TASK-1")).status, 409); // TASK-1/widget is there already
   mkdirSync(join(root, "tasks", "TASK-4"));
-  const ok = await clone("TASK-4");
+  // HEAD: the default branch by its name (as the kernel asks for an Engineer's clones).
+  const ok = await call("/ops/clone", { module: "apps-platform", repo: "acme-agents/widget", ref: "HEAD", into: "TASK-4" });
   assert.equal(ok.status, 200, JSON.stringify(ok.json));
   const dir = join(root, "tasks", "TASK-4", "widget");
+  assert.match(sh(dir, "rev-parse", "--verify", "refs/remotes/origin/main"), /^[0-9a-f]{40}$/);
   assert.equal(readFileSync(join(dir, "README.md"), "utf8"), "widget\n");
   assert.equal(sh(dir, "remote", "get-url", "origin"), "https://github.com/acme-agents/widget.git");
   assert.doesNotMatch(readFileSync(join(dir, ".git", "config"), "utf8"), /tok|credential|extraheader/i);
@@ -186,16 +168,22 @@ test("kernel.apply's land: the instance commit is read and landed on main once, 
   const NONE = { official: { from: null, to: null } };
   assert.equal((await call("/aidenhq/v1/apply/land", { ...src, ...NONE }, "apps-key")).status, 401);
   assert.equal((await call("/aidenhq/v1/apply/read", { ...src, repo: "acme-agents/widget" })).status, 403, "the instance repo only");
+  // The workspace makes the same sha resolve to other content (a replace ref to another commit): the code host reads the commit
+  // through its own fsck-checked copy with replace objects off, never the live workspace, so the read is the commit itself.
+  sh(ws, "checkout", "--quiet", "-b", "evil", "main");
+  writeFileSync(join(ws, "instance.yaml"), "product: z\n");
+  sh(ws, "commit", "--quiet", "-am", "evil");
+  sh(ws, "replace", sha, sh(ws, "rev-parse", "HEAD"));
+  sh(ws, "checkout", "--quiet", "fleet/edit");
   const read = await call("/aidenhq/v1/apply/read", src);
   assert.deepEqual([read.json.files.sort(), read.json.texts], [["agents/chaser/agent.yaml", "instance.yaml"], { base: { "instance.yaml": "product: x\n" }, head: { "agents/chaser/agent.yaml": "trial: true\n", "instance.yaml": "product: y\n" } }]);
   assert.match(read.json.diff, /\+product: y/);
-  // The land's reviewer-eval gate: the kernel names the official modules' pin on both sides, or nothing lands; a marketplace
-  // that appears, or moves to another repository, is refused before anything is pushed.
+  // The kernel names the official modules' pin on both sides, or nothing lands; a marketplace pin that appears or moves is
+  // refused before anything is pushed (the official modules come with the product pin).
   assert.equal((await call("/aidenhq/v1/apply/land", src)).status, 400, "no pin named: refused");
   const pinAt = (repo, c) => ({ repo, sha: c.repeat(40) });
   assert.equal((await call("/aidenhq/v1/apply/land", { ...src, official: { from: null, to: pinAt("acme/aidenhq-modules", "a") } })).status, 422);
-  const moved = await call("/aidenhq/v1/apply/land", { ...src, official: { from: pinAt("acme/aidenhq-modules", "a"), to: pinAt("evil/modules", "a") } });
-  assert.deepEqual([moved.status, /not landed: .*evil\/modules/.test(moved.json.error)], [409, true]);
+  assert.equal((await call("/aidenhq/v1/apply/land", { ...src, official: { from: pinAt("acme/aidenhq-modules", "a"), to: pinAt("evil/modules", "a") } })).status, 422);
   assert.notEqual(sh(origin, "rev-parse", "main"), sha, "nothing was pushed");
   assert.deepEqual((await call("/aidenhq/v1/apply/land", { ...src, ...NONE })).json, { landed: sha });
   assert.equal(sh(origin, "rev-parse", "main"), sha);

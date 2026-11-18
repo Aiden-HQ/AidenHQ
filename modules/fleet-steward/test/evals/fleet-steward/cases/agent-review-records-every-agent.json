@@ -1,0 +1,13 @@
+{
+ "name": "agent-review-records-every-agent",
+ "why": "Every reviewed agent gets one coach_record.",
+ "routine": "agent-review",
+ "input": "Run task: \"Agent Coach: review\". Today is 2026-11-18, now 2026-11-18T14:00:00+04:00.\n\ncoach_due -> {\"due\":[{\"agent_key\":\"roadmap-keeper\",\"reasons\":[\"never reviewed\"]}]}\ncoach_evidence roadmap-keeper -> {\"window\":{\"from\":\"2026-11-11\",\"to\":\"2026-11-18\"},\"handbook\":\"Keeps the roadmap app current from Jira and Slack.\",\"runs\":[{\"task\":\"T-30\",\"ok\":true},{\"task\":\"T-31\",\"ok\":true}],\"earlier_fixes\":[],\"corrections\":[],\"flags\":[],\"coverage\":{\"unavailable\":[]}}\ntask_get T-30 -> {\"result\":\"Updated 14 epics; ETAs from Jira.\"}\nwarehouse_query src_jira epics updated this week -> 14 rows\n",
+ "expect": [
+  {
+   "tool": "coach_record",
+   "count": 1
+  }
+ ],
+ "forbid": []
+}

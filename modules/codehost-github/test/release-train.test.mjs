@@ -8,8 +8,8 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { createReleaseTrain } from "../service/src/train.ts";
 
-const [OLD, NEW, MOD_OLD, MOD_NEW] = ["a", "b", "c", "d"].map((c) => c.repeat(40));
-const INSTANCE = `product: ${OLD}\nmarketplaces:\n  - { name: aidenhq, source: { source: github, repo: acme/aidenhq-modules }, sha: ${MOD_OLD} }\n`;
+const [OLD, NEW] = ["a", "b"].map((c) => c.repeat(40));
+const INSTANCE = `product: ${OLD}\nmodules: [core]\n`;
 
 function fakes() {
   const k = { tasks: [], writes: [], closed: [], records: {} };
@@ -32,15 +32,15 @@ function fakes() {
   };
   const github = {
     tip: async () => ({ tip: NEW, green: true }),
-    text: async (repo, path) => (path === "instance.yaml" ? INSTANCE : path === "modules-pin.json" ? JSON.stringify({ sha: MOD_NEW }) : undefined),
+    text: async (repo, path) => (path === "instance.yaml" ? INSTANCE : undefined),
     commits: async (repo, from, to) => [{ repo, sha: to, subject: "(#1)" }],
   };
   return { k, kernel, github };
 }
 const train = (dir, f, clock, extra = {}) => createReleaseTrain({
-  dir, productRepo: "acme/aidenhq", instanceRepo: "acme/aidenhq-instance", modulesRepo: "acme/aidenhq-modules", windowMinutes: 15,
+  dir, productRepo: "acme/aidenhq", instanceRepo: "acme/aidenhq-instance", windowMinutes: 15,
   kernel: f.kernel, github: f.github, evalBump: async () => undefined, now: () => clock.t,
-  commit: async (repo, path, edit) => { const t = edit(f.head ?? INSTANCE); f.committed = t; return t.includes(NEW) && t.includes(MOD_NEW) ? "e".repeat(40) : "0".repeat(40); }, ...extra,
+  commit: async (repo, path, edit) => { const t = edit(f.head ?? INSTANCE); f.committed = t; return t.includes(NEW) ? "e".repeat(40) : "0".repeat(40); }, ...extra,
 });
 
 test("a green tip past the window files one kernel.apply; a restart files the same commit, and an ended bump is never retried", async () => {
@@ -74,11 +74,13 @@ test("a bump whose reviewer eval runs waits; one the kernel refuses closes its t
   const f = fakes();
   const dir = mkdtempSync(join(tmpdir(), "train-"));
   let gate = { wait: "the eval runs" };
-  const t = () => train(dir, f, clock, { evalBump: async () => gate });
+  const asked = [];
+  const t = () => train(dir, f, clock, { evalBump: async (from, to) => (asked.push([from, to]), gate) });
   await t().step();
   clock.t = new Date("2026-11-18T10:20:00Z");
   await t().step();
   assert.equal(f.k.tasks.length, 0, "waits for the eval before anything is filed");
+  assert.deepEqual(asked.at(-1), [OLD, NEW], "the product's move: the tip judged by the pinned commit");
   gate = undefined;
   const refusing = { ...f, kernel: async (m, p, b) => { if (p === "/v1/writes") throw new Error("the kernel's /v1/writes answered 422: a new agent starts in trial"); return f.kernel(m, p, b); } };
   await train(dir, refusing, clock, { evalBump: async () => undefined }).step();

@@ -120,8 +120,8 @@ both fail; that is expected, and step 3 makes the local mirror.)
 
 One run sets up the whole machine. It is idempotent: if it stops partway, fix the cause and run it again. It:
 
-1. installs system packages, Docker, Node 24, gVisor, bubblewrap (a private copy with its own AppArmor profile), passt, gocryptfs and
-   Tailscale (`ops/vm/setup.sh`), plus the Codex CLI the runner's own short model calls use;
+1. installs system packages, Docker, Node 24, gVisor, gocryptfs and
+   Tailscale (`ops/vm/setup.sh`);
 2. joins the tailnet with `TS_AUTHKEY` as `aidenhq-<you>` (unless the VM is already on it, or `BOARD_HOST` is set);
 3. writes `.env` and `config/runner.yaml`, and runs `scripts/bootstrap.sh` (secrets folder, generated tokens, data
    folders);
@@ -136,7 +136,7 @@ One run sets up the whole machine. It is idempotent: if it stops partway, fix th
 8. runs `ops/apply-config.sh`: compiles the modules, starts the stack, creates your Paperclip account and company,
    then turns off Paperclip sign-up;
 9. publishes the board on your tailnet (`tailscale serve --bg --https=443 http://127.0.0.1:3121`), installs the
-   model gateway, runner, agent-computer launcher and run-pruning user units, and opens a Welcome chat with Aiden;
+   model gateway, agent-computer launcher and run-pruning user units, and opens a Welcome chat with Aiden;
 10. prints your one-time board setup link.
 
 Write `~/person.env` (it holds secrets; never commit it, and delete it at the end):
@@ -190,7 +190,7 @@ shell doesn't have it yet (setup restarts your systemd user manager itself, so t
 | Board | `curl -s http://127.0.0.1:3121/healthz` | `ok` |
 | Sign-in and approvals (the kernel) | `curl -s http://127.0.0.1:3120/healthz` | `ok` |
 | Containers | `cd ~/aidenhq && docker compose ps --format '{{.Service}} {{.State}}'` | every service `running` |
-| Kernel (model gateway), runner and agent computers | `systemctl --user is-active aidenhq-kernel aidenhq-runner aidenhq-computers` | `active` three times |
+| Kernel (model gateway) and agent computers | `systemctl --user is-active aidenhq-kernel aidenhq-computers` | `active` twice |
 
 ## 4. Finish the secrets
 
@@ -239,17 +239,6 @@ The password is `cat ~/.config/aidenhq/paperclip_owner_password` on the server.
 
 **Check:** `curl -s http://127.0.0.1:3100/api/health` on the server contains `"bootstrapStatus":"ready"`, and signing
 in at `http://localhost:3100` shows your company with Aiden in its org chart.
-
-### The runner's request reader
-
-Engineer jobs (the runner) read each request with a short `codex exec` call on the host. By default that goes through
-OpenRouter (the gateway, model `~deepseek/deepseek-flash-latest`), so a fresh install needs nothing here. To use a
-ChatGPT login instead, run `codex login --device-auth` and set `intake: {codex_args: []}` in `config/runner.yaml` (not
-tracked in git), then `systemctl --user restart aidenhq-runner`.
-
-**Check:** `systemctl --user is-active aidenhq-runner` prints `active`, and
-`journalctl --user -u aidenhq-runner --since '-5 min' | grep -i 'intake exited'` prints nothing after the first
-Engineer task.
 
 ## 7. Connect your accounts
 
@@ -334,13 +323,13 @@ module you add to `modules:`, plus a sign-in.
 
 ## 8. GitHub App (lets agents build and ship code)
 
-Optional, but required for agents to create repositories and apps. `ops/setup.sh` doesn't do this step. The runner
-acts on GitHub as an App owned by an **agents org**, never as you.
+Optional, but required for agents to create repositories and apps. `ops/setup.sh` doesn't do this step. Agents
+act on GitHub as an App owned by an **agents org**, never as you.
 
 1. [org admin: GitHub] Create a GitHub organization for agent-built repos, for example `acme-agents`. You must be an
    owner of it.
 2. Name it: if `GITHUB_AGENTS_ORG=acme-agents` was in `person.env`, setup already wrote it. Otherwise add
-   `github_agents_org: acme-agents` to `instance.yaml` under `settings:`, commit, push and apply (step 7). The runner
+   `github_agents_org: acme-agents` to `instance.yaml` under `settings:`, commit, push and apply (step 7). The code host module
    and the setup script both read the org from this setting.
 3. Create the App. The script serves a one-time plain-http page on port 8765, so give it an address your browser
    can reach, such as the server's tailnet IP:
@@ -350,10 +339,10 @@ acts on GitHub as an App owned by an **agents org**, never as you.
    Open the printed URL, press **Create on GitHub** and approve [human]. The App id and private key are saved in the
    vault under `github-app/` and never printed.
 4. Install the App on `acme-agents` with **All repositories**, using the link the script prints [human].
-5. `systemctl --user restart aidenhq-runner`.
+5. `docker compose restart codehost-github`.
 
 To let it open PRs on repos in another org (say your company's), an owner there installs the same App on selected
-repositories; then add that org to `allowed_orgs` in `config/runner.yaml` and to `github_orgs` in `instance.yaml`.
+repositories; then add that org to `github_orgs` in `instance.yaml`.
 
 **Check:** `ls ~/.config/aidenhq/github-app/` prints `app_id  key.pem`, and the org's Settings, GitHub Apps page lists
 the App as installed.
@@ -385,10 +374,10 @@ scripts/verify-security.sh
 ```
 
 **Check, healthcheck:** these lines must be `ok`: `paperclip http`, `paperclip bootstrap (account claimed)`,
-`board (127.0.0.1:3121)`, `kernel admin (127.0.0.1:3120)`, `runner active`, plus the lines of every account you connected in step 7. Lines for things
+`board (127.0.0.1:3121)`, `kernel admin (127.0.0.1:3120)`, plus the lines of every account you connected in step 7. Lines for things
 you didn't set up print `skip` and are listed on a `Skipped (not configured)` line at the end. What counts as set up
 is read from the install: the `meetings` module (`config/modules.json`) enables the `ops-mcp` and watcher webhook
-checks, the runner's default engine being `codex` enables the ChatGPT login check, and a Claude engine token enables
+checks, the default engine being `codex` enables the ChatGPT login check, and a Claude engine token enables
 the `claude` job-tool check. A module or engine you did install still fails when it is broken.
 
 **Check, security:** the last line is `All security checks passed.` If not, each `FAIL` line names what is wrong. Run
@@ -448,7 +437,7 @@ shared access for colleagues.
 ## By hand
 
 The route `ops/setup.sh` automates, for a host you prepare yourself (Ubuntu 22.04, 24.04 or 26.04, or Debian 12 or 13, with Docker and Compose, Node.js 24,
-git, `bubblewrap` plus the private copy (and, on AppArmor 4 hosts, the `aidenhq-bwrap` profile), `passt` where packaged; `sudo bash ops/vm/setup.sh` installs these). Use it only
+git; `sudo bash ops/vm/setup.sh` installs these). Use it only
 if `ops/setup.sh` doesn't fit.
 
 ```sh
@@ -457,19 +446,17 @@ scripts/bootstrap.sh                 # secrets dir, data dirs
 # create your private instance repo (instance.yaml, apps.yaml, agents/), check it out, and set
 # AIDENHQ_INSTANCE_DIR=<checkout> in .env
 ops/apply-config.sh                  # instance -> pinned product -> compile -> compose up -> setup
-mkdir -p ~/.config/systemd/user && cp ops/units/aidenhq-{gateway,runner,computers}.service ops/units/prune-runs.* ops/units/prune-docker.* ~/.config/systemd/user/
-systemctl --user enable --now aidenhq-kernel aidenhq-runner aidenhq-computers prune-runs.timer prune-docker.service prune-docker.timer
+mkdir -p ~/.config/systemd/user && cp ops/units/aidenhq-{gateway,computers}.service ops/units/prune-docker.* ~/.config/systemd/user/
+systemctl --user enable --now aidenhq-kernel aidenhq-computers prune-docker.service prune-docker.timer
 ```
 
-Copy `config/runner.example.yaml` to `config/runner.yaml` and set `allowed_orgs` (see
-[configuration.md](configuration.md)). Set `PAPERCLIP_DISABLE_SIGN_UP=true` in `.env` once you have created your
+Set `PAPERCLIP_DISABLE_SIGN_UP=true` in `.env` once you have created your
 Paperclip account. Then `sudo bash ops/vault/init.sh` for the secret vault
 ([ops/vault/README.md](../ops/vault/README.md)).
 
 The instance repo may live anywhere git can reach. `ops/setup.sh` makes a local one (`~/aidenhq-instance`, with the
 bare repo `~/aidenhq-instance.git` as its origin). A GitHub-hosted one is an ordinary clone: apps-mcp pushes registry
-changes to its `origin` unless `AIDENHQ_INSTANCE_PUSH_URL` says otherwise (see `.env.example`), and the runner changes
-it only when its org is in `allowed_orgs` of `config/runner.yaml`.
+changes to its `origin` unless `AIDENHQ_INSTANCE_PUSH_URL` says otherwise (see `.env.example`).
 
 ## Connecting accounts
 
@@ -508,16 +495,16 @@ then Settings, Keys, *Generate auth key*: reusable, pre-approved, tagged with it
 reachable. To add it later, put the key in the vault as `tailscale_apps_authkey` and apply again (apps-edge runs only
 once the key is there, in `tailscale` exposure).
 
-## GitHub App for the runner
+## GitHub App for the code host
 
-See step 8. The runner updates repositories in the agents organization (and creates one only on an approved `aidenhq create-repo` card) (`github_agents_org`, or
+See step 8. The code host module updates repositories in the agents organization (and creates one only on an approved `aidenhq create-repo` card) (`github_agents_org`, or
 `aidenhq-<instance_name>`) as a GitHub App, not as a person. `ops/github-app-setup.mjs` needs `AIDENHQ_SETUP_HOST`
 (the address your browser opens; it serves a one-time page on port 8765). Other organizations install the same App
-on selected repositories; list them in `allowed_orgs` of `config/runner.yaml` and, for app deploys, `github_orgs` in
-`instance.yaml`. The App asks for **Workflows: write** as well as Contents and Pull requests: the runner mints each token
+on selected repositories; list them in `github_orgs` in
+`instance.yaml`. The App asks for **Workflows: write** as well as Contents and Pull requests: the code host mints each token
 narrowed to the permissions that one push or merge needs, and GitHub refuses a push that touches `.github/workflows/`
 unless the token itself carries Workflows: write. That applies to the agents org and the product repo (whose CI the
-runner owns); a repository in another org gets Contents only.
+code host owns); a repository in another org gets Contents only.
 
 ## Board accounts
 

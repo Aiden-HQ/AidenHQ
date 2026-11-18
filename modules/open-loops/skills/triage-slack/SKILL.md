@@ -8,7 +8,7 @@ when: { fields: { name: Intake } }
 
 Each batch of live Slack events is decided quickly and cheaply: most become nothing, some a task, and rarely one pages the user. Call `slack_owner` once at the start for the user's Slack user ID (`U…`), written `<me>` below; if no one is paired yet, finish with a note that Slack is not paired.
 
-Tools: `slack_pending_events` (each event has `eventId`, `kind`, `channelId`, `userId`, `threadTs`, `ts`, `text`, `permalink`, `receivedAt`); `slack_live.notify_owner` (a Slack DM with a per-thread cooldown) and `telegram.notify_owner`; `slack_read_user_profile` and `slack_search_channels` for names; tasks `task_search`, `task_create` (idempotent by marker), `task_get`, `task_finish`.
+Tools: `slack_pending_events` (each event has `eventId`, `kind`, `channelId`, `userId`, `threadTs`, `ts`, `text`, `permalink`, `receivedAt`); `notify` (the one way to reach the user, on their phone); `slack_read_user_profile` and `slack_search_channels` for names; tasks `task_search`, `task_create` (idempotent by marker), `task_get`, `task_finish`.
 
 ## 1. Read the batch
 
@@ -22,7 +22,7 @@ Judge each event on its own text as soon as you see it, however recent it is: a 
 - **Task** (`task_create`), with exactly one of these labels:
   - `needs-response`: a direct question or a request that needs `<me>`'s own decision, answer, review, approval or access, addressed to `<me>`: an @mention, a DM, or a reply to `<me>`'s message. In a thread, a reply is addressed to whoever started the thread or is @mentioned in it, so it is for `<me>` when `<me>` started the thread, is @mentioned in the reply, or it is a DM. "I need your call on…" in someone else's thread is for them.
   - `waiting-on`: someone explicitly promises `<me>` something concrete ("I'll send you the contract by Friday"). Title it by what is owed and by whom. Open Loops tracks only `waiting-on` tasks.
-- **Urgent page** (`notify_owner`, `priority: "urgent"`): production down, a security incident, or a direct ask from `<me>`'s manager or a company executive that needs an answer now. When unsure it is that serious, create a `needs-response` task instead.
+- **Alert** (`notify`, `kind: "alert"`): production down, a security incident, or a direct ask from `<me>`'s manager or a company executive that needs an answer now. When unsure it is that serious, create a `needs-response` task instead.
 
 ## 3. Create a task
 
@@ -34,10 +34,9 @@ Judge each event on its own text as soon as you see it, however recent it is: a 
 
 ## 4. Page the user
 
-Call `slack_live.notify_owner` with `priority: "urgent"`, a one-line `text` (what happened, who, what is needed) and the event's `permalink`, `channel_id`, `thread_ts`, `ts` and `received_at`, so the cooldown and staleness header work.
+Call `notify` with `kind: "alert"`, a one-line `text` (what happened, who, what is needed) ending with the event's `permalink`, and `dedupe_key: "slack:<channelId>:<threadTs or ts>"`: one alert per thread an hour, from you or any other agent.
 
-- `{sent: false, reason: "cooldown"}`: an earlier DM covers the thread. Call again with `escalate` (one line on what changed) only when the thread got worse since (it spread, a second incident, customer impact).
-- Sent: also call `telegram.notify_owner` with `priority: "urgent"` and the same `text` and `permalink`.
+- `reason: "duplicate"`: an earlier alert covers the thread. Only when the thread got worse since (it spread, a second incident, customer impact), call again with the `dedupe_key` ending in `:worse` and a `text` that says what changed.
 - `reason: "error"`: create a `needs-response` task for it instead.
 
 One page per incident thread per run.

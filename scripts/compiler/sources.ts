@@ -2,14 +2,13 @@
 // never a ref. Sources are a relative path in the marketplace, or a hosted repo, a folder of a git URL (`git-subdir`) or a git `url`, each
 // with its own sha. Git fetches the sha into a cache (through the credential helper the caller passes, per command, never
 // into a checkout's config), checks it is that commit, refuses symlinks and submodules, and extracts the tree; nothing is
-// built or run. The tier is computed, never claimed: declared (it compiles), conformant (+ the contract kit passes in the job
-// sandbox, offline), official (from the `aidenhq` marketplace, whose kit runs in CI). Sync: the compiler is.
-import { execFileSync, spawnSync } from "node:child_process";
+// built or run (no third-party code runs on the host). The tier is computed, never claimed: declared (it compiles), official
+// (from the `aidenhq` marketplace, whose contract kit runs in CI). Sync: the compiler is.
+import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, renameSync, rmSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, posix, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
 
 type Dict = Record<string, unknown>;
 /**
@@ -19,7 +18,7 @@ type Dict = Record<string, unknown>;
  */
 export type Where = { url: string; path: string; sha: string; owned?: boolean };
 export type Fetch = { cacheDir: string; credentialHelper?: string };
-export type Tier = "declared" | "conformant" | "official";
+export type Tier = "declared" | "official";
 /** `market`: where its marketplace is (advisories are read from that repository's head); `fork`: the owner's fork it runs. */
 export type Remote = { name: string; marketplace: string; market: Where; at: Where; root: string; def: Dict; tier: Tier; fork?: Fork };
 
@@ -192,7 +191,7 @@ export function forkBase(instance: Dict, fork: Fork, product: string, f: Fetch &
  * move is an empty authority diff, nothing rebuilt). Otherwise its changed files: a git diff within one repository, the whole
  * folder across two.
  */
-export function officialSides(baseInstance: Dict, headInstance: Dict, from: string, to: string, product: string, f: Fetch & { parse: (s: string) => unknown; kit?: (root: string, def: Dict, at: Where) => boolean }) {
+export function officialSides(baseInstance: Dict, headInstance: Dict, from: string, to: string, product: string, f: Fetch & { parse: (s: string) => unknown}) {
   const local = (args: string[]) => execFileSync("git", ["-C", product, ...args], { maxBuffer: 256 << 20, stdio: ["ignore", "pipe", "pipe"] }).toString();
   const side = (instance: Dict, sha: string) => {
     const w = officialAt(instance, sha, product, f);
@@ -211,13 +210,13 @@ export function officialSides(baseInstance: Dict, headInstance: Dict, from: stri
       if (w.url === product) throw new Error(`${p.name}: an official module is part of the product: pin the product (product:), not the module`);
       const root = checkout(pw, f);
       defs[p.name] = (f.parse(readFileSync(join(root, "module.yaml"), "utf8")) ?? {}) as Dict;
-      forks[p.name] = { at: pw, origin: onOfficialMain(pw, f) ? `${OFFICIAL} pinned at ${p.sha.slice(0, 12)}` : `${OFFICIAL} pinned at ${p.sha.slice(0, 12)}, unreviewed: not on its main (tier ${f.kit?.(root, defs[p.name]!, pw) ? "conformant" : "declared"})` };
+      forks[p.name] = { at: pw, origin: onOfficialMain(pw, f) ? `${OFFICIAL} pinned at ${p.sha.slice(0, 12)}` : `${OFFICIAL} pinned at ${p.sha.slice(0, 12)}, unreviewed: not on its main (tier declared)` };
     }
     for (const k of forksOf(instance).filter((x) => x.target !== "kernel" && trees[x.target])) {
       const fw = onFork({ ...w, path: posix.join(w.path, k.target) }, k, f);
       const root = checkout(fw, f);
       defs[k.target] = (f.parse(readFileSync(join(root, "module.yaml"), "utf8")) ?? {}) as Dict;
-      forks[k.target] = { at: fw, origin: `fork ${fw.url} at ${fw.sha.slice(0, 12)} (tier ${f.kit?.(root, defs[k.target]!, fw) ? "conformant" : "declared"})` };
+      forks[k.target] = { at: fw, origin: `fork ${fw.url} at ${fw.sha.slice(0, 12)} (tier declared)` };
     }
     return { w, run, trees, defs, forks };
   };
@@ -334,10 +333,10 @@ function wantedRemote(instance: Dict): Map<string, string[]> {
 
 /**
  * The modules instance.yaml installs from third-party marketplaces, fetched and read. `parse`: the caller's YAML parser (the
- * compiler's); `kit`: whether a module passes the contract kit (conformant). A module from a third-party marketplace is
+ * compiler's). A module from a third-party marketplace is
  * `untrusted` unless its manifest says otherwise (spec §4.1); saying otherwise is new authority (the authority diff).
  */
-export function remoteModules(instance: Dict, f: Fetch & { parse: (s: string) => unknown; kit?: (root: string, def: Dict, at: Where) => boolean }, withForks = true): Remote[] {
+export function remoteModules(instance: Dict, f: Fetch & { parse: (s: string) => unknown }, withForks = true): Remote[] {
   const mkts = new Map(marketplacesOf(instance).map((m) => [m.name, m.at]));
   const forks = withForks ? forksOf(instance) : [];
   const pins = pinsOf(instance);
@@ -361,20 +360,20 @@ export function remoteModules(instance: Dict, f: Fetch & { parse: (s: string) =>
       const def = (f.parse(readFileSync(join(root, "module.yaml"), "utf8")) ?? {}) as Dict;
       if (def.name !== name) throw new Error(`${name}@${mkt}: module.yaml name is ${String(def.name)}, expected ${name}`);
       def.isolation ??= "untrusted";
-      out.push({ name, marketplace: mkt, market: at, at: w, root, def, tier: f.kit?.(root, def, w) ? "conformant" : "declared", ...(fork ? { fork } : {}) });
+      out.push({ name, marketplace: mkt, market: at, at: w, root, def, tier: "declared", ...(fork ? { fork } : {}) });
     }
   }
   return out;
 }
 
 /**
- * How the host fetches: the default cache, the jailed kit, and the host's credential helper (ops/git-credential-app.mjs, the
+ * How the host fetches: the default cache and the host's credential helper (ops/git-credential-app.mjs, the
  * code host module's App tokens; it answers nothing for a repo the App can't read, and git then fetches anonymously).
  */
-export function hostFetch(repo: string): Fetch & { kit: ReturnType<typeof kitInJail> } {
+export function hostFetch(repo: string): Fetch {
   const cacheDir = defaultCache();
   const helper = join(repo, "ops/git-credential-app.mjs");
-  return { cacheDir, kit: kitInJail(cacheDir), ...(existsSync(helper) ? { credentialHelper: `!node ${helper}` } : {}) };
+  return { cacheDir, ...(existsSync(helper) ? { credentialHelper: `!node ${helper}` } : {}) };
 }
 
 /**
@@ -382,7 +381,7 @@ export function hostFetch(repo: string): Fetch & { kit: ReturnType<typeof kitInJ
  * third-party modules that side's instance.yaml installs, the files those changed between the sides (as modules/<name>/…
  * paths, as the product's own diff names them), and where each comes from (marketplace, sha, tier) for the card.
  */
-export function withRemote<T extends { baseInstance: Dict; headInstance: Dict; baseDefs: Record<string, Dict>; headDefs: Record<string, Dict>; changed: string[]; origins?: { base: Record<string, string>; head: Record<string, string> } }>(a: T, f: Fetch & { parse: (s: string) => unknown; kit?: (root: string, def: Dict, at: Where) => boolean }) {
+export function withRemote<T extends { baseInstance: Dict; headInstance: Dict; baseDefs: Record<string, Dict>; headDefs: Record<string, Dict>; changed: string[]; origins?: { base: Record<string, string>; head: Record<string, string> } }>(a: T, f: Fetch & { parse: (s: string) => unknown}) {
   const [rb, rh] = [remoteModules(a.baseInstance, f), remoteModules(a.headInstance, f)];
   const defs = (official: Record<string, Dict>, remote: Remote[]) => {
     const out = { ...official };
@@ -445,36 +444,4 @@ export function remoteCodeText(baseInstance: Dict, headInstance: Dict, f: Fetch 
   }
   const text = parts.join("\n");
   return text.length > max ? `${text.slice(0, max)}\n… (cut at ${max} characters)` : text;
-}
-
-/**
- * The contract kit (kernel/sdk) on a third-party module, in the job sandbox with no network: true only when it ran and
- * passed. The kit covers engine@1, so a module with no engine is not conformant yet. Nowhere to jail it (no bwrap, not
- * Linux) is not conformant either. One run per sha, remembered in the cache.
- */
-export function kitInJail(cacheDir: string) {
-  return (root: string, def: Dict, at: Where) => {
-    if (!isMap(def.providers) || def.providers.engine == null || process.platform !== "linux") return false;
-    const mark = join(cacheDir, "kit", `${at.sha}-${hash(`${at.url}\0${at.path}`)}`);
-    if (existsSync(mark)) return true;
-    const r = spawnSync(process.execPath, ["--disable-warning=ExperimentalWarning", fileURLToPath(import.meta.url), root], { encoding: "utf8", timeout: 120_000 });
-    if (r.status !== 0) return false; // failed, or no jail here: run again next time
-    mkdirSync(join(cacheDir, "kit"), { recursive: true });
-    writeFileSync(mark, "pass");
-    return true;
-  };
-}
-
-// The jailed kit itself: `node sources.ts <module dir>`. Exit 0 passed, 3 no jail, else failed.
-if (process.argv[1] === fileURLToPath(import.meta.url)) {
-  const root = resolve(process.argv[2] ?? "");
-  const repo = resolve(import.meta.dirname, "../..");
-  const { sandboxConfig } = await import("../../kernel/src/sandbox-config.ts");
-  const { layout } = await import("../../kernel/src/sandbox.ts");
-  const cfg = sandboxConfig();
-  const yaml = join(repo, "kernel/node_modules");
-  if (spawnSync(cfg.bwrap, ["--version"]).status !== 0) process.exit(3);
-  const argv = [cfg.bwrap, ...layout(cfg, { ro: [root, join(repo, "kernel/sdk"), yaml] }), "--unshare-net", "--die-with-parent", "--clearenv", "--setenv", "PATH", "/usr/local/bin:/usr/bin:/bin", "--setenv", "HOME", homedir(), "--setenv", "NODE_PATH", yaml, "--", process.execPath, "--disable-warning=ExperimentalWarning", join(repo, "kernel/sdk/bin/aidenhq-module-test.ts"), root];
-  const r = spawnSync(argv[0]!, argv.slice(1), { stdio: "inherit", timeout: 110_000 });
-  process.exit(r.status === 0 ? 0 : 1);
 }

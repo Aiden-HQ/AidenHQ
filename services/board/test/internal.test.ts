@@ -27,7 +27,7 @@ describe("internal listener", () => {
     issue: async () => issue,
     companyId: "co",
   } as unknown as Paperclip;
-  const app = createApp({ paperclip: pc, store, log: pino({ level: "silent" }), allowedHosts: ["board:3122"], staticDir: "/nonexistent", timezone: "UTC", mode: "internal", internalToken: TOKEN, gatewayKey: "d".repeat(40), reviewerKey: "r".repeat(40) });
+  const app = createApp({ paperclip: pc, store, log: pino({ level: "silent" }), allowedHosts: ["board:3122"], staticDir: "/nonexistent", timezone: "UTC", mode: "internal", internalToken: TOKEN, gatewayKey: "d".repeat(40) });
   let port = 0;
   beforeAll(async () => {
     await new Promise<void>((r) => app.listen(0, "127.0.0.1", r));
@@ -51,22 +51,13 @@ describe("internal listener", () => {
     call("POST", path, body, { host: "board:3122", "content-type": "application/json", authorization: `Bearer ${TOKEN}`, ...asAgent("ra"), ...headers });
 
 
-  it("a typed settings change is read back only with the runner's key, never the token alone", async () => {
-    store.setMeta("settings-change:i9", JSON.stringify([{ kind: "unfork", agent: "scout" }]));
-    const get = (path: string, headers: Record<string, string> = {}) => call("GET", path, undefined, { host: "board:3122", authorization: `Bearer ${TOKEN}`, ...headers });
-    expect((await get("/internal/settings-changes/i9")).status).toBe(403);
-    const ok = await get("/internal/settings-changes/i9", { "x-reviewer-key": "r".repeat(40) });
-    expect([ok.status, await ok.json()]).toEqual([200, { changes: [{ kind: "unfork", agent: "scout" }] }]);
-    expect((await get("/internal/settings-changes/other", { "x-reviewer-key": "r".repeat(40) })).status).toBe(404);
-  });
-
   it("needs the token and an allowed host", async () => {
     expect((await post("/internal/issues/PEN-1/schedule", { clear: true }, { authorization: "Bearer nope" })).status).toBe(401);
     expect((await post("/internal/issues/PEN-1/schedule", { clear: true }, { authorization: "" })).status).toBe(401);
     expect((await post("/internal/issues/PEN-1/schedule", { clear: true }, { host: "evil:3122" })).status).toBe(403);
   });
 
-  it("the token alone changes nothing: the caller must be an agent granted the tool and the board-writer role, or the runner", async () => {
+  it("the token alone changes nothing: the caller must be an agent granted the tool and the board-writer role", async () => {
     const refused = async (path: string, body: unknown, headers: Record<string, string>) => (await (await post(path, body, headers)).json()) as { error: string };
     expect((await refused("/internal/issues/PEN-1/schedule", { clear: true }, { "x-aidenhq-caller": "" })).error).toBe("missing caller assertion");
     expect((await refused("/internal/issues/PEN-1/schedule", { clear: true }, asAgent("forged"))).error).toMatch(/^only an agent granted task_schedule/);
@@ -74,15 +65,6 @@ describe("internal listener", () => {
     expect((await refused("/internal/issues/PEN-1/recurring", { action: "stop" }, {})).error).toMatch(/^only an agent granted task_recurring/); // not granted
     expect((await refused("/internal/issues/PEN-1/schedule", { clear: true }, asAgent("ra", { aud: "ops" }))).error).toMatch(/^refused: the caller assertion is for ops/);
     expect((await refused("/internal/issues/PEN-1/schedule", { clear: true }, asAgent("ra", { exp: 1 }))).error).toMatch(/expired/);
-    expect((await refused("/internal/recurring/claim", {}, {})).error).toBe("only the runner claims recurring runs");
-    expect((await refused("/internal/runner/activity", {}, {})).error).toBe("only the runner reports its jobs");
-  });
-
-  it("where a moved chat continues: the board's own record, and only for the owner channel's key", async () => {
-    store.setMeta("task_rollover", JSON.stringify({ moved: { old: "new" } }));
-    const get = (headers: Record<string, string>) => call("GET", "/internal/successor/old", undefined, { host: "board:3122", authorization: `Bearer ${TOKEN}`, ...headers });
-    expect((await get({})).status).toBe(403); // the internal token alone opens nothing
-    expect(await (await get({ "x-gateway-key": "d".repeat(40) })).json()).toEqual({ id: "new" });
   });
 
   it("serves only /internal/ routes: not the user's API or the page", async () => {

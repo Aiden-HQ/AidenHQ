@@ -1,0 +1,37 @@
+#!/usr/bin/env bash
+# sleep for AidenHQ coding agents. Placed first on the job's PATH; a short pause goes to the real sleep. A long one, or
+# pauses adding up past a few minutes in one job (a polling loop around `aidenhq status`, `gh pr checks` or
+# `git ls-remote`), is refused: the kernel wakes the agent when a check, a card or a merge moves, so the turn should end
+# instead of holding the job's slot. The total lives in the job's private /tmp.
+set -euo pipefail
+
+ONE=60    # seconds one sleep may take
+TOTAL=300 # seconds all of a job's sleeps may take
+
+self_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+real=""
+IFS=: read -r -a dirs <<< "$PATH"
+for d in "${dirs[@]}"; do
+  [ "$d" = "$self_dir" ] && continue
+  if [ -x "$d/sleep" ]; then real="$d/sleep"; break; fi
+done
+[ -n "$real" ] || { echo "sleep (aidenhq): real sleep not found on PATH" >&2; exit 127; }
+
+# GNU sleep's arguments: numbers with an optional s/m/h/d suffix, summed in whole seconds (a sub-second pause costs
+# nothing); anything else (infinity, --help) counts as long.
+secs=$(for a in "$@"; do printf '%s\n' "$a"; done | awk '
+  { u = substr($0, length($0)); m = 1; a = $0
+    if (u == "m") m = 60; else if (u == "h") m = 3600; else if (u == "d") m = 86400
+    if (u ~ /[smhd]/) a = substr(a, 1, length(a) - 1)
+    if (a !~ /^[0-9]*\.?[0-9]+$/) bad = 1
+    t += a * m }
+  END { if (bad || NR == 0) print "inf"; else printf "%d\n", t }')
+
+tally="${TMPDIR:-/tmp}/.aidenhq-slept"
+before=$(cat "$tally" 2>/dev/null || echo 0)
+if [ "$secs" = inf ] || [ "$secs" -gt "$ONE" ] || [ $((before + secs)) -gt "$TOTAL" ]; then
+  echo "sleep (aidenhq): refused (sleep $*): this job has paused ${before}s already, and pauses stop at ${ONE}s each and ${TOTAL}s in all. Don't poll for checks, reviews or merges: end your turn, and the kernel wakes you when a check fails, a card is decided or a merge lands. If this turn truly needs the outcome first, \`aidenhq wait\` waits for it in one call." >&2
+  exit 1
+fi
+echo $((before + secs)) > "$tally"
+exec "$real" "$@"

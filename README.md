@@ -14,9 +14,9 @@ turns what you ask for into work for the right agent, chases it, and brings you 
 |---|---|
 | **Chief of staff (Aiden)** | The one agent you talk to. Turns chat and forwards into tasks, delegates, chases, sends the daily brief, relays your approvals word for word. |
 | **Crews** | Specialist agents on schedules and events. Core: Aiden, Researcher, DevOps Engineer, Agent Architect, Agent Coach, Platform Engineer. Modules add the rest (Follow-up Tracker with its Slack and inbox scouts, Meeting Librarian, Engineers, Security Watch, ...). Each is a `module.yaml` entry plus a handbook (`modules/<m>/agents/<key>/AGENTS.md`). |
-| **Control plane** | [Paperclip](https://github.com/paperclipai/paperclip): tasks, routines, budgets, approvals, run history. Agents run on Codex via OpenRouter. |
-| **Shared connections** | MCP servers any agent can be granted: Google Workspace, Slack, Glean, Jira, GitHub, Primer, tasks, apps (Grafana and ClickHouse are runner-only). Each optional one is a module (`modules/<m>/connections/`). Tools are tagged read or write; every call is checked against the agent's grants. |
-| **Runner** | Host service for coding jobs. Pushes, PRs and merges happen only on the owner's own words, enforced in code. |
+| **Control plane** | [Paperclip](https://github.com/paperclipai/paperclip): tasks, routines, budgets, approvals, run history. Paperclip runs nothing: the kernel runs every agent as a job in an agent computer, on Codex via OpenRouter. |
+| **Shared connections** | MCP servers any agent can be granted: Google Workspace, Slack, Glean, Jira, GitHub, Primer, tasks, apps (Grafana and ClickHouse are Engineer-only). Each optional one is a module (`modules/<m>/connections/`). Tools are tagged read or write; every call is checked against the agent's grants. |
+| **Code host** | `codehost-github`: the only holder of the GitHub App key; pushes, PRs and merges are approval records tiered in code. Coding jobs run in agent computers. |
 | **Apps platform** | Long-running services agents deploy and maintain (`apps-mcp`; registry is the instance's `apps.yaml` plus module apps), each sandboxed: no host access unless its registry entry grants it. |
 | **Warehouse** | Shared Postgres app for sources and apps (`modules/warehouse/apps/warehouse`). |
 | **Roles** | Agent roles decide which tools and restricted apps each agent may use. |
@@ -33,17 +33,17 @@ turns what you ask for into work for the right agent, chases it, and brings you 
                             │                         │                          │ MCP
                             │                         │              shared connections (Google, Slack, GitHub, ...)
                             │                         ▼
-                            │                 runner (host, systemd) ── coding jobs, git gates
+                            │                 codehost-github ── git writes, merges, gates
                             └──────────────── apps-mcp ── sandboxed apps (warehouse, ...)
 ```
 
-Everything runs in Docker Compose on one host, plus the runner as a systemd user unit. Inbound is LAN/Tailscale
+Everything runs in Docker Compose on one host, plus the kernel and the computer launcher as systemd user units. Inbound is LAN/Tailscale
 only. See [docs/architecture.md](docs/architecture.md).
 
 ## Get started
 
 - **Concepts:** [docs/concepts.md](docs/concepts.md) explains Aiden, crews, modules, connections, grants, apps, the
-  warehouse, the runner and the approval tiers in one page.
+  warehouse, the code host and the approval tiers in one page.
 - **Set up your own instance:** [SETUP.md](SETUP.md): paste one prompt into your AI coding agent and open the link it
   prints. [docs/setup.md](docs/setup.md) is the manual path, with a check after every step (in Claude Code, ask it to
   "set up AidenHQ": the `setup-aidenhq` skill walks it). Each person runs their own server, instance repo and keys.
@@ -63,7 +63,7 @@ override them):
 | UI Reviewer (screenshot reviews of UI PRs) | `~openai/gpt-luna-latest` at medium effort |
 | Red Teamer (fewer refusals on offensive security work) | `~z-ai/glm-flash-latest` (high effort) |
 | Advisor (`advisor_ask`, and `aidenhq advise` for Engineers: a second opinion at a decision point) | `~openai/gpt-sol-latest` |
-| Engineers (coding jobs on the runner) | `~deepseek/deepseek-flash-latest`, with a picker of others in `modules/engineering/module.yaml` |
+| Engineers (coding jobs in agent computers) | `~deepseek/deepseek-flash-latest`, with a picker of others in `modules/engineering/module.yaml` |
 | AI reviewer (Tier 1 approvals) and grader | `~openai/gpt-luna-latest` (medium effort), or `~deepseek/deepseek-flash-latest` (high) for an OpenAI-family requester: never the requesting model's family |
 
 `ops/setup.sh` creates one OpenRouter key per instance with a monthly limit (`OPENROUTER_LIMIT_USD`, default 100 USD).
@@ -76,7 +76,7 @@ $0); use the OpenRouter key limit instead.
 
 ## Modules and the instance
 
-This repo is the kernel (gates, identity, sandbox, metering, the runner, the board and setup) and the official modules
+This repo is the kernel (gates, identity, job admission, metering, the board and setup) and the official modules
 under `modules/` (the agents, connections, apps, engines and channels; MIT by folder, see `modules/LICENSE`), so one commit
 names a kernel and the modules it was tested with. Third-party modules load from their own repositories (`marketplaces:`
 in `instance.yaml`). Releases and the installer live in

@@ -6,7 +6,7 @@ import { execFileSync } from "node:child_process";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { bumpTitle, createApply, isTrial, officialMove, strayFiles } from "../src/apply.ts";
+import { bumpTitle, createApply, isTrial, officialMove, readDigest, strayFiles } from "../src/apply.ts";
 import { openRecords } from "../src/records.ts";
 import { createWrites } from "../src/writes.ts";
 
@@ -39,10 +39,12 @@ test("trial is read as YAML, like compile", () => {
 const SHA = "d".repeat(40);
 const until = async (fn) => { for (let i = 0; i < 300 && !(await fn()); i++) await new Promise((r) => setTimeout(r, 10)); assert.ok(await fn()); };
 /** This host as the executor sees it: the code host, systemd and the generations file, all fakes that count. */
+const READ = (files = ["instance.yaml"]) => ({ files, texts: { base: { "instance.yaml": "product: x\n" }, head: { "instance.yaml": "product: y\n" } }, diff: "" });
 function fakeHost({ files = ["instance.yaml"] } = {}) {
   const h = {
     launches: [], lands: [], units: {}, gens: [{ n: 1, instance: "e".repeat(40), health: "good" }], hang: false,
-    codehost: { read: async () => ({ files, texts: { base: { "instance.yaml": "product: x\n" }, head: { "instance.yaml": "product: y\n" } }, diff: "" }), land: async (s) => (h.lands.push(s), { landed: s.sha }) },
+    read: READ(files),
+    codehost: { read: async () => h.read, land: async (s) => (h.lands.push(s), { landed: s.sha }) },
     launch: async (u) => { h.launches.push(u); h.units[u] = { loaded: true, active: "active", sub: "running", result: "success" }; },
     // A kernel that hangs here is one the apply has just restarted: it never sees the unit end.
     unit: (u) => (h.hang ? new Promise(() => {}) : Promise.resolve(h.units[u] ?? { loaded: false, active: "inactive", sub: "dead", result: "success" })),
@@ -63,7 +65,7 @@ function kernel(db, h) {
   return { records, applies, writes, notices };
 }
 const claimed = (records, files = ["instance.yaml"]) => records.file({
-  kind: "kernel.apply", module: "kernel", args: { repo: "acme/aidenhq-instance", branch: "fleet/edit", sha: SHA, files }, targets: {}, executor: { module: "kernel" }, policy: "p",
+  kind: "kernel.apply", module: "kernel", args: { repo: "acme/aidenhq-instance", branch: "fleet/edit", sha: SHA, files }, targets: { content: readDigest(READ(files)) }, executor: { module: "kernel" }, policy: "p",
   card: { sentence: "Apply.", changes: "", reads: "", cost: "", details: "" }, requester: { agent: "", key: "", name: "the runner", roles: [], kind: "runner" },
   task: "TASK-1", identifier: "ACME-1", tier: 1, panel: false, state: "claimed",
 });
@@ -85,6 +87,13 @@ test("an apply lands its commit from the task's workspace, launches its unit onc
   const k2 = kernel(dbFile(), h2);
   assert.match((await k2.applies.execute(claimed(k2.records))).text, /no longer changes the files that were approved/);
   assert.deepEqual([h2.lands.length, h2.launches.length], [0, 0]);
+  // Nor does one whose content moved under the same files (the workspace rewrote what the sha resolves to, say): the land
+  // re-reads the commit and lands only exactly what was reviewed.
+  const h3 = fakeHost();
+  h3.read = { ...READ(), texts: { base: { "instance.yaml": "product: x\n" }, head: { "instance.yaml": "product: z\n" } }, diff: "-product: x\n+product: z\n" };
+  const k3 = kernel(dbFile(), h3);
+  assert.match((await k3.applies.execute(claimed(k3.records))).text, /no longer exactly what was approved/);
+  assert.deepEqual([h3.lands.length, h3.launches.length], [0, 0]);
 });
 
 test("a crash between launching the unit and recording its outcome never starts a second apply", async () => {
@@ -148,11 +157,12 @@ test("the official modules' pin is read structurally for the land's reviewer-eva
   const [A, B] = ["a".repeat(40), "b".repeat(40)];
   const flow = (sha, repo = "acme/aidenhq-modules") => `product: ${"c".repeat(40)}\nmarketplaces:\n  - { name: aidenhq, source: { source: github, repo: ${repo} }, sha: ${sha} }\n`;
   const block = (sha) => `marketplaces:\n  - name: aidenhq\n    source:\n      source: github\n      repo: acme/aidenhq-modules\n    sha: ${sha}\n`;
-  assert.deepEqual(officialMove(flow(A), block(B)), { from: { repo: "acme/aidenhq-modules", sha: A }, to: { repo: "acme/aidenhq-modules", sha: B } });
-  assert.deepEqual(officialMove(flow(A), flow(A, "evil/modules")).to, { repo: "evil/modules", sha: A }, "the repository is part of the pin");
+  assert.deepEqual(officialMove(flow(A), block(A)), { from: { repo: "acme/aidenhq-modules", sha: A }, to: { repo: "acme/aidenhq-modules", sha: A } });
+  assert.match(officialMove(flow(A), block(B)).error, /moves an `aidenhq` marketplace pin/);
+  assert.match(officialMove(flow(A), flow(A, "evil/modules")).error, /moves/, "the repository is part of the pin");
   assert.deepEqual(officialMove("product: x\n", "product: y\n"), { from: null, to: null });
-  assert.match(officialMove("product: x\n", flow(A)).error, /adds the official modules' marketplace/);
-  assert.match(officialMove(flow(A), "product: x\n").error, /removes/);
+  assert.match(officialMove("product: x\n", flow(A)).error, /adds an `aidenhq` marketplace pin/);
+  assert.deepEqual(officialMove(flow(A), "product: x\n"), { from: { repo: "acme/aidenhq-modules", sha: A }, to: null }, "a pre-monorepo install drops it");
   assert.match(officialMove(undefined, flow(A)).error, /instance.yaml isn't on the instance's main/, "missing is never an empty document");
   assert.match(officialMove(flow(A), undefined).error, /isn't on the commit/);
   assert.match(officialMove(flow(A), `${flow(B)}marketplaces: []\n`).error, /can't be read/, "duplicate keys");

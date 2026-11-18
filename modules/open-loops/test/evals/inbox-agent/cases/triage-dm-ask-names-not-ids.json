@@ -16,7 +16,7 @@
       "title_re": "U0[A-Z0-9]{6,}"
     },
     {
-      "tool": "notify_owner"
+      "tool": "notify"
     }
   ]
 }

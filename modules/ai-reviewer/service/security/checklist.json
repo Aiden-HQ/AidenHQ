@@ -9,8 +9,8 @@
     },
     {
       "id": "reviewer-cases-kept",
-      "trigger": { "paths": ["modules/ai-reviewer/**", "ai-reviewer/**", "services/runner/src/tiers.*", "services/runner/src/review-request.*", "services/runner/src/siblings.*", "services/runner/src/cards.*", "services/shared/review-files.*", "kernel/sdk/src/reviewer.ts", "kernel/src/tier.ts", "kernel/src/writes.ts", "kernel/src/records.ts", "kernel/src/reviews.ts", "kernel/src/kinds.ts", "scripts/compiler/authority.ts", "modules/codehost-github/src/plan.mjs", "codehost-github/src/plan.mjs", "modules/platform/src/check.mjs", "platform/src/check.mjs"] },
-      "check": "Code merges a change to the reviewer's or the tiers' code only with a 100% receipt of the paid reviewer eval for its exact head (services/runner/src/evalgate.ts), so the eval's result is not your question. What you check: every planted case under modules/ai-reviewer/test/reviewer-cases/ is kept, with its expect, expect_code, expect_second and expect_flag as they were; the diff adds cases or leaves them alone.",
+      "trigger": { "paths": ["modules/ai-reviewer/**", "modules/codehost-github/service/src/merges.ts", "modules/codehost-github/service/src/merge-gate.mjs", "modules/codehost-github/service/src/evalgate.ts", "kernel/src/review-loop.ts", "kernel/src/apply-tier.ts", "services/shared/review-files.*", "kernel/sdk/src/reviewer.ts", "kernel/src/tier.ts", "kernel/src/writes.ts", "kernel/src/records.ts", "kernel/src/reviews.ts", "kernel/src/kinds.ts", "scripts/compiler/authority.ts", "modules/codehost-github/service/src/plan.mjs", "modules/platform/src/check.mjs"] },
+      "check": "Code merges a change to the reviewer's or the tiers' code only with a 100% receipt of the paid reviewer eval for its exact head (modules/codehost-github/service/src/evalgate.ts), so the eval's result is not your question. What you check: every planted case under modules/ai-reviewer/test/reviewer-cases/ is kept, with its expect, expect_code, expect_second and expect_flag as they were; the diff adds cases or leaves them alone.",
       "why": "CLAUDE.md: the reviewer eval must stay at 100%; every false reject becomes a planted case."
     },
     {
@@ -22,15 +22,9 @@
     },
     {
       "id": "gate-file-moved",
-      "trigger": { "paths": ["services/runner/src/**", "modules/codehost-github/**", "codehost-github/**", "modules/platform/**", "platform/**", "kernel/**", "services/board/src/**", "modules/ai-reviewer/service/**", "ai-reviewer/service/**", "modules/grading/**", "grading/**"], "lines": "^(deleted file mode|rename from|\\+\\+\\+ /dev/null)" },
-      "check": "A gate file the diff deletes or renames has its new path (or its removal) wherever the gate is pinned, in this diff or in the companion PR the request chain names: GATE_CORE in platform/src/check.mjs (aidenhq-modules) and the must-list in the product's scripts/verify-security.sh.",
+      "trigger": { "paths": ["modules/codehost-github/**", "codehost-github/**", "modules/platform/**", "platform/**", "kernel/**", "services/board/src/**", "modules/ai-reviewer/service/**", "ai-reviewer/service/**", "modules/grading/**", "grading/**"], "lines": "^(deleted file mode|rename from|\\+\\+\\+ /dev/null)" },
+      "check": "A gate file the diff deletes or renames has its new path (or its removal) wherever the gate is pinned, in this diff or in the companion PR the request chain names: the path inventory (paths.yaml), GATE_CORE in modules/platform/src/check.mjs and the must-list in the product's scripts/verify-security.sh.",
       "why": "#200: after the board's accounts.ts moved into the kernel, verify-security still required the old file and failed on the host (generation 35)."
-    },
-    {
-      "id": "card-contract",
-      "trigger": { "paths": ["services/runner/src/cards.*", "kernel/src/kinds.ts"] },
-      "check": "A field added to, renamed in or removed from an approval card's args is changed on both sides in this diff: services/runner/src/cards.ts (what builds the args) and kernel/src/kinds.ts (the strict schema that checks them), so the card-contract test (services/runner/test/parity-3b.test.mjs) holds.",
-      "why": "CLAUDE.md: approval card args are a contract; a field on one side only makes the kernel refuse every card of that kind."
     },
     {
       "id": "scoped-deletions",

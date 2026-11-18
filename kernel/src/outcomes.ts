@@ -10,6 +10,7 @@
 // timeout) never posts twice.
 import type { DatabaseSync } from "node:sqlite";
 import type { Finish } from "./checks.ts";
+import type { Provenance } from "./provenance.ts";
 import { signature } from "../../services/paperclip-events/sign.js";
 
 const PLUGIN = "aidenhq.events";
@@ -26,32 +27,63 @@ export class OutcomeError extends Error {
 export interface Outcome { comment: string | null; status: string | null; again?: boolean; finish?: Finish }
 export interface PostRequest { kind: string; body: string; status?: string; blockedBy?: string[]; child?: { title: string; description?: string; assigneeAgentId?: string } }
 
-export function createOutcomes({ db, controlUrl, agentKey, postKey, delegates, finish, log = () => {}, timeoutMs = 30_000 }: {
-  db: DatabaseSync; controlUrl: string;
+/**
+ * One signed call to the plugin's `post` action as `agent`, with the agent's own Paperclip key (secrets paperclip-agents/<id>,
+ * kernel-held, never handed to a module): its answer's status and data. Shared by outcomes (here) and cp.ts.
+ */
+export function createPluginPost({ controlUrl, agentKey, postKey, timeoutMs = 30_000 }: {
+  controlUrl: string;
   /** The agent's own Paperclip key (secrets paperclip-agents/<id>), or "". */
   agentKey: (agent: string) => string;
   /** The key the kernel signs each call with (paperclip_post_key; the plugin holds it too). */
   postKey: () => string;
-  /** The ids of the agents an agent may hand a child task to (grants `delegate_to`). */
-  delegates: (agent: string) => string[];
-  /** The finish gate (checks.ts): a `done` that doesn't pass is posted without its status. */
-  finish: (task: string, agent: string) => Promise<Finish>;
-  log?: (msg: string, f?: Record<string, unknown>) => void; timeoutMs?: number;
+  timeoutMs?: number;
 }) {
-  db.exec("CREATE TABLE IF NOT EXISTS posted (job TEXT NOT NULL, kind TEXT NOT NULL, comment TEXT, status TEXT, at INTEGER NOT NULL, PRIMARY KEY (job, kind))");
   const companies = new Map<string, string>();
   const call = async (key: string, method: string, path: string, body?: unknown) => {
     const r = await fetch(new URL(path, controlUrl), { method, headers: { authorization: `Bearer ${key}`, "content-type": "application/json" }, ...(body !== undefined ? { body: JSON.stringify(body) } : {}), signal: AbortSignal.timeout(timeoutMs) })
       .catch((e: Error) => { throw new OutcomeError(502, "unknown", `the control plane didn't answer: ${e.message}`); });
     return { status: r.status, json: (await r.json().catch(() => ({}))) as any };
   };
-  const company = async (agent: string, key: string) => {
+  const keyOf = (agent: string) => {
+    const k = UUID.test(agent) ? agentKey(agent) : "";
+    if (!k) throw new OutcomeError(503, "no-agent-key", `the kernel holds no key for agent ${agent} (setup mints it)`);
+    return k;
+  };
+  /** The agent's company, checked once: the key the kernel holds for it is that agent's. */
+  async function company(agent: string): Promise<string> {
     if (companies.has(agent)) return companies.get(agent)!;
-    const r = await call(key, "GET", "/api/agents/me");
+    const r = await call(keyOf(agent), "GET", "/api/agents/me");
     if (r.status !== 200 || r.json?.id !== agent || typeof r.json.companyId !== "string") throw new OutcomeError(503, "no-agent-key", `the kernel's key for agent ${agent} isn't that agent's (setup mints it)`);
     companies.set(agent, r.json.companyId);
     return r.json.companyId as string;
+  }
+  return {
+    company,
+    /** `params` (no ts, no sig) signed and posted as `agent`: the plugin's status and data (`refused`, or what it wrote). */
+    async post(agent: string, params: Record<string, unknown>): Promise<{ status: number; data: any }> {
+      const companyId = await company(agent);
+      const signKey = postKey();
+      if (!signKey) throw new OutcomeError(503, "no-post-key", "the kernel has no paperclip_post_key (setup generates it)");
+      const p = { ...params, ts: Date.now() };
+      const r = await call(keyOf(agent), "POST", `/api/plugins/${PLUGIN}/actions/post`, { companyId, params: { ...p, sig: signature(signKey, companyId, agent, p) } });
+      return { status: r.status, data: r.json?.data };
+    },
   };
+}
+export type PluginPost = ReturnType<typeof createPluginPost>;
+
+export function createOutcomes({ db, plugin, delegates, finish, provenance, log = () => {} }: {
+  db: DatabaseSync; plugin: PluginPost;
+  /** The ids of the agents an agent may hand a child task to (grants `delegate_to`). */
+  delegates: (agent: string) => string[];
+  /** The finish gate (checks.ts): a `done` that doesn't pass is posted without its status. */
+  finish: (task: string, agent: string) => Promise<Finish>;
+  /** A child the job creates gets its provenance row (provenance.ts). */
+  provenance: Pick<Provenance, "carried" | "intend" | "record">;
+  log?: (msg: string, f?: Record<string, unknown>) => void;
+}) {
+  db.exec("CREATE TABLE IF NOT EXISTS posted (job TEXT NOT NULL, kind TEXT NOT NULL, comment TEXT, status TEXT, at INTEGER NOT NULL, PRIMARY KEY (job, kind))");
 
   /** Post `req` on `job.task` as `job.agent`, once per (job, kind). */
   async function post(job: { id: string; agent: string; task: string }, req: PostRequest): Promise<Outcome> {
@@ -59,28 +91,26 @@ export function createOutcomes({ db, controlUrl, agentKey, postKey, delegates, f
     if (typeof req.body !== "string" || !req.body.trim()) throw new OutcomeError(400, "bad-request", "send {kind, body}");
     const done = db.prepare("SELECT comment, status FROM posted WHERE job = ? AND kind = ?").get(job.id, req.kind) as { comment: string | null; status: string | null } | undefined;
     if (done?.comment) return { comment: done.comment, status: done.status, again: true };
-    const agentKeyOf = agentKey(job.agent);
-    if (!agentKeyOf) throw new OutcomeError(503, "no-agent-key", `the kernel holds no key for agent ${job.agent} (setup mints it)`);
-    const companyId = await company(job.agent, agentKeyOf);
+    await plugin.company(job.agent);
     let status = req.status;
     let gate: Finish | undefined;
     if (status === "done") {
       gate = await finish(job.task, job.agent);
       if (!gate.pass) status = undefined;
     }
+    const origin = tag(job.id, req.kind).slice(5, -4);
+    if (req.child) provenance.intend(origin, await provenance.carried({ job: job.id, agent: job.agent, task: job.task }));
     if (!done) db.prepare("INSERT INTO posted (job, kind, at) VALUES (?, ?, ?)").run(job.id, req.kind, Date.now());
-    const params = { issueId: job.task, tag: tag(job.id, req.kind), body: req.body, ...(done ? { again: true } : {}), ...(status ? { status } : {}), ...(status === "blocked" ? { blockedBy: req.blockedBy ?? [] } : {}), ...(status === "done" ? { gated: true } : {}), ...(req.child ? { child: req.child, delegateTo: delegates(job.agent) } : {}), ts: Date.now() };
-    const signKey = postKey();
-    if (!signKey) throw new OutcomeError(503, "no-post-key", "the kernel has no paperclip_post_key (setup generates it)");
-    const signed = { ...params, sig: signature(signKey, companyId, job.agent, params) };
-    const r = await call(agentKeyOf, "POST", `/api/plugins/${PLUGIN}/actions/post`, { companyId, params: signed });
+    const params = { issueId: job.task, tag: tag(job.id, req.kind), body: req.body, ...(done ? { again: true } : {}), ...(status ? { status } : {}), ...(status === "blocked" ? { blockedBy: req.blockedBy ?? [] } : {}), ...(status === "done" ? { gated: true } : {}), ...(req.child ? { child: req.child, delegateTo: delegates(job.agent) } : {}) };
+    const r = await plugin.post(job.agent, params);
     // A 5xx (502: the plugin is down, or it threw) leaves the row pending: whether it wrote is unknown, and the retry looks.
     if (r.status >= 500) throw new OutcomeError(502, "unknown", `the post action answered ${r.status}`);
-    const data = r.json?.data;
+    const data = r.data;
     if (r.status >= 300 || !data || data.refused) {
       db.prepare("DELETE FROM posted WHERE job = ? AND kind = ? AND comment IS NULL").run(job.id, req.kind);
       throw new OutcomeError(r.status >= 300 ? 502 : 422, "refused", data?.refused ?? `the post action answered ${r.status}`);
     }
+    if (req.child && data.child) provenance.record(data.child, origin);
     db.prepare("UPDATE posted SET comment = ?, status = ? WHERE job = ? AND kind = ?").run(data.comment, data.status ?? null, job.id, req.kind);
     log("outcome posted", { job: job.id, kind: req.kind, task: job.task, status: data.status ?? null, ...(gate && !gate.pass ? { finish: "held" in gate ? "held" : "reopened" } : {}) });
     return { comment: data.comment, status: data.status ?? null, ...(done ? { again: true } : {}), ...(gate ? { finish: gate } : {}) };

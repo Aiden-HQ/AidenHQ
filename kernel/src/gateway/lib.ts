@@ -7,7 +7,9 @@
 //   POST /api/v1/chat/completions  (Bearer gateway_board_key) kind aside: the board's side chat, capped per UTC day
 //   POST /usage {since}           (Bearer gateway_board_key) the ledger since then → {records} (the board's Costs tab)
 //   POST /internal/caps {scope, agentId, subject, cap}  (Bearer gateway_board_key) the owner raised a cap: the new cap
-//   POST /spend                   (Bearer gateway_board_key) today's spend and the install cap in force → {day, spent, cap}
+//   GET /v1/spend/summary         (Bearer gateway_board_key) today (UTC) against every cap in force, as the caps count it:
+//                                 {day, install: {spent, cap}, agents: [{agent_id, spent, cap}]}: every granted agent and any other
+//                                 that spent today (the board's header and Costs tab)
 //   POST /c/<connection>/mcp      (Bearer: a job's own `ahqj_` token) the job's reads of a connection, its jobcaps only (../proxy.ts)
 //   GET /health
 // CI listener (gateway.ts, the CI runners' bridge address; only these routes, only `ahqci_` credentials, never on the others):
@@ -16,11 +18,9 @@
 //   POST /api/v1/chat/completions | /api/v1/responses  kind ci-code-review: the allowed models and fields only (ci.ts), CI's
 //                                 own caps, attributed to repo and PR; streamed or not, reserved and settled like any call
 //   GET /health
-// Credentials: a Paperclip run JWT (Codex in Paperclip, env_key PAPERCLIP_API_KEY; checked at Paperclip's /api/agents/me,
-// its run id from the checked token, the task from that run); an agent computer's run token `ahqc_` (the launcher forwards
-// its boxes' calls here with it; the launcher's /whoami names the agent, Paperclip run and task, asked every call so a run
-// that ended stops at once); a runner token `ahqj_` (token.ts: an Engineer job, or the runner's reviewer/grader/intake), or a fast chat lane's turn token (same format, signed with gateway_lane_secret, agent kind only); the source writers' key (gateway_source_key); Paperclip's harness key
-// (gateway_harness_key: the new-agent hello probe, whose env has no run JWT). The run key is the credential's sha256.
+// Credentials: a kernel job's token `ahqj_` (token.ts, kind job: capped as its agent on its task while the job lives), a
+// system token of the same format (reviewer/grader/source/check), a fast chat lane's turn token (same format, signed with
+// gateway_lane_secret, agent kind only), or the source writers' key (gateway_source_key). The run key is the credential's sha256.
 // Spend (spec §5.12): before forwarding, one transaction reserves (estimated input x in + max_output x out) x peak at the
 // model's declared prices (config/gateway.json `models`; an unpriced model is refused) as a `reserved` ledger row, so every
 // cap sum counts calls in flight; max_output is cut to what the tightest cap has left, and a call that can't buy MIN_OUTPUT
@@ -45,11 +45,11 @@ import { CI_KIND, CI_PREFIX, ciBodyProblem, githubKeys, verifyGithubOidc } from 
 import { verifyToken } from "./token.ts";
 
 type Brand<T, B extends string> = T & { readonly __brand: B };
-/** A run key: the sha256 of the caller's own credential (or the harness's day key). Run caps and the ledger key on it. */
+/** A run key: the sha256 of the caller's own credential (or the board aside's day key). Run caps and the ledger key on it. */
 export type RunKey = Brand<string, "RunKey">;
 /**
- * Who a model call is for, settled by identify() from the credential alone (a checked token, Paperclip's /api/agents/me,
- * the launcher's /whoami, a stored CI token): only identify() makes one, and nothing in the request body ever feeds it.
+ * Who a model call is for, settled by identify() from the credential alone (a checked token, a stored CI token): only
+ * identify() makes one, and nothing in the request body ever feeds it.
  */
 export type Caller = Brand<{
   runKey: RunKey; agentId: string | null; runId: string | null; issueId: string | null; perpetual: boolean; rev: string | null;
@@ -241,13 +241,13 @@ const RETRY_DELAYS_MS = [1000, 3000, 9000, 20000];
  * The gateway: handle(req, res). `secret(name)` reads a secret file (fresh each time, so a rotation needs no restart);
  * `upstream` is OpenRouter's API base; Paperclip and the board's internal API as URLs.
  */
-export function createGateway({ dbFile, legacyDbFile, grantsFile, settingsFile, tools, asCaller, secret, upstream = "https://openrouter.ai/api/v1", paperclipUrl, fileRaiseCap, launcherUrl, githubJwksUrl, jobLive = () => false, log = () => {}, now = Date.now, retryDelaysMs = RETRY_DELAYS_MS }: {
+export function createGateway({ dbFile, legacyDbFile, grantsFile, settingsFile, tools, asCaller, secret, upstream = "https://openrouter.ai/api/v1", paperclipUrl, fileRaiseCap, githubJwksUrl, jobLive = () => false, log = () => {}, now = Date.now, retryDelaysMs = RETRY_DELAYS_MS }: {
   /** Whether a kernel job (a job token's id) is still admitted or running: an ended job's token buys nothing. */
   jobLive?: (id: string) => boolean;
   dbFile: string; legacyDbFile?: string; grantsFile: string; settingsFile: string; tools?: (req: IncomingMessage, res: ServerResponse, connection: string, o: { jobs: boolean }) => Promise<void>;
   /** A module's model call for the agent whose tool call it serves (module token + caller assertion): that caller's own credential. */
   asCaller?: (req: IncomingMessage) => Promise<string | undefined>; secret: (name: string) => string; upstream?: string; paperclipUrl?: string;
-  launcherUrl?: string; githubJwksUrl?: string; log?: Log; now?: () => number;
+  githubJwksUrl?: string; log?: Log; now?: () => number;
   /** Waits between attempts at a transient OpenRouter failure (tests pass zeros). */
   retryDelaysMs?: number[];
   /** Files a kernel.raise_cap record (writes.ts fileNative): the owner's, after the AI reviewer. No task: the install cap's. */
@@ -284,6 +284,7 @@ export function createGateway({ dbFile, legacyDbFile, grantsFile, settingsFile, 
     spentTask: db.prepare("SELECT COALESCE(SUM(cost_usd), 0) AS s FROM calls WHERE agent_id = ? AND task_subject = ?"),
     spentDay: db.prepare("SELECT COALESCE(SUM(cost_usd), 0) AS s FROM calls WHERE agent_id = ? AND day = ?"),
     spentAll: db.prepare("SELECT COALESCE(SUM(cost_usd), 0) AS s FROM calls WHERE day = ?"),
+    spenders: db.prepare("SELECT DISTINCT agent_id FROM calls WHERE day = ? AND agent_id IS NOT NULL"),
     cap: db.prepare("SELECT cap FROM caps WHERE scope = ? AND agent_id = ? AND subject = ?"),
     setCap: db.prepare("INSERT INTO caps (scope, agent_id, subject, cap, at) VALUES (?, ?, ?, ?, ?) ON CONFLICT (scope, agent_id, subject) DO UPDATE SET cap = excluded.cap, at = excluded.at"),
     file: db.prepare("INSERT OR IGNORE INTO filed (scope, agent_id, subject, cap, at) VALUES (?, ?, ?, ?, ?)"),
@@ -347,28 +348,13 @@ export function createGateway({ dbFile, legacyDbFile, grantsFile, settingsFile, 
     return res.json();
   }
 
-  /** A Paperclip run's task (Paperclip's record of the run, else `hint`) and whether that task is perpetual. */
-  async function runTask(runId: string | null | undefined, hint: string | null = null) {
-    const board = secret("paperclip_board_key");
-    const run = (runId ? await paperclip(`/api/heartbeat-runs/${encodeURIComponent(runId)}`, board).catch(() => undefined) : undefined) as { issueId?: string; contextSnapshot?: { issueId?: string } } | undefined;
-    const issueId = run?.issueId ?? run?.contextSnapshot?.issueId ?? hint ?? null;
-    const issue = (issueId ? await paperclip(`/api/issues/${encodeURIComponent(issueId)}`, board).catch(() => undefined) : undefined) as { labels?: ({ name?: string } | null)[]; originKind?: string } | undefined;
+  /** A job's task and whether that task is perpetual (a chat task, or a routine's execution task). */
+  async function taskOf(issueId: string | null) {
+    const issue = (issueId ? await paperclip(`/api/issues/${encodeURIComponent(issueId)}`, secret("paperclip_board_key")).catch(() => undefined) : undefined) as { labels?: ({ name?: string } | null)[]; originKind?: string } | undefined;
     return { issueId, perpetual: Boolean(issue && ((issue.labels ?? []).some((l) => l?.name === "chat") || issue.originKind === "routine_execution")) };
   }
 
-  /** A computer's run token as the launcher that issued it knows it now: { agentId, runId, issueId }. */
-  async function computerRun(token: string): Promise<{ agentId: string; runId?: string | null; issueId?: string | null }> {
-    if (!launcherUrl) throw fail(503, "unauthorized", "this gateway doesn't know where the computer launcher is");
-    const res = await fetch(new URL("/whoami", launcherUrl), { headers: { authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(10_000) })
-      .catch((e: Error) => { throw fail(503, "unauthorized", `the computer launcher is unreachable (${e.message})`); });
-    if (res.status === 401) throw fail(401, "unauthorized", "this computer's run has ended");
-    if (!res.ok) throw fail(503, "unauthorized", `the computer launcher answered ${res.status}`);
-    const j = (await res.json().catch(() => undefined)) as { agentId?: unknown; runId?: string | null; issueId?: string | null } | undefined;
-    if (typeof j?.agentId !== "string" || !j.agentId) throw fail(401, "unauthorized", "the run token doesn't name its agent");
-    return j as { agentId: string; runId?: string | null; issueId?: string | null };
-  }
-
-  /** A run key's identity, settled once: the agent, Paperclip's run id, its task and whether that task is perpetual, the rev. */
+  /** A run key's identity, settled once: the agent, a run id, its task and whether that task is perpetual, the rev. */
   function settle(runKey: RunKey, { agentId = null, runId = null, issueId = null, perpetual = false }: { agentId?: string | null; runId?: string | null; issueId?: string | null; perpetual?: boolean }): RunRow {
     q.addRun.run(runKey, agentId, runId, issueId, (agentId && grants()[agentId]?.rev) || null, perpetual ? 1 : 0, new Date(now()).toISOString());
     return q.run.get(runKey) as RunRow;
@@ -392,10 +378,6 @@ export function createGateway({ dbFile, legacyDbFile, grantsFile, settingsFile, 
       // The board's side chat ("ask about this task"): no agent and no task run, so its "run" is the UTC day, capped.
       return { ...as(null, "aside", "Board side chat", true), runKey: `board-aside:${day(now())}` as RunKey } as Caller;
     }
-    if (same(cred, secret("gateway_harness_key"))) {
-      // Paperclip's hello probe for a new agent: one shared key, so its "run" is the UTC day.
-      return { ...as(null, routeKind, "agent", true), runKey: `harness:${day(now())}` as RunKey } as Caller;
-    }
     if (cred.startsWith("ahqj_")) {
       // A fast chat lane's turn token (slack-live-mcp) is signed with gateway_lane_secret: an agent's capped call only, so a
       // holder of the lane secret can never mint a system (uncapped) token.
@@ -407,9 +389,10 @@ export function createGateway({ dbFile, legacyDbFile, grantsFile, settingsFile, 
       const p = verifyToken(secret("gateway_job_secret"), cred, now());
       if (!p) throw fail(401, "unauthorized", "this run's model credential is invalid or expired");
       if (p.k === "job") {
-        // A kernel job (boxes.ts): capped as its agent on its task (a chat or routine task by the day), while the job lives.
+        // A kernel job (boxes.ts): its run is the job; capped as its agent on its task (a chat or routine task by the day), while
+        // the job lives.
         if (!jobLive(String(p.id))) throw fail(401, "unauthorized", "this job has ended");
-        const row = (q.run.get(runKey) as RunRow | undefined) ?? settle(runKey, { agentId: p.a, ...(await runTask(null, p.i)) });
+        const row = (q.run.get(runKey) as RunRow | undefined) ?? settle(runKey, { agentId: p.a, runId: String(p.id), ...(await taskOf(p.i)) });
         return as(row, routeKind, "agent", true);
       }
       if (p.k === "check") return { ...as(null, "check", "Check jobs", true), check: { subject: String(p.c ?? "").slice(0, 80) } } as Caller;
@@ -419,33 +402,6 @@ export function createGateway({ dbFile, legacyDbFile, grantsFile, settingsFile, 
       // A grader token that names an agent (the grading module's, minted per held task) is capped as that agent's; the runner's own
       // grader/reviewer/source tokens name none and stay system calls.
       return as(row, system ? p.k : routeKind, component, !system || (p.k === "grader" && Boolean(p.a)));
-    }
-    if (cred.startsWith("ahqc_")) {
-      const box = await computerRun(cred);
-      let row: RunIdentity | undefined = q.run.get(runKey) as RunRow | undefined;
-      if (!row) {
-        const task = await runTask(box.runId, box.issueId);
-        // Settled only once the launcher knows the Paperclip run (its first exec binds it): until then the identity is
-        // resolved again on every call, so a run is never pinned without its task (run and agent-day caps still apply).
-        row = box.runId ? settle(runKey, { agentId: box.agentId, runId: box.runId, ...task })
-          : { agent_id: box.agentId, run_id: null, issue_id: task.issueId, perpetual: task.perpetual, rev: grants()[box.agentId]?.rev ?? null };
-      }
-      return as(row, routeKind, "agent", true);
-    }
-    if (cred.startsWith("eyJ")) {
-      // The claims are read from the credential itself: its hash is the run key, so they are the bytes Paperclip accepted.
-      let claims: { exp?: unknown; sub?: unknown; run_id?: string } = {};
-      try { claims = JSON.parse(Buffer.from(cred.split(".")[1]!, "base64url").toString("utf8")); } catch {}
-      // A settled run key outlives Paperclip's check; the JWT's own expiry (Paperclip's TTL, 48h by default) still ends it.
-      if (typeof claims.exp === "number" && claims.exp * 1000 <= now()) throw fail(401, "unauthorized", "this run's credential has expired");
-      let row = q.run.get(runKey) as RunRow | undefined;
-      if (!row) {
-        // The JWT is genuine if Paperclip accepts it; only then is its payload (run id, agent) read.
-        const me = (await paperclip("/api/agents/me", cred).catch((e: GatewayError) => { throw fail(e.status === 401 || e.status === 403 ? 401 : 503, "unauthorized", e.message); })) as { id?: string } | undefined;
-        if (!me?.id || claims.sub !== me.id) throw fail(401, "unauthorized", "the run credential doesn't name its agent");
-        row = settle(runKey, { agentId: me.id, runId: claims.run_id ?? null, ...(await runTask(claims.run_id)) });
-      }
-      return as(row, routeKind, "agent", true);
     }
     throw fail(401, "unauthorized", "not a credential this gateway knows");
   }
@@ -751,11 +707,14 @@ export function createGateway({ dbFile, legacyDbFile, grantsFile, settingsFile, 
         const records = (q.since.all(String(since ?? "")) as CallRow[]).map((r) => ({ key: r.key, at: r.at, agentId: r.agent_id, component: r.component, model: r.model, input: r.input, cached: r.cached, output: r.output, costUsd: r.cost_usd, runKey: r.run_key, runId: r.run_id, issueId: r.issue_id, rev: r.rev, kind: r.kind, ms: r.ms, status: r.status, ...(r.kind === CI_KIND ? { subject: r.task_subject } : {}) }));
         return send(res, 200, { records });
       }
-      if (req.method === "POST" && path === "/spend") {
-        // The board's header: today's spend (settled and in flight, as the install cap counts it) and the cap in force.
+      if (req.method === "GET" && path === "/v1/spend/summary") {
+        // Today's spend (settled and in flight) against the caps in force, the owner's raises included: the install's, and each
+        // agent's day (every granted agent, and any other that spent today), nearest its cap first.
         boardKeyed(req);
-        const today = day(now()), [inst] = installScope(today);
-        return send(res, 200, { day: today, spent: Math.round((q.spentAll.get(today) as Sum).s * 1e4) / 1e4, cap: inst?.cap ?? null });
+        const today = day(now()), [inst] = installScope(today), usd = (n: number) => Math.round(n * 1e4) / 1e4;
+        const ids = new Set([...Object.keys(grants()), ...(q.spenders.all(today) as { agent_id: string }[]).map((r) => r.agent_id)]);
+        const agents = [...ids].map((agent_id) => ({ agent_id, spent: usd((q.spentDay.get(agent_id, today) as Sum).s), cap: capOf({ agentId: agent_id }, "day", today) }));
+        return send(res, 200, { day: today, install: { spent: usd((q.spentAll.get(today) as Sum).s), cap: inst?.cap ?? null }, agents: agents.sort((a, b) => b.spent / b.cap - a.spent / a.cap) });
       }
       if (req.method === "POST" && path === "/internal/caps") {
         boardKeyed(req);

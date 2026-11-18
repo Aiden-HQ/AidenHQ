@@ -55,7 +55,7 @@ apps.yaml                     apps agents created (read and written by apps-mcp)
 agents/<key>.md               extra rules appended to that module agent's handbook
 agents/<key>/agent.yaml       an instance-defined agent
 agents/<key>/AGENTS.md        its handbook
-agents/<key>/memory.md        its curated memory (the Librarian's)
+agents/<key>/memory.md        its curated memory (the Fleet Steward's)
 owner/profile.md              how the owner works, in every crew handbook and chat lane
 decisions.md                  product decisions and "not building" entries the AI reviewer holds changes to
 ```
@@ -82,23 +82,19 @@ outcomes:
 - **The owner's profile** (`owner/profile.md`, at most 4 KB; longer is cut at a line end with a compile warning): how the
   owner likes to work (length, format, channels, what to lead with, taste), one preference per line. Every crew handbook
   carries it under "How the owner works", and so does each agent's chat lane; it shapes how agents work with the owner
-  and never changes a rule, grant or approval. The Librarian proposes edits from the owner's corrections (the Coach
-  hands it evidence), and the Platform Engineer lands them through the usual apply card.
+  and never changes a rule, grant or approval. The Fleet Steward proposes edits from the owner's corrections, and the Platform Engineer lands them through the usual apply card.
 
 - **Overrides** change a fixed set of fields on things that exist: agents (`model`, `reasoning_effort`, `timeout_sec`,
   `image`, `max_parallel` for a bigger host) and routines (`schedules`, `status`, `model`, `autonomy`). Anything else is refused.
 - **Missed schedule ticks:** setup sets every routine to catch up (`enqueue_missed_with_cap`), so a tick Paperclip lost (a stalled scheduler, a restart) runs on the next one instead of being dropped. Paperclip enqueues one run per missed tick (at most 25; one for crons that fire 24+ times a day); `always_enqueue` routines skip missed ticks.
 - **A model per routine:** `model: <id>` on a routine runs its tasks on that model instead of the agent's (e.g. a cheap
-  model for a frequent sweep, the agent's stronger one for everything else). Setup puts it in the routine's env
-  (`AIDENHQ_MODEL`), Paperclip passes that env to the routine's runs, and the agent's Codex is started through
-  `/opt/aidenhq/codex-model` (`services/paperclip-tasks-mcp/codex-model`), which swaps it in for the agent's `--model`.
-  `reasoning_effort:` on a routine works the same way (`AIDENHQ_REASONING_EFFORT`; generated heartbeats use both). For an
-  agent in a computer (`image:`) the computer launcher applies them to the exec in the box (`routineArgs`). Only for
-  `codex_local` agents (not `dispatch: runner`); compile refuses others. Removing them clears the env on the next apply.
+  model for a frequent sweep, the agent's stronger one for everything else). Compile writes it into the agent's grants
+  entry (`routines`), and the kernel's admission gives a routine run's job that model. `reasoning_effort:` on a routine
+  works the same way (generated heartbeats use both).
 - **Autonomy per routine:** `autonomy: off | tier0 | full` on a routine (module, instance agent, or
   `overrides.routines.<key>.autonomy`) caps the approval cards of the tasks its runs start: the run task itself and every
-  task traced back to it, through parents and through Paperclip's `originRunId` (the run that created an issue, which no
-  agent sets), so an unparented `task_create` from a routine's run keeps the cap. The strictest of the routines found and
+  task traced back to it, through parents and the kernel's provenance (the job that created an issue), so an unparented
+  `task_create` from a routine's run keeps the cap. The strictest of the routines found and
   the instance's `autonomy` applies, in code (`services/runner/src/tiers.mjs` `routineCap`, `paperclip.ts` `origins`):
   `tier0` makes Tier 1 the owner's after the AI reviewer has read it (its reject is final; Tier 0 still runs),
   `off` makes Tier 0 the owner's too, `full` adds no cap. The default is `full` for scheduled and owner-started
@@ -116,31 +112,29 @@ outcomes:
   `trial: true` keeps writes to reporting on the
   agent's own tasks; `trial_writes: [connection.tool, …]` on a trial agent says which more it may use, so a definition can
   give it the owner-channel writes before tap 2: `paperclip_tasks.task_create`, `chat_lane.wake_at`,
-  `chat_lane.chat_send`, `telegram.notify_owner` (any other name, an entry it doesn't grant, or one on an agent not in
+  `chat_lane.chat_send`, `owner_channel.notify` (any other name, an entry it doesn't grant, or one on an agent not in
   trial is a compile error). Every other granted write stays refused until trial ends. The Agent Architect designs these
   and the Platform Engineer commits them after the owner approves.
-- `private_reads: true` on a `dispatch: runner` agent: its jobs may hold private data (private grants: Grafana, Slack,
+- `private_reads: true` on an Engineer (`profile: engineer`): its jobs may hold private data (private grants: Grafana, Slack,
   Glean, ClickHouse; other tasks) and get no web search. Without it (the Software and Platform Engineers), web search and
   only the non-private jobcaps (Primer).
-- `image: engineer` on a `dispatch: runner` agent: every Engineer has one; its jobs run in that agent computer (a job for an
+- `image: engineer` on an Engineer (`profile: engineer`): every Engineer has one; its jobs run in that agent computer (a job for an
   agent without one is refused).
-- `jobcaps: [<id>]` on a `dispatch: runner` agent (`<id>?` when its module is optional): the non-private reads its jobs hold,
+- `jobcaps: [<id>]` on an Engineer (`profile: engineer`) (`<id>?` when its module is optional): the non-private reads its jobs hold,
   through the kernel's proxy with the box's run token; no connection URL or token enters a job. A module declares them under
-  `jobcaps:` (`id`, `connection`, `tools` or `read`, `private`, `tool_timeout_s`, `read_url`, `read_secret`). `engine:` on a
-  runner agent names its engine (`codex-openrouter`).
-- `max_parallel` on an agent: how many of its runs go at once (Paperclip's `maxConcurrentRuns`). For a `dispatch: runner`
-  agent (the Engineers, the Platform Engineer) it caps that agent's parallel runner jobs, each in its own task workspace,
-  within the host's `max_concurrent` (config/runner.yaml); unset, only the host's cap applies.
-- `prompts:` in a module: handbook sections it adds to every crew (`codex_local`) agent's handbook, after the kernel's
+  `jobcaps:` (`id`, `connection`, `tools` or `read`, `private`, `tool_timeout_s`, `read_url`, `read_secret`). `engine:` on an
+  agent names the engine its jobs run on; without one, the one enabled engine that runs in a computer (compile fails when
+  there are none or several).
+- `profile:` on an agent: `crew` (the default), `engineer` or `check`: which tools, writes and computer its kernel jobs get.
+- `max_parallel` on an agent: how many of its kernel jobs run at once, each on its own task.
+- `prompts:` in a module: handbook sections it adds to every crew (`profile: crew`) agent's handbook, after the kernel's
   Approvals: `{id, file: prompts/<id>.md, order: first|normal|last, when, unless, lane}`. The file goes in verbatim (its
   leading blank lines included); `{{memory}}` and `{{fleet_issues}}` are filled in. `when` and `unless` test `tools`
   (`connection.tool` granted), `roles`, `modules` (enabled) and `fields` (an agent field: `true` means set and not false,
   anything else equal): every `when` test holds and no `unless` test. Ordered first, normal, last, then by module, then id.
   `lane: true` adds it to the fast chat lane's prompt too. A section that serves only some agents says so in `when`.
-  A section file may open with frontmatter: `load: on_demand` with a one-line `summary` keeps its text out of the
-  handbook; the handbook lists `id: summary` under "Sections on demand" and the agent reads the text with
-  `handbook_section` (tasks module) when its work calls for it. `load: always` (the default) is for rules that guard
-  risk and for what applies to every turn.
+  A section is always in the handbook; what an agent needs only for some work is a skill (below), which its engine
+  reads natively from the job's engine home.
 - `skills/<name>/SKILL.md` in a module: a skill in Codex's format (`name`, which is its folder's name, `description`,
   optional `when`/`unless`), with id `<module>.<name>`, for the agents the module defines and those granted one of its
   connections, plus any agent (module or instance, any adapter) that names it in its `skills:` list. Compile lists every
@@ -172,14 +166,14 @@ outcomes:
 Every tool call to a connection is checked against `config/grants/grants.json`, keyed by the caller's Paperclip agent
 id: the tools it may use per connection and its roles. Roles gate a few capabilities and may be granted only by the
 modules the registry allows: `fleet-admin` (the board's fleet tools), `board-writer`,
-`app-incidents`, `security-verdict` (security-watch records finding verdicts), `ops-key`, `architect`, `fleet-read` (fleet-ops and core: the board's fleet status only) and `fleet-audit` (core: any agent's evidence packet and its own review log, the Agent Coach's `coach_due`, `coach_evidence`, `coach_record`). Instance agents get none. A module agent may set `delegate_to: [<agent key>, <key>?, app-owners]`: the tasks bridge then
+`app-incidents`, `security-verdict` (security-watch records finding verdicts), `ops-key`, `architect`, `fleet-read` (fleet-steward and core: the board's fleet status only) and `fleet-audit` (fleet-steward: any agent's evidence packet and its own review log, `coach_due`, `coach_evidence`, `coach_record`). Instance agents get none. A module agent may set `delegate_to: [<agent key>, <key>?, app-owners]`: the tasks bridge then
 refuses its `task_create` and `task_delegate` to anyone else (`key?` only when that agent is on; `app-owners`: any agent that
-owns an app); the Agent Coach has one. After editing `kernel/src/proxy.ts`,
+owns an app); the Fleet Steward has one. After editing `kernel/src/proxy.ts`,
 run `node scripts/sync-shared.mjs`.
 
 ## The web and apps' pages
 
-- **Web search** is live for every codex agent (`web_search="live"` in core's `codex_args`).
+- **Web search** is live for every agent's jobs unless they hold private data (the kernel's admission).
   An agent may set `web_search: cached` or `disabled` (module or instance `agent.yaml`); computers inherit both.
 - **`web_view(url, screenshot?, width?)`** and **`app_view(name, path?, screenshot?, width?)`** (apps-mcp, read tools):
   every codex agent is granted both explicitly (`apps: [web_view, app_view]`). One renderer
@@ -216,7 +210,7 @@ run `node scripts/sync-shared.mjs`.
 An app's health URL may return JSON with `checks: [{name, ok, count, sample}]`: rules about its own data it can evaluate
 (names: letters, digits, `_ . -`, up to 60; at most 20; `ok` must be a boolean). Health is still the HTTP status alone, so
 a failing check never opens an incident or rolls a deploy back; the board's detector raises it as `quality:<app>:<check>`
-and Fleet Ops routes it to the app's owner. A check that can't be evaluated (malformed, the app down) is unknown and keeps
+and the Fleet Steward routes it to the app's owner. A check that can't be evaluated (malformed, the app down) is unknown and keeps
 its finding open. Samples stay in apps-mcp: `app_status` shows them to a caller who may read the app. No `checks` field
 is the same as an empty list.
 
@@ -237,13 +231,14 @@ Set under `settings:` in `instance.yaml`. The board's Settings page (gear in the
 | `quiet_start` | core | no | | `on` (`ops/setup.sh` writes it for a new install): every module routine with `schedules:` compiles paused and every module agent's heartbeat off, until `overrides.routines.<key>.status: active` or `overrides.agents.<key>.heartbeat` turns one on (Aiden offers them; the agent's Settings tab has the switch). Webhook and runner-started routines and instance agents are untouched. Unset or `off`: as the modules declare. [design/quiet-start.md](design/quiet-start.md) |
 | `spend_day_usd` | core | no | | The install-wide cap on every model call (agents, jobs, the AI reviewer, grader, source writers, side chat, CI), USD per UTC day; `ops/setup.sh` writes 10. Past it the gateway refuses calls (402) and files one `raise_cap` card for today; the board's header shows today's spend against it. Unset: no install-wide cap. |
 | `heartbeat_hours` | core | no | `4` | Hours between each `heartbeat: true` agent's "Heartbeat: <key>" routine run (1, 2, 3, 4, 6, 8, 12 or 24; DeepSeek Flash at low effort). An agent's `heartbeat: <hours>` or `overrides.agents.<key>.heartbeat` sets its own; `false` turns it off for that agent. |
-| `agent_memory` | core | no | `on` | Agent memory: every Codex agent has `memory_note` (a fact and its source, to its own `Memory inbox: <key>` task, 10 a run); the Librarian curates the inboxes daily against run history and proposes `agents/<key>/memory.md` (max 4 KB, cut at a line end past that) through the Platform Engineer and an apply (Tier 1 for an agent without a role, Tier 2 for one with); compile adds it to the handbook as "What you've learned". `off` is the kill switch: no tool, no section (the files stay in git). |
+| `agent_memory` | core | no | `on` | Agent memory: every Codex agent has `memory_note` (a fact and its source, to its own `Memory inbox: <key>` task, 10 a run); the Fleet Steward curates the inboxes daily against run history and proposes `agents/<key>/memory.md` (max 4 KB, cut at a line end past that) through the Platform Engineer and an apply (Tier 1 for an agent without a role, Tier 2 for one with); compile adds it to the handbook as "What you've learned". `off` is the kill switch: no tool, no section (the files stay in git). |
 | `ci_review_model` | ci | no | `~deepseek/deepseek-flash-latest:high` | The template's code review (codex review): `<OpenRouter id>:<effort>` (minimal, low, medium, high, xhigh), handed to the job with its CI token; critical paths run one effort higher. Always allowed. |
 | `ci_review_models` | ci | no | `[~deepseek/deepseek-flash-latest]` | Models a CI token may call besides `ci_review_model`: repos still on the older template (OpenRouter ids; codegenie's `openrouter/` and `:<reasoning>` are dropped). |
 | `ci_review_repo_day_usd`, `ci_review_day_usd` | ci | no | `5`, `20` | CI code review's spend caps per UTC day: each repo's, and all repos' together. Always enforced; past one, reviews fail until the next day. |
 | `backup_repository` | core | no | | Off-host backup: a restic repository URL, for example a Hetzner Storage Box at `sftp://u12345@u12345.your-storagebox.de:23/aidenhq`. Set, `ops/apply-config.sh` installs `aidenhq-backup.timer` (nightly at 03:00 UTC, after the warehouse dump), which runs `ops/backup-offsite.sh`: `scripts/backup.sh --plain`, then restic with the vault ciphertext, `.env`, `compose.override.yaml`, `config/` and the notes vault; it keeps 7 daily, 4 weekly and 6 monthly snapshots. The password is the vault secret `restic_password` (keep a copy off the host); the host user's SSH key must be authorised on the target. Unset, the timer is removed. |
 | `slack_post_channels` | channel-slack | no | `[]` | Slack channel ids agents may post to with `slack_post` (the tool must also be granted); a post to any other channel is Tier 2 (the owner decides). |
-| `telegram_fyi` | channel-telegram | no | `send` | `notify_owner` messages of `kind: fyi` on Telegram: `send`, or `mute` (they still land on the board's chat and in Slack; returns reason `muted` when nothing else got them). `decision` and `done` messages are never muted. Set on the board's Notifications page. |
+| `notify_fyi` | owner-channel | no | `send` | `notify` messages of `kind: fyi`: `send`, or `mute` (they still land on the board's chat; returns reason `muted` when nothing else got them). `decision`, `done` and `alert` messages are never muted. Set on the board's Notifications page. |
+| `notify_transports` | owner-channel | no | `[channel-slack, channel-telegram]` | The channels an owner message tries, in order: the first one set up that delivers it gets it (the one the owner last wrote from in that chat goes first). |
 | `owner_slack_user_id` | open-loops | yes | | The owner's Slack user id: decides whose words count and who is paged. |
 | `owner_email` | core | yes | | The owner's email address: the only board account `ops/setup.sh` can make the owner's ([setup](setup.md#board-accounts)). With `edge`, the owner's account (like every admin account) is an admin of every shared app; the email alone grants nothing at the gate. |
 | `exposure` | core | no | `tailscale` | How the board is reached, and so what the host firewall (`ops/vm/public-fw.sh`) opens on the public interface ([access](design/access.md#exposure-modes)): `public` = HTTPS on the host's public IPv4 through Caddy, the board on 443 and sign-in on 8446 (tcp 22, 443, 8446; port 80 stays closed; `AIDENHQ_PUBLIC_IP` in `.env`, scripts/front-door.mjs), `tailscale` = the tailnet (tcp 22, udp 41641), `cloudflare` = a Cloudflare tunnel (tcp 22), `local` = loopback, reached through an SSH tunnel (tcp 22). Unset is `tailscale`, as every install made before the setting; `ops/setup.sh` writes `tailscale`, `local` with `--no-tailscale`, or `public` with `AIDENHQ_EXPOSURE=public`. Compile writes it to `config/exposure`, and in `public` also `config/Caddyfile` and the `caddy` service. A change reaches the firewall when `sudo bash ops/vm/setup.sh` runs again; until the `caddy` service is compiled, `public` keeps 443 and 8446 closed and the firewall acts as `local`. |
@@ -253,7 +248,7 @@ Set under `settings:` in `instance.yaml`. The board's Settings page (gear in the
 | `history_projects` | jira | no | `[]` | Jira project keys whose history to backfill once (for quiet projects the live sync's 30-day window misses). Each project is read back `history_days`, resumably, as baseline rows (hidden from `source_new` unless `include_baseline`, visible to `warehouse_query`), and never again; a newly listed project is picked up on the next pass. |
 | `history_days` | jira | no | `365` | How far back the `history_projects` backfill reaches (read when a project is first backfilled). |
 | `atlassian_mcp_url` | jira | no | Atlassian's v2 MCP URL | Atlassian's remote MCP server. |
-| `fleet_ops_interval_minutes` | fleet-ops | no | `10` | Minutes between the board's Fleet Ops detector checks (lower while developing). |
+| `fleet_ops_interval_minutes` | fleet-steward | no | `10` | Minutes between the board's fleet detector checks (lower while developing). |
 | `product_repo` | warehouse | yes | | `owner/repo` of your AidenHQ product checkout; the warehouse app is built from it at the pinned commit. Its org must be in `github_orgs` or be the agents org. |
 | `upstream` | github | no | `issues` | `off`, `issues` or `prs`: whether agents may report product bugs upstream as issues on `product_repo` (`off` grants none of the upstream tools). Every report is refused while it holds owner data (names, emails, hosts, IPs, ids, credentials). `prs` acts as `issues` until upstream PRs exist. |
 
@@ -325,7 +320,7 @@ Copy `.env.example` to `.env`. It holds host paths and endpoints, never agent-ed
 `config/runner.yaml` (from `config/runner.example.yaml`) configures the host runner: the `engineer` label it polls,
 `allowed_orgs` (the organizations it may implement, push and open PRs in; public repositories elsewhere are read-only),
 optional `repo_sources` (repos cloned from a local path), work and state directories, concurrency, the default OpenRouter
-model (`engines.openrouter.model`) and the host sandbox (`sandbox.read_only_roots` for toolchains outside the defaults).
+model (`engines.openrouter.model`).
 
 The release train (`release.batch_minutes`, default 15; 0 turns it off; `services/runner/src/release.mjs`) writes pin bumps
 in code. A green merge to the product opens one task, "Pin bump: this instance's product and modules", that lists the

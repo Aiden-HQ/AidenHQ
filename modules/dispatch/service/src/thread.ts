@@ -49,7 +49,7 @@ export const spoke = (comments: Comment[], t: Issue) => comments.some((c) => (c.
 /**
  * Whose words a comment is: "owner" (his own, typed or through his key, never a post of ours), "agent" (an agent's request:
  * the asker's or the chief of staff's, on a task an agent made), "notice" (a module's labelled wake notice, kernel POST
- * /v1/wake: it wakes the agent, never as the owner's words), "ours" (nothing to act on), or "other" (any other agent: it
+ * /v1/wakes: it wakes the agent, never as the owner's words), "ours" (nothing to act on), or "other" (any other agent: it
  * starts nothing).
  */
 export function speaker(c: Comment, t: Issue, dir: Directory): "owner" | "agent" | "notice" | "ours" | "other" {
@@ -68,7 +68,9 @@ export function freshWords(comments: Comment[], t: Issue, dir: Directory, { seen
   return live.slice(from + 1).flatMap((c) => {
     const who = speaker(c, t, dir);
     const text = stripHidden(c.body).trim();
-    return (who === "owner" || who === "agent" || who === "notice") && text && !delivered.has(c.id) ? [{ id: c.id, who, text }] : [];
+    // A chief-of-staff comment on a task it didn't ask for: its own words, labelled as such in the prompt (never the asker's, never the owner's).
+    const chief = who === "agent" && c.authorAgentId !== t.createdByAgentId;
+    return (who === "owner" || who === "agent" || who === "notice") && text && !delivered.has(c.id) ? [{ id: c.id, who, text, chief, by: c.authorAgentId }] : [];
   });
 }
 

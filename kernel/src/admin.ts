@@ -46,7 +46,7 @@ type Deps = {
   /** Module UI origins a session may be handed to (/auth/handoff), each with its module: the board's origins. */
   uiOrigins?: () => Record<string, string>;
   /** The model step: OpenRouter's PKCE start and exchange, the 1-token check, and the key the vault holds (for Retry). */
-  model?: { start: (callback: string, state: string) => { url: string; verifier: string }; exchange: (code: string, verifier: string) => Promise<string>; check: (key: string) => Promise<"ok" | "no_credit" | "error">; saved: () => string; /** The install-wide daily cap (settings.spend_day_usd), if set. */ dayCap?: () => number | undefined; ready: () => boolean; checked: (key: string, ok: boolean) => void; verifyAgents?: () => void };
+  model?: { start: (callback: string, state: string) => { url: string; verifier: string }; exchange: (code: string, verifier: string) => Promise<string>; check: (key: string) => Promise<"ok" | "no_credit" | "error">; saved: () => string; /** The install-wide daily cap (settings.spend_day_usd), if set. */ dayCap?: () => number | undefined; ready: () => boolean; checked: (key: string, ok: boolean) => void };
   /** The app doors' origins as one CSP source (`http://*.localhost:3130`), when there is a door: sign-in ends on a door host. */
   doorSource?: () => string | undefined;
   /** The board's front door: /recovery-key and the model step send the owner on to its welcome. */
@@ -224,8 +224,6 @@ export function createAdmin(d: Deps) {
     d.firstRun!.save(MODEL_KEY, key);
     d.model!.checked(key, r === "ok"); // ready only once a check of this key passed (no credit: Retry checks it again)
     log("model key saved", { by, check: r });
-    // The agents setup created before there was a key are still unverified (Paperclip shows them paused): setup checks them now.
-    if (r === "ok") d.model!.verifyAgents?.();
     return r;
   }
   async function useKey(req: IncomingMessage, res: ServerResponse, s: AdminSession, key: string) {

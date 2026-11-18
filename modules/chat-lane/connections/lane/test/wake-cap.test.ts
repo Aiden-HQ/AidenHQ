@@ -9,14 +9,13 @@ import { wakePass } from "../src/lane/serve.js";
 import { openLaneStore } from "../src/lane/store.js";
 import { buildServer, MAX_WAKES } from "../src/mcp.js";
 
-const aria: LaneAgent = { key: "aria", id: "ag-aria", name: "Aria", apiKey: "pcp_aria", model: "m", reasoning: "low", deadlineS: 8, prompt: "p", tools: [] };
+const aria: LaneAgent = { key: "aria", id: "ag-aria", name: "Aria", chatTask: "i-chat", apiKey: "pcp_aria", model: "m", reasoning: "low", deadlineS: 8, prompt: "p", tools: [] };
 const quiet = { info() {}, warn() {} };
 
 async function server(closed: Set<string>, { slow = false }: { slow?: boolean } = {}) {
   const laneStore = openLaneStore(":memory:");
-  laneStore.add("aria", "board", "owner", "hi", 1);
-  const lane = { followUp: vi.fn(async () => {}), receive: vi.fn(async () => {}), tick: vi.fn(async () => {}), resume: vi.fn() } as unknown as Lane;
-  // `slow` holds each board answer open, so concurrent calls would all read the cap before any of them inserted.
+  const lane = { followUp: vi.fn(async () => {}), wake: vi.fn(async () => {}), tick: vi.fn(async () => {}), resume: vi.fn(async () => {}) } as unknown as Lane;
+  // `slow` holds each kernel answer open, so concurrent calls would all read the cap before any of them inserted.
   const taskIsClosed = async (task: string) => {
     if (slow) await new Promise((r) => setTimeout(r, 5));
     return closed.has(task);
@@ -35,7 +34,7 @@ const at = (ms: number) => new Date(ms).toISOString().slice(0, 16).replace("T", 
 
 /** 51 wakes on tasks that have since finished (done or cancelled), one per task. */
 function fillTerminal(laneStore: ReturnType<typeof openLaneStore>) {
-  for (let i = 0; i < 51; i++) laneStore.addWake("aria", Date.now() + 3600_000 + i, `check ${i}`, null, `WOR-${5000 + i}`);
+  for (let i = 0; i < 51; i++) laneStore.addWake("aria", Date.now() + 3600_000 + i, `check ${i}`, false, `WOR-${5000 + i}`);
 }
 
 describe("the wake cap counts only wakes on open tasks", () => {
@@ -75,7 +74,7 @@ describe("the wake cap counts only wakes on open tasks", () => {
 
   it("still refuses the 51st wake when the 50 pending ones are on tasks that are open", async () => {
     const { call, laneStore } = await server(new Set());
-    for (let i = 0; i < MAX_WAKES; i++) laneStore.addWake("aria", Date.now() + 3600_000, `check ${i}`, null, "WOR-5245");
+    for (let i = 0; i < MAX_WAKES; i++) laneStore.addWake("aria", Date.now() + 3600_000, `check ${i}`, false, "WOR-5245");
 
     const refused = await call("wake_at", { when_local: "in 1 hour", note: "one too many", task: "WOR-5245" });
     expect(refused).toMatchObject({ ok: false, pending: MAX_WAKES });
@@ -86,7 +85,7 @@ describe("the wake cap counts only wakes on open tasks", () => {
 
   it("never takes more than the cap when wake_at calls arrive at once", async () => {
     const { call, laneStore } = await server(new Set(), { slow: true });
-    for (let i = 0; i < MAX_WAKES - 1; i++) laneStore.addWake("aria", Date.now() + 3600_000, `check ${i}`, null, "WOR-5245");
+    for (let i = 0; i < MAX_WAKES - 1; i++) laneStore.addWake("aria", Date.now() + 3600_000, `check ${i}`, false, "WOR-5245");
 
     const answers = await Promise.all(Array.from({ length: 5 }, (_, i) => call("wake_at", { when_local: "in 1 hour", note: `parallel ${i}`, task: "WOR-5245" })));
     expect(answers.filter((r) => r.ok)).toHaveLength(1);
@@ -96,14 +95,14 @@ describe("the wake cap counts only wakes on open tasks", () => {
   it("drops a wake that comes due on a finished task, and posts one for a task still open", async () => {
     const { laneStore } = await server(new Set(["WOR-5244"]));
     const now = Date.now();
-    laneStore.addWake("aria", now - 2000, "superseded check", null, "WOR-5244");
-    laneStore.addWake("aria", now - 1000, "the real check", null, "WOR-5245");
-    const noticeOnTask = vi.fn(async () => {});
+    laneStore.addWake("aria", now - 2000, "superseded check", false, "WOR-5244");
+    laneStore.addWake("aria", now - 1000, "the real check", false, "WOR-5245");
+    const wakeTask = vi.fn(async () => {});
 
-    await wakePass({ store: laneStore, lane: { tick: async () => {} } as unknown as Lane, agents: () => ({ aria }), taskIsClosed: async (t) => t === "WOR-5244", noticeOnTask, log: quiet });
+    await wakePass({ store: laneStore, lane: { tick: async () => {} } as unknown as Lane, agents: () => ({ aria }), taskIsClosed: async (t) => t === "WOR-5244", wakeTask, log: quiet });
 
-    expect(noticeOnTask).toHaveBeenCalledTimes(1);
-    expect(noticeOnTask).toHaveBeenCalledWith("WOR-5245", "the real check"); // the kernel labels it [wake]
+    expect(wakeTask).toHaveBeenCalledTimes(1);
+    expect(wakeTask).toHaveBeenCalledWith(expect.any(Number), "WOR-5245", "the real check");
     expect(laneStore.pendingWakes("aria")).toEqual([]);
   });
 });

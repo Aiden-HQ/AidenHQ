@@ -1,6 +1,6 @@
 // The kernel owns an admitted job's computer (spec §4.2a): it gets the box from the computer launcher (its job routes, bearer
 // launcher_kernel_key), mints the job's only credential (an `ahqj_` job token naming the job, whose authority is its row's,
-// frozen at admission), builds the job's engine home (per agent and task: its skills, its compiled handbook, its granted
+// frozen at admission), clones an engineer job's named repositories into its workspace (the code host broker), builds the job's engine home (per agent and task: its skills, its compiled handbook, its granted
 // connections as Codex config), starts the run (jobs.ts runAdmitted), renews the box's lease while the job lives and releases
 // it when the job ends, removing the task's workspace then if the job asked (`aidenhq cleanup`, jobtools.ts). A kernel restart
 // changes nothing: the renewals and releases are driven from the job rows.
@@ -28,8 +28,36 @@ export function launcherClient(url: string, key: () => string, fetchImpl: typeof
   };
 }
 
-export function createBoxes({ db, cfg, jobs, call, secret, whoami, connections, handbook, cleanup, log, now = Date.now }: {
+/**
+ * Every owner/name a task's text names (a GitHub URL or a bare org/repo token), first mention first: the runner's rule. An
+ * all-digit name is an issue or board number, not a repository.
+ */
+export function mentionedRepos(text: string): string[] {
+  const found = new Map<string, string>();
+  const re = /(?:https?:\/\/github\.com\/|git@github\.com:|(?<![\w./@:-]))([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+?)(?:\.git)?(?=[\s/#?)\]>,;:'"`]|\.(?:[\s)\]>,;:'"`]|$)|$)/g;
+  for (const m of text.matchAll(re)) {
+    if (/^\.+$/.test(m[1]!) || /^\.+$/.test(m[2]!) || /^\d+$/.test(m[2]!)) continue;
+    const slug = `${m[1]}/${m[2]}`;
+    if (!found.has(slug.toLowerCase())) found.set(slug.toLowerCase(), slug);
+  }
+  return [...found.values()];
+}
+
+/** An engineer job's clones (the kernel's code host broker, codehost.ts): what may be cloned for a dispatcher, and the clone. */
+export type Clones = {
+  /** The task's title and description (the control plane, as the owner). */
+  text: (task: string) => Promise<string>;
+  /** Whether `module`'s codehost grant lets it clone `repo` (checked here, so a token that names no repository never reaches GitHub). */
+  may: (module: string, repo: string) => boolean;
+  /** `repo`'s default branch cloned into the task's workspace as <workspace>/<name>; throws with the code host's status. */
+  clone: (module: string, repo: string, task: string) => Promise<void>;
+};
+const MAX_CLONES = 5;
+
+export function createBoxes({ db, cfg, jobs, call, secret, whoami, connections, handbook, cleanup, clones, log, now = Date.now }: {
   db: DatabaseSync; cfg: SandboxConfig; jobs: Pick<Jobs, "runAdmitted">; call: Call; secret: (name: string) => string; whoami: Whoami;
+  /** An engineer job's workspace: the repositories its task names, cloned before the box starts. */
+  clones: Clones;
   /** Whether a job asked for its workspace to go when it ends (jobtools.ts). */
   cleanup: (job: string) => boolean;
   /** config/computers.json `connections`: each connection's tool timeout, for the box's Codex config. */
@@ -43,9 +71,6 @@ export function createBoxes({ db, cfg, jobs, call, secret, whoami, connections, 
   /** admission.ts `launch`: the job's token, its engine home and workspace, its box, then the run. */
   async function launch(job: Admitted) {
     const { authority: a } = job;
-    // An engineer job's workspace is codehost's credential-free clone (Task F7) and a check job's a snapshot (F8); until
-    // those land, only crew jobs (an empty per-task folder) start here.
-    if (a.profile !== "crew") throw new JobError(501, "profile-not-ready", `${a.profile} jobs need codehost's workspace, which the kernel can't get yet`);
     const workspace = join(cfg.workDir, "tasks", job.identifier);
     const state = engineState(cfg, a.engine, `${job.agent}/${job.task}`, a.skills);
     if (!state) throw new JobError(400, "no-engine-home", `the ${a.engine} engine keeps no state folder, so the job can't have its own home`);
@@ -61,17 +86,44 @@ export function createBoxes({ db, cfg, jobs, call, secret, whoami, connections, 
     // After that release: a cleanup it does removes the last job's workspace, never this one's.
     mkdirSync(workspace, { recursive: true });
     insideNoLinks(join(cfg.workDir, "tasks"), workspace, "workspace");
+    const notes = a.profile === "engineer" ? await cloneNamed(job) : [];
+    const session = job.fresh ? undefined : lastSession(job.agent, job.task, a.engine);
+    const base = session ? job.prompt : job.fullPrompt ?? job.prompt;
+    const prompt = notes.length ? `(Kernel note: ${notes.join(" ")})\n\n${base}` : base;
     const box = (await call("/job", { agentId: job.agent, issueId: job.task, identifier: job.identifier, workspace, engine: a.engine, state, image: a.image, token, mcp, roles: a.roles }).catch((e: { status?: number }) => {
       throw e.status === 409 ? Object.assign(e, { status: 503 }) : e;
     })) as unknown as Box;
     // The row's box names its workspace too, for a cleanup at release.
     db.prepare("UPDATE jobs SET box = ?, renewed = ? WHERE id = ?").run(JSON.stringify({ ...box, workspace }), now(), job.id);
     try {
-      jobs.runAdmitted(job.id, { box: { ...box, workspace } as Box, worktree: workspace, prompt: job.prompt, session: job.fresh ? undefined : job.session ?? lastSession(job.agent, job.task, a.engine), label: job.identifier });
+      jobs.runAdmitted(job.id, { box: { ...box, workspace } as Box, worktree: workspace, prompt, session, label: job.identifier });
     } catch (e) {
       await release(job.id).catch(() => {});
       throw e;
     }
+  }
+
+  /**
+   * An engineer job's repositories: each one its task names that its dispatcher may clone, cloned into the workspace as
+   * <name> (the box's /workspace/<name>) on its default branch; one already there (409) is kept as it is. A refusal is told to
+   * the job (its notes); a code host that can't answer (5xx, unreachable) makes the launch a 503, so admission tries again.
+   */
+  async function cloneNamed(job: Admitted): Promise<string[]> {
+    const named = mentionedRepos(await clones.text(job.task)).filter((r) => clones.may(job.module, r)).slice(0, MAX_CLONES);
+    const notes: string[] = [];
+    for (const repo of named) {
+      try {
+        await clones.clone(job.module, repo, job.task);
+        log("repository cloned into the job's workspace", { job: job.id, repo });
+      } catch (e) {
+        const status = (e as { status?: number }).status ?? 502;
+        if (status === 409) continue;
+        if (status >= 500) throw new JobError(503, "clone-failed", `${repo} couldn't be cloned now (${(e as Error).message.slice(0, 200)})`);
+        log("repository not cloned", { job: job.id, repo, status, err: (e as Error).message.slice(0, 200) });
+        notes.push(`\`${repo}\` is named in the task but couldn't be cloned into your workspace (${(e as Error).message.slice(0, 200)}).`);
+      }
+    }
+    return notes;
   }
 
   /** The engine's last session for this agent on this task: a crew agent resumes per task, as Paperclip ran it (never another engine's). */

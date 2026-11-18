@@ -9,7 +9,7 @@
 //   services/shared/review-files.mjs  the changed files as the reviewer reads them, in the reviewer module's service
 //   kernel/sdk/src/source-store.ts   the shared-sources writer side, in every source writer
 //   services/shared/reason-codes.ts  reason codes on approvals and refusals, in the board
-//   services/shared/url-setting.ts   the URL setting check, in the board and the runner (the compiler imports the original)
+//   services/shared/url-setting.ts   the URL setting check, in the board (the compiler imports the original)
 //   modules/apps-platform/design-system/      the design system, in the app starter and the agent computers
 //   modules/apps-platform/starter/      the app starter, in the agent computers (a whole folder: SHARED_DIRS)
 //   kernel/sdk/src/{types,engine-io,progress}.ts  the SDK's engine side, in every module with an sdk/ folder
@@ -39,13 +39,13 @@ export function sharedCopies(root = repo) {
     "modules/jira/connections/jira-mcp/src",
     "modules/meetings/connections/ops-mcp/src",
     "modules/channel-slack/connections/slack/src",
-    "modules/channel-telegram/connections/telegram/src",
     "modules/chat-lane/connections/lane/src",
     "modules/primer/connections/primer-mcp/src",
     "modules/slack/connections/slack-mcp/src",
     "modules/tasks/connections/tasks-mcp/src",
     // The grading service checks the tasks module's assertion when it files a rubric; it fences nothing.
-    ...(f === "caller.ts" ? ["modules/grading/service/src"] : []),
+    // The owner's router checks the assertion on notify; it fences nothing.
+    ...(f === "caller.ts" ? ["modules/grading/service/src", "modules/owner-channel/connections/notify/src"] : []),
   ].map((d) => `${d}/aidenhq-sdk/${f}`)])),
   // The executor side of write kinds (executor@1), in each module server that declares an executor.
   "kernel/sdk/src/executor.ts": ["modules/apps-platform/apps-mcp/src/aidenhq-sdk/executor.ts", "modules/primer/connections/primer-mcp/src/aidenhq-sdk/executor.ts", "modules/channel-slack/connections/slack/src/aidenhq-sdk/executor.ts", "modules/hubspot/connections/hubspot-mcp/src/aidenhq-sdk/executor.ts", "modules/codehost-github/service/src/aidenhq-sdk/executor.ts"],
@@ -56,7 +56,7 @@ export function sharedCopies(root = repo) {
   "kernel/sdk/src/reviewer.ts": ["modules/ai-reviewer/service/src/aidenhq-sdk/reviewer.ts"],
   // The judges' shared library (design §4.4): the reviewer and the grader keep their own contracts and credentials.
   "kernel/sdk/src/judge.ts": ["modules/ai-reviewer/service/src/aidenhq-sdk/judge.ts", "modules/grading/service/src/aidenhq-sdk/judge.ts"],
-  // The changed files' shaping (the runner imports the canonical copy; the eval and the reviewer's verdicts use this one).
+  // The changed files' shaping (the eval and the reviewer's verdicts use this copy).
   "services/shared/review-files.mjs": ["modules/ai-reviewer/service/src/review-files.mjs"],
   // The reliability checklist's matcher: the CI template's (MIT), used by its code review and by the AI reviewer.
   "modules/ci/template/.github/review-checklist.mjs": ["modules/ai-reviewer/service/src/review-checklist.mjs"],
@@ -70,7 +70,7 @@ export function sharedCopies(root = repo) {
     "modules/security/scanner/src/source-store.ts",
   ],
   "services/shared/reason-codes.ts": ["services/board/src/reason-codes.ts"],
-  "services/shared/url-setting.ts": ["services/board/src/url-setting.ts", "services/runner/src/url-setting.ts"],
+  "services/shared/url-setting.ts": ["services/board/src/url-setting.ts"],
   // The supply-chain checks, version picker and image scan, for app repos (the app CI template is copied into each as it is).
   "scripts/supply-chain/best-version.mjs": ["modules/ci/template/.github/supply-chain/best-version.mjs", "modules/engineering/skills/supply-chain/best-version.mjs"],
   "scripts/supply-chain/pins.mjs": ["modules/ci/template/.github/supply-chain/pins.mjs"],

@@ -1,5 +1,9 @@
 # Agent Coach: agents that improve agents
 
+> The Coach's job is now the Fleet Steward's `agent-review`, `review-digest` and `handbook-prune` skills (roster merge
+> 5.3, `modules/fleet-steward`); Fleet Ops and the Librarian merged into the same agent, and product bugs go upstream
+> through the Maintainer. The design below still holds for the review itself.
+
 Status: approved by the owner 2026-11-13 (shape, autonomy, cadence); invariants approach below proposed.
 
 ## Why

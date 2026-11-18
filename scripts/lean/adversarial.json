@@ -105,13 +105,13 @@
     "id": "H2",
     "attack": "Hostile job: reads the vault, data dir, Docker or tailscaled socket, /run/user/<uid>",
     "unit": "1a",
-    "test": "services/runner/test/sandbox.test.mjs"
+    "test": null
   },
   {
     "id": "H3",
     "attack": "Hostile job: calls a module MCP server or a model provider directly, with no bearer or key",
     "unit": "1a",
-    "test": "services/runner/test/sandbox.test.mjs"
+    "test": null
   },
   {
     "id": "H4",

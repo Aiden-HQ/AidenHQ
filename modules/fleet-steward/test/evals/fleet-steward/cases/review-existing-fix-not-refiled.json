@@ -1,0 +1,13 @@
+{
+ "name": "review-existing-fix-not-refiled",
+ "why": "A cause whose fix is already open is noted, never proposed again.",
+ "routine": "fleet-review",
+ "input": "Run task: \"Fleet Ops: weekly review\". Today is 2026-11-18, now 2026-11-18T14:00:00+04:00.\n\nfleet_status window 7d -> {\"summary\":{\"failed\":[{\"task\":\"T-50\",\"agent\":\"app-engineer\",\"reason\":\"card rejected: lockfile changed without package.json\"},{\"task\":\"T-58\",\"agent\":\"app-engineer\",\"reason\":\"card rejected: lockfile changed without package.json\"}]}}\ntask_search \"Fleet issues\" -> [{\"id\":\"T-1\",\"title\":\"Fleet issues\",\"status\":\"todo\"}]\ntask_search \"rule: app-engineer lockfile\" -> [{\"id\":\"T-60\",\"title\":\"Rule: keep lockfile and package.json in step\",\"marker\":\"rule:app-engineer:lockfile-sync\",\"status\":\"in_progress\",\"assignee\":\"fleet-engineer\"}]\ntask_search \"fleet-review:2026-11-18\" -> []\ntask_search \"dependabot:2026-11-18\" -> []\nwarehouse_query reverts -> [{\"merged\":12,\"reverted\":0}]\n",
+ "expect": [],
+ "forbid": [
+  {
+   "tool": "task_create",
+   "marker": "rule:app-engineer:lockfile-sync"
+  }
+ ]
+}

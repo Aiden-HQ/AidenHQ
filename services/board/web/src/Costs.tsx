@@ -1,14 +1,13 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { SignInRequired, api } from "./api";
 import { duration } from "./FeatureCost";
-import type { FeatureCost, CostLedger, CostRow, CostTop, CostWindow, Costs, LedgerMetrics, LedgerPeriod } from "./types";
+import type { FeatureCost, CostLedger, CostTop, LedgerMetrics, LedgerPeriod } from "./types";
 import { Tag } from "./ui";
 
 // The Costs tab: billed spend from the model gateway's ledger (src/cost-ledger.ts), aggregated on the board.
 //  1. Overview: today / 7 / 30 days against the period before, the OpenRouter key's limit, agents nearest their day cap.
 //  2. Spend over time by model (stacked bars) and the by-model table.
 //  3. By agent and by kind of call; 4. a drill-down into one agent or model (top runs and tasks).
-//  5. The older estimate-and-check view (src/costs.ts), folded away, for what the ledger doesn't itemise.
 // The view lives in the URL (#/costs?range=7d&bucket=day&agent=…), so it can be linked.
 
 /* ----------------------------------------------------------------------------- formatting */
@@ -151,8 +150,6 @@ export function CostsView({ onSignIn }: { onSignIn: () => void }) {
   const top = useLoad<CostTop>(topKey, () => api.costTop(new URLSearchParams({ ...Object.fromEntries(query()), ...focus! })), onSignIn);
 
   const d = ledger.data;
-  // The older view asks Paperclip for every agent's runs: loaded only once opened.
-  const [reconcile, setReconcile] = useState(false);
   const stale = ledger.loading && d != null;
   const drill = useRef<HTMLElement>(null);
   const open = (patch: { agent?: string; model?: string }) => {
@@ -231,11 +228,6 @@ export function CostsView({ onSignIn }: { onSignIn: () => void }) {
           </div>
         </>
       )}
-
-      <details className="cost-card cost-reconcile" onToggle={(e) => setReconcile((e.target as HTMLDetailsElement).open)}>
-        <summary>Estimates and the check against OpenRouter's bill</summary>
-        {reconcile && <Reconcile onSignIn={onSignIn} />}
-      </details>
     </main>
   );
 }
@@ -523,14 +515,15 @@ function AgentTable({ d, focus, onOpen }: { d: CostLedger; focus: string | null;
     { key: "usd", label: "Spend", cls: "ct-usd", value: (r) => r.usd, render: (r) => usd(r.usd) },
     { key: "calls", label: "Calls", value: (r) => r.calls, render: (r) => compact(r.calls) },
     { key: "per", label: "$ / call", cls: "ct-wide", value: (r) => (r.calls ? r.usd / r.calls : 0), render: (r) => (r.calls ? `$${(r.usd / r.calls).toPrecision(2)}` : "—") },
-    { key: "today", label: "Today vs cap", cls: "ct-cap", value: (r) => r.today / r.dayCap, render: (r) => (
+    // An agent no longer granted has no cap in force: its day shows without one.
+    { key: "today", label: "Today vs cap", cls: "ct-cap", value: (r) => (r.dayCap ? r.today / r.dayCap : 0), render: (r) => (r.dayCap == null ? usd(r.today) : (
       <span className="ct-capcell" title={`${usd(r.today)} of the ${usd(r.dayCap)} day cap`}>
         <span className={`ct-minibar ${r.today / r.dayCap >= 0.9 ? "bad" : r.today / r.dayCap >= 0.7 ? "warn" : "ok"}`}>
           <span style={{ width: `${Math.min(100, (r.today / r.dayCap) * 100)}%` }} />
         </span>
         {pct(r.today / r.dayCap)}
       </span>
-    ) },
+    )) },
   ];
   const { head, sorted } = useSort(cols, "usd");
   const system = d.lanes.filter((l) => !["agent", "advisor", "fanout", "engineer"].includes(l.lane)).reduce((s, l) => s + l.usd, 0);
@@ -774,7 +767,7 @@ function FeaturesCard({ onSignIn }: { onSignIn: () => void }) {
     { key: "usd", label: "Spend", cls: "ct-usd", value: (r) => r.usd, render: (r) => usd(r.usd) },
     { key: "elapsed", label: "Elapsed", value: (r) => r.elapsedMs, render: (r) => `${duration(r.elapsedMs)}${r.running ? " so far" : ""}`, title: "From the first task's creation to the last completion or merge (to now while work is open)" },
     { key: "jobs", label: "Jobs", value: (r) => r.jobs, render: (r) => String(r.jobs) },
-    { key: "jobtime", label: "Job time", cls: "ct-wide", value: (r) => r.jobMs, render: (r) => (r.jobs ? duration(r.jobMs) : "—"), title: "The time Engineer jobs ran: the span of each job's model calls" },
+    { key: "jobtime", label: "Job time", cls: "ct-wide", value: (r) => r.jobMs, render: (r) => (r.jobs ? duration(r.jobMs) : "—"), title: "The time its agents' jobs ran: the span of each job's model calls" },
     { key: "prs", label: "PRs merged", value: (r) => r.prs, render: (r) => String(r.prs) },
     { key: "tasks", label: "Tasks", cls: "ct-wide", value: (r) => r.tasks, render: (r) => String(r.tasks) },
   ];
@@ -927,83 +920,6 @@ function CostSkeleton() {
         <div className="cost-skel" style={{ height: 240 }} />
         <div className="cost-skel" style={{ height: 240 }} />
       </div>
-    </div>
-  );
-}
-
-/* ----------------------------------------------------------------------------- reconcile (the older view, src/costs.ts) */
-const WINDOWS: [CostWindow, string][] = [["today", "Today (UTC)"], ["yesterday", "Yesterday"], ["7d", "7 days"], ["30d", "30 days"]];
-const usdRun = (n: number | null) => (n == null ? "—" : n >= 0.01 ? `$${n.toFixed(2)}` : n > 0 ? `$${n.toPrecision(2)}` : "$0");
-const perRun = (r: CostRow) => (r.usd != null && r.runs ? r.usd / r.runs : null);
-
-/** Billed plus Paperclip-estimated spend per agent and component, and the gap to OpenRouter's own total: loads when opened. */
-function Reconcile({ onSignIn }: { onSignIn: () => void }) {
-  const [win, setWin] = useState<CostWindow>("today");
-  const { data, error, loading } = useLoad<Costs>(win, () => api.costs(win), onSignIn);
-  const gap = data?.check.real != null ? data.check.real - data.check.itemised : null;
-  const rows = [...(data?.rows ?? [])];
-  return (
-    <div className="cost-reconcile-body">
-      <div className="cost-reconcile-bar">
-        <div className="seg-tabs" role="tablist" aria-label="Window">
-          {WINDOWS.map(([w, label]) => (
-            <button key={w} role="tab" aria-selected={win === w} className={win === w ? "on" : ""} onClick={() => setWin(w)}>
-              {label}
-            </button>
-          ))}
-        </div>
-        {data && <span className="muted">{`${usd(data.total.usd)} (${usd(data.total.billed)} billed, the rest estimated)`}</span>}
-      </div>
-      {error && <p className="ct-bad">Couldn't load: {error}</p>}
-      {data && !data.pricesAvailable && <p className="ct-bad">OpenRouter's price list is unreachable: tokens only, no dollars.</p>}
-      {!data ? (
-        !error && <div className="cost-skel" style={{ height: 160 }} />
-      ) : (
-        <div className={loading ? "cost-stale" : ""}>
-          <dl className="cost-facts">
-            <dt>OpenRouter charged, {data.check.period}</dt>
-            <dd>{usd(data.check.real)}</dd>
-            <dt>Itemised here</dt>
-            <dd>{usd(data.check.itemised)}</dd>
-            <dt>Not itemised</dt>
-            <dd>
-              {gap == null ? (data.check.error ?? "—") : gap < 0 ? `−${usd(-gap)} (the estimates run above what OpenRouter charged)` : usd(gap)}
-              {gap != null && gap >= 0 && data.check.real! > 0 && <span className="muted"> ({pct(gap / data.check.real!)})</span>}
-            </dd>
-          </dl>
-          <div className="ct ct-reconcile" role="table" aria-label="Billed and estimated spend by agent and component">
-            <div className="ct-row ct-head" role="row">
-              {["Agent or component", "Runs", "$ / run", "Spend"].map((h, i) => (
-                <span key={h} role="columnheader" className={i === 0 ? "ct-name" : ""}>
-                  {h}
-                </span>
-              ))}
-            </div>
-            {rows.map((r) => (
-              <div key={`${r.kind}:${r.name}`} className="ct-row" role="row">
-                <span role="cell" className="ct-name ct-stack">
-                  <span className="ct-strong">
-                    {r.name} {r.kind === "system" && <Tag>System</Tag>}
-                  </span>
-                  <span className="ct-sub">{r.models.map((m) => short(m.model)).join(", ")}</span>
-                </span>
-                <span role="cell">{r.runs || "—"}</span>
-                <span role="cell">{usdRun(perRun(r))}</span>
-                <span role="cell" title={r.reported ? "As OpenRouter billed it" : "Estimated: tokens × list price × the model's billed/list ratio"}>
-                  {usd(r.usd)}
-                  {r.partial && r.usd != null ? "+" : ""} <span className="ct-sub">{r.usd != null ? (r.reported ? "billed" : "est.") : ""}</span>
-                </span>
-              </div>
-            ))}
-          </div>
-          <p className="cost-note">
-            Billed: what OpenRouter charged for each call through the gateway, Engineer jobs and the AI reviewer. Estimated: agents whose calls go to OpenRouter directly; their dollars are
-            Paperclip's tokens × the list price × what billed calls of the same model cost against that list price over the last 7 days
-            {Object.keys(data.ratios).length ? ` (${Object.entries(data.ratios).map(([m, x]) => `${short(m)} ×${x.toFixed(2)}`).join(", ")})` : ""}. Not itemised: Docs and Confluence summaries,
-            CI code reviews if they use this key, Paperclip runs that failed before reporting tokens, and other companies on the same key.
-          </p>
-        </div>
-      )}
     </div>
   );
 }

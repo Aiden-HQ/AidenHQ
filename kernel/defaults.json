@@ -48,7 +48,6 @@
     }
   ],
   "generated_secrets": [
-    "computer_launcher_token",
     "paperclip_events_key",
     "paperclip_post_key",
     "board_internal_token",
@@ -56,12 +55,10 @@
     "edge_board_secret",
     "computer_progress_token",
     "reviewer_key",
-    "runner_writes_key",
     "board_operator_key",
     "gateway_job_secret",
     "gateway_board_key",
     "gateway_source_key",
-    "gateway_harness_key",
     "launcher_kernel_key",
     "receipt_secret"
   ]

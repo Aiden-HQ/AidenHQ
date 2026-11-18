@@ -5,7 +5,7 @@ import { buildServer } from "../src/mcp.js";
 import { openStore } from "../src/store.js";
 
 it("slack_owner returns the paired owner's id, and null before anyone pairs", async () => {
-  const cfg = { botToken: "", ownerId: "", cooldownMs: 0 };
+  const cfg = { botToken: "", ownerId: "" };
   const [a, b] = InMemoryTransport.createLinkedPair();
   await buildServer(openStore(":memory:"), cfg).connect(a);
   const client = new Client({ name: "t", version: "0" });

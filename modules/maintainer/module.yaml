@@ -4,6 +4,8 @@ description: "Watches, triages and fixes the GitHub repos you list (setting main
 requires:
   - github
 roles:
+  # product-issues (the chief of staff's): the Fleet Steward's product-bug reports, filed upstream as the GitHub App.
+  requests: [ product-issues ]
   declares:
     - { id: maintainer, description: "Issues as the GitHub App, on the repos in settings.maintainer_repos only (github-mcp github_app_* tools)." }
 settings:
@@ -19,7 +21,6 @@ settings:
 agents:
   maintainer:
     department: platform
-    adapter: codex_local
     model: ~deepseek/deepseek-flash-latest
     reasoning_effort: high
     timeout_sec: 1800
@@ -31,7 +32,8 @@ agents:
     connections:
       # The four App reads are tagged `named` in the github module, so naming them is the only way to hold them:
       # `github: read` would hand every reader the product repo's issues.
-      github?: [ github_issue_read, github_search_issues, github_app_issue_status,
+      # github_app_issue: the Fleet Steward's product-bug reports on the product repo (skill report-product-bug).
+      github?: [ github_issue_read, github_search_issues, github_app_issue, github_app_issue_status,
                  github_app_issue_list, github_app_label_events,
                  github_app_issue_comment, github_app_issue_label, github_app_issue_state,
                  github_app_repo_tree, github_app_repo_file ]
@@ -42,7 +44,7 @@ agents:
                          task_approvals, task_team, fleet_catalog, fleet_generation_status,
                          task_comment, task_handoff, task_finish, task_set_status,
                          task_delegate, task_create ]
-    roles: [ maintainer ]
+    roles: [ maintainer, product-issues ]
 routines:
   maintainer-issue:
     title: "Maintainer: an issue is labelled agent-fix" # setup matches routines by title: keep it

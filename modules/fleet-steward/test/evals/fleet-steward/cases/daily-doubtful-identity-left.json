@@ -1,0 +1,13 @@
+{
+ "name": "daily-doubtful-identity-left",
+ "why": "Different names on a shared mailbox stay proposed; never merged on a guess.",
+ "routine": "knowledge-daily",
+ "input": "Run task: \"Librarian daily pass\". Today is 2026-11-18, now 2026-11-18T14:00:00+04:00.\n\nobsidian_search new since yesterday -> []\nwarehouse_query src_meta.people_identities status=proposed -> [{\"person\":\"p-13\",\"source\":\"slack\",\"source_user_id\":\"U0OPS00001\",\"display_name\":\"Raj Patel\",\"email\":\"ops@example.com\"},{\"person\":\"p-13\",\"source\":\"github\",\"source_user_id\":\"lee-ops\",\"display_name\":\"Lee Chen\",\"email\":\"ops@example.com\"}]\ntask_search \"Memory inbox\" -> []\n",
+ "expect": [],
+ "forbid": [
+  {
+   "tool": "person_identity_decide",
+   "status": "confirm"
+  }
+ ]
+}

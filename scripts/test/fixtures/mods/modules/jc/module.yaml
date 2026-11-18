@@ -6,8 +6,8 @@ jobcaps:
   - { id: jc-read, connection: jconn, tools: read, read_url: "http://j-mcp:81/mcp/read", read_secret: j_mcp_read_token }
   - { id: jc-secret, connection: jsecret, tools: [s_get], private: true, tool_timeout_s: 90, read_url: "http://j-mcp:82/mcp", read_secret: s_mcp_token }
 agents:
-  eng: { adapter: opencode_local, dispatch: runner, jobcaps: [ jc-read, nope-read? ] }
-  deep: { adapter: opencode_local, dispatch: runner, private_reads: true, jobcaps: [ jc-secret, jc-read ] }
+  eng: { profile: engineer, jobcaps: [ jc-read, nope-read? ] }
+  deep: { profile: engineer, private_reads: true, jobcaps: [ jc-secret, jc-read ] }
 services:
   run:
     j-mcp: { image: "example.com/acme/j-mcp:1.0@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" }

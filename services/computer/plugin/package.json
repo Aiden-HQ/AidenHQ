@@ -1,8 +1,0 @@
-{
-  "name": "aidenhq-computer",
-  "version": "0.1.4",
-  "private": true,
-  "license": "AGPL-3.0-only",
-  "type": "module",
-  "paperclipPlugin": { "manifest": "./manifest.js", "worker": "./worker.js" }
-}

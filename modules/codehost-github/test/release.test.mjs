@@ -2,7 +2,7 @@
 // a tip tried once, and instance.yaml edited in exactly its two pins.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { bumpInstance, pinOf, trainStep } from "../service/src/release.mjs";
+import { bumpInstance, trainStep } from "../service/src/release.mjs";
 
 const A = "a".repeat(40), B = "b".repeat(40), C = "c".repeat(40);
 const now = "2026-11-18T10:20:00Z";
@@ -27,23 +27,9 @@ test("a tip already tried (rejected, failed or reverted) is not tried again; a p
   assert.equal(step({ tip: C, pinned: undefined }), "idle", "no plain pin (a release: instance): nothing opens");
 });
 
-test("bumpInstance moves only the product pin and the official marketplace's sha", () => {
-  const text = [
-    "# the instance",
-    `product: ${A} # pinned`,
-    "marketplaces:",
-    `  - { name: aidenhq, source: { source: github, repo: acme/modules }, sha: ${A} }`,
-    `  - { name: other, source: { source: github, repo: acme/other }, sha: ${A} }`,
-    "modules: [core, tasks]",
-    "",
-  ].join("\n");
-  const out = bumpInstance(text, { product: B, modules: C });
-  assert.equal(out, text.replace(`product: ${A}`, `product: ${B}`).replace(`repo: acme/modules }, sha: ${A}`, `repo: acme/modules }, sha: ${C}`));
-  assert.throws(() => bumpInstance("release: x\n", { product: B, modules: C }), /product: <sha>/);
-});
-
-test("a modules pin is only a full sha: anything else (a git option, say) is no pin", () => {
-  assert.equal(pinOf(`{ "repo": "acme/modules", "sha": "${A}" }`), A);
-  for (const bad of ["--output=/home/x/.bashrc", "HEAD", A.slice(0, 12), `${A} --stat`, 7]) assert.equal(pinOf(JSON.stringify({ sha: bad })), undefined, String(bad));
-  assert.equal(pinOf("not json"), undefined);
+test("bumpInstance moves only the product pin", () => {
+  const text = ["# the instance", `product: ${A} # pinned`, "modules: [core, tasks]", ""].join("\n");
+  assert.equal(bumpInstance(text, { product: B }), text.replace(`product: ${A}`, `product: ${B}`));
+  assert.throws(() => bumpInstance("release: x\n", { product: B }), /product: <sha>/);
+  assert.throws(() => bumpInstance(text, { product: "--output=/home/x/.bashrc" }), /full commit sha/);
 });

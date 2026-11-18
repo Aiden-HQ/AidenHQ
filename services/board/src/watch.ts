@@ -3,7 +3,6 @@
 // One small read per tick for every open board together, instead of each browser polling every chat.
 // Paperclip's own event socket only admits agent keys, not the board's user key, so the board looks itself.
 import type { Logger } from "pino";
-import type { RunnerReport } from "./activity.js";
 import type { SessionActivity } from "./codex-activity.js";
 import type { Events } from "./events.js";
 import type { Issue, LiveRun, Paperclip } from "./paperclip.js";
@@ -35,8 +34,7 @@ const isChat = (i: Issue, labelId?: string) => Boolean(i.labels?.some((l) => l.n
 /**
  * Announces, per change: `tasks` with the task's id (a conversation open on it refetches), `chat` with the chat's id when
  * the task is a chat or was handed out from one (the chat list, the needs-you badge and the chat refetch), and `progress`
- * with both ids when a run says more. `runner`: the runner's latest report of its Engineer jobs (they run outside
- * Paperclip). `session`: a Paperclip-run agent's live words from its session log (Paperclip records output progress only
+ * with both ids when a run says more. `session`: a Paperclip-run agent's live words from its session log (Paperclip records output progress only
  * once a minute), read only for runs on chats and the work handed out from them.
  */
 export function startWatch(o: {
@@ -45,7 +43,6 @@ export function startWatch(o: {
   /** The kernel's records: a card filed, decided or finished announces `approvals`. */
   records?: Pick<Records, "list">;
   log: Logger;
-  runner?: () => RunnerReport | undefined;
   session?: (agentId: string, startedAt: string | null) => Promise<SessionActivity | null>;
   everyMs?: number;
 }): () => void {
@@ -66,7 +63,7 @@ export function startWatch(o: {
     if (isChat(i, s.label)) s.chats.add(i.id);
   }
 
-  /** Each task's run as `state|output`: Paperclip's live runs (with live words on chats), then the runner's jobs. */
+  /** Each task's run as `state|output`: Paperclip's live runs (with live words on chats). */
   async function runs(s: Watched, live: LiveRun[]): Promise<Map<string, string>> {
     const out = new Map<string, string>();
     await Promise.all(
@@ -76,9 +73,6 @@ export function startWatch(o: {
         out.set(r.issueId, `${r.status}|${r.lastOutputSeq ?? ""}|${words?.saidAt ?? ""}|${words?.steps.at(-1)?.at ?? ""}|${words?.steps.length ?? ""}`);
       }),
     );
-    const report = o.runner?.();
-    for (const j of report?.running ?? []) out.set(j.issueId, `running|${j.saidAt ?? ""}|${j.steps?.at(-1)?.at ?? ""}|${JSON.stringify(j.plan ?? [])}`);
-    for (const j of report?.queued ?? []) out.set(j.issueId, "queued|");
     return out;
   }
 

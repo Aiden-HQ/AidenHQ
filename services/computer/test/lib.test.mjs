@@ -1,47 +1,16 @@
-// The launcher's logic: run tokens, what a box's exec gets, the box's Codex config, admission. Docker itself is proven live.
+// The launcher's logic: the box's Codex config, admission, repo-checkout. Docker itself is proven live.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { execFileSync, spawn, spawnSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { createServer } from "node:http";
-import { Tokens, Creds, admit, builtImage, dockerRunArgs, oomMessage, execEnv, routineArgs, mcpBlock, stale, wrapExec, runCredential, CP_SCRIPT, CODEX_CONFIG_SCRUB, checkoutRequest, archiveArgs, UNTAR_SCRIPT, RUN_TOKEN_PATH, WRITE_RUN_TOKEN_SCRIPT, CLEAR_RUN_TOKEN_SCRIPT } from "../lib.mjs";
+import { admit, dockerRunArgs, mcpBlock, stale, CODEX_CONFIG_SCRUB, checkoutRequest, archiveArgs, UNTAR_SCRIPT } from "../lib.mjs";
 import { host as localHost } from "../../../modules/codehost-local/src/host.mjs";
-import { ensureClone } from "../../../modules/codehost-github/src/git.mjs";
+import { ensureClone } from "../../../modules/codehost-local/src/git.mjs";
 
-test("a run token names its agent until the run ends; a new run gets a new one", () => {
-  const t = new Tokens();
-  const a = t.issue("box1", "agent-1");
-  assert.match(a, /^ahqc_[A-Za-z0-9_-]{43}$/);
-  assert.deepEqual(t.whoami(a), { agentId: "agent-1", container: "box1", runId: null, issueId: null });
-  // The first exec from Paperclip binds the run and task (what the model gateway caps by); it survives a reload.
-  assert.equal(t.bind("box1", { runId: "run-1", issueId: "iss-1" }), true);
-  assert.equal(t.bind("box1", { runId: "run-1", issueId: "iss-1" }), false);
-  const reloaded = new Tokens();
-  reloaded.load(t.dump());
-  assert.deepEqual(reloaded.whoami(a), { agentId: "agent-1", container: "box1", runId: "run-1", issueId: "iss-1" });
-  const b = t.issue("box1", "agent-1");
-  assert.equal(t.whoami(a), undefined);
-  assert.equal(t.current("box1"), b);
-  t.revoke("box1");
-  assert.equal(t.whoami(b), undefined);
-  const c = t.issue("box2", "agent-2", 0);
-  assert.equal(t.whoami(c, 7 * 3600_000), undefined, "expires");
-  assert.equal(t.whoami("forged"), undefined);
-});
-
-test("an exec gets no real key, no AIDENHQ_* token, and this run's token", () => {
-  const e = execEnv({ OPENROUTER_API_KEY: "sk-or-real", OPENAI_API_KEY: "sk-real", AIDENHQ_BOARD_TOKEN: "b", AIDENHQ_SLACK_MCP_TOKEN: "s", PAPERCLIP_API_KEY: "bridge", PATH: "/bin" }, { token: "ahqc_x" });
-  assert.deepEqual(e, { OPENAI_API_KEY: "unused", PAPERCLIP_API_KEY: "bridge", PATH: "/bin", AIDENHQ_RUN_TOKEN: "ahqc_x" });
-  assert.equal(execEnv({ CODEX_HOME: "/h" }, { token: "t", mcp: "x" }).AIDENHQ_MCP_B64, "eA==");
-  // Paperclip's own server env, seen live on some execs: never into a box. The box's bridge credential stays.
-  const server = { BETTER_AUTH_SECRET: "s", PAPERCLIP_AGENT_JWT_SECRET: "j", PAPERCLIP_AGENT_PRIVATE_KEY: "p", PAPERCLIP_SECRETS_MASTER_KEY_FILE: "/k", PAPERCLIP_GITHUB_BROKER_TOKEN: "g", GH_TOKEN: "", DATABASE_URL: "postgres://x" };
-  assert.deepEqual(execEnv({ ...server, PAPERCLIP_BRIDGE_TOKEN: "b", PAPERCLIP_API_KEY: "k", PAPERCLIP_TASK_ID: "t" }, {}), { PAPERCLIP_BRIDGE_TOKEN: "b", PAPERCLIP_API_KEY: "k", PAPERCLIP_TASK_ID: "t" });
-});
-
-test("the box's Codex config lists only granted connections, through the gateway, keyed by the run token", () => {
+test("the box's Codex config lists only granted connections, through the gateway, keyed by the job token", () => {
   const conns = { apps: { tool_timeout_sec: 600 }, slack: { tool_timeout_sec: 300 }, paperclip_tasks: { tool_timeout_sec: 300 } };
   const b = mcpBlock({ apps: ["app_list"], paperclip_tasks: ["task_finish"] }, conns, "http://10.231.2.1:8200");
   assert.match(b, /\[mcp_servers\.apps\]\nurl = "http:\/\/10\.231\.2\.1:8200\/c\/apps\/mcp"\nenv_http_headers = \{ "X-Agent-Key" = "AIDENHQ_RUN_TOKEN" \}\nenabled_tools = \["app_list"\]/);
@@ -50,22 +19,18 @@ test("the box's Codex config lists only granted connections, through the gateway
   assert.doesNotMatch(b, /slack|command/);
 });
 
-test("the scrub drops Paperclip's JWT block and the shared block, adds ours once, and refuses a leftover token", () => {
+test("the scrub replaces our block with this job's, once", () => {
   const home = mkdtempSync(join(tmpdir(), "codexhome-"));
   const f = join(home, "config.toml");
-  const original = 'model = "x"\n\n# >>> aidenhq (managed)\n[mcp_servers.apps]\nurl = "http://apps-mcp:8090/mcp"\n# <<< aidenhq\n\n# BEGIN PAPERCLIP MANAGED MCP\n[mcp_servers.paperclip-projects]\nhttp_headers = { Authorization = "Bearer eyJhbGciOi.x.y" }\n# END PAPERCLIP MANAGED MCP\n';
-  writeFileSync(f, original);
+  writeFileSync(f, 'model = "x"\n\n# >>> aidenhq (managed)\n[mcp_servers.apps]\nurl = "http://apps-mcp:8090/mcp"\n# <<< aidenhq\n');
   const block = mcpBlock({ apps: ["app_list"] }, { apps: { url: "http://apps-mcp:8090/mcp" } }, "http://gw");
   const env = { ...process.env, CODEX_HOME: home, AIDENHQ_MCP_B64: Buffer.from(block).toString("base64") };
   const run = () => execFileSync("sh", ["-c", CODEX_CONFIG_SCRUB, "x", "cat", f], { env, encoding: "utf8" });
   run();
   const out = run(); // twice: still one copy of ours
   assert.equal((out.match(/\[mcp_servers\.apps\]/g) ?? []).length, 1);
-  assert.doesNotMatch(out, /eyJ|PAPERCLIP MANAGED|apps-mcp:8090/);
+  assert.doesNotMatch(out, /apps-mcp:8090/);
   assert.match(out, /^model = "x"/);
-  writeFileSync(f, 'x = "eyJleftover"\n');
-  assert.throws(() => run(), (e) => e.status === 97);
-  assert.equal(readFileSync(f, "utf8").includes("eyJleftover"), true);
 });
 
 test("docker run: gVisor, the computers network, limits and mounts from config", () => {
@@ -82,59 +47,6 @@ test("admission: room → go; full → evict the least recently used idle box; a
   assert.equal(admit(boxes, 3), "wait");
   boxes.get("c").busy = 0;
   assert.deepEqual(stale(boxes, 10, 100), ["c"]);
-});
-
-test("a box's Paperclip credential survives a launcher restart (dump/load) and goes on delete", () => {
-  const c = new Creds();
-  assert.equal(c.get("box1"), undefined);
-  c.set("box1", { apiUrl: "http://127.0.0.1:4567", apiKey: "bridge", taskId: "issue-1" });
-  assert.deepEqual(c.get("box1"), { apiUrl: "http://127.0.0.1:4567", apiKey: "bridge", taskId: "issue-1" });
-  // The detached turn outlives the launcher: the saved file reloads into /cp's lookup as it was.
-  const reloaded = new Creds();
-  reloaded.load(JSON.parse(JSON.stringify(c.dump())));
-  assert.deepEqual(reloaded.get("box1"), { apiUrl: "http://127.0.0.1:4567", apiKey: "bridge", taskId: "issue-1" });
-  // Rows a broken file might carry are skipped, never a credential without a key.
-  const junk = new Creds();
-  junk.load([{ container: "box2", apiUrl: "http://127.0.0.1:1" }, null]);
-  assert.equal(junk.get("box2"), undefined);
-  // The box's token is revoked: the credential goes with it, so a later box reusing the name has none.
-  reloaded.delete("box1");
-  assert.equal(reloaded.get("box1"), undefined);
-  const afterRestart = new Creds();
-  afterRestart.load(reloaded.dump());
-  assert.equal(afterRestart.get("box1"), undefined);
-});
-
-test("a credential goes when its box's token does, expiry included", () => {
-  const creds = new Creds();
-  const tokens = new Tokens({ onRevoke: (container) => creds.delete(container) });
-  const token = tokens.issue("box1", "agent-1", 0);
-  creds.set("box1", { apiUrl: "http://127.0.0.1:4567", apiKey: "bridge" });
-  assert.ok(creds.get("box1"));
-  assert.equal(tokens.whoami(token, 7 * 3600_000), undefined); // expired: whoami revokes
-  assert.equal(creds.get("box1"), undefined);
-  // A new token for the same name (a resumed box, or a reused name) takes the old credential with it.
-  tokens.issue("box1", "agent-2");
-  creds.set("box1", { apiUrl: "http://127.0.0.1:4567", apiKey: "bridge-2" });
-  tokens.revoke("box1");
-  assert.equal(creds.get("box1"), undefined);
-});
-
-test("the cp script makes one control-plane call through the box's bridge with the key from stdin, never argv", async () => {
-  const got = [];
-  const srv = createServer((req, res) => { let b = ""; req.on("data", (d) => (b += d)); req.on("end", () => { got.push({ method: req.method, url: req.url, auth: req.headers.authorization, body: JSON.parse(b) }); res.writeHead(201, { "content-type": "application/json" }).end('{"id":"c1"}'); }); });
-  await new Promise((r) => srv.listen(0, "127.0.0.1", r));
-  const url = `http://127.0.0.1:${srv.address().port}`;
-  const ch = spawn(process.execPath, ["-e", CP_SCRIPT]);
-  let out = "";
-  ch.stdout.on("data", (d) => (out += d));
-  const code = await new Promise((resolve) => { ch.on("close", resolve); ch.stdin.end(JSON.stringify({ url, key: "bridge", method: "POST", path: "/api/issues/issue-1/comments", body: Buffer.from('{"body":"hi"}').toString("base64") })); });
-  srv.close();
-  assert.equal(code, 0);
-  const r = JSON.parse(out.trim());
-  assert.deepEqual([r.status, Buffer.from(r.body, "base64").toString()], [201, '{"id":"c1"}']);
-  assert.deepEqual(got, [{ method: "POST", url: "/api/issues/issue-1/comments", auth: "Bearer bridge", body: { body: "hi" } }]);
-  assert.ok(!CP_SCRIPT.includes("bridge\""));
 });
 
 test("repo-checkout: only the agents org, only a full SHA; the launcher picks the folder", () => {
@@ -207,54 +119,19 @@ test("repo-checkout's snapshot leaves out every .aidenhq/ folder", (t) => {
   assert.ok(existsSync(join(dest, "src/app.ts")));
 });
 
-test("repo-checkout reads this run's token from the launcher's file, never a stale env value", () => {
-  // The original failure: once the run rotates, the earlier token is dead and the gateway answers 401 not a live computer.
-  const t = new Tokens();
-  const stale = t.issue("box1", "agent-1");
-  const current = t.issue("box1", "agent-1");
-  assert.equal(t.whoami(stale), undefined);
-  assert.equal(t.whoami(current)?.agentId, "agent-1");
-
+test("repo-checkout sends the job's own token to the gateway", () => {
   const dir = mkdtempSync(join(tmpdir(), "repo-checkout-"));
-  const tokenFile = join(dir, "run-token");
   const record = join(dir, "sent");
   const bin = join(dir, "bin");
   mkdirSync(bin);
   writeFileSync(join(bin, "curl"), '#!/bin/sh\nfor a in "$@"; do case "$a" in X-Agent-Key:*) printf "%s" "${a#X-Agent-Key: }" > "$RECORD" ;; esac; done\nprintf \'{"ok":true}\\n\'\n', { mode: 0o755 });
   const script = join(dirname(fileURLToPath(import.meta.url)), "../images/agent-base/repo-checkout");
-  const run = () => spawnSync("sh", [script, "acme-agents/roadmap-keeper", "a".repeat(40)], {
-    encoding: "utf8",
-    env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, RECORD: record, AIDENHQ_RUN_TOKEN: stale, AIDENHQ_RUN_TOKEN_FILE: tokenFile },
-  });
-
-  writeFileSync(tokenFile, current, { mode: 0o600 });
-  const ok = run();
+  const run = (token) => spawnSync("sh", [script, "acme-agents/roadmap-keeper", "a".repeat(40)], { encoding: "utf8", env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, RECORD: record, AIDENHQ_RUN_TOKEN: token } });
+  const ok = run("ahqj_job.sig");
   assert.equal(ok.status, 0, ok.stderr);
-  assert.equal(readFileSync(record, "utf8"), current);
-
-  rmSync(tokenFile);
-  const gone = run();
-  assert.notEqual(gone.status, 0);
-  assert.match(gone.stderr, /no live run token/);
-  assert.equal(readFileSync(record, "utf8"), current, "it never falls back to the stale env token");
-});
-
-test("the launcher hands the box its token on stdin and clears it at the end of the run", () => {
-  assert.equal(RUN_TOKEN_PATH, "/dev/shm/aidenhq/run-token");
-  assert.match(WRITE_RUN_TOKEN_SCRIPT, /cat > \/dev\/shm\/aidenhq\/run-token/);
-  assert.match(WRITE_RUN_TOKEN_SCRIPT, /chmod 600/);
-  assert.match(CLEAR_RUN_TOKEN_SCRIPT, /rm -f \/dev\/shm\/aidenhq\/run-token/);
-  for (const s of [WRITE_RUN_TOKEN_SCRIPT, CLEAR_RUN_TOKEN_SCRIPT]) assert.doesNotMatch(s, /ahqc_/);
-});
-
-test("only execs carrying a CODEX_HOME are wrapped", () => {
-  assert.deepEqual(wrapExec("ls", ["-l"], {}), ["ls", ["-l"]]);
-  const [cmd, args] = wrapExec("codex", ["exec"], { CODEX_HOME: "/h" });
-  assert.equal(cmd, "sh");
-  assert.deepEqual(args.slice(2), ["aidenhq-computer", "codex", "exec"]);
-});
-
-test("a run's Paperclip credential comes from the exec env (bridge URL + key + task)", () => {
-  assert.equal(runCredential({ PATH: "/bin" }), undefined);
-  assert.deepEqual(runCredential({ PAPERCLIP_API_URL: "http://127.0.0.1:4567", PAPERCLIP_API_KEY: "bridge", PAPERCLIP_TASK_ID: "issue-1" }), { apiUrl: "http://127.0.0.1:4567", apiKey: "bridge", taskId: "issue-1" });
+  assert.equal(readFileSync(record, "utf8"), "ahqj_job.sig");
+  const none = run("");
+  assert.notEqual(none.status, 0);
+  assert.match(none.stderr, /no job token/);
+  rmSync(dir, { recursive: true, force: true });
 });

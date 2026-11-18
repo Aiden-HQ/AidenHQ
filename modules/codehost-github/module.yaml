@@ -1,12 +1,17 @@
 name: codehost-github
 description: "GitHub as the code host: task workspaces and the cache clones, repo-narrowed GitHub App tokens minted per write, git with the hardened arguments, push, PR, merge at the reviewed head once green, create_repo, deploy keys, land, and the git rules that tier those writes."
 license: MIT
-# A holder of the GitHub App key (vault github-app/) and the admin PAT, and the owner of all git state. Its code runs in
-# the host runner today (src/: the runner imports it); the write kinds codehost-github.{push,pr,merge,create_repo,deploy_key}
-# go through the kernel's /v1/writes once the runner files its git writes there (lean-core 3b), with src/plan.mjs as their
+# The only holder of the GitHub App key (vault github-app/) and the owner of all git state. Its write kinds
+# codehost-github.{push,pr,merge,create_repo,deploy_key} go through the kernel's /v1/writes, with service/src/plan.mjs as their
 # executor@1 plan. Outside the agents org it is PR-only (no merge, no creation, no workflows), except product-repo merges the
 # reviewer or the owner approved.
 privileged: [ git-credential ]
+# The merge queue, its gate rules and the reviewer-eval gate are the gate's own core: read by the reviewer and a second one on
+# another model family (the path inventory, paths.yaml; the rest of this privileged module is the reviewer's).
+paths:
+  - sensitivity: panel
+    owner_role: platform-engineer
+    patterns: [ service/src/merges.ts, service/src/merge-gate.mjs, service/src/evalgate.ts ]
 # The code host role (docs/design/codehost-local.md §2): it hosts every org codehost-local doesn't own (src/host.mjs).
 provides: [ codehost ]
 settings:
@@ -15,10 +20,6 @@ settings:
   # GitHub orgs/users (besides the agents org) whose repos the apps platform may build trusted apps from.
   github_orgs:
     default: []
-  # Until the big switch the service lands nothing outside the agents org (the product and modules repos included), in plan
-  # and again in execute. The switch turns it on; this setting is deleted then.
-  lands_platform_repos:
-    default: false
 # The owner's GitHub bot account (spec §6.9, decision 25): a fine-grained token that forks our repos and files issues and pull
 # requests upstream from that fork, nothing more. Asked for on the first-run page (/setup); empty = nothing goes upstream.
 secrets:
@@ -28,20 +29,19 @@ secrets:
         label: GitHub bot token
         pattern: '^(github_pat_[A-Za-z0-9_]{20,250}|gh[pousr]_[A-Za-z0-9]{30,250})$'
         help: "A fine-grained token of a GitHub account you made for this AidenHQ: it files issues and pull requests to AidenHQ from its own fork. Without it, nothing is sent upstream."
-# The PR watch (service/src/pr-watch.ts, W5; started at the switch) files the Platform Engineer's Dependabot tasks and closes them
+# The PR watch (service/src/pr-watch.ts, W5) files the Platform Engineer's Dependabot tasks and closes them
 # (kernel.tasks), and wakes the task that opened a PR now conflicting with main (kernel.wake). It holds only its module token.
 # The design review's tasks (service/src/design-review.ts, W6) are filed for the UI Reviewer's role and cancelled when
 # superseded (kernel.tasks).
 # The merge queue's reviewer eval (service/src/evalgate.ts) is a kernel check job (kernel.checks) whose signed receipt it
-# verifies before a product or official modules PR merges.
-# The release train (service/src/train.ts, W3; started at the switch) files the instance's pin bump as a kernel.apply, which the
+# verifies before a product PR that changes the reviewer merges.
+# The release train (service/src/train.ts, W3) files the instance's pin bump as a kernel.apply, which the
 # kernel plans and tiers like any apply (kernel.apply), on a task for the Platform Engineer's role (kernel.tasks).
 roles:
   requests: [ kernel.tasks, kernel.wake, kernel.checks, kernel.apply ]
-# The service (service/): the executor of the write kinds below, and narrow GitHub operations for other modules. It is built to
-# become the only App-key holder and the only lander (one-way phase 2, Lane T and the switch); until then nothing files its
-# kinds or calls its operations. It mounts the App key (read-only; the runner, apps-mcp and github-mcp keep theirs until Lane
-# T and the switch) and the job workspaces.
+# The service (service/): the executor of the write kinds below, the merge queue, the release train, the PR watch, design
+# reviews and tidying, and narrow GitHub operations other modules get through the kernel (/v1/codehost/:op). It lands in the
+# agents org and the product repo (elsewhere it only opens PRs). It alone mounts the App key (read-only), and the job workspaces.
 services:
   data: true
   run:
@@ -58,13 +58,12 @@ services:
         CODEHOST_KEY_FILE: ${secrets.codehost_github_token}
         CACHE_DIR: /cache
         AGENTS_ORG: "${settings.agents_org}" # github_agents_org, else aidenhq-<instance_name> (compile derives it)
-        LANDS_PLATFORM_REPOS: "${settings.lands_platform_repos}"
         GITHUB_APP_DIR: /github-app
         TASKS_DIR: /tasks
         PRODUCT_REPO: "${AIDENHQ_PRODUCT_REPO:-}"
         INSTANCE_REPO: "${AIDENHQ_INSTANCE_REPO:-}"
-        MODULES_REPO: "${settings.modules_repo}"
-# The kernel calls the kinds' plan, execute and status here with the module's own token (executor@1); plan is src/plan.mjs's
+        OWNER_NAME: "${settings.owner_name}"
+# The kernel calls the kinds' plan, execute and status here with the module's own token (executor@1); plan is service/src/plan.mjs's
 # rules on the state the service reads itself (the workspace, its cache clone, GitHub), never the args.
 providers:
   executor:

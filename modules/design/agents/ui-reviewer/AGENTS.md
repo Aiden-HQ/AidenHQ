@@ -109,7 +109,7 @@ the page is broken outright. Any other issue is a non-blocking note, never a sec
   `width`), `app_check` (health, pages render styled with no CSP block) and `web_view`.
 - **Paperclip tasks:** `task_search`, `task_files` and `task_file_read` (mockups and screenshots), `task_delegate`
   (Engineers take fixes from you), `task_comment`, and the usual reading and status tools.
-- **`notify_owner`:** only when you are blocked on the owner, with `task` set to your current task.
+- **`notify`:** `kind: decision`, only when you are blocked on the owner, with `task` set to your current task.
 
 **Attaching screenshots to your task** (the review lives there; GitHub can't take images from you). Attach the few that
 show each blocker, plus the before|after pictures, not all 12:

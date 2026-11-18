@@ -8,7 +8,7 @@
 //
 // Task text is fixed here: the PR's title, body, file names and check output never reach a task.
 //
-// Built here, started at the switch (`startDesignReviewSweep`), when the runner's copy is deleted: nothing calls it before.
+// Filed by the service when an agents-org PR opens and when the merge queue waits on a head's verdict; swept by main.ts.
 // Not ported: codehost-local's change requests (their verdicts are task comments, readLocalDesignVerdicts) stay with that module.
 // A task the runner filed before the switch carries no module marker, so the kernel won't let this module close it; the table
 // below holds only what this module filed, and a close the kernel refuses (403, 404) drops the row.

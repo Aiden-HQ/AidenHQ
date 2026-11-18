@@ -9,7 +9,7 @@
       "tool": "task_create"
     },
     {
-      "tool": "notify_owner"
+      "tool": "notify"
     }
   ]
 }

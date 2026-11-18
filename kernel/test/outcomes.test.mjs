@@ -3,12 +3,12 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { DatabaseSync } from "node:sqlite";
-import { createOutcomes, delegateIds, tag } from "../src/outcomes.ts";
+import { createOutcomes, createPluginPost, delegateIds, tag } from "../src/outcomes.ts";
 import { chiefOfStaff } from "../src/backplane.ts";
 import { SELF_TAG } from "../src/wakes.ts";
 import { post } from "../../services/paperclip-events/post.js";
 import { signature } from "../../services/paperclip-events/sign.js";
-import { readBody, serve } from "./helpers.mjs";
+import { pluginHost, readBody, serve } from "./helpers.mjs";
 
 const AGENT = "11111111-1111-4111-8111-111111111111", OTHER = "22222222-2222-4222-8222-222222222222";
 const TASK = "33333333-3333-4333-8333-333333333333", BLOCKER = "44444444-4444-4444-8444-444444444444";
@@ -17,21 +17,7 @@ const SECRET = "post-secret"; // paperclip_post_key: the kernel and the plugin a
 /** Params as the kernel signs them, for `agentId` in company c-1. */
 const signed = (params, agentId = AGENT) => { const p = { ts: Date.now(), ...params }; return { ...p, sig: signature(SECRET, "c-1", agentId, p) }; };
 
-/** Paperclip's plugin host, in memory: issues, comments, children; every write as the agent the action names. */
-function host() {
-  const issues = { [TASK]: { id: TASK, status: "in_progress", assigneeAgentId: AGENT, companyId: "c-1" } };
-  const comments = [];
-  let n = 0;
-  const ctx = { issues: {
-    get: async (id, c) => (issues[id]?.companyId === c ? issues[id] : null),
-    update: async (id, patch, _c, actor) => Object.assign(issues[id], { status: patch.status, blockedBy: patch.blockedByIssueIds, updatedBy: actor.actorAgentId }),
-    list: async ({ originId }) => Object.values(issues).filter((i) => i.originId === originId),
-    create: async ({ parentId, title, originId, actor }) => { const id = `child-${++n}`; return (issues[id] = { id, parentId, title, originId, createdByAgentId: actor.actorAgentId, companyId: "c-1" }); },
-    listComments: async (id) => comments.filter((c) => c.issueId === id),
-    createComment: async (issueId, body, _c, { authorAgentId }) => { const c = { id: `cm-${++n}`, issueId, body, authorAgentId }; comments.push(c); return c; },
-  } };
-  return { ctx, issues, comments };
-}
+const host = () => pluginHost({ [TASK]: { id: TASK, status: "in_progress", assigneeAgentId: AGENT, companyId: "c-1" } });
 
 async function paperclip(t, { lose = 0 } = {}) {
   const h = host();
@@ -58,7 +44,8 @@ async function paperclip(t, { lose = 0 } = {}) {
   return { ...h, url, direct, seen: () => sent };
 }
 
-const kernelOf = (url, extra = {}) => createOutcomes({ db: new DatabaseSync(":memory:"), controlUrl: url, agentKey: (id) => (id === AGENT ? "agent-key" : ""), postKey: () => SECRET, delegates: (id) => (id === AGENT ? [OTHER] : []), finish: async () => ({ pass: true }), ...extra });
+const provenance = { carried: async () => ({ job: null, cap: { cap: "off" } }), intend: () => {}, record: () => {} };
+const kernelOf = (url, extra = {}) => createOutcomes({ db: new DatabaseSync(":memory:"), plugin: createPluginPost({ controlUrl: url, agentKey: (id) => (id === AGENT ? "agent-key" : ""), postKey: () => SECRET }), provenance, delegates: (id) => (id === AGENT ? [OTHER] : []), finish: async () => ({ pass: true }), ...extra });
 const JOB = { id: "j-0123456789abcdef", agent: AGENT, task: TASK };
 
 test("posted twice is one comment, the agent's own, tagged so it wakes nobody", async (t) => {
@@ -94,7 +81,7 @@ test("the action writes only as the calling agent, on its own task, and only the
   assert.match(await refused({ issueId: TASK, tag: tg, body: "x", agentId: OTHER }), /unknown params: agentId/);
   assert.match(await refused({ issueId: TASK, tag: tg, body: "x" }, { actor: { ...agent.actor, agentId: OTHER }, companyId: "c-1" }), /isn't assigned to this agent/);
   assert.match(await refused({ issueId: TASK, tag: tg, body: "x", status: "blocked" }), /blocked needs blockedBy/);
-  assert.match(await refused({ issueId: TASK, tag: tg, body: "x", status: "todo" }), /status must be one of/);
+  assert.match(await refused({ issueId: TASK, tag: tg, body: "x", status: "paused" }), /status must be one of/);
   assert.match(await refused({ issueId: TASK, tag: "<!-- other -->", body: "x" }), /tag must be/);
   assert.equal(h.comments.length, 0, "a refusal writes nothing");
   // A child task, once: a retry finds it by its origin.

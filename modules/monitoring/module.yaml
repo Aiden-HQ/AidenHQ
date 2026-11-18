@@ -1,8 +1,8 @@
 name: monitoring
-description: "Host and fleet monitoring: Prometheus, node-exporter, cAdvisor, Alertmanager and Grafana. Every alert opens or updates a Fleet Ops task; critical ones also tell the owner in one line."
-# docs/design/monitoring.md. Alerts go into the Fleet Ops detector (services/board/src/monitoring.ts), so fleet-ops comes along.
+description: "Host and fleet monitoring: Prometheus, node-exporter, cAdvisor, Alertmanager and Grafana. Every alert opens or updates a Fleet Steward task; critical ones also tell the owner in one line."
+# docs/design/monitoring.md. Alerts go into the fleet detector (services/board/src/monitoring.ts), so fleet-steward comes along.
 requires:
-  - fleet-ops
+  - fleet-steward
   - grafana # mcp-grafana joins its network (grafana_source: local)
 settings:
   # How long Prometheus keeps samples (Prometheus duration: 30d, 8w).

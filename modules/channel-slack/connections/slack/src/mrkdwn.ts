@@ -1,4 +1,4 @@
-// Agent markdown -> Slack mrkdwn, and the leaked-"placeholder" guard. The input is HTML-escaped first (& < >), so agent
+// Agent markdown -> Slack mrkdwn. The input is HTML-escaped first (& < >), so agent
 // text can never form raw Slack links, mentions or broadcasts; only the small markdown subset below becomes formatting.
 export const escape = (s: string) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 
@@ -17,9 +17,4 @@ export function toSlackMrkdwn(text: string): string {
             .replace(/__([^_\n]+)__/g, "_$1_"),
     )
     .join("");
-}
-
-// Some agents fill a required `text` with the word "placeholder" (the real message in `questions`, or after it): it must never reach the owner.
-export function stripPlaceholder(text: string): string {
-  return text.replace(/^\s*placeholder\b[\s:.\-–—]*/i, "").trim();
 }

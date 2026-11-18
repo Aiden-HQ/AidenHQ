@@ -7,10 +7,8 @@ import { execFileSync } from "node:child_process";
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { SAFE_GIT_ARGS, git, setUntrusted } from "../src/git.mjs";
-import { WRITE, ghOptions, mergeOptions, mergePermissions, ownRepo, pushPermissions } from "../src/github-app.ts";
-import { allowedWrite } from "../src/merge-gate.mjs";
-import { plan, planParts } from "../src/plan.mjs";
+import { WRITE, ghOptions, mergeOptions, mergePermissions, ownRepo, pushPermissions } from "../service/src/github-app.ts";
+import { plan, planParts } from "../service/src/plan.mjs";
 
 const ORG = "acme-agents", PRODUCT = "acme/aidenhq";
 
@@ -24,28 +22,13 @@ test("every write mints its own token, narrowed to the one repo and the permissi
   assert.equal(a.cwd, "/w");
 });
 
-test("outside the agents org and the product repo: PR-only (no App merge, no workflows, no other writes through gh; creation is Tier 0 in plan.mjs)", () => {
+test("outside the agents org and the product repo: PR-only (no App merge, no workflows; creation is Tier 0 in plan.mjs)", () => {
   assert.equal(ownRepo("other/lib", ORG, PRODUCT), false, "merges there take the host's login, behind that repo's review");
   assert.equal(ownRepo(`${ORG}/app`, ORG, PRODUCT) && ownRepo(PRODUCT, ORG, PRODUCT), true);
   assert.deepEqual(pushPermissions(true, "other/lib", ORG, PRODUCT), { contents: "write" }, "no Workflows: write outside");
   assert.equal(mergePermissions("other/lib", PRODUCT).workflows, undefined);
   assert.equal(mergePermissions(PRODUCT, PRODUCT).workflows, "write", "the product repo's approved merges only");
-  for (const [method, path] of [["DELETE", "repos/other/lib/git/refs/heads/x"], ["PATCH", "repos/other/lib/pulls/1"], ["POST", "repos/other/lib/issues/1/comments"], ["POST", "orgs/other/repos"], ["PUT", "repos/other/lib/contents/.github/workflows/ci.yml"]])
-    assert.equal(allowedWrite(method, path, ORG, PRODUCT), false, `${method} ${path}`);
   assert.throws(() => plan({ kind: "codehost-github.push", args: {} }, { agentsOrg: ORG, productRepo: PRODUCT, instanceRepo: `${ORG}/aidenhq-instance`, branches: [{ repo: "other/lib", branch: "main", defaultBranch: "main", sha: "a".repeat(40), files: ["a"] }] }), /outside the agents org/);
-});
-
-test("the official modules repo is the product's: its PR card merges (Platform Engineer's line, panel) with the App's own writes", () => {
-  const MODULES = "acme/aidenhq-modules", both = [PRODUCT, MODULES];
-  assert.equal(ownRepo(MODULES, ORG, both), true, "the card is the review there");
-  assert.equal(ownRepo(MODULES, ORG, PRODUCT), false, "a bare product repo still names only itself");
-  assert.equal(mergePermissions(MODULES, both).workflows, "write");
-  assert.equal(allowedWrite("POST", `repos/${MODULES}/issues/1/comments`, ORG, both), true);
-  assert.equal(allowedWrite("DELETE", `repos/${MODULES}/git/refs/heads/x`, ORG, both), false, "never a branch delete outside the agents org");
-  const st = { agentsOrg: ORG, productRepo: PRODUCT, modulesRepo: MODULES, instanceRepo: `${ORG}/aidenhq-instance`, also: ["merge"], requester: { platform: true }, branches: [{ repo: MODULES, branch: "fix/x", defaultBranch: "main", sha: "a".repeat(40), files: ["slack/module.yaml"] }] };
-  assert.deepEqual(planParts("pr", st)[0].map((p) => [p.rule, p.tier, Boolean(p.panel)]), [["modules-pr-merge", 1, true]]);
-  assert.equal(planParts("pr", { ...st, requester: {} })[0][0].rule, "modules-merge-requester");
-  assert.equal(planParts("pr", { ...st, also: [] })[0][0].rule, "outside-pr", "a PR that doesn't merge is as before");
 });
 
 test("a merge-queue write mints no App token outside our repos, and one single-repo token inside them", async () => {
@@ -57,34 +40,4 @@ test("a merge-queue write mints no App token outside our repos, and one single-r
   assert.equal((await mergeOptions(app, `${ORG}/app`, own)).env.GH_TOKEN, "t");
   assert.equal((await mergeOptions(app, PRODUCT, own, mergePermissions(PRODUCT, PRODUCT))).env.GH_TOKEN, "t");
   assert.deepEqual(asked, [{ org: ORG, repositories: ["app"], permissions: WRITE }, { org: "acme", repositories: ["aidenhq"], permissions: { ...WRITE, workflows: "write" } }]);
-});
-
-test("host git in a task clone: the safe arguments, no global or system config, the task folder a ceiling, no diff programs", async (t) => {
-  const dir = mkdtempSync(join(tmpdir(), "codehost-hard-"));
-  const tasks = join(dir, "tasks");
-  const clone = join(tasks, "TASK-1", "repo");
-  mkdirSync(clone, { recursive: true });
-  execFileSync("git", ["init", "-q", clone], { env: { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null" } });
-  // A git on PATH that records how it was run, then hands over to the real one.
-  const real = execFileSync("sh", ["-c", "command -v git"], { encoding: "utf8" }).trim();
-  const bin = join(dir, "bin");
-  mkdirSync(bin);
-  const seen = join(dir, "seen.jsonl");
-  writeFileSync(join(bin, "git"), `#!/bin/sh\nprintf '%s\\n' "$(node -e 'console.log(JSON.stringify({argv: process.argv.slice(1), global: process.env.GIT_CONFIG_GLOBAL ?? null, nosystem: process.env.GIT_CONFIG_NOSYSTEM ?? null, ceiling: process.env.GIT_CEILING_DIRECTORIES ?? null}))' -- "$@")" >> ${JSON.stringify(seen)}\nexec ${JSON.stringify(real)} "$@"\n`);
-  chmodSync(join(bin, "git"), 0o755);
-  const path = process.env.PATH;
-  process.env.PATH = `${bin}:${path}`;
-  setUntrusted({ tasksDir: tasks });
-  t.after(() => { process.env.PATH = path; setUntrusted(undefined); });
-  await git(clone, "status", "--porcelain");
-  await git(clone, "diff", "HEAD").catch(() => "");
-  const runs = readFileSync(seen, "utf8").trim().split("\n").map((l) => JSON.parse(l));
-  const status = runs.find((r) => r.argv.includes("status"));
-  const diff = runs.find((r) => r.argv.includes("diff") && r.argv.includes("HEAD"));
-  for (const r of [status, diff]) {
-    assert.deepEqual(r.argv.slice(0, SAFE_GIT_ARGS.length), SAFE_GIT_ARGS);
-    assert.deepEqual([r.global, r.nosystem, r.ceiling], ["/dev/null", "1", tasks]);
-  }
-  assert.ok(SAFE_GIT_ARGS.includes("core.hooksPath=/dev/null") && SAFE_GIT_ARGS.includes("protocol.ext.allow=never") && SAFE_GIT_ARGS.includes("safe.bareRepository=explicit"));
-  assert.deepEqual(diff.argv.slice(SAFE_GIT_ARGS.length, SAFE_GIT_ARGS.length + 3), ["diff", "--no-ext-diff", "--no-textconv"]);
 });

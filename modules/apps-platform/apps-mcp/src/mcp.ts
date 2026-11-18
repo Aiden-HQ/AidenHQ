@@ -206,7 +206,7 @@ export function buildServer(p: Platform, caller: Caller, repo: { dir: string; pu
 
   tool(
     "person_identity_decide",
-    "Librarian only: confirm or reject one proposed identity link in src_meta.people_identities (the same person on two sources). Confirm only when the same email is on every linked source user and the names agree; never merge two people on a guess. A reason is required; who and when are recorded. Only a proposed link can be decided.",
+    "librarian role only: confirm or reject one proposed identity link in src_meta.people_identities (the same person on two sources). Confirm only when the same email is on every linked source user and the names agree; never merge two people on a guess. A reason is required; who and when are recorded. Only a proposed link can be decided.",
     { source: z.enum(["slack", "github", "jira"]), source_user_id: z.string().min(1).max(200), decision: z.enum(["confirm", "reject"]), reason: z.string().min(5).max(500).describe("the evidence, one line") },
     true,
     async (a) => {

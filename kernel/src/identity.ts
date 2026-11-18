@@ -1,9 +1,8 @@
-// K1 whoami: who a bearer is, from the credential alone. A control-plane run JWT or agent key (its /api/agents/me, cached 5
-// minutes by the credential's hash), an agent computer's run token (the launcher's /whoami, asked every time so a revoked
-// token stops at once), a runner job's token (gateway_job_secret), a module's token (its connection's service key, or its own `<module>_token`), or the
-// harness key (the new-agent hello probe: no agent, no grants). What an agent may do comes from the grants table setup
-// writes (config/grants/grants.json), never from control-plane metadata, which agents can edit.
-import { createHash, timingSafeEqual } from "node:crypto";
+// K1 whoami: who a bearer is, from the credential alone. A kernel job's token (`ahqj_`, gateway_job_secret: its row's frozen
+// authority), a runner job's token (the same secret, kind agent: its jobcaps), or a module's token (its connection's service
+// key, or its own `<module>_token`). Nothing else is a caller. What an agent may do comes from the kernel's records and the
+// grants table setup writes (config/grants/grants.json), never from control-plane metadata, which agents can edit.
+import { timingSafeEqual } from "node:crypto";
 import { verifyToken } from "./gateway/token.ts";
 
 export type Grant = { key?: string; roles?: string[]; tools?: Record<string, string[]>; trial?: boolean; jobcaps?: string[]; [k: string]: unknown };
@@ -26,13 +25,12 @@ export type Identity = {
   workspace?: string;
   /** A kernel job's model, frozen at admission: its writes carry it, so their reviewer is never of its family. */
   model?: string;
-  /** The credential the kernel acts with at /v1/cp/agent/* (the caller's own); never forwarded to a module. */
+  /** The control-plane credential the kernel acts with at /v1/cp/agent/* for this caller; never forwarded to a module. */
   credential: string;
 };
 export class Unknown extends Error { code = "denied_unknown_caller"; }
 export class NoGrants extends Error { code = "denied_no_grants"; }
 
-const sha = (s: string) => createHash("sha256").update(s).digest("hex");
 const same = (a: string, b: string) => Boolean(a && b) && a.length === b.length && timingSafeEqual(Buffer.from(a), Buffer.from(b));
 /** The roles an assertion carries: the agent's own, plus kernel.trial for an agent in trial. */
 export const rolesOf = (g: Grant) => [...(g.roles ?? []), ...(g.trial === true ? ["kernel.trial"] : [])];
@@ -40,33 +38,19 @@ export const rolesOf = (g: Grant) => [...(g.roles ?? []), ...(g.trial === true ?
 /** A kernel-admitted job as its row says (admission.ts): who, on what, and the authority frozen when it was admitted. */
 export type AdmittedJob = { agent: string; task: string; state: string; identifier: string; authority: { tools: Record<string, string[]>; jobcaps: string[]; writes: string[]; roles: string[]; reads?: boolean; model?: string } };
 
-export function createIdentity({ grants, connections, jobcaps, modules = () => ({}), secret, controlUrl, launcherUrl, runTask, job = () => undefined, now = Date.now }: {
+export function createIdentity({ grants, connections, jobcaps, modules = () => ({}), secret, job = () => undefined, now = Date.now }: {
   grants: () => Record<string, Grant>; connections: () => Record<string, Connection>; jobcaps: () => Record<string, Jobcap>;
   /** A kernel-admitted job by id (its row): a job token's authority is read here, never from the grants table again. */
   job?: (id: string) => AdmittedJob | undefined;
   /** Modules with kernel roles or a token of their own (config/kernel/modules.json): a module with no connection is known by its token. */
   modules?: () => Record<string, { roles?: string[]; token?: string }>;
-  secret: (name: string) => string; controlUrl?: string; launcherUrl?: string;
-  /** The task a control-plane run is on (its run record), or undefined. */
-  runTask?: (runId: string) => Promise<string | undefined>; now?: () => number;
+  secret: (name: string) => string; now?: () => number;
 }) {
-  const ids = new Map<string, { at: number; id: string; name: string; run?: string; task?: string }>();
-  const agent = (id: string, name: string | undefined, credential: string, extra: { run?: string; task?: string } = {}, box = false): Identity => {
-    const g = grants()[id];
-    if (!g) throw new NoGrants(`${name || id} has no grants`);
-    // A computer reaches its connections only through here: its agent's jobcaps (reads its runner jobs hold) come with it. A
-    // private one stays a job token's (observing); a computer's private reads are grants (scripts/computers.mjs privateGrants).
-    const tools: Record<string, string[]> = Object.fromEntries(Object.entries(g.tools ?? {}).map(([c, t]) => [c, [...t]]));
-    if (box) for (const j of g.jobcaps ?? []) { const c = jobcaps()[j]; if (c && !c.private) tools[c.connection] = [...new Set([...(tools[c.connection] ?? []), ...c.tools])]; }
-    return { kind: "run", agent: id, key: String(g.key ?? ""), name: name || String(g.key ?? ""), roles: rolesOf(g), tools, credential, ...extra };
-  };
-
   return async function whoami(token: string): Promise<Identity> {
     if (!token) throw new Unknown("no credential");
     const mod = (m: string): Identity => ({ kind: "module", module: m, roles: modules()[m]?.roles ?? [], tools: {}, credential: "" });
     for (const [, c] of Object.entries(connections())) if (same(token, secret(c.auth_secret))) return mod(c.module);
     for (const [m, d] of Object.entries(modules())) if (d.token && same(token, secret(d.token))) return mod(m);
-    if (same(token, secret("gateway_harness_key"))) return { kind: "run", roles: [], tools: {}, credential: "" };
     if (token.startsWith("ahqj_")) {
       const p = verifyToken(secret("gateway_job_secret"), token, now());
       if (p?.k === "job") {
@@ -87,30 +71,7 @@ export function createIdentity({ grants, connections, jobcaps, modules = () => (
       const g = p.a ? grants()[p.a] : undefined;
       return { kind: "job", ...(p.a ? { agent: p.a } : {}), key: String(g?.key ?? ""), name: String(g?.key ?? "job"), roles: [], tools, caps, writes: p.w ?? [], credential: "", ...(p.i ? { task: p.i } : {}) };
     }
-    if (token.startsWith("ahqc_")) {
-      if (!launcherUrl) throw new Unknown("the computer launcher isn't configured");
-      const res = await fetch(new URL("/whoami", launcherUrl), { headers: { authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(10_000) }).catch((e: Error) => { throw new Unknown(`the computer launcher is unreachable (${e.message})`); });
-      if (!res.ok) throw new Unknown(`run token rejected by the computer launcher (${res.status})`);
-      const j = (await res.json()) as { agentId?: unknown; runId?: unknown; issueId?: unknown };
-      const id = String(j.agentId ?? "");
-      if (!id) throw new NoGrants("this computer has no grants");
-      return agent(id, undefined, token, { ...(typeof j.runId === "string" && j.runId ? { run: j.runId } : {}), ...(typeof j.issueId === "string" && j.issueId ? { task: j.issueId } : {}) }, true);
-    }
-    if (!controlUrl) throw new Unknown("the control plane isn't configured");
-    const h = sha(token);
-    let hit = ids.get(h);
-    if (!hit || now() - hit.at > 300_000) {
-      const res = await fetch(new URL("/api/agents/me", controlUrl), { headers: { authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(20_000) }).catch((e: Error) => { throw new Unknown(`the control plane is unreachable (${e.message})`); });
-      if (!res.ok) throw new Unknown(`agent key rejected by the control plane (${res.status})`);
-      const a = (await res.json()) as { id?: unknown; name?: unknown };
-      let run: string | undefined;
-      if (token.startsWith("eyJ")) { try { const r = JSON.parse(Buffer.from(token.split(".")[1]!, "base64url").toString("utf8")).run_id; if (typeof r === "string" && r) run = r; } catch {} }
-      const task = run && runTask ? await runTask(run).catch(() => undefined) : undefined;
-      if (ids.size > 1000) for (const [k, v] of ids) if (now() - v.at > 300_000) ids.delete(k);
-      hit = { at: now(), id: String(a.id), name: String(a.name ?? ""), ...(run ? { run } : {}), ...(task ? { task } : {}) };
-      ids.set(h, hit);
-    }
-    return agent(hit.id, hit.name, token, { ...(hit.run ? { run: hit.run } : {}), ...(hit.task ? { task: hit.task } : {}) });
+    throw new Unknown("not a credential the kernel knows");
   };
 }
 export type Whoami = ReturnType<typeof createIdentity>;

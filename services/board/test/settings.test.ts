@@ -24,8 +24,8 @@ writeFileSync(
       paperclip_tasks: { command: "node", tools: { read: ["task_get"], write: ["task_comment"] } },
     },
     agents: {
-      "chief-of-staff": { name: "Aiden", module: "core", adapter: "codex_local", model: "~deepseek/deepseek-flash-latest", heartbeat: true, enabled_tools: { apps: ["app_list"], paperclip_tasks: ["task_get", "task_comment"] } },
-      devops: { name: "DevOps", module: "core", adapter: "codex_local", model: "m", enabled_tools: { apps: ["app_list", "app_deploy"], glean: ["search"] } },
+      "chief-of-staff": { name: "Aiden", module: "core", engine: "codex-openrouter", model: "~deepseek/deepseek-flash-latest", heartbeat: true, enabled_tools: { apps: ["app_list"], paperclip_tasks: ["task_get", "task_comment"] } },
+      devops: { name: "DevOps", module: "core", engine: "codex-openrouter", model: "m", enabled_tools: { apps: ["app_list", "app_deploy"], glean: ["search"] } },
     },
     routines: { "daily-brief": { title: "Prepare daily brief", agent: "chief-of-staff", schedules: [{ cron: "30 8 * * 1-5", timezone: "Europe/London", label: "weekday morning" }] } },
   }),

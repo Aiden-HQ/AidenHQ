@@ -1,12 +1,12 @@
 import pino from "pino";
-import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { createKernelAuth } from "./kernel-auth.js";
 import { createApp } from "./app.js";
 import { appsApi } from "./fleet.js";
 import { appWatchTick, type AppStatus } from "./app-watch.js";
 import { maintainerIssues, maintainerTriageWake, maintainerWake, startMaintainer, triageLimits } from "./maintainer.js";
-import { queueOwnerLine, startDetector } from "./fleet-ops.js";
+import { startDetector } from "./fleet-ops.js";
+import { ownerAlert, startNotify } from "./notify.js";
 import { createGrading } from "./grading.js";
 import { loadConfig } from "./config.js";
 import { pullUsage } from "./costs.js";
@@ -14,13 +14,12 @@ import { McpAuth } from "./mcpauth.js";
 import { GoogleAuth } from "./google.js";
 import { Paperclip } from "./paperclip.js";
 import { kernelRecords } from "./records.js";
+import { kernelWork } from "./runs.js";
 import { weekdayOf } from "./recurrence.js";
 import { Store, localDate } from "./store.js";
-import { startWake } from "./wake.js";
-import { startRollover } from "./rollover.js";
+import { startRecurringRuns } from "./recurring-start.js";
 import { startWatch } from "./watch.js";
 import { liveActivity } from "./live-activity.js";
-import type { RunnerReport } from "./activity.js";
 
 const cfg = loadConfig();
 const log = pino({ level: cfg.logLevel, redact: { paths: ["authorization", "*.authorization", "key", "*.key"], censor: "[redacted]" }, base: { svc: "board" } });
@@ -33,6 +32,8 @@ if (!cfg.gateway) throw new Error("the board needs gateway_board_key: its key on
 const paperclip = new Paperclip(kernelUrl, cfg.companyId, cfg.gateway.token);
 // The kernel keeps every approval record; the board reads them with the gateway_board_key.
 const records = kernelRecords({ url: kernelUrl, token: cfg.gateway.token }, log);
+// The kernel's jobs (every agent run is one): the run pages and run links.
+const work = kernelWork({ url: kernelUrl, token: cfg.gateway.token });
 
 /** Every minute: Tomorrow → Today at the start of a workday, then any scheduled moves that are due, on top. */
 function rollover() {
@@ -48,20 +49,20 @@ function rollover() {
 }
 rollover();
 setInterval(rollover, 60_000).unref();
+// The board's owner alerts go through the kernel's queue to owner-channel's notify (notify.ts).
+if (cfg.gateway) startNotify({ url: (process.env.AIDENHQ_KERNEL_URL ?? "http://10.231.0.1:3130").replace(/\/+$/, ""), token: cfg.gateway.token }, log);
 // Fleet Ops' detector: only when the fleet-ops module is enabled (it sets FLEET_OPS_INTERVAL_MINUTES).
 startDetector(paperclip, store, grading, log);
-// The owner's app alerts (app-watch.ts): owner lines a channel collects through the kernel. apps-mcp unreachable: skipped.
-const appWatch = () => void appWatchTick({ apps: () => appsApi<AppStatus[]>("/internal/status"), diskPct: async () => (await appsApi<{ disk_pct: number }>("/internal/host")).disk_pct, store, notify: (line) => queueOwnerLine(store, line) }).catch((err) => log.warn({ err: String(err) }, "app alerts tick failed"));
+// The owner's app alerts (app-watch.ts), through the one notify. apps-mcp unreachable: skipped.
+const appWatch = () => void appWatchTick({ apps: () => appsApi<AppStatus[]>("/internal/status"), diskPct: async () => (await appsApi<{ disk_pct: number }>("/internal/host")).disk_pct, store, notify: ownerAlert }).catch((err) => log.warn({ err: String(err) }, "app alerts tick failed"));
 setInterval(appWatch, 2 * 60_000).unref();
-// Event wake-ups for heartbeat agents (wake.ts).
-startWake(paperclip, store, records, grading, log);
 // The Maintainer's issue wake-up (maintainer.ts): off until the modules mount the webhook and github-mcp's token. Their
 // files are read on every tick: setup writes the webhook after apply has started this board.
 if (process.env.MAINTAINER_WEBHOOK_URL_FILE && process.env.MAINTAINER_ISSUES_TOKEN_FILE) {
   startMaintainer({ wiring: () => { const [fire, issues, triage] = [maintainerWake(), maintainerIssues(), maintainerTriageWake()]; return fire && issues ? { fire, issues, triage, limits: triageLimits() } : undefined; }, store, log });
 } else log.info({}, "maintainer issue watcher off: MAINTAINER_WEBHOOK_URL_FILE or MAINTAINER_ISSUES_TOKEN_FILE is not set");
-// Long-lived tasks move to a successor before Paperclip's fresh-session prompt outgrows the model's input (rollover.ts).
-startRollover(paperclip, store, records, grading, log);
+// Recurring runs that are due start the Researcher's "Run recurring task" routine (recurring-start.ts).
+startRecurringRuns({ pc: paperclip, store, timezone: cfg.timezone, log });
 // The Costs tab: model calls with what OpenRouter billed for each, from the model gateway (kernel/src/gateway), agent
 // computers' included (the launcher forwards their calls there).
 pullUsage(cfg.gateway, store, log, 60_000, "gateway_usage_pulled_at");
@@ -72,17 +73,15 @@ const signIns = cfg.signIns.map(({ url, token, ...s }) => ({ ...s, auth: new Mcp
 // Board sign-in: admins sign in on the kernel's admin listener and the kernel hands this origin its own session (kernel-auth.ts);
 // the board opens no accounts file.
 const accounts = createKernelAuth({ kernel: { url: kernelUrl, token: cfg.gateway.token }, adminUrl: cfg.accounts.adminUrl });
-// The runner's Engineer jobs, as it last reported them (shared by the listeners: it reports to the internal one).
-const activity: { runner?: RunnerReport } = {};
 // Open boards hear what agents change in their chats (watch.ts): one look at Paperclip every 2s while any board listens.
-startWatch({ pc: paperclip, events: store.events, records, log, runner: () => activity.runner, session: liveActivity(cfg.sessions) });
-const common = { grading, adminUrl: cfg.accounts.adminUrl, paperclip, store, log, staticDir: cfg.staticDir, timezone: cfg.timezone, workdays: cfg.workdays, slackTeams: cfg.slackTeams, lan: cfg.lan, activity, sessions: cfg.sessions, google, signIns, setupFlows: cfg.setupFlows, welcomeMarker: join(dirname(cfg.dbPath), "welcome-sent"), accounts, gateway: cfg.gateway, records, lane: process.env.CHAT_LANE_KEY_FILE ? { url: process.env.CHAT_LANE_URL ?? "http://lane:8089", token: readFileSync(process.env.CHAT_LANE_KEY_FILE, "utf8").trim() } : undefined };
+startWatch({ pc: paperclip, events: store.events, records, log, session: liveActivity(cfg.sessions) });
+const common = { grading, adminUrl: cfg.accounts.adminUrl, paperclip, store, log, staticDir: cfg.staticDir, timezone: cfg.timezone, workdays: cfg.workdays, slackTeams: cfg.slackTeams, lan: cfg.lan, sessions: cfg.sessions, google, signIns, setupFlows: cfg.setupFlows, welcomeMarker: join(dirname(cfg.dbPath), "welcome-sent"), accounts, gateway: cfg.gateway, records, work, lane: process.env.AIDENHQ_GRANTS_FILE ? { grantsFile: process.env.AIDENHQ_GRANTS_FILE } : undefined };
 // The board's https address (the front door) and phones on the home network; 3120 is the kernel's admin listener.
 const lan = createApp({ ...common, allowedHosts: cfg.lan.hosts, mode: "lan" });
 lan.listen(cfg.lan.port, "0.0.0.0", () => log.info({ port: cfg.lan.port, hosts: cfg.lan.hosts }, "LAN board listening"));
 
-// The tasks bridge and the runner: bearer token, /internal/ only. Not published beyond loopback.
-const internal = cfg.internal && createApp({ ...common, allowedHosts: cfg.internal.hosts, mode: "internal", internalToken: cfg.internal.token, reviewerKey: cfg.reviewerKey, operatorKey: cfg.operatorKey, gatewayKey: cfg.gateway?.token });
+// The tasks bridge and the kernel: bearer token, /internal/ only. Not published beyond loopback.
+const internal = cfg.internal && createApp({ ...common, allowedHosts: cfg.internal.hosts, mode: "internal", internalToken: cfg.internal.token, operatorKey: cfg.operatorKey, gatewayKey: cfg.gateway?.token });
 if (internal && cfg.internal) internal.listen(cfg.internal.port, "0.0.0.0", () => log.info({ port: cfg.internal!.port }, "internal API listening"));
 
 for (const sig of ["SIGTERM", "SIGINT"] as const) {

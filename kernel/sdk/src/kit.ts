@@ -29,7 +29,7 @@ export async function turn(moduleDir: string, decl: EngineDecl, { session, env =
   const spec: JobSpec = {
     contract: "engine@1", job: "kit-1", agent: "agent-kit", task: "task-kit", prompt: "Kit: answer ok.", ...(session ? { session } : {}),
     model: { base_url: "http://127.0.0.1:9/api/v1", token_env: "AIDENHQ_MODEL_TOKEN", id: "kit-model", effort: "" },
-    mcp: [], env: [], limits: { timeout_s: 60 }, web: true, state, sandbox: { kind: "bwrap", writable: [work], network: true },
+    mcp: [], env: [], limits: { timeout_s: 60 }, web: true, state, sandbox: { kind: "box", writable: [work], network: true },
   };
   writeFileSync(join(job, "job.json"), JSON.stringify(spec));
   try {

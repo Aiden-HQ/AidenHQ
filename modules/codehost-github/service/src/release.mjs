@@ -1,25 +1,12 @@
 // The release train (owner, 2026-11-18), moved from the runner (services/runner/src/release.mjs, deleted at the big switch):
-// pin bumps written by code, batched, and carded like any other write. Two targets,
-// each moved to its source's green tip once the batch window since the first unpinned merge has passed:
-// - `modules`: the product's modules-pin.json → the official modules repo's main (a product PR card that merges).
-// - `instance`: the instance's `product:` pin → the product repo's main, and its official marketplace → that commit's
-//   modules-pin.json (one apply card).
-// Each target has at most one bump in flight (its card filed) and one open (collecting merges, its task listing them), so two
-// bumps of one target never race. A bump files only at a tip CI passed on. A source tip already tried (applied, rejected or reverted) is never tried again: only a
-// newer merge starts the next bump. The service does the reads and writes; this file decides. No dependencies.
+// the instance's `product:` pin moved to the product repo's green main by code, batched, and carded like any other write
+// (one apply card). The official modules are the product's modules/, so the product pin carries them.
+// The train has at most one bump in flight (its card filed) and one open (collecting merges, its task listing them), so two
+// bumps never race. A bump files only at a tip CI passed on. A source tip already tried (applied, rejected or reverted) is
+// never tried again: only a newer merge starts the next bump. The service does the reads and writes; this file decides. No
+// dependencies.
 
 const SHA = /^[0-9a-f]{40}$/;
-
-/** A full commit sha, or undefined: a pin read from a repository's own files goes through this before git or an API path. */
-export const asSha = (x) => (typeof x === "string" && SHA.test(x) ? x : undefined);
-/** The commit a modules-pin.json text pins, or undefined for anything that isn't a full sha (`--output=…` included). */
-export function pinOf(text) {
-  try {
-    return asSha(JSON.parse(String(text ?? ""))?.sha);
-  } catch {
-    return undefined;
-  }
-}
 
 /**
  * One poll of one target, from what the service read: `tip` (the source's main) and `green` (its CI passed there), `pinned`
@@ -42,33 +29,23 @@ export function trainStep({ tip, green, pinned, lastTried, open, flight, now, wi
 }
 
 /**
- * instance.yaml with its `product:` pin and its official marketplace's sha moved, every other byte kept. Throws when either
- * line isn't there in the plain form (a `release:` instance, say), or when anything but those two values would change.
+ * instance.yaml with its `product:` pin moved, every other byte kept. Throws when that line isn't there in the plain form (a
+ * `release:` instance, say).
  */
-export function bumpInstance(text, { product, modules, official = "aidenhq" }) {
-  if (!SHA.test(product) || !SHA.test(modules)) throw new Error("a pin is a full commit sha");
+export function bumpInstance(text, { product }) {
+  if (!SHA.test(product)) throw new Error("a pin is a full commit sha");
   const lines = String(text).split("\n");
-  const at = (re, what) => {
-    const hits = lines.flatMap((l, i) => (re.test(l) ? [i] : []));
-    if (hits.length !== 1) throw new Error(`instance.yaml has ${hits.length} ${what} lines, not one`);
-    return hits[0];
-  };
-  const p = at(/^product:[ \t]*["']?[0-9a-f]{40}["']?[ \t]*(#.*)?$/, "`product: <sha>`");
-  lines[p] = lines[p].replace(/[0-9a-f]{40}/, product);
-  const m = at(new RegExp(`^\\s*-\\s*\\{.*\\bname:\\s*${official}\\b.*\\bsha:\\s*[0-9a-f]{40}.*\\}\\s*(#.*)?$`), `\`${official}\` marketplace`);
-  lines[m] = lines[m].replace(/\bsha:(\s*)[0-9a-f]{40}/, `sha:$1${modules}`);
-  // Only those two lines changed, each still a whole line of its own form (the patterns above match whole lines).
-  const before = String(text).split("\n");
-  if (lines.some((l, i) => l !== before[i] && i !== p && i !== m)) throw new Error("the edit changed more than the two pins");
-  const out = lines.join("\n");
-  return out;
+  const hits = lines.flatMap((l, i) => (/^product:[ \t]*["']?[0-9a-f]{40}["']?[ \t]*(#.*)?$/.test(l) ? [i] : []));
+  if (hits.length !== 1) throw new Error(`instance.yaml has ${hits.length} \`product: <sha>\` lines, not one`);
+  lines[hits[0]] = lines[hits[0]].replace(/[0-9a-f]{40}/, product);
+  return lines.join("\n");
 }
 
 /** The task's description: what the bump carries, one commit per line (full shas, so a waiter finds it by its merge commit). */
-export function trainDescription({ target, what, carries, windowMinutes, marker }) {
+export function trainDescription({ what, carries, windowMinutes, marker }) {
   const list = carries.length ? carries.map((c) => `- ${c.repo} \`${c.sha}\` ${c.subject}`).join("\n") : "- (nothing yet)";
   return [
-    `${what} Written by the code host's release train, batched over ${windowMinutes} minutes from the first merge it carries, then filed as one card for the AI reviewer. No agent works on this task; it closes when the bump is live${target === "instance" ? " (the apply succeeded)" : " (its PR merged)"}.`,
+    `${what} Written by the code host's release train, batched over ${windowMinutes} minutes from the first merge it carries, then filed as one card for the AI reviewer. No agent works on this task; it closes when the bump is live (the apply succeeded).`,
     "",
     "Carries these merged commits:",
     list,

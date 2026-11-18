@@ -5,7 +5,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { bridge } from "./helpers.mjs";
 
-const engineer = { id: "eng", name: "Engineer", metadata: { setupKey: "aidenhq:engineer-openrouter", persona: { name: "Linus" } }, status: "idle", runtimeConfig: { heartbeat: { wakeOnDemand: false, enabled: false } } };
+const engineer = { id: "eng", name: "Engineer", metadata: { setupKey: "aidenhq:engineer-openrouter", persona: { name: "Linus" }, runnerEngine: true }, status: "idle" };
 const handler = (req, res) => {
   let body = "";
   req.on("data", (d) => (body += d));

@@ -12,7 +12,6 @@ agents:
     # handbooks are what the other agents run on. Max can reason 60-90k tokens a turn: nothing in its path sets an output cap
     # (Codex and the gateway send none), and the longer timeout covers slow turns. A 90k-token turn costs about $0.05, so
     # the default $2 run cap allows about 40 of them.
-    adapter: codex_local
     model: ~deepseek/deepseek-flash-latest
     reasoning_effort: max
     timeout_sec: 3600
@@ -20,7 +19,7 @@ agents:
     # owner's tap (an approval record). It can't grant itself anything: its own grants live here, in the product.
     # Research (read access to every source, and the web): reads only, so it still changes nothing itself.
     connections:
-      telegram: [ notify_owner ]
+      owner_channel: [ notify ]
       # Explicit lists (tool-budget slimming, 2026-11-13): the research reads, not the plumbing (source cursors, sprints, board config).
       apps: [ app_list, app_status, app_logs, app_view, web_view, warehouse_query ]
       glean?: read

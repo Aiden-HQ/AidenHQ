@@ -12,11 +12,11 @@ test("a docs-only change selects nothing", () => {
   assert.deepEqual(suitesFor(map, ["docs/operations.md", "README.md", "kernel/README.md", "docs/img/flow.png"]), { all: false, names: [] });
 });
 
-test("a runner change selects the runner's jobs, not the board's alone", () => {
-  const { all, names } = suitesFor(map, ["services/runner/src/land.mjs"]);
+test("a kernel change selects the kernel's suites, not the board's alone", () => {
+  const { all, names } = suitesFor(map, ["kernel/src/writes.ts"]);
   assert.equal(all, false);
-  for (const n of ["services/runner", "services/runner#flows", "scripts"]) assert.ok(names.includes(n), n);
-  assert.deepEqual(suitesFor(map, ["services/runner/src/prompt.ts"]).names.includes("services/runner#flows"), false, "prompt text skips the flows");
+  for (const n of ["kernel", "scripts"]) assert.ok(names.includes(n), n);
+  assert.equal(names.includes("services/board"), false);
   assert.deepEqual(suitesFor(map, ["services/board/web/App.tsx"]).names, ["scripts", "services/board"]);
 });
 
@@ -30,7 +30,7 @@ test("an unknown path, CI itself or the map selects everything", () => {
 test("a rebased head re-runs only the suites main's new commits also touch", () => {
   const pr = ["services/board/web/App.tsx"];
   assert.deepEqual(reuse(map, pr, ["docs/x.md", "kernel/README.md"]), []);
-  assert.deepEqual(reuse(map, pr, ["services/runner/src/land.mjs"]), ["scripts", "services/board"]);
+  assert.deepEqual(reuse(map, pr, ["kernel/src/writes.ts"]), ["scripts"]);
   assert.deepEqual(reuse(map, pr, ["ops/x.sh"]), ["scripts", "services/board"], "an unknown gained path re-runs all of the PR's");
 });
 

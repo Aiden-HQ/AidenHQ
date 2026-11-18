@@ -112,7 +112,7 @@ describe("coach_evidence", () => {
       agent: { key: "a", name: "A", id: "a", status: "idle", createdAt: null, adapter: "codex_local", model: null },
       handbook: "h".repeat(LIMITS.handbook * 2),
       runs: Array.from({ length: 50 }, (_, n) => run(n)),
-      traces: Array.from({ length: 9 }, (_, n) => ({ run: `r${n}`, tools: [], failures: Array.from({ length: 30 }, () => ({ at: "t", name: "x", error: "y".repeat(2000) })), messages: [], usd: null, notes: [] })),
+      traces: Array.from({ length: 9 }, (_, n) => ({ run: `r${n}`, failures: Array.from({ length: 30 }, () => ({ at: "t", name: "x", error: "y".repeat(2000) })), messages: [], usd: null, notes: [] })),
       corrections: Array.from({ length: 20 }, () => ({ task: "WOR-1", title: "t", at: "t", text: "z".repeat(4000) })),
       window: { from: ago(168), to: ago(0) },
       runsScanned: 50,

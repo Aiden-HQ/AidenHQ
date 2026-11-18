@@ -61,19 +61,31 @@ async function host(t) {
   let boxes;
   const jobs = createJobs({ db, cfg, cp: {}, mayDispatch: () => false, log: () => {}, boxWrap: 'exec "$@"', onEnd: (id) => boxes.ended(id) });
   const jobTools = createJobTools({ db, secret: () => secret("gateway_job_secret"), engines: () => ["wait", "wait2"] });
-  const make = (now) => createBoxes({ db, cfg, jobs, cleanup: jobTools.cleanup, call: launcherClient(url, () => secret("launcher_kernel_key")), secret, whoami, connections: () => ({ slack: {}, tasks: {} }), handbook: (a) => (existsSync(join(dir, "config/handbooks", `${a}.md`)) ? readFileSync(join(dir, "config/handbooks", `${a}.md`), "utf8") : undefined), log: () => {}, ...(now ? { now } : {}) });
+  // The code host broker, faked: the task's text, a grant on acme/*, and clones that land, exist already or are refused.
+  const cloned = [];
+  const clones = {
+    text: async (task) => (task === "task-3" ? "Fix acme/widget (see https://github.com/acme/api/pull/4), not acme/28 or other/thing; acme/gone too." : "Say hello."),
+    may: (module, repo) => module === "acme-dispatch" && repo.startsWith("acme/"),
+    clone: async (module, repo, task) => {
+      cloned.push([module, repo, task]);
+      if (repo === "acme/api") throw Object.assign(new Error("PEN-3/api can't be made (EEXIST)"), { status: 409 });
+      if (repo === "acme/gone") throw Object.assign(new Error("acme/gone isn't on GitHub"), { status: 404 });
+      mkdirSync(join(cfg.workDir, "tasks", "PEN-3", repo.split("/")[1]), { recursive: true });
+    },
+  };
+  const make = (now) => createBoxes({ db, cfg, jobs, cleanup: jobTools.cleanup, clones, call: launcherClient(url, () => secret("launcher_kernel_key")), secret, whoami, connections: () => ({ slack: {}, tasks: {} }), handbook: (a) => (existsSync(join(dir, "config/handbooks", `${a}.md`)) ? readFileSync(join(dir, "config/handbooks", `${a}.md`), "utf8") : undefined), log: () => {}, ...(now ? { now } : {}) });
   boxes = make();
   const wakes = new Map();
   const admission = createAdmission({
-    provenance: { pending: () => false }, routineCap: async () => undefined, nextTurn: jobTools,
+    provenance: { settled: () => true }, routineCap: async () => undefined, nextTurn: jobTools,
     db, grants: () => grants, kinds: () => ({}), capacity: () => 12, spend: () => [], mayDispatch: () => true, log: () => {},
-    cp: { task: async (id) => ({ id, identifier: id === "task-1" ? "PEN-1" : "PEN-2", assigneeAgentId: "agent-1", status: "todo" }) },
+    cp: { task: async (id) => ({ id, identifier: `PEN-${id.split("-")[1]}`, assigneeAgentId: "agent-1", status: "todo" }) },
     wakes: { claimed: (_m, k) => wakes.get(k), bind: () => {}, unclaim: () => {} },
     launch: (job) => boxes.launch(job),
   });
   const admit = (task) => { wakes.set(task, { task, agent: "agent-1" }); return admission.admit("acme-dispatch", { wake: task, prompt: "hello" }); };
   const release = () => writeFileSync(join(cfg.logsDir, "release"), "");
-  return { dir, cfg, db, grants, calls, whoami, admit, release, make, jobTools };
+  return { dir, cfg, db, grants, calls, whoami, admit, release, make, jobTools, cloned };
 }
 
 test("admit → box → run: the kernel's key, the job token as the box's credential, the frozen tools in its config, the handbook home", async (t) => {
@@ -107,6 +119,20 @@ test("admit → box → run: the kernel's key, the job token as the box's creden
   assert.equal(h.calls.filter((c) => c.route === "/job/release").length, 2);
   await assert.rejects(h.whoami(acquire.body.token), /ended/);
   assert.ok(other.id);
+});
+
+test("an engineer job starts in its task's clones: the named repos its dispatcher may clone, one already there kept, a refusal told", async (t) => {
+  const h = await host(t);
+  h.grants["agent-1"].profile = "engineer";
+  const job = await h.admit("task-3");
+  assert.equal(job.state, "running");
+  assert.deepEqual(h.cloned, [["acme-dispatch", "acme/widget", "task-3"], ["acme-dispatch", "acme/api", "task-3"], ["acme-dispatch", "acme/gone", "task-3"]]);
+  assert.equal(existsSync(join(h.cfg.workDir, "tasks", "PEN-3", "widget")), true);
+  const spec = JSON.parse(readFileSync(join(h.db.prepare("SELECT dir FROM jobs WHERE id = ?").get(job.id).dir, "job.json"), "utf8"));
+  assert.match(spec.prompt, /^\(Kernel note: `acme\/gone` is named in the task but couldn't be cloned/);
+  assert.equal(h.calls.find((c) => c.route === "/job").body.image, "engineer");
+  h.release();
+  await until("the box released", () => h.db.prepare("SELECT released FROM jobs WHERE id = ?").get(job.id).released > 0);
 });
 
 test("a job's next-turn requests: the next admission runs the engine and model it asked for, fresh; its workspace goes when it ends; a model the agent may not use is ignored", async (t) => {

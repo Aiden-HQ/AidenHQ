@@ -18,9 +18,9 @@ const ENGINES: Engine[] = ["codex", "codex-openrouter", "claude", "openrouter"];
 export const engineOf = (a: { adapterType?: string; metadata?: { engine?: unknown } | null }): Engine | undefined =>
   ENGINES.includes(a.metadata?.engine as Engine) ? (a.metadata!.engine as Engine) : ADAPTER_ENGINE[a.adapterType ?? ""];
 /** The same for an agent in the compiled config (module.yaml fields). */
-export const compiledEngine = (a: { adapter?: string; engine?: string }): Engine | undefined => engineOf({ adapterType: a.adapter, metadata: { engine: a.engine } });
+export const compiledEngine = (a: { engine?: string }): Engine | undefined => engineOf({ metadata: { engine: a.engine } });
 export const openrouterEngine = (e: Engine | undefined) => e === "openrouter" || e === "codex-openrouter";
-// Where the runner reads the task's effort override (each engine module's effort_key, read by services/runner/src/agents.mjs).
+// Where the task's effort override is read (each engine module's effort_key).
 const EFFORT_KEY: Record<Engine, string> = { codex: "modelReasoningEffort", "codex-openrouter": "modelReasoningEffort", openrouter: "modelReasoningEffort", claude: "effort" };
 // The efforts each engine takes. opencode's are its model variants: a model without them ignores the setting.
 export const EFFORTS: Record<Engine, string[]> = {
@@ -120,7 +120,7 @@ export interface Card {
   carried?: number;
   /** Set on recurring tasks: the rule in words and the next run. */
   recurring?: { summary: string; nextRun: string | null; paused: boolean };
-  /** An agent is working on it now, or the runner has it queued. */
+  /** An agent is working on it now, or has it queued. */
   working?: { agent: string; since: string | null; queued: boolean };
   /** The agents on the task: its own agent, and those working in its sub-tasks. */
   crew?: CrewMember[];
@@ -154,7 +154,7 @@ export interface BoardInput {
   recurring?: Map<string, NonNullable<Card["recurring"]>>;
   installedAt: string;
   assignees: Assignee[];
-  /** Activity and runner results for the crew on each card; without it, cards have no crew. */
+  /** Activity for the crew on each card; without it, cards have no crew. */
   crew?: Omit<CrewInput, "assignees" | "seen">;
 }
 
@@ -254,7 +254,7 @@ export function commentView(c: Comment, me: string, agents: Agent[]): CommentVie
 export function replyTarget(issue: Issue, list: Assignee[]): string {
   const labels = new Set((issue.labels ?? []).map((l) => l.name));
   const a = list.find((x) => x.key === issue.assigneeAgentId);
-  if (a?.kind === "engineer" || labels.has("engineer")) return "The runner reads replies here and starts or continues the coding job.";
+  if (a?.kind === "engineer" || labels.has("engineer")) return "The Engineer reads replies here and continues the coding job.";
   if (labels.has("needs-review")) return "AidenHQ applies review replies here (pick N, ignore).";
   if (a?.kind === "assistant") return "The Researcher is working on this and reads replies.";
   return "The Researcher picks up replies here after about 90 seconds.";

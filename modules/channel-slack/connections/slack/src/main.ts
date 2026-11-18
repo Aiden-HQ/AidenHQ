@@ -1,7 +1,8 @@
 // channel-slack: the instance's Slack app. The ONE Socket Mode consumer for its app token (two consumers split the events):
 // live events buffered for triage (slack_pending_events) with a debounced webhook poke, every event teed to src_slack with a
-// gap sync, and the owner's own messages in their command channel sent to the kernel as owner chat. notify_owner here is a
-// Slack DM to the owner; slack_post is the write kind channel-slack.post (post.ts, the executor). No control-plane key.
+// gap sync, and the owner's own messages in their command channel sent to the kernel as owner chat. It is a transport of the
+// owner's router (owner-channel): the kernel sends it one owner message at a time as a Slack DM (POST /transport/send,
+// send.ts). slack_post is the write kind channel-slack.post (post.ts, the executor). No control-plane key.
 import { createHmac, timingSafeEqual } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { createServer, type IncomingMessage } from "node:http";
@@ -13,7 +14,7 @@ import { poster } from "./post.js";
 import { startSocket } from "./socket.js";
 import { createPairing, handlePairingDm } from "./pair.js";
 import { openStore } from "./store.js";
-import { postMessage, relayOutbox, type NotifyConfig } from "./urgent.js";
+import { postMessage, transportSend, type SlackConfig } from "./send.js";
 import { kernelJwks, verifyCaller } from "./aidenhq-sdk/caller.js";
 import { serveExecutor } from "./aidenhq-sdk/executor.js";
 import { SourceStore } from "./source-store.js";
@@ -47,12 +48,9 @@ const store = openStore(process.env.SLACK_LIVE_DB ?? "/data/slack-live.sqlite");
 const pairing = createPairing(store.db);
 if (pairing.seed(env("OWNER_SLACK_USER_ID"), process.env.OWNER_COMMAND_CHANNEL ?? "")) log.info("owner seeded from env");
 const pairToken = env("PAIR_TOKEN");
-const cfg: NotifyConfig = {
-  botToken: env("SLACK_BOT_TOKEN"),
-  ownerId: pairing.owner()?.user ?? "",
-  cooldownMs: Number(process.env.URGENT_COOLDOWN_MIN ?? 60) * 60_000,
-  brake: (task, agent, decision) => kernel("/v1/brake/notify", { task, agent, ...(decision ? { decision: true } : {}) }),
-};
+const cfg: SlackConfig = { botToken: env("SLACK_BOT_TOKEN"), ownerId: pairing.owner()?.user ?? "" };
+// The kernel's bearer on /transport/send: this module's own token.
+const channelToken = env("CHANNEL_TOKEN");
 const ignored = new Set((process.env.IGNORE_CHANNELS ?? "").split(",").map((s) => s.trim()).filter(Boolean));
 // channel-slack.post's executor (executor@1): the kernel calls it with the service key; execute only for an approved record.
 const post = poster(store, { botToken: cfg.botToken, allowed: new Set((process.env.SLACK_POST_CHANNELS ?? "").split(",").map((s) => s.trim()).filter(Boolean)) });
@@ -114,6 +112,22 @@ const http = createServer(async (req, res) => {
     return void res.writeHead(405).end();
   }
   if (await executor(req, res)) return;
+  if (url.pathname === "/transport/send") {
+    const presented = Buffer.from((req.headers.authorization ?? "").replace(/^Bearer\s+/i, ""));
+    const expected = Buffer.from(channelToken);
+    if (!channelToken || presented.length !== expected.length || !timingSafeEqual(presented, expected)) return void res.writeHead(401).end();
+    if (req.method !== "POST") return void res.writeHead(405).end();
+    const chunks: Buffer[] = [];
+    for await (const c of req) chunks.push(c as Buffer);
+    try {
+      const m = JSON.parse(Buffer.concat(chunks).toString("utf8") || "{}");
+      if (typeof m.text !== "string" || !m.text) return void res.writeHead(400).end();
+      return void res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify(await transportSend(cfg, m)));
+    } catch (err) {
+      log.error({ err: (err as Error).message }, "transport send failed");
+      return void res.writeHead(500).end();
+    }
+  }
   if (url.pathname !== "/mcp") return void res.writeHead(404).end();
   if (!authorized(req)) return void res.writeHead(401).end();
   if (req.method !== "POST") return void res.writeHead(405).end();
@@ -134,8 +148,7 @@ const http = createServer(async (req, res) => {
         return void res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify(Array.isArray(body) ? msgs.map(refusal) : refusal(msgs[0]!)));
       }
     }
-    // An agent in trial ("draft, don't do") reaches the owner and nothing that points elsewhere (the kernel's role mark).
-    const server = buildServer(store, cfg, caller && { id: caller.agent, name: caller.name, key: caller.key }, Boolean(caller?.roles.includes("kernel.trial")));
+    const server = buildServer(store, cfg, caller && { key: caller.key });
     const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined, enableJsonResponse: true });
     res.on("close", () => {
       void transport.close();
@@ -164,14 +177,6 @@ const tee = sources ? slackTee(sources, log) : undefined;
 const userToken = env("SLACK_USER_TOKEN");
 if (sources && userToken) startGapSync(sources, userToken, log);
 else log.warn(sources ? "SLACK_USER_TOKEN not set; src_slack gets live events only (no gap sync)" : "warehouse not configured; src_slack is off");
-
-// Normal owner messages from channel-telegram's notify_owner, as Slack DMs; a failed one goes back to Telegram.
-const drain = async () => {
-  const res = await fetch(`${kernelUrl}/v1/channel/outbox`, { headers: { authorization: `Bearer ${inboundToken}` }, signal: AbortSignal.timeout(30_000) });
-  if (!res.ok) throw new Error(`GET /v1/channel/outbox -> ${res.status}`);
-  return (((await res.json()) as { messages?: { text: string }[] }).messages ?? []);
-};
-setInterval(() => void relayOutbox(cfg, drain, (text) => kernel("/v1/channel/outbox", { to: "channel-telegram", text })).catch((err) => log.warn({ err: String(err) }, "owner DM relay failed")), 5_000).unref();
 
 // Channel binding: the owner's /aiden commands (a kernel record each) and @mentions in bound channels (a task each).
 const slackApi = (method: string, body: unknown) => fetch(`https://slack.com/api/${method}`, { method: "POST", headers: { authorization: `Bearer ${cfg.botToken}`, "content-type": "application/json; charset=utf-8" }, body: JSON.stringify(body) });

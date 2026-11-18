@@ -12,15 +12,15 @@ import { handbook, history } from "./agent-handbook.js";
 import { PauseSchema, setAgentPaused } from "./agent-pause.js";
 import { HISTORY_PAGE, agentByKey, agentProfile, historyPage, splitTasks } from "./agent-page.js";
 import { liveActivity, type SessionSources } from "./live-activity.js";
-import { makeRuns } from "./runs.js";
-import { RunnerReportSchema, agentsView, roster, runTasks, workingOn, type RunContext, type RunnerReport, type TaskRef, type Working } from "./activity.js";
-import { RecurringSchema, RunStateSchema, ScheduleSchema, changeRecurring, claimDue, recurringView, scheduleMove } from "./automation.js";
+import { makeRuns, type Work } from "./runs.js";
+import { agentsView, roster, runTasks, workingOn, type RunContext, type TaskRef, type Working } from "./activity.js";
+import { RecurringSchema, ScheduleSchema, changeRecurring, recurringView, scheduleMove } from "./automation.js";
 import { AddAgentSchema, BadRequest, CreateSchema, HandOverSchema, PassSchema, RUNNER_MARKER, hasMarker, UpdateSchema, assignees, buildBoard, commentView, displayText, executorOf, openrouterEngine, paperclipUpdate, replyTarget, toCard, type Assignee } from "./board.js";
 import { FOR_OTHERS, RELAY_MARKER, crewOf, deliveredFrom, deliveredText, foldedChildren, fromMarker, handOverText, mentionedAgents, withHandle, partsToClose, summaryOf, waitsOnItsOwn, type DeliveredFrom } from "./crew.js";
 import { AccountError, forwardedProto, type AccountSession, type KernelAuth } from "./kernel-auth.js";
 import { INLINE_TYPES, MAX_UPLOAD_BODY, UploadSchema, decode, fileType, fileViews, isPdf, pdfText, safeName } from "./files.js";
 import { ControlSchema, CostsSchema, RelaySchema, Refused, holdsRole, appsApi, assertMeantTask, boundedFleetStatus, fleetControl, fleetCosts, fleetStatus, relayableWords, requireAgent, requireFleetRole } from "./fleet.js";
-import { detectorState, kickDetector, queueOwnerLine, staleSources, takeOwnerLines } from "./fleet-ops.js";
+import { detectorState, kickDetector, staleSources } from "./fleet-ops.js";
 import { AlertsSchema, metricsText, receiveAlerts } from "./monitoring.js";
 import { kernelRecords, type Approval, type Records } from "./records.js";
 import { wakeCheck } from "./brake.js";
@@ -31,7 +31,7 @@ import { CommitUnreadable, agentGrants, browseModules, createResolver, marketpla
 import { connectionsView, probe, readSources, readUpdates, settingsView, type Probe } from "./settings.js";
 import { ChangeRefused, ChangesSchema, SETTINGS_LABEL, changesOf, checkChange, stageOf, taskFor, type Change } from "./settings-change.js";
 import { createGrading, gradePassed, type Grading } from "./grading.js";
-import { UsageSchema, WINDOWS, costs, keyUsage, prices, spendToday, type CostWindow } from "./costs.js";
+import { UsageSchema, keyUsage, prices, spendSummary } from "./costs.js";
 import { ledgerRange, ledgerSummary, ledgerTop } from "./cost-ledger.js";
 import { descendants, featureCost, recentFeatures } from "./feature-cost.js";
 import { MergeSchema, mergedDescription } from "./merge.js";
@@ -44,7 +44,6 @@ import { GoogleAuthFailed, loopbackPort, type GoogleAuth } from "./google.js";
 import { OPEN, Paperclip, PaperclipError, actingAccount, type Agent, type Comment, type Issue, type Label, type LiveRun } from "./paperclip.js";
 import { accountSession, type BoardSession, type SessionOf } from "./session.js";
 import { laneAgents, laneMessages, laneSend, type LaneOptions } from "./lane.js";
-import { latest, successorOf } from "./rollover.js";
 import { NOTICE_MARKER, asksOwner, chatAgent, chatAgentMarker, chatState, conversation, lastWord, needsYou, openAsk, pickAgent, shownState, type Message } from "./chats.js";
 import { addDays, nextWorkday, type Weekday } from "./recurrence.js";
 import { BUCKETS, isBucket, localDate, type Store } from "./store.js";
@@ -72,7 +71,7 @@ export interface AppOptions {
   slackTeams?: Record<string, string>;
   /**
    * "lan": the board's https address and home network (3121), a signed-in admin on every API route (admins sign in on the
-   * kernel's admin listener, 3120). "internal": the tasks bridge, the runner and the kernel, with a bearer token, /internal/ only.
+   * kernel's admin listener, 3120). "internal": the tasks bridge and the kernel, with a bearer token, /internal/ only.
    */
   mode?: "lan" | "internal";
   /** GitHub's REST API for a marketplace's newest pinnable commit (tests: a fake). */
@@ -82,10 +81,8 @@ export interface AppOptions {
   /** googleConnect: Google's Connect from the board's https address `url` (a Web-app OAuth client, ops/setup.sh). */
   lan?: { url: string; googleConnect?: boolean };
   internalToken?: string;
-  /** The fast chat lane (slack-live-mcp /lane); without it the lane routes answer empty. */
+  /** The fast chat lane: its agents and their chat tasks, from the grants table; without it the lane routes answer empty. */
   lane?: LaneOptions;
-  /** Shared by the listeners: the runner reports to the internal one, the board reads it on the others. */
-  activity?: { runner?: RunnerReport };
   /** Where a Codex agent's session log is (see live-activity.ts): without it, a working agent shows no steps. */
   sessions?: SessionSources;
   /** Google sign-in state and re-consent; no banner and no reconnect without it. */
@@ -98,8 +95,6 @@ export interface AppOptions {
   welcomeMarker?: string;
   /** The grading module's client (grading.ts); default: built from GRADING_URL and GRADING_BOARD_KEY_FILE. */
   grading?: Grading;
-  /** "internal" mode: the runner's key (secret reviewer_key): its routes (grades, usage, jobs), never agents'. */
-  reviewerKey?: string;
   /**
    * "internal" mode: the kernel's key (secret gateway_board_key, x-gateway-key; held only by the kernel and the board): the model
    * gateway files raise_cap, and channels reach the owner's cards, decisions and notices only through the kernel (lean-core 2f).
@@ -109,6 +104,8 @@ export interface AppOptions {
   gateway?: { url: string; token: string };
   /** The kernel's records, read-only (records.ts): the cards every view shows. Without it, there are none. */
   records?: Records;
+  /** The kernel's jobs (runs.ts kernelWork): the run pages and a task's run links. Without it, there are none. */
+  work?: Work;
   /**
    * The operator's key (secret board_operator_key, x-operator-key), for ops/setup.sh only, on "internal": the owner's setup
    * link, the welcome chat and an account reset. Nothing else.
@@ -248,18 +245,19 @@ export function createApp(opts: AppOptions): Server {
   const cardsOf = async (state: Parameters<Records["list"]>[0], opt?: Parameters<Records["list"]>[1]) => Promise.all((await records.list(state, opt)).map(named));
 
   const sessionOf = liveActivity(opts.sessions);
-  const runOf = makeRuns({ pc, store, sessionsDir: opts.sessions?.dir, grantsFile: process.env.AIDENHQ_GRANTS_FILE });
-  /** The newest runs on a task, for the links to their run pages. */
-  const runLinks = (past: { id: string; agentId: string; status: string; issueId: string | null; startedAt: string | null }[], issueId: string, agents: Agent[]) =>
-    past.filter((r) => r.issueId === issueId).slice(0, 6).map((r) => ({ id: r.id, agent: agents.find((a) => a.id === r.agentId)?.name ?? "Agent", status: r.status, at: r.startedAt }));
+  const work = opts.work ?? { job: async () => null, task: async () => [] };
+  const runOf = makeRuns({ work, store, grantsFile: process.env.AIDENHQ_GRANTS_FILE });
+  /** The newest runs (kernel jobs) on a task, for the links to their run pages. */
+  const runLinks = async (issueId: string, agents: Agent[]) =>
+    (await work.task(issueId).catch(() => [])).slice(0, 6).map((j) => ({ id: j.id, agent: agents.find((a) => a.id === j.agent)?.name ?? "Agent", status: j.state, at: j.started_at }));
   /** A run's page data with the names of its agent and task. */
   async function runView(id: string) {
     const run = await runOf(id);
-    if (!run) throw new HttpError(404, "Paperclip no longer has this run (pruned), or it isn't this company's");
+    if (!run) throw new HttpError(404, "the kernel has no such run");
     const [agents, issue] = await Promise.all([pc.agents(), run.issueId ? pc.issueSummary(run.issueId).catch(() => undefined) : undefined]);
     return { ...run, agent: agents.find((a) => a.id === run.agentId)?.name ?? "Agent", issue: issue ? { identifier: issue.identifier, title: issue.title } : null };
   }
-  /** A Paperclip-run Codex agent's live words, plan and steps from its session log, on top of what Paperclip says. Runner jobs report their own. */
+  /** A Paperclip-run Codex agent's live words, plan and steps from its session log, on top of what Paperclip says. */
   async function withSession(w: Working | null | undefined, live: LiveRun[], issueId: string, full: boolean): Promise<Working | null> {
     const run = w && !w.queued && !w.plan ? live.find((r) => r.issueId === issueId && r.status === "running") : undefined;
     const a = run && (await sessionOf(run.agentId, run.startedAt ?? run.createdAt));
@@ -294,15 +292,6 @@ export function createApp(opts: AppOptions): Server {
 
   const isChat = (i: Issue, ctx: { labels: Label[] }) => Boolean(i.labels?.some((l) => l.name === "chat") || i.labelIds?.some((id) => ctx.labels.find((l) => l.id === id)?.name === "chat"));
 
-  /**
-   * The runner's own key (secret reviewer_key: held only by the runner and the board, never by agents, which can reach the
-   * internal token): its routes (grades, usage, jobs).
-   */
-  const runnerKeyed = (req: IncomingMessage) => Boolean(opts.reviewerKey && keyMatches(req.headers["x-reviewer-key"], opts.reviewerKey));
-  /** The internal token alone opens nothing: every route also names its caller (agents can read the token in their shell). */
-  function requireRunner(req: IncomingMessage, what: string) {
-    if (!runnerKeyed(req)) throw new HttpError(403, `only the runner ${what}`);
-  }
   /** The operator's key (ops/setup.sh), on the internal listener only; it never decides or opens a session. */
   function requireOperator(req: IncomingMessage, what: string) {
     if (!opts.operatorKey || !keyMatches(req.headers["x-operator-key"], opts.operatorKey)) throw new HttpError(403, `only the operator ${what}`);
@@ -344,9 +333,7 @@ export function createApp(opts: AppOptions): Server {
     return ctx.labels.find((l) => l.name === name) ?? (await pc.createLabel(name, color));
   }
 
-  // Agent activity (Paperclip runs and the runner's jobs). The runner reports through the internal API.
-  const shared = opts.activity ?? {};
-
+  // Agent activity (Paperclip runs).
   /** The task a run is attached to, and the user's tasks it works on. */
   async function runContext(issueId: string | null, prefix: string): Promise<RunContext> {
     if (!issueId) return { run: null, tasks: [] };
@@ -354,7 +341,7 @@ export function createApp(opts: AppOptions): Server {
     if (!issue) return { run: null, tasks: [] };
     const tasks = runTasks(issue, prefix);
     await titled(tasks);
-    return { run: { identifier: issue.identifier, title: issue.title }, tasks, assigneeAgentId: issue.assigneeAgentId };
+    return { run: { identifier: issue.identifier, title: issue.title }, tasks };
   }
 
   /** Names the tasks that carry only an identifier, looked up at once. */
@@ -364,8 +351,7 @@ export function createApp(opts: AppOptions): Server {
     // The roster never fails the page: without routines or run history, cards just show less. Started alongside the runs.
     const rosterParts = withPast ? Promise.all([pc.routines().catch(() => []), pc.lastRuns().catch(() => new Map())]) : undefined;
     const [live, past] = await Promise.all([pc.liveRuns(), withPast ? pc.recentRuns(30) : Promise.resolve([])]);
-    const view = await agentsView({ live, past, runner: shared.runner, agents: ctx.agents, resolve: (id) => runContext(id, ctx.prefix) });
-    // Runner jobs report only their identifier; the Crew view names the task.
+    const view = await agentsView({ live, past, agents: ctx.agents, resolve: (id) => runContext(id, ctx.prefix) });
     if (!rosterParts) return view;
     await titled([...view.sessions, ...view.finished].flatMap((x) => x.tasks));
     const [routines, last] = await rosterParts;
@@ -457,22 +443,6 @@ export function createApp(opts: AppOptions): Server {
     return part;
   }
 
-  /**
-   * Paperclip wakes a task's agent on the owner's comment, except while the task carries a recovery hold: then the wake
-   * is parked until the hold clears, and some never do (a run it cancels before starting leaves no stop record, so every
-   * later message waits forever). A held task's agent is woken without the task (a task-scoped wake is parked too); it
-   * finds the message among its open tasks.
-   */
-  async function wakeIfHeld(issueId: string, commentId: string) {
-    const now = await pc.issue(issueId).catch(() => undefined);
-    if (!now?.assigneeAgentId || !now.executionBlocker) return;
-    const reason = `The owner wrote on ${now.identifier}, and Paperclip is holding that task's own wake (${now.executionBlocker.cause}). Read the newest comments on ${now.identifier} and reply there.`;
-    await pc.wakeAgent(now.assigneeAgentId, reason, `board-held-comment:${commentId}`).then(
-      () => log.warn({ issue: now.identifier, cause: now.executionBlocker!.cause }, "task wake held by Paperclip; woke its agent directly"),
-      (err) => log.warn({ issue: now.identifier, err: String(err) }, "couldn't wake the agent of a held task"),
-    );
-  }
-
   /** The user's task a chat belongs to: the task itself, or the task an agent's part is part of. */
   async function userTaskOf(issue: Issue, ctx: Awaited<ReturnType<typeof context>>): Promise<Issue | undefined> {
     if (issue.assigneeUserId === ctx.me && !issue.assigneeAgentId) return issue;
@@ -499,7 +469,7 @@ export function createApp(opts: AppOptions): Server {
 
   async function issueView(ref: string) {
     const { ctx, issue, assigned } = await ownIssue(ref);
-    const [comments, busy, files, parent, kids, names, past] = await Promise.all([
+    const [comments, busy, files, parent, kids, names, runs] = await Promise.all([
       pc.comments(issue.id),
       working(ctx),
       pc.attachments(issue.id).catch(() => []),
@@ -507,9 +477,9 @@ export function createApp(opts: AppOptions): Server {
       // The crew works in sub-tasks of the user's task.
       issue.assigneeUserId === ctx.me ? pc.children(issue.id).catch(() => []) : Promise.resolve([] as Issue[]),
       bylines(),
-      pc.recentRuns(100).catch(() => []),
+      runLinks(issue.id, ctx.agents),
     ]);
-    const crew = crewOf(issue, kids, { assignees: ctx.assignees, seen: (id) => store.seenAt(id), working: busy.map, jobs: latestJobs(shared.runner) });
+    const crew = crewOf(issue, kids, { assignees: ctx.assignees, seen: (id) => store.seenAt(id), working: busy.map });
     // Each crew member's latest word, when there's one issue to read it from (a fan-out shows its count instead):
     // what it says while working, else its last comment.
     const said = Object.fromEntries(
@@ -544,7 +514,7 @@ export function createApp(opts: AppOptions): Server {
       // An agent's sub-task links back to the task it works on.
       parent: parent ? { identifier: parent.identifier, title: parent.title } : null,
       crew: crew.map((m) => ({ ...m, said: said[m.agent] ?? null })),
-      runs: runLinks(past, issue.id, ctx.agents),
+      runs,
     };
   }
 
@@ -631,7 +601,7 @@ export function createApp(opts: AppOptions): Server {
           }),
       ),
       parent: parent ? { identifier: parent.identifier, title: parent.title } : null,
-      runs: runLinks(runs, issue.id, ctx.agents),
+      runs: await runLinks(issue.id, ctx.agents),
       asks: asks.map(({ task, ask }) => ({ ...ask, identifier: task.identifier, agent: agentOf(task.assigneeAgentId)?.name ?? "Agent" })),
     };
   }
@@ -733,7 +703,7 @@ export function createApp(opts: AppOptions): Server {
     const [comments, kids] = await Promise.all([pc.comments(issue.id), pc.children(issue.id).catch(() => [] as Issue[])]);
     const name = (id: string | null | undefined) => ctx.agents.find((a) => a.id === id)?.name ?? "Agent";
     const front = ctx.agents.find((a) => a.metadata?.setupKey === "aidenhq:chief-of-staff") ?? ctx.agents[0];
-    const model = String(front?.adapterConfig?.model ?? "~deepseek/deepseek-flash-latest").replace(/^openrouter\//, "");
+    const model = String(front?.metadata?.model ?? "~deepseek/deepseek-flash-latest").replace(/^openrouter\//, "");
     const prompt = asideMessages(
       {
         issue,
@@ -911,7 +881,6 @@ export function createApp(opts: AppOptions): Server {
             store.delMeta(key);
             throw err;
           }
-          await wakeIfHeld(dest.id, posted.id);
           log.info({ chat: source.chat.identifier, task: dest.identifier }, "chat message relayed");
           return { relayed: true, task: dest.identifier, to: agent.persona?.name ?? agent.name, comment_id: posted.id };
         }),
@@ -942,16 +911,6 @@ export function createApp(opts: AppOptions): Server {
         }),
     },
     {
-      // Where a message to a task the board moved to a successor goes (rollover.ts): read-only, from the board's own record.
-      // Only the kernel asks, before it delivers a channel's message to the owner's chat.
-      method: "GET",
-      path: /^\/internal\/successor\/([A-Za-z0-9_-]+)$/,
-      handle: async (m, _b, _u, req) => {
-        if (!kernelKeyed(req)) throw new HttpError(403, "only the kernel asks where a chat continues");
-        return { id: successorOf(store, m[1]!) ?? null };
-      },
-    },
-    {
       // Every card on one task, any state, read from the kernel's records (an agent's task_approvals through the tasks bridge; no args).
       method: "GET",
       path: /^\/internal\/approvals$/,
@@ -961,69 +920,6 @@ export function createApp(opts: AppOptions): Server {
         await requireAgentTool(req, "task_approvals");
         const task = await pc.issue(issue).then((i) => i.id, () => undefined);
         return { approvals: task ? (await cardsOf("recent", { task, limit: 50 })).map(approvalView) : [] };
-      },
-    },
-    {
-      // An app deliverable's evidence for the runner's grader: apps-mcp's status of that app (deployed SHA, health, incident).
-      method: "GET",
-      path: /^\/internal\/grades\/app\/([a-z0-9-]{1,63})$/,
-      handle: async (m, _b, _u, req) => {
-        requireRunner(req, "reads app evidence");
-        const apps = await appsApi<{ name: string }[]>("/internal/status");
-        return { app: apps.find((a) => a.name === m[1]) ?? null };
-      },
-    },
-    {
-      // A pr deliverable on an app's repo: that app's status too, so the grader can check "deployed at the merged commit".
-      method: "GET",
-      path: /^\/internal\/grades\/app-of\/([\w.-]+\/[\w.-]+)$/,
-      handle: async (m, _b, _u, req) => {
-        requireRunner(req, "reads app evidence");
-        const apps = await appsApi<{ name: string; repo?: string }[]>("/internal/status");
-        const same = apps.filter((a) => a.repo?.toLowerCase() === decodeURIComponent(m[1]!).toLowerCase());
-        return { app: same.length === 1 ? same[0]! : null }; // several apps in one repo: no single app to vouch for the PR
-      },
-    },
-    {
-      // Every deploy of one exact commit over the app's whole deploy table, for the grader's "deployed at the merged commit":
-      // the status row's list is bounded, so a commit it has moved past is looked up here instead of read as undeployed.
-      method: "GET",
-      path: /^\/internal\/grades\/deploys\/([a-z0-9-]{1,63})\/([0-9a-f]{40})$/,
-      handle: async (m, _b, _u, req) => {
-        requireRunner(req, "reads app deploy history");
-        return appsApi<{ deploys?: unknown[] }>(`/internal/deploys/${m[1]}/${m[2]}`, undefined, { auth: true }).then((r) => ({ deploys: r.deploys ?? [] }));
-      },
-    },
-    {
-      // The grader's live view of one page of a deployed app (apps-mcp graderView): rendered text plus the running commit
-      // before and after. A POST for the long timeout: one render can take up to 45 s.
-      method: "POST",
-      path: /^\/internal\/grades\/view$/,
-      handle: async (_m, body, _u, req) => {
-        requireRunner(req, "captures live app views");
-        const v = parse(z.object({ name: z.string().regex(/^[a-z0-9-]{1,63}$/), path: z.string().max(500) }).strict(), body);
-        return appsApi("/internal/view", v, { timeoutMs: 55_000 });
-      },
-    },
-    {
-      // The owner's one-line notices (critical monitoring alerts, a paused routine, Fleet Ops unreachable), each handed over
-      // once (to a channel, through the kernel). Escalated grades are not here: they go to the task's delegator (wake.ts).
-      method: "GET",
-      path: /^\/internal\/owner\/grades$/,
-      handle: async (_m, _b, _u, req) => {
-        if (!kernelKeyed(req)) throw new HttpError(403, "only the kernel collects owner notices");
-        return { lines: takeOwnerLines(store) };
-      },
-    },
-    {
-      // The runner's one-line notice for the owner (a stop or a decision on an agent's task whose asker is gone): queued with
-      // the others above, for the next channel that collects them.
-      method: "POST",
-      path: /^\/internal\/owner\/line$/,
-      handle: async (_m, body, _u, req) => {
-        requireRunner(req, "queues owner notices");
-        queueOwnerLine(store, parse(z.object({ text: z.string().trim().min(1).max(1000) }).strict(), body).text);
-        return { queued: true };
       },
     },
     {
@@ -1041,34 +937,13 @@ export function createApp(opts: AppOptions): Server {
     { method: "POST", path: /^\/internal\/issues\/([^/]+)\/recurring$/, handle: async (m, body, _u, req) => (await requireAgentTool(req, "task_recurring", "board-writer"), await refuseMemoryInbox(decodeURIComponent(m[1]!)), recurringChange(decodeURIComponent(m[1]!), body)) },
     { method: "POST", path: /^\/internal\/issues\/([^/]+)\/merge$/, handle: async (m, body, _u, req) => (await requireAgentTool(req, "task_merge", "board-writer"), await refuseMemoryInbox(decodeURIComponent(m[1]!), parse(MergeSchema, body).into), merge(decodeURIComponent(m[1]!), body)) },
     {
-      method: "POST",
-      path: /^\/internal\/recurring\/claim$/,
-      handle: async (_m, _b, _u, req) => {
-        requireRunner(req, "claims recurring runs");
-        const ctx = await context();
-        // Each run is created by the client of the account that set the task recurring (null: the owner).
-        return { runs: await claimDue(pc, store, ctx, opts.timezone, log) };
-      },
-    },
-    {
-      method: "POST",
-      path: /^\/internal\/recurring\/runs\/([0-9a-f-]{36})\/(\d{4}-\d{2}-\d{2}T\d{2}:\d{2})$/,
-      handle: async (m, body, _u, req) => {
-        requireRunner(req, "reports recurring runs");
-        const { state } = parse(RunStateSchema, body);
-        if (!store.setRunState(m[1]!, m[2]!, state)) throw new HttpError(404, "no such run");
-        log.info({ definition: m[1], occurrence: m[2], state }, "recurring run updated");
-        return { ok: true };
-      },
-    },
-    {
       // An agent passes one of the user's messages on to another agent on the same task. Only the
       // user's own comment travels, word for word: the agent picks which one and for whom, never the words.
       method: "POST",
       path: /^\/internal\/issues\/([^/]+)\/pass$/,
-      // The runner (an Engineer's `aidenhq pass`) or the Researcher through the tasks bridge.
+      // The Researcher through the tasks bridge.
       handle: async (m, body, _u, req) => {
-        if (!runnerKeyed(req)) await requireAgentTool(req, "task_pass_on", "board-writer");
+        await requireAgentTool(req, "task_pass_on", "board-writer");
         await refuseMemoryInbox(decodeURIComponent(m[1]!));
         const { comment, to, by } = parse(PassSchema, body);
         const { ctx, issue } = await ownIssue(decodeURIComponent(m[1]!));
@@ -1096,54 +971,17 @@ export function createApp(opts: AppOptions): Server {
       },
     },
     {
-      // A typed settings change as the owner filed it (POST /api/settings/change): the runner's to write, so only its key reads it.
-      method: "GET",
-      path: /^\/internal\/settings-changes\/([^/]+)$/,
-      handle: async (m, _b, _u, req) => {
-        requireRunner(req, "reads the typed settings changes");
-        const kept = store.meta(`settings-change:${decodeURIComponent(m[1]!)}`);
-        if (!kept) throw new HttpError(404, "no typed change for that task");
-        return { changes: JSON.parse(kept) };
-      },
-    },
-    {
-      // Model usage Paperclip doesn't see (the runner's Engineer jobs and AI reviewer): one record per job or call, deduped by key.
-      method: "POST",
-      path: /^\/internal\/usage$/,
-      handle: async (_m, body, _u, req) => {
-        // Only the runner (its reviewer key; agents reach the internal token, never this key), stamped with the board's time.
-        requireRunner(req, "reports usage");
-        const u = parse(UsageSchema, body);
-        store.addUsage({ ...u, at: new Date().toISOString() });
-        return { ok: true };
-      },
-    },
-    {
-      // The loop brake (brake.ts): the runner or an agent reports a comment it posted; past its daily limit the wake is cancelled.
+      // The loop brake (brake.ts): an agent reports a comment it posted; past its daily limit the wake is cancelled.
       method: "POST",
       path: /^\/internal\/wake-check$/,
       handle: async (_m, body, _u, req) => {
         const b = parse(z.object({ issue: z.string().min(1).max(100), comment: z.string().min(1).max(100) }), body);
-        let caller = "runner";
-        if (!runnerKeyed(req)) {
-          const me = await requireAgent(pc, req, () => true, "only the runner or an agent reports its comments here").catch((err) => {
-            throw err instanceof Refused ? new HttpError(403, err.message) : err;
-          });
-          caller = me.id;
-        }
-        return wakeCheck(pc, store, b.issue, b.comment, caller, opts.log).catch((err: Error) => {
+        const me = await requireAgent(pc, req, () => true, "only an agent reports its comments here").catch((err) => {
+          throw err instanceof Refused ? new HttpError(403, err.message) : err;
+        });
+        return wakeCheck(pc, store, b.issue, b.comment, me.id, opts.log).catch((err: Error) => {
           throw /not your comment/.test(err.message) ? new HttpError(403, err.message) : err;
         });
-      },
-    },
-    {
-      // The runner's Engineer jobs: running, queued and recently finished (kept in memory only).
-      method: "POST",
-      path: /^\/internal\/runner\/activity$/,
-      handle: async (_m, body, _u, req) => {
-        requireRunner(req, "reports its jobs");
-        shared.runner = { ...parse(RunnerReportSchema, body), at: new Date().toISOString() };
-        return { ok: true };
       },
     },
   ];
@@ -1268,7 +1106,7 @@ export function createApp(opts: AppOptions): Server {
         const ctx = await context();
         const since = new Date(Date.now() - RECENT_MS).toISOString();
         // Who is working and the connections' states don't depend on the tasks: started with them, not after.
-        const extras = Promise.all([working(ctx), opts.google?.status(), signInStates(), bylines(), spendToday(opts.gateway)]);
+        const extras = Promise.all([working(ctx), opts.google?.status(), signInStates(), bylines(), spendSummary(opts.gateway)]);
         extras.catch(() => {}); // awaited below; this only keeps a failure there from going unhandled meanwhile
         const settledAt = store.settledAt();
         // A settled task stays off the board until something happens on it.
@@ -1284,8 +1122,10 @@ export function createApp(opts: AppOptions): Server {
         const folded = foldedChildren([...open, ...closed], ctx.assignees);
         store.placeNew(open.filter((i) => !folded.has(i.id)).map((i) => ({ id: i.id, createdAt: i.createdAt, status: i.status })));
         const recurring = new Map([...store.allRecurring()].map(([id, r]) => [id, { summary: recurringView(r, opts.timezone).summary, nextRun: r.nextRun, paused: r.paused }]));
-        const [busy, google, signIns, names, spend] = await extras;
-        const board = buildBoard({ open, closed, placements: store.placements(), seen: store.allSeen(), schedules: store.schedules(), recurring, installedAt: store.meta("installed_at")!, assignees: ctx.assignees, crew: { working: busy.map, jobs: latestJobs(shared.runner) } });
+        const [busy, google, signIns, names, summary] = await extras;
+        // The header's spend line: today against the install cap, when one is set.
+        const spend = summary?.install.cap != null ? { spent: summary.install.spent, cap: summary.install.cap } : null;
+        const board = buildBoard({ open, closed, placements: store.placements(), seen: store.allSeen(), schedules: store.schedules(), recurring, installedAt: store.meta("installed_at")!, assignees: ctx.assignees, crew: { working: busy.map } });
         for (const card of [...Object.values(board.buckets).flat(), ...board.recurring]) {
           const w = busy.map.get(card.identifier);
           if (w) card.working = w;
@@ -1301,7 +1141,7 @@ export function createApp(opts: AppOptions): Server {
       },
     },
     { method: "GET", path: /^\/api\/issues\/([^/]+)$/, handle: async (m) => issueView(decodeURIComponent(m[1]!)) },
-    { method: "GET", path: /^\/api\/runs\/([0-9a-f-]{36})$/, handle: async (m) => runView(m[1]!) },
+    { method: "GET", path: /^\/api\/runs\/(j-[0-9a-f]{16})$/, handle: async (m) => runView(m[1]!) },
     { method: "GET", path: /^\/api\/chats\/([^/]+)$/, handle: async (m, _b, url) => chatView(decodeURIComponent(m[1]!), url.searchParams.has("peek")) },
     { method: "GET", path: /^\/api\/agents$/, handle: async () => activity(await context(), true) },
     // The Agents page's first paint: who is in the fleet, where each sits and its schedules (no run history; /api/agents
@@ -1477,27 +1317,27 @@ export function createApp(opts: AppOptions): Server {
         const named = input.agent ? crew.find((a) => a.id === input.agent || a.metadata?.setupKey === `aidenhq:${input.agent}` || a.name.toLowerCase() === input.agent!.toLowerCase()) : undefined;
         const { agent, note } = named && named.status !== "paused" ? { agent: named, note: undefined } : pickAgent(input.text, crew);
         // A fast-lane agent answers in the lane, not in a task: the board opens its lane chat (`lane:<key>`).
-        const lane = (await laneAgents(opts.lane)).find((l) => l.id === agent.id);
+        const lane = (await laneAgents(pc, opts.lane)).find((l) => l.id === agent.id);
         if (lane) {
-          await laneSend(opts.lane, lane.key, input.text, await laneByline(req));
+          await laneSend(pc, opts.lane, lane.key, input.text, await laneByline(req));
           return { identifier: `lane:${lane.key}` };
         }
         const label = await labelNamed(ctx, "chat", "#0ea5e9");
         const title = input.text.split("\n")[0]!.replace(/^@\S+\s*/, "").slice(0, 80) || "New chat";
-        const issue = await pc.createIssue({ title, description: `${note ? `${input.text}\n\n${note}` : input.text}\n\n${chatAgentMarker(agent.id)}`, status: "todo", assigneeAgentId: agent.id, labelIds: [label.id], executionWorkspacePreference: "agent_default", executionWorkspaceSettings: { mode: "agent_default" } });
+        const issue = await pc.createIssue({ title, description: `${note ? `${input.text}\n\n${note}` : input.text}\n\n${chatAgentMarker(agent.id)}`, status: "todo", assigneeAgentId: agent.id, labelIds: [label.id] });
         log.info({ issue: issue.identifier, agent: agent.name }, "chat started");
         return { identifier: issue.identifier };
       },
     },
-    // The fast chat lane's agents and conversations (lane.ts): proxied with the internal token.
-    { method: "GET", path: /^\/api\/lane$/, handle: async () => ({ agents: await laneAgents(opts.lane) }) },
-    { method: "GET", path: /^\/api\/lane\/([^/]+)\/messages$/, handle: async (m, _b, url) => laneMessages(opts.lane, decodeURIComponent(m[1]!), url.searchParams.get("after") ?? "") },
+    // The fast chat lane's agents and their chats (lane.ts): each agent's chat task.
+    { method: "GET", path: /^\/api\/lane$/, handle: async () => ({ agents: await laneAgents(pc, opts.lane) }) },
+    { method: "GET", path: /^\/api\/lane\/([^/]+)\/messages$/, handle: async (m, _b, url) => laneMessages(pc, opts.lane, decodeURIComponent(m[1]!), url.searchParams.get("after") ?? "") },
     {
       method: "POST",
       path: /^\/api\/lane\/([^/]+)\/messages$/,
       handle: async (m, body, _u, req) => {
         const { text } = parse(z.object({ text: z.string().trim().min(1).max(8000) }).strict(), body);
-        await laneSend(opts.lane, decodeURIComponent(m[1]!), text, await laneByline(req));
+        await laneSend(pc, opts.lane, decodeURIComponent(m[1]!), text, await laneByline(req));
         return { ok: true };
       },
     },
@@ -1520,7 +1360,7 @@ export function createApp(opts: AppOptions): Server {
       handle: async (m, body) => {
         const own = await editableIssue(decodeURIComponent(m[1]!), "this task isn't yours");
         const { ctx } = own;
-        const issue = await latest(pc, store, own.issue); // a moved task's correction goes to its successor
+        const { issue } = own;
         const { text } = parse(z.object({ text: z.string().trim().min(1).max(500) }).strict(), body);
         const label = await labelNamed(ctx, "correction", "#dc2626");
         await pc.addComment(issue.id, `Not right: ${text}\n\n<!-- aidenhq-correction -->`);
@@ -1531,21 +1371,11 @@ export function createApp(opts: AppOptions): Server {
         return issueView(issue.id);
       },
     },
-    // What each agent and system component spent on models (the Costs tab).
-    {
-      method: "GET",
-      path: /^\/api\/costs$/,
-      handle: async (_m, _b, url) => {
-        const w = url.searchParams.get("window") ?? "7d";
-        if (!(WINDOWS as readonly string[]).includes(w)) throw new HttpError(400, `window is one of ${WINDOWS.join(", ")}`);
-        return costs(pc, store, w as CostWindow);
-      },
-    },
     // The Costs tab's ledger views (cost-ledger.ts): aggregates over ?from&to&bucket, and one agent's or model's top runs and tasks.
     {
       method: "GET",
       path: /^\/api\/costs\/ledger$/,
-      handle: async (_m, _b, url) => ledgerSummary({ store, agents: () => pc.agents(), key: keyUsage, issue: (id) => pc.issueSummary(id), prices, grantsFile: process.env.AIDENHQ_GRANTS_FILE }, ledgerRange(url.searchParams)),
+      handle: async (_m, _b, url) => ledgerSummary({ store, agents: () => pc.agents(), key: keyUsage, spend: () => spendSummary(opts.gateway), issue: (id) => pc.issueSummary(id), prices }, ledgerRange(url.searchParams)),
     },
     {
       method: "GET",
@@ -1702,9 +1532,7 @@ export function createApp(opts: AppOptions): Server {
       path: /^\/api\/issues\/([^/]+)\/comments$/,
       handle: async (m, body, _u, req) => {
         const { ctx, issue: asked } = await editableIssue(decodeURIComponent(m[1]!));
-        // A task moved to a successor (rollover.ts): the message goes there, and the board opens it.
-        const issue = await latest(pc, store, asked);
-        const moved = issue.id !== asked.id ? { movedTo: issue.identifier } : {};
+        const issue = asked;
         // `brief`: the chat's send, which refetches the chat itself, so the reply skips building the whole task view.
         const { body: text, brief } = parse(z.object({ body: z.string().trim().min(1).max(30_000), answer: z.boolean().optional(), brief: z.boolean().optional() }).strict(), body);
         const view = async () => (brief ? { identifier: issue.identifier } : issueView(issue.id));
@@ -1725,12 +1553,11 @@ export function createApp(opts: AppOptions): Server {
           const agentId = chatAgent(issue);
           await pc.updateIssue(issue.id, { status: "todo", ...(agentId && !issue.assigneeAgentId ? { assigneeAgentId: agentId, assigneeUserId: null } : {}) });
         }
-        if (posted) await wakeIfHeld(issue.id, posted.id);
         const where = issue.id === task?.id ? "the team chat" : `${ctx.assignees.find((a) => a.key === issue.assigneeAgentId)?.persona?.name ?? "another agent"}'s chat`;
         const parts = [];
         for (const a of others) parts.push(await deliver(ctx, task!, a, text, { identifier: issue.identifier, commentId: posted?.id, note: `Written in ${where} on ${issue.identifier}.` }));
         // A message that left this chat for another agent's: the board opens that one.
-        return { ...(await view()), ...moved, ...(!posted && parts[0] ? { movedTo: parts[0].identifier } : {}) };
+        return { ...(await view()), ...(!posted && parts[0] ? { movedTo: parts[0].identifier } : {}) };
       },
     },
     {
@@ -2303,11 +2130,4 @@ async function sendCompressed(req: IncomingMessage, res: ServerResponse, status:
 
 /** Each built file's compressed copies, made on first request (a deploy restarts the board, so they never go stale). */
 const staticCompressed = new Map<string, Promise<Buffer>>();
-
-/** The runner's latest job result per task (a failed run shows on the agent's portrait). */
-function latestJobs(report: { recent: { identifier: string; status?: string }[]; latest?: { identifier: string; status: string }[] } | undefined): Map<string, string> {
-  const out = new Map<string, string>();
-  for (const j of [...(report?.recent ?? []), ...(report?.latest ?? [])]) if (j.status && !out.has(j.identifier)) out.set(j.identifier, j.status);
-  return out;
-}
 

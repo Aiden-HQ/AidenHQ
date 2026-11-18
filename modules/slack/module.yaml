@@ -1,5 +1,5 @@
 name: slack
-description: "Slack as the owner, through Slack's MCP server passed through whole: search, read, drafts, and reviewed sends. The live listener and notify_owner are in owner-channel."
+description: "Slack as the owner, through Slack's MCP server passed through whole: search, read, drafts, and reviewed sends. The live listener is channel-slack; messages to the owner are owner-channel's notify."
 requires:
   - board # its sign-in and setup flow
 # Its sign-in on the board (the board's point, modules/board/schemas/signins.json), and its setup flow.

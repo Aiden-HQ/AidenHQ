@@ -6,15 +6,14 @@ roles:
   declares:
     - { id: fleet-admin, description: "The board's fleet tools and relaying the owner's words; the chief of staff: never paused, never passed to by an agent." }
     - { id: board-writer, description: "Board moves and recurring tasks." }
-    # Declared here (every instance has the chief of staff) so the upstream tools have a holder even without Fleet Ops; Fleet
-    # Ops requests it.
+    # Declared here (every instance has the chief of staff) so the upstream tools have a holder even without the Maintainer;
+    # the Maintainer requests it (it files the Fleet Steward's product-bug reports).
     - { id: product-issues, description: "Product bugs as issues on the product repo, as the GitHub App (github-mcp github_app_issue)." }
   # ops-key (the meetings module's): the Researcher runs the meeting scan, so ops-mcp acts as it, while meetings is on.
   requests: [ ops-key? ]
 agents:
   chief-of-staff:
     department: leadership
-    adapter: codex_local
     # The owner's message must not queue behind a long wake on another task: on 2026-11-14 a Telegram question waited
     # 5m48s for two runs on Aiden's notice chat (WOR-2275). Paperclip still runs one at a time per task.
     max_parallel: 2
@@ -29,7 +28,7 @@ agents:
       # The CRM (hubspot module): reads, plus manage_crm_objects (a note, a task, a deal update): a kernel record the AI
       # reviewer decides first, and the owner when it touches more than 5 records.
       hubspot?: [ get_user_details, get_organization_details, discover_hubspot_schema, search_crm_objects, get_crm_objects, query_crm_data, search_properties, get_properties, search_owners, tool_guidance, manage_crm_objects ]
-      telegram: [ notify_owner ]
+      owner_channel: [ notify ]
       # Product bugs as issues on the product repo, as the GitHub App (never the owner's account), with the github module:
       # report one (deduped by fingerprint) and read their state. No other GitHub reads, and no repo input.
       github?: [ github_app_issue, github_app_issue_status ]
@@ -47,7 +46,6 @@ agents:
     # The crew member's board identity: name, a one-line voice for tone only, and the
     # avatar bundled with the board (services/board/web/public/crew/<avatar>.svg).
     persona: { name: Alfred, voice: "Measured and dry; leads with the answer, then the sources.", avatar: alfred }
-    adapter: codex_local
     max_parallel: 3 # research asks are independent; the 15-minute meeting scan takes a slot of its own
     model: ~deepseek/deepseek-flash-latest
     reasoning_effort: high
@@ -114,7 +112,7 @@ prompts:
   - { id: how-we-work, file: prompts/how-we-work.md, order: first }
   - { id: progress, file: prompts/progress.md, order: first }
   - { id: replying, file: prompts/replying.md, order: first }
-  - { id: asking, file: prompts/asking.md, order: first, when: { tools: [ telegram.notify_owner ] } }
+  - { id: asking, file: prompts/asking.md, order: first, when: { tools: [ owner_channel.notify ] } }
   - { id: privacy, file: prompts/privacy.md }
   # {{fleet_issues}}: the "Fleet issues" task where heartbeat runs note missed wake-ups (setup finds or creates it).
   - { id: heartbeat, file: prompts/heartbeat.md, order: last, when: { fields: { heartbeat: true } } }

@@ -1,14 +1,12 @@
 name: grading
-description: "Graded done: a delegated task's rubric and grade, the finish check every move to done passes (held for the grader until its rubric is met), and the routes the runner's grader and the board read. Always installed (core requires it)."
+description: "Graded done: a delegated task's rubric and grade, the finish check every move to done passes (held for the grader until its rubric is met), and the routes the board reads. Always installed (core requires it)."
 license: MIT
 # A task.finish check (P5, spec §3.5): the kernel asks POST /check/finish on every move to done (kernel/src/checks.ts); a held
 # task goes to review with the `grading` label, which this module releases (POST /v1/checks/:task) once a verdict is in. The
-# grade loop itself (src/loop.mjs) runs in the host runner, which holds what the grader reads (job state, GitHub through the
-# App); it reaches this service at its container address with grading_runner_key. It reads tasks and the kill switch from
-# the kernel with its own token (kernel.cp-read) and never writes to the control plane itself.
-# The same loop also exists in the service (service/src/kernel-loop.ts, W7): it reads the kernel's jobs (kernel.work-read), asks it for a
-# grader token (kernel.grader), moves a graded task through the finish check and tells parents by wake notice (kernel.wake). Unstarted
-# until the switch deletes the runner's loop.
+# grade loop runs in the service (service/src/kernel-loop.ts, W7): it reads tasks (kernel.cp-read) and the kernel's jobs
+# (kernel.work-read), asks it for a grader token (kernel.grader), moves a graded task through the finish check and tells
+# parents by wake notice (kernel.wake). It never writes to the control plane itself. A PR's evidence is read from GitHub (below);
+# an app's status, deploys and live view are held ("not available"): apps-mcp's internal API has no route this module may reach.
 roles:
   requests: [ kernel.cp-read, kernel.work-read, kernel.grader, kernel.wake ]
 checks:
@@ -17,6 +15,12 @@ checks:
     post: http://grading:8096/check/finish
     auth: grading_check_key
     label: grading
+# PR evidence: a read token for the fleet's own repositories from the kernel's broker (POST /v1/codehost/token, with this module's
+# token; service/src/github.ts), to read a PR, its checks and its diff from GitHub. Checks and statuses are the PR's rollup.
+codehost:
+  token:
+    repos: [ "@agents/*", "@product" ]
+    perms: { pull_requests: read, contents: read, checks: read, statuses: read }
 labels:
   - { name: grading, color: "#7c3aed" }
 # The board's reads (held parts, wake-ups, rollover, Fleet Ops' stale grades), with its own key, until the board is a module.
@@ -39,11 +43,9 @@ services:
         AIDENHQ_KERNEL_URL: http://10.231.0.1:3130
         GRADING_TOKEN_FILE: ${secrets.grading_token}
         GRADING_CHECK_KEY_FILE: ${secrets.grading_check_key}
-        GRADING_RUNNER_KEY_FILE: ${secrets.grading_runner_key}
         GRADING_BOARD_KEY_FILE: ${secrets.grading_board_key}
 generated_secrets:
   - grading_token
   - grading_check_key
-  - grading_runner_key
   - grading_board_key
 data_version: 0 # its data dir's format: bumped by each forward-only migration (docs/configuration.md)

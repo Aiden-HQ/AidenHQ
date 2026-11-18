@@ -52,7 +52,7 @@ function sandbox() {
   };
   writeFileSync(join(dir, "engines.json"), JSON.stringify(engines));
   const cfg = {
-    bwrap: "bwrap", hidden: [], binDir: join(dir, "bin"), browserDir: join(dir, "browser"), workDir: join(dir, "work"), stateDir: join(dir, "state"), logsDir: join(dir, "state/logs"),
+    workDir: join(dir, "work"), stateDir: join(dir, "state"), logsDir: join(dir, "state/logs"),
     secretsDir: join(dir, "secrets"), enginesFile: join(dir, "engines.json"), gatewayUrl: "http://127.0.0.1:8201", boxGatewayUrl: "http://10.231.2.1:8200", boxDir: join(dir, "boxes"),
     timeout_minutes: 2, stall_minutes: 2, progress_minutes: 2,
   };
@@ -63,7 +63,7 @@ function sandbox() {
     const container = `aidenhq-computer-k${++n}`;
     const outDir = join(cfg.boxDir, container);
     mkdirSync(outDir);
-    writeFileSync(join(cfg.boxDir, `${container}.env`), "AIDENHQ_RUN_TOKEN=ahqc_x\nHOME=/workspace/.aidenhq/home\n");
+    writeFileSync(join(cfg.boxDir, `${container}.env`), "AIDENHQ_RUN_TOKEN=ahqj_x.sig\nHOME=/workspace/.aidenhq/home\n");
     writeFileSync(join(cfg.boxDir, `${container}.box.json`), JSON.stringify({ workspace: join(cfg.workDir, "tasks", ident), outDir, engineDir: engines[kind]?.dir ?? "" }));
     const file = join(dir, "jobs.json");
     const recs = existsSync(file) ? JSON.parse(readFileSync(file, "utf8")) : [];
@@ -169,7 +169,7 @@ test("a job's env in its box: the launcher's env file and its gh read token, not
     const env = JSON.parse((await finished(jobs, j.id)).final);
     assert.equal(env.GH_TOKEN, "ghs_read");
     assert.equal(env.AIDENHQ_GH_AUTH, "ghs_read");
-    assert.equal(env.AIDENHQ_RUN_TOKEN, "ahqc_x", "the box's own credential, from the launcher's env file");
+    assert.equal(env.AIDENHQ_RUN_TOKEN, "ahqj_x.sig", "the box's own credential, from the launcher's env file");
     const allowed = new Set(["AIDENHQ_RUN_TOKEN", "HOME", "PATH", "GH_TOKEN", "AIDENHQ_GH_AUTH"]);
     // The shell and node add a few of their own (PWD, SHLVL, _): anything else came from the kernel or the dispatcher.
     const extra = Object.keys(env).filter((k) => !allowed.has(k) && !["PWD", "OLDPWD", "SHLVL", "_", "__CF_USER_TEXT_ENCODING"].includes(k));

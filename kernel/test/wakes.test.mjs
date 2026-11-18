@@ -19,7 +19,7 @@ function world() {
     const u = new URL(path, "http://cp");
     let m;
     if ((m = /^\/api\/agents\/([^/]+)$/.exec(u.pathname))) return { status: 200, json: { id: m[1], companyId: "c-1" } };
-    if (u.pathname === "/api/companies/c-1/issues") return { status: 200, json: Object.values(issues).filter((i) => ["todo", "in_progress", "in_review"].includes(i.status) && i.assigneeAgentId === u.searchParams.get("assigneeAgentId")) };
+    if (u.pathname === "/api/companies/c-1/issues") return { status: 200, json: Object.values(issues).filter((i) => (u.searchParams.get("status") ?? "todo,in_progress,in_review").split(",").includes(i.status) && i.assigneeAgentId === u.searchParams.get("assigneeAgentId")) };
     if ((m = /^\/api\/issues\/([^/]+)\/comments$/.exec(u.pathname))) {
       let list = [...(comments[m[1]] ?? [])];
       const after = u.searchParams.get("after");
@@ -28,6 +28,14 @@ function world() {
     }
     if ((m = /^\/api\/routines\/([^/]+)\/runs$/.exec(u.pathname))) return { status: 200, json: Object.values(issues).filter((i) => i.originId === m[1]).map((i) => ({ id: `run-${i.id}`, linkedIssueId: i.id })) };
     if ((m = /^\/api\/routines\/([^/]+)$/.exec(u.pathname))) return { status: 200, json: { id: m[1], concurrencyPolicy: "coalesce_if_active" } };
+    if (method === "PATCH" && (m = /^\/api\/issues\/([^/]+)$/.exec(u.pathname))) {
+      const i = issues[m[1]];
+      if (body.status && i.blockedBy?.some((x) => x.status !== "done")) return { status: 409, json: {} }; // a cancelled blocker still refuses
+      if (body.blockedByIssueIds) i.blockedBy = i.blockedBy.filter((x) => body.blockedByIssueIds.includes(x.id));
+      if (body.status) Object.assign(i, { status: body.status, updatedAt: iso(clock) });
+      if (body.comment) (comments[i.id] ??= []).push({ id: `c-p${(comments[i.id] ?? []).length}`, body: body.comment, authorAgentId: null, createdAt: iso(clock) });
+      return { status: 200, json: i };
+    }
     if ((m = /^\/api\/issues\/([^/]+)$/.exec(u.pathname))) return issues[m[1]] ? { status: 200, json: issues[m[1]] } : { status: 404, json: {} };
     return { status: 404, json: {} };
   };
@@ -122,4 +130,20 @@ test("a note on a claimed wake's task is posted as its agent, once, tagged; only
   assert.deepEqual([p.agent, p.task, p.kind, p.body], [AGENT, "t7", "note", "Ready."]);
   assert.match(p.id, /^w-[0-9a-f]{24}$/, "the plugin's tag takes it as a job id; outcomes posts once per (id, kind)");
   assert.equal(w.wakes.get(x.key).state, "claimed", "a note doesn't drop the wake");
+});
+
+test("a blocked task is released once when every blocker is done or cancelled: todo, one tagged notice, one wake", async () => {
+  const w = world();
+  const b = (id, status) => ({ id, identifier: `WOR-${id}`, status });
+  w.issue("t8", { status: "blocked", blockedBy: [b("b1", "in_progress"), b("b2", "in_progress")] });
+  await w.wakes.poll();
+  w.issues.t8.blockedBy = [b("b1", "done"), b("b2", "in_review")];
+  await w.wakes.poll();
+  assert.equal(w.issues.t8.status, "blocked", "one blocker still open: not news");
+  w.issues.t8.blockedBy = [b("b1", "done"), b("b2", "cancelled")];
+  for (let i = 0; i < 3; i++) { w.tick(); await w.wakes.poll(); }
+  assert.equal(w.issues.t8.status, "todo");
+  assert.deepEqual(w.issues.t8.blockedBy.map((x) => x.id), ["b1"], "the cancelled relation was cleared so the status write took");
+  assert.match(w.rows("t8").join("\n"), /^unblocked:t8:b1:done,b2:cancelled open$/m);
+  assert.equal(w.wakes.claim("dispatch").filter((x) => x.task === "t8").length, 1, "this wake and the scan's move to todo coalesce into one job start");
 });

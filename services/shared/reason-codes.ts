@@ -5,7 +5,7 @@
 // the reviewer module keeps its own list in modules/ai-reviewer/service/src/review.mjs, which
 // modules/ai-reviewer/test/review.test.mjs pins to REVIEW_CODES here.
 //
-// A card's tier rule (services/runner/src/tiers.mjs `rule`, or the board's own for its actions) is a reason code too: those
+// A card's tier rule (kernel/src/tier.ts `rule`, or the board's own for its actions) is a reason code too: those
 // are kebab-case words owned by the classifier, checked by shape (TIER_RULE), not listed here, so a new rule needs no edit.
 
 /** The AI reviewer's code on a Tier 1 card: what it judged (model-chosen) or why code escalated before or after it. */

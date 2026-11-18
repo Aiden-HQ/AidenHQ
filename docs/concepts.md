@@ -13,8 +13,9 @@ widely, turns messages and forwards into tasks, delegates the doing to other age
 relays the owner's decisions. It never needs the owner to write prompts.
 
 **Crews and agents.** Specialist agents under Aiden: the Researcher (long research and drafts, your task
-replies, recurring reports), DevOps Engineer (app health), Agent Architect (designs new agents), Agent Coach (reviews
-whether agents' output is right and complete, and files fixes), Platform Engineer (changes the instance and the product;
+replies, recurring reports), DevOps Engineer (app health), Agent Architect (designs new agents), Fleet Steward (watches
+the fleet, reviews whether agents' output is right and complete, keeps notes and memory tidy, and files fixes), Maintainer
+(issues on the repos you list, and product bugs upstream), Platform Engineer (changes the instance and the product;
 owns Dependabot PRs), and whatever modules add (Follow-up Tracker, Meeting Librarian, Engineers, UI/UX Designer and UI Reviewer,
 Security Watch, ...). Each agent is a definition (adapter, model,
 grants, schedules) plus an `AGENTS.md` handbook. Agents wake on schedules (Paperclip routines), events (routine
@@ -26,7 +27,7 @@ applies it idempotently; edits made in Paperclip's UI are overwritten by the nex
 
 **Modules.** Product features ship as `modules/<name>/`: a `module.yaml` (settings, agents, routines), agent
 handbooks, connection services, apps and a `compose.yaml`. `core`, `channel-telegram` and `chat-lane` are always installed; the rest
-(`open-loops`, `meetings`, `engineering`, `design`, `security`, `fleet-ops`, `librarian`, `ci`, `warehouse`, and the
+(`open-loops`, `meetings`, `engineering`, `design`, `security`, `fleet-steward`, `maintainer`, `ci`, `warehouse`, and the
 connection modules) are switched on per instance.
 
 **Instance repo.** Your private repo holding everything specific to your deployment: `instance.yaml` (the pinned
@@ -42,14 +43,13 @@ and optional roles. Every tool call is checked in code against the grants table 
 (`kernel/src/proxy.ts`), using the caller's Paperclip identity. Roles gate a few extra powers, such as fleet
 tools or deploying apps.
 
-**Runner.** A host service (`services/runner`) that runs coding jobs for the Engineer agents in sandboxed per-task
-workspaces, and owns every git write: pushes, pull requests and merges. It checks each write in code before it
-happens. See [design/conversational-engineers.md](design/conversational-engineers.md).
+**Code host.** `modules/codehost-github` owns every git write: pushes, pull requests and merges, and checks each in code
+before it happens. Engineer coding jobs run in agent computers. See [design/conversational-engineers.md](design/conversational-engineers.md).
 
 **Approvals and tiers.** Every write that matters (push, PR, merge, fleet change, app deploy) is an *approval record*
 (a kernel record, `kernel/src/records.ts`; the board only reads and shows it): the exact request, decided once, outcome on the card. Code assigns the tier from verified state, never
-from text an agent wrote ([`services/runner/src/tiers.mjs`](../services/runner/src/tiers.mjs)):
-- **Tier 0** runs at once (for example a green merge in the agents org on a branch the runner pushed).
+from text an agent wrote ([`kernel/src/tier.ts`](../kernel/src/tier.ts)):
+- **Tier 0** runs at once (for example a green merge in the agents org on a branch the code host pushed).
 - **Tier 1** is decided by an AI reviewer model with a written policy.
 - **Tier 2** is the owner's tap on the board or the owner channel, or an exact typed reply such as `apply WOR-184`, after the
   AI reviewer has read it (its verdict is on the card).

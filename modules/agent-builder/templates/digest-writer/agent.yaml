@@ -12,7 +12,7 @@ connections:
   paperclip_tasks: [ task_current, task_get, task_comments, task_list, task_comment, task_handoff, task_finish, task_set_status ]
   # Warehouse reads, plus the apps' live pages (every agent).
   apps: [ web_view, app_view, warehouse_query ]
-  # After trial (tap 2): add the owner-channel connection's `notify_owner` for a one-line pointer to the digest.
+  # After trial (tap 2): add `owner_channel.notify` for a one-line pointer to the digest.
 routines:
   digest:
     title: Write the digest

@@ -24,7 +24,7 @@ settings:
   grafana_source:
     default: cloud
     values: [cloud, local]
-# Agents granted `grafana: read` (e.g. Fleet Ops, in the instance's agent overrides) query metrics and dashboards.
+# Agents granted `grafana: read` (e.g. the Fleet Steward, in the instance's agent overrides) query metrics and dashboards.
 connections:
   grafana:
     setup: "Cloud: press Connect on the board (Settings, Connections), give your stack's address and allow access. Local: enable the monitoring module, set grafana_source: local and put a Viewer service account token in the vault (docs/design/monitoring.md)."

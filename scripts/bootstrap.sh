@@ -48,20 +48,18 @@ placeholder() { # name content
 gen_secret paperclip_auth_secret
 gen_secret paperclip_agent_jwt_secret
 gen_secret google_auth_token     # the board's Google sign-in state and reconnect
-gen_secret slack_mcp_read_token    # the runner's Engineer jobs, /mcp/read on 127.0.0.1:3125
-gen_secret primer_mcp_read_token   # the runner's Engineer jobs, /mcp/read on 127.0.0.1:3123
-gen_secret glean_mcp_read_token    # the runner's Engineer jobs, /mcp/read on 127.0.0.1:3126
+gen_secret slack_mcp_read_token    # jobs' reads, /mcp/read on 127.0.0.1:3125
+gen_secret primer_mcp_read_token   # jobs' reads, /mcp/read on 127.0.0.1:3123
+gen_secret glean_mcp_read_token    # jobs' reads, /mcp/read on 127.0.0.1:3126
 gen_secret glean_auth_token      # the board's Glean sign-in state and sign-in
-gen_secret grafana_mcp_token     # the runner's Engineer jobs, on 127.0.0.1:3124
+gen_secret grafana_mcp_token     # jobs' reads, on 127.0.0.1:3124
 gen_secret grafana_auth_token    # the board's Grafana sign-in state and sign-in
-gen_secret clickhouse_mcp_token  # the runner's Engineer jobs, on 127.0.0.1:3127
+gen_secret clickhouse_mcp_token  # jobs' reads, on 127.0.0.1:3127
 gen_secret clickhouse_auth_token # the board's ClickHouse sign-in state and sign-in
 gen_secret board_internal_token   # the board's internal API
 gen_secret apps_internal_token   # apps-mcp POST /internal/deploy: the board and apps-mcp only
 gen_secret paperclip_master_key  # Paperclip's secret-store key (PAPERCLIP_SECRETS_MASTER_KEY_FILE)
-gen_secret computer_launcher_token  # the computer plugin (in paperclip) → the launcher on the host (services/computer)
 gen_secret computer_progress_token  # the board → the launcher's /progress only (live view)
-gen_secret computers_runner_key     # the runner → the launcher's job routes only (/job, /job/renew, /job/release)
 placeholder paperclip_ops_key ""
 placeholder paperclip_board_key ""   # written by scripts/paperclip-setup.mjs; held by the kernel alone (the board goes through it)
 mkdir -p "$AIDENHQ_SECRETS_DIR/modules/google" && chmod 0700 "$AIDENHQ_SECRETS_DIR/modules" "$AIDENHQ_SECRETS_DIR/modules/google"
@@ -69,7 +67,7 @@ placeholder modules/google/google_oauth.json "{}"   # the google module's own va
 placeholder github_token ""      # the user's GitHub token: the github module's setup flow
 placeholder slack_live_app_token ""             # xapp- Socket Mode token
 placeholder slack_live_bot_token ""             # xoxb- bot token, posts DMs to OWNER_SLACK_USER_ID
-placeholder telegram_notify_bot_token ""       # BotFather token; notify_owner also messages TELEGRAM_OWNER_CHAT_ID
+placeholder telegram_notify_bot_token ""       # BotFather token; the owner's Telegram chat with Aiden, and a channel for notify
 placeholder slack_live_triage_webhook_url ""    # the slack-triage routine's webhook; empty = no poke
 placeholder slack_live_triage_webhook_secret ""
 placeholder apps_incident_webhook_url ""       # the app-incident routine's webhook (paperclip-setup.mjs writes it); empty = no wake
@@ -105,8 +103,6 @@ umask 022
 
 echo "Installing setup-script dependency"
 [ -d scripts/node_modules/yaml ] || npm ci --prefix scripts --silent
-[ -d services/runner/node_modules/yaml ] || npm ci --prefix services/runner --silent
-for f in runner; do [ -f "$config_dir/$f.yaml" ] || { cp "config/$f.example.yaml" "$config_dir/$f.yaml"; say "created $config_dir/$f.yaml"; }; done
 
 echo "Validating compose"
 docker compose --env-file "$env_file" -f compose.yaml config --quiet

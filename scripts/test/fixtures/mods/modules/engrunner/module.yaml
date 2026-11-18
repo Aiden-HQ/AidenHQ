@@ -1,4 +1,4 @@
 name: engrunner
 description: a runner agent on an engine kind
 agents:
-  coder: { adapter: opencode_local, dispatch: runner, engine: codex-openrouter }
+  coder: { profile: engineer, engine: codex-openrouter }

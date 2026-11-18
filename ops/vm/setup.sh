@@ -31,12 +31,7 @@ esac
 # A fresh cloud VM's first boot runs cloud-init's own apt for a few minutes: wait for its lock instead of failing.
 apt-get() { command apt-get -o DPkg::Lock::Timeout=600 "$@"; }
 apt-get update
-apt-get -y install ca-certificates curl gnupg git openssl jq unattended-upgrades bubblewrap nftables python3-systemd iproute2 file binutils sqlite3 unzip
-# passt (pasta) gives each Engineer job its own network; Ubuntu 22.04 doesn't package it, and without it jobs share the
-# host's network (the runner says so in a WARNING).
-if apt-cache show passt >/dev/null 2>&1; then apt-get -y install passt
-else echo "warning: passt isn't packaged for $codename: Engineer jobs will share the host network" >&2; fi
-
+apt-get -y install ca-certificates curl gnupg git openssl jq unattended-upgrades nftables python3-systemd iproute2 file binutils sqlite3 unzip
 # pins.json, checked before any value reaches apt or a URL: fingerprints are 40 hex digits, package names and versions
 # Debian's characters only, and this release has an entry.
 jq -e --arg c "$codename" '
@@ -52,52 +47,6 @@ repo() { jq -r --arg k "$1" --arg d "$distro" --arg c "$codename" '.repos[$k] | 
 
 # The QEMU guest agent only on a VM: on bare metal its unit waits on a virtio port that doesn't exist.
 vm=; if systemd-detect-virt --vm --quiet 2>/dev/null; then vm=1; apt-get -y install qemu-guest-agent; fi
-# The runner wraps engineer jobs in bwrap to hide the vault and gcloud sign-ins; Ubuntu's AppArmor (24.04 and later:
-# kernel.apparmor_restrict_unprivileged_userns=1) blocks the user namespace bwrap needs, and 26.04's own profile for
-# /usr/bin/bwrap (bwrap-userns-restrict) strips every capability from bwrap's children, which the jail's first step
-# needs (it sets the job's routes, then drops them). So the runner runs a private copy, /opt/aidenhq/bwrap/bwrap, that
-# only root and the AidenHQ user's group can run, under a profile of its own allowing the namespace; /usr/bin/bwrap keeps
-# the release's policy for everyone else. Codex's own sandbox in a job finds the same copy first on the job's PATH.
-# An apt hook refreshes the copy whenever bubblewrap is updated. passt (pasta) gives each job its own network: the
-# Internet and the few loopback ports it needs, never the board, Paperclip, apps or the LAN (26.04's passt confines
-# pasta with its own profile, which allows joining the job's namespace). The profile needs AppArmor 4 (abi 4.0): older
-# releases (22.04, Debian 12) don't restrict the namespace, so they get the copy without a profile.
-group="$(id -gn "$USER_NAME")"
-install -d -m 0750 -o root -g "$group" /opt/aidenhq/bwrap
-install -m 0750 -o root -g "$group" /usr/bin/bwrap /opt/aidenhq/bwrap/bwrap
-cat >/etc/apt/apt.conf.d/90aidenhq-bwrap <<EOF
-// AidenHQ (ops/vm/setup.sh): keep the runner's private bwrap the same as the distro's.
-DPkg::Post-Invoke { "if [ -x /usr/bin/bwrap ] && ! cmp -s /usr/bin/bwrap /opt/aidenhq/bwrap/bwrap; then install -m 0750 -o root -g $group /usr/bin/bwrap /opt/aidenhq/bwrap/bwrap; fi"; };
-EOF
-if [ -e /etc/apparmor.d/abi/4.0 ] && command -v apparmor_parser >/dev/null; then
-  cat >/etc/apparmor.d/aidenhq-bwrap <<'EOF'
-abi <abi/4.0>,
-include <tunables/global>
-
-profile aidenhq-bwrap /opt/aidenhq/bwrap/bwrap flags=(unconfined) {
-  userns,
-  include if exists <local/aidenhq-bwrap>
-}
-EOF
-  apparmor_parser -r /etc/apparmor.d/aidenhq-bwrap
-  # Earlier setups exempted /usr/bin/bwrap itself, for every user: that profile goes, and the release's own is reloaded.
-  if [ -e /etc/apparmor.d/bwrap ]; then
-    apparmor_parser -R /etc/apparmor.d/bwrap 2>/dev/null || true # not loaded: nothing to remove
-    rm /etc/apparmor.d/bwrap
-    if [ -e /etc/apparmor.d/bwrap-userns-restrict ]; then apparmor_parser -r /etc/apparmor.d/bwrap-userns-restrict; fi
-  fi
-fi
-# A kernel that turns unprivileged user namespaces off (an older Debian default) gets them back on.
-if [ "$(cat /proc/sys/kernel/unprivileged_userns_clone 2>/dev/null || echo 1)" = 0 ]; then
-  echo 'kernel.unprivileged_userns_clone = 1' >/etc/sysctl.d/90-aidenhq-userns.conf
-  sysctl -q -p /etc/sysctl.d/90-aidenhq-userns.conf
-fi
-# Check it as the runner uses it (engines.mjs jailed): the job's first step sets routes in its own network namespace.
-# --dev-bind, never --dev: a fresh /dev makes bwrap run the job in a nested user namespace that doesn't own the network
-# one, so CAP_NET_ADMIN there can't change it (EPERM) whatever AppArmor allows.
-runuser -u "$USER_NAME" -- /opt/aidenhq/bwrap/bwrap --ro-bind / / --dev-bind /dev /dev --unshare-user --unshare-net \
-  --cap-add CAP_NET_ADMIN -- ip route add unreachable 192.0.2.0/24 \
-  || { echo "the runner's bwrap can't set up a job's network (AppArmor profile aidenhq-bwrap?)" >&2; exit 1; }
 # Library names: releases since the 64-bit time_t transition (24.04, 26.04, Debian 13) carry a t64 suffix.
 t64=; if apt-cache show libasound2t64 >/dev/null 2>&1; then t64=t64; fi
 # The libraries and a font set Chrome needs headless (the browser Engineer jobs use, below), and unzip for its archive.
@@ -195,7 +144,7 @@ fi
 # Distro updates, after the holds so they never move a pinned package.
 apt-get -y upgrade
 
-# The browser for Engineer jobs (services/runner/bin/aidenhq-browse: screenshots and click-throughs of the app they build):
+# The browser for Engineer jobs (aidenhq-browse: screenshots and click-throughs of the app they build):
 # AidenHQ's one browser, as in the browser image (services/computer/images/browser): agent-browser 0.41.2 and Chrome for
 # Testing 157.0.8103.78 (2026-11-11, critical CVE fixes; supply-chain exception), checksummed, root-owned under /opt; the runner binds it read-only into every job. Move
 # both pins with the image's. Reinstalled only when a pin moves. Chrome for Testing publishes linux64 and linux-arm64

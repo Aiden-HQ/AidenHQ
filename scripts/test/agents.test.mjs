@@ -68,7 +68,7 @@ test("trial_writes: an agent in trial compiles with the writes it names, and kee
 });
 
 test("trial_writes: any other name is a compile error naming the agent and the tool", () => {
-  assert.throws(() => compile(product, withAgents({ x: { yaml: { ...ariaYaml, trial_writes: [...ariaWrites, "paperclip_tasks.task_update"] } } }, ["slack"])), /x: trial_writes names paperclip_tasks\.task_update, which it may not use in trial \(only paperclip_tasks\.task_create, chat_lane\.wake_at, chat_lane\.chat_send, telegram\.notify_owner\)/);
+  assert.throws(() => compile(product, withAgents({ x: { yaml: { ...ariaYaml, trial_writes: [...ariaWrites, "paperclip_tasks.task_update"] } } }, ["slack"])), /x: trial_writes names paperclip_tasks\.task_update, which it may not use in trial \(only paperclip_tasks\.task_create, chat_lane\.wake_at, chat_lane\.chat_send, owner_channel\.notify\)/);
   assert.throws(() => compile(product, withAgents({ x: { yaml: { ...ariaYaml, trial_writes: ["chat_lane.slack_post"] } } }, ["slack"])), /x: trial_writes names chat_lane\.slack_post, which it may not use in trial/);
   assert.throws(() => compile(product, withAgents({ x: { yaml: { ...ariaYaml, trial_writes: ["slack.wake_at"] } } }, ["slack"])), /x: trial_writes names slack\.wake_at, which it may not use in trial/);
   assert.throws(() => compile(product, withAgents({ x: { yaml: { ...ariaYaml, trial_writes: ["task_create"] } } }, ["slack"])), /x: trial_writes names "task_create", not a tool written connection\.tool/);
@@ -112,55 +112,21 @@ test("the Architect: max effort, only its own role, no fleet tools, reads every 
   const a = compile(product, withAgents({}, ["slack", "github"])).paperclip.agents.architect;
   assert.deepEqual([a.model, a.reasoning_effort], ["~deepseek/deepseek-flash-latest", "max"]);
   assert.deepEqual(a.roles, ["architect", "repo-checkout"]);
-  assert.deepEqual(a.enabled_tools.telegram, ["notify_owner"]);
+  assert.deepEqual(a.enabled_tools.owner_channel, ["notify"]);
   assert.deepEqual(a.enabled_tools.apps, ["app_list", "app_status", "app_logs", "app_view", "web_view", "warehouse_query"]); // research reads only: no deploys, and the request and role reads would refuse it anyway
   assert.ok(a.enabled_tools.slack.includes("slack_read_thread") && !a.enabled_tools.slack.some((t) => /send|draft/.test(t)));
   assert.ok(a.enabled_tools.github.includes("github_issue_read") && !a.enabled_tools.github.some((t) => /comment|create|update|review|rerun/.test(t)));
   for (const t of ["fleet_control", "fleet_status", "task_relay_owner_words", "task_update", "task_create"]) assert.ok(!a.enabled_tools.paperclip_tasks.includes(t), t);
 });
 
-test("the codex-model launcher swaps the routine's model in for the agent's, and runs Codex as is otherwise", () => {
-  const bin = mkdtempSync(join(tmpdir(), "codex-"));
-  writeFileSync(join(bin, "codex"), '#!/bin/sh\nprintf "%s|" "$@"\n', { mode: 0o755 });
-  const run = (args, model) => execFileSync(join(product, "services/paperclip-tasks-mcp/codex-model"), args, { encoding: "utf8", env: { PATH: `${bin}:/usr/bin:/bin`, ...(model ? { AIDENHQ_MODEL: model } : {}) } });
-  assert.equal(run(["exec", "--json", "--model", "agent-m", "-c", 'x="a b"', "resume", "s1", "-"], "routine-m"), 'exec|--model|routine-m|--json|-c|x="a b"|resume|s1|-|');
-  assert.equal(run(["exec", "--json", "-"], "routine-m"), "exec|--model|routine-m|--json|-|");
-  assert.equal(run(["exec", "--json", "--model", "agent-m", "-"]), "exec|--json|--model|agent-m|-|");
-  assert.equal(run(["--version"], "routine-m"), "--version|");
-  // Paperclip puts its own -c pairs before `exec`.
-  assert.equal(run(["-c", "a=1", "exec", "--json", "--model", "agent-m", "-"], "routine-m"), "-c|a=1|exec|--model|routine-m|--json|-|");
-  assert.equal(run(["-c", "a=1", "exec", "-"]), "-c|a=1|exec|-|");
-  // A run starts in one stable directory per agent, not the task's.
-  writeFileSync(join(bin, "codex"), "#!/bin/sh\npwd\n", { mode: 0o755 });
-  const here = (id) => execFileSync(join(product, "services/paperclip-tasks-mcp/codex-model"), ["-c", "x=1", "exec"], { encoding: "utf8", cwd: tmpdir(), env: { PATH: `${bin}:/usr/bin:/bin`, ...(id ? { PAPERCLIP_AGENT_ID: id } : {}) } });
-  assert.equal(here("a1"), "/tmp/aidenhq-cwd/a1\n");
-  assert.equal(statSync("/tmp/aidenhq-cwd/a1").mode & 0o777, 0o555); // read-only: Codex loads AGENTS.md from its cwd
-  assert.doesNotMatch(here(""), /aidenhq-cwd/); // no agent id: left alone
-  assert.doesNotMatch(here("../x"), /aidenhq-cwd/);
-  chmodSync("/tmp/aidenhq-cwd/a1", 0o755); writeFileSync("/tmp/aidenhq-cwd/a1/AGENTS.md", "planted"); // a run made it writable again
-  assert.doesNotMatch(here("a1"), /aidenhq-cwd/); // not empty: Paperclip's own cwd
-  rmSync("/tmp/aidenhq-cwd/a1", { recursive: true });
-  mkdirSync("/tmp/aidenhq-cwd/.git"); // a planted git root above the cwd would make Codex read AGENTS.md from the parent
-  assert.doesNotMatch(here("a1"), /aidenhq-cwd/);
-  rmSync("/tmp/aidenhq-cwd", { recursive: true, force: true });
-  writeFileSync(join(bin, "codex"), '#!/bin/sh\nprintf "%s|" "$@"\n', { mode: 0o755 });
-  // The routine's reasoning effort replaces the agent's -c model_reasoning_effort, other -c settings stay.
-  const eff = ["exec", "--json", "-c", 'model_reasoning_effort="high"', "-c", "x=1", "-"];
-  assert.equal(execFileSync(join(product, "services/paperclip-tasks-mcp/codex-model"), eff, { encoding: "utf8", env: { PATH: `${bin}:/usr/bin:/bin`, AIDENHQ_REASONING_EFFORT: "low" } }), 'exec|-c|model_reasoning_effort="low"|--json|-c|x=1|-|');
-});
-
-test("the web for every codex agent: live search by default (an agent may opt down), web_view and app_view granted; never runner agents", () => {
+test("the web for every crew agent: web_view and app_view granted (an agent may opt its search down); Engineers get only their own grants", () => {
   const dir = withAgents({ "review-chaser": { yaml: { web_search: "disabled" } } }, ["slack", "github", "open-loops", "meetings", "engineering", "primer"]);
   writeFileSync(join(dir, "instance.yaml"), YAML.stringify({ product: "0".repeat(40), modules: [...BUNDLE, "slack", "github", "open-loops", "meetings", "engineering", "primer"], settings: { ...owner, owner_slack_user_id: "U1", owner_email: "e@x", product_repo: "acme/aidenhq" } }));
   const r = compile(product, dir);
-  const args = r.paperclip.codex_args.join(" ");
-  assert.match(args, /web_search="live"/);
-  assert.doesNotMatch(args, /web_search="(disabled|cached)"/);
-  const codex = Object.entries(r.paperclip.agents).filter(([, a]) => a.adapter === "codex_local");
+  const codex = Object.entries(r.paperclip.agents).filter(([, a]) => a.profile === "crew");
   assert.ok(codex.length >= 8);
   // Every codex agent can view apps; web_view goes to all but those with web search off (the email/Slack scouts).
   for (const [key, a] of codex) {
-    if (key === "fleet-ops") continue; // reads app status and logs only
     assert.ok(a.enabled_tools.apps?.includes("app_view"), `${key} lacks app_view`);
     if (a.web_search !== "disabled") assert.ok(a.enabled_tools.apps?.includes("web_view"), `${key} lacks web_view`);
   }
@@ -171,23 +137,22 @@ test("the web for every codex agent: live search by default (an agent may opt do
     assert.equal(a.web_search, "disabled", k);
     assert.ok(!a.enabled_tools.apps?.includes("web_view"), k);
     // Reads only, plus the owner's page and its own tasks: no tool a connection tags write that reaches anyone else.
-    const writes = Object.entries(a.enabled_tools).flatMap(([c, list]) => list.filter((t) => c !== "paperclip_tasks" && t !== "notify_owner" && writeTools(r.paperclip.mcp_servers[c]).includes(t)).map((t) => `${c}.${t}`));
+    const writes = Object.entries(a.enabled_tools).flatMap(([c, list]) => list.filter((t) => c !== "paperclip_tasks" && t !== "notify" && writeTools(r.paperclip.mcp_servers[c]).includes(t)).map((t) => `${c}.${t}`));
     assert.deepEqual(writes, [], k);
   }
-  // Runner agents get no tools added; one in a computer (the App Engineer) has exactly what it grants itself.
-  for (const [key, a] of Object.entries(r.paperclip.agents)) if (a.dispatch === "runner" && !a.image) assert.ok(!a.mcp_servers.includes("apps"), key);
+  // An Engineer gets no tools added: the App Engineer has exactly what it grants itself.
   assert.deepEqual(r.paperclip.agents["app-engineer"].enabled_tools, { apps: ["app_list", "app_status", "app_view", "app_check", "web_view"], github: ["github_whoami", "github_project_read", "github_issue_read", "github_search_issues", "github_app_issue_status"] });
   assert.equal(r.paperclip.agents["review-chaser"].web_search, "disabled");
   assert.equal(r.paperclip.agents.assistant.web_search, undefined);
 });
 
-test("trial_writes: all four names compile, including notify_owner, which a trial agent doesn't get automatically", () => {
-  const r = compile(product, withAgents({ x: { yaml: { connections: { slack: "read", paperclip_tasks: ["task_create"], chat_lane: ["wake_at", "chat_send"], telegram: ["notify_owner"] }, trial_writes: TRIAL_WRITE_ALLOWED } } }, ["slack"]));
+test("trial_writes: all four names compile, including notify, which a trial agent doesn't get automatically", () => {
+  const r = compile(product, withAgents({ x: { yaml: { connections: { slack: "read", paperclip_tasks: ["task_create"], chat_lane: ["wake_at", "chat_send"], owner_channel: ["notify"] }, trial_writes: TRIAL_WRITE_ALLOWED } } }, ["slack"]));
   assert.deepEqual(r.paperclip.agents.x.trial_writes, TRIAL_WRITE_ALLOWED);
   assert.deepEqual(writesOf(r, r.paperclip.agents.x, "chat_lane"), ["wake_at", "chat_send"]);
-  assert.deepEqual(writesOf(r, r.paperclip.agents.x, "telegram"), ["notify_owner"]);
-  // A trial agent that names nothing still gets no notify_owner added for it (the "Asking the owner" grant is post-trial).
-  assert.equal(compile(product, withAgents({ "review-chaser": {} }, ["github", "slack"])).paperclip.agents["review-chaser"].enabled_tools.telegram, undefined);
+  assert.deepEqual(writesOf(r, r.paperclip.agents.x, "owner_channel"), ["notify"]);
+  // A trial agent that names nothing still gets no notify added for it (the "Asking the owner" grant is post-trial).
+  assert.equal(compile(product, withAgents({ "review-chaser": {} }, ["github", "slack"])).paperclip.agents["review-chaser"].enabled_tools.owner_channel, undefined);
 });
 
 test("trial_writes: an agent that names none keeps today's behaviour, and a granted write outside trial_writes is still refused", () => {
@@ -201,6 +166,23 @@ test("trial_writes: an agent that names none keeps today's behaviour, and a gran
   assert.deepEqual(writesOf(partial, partial.paperclip.agents.x, "chat_lane"), ["chat_send"]);
   assert.deepEqual(partial.paperclip.agents.x.trial_withheld, ["chat_lane.wake_at"]);
   assert.throws(() => compile(product, withAgents({ x: { yaml: { trial_writes: undefined, connections: { slack: "read", chat_lane: ["chat_send", "wake_at"] } } } }, ["slack"])), /x: an agent in trial may not have chat_lane write tools \(chat_send, wake_at\); they come with tap 2/);
+});
+test("the Fleet Steward's grants: reads, plus exactly its predecessors' writes; no public GitHub write and no web", () => {
+  // Roster merge 5.3 (Fleet Ops, Agent Coach, Librarian). It reads every agent's evidence (fleet-audit), so it must never
+  // gain a write that reaches outside the fleet: product bugs go to the Maintainer. An edit that widens this fails here.
+  const dir = mkdtempSync(join(tmpdir(), "inst-"));
+  mkdirSync(join(dir, "agents"));
+  writeFileSync(join(dir, "instance.yaml"), YAML.stringify({ product: "0".repeat(40), modules: [...BUNDLE, "github", "meetings", "grafana", "maintainer", "agent-builder"], settings: owner }));
+  const r = compile(product, dir);
+  const a = r.paperclip.agents["fleet-steward"];
+  const writes = Object.entries(a.enabled_tools).flatMap(([c, list]) => list.filter((t) => writeTools(r.paperclip.mcp_servers[c]).includes(t)).map((t) => `${c}.${t}`)).sort();
+  assert.deepEqual(writes, ["apps.person_identity_decide", "ops_mcp.meeting_note_correct", "owner_channel.notify", "paperclip_tasks.coach_record", "paperclip_tasks.task_comment", "paperclip_tasks.task_create", "paperclip_tasks.task_delegate", "paperclip_tasks.task_finish", "paperclip_tasks.task_handoff", "paperclip_tasks.task_propose_rule", "paperclip_tasks.task_set_status"]);
+  assert.deepEqual(a.enabled_tools.github, ["github_app_issue_status"]);
+  assert.equal(a.web_search, "disabled");
+  assert.ok(!a.enabled_tools.apps.includes("web_view"));
+  assert.deepEqual(a.roles, ["fleet-read", "fleet-audit", "librarian"]);
+  assert.deepEqual(a.delegate_to, ["fleet-engineer", "app-maintainer", "app-owners", "architect", "maintainer"]);
+  assert.ok(r.paperclip.agents.maintainer.enabled_tools.github.includes("github_app_issue"), "the Maintainer files product bugs");
 });
 test("the in-box `aidenhq task|tasks` reads are the tasks module's default grant: crew yes; trial, check, and an Engineer without private_reads no", () => {
   const reads = (yaml) => (compile(product, withAgents({ x: { yaml } }, ["slack"])).paperclip.agents.x.enabled_tools.paperclip_tasks ?? []).filter((t) => ["task_get", "task_search"].includes(t)).sort();

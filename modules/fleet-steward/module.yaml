@@ -1,0 +1,131 @@
+name: fleet-steward
+description: "Fleet Steward: watches the fleet (stuck or failing runs, sources and apps down), reviews other agents' outcomes, keeps the notes, the people directory and agents' memory tidy, and files every fix through the usual tiers."
+# One agent for fleet upkeep (roster merge 5.3: Fleet Ops, the Agent Coach and the Knowledge Librarian), one skill per
+# routine. It reads every agent's evidence, so it holds no public write: product bugs go to the Maintainer, which files
+# them upstream (owner, 2026-11-18: no single agent both reads every agent's private data and writes public GitHub issues).
+roles:
+  declares:
+    - { id: fleet-read, description: "The board's fleet status only (never fleet_control or relaying the owner's words)." }
+    - { id: fleet-audit, description: "Read any agent's evidence (the board's coach routes) and keep a review log (tasks bridge coach_*)." }
+    - { id: librarian, description: "Read every handbook, decide proposed identity links, hand rule proposals to the Platform Engineer (tasks bridge, apps-mcp)." }
+settings:
+  # Minutes between the board's detector checks (lower while developing). The detector wakes the Steward only when a
+  # threshold trips or recovers, at most once per 30 minutes unless an app or apps-mcp is down or a critical alert fires
+  # (services/board/src/fleet-ops.ts).
+  fleet_ops_interval_minutes:
+    default: 10
+agents:
+  fleet-steward:
+    department: platform
+    model: ~deepseek/deepseek-flash-latest
+    reasoning_effort: high
+    timeout_sec: 1800
+    # It reads every agent's private data and untrusted text (notes, task text, handbooks) and needs nothing from the web.
+    web_search: disabled
+    connections:
+      # Reads, plus one write: person_identity_decide (role librarian) confirms or rejects a proposed identity link.
+      apps: [ app_list, app_status, app_logs, app_view, warehouse_query, person_identity_decide ]
+      # The notes vault, read-only, plus its one correction tool (meeting notes), when the meetings module is on.
+      ops_mcp?: [ obsidian_search, obsidian_read, obsidian_read_document_map, knowledge_list, knowledge_index, knowledge_search, knowledge_read, meeting_note_correct ]
+      owner_channel: [ notify ]
+      # Metrics and dashboards (monitoring alerts' series), when the grafana module is on: reads only.
+      grafana?: read
+      # Where the product-bug issues the Maintainer filed for it stand: a read. Filing is the Maintainer's.
+      github?: [ github_app_issue_status ]
+      # fleet_status through fleet-read (no fleet_control, no relaying, no approvals decided); coach_* through fleet-audit;
+      # handbook_list/handbook_read/task_propose_rule through librarian. task_create/task_delegate only to delegate_to below.
+      paperclip_tasks: [ task_current, task_get, task_comments, task_search, task_list, task_approvals, task_team,
+                         task_create, task_comment, task_delegate, task_handoff, task_set_status, task_finish,
+                         fleet_status, fleet_catalog, fleet_generation_status, fanout_map,
+                         coach_due, coach_evidence, coach_record, handbook_list, handbook_read, task_propose_rule ]
+    # It reads untrusted content broadly: the tasks module lets it assign work only to these. Fixes are theirs, under tiers:
+    # the Platform Engineer (rules, product and instance changes), an app's owner (app-owners; the
+    # DevOps Engineer for an app with none), the Agent Architect (an agent's definition), the Maintainer (product bugs upstream).
+    delegate_to: [ fleet-engineer, app-maintainer?, app-owners, architect?, maintainer? ]
+    roles: [ fleet-read, fleet-audit, librarian ]
+# Routine titles stay as they were: setup matches routines by title (and the check's webhook secrets by secrets_prefix).
+routines:
+  fleet-ops-check:
+    title: "Fleet Ops: check"
+    agent: fleet-steward
+    description: |
+      Now {{timestamp}}. The board's detector tripped or recovered. Follow your fleet-check skill: `fleet_status` →
+      `detector` lists what is open and what recovered. Close this task with one line.
+    concurrency: coalesce_if_active
+    webhook: true # fired by the board's detector
+    webhook_base: http://paperclip:3100 # the board calls it from inside the compose network
+    secrets_prefix: fleet_ops_webhook # setup saves <prefix>_url / _secret; the module's compose mounts them into the board
+    autonomy: full # fired by our own detector over fleet state, not outside text: its fixes stay the AI reviewer's
+  fleet-ops-digest:
+    title: "Fleet Ops: daily digest"
+    agent: fleet-steward
+    description: |
+      Today is {{date}}. Follow your fleet-digest skill: work the day's deep-look lines, then send one notify (kind digest)
+      of the day and log it. Then close this task with one line.
+    concurrency: skip_if_active
+    schedules:
+      - { cron: "45 20 * * *", timezone: "${settings.timezone}", label: "evening" }
+  fleet-ops-weekly:
+    title: "Fleet Ops: weekly review"
+    agent: fleet-steward
+    description: |
+      Today is {{date}}. Follow your fleet-review skill: group the week's recurring failures and file at most 3 rule
+      proposals, plus a Dependabot backstop delegation. Then close this task with one line.
+    concurrency: skip_if_active
+    schedules:
+      - { cron: "0 9 * * 1", timezone: "${settings.timezone}", label: "Monday morning" }
+  coach-review:
+    title: "Agent Coach: review"
+    agent: fleet-steward
+    description: |
+      Now {{timestamp}}. Follow your agent-review skill: `coach_due` lists the agents to review (at most 3). Review each,
+      file at most 2 new fixes in total, record each review with `coach_record`, then close this task with one line.
+    concurrency: skip_if_active
+    schedules:
+      - { cron: "20 */6 * * *", timezone: "${settings.timezone}", label: "every 6 hours" }
+  coach-digest:
+    title: "Agent Coach: weekly digest"
+    agent: fleet-steward
+    description: |
+      Today is {{date}}. Follow your review-digest skill: file one digest task for the owner (task_create) and, only when
+      it is new, send one notify (kind digest) about it. Then close this task with one line.
+    concurrency: skip_if_active
+    schedules:
+      - { cron: "30 9 * * 1", timezone: "${settings.timezone}", label: "Monday morning" }
+  coach-prune:
+    title: "Agent Coach: weekly prune"
+    agent: fleet-steward
+    description: |
+      Today is {{date}}. Follow your handbook-prune skill: one task for the Platform Engineer listing dead handbook text
+      to delete, or a "nothing to prune" note. Then close this task with one line.
+    concurrency: skip_if_active
+    schedules:
+      - { cron: "0 10 * * 0", timezone: "${settings.timezone}", label: "Sunday morning" }
+  librarian-daily:
+    title: Librarian daily pass
+    agent: fleet-steward
+    description: |
+      Today is {{date}}. Follow your knowledge-daily skill: review what is new since yesterday in the notes vault, the
+      people proposals and the agents' memory inboxes, fix what the tools allow, note the rest for the weekly report, then
+      close this task with a short count summary.
+    concurrency: coalesce_if_active
+    schedules:
+      - { cron: "30 6 * * *", timezone: "${settings.timezone}", label: "daily" }
+  librarian-weekly:
+    title: Librarian weekly lint
+    agent: fleet-steward
+    description: |
+      Today is {{date}}. Follow your knowledge-lint skill: lint the whole notes vault, the people directory and the
+      agents' rules, then file the one weekly report task. Then close this task with one line saying what you did.
+    concurrency: coalesce_if_active
+    schedules:
+      - { cron: "0 7 * * 1", timezone: "${settings.timezone}", label: "Monday morning" }
+# Switches on the board's detector (added to the root compose's board service).
+board_env:
+  FLEET_OPS_INTERVAL_MINUTES: "${settings.fleet_ops_interval_minutes}"
+  FLEET_OPS_WEBHOOK_URL_FILE: ${secrets.fleet_ops_webhook_url}
+  FLEET_OPS_WEBHOOK_SECRET_FILE: ${secrets.fleet_ops_webhook_secret}
+# Written by setup once the routine's webhook exists; empty until then (the detector stays off while they're empty).
+optional_secrets:
+  - fleet_ops_webhook_url
+  - fleet_ops_webhook_secret

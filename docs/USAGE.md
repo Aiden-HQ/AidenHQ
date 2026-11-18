@@ -86,7 +86,7 @@ Agents post only to channels you list, from the instance's Slack bot (never your
 "*<Agent>* (AI agent)", with no @channel or @here. Two steps, both reviewed like any change:
 
 1. Add the channel ids to `instance.yaml`: `settings: { slack_post_channels: [C0123ABCD] }`.
-2. Grant the agent the tool: `slack_live: [notify_owner, slack_post]` (agents in trial cannot have it).
+2. Grant the agent the tool: `slack_live: [slack_post]` (agents in trial cannot have it).
 
 Replies in the thread are read with the Slack read tools, using the post's `ts`.
 

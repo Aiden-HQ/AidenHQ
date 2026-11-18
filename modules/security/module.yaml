@@ -22,19 +22,17 @@ settings:
 agents:
   security-watch:
     department: security
-    adapter: codex_local
     model: ~deepseek/deepseek-flash-latest
     reasoning_effort: high
     timeout_sec: 1800
     connections:
       # src_security (findings) through the warehouse tools; web reads (web search is on for every agent).
       apps: [ app_list, app_status, web_view, warehouse_query, source_new, source_ack, finding_verdict ]
-      telegram: [ notify_owner ]
+      owner_channel: [ notify ]
       paperclip_tasks: [ task_current, task_get, task_comments, task_search, task_list, task_create, task_comment, task_set_status, task_finish, fleet_catalog ]
     roles: [ security-verdict ]
   red-teamer:
     department: security
-    adapter: codex_local
     # GLM: a lower refusal rate for offensive security work (owner, 2026-11-11). GLM Flash at high since 2026-11-13 (the
     # owner's pick after a blind bake-off).
     model: ~z-ai/glm-flash-latest
@@ -45,7 +43,7 @@ agents:
     # github-mcp has no file tools and app repos are private; white-box review is App Auditor's.
     connections:
       apps: [ app_list, app_status, app_view, app_api, web_view, warehouse_query ]
-      telegram: [ notify_owner ]
+      owner_channel: [ notify ]
       paperclip_tasks: [ task_current, task_get, task_comments, task_search, task_list, task_create, task_comment, task_set_status, task_finish, fleet_catalog ]
 routines:
   security-scan:
@@ -86,7 +84,7 @@ routines:
     agent: red-teamer
     description: |
       Today is {{date}}. Follow "Weekly rolling pass" in your handbook: the next targets in rotation, under the rules
-      of engagement; findings with a proof of concept, each filed as a finding task (task_create), with notify_owner for a high or
+      of engagement; findings with a proof of concept, each filed as a finding task (task_create), with notify (kind alert) for a high or
       critical one. Then close this task with counts.
     concurrency: skip_if_active
     schedules:

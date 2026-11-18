@@ -58,7 +58,7 @@ export function appTokens(kernelUrl: string, key: string, fetch = globalThis.fet
 /**
  * git args + env for a command that carries the token in env AIDENHQ_GIT_TOKEN (never argv, URL or .git/config): config a
  * planted repo could use to run code or reroute traffic is overridden, every other credential helper cleared, and this one
- * answers only `get` for protocol=https and host=github.com (as modules/codehost-github/src/github-app.ts).
+ * answers only `get` for protocol=https and host=github.com (as modules/codehost-github/service/src/github-app.ts).
  */
 export const CREDENTIAL_ARGS = [
   "-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=", "-c", "core.sshCommand=", "-c", "http.proxy=",

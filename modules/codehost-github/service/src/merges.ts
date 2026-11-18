@@ -5,16 +5,17 @@
 // One queue per repository: a poll merges at most one PR per repository, records in the order they were approved, so two merges
 // never race on a base. A PR merges only at the head the record bound (the merge call carries that sha, so GitHub refuses any
 // other), once the gate says so and, last, the reviewer-eval gate (evalgate.ts) has a verified receipt where it requires one.
-// Until lands_platform_repos (the big switch), nothing lands outside the agents org.
+// A UI head in the agents org that waits on its design review gets the UI Reviewer's task for it (design-review.ts), once per
+// head, beside its checks; with no verdict in time it is asked once more, then the PR isn't merged.
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { READ, mergePermissions, ownRepo } from "./github-app.ts";
-import { EVAL_WAIT_MINUTES, PR_QUERY, WAIT_MINUTES, decide, mergeMethod, withGate } from "./merge-gate.mjs";
+import { DESIGN_REVIEW, EVAL_WAIT_MINUTES, PR_QUERY, WAIT_MINUTES, awaitsDesignReview, decide, mergeMethod, withGate } from "./merge-gate.mjs";
 
 type Gh = (method: string, path: string, token: string, body?: unknown) => Promise<{ status: number; body: any }>;
 type Outcome = { ok: boolean; text: string };
 export type EvalGate = (repo: string, pr: any) => Promise<undefined | { wait: string } | { stop: string }>;
-type Pr = { repo: string; number: number; head: string; url: string; status: string; note?: string; sha?: string; wait?: { key: string; since: string } };
+type Pr = { repo: string; number: number; head: string; url: string; status: string; note?: string; sha?: string; wait?: { key: string; since: string }; reviewAsked?: string; reviewAskedAgain?: string };
 type Queue = { state: string; prs: Pr[]; said: string[]; startedAt: string; finishedAt?: string; outcome?: Outcome; reported?: boolean };
 
 const same = (a?: string, b?: string) => Boolean(a && b) && a!.toLowerCase() === b!.toLowerCase();
@@ -22,15 +23,18 @@ const KEEP_MS = 7 * 24 * 3600_000;
 /** How long GitHub may keep failing on one PR before it is reported not merged. */
 const ERROR_MINUTES = 30;
 const says = (e: unknown) => String((e as Error)?.message ?? e).split("\n").pop()!.slice(0, 300);
+/** The fixed start of a merge outcome's first line: the PRs this queue merged (finish). */
+export const MERGED_LINE = "merged-prs: ";
 
 export function createMerges(d: {
   dir: string;
   /** An installation token narrowed to `repo` and these permissions. */
   token(repo: string, perms: Record<string, string>): Promise<string>;
   gh: Gh;
-  agentsOrg: string; productRepo?: string; modulesRepo?: string;
-  landsPlatformRepos: boolean;
+  agentsOrg: string; productRepo?: string;
   evalGate: EvalGate;
+  /** Files the design reviewer's task for a PR head the queue waits on for its verdict (design-review.ts). */
+  designReview?: (ask: { repo: string; number: number; head: string; again?: boolean }) => Promise<unknown>;
   /** Delivers a record's outcome to the kernel (POST /v1/writes/:id/outcome). */
   report(id: string, o: Outcome): Promise<void>;
   log?: (msg: string, f?: Record<string, unknown>) => void;
@@ -39,7 +43,7 @@ export function createMerges(d: {
 }) {
   const log = d.log ?? (() => {});
   const now = d.now ?? (() => new Date());
-  const platform = [d.productRepo, d.modulesRepo].filter(Boolean) as string[];
+  const platform = [d.productRepo].filter(Boolean) as string[];
   const inAgentsOrg = (repo: string) => same(repo.split("/")[0], d.agentsOrg) && !platform.some((p) => same(p, repo));
   mkdirSync(d.dir, { recursive: true });
   const file = join(d.dir, "merges.json");
@@ -72,17 +76,33 @@ export function createMerges(d: {
       if (p.wait?.key !== key) p.wait = { key, since: now().toISOString() };
       if (t - Date.parse(p.wait.since) > limit * 60_000) fail(`stuck for ${limit} minutes: ${why}`);
     };
-    if (!d.landsPlatformRepos && !inAgentsOrg(p.repo)) return fail(`codehost-github doesn't land in ${p.repo} yet (lands_platform_repos is off until the switch)`);
+    const askReview = async (again: boolean) => {
+      if (again) p.reviewAskedAgain = p.head;
+      else p.reviewAsked = p.head;
+      await d.designReview?.({ repo: p.repo, number: p.number, head: p.head, ...(again ? { again } : {}) }).catch((e: Error) => log("design review task failed", { pr: p.url, err: says(e) }));
+    };
+    // Outside the agents org and the product repo the App is PR-only: it merges nothing there.
+    if (!ownRepo(p.repo, d.agentsOrg, platform)) return fail(`\`${p.repo}\` is outside the agents org and the product repo, where the code host only opens PRs: merge it there`);
     try {
       const data = await readPr(p.repo, p.number);
-      const v = decide(data, p.head, { ownRepo: ownRepo(p.repo, d.agentsOrg, platform), uiReview: inAgentsOrg(p.repo) });
+      const uiReview = inAgentsOrg(p.repo);
+      const v = decide(data, p.head, { uiReview });
+      // The design reviewer is asked as soon as a UI head waits without a verdict: its review runs beside the checks.
+      if (v.do === "wait" && uiReview && p.reviewAsked !== p.head && awaitsDesignReview(data.repository.pullRequest)) await askReview(false);
       if (v.do === "done") {
         Object.assign(p, { status: "skipped", note: v.why });
         delete p.wait;
         return void q.said.push(`${p.url} was ${v.why}.`);
       }
       if (v.do === "fail") return fail(v.why);
-      if (v.do === "wait") return wait(v.why, v.why, v.limit ?? WAIT_MINUTES);
+      if (v.do === "wait") {
+        // No verdict within its time: the reviewer is asked once more for the same head and the wait starts over.
+        if (v.review && p.wait?.key === v.why && t - Date.parse(p.wait.since) > DESIGN_REVIEW.minutes * 60_000 && p.reviewAskedAgain !== p.head) {
+          p.wait = { key: v.why, since: now().toISOString() };
+          return askReview(true);
+        }
+        return wait(v.why, v.why, v.limit ?? WAIT_MINUTES);
+      }
       const gate = await d.evalGate(p.repo, data.repository.pullRequest);
       if (gate && "stop" in gate) return fail(gate.stop);
       if (gate) return wait("eval", gate.wait, EVAL_WAIT_MINUTES);
@@ -105,11 +125,17 @@ export function createMerges(d: {
     }
   }
 
+  /**
+   * ok only when every PR the record named merged (or was merged already). The text's first line is MERGED_LINE and the PRs this
+   * queue merged itself, as JSON ({ repo, number, head, sha }, an empty list when none): what readers of the record (the grading
+   * module) take as merged, never the record's args. Then what the queue said, last word last.
+   */
   function finish(id: string, q: Queue) {
     const ok = q.prs.every((p) => p.status === "merged" || p.status === "skipped");
     const n = q.prs.filter((p) => p.status === "merged" || p.status === "skipped").length;
     const headline = ok ? `**Done:** ${n} merged.` : `**Merges finished:** ${n} merged, ${q.prs.length - n} not.`;
-    q.outcome = { ok, text: [...q.said, headline].join("\n\n").slice(-12_000) };
+    const merged = q.prs.filter((p) => p.status === "merged" && typeof p.sha === "string").map((p) => ({ repo: p.repo, number: p.number, head: p.head, sha: p.sha }));
+    q.outcome = { ok, text: `${MERGED_LINE}${JSON.stringify(merged)}\n\n${[...q.said, headline].join("\n\n").slice(-12_000)}` };
     Object.assign(q, { state: ok ? "done" : "stopped", finishedAt: now().toISOString() });
     log("merges finished", { record: id, ok });
     deliver(id, q);

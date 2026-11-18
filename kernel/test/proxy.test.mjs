@@ -40,7 +40,7 @@ test("the proxy: grants, listing, the service key, assertions, fencing", async (
   assert.equal(s.headers.cookie, undefined);
   assert.ok(!JSON.stringify(s.headers).includes("run-jwt-ada"));
   const caller = await verifyCaller({ headers: { "x-aidenhq-caller": s.caller } }, k.jwks, "docs");
-  assert.deepEqual({ agent: caller.agent, key: caller.key, name: caller.name, roles: caller.roles, task: caller.task, tool: caller.tool }, { agent: "ag-ada", key: "ada", name: "Ada", roles: ["writer"], task: undefined, tool: "docs.doc_read" });
+  assert.deepEqual({ agent: caller.agent, key: caller.key, name: caller.name, roles: caller.roles, task: caller.task, tool: caller.tool }, { agent: "ag-ada", key: "ada", name: "ada", roles: ["writer"], task: "TASK-1", tool: "docs.doc_read" });
   await assert.rejects(verifyCaller({ headers: { "x-aidenhq-caller": s.caller } }, k.jwks, "other"), /not other/);
   // A trial agent's assertion carries kernel.trial.
   await k.call("docs", "agent-key-bo", { method: "tools/call", params: { name: "doc_read", arguments: {} } });
@@ -63,11 +63,8 @@ test("the proxy: grants, listing, the service key, assertions, fencing", async (
   assert.equal(r.status, 400);
   assert.equal(docs.seen.length, before);
 
-  // The harness key (the new-agent hello probe): it starts, lists nothing and calls nothing.
-  r = await k.call("docs", "harness-key", { method: "tools/list" });
-  assert.deepEqual((await r.json()).result.tools, []);
-  r = await k.call("docs", "harness-key", { method: "tools/call", params: { name: "doc_read" } });
-  assert.equal((await r.json()).error.message, "no-grant");
+  // Paperclip's credentials (a run JWT, a launcher run token, the old harness key) are no callers at all.
+  for (const tok of ["eyJhbGciOi.x.y", "ahqc_x", "harness-key"]) assert.equal((await k.call("docs", tok, { method: "tools/list" })).status, 401, tok);
 
   // Every call is logged with its connection, tool, agent, time and outcome.
   assert.ok(k.log.some((l) => l.msg === "proxy" && l.connection === "docs" && l.tool === "doc_read" && l.agent === "ada" && l.outcome === "ok" && typeof l.ms === "number"));
@@ -87,46 +84,16 @@ test("A4: an assertion opens /v1/cp/agent/* only while its call is in flight, an
     return { content: [{ type: "text", text: "ok" }] };
   } });
   const other = await moduleServer(t, { key: "other-key", tools: ["x"] });
-  k = await kernel(t, { agents, grants, secrets, connections: { docs: conn(docs.url, "docs", { read: ["doc_read"] }), other: conn(other.url, "other", { read: ["x"] }) } });
+  k = await kernel(t, { agents, grants, secrets: { ...secrets, "paperclip-agents/ag-ada": "ada-key" }, connections: { docs: conn(docs.url, "docs", { read: ["doc_read"] }), other: conn(other.url, "other", { read: ["x"] }) } });
   assert.equal((await k.call("docs", "run-jwt-ada", { method: "tools/call", params: { name: "doc_read" } })).status, 200);
-  // Inside the call: several uses, as the caller itself (its own credential, never the owner's).
-  assert.deepEqual(inside, { a: 200, b: 200, as: "run-jwt-ada", other: 401, off: 403, dots: 403 });
+  // Inside the call: the assertion opens the route, as many times as the call needs; the kernel reads with the job's agent's
+  // own key (never the owner's, never handed to the module).
+  assert.deepEqual(inside, { a: 200, b: 200, as: "ada-key", other: 401, off: 403, dots: 403 });
   // Once the call's answer ended: refused.
   assert.equal((await cp(assertion, "docs-key")).status, 401);
   // A forged one, or none: refused.
   assert.equal((await cp(`${assertion.slice(0, -4)}AAAA`, "docs-key")).status, 401);
   assert.equal((await cp("", "docs-key")).status, 401);
-});
-
-test("an approved write replays as its requester: the control plane sees the agent's own key and run, for that call only", async (t) => {
-  // A run's JWT names its run (identity.ts); setup keeps each agent's own key at paperclip-agents/<id>.
-  const jwt = `eyJhbGciOiJIUzI1NiJ9.${Buffer.from(JSON.stringify({ run_id: "run-7" })).toString("base64url")}.sig`;
-  let k, assertion, inside;
-  const cp = (key) => fetch(`${k.url}/v1/cp/agent/api/issues/TASK-1/comments`, { method: "POST", headers: { authorization: `Bearer ${key}`, "x-aidenhq-caller": assertion, "content-type": "application/json" }, body: "{}" });
-  const docs = await moduleServer(t, { key: "docs-key", tools: ["doc_write"], answer: async (_msg, req) => {
-    assertion = req.headers["x-aidenhq-caller"];
-    const r = await cp("docs-key");
-    inside = { status: r.status, as: (await r.json()).as };
-    return { content: [{ type: "text", text: "ok" }] };
-  } });
-  const runs = [];
-  k = await kernel(t, { onControl: (req) => void (req.url === "/api/issues/TASK-1/comments" && runs.push(req.headers["x-paperclip-run-id"])), agents: { ...agents, [jwt]: { id: "ag-ada", name: "Ada" } }, grants, settings: { autonomy: "off" }, secrets: { ...secrets, "paperclip-agents/ag-ada": "ada-own-key" },
-    connections: { docs: conn(docs.url, "docs", { write: ["doc_write"] }) } });
-  // Autonomy off: the write is the owner's card; nothing reaches the module yet.
-  const filed = JSON.parse((await (await k.call("docs", jwt, { method: "tools/call", params: { name: "doc_write", arguments: { note: "hi" } } })).json()).result.content[0].text.split("\n")[0]);
-  const rec = k.records.get(filed.approval);
-  assert.deepEqual([rec.state, rec.tier, rec.requester.run], ["owner", 2, "run-7"]);
-  assert.equal(docs.seen.filter((m) => m.method === "tools/call").length, 0);
-  k.writes.decide(rec.id, { digest: rec.digest, decision: "approve", by: "owner:chat", via: "chat" });
-  await new Promise((r) => { const i = setInterval(() => { if (k.records.get(rec.id).state === "done") { clearInterval(i); r(); } }, 20); });
-  // Inside the replay the module acted as Ada: her own key, on her run; the module never saw the key.
-  assert.deepEqual(inside, { status: 200, as: "ada-own-key" });
-  const at = k.control.find((c) => c.url === "/api/issues/TASK-1/comments");
-  assert.equal(at.auth, "ada-own-key");
-  assert.deepEqual(runs, ["run-7"]);
-  assert.ok(docs.seen.every((m) => !JSON.stringify(m).includes("ada-own-key")));
-  // Once the replay ended, its assertion opens nothing.
-  assert.equal((await cp("docs-key")).status, 401);
 });
 
 test("A5: a module token without services.grants cannot call another connection; the directory never shows tools", async (t) => {
@@ -138,9 +105,9 @@ test("A5: a module token without services.grants cannot call another connection;
   assert.equal(docs.seen.filter((s) => s.method === "tools/call").length, 0);
   const dir = await fetch(`${k.url}/v1/agents`, { headers: { authorization: "Bearer other-key" } }).then((x) => x.json());
   assert.deepEqual(dir, { agents: { "ag-ada": { key: "ada", roles: ["writer"], profile: "engineer" }, "ag-bo": { key: "bo", roles: [], trial: true } }, settings: { coach: "off", agents_org: "acme" } });
-  assert.equal((await fetch(`${k.url}/v1/agents`, { headers: { authorization: "Bearer run-jwt-ada" } })).status, 401);
-  const me = await fetch(`${k.url}/v1/whoami`, { headers: { authorization: "Bearer run-jwt-ada" } }).then((x) => x.json());
-  assert.deepEqual(me, { kind: "run", agent: "ag-ada", roles: ["writer"], tools: { docs: ["doc_read", "doc_write"] } });
+  assert.equal((await fetch(`${k.url}/v1/agents`, { headers: { authorization: `Bearer ${k.token("run-jwt-ada")}` } })).status, 401);
+  const me = await fetch(`${k.url}/v1/whoami`, { headers: { authorization: `Bearer ${k.token("run-jwt-ada")}` } }).then((x) => x.json());
+  assert.deepEqual(me, { kind: "run", agent: "ag-ada", roles: ["writer"], task: "TASK-1", tools: { docs: ["doc_read", "doc_write"] } });
 });
 
 test("jobs: their jobcaps only, their own token only, on the job listener only, through the read endpoint", async (t) => {
@@ -230,74 +197,4 @@ test("untrusted answers: errors, resources, SSE events and failures all reach th
   const f = JSON.parse(await call());
   assert.match(f.error.message, /^UNTRUSTED CONTENT from docs\.doc_read/);
   assert.match(f.error.message, /answered 500/);
-});
-
-test("an agent computer's run token: the launcher names the agent, and a revoked one stops at once", async (t) => {
-  const docs = await moduleServer(t, { key: "docs-key", tools: ["doc_read"] });
-  const boxes = { ahqc_live: { agentId: "ag-ada", runId: "run-9", issueId: "TASK-9" } };
-  const k = await kernel(t, { agents, grants, boxes, secrets, connections: { docs: conn(docs.url, "docs", { read: ["doc_read"] }) } });
-  await k.call("docs", "ahqc_live", { method: "tools/call", params: { name: "doc_read" } });
-  const c = await verifyCaller({ headers: { "x-aidenhq-caller": docs.seen.at(-1).caller } }, k.jwks, "docs");
-  assert.deepEqual([c.agent, c.run, c.task], ["ag-ada", "run-9", "TASK-9"]);
-  delete boxes.ahqc_live;
-  assert.equal((await k.call("docs", "ahqc_live", { method: "tools/list" })).status, 401);
-});
-
-test("a computer's run holds its agent's jobcaps (a private one stays a job token's); a control-plane run doesn't", async (t) => {
-  const docs = await moduleServer(t, { key: "docs-key", tools: ["doc_read", "doc_search", "doc_secret"] });
-  const boxes = { ahqc_job: { agentId: "ag-cy", issueId: "TASK-3" } };
-  const grantsCy = { "ag-cy": { key: "cy", roles: [], tools: {}, jobcaps: ["docs-read", "docs-private"] } };
-  const jobcaps = { "docs-read": { connection: "docs", url: `${docs.url}/mcp`, bearer_secret: "docs_service_key", tools: ["doc_read", "doc_search"] }, "docs-private": { connection: "docs", url: `${docs.url}/mcp`, bearer_secret: "docs_service_key", tools: ["doc_secret"], private: true } };
-  const k = await kernel(t, { agents: { "agent-key-cy": { id: "ag-cy", name: "Cy" } }, grants: grantsCy, boxes, jobcaps, secrets, connections: { docs: conn(docs.url, "docs", { read: ["doc_read", "doc_search", "doc_secret"] }) } });
-  let r = await k.call("docs", "ahqc_job", { method: "tools/list" });
-  assert.deepEqual((await r.json()).result.tools.map((x) => x.name), ["doc_read", "doc_search"]);
-  r = await k.call("docs", "ahqc_job", { method: "tools/call", params: { name: "doc_secret" } });
-  assert.deepEqual((await r.json()).error, { code: -32602, message: "no-grant" });
-  r = await k.call("docs", "agent-key-cy", { method: "tools/call", params: { name: "doc_read" } });
-  assert.deepEqual((await r.json()).error, { code: -32602, message: "no-grant" });
-});
-
-test("a module's model calls for its caller: only a module that declares it, only while the call is in flight", async (t) => {
-  let k, inside;
-  const as = (key, jwt) => k.asCaller({ headers: { authorization: `Bearer ${key}`, "x-aidenhq-caller": jwt } }).then((c) => c, (e) => e.status);
-  const docs = await moduleServer(t, { key: "docs-key", tools: ["doc_read"], answer: async (_m, req) => {
-    const jwt = req.headers["x-aidenhq-caller"];
-    inside = { jwt, docs: await as("docs-key", jwt), other: await as("other-key", jwt) };
-    return { content: [] };
-  } });
-  const other = await moduleServer(t, { key: "other-key", tools: ["x"] });
-  k = await kernel(t, { agents, grants, secrets, connections: { docs: conn(docs.url, "docs", { read: ["doc_read"] }, { model_as_caller: true }), other: conn(other.url, "other", { read: ["x"] }) } });
-  await k.call("docs", "run-jwt-ada", { method: "tools/call", params: { name: "doc_read" } });
-  assert.equal(inside.docs, "run-jwt-ada");
-  assert.equal(inside.other, 403); // other hasn't declared it (and the assertion isn't its own)
-  assert.equal(await as("docs-key", inside.jwt), 401); // the call ended
-  assert.ok(k.log.some((l) => l.msg === "model as caller" && l.module === "docs" && l.agent === "ada"));
-});
-
-test("the real tasks server behind the real proxy: a read and a write reach the control plane as the caller", async (t) => {
-  const { spawn } = await import("node:child_process");
-  const { createServer } = await import("node:net");
-  const port = await new Promise((r) => { const s = createServer().listen(0, "127.0.0.1", () => { const p = s.address().port; s.close(() => r(p)); }); });
-  const issue = { id: "i-1", identifier: "WOR-1", title: "Digest", status: "in_progress", priority: "medium", labels: [], assigneeAgentId: "ag-ada" };
-  const k = await kernel(t, { agents, secrets: { ...secrets, tasks_service_key: "tasks-key" },
-    grants: { "ag-ada": { key: "ada", roles: [], tools: { paperclip_tasks: ["task_get", "task_comment"] } } },
-    connections: { paperclip_tasks: { url: `http://127.0.0.1:${port}/mcp`, auth_secret: "tasks_service_key", module: "tasks", returns: "untrusted", tools: { read: ["task_get"], write: ["task_comment"], destructive: [] } } },
-    onControl: (req, body, auth) => {
-      if (req.url === "/api/agents/me") return { body: { ...agents[auth], companyId: "co" } };
-      if (req.url.startsWith("/api/issues/WOR-1/comments") && req.method === "POST") return { body: { id: "c1", body: JSON.parse(body).body } };
-      if (req.url.startsWith("/api/issues/WOR-1")) return { body: issue };
-      return undefined;
-    } });
-  const child = spawn(process.execPath, [new URL("../../modules/tasks/connections/tasks-mcp/src/main.mjs", import.meta.url).pathname], {
-    env: { PATH: process.env.PATH, PORT: String(port), AIDENHQ_MODULE: "tasks", AIDENHQ_KERNEL_URL: k.url, MCP_TOKEN: "tasks-key", AIDENHQ_BOARD_URL: "http://127.0.0.1:1", AIDENHQ_BOARD_TOKEN: "x" }, stdio: "ignore" });
-  t.after(() => child.kill());
-  for (let i = 0; i < 50 && !(await fetch(`http://127.0.0.1:${port}/healthz`).then((r) => r.ok, () => false)); i++) await new Promise((r) => setTimeout(r, 100));
-  const got = await (await k.call("paperclip_tasks", "run-jwt-ada", { method: "tools/call", params: { name: "task_get", arguments: { issue: "WOR-1" } } })).json();
-  assert.match(got.result.content[0].text, /UNTRUSTED CONTENT from paperclip_tasks\.task_get[\s\S]*"identifier": "WOR-1"/);
-  const said = await (await k.call("paperclip_tasks", "run-jwt-ada", { method: "tools/call", params: { name: "task_comment", arguments: { issue: "WOR-1", body: "hello" } } })).json();
-  assert.equal(said.result.isError, undefined, JSON.stringify(said));
-  // Every control-plane call went out with the caller's own credential, through the kernel's path allowlist.
-  const cp = k.control.filter((c) => c.url !== "/api/agents/me" || c.auth === "run-jwt-ada");
-  assert.ok(cp.some((c) => c.method === "POST" && c.url === "/api/issues/WOR-1/comments" && c.auth === "run-jwt-ada" && JSON.parse(c.body).body.includes("hello")));
-  assert.ok(cp.every((c) => c.auth === "run-jwt-ada" || c.url.startsWith("/api/heartbeat-runs/")));
 });

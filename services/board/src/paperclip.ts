@@ -25,7 +25,7 @@ export interface Agent {
   reportsTo?: string | null;
   adapterType: string;
   adapterConfig?: Record<string, unknown>;
-  metadata?: { setupKey?: string; module?: unknown; trial?: unknown; models?: unknown; persona?: unknown; avatar?: unknown; runnerEngine?: unknown; engine?: unknown; department?: unknown } | null;
+  metadata?: { setupKey?: string; module?: unknown; trial?: unknown; model?: unknown; models?: unknown; persona?: unknown; avatar?: unknown; runnerEngine?: unknown; engine?: unknown; profile?: unknown; department?: unknown } | null;
 }
 
 export interface Issue {
@@ -57,8 +57,6 @@ export interface Issue {
   originKind?: string | null;
   /** Paperclip's execution policy; a scheduled monitor is its persisted review path. */
   executionPolicy?: Record<string, unknown> | null;
-  /** A recovery hold: Paperclip parks the assignee's wakes for this task until it clears (single-issue reads only). */
-  executionBlocker?: { cause: string; runError?: string | null; runId?: string | null; recoveryActionId?: string | null } | null;
 }
 
 /** Paperclip's own approval: the board mirrors an open kernel card as one so its wait is counted (mirror.ts). */
@@ -100,24 +98,6 @@ export interface Routine {
 }
 
 /** A finished (or failed) agent run, from heartbeat-runs. */
-/** Why a cancelled run did nothing, for releasing the recovery hold it left (releaseCancelledRun). */
-export interface ReleaseWhy {
-  note: string;
-  evidence: string;
-}
-const BRAKE_CANCEL: ReleaseWhy = {
-  note: "The board's loop brake cancelled this run as it started; it did nothing.",
-  evidence: "Cancelled by the board's loop brake, which only cancels a run it saw still queued; it was stopped as it started, before any action.",
-};
-/** Paperclip's own disposition repair, cancelled before dispatch because the task already had a disposition. */
-export const REPAIR_SUPPRESSED = "legacy_disposition_repair_suppressed";
-/** What Paperclip calls a run whose adapter reported an incomplete response (Codex: "Incomplete response returned, reason: max_output_tokens"). */
-export const CONFIG_INCOMPLETE = "configuration_incomplete";
-export const REPAIR_SUPPRESSED_WHY: ReleaseWhy = {
-  note: "Paperclip suppressed its own disposition repair run before dispatch; it did nothing.",
-  evidence: "The run ended with legacy_disposition_repair_suppressed: Paperclip cancels it before the adapter starts, so no action ran.",
-};
-
 export interface PastRun {
   id: string;
   status: string;
@@ -332,24 +312,6 @@ export class Paperclip {
     return this.request("POST", `/api/heartbeat-runs/${encodeURIComponent(runId)}/cancel`, {});
   }
 
-  /**
-   * Clears the recovery hold Paperclip puts on a task when a cancelled run had just started and did nothing (the brake
-   * cancels only runs it saw queued; Paperclip's suppressed repair stops before dispatch), so the hold is resolved as
-   * restored with no action performed.
-   */
-  releaseCancelledRun(issue: Pick<Issue, "id" | "status" | "executionBlocker">, runId: string, why = BRAKE_CANCEL): Promise<unknown> {
-    const b = issue.executionBlocker;
-    if (!b?.recoveryActionId || b.runId !== runId) return Promise.resolve(undefined);
-    const status = ["todo", "done", "in_review"].includes(issue.status) ? issue.status : "todo";
-    return this.request("POST", `/api/issues/${encodeURIComponent(issue.id)}/recovery-actions/resolve`, {
-      actionId: b.recoveryActionId,
-      outcome: "restored",
-      sourceIssueStatus: status,
-      resolutionNote: why.note,
-      executionReconciliation: { runId, providerStopped: true, actionOutcome: "not_performed", outcomeEvidence: why.evidence },
-    });
-  }
-
   closedSince(since: string, limit = "100"): Promise<Issue[]> {
     return this.list("done,cancelled", since, limit);
   }
@@ -444,11 +406,6 @@ export class Paperclip {
 
   addComment(id: string, body: string): Promise<Comment> {
     return this.request<Comment>("POST", `/api/issues/${encodeURIComponent(id)}/comments`, { body });
-  }
-
-  /** Wakes an agent with no task attached (a task-scoped wake goes through that task's execution hold), or on `issueId`. */
-  wakeAgent(agentId: string, reason: string, idempotencyKey: string, issueId?: string): Promise<unknown> {
-    return this.request("POST", `/api/agents/${encodeURIComponent(agentId)}/wakeup`, { source: "on_demand", triggerDetail: "manual", reason, idempotencyKey, ...(issueId ? { issueId } : {}) });
   }
 
   createIssue(body: Record<string, unknown>): Promise<Issue> {

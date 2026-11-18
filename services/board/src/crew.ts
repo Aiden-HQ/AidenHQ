@@ -19,17 +19,12 @@ export interface CrewMember {
 const URGENCY: CrewState[] = ["needs", "failed", "working", "queued", "done"];
 export const mostUrgent = (states: CrewState[]): CrewState => URGENCY.find((s) => states.includes(s)) ?? "done";
 
-/** Runner job results that mean the agent got stuck (the runner's `jobs.status`). */
-const STUCK = new Set(["failed", "timeout", "incomplete"]);
-
 export interface CrewInput {
   assignees: Assignee[];
   /** Read markers per issue, and the default for issues never opened. */
   seen: (issueId: string) => string;
   /** Agents working on or queued for an issue, by identifier (activity.ts). */
   working: Map<string, { since: string | null; queued: boolean }>;
-  /** The runner's latest job result per identifier. */
-  jobs: Map<string, string>;
 }
 
 const crewAgent = (i: Issue, list: Assignee[]) => list.find((a) => a.kind !== "me" && a.key === i.assigneeAgentId);
@@ -88,13 +83,11 @@ export function issueState(i: Issue, agent: Assignee, input: CrewInput): CrewSta
   const w = input.working.get(i.identifier);
   if (w) return w.queued ? "queued" : "working";
   const closed = i.status === "done" || i.status === "cancelled";
-  const job = input.jobs.get(i.identifier);
-  if (!closed && job && STUCK.has(job)) return "failed";
   // Something new to read is the user's turn, even on a part that's closed.
   const activityAt = i.lastActivityAt ?? i.updatedAt;
   if (activityAt > input.seen(i.id)) return "needs";
-  // Assigned and not picked up yet (nothing happened since it was made): the runner polls, Paperclip wakes the Researcher.
-  if (!closed && i.status === "todo" && !job && Date.parse(activityAt) - Date.parse(i.createdAt) < 60_000) return "queued";
+  // Assigned and not picked up yet (nothing happened since it was made): Paperclip wakes the agent.
+  if (!closed && i.status === "todo" && Date.parse(activityAt) - Date.parse(i.createdAt) < 60_000) return "queued";
   return "done";
 }
 

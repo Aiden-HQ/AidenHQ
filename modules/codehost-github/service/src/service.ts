@@ -7,14 +7,13 @@
 // Repo code never runs here. Every git command carries SAFE_GIT_ARGS and no global or system config but the service's own
 // (no hooks, no filters, no fsmonitor); a job's commits come in by a fetch from its workspace's .git into this service's
 // bare cache clone, which is never checked out; the App token lives only in the env of the one git or GitHub call that
-// needs it. Until `lands_platform_repos` (the big switch), it lands nothing outside the agents org: the product and modules
-// repos are refused in plan, in execute and again at the merge. An approved merge runs as a queue (merges.ts) whose outcome
+// needs it. An approved merge runs as a queue (merges.ts) whose outcome
 // comes once its PRs merged at their approved heads, or it stopped.
 //
 // The instance's land for kernel.apply (the kernel's executor, with this service's executor key): POST /aidenhq/v1/apply/read
 // {repo, sha, branch, workspace?} → what the kernel plans and tiers the commit on (its files, texts, diff and trial edits against
-// the instance's main); /apply/land → the commit on main, never forced, once (a commit main already has is a no-op), and only
-// on a passing reviewer-eval receipt when it moves the official modules to new reviewer code.
+// the instance's main); /apply/land → the commit on main, never forced, once (a commit main already has is a no-op), and never
+// one that moves an `aidenhq` marketplace pin (the official modules come with the product pin).
 // The commit comes from this service's own copy when it made it, else from the task's workspace. The instance repo only.
 import { execFile, spawn } from "node:child_process";
 import { timingSafeEqual } from "node:crypto";
@@ -30,23 +29,26 @@ import { createMerges } from "./merges.ts";
 import { createReleaseTrain } from "./train.ts";
 import { plan as planRules } from "./plan.mjs";
 import { notePrTask } from "./pr-watch.ts";
+import { createDesignReviews, startDesignReviewSweep } from "./design-review.ts";
 import { noteKept } from "./tidy.ts";
 
 const run = promisify(execFile);
 
-/** codehost-github/src/git.mjs SAFE_GIT_ARGS (test/service.test.mjs checks they match). */
+/** The hardened git arguments: hooks, fsmonitor and ext:: transports off whatever a workspace's config says. */
 export const SAFE_GIT_ARGS = ["-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=", "-c", "protocol.ext.allow=never", "-c", "safe.bareRepository=explicit"];
 
 type Gh = (method: string, path: string, token: string, body?: unknown) => Promise<{ status: number; body: any }>;
 type App = { token(org: string, o: { repositories?: string[]; permissions?: Record<string, string>; fresh?: boolean }): Promise<string>; createRepo(slug: string): Promise<"exists" | "created">; identity(): Promise<{ name: string }> };
 export type Options = {
   key: string; kernelUrl: string; cacheDir: string; tasksDir?: string;
-  /** The App (src/github-app.ts appClient); undefined without the key: every GitHub action fails, saying so. */
+  /** The App (github-app.ts appClient); undefined without the key: every GitHub action fails, saying so. */
   app?: App; gh: Gh; remoteUrl?: (slug: string) => string;
-  agentsOrg: string; instanceRepo?: string; productRepo?: string; modulesRepo?: string;
-  landsPlatformRepos: boolean; log?: (msg: string, f?: Record<string, unknown>) => void;
+  agentsOrg: string; instanceRepo?: string; productRepo?: string;
+  log?: (msg: string, f?: Record<string, unknown>) => void;
   /** The release train's batch window, minutes (the instance's release_window_minutes). */
   releaseWindowMinutes?: number;
+  /** The owner's name, as the design reviewer's task names who approved a merge that doesn't wait for it. */
+  selfName?: string;
   /** Tests: the merge loop's clock and its poll interval. */
   now?: () => Date; mergeEveryMs?: number;
 };
@@ -165,13 +167,6 @@ export function createService(o: Options) {
     return { s, dir };
   }
 
-  // Until the big switch, nothing lands outside the agents org (the product and modules repos included).
-  function platformGuard(repos: string[]) {
-    if (o.landsPlatformRepos) return;
-    const out = repos.find((r) => !same(String(r).split("/")[0], o.agentsOrg) || same(r, o.productRepo) || same(r, o.modulesRepo));
-    if (out) throw Object.assign(fail(422, `codehost-github doesn't land in ${out} yet (lands_platform_repos is off until the switch)`), { rule: "platform-repos-off" });
-  }
-  const reposOf = (kind: string, a: any): string[] => (kind.endsWith(".merge") || kind.endsWith(".close") ? (a.prs ?? []).map((p: any) => p.repo) : kind.endsWith(".create_repo") ? [a.repo] : (a.only ?? []).map((b: any) => b.repo));
 
   // GitHub's checks on a commit as plan.mjs reads them: { ok, pending, skipped } each (names never leave this function).
   // Every page is read; if GitHub reports more than could be read, one check stays pending: missing evidence never passes.
@@ -202,8 +197,9 @@ export function createService(o: Options) {
   const notePushed = (sha: string) => writeFileSync(pushed, JSON.stringify([...pushedHeads().slice(-4999), sha]));
 
   /** The verified state plan.mjs tiers a request on (its `s`): read from the workspace, the cache and GitHub, never the args. */
-  async function stateFor(kind: string, a: any) {
-    const base = { agentsOrg: o.agentsOrg, instanceRepo: o.instanceRepo, productRepo: o.productRepo, modulesRepo: o.modulesRepo, requester: { platform: false }, also: [] as string[] };
+  async function stateFor(kind: string, a: any, requester?: { roles?: string[] }) {
+    // The Platform Engineer's line: a requester holding the platform-engineer role (the kernel's record of who asked, never the args).
+    const base = { agentsOrg: o.agentsOrg, instanceRepo: o.instanceRepo, productRepo: o.productRepo, requester: { platform: (requester?.roles ?? []).includes("platform-engineer") }, also: [] as string[] };
     if (kind.endsWith(".create_repo")) return { ...base, repo: slugOf(a.repo).slug };
     if (kind.endsWith(".merge") || kind.endsWith(".close")) {
       const prs = [];
@@ -235,12 +231,10 @@ export function createService(o: Options) {
 
   const executor: Executor = {
     async plan(req: PlanRequest) {
-      platformGuard(reposOf(req.kind, req.args ?? {}));
-      return planRules({ kind: req.kind, args: req.args }, await stateFor(req.kind, req.args ?? {}));
+      return planRules({ kind: req.kind, args: req.args }, await stateFor(req.kind, req.args ?? {}, req.requester));
     },
     async execute(rec) {
       const a = rec.args ?? {};
-      platformGuard(reposOf(rec.kind, a));
       const action = rec.kind.replace(/^codehost-github\./, "");
       const done: string[] = [];
       if (action === "push" || action === "pr") {
@@ -257,6 +251,8 @@ export function createService(o: Options) {
             const pr = open[0] ? await api("PATCH", `/repos/${s.slug}/pulls/${open[0].number}`, token, text) : await api("POST", `/repos/${s.slug}/pulls`, token, { ...text, head: b.branch, base: (await api("GET", `/repos/${s.slug}`, token)).default_branch });
             done.push(pr.html_url ?? `${s.slug}#${pr.number}`);
             if (pr.html_url) notePrTask(o.cacheDir, pr.html_url, { task: a.workspace, branch: b.branch }); // the PR watch wakes the task that opened it
+            // An agents-org PR that changes UI files gets its design review at this head (one that changes none files nothing).
+            if (same(s.org, o.agentsOrg) && pr.number) void designReviews?.fileDesignReview({ repo: s.slug, number: Number(pr.number), head: b.sha }).catch((e: Error) => log("design review task failed", { pr: pr.html_url, err: String(e.message ?? e).slice(0, 300) }));
           } else done.push(`${s.slug} ${b.branch} at ${b.sha.slice(0, 12)}`);
         }
         return { ok: true, text: `${action === "pr" ? "PRs" : "Pushed"}: ${done.join(", ")}` };
@@ -286,17 +282,21 @@ export function createService(o: Options) {
     if (!r.ok) throw new Error(`the kernel's ${path.split("/").slice(0, 3).join("/")} answered ${r.status}: ${String(j?.error?.message ?? j?.error ?? "").slice(0, 200)}`);
     return j;
   }
-  // The product's and the official modules repo's PRs that bring the AI reviewer's own code merge only on a passing
+  // The product's PRs that bring the AI reviewer's own code merge only on a passing
   // reviewer-eval receipt for their head (evalgate.ts; the eval is a kernel check job).
   const evalGate = createEvalGate({
-    productRepo: o.productRepo, modulesRepo: o.modulesRepo, dir: join(o.cacheDir, "merges"), kernel, log,
+    productRepo: o.productRepo, dir: join(o.cacheDir, "merges"), kernel, log,
     fetch: async (repo, ref) => fetchRemote(slugOf(repo), ref),
     git: (dir, args) => git(dir, args),
     defaultBranch: async (repo) => String((await api("GET", `/repos/${slugOf(repo).slug}`, await tokenFor(slugOf(repo), READ))).default_branch ?? "main"),
   });
+  // The design reviewer's tasks (design-review.ts): for an agents-org PR's UI head when it opens, and for each head the merge
+  // queue waits on for its verdict.
+  const designReviews = o.app ? createDesignReviews({ kernelUrl: o.kernelUrl, key: o.key, cacheDir: o.cacheDir, selfName: o.selfName || "the owner", app: o.app, gh: o.gh, log }) : undefined;
   const merges = createMerges({
-    dir: join(o.cacheDir, "merges"), gh: o.gh, agentsOrg: o.agentsOrg, productRepo: o.productRepo, modulesRepo: o.modulesRepo,
-    landsPlatformRepos: o.landsPlatformRepos, report, log, now: o.now, everyMs: o.mergeEveryMs,
+    designReview: async (ask) => designReviews?.fileDesignReview(ask),
+    dir: join(o.cacheDir, "merges"), gh: o.gh, agentsOrg: o.agentsOrg, productRepo: o.productRepo,
+    report, log, now: o.now, everyMs: o.mergeEveryMs,
     token: (repo, perms) => tokenFor(slugOf(repo), perms),
     evalGate: (repo, pr) => evalGate(repo, pr),
   });
@@ -403,17 +403,14 @@ export function createService(o: Options) {
     // Already on main (a land that ran before a restart): main is what applies, and it contains this commit.
     if (c.base === c.sha) return { landed: c.main, already: true };
     if (c.base !== c.main) throw fail(409, `the instance's ${c.def} moved on since this commit's base; it needs a rebase and a new approval`);
-    // The one choke point for new reviewer code reaching this host through an apply: any move of the official modules' pin
-    // (repository or sha) needs a passing reviewer-eval receipt (evalgate.ts bump), whoever filed the apply. The kernel reads
-    // the pin structurally from both sides (apply.ts officialMove) and names it; without it nothing lands.
+    // The official modules are the product's modules/: their reviewer code reaches this host only with the product pin, whose
+    // reviewer changes merged on a passing reviewer-eval receipt (evalgate.ts). An `aidenhq` marketplace pin an apply adds or
+    // moves would bring reviewer code past that gate, so it never lands; dropping one (a pre-monorepo install) does. The kernel reads the pin structurally from both sides
+    // (apply.ts officialMove) and names it; without it nothing lands.
     const pin = (x: any) => x === null || (x && typeof x.repo === "string" && SLUG.test(x.repo) && /^[0-9a-f]{40}$/.test(String(x.sha)));
     const off = b.official;
     if (!off || !pin(off.from) || !pin(off.to)) throw fail(400, "name the official modules' pin on both sides (official: {from, to}, each {repo, sha} or null)");
-    if (JSON.stringify(off.from) !== JSON.stringify(off.to)) {
-      if (!off.from || !off.to) throw fail(422, "the official modules' marketplace appears or disappears: the reviewer-eval gate can't judge it");
-      const gate = await evalGate.bump(off.from, off.to, "this apply");
-      if (gate) throw fail(409, `not landed: ${"wait" in gate ? gate.wait : gate.stop}`);
-    }
+    if (off.to !== null && JSON.stringify(off.from) !== JSON.stringify(off.to)) throw fail(422, "not landed: it adds or moves an `aidenhq` marketplace pin; the official modules come with the product pin");
     await git(c.dir, ["push", "--quiet", "--no-verify", remote(c.s.slug), `${c.sha}:refs/heads/${c.def}`], await tokenFor(c.s, PUSH));
     log("instance landed", { repo: c.s.slug, sha: c.sha });
     return { landed: c.sha };
@@ -446,7 +443,15 @@ export function createService(o: Options) {
     }
     const s = slugOf(b.repo);
     if (op !== "snapshot" && op !== "clone") throw fail(404, "no such operation");
-    const name = String(b.ref ?? "").replace(/^refs\/heads\//, "");
+    // HEAD: the repo's default branch, by its name (a clone then has origin/<that branch>). A repo GitHub doesn't show is a 404.
+    const asked = String(b.ref ?? "").replace(/^refs\/heads\//, "");
+    let name = asked;
+    if (asked === "HEAD") {
+      const r = await o.gh("GET", `/repos/${s.slug}`, await tokenFor(s, READ));
+      if (r.status === 404) throw fail(404, `${s.slug} isn't on GitHub (or the App can't see it)`);
+      if (r.status >= 300) throw fail(502, `GitHub GET /repos/${s.slug}: ${r.status}`);
+      name = String(r.body?.default_branch ?? "");
+    }
     if (!BRANCH.test(name)) throw fail(400, "name a branch or a commit");
     const { dir, ref, sha } = await fetchRemote(s, name);
     if (op === "snapshot") {
@@ -511,10 +516,10 @@ export function createService(o: Options) {
       rmSync(join(index, ".."), { recursive: true, force: true });
     }
   }
-  const train = o.productRepo && o.instanceRepo && o.modulesRepo ? createReleaseTrain({
-    dir: join(o.cacheDir, "release"), productRepo: o.productRepo, instanceRepo: o.instanceRepo, modulesRepo: o.modulesRepo, windowMinutes: o.releaseWindowMinutes ?? 15, kernel, log, now: o.now,
+  const train = o.productRepo && o.instanceRepo ? createReleaseTrain({
+    dir: join(o.cacheDir, "release"), productRepo: o.productRepo, instanceRepo: o.instanceRepo, windowMinutes: o.releaseWindowMinutes ?? 15, kernel, log, now: o.now,
     commit: trainCommit,
-    evalBump: (from, to) => evalGate.bump({ repo: o.modulesRepo, sha: from }, { repo: o.modulesRepo, sha: to }, "the release bump"),
+    evalBump: (from, to) => evalGate.bump(from, to),
     github: {
       async tip(repo) {
         const s = slugOf(repo);
@@ -524,9 +529,9 @@ export function createService(o: Options) {
         const checks = await checksAt(s, tip, token);
         return { tip: /^[0-9a-f]{40}$/.test(tip) ? tip : undefined, green: checks.length > 0 && checks.every((c) => c.ok && !c.pending) };
       },
-      async text(repo, path, at) {
+      async text(repo, path) {
         const s = slugOf(repo);
-        const ref = at ?? String((await api("GET", `/repos/${s.slug}`, await tokenFor(s, READ))).default_branch ?? "main");
+        const ref = String((await api("GET", `/repos/${s.slug}`, await tokenFor(s, READ))).default_branch ?? "main");
         const { dir, sha } = await fetchRemote(s, ref);
         return fileAt(dir, sha, path);
       },
@@ -560,10 +565,12 @@ export function createService(o: Options) {
       else res.end();
     }
   }, {
-    /** The merge loop (merges.ts), started at the switch with the runner's copy deleted (an approved merge queues until then); one poll of it. */
+    /** The merge loop (merges.ts). */
     startMerges: () => merges.start(),
-    /** The release train (train.ts), started at the switch with the runner's copy deleted; one poll of it. */
+    /** The release train (train.ts): only with the product and instance repos set. */
     startReleases: () => train?.start(),
+    /** The superseded design reviews' sweep (design-review.ts): only with the App. */
+    startDesignReviews: () => designReviews && startDesignReviewSweep(designReviews, { log }),
     stepReleases: () => train?.step(),
     stepMerges: () => merges.step(),
   });

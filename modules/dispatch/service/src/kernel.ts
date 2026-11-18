@@ -14,8 +14,8 @@ export interface Kernel {
   comments(task: string): Promise<Comment[]>;
   agent(id: string): Promise<Agent | undefined>;
   directory(): Promise<Directory>;
-  /** Admission (F3): one job for the claimed wake, or busy (429: the wake stays claimed and comes back). */
-  start(req: { wake: string; prompt: string; session?: string }): Promise<{ job: JobView } | { busy: true }>;
+  /** Admission (F3): one job for the claimed wake (`full_prompt`: what runs when no session is resumed), or busy (429: the wake stays claimed and comes back). */
+  start(req: { wake: string; prompt: string; full_prompt?: string }): Promise<{ job: JobView } | { busy: true }>;
   job(id: string): Promise<JobView>;
   /** This module's job admitted on a wake, if any: a start whose answer was lost (a crash, a timeout) is found here. */
   jobsOn(wake: string): Promise<JobView[]>;
@@ -65,7 +65,7 @@ export function createKernel(url: string, token: string, fetcher: typeof fetch =
     post: async (job, b) => void (await call("POST", `/v1/jobs/${e(job)}/post`, b)),
     stop: async (job) => void (await call("DELETE", `/v1/jobs/${e(job)}`)),
     children: (parent, company) => call("GET", `/v1/cp/read/api/companies/${e(company)}/issues?parentId=${e(parent)}&status=todo,in_progress,in_review,blocked,done,cancelled&limit=200`).then((l: Issue[]) => l.filter((i) => i.parentId === parent)),
-    wake: async (task, text) => void (await call("POST", "/v1/wake", { task, text })),
+    wake: async (task, text) => void (await call("POST", "/v1/wakes", { task, text })),
     fileTask: async (b) => void (await call("POST", "/v1/tasks", b)),
     notify: async (b) => void (await call("POST", "/v1/notify", b)),
     note: async (wake, body) => void (await call("POST", `/v1/wakes/${e(wake)}/note`, { body })),

@@ -3,7 +3,7 @@
 // after REVIEWED_RETENTION_DAYS, and so is a note whose ref is already gone. Nothing else deletes them; a merged PR's branch stays
 // GitHub's to delete.
 //
-// Built here, started at the switch (`startTidy`), when the runner's copy is deleted: nothing calls it before.
+// Started by main.ts.
 // Not ported: closeReviewedTasks. It closes the owner's own review-request tasks, which the kernel's POST /v1/tasks/:task/close
 // refuses a module (it closes only tasks that module filed); it waits on a kernel route for owner tasks (see the PR).
 import { execFile } from "node:child_process";

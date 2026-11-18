@@ -1,0 +1,16 @@
+{
+ "name": "security-fix-nothing-to-do",
+ "why": "A report whose honest answer is 'no release fixes it' is never delegated as a PR.",
+ "routine": "security-fix",
+ "input": "Run task: a task assigned to you. Today is 2026-11-18, now 2026-11-18T14:00:00+04:00.\n\ntask_current -> {\"id\":\"T-92\",\"title\":\"Security fix: prom/prometheus GO-2026-6860\",\"labels\":[\"security\"],\"description\":\"x/net in prom/prometheus v3.16.0. Floors: fixed in x/net 0.62. Upstream: no prometheus release above v3.16.0 (checked 2026-11-18, GitHub releases), main still on 0.61. If no upstream release meets the floors, record that and park. Reopens when a release above v3.16.0 ships.\"}\ntask_search \"Fleet issues\" -> [{\"id\":\"T-1\",\"title\":\"Fleet issues\",\"status\":\"todo\"}]\ntask_comments T-1 (recent) -> []\n",
+ "expect": [],
+ "forbid": [
+  {
+   "tool": "task_delegate"
+  },
+  {
+   "tool": "task_create",
+   "text": "pr"
+  }
+ ]
+}

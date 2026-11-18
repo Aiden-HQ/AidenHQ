@@ -85,7 +85,7 @@ export function budget(cfg, defs, readText = () => "", assume = 0) {
       }
     }
     const handbook = a.instructions ? tokens(readText(a.instructions)) : 0;
-    rows.push({ agent: key, adapter: a.adapter, model: a.model ?? "", tools: n, tool_tokens: tok, unknown, handbook_tokens: handbook, heaviest: Object.entries(per).sort((x, y) => y[1] - x[1]).slice(0, 5) });
+    rows.push({ agent: key, profile: a.profile, model: a.model ?? "", tools: n, tool_tokens: tok, unknown, handbook_tokens: handbook, heaviest: Object.entries(per).sort((x, y) => y[1] - x[1]).slice(0, 5) });
   }
   return rows.sort((x, y) => y.tool_tokens - x.tool_tokens);
 }
@@ -100,8 +100,8 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
   const rows = budget(cfg, defs, (f) => { try { return readFileSync(f, "utf8"); } catch { return ""; } }, Number(opt("assume") ?? 0));
   if (argv.includes("--json")) console.log(JSON.stringify(rows, null, 1));
   else {
-    console.log("agent\tadapter\ttools\ttool_tokens\thandbook_tokens\tunknown\theaviest");
-    for (const r of rows) console.log([r.agent, r.adapter, r.tools, r.tool_tokens, r.handbook_tokens, r.unknown, r.heaviest.map(([t, k]) => `${t}:${k}`).join(" ")].join("\t"));
+    console.log("agent\tprofile\ttools\ttool_tokens\thandbook_tokens\tunknown\theaviest");
+    for (const r of rows) console.log([r.agent, r.profile, r.tools, r.tool_tokens, r.handbook_tokens, r.unknown, r.heaviest.map(([t, k]) => `${t}:${k}`).join(" ")].join("\t"));
     console.log("\nserver\ttools\ttokens (all tools)");
     for (const [s, d] of Object.entries(defs)) console.log(`${s}\t${Object.keys(d).length}\t${tokens(Object.values(d))}`);
   }

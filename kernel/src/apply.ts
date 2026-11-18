@@ -12,6 +12,7 @@
 // generation after the mark that applied this commit (ops/lib/generations.sh); with neither, it failed and is not run again.
 // A restart is the normal path (the apply restarts the kernel): writes.ts resumes a claimed kernel.apply here.
 import { execFile } from "node:child_process";
+import { createHash } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import http from "node:http";
 import { join } from "node:path";
@@ -105,14 +106,15 @@ export function officialPinOf(text: string): OfficialPin {
   return { repo, sha: at.sha };
 }
 /**
- * The official pin's move a change makes, or why it can't be applied: the marketplace may not appear or disappear (the
- * reviewer code would move with no eval to judge it) and its texts must read. Fails closed.
+ * The official pin's move a change makes, or why it can't be applied: the official modules are the product's modules/, so
+ * an `aidenhq` marketplace may only stay as it is or be dropped (a pre-monorepo install's first update); one may never
+ * appear (it would bring reviewer code with no eval to judge it), and its texts must read. Fails closed.
  */
 export function officialMove(base: string | undefined, head: string | undefined): { from: OfficialPin; to: OfficialPin } | { error: string } {
   if (base === undefined || head === undefined) return { error: `instance.yaml isn't on ${base === undefined ? "the instance's main" : "the commit"}, so the official modules' pin can't be read` };
   try {
     const [from, to] = [officialPinOf(base), officialPinOf(head)];
-    if (Boolean(from) !== Boolean(to)) return { error: `it ${to ? "adds" : "removes"} the official modules' marketplace, which moves the reviewer's code past its eval` };
+    if (to && JSON.stringify(from) !== JSON.stringify(to)) return { error: `it ${from ? "moves" : "adds"} an \`aidenhq\` marketplace pin, which would bring the reviewer's code past its eval; the official modules come with the product pin` };
     return { from, to };
   } catch (e) {
     return { error: `the official modules' pin in instance.yaml can't be read (${(e as Error).message.split("\n")[0]!.slice(0, 200)})` };
@@ -124,6 +126,14 @@ export function officialMove(base: string | undefined, head: string | undefined)
  * file isn't), the diff, and the graduation card's trial edits (handbook commits since an agent's trial began; "" if none).
  */
 export type Read = { files: string[]; texts: { base: Record<string, string>; head: Record<string, string> }; diff: string; trial?: string };
+/**
+ * What an apply's commit changes, as one digest: its files, the texts read on both sides and the diff. The plan binds it into
+ * the record's targets; the land re-reads the commit and lands only when it is exactly the same.
+ */
+export function readDigest(c: Read): string {
+  const sorted = (t: Record<string, string>) => Object.entries(t).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
+  return createHash("sha256").update(JSON.stringify({ files: [...c.files].sort(), base: sorted(c.texts.base), head: sorted(c.texts.head), diff: c.diff })).digest("hex");
+}
 /** A unit as `systemctl --user show` reads it. */
 export type Unit = { loaded: boolean; active: string; sub: string; result: string };
 /** One line of generations.jsonl (ops/lib/generations.sh). */
@@ -186,6 +196,8 @@ export function createApply({ db, codehost, launch, unit, generations, busy, tai
       const c = await codehost.read(src);
       // What lands is what the card showed: the same files, read again from git at the commit, never from the args alone.
       if ([...c.files].sort().join("\n") !== [...a.files].sort().join("\n")) return { ok: false, text: "Not applied: the commit no longer changes the files that were approved; it needs a new approval." };
+      // And exactly what was reviewed: every text and the diff, not only the file names.
+      if ((r.targets as { content?: unknown })?.content !== readDigest(c)) return { ok: false, text: "Not applied: what the commit changes is no longer exactly what was approved; it needs a new approval." };
       const stray = strayFiles(c.files);
       if (stray.length) return { ok: false, text: `Not applied: it changes files outside the instance config (${stray.join(", ")}).` };
       const untrialed = untrialedNewAgents(c.files, c.texts.base, c.texts.head);

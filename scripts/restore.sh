@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Restore a backup made by scripts/backup.sh. Refuses to run while any AidenHQ container or the runner is running.
+# Restore a backup made by scripts/backup.sh. Refuses to run while any AidenHQ container or the kernel is running.
 # Existing state is moved aside, never deleted: each top-level entry the backup replaces goes to
 # <dir>/.pre-restore-<stamp>/ (in the data dir and in the runner's state dir). App volumes that already exist are left
 # alone (remove one with `docker volume rm` first to restore it). Files are written through a container, so their
@@ -23,8 +23,8 @@ if [ -n "$running" ]; then
   echo "       stop them first: docker compose down" >&2
   exit 1
 fi
-if systemctl --user is-active --quiet aidenhq-runner 2>/dev/null; then
-  echo "error: refusing to restore while the runner is running: systemctl --user stop aidenhq-runner" >&2
+if systemctl --user is-active --quiet aidenhq-kernel 2>/dev/null; then
+  echo "error: refusing to restore while the kernel is running: systemctl --user stop aidenhq-kernel" >&2
   exit 1
 fi
 
@@ -113,5 +113,5 @@ if grep -q '^paperclip_running=yes' "$work/MANIFEST"; then
   echo "      Restore Paperclip's DB from its dump under $data/paperclip/instances/*/data/backups/"
   echo "      (see Paperclip docs: database backups), or use a backup taken with the stack stopped."
 fi
-echo "Restored. Start with: docker compose up -d (then systemctl --user start aidenhq-runner)"
+echo "Restored. Start with: docker compose up -d (then systemctl --user start aidenhq-kernel)"
 echo "A live Postgres cluster skipped by the backup (the warehouse) comes back from its app's dumps: see its AGENTS.md."

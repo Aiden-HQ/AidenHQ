@@ -1,6 +1,6 @@
 // kernel.apply's planner (spec §4.4 "Land", §5.7): what an instance change is, read from git by the code host, and its tier on
-// its merits. One copy: the runner's tiers.mjs classifies an apply with these rules until the big switch deletes it, and the
-// kernel plans every kernel.apply with them (writes.ts `planners`), whoever files it: a module's release bump, an agent's job.
+// its merits. The kernel plans every kernel.apply with these rules (writes.ts `planners`), whoever files it: the release
+// train, the updater, an agent's job.
 // The plan is the record's args (the commit, its files and the module changes it brings), its card (the diff whole, bound by
 // its hash in the targets), the files for the path inventory, and a raise from the rules below; computeTier adds the floor,
 // the owner's veto and the caps. A change the rules refuse is refused at filing, saying why.
@@ -12,7 +12,7 @@ import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import YAML from "yaml";
-import { strayFiles, untrialedNewAgents, productPin, bumpTitle, type Read, type Source } from "./apply.ts";
+import { readDigest, strayFiles, untrialedNewAgents, productPin, bumpTitle, type Read, type Source } from "./apply.ts";
 import { applyCard, repoKey } from "./kinds.ts";
 import { authorityLines, classifyModules, diffAll, forkChanges, grantOverrides, marketplaceChanges, moduleInputs, withGrantOverrides, type ModuleInput } from "../../scripts/compiler/authority.ts";
 import { effective } from "../../scripts/compiler/release.ts";
@@ -351,7 +351,7 @@ export async function productBump(from: string | undefined, to: string | undefin
 /** What an apply plan returns to writes.ts (its executor@1 plan's shape, planned by the kernel itself). */
 export type ApplyPlan = {
   args: { repo: string; branch: string; sha: string; files: string[]; authority?: string[]; ownerRequired?: true };
-  targets: { diff: string }; card: Record<string, string>; paths: { repo: string; files: { path: string }[] }[];
+  targets: { diff: string; content: string }; card: Record<string, string>; paths: { repo: string; files: { path: string }[] }[];
   raise?: { tier: 1 | 2; panel?: boolean; reason?: string; rule?: string }; review_first?: ReviewFirst;
 };
 export class Refused extends Error {
@@ -365,7 +365,7 @@ export const DETAILS_MAX = 80_000;
 
 /**
  * kernel.apply's planner. The requester names the commit (repo, branch, sha); the code host reads it from git (its own copy,
- * or the task's workspace) and everything else comes from that read, the product's git and the compiled config, never from
+ * or a job's task workspace) and everything else comes from that read, the product's git and the compiled config, never from
  * the requester's words.
  */
 export function createApplyPlanner(h: {
@@ -394,14 +394,15 @@ export function createApplyPlanner(h: {
     if (typeof r?.name !== "string" || typeof r?.sha !== "string") return false;
     return (await h.verifyRelease(baseText, r.name, r.sha).catch(() => null)) === headText;
   }
-  return async function plan({ args, requester }: { args: unknown; requester?: Requester }): Promise<ApplyPlan> {
-    const a = (args ?? {}) as { repo?: unknown; branch?: unknown; sha?: unknown; workspace?: unknown };
+  return async function plan({ args, requester, workspace }: { args: unknown; requester?: Requester; workspace?: string }): Promise<ApplyPlan> {
+    const a = (args ?? {}) as { repo?: unknown; branch?: unknown; sha?: unknown };
     if (typeof a.repo !== "string" || typeof a.branch !== "string" || typeof a.sha !== "string") throw new Refused("name the commit to apply: {repo, branch, sha}");
     // The configured instance repo, never the requester's spelling of it: what is read, tiered by path and landed.
     const repo = h.instanceRepo();
     if (!repo || !repoKey(repo)) throw new Refused("the instance repo isn't set here (AIDENHQ_INSTANCE_REPO), so nothing can be applied");
     if (repoKey(a.repo) !== repoKey(repo)) throw new Refused(`an apply lands only on the instance repo (${repo}), not ${a.repo.slice(0, 100)}`);
-    const src: Source = { repo, branch: a.branch, sha: a.sha };
+    // A job's commit is read from its task's workspace (the job's own, never the requester's words); a module's from the code host's copy.
+    const src: Source = { repo, branch: a.branch, sha: a.sha, ...(workspace ? { workspace } : {}) };
     const c = await h.read(src);
     if (!c.files.length) throw new Refused("the commit changes nothing against the instance's main");
     const stray = strayFiles(c.files);
@@ -423,7 +424,7 @@ export function createApplyPlanner(h: {
     const full = { repo, branch: a.branch, sha: a.sha, files: c.files, ...authorityArgs(st) };
     const card = applyCard(full, details);
     return {
-      args: full, targets: { diff: createHash("sha256").update(details).digest("hex") }, card: card as unknown as Record<string, string>,
+      args: full, targets: { diff: createHash("sha256").update(details).digest("hex"), content: readDigest(c) }, card: card as unknown as Record<string, string>,
       paths: [{ repo, files: c.files.map((path) => ({ path })) }],
       ...(t.tier >= 1 ? { raise: { tier: t.tier as 1 | 2, ...(t.panel ? { panel: true } : {}), ...(t.reason ? { reason: String(t.reason) } : {}), ...(t.rule ? { rule: String(t.rule) } : {}) } } : {}),
       ...(t.tier === 2 ? { review_first: (t.byMerit ? "owner" : "final") as ReviewFirst } : {}),

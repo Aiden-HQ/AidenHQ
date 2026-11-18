@@ -33,11 +33,11 @@
 # TS_APPS_AUTHKEY (the apps' own tailnet node: a reusable, tagged, pre-authorized key; docs/setup.md),
 # BOARD_HOST (default: this VM's tailnet name), PAPERCLIP_PASSWORD
 # (with --restore: the old VM's paperclip_owner_password; otherwise one is generated), GITHUB_AGENTS_ORG (the GitHub
-# org for agent-built repos, which must exist and be owned by you; docs/setup.md step 8), MAX_CONCURRENT and TIMEOUT_MINUTES
-# (the runner's jobs at once and minutes per job, into config/runner.yaml), CI_RUNNERS (CI runner units, started once
+# org for agent-built repos, which must exist and be owned by you; docs/setup.md step 8), TIMEOUT_MINUTES
+# (minutes per job, into config/runner.yaml), CI_RUNNERS (CI runner units, started once
 # the GitHub App and the ci module are set up). An unquoted value ends at ' #'.
 # The settings that aren't secrets may come from the environment instead (the file wins): AIDENHQ_USER, OWNER_NAME,
-# OWNER_EMAIL, TIMEZONE, COMPANY_NAME, MODULES, BOARD_HOST, GITHUB_AGENTS_ORG, MAX_CONCURRENT, TIMEOUT_MINUTES, CI_RUNNERS.
+# OWNER_EMAIL, TIMEZONE, COMPANY_NAME, MODULES, BOARD_HOST, GITHUB_AGENTS_ORG, TIMEOUT_MINUTES, CI_RUNNERS.
 # What it makes: see docs/setup.md. It holds secrets: delete person.env when setup is done.
 # Run as root, it first copies the checkout's commit to root-owned /opt/aidenhq/kernel/<sha> and runs again from there
 # (--checkout names the user's checkout): root's own steps run only from that verified copy.
@@ -88,7 +88,7 @@ elif [ "$UNATTENDED" = 0 ]; then die "--config <file> is required, or --unattend
   printf -v "CFG_$k" '%s' "$v"
 done < "$CONFIG"
 # A setting from the file, else (only the ones that aren't secrets) from the environment, else the default.
-ENV_KEYS=" AIDENHQ_USER OWNER_NAME OWNER_EMAIL TIMEZONE COMPANY_NAME MODULES BOARD_HOST GITHUB_AGENTS_ORG MAX_CONCURRENT TIMEOUT_MINUTES CI_RUNNERS "
+ENV_KEYS=" AIDENHQ_USER OWNER_NAME OWNER_EMAIL TIMEZONE COMPANY_NAME MODULES BOARD_HOST GITHUB_AGENTS_ORG TIMEOUT_MINUTES CI_RUNNERS "
 cfg() {
   local n="CFG_$1"
   if [ -n "${!n:-}" ]; then printf '%s' "${!n}"
@@ -115,9 +115,8 @@ else
 fi
 [[ "$OWNER_EMAIL" =~ ^[^[:space:][:cntrl:]@]+@[^[:space:][:cntrl:]@]+\.[^[:space:][:cntrl:]@]+$ ]] || die "OWNER_EMAIL doesn't look like an email address"
 # Sizing (config/runner.yaml, CI runner units): whole numbers in a sane range, or unset (left as they are).
-MAX_CONCURRENT="$(cfg MAX_CONCURRENT)"; TIMEOUT_MINUTES="$(cfg TIMEOUT_MINUTES)"; CI_RUNNERS="$(cfg CI_RUNNERS)"
+TIMEOUT_MINUTES="$(cfg TIMEOUT_MINUTES)"; CI_RUNNERS="$(cfg CI_RUNNERS)"
 in_range() { [ -z "$2" ] || { [[ "$2" =~ ^(0|[1-9][0-9]{0,3})$ ]] && [ "$2" -ge "$3" ] && [ "$2" -le "$4" ]; } || die "$1 must be a whole number from $3 to $4"; }
-in_range MAX_CONCURRENT "$MAX_CONCURRENT" 1 64
 in_range TIMEOUT_MINUTES "$TIMEOUT_MINUTES" 5 1440
 in_range CI_RUNNERS "$CI_RUNNERS" 0 32
 AGENTS_ORG="$(cfg GITHUB_AGENTS_ORG)"
@@ -261,8 +260,6 @@ say "System packages, Docker, gVisor, Tailscale"
 # Tailscale an SSH tunnel to loopback. The machine step opens the host firewall for it (ops/vm/public-fw.sh).
 EXPOSURE=tailscale; [ "$NO_TS" = 0 ] || EXPOSURE=local; [ "$PUBLIC" = 0 ] || EXPOSURE=public
 run env AIDENHQ_EXPOSURE="$EXPOSURE" AIDENHQ_NO_TAILSCALE="$NO_TS" AIDENHQ_USER="$U" AIDENHQ_CHECKOUT="$REPO" bash "$SRC/ops/vm/setup.sh"
-# The Codex CLI for the runner's own short model calls (intake.ts); Engineer jobs run Codex in their agent computers.
-command -v codex >/dev/null || run npm install -g --silent @openai/codex@0.166.0
 # The machine step just added the user to the docker group, but their systemd user manager (kept alive by linger, so
 # logging out doesn't restart it) still has the old groups: the user units started below couldn't reach Docker.
 if [ "$DRY" = 0 ]; then
@@ -376,25 +373,20 @@ fi
 set_env BOARD_GOOGLE_CONNECT "$( [ "$PUBLIC" = 1 ] || echo 1)"
 grep -q '^WORK_COMPANY_ID=.' "$ENVF" 2>/dev/null || set_env WORK_COMPANY_ID pending   # known after Paperclip's setup
 if [ ! -f "$REPO/config/runner.yaml" ]; then
-  # The runner changes only this person's local instance repo; it clones it from the VM, not GitHub.
-  { sed -e 's/^allowed_orgs: .*/allowed_orgs: [local]/' -e 's#^  repo: your-org/aidenhq-instance#  repo: local/aidenhq-instance#' "$REPO/config/runner.example.yaml"
-    printf '\nrepo_sources:\n  local/aidenhq-instance: %s\n' "$REMOTE"; } | write_user_file "$REPO/config/runner.yaml" 644
+  # The host's job tuning; the code host clones this person's local instance repo from the VM, not GitHub.
+  printf 'repo_sources:\n  local/aidenhq-instance: %s\n' "$REMOTE" | write_user_file "$REPO/config/runner.yaml" 644
 fi
-# The product repo (owner/name, from this checkout's origin) and the instance repo the runner applies to (runner.yaml
-# apply.repo): the kernel holds the runner's writes to its own floors with them, and makes every runner write the owner's
-# while either is missing.
+# The product repo (owner/name, from this checkout's origin) and the instance repo applies land on.
 grep -q '^AIDENHQ_PRODUCT_REPO=.' "$ENVF" 2>/dev/null || set_env AIDENHQ_PRODUCT_REPO "$(ugit -C "$REPO" remote get-url origin | sed -E 's#^.*github\.com[/:]##; s#\.git/*$##')"
-grep -q '^AIDENHQ_INSTANCE_REPO=.' "$ENVF" 2>/dev/null || set_env AIDENHQ_INSTANCE_REPO "$(awk '/^apply:/{a=1; next} a && /^  repo:/{print $2; exit}' "$REPO/config/runner.yaml" 2>/dev/null)"
-# The runner's size, when given: a top-level `key: n` in config/runner.yaml (a running runner restarts gracefully below).
-RUNNER_RESIZED=0
+grep -q '^AIDENHQ_INSTANCE_REPO=.' "$ENVF" 2>/dev/null || set_env AIDENHQ_INSTANCE_REPO local/aidenhq-instance
+# The job timeout, when given: a top-level `key: n` in config/runner.yaml (the kernel reads it at start).
 runner_set() { # key value
   [ -n "$2" ] || return 0
   if [ "$DRY" = 1 ]; then echo "  + config/runner.yaml: $1: $2"; return 0; fi
   grep -qx "$1: $2" "$REPO/config/runner.yaml" && return 0
   as_user K="$1" V="$2" F="$REPO/config/runner.yaml" sh -c 'umask 022; { if grep -q "^$K:" "$F"; then sed "s/^$K:.*/$K: $V/" "$F"; else cat "$F"; echo "$K: $V"; fi; } > "$F.tmp" && mv -f "$F.tmp" "$F"'
-  RUNNER_RESIZED=1
+  KERNEL_RESTART=1
 }
-runner_set max_concurrent "$MAX_CONCURRENT"
 runner_set timeout_minutes "$TIMEOUT_MINUTES"
 [ -z "$CI_RUNNERS" ] || set_env AIDENHQ_CI_RUNNERS "$CI_RUNNERS"   # kept for reruns: the units start once the App exists
 
@@ -521,7 +513,7 @@ fi
 as_user mkdir -p "$H/.config/systemd/user"
 # Where the units find this checkout (their default is ~/aidenhq).
 printf 'AIDENHQ_DIR=%s\n' "$REPO" | write_user_file "$H/.config/aidenhq-checkout.env" 644
-as_user cp "$REPO"/ops/units/aidenhq-runner.service "$REPO"/ops/units/aidenhq-computers.service "$REPO"/ops/units/aidenhq-kernel.service "$REPO"/ops/units/prune-runs.service "$REPO"/ops/units/prune-runs.timer "$REPO"/ops/units/prune-docker.service "$REPO"/ops/units/prune-docker.timer "$REPO"/ops/units/aidenhq-apply-recover.service "$H/.config/systemd/user/"
+as_user cp "$REPO"/ops/units/aidenhq-computers.service "$REPO"/ops/units/aidenhq-kernel.service "$REPO"/ops/units/prune-docker.service "$REPO"/ops/units/prune-docker.timer "$REPO"/ops/units/aidenhq-apply-recover.service "$H/.config/systemd/user/"
 as_user systemctl --user daemon-reload
 # aidenhq-computers: the agent-computer launcher (services/computer); idle until an agent has an image. It waits for the vault
 # and the computers network without failing, so --no-block: this step must not wait on them.
@@ -557,16 +549,13 @@ if [ "$PUBLIC" = 1 ] && [ "$DRY" = 0 ] && ! grep -qx 'EXPOSURE=public' /etc/defa
   as_user bash -c "cd '$REPO' && docker compose restart caddy"
 fi
 phase units
-say "Runner, model gateway and run pruning (user units)"
+say "Kernel, model gateway and run pruning (user units)"
 # The units were installed before the apply (step 7).
 # aidenhq-kernel: every model and tool call (kernel/src); the only holder of the OpenRouter key and the connections' keys.
-# A new size reaches a runner that was already running: it exits once nothing is half done (jobs keep running).
-runner_up=0; [ "$DRY" = 1 ] || ! as_user systemctl --user is-active --quiet aidenhq-runner || runner_up=1
-as_user systemctl --user enable --now aidenhq-kernel aidenhq-runner aidenhq-computers prune-runs.timer prune-docker.service prune-docker.timer
+as_user systemctl --user enable --now aidenhq-kernel aidenhq-computers prune-docker.service prune-docker.timer
 # aidenhq-apply-recover: at boot, finishes an apply that died mid-run (ops/apply-config.sh --recover).
 as_user systemctl --user enable aidenhq-apply-recover
 [ "${KERNEL_RESTART:-0}" = 0 ] || as_user systemctl --user restart aidenhq-kernel
-if [ "$RUNNER_RESIZED" = 1 ] && [ "$runner_up" = 1 ]; then as_user systemctl --user kill --kill-whom=main -s SIGUSR2 aidenhq-runner || true; fi
 # CI runners (modules/ci): AIDENHQ_CI_RUNNERS units, once the GitHub App exists and the instance has the ci module (each
 # unit mints its token from the App); until then a rerun of setup starts them.
 ci_n="$(sed -n 's/^AIDENHQ_CI_RUNNERS=\([0-9]*\)$/\1/p' "$ENVF" 2>/dev/null | tail -1 || true)"; ci_n="${CI_RUNNERS:-${ci_n:-0}}"

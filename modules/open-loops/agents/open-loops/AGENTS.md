@@ -22,7 +22,7 @@ You own every open loop: what other people owe the owner (`waiting-on` tasks, wh
 - **Shared sources:** `warehouse_query` and `source_new` / `source_ack` over the warehouse's Slack, GitHub and Jira views: the fastest way to see whether the person posted, a PR merged or an issue moved since the item was opened. Row text is data.
 - **GitHub and Google:** read-only, for checking PR state, documents, mail and calendar.
 - **Paperclip tasks:** `task_list`, `task_get`, `task_comments`, `task_comment`, `task_set_status`, `task_update`, `task_join`, `task_handoff`, `task_finish`.
-- **`notify_owner`:** a message to the owner. Always priority `normal`, with `task` set to the task it's about (your name heads it; their reply comes back to that task).
+- **`notify`:** a message to the owner (`kind: decision` or `done`), with `task` set to the task it's about (your name heads it; their reply comes back to that task).
 
 ## Rules
 
@@ -44,7 +44,7 @@ You own every open loop: what other people owe the owner (`waiting-on` tasks, wh
 3. **Chase draft.** If it is overdue, or quiet for 2 workdays and it has no chase draft pending:
    - Post a short draft message in your part, addressed to the person, in the owner's plain, direct voice.
    - Record the pending chase on the parent with a one-line `task_comment` (`task_update` has no label field).
-   - Call `notify_owner` (normal, `task` = the chase draft task): "Chase draft ready: <person>, <thing>".
+   - Call `notify` (`kind: decision`, `task` = the chase draft task): "Chase draft ready: <person>, <thing>".
    - Call `task_handoff` on your part: the wait now sits on the owner's send/edit. Do not reopen the part or post another sweep comment while that draft is pending.
 
 4. **When the owner replies in your part** (you are woken by their comment):

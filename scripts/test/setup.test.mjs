@@ -72,11 +72,10 @@ test("every unit setup enables carries an [Install] section, or systemctl enable
 
 test("--unattended: no config file, settings from the environment, the SSH-tunnel route without Tailscale", () => {
   const run = (env, ...args) => execFileSync("bash", [setup, "--dry-run", "--unattended", ...args], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], env: { PATH: process.env.PATH, AIDENHQ_USER: "alice", ...env } });
-  const out = run({ OWNER_EMAIL: "alice@example.com", MAX_CONCURRENT: "8", TIMEOUT_MINUTES: "120", CI_RUNNERS: "2", OPENROUTER_KEY: "sk-SECRET" }, "--no-tailscale");
+  const out = run({ OWNER_EMAIL: "alice@example.com", TIMEOUT_MINUTES: "120", CI_RUNNERS: "2", OPENROUTER_KEY: "sk-SECRET" }, "--no-tailscale");
   for (const want of [
     "env AIDENHQ_EXPOSURE=local AIDENHQ_NO_TAILSCALE=1 AIDENHQ_USER=alice AIDENHQ_CHECKOUT=", // the machine without Tailscale
     ".env: BOARD_LAN_URL=http://localhost:3121",
-    "config/runner.yaml: max_concurrent: 8",
     "config/runner.yaml: timeout_minutes: 120",
     "CI runners: aidenhq-ci-runner@1..2",
     "Model key: none yet", // secrets never come from the environment
@@ -85,7 +84,7 @@ test("--unattended: no config file, settings from the environment, the SSH-tunne
   ]) assert.ok(out.includes(want), `missing: ${want}\n${out}`);
   for (const not of ["tailscale serve", "APPS_URL_BASE", "sk-SECRET"]) assert.ok(!out.includes(not), `unexpected: ${not}\n${out}`);
   assert.throws(() => run({}), /--unattended needs OWNER_EMAIL/);
-  assert.throws(() => run({ OWNER_EMAIL: "alice@example.com", MAX_CONCURRENT: "8; rm -rf /" }), /MAX_CONCURRENT must be a whole number/);
+  assert.throws(() => run({ OWNER_EMAIL: "alice@example.com", TIMEOUT_MINUTES: "8; rm -rf /" }), /TIMEOUT_MINUTES must be a whole number/);
 });
 
 test("--unattended, exposure public: the IP's https URLs and 24-hour links, no tailnet and no tunnel", () => {

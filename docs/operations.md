@@ -6,7 +6,7 @@
 locked entry point: it opens `data/apply.lock` at that fixed path (before `.env` is read, so nothing the apply reads
 decides what it locks), holds the lock on fd 9 and execs `ops/apply-config-work.sh`, which takes no lock of its own. One
 apply runs at a time; a second one exits at once with `another apply is running` rather than queueing behind a whole
-apply. The lock is held across the hand-over to a newer script too. A land (the runner applying an approved change) reads
+apply. The lock is held across the hand-over to a newer script too. A land (an approved change applied by the code host module) reads
 that refusal as "wait": it tries the apply again once `data/apply.lock` is free, waiting up to 15 minutes, and reports the
 wait plainly when the lock does not clear in that time, instead of the change as failed.
 
@@ -24,7 +24,7 @@ wait plainly when the lock does not clear in that time, instead of the change as
    enough;
 5. runs `node scripts/compile.mjs`, builds agent computer images, runs `ops/compose-recreate.sh`, and
    `node scripts/paperclip-setup.mjs`;
-6. schedules a runner restart when runner code changed.
+6. restarts the kernel when its code changed.
 
 `ops/compose-recreate.sh` is the compose step. It stops before building, dumping or removing anything when the config
 lists no services; dumps the warehouse first, when this host runs one (a fresh file created exclusively under `umask 077`
@@ -92,12 +92,11 @@ It is idempotent. The Platform Engineer runs it for you after you approve a chan
   is picked up the same way on the next apply. Force-recreate (`docker compose up -d --force-recreate <svc>`) only after
   changing a file a service reads once at start that is not a compose secret (a bind-mounted config, for example):
   running it after every apply restarts those services a second time for nothing.
-- **After changing runner code:** `ops/apply-config.sh` sends `systemctl --user kill --kill-whom=main -s SIGUSR2 aidenhq-runner`: the runner takes nothing new, exits as soon as nothing is half done (a reply being posted, a publish, an apply), and systemd starts it again 5s later. Running agent jobs are not touched: the kernel runs them (`kernel/src/jobs.ts`), each in its own process group writing its log and exit status under the runner's state dir; the new runner follows them again through `GET /v1/jobs/:id`, keeps their `aidenhq` tools working (same helper port and token) and reports each turn once. A plain `systemctl --user restart aidenhq-runner` does the same.
-- **After changing kernel code:** apply-config restarts `aidenhq-kernel` (SIGTERM; `KillMode=process`): the kernel stops following its jobs (offsets saved in `data/kernel/kernel.db`) and exits; the next kernel adopts every job whose shell is still that run (pid and its `.exit` file name) and reports one that died while no kernel ran as lost, which the runner resumes in the same session. apply-config installs the unit (and daemon-reloads) when `ops/units/aidenhq-runner.service` changes.
+- **After changing kernel code:** apply-config restarts `aidenhq-kernel` (SIGTERM; `KillMode=process`): the kernel stops following its jobs (offsets saved in `data/kernel/kernel.db`) and exits; the next kernel adopts every job whose shell is still that run (pid and its `.exit` file name) and reports one that died while no kernel ran as lost, which the kernel resumes in the same session.
 
-- **The model gateway** (`kernel/src/gateway`, user unit `aidenhq-kernel`): every model call goes through it, and it alone reads `openrouter_key`. apply-config installs and starts the unit before compose and setup, and restarts it only when `kernel/src/gateway` or its unit changed. A host whose apply-config predates the hand-over (step 3) runs its old script for the apply that brings the hand-over in; start that one apply with the new script instead: `git fetch -q origin main && git show <product sha>:ops/apply-config.sh > ops/.apply-next.sh && bash ops/.apply-next.sh; rm -f ops/.apply-next.sh` (it checks out the product, sees the script changed and hands over to the checked-out one). A bind that fails (the backplane address before compose is up) is retried in the process while loopback serves. It listens on `127.0.0.1:8201` (runner jobs through their jail, the AI reviewer, the intake, and the computer launcher, which forwards its boxes' model calls with the box's run token; the gateway names that run at the launcher's `/whoami`) and `10.231.0.1:8201` (Codex in Paperclip with the run's own JWT, the source writers, the board's `/usage` pull), and, with the ci module on, `10.231.4.1:8201` (the CI runners' bridge: CI tokens only, see CI runners). Spend (spec §5.12): each call reserves its worst case at the model's declared price (`modules/models-openrouter`; an unpriced model is refused) against its run, task and agent-day caps (grants `caps`, default $2 / $10 / $30) before it is sent, with its output limit cut to what the tightest cap has left; it settles at max(what OpenRouter reported, tokens × price). A call that would pass a cap gets HTTP 402 and the owner a `raise_cap` card; there is no off switch. Ledger: `data/kernel/kernel.db` (`calls`); the old `data/gateway/usage.db` is merged in at every start while it exists (idempotent) and otherwise left alone. If it is down, no model call is made (`systemctl --user status aidenhq-gateway`, `journalctl --user -u aidenhq-gateway`).
-- **Agent memory** (`agent_memory`): `memory_note` writes to the agent's own inbox task; the Librarian's daily pass curates it into `agents/<key>/memory.md`, landed by an apply card. To clear one agent's memory, apply a change that empties its file. Kill switch: `agent_memory: off`.
-- **Advisor and fan-out** (`modules/tasks/connections/tasks-mcp/src/models.mjs`): `advisor_ask` (every Codex agent; GPT Sol, 5 calls per run) and `fanout_map` (granted per agent; up to 25 items on DeepSeek Flash) call the gateway's `/advisor` and `/fanout` routes with the run's own credential, billed to its run. Engineer jobs consult the same advisor with `aidenhq advise "<brief>"` (the runner's helper, `services/runner/src/advise.ts`, on the job's own credential; 5 per job). Both send `ADVISOR_MODEL` (models.mjs). Not yet in agent computers. The kill switch below drops only the agents' tools; `aidenhq advise` stays (still under the gateway's caps). Kill switch: `settings.model_tools: off`, then apply.
+- **The model gateway** (`kernel/src/gateway`, user unit `aidenhq-kernel`): every model call goes through it, and it alone reads `openrouter_key`. apply-config installs and starts the unit before compose and setup, and restarts it only when `kernel/src/gateway` or its unit changed. A host whose apply-config predates the hand-over (step 3) runs its old script for the apply that brings the hand-over in; start that one apply with the new script instead: `git fetch -q origin main && git show <product sha>:ops/apply-config.sh > ops/.apply-next.sh && bash ops/.apply-next.sh; rm -f ops/.apply-next.sh` (it checks out the product, sees the script changed and hands over to the checked-out one). A bind that fails (the backplane address before compose is up) is retried in the process while loopback serves. It listens on `127.0.0.1:8201` (Engineer jobs through their jail, the AI reviewer, and the computer launcher, which forwards its boxes' model calls with the box's run token; the gateway names that run at the launcher's `/whoami`) and `10.231.0.1:8201` (Codex in Paperclip with the run's own JWT, the source writers, the board's `/usage` pull), and, with the ci module on, `10.231.4.1:8201` (the CI runners' bridge: CI tokens only, see CI runners). Spend (spec §5.12): each call reserves its worst case at the model's declared price (`modules/models-openrouter`; an unpriced model is refused) against its run, task and agent-day caps (grants `caps`, default $2 / $10 / $30) before it is sent, with its output limit cut to what the tightest cap has left; it settles at max(what OpenRouter reported, tokens × price). A call that would pass a cap gets HTTP 402 and the owner a `raise_cap` card; there is no off switch. Ledger: `data/kernel/kernel.db` (`calls`); the old `data/gateway/usage.db` is merged in at every start while it exists (idempotent) and otherwise left alone. If it is down, no model call is made (`systemctl --user status aidenhq-gateway`, `journalctl --user -u aidenhq-gateway`).
+- **Agent memory** (`agent_memory`): `memory_note` writes to the agent's own inbox task; the Fleet Steward's daily pass curates it into `agents/<key>/memory.md`, landed by an apply card. To clear one agent's memory, apply a change that empties its file. Kill switch: `agent_memory: off`.
+- **Advisor and fan-out** (`modules/tasks/connections/tasks-mcp/src/models.mjs`): `advisor_ask` (every Codex agent; GPT Sol, 5 calls per run) and `fanout_map` (granted per agent; up to 25 items on DeepSeek Flash) call the gateway's `/advisor` and `/fanout` routes with the run's own credential, billed to its run. Engineer jobs consult the same advisor with `aidenhq advise "<brief>"` (on the job's own credential; 5 per job). Both send `ADVISOR_MODEL` (models.mjs). Not yet in agent computers. The kill switch below drops only the agents' tools; `aidenhq advise` stays (still under the gateway's caps). Kill switch: `settings.model_tools: off`, then apply.
 
 ## Health
 
@@ -106,11 +105,11 @@ It is idempotent. The Platform Engineer runs it for you after you approve a chan
   exposure). Run with the stack up.
 - The board's Apps tab lists each app's health; the DevOps Engineer owns an unhealthy app and pages the owner only when
   it cannot fix it.
-- Fleet Ops (module `fleet-ops`): the board's detector (`services/board/src/fleet-ops.ts`) checks every
+- The Fleet Steward (module `fleet-steward`): the board's detector (`services/board/src/fleet-ops.ts`) checks every
   `fleet_ops_interval_minutes` for a run stuck past twice its timeout, an agent's last
   3 runs failed, an app incident open over 15 minutes (or apps-mcp not answering for 15 minutes) a source with no good pass in an hour and an agents-org pull request open over an hour without merging (from the warehouse)
   (or failing for 15 minutes; apps-mcp's `/internal/sources`). It fires the "Fleet Ops: check" webhook once per incident
-  and once on recovery (state in the board's store, meta `fleet_ops_detector`); Fleet Ops reads it from `fleet_status`
+  and once on recovery (state in the board's store, meta `fleet_ops_detector`); the Steward reads it from `fleet_status`
   → `detector` and logs on the "Fleet issues" task (`log ·` lines).
 - Task rollover (always on, `services/board/src/rollover.ts`): every 10 minutes the board measures each open agent task's
   history; past ~600K characters (comments plus ~400 each for Paperclip's envelope), or once a run on it fails over the
@@ -119,7 +118,7 @@ It is idempotent. The Platform Engineer runs it for you after you approve a chan
   Only the owner's own tasks move (made with the board key, by no agent, no source marker), so the successor keeps their
   origin. Writes to the old task follow the board's record (meta `task_rollover`), never description text: the board's own
   routes directly, the bridge (Telegram replies, its daily chat) through `GET /internal/successor/:id` (decide key only).
-  Not moved while a run or a card is on it, nor graded, runner Engineer or agent-made tasks; the detector names such a task
+  Not moved while a run or a card is on it, nor graded, Engineer or agent-made tasks; the detector names such a task
   in its "runs failed" flag.
 
 - The Maintainer (`services/board/src/maintainer.ts`): every `maintainer_poll_minutes` (default 5; the board reads
@@ -153,14 +152,14 @@ It is idempotent. The Platform Engineer runs it for you after you approve a chan
   and `CoreServiceDown` also send the owner one line. Grafana is on `127.0.0.1:3131`; one-time on the host:
   `tailscale serve --bg --https=8444 http://127.0.0.1:3131` (no sudo: the user is tailscaled's operator) and set
   `grafana_root_url`. Sign in as `admin` with the vault's `grafana_admin_password`. Unit and container states come from the
-  user timer `aidenhq-host-metrics` (`ops/host-metrics.sh`; apply installs it while the module is on), the runner's and the gateway's from
-  `data/monitoring/textfile/{runner,gateway}.prom`. No sudo step.
+  user timer `aidenhq-host-metrics` (`ops/host-metrics.sh`; apply installs it while the module is on), the gateway's from
+  `data/monitoring/textfile/gateway.prom`. No sudo step.
 
 ## Backups
 
 `scripts/backup.sh [output-dir] [--plain]` writes a directory `aidenhq-<timestamp>/` of `.tar.gz` parts (`.tar` with
 `--plain`), each streamed straight to its file, with the whole data directory (Paperclip, the board, the accounts and their `auth.secret` (`data/kernel/auth`), the gateway ledger, apps-mcp, ops-mcp,
-slack-live, the apps node's state), the runner's state dir, every `app-*` volume with its labels, the YAML config and
+slack-live, the apps node's state), the kernel's job state dir, every `app-*` volume with its labels, the YAML config and
 the instance repo as a git bundle. Every SQLite database is also copied online through SQLite's backup API, and
 restore puts that copy over the file copy. Files are read through a container, so no sudo is needed. While Paperclip
 runs, its live database is left out and its hourly dumps carry it; for a complete Paperclip database, stop the stack
@@ -170,28 +169,20 @@ unless the output filesystem has 1.2 times the sources' size plus 20 GB free (a 
 Postgres on 2026-11-16). Each successful apply prunes unused images older than 48 hours and caps the build cache at 40 GB (least recently used
 first); `prune-docker.timer` does the same daily on a host that hasn't applied. Apply installs changed prune units.
 
-`scripts/restore.sh <backup>` refuses to run while containers or the runner are up, and moves existing state aside
+`scripts/restore.sh <backup>` refuses to run while containers or the kernel are up, and moves existing state aside
 (`.pre-restore-<stamp>/`) rather than deleting it. It leaves an app volume that already exists alone. A new host can be
 built from a backup with `ops/setup.sh --restore`. Off-host, nightly: [operations/migrate-host.md](operations/migrate-host.md#10-backups-off-host).
 
 Moving a running instance to another host (drain, cold copy, tailnet names, rollback): [operations/migrate-host.md](operations/migrate-host.md).
 
-## Run-history pruning
-
-Paperclip has no pruning of its own and long run history exhausts memory. `ops/prune-runs.sh` deletes run logs and
-`heartbeat_run_events` older than `PRUNE_DAYS` (default 30); the `prune-runs.timer` unit runs it weekly. Enable it
-with `systemctl --user enable --now prune-runs.timer`.
-
-Task workspaces (`~/aidenhq-work/tasks/<task>`): once a day the runner removes the workspace of every task closed (done or
-cancelled) over 3 days ago, as `aidenhq cleanup` does: a workspace with uncommitted changes stays, and local branches are
-kept in the runner's cache clones (`refs/kept/<task>/…`). A reopened task gets a fresh clone.
+## Task workspaces
 
 ## Logs and debugging a run
 
-- `docker compose logs -f <service>` for any service; `systemctl --user status aidenhq-runner` and
-  `journalctl --user -u aidenhq-runner` for the runner. After a full disk journald keeps logging to `/run` (no per-user
+- `docker compose logs -f <service>` for any service; `systemctl --user status aidenhq-kernel` and
+  `journalctl --user -u aidenhq-kernel` for the kernel. After a full disk journald keeps logging to `/run` (no per-user
   file there) until `sudo journalctl --flush`, so `--user` shows nothing new; the owner's `systemd-journal` group
-  (`ops/vm/setup.sh`) reads it there too: `journalctl _SYSTEMD_USER_UNIT=aidenhq-runner.service`.
+  (`ops/vm/setup.sh`) reads it there too: `journalctl _SYSTEMD_USER_UNIT=aidenhq-kernel.service`.
 - A run's full transcript is its Codex session log: `**/sessions/**/*.jsonl` under the Paperclip container's codex
   home (or `/workspace/.paperclip-runtime/codex/home/sessions` in an agent computer). Tool calls are `function_call`
   lines.
@@ -239,13 +230,13 @@ app requires a signed identity and has no Open link (docs/design/app-identity.md
 Design: [design/approvals.md](design/approvals.md).
 
 The instance setting `autonomy` (`off` | `tier0` | `full`; docs/configuration.md) decides who approves. Code tiers each
-write from verified state (`services/runner/src/tiers.mjs`): Tier 0 runs at once with an audit row on the board, Tier 1
+write from verified state (`kernel/src/tier.ts`, `kernel/src/writes.ts`): Tier 0 runs at once with an audit row on the board, Tier 1
 goes to the AI reviewer (the `modules/ai-reviewer` module, policy `modules/ai-reviewer/service/security/policy.md`), Tier 2 to the
 owner (Telegram card). Every record shows its tier, reason and `decided_by` on the board; a digest of what was decided
 without the owner reaches Telegram once a day from 21:00.
 
-- Agents-org PRs end merged: whenever the runner opens or pushes to a PR in an agents-org repo (not
-  the product or instance repo), it requests the merge itself, and tiers each PR on its own. A head the runner itself
+- Agents-org PRs end merged: whenever an agent opens or pushes to a PR in an agents-org repo (not
+  the product or instance repo), the code host module requests the merge itself, and tiers each PR on its own. A head the code host
   pushed to a branch of that repo (any task's; `pushed_heads` in its state), with named checks green or still running on
   it, is Tier 0: it starts at once, even while the task's run goes on (merges are GitHub calls, not workspace changes),
   with an audit row. Each Tier 0 PR merges independently, checked every poll, as soon as its named checks are green on
@@ -253,7 +244,7 @@ without the owner reaches Telegram once a day from 21:00.
   Green means every named check passed, GitHub's own rollup is green, `UNSTABLE` only from advisory checks, and no
   more than one page (100) of checks. A conflict (or "behind" under an up-to-date rule) is updated once, and the PR
   then merges only at GitHub's own update commit of that head (parents: the head and the base's current tip, signed
-  by GitHub), once its checks pass there; any other new head is tiered again (a head the runner didn't push goes to
+  by GitHub), once its checks pass there; any other new head is tiered again (a head it didn't push goes to
   the AI reviewer). Each PR is tiered on its own, and one still waiting for its first checks (up to five minutes after
   the push) doesn't hold the others. A card approved while such a queue runs takes over; the queue's waiting PRs are
   requested again and start once the card's queue ends. A PR with a failing
@@ -274,8 +265,7 @@ without the owner reaches Telegram once a day from 21:00.
   change has to happen outside the repository. The product watcher classifies these the same way: such a check wakes no
   rebase, so no new head is minted and a green check set is never thrown away for one.
 
-- Keys (generated by compile, in the vault): `reviewer_key` (the runner's: files Tier 1, records Tier 0, posts verdicts;
-  board and runner only). The owner's Claude watcher is the host CLI `modules/channel-operator/bin/decide <id> approve|reject [--stale]`
+- Keys (generated by compile, in the vault): `reviewer_key` (the kernel's reviewer slot: files Tier 1, records Tier 0, posts verdicts). The owner's Claude watcher is the host CLI `modules/channel-operator/bin/decide <id> approve|reject [--stale]`
   (module `channel-operator`, optional), which decides through the kernel's channel routes and stamps `watcher`. A watcher's no is a real veto on that action for the task; to close a stale
   or duplicate card without vetoing, it passes `--stale` (stamped `stale:watcher`, never a veto).
 - Before `autonomy: full`, run the planted eval on the host and require 100%:
@@ -352,14 +342,13 @@ the audit by hand instead.
 ## Vault
 
 The secrets directory is a gocryptfs view mounted at boot by `aidenhq-vault.service`; Docker requires it and the
-runner waits for it. Check with `systemctl status aidenhq-vault` and `mountpoint ~/.config/aidenhq`. If it is
+user units wait for it. Check with `systemctl status aidenhq-vault` and `mountpoint ~/.config/aidenhq`. If it is
 locked, nothing that needs secrets starts. Recovery without the TPM: [ops/vault/README.md](../ops/vault/README.md).
 
-## The runner unit
+## User units
 
-`aidenhq-runner` (`ops/units/aidenhq-runner.service`) is a systemd user unit running
-`services/runner/src/main.mjs` as the AidenHQ user, configured by `config/runner.yaml`. It starts only once the vault is
-mounted and restarts on failure. Other units: `aidenhq-computers` (the agent computer launcher, optional; a restart
+`aidenhq-kernel` is a systemd user unit; the optional `config/runner.yaml` holds host tuning it reads. Units start only once the vault is
+mounted and restart on failure. Other units: `aidenhq-computers` (the agent computer launcher, optional; a restart
 never ends a run: boxes stay up, an agent's turn runs detached in its box and the plugin collects its result from the new
 launcher; a new image applies from the next acquire) and
 `aidenhq-transcripts.path` (meeting transcript watcher). Enable user units to survive logout with

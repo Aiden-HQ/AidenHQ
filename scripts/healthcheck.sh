@@ -62,19 +62,11 @@ else
   skip "ops-mcp (meetings module not installed)"
 fi
 
-# A ChatGPT login only matters when an engine uses it: the runner's default engine is Codex (also when unset).
+# A ChatGPT login only matters when an engine uses it: the default engine is Codex (also when unset).
 if [ -z "$engine_default" ] || [ "$engine_default" = codex ]; then
   check "codex logged in (ChatGPT)" dc exec -T -u node paperclip test -s /paperclip/.codex/auth.json
 else
   skip "codex ChatGPT login (default engine is $engine_default)"
-fi
-
-# The runner's request reader (SETUP step 6) goes through the model gateway on OpenRouter unless runner.yaml sets
-# `intake.codex_args: []` (the host's ChatGPT login).
-if grep -Eq '^ *codex_args: *\[ *\]' config/runner.yaml 2>/dev/null; then
-  check "request reader (host ChatGPT login)" test -s "$HOME/.codex/auth.json"
-else
-  check "request reader (OpenRouter gateway, 127.0.0.1:8201)" sh -c 'curl -fsS --max-time 5 http://127.0.0.1:8201/health | grep -q "\"ok\":true"'
 fi
 
 # The kernel: every agent tool call crosses its proxy (aidenhq-kernel, backplane address).
@@ -192,23 +184,6 @@ if [ -f config/gate.json ]; then
   check "kernel sign-in listener for the gate (127.0.0.1:3129)" sh -c 'curl -fsS --max-time 5 http://127.0.0.1:3129/healthz | grep -q ok || { echo "nothing answers on 127.0.0.1:3129: the gate cannot sign anyone in; check the kernel (systemctl --user status aidenhq-kernel)"; exit 1; }'
 fi
 
-# The runner, and what its jobs need, seen with the runner's own PATH:
-# bwrap only on an interactive shell's PATH stopped every job (PEN-2714).
-if systemctl --user list-unit-files aidenhq-runner.service >/dev/null 2>&1; then
-  check "runner active" systemctl --user is-active --quiet aidenhq-runner
-  runner_pid="$(systemctl --user show aidenhq-runner -p MainPID --value)"
-  runner_path="$(tr '\0' '\n' < "/proc/$runner_pid/environ" 2>/dev/null | sed -n 's/^PATH=//p')"
-  # claude counts once the Claude engine has its token (the runner's own signal that it is configured).
-  tools="bwrap codex opencode git node"
-  if [ -s "$secrets/claude_oauth_token" ]; then tools="$tools claude"; else skip "claude job tool (no Claude engine token)"; fi
-  job_tools() {
-    env -i HOME="$HOME" PATH="${runner_path:-/usr/local/bin:/usr/bin:/bin}" \
-      sh -c 'for t in "$@"; do command -v "$t" >/dev/null || { echo "missing $t"; exit 1; }; done' _ $tools
-  }
-  check "runner has the job tools" job_tools
-else
-  printf '  skip  runner (not installed)\n'
-fi
 
 if module_on meetings; then
   check "watcher webhook configured" test -s "$secrets/meeting_webhook_url"

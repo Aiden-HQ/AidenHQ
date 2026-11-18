@@ -6,7 +6,7 @@ import { DatabaseSync } from "node:sqlite";
 import { createJobs } from "../src/jobs.ts";
 import { createAdmission, wakeInbox } from "../src/admission.ts";
 import { createWakes } from "../src/wakes.ts";
-import { createProvenance } from "../src/provenance.ts";
+import { createProvenance, ORIGIN } from "../src/provenance.ts";
 import { createJobTools } from "../src/jobtools.ts";
 
 function setup({ capacity = 12, spend = () => [], launch = async () => {}, grants: g } = {}) {
@@ -27,20 +27,20 @@ function setup({ capacity = 12, spend = () => [], launch = async () => {}, grant
   const wakes = { get: (key) => db.prepare("SELECT * FROM wakes WHERE key = ?").get(key) };
   const tasks = { "task-1": "agent-1", "task-2": "agent-1", "task-3": "agent-2", "task-4": "agent-2", "task-5": "agent-2", "task-6": "agent-3" };
   const launched = [];
-  // Kernel provenance (provenance.ts) over the same db; a task's description and its traced routine cap, per task.
-  const provenance = createProvenance({ db, cap: async () => undefined, search: async () => [], log: () => {} });
-  const descriptions = {}, caps = {};
+  // Kernel provenance over the same db; a task's origin (`origins`: what the plugin gave it) and traced routine cap, per task.
+  const provenance = createProvenance({ db, cap: async () => undefined });
+  const origins = {}, caps = {};
   const adm = createAdmission({
     provenance, routineCap: async (task) => caps[task], nextTurn: createJobTools({ db, secret: () => "s", engines: () => [] }),
     db, grants: () => grants, capacity: () => capacity, spend,
-    kinds: () => ({ "tasks.create_task": { floor: 1, tools: ["tasks.create"] }, "slack.post": { floor: 1, tools: ["slack.post"] }, "tasks.now": { floor: 0, tools: ["tasks.create"] } }),
+    kinds: () => ({ "tasks.create_task": { module: "tasks", floor: 1, tools: ["tasks.create"] }, "slack.post": { module: "slack", floor: 1, tools: ["slack.post"] }, "tasks.now": { module: "tasks", floor: 0, tools: ["tasks.create"] }, "codehost-github.pr": { module: "codehost-github", floor: 0, tools: [] }, "kernel.apply": { module: "kernel", floor: 1, tools: [] } }),
     mayDispatch: (module, agent) => module === "acme-dispatch" && agent !== "agent-3",
-    cp: { task: async (id) => (tasks[id] ? { id, identifier: id.toUpperCase(), assigneeAgentId: tasks[id], status: "todo", description: descriptions[id] ?? "" } : undefined) },
+    cp: { task: async (id) => (tasks[id] ? { id, identifier: id.toUpperCase(), assigneeAgentId: tasks[id], status: "todo", ...origins[id] } : undefined) },
     wakes: wakeInbox(db),
     launch: async (job) => { launched.push(job); await launch(job); },
     log: () => {},
   });
-  return { db, adm, jobs, grants, wake, wakes, inbox, launched, descriptions, caps };
+  return { db, adm, jobs, grants, wake, wakes, inbox, launched, origins, provenance, caps };
 }
 
 const req = (wake) => ({ wake, prompt: "do the thing" });
@@ -69,11 +69,14 @@ test("the job's authority is frozen at admission: later grant edits neither wide
   assert.deepEqual(adm.authority(job.id).writes, ["tasks.create_task"]);
 });
 
-test("profiles: an engineer gets the engineer image and its jobcaps; a check job gets no tools and no writes", async () => {
+test("profiles: an engineer gets the engineer image, its jobcaps and the code host's writes (none in trial); a check job gets no tools and no writes", async () => {
   const { adm, grants, wake } = setup();
   const eng = await adm.admit("acme-dispatch", req(wake("w1", "task-3", "agent-2")));
   assert.equal(eng.authority.image, "engineer");
   assert.deepEqual(eng.authority.jobcaps, ["gh-read"]);
+  assert.deepEqual(eng.authority.writes, ["codehost-github.pr", "kernel.apply"]);
+  grants["agent-2"].trial = true;
+  assert.deepEqual((await adm.admit("acme-dispatch", req(wake("w3", "task-4", "agent-2")))).authority.writes, []);
   grants["agent-1"].profile = "check";
   const chk = await adm.admit("acme-dispatch", req(wake("w2", "task-1", "agent-1")));
   assert.deepEqual([chk.authority.tools, chk.authority.writes, chk.authority.jobcaps], [{}, [], []]);
@@ -103,13 +106,15 @@ test("a module that doesn't dispatch the agent → 403; a wake it didn't claim �
   await assert.rejects(adm.admit("acme-other", req(wake("w2", "task-1", "agent-1"))), (e) => e.status === 409 && e.code === "wake-not-claimed");
 });
 
-test("a task a job created whose provenance isn't settled yet → 409, no job; once settled it is admitted", async () => {
-  const { adm, wake, db, descriptions } = setup();
-  descriptions["task-1"] = `Do it\n\n<!-- ahqintent${"a".repeat(32)} -->`;
-  await assert.rejects(adm.admit("acme-dispatch", req(wake("w1", "task-1", "agent-1"))), (e) => e.status === 409 && e.code === "provenance-pending");
+test("a task the kernel's plugin made runs only with its provenance: with no intent behind it → 409; its intent settles it", async () => {
+  const { adm, wake, db, origins, provenance } = setup();
+  origins["task-1"] = { originKind: ORIGIN, originId: "aidenhq:op=forged" };
+  await assert.rejects(adm.admit("acme-dispatch", req(wake("w1", "task-1", "agent-1"))), (e) => e.status === 409 && e.code === "provenance-unsettled");
   assert.equal(db.prepare("SELECT COUNT(*) AS n FROM jobs").get().n, 0);
-  db.prepare("INSERT INTO provenance (task, created_by_job, routine, routine_cap, at) VALUES ('task-1', 'j-parent', 'digest', 'off', 1)").run();
+  // The kernel recorded the cap under the op before the create; the plugin's answer was lost: the first read completes it.
+  provenance.intend("aidenhq:op=forged", { job: "j-parent", cap: { cap: "off", routine: "digest" } });
   assert.equal((await adm.admit("acme-dispatch", req("w1"))).state, "admitted");
+  assert.deepEqual({ ...db.prepare("SELECT created_by_job, routine_cap FROM provenance WHERE task = 'task-1'").get() }, { created_by_job: "j-parent", routine_cap: "off" });
 });
 
 test("the routine cap is frozen on the job row at admission; a later change to the trace doesn't move it", async () => {
@@ -121,4 +126,15 @@ test("the routine cap is frozen on the job row at admission; a later change to t
   // A task with no routine root: no cap frozen.
   const free = await adm.admit("acme-dispatch", req(wake("w2", "task-3", "agent-2")));
   assert.deepEqual({ ...db.prepare("SELECT routine, routine_cap FROM jobs WHERE id = ?").get(free.id) }, { routine: null, routine_cap: null });
+});
+
+test("a job woken by the chief of staff's comment has the target agent's authority and the target task's cap, nothing of the chief of staff's", async () => {
+  const { adm, wake, db, caps, grants } = setup();
+  grants["agent-cos"] = { key: "acme-cos", roles: ["fleet-admin"], tools: { slack: ["post"], tasks: ["create"] }, model: "acme/big", effort: "max" };
+  caps["task-1"] = { cap: "off", routine: "routine-1" }; // agent-1's task: its own routine root; the chief of staff's task has another cap
+  caps["task-cos"] = { cap: "full", routine: "routine-cos" };
+  const job = await adm.admit("acme-dispatch", req(wake("w1", "task-1", "agent-1", "comment")));
+  assert.equal(job.agent, "agent-1");
+  assert.deepEqual([job.authority.tools, job.authority.roles, job.authority.model], [{ slack: ["search"], tasks: ["create"] }, [], "acme/m1"]);
+  assert.deepEqual({ ...db.prepare("SELECT routine, routine_cap FROM jobs WHERE id = ?").get(job.id) }, { routine: "routine-1", routine_cap: "off" });
 });

@@ -66,7 +66,7 @@ so a routine turned on after weeks paused starts at its next tick with no backlo
 ### 4. Spend visible
 
 The board's header shows today's spend against the cap ("$3.20 / $10 today", linking to Costs), read from the gateway
-(`POST /spend`, the board's key): the exact sum the cap enforces, raises included. Without a cap it shows nothing.
+(`GET /v1/spend/summary`, the board's key): the exact sum the cap enforces, raises included. Without a cap it shows nothing.
 
 ### 5. Keys
 

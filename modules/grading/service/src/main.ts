@@ -29,18 +29,13 @@ const kernel: Kernel = {
 
 const db = new DatabaseSync(process.env.GRADES_DB ?? "/data/grades.sqlite");
 db.exec("PRAGMA journal_mode = WAL");
-const { server, tick, runner, grades } = createGrading({ db, kernel, keys: { check: file("GRADING_CHECK_KEY_FILE"), runner: file("GRADING_RUNNER_KEY_FILE"), board: file("GRADING_BOARD_KEY_FILE") }, log });
+const { server, tick, runner, grades } = createGrading({ db, kernel, keys: { check: file("GRADING_CHECK_KEY_FILE"), board: file("GRADING_BOARD_KEY_FILE") }, log });
 const port = Number(process.env.PORT ?? 8096);
 server.listen(port, () => log("listening", { port }));
 setInterval(() => void tick(), 5 * 60_000).unref();
 setTimeout(() => void tick(), 30_000).unref();
 
-/**
- * The grade loop on the kernel's jobs (kernel-loop.ts). Not called yet: the runner's loop grades until the switch, which deletes it and
- * calls this once a minute. Needs the module's roles kernel.cp-read, kernel.work-read, kernel.grader and kernel.wake.
- */
-export function startGradeLoop(gatewayUrl = process.env.AIDENHQ_GATEWAY_URL ?? "http://10.231.0.1:8201") {
-  const loop = createKernelGradeLoop({ db, runner, due: () => ({ grades: grades.due(), resubmitted: grades.resubmitted() }), kernel: kernelCall, kernelBytes, gatewayUrl, log });
-  let running = false;
-  setInterval(() => { if (!running) { running = true; loop.runGrades().catch((e) => log("grade loop failed", { err: String(e.message ?? e) })).finally(() => (running = false)); } }, 60_000).unref();
-}
+// The grade loop on the kernel's jobs (kernel-loop.ts), once a minute: roles kernel.cp-read, kernel.work-read, kernel.grader and kernel.wake.
+const loop = createKernelGradeLoop({ db, runner, due: () => ({ grades: grades.due(), resubmitted: grades.resubmitted() }), kernel: kernelCall, kernelBytes, gatewayUrl: process.env.AIDENHQ_GATEWAY_URL ?? "http://10.231.0.1:8201", log });
+let grading = false;
+setInterval(() => { if (!grading) { grading = true; loop.runGrades().catch((e) => log("grade loop failed", { err: String(e.message ?? e) })).finally(() => (grading = false)); } }, 60_000).unref();

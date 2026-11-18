@@ -11,10 +11,11 @@ import { DatabaseSync } from "node:sqlite";
 import { createChecks } from "../../../kernel/src/checks.ts";
 import { createResolver } from "../../../kernel/src/net.ts";
 import { createGrading } from "../service/src/server.ts";
+import { Invalid } from "../service/src/grades.ts";
 
 const script = JSON.parse(readFileSync(new URL("./script.json", import.meta.url), "utf8"));
 const golden = JSON.parse(readFileSync(new URL("./golden.json", import.meta.url), "utf8"));
-const KEYS = { check: "c".repeat(32), runner: "r".repeat(32), board: "b".repeat(32) };
+const KEYS = { check: "c".repeat(32), board: "b".repeat(32) };
 
 test("grading parity: the golden script through the kernel's finish gate and the grading module", async (t) => {
   const realNow = Date.now;
@@ -43,7 +44,7 @@ test("grading parity: the golden script through the kernel's finish gate and the
     settings: async () => settings,
     release: async (task) => void (await checks.resolve("grading", task, { verdict: "release" })),
   };
-  const { server, grades } = createGrading({ db: new DatabaseSync(":memory:"), kernel, keys: KEYS, jwks: { keys: [{ ...publicKey.export({ format: "jwk" }), kid: "k1" }] } });
+  const { server, grades, runner } = createGrading({ db: new DatabaseSync(":memory:"), kernel, keys: KEYS, jwks: { keys: [{ ...publicKey.export({ format: "jwk" }), kid: "k1" }] } });
   await new Promise((r) => server.listen(0, "127.0.0.1", r));
   t.after(() => server.close());
   const url = `http://127.0.0.1:${server.address().port}`;
@@ -54,7 +55,8 @@ test("grading parity: the golden script through the kernel's finish gate and the
   const b64 = (v) => Buffer.from(JSON.stringify(v)).toString("base64url");
   const assertion = (agent, tool) => { const body = `${b64({ alg: "EdDSA", typ: "JWT", kid: "k1" })}.${b64({ agent, key: agent, name: agent, roles: [], tool: `paperclip_tasks.${tool}`, kind: "run", aud: "tasks", jti: "j", exp: Math.floor(Date.now() / 1000) + 60 })}`; return `${body}.${sign(null, Buffer.from(body), privateKey).toString("base64url")}`; };
   const call = async (method, path, headers, body) => { const r = await fetch(`${url}${path}`, { method, headers: { "content-type": "application/json", ...headers }, ...(body !== undefined ? { body: JSON.stringify(body) } : {}) }); return { status: r.status, json: await r.json() }; };
-  const runner = { authorization: `Bearer ${KEYS.runner}` };
+  // The grade loop's own calls (kernel-loop.ts), in process: the rows to grade, a verdict, a resubmission.
+  const viaLoop = async (method, path, body) => { try { return { status: 200, json: await runner(method, path, body) }; } catch (e) { return { status: e.status ?? (e instanceof Invalid ? 400 : 500), json: { error: e.message } }; } };
   const out = [];
   for (const s of script.steps) {
     patches = [];
@@ -62,14 +64,14 @@ test("grading parity: the golden script through the kernel's finish gate and the
     let r;
     if (s.op === "file") r = await call("POST", "/grades", { "x-aidenhq-caller": assertion(s.as, s.tool ?? "task_delegate") }, { issue: s.task, rubric: s.rubric, deliverable: s.deliverable });
     if (s.op === "close") {
-      // The two ways a close reaches the gate: an agent's own (cp.ts, the tool's name as via) or the runner's (/v1/finish).
+      // The two ways a close reaches the gate: an agent's own (cp.ts, the tool's name as via) or a job's close (via finish_*).
       const f = await checks.finish(byRef(s.task).id, s.via.startsWith("finish_") ? { via: s.via } : { agent: s.as, tool: s.via, via: s.via }).catch((e) => e);
       r = f instanceof Error ? { status: f.status, json: { type: f.type } } : { status: 200, json: f };
     }
-    if (s.op === "verdict") r = await call("POST", `/internal/grades/${s.task}/verdict`, runner, s.verdict);
-    if (s.op === "resubmit") r = await call("POST", `/internal/grades/${s.task}/resubmit`, runner, { version: s.version });
-    if (s.op === "list") r = await call("GET", "/internal/grades", runner);
-    if (s.op === "state") r = await call("GET", `/internal/grades/${byRef(s.task).id}`, runner);
+    if (s.op === "verdict") r = await viaLoop("POST", `/internal/grades/${s.task}/verdict`, s.verdict);
+    if (s.op === "resubmit") r = await viaLoop("POST", `/internal/grades/${s.task}/resubmit`, { version: s.version });
+    if (s.op === "list") r = await viaLoop("GET", "/internal/grades");
+    if (s.op === "state") r = await viaLoop("GET", `/internal/grades/${byRef(s.task).id}`);
     out.push({ step: s.name, ...normalize(s, r), row: row(grades.get(byRef(s.task ?? "WOR-1").id)), patches });
   }
   for (let n = 0; n < golden.length; n++) assert.deepEqual(out[n], golden[n], `step ${n + 1}: ${golden[n].step}`);

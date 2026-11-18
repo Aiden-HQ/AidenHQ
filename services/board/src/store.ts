@@ -28,7 +28,7 @@ export interface UsageRecord {
   agentId?: string | null;
   /** The run's key (runKey in kernel/src/gateway/lib.ts: the credential's sha256; a computer's box session), for per-run caps and the run page. */
   runKey?: string | null;
-  /** Paperclip's run id, when the credential names it (the model gateway, for a run JWT). */
+  /** The run: a kernel job's id, or Paperclip's run id when the credential named one (a run JWT, before the switch). */
   runId?: string | null;
   /** The Paperclip task the run works on. */
   issueId?: string | null;
@@ -51,19 +51,6 @@ export interface Settled {
   agent: string;
   kind: "chat" | "task";
   at: string;
-}
-
-export interface UsageTotal {
-  component: string;
-  model: string;
-  agentId: string | null;
-  runs: number;
-  input: number;
-  cached: number;
-  output: number;
-  costUsd: number | null;
-  /** How many of the runs reported their own cost. */
-  priced: number;
 }
 
 /** What a call was for: its kind (the gateway's) or, for records from before kinds, its component. Engineer jobs are their own lane. */
@@ -90,11 +77,11 @@ const METRICS = `COALESCE(SUM(cost_usd), 0) AS usd, COUNT(*) AS calls, COALESCE(
   COALESCE(SUM(output), 0) AS output, COALESCE(SUM(status IS NOT NULL AND status NOT IN ('ok', 'unsettled', 'interrupted')), 0) AS errors,
   COALESCE(SUM(status IN ('unsettled', 'interrupted')), 0) AS interrupted,
   COALESCE(SUM(CASE WHEN COALESCE(status, 'ok') = 'ok' THEN ms END), 0) AS msSum, COUNT(CASE WHEN COALESCE(status, 'ok') = 'ok' THEN ms END) AS msN`;
-/** One run's calls on one task (store.usageByRun); engineer is 1 for an Engineer job. */
+/** One run's calls on one task (store.usageByRun); job is 1 for a kernel job (every agent run is one). */
 export interface RunUsage {
   issueId: string | null;
   run: string;
-  engineer: number;
+  job: number;
   calls: number;
   usd: number;
   first: string;
@@ -239,7 +226,7 @@ export class Store {
     for (const [c, type] of [["run_key", "TEXT"], ["run_id", "TEXT"], ["issue_id", "TEXT"], ["rev", "TEXT"], ["kind", "TEXT"], ["ms", "INTEGER"], ["status", "TEXT"], ["subject", "TEXT"]]) if (!usageColumns.includes(c!)) this.db.exec(`ALTER TABLE usage ADD COLUMN ${c} ${type}`);
     // An unsettled call's amount is the gateway's fail-closed hold, not spend (addUsage).
     this.db.exec("UPDATE usage SET cost_usd = NULL WHERE status = 'unsettled' AND cost_usd IS NOT NULL");
-    this.db.exec("CREATE INDEX IF NOT EXISTS usage_run ON usage (run_key); CREATE INDEX IF NOT EXISTS usage_issue ON usage (issue_id); CREATE INDEX IF NOT EXISTS usage_at_cost ON usage (at, cost_usd)");
+    this.db.exec("CREATE INDEX IF NOT EXISTS usage_run ON usage (run_key); CREATE INDEX IF NOT EXISTS usage_run_id ON usage (run_id); CREATE INDEX IF NOT EXISTS usage_issue ON usage (issue_id); CREATE INDEX IF NOT EXISTS usage_at_cost ON usage (at, cost_usd)");
     if (!this.meta("installed_at")) this.setMeta("installed_at", new Date().toISOString());
   }
 
@@ -272,13 +259,6 @@ export class Store {
     this.db.prepare("DELETE FROM usage WHERE at < ?").run(before);
   }
 
-  /** Usage per component, agent and model in [from, to): records, tokens and the summed reported cost (null when none reported one). */
-  usage(from: string, to: string): UsageTotal[] {
-    return this.db
-      .prepare("SELECT component, model, agent_id AS agentId, COUNT(*) AS runs, SUM(input) AS input, SUM(cached) AS cached, SUM(output) AS output, SUM(cost_usd) AS costUsd, COUNT(cost_usd) AS priced FROM usage WHERE at >= ? AND at < ? GROUP BY component, model, agent_id")
-      .all(from, to) as unknown as UsageTotal[];
-  }
-
   /** Billed dollars per agent and UTC day in [from, to) (scorecards, the morning fleet section): rows, and how many carried a cost. */
   usageDaily(from: string, to: string): { agentId: string | null; day: string; costUsd: number; rows: number; priced: number }[] {
     return this.db
@@ -286,11 +266,11 @@ export class Store {
       .all(from, to) as unknown as { agentId: string | null; day: string; costUsd: number; rows: number; priced: number }[];
   }
 
-  /** The ledger rows of one agent in [from, to] (the run page's join: rows carry the credential's hash, not Paperclip's run id), oldest first. */
-  usageOf(agentId: string, from: string, to: string): UsageRecord[] {
-    return (this.db
-      .prepare("SELECT key, at, component, model, input, cached, output, cost_usd AS costUsd, agent_id AS agentId, run_key AS runKey, run_id AS runId, issue_id AS issueId, rev, kind, ms, status FROM usage WHERE agent_id = ? AND at >= ? AND at <= ? ORDER BY at")
-      .all(agentId, from, to) as unknown as UsageRecord[]);
+  /** The ledger rows of one run (a kernel job's calls carry its id), oldest first: the run page's join. */
+  usageOfRun(runId: string): UsageRecord[] {
+    return this.db
+      .prepare("SELECT key, at, component, model, input, cached, output, cost_usd AS costUsd, agent_id AS agentId, run_key AS runKey, run_id AS runId, issue_id AS issueId, rev, kind, ms, status FROM usage WHERE run_id = ? ORDER BY at")
+      .all(runId) as unknown as UsageRecord[];
   }
 
   /**
@@ -338,12 +318,6 @@ export class Store {
     return this.db
       .prepare("SELECT run_id AS runId, MAX(agent_id) AS agentId, COUNT(*) AS calls, COALESCE(SUM(cost_usd), 0) AS usd, MIN(at) AS first, MAX(at) AS last FROM usage WHERE at >= ? AND at < ? AND run_id IS NOT NULL GROUP BY run_id HAVING COUNT(*) >= ? ORDER BY usd DESC LIMIT 200")
       .all(from, to, minCalls) as unknown as { runId: string; agentId: string | null; calls: number; usd: number; first: string; last: string }[];
-  }
-
-  /** Each agent's spend in [from, to) (the day caps): agent calls only. */
-  spendByAgent(from: string, to: string): Map<string, number> {
-    const rows = this.db.prepare("SELECT agent_id AS id, COALESCE(SUM(cost_usd), 0) AS usd FROM usage WHERE at >= ? AND at < ? AND agent_id IS NOT NULL GROUP BY 1").all(from, to) as { id: string; usd: number }[];
-    return new Map(rows.map((r) => [r.id, r.usd]));
   }
 
   /** Spend and calls in [from, to), read off the (at, cost_usd) index alone: the overview's periods. */
@@ -634,7 +608,7 @@ export class Store {
     if (ids) where.push(`issue_id IN (${ids.map(() => "?").join(",") || "NULL"})`);
     return this.db
       .prepare(
-        `SELECT issue_id AS issueId, COALESCE(run_key, key) AS run, component = 'Engineer jobs' AS engineer, COUNT(*) AS calls, COALESCE(SUM(cost_usd), 0) AS usd, MIN(at) AS first, MAX(at) AS last
+        `SELECT issue_id AS issueId, COALESCE(run_id, run_key, key) AS run, run_id LIKE 'j-%' AS job, COUNT(*) AS calls, COALESCE(SUM(cost_usd), 0) AS usd, MIN(at) AS first, MAX(at) AS last
          FROM usage WHERE ${where.join(" AND ")} GROUP BY 1, 2, 3`,
       )
       .all(from, ...(ids ?? [])) as unknown as RunUsage[];

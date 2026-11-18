@@ -133,8 +133,8 @@ export function createGradeLoop({ api, pc, log, state, gather, grade, escalation
       // Graded satisfied before, but closing the task failed: the same version keeps its verdict, no second grader call.
       v = { outcome: "satisfied", model: last.model, criteria: last.criteria };
     } else {
-      // The author's model: the job's engine for a runner Engineer, else the agent's own; the grader is never of its family.
-      const authorModel = `${state.lastJob(issue.id)?.engine ?? ""} ${agent?.adapterConfig?.model ?? ""}`;
+      // The author's model: its last job's engine and the agent's own model (setup's metadata); the grader is never of its family.
+      const authorModel = `${state.lastJob(issue.id)?.engine ?? ""} ${agent?.metadata?.model ?? ""}`;
       // Through the model gateway with the runner's grader token (kind grader: billed to the task, never capped). AIDENHQ_GRADER_URL: tests' fake.
       const ask = graderAsk(issue);
       v = await grade({ rubric, deliverable: g.deliverable, facts: ev.facts, data: ev.data, request: `${issue.title}\n\n${stripHidden(issue.description ?? "")}`, images: ev.images, authorModel, ask });

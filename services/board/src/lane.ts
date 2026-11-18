@@ -1,11 +1,14 @@
-// The fast chat lane (slack-live-mcp's /lane): an agent with a `chat:` block answers its board chats there, in seconds.
-// Its conversation lives in the lane, not in a Paperclip task. The lane may be absent (older instance, no lane agents):
-// reads fail soft to empty, a send fails loudly.
+// The fast chat lane (the chat-lane module): an agent with a `chat:` block has one chat task (the grants table's
+// `chat_task`), where the lane answers what the owner writes, in seconds. The board shows that task as the agent's fast
+// chat and writes on it as the owner; the lane reads it from there (and posts Telegram words and its replies there through
+// the kernel). No lane key: the task is the only conversation store.
+import { readFileSync } from "node:fs";
+import { displayText } from "./board.js";
+import type { Comment, Paperclip } from "./paperclip.js";
 
 export interface LaneOptions {
-  url: string;
-  /** The board's internal token, which the lane accepts as its Bearer. */
-  token: string;
+  /** config/grants/grants.json: the lane agents are its agents with a `chat_task`. */
+  grantsFile: string;
 }
 
 export interface LaneAgent {
@@ -14,39 +17,41 @@ export interface LaneAgent {
   name: string;
 }
 
-async function laneCall(lane: LaneOptions, method: string, path: string, body?: unknown): Promise<any> {
-  const res = await fetch(`${lane.url.replace(/\/+$/, "")}/lane${path}`, {
-    method,
-    headers: { authorization: `Bearer ${lane.token}`, ...(body === undefined ? {} : { "content-type": "application/json" }) },
-    body: body === undefined ? undefined : JSON.stringify(body),
-    signal: AbortSignal.timeout(5_000),
-  });
-  if (!res.ok) throw new Error(`lane ${res.status}`);
-  return res.json();
-}
-
-export async function laneAgents(lane?: LaneOptions): Promise<LaneAgent[]> {
+function chatTasks(lane: LaneOptions | undefined): { id: string; key: string; task: string }[] {
   if (!lane) return [];
   try {
-    const r = await laneCall(lane, "GET", "/agents");
-    return Array.isArray(r?.agents) ? r.agents : [];
+    const agents = (JSON.parse(readFileSync(lane.grantsFile, "utf8")).agents ?? {}) as Record<string, { key?: unknown; chat_task?: unknown }>;
+    return Object.entries(agents).flatMap(([id, g]) => (typeof g.key === "string" && typeof g.chat_task === "string" ? [{ id, key: g.key, task: g.chat_task }] : []));
   } catch {
     return [];
   }
 }
 
-export async function laneMessages(lane: LaneOptions | undefined, key: string, after: string) {
-  const empty = { messages: [], busy: false };
-  if (!lane) return empty;
-  try {
-    return (await laneCall(lane, "GET", `/${encodeURIComponent(key)}/messages${after ? `?after=${encodeURIComponent(after)}` : ""}`)) ?? empty;
-  } catch {
-    return empty;
-  }
+export async function laneAgents(pc: Paperclip, lane?: LaneOptions): Promise<LaneAgent[]> {
+  const tasks = chatTasks(lane);
+  if (!tasks.length) return [];
+  const names = new Map((await pc.agents()).map((a) => [a.id, a.name]));
+  return tasks.map((t) => ({ key: t.key, id: t.id, name: names.get(t.id) ?? t.key }));
 }
 
-/** `by`: the signed-in admin's name when that admin is not the owner. */
-export async function laneSend(lane: LaneOptions | undefined, key: string, text: string, by?: string): Promise<void> {
-  if (!lane) throw new Error("the fast chat lane isn't available");
-  await laneCall(lane, "POST", `/${encodeURIComponent(key)}/messages`, { text, ...(by ? { by } : {}) });
+const role = (agentId: string, c: Comment) => (c.authorAgentId === agentId ? "agent" : c.authorUserId && !c.authorAgentId ? "owner" : undefined);
+
+/** The chat after the comment `after` (its id), oldest first; `busy` while the owner's last word has no reply yet. */
+export async function laneMessages(pc: Paperclip, lane: LaneOptions | undefined, key: string, after: string) {
+  const t = chatTasks(lane).find((x) => x.key === key);
+  if (!t) return { messages: [], busy: false };
+  const lines = (await pc.comments(t.task)).flatMap((c) => {
+    const r = role(t.id, c);
+    // The kernel's label on the owner's words from another channel ("[telegram] ") stays: it says where they were written.
+    return r ? [{ id: c.id, role: r, text: displayText(c.body), at: Date.parse(c.createdAt) || 0 }] : [];
+  });
+  const from = after ? lines.findIndex((l) => l.id === after) + 1 : 0;
+  return { messages: lines.slice(from), busy: lines.at(-1)?.role === "owner" };
+}
+
+/** The owner's words on the agent's chat task; `by`: the signed-in admin's name when that admin is not the owner. */
+export async function laneSend(pc: Paperclip, lane: LaneOptions | undefined, key: string, text: string, by?: string): Promise<void> {
+  const t = chatTasks(lane).find((x) => x.key === key);
+  if (!t) throw new Error(`${key} has no fast chat`);
+  await pc.addComment(t.task, `${by ? `(by ${by}) ` : ""}${displayText(text)}`);
 }

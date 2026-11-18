@@ -45,13 +45,6 @@ function publishParts(action, b, s) {
     if (!s.requester?.platform) return [REJECT("product-push", "only the Platform Engineer's line pushes to the product repo: hand product changes to the Platform Engineer")];
     return [T(1, action === "pr" ? "product-pr" : "product-push-branch", `${action === "pr" ? "a PR" : "a branch push"} to the product repo from the Platform Engineer's line`)];
   }
-  // A PR on the official modules repo that also merges on its card, as a product PR does (owner, 2026-11-18): the Platform
-  // Engineer's line only, and the panel's, as a merge outside the agents org is.
-  if (action === "pr" && s.modulesRepo && (s.also ?? []).includes("merge") && same(b.repo, s.modulesRepo)) {
-    if (!s.requester?.platform) return [REJECT("modules-merge-requester", "only the Platform Engineer's line merges official modules PRs: hand it to the Platform Engineer")];
-    if (b.empty || b.branch === b.defaultBranch) return [REJECT("outside-default-branch", `\`${b.branch}\` is ${b.repo}'s default branch: publish a branch and open a PR`)];
-    return [PANEL("modules-pr-merge", `a PR to the official modules repo from the Platform Engineer's line, merged once every named check is green on its head`)];
-  }
   const workflow = b.files.find((f) => GITHUB.test(f));
   const parts = [];
   // A byte-identical copy of the product's CI template (checked in the runner's own clone) is Tier 0; any other `.github/`
@@ -132,14 +125,13 @@ function mergeParts(p, s) {
   if (same(p.repo, s.instanceRepo)) return [REJECT("core-repo-merge", `${ref} is the instance repo: it changes only through apply`)];
   if (same(p.repo, s.productRepo)) return [productMergePart(p, ref, s)];
   if (!Array.isArray(p.files)) return [REJECT("unknown-files", `couldn't list every file ${ref} changes; try again`)];
+  // Outside the agents org and the product repo the code host only opens PRs: the merge queue refuses it too (merges.ts).
+  if (!inAgentsOrg(p.repo, s)) return [REJECT("outside-merge", `${ref} is outside the agents org: the code host only opens PRs there`)];
   const friction = mergeFriction(p, ref);
   if (friction) return [friction];
   const parts = [];
-  // Outside the agents org: a write into someone else's repo (its own GitHub review applies too), the panel's.
-  const outside = !inAgentsOrg(p.repo, s);
-  if (outside) parts.push(PANEL("outside-merge", `${ref} is outside the agents org (its own GitHub review applies too)`));
   const workflow = p.files.find((f) => GITHUB.test(f));
-  if (workflow && !(p.ciTemplate === true && !outside)) parts.push(T(1, "github-dir", `${ref} changes ${workflow}`));
+  if (workflow && p.ciTemplate !== true) parts.push(T(1, "github-dir", `${ref} changes ${workflow}`));
   // Existing sensitivity alone doesn't make every merge the owner's: the reviewer reads it (and flags new reach).
   if (p.sensitive) parts.push(T(1, "sensitive-app", `${ref} is a sensitive app's repo (access, caps or connects to paperclip)`));
   // A head the runner didn't push (a fork, someone else's push): the reviewer reads the diff first.
@@ -149,8 +141,8 @@ function mergeParts(p, s) {
   const n = `${p.checks.length} named check${p.checks.length === 1 ? "" : "s"}`;
   // A change request on this server: no CI code-review job read it (that needs GitHub's OIDC), so the AI reviewer reads the
   // card's diff and the request chain (owner, 2026-11-17). Merged only once every named check is green on this head.
-  if (!outside && isLocal(p.repo)) parts.push(T(1, "local-merge", `${ref}: a change request on this server; ${n}, ${p.checks.some((c) => c.pending) ? "still running on the exact head (merged only once green)" : "all green on the exact head"}`));
-  else if (!outside) parts.push(p.checks.some((c) => c.pending) ? T(0, "agents-org-merge-checks-running", `${ref}: ${n}, still running on the exact head (merged only once green)`) : T(0, "agents-org-merge", `${ref}: ${n}, all green on the exact head`));
+  if (isLocal(p.repo)) parts.push(T(1, "local-merge", `${ref}: a change request on this server; ${n}, ${p.checks.some((c) => c.pending) ? "still running on the exact head (merged only once green)" : "all green on the exact head"}`));
+  else parts.push(p.checks.some((c) => c.pending) ? T(0, "agents-org-merge-checks-running", `${ref}: ${n}, still running on the exact head (merged only once green)`) : T(0, "agents-org-merge", `${ref}: ${n}, all green on the exact head`));
   return parts;
 }
 

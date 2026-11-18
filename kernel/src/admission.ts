@@ -5,6 +5,7 @@
 // edited later never changes a running job. Everything the job gets comes from the wake's task and agent, never the request.
 import { randomBytes } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
+import { CODEHOST } from "./codehost.ts";
 import { rolesOf } from "./identity.ts";
 import { JobError } from "./jobs.ts";
 import type { JobTools } from "./jobtools.ts";
@@ -49,7 +50,7 @@ export const wakeInbox = (db: DatabaseSync): Wakes => ({
   unclaim: (key) => { db.prepare("UPDATE wakes SET job = NULL, until = 0 WHERE key = ?").run(key); },
 });
 /** `fresh`: the last job asked for a fresh session (`aidenhq reset`): no session resumes, the dispatcher's included. */
-export type Admitted = { id: string; module: string; agent: string; task: string; identifier: string; profile: Profile; authority: Authority; prompt: string; session?: string; fresh: boolean; wake: string };
+export type Admitted = { id: string; module: string; agent: string; task: string; identifier: string; profile: Profile; authority: Authority; prompt: string; fullPrompt?: string; fresh: boolean; wake: string };
 
 const LIVE = "state IN ('admitted', 'running')";
 const ID = /^[\w.:-]{1,200}$/;
@@ -57,21 +58,22 @@ const ID = /^[\w.:-]{1,200}$/;
 export function createAdmission({ db, grants, kinds, capacity, spend, mayDispatch, cp, wakes, provenance, routineCap, nextTurn, launch, log }: {
   /** What the task's last job asked of this turn (jobtools.ts): read in the transaction, spent once the job has started. */
   nextTurn: Pick<JobTools, "pending" | "taken" | "refusal">;
-  /** Kernel provenance (provenance.ts): a task carrying a creation intent with no row yet is not admitted until reconciled. */
-  provenance: { pending(issue: { id: string; description?: string | null }): boolean };
+  /** Kernel provenance (provenance.ts): a task the kernel's plugin made runs only with its provenance row. */
+  provenance: { settled(issue: { id: string; originKind?: string | null; originId?: string | null }): boolean };
   /** The task's routine cap as the kernel traces it now (tier.ts taskRoutineCap): frozen on the job row at admission. */
   routineCap: (task: string) => Promise<RoutineCap | undefined>;
   /** kernel.db, with the jobs table (jobs.ts) already made. */
   db: DatabaseSync;
   grants: () => Record<string, AgentGrant | undefined>;
-  /** Write kinds (config/kernel/writes.json): a job may request the reviewed ones (floor 1+) whose tools it holds. */
-  kinds: () => Record<string, { floor: number; tools: string[] }>;
+  /** Write kinds (config/kernel/writes.json and the kernel's): a job may request the reviewed ones (floor 1+) whose tools it
+   * holds; an engineer job also the code host's kinds and kernel.apply. */
+  kinds: () => Record<string, { module: string; floor: number; tools: string[] }>;
   /** settings.computers_max (config/computers.json `max`): the launcher's pool, so no job is admitted it can't box. */
   capacity: () => number;
   /** The spend caps a new job of this agent on this task would start over (the gateway's `exhausted`). */
   spend: (agent: string, task: string) => { scope: string }[];
   mayDispatch: (module: string, agent: string) => boolean;
-  cp: { task(id: string): Promise<{ id: string; identifier?: string; assigneeAgentId?: string | null; status?: string; description?: string | null } | undefined> };
+  cp: { task(id: string): Promise<{ id: string; identifier?: string; assigneeAgentId?: string | null; status?: string; description?: string | null; originKind?: string | null; originId?: string | null } | undefined> };
   wakes: Wakes;
   /** Gets the job its computer and starts it (boxes.ts); a 503 means the computers are full: the job waits for the next tick. */
   launch: (job: Admitted) => Promise<void>;
@@ -86,7 +88,11 @@ export function createAdmission({ db, grants, kinds, capacity, spend, mayDispatc
     // A check job runs repo code: no tools, no writes, nothing to reach.
     const tools = profile === "check" ? {} : Object.fromEntries(Object.entries(g.tools ?? {}).map(([c, t]) => [c, [...t]]));
     const holds = (ct: string) => { const [c, t] = ct.split("."); return Boolean(tools[c!]?.includes(t!)); };
-    const writes = Object.entries(kinds()).filter(([, k]) => k.floor >= 1 && k.tools.length > 0 && k.tools.some(holds)).map(([id]) => id).sort();
+    // An Engineer publishes its workspace's commits (push, PR, merge, close, a new repo) and applies instance changes: each
+    // a record its tier decides, filed with the job's own workspace.
+    // Not an agent in trial: its writes come with the change that graduates it.
+    const engineer = (id: string, k: { module: string }) => profile === "engineer" && g.trial !== true && (k.module === CODEHOST || id === "kernel.apply");
+    const writes = Object.entries(kinds()).filter(([id, k]) => (k.floor >= 1 && k.tools.length > 0 && k.tools.some(holds)) || engineer(id, k)).map(([id]) => id).sort();
     return {
       profile, image: g.image ?? IMAGE[profile], engine: String(g.engine ?? ""), engines: [...(g.engines ?? [g.engine ?? ""])].filter(Boolean), model: String(routine?.model ?? g.model ?? ""), effort: String(routine?.effort ?? g.effort ?? ""),
       models: [...(g.models ?? [])], skills: (g.skills ?? []).map((k) => ({ ...k })), tools, jobcaps: profile === "check" ? [] : [...(g.jobcaps ?? [])], writes,
@@ -95,8 +101,8 @@ export function createAdmission({ db, grants, kinds, capacity, spend, mayDispatc
     };
   }
 
-  async function admit(module: string, b: { wake: string; prompt: string; session?: string }) {
-    if (!b || typeof b !== "object" || !ID.test(String(b.wake)) || typeof b.prompt !== "string") throw new JobError(400, "bad-request", "send {wake, prompt, session?}");
+  async function admit(module: string, b: { wake: string; prompt: string; full_prompt?: string }) {
+    if (!b || typeof b !== "object" || !ID.test(String(b.wake)) || typeof b.prompt !== "string" || (b.full_prompt !== undefined && typeof b.full_prompt !== "string")) throw new JobError(400, "bad-request", "send {wake, prompt, full_prompt?}");
     const first = wakes.claimed(module, b.wake);
     if (!first) throw new JobError(409, "wake-not-claimed", `wake ${b.wake} isn't one this module claimed`);
     const { task, agent } = first;
@@ -117,8 +123,8 @@ export function createAdmission({ db, grants, kinds, capacity, spend, mayDispatc
       const w = wakes.claimed(module, b.wake);
       if (!w || w.task !== task || w.agent !== agent) throw new JobError(409, "wake-not-claimed", `wake ${b.wake} isn't one this module claimed`);
       if (db.prepare(`SELECT 1 FROM jobs WHERE task = ? AND ${LIVE}`).get(task)) throw new JobError(409, "job-running", `task ${task} already has a job`);
-      // A task a job created whose provenance row isn't written yet: its routine cap is unknown, so nothing runs on it.
-      if (provenance.pending({ id: task, description: t.description ?? null })) throw new JobError(409, "provenance-pending", `task ${task}'s provenance isn't settled yet`);
+      // A task the plugin made with no provenance behind it: its routine cap is unknown, so nothing runs on it.
+      if (!provenance.settled(t)) throw new JobError(409, "provenance-unsettled", `task ${task} was made through the kernel's plugin with no provenance; it doesn't run`);
       const g = grants()[agent];
       if (!g) throw new JobError(403, "no-grants", `agent ${agent} has no grants`);
       const live = (db.prepare(`SELECT COUNT(*) AS n FROM jobs WHERE ${LIVE}`).get() as { n: number }).n;
@@ -141,7 +147,7 @@ export function createAdmission({ db, grants, kinds, capacity, spend, mayDispatc
         .run(id, module, agent, task, authority.engine, Date.now(), JSON.stringify(authority.jobcaps), authority.profile, b.wake, JSON.stringify(authority), cap?.routine ?? null, cap?.cap ?? null, identifier);
       wakes.bind(b.wake, id);
       db.exec("COMMIT");
-      job = { id, module, agent, task, identifier, profile: authority.profile, authority, prompt: b.prompt, ...(b.session && !fresh ? { session: b.session } : {}), fresh, wake: b.wake };
+      job = { id, module, agent, task, identifier, profile: authority.profile, authority, prompt: b.prompt, ...(b.full_prompt ? { fullPrompt: b.full_prompt } : {}), fresh, wake: b.wake };
     } catch (e) {
       if (db.isTransaction) db.exec("ROLLBACK");
       throw e;

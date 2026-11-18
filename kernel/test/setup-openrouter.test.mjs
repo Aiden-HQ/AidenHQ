@@ -15,7 +15,7 @@ const field = { module: "models-openrouter", secret: "openrouter_key", label: "O
 const vault = new Map();
 // What the kernel's model_ready op answers (main.ts wires the same readiness to it and to the admin pages).
 const state = readiness({ get: (n) => vault.get(n) ?? "", exists: (n) => vault.has(n), save: (n, v) => vault.set(n, v) });
-let accounts, adminSrv, verdict = "ok", exchanged = [], verifies = 0;
+let accounts, adminSrv, verdict = "ok", exchanged = [];
 before(async () => {
   accounts = await openAccounts({ dataDir: ":memory:", hosts: [HOST], adminUrl: `http://${HOST}`, edgeSecret: () => "", notify: () => {}, log: silent });
   const firstRun = { ownerEmail: () => undefined, recoveryKey: () => "", fields: () => [field, { ...field, module: "codehost-github", secret: "github_bot_token", label: "GitHub token" }], has: (n) => vault.has(n), save: (n, v) => vault.set(n, v), forgetRecoveryKey() {} };
@@ -24,7 +24,6 @@ before(async () => {
     exchange: async (code, verifier) => { exchanged.push([code, verifier]); return KEY; },
     check: async () => verdict,
     saved: () => vault.get("openrouter_key") ?? "",
-    verifyAgents: () => verifies++,
     ...state,
   };
   const cards = { ownerCards: async () => ({ live: [], finished: [] }), decideCard: async () => { throw new Error("no"); } };

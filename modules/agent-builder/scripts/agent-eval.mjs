@@ -28,7 +28,8 @@ const model = conf.model ?? "~deepseek/deepseek-flash-latest";
 const cases = readdirSync(join(dir, "cases")).filter((f) => f.endsWith(".json") && f.includes(only)).sort().map((f) => ({ file: f, ...JSON.parse(readFileSync(join(dir, "cases", f), "utf8")) }));
 
 const body = (text) => text.replace(/^---\n[\s\S]*?\n---\n/, "");
-const at = (ref, path) => execFileSync("git", ["-C", root, "show", `${ref}:${path}`], { encoding: "utf8" });
+// `./`: the path is read relative to modules/ (root), as the new side reads it, not to the repository's top.
+const at = (ref, path) => execFileSync("git", ["-C", root, "show", `${ref}:./${path}`], { encoding: "utf8" });
 const handbook = (side) => side.ref
   ? [body(at(side.ref, side.handbook)), ...(side.extra ? [`## Instance rules\n\n${side.extra}`] : [])].join("\n\n")
   : [body(readFileSync(join(root, side.handbook), "utf8")), ...(side.skills ?? []).map((s) => `## Skill ${s.split("/").pop()} (you read it for this run)\n\n${body(readFileSync(join(root, s, "SKILL.md"), "utf8"))}`)].join("\n\n");

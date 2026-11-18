@@ -22,8 +22,8 @@ Thanks for helping. Contributors have read access to this repository; the mainta
 - **The PR title follows [Conventional Commits](https://www.conventionalcommits.org/)** and becomes the squash
   commit's subject: `type(scope): summary`, lower-case type, the scope optional, `!` before the colon for a breaking
   change. Types: `feat`, `fix`, `docs`, `chore`, `test`, `refactor`, `perf`, `ci`, plus `build`, `style` and `revert`.
-  The scope is the area touched: `runner`, `board`, `gate`, `computer`, `apps-mcp`, `scripts`, `ops`, a module's name.
-  For example `feat(runner): retry a merge after a flaky check`, `fix(board): keep the drawer open on refresh`,
+  The scope is the area touched: `kernel`, `board`, `gate`, `computer`, `apps-mcp`, `scripts`, `ops`, a module's name.
+  For example `feat(kernel): retry a job after a flaky check`, `fix(board): keep the drawer open on refresh`,
   `docs: explain instance pins`. The `pr-title` CI check enforces it; after fixing a title, re-run the failed jobs.
 - **The PR body says why**: the problem, and why this is the fix. The diff already shows what.
 - Commits on your branch may be as granular as you like; they are squashed.
@@ -55,7 +55,6 @@ No live instance and no paid keys are needed. Use Node 24 and run `npm ci` once 
 | Package | Commands |
 |---|---|
 | `scripts` (compiler, setup, `paperclip-tasks-mcp`, shared-code drift) | `npm test` |
-| `services/runner` | `npm test` |
 | `services/computer` | `node --test test/*.test.mjs` |
 | `modules/apps-platform/gate` | `npm test && npm run typecheck` |
 | `services/gateway` | `npm test && npm run typecheck` |
@@ -69,7 +68,7 @@ No live instance and no paid keys are needed. Use Node 24 and run `npm ci` once 
 - **The reviewer eval.** `node modules/ai-reviewer/scripts/reviewer-eval.mjs` runs the AI reviewer against every planted
   case in `modules/ai-reviewer/test/reviewer-cases/` and must stay at 100%. It needs a paid `OPENROUTER_API_KEY`, so CI
   doesn't run it. If your PR touches the `modules/ai-reviewer` module (its service, its policy in `service/security/` or
-  the cases), `services/runner/src/tiers.mjs` or `scripts/compiler/authority.ts`, say so in the PR; the maintainer runs it before merging. A reviewer
+  the cases), `kernel/src/tier.ts` or `scripts/compiler/authority.ts`, say so in the PR; the maintainer runs it before merging. A reviewer
   false reject you hit becomes a new planted case.
 
 ## What a good change looks like
@@ -78,7 +77,7 @@ Read [CLAUDE.md](CLAUDE.md) first; it is also the guide coding agents follow. In
 
 - **Generic core.** New behaviour is an agent definition, handbook text or a tool, not a special-case branch.
 - **Gates in code.** Writes, approvals and access checks are enforced below the model. Don't move a gate into a
-  prompt. Changes to gate files (`services/runner/src/tiers.mjs`, `kernel/`, `modules/apps-platform/gate/`,
+  prompt. Changes to gate files (`kernel/src/tier.ts`, `kernel/`, `modules/apps-platform/gate/`,
   `ops/`, `scripts/paperclip-setup.mjs`) get extra review.
 - **Minimal tests.** A few tests that prove the change works end to end. No tests for obvious code.
 - **Simple.** Less code, no speculative options or compatibility shims.

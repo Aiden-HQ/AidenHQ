@@ -7,19 +7,18 @@ import type { DatabaseSync } from "node:sqlite";
 import { KernelError, type Kernel, type Wake } from "./kernel.ts";
 import { buildPrompt, outcome, type Words } from "./prompt.ts";
 import { createAsker } from "./asker.ts";
-import { agentMade, freshWords, moduleMade, ownRequest, redirectNote, speaker, spoke, stripHidden, threadEntries, threadSection, type Agent, type Directory, type Issue } from "./thread.ts";
+import { agentMade, fence, freshWords, moduleMade, ownRequest, redirectNote, speaker, spoke, stripHidden, threadEntries, threadSection, type Agent, type Directory, type Issue } from "./thread.ts";
 
 // The jobs this module started, until their outcome is posted; a start asked for whose answer isn't recorded yet (`starting`:
-// a crash or a lost answer leaves it, and the next tick asks the kernel for the wake's job); the engine session each
-// (agent, task) resumes; per task, the newest comment its last job saw; comments a run took as live input; tasks greeted.
+// a crash or a lost answer leaves it, and the next tick asks the kernel for the wake's job); per task, the newest comment its last job saw; comments a run took as live input; tasks greeted.
 const DDL = `CREATE TABLE IF NOT EXISTS jobs (id TEXT PRIMARY KEY, task TEXT NOT NULL, agent TEXT NOT NULL, wake TEXT NOT NULL, done INTEGER NOT NULL DEFAULT 0);
 CREATE TABLE IF NOT EXISTS starting (wake TEXT PRIMARY KEY, task TEXT NOT NULL, agent TEXT NOT NULL, seen TEXT NOT NULL);
-CREATE TABLE IF NOT EXISTS sessions (agent TEXT NOT NULL, task TEXT NOT NULL, session TEXT NOT NULL, PRIMARY KEY (agent, task));
 CREATE TABLE IF NOT EXISTS seen (task TEXT PRIMARY KEY, comment TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS delivered (comment TEXT PRIMARY KEY, task TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS greeted (task TEXT PRIMARY KEY);
 CREATE TABLE IF NOT EXISTS ended (job TEXT PRIMARY KEY, task TEXT NOT NULL, state TEXT NOT NULL);
-CREATE TABLE IF NOT EXISTS summarized (parent TEXT PRIMARY KEY, batch INTEGER NOT NULL);`;
+CREATE TABLE IF NOT EXISTS summarized (parent TEXT PRIMARY KEY, batch INTEGER NOT NULL);
+DROP TABLE IF EXISTS sessions;`;
 // A job's end states (kernel jobs.ts); any other state is still live.
 const ENDED = new Set(["done", "failed", "cancelled", "stopped", "stalled", "timeout", "lost"]);
 // A comment on a finished or blocked task would reopen it: those get no note.
@@ -84,7 +83,6 @@ export function createDispatch({ kernel, db, owner, log = () => {} }: { kernel: 
         }
         const o = outcome(v);
         if (o) await kernel.post(r.id, o);
-        if (v.session) q("INSERT INTO sessions (agent, task, session) VALUES (?, ?, ?) ON CONFLICT DO UPDATE SET session = excluded.session").run(r.agent, r.task, v.session);
         q("INSERT OR IGNORE INTO ended (job, task, state) VALUES (?, ?, ?)").run(r.id, r.task, v.state);
         const task = await kernel.task(r.task);
         if (!CLOSED.has(String(task.status))) await report(task, r.id, o?.kind === "notice" ? o.body : undefined);
@@ -120,14 +118,16 @@ export function createDispatch({ kernel, db, owner, log = () => {} }: { kernel: 
       }
     }
 
-    const session = (q("SELECT session FROM sessions WHERE agent = ? AND task = ?").get(w.agent, w.task) as { session: string } | undefined)?.session;
-    const first = !session && !spoke(comments, task);
+    // The kernel resumes the engine's session on this task (reset and a changed engine start fresh): a task this module ran to
+    // the end is sent in its resumed form, with the full form beside it for the kernel to use when it finds no session.
+    const ran = Boolean(q("SELECT 1 FROM ended WHERE task = ? AND state = 'done'").get(task.id));
+    const first = !ran && !spoke(comments, task);
     const seen = (q("SELECT comment FROM seen WHERE task = ?").get(task.id) as { comment: string } | undefined)?.comment;
     const delivered = new Set((q("SELECT comment FROM delivered WHERE task = ?").all(task.id) as { comment: string }[]).map((r) => r.comment));
     const fresh = freshWords(comments, task, dir, { seen, delivered });
     // A routine run's wake (routine, or routine:<key> naming the routine) or a module's scheduled wake.
     const scheduled = /^(routine|scheduled)(:|$)/.test(w.cause);
-    const said = (who: string) => fresh.filter((f) => f.who === who).map((f) => f.text);
+    const said = (who: string) => fresh.filter((f) => f.who === who).map((f) => (f.chief ? `${agents.get(f.by!)?.name ?? "The chief of staff"} (the chief of staff, not ${owner}) wrote:\n${fence("CHIEF_OF_STAFF", f.text)}` : f.text));
     const words: Words = { owner: said("owner"), agent: said("agent"), notice: said("notice") };
     if (first && ownRequest(task)) words.task = "owner";
     else if (first && agentMade(task) && stripHidden(task.description).trim()) words.task = "agent";
@@ -149,12 +149,12 @@ export function createDispatch({ kernel, db, owner, log = () => {} }: { kernel: 
 
     const parent = task.parentId ? await kernel.task(task.parentId).catch(() => undefined) : undefined;
     const assignee = agents.get(w.agent);
-    const thread = threadSection(owner, threadEntries(comments, task, { owner, agents, skip: new Set(fresh.map((f) => f.id)) }), { resumed: Boolean(session) });
-    const prompt = buildPrompt({ user: owner, task, parent, profile: dir[w.agent]?.profile ?? "crew", persona: assignee?.metadata?.persona, thread, words, resumed: Boolean(session) });
+    const entries = threadEntries(comments, task, { owner, agents, skip: new Set(fresh.map((f) => f.id)) });
+    const build = (resumed: boolean) => buildPrompt({ user: owner, task, parent, profile: dir[w.agent]?.profile ?? "crew", persona: assignee?.metadata?.persona, thread: threadSection(owner, entries, { resumed }), words, resumed });
     const start = { wake: w.key, task: w.task, agent: w.agent, seen: comments.at(-1)?.id ?? "" };
     q("INSERT INTO starting (wake, task, agent, seen) VALUES (?, ?, ?, ?) ON CONFLICT DO UPDATE SET seen = excluded.seen").run(start.wake, start.task, start.agent, start.seen);
     try {
-      const r = await kernel.start({ wake: w.key, prompt, ...(session ? { session } : {}) });
+      const r = await kernel.start({ wake: w.key, prompt: build(ran), ...(ran ? { full_prompt: build(false) } : {}) });
       if ("busy" in r) {
         q("DELETE FROM starting WHERE wake = ?").run(w.key);
         return log("busy: the wake comes back", { task: task.identifier, wake: w.key });

@@ -11,7 +11,6 @@ agents:
   ui-designer:
     department: engineering
     skills: [ engineering.write-code, engineering.supply-chain ]
-    adapter: codex_local
     max_parallel: 2 # mockups are independent; each run gets its own box
     # Graded done: mockups and design work delegated to it are checked against their rubric before they close.
     graded: true
@@ -23,7 +22,7 @@ agents:
     # Its own computer (services/computer): Chrome + agent-browser to build a mockup and screenshot it, and repo-checkout for an app's code.
     image: agent-base
     connections:
-      telegram: [ notify_owner ]
+      owner_channel: [ notify ]
       apps: [ app_list, app_status, app_view, app_check, web_view ]
       github?: [ github_whoami, github_issue_read, github_search_issues ]
       # fleet_catalog: which agent owns an app, so a redesign or a review brings that agent in.
@@ -34,7 +33,6 @@ agents:
   ui-reviewer:
     department: engineering
     skills: [ engineering.write-code, engineering.supply-chain ]
-    adapter: codex_local
     max_parallel: 2 # design reviews per PR are independent; each run gets its own box
     # Finds visible defects in screenshots: the owner picked GPT Luna at medium (2026-11-13; it matched Opus on screenshot
     # bug-finding at a fraction of the cost). Takes images on OpenRouter.
@@ -43,7 +41,7 @@ agents:
     timeout_sec: 2400
     image: agent-base
     connections:
-      telegram: [ notify_owner ]
+      owner_channel: [ notify ]
       apps: [ app_list, app_status, app_view, app_check, web_view ]
       # Reads PRs and their checks; commit_status_set is the design-review verdict (role-checked in github-mcp).
       github?: [ github_whoami, github_issue_read, github_search_issues, commit_status_set ]

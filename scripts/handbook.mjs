@@ -1,4 +1,4 @@
-// An agent's handbook as setup writes it into Paperclip (its AGENTS.md), as named parts: setup joins them, and
+// An agent's handbook (a kernel job's instructions file, config/handbooks/<id>.md), as named parts: setup joins them, and
 // `node scripts/compile.mjs --sizes` prints their bytes per agent.
 import { existsSync, readFileSync, realpathSync } from "node:fs";
 import { join, sep } from "node:path";
@@ -55,15 +55,14 @@ export function personaOf(key, a) {
 
 /**
  * What a woken agent with a persona learns about itself and the Engineers: its name and voice (tone only), and which engine
- * each Engineer's name stands for, so "ask Ada" maps onto delegating to that Engineer. `engines`: config/engines.json.
+ * each Engineer's name stands for, so "ask Ada" maps onto delegating to that Engineer.
  */
-function personaSection(cfg, engines, key, a) {
+function personaSection(cfg, key, a) {
   const me = personaOf(key, a);
-  if (!me || a.dispatch === "runner") return "";
-  const engineOf = (x) => x.engine ?? Object.keys(engines).find((k) => engines[k].adapter === x.adapter);
+  if (!me || a.profile === "engineer") return "";
   const crew = Object.entries(cfg.agents ?? {})
-    .filter(([, x]) => x.dispatch === "runner" && x.persona)
-    .map(([k, x]) => `${personaOf(k, x).name} (engine \`${engineOf(x)}\`)`);
+    .filter(([, x]) => x.profile === "engineer" && x.persona)
+    .map(([k, x]) => `${personaOf(k, x).name} (engine \`${x.engine}\`)`);
   return `
 
 ## Your name and voice
@@ -104,38 +103,23 @@ function sectionText(cfg, a, id, { repo, fleetIssues }) {
   if (body.includes("{{fleet_issues}}") && !fleetIssues) throw new Error(`section ${id}: the Fleet issues task is missing`);
   return body.replaceAll("{{fleet_issues}}", fleetIssues).replace("{{memory}}", () => a.memory ?? "");
 }
-// deleted at the one-way big switch (crew read skills natively in computers)
-const onDemand = (cfg, id) => cfg.prompts?.[id]?.load === "on_demand";
-
 /**
  * The module sections compile picked for this agent that load always (spec §3.1 `prompts`, after the kernel's sections), in
  * compile's order, as [id, text]. `lane`: only those marked for the fast chat lane.
  */
 export function promptParts(cfg, a, { repo, fleetIssues, lane = false }) {
-  return (a.prompts ?? []).filter((id) => !onDemand(cfg, id) && (!lane || cfg.prompts?.[id]?.lane)).map((id) => [id, sectionText(cfg, a, id, { repo, fleetIssues })]);
-}
-
-/** The agent's on-demand sections (module sections with `load: on_demand`, and skills): { id: text }, for handbook_section. */
-export function onDemandSections(cfg, a, opts) {
-  return Object.fromEntries((a.prompts ?? []).filter((id) => onDemand(cfg, id)).map((id) => [id, sectionText(cfg, a, id, opts)]));
-}
-
-/** The handbook's index of its on-demand sections: one line each, read with handbook_section. */
-function indexSection(cfg, a) {
-  const ids = (a.prompts ?? []).filter((id) => onDemand(cfg, id));
-  if (!ids.length) return "";
-  return `${section("on-demand", "\n")}${ids.map((id) => `- \`${id}\`: ${cfg.prompts[id].summary}`).join("\n")}\n`;
+  return (a.prompts ?? []).filter((id) => !lane || cfg.prompts?.[id]?.lane).map((id) => [id, sectionText(cfg, a, id, { repo, fleetIssues })]);
 }
 
 /** The skills compile resolved for an agent (its `skills:` ids), with each one's folder: what a job's engine home gets. */
 export const agentSkills = (cfg, key) => (cfg.agents?.[key]?.skills ?? []).map((id) => ({ id, dir: cfg.skills[id].dir }));
 
 /** An agent's whole handbook as [id, text] parts, in the order setup writes them. */
-export function handbookParts(cfg, key, a, { repo, instanceDir, engines = {}, fleetIssues }) {
-  const codex = a.adapter === "codex_local";
+export function handbookParts(cfg, key, a, { repo, instanceDir, fleetIssues }) {
+  const codex = a.profile === "crew";
   const parts = [
     ["handbook", readInstructions(cfg, a, { repo, instanceDir })],
-    ["persona", personaSection(cfg, engines, key, a)],
+    ["persona", personaSection(cfg, key, a)],
     ["computer", computerSection(a)],
     ["profile", codex ? profileSection(cfg) : ""],
     ["untrusted", UNTRUSTED_SECTION],
@@ -147,7 +131,6 @@ export function handbookParts(cfg, key, a, { repo, instanceDir, engines = {}, fl
     ["app-followup", codex ? appFollowupSection(a) : ""],
     ["sources", sourcesSection(a, cfg.mcp_servers ?? {})],
     ...promptParts(cfg, a, { repo, fleetIssues }),
-    ["on-demand", indexSection(cfg, a)],
   ];
   return parts.filter(([, text]) => text);
 }
@@ -157,12 +140,11 @@ export function laneHandbook(cfg, a, opts) {
   return readInstructions(cfg, a, opts) + profileSection(cfg) + UNTRUSTED_SECTION + promptParts(cfg, a, { ...opts, lane: true }).map(([, t]) => t).join("");
 }
 
-/** `compile --sizes`: bytes per handbook part per crew agent, largest handbook first (on-demand sections listed, not counted). A local report. */
+/** `compile --sizes`: bytes per handbook part per crew agent, largest handbook first. A local report. */
 export function sizesReport(cfg, opts) {
-  const rows = Object.entries(cfg.agents ?? {}).filter(([, a]) => a.dispatch !== "runner").map(([key, a]) => {
+  const rows = Object.entries(cfg.agents ?? {}).filter(([, a]) => a.profile === "crew").map(([key, a]) => {
     const parts = handbookParts(cfg, key, a, { ...opts, fleetIssues: "WOR-0" });
-    const later = Object.entries(onDemandSections(cfg, a, { ...opts, fleetIssues: "WOR-0" })).map(([id, t]) => [`${id} (on demand)`, t]);
-    return { key, total: parts.reduce((n, [, t]) => n + Buffer.byteLength(t), 0), parts: [...parts, ...later] };
+    return { key, total: parts.reduce((n, [, t]) => n + Buffer.byteLength(t), 0), parts };
   }).sort((x, y) => y.total - x.total);
   return rows.map(({ key, total, parts }) => `${key} ${total}\n${parts.map(([id, t]) => `  ${String(Buffer.byteLength(t)).padStart(6)}  ${id}`).join("\n")}`).join("\n");
 }

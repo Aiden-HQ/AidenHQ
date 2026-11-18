@@ -87,7 +87,7 @@ Alertmanager has one receiver: the board's `POST /internal/alerts` (`services/bo
 `send_resolved`. The board keeps what is firing and the Fleet Ops detector (`fleet-ops.ts`) gets an `alert` check group, so
 an alert takes the detector's existing path: one incident per alert, the "Fleet Ops: check" webhook fired once, the
 incident recovered (and fired once more) when the alert resolves. The board runs the detector at once when an alert
-arrives. So the module requires `fleet-ops`.
+arrives. So the module requires `fleet-steward`.
 
 The webhook is one-shot news, so the detector does not rely on it alone: each tick its `alert` group also reads
 Alertmanager's `GET /api/v2/alerts` and reconciles. An alert no longer in that list recovers even when its whole label set
