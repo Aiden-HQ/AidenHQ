@@ -17,6 +17,7 @@ import http from "node:http";
 import { join } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
 import YAML from "yaml";
+import { marketplacesOf, OFFICIAL } from "../../scripts/compiler/sources.ts";
 import type { Resolver } from "./net.ts";
 import type { Rec } from "./records.ts";
 
@@ -85,6 +86,35 @@ export function applyIsBusy(repoPath: string): Promise<boolean> {
 
 /** Where the code host reads the commit: its own copy when it made it, else the task's workspace (the record's identifier). */
 export type Source = { repo: string; branch: string; sha: string; workspace?: string };
+/** The official modules' pin on one side of an apply: the `aidenhq` marketplace's repository and commit, or null without one. */
+export type OfficialPin = { repo: string; sha: string } | null;
+
+/**
+ * The official modules' pin an instance.yaml sets, read structurally (duplicate keys and a twice-listed marketplace throw):
+ * the reviewer code the instance runs comes from there, so the code host's land runs the reviewer-eval gate on its move.
+ * Throws for anything but a GitHub repository at a full sha.
+ */
+export function officialPinOf(text: string | undefined): OfficialPin {
+  const doc = text === undefined ? {} : (YAML.parse(text, { uniqueKeys: true }) ?? {});
+  const at = marketplacesOf(doc).find((m) => m.name === OFFICIAL)?.at;
+  if (!at) return null;
+  const repo = /^https:\/\/github\.com\/([\w.-]+\/[\w.-]+?)\.git$/.exec(at.url)?.[1];
+  if (!repo || at.path) throw new Error(`the official marketplace isn't a GitHub repository (${at.url})`);
+  return { repo, sha: at.sha };
+}
+/**
+ * The official pin's move a change makes, or why it can't be applied: the marketplace may not appear or disappear (the
+ * reviewer code would move with no eval to judge it) and its texts must read. Fails closed.
+ */
+export function officialMove(base: string | undefined, head: string | undefined): { from: OfficialPin; to: OfficialPin } | { error: string } {
+  try {
+    const [from, to] = [officialPinOf(base), officialPinOf(head)];
+    if (Boolean(from) !== Boolean(to)) return { error: `it ${to ? "adds" : "removes"} the official modules' marketplace, which moves the reviewer's code past its eval` };
+    return { from, to };
+  } catch (e) {
+    return { error: `the official modules' pin in instance.yaml can't be read (${(e as Error).message.split("\n")[0]!.slice(0, 200)})` };
+  }
+}
 /**
  * What the code host read at the commit, against its merge base with the instance's main: the files it changes, the texts the
  * rules read on both sides (each changed file, the agent.yaml of each agent it touches, and instance.yaml; absent where the
@@ -97,7 +127,8 @@ export type Unit = { loaded: boolean; active: string; sub: string; result: strin
 export type Generation = { n: number; instance?: string; health?: string; reason?: string; log?: string; revert_of?: number };
 type Outcome = { ok: boolean; text: string };
 export type ApplyHost = {
-  codehost: { read(s: Source): Promise<Read>; land(s: Source): Promise<{ landed: string }> };
+  /** land: `official`, the official modules' pin on both sides, for the code host's reviewer-eval gate. */
+  codehost: { read(s: Source): Promise<Read>; land(s: Source & { official: { from: OfficialPin; to: OfficialPin } }): Promise<{ landed: string }> };
   launch(unit: string, sha: string): Promise<void>;
   unit(unit: string): Promise<Unit>;
   generations(): Generation[];
@@ -156,7 +187,9 @@ export function createApply({ db, codehost, launch, unit, generations, busy, tai
       if (stray.length) return { ok: false, text: `Not applied: it changes files outside the instance config (${stray.join(", ")}).` };
       const untrialed = untrialedNewAgents(c.files, c.texts.base, c.texts.head);
       if (untrialed.length) return { ok: false, text: `Not applied: a new agent must start in trial (${untrialed.join(", ")}).` };
-      const { landed } = await codehost.land(src);
+      const official = officialMove(c.texts.base["instance.yaml"], c.texts.head["instance.yaml"]);
+      if ("error" in official) return { ok: false, text: `Not applied: ${official.error}.` };
+      const { landed } = await codehost.land({ ...src, official });
       db.prepare("UPDATE applies SET landed = ? WHERE record = ?").run(landed, r.id);
       log("apply landed", { record: r.id, sha: landed });
       row = get(r.id)!;
@@ -214,7 +247,7 @@ export function hostApply({ repo, stateDir, resolver, codehost }: { repo: string
   }
   const genFile = join(stateDir, "generations.jsonl");
   return {
-    codehost: { read: (s) => call<Read>("read", s), land: (s) => call<{ landed: string }>("land", s) },
+    codehost: { read: (s) => call<Read>("read", s), land: (s) => call<{ landed: string }>("land", s as Source) },
     // RemainAfterExit: the finished unit stays loaded, so its result can be read and its name can't start a second apply.
     launch: async (u, sha) => void (await run("systemd-run", ["--user", `--unit=${u}`, "-p", "RemainAfterExit=yes", `--working-directory=${repo}`, `--setenv=PATH=${process.env.PATH ?? "/usr/bin:/bin"}`, `--setenv=HOME=${process.env.HOME ?? ""}`, "--", "bash", join(repo, "ops/apply-config.sh"), sha])),
     async unit(u) {
