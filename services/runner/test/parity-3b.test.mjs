@@ -217,8 +217,6 @@ test("a replay is carried only by an approval of the same change: same kind, tar
   assert.throws(replay({ ...only("3".repeat(40), "b"), merge: true }), /don't carry/, "another change on the same branch");
   assert.throws(replay(only("4".repeat(40), "a")), /don't carry/, "the same change without its merge");
   assert.throws(replay(only("5".repeat(40), "a"), "runner.push"), /don't carry/, "another kind");
-  // A new repository is the panel's, whatever the plan says, and only in the agents org.
-  const repo = k.writes.fileRunner({ kind: "runner.create_repo", task: "i-7", args: { repo: "acme-agents/new-app" }, plan: { tier: 0, card: { sentence: "x" } } });
-  assert.deepEqual([repo.state, repo.panel], ["review", true]);
-  assert.throws(() => k.writes.fileRunner({ kind: "runner.create_repo", task: "i-7", args: { repo: "acme/new-app" }, plan: { tier: 0, card: { sentence: "x" } } }), /only in the agents org/);
+  // A new repository is Tier 0 in any org (owner, 2026-11-18): the kernel doesn't decide where repos live.
+  for (const org of ["acme-agents", "acme"]) assert.equal(k.writes.fileRunner({ kind: "runner.create_repo", task: "i-7", args: { repo: `${org}/new-app` }, plan: { tier: 0, card: { sentence: "x" } } }).state, "claimed", org);
 });

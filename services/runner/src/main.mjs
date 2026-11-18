@@ -4135,8 +4135,8 @@ async function agentClose(ctx, args) {
 }
 
 /**
- * `aidenhq create-repo <org/name>`: a new app's repository in the agents org, the only way the runner creates one. It grows
- * the org, so it is an approval card (tiers.mjs: the panel); once approved the runner creates it, private with the app starter
+ * `aidenhq create-repo <org/name>`: a new app's repository in any org the instance's GitHub App is installed on (and allowed_orgs
+ * lists), the only way the runner creates one. Tier 0 (owner, 2026-11-18); the runner creates it, private with the app starter
  * on its default branch, and it joins the task's workspace on its next run.
  */
 async function agentCreateRepo(ctx, args) {
@@ -4144,7 +4144,7 @@ async function agentCreateRepo(ctx, args) {
   if (!repo) throw new UserError("Name the new repository as org/name.");
   const local = isLocal(repo.slug);
   if (!local && (!app || !cfg.agentsOrg)) throw new UserError(`Creating repositories needs the instance's GitHub App, which isn't set up here${localHost ? `; on this server, name it ${LOCAL_ORG}/<name>` : ""}.`);
-  if (!local && !inOrg(cfg.agentsOrg, repo.slug)) throw new UserError(`Not done: repositories are created only in the agents org (${cfg.agentsOrgs.join(" or ")}).`);
+  if (!local && !repoAllowed(repo, cfg.allowed_orgs)) throw new UserError(`Not done: ${repo.slug} is outside your orgs (${cfg.allowed_orgs.join(", ")}); the instance's GitHub App must be installed on the org, and the org listed in allowed_orgs.`);
   if (await (local ? localHost.exists(repo.slug) : app.repoExists(repo.slug))) return `${repo.slug} already exists: \`aidenhq repo ${repo.slug}\` clones it into the workspace.`;
   const t = await tierFor(ctx.issue, "create_repo", { repo: repo.slug });
   if (t.reject) throw new UserError(`Not done: ${t.reason}.`);
@@ -4161,7 +4161,7 @@ const createRepoText = (slug) => isLocal(slug)
 async function createRepoApproved(issue, a) {
   const slug = a.args.repo;
   const local = isLocal(slug);
-  if (!local && (!app || !inOrg(cfg.agentsOrg, slug))) throw new UserError(`${slug} is outside the agents org`);
+  if (!local && (!app || !repoAllowed(normalizeRepo(slug), cfg.allowed_orgs))) throw new UserError(`${slug} is outside your orgs`);
   const done = await (local ? localHost.createRepo(slug) : app.createRepo(slug));
   // A repository that already existed is never touched; a new one gets the starter. A failed seed is reported, not hidden.
   const seeded = done === "created" ? await seedStarter(slug).then(() => "", (err) => String(err.message ?? err).slice(0, 300)) : "";

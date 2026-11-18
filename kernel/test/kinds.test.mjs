@@ -17,8 +17,10 @@ test("a codehost:local/x/change/3 merge is accepted and its floor is 1; a GitHub
   assert.deepEqual([local.floor, local.target], [1, "local/x#3"]);
   assert.equal(runnerFacts("runner.merge", merge("acme-agents/x", "https://github.com/acme-agents/x/pull/3"), repos).floor, 0);
   assert.match(runnerFacts("runner.merge", merge("local/x", "codehost:local/y/change/3"), repos).refuse, /another repository/);
-  // A local branch push runs at once like any agents-org branch; a repository is created only in an agents org.
+  // A local branch push runs at once like any agents-org branch; a repository is created in any org.
   assert.equal(runnerFacts("runner.push", { only: [{ repo: "local/x", branch: "feat/a", sha: "b".repeat(40) }] }, repos).floor, 0);
   assert.equal(runnerFacts("runner.create_repo", { repo: "local/new-app" }, repos).refuse, undefined);
-  assert.match(runnerFacts("runner.create_repo", { repo: "local/new-app" }, { ...repos, agentsOrgs: undefined }).refuse, /only in the agents org/);
+  // A repository is created at Tier 0 in any org the App is installed on (owner, 2026-11-18); only the product's own name is refused.
+  assert.deepEqual([runnerFacts("runner.create_repo", { repo: "other-org/new-app" }, repos).floor, KERNEL_KINDS["runner.create_repo"].floor, KERNEL_KINDS["runner.create_repo"].panel], [0, 0, undefined]);
+  assert.match(runnerFacts("runner.create_repo", { repo: "acme/aidenhq" }, repos).refuse, /already exists/);
 });

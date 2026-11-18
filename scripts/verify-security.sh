@@ -954,20 +954,20 @@ grep -qF 'import { assertNoShell } from "./no-shell.mjs";' scripts/paperclip-set
 # endpoint, every write tiered (tiers.mjs) or a kernel record (a Primer document: primer.publish, floor 1, which the runner
 # files with a token naming only that kind; no owner-words check, no publish URL or token in the runner).
 # `close` is tiered only: Tier 0 for agents-org PRs outside the instance repo and for the product repo's Dependabot PRs
-# (the Platform Engineer's line), refused anywhere else. A repository is created only by an approved create_repo card
-# (`create-repo` files it, the panel's): one call, in createRepoApproved, never from naming or cloning one. Only a
+# (the Platform Engineer's line), refused anywhere else. A repository is created only by a create_repo card
+# (`create-repo` files it, Tier 0 in any allowed org since 2026-11-18): one call, in createRepoApproved, never from naming or cloning one. Only a
 # repository that call just created gets the app starter committed on its default branch (seedStarter, a fast-forward publish). `review` asks the
 # AI reviewer about what `pr` would file, files and publishes nothing, and is capped per job.
 # On this server's repos (product #326 ba7db16d): `merge` of local change requests is agentMergeLocal (its own function, so
 # agentMerge's range is anchored on `agentMerge(`; it and requestLocalMerge file through fileLocalMerge since #366 79593141): tiered, then always a card (no Tier 0 auto-merge; local-merge is Tier 1),
-# bound to the heads shown; `create-repo` creates a local/<name> repo only from the same approved create_repo card.
+# bound to the heads shown; `create-repo` creates a local/<name> repo only from the same create_repo card.
 # A function body piped from awk is matched with plain grep (to /dev/null), never grep -q: under pipefail, grep -q's early
 # exit kills awk with SIGPIPE, failing a match and passing a negated one.
 tools="$(grep -oE '^export const TOOLS = \[[^]]*\]' services/runner/src/repohelper.ts)"
 [ "$tools" = 'export const TOOLS = ["repo", "status", "review", "push", "pr", "merge", "close", "create-repo", "apply", "engine", "primer", "pass", "reset", "cleanup", "task", "tasks", "advise"]' ] \
   && grep -qF 'close: agentClose,' "$rmain" \
   && [ "$(grep -c 'createRepo(' "$rmain")" = 1 ] && awk '/^async function createRepoApproved\(/,/^}/' "$rmain" | grep -F '  const done = await (local ? localHost.createRepo(slug) : app.createRepo(slug));' >/dev/null \
-  && awk '/^async function createRepoApproved\(/,/^}/' "$rmain" | grep -F '  if (!local && (!app || !inOrg(cfg.agentsOrg, slug))) throw new UserError(' >/dev/null \
+  && awk '/^async function createRepoApproved\(/,/^}/' "$rmain" | grep -F '  if (!local && (!app || !repoAllowed(normalizeRepo(slug), cfg.allowed_orgs))) throw new UserError(' >/dev/null \
   && [ "$(grep -c 'createRepoApproved(' "$rmain")" = 2 ] && grep -qF '  if (a.action === "create_repo") return createRepoApproved(issue, a);' "$rmain" \
   && [ "$(grep -c 'seedStarter(' "$rmain")" = 2 ] && awk '/^async function createRepoApproved\(/,/^}/' "$rmain" | grep -F 'const seeded = done === "created" ? await seedStarter(slug)' >/dev/null \
   && [ "$(grep -c 'hostOf(slug).publish(' "$rmain")" = 1 ] && awk '/^async function seedStarter\(/,/^}/' "$rmain" | grep -F 'await hostOf(slug).publish({ path: clone, slug, sha, branch });' >/dev/null \

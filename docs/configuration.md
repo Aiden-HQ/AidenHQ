@@ -214,7 +214,7 @@ Set under `settings:` in `instance.yaml`. The board's Settings page (gear in the
 | `channels` | core | no | `[web]` | Owner channels: any of `web`, `telegram`, `slack`. |
 | `company_name` | core | no | `work` | The Paperclip company name. |
 | `instance_name` | core | no | | Short name of this AidenHQ; the agents org is `aidenhq-<instance_name>`. |
-| `github_agents_org` | core | no | derived | The GitHub org where the runner works and, on an approved `create-repo` card, creates repositories; overrides the derived name. |
+| `github_agents_org` | core | no | derived | The GitHub org where the runner works and, by default, creates repositories (`create-repo` is Tier 0 in any org the App is installed on and `allowed_orgs` lists); overrides the derived name. |
 | `github_orgs` | core | no | `[]` | GitHub orgs or users, besides the agents org, whose repos apps may be deployed from. |
 | `autonomy` | core | no | `off` | Tiered approvals: `off` = every write is the owner's card, the AI reviewer reading Tier 1 first (its reject is final; also the pause switch); `tier0` = Tier 0 runs at once, the AI reviewer only notes its verdict on Tier 1; `full` = the reviewer decides Tier 1. Move to `full` only after `modules/ai-reviewer/scripts/reviewer-eval.mjs` prints 100%. Changing it is itself a Tier 2 apply. |
 | `heartbeat_hours` | core | no | `4` | Hours between each `heartbeat: true` agent's "Heartbeat: <key>" routine run (1, 2, 3, 4, 6, 8, 12 or 24; DeepSeek Flash at low effort). An agent's `heartbeat: <hours>` or `overrides.agents.<key>.heartbeat` sets its own; `false` turns it off for that agent. |

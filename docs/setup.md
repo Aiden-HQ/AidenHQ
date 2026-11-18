@@ -481,7 +481,7 @@ reachable. To add it later, put the key in the vault as `tailscale_apps_authkey`
 
 ## GitHub App for the runner
 
-See step 8. The runner updates repositories in the agents organization (and creates one only on an approved `aidenhq create-repo` card) (`github_agents_org`, or
+See step 8. The runner updates repositories in the agents organization (and creates repositories, at Tier 0, with `aidenhq create-repo`, in any org the App is installed on that is listed in `allowed_orgs`) (`github_agents_org`, or
 `aidenhq-<instance_name>`) as a GitHub App, not as a person. `ops/github-app-setup.mjs` needs `AIDENHQ_SETUP_HOST`
 (the address your browser opens; it serves a one-time page on port 8765). Other organizations install the same App
 on selected repositories; list them in `allowed_orgs` of `config/runner.yaml` and, for app deploys, `github_orgs` in

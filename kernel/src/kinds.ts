@@ -87,7 +87,7 @@ export const urlRepo = (url: unknown) => repoKey(/^(?:https:\/\/github\.com\/([^
  *   reviewer (fails closed, as tiers.mjs's unknown-repos);
  * - a refusal: a push, PR or merge on the instance repo (it changes only through kernel.apply), a merge whose PR URL names
  *   another repo than its `repo`, a repository created over the product's or the instance's name;
- * - the floor: a push, PR or merge runs at once (floor 0) only in the agents orgs, off its main branch, never on the product
+ * - the floor: a new repository is floor 0 in any org (the code host's rules tier it); a push, PR or merge runs at once (floor 0) only in the agents orgs, off its main branch, never on the product
  *   or instance repo, never a PR that also merges, and never a local change request's merge (no CI review read it: local-merge) (today's Tier 0 rules, as far as the args show them; the rest, such as
  *   green checks on the exact head, the runner's merge queue holds at execution); anything else at least the reviewer;
  * - new module authority (an apply's ownerRequired): the owner decides after the reviewer;
@@ -106,11 +106,10 @@ export function runnerFacts(kind: string, args: any, repos: Repos): { floor: 0 |
   if (instance && action !== "apply" && touched.includes(instance)) return refused("the instance repo changes only through apply");
   if (product && action === "create_repo" && touched.includes(product)) return refused("the product repo already exists");
   const orgs = [repos.agentsOrgs ?? repos.agentsOrg].flat().filter(Boolean).map((o) => String(o).toLowerCase());
-  if (action === "create_repo" && orgs.length && !orgs.includes(touched[0]!.split("/")[0]!)) return refused("repositories are created only in the agents org");
   const unknown = !product || !instance;
   const ours = orgs.length > 0 && touched.every((r) => orgs.includes(r!.split("/")[0]!) && r !== product && r !== instance);
   const localMerge = action === "merge" && touched.some((r) => r!.split("/")[0] === LOCAL_ORG);
-  const floor = unknown ? 2 : !ours || localMerge || branches.some((b) => /^(main|master)$/.test(b.branch)) || args?.merge === true ? 1 : 0;
+  const floor = unknown ? 2 : action === "create_repo" ? 0 : !ours || localMerge || branches.some((b) => /^(main|master)$/.test(b.branch)) || args?.merge === true ? 1 : 0;
   const target = action === "merge" && prs.length ? prs.map((p) => `${urlRepo(p.url)}#${String(p.url).replace(/\/+$/, "").split("/").pop()}`).sort().join(" ")
     : (action === "push" || action === "pr") && branches.length ? branches.map((b) => `${repoKey(b.repo)} ${b.branch}`).sort().join(" ")
     : action === "apply" ? `${repoKey(args.repo)} ${args.branch}` : action === "create_repo" ? repoKey(args.repo) : undefined;
@@ -120,9 +119,9 @@ export function runnerFacts(kind: string, args: any, repos: Repos): { floor: 0 |
 
 /** The kernel's kinds, beside the modules' compiled ones (config/kernel/writes.json). */
 export const KERNEL_KINDS: Record<string, Kind> = {
-  // An apply is always read by the reviewer first (floor 1); a push, a PR, a merge and a new repo by what they touch (runnerFacts).
-  // A new repository grows the agents org: the reviewer and a second one always (tiers.mjs createRepoParts).
-  ...Object.fromEntries(Object.entries(RUNNER_ARGS).map(([k, args]) => [`runner.${k}`, { module: "runner", floor: k === "create_repo" ? 1 : 0, ...(k === "create_repo" ? { panel: true } : {}), tools: [], args, runner: true } as Kind])),
+  // An apply is always read by the reviewer first (floor 1); a push, a PR and a merge by what they touch (runnerFacts).
+  // A new repository is Tier 0 in any org the App is installed on (owner, 2026-11-18): where repos live is the code host's, not the kernel's.
+  ...Object.fromEntries(Object.entries(RUNNER_ARGS).map(([k, args]) => [`runner.${k}`, { module: "runner", floor: 0, tools: [], args, runner: true } as Kind])),
   "kernel.apply": { module: "kernel", floor: 1, tools: [], args: APPLY_ARGS, runner: true },
   "kernel.raise_cap": { module: "kernel", floor: 2, tools: [], args: RAISE_ARGS },
 };
