@@ -70,6 +70,10 @@ providers:
   executor:
     url: http://codehost-github:8100/aidenhq/v1/executor
     auth: codehost_github_token
+  # The kernel's check jobs take a repo's tree at a commit from here (POST /ops/snapshot), asked with the token of the module
+  # that asked for the check: that module's snapshot grant decides what it may check.
+  snapshot:
+    url: http://codehost-github:8100/ops/snapshot
 writes:
   push: { args: schemas/push.json, floor: 0 }
   pr: { args: schemas/pr.json, floor: 0 }
@@ -84,5 +88,9 @@ writes:
 # caller dispatches that task's agent) with its own module token.
 points:
   ops: { schema: schemas/ops.json }
+# Its own checks (the merge queue's reviewer eval: kernel.checks) read the repos it lands, through its own snapshot op.
+contributes:
+  codehost-github.ops:
+    - snapshot: { repos: [ "*/*" ] }
 generated_secrets:
   - codehost_github_token
