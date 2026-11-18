@@ -75,7 +75,7 @@
     "id": "A15",
     "attack": "Older module code started on data whose .data_version is newer (a rollback or revert without the snapshot)",
     "unit": "2c+",
-    "test": "kernel/test/data-version.test.mjs"
+    "test": "scripts/test/data-version.test.mjs"
   },
   {
     "id": "A16",
@@ -87,7 +87,7 @@
     "id": "A17",
     "attack": "An installer run against a release file whose kernel or module sha does not match the fetched checkout (the installer's half is installer/test.sh in the distro repo)",
     "unit": "5c",
-    "test": "kernel/test/release.test.mjs"
+    "test": "scripts/test/release.test.mjs"
   },
   {
     "id": "A18",
@@ -117,13 +117,13 @@
     "id": "H4",
     "attack": "Hostile module manifest: bind mount, cap_add, network_mode: host, another module's network, a socket",
     "unit": "2b",
-    "test": "kernel/test/services.test.mjs"
+    "test": "scripts/test/services.test.mjs"
   },
   {
     "id": "H5",
     "attack": "Hostile module reads another module's secrets or data dir",
     "unit": "2b",
-    "test": "kernel/test/services.test.mjs"
+    "test": "scripts/test/services.test.mjs"
   },
   {
     "id": "H6",

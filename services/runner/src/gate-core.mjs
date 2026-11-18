@@ -22,6 +22,8 @@ export const GATE_CORE = [
   // check (scripts/sync-shared.mjs).
   /^kernel\//,
   /(^|\/)aidenhq-sdk\/caller\.ts$/,
+  // The compiler (moved out of the kernel): compose isolation, the grants it writes, the authority diff.
+  /^scripts\/compiler\//,
   /^scripts\/modules\.(mjs|ts)$/,
   /^scripts\/paperclip-setup\.(mjs|ts)$/,
   /^scripts\/no-shell\.(mjs|ts)$/,
