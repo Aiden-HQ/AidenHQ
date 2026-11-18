@@ -25,6 +25,12 @@ test("a handbook-only change is Tier 1, no panel", () => {
   assert.deepEqual(authorityLines([authorityDiff("acme-crm", base, base, false)]), ["acme-crm: text only (review)"]);
 });
 
+test("an agent's skills list is module text, like its prompts: the reviewer's, never an unrecognised field", () => {
+  const head = with_({ agents: { closer: { ...base.agents.closer, skills: ["acme-crm.follow-up"] } } });
+  assert.equal(tier(head).tier, 1);
+  assert.deepEqual(authorityLines([authorityDiff("acme-crm", base, head, false)]), ["acme-crm: text only (review)"]);
+});
+
 test("a code change without new authority is Tier 1 with panel", () => {
   const head = with_({ services: { run: { "crm-mcp": { image: IMG.replace("1.0", "1.1"), port: 8080, env: { LOG: "debug" } } } } });
   const t = tier(head, true);
