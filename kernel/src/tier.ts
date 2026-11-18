@@ -219,7 +219,10 @@ const decided = (r: Prior) => ["approved", "used", "expired", "rejected"].includ
  *   across three branches park none of them. At MAX_REJECTS a target is parked; without `targets` (an action that names
  *   neither branch nor PR) the task is the target, as before.
  * - same: one of those rejected exactly this content (requestKey): it stays rejected (its note). Two reviewers' unsure
- *   lifts once, after the request chain changed (`chain`: the current chain's hash).
+ *   lifts once, after the request chain changed (`chain`: the current chain's hash). A conn.tool call's content key is its
+ *   digest, and a fixed-schema tool's identical refile has the same digest: `same` is never set for it, so an identical
+ *   refile is reviewed again. Its retries stay bounded per tool and target (`rejects`), and its earlier notes are in
+ *   `findings`.
  * - relift: that lift's earlier note: the re-review's unsure goes to the owner, not back to the agent.
  * - findings: every one of those notes, attached to the next review.
  */
@@ -252,7 +255,7 @@ export function priorDecisions(records: Prior[], action: string, also: string[] 
   const rejectedSame = key ? judged.filter((r) => recordKey(r) === key) : [];
   const [only] = rejectedSame;
   const lifted = rejectedSame.length === 1 && only!.reviewCode === "reviewer_unsure" && Boolean(only!.requestChain) && Boolean(chain) && only!.requestChain !== chain;
-  const sameOne = lifted ? undefined : rejectedSame[0];
+  const sameOne = lifted || action === "conn.tool" ? undefined : rejectedSame[0];
   // The owner's no on this exact content holds until they approve that same content, whatever else they approved since.
   // Same content: the commits, or the patch keys (a rebased or renamed resubmission). Patch keys that couldn't be computed
   // (null) fail closed: any owner rejection of the action on the task makes it theirs.
