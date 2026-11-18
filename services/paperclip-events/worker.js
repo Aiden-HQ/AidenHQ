@@ -10,7 +10,7 @@ const URL = process.env.AIDENHQ_KERNEL_URL || "http://10.231.0.1:3130";
 const plugin = definePlugin({
   async setup(c) {
     for (const type of EVENTS) c.events.on(type, (e) => forward(e, { url: URL, key: KEY }).catch((err) => c.logger.warn(`${type} ${e.entityId}: ${err.message}`)));
-    c.actions.register("post", (params, context) => post(c, params, context));
+    c.actions.register("post", (params, context) => post(c, params, context, KEY));
     c.logger.info("aidenhq-events ready");
   },
   async onHealth() { return { status: "ok", message: "aidenhq-events ok" }; },

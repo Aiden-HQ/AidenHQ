@@ -2,7 +2,9 @@
 // agent key's comment or status without a heartbeat run, so the kernel calls the paperclip-events plugin's `post` action
 // (services/paperclip-events/post.js) with the agent's own key (secrets paperclip-agents/<agentId>, minted by setup): the plugin
 // writes as the authenticated agent, which Paperclip shows as the agent's own words, and an agent-attributed plugin comment
-// wakes nobody. Every comment carries the job's tag (wakes.ts SELF_TAG), so the wake inbox never wakes on it either.
+// wakes nobody. The action takes the kernel's secret (paperclip_events_key, shared with the plugin) so no agent key alone
+// can call it, a `done` only with `gated` (this kernel's finish gate passed), and a child's assignee only from the caller
+// or its `delegate_to`. Every comment carries the job's tag (wakes.ts SELF_TAG), so the wake inbox never wakes on it either.
 // Once: `posted(job, kind)` is written before the call (pending) and completed after; a retry that finds it pending asks the
 // plugin to look for the tagged write first, so a call whose answer was lost (a crash after Paperclip's 201, a 502, a
 // timeout) never posts twice.
@@ -21,14 +23,18 @@ export class OutcomeError extends Error {
   constructor(status: number, code: string, message: string) { super(message); this.status = status; this.code = code; }
 }
 export interface Outcome { comment: string | null; status: string | null; again?: boolean; finish?: Finish }
-export interface PostRequest { kind: string; body: string; status?: string; blockedBy?: string[] }
+export interface PostRequest { kind: string; body: string; status?: string; blockedBy?: string[]; child?: { title: string; description?: string; assigneeAgentId?: string } }
 
-export function createOutcomes({ db, controlUrl, agentKey, finish, log = () => {}, timeoutMs = 30_000 }: {
+export function createOutcomes({ db, controlUrl, agentKey, kernelKey, delegates, finish, log = () => {}, timeoutMs = 30_000 }: {
   db: DatabaseSync; controlUrl: string;
   /** The agent's own Paperclip key (secrets paperclip-agents/<id>), or "". */
   agentKey: (agent: string) => string;
+  /** The secret the plugin checks that the caller is this kernel (paperclip_events_key). */
+  kernelKey: () => string;
+  /** The ids of the agents an agent may hand a child task to (grants `delegate_to`). */
+  delegates: (agent: string) => string[];
   /** The finish gate (checks.ts): a `done` that doesn't pass is posted without its status. */
-  finish?: (task: string, agent: string) => Promise<Finish>;
+  finish: (task: string, agent: string) => Promise<Finish>;
   log?: (msg: string, f?: Record<string, unknown>) => void; timeoutMs?: number;
 }) {
   db.exec("CREATE TABLE IF NOT EXISTS posted (job TEXT NOT NULL, kind TEXT NOT NULL, comment TEXT, status TEXT, at INTEGER NOT NULL, PRIMARY KEY (job, kind))");
@@ -57,12 +63,12 @@ export function createOutcomes({ db, controlUrl, agentKey, finish, log = () => {
     const companyId = await company(job.agent, key);
     let status = req.status;
     let gate: Finish | undefined;
-    if (status === "done" && finish) {
+    if (status === "done") {
       gate = await finish(job.task, job.agent);
       if (!gate.pass) status = undefined;
     }
     if (!done) db.prepare("INSERT INTO posted (job, kind, at) VALUES (?, ?, ?)").run(job.id, req.kind, Date.now());
-    const params = { issueId: job.task, tag: tag(job.id, req.kind), body: req.body, ...(done ? { again: true } : {}), ...(status ? { status } : {}), ...(status === "blocked" ? { blockedBy: req.blockedBy ?? [] } : {}) };
+    const params = { issueId: job.task, tag: tag(job.id, req.kind), body: req.body, ...(done ? { again: true } : {}), ...(status ? { status } : {}), ...(status === "blocked" ? { blockedBy: req.blockedBy ?? [] } : {}), ...(status === "done" ? { gated: true } : {}), ...(req.child ? { child: req.child, delegateTo: delegates(job.agent) } : {}), kernelKey: kernelKey() };
     const r = await call(key, "POST", `/api/plugins/${PLUGIN}/actions/post`, { companyId, params });
     // A 5xx (502: the plugin is down, or it threw) leaves the row pending: whether it wrote is unknown, and the retry looks.
     if (r.status >= 500) throw new OutcomeError(502, "unknown", `the post action answered ${r.status}: ${JSON.stringify(r.json).slice(0, 200)}`);
@@ -78,3 +84,10 @@ export function createOutcomes({ db, controlUrl, agentKey, finish, log = () => {
   return { post };
 }
 export type Outcomes = ReturnType<typeof createOutcomes>;
+
+/** The ids of the agents `agent` may delegate to: its grants `delegate_to` keys (`key?` optional ones too), mapped to ids. */
+export const delegateIds = (agents: Record<string, { key?: string; delegate_to?: unknown }> | undefined, agent: string) => {
+  const to = agents?.[agent]?.delegate_to;
+  const keys = new Set((Array.isArray(to) ? to : []).map((k) => String(k).replace(/\?$/, "")));
+  return Object.entries(agents ?? {}).filter(([, g]) => g.key && keys.has(g.key)).map(([id]) => id);
+};
