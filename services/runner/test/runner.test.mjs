@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { describe, it } from "node:test";
 import { fileURLToPath } from "node:url";
 import { normalizeRepo } from "../../../modules/codehost-github/src/repos.ts";
-import { crewNames, findRepos, mentionedRepos, parseCommand, repoAllowed, resolveEngine, useEngines } from "../src/agents.mjs";
+import { crewNames, findRepos, mentionedRepos, parseCommand, repoAllowed, resolveEngine, useEngines, settledWait } from "../src/agents.mjs";
 import { enginesFile, registry } from "./fakes/engines.mjs";
 import { buildJob } from "../../../kernel/src/sandbox.ts";
 import { staleRoutineRuns } from "../src/recurring.ts";
@@ -384,6 +384,27 @@ describe("run outcome", async () => {
     // A long real report ending in a diff of similar lines still finishes.
     const diff = Array.from({ length: 60 }, (_, i) => `+    "feature.op${i}",`).join("\n");
     assert.equal(runOutcome({ code: 0, lastMessage: `${"Implemented the writer on `feat/x`.\n".repeat(700)}${diff}` }).finished, true);
+  });
+});
+
+describe("a turn that armed a later check", () => {
+  const task = (monitor) => ({ id: "t1", status: "in_progress", executionPolicy: { mode: "normal", ...(monitor ? { monitor } : {}) } });
+  const NOW = Date.parse("2026-11-18T08:00:00.000Z");
+  it("is a settled wait while its check is ahead, so the turn ends without a status write", () => {
+    const future = new Date(NOW + 24 * 3600_000).toISOString();
+    // Any status write here wakes the task now and runs the same check again: the armed wait is where the turn ends.
+    assert.equal(settledWait(task({ nextCheckAt: future, notes: "Read the deploy once it settles." }), NOW), future);
+  });
+  it("is no wait once the check has come due, on another status, or without a check", () => {
+    const past = new Date(NOW - 60_000).toISOString();
+    const future = new Date(NOW + 3600_000).toISOString();
+    assert.equal(settledWait(task({ nextCheckAt: past }), NOW), undefined);
+    assert.equal(settledWait(task(undefined), NOW), undefined);
+    assert.equal(settledWait(task({ nextCheckAt: "not a time" }), NOW), undefined);
+    assert.equal(settledWait({ executionPolicy: null }, NOW), undefined);
+    assert.equal(settledWait(undefined, NOW), undefined);
+    // A check a review is held on belongs to the finish gate, not to this wait.
+    assert.equal(settledWait({ ...task({ nextCheckAt: future }), status: "in_review" }, NOW), undefined);
   });
 });
 
