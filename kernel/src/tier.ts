@@ -253,11 +253,11 @@ const decided = (r: Prior) => ["approved", "used", "expired", "rejected"].includ
  *   (a rebased or renamed resubmission on another branch), and never to a target it wasn't raised against, so three spread
  *   across three branches park none of them. At MAX_REJECTS a target is parked; without `targets` (an action that names
  *   neither branch nor PR) the task is the target, as before.
- * - same: one of those rejected exactly this content (requestKey): it stays rejected (its note). Two reviewers' unsure
- *   lifts once, after the request chain changed (`chain`: the current chain's hash). A conn.tool call's content key is its
- *   digest, and a fixed-schema tool's identical refile has the same digest: `same` is never set for it, so an identical
- *   refile is reviewed again. Its retries stay bounded per tool and target (`rejects`), and its earlier notes are in
- *   `findings`.
+ * - same: one of those rejected exactly this content (requestKey, or the same patch keys: an amended, rebased or renamed
+ *   resubmission of the same change; a conn.tool call's or module kind's digest): it stays rejected (its note), refused by
+ *   code before any review (owner, 2026-11-18: refile only after a fix). Two reviewers' unsure lifts once, after the request
+ *   chain changed (`chain`: the current chain's hash). A conn.tool call whose arguments can't change (a close, a label) is
+ *   refused unchanged on this task once rejected: the agent reports back instead.
  * - relift: that lift's earlier note: the re-review's unsure goes to the owner, not back to the agent.
  * - findings: every one of those notes, attached to the next review.
  */
@@ -287,10 +287,10 @@ export function priorDecisions(records: Prior[], action: string, also: string[] 
   // gets `relift` (the first round's note), and unsure again there goes to the owner (the reviewer module). Unchanged or unknown
   // chain, or any other rejection of the content, and it stays rejected. It still counts toward MAX_REJECTS (on the branch
   // it was raised against). Content is judged task-wide: this is about what was written, not where it was aimed.
-  const rejectedSame = key ? judged.filter((r) => recordKey(r) === key) : [];
+  const rejectedSame = key || typeof patches === "string" ? judged.filter((r) => (key !== undefined && recordKey(r) === key) || (typeof patches === "string" && recordPatches(r) === patches)) : [];
   const [only] = rejectedSame;
   const lifted = rejectedSame.length === 1 && only!.reviewCode === "reviewer_unsure" && Boolean(only!.requestChain) && Boolean(chain) && only!.requestChain !== chain;
-  const sameOne = lifted || action === "conn.tool" ? undefined : rejectedSame[0];
+  const sameOne = lifted ? undefined : rejectedSame[0];
   // The owner's no on this exact content holds until they approve that same content, whatever else they approved since.
   // Same content: the commits, or the patch keys (a rebased or renamed resubmission). Patch keys that couldn't be computed
   // (null) fail closed: any owner rejection of the action on the task makes it theirs.
@@ -303,7 +303,7 @@ export function priorDecisions(records: Prior[], action: string, also: string[] 
 export function priorPart(p: ReturnType<typeof priorDecisions> | undefined): Part | undefined {
   if (!p) return undefined;
   if (p.ownerVeto) return T(2, "owner-veto", "the owner rejected this action on this task, and only their own yes lifts it");
-  if (p.same !== undefined) return REJECT("rejected-content", `the AI reviewer already rejected exactly this change on this task (its note: ${String(p.same).slice(0, 400)}). Fix what it found and ask again with the changed commits`);
+  if (p.same !== undefined) return REJECT("rejected-content", `the AI reviewer already rejected exactly this request on this task, so it isn't reviewed again unchanged (its note: ${String(p.same).slice(0, 400)}). Change what it found and file the changed request, or report back to whoever asked why it can't change`);
   if (p.rejects >= MAX_REJECTS) return REJECT("retries-exhausted", `parked: the AI reviewer rejected this action ${p.rejects} times on ${(p as { scope?: string }).scope ?? "this task"}, so it isn't reviewed again here. A different branch, PR or tool target of the task is reviewed on its own; report what it found to whoever asked for this work`);
   return undefined;
 }

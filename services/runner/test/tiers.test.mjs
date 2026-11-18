@@ -72,6 +72,8 @@ test("earlier decisions: owner veto, same content, bounded retries per target", 
   const twice = [...unsure("c1"), rec("rejected", "reviewer:~z-ai/glm-flash-latest", SHA("f"), 2, { reviewCode: "reviewer_unsure", requestChain: "c2" })];
   assert.equal(pub("pr", { sha: SHA("f"), patch: pk(SHA("f")) }, { records: twice, requestChain: "c3" }).rule, "rejected-content", "no second relift");
   assert.equal(tierOf(pub("pr", { sha: SHA("a"), patch: pk(SHA("a")) }, { records: twice, requestChain: "c3" })), 0, "changed commits: always a fresh review");
+  // The same change amended or rebased (new commits, the same patch key) is the same content: still rejected.
+  assert.equal(at([rec("rejected", "reviewer:~openai/gpt-luna-latest", SHA("a"), 1)], SHA("b"), { patch: pk(SHA("a")) }).rule, "rejected-content", "an amend of the same patch stays rejected");
   assert.equal(tierOf(at([rec("rejected", "owner:board", SHA("a"), 1)])), 2, "the owner's no: their card");
   assert.equal(tierOf(at([rec("rejected", "owner:board", SHA("a"), 1), rec("approved", "owner:telegram", SHA("b"), 2)])), 0, "their later yes lifts it");
   // Bound to content: reject X, approve Y, resubmit X: still the owner's (the watcher decides as the owner too).
@@ -102,12 +104,12 @@ test("earlier decisions: owner veto, same content, bounded retries per target", 
   assert.equal(merge({}, { ...other, records: onPr([1, 1, 1]) }).rule, "agents-org-merge", "three rejections on PR #1 leave PR #2 reviewed");
   assert.equal(merge({}, { ...other, records: onPr([2, 2, 2]) }).rule, "retries-exhausted", "three on this PR park it");
   assert.equal(at(onBranch([SHA("a"), SHA("b"), SHA("c")], "feat/sibling"), SHA("d"), { branch: "feat/sibling" }).rule, "retries-exhausted", "its own rejections park it, under its own commits");
-  // A rejection follows its branch's budget by content too: one raised on `feat/x` for exactly the change now resubmitted
-  // under another name counts on that branch (two more there park it; without it, only two rejections and a fresh review).
+  // A rejected change resubmitted under another name (new commits, the same patch key) is that change: refused unchanged,
+  // whatever its new branch's budget (refile only after a fix, owner 2026-11-18).
   const renamedOne = onBranch([SHA("a")], "feat/x");
   const hereTwo = onBranch([SHA("b"), SHA("c")], "feat/renamed");
-  assert.equal(at([...renamedOne, ...hereTwo], SHA("d"), { branch: "feat/renamed", patch: pk(SHA("a")) }).rule, "retries-exhausted", "the same change under another name keeps its budget");
-  assert.equal(tierOf(at([...renamedOne, ...hereTwo.slice(1)], SHA("d"), { branch: "feat/renamed", patch: pk(SHA("a")) })), 0, "two rejections here are not parked");
+  assert.equal(at([...renamedOne, ...hereTwo], SHA("d"), { branch: "feat/renamed", patch: pk(SHA("a")) }).rule, "rejected-content", "the same change under another name stays rejected");
+  assert.equal(at([...renamedOne, ...hereTwo.slice(1)], SHA("d"), { branch: "feat/renamed", patch: pk(SHA("a")) }).rule, "rejected-content", "with fewer rejections too");
   const three = [1, 2, 3].map((i) => rec("rejected", "reviewer:~openai/gpt-luna-latest", SHA(String(i)), i));
   assert.equal(at(three, SHA("f"), { branch: "feat/other" }).rule, "agents-org-branch", "a task-targeted action elsewhere never parks a branch");
   // The target is read from a record's args and from a request's verified state alike: `only` on a card, `branches` when
@@ -127,16 +129,17 @@ test("earlier decisions: owner veto, same content, bounded retries per target", 
   assert.equal(toolPart(onIssue([180, 180, 180]), call("github_app_issue_comment", 180, "reworded"))?.rule, "retries-exhausted", "three on one issue park it");
   assert.equal(toolPart(onIssue([180, 180, 180]), call("github_app_issue_comment", 362)), undefined, "another issue is reviewed");
   assert.equal(toolPart(onIssue([180, 180, 180]), call("github_app_issue_state", 362)), undefined, "another tool on another issue is reviewed");
-  // A fixed-schema tool cannot produce a changed call, so an identical conn.tool refile (the same digest) is reviewed again
-  // rather than refused as rejected-content; its retries stay bounded per tool and target, with the earlier notes attached.
+  // Refile only after a fix (owner, 2026-11-18): an identical conn.tool refile (the same digest) is refused by code before any
+  // review; a changed call is reviewed with the earlier notes, and retries stay bounded per tool and target.
   const label = (number, body = "x") => ({ connection: "github", tool: "github_app_issue_label", arguments: { repo: "Aiden-HQ/AidenHQ", number, action: "add", label: body } });
   const toolWrite = (digest, i, args = label(314)) => ({ action: "conn.tool", args, digest, state: "rejected", decidedBy: "reviewer:~openai/gpt-luna-latest", decidedAt: `2026-11-18T0${i}:00:00Z`, review: `note ${i}` });
   const toolPrior = (records, args, digest) => priorPart(priorDecisions(records, "conn.tool", [], digest, undefined, undefined, requestTargets("conn.tool", args)));
   const once = toolWrite("d1", 1);
-  assert.equal(toolPrior([once], label(314), "digest:d1"), undefined, "an identical call rejected once is reviewed again");
-  assert.equal(priorDecisions([once], "conn.tool", [], "digest:d1").same, undefined, "not rejected-content");
-  assert.deepEqual(priorDecisions([once], "conn.tool", [], "digest:d1").findings, ["note 1"], "its earlier note is attached to the review");
-  assert.equal(toolPrior([1, 2, 3].map((i) => toolWrite("d1", i)), label(314), "digest:d1")?.rule, "retries-exhausted", "three on the same tool and target park it");
+  assert.equal(toolPrior([once], label(314), "digest:d1")?.rule, "rejected-content", "an identical call rejected once is refused unchanged");
+  assert.match(toolPrior([once], label(314), "digest:d1").reason, /report back/, "it tells the agent to change it or report back");
+  assert.equal(toolPrior([once], label(314, "y"), "digest:d2"), undefined, "a changed call is reviewed");
+  assert.deepEqual(priorDecisions([once], "conn.tool", [], "digest:d2").findings, ["note 1"], "its earlier note is attached to the review");
+  assert.equal(toolPrior([1, 2, 3].map((i) => toolWrite(`d${i}`, i)), label(314), "digest:d9")?.rule, "retries-exhausted", "three on the same tool and target park it");
   assert.equal(toolPrior([1, 2, 3].map((i) => toolWrite(`o${i}`, i, label(358))), label(314), "digest:d1"), undefined, "rejections on another issue do not park this one");
   // The task-wide content refusal is unchanged for the actions whose content key is a real change key.
   const prNo = { action: "pr", args: { only: [{ repo: "acme/roadmap", branch: "feat/x", sha: SHA("a") }] }, state: "rejected", decidedBy: "reviewer:~openai/gpt-luna-latest", decidedAt: "2026-11-18T01:00:00Z", review: "note" };
