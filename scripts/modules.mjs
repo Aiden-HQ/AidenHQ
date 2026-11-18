@@ -1203,10 +1203,11 @@ export function writeKinds(name, def, root, instanceWrites = {}, taken = {}) {
   for (const [k, w] of entries) {
     const id = `${name}.${k}`;
     if (!/^[a-z][a-z0-9_]{0,40}$/.test(k)) fail(`write kind ${id}: the name is lowercase letters, digits and _`);
-    const extra = Object.keys(w ?? {}).filter((f) => !["args", "floor", "panel", "card", "tools"].includes(f));
+    const extra = Object.keys(w ?? {}).filter((f) => !["args", "floor", "panel", "paths", "card", "tools"].includes(f));
     if (extra.length) fail(`write kind ${id}: unknown field ${extra.join(", ")} (kernel/schemas/writes.json)`);
     if (![0, 1, 2].includes(w.floor)) fail(`write kind ${id}: floor is 0, 1 or 2`);
     if (w.panel != null && typeof w.panel !== "boolean") fail(`write kind ${id}: panel is true or false`);
+    if (w.paths != null && w.paths !== true) fail(`write kind ${id}: paths is true (a repository write: its plan returns the files it changes)`);
     const card = w.card ?? {};
     if (typeof card !== "object" || Object.entries(card).some(([f, v]) => !CARD_FIELDS.includes(f) || typeof v !== "string")) fail(`write kind ${id}: card has only ${CARD_FIELDS.join(", ")}, each a template string`);
     const tools = (w.tools ?? []).map((t) => {
@@ -1224,7 +1225,7 @@ export function writeKinds(name, def, root, instanceWrites = {}, taken = {}) {
       args = JSON.parse(readFileSync(file, "utf8"));
     }
     const floor = Math.max(w.floor, Number(instanceWrites[id]?.floor ?? 0));
-    out[id] = { module: name, floor, ...(w.panel ? { panel: true } : {}), tools, card, ...(args ? { args } : {}), executor: { url: ex.url, auth_secret: ex.auth, rev: moduleRev(root) } };
+    out[id] = { module: name, floor, ...(w.panel ? { panel: true } : {}), ...(w.paths ? { paths: true } : {}), tools, card, ...(args ? { args } : {}), executor: { url: ex.url, auth_secret: ex.auth, rev: moduleRev(root) } };
   }
   return out;
 }

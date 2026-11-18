@@ -12,6 +12,7 @@
       "args": { "type": "string", "pattern": "^schemas/[\\w.-]+\\.json$", "description": "a strict JSON Schema in the module for the args its plan returns" },
       "floor": { "enum": [0, 1, 2], "description": "the lowest tier; the instance may raise it (writes.<kind>.floor), plan may raise a request" },
       "panel": { "type": "boolean", "description": "a second reviewer of another model family must approve too" },
+      "paths": { "const": true, "description": "a repository write: its plan returns `paths` ([{ repo, files: [{ path, from? }] }], read from git) and the path inventory raises its tier (kernel/src/paths.ts); without them it is the owner's" },
       "card": {
         "type": "object",
         "additionalProperties": false,

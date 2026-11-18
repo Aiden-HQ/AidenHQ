@@ -1,0 +1,46 @@
+# The product repo's path inventory (spec §4.4): how carefully a change to each path is read, and which role owns it.
+# scripts/paths.mjs compiles it with each official module's `paths:` (and every privileged module's folder, at least the
+# reviewer's) into config/kernel/paths.json, which the kernel's tier function reads (kernel/src/paths.ts). Sensitivity:
+# 0 runs at once, 1 the AI reviewer, panel the reviewer and a second one on another model family, 2 the owner. It only
+# raises: the highest entry a path matches wins. owner_role routes work to the role holding the path; it grants nothing.
+# Patterns: `**` any run, `*` one segment, `{a,b}` either, a trailing `/` the whole folder. `repo`: product (default),
+# modules (the official modules repo) or any.
+#
+# The gate's own core and anything that can bypass or widen it (owner, 2026-11-14) is the panel's: the approval path, the
+# state it trusts and the runner's GitHub writes, the job jail, who an agent is and what it may call, the board's approval
+# records, decision routes and sign-in, the sandboxes, the kernel, host privileges, the security checks and the product's CI.
+paths:
+  - sensitivity: panel
+    owner_role: platform-engineer
+    patterns:
+      - services/runner/src/{tiers,gate-core,review-request,siblings,cards,evalgate,apply,state,config,progress,main,engines,files,agents,typed-change,url-setting,release}.{mjs,ts}
+      - scripts/{computers,modules,paperclip-setup,no-shell}.{mjs,ts}
+      - kernel/
+      - services/shared/review-files.{mjs,ts}
+      - "**/aidenhq-sdk/caller.ts"
+      - services/board/src/{app,fleet,kernel-auth,session}.ts
+      - services/computer/
+      - ops/
+      - scripts/verify-security.sh
+      - scripts/supply-chain/
+      - .gitleaks.toml
+      # The lean counters and the tests that hold the gate's lists: loosening either would hide an ungated file.
+      - scripts/lean/
+      - scripts/test/lean.test.mjs
+      - services/runner/test/gate-coverage.test.mjs
+      # This inventory, its compiler and the test that holds it to the gate's lists.
+      - paths.yaml
+      - scripts/paths.mjs
+      - .github/
+      - "**/.github/"
+  # The owner-approved source exceptions (review-request.mjs reads them): only the owner's own tap makes a record one, in
+  # every repository, so no PR records its own approval.
+  - sensitivity: 2
+    repo: any
+    owner_role: platform-engineer
+    patterns: [ .github/supply-chain-source-exceptions.yaml ]
+  # The board's screens: a change here gets a design review (no tier of its own).
+  - sensitivity: 0
+    owner_role: platform-engineer
+    ui: true
+    patterns: [ services/board/web/ ]
