@@ -30,7 +30,7 @@ type Deps = {
   };
   /** First-run setup's vault side: the owner email settings fix, the recovery key shown once, and secret writes. */
   firstRun?: { ownerEmail: () => string | undefined; recoveryKey: () => string; fields: () => SetupField[]; has: (secret: string) => boolean; save: (secret: string, value: string) => void; forgetRecoveryKey: () => void };
-  cards: { ownerCards: () => Promise<{ live: Card[]; finished: Card[] }>; decideCard: (id: string, digest: string, decision: "approve" | "reject", by: string, via: string) => Promise<{ identifier: string; sentence: string; state: string }> };
+  cards: { ownerCards: () => Promise<{ live: Card[]; finished: Card[] }>; decideCard: (id: string, digest: string, decision: "approve" | "reject", by: string, via: string, reason?: string) => Promise<{ identifier: string; sentence: string; state: string }> };
   ownerMessage: (b: { text?: unknown; task?: unknown }) => Promise<{ task: { identifier: string } }>;
   /** The control plane as the owner (a confirmed status change). */
   owner: Api;
@@ -217,7 +217,7 @@ export function createAdmin(d: Deps) {
     const head = `<div class="muted">${esc(a.identifier)} · ${esc(a.action ?? a.kind)} · Tier ${esc(a.tier)}${a.panel ? " · panel" : ""} · asked by ${esc(a.requestedBy)}</div><b>${esc(a.sentence)}</b>`;
     if (!full) return `<div class="card">${head}<div><a href="/approvals/${esc(a.id)}">Open</a></div></div>`;
     const rows = [["Changes", a.changes], ["Reads", a.reads], ["Cost", a.cost], ["Why", a.reason], ["AI reviewer", a.review]].filter(([, v]) => v).map(([k, v]) => `<div class="muted">${k}</div><pre>${esc(v)}</pre>`).join("");
-    const decide = (decision: string, label: string, cls: string) => form(`/approvals/${a.id}/decide`, `<input type="hidden" name="digest" value="${esc(a.digest)}"><input type="hidden" name="decision" value="${decision}"><button class="b ${cls}">${label}</button>`, s);
+    const decide = (decision: string, label: string, cls: string) => form(`/approvals/${a.id}/decide`, `<input type="hidden" name="digest" value="${esc(a.digest)}"><input type="hidden" name="decision" value="${decision}">${decision === "reject" ? `<input name="reason" maxlength="500" placeholder="Reason (optional)" aria-label="Reason">` : ""}<button class="b ${cls}">${label}</button>`, s);
     return `<div class="card">${head}${rows}<div class="muted">digest ${esc(String(a.digest).slice(0, 16))}…</div><div style="display:flex;gap:8px;margin-top:8px">${decide("approve", "Approve", "")}${decide("reject", "Reject", "r")}</div></div>`;
   }
 
@@ -379,7 +379,7 @@ export function createAdmin(d: Deps) {
         }
         case "GET /": case "GET /approvals": {
           const { live, finished } = await d.cards.ownerCards();
-          const batch = live.length > 1 ? form("/approvals/batch", `${live.map((a) => `<label><input type="checkbox" name="item" value="${esc(`${a.id}:${a.digest}`)}" style="width:auto"> ${esc(a.identifier)}: ${esc(a.sentence)}</label>`).join("")}<div style="display:flex;gap:8px"><button class="b" name="decision" value="approve">Approve selected</button><button class="b r" name="decision" value="reject">Reject selected</button></div>`, s) : "";
+          const batch = live.length > 1 ? form("/approvals/batch", `${live.map((a) => `<label><input type="checkbox" name="item" value="${esc(`${a.id}:${a.digest}`)}" style="width:auto"> ${esc(a.identifier)}: ${esc(a.sentence)}</label>`).join("")}<div style="display:flex;gap:8px"><button class="b" name="decision" value="approve">Approve selected</button><input name="reason" maxlength="500" placeholder="Reason for reject (optional)" aria-label="Reason"><button class="b r" name="decision" value="reject">Reject selected</button></div>`, s) : "";
           const done = finished.slice(0, 20).map((a) => `<div class="card muted">${esc(a.identifier)} · ${esc(a.state)}${a.outcome ? ` · ${esc(a.outcome)}` : ""}: ${esc(a.sentence)}</div>`).join("");
           return send(res, 200, doc("Approvals", `<h1>Waiting for you (${live.length})</h1>${live.map((a) => cardHtml(a, s, false)).join("") || `<p class="muted">Nothing waits on you.</p>`}${batch ? `<h2>Several at once</h2><div class="card">${batch}</div>` : ""}<h2>Recent</h2>${done}`, s));
         }
@@ -393,7 +393,7 @@ export function createAdmin(d: Deps) {
         case "POST /approvals/:id/decide": {
           const decision = f.get("decision") === "approve" ? "approve" : f.get("decision") === "reject" ? "reject" : undefined;
           if (!decision) throw new Refusal(400, "approve or reject");
-          const r = await d.cards.decideCard(id, f.get("digest") ?? "", decision, by, "web");
+          const r = await d.cards.decideCard(id, f.get("digest") ?? "", decision, by, "web", f.get("reason") ?? "");
           log("web decision", { card: id, decision, by });
           return send(res, 200, doc("Decided", `<p class="ok">${decision === "approve" ? "Approved" : "Rejected"}: ${esc(r.sentence)} (${esc(r.identifier)}, now ${esc(r.state)})</p><a href="/approvals">Back to approvals</a>`, s));
         }
@@ -404,7 +404,7 @@ export function createAdmin(d: Deps) {
           // Each card on its own, against the digest the owner saw: one that changed meanwhile fails alone.
           const lines: string[] = [];
           for (const [cid, digest] of items) {
-            const r = await d.cards.decideCard(cid, digest, decision, by, "web").then((x) => `<p class="ok">${esc(x.identifier)}: ${esc(x.state)}</p>`, (e: Error) => `<p class="err">${esc(cid)}: ${esc(e.message)}</p>`);
+            const r = await d.cards.decideCard(cid, digest, decision, by, "web", f.get("reason") ?? "").then((x) => `<p class="ok">${esc(x.identifier)}: ${esc(x.state)}</p>`, (e: Error) => `<p class="err">${esc(cid)}: ${esc(e.message)}</p>`);
             lines.push(r);
           }
           log("web batch decision", { cards: items.map(([c]) => c), decision, by });

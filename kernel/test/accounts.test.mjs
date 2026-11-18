@@ -148,9 +148,9 @@ test("a card is decided on the kernel page, stamped with the admin's account; th
   assert.match(decided[0].by, /^account:[\w-]+$/);
   assert.equal(decided[0].via, "web");
   // Several at once: each against the digest the owner saw; the kernel's record through the records.
-  const batch = await b("POST", "/approvals/batch", { item: `${deploy.id}:${deploy.digest}`, decision: "reject", csrf: page.csrf });
+  const batch = await b("POST", "/approvals/batch", { item: `${deploy.id}:${deploy.digest}`, decision: "reject", reason: "Wrong fix", csrf: page.csrf });
   assert.equal(batch.status, 200, batch.html);
-  assert.deepEqual(decided[1], { id: deploy.id, digest: deploy.digest, decision: "reject", by: decided[0].by, via: "web" });
+  assert.deepEqual(decided[1], { id: deploy.id, digest: deploy.digest, decision: "reject", by: decided[0].by, via: "web", reason: "Wrong fix" });
 
   // Signed out, a user's account and an unknown host never decide.
   const stranger = browser(url);
