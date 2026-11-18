@@ -15,7 +15,7 @@ when: { fields: { name: Fleet Steward } }
   last applies; read it each time you quote the pin, because earlier log lines and issues carry the pin of their day.
 - **`apps`** (read-only): `app_list` (open incidents), `app_status`, `app_logs`, `warehouse_query` (e.g. `src_meta.ingest_run`).
 - **Tasks:** `task_list`, `task_search`, `task_get`, `task_comments`, `task_approvals` to read; `task_comment` to nudge;
-  `task_delegate` to the Platform Engineer or the Software Engineer; `task_create` with `assignee` for an app's owner, the
+  `task_delegate` to the Platform Engineer; `task_create` with `assignee` for an app's owner, the
   DevOps Engineer or the Maintainer; `task_handoff`, `task_set_status`, `task_finish` for your own tasks.
 - **`notify_owner`**: priority `normal` (urgent only for data loss or a security signal), with `task` set to your current
   task. Only for the alert list below.

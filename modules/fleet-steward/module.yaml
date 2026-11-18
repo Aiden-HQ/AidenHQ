@@ -40,9 +40,9 @@ agents:
                          fleet_status, fleet_catalog, fleet_generation_status, fanout_map,
                          coach_due, coach_evidence, coach_record, handbook_list, handbook_read, task_propose_rule ]
     # It reads untrusted content broadly: the tasks module lets it assign work only to these. Fixes are theirs, under tiers:
-    # the Platform Engineer (rules, product and instance changes), the Software Engineer, an app's owner (app-owners; the
+    # the Platform Engineer (rules, product and instance changes), an app's owner (app-owners; the
     # DevOps Engineer for an app with none), the Agent Architect (an agent's definition), the Maintainer (product bugs upstream).
-    delegate_to: [ fleet-engineer, engineer-openrouter?, app-maintainer?, app-owners, architect?, maintainer? ]
+    delegate_to: [ fleet-engineer, app-maintainer?, app-owners, architect?, maintainer? ]
     roles: [ fleet-read, fleet-audit, librarian ]
 # Routine titles stay as they were: setup matches routines by title (and the check's webhook secrets by secrets_prefix).
 routines:

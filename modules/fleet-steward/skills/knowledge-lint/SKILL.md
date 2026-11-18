@@ -6,7 +6,7 @@ when: { fields: { name: Fleet Steward } }
 
 # Knowledge weekly lint
 
-The tools are the `knowledge-daily` skill's.
+The tools are the `knowledge-daily` skill's. Without the notes tools (no meetings module on), skip step 1.
 
 1. **Vault.** Walk the vault by area (`obsidian_read_document_map`, `knowledge_list`). Look for merge candidates (two
    pages on one thing: say which stays), stale facts (time-bound words, a role or deadline long past), contradictions

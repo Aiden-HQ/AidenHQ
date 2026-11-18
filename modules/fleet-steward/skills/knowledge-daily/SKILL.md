@@ -20,6 +20,8 @@ Never look for a way around that: a fix that needs one goes in the weekly report
 
 ## Steps
 
+Without the notes tools (no meetings module on), skip step 1.
+
 1. **Notes.** Notes and meetings new or changed since yesterday. Check each for a duplicate of an existing note, a fact
    that contradicts an older one, and a fact with no source and date.
    - A wrong fact in a meeting note: fix it with `meeting_note_correct`, only when the meeting's own transcript or a
