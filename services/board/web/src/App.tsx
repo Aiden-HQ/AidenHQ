@@ -575,6 +575,8 @@ export function App() {
   useEffect(() => {
     if (needsSignIn) void api.session().then(setSession, () => {});
   }, [needsSignIn]);
+  // Every hook runs before the early returns below (React needs the same hooks on every render).
+  const appsQ = useQuery(QUERIES.apps, signInNeeded);
   // Signed out, or an admin without an authenticator yet: both are done on the kernel's sign-in pages.
   if (session && !session.account) return <SignInScreen />;
 
@@ -586,7 +588,7 @@ export function App() {
   const mergeTargets = BUCKETS.flatMap((b) => items[b]).filter((c) => c.assignee === "me" && !c.recurring);
   const openChat = (identifier: string) => go(`#/c/${identifier}`);
   const tabs = TABS;
-  const panels = panelsOf(useQuery(QUERIES.apps, signInNeeded).data?.apps ?? [], keepsSecureCookies());
+  const panels = panelsOf(appsQ.data?.apps ?? [], keepsSecureCookies());
   const onBoard = view === "board";
   // A chat (or a settings category) open on a phone takes the whole screen (back arrow to the list).
   const chatFull = mobile && ((view === "chat" && route.kind === "chat") || (view === "settings" && route.kind === "settings" && route.cat !== null));
