@@ -93,6 +93,9 @@ export function chatAgent(issue: Issue): string | undefined {
 
 /** An agent's visible reply to the owner (notify(task) posts it; owner-channel's REPLY_MARKER). */
 export const REPLY_MARKER = "<!-- aidenhq-reply -->";
+/** A kernel job's final message, posted as the agent (kernel outcomes.ts, kind `reply`): also its reply to the owner. */
+const JOB_REPLY = /<!-- aidenhq:job=[\w-]+ kind=reply -->/;
+const isReply = (body: string) => body.includes(REPLY_MARKER) || JOB_REPLY.test(body);
 /** A board notice on a chat (an approval's outcome, a file it couldn't read): shown as a line, never as the owner's words. */
 export const NOTICE_MARKER = "<!-- aidenhq-notice -->";
 export const APPROVAL_MARKER = "<!-- aidenhq-approval -->";
@@ -178,7 +181,7 @@ export function openAsk(comments: ChatComment[], agentId: string | null | undefi
  * all: older chats, or an agent that doesn't use notify), every agent comment is shown as a reply.
  */
 export function conversation(issue: { id: string; description: string | null; createdAt: string; createdByAgentId?: string | null; createdByUserId?: string | null }, comments: ChatComment[], me: string, agentName: (id: string | null | undefined) => string, isChat = true, runnerAs?: string): Message[] {
-  const tagged = comments.some((c) => c.authorType === "agent" && c.body.includes(REPLY_MARKER));
+  const tagged = comments.some((c) => c.authorType === "agent" && isReply(c.body));
   const out: Message[] = [];
   // The opening is the owner's words only when the owner created the chat (an agent could write the marker too).
   const byOwner = !issue.createdByAgentId && (!issue.createdByUserId || issue.createdByUserId === me);
@@ -209,7 +212,7 @@ export function conversation(issue: { id: string; description: string | null; cr
     else if (system && has(c.body, RUNNER_MARKER)) note(c, "Runner");
     else if (c.authorType === "agent") {
       const name = agentName(c.authorAgentId);
-      if (tagged && !c.body.includes(REPLY_MARKER)) note(c, name);
+      if (tagged && !isReply(c.body)) note(c, name);
       else {
         const actions = replyActions(c.body);
         const questions = replyQuestions(c.body);
