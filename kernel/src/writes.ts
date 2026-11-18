@@ -386,12 +386,14 @@ export function createWrites({ records, registry, connections, secret, resolver,
       // outcome instead of running the module again while it is at most 10 minutes old (from its created_at). A different tier,
       // requester, task or arguments still files its own; a rejected or otherwise closed earlier record is not reused.
       const same = (r: Rec) => by(r.requester) === by(base.requester) && r.tier === t.tier;
-      const live = records.live(task, CONN_TOOL, digest).find(same);
-      if (live) return { record: live, forward: false };
-      const ran = records.recent(task, CONN_TOOL, digest, new Date(Date.now() - CONN_TOOL_REUSE_MS).toISOString()).find((r) => same(r) && (r.state === "done" || r.state === "failed"));
-      if (ran) return { record: ran, forward: false };
-      const record = records.file({ ...base, tier: t.tier, merit: t.merit, panel: false, review_first: t.reviewFirst, rule: t.rule ?? null, cap: t.cap ?? null, state: t.state });
-      return { record, forward: record.state === "claimed" };
+      const since = new Date(Date.now() - CONN_TOOL_REUSE_MS).toISOString();
+      // Lookup and insert run in one transaction (records.fileOnce): two simultaneous identical calls cannot both file.
+      const { record, filed } = records.fileOnce({ ...base, tier: t.tier, merit: t.merit, panel: false, review_first: t.reviewFirst, rule: t.rule ?? null, cap: t.cap ?? null, state: t.state }, (rows) => {
+        const live = ["review", "owner", "approved", "claimed"];
+        return rows.find((r) => same(r) && live.includes(r.state) && records.shownState(r) !== "expired")
+          ?? rows.find((r) => same(r) && (r.state === "done" || r.state === "failed") && r.created_at > since);
+      });
+      return { record, forward: filed && record.state === "claimed" };
     },
     outcome: outcomeOf,
     /** Resolves once the record has an outcome, or with it as it is after `ms`. */

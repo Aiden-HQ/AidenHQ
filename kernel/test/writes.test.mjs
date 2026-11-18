@@ -251,6 +251,21 @@ test("a repeat while the first conn.tool call is still claimed waits for it, nev
   assert.deepEqual(moduleCalls(), ["note_write"]);
 });
 
+test("two simultaneous identical conn.tool calls file one record and forward once", async (t) => {
+  let release;
+  const hold = new Promise((r) => { release = r; });
+  const { k, tool, moduleCalls } = await twin(t, { hold });
+  // Both calls are in flight before either can answer: the lookup and the filing are one transaction.
+  const both = Promise.all([tool("note_write", { text: "race" }), tool("note_write", { text: "race" })]);
+  await until(() => k.records.list(["claimed"]).length === 1);
+  release();
+  const [a, b] = await both;
+  assert.match(await text(a), /note_write done/);
+  assert.match(await text(b), /note_write done/);
+  assert.equal(k.records.list(["done"]).length, 1);
+  assert.deepEqual(moduleCalls(), ["note_write"]);
+});
+
 test("two identical destructive conn.tool calls in one run file one Tier 1 card, replayed once", async (t) => {
   const { k, tool, pending, review, moduleCalls } = await twin(t);
   const p = await pending(await tool("note_drop", { id: 7 }));

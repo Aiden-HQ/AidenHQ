@@ -98,28 +98,45 @@ export function openRecords(file: string, now = () => new Date()) {
   const expire = () => db.prepare(`UPDATE records SET state = 'cancelled', updated_at = ?, outcome = ? WHERE state IN ('review','owner','approved') AND created_at <= ?`).run(iso(), JSON.stringify({ ok: false, text: "expired: not decided and run within 7 days" }), cutoff());
   const shownState = (r: Rec) => (OPEN.includes(r.state) && r.created_at <= cutoff() ? "expired" : r.state);
 
+  /** Insert `r` in the caller's open transaction: one row, and a changed request on the same target replaces the open one. */
+  const insert = (r: Filing, at: string, digest: string): string => {
+    const id = `k-${randomBytes(8).toString("hex")}`;
+    const replaced = r.target ? db.prepare("UPDATE records SET state = 'cancelled', updated_at = ?, outcome = ? WHERE task = ? AND kind = ? AND target = ? AND digest != ? AND state IN ('review','owner','approved')").run(at, JSON.stringify({ ok: false, text: "replaced by a newer request" }), r.task, r.kind, r.target, digest).changes : 0;
+    db.prepare("INSERT INTO records (id, kind, module, args, targets, executor, policy, digest, tier, merit, panel, card, requester, task, state, created_at, updated_at, review_first, rule, identifier, replaced, target, content, chain, cap) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+      .run(id, r.kind, r.module, JSON.stringify(r.args ?? null), JSON.stringify(r.targets), JSON.stringify(r.executor), r.policy, digest, r.tier, r.merit ?? r.tier, r.panel ? 1 : 0, JSON.stringify(r.card), JSON.stringify(r.requester), r.task, r.state, at, at,
+        r.review_first ?? null, r.rule ?? null, r.identifier ?? null, replaced ? 1 : 0, r.target ?? null, r.content ?? null, r.chain ?? null, r.cap ? JSON.stringify(r.cap) : null);
+    return id;
+  };
+  /**
+   * File `r` once: `same` reads the records of its content inside the write transaction, and a hit is returned instead of
+   * inserting, so two simultaneous filings of one request can't both miss it. Without `same`, every call files.
+   */
+  function fileOnce(r: Filing, same: (rows: Rec[]) => Rec | undefined): { record: Rec; filed: boolean } {
+    const at = iso();
+    const digest = digestOf(r);
+    db.exec("BEGIN IMMEDIATE");
+    let id: string;
+    try {
+      const hit = same(rows(db.prepare("SELECT * FROM records WHERE task = ? AND kind = ? AND digest = ? ORDER BY created_at DESC, rowid DESC").all(r.task, r.kind, digest)));
+      if (hit) {
+        db.exec("COMMIT");
+        return { record: hit, filed: false };
+      }
+      id = insert(r, at, digest);
+      db.exec("COMMIT");
+    } catch (e) {
+      db.exec("ROLLBACK");
+      throw e;
+    }
+    event("approval.filed", { record: id, kind: r.kind, tier: r.tier, panel: r.panel, requester: r.requester.key || r.requester.module || "", task: r.task });
+    return { record: get(id)!, filed: true };
+  }
+
   return {
     db,
     get,
-    file(r: Filing): Rec {
-      const id = `k-${randomBytes(8).toString("hex")}`;
-      const at = iso();
-      const digest = digestOf(r);
-      db.exec("BEGIN IMMEDIATE");
-      try {
-        // A changed request on the same task, kind and target replaces the open one (the requester's own target key).
-        const replaced = r.target ? db.prepare("UPDATE records SET state = 'cancelled', updated_at = ?, outcome = ? WHERE task = ? AND kind = ? AND target = ? AND digest != ? AND state IN ('review','owner','approved')").run(at, JSON.stringify({ ok: false, text: "replaced by a newer request" }), r.task, r.kind, r.target, digest).changes : 0;
-        db.prepare("INSERT INTO records (id, kind, module, args, targets, executor, policy, digest, tier, merit, panel, card, requester, task, state, created_at, updated_at, review_first, rule, identifier, replaced, target, content, chain, cap) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
-          .run(id, r.kind, r.module, JSON.stringify(r.args ?? null), JSON.stringify(r.targets), JSON.stringify(r.executor), r.policy, digest, r.tier, r.merit ?? r.tier, r.panel ? 1 : 0, JSON.stringify(r.card), JSON.stringify(r.requester), r.task, r.state, at, at,
-            r.review_first ?? null, r.rule ?? null, r.identifier ?? null, replaced ? 1 : 0, r.target ?? null, r.content ?? null, r.chain ?? null, r.cap ? JSON.stringify(r.cap) : null);
-        db.exec("COMMIT");
-      } catch (e) {
-        db.exec("ROLLBACK");
-        throw e;
-      }
-      event("approval.filed", { record: id, kind: r.kind, tier: r.tier, panel: r.panel, requester: r.requester.key || r.requester.module || "", task: r.task });
-      return get(id)!;
-    },
+    file: (r: Filing): Rec => fileOnce(r, () => undefined).record,
+    fileOnce,
     /** Newest first; `reviewed`: only records that went to the reviewer or the owner (Tier 1 and 2), `task`: only that task's. */
     list(states: State[], limit = 100, { reviewed = false, task, kinds }: { reviewed?: boolean; task?: string; kinds?: string[] } = {}): Rec[] {
       expire();
@@ -140,10 +157,6 @@ export function openRecords(file: string, now = () => new Date()) {
     shownState,
     /** The open records of this content on this task (a repeated request returns its own, never a second card). */
     open: (task: string, kind: string, digest: string): Rec[] => rows(db.prepare("SELECT * FROM records WHERE task = ? AND kind = ? AND digest = ? AND state IN ('review','owner','approved') AND created_at > ?").all(task, kind, digest, cutoff())),
-    /** The open records of this content on this task, and any claimed one still running: the same call, never a second. */
-    live: (task: string, kind: string, digest: string): Rec[] => rows(db.prepare("SELECT * FROM records WHERE task = ? AND kind = ? AND digest = ? AND state IN ('review','owner','approved','claimed') AND created_at > ?").all(task, kind, digest, cutoff())),
-    /** Records of this content on this task created since then, newest first, in any state (a call that already ran). */
-    recent: (task: string, kind: string, digest: string, since: string): Rec[] => rows(db.prepare("SELECT * FROM records WHERE task = ? AND kind = ? AND digest = ? AND created_at > ? ORDER BY created_at DESC, rowid DESC").all(task, kind, digest, since)),
     /** Records of these modules' kinds in these states (a reconcile before the modules are removed). */
     ofModules(modules: string[], states: State[]): Rec[] {
       if (!modules.length) return [];
