@@ -20,11 +20,9 @@ export const REVIEWER_CODE = [
   /^modules\/ai-reviewer\//,
   /^kernel\/sdk\/src\/reviewer\.ts$/,
   /^services\/shared\/review-files\.(mjs|ts)$/,
-  /^services\/runner\/src\/(review-request|siblings|cards)\.(mjs|ts)$/,
-  /^services\/runner\/src\/(tiers|gate-core)\.(mjs|ts)$/,
-  /^modules\/codehost-github\/(service\/)?src\/plan\.mjs$/,
+  /^modules\/codehost-github\/service\/src\/(plan\.mjs|merges\.ts|merge-gate\.mjs|evalgate\.ts)$/,
   /^modules\/platform\/src\/check\.mjs$/,
-  /^kernel\/src\/(tier|provenance|writes|records|reviews|kinds|checkjobs|apply|apply-tier)\.ts$/,
+  /^kernel\/src\/(tier|provenance|writes|records|reviews|review-loop|kinds|checkjobs|apply|apply-tier)\.ts$/,
   /^scripts\/compiler\/authority\.ts$/,
 ];
 export const touchesReviewer = (files: string[]) => files.some((f) => REVIEWER_CODE.some((r) => r.test(f)));
