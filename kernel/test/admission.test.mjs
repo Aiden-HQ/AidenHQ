@@ -127,3 +127,14 @@ test("the routine cap is frozen on the job row at admission; a later change to t
   const free = await adm.admit("acme-dispatch", req(wake("w2", "task-3", "agent-2")));
   assert.deepEqual({ ...db.prepare("SELECT routine, routine_cap FROM jobs WHERE id = ?").get(free.id) }, { routine: null, routine_cap: null });
 });
+
+test("a job woken by the chief of staff's comment has the target agent's authority and the target task's cap, nothing of the chief of staff's", async () => {
+  const { adm, wake, db, caps, grants } = setup();
+  grants["agent-cos"] = { key: "acme-cos", roles: ["fleet-admin"], tools: { slack: ["post"], tasks: ["create"] }, model: "acme/big", effort: "max" };
+  caps["task-1"] = { cap: "off", routine: "routine-1" }; // agent-1's task: its own routine root; the chief of staff's task has another cap
+  caps["task-cos"] = { cap: "full", routine: "routine-cos" };
+  const job = await adm.admit("acme-dispatch", req(wake("w1", "task-1", "agent-1", "comment")));
+  assert.equal(job.agent, "agent-1");
+  assert.deepEqual([job.authority.tools, job.authority.roles, job.authority.model], [{ slack: ["search"], tasks: ["create"] }, [], "acme/m1"]);
+  assert.deepEqual({ ...db.prepare("SELECT routine, routine_cap FROM jobs WHERE id = ?").get(job.id) }, { routine: "routine-1", routine_cap: "off" });
+});

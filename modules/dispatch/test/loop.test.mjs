@@ -104,7 +104,7 @@ test("on an agent's task, the chief of staff's comment starts work as an agent's
   k.inbox.push(wake("comment:c3", "comment"));
   await k.dispatch.tick();
   assert.equal(k.started.length, 1);
-  assert.match(k.started[0].prompt, /## Request from the agent that delegated this task \(not Dana's words\)\n\n[^#]*\n\nKeep the Legacy flag in the config\.\n\n## Your reply/);
+  assert.match(k.started[0].prompt, /## Request from an agent \(the one that delegated this task, or the chief of staff; not Dana's words\)\n\n[^#]*Aiden \(the chief of staff, not Dana\) wrote:\n<<<CHIEF_OF_STAFF\nKeep the Legacy flag in the config\.\nCHIEF_OF_STAFF>>>\n\n## Your reply/);
   assert.doesNotMatch(k.started[0].prompt, /Instructions from Dana/);
 });
 

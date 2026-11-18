@@ -38,7 +38,8 @@ async function setup(t) {
     connections: { todo: { url: `${todo.url}/mcp`, auth_secret: "todo_service_key", module: "todo", returns: "trusted", tools: { read: [], write: ["act"], destructive: [] } } },
     onControl: async (req, body, auth) => {
       const me = KEYS[auth];
-      if (req.url === "/api/agents/me") return me ? { body: { id: me, companyId: "co" } } : { status: 401, body: {} };
+      // Ada's Paperclip record claims the role and a chief-of-staff name; only the grants table's roles count.
+      if (req.url === "/api/agents/me") return me ? { body: { id: me, companyId: "co", name: me === ADA ? "chief-of-staff" : undefined, metadata: me === ADA ? { roles: ["fleet-admin"] } : undefined } } : { status: 401, body: {} };
       if (req.url === "/api/companies/co") return { body: { id: "co", defaultResponsibleUserId: "u-owner" } };
       const ref = /^\/api\/issues\/([^/?]+)$/.exec(req.url)?.[1];
       if (ref && req.method === "GET") { const i = Object.values(h.issues).find((x) => x.id === decodeURIComponent(ref) || x.identifier === decodeURIComponent(ref)); return i ? { body: i } : { status: 404, body: {} }; }
@@ -113,8 +114,9 @@ test("the chief of staff comments on any task of its company, heard by that task
   assert.ok(!SELF_TAG.test(h.comments.at(-1).body), "the task's agent hears it (dispatch: the chief of staff's words start work)");
   assert.equal((await act("cos", "PATCH", "/api/issues/WOR-2", { status: "cancelled" })).status, 403);
   assert.equal((await act("cos", "PATCH", "/api/issues/WOR-2", { comment: "Also: keep it short." })).status, 200);
-  // Ada isn't the chief of staff.
+  // Ada isn't the chief of staff: her Paperclip metadata and name say so, her grants don't.
   assert.equal((await act("ada", "PATCH", "/api/issues/WOR-2", { comment: "Hello." })).status, 403);
+  assert.equal((await act("ada", "POST", "/api/issues/WOR-2/comments", { body: "Hello." })).status, 403);
 });
 
 test("no control-plane identity, no call: a caller whose agent the kernel holds no key for is refused before anything runs", async (t) => {

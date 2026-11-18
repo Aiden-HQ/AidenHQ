@@ -7,7 +7,7 @@ import type { DatabaseSync } from "node:sqlite";
 import { KernelError, type Kernel, type Wake } from "./kernel.ts";
 import { buildPrompt, outcome, type Words } from "./prompt.ts";
 import { createAsker } from "./asker.ts";
-import { agentMade, freshWords, moduleMade, ownRequest, redirectNote, speaker, spoke, stripHidden, threadEntries, threadSection, type Agent, type Directory, type Issue } from "./thread.ts";
+import { agentMade, fence, freshWords, moduleMade, ownRequest, redirectNote, speaker, spoke, stripHidden, threadEntries, threadSection, type Agent, type Directory, type Issue } from "./thread.ts";
 
 // The jobs this module started, until their outcome is posted; a start asked for whose answer isn't recorded yet (`starting`:
 // a crash or a lost answer leaves it, and the next tick asks the kernel for the wake's job); per task, the newest comment its last job saw; comments a run took as live input; tasks greeted.
@@ -127,7 +127,7 @@ export function createDispatch({ kernel, db, owner, log = () => {} }: { kernel: 
     const fresh = freshWords(comments, task, dir, { seen, delivered });
     // A routine run's wake (routine, or routine:<key> naming the routine) or a module's scheduled wake.
     const scheduled = /^(routine|scheduled)(:|$)/.test(w.cause);
-    const said = (who: string) => fresh.filter((f) => f.who === who).map((f) => f.text);
+    const said = (who: string) => fresh.filter((f) => f.who === who).map((f) => (f.chief ? `${agents.get(f.by!)?.name ?? "The chief of staff"} (the chief of staff, not ${owner}) wrote:\n${fence("CHIEF_OF_STAFF", f.text)}` : f.text));
     const words: Words = { owner: said("owner"), agent: said("agent"), notice: said("notice") };
     if (first && ownRequest(task)) words.task = "owner";
     else if (first && agentMade(task) && stripHidden(task.description).trim()) words.task = "agent";
