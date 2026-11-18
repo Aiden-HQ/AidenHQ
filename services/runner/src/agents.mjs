@@ -208,6 +208,17 @@ export function isAgentSubtask(issue) {
 }
 
 /**
+ * A task left in progress with a check still ahead (Paperclip's `executionPolicy.monitor.nextCheckAt`): the run settled
+ * into that wait, so the task keeps its status and Paperclip wakes it at that time. The time, or undefined.
+ */
+export function settledWait(issue, now = Date.now()) {
+  if (issue?.status !== "in_progress") return undefined;
+  const at = issue?.executionPolicy?.monitor?.nextCheckAt;
+  const t = typeof at === "string" ? Date.parse(at) : NaN;
+  return Number.isFinite(t) && t > now ? new Date(t).toISOString() : undefined;
+}
+
+/**
  * Where a finished queue leaves its task: an agent's sub-task whose PRs all merged, with no other open PR of its own
  * (openPrUrls: the task's PRs not known merged), is done; the delegating agent hears it on the parent. The owner's own
  * tasks, a queue that stopped, and a task with another PR still open stay in review.
