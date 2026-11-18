@@ -66,11 +66,12 @@ override them):
 | Engineers (coding jobs on the runner) | `~deepseek/deepseek-flash-latest`, with a picker of others in `modules/engineering/module.yaml` |
 | AI reviewer (Tier 1 approvals) and grader | `~openai/gpt-luna-latest` (medium effort), or `~deepseek/deepseek-flash-latest` (high) for an OpenAI-family requester: never the requesting model's family |
 
-`ops/setup.sh` creates one OpenRouter key per instance with a monthly limit (`OPENROUTER_LIMIT_USD`, default 50 USD).
-Typical daily spend: one owner's full fleet ran about $30-50 a day before cost tuning. Most agents run on DeepSeek
-Flash; the expensive parts are GPT Sol advisor calls and the Agent Architect's max-effort reasoning. Raise
-`OPENROUTER_LIMIT_USD` accordingly: the 50 USD default suits a small trial, not a full fleet. The board's Costs page shows the real
-figures. Paperclip shows OpenRouter runs as unpriced, so Paperclip budgets stay at 0 (any budget pauses the agent at
+`ops/setup.sh` creates one OpenRouter key per instance with a monthly limit (`OPENROUTER_LIMIT_USD`, default 100 USD).
+A new install also starts quiet (`docs/design/quiet-start.md`): scheduled routines and heartbeats wait until the owner
+turns them on, and every model call stops at `spend_day_usd` (10 USD a day) until the owner raises it. Typical daily
+spend: one owner's full fleet ran about $30-50 a day before cost tuning. Most agents run on DeepSeek Flash; the expensive
+parts are GPT Sol advisor calls and the Agent Architect's max-effort reasoning. Raise both accordingly for a full fleet.
+The board's Costs page shows the real figures. Paperclip shows OpenRouter runs as unpriced, so Paperclip budgets stay at 0 (any budget pauses the agent at
 $0); use the OpenRouter key limit instead.
 
 ## Modules and the instance

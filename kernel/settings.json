@@ -38,5 +38,15 @@
       "local"
     ],
     "doc": "How the board is reached, and so what the host firewall opens on the public interface (ops/vm/public-fw.sh): public = HTTPS on 443 (tcp 22, 443); tailscale = the tailnet (tcp 22, udp 41641); cloudflare = a Cloudflare tunnel, local = loopback through an SSH tunnel (tcp 22 only). Unset = tailscale; ops/setup.sh writes it. A change reaches the firewall when ops/vm/setup.sh runs again (root)."
+  },
+  "quiet_start": {
+    "values": [
+      "on",
+      "off"
+    ],
+    "doc": "On (a new install): a module's scheduled routines start paused and its agents' heartbeats off, until the owner turns one on (overrides.routines.<key>.status: active, overrides.agents.<key>.heartbeat). Unset or off: they run as their modules declare. docs/design/quiet-start.md."
+  },
+  "spend_day_usd": {
+    "doc": "The install-wide spend cap on every model call, USD per UTC day (a new install: 10). Past it, calls are refused and the owner gets one card to raise today's cap. Unset = no install-wide cap (per-agent caps still apply)."
   }
 }

@@ -35,7 +35,7 @@ test("dry run prints the plan and no secrets", () => {
     ".env: BOARD_LAN_URL=https://alice.tail1234.ts.net",
     ".env: APPS_URL_BASE=https://aidenhq-alice-apps.tail1234.ts.net", // apps on their own tailnet node, never the board's name
     "with OPENROUTER_MANAGEMENT_KEY,AIDENHQ_SECRETS_DIR) node", // the key goes in through the environment
-    "openrouter-key.mjs create aidenhq-alice 50",
+    "openrouter-key.mjs create aidenhq-alice 100",
     "write /home/alice/.config/aidenhq/modules/google/google_oauth.json",
     "write /home/alice/aidenhq-instance/apps.yaml", // instance.yaml's heredoc ends where it should
     "ops/apply-config.sh",
