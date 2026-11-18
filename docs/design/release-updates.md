@@ -41,9 +41,13 @@ charge: auto-updates on by default, off in Settings, and "Update now" for the im
   (GitHub has it; a local mirror gets a fast-forward push); one commit moving `product:` and `release.{name,sha}` (dropping an
   obsolete `aidenhq` marketplace entry) on the instance repo's branch `release/<name>`, built on its main.
 - **Filing it:** the kernel files a task of its own for the platform engineer (no agent works on it) and a `kernel.apply` of
-  that commit on it, as the release train files a product bump. The planner tiers it like any apply: a `release:` move along
-  the same source while auto-updates are on is the AI reviewer's (`release-pin`, Tier 1: the owner's standing authority),
-  otherwise the owner's after the reviewer; new module authority the release brings is the owner's either way. The code host
+  that commit on it (`writes.fileUpdater`: the requester kind `kernel`, which no token yields), as the release train files a
+  product bump. The planner tiers it like any apply. Only the updater's own filing, while auto-updates are on, whose head is
+  exactly the pin the planner's own verification of that release writes for this base (`updates.ts verify`: tag on the
+  distro's main, newer than the current release, the tested stamp, the kernel descending), is the AI reviewer's (`release-pin`,
+  Tier 1: the owner's standing authority). Every other release move is the owner's after the reviewer, and new module
+  authority the release brings is the owner's either way. The `autonomy` setting still caps Tier 1: below `full`, the
+  reviewer's yes goes on to the owner. The code host
   that owns the instance repo lands it (codehost-local's land for `local/…`, the bare repo on this host; codehost-github's
   otherwise) and the kernel's apply executor runs `ops/apply-config.sh` once.
 - **The outcome.** The kernel follows the record: done is installed; anything else (a rejected card, a failed apply) is
@@ -77,8 +81,8 @@ Hard gates, from day one (no observe mode):
   `workflow_dispatch` on the tag ref (the distro's nightly dispatches it, since a tag pushed with `GITHUB_TOKEN` starts no
   workflow), never a run on a branch (GitHub's API). A run still in progress is checked again next time. A tag pushed without
   the release workflow passing, or a hand-edited asset, is refused and the owner told once.
-- **Authority.** Auto-updates on is the owner's standing authority, so a release move along the same source is the AI
-  reviewer's; with it off, every release is the owner's tap. Update now is an admin's tap on the kernel's page. No agent can
+- **Authority.** Auto-updates on is the owner's standing authority, so the updater's verified move is the AI reviewer's;
+  any other release move, and every release with it off, is the owner's tap. Update now is an admin's tap on the kernel's page. No agent can
   file a release: the kernel files it, from its own check.
 
 What a compromised distro repo could do: with push access to `main` and the release workflow, an attacker can publish a

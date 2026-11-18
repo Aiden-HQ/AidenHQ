@@ -80,7 +80,7 @@ It is idempotent. The Platform Engineer runs it for you after you approve a chan
   no downgrade, the published asset's `tested` stamp from a successful `release.yml` run on the tag's commit) and, at
   02:00-05:00 in `settings.timezone` with `auto_update` on (unset = on) or after Update now (the kernel's `/updates` page),
   fast-forwards a local product mirror to the release's kernel and commits the pin on the instance repo's `release/<name>`.
-  The kernel files it as a `kernel.apply` (the AI reviewer's while auto-updates are on, the owner's otherwise) and follows
+  The kernel files it as a `kernel.apply` (the planner verifies it again; the AI reviewer's while auto-updates are on, the owner's otherwise) and follows
   it. State: `data/updates/state.json`; the board reads `~/.local/state/aidenhq/board/updates.json`. By hand:
   `node kernel/src/updates.ts check`. The installer run again also moves the pin (`node kernel/src/updates.ts pin <release>
   <distro sha>`, from `ops/setup.sh`) and refuses an older release.

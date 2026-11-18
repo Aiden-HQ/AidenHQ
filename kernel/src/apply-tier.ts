@@ -18,6 +18,7 @@ import { authorityLines, classifyModules, diffAll, forkChanges, grantOverrides, 
 import { effective } from "../../scripts/compiler/release.ts";
 import { hostFetch, officialSides, remoteCodeText, withRemote } from "../../scripts/compiler/sources.ts";
 import { REJECT, T, highest, meritOwner, type Part, type ReviewFirst } from "./tier.ts";
+import { UPDATER, type Requester } from "./records.ts";
 
 /** Authority-expanding: the reviewer and a second reviewer on another model family must both approve. */
 export const PANEL = (rule: string, reason: string): Part => ({ tier: 1, rule, reason, panel: true });
@@ -186,15 +187,16 @@ function instanceParts(s: any) {
   // Module authority: what the modules hand out moves with the pins and lists, and with an agent's grants override
   // (overrides.agents.<key>.connections, folded into its module's def, so the authority diff judges it like a module grant).
   if (["product", "modules", "marketplaces", "release", "product_fork"].some((k) => keys.includes(k)) || !eq(grantOverrides(base), grantOverrides(head))) parts.push(...moduleAuthorityParts(s, base, head));
-  // Following a release is the owner's (docs/design/release-updates.md): adding the pin, changing where releases come from, or
-  // moving it while auto-updates are off. Auto-updates on (both sides; unset is on) is the owner's standing authority to move
-  // along the same source, so that move is the reviewer's (the module parts above still raise new authority to the owner).
-  // Dropping the pin leaves the module parts above to judge.
+  // Following a release is the owner's (docs/design/release-updates.md). The one exception: the kernel's release updater moving
+  // the pin along the same source, forward, while auto-updates are on (both sides; unset is on), to exactly the instance.yaml
+  // it verified itself for this base (`s.releaseVerified`: the planner checked it, never the requester's say-so). That is the
+  // owner's standing authority, so the reviewer's. Any other add or move is the owner's after the reviewer; the module parts
+  // above still raise new authority to the owner. Dropping the pin leaves the module parts above to judge.
   const auto = (i: any) => i.settings?.auto_update !== "off";
   if (keys.includes("release") && head.release != null) {
-    parts.push(base.release != null && eq(base.release?.source, head.release?.source) && auto(base) && auto(head)
-      ? T(1, "release-pin", "moves the release this instance follows along its source while auto-updates are on: the owner's standing authority")
-      : OWNER_AFTER_REVIEW("release-pin", "adds the release this instance follows, changes its source, or moves it while auto-updates are off: the owner's authority"));
+    parts.push(s.releaseVerified === true && base.release != null && eq(base.release?.source, head.release?.source) && auto(base) && auto(head) && !s.pin?.back
+      ? T(1, "release-pin", "the release updater moves this instance to the next release it verified, while auto-updates are on: the owner's standing authority")
+      : OWNER_AFTER_REVIEW("release-pin", "adds or moves the release this instance follows: the owner's authority, unless it is the updater's verified move while auto-updates are on"));
   }
   else if (keys.includes("release") && !parts.length) parts.push(T(1, "release-pin", "the release pin is removed; what it resolved to is unchanged"));
   for (const k of keys) {
@@ -379,8 +381,20 @@ export function createApplyPlanner(h: {
   connections(): Record<string, { tools: { read: string[]; write: string[]; destructive: string[] } }>;
   /** The module apps (config/apps.modules.yaml), for restricted-app lookups. */
   moduleApps(): unknown[];
+  /**
+   * The instance.yaml the release updater would write for release `name` at distro commit `sha` on this base, after every
+   * check it makes (updates.ts verify); null when the release fails one or can't be checked.
+   */
+  verifyRelease(baseText: string, name: string, sha: string): Promise<string | null>;
 }) {
-  return async function plan({ args }: { args: unknown }): Promise<ApplyPlan> {
+  /** Whether this is the updater's own release move, to exactly the instance.yaml its verification of that release writes. */
+  async function updaterMove(requester: Requester | undefined, baseText: string | undefined, headText: string | undefined): Promise<boolean> {
+    if (requester?.kind !== UPDATER.kind || requester.name !== UPDATER.name || baseText === undefined || headText === undefined) return false;
+    const r = parse(headText)?.release;
+    if (typeof r?.name !== "string" || typeof r?.sha !== "string") return false;
+    return (await h.verifyRelease(baseText, r.name, r.sha).catch(() => null)) === headText;
+  }
+  return async function plan({ args, requester }: { args: unknown; requester?: Requester }): Promise<ApplyPlan> {
     const a = (args ?? {}) as { repo?: unknown; branch?: unknown; sha?: unknown; workspace?: unknown };
     if (typeof a.repo !== "string" || typeof a.branch !== "string" || typeof a.sha !== "string") throw new Refused("name the commit to apply: {repo, branch, sha}");
     // The configured instance repo, never the requester's spelling of it: what is read, tiered by path and landed.
@@ -401,7 +415,8 @@ export function createApplyPlanner(h: {
     const st = { ...(c.files.includes("instance.yaml") ? h.modules(baseI, headI) : {}) } as ReturnType<typeof moduleTierState> & { remote?: string };
     // The kind's floor is 1 (every apply is read by the reviewer), so the rules' Tier 0 trial exceptions (ownerStarted,
     // trialNoTap) never lower anything here.
-    const t = meritOwner(highest(applyParts({ files: c.files, base: c.texts.base, head: c.texts.head, pin: bump ? { forward: bump.forward, back: bump.back } : null, roles: h.roles(), connections: h.connections(), moduleApps: h.moduleApps(), ownerStarted: false, trialNoTap: false, ...st })));
+    const releaseVerified = !eq(parse(baseI)?.release, parse(headI)?.release) && (await updaterMove(requester, baseI, headI));
+    const t = meritOwner(highest(applyParts({ files: c.files, base: c.texts.base, head: c.texts.head, pin: bump ? { forward: bump.forward, back: bump.back } : null, roles: h.roles(), connections: h.connections(), moduleApps: h.moduleApps(), ownerStarted: false, trialNoTap: false, releaseVerified, ...st })));
     if (t.reject) throw new Refused(String(t.reason));
     const details = [c.diff, bump && `${bump.title.replaceAll("`", "")}:\n${bump.log}`, st.remote, c.trial].filter(Boolean).join("\n\n");
     if (details.length > DETAILS_MAX) throw new Refused(`the change is too large to review (${details.length} characters with the commits and code it brings): split it into smaller ones`);
@@ -430,13 +445,14 @@ export const hostProduct = (repo: string): ProductGit => ({
 });
 
 /** The planner on this host: the code host's read, the product checkout, and the compiled grants, connections and apps. */
-export function hostPlanner({ repo, instanceRepo, configDir, read, grants, connections }: {
+export function hostPlanner({ repo, instanceRepo, configDir, read, grants, connections, verifyRelease }: {
   repo: string; instanceRepo: () => string | undefined; configDir: string; read: (s: Source) => Promise<Read>;
+  verifyRelease: (baseText: string, name: string, sha: string) => Promise<string | null>;
   grants: () => Record<string, { key?: string; roles?: string[] } | undefined>;
   connections: () => Record<string, { tools: { read: string[]; write: string[]; destructive: string[] } }>;
 }): ApplyPlanner {
   return createApplyPlanner({
-    instanceRepo, read, product: hostProduct(repo), modules: (b, h) => moduleTierState(b, h, repo), connections,
+    instanceRepo, read, product: hostProduct(repo), modules: (b, h) => moduleTierState(b, h, repo), connections, verifyRelease,
     roles: () => Object.fromEntries(Object.values(grants()).flatMap((a) => (a?.key ? [[a.key, a.roles ?? []]] : []))),
     moduleApps: () => { try { return ((YAML.parse(readFileSync(join(configDir, "apps.modules.yaml"), "utf8")) ?? {}).apps ?? []).filter(Boolean); } catch { return []; } },
   });

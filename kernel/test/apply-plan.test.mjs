@@ -9,7 +9,7 @@ import { join } from "node:path";
 import { createApply } from "../src/apply.ts";
 import { createApplyPlanner } from "../src/apply-tier.ts";
 import { KERNEL_KINDS } from "../src/kinds.ts";
-import { openRecords } from "../src/records.ts";
+import { UPDATER, openRecords } from "../src/records.ts";
 import { createWrites } from "../src/writes.ts";
 
 const [OLD, NEW, COMMIT] = ["a".repeat(40), "b".repeat(40), "c".repeat(40)];
@@ -19,13 +19,13 @@ const codehost = { kind: "module", module: "codehost-github", roles: ["kernel.ta
 const NEW_AUTHORITY = { modules: { acme: { base: { name: "acme" }, head: { name: "acme", privileged: ["git-credential"] }, codeChanged: false } }, marketplaces: [] };
 
 /** One kernel: records, the planner over a fake code host and product git, the executor over a fake host that counts. */
-function kernel({ modules = { modules: {}, marketplaces: [] }, inventory = { entries: [] }, reviewer = "approve" } = {}) {
+function kernel({ modules = { modules: {}, marketplaces: [] }, inventory = { entries: [] }, reviewer = "approve", texts = { base: yaml(OLD), head: yaml(NEW) }, verifyRelease = async () => null } = {}) {
   const h = { reads: 0, lands: [], launches: [], units: {} };
   const planner = createApplyPlanner({
     instanceRepo: () => "acme/aidenhq-instance",
-    read: async (s) => (h.reads++, { files: ["instance.yaml"], texts: { base: { "instance.yaml": yaml(OLD) }, head: { "instance.yaml": yaml(NEW) } }, diff: `-product: ${OLD}\n+product: ${NEW}\n`, trial: "" }),
+    read: async (s) => (h.reads++, { files: ["instance.yaml"], texts: { base: { "instance.yaml": texts.base }, head: { "instance.yaml": texts.head } }, diff: `-product: ${OLD}\n+product: ${NEW}\n`, trial: "" }),
     product: { onMain: async () => true, isAncestor: async (a, b) => a === OLD && b === NEW, log: async () => "bbbbbbb feat: something (#1)" },
-    modules: () => modules, roles: () => ({}), connections: () => ({}), moduleApps: () => [],
+    modules: () => modules, roles: () => ({}), connections: () => ({}), moduleApps: () => [], verifyRelease,
   });
   const records = openRecords(join(mkdtempSync(join(tmpdir(), "apply-plan-")), "kernel.db"));
   const applies = createApply({
@@ -121,4 +121,30 @@ test("a change the rules refuse is refused at filing, saying why", async () => {
   const k = kernel();
   await assert.rejects(k.writes.request(codehost, { kind: "kernel.apply", args: { ...BUMP, repo: "evil/aidenhq-instance" }, task: "TASK-1" }), /lands only on the instance repo/);
   assert.equal((await k.writes.request(codehost, { kind: "kernel.apply", args: { ...BUMP, repo: "ACME/AidenHQ-Instance" }, task: "TASK-1" })).args.repo, "acme/aidenhq-instance");
+});
+
+// Release updates (docs/design/release-updates.md): only the kernel's updater, moving to exactly the pin its own verification
+// of that release writes, while auto-updates are on, is the reviewer's; any other release move is the owner's.
+test("a release move is the reviewer's only as the updater's verified move under auto-updates; any other is the owner's", async () => {
+  const rel = (product, name, sha, auto = "on") => `product: ${product}\nrelease: { name: "${name}", source: { source: github, repo: Aiden-HQ/aidenhq-distro }, sha: ${sha} }\nmodules: [core]\nsettings: { auto_update: "${auto}" }\n`;
+  const [D2, D3] = ["d2".repeat(20), "d3".repeat(20)];
+  const texts = { base: rel(OLD, "2026.11.2", D2), head: rel(NEW, "2026.11.3", D3) };
+  const asked = [];
+  // The updater's verification of 2026.11.3 at D3 on this base writes exactly the head.
+  const verified = async (base, name, sha) => (asked.push([name, sha]), base === texts.base && name === "2026.11.3" && sha === D3 ? texts.head : null);
+  const tierOf = async (k, filer) => { const r = filer === "updater" ? await k.writes.fileUpdater("kernel.apply", { args: BUMP, task: "TASK-1" }) : await k.writes.request(codehost, { kind: "kernel.apply", args: BUMP, task: "TASK-1" }); return [r.tier, r.rule]; };
+  assert.deepEqual(await tierOf(kernel({ texts, verifyRelease: verified }), "updater"), [1, "release-pin"], "the updater's verified move");
+  assert.deepEqual(asked.at(-1), ["2026.11.3", D3], "verified by the planner, at the head's release and sha");
+  // Anyone else filing the same move (an agent's job, a module): the owner's, and never verified for them.
+  asked.length = 0;
+  assert.deepEqual(await tierOf(kernel({ texts, verifyRelease: verified }), "module"), [2, "release-pin"]);
+  assert.equal(asked.length, 0);
+  // A release the updater's checks refuse (older than the base, its sha off the distro's main, no tested stamp): the owner's.
+  assert.deepEqual(await tierOf(kernel({ texts, verifyRelease: async () => null }), "updater"), [2, "release-pin"]);
+  // The verified release, but the head isn't exactly its pin (anything else edited along with it): the owner's.
+  assert.deepEqual(await tierOf(kernel({ texts: { ...texts, head: `${texts.head}# more\n` }, verifyRelease: verified }), "updater"), [2, "release-pin"]);
+  // Auto-updates off: every release move is the owner's.
+  const off = { base: rel(OLD, "2026.11.2", D2, "off"), head: rel(NEW, "2026.11.3", D3, "off") };
+  assert.deepEqual(await tierOf(kernel({ texts: off, verifyRelease: async () => off.head }), "updater"), [2, "release-pin"]);
+  assert.equal(UPDATER.kind, "kernel", "a kind no token yields (identity.ts: run, job, module)");
 });

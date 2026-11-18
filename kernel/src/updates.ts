@@ -18,6 +18,7 @@
 //   failed (a failed apply leaves the pin landed, as any apply does: apply's own health check put the host back on the last
 //   good generation). The night never files a failed release again. Each event is told to the owner once.
 //   node kernel/src/updates.ts check [<release> <by>]   (the kernel) find, verify and prepare; with a release: Update now
+//   node kernel/src/updates.ts verify <name> <distro sha> < base instance.yaml   (the apply planner) the verified pin, as JSON
 //   node kernel/src/updates.ts pin <name> <distro sha>  (ops/setup.sh, the installer run again) move the pin to that release
 import { execFile, execFileSync, spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
@@ -387,6 +388,9 @@ export function createUpdates({ db, dir, board, ownerLine, check, file, record, 
       s.available = null;
       s.failed = (s.failed ?? []).filter((n) => n !== f.release);
       event(s, `installed:${f.release}`, `AidenHQ is updated to ${f.release} (from ${f.from}).${f.notes.length ? ` What changed: ${f.notes.slice(0, 5).join("; ")}.` : ""} Every change: ${f.compare}`);
+    } else if (r?.state === "failed" && /moved on since this commit's base/.test(String(r.outcome?.text ?? ""))) {
+      // Another change reached the instance's main first: nothing was tried, so the next check prepares it again on the new main.
+      log("release to prepare again: the instance's main moved", { release: f.release });
     } else {
       const why = !r ? "its record is gone" : r.state === "failed" ? plain(String(r.outcome?.text ?? "").split("\n")[0], 400) || "the apply failed" : `the card was ${r.state}`;
       s.last = { release: f.release, outcome: "failed", why, at, by: f.by };
@@ -395,7 +399,8 @@ export function createUpdates({ db, dir, board, ownerLine, check, file, record, 
     }
     delete s.flight;
     writeState(d, s);
-    await close(f.task, s.last.outcome === "installed" ? `Installed: this server runs AidenHQ ${f.release}.` : `**Not installed:** ${s.last.why}.`).catch((e: Error) => log("update task not closed", { task: f.task, err: e.message }));
+    const done = s.last?.release === f.release && s.last.at === at;
+    await close(f.task, !done ? "Not landed: the instance's main moved first; it is prepared again on the new main." : s.last!.outcome === "installed" ? `Installed: this server runs AidenHQ ${f.release}.` : `**Not installed:** ${s.last!.why}.`).catch((e: Error) => log("update task not closed", { task: f.task, err: e.message }));
   }
 
   async function pass() {
@@ -415,9 +420,12 @@ export function createUpdates({ db, dir, board, ownerLine, check, file, record, 
         delete s.ready;
         log("release filed", { release: r.release, record: s.flight.record });
       } catch (e) {
-        // The kernel's refusal (the planner's rules) is said once and dropped; anything else is filed again next pass.
-        const refused = /refused|no_grant|unknown_kind/.test(String((e as { code?: string }).code ?? "")) || (e as { status?: number }).status === 422;
-        if (refused) { delete s.ready; event(s, `notfiled:${r.release}`, `AidenHQ ${r.release} couldn't be filed: ${plain((e as Error).message, 300)}. Nothing changed.`); }
+        // Said once either way. Refused (the planner's rules, the grant): dropped, and the night doesn't prepare it again; anything
+        // else (no agent for its task yet, the network) is filed again next pass.
+        const status = (e as { status?: number }).status;
+        const refused = status === 403 || status === 404 || status === 422;
+        event(s, `notfiled:${r.release}`, `AidenHQ ${r.release} couldn't be filed${refused ? "" : " yet"}: ${plain((e as Error).message, 300)}. Nothing changed.`);
+        if (refused) { delete s.ready; s.failed = [...new Set([...(s.failed ?? []), r.release])]; }
         log("release not filed", { release: r.release, err: (e as Error).message.slice(0, 300) });
       }
       writeState(d, s);
@@ -438,7 +446,7 @@ export function createUpdates({ db, dir, board, ownerLine, check, file, record, 
       const s = readState(dir);
       if (!s.available || s.available.name !== release) throw new Error("that release isn't the one available any more; reload the page");
       asked = { release, by };
-      void this.tick();
+      this.tick().catch((e: Error) => log("update pass failed", { err: e.message.slice(0, 300) }));
       return `Filing ${release} now. ${s.auto ? "The AI reviewer checks it" : "It installs on your approval (its card)"}; the board and this page restart while it installs, and you'll get a message when it is done.`;
     },
   };
@@ -467,10 +475,13 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
     if (cmd === "check") {
       const s = await check(d, a && b ? { release: a, by: b } : null);
       console.log(s.ready ? `release ${s.ready.release} prepared at ${s.ready.sha} (${s.ready.branch})` : s.available ? `release ${s.available.name} available (running ${s.current?.name})` : s.error ? `update check: ${s.error}` : `release: ${s.current?.name ?? "none followed"}, nothing newer`);
+    } else if (cmd === "verify" && a && b) {
+      // The planner's check of a release move (apply-tier.ts): the instance.yaml this base moves to, every check passed.
+      process.stdout.write(JSON.stringify({ text: (await verify(d, readFileSync(0, "utf8"), a, b)).text }));
     } else if (cmd === "pin" && a && b) {
       console.log(pinTo(d, a, b, git(product, ["rev-parse", "HEAD"]).trim()));
     } else {
-      console.error("usage: node kernel/src/updates.ts check [<release> <by>] | pin <release> <distro sha>");
+      console.error("usage: node kernel/src/updates.ts check [<release> <by>] | verify <release> <distro sha> < instance.yaml | pin <release> <distro sha>");
       process.exitCode = 2;
     }
   } catch (e) {
@@ -482,4 +493,15 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
 /** The kernel's check: this file's CLI as a child process, so the git and network work never blocks the kernel. */
 export function runCheck(product: string) {
   return (asked: Asked) => new Promise<void>((ok, no) => execFile(process.execPath, ["--disable-warning=ExperimentalWarning", join(product, "kernel/src/updates.ts"), "check", ...(asked ? [asked.release, asked.by] : [])], { cwd: product, timeout: 15 * 60_000, maxBuffer: 4 * 1024 * 1024 }, (e, _out, err) => (e && (e as { code?: unknown }).code !== 3 ? no(new Error(String(err || e.message).trim().slice(0, 500))) : ok())));
+}
+
+/** The planner's verification of a release move: the instance.yaml `verify` writes for this base, or null when it refuses or fails. */
+export function runVerify(product: string) {
+  return (baseText: string, name: string, sha: string) => new Promise<string | null>((ok) => {
+    const c = execFile(process.execPath, ["--disable-warning=ExperimentalWarning", join(product, "kernel/src/updates.ts"), "verify", name, sha], { cwd: product, timeout: 10 * 60_000, maxBuffer: 4 * 1024 * 1024 }, (e, out) => {
+      if (e) return ok(null);
+      try { const t = (JSON.parse(String(out)) as { text?: unknown }).text; ok(typeof t === "string" ? t : null); } catch { ok(null); }
+    });
+    c.stdin?.end(baseText);
+  });
 }

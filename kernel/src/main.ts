@@ -64,7 +64,7 @@ import { createWork } from "./work.ts";
 import { jailProblem, readEngines } from "./sandbox.ts";
 import { sandboxConfig } from "./sandbox-config.ts";
 import { createCertWatch } from "./front-door.ts";
-import { createUpdates, runCheck } from "./updates.ts";
+import { createUpdates, runCheck, runVerify } from "./updates.ts";
 import { BOX_EXEC_WRAP } from "../../services/computer/lib.mjs";
 
 const log = (msg: string, fields: Record<string, unknown> = {}) => console.log(new Date().toISOString(), msg, JSON.stringify(fields));
@@ -139,7 +139,7 @@ const applyHost = hostApply({ repo, stateDir: env("AIDENHQ_STATE_DIR", path.join
   local: () => { const bare = env("AIDENHQ_INSTANCE_REMOTE"), inst = repos().instance; return localHost() && inst && bare?.startsWith("/") ? { bare, repo: inst } : undefined; } });
 const applies = createApply({ db: records.db, log, ...applyHost });
 // Its planner (apply-tier.ts): the same code host read, the product checkout, and the compiled grants, connections and apps.
-const applyPlanner = hostPlanner({ repo, instanceRepo: () => repos().instance, configDir, read: applyHost.codehost.read, grants: () => grantsTable().agents ?? {}, connections });
+const applyPlanner = hostPlanner({ repo, instanceRepo: () => repos().instance, configDir, read: applyHost.codehost.read, grants: () => grantsTable().agents ?? {}, connections, verifyRelease: runVerify(repo) });
 const writes = createWrites({
   records, registry, connections, secret, resolver, reviews, onTask, log, replay: (r) => replay(r as never), repos, paths: pathInventory,
   autonomy: () => (["off", "tier0", "full"].includes(grantsTable().autonomy as string) ? grantsTable().autonomy : "off") as never,
@@ -182,14 +182,19 @@ const updates = createUpdates({
   ownerLine: channels.ownerLine, check: runCheck(repo), log,
   file: async (r) => {
     const task = await moduleTasks.file("kernel", { title: `Update AidenHQ to ${r.release}`, role: "platform-engineer", source: `release:${r.release}:${r.sha}`, description: `Installs AidenHQ ${r.release} (from ${r.from}), filed by the release updater as one apply. No agent works on this task; it closes when the apply ends.\n\nWhat changed: ${r.compare}` });
-    const rec = await writes.request({ kind: "module", module: "kernel", roles: ["kernel.apply"], tools: {}, credential: "" }, { kind: "kernel.apply", args: { repo: repos().instance, branch: r.branch, sha: r.sha }, task: task.id });
-    return { record: rec.id, task: task.id };
+    try {
+      return { record: (await writes.fileUpdater("kernel.apply", { args: { repo: repos().instance, branch: r.branch, sha: r.sha }, task: task.id })).id, task: task.id };
+    } catch (e) {
+      await moduleTasks.close("kernel", task.id, { status: "cancelled", body: `Not filed: ${(e as Error).message.slice(0, 500)}` }).catch(() => {});
+      throw e;
+    }
   },
   record: (id) => records.get(id),
   close: (task, body) => moduleTasks.close("kernel", task, { status: "done", body }),
 });
-every(() => updates.tick(), 5 * 60_000);
-once(() => updates.tick(), 60_000);
+const updatesTick = () => void updates.tick().catch((e: Error) => log("update pass failed", { err: e.message.slice(0, 300) }));
+every(updatesTick, 5 * 60_000);
+once(updatesTick, 60_000);
 // The kernel's review of every record waiting for the AI reviewer (review-loop.ts). The instance's decisions digest is read
 // from its checkout's origin/main (fetched first, as updates.ts reads instance.yaml), never a branch under review.
 const instanceDir = env("AIDENHQ_INSTANCE_DIR", path.join(process.env.HOME ?? "", "aidenhq-instance"));

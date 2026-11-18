@@ -13,7 +13,7 @@ import { createHash } from "node:crypto";
 import { neutral } from "./channels.ts";
 import type { Connection, Identity } from "./identity.ts";
 import type { Resolver } from "./net.ts";
-import { canonical, digestOf, type Card, type Rec, type Records, type Requester } from "./records.ts";
+import { UPDATER, canonical, digestOf, type Card, type Rec, type Records, type Requester } from "./records.ts";
 import type { Reviews } from "./reviews.ts";
 import { LOCAL_ORG, repoKey, runnerFacts, type Repos } from "./kinds.ts";
 import { writeRaise, type Inventory } from "./paths.ts";
@@ -376,6 +376,18 @@ export function createWrites({ records, registry, connections, secret, resolver,
       const k = kindOf_(b.kind);
       if (!k?.runner) throw fail(404, "unknown_kind", `no runner kind ${b.kind}`);
       return fileRunner(b.kind, k, b);
+    },
+    /**
+     * A kind the kernel plans (kernel.apply), filed by the kernel's release updater (updates.ts): planned and tiered as any
+     * requester's. Its requester kind `kernel` is set only here, never from a token, so the planner can tell the updater's own
+     * filing (a release move it verifies itself) from anyone else's.
+     */
+    async fileUpdater(kind: string, { args, task }: { args: unknown; task: string }): Promise<Rec> {
+      const k = kindOf_(kind);
+      if (!k || k.runner || !Object.hasOwn(planners, kind)) throw fail(404, "unknown_kind", `no kernel-planned kind ${kind}`);
+      const r = await file(kind, k, UPDATER, args, task);
+      if (r.state === "claimed") await execute(r, k);
+      return r;
     },
     /** kernel.raise_cap, filed by the kernel itself (the model gateway): the owner's tap alone, with no reviewer call (the cap it raises would refuse one). */
     fileNative(kind: string, b: { task: string; identifier?: string; args: unknown; card: Card; reason: string; rule: string }): Rec {
