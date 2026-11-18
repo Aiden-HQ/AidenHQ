@@ -6,7 +6,8 @@
 import type { DatabaseSync } from "node:sqlite";
 import { createGradeLoop } from "./loop.mjs";
 import { GRADE_SCHEMA, escalationFor, gather, grade, gradeNote, template } from "./grader/grade.ts";
-import { openRouterAsk, stripHidden } from "./grader/compat.ts";
+import { stripHidden } from "./grader/compat.ts";
+import { openRouterAsk } from "./aidenhq-sdk/judge.ts";
 
 type Json = any;
 /** The kernel as the grading loop needs it: its calls with this module's token (kernel.cp-read, kernel.work-read, kernel.grader, kernel.wake). */

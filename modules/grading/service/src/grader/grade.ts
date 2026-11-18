@@ -8,7 +8,8 @@ import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { GRADER_MARKER, appEvidence, applyEvidence, deploysOf, fileEvidence, namedTasks, otherTaskEvidence, predatesDeploys, presentNow, prEvidence, stamp, wordsEvidence } from "./evidence.ts";
-import { MAX_DIFF, familyModels, stripRubric } from "./compat.ts";
+import { stripRubric } from "./compat.ts";
+import { MAX_DIFF, judgeModels } from "../aidenhq-sdk/judge.ts";
 
 export { GRADER_MARKER };
 
@@ -31,7 +32,7 @@ export const GRADE_SCHEMA = {
 };
 
 /** The grader models in order: GPT Luna, then DeepSeek Flash, never the author's own family. */
-export const graderModels = (authorModel = "") => familyModels(authorModel);
+export const graderModels = (authorModel = "") => judgeModels(authorModel);
 
 /** The standard criteria for a deliverable kind: the `- ` lines of rubrics/<kind>.md. */
 export function template(kind: string, dir: string = fileURLToPath(new URL("../../rubrics", import.meta.url))) {
