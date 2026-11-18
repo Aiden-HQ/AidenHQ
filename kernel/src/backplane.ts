@@ -297,7 +297,7 @@ export function createBackplane({ whoami, asserter, proxy, cp, grantsFile, write
           }
           case "POST /v1/writes/:id/claim": {
             runner(req);
-            const r = writes.claim(id);
+            const r = await writes.claim(id);
             if (!r) throw fail(409, "conflict", `this record is ${records.shownState(record(id))}`);
             return send(res, 200, r);
           }

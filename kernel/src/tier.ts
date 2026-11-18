@@ -20,7 +20,7 @@ export type Part = { tier: number; rule?: string; reason?: string; panel?: boole
 export type Verdict = { decision: "approve" | "reject" | "escalate"; reason: string; model: string; second?: string; code?: string };
 
 /** What a cap says, for a card's reason and the reviewer's label. */
-export const capText = (c: Cap) => (c.by === "autonomy" ? "autonomy is off" : c.routine ? `a routine's run (${c.routine}) started this task and its autonomy is ${c.value}` : "the task's routine trace couldn't be read, so it counts as a routine set to off");
+export const capText = (c: Cap) => (c.by === "autonomy" ? `autonomy is ${c.value}` : c.routine ? `a routine's run (${c.routine}) started this task and its autonomy is ${c.value}` : "the task's routine trace couldn't be read, so it counts as a routine set to off");
 
 /**
  * The one tier function every write goes through (writes.ts: module kinds, conn.tool, the runner's kinds). The merit tier

@@ -88,7 +88,7 @@ export function openRecords(file: string, now = () => new Date()) {
   const event = (type: string, data: unknown) => db.prepare("INSERT INTO events (id, type, at, data) VALUES (?, ?, ?, ?)").run(`e-${randomBytes(8).toString("hex")}`, type, iso(), JSON.stringify(data));
   const get = (id: string) => row(db.prepare("SELECT * FROM records WHERE id = ?").get(id));
   /** One state move, only from `from` (and, from an open state, only within its 7 days); false when someone moved it first. */
-  const move = (id: string, from: State[], to: State, set: { review?: string; review_code?: string | null; decided_by?: string; via?: string; owner_reason?: string; tier?: number; outcome?: unknown; decided_at?: string; chain?: string | null } = {}, fresh = false): boolean => {
+  const move = (id: string, from: State[], to: State, set: { review?: string; review_code?: string | null; decided_by?: string; via?: string; owner_reason?: string; tier?: number; outcome?: unknown; decided_at?: string; chain?: string | null; cap?: string; review_first?: string } = {}, fresh = false): boolean => {
     const cols = Object.keys(set);
     const r = db.prepare(`UPDATE records SET state = ?, updated_at = ?${cols.map((c) => `, ${c} = ?`).join("")} WHERE id = ? AND state IN (${from.map(() => "?").join(",")})${fresh ? " AND created_at > ?" : ""}`)
       .run(to, iso(), ...cols.map((c) => (c === "outcome" ? JSON.stringify((set as any)[c]) : (set as any)[c] ?? null)), id, ...from, ...(fresh ? [cutoff()] : []));
@@ -195,6 +195,16 @@ export function openRecords(file: string, now = () => new Date()) {
       if (!move(id, ["owner"], decision === "approve" ? "approved" : by.startsWith("stale:") ? "stale" : "rejected", { decided_by: by, via, decided_at: iso(), ...(decision === "reject" && reason ? { owner_reason: reason } : {}) }, true)) return "it changed meanwhile";
       event("approval.decided", { record: id, decision, by, via });
       return get(id)!;
+    },
+    /**
+     * approved → owner: a reviewer's yes that a stricter cap now outranks (writes.ts revalidate). Tier 2 after the reviewer,
+     * the cap that holds it on the record, and why after the reviewer's note: the owner's tap decides it now.
+     */
+    hold(id: string, cap: Cap, why: string): boolean {
+      const r = get(id);
+      if (!r || !move(id, ["approved"], "owner", { tier: 2, review_first: "final", cap: JSON.stringify(cap), review: `${r.review ?? ""}\n\nHeld for the owner before it ran: ${why}`.trim() }, true)) return false;
+      event("approval.held", { record: id, why });
+      return true;
     },
     /** approved → claimed, once, within its 7 days. */
     claim: (id: string) => move(id, ["approved"], "claimed", {}, true),

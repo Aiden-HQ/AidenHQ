@@ -937,6 +937,7 @@ rreview="modules/ai-reviewer/service/src/review.mjs"
   && grep -qF '  if (v2.decision === "approve") return { decision: "approve"' "$rreview" \
   && grep -qF '  return meritOwner(onMerits(action, s));' "$rtiers" \
   && grep -qF 'if (merit === 1 && caps[0]) return' kernel/src/tier.ts && grep -qF 'if (merit === 0 && off) return' kernel/src/tier.ts \
+  && grep -qF '!(await revalidate(pre)) || !records.claim(id)' kernel/src/writes.ts && grep -qF '!(await revalidate(r)) || !records.claim(id)' kernel/src/writes.ts \
   && grep -qF 'if (f.ownerRequired) { tier = 2; reviewFirst = reviewFirst === "owner" ? "owner" : "final"; }' kernel/src/writes.ts \
   && grep -qF 'const veto = records.vetoed(task, kind, { digest, content: f.content });' kernel/src/writes.ts \
   && grep -qF 'let tier = Math.max(proposed, carried ? 0 : k.floor, carried ? 0 : f.floor) as Tier;' kernel/src/writes.ts \

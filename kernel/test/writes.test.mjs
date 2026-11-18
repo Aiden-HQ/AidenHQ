@@ -316,3 +316,17 @@ test("the owner's reason for a rejection reaches the requester's task, fenced an
   assert.equal(n.text.match(/<!-- aidenhq-approval -->/g).length, 1);
   assert.equal(k.records.get(r.id).owner_reason.startsWith("Wrong fix"), true);
 });
+
+test("revalidate at execution: a reviewer's yes doesn't run once autonomy is off; the record is held for the owner", async (t) => {
+  const { readFileSync, writeFileSync } = await import("node:fs");
+  const k = await kernel(t, { reviewer: async () => ({ decision: "approve", reason: "fine", model: "~acme/model-a" }), repos: { product: "acme/aidenhq", instance: "acme/aidenhq-instance", agentsOrg: "acme" } });
+  // A push outside the agents org: Tier 1, the reviewer's.
+  const r = await k.writes.fileRunner({ kind: "runner.push", task: "TASK-1", args: { only: [{ repo: "other/web", branch: "feat/x", sha: "a".repeat(40) }] }, plan: { tier: 1, card: { sentence: "x" } } });
+  assert.equal((await k.v1("POST", `/v1/writes/${r.id}/review`, { input: { tier: 1, model: "~acme/model-a" }, request: { card: {} } }, "the-runners-key")).json.record.state, "approved");
+  writeFileSync(k.grantsFile, JSON.stringify({ ...JSON.parse(readFileSync(k.grantsFile, "utf8")), autonomy: "off" }));
+  await new Promise((res) => setTimeout(res, 50));
+  assert.equal((await k.v1("POST", `/v1/writes/${r.id}/claim`, {}, "the-runners-key")).status, 409);
+  const held = k.records.get(r.id);
+  assert.deepEqual([held.state, held.tier, held.cap], ["owner", 2, { by: "autonomy", value: "off" }]);
+  assert.match(held.review, /Held for the owner before it ran: since the AI reviewer approved it, autonomy is off/);
+});

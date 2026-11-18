@@ -69,6 +69,19 @@ Rules: a lifted Tier 0 write gets the cap's rule on every path (`autonomy-off` o
 write keeps its own rule (none on conn.tool, the kind's raise on a module kind, the classifier's on the runner); the cap is
 in its `cap` field.
 
+## Revalidate at execution
+
+A record the AI reviewer approved runs only while that yes still stands: right before it runs (`run()` for module kinds and
+conn.tool, `claim()` for the runner's kinds), the kernel reads the autonomy and traces the routine cap again
+(`writes.ts` `revalidate`; an unreadable trace is `off`). The owner's own yes is never re-held.
+
+| Scenario | Kernel module kind | Kernel conn.tool | Runner kind | Same? |
+|---|---|---|---|---|
+| Reviewer-approved, then autonomy or the routine's cap tightened before it runs | held for the owner | held for the owner | held for the owner | same |
+
+Held means: back to the owner's queue as Tier 2 after the reviewer, with the cap on the record and why after the reviewer's
+note. `kernel/test/writes.test.mjs` ("revalidate at execution") asserts it on a runner kind; the other paths share the code.
+
 ## Owner decisions (2026-11-18)
 
 1. Instance autonomy `off` raises Tier 0 writes to the owner (Tier 2, owner-only) on every path.

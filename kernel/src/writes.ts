@@ -16,7 +16,7 @@ import type { Resolver } from "./net.ts";
 import { canonical, digestOf, type Card, type Rec, type Records, type Requester } from "./records.ts";
 import type { Reviews } from "./reviews.ts";
 import { LOCAL_ORG, repoKey, runnerFacts, type Repos } from "./kinds.ts";
-import { REVIEW_TRIES, afterReview, capText, codeVerdict, computeTier, failedVerdict, heldInput, shadowed, type Autonomy, type Raise, type ReviewFirst, type ReviewInput, type RoutineCap, type Tier, type Verdict } from "./tier.ts";
+import { REVIEW_TRIES, afterReview, capText, codeVerdict, computeTier, failedVerdict, heldInput, shadowed, type Autonomy, type Raise, type ReviewFirst, type ReviewInput, type Cap, type RoutineCap, type Tier, type Verdict } from "./tier.ts";
 
 export type Schema = { type?: string; properties?: { [k: string]: Schema }; required?: string[]; additionalProperties?: boolean; enum?: unknown[]; pattern?: string; minLength?: number; maxLength?: number; items?: Schema; minItems?: number; maxItems?: number; minimum?: number; maximum?: number; exclusiveMinimum?: number };
 /**
@@ -136,6 +136,20 @@ export function createWrites({ records, registry, connections, secret, resolver,
 
   /** The cap of a routine whose run started the task's chain (tier.ts taskRoutineCap: an unreadable trace is off). */
   const routineOf = async (task: string) => (task && onTask.routineCap ? onTask.routineCap(task) : undefined);
+  /** The cap now that outranks the AI reviewer's yes on a task: the instance's autonomy below full, or a routine's below full. */
+  const capOverReviewer = (routine: RoutineCap | undefined): Cap | undefined =>
+    routine && routine.cap !== "full" ? { by: "routine", value: routine.cap, ...(routine.routine ? { routine: routine.routine } : {}) } : autonomy() !== "full" ? { by: "autonomy", value: autonomy() } : undefined;
+  /**
+   * Revalidate at execution: a record the AI reviewer approved runs only while its yes still stands, under the autonomy and
+   * the routine cap now (traced again; an unreadable trace is off). Tightened since: held for the owner instead (false).
+   */
+  async function revalidate(r: Rec): Promise<boolean> {
+    if (!r.decided_by?.startsWith("reviewer:")) return true;
+    const cap = capOverReviewer(await routineOf(r.task));
+    if (!cap) return true;
+    records.hold(r.id, cap, `since the AI reviewer approved it, ${capText(cap)}, so the owner decides`);
+    return false;
+  }
 
   /** Plan, tier, card and file. Tier 0 comes back claimed (the caller executes it); `satisfied` comes back done. */
   async function file(kind: string, k: Kind, requester: Requester, args: unknown, task: string, evidence?: unknown): Promise<Rec> {
@@ -186,7 +200,7 @@ export function createWrites({ records, registry, connections, secret, resolver,
     // A replay of approved commits onto a new base (the runner's rebuild) is carried by those approvals, which the kernel
     // checks: on this task, the same kind, merge flag, target and content (patch keys), never stale, and the reviewer's
     // yes only while autonomy is full and no routine caps the task.
-    const reviewerCarries = autonomy() === "full" && (!routine || routine.cap === "full");
+    const reviewerCarries = !capOverReviewer(routine);
     const carries = Array.isArray(plan.carries) ? plan.carries.map((id) => records.get(String(id))) : [];
     const sameMerge = (c: Rec) => Boolean((c.args as { merge?: unknown })?.merge) === Boolean((args as { merge?: unknown })?.merge);
     const carried = carries.length > 0 && carries.every((c) => Boolean(c && c.task === task && c.kind === kind && ["runner.push", "runner.pr"].includes(kind) && sameMerge(c) && ["approved", "claimed", "done"].includes(c.state)
@@ -239,7 +253,7 @@ export function createWrites({ records, registry, connections, secret, resolver,
   async function run(id: string): Promise<void> {
     const pre = records.get(id);
     if (!pre || kindOf_(pre.kind)?.runner) return;
-    if (!records.claim(id)) return;
+    if (pre.state !== "approved" || !(await revalidate(pre)) || !records.claim(id)) return;
     const r = records.get(id)!;
     try {
       if (r.task && !(await onTask.open(r.task))) return void records.finish(id, false, "Not run: the task is closed, so a leftover request runs nothing.");
@@ -364,9 +378,9 @@ export function createWrites({ records, registry, connections, secret, resolver,
     },
     run,
     /** approved → claimed by the runner, for its own kinds. */
-    claim(id: string): Rec | undefined {
+    async claim(id: string): Promise<Rec | undefined> {
       const r = records.get(id);
-      if (!r || !kindOf_(r.kind)?.runner || !records.claim(id)) return undefined;
+      if (!r || !kindOf_(r.kind)?.runner || r.state !== "approved" || !(await revalidate(r)) || !records.claim(id)) return undefined;
       return records.get(id);
     },
     isRunnerKind: (kind: string) => Boolean(kindOf_(kind)?.runner),
