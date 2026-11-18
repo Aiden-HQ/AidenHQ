@@ -86,19 +86,22 @@ describe("flow-asker: an agent's task whose asker is gone", { concurrency: 1 }, 
     t.runner.kill("SIGTERM");
     await exited;
     t.startRunner();
-    /** The newest card, once the kernel has had the reviewer reject it (dated after the next comment: nobody answered it). */
-    const rejected = async (n) => {
+    /**
+     * The newest card, once the kernel has had the reviewer reject it: dated after the next comment (nobody answered it), or
+     * left as it is (`answered`: the next turn's owner comment answers it, so the same patch may be reviewed again).
+     */
+    const rejected = async (n, answered = false) => {
       await t.waitFor(`card ${n}`, () => t.paperclip.approvals.size === n);
       const card = [...t.paperclip.approvals.values()].at(-1);
       await t.waitFor("the reviewer's verdict", () => t.output.includes(`"approval":"${card.id}","issue":"PEN-2","action":"pr","decision":"reject"`));
-      t.paperclip.kdb.db.prepare("UPDATE records SET decided_at = ? WHERE id = ?").run(new Date(Date.now() + 3600_000).toISOString(), card.id);
+      if (!answered) t.paperclip.kdb.db.prepare("UPDATE records SET decided_at = ? WHERE id = ?").run(new Date(Date.now() + 3600_000).toISOString(), card.id);
     };
     t.step("second\naidenhq pr acme/app feat/second");
     await t.turn("Add the second change to acme/app and open its PR.");
-    await rejected(1);
-    // A changed second.txt (an unchanged patch is refused before review: refile only after a fix): rejected the same way,
-    // which stops the task.
-    t.step("write feat/second second.txt second, changed\naidenhq pr acme/app feat/second");
+    // Answered by the next turn's owner comment: an unchanged patch is otherwise refused before review (refile only after a fix).
+    await rejected(1, true);
+    // The same lines under a new commit: rejected the same way, which stops the task.
+    t.step("reword feat/second\naidenhq pr acme/app feat/second");
     await t.turn("Publish it again.");
     await rejected(2);
     await t.waitFor("the stop told", () => lines().length === 2);
