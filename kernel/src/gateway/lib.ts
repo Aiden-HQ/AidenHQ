@@ -10,7 +10,6 @@
 //   GET /v1/spend/summary         (Bearer gateway_board_key) today (UTC) against every cap in force, as the caps count it:
 //                                 {day, install: {spent, cap}, agents: [{agent_id, spent, cap}]}: every granted agent and any other
 //                                 that spent today (the board's header and Costs tab)
-//   POST /c/<connection>/mcp      (Bearer: a job's own `ahqj_` token) the job's reads of a connection, its jobcaps only (../proxy.ts)
 //   GET /health
 // CI listener (gateway.ts, the CI runners' bridge address; only these routes, only `ahqci_` credentials, never on the others):
 //   POST /ci/token                (Bearer: a GitHub Actions OIDC token, ci.ts) -> {token, expires_at, review}: an opaque CI
@@ -241,10 +240,10 @@ const RETRY_DELAYS_MS = [1000, 3000, 9000, 20000];
  * The gateway: handle(req, res). `secret(name)` reads a secret file (fresh each time, so a rotation needs no restart);
  * `upstream` is OpenRouter's API base; Paperclip and the board's internal API as URLs.
  */
-export function createGateway({ dbFile, legacyDbFile, grantsFile, settingsFile, tools, asCaller, secret, upstream = "https://openrouter.ai/api/v1", paperclipUrl, fileRaiseCap, githubJwksUrl, jobLive = () => false, log = () => {}, now = Date.now, retryDelaysMs = RETRY_DELAYS_MS }: {
+export function createGateway({ dbFile, legacyDbFile, grantsFile, settingsFile, asCaller, secret, upstream = "https://openrouter.ai/api/v1", paperclipUrl, fileRaiseCap, githubJwksUrl, jobLive = () => false, log = () => {}, now = Date.now, retryDelaysMs = RETRY_DELAYS_MS }: {
   /** Whether a kernel job (a job token's id) is still admitted or running: an ended job's token buys nothing. */
   jobLive?: (id: string) => boolean;
-  dbFile: string; legacyDbFile?: string; grantsFile: string; settingsFile: string; tools?: (req: IncomingMessage, res: ServerResponse, connection: string, o: { jobs: boolean }) => Promise<void>;
+  dbFile: string; legacyDbFile?: string; grantsFile: string; settingsFile: string;
   /** A module's model call for the agent whose tool call it serves (module token + caller assertion): that caller's own credential. */
   asCaller?: (req: IncomingMessage) => Promise<string | undefined>; secret: (name: string) => string; upstream?: string; paperclipUrl?: string;
   githubJwksUrl?: string; log?: Log; now?: () => number;
@@ -396,12 +395,12 @@ export function createGateway({ dbFile, legacyDbFile, grantsFile, settingsFile, 
         return as(row, routeKind, "agent", true);
       }
       if (p.k === "check") return { ...as(null, "check", "Check jobs", true), check: { subject: String(p.c ?? "").slice(0, 80) } } as Caller;
+      // An agent's model calls come only with a kernel job's token or a lane's: an agent-kind token under the job secret is no one's.
+      if (!SYSTEM[p.k]) throw fail(401, "unauthorized", "this run's model credential is invalid or expired");
       const row = (q.run.get(runKey) as RunRow | undefined) ?? settle(runKey, { agentId: p.a, issueId: p.i });
-      const system = p.k !== "agent";
-      const component = String(p.c ?? (system ? SYSTEM[p.k] : "Engineer jobs")).slice(0, 80);
-      // A grader token that names an agent (the grading module's, minted per held task) is capped as that agent's; the runner's own
-      // grader/reviewer/source tokens name none and stay system calls.
-      return as(row, system ? p.k : routeKind, component, !system || (p.k === "grader" && Boolean(p.a)));
+      // A grader token that names an agent (the grading module's, minted per held task) is capped as that agent's; the reviewer's
+      // and the others name none and stay system calls.
+      return as(row, p.k, String(p.c ?? SYSTEM[p.k]).slice(0, 80), p.k === "grader" && Boolean(p.a));
     }
     throw fail(401, "unauthorized", "not a credential this gateway knows");
   }
@@ -697,8 +696,6 @@ export function createGateway({ dbFile, legacyDbFile, grantsFile, settingsFile, 
         if (req.method === "POST" && m) return await model(req, res, "agent", m[1]!, true);
         return send(res, 404, { error: { code: 404, type: "not_found", message: "no such route" } });
       }
-      const c = /^\/c\/([a-z0-9_]+)\/mcp$/.exec(path);
-      if (c) { if (!tools) throw fail(404, "not_found", "no such route"); return await tools(req, res, c[1]!, { jobs: true }); }
       const m = ROUTE.exec(path);
       if (req.method === "POST" && m) return await model(req, res, m[1] ?? "agent", m[2]!);
       if (req.method === "POST" && path === "/usage") {

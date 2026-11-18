@@ -59,20 +59,14 @@ export function mapMessages(body: string, sse: boolean, fn: (m: Record<string, a
 }
 
 /**
- * The tools a caller may use on a connection, and the tools it lists. An agent: its granted tools the manifest lists. A job:
- * its jobcaps' tools (declared in the manifests, compile-checked), never one the connection tags write or destructive.
- * A tool the connection tags `named` is a read the `read` shorthand never reaches: it is listed only to a caller whose grant
- * (a jobcap's tool list included) names it, so to everyone else the manifest does not hold it.
+ * The tools a caller may use on a connection, and the tools it lists: its granted tools the manifest lists. A tool the
+ * connection tags `named` is a read the `read` shorthand never reaches: it is listed only to a caller whose grant (a jobcap's
+ * tool list included) names it, so to everyone else the manifest does not hold it.
  */
 export function toolsFor(who: Identity, connection: string, conn: Connection | undefined): { listed: Set<string>; allowed: Set<string> } {
   const granted = new Set(who.tools[connection] ?? []);
   const named = new Set(conn?.tools.named ?? []);
   const tagged = conn ? [...conn.tools.read, ...conn.tools.write, ...conn.tools.destructive].filter((t) => !named.has(t) || granted.has(t)) : [];
-  if (who.kind === "job") {
-    const writes = new Set(conn ? [...conn.tools.write, ...conn.tools.destructive] : []);
-    const reads = new Set([...granted].filter((t) => !writes.has(t)));
-    return { listed: new Set([...tagged, ...reads]), allowed: reads };
-  }
   const listed = new Set(tagged);
   return { listed, allowed: new Set([...granted].filter((t) => listed.has(t))) };
 }
@@ -138,10 +132,10 @@ export function createProxy({ whoami, connections, asserter, resolver, secret, w
     return callAs(r.requester, a.connection, a.tool, a.arguments, r.task);
   };
 
-  const proxy = async function proxy(req: IncomingMessage, res: ServerResponse, connection: string, { jobs = false }: { jobs?: boolean } = {}): Promise<void> {
+  const proxy = async function proxy(req: IncomingMessage, res: ServerResponse, connection: string): Promise<void> {
     const t0 = Date.now();
-    const conn = Object.hasOwn(connections(), connection) ? connections()[connection] : undefined;
-    if (!conn && !jobs) throw fail(404, "not_found", `no connection ${connection}`);
+    const conn = Object.hasOwn(connections(), connection) ? connections()[connection]! : undefined;
+    if (!conn) throw fail(404, "not_found", `no connection ${connection}`);
     let who: Identity;
     const callerToken = String(req.headers.authorization ?? "").replace(/^Bearer\s+/i, "").trim();
     try {
@@ -150,14 +144,8 @@ export function createProxy({ whoami, connections, asserter, resolver, secret, w
       log("proxy", { connection, outcome: (e as { code?: string }).code ?? "denied_unknown_caller", ms: Date.now() - t0 });
       throw fail(e instanceof NoGrants ? 403 : 401, "unauthorized", (e as Error).message);
     }
-    // The job listener (loopback 8201, the jail's one port) takes job tokens only; the backplane takes the others.
-    if ((who.kind === "job") !== jobs) throw fail(401, "unauthorized", jobs ? "a job's own token is required here" : "a job's token works only on its own listener");
-    const cap = jobs ? who.caps?.[connection]?.[0] : undefined;
-    if (jobs && !cap) throw fail(401, "unauthorized", `this job has no jobcap on ${connection}`);
-    // Where the call goes: an agent's to the module's endpoint with its service key; a job's to its jobcap's read endpoint
-    // with the read secret (1a), never the service key.
-    const target = cap ? { url: cap.url, secret: cap.bearer_secret, timeout: Math.max(...who.caps![connection]!.map((c) => c.tool_timeout_s ?? 0), 120) } : { url: conn!.url, secret: conn!.auth_secret, timeout: conn!.tool_timeout_s ?? 300 };
-    const untrusted = conn?.returns !== "trusted";
+    const timeout = conn.tool_timeout_s ?? 300;
+    const untrusted = conn.returns !== "trusted";
     const source = (t?: string) => `${connection}.${t ?? ""}`;
     if (req.method !== "POST" && req.method !== "DELETE") { res.writeHead(405, { allow: "POST, DELETE" }).end(); return; }
     const raw = await readAll(req, MAX_BODY);
@@ -187,7 +175,7 @@ export function createProxy({ whoami, connections, asserter, resolver, secret, w
         if (!allowed.has(tool)) return refuse(-32602, "no-grant");
         // Step 4: every write is a record. A tool mapped to a kind goes to its executor's lifecycle (Tier 0 answered inline
         // with the outcome); any other write or destructive tool is conn.tool, forwarded below at Tier 0.
-        const routed = writes && !jobs ? writes.kindOf(connection, tool) : undefined;
+        const routed = writes ? writes.kindOf(connection, tool) : undefined;
         if (routed) {
           const reply = (text: string, isError = false) => {
             outcome(isError ? "write-refused" : "ok");
@@ -198,7 +186,7 @@ export function createProxy({ whoami, connections, asserter, resolver, secret, w
           try {
             if (routed !== CONN_TOOL) {
               let r = await writes!.request(who, { kind: routed, args: params?.arguments ?? {} });
-              if (r.state === "claimed") r = await writes!.wait(r.id, (conn!.tool_timeout_s ?? 300) * 1000);
+              if (r.state === "claimed") r = await writes!.wait(r.id, timeout * 1000);
               if (r.tier === 0) return reply(r.outcome ? own(r.outcome.text) : `${pendingText(r)}\n(still running past the tool timeout)`, r.outcome ? !r.outcome.ok : false);
               return reply(pendingText(r));
             }
@@ -219,19 +207,19 @@ export function createProxy({ whoami, connections, asserter, resolver, secret, w
     const done = (ok: boolean, text: string) => { if (rec) writes!.outcome(rec.id, ok, text.slice(0, 4000)); rec = undefined; };
     const headers: Record<string, string> = { "content-length": String(body.length) };
     for (const h of PASS) { const v = req.headers[h]; if (typeof v === "string") headers[h] = v; }
-    const key = secret(target.secret);
-    if (!key) { done(false, "the service key is missing"); throw fail(503, "no_service_key", `${connection}'s ${cap ? "read" : "service"} key is missing`); }
+    const key = secret(conn.auth_secret);
+    if (!key) { done(false, "the service key is missing"); throw fail(503, "no_service_key", `${connection}'s service key is missing`); }
     headers.authorization = `Bearer ${key}`;
     let jti: string | undefined;
-    if (tool && !cap) {
-      const signed = asserter.signCaller({ agent: who.agent ?? "", key: who.key ?? "", name: who.name ?? "", roles: who.roles, ...(who.task ? { task: who.task } : {}), ...(who.run ? { run: who.run } : {}), tool: `${connection}.${tool}`, aud: conn!.module, kind: who.kind });
+    if (tool) {
+      const signed = asserter.signCaller({ agent: who.agent ?? "", key: who.key ?? "", name: who.name ?? "", roles: who.roles, ...(who.task ? { task: who.task } : {}), ...(who.run ? { run: who.run } : {}), tool: `${connection}.${tool}`, aud: conn.module, kind: who.kind });
       jti = signed.jti;
       headers["x-aidenhq-caller"] = signed.jwt;
-      asserter.begin(jti, { credential: who.credential, ...(who.kind === "run" ? { bearer: callerToken } : {}), aud: conn!.module, kind: who.kind, ...(who.run ? { run: who.run } : {}) }, target.timeout + 30);
+      asserter.begin(jti, { credential: who.credential, ...(who.kind === "run" ? { bearer: callerToken } : {}), aud: conn.module, kind: who.kind, ...(who.run ? { run: who.run } : {}) }, timeout + 30);
     }
-    const to = await resolver.resolve(target.url).catch((e: Error) => { done(false, e.message); throw fail(502, "bad_upstream", e.message); });
-    headers.host = new URL(target.url).host;
-    const timeoutMs = (target.timeout + 30) * 1000;
+    const to = await resolver.resolve(conn.url).catch((e: Error) => { done(false, e.message); throw fail(502, "bad_upstream", e.message); });
+    headers.host = new URL(conn.url).host;
+    const timeoutMs = (timeout + 30) * 1000;
     try {
       forwarded = Date.now();
       await new Promise<void>((resolve, reject) => {
@@ -280,7 +268,7 @@ export function createProxy({ whoami, connections, asserter, resolver, secret, w
           } catch (e) { reject(e); }
         });
         out.on("timeout", () => out.destroy(fail(504, "timeout", `${connection} didn't answer in time`)));
-        out.on("error", (e) => { resolver.forget(target.url); reject((e as { status?: number }).status ? e : fail(502, "bad_upstream", `${connection} is unreachable (${e.message})`)); });
+        out.on("error", (e) => { resolver.forget(conn.url); reject((e as { status?: number }).status ? e : fail(502, "bad_upstream", `${connection} is unreachable (${e.message})`)); });
         out.end(body);
       });
       outcome("ok");

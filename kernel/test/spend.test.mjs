@@ -25,12 +25,12 @@ async function rig(t, { dayUsd = 30, answer, dir = mkdtempSync(join(tmpdir(), "s
   const upstream = await serve((req, res) => {
     let b = ""; req.on("data", (d) => (b += d)); req.on("end", () => { const body = JSON.parse(b); seen.push(body); answer(body, res, seen.length); });
   });
-  const open = () => createGateway({ dbFile: join(dir, "kernel.db"), legacyDbFile: legacy, grantsFile: join(dir, "grants.json"), settingsFile: join(dir, "gateway.json"), secret: () => "js", upstream: upstream.url, now: () => Date.parse("2026-11-16T10:00:00Z") });
+  const open = () => createGateway({ dbFile: join(dir, "kernel.db"), legacyDbFile: legacy, grantsFile: join(dir, "grants.json"), settingsFile: join(dir, "gateway.json"), secret: () => "js", upstream: upstream.url, jobLive: () => true, now: () => Date.parse("2026-11-16T10:00:00Z") });
   const gw = open();
   const front = await serve((req, res) => gw.handle(req, res));
   t.after(() => { upstream.s.close(); front.s.close(); try { gw.close(); } catch {} });
   const call = async (body, issueId = "WOR-1") => {
-    const res = await fetch(`${front.url}/api/v1/chat/completions`, { method: "POST", headers: { authorization: `Bearer ${mintToken("js", { agentId: "ag", issueId }, Date.parse("2026-11-16T10:00:00Z"))}` }, body: JSON.stringify(body) });
+    const res = await fetch(`${front.url}/api/v1/chat/completions`, { method: "POST", headers: { authorization: `Bearer ${mintToken("js", { kind: "job", job: `j-${issueId}`, agentId: "ag", issueId }, Date.parse("2026-11-16T10:00:00Z"))}` }, body: JSON.stringify(body) });
     return { status: res.status, json: await res.json().catch(() => null) };
   };
   const rows = () => gw.db.prepare("SELECT key, status, cost_usd, input, cached, output FROM calls ORDER BY rowid").all();
@@ -85,10 +85,10 @@ test("a definite upstream refusal before any output is released at $0; a cut str
   const dir = mkdtempSync(join(tmpdir(), "spend-refused-"));
   writeFileSync(join(dir, "grants.json"), JSON.stringify({ agents: { ag: { key: "eng" } } }));
   writeFileSync(join(dir, "gateway.json"), JSON.stringify(MODELS));
-  const gw = createGateway({ dbFile: join(dir, "kernel.db"), grantsFile: join(dir, "grants.json"), settingsFile: join(dir, "gateway.json"), secret: () => "js", upstream: await closedPort() });
+  const gw = createGateway({ dbFile: join(dir, "kernel.db"), grantsFile: join(dir, "grants.json"), settingsFile: join(dir, "gateway.json"), secret: () => "js", upstream: await closedPort(), jobLive: () => true });
   const front = await serve((req, res) => gw.handle(req, res));
   t.after(() => { front.s.close(); gw.close(); });
-  const res = await fetch(`${front.url}/api/v1/chat/completions`, { method: "POST", headers: { authorization: `Bearer ${mintToken("js", { agentId: "ag", issueId: "WOR-1" }, Date.now())}` }, body: JSON.stringify({ model: "flat", messages: [] }) });
+  const res = await fetch(`${front.url}/api/v1/chat/completions`, { method: "POST", headers: { authorization: `Bearer ${mintToken("js", { kind: "job", job: "j-WOR-1", agentId: "ag", issueId: "WOR-1" }, Date.now())}` }, body: JSON.stringify({ model: "flat", messages: [] }) });
   assert.equal(res.status, 502);
   assert.deepEqual(gw.db.prepare("SELECT status, cost_usd FROM calls").all().map((x) => [x.status, x.cost_usd]), [["upstream_error", 0]]);
 });
@@ -154,7 +154,7 @@ test("restart: a live kernel's reservations are left to it; a dead one's close a
   add.run("gw:cut", ownerOf(dead), "gen-cut"); // cut off mid-answer
   add.run("gw:early", ownerOf(dead), null); // cut off before the answer began
   db.close();
-  const gw = createGateway({ dbFile: join(dir, "kernel.db"), grantsFile: join(dir, "grants.json"), settingsFile: join(dir, "gateway.json"), secret: () => "js", upstream: upstream.url, now: () => Date.parse("2026-11-16T10:00:00Z") });
+  const gw = createGateway({ dbFile: join(dir, "kernel.db"), grantsFile: join(dir, "grants.json"), settingsFile: join(dir, "gateway.json"), secret: () => "js", upstream: upstream.url, jobLive: () => true, now: () => Date.parse("2026-11-16T10:00:00Z") });
   t.after(() => gw.close());
   const rows = () => Object.fromEntries(gw.db.prepare("SELECT key, status, cost_usd, input, cached, output FROM calls").all().map((r) => [r.key, [r.status, r.cost_usd, r.input, r.cached, r.output]]));
   assert.deepEqual(rows(), { "gw:live": ["reserved", 0.25, 0, 0, 0], "gw:cut": ["unsettled", 0.25, 0, 0, 0], "gw:early": ["unsettled", 0.25, 0, 0, 0] });

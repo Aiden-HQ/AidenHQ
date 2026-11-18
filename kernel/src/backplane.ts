@@ -2,7 +2,7 @@
 // with, the agent directory modules read, and the control plane as the calling agent.
 //   GET  /healthz              ok
 //   GET  /v1/jwks              the caller-assertion keys
-//   GET  /v1/whoami            (run, job or module token) who the bearer is and its granted tools
+//   GET  /v1/whoami            (a kernel job's or a module's token) who the bearer is and its granted tools
 //   GET  /v1/agents            (module token) every agent's key, roles, profile and the fields setup records for it, never its tools
 //   POST /c/<connection>/mcp   (run or module token) the tool proxy (proxy.ts)
 //   ANY  /v1/cp/agent/<path>   (module token + caller assertion) cp.ts; a status change to done passes the finish gate
@@ -34,9 +34,9 @@
 //                              {status: done|cancelled, body}: one it filed
 //   POST /v1/reviews           (the runner's reviewer key) a check before filing: one review by the bound reviewer module → its verdict
 //   POST /v1/reviews/:review   (that review's token, once) the reviewer module's verdict
-//   POST /v1/jobs, GET/DELETE /v1/jobs/:job, POST /v1/jobs/:job/input  (a module with role kernel.jobs) start a job in the
-//                              sandbox, its status (?after=<version>&wait=<ms> waits for a change), stop it, a comment into it (jobs.ts; `wake`: the claimed comment wake it delivers);
-//                              POST /v1/jobs {wake, prompt, session?}: a job on a wake it claimed, admitted (admission.ts);
+//   POST /v1/jobs {wake, prompt, session?}, GET/DELETE /v1/jobs/:job, POST /v1/jobs/:job/input  (a module with role kernel.jobs)
+//                              a job on a wake it claimed, admitted (admission.ts: the only way a job starts), its status
+//                              (?after=<version>&wait=<ms> waits for a change), stop it, a comment into it (jobs.ts; `wake`: the claimed comment wake it delivers);
 //                              GET /v1/jobs?open=1 | ?task=<id>: its own jobs not yet acknowledged, or a task's; POST /v1/jobs/:job/ack: an ended job is dealt with
 //   POST /v1/codehost/:op      (a module's own token) token | snapshot | clone on the GitHub code host, under the module's
 //                              codehost grant (codehost.ts)
@@ -436,9 +436,11 @@ export function createBackplane({ whoami, asserter, proxy, cp, boardCp, grantsFi
         try {
           switch (`${hit.method} ${hit.path}`) {
             case "POST /v1/jobs": {
-              // {wake, prompt, session?}: admitted by the kernel; the runner's box-carrying request stays until C1b.
+              // {wake, prompt, session?}: every job is admitted by the kernel, on a wake its module claimed.
+              if (!admission) throw fail(503, "unavailable", "admission is off");
               const b = await json(req, 4_000_000);
-              return send(res, 200, admission && typeof (b as { wake?: unknown })?.wake === "string" ? await admission.admit(w.module!, b as never) : await jobs.start(w.module!, b as never));
+              if (typeof (b as { wake?: unknown })?.wake !== "string") throw fail(400, "bad_request", "send {wake, prompt, session?}");
+              return send(res, 200, await admission.admit(w.module!, b as never));
             }
             case "GET /v1/jobs": {
               const p = new URLSearchParams(q ?? "");

@@ -11,9 +11,8 @@ project="${COMPOSE_PROJECT_NAME:-aidenhq}"
 fails=0
 pass() { printf '  ok    %s\n' "$1"; }
 fail() { printf '  FAIL  %s\n' "$1"; fails=$((fails + 1)); }
-# A service's /mcp/read for the runner's jobs: its read token opens only /mcp/read, which lists
-# no write tools, and the service's key (the kernel's, for agents' calls) doesn't open it. Only the kernel holds either: jobs
-# reach /mcp/read through its proxy (POST /c/<connection>/mcp on 8201) with their own job token (checked below).
+# A service's /mcp/read: its read token opens only /mcp/read, which lists no write tools, and the service's key (the kernel's,
+# for agents' calls) doesn't open it. Nothing in the kernel calls /mcp/read any more (jobs' reads go through the proxy as the job).
 # Module services publish no ports: the host reaches them at their container address (any network's works from the host).
 cip() { docker inspect "$1" --format '{{range .NetworkSettings.Networks}}{{.IPAddress}} {{end}}' | awk '{print $1}'; }
 read_split() { # service container-address:port
@@ -494,30 +493,34 @@ if ! grep -rqE 'bwrap|hiding\(' kernel/src && [ ! -e /opt/aidenhq/bwrap ] && [ !
 else
   fail "kernel: host-side repo code isolation is back or left over (remove /opt/aidenhq/bwrap and the aidenhq-bwrap AppArmor profile; no bwrap in kernel/src)"
 fi
-# Live, the kernel's proxy for jobs (kernel/src/proxy.ts, on 8201): a job token with primer-read is refused a write; the read
-# token and the service key themselves (not a job token) are refused. Only where config/jobcaps.json has primer-read.
-if grep -q '"primer-read"' config/jobcaps.json 2>/dev/null; then
-  if jc_probe="$(node --input-type=module -e '
-    import { readFileSync } from "node:fs";
+# Live, jobs' tools go only through the kernel's tool proxy (kernel/src/proxy.ts, 10.231.0.1:3130) as a kernel job: the model
+# gateway (8201) has no tool route; a job token for no live job, an agent-kind token (the old runner jobs', its jobcaps and write
+# kinds no one's authority) and a connection's read token are no callers. Never a token for a live job: it carries real authority.
+if jc_probe="$(node --input-type=module -e '
+    import { createHmac } from "node:crypto";
+    import { readdirSync, readFileSync } from "node:fs";
     import { mintToken } from "./kernel/src/gateway/token.ts";
     const dir = process.env.AIDENHQ_SECRETS_DIR;
     const read = (n) => readFileSync(`${dir}/${n}`, "utf8").trim();
-    const job = mintToken(read("gateway_job_secret"), { kind: "agent", component: "verify-security", ttlMs: 120_000, jobcaps: ["primer-read"] });
-    const call = (token, body) => fetch("http://127.0.0.1:8201/c/primer/mcp", { method: "POST", headers: { authorization: `Bearer ${token}`, "content-type": "application/json", accept: "application/json, text/event-stream" }, body: JSON.stringify({ jsonrpc: "2.0", id: 1, ...body }), signal: AbortSignal.timeout(30_000) });
+    const secret = read("gateway_job_secret");
+    const conn = Object.keys(JSON.parse(readFileSync("config/kernel/connections.json", "utf8")))[0];
+    const call = (base, token) => fetch(`${base}/c/${conn ?? "none"}/mcp`, { method: "POST", headers: { authorization: `Bearer ${token}`, "content-type": "application/json", accept: "application/json, text/event-stream" }, body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list" }), signal: AbortSignal.timeout(30_000) });
+    const dead = mintToken(secret, { kind: "job", job: "j-0000000000000000", agentId: "verify-security", issueId: "verify-security", ttlMs: 120_000 });
+    const body = Buffer.from(JSON.stringify({ k: "agent", a: "verify-security", i: null, c: "verify-security", x: Date.now() + 120_000, j: ["primer-read"], w: ["kernel.apply"] })).toString("base64url");
+    const agent = `ahqj_${body}.${createHmac("sha256", secret).update(body).digest("base64url")}`;
     const bad = [];
-    if ((await call(read("primer_mcp_read_token"), { method: "tools/list" })).status !== 401) bad.push("the read token opens it");
-    if ((await call(read("primer_service_key"), { method: "tools/list" })).status !== 401) bad.push("the service key opens it");
-    const w = await (await call(job, { method: "tools/call", params: { name: "primer_create_document", arguments: {} } })).text();
-    if (!/no-grant|tool-unlisted/.test(w)) bad.push(`a write was not refused: ${w.slice(0, 120)}`);
-    const r = await (await call(job, { method: "resources/list" })).text();
-    if (!r.includes("method-refused")) bad.push(`resources/list was not refused: ${r.slice(0, 120)}`);
+    if ((await call("http://127.0.0.1:8201", dead)).status !== 404) bad.push("the model gateway still has a tool route");
+    // The proxy names an unknown connection (404) before it asks who calls: only with a connection is a 401 the answer.
+    if (conn) {
+      for (const [name, tok] of [["a dead job token", dead], ["an agent-kind token", agent]]) if ((await call("http://10.231.0.1:3130", tok)).status !== 401) bad.push(`${name} is a caller`);
+      for (const f of readdirSync(dir).filter((n) => n.endsWith("_mcp_read_token"))) if ((await call("http://10.231.0.1:3130", read(f))).status !== 401) bad.push(`${f} is a caller`);
+    }
     process.stdout.write(bad.join(", "));
     process.exit(bad.length ? 1 : 0);
   ' 2>&1)"; then
-    pass "kernel: jobs' tool route takes only a job token, and refuses a write or a method outside the jobcap"
-  else
-    fail "kernel: jobs' tool route: ${jc_probe:-the probe failed to run}"
-  fi
+  pass "kernel: jobs' tools only through the proxy as a live kernel job; a dead job token, an agent-kind token and a read token are refused"
+else
+  fail "kernel: jobs' tool route: ${jc_probe:-the probe failed to run}"
 fi
 # Live, the kernel's tool proxy (aidenhq-kernel): its backplane listener is 10.231.0.1:3130 alone; /c/ without a credential is
 # 401; the paperclip container holds no connection token, internal token or grants table, and calling any module's MCP

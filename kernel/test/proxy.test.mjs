@@ -110,43 +110,13 @@ test("A5: a module token without services.grants cannot call another connection;
   assert.deepEqual(me, { kind: "run", agent: "ag-ada", roles: ["writer"], task: "TASK-1", tools: { docs: ["doc_read", "doc_write"] } });
 });
 
-test("jobs: their jobcaps only, their own token only, on the job listener only, through the read endpoint", async (t) => {
-  const docs = await moduleServer(t, { key: "docs-key", tools: ["read_a", "write_b"], sse: true });
-  const reader = await moduleServer(t, { key: "read-token", tools: ["read_a", "write_b", "extra_read"], sse: true });
-  const cap = (connection, tools, extra = {}) => ({ connection, url: `${reader.url}/mcp/read`, bearer_secret: "docs_mcp_read_token", tools, ...extra });
-  const k = await kernel(t, { agents, grants, secrets: { ...secrets, docs_mcp_read_token: "read-token" },
-    connections: { docs: conn(docs.url, "docs", { read: ["read_a"], write: ["write_b"] }, { returns: "trusted" }), private: conn(docs.url, "docs", { read: ["read_a"] }) },
-    // A jobcap listing a write tool by mistake still never gets it; one with a read the connection's agents don't have does.
-    jobcaps: { "docs-read": cap("docs", ["read_a", "write_b", "extra_read"]), "private-read": cap("private", ["read_a"], { private: true }), "solo-read": cap("solo", ["read_a"]) } });
-  const job = mintToken("job-secret", { kind: "agent", agentId: "ag-ada", issueId: "iss1", jobcaps: ["docs-read", "solo-read"] });
-  const opts = { jobsListener: true };
-  let r = await k.call("docs", job, { method: "tools/list" }, opts);
-  assert.deepEqual(JSON.parse(/data: (.*)/.exec(await r.text())[1]).result.tools.map((x) => x.name), ["read_a", "extra_read"]);
-  r = await k.call("docs", job, { method: "tools/call", params: { name: "write_b" } }, opts);
-  assert.equal((await r.json()).error.message, "no-grant");
-  assert.equal(reader.seen.filter((s) => s.name === "write_b").length, 0);
-  // A connection only jobs read (no agent connection): its jobcap is the whole story.
-  assert.equal((await k.call("solo", job, { method: "tools/call", params: { name: "read_a" } }, opts)).status, 200);
-  // A duplicate `name` key: the module runs the name that was checked, from a re-serialized message.
-  await k.call("docs", job, '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"write_b","name":"read_a","arguments":{}}}', opts);
-  assert.equal(reader.seen.at(-1).name, "read_a");
-  assert.equal(reader.seen.at(-1).raw.includes("write_b"), false);
-  // No token, the read token, the service key, a lane token, a system token, a job token without the jobcap: 401. A job token on the backplane: 401.
-  const lane = mintToken("lane-secret", { kind: "agent", agentId: "ag-ada", jobcaps: ["docs-read"] });
-  const reviewer = mintToken("job-secret", { kind: "reviewer", jobcaps: ["docs-read"] });
-  const bare = mintToken("job-secret", { kind: "agent", agentId: "ag-ada", issueId: "iss1" });
-  // A grader token names the graded agent for billing only: it is never that agent's identity.
-  const grader = mintToken("job-secret", { kind: "grader", agentId: "ag-ada", issueId: "iss1", jobcaps: ["docs-read"] });
-  for (const tok of [undefined, "read-token", "docs-key", lane, reviewer, bare, grader, "run-jwt-ada"]) assert.equal((await k.call("docs", tok, { method: "tools/list" }, opts)).status, 401, String(tok));
-  assert.equal((await k.call("docs", job, { method: "tools/list" })).status, 401);
-  // A private jobcap: only for a job minted as observing.
-  const light = mintToken("job-secret", { kind: "agent", agentId: "ag-ada", jobcaps: ["private-read"] });
-  assert.equal((await k.call("private", light, { method: "tools/list" }, opts)).status, 401);
-  const observing = mintToken("job-secret", { kind: "agent", agentId: "ag-ada", jobcaps: ["private-read"], observing: true });
-  assert.equal((await k.call("private", observing, { method: "tools/list" }, opts)).status, 200);
-  // Every job call went to the read endpoint with the read token, never the service key, and carried no assertion.
-  assert.equal(docs.seen.length, 0);
-  for (const s of reader.seen) { assert.equal(s.auth, "Bearer read-token"); assert.equal(s.caller, undefined); }
+test("a kernel job's jobcaps add their reads to its frozen tools; a private one only to a job that reads private data", async (t) => {
+  const k = await kernel(t, { grants, secrets,
+    jobcaps: { "docs-read": { connection: "docs", tools: ["read_a"] }, "private-read": { connection: "private", tools: ["read_a"], private: true } },
+    job: (id) => ({ agent: "ag-ada", task: "TASK-1", state: "running", identifier: "TASK-1", authority: { tools: { docs: ["doc_read"] }, jobcaps: ["docs-read", "private-read"], writes: [], roles: [], reads: id === "j-reads" } }) });
+  const tools = async (id) => (await k.v1("GET", "/v1/whoami", undefined, mintToken("job-secret", { kind: "job", job: id, agentId: "ag-ada", issueId: "TASK-1" }))).json.tools;
+  assert.deepEqual(await tools("j-light"), { docs: ["doc_read", "read_a"] });
+  assert.deepEqual(await tools("j-reads"), { docs: ["doc_read", "read_a"], private: ["read_a"] });
 });
 
 test("untrusted answers: errors, resources, SSE events and failures all reach the agent fenced", async (t) => {
