@@ -1,4 +1,4 @@
-# Two stages on the same base: build the React app with the locked dev tooling, then run only server.mjs and dist/ (the
+# Two stages on the same base: build the React app with the locked dev tooling, then run only server.mjs, the modules it imports and dist/ (the
 # server has no runtime dependencies, so the image carries no node_modules).
 # node 24.22.2 bookworm-slim, pinned by digest (the same base the agent computers use).
 FROM node:24.22.2-bookworm-slim@sha256:01d566e8d94d8c619591d78652babfccd3c6992a3dffa9ed5ab39e11cf6c70e9 AS build
@@ -15,7 +15,7 @@ ENV NODE_ENV=production
 # advisories; npm 11.21.2 bundles undici 6.29.1 and brace-expansion 5.0.12 at the paths the scanner reads. The app's
 # one-off commands run as `npm run <script>` in this image, so npm stays.
 RUN npm install -g npm@11.21.2 && npm cache clean --force
-COPY --from=build /app/server.mjs ./
+COPY --from=build /app/server.mjs /app/aidenhq-identity.mjs ./
 COPY --from=build /app/dist ./dist
 USER node
 EXPOSE 8080

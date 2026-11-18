@@ -375,7 +375,7 @@ jobs:
                   found="$found $df"; break ;;
               esac
             done <<< "$changed"
-          done < <(git ls-files -z | grep -izE '(^|/)(Dockerfile|Containerfile)[^/]*$|\.dockerfile$')
+          done < <(git ls-files -z | grep -izE '(^|/)(Dockerfile|Containerfile)[^/]*$|\.dockerfile$' | grep -zvE '\.(m?[jt]s|json|md|ya?ml|sh)$')
           echo "Images to scan:${found:- none}"
           echo "dockerfiles=${found# }" >> "$GITHUB_OUTPUT"
 
