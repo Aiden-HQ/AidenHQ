@@ -30,7 +30,11 @@ ships no compose file: compile generates its services from `services:`. There is
 | `optional_secrets` | Secret files created empty when missing (an empty value means "not configured"). |
 
 A connection connects with one Connect click from wherever the board lists it (a `board.signins` entry; the vendor's sign-in
-does the rest). A fixed or discoverable value is a module default; only a genuinely per-install value is asked for, as one
+does the rest). The sign-in returns to loopback, `http://localhost:3121` plus the entry's `callback` (fixed, so a hand-made
+client registers it once): that page doesn't load, and the owner pastes its address into the same Connect, which finishes it.
+Vendors don't hold a loopback redirect to a company's domain allowlist, so no admin has to allow the board's name. One click
+back to the board's https address stays as a link on Connect; `https_only: true` on the entry makes it the only path (Slack
+takes https redirects alone). A fixed or discoverable value is a module default; only a genuinely per-install value is asked for, as one
 field on that Connect (the sign-in's `secrets`, each a provided secret with `setup:`). `board.setup_flows` is only for what
 the owner must make elsewhere first (an OAuth client, an app, a token, a bot) or a channel to pair.
 | `generated_secrets` | Secret files compile creates randomly when missing. |
@@ -310,8 +314,8 @@ Copy `.env.example` to `.env`. It holds host paths and endpoints, never agent-ed
   signed-in admins only) `BOARD_LAN_BIND`, `BOARD_LAN_PORT`, `BOARD_LAN_HOSTS`, `BOARD_LAN_URL`. It stays on loopback:
   it trusts `X-Forwarded-Proto` from whoever reaches it. Only a LAN-only VM in `local` exposure with
   `AIDENHQ_PUBLIC_IF=none` may publish it on the LAN; `scripts/verify-security.sh` fails it anywhere else. An https
-  `BOARD_LAN_URL` is where every vendor sign-in (board.signins) connects and returns, from a request that reached the board by
-  that name; a module contributing board.signins may pass it to its service (`${BOARD_LAN_URL:-}`) as its allowed redirect.
+  `BOARD_LAN_URL` is where a one-click vendor sign-in (board.signins: Connect's secondary link, and every `https_only` one)
+  returns, from a request that reached the board by that name; the default returns to `http://localhost:3121` and is pasted back; a module contributing board.signins may pass it to its service (`${BOARD_LAN_URL:-}`) as its allowed redirect.
 - Host firewall: `AIDENHQ_PUBLIC_IF`, read by `ops/vm/setup.sh` with `settings.exposure` (default: the default-route interface; see
   [operations/migrate-host.md](operations/migrate-host.md#2-the-new-host-what-reaches-it-from-the-internet)).
 - `PAPERCLIP_DISABLE_SIGN_UP`, `OWNER_SLACK_USER_ID`, `TELEGRAM_TASK_URL`, `COMPOSE_FILE`.

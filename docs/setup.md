@@ -484,11 +484,19 @@ an `ops/setup.sh` host.
 | GitHub (read) | Open its setup on the board (`#/setup/github`) and paste a read-only token. |
 | Glean, Jira, Grafana, ClickHouse, Primer | Press Connect on the board (Settings, Connections, or the module's page). Glean, Grafana and Primer ask for their own address in the same dialog; Jira and ClickHouse ask for nothing. Jira's site URL stays the `jira_url` setting. Grafana with `grafana_source: local` needs no sign-in. |
 
-Sign-ins started on the board (Google, Glean, Jira, Grafana Cloud, ClickHouse, Slack, Primer, HubSpot) return to the board's
-https address (`BOARD_LAN_URL`, which `ops/setup.sh` sets to the tailnet name or the public front door): open the board there
-and press Connect (Settings, Connections, or the module's setup), one click, signed in as an admin. A vendor that needs a
-client you make by hand (HubSpot) shows its exact redirect URL, with a copy button, on its setup page. Only a board without an
-https address (local exposure with no Tailscale) still signs in on its loopback address: on your laptop run
+Sign-ins started on the board (Glean, Jira, Grafana Cloud, ClickHouse, Primer, HubSpot) return to a loopback address,
+`http://localhost:3121/<id>/callback` (RFC 8252). Press Connect (Settings, Connections, or the module's page), signed in as an
+admin, from wherever you reach the board, and approve in the tab that opens. Your browser then shows a page that can't load:
+copy its full address, paste it into the Connect dialog and press **Finish**. A loopback redirect isn't subject to a company's
+domain allowlist, so no admin has to allow the board's name (Atlassian blocks an unlisted domain). The address holds a
+one-time code that is good for about ten minutes and only with this sign-in. Through the tunnel below the page loads and the
+sign-in finishes by itself.
+
+The dialog's **Use one-click sign-in** link returns to the board's https address (`BOARD_LAN_URL`, which `ops/setup.sh` sets
+to the tailnet name or the public front door) instead: one click, where your company allows that domain. Slack takes only https
+redirects, so it always signs in that way; Google is the board's own sign-in and returns to the https address too. A vendor
+that needs a client you make by hand (HubSpot, Slack) shows its exact redirect URL, with a copy button, on its setup page. A
+board without an https address (local exposure with no Tailscale) signs Google and Slack in through a tunnel: on your laptop run
 `ssh -N -L 3121:127.0.0.1:3121 -L 3120:127.0.0.1:3120 <you>@<host>`, sign in at `http://localhost:3120`, open
 `http://localhost:3121` and press Connect.
 

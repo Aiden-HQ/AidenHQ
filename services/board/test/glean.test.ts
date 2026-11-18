@@ -60,20 +60,22 @@ describe("Glean sign-in routes", () => {
     expect(seen.at(-1)).toEqual({ path: "/auth/start", body: { redirect_uri: "http://localhost:3121/callback" } });
   });
 
-  it("connects from the board's https address and finishes there; plain http off loopback stays refused", async () => {
-    const r = await get(`${httpsBase}/glean/connect`, "board.example.ts.net");
+  it("returns to loopback by default from any of the board's names (the owner pastes it back)", async () => {
+    expect((await get(`${httpsBase}/glean/connect`, "board.example.ts.net")).status).toBe(302);
+    expect(seen.at(-1)).toEqual({ path: "/auth/start", body: { redirect_uri: "http://localhost:3121/callback" } });
+    expect((await get(`${lanBase}/glean/connect`, "aidenhq.local")).status).toBe(302);
+    expect(seen.at(-1)).toEqual({ path: "/auth/start", body: { redirect_uri: "http://localhost:3121/callback" } });
+    expect((await get(`${localBase}/glean/connect`, "evil.example")).status).toBe(403);
+  });
+
+  it("connects in one click from the board's https address and finishes there; plain http off loopback can't", async () => {
+    const r = await get(`${httpsBase}/glean/connect?oneclick=1`, "board.example.ts.net");
     expect(r.status).toBe(302);
     expect(seen.at(-1)).toEqual({ path: "/auth/start", body: { redirect_uri: "https://board.example.ts.net/callback" } });
     expect(await get(`${httpsBase}/callback?state=s&code=good`, "board.example.ts.net")).toMatchObject({ status: 302, location: "/#/settings/connections?connected=glean" });
-    const refused = await get(`${httpsBase}/glean/connect`, "aidenhq.local");
-    expect(refused.status).toBe(403);
-    expect(refused.body).toContain("https://board.example.ts.net");
-  });
-
-  it("refuses away from the laptop's loopback address without an https board", async () => {
-    expect((await get(`${localBase}/glean/connect`, "board.example.ts.net")).status).toBe(403);
-    expect((await get(`${lanBase}/glean/connect`, "aidenhq.local")).status).toBe(403);
-    expect((await get(`${localBase}/glean/connect`, "evil.example")).status).toBe(403);
+    const refused = await get(`${httpsBase}/glean/connect?oneclick=1`, "aidenhq.local");
+    expect(refused.status).toBe(302);
+    expect(decodeURIComponent(refused.location!)).toContain("sign in from https://board.example.ts.net");
   });
 
   it("finishes the sign-in and returns to the board, or to its page with why not", async () => {
@@ -143,7 +145,7 @@ describe("board.signins from the compiled point", () => {
   it("takes a mounted one with its proxy's base URL, and leaves one without a token off", () => {
     writeFileSync(join(dir, "glean_auth_token"), "tok\n");
     const jira = { ...glean, id: "jira", module: "jira", label: "Jira", status_url: "http://jira-mcp:8091/auth/status", connect_url: "/jira/connect", callback: "/jira/callback" };
-    expect(signInPoints(point([glean, jira]), dir)).toEqual([{ id: "glean", label: "Glean", connect: "/glean/connect", callback: "/callback", missing: "m", stopped: "s", fields: [], url: "http://glean-mcp:8085", token: "tok" }]);
+    expect(signInPoints(point([glean, jira]), dir)).toEqual([{ id: "glean", label: "Glean", connect: "/glean/connect", callback: "/callback", httpsOnly: false, missing: "m", stopped: "s", fields: [], url: "http://glean-mcp:8085", token: "tok" }]);
   });
   it("refuses another module's paths, Google's, or a second bare /callback", () => {
     expect(() => signInPoints(point([{ ...glean, callback: "/google/callback" }]), dir)).toThrow(/its paths/);

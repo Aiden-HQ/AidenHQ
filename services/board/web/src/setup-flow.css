@@ -72,3 +72,7 @@
 .ui-dialog .connect-rows { grid-template-columns: 1fr; max-height: min(52dvh, 520px); overflow-y: auto; }
 .ui-dialog .connect-row:nth-child(even) { border-left: 0; }
 .ui-dialog .connect-row:nth-child(2) { border-top: 1px solid var(--border); }
+/* A loopback sign-in's last step (Connect.tsx): what to do, the pasted address, and one click as the other way. */
+.connect-steps { margin: 0 0 12px; padding-left: 20px; display: grid; gap: 6px; line-height: 1.45; }
+.connect-alt { margin: 4px 0 0; font-size: var(--text-sm); color: var(--muted); display: flex; flex-wrap: wrap; align-items: center; gap: 4px; }
+.ui-field-help { overflow-wrap: anywhere; }

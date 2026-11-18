@@ -5,7 +5,7 @@ requires:
 # Its sign-in on the board (the board's point, modules/board/schemas/signins.json), and its setup flow.
 contributes:
   board.signins:
-    - { id: slack, label: Slack, status_url: "http://slack-mcp:8082/auth/status", connect_url: /slack/connect, callback: /slack/callback,
+    - { id: slack, label: Slack, status_url: "http://slack-mcp:8082/auth/status", connect_url: /slack/connect, callback: /slack/callback, https_only: true,
         missing: "The agents can't read Slack until it is.", stopped: "The agents can't read Slack." }
   board.setup_flows:
     - order: 115
@@ -64,7 +64,7 @@ services:
       env:
         SLACK_CLIENT_ID_FILE: ${secrets.slack_client_id}
         SLACK_CLIENT_ID: "${SLACK_CLIENT_ID:-}"
-        # The board's https address: its Connect returns there (besides loopback).
+        # The board's https address: its Connect returns there (https_only: Slack refuses loopback redirects).
         BOARD_URL: "${BOARD_LAN_URL:-}"
         # The board's sign-in endpoints: state, and starting or finishing a sign-in.
         SLACK_AUTH_TOKEN_FILE: ${secrets.slack_auth_token}

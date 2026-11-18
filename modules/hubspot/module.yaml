@@ -19,9 +19,9 @@ contributes:
       console_url: https://app.hubspot.com/l/mcp-auth-apps/
       steps: |
         1. Press **Open HubSpot** below. It opens **Development → MCP Connectors** in your HubSpot account (pick the account if HubSpot asks).
-        2. Press **Create MCP connector**. Give it any name (for example `AidenHQ`) and set its **Redirect URL** to `{redirect_url}` exactly.
+        2. Press **Create MCP connector**. Give it any name (for example `AidenHQ`) and set its **Redirect URL** to `{redirect_url}` exactly (a loopback address, so no domain needs allowing).
         3. Save. HubSpot opens the connector's details page: copy its **Client ID** and **Client secret** into the fields here and save.
-        4. Press **Connect** and allow access.
+        4. Press **Connect** and allow access. HubSpot then sends that tab to the redirect URL, which can't load: copy its full address into the Connect dialog and press **Finish**.
 
         Agents read as you, so they see only what you can see in HubSpot. Every change they make to the CRM is reviewed first.
   warehouse.sources:
@@ -91,7 +91,7 @@ services:
       env:
         HUBSPOT_MCP_URL: "${settings.hubspot_mcp_url}"
         HUBSPOT_STATE_DIR: /state
-        # The board's https address: its Connect returns there (besides loopback).
+        # The board's https address: Connect's one-click link returns there (the default is loopback).
         BOARD_URL: "${BOARD_LAN_URL:-}"
         HUBSPOT_OBJECTS: "${settings.hubspot_objects}"
         HISTORY_DAYS: "${settings.hubspot_history_days}"

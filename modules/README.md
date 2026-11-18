@@ -27,7 +27,8 @@ in [aidenhq-modules](https://github.com/Aiden-HQ/aidenhq-modules), which takes n
 ## Connections
 
 A connection connects with one Connect click from wherever the board lists it: declare a `board.signins` entry and the
-vendor's sign-in does the rest. Make every fixed or discoverable value (a vendor's MCP address) a module default. Ask only
+vendor's sign-in does the rest (it ends on `http://localhost:3121/<callback>`, which the owner pastes back into Connect; set
+`https_only: true` for a vendor that refuses loopback redirects). Make every fixed or discoverable value (a vendor's MCP address) a module default. Ask only
 for a genuinely per-install value (a company's own address), as one field on that Connect: list its secret (with `setup:`)
 under the sign-in's `secrets`. Add a `board.setup_flows` entry only when the owner must make something elsewhere first (an
 OAuth client, an app, a token, a bot) or pair a channel.
