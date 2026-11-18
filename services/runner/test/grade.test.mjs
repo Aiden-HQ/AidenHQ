@@ -39,6 +39,49 @@ test("pending evidence waits; a merged PR is bound to its merge commit", async (
   assert.match(many.version, /^prs:[0-9a-f]{16}$/);
 });
 
+// A pr task's rubric may define its deliverable another way than a pull request: then the task's own words are its evidence,
+// and the PR it was never asked to open is not "missing". A rubric that requires the PR keeps today's wait and escalation.
+test("a rubric that defines another completion path is graded without a PR; one that requires a PR still waits and escalates", async () => {
+  const alternative = [
+    "the floors are the image's base and every pinned tool version",
+    "the report names each floor and the version it needs",
+    "If no upstream release meets the floors, the task records that and names the floors rather than patching the image locally",
+  ];
+  const posted = { id: "c-1", authorType: "agent", body: "No upstream release meets the floors: base needs 3.21, pinned tool 2.9.", createdAt: "2026-11-18T09:00:00Z" };
+  const noPr = (rubric, over = {}) => gather({ kind: "pr", ref: "" }, deps({ taskPrs: async () => [], comments: async () => [posted], ...over }), rubric);
+  // Taken: graded on what the task says, not awaited and not "missing".
+  const taken = await noPr(alternative);
+  assert.equal(taken.missing, undefined);
+  assert.equal(taken.awaiting, undefined);
+  assert.ok(taken.version, "the task's own words are the version to grade");
+  assert.match(taken.facts[0], /no pull request was opened, and rubric criterion 3 defines the completion path without one/);
+  assert.match(taken.data.TASK_COMMENTS, /No upstream release meets the floors/);
+  // The grade loop escalates only an awaiting evidence row, so this one is graded, never sent to the delegator as missing.
+  assert.doesNotMatch(JSON.stringify(taken), /no pull request yet|finished without its deliverable/);
+  // Nothing posted yet: evidence still to come, not a deliverable that never existed.
+  const empty = await noPr(alternative, { comments: async () => [] });
+  assert.equal(empty.missing, undefined);
+  assert.match(empty.awaiting, /nothing posted on the task yet/);
+  // The same task with no alternative: today's behaviour, unchanged.
+  const required = ["Merged into the default branch", "Every named check is green on the PR's head", "The diff makes the change the task asked for"];
+  const waited = await noPr(required);
+  assert.equal(waited.missing, true);
+  assert.match(waited.awaiting, /no pull request yet/);
+  assert.deepEqual(await escalationFor(waited, { kind: "pr", ref: "" }, deps({ taskPrs: async () => [] })), { reason: "finished without its deliverable: no pull request yet", facts: [] });
+  // An alternative beside a criterion that still requires the PR (or its merge) is not a replacement: it waits and escalates.
+  const beside = await noPr([...alternative, "Merged into the default branch", "Every named check is green on the PR's head"]);
+  assert.equal(beside.missing, true);
+  assert.match(beside.awaiting, /no pull request yet/);
+  // A path taken instead of opening one is a replacement even when it says so by naming the PR it does not open.
+  const insteadOf = await noPr(["the task records which release it waits for, rather than opening a pull request", "the report names the floors"]);
+  assert.equal(insteadOf.missing, undefined);
+  assert.ok(insteadOf.version);
+  // A bare conditional, "otherwise" alone, or a criterion that itself still requires the PR is never the replacement.
+  assert.equal((await noPr(["If no release qualifies, the task records it"])).missing, true);
+  assert.equal((await noPr(["the task otherwise records what it found"])).missing, true);
+  assert.equal((await noPr(["If no release qualifies, the task records it in the PR description rather than opening a new one"])).missing, true);
+});
+
 test("the PR's title and description are the grader's evidence, fenced as the author's words, and an edit is a new version", async () => {
   const body = "## Reproduction\n\nAt the old 5s limit the test fails: `Error: Test timed out in 5000ms`.\n\nNo existing test was removed, skipped or changed.";
   const described = (over = {}) => deps({ pr: async () => pr({ state: "MERGED", title: "fix(ci): prove the timeout", body, ...over }) });

@@ -40,6 +40,37 @@ export function template(kind: string, dir: string = join(REPO_ROOT, "modules/gr
   return readFileSync(file, "utf8").split("\n").filter((l) => l.startsWith("- ")).map((l) => l.slice(2).trim());
 }
 
+/** A criterion that offers another path instead of the work a PR would do ("… rather than patching the image locally"). */
+const REPLACEMENT = /\b(?:instead of|rather than)\b/i;
+/** A criterion that offers a path instead of opening a pull request, naming it. */
+const NOT_OPENING = /\b(?:instead of|rather than)\s+(?:open(?:ing)?\s+)?(?:a\s+)?(?:pull request|pr)s?\b/i;
+/** A conditional path ("If no upstream release meets the floors, …"). */
+const CONDITIONAL = /\bif (?:no|none)\b/i;
+/** The task as the one that records the outcome: the words such a path leaves to grade, where a PR would be the evidence. */
+const RECORDED_BY_TASK = /\bthe task\b[^.;]{0,80}?\b(?:record|report|name|state|document|explain|note|describe|list|say)\w*/i;
+/** A pull request, or its merge, as the deliverable itself. */
+const REQUIRES_PR = /\b(?:pr|pull requests?|merg(?:e|ed|ing))\b/i;
+/** A pull request named only as the thing a path is taken instead of, or as one that doesn't exist. */
+const REPLACED_PR = /\b(?:(?:instead of|rather than)\s+(?:open(?:ing)?\s+)?|no\s+)(?:a\s+)?(?:pull request|pr)s?\b/gi;
+
+/**
+ * The rubric criterion that defines the deliverable another way, for a `pr` task that has no PR: one explicitly worded as
+ * another completion path, and leaving the task's own record to grade ("If no upstream release meets the floors, the task
+ * records that and names the floors rather than patching the image locally"). It is explicit: a conditional *and* a stated
+ * replacement of the work ("If no … , … rather than patching it"), or a stated replacement of opening the pull request
+ * itself. "If no …" alone, and "otherwise" alone, are not one. It has to replace the PR, not sit beside one: a rubric with
+ * any criterion that still requires a pull request, or its merge, returns undefined, so the missing-PR wait and escalation
+ * stand. Only the rubric's own text decides this, never a comment claiming it. { n, criterion }: the first, n its 1-based.
+ */
+export function rubricAlternative(rubric: string[] = []): { n: number; criterion: string } | undefined {
+  const requirePr = (text: string) => REQUIRES_PR.test(text.replace(REPLACED_PR, ""));
+  const alternative = (text: string) => RECORDED_BY_TASK.test(text) && (NOT_OPENING.test(text) || (CONDITIONAL.test(text) && REPLACEMENT.test(text))) && !requirePr(text);
+  const n = rubric.findIndex((c) => alternative(String(c)));
+  if (n < 0) return undefined;
+  if (rubric.some((c, i) => i !== n && requirePr(String(c)))) return undefined;
+  return { n: n + 1, criterion: String(rubric[n]) };
+}
+
 /**
  * Author text in its own block, and never able to end it: every run of three or more fence characters in the text is
  * neutralised, in every spelling a prompt here uses (`<<<`/`>>>` and the `‹‹‹`/`›››` the neutralised text itself used to
@@ -70,10 +101,17 @@ export async function gather(deliverable: any, deps: any, rubric: string[] = [])
   if (open.length) return { awaiting: `an approval card is still open (${open.map((a: any) => `${a.id} ${a.action}`).join(", ")})` };
   const kind = deliverable.kind;
   let app = kind === "app" ? await deps.app(deliverable.ref) : null; // the deployed app whose live pages are evidence
-  const ev = kind === "pr" ? await prEvidence(await deps.taskPrs(), deliverable.ref, deps) : kind === "app" ? appEvidence(app, deliverable.ref) : kind === "apply" ? applyEvidence(cards) : null;
+  let ev = kind === "pr" ? await prEvidence(await deps.taskPrs(), deliverable.ref, deps) : kind === "app" ? appEvidence(app, deliverable.ref) : kind === "apply" ? applyEvidence(cards) : null;
   // `missing`: the deliverable doesn't exist at all (no PR, no apply, nothing posted), as opposed to evidence still coming.
-  if (ev?.awaiting) return { awaiting: ev.awaiting, missing: ev.missing };
-  if (kind === "pr" && deps.appOfRepo) {
+  // A pr task's rubric may define its deliverable another way than a pull request: then the task's own words are graded and
+  // the absent PR is not missing. The rubric is read here, before the wait, because nothing else on this path reads it.
+  let alternative: { n: number; criterion: string } | undefined;
+  if (ev?.awaiting) {
+    alternative = kind === "pr" && ev.missing ? rubricAlternative(rubric) : undefined;
+    if (!alternative) return { awaiting: ev.awaiting, missing: ev.missing };
+    ev = null;
+  }
+  if (kind === "pr" && ev && deps.appOfRepo) {
     // A pr on an app's repo: the app's deploy facts too (its rubric may ask for "deployed at the merged commit").
     // Only the PRs graded (by the ref), and only when they sit in exactly one repo.
     const repos = [...new Set(ev.prs.map((p: any) => p.repo.toLowerCase()))];
@@ -106,7 +144,7 @@ export async function gather(deliverable: any, deps: any, rubric: string[] = [])
   let files: any = { facts: [], data: {}, images: [] };
   if (rubric.length && w.files.length && deps.content) {
     // A pr's screenshots are judged against its own heads: a capture stamped at other code is left out (fileEvidence).
-    const heads = kind === "pr" ? ev.prs.map((p: any) => p.shows).filter((h: any) => h?.commits.length) : [];
+    const heads = kind === "pr" && ev ? ev.prs.map((p: any) => p.shows).filter((h: any) => h?.commits.length) : [];
     files = await fileEvidence(w.files, deps.content, { rubric: rubric.join("\n"), comments: w.data.TASK_COMMENTS, heads });
     if (files.awaiting) return { awaiting: files.awaiting };
   }
@@ -125,9 +163,12 @@ export async function gather(deliverable: any, deps: any, rubric: string[] = [])
     Object.assign(ev.data, live.data);
   }
   if (ev) return { version: ev.version, facts: [...ev.facts, ...files.facts, ...other.facts], data: { ...ev.data, ...w.data, ...files.data, ...other.data }, images: files.images };
-  if (!w.version) return { awaiting: "nothing posted on the task yet", missing: true };
+  // A rubric that defines the deliverable another way than a PR: nothing posted is evidence still to come, not a missing
+  // deliverable, so it waits instead of escalating as one.
+  if (!w.version) return { awaiting: "nothing posted on the task yet", ...(alternative ? {} : { missing: true }) };
+  const said = alternative ? [`no pull request was opened, and rubric criterion ${alternative.n} defines the completion path without one: "${alternative.criterion.slice(0, 300)}"`] : [];
   // Files landing on the named task make a new version too.
-  return { version: other.version ? `${w.version}+${other.version}` : w.version, facts: [...w.facts, ...files.facts, ...other.facts], data: { ...w.data, ...files.data, ...other.data }, images: files.images };
+  return { version: other.version ? `${w.version}+${other.version}` : w.version, facts: [...said, ...w.facts, ...files.facts, ...other.facts], data: { ...w.data, ...files.data, ...other.data }, images: files.images };
 }
 
 /**

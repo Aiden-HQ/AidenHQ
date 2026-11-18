@@ -114,6 +114,28 @@ describe("flow-graded", { concurrency: true }, () => {
     });
   });
 
+  // A pr task whose own rubric says what to do instead when there is no pull request: the task's record is the deliverable,
+  // so the delegator is never asked to decide on a PR its brief never required.
+  describe("flow-graded: a rubric that defines another completion path", () => {
+    const rubric = [
+      "the floors are the image's base and every pinned tool version",
+      "If no upstream release meets the floors, the task records that and names the floors rather than patching the image locally",
+    ];
+    const t = flow({
+      ...held("no-release", { rubric, deliverable: { kind: "pr", ref: "" }, state: "awaiting_evidence", updatedAt: new Date(Date.now() - 11 * 60_000).toISOString() }),
+      partComments: [{ id: "floors-1", authorType: "agent", body: "No upstream release meets the floors: the base image needs 3.21, the pinned tool 2.9.", createdAt: new Date(0).toISOString() }],
+    });
+
+    it("grades the task's own record and never escalates it as finished without its deliverable", async () => {
+      const { waitFor, paperclip, partComments } = t;
+      paperclip.graderAnswers.push(answer(["yes", "yes"]));
+      await waitFor("the graded task closed", () => paperclip.issues.get("part").status === "done", 60_000);
+      assert.equal(paperclip.grades.get("part").state, "satisfied");
+      assert.ok(!partComments().some((c) => /escalated to the delegator/.test(c)), "no decision asked on the branch the rubric defines");
+      assert.ok(!(paperclip.comments.get("parent") ?? []).some((c) => /needs your decision/.test(c.body)));
+    });
+  });
+
   describe("flow-graded: a deliverable still being built on a sub-task", () => {
     // The same missing PR, but the work was handed to a sub-task that is still open: that is movement, not "finished without it".
     const t = flow({ ...held("handed-on", { rubric: [], deliverable: { kind: "pr", ref: "" }, state: "awaiting_evidence", updatedAt: new Date(Date.now() - 11 * 60_000).toISOString() }), alfredPart: { parentId: "part", status: "in_progress" } });
