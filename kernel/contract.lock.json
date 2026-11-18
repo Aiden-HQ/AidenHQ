@@ -102,6 +102,7 @@
     "route POST /v1/checks": {"state":"experimental","fp":"auth=module"},
     "route POST /v1/checks/:task": {"state":"experimental","fp":"auth=module"},
     "route POST /v1/codehost/:op": {"state":"experimental","fp":"auth=module"},
+    "route POST /v1/health/probe": {"state":"experimental","fp":"auth=operator-key"},
     "route POST /v1/jobs": {"state":"experimental","fp":"auth=module"},
     "route POST /v1/jobs/:job/input": {"state":"experimental","fp":"auth=module"},
     "route POST /v1/jobs/:job/post": {"state":"experimental","fp":"auth=module"},

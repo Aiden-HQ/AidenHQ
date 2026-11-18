@@ -9,7 +9,7 @@ import { fence } from "../sdk/src/fence.ts";
 import type { Asserter } from "./assert.ts";
 import { NoGrants, type Connection, type Identity, type Whoami } from "./identity.ts";
 import type { Resolver } from "./net.ts";
-import type { Rec } from "./records.ts";
+import type { Rec, Requester } from "./records.ts";
 import { CONN_TOOL, type Writes } from "./writes.ts";
 
 type Log = (msg: string, fields?: Record<string, unknown>) => void;
@@ -104,30 +104,28 @@ export function createProxy({ whoami, connections, asserter, resolver, secret, w
   log?: Log;
 }) {
   /**
-   * An approved conn.tool record: its stored call, sent once to the module as its requester (no session: one tools/call).
-   * A requester that is an agent's run acts at /v1/cp/agent/* as that agent, with its own key and the run it asked from,
-   * while this one call is in flight, as its live call did; any other requester has no control-plane identity, as live.
+   * One tools/call sent once to a connection's module as `q` (no session): an approved conn.tool record's stored call, or the
+   * host's health probe. A requester that is an agent's run acts at /v1/cp/agent/* as that agent, with its own key and the run it
+   * asked from, while this one call is in flight, as its live call did; any other requester has no control-plane identity.
    */
-  async function replay(r: Rec): Promise<{ ok: boolean; text: string }> {
-    const a = r.args as { connection: string; tool: string; arguments: unknown };
-    const conn = connections()[a.connection];
-    if (!conn) throw new Error(`no connection ${a.connection}`);
-    const q = r.requester;
-    const signed = asserter.signCaller({ agent: q.agent, key: q.key, name: q.name, roles: q.roles, ...(r.task ? { task: r.task } : {}), tool: `${a.connection}.${a.tool}`, aud: conn.module, kind: q.kind });
+  async function callAs(q: Requester, connection: string, tool: string, args: unknown, task?: string): Promise<{ ok: boolean; text: string }> {
+    const conn = connections()[connection];
+    if (!conn) throw new Error(`no connection ${connection}`);
+    const signed = asserter.signCaller({ agent: q.agent, key: q.key, name: q.name, roles: q.roles, ...(task ? { task } : {}), tool: `${connection}.${tool}`, aud: conn.module, kind: q.kind });
     // The module acts at /v1/cp/agent as the requester (cp.ts: a kernel job's agent on its task, with the kernel-held agent key).
     asserter.begin(signed.jti, { credential: "", aud: conn.module, kind: q.kind }, conn.tool_timeout_s ?? 300);
     try {
       const to = await resolver.resolve(conn.url);
-      const body = Buffer.from(JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: a.tool, arguments: a.arguments } }));
+      const body = Buffer.from(JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: tool, arguments: args } }));
       const { status, sse, text } = await new Promise<{ status: number; sse: boolean; text: string }>((resolve, reject) => {
         const out = http.request({ host: to.host, port: to.port, path: to.path, method: "POST", timeout: ((conn.tool_timeout_s ?? 300) + 30) * 1000, headers: { host: new URL(conn.url).host, authorization: `Bearer ${secret(conn.auth_secret)}`, "x-aidenhq-caller": signed.jwt, accept: "application/json, text/event-stream", "content-type": "application/json", "content-length": body.length } }, async (ur) => {
           try { resolve({ status: ur.statusCode ?? 502, sse: String(ur.headers["content-type"] ?? "").includes("text/event-stream"), text: (await readAll(ur, MAX_ANSWER)).toString("utf8") }); } catch (e) { reject(e); }
         });
-        out.on("timeout", () => out.destroy(new Error(`${a.connection} didn't answer in time`)));
+        out.on("timeout", () => out.destroy(new Error(`${connection} didn't answer in time`)));
         out.on("error", reject);
         out.end(body);
       });
-      if (status >= 300) return { ok: false, text: `${a.connection} answered ${status}: ${text.slice(0, 2000)}` };
+      if (status >= 300) return { ok: false, text: `${connection} answered ${status}: ${text.slice(0, 2000)}` };
       let ok = true;
       const answer = mapMessages(text, sse, (m) => { if (m.error || m.result?.isError) ok = false; });
       return { ok, text: answer };
@@ -135,6 +133,10 @@ export function createProxy({ whoami, connections, asserter, resolver, secret, w
       asserter.end(signed.jti);
     }
   }
+  const replay = (r: Rec) => {
+    const a = r.args as { connection: string; tool: string; arguments: unknown };
+    return callAs(r.requester, a.connection, a.tool, a.arguments, r.task);
+  };
 
   const proxy = async function proxy(req: IncomingMessage, res: ServerResponse, connection: string, { jobs = false }: { jobs?: boolean } = {}): Promise<void> {
     const t0 = Date.now();
@@ -290,5 +292,5 @@ export function createProxy({ whoami, connections, asserter, resolver, secret, w
       if (jti) asserter.end(jti);
     }
   };
-  return Object.assign(proxy, { replay });
+  return Object.assign(proxy, { replay, callAs });
 }

@@ -54,6 +54,8 @@
 //   GET  /v1/advisories        (the board's key) the marketplace advisories open against installed modules (advisories.ts)
 //   POST /v1/auth/:op, /v1/accounts/:op, /v1/apps/:op, /v1/operator/:op  the accounts' routes (auth-api.ts): module UI
 //                              sessions and account admin (the board), in-app requests (apps-platform), setup links (operator)
+//   POST /v1/health/probe      (the operator's key) {connection, tool, args}: one read tool of the connection, called as the agent
+//                              granted it (health.ts) -> {ok, text}; scripts/healthcheck.sh's reads
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { timingSafeEqual } from "node:crypto";
 import type { Asserter } from "./assert.ts";
@@ -136,6 +138,7 @@ export const ROUTES = [
   { method: "POST", path: "/v1/accounts/:op", auth: "board+session" },
   { method: "POST", path: "/v1/apps/:op", auth: "module" },
   { method: "POST", path: "/v1/operator/:op", auth: "operator-key" },
+  { method: "POST", path: "/v1/health/probe", auth: "operator-key" },
 ] as const;
 // `:id` matches a record id, any other `:name` [a-z0-9_]+, a trailing `/*` the rest of the path, slash included.
 const compiled = ROUTES.map((r) => ({ ...r, re: new RegExp(`^${r.path.replace(/:id\b/g, "(k-[0-9a-f]{16})").replace(/:review\b/g, "(r-[0-9a-f]{16})").replace(/:job\b/g, "(j-[0-9a-f]{16})").replace(/:check\b/g, "(c-[0-9a-f]{16})").replace(/:task\b/g, "([0-9a-f-]{36})").replace(/:key\b/g, "([^/]{1,200})").replace(/:\w+/g, "([a-z0-9_]+)").replace(/\/\*$/, "(/.*)")}$`) }));
@@ -150,7 +153,7 @@ async function json(req: IncomingMessage, max = 1_000_000): Promise<any> {
   try { return JSON.parse(Buffer.concat(chunks).toString("utf8") || "{}"); } catch { throw fail(400, "bad_request", "the body must be JSON"); }
 }
 
-export function createBackplane({ whoami, asserter, proxy, cp, boardCp, grantsFile, writes, records, channels, brake, notify, owner, modules = () => ({}), boardKey = () => "", reviews, reviewerKey = () => "", jobs, codehost, admission, outcomes, wakes, tasks, eventsKey = () => "", work, graderToken = () => "", dropGraderToken = () => {}, advisories = () => [], accounts, checks, checkJobs, jobTools, ownerRaw, lane, log = () => {} }: {
+export function createBackplane({ whoami, asserter, proxy, cp, boardCp, grantsFile, writes, records, channels, brake, notify, owner, modules = () => ({}), boardKey = () => "", reviews, reviewerKey = () => "", jobs, codehost, admission, outcomes, wakes, tasks, eventsKey = () => "", work, graderToken = () => "", dropGraderToken = () => {}, advisories = () => [], accounts, checks, checkJobs, jobTools, ownerRaw, lane, healthProbe, operatorKey = () => "", log = () => {} }: {
   whoami: Whoami; asserter: Asserter; proxy: Handler; cp: Handler; boardCp?: Handler; grantsFile: () => { agents?: Record<string, Grant> } & Record<string, unknown>;
   writes?: Writes; records?: Records; boardKey?: () => string; log?: (msg: string, f?: Record<string, unknown>) => void;
   /** The reviewer slot, and the key a direct review request asks with (reviewer_key, which the board holds). */
@@ -191,6 +194,9 @@ export function createBackplane({ whoami, asserter, proxy, cp, boardCp, grantsFi
   checkJobs?: CheckJobs;
   /** A running job's requests for its task's next turn (jobtools.ts). */
   jobTools?: JobTools;
+  /** The host's health probe (health.ts), and the operator's key it asks with. */
+  healthProbe?: (b: Record<string, unknown>) => Promise<{ ok: boolean; text: string }>;
+  operatorKey?: () => string;
 }) {
   /** The calling module (its own token), or 401. */
   const moduleOf = async (req: IncomingMessage) => {
@@ -247,6 +253,12 @@ export function createBackplane({ whoami, asserter, proxy, cp, boardCp, grantsFi
           const w = await moduleOf(req);
           if (!notify) throw fail(503, "unavailable", "notify is off");
           return send(res, 200, hit!.method === "GET" ? notify.take(w.roles) : await notify.send(w.roles, await json(req)));
+        }
+        case "POST /v1/health/probe": {
+          const given = Buffer.from(String(req.headers["x-operator-key"] ?? "")), want = Buffer.from(operatorKey());
+          if (!want.length || given.length !== want.length || !timingSafeEqual(given, want)) throw fail(401, "unauthorized", "the operator's key is required");
+          if (!healthProbe) throw fail(503, "unavailable", "the health probe is off");
+          return send(res, 200, await healthProbe(await json(req)));
         }
         case "POST /v1/jobtools/:cmd": {
           if (!jobTools) throw fail(503, "unavailable", "job tools are off");

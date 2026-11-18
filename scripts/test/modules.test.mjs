@@ -7,7 +7,7 @@ import { fileURLToPath } from "node:url";
 import YAML from "yaml";
 import { BUNDLE } from "./bundle.mjs";
 import { ensureIdentityKeys } from "../identity.mjs";
-import { checkEntries, compile, composeSecretFiles, ensureMountedSecrets, writeKinds, ensureOptionalSecrets, grantEntry, healthProbeAgent, hostMounts, kernelModuleTable, LEGACY_HOST_ENV, LEGACY_LINKS, LEGACY_SECRETS, mapLimit, OPS_NETWORKS } from "../modules.mjs";
+import { checkEntries, compile, composeSecretFiles, ensureMountedSecrets, writeKinds, ensureOptionalSecrets, grantEntry, hostMounts, kernelModuleTable, LEGACY_HOST_ENV, LEGACY_LINKS, LEGACY_SECRETS, mapLimit, OPS_NETWORKS } from "../modules.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const mods = join(here, "fixtures/mods");
@@ -314,17 +314,6 @@ test("a channel's transport is a compose service (the kernel sends the channel's
   assert.deepEqual(kernelModuleTable(ch({ transport: "http://telegram:8089/transport/send", credentials: true })).x.channel, { transport: "http://telegram:8089/transport/send", credentials: true });
   for (const t of ["http://127.0.0.1:8089/t", "http://localhost:8089/t", "http://169.254.169.254:80/t", "https://example.com:443/t"]) assert.throws(() => kernelModuleTable(ch({ transport: t })), /a compose service/, t);
   assert.throws(() => kernelModuleTable(ch({ credentials: true })), /credentials is true, on a channel with a transport/);
-});
-
-test("health check probes call as the least-granted agent holding every probe tool, or none", () => {
-  const agents = {
-    librarian: { enabled_tools: { google_workspace: ["calendar_list_events"] } },
-    assistant: { enabled_tools: { google_workspace: ["gmail_search", "calendar_list_events", "docs_read"], github: ["github_whoami", "github_issue_read"] } },
-    inbox: { enabled_tools: { google_workspace: ["gmail_search", "calendar_list_events"] } },
-  };
-  assert.equal(healthProbeAgent(agents, "google_workspace"), "inbox");
-  assert.equal(healthProbeAgent(agents, "github"), "assistant");
-  assert.equal(healthProbeAgent({ librarian: agents.librarian }, "google_workspace"), undefined);
 });
 
 test("a codehost grant is taken literally: settings are refused, the kernel's @ names pass", async () => {

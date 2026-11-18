@@ -128,24 +128,6 @@ const legacyOf = (name) => ({ links: LEGACY_LINKS[name]?.to, secrets: LEGACY_SEC
 export const CAPS = { run_usd: 2, task_usd: 10, day_usd: 30 };
 
 /**
- * The tool calls scripts/healthcheck.sh makes as an agent, by connection. Each needs a caller granted every tool listed:
- * setup gives the health check a key for one (healthProbeAgent).
- */
-export const HEALTH_PROBES = { google_workspace: ["gmail_search", "calendar_list_events"], github: ["github_whoami"] };
-
-/**
- * The agent the health check calls `connection` as: of those granted every probe tool there, the one granted the fewest
- * tools overall (its key is a standing one), then by name. undefined when none is: the check skips that probe.
- */
-export function healthProbeAgent(agents, connection) {
-  const need = HEALTH_PROBES[connection] ?? [];
-  const count = (a) => Object.values(a.enabled_tools ?? {}).reduce((n, t) => n + t.length, 0);
-  return Object.entries(agents ?? {})
-    .filter(([, a]) => need.length && need.every((t) => a.enabled_tools?.[connection]?.includes(t)))
-    .sort(([k1, a1], [k2, a2]) => count(a1) - count(a2) || k1.localeCompare(k2))[0]?.[0];
-}
-
-/**
  * The wave-1 part of an agent's grants-table entry (scripts/paperclip-setup.mjs writeGrants), for the model gateway and the
  * grader: `models`, every model id the agent may call (its model, its runner models, its routines' models; OpenRouter ids,
  * `openrouter/` dropped); `caps`, the fleet defaults with the agent's own over them; `graded`, whether tasks delegated to it

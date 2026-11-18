@@ -41,6 +41,7 @@ import { createAdvisories } from "./advisories.ts";
 import { hostFetch } from "../../scripts/compiler/sources.ts";
 import { createResolver } from "./net.ts";
 import { CODEHOST, covers, createCodehost, type OpsGrant } from "./codehost.ts";
+import { createHealthProbe } from "./health.ts";
 import { createProxy } from "./proxy.ts";
 import { openRecords } from "./records.ts";
 import { createReviews, type ReviewerSlot } from "./reviews.ts";
@@ -136,6 +137,7 @@ const writes = createWrites({
 });
 const proxy = createProxy({ whoami, connections, asserter, resolver, secret, writes, log });
 replay = proxy.replay as never;
+const healthProbe = createHealthProbe({ grants: () => grantsTable().agents ?? {}, connections, callAs: proxy.callAs });
 // JSON both ways: the control plane as the owner (only the kernel holds the board key), and the board's internal listener with
 // the kernel's key (gateway_board_key).
 const asApi = (call: (p: string, init: RequestInit) => Promise<Response>): Api => async (method, p, body) => {
@@ -328,7 +330,7 @@ const codehost = createCodehost({ repos: codehostRepos, grants: codehostGrants, 
 // Check jobs (checkjobs.ts): credential-free boxes of the launcher's, snapshots from the module that provides them.
 const checkJobs = checkJobsFrom({ db: records.db, secret, ask: codehost.ask, call: launcherClient(launcherUrl, () => secret("launcher_kernel_key")), workDir: sandbox.workDir, gatewayUrl: `${sandbox.boxGatewayUrl}/api/v1`, log });
 const lane = createLane({ db: records.db, owner: ownerApi, grantsFile: grantsTable, log, postAsAgent: async (agent, task, job, body) => ({ id: String((await outcomes.post({ id: job, agent, task }, { kind: "lane", body })).comment) }) });
-const backplane = createBackplane({ codehost: codehost.op, checks, checkJobs, lane, whoami, asserter, grantsFile: grantsTable, log, writes, records, channels, brake, notify, owner: ownerApi, ownerRaw: (p) => cpApi(p), modules: modulesFile, boardKey: () => secret("gateway_board_key"), reviews, reviewerKey: () => secret("reviewer_key"), jobs, admission, outcomes, wakes, tasks: moduleTasks, work, graderToken, dropGraderToken: (task) => graderTokens.delete(task), eventsKey: () => secret("paperclip_events_key"), jobTools, advisories: advisories.list, accounts: createAuthApi({ accounts: () => accounts, whoami, boardKey: () => secret("gateway_board_key"), recoveryKeyWaiting: () => Boolean(firstRun.recoveryKey()), modelReady: modelState.ready, operatorKey: () => secret("board_operator_key"), secrets: moduleSecrets }), proxy: (req, res, c) => proxy(req, res, c!), cp: createCp({ asserter, whoami, plugin, agentKey: (id) => secret(`paperclip-agents/${id}`), grants: () => grantsTable().agents ?? {}, controlUrl, checks, provenance, log }) as never, boardCp: createBoardCp({ controlUrl, key: () => secret("paperclip_board_key"), log }) as never });
+const backplane = createBackplane({ healthProbe, operatorKey: () => secret("board_operator_key"), codehost: codehost.op, checks, checkJobs, lane, whoami, asserter, grantsFile: grantsTable, log, writes, records, channels, brake, notify, owner: ownerApi, ownerRaw: (p) => cpApi(p), modules: modulesFile, boardKey: () => secret("gateway_board_key"), reviews, reviewerKey: () => secret("reviewer_key"), jobs, admission, outcomes, wakes, tasks: moduleTasks, work, graderToken, dropGraderToken: (task) => graderTokens.delete(task), eventsKey: () => secret("paperclip_events_key"), jobTools, advisories: advisories.list, accounts: createAuthApi({ accounts: () => accounts, whoami, boardKey: () => secret("gateway_board_key"), recoveryKeyWaiting: () => Boolean(firstRun.recoveryKey()), modelReady: modelState.ready, operatorKey: () => secret("board_operator_key"), secrets: moduleSecrets }), proxy: (req, res, c) => proxy(req, res, c!), cp: createCp({ asserter, whoami, plugin, agentKey: (id) => secret(`paperclip-agents/${id}`), grants: () => grantsTable().agents ?? {}, controlUrl, checks, provenance, log }) as never, boardCp: createBoardCp({ controlUrl, key: () => secret("paperclip_board_key"), log }) as never });
 // The admin listener's accounts (data/kernel/auth/auth.db) and pages. Accounts not moved yet, or a malformed URL setting: the
 // listener refuses while every other part of the kernel serves.
 const urlOf = (v: string) => { try { return v ? new URL(v) : undefined; } catch { log("ignoring a malformed URL setting", { value: v.slice(0, 100) }); return undefined; } };

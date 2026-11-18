@@ -37,14 +37,28 @@ module_on() { # name: installed unless modules.json says it isn't
   node -e 'const m=JSON.parse(require("fs").readFileSync("config/modules.json","utf8")).find(x=>x.name===process.argv[1]); process.exit(m&&!m.enabled?1:0)' "$1"
 }
 secrets="${AIDENHQ_SECRETS_DIR:-/nonexistent}"
-# Tool calls on a connection's /mcp are checked against the calling agent's grants: the probes call as the agent setup
-# keyed for that connection (paperclip_health_key_<connection>, picked from the grants: scripts/modules.mjs HEALTH_PROBES).
-probe_key() { [ -s "$secrets/paperclip_health_key_$1" ]; }
-mcp_as() { # connection, tool, json args: through the kernel's proxy as the probe agent; a refusal says "refused", not a token problem
-  local out
-  out="$(dc exec -T paperclip node /tmp/mcp-call.mjs "http://10.231.0.1:3130/c/$1/mcp" "$2" "$3" "$(cat "$secrets/paperclip_health_key_$1")" 2>&1)" && { printf '%s\n' "$out"; return 0; }
-  if printf '%s' "$out" | grep -qE 'no-grant|tool-unlisted'; then echo "refused by $1's grants: $(printf '%s' "$out" | grep -oE 'no-grant|tool-unlisted' | head -1)"; else printf '%s\n' "$out"; fi
-  return 1
+# Read tools on a connection are called by the kernel as the narrowest agent granted them (POST /v1/health/probe, the
+# operator's key). Prints the tool's answer; 0 ok, 1 failed, 3 when no agent holds the tool (the probe is skipped).
+probe() { # connection, tool, json args
+  local key out code
+  key="$(cat "$secrets/board_operator_key" 2>/dev/null)"
+  out="$(curl -sS -m 60 -w '\n%{http_code}' -X POST -H "x-operator-key: $key" -H 'content-type: application/json' \
+    -d "{\"connection\":\"$1\",\"tool\":\"$2\",\"args\":$3}" http://10.231.0.1:3130/v1/health/probe 2>&1)" || { printf '%s\n' "$out" | tail -1; return 1; }
+  code="${out##*$'\n'}"; out="${out%$'\n'*}"
+  case "$code" in
+    200) printf '%s' "$out" | node -e 'let d="";process.stdin.on("data",c=>d+=c).on("end",()=>{const r=JSON.parse(d);console.log(r.text);process.exit(r.ok?0:1)})' ;;
+    409) printf '%s\n' "$out"; return 3 ;;
+    *) printf '%s\n' "$out"; return 1 ;;
+  esac
+}
+probe_check() { # name, connection, tool, json args
+  local out rc
+  out="$(probe "$2" "$3" "$4")"; rc=$?
+  case "$rc" in
+    0) printf '  ok    %s\n' "$1" ;;
+    3) skip "$1 ($out)" ;;
+    *) printf '  FAIL  %s  %s\n' "$1" "$(echo "$out" | tail -1 | cut -c1-160)"; fails=$((fails + 1)) ;;
+  esac
 }
 engine_default="$(sed -n 's/^  default: *\([a-z]*\).*/\1/p' config/runner.yaml 2>/dev/null | head -1)"
 
@@ -81,13 +95,8 @@ fi
 g_health="$(curl -s -m 10 "$(svc google-workspace-mcp 8081)/healthz" 2>&1)"
 if echo "$g_health" | grep -q '"ok":true'; then
   # Harmless reads: one message, today's events.
-  dc cp scripts/dev/mcp-call.mjs paperclip:/tmp/mcp-call.mjs >/dev/null 2>&1
-  if probe_key google_workspace; then
-    check "gmail read (1 message)" mcp_as google_workspace gmail_search '{"query":"in:inbox","max_results":1}'
-    check "google calendar read" mcp_as google_workspace calendar_list_events "{\"start\":\"$(date -u +%Y-%m-%dT00:00:00Z)\",\"end\":\"$(date -u +%Y-%m-%dT23:59:59Z)\",\"max_results\":5}"
-  else
-    skip "gmail and calendar reads (no agent is granted gmail_search and calendar_list_events, or setup hasn't keyed one yet: ops/apply-config.sh)"
-  fi
+  probe_check "gmail read (1 message)" google_workspace gmail_search '{"query":"in:inbox","max_results":1}'
+  probe_check "google calendar read" google_workspace calendar_list_events "{\"start\":\"$(date -u +%Y-%m-%dT00:00:00Z)\",\"end\":\"$(date -u +%Y-%m-%dT23:59:59Z)\",\"max_results\":5}"
   # Every connected account, not just the one the reads above happened to use.
   atoken="$(cat "${AIDENHQ_SECRETS_DIR:-/nonexistent}/google_auth_token" 2>/dev/null)"
   if [ -n "$atoken" ]; then
@@ -101,7 +110,6 @@ else
   printf '  skip  google workspace (not connected: %s)\n' "$(echo "$g_health" | cut -c1-80)"
 fi
 
-dc cp scripts/dev/mcp-call.mjs paperclip:/tmp/mcp-call.mjs >/dev/null 2>&1
 s_health="$(curl -s -m 10 "$(svc slack-mcp 8082)/healthz" 2>&1)"
 if echo "$s_health" | grep -q '"ok":true'; then
   # The host's read-only endpoint (its own token): /mcp needs an agent's key.
@@ -161,15 +169,18 @@ fi
 gh_health="$(curl -s -m 10 "$(svc github-mcp 8086)/healthz" 2>&1)"
 if echo "$gh_health" | grep -q '"ok":true'; then
   gh_whoami() {
-    local out
-    if ! out="$(mcp_as github github_whoami '{}')"; then
-      case "$out" in refused*) echo "$out" ;; *) echo "$(printf '%s' "$out" | tail -1) (if GitHub rejected the token: paste a new one in the GitHub setup on the board)" ;; esac
-      return 1
-    fi
+    local out rc
+    out="$(probe github github_whoami '{}')"; rc=$?
+    [ "$rc" -eq 3 ] && return 3
+    [ "$rc" -eq 0 ] || { echo "$(printf '%s' "$out" | tail -1) (if GitHub rejected the token: paste a new one in the GitHub setup on the board)"; return 1; }
     printf '%s' "$out" | grep -q '"login"' || { echo 'GitHub rejected the token: paste a new one in the GitHub setup on the board'; return 1; }
   }
-  if probe_key github; then check "github (whoami)" gh_whoami
-  else skip "github (whoami) (no agent is granted github_whoami, or setup hasn't keyed one yet: ops/apply-config.sh)"; fi
+  gh_out="$(gh_whoami)"; rc=$?
+  case "$rc" in
+    0) printf '  ok    github (whoami)\n' ;;
+    3) skip "github (whoami) (no agent is granted github_whoami)" ;;
+    *) printf '  FAIL  github (whoami)  %s\n' "$(echo "$gh_out" | tail -1 | cut -c1-160)"; fails=$((fails + 1)) ;;
+  esac
 else
   printf '  skip  github (not connected: %s)\n' "$(echo "$gh_health" | cut -c1-80)"
 fi
