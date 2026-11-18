@@ -43,14 +43,13 @@ and optional roles. Every tool call is checked in code against the grants table 
 (`kernel/src/proxy.ts`), using the caller's Paperclip identity. Roles gate a few extra powers, such as fleet
 tools or deploying apps.
 
-**Runner.** A host service (`services/runner`) that runs coding jobs for the Engineer agents in sandboxed per-task
-workspaces, and owns every git write: pushes, pull requests and merges. It checks each write in code before it
-happens. See [design/conversational-engineers.md](design/conversational-engineers.md).
+**Code host.** `modules/codehost-github` owns every git write: pushes, pull requests and merges, and checks each in code
+before it happens. Engineer coding jobs run in agent computers. See [design/conversational-engineers.md](design/conversational-engineers.md).
 
 **Approvals and tiers.** Every write that matters (push, PR, merge, fleet change, app deploy) is an *approval record*
 (a kernel record, `kernel/src/records.ts`; the board only reads and shows it): the exact request, decided once, outcome on the card. Code assigns the tier from verified state, never
-from text an agent wrote ([`services/runner/src/tiers.mjs`](../services/runner/src/tiers.mjs)):
-- **Tier 0** runs at once (for example a green merge in the agents org on a branch the runner pushed).
+from text an agent wrote ([`kernel/src/tier.ts`](../kernel/src/tier.ts)):
+- **Tier 0** runs at once (for example a green merge in the agents org on a branch the code host pushed).
 - **Tier 1** is decided by an AI reviewer model with a written policy.
 - **Tier 2** is the owner's tap on the board or the owner channel, or an exact typed reply such as `apply WOR-184`, after the
   AI reviewer has read it (its verdict is on the card).
