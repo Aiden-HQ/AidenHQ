@@ -44,7 +44,7 @@ settings:
   # admin and maintain; github-mcp refuses any other role). It lists every role that counts: [write] alone trusts no admin. `after_merge` is what follows a fix's merge: done (default: the
   # merged PR is the fix) or product-pin (this instance's product pin bump, its apply and the generation's health, for the
   # AidenHQ product repo this instance runs). Read by github-mcp (maintainer.ts), which the Maintainer's App tools and the
-  # board's watcher go through.
+  # Maintainer's watcher go through.
   maintainer_repos:
     default: []
 connections:
@@ -111,24 +111,16 @@ services:
         # The key of a product issue's opaque origin ids (scrub.ts originIds); without it nothing is filed upstream.
         GITHUB_ORIGIN_KEY_FILE: ${secrets.github_origin_key}
         MCP_TOKEN_FILE: ${secrets.github_service_key}
-        # The Maintainer's repos (setting maintainer_repos, as JSON): its App tools and the board's watcher act on these only.
+        # The Maintainer's repos (setting maintainer_repos, as JSON): its App tools and the Maintainer's watcher act on these only.
         GITHUB_MAINTAINER_REPOS: "${settings.maintainer_repos}"
-        # The board's Maintainer watcher's token: it opens /internal/maintainer/issues only (not /mcp).
-        MAINTAINER_ISSUES_TOKEN_FILE: ${secrets.github_maintainer_issues_token}
         # Shared sources (src_github): the orgs it syncs (github_orgs plus the agents org) and its warehouse login.
         GITHUB_SYNC_ORGS: "${settings.github_sync_orgs}"
         WAREHOUSE_PASSWORD_FILE: ${secrets.warehouse_src_github_password}
         # The GitHub App's tokens (repo reads, org Projects boards, the sync, its writes): the kernel's /v1/codehost/token, asked
         # for with MCP_TOKEN_FILE's token.
         AIDENHQ_KERNEL_URL: http://10.231.0.1:3130
-# The board reads the Maintainer's labelled issues (services/board/src/maintainer.ts) with a token of its own, narrower than
-# github_service_key: github-mcp takes it on that one read-only route and nowhere else. It is this module's (a module mounts
-# only its own secrets), and the board's watcher stays off until the maintainer module also supplies the routine's webhook.
-board_env:
-  MAINTAINER_ISSUES_TOKEN_FILE: ${secrets.github_maintainer_issues_token}
 # src_github's warehouse login (ops/warehouse-sources.sh gives the role this password); compile creates it when missing.
 generated_secrets:
   - github_service_key
-  - github_maintainer_issues_token
   - github_origin_key
   - warehouse_src_github_password

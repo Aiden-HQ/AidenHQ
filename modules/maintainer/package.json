@@ -1,0 +1,9 @@
+{
+  "name": "maintainer",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": { "node": ">=24" },
+  "description": "The Maintainer's issue watcher and its handbook checks.",
+  "scripts": { "test": "node --disable-warning=ExperimentalWarning --test test/*.test.mjs" }
+}

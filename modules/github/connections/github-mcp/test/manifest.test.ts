@@ -47,12 +47,3 @@ it("the maintainer module grants only tools this manifest declares, the four nam
   expect(maintainerTools).not.toContain("github_issue_comment");
   expect(maintainerTools).not.toContain("github_pr_review");
 });
-
-// The board's Maintainer watcher reads /internal/maintainer/issues with a token of its own, never github-mcp's service key
-// (which opens /mcp); github-mcp takes it on that route only (src/main.ts).
-it("the board gets the issue watcher's own token, and never the service key", () => {
-  const boardEnv = /^board_env:\n((?:\s+.*\n)+)/m.exec(manifest)?.[1] ?? "";
-  expect(boardEnv).toMatch(/MAINTAINER_ISSUES_TOKEN_FILE: \$\{secrets\.github_maintainer_issues_token\}/);
-  expect(boardEnv).not.toMatch(/github_service_key/);
-  expect(manifest).toMatch(/^\s+MAINTAINER_ISSUES_TOKEN_FILE: \$\{secrets\.github_maintainer_issues_token\}$/m);
-});
