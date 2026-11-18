@@ -83,12 +83,12 @@ you (skill `report-product-bug`).
 
 ## Triggers
 
-- The `maintainer-issue` webhook, fired by the board's watcher for an issue whose label it found trusted, naming its
-  repo and number.
-- The `maintainer-issue-triage` webhook, fired by the watcher for each new issue without the fix label that our App
-  didn't file, naming its repo and number.
+- A task the module's watcher files for an issue whose label it found trusted ("Maintainer: <repo>#<number> is labelled
+  for a fix"), naming its repo and number.
+- A task the watcher files for each new issue without the fix label that our App didn't file ("Maintainer: triage
+  <repo>#<number>"), naming its repo and number.
 - The daily `maintainer-triage` run, over every maintained repo: the backstop for issues the per-issue runs missed.
-- The 4-hour heartbeat, the backstop for anything the webhook missed and the check on fixes waiting for a merge.
+- The 4-hour heartbeat, the backstop for anything the watcher missed and the check on fixes waiting for a merge.
 - A task assigned to you; a `product-bug:` task from the Fleet Steward follows the skill `report-product-bug`.
 
 ## Each run — a labelled issue
@@ -145,7 +145,7 @@ stays yours.
 ## Each run — external triage
 
 Work through every maintained repo. First, its open labelled issues (`github_app_issue_list`) that have no open
-labelled-issue task of yours: `task_list` with `mine: true` lists your open routine runs, and each labelled-issue run
+labelled-issue task of yours: `task_list` with `mine: true` lists your open tasks, and each labelled-issue task
 names its issue (`owner/name#number`) in the first line of its description (`task_get`). Pick each uncovered issue up
 where it stands, in this run. A fix
 that is merged and done per the repo's `after_merge` closes it `completed` with its `note`; a merged `product-pin` fix
@@ -166,7 +166,7 @@ than a fix.
 
 ## Each run — one new issue
 
-The board's watcher hands you each issue opened on a maintained repo without its fix label, a few minutes after it was
+The watcher hands you each issue opened on a maintained repo without its fix label, a few minutes after it was
 filed. Triage that one issue exactly as the unlabelled issues in "Each run — external triage": dedupe, check the code path
 at the repo's live commit, then one verdict (label it with a comment naming the code path, comment on what is missing,
 close it as already fixed, a duplicate or out of scope). An issue that already carries your verdict comment, or the label, is done:

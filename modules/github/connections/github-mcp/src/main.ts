@@ -17,6 +17,7 @@ import { z } from "zod";
 import { kernelJwks, verifyCaller, type Caller } from "./aidenhq-sdk/caller.js";
 import { GitHub, GitHubAuthError, GitHubRefused, parseRef } from "./github.js";
 import { describeRepos, Maintainer, parseRepos } from "./maintainer.js";
+import { isModule } from "./module-caller.js";
 
 const log = pino({ level: process.env.LOG_LEVEL ?? "info", base: { svc: "github-mcp" }, redact: ["authorization", "*.authorization", "token", "*.token"] });
 const port = Number(process.env.PORT ?? 8086);
@@ -416,9 +417,9 @@ const bearer = (req: IncomingMessage, token: string) => {
 function authorized(req: IncomingMessage): boolean {
   return !inboundToken || bearer(req, inboundToken);
 }
-// The board's watcher holds its own token, which opens only the internal issue read (never /mcp); without one the read is shut.
-const issuesTokenFile = process.env.MAINTAINER_ISSUES_TOKEN_FILE;
-const issuesToken = issuesTokenFile && existsSync(issuesTokenFile) ? readFileSync(issuesTokenFile, "utf8").trim() : "";
+// The Maintainer module's watcher opens only the internal issue read (never /mcp) with its own module token, which the
+// kernel vouches for (module-caller.ts).
+const kernelUrl = process.env.AIDENHQ_KERNEL_URL ?? "http://10.231.0.1:3130";
 
 const http = createServer(async (req, res) => {
   const url = new URL(req.url ?? "/", "http://localhost");
@@ -427,11 +428,11 @@ const http = createServer(async (req, res) => {
     res.writeHead(ok ? 200 : 503, { "content-type": "application/json" }).end(JSON.stringify({ ok, detail: ok ? undefined : "no GitHub token (run scripts/github-auth.sh)" }));
     return;
   }
-  // The board's watcher: each maintained repo's open labelled issues updated since its cursor (`cursors`, JSON
+  // The Maintainer's watcher: each maintained repo's open labelled issues updated since its cursor (`cursors`, JSON
   // { "owner/name": iso }), with their trust verdict, and with `triage_cursors` its new unlabelled issues. Read-only, no
   // model call.
   if (url.pathname === "/internal/maintainer/issues") {
-    if (!issuesToken || !bearer(req, issuesToken)) return void res.writeHead(401).end();
+    if (!(await isModule(kernelUrl, String(req.headers.authorization ?? ""), "maintainer"))) return void res.writeHead(401).end();
     if (req.method !== "GET") return void res.writeHead(405).end();
     try {
       let cursors: Record<string, string> = {};
@@ -442,7 +443,7 @@ const http = createServer(async (req, res) => {
       }
       if (!cursors || typeof cursors !== "object" || Array.isArray(cursors) || Object.values(cursors).some((v) => typeof v !== "string"))
         throw new GitHubRefused("cursors must be a JSON object of repo to ISO timestamp");
-      // The triage cursors, sent only by a board that triages each new issue: { "owner/name": iso }, a repo absent on its
+      // The triage cursors, sent only by a watcher that triages each new issue: { "owner/name": iso }, a repo absent on its
       // first look.
       let triage: Record<string, string> | undefined;
       if (url.searchParams.has("triage_cursors")) {

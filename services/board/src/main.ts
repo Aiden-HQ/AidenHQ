@@ -4,7 +4,6 @@ import { createKernelAuth } from "./kernel-auth.js";
 import { createApp } from "./app.js";
 import { appsApi } from "./fleet.js";
 import { appWatchTick, type AppStatus } from "./app-watch.js";
-import { maintainerIssues, maintainerTriageWake, maintainerWake, startMaintainer, triageLimits } from "./maintainer.js";
 import { startDetector } from "./fleet-ops.js";
 import { ownerAlert, startNotify } from "./notify.js";
 import { createGrading } from "./grading.js";
@@ -56,11 +55,6 @@ startDetector(paperclip, store, grading, log);
 // The owner's app alerts (app-watch.ts), through the one notify. apps-mcp unreachable: skipped.
 const appWatch = () => void appWatchTick({ apps: () => appsApi<AppStatus[]>("/internal/status"), diskPct: async () => (await appsApi<{ disk_pct: number }>("/internal/host")).disk_pct, store, notify: ownerAlert }).catch((err) => log.warn({ err: String(err) }, "app alerts tick failed"));
 setInterval(appWatch, 2 * 60_000).unref();
-// The Maintainer's issue wake-up (maintainer.ts): off until the modules mount the webhook and github-mcp's token. Their
-// files are read on every tick: setup writes the webhook after apply has started this board.
-if (process.env.MAINTAINER_WEBHOOK_URL_FILE && process.env.MAINTAINER_ISSUES_TOKEN_FILE) {
-  startMaintainer({ wiring: () => { const [fire, issues, triage] = [maintainerWake(), maintainerIssues(), maintainerTriageWake()]; return fire && issues ? { fire, issues, triage, limits: triageLimits() } : undefined; }, store, log });
-} else log.info({}, "maintainer issue watcher off: MAINTAINER_WEBHOOK_URL_FILE or MAINTAINER_ISSUES_TOKEN_FILE is not set");
 // Recurring runs that are due start the Researcher's "Run recurring task" routine (recurring-start.ts).
 startRecurringRuns({ pc: paperclip, store, timezone: cfg.timezone, log });
 // The Costs tab: model calls with what OpenRouter billed for each, from the model gateway (kernel/src/gateway), agent
