@@ -1,33 +1,35 @@
-import { generateKeyPairSync } from "node:crypto";
-import { mkdtempSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import { expect, it } from "vitest";
 import { Projects, productTarget, upstreamReport } from "../src/projects.js";
 import { originIds, ownerTerms } from "../src/scrub.js";
 
+const CODEHOST = { url: "http://codehost", key: () => "gh-key" };
+/** codehost-github's POST /ops/token, faked: `covers(repo, perms)` says whether the App covers that (else 422). */
+function ops(url: string, init: RequestInit, token: string, covers: (repo: string, perms: Record<string, string>) => boolean = () => true) {
+  if (url !== "http://codehost/ops/token") return undefined;
+  const b = JSON.parse(String(init.body));
+  const ok = (init.headers as Record<string, string>).authorization === "Bearer gh-key" && covers(b.repo, b.perms);
+  return { status: ok ? 200 : 422, json: async () => (ok ? { token, repo: b.repo, perms: b.perms, expires_at: new Date(Date.now() + 3300_000).toISOString(), app: { slug: "acme-app" } } : { error: "GitHub said 422" }) };
+}
+
 it("design-review status: only on the PR's current head, with a token narrowed to statuses and PR reads", async () => {
-  const dir = mkdtempSync(join(tmpdir(), "gh-app-"));
-  writeFileSync(join(dir, "app_id"), "123\n");
-  writeFileSync(join(dir, "key.pem"), generateKeyPairSync("rsa", { modulusLength: 2048 }).privateKey.export({ type: "pkcs8", format: "pem" }));
   const head = "b".repeat(40);
   const calls: { method: string; url: string; body?: any }[] = [];
   const fetchFn = (async (url: string, init: RequestInit) => {
     calls.push({ method: init.method!, url, body: init.body ? JSON.parse(String(init.body)) : undefined });
     const json = (status: number, body: unknown) => ({ status, json: async () => body });
-    if (url.endsWith("/repos/org/app/installation")) return json(200, { id: 9, permissions: { statuses: "write" } });
-    if (url.endsWith("/app/installations/9/access_tokens")) return json(201, { token: "ghs_s" });
+    const t = ops(url, init, "ghs_s");
+    if (t) return t;
     if (url.endsWith("/pulls/4")) return json(200, { state: "open", head: { sha: head } });
     if (url.includes("/statuses/")) return json(201, { context: "design-review", state: "success" });
     return json(404, {});
   }) as unknown as typeof fetch;
-  const p = new Projects(dir, fetchFn);
+  const p = new Projects(CODEHOST, fetchFn);
   const status = { state: "success", context: "design-review", description: "ok" };
 
   await expect(p.commitStatus("org", "app", 4, "a".repeat(40), status)).rejects.toThrow(/isn't the current head/);
   expect(calls.some((c) => c.url.includes("/statuses/"))).toBe(false);
   expect(await p.commitStatus("org", "app", 4, head, status)).toMatchObject({ number: 4, sha: head, state: "success" });
-  expect(calls.find((c) => c.url.endsWith("access_tokens"))!.body).toEqual({ repositories: ["app"], permissions: { statuses: "write", pull_requests: "read" } });
+  expect(calls.find((c) => c.url.endsWith("/ops/token"))!.body).toEqual({ repo: "org/app", perms: { statuses: "write", pull_requests: "read" } });
   expect(calls.at(-1)!.url).toBe(`https://api.github.com/repos/org/app/statuses/${head}`);
 });
 
@@ -39,9 +41,6 @@ it("product issues: only the product-issues role, only the configured product re
 });
 
 it("a product issue as the App: Issues: write required, a narrowed token, deduped by fingerprint, status names the fixing commit", async () => {
-  const dir = mkdtempSync(join(tmpdir(), "gh-app-"));
-  writeFileSync(join(dir, "app_id"), "123\n");
-  writeFileSync(join(dir, "key.pem"), generateKeyPairSync("rsa", { modulusLength: 2048 }).privateKey.export({ type: "pkcs8", format: "pem" }));
   let issues = "read";
   const filed: { number: number; state: string; body: string }[] = [];
   const calls: { method: string; url: string; body?: any }[] = [];
@@ -49,8 +48,8 @@ it("a product issue as the App: Issues: write required, a narrowed token, dedupe
     const body = init.body ? JSON.parse(String(init.body)) : undefined;
     calls.push({ method: init.method!, url, body });
     const json = (status: number, b: unknown) => ({ status, json: async () => b });
-    if (url.endsWith("/repos/acme/product/installation")) return json(200, { id: 9, permissions: { issues } });
-    if (url.endsWith("/app/installations/9/access_tokens")) return json(201, { token: "ghs_i" });
+    const t = ops(url, init, "ghs_i", (repo, perms) => repo === "acme/product" && (perms.issues !== "write" || issues === "write"));
+    if (t) return t;
     if (url.includes("/search/issues")) {
       const q = decodeURIComponent(url.split("q=")[1]!.split("&")[0]!);
       // Search is fuzzy: a near-miss fingerprint comes back too, and must not count.
@@ -62,13 +61,13 @@ it("a product issue as the App: Issues: write required, a narrowed token, dedupe
     if (url.includes("/issues/12/events")) return json(200, [{ event: "referenced", commit_id: "a".repeat(40) }, { event: "closed", commit_id: "c".repeat(40) }]);
     return json(404, {});
   }) as unknown as typeof fetch;
-  const p = new Projects(dir, fetchFn);
+  const p = new Projects(CODEHOST, fetchFn);
   const report = { fingerprint: "product-bug:runner-rebase-asks", title: "runner: rebase asks on cancelled tasks", body: "WOR-1, WOR-2" };
   await expect(p.reportIssue("acme", "product", report)).rejects.toThrow(/Issues: Read and write/);
   issues = "write";
   expect(await p.reportIssue("acme", "product", report)).toEqual({ deduplicated: false, number: 12, state: "open", url: "u12" });
   expect(filed[0]!.body).toBe("WOR-1, WOR-2\n\nproduct-bug:runner-rebase-asks");
-  expect(calls.find((c) => c.url.endsWith("access_tokens"))!.body).toEqual({ repositories: ["product"], permissions: { issues: "write" } });
+  expect(calls.filter((c) => c.url.endsWith("/ops/token")).at(-1)!.body).toEqual({ repo: "acme/product", perms: { issues: "write" } });
   expect(await p.reportIssue("acme", "product", { ...report, body: "WOR-3" })).toEqual({ deduplicated: true, number: 12, state: "open", url: "u12#c77" });
   expect(filed).toHaveLength(1);
   filed[0]!.state = "closed";
@@ -79,9 +78,6 @@ it("a product issue as the App: Issues: write required, a narrowed token, dedupe
 });
 
 it("dedupe is the only limiter: every new fingerprint opens an issue (labelled agent-fix), and a repeat only comments", async () => {
-  const dir = mkdtempSync(join(tmpdir(), "gh-app-"));
-  writeFileSync(join(dir, "app_id"), "123\n");
-  writeFileSync(join(dir, "key.pem"), generateKeyPairSync("rsa", { modulusLength: 2048 }).privateKey.export({ type: "pkcs8", format: "pem" }));
   const filed: { number: number; body: string; labels?: string[] }[] = [];
   const comments: string[] = [];
   const calls: { method: string; url: string; body?: any }[] = [];
@@ -89,8 +85,8 @@ it("dedupe is the only limiter: every new fingerprint opens an issue (labelled a
     const body = init.body ? JSON.parse(String(init.body)) : undefined;
     calls.push({ method: init.method!, url, body });
     const json = (status: number, b: unknown) => ({ status, json: async () => b });
-    if (url.endsWith("/installation")) return json(200, { id: 9, permissions: { issues: "write" } });
-    if (url.endsWith("/access_tokens")) return json(201, { token: "ghs_c" });
+    const t = ops(url, init, "ghs_c");
+    if (t) return t;
     if (url.includes("/search/issues")) {
       const q = decodeURIComponent(url.split("q=")[1]!.split("&")[0]!);
       const fingerprint = /in:body "([^"]+)"/.exec(q)![1]!;
@@ -101,7 +97,7 @@ it("dedupe is the only limiter: every new fingerprint opens an issue (labelled a
     if (url.includes("/comments")) return comments.push(body.body), json(201, { html_url: "u1#c1" });
     return json(404, {});
   }) as unknown as typeof fetch;
-  const p = new Projects(dir, fetchFn);
+  const p = new Projects(CODEHOST, fetchFn);
   const report = (n: number) => ({ fingerprint: `product-bug:board-crash-${n}`, title: "board: a crash", body: "It crashes." });
 
   // Dedupe is the only limiter: ten distinct defects in a row all file, each labelled.
@@ -118,23 +114,20 @@ it("dedupe is the only limiter: every new fingerprint opens an issue (labelled a
 });
 
 it("an issue opened for a new fingerprint carries agent-fix, created when the repo has no such label", async () => {
-  const dir = mkdtempSync(join(tmpdir(), "gh-app-"));
-  writeFileSync(join(dir, "app_id"), "123\n");
-  writeFileSync(join(dir, "key.pem"), generateKeyPairSync("rsa", { modulusLength: 2048 }).privateKey.export({ type: "pkcs8", format: "pem" }));
   const calls: { method: string; url: string; body?: any }[] = [];
   const fetchFn = (async (url: string, init: RequestInit) => {
     const body = init.body ? JSON.parse(String(init.body)) : undefined;
     calls.push({ method: init.method!, url, body });
     const json = (status: number, b: unknown) => ({ status, json: async () => b });
-    if (url.endsWith("/installation")) return json(200, { id: 9, permissions: { issues: "write" } });
-    if (url.endsWith("/access_tokens")) return json(201, { token: "ghs_l" });
+    const t = ops(url, init, "ghs_l");
+    if (t) return t;
     if (url.includes("/search/issues")) return json(200, { items: [] });
     if (url.endsWith("/labels/agent-fix") && init.method === "GET") return json(404, { message: "Not Found" });
     if (url.endsWith("/repos/acme/product/labels") && init.method === "POST") return json(201, { name: "agent-fix" });
     if (url.endsWith("/repos/acme/product/issues")) return json(201, { number: 8, html_url: "u8" });
     return json(404, {});
   }) as unknown as typeof fetch;
-  const p = new Projects(dir, fetchFn);
+  const p = new Projects(CODEHOST, fetchFn);
   await p.reportIssue("acme", "product", { fingerprint: "product-bug:runner-rebase-asks", title: "runner: rebase", body: "x" });
   expect(calls.find((c) => c.url.endsWith("/repos/acme/product/labels") && c.method === "POST")!.body).toEqual({ name: "agent-fix", color: "0e8a16", description: "A product bug an agent found and can fix" });
   expect(calls.find((c) => c.url.endsWith("/repos/acme/product/issues") && c.method === "POST")!.body.labels).toEqual(["agent-fix"]);
@@ -185,23 +178,20 @@ it("A18: owner data in an upstream report is refused with the matches; a clean o
 });
 
 it("A18 exit: a duplicate report becomes a comment on the open issue, never a second issue", async () => {
-  const dir = mkdtempSync(join(tmpdir(), "gh-app-"));
-  writeFileSync(join(dir, "app_id"), "123\n");
-  writeFileSync(join(dir, "key.pem"), generateKeyPairSync("rsa", { modulusLength: 2048 }).privateKey.export({ type: "pkcs8", format: "pem" }));
   const filed: { number: number; state: string; body: string }[] = [];
   const comments: string[] = [];
   const fetchFn = (async (url: string, init: RequestInit) => {
     const body = init.body ? JSON.parse(String(init.body)) : undefined;
     const json = (status: number, b: unknown) => ({ status, json: async () => b });
-    if (url.endsWith("/installation")) return json(200, { id: 9, permissions: { issues: "write" } });
-    if (url.endsWith("/access_tokens")) return json(201, { token: "ghs_i" });
+    const t = ops(url, init, "ghs_i");
+    if (t) return t;
     if (url.includes("/search/issues")) return json(200, { items: filed.map((i) => ({ html_url: `u${i.number}`, ...i })) });
     if (url.endsWith("/labels/agent-fix")) return json(200, { name: "agent-fix" });
     if (url.endsWith("/issues") && init.method === "POST") return filed.push({ number: 5, state: "open", body: body.body }), json(201, { number: 5, html_url: "u5" });
     if (url.endsWith("/issues/5/comments")) return comments.push(body.body), json(201, { html_url: "u5#c1" });
     return json(404, {});
   }) as unknown as typeof fetch;
-  const p = new Projects(dir, fetchFn);
+  const p = new Projects(CODEHOST, fetchFn);
   const evidence = { module: "board", version: "abc1234", reproduction: "1. open Settings", log: "TypeError: x is undefined" };
   const report = (agent: string) => upstreamReport({ fingerprint: "product-bug:board-settings-crash", title: "board: Settings crashes", body: "Settings crashes.", evidence }, originIds("s".repeat(32), agent), []);
   expect(await p.reportIssue("upstream-org", "product", report("fleet-ops"))).toMatchObject({ deduplicated: false, number: 5 });
@@ -212,15 +202,13 @@ it("A18 exit: a duplicate report becomes a comment on the open issue, never a se
 });
 
 it("mints a read-only narrowed token and flattens project items", async () => {
-  const dir = mkdtempSync(join(tmpdir(), "gh-app-"));
-  writeFileSync(join(dir, "app_id"), "123\n");
-  writeFileSync(join(dir, "key.pem"), generateKeyPairSync("rsa", { modulusLength: 2048 }).privateKey.export({ type: "pkcs8", format: "pem" }));
   const calls: { method: string; url: string; body?: any; auth?: string }[] = [];
   const fetchFn = (async (url: string, init: RequestInit) => {
     calls.push({ method: init.method!, url, body: init.body ? JSON.parse(String(init.body)) : undefined, auth: (init.headers as any).authorization });
     const json = (status: number, body: unknown) => ({ status, json: async () => body });
-    if (url.endsWith("/orgs/acme/installation")) return json(200, { id: 7 });
-    if (url.endsWith("/app/installations/7/access_tokens")) return json(201, { token: "ghs_x", expires_at: new Date(Date.now() + 3600_000).toISOString() });
+    const t = ops(url, init, "ghs_x");
+    if (t) return t;
+    if (url.endsWith("/users/acme")) return json(200, { type: "Organization" });
     return json(200, { data: { organization: { projectV2: {
       title: "BPN", url: "https://github.com/orgs/acme/projects/23", closed: false,
       fields: { nodes: [{ name: "Status", dataType: "SINGLE_SELECT", options: [{ name: "Todo" }, { name: "Done" }] }, {}] },
@@ -231,9 +219,9 @@ it("mints a read-only narrowed token and flattens project items", async () => {
     } } } });
   }) as unknown as typeof fetch;
 
-  const out = await new Projects(dir, fetchFn).read({ org: "acme", number: 23, limit: 100 });
+  const out = await new Projects(CODEHOST, fetchFn).read({ org: "acme", number: 23, limit: 100 });
 
-  expect(calls.find((c) => c.url.endsWith("access_tokens"))!.body).toEqual({ permissions: { organization_projects: "read", issues: "read", pull_requests: "read" } });
+  expect(calls.filter((c) => c.url.endsWith("/ops/token")).at(-1)!.body).toEqual({ repo: "acme/*", perms: { organization_projects: "read", issues: "read", pull_requests: "read" } });
   expect(calls.at(-1)!.auth).toBe("Bearer ghs_x");
   expect(out.project.title).toBe("BPN");
   expect(out.fields).toEqual([{ name: "Status", type: "SINGLE_SELECT", options: ["Todo", "Done"] }]);
@@ -245,65 +233,67 @@ it("mints a read-only narrowed token and flattens project items", async () => {
 });
 
 it("mints a read-only token for an org, and reports a miss when the App isn't installed", async () => {
-  const dir = mkdtempSync(join(tmpdir(), "gh-app-"));
-  writeFileSync(join(dir, "app_id"), "123\n");
-  writeFileSync(join(dir, "key.pem"), generateKeyPairSync("rsa", { modulusLength: 2048 }).privateKey.export({ type: "pkcs8", format: "pem" }));
   const calls: { method: string; url: string; body?: any }[] = [];
   const fetchFn = (async (url: string, init: RequestInit) => {
     calls.push({ method: init.method!, url, body: init.body ? JSON.parse(String(init.body)) : undefined });
     const json = (status: number, body: unknown) => ({ status, json: async () => body });
-    if (url.endsWith("/orgs/acme/installation")) return json(200, { id: 7, permissions: { issues: "read", pull_requests: "read" } });
-    if (url.endsWith("/app/installations/7/access_tokens")) return json(201, { token: "ghs_o", expires_at: new Date(Date.now() + 3600_000).toISOString() });
+    const t = ops(url, init, "ghs_o", (repo) => repo === "acme/*");
+    if (t) return t;
+    if (url.endsWith("/users/acme") || url.endsWith("/users/other")) return json(200, { type: "Organization" });
     return json(404, { message: "Not Found" });
   }) as unknown as typeof fetch;
-  const p = new Projects(dir, fetchFn);
+  const p = new Projects(CODEHOST, fetchFn);
 
   expect(await p.orgToken("acme")).toBe("ghs_o");
   expect(await p.orgToken("other")).toBeUndefined();
-  expect(calls.find((c) => c.url.endsWith("access_tokens"))!.body).toEqual({ permissions: { issues: "read", pull_requests: "read" } });
+  expect(calls.find((c) => c.url.endsWith("/ops/token"))!.body).toEqual({ repo: "acme/*", perms: { issues: "read", pull_requests: "read" } });
+});
+
+it("an org whose installation lacks Projects read still syncs issues and PRs, its boards off", async () => {
+  const fetchFn = (async (url: string, init: RequestInit) => {
+    const t = ops(url, init, "ghs_n", (_repo, perms) => !perms.organization_projects);
+    if (t) return t;
+    if (url.endsWith("/users/acme")) return { status: 200, json: async () => ({ type: "Organization" }) };
+    return { status: 200, json: async () => ({ total_count: 0, items: [] }) };
+  }) as unknown as typeof fetch;
+  const p = new Projects(CODEHOST, fetchFn);
+  expect(await p.account("acme")).toEqual({ user: false, projects: false });
+  await expect(p.request("acme", "GET", "/search/issues?q=x")).resolves.toEqual({ total_count: 0, items: [] });
 });
 
 it("mints a read-only token for a repo the App covers, and reports a miss elsewhere", async () => {
-  const dir = mkdtempSync(join(tmpdir(), "gh-app-"));
-  writeFileSync(join(dir, "app_id"), "123\n");
-  writeFileSync(join(dir, "key.pem"), generateKeyPairSync("rsa", { modulusLength: 2048 }).privateKey.export({ type: "pkcs8", format: "pem" }));
   const calls: { method: string; url: string; body?: any }[] = [];
   const fetchFn = (async (url: string, init: RequestInit) => {
     calls.push({ method: init.method!, url, body: init.body ? JSON.parse(String(init.body)) : undefined });
     const json = (status: number, body: unknown) => ({ status, json: async () => body });
-    if (url.endsWith("/repos/acme/app/installation")) return json(200, { id: 9, permissions: { contents: "read", issues: "read", pull_requests: "read", checks: "read", statuses: "read", actions: "read", administration: "write" } });
-    if (url.endsWith("/app/installations/9/access_tokens")) return json(201, { token: "ghs_r", expires_at: new Date(Date.now() + 3600_000).toISOString() });
+    const t = ops(url, init, "ghs_r", (repo) => repo === "acme/app");
+    if (t) return t;
     return json(404, { message: "Not Found" });
   }) as unknown as typeof fetch;
-  const p = new Projects(dir, fetchFn);
+  const p = new Projects(CODEHOST, fetchFn);
 
   expect(await p.repoToken("acme", "app")).toBe("ghs_r");
   expect(await p.repoToken("acme", "app")).toBe("ghs_r");
   expect(await p.repoToken("other", "repo")).toBeUndefined();
   expect(await p.repoToken("other", "repo")).toBeUndefined();
 
-  expect(calls.find((c) => c.url.endsWith("/repos/acme/app/installation"))).toBeTruthy();
-  expect(calls.find((c) => c.url.endsWith("/repos/other/repo/installation"))).toBeTruthy();
-  expect(calls.find((c) => c.url.endsWith("access_tokens"))!.body).toEqual({
-    repositories: ["app"],
-    permissions: { contents: "read", issues: "read", pull_requests: "read", checks: "read", statuses: "read", actions: "read" },
-  });
-  expect(calls).toHaveLength(3); // installation + token once, the other repo's miss once: both cached
+  expect(calls.map((c) => c.body)).toEqual([ // one ask each: the token and the miss are both remembered
+    { repo: "acme/app", perms: { contents: "read", issues: "read", pull_requests: "read", checks: "read", statuses: "read", actions: "read" } },
+    { repo: "other/repo", perms: { contents: "read", issues: "read", pull_requests: "read", checks: "read", statuses: "read", actions: "read" } },
+  ]);
 });
 
-it("asks only for what the installation grants, and finds a user account's installation", async () => {
-  const dir = mkdtempSync(join(tmpdir(), "gh-app-"));
-  writeFileSync(join(dir, "app_id"), "123\n");
-  writeFileSync(join(dir, "key.pem"), generateKeyPairSync("rsa", { modulusLength: 2048 }).privateKey.export({ type: "pkcs8", format: "pem" }));
+it("a user account gets an org-wide token without Projects", async () => {
   const asked: any[] = [];
   const fetchFn = (async (url: string, init: RequestInit) => {
     const json = (status: number, body: unknown) => ({ status, json: async () => body });
-    if (url.endsWith("/orgs/sam/installation")) return json(404, { message: "Not Found" });
-    if (url.endsWith("/users/sam/installation")) return json(200, { id: 9, permissions: { issues: "write", pull_requests: "write", contents: "write" } });
-    if (url.endsWith("/app/installations/9/access_tokens")) { asked.push(JSON.parse(String(init.body))); return json(201, { token: "ghs_y", expires_at: new Date(Date.now() + 3600_000).toISOString() }); }
+    if (url.endsWith("/users/sam")) return json(200, { type: "User" });
+    const t = ops(url, init, "ghs_y");
+    if (t) return asked.push(JSON.parse(String(init.body))), t;
     return json(200, {});
   }) as unknown as typeof fetch;
-  const p = new Projects(dir, fetchFn);
+  const p = new Projects(CODEHOST, fetchFn);
   expect(await p.account("sam")).toEqual({ user: true, projects: false });
-  expect(asked[0]).toEqual({ permissions: { issues: "read", pull_requests: "read" } });
+  expect(await p.orgToken("sam")).toBe("ghs_y");
+  expect(asked[0]).toEqual({ repo: "sam/*", perms: { issues: "read", pull_requests: "read" } });
 });

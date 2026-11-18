@@ -1,12 +1,10 @@
 import { generateKeyPairSync } from "node:crypto";
-import { mkdtempSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import { afterEach, expect, it, vi } from "vitest";
 import { Maintainer, parseRepos } from "../src/maintainer.js";
 import { Projects } from "../src/projects.js";
 
 const APP = { id: 4242, slug: "acme-bot" };
+const CODEHOST = { url: "http://codehost", key: () => "gh-key" };
 const PRODUCT = "acme/product";
 const COMMIT = "c".repeat(40);
 
@@ -37,9 +35,8 @@ function fake(opts: {
     const body = init.body ? JSON.parse(String(init.body)) : undefined;
     calls.push({ method, url, body });
     const json = (status: number, b: unknown) => ({ status, json: async () => b });
-    if (u.pathname === "/app") return json(200, APP);
-    if (/^\/repos\/[^/]+\/[^/]+\/installation$/.test(u.pathname)) return json(200, { id: 9, permissions: { issues: "write", contents: "read" } });
-    if (u.pathname === "/app/installations/9/access_tokens") return json(201, { token: "ghs_t", expires_at: new Date(Date.now() + 3600_000).toISOString() });
+    // codehost-github's /ops/token: the App's token and its slug.
+    if (url === "http://codehost/ops/token") return json(200, { token: "ghs_t", expires_at: new Date(Date.now() + 3300_000).toISOString(), app: { slug: APP.slug } });
     const perm = u.pathname.match(/^\/repos\/[^/]+\/[^/]+\/collaborators\/([^/]+)\/permission$/);
     if (perm && opts.failPermission) return json(opts.failPermission, { message: "Forbidden" });
     if (perm) {
@@ -100,10 +97,7 @@ function fake(opts: {
 }
 
 function maintainer(f: ReturnType<typeof fake>, terms: string[] = [], repos: unknown[] = [{ repo: PRODUCT }]) {
-  const dir = mkdtempSync(join(tmpdir(), "gh-app-"));
-  writeFileSync(join(dir, "app_id"), "123\n");
-  writeFileSync(join(dir, "key.pem"), generateKeyPairSync("rsa", { modulusLength: 2048 }).privateKey.export({ type: "pkcs8", format: "pem" }));
-  return new Maintainer(new Projects(dir, f.fetchFn), parseRepos(JSON.stringify(repos)), terms);
+  return new Maintainer(new Projects(CODEHOST, f.fetchFn), parseRepos(JSON.stringify(repos)), terms);
 }
 
 const labeled = (login: string, at: string, app?: { id: number; slug: string }) => ({
@@ -133,7 +127,7 @@ it("trusts a label from our App bot, an admin or a maintain collaborator, and no
   const { events } = await m.labelEvents(PRODUCT, 1);
   const trust = Object.fromEntries(events.map((e) => [e.actor, e.trusted]));
   expect(trust).toEqual({ "acme-bot[bot]": true, "admin-user": true, "maintainer-user": true, "writer-user": false, "triage-user": false, "random-user": false });
-  // The App's own event is trusted by app_id even when the actor login is something else.
+  // The App's own event is trusted by its slug (performed_via_github_app) even when the actor login is something else.
   const f2 = fake({ issues: [{ number: 1, updated_at: "2026-01-01T00:00:00Z" }], timelines: { 1: [labeled("someone", "2026-01-01T00:00:00Z", APP)] } });
   expect((await maintainer(f2).labelEvents(PRODUCT, 1)).events[0]!.trusted).toBe(true);
 });
@@ -168,7 +162,7 @@ it("a collaborator's role is looked up with a metadata-read token, and read, a 4
     permissions: { "admin-user": "admin" },
   });
   expect((await maintainer(f).labelEvents(PRODUCT, 1)).events[0]!.trusted).toBe(true);
-  const tokens = f.calls.filter((c) => c.url.includes("/access_tokens")).map((c) => c.body.permissions);
+  const tokens = f.calls.filter((c) => c.url.endsWith("/ops/token")).map((c) => c.body.perms);
   expect(tokens).toContainEqual({ metadata: "read" });
   expect(tokens.every((p: Record<string, string>) => p.administration === undefined)).toBe(true);
   expect(f.calls.filter((c) => c.url.endsWith("/collaborators/admin-user/permission"))).toHaveLength(1);
@@ -433,7 +427,7 @@ it("maintainer_repos: defaults, bare repos, and a role outside admin, maintain o
 
 it("a list that doesn't parse refuses every tool and the watcher's read, naming why", async () => {
   const f = fake({});
-  const m = new Maintainer(new Projects(mkdtempSync(join(tmpdir(), "gh-app-")), f.fetchFn), new Error("maintainer_repos[0]: trusted must be one or more of admin, maintain, write"));
+  const m = new Maintainer(new Projects(CODEHOST, f.fetchFn), new Error("maintainer_repos[0]: trusted must be one or more of admin, maintain, write"));
   await expect(m.issueList(PRODUCT)).rejects.toThrow(/maintainer_repos is invalid: .*trusted/);
   await expect(m.issuesSince({})).rejects.toThrow(/maintainer_repos is invalid/);
   expect(f.calls).toHaveLength(0);
