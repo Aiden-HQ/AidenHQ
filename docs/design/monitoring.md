@@ -46,7 +46,7 @@ kills are the host's.
 Images (pinned by digest; `scripts/supply-chain/best-version.mjs`, release dates):
 `prom/prometheus:v3.16.0` (2026-11-05), `prom/node-exporter:v1.12.1` (2026-07-14), `prom/alertmanager:v0.35.0`
 (2026-11-09), `grafana/grafana:13.3.0` (2026-10-27), `ghcr.io/google/cadvisor:v0.60.6` (GitHub release 2026-09-18),
-`grafana/mcp-grafana:2.2.0` (2026-11-02).
+`grafana/mcp-grafana:2.3.0` (2026-11-10).
 
 ## Metrics
 
