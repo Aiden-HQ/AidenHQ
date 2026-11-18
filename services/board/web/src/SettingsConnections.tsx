@@ -66,6 +66,13 @@ function ConnectionTile({ r, v, can }: { r: ConnectionRow; v: Verdict; can: Can 
       {v.action.label}
     </LinkButton>
   ) : null;
+  // A connected sign-in can run again: to grant more (the scope picker) or to switch accounts.
+  const again =
+    r.signIn?.state === "ok" && can.signIn ? (
+      <LinkButton size="sm" href={`/${r.name}/connect`}>
+        {r.signIn.scopes ? "Change access" : "Reconnect"}
+      </LinkButton>
+    ) : null;
   const status = changing ? <StatusDot tone="busy">Changing</StatusDot> : <StatusDot tone={TONE[v.status]}>{STATUS_LABEL[v.status]}</StatusDot>;
   const who = r.kind === "service" ? "Engineer jobs" : v.status === "builtin" ? null : r.grants.length ? `${r.grants.length} agent${r.grants.length === 1 ? "" : "s"}` : "No agents yet";
   return (
@@ -87,7 +94,7 @@ function ConnectionTile({ r, v, can }: { r: ConnectionRow; v: Verdict; can: Can 
       >
         {v.reason}
       </Tile>
-      <Dialog open={open} onClose={() => setOpen(false)} title={displayName(r.name)} wide actions={connect}>
+      <Dialog open={open} onClose={() => setOpen(false)} title={displayName(r.name)} wide actions={connect ?? again}>
         <div className="st-conn">
           <p className="st-conn-state">
             {status} <span>{v.reason}</span>

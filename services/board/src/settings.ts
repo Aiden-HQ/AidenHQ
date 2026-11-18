@@ -256,6 +256,8 @@ export interface SignIn {
   configured: boolean;
   since: string;
   detail?: string;
+  /** Connected, and the owner may pick what to grant on a Reconnect. */
+  scopes?: boolean;
 }
 
 /** Every connection the compiled config has, every runner service with setup steps, and each warehouse source. */
