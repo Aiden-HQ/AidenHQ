@@ -29,7 +29,5 @@ export function sandboxConfig(env: (k: string) => string | undefined = (k) => pr
     boxGatewayUrl: "http://10.231.2.1:8200",
     boxDir: join(homedir(), ".local/state/aidenhq-computers/jobs"),
     timeout_minutes: y.timeout_minutes ?? 60,
-    stall_minutes: y.stall_minutes ?? 15,
-    progress_minutes: y.progress_minutes ?? 35,
   };
 }

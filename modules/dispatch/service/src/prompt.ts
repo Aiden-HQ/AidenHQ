@@ -103,14 +103,13 @@ ${REPLY(user)}
 }
 
 /** What a finished job posts: its reply, nothing (NO_REPLY), or a notice of how it stopped. */
-export function outcome(v: { exit?: number | null; timedOut?: boolean; stalled?: boolean; stopped?: string | null; final?: string }): { kind: "reply" | "notice"; body: string } | undefined {
+export function outcome(v: { exit?: number | null; timedOut?: boolean; stopped?: string; final?: string }): { kind: "reply" | "notice"; body: string } | undefined {
   const reply = String(v.final ?? "").trim();
-  if (!v.exit && !v.timedOut && reply) return reply === NO_REPLY ? undefined : { kind: "reply", body: reply };
+  if (!v.exit && !v.timedOut && !v.stopped && reply) return reply === NO_REPLY ? undefined : { kind: "reply", body: reply };
   const again = "Say **continue** to pick up where it stopped.";
   const body = v.stopped ? `**Stopped:** ${v.stopped}. Rethink the approach, or ${again.toLowerCase()}`
-    : v.stalled ? `**Stalled:** the agent produced nothing for too long, so it was stopped. ${again}`
-      : v.timedOut ? `**Timed out.** ${again}`
-        : v.exit ? `**Failed** (exit code ${v.exit}).`
-          : `**Stopped before finishing:** the agent ended without a reply. ${again}`;
+    : v.timedOut ? `**Timed out.** ${again}`
+      : v.exit ? `**Failed** (exit code ${v.exit}).`
+        : `**Stopped before finishing:** the agent ended without a reply. ${again}`;
   return { kind: "notice", body };
 }

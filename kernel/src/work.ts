@@ -30,7 +30,7 @@ export function createWork({ db, records }: { db: DatabaseSync; records: Records
       if (!r) return null;
       const why = JSON.parse(r.why || "{}"), progress = JSON.parse(r.progress || "{}");
       return {
-        ...job(r), exit: r.exit ?? null, timed_out: why.timedOut === true, stalled: why.stalled === true, stopped: why.stopped ?? null, cancelled: why.cancelled === true,
+        ...job(r), exit: r.exit ?? null, timed_out: why.timedOut === true, cancelled: why.cancelled === true,
         usage: r.usage ? (JSON.parse(r.usage) as { input: number; cached: number; output: number }) : null,
         progress: { said: progress.said ?? null, plan: progress.plan ?? [], steps: progress.steps ?? [] }, final: r.final || null,
       };

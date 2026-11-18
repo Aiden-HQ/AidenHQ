@@ -1,11 +1,12 @@
 // Every kernel call the dispatch module makes, with its own module token (roles kernel.jobs and kernel.cp-read): it holds no
 // other credential, reads Paperclip only through the kernel's read routes and writes to tasks only through the kernel.
+import type { Step } from "./progress.ts";
 import type { Agent, Comment, Directory, Issue } from "./thread.ts";
 
 /** An inbox row the module claimed (kernel wakes.ts); `live_job`: a comment for that running job. */
 export interface Wake { key: string; task: string; agent: string; cause: string; at: number; live_job?: string }
 /** A job as the kernel shows it (jobs.ts JobView, the fields dispatch reads). */
-export interface JobView { id: string; task: string; agent: string; state: string; exit: number | null; final: string; session: string | null; timedOut: boolean; stalled: boolean; stopped: string | null }
+export interface JobView { id: string; task: string; agent: string; state: string; exit: number | null; final: string; session: string | null; timedOut: boolean; progress?: { steps?: Step[] } }
 
 export interface Kernel {
   claim(limit: number): Promise<Wake[]>;

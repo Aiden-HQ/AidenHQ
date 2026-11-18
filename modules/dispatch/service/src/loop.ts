@@ -7,6 +7,7 @@ import type { DatabaseSync } from "node:sqlite";
 import { KernelError, type Kernel, type Wake } from "./kernel.ts";
 import { buildPrompt, outcome, type Words } from "./prompt.ts";
 import { createAsker } from "./asker.ts";
+import { progressTracker } from "./progress.ts";
 import { agentMade, fence, freshWords, moduleMade, ownRequest, redirectNote, speaker, spoke, stripHidden, threadEntries, threadSection, type Agent, type Directory, type Issue } from "./thread.ts";
 
 // The jobs this module started, until their outcome is posted; a start asked for whose answer isn't recorded yet (`starting`:
@@ -20,7 +21,7 @@ CREATE TABLE IF NOT EXISTS ended (job TEXT PRIMARY KEY, task TEXT NOT NULL, stat
 CREATE TABLE IF NOT EXISTS summarized (parent TEXT PRIMARY KEY, batch INTEGER NOT NULL);
 DROP TABLE IF EXISTS sessions;`;
 // A job's end states (kernel jobs.ts); any other state is still live.
-const ENDED = new Set(["done", "failed", "cancelled", "stopped", "stalled", "timeout", "lost"]);
+const ENDED = new Set(["done", "failed", "cancelled", "timeout", "lost"]);
 // A comment on a finished or blocked task would reopen it: those get no note.
 const QUIET = new Set(["done", "cancelled", "blocked"]);
 const CLOSED = new Set(["done", "cancelled"]);
@@ -31,6 +32,9 @@ export function createDispatch({ kernel, db, owner, log = () => {} }: { kernel: 
   db.exec(DDL);
   const q = (sql: string) => db.prepare(sql);
   const asker = createAsker(kernel);
+  // Each running job's progress judge, and why this module stopped a job (until its outcome is posted; a restart starts both fresh).
+  const judges = new Map<string, ReturnType<typeof progressTracker>>();
+  const stoppedFor = new Map<string, string>();
 
   /** A started job is recorded with the newest comment it saw; its wake's `starting` row goes. */
   const started = (job: string, w: { wake: string; task: string; agent: string; seen: string }) => {
@@ -78,10 +82,17 @@ export function createDispatch({ kernel, db, owner, log = () => {} }: { kernel: 
         const v = await kernel.job(r.id);
         if (!ENDED.has(v.state)) {
           // A task closed while its run goes on (the owner cancelled it): nothing else would end the run or free its computer.
-          if (CLOSED.has(String((await kernel.task(r.task)).status))) { await kernel.stop(r.id); log("task closed while running: run stopped", { job: r.id, task: r.task }); }
+          if (CLOSED.has(String((await kernel.task(r.task)).status))) { await kernel.stop(r.id); log("task closed while running: run stopped", { job: r.id, task: r.task }); continue; }
+          // A run that stops making progress is stopped here (progress.ts); the kernel keeps only the hard deadline.
+          const judge = judges.get(r.id) ?? judges.set(r.id, progressTracker()).get(r.id)!;
+          judge.add(v.progress?.steps);
+          const why = judge.check();
+          if (why) { stoppedFor.set(r.id, why); await kernel.stop(r.id); log("run stopped for lack of progress", { job: r.id, task: r.task, why }); }
           continue;
         }
-        const o = outcome(v);
+        judges.delete(r.id);
+        const o = outcome({ ...v, stopped: stoppedFor.get(r.id) });
+        stoppedFor.delete(r.id);
         if (o) await kernel.post(r.id, o);
         q("INSERT OR IGNORE INTO ended (job, task, state) VALUES (?, ?, ?)").run(r.id, r.task, v.state);
         const task = await kernel.task(r.task);

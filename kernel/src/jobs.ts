@@ -3,15 +3,14 @@
 // for an engine-run agent with a computer on a task the control plane assigns to it. Each run is a detached process group
 // under a small `sh` that records its exit status, writing straight to its log: nothing ties it to the kernel, so a kernel
 // restart (KillMode=process) leaves it running and the next kernel adopts it from kernel.db (its pid and events offset). The
-// watcher follows events.jsonl (untrusted: regular files only, no links, capped lines), the exit file, the deadline, the
-// progress stop (progress.ts) and the silence stop.
+// watcher follows events.jsonl (untrusted: regular files only, no links, capped lines), the exit file, the deadline and a
+// cancel. Judging a run's progress (no work for too long) is its dispatcher's: it stops the run (dispatch progress.ts).
 import { execFileSync, spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { appendFileSync, closeSync, existsSync, lstatSync, mkdirSync, openSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
 import { appendLine, lines, readFrom } from "../sdk/src/engine-io.ts";
-import { progressTracker } from "./progress.ts";
 import { SESSION, buildJob, observes, readEngines, type Box, type Engine, type SandboxConfig } from "./sandbox.ts";
 
 /** What the control plane says: the agent (setup's metadata: its module, engine run, private reads, box) and the task. */
@@ -37,7 +36,7 @@ type Progress = { said?: string; saidAt?: string; plan?: unknown[]; steps?: unkn
 export interface JobView {
   id: string; module: string; agent: string; task: string; state: string; pid: number; log: string; dir: string; at: number;
   jobcaps: string[]; observing: boolean; live_input: boolean; exit: number | null; final: string; session: string | null;
-  timedOut: boolean; stalled: boolean; stopped: string | null; cancelled: boolean; usage: { input: number; cached: number; output: number } | null;
+  timedOut: boolean; cancelled: boolean; usage: { input: number; cached: number; output: number } | null;
   progress: Progress; version: number;
 }
 
@@ -161,13 +160,13 @@ export function createJobs({ db, cfg, cp, mayDispatch, log, boxWrap, onEnd = () 
     return {
       id: r.id, module: r.module, agent: r.agent, task: r.task, state: r.state, pid: r.pid, log: r.log, dir: r.dir, at: r.at,
       jobcaps: JSON.parse(r.jobcaps), observing: r.observing === 1, live_input: r.live_input === 1, exit: r.exit ?? null, final: r.final,
-      session: r.session ?? null, timedOut: why.timedOut === true, stalled: why.stalled === true, stopped: why.stopped ?? null,
+      session: r.session ?? null, timedOut: why.timedOut === true,
       cancelled: why.cancelled === true, usage: r.usage ? JSON.parse(r.usage) : null, progress: JSON.parse(r.progress || "{}"), version: versions.get(r.id) ?? 0,
     };
   };
 
-  /** Follow a run to its end from its offset: events, exit file, deadline, progress and silence stops, and a cancel. */
-  function watch(id: string, { adopted = false } = {}) {
+  /** Follow a run to its end from its offset: events, exit file, deadline, and a cancel. */
+  function watch(id: string) {
     const r = row(id)!;
     const { pid, log: logPath, dir: jobDir } = r;
     const exitFile = `${logPath}.exit`;
@@ -177,19 +176,10 @@ export function createJobs({ db, cfg, cp, mayDispatch, log, boxWrap, onEnd = () 
     const progress: Progress = JSON.parse(r.progress || "{}");
     const usage = { input: 0, cached: 0, output: 0, seen: false, ...(r.usage ? { ...JSON.parse(r.usage), seen: true } : {}) };
     const deadline = r.at + cfg.timeout_minutes * 60_000;
-    const tracker = progressTracker({ start: r.at, ...(adopted ? { since: Date.now() } : {}), windowMs: cfg.progress_minutes * 60_000 });
-    const stallMs = cfg.stall_minutes * 60_000;
-    let grewAt = Date.now();
-    let logSize = 0;
-    let timedOut = false, stalled = false, cancelled = false, killed = false;
-    let stopped: string | undefined;
+    let timedOut = false, cancelled = false, killed = false;
     let over = false;
     const save = () => db.prepare("UPDATE jobs SET offset = ?, session = ?, final = ?, progress = ?, usage = ? WHERE id = ?").run(offset, session, final ?? "", JSON.stringify(progress), usage.seen ? JSON.stringify({ input: usage.input, cached: usage.cached, output: usage.output }) : null, id);
     const read = () => {
-      try {
-        const size = lstatSync(logPath).size;
-        if (size > logSize) (logSize = size), (grewAt = Date.now());
-      } catch {}
       let got;
       try {
         got = readEvents(jobDir, offset);
@@ -197,7 +187,6 @@ export function createJobs({ db, cfg, cp, mayDispatch, log, boxWrap, onEnd = () 
         return; // not a regular file: the job's own doing, nothing of it is read
       }
       if (got.offset === offset) return;
-      grewAt = Date.now();
       offset = got.offset;
       for (const e of got.events) {
         if (e.t === "session" && typeof e.id === "string" && SESSION.test(e.id)) session = e.id;
@@ -208,7 +197,6 @@ export function createJobs({ db, cfg, cp, mayDispatch, log, boxWrap, onEnd = () 
         }
         if (e.t === "progress") {
           const steps = STEPS(e.steps);
-          tracker.add(steps);
           const text = clip(e.text, 600);
           if (text && text !== progress.said) (progress.said = text), (progress.saidAt = new Date().toISOString());
           const plan = PLAN(e.plan);
@@ -243,9 +231,9 @@ export function createJobs({ db, cfg, cp, mayDispatch, log, boxWrap, onEnd = () 
       if (lastMessage) writeFileSync(`${logPath}.last.md`, lastMessage);
       // No status: the run died without its shell, by its own stop or timeout (killed), else by hand (a failure).
       const exit = code === null && !killed ? 1 : code;
-      const state = cancelled ? "cancelled" : stopped ? "stopped" : stalled ? "stalled" : timedOut ? "timeout" : exit ? "failed" : "done";
+      const state = cancelled ? "cancelled" : timedOut ? "timeout" : exit ? "failed" : "done";
       db.prepare("UPDATE jobs SET state = ?, exit = ?, final = ?, why = ?, offset = ?, session = ?, ended = ? WHERE id = ?")
-        .run(state, exit, lastMessage, JSON.stringify({ timedOut, stalled, stopped, cancelled }), offset, session, Date.now(), id);
+        .run(state, exit, lastMessage, JSON.stringify({ timedOut, cancelled }), offset, session, Date.now(), id);
       log("job finished", { job: id, task: r.task, state, exit });
       bump(id);
       onEnd(id);
@@ -253,9 +241,7 @@ export function createJobs({ db, cfg, cp, mayDispatch, log, boxWrap, onEnd = () 
     const tick = () => {
       read();
       if (exitStatus(exitFile) || !alive(pid)) return done();
-      if (!timedOut && Date.now() > tracker.deadline(deadline)) (timedOut = true), kill();
-      if (!timedOut && (stopped = tracker.check())) (timedOut = true), kill();
-      if (!timedOut && !tracker.waiting && Date.now() - grewAt > stallMs) (timedOut = stalled = true), kill();
+      if (!timedOut && Date.now() > deadline) (timedOut = true), kill();
     };
     // A box job's dir is the launcher's out folder, mounted in its box: the inbox reaches it the same way.
     const send = r.live_input === 1
@@ -283,7 +269,7 @@ export function createJobs({ db, cfg, cp, mayDispatch, log, boxWrap, onEnd = () 
       const ended = status !== "" && Number(status) >= 0 && Number(status) <= 128;
       if (ended || (status === "" && runAlive(r.pid, r.log))) {
         log("adopted a running job", { job: r.id, task: r.task, pid: r.pid });
-        watch(r.id, { adopted: true });
+        watch(r.id);
         continue;
       }
       db.prepare("UPDATE jobs SET state = 'lost', exit = NULL, ended = ? WHERE id = ?").run(Date.now(), r.id);
