@@ -102,7 +102,7 @@ export function createCodehost({ grants, repos, kind, secret, resolver, workspac
     /** POST /v1/codehost/:op: the answer goes back as it came. */
     async op(module: string, op: string, b: Record<string, unknown>, res: ServerResponse): Promise<void> {
       const r = await ask(module, op, b);
-      res.writeHead(r.statusCode ?? 502, { "content-type": String(r.headers["content-type"] ?? "application/json") });
+      res.writeHead(r.statusCode ?? 502, { "content-type": String(r.headers["content-type"] ?? "application/json"), ...(r.headers["x-aidenhq-commit"] ? { "x-aidenhq-commit": String(r.headers["x-aidenhq-commit"]) } : {}) });
       await new Promise<void>((ok, reject) => { r.pipe(res); r.on("end", ok).on("error", reject); });
     },
   };

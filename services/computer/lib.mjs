@@ -228,36 +228,19 @@ export function controlAllowed(bearer, method, url, { kernel, progress }) {
 
 const refused = (status, msg) => Object.assign(new Error(msg), { status });
 
-/**
- * A box's `repo-checkout` request (POST /repo on the gateway), checked: a repo in the agents org and a full commit SHA. The
- * snapshot comes from the runner's cache clone (<runner work_dir>/repos/<org>/<name>, kept fetched with the runner's GitHub
- * App token), so no token goes near the box; the launcher, never the caller, picks the folder in the box.
- * Returns { cache, sha?, dest }, or throws with a message for the agent.
- */
-export function checkoutRequest(body, { agentsOrg, agentsOrgs, cacheRoot }) {
-  const m = /^([A-Za-z0-9_-][A-Za-z0-9_.-]*)\/([A-Za-z0-9_-][A-Za-z0-9_.-]*)$/.exec(String(body?.repo ?? "").trim());
+/** Where a box's `repo-checkout org/name` lands: /workspace/repos/<name>, picked here, never by the caller. */
+export function checkoutDest(repo) {
+  const m = /^[A-Za-z0-9_-][A-Za-z0-9_.-]*\/([A-Za-z0-9_-][A-Za-z0-9_.-]*)$/.exec(String(repo ?? "").trim());
   if (!m) throw refused(400, "give the repository as org/name");
-  // One agents org per enabled code host (the GitHub agents org, and `local` with codehost-local): the runner's cache clone of
-  // a repo is <cacheRoot>/<org>/<name> either way.
-  const orgs = [agentsOrgs ?? agentsOrg].flat().filter(Boolean);
-  const org = orgs.find((o) => m[1].toLowerCase() === String(o).toLowerCase());
-  if (!org) throw refused(403, `only repositories in the agents org (${orgs.join(", ") || "none configured"})`);
-  // No SHA: the default branch as the runner's copy last saw it (the launcher resolves it).
-  const sha = String(body?.sha ?? "").trim().toLowerCase() || undefined;
-  if (sha && !/^[0-9a-f]{40}$/.test(sha)) throw refused(400, "give the full 40-character commit SHA (e.g. the PR's head), or none for the default branch");
-  const name = m[2].replace(/\.git$/, "");
-  return { cache: `${cacheRoot}/${org}/${name}`, sha, dest: `/workspace/repos/${name}` };
+  return `/workspace/repos/${m[1].replace(/\.git$/, "")}`;
 }
 
 /**
- * `git` arguments for the snapshot of `sha` in `cache`, as a tar on stdout. Every `.aidenhq/` folder is left out: that is
- * AidenHQ's scratch space (an agent's screenshots and reports), never the app, and one committed by an earlier change shows
- * that change, not this commit. A reviewer judges only what it captures itself.
+ * Runs in the box (sh -c, $1 = the folder): replaces the folder with the tar.gz on stdin. Every `.aidenhq/` folder is left
+ * out: that is AidenHQ's scratch space (an agent's screenshots and reports), never the app, and one committed by an earlier
+ * change shows that change, not this commit. A reviewer judges only what it captures itself.
  */
-export const archiveArgs = (cache, sha) => ["-C", cache, "archive", "--format=tar", sha, "--", ".", ":(exclude,glob)**/.aidenhq/**"];
-
-/** Runs in the box (sh -c, $1 = the folder): replaces the folder with the tar on stdin. */
-export const UNTAR_SCRIPT = 'rm -rf "$1" && mkdir -p "$1" && tar -x --no-same-owner -C "$1"';
+export const UNTAR_SCRIPT = 'rm -rf "$1" && mkdir -p "$1" && tar -xz --no-same-owner -C "$1" && find "$1" -name .aidenhq -type d -prune -exec rm -rf {} +';
 
 /**
  * A box's model call, passed on to the model gateway (kernel/src/gateway) with the job token as its credential: the gateway
