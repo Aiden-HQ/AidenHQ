@@ -58,10 +58,12 @@ export class McpAuth {
    * asks for none, or predates the choice).
    */
   async scopes(): Promise<{ supported: string[]; recommended: string[] } | undefined> {
-    // The offer is the proxy's own config: asked again every ten minutes (every Connections and board load reads it).
-    if (!this.offered || Date.now() - this.offered.at >= 600_000)
-      this.offered = { at: Date.now(), scopes: await this.call<{ supported: string[]; recommended: string[] }>("GET", "/auth/scopes").catch(() => undefined) };
-    return this.offered.scopes;
+    // The offer is the proxy's own config: kept ten minutes once it answers (every Connections and board load reads it). A
+    // proxy without its address yet answers nothing, so that is asked again each time.
+    if (this.offered && Date.now() - this.offered.at < 600_000) return this.offered.scopes;
+    const scopes = await this.call<{ supported: string[]; recommended: string[] }>("GET", "/auth/scopes").catch(() => undefined);
+    if (scopes) this.offered = { at: Date.now(), scopes };
+    return scopes;
   }
 
   /** Whether Connect offers a choice of scopes: its button opens the picker first, and a Reconnect reads "Change access". */

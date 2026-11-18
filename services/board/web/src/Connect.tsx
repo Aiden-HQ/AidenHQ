@@ -113,6 +113,15 @@ export function ConnectDialog({ c, error, onClose }: { c: Connectable; error: st
           ready = await api.signIn(c.id).then((v) => v.configured, () => false);
         }
         if (!ready) throw new Error(`Saved. ${view.label} is still restarting: press Connect again in a minute.`);
+        // Its scopes are on offer only once it knows its address: the picker comes now, and Connect again.
+        const fresh = await api.signIn(c.id);
+        if (fresh.scopes && !on) {
+          w?.close();
+          setView(fresh);
+          setOn(new Set(fresh.scopes.recommended.filter((s) => fresh.scopes!.supported.includes(s))));
+          setBusy("");
+          return;
+        }
       }
       const q = new URLSearchParams();
       if (on) {

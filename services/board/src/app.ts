@@ -1896,6 +1896,8 @@ export function createApp(opts: AppOptions): Server {
       method: "POST",
       path: /^\/api\/sign-ins\/([a-z0-9-]{1,63})\/secret$/,
       handle: async (m, body, who) => {
+        // A ready admin, as for the setup flows' saves; the kernel then lets only the owner write.
+        if (!who.ready || who.account.role !== "admin") throw new HttpError(403, "totp");
         const s = (opts.signIns ?? []).find((x) => x.id === m[1]);
         const { secret, value } = parse(z.object({ secret: z.string().max(64), value: z.string().min(1).max(1000) }).strict(), body);
         if (!s?.fields.some((f) => f.secret === secret)) throw new HttpError(400, "not one of this sign-in's values");

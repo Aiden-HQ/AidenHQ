@@ -46,6 +46,7 @@ describe("setup flows", () => {
     const paperclip = new Paperclip("http://paperclip", "00000000-0000-4000-8000-000000000001", "k", (async () => new Response("[]")) as unknown as typeof fetch);
     app = createApp({ paperclip, store, records: fakeRecords(), log: pino({ level: "silent" }), staticDir: "/nonexistent", timezone: "UTC", accounts, allowedHosts: ["localhost:3121"], mode: "lan", lan: { url: "https://aiden.example.com", googleConnect: true }, google, signIns: [
         { id: "working", label: "Working", connect: "/working/connect", callback: "/working/callback", missing: "m", stopped: "s", fields: [], auth: { status: async () => ({ state: "ok" }), scopes: async () => undefined, offers: async () => false } as never },
+        { id: "site", label: "Site", connect: "/site/connect", callback: "/site/callback", missing: "m", stopped: "s", fields: [{ secret: "site_url", label: "Site address", pattern: "^https://.+$" }], auth: { status: async () => ({ state: "missing", configured: false }), scopes: async () => undefined, offers: async () => false } as never },
         ...["plain", "hub"].map((id) => ({ id, label: id, connect: `/${id}/connect`, callback: `/${id}/callback`, missing: "m", stopped: "s", fields: [], auth: { status: async () => ({ state: "missing" }), scopes: async () => null, offers: async () => false, start: async () => ({ url: `https://${id}.example.com/authorize` }), finish: async () => {} } as never })),
       ], setupFlows: { flows, fetchImpl: fakePair } });
     await new Promise<void>((r) => app.listen(0, "127.0.0.1", r));
@@ -88,6 +89,13 @@ describe("setup flows", () => {
     expect((await admin("POST", "/api/setup-flows/phone/secret", { secret: "phone_bot_token", value: "123:abc" })).json).toMatchObject({ ok: true });
     const save = kernel.calls.filter((c) => c.path === "/v1/accounts/save_secret").at(-1)!;
     expect(save.body).toMatchObject({ module: "phone", secret: "phone_bot_token", value: "123:abc", token: expect.stringMatching(/^ahqu_/) });
+  });
+
+  it("a sign-in's own value saves through the kernel as a ready admin, and only a value it declares", async () => {
+    expect((await admin("POST", "/api/sign-ins/site/secret", { secret: "site_url", value: "https://site.example.com" })).json).toMatchObject({ ok: true });
+    expect(kernel.calls.filter((c) => c.path === "/v1/accounts/save_secret").at(-1)!.body).toMatchObject({ module: "site", secret: "site_url", value: "https://site.example.com" });
+    expect((await admin("POST", "/api/sign-ins/site/secret", { secret: "phone_bot_token", value: "123:abc" })).status).toBe(400);
+    expect((await user("POST", "/api/sign-ins/site/secret", { secret: "site_url", value: "https://site.example.com" })).status).toBe(403);
   });
 
   it("done needs the secrets, the sign-in and the pairing", async () => {

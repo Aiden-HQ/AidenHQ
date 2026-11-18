@@ -45,9 +45,11 @@ export function ConnectionsPage({ conns, can, refresh, onRefresh }: { conns: Con
         </Button>
       }
     >
-      {done && (
-        <Banner>
-          {displayName(done)} is connected. You can close this tab.
+      {done && <Banner>{displayName(done)} is connected.</Banner>}
+      {/* A failed sign-in of a connection without a tile here (Google's): its reason, and the way on. */}
+      {q.get("error") && !conns.connections.some((r) => r.name === q.get("connect")) && (
+        <Banner tone="danger" action={<Button size="sm" onClick={clear}>Dismiss</Button>}>
+          {q.get("error")} Nothing changed; press Connect to try again.
         </Banner>
       )}
       {needs.length > 0 && <Section title="Needs you" count={needs.length}>{tiles(needs)}</Section>}
@@ -89,7 +91,7 @@ function ConnectionTile({ r, v, can, connect: asked, onAsked }: { r: ConnectionR
   // A connected sign-in can run again: to grant more (the scope picker) or to switch accounts.
   const again = (r.signIn?.state === "ok" || r.signIn?.state === "expired") && can.signIn ? <ConnectButton c={c} size="sm" /> : null;
   // Never signed in reads "Not connected"; "Signed out" is a sign-in that stopped working.
-  const status = <StatusDot tone={TONE[v.status]}>{r.signIn?.state === "missing" ? STATUS_LABEL.not_configured : STATUS_LABEL[v.status]}</StatusDot>;
+  const status = r.signIn?.state === "missing" && v.status !== "error" ? <StatusDot tone="needs">{STATUS_LABEL.not_configured}</StatusDot> : <StatusDot tone={TONE[v.status]}>{STATUS_LABEL[v.status]}</StatusDot>;
   const who = r.kind === "service" ? "Engineer jobs" : v.status === "builtin" ? null : r.grants.length ? `${r.grants.length} agent${r.grants.length === 1 ? "" : "s"}` : "No agents yet";
   return (
     <>

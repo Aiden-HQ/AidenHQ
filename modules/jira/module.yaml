@@ -37,7 +37,7 @@ settings:
     default: 365
 connections:
   jira:
-    setup: "Set your Atlassian site's URL on the board (Settings, Connections) and approve the change, then press Connect on the board (its https address)."
+    setup: "Set your Atlassian site's URL (the jira_url setting, on the module's Settings tab) and approve the change, then press Connect on the board."
     guide: "Jira and Confluence directly: exact issue fields, change history (when a status or date changed), comments, versions and JQL queries. Use it for precise dates and history; use Glean to find the issue or page first."
     url: http://jira-mcp:8091/mcp
     auth: jira_service_key

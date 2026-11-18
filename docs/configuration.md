@@ -301,7 +301,7 @@ Copy `.env.example` to `.env`. It holds host paths and endpoints, never agent-ed
   `https://<APPS_TS_HOSTNAME>.<tailnet>.ts.net`), `APPS_TS_HOSTNAME` (the apps' own tailnet node, default `aidenhq-apps`).
 - Meetings: `TRANSCRIPTS_DIR`, `VAULT_DIR`, `VAULT_FOLDERS`, `KNOWLEDGE_BASES`.
 - Connection endpoints: `GITHUB_COMMENT_ORGS` (and the legacy `SLACK_CLIENT_ID`). Leave one empty to skip that connection. The other
-  connection's URL is an instance setting (`jira_url`): set it on the board (Settings, Connections), which files the change
+  connection's URL is an instance setting (`jira_url`): set it on the board (the jira module's Settings tab), which files the change
   as an apply card (docs/design/settings-changes.md). Primer's, Glean's and Grafana's addresses are asked for on their Connect
   (a sign-in's `secrets`, saved into the vault with no apply), and Slack's client id on its setup flow (`#/setup/slack`); an
   old `primer_mcp_url`, `glean_mcp_url`, `grafana_url` setting or `SLACK_CLIENT_ID` is read only while that value is empty.
