@@ -1102,7 +1102,9 @@ async function handleIssue(issue, engineerIds) {
   for (const c of comments.filter((x) => !fresh.includes(x))) state.markHandled(c.id, issue.id);
   // Agents' comments (never the Engineer's own on its task): the asker's and the chief of staff's start a job on an agent's
   // task, as an agent's words and never a command; any other agent's is answered once with whom to ask, and starts nothing.
-  const notes = all.filter((c) => c.authorType === "agent" && c.authorAgentId && c.authorAgentId !== issue.assigneeAgentId && !state.handled(c.id));
+  // Only on a task an Engineer holds or has run: a task merely labelled for the runner waits for the owner's words.
+  const ours = engineerIds.has(issue.assigneeAgentId) || Boolean(state.get(`history:${issue.id}`));
+  const notes = ours ? all.filter((c) => c.authorType === "agent" && c.authorAgentId && c.authorAgentId !== issue.assigneeAgentId && !state.handled(c.id)) : [];
   for (const c of notes.filter((x) => !known && Date.parse(x.createdAt) < horizon)) state.markHandled(c.id, issue.id);
   const recent = notes.filter((x) => known || Date.parse(x.createdAt) >= horizon);
   const asked = recent.length ? await pc.issue(issue.id) : undefined;
@@ -1112,10 +1114,10 @@ async function handleIssue(issue, engineerIds) {
   if (others.length) await redirectNotes(asked);
   if (!fresh.length && followUps.length) {
     for (const c of followUps) state.markHandled(c.id, issue.id);
-    state.set(`ownreq:${issue.id}`, new Date().toISOString()); // a first run from these words: the description joins it
     const text = followUps.map((c) => stripHidden(c.body).trim()).filter(Boolean).join("\n\n");
-    if (text) await handleRequest(issue, `(From an agent, not ${cfg.selfName}'s own words.)\n\n${text}`);
-    return;
+    if (!text) return;
+    state.set(`ownreq:${issue.id}`, new Date().toISOString()); // a first run from these words: the description joins it
+    return handleRequest(issue, `(From an agent, not ${cfg.selfName}'s own words.)\n\n${text}`);
   }
   if (!fresh.length) {
     // Newly assigned to an Engineer without comments. A task the user wrote themselves is the
@@ -1782,7 +1784,7 @@ async function finishMerges(issueId, queue, say, { posted = false } = {}) {
   else if (full && status !== full.status) await pc.setStatus(issueId, status);
   // The delegator hears how the merges ended when that is the last word: they failed, or the task closed ungraded. With a
   // grade to follow, the grade's outcome is the news (notices.ts).
-  if (full && agentMade(full)) {
+  if (full?.parentId && isAgentSubtask(full)) {
     const kind = queue.state !== "done" ? "failed" : status === "done" ? "done" : (await graded(issueId)) ? "merged" : "done";
     // A failure is told once per what failed (each PR's head, status and note, and the stop's reason): the same environment
     // stop or red checks on the same head again is no news (WOR-5276 woke 15 times on them). A new head or reason is told.
@@ -2047,8 +2049,11 @@ function gradeDeps(issue) {
   };
 }
 
-/** Outcomes someone must act on or decide: with no open parent to hear them, they still go to whoever asked. */
-const NEEDS_ASKER = new Set(["parked", "escalated", "decision", "failed"]);
+/**
+ * Outcomes someone must decide, each with the fixed words the owner's channel uses for it: with no open parent to hear
+ * them, they still go to whoever asked.
+ */
+const NEEDS_ASKER = { parked: "was stopped", escalated: "has a decision waiting", decision: "needs a decision" };
 
 /**
  * A notice about a task for whoever asked (notices.ts): an outcome is posted on its open parent, which wakes the delegator;
@@ -2060,7 +2065,7 @@ const NEEDS_ASKER = new Set(["parked", "escalated", "decision", "failed"]);
 async function tellAsker(issue, kind, text) {
   if (!wakesParent(kind)) return false;
   const p = issue.parentId ? await pc.issue(issue.parentId).catch(() => undefined) : undefined;
-  if (!p || ["done", "cancelled"].includes(p.status)) return NEEDS_ASKER.has(kind) && (await askAsker(issue, text));
+  if (!p || ["done", "cancelled"].includes(p.status)) return Boolean(NEEDS_ASKER[kind]) && (await askAsker(issue, kind, text));
   // Only the asking agent's own chat (its id in the chat's end-anchored marker), and only while it sits with the owner.
   const chatAgent = /<!-- aidenhq-chat-agent:([A-Za-z0-9_-]+) -->\s*$/.exec(p.description ?? "")?.[1];
   if (!p.assigneeAgentId && p.assigneeUserId && issue.createdByAgentId && chatAgent === issue.createdByAgentId && isAgentSubtask(issue))
@@ -2075,9 +2080,9 @@ async function tellAsker(issue, kind, text) {
  * a task of its own (askDelegator); an asker that is paused or gone leaves it to the owner, through the owner channel's
  * notices. False for a task no agent made (the owner's own keeps its note on itself) or when neither could be reached.
  */
-async function askAsker(issue, text) {
+async function askAsker(issue, kind, text) {
   if (!agentMade(issue)) return false;
-  return (await askDelegator(issue, text)) || tellOwner(issue, text);
+  return (await askDelegator(issue, text)) || tellOwner(issue, kind, text);
 }
 
 /**
@@ -2100,15 +2105,22 @@ async function askDelegator(issue, text) {
   return true;
 }
 
-/** The owner's channel (the board's owner notices, which the kernel hands to Telegram or Slack): once per distinct note. */
-async function tellOwner(issue, text) {
+/**
+ * The owner's channel (the board's owner notices, which the kernel hands to Telegram or Slack), in fixed words: the
+ * identifier and what it needs, never an agent's title or GitHub's text. The note itself goes on the task, where the owner's
+ * reply carries on. Once per distinct note.
+ */
+async function tellOwner(issue, kind, text) {
   const key = `owner-told:${issue.id}:${createHash("sha256").update(text).digest("hex").slice(0, 16)}`;
   if (state.get(key)) return true;
   if (!boardApi) return false;
-  const gist = stripHidden(text).trim().split("\n\n")[0].slice(0, 600);
-  const sent = await boardApi.post("/internal/owner/line", { text: `🔧 **${issue.identifier} needs you** (the agent that asked for it is paused or gone): ${gist} Reply on ${issue.identifier} to carry on, or cancel it.` }).then(() => true, (err) => (log("owner notice failed", { task: issue.identifier, err: String(err.message ?? err).slice(0, 200) }), false));
-  if (sent) state.set(key, new Date().toISOString()), log("decision sent to the owner", { task: issue.identifier });
-  return sent;
+  const line = `🔧 **${issue.identifier} ${NEEDS_ASKER[kind]}**, and the agent that asked for it is paused or gone. What it needs is on ${issue.identifier}: reply there to carry on, or cancel it.`;
+  const sent = await boardApi.post("/internal/owner/line", { text: line }).then(() => true, (err) => (log("owner notice failed", { task: issue.identifier, err: String(err.message ?? err).slice(0, 200) }), false));
+  if (!sent) return false;
+  state.set(key, new Date().toISOString());
+  log("decision sent to the owner", { task: issue.identifier, kind });
+  if (!["done", "cancelled", "blocked"].includes(issue.status)) await pc.comment(issue.id, text).catch(() => {});
+  return true;
 }
 
 
@@ -3582,7 +3594,7 @@ async function runClaimed(claimed) {
   // The agent that delegated this (e.g. the Agent Architect, on its chat) learns a failure, or the result of work no grade
   // will judge; a graded task's grade is the news (notices.ts).
   const full = await pc.issue(claimed.issueId).catch(() => null);
-  if (full && agentMade(full)) {
+  if (full && isAgentSubtask(full)) {
     const kind = !outcome.ok ? "failed" : (await graded(full.id)) ? "applied" : "done";
     await tellAsker(full, kind, appliedNote(claimed.identifier, claimed.id, outcome)).catch(() => {});
   }

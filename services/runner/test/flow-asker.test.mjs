@@ -2,9 +2,10 @@
 // agent's task with no parent runs as that agent's request; after its first run the asker and the chief of staff (role
 // fleet-admin in the grants table) start work with a comment, and any other agent is told whom to ask. What needs a decision
 // goes to the asker, or to the owner's channel when the asker is gone: never a note left only on the task.
-import { describe, it } from "node:test";
+import { after, describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { writeFileSync } from "node:fs";
+import { appendFileSync, writeFileSync } from "node:fs";
+import { createServer } from "node:http";
 import { join } from "node:path";
 import { flow, git } from "./flow-harness.mjs";
 
@@ -42,39 +43,57 @@ describe("flow-asker: an agent's task with no parent", () => {
   });
 });
 
-describe("flow-asker: an agent's task whose asker is gone", () => {
-  const t = flow({ grants, part: { parentId: null, createdByUserId: null, createdByAgentId: "gone-agent", description: "" } });
+describe("flow-asker: an agent's task whose asker is gone", { concurrency: 1 }, () => {
+  const t = flow({
+    grants: { autonomy: "full", agents: { "engineer-claude": { key: "fleet-engineer", roles: ["platform-engineer"] } } },
+    env: { AIDENHQ_PRODUCT_REPO: "acme/app", AIDENHQ_GITHUB_AGENTS_ORG: "acme-agents" },
+    runnerYaml: "apply:\n  repo: acme/aidenhq-instance\n",
+    part: { parentId: null, createdByUserId: null, createdByAgentId: "gone-agent", description: "" },
+  });
+  // The model gateway: the reviewer rejects every card the same way.
+  const gateway = createServer(async (req, res) => {
+    for await (const _ of req);
+    res.writeHead(200, { "content-type": "application/json" });
+    res.end(JSON.stringify({ choices: [{ message: { content: JSON.stringify({ decision: "reject", reason_code: "out_of_scope", reason: "second.txt isn't part of the request.", second_review: false }) } }], usage: {} }));
+  });
+  after(() => gateway.close());
+  const lines = () => t.paperclip.ownerLines;
 
-  it("with no request, goes to the owner's channel: no greeting and no run", async () => {
-    await t.waitFor("the owner's notice", () => t.paperclip.ownerLines.length > 0);
-    assert.match(t.paperclip.ownerLines[0], /PEN-2 needs you\*\* \(the agent that asked for it is paused or gone\): \*\*PEN-2 has no request:\*\*/);
+  it("with no request, goes to the owner's channel in fixed words: no greeting and no run", async () => {
+    await t.waitFor("the owner's notice", () => lines().length > 0);
+    assert.equal(lines()[0], "🔧 **PEN-2 needs a decision**, and the agent that asked for it is paused or gone. What it needs is on PEN-2: reply there to carry on, or cancel it.");
+    assert.ok(t.partComments().some((c) => /PEN-2 has no request/.test(c)), "the note is on the task");
     await t.idle(1000);
-    assert.equal(t.paperclip.ownerLines.length, 1, "once");
+    assert.equal(lines().length, 1, "once");
     assert.equal(t.agentRuns().length, 0);
     assert.ok(!t.partComments().some((c) => /What would you like me to do/.test(c)));
   });
-});
 
-describe("flow-asker: a stop on an agent's task whose asker is gone", () => {
-  const t = flow({ grants, part: { parentId: null, createdByUserId: null, createdByAgentId: "gone-agent", description: "Fix the tests in acme/app." } });
-
-  // A stopped merge queue and the breaker's stop go the same way (tellAsker): the fakes can't trip the breaker, so the queue's
-  // stop stands in for it.
-  it("a stopped merge queue reaches the owner's channel, once", async () => {
-    await t.settled();
-    const seed = join(t.dir, "seed");
-    git(t.dir, "clone", "-q", join(t.dir, "github/acme/app.git"), seed);
-    git(seed, "switch", "-q", "-c", "ci/r");
-    writeFileSync(join(seed, "r.txt"), "r\n");
-    git(seed, "add", ".");
-    git(seed, "commit", "-qm", "ci: r");
-    git(seed, "push", "-q", "origin", "ci/r");
-    writeFileSync(join(t.dir, "github-prs.json"), JSON.stringify({ 40: { branch: "ci/r", files: ["r.txt"], checks: "FAILURE" } }));
-    const head = git(seed, "rev-parse", "HEAD");
-    t.paperclip.approvals.set("A40000001", { id: "A40000001", issueId: "part", identifier: "PEN-2", action: "merge", args: { prs: [{ repo: "acme/app", number: 40, url: "https://github.com/acme/app/pull/40", head }] }, details: "", digest: "A40000001", state: "approved" });
-    await t.waitFor("the owner's notice", () => t.paperclip.ownerLines.length > 0);
-    assert.match(t.paperclip.ownerLines[0], /^🔧 \*\*PEN-2 needs you\*\* \(the agent that asked for it is paused or gone\): \*\*Approved, but it failed\*\*/);
-    await t.idle(1000);
-    assert.equal(t.paperclip.ownerLines.length, 1, "once");
+  it("the breaker's stop reaches the owner's channel", async () => {
+    await new Promise((r) => gateway.listen(0, "127.0.0.1", r));
+    appendFileSync(join(t.dir, "config/runner.yaml"), `gateway:\n  url: http://127.0.0.1:${gateway.address().port}\n`);
+    writeFileSync(join(t.dir, "secrets/gateway_job_secret"), "s".repeat(64), { mode: 0o600 });
+    writeFileSync(join(t.dir, "github-prs.json"), "{}"); // the fake GitHub answers the default branch
+    const exited = new Promise((r) => t.runner.once("exit", r));
+    t.runner.kill("SIGTERM");
+    await exited;
+    t.startRunner();
+    /** The newest card, once the kernel has had the reviewer reject it (dated after the next comment: nobody answered it). */
+    const rejected = async (n) => {
+      await t.waitFor(`card ${n}`, () => t.paperclip.approvals.size === n);
+      const card = [...t.paperclip.approvals.values()].at(-1);
+      await t.waitFor("the reviewer's verdict", () => t.output.includes(`"approval":"${card.id}","issue":"PEN-2","action":"pr","decision":"reject"`));
+      t.paperclip.kdb.db.prepare("UPDATE records SET decided_at = ? WHERE id = ?").run(new Date(Date.now() + 3600_000).toISOString(), card.id);
+    };
+    t.step("second\naidenhq pr acme/app feat/second");
+    await t.turn("Add the second change to acme/app and open its PR.");
+    await rejected(1);
+    // The same lines under a new commit: rejected the same way, which stops the task.
+    t.step("reword feat/second\naidenhq pr acme/app feat/second");
+    await t.turn("Publish it again.");
+    await rejected(2);
+    await t.waitFor("the stop told", () => lines().length === 2);
+    assert.equal(lines()[1], "🔧 **PEN-2 was stopped**, and the agent that asked for it is paused or gone. What it needs is on PEN-2: reply there to carry on, or cancel it.");
+    assert.ok(t.partComments().some((c) => /Stopped: the same failure twice/.test(c)), "the stop is on the task");
   });
 });
