@@ -1,0 +1,102 @@
+name: primer
+description: "Primer: read, and publish documents when asked."
+requires:
+  - board # its sign-in and setup flow
+# Its sign-in on the board (the board's point, modules/board/schemas/signins.json), and its setup flow.
+contributes:
+  board.signins:
+    - { id: primer, label: Primer, status_url: "http://primer-mcp:8084/auth/status", connect_url: /primer/connect, callback: /primer/callback,
+        missing: "The agents can't read or publish documents until it is.", stopped: "The agents can't read or publish documents." }
+  board.setup_flows:
+    - order: 125
+      title: Primer documents
+      why: Agents can read your Primer documents, and publish when you approve.
+      effort: about 3 minutes, needs your Primer login
+      secrets: [primer_mcp_url]
+      signin: primer
+      steps: |
+        1. Ask your Primer admin for your organization's MCP address, or find it in Primer's settings. It looks like `https://primer.example.com/mcp`.
+        2. Paste it below.
+        3. Press **Connect Primer**, sign in with your company login in the tab that opens and press **Allow**.
+
+        Agents read as you. Publishing a document always waits for your approval.
+settings:
+  # Superseded by the primer_mcp_url secret the setup flow saves; a value here is read only while that secret is empty.
+  primer_mcp_url:
+    default: ""
+    type: url
+connections:
+  primer:
+    setup: "Open its setup on the board (#/setup/primer): paste your Primer MCP address and press Connect."
+    guide: "Primer documents (design docs and write-ups) with their versions and comments."
+    url: http://primer-mcp:8084/mcp
+    auth: primer_service_key
+    # Every tool Primer's server lists (probed 2026-11-18). Reads added since the first nine are `named`: only a grant
+    # naming them reaches them. primer_send_events sends structured events to other people's open pages, as the owner:
+    # `destructive`, so only a grant naming it reaches it and every call is a record the AI reviewer decides first.
+    tools:
+      read: [ primer_whoami, primer_resolve_url, primer_get_document, primer_get_version_content, primer_list_versions, primer_get_comments, primer_get_document_comments, primer_list_documents, primer_find_document, primer_get_all_comments, primer_get_events ]
+      named: [ primer_get_all_comments, primer_get_events ]
+      write: [ primer_create_document, primer_add_version ]
+      destructive: [ primer_send_events ]
+# Runner jobs read Primer through the model gateway with their own token (scripts/modules.mjs jobcapEntries); read_url and
+# read_secret are today's loopback read endpoint and its token, which only the gateway holds.
+jobcaps:
+  - { id: primer-read, connection: primer, tools: read, read_url: "http://primer-mcp:8084/mcp/read", read_secret: primer_mcp_read_token }
+secrets:
+  state: true # its own vault dir, read-write at /state: the registered client and the token pair; Primer rotates the refresh token on every refresh
+  provided:
+    # Your organization's Primer MCP endpoint, saved by the setup flow; empty: Primer is off.
+    - name: primer_mcp_url
+      setup:
+        label: Primer MCP address
+        pattern: '^https://[a-z0-9.-]+(:[0-9]{2,5})?/[A-Za-z0-9._/-]*$'
+        help: "For example https://primer.example.com/mcp"
+optional_secrets:
+  - primer_mcp_url
+services:
+  run:
+    primer-mcp:
+      build: ./connections/primer-mcp
+      tmp: 16m
+      port: 8084
+      egress: true
+      links: [board] # the board's connection health check
+      state: /state
+      env:
+        PRIMER_MCP_URL_FILE: ${secrets.primer_mcp_url}
+        PRIMER_MCP_URL: "${settings.primer_mcp_url}"
+        PRIMER_STATE_DIR: /state
+        # The board's https address: its Connect returns there (besides loopback).
+        BOARD_URL: "${BOARD_LAN_URL:-}"
+        # The board's sign-in endpoints: state, and starting or finishing a sign-in.
+        PRIMER_AUTH_TOKEN_FILE: ${secrets.primer_auth_token}
+        MCP_TOKEN_FILE: ${secrets.primer_service_key}
+        MCP_READ_TOKEN_FILE: ${secrets.primer_mcp_read_token}
+        # The read endpoint serves only these: the connection's read tags (CI checks they match).
+        READ_TOOLS: "primer_whoami,primer_resolve_url,primer_get_document,primer_get_version_content,primer_list_versions,primer_get_comments,primer_get_document_comments,primer_list_documents,primer_find_document,primer_get_all_comments,primer_get_events"
+# The kernel calls primer.publish's plan, execute and status on primer-mcp, with the connection's key (executor@1).
+providers:
+  executor:
+    url: http://primer-mcp:8084/aidenhq/v1/executor
+    auth: primer_service_key
+# Every publish is a kernel record: an agent's primer_create_document or primer_add_version call, and an Engineer's
+# document the runner files after its run (`aidenhq primer`). The AI reviewer reads the whole document and the request
+# chain before anything is published; the args carry the content, so what is published is exactly what was reviewed.
+writes:
+  publish:
+    args: schemas/publish.json
+    floor: 1
+    tools: [ primer_create_document, primer_add_version ]
+    card:
+      sentence: "Publish {{what}} on Primer."
+      changes: "{{changes}}"
+      reads: "Nothing new: the document below ({{format}}, {{size}} characters, sha256 {{short}}){{from}}."
+      cost: "No model cost."
+      details: "{{content}}"
+# The board's Connect/Reconnect for Primer: its sign-in token, only while this module is on.
+board_env:
+  PRIMER_AUTH_TOKEN_FILE: ${secrets.primer_auth_token}
+generated_secrets:
+  - primer_service_key
+  - primer_auth_token

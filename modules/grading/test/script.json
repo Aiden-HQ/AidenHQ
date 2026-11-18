@@ -1,0 +1,64 @@
+{
+  "now": "2026-11-16T12:00:00.000Z",
+  "grants": {
+    "agents_org": "acme",
+    "product_repo": "own/aidenhq",
+    "agents": {
+      "eng": { "key": "engineer", "roles": [], "tools": { "paperclip_tasks": ["task_finish", "task_set_status", "task_delegate"] } },
+      "cos": { "key": "chief-of-staff", "roles": [], "tools": { "paperclip_tasks": ["task_finish", "task_set_status", "task_delegate"] } },
+      "ra": { "key": "research-assistant", "roles": [], "tools": { "paperclip_tasks": ["task_delegate", "task_finish", "task_set_status"] } },
+      "other": { "key": "someone", "roles": [], "tools": { "paperclip_tasks": ["task_finish", "task_set_status", "task_delegate"] } }
+    }
+  },
+  "agents": [
+    { "id": "eng", "name": "Engineer", "companyId": "co" },
+    { "id": "cos", "name": "Aiden", "companyId": "co" },
+    { "id": "ra", "name": "Alfred", "companyId": "co" },
+    { "id": "other", "name": "Someone", "companyId": "co" }
+  ],
+  "issues": {
+    "WOR-1": { "id": "11111111-1111-1111-1111-111111111111", "identifier": "WOR-1", "title": "Build it", "status": "in_progress", "assigneeAgentId": "eng", "createdByAgentId": "cos", "parentId": null, "labelIds": [] },
+    "WOR-2": { "id": "22222222-2222-2222-2222-222222222222", "identifier": "WOR-2", "title": "Ungraded", "status": "in_progress", "assigneeAgentId": "eng", "createdByAgentId": "cos", "parentId": null, "labelIds": [] },
+    "WOR-3": { "id": "33333333-3333-3333-3333-333333333333", "identifier": "WOR-3", "title": "Child", "status": "in_progress", "assigneeAgentId": "eng", "createdByAgentId": "ra", "parentId": "44444444-4444-4444-4444-444444444444", "labelIds": [] },
+    "WOR-4": { "id": "44444444-4444-4444-4444-444444444444", "identifier": "WOR-4", "title": "Parent", "status": "in_progress", "assigneeAgentId": "cos", "createdByAgentId": null, "parentId": null, "labelIds": [] },
+    "WOR-5": { "id": "55555555-5555-5555-5555-555555555555", "identifier": "WOR-5", "title": "Cancelled", "status": "in_progress", "assigneeAgentId": "eng", "createdByAgentId": "cos", "parentId": null, "labelIds": [] },
+    "WOR-6": { "id": "66666666-6666-6666-6666-666666666666", "identifier": "WOR-6", "title": "Engineer turn", "status": "in_progress", "assigneeAgentId": "eng", "createdByAgentId": "cos", "parentId": null, "labelIds": [] }
+  },
+  "steps": [
+    { "name": "an ungraded close passes untouched", "op": "close", "task": "WOR-2", "as": "eng", "via": "task_finish" },
+    { "name": "the assignee can't file its own rubric", "op": "file", "task": "WOR-1", "as": "eng", "rubric": ["merged into main", "checks green on the head", "the page shows the total"], "deliverable": { "kind": "pr", "ref": "acme/app" } },
+    { "name": "a PR outside the agents org is refused", "op": "file", "task": "WOR-1", "as": "cos", "rubric": ["merged into main", "checks green on the head", "the page shows the total"], "deliverable": { "kind": "pr", "ref": "other/app" } },
+    { "name": "the delegator files the rubric", "op": "file", "task": "WOR-1", "as": "cos", "rubric": ["merged into main", "checks green on the head", "the page shows the total"], "deliverable": { "kind": "pr", "ref": "acme/app" } },
+    { "name": "filing again keeps the first rubric", "op": "file", "task": "WOR-1", "as": "cos", "rubric": ["always pass", "ok ok", "yes yes"], "deliverable": { "kind": "pr", "ref": "acme/app" } },
+    { "name": "the delegator can't close a graded task", "op": "close", "task": "WOR-1", "as": "cos", "via": "task_set_status" },
+    { "name": "the assignee's finish is held for grading", "op": "close", "task": "WOR-1", "as": "eng", "via": "task_finish" },
+    { "name": "finishing again stays held", "op": "close", "task": "WOR-1", "as": "eng", "via": "task_finish" },
+    { "name": "the runner lists the waiting row", "op": "list" },
+    { "name": "one task's state for the runner", "op": "state", "task": "WOR-1" },
+    { "name": "needs revision", "op": "verdict", "task": "WOR-1", "verdict": { "version": "a", "outcome": "needs_revision", "model": "glm", "criteria": [{ "id": "1", "met": "no", "evidence": "not merged" }] } },
+    { "name": "reopened and finished again", "op": "close", "task": "WOR-1", "as": "eng", "via": "task_set_status", "set": { "status": "todo" } },
+    { "name": "satisfied", "op": "verdict", "task": "WOR-1", "verdict": { "version": "b", "outcome": "satisfied", "model": "glm", "criteria": [{ "id": "1", "met": "yes", "evidence": "merged" }] } },
+    { "name": "the runner closes a satisfied, done task", "op": "close", "task": "WOR-1", "via": "finish_merges", "set": { "status": "done" } },
+    { "name": "another agent closing a satisfied, done task passes", "op": "close", "task": "WOR-1", "as": "other", "via": "task_set_status" },
+    { "name": "satisfied is not sticky: reopened and finished, graded again", "op": "close", "task": "WOR-1", "as": "eng", "via": "task_finish", "set": { "status": "todo" } },
+    { "name": "second rejected version", "op": "verdict", "task": "WOR-1", "verdict": { "version": "c", "outcome": "needs_revision", "model": "glm", "criteria": [{ "id": "1", "met": "no", "evidence": "red" }] } },
+    { "name": "finished again after the second rejection", "op": "close", "task": "WOR-1", "as": "eng", "via": "task_finish", "set": { "status": "in_progress" } },
+    { "name": "the third rejected version escalates", "op": "verdict", "task": "WOR-1", "verdict": { "version": "d", "outcome": "needs_revision", "model": "glm", "criteria": [{ "id": "1", "met": "no", "evidence": "red again" }] } },
+    { "name": "an agent the escalation wasn't addressed to can't close it", "op": "close", "task": "WOR-1", "as": "other", "via": "task_set_status" },
+    { "name": "the assignee finishing an escalated task marks it resubmitted", "op": "close", "task": "WOR-1", "as": "eng", "via": "task_finish" },
+    { "name": "the runner sees the resubmission", "op": "list" },
+    { "name": "the same version stays escalated", "op": "resubmit", "task": "WOR-1", "version": "d" },
+    { "name": "finished again", "op": "close", "task": "WOR-1", "as": "eng", "via": "task_finish" },
+    { "name": "a new version goes back to the grader", "op": "resubmit", "task": "WOR-1", "version": "e" },
+    { "name": "cannot judge escalates", "op": "verdict", "task": "WOR-1", "verdict": { "version": "e", "outcome": "cannot_judge", "model": "glm", "criteria": [] } },
+    { "name": "the delegator's close accepts the work", "op": "close", "task": "WOR-1", "as": "cos", "via": "task_set_status" },
+    { "name": "a delegator under another agent's task files its rubric", "op": "file", "task": "WOR-3", "as": "ra", "rubric": [], "deliverable": { "kind": "report", "ref": "" } },
+    { "name": "the child's finish is held", "op": "close", "task": "WOR-3", "as": "eng", "via": "task_finish" },
+    { "name": "the child escalates to its creator and its parent's agent", "op": "verdict", "task": "WOR-3", "verdict": { "version": "v1", "outcome": "cannot_judge", "model": "glm", "criteria": [] } },
+    { "name": "the parent's agent accepts the child", "op": "close", "task": "WOR-3", "as": "cos", "via": "task_set_status" },
+    { "name": "a graded task to cancel", "op": "file", "task": "WOR-5", "as": "cos", "rubric": [], "deliverable": { "kind": "file", "ref": "" } },
+    { "name": "closing a cancelled task is refused and settles its row", "op": "close", "task": "WOR-5", "as": "eng", "via": "task_finish", "set": { "status": "cancelled" } },
+    { "name": "a graded Engineer task", "op": "file", "task": "WOR-6", "as": "cos", "rubric": [], "deliverable": { "kind": "pr", "ref": "" } },
+    { "name": "the runner's turn end is held for grading", "op": "close", "task": "WOR-6", "via": "finish_turn" }
+  ]
+}

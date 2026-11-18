@@ -13,12 +13,14 @@ const market = (sha = M, url = "https://git.example.com/acme/modules.git") => ({
 const file = (over = {}) => ({ name: "AidenHQ", release: "2026.11", kernel: K, kernel_repo: "acme/kernel", todo: "ignored", marketplace: market(), modules: { alpha: A, beta: B }, tested: { suites: ["swap"] }, ...over });
 const inst = (over = {}) => ({ product: K, release: { name: "2026.11", source: { source: "url", url: "https://git.example.com/acme/distro.git" }, sha: C }, modules: ["alpha@aidenhq", "beta@aidenhq"], ...over });
 
-test("a release resolves its marketplace and module shas", () => {
-  assert.deepEqual(resolveRelease(file(), inst()), { name: "2026.11", kernel: K, marketplace: market(), modules: { alpha: A, beta: B }, images: {} });
-  assert.throws(() => resolveRelease(file({ modules: { alpha: "TODO-module-sha" } }), inst()), /modules\.alpha must be a 40-character sha/);
-  // The instance's own official marketplace entry may only agree with the release.
-  assert.ok(resolveRelease(file(), inst({ marketplaces: [market()] })));
-  assert.throws(() => resolveRelease(file(), inst({ marketplaces: [market(C)] })), /isn't the release's/);
+test("a release pins the kernel and its images; a `marketplace` or `modules` in it is never read", () => {
+  const one = { release: "2026.11", kernel: K, images: { board: `ghcr.io/aiden-hq/board@sha256:${"e".repeat(64)}` } };
+  assert.deepEqual(resolveRelease(one, inst()), { name: "2026.11", kernel: K, images: one.images });
+  // A file that names the official marketplace elsewhere (or module shas) changes nothing: not resolved, not checked, not used.
+  const elsewhere = file({ marketplace: market(C, "https://evil.example.com/modules.git"), modules: { alpha: "TODO-module-sha" } });
+  assert.deepEqual(resolveRelease(elsewhere, inst({ marketplaces: [market()] })), { name: "2026.11", kernel: K, images: {} });
+  assert.deepEqual(withRelease(inst(), resolveRelease(elsewhere, inst())), inst());
+  assert.throws(() => resolveRelease({ release: "2026.11" }, inst()), /kernel must be a 40-character sha/);
 });
 
 test("A17: the release file is read at exactly the pinned distro sha, from a local bare repo", () => {
@@ -34,7 +36,14 @@ test("A17: the release file is read at exactly the pinned distro sha, from a loc
   execFileSync("git", ["clone", "-q", "--bare", dir, bare]);
   const f = () => ({ cacheDir: mkdtempSync(join(tmpdir(), "sources-")) });
   const at = (s) => inst({ release: { name: "2026.11", source: { source: "url", url: bare }, sha: s } });
-  assert.equal(readRelease(at(sha), f()).marketplace.sha, M);
+  assert.equal(readRelease(at(sha), f()).kernel, K);
   assert.throws(() => readRelease(at(C), f()), /has no commit c{40}/);
   assert.equal(readRelease({ product: K }, f()), null);
+});
+
+test("with a release, the instance drops its obsolete `aidenhq` marketplace entry and never gains one", () => {
+  const third = { name: "acme", source: { source: "url", url: "https://git.example.com/acme/m.git" }, sha: A };
+  assert.deepEqual(withRelease(inst({ marketplaces: [market(), third] }), resolveRelease(file(), inst())).marketplaces, [third]);
+  assert.equal("marketplaces" in withRelease(inst({ marketplaces: [market()] }), resolveRelease(file(), inst())), false, "no empty list");
+  assert.deepEqual(withRelease({ product: K }, null), { product: K });
 });

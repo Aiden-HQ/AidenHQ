@@ -47,15 +47,6 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      # The official modules, their own (public) repository since 5b, at the product's pin (modules-pin.json), where the tree had them.
-      - id: modules-pin
-        run: echo "sha=$(jq -r .sha modules-pin.json)" >> "$GITHUB_OUTPUT"
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          repository: Aiden-HQ/aidenhq-modules
-          ref: ${{ steps.modules-pin.outputs.sha }}
-          path: modules
-          persist-credentials: false
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 24.x
@@ -81,7 +72,6 @@ jobs:
       - name: Test
         env:
           TESTS: ${{ needs.checks.outputs.tests }}
-          CHANGED_FILES: ${{ needs.checks.outputs.changed }}
           SHARD: ${{ matrix.shard }}
           # Seconds each suite took (GitHub-hosted, 2026-11-17), for balancing; a suite not listed counts 30. The selected
           # suites go heaviest first into the lighter shard.
@@ -115,6 +105,46 @@ jobs:
           done < "$logs/list"
           exit $status
 
+  # The official modules' own suites (areas.json entries with job "modules": each module's packages, plus the module suites
+  # whose paths a change touches, e.g. the kernel for the modules that import it), up to three shards. Each shard installs the
+  # kernel's and the compiler's packages once (module tests import them), then runs its entries one after another.
+  modules:
+    name: modules (${{ matrix.shard }})
+    needs: checks
+    if: needs.checks.outputs.modules != '[]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.checks.outputs.modules) }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24.x
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.npm
+          key: npm-${{ runner.os }}-${{ hashFiles('**/package-lock.json') }}
+          restore-keys: npm-${{ runner.os }}-
+      - name: Git identity (the tests make commits)
+        run: git config --global user.name ci && git config --global user.email ci@example.com
+      - name: Test
+        env:
+          ENTRIES: ${{ toJSON(matrix.entries) }}
+        run: |
+          (cd kernel && npm ci --silent) && (cd scripts && npm ci --silent)
+          status=0
+          while IFS=$'\t' read -r dir run; do
+            echo "::group::$dir"
+            (cd "$dir" && bash "$GITHUB_WORKSPACE/.github/ci/run-suite.sh" "$run") && echo "ok: $dir" || { echo "::error::$dir failed"; status=1; }
+            echo "::endgroup::"
+          done < <(jq -r '.[] | [.dir, .run] | @tsv' <<< "$ENTRIES")
+          exit $status
+
   # The runner's unit tests, and its end-to-end flows in three shards side by side (each only when selected; the flows only
   # on a push to main).
   runner-unit:
@@ -125,15 +155,6 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          persist-credentials: false
-      # The official modules, their own (public) repository since 5b, at the product's pin (modules-pin.json), where the tree had them.
-      - id: modules-pin
-        run: echo "sha=$(jq -r .sha modules-pin.json)" >> "$GITHUB_OUTPUT"
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          repository: Aiden-HQ/aidenhq-modules
-          ref: ${{ steps.modules-pin.outputs.sha }}
-          path: modules
           persist-credentials: false
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
@@ -163,15 +184,6 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          persist-credentials: false
-      # The official modules, their own (public) repository since 5b, at the product's pin (modules-pin.json), where the tree had them.
-      - id: modules-pin
-        run: echo "sha=$(jq -r .sha modules-pin.json)" >> "$GITHUB_OUTPUT"
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          repository: Aiden-HQ/aidenhq-modules
-          ref: ${{ steps.modules-pin.outputs.sha }}
-          path: modules
           persist-credentials: false
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
@@ -212,15 +224,6 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      # The official modules, their own (public) repository since 5b, at the product's pin (modules-pin.json), where the tree had them.
-      - id: modules-pin
-        run: echo "sha=$(jq -r .sha modules-pin.json)" >> "$GITHUB_OUTPUT"
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          repository: Aiden-HQ/aidenhq-modules
-          ref: ${{ steps.modules-pin.outputs.sha }}
-          path: modules
-          persist-credentials: false
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 24.x
@@ -250,7 +253,7 @@ jobs:
       dockerfiles: ${{ steps.find.outputs.dockerfiles }}
       tests: ${{ steps.tests.outputs.tests }}
       packages: ${{ steps.tests.outputs.packages }}
-      changed: ${{ steps.tests.outputs.changed }}
+      modules: ${{ steps.tests.outputs.modules }}
       runner: ${{ steps.runner.outputs.runner }}
     env:
       PR_BASE: ${{ github.event.pull_request.base.sha }}
@@ -281,16 +284,6 @@ jobs:
           echo "runner=$runner" >> "$GITHUB_OUTPUT"
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          fetch-depth: 0
-          persist-credentials: false
-      # The official modules, their own (public) repository since 5b, at the product's pin (modules-pin.json), where the tree had them.
-      - id: modules-pin
-        run: echo "sha=$(jq -r .sha modules-pin.json)" >> "$GITHUB_OUTPUT"
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          repository: Aiden-HQ/aidenhq-modules
-          ref: ${{ steps.modules-pin.outputs.sha }}
-          path: modules
           fetch-depth: 0
           persist-credentials: false
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
@@ -330,9 +323,7 @@ jobs:
           echo "Suites to test: $(jq -r 'map(.name) | join(" ")' <<< "$tests")"
           echo "tests=$tests" >> "$GITHUB_OUTPUT"
           echo "packages=$(jq -r .packages <<< "$out")" >> "$GITHUB_OUTPUT"
-          # The changed files for the scripts suite's shared-copies test (it compares the modules' copies when the diff moves
-          # either side); `all` on a push to main or a merge train.
-          if [ -n "$ALL" ]; then echo "changed=all" >> "$GITHUB_OUTPUT"; else echo "changed=$(git diff --name-only "$base" "$HEAD_SHA" | jq -Rsc 'split("\n") | map(select(length > 0))')" >> "$GITHUB_OUTPUT"; fi
+          echo "modules=$(jq -c '.modules // []' <<< "$out")" >> "$GITHUB_OUTPUT"
 
       - id: find
         run: |
@@ -344,21 +335,6 @@ jobs:
             base=$(git merge-base origin/main "$HEAD_SHA" 2>/dev/null || git rev-parse "$HEAD_SHA~1")
           fi
           changed=$(git diff --name-only "$base" "$HEAD_SHA")
-          # The official modules are a separate repository at modules-pin.json, so the only product change that can bring in a
-          # module image is a pin bump: the images its range touches are the ones it could alter. Without a modules checkout
-          # (a plain clone of the product), there are none.
-          new_pin=$(jq -r '.sha // empty' modules-pin.json 2>/dev/null || true)
-          if [ -d modules ] && [ -n "$new_pin" ]; then
-            old_pin=$(git show "$base:modules-pin.json" 2>/dev/null | jq -r '.sha // empty' || true)
-            if [ "$old_pin" != "$new_pin" ]; then
-              # A pin that moved must be diffable: skipping it silently would scan nothing and still look green.
-              if [ -z "$old_pin" ] || ! git -C modules cat-file -e "$old_pin^{commit}" 2>/dev/null; then
-                echo "::error::modules-pin.json moves from ${old_pin:-none} to $new_pin, but the previous pin is not a commit in the modules checkout"
-                exit 1
-              fi
-              changed="$changed"$'\n'"$(git -C modules diff --name-only "$old_pin" "$new_pin" | sed 's|^|modules/|')"
-            fi
-          fi
           found=""
           while IFS= read -r -d '' df; do
             # A path with whitespace would split in DOCKERFILES, one starting with - could pass for an option: refuse both.
@@ -371,12 +347,7 @@ jobs:
                   found="$found $df"; break ;;
               esac
             done <<< "$changed"
-          done < <(
-            git ls-files -z | grep -izE '(^|/)(Dockerfile|Containerfile)[^/]*$|\.dockerfile$' | grep -zvE '\.(m?[jt]s|json|md|ya?ml|sh)$'
-            if [ -d modules ]; then
-              git -C modules ls-files -z | grep -izE '(^|/)(Dockerfile|Containerfile)[^/]*$|\.dockerfile$' | grep -zvE '\.(m?[jt]s|json|md|ya?ml|sh)$' | sed -z 's|^|modules/|'
-            fi
-          )
+          done < <(git ls-files -z | grep -izE '(^|/)(Dockerfile|Containerfile)[^/]*$|\.dockerfile$' | grep -zvE '\.(m?[jt]s|json|md|ya?ml|sh)$')
           echo "Images to scan:${found:- none}"
           echo "dockerfiles=${found# }" >> "$GITHUB_OUTPUT"
 
@@ -459,15 +430,6 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
-      # The official modules at the product's pin (modules-pin.json), where the tree had them: the module Dockerfiles the find step selected live here.
-      - id: modules-pin
-        run: echo "sha=$(jq -r .sha modules-pin.json)" >> "$GITHUB_OUTPUT"
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          repository: Aiden-HQ/aidenhq-modules
-          ref: ${{ steps.modules-pin.outputs.sha }}
-          path: modules
-          persist-credentials: false
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 24.x
@@ -514,7 +476,7 @@ jobs:
   # exist; the runner treats this check as required once the base branch has it (modules/codehost-github/src/merge-gate.mjs withGate).
   ci-required:
     if: always()
-    needs: [checks, policy, packages, runner-unit, runner-flows, board, image-scan]
+    needs: [checks, policy, packages, modules, runner-unit, runner-flows, board, image-scan]
     runs-on: ubuntu-latest
     timeout-minutes: 2
     steps:
@@ -522,4 +484,4 @@ jobs:
           RESULTS: ${{ toJSON(needs) }}
         run: |
           echo "$RESULTS" | jq -r 'to_entries[] | "\(.key): \(.value.result)"'
-          echo "$RESULTS" | jq -e '(.checks.result == "success") and (.policy.result == "success") and ([.packages, .["runner-unit"], .["runner-flows"], .board, .["image-scan"]] | all(.result | IN("success", "skipped")))' >/dev/null
+          echo "$RESULTS" | jq -e '(.checks.result == "success") and (.policy.result == "success") and ([.packages, .modules, .["runner-unit"], .["runner-flows"], .board, .["image-scan"]] | all(.result | IN("success", "skipped")))' >/dev/null

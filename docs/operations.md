@@ -82,8 +82,8 @@ It is idempotent. The Platform Engineer runs it for you after you approve a chan
   `data/applied-product` says installed or failed), then checks the release tags newer than the one followed (newest that
   verifies: shas on each official repo's main, no downgrade, the published asset's `tested` stamp from a successful
   `release.yml` run on the tag's commit) and installs at 02:00-05:00 in `settings.timezone` with `auto_update` on (unset =
-  on) or after Update now (the kernel's `/updates` page): one instance commit (`product:`, `release:`, the `aidenhq`
-  marketplace sha), then `ops/apply-config.sh` on the instance's main with the lock handed over (output in
+  on) or after Update now (the kernel's `/updates` page): one instance commit (`product:` and `release:`, dropping an obsolete
+  `aidenhq` marketplace entry), then `ops/apply-config.sh` on the instance's main with the lock handed over (output in
   `data/updates/apply.log`). A failed apply (apply's own auto-revert puts the last known good back) gets its commit
   reverted on main and the release marked failed: the night skips it, Update now retries. The board reads
   `~/.local/state/aidenhq/board/updates.json`; the kernel tells the owner each event once. By hand:
@@ -459,7 +459,7 @@ not the boundary: the org's runner group is. To serve the product org:
 3. On the VM: `systemctl --user enable --now aidenhq-ci-runner@<org>-1 aidenhq-ci-runner@<org>-2` (the org's login as
    in its URL, e.g. `aidenhq-ci-runner@acme-1`). Check: the group's runners list them idle.
 
-**The public Aiden-HQ repos (AidenHQ, aidenhq-modules, aidenhq-distro).** Their CI runs on GitHub-hosted runners first.
+**The public Aiden-HQ repos (AidenHQ, aidenhq-distro).** Their CI runs on GitHub-hosted runners first.
 In the product's ci.yml the first job (`checks`) counts the hosted jobs this repo's other runs hold (queued or running) and
 sends the heavy jobs (packages, runner-unit, runner-flows, board) to `[self-hosted, aidenhq]` only when that count is 12 or
 more (the free plan runs ~20 at once), the repository variable `CI_SELF_HOSTED` is `true`, and the run is a push to main or
@@ -472,11 +472,11 @@ is not a push or workflow_dispatch on the default branch, a schedule, or a pull_
 PRs, merge trains, merge_group, pull_request_target, issue_comment, workflow_run, release or repository_dispatch). The
 runner starts the hook with an environment of its own (the github and runner contexts), never the job's `env:`, so a
 job-level `BASH_ENV` or `NODE_OPTIONS` does not reach it. To enable: the App on the Aiden-HQ org with *Self-hosted
-runners: Read and write*; a runner group there limited to the three repos with *Allow public repositories* on, named in
-`settings.ci_org_runner_group`; the modules pin at or after the hook; on the VM `systemctl --user enable --now
+runners: Read and write*; a runner group there limited to the two repos with *Allow public repositories* on, named in
+`settings.ci_org_runner_group`; a product at or after the hook; on the VM `systemctl --user enable --now
 aidenhq-ci-runner@Aiden-HQ-1 aidenhq-ci-runner@Aiden-HQ-2` (up to 4, or move existing agents-org units); then the repo
-variable (Settings -> Secrets and variables -> Actions -> Variables). Unset it to go back to hosted only. aidenhq-modules
-and aidenhq-distro can adopt the same routing in their ci.yml later.
+variable (Settings -> Secrets and variables -> Actions -> Variables). Unset it to go back to hosted only.
+aidenhq-distro can adopt the same routing in its ci.yml later.
 
 A push runs about 21 jobs (the test matrix is 18), each in a fresh container that installs Node and its packages: roughly
 10 minutes on two runners. Jobs for one org never take another org's runners.

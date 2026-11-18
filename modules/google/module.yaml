@@ -1,0 +1,89 @@
+name: google
+description: "Google Workspace: Gmail, Calendar, Drive and Docs (reads)."
+requires:
+  - warehouse # its source schema lives in the shared warehouse
+  - board # its guided setup
+# Its schema and the views agents read with source_new (the warehouse's point, modules/warehouse/schemas/sources.json).
+contributes:
+  # Your own Google client, pasted on the board (#/setup/google). Connect Google is the board's own route (/google/connect), not
+  # a board.signins entry, so the flow names it as `connect_url`; the board shows its button and marks the flow done once an
+  # account is connected. Google refuses a bare-IP redirect URI, so on one the flow shows `needs_name` instead.
+  board.setup_flows:
+    - order: 40
+      wizard: false
+      title: Google
+      why: "Aiden reads your calendar, Drive and Gmail (read-only) to brief you and follow up."
+      effort: "about 10 minutes, in the Google Cloud console"
+      secrets: [google_client_id, google_client_secret]
+      connect_url: /google/connect
+      needs_name: "Google only accepts a named address (like aiden.example.com) for its sign-in, and this board is reached by its IP address. Ask Aiden to help you set up Tailscale or a domain for the board, then open this page from that address."
+      steps: |
+        1. [Create a project](https://console.cloud.google.com/projectcreate) (any name, for example "AidenHQ").
+        2. Turn on three APIs, pressing Enable on each: [Calendar](https://console.cloud.google.com/apis/library/calendar-json.googleapis.com), [Drive](https://console.cloud.google.com/apis/library/drive.googleapis.com), [Gmail](https://console.cloud.google.com/apis/library/gmail.googleapis.com).
+        3. Open the [OAuth consent screen](https://console.cloud.google.com/apis/credentials/consent). On Google Workspace choose **Internal**, otherwise **External** and add yourself as a test user. Fill in a name and your email, then save.
+        4. Open [Credentials](https://console.cloud.google.com/apis/credentials), press **Create credentials**, **OAuth client ID**, and choose **Web application**.
+        5. Under **Authorized redirect URIs** add exactly `{board_url}/google/callback`.
+        6. Create it, then paste the **Client ID** and **Client secret** below and save.
+        7. Press **Connect** below and approve read-only access.
+  warehouse.sources:
+    - schema: src_docs
+      about: "src_docs.docs (Drive metadata + a cheap summary: a pointer, never evidence; read the doc live before acting) / changes"
+      views:
+        - { name: docs, time: ingested_at, project: container, tsv: true }
+        - { name: changes, time: observed_at, project: scope }
+connections:
+  google_workspace:
+    setup: "Follow the steps at #/setup/google on the board, then press Connect Google (from the board's https address; otherwise from http://127.0.0.1:3121). By hand: `scripts/google-auth.sh <client.json>` once per account (`--email`, `--primary`)."
+    guide: "Google Drive, Docs, Calendar and Gmail directly: a document's full current text, events, threads. Glean finds Drive documents faster; read them here when you need the exact current text."
+    url: http://google-workspace-mcp:8081/mcp
+    auth: google_service_key
+    tools:
+      read: [ calendar_list_events, calendar_search_events, calendar_get_event, drive_list_recent_files, drive_list_meeting_documents, drive_search_files, drive_read_file, gmail_search, gmail_read_thread, docs_read ]
+      write: []
+# Empty until pasted: with them empty, the client already in google_oauth.json (set up before the guided flow) stands.
+optional_secrets:
+  - google_client_id
+  - google_client_secret
+secrets:
+  provided:
+    - name: google_client_id
+      setup:
+        label: Google client ID
+        pattern: '^[0-9]+-[a-z0-9]+\.apps\.googleusercontent\.com$'
+        help: "Ends in .apps.googleusercontent.com."
+    - name: google_client_secret
+      setup:
+        label: Google client secret
+        pattern: '^GOCSPX-[A-Za-z0-9_-]{20,60}$'
+        help: "Starts with GOCSPX-."
+  # Its own vault dir, read-write at /state: google_oauth.json, which a reconnect from the board (or google-auth.sh on the
+  # host) rewrites with the new refresh token; the service reloads on change.
+  state: true
+services:
+  run:
+    google-workspace-mcp:
+      build: ./connections/google-workspace-mcp
+      tmp: 16m
+      egress: true
+      links: [board, sources] # the board's sign-in endpoints; the warehouse (shared sources)
+      state: /state
+      env:
+        GOOGLE_CREDENTIALS_FILE: /state/google_oauth.json
+        # The client pasted on the board; over the one in google_oauth.json when set.
+        GOOGLE_CLIENT_ID_FILE: ${secrets.google_client_id}
+        GOOGLE_CLIENT_SECRET_FILE: ${secrets.google_client_secret}
+        MCP_TOKEN_FILE: ${secrets.google_service_key}
+        # The board's sign-in endpoints: state per account, and reconnecting an expired one.
+        GOOGLE_AUTH_TOKEN_FILE: ${secrets.google_auth_token}
+        # The board's https address: Connect there returns there (ops/setup.sh sets BOARD_LAN_URL).
+        BOARD_URL: "${BOARD_LAN_URL:-}"
+        CALENDAR_ID: "${GOOGLE_CALENDAR_ID:-primary}"
+        # Shared sources (src_docs): its warehouse login, and the model credential for doc summaries.
+        WAREHOUSE_PASSWORD_FILE: ${secrets.warehouse_src_docs_password}
+        # Summaries go through the model gateway with the source writers' key, never OpenRouter's.
+        OPENROUTER_KEY_FILE: ${secrets.gateway_source_key}
+        OPENROUTER_BASE_URL: "${AIDENHQ_GATEWAY_URL:-http://10.231.0.1:8201}/api/v1"
+# src_docs' warehouse login (ops/warehouse-sources.sh gives the role this password); compile creates it when missing.
+generated_secrets:
+  - google_service_key
+  - warehouse_src_docs_password

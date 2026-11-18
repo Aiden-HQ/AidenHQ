@@ -56,42 +56,6 @@ test("image-changes (the product's CI and the app template's) selects every chan
   assert.deepEqual(select(), Array(2).fill("dockerfiles=tool/Dockerfile web/Dockerfile"));
 });
 
-test("image-changes selects the module images a modules-pin.json bump touches, and only those", (t) => {
-  const pin = (sha) => JSON.stringify({ repo: "Aiden-HQ/aidenhq-modules", sha }) + "\n";
-  const { dir, git, put, env } = scratch(t, { ignore: ["/modules/"] });
-  // The modules at modules/ (where .gitignore keeps a checkout), a repository of its own: one image changed in the range.
-  const modules = join(dir, "modules");
-  const modGit = (...a) => execFileSync("git", a, { cwd: modules, env, stdio: "pipe" }).toString().trim();
-  const modPut = (path, text) => (mkdirSync(join(modules, dirname(path)), { recursive: true }), writeFileSync(join(modules, path), text));
-  git("init", "-q", "-b", "main", modules);
-  modPut("apps/gate/Dockerfile", `FROM ghcr.io/acme/gate:1@sha256:${"1".repeat(64)}\n`);
-  modPut("apps/other/Dockerfile", `FROM ghcr.io/acme/other:1@sha256:${"2".repeat(64)}\n`);
-  modGit("add", "-A");
-  modGit("commit", "-qm", "old pin");
-  const oldPin = modGit("rev-parse", "HEAD");
-  modPut("apps/gate/Dockerfile", `FROM ghcr.io/acme/gate:2@sha256:${"3".repeat(64)}\n`);
-  modGit("commit", "-qam", "new pin");
-  const newPin = modGit("rev-parse", "HEAD");
-  // The product, its base commit pinning the old one, its head bumping the pin and touching a product image of its own.
-  put("web/Dockerfile", `FROM node:24@sha256:${"0".repeat(64)}\n`);
-  put("modules-pin.json", pin(oldPin));
-  put("README.md", "x\n");
-  git("add", "-A");
-  git("commit", "-qm", "base");
-  const base = git("rev-parse", "HEAD");
-  put("modules-pin.json", pin(newPin));
-  put("README.md", "y\n");
-  put("web/package-lock.json", "{}\n");
-  git("add", "-A");
-  git("commit", "-qm", "bump the modules pin");
-  const head = git("rev-parse", "HEAD");
-  const out = join(dir, "out");
-  writeFileSync(out, "");
-  execFileSync("bash", ["-c", findStep(".github/workflows/ci.yml")], { cwd: dir, env: { ...env, BASE_SHA: base, PR_BASE: base, HEAD_SHA: head, GITHUB_OUTPUT: out }, stdio: "pipe" });
-  // The product's own selection plus the module image the pin range touched; the module image it did not touch stays out.
-  assert.equal(readFileSync(out, "utf8").trim(), "dockerfiles=web/Dockerfile modules/apps/gate/Dockerfile");
-});
-
 test("the image-scan reader passes grype digest-pinned references only, and refuses injected or odd ones", () => {
   const d = "@sha256:" + "a".repeat(64);
   const node = `node:24.22.2-bookworm-slim${d}`;

@@ -1,0 +1,27 @@
+name: dispatch
+description: "Turns the kernel's wakes into jobs: which inbox rows start work (the asker rules), the job's prompt, and its outcome posted once. Off until the big switch, when it dispatches every agent."
+license: MIT
+# Unprivileged: its own module token only (dispatch_token), never a Paperclip or GitHub credential. It claims wakes and starts,
+# follows and feeds jobs (kernel.jobs), and reads tasks through the kernel (kernel.cp-read). The kernel owns admission,
+# limits, identity and the job's lifecycle, and posts outcomes on the task as the agent.
+# kernel.jobs joins at the big switch, in the change that takes it from engineering (one job dispatcher at a time).
+roles:
+  # kernel.wake, kernel.tasks, kernel.owner-notice: what an agent's task needs reaches whoever asked (asker.ts).
+  requests: [ kernel.cp-read, kernel.wake, kernel.tasks, kernel.owner-notice ]
+services:
+  data: true
+  run:
+    dispatch:
+      build: ./service
+      tmp: 16m
+      # The kernel's listener is a host address: reached the way every module with no legacy link reaches it.
+      egress: true
+      data: ["dispatch:/data"]
+      env:
+        DISPATCH_DB: /data/dispatch.sqlite
+        AIDENHQ_KERNEL_URL: http://10.231.0.1:3130
+        DISPATCH_TOKEN_FILE: ${secrets.dispatch_token}
+        OWNER_NAME: "${settings.owner_name}"
+generated_secrets:
+  - dispatch_token
+data_version: 0 # its data dir's format: bumped by each forward-only migration (docs/configuration.md)

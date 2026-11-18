@@ -1,0 +1,14 @@
+{
+  "title": "codehost-github.create_repo: a new private repository in the agents org.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "repo"
+  ],
+  "properties": {
+    "repo": {
+      "type": "string",
+      "pattern": "^[\\w.-]+/[a-z][a-z0-9-]{0,62}$"
+    }
+  }
+}

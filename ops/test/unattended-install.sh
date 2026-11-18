@@ -24,12 +24,12 @@
 # Not in CI: our runners' job containers set no-new-privileges, so sudo can't reach root there. Run it in a container,
 # e.g. a Node 24 Debian image with the checkout mounted, after npm ci in kernel/, scripts/ and services/board. The kernel refuses to start
 # where jobs can't be jailed, so the container runs --privileged with passt, bubblewrap and iproute2 installed. The release
-# names the official marketplace at modules-pin.json's sha, which compile fetches from GitHub (public, anonymous).
+# pins the kernel alone: the official modules are its own modules/.
 set -euo pipefail
 src="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 [ "$(id -u)" = 0 ] || exec sudo -n env PATH="$PATH" CI="${CI:-}" bash "$0" "$@"
 [ -f /.dockerenv ] || [ -n "${CI:-}" ] || { echo "refusing: this test adds a user and /opt/aidenhq; run it in a throwaway container" >&2; exit 1; }
-[ -d "$src/kernel/node_modules" ] && [ -d "$src/scripts/node_modules" ] && [ -d "$src/services/board/node_modules" ] && [ -d "$src/modules" ] || { echo "npm ci in kernel/, scripts/ and services/board, and materialize ./modules (modules-pin.json), first" >&2; exit 1; }
+[ -d "$src/kernel/node_modules" ] && [ -d "$src/scripts/node_modules" ] && [ -d "$src/services/board/node_modules" ] || { echo "npm ci in kernel/, scripts/ and services/board first" >&2; exit 1; }
 U=alice H=/home/alice
 work="$(mktemp -d /tmp/unattended.XXXXXX)"; chmod 0755 "$work"
 ok() { echo "ok   $*"; }
@@ -60,8 +60,7 @@ g -C "$work/k" init -q && g -C "$work/k" add -A && g -C "$work/k" commit -qm ker
 g clone -q --bare "$work/k" "$work/git/kernel.git"
 KSHA="$(git -C "$work/k" rev-parse HEAD)"
 mkdir -p "$work/d/releases"
-MSHA="$(sed -n 's/.*"sha": *"\([0-9a-f]*\)".*/\1/p' "$src/modules-pin.json")"   # the official marketplace at the product's pin
-printf '{ "name": "AidenHQ", "release": "2026.11", "kernel": "%s", "marketplace": { "name": "aidenhq", "source": { "source": "github", "repo": "Aiden-HQ/aidenhq-modules" }, "sha": "%s" }, "modules": {} }\n' "$KSHA" "$MSHA" > "$work/d/releases/2026.11.json"
+printf '{ "release": "2026.11", "kernel": "%s" }\n' "$KSHA" > "$work/d/releases/2026.11.json"
 g -C "$work/d" init -q && g -C "$work/d" add -A && g -C "$work/d" commit -qm release
 g clone -q --bare "$work/d" "$work/git/distro.git"
 RSHA="$(git -C "$work/d" rev-parse HEAD)"
@@ -72,10 +71,6 @@ chown -R "$U:$U" "$work/git"   # as a remote it fetches from: git refuses a repo
 runuser -u "$U" -- git clone -q "file://$work/git/kernel.git" "$H/aidenhq"
 runuser -u "$U" -- git -C "$H/aidenhq" -c advice.detachedHead=false checkout -q --detach "$(git --git-dir="$work/git/distro.git" show "$RSHA:releases/2026.11.json" | sed -n 's/.*"kernel": "\([0-9a-f]*\)".*/\1/p')"
 for d in kernel scripts services/board; do cp -a "$src/$d/node_modules" "$H/aidenhq/$d/" && chown -R "$U:$U" "$H/aidenhq/$d/node_modules"; done
-# The official modules: this tree's materialized ./modules (gitignored), marked at modules-pin.json's sha so setup keeps
-# them instead of fetching (the test stays offline; a local modules change can be tried the same way).
-cp -a "$src/modules" "$H/aidenhq/modules" && sed -n 's/.*"sha": *"\([0-9a-f]*\)".*/\1/p' "$src/modules-pin.json" > "$H/aidenhq/modules/.sha"
-chown -R "$U:$U" "$H/aidenhq/modules"
 TOKEN="ghp_$(head -c 18 /dev/urandom | od -An -tx1 | tr -d ' \n')"   # random: this file is in the checkout too
 (umask 077; printf '%s\n' "$TOKEN" > "$work/ktoken")
 # Root's copy, as install.sh's root_verify makes it: a --no-local clone of the checkout, the release's sha exported into

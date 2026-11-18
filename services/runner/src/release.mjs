@@ -42,27 +42,39 @@ export function trainStep({ tip, green, pinned, lastTried, open, flight, now, wi
 }
 
 /**
- * instance.yaml with its `product:` pin and its official marketplace's sha moved, every other byte kept. Throws when either
- * line isn't there in the plain form (a `release:` instance, say), or when anything but those two values would change.
+ * instance.yaml with its `product:` pin moved, every other byte kept but the official marketplace: for a product from before the
+ * official modules were its own (`modules` given) its sha moves with it; for one that holds them (no `modules`) its obsolete
+ * entry goes (a one-line flow entry), and `marketplaces:` with it when that was its only one. Throws when a line isn't there
+ * in the plain form (a `release:` instance, say), or when anything else would change.
  */
 export function bumpInstance(text, { product, modules, official = "aidenhq" }) {
-  if (!SHA.test(product) || !SHA.test(modules)) throw new Error("a pin is a full commit sha");
-  const lines = String(text).split("\n");
+  if (!SHA.test(product) || (modules !== undefined && !SHA.test(modules))) throw new Error("a pin is a full commit sha");
+  let lines = String(text).split("\n");
+  const hitsOf = (re) => lines.flatMap((l, i) => (re.test(l) ? [i] : []));
   const at = (re, what) => {
-    const hits = lines.flatMap((l, i) => (re.test(l) ? [i] : []));
+    const hits = hitsOf(re);
     if (hits.length !== 1) throw new Error(`instance.yaml has ${hits.length} ${what} lines, not one`);
     return hits[0];
   };
   const p = at(/^product:[ \t]*["']?[0-9a-f]{40}["']?[ \t]*(#.*)?$/, "`product: <sha>`");
   lines[p] = lines[p].replace(/[0-9a-f]{40}/, product);
-  const m = at(new RegExp(`^\\s*-\\s*\\{.*\\bname:\\s*${official}\\b.*\\bsha:\\s*[0-9a-f]{40}.*\\}\\s*(#.*)?$`), `\`${official}\` marketplace`);
-  lines[m] = lines[m].replace(/\bsha:(\s*)[0-9a-f]{40}/, `sha:$1${modules}`);
-  const out = lines.join("\n");
-  const [before, after] = [YAML.parse(String(text)), YAML.parse(out)];
+  const entry = new RegExp(`^\\s*-\\s*\\{.*\\bname:\\s*${official}\\b.*\\bsha:\\s*[0-9a-f]{40}.*\\}\\s*(#.*)?$`);
   const market = (doc) => (doc.marketplaces ?? []).find((x) => x?.name === official);
-  if (after.product !== product || market(after)?.sha !== modules) throw new Error("the pins didn't move as written");
-  const rest = (doc) => JSON.stringify({ ...doc, product: undefined, marketplaces: (doc.marketplaces ?? []).map((x) => (x?.name === official ? { ...x, sha: undefined } : x)) });
-  if (rest(before) !== rest(after)) throw new Error("the edit changed more than the two pins");
+  const [before] = [YAML.parse(String(text))];
+  if (modules !== undefined) {
+    const m = at(entry, `\`${official}\` marketplace`);
+    lines[m] = lines[m].replace(/\bsha:(\s*)[0-9a-f]{40}/, `sha:$1${modules}`);
+  } else if (market(before ?? {})) {
+    const m = at(entry, `\`${official}\` marketplace`);
+    lines.splice(m, 1);
+    if (!(before.marketplaces ?? []).some((x) => x?.name !== official)) lines = lines.filter((l) => !/^marketplaces:[ \t]*(#.*)?$/.test(l));
+  }
+  const out = lines.join("\n");
+  const after = YAML.parse(out);
+  if (after.product !== product || (modules !== undefined ? market(after)?.sha !== modules : market(after ?? {}))) throw new Error("the pins didn't move as written");
+  const others = (doc) => (doc.marketplaces ?? []).filter((x) => x?.name !== official);
+  const rest = ({ product: _p, marketplaces: _m, ...doc }) => JSON.stringify({ ...doc, marketplaces: modules !== undefined ? (_m ?? []).map((x) => (x?.name === official ? { ...x, sha: undefined } : x)) : others({ marketplaces: _m }) });
+  if (rest(before) !== rest(after)) throw new Error("the edit changed more than the pins");
   return out;
 }
 

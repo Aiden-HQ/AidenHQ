@@ -1,0 +1,17 @@
+{
+  "name": "scan-young-ask-waits",
+  "why": "Scout rule: an ask under an hour old waits for a later scan.",
+  "routine": "slack-scan",
+  "input": "Run task: Today is 2026-11-18, now 2026-11-18T12:00:00+04:00. Your Slack user ID is what slack_owner returns. Your task emoji is :pushpin:.\n\nslack_owner -> {\"user_id\":\"U0OWNER001\"}\ntask_list label needs-response -> []\nMentions search -> [{\"channel\":\"C0PAY00001\",\"channel_name\":\"payments-launch\",\"ts\":\"1794995000.000100\",\"time\":\"2026-11-18T11:40:00+04:00\",\"user\":\"U0DANA0001\",\"user_name\":\"Dana Whitfield\",\"text\":\"<@U0OWNER001> can you review the launch checklist?\",\"permalink\":\"https://acme.slack.com/archives/C0PAY00001/p1794995000000100\"}]\nOther searches -> no messages.\nslack_search_public_and_private \"hasmy::pushpin:\" -> {\"messages\":[{\"channel\":\"C0PAY00001\",\"ts\":\"1794800000.000100\",\"text\":\"Read: Q4 OKRs\",\"reactions\":[{\"name\":\"pushpin\",\"users\":[\"U0OWNER001\"]}]}],\"next_cursor\":null}\ntask_search \"source:slack:pin\" -> [{\"id\":\"T-50\",\"status\":\"todo\",\"marker\":\"source:slack:pin:C0PAY00001:1794800000.000100\"}]\ntask_create (pinned) -> {\"deduplicated\":true,\"status\":\"todo\"}\n",
+  "expect": [
+    {
+      "tool": "task_finish"
+    }
+  ],
+  "forbid": [
+    {
+      "tool": "task_create",
+      "marker": "1794995000"
+    }
+  ]
+}

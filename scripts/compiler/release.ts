@@ -1,6 +1,7 @@
 // Releases (spec §6.4, §6.8): instance.yaml `release: { name, source, sha }` pins a tested set from the distro repo, read at
 // that sha as releases/<name>.json. The release supplies the kernel sha (`product:` must equal it, so the deploy flow is
-// unchanged), the official marketplace's sha and each default module's sha; a per-module `{ id, sha }` entry overrides one.
+// unchanged) and its prebuilt images; the official modules are that kernel commit's own modules/ (2026-11-18). A release
+// file's `marketplace` and `modules` (from before that) are never read: nothing in a release points the modules elsewhere.
 // A release name is display: only its sha resolves.
 //   node scripts/compiler/release.ts <instance.yaml>     the apply's check: prints the resolved release; exit 2 refused
 import { execFileSync } from "node:child_process";
@@ -10,7 +11,7 @@ import { fileURLToPath } from "node:url";
 import { hostFetch, OFFICIAL, repoAt, sourceOf, type Fetch, type Where } from "./sources.ts";
 
 type Dict = Record<string, unknown>;
-export type Resolved = { name: string; kernel: string; marketplace: { name: string; source: unknown; sha: string }; modules: Record<string, string>; images: Record<string, string> };
+export type Resolved = { name: string; kernel: string; images: Record<string, string> };
 
 const SHA = /^[0-9a-f]{40}$/;
 const NAME = /^\d{4}\.\d{1,2}(\.\d+){0,2}$/;
@@ -31,21 +32,16 @@ export function releaseOf(instance: Dict): { name: string; at: Where } | null {
 }
 
 /**
- * A release file as the instance runs it. Unknown keys are ignored (a newer release file loads); every key used is checked.
- * Throws when `product:` isn't the release's kernel, when the release isn't the one instance.yaml names, or when the
- * instance's own official marketplace entry disagrees with the release's.
+ * A release file as the instance runs it: { release, kernel, images? }. Unknown keys are ignored (a newer release file loads,
+ * and an older one's `modules`); every key used is checked. Throws when `product:` isn't the release's kernel or the release
+ * isn't the one instance.yaml names.
  */
 export function resolveRelease(file: unknown, instance: Dict): Resolved {
-  if (!isMap(file) || typeof file.release !== "string" || !isMap(file.marketplace) || !isMap(file.modules)) throw new Error("release: the file needs release, kernel, marketplace and modules");
+  if (!isMap(file) || typeof file.release !== "string") throw new Error("release: the file needs release and kernel");
   const want = isMap(instance.release) ? instance.release.name : undefined;
   if (want !== undefined && want !== file.release) throw new Error(`release: instance.yaml names ${String(want)}, the file is ${file.release}`);
   const kernel = sha(file.kernel, "kernel");
   if (instance.product !== kernel) throw new Error(`release ${file.release}: product: is ${String(instance.product)}, the release's kernel is ${kernel}`);
-  const m = file.marketplace;
-  if (m.name !== OFFICIAL) throw new Error(`release ${file.release}: the marketplace must be ${OFFICIAL}`);
-  const marketplace = { name: OFFICIAL, source: m.source, sha: sha(m.sha, "marketplace.sha") };
-  const modules: Record<string, string> = {};
-  for (const [k, v] of Object.entries(file.modules)) modules[k] = sha(v, `modules.${k}`);
   // images: the prebuilt images of this release (name -> registry/repo@sha256:...), which apply pulls instead of building.
   const images: Record<string, string> = {};
   if (file.images != null && !isMap(file.images)) throw new Error("release: images must be a map of name to image@sha256:digest");
@@ -53,17 +49,7 @@ export function resolveRelease(file: unknown, instance: Dict): Resolved {
     if (typeof v !== "string" || !IMAGE.test(v)) throw new Error(`release: images.${k} must be registry/name@sha256:<digest>`);
     images[k] = v;
   }
-  for (const e of Array.isArray(instance.modules) ? instance.modules : []) {
-    if (!isMap(e) || e.sha == null) continue;
-    const [name, mkt] = String(e.id).split("@");
-    if (!mkt || mkt === OFFICIAL) modules[name!] = sha(e.sha, `modules ${String(e.id)}`);
-  }
-  const own = (Array.isArray(instance.marketplaces) ? instance.marketplaces : []).find((x) => isMap(x) && x.name === OFFICIAL) as Dict | undefined;
-  if (own) {
-    const [a, b] = [sourceOf(own.source, "instance.yaml marketplaces", undefined, own.sha, true), sourceOf(marketplace.source, "release marketplace", undefined, marketplace.sha, true)];
-    if (a.url !== b.url || a.path !== b.path || a.sha !== b.sha) throw new Error(`release ${file.release}: instance.yaml's ${OFFICIAL} marketplace (${a.url} at ${a.sha.slice(0, 12)}) isn't the release's (${b.url} at ${b.sha.slice(0, 12)})`);
-  }
-  return { name: file.release, kernel, marketplace, modules, images };
+  return { name: file.release, kernel, images };
 }
 
 /** The release instance.yaml pins, read from the distro repo at exactly its sha, and resolved; null without one. */
@@ -75,14 +61,12 @@ export function readRelease(instance: Dict, f: Fetch): Resolved | null {
   return resolveRelease(JSON.parse(text), instance);
 }
 
-/**
- * The instance as it runs with its release: the official marketplace entry is the release's (the loader reads the official
- * modules from it, by folder tree id), so a release move is classified by the module changes it resolves to, not by the key.
- */
+/** The instance as it runs with its release: without an obsolete `aidenhq` marketplace entry (the kernel's modules/ are the official ones). */
 export function withRelease(instance: Dict, r: Resolved | null): Dict {
   if (!r) return instance;
-  const others = (Array.isArray(instance.marketplaces) ? instance.marketplaces : []).filter((m) => !(isMap(m) && m.name === OFFICIAL));
-  return { ...instance, marketplaces: [{ name: OFFICIAL, source: r.marketplace.source, sha: r.marketplace.sha }, ...others] };
+  const marketplaces = (Array.isArray(instance.marketplaces) ? instance.marketplaces : []).filter((m) => !(isMap(m) && m.name === OFFICIAL));
+  const { marketplaces: _m, ...rest } = instance;
+  return marketplaces.length ? { ...rest, marketplaces } : rest;
 }
 
 /** withRelease on the release instance.yaml pins, read at its distro sha. */
@@ -96,7 +80,7 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
     const { default: YAML } = await import(yaml);
     const instance = (YAML.parse(readFileSync(process.argv[2] ?? "", "utf8")) ?? {}) as Dict;
     const r = readRelease(instance, hostFetch(resolve(import.meta.dirname, "../..")));
-    console.log(r ? `release: ${r.name}, kernel ${r.kernel.slice(0, 12)}, marketplace ${OFFICIAL} at ${r.marketplace.sha.slice(0, 12)}, ${Object.keys(r.modules).length} modules, ${Object.keys(r.images).length} prebuilt images` : "release: none");
+    console.log(r ? `release: ${r.name}, kernel ${r.kernel.slice(0, 12)}, ${Object.keys(r.images).length} prebuilt images` : "release: none");
   } catch (e) {
     console.error(`release: refused (${String((e as Error).message ?? e).split("\n")[0]})`);
     process.exitCode = 2;

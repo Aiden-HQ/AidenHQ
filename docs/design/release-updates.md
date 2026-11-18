@@ -45,7 +45,7 @@ charge: auto-updates on by default, off in Settings, and "Update now" for the im
   and this release never failed here. This is maintenance, not scheduled agent work, so **quiet start does not hold it**.
 - **The install:** verify again; make sure the kernel commit is on the product checkout's `origin/main` (an installer
   checkout's origin is GitHub, which has it; a local mirror gets it pushed, fast-forward only); one instance commit moving
-  `product:`, `release.{name,sha}` and the `aidenhq` marketplace sha, as an upgrade by hand does, recorded in the state as
+  `product:` and `release.{name,sha}` (dropping an obsolete `aidenhq` marketplace entry), as an upgrade by hand does, recorded in the state as
   `installing` before it is pushed; then `ops/apply-config.sh` on the instance's main, handed the held lock
   (`ops/lib/apply-lock.sh`). Main, not the commit alone: a commit another writer pushed after it is applied with it rather
   than refused. Apply's output goes to a file, so nothing it leaves running holds the updater. Never a `git pull`.
@@ -72,8 +72,9 @@ charge: auto-updates on by default, off in Settings, and "Update now" for the im
 
 Hard gates, from day one (no observe mode):
 
-- **Fixed source.** The distro, kernel and modules repositories are constants (`Aiden-HQ/...` on github.com, https only).
-  The release file can't redirect them: a `kernel_repo` or marketplace other than the official one, or an image outside
+- **Fixed source.** The distro and kernel repositories are constants (`Aiden-HQ/...` on github.com, https only; the
+  official modules are the kernel's `modules/`). The release file can't redirect them: a `kernel_repo` other than the
+  official one (a `marketplace` in it is not read), or an image outside
   `ghcr.io/aiden-hq/`, is refused.
 - **Verified before anything runs.** The tag's commit is on the distro's `main`; every module sha is on the marketplace's
   history at the release's sha (as `install.sh` checks); the release file resolves against the instance it would pin (`release.ts`: 40-char shas, image digests, `product:` = kernel, marketplace agreeing); the kernel

@@ -1,0 +1,114 @@
+name: channel-telegram
+description: "The owner's Telegram: their chat with Aiden (typed, and voice notes with the voice module), approval cards decided with single-use decision tokens, and notify_owner (Telegram and their chat on the board). Always installed (core requires it); Telegram itself is optional."
+# A channel (channel@1): the kernel hands it each pending card with a single-use approve and reject token bound to the card's
+# digest and this channel, and posts what the owner writes here as theirs (stamped [telegram]). It can approve every card it
+# is sent: telegram_decide is how the owner limits that.
+privileged: [ speaks-as-owner ]
+requires: [ board ] # its setup flow on the board
+# Set up on the board (#/setup/channel-telegram, and the first-run wizard): paste the bot token, then tap a one-time link to
+# pair the chat. Only the board can mint a code (it sends channel_telegram_pair_token); the paired chat is this service's own
+# state (its data dir), so pairing needs no apply.
+contributes:
+  board.setup_flows:
+    - order: 20
+      wizard: true
+      title: Aiden on your phone
+      why: "Chat with Aiden and approve its requests from Telegram, wherever you are."
+      effort: about 2 minutes, needs the Telegram app
+      secrets: [ telegram_notify_bot_token ]
+      pair_url: http://channel-telegram-telegram:8089/pair
+      steps: |
+        1. In Telegram, open [BotFather](https://t.me/BotFather) (Telegram's official helper for making bots) and tap **Start**.
+        2. Send `/newbot`.
+        3. Choose a name for your bot, for example *My Aiden*.
+        4. Choose a username. It must end in "bot", for example `my_aiden_bot`.
+        5. BotFather replies with a token: a long line of numbers, a colon and letters. Copy it, paste it below and press **Save**.
+        6. Tap the link that appears next, on the phone where you use Telegram, and press **Start**. That chat is now yours with Aiden.
+providers:
+  channel: {}
+connections:
+  telegram:
+    setup: "Set up on the board: Settings, Aiden on your phone (#/setup/channel-telegram). Paste the BotFather token, then tap the pairing link in Telegram."
+    url: http://telegram:8089/mcp
+    auth: telegram_service_key
+    tools:
+      # notify_owner: a message to the owner on Telegram and, with `task`, on their chat on the board.
+      read: []
+      write: [ notify_owner ]
+settings:
+  # notify_owner messages of kind fyi (news to read later) on Telegram: send, or mute (they still show on the board's chat).
+  # Decisions and results are never muted.
+  telegram_fyi:
+    default: send
+    values: [ send, mute ]
+  # Which approval cards may be decided in Telegram: all; standard (all but Tier 2 panel cards and applies, which come as
+  # text to decide on the board); or none (every card is text only).
+  telegram_decide:
+    default: all
+    values: [ all, standard, none ]
+  # Attention control on notify_owner (decisions and urgent alerts always pass; the chief of staff is never blocked or digested).
+  # The block list and the digest always act (owner preferences). This sets the daily cap only: observe logs what it would
+  # block and lets everything through (a new gate's first stage); enforce acts.
+  notify_attention:
+    default: observe
+    values: [ observe, enforce ]
+  # Agent keys whose routine (fyi/done) messages are dropped Empty: nobody is blocked.
+  notify_blocked:
+    default: []
+  # Routine messages one agent may send per UTC day (decisions don't count).
+  notify_daily_cap:
+    default: 40
+  # Owner-local hours at which routine fyi/done messages from crew agents go out as one digest (they show on the board's chat at once).
+  notify_digest_hours:
+    default: [ 9, 13, 18 ]
+services:
+  data: true
+  run:
+    telegram:
+      build: ./connections/telegram
+      tmp: 16m
+      egress: true
+      data: ["telegram:/data"]
+      env:
+        TELEGRAM_DB: /data/telegram.sqlite
+        OWNER_NAME: "${settings.owner_name}"
+        OWNER_TIMEZONE: "${settings.timezone}"
+        OWNER_COMPANY: "${settings.company_name}"
+        TELEGRAM_FYI: "${settings.telegram_fyi}"
+        TELEGRAM_DECIDE: "${settings.telegram_decide}"
+        NOTIFY_ATTENTION: "${settings.notify_attention}"
+        NOTIFY_BLOCKED: "${settings.notify_blocked}"
+        NOTIFY_DAILY_CAP: "${settings.notify_daily_cap}"
+        NOTIFY_DIGEST_HOURS: "${settings.notify_digest_hours}"
+        URGENT_COOLDOWN_MIN: "60"
+        MCP_BEARER_TOKEN_FILE: ${secrets.telegram_service_key}
+        TELEGRAM_NOTIFY_BOT_TOKEN_FILE: ${secrets.telegram_notify_bot_token}
+        # The board's bearer for minting a pairing code (POST /pair).
+        PAIR_TOKEN_FILE: ${secrets.channel_telegram_pair_token}
+        # Upgrade only: an owner chat id from the host's .env is stored once when no chat is paired yet. Host-controlled
+        # (.env), never instance.yaml: where task links point.
+        TELEGRAM_OWNER_CHAT_ID: "${TELEGRAM_OWNER_CHAT_ID:-}"
+        TELEGRAM_TASK_URL: "${TELEGRAM_TASK_URL:-}"
+        # Voice notes are transcribed on this host (audio never leaves it) by the optional voice module, whose Whisper joins
+        # this module's network under this name; while it is off, a voice note gets "Voice notes are off" and typing works.
+        WHISPER_URL: http://whisper:9000
+# Telegram is optional: created empty when missing, so compose starts; an empty token means "not configured".
+optional_secrets:
+  - telegram_notify_bot_token
+# Pasted in the board's setup flow (above), which then pairs the chat.
+secrets:
+  provided:
+    - name: telegram_notify_bot_token
+      setup:
+        label: Telegram bot token
+        pattern: '^[0-9]{6,12}:[A-Za-z0-9_-]{30,64}$'
+        help: "From BotFather in Telegram: send /newbot, then copy the token it replies with."
+# The kernel's bearer for this module's connection, and this module's own token at the kernel: compile creates it.
+generated_secrets:
+  - telegram_service_key
+  - channel_telegram_pair_token # the board's pairing bearer (compile also adds it for the flow's pair_url)
+data_version: 0 # its data dir's format: bumped by each forward-only migration (docs/configuration.md)
+# Every crew agent can reply to and ask the owner (notify_owner, the "Asking the owner" section), except in trial or in an
+# untrusted module, where write tools stay off.
+default_grants:
+  - { tools: [ telegram.notify_owner ], when: { fields: { adapter: codex_local } }, unless: { fields: { trial: true, isolation: untrusted } } }

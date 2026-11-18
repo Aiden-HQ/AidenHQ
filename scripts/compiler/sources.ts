@@ -150,16 +150,28 @@ export function onFork(base: Where, fork: Fork, f: Fetch): Where {
 }
 
 /**
- * Where the official modules folder is for an instance at product sha `sha`: the instance's `aidenhq` marketplace entry
- * (5b), else the modules repository commit the product pins (modules-pin.json), else the product's ./modules: the kernel's
- * fork's (product_fork:) when there is one, checked to descend from `sha`.
+ * Where the official modules folder is for an instance at product sha `sha`: the product's own ./modules (the official modules
+ * are part of the product again since 2026-11-18), the kernel's fork's (product_fork:) when there is one, checked to descend
+ * from `sha`. An `aidenhq` marketplace entry is ignored there. A product commit from before that (no tracked
+ * modules/marketplace.json, and no modules-pin.json deleted in its history) is read as it ran: its `aidenhq` marketplace, else
+ * its modules-pin.json; only an apply or a rollback across the move reads one. Any other commit without modules/ is refused.
  */
 export function officialAt(instance: Dict, sha: string, product: string, f: Fetch): Where {
   const local = (args: string[]) => execFileSync("git", ["-C", product, ...args], { maxBuffer: 256 << 20, stdio: ["ignore", "pipe", "pipe"] }).toString();
-  const pinned = () => { try { const p = JSON.parse(local(["show", `${sha}:modules-pin.json`])); return sourceOf({ source: "github", repo: p.repo }, "modules-pin.json", undefined, p.sha, true); } catch { return undefined; } };
   const kernel = forksOf(instance).find((x) => x.target === "kernel");
   const own: Where = { url: product, path: "modules", sha, owned: true };
-  return marketplacesOf(instance).find((m) => m.name === OFFICIAL)?.at ?? pinned() ?? (kernel ? onFork(own, kernel, f) : own);
+  if (!SHA.test(sha) || tracks(local, sha)) return kernel ? onFork(own, kernel, f) : own;
+  // One way only: a commit whose history already took the modules in (a commit there deleted modules-pin.json) never reads
+  // them from anywhere else again.
+  if (local(["log", "-1", "--diff-filter=D", "--format=%H", sha, "--", "modules-pin.json"]).trim()) throw new Error(`product ${sha.slice(0, 12)} has no modules/ of its own, but its history moved the official modules into the product: refused`);
+  const pinned = () => { try { const p = JSON.parse(local(["show", `${sha}:modules-pin.json`])); return sourceOf({ source: "github", repo: p.repo }, "modules-pin.json", undefined, p.sha, true); } catch { return undefined; } };
+  return marketplacesOf(instance).find((m) => m.name === OFFICIAL)?.at ?? pinned() ?? own;
+}
+
+/** Whether product commit `sha` holds the official modules itself (modules/marketplace.json); throws when the commit isn't there. */
+function tracks(local: (args: string[]) => string, sha: string): boolean {
+  local(["cat-file", "-e", `${sha}^{commit}`]);
+  try { local(["cat-file", "-e", `${sha}:modules/marketplace.json`]); return true; } catch { return false; }
 }
 
 /** What a fork is on top of: `product:` for the kernel, else the module's folder in the official modules or its marketplace. */
@@ -196,7 +208,7 @@ export function officialSides(baseInstance: Dict, headInstance: Dict, from: stri
     // A per-module pin: the module's folder at its own commit of the official repository (pinsOf).
     for (const p of pinsOf(instance).filter((x) => x.marketplace === OFFICIAL && trees[x.name])) {
       const pw = { ...w, path: posix.join(w.path, p.name), sha: p.sha };
-      if (w.url === product) throw new Error(`${p.name}: a per-module pin needs the official modules repository (an \`${OFFICIAL}\` marketplace or modules-pin.json)`);
+      if (w.url === product) throw new Error(`${p.name}: an official module is part of the product: pin the product (product:), not the module`);
       const root = checkout(pw, f);
       defs[p.name] = (f.parse(readFileSync(join(root, "module.yaml"), "utf8")) ?? {}) as Dict;
       forks[p.name] = { at: pw, origin: onOfficialMain(pw, f) ? `${OFFICIAL} pinned at ${p.sha.slice(0, 12)}` : `${OFFICIAL} pinned at ${p.sha.slice(0, 12)}, unreviewed: not on its main (tier ${f.kit?.(root, defs[p.name]!, pw) ? "conformant" : "declared"})` };

@@ -1,0 +1,185 @@
+# Alerts (docs/design/monitoring.md). Every one opens or updates the Fleet Ops task (Alertmanager → the board's detector);
+# severity critical also tells the owner in one line, so only these two are critical: DiskNearlyFull and CoreServiceDown
+# (their owner sentences are in services/board/src/monitoring.ts). Names are identifiers (the board shows no other).
+groups:
+  - name: host
+    rules:
+      - alert: DiskSpaceLow
+        expr: |
+          (1 - node_filesystem_avail_bytes{fstype!~"tmpfs|overlay|squashfs|fuse.*"} / node_filesystem_size_bytes) > 0.80
+          or (predict_linear(node_filesystem_avail_bytes{fstype!~"tmpfs|overlay|squashfs|fuse.*"}[6h], 24 * 3600) < 0
+              and node_filesystem_avail_bytes / node_filesystem_size_bytes < 0.5)
+        for: 15m
+        labels: { severity: warning }
+        annotations:
+          summary: "filesystem {{ $labels.mountpoint }} is over 80% full or on course to fill within 24 hours ({{ $value | humanize }})"
+      - alert: DiskNearlyFull
+        expr: (1 - node_filesystem_avail_bytes{fstype!~"tmpfs|overlay|squashfs|fuse.*"} / node_filesystem_size_bytes) > 0.95
+        for: 5m
+        labels: { severity: critical }
+        annotations:
+          summary: "filesystem {{ $labels.mountpoint }} is over 95% full"
+      - alert: MemoryPressure
+        expr: |
+          node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes < 0.10
+          or rate(node_pressure_memory_waiting_seconds_total[5m]) > 0.10
+        for: 10m
+        labels: { severity: warning }
+        annotations:
+          summary: "memory pressure on the host: under 10% available, or tasks stalled on memory over 10% of the time"
+      - alert: OomKill
+        expr: increase(node_vmstat_oom_kill[10m]) > 0
+        labels: { severity: warning }
+        annotations:
+          summary: "the kernel killed {{ $value | humanize }} process(es) for memory in the last 10 minutes"
+      - alert: HostMetricsStale
+        expr: time() - node_textfile_mtime_seconds{file!~".*/units\\.prom"} > 300
+        for: 5m
+        labels: { severity: warning }
+        annotations:
+          summary: "textfile {{ $labels.file }} not rewritten for over 5 minutes (the runner or the gateway)"
+      # The host-metrics writer (ops/host-metrics.sh, the aidenhq-host-metrics timer) writes units.prom and containers.prom,
+      # and is the only source of the unit series. When it dies or its file goes stale, the last snapshot is all Prometheus
+      # has: without this alert a frozen "all failed" snapshot reads as a failed fleet. The unit alerts below are gated on the
+      # same freshness, so absent data is unknown, never "0 active" or "16 failed". It runs every 30s; 3 minutes is six misses.
+      - alert: HostMetricsExporterStale
+        expr: |
+          absent(node_textfile_mtime_seconds{file=~".*/units\\.prom"})
+          or absent(aidenhq_unit_active{scope="user"})
+          or (time() - node_textfile_mtime_seconds{file=~".*/units\\.prom"} > 180)
+        for: 2m
+        labels: { severity: warning }
+        annotations:
+          summary: "aidenhq-host-metrics has not written units.prom for over 3 minutes, or wrote no unit at all: unit state is unknown, not 0 active"
+  - name: services
+    rules:
+      - alert: ContainerRestarting
+        expr: increase(aidenhq_container_restarts[30m]) >= 2 or aidenhq_container_unhealthy == 1
+        for: 5m
+        labels: { severity: warning }
+        annotations:
+          summary: "container {{ $labels.name }} ({{ $labels.project }}/{{ $labels.service }}) is restarting or unhealthy"
+      # The core: Paperclip, the board, apps-mcp and every connection in the aidenhq project; the runner and the gateway units;
+      # the board answering Prometheus.
+      - alert: CoreServiceDown
+        expr: |
+          aidenhq_container_running{project="aidenhq",service!="ci-runner"} == 0
+          or aidenhq_unit_active{scope="user",unit=~"aidenhq-(runner|gateway)\\.service"} == 0
+          or up{job="board"} == 0
+        for: 5m
+        labels: { severity: critical }
+        annotations:
+          summary: "{{ $labels.service }}{{ $labels.unit }}{{ $labels.job }} has been down for over 5 minutes"
+      # A planned drain (scripts/fleet-pause.mjs) writes no aidenhq_unit_failed for the units it stopped
+      # (ops/host-metrics.sh), so this fires on a crash only.
+      # An apply that failed its health check (the host went back to the last known good and stays there until the instance's
+      # main moves) or was refused at validation (nothing switched): ops/host-metrics.sh, from generations.jsonl.
+      - alert: ApplyFailed
+        expr: aidenhq_apply_failed == 1
+        labels: { severity: critical }
+        annotations:
+          summary: "apply generation {{ $labels.n }} {{ $labels.health }}: {{ $labels.reason }} (log {{ $labels.log }}); the host runs the last known good until the instance's main moves"
+      - alert: UnitFailed
+        expr: |
+          aidenhq_unit_failed == 1
+          and on() (time() - node_textfile_mtime_seconds{file=~".*/units\\.prom"} < 180)
+        for: 5m
+        labels: { severity: warning }
+        annotations:
+          summary: "systemd unit {{ $labels.unit }} ({{ $labels.scope }}) has failed (CI runners, aidenhq-ci-net, timers)"
+      - alert: CiRunnersDown
+        expr: |
+          count(aidenhq_unit_active{scope="user",unit=~"aidenhq-ci-runner@.+"}) > 0
+          and sum(aidenhq_unit_active{scope="user",unit=~"aidenhq-ci-runner@.+"}) == 0
+          and on() aidenhq_fleet_draining == 0
+          and on() (time() - node_textfile_mtime_seconds{file=~".*/units\\.prom"} < 180)
+        for: 10m
+        labels: { severity: warning }
+        annotations:
+          summary: "no CI runner unit is active"
+      # A unit that reported within the last day and is gone from the snapshot now is named by unit: expected units
+      # come from the series themselves (a unit that was there), not a fixed list. A dead exporter is HostMetricsExporterStale's.
+      # A unit stopped and disabled in one step is retired, and absent is what it should look like, so only a unit systemd still
+      # has enabled (aidenhq_unit_declared) alerts. That guard is silent when the declared series is absent altogether.
+      - alert: CiRunnerUnitMissing
+        expr: |
+          (count_over_time(aidenhq_unit_active{scope="user",unit=~"aidenhq-ci-runner@.+"}[1d]) > 0
+           unless on (unit) last_over_time(aidenhq_unit_active{scope="user",unit=~"aidenhq-ci-runner@.+"}[2m]))
+          and on (unit) aidenhq_unit_declared{scope="user"} == 1
+          and on() aidenhq_fleet_draining == 0
+          and on() (time() - node_textfile_mtime_seconds{file=~".*/units\\.prom"} < 180)
+        for: 5m
+        labels: { severity: warning }
+        annotations:
+          summary: "CI runner unit {{ $labels.unit }} stopped reporting (it was in units.prom within the last day)"
+  - name: fleet
+    rules:
+      - alert: RunnerQueueStuck
+        expr: |
+          aidenhq_runner_queue_depth > 0
+          and increase(aidenhq_runner_job_duration_seconds_count[30m]) == 0
+          and aidenhq_runner_running_jobs == 0
+        for: 15m
+        labels: { severity: warning }
+        annotations:
+          summary: "{{ $value }} Engineer job(s) queued with none running and none finished in 30 minutes"
+      - alert: RunnerJobOverlong
+        expr: aidenhq_runner_oldest_job_seconds > 3 * 3600
+        for: 10m
+        labels: { severity: warning }
+        annotations:
+          summary: "an Engineer job has run over 3 hours"
+      - alert: GatewaySpendNearCap
+        expr: aidenhq_gateway_agent_day_spend_usd / aidenhq_gateway_agent_day_cap_usd > 0.8
+        labels: { severity: warning }
+        annotations:
+          summary: "agent {{ $labels.agent }} has spent over 80% of its day cap ({{ $value | humanizePercentage }})"
+      - alert: CiReviewSpendNearCap
+        expr: aidenhq_gateway_ci_day_cap_usd > 0 and aidenhq_gateway_ci_spend_usd_today / aidenhq_gateway_ci_day_cap_usd > 0.8
+        labels: { severity: warning }
+        annotations:
+          summary: "app CI code review has spent over 80% of its day cap"
+      # Deployed apps (the app-* compose projects) are starved of CPU: an app container's own cgroup waits over 20% while the
+      # host waits over 15% (an app at its own CPU limit alone does not fire). Host CPU pressure alone is not an app alert, and
+      # this rule never matches the host series: its summary names the project, which only the app clause carries.
+      - alert: AppsCpuStarved
+        expr: |
+          rate(container_pressure_cpu_waiting_seconds_total[5m])
+            * on (id) group_left (project, service) max by (id, project, service) (aidenhq_container_running{project=~"app-.+"}) > 0.20
+          and on () rate(node_pressure_cpu_waiting_seconds_total[5m]) > 0.15
+        for: 5m
+        labels: { severity: warning }
+        annotations:
+          summary: "deployed apps are starved of CPU ({{ $labels.project }}): CPU waiting {{ $value | humanizePercentage }} of the time for over 5 minutes (CPU by source dashboard)"
+  # CPU by source (Containers dashboard): cores by name, then by source. Host-side sources come from cAdvisor's raw cgroups:
+  # the runner's service cgroup holds the Engineer jobs, dockerd and containerd the Docker builds. "other" is the host total
+  # less the rest (core services, anything too short-lived for containers.prom to name).
+  - name: cpu
+    rules:
+      - record: aidenhq:container_cpu_cores
+        expr: |
+          sum by (name, project, service) (
+            rate(container_cpu_usage_seconds_total{id=~"/system.slice/docker-.+"}[2m])
+              * on (id) group_left (name, project, service) max by (id, name, project, service) (aidenhq_container_running)
+          )
+      - record: aidenhq:cpu_cores:by_source
+        labels: { source: engineer_jobs }
+        expr: sum(rate(container_cpu_usage_seconds_total{id=~"/user.slice/.+/aidenhq-runner.service"}[2m])) or vector(0)
+      - record: aidenhq:cpu_cores:by_source
+        labels: { source: ci_runners }
+        expr: sum(aidenhq:container_cpu_cores{name=~"aidenhq-ci-runner.*"}) or vector(0)
+      - record: aidenhq:cpu_cores:by_source
+        labels: { source: computer_boxes }
+        expr: sum(aidenhq:container_cpu_cores{name=~"aidenhq-computer-.*"}) or vector(0)
+      - record: aidenhq:cpu_cores:by_source
+        labels: { source: paperclip }
+        expr: sum(aidenhq:container_cpu_cores{service="paperclip"}) or vector(0)
+      - record: aidenhq:cpu_cores:by_source
+        labels: { source: apps }
+        expr: sum(aidenhq:container_cpu_cores{project=~"app-.+"}) or vector(0)
+      - record: aidenhq:cpu_cores:by_source
+        labels: { source: builds_dockerd }
+        expr: sum(rate(container_cpu_usage_seconds_total{id=~"/system.slice/(docker|containerd).service"}[2m])) or vector(0)
+      - record: aidenhq:cpu_cores:by_source
+        labels: { source: other }
+        expr: clamp_min(sum(rate(container_cpu_usage_seconds_total{id="/"}[2m])) - sum(aidenhq:cpu_cores:by_source{source!="other"}), 0)

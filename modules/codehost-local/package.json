@@ -1,0 +1,14 @@
+{
+  "name": "codehost-local",
+  "version": "0.1.0",
+  "private": true,
+  "license": "MIT",
+  "type": "module",
+  "engines": {
+    "node": ">=24"
+  },
+  "description": "The on-server code host: bare repos, change requests as git refs, the checks receipt and the compare-and-swap squash merge.",
+  "scripts": {
+    "test": "node --disable-warning=ExperimentalWarning --test test/*.test.mjs"
+  }
+}

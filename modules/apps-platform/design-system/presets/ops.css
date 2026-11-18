@@ -1,0 +1,147 @@
+/* AidenHQ design system preset "ops". Ops: calm slate and teal, moderate corners, for monitoring, queues and run-books.
+   Use: import this file after shadcn.css (in the app's src/index.css or theme.css) and set <html data-palette="ops">.
+   A starting point, not a rule: copy it into the app's theme.css and change what doesn't fit. AA in light and dark
+   (scripts/test/design-system.test.mjs). Statuses (ok, warn, danger, info and their tints) are this preset's own. */
+
+:root[data-palette="ops"] {
+  --font: "Inter Variable", ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+  --radius-sm: 4px;
+  --radius: 6px;
+  --radius-lg: 8px;
+  --radius-xl: 10px;
+  --bg: #f6f8f8;
+  --surface: #ffffff;
+  --surface-2: #edf2f2;
+  --surface-hover: #e4ebeb;
+  --surface-active: #dae3e3;
+  --line: #d5dfdf;
+  --line-strong: #768787;
+  --text: #142424;
+  --text-muted: #4e6262;
+  --accent: #0f766e;
+  --accent-hover: #0b5f58;
+  --accent-text: #ffffff;
+  --accent-soft: #e1f3f0;
+  --accent-line: #97d3cb;
+  --accent-ink: #0b5f58;
+  --focus: #0d8a80;
+  --chart-1: #0f766e;
+  --chart-2: #3b6fd4;
+  --chart-3: #d97706;
+  --chart-4: #c2417a;
+  --chart-5: #4d7c0f;
+  --chart-6: #7c5cc4;
+  --ok: #0f4a40;
+  --ok-soft: #e0f4ef;
+  --ok-line: #7fcfbf;
+  --ok-solid: #0f7d6c;
+  --ok-solid-text: #ffffff;
+  --warn: #5a3a05;
+  --warn-soft: #fff4cc;
+  --warn-line: #e6c25a;
+  --warn-solid: #a35f00;
+  --warn-solid-text: #ffffff;
+  --danger: #b3262b;
+  --danger-soft: #fdebec;
+  --danger-line: #f2a3a5;
+  --danger-solid: #c42b31;
+  --danger-solid-text: #ffffff;
+  --info: #0f3d66;
+  --info-soft: #e4f1fb;
+  --info-line: #8cc3ee;
+  --info-solid: #0b6bb8;
+  --info-solid-text: #ffffff;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root[data-palette="ops"]:not([data-theme="light"]) {
+    --bg: #0c1414;
+    --surface: #111b1b;
+    --surface-2: #172323;
+    --surface-hover: #1d2b2b;
+    --surface-active: #243434;
+    --line: #263535;
+    --line-strong: #678080;
+    --text: #e5efee;
+    --text-muted: #a3b6b4;
+    --accent: #2bb3a6;
+    --accent-hover: #3ec6b8;
+    --accent-text: #061413;
+    --accent-soft: #0f2e2b;
+    --accent-line: #1c615a;
+    --accent-ink: #5fd6c9;
+    --focus: #2bb3a6;
+    --chart-1: #2bb3a6;
+    --chart-2: #6b9cf0;
+    --chart-3: #f0a43a;
+    --chart-4: #e472a4;
+    --chart-5: #8cc24a;
+    --chart-6: #a48cec;
+    --ok: #5ee0c4;
+    --ok-soft: #0a2a25;
+    --ok-line: #1f6b5c;
+    --ok-solid: #2bc4a4;
+    --ok-solid-text: #05161a;
+    --warn: #ffcc3d;
+    --warn-soft: #2e2005;
+    --warn-line: #6e5012;
+    --warn-solid: #f5b800;
+    --warn-solid-text: #161000;
+    --danger: #ff8f8c;
+    --danger-soft: #3a1115;
+    --danger-line: #8a2f35;
+    --danger-solid: #ef5a5f;
+    --danger-solid-text: #1a0507;
+    --info: #7cc0ff;
+    --info-soft: #0c2640;
+    --info-line: #1f5a94;
+    --info-solid: #4aa3f0;
+    --info-solid-text: #06121f;
+  }
+}
+
+:root[data-palette="ops"][data-theme="dark"] {
+  --bg: #0c1414;
+  --surface: #111b1b;
+  --surface-2: #172323;
+  --surface-hover: #1d2b2b;
+  --surface-active: #243434;
+  --line: #263535;
+  --line-strong: #678080;
+  --text: #e5efee;
+  --text-muted: #a3b6b4;
+  --accent: #2bb3a6;
+  --accent-hover: #3ec6b8;
+  --accent-text: #061413;
+  --accent-soft: #0f2e2b;
+  --accent-line: #1c615a;
+  --accent-ink: #5fd6c9;
+  --focus: #2bb3a6;
+  --chart-1: #2bb3a6;
+  --chart-2: #6b9cf0;
+  --chart-3: #f0a43a;
+  --chart-4: #e472a4;
+  --chart-5: #8cc24a;
+  --chart-6: #a48cec;
+  --ok: #5ee0c4;
+  --ok-soft: #0a2a25;
+  --ok-line: #1f6b5c;
+  --ok-solid: #2bc4a4;
+  --ok-solid-text: #05161a;
+  --warn: #ffcc3d;
+  --warn-soft: #2e2005;
+  --warn-line: #6e5012;
+  --warn-solid: #f5b800;
+  --warn-solid-text: #161000;
+  --danger: #ff8f8c;
+  --danger-soft: #3a1115;
+  --danger-line: #8a2f35;
+  --danger-solid: #ef5a5f;
+  --danger-solid-text: #1a0507;
+  --info: #7cc0ff;
+  --info-soft: #0c2640;
+  --info-line: #1f5a94;
+  --info-solid: #4aa3f0;
+  --info-solid-text: #06121f;
+}

@@ -1,0 +1,76 @@
+name: ci
+description: "Self-hosted GitHub Actions runners (labels self-hosted, aidenhq) for the agents org's app repos and any other org the App serves runners for (the product repo's): one fresh container per job."
+# No agents and no connections: the runner service (compose.yaml) is started per job by the host's
+# aidenhq-ci-runner@[<org>-]<n> units (ops/ci-runner.sh), never by `docker compose up`. docs/operations.md, "CI runners".
+# The self-hosted Actions runner. on_demand: `docker compose up` never starts it; each aidenhq-ci-runner@[<org>-]<n> unit runs
+# `docker compose run --rm ci-runner` (ops/ci-runner.sh), so every job gets a new container (nothing shared between jobs),
+# which registers ephemerally, runs one job, exits and is removed. It gets only a one-hour registration token (RUNNER_TOKEN,
+# minted on the host from the GitHub App): no host mounts, no docker socket, none of the instance's secrets, and the ops
+# shell's network (aidenhq-ci: the public Internet and, on the host, only the model gateway's CI listener 10.231.4.1:8201).
+services:
+  run:
+    ci-runner:
+      # The official runner image, less what our jobs never run and what carries known vulnerabilities (runner/Dockerfile).
+      build: ./runner
+      on_demand: true
+      user: image
+      read_only: false
+      egress: true
+      env:
+        # Who the job-started hook (runner/job-started.sh) serves: any repo of the agents org, plus ci_runner_repos.
+        AIDENHQ_AGENTS_ORG: ${settings.agents_org}
+        AIDENHQ_CI_REPOS: ${settings.ci_runner_repos}
+        # The runner group another org's runners (@<org>-<n> units) join; the agents org's join its Default group.
+        AIDENHQ_ORG_RUNNER_GROUP: ${settings.ci_org_runner_group}
+        RUNNER_URL: https://github.com/${settings.agents_org} # ops/ci-runner.sh sets another org's URL for @<org>-<n> units
+        # Not a secret: where the template's code-review job trades its OIDC token for a CI token (unset = the repo secret).
+        AIDENHQ_GATEWAY_URL: http://10.231.4.1:8201
+        # The image prints the runner's own debug log to stdout, which the unit sends to the journal and syslog: ~2 million
+        # lines a week filled /var/log (2026-11-18). The job's own output still reaches GitHub.
+        ACTIONS_RUNNER_PRINT_LOG_TO_STDOUT: "0"
+      # $$: compose leaves $ to the shell. The token is dropped from the environment before any job runs.
+      entrypoint:
+        - bash
+        - -c
+        - |
+          set -euo pipefail
+          : "$${RUNNER_TOKEN:?no registration token (ops/ci-runner.sh mints it)}"
+          # Another org's runners join its runner group (only the repos it lists), never that org's Default (all repos).
+          group=()
+          if [ "$${RUNNER_URL,,}" != "https://github.com/$${AIDENHQ_AGENTS_ORG,,}" ]; then
+            group=(--runnergroup "$${AIDENHQ_ORG_RUNNER_GROUP:?set settings.ci_org_runner_group for $$RUNNER_URL (docs/operations.md, CI runners)}")
+          fi
+          ./config.sh --unattended --ephemeral --disableupdate --url "$$RUNNER_URL" --token "$$RUNNER_TOKEN" --name "aidenhq-$$(hostname)" --labels aidenhq --work _work "$${group[@]}"
+          unset RUNNER_TOKEN
+          # The job-started hook's allow list (runner/job-started.mjs), from settings, then read-only and out of the env.
+          printf '%s/*\n' "$$AIDENHQ_AGENTS_ORG" > /opt/aidenhq/allowed
+          printf '%s\n' $$AIDENHQ_CI_REPOS >> /opt/aidenhq/allowed
+          chmod 0444 /opt/aidenhq/allowed
+          unset AIDENHQ_AGENTS_ORG AIDENHQ_CI_REPOS AIDENHQ_ORG_RUNNER_GROUP
+          exec ./run.sh
+      tmp: 2g # a tmpfs /tmp: tests that open many scratch files (SQLite) are far faster than on the container's overlay disk
+      cpus: 4
+      memory: 8g
+      pids: 2048
+settings:
+  # Repositories outside the agents org whose jobs the runners take (space-separated owner/name), from a push to the
+  # default branch or a same-repo PR only (runner/job-started.mjs). The App and that org's runner group
+  # (ci_org_runner_group) must also serve them (docs/operations.md, "CI runners").
+  ci_runner_repos:
+    default: "Aiden-HQ/AidenHQ Aiden-HQ/aidenhq-modules Aiden-HQ/aidenhq-distro"
+  # The runner group (by name) that runners serving another org join, e.g. the product repo's org: create it there limited
+  # to the repos above. Required for those units (they refuse to register without it); unused for the agents org.
+  ci_org_runner_group:
+    default: ""
+  # The model and reasoning effort of the template's code review (codex review), `<OpenRouter id>:<effort>`: the gateway
+  # hands it to the job with its CI token. Critical paths and reviewer-addressed diffs run one effort higher (xhigh).
+  ci_review_model:
+    default: "~deepseek/deepseek-flash-latest:high"
+  # Models a CI token may call besides ci_review_model: repos still on the older template (codegenie).
+  ci_review_models:
+    default: ["~deepseek/deepseek-flash-latest"] # codegenie's (roadmap-keeper until its codex copy PR lands)
+  # CI review spend caps, USD per UTC day: each repo's, and all repos' together. Past one, reviews fail until the next day.
+  ci_review_repo_day_usd:
+    default: 5
+  ci_review_day_usd:
+    default: 20

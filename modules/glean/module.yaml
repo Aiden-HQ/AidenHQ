@@ -1,0 +1,80 @@
+name: glean
+description: "The organization's Glean, passed through whole as the owner: search, documents, people and meetings, and its writes (memory, artifacts, images) by name and reviewed."
+requires:
+  - board # its sign-in banner
+# Its sign-in on the board (the board's point, modules/board/schemas/signins.json). Glean permits only this loopback callback shape.
+contributes:
+  board.signins:
+    - { id: glean, label: Glean, status_url: "http://glean-mcp:8085/auth/status", connect_url: /glean/connect, callback: /callback,
+        missing: "The Researcher can't search company knowledge until it is.", stopped: "The Researcher's company search is paused." }
+  board.setup_flows:
+    - order: 110
+      title: Company search (Glean)
+      why: Agents can search your company's documents, chats, tickets and people as you.
+      effort: about 3 minutes, needs your company's Glean address
+      secrets: [glean_mcp_url]
+      signin: glean
+      steps: |
+        1. Open Glean in your browser and sign in. Your company's Glean address looks like `https://acme-be.glean.com`.
+        2. Paste your Glean MCP address below. It is that address followed by `/mcp/default`, for example `https://acme-be.glean.com/mcp/default`. If your Glean admin has switched MCP off, ask them to open Glean's admin settings and use the **MCP Configurator** (the "Custom" host) to turn it on.
+        3. Press **Connect Glean**, sign in to Glean in the tab that opens, and allow access.
+
+        Agents search as you, so they see only what you can see.
+settings:
+  # Superseded by the glean_mcp_url secret the setup flow saves; a value here is read only while that secret is empty.
+  glean_mcp_url:
+    default: ""
+    type: url
+    host: "*.glean.com"
+connections:
+  glean:
+    setup: "Open its setup on the board (#/setup/glean): paste your Glean MCP address and press Connect."
+    guide: "Start here for anything about the company. One search covers Slack, Google Drive, Confluence, Jira, GitHub, meeting transcripts and people, ranked by relevance and permissions. `search` finds documents and threads (then `read_document` for the full text), `chat` gives a summarized, cited answer across all of them, `employee_search` finds who owns or works on something, `meeting_lookup` finds meetings and their notes, `code_search` finds code. Go to the single-system tools only for what Glean can't give (exact Jira history, a full Slack thread, a live PR state)."
+    url: http://glean-mcp:8085/mcp
+    auth: glean_service_key
+    # Every tool Glean's server lists (probed 2026-11-18). Reads added since the first six are `named`: only a grant naming
+    # them reaches them. Glean's writes act in the owner's account (memory, images, artifacts, sharing an artifact as the
+    # owner): `destructive`, so only a grant naming one reaches it and every call is a record the AI reviewer decides first.
+    tools:
+      read: [ search, read_document, employee_search, meeting_lookup, code_search, chat, user_activity, memory_schema ]
+      named: [ user_activity, memory_schema ]
+      write: []
+      destructive: [ memory, create_image, edit_image, upload_artifact, update_artifact, share_artifact ]
+# Runner jobs of an Engineer with private reads, through the model gateway with their own token (scripts/modules.mjs jobcapEntries).
+jobcaps:
+  - { id: glean-read, connection: glean, tools: read, private: true, read_url: "http://glean-mcp:8085/mcp/read", read_secret: glean_mcp_read_token }
+secrets:
+  state: true # its own vault dir, read-write at /state: the registered client and the token pair, refreshed here
+  provided:
+    # Your Glean MCP server URL (Glean's MCP Configurator, e.g. https://acme-be.glean.com/mcp/default), saved by the setup flow;
+    # empty: Glean is off. The pattern is the host rule the glean_mcp_url setting had (*.glean.com).
+    - name: glean_mcp_url
+      setup:
+        label: Glean MCP address
+        pattern: '^https://[a-z0-9-]+(\.[a-z0-9-]+)*\.glean\.com/mcp(/[A-Za-z0-9_-]+)?/?$'
+        help: "For example https://acme-be.glean.com/mcp/default"
+optional_secrets:
+  - glean_mcp_url
+services:
+  run:
+    glean-mcp:
+      build: ./connections/glean-mcp
+      tmp: 16m
+      port: 8085
+      egress: true
+      links: [board] # the board's sign-in endpoints
+      state: /state
+      env:
+        GLEAN_MCP_URL_FILE: ${secrets.glean_mcp_url}
+        GLEAN_MCP_URL: "${settings.glean_mcp_url}"
+        GLEAN_STATE_DIR: /state
+        # The board's https address: its Connect returns there (besides loopback).
+        BOARD_URL: "${BOARD_LAN_URL:-}"
+        MCP_TOKEN_FILE: ${secrets.glean_service_key}
+        MCP_READ_TOKEN_FILE: ${secrets.glean_mcp_read_token}
+        # The read endpoint serves only these: the connection's read tags (CI checks they match).
+        READ_TOOLS: "search,read_document,employee_search,meeting_lookup,code_search,chat,user_activity,memory_schema"
+        # The board's sign-in endpoints: state, and starting or finishing a sign-in.
+        GLEAN_AUTH_TOKEN_FILE: ${secrets.glean_auth_token}
+generated_secrets:
+  - glean_service_key

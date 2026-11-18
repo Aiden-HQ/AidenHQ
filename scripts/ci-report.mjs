@@ -8,7 +8,7 @@ const run = promisify(execFile);
 const args = process.argv.slice(2);
 const opt = (k, d) => (args.includes(k) ? args[args.indexOf(k) + 1] : d);
 const hours = Number(opt("--hours", 24));
-const repos = opt("--repo") ? [opt("--repo")] : ["Aiden-HQ/AidenHQ", "Aiden-HQ/aidenhq-modules"];
+const repos = opt("--repo") ? [opt("--repo")] : ["Aiden-HQ/AidenHQ"];
 const now = Date.now();
 const since = new Date(now - hours * 3600e3).toISOString().replace(/\.\d+Z/, "Z");
 // PR runs from before the window still tell whether a merged PR was ever red.

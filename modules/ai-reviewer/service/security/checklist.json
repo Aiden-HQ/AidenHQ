@@ -1,0 +1,78 @@
+{
+  "about": "The product's reliability checklist (policy.md, 'Reliability checklist'). Code matches each item's trigger against the diff (review-checklist.mjs) and the reviewer checks only the matched ones. The service reads this file from its own image (the deployed modules pin), never from the change. Paths are written both ways: the product repo's (modules/<x>/...) and aidenhq-modules' own (<x>/...). Each item: id; scope (optional; product: only a change to the product or the official modules repo, the card's code-set `product` list; review.mjs productScoped); trigger (paths: globs, lines: a regex over the changed lines of a matching file; both set means both); check (what must be true, visible in the diff or the changed files); why (the incidents behind it).",
+  "items": [
+    {
+      "id": "data-mount-dirs",
+      "trigger": { "paths": ["modules/*/module.yaml", "*/module.yaml", "**/compose*.yaml"], "lines": "^[+-]\\s+-\\s+[\"']?[\\w.${}/-]+:/(?!/)" },
+      "check": "Every folder the service uses under an added or moved data mount (an env value such as TMPDIR or a cache dir, a path in its code) is created by the service itself at start (mkdir with recursive in its code or entrypoint), shown in this diff or the changed files. A folder the image's Dockerfile makes under that path is hidden by the bind mount, so it does not count.",
+      "why": "AidenHQ#216 and #217: the scanner's /cache/tmp vanished under its data mount and no scan pass completed for a day."
+    },
+    {
+      "id": "reviewer-cases-kept",
+      "trigger": { "paths": ["modules/ai-reviewer/**", "ai-reviewer/**", "services/runner/src/tiers.*", "services/runner/src/review-request.*", "services/runner/src/siblings.*", "services/runner/src/cards.*", "services/shared/review-files.*", "kernel/sdk/src/reviewer.ts", "kernel/src/tier.ts", "kernel/src/writes.ts", "kernel/src/records.ts", "kernel/src/reviews.ts", "kernel/src/kinds.ts", "kernel/src/loader/authority.ts", "modules/codehost-github/src/plan.mjs", "codehost-github/src/plan.mjs", "modules/platform/src/check.mjs", "platform/src/check.mjs"] },
+      "check": "Code merges a change to the reviewer's or the tiers' code only with a 100% receipt of the paid reviewer eval for its exact head (services/runner/src/evalgate.ts), so the eval's result is not your question. What you check: every planted case under modules/ai-reviewer/test/reviewer-cases/ is kept, with its expect, expect_code, expect_second and expect_flag as they were; the diff adds cases or leaves them alone.",
+      "why": "CLAUDE.md: the reviewer eval must stay at 100%; every false reject becomes a planted case."
+    },
+    {
+      "id": "exposure-pins",
+      "scope": "product",
+      "trigger": { "paths": ["**/compose*.yaml", "modules/*/module.yaml", "*/module.yaml", "ops/**", "scripts/verify-security.sh", "services/*/src/**", "modules/*/service/**", "*/service/**"], "lines": "^[+-].*(\\bports:|network_mode|\\b0\\.0\\.0\\.0\\b|127\\.0\\.0\\.1:\\d|tailscale serve|--https=\\d|\\.listen\\(\\s*\\d)" },
+      "check": "A port, bind address, network mode or tailnet listener the diff adds, moves or removes is matched by the product's scripts/verify-security.sh (its must-lists and pins name the new value), in this diff or in the product PR the request chain names for it, and a new port is one no other listener already uses (Grafana 8444, the gate 8445, the kernel admin 8446).",
+      "why": "#195 and #200: verify-security's pins went stale and failed on the live host after an apply; #196: the kernel's admin pages took Grafana's port 8444."
+    },
+    {
+      "id": "gate-file-moved",
+      "trigger": { "paths": ["services/runner/src/**", "modules/codehost-github/**", "codehost-github/**", "modules/platform/**", "platform/**", "kernel/**", "services/board/src/**", "modules/ai-reviewer/service/**", "ai-reviewer/service/**", "modules/grading/**", "grading/**"], "lines": "^(deleted file mode|rename from|\\+\\+\\+ /dev/null)" },
+      "check": "A gate file the diff deletes or renames has its new path (or its removal) wherever the gate is pinned, in this diff or in the companion PR the request chain names: GATE_CORE in platform/src/check.mjs (aidenhq-modules) and the must-list in the product's scripts/verify-security.sh.",
+      "why": "#200: after the board's accounts.ts moved into the kernel, verify-security still required the old file and failed on the host (generation 35)."
+    },
+    {
+      "id": "card-contract",
+      "trigger": { "paths": ["services/runner/src/cards.*", "kernel/src/kinds.ts"] },
+      "check": "A field added to, renamed in or removed from an approval card's args is changed on both sides in this diff: services/runner/src/cards.ts (what builds the args) and kernel/src/kinds.ts (the strict schema that checks them), so the card-contract test (services/runner/test/parity-3b.test.mjs) holds.",
+      "why": "CLAUDE.md: approval card args are a contract; a field on one side only makes the kernel refuse every card of that kind."
+    },
+    {
+      "id": "scoped-deletions",
+      "trigger": { "lines": "^(deleted file mode|rename from|\\+\\+\\+ /dev/null)" },
+      "check": "Every file the diff deletes or renames is part of what the request chain asked for. A deletion of files the chain never mentions is how a branch built on an old base silently reverts newer work on main: then the change goes back to be rebased onto main. An app built on the app starter removing the starter's own demo it doesn't use (sample pages and data, the catalog, unused blocks and their tests) is the app's own work and holds. Deleting or skipping ordinary tests is fine and holds, with this exception: a reviewer case under ai-reviewer/test/reviewer-cases/ (or modules/ai-reviewer/), a security test (anything under a security/ path, a *security*.test.* file, scripts/verify-security.sh) or the reviewer's eval script is part of the security gates, so deleting, renaming or skipping one holds only when the request chain asked for exactly that.",
+      "why": "#50 (2026-11-14) carried stale files from its old base, silently reverted 2d5fba3 and 2fc33bd, and broke the next apply."
+    },
+    {
+      "id": "timeout-sized",
+      "trigger": { "lines": "^\\+.*([Tt]imeout|TIMEOUT|_MINUTES|_SECONDS)\\w*[\"']?\\s*[:=(,]\\s*[\\d_]+" },
+      "check": "A timeout the diff adds or lowers on a scan, build, subprocess or network call leaves headroom over the longest real run it covers (the largest target: the host SBOM, the biggest repo or image), as far as the code, its comments or the request chain say how long that takes; a timeout that cuts real work short kills the job every time.",
+      "why": "#218: the host SBOM's grype run took 927 s against a 900 s timeout and failed every pass."
+    },
+    {
+      "id": "sync-shared",
+      "trigger": { "paths": ["services/shared/**", "kernel/sdk/src/**", "scripts/supply-chain/*.mjs", "modules/apps-platform/design-system/**", "apps-platform/design-system/**", "modules/apps-platform/starter/**", "apps-platform/starter/**", "modules/ci/template/.github/**", "ci/template/.github/**", "**/aidenhq-sdk/**", "modules/ai-reviewer/service/src/review-files.mjs", "ai-reviewer/service/src/review-files.mjs", "modules/ai-reviewer/service/src/review-checklist.mjs", "ai-reviewer/service/src/review-checklist.mjs", "services/computer/images/agent-base/design-system/**", "services/computer/images/agent-base/app-starter/**"] },
+      "check": "A file the product's scripts/sync-shared.mjs copies is changed together with every copy, identically (node scripts/sync-shared.mjs). When the canonical file and its copies sit in different repos (the product and aidenhq-modules), this diff changes its side and the request chain names the other side's PR; a copy is never edited on its own. A diff that carries the file and every copy of it together (all the paths are in this one diff, in one repository) holds, with no other PR to name. A file that sync-shared.mjs doesn't list has no copies.",
+      "why": "CLAUDE.md: services/shared, the SDK, the design system and the app starter are copied into services and modules; scripts/test fails on drift."
+    },
+    {
+      "id": "schema-setup-race",
+      "trigger": { "lines": "^\\+.*\\b(ALTER TABLE|CREATE TABLE|CREATE INDEX|journal_mode)\\b" },
+      "check": "Schema setup that more than one process or opener can run at once on the same database (adding a column, a table, an index, setting WAL) runs inside one BEGIN IMMEDIATE transaction or is idempotent (IF NOT EXISTS, a retry on a busy lock), so two openers never both alter or both fail.",
+      "why": "#164: two openers of the runner's state.sqlite both added the same column (duplicate column name) and flaked flow-graded on main; #167: the WAL pragma failed while another opener held the lock."
+    },
+    {
+      "id": "progress-after-success",
+      "trigger": { "lines": "^\\+.*\\b(seen|markSeen|lastSeen|cursor|watermark|processed)\\b" },
+      "check": "A pass records progress (a seen marker, a cursor, a watermark) for an item only after that item's work succeeded, so a failed or interrupted item is retried by the next pass; a transient error (network, 429, 5xx) is never recorded as done.",
+      "why": "#158: apps-mcp marked a commit seen when its build failed, so the app was never redeployed; #43: a network blip at a job's end dropped the job."
+    },
+    {
+      "id": "drain-on-restart",
+      "trigger": { "paths": ["**/compose*.yaml", "modules/*/module.yaml", "*/module.yaml", "**/src/**"], "lines": "^\\+.*(stop_grace_period|process\\.on\\(\\s*[\"']SIG(TERM|INT)|KillMode)" },
+      "check": "A service that runs long work (a deploy, a build, a job) finishes or hands off the work in flight when it is stopped: its SIGTERM handler refuses new work and waits for the running work, within a stop_grace_period long enough for it.",
+      "why": "#156: an apply that recreated apps-mcp killed an app build mid-deploy, which failed and rolled back."
+    },
+    {
+      "id": "module-contract-docs",
+      "trigger": { "paths": ["kernel/src/loader/authority.ts", "kernel/src/loader/points.ts", "scripts/modules.mjs", "scripts/modules.ts", "kernel/contract.lock.json", "kernel/schemas/**", "kernel/sdk/src/**"] },
+      "check": "A change to the module contract (a module.yaml key the loader or the compiler reads, a point, kernel/contract.lock.json, or a kernel API that modules call through the SDK) updates docs/modules.md in the same diff to describe it. A change that leaves the contract as it was (an internal fix, a refactor that keeps every key and call) holds.",
+      "why": "Owner, 2026-11-17: module authors build from docs/modules.md, so a contract change it doesn't describe breaks the next module written from it."
+    }
+  ]
+}

@@ -1,0 +1,4 @@
+{
+  "type": "object", "additionalProperties": false, "required": ["name", "sha", "stateful"],
+  "properties": { "name": { "type": "string", "pattern": "^[a-z][a-z0-9-]{1,30}$" }, "sha": { "type": "string", "pattern": "^[0-9a-f]{40}$" }, "stateful": { "type": "boolean" } }
+}

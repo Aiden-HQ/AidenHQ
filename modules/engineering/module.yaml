@@ -1,0 +1,62 @@
+name: engineering
+description: Engineer agents for coding jobs, dispatched by the host runner and run by the kernel in its sandbox (OpenRouter models on Codex through the model gateway).
+requires:
+  # The module that provides the engine (engine-codex): the runner names it per agent.
+  - engine
+  # Any code host (codehost-github, codehost-local): each repo is hosted by the provider that owns its org.
+  - codehost
+# The runner starts its Engineers' jobs through the kernel's /v1/jobs with this module's own token (engineering_token).
+roles:
+  requests: [ kernel.jobs ]
+generated_secrets:
+  - engineering_token
+isolation: code-exec
+agents:
+  engineer-openrouter:
+    department: engineering
+    skills: [ apps-platform.design-system ]
+    persona: { name: Linus, voice: "Scrappy; tries the cheap route first and says plainly when it isn't good enough.", avatar: linus }
+    # Paperclip never runs runner agents: opencode_local only holds the openrouter/<model> ids. The runner's engine is Codex
+    # through the model gateway (codex-openrouter), in an agent computer.
+    adapter: opencode_local
+    engine: codex-openrouter
+    reasoning_effort: high
+    # Graded done: deliverables delegated to it are checked against their rubric before they close (the runner's grader).
+    graded: true
+    model: openrouter/~deepseek/deepseek-flash-latest
+    # Offered in the board's model picker and known to the runner ("use DeepSeek"). Any other
+    # OpenRouter model id works when typed in full once it has a price (modules/models-openrouter).
+    models:
+      - openrouter/~deepseek/deepseek-flash-latest
+      - openrouter/moonshotai/kimi-k3.1-pro
+      - openrouter/z-ai/glm-5.3-flash
+      - openrouter/z-ai/glm-5.3
+      - openrouter/deepseek/deepseek-v4.1-flash
+      - openrouter/deepseek/deepseek-v4-pro
+      - openrouter/moonshotai/kimi-k3
+      - openrouter/qwen/qwen3-coder-next
+    dispatch: runner
+    # Its runner jobs run in an `engineer` agent computer (gVisor), like every Engineer's (owner, 2026-11-18).
+    image: engineer
+    # Primer reads (optional: only with the primer module); in its computer through the kernel's proxy with its run token.
+    jobcaps: [ primer-read? ]
+  app-engineer:
+    department: engineering
+    # Routed since 2026-11-14, after the live checks (restart, cancel, peak memory: docs/design/sandboxing.md).
+    # The strong tier: its runner jobs run in an `engineer` agent computer (gVisor) with app and data reads and a browser.
+    brief: true
+    graded: true
+    adapter: opencode_local
+    engine: codex-openrouter
+    dispatch: runner
+    image: engineer
+    model: openrouter/~deepseek/deepseek-flash-latest
+    reasoning_effort: high
+    max_parallel: 2
+    # Public reads only (App UI work: web search and web_view on). Data work needs private_reads: true and drops the web
+    # (scripts/computers.mjs privateGrants, checked at compile): a separate mode, not this agent's yet.
+    connections:
+      apps: [ app_list, app_status, app_view, app_check, web_view ]
+      github?: read
+labels:
+  - { name: engineer, color: "#4f46e5" }

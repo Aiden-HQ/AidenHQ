@@ -50,10 +50,11 @@ npm test && npm run typecheck
 
 The board's Docker build is stricter than vitest: always run `tsc -p tsconfig.build.json` for board changes. After
 editing `kernel/sdk/src/caller.ts` or `fence.ts`, `services/shared/source-store.ts`, `modules/apps-platform/design-system/` or the app starter (`modules/apps-platform/starter/`), run `node scripts/sync-shared.mjs` (a
-test fails on drift; copies under `modules/` are checked here only when the change touches `modules-pin.json` or a
-canonical they copy, and in the modules repo against its `product-pin.json`, so they land there with its next pin bump). Each repo tests only against the other's pinned commit (`modules-pin.json` here,
-`product-pin.json` there): a change that needs both lands one side first, then bumps the other's pin. CI (`.github/workflows/ci.yml`) runs the suites a PR touches (map: `.github/ci/areas.json`, read from
-the base; a new top-level path needs a suite there or it runs everything) and all of them on main.
+test fails on drift, the copies under `modules/` included). The official modules are this repo's `modules/` (MIT by folder:
+`modules/LICENSE`, `NOTICE`, `LICENSES/`), so a change across the kernel and a module is one PR. CI (`.github/workflows/ci.yml`)
+runs the suites a PR touches (map: `.github/ci/areas.json`, read from the base: each module package is a suite of its own
+whose paths list what it imports; `scripts/test/ci-areas.test.mjs` fails when a module with tests has no suite or a suite's
+imports leave its paths; a path under no suite runs everything) and all of them on main.
 
 The app starter (`modules/apps-platform/starter/`) is Vite + shadcn: `npm ci && npm run build` before serving it (apps-mcp's
 render test skips without `dist/`). Copying files from macOS with `tar`, set `COPYFILE_DISABLE=1` (else `._*` files break
@@ -65,8 +66,8 @@ applies to changes to the module (its service, policy `service/security/`, cases
 `kernel/sdk/src/reviewer.ts`, the tier function and write lifecycle (`services/runner/src/tiers.mjs`, its gate list `gate-core.mjs`, `cards.ts`,
 `review-request.mjs`, `kernel/src/{tier,provenance,writes,records,reviews,review-loop,kinds,apply,apply-tier}.ts`, the code host's git rules
 `modules/codehost-github/src/plan.mjs`, the platform check `modules/platform/src/check.mjs`) the authority-diff classifier (`scripts/compiler/authority.ts`), the path inventory (`paths.yaml`, `scripts/paths.mjs`, `kernel/src/paths.ts`) or the check jobs that run it and sign its receipt (`kernel/src/checkjobs.ts`); the runner's merge queue runs it on the PR's exact head
-(product and official modules repo) and merges only on a passing receipt (95% of the base cases, every miss a false block of a clean case; `services/runner/src/evalgate.ts`); a modules pin bump
-(`modules-pin.json`, the instance's `aidenhq` marketplace) that changes the reviewer needs a receipt for that reviewer too.
+and merges only on a passing receipt (95% of the base cases, every miss a false block of a clean case; `services/runner/src/evalgate.ts`); an apply
+that moves `product:` to a different reviewer needs a receipt for that reviewer too.
 
 ## Conventions
 

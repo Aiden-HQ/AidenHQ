@@ -44,14 +44,6 @@ async function main() {
   console.log("  supply-chain (always): npm-age.mjs, pins.mjs");
   if (list) return;
 
-  // The official modules at the product's pin, as CI checks them out.
-  const pin = JSON.parse(readFileSync(join(root, "modules-pin.json"), "utf8")).sha;
-  const mark = join(root, "modules/.sha");
-  if (sel.suites.length && !(existsSync(mark) && readFileSync(mark, "utf8").trim() === pin)) {
-    console.log(`modules/ is missing or not at ${pin.slice(0, 12)}: materializing`);
-    execFileSync("node", ["scripts/modules-repo/materialize.mjs", "."], { cwd: root, stdio: "inherit" });
-  }
-
   // Shared code copied into the services (scripts/sync-shared.mjs) is mechanical: synced here, so drift never reaches CI.
   const before = new Set(lines(git("diff", "--name-only")));
   execFileSync("node", ["scripts/sync-shared.mjs"], { cwd: root, stdio: "ignore" });
@@ -65,6 +57,7 @@ async function main() {
     for (const [, cd] of (s.run ?? "").matchAll(/cd (\S+) && npm ci/g)) installs.add(join(dir, cd));
     if (/^npm ci|\) && npm ci/.test(s.run ?? "")) installs.add(dir);
     if (s.name === "scripts") installs.add("services/runner");
+    if (s.job === "modules") installs.add("kernel"); // module suites read the kernel's code, as CI's modules job installs it
   }
   for (const d of installs) {
     const dir = resolve(root, d);
