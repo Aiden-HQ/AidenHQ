@@ -45,9 +45,9 @@ async function authorize(req: IncomingMessage, body: unknown): Promise<{ ok: tru
     return { ok: false, body: Array.isArray(body) ? msgs.map(refusal) : refusal(msgs[0]!) };
   }
 }
-// The App's tokens come from codehost-github (CODEHOST_URL), asked for with this module's own token (the kernel's key to /mcp,
-// which the kernel's /v1/whoami knows as module github); this service never holds the App's key.
-const projects = new Projects(process.env.CODEHOST_URL && inboundToken ? { url: process.env.CODEHOST_URL, key: () => inboundToken } : undefined);
+// The App's tokens come from the kernel's POST /v1/codehost/token, asked for with this module's own token (the kernel's key to
+// /mcp, which the kernel knows as module github); this service never holds the App's key.
+const projects = new Projects(inboundToken ? { url: process.env.AIDENHQ_KERNEL_URL ?? "http://10.231.0.1:3130", key: () => inboundToken } : undefined);
 // The Maintainer's App tools: the repos maintainer_repos lists and no other, each trusting a label only from our App or a
 // collaborator with one of its trusted roles (picked from the fixed set in maintainer.ts). A list that doesn't parse leaves
 // every tool refusing with the reason.

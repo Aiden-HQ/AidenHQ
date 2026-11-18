@@ -3,9 +3,9 @@ import { Projects, productTarget, upstreamReport } from "../src/projects.js";
 import { originIds, ownerTerms } from "../src/scrub.js";
 
 const CODEHOST = { url: "http://codehost", key: () => "gh-key" };
-/** codehost-github's POST /ops/token, faked: `covers(repo, perms)` says whether the App covers that (else 422). */
+/** the kernel's POST /v1/codehost/token, faked: `covers(repo, perms)` says whether the App covers that (else 422). */
 function ops(url: string, init: RequestInit, token: string, covers: (repo: string, perms: Record<string, string>) => boolean = () => true) {
-  if (url !== "http://codehost/ops/token") return undefined;
+  if (url !== "http://codehost/v1/codehost/token") return undefined;
   const b = JSON.parse(String(init.body));
   const ok = (init.headers as Record<string, string>).authorization === "Bearer gh-key" && covers(b.repo, b.perms);
   return { status: ok ? 200 : 422, json: async () => (ok ? { token, repo: b.repo, perms: b.perms, expires_at: new Date(Date.now() + 3300_000).toISOString(), app: { slug: "acme-app" } } : { error: "GitHub said 422" }) };
@@ -29,7 +29,7 @@ it("design-review status: only on the PR's current head, with a token narrowed t
   await expect(p.commitStatus("org", "app", 4, "a".repeat(40), status)).rejects.toThrow(/isn't the current head/);
   expect(calls.some((c) => c.url.includes("/statuses/"))).toBe(false);
   expect(await p.commitStatus("org", "app", 4, head, status)).toMatchObject({ number: 4, sha: head, state: "success" });
-  expect(calls.find((c) => c.url.endsWith("/ops/token"))!.body).toEqual({ repo: "org/app", perms: { statuses: "write", pull_requests: "read" } });
+  expect(calls.find((c) => c.url.endsWith("/v1/codehost/token"))!.body).toEqual({ repo: "org/app", perms: { statuses: "write", pull_requests: "read" } });
   expect(calls.at(-1)!.url).toBe(`https://api.github.com/repos/org/app/statuses/${head}`);
 });
 
@@ -67,7 +67,7 @@ it("a product issue as the App: Issues: write required, a narrowed token, dedupe
   issues = "write";
   expect(await p.reportIssue("acme", "product", report)).toEqual({ deduplicated: false, number: 12, state: "open", url: "u12" });
   expect(filed[0]!.body).toBe("WOR-1, WOR-2\n\nproduct-bug:runner-rebase-asks");
-  expect(calls.filter((c) => c.url.endsWith("/ops/token")).at(-1)!.body).toEqual({ repo: "acme/product", perms: { issues: "write" } });
+  expect(calls.filter((c) => c.url.endsWith("/v1/codehost/token")).at(-1)!.body).toEqual({ repo: "acme/product", perms: { issues: "write" } });
   expect(await p.reportIssue("acme", "product", { ...report, body: "WOR-3" })).toEqual({ deduplicated: true, number: 12, state: "open", url: "u12#c77" });
   expect(filed).toHaveLength(1);
   filed[0]!.state = "closed";
@@ -221,7 +221,7 @@ it("mints a read-only narrowed token and flattens project items", async () => {
 
   const out = await new Projects(CODEHOST, fetchFn).read({ org: "acme", number: 23, limit: 100 });
 
-  expect(calls.filter((c) => c.url.endsWith("/ops/token")).at(-1)!.body).toEqual({ repo: "acme/*", perms: { organization_projects: "read", issues: "read", pull_requests: "read" } });
+  expect(calls.filter((c) => c.url.endsWith("/v1/codehost/token")).at(-1)!.body).toEqual({ repo: "acme/*", perms: { organization_projects: "read", issues: "read", pull_requests: "read" } });
   expect(calls.at(-1)!.auth).toBe("Bearer ghs_x");
   expect(out.project.title).toBe("BPN");
   expect(out.fields).toEqual([{ name: "Status", type: "SINGLE_SELECT", options: ["Todo", "Done"] }]);
@@ -246,7 +246,7 @@ it("mints a read-only token for an org, and reports a miss when the App isn't in
 
   expect(await p.orgToken("acme")).toBe("ghs_o");
   expect(await p.orgToken("other")).toBeUndefined();
-  expect(calls.find((c) => c.url.endsWith("/ops/token"))!.body).toEqual({ repo: "acme/*", perms: { issues: "read", pull_requests: "read" } });
+  expect(calls.find((c) => c.url.endsWith("/v1/codehost/token"))!.body).toEqual({ repo: "acme/*", perms: { issues: "read", pull_requests: "read" } });
 });
 
 it("an org whose installation lacks Projects read still syncs issues and PRs, its boards off", async () => {

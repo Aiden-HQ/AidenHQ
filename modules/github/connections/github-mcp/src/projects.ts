@@ -1,5 +1,5 @@
-// The instance's GitHub App, without its key: every App token comes from codehost-github (POST /ops/token, with this module's
-// own token and its grant on codehost-github.ops), narrowed to one repo or org and the permissions each call needs. Read-only
+// The instance's GitHub App, without its key: every App token comes from the kernel (POST /v1/codehost/token, with this
+// module's own token, under its `codehost:` grant; the kernel asks codehost-github, the App key's only holder), narrowed to one repo or org and the permissions each call needs. Read-only
 // GitHub Projects (v2) boards of an organization (the user's own token can't read org projects: one fixed GraphQL query with
 // an org token), the src_github sync, product issues and the Maintainer's App calls go through here; github.ts uses
 // `repoToken` for read-only access to repositories the App covers.
@@ -27,8 +27,10 @@ const QUERY = `query($org:String!,$number:Int!,$first:Int!,$after:String){organi
       ... on ProjectV2ItemFieldTextValue{text field{... on ProjectV2FieldCommon{name}}}
       ... on ProjectV2ItemFieldNumberValue{number field{... on ProjectV2FieldCommon{name}}}}}}}}}}`;
 
-/** codehost-github's ops (its URL, and this module's own token as the bearer); undefined: no App here. */
+/** The kernel's codehost route (its URL, and this module's own token as the bearer); undefined: no App here. */
 export type Codehost = { url: string; key: () => string };
+/** The kernel's error ({error: {message}}) or codehost-github's passed through ({error: "…"}). */
+const errorOf = (b: any) => String(b?.error?.message ?? b?.error ?? "");
 
 /**
  * Where product issues go: only the configured product repo (no tool input names a repo), and only for a caller holding the
@@ -72,7 +74,7 @@ export class Projects {
   }
 
   /**
-   * An App token for `target` (owner/name, or owner/* for an org-wide one) and these permissions, from codehost-github,
+   * An App token for `target` (owner/name, or owner/* for an org-wide one) and these permissions, from the kernel,
    * reused until 5 minutes before it expires. Where the App doesn't cover it (not installed there, or a permission the
    * installation lacks) or there is no App: undefined (remembered for 15 minutes), or, with `need`, an error that says so.
    */
@@ -85,16 +87,16 @@ export class Projects {
       this.tokens.set(key, { token: undefined, expires: Date.now() + 15 * 60_000 });
       return undefined;
     };
-    if (!this.codehost) return miss("the GitHub App isn't set up here (no codehost-github)");
-    const r = await this.api("POST", `${this.codehost.url}/ops/token`, { authorization: `Bearer ${this.codehost.key()}` }, { repo: target, perms: permissions });
+    if (!this.codehost) return miss("the GitHub App isn't set up here");
+    const r = await this.api("POST", `${this.codehost.url}/v1/codehost/token`, { authorization: `Bearer ${this.codehost.key()}` }, { repo: target, perms: permissions });
     if (r.status === 200) {
       this.slug = String(r.body.app?.slug ?? this.slug);
       this.tokens.set(key, { token: String(r.body.token), expires: Date.parse(r.body.expires_at) });
       return String(r.body.token);
     }
-    // 404: not installed there; 422: GitHub refused those permissions or that repo; 503: no App key on the code host.
-    if ([404, 422, 503].includes(r.status)) return miss(`the GitHub App doesn't cover ${target} with ${Object.entries(permissions).map(([k, v]) => `${k}: ${v}`).join(", ")} (codehost-github said ${r.status} ${r.body?.error ?? ""})`.trim());
-    throw new Error(`couldn't get a GitHub App token for ${target} (codehost-github said ${r.status} ${r.body?.error ?? ""})`.trim());
+    // 404: not installed there, or no GitHub code host; 422: GitHub refused those permissions or that repo; 503: no App key.
+    if ([404, 422, 503].includes(r.status)) return miss(`the GitHub App doesn't cover ${target} with ${Object.entries(permissions).map(([k, v]) => `${k}: ${v}`).join(", ")} (the kernel said ${r.status} ${errorOf(r.body)})`.trim());
+    throw new Error(`couldn't get a GitHub App token for ${target} (the kernel said ${r.status} ${errorOf(r.body)})`.trim());
   }
 
   private async narrowed(owner: string, repo: string, permissions: Record<string, string>, need: string): Promise<{ authorization: string }> {

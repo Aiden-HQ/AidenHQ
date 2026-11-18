@@ -35,8 +35,8 @@ function fake(opts: {
     const body = init.body ? JSON.parse(String(init.body)) : undefined;
     calls.push({ method, url, body });
     const json = (status: number, b: unknown) => ({ status, json: async () => b });
-    // codehost-github's /ops/token: the App's token and its slug.
-    if (url === "http://codehost/ops/token") return json(200, { token: "ghs_t", expires_at: new Date(Date.now() + 3300_000).toISOString(), app: { slug: APP.slug } });
+    // The kernel's /v1/codehost/token: the App's token and its slug.
+    if (url === "http://codehost/v1/codehost/token") return json(200, { token: "ghs_t", expires_at: new Date(Date.now() + 3300_000).toISOString(), app: { slug: APP.slug } });
     const perm = u.pathname.match(/^\/repos\/[^/]+\/[^/]+\/collaborators\/([^/]+)\/permission$/);
     if (perm && opts.failPermission) return json(opts.failPermission, { message: "Forbidden" });
     if (perm) {
@@ -162,7 +162,7 @@ it("a collaborator's role is looked up with a metadata-read token, and read, a 4
     permissions: { "admin-user": "admin" },
   });
   expect((await maintainer(f).labelEvents(PRODUCT, 1)).events[0]!.trusted).toBe(true);
-  const tokens = f.calls.filter((c) => c.url.endsWith("/ops/token")).map((c) => c.body.perms);
+  const tokens = f.calls.filter((c) => c.url.endsWith("/v1/codehost/token")).map((c) => c.body.perms);
   expect(tokens).toContainEqual({ metadata: "read" });
   expect(tokens.every((p: Record<string, string>) => p.administration === undefined)).toBe(true);
   expect(f.calls.filter((c) => c.url.endsWith("/collaborators/admin-user/permission"))).toHaveLength(1);
