@@ -714,6 +714,8 @@ export function compile(productDir, instanceDir, { revision, fetch = hostFetch(p
   for (const [k, v] of Object.entries(serviceModule)) {
     for (const j of String(compose.services[k].labels?.["aidenhq.join"] ?? "").split(",").filter(Boolean)) {
       if (networkModule[`mod-${j}`] !== j) fail(`module ${v.module}: ${k} joins ${j}, which defines no network of its own`);
+      // A shared service is reached only through the gate, as a shared app is (no other app may join a shared app's network).
+      if (serviceShares.some((sh) => sh.name === j)) fail(`module ${v.module}: ${k} joins ${j}, whose service is shared through the gate: shared services are reached only through the gate`);
     }
   }
   linkPairServices(points.board?.setup_flows ?? [], compose, serviceModule, networkModule);

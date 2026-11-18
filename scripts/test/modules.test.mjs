@@ -136,6 +136,10 @@ test("H4: a module can't take another's network or service name (a link network'
   add("glean-board", ""); // an empty module named like another's link network
   add("joiner", `requires: [glean-board]\nservices:\n  run:\n    srv: { ${img}, join: [glean-board] }\n`);
   assert.throws(() => compile(dir, finst(["joiner"])), /module joiner: joiner-srv joins glean-board, which defines no network of its own/);
+  // A service shared through the gate (share.host) is reached only through it: another module may not join its network.
+  add("docs", `services:\n  run:\n    srv: { ${img}, port: 3000, ui_port: 3141, share: { host: docs.example.com } }\n`);
+  add("docs-reader", `requires: [docs]\nservices:\n  run:\n    srv: { ${img}, join: [docs] }\n`);
+  assert.throws(() => compile(dir, finst(["docs", "docs-reader"])), /module docs-reader: docs-reader-srv joins docs, whose service is shared through the gate/);
   add("copycat", `services:\n  run:\n    a-mcp: { ${img} }\n`);
   assert.throws(() => compile(dir, finst(["a", "copycat"])), /module copycat: the service name a-mcp is already module a's/);
   add("boardy", `services:\n  run:\n    board: { ${img} }\n`);
