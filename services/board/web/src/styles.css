@@ -1044,7 +1044,7 @@ button.live-toggle:focus-visible { outline: 2px solid var(--accent); border-radi
 .cost-dates input { font: inherit; font-size: var(--text-base); padding: 4px 8px; border-radius: 8px; border: 1px solid var(--border-strong); background: var(--surface); color: var(--text); }
 .cost-dates input:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 .cost-controls .seg-tabs button:disabled { opacity: 0.45; cursor: default; }
-.cost-controls .seg-tabs button:focus-visible, .cost-reconcile .seg-tabs button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.cost-controls .seg-tabs button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 .cost-error { border-radius: 10px; }
 
 .cost-card { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; box-shadow: var(--shadow); padding: 16px 18px; min-width: 0; }
@@ -1126,7 +1126,6 @@ button.live-toggle:focus-visible { outline: 2px solid var(--accent); border-radi
 .ct-agents .ct-row { grid-template-columns: minmax(0, 2fr) 72px 56px 66px 112px; }
 .ct-features .ct-row { grid-template-columns: minmax(0, 2.4fr) 72px 96px 48px 72px 84px 52px; }
 .ct-features .ct-name a { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: inherit; text-decoration: none; }
-.ct-reconcile .ct-row { grid-template-columns: minmax(0, 2.4fr) 56px 76px 110px; }
 .ct-capcell { display: inline-flex; align-items: center; justify-content: flex-end; gap: 8px; width: 100%; }
 .ct-minibar { flex: 1 1 auto; max-width: 64px; height: 4px; border-radius: 999px; background: var(--cost-meter-track); overflow: hidden; }
 .ct-minibar > span { display: block; height: 100%; border-radius: 999px; background: var(--accent); }
@@ -1159,12 +1158,6 @@ a.cost-top-name:focus-visible { outline: 2px solid var(--accent); outline-offset
 .cost-top-meta strong { color: var(--text); }
 
 /* The older estimate check, folded */
-.cost-reconcile { padding: 0; }
-.cost-reconcile > summary { cursor: pointer; padding: 14px 18px; font-size: var(--text-md); font-weight: 600; color: var(--muted); list-style-position: inside; }
-.cost-reconcile > summary:hover { color: var(--text); }
-.cost-reconcile > summary:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; border-radius: 12px; }
-.cost-reconcile-body { display: grid; gap: 14px; padding: 0 18px 18px; }
-.cost-reconcile-bar { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; font-size: var(--text-base); }
 .cost-facts { display: grid; grid-template-columns: auto 1fr; gap: 3px 16px; margin: 0 0 12px; font-size: var(--text-base); font-variant-numeric: tabular-nums; }
 .cost-facts dt { color: var(--muted); }
 .cost-facts dd { margin: 0; font-weight: 600; }
@@ -1229,8 +1222,6 @@ a.cost-top-name:focus-visible { outline: 2px solid var(--accent); outline-offset
   .ct-models .ct-row > :nth-child(n + 5) { display: none; }
   .ct-agents .ct-row { grid-template-columns: minmax(0, 1fr) 64px 50px; }
   .ct-agents .ct-row > :nth-child(n + 4) { display: none; }
-  .ct-reconcile .ct-row { grid-template-columns: minmax(0, 1fr) 44px 90px; }
-  .ct-reconcile .ct-row > :nth-child(3) { display: none; }
 }
 
 /* ------------------------------------------------------------ accounts (sign-in, authenticator, people) */

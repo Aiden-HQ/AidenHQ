@@ -45,6 +45,7 @@
 //   POST /v1/jobs/workspace    (a module with role kernel.jobs) {task}: the workspace folder it may write into (a task of an agent it dispatches)
 //   GET  /v1/work[?task=], GET /v1/work/metrics  (a module with role kernel.work-read) the jobs and records of the kernel's
 //                              work: a task's, or what runs and ended lately; Prometheus text (work.ts)
+//   GET  /v1/work[?task=|?job=]  (the board) the same reads, and one job for its run page; never the metrics or a token
 //   POST /v1/work/grader-token  (the one module with role kernel.grader) {task} -> a gateway
 //                              token billed to the task's assignee under its caps, for a task its finish check holds; one live token per task
 //   POST /v1/jobs/:job/post    (that job's module) {kind: reply|status|notice, body, status?, blocked_by?}: posted on the job's
@@ -131,7 +132,7 @@ export const ROUTES = [
   { method: "GET", path: "/v1/jobs/:job", auth: "module" },
   { method: "DELETE", path: "/v1/jobs/:job", auth: "module" },
   { method: "POST", path: "/v1/jobs/:job/input", auth: "module" },
-  { method: "GET", path: "/v1/work", auth: "module" },
+  { method: "GET", path: "/v1/work", auth: "module|board" },
   { method: "GET", path: "/v1/work/metrics", auth: "module" },
   { method: "POST", path: "/v1/work/grader-token", auth: "module" },
   { method: "POST", path: "/v1/jobs/:job/post", auth: "module" },
@@ -379,6 +380,14 @@ export function createBackplane({ whoami, asserter, proxy, cp, boardCp, grantsFi
       if (hit && /^\/v1\/(auth|accounts|apps|operator)\/:op$/.test(hit.path)) {
         if (!accounts) throw fail(503, "unavailable", "accounts are off");
         return await accounts(req, res, hit.path.split("/")[2]!, m[0]!);
+      }
+      if (hit?.path === "/v1/work" && isBoard(req)) {
+        if (!work) throw fail(503, "unavailable", "work reads are off");
+        const p = new URLSearchParams(q ?? ""), job = p.get("job"), task = p.get("task");
+        const one = job && work.job(job.slice(0, 40));
+        if (job && !one) throw fail(404, "not_found", `no job ${job.slice(0, 40)}`);
+        if (one) return send(res, 200, one);
+        return send(res, 200, task ? work.task(task.slice(0, 100)) : work.activity());
       }
       if (hit && hit.path.startsWith("/v1/work")) {
         const w = await moduleOf(req);

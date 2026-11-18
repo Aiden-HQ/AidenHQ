@@ -10,7 +10,7 @@ import type { Agent, Paperclip } from "./paperclip.js";
 import type { Store } from "./store.js";
 import { appsApi } from "./fleet.js";
 import type { Grade, Grading } from "./grading.js";
-import { parseRunLog } from "./runs.js";
+import { firstArg } from "./codex-activity.js";
 import { alertIncidents } from "./monitoring.js";
 import { TOO_LONG } from "./rollover.js";
 import { ownerAlert } from "./notify.js";
@@ -360,4 +360,73 @@ export function startDetector(pc: Paperclip, store: Store, grading: Grading, log
   setInterval(run, Math.max(1, minutes) * MIN).unref();
   setTimeout(run, MIN).unref();
   log.info({ minutes }, "fleet-ops detector on");
+}
+
+/* ----------------------------------------------------------------------------- Paperclip run logs (the silent-run check) */
+interface TraceEvent {
+  at: string;
+  kind: "tool" | "shell" | "message" | "error";
+  name: string;
+  text: string;
+  ok: boolean;
+  error?: string;
+  ms?: number;
+}
+interface ParsedLog {
+  events: TraceEvent[];
+  tokens: { input: number; cached: number; output: number; reasoning: number } | null;
+}
+const MAX_EVENTS = 400;
+const clip = (s: string, n: number) => (s.length > n ? s.slice(0, n - 1).trimEnd() + "…" : s);
+const oneLine = (s: string) => s.replace(/\s+/g, " ").trim();
+
+/** Paperclip's stored run log (ndjson of {ts, stream, chunk}) → the tool calls, messages and errors of the Codex JSON stream. */
+function parseRunLog(ndjson: string): ParsedLog {
+  const events: TraceEvent[] = [];
+  const started = new Map<string, string>();
+  let tokens: ParsedLog["tokens"] = null;
+  // A line can span chunks (and a chunk hold several lines), so rebuild lines per stream; a line is stamped when it completes.
+  const partial: Record<string, string> = {};
+  const line = (raw: string, at: string) => {
+    if (!raw.startsWith("{")) return;
+    let e: any;
+    try {
+      e = JSON.parse(raw);
+    } catch {
+      return;
+    }
+    const it = e.item;
+    if (e.type === "item.started" && it?.id) started.set(it.id, at);
+    else if (e.type === "item.completed" && it?.type === "mcp_tool_call") {
+      const failed = it.status === "failed" || !!it.error;
+      const ms = started.has(it.id) ? Date.parse(at) - Date.parse(started.get(it.id)!) : undefined;
+      const err = failed ? clip(oneLine(String(it.error?.message ?? it.error ?? it.result?.content?.[0]?.text ?? "failed")), 300) : undefined;
+      events.push({ at, kind: "tool", name: `${it.server}.${it.tool}`, text: firstArg(it.arguments && typeof it.arguments === "object" ? it.arguments : {}), ok: !failed, ...(err ? { error: err } : {}), ...(ms !== undefined && ms >= 0 ? { ms } : {}) });
+    } else if (e.type === "item.completed" && it?.type === "command_execution") {
+      const failed = it.status === "failed" || (typeof it.exit_code === "number" && it.exit_code !== 0);
+      const ms = started.has(it.id) ? Date.parse(at) - Date.parse(started.get(it.id)!) : undefined;
+      events.push({ at, kind: "shell", name: "shell", text: clip(oneLine(String(it.command ?? "")), 120), ok: !failed, ...(failed ? { error: clip(oneLine(String(it.aggregated_output ?? `exit ${it.exit_code}`)).slice(-300), 300) } : {}), ...(ms !== undefined && ms >= 0 ? { ms } : {}) });
+    } else if (e.type === "item.completed" && it?.type === "agent_message" && typeof it.text === "string") {
+      events.push({ at, kind: "message", name: "message", text: clip(oneLine(it.text), 200), ok: true });
+    } else if ((e.type === "error" || e.type === "turn.failed") && (e.message ?? e.error?.message)) {
+      events.push({ at, kind: "error", name: e.type, text: clip(oneLine(String(e.message ?? e.error.message)), 300), ok: false });
+    } else if (e.type === "turn.completed" && e.usage) {
+      const t = tokens ?? { input: 0, cached: 0, output: 0, reasoning: 0 };
+      tokens = { input: t.input + (e.usage.input_tokens ?? 0), cached: t.cached + (e.usage.cached_input_tokens ?? 0), output: t.output + (e.usage.output_tokens ?? 0), reasoning: t.reasoning + (e.usage.reasoning_output_tokens ?? 0) };
+    }
+  };
+  for (const raw of ndjson.split("\n")) {
+    let c: { ts?: string; stream?: string; chunk?: string };
+    try {
+      c = JSON.parse(raw);
+    } catch {
+      continue;
+    }
+    if (typeof c.chunk !== "string") continue;
+    const stream = c.stream ?? "stdout";
+    const lines = ((partial[stream] ?? "") + c.chunk).split("\n");
+    partial[stream] = lines.pop() ?? "";
+    for (const l of lines) line(l, c.ts ?? "");
+  }
+  return { events: events.slice(-MAX_EVENTS), tokens };
 }

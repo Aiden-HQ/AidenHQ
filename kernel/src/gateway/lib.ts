@@ -7,7 +7,9 @@
 //   POST /api/v1/chat/completions  (Bearer gateway_board_key) kind aside: the board's side chat, capped per UTC day
 //   POST /usage {since}           (Bearer gateway_board_key) the ledger since then → {records} (the board's Costs tab)
 //   POST /internal/caps {scope, agentId, subject, cap}  (Bearer gateway_board_key) the owner raised a cap: the new cap
-//   POST /spend                   (Bearer gateway_board_key) today's spend and the install cap in force → {day, spent, cap}
+//   GET /v1/spend/summary         (Bearer gateway_board_key) today (UTC) against every cap in force, as the caps count it:
+//                                 {day, install: {spent, cap}, agents: [{agent_id, spent, cap}]}: every granted agent and any other
+//                                 that spent today (the board's header and Costs tab)
 //   POST /c/<connection>/mcp      (Bearer: a job's own `ahqj_` token) the job's reads of a connection, its jobcaps only (../proxy.ts)
 //   GET /health
 // CI listener (gateway.ts, the CI runners' bridge address; only these routes, only `ahqci_` credentials, never on the others):
@@ -284,6 +286,7 @@ export function createGateway({ dbFile, legacyDbFile, grantsFile, settingsFile, 
     spentTask: db.prepare("SELECT COALESCE(SUM(cost_usd), 0) AS s FROM calls WHERE agent_id = ? AND task_subject = ?"),
     spentDay: db.prepare("SELECT COALESCE(SUM(cost_usd), 0) AS s FROM calls WHERE agent_id = ? AND day = ?"),
     spentAll: db.prepare("SELECT COALESCE(SUM(cost_usd), 0) AS s FROM calls WHERE day = ?"),
+    spenders: db.prepare("SELECT DISTINCT agent_id FROM calls WHERE day = ? AND agent_id IS NOT NULL"),
     cap: db.prepare("SELECT cap FROM caps WHERE scope = ? AND agent_id = ? AND subject = ?"),
     setCap: db.prepare("INSERT INTO caps (scope, agent_id, subject, cap, at) VALUES (?, ?, ?, ?, ?) ON CONFLICT (scope, agent_id, subject) DO UPDATE SET cap = excluded.cap, at = excluded.at"),
     file: db.prepare("INSERT OR IGNORE INTO filed (scope, agent_id, subject, cap, at) VALUES (?, ?, ?, ?, ?)"),
@@ -407,9 +410,10 @@ export function createGateway({ dbFile, legacyDbFile, grantsFile, settingsFile, 
       const p = verifyToken(secret("gateway_job_secret"), cred, now());
       if (!p) throw fail(401, "unauthorized", "this run's model credential is invalid or expired");
       if (p.k === "job") {
-        // A kernel job (boxes.ts): capped as its agent on its task (a chat or routine task by the day), while the job lives.
+        // A kernel job (boxes.ts): capped as its agent on its task (a chat or routine task by the day), while the job lives; its
+        // calls name the job as their run (the board's run page).
         if (!jobLive(String(p.id))) throw fail(401, "unauthorized", "this job has ended");
-        const row = (q.run.get(runKey) as RunRow | undefined) ?? settle(runKey, { agentId: p.a, ...(await runTask(null, p.i)) });
+        const row = (q.run.get(runKey) as RunRow | undefined) ?? settle(runKey, { agentId: p.a, runId: String(p.id), ...(await runTask(null, p.i)) });
         return as(row, routeKind, "agent", true);
       }
       if (p.k === "check") return { ...as(null, "check", "Check jobs", true), check: { subject: String(p.c ?? "").slice(0, 80) } } as Caller;
@@ -751,11 +755,14 @@ export function createGateway({ dbFile, legacyDbFile, grantsFile, settingsFile, 
         const records = (q.since.all(String(since ?? "")) as CallRow[]).map((r) => ({ key: r.key, at: r.at, agentId: r.agent_id, component: r.component, model: r.model, input: r.input, cached: r.cached, output: r.output, costUsd: r.cost_usd, runKey: r.run_key, runId: r.run_id, issueId: r.issue_id, rev: r.rev, kind: r.kind, ms: r.ms, status: r.status, ...(r.kind === CI_KIND ? { subject: r.task_subject } : {}) }));
         return send(res, 200, { records });
       }
-      if (req.method === "POST" && path === "/spend") {
-        // The board's header: today's spend (settled and in flight, as the install cap counts it) and the cap in force.
+      if (req.method === "GET" && path === "/v1/spend/summary") {
+        // Today's spend (settled and in flight) against the caps in force, the owner's raises included: the install's, and each
+        // agent's day (every granted agent, and any other that spent today), nearest its cap first.
         boardKeyed(req);
-        const today = day(now()), [inst] = installScope(today);
-        return send(res, 200, { day: today, spent: Math.round((q.spentAll.get(today) as Sum).s * 1e4) / 1e4, cap: inst?.cap ?? null });
+        const today = day(now()), [inst] = installScope(today), usd = (n: number) => Math.round(n * 1e4) / 1e4;
+        const ids = new Set([...Object.keys(grants()), ...(q.spenders.all(today) as { agent_id: string }[]).map((r) => r.agent_id)]);
+        const agents = [...ids].map((agent_id) => ({ agent_id, spent: usd((q.spentDay.get(agent_id, today) as Sum).s), cap: capOf({ agentId: agent_id }, "day", today) }));
+        return send(res, 200, { day: today, install: { spent: usd((q.spentAll.get(today) as Sum).s), cap: inst?.cap ?? null }, agents: agents.sort((a, b) => b.spent / b.cap - a.spent / a.cap) });
       }
       if (req.method === "POST" && path === "/internal/caps") {
         boardKeyed(req);

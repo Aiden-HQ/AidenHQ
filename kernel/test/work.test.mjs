@@ -36,3 +36,20 @@ test("the routes need a module holding kernel.work-read", async (t) => {
   assert.equal((await post("grader", "unknown")).status, 403, "a task no finish check of the module holds");
   assert.equal((await get("/v1/work/metrics", "reader")).headers.get("content-type").startsWith("text/plain"), true);
 });
+
+test("the board reads GET /v1/work with its key, one job included, and nothing else under /v1/work", async (t) => {
+  const { work, records } = setup();
+  records.db.prepare("UPDATE jobs SET usage = ?, progress = ?, final = ?, why = ?, exit = 1 WHERE id = 'j-1'").run(JSON.stringify({ input: 10, cached: 4, output: 2 }), JSON.stringify({ said: "building", plan: ["a"], steps: [] }), "done it", JSON.stringify({ timedOut: true }));
+  const whoami = async () => Promise.reject(new Error("not a module"));
+  const handle = createBackplane({ whoami, asserter: { jwks: {} }, proxy: async () => {}, cp: async () => {}, grantsFile: () => ({}), work, boardKey: () => "board-key", graderToken: () => "tok" });
+  const server = http.createServer(handle).listen(0);
+  t.after(() => server.close());
+  const get = (path, token = "board-key") => fetch(`http://127.0.0.1:${server.address().port}${path}`, { headers: { authorization: `Bearer ${token}` } });
+  assert.deepEqual((await (await get("/v1/work?task=t1")).json()).jobs.map((j) => j.id), ["j-2", "j-1"]);
+  const j = await (await get("/v1/work?job=j-1")).json();
+  assert.deepEqual([j.agent, j.state, j.exit, j.timed_out, j.usage, j.progress.said, j.final], ["a1", "done", 1, true, { input: 10, cached: 4, output: 2 }, "building", "done it"]);
+  assert.equal((await get("/v1/work?job=j-404")).status, 404);
+  assert.equal((await get("/v1/work/metrics")).status, 401, "the metrics are a module's");
+  assert.equal((await fetch(`http://127.0.0.1:${server.address().port}/v1/work/grader-token`, { method: "POST", headers: { authorization: "Bearer board-key" }, body: "{}" })).status, 401, "so is a grader token");
+  assert.equal((await get("/v1/work", "wrong")).status, 401);
+});

@@ -1,4 +1,4 @@
-import type { AgentProfile, TaskRow, FeatureCost, Features, Advisory, Agents, AsideMessage, Lineage, SettledItem, AppRow, Approval, Board, Bucket, Cadence, ChatAgent, ChatDetail, LaneAgent, LaneMessage, ChatRow, CostLedger, CostTop, CostWindow, Costs, IssueView, Models, ModuleDetail, ModuleRow, NeedsYou, RecurringView, RosterAgent, RunTrace, Scorecard, SettingChange, FiledChange, SettingsData, Update } from "./types";
+import type { AgentProfile, TaskRow, FeatureCost, Features, Advisory, Agents, AsideMessage, Lineage, SettledItem, AppRow, Approval, Board, Bucket, Cadence, ChatAgent, ChatDetail, LaneAgent, LaneMessage, ChatRow, CostLedger, CostTop, IssueView, Models, ModuleDetail, ModuleRow, NeedsYou, RecurringView, RosterAgent, RunTrace, Scorecard, SettingChange, FiledChange, SettingsData, Update } from "./types";
 import type { ConnectionsData } from "./connections";
 import type { BrowseModule, GrantConnection, MarketplaceRow } from "./types";
 
@@ -187,7 +187,6 @@ export const api = {
   changeSettings: (changes: SettingChange[]) => call<{ identifier: string }>("POST", "/api/settings/change", { changes }),
   settingsChanges: () => call<{ changes: FiledChange[] }>("GET", "/api/settings/changes"),
   apps: () => call<{ apps: AppRow[]; error?: string }>("GET", "/api/apps"),
-  costs: (window: CostWindow) => call<Costs>("GET", `/api/costs?window=${window}`),
   costLedger: (q: URLSearchParams) => call<CostLedger>("GET", `/api/costs/ledger?${q}`),
   featureCost: (ref: string) => call<{ cost: FeatureCost | null }>("GET", `/api/issues/${encodeURIComponent(ref)}/feature-cost`),
   features: () => call<Features>("GET", "/api/costs/features"),

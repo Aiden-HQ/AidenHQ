@@ -9,8 +9,8 @@ const tok = (n: number | null | undefined) => (n == null ? "—" : n >= 1e6 ? `$
 const usd = (n: number | null) => (n == null ? "—" : n > 0 && n < 0.01 ? "<$0.01" : `$${n.toFixed(2)}`);
 
 /**
- * One run as a trace (a drawer at #/r/<run id>): what the agent called and what failed, tokens and context size per call,
- * the usage ledger's rows with cost against the run cap, and the rev with its product and instance shas.
+ * One run (a kernel job) as a trace (a drawer at #/r/<job id>): its plan, the steps it reported and its last words, why it
+ * ended, its tokens, the usage ledger's rows with cost against the run cap, and the rev with its product and instance shas.
  * Everything the agent produced is shown as plain text (never through the markdown renderer).
  */
 export function RunPage({ id, onClose, onSignIn }: { id: string; onClose: () => void; onSignIn: () => void }) {
@@ -24,12 +24,11 @@ export function RunPage({ id, onClose, onSignIn }: { id: string; onClose: () => 
     );
     return () => void (live = false);
   }, [id, onSignIn]);
-  const peak = run?.contexts.length ? Math.max(...run.contexts) : null;
   return (
     <div className="drawer-backdrop" onPointerDown={(e) => e.target === e.currentTarget && onClose()}>
       <aside className="drawer run-page" role="dialog" aria-label="Run">
         <header className="drawer-head">
-          <span className="ident">{run ? `${run.agent} · ${run.status}` : "Run"}</span>
+          <span className="ident">{run ? `${run.agent} · ${run.engine} · ${run.status}` : "Run"}</span>
           {run?.issue && <a href={`#/t/${run.issue.identifier}`} className="run-task">{run.issue.identifier}</a>}
           <span className="spacer" />
           <button className="icon-btn" onClick={onClose} aria-label="Close">✕</button>
@@ -45,24 +44,22 @@ export function RunPage({ id, onClose, onSignIn }: { id: string; onClose: () => 
                 <dt>Rev</dt>
                 <dd>{run.rev ? <code>{run.rev.rev}</code> : "—"}{run.rev && <span className="faint"> product {run.rev.productSha?.slice(0, 7) ?? "?"} · instance {run.rev.instanceSha?.slice(0, 7) ?? "?"}{run.rev.from === "revs" ? " (latest before the start)" : ""}</span>}</dd>
                 <dt>Tokens</dt>
-                <dd>{run.tokens ? `${tok(run.tokens.input)} in (${tok(run.tokens.cached)} cached) · ${tok(run.tokens.output)} out` : run.paperclip.input != null ? `${tok(run.paperclip.input)} in · ${tok(run.paperclip.output)} out (Paperclip)` : "—"}{peak != null && <span className="faint"> · context peaked at {tok(peak)} over {run.contexts.length} calls</span>}</dd>
+                <dd>{run.tokens ? `${tok(run.tokens.input)} in (${tok(run.tokens.cached)} cached) · ${tok(run.tokens.output)} out` : "—"}</dd>
                 <dt>Cost</dt>
                 <dd>{usd(run.ledger.usd)}{run.ledger.capUsd != null && <span className="faint"> of {usd(run.ledger.capUsd)} run cap</span>}{!run.ledger.rows.length && <span className="faint"> (no ledger rows for this run)</span>}</dd>
               </dl>
               {run.error && <p className="run-note bad">{run.error}</p>}
-              {run.notes.map((n) => <p key={n} className="run-note">{n}</p>)}
-              {run.tools.length > 0 && (
+              {run.plan.length > 0 && (
                 <section>
-                  <h4>Tools</h4>
-                  <table className="run-table">
-                    <tbody>
-                      {run.tools.map((t) => (
-                        <tr key={t.name} className={t.failures ? "bad" : ""}>
-                          <td>{t.name}</td><td>{t.calls}×</td><td>{t.failures ? `${t.failures} failed` : ""}</td><td>{t.medianMs != null ? `median ${dur(t.medianMs)}` : ""}</td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
+                  <h4>Plan</h4>
+                  <ol className="run-timeline">
+                    {run.plan.map((p, i) => (
+                      <li key={i} className={p.state === "done" ? "faint" : ""}>
+                        <span className="run-name">{p.state}</span>
+                        <span className="run-text">{p.text}</span>
+                      </li>
+                    ))}
+                  </ol>
                 </section>
               )}
               <section>
@@ -71,16 +68,14 @@ export function RunPage({ id, onClose, onSignIn }: { id: string; onClose: () => 
                   <ol className="run-timeline">
                     {run.timeline.map((e, i) => (
                       <li key={i} className={e.ok ? "" : "bad"}>
-                        <time>{new Date(e.at).toLocaleTimeString()}</time>
-                        <span className="run-name">{e.name}</span>
+                        <time>{e.at ? new Date(e.at).toLocaleTimeString() : ""}</time>
+                        <span className="run-name">{e.kind}</span>
                         <span className="run-text">{e.text}</span>
-                        {e.ms != null && <span className="faint">{dur(e.ms)}</span>}
-                        {e.error && <div className="run-err">{e.error}</div>}
                       </li>
                     ))}
                   </ol>
                 ) : (
-                  <p className="run-note">No tool calls recorded.</p>
+                  <p className="run-note">No steps reported.</p>
                 )}
               </section>
               {run.ledger.rows.length > 0 && (

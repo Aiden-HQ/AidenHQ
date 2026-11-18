@@ -12,7 +12,7 @@ import { handbook, history } from "./agent-handbook.js";
 import { PauseSchema, setAgentPaused } from "./agent-pause.js";
 import { HISTORY_PAGE, agentByKey, agentProfile, historyPage, splitTasks } from "./agent-page.js";
 import { liveActivity, type SessionSources } from "./live-activity.js";
-import { makeRuns } from "./runs.js";
+import { makeRuns, type Work } from "./runs.js";
 import { RunnerReportSchema, agentsView, roster, runTasks, workingOn, type RunContext, type RunnerReport, type TaskRef, type Working } from "./activity.js";
 import { RecurringSchema, RunStateSchema, ScheduleSchema, changeRecurring, claimDue, recurringView, scheduleMove } from "./automation.js";
 import { AddAgentSchema, BadRequest, CreateSchema, HandOverSchema, PassSchema, RUNNER_MARKER, hasMarker, UpdateSchema, assignees, buildBoard, commentView, displayText, executorOf, openrouterEngine, paperclipUpdate, replyTarget, toCard, type Assignee } from "./board.js";
@@ -31,7 +31,7 @@ import { CommitUnreadable, agentGrants, browseModules, createResolver, marketpla
 import { connectionsView, probe, readSources, readUpdates, settingsView, type Probe } from "./settings.js";
 import { ChangeRefused, ChangesSchema, SETTINGS_LABEL, changesOf, checkChange, stageOf, taskFor, type Change } from "./settings-change.js";
 import { createGrading, gradePassed, type Grading } from "./grading.js";
-import { UsageSchema, WINDOWS, costs, keyUsage, prices, spendToday, type CostWindow } from "./costs.js";
+import { UsageSchema, keyUsage, prices, spendSummary } from "./costs.js";
 import { ledgerRange, ledgerSummary, ledgerTop } from "./cost-ledger.js";
 import { descendants, featureCost, recentFeatures } from "./feature-cost.js";
 import { MergeSchema, mergedDescription } from "./merge.js";
@@ -109,6 +109,8 @@ export interface AppOptions {
   gateway?: { url: string; token: string };
   /** The kernel's records, read-only (records.ts): the cards every view shows. Without it, there are none. */
   records?: Records;
+  /** The kernel's jobs (runs.ts kernelWork): the run pages and a task's run links. Without it, there are none. */
+  work?: Work;
   /**
    * The operator's key (secret board_operator_key, x-operator-key), for ops/setup.sh only, on "internal": the owner's setup
    * link, the welcome chat and an account reset. Nothing else.
@@ -248,14 +250,15 @@ export function createApp(opts: AppOptions): Server {
   const cardsOf = async (state: Parameters<Records["list"]>[0], opt?: Parameters<Records["list"]>[1]) => Promise.all((await records.list(state, opt)).map(named));
 
   const sessionOf = liveActivity(opts.sessions);
-  const runOf = makeRuns({ pc, store, sessionsDir: opts.sessions?.dir, grantsFile: process.env.AIDENHQ_GRANTS_FILE });
-  /** The newest runs on a task, for the links to their run pages. */
-  const runLinks = (past: { id: string; agentId: string; status: string; issueId: string | null; startedAt: string | null }[], issueId: string, agents: Agent[]) =>
-    past.filter((r) => r.issueId === issueId).slice(0, 6).map((r) => ({ id: r.id, agent: agents.find((a) => a.id === r.agentId)?.name ?? "Agent", status: r.status, at: r.startedAt }));
+  const work = opts.work ?? { job: async () => null, task: async () => [] };
+  const runOf = makeRuns({ work, store, grantsFile: process.env.AIDENHQ_GRANTS_FILE });
+  /** The newest runs (kernel jobs) on a task, for the links to their run pages. */
+  const runLinks = async (issueId: string, agents: Agent[]) =>
+    (await work.task(issueId).catch(() => [])).slice(0, 6).map((j) => ({ id: j.id, agent: agents.find((a) => a.id === j.agent)?.name ?? "Agent", status: j.state, at: j.started_at }));
   /** A run's page data with the names of its agent and task. */
   async function runView(id: string) {
     const run = await runOf(id);
-    if (!run) throw new HttpError(404, "Paperclip no longer has this run (pruned), or it isn't this company's");
+    if (!run) throw new HttpError(404, "the kernel has no such run");
     const [agents, issue] = await Promise.all([pc.agents(), run.issueId ? pc.issueSummary(run.issueId).catch(() => undefined) : undefined]);
     return { ...run, agent: agents.find((a) => a.id === run.agentId)?.name ?? "Agent", issue: issue ? { identifier: issue.identifier, title: issue.title } : null };
   }
@@ -499,7 +502,7 @@ export function createApp(opts: AppOptions): Server {
 
   async function issueView(ref: string) {
     const { ctx, issue, assigned } = await ownIssue(ref);
-    const [comments, busy, files, parent, kids, names, past] = await Promise.all([
+    const [comments, busy, files, parent, kids, names, runs] = await Promise.all([
       pc.comments(issue.id),
       working(ctx),
       pc.attachments(issue.id).catch(() => []),
@@ -507,7 +510,7 @@ export function createApp(opts: AppOptions): Server {
       // The crew works in sub-tasks of the user's task.
       issue.assigneeUserId === ctx.me ? pc.children(issue.id).catch(() => []) : Promise.resolve([] as Issue[]),
       bylines(),
-      pc.recentRuns(100).catch(() => []),
+      runLinks(issue.id, ctx.agents),
     ]);
     const crew = crewOf(issue, kids, { assignees: ctx.assignees, seen: (id) => store.seenAt(id), working: busy.map, jobs: latestJobs(shared.runner) });
     // Each crew member's latest word, when there's one issue to read it from (a fan-out shows its count instead):
@@ -544,7 +547,7 @@ export function createApp(opts: AppOptions): Server {
       // An agent's sub-task links back to the task it works on.
       parent: parent ? { identifier: parent.identifier, title: parent.title } : null,
       crew: crew.map((m) => ({ ...m, said: said[m.agent] ?? null })),
-      runs: runLinks(past, issue.id, ctx.agents),
+      runs,
     };
   }
 
@@ -631,7 +634,7 @@ export function createApp(opts: AppOptions): Server {
           }),
       ),
       parent: parent ? { identifier: parent.identifier, title: parent.title } : null,
-      runs: runLinks(runs, issue.id, ctx.agents),
+      runs: await runLinks(issue.id, ctx.agents),
       asks: asks.map(({ task, ask }) => ({ ...ask, identifier: task.identifier, agent: agentOf(task.assigneeAgentId)?.name ?? "Agent" })),
     };
   }
@@ -1247,7 +1250,7 @@ export function createApp(opts: AppOptions): Server {
         const ctx = await context();
         const since = new Date(Date.now() - RECENT_MS).toISOString();
         // Who is working and the connections' states don't depend on the tasks: started with them, not after.
-        const extras = Promise.all([working(ctx), opts.google?.status(), signInStates(), bylines(), spendToday(opts.gateway)]);
+        const extras = Promise.all([working(ctx), opts.google?.status(), signInStates(), bylines(), spendSummary(opts.gateway)]);
         extras.catch(() => {}); // awaited below; this only keeps a failure there from going unhandled meanwhile
         const settledAt = store.settledAt();
         // A settled task stays off the board until something happens on it.
@@ -1263,7 +1266,9 @@ export function createApp(opts: AppOptions): Server {
         const folded = foldedChildren([...open, ...closed], ctx.assignees);
         store.placeNew(open.filter((i) => !folded.has(i.id)).map((i) => ({ id: i.id, createdAt: i.createdAt, status: i.status })));
         const recurring = new Map([...store.allRecurring()].map(([id, r]) => [id, { summary: recurringView(r, opts.timezone).summary, nextRun: r.nextRun, paused: r.paused }]));
-        const [busy, google, signIns, names, spend] = await extras;
+        const [busy, google, signIns, names, summary] = await extras;
+        // The header's spend line: today against the install cap, when one is set.
+        const spend = summary?.install.cap != null ? { spent: summary.install.spent, cap: summary.install.cap } : null;
         const board = buildBoard({ open, closed, placements: store.placements(), seen: store.allSeen(), schedules: store.schedules(), recurring, installedAt: store.meta("installed_at")!, assignees: ctx.assignees, crew: { working: busy.map, jobs: latestJobs(shared.runner) } });
         for (const card of [...Object.values(board.buckets).flat(), ...board.recurring]) {
           const w = busy.map.get(card.identifier);
@@ -1280,7 +1285,7 @@ export function createApp(opts: AppOptions): Server {
       },
     },
     { method: "GET", path: /^\/api\/issues\/([^/]+)$/, handle: async (m) => issueView(decodeURIComponent(m[1]!)) },
-    { method: "GET", path: /^\/api\/runs\/([0-9a-f-]{36})$/, handle: async (m) => runView(m[1]!) },
+    { method: "GET", path: /^\/api\/runs\/(j-[0-9a-f]{16})$/, handle: async (m) => runView(m[1]!) },
     { method: "GET", path: /^\/api\/chats\/([^/]+)$/, handle: async (m, _b, url) => chatView(decodeURIComponent(m[1]!), url.searchParams.has("peek")) },
     { method: "GET", path: /^\/api\/agents$/, handle: async () => activity(await context(), true) },
     // The Agents page's first paint: who is in the fleet, where each sits and its schedules (no run history; /api/agents
@@ -1510,21 +1515,11 @@ export function createApp(opts: AppOptions): Server {
         return issueView(issue.id);
       },
     },
-    // What each agent and system component spent on models (the Costs tab).
-    {
-      method: "GET",
-      path: /^\/api\/costs$/,
-      handle: async (_m, _b, url) => {
-        const w = url.searchParams.get("window") ?? "7d";
-        if (!(WINDOWS as readonly string[]).includes(w)) throw new HttpError(400, `window is one of ${WINDOWS.join(", ")}`);
-        return costs(pc, store, w as CostWindow);
-      },
-    },
     // The Costs tab's ledger views (cost-ledger.ts): aggregates over ?from&to&bucket, and one agent's or model's top runs and tasks.
     {
       method: "GET",
       path: /^\/api\/costs\/ledger$/,
-      handle: async (_m, _b, url) => ledgerSummary({ store, agents: () => pc.agents(), key: keyUsage, issue: (id) => pc.issueSummary(id), prices, grantsFile: process.env.AIDENHQ_GRANTS_FILE }, ledgerRange(url.searchParams)),
+      handle: async (_m, _b, url) => ledgerSummary({ store, agents: () => pc.agents(), key: keyUsage, spend: () => spendSummary(opts.gateway), issue: (id) => pc.issueSummary(id), prices }, ledgerRange(url.searchParams)),
     },
     {
       method: "GET",

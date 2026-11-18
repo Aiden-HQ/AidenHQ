@@ -84,7 +84,7 @@
     "route GET /v1/jwks": {"state":"stable","fp":"auth=none"},
     "route GET /v1/notify/take": {"state":"experimental","fp":"auth=module"},
     "route GET /v1/whoami": {"state":"experimental","fp":"auth=bearer"},
-    "route GET /v1/work": {"state":"experimental","fp":"auth=module"},
+    "route GET /v1/work": {"state":"experimental","fp":"auth=module|board"},
     "route GET /v1/work/metrics": {"state":"experimental","fp":"auth=module"},
     "route GET /v1/writes": {"state":"experimental","fp":"auth=board|runner"},
     "route GET /v1/writes/:id": {"state":"experimental","fp":"auth=bearer"},

@@ -261,20 +261,25 @@ test("gateway: the install cap counts every call of the day, no-agent ones too, 
   const upstream = await serve((req, res) => { req.resume(); req.on("end", () => json(res, 200, { id: `gen-${Math.random()}`, model: "m", choices: [], usage: { prompt_tokens: 1, completion_tokens: 1, cost: 0.03 } })); });
   const filed = [];
   const now = Date.parse("2026-11-18T10:00:00Z");
-  const gw = createGateway({ dbFile: join(dir, "usage.db"), grantsFile, settingsFile, secret: (n) => secrets[n] ?? "", upstream: upstream.url, fileRaiseCap: async (b) => void filed.push(b), now: () => now });
+  const gw = createGateway({ dbFile: join(dir, "usage.db"), grantsFile, settingsFile, secret: (n) => secrets[n] ?? "", upstream: upstream.url, fileRaiseCap: async (b) => void filed.push(b), jobLive: () => true, now: () => now });
   const front = await serve((req, res) => gw.handle(req, res));
   t.after(() => { upstream.s.close(); front.s.close(); gw.close(); });
   const call = async (cred) => {
     const res = await fetch(`${front.url}/api/v1/chat/completions`, { method: "POST", headers: { authorization: `Bearer ${cred}` }, body: JSON.stringify({ model: "m", max_tokens: 1024, messages: [] }) });
     return { status: res.status, body: await res.json() };
   };
-  const spend = async () => (await fetch(`${front.url}/spend`, { method: "POST", headers: { authorization: "Bearer gw-board" } })).json();
+  const spend = async () => (await fetch(`${front.url}/v1/spend/summary`, { headers: { authorization: "Bearer gw-board" } })).json();
   const reviewer = mintToken("job-secret", { kind: "reviewer" }, now); // a system kind: no agent, never capped per agent
 
-  // Two calls of different callers (an agent's job, then the uncapped reviewer) spend 0.06 of the install's 0.05.
-  assert.equal((await call(mintToken("job-secret", { agentId: "ag1", issueId: "iss1" }, now))).status, 200);
+  // Two calls of different callers (a kernel job of ag1, then the uncapped reviewer) spend 0.06 of the install's 0.05: the
+  // summary has today against the install cap and each agent's day against its own cap (the grants default here).
+  assert.equal((await call(mintToken("job-secret", { kind: "job", job: "j-0123456789abcdef", agentId: "ag1", issueId: "iss1" }, now))).status, 200);
   assert.equal((await call(reviewer)).status, 200);
-  assert.deepEqual(await spend(), { day: "2026-11-18", spent: 0.06, cap: 0.05 });
+  assert.deepEqual(await spend(), { day: "2026-11-18", install: { spent: 0.06, cap: 0.05 }, agents: [{ agent_id: "ag1", spent: 0.03, cap: 30 }] });
+  // A kernel job's calls name the job as their run: the run page's join.
+  const [jobCall] = (await (await fetch(`${front.url}/usage`, { method: "POST", headers: { authorization: "Bearer gw-board" }, body: "{}" })).json()).records.filter((r) => r.agentId === "ag1");
+  assert.equal(jobCall.runId, "j-0123456789abcdef");
+  assert.equal((await fetch(`${front.url}/v1/spend/summary`, { headers: { authorization: "Bearer nope" } })).status, 401);
   // Past it every caller is refused, the reviewer, the source writers and the board's side chat included: one raise, no task.
   for (const cred of [reviewer, "src-key", "gw-board", mintToken("job-secret", { agentId: "ag1", issueId: "iss1" }, now)]) {
     const r = await call(cred);
@@ -286,8 +291,8 @@ test("gateway: the install cap counts every call of the day, no-agent ones too, 
   // The owner's raise (the approved card): calls go through again, and the header shows the raised cap.
   gw.setCap("day", "install", "2026-11-18", 0.1);
   assert.equal((await call(reviewer)).status, 200);
-  assert.equal((await spend()).cap, 0.1);
+  assert.equal((await spend()).install.cap, 0.1);
   // Unset, no install cap at all.
   writeFileSync(settingsFile, JSON.stringify({ models: { m: price } }));
-  assert.equal((await spend()).cap, null);
+  assert.equal((await spend()).install.cap, null);
 });

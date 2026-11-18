@@ -372,40 +372,6 @@ export interface ModuleDetail {
   requires: string[];
 }
 
-/** The Costs tab (src/costs.ts). */
-export type CostWindow = "today" | "yesterday" | "7d" | "30d";
-export interface CostModel {
-  model: string;
-  input: number;
-  cached: number;
-  output: number;
-  usd: number | null;
-  reported: boolean;
-}
-export interface CostRow {
-  name: string;
-  kind: "agent" | "system";
-  runs: number;
-  input: number;
-  cached: number;
-  output: number;
-  usd: number | null;
-  partial: boolean;
-  reported: boolean;
-  models: CostModel[];
-}
-export interface Costs {
-  window: CostWindow;
-  from: string;
-  to: string;
-  pricesAvailable: boolean;
-  rows: CostRow[];
-  /** usd: billed plus estimated; billed: the part OpenRouter's own cost figures cover. */
-  total: { runs: number; input: number; cached: number; output: number; usd: number; billed: number };
-  /** Per model, OpenRouter's billed cost over the list price for the same calls (last 7 days): applied to estimated tokens. */
-  ratios: Record<string, number>;
-  check: { period: string; from: string; itemised: number; real: number | null; error?: string };
-}
 /** The Costs tab's ledger views (src/cost-ledger.ts): billed spend from the model gateway's ledger, aggregated on the board. */
 export interface LedgerMetrics {
   usd: number;
@@ -443,7 +409,7 @@ export interface CostLedger {
   modelOrder: string[];
   models: (LedgerMetrics & { model: string })[];
   lanes: (LedgerMetrics & { lane: string })[];
-  agents: (LedgerMetrics & { agentId: string; name: string; model: string | null; today: number; dayCap: number })[];
+  agents: (LedgerMetrics & { agentId: string; name: string; model: string | null; today: number; dayCap: number | null })[];
   series: { t: string; model: string; usd: number; calls: number }[];
   insights: LedgerInsights;
 }
@@ -623,9 +589,11 @@ export interface RunLink {
   at: string | null;
 }
 /** One run's trace (services/board/src/runs.ts RunView, with the agent's and task's names). */
+/** One run (a kernel job) as a trace (src/runs.ts). */
 export interface RunTrace {
   id: string;
   agent: string;
+  engine: string;
   status: string;
   error: string | null;
   startedAt: string | null;
@@ -633,13 +601,10 @@ export interface RunTrace {
   durationMs: number | null;
   issue: { identifier: string; title: string } | null;
   rev: { rev: string; productSha: string | null; instanceSha: string | null; from: "ledger" | "revs" } | null;
-  tokens: { input: number; cached: number; output: number; reasoning: number } | null;
-  paperclip: { input: number | null; output: number | null; model: string | null };
-  contexts: number[];
-  tools: { name: string; calls: number; failures: number; medianMs: number | null }[];
-  timeline: { at: string; kind: "tool" | "shell" | "message" | "error"; name: string; text: string; ok: boolean; error?: string; ms?: number }[];
+  tokens: { input: number; cached: number; output: number } | null;
+  plan: PlanItem[];
+  timeline: { at: string; kind: "step" | "message" | "error"; text: string; ok: boolean }[];
   ledger: { rows: { at: string; kind: string | null; model: string; input: number; cached: number; output: number; costUsd: number | null; ms: number | null; status: string | null; runKey: string | null }[]; usd: number | null; capUsd: number | null };
-  notes: string[];
 }
 export interface NeedsYou {
   count: number;
