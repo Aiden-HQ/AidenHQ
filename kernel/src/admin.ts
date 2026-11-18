@@ -25,6 +25,7 @@ type Deps = {
   accounts: {
     sessionOf: (req: IncomingMessage) => Promise<AdminSession | null>; step: (req: IncomingMessage, sub: string, body: Record<string, unknown>) => Promise<Step>; secret: string;
     mintUiCode: (who: AdminSession, module: string, origin: string, state: string) => string;
+    mintDoorCode?: (who: AdminSession, origin: string, state: string) => string;
     setupOpen: (token: string) => boolean; claimSetup: (token: string, input: { email: string; name: string; password: string }) => Promise<{ id: string }>;
   };
   /** First-run setup's vault side: the owner email settings fix, the recovery key shown once, and secret writes. */
@@ -324,6 +325,13 @@ export function createAdmin(d: Deps) {
         case "GET /auth/handoff": {
           const to = url.searchParams.get("to") ?? "", state = url.searchParams.get("state") ?? "";
           const module = Object.hasOwn(d.uiOrigins?.() ?? {}, to) ? d.uiOrigins!()[to]! : undefined;
+          // An app door (docs/design/app-doors.md): the gate's own handoff on that app host, which sets its host-only cookie.
+          if (!module && d.accounts.mintDoorCode) {
+            const code = d.accounts.mintDoorCode(s, to, state);
+            const next = url.searchParams.get("next") ?? "/";
+            log("session handed to an app door", { origin: to, by });
+            return redirect(res, `${to}/.auth/handoff?${new URLSearchParams({ code, state, next: next.length <= 2000 ? next : "/" })}`);
+          }
           if (!module) throw new Refusal(400, "that address isn't an installed module's");
           const code = d.accounts.mintUiCode(s, module, to, state);
           log("session handed to a module", { module, origin: to, by });

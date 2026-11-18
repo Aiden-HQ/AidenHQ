@@ -27,7 +27,7 @@ const dir = mkdtempSync(join(tmpdir(), "gate-seam-"));
 const accountsFile = join(dir, "accounts.json");
 const apps = { crm: { host: "crm.example.com" }, wiki: { host: "wiki.example.com" } };
 let password = true;
-const gateInfo = () => ({ password, myAppsHost: MY, appHosts: Object.values(apps).map((a) => a.host), previews: true, apps });
+const gateInfo = () => ({ password, myAppsHost: MY, appHosts: Object.values(apps).map((a) => a.host), previews: true, apps, door: { base: "localhost", scheme: "http", port: 3130 } });
 const manifests = {};
 let accounts, signin, gate, app, gatePort = 0, authPort = 0;
 const seen = [];
@@ -333,4 +333,47 @@ test("counts failed sign-ins against the visitor's Cloudflare address, not the g
   for (let i = 0; i < 5; i++) assert.equal((await signIn("wrong password!!", "198.51.100.9")).status, 401);
   assert.equal((await signIn(PASSWORD, "198.51.100.9")).status, 403);
   assert.equal((await signIn(PASSWORD, "198.51.100.10")).status, 200);
+});
+
+// App doors (docs/design/app-doors.md): the real gate's local door and the real kernel. The admin listener mints the code
+// (handoff.test.mjs drives its route); here the gate redeems it into the app host's own session, which counts on that host
+// only and never as a kernel session.
+test("a local door: the admin listener's code becomes this host's session, an admin's identity, and nothing elsewhere", async () => {
+  const doorsFile = join(dir, "doors.json");
+  writeFileSync(doorsFile, JSON.stringify({ notes: appPort(), other: appPort() }));
+  const g = await startGate(baseConfig({ my_apps: undefined, hosts: {}, origin: { scheme: "http", port: 3130 }, doors: { base: "localhost", file: doorsFile, signin: "http://localhost:3120" } }));
+  const port = g.address().port;
+  try {
+    const first = await through("notes.localhost:3130", "GET", "/plan", { port });
+    assert.equal(first.status, 302);
+    const to = new URL(first.location);
+    assert.equal(`${to.origin}${to.pathname}?to=${to.searchParams.get("to")}`, "http://localhost:3120/auth/handoff?to=http://notes.localhost:3130");
+    // A person signed in (on the my-apps host here; on the admin listener in a real door, whose route and TOTP rule
+    // handoff.test.mjs drives), handed to this host: a user account gets nothing, an admin gets the app as an admin.
+    const redeem = async (email) => {
+      const first = await through("notes.localhost:3130", "GET", "/plan", { port });
+      const state = new URL(first.location).searchParams.get("state");
+      const s_ = await accounts.gateSession({ headers: { cookie: await signInAs(email), "x-forwarded-proto": "https" } }, `127.0.0.1:${authPort}`);
+      const code = accounts.mintDoorCode({ account: { id: s_.user.id }, session: { id: s_.session.id }, ready: true }, "http://notes.localhost:3130", state);
+      const handoff = await through("notes.localhost:3130", "GET", `/.auth/handoff?${new URLSearchParams({ code, state, next: "/plan" })}`, { port, cookie: cookieOf(first.cookies, "__Host-better-auth.handoff_state") });
+      assert.deepEqual([handoff.status, handoff.location], [302, "/plan"]);
+      return cookieOf(handoff.cookies, "__Host-better-auth.session_token");
+    };
+    await user("dora@example.com", "Dora");
+    const session = await redeem("dora@example.com");
+    assert.equal((await through("notes.localhost:3130", "GET", "/plan", { port, cookie: session })).status, 403);
+    // made an admin (an admin signs in with TOTP, which the admin listener asks for): now the app is theirs
+    const owner = (await accounts.list()).find((x) => x.owner);
+    await accounts.setRole(owner, (await accounts.list()).find((x) => x.email === "dora@example.com").id, "admin");
+    await accounts.syncGate();
+    seen.length = 0;
+    assert.equal((await through("notes.localhost:3130", "GET", "/plan", { port, cookie: session })).status, 200);
+    assert.deepEqual([who(seen[0]).aud, who(seen[0]).role, who(seen[0]).email], ["notes", "admin", "dora@example.com"]);
+    assert.ok(!String(seen[0].cookie ?? "").includes("better-auth")); // the gate's cookie never reaches the app
+    // the same cookie on another door host (cookies ignore ports) is no session there; nor on the admin listener or board
+    assert.equal((await through("other.localhost:3130", "GET", "/", { port, cookie: session })).status, 302);
+    assert.equal(await accounts.sessionOf({ headers: { cookie: session, "x-forwarded-proto": "https" } }), null);
+  } finally {
+    g.close();
+  }
 });

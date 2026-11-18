@@ -17,7 +17,8 @@ const tokenOf = (url) => url.split("token=").pop();
 let accounts, steps, adminSrv, api;
 const apps = { "tok-apps": { kind: "module", module: "apps-platform" }, "tok-board": { kind: "module", module: "board" } };
 before(async () => {
-  accounts = await openAccounts({ dataDir: ":memory:", hosts: [HOST], adminUrl: `http://${HOST}`, edgeSecret: () => "", notify: () => {}, log: silent });
+  // An app door on loopback (docs/design/app-doors.md), as compile's gate.json names it.
+  accounts = await openAccounts({ dataDir: ":memory:", hosts: [HOST], adminUrl: `http://${HOST}`, edgeSecret: () => "", notify: () => {}, log: silent, gate: () => ({ password: true, appHosts: [], door: { base: "localhost", scheme: "http", port: 3130 } }) });
   steps = await stepListener(accounts);
   const cards = { ownerCards: async () => ({ live: [], finished: [] }), decideCard: async () => { throw new Error("no"); } };
   adminSrv = await serve(createAdmin({ accounts, cards, ownerMessage: async () => ({ task: { identifier: "WOR-1" } }), owner: async () => ({ status: 200, json: {} }), hosts: () => [HOST], origins: () => [`http://${HOST}`], frameOrigins: () => [], uiOrigins: () => ({ [BOARD]: "board" }) }));
@@ -209,4 +210,33 @@ test("the backplane: the board's key and a live session token, and nothing else,
   assert.equal((await api.post("/v1/apps/requests", { app: "crm" }, { authorization: "Bearer tok-board" })).status, 401);
   assert.equal((await api.post("/v1/apps/requests", { app: "crm" })).status, 401);
   assert.equal((await api.post("/v1/apps/requests", { app: "crm" }, { authorization: "Bearer tok-apps" })).status, 404); // past the door: no shared app "crm" here
+});
+
+test("an app door: a ready admin's /auth/handoff mints the gate's code for exactly a door origin, redeemed once on that host", async () => {
+  const st = "0123456789abcdef0123456789abcdef";
+  const door = "http://roadmap.localhost:3130";
+  const ok = await admin("GET", `${handoffPath(door, st)}&next=${encodeURIComponent("/plan?q=1")}`, owner.jar);
+  assert.equal(ok.status, 303);
+  const to = new URL(ok.location);
+  assert.equal(`${to.origin}${to.pathname}`, `${door}/.auth/handoff`);
+  assert.equal(to.searchParams.get("state"), st);
+  assert.equal(to.searchParams.get("next"), "/plan?q=1");
+  const code = to.searchParams.get("code");
+  await assert.rejects(accounts.redeemHandoff(code, "other.localhost", st), /invalid or expired/); // spent on the wrong host
+  const again = new URL((await admin("GET", handoffPath(door, st), owner.jar)).location).searchParams.get("code");
+  const { token } = await accounts.redeemHandoff(again, "roadmap.localhost", st);
+  // The door session, as the gate forwards it: it counts only on the host it was handed to (cookies ignore ports, so another
+  // *.localhost can be sent it), and never as a session on the admin listener or the board.
+  const fromGate = { headers: { cookie: `__Host-better-auth.session_token=${encodeURIComponent(token)}`, "x-forwarded-proto": "https" } };
+  assert.equal((await accounts.gateSession(fromGate, HOST, "roadmap.localhost"))?.user?.email, "owner@example.com");
+  assert.equal(await accounts.gateSession(fromGate, HOST, "other.localhost"), null);
+  assert.equal(await accounts.gateSession(fromGate, HOST, ""), null);
+  assert.equal(await accounts.sessionOf(fromGate), null);
+  assert.equal(await accounts.sessionOf({ headers: { cookie: `better-auth.session_token=${encodeURIComponent(token)}` } }), null);
+  await assert.rejects(accounts.redeemHandoff(again, "roadmap.localhost", st), /invalid or expired/); // once
+  // only an exact door origin: not another port, scheme or base, not nested, not with a path, not a bad state
+  for (const t of ["http://roadmap.localhost:3131", "https://roadmap.localhost:3130", "http://roadmap.localhost", "http://a.roadmap.localhost:3130", "http://localhost:3130", "http://roadmap.localhost:3130/x", "http://evil.example:3130"]) assert.equal((await admin("GET", handoffPath(t, st), owner.jar)).status, 400, t);
+  assert.equal((await admin("GET", handoffPath(door, "short"), owner.jar)).status, 400);
+  // signed out: sign-in first, keeping the whole handoff
+  assert.match((await admin("GET", handoffPath(door, st))).location, /^\/auth\/sign-in\?next=/);
 });
