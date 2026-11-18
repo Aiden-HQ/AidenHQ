@@ -3,6 +3,7 @@
   "version": "0.1.0",
   "description": "Contract types, engine IO, the executor side of write kinds and the contract kit for AidenHQ modules.",
   "license": "MIT",
+  "repository": { "type": "git", "url": "git+https://github.com/Aiden-HQ/AidenHQ.git", "directory": "kernel/sdk" },
   "type": "module",
   "engines": { "node": ">=24" },
   "bin": { "aidenhq-module-test": "dist/bin/aidenhq-module-test.js" },
