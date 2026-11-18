@@ -173,7 +173,9 @@ kept in the runner's cache clones (`refs/kept/<task>/…`). A reopened task gets
 ## Logs and debugging a run
 
 - `docker compose logs -f <service>` for any service; `systemctl --user status aidenhq-runner` and
-  `journalctl --user -u aidenhq-runner` for the runner.
+  `journalctl --user -u aidenhq-runner` for the runner. After a full disk journald keeps logging to `/run` (no per-user
+  file there) until `sudo journalctl --flush`, so `--user` shows nothing new; the owner's `systemd-journal` group
+  (`ops/vm/setup.sh`) reads it there too: `journalctl _SYSTEMD_USER_UNIT=aidenhq-runner.service`.
 - A run's full transcript is its Codex session log: `**/sessions/**/*.jsonl` under the Paperclip container's codex
   home (or `/workspace/.paperclip-runtime/codex/home/sessions` in an agent computer). Tool calls are `function_call`
   lines.

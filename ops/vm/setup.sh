@@ -214,7 +214,11 @@ if [ "$(jq -r .version "$browser/lib/node_modules/agent-browser/package.json" 2>
   chmod -R a+rX "$browser"
 fi
 
-usermod -aG docker "$USER_NAME"
+# systemd-journal: the owner reads the runner's and the kernel's logs (user units) without sudo wherever journald keeps
+# them. After a full disk journald falls back to /run, which has no per-user file, and stays there until a flush; the
+# flush moves it back to /var/log/journal, where `journalctl --user` reads the owner's own file again.
+usermod -aG docker,systemd-journal "$USER_NAME"
+journalctl --flush
 loginctl enable-linger "$USER_NAME"
 systemctl enable --now docker unattended-upgrades
 if [ -n "$vm" ]; then systemctl enable --now qemu-guest-agent; fi
