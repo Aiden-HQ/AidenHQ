@@ -5,17 +5,12 @@ import { createContext, useCallback, useContext, useEffect, useId, useMemo, useS
 import { SignInRequired, api } from "./api";
 import type { ChangeStage, FiledChange, SettingChange } from "./types";
 import { changeLines, whoDecides } from "./settings-format";
+import { PageHeader } from "./ui";
 
 export function Page({ title, sub, children, tools }: { title: string; sub?: ReactNode; children: ReactNode; tools?: ReactNode }) {
   return (
     <main className="st-page">
-      <header className="st-head">
-        <div className="st-head-text">
-          <h1>{title}</h1>
-          {sub && <p>{sub}</p>}
-        </div>
-        {tools && <div className="st-head-tools">{tools}</div>}
-      </header>
+      <PageHeader title={title} sub={sub} actions={tools} />
       {children}
     </main>
   );

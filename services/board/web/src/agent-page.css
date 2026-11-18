@@ -37,7 +37,7 @@ a.agp-ctx:hover { color: var(--text); text-decoration: underline; }
 .agp-details div { display: flex; gap: 8px; }
 .agp-details dt { color: var(--muted); }
 .agp-details dd { margin: 0; }
-/* Settings forms keep a readable width: a value at the far end of a 2000px row loses its label. */
-.agp .st-embedded { gap: 22px; max-width: 1100px; }
+/* Settings rows go two or three to a line on a wide screen (settings.css .st-rows), so a value stays near its label. */
+.agp .st-embedded { gap: 22px; }
 .agp .st-group-head h2 { font-size: var(--text-lg); font-weight: 600; }
 .agp .st-group { margin-bottom: 14px; }
