@@ -58,6 +58,7 @@ export const VIEW_CHUNKS = {
   agentPage: () => import("./AgentPage"),
   modulePage: () => import("./ModulePage"),
   run: () => import("./Run"),
+  design: () => import("./Design"),
 };
 
 export function prefetchView(view: string) {

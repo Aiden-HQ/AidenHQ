@@ -1,0 +1,132 @@
+/* The board's design tokens: every colour, the type scale, spacing, radius, elevation and motion, in one place.
+   Each colour is light-dark(light, dark): the page follows the system theme, and [data-theme] forces one on any subtree
+   (the #/design page shows both side by side). Raw colours and px font sizes live only here (stylelint enforces it:
+   web/.stylelintrc.json). What to use for what: docs/design/board-ui.md. */
+:root { color-scheme: light dark; }
+[data-theme="light"] { color-scheme: light; }
+[data-theme="dark"] { color-scheme: dark; }
+
+:root {
+  /* Surfaces: a warm paper page, white cards, a slightly sunk column. */
+  --bg: light-dark(#f6f5f2, #111215);
+  --col: light-dark(#efeee9, #16171b);
+  --surface: light-dark(#ffffff, #1c1d22);
+  --surface-2: light-dark(#faf9f7, #22232a);
+  --border: light-dark(#e4e2dc, #2b2d34);
+  --border-strong: light-dark(#d3d0c8, #3b3d46);
+  --hover: light-dark(rgba(29, 28, 26, 0.045), rgba(255, 255, 255, 0.045));
+  --scrim: light-dark(rgba(20, 19, 17, 0.32), rgba(0, 0, 0, 0.55));
+
+  /* Ink. */
+  --text: light-dark(#1d1c1a, #ececf0);
+  --muted: light-dark(#6e6b64, #a4a6b0);
+  --faint: light-dark(#9a968d, #737682);
+  --on-solid: #ffffff; /* text on a saturated fill (danger button, priority chip) */
+  --knob: #ffffff; /* a switch's knob */
+
+  /* Accent: indigo, for the primary action, focus and links. */
+  --accent: light-dark(#3b5bdb, #7c9bff);
+  --accent-soft: light-dark(#e7ecfc, #222b4d);
+  --accent-text: light-dark(#ffffff, #0c1024);
+
+  /* Status. One vocabulary (ui/StatusDot.tsx): working/ok = green, needs you = amber, failed = red, idle = grey. */
+  --working: light-dark(#2f9e44, #3fbf62);
+  --ok-text: light-dark(#237a35, #6fd98b);
+  --warn: light-dark(#e8a400, #f0b429);
+  --warn-text: light-dark(#8a5d00, #f5c95c);
+  --needs-text: var(--warn-text);
+  --urgent: light-dark(#e03131, #ff6b6b);
+  --bad-text: light-dark(#c92a2a, #ff8787);
+  --danger: light-dark(#d6336c, #f06595);
+  --high: #e8590c;
+  --low: light-dark(#b5b1a8, #5c5a55);
+  --on-warn: #2b1e00;
+
+  /* Task buckets (the Tasks board). */
+  --triage: #e8a400;
+  --today: #3b5bdb;
+  --tomorrow: #7048e8;
+  --later: #868e96;
+  --backlog: #adb5bd;
+
+  /* Per-item hues (ui/hue.ts): 3:1 or better on --bg, --surface and --surface-2 in both themes. */
+  --hue-0: light-dark(#3b5bdb, #7c9bff);
+  --hue-1: light-dark(#0c8599, #3bc9db);
+  --hue-2: light-dark(#2b8a3e, #69db7c);
+  --hue-3: light-dark(#b26a00, #fcc419);
+  --hue-4: light-dark(#d9480f, #ff922b);
+  --hue-5: light-dark(#c2255c, #f783ac);
+  --hue-6: light-dark(#7048e8, #b197fc);
+  --hue-7: light-dark(#5c6773, #a5b0bc);
+
+  /* Monogram and avatar tones (avatar.ts): 7:1 text on its fill in both themes. */
+  --tone-0-bg: light-dark(#dbe4ff, #22305c); --tone-0-fg: light-dark(#1e3a8a, #c9d6ff);
+  --tone-1-bg: light-dark(#d3f3ee, #173f3a); --tone-1-fg: light-dark(#0f4f45, #b5eee4);
+  --tone-2-bg: light-dark(#dcf2d9, #1f3d22); --tone-2-fg: light-dark(#1f5420, #c3ecbf);
+  --tone-3-bg: light-dark(#fbebc8, #4a3812); --tone-3-fg: light-dark(#6b4500, #f8dfa5);
+  --tone-4-bg: light-dark(#fde0cf, #4d2a17); --tone-4-fg: light-dark(#7a2e0b, #fcd0b5);
+  --tone-5-bg: light-dark(#fadbe3, #4d1f2e); --tone-5-fg: light-dark(#7d1d3a, #f8c6d3);
+  --tone-6-bg: light-dark(#e7defc, #33275a); --tone-6-fg: light-dark(#46238f, #dacdfc);
+  --tone-7-bg: light-dark(#e2e6ea, #2b333c); --tone-7-fg: light-dark(#2f3a45, #d2d9e0);
+
+  /* Who a chat message is from (styles.css .avatar-*). */
+  --who-me: #495057; --who-assistant: #0c8599; --who-agent: #5c7cfa; --who-codex: #1c1c1c; --who-claude: #d9773e; --who-openrouter: #6741d9;
+
+  /* Costs chart series (Costs.tsx). */
+  --cost-s1: light-dark(#2a78d6, #3987e5); --cost-s2: light-dark(#eb6834, #d95926); --cost-s3: light-dark(#1baf7a, #199e70);
+  --cost-s4: light-dark(#eda100, #c98500); --cost-s5: light-dark(#e87ba4, #d55181); --cost-s6: light-dark(#6250d6, #9085e9);
+  --cost-other: light-dark(#b5b1a8, #5c5a55);
+
+  /* Full-width strips under the top bar (styles.css .offline, .alert), and the inverted toast. */
+  --strip-warn-bg: light-dark(#fff3bf, #3d3410); --strip-warn-fg: light-dark(#5c4400, #f5e3a3);
+  --strip-bad-bg: light-dark(#ffe3e3, #3d1518); --strip-bad-fg: light-dark(#7a1414, #f5c2c2);
+  --strip-ok-bg: light-dark(#d3f9d8, #13361b); --strip-ok-fg: light-dark(#1b4d24, #b2f2bb);
+  --toast-bg: light-dark(#1d1c1a, #ececea); --toast-fg: light-dark(#f6f5f2, #121214); --toast-link: light-dark(#9db1ff, #3b5bdb);
+  --diff-add: rgba(34, 197, 94, 0.15); --diff-del: rgba(239, 68, 68, 0.15);
+
+  /* Type: one family; a fixed small scale for dense UI, fluid steps from body size up. */
+  --font: Inter, ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --mono: ui-monospace, SFMono-Regular, Menlo, monospace;
+  --text-3xs: 10px;
+  --text-2xs: 11px;
+  --text-xs: 12px;
+  --text-sm: 12.5px;
+  --text-base: 13px;
+  --text-md: 13.5px;
+  --text-body: 14px;
+  --text-input: 16px; /* form fields on a phone: iOS zooms into anything smaller */
+  --text-row: clamp(13.5px, 0.2vw + 11px, 15px);
+  --text-lg: clamp(15px, 0.25vw + 11px, 17px);
+  --text-xl: clamp(17px, 0.3vw + 12.5px, 20px);
+  --text-2xl: clamp(20px, 0.6vw + 16px, 26px);
+  --text-3xl: clamp(22px, 1.1vw + 14px, 30px);
+
+  /* Space: a 4px grid, and the page's fluid gutters. */
+  --sp-1: 4px; --sp-2: 8px; --sp-3: 12px; --sp-4: 16px; --sp-5: 20px; --sp-6: 24px; --sp-8: 32px;
+  --gutter: clamp(16px, 2.4vw, 56px);
+  --page-top: clamp(16px, 1.6vw + 6px, 40px);
+  --stack: clamp(16px, 1vw + 8px, 26px);
+
+  /* Radius: moderate, and smaller as things get smaller. Never a pill. */
+  --radius-sm: 5px; /* tags, small marks */
+  --radius-md: 8px; /* buttons, inputs, menu items */
+  --radius: 10px; /* cards, rows, tiles */
+  --radius-lg: 14px; /* dialogs */
+
+  /* Elevation. */
+  --shadow: 0 1px 2px light-dark(rgba(29, 28, 26, 0.06), rgba(0, 0, 0, 0.4)), 0 1px 1px light-dark(rgba(29, 28, 26, 0.04), rgba(0, 0, 0, 0));
+  --shadow-hover: 0 4px 14px light-dark(rgba(29, 28, 26, 0.06), rgba(0, 0, 0, 0.35));
+  --shadow-lg: 0 12px 32px light-dark(rgba(29, 28, 26, 0.16), rgba(0, 0, 0, 0.55)), 0 2px 6px light-dark(rgba(29, 28, 26, 0.08), rgba(0, 0, 0, 0.3));
+  --shadow-knob: 0 1px 2px rgba(0, 0, 0, 0.25);
+
+  /* Motion: quick, and only in answer to an action. */
+  --ease: cubic-bezier(0.2, 0.7, 0.2, 1);
+  --fast: 160ms;
+}
+
+.hue-0 { --hue: var(--hue-0); } .hue-1 { --hue: var(--hue-1); } .hue-2 { --hue: var(--hue-2); } .hue-3 { --hue: var(--hue-3); }
+.hue-4 { --hue: var(--hue-4); } .hue-5 { --hue: var(--hue-5); } .hue-6 { --hue: var(--hue-6); } .hue-7 { --hue: var(--hue-7); }
+.tone-0 { --tone-bg: var(--tone-0-bg); --tone-fg: var(--tone-0-fg); } .tone-1 { --tone-bg: var(--tone-1-bg); --tone-fg: var(--tone-1-fg); }
+.tone-2 { --tone-bg: var(--tone-2-bg); --tone-fg: var(--tone-2-fg); } .tone-3 { --tone-bg: var(--tone-3-bg); --tone-fg: var(--tone-3-fg); }
+.tone-4 { --tone-bg: var(--tone-4-bg); --tone-fg: var(--tone-4-fg); } .tone-5 { --tone-bg: var(--tone-5-bg); --tone-fg: var(--tone-5-fg); }
+.tone-6 { --tone-bg: var(--tone-6-bg); --tone-fg: var(--tone-6-fg); } .tone-7 { --tone-bg: var(--tone-7-bg); --tone-fg: var(--tone-7-fg); }

@@ -5,6 +5,7 @@ import { RowsSkeleton } from "./SettingsConnections";
 import { ChangeProgress, Group, IN_FLIGHT, Row, useChanges, useFiled } from "./settings-ui";
 import type { MarketplaceRow, SettingChange } from "./types";
 import "./settings.css";
+import { Tag } from "./ui";
 
 type Op = Extract<SettingChange, { kind: "marketplace" }>;
 
@@ -106,9 +107,9 @@ function MarketplaceItem({ m }: { m: MarketplaceRow }) {
         sub={m.source || "built in"}
         meta={
           <>
-            <span className="st-chip">{m.sha ? m.sha.slice(0, 7) : "product"}</span>
-            <span className="st-chip">{m.modules} modules</span>
-            {m.newer && <span className="st-chip warn">newer available</span>}
+            <Tag>{m.sha ? m.sha.slice(0, 7) : "product"}</Tag>
+            <Tag>{m.modules} modules</Tag>
+            {m.newer && <Tag tone="needs">newer available</Tag>}
           </>
         }
         action={

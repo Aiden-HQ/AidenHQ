@@ -3,11 +3,12 @@
 // the sign-in.
 import { useState } from "react";
 import { STATUS_LABEL, connectionStatus, displayName, sourceStatus, type ConnectionRow, type ConnectionsData, type Status, type UrlSetting, type Verdict } from "./connections";
-import { ChangePreview, ChangeProgress, Group, IN_FLIGHT, Page, Row, StatusPill, useFiled } from "./settings-ui";
+import { ChangePreview, ChangeProgress, Group, IN_FLIGHT, Page, Row, useFiled } from "./settings-ui";
 import { urlSettingProblem } from "../../src/url-setting";
+import { StatusDot, Tag, type StatusTone } from "./ui";
 
 type Can = { signIn: boolean; google: boolean };
-const TONE: Record<Status, "ok" | "warn" | "bad" | "off" | "info"> = { connected: "ok", signed_out: "warn", error: "bad", not_configured: "off", unknown: "off", builtin: "info" };
+const TONE: Record<Status, StatusTone> = { connected: "ok", signed_out: "needs", error: "failed", not_configured: "idle", unknown: "idle", builtin: "info" };
 const NEEDS: Status[] = ["error", "signed_out", "not_configured", "unknown"];
 const when = (iso?: string | null) => (iso ? new Date(iso).toLocaleString(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", hour12: false }) : "never");
 
@@ -56,7 +57,7 @@ export function ConnectionsPage({ conns, can, refresh, onRefresh }: { conns: Con
         ) : (
           conns.sources.map((s) => {
             const sv = sourceStatus(s);
-            return <Row key={s.name} title={<code>{s.name}</code>} sub={sv.reason} meta={<StatusPill tone={sv.status === "error" ? "bad" : s.failing ? "warn" : "ok"}>{sv.status === "error" ? "Behind" : s.failing ? "Last pass failed" : "Up to date"}</StatusPill>} />;
+            return <Row key={s.name} title={<code>{s.name}</code>} sub={sv.reason} meta={<StatusDot tone={sv.status === "error" ? "failed" : s.failing ? "needs" : "ok"}>{sv.status === "error" ? "Behind" : s.failing ? "Last pass failed" : "Up to date"}</StatusDot>} />;
           })
         )}
       </Group>
@@ -69,7 +70,7 @@ function ConnectionItem({ r, v, can }: { r: ConnectionRow; v: Verdict; can: Can 
   const filed = useFiled((c) => c.kind === "setting" && urls.some((u) => u.key === c.key));
   const setup = v.status === "not_configured" && urls.length > 0;
   const [open, setOpen] = useState(setup || Boolean(filed && IN_FLIGHT.includes(filed.stage)));
-  const pill = filed && IN_FLIGHT.includes(filed.stage) ? <StatusPill tone="busy">Changing</StatusPill> : <StatusPill tone={TONE[v.status]}>{STATUS_LABEL[v.status]}</StatusPill>;
+  const pill = filed && IN_FLIGHT.includes(filed.stage) ? <StatusDot tone="busy">Changing</StatusDot> : <StatusDot tone={TONE[v.status]}>{STATUS_LABEL[v.status]}</StatusDot>;
   const connect = v.action ? (
     <a className={`btn${v.status === "signed_out" ? " primary" : ""}`} href={v.action.href}>
       {v.action.label}
@@ -82,8 +83,8 @@ function ConnectionItem({ r, v, can }: { r: ConnectionRow; v: Verdict; can: Can 
       sub={v.reason}
       meta={
         <>
-          {r.kind === "connection" && v.status !== "builtin" && <span className="st-chip">{r.grants.length ? `${r.grants.length} agent${r.grants.length === 1 ? "" : "s"}` : "no agents"}</span>}
-          {r.kind === "service" && <span className="st-chip">Engineer jobs</span>}
+          {r.kind === "connection" && v.status !== "builtin" && <Tag>{r.grants.length ? `${r.grants.length} agent${r.grants.length === 1 ? "" : "s"}` : "no agents"}</Tag>}
+          {r.kind === "service" && <Tag>Engineer jobs</Tag>}
           {pill}
         </>
       }
@@ -239,7 +240,7 @@ function GoogleAccounts({ g, can }: { g: NonNullable<ConnectionRow["google"]>; c
     <ul className="st-accounts">
       {g.accounts.map((a) => (
         <li key={a.email}>
-          <StatusPill tone={a.state === "ok" ? "ok" : a.state === "unknown" ? "off" : "warn"}>{a.state === "ok" ? "Working" : a.state === "expired" ? "Stopped working" : a.state === "unknown" ? "Checking" : "Error"}</StatusPill>
+          <StatusDot tone={a.state === "ok" ? "ok" : a.state === "unknown" ? "idle" : "needs"}>{a.state === "ok" ? "Working" : a.state === "expired" ? "Stopped working" : a.state === "unknown" ? "Checking" : "Error"}</StatusDot>
           <span className="st-account">
             {a.email}
             {a.primary && <span className="muted"> (calendar and meeting notes)</span>}

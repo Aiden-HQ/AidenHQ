@@ -5,9 +5,9 @@
 .welcome-dots span { width: 8px; height: 8px; border-radius: 50%; background: var(--border-strong); }
 .welcome-dots span.past { background: var(--accent-soft); outline: 1px solid var(--accent); }
 .welcome-dots span.on { background: var(--accent); }
-.welcome-error { font-size: 12.5px; color: var(--bad-text); }
+.welcome-error { font-size: var(--text-sm); color: var(--bad-text); }
 .welcome-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
-.welcome-list li { display: flex; justify-content: space-between; padding: 8px 0; border-bottom: 1px solid var(--border); font-size: 14px; }
+.welcome-list li { display: flex; justify-content: space-between; padding: 8px 0; border-bottom: 1px solid var(--border); font-size: var(--text-body); }
 .welcome-list em { font-style: normal; font-weight: 600; color: var(--muted); }
 .welcome-list li.done em { color: var(--ok-text); }
 .setup-overlay { padding-bottom: 64px; }

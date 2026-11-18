@@ -43,7 +43,7 @@ cd scripts && npm test                       # compiler, setup, sync-shared drif
 cd services/runner && npm test
 cd services/computer && node --test test/*.test.mjs
 cd modules/apps-platform/gate && npm test && npm run typecheck
-cd services/board && npx vitest run && npx tsc -p tsconfig.build.json --noEmit && npm run typecheck && npm run build
+cd services/board && npx vitest run && npx tsc -p tsconfig.build.json --noEmit && npm run typecheck && npm run lint && npm run build
 # kernel, modules/apps-platform/apps-mcp, modules/*/connections/*, modules/security/scanner:
 npm test && npm run typecheck
 ```

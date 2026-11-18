@@ -3,6 +3,7 @@ import { QUERIES, useQuery } from "./queries";
 import { CardGridSkeleton, Updating } from "./Skeleton";
 import type { AppRow } from "./types";
 import { agoLabel, isLocalDoor, keepsSecureCookies } from "./util";
+import { StatusDot } from "./ui";
 
 const mb = (n: number) => `${Math.round(n / 1048576)} MB`;
 
@@ -54,7 +55,7 @@ export function AppCard({ a, secureCookies = keepsSecureCookies() }: { a: AppRow
     <article className={`app-card${a.healthy ? "" : " sick"}`}>
       <header className="app-card-head">
         <h3>{a.name}</h3>
-        <span className={`pill ${a.healthy ? "pill-working" : "pill-failed"}`}>{a.healthy ? "Healthy" : a.state}</span>
+        <StatusDot tone={a.healthy ? "ok" : "failed"}>{a.healthy ? "Healthy" : a.state}</StatusDot>
         {a.url && !otherBrowser && (
           <a className="btn" href={a.url} target="_blank" rel="noreferrer noopener">
             Open
