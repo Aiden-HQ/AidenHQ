@@ -56,7 +56,7 @@ connections:
     tools:
       # github_app_issue_status: a status lookup of product-bug issues (number, state, fixing commit; no issue text), so a
       # read: tagged destructive it filed a Tier 2 owner card on every check.
-      read: [ github_whoami, github_project_read, github_issue_read, github_search_issues, github_app_issue_status, github_app_issue_list, github_app_label_events, github_app_repo_tree, github_app_repo_file ]
+      read: [ github_whoami, github_project_read, github_issue_read, github_search_issues, github_job_log, github_pr_files, github_app_issue_status, github_app_issue_list, github_app_label_events, github_app_repo_tree, github_app_repo_file ]
       # commit_status_set: the design-review check on agents-org PRs, as the GitHub App; it also needs the design-review role.
       write: [ commit_status_set ]
       # github_app_issue: product bugs on settings.product_repo only, as the GitHub App, and only for the product-issues role
