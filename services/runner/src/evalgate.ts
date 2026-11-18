@@ -61,7 +61,7 @@ export const REVIEWER_CODE = [
   /^services\/runner\/src\/(tiers|gate-core)\.(mjs|ts)$/,
   /^modules\/codehost-github\/src\/plan\.mjs$/,
   /^modules\/platform\/src\/check\.mjs$/,
-  /^kernel\/src\/(tier|writes|records|reviews|kinds)\.ts$/,
+  /^kernel\/src\/(tier|provenance|writes|records|reviews|kinds)\.ts$/,
   /^kernel\/src\/loader\/authority\.ts$/,
 ];
 export const touchesReviewer = (files: string[]) => files.some((f) => REVIEWER_CODE.some((r) => r.test(f)));
