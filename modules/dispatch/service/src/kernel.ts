@@ -30,6 +30,12 @@ export interface Kernel {
   post(job: string, b: { kind: "reply" | "notice"; body: string }): Promise<void>;
   /** Stop a running job (its task was closed under it). */
   stop(job: string): Promise<void>;
+  /** A company's tasks by control-plane query (the open ones of a routine, say). */
+  issues(company: string, query: string): Promise<Issue[]>;
+  /** A routine's definition (its concurrency policy). */
+  routine(id: string): Promise<{ concurrencyPolicy?: string }>;
+  /** Cancel a routine run's task as its agent: folded into an earlier run (`coalesced`), or overtaken by a later one (`stale`). */
+  cancelRoutineRun(task: string, why: "coalesced" | "stale", body: string): Promise<void>;
   /** A task's sub-tasks, any status. */
   children(parent: string, company: string): Promise<Issue[]>;
   /** A labelled wake notice on a task (role kernel.wake): it wakes the task's agent, as a module's words. */
@@ -61,6 +67,9 @@ export function createKernel(url: string, token: string, fetcher: typeof fetch =
     input: (job, b) => call("POST", `/v1/jobs/${e(job)}/input`, b),
     post: async (job, b) => void (await call("POST", `/v1/jobs/${e(job)}/post`, b)),
     stop: async (job) => void (await call("DELETE", `/v1/jobs/${e(job)}`)),
+    issues: (company, query) => call("GET", `/v1/cp/read/api/companies/${e(company)}/issues?${query}`),
+    routine: (id) => call("GET", `/v1/cp/read/api/routines/${e(id)}`),
+    cancelRoutineRun: async (task, why, body) => void (await call("POST", "/v1/routines/cancel", { task, why, body })),
     children: (parent, company) => call("GET", `/v1/cp/read/api/companies/${e(company)}/issues?parentId=${e(parent)}&status=todo,in_progress,in_review,blocked,done,cancelled&limit=200`).then((l: Issue[]) => l.filter((i) => i.parentId === parent)),
     wake: async (task, text) => void (await call("POST", "/v1/wakes", { task, text })),
     fileTask: async (b) => void (await call("POST", "/v1/tasks", b)),

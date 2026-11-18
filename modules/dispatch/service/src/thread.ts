@@ -16,12 +16,13 @@ const WAKE_NOTICE = "<!-- aidenhq-wake -->";
 export interface Issue {
   id: string; identifier?: string; title?: string; description?: string | null; status?: string; parentId?: string | null;
   assigneeAgentId?: string | null; createdByAgentId?: string | null; createdByUserId?: string | null; companyId?: string;
+  originKind?: string | null; originId?: string | null; createdAt?: string;
 }
 export interface Comment { id: string; body?: string | null; authorType?: string; authorAgentId?: string | null; createdAt?: string; deletedAt?: string | null }
 /** The grants table's directory (kernel GET /v1/agents), by agent id. */
 export type Directory = Record<string, { key?: string; roles?: string[]; profile?: string; graded?: boolean }>;
 /** A Paperclip agent, for names and personas. */
-export interface Agent { id: string; name?: string; metadata?: { persona?: { name?: string; voice?: string } } }
+export interface Agent { id: string; name?: string; companyId?: string; metadata?: { persona?: { name?: string; voice?: string } } }
 
 /** Remove HTML comments: hidden text never counts as anyone's words. */
 export const stripHidden = (s: unknown) => String(s ?? "").replace(/<!--[\s\S]*?-->/g, "");

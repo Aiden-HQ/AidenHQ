@@ -3,8 +3,8 @@
 // plugin, at most once and with duplicates) only scans its one task sooner. A dispatcher (role kernel.jobs) claims rows and
 // turns them into jobs; admission binds `job` (unique, so a wake starts at most one job).
 // Keys (never Paperclip's eventId): comment:<commentId>, issue:<issueId>:<updatedAt> (assigned or moved to todo),
-// routine-run:<runId> (a routine run's new task, cause routine:<key>: the routine's compiled key, so admission applies its own
-// model; routine tasks of a non-always_enqueue routine coalesce here), reopen:<issueId>:<statusVersion> (a comment reopened a finished task),
+// routine-run:<issueId> (a routine run's new task, cause routine:<key>: the routine's compiled key, so admission applies its own
+// model; dispatch folds a run into an earlier open one of its routine, and cancels overtaken blocked ones), reopen:<issueId>:<statusVersion> (a comment reopened a finished task),
 // wake_at:<module>.<id> (a module's scheduled wake, due at `until`), unblocked:<issueId>:<closure> (a blocked task whose first-class
 // blockers (blockedBy) are all done or cancelled: the poll moves it to todo with one tagged notice, then files this wake).
 // Polled agents: those the modules that claim wakes dispatch (compile's `dispatches`); a module joins on its first claim.
@@ -14,7 +14,6 @@ import { createHash, randomBytes } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
 import type { Api } from "./channels.ts";
 import type { Outcomes } from "./outcomes.ts";
-import { closeStaleRoutineRuns } from "./stale-routines.ts";
 
 /** A comment the kernel posted for a job (outcomes.ts): it never wakes anyone. */
 export const SELF_TAG = /<!-- aidenhq:job=/;
@@ -42,7 +41,7 @@ export function createWakes({ db, owner, post, dispatches, routineKey = () => un
   db: DatabaseSync;
   /** The control plane as the owner (only reads). */
   owner: Api;
-  /** Writes as the task's agent (outcomes.ts): a coalesced routine task is cancelled by its own agent. */
+  /** Writes as the task's agent (outcomes.ts): notes, and a routine run a dispatcher cancels. */
   post: Outcomes["post"];
   /** Whether a module dispatches an agent (jobs.ts dispatchesFrom), and the agents it dispatches (ids). */
   dispatches: { may: (module: string, agent: string) => boolean; agents: (module: string) => string[] };
@@ -70,29 +69,8 @@ export function createWakes({ db, owner, post, dispatches, routineKey = () => un
   const liveJob = (task: string) => q(`SELECT id, at FROM jobs WHERE task = ? AND state IN ${LIVE} ORDER BY at DESC LIMIT 1`).get(task) as { id: string; at: number } | undefined;
   const lastJob = (task: string) => q("SELECT id, at FROM jobs WHERE task = ? ORDER BY at DESC LIMIT 1").get(task) as { id: string; at: number } | undefined;
 
-  /**
-   * A routine run's new task. With agents' wakes off Paperclip never coalesces (spike gaps, C0): every tick, and every
-   * catch-up tick after downtime, is a new task. So unless the routine always enqueues, a task arriving while an earlier
-   * one of the same routine is open is cancelled here; otherwise its run is the wake. False: try again next poll.
-   */
-  async function routine(issue: Issue, agent: string, open: Issue[]) {
-    const id = encodeURIComponent(String(issue.originId ?? ""));
-    const [def, runs] = await Promise.all([owner("GET", `/api/routines/${id}`), owner("GET", `/api/routines/${id}/runs?limit=100`)]);
-    const run = Array.isArray(runs.json) ? (runs.json as { id: string; linkedIssueId?: string }[]).find((x) => x.linkedIssueId === issue.id) : undefined;
-    if (def.status !== 200 || !run) { log("wake: routine run not found yet", { task: issue.id, routine: issue.originId }); return false; }
-    const earlier = open.find((o) => o.id !== issue.id && o.originKind === "routine_execution" && o.originId === issue.originId && (ms(o.createdAt) < ms(issue.createdAt) || (ms(o.createdAt) === ms(issue.createdAt) && o.id < issue.id)));
-    if (def.json?.concurrencyPolicy !== "always_enqueue" && earlier) {
-      await post({ id: issue.id, agent, task: issue.id }, { kind: "coalesced", status: "cancelled", body: "Cancelled: an earlier run of this routine is still open, so this one is folded into it." });
-      log("wake: routine task coalesced", { task: issue.id, into: earlier.id, routine: issue.originId });
-      return true;
-    }
-    const key = routineKey(String(issue.originId ?? ""));
-    insert(`routine-run:${run.id}`, issue.id, agent, key ? `routine:${key}` : "routine", ms(issue.updatedAt) || now());
-    return true;
-  }
-
   /** One task's wakes: new comments past its cursor, and a move to todo (or a first sight of an unstarted todo task). */
-  async function scan(issue: Issue, { reopened = false, open = [] as Issue[] } = {}) {
+  async function scan(issue: Issue, { reopened = false } = {}) {
     const agent = issue.assigneeAgentId;
     const joined = agent ? polled().get(agent) : undefined;
     if (!agent || joined === undefined) return;
@@ -112,7 +90,10 @@ export function createWakes({ db, owner, post, dispatches, routineKey = () => un
     if (status === "todo" && (reopened || moved) && !liveJob(issue.id)) {
       const at = ms(issue.updatedAt) || now();
       if (reopened) insert(`reopen:${issue.id}:${issue.statusVersion ?? issue.updatedAt}`, issue.id, agent, "reopen", at);
-      else if (!prev && issue.originKind === "routine_execution") { if (!(await routine(issue, agent, open))) return; }
+      else if (!prev && issue.originKind === "routine_execution") {
+        const key = routineKey(String(issue.originId ?? ""));
+        insert(`routine-run:${issue.id}`, issue.id, agent, key ? `routine:${key}` : "routine", at);
+      }
       else insert(`issue:${issue.id}:${issue.updatedAt}`, issue.id, agent, prev?.agent === agent ? "status" : "assigned", at);
     }
     const newest = prev?.comment && !all.length ? prev.comment : all.at(-1)?.id ?? null;
@@ -160,12 +141,10 @@ export function createWakes({ db, owner, post, dispatches, routineKey = () => un
           }
           const l = await owner("GET", `/api/companies/${encodeURIComponent(companies.get(agent)!)}/issues?status=${OPEN}&limit=500&assigneeAgentId=${encodeURIComponent(agent)}`);
           if (l.status !== 200 || !Array.isArray(l.json)) throw new Error(`control plane GET issues → ${l.status}`);
-          for (const issue of l.json as Issue[]) await scan(issue, { open: l.json }).catch((e: Error) => log("wake scan failed", { task: issue.id, err: e.message }));
+          for (const issue of l.json as Issue[]) await scan(issue).catch((e: Error) => log("wake scan failed", { task: issue.id, err: e.message }));
           const b = await owner("GET", `/api/companies/${encodeURIComponent(companies.get(agent)!)}/issues?status=blocked&limit=200&assigneeAgentId=${encodeURIComponent(agent)}`);
           if (b.status !== 200 || !Array.isArray(b.json)) throw new Error(`control plane GET blocked issues → ${b.status}`);
           for (const issue of b.json as Issue[]) await unblock(issue, agent).catch((e: Error) => log("wake unblock failed", { task: issue.id, err: e.message }));
-          // Its blocked routine runs a later run of the same routine finished are moot: cancelled as the agent (stale-routines.ts).
-          await closeStaleRoutineRuns({ owner, post, log }, agent, companies.get(agent)!).catch((e: Error) => log("stale routine runs not closed", { agent, err: e.message }));
         } catch (e) {
           log("wake poll failed", { agent, err: (e as Error).message });
         }
@@ -250,6 +229,19 @@ export function createWakes({ db, owner, post, dispatches, routineKey = () => un
       if (typeof body !== "string" || !body.trim()) return { status: 400, error: "send {body}" };
       const id = `w-${createHash("sha256").update(key).digest("hex").slice(0, 24)}`;
       return post({ id, agent: w.agent, task: w.task }, { kind: "note", body: body.slice(0, 20_000) });
+    },
+    /**
+     * A dispatcher's cancel of a routine run's task, posted as the task's agent (once per task and reason): folded into an
+     * earlier run of its routine (`coalesced`), or overtaken by a later one that finished (`stale`). Dispatch judges which; the
+     * kernel only lets it cancel an open or blocked routine run of an agent it dispatches, never any other task.
+     */
+    async cancelRoutineRun(module: string, b: { task?: unknown; why?: unknown; body?: unknown }) {
+      if (typeof b.task !== "string" || (b.why !== "coalesced" && b.why !== "stale") || typeof b.body !== "string" || !b.body.trim()) return { status: 400, error: "send {task, why: coalesced|stale, body}" };
+      const r = await owner("GET", `/api/issues/${encodeURIComponent(b.task)}`);
+      const t = r.json as Issue;
+      if (r.status !== 200 || t.originKind !== "routine_execution" || !t.assigneeAgentId || !`${OPEN},blocked`.split(",").includes(String(t.status)) || !dispatches.may(module, t.assigneeAgentId))
+        return { status: 409, error: `${b.task} isn't an open routine run of an agent ${module} dispatches` };
+      return post({ id: t.id, agent: t.assigneeAgentId, task: t.id }, { kind: b.why, status: "cancelled", body: b.body.slice(0, 2000) });
     },
     /** A claimed comment delivered into its live job (the input's ack). */
     delivered(module: string, key: string) {

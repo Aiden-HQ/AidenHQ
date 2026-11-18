@@ -147,3 +147,15 @@ test("a blocked task is released once when every blocker is done or cancelled: t
   assert.match(w.rows("t8").join("\n"), /^unblocked:t8:b1:done,b2:cancelled open$/m);
   assert.equal(w.wakes.claim("dispatch").filter((x) => x.task === "t8").length, 1, "this wake and the scan's move to todo coalesce into one job start");
 });
+
+test("a dispatcher cancels only an open or blocked routine run of an agent it dispatches, as that agent", async () => {
+  const w = world();
+  w.issue("r1", { originKind: "routine_execution", originId: "rt" });
+  w.issue("r2", { originKind: "routine_execution", originId: "rt", status: "done" });
+  w.issue("plain");
+  const body = "Closed.";
+  assert.equal((await w.wakes.cancelRoutineRun("dispatch", { task: "r1", why: "other", body })).status, 400);
+  for (const [module, task] of [["dispatch", "plain"], ["dispatch", "r2"], ["other", "r1"]]) assert.equal((await w.wakes.cancelRoutineRun(module, { task, why: "stale", body })).status, 409, `${module} ${task}`);
+  await w.wakes.cancelRoutineRun("dispatch", { task: "r1", why: "coalesced", body });
+  assert.deepEqual(w.posts.map((p) => [p.agent, p.task, p.kind, p.status]), [[AGENT, "r1", "coalesced", "cancelled"]]);
+});
