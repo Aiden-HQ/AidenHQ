@@ -76,7 +76,7 @@ test("setup takes account then model", async () => {
   assert.deepEqual(exchanged, [["c0de", "v".repeat(43)]]);
   assert.equal(vault.get("openrouter_key"), KEY);
   assert.equal(state.ready(), true);
-  assert.equal((await page("GET", "/setup/model?connect=ok")).location, `${BOARD}/#/welcome`);
+  assert.equal((await page("GET", "/setup/model?connect=ok")).location, `${BOARD}/auth/start`);
   assert.match((await page("GET", `/setup/openrouter/${stateOf(step.body)}?code=c0de`, undefined, new Map())).body, /url=\/setup\/model">/); // a reload: spent, no outcome
   assert.equal(exchanged.length, 1);
 });
