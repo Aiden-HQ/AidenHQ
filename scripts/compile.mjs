@@ -92,6 +92,9 @@ if (secretsDir && !stage) {
   if (missing.length) die(`missing secret files in ${secretsDir}: ${missing.map((m) => `${m.secret} (mounted by ${m.services.join(", ")})`).join("; ")}. Run scripts/bootstrap.sh, or put the secret there.`);
 }
 
+// A module's own vault folder (secrets.state) too: the secrets dir is a FUSE mount, so Docker (root) can't create its bind source.
+if (secretsDir && !stage) for (const d of new Set(out.stateDirs)) mkdirSync(join(secretsDir, d), { recursive: true, mode: 0o700 });
+
 // The grants table's directory exists before compose mounts it (Docker would create a root-owned one setup can't write).
 if (!stage) mkdirSync(join(resolve(repo, env("AIDENHQ_CONFIG_DIR") ?? "config"), "grants"), { recursive: true });
 // Likewise the apps node's state and serve config (compose.yaml apps-edge; apps-mcp writes the serve config), and the

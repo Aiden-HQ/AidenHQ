@@ -89,15 +89,18 @@ export function newGrants(cfg, prev) {
 
 /**
  * The live check's verdict, given each HTTP connection's health ({ name → { ok, detail } }): errors for connections that
- * fail where they are newly granted (`fresh`, from newGrants), warnings for the rest.
+ * fail where they are newly granted (`fresh`, from newGrants), warnings for the rest, and for those that are up but report
+ * "not connected" / "not signed in" (a sign-in the owner hasn't made yet).
  */
 export function liveVerdict(cfg, health, fresh) {
   const errors = [];
   const warnings = [];
   for (const [name, h] of Object.entries(health)) {
     if (h.ok) continue;
+    // Up but not signed in yet (the owner connects it on the board once its module runs): a warning, even where newly granted.
+    const waiting = !h.detail?.startsWith("unreachable") && /\bnot (connected|signed in)\b/i.test(`${h.state ?? ""} ${h.detail ?? ""}`);
     const users = Object.entries(cfg.agents ?? {}).filter(([, a]) => (a.mcp_servers ?? []).includes(name)).map(([k]) => k);
-    const hard = users.filter((k) => fresh.get(k)?.has(name));
+    const hard = waiting ? [] : users.filter((k) => fresh.get(k)?.has(name));
     const msg = `connection ${name} isn't healthy or signed in (${h.detail}); granted to ${users.join(", ")}`;
     (hard.length ? errors : warnings).push(hard.length ? `${msg}: newly granted to ${hard.join(", ")}` : msg);
   }
@@ -112,7 +115,7 @@ export function connectionHealth(cfg, repo) {
   const used = new Set(Object.values(cfg.agents ?? {}).flatMap((a) => a.mcp_servers ?? []));
   const targets = Object.fromEntries(Object.entries(cfg.mcp_servers ?? {}).filter(([n, c]) => used.has(n) && c.url).map(([n, c]) => [n, new URL("/healthz", c.url).href]));
   if (!Object.keys(targets).length) return {};
-  const probe = `import { createResolver } from "./kernel/src/net.ts";const s=createResolver({project:process.env.COMPOSE_PROJECT_NAME||"aidenhq"});const t=JSON.parse(process.argv[1]);Promise.all(Object.entries(t).map(([n,u])=>s.resolve(u).then((a)=>fetch("http://"+a.host+":"+a.port+a.path,{signal:AbortSignal.timeout(8000)})).then(async r=>{const b=await r.text();let j={};try{j=JSON.parse(b)}catch{}return [n,{ok:r.ok&&j.ok!==false,detail:r.ok&&j.ok!==false?"ok":String(j.detail??j.state??r.status).slice(0,160)}]}).catch(e=>[n,{ok:false,detail:"unreachable: "+e.message}]))).then(x=>console.log(JSON.stringify(Object.fromEntries(x))))`;
+  const probe = `import { createResolver } from "./kernel/src/net.ts";const s=createResolver({project:process.env.COMPOSE_PROJECT_NAME||"aidenhq"});const t=JSON.parse(process.argv[1]);Promise.all(Object.entries(t).map(([n,u])=>s.resolve(u).then((a)=>fetch("http://"+a.host+":"+a.port+a.path,{signal:AbortSignal.timeout(8000)})).then(async r=>{const b=await r.text();let j={};try{j=JSON.parse(b)}catch{}return [n,{ok:r.ok&&j.ok!==false,state:j.state,detail:r.ok&&j.ok!==false?"ok":String(j.detail??j.state??r.status).slice(0,160)}]}).catch(e=>[n,{ok:false,detail:"unreachable: "+e.message}]))).then(x=>console.log(JSON.stringify(Object.fromEntries(x))))`;
   const out = execFileSync(process.execPath, ["--disable-warning=ExperimentalWarning", "--input-type=module", "-e", probe, JSON.stringify(targets)], { cwd: repo, encoding: "utf8", timeout: 60_000 });
   return JSON.parse(out.trim().split("\n").at(-1));
 }

@@ -619,7 +619,7 @@ export function compile(productDir, instanceDir, { revision, fetch = hostFetch(p
   const serviceModule = {};
   const secretOwner = {};
   const networkModule = {};
-  const dataDirs = [];
+  const dataDirs = [], stateDirs = [];
   const dataModules = {};
   const labelNames = new Set();
   const routineTitles = new Set();
@@ -714,6 +714,7 @@ export function compile(productDir, instanceDir, { revision, fetch = hostFetch(p
       compose.networks[k] = v;
     }
     dataDirs.push(...gen.dataDirs);
+    stateDirs.push(...gen.stateDirs);
     // A module with a data dir: its data_version (spec §6.4.1; compile.mjs keeps the marker) and a digest of its services, so
     // the apply snapshots it when its services or code change (ops/lib/generations.sh).
     if (def.data_version != null && !(Number.isInteger(def.data_version) && def.data_version >= 0)) fail(`module ${name}: data_version is a whole number, 0 or more`);
@@ -1043,7 +1044,7 @@ export function compile(productDir, instanceDir, { revision, fetch = hostFetch(p
   const runAgents = Object.entries(paperclip.agents).filter(([, a]) => a.dispatch === "runner").map(([k]) => k).sort();
   if (dispatchers.length > 1) fail(`modules ${dispatchers.join(", ")} all request kernel.jobs: one job dispatcher at a time`);
   if (dispatchers.length) kernelModules.modules[dispatchers[0]].dispatches = runAgents;
-  return { paperclip, apps: { apps }, points, compose, catalog, warnings, optionalSecrets, askedSecrets: setup.map((f) => f.secret), generatedSecrets, dataDirs, dataModules, gateway, jobcaps, engines, connections, writes, checks, kernelModules, exposure: settings.exposure, edge: edge && { gate: edge.gate, cloudflared: edge.cloudflared } };
+  return { paperclip, apps: { apps }, points, compose, catalog, warnings, optionalSecrets, askedSecrets: setup.map((f) => f.secret), generatedSecrets, dataDirs, stateDirs, dataModules, gateway, jobcaps, engines, connections, writes, checks, kernelModules, exposure: settings.exposure, edge: edge && { gate: edge.gate, cloudflared: edge.cloudflared } };
 }
 
 /**
