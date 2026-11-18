@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { test } from "node:test";
@@ -55,10 +55,30 @@ test("person.env: an unquoted value ends at ' #', a quoted one keeps it", () => 
   assert.ok(out.includes("openrouter-key.mjs create aidenhq-alice 75"), out);
 });
 
-test("dry run installs and starts the Docker prune timer, so a fresh host cleans its images", () => {
+test("dry run installs and enables the Docker prune service and timer, so a fresh host cleans its images on demand", () => {
   const out = dry(conf(person));
   assert.match(out, /cp .*prune-docker\.service .*prune-docker\.timer /, out);
-  assert.match(out, /enable --now .*prune-docker\.timer/, out);
+  assert.match(out, /enable --now .*prune-docker\.service prune-docker\.timer/, out);
+});
+
+test("every unit setup enables carries an [Install] section, or systemctl enable stops setup", () => {
+  const dir = join(dirname(setup), "units");
+  const enabled = [];
+  for (const line of readFileSync(setup, "utf8").split("\n")) {
+    if (line.trimStart().startsWith("#")) continue;
+    const m = /systemctl --user enable(?: --now)? (.*)$/.exec(line);
+    if (!m) continue;
+    for (const word of m[1].split(/\s+/)) {
+      const unit = word.includes(".") ? word : `${word}.service`;
+      if (/^[a-z0-9-]+\.(service|timer|path|socket)$/.test(unit) && existsSync(join(dir, unit))) enabled.push(unit);
+    }
+  }
+  assert.ok(enabled.includes("prune-docker.service") && enabled.includes("prune-docker.timer"), `prune units not enabled: ${enabled}`);
+  for (const unit of enabled) {
+    const body = readFileSync(join(dir, unit), "utf8");
+    assert.match(body, /^\[Install\]$/m, `${unit} has no [Install] section: systemctl enable ${unit} fails`);
+    assert.match(body, /^WantedBy=\S+/m, `${unit} has no WantedBy=: systemctl enable ${unit} fails`);
+  }
 });
 
 test("dry run needs no node, and a missing OpenRouter key is 'would fail'", () => {

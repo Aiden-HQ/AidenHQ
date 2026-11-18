@@ -439,7 +439,7 @@ scripts/bootstrap.sh                 # secrets dir, data dirs
 # AIDENHQ_INSTANCE_DIR=<checkout> in .env
 ops/apply-config.sh                  # instance -> pinned product -> compile -> compose up -> setup
 mkdir -p ~/.config/systemd/user && cp ops/units/aidenhq-{gateway,runner,computers}.service ops/units/prune-runs.* ops/units/prune-docker.* ~/.config/systemd/user/
-systemctl --user enable --now aidenhq-kernel aidenhq-runner aidenhq-computers prune-runs.timer prune-docker.timer
+systemctl --user enable --now aidenhq-kernel aidenhq-runner aidenhq-computers prune-runs.timer prune-docker.service prune-docker.timer
 ```
 
 Copy `config/runner.example.yaml` to `config/runner.yaml` and set `allowed_orgs` (see
