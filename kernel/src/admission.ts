@@ -55,11 +55,9 @@ export type Admitted = { id: string; module: string; agent: string; task: string
 const LIVE = "state IN ('admitted', 'running')";
 const ID = /^[\w.:-]{1,200}$/;
 
-export function createAdmission({ db, grants, kinds, capacity, spend, mayDispatch, cp, wakes, provenance, routineCap, nextTurn, launch, log }: {
+export function createAdmission({ db, grants, kinds, capacity, spend, mayDispatch, cp, wakes, routineCap, nextTurn, launch, log }: {
   /** What the task's last job asked of this turn (jobtools.ts): read in the transaction, spent once the job has started. */
   nextTurn: Pick<JobTools, "pending" | "taken" | "refusal">;
-  /** Kernel provenance (provenance.ts): a task carrying a creation intent with no row yet is not admitted until reconciled. */
-  provenance: { pending(issue: { id: string; description?: string | null }): boolean };
   /** The task's routine cap as the kernel traces it now (tier.ts taskRoutineCap): frozen on the job row at admission. */
   routineCap: (task: string) => Promise<RoutineCap | undefined>;
   /** kernel.db, with the jobs table (jobs.ts) already made. */
@@ -123,8 +121,6 @@ export function createAdmission({ db, grants, kinds, capacity, spend, mayDispatc
       const w = wakes.claimed(module, b.wake);
       if (!w || w.task !== task || w.agent !== agent) throw new JobError(409, "wake-not-claimed", `wake ${b.wake} isn't one this module claimed`);
       if (db.prepare(`SELECT 1 FROM jobs WHERE task = ? AND ${LIVE}`).get(task)) throw new JobError(409, "job-running", `task ${task} already has a job`);
-      // A task a job created whose provenance row isn't written yet: its routine cap is unknown, so nothing runs on it.
-      if (provenance.pending({ id: task, description: t.description ?? null })) throw new JobError(409, "provenance-pending", `task ${task}'s provenance isn't settled yet`);
       const g = grants()[agent];
       if (!g) throw new JobError(403, "no-grants", `agent ${agent} has no grants`);
       const live = (db.prepare(`SELECT COUNT(*) AS n FROM jobs WHERE ${LIVE}`).get() as { n: number }).n;

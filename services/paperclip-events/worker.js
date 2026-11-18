@@ -1,4 +1,4 @@
-// Forwards task events to the kernel's backplane (forward.js); the `post` action writes as the calling agent (post.js). The SDK is imported from the paperclip image by path.
+// Forwards task events to the kernel's backplane (forward.js); the `post` action is every write an agent makes, the kernel deciding (post.js). The SDK is imported from the paperclip image by path.
 import { readFileSync } from "node:fs";
 import { definePlugin, runWorker } from "/app/packages/plugins/sdk/dist/index.js";
 import { EVENTS, forward } from "./forward.js";

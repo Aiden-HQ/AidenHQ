@@ -6,7 +6,6 @@ import { DatabaseSync } from "node:sqlite";
 import { createJobs } from "../src/jobs.ts";
 import { createAdmission, wakeInbox } from "../src/admission.ts";
 import { createWakes } from "../src/wakes.ts";
-import { createProvenance } from "../src/provenance.ts";
 import { createJobTools } from "../src/jobtools.ts";
 
 function setup({ capacity = 12, spend = () => [], launch = async () => {}, grants: g } = {}) {
@@ -27,20 +26,19 @@ function setup({ capacity = 12, spend = () => [], launch = async () => {}, grant
   const wakes = { get: (key) => db.prepare("SELECT * FROM wakes WHERE key = ?").get(key) };
   const tasks = { "task-1": "agent-1", "task-2": "agent-1", "task-3": "agent-2", "task-4": "agent-2", "task-5": "agent-2", "task-6": "agent-3" };
   const launched = [];
-  // Kernel provenance (provenance.ts) over the same db; a task's description and its traced routine cap, per task.
-  const provenance = createProvenance({ db, cap: async () => undefined, search: async () => [], log: () => {} });
-  const descriptions = {}, caps = {};
+  // A task's traced routine cap, per task.
+  const caps = {};
   const adm = createAdmission({
-    provenance, routineCap: async (task) => caps[task], nextTurn: createJobTools({ db, secret: () => "s", engines: () => [] }),
+    routineCap: async (task) => caps[task], nextTurn: createJobTools({ db, secret: () => "s", engines: () => [] }),
     db, grants: () => grants, capacity: () => capacity, spend,
     kinds: () => ({ "tasks.create_task": { module: "tasks", floor: 1, tools: ["tasks.create"] }, "slack.post": { module: "slack", floor: 1, tools: ["slack.post"] }, "tasks.now": { module: "tasks", floor: 0, tools: ["tasks.create"] }, "codehost-github.pr": { module: "codehost-github", floor: 0, tools: [] }, "kernel.apply": { module: "kernel", floor: 1, tools: [] } }),
     mayDispatch: (module, agent) => module === "acme-dispatch" && agent !== "agent-3",
-    cp: { task: async (id) => (tasks[id] ? { id, identifier: id.toUpperCase(), assigneeAgentId: tasks[id], status: "todo", description: descriptions[id] ?? "" } : undefined) },
+    cp: { task: async (id) => (tasks[id] ? { id, identifier: id.toUpperCase(), assigneeAgentId: tasks[id], status: "todo" } : undefined) },
     wakes: wakeInbox(db),
     launch: async (job) => { launched.push(job); await launch(job); },
     log: () => {},
   });
-  return { db, adm, jobs, grants, wake, wakes, inbox, launched, descriptions, caps };
+  return { db, adm, jobs, grants, wake, wakes, inbox, launched, caps };
 }
 
 const req = (wake) => ({ wake, prompt: "do the thing" });
@@ -104,15 +102,6 @@ test("a module that doesn't dispatch the agent → 403; a wake it didn't claim �
   const { adm, wake } = setup();
   await assert.rejects(adm.admit("acme-dispatch", req(wake("w1", "task-6", "agent-3"))), (e) => e.status === 403 && e.code === "not-your-agent");
   await assert.rejects(adm.admit("acme-other", req(wake("w2", "task-1", "agent-1"))), (e) => e.status === 409 && e.code === "wake-not-claimed");
-});
-
-test("a task a job created whose provenance isn't settled yet → 409, no job; once settled it is admitted", async () => {
-  const { adm, wake, db, descriptions } = setup();
-  descriptions["task-1"] = `Do it\n\n<!-- ahqintent${"a".repeat(32)} -->`;
-  await assert.rejects(adm.admit("acme-dispatch", req(wake("w1", "task-1", "agent-1"))), (e) => e.status === 409 && e.code === "provenance-pending");
-  assert.equal(db.prepare("SELECT COUNT(*) AS n FROM jobs").get().n, 0);
-  db.prepare("INSERT INTO provenance (task, created_by_job, routine, routine_cap, at) VALUES ('task-1', 'j-parent', 'digest', 'off', 1)").run();
-  assert.equal((await adm.admit("acme-dispatch", req("w1"))).state, "admitted");
 });
 
 test("the routine cap is frozen on the job row at admission; a later change to the trace doesn't move it", async () => {

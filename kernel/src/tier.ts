@@ -127,13 +127,13 @@ export async function origins(pc: Trace, full: any): Promise<{ issues: any[]; co
     seen.set(i.id, i);
     // Every issue on the trace, not only the task: a child of a job-created task carries that job's cap.
     const p = pc.provenance(i);
-    if (p) recorded.push(p === "pending" ? { cap: "off" } : p);
+    if (p) recorded.push(p);
     if (i.parentId) queue.push(await pc.issue(i.parentId));
   }
   return { issues: [...seen.values()], complete: true, recorded };
 }
-/** What the routine trace reads: the control plane's issues, and kernel provenance for an issue (provenance.ts trace: its row's cap, "pending" for a marked task with no row yet). */
-export type Trace = { issue(id: string): Promise<any>; provenance(issue: any): RoutineCap | "pending" | undefined };
+/** What the routine trace reads: the control plane's issues, and kernel provenance for an issue (provenance.ts trace: its row's cap, "off" for a plugin-made task with no row). */
+export type Trace = { issue(id: string): Promise<any>; provenance(issue: any): RoutineCap | undefined };
 /** A task's routine cap: kernel provenance first, then the control plane; a trace that fails (a read that throws) is incomplete: "off". Never throws. */
 export const taskRoutineCap = (pc: Trace, task: string, routines: Record<string, string> | null = {}): Promise<RoutineCap | undefined> =>
   pc.issue(task).then((full) => (full?.id ? origins(pc, full) : { issues: [], complete: false, recorded: [] })).then(({ issues, complete, recorded }) => routineCap(issues, complete, routines, recorded), () => routineCap([], false, routines));

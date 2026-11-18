@@ -4,9 +4,9 @@
 export default {
   id: "aidenhq.events",
   apiVersion: 1,
-  version: "0.2.2", // keep equal to package.json: setup reinstalls when it changes
+  version: "0.3.0", // keep equal to package.json: setup reinstalls when it changes
   displayName: "AidenHQ kernel",
-  description: "Tells the AidenHQ kernel which task changed, and posts a job's outcome on its task as the agent itself.",
+  description: "Tells the AidenHQ kernel which task changed, and writes on tasks as an agent, for the kernel (a job's outcome and its writes).",
   author: "AidenHQ",
   categories: ["automation"],
   capabilities: ["events.subscribe", "http.outbound", "issues.read", "issues.create", "issues.update", "issue.comments.read", "issue.comments.create"],

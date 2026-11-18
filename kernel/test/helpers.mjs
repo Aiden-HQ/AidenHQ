@@ -21,12 +21,13 @@ import { createWrites } from "../src/writes.ts";
 import { KERNEL_KINDS } from "../src/kinds.ts";
 import { taskRoutineCap } from "../src/tier.ts";
 import { createProvenance } from "../src/provenance.ts";
+import { createPluginPost } from "../src/outcomes.ts";
 
 export const serve = (handler) => new Promise((r) => { const s = http.createServer(handler).listen(0, "127.0.0.1", () => r({ s, url: `http://127.0.0.1:${s.address().port}` })); });
 export const readBody = (req) => new Promise((r) => { let b = ""; req.on("data", (d) => (b += d)); req.on("end", () => r(b)); });
 
 /**
- * agents: { alias: {id, name} }: each alias stands for a running kernel job of that agent on TASK-1 (its authority frozen from
+ * agents: { alias: {id, name, task?} }: each alias stands for a running kernel job of that agent on its task (TASK-1 by default; its authority frozen from
  * its grants); `call`, `v1` and `token(alias)` turn the alias into the job's real token. grants: the grants table's agents; connections(urls): config/kernel/connections.json from the fake servers' URLs.
  */
 export async function kernel(t, { agents = {}, grants = {}, settings = {}, connections, jobcaps = {}, secrets = {}, onControl, writes: kinds = {}, closed = [], modules = {}, board = async () => ({ status: 404, json: {} }), reviewer, native = {}, parents = {}, repos = {}, jobs: jobsApi, checks: checkTable, checkJobs, paths, job } = {}) {
@@ -53,8 +54,9 @@ export async function kernel(t, { agents = {}, grants = {}, settings = {}, conne
   const aliased = new Map(), tokens = {};
   for (const [alias, a] of Object.entries(agents)) {
     const id = `job-${alias}`, g = grants[a.id] ?? {};
-    aliased.set(id, { agent: a.id, task: "TASK-1", state: "running", identifier: "TASK-1", authority: { tools: g.tools ?? {}, jobcaps: [], writes: [], roles: rolesOf(g) } });
-    tokens[alias] = mintToken(allSecrets.gateway_job_secret, { kind: "job", job: id, agentId: a.id, issueId: "TASK-1" });
+    const task = a.task ?? "TASK-1";
+    aliased.set(id, { agent: a.id, task, state: "running", identifier: a.identifier ?? task, authority: { tools: g.tools ?? {}, jobcaps: [], writes: [], roles: rolesOf(g) } });
+    tokens[alias] = mintToken(allSecrets.gateway_job_secret, { kind: "job", job: id, agentId: a.id, issueId: task });
   }
   const token = (alias) => tokens[alias] ?? alias;
   const log = [];
@@ -74,9 +76,7 @@ export async function kernel(t, { agents = {}, grants = {}, settings = {}, conne
   const reviews = { request: async (request) => { reviewed.push(request); if (!reviewer) throw new Error("no reviewer module is installed"); return reviewer(request); } };
   // The control plane as main.ts reads it for a task's routine cap (a fetch that isn't ok throws).
   const cpJson = async (p) => { const r = await fetch(new URL(p, cpServer.url), { headers: { authorization: "Bearer board-key" } }); if (!r.ok) throw new Error(`${p} → ${r.status}`); return r.json(); };
-  const provenance = createProvenance({ db: records.db, log: logf, cap: (task) => taskRoutineCap(cpTrace, task, grantsTable().routines),
-    search: async (cid, q) => Promise.all((await cpJson(`/api/companies/${cid}/issues?q=${encodeURIComponent(q)}`)).map((i) => cpJson(`/api/issues/${encodeURIComponent(i.id)}`))),
-    issue: (id) => cpJson(`/api/issues/${encodeURIComponent(id)}`) });
+  const provenance = createProvenance({ db: records.db, cap: (task) => taskRoutineCap(cpTrace, task, grantsTable().routines) });
   const cpTrace = { issue: (id) => cpJson(`/api/issues/${encodeURIComponent(id)}`), provenance: provenance.trace };
   const writes = createWrites({ records, registry: () => ({ ...moduleKinds(), ...KERNEL_KINDS }), connections: connectionsTable, secret, resolver: createResolver(), log: logf, replay: (r) => replay(r), reviews, native, repos: () => repos, paths: () => paths,
     autonomy: () => grantsTable().autonomy ?? "full", onTask: { open: async (task) => !closed.includes(task), notify: async (task, text) => void notices.push({ task, text }), parent: async (task) => parents[task],
@@ -99,7 +99,7 @@ export async function kernel(t, { agents = {}, grants = {}, settings = {}, conne
     return { id: `ac-${(i >= 0 ? i : agentPosts.push({ agent, task, job, body }) - 1) + 1}` };
   } });
   const notify = createNotify({ db: records.db, modules: modulesFile, secret, resolver: createResolver(), testHosts: true });
-  const backplane = createBackplane({ checks, checkJobs, lane, whoami, asserter, grantsFile: grantsTable, log: logf, writes, records, channels, brake, notify, owner, ownerRaw: (p) => fetch(new URL(p, cpServer.url), { headers: { authorization: "Bearer board-key" } }), modules: modulesFile, boardKey: () => secret("gateway_board_key"), reviewerKey: () => secret("reviewer_key"), reviews, jobs: jobsApi, proxy: (req, res, c) => proxy(req, res, c), cp: createCp({ whoami, asserter, controlUrl: cpServer.url, checks, provenance, log: logf }), boardCp: createBoardCp({ controlUrl: cpServer.url, key: () => secret("paperclip_board_key"), log: logf }) });
+  const backplane = createBackplane({ checks, checkJobs, lane, whoami, asserter, grantsFile: grantsTable, log: logf, writes, records, channels, brake, notify, owner, ownerRaw: (p) => fetch(new URL(p, cpServer.url), { headers: { authorization: "Bearer board-key" } }), modules: modulesFile, boardKey: () => secret("gateway_board_key"), reviewerKey: () => secret("reviewer_key"), reviews, jobs: jobsApi, proxy: (req, res, c) => proxy(req, res, c), cp: createCp({ whoami, asserter, plugin: createPluginPost({ controlUrl: cpServer.url, agentKey: (id) => secret(`paperclip-agents/${id}`), postKey: () => secret("paperclip_post_key") }), agentKey: (id) => secret(`paperclip-agents/${id}`), grants: () => grantsTable().agents ?? {}, controlUrl: cpServer.url, checks, provenance, log: logf }), boardCp: createBoardCp({ controlUrl: cpServer.url, key: () => secret("paperclip_board_key"), log: logf }) });
   const asCaller = createAsCaller({ whoami, connections: connectionsTable, asserter, log: logf });
   const gw = createGateway({ asCaller, dbFile: join(dir, "usage.db"), grantsFile: join(dir, "grants.json"), settingsFile: join(dir, "gateway.json"), tools: proxy, secret });
   const bp = await serve(backplane);
@@ -129,4 +129,22 @@ export async function moduleServer(t, { key, tools = [], answer, sse = false } =
   });
   t.after(() => m.s.close());
   return { ...m, seen };
+}
+
+/**
+ * Paperclip's plugin host for the paperclip-events `post` action, in memory: `issues` by id (each with companyId), comments,
+ * and every write as the agent the action names (createdByAgentId, authorAgentId).
+ */
+export function pluginHost(issues) {
+  const comments = [];
+  let n = 0;
+  const ctx = { issues: {
+    get: async (id, c) => (issues[id]?.companyId === c ? issues[id] : null),
+    update: async (id, patch, _c, actor) => Object.assign(issues[id], patch.blockedByIssueIds ? { blockedBy: patch.blockedByIssueIds } : {}, patch, { updatedBy: actor.actorAgentId }),
+    list: async ({ originId }) => Object.values(issues).filter((i) => i.originId === originId),
+    create: async ({ companyId, actor, ...f }) => { const id = `00000000-0000-4000-8000-${String(++n).padStart(12, "0")}`; return (issues[id] = { id, identifier: `NEW-${n}`, ...f, createdByAgentId: actor.actorAgentId, companyId }); },
+    listComments: async (id) => comments.filter((c) => c.issueId === id),
+    createComment: async (issueId, body, _c, { authorAgentId }) => { const c = { id: `cm-${++n}`, issueId, body, authorAgentId }; comments.push(c); return c; },
+  } };
+  return { ctx, issues, comments };
 }

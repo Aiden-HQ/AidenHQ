@@ -29,7 +29,7 @@ import { routineWake, webhookWake, type Manifest } from "./app-access.ts";
 import { createSignin } from "./signin.ts";
 import { createAsserter, loadKey } from "./assert.ts";
 import { chiefOfStaff, createBackplane } from "./backplane.ts";
-import { createOutcomes, delegateIds } from "./outcomes.ts";
+import { createOutcomes, createPluginPost, delegateIds } from "./outcomes.ts";
 import { createBrake } from "./brake.ts";
 import { createNotify } from "./notify.ts";
 import { createChannels, type Api, type ModulesFile } from "./channels.ts";
@@ -91,16 +91,9 @@ const resolver = createResolver({ project: env("COMPOSE_PROJECT_NAME", "aidenhq"
 const issueOf = async (task: string) => { const r = await cpApi(`/api/issues/${encodeURIComponent(task)}`); return r.ok ? ((await r.json()) as { id: string; identifier?: string; status?: string; parentId?: string | null }) : undefined; };
 const cpJson = async (p: string) => { const r = await cpApi(p); if (!r.ok) throw new Error(`control plane GET ${p} → ${r.status}`); return r.json(); };
 const records = openRecords(path.join(dataDir, "kernel", "kernel.db"));
-// Tasks kernel jobs create (provenance.ts): the routine trace reads them first; lost intents are reconciled at start and every minute.
-const provenance = createProvenance({
-  db: records.db, log, cap: (task) => taskRoutineCap(cpTrace, task, grantsTable().routines as Record<string, string> | undefined),
-  // The list cuts long descriptions: each hit is read whole.
-  search: async (cid, q) => Promise.all(((await cpJson(`/api/companies/${encodeURIComponent(cid)}/issues?q=${encodeURIComponent(q)}&status=backlog,todo,in_progress,in_review,blocked,done,cancelled&limit=50`)) as { id: string }[]).map((i) => cpJson(`/api/issues/${encodeURIComponent(i.id)}`))),
-  issue: (id) => cpJson(`/api/issues/${encodeURIComponent(id)}`),
-});
+// Tasks kernel jobs create (provenance.ts): the routine trace reads them first.
+const provenance = createProvenance({ db: records.db, cap: (task) => taskRoutineCap(cpTrace, task, grantsTable().routines as Record<string, string> | undefined) });
 const cpTrace = { issue: (id: string) => cpJson(`/api/issues/${encodeURIComponent(id)}`), provenance: provenance.trace };
-setInterval(() => void provenance.reconcile(), 60_000).unref();
-setTimeout(() => void provenance.reconcile(), 1_000).unref();
 const onTask = {
   open: async (task: string) => { const i = await issueOf(task); return Boolean(i) && !["done", "cancelled"].includes(String(i!.status)); },
   parent: async (task: string) => (await issueOf(task))?.parentId ?? undefined,
@@ -240,7 +233,8 @@ jobs.adopt();
 // The wake inbox (wakes.ts): Paperclip events scan their task now; the reconcile poll scans every polled agent's open tasks.
 const mayDispatch = dispatchesFrom(() => (modulesFile().modules ?? {}) as never, () => grantsTable().agents ?? {});
 // Outcomes posted on a job's task as its agent, once (outcomes.ts): the agent's own Paperclip key, setup's paperclip-agents/<id>.
-const outcomes = createOutcomes({ db: records.db, controlUrl, log, agentKey: (id) => secret(`paperclip-agents/${id}`), postKey: () => secret("paperclip_post_key"), delegates: (id) => delegateIds(grantsTable().agents, id), finish: (task, agent) => checks.finish(task, { agent, via: "job_post" }) });
+const plugin = createPluginPost({ controlUrl, agentKey: (id) => secret(`paperclip-agents/${id}`), postKey: () => secret("paperclip_post_key") });
+const outcomes = createOutcomes({ db: records.db, plugin, provenance, log, delegates: (id) => delegateIds(grantsTable().agents, id), finish: (task, agent) => checks.finish(task, { agent, via: "job_post" }) });
 const wakes = createWakes({
   db: records.db, owner: ownerApi, post: outcomes.post, log,
   routineKey: (id) => (grantsTable().routine_keys as Record<string, string> | undefined)?.[id],
@@ -324,7 +318,7 @@ boxes = createBoxes({
 const admission = createAdmission({
   db: records.db, grants: () => (grantsTable().agents ?? {}) as never, kinds: registry, capacity: () => Number(computers().max) || 0,
   spend: (agent, task) => gw.exhausted(agent, task), mayDispatch, wakes: wakeInbox(records.db), nextTurn: jobTools, launch: (job) => boxes!.launch(job), log,
-  provenance, routineCap: (task) => taskRoutineCap(cpTrace, task, grantsTable().routines as Record<string, string> | undefined),
+  routineCap: (task) => taskRoutineCap(cpTrace, task, grantsTable().routines as Record<string, string> | undefined),
   cp: { task: async (id) => { const r = await cpApi(`/api/issues/${encodeURIComponent(id)}`); return r.ok ? ((await r.json()) as never) : undefined; } },
 });
 admission.recover();
@@ -334,7 +328,7 @@ const codehost = createCodehost({ repos: codehostRepos, grants: codehostGrants, 
 // Check jobs (checkjobs.ts): credential-free boxes of the launcher's, snapshots from the module that provides them.
 const checkJobs = checkJobsFrom({ db: records.db, secret, ask: codehost.ask, call: launcherClient(launcherUrl, () => secret("launcher_kernel_key")), workDir: sandbox.workDir, gatewayUrl: `${sandbox.boxGatewayUrl}/api/v1`, log });
 const lane = createLane({ db: records.db, owner: ownerApi, grantsFile: grantsTable, log, postAsAgent: async (agent, task, job, body) => ({ id: String((await outcomes.post({ id: job, agent, task }, { kind: "lane", body })).comment) }) });
-const backplane = createBackplane({ codehost: codehost.op, checks, checkJobs, lane, whoami, asserter, grantsFile: grantsTable, log, writes, records, channels, brake, notify, owner: ownerApi, ownerRaw: (p) => cpApi(p), modules: modulesFile, boardKey: () => secret("gateway_board_key"), reviews, reviewerKey: () => secret("reviewer_key"), jobs, admission, outcomes, wakes, tasks: moduleTasks, work, graderToken, dropGraderToken: (task) => graderTokens.delete(task), eventsKey: () => secret("paperclip_events_key"), jobTools, advisories: advisories.list, accounts: createAuthApi({ accounts: () => accounts, whoami, boardKey: () => secret("gateway_board_key"), recoveryKeyWaiting: () => Boolean(firstRun.recoveryKey()), modelReady: modelState.ready, operatorKey: () => secret("board_operator_key"), secrets: moduleSecrets }), proxy: (req, res, c) => proxy(req, res, c!), cp: createCp({ whoami, asserter, controlUrl, checks, provenance, log }) as never, boardCp: createBoardCp({ controlUrl, key: () => secret("paperclip_board_key"), log }) as never });
+const backplane = createBackplane({ codehost: codehost.op, checks, checkJobs, lane, whoami, asserter, grantsFile: grantsTable, log, writes, records, channels, brake, notify, owner: ownerApi, ownerRaw: (p) => cpApi(p), modules: modulesFile, boardKey: () => secret("gateway_board_key"), reviews, reviewerKey: () => secret("reviewer_key"), jobs, admission, outcomes, wakes, tasks: moduleTasks, work, graderToken, dropGraderToken: (task) => graderTokens.delete(task), eventsKey: () => secret("paperclip_events_key"), jobTools, advisories: advisories.list, accounts: createAuthApi({ accounts: () => accounts, whoami, boardKey: () => secret("gateway_board_key"), recoveryKeyWaiting: () => Boolean(firstRun.recoveryKey()), modelReady: modelState.ready, operatorKey: () => secret("board_operator_key"), secrets: moduleSecrets }), proxy: (req, res, c) => proxy(req, res, c!), cp: createCp({ asserter, whoami, plugin, agentKey: (id) => secret(`paperclip-agents/${id}`), grants: () => grantsTable().agents ?? {}, controlUrl, checks, provenance, log }) as never, boardCp: createBoardCp({ controlUrl, key: () => secret("paperclip_board_key"), log }) as never });
 // The admin listener's accounts (data/kernel/auth/auth.db) and pages. Accounts not moved yet, or a malformed URL setting: the
 // listener refuses while every other part of the kernel serves.
 const urlOf = (v: string) => { try { return v ? new URL(v) : undefined; } catch { log("ignoring a malformed URL setting", { value: v.slice(0, 100) }); return undefined; } };
