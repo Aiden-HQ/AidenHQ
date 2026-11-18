@@ -3410,7 +3410,7 @@ function readGrants() {
     return undefined;
   }
 }
-const grantsPath = () => cfg.grants_file ?? join(process.env.AIDENHQ_CONFIG_DIR ?? join(REPO_ROOT, "config"), "grants", "grants.json");
+const grantsPath = () => join(process.env.AIDENHQ_CONFIG_DIR ?? join(REPO_ROOT, "config"), "grants", "grants.json");
 /** The instance commit this host last applied: the latest `instance_sha` setup recorded in revs.jsonl, beside the grants. */
 function deployedInstance() {
   try {
