@@ -138,16 +138,34 @@ export function maintainerWake(env: NodeJS.ProcessEnv = process.env): ((issue: M
   };
 }
 
-/** Starts the watcher (main.ts). A tick that finds the previous one still in flight is skipped. */
-export function startMaintainer(d: { issues: (since: string) => Promise<MaintainerBatch>; fire: (issue: MaintainerIssue) => Promise<boolean>; store: Kv; log: Log; minutes?: number }): void {
+type Wiring = { issues: (since: string) => Promise<MaintainerBatch>; fire: (issue: MaintainerIssue) => Promise<boolean> };
+
+/**
+ * Starts the watcher (main.ts). `wiring` is asked on every tick, so the webhook setup writes after this board started is
+ * picked up without a restart; until it answers, the tick does nothing. A tick that finds the previous one still in flight
+ * is skipped.
+ */
+export function startMaintainer(d: { wiring: () => Wiring | undefined; store: Kv; log: Log; minutes?: number }): void {
   const minutes = Number(d.minutes ?? process.env.MAINTAINER_POLL_MINUTES ?? 5);
   if (!(minutes > 0)) return;
   let busy = false;
+  let on: boolean | undefined;
+  const wired = () => {
+    const w = d.wiring();
+    if (!!w !== on) {
+      on = !!w;
+      if (on) d.log.info({ minutes }, "maintainer issue watcher on");
+      else d.log.info({}, "maintainer issue watcher waiting: the routine webhook or github-mcp's token file is still empty");
+    }
+    return w;
+  };
   const run = async () => {
     if (busy) return;
+    const w = wired();
+    if (!w) return;
     busy = true;
     try {
-      await maintainerTick(d);
+      await maintainerTick({ ...w, store: d.store, log: d.log });
     } catch (err) {
       d.log.warn({ err: String(err) }, "maintainer tick failed");
     } finally {
@@ -156,5 +174,5 @@ export function startMaintainer(d: { issues: (since: string) => Promise<Maintain
   };
   setInterval(run, Math.max(1, minutes) * MIN).unref();
   setTimeout(run, MIN).unref();
-  d.log.info({ minutes }, "maintainer issue watcher on");
+  wired();
 }

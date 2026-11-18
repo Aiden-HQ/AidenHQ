@@ -189,6 +189,11 @@ for c in $containers; do
       # key, and not the gate's account map (the kernel writes it).
       ksrc="$(docker inspect "$c" --format '{{range .Mounts}}{{.Source}}{{"\n"}}{{end}}' | grep -E '/kernel(/|$)|/gate(/|$)' | tr '\n' ' ')"
       [ -z "$ksrc" ] && pass "board: mounts nothing of the kernel's data or the gate's (accounts are the kernel's alone)" || fail "board mounts the kernel's or the gate's data: $ksrc"
+      # The Maintainer watcher's github-mcp token (the github module's board_env) opens its one issue read, never /mcp.
+      if docker exec "$c" sh -c 'test -s "$MAINTAINER_ISSUES_TOKEN_FILE"' 2>/dev/null; then
+        code="$(docker exec "$c" node -e 'const t=require("fs").readFileSync(process.env.MAINTAINER_ISSUES_TOKEN_FILE,"utf8").trim();fetch("http://github-mcp:8086/mcp",{method:"POST",headers:{authorization:"Bearer "+t,"content-type":"application/json",accept:"application/json, text/event-stream"},body:JSON.stringify({jsonrpc:"2.0",id:1,method:"tools/list"}),signal:AbortSignal.timeout(5000)}).then((r)=>console.log(r.status),()=>console.log("unreachable"))' 2>/dev/null)"
+        [ "$code" = 401 ] && pass "board: the Maintainer watcher's token is refused on github-mcp's /mcp (401)" || fail "board: the Maintainer watcher's token on github-mcp's /mcp answered $code"
+      fi
       # 3121, the browser listener, is loopback: the front door (tailscale serve, Caddy, the tunnel) reaches it there, and
       # it trusts X-Forwarded-Proto from whoever does. The one exception is a LAN VM in local mode with no public firewall
       # (AIDENHQ_PUBLIC_IF=none), whose phones use it over the LAN; it must still refuse a read without a session.

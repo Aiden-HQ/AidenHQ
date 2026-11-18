@@ -89,7 +89,7 @@ describe("the Maintainer's issue watcher", () => {
         await new Promise<void>((r) => (release = r));
         return { issues: [], cursor: `c${calls}` };
       };
-      startMaintainer({ issues, fire: async () => true, store: kv(), log: logs() });
+      startMaintainer({ wiring: () => ({ issues, fire: async () => true }), store: kv(), log: logs() });
       await vi.advanceTimersByTimeAsync(60_000); // the first look, a minute after start
       expect(calls).toBe(1);
       await vi.advanceTimersByTimeAsync(60_000); // still in flight: this tick does nothing
@@ -109,6 +109,32 @@ describe("the Maintainer's issue watcher", () => {
     expect(maintainerWake({ MAINTAINER_WEBHOOK_URL_FILE: join(dir, "absent"), MAINTAINER_WEBHOOK_SECRET_FILE: join(dir, "absent") })).toBeUndefined();
     writeFileSync(join(dir, "token"), "t".repeat(32));
     expect(typeof maintainerIssues({ MAINTAINER_ISSUES_TOKEN_FILE: join(dir, "token") })).toBe("function");
+  });
+
+  it("picks up a webhook setup writes after the board started, without a restart", async () => {
+    vi.useFakeTimers();
+    try {
+      const dir = mkdtempSync(join(tmpdir(), "maintainer-"));
+      const env = { MAINTAINER_WEBHOOK_URL_FILE: join(dir, "url"), MAINTAINER_WEBHOOK_SECRET_FILE: join(dir, "secret"), MAINTAINER_ISSUES_TOKEN_FILE: join(dir, "token") };
+      // apply started the board with the webhook files still empty (compile creates optional secrets empty).
+      for (const f of Object.values(env)) writeFileSync(f, "");
+      writeFileSync(env.MAINTAINER_ISSUES_TOKEN_FILE, "t".repeat(32));
+      let calls = 0;
+      const issues = async () => (calls++, { issues: [], cursor: "c" });
+      const log = logs();
+      startMaintainer({ wiring: () => (maintainerWake(env) && maintainerIssues(env) ? { issues, fire: async () => true } : undefined), store: kv(), log, minutes: 1 });
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(calls).toBe(0);
+      expect(log.infoLines.map((l) => l.m)).toEqual([expect.stringMatching(/waiting/)]);
+      // setup writes the routine's webhook.
+      writeFileSync(env.MAINTAINER_WEBHOOK_URL_FILE, "http://paperclip:3100/hook");
+      writeFileSync(env.MAINTAINER_WEBHOOK_SECRET_FILE, "s".repeat(32));
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(calls).toBe(1);
+      expect(log.infoLines.at(-1)!.m).toBe("maintainer issue watcher on");
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("a refused webhook holds the cursor and is retried, without delivering the earlier ones again", async () => {
