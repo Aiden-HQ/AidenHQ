@@ -112,7 +112,8 @@
     "workflow": "Fleet apply, Tier 0 instance changes, land",
     "today": [
       "services/runner/test/apply.test.mjs",
-      "services/runner/test/land.test.mjs"
+      "services/runner/test/land.test.mjs",
+      "scripts/test/apply-atomic.test.mjs"
     ],
     "next": "kernel.apply + codehost-github.land"
   },

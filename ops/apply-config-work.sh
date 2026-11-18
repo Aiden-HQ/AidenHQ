@@ -58,6 +58,9 @@ main() {
   progress_line APPLY_PHASES instance
   git -C "$inst" fetch --quiet origin main
   git fetch --quiet origin main
+  # The pin is read with the kernel's own parser (kernel/src/apply.ts) before the checkout moves, so a fresh host installs
+  # the kernel's deps for the checkout it has; the npm step below follows the product's lockfiles once it has moved.
+  [ -d kernel/node_modules ] || npm ci --prefix kernel --silent
   if [ -n "$gen" ]; then applyGeneration; return; fi
   # An apply that died is finished before anything else (the lock says no other apply is running). It moves both
   # checkouts, so a hand-over's record of what ran before no longer holds: it is read again below.
