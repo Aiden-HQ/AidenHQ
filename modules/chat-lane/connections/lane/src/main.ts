@@ -1,7 +1,8 @@
-// chat-lane: the fast chat lane (lane/lane.ts). Agents with a `chat:` block answer their chats (the board's lane chat and
-// their own Telegram bots) in seconds with a light model, calling tools through the kernel as themselves; wake_at, wake_list
-// and chat_send (MCP, behind the kernel's proxy). It keeps the owner's words inside the lane and never speaks as the owner:
-// a wake on a task is the kernel's labelled notice (POST /v1/wake), and it reads task states through the kernel.
+// chat-lane: the fast chat lane (lane/lane.ts). Agents with a `chat:` block answer their chat (one task each, written on the
+// board or through their own Telegram bots) in seconds with a light model, calling tools through the kernel as themselves;
+// wake_at, wake_list and chat_send (MCP, behind the kernel's proxy). Its chats live only in those tasks: the kernel writes
+// each turn there (POST /v1/channel/exchange, role kernel.lane), the owner's words as the owner and the replies as the agent;
+// a wake on a task is the kernel's labelled notice (POST /v1/wake), and it reads tasks through the kernel.
 import { readFileSync } from "node:fs";
 import { createServer, type IncomingMessage } from "node:http";
 import { timingSafeEqual } from "node:crypto";
@@ -11,7 +12,8 @@ import { buildServer } from "./mcp.js";
 import { kernelJwks, verifyCaller } from "./aidenhq-sdk/caller.js";
 import { laneConfig } from "./lane/config.js";
 import { makeLane } from "./lane/lane.js";
-import { followOwnerChat, laneRoutes, startLaneTelegram, startWakes, telegramSend } from "./lane/serve.js";
+import { kernelChat } from "./lane/chat.js";
+import { followOwnerChat, startLaneTelegram, startScan, startWakes, telegramSend } from "./lane/serve.js";
 import { openLaneStore } from "./lane/store.js";
 import { makeTools } from "./lane/tools.js";
 
@@ -34,16 +36,19 @@ const kernel = async (method: string, path: string, body?: unknown) => {
 
 const store = openLaneStore(process.env.LANE_DB ?? "/data/lane.sqlite");
 const agents = laneConfig(process.env.LANE_CONFIG_FILE, (msg) => log.warn(msg));
+// Only the owner's chat reaches a lane agent's bot: the chat channel-telegram paired.
+const ownerChat = followOwnerChat({ telegramUrl: process.env.TELEGRAM_URL ?? "http://telegram:8089", getKv: (k) => store.getKv(k), setKv: (k, v) => store.setKv(k, v), log });
 const lane = makeLane({
   store,
+  chat: kernelChat(kernel),
   agents,
   tools: makeTools(),
   gatewayUrl: process.env.AIDENHQ_GATEWAY_URL ?? "http://10.231.0.1:8201",
   laneSecret: env("GATEWAY_LANE_SECRET"),
   timezone: process.env.OWNER_TIMEZONE || "UTC",
   ownerName: process.env.OWNER_NAME || "the owner",
-  deliver: async (agent, conversation, text) => {
-    const chat = /^telegram:(-?\d+)$/.exec(conversation)?.[1];
+  telegram: async (agent, text) => {
+    const chat = ownerChat.current();
     if (chat && agent.telegramToken) await telegramSend(agent.telegramToken, chat, text);
   },
   log,
@@ -60,7 +65,6 @@ const taskIsClosed = async (task: string): Promise<boolean> => {
   return closed;
 };
 const laneTools = { store, lane, agents, timezone: process.env.OWNER_TIMEZONE || "UTC", taskIsClosed };
-const routeLane = laneRoutes({ lane, store, agents, token: env("CHAT_LANE_BOARD_KEY"), log });
 
 function authorized(req: IncomingMessage): boolean {
   const presented = Buffer.from((req.headers.authorization ?? "").replace(/^Bearer\s+/i, ""));
@@ -71,7 +75,6 @@ function authorized(req: IncomingMessage): boolean {
 const http = createServer(async (req, res) => {
   const url = new URL(req.url ?? "/", "http://localhost");
   if (url.pathname === "/healthz") return void res.writeHead(200, { "content-type": "application/json" }).end('{"ok":true}');
-  if (await routeLane(req, res, url)) return;
   if (url.pathname !== "/mcp") return void res.writeHead(404).end();
   if (!authorized(req)) return void res.writeHead(401).end();
   if (req.method !== "POST") return void res.writeHead(405).end();
@@ -109,8 +112,7 @@ const http = createServer(async (req, res) => {
 http.listen(port, "0.0.0.0", () => log.info({ port }, "chat-lane listening"));
 for (const sig of ["SIGTERM", "SIGINT"] as const) process.on(sig, () => http.close(() => process.exit(0)));
 
-// Only the owner's chat reaches a lane agent's bot: the chat channel-telegram paired.
-const ownerChat = followOwnerChat({ telegramUrl: process.env.TELEGRAM_URL ?? "http://telegram:8089", getKv: (k) => store.getKv(k), setKv: (k, v) => store.setKv(k, v), log });
+startScan({ lane, agents, log });
 startLaneTelegram({ lane, agents, ownerChatId: ownerChat.current, getKv: (k) => store.getKv(k), setKv: (k, v) => store.setKv(k, v), log });
 startWakes({
   store,

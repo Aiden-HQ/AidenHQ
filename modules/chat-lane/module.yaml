@@ -1,10 +1,11 @@
 name: chat-lane
-description: "The fast chat lane: agents with a `chat:` block answer their chats (the board and their own Telegram bots) in seconds with a light model, plus wake_at, wake_list and chat_send. Always installed (core requires it)."
-# It keeps the owner's words inside the lane and never speaks as the owner: task wakes are the kernel's labelled notices
-# (kernel.wake), and it reads task states through the kernel (kernel.cp-read).
+description: "The fast chat lane: agents with a `chat:` block answer their chat (one task each, written on the board or to their own Telegram bots) in seconds with a light model, plus wake_at, wake_list and chat_send. Always installed (core requires it)."
+# Its chats live only in each agent's chat task: the kernel writes every turn there (kernel.lane: the owner's words as the
+# owner, the replies as the agent), it reads them through the kernel (kernel.cp-read), and task wakes are the kernel's
+# labelled notices (kernel.wake).
 requires: [ channel-telegram ] # the paired owner chat (its service's /owner-chat)
 roles:
-  requests: [ kernel.cp-read, kernel.wake ]
+  requests: [ kernel.cp-read, kernel.wake, kernel.lane ]
 connections:
   chat_lane:
     url: http://lane:8089/mcp
@@ -14,10 +15,6 @@ connections:
       read: [ wake_list ]
       # wake_at: wake yourself later (a reminder or follow-up). chat_send: answer in your own fast-lane chat from a background run.
       write: [ wake_at, chat_send ]
-# The board's lane chat (services/board lane.ts) calls /lane/* here with its own key.
-board_env:
-  CHAT_LANE_URL: http://lane:8089
-  CHAT_LANE_KEY_FILE: ${secrets.chat_lane_board_key}
 services:
   data: true
   run:
@@ -25,7 +22,6 @@ services:
       build: ./connections/lane
       tmp: 16m
       egress: true # each lane agent's own Telegram bot
-      links: [ board ] # the board's lane chat reaches /lane/* (until the board becomes a module, 3g)
       join: [ channel-telegram ] # asks channel-telegram which chat is paired (GET /owner-chat)
       data: ["lane:/data"]
       env:
@@ -33,7 +29,6 @@ services:
         OWNER_NAME: "${settings.owner_name}"
         OWNER_TIMEZONE: "${settings.timezone}"
         MCP_BEARER_TOKEN_FILE: ${secrets.chat_lane_service_key}
-        CHAT_LANE_BOARD_KEY_FILE: ${secrets.chat_lane_board_key}
         # The lane's config (agents with a `chat:` block, their keys and tools; scripts/paperclip-setup.mjs writes it), and the
         # secret its per-turn model tokens are signed with (capped agent calls only, through the gateway).
         LANE_CONFIG_FILE: ${secrets.lane_config}
@@ -45,7 +40,6 @@ optional_secrets:
   - lane_config
 generated_secrets:
   - chat_lane_service_key
-  - chat_lane_board_key
   # Signs the fast chat lane's per-turn model tokens (agent kind only; the gateway refuses any other kind signed with it).
   - gateway_lane_secret
-data_version: 0 # its data dir's format: bumped by each forward-only migration (docs/configuration.md)
+data_version: 1 # its data dir's format: bumped by each forward-only migration (docs/configuration.md)
