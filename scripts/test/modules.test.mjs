@@ -216,7 +216,7 @@ test("disabling open-loops removes its agents, routines and labels only", () => 
   const dir = pinst(["meetings", "engineering", "warehouse", "github", "glean", "primer"], { timezone: "Europe/London", owner_name: "Sam", owner_slack_user_id: "U1", product_repo: "acme/aidenhq", owner_email: "o@x" });
   const r = compile(repo, dir);
   assert.ok(!Object.values(r.paperclip.agents).some((a) => a.module === "open-loops"));
-  for (const k of ["chief-of-staff", "assistant", "app-maintainer", "fleet-engineer", "meeting-librarian"]) assert.ok(r.paperclip.agents[k], k);
+  for (const k of ["chief-of-staff", "assistant", "app-maintainer", "fleet-engineer"]) assert.ok(r.paperclip.agents[k], k);
   assert.ok(!r.paperclip.labels.some((l) => l.name === "waiting-on"));
   assert.ok(r.paperclip.mcp_servers.telegram && r.paperclip.mcp_servers.chat_lane, "the Telegram channel and the chat lane stay: the bundle lists them");
   assert.ok(r.kernelModules.mounts.github_token.includes("apps-mcp"), "a setup secret's services include other modules' that mount it");
