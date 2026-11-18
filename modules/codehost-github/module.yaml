@@ -34,8 +34,10 @@ secrets:
 # superseded (kernel.tasks).
 # The merge queue's reviewer eval (service/src/evalgate.ts) is a kernel check job (kernel.checks) whose signed receipt it
 # verifies before a product or official modules PR merges.
+# The release train (service/src/train.ts, W3; started at the switch) files the instance's pin bump as a kernel.apply, which the
+# kernel plans and tiers like any apply (kernel.apply), on a task for the Platform Engineer's role (kernel.tasks).
 roles:
-  requests: [ kernel.tasks, kernel.wake, kernel.checks ]
+  requests: [ kernel.tasks, kernel.wake, kernel.checks, kernel.apply ]
 # The service (service/): the executor of the write kinds below, and narrow GitHub operations for other modules. It is built to
 # become the only App-key holder and the only lander (one-way phase 2, Lane T and the switch); until then nothing files its
 # kinds or calls its operations. It mounts the App key (read-only; the runner, apps-mcp and github-mcp keep theirs until Lane

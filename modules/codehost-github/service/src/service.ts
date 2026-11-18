@@ -26,6 +26,7 @@ import { serveExecutor, type Executor, type PlanRequest } from "./aidenhq-sdk/ex
 import { CREDENTIAL_ARGS } from "./github-app.ts";
 import { createEvalGate } from "./evalgate.ts";
 import { createMerges } from "./merges.ts";
+import { createReleaseTrain } from "./train.ts";
 import { plan as planRules } from "./plan.mjs";
 import { notePrTask } from "./pr-watch.ts";
 import { noteKept } from "./tidy.ts";
@@ -45,6 +46,8 @@ export type Options = {
   app?: App; gh: Gh; remoteUrl?: (slug: string) => string;
   agentsOrg: string; instanceRepo?: string; productRepo?: string; modulesRepo?: string;
   landsPlatformRepos: boolean; grants: () => Grant[]; log?: (msg: string, f?: Record<string, unknown>) => void;
+  /** The release train's batch window, minutes (the instance's release_window_minutes). */
+  releaseWindowMinutes?: number;
   /** Tests: the merge loop's clock and its poll interval. */
   now?: () => Date; mergeEveryMs?: number;
 };
@@ -492,6 +495,65 @@ export function createService(o: Options) {
     }
   }
 
+  /**
+   * A commit on top of the repo's default branch head with one file edited, in the ws cache (refs/train/<sha>, never checked
+   * out): the edit reads the file at that same head, and its author, committer and dates are fixed by the head, so the same
+   * head gives the same commit.
+   */
+  async function trainCommit(repo: string, path: string, edit: (text: string) => string, message: string) {
+    const s = slugOf(repo);
+    const def = String((await api("GET", `/repos/${s.slug}`, await tokenFor(s, READ))).default_branch ?? "main");
+    const { dir, sha: head } = await fetchRemote(s, def, "ws");
+    const text = await fileAt(dir, head, path);
+    if (text === undefined) throw fail(404, `${path} isn't on ${s.slug}'s ${def}`);
+    const files = { [path]: edit(text) };
+    const date = await git(dir, ["log", "-1", "--format=%cI", head]);
+    const index = join(mkdtempSync(join(o.cacheDir, "scratch-")), "index");
+    try {
+      const g = (args: string[], input?: string) => new Promise<string>((ok, no) => {
+        const p = spawn("git", [...SAFE_GIT_ARGS, "--git-dir", dir, ...args], { env: { ...ENV, GIT_INDEX_FILE: index, GIT_AUTHOR_NAME: "AidenHQ release train", GIT_AUTHOR_EMAIL: "release-train@aidenhq.invalid", GIT_COMMITTER_NAME: "AidenHQ release train", GIT_COMMITTER_EMAIL: "release-train@aidenhq.invalid", GIT_AUTHOR_DATE: date, GIT_COMMITTER_DATE: date } });
+        let out = "", err = "";
+        p.stdout.on("data", (d) => (out += d)); p.stderr.on("data", (d) => (err += d));
+        p.on("close", (code) => (code === 0 ? ok(out.trim()) : no(new Error(`git ${args[0]}: ${err.trim().slice(0, 300)}`))));
+        p.stdin.end(input ?? "");
+      });
+      await g(["read-tree", head]);
+      for (const [path, text] of Object.entries(files)) await g(["update-index", "--add", "--cacheinfo", `100644,${await g(["hash-object", "-w", "--stdin"], text)},${path}`]);
+      const sha = await g(["commit-tree", await g(["write-tree"]), "-p", head], message);
+      await git(dir, ["update-ref", `refs/train/${sha}`, sha]);
+      return sha;
+    } finally {
+      rmSync(join(index, ".."), { recursive: true, force: true });
+    }
+  }
+  const train = o.productRepo && o.instanceRepo && o.modulesRepo ? createReleaseTrain({
+    dir: join(o.cacheDir, "release"), productRepo: o.productRepo, instanceRepo: o.instanceRepo, modulesRepo: o.modulesRepo, windowMinutes: o.releaseWindowMinutes ?? 15, kernel, log, now: o.now,
+    commit: trainCommit,
+    evalBump: (from, to) => evalGate.bump({ repo: o.modulesRepo, sha: from }, { repo: o.modulesRepo, sha: to }, "the release bump"),
+    github: {
+      async tip(repo) {
+        const s = slugOf(repo);
+        const token = await tokenFor(s, MERGE);
+        const def = String((await api("GET", `/repos/${s.slug}`, token)).default_branch ?? "main");
+        const tip = String((await api("GET", `/repos/${s.slug}/commits/${def}`, token)).sha ?? "");
+        const checks = await checksAt(s, tip, token);
+        return { tip: /^[0-9a-f]{40}$/.test(tip) ? tip : undefined, green: checks.length > 0 && checks.every((c) => c.ok && !c.pending) };
+      },
+      async text(repo, path, at) {
+        const s = slugOf(repo);
+        const ref = at ?? String((await api("GET", `/repos/${s.slug}`, await tokenFor(s, READ))).default_branch ?? "main");
+        const { dir, sha } = await fetchRemote(s, ref);
+        return fileAt(dir, sha, path);
+      },
+      async commits(repo, from, to) {
+        const s = slugOf(repo);
+        const r = await api("GET", `/repos/${s.slug}/compare/${from}...${to}`, await tokenFor(s, READ));
+        // Only each subject's PR number: a subject is whoever merged it's words.
+        return (r.commits ?? []).slice(-100).map((c: any) => ({ repo: s.slug, sha: String(c.sha), subject: /\(#(\d+)\)\s*$/.exec(String(c.commit?.message ?? "").split("\n")[0]!)?.[0] ?? "" }));
+      },
+    },
+  }) : undefined;
+
   return Object.assign(async function handle(req: IncomingMessage, res: ServerResponse) {
     try {
       if (req.url === "/healthz") return send(res, 200, { ok: true });
@@ -515,6 +577,9 @@ export function createService(o: Options) {
   }, {
     /** The merge loop (merges.ts), started at the switch with the runner's copy deleted (an approved merge queues until then); one poll of it. */
     startMerges: () => merges.start(),
+    /** The release train (train.ts), started at the switch with the runner's copy deleted; one poll of it. */
+    startReleases: () => train?.start(),
+    stepReleases: () => train?.step(),
     stepMerges: () => merges.step(),
   });
 }
