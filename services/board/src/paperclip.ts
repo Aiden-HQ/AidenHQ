@@ -51,6 +51,8 @@ export interface Issue {
   projectId?: string | null;
   /** The task this one is a sub-task of: an agent's work on the user's task. */
   parentId?: string | null;
+  /** The first-class blockers it waits on while `blocked` (single-issue reads; a list row may leave them out). */
+  blockedBy?: { id: string; identifier?: string | null; status: string; updatedAt?: string; completedAt?: string | null; cancelledAt?: string | null }[];
   /** "routine_execution" for a routine's run task. */
   originKind?: string | null;
   /** Paperclip's execution policy; a scheduled monitor is its persisted review path. */

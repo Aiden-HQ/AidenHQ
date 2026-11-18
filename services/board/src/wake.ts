@@ -9,6 +9,9 @@
  * PRs, a grade sending it back to its assignee) is the sub-task's own, and its outcome follows.
  *   - each sub-task delegated to someone else: its status (done or cancelled, or reopened from one; intermediate
  *     updates such as in progress or in review are not news);
+ *   - the task's own first-class blockers (blockedBy): only every one of them being done or cancelled is news (a
+ *     blocker picked up, reviewed or blocked again is not), and the task then leaves `blocked` for `todo` and its
+ *     assignee is woken directly (a comment on a blocked task has been seen to wake nobody);
  *   - approval cards on the task itself: rejected, or applied/failed (approved-not-yet-applied is not an event: the
  *     runner's outcome follows);
  *   - each sub-task's grade: satisfied or escalated;
@@ -27,7 +30,7 @@
 import { takeWake } from "./brake.js";
 import { NOTICE_MARKER } from "./chats.js";
 import { appsApi } from "./fleet.js";
-import { CONFIG_INCOMPLETE, OPEN, REPAIR_SUPPRESSED, REPAIR_SUPPRESSED_WHY, type Agent, type Issue, type LiveRun, type Paperclip, type PastRun, type Routine } from "./paperclip.js";
+import { CONFIG_INCOMPLETE, OPEN, PaperclipError, REPAIR_SUPPRESSED, REPAIR_SUPPRESSED_WHY, type Agent, type Issue, type LiveRun, type Paperclip, type PastRun, type Routine } from "./paperclip.js";
 import type { Approval, Records } from "./records.js";
 import { mirrorTick } from "./mirror.js";
 import type { Grading, GradesView } from "./grading.js";
@@ -85,6 +88,49 @@ function prRefs(text: string | null | undefined): string[] {
 const latest = (...xs: (string | null | undefined)[]) => xs.filter(Boolean).sort().at(-1) ?? undefined;
 /** A sub-task's status as an event: only a terminal state is news (picking a task up, reviewing it or blocking it is not). */
 const childState = (status: string) => (status === "done" || status === "cancelled" ? status : "open");
+const closed = (status: string) => status === "done" || status === "cancelled";
+
+/**
+ * The task's own dependency as one signal: `open` while any first-class blocker is unresolved, its blockers once all
+ * closed. One signal (not one per blocker) so several closing in the same tick are one notice and one wake.
+ */
+function blockerSignal(task: Issue): Signal | undefined {
+  const blockers = task.blockedBy ?? [];
+  // Only a blocked task waits on its blockers: once released it is the assignee's ordinary task, not one waiting again.
+  if (task.status !== "blocked" || !blockers.length) return undefined;
+  const done = blockers.every((b) => closed(b.status));
+  const names = blockers.map((b) => b.identifier ?? b.id).join(", ");
+  const states = blockers.map((b) => b.status).join(", ");
+  return {
+    value: done ? `closed:${blockers.map((b) => `${b.id}:${b.status}`).sort().join(",")}` : "open",
+    at: latest(...blockers.map((b) => latest(b.completedAt, b.cancelledAt, b.updatedAt))),
+    line: (was) => `${names} ${was === "open" ? `closed (${states})` : `reopened (${states})`}.`,
+  };
+}
+
+/**
+ * A task whose blockers all closed leaves `blocked` for `todo`, gets one notice naming what closed, and its assignee is
+ * woken on it. Paperclip refuses a blocked task's status write while any blocker is unresolved and counts a cancelled
+ * one as unresolved, so closed relations are cleared first; a 409 is retried once with them all cleared. A comment on a
+ * blocked task has been seen to wake nobody, so the wake is direct (`wakeAgent`), and its key makes it once per closure.
+ */
+async function release(pc: WakeDeps["pc"], task: Issue, agent: string, line: string, key: string, busy: boolean): Promise<void> {
+  const blockers = task.blockedBy ?? [];
+  // A cancelled blocker still refuses the status write, so those relations go first; the 409 fallback clears the rest.
+  const keep = blockers.filter((b) => b.status !== "cancelled").map((b) => b.id);
+  if (keep.length !== blockers.length) await pc.updateIssue(task.id, { blockedByIssueIds: keep });
+  try {
+    await pc.updateIssue(task.id, { status: "todo" });
+  } catch (err) {
+    if (!(err instanceof PaperclipError) || err.status !== 409) throw err;
+    await pc.updateIssue(task.id, { blockedByIssueIds: [] });
+    await pc.updateIssue(task.id, { status: "todo" });
+  }
+  await pc.addComment(task.id, `Wake-up: ${line}\n\n${NOTICE_MARKER}${WAKE_MARKER}`);
+  // The task is todo before the wake, and the key makes a retry the same wake rather than a second run. A queued or live
+  // run already takes the release, and the task is looked at again (todo now) once that run ends.
+  if (!busy) await pc.wakeAgent(agent, `${task.identifier} is unblocked: ${line} Continue it.`, key, task.id);
+}
 
 /** The PRs a task names: its description and its merge cards. */
 function prsOf(x: Issue, cards: Approval[]): string[] {
@@ -112,6 +158,8 @@ function signals(task: Issue, kids: Issue[], cards: Approval[], grades: GradesVi
       out.set(`graded:${k.id}`, { value: gs, at: g.updatedAt, line: () => `${k.identifier}'s grade: ${gs}.` });
     }
   }
+  const blockers = blockerSignal(task);
+  if (blockers) out.set("blockers", blockers);
   for (const a of cards) {
     // Approved and not yet applied is not news: the runner's outcome follows. An outcome carries no time of its own.
     const terminal = a.outcome != null || a.state === "rejected" || a.state === "stale";
@@ -220,7 +268,10 @@ export async function wakeTick(deps: WakeDeps, recent: Recent, now = Date.now())
     const agent = t.assigneeAgentId!;
     const was = state.cursors[t.id];
     const kids = ownKids(t);
-    const sig = signals(t, kids, cardsOf.get(t.id) ?? [], grades ?? {}, prs);
+    // A list row may leave a blocked task's blockers out: read them, as the runner does (no blockers shown is not the
+    // same as none). A failed read leaves the signal out, and the next tick reads again.
+    const full = t.status === "blocked" ? await pc.issue(t.id).catch(() => undefined) : t;
+    const sig = signals(full ? { ...t, blockedBy: full.blockedBy } : t, kids, cardsOf.get(t.id) ?? [], grades ?? {}, prs);
     const next: Record<string, string> = {};
     // A source's first sighting is its baseline; a source that went away (a pruned card, an old closed sub-task) is dropped.
     const changed: [string, Signal][] = [];
@@ -246,6 +297,27 @@ export async function wakeTick(deps: WakeDeps, recent: Recent, now = Date.now())
     // A closed sub-task leaves the closed list after a while: its cursor stays, so reopening it later is still news.
     for (const [k, v] of Object.entries(was ?? {})) if (k.startsWith("child:") && (v === "done" || v === "cancelled")) next[k] ??= v;
     cursors[t.id] = next;
+    const unlocked = sig.get("blockers");
+    if (unlocked?.value.startsWith("closed:") && was?.blockers !== unlocked.value) {
+      // The task's last blocker closed (or it is first seen blocked with every blocker already closed): it comes out of
+      // `blocked`, and its assignee is woken, since no other path looks at a blocked task's blockers. Not held to the
+      // hourly or daily limits: one release per closure, and its other release is a person's.
+      const line = unlocked.line(was?.blockers ?? "open");
+      const key = `${agent}:${t.id}`;
+      try {
+        await release(pc, full ?? t, agent, line, `blockers:${t.id}:${unlocked.value}`, busy.has(key));
+      } catch (err) {
+        log.warn({ issue: t.identifier, err: String(err) }, "couldn't release a task whose blockers closed; retried next tick");
+        delete cursors[t.id];
+        continue;
+      }
+      next.blockers = unlocked.value;
+      store.events.emit("chat", t.id);
+      if (!busy.has(key)) woke.push(t.id);
+      log.info({ issue: t.identifier, agent, blockers: unlocked.value }, "wake-up posted: blockers closed, task released");
+      cursors[t.id] = next;
+      continue;
+    }
     if (!was || !changed.length) continue;
     const key = `${agent}:${t.id}`;
     for (const [k] of changed) seen[`${t.id}|${k}`] = state.seen?.[`${t.id}|${k}`] ?? new Date(now).toISOString();
