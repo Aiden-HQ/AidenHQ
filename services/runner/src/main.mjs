@@ -1106,7 +1106,7 @@ async function handleIssue(issue, engineerIds) {
   // diff): a new request on the same task, so its next commit replaces the card. Never a command.
   const agentNotes = state.get(`history:${issue.id}`) ? all.filter((c) => c.authorType === "agent" && c.authorAgentId && !state.handled(c.id)) : [];
   const asked = agentNotes.length ? await pc.issue(issue.id) : undefined;
-  const followUps = asked ? architectFollowUps(agentNotes, asked.createdByAgentId, readGrants(), { agentTask: agentAsked(asked), reopened: issue.status === "todo" }) : [];
+  const followUps = asked ? architectFollowUps(agentNotes, asked.createdByAgentId, readGrants(), { agentTask: agentAsked(asked) }) : [];
   for (const c of agentNotes.filter((x) => !followUps.includes(x))) state.markHandled(c.id, issue.id); // other agents: ignored
   if (!fresh.length && followUps.length) {
     for (const c of followUps) state.markHandled(c.id, issue.id);
@@ -4775,8 +4775,9 @@ async function handleParentPr(parent, fresh) {
   const asks = fresh.filter((c) => parseCommand(c.body) === "pr");
   if (!asks.length) return false;
   const engineers = await pc.engineerAgents();
-  // The Engineer sub-tasks an agent made, and the parts the user gave Engineers themselves.
-  const kids = (await pc.children(parent.id)).filter((c) => engineers.some((e) => e.id === c.assigneeAgentId) && (isAgentSubtask(c) || isUserPart(c, engineers)));
+  // Only the parts the user gave Engineers themselves: his "pr" publishes with no card, so it never reaches a sub-task an agent
+  // wrote (that one files its own push/PR records, tiered by the kernel, or takes his "pr" on the sub-task itself).
+  const kids = (await pc.children(parent.id)).filter((c) => isUserPart(c, engineers));
   if (!kids.length) return false;
   for (const c of asks) state.markHandled(c.id, parent.id);
   kids.sort((a, b) => a.identifier.localeCompare(b.identifier, undefined, { numeric: true }));
