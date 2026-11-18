@@ -77,7 +77,9 @@ services:
       tmp: 64m
       port: 3000
       ui_port: 3141 # loopback only: the gate's host for it (share)
-      share: { host: "${settings.primer_host}", aud: "${settings.primer_host_aud}", default_role: member }
+      egress: true # Docker publishes no port from an internal network; also Primer's own outbound (email, if set)
+      # People other than AidenHQ admins get a role from the app's admins on its Access page (no default: blocked).
+      share: { host: "${settings.primer_host}", aud: "${settings.primer_host_aud}" }
       data: ["blobs:/data/blobs"]
       env:
         AUTH_BASE_URL: "https://${settings.primer_host}"

@@ -21,13 +21,17 @@ export interface Kernel {
   /** POST /v1/tasks: a task for an agent (by id), idempotent by source. */
   file(b: { title: string; description: string; agent: string; source: string; parent?: string }): Promise<{ id: string; identifier?: string }>;
 }
-interface DocState { pending: string[]; batches: { version?: string; comments: string[] }[]; revisions?: { task: string; n: number } }
+interface DocState { pending: string[]; batches: { version?: string; comments: string[] }[]; revisions?: number }
 interface State { cursor?: string; created: string[]; processed: string[]; docs: Record<string, DocState> }
 type Log = (msg: string, f?: Record<string, unknown>) => void;
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const ID = /^[\w:.-]{1,200}$/;
 const KEEP = 5000; // ids remembered (created, processed): far more than a stream replays
+// Primer's reads (main.ts PRIMER_READ): they run unguarded, so a read's comment ids are never taken for the connector's own.
+const READ = /^primer_(whoami|resolve_url|get_|list_|find_)/;
+/** A kernel answer that will never change on a retry (a deleted task, a paused agent): skipped loudly, never replayed. */
+const permanent = (e: unknown) => [400, 403, 404, 409, 422].includes(Number((e as { status?: number }).status));
 const id = (v: unknown) => (typeof v === "string" && ID.test(v) ? v : undefined);
 
 /** The comment ids a write's receipt names (JSON anywhere in the text: comment_id / commentId, or a reply's {comment: {id}}). */
@@ -56,8 +60,9 @@ export function createSubscriber(o: {
   /** The connector's sign-in to Primer (the service token, or the owner's OAuth); throws while there is none. */
   headers: () => Promise<Record<string, string>>;
   kernel: Kernel;
-  /** The ownership map (publish receipts): who published a document, on which task. */
+  /** The ownership map (publish receipts): who published a document, on which task; a Revisions task becomes its owner. */
   owner: (documentId: string) => Owner | undefined;
+  recordOwner: (documentId: string, owner: Owner) => void;
   stateFile: string;
   log: Log;
   fetch?: typeof fetch;
@@ -80,6 +85,7 @@ export function createSubscriber(o: {
    * the connector's own. A version (primer_add_version with documentId) covers the comments pending when it started.
    */
   async function guard<T extends { text: string; isError?: boolean }>(tool: string, args: Record<string, unknown>, run: () => Promise<T>): Promise<T> {
+    if (READ.test(tool)) return run();
     const d = typeof args.documentId === "string" ? args.documentId : undefined;
     const covers = tool === "primer_add_version" && d ? [...doc(d).pending] : [];
     inflight++;
@@ -101,10 +107,14 @@ export function createSubscriber(o: {
     }
   }
 
-  async function revisions(d: string, own: Owner, closedTask?: string): Promise<{ task: string; fresh: boolean }> {
+  /**
+   * The document's task is closed: one new "Revisions" task for its agent, which becomes the document's owner in the map (so
+   * the agent's versions and replies there are its own, and the next comment wakes it). Numbered, so a closed Revisions task
+   * gets a fresh one rather than the same closed task back from the kernel's idempotency.
+   */
+  async function revisions(d: string, own: Owner): Promise<string> {
     const s = doc(d);
-    if (s.revisions && s.revisions.task !== closedTask) return { task: s.revisions.task, fresh: false };
-    const n = (s.revisions?.n ?? 0) + (s.revisions ? 1 : 0);
+    const n = s.revisions == null ? 0 : s.revisions + 1;
     let title = `document ${d}`;
     try {
       const r = await f(`${o.primer}/api/documents/${encodeURIComponent(d)}`, { headers: await o.headers(), signal: AbortSignal.timeout(10_000) });
@@ -116,9 +126,10 @@ export function createSubscriber(o: {
       description: `People are commenting on Primer document ${d}, which you published on a task that is now closed. Revisions for it come here.\n\n${notice(d, undefined, "(see the open threads)", s.pending.length)}`,
       agent: own.agent, source: `primer-revisions:${d}:${n}`, ...(UUID.test(own.task) ? { parent: own.task } : {}),
     });
-    s.revisions = { task: t.id, n };
+    s.revisions = n;
+    o.recordOwner(d, { task: t.id, agent: own.agent });
     save();
-    return { task: t.id, fresh: true };
+    return t.id;
   }
 
   /** One primer.comment.created: at most one wake, none for the connector's own comment or an unmapped document. */
@@ -132,15 +143,13 @@ export function createSubscriber(o: {
     const s = doc(d);
     if (!s.pending.includes(c)) s.pending.push(c);
     const text = notice(d, thread, c, s.pending.length);
-    let target = s.revisions?.task ?? own.task;
-    let r = await o.kernel.wake(target, text);
-    if (r.closed) {
-      const rev = await revisions(d, own, s.revisions ? target : undefined);
-      target = rev.task;
-      // A new Revisions task starts its agent by itself (its description is the notice); a reused one gets the notice.
-      if (!rev.fresh) r = await o.kernel.wake(target, text);
-      else r = { posted: true };
-      if (r.closed) throw new Error(`the Revisions task ${target} for document ${d} is closed right after filing`);
+    let target = own.task;
+    try {
+      // Closed: a new Revisions task, whose assignment starts its agent by itself (its description is the notice).
+      if ((await o.kernel.wake(target, text)).closed) target = await revisions(d, own);
+    } catch (e) {
+      if (!permanent(e)) throw e; // the kernel or the network: the event replays
+      o.log("comment wake refused for good; skipped", { document: d, comment: c, task: target, err: (e as Error).message });
     }
     st.processed.push(c);
     save();
@@ -162,13 +171,16 @@ export function createSubscriber(o: {
         const auth = await o.headers().catch((e) => { throw Object.assign(e as Error, { quiet: true }); }); // not signed in yet: wait
         ctl = new AbortController();
         const res = await f(`${o.primer}/api/events/stream?scope=me`, { headers: { ...auth, accept: "text/event-stream", ...(st.cursor ? { "last-event-id": st.cursor } : {}) }, signal: ctl.signal });
-        if (!res.ok || !res.body) throw Object.assign(new Error(`the event stream answered ${res.status}`), { quiet: res.status === 404 });
-        wait = 1000;
+        // A Primer without the stream (404, or an answer that isn't an event stream) waits quietly at the backoff's pace.
+        if (!res.ok || !res.body || !/^text\/event-stream/.test(res.headers.get("content-type") ?? "")) throw Object.assign(new Error(`the event stream answered ${res.status}`), { quiet: res.status === 404 || res.ok });
         for await (const ev of sse(res.body)) {
+          wait = 1000; // only a real event resets the backoff: a stream that closes at once doesn't hammer Primer
           let data: Record<string, unknown>;
           try { data = JSON.parse(ev.data); } catch { continue; }
-          const type = ev.event ?? (typeof data.type === "string" ? data.type : "");
-          const payload = (data.payload && typeof data.payload === "object" ? data.payload : data) as Record<string, unknown>;
+          // `event: primer.comment.created` with the payload as data, or Primer's event row {namespace, type, payload, documentId}.
+          const t = typeof data.type === "string" ? data.type : "";
+          const type = ev.event ?? (typeof data.namespace === "string" && !t.startsWith(`${data.namespace}.`) ? `${data.namespace}.${t}` : t);
+          const payload = { ...(typeof data.documentId === "string" ? { document_id: data.documentId } : {}), ...((data.payload && typeof data.payload === "object" ? data.payload : data) as Record<string, unknown>) };
           await handle({ id: ev.id, type, data: payload });
         }
       } catch (e) {

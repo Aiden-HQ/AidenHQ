@@ -7,7 +7,7 @@ import pino from "pino";
 import { kernelJwks, verifyCaller } from "./aidenhq-sdk/caller.js";
 import { serveExecutor } from "./aidenhq-sdk/executor.js";
 import { kernelClient } from "./kernel.js";
-import { getOwner } from "./owners.js";
+import { getOwner, recordOwner } from "./owners.js";
 import { publisher } from "./publish.js";
 import { replier } from "./reply.js";
 import { createSubscriber } from "./subscriber.js";
@@ -73,6 +73,7 @@ const subscriber = createSubscriber({
   headers: () => auth.headers(),
   kernel: kernelClient(process.env.AIDENHQ_KERNEL_URL ?? "http://10.231.0.1:3130", () => moduleKey),
   owner: getOwner,
+  recordOwner,
   stateFile: `${stateDir}/comments.json`,
   log: (msg, f) => log.info(f ?? {}, msg),
 });

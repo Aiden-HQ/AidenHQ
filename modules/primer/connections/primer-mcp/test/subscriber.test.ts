@@ -9,10 +9,14 @@ import { createSubscriber, type Kernel } from "../src/subscriber.js";
 
 const T1 = "11111111-1111-4111-8111-111111111111";
 
-function harness(closed = new Set<string>()) {
+function harness(closed = new Set<string>(), gone = new Set<string>()) {
   const wakes: { task: string; text: string }[] = [], filed: any[] = [];
+  const owners: Record<string, { task: string; agent: string }> = { d1: { task: T1, agent: "agent-1" } };
   const kernel: Kernel = {
-    wake: async (task, text) => (closed.has(task) ? { posted: false, closed: true } : (wakes.push({ task, text }), { posted: true })),
+    wake: async (task, text) => {
+      if (gone.has(task)) throw Object.assign(new Error("no task"), { status: 404 });
+      return closed.has(task) ? { posted: false, closed: true } : (wakes.push({ task, text }), { posted: true });
+    },
     file: async (b) => (filed.push(b), { id: `rev-${filed.length}` }),
   };
   // Primer's stream: each connection gets the events after its Last-Event-ID, then stays open until the test closes it.
@@ -33,8 +37,8 @@ function harness(closed = new Set<string>()) {
     streams.at(-1)?.ctl.enqueue(new TextEncoder().encode(e));
   };
   const stateFile = join(mkdtempSync(join(tmpdir(), "primer-sub-")), "comments.json");
-  const make = () => createSubscriber({ primer: "http://primer-server:3000", headers: async () => ({ authorization: "Bearer primer_pat_test" }), kernel, owner: (d) => (d === "d1" ? { task: T1, agent: "agent-1" } : undefined), stateFile, log: () => {}, fetch });
-  return { wakes, filed, emit, streams, seen, make };
+  const make = () => createSubscriber({ primer: "http://primer-server:3000", headers: async () => ({ authorization: "Bearer primer_pat_test" }), kernel, owner: (d) => owners[d], recordOwner: (d, o) => void (owners[d] = o), stateFile, log: () => {}, fetch });
+  return { wakes, filed, emit, streams, seen, make, owners };
 }
 const settle = () => new Promise((r) => setTimeout(r, 20));
 const c = (comment_id: string, thread_id = "th1", document_id = "d1") => ({ document_id, version_id: "v1", thread_id, comment_id, author_id: "proxy:u_someone" });
@@ -80,6 +84,10 @@ describe("the comment wake loop", () => {
     await replying;
     await held;
     expect(h.wakes.map((w) => w.text.match(/comment (\S+);/)?.[1])).toEqual(["c1"]);
+    // A read through the same path (the reply executor's primer_get_comments) names people's comments: never taken as ours.
+    await s.guard("primer_get_comments", { documentId: "d1" }, async () => ({ text: '{"comments":[{"thread_id":"th5","comment_id":"c5"}]}' }));
+    await s.handle({ id: "2b", type: "primer.comment.created", data: c("c5", "th5") });
+    expect(h.wakes.map((w) => w.text.match(/comment (\S+);/)?.[1])).toEqual(["c1", "c5"]);
     // A version: c1 was pending when it started; c3 arrives mid-publish and waits for the next batch.
     let done!: (v: { text: string }) => void;
     const publishing = s.guard("primer_add_version", { documentId: "d1", content: "v2" }, () => new Promise<{ text: string }>((r) => (done = r)));
@@ -87,7 +95,7 @@ describe("the comment wake loop", () => {
     done({ text: '{"versionId":"v2"}' });
     await publishing;
     await mid;
-    expect(s.state().docs.d1!.batches).toEqual([{ version: "v2", comments: ["c1"] }]);
+    expect(s.state().docs.d1!.batches).toEqual([{ version: "v2", comments: ["c1", "c5"] }]);
     expect(s.state().docs.d1!.pending).toEqual(["c3"]);
   });
 
@@ -101,5 +109,13 @@ describe("the comment wake loop", () => {
     expect(h.filed[0].description).toMatch(/document d1/);
     // The new task starts its agent by itself; the next comment is a notice on it.
     expect(h.wakes).toEqual([{ task: "rev-1", text: expect.stringMatching(/comment c2;/) }]);
+    expect(h.owners.d1).toEqual({ task: "rev-1", agent: "agent-1" }); // its versions and replies there are the agent's own
+  });
+
+  it("skips a comment whose task is gone for good, without replaying it forever", async () => {
+    const h = harness(new Set(), new Set([T1]));
+    const s = h.make();
+    await s.handle({ id: "1", type: "primer.comment.created", data: c("c1") });
+    expect([h.wakes.length, s.state().processed, s.state().cursor]).toEqual([0, ["c1"], "1"]);
   });
 });
