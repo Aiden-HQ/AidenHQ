@@ -404,13 +404,13 @@ export function createService(o: Options) {
     if (c.base === c.sha) return { landed: c.main, already: true };
     if (c.base !== c.main) throw fail(409, `the instance's ${c.def} moved on since this commit's base; it needs a rebase and a new approval`);
     // The official modules are the product's modules/: their reviewer code reaches this host only with the product pin, whose
-    // reviewer changes merged on a passing reviewer-eval receipt (evalgate.ts). An `aidenhq` marketplace pin an apply moves
-    // would bring reviewer code past that gate, so it never lands. The kernel reads the pin structurally from both sides
+    // reviewer changes merged on a passing reviewer-eval receipt (evalgate.ts). An `aidenhq` marketplace pin an apply adds or
+    // moves would bring reviewer code past that gate, so it never lands; dropping one (a pre-monorepo install) does. The kernel reads the pin structurally from both sides
     // (apply.ts officialMove) and names it; without it nothing lands.
     const pin = (x: any) => x === null || (x && typeof x.repo === "string" && SLUG.test(x.repo) && /^[0-9a-f]{40}$/.test(String(x.sha)));
     const off = b.official;
     if (!off || !pin(off.from) || !pin(off.to)) throw fail(400, "name the official modules' pin on both sides (official: {from, to}, each {repo, sha} or null)");
-    if (JSON.stringify(off.from) !== JSON.stringify(off.to)) throw fail(422, "not landed: it moves an `aidenhq` marketplace pin; the official modules come with the product pin");
+    if (off.to !== null && JSON.stringify(off.from) !== JSON.stringify(off.to)) throw fail(422, "not landed: it adds or moves an `aidenhq` marketplace pin; the official modules come with the product pin");
     await git(c.dir, ["push", "--quiet", "--no-verify", remote(c.s.slug), `${c.sha}:refs/heads/${c.def}`], await tokenFor(c.s, PUSH));
     log("instance landed", { repo: c.s.slug, sha: c.sha });
     return { landed: c.sha };

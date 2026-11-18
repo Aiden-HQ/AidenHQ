@@ -106,14 +106,15 @@ export function officialPinOf(text: string): OfficialPin {
   return { repo, sha: at.sha };
 }
 /**
- * The official pin's move a change makes, or why it can't be applied: the marketplace may not appear or disappear (the
- * reviewer code would move with no eval to judge it) and its texts must read. Fails closed.
+ * The official pin's move a change makes, or why it can't be applied: the official modules are the product's modules/, so
+ * an `aidenhq` marketplace may only stay as it is or be dropped (a pre-monorepo install's first update); one may never
+ * appear (it would bring reviewer code with no eval to judge it), and its texts must read. Fails closed.
  */
 export function officialMove(base: string | undefined, head: string | undefined): { from: OfficialPin; to: OfficialPin } | { error: string } {
   if (base === undefined || head === undefined) return { error: `instance.yaml isn't on ${base === undefined ? "the instance's main" : "the commit"}, so the official modules' pin can't be read` };
   try {
     const [from, to] = [officialPinOf(base), officialPinOf(head)];
-    if (Boolean(from) !== Boolean(to)) return { error: `it ${to ? "adds" : "removes"} the official modules' marketplace, which moves the reviewer's code past its eval` };
+    if (to && JSON.stringify(from) !== JSON.stringify(to)) return { error: `it ${from ? "moves" : "adds"} an \`aidenhq\` marketplace pin, which would bring the reviewer's code past its eval; the official modules come with the product pin` };
     return { from, to };
   } catch (e) {
     return { error: `the official modules' pin in instance.yaml can't be read (${(e as Error).message.split("\n")[0]!.slice(0, 200)})` };
