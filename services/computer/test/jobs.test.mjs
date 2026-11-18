@@ -75,6 +75,9 @@ test("only the runner's key opens the job routes, and it opens nothing else", ()
     assert.equal(controlAllowed("runner-key", "POST", url, keys), false, `runner key on ${url}`);
     assert.equal(controlAllowed("kernel-key", "POST", url, { ...keys, kernel: "kernel-key" }), false, `kernel key on ${url}`);
   }
+  // A check box (credential-free, kernel/src/checkbox.ts) is the kernel's alone.
+  assert.equal(controlAllowed("kernel-key", "POST", "/check", { ...keys, kernel: "kernel-key" }), true);
+  for (const k of ["runner-key", "plugin-key", "progress-key"]) assert.equal(controlAllowed(k, "POST", "/check", { ...keys, kernel: "kernel-key" }), false, `${k} on /check`);
   assert.equal(controlAllowed("plugin-key", "POST", "/exec", keys), true);
   assert.equal(controlAllowed("progress-key", "POST", "/progress", keys), true);
   assert.equal(controlAllowed("progress-key", "POST", "/exec", keys), false);

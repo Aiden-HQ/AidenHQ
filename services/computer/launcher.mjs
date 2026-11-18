@@ -15,7 +15,7 @@
 //                             Paperclip's bridge with the run's own credential (the kernel's /v1/cp/agent/*, which checks
 //                             the path, calls it for a computer's run) → {status, type, body} (bodies base64)
 // Gateway, on the computers network gateway (only boxes reach it; ops/vm/computer-net.sh):
-//   POST /api/v1/responses    model calls: the "API key" must be a live run token; passed on to the model gateway
+//   POST /api/v1/responses | /api/v1/chat/completions   model calls: the "API key" must be a live run token (or a check's); passed on to the model gateway
 //                             (the kernel's model gateway, which counts and caps them like every agent's) with that token
 //   /c/<connection>/mcp       tool calls to a connection: X-Agent-Key must be a live run token; passed on to the kernel's proxy
 //                             (aidenhq-kernel) with that token as the bearer: the kernel checks the grants and holds the keys
@@ -34,6 +34,8 @@
 //                             config; no run token of the launcher's, no helper
 //   POST /job/renew {container, issueId, helperPort, helperToken}   the runner still follows it (also on adoption): a new lease
 //   POST /job/release {container}   destroy and revoke; idempotent → {state} ("missing" once the box is gone)
+//   POST /check {check, image, workspace, out, readOnly, token?, timeoutMs}   the kernel's only: a box for one run of a check
+//                             (kernel/src/checkjobs.ts), with only its snapshot and out folder → {container}; /job/release ends it
 //
 import http from "node:http";
 import { spawn } from "node:child_process";
@@ -41,7 +43,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, writeFile
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { answerSlowly, archiveArgs, forwardModel, PROGRESS_SCRIPT, CP_SCRIPT, UNTAR_SCRIPT, WRITE_RUN_TOKEN_SCRIPT, CLEAR_RUN_TOKEN_SCRIPT, boxOf, checkoutRequest, EXEC_ID, EXEC_ROOT, EXEC_MISSING, EXEC_PREP_SCRIPT, EXEC_RUN_SCRIPT, EXEC_WAIT_SCRIPT, Tokens, Creds, Jobs, mayCheckout, tokenHash, JOB_HOME, JOB_ROUTES, admit, controlAllowed, jobEnvFile, jobFolder, jobMounts, reapLapsed, serveHelper, builtImage, dockerRunArgs, oomMessage, execEnv, mcpBlock, runCredential, stale, wrapExec, routineArgs } from "./lib.mjs";
+import { answerSlowly, archiveArgs, forwardModel, PROGRESS_SCRIPT, CP_SCRIPT, UNTAR_SCRIPT, WRITE_RUN_TOKEN_SCRIPT, CLEAR_RUN_TOKEN_SCRIPT, boxOf, checkoutRequest, EXEC_ID, EXEC_ROOT, EXEC_MISSING, EXEC_PREP_SCRIPT, EXEC_RUN_SCRIPT, EXEC_WAIT_SCRIPT, Tokens, Creds, Jobs, mayCheckout, tokenHash, JOB_HOME, JOB_ROUTES, CHECK_ROUTES, checkMounts, admit, controlAllowed, jobEnvFile, jobFolder, jobMounts, reapLapsed, serveHelper, builtImage, dockerRunArgs, oomMessage, execEnv, mcpBlock, runCredential, stale, wrapExec, routineArgs } from "./lib.mjs";
 
 const repo = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
 const dotenv = {};
@@ -405,6 +407,40 @@ const runnerControl = {
     saveJobs();
     return { container, issueId: r.issueId, identifier: r.identifier, workspace: r.workspace, leaseUntil: r.leaseUntil };
   },
+  /**
+   * The kernel's check box (kernel/src/checkbox.ts): one run of a check, in the image its run names, with only the check's
+   * snapshot, its out folder and the product's supply-chain checks mounted (lib.mjs checkMounts). No agent, task, run token
+   * or helper: only the eval's model token, by its hash, so the gateway below passes its model calls on (fast and tests have
+   * none). Its lease is its time limit: a kernel that dies mid-run leaves nothing behind. The kernel runs the command itself
+   * (docker exec) and ends it with /job/release.
+   */
+  async "/check"({ check, image: imageName, workspace, out, readOnly, token, timeoutMs }, { kernel = false } = {}) {
+    if (!kernel) throw fail(403, "check boxes are the kernel's");
+    if (typeof check !== "string" || !/^c-[0-9a-f]{16}$/.test(check)) throw fail(400, "check is the kernel's check id");
+    if (token != null && (typeof token !== "string" || !token.startsWith("ahqj_") || /\s/.test(token))) throw fail(400, "a check's token is the kernel's (ahqj_)");
+    const ms = Number(timeoutMs);
+    if (!Number.isInteger(ms) || ms < 1000 || ms > 2 * 3600_000) throw fail(400, "timeoutMs is the run's time limit");
+    // Exactly this check's own folders under the kernel's work_dir/checks/<check>: the snapshot (ws, tree) and an out folder.
+    const root = path.join(CFG.runnerWork, "checks", check);
+    if (!["ws", "tree"].includes(path.basename(String(workspace))) || !/^out(-\d)?$/.test(path.basename(String(out)))) throw fail(400, "not a check's folders");
+    const ws = jobFolder(workspace, root, path.basename(workspace));
+    const o = jobFolder(out, root, path.basename(out));
+    const image = await imageNamed(imageName);
+    await makeRoom();
+    const name = newName();
+    boxes.set(name, { agentId: "check", lastUsed: Date.now(), busy: 1 }); // reserve the slot while starting
+    jobs.add({ container: name, agentId: "check", issueId: `check:${check}`, check, kernel: true, ...(token ? { tokenHash: tokenHash(token) } : {}) }, Date.now(), ms + 5 * 60_000); saveJobs();
+    try {
+      const mounts = checkMounts({ resolvConf, workspace: ws, out: o, readOnly: readOnly === true, supplyChain: path.join(repo, "scripts/supply-chain") });
+      const r = await docker(dockerRunArgs({ name, image, agentId: "check", network: CFG.network, limits: { ...CFG.limits, memory: CFG.jobMemory }, mounts, user: JOB_USER, labels: [`aidenhq.check=${check}`], home: "/aidenhq-out/home" }));
+      if (r.exitCode !== 0) throw fail(500, `docker run failed: ${r.stderr.trim()}`);
+    } catch (e) {
+      await destroy(name, "check box failed to start");
+      throw e;
+    }
+    boxes.get(name).busy = 0;
+    return { container: name };
+  },
   async "/job/release"({ container }, { kernel = false } = {}) {
     if (!ours(container)) throw fail(400, "not a computer");
     if (!jobs.has(container) && boxes.has(container)) throw fail(403, `not a job's box: ${container}`);
@@ -487,7 +523,7 @@ const controlServer = http.createServer((req, res) => {
     // The board's progress key opens /progress only, the runner's key the job routes only; the rest needs the plugin's key.
     if (!controlAllowed(bearer(req), req.method, req.url, { plugin: TOKEN, runner: RUNNER_KEY, kernel: KERNEL_KEY, progress: PROGRESS_TOKEN })) return send(res, 401, { error: "unauthorized" });
     const byKernel = Boolean(KERNEL_KEY) && bearer(req) === KERNEL_KEY;
-    const fn = JOB_ROUTES.includes(req.url) ? runnerControl[req.url] : req.method === "POST" && Object.hasOwn(control, req.url.slice(1)) ? control[req.url.slice(1)] : null;
+    const fn = [...JOB_ROUTES, ...CHECK_ROUTES].includes(req.url) ? runnerControl[req.url] : req.method === "POST" && Object.hasOwn(control, req.url.slice(1)) ? control[req.url.slice(1)] : null;
     if (!fn) return send(res, 404, { error: "no such route" });
     const t0 = Date.now();
     if (req.url === "/exec" || req.url === "/attach") {
@@ -521,13 +557,13 @@ const gatewayServer = http.createServer(async (req, res) => {
   try {
     // A runner job's `aidenhq` commands, to the helper its run token is bound to (lib.mjs serveHelper).
     if (req.url?.startsWith("/helper/")) return await serveHelper(req, res, { tokens, jobs });
-    if (req.method === "POST" && req.url === "/api/v1/responses") {
+    if (req.method === "POST" && (req.url === "/api/v1/responses" || req.url === "/api/v1/chat/completions")) {
       // The model: the box's "API key" is its run token; the model gateway, not a box or the launcher, holds the real key.
       const token = bearer(req);
       const who = liveBox(token);
       if (!who) return deny(401, "not a live computer");
       boxes.get(who.container) && (boxes.get(who.container).lastUsed = Date.now());
-      return await forwardModel(req, res, `${MODEL_GATEWAY_URL}/api/v1/responses`, token);
+      return await forwardModel(req, res, `${MODEL_GATEWAY_URL}${req.url}`, token);
     }
     if (req.method === "POST" && req.url === "/repo") {
       const who = liveBox(String(req.headers["x-agent-key"] ?? ""));

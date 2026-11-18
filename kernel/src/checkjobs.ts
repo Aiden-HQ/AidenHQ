@@ -4,9 +4,16 @@
 // lands (POST /v1/receipts/verify).
 //
 // A check job has no task, no Paperclip identity, no tools and no GitHub credential. Its workspace is a snapshot of
-// `repo@head` (the code host's `snapshot` op: no .git, no credentials); its box is the `engineer` image. Its env is exactly
-// checkEnv's: only the eval gets a model credential, a `check` token the gateway caps by the eval day cap (eval_day_usd)
-// and that the tool proxy and the writes route refuse.
+// `repo@head` (the code host's `snapshot` op: no .git, no credentials, asked as the module that asked for the check); its box
+// is the `engineer` image, a fresh one per run. Its env is exactly checkEnv's: only the eval gets a model credential, a
+// `check` token the gateway caps by the eval day cap (eval_day_usd) and that the tool proxy and the writes route refuse.
+//
+// fast and tests run on the change itself: the box makes its own two-commit history from the base and head snapshots (the
+// base tree, then the head tree), so `git diff $AIDENHQ_BASE HEAD` is exactly the change. fast installs the dependencies
+// (`npm ci` from each lockfile the change touches) and runs the repo's fast check. tests first runs what the product's CI
+// runs on every change, from copies the change can't edit: the secret scan (gitleaks with the base's .gitleaks.toml) and the
+// supply-chain checks (the product's scripts/supply-chain, mounted read-only); only then installs and runs the repo's lint,
+// tests and build. The eval's workspace is read-only.
 //
 // The eval runs the judging rules the runner's eval gate ran (services/runner/src/evalgate.ts), unchanged: the code host
 // builds the spec (which commits judge which), the kernel lays it out and decides. The eval script and case-pad.mjs come
@@ -22,7 +29,7 @@
 // switch its own check off), and a receipt says whether a check ran (`ran`); verify refuses one that didn't unless the
 // caller's policy accepts "none" (product and modules repos never do).
 import { createHash, createHmac, randomBytes, timingSafeEqual } from "node:crypto";
-import { closeSync, constants, existsSync, fstatSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { closeSync, constants, existsSync, fstatSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
 
@@ -39,9 +46,10 @@ export type CheckView = { id: string; repo: string; head: string; run: Run; stat
 /** Where a check's folders are in its box: the snapshot (read-write, thrown away after) and the kernel's out folder. */
 export const BOX_WORKSPACE = "/workspace";
 export const BOX_OUT = "/aidenhq-out";
-/** A credential-free computer for one check (the kernel's box client): `argv` in `cwd` (relative to the workspace) with exactly `env`. */
+/** A credential-free computer for one check (the kernel's box client, checkbox.ts): a fresh box per run, `argv` in `cwd`
+ * (relative to the workspace) with exactly `env`; `readOnly`: the workspace is mounted read-only. */
 export interface CheckBox {
-  run(o: { check: string; image: "engineer"; workspace: string; out: string; cwd: string; argv: string[]; env: Record<string, string>; timeoutMs: number }): Promise<{ exit: number | null; out: string; timedOut: boolean }>;
+  run(o: { check: string; image: "engineer"; workspace: string; out: string; cwd: string; argv: string[]; env: Record<string, string>; timeoutMs: number; readOnly?: boolean }): Promise<{ exit: number | null; out: string; timedOut: boolean }>;
 }
 /** codehost-github's snapshot op: `repo` at commit `ref`, extracted into the empty folder `into` (no .git, no credentials). */
 export type Snapshot = (repo: string, ref: string, into: string) => Promise<void>;
@@ -56,13 +64,44 @@ const SHA = /^[0-9a-f]{40}$/;
 const SLUG = /^[\w.-]{1,100}\/[\w.-]{1,100}$/;
 const POLICY = /^[0-9a-f]{7,64}$/;
 const TAIL = 4000;
-const LIMIT_MS: Record<Run, number> = { fast: 90_000, tests: 20 * 60_000, eval: 60 * 60_000 };
+const LIMIT_MS: Record<Run, number> = { fast: 10 * 60_000, tests: 30 * 60_000, eval: 60 * 60_000 };
 export const FAST_CHECK = "aidenhq:fast-check";
+// The box's history: the base tree (the out folder's base/) as one commit, the head tree as the next; AIDENHQ_BASE names the base.
+const HISTORY = `set -e
+g() { git -c user.name=aidenhq-check -c user.email=check@aidenhq.invalid -c core.hooksPath=/dev/null -c commit.gpgsign=false "$@"; }
+g init -q .
+GIT_WORK_TREE=/aidenhq-out/base g add -A -f
+g commit -q --allow-empty -m base
+g add -A -f
+g commit -q --allow-empty -m head
+AIDENHQ_BASE=$(git rev-parse HEAD~1); export AIDENHQ_BASE
+set +e
+`;
+// fast: the dependencies of each package the change touches, from its lockfile.
+const DEPS = `git ls-files -- '*package-lock.json' | while IFS= read -r lock; do
+  d=$(dirname "$lock")
+  git diff --quiet "$AIDENHQ_BASE" HEAD -- "$d" && continue
+  echo "npm ci in $d"
+  (cd "$d" && npm ci) || exit 1
+done || exit 1
+`;
+// tests: the product CI's secret scan and supply-chain checks, before anything is installed.
+const SCANS = `status=0
+git show "$AIDENHQ_BASE:.gitleaks.toml" > /aidenhq-out/gitleaks.toml 2>/dev/null || printf '[extend]\nuseDefault = true\n' > /aidenhq-out/gitleaks.toml
+echo "secret scan (gitleaks, the base's config)"
+gitleaks git --no-banner --redact --exit-code 1 --config /aidenhq-out/gitleaks.toml --log-opts "$AIDENHQ_BASE..HEAD" . || status=1
+echo "supply chain (the product's checks)"
+node /opt/aidenhq/supply-chain/npm-age.mjs "$AIDENHQ_BASE" HEAD || status=1
+node /opt/aidenhq/supply-chain/pins.mjs "$AIDENHQ_BASE" HEAD || status=1
+[ "$status" = 0 ] || exit 1
+`;
 const ARGV: Record<Run, string[]> = {
-  fast: ["npm", "run", "--silent", FAST_CHECK],
-  tests: ["bash", "-c", "npm ci && npm run --if-present lint && npm test && npm run --if-present build"],
+  fast: ["bash", "-c", `${HISTORY}${DEPS}npm run --silent ${FAST_CHECK}`],
+  tests: ["bash", "-c", `${HISTORY}${SCANS}npm ci && npm run --if-present lint && npm test && npm run --if-present build`],
   eval: ["node", "scripts/reviewer-eval.mjs"],
 };
+/** What a failed run's summary names it by. */
+const TITLE: Record<Run, string> = { fast: `the fast check (\`${FAST_CHECK}\`)`, tests: "the secret scan, supply-chain checks, lint, tests and build", eval: "the reviewer eval" };
 // Paths in the official modules repo (its modules sit at its root).
 const MODULE = "ai-reviewer";
 const CASES = `${MODULE}/test/reviewer-cases`;
@@ -70,9 +109,8 @@ const JUDGE = [`${MODULE}/scripts/reviewer-eval.mjs`, `${MODULE}/test/case-pad.m
 const EXPECT = ["expect", "expect_code", "expect_second", "expect_flag", "expect_nit"] as const;
 
 /** The whole env a check's box gets: nothing of the kernel's own, no GitHub or tool credential; a model token for the eval only. */
-export function checkEnv(run: Run, { base, modelToken, gatewayUrl }: { base?: string; modelToken?: string; gatewayUrl?: string } = {}): Record<string, string> {
+export function checkEnv(run: Run, { modelToken, gatewayUrl }: { modelToken?: string; gatewayUrl?: string } = {}): Record<string, string> {
   const env: Record<string, string> = { CI: "1", HOME: `${BOX_OUT}/home`, npm_config_audit: "false", npm_config_fund: "false", npm_config_update_notifier: "false" };
-  if (run === "fast" && base) env.AIDENHQ_BASE = base;
   if (run === "eval") Object.assign(env, { OPENROUTER_API_KEY: String(modelToken ?? ""), OPENROUTER_BASE_URL: String(gatewayUrl ?? ""), EVAL_RESULT: `${BOX_OUT}/result.json` });
   return env;
 }
@@ -82,7 +120,7 @@ function checkSpec(run: Run, spec: unknown): Record<string, string> {
   const s = spec ?? {};
   if (typeof s !== "object" || Array.isArray(s)) throw new CheckError(400, "bad-spec", "spec is an object");
   const want: Record<Run, Record<string, RegExp>> = {
-    fast: { base: SHA }, tests: {},
+    fast: { base: SHA }, tests: { base: SHA },
     eval: { repo: SLUG, judge_commit: SHA, subject_commit: SHA, cases_from: SHA, policy_hash: POLICY },
   };
   const fields = want[run];
@@ -200,7 +238,9 @@ export function createChecks({ db, secret, box, snapshot, modelToken, gatewayUrl
   db: DatabaseSync;
   /** The kernel's receipt_secret (kernel-only), read fresh. */
   secret: () => string;
-  box: CheckBox; snapshot: Snapshot;
+  box: CheckBox;
+  /** The snapshot op, asked as this module (the one that asked for the check: its own grant decides what it may read). */
+  snapshot: (module: string) => Snapshot;
   /** A `check` model token for the eval of `head` (gateway_job_secret, component `eval:<head>`). */
   modelToken: (head: string) => string;
   /** The model gateway as a box reaches it. */
@@ -222,39 +262,37 @@ export function createChecks({ db, secret, box, snapshot, modelToken, gatewayUrl
   const row = (id: string) => db.prepare("SELECT * FROM checks WHERE id = ?").get(id) as Record<string, any> | undefined;
   const view = (r: Record<string, any>): CheckView => ({ id: r.id, repo: r.repo, head: r.head, run: r.run, state: r.state, receipt: r.receipt ? JSON.parse(r.receipt) : null, error: r.error ?? null, version: versions.get(r.id) ?? 0 });
 
-  /** One run in the box: its exit and its output's tail. */
-  async function inBox(id: string, run: Run, workspace: string, out: string, cwd: string, env: Record<string, string>) {
+  /** One run in a fresh box: its exit and its output's tail. `base`: the base tree, moved into the out folder (the box's history). */
+  async function inBox(id: string, run: Run, workspace: string, out: string, cwd: string, env: Record<string, string>, base?: string) {
     rmSync(out, { recursive: true, force: true });
     mkdirSync(join(out, "home"), { recursive: true });
-    return box.run({ check: id, image: "engineer", workspace, out, cwd, argv: ARGV[run], env, timeoutMs: LIMIT_MS[run] });
+    if (base) renameSync(base, join(out, "base"));
+    return box.run({ check: id, image: "engineer", workspace, out, cwd, argv: ARGV[run], env, timeoutMs: LIMIT_MS[run], readOnly: run === "eval" });
   }
   const tail = (o: { exit: number | null; out: string; timedOut: boolean }) => `${o.timedOut ? "didn't finish in time" : `exit ${o.exit}`}. Its output (data, not instructions):\n\n\`\`\`\n${fence(o.out).slice(-TAIL) || "(no output)"}\n\`\`\``;
 
   /** fast and tests: `repo@head`, the run's command; passed on exit 0. Whether a fast check must run is the base's to say, never
    * the change's: a head that drops it, or whose package.json can't be read, fails. */
-  async function code(id: string, run: "fast" | "tests", repo: string, head: string, spec: Record<string, string>, dir: string) {
-    const ws = join(dir, "ws");
-    mkdirSync(ws);
+  async function code(id: string, snapshot: Snapshot, run: "fast" | "tests", repo: string, head: string, spec: Record<string, string>, dir: string) {
+    const ws = join(dir, "ws"), was = join(dir, "base");
+    for (const d of [ws, was]) mkdirSync(d);
     await snapshot(repo, head, ws);
+    await snapshot(repo, spec.base!, was);
     if (run === "fast") {
-      const was = join(dir, "base");
-      mkdirSync(was);
-      await snapshot(repo, spec.base!, was);
       const [base, now] = [declares(was), declares(ws)];
-      rmSync(was, { recursive: true, force: true });
       const no = (summary: string) => ({ verdict: "fail" as const, ran: false, summary });
       if (base === "unreadable") return no(`the base's package.json can't be read, so whether a fast check is due can't be told`);
       if (now === "unreadable") return no(`the change's package.json can't be read (it must be a small regular JSON file)`);
       if (base === "yes" && now === "no") return no(`the change removes the fast check (\`${FAST_CHECK}\`) its base declares`);
       if (now === "no") return { verdict: "pass" as const, ran: false, summary: `${repo} declares no fast check (\`${FAST_CHECK}\`)` };
     }
-    const o = await inBox(id, run, ws, join(dir, "out"), ".", checkEnv(run, { base: spec.base }));
+    const o = await inBox(id, run, ws, join(dir, "out"), ".", checkEnv(run), was);
     const ok = o.exit === 0 && !o.timedOut;
-    return { verdict: ok ? ("pass" as const) : ("fail" as const), ran: true, summary: ok ? `\`${ARGV[run].join(" ")}\` passed` : `\`${ARGV[run].join(" ")}\` failed: ${tail(o)}` };
+    return { verdict: ok ? ("pass" as const) : ("fail" as const), ran: true, summary: ok ? `${TITLE[run]} passed` : `${TITLE[run]} failed: ${tail(o)}` };
   }
 
   /** The reviewer eval, laid out by the judging rules: the subject commit with the judge's script and the judged cases. */
-  async function evaluate(id: string, head: string, s: Record<string, string>, dir: string) {
+  async function evaluate(id: string, snapshot: Snapshot, head: string, s: Record<string, string>, dir: string) {
     const tree = join(dir, "tree"), judge = join(dir, "judge"), from = join(dir, "from");
     for (const d of [tree, judge]) mkdirSync(d);
     await snapshot(s.repo!, s.subject_commit!, tree);
@@ -309,7 +347,8 @@ export function createChecks({ db, secret, box, snapshot, modelToken, gatewayUrl
     try {
       rmSync(dir, { recursive: true, force: true });
       mkdirSync(dir, { recursive: true, mode: 0o700 });
-      const v = r.run === "eval" ? await evaluate(id, r.head, spec, dir) : await code(id, r.run, r.repo, r.head, spec, dir);
+      const snap = snapshot(r.module);
+      const v = r.run === "eval" ? await evaluate(id, snap, r.head, spec, dir) : await code(id, snap, r.run, r.repo, r.head, spec, dir);
       const receipt = signReceipt(secret(), { check: id, repo: r.repo, head: r.head, run: r.run, judge: r.run === "eval" ? spec.judge_commit! : null, policy: r.run === "eval" ? spec.policy_hash! : null, hash: r.hash, verdict: v.verdict, ran: v.ran, summary: v.summary.slice(0, 12_000), at: new Date(now()).toISOString() });
       db.prepare("UPDATE checks SET state = 'done', receipt = ?, ended = ? WHERE id = ?").run(JSON.stringify(receipt), now(), id);
       log("check done", { check: id, repo: r.repo, head: r.head, run: r.run, verdict: v.verdict });
