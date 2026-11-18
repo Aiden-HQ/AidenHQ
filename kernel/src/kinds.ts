@@ -123,6 +123,7 @@ export const KERNEL_KINDS: Record<string, Kind> = {
   // An apply is always read by the reviewer first (floor 1); a push, a PR, a merge and a new repo by what they touch (runnerFacts).
   // A new repository grows the agents org: the reviewer and a second one always (tiers.mjs createRepoParts).
   ...Object.fromEntries(Object.entries(RUNNER_ARGS).map(([k, args]) => [`runner.${k}`, { module: "runner", floor: k === "create_repo" ? 1 : 0, ...(k === "create_repo" ? { panel: true } : {}), tools: [], args, runner: true } as Kind])),
-  "kernel.apply": { module: "kernel", floor: 1, tools: [], args: APPLY_ARGS, runner: true },
+  // kernel.apply: planned by the kernel (apply-tier.ts) once the switch drops `runner`; its files raise it by the path inventory.
+  "kernel.apply": { module: "kernel", floor: 1, paths: true, tools: [], args: APPLY_ARGS, runner: true },
   "kernel.raise_cap": { module: "kernel", floor: 2, tools: [], args: RAISE_ARGS },
 };

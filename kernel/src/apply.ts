@@ -85,8 +85,12 @@ export function applyIsBusy(repoPath: string): Promise<boolean> {
 
 /** Where the code host reads the commit: its own copy when it made it, else the task's workspace (the record's identifier). */
 export type Source = { repo: string; branch: string; sha: string; workspace?: string };
-/** What the code host read at the commit: the files it changes against main, and the agent.yaml texts the trial check needs. */
-export type Read = { files: string[]; agents: { base: Record<string, string>; head: Record<string, string> } };
+/**
+ * What the code host read at the commit, against its merge base with the instance's main: the files it changes, the texts the
+ * rules read on both sides (each changed file, the agent.yaml of each agent it touches, and instance.yaml; absent where the
+ * file isn't), the diff, and the graduation card's trial edits (handbook commits since an agent's trial began; "" if none).
+ */
+export type Read = { files: string[]; texts: { base: Record<string, string>; head: Record<string, string> }; diff: string; trial?: string };
 /** A unit as `systemctl --user show` reads it. */
 export type Unit = { loaded: boolean; active: string; sub: string; result: string };
 /** One line of generations.jsonl (ops/lib/generations.sh). */
@@ -150,7 +154,7 @@ export function createApply({ db, codehost, launch, unit, generations, busy, tai
       if ([...c.files].sort().join("\n") !== [...a.files].sort().join("\n")) return { ok: false, text: "Not applied: the commit no longer changes the files that were approved; it needs a new approval." };
       const stray = strayFiles(c.files);
       if (stray.length) return { ok: false, text: `Not applied: it changes files outside the instance config (${stray.join(", ")}).` };
-      const untrialed = untrialedNewAgents(c.files, c.agents.base, c.agents.head);
+      const untrialed = untrialedNewAgents(c.files, c.texts.base, c.texts.head);
       if (untrialed.length) return { ok: false, text: `Not applied: a new agent must start in trial (${untrialed.join(", ")}).` };
       const { landed } = await codehost.land(src);
       db.prepare("UPDATE applies SET landed = ? WHERE record = ?").run(landed, r.id);

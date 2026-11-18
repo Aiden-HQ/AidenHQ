@@ -42,7 +42,7 @@ const until = async (fn) => { for (let i = 0; i < 300 && !(await fn()); i++) awa
 function fakeHost({ files = ["instance.yaml"] } = {}) {
   const h = {
     launches: [], lands: [], units: {}, gens: [{ n: 1, instance: "e".repeat(40), health: "good" }], hang: false,
-    codehost: { read: async () => ({ files, agents: { base: {}, head: {} } }), land: async (s) => (h.lands.push(s), { landed: s.sha }) },
+    codehost: { read: async () => ({ files, texts: { base: {}, head: {} }, diff: "" }), land: async (s) => (h.lands.push(s), { landed: s.sha }) },
     launch: async (u) => { h.launches.push(u); h.units[u] = { loaded: true, active: "active", sub: "running", result: "success" }; },
     // A kernel that hangs here is one the apply has just restarted: it never sees the unit end.
     unit: (u) => (h.hang ? new Promise(() => {}) : Promise.resolve(h.units[u] ?? { loaded: false, active: "inactive", sub: "dead", result: "success" })),

@@ -25,7 +25,13 @@ export type Schema = { type?: string; properties?: { [k: string]: Schema }; requ
  * runner plans it (it files with its plan), claims it and reports its outcome.
  */
 export type Kind = { module: string; floor: Tier; panel?: boolean; paths?: boolean; tools: string[]; card?: Partial<Card>; args?: Schema; executor?: { url: string; auth_secret: string; rev?: string }; runner?: boolean };
-type Plan = { args: unknown; targets?: { [k: string]: unknown }; facts?: { [k: string]: unknown }; raise?: Raise; paths?: unknown; card?: { [k: string]: string }; satisfied?: { evidence: string } };
+/**
+ * A plan (executor@1's, or the kernel's own planner's). `review_first` with a Tier 2 raise: how the reviewer's verdict on it
+ * stands ("final": its reject is final, its approve goes on to the owner; "owner", the default: both go on to the owner).
+ */
+type Plan = { args: unknown; targets?: { [k: string]: unknown }; facts?: { [k: string]: unknown }; raise?: Raise; review_first?: ReviewFirst; paths?: unknown; card?: { [k: string]: string }; satisfied?: { evidence: string } };
+/** The kernel's own planner for one of its kinds (kernel.apply: apply-tier.ts), in place of an executor's plan. */
+export type Planner = (b: { kind: string; args: unknown; requester: Requester; task: string }) => Promise<Plan>;
 /**
  * The runner's plan for its own kind (it is that kind's planner until 3d): the tier its classifier gave on the merits,
  * whether and how the record is review-first, and the card text. A proposal only: the kernel raises it by what it derives
@@ -81,7 +87,7 @@ const hash = (s: string) => createHash("sha256").update(s).digest("hex");
 const UNSURE = "reviewer_unsure";
 const MODEL = /^~?[\w.-]+\/[\w.:-]+$/;
 
-export function createWrites({ records, registry, connections, secret, resolver, reviews, autonomy = () => "full", repos = () => ({}), paths = () => undefined, onTask, replay, native = {}, resume = [], log = () => {} }: {
+export function createWrites({ records, registry, connections, secret, resolver, reviews, autonomy = () => "full", repos = () => ({}), paths = () => undefined, onTask, replay, native = {}, planners = {}, resume = [], log = () => {} }: {
   records: Records; registry: () => { [kind: string]: Kind }; connections: () => { [c: string]: Connection }; secret: (n: string) => string; resolver: Resolver;
   /** The bound reviewer module (reviews.ts): every record's review goes there. */
   reviews?: Reviews;
@@ -96,6 +102,8 @@ export function createWrites({ records, registry, connections, secret, resolver,
   replay: (r: Rec) => Promise<{ ok: boolean; text: string }>;
   /** The kernel's own executors, by kind (kernel.raise_cap). */
   native?: { [kind: string]: (r: Rec) => Promise<{ ok: boolean; text: string }> };
+  /** The kernel's planners for its own kinds (kernel.apply): filed through request() like a module kind, planned here. */
+  planners?: { [kind: string]: Planner };
   /** Native kinds whose executor carries on from where it was: a claimed record of one is run again after a restart (kernel.apply). */
   resume?: string[];
   log?: (msg: string, f?: { [k: string]: unknown }) => void;
@@ -164,10 +172,12 @@ export function createWrites({ records, registry, connections, secret, resolver,
   /** Plan, tier, card and file. Tier 0 comes back claimed (the caller executes it); `satisfied` comes back done. */
   async function file(kind: string, k: Kind, requester: Requester, args: unknown, task: string, evidence?: unknown): Promise<Rec> {
     const executor = { module: k.module, url: k.executor?.url, ...(k.executor?.rev ? { rev: k.executor.rev } : {}) };
-    const plan: Plan = await call(k, "plan", { kind, args, requester, task, ...(evidence !== undefined ? { evidence } : {}) });
+    const own = Object.hasOwn(planners, kind) ? planners[kind] : undefined;
+    const plan: Plan = own ? await own({ kind, args, requester, task }) : await call(k, "plan", { kind, args, requester, task, ...(evidence !== undefined ? { evidence } : {}) });
     if (k.args) validate(k.args, plan.args);
     const targets = plan.targets ?? {};
-    const card = render(k.card ?? {}, { ...(plan.args && typeof plan.args === "object" ? plan.args : {}), ...plan.facts, ...plan.card });
+    // The kernel's planner writes its card whole; a module's kind renders its manifest's templates.
+    const card = render(own ? literal(plan.card ?? {}) : k.card ?? {}, { ...(plan.args && typeof plan.args === "object" ? plan.args : {}), ...plan.facts, ...plan.card });
     const base = { kind, module: k.module, args: plan.args, targets, executor, policy: policy(k), card, requester, task };
     if (plan.satisfied) {
       const r = records.file({ ...base, tier: 0, panel: false, state: "claimed" });
@@ -176,7 +186,8 @@ export function createWrites({ records, registry, connections, secret, resolver,
     }
     const raise = plan.raise && (plan.raise.tier === 1 || plan.raise.tier === 2) ? plan.raise : undefined;
     const byPaths = k.paths ? writeRaise(paths(), plan.paths, repoKindOf) : undefined;
-    const t = computeTier({ floor: k.floor, raise, ...(byPaths ? { checkRaises: [byPaths] } : {}), priorVeto: task ? records.vetoed(task, kind, { digest: digestOf(base) }) : false, autonomy: autonomy(), routine: await routineOf(task), panel: k.panel === true });
+    const reviewFirst: ReviewFirst = plan.review_first === "final" ? "final" : "owner";
+    const t = computeTier({ floor: k.floor, raise, reviewFirst, ...(byPaths ? { checkRaises: [byPaths] } : {}), priorVeto: task ? records.vetoed(task, kind, { digest: digestOf(base) }) : false, autonomy: autonomy(), routine: await routineOf(task), panel: k.panel === true });
     if (t.tier > 0 && !task) throw fail(400, "no_task", `${kind} needs approval: pass your current task`);
     // The same requester's same request still open on the task is that record, never a second card that would run twice,
     // while it is at least as strict (tier and panel). A stricter one replaces it only while it waits for the reviewer; a
@@ -340,10 +351,12 @@ export function createWrites({ records, registry, connections, secret, resolver,
     /** POST /v1/writes, and the proxy for a tool mapped to a kind. */
     async request(who: Identity, { kind, args, task, evidence }: { kind: string; args: unknown; task?: string; evidence?: unknown }): Promise<Rec> {
       const k = kindOf_(kind);
-      if (!k || k.runner || !k.executor) throw fail(404, "unknown_kind", `no write kind ${kind}`);
+      if (!k || k.runner || !(k.executor || Object.hasOwn(planners, kind))) throw fail(404, "unknown_kind", `no write kind ${kind}`);
       // A job only by the kinds its token names (its minter names them), on the token's task; its tier is the kind's, as any
-      // requester's (floor, the executor's plan, caps and the routine cap: computeTier).
-      const granted = (who.kind === "module" && who.module === k.module) || (who.kind === "job" ? Boolean(who.task && who.writes?.includes(kind)) : k.tools.some((ct) => { const [c, t] = ct.split("."); return who.tools[c!]?.includes(t!); }));
+      // requester's (floor, the executor's plan, caps and the routine cap: computeTier). A module files its own kinds, and
+      // another's (the kernel's) only by holding the role named after the kind (kernel.apply), which compile grants from its
+      // manifest's roles.requests and the authority diff judges.
+      const granted = (who.kind === "module" && (who.module === k.module || (who.roles ?? []).includes(kind))) || (who.kind === "job" ? Boolean(who.task && who.writes?.includes(kind)) : k.tools.some((ct) => { const [c, t] = ct.split("."); return who.tools[c!]?.includes(t!); }));
       if (!granted) throw fail(403, "no-grant", `no grant on ${kind}`);
       // An agent's record is on the task its run is on (its notices land there, as the owner); only a module names one.
       const t = who.kind === "module" && typeof task === "string" && task ? task : who.task ?? "";
