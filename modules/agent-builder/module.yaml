@@ -2,7 +2,7 @@ name: agent-builder
 description: "The Agent Architect (designs, builds and improves agents; reviews agents in trial) and the agent templates it starts from."
 roles:
   declares:
-    - { id: architect, description: "Its Platform Engineer tasks may use the trial exception (the runner reads it from the grants table)." }
+    - { id: architect, description: "Its Engineer tasks may use the trial exception (the runner reads it from the grants table)." }
     - { id: repo-checkout, description: "A commit of an agents-org repo placed in its computer (services/computer/launcher.mjs POST /repo)." }
 agents:
   architect:
@@ -15,7 +15,7 @@ agents:
     model: ~deepseek/deepseek-flash-latest
     reasoning_effort: max
     timeout_sec: 3600
-    # No fleet tools or other roles: it changes the fleet only by delegating to the Platform Engineer, whose change waits for the
+    # No fleet tools or other roles: it changes the fleet only by delegating to the Engineer, whose change waits for the
     # owner's tap (an approval record). It can't grant itself anything: its own grants live here, in the product.
     # Research (read access to every source, and the web): reads only, so it still changes nothing itself.
     connections:
@@ -31,7 +31,7 @@ agents:
       ops_mcp?: [ obsidian_search, obsidian_read, obsidian_read_document_map, voice_note_read, knowledge_list, knowledge_index, knowledge_search, knowledge_read ]
       paperclip_tasks: [ task_current, task_get, task_comments, task_files, task_file_read, task_search, task_list, task_approvals, task_team, fleet_catalog, task_delegate, task_comment, task_handoff, task_set_status, task_finish ]
     heartbeat: true
-    # architect: handbook-only edits to agents in trial on its Platform Engineer tasks land without a tap (the runner checks).
+    # architect: handbook-only edits to agents in trial on its Engineer tasks land without a tap (the runner checks).
     # repo-checkout: the instance repo's agents/ and handbooks, read-only, once the Architect has a computer (`image:`).
     roles: [ architect, repo-checkout ]
 routines:

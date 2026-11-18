@@ -12,7 +12,7 @@ roles:
   declares:
     - { id: fleet-read, description: "The board's fleet status and the detector's incidents only (never fleet_control or relaying the owner's words)." }
     - { id: fleet-audit, description: "Read any agent's evidence (the fleet_steward connection's coach_* reads) and keep a review log (tasks bridge coach_record)." }
-    - { id: librarian, description: "Read every handbook, decide proposed identity links, hand rule proposals to the Platform Engineer (tasks bridge, apps-mcp)." }
+    - { id: librarian, description: "Read every handbook, decide proposed identity links, hand rule proposals to the Engineer (tasks bridge, apps-mcp)." }
 settings:
   # Minutes between the detector's checks (lower while developing). The detector files a check task for the Steward only when a
   # threshold trips or recovers, at most once per 30 minutes unless an app or apps-mcp is down or a critical alert fires
@@ -46,9 +46,9 @@ agents:
       # The detector's open and recovered incidents (fleet-read), the Coach's reads (fleet-audit) and the apply generations.
       fleet_steward: [ fleet_detector, coach_due, coach_evidence, fleet_generation_status ]
     # It reads untrusted content broadly: the tasks module lets it assign work only to these. Fixes are theirs, under tiers:
-    # the Platform Engineer (rules, product and instance changes), an app's owner (app-owners; the
+    # the Engineer (rules, product and instance changes), an app's owner (app-owners; the
     # DevOps Engineer for an app with none), the Agent Architect (an agent's definition), the Maintainer (product bugs upstream).
-    delegate_to: [ fleet-engineer, app-maintainer?, app-owners, architect?, maintainer? ]
+    delegate_to: [ engineer, app-maintainer?, app-owners, architect?, maintainer? ]
     roles: [ fleet-read, fleet-audit, librarian ]
 # Routine titles stay as they were: setup matches routines by title. The check task itself is filed by the service (kernel.tasks).
 routines:
@@ -92,7 +92,7 @@ routines:
     title: "Agent Coach: weekly prune"
     agent: fleet-steward
     description: |
-      Today is {{date}}. Follow your handbook-prune skill: one task for the Platform Engineer listing dead handbook text
+      Today is {{date}}. Follow your handbook-prune skill: one task for the Engineer listing dead handbook text
       to delete, or a "nothing to prune" note. Then close this task with one line.
     concurrency: skip_if_active
     schedules:

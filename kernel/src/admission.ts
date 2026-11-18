@@ -14,6 +14,9 @@ import type { Skill } from "./sandbox.ts";
 
 export const PROFILES = ["crew", "engineer", "check"] as const;
 export type Profile = (typeof PROFILES)[number];
+/** The role the code host reads as the product line (requester.platform), and the roles whose filed tasks may carry it (the Architect, the Fleet Steward). */
+const PLATFORM = "platform-engineer";
+const PLATFORM_FILERS = ["architect", "fleet-audit"];
 /** The computer image a profile's jobs run in when the agent names none (`image:` wins). */
 const IMAGE: Record<Profile, string> = { crew: "agent-base", engineer: "engineer", check: "engineer" };
 
@@ -59,7 +62,7 @@ export function createAdmission({ db, grants, kinds, capacity, spend, mayDispatc
   /** What the task's last job asked of this turn (jobtools.ts): read in the transaction, spent once the job has started. */
   nextTurn: Pick<JobTools, "pending" | "taken" | "refusal">;
   /** Kernel provenance (provenance.ts): a task the kernel's plugin made runs only with its provenance row. */
-  provenance: { settled(issue: { id: string; originKind?: string | null; originId?: string | null }): boolean };
+  provenance: { settled(issue: { id: string; originKind?: string | null; originId?: string | null }): boolean; filedBy(issue: { id: string; originKind?: string | null; originId?: string | null }): string | undefined };
   /** The task's routine cap as the kernel traces it now (tier.ts taskRoutineCap): frozen on the job row at admission. */
   routineCap: (task: string) => Promise<RoutineCap | undefined>;
   /** kernel.db, with the jobs table (jobs.ts) already made. */
@@ -80,7 +83,13 @@ export function createAdmission({ db, grants, kinds, capacity, spend, mayDispatc
   log: (msg: string, fields?: Record<string, unknown>) => void;
 }) {
 
-  function freeze(g: AgentGrant, cause: string): Authority {
+  /** Platform authority belongs to the task: a job holds the platform-engineer role only on a task no agent filed, or one the Architect or the Fleet Steward filed. */
+  function platformTask(t: Parameters<typeof provenance.filedBy>[0]): boolean {
+    const by = provenance.filedBy(t);
+    return by === undefined || (by !== "" && (grants()[by]?.roles ?? []).some((r) => PLATFORM_FILERS.includes(r)));
+  }
+
+  function freeze(g: AgentGrant, cause: string, platform: boolean): Authority {
     const profile: Profile = g.profile ?? "crew";
     if (!PROFILES.includes(profile)) throw new JobError(403, "bad-profile", `profile ${profile} isn't one of ${PROFILES.join(", ")}`);
     const key = /^routine:(.+)$/.exec(cause)?.[1];
@@ -96,7 +105,7 @@ export function createAdmission({ db, grants, kinds, capacity, spend, mayDispatc
     return {
       profile, image: g.image ?? IMAGE[profile], engine: String(g.engine ?? ""), engines: [...(g.engines ?? [g.engine ?? ""])].filter(Boolean), model: String(routine?.model ?? g.model ?? ""), effort: String(routine?.effort ?? g.effort ?? ""),
       models: [...(g.models ?? [])], skills: (g.skills ?? []).map((k) => ({ ...k })), tools, jobcaps: profile === "check" ? [] : [...(g.jobcaps ?? [])], writes,
-      roles: profile === "check" ? [] : rolesOf(g), reads: g.private_reads === true,
+      roles: profile === "check" ? [] : rolesOf(g).filter((r) => platform || r !== PLATFORM), reads: g.private_reads === true,
       web: g.private_reads !== true && g.web_search !== "disabled",
     };
   }
@@ -133,7 +142,7 @@ export function createAdmission({ db, grants, kinds, capacity, spend, mayDispatc
       if (mine >= (g.max_parallel ?? 1)) throw new JobError(429, "busy", `agent ${agent} already runs ${mine} job(s), its max_parallel`);
       const over = spend(agent, task);
       if (over.length) throw new JobError(429, "over-cap", `the ${over.map((o) => o.scope).join(", ")} spend cap is used up`);
-      const authority = freeze(g, w.cause);
+      const authority = freeze(g, w.cause, platformTask(t));
       // The last job's `aidenhq engine`: applied when the agent may still run it now, else ignored loudly (refusing would
       // wedge the task: the request would stand at every retry). Never widens `models`.
       const asked = nextTurn.pending(task);

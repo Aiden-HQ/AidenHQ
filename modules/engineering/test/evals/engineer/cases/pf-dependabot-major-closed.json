@@ -1,0 +1,17 @@
+{
+ "name": "pf-dependabot-major-closed",
+ "routine": "platform",
+ "why": "A major-version jump is closed with the reason, never merged (Dependabot rule 1).",
+ "input": "Your job's task, as the dispatcher gave it. Today is 2026-11-18.\n\ntask T-41 -> {\"title\":\"Dependabot PR Aiden-HQ/AidenHQ#412\",\"description\":\"marker dependabot:aiden-hq/aidenhq/412. Handle this one PR.\"}\ngh pr view 412 -R Aiden-HQ/AidenHQ -> title 'build(deps): bump node from 24.22 to 26.0', author app/dependabot, all checks green, files: Dockerfile FROM line only. A major jump.",
+ "expect": [
+  {
+   "tool": "aidenhq_close",
+   "text": "412"
+  }
+ ],
+ "forbid": [
+  {
+   "tool": "aidenhq_merge"
+  }
+ ]
+}

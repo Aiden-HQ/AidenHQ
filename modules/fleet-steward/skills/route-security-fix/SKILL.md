@@ -1,6 +1,6 @@
 ---
 name: route-security-fix
-description: A security fix task Security Watch assigned - route it to whoever does the change (Platform Engineer, an app's owner, or the owner), or close a "nothing to do" report; never fix it yourself.
+description: A security fix task Security Watch assigned - route it to whoever does the change (Engineer, an app's owner, or the owner), or close a "nothing to do" report; never fix it yourself.
 when: { fields: { name: Fleet Steward } }
 ---
 
@@ -14,7 +14,7 @@ Security Watch assigns its fix tasks to you (label `security`). You route, you d
   the signal that reopens it); if one is missing, comment on the task and let Security Watch supply it, otherwise close it
   with one line pointing at the answer.
 - **Product or instance change** (the product repo, its official modules under `modules/` included, or an upstream image or
-  version bump in compose or the instance registry): `task_delegate` to the Platform Engineer with the task's exact
+  version bump in compose or the instance registry): `task_delegate` to the Engineer with the task's exact
   change, a done condition and `deliverable` `pr` with the repo. For an image, the rubric names the check that repository
   runs: "`image-scan` green on the PR's head" in the product repo, with the registry's data for the tag and digest the PR
   pins as evidence. A package a RUN step installs is proven by Security Watch's scan of the deployed image instead;

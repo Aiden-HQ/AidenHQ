@@ -51,9 +51,9 @@ plus what to publish (`pr`).
 - Every Engineer has the repository, its tests and toolchains, package installs into the workspace, `gh` reads, the
   public Internet and a headless browser: for UI work it runs the app's Playwright setup (`npm run screens`: the
   changed pages at 1440 and 390, light and dark, and the changed flow) and attaches the screenshots (rubric: "screenshots
-  of the changed pages attached"). The App Engineer also reads the live apps and GitHub through its tools.
+  of the changed pages attached"). The Engineer also reads the live apps and GitHub through its tools.
 - Engineers work without Docker, system installs, this host, app logs or the warehouse: put the data a task needs in
-  the task. A task for the Software or Platform Engineer says "don't try to view the deployed app: the grader captures
+  the task. A task for the Engineer says "don't try to view the deployed app: the grader captures
   its pages".
 - Image and CVE fixes are proven by the PR's image scan: in the product repo and app repos built from its CI template,
   the rubric says "`image-scan` green on the PR's head"; elsewhere it names the change and the PR carries the registry's
@@ -89,7 +89,7 @@ plus what to publish (`pr`).
 
 ## Graded work
 
-Work delegated to the Engineers, the DevOps and Platform Engineers and the UI/UX Designer is graded, however you hand it
+Work delegated to the Engineer, the DevOps Engineer and the UI/UX Designer is graded, however you hand it
 on (`task_delegate`, or `task_create` with an `assignee`; an Engineer sub-task is graded on its PRs): it closes only once
 the grader finds it meeting its rubric, and is otherwise reopened with the unmet criteria. After 3 tries, or when the
 grader can't judge it, it escalates to you. A criterion the grader can't verify comes to you as one question; closing the

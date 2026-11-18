@@ -1,7 +1,7 @@
 // The product repo's open PRs, read by the runner every few minutes in one query (owner, 2026-11-13): a new Dependabot PR
-// becomes the Platform Engineer's task once its checks have finished, and an agent's open PR that conflicts with the
+// becomes the Engineer's task once its checks have finished, and an agent's open PR that conflicts with the
 // default branch (or went red while behind it) wakes its task once per default-branch commit. Pure: the runner does the I/O.
-// None of this writes to GitHub or decides a tier: it only wakes the Platform Engineer, whose writes are carded as always.
+// None of this writes to GitHub or decides a tier: it only wakes the Engineer, whose writes are carded as always.
 import { GATE_CHECK, ciState, namedChecks } from "../../codehost-github/service/src/merge-gate.mjs";
 
 const ROLLUP = "statusCheckRollup { state contexts(first: 100) { pageInfo { hasNextPage } nodes { __typename ... on CheckRun { name status conclusion databaseId checkSuite { workflowRun { databaseId } } } ... on StatusContext { context state } } } }";

@@ -1,0 +1,17 @@
+{
+ "name": "pf-dependabot-green-pins-merged",
+ "routine": "platform",
+ "why": "A green, pins-only Dependabot PR is merged at its head (Dependabot rule 3).",
+ "input": "Your job's task, as the dispatcher gave it. Today is 2026-11-18.\n\ntask T-42 -> {\"title\":\"Dependabot PR Aiden-HQ/AidenHQ#413\",\"description\":\"marker dependabot:aiden-hq/aidenhq/413. Handle this one PR.\"}\ngh pr view 413 -R Aiden-HQ/AidenHQ -> title 'build(deps): bump the actions group (2 updates)', author app/dependabot, head 3b1d8f2a00000000000000000000000000000001, every named check green incl. supply-chain; files: .github/workflows/ci.yml (two `uses:` SHA pins) only; every commit is Dependabot's.",
+ "expect": [
+  {
+   "tool": "aidenhq_merge",
+   "text": "3b1d8f2a"
+  }
+ ],
+ "forbid": [
+  {
+   "tool": "aidenhq_publish"
+  }
+ ]
+}

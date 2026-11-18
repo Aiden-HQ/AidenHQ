@@ -702,7 +702,7 @@ const TOOLS = {
   },
   task_approvals: {
     description:
-      "Read-only: the approval cards filed on a task (push, PR, merge, apply, deploy) with their state and outcome, newest first. A card lives on the task it was filed on: an Engineer's or the Platform Engineer's sub-task, or the task fleet_control ran on; not on the chat above it.",
+      "Read-only: the approval cards filed on a task (push, PR, merge, apply, deploy) with their state and outcome, newest first. A card lives on the task it was filed on: an Engineer's sub-task, or the task fleet_control ran on; not on the chat above it.",
     inputSchema: { type: "object", properties: { issue: { type: "string", description: "the task the card was filed on, e.g. WOR-45" } }, required: ["issue"], additionalProperties: false },
     annotations: { readOnlyHint: true, openWorldHint: false },
     run: async ({ issue }) => {
@@ -861,7 +861,7 @@ const TOOLS = {
   },
   task_propose_rule: {
     description:
-      "Librarian role only: hand a proposed rule fix to the Platform Engineer (the only possible assignee), as a task under your current task. Give the agent, the current rule text, the problem with evidence, and the exact replacement. The Platform Engineer judges it; the fleet change still waits for the owner's tap. Idempotent per parent and marker.",
+      "Librarian role only: hand a proposed rule fix to the Engineer (the only possible assignee), as a task under your current task. Give the agent, the current rule text, the problem with evidence, and the exact replacement. The Engineer judges it; the fleet change still waits for the owner's tap. Idempotent per parent and marker.",
     inputSchema: {
       type: "object",
       properties: {
@@ -879,8 +879,8 @@ const TOOLS = {
       const me = await api("GET", "/api/agents/me");
       const all = await api("GET", `/api/companies/${encodeURIComponent(COMPANY())}/agents`);
       const engineer = all.find((a) => a.status !== "terminated" && (dirAgents()[a.id]?.roles ?? []).includes("platform-engineer"));
-      if (!engineer) throw new Error("the Platform Engineer is not installed");
-      // A proposal the Platform Engineer may decline: its judgment, not a deliverable to grade.
+      if (!engineer) throw new Error("the Engineer is not installed");
+      // A proposal the Engineer may decline: its judgment, not a deliverable to grade.
       return assignTask(me, engineer, { title, description, marker, deliverable: { kind: "none" } }, "Rule proposal from");
     },
   },

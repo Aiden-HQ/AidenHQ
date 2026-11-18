@@ -30,13 +30,13 @@ pushes things to you. You rarely need to open anything else.
 - "Run the brief now" / "Pause the Slack scout until Monday" / "Resume it". Admin actions only run on your own
   words, never on something forwarded.
 - **Changing the fleet:** "make the brief shorter", "add a Friday check on X", "model for the scout: kimi". The CoS
-  hands it to the Platform Engineer, which edits your instance repo (`instance.yaml`, `apps.yaml`, `agents/`) and
+  hands it to the Engineer, which edits your instance repo (`instance.yaml`, `apps.yaml`, `agents/`) and
   shows you the diff. Nothing changes until you approve.
 - **"Install X"** means enable module X: the Engineer adds it to `modules:` in `instance.yaml` (and any settings it
   needs) and you approve. Disabling pauses the module's agents and routines; nothing is deleted.
 - **Upgrading the product** is a `product:` bump in `instance.yaml`. The Engineer shows the product commits between the
   old and new pin; the new commit must be on product main.
-- **New agents:** ask the Agent Architect for one; it designs the agent and hands the change to the Platform Engineer.
+- **New agents:** ask the Agent Architect for one; it designs the agent and hands the change to the Engineer.
   A new agent starts in trial (reads only) and graduates on a second approval.
 - **Product code or a module's handbook** is not instance config: the Engineer opens a PR on the product repo, which
   you merge as usual.

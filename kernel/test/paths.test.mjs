@@ -11,6 +11,7 @@ import YAML from "yaml";
 import { pathInventory } from "../../scripts/paths.mjs";
 import { authorityDiff } from "../../scripts/compiler/authority.ts";
 import { pathRaise, sensitivityOf } from "../src/paths.ts";
+import { GATE_CORE } from "../../modules/platform/src/check.mjs";
 import { serveExecutor } from "../sdk/src/executor.ts";
 import { kernel, serve } from "./helpers.mjs";
 
@@ -76,4 +77,9 @@ test("a repository write where the product repo isn't known is the owner's, what
   const handler = serveExecutor({ plan: async () => ({ args: {}, paths: [{ repo: "acme/aidenhq", files: [{ path: "kernel/src/tier.ts" }] }] }), execute: async () => ({ ok: true, text: "done" }) }, { key: "acme-key", kernelUrl: k.url });
   const r = await k.writes.request({ kind: "module", module: "acme", roles: [], tools: {} }, { kind: "acme.push", args: {}, task: "TASK-1" });
   assert.deepEqual([r.tier, r.rule], [2, "unknown-repos"]);
+});
+
+test("the platform check's module gate list and the inventory's panel paths under modules/ name the same files", () => {
+  const drift = modules.filter((f) => GATE_CORE.some((g) => g.test(f)) !== (sensitivityOf(inv, "product", f).sensitivity === "panel"));
+  assert.deepEqual(drift, []);
 });

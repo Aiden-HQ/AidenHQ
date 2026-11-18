@@ -1,8 +1,6 @@
 name: platform
 description: "The product's own gate: what a change to the product repo needs (the gate's core paths, role handbooks, module and compose files by content), the owner-approval records, and the Dependabot pin-only and supply-chain rule for product merges."
-roles:
-  declares:
-    - { id: platform-engineer, description: "The agent that makes fleet and product changes: settings changes, rule proposals and Dependabot PRs are filed to it." }
+requires: [ engineering ] # the Engineer holds the platform-engineer role its fork routine and pin bumps are filed to
 license: MIT
 # A check (P5, spec §3.5) at write.filed for the code host's pushes, PRs and merges: it raises or denies, never lowers.
 # src/check.mjs; the runner calls it in-process on every git write's tier today, and the kernel dispatches it at
@@ -22,39 +20,21 @@ check_jobs:
     title: the module's contract kit
     spec: { path: dir }
     cwd_from: path
-agents:
-  fleet-engineer:
-    department: platform
-    skills: [ engineering.write-code, engineering.supply-chain, apps-platform.design-system ]
-    # platform-engineer: settings changes, rule proposals and Dependabot tasks are filed to the agent holding it.
-    roles: [ platform-engineer ]
-    brief: true
-    graded: true
-    engine: codex-openrouter # Codex through the model gateway, in an agent computer
-    reasoning_effort: high
-    model: openrouter/~deepseek/deepseek-flash-latest
-    # Engineer jobs: the task's repositories cloned into its workspace and the code host's writes, in an `engineer` agent
-    # computer (gVisor), like every Engineer's (owner, 2026-11-18).
-    profile: engineer
-    image: engineer
-    isolation: code-exec
-    max_parallel: 3 # independent product and instance changes run side by side, each in its own task workspace
-    jobcaps: [ primer-read? ] # Primer through the model gateway, when the primer module is on
 # Carry-your-patch forks (spec §6.9b): once a fork's upstream PR is merged and an official sha contains it, the daily run
 # switches the instance back. Its apply card is tiered by code (leaving a fork is the reviewer's); no autonomy of its own.
 # Compiled only while instance.yaml has a fork (`when`), so an instance without one has no routine and no run.
 routines:
   fork-switchback:
     title: "Platform: fork switch-back"
-    agent: fleet-engineer
+    agent: engineer
     description: |
-      Today is {{date}}. Follow "Forks" in your instructions: switch each fork in instance.yaml back to official code once
+      Today is {{date}}. Follow your `forks` skill: switch each fork in instance.yaml back to official code once
       its upstream PR is merged and an official sha contains it. The pin moves to the newest commit of the product's main (or of the marketplace) that holds the merge, so the upgrade also carries the other official commits made since the old pin: that is the task, not a scope change. Close this task with one line per fork.
     concurrency: skip_if_active
     when: { forks: true }
     schedules:
       - { cron: "30 6 * * *", timezone: "${settings.timezone}", label: "daily" }
-# Improving the rules: proposals go to the Platform Engineer. With fleet-steward, product defects are logged for the Fleet
+# Improving the rules: proposals go to the Engineer. With fleet-steward, product defects are logged for the Fleet
 # Steward, which has the Maintainer report them upstream.
 prompts:
   - { id: improving, file: prompts/improving.md, order: first, when: { tools: [ paperclip_tasks.task_create ] }, unless: { fields: { trial: true } } }

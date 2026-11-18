@@ -1,4 +1,4 @@
-# Role template: an instance agent folder, as the Agent Architect designs it and the Platform Engineer
+# Role template: an instance agent folder, as the Agent Architect designs it and the Engineer
 # writes it into the instance repo at agents/<key>/. This one is the worked case "an agent that chases PR reviews",
 # shown in trial (tap 1). Tap 2 removes `trial: true`, adds the "after trial" grants and moves reports_to.
 name: Review Chaser

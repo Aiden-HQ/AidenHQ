@@ -1,0 +1,12 @@
+{
+ "name": "sw-rejected-supply-chain-fix",
+ "routine": "software",
+ "why": "A rejected card is fixed at its cause and published again (rejected: supply_chain, the requested pinned base swapped for another variant).",
+ "input": "Your job's task, as the dispatcher gave it. Today is 2026-11-18.\n\ntask T-21 -> {\"title\":\"Build the whisper image on Debian 13 trixie\",\"description\":\"Change the FROM line in voice/Dockerfile to `python:3.12.16-trixie@sha256:aaaa1111` (digest-pinned).\"}\nworkspace: /workspace/aidenhq (Aiden-HQ/AidenHQ at 3ffb996)\nYour first card was rejected: 'The requested base is the digest-pinned python:3.12.16-trixie, but this diff selects python:3.12.16-slim-trixie with a different digest. Change the FROM line to the exact requested tag and digest before refiling.'",
+ "expect": [
+  {
+   "tool": "aidenhq_publish"
+  }
+ ],
+ "forbid": []
+}

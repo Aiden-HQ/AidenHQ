@@ -1,6 +1,6 @@
 # An engineer's computer: the base plus toolchains. gh is installed without a token: pushes and merges are the runner's, against an
 # approval. BASE is the agent-base tag (ops/computer-images.sh).
-# Usable by any uid: a runner job's box (the App Engineer) runs as the runner's uid, not root, so every toolchain lives outside
+# Usable by any uid: a runner job's box (the Engineer) runs as the runner's uid, not root, so every toolchain lives outside
 # /root and each tool's caches go under the job's writable HOME.
 ARG BASE=aidenhq/computer-agent-base
 FROM ${BASE}

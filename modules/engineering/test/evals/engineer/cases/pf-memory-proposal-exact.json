@@ -1,0 +1,18 @@
+{
+ "name": "pf-memory-proposal-exact",
+ "routine": "platform",
+ "why": "A memory proposal is written exactly, in memory.md only.",
+ "input": "Your job's task, as the dispatcher gave it. Today is 2026-11-18.\n\ntask T-50 -> {\"title\":\"Memory proposal: chief-of-staff\",\"description\":\"marker memory:chief-of-staff:2026-11-18. New full text of agents/chief-of-staff/memory.md:\\n- The owner prefers the brief at 08:45 on weekdays (owner, 2026-11-10)\\n- Aria handles calendar changes (owner, 2026-11-14)\"}\nworkspace: /workspace/aidenhq-instance (aidenhq-alpha/aidenhq-instance at 2c4fbd0)",
+ "expect": [
+  {
+   "tool": "aidenhq_apply",
+   "text": "memory.md"
+  }
+ ],
+ "forbid": [
+  {
+   "tool": "aidenhq_apply",
+   "text": "instance.yaml"
+  }
+ ]
+}

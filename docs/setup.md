@@ -244,7 +244,7 @@ in at `http://localhost:3100` shows your company with Aiden in its org chart.
 
 Change config in one of two ways. Prefer the first:
 
-- **Ask Aiden.** "Install the slack module" or "set channels to web and telegram". The Platform Engineer edits the
+- **Ask Aiden.** "Install the slack module" or "set channels to web and telegram". The Engineer edits the
   instance repo and you approve the change with one tap.
 - **By hand.** Edit `~/aidenhq-instance/instance.yaml`, then
   `git -C ~/aidenhq-instance commit -am '<why>' && git -C ~/aidenhq-instance push origin main`, then
@@ -355,7 +355,7 @@ New agents come from the **Agent Architect**. Open the board's Agents tab and pr
 1. The Architect asks you questions (multiple choice, a few at a time), plays back what it understood, then shows the
    design in plain words: what it does, what it can read, what it may change later, its schedule. Press
    **Build it**.
-2. The Platform Engineer writes the change. **Tap 1** creates the agent **in trial**: it can only read and report.
+2. The Engineer writes the change. **Tap 1** creates the agent **in trial**: it can only read and report.
    A new install's `autonomy: full` lets the AI reviewer decide it when it is Tier 1; with `autonomy: off` it is an
    approval card on the board's Approvals page (and in Telegram): see [docs/design/approvals.md](design/approvals.md).
 3. The Architect reviews its work during the trial and fixes its handbook. After it passes your examples and two
@@ -411,7 +411,7 @@ Don't ask Aiden to "upgrade to the latest main" on a release install: main isn't
 that isn't the release's kernel.
 
 **Pinned by hand** (no `release:`, e.g. an instance tracking main): nothing updates itself. The easy way: ask Aiden to
-"upgrade the product to the latest main". The Platform Engineer shows the commits between the old and new pin, and you
+"upgrade the product to the latest main". The Engineer shows the commits between the old and new pin, and you
 approve.
 
 By hand:

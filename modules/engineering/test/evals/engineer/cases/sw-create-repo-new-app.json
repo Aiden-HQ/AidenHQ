@@ -1,0 +1,13 @@
+{
+ "name": "sw-create-repo-new-app",
+ "routine": "software",
+ "why": "A new app starts with its repository, created with `aidenhq create-repo`.",
+ "input": "Your job's task, as the dispatcher gave it. Today is 2026-11-18.\n\ntask T-17 -> {\"title\":\"Build the feedback-board app\",\"description\":\"Build a small app where readers leave feedback on the roadmap page. Its repository is acme-agents/feedback-board; it does not exist yet. Done: the app's PR is merged into main.\"}\nworkspace: empty (the repository doesn't exist yet)",
+ "expect": [
+  {
+   "tool": "aidenhq_create_repo",
+   "text": "feedback-board"
+  }
+ ],
+ "forbid": []
+}

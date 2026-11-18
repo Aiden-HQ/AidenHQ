@@ -73,11 +73,11 @@ a change that cuts text beats one that adds it).
 
 Where each goes:
 
-- **A rule in a module handbook or a shared section** (product code): `task_create` with `assignee: fleet-engineer`,
+- **A rule in a module handbook or a shared section** (product code): `task_create` with `assignee: engineer`,
   marker `coach:<agent key>:<slug>`, `deliverable` `pr` with `ref` the product repo, the finding in the format above.
 - **A rule under "Instance rules", a grant or a schedule:** the same `task_create` with `deliverable` `apply`.
 - **An agent's definition** (its mission, routines, skills or grants as a whole): `task_create` with `assignee: architect`
-  when the Agent Architect is in `fleet_catalog`, else the Platform Engineer, marker `coach:<agent key>:<slug>`.
+  when the Agent Architect is in `fleet_catalog`, else the Engineer, marker `coach:<agent key>:<slug>`.
 - **A product bug:** as the `fleet-check` skill says (a task for the Maintainer); name it in your review record.
 - **An app writer rule or check:** `task_create` with `assignee` the app's owning agent (`fleet_catalog` apps; the DevOps
   Engineer `app-maintainer` when none), marker `coach:<agent key>:<slug>`, `deliverable` `app` with the app's name.

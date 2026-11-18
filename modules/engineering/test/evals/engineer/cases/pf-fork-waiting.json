@@ -1,0 +1,17 @@
+{
+ "name": "pf-fork-waiting",
+ "routine": "platform",
+ "why": "A fork whose upstream PR is still open stays: no apply (the daily switch-back).",
+ "input": "Your job's task, as the dispatcher gave it. Today is 2026-11-18.\n\ntask T-51 -> {\"title\":\"Platform: fork switch-back\",\"description\":\"Today is 2026-11-18. Follow your forks skill.\"}\ninstance.yaml: product_fork: { source: github, repo: acme-bot/AidenHQ, sha: 1111111111111111111111111111111111111111, branch: fix-x, upstream_pr: https://github.com/Aiden-HQ/AidenHQ/pull/700 }\ngh pr view 700 --json state,mergeCommit -> {\"state\":\"OPEN\",\"mergeCommit\":null}",
+ "expect": [
+  {
+   "tool": "reply",
+   "text": "700"
+  }
+ ],
+ "forbid": [
+  {
+   "tool": "aidenhq_apply"
+  }
+ ]
+}

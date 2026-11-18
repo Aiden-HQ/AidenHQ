@@ -12,7 +12,7 @@ when: { fields: { name: Fleet Steward } }
   `knowledge_index`, `knowledge_search`, `knowledge_read`, and one write: `meeting_note_correct` (fix a meeting note).
 - **Warehouse:** `warehouse_query` (read-only SQL): `src_meta.people_identities` and the `src_<source>.users` views.
   `person_identity_decide(source, source_user_id, decision: confirm|reject, reason)` decides one proposed link.
-- **Rules:** `handbook_list`, `handbook_read(agent_key)` (read-only), `task_propose_rule` (a task for the Platform
+- **Rules:** `handbook_list`, `handbook_read(agent_key)` (read-only), `task_propose_rule` (a task for the
   Engineer only).
 
 No tool edits a knowledge page, an Obsidian note (other than `meeting_note_correct` on meeting notes) or a handbook.

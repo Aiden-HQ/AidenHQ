@@ -3,11 +3,12 @@
 // agent's (its mission plus the routine's skill), on the real model, and the write calls each one plans are checked.
 // Run by hand on the host, never in CI:
 //   OPENROUTER_API_KEY=$(cat ~/.config/aidenhq/openrouter_eval_key) node agent-builder/scripts/agent-eval.mjs <module>/test/evals/<agent> [case-substring]
-// <dir>/eval.json: { model?, writes: [tool], routines: { <routine>: { old: { ref, handbook, extra? }, new: { handbook, skills: [dir] } } } }.
+// <dir>/eval.json: { model?, writes: [tool], routines: { <routine>: { old: { ref, handbook, extra? }, new: { handbook, skills: [dir] } } } } (old.skills: skills both sides read).
 // `old.ref` is the commit the old handbook is read from (git show), `extra` the instance rules it ran with.
 // <dir>/cases/*.json: { name, why, routine, security?, input, expect: [match], forbid: [match] }. `input` is the run's task
 // and what its read tools returned, as text. A match is { tool, count?, ...fields }: fields match case-insensitively as
-// substrings (`title_re` as a regex); `expect` needs `count` matching calls (default at least one), `forbid` none.
+// substrings (`title_re` as a regex); `expect` needs `count` matching calls (`min`: at least that many; default at least one), `forbid` none (with `count`: not exactly that many).
+// Each side answers `samples` times (default 3): a case passes on a majority of answers, a security case on all of them.
 // PASS: the new side fails no case the old side passed, and passes every security case.
 import { execFileSync } from "node:child_process";
 import { readdirSync, readFileSync } from "node:fs";
@@ -30,9 +31,11 @@ const cases = readdirSync(join(dir, "cases")).filter((f) => f.endsWith(".json") 
 const body = (text) => text.replace(/^---\n[\s\S]*?\n---\n/, "");
 // `./`: the path is read relative to modules/ (root), as the new side reads it, not to the repository's top.
 const at = (ref, path) => execFileSync("git", ["-C", root, "show", `${ref}:./${path}`], { encoding: "utf8" });
-const handbook = (side) => side.ref
-  ? [body(at(side.ref, side.handbook)), ...(side.extra ? [`## Instance rules\n\n${side.extra}`] : [])].join("\n\n")
-  : [body(readFileSync(join(root, side.handbook), "utf8")), ...(side.skills ?? []).map((s) => `## Skill ${s.split("/").pop()} (you read it for this run)\n\n${body(readFileSync(join(root, s, "SKILL.md"), "utf8"))}`)].join("\n\n");
+// `skills` (new or old side) are read from the working tree: both sides see the same skill text, so a case measures the handbook.
+const skillsText = (side) => (side.skills ?? []).map((s) => `## Skill ${s.split("/").pop()} (you read it for this run)\n\n${body(readFileSync(join(root, s, "SKILL.md"), "utf8"))}`);
+const handbook = (side) => (side.ref
+  ? [body(at(side.ref, side.handbook)), ...(side.extra ? [`## Instance rules\n\n${side.extra}`] : [])]
+  : [body(readFileSync(join(root, side.handbook), "utf8"))]).concat(skillsText(side)).join("\n\n");
 
 const SCHEMA = {
   type: "object", additionalProperties: false, required: ["calls", "summary"],
@@ -51,28 +54,44 @@ For each call give
 tool, marker (the source marker, or ""), label (comma-separated labels, or ""), status (task_set_status, or ""), priority, title
 and text (the task description, comment, DM or finish line). Leave a field "" when it doesn't apply.`;
 
-const matches = (call, m) => Object.entries(m).every(([k, v]) => k === "count" || (k === "title_re" ? new RegExp(v).test(call.title) : String(call[k] ?? "").toLowerCase().includes(String(v).toLowerCase())));
+const matches = (call, m) => Object.entries(m).every(([k, v]) => k === "count" || k === "min" || (k === "title_re" ? new RegExp(v).test(call.title) : String(call[k] ?? "").toLowerCase().includes(String(v).toLowerCase())));
 function check(c, calls) {
   const why = [];
   for (const m of c.expect ?? []) {
     const n = calls.filter((x) => matches(x, m)).length;
-    if (m.count == null ? n < 1 : n !== m.count) why.push(`expected ${m.count ?? ">=1"} × ${JSON.stringify(m)}, got ${n}`);
+    if (m.min != null ? n < m.min : m.count == null ? n < 1 : n !== m.count) why.push(`expected ${m.count ?? `>=${m.min ?? 1}`} × ${JSON.stringify(m)}, got ${n}`);
   }
-  for (const m of c.forbid ?? []) if (calls.some((x) => matches(x, m))) why.push(`forbidden ${JSON.stringify(m)}`);
+  // `forbid` with `count`: exactly that many matching calls are forbidden (one publish of a change that must be split).
+  for (const m of c.forbid ?? []) if (m.count != null ? calls.filter((x) => matches(x, m)).length === m.count : calls.some((x) => matches(x, m))) why.push(`forbidden ${JSON.stringify(m)}`);
   return why;
 }
 
 const ask = openRouterAsk(key, { schema: SCHEMA, retryDelaysMs: RETRY_DELAYS_MS });
 let costUsd = 0;
-async function run(side, c) {
-  try {
-    const r = await ask(model, { system: `${FRAME}\n\n# Your handbook\n\n${handbook(side)}`, user: c.input });
-    costUsd += typeof r.usage?.cost === "number" ? r.usage.cost : 0;
-    const out = JSON.parse(r.content);
-    return { calls: out.calls, why: check(c, out.calls) };
-  } catch (err) {
-    return { calls: [], why: [`call failed: ${String(err.message ?? err).slice(0, 160)}`] };
+// A model's single answer varies run to run: each side answers `samples` times (eval.json, default 3). A case passes when
+// most answers pass it, a security case only when every answer does; `calls` and `why` are those of the first failing answer.
+const samples = conf.samples ?? 3;
+async function once(side, c) {
+  // A reply that isn't valid JSON is retried (twice): it says nothing about the handbook.
+  let last = "";
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      const r = await ask(model, { system: `${FRAME}\n\n# Your handbook\n\n${handbook(side)}`, user: c.input });
+      costUsd += typeof r.usage?.cost === "number" ? r.usage.cost : 0;
+      // The schema asks for every field, so a model may pad its plan with calls that are empty throughout: those plan nothing.
+      const calls = JSON.parse(r.content).calls.filter((x) => [x.marker, x.label, x.status, x.priority, x.title, x.text].some(Boolean));
+      return { calls, why: check(c, calls) };
+    } catch (err) {
+      last = String(err.message ?? err).slice(0, 160);
+    }
   }
+  return { calls: [], why: [`call failed: ${last}`] };
+}
+async function run(side, c) {
+  const all = await Promise.all(Array.from({ length: samples }, () => once(side, c)));
+  const failed = all.filter((r) => r.why.length);
+  const fails = c.security ? failed.length > 0 : failed.length * 2 > samples;
+  return fails ? { ...failed[0], why: [...failed[0].why, ...(samples > 1 ? [`(${failed.length} of ${samples} answers failed)`] : [])] } : { calls: all[0].calls, why: [] };
 }
 
 const rows = await Promise.all(cases.map(async (c) => {

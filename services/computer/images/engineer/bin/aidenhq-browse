@@ -46,7 +46,7 @@ for (const p of [...paths, ...steps.filter((s) => s.goto).map((s) => s.goto)]) {
   }
 }
 
-// The host's install (ops/vm/setup.sh) when there is one, else the browser image's own (an App Engineer's box).
+// The host's install (ops/vm/setup.sh) when there is one, else the browser image's own (an Engineer's box).
 const hostAb = join(DIR, "bin/agent-browser");
 const AB = existsSync(hostAb) ? hostAb : "agent-browser";
 const CHROME = existsSync(join(DIR, "chrome/chrome")) ? join(DIR, "chrome/chrome") : process.env.AGENT_BROWSER_EXECUTABLE_PATH;

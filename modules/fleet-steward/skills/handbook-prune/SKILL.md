@@ -1,6 +1,6 @@
 ---
 name: handbook-prune
-description: The Sunday prune - find handbook rules nobody cited in 30 days, duplicated or contradicted, and file one task for the Platform Engineer listing the deletions, or note that nothing qualifies.
+description: The Sunday prune - find handbook rules nobody cited in 30 days, duplicated or contradicted, and file one task for the Engineer listing the deletions, or note that nothing qualifies.
 when: { fields: { name: Fleet Steward } }
 ---
 
@@ -19,8 +19,8 @@ You edit no handbook yourself.
    rule contradicts it.
 4. Keep every rule in a section headed "Security rules" and every rule that states the owner's standing direction or an
    owner decision. Keep a rule when the evidence is thin or the window is short for that agent.
-5. One `task_create` with `assignee: fleet-engineer`, marker `coach-prune:<date>`, `dedupe_closed: true`, `deliverable`
+5. One `task_create` with `assignee: engineer`, marker `coach-prune:<date>`, `dedupe_closed: true`, `deliverable`
    `pr`, `ref` the product repo, titled `Prune dead handbook rules — <date>`. The body lists each deletion: file, the exact
    rule text (one line), the reason and the evidence (the searches you ran and what they returned). Rules under "Instance
-   rules" go in the same task as a second list (the Platform Engineer files them as an `apply`).
+   rules" go in the same task as a second list (the Engineer files them as an `apply`).
 6. Nothing qualifies: `task_finish` with "nothing to prune" and what you checked. Otherwise `task_finish` with the task id.
