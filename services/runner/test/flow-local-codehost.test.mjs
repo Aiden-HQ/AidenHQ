@@ -1,7 +1,8 @@
 // End to end (see flow-harness.mjs) on the on-server code host (codehost-local, docs/design/codehost-local.md): a repo of
 // the org `local` is a bare repo under the data dir; `pr` opens a change request, its checks run here at the exact head, a
 // merge is requested once they are green, its card is approved and the change lands as one squash commit. A head that moved after the card is refused; a red
-// check wakes the task's Engineer with its log tail. An approved create_repo or a local merge starts the Engineer's next run.
+// check wakes the task's Engineer with its log tail. A merged change finishes its agent's task as a GitHub merge queue does
+// (done, and the delegator told on the parent); an approved create_repo starts the Engineer's next run.
 import { after, describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { chmodSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
@@ -64,13 +65,19 @@ describe("flow-local-codehost", () => {
     assert.match(JSON.stringify(card), /\+chain/, "the merge card carries the change's diff");
     const before = git(t.dir, "--git-dir", bare, "rev-parse", "main");
     const runs = agentRuns().length;
+    // An agent's sub-task (the chief of staff delegated it): its merge's outcome goes to the parent, where it wakes the delegator.
+    const part = t.paperclip.issues.get("part");
+    Object.assign(part, { createdByUserId: null, createdByAgentId: "assistant" });
     t.paperclip.decide("merge", "approved");
     await waitFor("the merge", () => partComments().some((c) => c.startsWith("**Merged** codehost:local/app/change/1")));
-    // The merged change is where the task's work goes on (deploying): its Engineer gets the next run.
-    await waitFor("the next run", () => agentRuns().slice(runs).some((r) => /Your merge card codehost:local\/app\/change\/1 was approved and applied: \*\*Merged\*\*/.test(r.prompt)));
+    // As on GitHub: the agent's task is done and its delegator hears it on the parent; the Engineer's work ended at its merge.
+    await waitFor("the task done", () => t.paperclip.issues.get("part").status === "done");
+    await waitFor("the delegator told", () => t.paperclip.comments.get("parent").some((c) => /\*\*Merged\*\* codehost:local\/app\/change\/1/.test(c.body)));
     await t.settled();
     await t.idle();
-    assert.equal(agentRuns().length, runs + 1, "one run, not more");
+    assert.equal(agentRuns().length, runs, "no further run");
+    // The owner's own task again, in review, for the changes that follow.
+    Object.assign(part, { createdByUserId: "user-1", createdByAgentId: null, status: "in_review" });
     const main = git(t.dir, "--git-dir", bare, "rev-parse", "main");
     assert.equal(git(t.dir, "--git-dir", bare, "rev-parse", `${main}^`), before, "one new commit on main");
     assert.equal(git(t.dir, "--git-dir", bare, "show", "main:chains.txt"), "chain");
