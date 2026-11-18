@@ -29,6 +29,8 @@ export const REVIEWER_CODE = [
   /^kernel\/src\/checkbox\.ts$/,
   /^kernel\/src\/(tier|provenance|writes|records|reviews|review-loop|kinds|checkjobs|apply|apply-tier)\.ts$/,
   /^scripts\/compiler\/authority\.ts$/,
+  // The panel-path registry: a change could take a path out of the panel.
+  /^(paths\.yaml|scripts\/paths\.mjs|kernel\/src\/paths\.ts)$/,
 ];
 export const touchesReviewer = (files: string[]) => files.some((f) => REVIEWER_CODE.some((r) => r.test(f)));
 /** The reviewer's content in a product commit, by git object id: the same ids are the same reviewer, whatever commit holds them. */
