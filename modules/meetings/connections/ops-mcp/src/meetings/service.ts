@@ -1,3 +1,4 @@
+import { fence } from "../aidenhq-sdk/fence.js";
 import type { Config } from "../config.js";
 import type { Db } from "../db/db.js";
 import { tx } from "../db/db.js";
@@ -205,7 +206,7 @@ export class MeetingService {
       offset,
       next_offset: offset + chunk.length < text.length ? offset + chunk.length : null,
       notice: UNTRUSTED_BANNER,
-      content: `<<<SOURCE_START ${s.id}>>>\n${chunk}\n<<<SOURCE_END ${s.id}>>>`,
+      content: fence(chunk, `transcript:${s.id}`),
     };
   }
 

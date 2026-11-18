@@ -7,8 +7,9 @@ import type { DatabaseSync } from "node:sqlite";
 import { KernelError, type Kernel, type Wake } from "./kernel.ts";
 import { buildPrompt, outcome, type Words } from "./prompt.ts";
 import { createAsker } from "./asker.ts";
+import { dataBlock as fence } from "./aidenhq-sdk/fence.ts";
 import { progressTracker } from "./progress.ts";
-import { agentMade, fence, freshWords, moduleMade, ownRequest, redirectNote, speaker, spoke, stripHidden, threadEntries, threadSection, type Agent, type Directory, type Issue } from "./thread.ts";
+import { agentMade, freshWords, moduleMade, ownRequest, redirectNote, speaker, spoke, stripHidden, threadEntries, threadSection, type Agent, type Directory, type Issue } from "./thread.ts";
 
 // The jobs this module started, until their outcome is posted; a start asked for whose answer isn't recorded yet (`starting`:
 // a crash or a lost answer leaves it, and the next tick asks the kernel for the wake's job); per task, the newest comment its last job saw; comments a run took as live input; tasks greeted.

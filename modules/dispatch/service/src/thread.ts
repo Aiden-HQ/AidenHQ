@@ -2,6 +2,7 @@
 // handleIssue): the asker is whoever created the task. The owner's comments are his words; on a task an agent made, its
 // asker's and the chief of staff's (role fleet-admin in the grants table, never Paperclip metadata) start work as an agent's
 // request; any other agent's comment starts nothing and is told, once, whom to ask.
+import { dataBlock as fence } from "./aidenhq-sdk/fence.ts";
 
 /** The kernel's posts for a job (outcomes): its own words on the task, which wake nobody. */
 export const SELF_TAG = /<!-- aidenhq:job=/;
@@ -24,8 +25,6 @@ export interface Agent { id: string; name?: string; metadata?: { persona?: { nam
 
 /** Remove HTML comments: hidden text never counts as anyone's words. */
 export const stripHidden = (s: unknown) => String(s ?? "").replace(/<!--[\s\S]*?-->/g, "");
-/** Untrusted text between markers it can't fake, cut to `max` characters. */
-export const fence = (label: string, text: unknown, max = Infinity) => `<<<${label}\n${String(text ?? "").replace(/<<<|>>>/g, "‹‹‹").slice(0, max)}\n${label}>>>`;
 const when = (iso: unknown) => String(iso ?? "").slice(0, 16).replace("T", " ");
 
 /** A task a module filed (kernel POST /v1/tasks: its marker, by no agent): its description is the module's fixed request. */

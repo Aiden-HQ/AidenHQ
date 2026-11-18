@@ -1,7 +1,8 @@
 // A job's prompt: the security rules, the mechanics of its profile, and the task's context (its text, its parent, the
 // bounded conversation and the request), every untrusted part fenced. Ported from the runner's prompt.ts. How code is
 // written is the `write-code` skill's, and a crew agent's role is its compiled handbook in its engine home: neither is here.
-import { fence, stripHidden, type Issue } from "./thread.ts";
+import { dataBlock as fence } from "./aidenhq-sdk/fence.ts";
+import { stripHidden, type Issue } from "./thread.ts";
 
 /** The final message when nothing needs saying: the job posts no reply. */
 export const NO_REPLY = "NO_REPLY";
