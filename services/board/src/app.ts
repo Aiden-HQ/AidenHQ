@@ -1894,7 +1894,8 @@ export function createApp(opts: AppOptions): Server {
           ...opts.setupFlows,
           accounts: opts.accounts,
           store,
-          signedIn: async (id) => (await signInStates()).find((x) => x.id === id)?.status?.state === "ok",
+          // "none": the connection needs no sign-in (Grafana with grafana_source: local), so its flow is done.
+          signedIn: async (id) => ["ok", "none"].includes((await signInStates()).find((x) => x.id === id)?.status?.state ?? ""),
           scopeChoice: async (id) => ((await (opts.signIns ?? []).find((x) => x.id === id)?.auth.scopes())?.supported.length ?? 0) > 1,
           connected: connectionSignedIn,
           boardUrl: signInOrigin,
