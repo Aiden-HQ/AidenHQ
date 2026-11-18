@@ -7,13 +7,18 @@
 //   token    {repo: owner/name | owner/*, perms} → {token, repo, perms, expires_at, app}; owner/* is an org-wide token
 //   snapshot {repo, ref} → a tar.gz with no .git and no credentials
 //   clone    {repo, ref, into: task} → a credential-free clone in the workspace of a task whose agent the caller dispatches
-// Without codehost-github (a codehost-local install), every op is 404: there is no GitHub code host.
+// A `local/…` repo (the org codehost-local owns) is served by codehost-local's snapshot op, the only one it has, under the same
+// grants and the same answer; every other op on it, and every op without codehost-github for other orgs, is 404.
 import http from "node:http";
 import type { ServerResponse } from "node:http";
+import { LOCAL_ORG } from "./kinds.ts";
+import type { Readable } from "node:stream";
 import type { Resolver } from "./net.ts";
 import type { Kind } from "./writes.ts";
 
 export const CODEHOST = "codehost-github";
+/** A code host's answer to an op: a status, headers and a body stream (an http response, or codehost-local's tarball). */
+export type Answer = Readable & { statusCode?: number; headers: http.IncomingHttpHeaders };
 // A module's grant (its `codehost:`, taken literally): repos are owner/name, owner/*, */* (anything the App covers), or
 // @instance, @product, @agents/<name|*>, which resolve from the kernel's own configuration (its repos), never from settings.
 export type OpsGrant = { module: string; token?: { repos: string[]; perms: Record<string, string> }; snapshot?: { repos: string[] }; clone?: { repos: string[] } };
@@ -45,7 +50,7 @@ export function covers(slug: string, repos: string[] = [], r: KernelRepos = {}):
   return repos.map((p) => resolveRepo(p, r)).some((p) => p !== undefined && (p === "*/*" || same(p, slug) || (p.endsWith("/*") && same(p.slice(0, -2), owner))));
 }
 
-export function createCodehost({ grants, repos, kind, secret, resolver, workspace }: {
+export function createCodehost({ grants, repos, kind, secret, resolver, workspace, localSnapshot = () => undefined }: {
   grants: () => OpsGrant[];
   /** The kernel's own repos (AIDENHQ_INSTANCE_REPO, AIDENHQ_PRODUCT_REPO, the agents org): what @ names in grants resolve to. */
   repos: () => KernelRepos;
@@ -54,18 +59,30 @@ export function createCodehost({ grants, repos, kind, secret, resolver, workspac
   secret: (name: string) => string; resolver: Resolver;
   /** The workspace folder of task `task`, if `module` dispatches its agent (jobs.ts workspace); throws otherwise. */
   workspace: (module: string, task: unknown) => Promise<{ workspace: string }>;
+  /** codehost-local's snapshot op, when that module is enabled. */
+  localSnapshot?: () => ((repo: string, ref: string) => Promise<Answer>) | undefined;
 }) {
   /** Checks `module`'s grant and asks the code host: its answer as it came (JSON, or a snapshot's tarball). */
-  async function ask(module: string, op: string, b: Record<string, unknown>): Promise<http.IncomingMessage> {
+  async function ask(module: string, op: string, b: Record<string, unknown>): Promise<Answer> {
     if (!["token", "snapshot", "clone"].includes(op)) throw fail(404, `no codehost operation ${op}`);
-    const k = kind();
-    if (!k?.executor) throw fail(404, "no GitHub code host here (codehost-github isn't enabled)");
     const repo = String(b?.repo ?? "");
     const m = SLUG.exec(repo);
+    const local = m !== null && same(m[1]!, LOCAL_ORG);
+    const k = kind();
+    if (!local && !k?.executor) throw fail(404, "no GitHub code host here (codehost-github isn't enabled)");
     if (!m || DOTS.test(m[1]!) || DOTS.test(m[2]!) || (m[2] === "*" && op !== "token")) throw fail(400, `${repo} is not owner/name${op === "token" ? " or owner/*" : ""}`);
     const g = grants().find((x) => x.module === module);
     const grant = g?.[op as "token" | "snapshot" | "clone"];
     if (!covers(repo, grant?.repos, repos())) throw fail(403, `${module} has no ${op} grant on ${repo}`);
+    if (local) {
+      const ref = String(b.ref ?? "");
+      if (op !== "snapshot") throw fail(404, `codehost-local has no ${op} operation`);
+      if (!REF.test(ref)) throw fail(400, `${ref.slice(0, 100)} is not a branch or a commit`);
+      const snap = localSnapshot();
+      if (!snap) throw fail(404, "codehost-local isn't enabled here");
+      return snap(repo, ref);
+    }
+    const k2 = k!;
     let out: Record<string, unknown>;
     if (op === "token") {
       const asked = b.perms && typeof b.perms === "object" && !Array.isArray(b.perms) ? Object.entries(b.perms as Record<string, unknown>) : [];
@@ -85,12 +102,12 @@ export function createCodehost({ grants, repos, kind, secret, resolver, workspac
       out = { module, repo, ref };
       if (op === "clone") out.into = (await workspace(module, b.into)).workspace;
     }
-    const key = secret(k.executor.auth_secret);
+    const key = secret(k2.executor!.auth_secret);
     if (!key) throw fail(503, `${CODEHOST}'s key is missing`);
-    const url = new URL(`/ops/${op}`, k.executor.url).toString();
+    const url = new URL(`/ops/${op}`, k2.executor!.url).toString();
     const to = await resolver.resolve(url);
     const data = Buffer.from(JSON.stringify(out));
-    return new Promise<http.IncomingMessage>((ok, reject) => {
+    return new Promise<Answer>((ok, reject) => {
       const req = http.request({ host: to.host, port: to.port, path: to.path, method: "POST", timeout: 10 * 60_000, headers: { host: new URL(url).host, authorization: `Bearer ${key}`, "content-type": "application/json", "content-length": data.length } }, ok);
       req.on("timeout", () => req.destroy(fail(504, `${CODEHOST} didn't answer`)));
       req.on("error", (e) => { resolver.forget(url); reject((e as { status?: number }).status ? e : fail(502, `${CODEHOST} is unreachable (${e.message})`)); });

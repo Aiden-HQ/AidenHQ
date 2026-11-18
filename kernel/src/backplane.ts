@@ -53,7 +53,7 @@
 //                              job of repo@head and its signed receipt (?after=<version>&wait=<ms>), a receipt checked against
 //                              {repo, head, run, judge?, policy?} (checkjobs.ts)
 //   POST /v1/checkout          (a kernel job's own token) {repo, sha?}: a code host snapshot (tar.gz) for a job holding the
-//                              repo-checkout role, an agents-org repo only (jobtools.ts checkout)
+//                              repo-checkout role, an agents-org repo only: GitHub's, or local/… from codehost-local (jobtools.ts checkout)
 //   POST /v1/jobtools/:cmd     (a kernel job's own token) reset | engine {engine, model?} | cleanup: what the running job asks of its
 //                              task's next turn (jobtools.ts)
 //   GET  /v1/advisories        (the board's key) the marketplace advisories open against installed modules (advisories.ts)
