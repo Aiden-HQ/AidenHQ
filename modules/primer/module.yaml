@@ -55,7 +55,7 @@ secrets:
         pattern: '^https://[a-z0-9.-]+(:[0-9]{2,5})?/[A-Za-z0-9._/-]*$'
         help: "From your Primer admin or Primer's settings, for example https://primer.example.com/mcp"
     # self-host: a service token the owner mints in Primer (Settings, Tokens; scopes documents:read (also the event stream),
-    # documents:write, comments:write, events:write (the working status), users:read) after first signing in.
+    # documents:write, comments:write, events:write (the working status)) after first signing in.
     - name: primer_service_token
       setup:
         label: Primer service token

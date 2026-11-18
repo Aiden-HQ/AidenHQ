@@ -3,7 +3,7 @@
 # pinned commit, plus start.mjs, which turns AidenHQ's gate key and vault files into Primer's proxy sign-in settings.
 # PRIMER_SHA: the commit of github.com/maxsam4/primer (Primer with proxy sign-in, the event stream and thread tools) this
 # product runs. Bump it here; the Primer source enforces its own dependency age (14 days) and frozen lockfile.
-ARG PRIMER_SHA=dd404722c70c2d6788e76f4fa11b1cf202ec16f1
+ARG PRIMER_SHA=18d47ac176203756ebffe131f1ce66bd5872fa9c
 
 FROM node:24.22.2-bookworm-slim@sha256:01d566e8d94d8c619591d78652babfccd3c6992a3dffa9ed5ab39e11cf6c70e9 AS build
 ARG PRIMER_SHA
