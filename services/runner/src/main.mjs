@@ -235,6 +235,11 @@ async function poll() {
     lastReviewedSweep = Date.now();
     await pruneReviewedRefs(join(cfg.workDir, "repos"), { days: REVIEWED_RETENTION_DAYS }).catch((err) => log("reviewed refs not pruned", { err: String(err.message ?? err).slice(0, 200) }));
   }
+  // Workspaces of tasks closed over CLOSED_WORKSPACE_DAYS ago, once a day.
+  if (Date.now() - lastWorkspaceSweep >= 24 * 60 * 60_000) {
+    lastWorkspaceSweep = Date.now();
+    await removeClosedWorkspaces().catch((err) => log("closed workspaces not removed", { err: String(err.message ?? err).slice(0, 200) }));
+  }
   // Design-review tasks whose head moved on, or whose verdict is in: closed as superseded, once a minute.
   if (Date.now() - lastDesignReviewSweep >= 60_000) {
     lastDesignReviewSweep = Date.now();
@@ -4540,6 +4545,44 @@ async function reportToParent(issue) {
 
 // ------------------------------------------------------------------ commands
 
+/**
+ * Remove a task's workspace unless a checkout has uncommitted changes (returned as `dirty`, nothing removed): its local
+ * branches stay in the runner's cache clones (refs/kept/<task>/…), in case they're needed again, and its cache layers go.
+ */
+async function removeWorkspace(issue, workspace) {
+  const repos = await workspaceRepos(workspace);
+  const dirty = await dirtyCheckouts(repos);
+  if (dirty.length) return { dirty, kept: 0 };
+  for (const r of repos) await keepBranches(r.path, join(cfg.workDir, "repos", r.org, r.name), issue.identifier);
+  removeLayers(workspace); // a job's overlay leaves work dirs only their owner can enter: made writable, then removed
+  try {
+    removeLayers(cowRoot(cfg, workspace)); // its copy-on-write cache layers
+  } catch (err) {
+    log("cache layers not removed", { issue: issue.identifier, err: String(err.message ?? err).slice(0, 200) });
+  }
+  const kept = state.branches(issue.id).length;
+  for (const b of state.branches(issue.id)) state.deleteBranch(issue.id, b.repo, b.branch);
+  state.updateTask(issue.id, { workspace: null, session_id: null });
+  return { dirty, kept };
+}
+
+/** A task closed (done or cancelled) this long ago loses its workspace, as `cleanup` removes it (owner, 2026-11-18). */
+const CLOSED_WORKSPACE_DAYS = 3;
+let lastWorkspaceSweep = 0;
+/** Workspaces of tasks closed over CLOSED_WORKSPACE_DAYS ago, at most 5 minutes a pass (the rest wait for the next). Never comments: a comment reopens a closed task. */
+async function removeClosedWorkspaces() {
+  const until = Date.now() + 5 * 60_000;
+  const busy = new Set(state.runningJobs().map((j) => j.issue_id));
+  for (const t of state.withWorkspace()) {
+    if (Date.now() > until) break;
+    if (running.has(t.issue_id) || busy.has(t.issue_id) || !existsSync(t.workspace)) continue;
+    const issue = await pc.issue(t.issue_id).catch(() => null);
+    if (!["done", "cancelled"].includes(issue?.status) || !(Date.parse(issue.updatedAt) < Date.now() - CLOSED_WORKSPACE_DAYS * 86_400_000)) continue;
+    const { dirty } = await removeWorkspace(issue, t.workspace);
+    log(dirty.length ? "closed task's workspace kept: uncommitted changes" : "closed task's workspace removed", { issue: issue.identifier });
+  }
+}
+
 /** The user's exact "push" or "pr", the parent's "pr" for its parts, and the agent's `aidenhq cleanup` after its run. */
 async function runCommand(issue, task, command) {
   if ((!task?.repo && command !== "cleanup") || !task?.workspace) {
@@ -4549,22 +4592,10 @@ async function runCommand(issue, task, command) {
   const workspace = await prepareWorkspace(issue, task, { clone: false });
 
   if (command === "cleanup") {
-    const repos = await workspaceRepos(workspace);
-    const dirty = await dirtyCheckouts(repos);
+    const { dirty, kept } = await removeWorkspace(issue, workspace);
     if (dirty.length) {
       return void (await pc.comment(issue.id, `I didn't remove the workspace: it has uncommitted changes (${dirty.map((d) => `\`${d.path}\``).join(", ")}). Ask me to commit or discard them first.`));
     }
-    // Local branches stay in the runner's cache clones (refs/kept/<task>/…), in case they're needed again.
-    for (const r of repos) await keepBranches(r.path, join(cfg.workDir, "repos", r.org, r.name), issue.identifier);
-    rmSync(workspace, { recursive: true, force: true });
-    try {
-      removeLayers(cowRoot(cfg, workspace)); // its copy-on-write cache layers
-    } catch (err) {
-      log("cache layers not removed", { issue: issue.identifier, err: String(err.message ?? err).slice(0, 200) });
-    }
-    const kept = state.branches(issue.id).length;
-    for (const b of state.branches(issue.id)) state.deleteBranch(issue.id, b.repo, b.branch);
-    state.updateTask(issue.id, { workspace: null, session_id: null });
     return void (await pc.comment(issue.id, `Removed the workspace.${kept ? " Its branches are kept in the runner's copies of the repositories, and pushed ones are on their code host." : ""}`));
   }
   // Publishing takes minutes for many branches (a push and a PR description each): it shows on the

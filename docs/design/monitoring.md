@@ -68,7 +68,7 @@ over the Actions API, or the runner recording its CI runs).
 
 ## Alerts and routing
 
-Rules are `modules/monitoring/prometheus/rules.yml`: `DiskSpaceLow` (over 85%, or on course to fill in 24 h),
+Rules are `modules/monitoring/prometheus/rules.yml`: `DiskSpaceLow` (over 80%, or on course to fill in 24 h),
 `DiskNearlyFull` (over 95%, **critical**), `MemoryPressure`, `OomKill`, `HostMetricsStale`, `ContainerRestarting`,
 `CoreServiceDown` (an aidenhq container, the runner or gateway unit, or the board or gateway not answering, for 5 minutes,
 **critical**), `HostMetricsExporterStale` (`units.prom` absent or not written for 3 minutes: unit state is unknown, not a

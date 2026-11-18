@@ -3,7 +3,9 @@ Description=AidenHQ Docker cleanup (build cache and images nothing has used for 
 
 [Service]
 Type=oneshot
-# Every deploy rebuilds images; old ones and the build cache filled the VM disk. Keep two days for rollbacks; images a
-# container still uses are never removed. Computer images are rebuilt by apply-config when missing.
-ExecStart=/usr/bin/docker builder prune -f --filter until=48h
+# Every deploy rebuilds images; old ones and the build cache filled the VM disk. Keep two days of images for rollbacks;
+# images a container still uses are never removed. Computer images are rebuilt by apply-config when missing. The build
+# cache is capped by size, least recently used first: an `until` filter freed nothing on the containerd image store
+# (104 GB of cache on the EX44, 2026-11-18).
+ExecStart=/usr/bin/docker builder prune -f --max-used-space 40GB
 ExecStart=/usr/bin/docker image prune -af --filter until=48h
