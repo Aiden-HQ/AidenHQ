@@ -47,8 +47,8 @@ const d: Deps = {
   // The task's live agent heads the message, and the owner's reply goes where they last wrote on it (read through the kernel).
   resolveTask: async (identifier) => {
     const issue = await kernel.read(`/api/issues/${encodeURIComponent(identifier)}`);
-    const [agents, live] = await Promise.all([kernel.read(`/api/companies/${issue.companyId}/agents`), kernel.read(`/api/companies/${issue.companyId}/live-runs`)]);
-    const found = taskForNotify({ id: String(issue.id), assigneeAgentId: issue.assigneeAgentId ?? null }, live, agents);
+    const [agents, work] = await Promise.all([kernel.read(`/api/companies/${issue.companyId}/agents`), kernel.work(String(issue.id))]);
+    const found = taskForNotify({ id: String(issue.id), assigneeAgentId: issue.assigneeAgentId ?? null }, work.jobs, agents);
     if (!found) return undefined;
     const commentsOf = async (id: string) => {
       const c = await kernel.read(`/api/issues/${encodeURIComponent(id)}/comments`).catch(() => []);

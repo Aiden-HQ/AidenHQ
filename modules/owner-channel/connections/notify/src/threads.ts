@@ -7,17 +7,17 @@ function chatAgentOf(description: string | null | undefined): string | undefined
 }
 
 /**
- * The chat a notify(task) message may claim: only a task its own agent is running on right now. Until shared
- * tools know who is calling, this keeps one agent from heading a message with another agent's name or
- * routing the owner's reply onto another agent's task.
+ * The chat a notify(task) message may claim: only a task its own agent is running a kernel job on right now (the kernel's
+ * job ledger, GET /v1/work?task=). This keeps one agent from heading a message with another agent's name or routing the
+ * owner's reply onto another agent's task.
  */
 export function taskForNotify(
   issue: { id: string; assigneeAgentId: string | null },
-  live: { issueId: string | null; agentId: string }[],
+  jobs: { agent: string; state: string }[],
   agents: { id: string; name: string }[],
 ): { issueId: string; agentId: string; agentName: string } | undefined {
   const agent = agents.find((a) => a.id === issue.assigneeAgentId);
-  if (!agent || !live.some((r) => r.issueId === issue.id && r.agentId === agent.id)) return undefined;
+  if (!agent || !jobs.some((j) => j.agent === agent.id && j.state === "running")) return undefined;
   return { issueId: issue.id, agentId: agent.id, agentName: agent.name };
 }
 
