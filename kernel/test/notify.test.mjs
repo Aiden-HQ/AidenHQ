@@ -39,3 +39,40 @@ test("queued by the board or the runner, taken once by the router, sent through 
   assert.equal((await k.v1("POST", "/v1/notify/send", { to: "channel-telegram", message: msg }, "router-key")).json.off, true);
   assert.equal((await k.v1("POST", "/v1/notify/send", { to: "plain", message: msg }, "router-key")).status, 404);
 });
+
+test("a transport is a compose service: an address, localhost or a name that resolves to loopback gets no token", async () => {
+  const { DatabaseSync } = await import("node:sqlite");
+  const { createNotify } = await import("../src/notify.ts");
+  const hit = [];
+  const resolver = { resolve: async (u) => (hit.push(u), { host: "127.0.0.1", port: 1, path: "/transport/send" }), forget: () => {} };
+  const ch = (transport) => ({ privileged: ["speaks-as-owner"], channel: { transport }, token: "t" });
+  const n = createNotify({ db: new DatabaseSync(":memory:"), secret: () => "key", resolver, modules: () => ({ modules: { ip: ch("http://169.254.169.254:80/x"), local: ch("http://localhost:8089/x"), named: ch("http://telegram:8089/x") } }) });
+  const send = (to) => n.send(["kernel.notify"], { to, message: { kind: "done", text: "x" } }).then((r) => r, (e) => ({ status: e.status }));
+  assert.deepEqual(await send("ip"), { status: 403 });
+  assert.deepEqual(await send("local"), { status: 403 });
+  assert.deepEqual(hit, []);
+  assert.deepEqual(await send("named"), { sent: false, reason: "unreachable (it resolves to loopback)" });
+});
+
+test("a credential goes only to the private owner chat, never to the router; kept until that chat takes it", async (t) => {
+  const seen = [];
+  let up = false;
+  const tg = await serve(async (req, res) => { seen.push(JSON.parse(await readBody(req)).text); res.writeHead(up ? 200 : 503, { "content-type": "application/json" }).end(up ? '{"sent":true}' : "{}"); });
+  const slack = await serve(async (req, res) => { seen.push(`slack: ${JSON.parse(await readBody(req)).text}`); res.writeHead(200).end('{"sent":true}'); });
+  t.after(() => { tg.s.close(); slack.s.close(); });
+  const { DatabaseSync } = await import("node:sqlite");
+  const { createNotify } = await import("../src/notify.ts");
+  const { createResolver } = await import("../src/net.ts");
+  const modules = { modules: {
+    "channel-telegram": { privileged: ["speaks-as-owner"], channel: { transport: `${tg.url}/transport/send`, credentials: true }, token: "tg" },
+    "channel-slack": { privileged: ["speaks-as-owner"], channel: { transport: `${slack.url}/transport/send` }, token: "sl" },
+  } };
+  const n = createNotify({ db: new DatabaseSync(":memory:"), secret: () => "key", resolver: createResolver(), modules: () => modules, testHosts: true });
+  n.secret("Board account reset for sam@example.com: https://example.com/r/abc");
+  assert.deepEqual(n.take(["kernel.notify"]).messages, []); // the router never sees it
+  assert.equal(await n.deliverSecrets(), 0); // Telegram down: kept, not sent anywhere else
+  up = true;
+  assert.equal(await n.deliverSecrets(), 1);
+  assert.equal(await n.deliverSecrets(), 0);
+  assert.deepEqual(seen, ["Board account reset for sam@example.com: https://example.com/r/abc", "Board account reset for sam@example.com: https://example.com/r/abc"]);
+});
