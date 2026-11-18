@@ -128,7 +128,9 @@ export async function notify(d: Deps, a: NotifyArgs, caller?: Caller, now = Date
     const ok = out === "sent" || out === "down" || onChat || digested;
     if (ok) d.store.setKv(dedupe, String(now));
     const chat = onChat ? { onChat: true as const } : {};
-    if (ok) return { sent: true, ...chat, ...(out === "down" ? { queued: true as const, note: "No channel reaches the owner right now: it goes out once one is back." } : {}), ...(digested ? { note: "Routine update: it goes to the owner in the next digest." } : {}) };
+    // Sent only when a channel took it, its chat holds it or the digest will carry it; waiting for a channel is never "sent".
+    if (out === "down" && !onChat && !digested) return { sent: false, queued: true, note: "No channel reaches the owner right now: it goes out once one is back." };
+    if (ok) return { sent: true, ...chat, ...(digested ? { note: "Routine update: it goes to the owner in the next digest." } : {}) };
     if (muted) return { sent: false, reason: "muted", note: "The owner muted fyi messages, so nothing was sent. That is expected: don't resend it; put it in your next result instead." };
     return { sent: false, reason: "error", note: "No channel is set up to reach the owner, and this message has no chat on the board to land on." };
   } catch {

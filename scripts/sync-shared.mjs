@@ -39,7 +39,6 @@ export function sharedCopies(root = repo) {
     "modules/jira/connections/jira-mcp/src",
     "modules/meetings/connections/ops-mcp/src",
     "modules/channel-slack/connections/slack/src",
-    "modules/channel-telegram/connections/telegram/src",
     "modules/chat-lane/connections/lane/src",
     "modules/primer/connections/primer-mcp/src",
     "modules/slack/connections/slack-mcp/src",

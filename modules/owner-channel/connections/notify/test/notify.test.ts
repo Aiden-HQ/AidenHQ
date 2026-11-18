@@ -43,7 +43,7 @@ describe("notify", () => {
 
   it("every channel down: queued, retried, sent once; a channel that isn't set up is skipped", async () => {
     const { d, sent, up } = world({ "channel-slack": "off", "channel-telegram": "down" });
-    expect(await notify(d, { kind: "decision", text: "WOR-2 needs you" })).toMatchObject({ sent: true, queued: true });
+    expect(await notify(d, { kind: "decision", text: "WOR-2 needs you" })).toEqual({ sent: false, queued: true, note: expect.any(String) });
     expect(await notify(d, { kind: "decision", text: "WOR-2 needs you" })).toMatchObject({ reason: "duplicate" });
     expect(await retry(d)).toBe(0);
     up["channel-telegram"] = "up";
@@ -54,7 +54,8 @@ describe("notify", () => {
 
   it("a kernel message waits for a channel to be set up; an agent's, with nowhere to land, says so", async () => {
     const { d, sent, up } = world({ "channel-slack": "off", "channel-telegram": "off" });
-    expect(await notify(d, { kind: "done", text: "Board account reset for sam@example.com" })).toMatchObject({ sent: true, queued: true });
+    // Installed but not connected (Slack set up, never signed in): never reported as sent.
+    expect(await notify(d, { kind: "done", text: "Board account reset for sam@example.com" })).toEqual({ sent: false, queued: true, note: expect.any(String) });
     expect(await notify(d, { kind: "done", text: "x" }, agent("crew"))).toMatchObject({ sent: false, reason: "error" });
     expect(await retry(d)).toBe(0);
     up["channel-telegram"] = "up";
