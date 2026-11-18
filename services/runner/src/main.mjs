@@ -4444,7 +4444,7 @@ class BoxesFull extends Error {}
 async function startBox({ issue, agentId, workspace, helperToken, identity, engine }) {
   const before = state.get(boxKey(issue.id));
   if (before) await stopBox(issue, { container: before });
-  const box = await boxCall("/job", { agentId, issueId: issue.id, identifier: issue.identifier, workspace, engine: engine.kind, state: engineState(cfg, engine.kind, issue.id), helperPort: helperPort(), helperToken, identity: { name: identity.name, email: identity.email } })
+  const box = await boxCall("/job", { agentId, issueId: issue.id, identifier: issue.identifier, workspace, engine: engine.kind, state: engineState(cfg, engine.kind, issue.id, readGrants()?.agents?.[agentId]?.skills ?? []), helperPort: helperPort(), helperToken, identity: { name: identity.name, email: identity.email } })
     .catch((err) => { throw err.status === 503 ? new BoxesFull(err.message) : err; });
   state.set(boxKey(issue.id), box.container);
   log("box job started", { issue: issue.identifier, container: box.container });
