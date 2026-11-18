@@ -2005,9 +2005,8 @@ export function createApp(opts: AppOptions): Server {
         return;
       }
     } catch (err) {
-      if (!(err instanceof GoogleAuthFailed)) throw err;
-      log.warn({ err: err.message }, "Google sign-in failed");
-      return signInFailed(res, "google", `Couldn't connect Google: ${err.message}`);
+      log.warn({ err: String((err as Error).message ?? err).slice(0, 500) }, "Google sign-in failed");
+      return signInFailed(res, "google", `Couldn't connect Google: ${err instanceof GoogleAuthFailed ? err.message : "google-workspace-mcp isn't answering"}`);
     }
     throw new HttpError(404, "not found");
   }
@@ -2066,9 +2065,8 @@ export function createApp(opts: AppOptions): Server {
         return;
       }
     } catch (err) {
-      if (!(err instanceof McpAuthFailed)) throw err;
-      log.warn({ err: err.message }, `${name} sign-in failed`);
-      return signInFailed(res, s.id, `Couldn't connect ${name}: ${err.message}`);
+      log.warn({ err: String((err as Error).message ?? err).slice(0, 500) }, `${name} sign-in failed`);
+      return signInFailed(res, s.id, `Couldn't connect ${name}: ${err instanceof McpAuthFailed ? err.message : `${name.toLowerCase()}-mcp isn't answering`}`);
     }
     throw new HttpError(404, "not found");
   }
@@ -2191,9 +2189,10 @@ async function readJson(req: IncomingMessage, max = 256_000): Promise<unknown> {
   }
 }
 
-/** A failed sign-in: back to the board's page for it (#/connect/<id>), which shows why and the way on. */
+/** A failed sign-in: back to the board's page for it (#/connect/<id>), which shows why and the way on (kept short: it rides in a header). */
 function signInFailed(res: ServerResponse, id: string, message: string) {
-  res.writeHead(302, { ...SECURITY_HEADERS, location: `/#/connect/${id}?error=${encodeURIComponent(message)}`, "cache-control": "no-store" }).end();
+  const why = message.length > 400 ? `${message.slice(0, 399)}…` : message;
+  res.writeHead(302, { ...SECURITY_HEADERS, location: `/#/connect/${id}?error=${encodeURIComponent(why)}`, "cache-control": "no-store" }).end();
 }
 
 function send(res: ServerResponse, status: number, body: string | Buffer, type: string, cache = "no-store") {

@@ -53,7 +53,12 @@ function Picker({ view, back }: { view: SignInView; back: string }) {
   const groups = useMemo(() => groupScopes(offer.supported), [offer.supported]);
   const [on, setOn] = useState(() => new Set(offer.recommended.filter((s) => offer.supported.includes(s))));
   const [raw, setRaw] = useState(false);
-  const toggle = (scope: string) => setOn((was) => (was.delete(scope) ? new Set(was) : new Set(was).add(scope)));
+  const toggle = (scope: string) =>
+    setOn((was) => {
+      const next = new Set(was);
+      if (!next.delete(scope)) next.add(scope);
+      return next;
+    });
   const writes = groups.flatMap((g) => g.items).filter((i) => on.has(i.scope) && changes(i.access)).length;
   const go = () => {
     const q = new URLSearchParams({ picked: "1" });

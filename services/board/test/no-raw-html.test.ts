@@ -12,7 +12,9 @@ it("the board's server builds no HTML pages, and allows no form submissions", ()
     .filter((f) => f.endsWith(".ts"))
     .flatMap((f) => {
       const text = readFileSync(join(dir, f), "utf8");
-      return [/<!doctype/i, /<html[\s>]/i, /<body[\s>]/i, /send\([^)]*["'`]text\/html/, /form-action 'self'/].filter((re) => re.test(text)).map((re) => `${f}: ${re}`);
+      // text/html only as the static files' type (TYPES[".html"], the app's index).
+      const html = text.split("\n").filter((l) => /text\/html/.test(l) && !/^\s*"\.html": "text\/html; charset=utf-8",$/.test(l));
+      return [/<!doctype/i, /<html[\s>]/i, /<body[\s>]/i, /form-action 'self'/].filter((re) => re.test(text)).map((re) => `${f}: ${re}`).concat(html.map((l) => `${f}: ${l.trim()}`));
     });
   expect(offenders).toEqual([]);
 });
