@@ -11,7 +11,7 @@ Read `CLAUDE.md` at the repo root first: it is the source for layout, convention
   workflow. Cross-agent behaviour is a module's `prompts:`; how a kind of work is done is a module skill
   (`modules/<m>/skills/<name>/SKILL.md`).
 - **Gates in code.** Writes are approval records tiered in `services/runner/src/tiers.mjs`. A change to `tiers.mjs`,
-  the `modules/ai-reviewer` module (its policy and `test/reviewer-cases/`) or `kernel/src/loader/authority.ts` needs the maintainer's reviewer eval:
+  the `modules/ai-reviewer` module (its policy and `test/reviewer-cases/`) or `scripts/compiler/authority.ts` needs the maintainer's reviewer eval:
   say so in the PR.
 - **No owner data.** Tests and docs use `acme`, `example.com` and documentation IP ranges.
 - **Shared code.** After editing `kernel/sdk/src/caller.ts`, `kernel/sdk/src/fence.ts` or `services/shared/source-store.ts`, or the design
