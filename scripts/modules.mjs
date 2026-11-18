@@ -1091,8 +1091,10 @@ export function setupSecrets(defs, generated) {
 const CODEHOST_SCHEMA = JSON.parse(readFileSync(new URL("../kernel/schemas/codehost.json", import.meta.url), "utf8"));
 export function kernelModuleTable(defs, settings = {}) {
   const out = {};
+  // A module's own token holds the roles it requests that the kernel or an enabled module defines (apps-platform's apps.read).
+  const moduleRoles = new Set(Object.values(defs).flatMap((d) => [d.roles?.declares ?? []].flat().map((r) => String(r?.id ?? r))));
   for (const [name, def] of Object.entries(defs)) {
-    const roles = [def.roles?.requests ?? []].flat().map(String).filter((r) => r.startsWith("kernel."));
+    const roles = [def.roles?.requests ?? []].flat().map((r) => String(r).replace(/\?$/, "")).filter((r) => r.startsWith("kernel.") || moduleRoles.has(r));
     const privileged = [def.privileged ?? []].flat().map(String);
     const token = `${name.replace(/-/g, "_")}_token`;
     const ch = def.providers?.channel;

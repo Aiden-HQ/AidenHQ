@@ -1,5 +1,4 @@
 // apps-mcp: deploys and runs sandboxed apps from the git registry; MCP over streamable HTTP behind the kernel (service key bearer, caller assertion).
-import { timingSafeEqual } from "node:crypto";
 import { readdirSync, readFileSync, statfsSync } from "node:fs";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
@@ -23,6 +22,7 @@ import { githubApi, startPreviews } from "./previews.js";
 import { inAgentsOrg } from "./git.js";
 import { isLocal, localChanges, localRepos, localRoot, withLocal } from "./codehost.js";
 import { previewApp, previewName } from "./previews.js";
+import { bearerIs, internalAccess } from "./readers.js";
 
 const log = pino({ level: process.env.LOG_LEVEL ?? "info", base: { svc: "apps-mcp" }, redact: ["authorization", "*.authorization", "token", "*.token"] });
 const need = (n: string): string => process.env[n] || (() => { throw new Error(`${n} is required`); })();
@@ -106,15 +106,13 @@ const readBody = async (req: IncomingMessage): Promise<any> => {
   }
   return chunks.length ? JSON.parse(Buffer.concat(chunks).toString("utf8")) : undefined;
 };
-const bearerIs = (req: IncomingMessage, token: string): boolean => {
-  const presented = Buffer.from((req.headers.authorization ?? "").replace(/^Bearer\s+/i, ""));
-  const expected = Buffer.from(token);
-  return presented.length === expected.length && timingSafeEqual(presented, expected);
-};
 const internalAuthorized = (req: IncomingMessage): boolean => bearerIs(req, internalToken);
+// The grader's reads (deploys, view): the internal token, or a module holding apps.read (readers.ts).
+const access = internalAccess(kernelUrl, internalToken);
 
 // Nothing is published to the host: only containers on the compose network reach this port. /internal/* is the board's and
-// watcher's API; the one write (a stateful deploy, already approved in chat) needs the internal token, which agents don't have.
+// watcher's API, and the grader's reads (a module holding apps.read); the one write (a stateful deploy, already approved in
+// chat) needs the internal token, which agents and modules don't have.
 let reconcile: () => Promise<void> = async () => undefined; // set once the loops start
 const http = createServer(async (req, res) => {
   const url = new URL(req.url ?? "/", "http://localhost");
@@ -194,7 +192,8 @@ const http = createServer(async (req, res) => {
     // list has moved past is still provable here, and a commit with no row really was never deployed.
     const deployHistory = /^\/internal\/deploys\/([a-z0-9-]{1,63})\/([0-9a-f]{40})$/.exec(url.pathname);
     if (deployHistory && req.method === "GET") {
-      if (!internalAuthorized(req)) return send(res, 401, { error: "unauthorized" });
+      const refused = await access(req, "read");
+      if (refused) return send(res, refused, { error: refused === 403 ? `role apps.read is required` : "unauthorized" });
       const a = p.find(deployHistory[1]!);
       return send(res, 200, { deploys: p.store.deploysOf(a.name, deployHistory[2]!).map(({ sha, at, by, status }) => ({ sha, at, by, status })) });
     }
@@ -209,12 +208,13 @@ const http = createServer(async (req, res) => {
     }
     // The grader's live view of one page of a deployed app (the runner, through the board): view.ts graderView.
     if (url.pathname === "/internal/view" && req.method === "POST") {
-      if (!internalAuthorized(req)) return send(res, 401, { error: "unauthorized" });
+      const refused = await access(req, "read");
+      if (refused) return send(res, refused, { error: refused === 403 ? `role apps.read is required` : "unauthorized" });
       const b = await readBody(req);
       return send(res, 200, await graderView(p.find(String(b?.name ?? "")), { path: b?.path, width: b?.width }, { resolve: p.resolveApi, render: p.render, sign: p.sign, running: p.store.running, audit: p.auditView }));
     }
     if (url.pathname === "/internal/deploy" && req.method === "POST") {
-      if (!internalAuthorized(req)) return send(res, 401, { error: "unauthorized" });
+      if (await access(req, "write")) return send(res, 401, { error: "unauthorized" });
       const b = await readBody(req);
       if (!b?.name || !b.by || !b.approved_comment_id) return send(res, 400, { error: "name, by and approved_comment_id are required" });
       return send(res, 200, await p.engine.deploy(p.find(b.name), { sha: b.sha, by: `${b.by} (approved in ${b.approved_comment_id})`, allowStateful: true }));

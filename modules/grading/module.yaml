@@ -8,7 +8,7 @@ license: MIT
 # parents by wake notice (kernel.wake). It never writes to the control plane itself. A PR's evidence is read from GitHub (below);
 # an app's status, deploys and live view are held ("not available"): apps-mcp's internal API has no route this module may reach.
 roles:
-  requests: [ kernel.cp-read, kernel.work-read, kernel.grader, kernel.wake ]
+  requests: [ kernel.cp-read, kernel.work-read, kernel.grader, kernel.wake, apps.read ] # apps.read: an app deliverable's status, deploys and live view (apps-mcp)
 checks:
   - id: finish
     at: task.finish

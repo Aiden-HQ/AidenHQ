@@ -309,6 +309,10 @@ test("checks: a task.finish check may observe; a hard gate or a write.filed chec
   assert.throws(() => checkEntries("platform", { checks: [{ id: "product-gate", at: "write.filed", mode: "observe" }] }), /hard gate: it always enforces/);
   assert.throws(() => checkEntries("judge", { checks: [{ id: "lint", at: "write.filed", mode: "observe" }] }), /write\.filed check gates writes/);
 });
+test("a module's token holds the kernel roles and the enabled modules' declared roles it requests (whoami's roles)", () => {
+  const t = kernelModuleTable({ apps: { roles: { declares: [{ id: "apps.read", description: "d" }] } }, grading: { roles: { requests: ["kernel.wake", "apps.read", "nobody.declares"] } } });
+  assert.deepEqual(t.grading.roles, ["kernel.wake", "apps.read"]);
+});
 test("a channel's transport is a compose service (the kernel sends the channel's token there); credentials need a transport", () => {
   const ch = (channel) => ({ x: { privileged: ["speaks-as-owner"], providers: { channel }, generated_secrets: ["x_token"] } });
   assert.deepEqual(kernelModuleTable(ch({ transport: "http://telegram:8089/transport/send", credentials: true })).x.channel, { transport: "http://telegram:8089/transport/send", credentials: true });
