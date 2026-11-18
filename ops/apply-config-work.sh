@@ -80,7 +80,7 @@ main() {
 
   # The product commit the instance pins. It must be on product main: nothing unmerged runs here.
   local product
-  product="$(node services/runner/src/apply.ts product-pin "$inst/instance.yaml")"
+  product="$(node kernel/src/apply.ts product-pin "$inst/instance.yaml")"
   [ -n "$product" ] || { echo "refusing: instance.yaml has no full-sha 'product:' line" >&2; exit 1; }
   git merge-base --is-ancestor "$product" origin/main || { echo "refusing: product $product is not on origin/main" >&2; exit 1; }
   # The kernel the instance runs: the pin, or its own fork of it (product_fork:) when that descends from the pin.
@@ -263,7 +263,7 @@ applyGeneration() {
   git -C "$inst" merge-base --is-ancestor "$instance" origin/main || { echo "refusing: generation $gen's instance $instance is not on the instance's origin/main" >&2; exit 1; }
   # Its product is what its instance commit runs: that commit's pin on origin/main, or the pin's fork (product_fork:).
   local file pin; file="$(mktemp)"; git -C "$inst" show "$instance:instance.yaml" > "$file"
-  pin="$(node services/runner/src/apply.ts product-pin "$file")"
+  pin="$(node kernel/src/apply.ts product-pin "$file")"
   git merge-base --is-ancestor "$pin" origin/main || { rm -f "$file"; echo "refusing: generation $gen's product $pin is not on origin/main" >&2; exit 1; }
   [ "$(kernelRun "$file" "$pin")" = "$product" ] || { rm -f "$file"; echo "refusing: generation $gen's product $product is not what its instance commit runs" >&2; exit 1; }
   rm -f "$file"
@@ -316,7 +316,7 @@ refuseGeneration() {
 # descends from the pin.
 kernelRun() {
   local f url sha
-  f="$(node services/runner/src/apply.ts product-fork "$1")" || { echo "refusing: instance.yaml product_fork: doesn't parse" >&2; exit 1; }
+  f="$(node kernel/src/apply.ts product-fork "$1")" || { echo "refusing: instance.yaml product_fork: doesn't parse" >&2; exit 1; }
   [ -n "$f" ] || { echo "$2"; return 0; }
   read -r url sha <<< "$f"
   git cat-file -e "$sha^{commit}" 2>/dev/null || git -c credential.helper= -c protocol.allow=never -c protocol.https.allow=always fetch --quiet --no-tags --no-recurse-submodules -- "$url" "$sha" >&2 \
@@ -331,7 +331,7 @@ instancePinning() {
   local c tmp; tmp="$(mktemp)"
   for c in $(git -C "$inst" rev-list --first-parent --max-count=500 HEAD); do
     git -C "$inst" show "$c:instance.yaml" > "$tmp" 2>/dev/null || continue
-    [ "$(node services/runner/src/apply.ts product-pin "$tmp" 2>/dev/null)" = "$1" ] && { rm -f "$tmp"; echo "$c"; return 0; }
+    [ "$(node kernel/src/apply.ts product-pin "$tmp" 2>/dev/null)" = "$1" ] && { rm -f "$tmp"; echo "$c"; return 0; }
   done
   rm -f "$tmp"
 }
