@@ -1,15 +1,10 @@
 name: engineering
-description: Engineer agents for coding jobs, dispatched by the host runner and run by the kernel in its sandbox (OpenRouter models on Codex through the model gateway).
+description: Engineer agents for coding jobs, run by the kernel in engineer computers (OpenRouter models on Codex through the model gateway).
 requires:
   # The module that provides the engine (engine-codex): the runner names it per agent.
   - engine
   # Any code host (codehost-github, codehost-local): each repo is hosted by the provider that owns its org.
   - codehost
-# The runner starts its Engineers' jobs through the kernel's /v1/jobs with this module's own token (engineering_token).
-roles:
-  requests: [ kernel.jobs ]
-generated_secrets:
-  - engineering_token
 isolation: code-exec
 agents:
   engineer-openrouter:
@@ -36,7 +31,9 @@ agents:
       - openrouter/moonshotai/kimi-k3
       - openrouter/qwen/qwen3-coder-next
     dispatch: runner
-    # Its runner jobs run in an `engineer` agent computer (gVisor), like every Engineer's (owner, 2026-11-18).
+    # Engineer jobs: the task's repositories cloned into its workspace and the code host's writes, in an `engineer` agent
+    # computer (gVisor), like every Engineer's (owner, 2026-11-18).
+    profile: engineer
     image: engineer
     # Primer reads (optional: only with the primer module); in its computer through the kernel's proxy with its run token.
     jobcaps: [ primer-read? ]
@@ -49,6 +46,7 @@ agents:
     adapter: opencode_local
     engine: codex-openrouter
     dispatch: runner
+    profile: engineer
     image: engineer
     model: openrouter/~deepseek/deepseek-flash-latest
     reasoning_effort: high

@@ -1085,12 +1085,11 @@ export function compile(productDir, instanceDir, { revision, fetch = hostFetch(p
   const mounted = composeSecretFiles(base, compose);
   const mounts = Object.fromEntries(setup.map((f) => [f.secret, [...(mounted[f.secret] ?? [])].sort()]));
   const kernelModules = { owner: { name: String(settings.owner_name ?? ""), email: String(settings.owner_email).trim().toLowerCase(), timezone: String(settings.timezone ?? "UTC") }, modules: kernelModuleTable(enabledDefs, settings), services, ...(reviewer ? { reviewer } : {}), ...(setup.length ? { setup, mounts } : {}) };
-  // The engine-run agents (`dispatch: runner`, any module's or the instance's) are the job dispatcher's: the one enabled module
-  // with kernel.jobs. The kernel starts a job only for an agent its requester dispatches (kernel/src/jobs.ts).
+  // Every agent (any module's or the instance's) is the job dispatcher's: the one enabled module with kernel.jobs. The kernel
+  // starts a job only for an agent its requester dispatches (kernel/src/jobs.ts).
   const dispatchers = Object.entries(kernelModules.modules).filter(([, m]) => (m.roles ?? []).includes("kernel.jobs")).map(([n]) => n);
-  const runAgents = Object.entries(paperclip.agents).filter(([, a]) => a.dispatch === "runner").map(([k]) => k).sort();
   if (dispatchers.length > 1) fail(`modules ${dispatchers.join(", ")} all request kernel.jobs: one job dispatcher at a time`);
-  if (dispatchers.length) kernelModules.modules[dispatchers[0]].dispatches = runAgents;
+  if (dispatchers.length) kernelModules.modules[dispatchers[0]].dispatches = Object.keys(paperclip.agents).sort();
   // kernel.grader (grader tokens for a task a finish check holds) is the one grading module's: exactly one holder, and it declares a
   // task.finish check (the hold the kernel checks before it mints), the same way kernel.jobs has one dispatcher.
   const graders = Object.entries(kernelModules.modules).filter(([, m]) => (m.roles ?? []).includes("kernel.grader")).map(([n]) => n);

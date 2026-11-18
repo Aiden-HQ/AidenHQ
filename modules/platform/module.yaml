@@ -24,7 +24,9 @@ agents:
     reasoning_effort: high
     model: openrouter/~deepseek/deepseek-flash-latest
     dispatch: runner
-    # Its runner jobs run in an `engineer` agent computer (gVisor), like every Engineer's (owner, 2026-11-18).
+    # Engineer jobs: the task's repositories cloned into its workspace and the code host's writes, in an `engineer` agent
+    # computer (gVisor), like every Engineer's (owner, 2026-11-18).
+    profile: engineer
     image: engineer
     isolation: code-exec
     max_parallel: 3 # independent product and instance changes run side by side, each in its own task workspace
