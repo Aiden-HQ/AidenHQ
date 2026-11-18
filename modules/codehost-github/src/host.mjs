@@ -23,10 +23,11 @@ import { appRemoteUrl } from "./github-app.ts";
 const BRANCH_NAME = /^[A-Za-z0-9_][A-Za-z0-9_./-]*$/;
 
 /**
- * deps: { appFor(slug) → the App client or undefined, gh(slug, write, args, { cwd }) → stdout (the real gh with the right
- * token), git(cwd, ...args) → stdout, mergeGate(slug, n, head) → { sha }, repoSources: { slug: path } }.
+ * deps: { allowedOrgs (the orgs a new repository may name; creation is refused without one), appFor(slug) → the App client or
+ * undefined, gh(slug, write, args, { cwd }) → stdout (the real gh with the right token), git(cwd, ...args) → stdout,
+ * mergeGate(slug, n, head) → { sha }, repoSources: { slug: path } }.
  */
-export function host({ appFor = async () => undefined, gh, git, mergeGate, repoSources = {} } = {}) {
+export function host({ appFor = async () => undefined, allowedOrgs, gh, git, mergeGate, repoSources = {} } = {}) {
   const json = async (slug, args, write = false, opts) => JSON.parse(await gh(slug, write, args, opts));
   return {
     name: "codehost-github",
@@ -65,6 +66,10 @@ export function host({ appFor = async () => undefined, gh, git, mergeGate, repoS
       await gh(slug, true, ["pr", "close", String(n), "--repo", slug]);
     },
     async createRepo(slug) {
+      // Fails closed: an installation alone proves nothing (the App is public), so creation needs the owner's list, and an
+      // empty or missing one creates nothing.
+      const orgs = (allowedOrgs ?? []).map((o) => String(o).toLowerCase());
+      if (!orgs.includes(slug.split("/")[0].toLowerCase())) throw new Error(`${slug} is outside the allowed orgs`);
       const app = await appFor(slug);
       if (!app) throw new Error(`no GitHub App installation covers ${slug.split("/")[0]}`);
       return app.createRepo(slug);
