@@ -17,6 +17,7 @@ function fake() {
   const holds = new Map<string, { runId: string; recoveryActionId: string; cause: string }>();
   const released: string[] = [];
   const cleared: string[] = [];
+  const woken: string[] = [];
   const comments: { issue: string; body: string }[] = [];
   const pc = {
     routines: async () => [
@@ -33,7 +34,7 @@ function fake() {
       return { id: `c${comments.length}` };
     },
     issue: async (id: string) => ({ ...tasks.get(id), executionBlocker: holds.get(id) ?? null }),
-    wakeAgent: async () => ({}),
+    wakeAgent: async (agent: string, _why: string, _key: string, issue?: string) => void woken.push(`${agent}:${issue}`),
     updateIssue: async (id: string, b: { status: string }) => void Object.assign(tasks.get(id)!, b),
     clearAgentError: async (id: string) => void cleared.push(id),
     releaseCancelledRun: async (issue: { id: string }, runId: string) => {
@@ -42,7 +43,7 @@ function fake() {
     },
   };
   const put = (t: Partial<T> & { id: string }, at: number) => tasks.set(t.id, { identifier: `WOR-${t.id}`, title: t.id, status: "todo", assigneeAgentId: null, ...tasks.get(t.id), ...t, updatedAt: iso(at) });
-  return { pc, tasks, runs, comments, put, holds, released, cleared };
+  return { pc, tasks, runs, comments, put, holds, released, cleared, woken };
 }
 
 function deps(f: ReturnType<typeof fake>, store: Store, records = fakeRecords(), grading = fakeGrading()) {
@@ -278,6 +279,7 @@ describe("event wake-ups", () => {
     expect(f.tasks.get("1")!.status).toBe("todo");
     expect(f.tasks.get("2")!.status).toBe("blocked");
     expect(f.cleared).toEqual(["a"]);
+    expect(f.woken).toEqual(["a:1"]); // a fresh run replaces the failed one, which Paperclip would re-block on
     f.tasks.get("1")!.status = "blocked"; // blocked again by the same run: not repaired a second time
     await wakeTick(deps(f, store), new Map(), t0 + 3 * MIN);
     expect(f.tasks.get("1")!.status).toBe("blocked");
