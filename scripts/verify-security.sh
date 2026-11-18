@@ -37,6 +37,13 @@ containers="$(docker ps --filter "label=com.docker.compose.project=$project" --f
 [ -n "$containers" ] || { echo "no running containers for project $project"; exit 1; }
 
 echo "Containers: $(echo $containers)"
+# Each service's networks as the compiled files declare them (compose.yaml + compose.modules.yaml; never the host's override,
+# which would bless its own additions): "service net net ...". Only network names leave node (the config holds resolved values).
+declared_nets="$(docker compose -f compose.yaml -f compose.modules.yaml config --format json 2>/dev/null | node -e '
+  let s = ""; process.stdin.on("data", (d) => (s += d)).on("end", () => {
+    const c = JSON.parse(s || "{}");
+    for (const [name, svc] of Object.entries(c.services ?? {})) console.log(name, ...Object.keys(svc.networks ?? {}).map((k) => c.networks?.[k]?.name ?? k));
+  });' 2>/dev/null)"
 for c in $containers; do
   # One read per container: a one-job CI runner can exit between reads, and a container gone mid-check is not a finding.
   info="$(docker inspect "$c" --format '{{.HostConfig.Privileged}}
@@ -148,12 +155,18 @@ for c in $containers; do
       ;;
     *mcp-grafana*|*prometheus*|*alertmanager*|*cadvisor*)
       # The monitoring module's inner services: nothing published, and none on the backplane (their APIs take no auth:
-      # Alertmanager's silences, Prometheus, mcp-grafana). Only their module's networks: its own, the one it shares with the
-      # board (Prometheus, Alertmanager) and the grafana module's (mcp-grafana, which joins it to meet grafana-mcp).
+      # Alertmanager's silences, Prometheus, mcp-grafana). Only module networks the compiled config gives the service: its
+      # module's own, its links (the board's) and its joins (grafana's for mcp-grafana, fleet-steward's for Prometheus and
+      # Alertmanager, #685). A network that isn't a module's (the backplane, egress, sources) fails even if declared.
       [ "$(docker inspect "$c" --format '{{json .HostConfig.PortBindings}}')" = "{}" ] && pass "$c: no published ports" || fail "$c publishes ports"
       nets="$(docker inspect "$c" --format '{{range $k, $v := .NetworkSettings.Networks}}{{$k}} {{end}}')"
-      ! echo "$nets" | tr ' ' '\n' | grep -v '^$' | grep -qvxE "aidenhq-mod-(monitoring|monitoring-board|grafana)" \
-        && pass "$c: on the monitoring networks only ($nets)" || fail "$c is on another network (backplane?): $nets"
+      want=" $(printf '%s\n' "$declared_nets" | awk -v s="$service" '$1 == s { $1 = ""; print }') "
+      bad=""
+      for n in $nets; do
+        case "$n" in aidenhq-mod-*) case "$want" in *" $n "*) ;; *) bad="$bad $n(undeclared)" ;; esac ;; *) bad="$bad $n" ;; esac
+      done
+      [ -n "${want// /}" ] && [ -z "$bad" ] \
+        && pass "$c: on its declared module networks only ($nets)" || fail "$c is on a network that isn't one its module declares (backplane?):${bad:- no compiled networks for $service}"
       ;;
     *node-exporter*)
       # Reads the host's / (filesystem sizes): as nobody, read-only, nothing published.
@@ -476,15 +489,37 @@ grep -qF "pattern: '^https://[a-z0-9-]+\.grafana\.net/?\$'" modules/grafana/modu
   && grep -qF '      if (!secretFits(field, value)) throw fail(400, "bad_request", `that doesn'"'"'t look like a ${field.label}`);' kernel/src/module-secrets.ts \
   && pass "grafana-mcp and clickhouse-mcp: the upstream address is held to *.grafana.net (owner-saved, kernel/src/module-secrets.ts) / *.clickhouse.cloud (a setting's host rule)" \
   || fail "grafana-mcp or clickhouse-mcp: the saved upstream address's pattern or its owner-only save changed"
-# One way to run a job: every Engineer job in its agent's computer (kernel/src/jobs.ts refuses any other).
-grep -qF 'if (!b.box) throw new JobError(400, "box-required",' kernel/src/jobs.ts \
-  && grep -qF 'if (agent.metadata?.box !== true) throw new JobError(403, "not-a-box-agent",' kernel/src/jobs.ts \
-  && grep -qF 'if (entry.box !== true) throw new JobError(400, "not-a-box-engine",' kernel/src/jobs.ts \
+# One way to run a job (#712): the kernel inserts a job row only at admission ('admitted', its authority frozen), POST /v1/jobs
+# only admits, and the one start (jobs.ts runAdmitted, called only by boxes.ts once the launcher made the box) runs only an
+# admitted row, only a box engine, as `docker exec` into that box (sandbox.ts buildJob). Nothing wraps a host command.
+[ "$(grep -rh 'INSERT INTO jobs' kernel/src --include='*.ts' | grep -v '\.test\.' | wc -l | tr -d ' ')" = 1 ] \
+  && grep -qF "VALUES (?, ?, ?, ?, ?, 0, '', '', ?, ?, 0, 0, 'admitted'," kernel/src/admission.ts \
+  && grep -qF 'return send(res, 200, await admission.admit(w.module!, b as never));' kernel/src/backplane.ts \
+  && [ "$(grep -rh 'runAdmitted(' kernel/src --include='*.ts' | wc -l | tr -d ' ')" = 2 ] \
+  && grep -qF 'jobs.runAdmitted(job.id, { box: { ...box, workspace } as Box,' kernel/src/boxes.ts \
+  && grep -qF 'if (!r || r.state !== "admitted" || !r.authority) throw new JobError(409, "not-admitted",' kernel/src/jobs.ts \
+  && grep -qF 'if (entry?.box !== true) throw new JobError(400, "not-a-box-engine",' kernel/src/jobs.ts \
+  && [ "$(grep -c 'buildJob(' kernel/src/jobs.ts)" = 1 ] && [ "$(grep -c 'spawn(' kernel/src/jobs.ts)" = 1 ] \
+  && grep -qF 'const built = buildJob({ cfg, engine, worktree, jobDir, sessionId: session, prompt, job: { agentId: r.agent, issueId: r.task, at }, box, boxWrap });' kernel/src/jobs.ts \
+  && grep -qF 'if (entry.box !== true) throw new Error(' kernel/src/sandbox.ts \
+  && grep -qF 'const argv = ["docker", "exec", "--env-file", box.envFile, "-w", "/workspace", box.container, "sh", "-c", boxWrap,' kernel/src/sandbox.ts \
   && ! grep -q 'hiding(' kernel/src/jobs.ts \
-  && pass "kernel: every job runs in its agent's computer; none on the host" || fail "kernel: a job can run outside an agent computer again"
-grep -q 'const ENV_NAMES = new Set(\["AIDENHQ_REPO_URL", "AIDENHQ_REPO_TOKEN", "GH_TOKEN", "AIDENHQ_GH_AUTH", "GIT_AUTHOR_NAME", "GIT_AUTHOR_EMAIL", "GIT_COMMITTER_NAME", "GIT_COMMITTER_EMAIL"\]);' kernel/src/jobs.ts && grep -q '...(gh ? \["-e", "GH_TOKEN", "-e", "AIDENHQ_GH_AUTH"\] : \[\])' kernel/src/sandbox.ts \
-  && grep -q 'permissions: READ, fresh: true' modules/codehost-github/service/src/github-app.ts && node --input-type=module -e 'import { READ } from "./modules/codehost-github/service/src/github-app.ts"; process.exit(Object.values(READ).every((v) => v === "read") ? 0 : 1)' \
-  && pass "kernel: jobs run in boxes with no gh sign-in of the user's; their gh reads with a read-only App token for the task's repos" || fail "runner: the user's gh sign-in isn't hidden from jobs, or their gh token changed (or gained a write permission)"
+  && pass "kernel: every job is admitted and runs in its agent's computer (docker exec into its box); none on the host" || fail "kernel: a job can run outside an agent computer again"
+# A job never sees the user's own gh sign-in (~/.config/gh) or any host credential: its box's env file holds only the launcher's
+# allowlist (services/computer/lib.mjs JOB_ENV_NAMES: no GitHub name), docker exec passes nothing else, and every running job
+# box mounts only its own folders: nothing at or above the home root, nothing under ~/.config, nothing from the secrets dir.
+gh_env_ok="$(node --input-type=module -e 'import { JOB_ENV_NAMES } from "./services/computer/lib.mjs"; console.log(JOB_ENV_NAMES.length > 0 && !JOB_ENV_NAMES.some((n) => /GH|GITHUB/i.test(n)) ? "yes" : "no")' 2>/dev/null)"
+box_bad=""; boxes=0
+for b in $(docker ps --filter label=aidenhq.job --format '{{.Names}}'); do
+  boxes=$((boxes + 1))
+  for src in $(docker inspect "$b" --format '{{range .Mounts}}{{.Source}} {{end}}' 2>/dev/null); do
+    case "$src" in "$HOME"|"$HOME"/|/home|/root|/|"$HOME"/.config|"$HOME"/.config/*) box_bad="$box_bad $b:$src" ;; esac
+    [ -n "${AIDENHQ_SECRETS_DIR:-}" ] && case "$src" in "$AIDENHQ_SECRETS_DIR"|"$AIDENHQ_SECRETS_DIR"/*) box_bad="$box_bad $b:$src" ;; esac
+  done
+done
+[ "$gh_env_ok" = yes ] && [ -z "$box_bad" ] \
+  && pass "kernel: job boxes get no gh sign-in or host credential (env allowlist has no GitHub name; $boxes running job box(es) mount no home root, ~/.config or secrets)" \
+  || fail "kernel: a job box can reach the user's gh sign-in or a host credential (GitHub name in JOB_ENV_NAMES: $([ "$gh_env_ok" = yes ] && echo no || echo yes); mounts:${box_bad:- none})"
 # No process on the host runs repo code (one-way spec §4.2a): a repo's checks are check jobs in credential-free boxes, so the
 # host keeps no jail for them: no bwrap binary under /opt/aidenhq, no aidenhq-bwrap AppArmor profile loaded or on disk, and
 # nothing in the kernel that wraps a command in one.
