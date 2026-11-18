@@ -25,7 +25,7 @@ export type TaskApi = { issue(id: string): Promise<Issue>; comments(id: string):
 
 /** The module kinds the reviewer has always read by their card names. */
 const LEGACY: Record<string, string> = { "apps-platform.deploy": "deploy_app", "apps-platform.run": "app_run" };
-const actionOf = (kind: string) => LEGACY[kind] ?? kind.replace(/^(runner|kernel)\./, "");
+export const actionOf = (kind: string) => LEGACY[kind] ?? kind.replace(/^(runner|kernel)\./, "");
 const STATE: Partial<Record<State, string>> = { review: "pending", owner: "pending", approved: "approved", claimed: "used", done: "used", failed: "used", unknown: "used", rejected: "rejected", stale: "stale", cancelled: "expired" };
 const ALL: State[] = ["review", "owner", "approved", "claimed", "done", "failed", "unknown", "rejected", "stale", "cancelled"];
 

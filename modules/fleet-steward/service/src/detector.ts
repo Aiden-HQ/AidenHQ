@@ -128,8 +128,82 @@ export async function tick(kv: Kv, checks: Record<string, Check>, file: (body: {
 
 interface Company { id: string }
 interface AgentRow { id: string; name: string; status: string; adapterConfig?: { timeoutSec?: number } }
-interface JobRow { id: string; agent: string; state: string; started_at: string | null; ended_at: string | null; exit?: number | null; timed_out?: boolean; steps?: number; has_final?: boolean }
-interface IssueRow { id: string; identifier?: string; status: string; updatedAt: string }
+interface JobRow { id: string; agent: string; task?: string; state: string; started_at: string | null; ended_at: string | null; exit?: number | null; timed_out?: boolean; steps?: number; has_final?: boolean }
+interface IssueRow { id: string; identifier?: string; title?: string; status: string; priority?: string; updatedAt: string; assigneeUserId?: string | null; assigneeAgentId?: string | null; originKind?: string | null; labels?: ({ name?: string } | null)[] }
+interface CommentRow { authorType?: string; body?: string; createdAt: string; deletedAt?: string | null }
+interface WorkRecord { task: string | null; identifier: string | null; judged?: boolean; targets?: string[]; decided_at: string | null }
+
+const HOUR_MS = 60 * MIN;
+const REJECT_LOOP = { n: 3, windowMs: 6 * HOUR_MS }; // n = the kernel's MAX_REJECTS (tier.ts): the point where a branch is parked
+const REPEAT_FAILS = { n: 3, spanMs: 30 * MIN, freshMs: HOUR_MS }; // same category on one task within spanMs, the newest within freshMs
+const UNCLOSED_MS = 6 * HOUR_MS; // in review with nothing left running, filed, or open
+const STALE_FOLLOWUP_MS = 3 * DAY_MS;
+const SILENT_MS = 15 * MIN; // an owner message on a chat task with no reply
+const SILENT_LOOKBACK_MS = 6 * HOUR_MS; // older than this, the owner has long since seen the silence
+
+/** Tasks that are test data or perpetual by design (bake-off, TEST, chats, routine executions): never a loop, never stale. */
+export const exempt = (i: Pick<IssueRow, "identifier" | "title" | "labels" | "originKind">): boolean =>
+  /^BAKA?-/i.test(i.identifier ?? "") || /^\W*(TEST|BAK)\b/i.test(i.title ?? "") || (i.labels ?? []).some((l) => l?.name === "chat") || i.originKind === "routine_execution";
+
+/** How a finished job ended, as a category: a timeout, or its state (failed, stalled, stopped) with a non-zero exit. */
+const category = (j: JobRow) => (j.timed_out || j.state === "timeout" ? "timeout" : j.state === "failed" && j.exit ? `failed-exit-${j.exit}` : j.state);
+
+/**
+ * The newest run of three or more jobs of one task that ended the same way within 30 minutes of each other, the newest ended
+ * within the last hour (a loop that is still going). Returns the task and category, once each.
+ */
+export function repeatedFailures(jobs: JobRow[], t: number): { task: string; category: string; n: number }[] {
+  const by = new Map<string, number[]>();
+  for (const j of jobs) {
+    if (!j.task || ["running", "done", "cancelled"].includes(j.state) || !j.ended_at) continue;
+    const k = `${j.task}\u0000${category(j)}`;
+    by.set(k, [...(by.get(k) ?? []), Date.parse(j.ended_at)]);
+  }
+  const out: { task: string; category: string; n: number }[] = [];
+  for (const [k, ends] of by) {
+    const e = ends.sort((a, b) => b - a);
+    if (t - e[0]! > REPEAT_FAILS.freshMs) continue;
+    const n = e.filter((x) => e[0]! - x <= REPEAT_FAILS.spanMs).length;
+    if (n >= REPEAT_FAILS.n) out.push({ task: k.split("\u0000")[0]!, category: k.split("\u0000")[1]!, n });
+  }
+  return out;
+}
+
+/** Records the AI reviewer judged and rejected, grouped by (task, branch or PR): the ones at the kernel's retry bound within the window. */
+export function rejectLoops(records: WorkRecord[], t: number): { task: string; identifier: string | null; target: string; n: number }[] {
+  const by = new Map<string, { task: string; identifier: string | null; target: string; n: number }>();
+  for (const r of records) {
+    if (!r.judged || !r.task || age(r.decided_at, t) > REJECT_LOOP.windowMs) continue;
+    for (const target of r.targets?.length ? r.targets : [r.task]) {
+      const k = `${r.task}\u0000${target}`;
+      by.set(k, { task: r.task, identifier: r.identifier, target, n: (by.get(k)?.n ?? 0) + 1 });
+    }
+  }
+  return [...by.values()].filter((x) => x.n >= REJECT_LOOP.n);
+}
+
+/** Open PRs and issue references a task's records name (repo#number), for "has an open PR". */
+const prRefs = (records: { args?: any; outcome_text?: string | null }[]): string[] =>
+  records.flatMap((r) => [
+    ...((r.args?.prs ?? []) as { repo?: string; number?: number }[]).filter((p) => p?.repo && p?.number !== undefined).map((p) => `${p.repo}#${p.number}`.toLowerCase()),
+    ...[...String(r.outcome_text ?? "").matchAll(/github\.com\/([\w.-]+\/[\w.-]+)\/pull\/(\d+)/g)].map((m) => `${m[1]}#${m[2]}`.toLowerCase()),
+  ]);
+
+/** The owner's own typed words on a chat task (not a relayed notice, the kernel's, or deleted). */
+const ownerWords = (c: CommentRow) => c.authorType === "user" && !c.deletedAt && !/<!-- aidenhq-/.test(String(c.body));
+
+/**
+ * Owner-assigned todos nobody has touched in 3 days, ranked (priority, then age), for the morning brief. A task the owner
+ * snoozed (the board parks it in Backlog; a `<!-- followup-snooze:DATE -->` note from a brief reply) is not listed until then.
+ */
+export function rankFollowups(issues: (IssueRow & { snoozedUntil?: string })[], t: number, top = 10) {
+  const weight: Record<string, number> = { critical: 4, urgent: 4, high: 3, medium: 2, low: 1 };
+  return issues
+    .filter((i) => i.status === "todo" && i.assigneeUserId && !i.assigneeAgentId && !exempt(i) && age(i.updatedAt, t) >= STALE_FOLLOWUP_MS && !(i.snoozedUntil && Date.parse(i.snoozedUntil) > t))
+    .sort((a, b) => (weight[b.priority ?? ""] ?? 0) - (weight[a.priority ?? ""] ?? 0) || Date.parse(a.updatedAt) - Date.parse(b.updatedAt))
+    .slice(0, top)
+    .map((i) => ({ task: i.identifier ?? i.id, title: String(i.title ?? "").slice(0, 120), priority: i.priority ?? "medium", idle_days: Math.floor(age(i.updatedAt, t) / DAY_MS), options: ["snooze 7d", "close", "delegate"] }));
+}
 
 /** The owner's alert list, as checks. `apps` reads apps-mcp (a module holding apps.read); `alerts` is Alertmanager's list. */
 export function checks(d: { kernel: KernelClient; apps: <T>(path: string) => Promise<T>; alerts: () => Promise<Incident[]>; openKeys: () => string[]; now?: () => number }): Record<string, Check> {
@@ -137,6 +211,10 @@ export function checks(d: { kernel: KernelClient; apps: <T>(path: string) => Pro
   let appsOkAt = now(); // apps-mcp's last answer: a restart (an apply) is not an outage
   const companies = async () => (await d.kernel.read("/api/companies")) as Company[];
   const agents = async () => (await Promise.all((await companies()).map(async (c) => (await d.kernel.read(`/api/companies/${c.id}/agents`)) as AgentRow[]))).flat().filter((a) => a.status !== "terminated");
+  const issueCache = new Map<string, Promise<IssueRow | undefined>>();
+  const issueOf = (id: string) => (issueCache.get(id) ?? issueCache.set(id, (d.kernel.read(`/api/issues/${encodeURIComponent(id)}`) as Promise<IssueRow>).catch(() => undefined)).get(id)!);
+  /** A task's id as the owner reads it, or undefined when it is exempt (bake-off, TEST, chat, routine run) or unreadable. */
+  const live = async (id: string) => { const i = await issueOf(id); return i && !exempt(i) ? i.identifier ?? id : undefined; };
   const jobsOf = async (agent: string) => ((await d.kernel.call("GET", `/v1/work?agent=${encodeURIComponent(agent)}`)).jobs ?? []) as JobRow[];
   return {
     // Stuck, failing and silent runs, from the kernel's job ledger.
@@ -151,6 +229,11 @@ export function checks(d: { kernel: KernelClient; apps: <T>(path: string) => Pro
         if (stuck) out.push({ key: `${a.id}:stuck`, reason: `${a.name}: a run has been running ${mins(age(stuck.started_at, t))} (limit ${mins(limit)})` });
         const finished = mine.filter((j) => !["running", "cancelled"].includes(j.state)).slice(0, FAILS);
         if (finished.length === FAILS && finished.every((j) => j.state !== "done")) out.push({ key: `${a.id}:failing`, reason: `${a.name}: its last ${FAILS} runs failed (${finished.map((j) => j.state).join(", ")})` });
+        // The same ending three times on one task inside half an hour is a loop (what the last-three check can't tell from three tasks).
+        for (const r of repeatedFailures(mine, t)) {
+          const task = await live(r.task);
+          if (task) out.push({ key: `${a.id}:repeat:${slug(task)}`, reason: `${a.name}: ${r.n} runs of task ${task} ended "${r.category}" within 30 minutes` });
+        }
         // One heuristic: a job that finished with no steps and no final words, 3+ times in a day. Diagnostic only.
         const silent = mine.filter((j) => j.state === "done" && !j.steps && !j.has_final && age(j.ended_at, t) < DAY_MS).length;
         if (silent >= SILENT_RUNS) out.push({ key: `${a.id}:silent`, reason: `agent ${a.name}: ${silent} runs in 24h ended with no steps and no output` });
@@ -166,6 +249,45 @@ export function checks(d: { kernel: KernelClient; apps: <T>(path: string) => Pro
         if (!label) continue;
         const held = (await d.kernel.read(`/api/companies/${c.id}/issues?labelId=${label.id}&status=in_review&limit=100&excludeRoutineExecutions=true`)) as IssueRow[];
         for (const i of held.filter((x) => age(x.updatedAt, t) > DAY_MS)) out.push({ key: i.id, reason: `task ${i.identifier ?? i.id} held for grading for ${mins(age(i.updatedAt, t))}` });
+      }
+      // Finished but not closed: in review 6 hours, and nothing left that could move it (no job, no open card, no open PR).
+      const prs = new Set(((await d.apps<{ prs?: PrRow[] }>("/internal/open-prs").catch(() => ({}) as { prs?: PrRow[] })).prs ?? []).map((p) => `${p.repo}#${p.number}`.toLowerCase()));
+      const parked: IssueRow[] = [];
+      for (const c of await companies()) parked.push(...((await d.kernel.read(`/api/companies/${c.id}/issues?status=in_review&limit=100&excludeRoutineExecutions=true`)) as IssueRow[]));
+      const candidates = parked.filter((i) => age(i.updatedAt, t) >= UNCLOSED_MS && !exempt(i) && !(i.labels ?? []).some((l) => l?.name === "grading")).sort((a, b) => Date.parse(a.updatedAt) - Date.parse(b.updatedAt)).slice(0, 40);
+      for (const i of candidates) {
+        const w = await d.kernel.call("GET", `/v1/work?task=${encodeURIComponent(i.id)}`).catch(() => undefined) as { busy?: boolean; records?: { state: string; args?: unknown; outcome_text?: string | null }[] } | undefined;
+        if (!w || w.busy) continue;
+        const open = (w.records ?? []).some((r) => ["review", "owner", "approved", "claimed"].includes(r.state));
+        if (!open && !prRefs(w.records ?? []).some((r) => prs.has(r))) out.push({ key: `${i.id}:unclosed`, reason: `task ${i.identifier ?? i.id} in review for ${mins(age(i.updatedAt, t))} with no running job, open card or open PR` });
+      }
+      return out;
+    },
+    // The AI reviewer rejecting the same branch again and again (the kernel parks it at 3; nobody hears of the park).
+    async loop() {
+      const t = now();
+      const r = (await d.kernel.call("GET", `/v1/work?since=${encodeURIComponent(new Date(t - REJECT_LOOP.windowMs).toISOString())}`)) as { records?: WorkRecord[] };
+      const out: Incident[] = [];
+      for (const l of rejectLoops(r.records ?? [], t)) {
+        const task = await live(l.task);
+        if (task) out.push({ key: `${l.task}:${slug(l.target)}`, reason: `task ${task}: the AI reviewer rejected ${slug(l.target)} ${l.n} times in 6 hours (parked at ${REJECT_LOOP.n})` });
+      }
+      return out;
+    },
+    // An owner message on a chat task with no reply: the front door is silent.
+    async front() {
+      const t = now();
+      const out: Incident[] = [];
+      for (const c of await companies()) {
+        const label = ((await d.kernel.read(`/api/companies/${c.id}/labels`)) as { id: string; name: string }[]).find((l) => l.name === "chat");
+        if (!label) continue;
+        const chats = ((await d.kernel.read(`/api/companies/${c.id}/issues?labelId=${label.id}&limit=100`)) as IssueRow[]).filter((i) => age(i.updatedAt, t) < SILENT_LOOKBACK_MS).slice(0, 20);
+        for (const i of chats) {
+          const comments = (((await d.kernel.read(`/api/issues/${i.id}/comments?order=desc&limit=20`).catch(() => [])) as CommentRow[]) ?? []).filter((x) => !x.deletedAt);
+          const last = comments.find(ownerWords); // newest first
+          // Any later comment, an agent's or a relayed notice, is an answer (a deferral note counts).
+          if (last && age(last.createdAt, t) > SILENT_MS && age(last.createdAt, t) < SILENT_LOOKBACK_MS && !comments.some((x) => x.createdAt > last.createdAt && !ownerWords(x))) out.push({ key: i.id, critical: true, reason: `an owner message on chat ${i.identifier ?? i.id} has had no reply for ${mins(age(last.createdAt, t))}` });
+        }
       }
       return out;
     },
@@ -200,4 +322,18 @@ export function checks(d: { kernel: KernelClient; apps: <T>(path: string) => Pro
       return stalePrs(r.prs, now());
     },
   };
+}
+
+/** The owner's stale follow-ups, ranked, for the morning brief (`fleet_stale_followups`); a snoozed one waits out its date. */
+export async function staleFollowups(d: { kernel: KernelClient; now?: () => number }) {
+  const t = (d.now ?? (() => Date.now()))();
+  const companies = (await d.kernel.read("/api/companies")) as Company[];
+  const todo = (await Promise.all(companies.map(async (c) => (await d.kernel.read(`/api/companies/${c.id}/issues?status=todo&limit=200&excludeRoutineExecutions=true`)) as IssueRow[]))).flat();
+  const stale = rankFollowups(todo, t, 30).map((r) => todo.find((i) => (i.identifier ?? i.id) === r.task)!);
+  const snoozes = await Promise.all(stale.map(async (i) => {
+    const comments = ((await d.kernel.read(`/api/issues/${i.id}/comments?order=desc&limit=20`).catch(() => [])) as CommentRow[]) ?? [];
+    const until = comments.flatMap((c) => [...String(c.body ?? "").matchAll(/<!-- followup-snooze:(\d{4}-\d\d-\d\d) -->/g)].map((m) => m[1]!)).sort().at(-1);
+    return { ...i, snoozedUntil: until };
+  }));
+  return { followups: rankFollowups(snoozes, t) };
 }

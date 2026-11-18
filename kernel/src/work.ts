@@ -6,12 +6,15 @@
 //                            progress (said, plan, steps) and final words (both the agent's: untrusted)
 //   GET /v1/work?agent=<id>  an agent's last 50 jobs (newest first), each with how it ended: { jobs }
 //   GET /v1/work?since=<iso>[&to=<iso>]  the records filed or decided since then (tier 1 and 2) and the billed cost per agent and
-//                            UTC day from the gateway ledger: { records, usage } (the Fleet Steward's scorecards)
+//                            UTC day from the gateway ledger: { records, usage } (the Fleet Steward's scorecards; each record says
+//                            whether it is a `judged` rejection and the branches or PRs it was aimed at, `targets`)
 //   GET /v1/work?generations=1  the host's apply generations: the current product pin and the last 20 applies (generations.ts)
 //   GET /v1/work/metrics     Prometheus text (aidenhq_kernel_jobs_*) over the same rows
 import type { DatabaseSync } from "node:sqlite";
 import { fleetGenerations } from "./generations.ts";
 import type { Records } from "./records.ts";
+import { actionOf } from "./review-loop.ts";
+import { CODE_REJECTS, requestTargets } from "./tier.ts";
 
 /** Job duration buckets, seconds: a quick reply to a two-hour build. */
 const BUCKETS = [60, 300, 900, 1800, 3600, 7200, Infinity];
@@ -20,6 +23,8 @@ const iso = (ms: unknown) => (typeof ms === "number" && ms > 0 ? new Date(ms).to
 export function createWork({ db, records, generationsFile = "" }: { db: DatabaseSync; records: Records; generationsFile?: string }) {
   const rows = (sql: string, ...args: (string | number)[]) => db.prepare(sql).all(...args) as Record<string, any>[];
   const job = (r: Record<string, any>) => ({ id: r.id, agent: r.agent, task: r.task, engine: r.engine, state: r.state, started_at: iso(r.at), ended_at: iso(r.ended), session: r.session ?? null });
+  /** A rejection the retry bound counts (tier.ts priorDecisions): the AI reviewer's judgment, not code's refusal (a moved head, too large). */
+  const judged = (r: { state: string; decided_by?: string | null; review_code?: string | null }) => r.state === "rejected" && /^reviewer:/.test(r.decided_by ?? "") && !CODE_REJECTS.includes(r.review_code ?? "");
   return {
     task(task: string) {
       const jobs = rows("SELECT * FROM jobs WHERE task = ? ORDER BY at DESC LIMIT 20", task).map(job);
@@ -36,7 +41,7 @@ export function createWork({ db, records, generationsFile = "" }: { db: Database
       }) };
     },
     since(from: string, to = new Date().toISOString()) {
-      const recs = records.since(from).map((r) => ({ id: r.id, kind: r.kind, state: r.state, tier: r.tier, panel: r.panel, requester: r.requester?.key || r.requester?.module || null, task: r.task, identifier: r.identifier ?? null, decided_by: r.decided_by ?? null, outcome_ok: r.outcome?.ok ?? null, outcome_text: r.outcome?.text ?? null, created_at: r.created_at, decided_at: r.decided_at ?? null }));
+      const recs = records.since(from).map((r) => ({ id: r.id, kind: r.kind, state: r.state, tier: r.tier, panel: r.panel, requester: r.requester?.key || r.requester?.module || null, task: r.task, identifier: r.identifier ?? null, decided_by: r.decided_by ?? null, outcome_ok: r.outcome?.ok ?? null, judged: judged(r), targets: (requestTargets(actionOf(r.kind), r.args)?.targets ?? []).map((t) => t.key), outcome_text: r.outcome?.text ?? null, created_at: r.created_at, decided_at: r.decided_at ?? null }));
       const usage = rows("SELECT agent_id AS agent, day, COALESCE(SUM(cost_usd), 0) AS cost_usd, COUNT(*) AS calls, COUNT(cost_usd) AS priced FROM calls WHERE at >= ? AND at < ? GROUP BY agent_id, day", from, to);
       return { records: recs, usage };
     },
