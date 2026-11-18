@@ -40,10 +40,13 @@ export function template(kind: string, dir: string = join(REPO_ROOT, "modules/gr
   return readFileSync(file, "utf8").split("\n").filter((l) => l.startsWith("- ")).map((l) => l.slice(2).trim());
 }
 
-/** A criterion explicitly another path: a conditional ("If no upstream release meets the floors, …"), or a stated
- * replacement of opening a pull request ("… rather than opening a pull request"). "Otherwise" alone is not one. */
-const ALTERNATIVE_PATH = /\bif (?:no|none)\b|\b(?:instead of|rather than)\s+(?:open(?:ing)?\s+)?(?:a\s+)?(?:pull request|pr)s?\b/i;
-/** …whose outcome the task records itself: the words such a path leaves to grade. */
+/** A criterion that offers another path instead of the work a PR would do ("… rather than patching the image locally"). */
+const REPLACEMENT = /\b(?:instead of|rather than)\b/i;
+/** A criterion that offers a path instead of opening a pull request, naming it. */
+const NOT_OPENING = /\b(?:instead of|rather than)\s+(?:open(?:ing)?\s+)?(?:a\s+)?(?:pull request|pr)s?\b/i;
+/** A conditional path ("If no upstream release meets the floors, …"). */
+const CONDITIONAL = /\bif (?:no|none)\b/i;
+/** The task as the one that records the outcome: the words such a path leaves to grade, where a PR would be the evidence. */
 const RECORDED_BY_TASK = /\bthe task\b[^.;]{0,80}?\b(?:record|report|name|state|document|explain|note|describe|list|say)\w*/i;
 /** A pull request, or its merge, as the deliverable itself. */
 const REQUIRES_PR = /\b(?:pr|pull requests?|merg(?:e|ed|ing))\b/i;
@@ -52,15 +55,17 @@ const REPLACED_PR = /\b(?:(?:instead of|rather than)\s+(?:open(?:ing)?\s+)?|no\s
 
 /**
  * The rubric criterion that defines the deliverable another way, for a `pr` task that has no PR: one explicitly worded as
- * another completion path ("If no upstream release meets the floors, the task records that and names the floors rather than
- * patching the image locally"), whose outcome the task records itself. It has to replace the PR, not sit beside one: a
- * rubric with any criterion that still requires a pull request, or its merge, returns undefined, so the missing-PR wait and
- * escalation stand. Only the rubric's own text decides this, never a comment claiming it.
- * { n, criterion }: the first such criterion, n its 1-based number.
+ * another completion path, and leaving the task's own record to grade ("If no upstream release meets the floors, the task
+ * records that and names the floors rather than patching the image locally"). It is explicit: a conditional *and* a stated
+ * replacement of the work ("If no … , … rather than patching it"), or a stated replacement of opening the pull request
+ * itself. "If no …" alone, and "otherwise" alone, are not one. It has to replace the PR, not sit beside one: a rubric with
+ * any criterion that still requires a pull request, or its merge, returns undefined, so the missing-PR wait and escalation
+ * stand. Only the rubric's own text decides this, never a comment claiming it. { n, criterion }: the first, n its 1-based.
  */
 export function rubricAlternative(rubric: string[] = []): { n: number; criterion: string } | undefined {
   const requirePr = (text: string) => REQUIRES_PR.test(text.replace(REPLACED_PR, ""));
-  const n = rubric.findIndex((c) => ALTERNATIVE_PATH.test(String(c)) && RECORDED_BY_TASK.test(String(c)) && !requirePr(String(c)));
+  const alternative = (text: string) => RECORDED_BY_TASK.test(text) && (NOT_OPENING.test(text) || (CONDITIONAL.test(text) && REPLACEMENT.test(text))) && !requirePr(text);
+  const n = rubric.findIndex((c) => alternative(String(c)));
   if (n < 0) return undefined;
   if (rubric.some((c, i) => i !== n && requirePr(String(c)))) return undefined;
   return { n: n + 1, criterion: String(rubric[n]) };

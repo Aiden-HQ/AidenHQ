@@ -76,7 +76,8 @@ test("a rubric that defines another completion path is graded without a PR; one 
   const insteadOf = await noPr(["the task records which release it waits for, rather than opening a pull request", "the report names the floors"]);
   assert.equal(insteadOf.missing, undefined);
   assert.ok(insteadOf.version);
-  // "Otherwise" on its own, or a criterion that itself still requires the PR, is never the replacement.
+  // A bare conditional, "otherwise" alone, or a criterion that itself still requires the PR is never the replacement.
+  assert.equal((await noPr(["If no release qualifies, the task records it"])).missing, true);
   assert.equal((await noPr(["the task otherwise records what it found"])).missing, true);
   assert.equal((await noPr(["If no release qualifies, the task records it in the PR description rather than opening a new one"])).missing, true);
 });
