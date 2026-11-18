@@ -18,7 +18,7 @@ const thread = [
   { id: "c4", body: "and?", authorUserId: "u1", createdAt: "2026-11-18T10:00:03Z" },
 ];
 const pc = {
-  me: async () => "me", agents: async () => [{ id: "a1", name: "Aria", status: "idle", adapterType: "codex_local", metadata: { setupKey: "aidenhq:aria" } }], labels: async () => [{ id: "l", name: "chat", color: "#0ea5e9" }], company: async () => ({ issuePrefix: "WOR" }),
+  me: async () => "me", agents: async () => [{ id: "a1", name: "Aria", status: "idle", metadata: { engine: "codex", setupKey: "aidenhq:aria" } }], labels: async () => [{ id: "l", name: "chat", color: "#0ea5e9" }], company: async () => ({ issuePrefix: "WOR" }),
   comments: async (id: string) => (id === "i-chat" ? thread : []),
   addComment: async (id: string, body: string) => (posted.push({ id, body }), { id: "c9", body }),
 } as unknown as Paperclip;

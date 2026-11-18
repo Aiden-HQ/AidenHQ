@@ -10,7 +10,6 @@ import type { Agent, Paperclip } from "./paperclip.js";
 import type { Store } from "./store.js";
 import { appsApi } from "./fleet.js";
 import type { Grade, Grading } from "./grading.js";
-import { firstArg } from "./codex-activity.js";
 import { alertIncidents } from "./monitoring.js";
 import { ownerAlert } from "./notify.js";
 
@@ -131,7 +130,6 @@ export async function tick(store: Pick<Store, "meta" | "setMeta">, checks: Recor
 }
 
 const DAY_MS = 24 * 60 * MIN;
-const SILENT_RUNS = 3; // silent runs in a day before the flag opens
 const MISSED_GRACE_MS = 15 * MIN;
 const HARD_FAIL = new Set(["failed", "timed_out"]);
 const SOFT_CODES = new Set(["cap_reached", "issue_reassigned"]); // not the routine's fault
@@ -162,8 +160,6 @@ export function failingRoutines(routines: RoutineRow[], runs: RoutineRun[], sinc
   return out;
 }
 
-const silentRuns = new Map<string, boolean>(); // run id → silent (a finished run's log never changes)
-
 const age = (t: string | null | undefined, now: number) => (t ? now - Date.parse(t) : Infinity);
 const mins = (ms: number) => `${Math.round(ms / MIN)} min`;
 
@@ -178,10 +174,8 @@ export function checks(pc: Paperclip, store: Pick<Store, "meta" | "setMeta" | "r
       const out: Incident[] = [];
       for (const a of agents.filter((x) => x.status !== "terminated")) {
         const mine = runs.filter((r) => r.agentId === a.id).sort((x, y) => (y.startedAt ?? y.createdAt).localeCompare(x.startedAt ?? x.createdAt));
-        const timeout = Number(a.adapterConfig?.timeoutSec) * 1000;
-        const limit = timeout > 0 ? 2 * timeout : STUCK_DEFAULT_MS;
-        const stuck = mine.find((r) => r.status === "running" && age(r.startedAt ?? r.createdAt, t) > limit);
-        if (stuck) out.push({ key: `${a.id}:stuck`, reason: `${a.name}: a run has been running ${mins(age(stuck.startedAt ?? stuck.createdAt, t))} (limit ${mins(limit)})` });
+        const stuck = mine.find((r) => r.status === "running" && age(r.startedAt ?? r.createdAt, t) > STUCK_DEFAULT_MS);
+        if (stuck) out.push({ key: `${a.id}:stuck`, reason: `${a.name}: a run has been running ${mins(age(stuck.startedAt ?? stuck.createdAt, t))} (limit ${mins(STUCK_DEFAULT_MS)})` });
         const finished = mine.filter((r) => !["running", "queued", "cancelled"].includes(r.status)).slice(0, FAILS);
         if (finished.length === FAILS && finished.every((r) => r.status !== "succeeded")) {
           out.push({ key: `${a.id}:failing`, reason: `${a.name}: its last ${FAILS} runs failed (${finished.map((r) => r.status).join(", ")})` });
@@ -233,25 +227,6 @@ export function checks(pc: Paperclip, store: Pick<Store, "meta" | "setMeta" | "r
         ownerAlert(`⏸ **Routine paused**: ${routine.title} failed ${failures} runs in a row. Ask Aiden to resume it once it's fixed.`, "done");
       }
       return failing.map(({ routine, failures }) => ({ key: routine.id, reason: `routine ${routine.title}: its last ${failures} runs failed${routine.status === "paused" ? " (paused until the owner resumes it)" : ""}` }));
-    },
-    // One heuristic: a Codex run that succeeded with no tool calls and no message, 3+ times in a day. Diagnostic only; nothing is paused.
-    async silent() {
-      const t = now();
-      const codex = new Set((await pc.agents()).filter((a) => a.adapterType === "codex_local").map((a) => a.id));
-      const runs = await pc.request<{ id: string; agentId: string; status: string; finishedAt?: string | null }[]>("GET", `/api/companies/${pc.companyId}/heartbeat-runs?limit=200`);
-      let fetched = 0;
-      const byAgent = new Map<string, number>();
-      for (const r of runs.filter((x) => codex.has(x.agentId) && x.status === "succeeded" && x.finishedAt && age(x.finishedAt, t) < DAY_MS)) {
-        let silent = silentRuns.get(r.id);
-        if (silent === undefined) {
-          if (fetched++ >= 15) continue; // the rest next tick
-          silent = await pc.runLog(r.id, 300_000).then((l) => !l.truncated && parseRunLog(l.text).events.length === 0, () => false);
-          if (silentRuns.size >= 500) silentRuns.delete(silentRuns.keys().next().value!);
-          silentRuns.set(r.id, silent);
-        }
-        if (silent) byAgent.set(r.agentId, (byAgent.get(r.agentId) ?? 0) + 1);
-      }
-      return [...byAgent].filter(([, n]) => n >= SILENT_RUNS).map(([agentId, n]) => ({ key: agentId, reason: `agent ${agentId}: ${n} runs in 24h ended with no tool calls and no output` }));
     },
     // A graded task waiting on grading, or escalated, for over a day (the grading module settles closed tasks first and
     // answers the due and escalated rows). A row whose task has closed since is no waiting work: the module settles it on its
@@ -355,73 +330,4 @@ export function startDetector(pc: Paperclip, store: Store, grading: Grading, log
   setInterval(run, Math.max(1, minutes) * MIN).unref();
   setTimeout(run, MIN).unref();
   log.info({ minutes }, "fleet-ops detector on");
-}
-
-/* ----------------------------------------------------------------------------- Paperclip run logs (the silent-run check) */
-interface TraceEvent {
-  at: string;
-  kind: "tool" | "shell" | "message" | "error";
-  name: string;
-  text: string;
-  ok: boolean;
-  error?: string;
-  ms?: number;
-}
-interface ParsedLog {
-  events: TraceEvent[];
-  tokens: { input: number; cached: number; output: number; reasoning: number } | null;
-}
-const MAX_EVENTS = 400;
-const clip = (s: string, n: number) => (s.length > n ? s.slice(0, n - 1).trimEnd() + "…" : s);
-const oneLine = (s: string) => s.replace(/\s+/g, " ").trim();
-
-/** Paperclip's stored run log (ndjson of {ts, stream, chunk}) → the tool calls, messages and errors of the Codex JSON stream. */
-function parseRunLog(ndjson: string): ParsedLog {
-  const events: TraceEvent[] = [];
-  const started = new Map<string, string>();
-  let tokens: ParsedLog["tokens"] = null;
-  // A line can span chunks (and a chunk hold several lines), so rebuild lines per stream; a line is stamped when it completes.
-  const partial: Record<string, string> = {};
-  const line = (raw: string, at: string) => {
-    if (!raw.startsWith("{")) return;
-    let e: any;
-    try {
-      e = JSON.parse(raw);
-    } catch {
-      return;
-    }
-    const it = e.item;
-    if (e.type === "item.started" && it?.id) started.set(it.id, at);
-    else if (e.type === "item.completed" && it?.type === "mcp_tool_call") {
-      const failed = it.status === "failed" || !!it.error;
-      const ms = started.has(it.id) ? Date.parse(at) - Date.parse(started.get(it.id)!) : undefined;
-      const err = failed ? clip(oneLine(String(it.error?.message ?? it.error ?? it.result?.content?.[0]?.text ?? "failed")), 300) : undefined;
-      events.push({ at, kind: "tool", name: `${it.server}.${it.tool}`, text: firstArg(it.arguments && typeof it.arguments === "object" ? it.arguments : {}), ok: !failed, ...(err ? { error: err } : {}), ...(ms !== undefined && ms >= 0 ? { ms } : {}) });
-    } else if (e.type === "item.completed" && it?.type === "command_execution") {
-      const failed = it.status === "failed" || (typeof it.exit_code === "number" && it.exit_code !== 0);
-      const ms = started.has(it.id) ? Date.parse(at) - Date.parse(started.get(it.id)!) : undefined;
-      events.push({ at, kind: "shell", name: "shell", text: clip(oneLine(String(it.command ?? "")), 120), ok: !failed, ...(failed ? { error: clip(oneLine(String(it.aggregated_output ?? `exit ${it.exit_code}`)).slice(-300), 300) } : {}), ...(ms !== undefined && ms >= 0 ? { ms } : {}) });
-    } else if (e.type === "item.completed" && it?.type === "agent_message" && typeof it.text === "string") {
-      events.push({ at, kind: "message", name: "message", text: clip(oneLine(it.text), 200), ok: true });
-    } else if ((e.type === "error" || e.type === "turn.failed") && (e.message ?? e.error?.message)) {
-      events.push({ at, kind: "error", name: e.type, text: clip(oneLine(String(e.message ?? e.error.message)), 300), ok: false });
-    } else if (e.type === "turn.completed" && e.usage) {
-      const t = tokens ?? { input: 0, cached: 0, output: 0, reasoning: 0 };
-      tokens = { input: t.input + (e.usage.input_tokens ?? 0), cached: t.cached + (e.usage.cached_input_tokens ?? 0), output: t.output + (e.usage.output_tokens ?? 0), reasoning: t.reasoning + (e.usage.reasoning_output_tokens ?? 0) };
-    }
-  };
-  for (const raw of ndjson.split("\n")) {
-    let c: { ts?: string; stream?: string; chunk?: string };
-    try {
-      c = JSON.parse(raw);
-    } catch {
-      continue;
-    }
-    if (typeof c.chunk !== "string") continue;
-    const stream = c.stream ?? "stdout";
-    const lines = ((partial[stream] ?? "") + c.chunk).split("\n");
-    partial[stream] = lines.pop() ?? "";
-    for (const l of lines) line(l, c.ts ?? "");
-  }
-  return { events: events.slice(-MAX_EVENTS), tokens };
 }

@@ -25,8 +25,8 @@ const base = { priority: "medium", assigneeUserId: null, assigneeAdapterOverride
 const chat: Issue = { ...base, id: "11111111-1111-1111-1111-111111111111", identifier: "WOR-20", title: "An agent for PR reviews", description: `[telegram] make me an agent that chases PR reviews\n\n${chatAgentMarker(COS)}`, status: "todo", assigneeAgentId: COS, labels: [chatLabel] };
 const child: Issue = { ...base, id: "22222222-2222-2222-2222-222222222222", identifier: "WOR-21", title: "Design a PR review chaser", description: "The owner wants an agent that chases PR reviews.", status: "in_progress", assigneeAgentId: ARCH, parentId: chat.id, createdByAgentId: COS };
 const agents = [
-  { id: COS, name: "Aiden", status: "idle", adapterType: "codex_local", companyId: "co", metadata: { setupKey: "aidenhq:chief-of-staff" } },
-  { id: ARCH, name: "Agent Architect", status: "idle", adapterType: "codex_local", companyId: "co", metadata: { setupKey: "aidenhq:architect" } },
+  { id: COS, name: "Aiden", status: "idle", companyId: "co", metadata: { engine: "codex", setupKey: "aidenhq:chief-of-staff" } },
+  { id: ARCH, name: "Agent Architect", status: "idle", companyId: "co", metadata: { engine: "codex", setupKey: "aidenhq:architect" } },
 ];
 const comments: Record<string, Comment[]> = { [chat.id]: [], [child.id]: [] };
 let seq = 0;

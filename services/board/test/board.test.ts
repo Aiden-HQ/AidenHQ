@@ -1,17 +1,18 @@
 import { describe, expect, it } from "vitest";
+import { shortModel } from "../src/activity.js";
 import { checkRequest } from "../src/app.js";
-import { BadRequest, UpdateSchema, assignees, buildBoard, paperclipUpdate } from "../src/board.js";
+import { BadRequest, UpdateSchema, assignees, buildBoard, engineOf, paperclipUpdate } from "../src/board.js";
 import type { Agent, Issue, Label } from "../src/paperclip.js";
 import { Store } from "../src/store.js";
 
 const agents: Agent[] = [
-  { id: "00000000-0000-0000-0000-00000000000a", name: "Researcher", status: "idle", adapterType: "codex_local", metadata: { setupKey: "aidenhq:assistant" } },
-  { id: "00000000-0000-0000-0000-0000000000c1", name: "Engineer · Claude", status: "idle", adapterType: "claude_local", adapterConfig: { model: "claude-opus-5-5" }, metadata: { setupKey: "aidenhq:engineer-claude" } },
-  { id: "00000000-0000-0000-0000-0000000000c0", name: "Engineer · Codex", status: "idle", adapterType: "codex_local", adapterConfig: {}, metadata: { setupKey: "aidenhq:engineer" } },
-  { id: "00000000-0000-0000-0000-0000000000c2", name: "Engineer · OpenRouter", status: "idle", adapterType: "opencode_local", adapterConfig: { model: "openrouter/z-ai/glm-5.3-flash" }, metadata: { setupKey: "aidenhq:engineer-openrouter", models: ["openrouter/deepseek/deepseek-v4.1-flash", 7] } },
-  { id: "00000000-0000-0000-0000-0000000000ee", name: "Slack Scout", status: "idle", adapterType: "codex_local", metadata: { setupKey: "aidenhq:slack-scout" } },
-  { id: "00000000-0000-0000-0000-0000000000f1", name: "Fleet Engineer", status: "idle", adapterType: "opencode_local", metadata: { setupKey: "aidenhq:fleet-engineer", runnerEngine: true } },
-  { id: "00000000-0000-0000-0000-0000000000f2", name: "Old Agent", status: "terminated", adapterType: "codex_local", metadata: { setupKey: "aidenhq:old" } },
+  { id: "00000000-0000-0000-0000-00000000000a", name: "Researcher", status: "idle", metadata: { engine: "codex", setupKey: "aidenhq:assistant" } },
+  { id: "00000000-0000-0000-0000-0000000000c1", name: "Engineer · Claude", status: "idle", metadata: { model: "claude-opus-5-5", engine: "claude", setupKey: "aidenhq:engineer-claude" } },
+  { id: "00000000-0000-0000-0000-0000000000c0", name: "Engineer · Codex", status: "idle", metadata: { engine: "codex", setupKey: "aidenhq:engineer" } },
+  { id: "00000000-0000-0000-0000-0000000000c2", name: "Engineer · OpenRouter", status: "idle", metadata: { model: "openrouter/z-ai/glm-5.3-flash", engine: "openrouter", setupKey: "aidenhq:engineer-openrouter", models: ["openrouter/deepseek/deepseek-v4.1-flash", 7] } },
+  { id: "00000000-0000-0000-0000-0000000000ee", name: "Slack Scout", status: "idle", metadata: { engine: "codex", setupKey: "aidenhq:slack-scout" } },
+  { id: "00000000-0000-0000-0000-0000000000f1", name: "Fleet Engineer", status: "idle", metadata: { engine: "openrouter", setupKey: "aidenhq:fleet-engineer", runnerEngine: true } },
+  { id: "00000000-0000-0000-0000-0000000000f2", name: "Old Agent", status: "terminated", metadata: { engine: "codex", setupKey: "aidenhq:old" } },
 ];
 const list = assignees(agents);
 const [CODEX, CLAUDE, OPENROUTER] = ["c0", "c1", "c2"].map((s) => `00000000-0000-0000-0000-0000000000${s}`);
@@ -158,3 +159,11 @@ describe("request guard", () => {
   });
 });
 
+
+describe("an agent's engine is the one setup recorded", () => {
+  it("labels the engine from metadata.engine, whatever the Paperclip adapter is", () => {
+    const record = { id: "x", name: "E", status: "idle", metadata: { engine: "claude", runnerEngine: true, setupKey: "aidenhq:engineer-claude" } } as never;
+    expect(engineOf(record)).toBe("claude");
+    expect(shortModel(record)).toBe("Claude Code");
+  });
+});

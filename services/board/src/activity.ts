@@ -82,13 +82,13 @@ export interface RosterAgent {
   lastRunStatus: string | null;
 }
 
-const ENGINE_LABEL: Record<string, string> = { codex_local: "Codex", claude_local: "Claude Code", opencode_local: "OpenRouter" };
+const ENGINE_LABEL: Record<string, string> = { codex: "Codex", "codex-openrouter": "Codex", claude: "Claude Code", openrouter: "OpenRouter" };
 
 /** "~deepseek/deepseek-flash-latest" → "deepseek-flash-latest". */
-export function shortModel(a: Pick<Agent, "adapterType" | "adapterConfig" | "metadata">): string | null {
-  const model = typeof a.adapterConfig?.model === "string" ? a.adapterConfig.model : "";
+export function shortModel(a: Pick<Agent, "metadata">): string | null {
+  const model = typeof a.metadata?.model === "string" ? a.metadata.model : "";
   if (model) return model.replace(/^openrouter\//, "").replace(/^~/, "").split("/").at(-1)!;
-  return a.metadata?.runnerEngine ? (ENGINE_LABEL[a.adapterType] ?? null) : null;
+  return a.metadata?.runnerEngine ? (ENGINE_LABEL[String(a.metadata?.engine)] ?? null) : null;
 }
 
 export interface Department {

@@ -19,6 +19,7 @@ import { createInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
 import { ensureBackupRetention, ensureChatTasks, ensureFleetIssues, ensureMemoryInboxes, ensureReviewLogs, grantEntry, mapLimit, routineAutonomyDefault } from "./modules.mjs";
 import { retireUnconfigured } from "./retire-agents.mjs";
+import { writeRecord } from "./record-agent.mjs";
 import { ensureAgentKeys, ensureEventsPlugin } from "./paperclip-events.mjs";
 import { agentSkills, handbookParts, laneHandbook, personaOf, readInstructions as readHandbook } from "./handbook.mjs";
 import { recoverStalePid } from "./paperclip-recover.mjs";
@@ -204,15 +205,9 @@ const instanceDir = env("AIDENHQ_INSTANCE_DIR", "");
 // An agent's own handbook (scripts/handbook.mjs); a bad path fails setup.
 const readInstructions = (a) => { try { return readHandbook(cfg, a, { repo, instanceDir }); } catch (e) { fail(e.message); } };
 
-// What setup once wrote into an agent's adapter config when Paperclip ran it. Paperclip merges adapterConfig on PATCH, so each
-// is cleared by name (null) and nothing of the old execution config stays.
-const RUN_CONFIG = ["engine", "command", "extraArgs", "env", "model", "modelReasoningEffort", "effort", "timeoutSec", "dangerouslyBypassApprovalsAndSandbox", "dangerouslySkipPermissions", "paperclipSkillSync"];
-// The adapter type a new record gets: Paperclip requires one, and never runs it (the kernel runs every job).
-const RECORD_ADAPTER = "codex_local";
-
 /**
  * An agent's Paperclip record. Paperclip tracks and schedules (tasks are assigned to it, its routines file tasks for it); it runs
- * nothing: no adapter config, env or secrets, and Paperclip never wakes it. The kernel runs its jobs (grants.json). The
+ * nothing: no env or secrets (record-agent.mjs), and Paperclip never wakes it. The kernel runs its jobs (grants.json). The
  * metadata is the board's and the tools' view of it (setupKey is its identity).
  */
 function agentBody(key, a) {
@@ -227,8 +222,6 @@ function agentBody(key, a) {
     name: a.name,
     role: "general",
     title: a.title ?? null,
-    // Clear every run setting. Paperclip validates env as a map, so it is cleared to {} rather than null.
-    adapterConfig: Object.fromEntries(RUN_CONFIG.map((k) => [k, k === "env" ? {} : null])),
     runtimeConfig: { heartbeat: { enabled: false, intervalSec: 0, wakeOnDemand: false, maxConcurrentRuns: 1 } },
     // budget: informational, never Paperclip's hard stop (spend caps are the kernel's). 0 = no limit.
     budgetMonthlyCents: 0,
@@ -288,10 +281,9 @@ async function ensureAgents(companyId, fleetIssues) {
   // kernel's copy, then the read-back.
   const updated = await mapLimit(plans, 4, async (p) => {
     const { a, body, instructions } = p;
-    if (!p.agent) {
-      p.agent = (await api("POST", `/api/companies/${companyId}/agents`, { ...body, adapterType: RECORD_ADAPTER, adapterConfig: {}, instructionsBundle: { entryFile: "AGENTS.md", files: { "AGENTS.md": instructions } } })).json;
-      step(`Created agent ${a.name}`);
-    } else await api("PATCH", `/api/agents/${p.agent.id}`, body);
+    const w = await writeRecord({ api, companyId, agent: p.agent, body, instructionsBundle: { entryFile: "AGENTS.md", files: { "AGENTS.md": instructions } } });
+    p.agent = w.agent;
+    if (w.created) step(`Created agent ${a.name}`);
     // Instructions are revisioned (2026.1106): write against the current revision, and only when changed.
     const cur = (await api("GET", `/api/agents/${p.agent.id}/instructions-bundle/file?path=AGENTS.md`, undefined, { allow: [404] })).json;
     if (cur.content !== instructions) await api("PUT", `/api/agents/${p.agent.id}/instructions-bundle/file`, { path: "AGENTS.md", content: instructions, baseRevisionId: cur.revision?.id ?? null });

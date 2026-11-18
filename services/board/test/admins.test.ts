@@ -23,7 +23,7 @@ const issues = [
   issue(1, { assigneeUserId: "me", assigneeAgentId: null, createdByUserId: "me", createdByAgentId: null }), // the owner's task
   issue(3, { assigneeUserId: null, assigneeAgentId: "aiden", createdByUserId: "me", createdByAgentId: null, labels: [chatLabel] }), // the owner's chat
 ];
-const agents = [{ id: "aiden", name: "Aiden", status: "idle", adapterType: "codex_local", metadata: { setupKey: "aidenhq:chief-of-staff" } }];
+const agents = [{ id: "aiden", name: "Aiden", status: "idle", metadata: { engine: "codex", setupKey: "aidenhq:chief-of-staff" } }];
 
 /** Every write the kernel got, with the credential and the admin it came with; comments are kept per task. */
 const writes: { key: string; account?: string; method: string; path: string; body: any }[] = [];

@@ -12,11 +12,10 @@ export const hasMarker = (body: string, marker: string) => body.includes(marker)
 export const BRIEF_LABEL = "daily-brief";
 
 export type Engine = "codex" | "codex-openrouter" | "claude" | "openrouter";
-export const ADAPTER_ENGINE: Record<string, Engine> = { codex_local: "codex", claude_local: "claude", opencode_local: "openrouter" };
 const ENGINES: Engine[] = ["codex", "codex-openrouter", "claude", "openrouter"];
-/** A runner Engineer's engine: the one setup recorded (module.yaml `engine:`), else its adapter's. */
-export const engineOf = (a: { adapterType?: string; metadata?: { engine?: unknown } | null }): Engine | undefined =>
-  ENGINES.includes(a.metadata?.engine as Engine) ? (a.metadata!.engine as Engine) : ADAPTER_ENGINE[a.adapterType ?? ""];
+/** A runner Engineer's engine: the one setup recorded (module.yaml `engine:`). */
+export const engineOf = (a: { metadata?: { engine?: unknown } | null }): Engine | undefined =>
+  ENGINES.includes(a.metadata?.engine as Engine) ? (a.metadata!.engine as Engine) : undefined;
 /** The same for an agent in the compiled config (module.yaml fields). */
 export const compiledEngine = (a: { engine?: string }): Engine | undefined => engineOf({ metadata: { engine: a.engine } });
 export const openrouterEngine = (e: Engine | undefined) => e === "openrouter" || e === "codex-openrouter";
@@ -36,7 +35,6 @@ export interface Assignee {
   kind: "me" | "assistant" | "engineer" | "agent";
   name: string;
   engine?: Engine;
-  adapterType?: string;
   defaultModel?: string;
   /** Models offered for this Engineer (config/paperclip.yaml `models`), besides Paperclip's list. */
   models?: string[];
@@ -72,9 +70,9 @@ export function assignees(agents: Agent[]): Assignee[] {
   engineers.sort((a, b) => ENGINES.indexOf(engineOf(a)!) - ENGINES.indexOf(engineOf(b)!));
   for (const a of engineers) {
     const engine = engineOf(a)!;
-    const model = typeof a.adapterConfig?.model === "string" ? a.adapterConfig.model : "";
+    const model = typeof a.metadata?.model === "string" ? a.metadata.model : "";
     const models = Array.isArray(a.metadata?.models) ? a.metadata.models.filter((m): m is string => typeof m === "string") : [];
-    out.push({ key: a.id, kind: "engineer", name: a.name, engine, adapterType: a.adapterType, defaultModel: model || undefined, ...(models.length ? { models } : {}), efforts: EFFORTS[engine], ...withPersona(a) });
+    out.push({ key: a.id, kind: "engineer", name: a.name, engine, defaultModel: model || undefined, ...(models.length ? { models } : {}), efforts: EFFORTS[engine], ...withPersona(a) });
   }
   for (const a of live) if (a !== assistant && !isEngineer(a)) out.push({ key: a.id, kind: "agent", name: a.name, ...withPersona(a) });
   return out;

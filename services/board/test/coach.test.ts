@@ -80,7 +80,7 @@ describe("coach_evidence", () => {
     const others = [coachTask("4040", "assistant", "read-current-state"), { ...coachTask("5000", "open-loops", "not-coach"), description: "Plain task, no marker." }];
     const rows = [...mine, ...others];
     const full = new Map(rows.map((i) => [i.id, i]));
-    const agent = { id: "ag-open-loops", name: "Follow-up Tracker", status: "idle", adapterType: "codex_local", createdAt: ago(1000), metadata: { setupKey: "aidenhq:open-loops" } };
+    const agent = { id: "ag-open-loops", name: "Follow-up Tracker", status: "idle", createdAt: ago(1000), metadata: { engine: "codex", setupKey: "aidenhq:open-loops" } };
     const pc = {
       companyId: "co",
       request: async (method: string, path: string) => {
@@ -109,7 +109,7 @@ describe("coach_evidence", () => {
   it("bounds every part and says what it cut", () => {
     const run = (n: number) => ({ id: `r${n}`, status: "succeeded", startedAt: ago(n), finishedAt: ago(n), error: "e".repeat(5000), task: null });
     const p = packEvidence({
-      agent: { key: "a", name: "A", id: "a", status: "idle", createdAt: null, adapter: "codex_local", model: null },
+      agent: { key: "a", name: "A", id: "a", status: "idle", createdAt: null, engine: "codex", model: null },
       handbook: "h".repeat(LIMITS.handbook * 2),
       runs: Array.from({ length: 50 }, (_, n) => run(n)),
       traces: Array.from({ length: 9 }, (_, n) => ({ run: `r${n}`, failures: Array.from({ length: 30 }, () => ({ at: "t", name: "x", error: "y".repeat(2000) })), messages: [], usd: null, notes: [] })),

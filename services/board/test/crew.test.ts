@@ -5,9 +5,9 @@ import type { Agent, Issue } from "../src/paperclip.js";
 
 const ME = "user-1";
 const agents: Agent[] = [
-  { id: "a-alfred", name: "Researcher", status: "idle", adapterType: "codex_local", metadata: { setupKey: "aidenhq:assistant" } },
-  { id: "a-grace", name: "Engineer · Codex", status: "idle", adapterType: "codex_local", metadata: { setupKey: "aidenhq:engineer" } },
-  { id: "a-ada", name: "Engineer · Claude", status: "idle", adapterType: "claude_local", metadata: { setupKey: "aidenhq:engineer-claude" } },
+  { id: "a-alfred", name: "Researcher", status: "idle", metadata: { engine: "codex", setupKey: "aidenhq:assistant" } },
+  { id: "a-grace", name: "Engineer · Codex", status: "idle", metadata: { engine: "codex", setupKey: "aidenhq:engineer" } },
+  { id: "a-ada", name: "Engineer · Claude", status: "idle", metadata: { engine: "claude", setupKey: "aidenhq:engineer-claude" } },
 ];
 const list = assignees(agents);
 let n = 0;
