@@ -52,6 +52,7 @@
     "manifest key models": {"state":"experimental","fp":""},
     "manifest key name": {"state":"experimental","fp":""},
     "manifest key optional_secrets": {"state":"experimental","fp":""},
+    "manifest key paths": {"state":"experimental","fp":""},
     "manifest key points": {"state":"experimental","fp":""},
     "manifest key privileged": {"state":"experimental","fp":""},
     "manifest key prompts": {"state":"experimental","fp":""},

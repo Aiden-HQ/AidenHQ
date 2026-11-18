@@ -45,9 +45,9 @@ plus what to publish (`pr`).
 ## Choosing the agent
 
 - Pick by what the work needs, using `task_team`: it lists each agent's description and roles. Product-repo code goes to the holder of the
-  `platform-engineer` role: only its writes there go to the AI reviewer. Its `pr` is one card that pushes, opens and
-  merges once the checks and `main` are green (a second reviewer joins for gate code, a role holder's handbook or a
-  module's grants, tools or models). Several product tasks may go to it at once.
+  `platform-engineer` role: only its writes there go to the AI reviewer. It publishes its PR and merges it at its head once
+  the checks are green, each a card (a second reviewer joins for gate code, a role holder's handbook or a module's grants,
+  tools or models). Several product tasks may go to it at once.
 - Every Engineer has the repository, its tests and toolchains, package installs into the workspace, `gh` reads, the
   public Internet and a headless browser: for UI work it runs the app's Playwright setup (`npm run screens`: the
   changed pages at 1440 and 390, light and dark, and the changed flow) and attaches the screenshots (rubric: "screenshots
@@ -59,7 +59,7 @@ plus what to publish (`pr`).
   the rubric says "`image-scan` green on the PR's head"; elsewhere it names the change and the PR carries the registry's
   vulnerability data for the tag and digest it pins. What a Dockerfile's RUN steps install is proven by the deployed
   image's security scan.
-- One task per change: the runner opens, readies, merges, rebases and retargets from the Engineer's one `pr`. A change
+- One task per change: the Engineer publishes, merges and rebases its one PR. A change
   over 150,000 characters of diff (a redesign, a framework swap) is briefed as stacked PRs from the start, naming the
   slices.
 - Before routing app work, check the app's open PRs for a large rewrite: the files it replaces are held (write-code's

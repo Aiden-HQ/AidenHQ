@@ -10,6 +10,7 @@
 //   aidenhq merge <PR link> <head sha>...            merge each PR only at that head: one codehost-github.merge write each
 //   aidenhq close <PR link>...                       close superseded or duplicate PRs: one codehost-github.close write each
 //   aidenhq create-repo <org/name>                   a new app's repository: one codehost-github.create_repo write
+//   aidenhq apply <org/repo> <branch>                apply the instance repo's branch at its commit here: one kernel.apply write
 //   aidenhq task <PEN-N>                             read a task (tasks-mcp task_get, when the job's profile grants it)
 //   aidenhq tasks <words>                            search open tasks (tasks-mcp task_search)
 //   aidenhq advise "<question>" [--file <brief>]     a second opinion from the advisor (tasks-mcp advisor_ask)
@@ -25,8 +26,8 @@ import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 
-const usage = `usage: aidenhq publish <org/repo> <branch>... [--title <title> --body-file <file>] | merge <PR link> <head sha>... | close <PR link>... | create-repo <org/name> | task <PEN-N> | tasks <words> | advise "<question>" [--file <brief>] | reset | engine <kind> [model] | cleanup`;
-const COMMANDS = ["publish", "merge", "close", "create-repo", "task", "tasks", "advise", "reset", "engine", "cleanup"];
+const usage = `usage: aidenhq publish <org/repo> <branch>... [--title <title> --body-file <file>] | merge <PR link> <head sha>... | close <PR link>... | create-repo <org/name> | apply <org/repo> <branch> | task <PEN-N> | tasks <words> | advise "<question>" [--file <brief>] | reset | engine <kind> [model] | cleanup`;
+const COMMANDS = ["publish", "merge", "close", "create-repo", "apply", "task", "tasks", "advise", "reset", "engine", "cleanup"];
 const [command, ...rest] = process.argv.slice(2);
 const fail = (msg, code = 1) => {
   console.error(`aidenhq: ${msg}`);
@@ -126,6 +127,9 @@ if (command === "publish") {
 } else if (command === "create-repo") {
   if (words.length !== 1) fail("usage: aidenhq create-repo <org/name>", 2);
   lines.push(`${words[0]}: ${said(await write("codehost-github.create_repo", { repo: words[0] }))}`);
+} else if (command === "apply") {
+  if (words.length !== 2) fail("usage: aidenhq apply <org/repo> <branch>", 2);
+  lines.push(`${words[0]} ${words[1]}: ${said(await write("kernel.apply", { repo: words[0], branch: words[1], sha: commitOf(words[0], words[1]) }))}`);
 } else if (command === "task") {
   if (words.length !== 1) fail("usage: aidenhq task <PEN-N>", 2);
   lines.push(await tool("task_get", { issue: words[0] }));
