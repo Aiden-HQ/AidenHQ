@@ -25,7 +25,10 @@
 // model's declared prices (config/gateway.json `models`; an unpriced model is refused) as a `reserved` ledger row, so every
 // cap sum counts calls in flight; max_output is cut to what the tightest cap has left, and a call that can't buy MIN_OUTPUT
 // tokens is refused. Settlement replaces the row's cost with max(reported, tokens x price); no usage (a stream cut, an
-// upstream failure) leaves the reservation, and a restart settles every open one at it (fail closed).
+// upstream failure) leaves the reservation. A reservation whose kernel died (its `owner`, boot and pid) is closed as
+// `unsettled` at that amount (fail closed); one whose answer had begun (OpenRouter's generation id, `gen`) is then settled
+// from OpenRouter's record of that generation as `interrupted`, at what it billed. A restart lets calls in flight finish in
+// the old kernel (main.ts drain), so the next kernel never closes a live peer's reservation.
 // Caps: run / task / agent-day (grants caps, defaults 2/10/30 USD), always enforced; only the owner raises one (raise_cap). A
 // task labelled `chat` or a routine's execution task is perpetual: its task cap counts the UTC day only. System kinds
 // (reviewer, grader, source) are never capped. CI caps (config/gateway.json `ci`: per repo per UTC day, all CI per day) are
@@ -144,6 +147,9 @@ export function openLedger(file: string, legacy?: string): { db: DatabaseSync; m
     CREATE TABLE IF NOT EXISTS ci_tokens (hash TEXT PRIMARY KEY, repo TEXT NOT NULL, pr INTEGER NOT NULL, head TEXT, gh_run TEXT NOT NULL, attempt TEXT NOT NULL,
       exp TEXT NOT NULL, at TEXT NOT NULL, UNIQUE (repo, gh_run, attempt));
   `);
+  // A call's kernel process (`<boot id>:<pid>`) and OpenRouter's generation id (the true-up's handle on a cut-off call).
+  const have = new Set((db.prepare("PRAGMA table_info(calls)").all() as { name: string }[]).map((c) => c.name));
+  for (const c of ["owner", "gen"]) if (!have.has(c)) db.exec(`ALTER TABLE calls ADD COLUMN ${c} TEXT`);
   return { db, moved: moveLedger(db, legacy) };
 }
 
@@ -212,6 +218,18 @@ export function usageTap(sse: boolean): { feed(text: string): void; done(): Usag
   };
 }
 
+const BOOT = (() => { try { return readFileSync("/proc/sys/kernel/random/boot_id", "utf8").trim(); } catch { return ""; } })();
+/** A kernel process's mark on the reservations it holds: this boot and its pid. */
+export const ownerOf = (pid: number) => `${BOOT}:${pid}`;
+/** Whether the process that marked a reservation still runs (a pid from another boot never does). */
+function alive(owner: string | null): boolean {
+  const [boot, pid] = String(owner ?? "").split(":");
+  if (boot !== BOOT || !Number(pid)) return false;
+  try { process.kill(Number(pid), 0); return true; } catch (e) { return (e as NodeJS.ErrnoException).code === "EPERM"; }
+}
+/** How long after a call was cut off OpenRouter's record of it is looked for (it appears with a delay). */
+const TRUE_UP_MS = 30 * 60_000;
+
 const RETRY_STATUS = new Set([429, 500, 502, 503, 504, 524]);
 const RETRY_DELAYS_MS = [1000, 3000, 9000, 20000];
 
@@ -231,8 +249,19 @@ export function createGateway({ dbFile, legacyDbFile, grantsFile, settingsFile, 
 }) {
   const { db, moved } = openLedger(dbFile, legacyDbFile);
   if (moved) log("ledger rows moved into kernel.db", { rows: moved });
-  // A reservation a restart left open is settled at its reserved amount (fail closed).
-  db.prepare("UPDATE calls SET status = 'unsettled', at = ? WHERE status = 'reserved'").run(new Date(now()).toISOString());
+  const me = ownerOf(process.pid);
+  /**
+   * Reservations whose kernel is gone are closed at their reserved amount (fail closed): at start, and each minute (a draining
+   * peer that hit its deadline). A live peer's (a kernel still draining) are left to it; at start, rows under this process's own
+   * mark are a dead one's whose pid came round again.
+   */
+  const sweep = (start = false) => {
+    for (const { owner } of db.prepare("SELECT DISTINCT owner FROM calls WHERE status = 'reserved'").all() as { owner: string | null }[]) {
+      if (owner === me ? !start : alive(owner)) continue;
+      db.prepare("UPDATE calls SET status = 'unsettled', at = ? WHERE status = 'reserved' AND owner IS ?").run(new Date(now()).toISOString(), owner);
+    }
+  };
+  sweep(true);
   const grants = watched(grantsFile, (j) => (j.agents ?? {}) as Grants, {});
   const prices = watched(settingsFile, (j) => (j.models && typeof j.models === "object" ? (j.models as Record<string, Price>) : {}), {});
   // CI code review (compile writes it from the ci module's settings): { orgs, models, repo_day_usd, day_usd } or null.
@@ -243,7 +272,7 @@ export function createGateway({ dbFile, legacyDbFile, grantsFile, settingsFile, 
   const q = {
     run: db.prepare("SELECT * FROM runs WHERE run_key = ?"),
     addRun: db.prepare("INSERT OR IGNORE INTO runs (run_key, agent_id, run_id, issue_id, rev, perpetual, at) VALUES (?, ?, ?, ?, ?, ?, ?)"),
-    add: db.prepare("INSERT OR IGNORE INTO calls (key, at, day, run_key, run_id, agent_id, issue_id, task_subject, rev, kind, component, model, input, cached, output, cost_usd, ms, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"),
+    add: db.prepare("INSERT OR IGNORE INTO calls (key, at, day, run_key, run_id, agent_id, issue_id, task_subject, rev, kind, component, model, input, cached, output, cost_usd, ms, status, owner) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"),
     spentRun: db.prepare("SELECT COALESCE(SUM(cost_usd), 0) AS s FROM calls WHERE run_key = ?"),
     spentTask: db.prepare("SELECT COALESCE(SUM(cost_usd), 0) AS s FROM calls WHERE agent_id = ? AND task_subject = ?"),
     spentDay: db.prepare("SELECT COALESCE(SUM(cost_usd), 0) AS s FROM calls WHERE agent_id = ? AND day = ?"),
@@ -255,6 +284,9 @@ export function createGateway({ dbFile, legacyDbFile, grantsFile, settingsFile, 
     since: db.prepare("SELECT * FROM calls WHERE at >= ? AND status != 'reserved' ORDER BY at LIMIT 20000"),
     settle: db.prepare("UPDATE calls SET key = ?, at = ?, model = ?, input = ?, cached = ?, output = ?, cost_usd = ?, ms = ?, status = ? WHERE key = ? AND status = 'reserved'"),
     inflight: db.prepare("SELECT COUNT(*) AS n FROM calls WHERE status = 'reserved'"),
+    gen: db.prepare("UPDATE calls SET gen = ? WHERE key = ? AND status = 'reserved'"),
+    cutOff: db.prepare("SELECT key, gen FROM calls WHERE status = 'unsettled' AND gen IS NOT NULL AND at >= ? LIMIT 100"),
+    trueUp: db.prepare("UPDATE calls SET status = 'interrupted', at = ?, model = ?, input = ?, cached = ?, output = ?, cost_usd = ? WHERE key = ? AND status = 'unsettled'"),
     ciToken: db.prepare("SELECT * FROM ci_tokens WHERE hash = ?"),
     addCiToken: db.prepare("INSERT OR IGNORE INTO ci_tokens (hash, repo, pr, head, gh_run, attempt, exp, at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)"),
     ciIssued: db.prepare("SELECT COUNT(*) AS n FROM ci_tokens WHERE repo = ? AND substr(at, 1, 10) = ?"),
@@ -272,6 +304,34 @@ export function createGateway({ dbFile, legacyDbFile, grantsFile, settingsFile, 
   prune();
   const pruner = setInterval(prune, 3600_000);
   pruner.unref();
+
+  /**
+   * Cut-off calls whose answer had begun are settled from OpenRouter's record of the generation (GET /generation: what it
+   * billed and the native tokens) as `interrupted`; tried each minute until TRUE_UP_MS after the cut, since the record appears
+   * with a delay. Without a record they keep the reserved amount.
+   */
+  async function trueUp() {
+    sweep();
+    const key = secret("openrouter_key");
+    if (!key) return;
+    for (const row of q.cutOff.all(new Date(now() - TRUE_UP_MS).toISOString()) as { key: string; gen: string }[]) {
+      try {
+        const res = await fetch(`${upstream}/generation?id=${encodeURIComponent(row.gen)}`, { headers: { authorization: `Bearer ${key}` }, signal: AbortSignal.timeout(15_000) });
+        if (!res.ok) continue;
+        const g = ((await res.json()) as { data?: Record<string, unknown> }).data ?? {};
+        if (typeof g.total_cost !== "number") continue;
+        const n = (k: string) => (Number.isFinite(Number(g[k])) ? Number(g[k]) : 0);
+        const cached = n("native_tokens_cached");
+        q.trueUp.run(new Date(now()).toISOString(), String(g.model ?? "").slice(0, 120) || "unknown", Math.max(0, n("native_tokens_prompt") - cached), cached, n("native_tokens_completion"), g.total_cost, row.key);
+        log("cut-off call settled from OpenRouter", { gen: row.gen, usd: g.total_cost });
+      } catch (e) {
+        log("true-up failed", { gen: row.gen, err: String((e as Error).message).slice(0, 200) });
+      }
+    }
+  }
+  const trueUps = setInterval(() => void trueUp(), 60_000);
+  trueUps.unref();
+  let live = 0; // this process's model calls in flight (main.ts drains on them)
 
   async function paperclip(path: string, token: string): Promise<unknown> {
     const res = await fetch(new URL(path, paperclipUrl), { headers: { authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(15_000) });
@@ -501,7 +561,7 @@ export function createGateway({ dbFile, legacyDbFile, grantsFile, settingsFile, 
   // Stamped when the call ends (the board pulls by that time); counted on the UTC day it started.
   function record(who: Caller, r: Partial<Usage> & { key?: string; t?: number; model?: unknown; costUsd?: number | null; ms?: number | null; status: string }) {
     const t = r.t ?? now();
-    q.add.run(r.key ?? `gw:${randomUUID()}`, new Date(now()).toISOString(), day(t), who.runKey, who.runId, who.agentId, who.issueId, who.ci ? who.ci.subject : taskSubject(who, t), who.rev, who.kind, who.component, String(r.model ?? "").slice(0, 120) || "unknown", r.input ?? 0, r.cached ?? 0, r.output ?? 0, r.costUsd ?? null, r.ms ?? null, r.status);
+    q.add.run(r.key ?? `gw:${randomUUID()}`, new Date(now()).toISOString(), day(t), who.runKey, who.runId, who.agentId, who.issueId, who.ci ? who.ci.subject : taskSubject(who, t), who.rev, who.kind, who.component, String(r.model ?? "").slice(0, 120) || "unknown", r.input ?? 0, r.cached ?? 0, r.output ?? 0, r.costUsd ?? null, r.ms ?? null, r.status, me);
   }
 
   const send = (res: ServerResponse, status: number, body: unknown) => res.writeHead(status, { "content-type": "application/json" }).end(JSON.stringify(body));
@@ -564,7 +624,9 @@ export function createGateway({ dbFile, legacyDbFile, grantsFile, settingsFile, 
     body.provider = { ...(body.provider && typeof body.provider === "object" ? body.provider : {}), zdr: true };
     // Settled once, however the call ends: the billed usage at max(reported, tokens x price); nothing when the upstream refused
     // before any output (`free`: OpenRouter bills none); else the reservation (a stream cut, no usage, a restart).
+    live++;
     const settle = (status: string, u?: Usage, free = false) => {
+      live--;
       const floor = u ? (u.input * price.in + u.cached * price.cached_in + u.output * price.out) / 1e6 : 0;
       const row = [new Date(now()).toISOString(), String(u?.model || body.model).slice(0, 120), u?.input ?? 0, u?.cached ?? 0, u?.output ?? 0, u ? Math.max(u.costUsd ?? 0, floor) : free ? 0 : r.usd, now() - t0, status, id];
       try { q.settle.run(u?.key ?? id, ...row); } catch { q.settle.run(id, ...row); } // a generation id already used keeps the reservation's key
@@ -594,10 +656,16 @@ export function createGateway({ dbFile, legacyDbFile, grantsFile, settingsFile, 
     const tap = usageTap(sse);
     const text = new TextDecoder();
     // Read to the end even if the caller hung up, so what OpenRouter billed still lands in the ledger.
-    let status = "upstream_aborted";
+    let status = "upstream_aborted", gen = "";
     try {
       res.writeHead(up.status, Object.fromEntries([...up.headers].filter(([k]) => !["content-encoding", "content-length", "transfer-encoding", "connection"].includes(k))));
-      if (up.body) for await (const c of up.body) { if (!res.destroyed) res.write(c); tap.feed(text.decode(c, { stream: true })); }
+      if (up.body) for await (const c of up.body) {
+        if (!res.destroyed) res.write(c);
+        const s = text.decode(c, { stream: true });
+        tap.feed(s);
+        // The generation id from the answer's first event (a chat chunk's id, a response's response.id): a cut-off call's handle.
+        if (!gen && (gen = /"id"\s*:\s*"(gen-[\w-]{1,190})"/.exec(s)?.[1] ?? "")) q.gen.run(gen, id);
+      }
       status = up.ok ? "ok" : `upstream_${up.status}`;
     } finally {
       settle(status, tap.done(), !up.ok && !sse && status !== "upstream_aborted"); // a definite error answer, no stream started
@@ -694,5 +762,5 @@ export function createGateway({ dbFile, legacyDbFile, grantsFile, settingsFile, 
     q.setCap.run(scope, agentId, subject, cap, new Date(now()).toISOString());
     log("cap set", { scope, agent: agentId, subject, cap });
   };
-  return { handle, db, metricsText, setCap, ciEnabled: () => Boolean(ciConf()), close: () => { clearInterval(pruner); db.close(); } };
+  return { handle, db, metricsText, setCap, trueUp, inflight: () => live, ciEnabled: () => Boolean(ciConf()), close: () => { clearInterval(pruner); clearInterval(trueUps); db.close(); } };
 }

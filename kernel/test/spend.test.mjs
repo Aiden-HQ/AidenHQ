@@ -7,7 +7,8 @@ import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { createGateway, openLedger } from "../src/gateway/lib.ts";
+import { spawnSync } from "node:child_process";
+import { createGateway, openLedger, ownerOf } from "../src/gateway/lib.ts";
 import { mintToken } from "../src/gateway/token.ts";
 
 const serve = (handler) => new Promise((r) => { const s = http.createServer(handler).listen(0, "127.0.0.1", () => r({ s, url: `http://127.0.0.1:${s.address().port}` })); });
@@ -107,6 +108,8 @@ test("A12: stream cut, restart mid-call, no usage, under-reported cost, unpriced
   await r.call({ model: "flat", messages: ["cut"] }).catch(() => {});
   assert.equal((await r.call({ model: "flat", messages: ["none"] })).status, 200);
   assert.deepEqual(r.rows().map((x) => [x.status, x.cost_usd]), [["upstream_aborted", 0.01], ["ok", 0.01]]);
+  // The cut stream's generation id was kept from its first event (the true-up's handle).
+  assert.equal(r.gw.db.prepare("SELECT gen FROM calls ORDER BY rowid LIMIT 1").get().gen, "gen-1");
   // Under-reported: settled at tokens × declared price.
   assert.equal((await r.call({ model: "priced", messages: [] })).status, 200);
   assert.equal(r.rows().at(-1).cost_usd, 0.002);
@@ -128,6 +131,36 @@ test("A12: stream cut, restart mid-call, no usage, under-reported cost, unpriced
   hang.end(JSON.stringify({ id: "gen-late", usage: { prompt_tokens: 1, completion_tokens: 1, cost: 0.000001 } }));
   await inFlight;
   assert.deepEqual([r.rows().at(-1).status, r.rows().at(-1).cost_usd], ["unsettled", 0.01]);
+});
+
+test("restart: a live kernel's reservations are left to it; a dead one's close at the reserved amount, then settle at OpenRouter's record", async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "spend-trueup-"));
+  writeFileSync(join(dir, "grants.json"), "{}");
+  writeFileSync(join(dir, "gateway.json"), JSON.stringify(MODELS));
+  // OpenRouter's record of a generation appears with a delay: not found at the first look.
+  const looks = [];
+  const upstream = await serve((req, res) => {
+    looks.push(req.url);
+    if (looks.length === 1) return res.writeHead(404).end();
+    res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ data: { id: "gen-cut", model: "acme/flat", total_cost: 0.0123, native_tokens_prompt: 5000, native_tokens_cached: 4000, native_tokens_completion: 300 } }));
+  });
+  t.after(() => upstream.s.close());
+  const { db } = openLedger(join(dir, "kernel.db"));
+  const dead = spawnSync(process.execPath, ["-e", ""]).pid;
+  const add = db.prepare("INSERT INTO calls (key, at, day, run_key, agent_id, kind, component, model, cost_usd, status, owner, gen) VALUES (?, '2026-11-16T09:59:00Z', '2026-11-16', 'r', 'ag', 'agent', 'agent', 'flat', 0.25, 'reserved', ?, ?)");
+  add.run("gw:live", ownerOf(process.ppid), "gen-live"); // a kernel still draining its calls
+  add.run("gw:cut", ownerOf(dead), "gen-cut"); // cut off mid-answer
+  add.run("gw:early", ownerOf(dead), null); // cut off before the answer began
+  db.close();
+  const gw = createGateway({ dbFile: join(dir, "kernel.db"), grantsFile: join(dir, "grants.json"), settingsFile: join(dir, "gateway.json"), secret: () => "js", upstream: upstream.url, now: () => Date.parse("2026-11-16T10:00:00Z") });
+  t.after(() => gw.close());
+  const rows = () => Object.fromEntries(gw.db.prepare("SELECT key, status, cost_usd, input, cached, output FROM calls").all().map((r) => [r.key, [r.status, r.cost_usd, r.input, r.cached, r.output]]));
+  assert.deepEqual(rows(), { "gw:live": ["reserved", 0.25, 0, 0, 0], "gw:cut": ["unsettled", 0.25, 0, 0, 0], "gw:early": ["unsettled", 0.25, 0, 0, 0] });
+  await gw.trueUp();
+  assert.equal(rows()["gw:cut"][0], "unsettled");
+  await gw.trueUp();
+  assert.deepEqual(looks, ["/generation?id=gen-cut", "/generation?id=gen-cut"]);
+  assert.deepEqual(rows(), { "gw:live": ["reserved", 0.25, 0, 0, 0], "gw:cut": ["interrupted", 0.0123, 1000, 4000, 300], "gw:early": ["unsettled", 0.25, 0, 0, 0] });
 });
 
 test("ledger move: the old usage.db's rows land once in kernel.db, repeatably, and its spend still counts against the caps", async (t) => {
