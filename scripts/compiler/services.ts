@@ -13,11 +13,10 @@ export type Generated = { services: Record<string, Dict>; networks: Record<strin
 /**
  * What the caller (the compiler) still lets this module reach of the root stack before its kernel routes exist, from its
  * closed, shrink-only legacy lists: `links`, root compose services (one network per pair, shared only by the linking
- * services and that root service) or root compose networks; `secrets`, root secrets it may mount (`secretPaths`: those
- * that are a vault path other than their name); `hostEnv`, host variables its env may read; `opsNetwork`, the network the
- * ops shell creates for it (fixed bridge, subnet and firewall rule), which its services join alone.
+ * services and that root service) or root compose networks; `secrets`, root secrets it may mount; `hostEnv`, host
+ * variables its env may read; `opsNetwork`, the network the ops shell creates for it (fixed bridge, subnet and firewall rule), which its services join alone.
  */
-export type Legacy = { links?: string[]; secrets?: string[]; secretPaths?: Record<string, string>; hostEnv?: string[]; opsNetwork?: string };
+export type Legacy = { links?: string[]; secrets?: string[]; hostEnv?: string[]; opsNetwork?: string };
 
 /** The closed privileged list (spec §5.6) plus host-metrics: read-only host /, /sys and /proc for collectors (ruling c). */
 export const PRIVILEGED = ["docker", "host-unit", "sandbox-provider", "paperclip-plugin", "speaks-as-owner", "git-credential", "reviewer", "host-metrics"];
@@ -95,10 +94,9 @@ export function generateCompose(name: string, def: Dict, ctx: { root: string; lo
   const rootSecrets = new Set(ctx.rootSecrets ?? []);
   const lg = ctx.legacy ?? {};
   const legacySecrets = lg.secrets ?? [];
-  const paths = lg.secretPaths ?? {};
   const secretFile = (s: string, what: string) => {
     if (!SECRET.test(s)) fail(`${what}: ${s} is not a secret name`);
-    if (legacySecrets.includes(s)) return void (out.secrets[s] = { file: `\${AIDENHQ_SECRETS_DIR}/${paths[s] ?? s}` });
+    if (legacySecrets.includes(s)) return void (out.secrets[s] = { file: `\${AIDENHQ_SECRETS_DIR}/${s}` });
     if (!own.has(s) || rootSecrets.has(s)) fail(`${what}: secret ${s} isn't one of ${name}'s own (declare it under secrets, generated_secrets or optional_secrets)`);
     out.secrets[s] = { file: `\${AIDENHQ_SECRETS_DIR}/${s}` };
   };

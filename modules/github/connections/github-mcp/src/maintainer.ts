@@ -110,7 +110,7 @@ const labelNames = (i: GhIssue) => (i.labels ?? []).map((l) => (typeof l === "st
 const same = (a: string, b: string) => a.toLowerCase() === b.toLowerCase();
 
 export class Maintainer {
-  private identity?: { id: number; slug: string };
+  private slug = "";
   private roles = new Map<string, { role: string | null; at: number }>();
 
   /** `repos` is the parsed list, or why it couldn't be parsed: then every tool refuses with that reason. */
@@ -139,13 +139,11 @@ export class Maintainer {
     return this.terms.filter((t) => !same(t, r.owner));
   }
 
-  private async appIdentity(): Promise<{ id: number; slug: string }> {
-    if (!this.identity) {
-      const r = await this.app.appIdentity();
-      if (r.status !== 200) throw new Error(`couldn't read the GitHub App's identity (GitHub said ${r.status})`);
-      this.identity = { id: Number(r.body.id), slug: String(r.body.slug ?? "") };
-    }
-    return this.identity;
+  /** The App's slug (its events carry it, and its bot login is `<slug>[bot]`), from codehost-github with a token on `r`. */
+  private async appSlug(r: MaintainedRepo): Promise<string> {
+    if (!this.slug) this.slug = await this.app.appSlug(r.owner, r.name);
+    if (!this.slug) throw new Error("couldn't learn the GitHub App's slug from codehost-github");
+    return this.slug;
   }
 
   /**
@@ -166,13 +164,11 @@ export class Maintainer {
 
   /** Whether this label event was made by our App or by a collaborator with one of the repo's trusted roles. */
   private async trustedEvent(e: GhTimelineEvent, r: MaintainedRepo): Promise<boolean> {
-    const id = await this.appIdentity();
-    const via = e.performed_via_github_app;
-    if (via?.id != null && Number(via.id) === id.id) return true;
-    if (id.slug && via?.slug === id.slug) return true;
+    const slug = await this.appSlug(r);
+    if (e.performed_via_github_app?.slug === slug) return true;
     const login = e.actor?.login;
     if (!login) return false;
-    if (id.slug && login.toLowerCase() === `${id.slug.toLowerCase()}[bot]`) return true;
+    if (login.toLowerCase() === `${slug.toLowerCase()}[bot]`) return true;
     const role = await this.role(r.owner, r.name, login);
     return role !== null && r.trusted.includes(role);
   }
@@ -411,8 +407,8 @@ export class Maintainer {
       newer.push(...pageIssues.filter(after));
       if (pageIssues.length < 100 || !pageIssues.every(after)) break;
     }
-    const id = await this.appIdentity();
-    const ours = (i: GhIssue) => Number(i.performed_via_github_app?.id) === id.id || (!!id.slug && String(i.user?.login ?? "").toLowerCase() === `${id.slug.toLowerCase()}[bot]`);
+    const slug = await this.appSlug(r);
+    const ours = (i: GhIssue) => i.performed_via_github_app?.slug === slug || String(i.user?.login ?? "").toLowerCase() === `${slug.toLowerCase()}[bot]`;
     const fresh = newer
       .filter((i) => !i.pull_request && !labelNames(i).some((l) => same(l, r.label)) && !ours(i))
       .sort((a, b) => Date.parse(String(a.created_at)) - Date.parse(String(b.created_at)))

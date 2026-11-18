@@ -123,7 +123,7 @@ export const LEGACY_SECRETS = {
   glean: ["glean_auth_token"],
   grafana: ["grafana_auth_token"],
   clickhouse: ["clickhouse_auth_token"],
-  github: ["github_token", "github_app"],
+  github: ["github_token"],
 };
 /** Host variables (the host's .env, never instance.yaml: they decide whose words count and where links point). Closed. */
 export const LEGACY_HOST_ENV = {
@@ -138,7 +138,7 @@ export const LEGACY_HOST_ENV = {
 };
 /** Networks the ops shell makes (fixed bridge, subnet and host rule: ops/units/aidenhq-ci-net.service). */
 export const OPS_NETWORKS = { ci: "aidenhq-ci" };
-const legacyOf = (name) => ({ links: LEGACY_LINKS[name]?.to, secrets: LEGACY_SECRETS[name], secretPaths: { github_app: "github-app" }, hostEnv: LEGACY_HOST_ENV[name], opsNetwork: OPS_NETWORKS[name] });
+const legacyOf = (name) => ({ links: LEGACY_LINKS[name]?.to, secrets: LEGACY_SECRETS[name], hostEnv: LEGACY_HOST_ENV[name], opsNetwork: OPS_NETWORKS[name] });
 
 /** Fleet default spend caps in USD (owner decision, wave 1): per run, per task, per agent per UTC day. */
 export const CAPS = { run_usd: 2, task_usd: 10, day_usd: 30 };
@@ -1657,7 +1657,7 @@ export function ensureOptionalSecrets(dir, names, known, generate = false) {
 
 /**
  * The secret files compose mounts as `<name>: { file: ${AIDENHQ_SECRETS_DIR}/<name> }` in the given compose files, each with
- * the services that mount it. A secret mounted from another path (a folder such as github-app) is left to whatever makes it.
+ * the services that mount it.
  */
 export function composeSecretFiles(...composes) {
   const file = /^\$\{AIDENHQ_SECRETS_DIR(?::?[-?][^}]*)?\}\/([A-Za-z0-9_.-]+)$/;

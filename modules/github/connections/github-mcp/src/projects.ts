@@ -1,14 +1,14 @@
-// Read-only GitHub Projects (v2) boards of an organization, through the instance's GitHub App. The user's own token
-// can't read org projects, so this mints an installation token narrowed to {organization_projects, issues, pull_requests}: read
-// and sends one fixed GraphQL query with it. github.ts uses `repoToken` for read-only access to repositories the App covers.
-import { createSign } from "node:crypto";
-import { existsSync, readFileSync } from "node:fs";
-import { join } from "node:path";
+// The instance's GitHub App, without its key: every App token comes from the kernel (POST /v1/codehost/token, with this
+// module's own token, under its `codehost:` grant; the kernel asks codehost-github, the App key's only holder), narrowed to one repo or org and the permissions each call needs. Read-only
+// GitHub Projects (v2) boards of an organization (the user's own token can't read org projects: one fixed GraphQL query with
+// an org token), the src_github sync, product issues and the Maintainer's App calls go through here; github.ts uses
+// `repoToken` for read-only access to repositories the App covers.
 import { AGENT_FIX } from "./maintainer.js";
 import { scrubProblems } from "./scrub.js";
 
 const API = "https://api.github.com";
 const PERMISSIONS = { organization_projects: "read", issues: "read", pull_requests: "read" };
+const ORG_READ = { issues: "read", pull_requests: "read" };
 // What github.ts's read endpoints need, as read-only permissions: issues and their comments, pull requests and their
 // reviews/files, commit statuses, and workflow runs.
 const REPO_READ = { contents: "read", issues: "read", pull_requests: "read", checks: "read", statuses: "read", actions: "read" };
@@ -27,12 +27,10 @@ const QUERY = `query($org:String!,$number:Int!,$first:Int!,$after:String){organi
       ... on ProjectV2ItemFieldTextValue{text field{... on ProjectV2FieldCommon{name}}}
       ... on ProjectV2ItemFieldNumberValue{number field{... on ProjectV2FieldCommon{name}}}}}}}}}}`;
 
-const b64url = (v: unknown) => Buffer.from(typeof v === "string" ? v : JSON.stringify(v)).toString("base64url");
-function appJwt(appId: string, key: string): string {
-  const iat = Math.floor(Date.now() / 1000) - 60;
-  const body = `${b64url({ alg: "RS256", typ: "JWT" })}.${b64url({ iat, exp: iat + 600, iss: appId })}`;
-  return `${body}.${createSign("RSA-SHA256").update(body).sign(key, "base64url")}`;
-}
+/** The kernel's codehost route (its URL, and this module's own token as the bearer); undefined: no App here. */
+export type Codehost = { url: string; key: () => string };
+/** The kernel's error ({error: {message}}) or codehost-github's passed through ({error: "…"}). */
+const errorOf = (b: any) => String(b?.error?.message ?? b?.error ?? "");
 
 /**
  * Where product issues go: only the configured product repo (no tool input names a repo), and only for a caller holding the
@@ -65,23 +63,45 @@ export function upstreamReport(
 }
 
 export class Projects {
-  private cache = new Map<string, { token: string; expires: number; user: boolean; projects: boolean }>();
-  private repoTokens = new Map<string, { token: string | undefined; expires: number }>();
-  private appTokens = new Map<string, { token: string; expires: number }>();
-  constructor(private readonly appDir: string, private readonly fetchFn: typeof fetch = globalThis.fetch) {}
+  private tokens = new Map<string, { token: string | undefined; expires: number }>();
+  private accounts = new Map<string, { user: boolean; projects: boolean }>();
+  private slug = "";
+  constructor(private readonly codehost: Codehost | undefined, private readonly fetchFn: typeof fetch = globalThis.fetch) {}
 
   private async api(method: string, url: string, headers: Record<string, string>, body?: unknown) {
     const r = await this.fetchFn(url, { method, headers: { accept: "application/vnd.github+json", "x-github-api-version": "2022-11-28", ...headers, ...(body ? { "content-type": "application/json" } : {}) }, ...(body ? { body: JSON.stringify(body) } : {}), signal: AbortSignal.timeout(30_000) });
     return { status: r.status, body: (await r.json().catch(() => ({}))) as any };
   }
 
-  private configured(): boolean {
-    return existsSync(join(this.appDir, "app_id")) && existsSync(join(this.appDir, "key.pem"));
+  /**
+   * An App token for `target` (owner/name, or owner/* for an org-wide one) and these permissions, from the kernel,
+   * reused until 5 minutes before it expires. Where the App doesn't cover it (not installed there, or a permission the
+   * installation lacks) or there is no App: undefined (remembered for 15 minutes), or, with `need`, an error that says so.
+   */
+  private async token(target: string, permissions: Record<string, string>, need?: string): Promise<string | undefined> {
+    const key = `${target.toLowerCase()} ${JSON.stringify(permissions)}`;
+    const hit = this.tokens.get(key);
+    if (hit && hit.expires - Date.now() > 5 * 60_000 && (hit.token || !need)) return hit.token;
+    const miss = (why: string) => {
+      if (need) throw new Error(`${need}: ${why}`);
+      this.tokens.set(key, { token: undefined, expires: Date.now() + 15 * 60_000 });
+      return undefined;
+    };
+    if (!this.codehost) return miss("the GitHub App isn't set up here");
+    const r = await this.api("POST", `${this.codehost.url}/v1/codehost/token`, { authorization: `Bearer ${this.codehost.key()}` }, { repo: target, perms: permissions });
+    if (r.status === 200) {
+      this.slug = String(r.body.app?.slug ?? this.slug);
+      this.tokens.set(key, { token: String(r.body.token), expires: Date.parse(r.body.expires_at) });
+      return String(r.body.token);
+    }
+    // 404: not installed there, or no GitHub code host; 422: GitHub refused those permissions or that repo; 503: no App key.
+    if ([404, 422, 503].includes(r.status)) return miss(`the GitHub App doesn't cover ${target} with ${Object.entries(permissions).map(([k, v]) => `${k}: ${v}`).join(", ")} (the kernel said ${r.status} ${errorOf(r.body)})`.trim());
+    throw new Error(`couldn't get a GitHub App token for ${target} (the kernel said ${r.status} ${errorOf(r.body)})`.trim());
   }
 
-  private jwt(): string {
-    if (!this.configured()) throw new Error("the GitHub App isn't configured here (no github-app/{app_id,key.pem})");
-    return `Bearer ${appJwt(readFileSync(join(this.appDir, "app_id"), "utf8").trim(), readFileSync(join(this.appDir, "key.pem"), "utf8"))}`;
+  private async narrowed(owner: string, repo: string, permissions: Record<string, string>, need: string): Promise<{ authorization: string }> {
+    if (!NAME.test(owner) || !NAME.test(repo)) throw new Error("the repo isn't owner/repo");
+    return { authorization: `Bearer ${await this.token(`${owner}/${repo}`, permissions, need)}` };
   }
 
   /**
@@ -91,63 +111,25 @@ export class Projects {
    */
   async commitStatus(org: string, repo: string, number: number, sha: string, status: { state: string; context: string; description: string; target_url?: string }) {
     if (!NAME.test(org) || !NAME.test(repo) || !Number.isInteger(number) || number < 1 || !/^[0-9a-f]{40}$/.test(sha)) throw new Error("give owner/repo, the PR number and the full 40-character commit SHA");
-    const jwt = this.jwt();
-    const inst = await this.api("GET", `${API}/repos/${org}/${repo}/installation`, { authorization: jwt });
-    if (inst.status !== 200) throw new Error(`the AidenHQ GitHub App isn't installed on ${org}/${repo} (GitHub said ${inst.status})`);
-    if (inst.body.permissions?.statuses !== "write") throw new Error("the GitHub App can't write commit statuses yet: the operator gives it Commit statuses: Read and write, and accepts that on the installation");
-    const t = await this.api("POST", `${API}/app/installations/${inst.body.id}/access_tokens`, { authorization: jwt }, { repositories: [repo], permissions: { statuses: "write", pull_requests: "read" } });
-    if (t.status !== 201) throw new Error(`couldn't get a GitHub App token for ${org}/${repo} (GitHub said ${t.status} ${t.body?.message ?? ""})`.trim());
-    const pr = await this.api("GET", `${API}/repos/${org}/${repo}/pulls/${number}`, { authorization: `Bearer ${t.body.token}` });
+    const auth = await this.narrowed(org, repo, { statuses: "write", pull_requests: "read" }, `the GitHub App can't write commit statuses on ${org}/${repo} (the operator gives it Commit statuses: Read and write, and accepts that on the installation)`);
+    const pr = await this.api("GET", `${API}/repos/${org}/${repo}/pulls/${number}`, auth);
     if (pr.status !== 200) throw new Error(`couldn't read ${org}/${repo}#${number} (GitHub said ${pr.status})`);
     if (pr.body.state !== "open") throw new Error(`${org}/${repo}#${number} isn't open`);
     if (String(pr.body.head?.sha).toLowerCase() !== sha) throw new Error(`${sha.slice(0, 12)} isn't the current head of #${number} (it is ${String(pr.body.head?.sha).slice(0, 12)}): review that head`);
-    const r = await this.api("POST", `${API}/repos/${org}/${repo}/statuses/${sha}`, { authorization: `Bearer ${t.body.token}` }, status);
+    const r = await this.api("POST", `${API}/repos/${org}/${repo}/statuses/${sha}`, auth, status);
     if (r.status !== 201) throw new Error(`GitHub refused the status (${r.status} ${r.body?.message ?? ""})`.trim());
     return { repo: `${org}/${repo}`, number, sha, context: r.body.context, state: r.body.state };
   }
 
-  /** The App's own identity (id and slug), for telling its label events from anyone else's. */
-  async appIdentity(): Promise<{ status: number; body: any }> {
-    return this.api("GET", `${API}/app`, { authorization: this.jwt() });
+  /** The App's slug (codehost-github names it with every token), for telling its events from anyone else's. */
+  async appSlug(owner: string, repo: string): Promise<string> {
+    await this.token(`${owner}/${repo}`, { metadata: "read" }, `the GitHub App doesn't cover ${owner}/${repo}`);
+    return this.slug;
   }
 
-  /**
-   * A REST call as the App on one repository, with a token narrowed to it and to `permissions` (each must be granted by the
-   * installation). Tokens are reused until 5 minutes before expiry.
-   */
+  /** A REST call as the App on one repository, with a token narrowed to it and to `permissions`. */
   async appCall(owner: string, repo: string, permissions: Record<string, "read" | "write">, method: string, path: string, body?: unknown): Promise<{ status: number; body: any }> {
-    if (!NAME.test(owner) || !NAME.test(repo)) throw new Error("the product repo isn't owner/repo");
-    const key = `${owner.toLowerCase()}/${repo.toLowerCase()} ${JSON.stringify(permissions)}`;
-    const hit = this.appTokens.get(key);
-    let token = hit && hit.expires - Date.now() > 5 * 60_000 ? hit.token : undefined;
-    if (!token) {
-      const jwt = this.jwt();
-      const inst = await this.api("GET", `${API}/repos/${owner}/${repo}/installation`, { authorization: jwt });
-      if (inst.status !== 200) throw new Error(`the AidenHQ GitHub App isn't installed on ${owner}/${repo} (GitHub said ${inst.status})`);
-      const missing = Object.entries(permissions).filter(([k, v]) => {
-        if (k === "metadata") return false; // every installation has it, read-only
-        const granted = inst.body.permissions?.[k];
-        return granted !== "write" && !(granted === "read" && v === "read");
-      });
-      if (missing.length) throw new Error(`the GitHub App lacks ${missing.map(([k, v]) => `${k}: ${v}`).join(", ")} on ${owner}/${repo}`);
-      const t = await this.api("POST", `${API}/app/installations/${inst.body.id}/access_tokens`, { authorization: jwt }, { repositories: [repo], permissions });
-      if (t.status !== 201) throw new Error(`couldn't get a GitHub App token for ${owner}/${repo} (GitHub said ${t.status} ${t.body?.message ?? ""})`.trim());
-      token = t.body.token as string;
-      this.appTokens.set(key, { token, expires: Date.parse(t.body.expires_at) });
-    }
-    return this.api(method, `${API}${path}`, { authorization: `Bearer ${token}` }, body);
-  }
-
-  /** A one-off App token for one repo and these permissions, once the installation there grants them. */
-  private async narrowed(owner: string, repo: string, permissions: Record<string, "read" | "write">): Promise<{ authorization: string }> {
-    if (!NAME.test(owner) || !NAME.test(repo)) throw new Error("the product repo isn't owner/repo");
-    const jwt = this.jwt();
-    const inst = await this.api("GET", `${API}/repos/${owner}/${repo}/installation`, { authorization: jwt });
-    if (inst.status !== 200) throw new Error(`the AidenHQ GitHub App isn't installed on ${owner}/${repo} (GitHub said ${inst.status})`);
-    if (inst.body.permissions?.issues !== "write") throw new Error(`the GitHub App can't write issues on ${owner}/${repo} yet: the operator gives it Issues: Read and write, and accepts that on the installation`);
-    const t = await this.api("POST", `${API}/app/installations/${inst.body.id}/access_tokens`, { authorization: jwt }, { repositories: [repo], permissions });
-    if (t.status !== 201) throw new Error(`couldn't get a GitHub App token for ${owner}/${repo} (GitHub said ${t.status} ${t.body?.message ?? ""})`.trim());
-    return { authorization: `Bearer ${t.body.token}` };
+    return this.api(method, `${API}${path}`, await this.narrowed(owner, repo, permissions, `the GitHub App can't act on ${owner}/${repo}`), body);
   }
 
   /** The repo's issues whose body carries the fingerprint (GitHub search is fuzzy: each hit is checked). */
@@ -174,7 +156,7 @@ export class Projects {
    * comment; only a fingerprint seen nowhere opens a new issue, the fingerprint on its last line and the agent-fix label.
    */
   async reportIssue(owner: string, repo: string, input: { fingerprint: string; title: string; body: string }) {
-    const auth = await this.narrowed(owner, repo, { issues: "write" });
+    const auth = await this.narrowed(owner, repo, { issues: "write" }, `the GitHub App can't write issues on ${owner}/${repo} yet (the operator gives it Issues: Read and write, and accepts that on the installation)`);
     const all = await this.byFingerprint(owner, repo, auth, input.fingerprint, false);
     const hit = all.find((i) => i.state === "open") ?? all.sort((a, b) => b.number - a.number)[0];
     let r;
@@ -190,7 +172,7 @@ export class Projects {
 
   /** Each fingerprint's issues with their state; a closed one names the commit that closed it (`fixed_in`), when a commit did. */
   async issueStatus(owner: string, repo: string, fingerprints: string[]) {
-    const auth = await this.narrowed(owner, repo, { issues: "read" });
+    const auth = await this.narrowed(owner, repo, { issues: "read" }, `the GitHub App can't read issues on ${owner}/${repo}`);
     const out = [];
     for (const fingerprint of fingerprints) {
       for (const i of await this.byFingerprint(owner, repo, auth, fingerprint, false)) {
@@ -205,85 +187,45 @@ export class Projects {
     return out;
   }
 
-  /** Whether `org` is a user account, and whether the App may read its Projects boards. */
+  /**
+   * The App on an org or user account, remembered: whether it is a user account (its profile, read with the App's token) and
+   * whether the App may read its Projects boards (an org whose installation grants organization_projects).
+   */
   async account(org: string): Promise<{ user: boolean; projects: boolean }> {
-    const i = await this.install(org);
-    return { user: i.user, projects: i.projects };
-  }
-
-  /**
-   * A read-only installation token for one repository, narrowed to it and to the read permissions the installation
-   * grants (REPO_READ). Undefined when the App isn't installed there, so the caller keeps using the user's own token.
-   * A missing App configuration is also "not installed": the caller then has no App token at all.
-   */
-  async repoToken(owner: string, repo: string): Promise<string | undefined> {
-    if (!NAME.test(owner) || !NAME.test(repo)) return undefined;
-    const key = `${owner.toLowerCase()}/${repo.toLowerCase()}`;
-    const hit = this.repoTokens.get(key);
-    if (hit && hit.expires - Date.now() > 5 * 60_000) return hit.token;
-    if (!this.configured()) return undefined;
-    const jwt = this.jwt();
-    const inst = await this.api("GET", `${API}/repos/${owner}/${repo}/installation`, { authorization: jwt });
-    if (inst.status === 404) {
-      // Remember the miss for a while: reads outside the installation stay on the user's token.
-      this.repoTokens.set(key, { token: undefined, expires: Date.now() + 10 * 60_000 });
-      return undefined;
-    }
-    if (inst.status !== 200) throw new Error(`couldn't check the GitHub App for ${owner}/${repo} (GitHub said ${inst.status} ${inst.body?.message ?? ""})`.trim());
-    const granted = inst.body.permissions;
-    const permissions = granted
-      ? Object.fromEntries(Object.entries(REPO_READ).filter(([k]) => granted[k] === "read" || granted[k] === "write"))
-      : REPO_READ;
-    const r = await this.api("POST", `${API}/app/installations/${inst.body.id}/access_tokens`, { authorization: jwt }, { repositories: [repo], permissions });
-    if (r.status !== 201) throw new Error(`couldn't get a GitHub App token for ${owner}/${repo} (GitHub said ${r.status} ${r.body?.message ?? ""})`.trim());
-    const out = { token: r.body.token as string, expires: Date.parse(r.body.expires_at) };
-    this.repoTokens.set(key, out);
-    return out.token;
-  }
-
-  /**
-   * A read-only installation token for the org or user account, or undefined when the App isn't installed there.
-   * Search has no repository in its path, so it uses this instead of the user's token, which can't see the agents org.
-   */
-  async orgToken(org: string): Promise<string | undefined> {
-    if (!NAME.test(org) || !this.configured()) return undefined;
-    const hit = this.cache.get(org.toLowerCase());
-    if (hit && hit.expires - Date.now() > 5 * 60_000) return hit.token;
-    const found = await this.find(org);
-    return found ? (await this.mint(org, found)).token : undefined;
-  }
-
-  /** The App's installation on `org` (or a user account of that name), or undefined when it isn't installed. */
-  private async find(org: string): Promise<{ id: number; permissions?: Record<string, string>; user: boolean } | undefined> {
-    const jwt = this.jwt();
-    let user = false;
-    let inst = await this.api("GET", `${API}/orgs/${org}/installation`, { authorization: jwt });
-    if (inst.status === 404) [user, inst] = [true, await this.api("GET", `${API}/users/${org}/installation`, { authorization: jwt })];
-    if (inst.status === 404) return undefined;
-    if (inst.status !== 200) throw new Error(`couldn't check the GitHub App for ${org} (GitHub said ${inst.status} ${inst.body?.message ?? ""})`.trim());
-    return { id: inst.body.id, permissions: inst.body.permissions, user };
-  }
-
-  /** An installation token for the org or user account, asking only for the read permissions the installation grants. */
-  private async mint(org: string, found: { id: number; permissions?: Record<string, string>; user: boolean }): Promise<{ token: string; expires: number; user: boolean; projects: boolean }> {
-    const permissions = found.permissions ? Object.fromEntries(Object.entries(PERMISSIONS).filter(([k]) => found.permissions![k])) : PERMISSIONS;
-    const r = await this.api("POST", `${API}/app/installations/${found.id}/access_tokens`, { authorization: this.jwt() }, { permissions });
-    if (r.status !== 201) throw new Error(`couldn't get a GitHub App token for ${org} (GitHub said ${r.status} ${r.body?.message ?? ""})`.trim());
-    const out = { token: r.body.token, expires: Date.parse(r.body.expires_at), user: found.user, projects: "organization_projects" in permissions && !found.user };
-    this.cache.set(org.toLowerCase(), out);
+    if (!NAME.test(org)) throw new Error("invalid org");
+    const hit = this.accounts.get(org.toLowerCase());
+    if (hit) return hit;
+    const token = await this.token(`${org}/*`, ORG_READ, `the AidenHQ GitHub App isn't installed on ${org}`);
+    const r = await this.api("GET", `${API}/users/${org}`, { authorization: `Bearer ${token}` });
+    if (r.status !== 200) throw new Error(`couldn't read the GitHub account ${org} (GitHub said ${r.status})`);
+    const user = r.body.type === "User";
+    const out = { user, projects: !user && (await this.token(`${org}/*`, PERMISSIONS)) !== undefined };
+    this.accounts.set(org.toLowerCase(), out);
     return out;
   }
 
   /**
-   * An installation token for the org or user account, asking only for the read permissions the installation grants
-   * (projects, issues, pull requests), reused until 5 minutes before expiry.
+   * A read-only token for one repository (REPO_READ), or undefined when the App doesn't cover it, so the caller keeps using
+   * the user's own token.
    */
-  private async install(org: string): Promise<{ token: string; expires: number; user: boolean; projects: boolean }> {
-    const hit = this.cache.get(org.toLowerCase());
-    if (hit && hit.expires - Date.now() > 5 * 60_000) return hit;
-    const found = await this.find(org);
-    if (!found) throw new Error(`the AidenHQ GitHub App isn't installed on ${org}`);
-    return this.mint(org, found);
+  async repoToken(owner: string, repo: string): Promise<string | undefined> {
+    if (!NAME.test(owner) || !NAME.test(repo)) return undefined;
+    return this.token(`${owner}/${repo}`, REPO_READ);
+  }
+
+  /**
+   * A read-only org-wide token for the org or user account (issues and pull requests), or undefined when the App isn't
+   * installed there. Search has no repository in its path, so it uses this instead of the user's token, which can't see the
+   * agents org.
+   */
+  async orgToken(org: string): Promise<string | undefined> {
+    return NAME.test(org) ? this.token(`${org}/*`, ORG_READ) : undefined;
+  }
+
+  /** The org's token for the sync and boards: with Projects read where the App may read them, else issues and PRs only. */
+  private async install(org: string): Promise<{ token: string }> {
+    const { projects } = await this.account(org);
+    return { token: (await this.token(`${org}/*`, projects ? PERMISSIONS : ORG_READ, `the AidenHQ GitHub App isn't installed on ${org}`))! };
   }
 
   /**
