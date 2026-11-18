@@ -44,6 +44,7 @@ import { openRecords } from "./records.ts";
 import { createReviews, type ReviewerSlot } from "./reviews.ts";
 import { mintToken } from "./gateway/token.ts";
 import { createWrites, type Kind } from "./writes.ts";
+import { inventoryOf } from "./paths.ts";
 import { taskRoutineCap } from "./tier.ts";
 import { KERNEL_KINDS, LOCAL_ORG, raiseCapCard } from "./kinds.ts";
 import { admittedJob, createJobs, dispatchesFrom } from "./jobs.ts";
@@ -96,6 +97,7 @@ const onTask = {
 const records = openRecords(path.join(dataDir, "kernel", "kernel.db"));
 // The modules' kinds (compile) and the kernel's own and the runner's (kinds.ts).
 const moduleKinds = watched(path.join(configDir, "kernel", "writes.json"), (j) => j as Record<string, Kind>, {});
+const pathInventory = watched(path.join(configDir, "kernel", "paths.json"), inventoryOf, undefined);
 const registry = () => ({ ...moduleKinds(), ...KERNEL_KINDS });
 let replay: (r: never) => Promise<{ ok: boolean; text: string }> = async () => ({ ok: false, text: "the proxy isn't up" });
 // The product and instance repositories (owner/name), as setup recorded them in .env: runner kinds touching them get the
@@ -114,7 +116,7 @@ log(baseRepos.product && baseRepos.instance ? "runner kinds' repositories" : "ru
 const reviews = createReviews({ slot: () => modulesFile().reviewer, secret, resolver, log, modelToken: (component) => mintToken(secret("gateway_job_secret"), { kind: "reviewer", component, ttlMs: 3600_000 }) });
 let raiseCap: (r: { scope: string; agentId: string; subject: string; cap: number; spent: number; to: number }) => Promise<string> = async () => { throw new Error("the model gateway isn't up"); };
 const writes = createWrites({
-  records, registry, connections, secret, resolver, reviews, onTask, log, replay: (r) => replay(r as never), repos,
+  records, registry, connections, secret, resolver, reviews, onTask, log, replay: (r) => replay(r as never), repos, paths: pathInventory,
   autonomy: () => (["off", "tier0", "full"].includes(grantsTable().autonomy as string) ? grantsTable().autonomy : "off") as never,
   // An approved raise_cap: the gateway's cap for that scope and subject becomes the card's doubled cap.
   native: { "kernel.raise_cap": async (r) => ({ ok: true, text: await raiseCap(r.args as never) }) },

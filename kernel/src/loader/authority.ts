@@ -6,6 +6,7 @@
 // the owner's card and in the apply log.
 import { ownSecrets } from "./services.ts";
 import { forksOf, marketplacesOf, OFFICIAL, OFFICIAL_URL } from "./sources.ts";
+import { SENSITIVITIES } from "../paths.ts";
 
 type Dict = Record<string, unknown>;
 export type ModuleDef = Dict;
@@ -26,7 +27,7 @@ const added = (b: unknown, h: unknown) => list(h).map((x) => (isMap(x) ? x.name 
 /** Top-level keys that never hand out authority by themselves (their contents are checked where they can). */
 const PLAIN = new Set(["name", "version", "description", "license", "publisher", "homepage", "kernel", "requires", "provides", "conflicts", "replaces", "data_version", "labels", "company", "departments", "setup", "settings", "apps", "events", "checks", "points", "contributes", "prompts", "skills", "models", "jobcaps"]);
 /** Checked below, field by field. */
-const CHECKED = new Set(["writes", "privileged", "secrets", "generated_secrets", "optional_secrets", "roles", "default_grants", "connections", "services", "agents", "providers", "isolation", "routines", "board_env", "workspaces"]);
+const CHECKED = new Set(["writes", "privileged", "secrets", "generated_secrets", "optional_secrets", "roles", "default_grants", "connections", "services", "agents", "providers", "isolation", "routines", "board_env", "workspaces", "paths"]);
 /** Every top-level module.yaml key the kernel knows: any other is a compile error (module.yaml is strict, spec §3.1). */
 export const MANIFEST_KEYS = new Set([...PLAIN, ...CHECKED]);
 /** Agent fields that hand out nothing (model and engine choice, scheduling, presentation, the module text it reads: skills, like
@@ -35,6 +36,9 @@ const AGENT_PLAIN = new Set(["department", "adapter", "max_parallel", "model", "
 /** Service fields that change what runs or how much, not what it may reach (the code diff and the panel judge those). */
 const SERVICE_PLAIN = new Set(["image", "build", "command", "entrypoint", "env", "secrets", "port", "healthcheck", "cpus", "memory", "pids", "tmp", "on_demand"]);
 const ISOLATION_RANK: Record<string, number> = { untrusted: 0, "code-exec": 1, trusted: 2 };
+
+/** A module's `paths:` as `repo|pattern` → its sensitivity's rank (an unknown sensitivity ranks lowest: fails closed). */
+const pathRanks = (v: unknown) => new Map(list(v).flatMap((g) => list(map(g).patterns).map((p) => [`${map(g).repo ?? "product"}|${String(p)}`, SENSITIVITIES.indexOf(map(g).sensitivity as never)] as const)));
 
 /**
  * A grant is wider when it newly reaches tools it did not: a new connection, read → write or a list, a list with new names,
@@ -144,9 +148,17 @@ export function authorityDiff(name: string, base: ModuleDef | undefined, head: M
   for (const k of keys(hw)) {
     if (!(k in bw)) owner(`adds write kind ${id(k)}`);
     else if (Number(map(hw[k]).floor ?? 1) < Number(map(bw[k]).floor ?? 1)) owner(`lowers the floor of write kind ${id(k)}`);
+    else if (map(bw[k]).paths === true && map(hw[k]).paths !== true) owner(`write kind ${id(k)} stops reading its paths`);
     else if (!eq(bw[k], hw[k])) review(`changes write kind ${id(k)}`);
   }
   for (const p of added(b.privileged, head.privileged)) owner(`adds privileged ${id(p)}`);
+  // Its path inventory (paths:, kernel/src/paths.ts): a path read less carefully than before, or no longer listed, is the
+  // owner's; a new or stricter entry the reviewer's.
+  const [bp, hp] = [pathRanks(b.paths), pathRanks(head.paths)];
+  for (const [k, r] of bp) if (!((hp.get(k) ?? -1) >= r)) owner(`lowers the sensitivity of path ${id(k)}`);
+  if (!eq(b.paths, head.paths)) review("changes its path inventory");
+  // Dropping privileged also drops its folder's floor in the path inventory (scripts/paths.mjs): the owner's too.
+  for (const p of added(head.privileged, b.privileged)) owner(`drops privileged ${id(p)}`);
 
   // Secrets: every name it may mount (generated, optional, provided, connection service keys, jobcap read secrets).
   for (const s of ownSecrets(head).filter((x) => !ownSecrets(b).includes(x))) owner(`adds secret ${id(s)}`);
