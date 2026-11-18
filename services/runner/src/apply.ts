@@ -1,38 +1,7 @@
-// What `aidenhq apply` may land: the instance repo's config only (instance.yaml, apps.yaml, handbook additions).
-// Product code and module handbooks change through Engineer PRs; the instance pins the product (`product: <sha>`), so
-// upgrading the product is itself an instance change that the owner sees with its commit log.
-import { execFile } from "node:child_process";
-import { existsSync } from "node:fs";
-import { join } from "node:path";
-import YAML from "yaml";
+// The runner's side of an apply until the big switch (what may land, and the executor, are kernel/src/apply.ts): the trial
+// edits a graduation card lists, who may use the trial exception, and the runner's wait on the host's apply lock.
 import { git } from "../../../modules/codehost-github/src/git.mjs";
-
-// Agents the instance defines itself live in agents/<key>/ (agent.yaml + AGENTS.md); owner/profile.md is how the owner works.
-export const APPLY_PATHS = /^(instance\.yaml|apps\.yaml|agents\/[\w.-]+\.md|agents\/[a-z0-9][a-z0-9-]*\/(agent\.yaml|AGENTS\.md|memory\.md)|owner\/profile\.md)$/;
-
-/** Files a change touches outside what apply may land. */
-export const strayFiles = (files: string[]) => files.filter((f) => !APPLY_PATHS.test(f));
-
-const HANDBOOK = /^agents\/([a-z0-9][a-z0-9-]*)\/AGENTS\.md$/;
-const DEFINITION = /^agents\/([a-z0-9][a-z0-9-]*)\/agent\.yaml$/;
-/** An agent.yaml that puts its agent in trial (a top-level `trial: true`). */
-export function isTrial(text: unknown): boolean {
-  try {
-    return text != null && YAML.parse(String(text))?.trial === true;
-  } catch {
-    return false;
-  }
-}
-/** The agent.yaml paths whose content the two checks below need, at the merge base and at the change. */
-export const definitionsOf = (files: string[]) => [...new Set(files.map((f) => HANDBOOK.exec(f)?.[1] ?? DEFINITION.exec(f)?.[1]).filter(Boolean))].map((k) => `agents/${k}/agent.yaml`);
-
-/**
- * Agents a change adds that don't start in trial. A new agent always starts read-only ("draft, don't do"), so tap 1 is
- * safe to approve; its write grants come with tap 2, a change to an agent that already exists. `base`/`head`: path → text
- * (undefined when the file isn't there).
- */
-export const untrialedNewAgents = (files: string[], base: Record<string, string | undefined>, head: Record<string, string | undefined>) =>
-  files.filter((f) => DEFINITION.test(f) && base[f] === undefined && head[f] !== undefined && !isTrial(head[f])).map((f) => DEFINITION.exec(f)![1]);
+import { APPLY_LOCK, applyIsBusy, definitionsOf, isTrial } from "../../../kernel/src/apply.ts";
 
 /**
  * The graduation card's list of what changed without a tap: when the change flips an agent from trial to not-trial,
@@ -79,49 +48,15 @@ export function trialNoTapBy(issue: any, grants: any, runnerMade = false): boole
  */
 export const ownerMade = (issue: any, runnerMade = false): boolean => Boolean(issue?.createdByUserId) && !issue.createdByAgentId && !runnerMade;
 
-/** instance.yaml's top-level `product:` pin (a full sha), or undefined. */
-export function productPin(text: unknown): string | undefined {
-  return /^product:[ \t]*["']?([0-9a-f]{40})["']?[ \t]*(?:#.*)?$/m.exec(String(text ?? ""))?.[1];
-}
-
-/**
- * How a `product:` move reads to the owner: an upgrade adds commits, a rollback removes them (and says so). undefined when
- * neither pin is an ancestor of the other (diverged): that move is refused.
- */
-export function bumpTitle({ from, to, forward, back }: { from?: string; to: string; forward?: boolean; back?: boolean }): string | undefined {
-  const s = (x: string) => `\`${x.slice(0, 9)}\``;
-  if (!from) return `Product pinned at ${s(to)}`;
-  if (forward) return `Product upgrade ${s(from)} → ${s(to)}, adding these commits`;
-  if (back) return `Product DOWNGRADE (rollback) ${s(from)} → ${s(to)}, removing these commits`;
-}
-
 // The host's apply lock, seen from the runner. ops/apply-config.sh opens data/apply.lock, holds it for the whole apply and
 // refuses a second one at once with "another apply is running" (ops/lib/apply-lock.sh). That refusal is right for the lock
 // and wrong for a land: the commit is already on main and the apply holding the lock is about to finish, so reporting the
 // change as failed is a spurious failure. A land waits the lock out instead, bounded, and then applies; a lock that
 // outlasts the bound is reported as that, naming the lock and the time waited, never as the change having failed.
-export const APPLY_LOCK = "data/apply.lock";
 export const APPLY_LOCK_WAIT_MS = 15 * 60_000;
 export const APPLY_LOCK_POLL_MS = 2_000;
 /** The apply's own words when another process holds the lock (ops/apply-config.sh). */
 export const applySaysLocked = (text: unknown) => /another apply is running/.test(String(text ?? ""));
-// flock's -E status for "somebody else holds it", so a probe's other failures stay failures.
-const FLOCK_BUSY = 75;
-
-/** Whether another process holds <repo>/data/apply.lock now: a probe that locks the file itself, so a free lock stays free. */
-export function applyIsBusy(repoPath: string): Promise<boolean> {
-  const lock = join(repoPath, APPLY_LOCK);
-  // The entry point creates it before it locks; no file is no apply running (and flock won't open one that isn't there).
-  if (!existsSync(lock)) return Promise.resolve(false);
-  return new Promise<boolean>((resolve, reject) => {
-    execFile("flock", ["-n", "-E", String(FLOCK_BUSY), lock, "true"], (err: (Error & { code?: unknown }) | null) => {
-      if (!err) return resolve(false);
-      if (err.code === FLOCK_BUSY) return resolve(true);
-      reject(new Error(`couldn't check whether ${lock} is held (${err.message})`));
-    });
-  });
-}
-
 /** A wait as the operator reads it: "0.6s", "9m05s". */
 const waitedText = (ms: number) => (ms < 60_000 ? `${(ms / 1000).toFixed(1)}s` : `${Math.floor(ms / 60_000)}m${String(Math.round((ms % 60_000) / 1000)).padStart(2, "0")}s`);
 
@@ -148,18 +83,5 @@ export async function applyWaitingForLock(run: () => Promise<any>, repoPath: str
     } while (Date.now() < deadline && (await applyIsBusy(repoPath)));
     // The bound is spent: that is the outcome, and nothing is tried on top of it. The clock decides, never the probe alone.
     if (Date.now() >= deadline) return outOfTime(out);
-  }
-}
-
-// `node apply.ts product-pin <instance.yaml>`: the pin, for ops/apply-config.sh (one parser for both). `product-fork`: the
-// kernel's fork (product_fork:, spec §6.9b) as "<url> <sha>", or nothing; a malformed one exits 1.
-if (process.argv[1] && import.meta.url === new URL(`file://${process.argv[1]}`).href && ["product-pin", "product-fork"].includes(process.argv[2]!)) {
-  const { readFileSync } = await import("node:fs");
-  const text = readFileSync(process.argv[3]!, "utf8");
-  if (process.argv[2] === "product-pin") process.stdout.write(productPin(text) ?? "");
-  else {
-    const { forksOf } = await import("../../../kernel/src/loader/sources.ts");
-    const k = forksOf(YAML.parse(text) ?? {}).find((x) => x.target === "kernel");
-    process.stdout.write(k ? `${k.at.url} ${k.at.sha}` : "");
   }
 }

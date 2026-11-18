@@ -81,7 +81,7 @@ const hash = (s: string) => createHash("sha256").update(s).digest("hex");
 const UNSURE = "reviewer_unsure";
 const MODEL = /^~?[\w.-]+\/[\w.:-]+$/;
 
-export function createWrites({ records, registry, connections, secret, resolver, reviews, autonomy = () => "full", repos = () => ({}), paths = () => undefined, onTask, replay, native = {}, log = () => {} }: {
+export function createWrites({ records, registry, connections, secret, resolver, reviews, autonomy = () => "full", repos = () => ({}), paths = () => undefined, onTask, replay, native = {}, resume = [], log = () => {} }: {
   records: Records; registry: () => { [kind: string]: Kind }; connections: () => { [c: string]: Connection }; secret: (n: string) => string; resolver: Resolver;
   /** The bound reviewer module (reviews.ts): every record's review goes there. */
   reviews?: Reviews;
@@ -96,6 +96,8 @@ export function createWrites({ records, registry, connections, secret, resolver,
   replay: (r: Rec) => Promise<{ ok: boolean; text: string }>;
   /** The kernel's own executors, by kind (kernel.raise_cap). */
   native?: { [kind: string]: (r: Rec) => Promise<{ ok: boolean; text: string }> };
+  /** Native kinds whose executor carries on from where it was: a claimed record of one is run again after a restart (kernel.apply). */
+  resume?: string[];
   log?: (msg: string, f?: { [k: string]: unknown }) => void;
 }) {
   const waiters = new Map<string, ((r: Rec) => void)[]>();
@@ -467,6 +469,7 @@ export function createWrites({ records, registry, connections, secret, resolver,
       const claimed = (modules ? records.ofModules(modules, ["claimed"]) : records.list(["claimed"], 1000)).filter((r) => !kindOf_(r.kind)?.runner);
       const unresolved: string[] = [];
       for (const r of claimed) {
+        if (!modules && resume.includes(r.kind) && native[r.kind]) { void execute(r, undefined); continue; }
         const k = registry()[r.kind];
         const s = r.kind === CONN_TOOL || !k?.executor ? undefined : await call(k, "status", { id: r.id, idempotency_key: r.id }).catch(() => undefined);
         if (s?.state === "done" || s?.state === "failed") outcomeOf(r.id, s.state === "done", String(s.text ?? s.state));

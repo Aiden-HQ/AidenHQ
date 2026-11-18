@@ -52,7 +52,7 @@ if (!stage) fs.appendFileSync(process.env.CALLS, "compile\\n");
   "scripts/host-serve.mjs": "",
   "scripts/agent-check.mjs": "",
   "scripts/paperclip-setup.mjs": `import fs from "node:fs"; fs.appendFileSync(process.env.CALLS, "setup\\n");\n`,
-  "services/runner/src/apply.ts": `import { readFileSync } from "node:fs";
+  "kernel/src/apply.ts": `import { readFileSync } from "node:fs";
 if (process.argv[2] === "product-pin") process.stdout.write(/^product:\\s*([0-9a-f]{40})\\s*$/m.exec(readFileSync(process.argv[3], "utf8"))?.[1] ?? "");
 if (process.argv[2] === "product-fork") process.stdout.write(/^product_fork: (\\S+ [0-9a-f]{40})$/m.exec(readFileSync(process.argv[3], "utf8"))?.[1] ?? "");
 `,
