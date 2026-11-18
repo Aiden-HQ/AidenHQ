@@ -12,7 +12,7 @@ owner's identity, on a door chosen by the install's exposure:
 | `settings.exposure` | Door | App URL | Where the owner signs in |
 |---|---|---|---|
 | `local` (Mac/Lima, SSH tunnel) | the gate on the host's loopback, plain http | `http://<app>.localhost:3130` | the admin listener, `http://127.0.0.1:3120` (through the tunnel) |
-| `public` (Caddy on the IP) | Caddy → the gate's socket | `https://<app>.<ip-with-dashes>.sslip.io` | the admin listener, `https://<ip>:8446` |
+| `public` (Caddy on the IP) | Caddy → the gate on loopback | `https://<app>.<ip-with-dashes>.sslip.io` | the admin listener, `https://<ip>:8446` |
 | `tailscale` with the apps node | unchanged: the apps node | `https://<user>-apps.<tailnet>:<port>` | none (anonymous on the tailnet) |
 | any, with `settings.edge` | unchanged: the edge (Cloudflare tunnel or header-jwt front door) | `https://<share.host>` | `edge.my_apps.host` |
 
@@ -54,18 +54,16 @@ Caddyfile (`scripts/front-door.mjs`) gains one site:
 ```caddyfile
 https://*.203-0-113-7.sslip.io {
 	tls { on_demand; issuer acme { disable_http_challenge } }   # TLS-ALPN-01 on 443; port 80 stays closed
-	reverse_proxy unix//run/gate/gate.sock { import strip; header_up X-AidenHQ-Client-IP {remote_host} }
+	reverse_proxy 127.0.0.1:3130 { import strip; header_up -X-AidenHQ-Client-IP }
 	import response
 }
 ```
 
-with `on_demand_tls { ask http://127.0.0.1:3130/.aidenhq/door-ask }`. The gate answers 200 only for a name in the doors
+with the global `on_demand_tls { ask http://127.0.0.1:3130/.aidenhq/door-ask }`. The gate answers 200 only for a name in the doors
 file, so a stranger can't make Caddy order certificates for arbitrary names (the reason section 4.6
-ruled out on-demand TLS). A certificate is ordered at the first handshake for that name. Caddy reaches the gate on the
-unix socket cloudflared uses (`data/gate/socket`; the two never run together, since a door exists only without
-`settings.edge`), and `gate.json` names the header the socket believes (`client_ip_header`: cloudflared's
-`cf-connecting-ip`, Caddy's `x-aidenhq-client-ip`). So sign-in limits and bans count the real visitor, not one shared
-peer that a stranger could hold down.
+ruled out on-demand TLS). A certificate is ordered at the first handshake for that name. Caddy reaches the gate on its
+loopback port. No sign-in passes through a door, so the gate needs no visitor address: sign-in limits and bans stay on
+the admin listener, where Caddy already names the client.
 
 **apps-mcp (modules).** The status row's `url` is the door's URL when the door serves the app and works; otherwise no
 URL and `unpublished: "<reason>"` (today a bare `true`). Local: the door works once the gate config has doors and the
@@ -127,12 +125,10 @@ tunnel line and the Lima template forward 3130 as well (the template forwards on
 - **Gate (modules, `npm test`):** a door host maps through the doors file; an unknown name and a reserved or low port
   are refused; a door host without a session redirects to the admin listener's handoff with a state cookie, and serves
   no sign-in pages; a user account gets 403, an admin gets a token; `http://` origin with
-  port: a same-origin write passes, `https://<host>` and a sibling are 403; `go()` accepts the door origin and refuses
-  any other; app `Set-Cookie` loses `Domain`; door-ask answers 200 only for known names; the socket believes only the
-  configured client-IP header.
+  port: a same-origin write passes, `https://<host>` and a sibling are 403;  app `Set-Cookie` loses `Domain`; door-ask answers 200 only for known names.
 - **apps-mcp:** status url per door; `unpublished` reason when the handshake fails; doors.json holds exactly the served
   set; a door app's compose never has `AIDENHQ_ANONYMOUS`.
-- **Product `scripts/test`:** compile per mode: local → gate with doors and `origin`; public → doors, socket, and the
+- **Product `scripts/test`:** compile per mode: local → gate with doors and `origin`; public → doors and the
   Caddyfile's wildcard on-demand site and ask; edge or tailscale → no doors. Kernel: the admin listener's `/auth/handoff` mints a gate
   code for an exact door origin (a ready admin only) and refuses any other origin, and the gate redeems it. Setup's tunnel line (`setup.test.mjs`, `unattended-install.sh`). Board:
   the row shows the reason, and the Safari note.
