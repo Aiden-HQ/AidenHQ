@@ -68,6 +68,9 @@ describe("flow-local-codehost", () => {
     await waitFor("the merge", () => partComments().some((c) => c.startsWith("**Merged** codehost:local/app/change/1")));
     // The merged change is where the task's work goes on (deploying): its Engineer gets the next run.
     await waitFor("the next run", () => agentRuns().slice(runs).some((r) => /Your merge card codehost:local\/app\/change\/1 was approved and applied: \*\*Merged\*\*/.test(r.prompt)));
+    await t.settled();
+    await t.idle();
+    assert.equal(agentRuns().length, runs + 1, "one run, not more");
     const main = git(t.dir, "--git-dir", bare, "rev-parse", "main");
     assert.equal(git(t.dir, "--git-dir", bare, "rev-parse", `${main}^`), before, "one new commit on main");
     assert.equal(git(t.dir, "--git-dir", bare, "show", "main:chains.txt"), "chain");
