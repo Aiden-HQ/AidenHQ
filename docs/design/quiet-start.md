@@ -52,9 +52,8 @@ so a routine turned on after weeks paused starts at its next tick with no backlo
   refused call's task, or on a new unassigned "Daily spend cap reached" task when the call had none (the reviewer, the
   grader). Approving it doubles today's cap; tomorrow starts at the setting again. The owner changes the setting itself
   in Settings (Tier 2).
-- The raise card is reviewed first like every `raise_cap`, and that review's model call is itself over the cap: it fails,
-  and after the reviewer's retries (about 30 minutes) the card reaches the owner on its merits (Tier 2). Accepted for now;
-  the alternative is letting the reviewer past the install cap.
+- The raise card reaches the owner at once, as every `raise_cap` does: the runner's tier for it is Tier 2 from code
+  (`tiers.mjs` `raise_cap`), so no reviewer model call is made, which the cap it raises would refuse.
 - Per-agent caps (2/10/30 USD) stay as they are: run and task already fit under 10, and the install cap binds first.
 
 ### 3. Turning things on

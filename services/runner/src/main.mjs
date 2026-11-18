@@ -2791,8 +2791,8 @@ async function reviewOne(a) {
   let input;
   try {
     if (notRunners(a) && a.action === "raise_cap") {
-      // The model gateway's spend-cap raise (the kernel files it): the owner's on its merits, read by the reviewer first. Its
-      // card is the change; every number on it is the gateway's.
+      // The model gateway's spend-cap raise (the kernel files it): Tier 2 from code, so it goes to the owner at once with no
+      // reviewer call (one the install-wide cap would refuse). Its card is the change; every number on it is the gateway's.
       input = { ...classify("raise_cap", {}), diff: [a.sentence, a.changes, a.cost, a.details].join("\n") };
     } else if (notRunners(a)) {
       // The kernel files them without classify(): earlier decisions on the task count as for any request (the card's digest
