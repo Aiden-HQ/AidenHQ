@@ -1,6 +1,7 @@
 // The grade loop on the kernel's jobs (phase 2 W7): loop.mjs wired to this module's own rows and to the kernel as the one source of a
 // task's jobs, comments, agents and verdict moves, run once a minute by main.ts. A PR's facts and diff are read from GitHub with a
-// token the kernel's broker mints (github.ts); its PRs are named by the codehost-github pr and merge records on the task (/v1/work).
+// token the kernel's broker mints (github.ts); its PRs are named by the codehost-github pr and merge records on the task (/v1/work):
+// by what their executor wrote in their outcome, never by the args an agent filed.
 // Evidence the module cannot read (an app's status, its deploys, its rendered view: apps-mcp's internal API is not reachable from
 // here and its token can deploy) throws "not available", so its row stays and is retried, never passed or judged on a guess.
 import type { DatabaseSync } from "node:sqlite";
@@ -18,6 +19,21 @@ type Runner = (method: string, path: string, body: unknown) => Promise<Json>;
 
 const notAvailable = (what: string) => async () => { throw new Error(`${what} is not available to the grading module yet`); };
 const q = (o: Record<string, string>) => `?${new URLSearchParams(o)}`;
+
+/**
+ * The PRs a codehost-github merge record merged, as its executor wrote them: the outcome's first line, `merged-prs: ` and JSON
+ * ({ repo, number, head, sha }), on a record that ended ok. The record's args are only what an agent asked for, never evidence.
+ */
+export function verifiedMerges(r: Json): { repo: string; number: number; head: string; sha: string }[] {
+  if (r?.state !== "done" || r.ok !== true) return [];
+  const line = String(r.outcome_text ?? "").split("\n", 1)[0]!;
+  if (!line.startsWith("merged-prs: ")) return [];
+  let list: unknown;
+  try { list = JSON.parse(line.slice("merged-prs: ".length)); } catch { return []; }
+  const SHA = /^[0-9a-f]{40}$/, SLUG = /^[\w.-]+\/[\w.-]+$/;
+  return (Array.isArray(list) ? list : []).filter((p: Json) => SLUG.test(String(p?.repo)) && Number.isInteger(p?.number) && p.number > 0 && SHA.test(String(p?.head)) && SHA.test(String(p?.sha)))
+    .map((p: Json) => ({ repo: p.repo, number: p.number, head: p.head, sha: p.sha }));
+}
 
 export function createKernelGradeLoop({ db, runner, due, kernel, kernelBytes, gatewayUrl, github = createGithub({ kernel }), log }: {
   db: DatabaseSync; runner: Runner; due: () => Json; kernel: KernelCall; /** A kernel GET's raw bytes (the attachment read). */ kernelBytes: (path: string) => Promise<Buffer>; gatewayUrl: string;
@@ -80,7 +96,7 @@ export function createKernelGradeLoop({ db, runner, due, kernel, kernelBytes, ga
         const urls = findPrs(r.outcome_text), only = r.args?.only ?? [];
         return urls.map((u, i) => ({ pr_url: u.url, ...(urls.length === only.length ? { branch: only[i]?.branch } : {}) }));
       })),
-      taskMerged: async () => (await records(issue, "merge", ["done", "failed"])).flatMap((r: Json) => r.args?.prs ?? []),
+      taskMerged: async () => (await records(issue, "merge", ["done"])).flatMap(verifiedMerges),
       // The grant reads only the fleet's own repositories (the agents org and the product): a PR that reads is an own PR.
       ownRepo: () => true,
       pr: github.pr, diff: github.diff, app: notAvailable("an app's status"),

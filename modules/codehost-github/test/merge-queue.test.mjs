@@ -92,6 +92,8 @@ test("an approved agents-org merge waits for green, merges at its bound head, an
   assert.deepEqual(github.merges()[0].perms, { contents: "write", pull_requests: "write", checks: "read", statuses: "read" }, "the merge's own permissions, nothing more");
   assert.equal(outcomes[0]?.ok, true, JSON.stringify(outcomes));
   assert.match(outcomes[0].text, /Merged https:\/\/github.com\/acme-agents\/widget\/pull\/1/);
+  const [line] = outcomes[0].text.split("\n");
+  assert.deepEqual(JSON.parse(line.replace(/^merged-prs: /, "")).map((p) => [p.repo, p.number, p.head, typeof p.sha]), [["acme-agents/widget", 1, HEAD, "string"]], "the first line lists what it merged, with its merge commit");
 });
 
 test("a head that moved after approval is never merged; one queue per repo merges one PR a poll, each at its bound head", async (t) => {

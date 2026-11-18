@@ -7,7 +7,7 @@ import http from "node:http";
 import { DatabaseSync } from "node:sqlite";
 import { completionGate } from "../service/src/grades.ts";
 import { createGrading } from "../service/src/server.ts";
-import { createKernelGradeLoop } from "../service/src/kernel-loop.ts";
+import { createKernelGradeLoop, verifiedMerges } from "../service/src/kernel-loop.ts";
 
 const answer = (met) => ({ verdict: met.every((m) => m === "yes") ? "satisfied" : "needs_revision", criteria: met.map((m, i) => ({ id: String(i + 1), met: m, evidence: m === "yes" ? "shown" : "missing" })) });
 
@@ -103,4 +103,14 @@ test("a graded PR task's PR is read through the broker's token and graded; a PR 
   await loop.runGrades();
   assert.deepEqual(calls.resolve.map((c) => c.verdict), ["ok"]);
   assert.equal(grades.get("t2").state, "satisfied");
+});
+
+test("a merge counts only as its executor wrote it on a record that ended ok, never by the args an agent filed", () => {
+  const a = "a".repeat(40), b = "b".repeat(40);
+  const line = `merged-prs: ${JSON.stringify([{ repo: "acme-agents/app", number: 7, head: a, sha: b }])}`;
+  const args = { prs: [{ repo: "acme-agents/app", number: 9, head: a }] };
+  assert.deepEqual(verifiedMerges({ state: "done", ok: true, args, outcome_text: `${line}\n\nMerged #7.` }), [{ repo: "acme-agents/app", number: 7, head: a, sha: b }]);
+  assert.deepEqual(verifiedMerges({ state: "failed", ok: false, args, outcome_text: `${line}\n\nStopped.` }), [], "a failed merge never counts");
+  assert.deepEqual(verifiedMerges({ state: "done", ok: true, args, outcome_text: "Merged #9." }), [], "args naming a PR are no evidence");
+  assert.deepEqual(verifiedMerges({ state: "done", ok: true, args, outcome_text: `merged-prs: []\n\n${line}` }), [], "only the first line counts");
 });
