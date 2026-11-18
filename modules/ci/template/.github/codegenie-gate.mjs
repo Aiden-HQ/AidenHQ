@@ -62,7 +62,7 @@ function judge(exitCode, stdout, sha, { failure, cause, attempts, lines }) {
   const tries = Number(attempts) > 1 ? `, ${attempts} attempts` : "";
   const readable = Boolean(review) && Array.isArray(review.findings) && review.health?.status !== "failed";
   // Its own headline: the runner re-runs a check whose comment says the review failed or was incomplete
-  // (services/runner/src/merges.mjs codeReviewInfra).
+  // (modules/codehost-github/service/src/merge-gate.mjs codeReviewInfra).
   const counted = Number(lines) > 0 ? Number(lines) : 0;
   // No verdict that isn't a provider failure gets its own headline (never "failed"/"incomplete": the runner re-runs those, and
   // a re-run would end the same way). Past the target, the size is the reason.

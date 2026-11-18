@@ -11,9 +11,9 @@ A change is **authority-expanding** when it:
 - changes who can approve, or how an approval, a reviewer verdict or the owner's words are recognised;
 - widens credentials, grants, tools, roles, public access (`access`, `share`, a public port, a sign-in path), where data may
   be sent, or spending (caps, models, budgets);
-- edits the gate's own core: `services/runner/src/tiers.mjs`, `review-request.mjs`, `merges.mjs`, `main.mjs` and
-  the other runner files that build what tiering trusts or what a job can reach (`engines.mjs`: the job request;
-  `workspace.mjs`, `files.mjs`, `agents.mjs`; `scripts/computers.mjs`), the engine modules (`modules/engine-*/`: what
+- edits the gate's own core: the kernel (`kernel/`: the tier function, the write lifecycle and review loop, the apply
+  planner, job admission and boxes), the code host (`modules/codehost-github/`: its git rules, merge queue, merge gate and
+  eval gate), the path inventory (`paths.yaml`), what a job can reach (`scripts/computers.mjs`), the engine modules (`modules/engine-*/`: what
   runs inside a job and what it passes on) and the SDK (`kernel/sdk/`), the AI reviewer module (`modules/ai-reviewer/`: its service, this policy,
   its eval cases, `scripts/reviewer-eval.mjs` and its pass rule `scripts/pass-rule.mjs`), the board's `approvals.ts`, `app.ts`,
   `fleet.ts`, `accounts.ts` and `session.ts`, the kernel (`kernel/`: the tool proxy, caller identity, the model gateway, and the job sandbox and lifecycle in

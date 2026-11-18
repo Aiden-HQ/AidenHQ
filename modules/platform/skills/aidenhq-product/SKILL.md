@@ -16,7 +16,7 @@ Read `CLAUDE.md` at the repo root first: it is the source for layout, convention
   inbox for starting jobs). Rules live in one place: a skill, an agent's `description:` or a module prompt, linked from
   handbooks, never copied. A new path gets a security review before it switches on. `CLAUDE.md` Conventions is the full
   source.
-- **Gates in code.** Writes are approval records tiered in `services/runner/src/tiers.mjs`. A change to `tiers.mjs`,
+- **Gates in code.** Writes are approval records tiered in the kernel (`kernel/src/tier.ts`, `paths.yaml`). A change to the tier function,
   the `modules/ai-reviewer` module (its policy and `test/reviewer-cases/`) or `scripts/compiler/authority.ts` needs the maintainer's reviewer eval:
   say so in the PR.
 - **No owner data.** Tests and docs use `acme`, `example.com` and documentation IP ranges.

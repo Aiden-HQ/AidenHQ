@@ -27,8 +27,8 @@ async function codehost(t, state) {
     execute: async (rec) => (fx.executes.push(rec), { ok: true, text: "pushed" }),
   }, { key: "ch-key", kernelUrl: k.url });
   const file = async (kind, args) => (await k.v1("POST", "/v1/writes", { kind, args, task: "TASK-1" }, "ch-key")).json;
-  // The runner asks for the record's review (its key); the bound reviewer approves.
-  const approve = (id) => (verdicts.push({ decision: "approve", reason: "fine", model: "~acme/model-a" }), k.v1("POST", `/v1/writes/${id}/review`, { input: { model: "~acme/model-b", tier: 1 }, request: { card: {} } }, "the-runners-key"));
+  // The kernel's review loop asks for the record's review; the bound reviewer approves.
+  const approve = async (id) => (verdicts.push({ decision: "approve", reason: "fine", model: "~acme/model-a" }), { status: 200, json: await k.writes.review(id, { input: { model: "~acme/model-b", tier: 1 }, request: { card: {} } }) });
   const updateExecutor = (rev) => {
     const file = join(k.dir, "writes.json");
     writeFileSync(file, JSON.stringify({ ...kinds, "codehost-github.push": { ...kinds["codehost-github.push"], executor: { ...executor, rev } } }));

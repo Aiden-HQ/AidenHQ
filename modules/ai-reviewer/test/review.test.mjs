@@ -118,7 +118,7 @@ test("the reviewer's codes are exactly the shared REVIEW_CODES (services/shared/
 });
 
 // The owner-approved source exception: the gate can represent one, and only a record code read from the base is one.
-// One record as the runner reads it from the base (services/runner/src/review-request.mjs readSourceExceptions).
+// One record as it is read from the base.
 const ghRec = { ecosystem: "apt", package: "gh", from: "Debian sid", to: "https://cli.github.com/packages stable main", version: "2.104.0", approved_by: "owner", reference: "the owner's comment on the security fix", reason: "CVE-2026-48501; Debian's gh is too old" };
 // The gh keyring step the new-source cases carry, shared so the guard test below reads the same text the cases do. The
 // keyring is trusted only when its primary keys are exactly the expected sorted pair (the live key and the expired one

@@ -16,8 +16,8 @@ after(() => rmSync(dir, { recursive: true, force: true }));
 const env = { ...process.env, GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null", GIT_AUTHOR_NAME: "t", GIT_AUTHOR_EMAIL: "t@example.com", GIT_COMMITTER_NAME: "t", GIT_COMMITTER_EMAIL: "t@example.com" };
 const git = (...a) => execFileSync("git", a, { cwd: dir, env, encoding: "utf8" }).trim();
 const put = (f, t) => (mkdirSync(join(dir, f, ".."), { recursive: true }), writeFileSync(join(dir, f), t));
-/** materializeModules as the apply runs it, in the checkout; prints mods_before and mods_after. */
-const materialize = () => execFileSync("bash", ["-euc", `${fn("materializeModules")}\ninst=/nonexistent; materializeModules; echo "before=$mods_before after=$mods_after"`], { cwd: dir, env, encoding: "utf8" });
+/** materializeModules as the apply runs it, in the checkout. */
+const materialize = () => execFileSync("bash", ["-euc", `${fn("materializeModules")}\ninst=/nonexistent; materializeModules`], { cwd: dir, env, encoding: "utf8" });
 const files = () => execFileSync("find", ["modules", "-type", "f"], { cwd: dir, encoding: "utf8" }).split("\n").filter(Boolean).sort();
 
 test("forward over a fetched tree, its leftovers gone once; back to the old commit, fetched again", () => {
@@ -45,17 +45,17 @@ writeFileSync("modules/.sha", "${"a".repeat(40)}\\n");
   const next = git("rev-parse", "HEAD");
 
   git("checkout", "-q", "--detach", old);
-  assert.match(materialize(), /before= after=a{40}/);
+  materialize();
   assert.deepEqual(files(), ["modules/.sha", "modules/gone/module.yaml", "modules/marketplace.json", "modules/x/module.yaml"]);
 
   // Forward (the apply checks the product out, then runs the new scripts): the tracked files replace the fetched ones.
   git("checkout", "-q", "--detach", next);
-  assert.match(materialize(), /before=a{40} after=$/m, "the runner restarts");
+  materialize();
   assert.deepEqual(files(), ["modules/marketplace.json", "modules/x/module.yaml"], "no leftover of the fetched tree");
   assert.equal(readFileSync(join(dir, "modules/x/module.yaml"), "utf8"), "name: x\n");
   assert.equal(existsSync(join(dir, "modules.old")), false);
   assert.equal(git("status", "--porcelain"), "");
-  assert.match(materialize(), /before= after=$/m, "nothing to do the next time");
+  assert.equal(materialize(), "", "nothing to do the next time");
 
   // Back (ops/apply-config.sh --generation <old>): the old commit fetches its modules again.
   git("checkout", "-q", "--detach", old);

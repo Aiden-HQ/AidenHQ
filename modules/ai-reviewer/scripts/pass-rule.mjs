@@ -1,7 +1,7 @@
 // The eval's pass rule (owner, 2026-11-17): at least 95% of the cases, and the only misses the 5% may cover are false
 // blocks: a case that expects `approve` which the reviewer rejected or escalated. Every other miss fails the run: an
 // approval of something that must not be approved, an approval without the required second reviewer or flag, a wrong
-// code. The runner (services/runner/src/evalgate.ts) applies the same rule to the cases it judges (and counts the 95%
+// code. The code host's eval gate (modules/codehost-github/service/src/evalgate.ts) applies the same rule to the cases it judges (and counts the 95%
 // over the base's cases only, so a PR can't pad the count with easy cases).
 export const PASS_PERCENT = 95;
 /** A miss the 5% may cover: the case expects approve and the reviewer blocked it (reject or escalate). */
