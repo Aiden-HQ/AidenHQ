@@ -1086,3 +1086,24 @@ test("withGate: a head without the base branch's ci-required check is pending, n
   assert.equal(ciState(rollup(withGate(merged))), "green");
   assert.deepEqual(namedChecks(rollup(merged)).map((c) => c.name), ["scripts"]);
 });
+
+describe("merge queue: the official modules repo merges on its card (owner, 2026-11-18)", () => {
+  it("a merge-carrying modules PR card is the panel's from the Platform Engineer's line, and its approval is the review", async () => {
+    const { ownRepo } = await import("../../../modules/codehost-github/src/github-app.ts");
+    const [ORG, PRODUCT, MODULES] = ["acme-agents", "acme/aidenhq", "acme/aidenhq-modules"];
+    const t = classify("pr", { agentsOrg: ORG, productRepo: PRODUCT, modulesRepo: MODULES, instanceRepo: `${ORG}/aidenhq-instance`, requester: { platform: true }, also: ["merge"], records: [], branches: [{ repo: MODULES, branch: "fix/x", defaultBranch: "main", sha: "a".repeat(40), files: ["slack/module.yaml"] }] });
+    assert.deepEqual([t.tier, t.rule, Boolean(t.panel)], [1, "modules-pr-merge", true]);
+    // As mergeAfterPublish queues it: bound to the card's head, strict, no GitHub approval (the App can't approve its own PR).
+    const run = async (product) => {
+      const gh = fakeGithub({ 5: pr(5, { url: `https://github.com/${MODULES}/pull/5`, reviewDecision: "REVIEW_REQUIRED", latestOpinionatedReviews: { nodes: [] } }) });
+      const q = { ...newQueue([{ ...findPrs(`${MODULES}#5`)[0], head: "head5", noReview: true }], { gapMinutes: 0, now: at(0) }), strict: true };
+      const step = await advance(q, { github: gh, now: at(0), cardIsReview: (r) => ownRepo(r, ORG, product) });
+      return [gh.writes, step.queue];
+    };
+    const [merged] = await run([PRODUCT, MODULES]);
+    assert.deepEqual(merged, [{ merge: 5, sha: "head5", method: "squash" }]);
+    const [none, stopped] = await run(PRODUCT);
+    assert.deepEqual(none, [], "without the modules repo among the product's, it waits for a GitHub approval");
+    assert.match(stopped.reason ?? stopped.prs[0].reason ?? "", /isn't approved/);
+  });
+});

@@ -159,7 +159,7 @@ the board key (it writes as the owner). Agents never claim something is done unt
   gives repo-narrowed tokens: the runner uses them for git (credential helper) and `gh` in its cache clone; apps-mcp
   uses them to read private agents-org app repos and to pull and push the registry (instance repo) over https. Host
   checkouts of agents-org repos pull with `ops/git-credential-app.mjs` as that checkout's credential helper
-  (`credential.useHttpPath true`). Outside the agents org the App is PR-only, except that it merges product-repo PRs the reviewer or the owner approved.
+  (`credential.useHttpPath true`). Outside the agents org the App is PR-only, except that it merges product-repo and official-modules-repo PRs the reviewer or the owner approved.
 - `REGISTRY_PUSH_URL` defaults to `https://github.com/<agents org>/aidenhq-instance.git` when the App is configured,
   else the instance checkout's `origin` (deploy key).
 - An app with `database: warehouse` gets its own warehouse role and schema `app_<name>`; apps-mcp writes its

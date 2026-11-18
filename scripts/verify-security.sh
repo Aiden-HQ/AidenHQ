@@ -694,15 +694,17 @@ gh_mutations="$(sed -n '/^export const GRAPHQL/,/^} as const;/p' modules/github/
 # merges.mjs infraRetry), or when a pending check's workflow run has been over for ten minutes (merges.mjs ghostRetry: the whole run re-runs, its one call site, once per check per head, never read as passed), or when a red check's job never started (merges.mjs environmentRetry: once per check per head, the
 # head never moves; from a started queue, or from watchProductPrs on the product repo's own same-repo PRs that a task here
 # opened, authored by the App's bot), and a `pending` commit status where the design review is woken (main.mjs, the
-# only status write; never success or failure, so the runner can only hold a merge, never pass the review). A sequential queue on a card that is the review (agents org, product repo) may also replay a
+# only status write; never success or failure, so the runner can only hold a merge, never pass the review). A sequential queue on a card that is the review (agents org, product repo, official modules repo) may also replay a
 # stacked PR's approved commits onto the default branch and push them as its head (github.rebuild: only when its parent
 # merged in the same queue at its approved head and the PR's head is still the approved one; the push is leased to that
 # head), then retarget it; the replayed head merges only with every named check green on it. A Tier 0 queue only
 # retargets and hands the PR back to be tiered again. allowedWrite refuses all but
-# PUT outside the agents org, except comments, PR edits, job re-runs and statuses (never a branch delete) on the product repo, for closing its
+# PUT outside the agents org, except comments, PR edits, job re-runs and statuses (never a branch delete) on the product repo
+# and the official modules repo (the product's repos: runner productRepos), for closing its
 # Dependabot PRs (Tier 0 only when the runner read the author as dependabot[bot] from the API), and for closing, once, an
 # agent's own product PR whose task is cancelled (watchProductPrs, #174: the App bot's same-repo PR of a task here, no other
-# task on its branch, marked before the close so it never repeats). The card is the review (bound to the head) in the agents org and the product repo, whose
+# task on its branch, marked before the close so it never repeats). The card is the review (bound to the head) in the agents org, the product repo and the
+# official modules repo (owner, 2026-11-18: a modules PR card merges, Platform Engineer's line, the panel's: plan.mjs), whose
 # merges go through the App; elsewhere the host gh login merges, behind GitHub's own review. WRITES allows paths, not
 # bodies or orgs, so the call sites and their gates are asserted here too. Pushes and draft PRs stay on the exact word.
 # Merge trains (aidenhq-modules 79038e3, #12; product c19e96cb, #249), on the product repo's card queues only: two or more
@@ -727,16 +729,16 @@ gh_mutations="$(sed -n '/^export const GRAPHQL/,/^} as const;/p' modules/github/
 rm_="modules/codehost-github/src/merge-gate.mjs"; rq="modules/engineering/src/merge-queue.mjs"; rmain="services/runner/src/main.mjs"; rtiers="services/runner/src/tiers.mjs"; rcore="services/runner/src/gate-core.mjs"
 rplan="modules/codehost-github/src/plan.mjs"; rcheck="modules/platform/src/check.mjs"
 merge_writes="$(sed -n '/^export const WRITES/,/^\];/p' "$rm_" | grep -oE 'method: "[A-Z]+", path: /[^ ]+/' | tr '\n' ' ')"
-merge_calls="$(awk '/^const mergeGithub = \{/,/^};/' "$rmain" | grep -oE 'githubWrite\(repo, `[^`]*`, \{[^}]*\}(, "[A-Z]+")?(, (RERUN|STATUS|mergePermissions\(repo, cfg\.productRepo\)))?\)' | tr '\n' ' ')"
+merge_calls="$(awk '/^const mergeGithub = \{/,/^};/' "$rmain" | grep -oE 'githubWrite\(repo, `[^`]*`, \{[^}]*\}(, "[A-Z]+")?(, (RERUN|STATUS|mergePermissions\(repo, productRepos\(\)\)))?\)' | tr '\n' ' ')"
 [ "$merge_writes" = 'method: "PUT", path: /^repos\/[\w.-]+\/[\w.-]+\/pulls\/\d+\/merge$/ method: "PUT", path: /^repos\/[\w.-]+\/[\w.-]+\/pulls\/\d+\/update-branch$/ method: "POST", path: /^repos\/[\w.-]+\/[\w.-]+\/issues\/\d+\/comments$/ method: "PATCH", path: /^repos\/[\w.-]+\/[\w.-]+\/pulls\/\d+$/ method: "DELETE", path: /^repos\/[\w.-]+\/[\w.-]+\/git\/refs\/heads\/[\w./-]+$/ method: "POST", path: /^repos\/[\w.-]+\/[\w.-]+\/actions\/runs\/\d+\/rerun-failed-jobs$/ method: "POST", path: /^repos\/[\w.-]+\/[\w.-]+\/actions\/runs\/\d+\/rerun$/ method: "POST", path: /^repos\/[\w.-]+\/[\w.-]+\/statuses\/[0-9a-f]{7,40}$/ method: "POST", path: /^repos\/[\w.-]+\/[\w.-]+\/git\/refs$/ method: "POST", path: /^repos\/[\w.-]+\/[\w.-]+\/merges$/ ' ] \
   && [ "$(grep -o 'mutation([^)]*) { [A-Za-z]*' "$rm_" | awk '{print $NF}' | tr '\n' ' ')" = "markPullRequestReadyForReview " ] \
-  && [ "$(grep -c '"-X"' "$rmain")" = 1 ] && grep -qF 'if (!merges.allowedWrite(method, path, cfg.agentsOrg, cfg.productRepo)) throw' "$rmain" \
+  && [ "$(grep -c '"-X"' "$rmain")" = 1 ] && grep -qF 'if (!merges.allowedWrite(method, path, cfg.agentsOrg, productRepos())) throw' "$rmain" \
   && grep -qF 'if (method === "PUT" || (Boolean(agentsOrg) && path.split("/")[1].toLowerCase() === agentsOrg.toLowerCase())) return true;' "$rm_" \
-  && grep -qF '  if (!productRepo || path.split("/").slice(1, 3).join("/").toLowerCase() !== productRepo.toLowerCase()) return false;' "$rm_" \
+  && grep -qF '  if (![productRepo ?? []].flat().some((p) => p.toLowerCase() === repo)) return false;' "$rm_" \
   && grep -qF '  return method !== "DELETE" || TRAIN_BRANCH.test(path.split("/").slice(6).join("/"));' "$rm_" \
   && grep -qF 'export const TRAIN_BRANCH = /^merge-(train|build)\/\d+$/;' "$rm_" && [ "$(grep -c 'githubWrite(' "$rmain")" = 10 ] \
-  && [ "$merge_calls" = 'githubWrite(repo, `repos/${repo}/pulls/${number}/merge`, { merge_method: method, sha }, "PUT", mergePermissions(repo, cfg.productRepo)) githubWrite(repo, `repos/${repo}/pulls/${number}/update-branch`, { expected_head_sha: head }, "PUT", mergePermissions(repo, cfg.productRepo)) githubWrite(repo, `repos/${repo}/pulls/${number}`, { base }, "PATCH") githubWrite(repo, `repos/${repo}/issues/${number}/comments`, { body }, "POST") githubWrite(repo, `repos/${repo}/statuses/${sha}`, { state, context, description }, "POST", STATUS) githubWrite(repo, `repos/${repo}/pulls/${number}`, { state: "closed" }, "PATCH") githubWrite(repo, `repos/${repo}/actions/runs/${run}/rerun`, {}, "POST", RERUN) githubWrite(repo, `repos/${repo}/actions/runs/${run}/rerun-failed-jobs`, {}, "POST", RERUN) ' ] \
-  && grep -qF '  ...merges.branchWrites((repo, path, fields, method) => githubWrite(repo, path, fields, method, mergePermissions(repo, cfg.productRepo))),' "$rmain" \
+  && [ "$merge_calls" = 'githubWrite(repo, `repos/${repo}/pulls/${number}/merge`, { merge_method: method, sha }, "PUT", mergePermissions(repo, productRepos())) githubWrite(repo, `repos/${repo}/pulls/${number}/update-branch`, { expected_head_sha: head }, "PUT", mergePermissions(repo, productRepos())) githubWrite(repo, `repos/${repo}/pulls/${number}`, { base }, "PATCH") githubWrite(repo, `repos/${repo}/issues/${number}/comments`, { body }, "POST") githubWrite(repo, `repos/${repo}/statuses/${sha}`, { state, context, description }, "POST", STATUS) githubWrite(repo, `repos/${repo}/pulls/${number}`, { state: "closed" }, "PATCH") githubWrite(repo, `repos/${repo}/actions/runs/${run}/rerun`, {}, "POST", RERUN) githubWrite(repo, `repos/${repo}/actions/runs/${run}/rerun-failed-jobs`, {}, "POST", RERUN) ' ] \
+  && grep -qF '  ...merges.branchWrites((repo, path, fields, method) => githubWrite(repo, path, fields, method, mergePermissions(repo, productRepos()))),' "$rmain" \
   && [ "$(awk '/^export const branchWrites = /,/^}\);/' "$rm_" | grep -c 'await write(repo, ')" = 3 ] \
   && [ "$(awk '/^export const branchWrites = /,/^}\);/' "$rm_" | grep -cF '    if (!TRAIN_BRANCH.test(branch)) throw new Error(`not a merge train branch: ${branch}`);')" = 2 ] \
   && grep -qF '    await write(repo, `repos/${repo}/git/refs/heads/${branch}`, {}, "DELETE");' "$rm_" \
@@ -750,7 +752,7 @@ merge_calls="$(awk '/^const mergeGithub = \{/,/^};/' "$rmain" | grep -oE 'github
   && grep -qF '  if (named.some((c) => !c.ok && !c.pending)) return "red";' "$rm_" \
   && grep -qF '  if (named.some((c) => c.pending) || (gate && !named.some((c) => c.name === GATE_CHECK))) return "pending";' "$rm_" \
   && grep -qF 'const RERUN = { actions: "write" };' "$rmain" \
-  && grep -qF 'export const mergePermissions = (slug: string | undefined, productRepo: string | undefined) => (sameSlug(slug, productRepo) ? { ...WRITE, workflows: "write" } : WRITE);' modules/codehost-github/src/github-app.ts \
+  && grep -qF 'export const mergePermissions = (slug: string | undefined, productRepo: ProductRepos) => (isProduct(slug, productRepo) ? { ...WRITE, workflows: "write" } : WRITE);' modules/codehost-github/src/github-app.ts \
   && grep -qF 'const STATUS = { ...WRITE, statuses: "write" };' "$rmain" && [ "$(grep -c 'STATUS)' "$rmain")" = 1 ] \
   && [ "$(grep -rhoE '\.status\(' services/runner/src | wc -l | tr -d ' ')" = 1 ] && [ "$(grep -c 'github\.status(' "$rm_")" = 0 ] \
   && grep -qF '      .status(pr.repo, pr.head, { state: "pending", context: merges.DESIGN_REVIEW.name, description: "Waiting for the UI Reviewer" })' "$rmain" \
@@ -781,8 +783,10 @@ merge_calls="$(awk '/^const mergeGithub = \{/,/^};/' "$rmain" | grep -oE 'github
   && [ "$(grep -c 'deleteHead(' "$rm_")" = 4 ] && grep -qF 'if (cardIsReview(next.repo)) await deleteHead(' "$rm_" && grep -qF 'if (cardIsReview(m.repo)) await deleteHead(' "$rm_" \
   && grep -qF '  const opts = { github: mergeGithub, timeoutMinutes: cfg.merges?.timeout_minutes ?? 90, cardIsReview: ownRepo };' "$rmain" \
   && grep -qF 'step = planned.has(issueId) ? merges.unwrap(planned.get(issueId)) : await merges.advance(queue, opts);' "$rmain" \
-  && grep -qF 'const ownRepo = (slug) => appOwnRepo(slug, cfg.agentsOrg, cfg.productRepo);' "$rmain" \
-  && grep -qF 'export const ownRepo = (slug: string | undefined, agentsOrg: string | undefined, productRepo: string | undefined) => inOrg(agentsOrg, slug) || sameSlug(slug, productRepo);' modules/codehost-github/src/github-app.ts \
+  && grep -qF 'const productRepos = () => [cfg.productRepo, cfg.modulesRepo].filter(Boolean);' "$rmain" \
+  && grep -qF 'const ownRepo = (slug) => appOwnRepo(slug, cfg.agentsOrg, productRepos());' "$rmain" \
+  && grep -qF 'export const ownRepo = (slug: string | undefined, agentsOrg: string | undefined, productRepo: ProductRepos) => inOrg(agentsOrg, slug) || isProduct(slug, productRepo);' modules/codehost-github/src/github-app.ts \
+  && grep -qF 'const isProduct = (slug: string | undefined, product: ProductRepos) => [product ?? []].flat().some((p) => sameSlug(slug, p));' modules/codehost-github/src/github-app.ts \
   && grep -qF 'if (same(p.repo, s.productRepo)) return [productMergePart(p, ref, s)];' "$rplan" \
   && [ "$(awk '/^function productMergePart/,/^}/' "$rplan" | grep -oE 'T\([0-9]' | sort -u | tr '\n' ' ')" = "T(1 " ] \
   && [ "$(grep -c 'each: true' "$rmain")" = 1 ] && grep -qF 'startMerges(issue, { prs: zero, strict: true, each: true })' "$rmain" \
