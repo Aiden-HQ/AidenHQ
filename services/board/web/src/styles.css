@@ -723,10 +723,6 @@ kbd {
 .state-chip.st-queued::before { background: transparent; border: 1.5px solid currentColor; box-sizing: border-box; }
 .state-chip.st-you { color: var(--warn-text); background: color-mix(in srgb, var(--warn) 16%, transparent); }
 .state-chip.st-failed { color: var(--bad-text); background: color-mix(in srgb, var(--urgent) 14%, transparent); }
-.activity-day h3 { font-size: 14px; color: var(--muted); margin: 8px 0 4px; }
-.activity-day ul { list-style: none; margin: 0; padding: 0; display: grid; gap: 4px; }
-.activity-day time { color: var(--faint); font-variant-numeric: tabular-nums; }
-.activity-day a { color: var(--text); text-decoration: none; }
 .activity-failed a { color: var(--danger); }
 
 /* Phone overflow: a grid track never grows past the screen because of one nowrap line. */
@@ -1159,12 +1155,6 @@ button.live-toggle:focus-visible { outline: 2px solid var(--accent); border-radi
 .app-card .meter { margin-top: 6px; }
 .app-note { margin: 0; font-size: 13px; }
 .app-incident { margin: 0; padding: 8px 12px; border-radius: 8px; font-size: 13px; color: var(--bad-text); background: color-mix(in srgb, var(--urgent) 10%, transparent); }
-.activity-day { padding: 14px 18px; background: var(--surface); border: 1px solid var(--border); border-radius: 12px; }
-.activity-day h3 { margin: 0 0 8px; font-size: 13.5px; font-weight: 650; color: var(--text); }
-.activity-day ul { gap: 2px; }
-.activity-day li { display: flex; align-items: baseline; gap: 10px; padding: 4px 0; font-size: 13.5px; min-width: 0; }
-.activity-day li a { min-width: 0; overflow-wrap: anywhere; }
-.activity-day li a:hover { color: var(--accent); }
 .activity-dot { flex: none; width: 7px; height: 7px; border-radius: 50%; background: var(--working); align-self: center; }
 .activity-dot.bad { background: var(--urgent); }
 .activity-failed a { color: var(--bad-text); }
