@@ -11,6 +11,17 @@ checks:
   - id: product-gate
     at: write.filed
     kinds: [ codehost-github.push, codehost-github.pr, codehost-github.merge ]
+# A module's contract kit as a check job (kernel/src/checkjobs.ts, P8): run in a credential-free box on a snapshot of the module's
+# source, `path` the module's folder in it. It runs only where the asking module's code host grant can snapshot the repository;
+# any other source can't be checked, and its modules stay `declared` (scripts/compiler/sources.ts) until it can.
+check_jobs:
+  contract:
+    dir: checks
+    argv: [ bash, /aidenhq-out/recipe/contract.sh ]
+    timeout_min: 15
+    title: the module's contract kit
+    spec: { path: dir }
+    cwd_from: path
 agents:
   fleet-engineer:
     department: platform

@@ -1,40 +1,59 @@
-// Check jobs (one-way spec §4.2a): a repo's checks (its fast check, its tests, the reviewer eval) run as credential-free jobs
-// in a computer, never in a process that holds a credential, and come back as a receipt the kernel signs. A module with role
-// kernel.checks (codehost-github, dispatch) asks for one at POST /v1/checks; the code host verifies the receipt before it
-// lands (POST /v1/receipts/verify).
+// Check jobs (one-way spec §4.2a): a repo's checks (its fast check, its tests, the reviewer eval, a module's contract kit) run as
+// credential-free jobs in a computer, never in a process that holds a credential, and come back as a receipt the kernel signs. A
+// module with role kernel.checks (codehost-github, dispatch) asks for one at POST /v1/checks; the code host verifies the receipt
+// before it lands (POST /v1/receipts/verify).
+//
+// What a check runs is its module's: each module declares its recipes (module.yaml `check_jobs:`, compiled into the kernel's
+// modules.json with the files of its folder) and the kernel carries no npm, supply-chain or reviewer knowledge. The kernel keeps
+// what makes a receipt worth trusting: the recipe comes from the installed product, never from the request or the snapshot; a
+// spec is exactly the recipe's fields, each well-formed; the box has no credential; the verdict and the receipt are the kernel's.
+// One transport (inBox) runs every recipe, with the recipe's own time limit.
 //
 // A check job has no task, no Paperclip identity, no tools and no GitHub credential. Its workspace is a snapshot of
 // `repo@head` (the code host's `snapshot` op: no .git, no credentials, asked as the module that asked for the check); its box
-// is the `engineer` image, a fresh one per run. Its env is exactly checkEnv's: only the eval gets a model credential, a
-// `check` token the gateway caps by the eval day cap (eval_day_usd) and that the tool proxy and the writes route refuse.
+// is the `engineer` image, a fresh one per run. Its env is exactly checkEnv's: only a judged run (the reviewer eval) gets a model
+// credential, a `check` token the gateway caps by the eval day cap (eval_day_usd) and that the tool proxy and the writes route
+// refuse. The recipe's files are laid in the out folder (`/aidenhq-out/recipe`) and its argv runs in the workspace.
 //
-// fast and tests run on the change itself: the box makes its own two-commit history from the base and head snapshots (the
-// base tree, then the head tree), so `git diff $AIDENHQ_BASE HEAD` is exactly the change. fast installs the dependencies
-// (`npm ci` from each lockfile the change touches) and runs the repo's fast check. tests first runs what the product's CI
-// runs on every change, from copies the change can't edit: the secret scan (gitleaks with the base's .gitleaks.toml) and the
-// supply-chain checks (the product's scripts/supply-chain, mounted read-only); only then installs and runs the repo's lint,
-// tests and build. The eval's workspace is read-only.
+// A recipe with a `base` in its spec runs on the change itself: the box makes its own two-commit history from the base and head
+// snapshots (the recipe's script does it from /aidenhq-out/base), so `git diff $AIDENHQ_BASE HEAD` is exactly the change. A
+// recipe that `declares` a package script has it required by the base (a change can't switch its own check off).
 //
-// The eval runs the judging rules the runner's eval gate ran, unchanged: the code host
-// builds the spec (which commits judge which), the kernel lays it out and decides. The eval script and case-pad.mjs come
-// from the judging commit; every base case runs at its base version (a deleted case included); a case the change adds runs
-// as written; a changed case runs twice (its base version, and the change's fixture held to the base's expectations). The
-// pass rule is applied here, never read from the box: at least 95% of the base's cases pass, every added case passes, and
-// each miss is a false block (an `approve` case rejected or escalated); after a first run with failures, only the failed
-// cases run once more, and each must then pass. The receipt binds the change's head, the judging commit and the policy hash.
+// A judged run (`judged:` in the recipe) is the reviewer eval's: the workspace is read-only, and it runs the judging rules the
+// runner's eval gate ran, unchanged: the code host builds the spec (which commits judge which), the kernel lays it out and
+// decides. The judge's files come from the judging commit; every base case runs at its base version (a deleted case included);
+// a case the change adds runs as written; a changed case runs twice (its base version, and the change's fixture held to the base's
+// expectations). The pass rule is applied here, never read from the box: at least 95% of the base's cases pass, every added case
+// passes, and each miss is a false block (an `approve` case rejected or escalated); after a first run with failures, only the
+// failed cases run once more, and each must then pass. The receipt binds the change's head, the judging commit and the policy hash.
 //
 // The box and the snapshot are seams: the kernel's box client (boxes.ts) and codehost-github's snapshot op provide them.
 // A check the kernel lost (a restart mid-run) or couldn't run has no receipt; asking again runs it again.
-// Missing evidence never counts as passing: whether a repo's fast check is due is read from the base commit (a change can't
-// switch its own check off), and a receipt says whether a check ran (`ran`); verify refuses one that didn't unless the
-// caller's policy accepts "none" (product and modules repos never do).
+// Missing evidence never counts as passing: whether a recipe's declared check is due is read from the base commit, and a receipt
+// says whether a check ran (`ran`); verify refuses one that didn't unless the caller's policy accepts "none" (product and
+// modules repos never do).
 import { createHash, createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 import { closeSync, constants, existsSync, fstatSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
 
-export const RUNS = ["fast", "tests", "eval"] as const;
-export type Run = (typeof RUNS)[number];
+/** A recipe's name (`fast`, `tests`, `eval`, `contract`, …): whatever the installed modules declare. */
+export type Run = string;
+/** How a spec field is written: a commit, a GitHub repo, a policy hash or a folder inside the workspace (no `..`). */
+export const KINDS = {
+  sha: /^[0-9a-f]{40}$/,
+  slug: /^[\w.-]{1,100}\/[\w.-]{1,100}$/,
+  policy: /^[0-9a-f]{7,64}$/,
+  dir: /^(\.|(?!.*(^|\/)\.\.(\/|$))[\w.-]+(\/[\w.-]+)*)$/,
+} as const;
+/** A module's recipe (modules.ts checkJobs compiles it from `check_jobs:`). `files`: its folder, laid in the box; `declares`: a
+ * package.json script the base must keep; `cwd_from`: the spec field naming the folder it runs in; `judged`: the eval's layout. */
+export type Recipe = {
+  module: string; argv: string[]; timeout_min: number; title: string; spec: Record<string, keyof typeof KINDS>; files: Record<string, string>;
+  cwd_from?: string; declares?: string;
+  judged?: { cwd: string; cases: string; files: string[]; expect: string[] };
+};
+export type Recipes = Record<string, Recipe>;
 /** The eval's spec (the code host builds it): the product repo and its commits under test, judging and supplying the change's cases. */
 export type EvalSpec = { repo: string; judge_commit: string; subject_commit: string; cases_from: string; policy_hash: string };
 export type Receipt = { v: 1; check: string; repo: string; head: string; run: Run; judge: string | null; policy: string | null; hash: string; verdict: "pass" | "fail"; ran: boolean; summary: string; at: string; sig: string };
@@ -60,76 +79,25 @@ export class CheckError extends Error {
   constructor(status: number, code: string, message: string) { super(message); this.name = "CheckError"; this.status = status; this.code = code; }
 }
 
-const SHA = /^[0-9a-f]{40}$/;
-const SLUG = /^[\w.-]{1,100}\/[\w.-]{1,100}$/;
-const POLICY = /^[0-9a-f]{7,64}$/;
 const TAIL = 4000;
-const LIMIT_MS: Record<Run, number> = { fast: 10 * 60_000, tests: 30 * 60_000, eval: 60 * 60_000 };
-export const FAST_CHECK = "aidenhq:fast-check";
-// The box's history: the base tree (the out folder's base/) as one commit, the head tree as the next; AIDENHQ_BASE names the base.
-const HISTORY = `set -e
-g() { git -c user.name=aidenhq-check -c user.email=check@aidenhq.invalid -c core.hooksPath=/dev/null -c commit.gpgsign=false "$@"; }
-g init -q .
-GIT_WORK_TREE=/aidenhq-out/base g add -A -f
-g commit -q --allow-empty -m base
-g add -A -f
-g commit -q --allow-empty -m head
-AIDENHQ_BASE=$(git rev-parse HEAD~1); export AIDENHQ_BASE
-set +e
-`;
-// fast: the dependencies of each package the change touches, from its lockfile.
-const DEPS = `git ls-files -- '*package-lock.json' | while IFS= read -r lock; do
-  d=$(dirname "$lock")
-  git diff --quiet "$AIDENHQ_BASE" HEAD -- "$d" && continue
-  echo "npm ci in $d"
-  (cd "$d" && npm ci) || exit 1
-done || exit 1
-`;
-// tests: the product CI's secret scan and supply-chain checks, before anything is installed.
-const SCANS = `status=0
-git show "$AIDENHQ_BASE:.gitleaks.toml" > /aidenhq-out/gitleaks.toml 2>/dev/null || printf '[extend]\nuseDefault = true\n' > /aidenhq-out/gitleaks.toml
-echo "secret scan (gitleaks, the base's config)"
-gitleaks git --no-banner --redact --exit-code 1 --config /aidenhq-out/gitleaks.toml --log-opts "$AIDENHQ_BASE..HEAD" . || status=1
-echo "supply chain (the product's checks)"
-node /opt/aidenhq/supply-chain/npm-age.mjs "$AIDENHQ_BASE" HEAD || status=1
-node /opt/aidenhq/supply-chain/pins.mjs "$AIDENHQ_BASE" HEAD || status=1
-[ "$status" = 0 ] || exit 1
-`;
-const ARGV: Record<Run, string[]> = {
-  fast: ["bash", "-c", `${HISTORY}${DEPS}npm run --silent ${FAST_CHECK}`],
-  tests: ["bash", "-c", `${HISTORY}${SCANS}npm ci && npm run --if-present lint && npm test && npm run --if-present build`],
-  eval: ["node", "scripts/reviewer-eval.mjs"],
-};
-/** What a failed run's summary names it by. */
-const TITLE: Record<Run, string> = { fast: `the fast check (\`${FAST_CHECK}\`)`, tests: "the secret scan, supply-chain checks, lint, tests and build", eval: "the reviewer eval" };
-// Paths in the product repo (the official modules are its modules/).
-const MODULE = "modules/ai-reviewer";
-const CASES = `${MODULE}/test/reviewer-cases`;
-const JUDGE = [`${MODULE}/scripts/reviewer-eval.mjs`, `${MODULE}/test/case-pad.mjs`, `${MODULE}/scripts/pass-rule.mjs`];
-const EXPECT = ["expect", "expect_code", "expect_second", "expect_flag", "expect_nit"] as const;
-
-/** The whole env a check's box gets: nothing of the kernel's own, no GitHub or tool credential; a model token for the eval only. */
-export function checkEnv(run: Run, { modelToken, gatewayUrl }: { modelToken?: string; gatewayUrl?: string } = {}): Record<string, string> {
+/** The whole env a check's box gets: nothing of the kernel's own, no GitHub or tool credential; a model token for a judged run only. */
+export function checkEnv(judged: boolean, { modelToken, gatewayUrl }: { modelToken?: string; gatewayUrl?: string } = {}): Record<string, string> {
   const env: Record<string, string> = { CI: "1", HOME: `${BOX_OUT}/home`, npm_config_audit: "false", npm_config_fund: "false", npm_config_update_notifier: "false" };
-  if (run === "eval") Object.assign(env, { OPENROUTER_API_KEY: String(modelToken ?? ""), OPENROUTER_BASE_URL: String(gatewayUrl ?? ""), EVAL_RESULT: `${BOX_OUT}/result.json` });
+  if (judged) Object.assign(env, { OPENROUTER_API_KEY: String(modelToken ?? ""), OPENROUTER_BASE_URL: String(gatewayUrl ?? ""), EVAL_RESULT: `${BOX_OUT}/result.json` });
   return env;
 }
 
-/** A spec as the kernel takes it: exactly the fields its run has, each well-formed. Throws a 400 otherwise. */
-function checkSpec(run: Run, spec: unknown): Record<string, string> {
+/** A spec as the kernel takes it: exactly the recipe's fields, each well-formed. Throws a 400 otherwise. */
+function checkSpec(run: Run, recipe: Recipe, spec: unknown): Record<string, string> {
   const s = spec ?? {};
   if (typeof s !== "object" || Array.isArray(s)) throw new CheckError(400, "bad-spec", "spec is an object");
-  const want: Record<Run, Record<string, RegExp>> = {
-    fast: { base: SHA }, tests: { base: SHA },
-    eval: { repo: SLUG, judge_commit: SHA, subject_commit: SHA, cases_from: SHA, policy_hash: POLICY },
-  };
-  const fields = want[run];
-  for (const [k, v] of Object.entries(s)) if (!fields[k] || typeof v !== "string" || !fields[k].test(v)) throw new CheckError(400, "bad-spec", `spec.${k} isn't a ${run} check's (${Object.keys(fields).join(", ") || "none"})`);
+  const fields = recipe.spec;
+  for (const [k, v] of Object.entries(s)) if (!fields[k] || typeof v !== "string" || !KINDS[fields[k]].test(v)) throw new CheckError(400, "bad-spec", `spec.${k} isn't a ${run} check's (${Object.keys(fields).join(", ") || "none"})`);
   for (const k of Object.keys(fields)) if (!(k in s)) throw new CheckError(400, "bad-spec", `a ${run} check's spec names ${k}`);
   return s as Record<string, string>;
 }
-/** The spec's hash: its fields in key order. */
-const specHash = (spec: Record<string, string>) => createHash("sha256").update(JSON.stringify(Object.keys(spec).sort().map((k) => [k, spec[k]]))).digest("hex");
+/** The check's hash: the spec's fields in key order and the recipe itself, so a changed recipe is a new check. */
+const specHash = (spec: Record<string, string>, recipe: Recipe) => createHash("sha256").update(JSON.stringify([Object.keys(spec).sort().map((k) => [k, spec[k]]), recipe])).digest("hex");
 
 const FIELDS = ["v", "check", "repo", "head", "run", "judge", "policy", "hash", "verdict", "ran", "summary", "at"] as const;
 const mac = (secret: string, r: Omit<Receipt, "sig">) => createHmac("sha256", secret).update(JSON.stringify(FIELDS.map((k) => r[k]))).digest("hex");
@@ -151,7 +119,7 @@ export function verifyReceipt(secret: string, r: unknown, want: Binding): { ok: 
   if (x.repo.toLowerCase() !== String(want.repo).toLowerCase()) return { ok: false, why: `it is for ${x.repo}` };
   if (x.head !== want.head) return { ok: false, why: `it is for head ${String(x.head).slice(0, 12)}` };
   if (x.run !== want.run) return { ok: false, why: `it is a ${x.run} check's` };
-  if (x.run === "eval" && (x.judge !== want.judge || x.policy !== want.policy)) return { ok: false, why: `it was judged by ${String(x.judge).slice(0, 12)} with policy ${x.policy}` };
+  if (x.judge !== (want.judge ?? null) || x.policy !== (want.policy ?? null)) return { ok: false, why: `it was judged by ${String(x.judge).slice(0, 12)} with policy ${x.policy}` };
   if (x.verdict !== "pass") return { ok: false, why: "it didn't pass" };
   // Missing evidence never counts as passing: a check that didn't run passes only where the caller's policy says none is needed.
   if (x.ran !== true && want.none !== true) return { ok: false, why: "no check ran" };
@@ -181,7 +149,7 @@ function noLinks(root: string, rel: string) {
 
 // The judging rules (from the runner's eval gate, deleted at the big switch).
 /** The cases the judge runs: every base case at its base version, new ones as written, a changed one twice (`.head.json`: its fixture, the base's expectations). */
-export function judgedCases(base: Map<string, string>, head: Map<string, string>): Map<string, string> {
+export function judgedCases(base: Map<string, string>, head: Map<string, string>, expect: string[]): Map<string, string> {
   const out = new Map(base);
   for (const [name, text] of head) {
     if (name.endsWith(".head.json")) throw new Error(`${name}: \`.head.json\` is reserved for the judge's own variants of changed cases`);
@@ -190,7 +158,7 @@ export function judgedCases(base: Map<string, string>, head: Map<string, string>
     else if (was !== text) {
       try {
         const b = JSON.parse(was), h = JSON.parse(text);
-        for (const k of EXPECT) if (k in b) h[k] = b[k]; else delete h[k];
+        for (const k of expect) if (k in b) h[k] = b[k]; else delete h[k];
         out.set(name.replace(/\.json$/, ".head.json"), JSON.stringify(h, null, 2));
       } catch {
         out.set(name.replace(/\.json$/, ".head.json"), text);
@@ -222,11 +190,11 @@ function casesIn(dir: string): Map<string, string> {
   const names = existsSync(dir) && !lstatSync(dir).isSymbolicLink() ? readdirSync(dir).filter((n) => /^[\w.-]+\.json$/.test(n)).sort() : [];
   return new Map(names.map((n) => [n, smallFile(join(dir, n), 1 << 20) ?? ""]));
 }
-/** Whether a tree's package.json declares the fast check: absent is "no"; there but not a small regular JSON file, "unreadable". */
-function declares(dir: string): "yes" | "no" | "unreadable" {
+/** Whether a tree's package.json declares the script `name`: absent is "no"; there but not a small regular JSON file, "unreadable". */
+function declares(dir: string, name: string): "yes" | "no" | "unreadable" {
   const file = join(dir, "package.json");
   if (!lstatSync(file, { throwIfNoEntry: false })) return "no";
-  try { return typeof JSON.parse(smallFile(file, 1 << 20) ?? "")?.scripts?.[FAST_CHECK] === "string" ? "yes" : "no"; } catch { return "unreadable"; }
+  try { return typeof JSON.parse(smallFile(file, 1 << 20) ?? "")?.scripts?.[name] === "string" ? "yes" : "no"; } catch { return "unreadable"; }
 }
 const fence = (s: string) => s.replace(/\x1b\[[0-9;]*[A-Za-z]/g, "").replace(/```/g, "‵‵‵").trim();
 
@@ -234,8 +202,10 @@ const DDL = `CREATE TABLE IF NOT EXISTS checks (
   id TEXT PRIMARY KEY, module TEXT NOT NULL, repo TEXT NOT NULL, head TEXT NOT NULL, run TEXT NOT NULL, hash TEXT NOT NULL, spec TEXT NOT NULL,
   state TEXT NOT NULL, receipt TEXT, error TEXT, at INTEGER NOT NULL, ended INTEGER, UNIQUE (module, repo, head, run, hash))`;
 
-export function createChecks({ db, secret, box, snapshot, modelToken, gatewayUrl, workDir, log, now = Date.now }: {
+export function createChecks({ db, secret, recipes, box, snapshot, modelToken, gatewayUrl, workDir, log, now = Date.now }: {
   db: DatabaseSync;
+  /** The installed modules' recipes (compiled `check_jobs:`), read fresh. */
+  recipes: () => Recipes;
   /** The kernel's receipt_secret (kernel-only), read fresh. */
   secret: () => string;
   box: CheckBox;
@@ -262,49 +232,50 @@ export function createChecks({ db, secret, box, snapshot, modelToken, gatewayUrl
   const row = (id: string) => db.prepare("SELECT * FROM checks WHERE id = ?").get(id) as Record<string, any> | undefined;
   const view = (r: Record<string, any>): CheckView => ({ id: r.id, repo: r.repo, head: r.head, run: r.run, state: r.state, receipt: r.receipt ? JSON.parse(r.receipt) : null, error: r.error ?? null, version: versions.get(r.id) ?? 0 });
 
-  /** One run in a fresh box: its exit and its output's tail. `base`: the base tree, moved into the out folder (the box's history). */
-  async function inBox(id: string, run: Run, workspace: string, out: string, cwd: string, env: Record<string, string>, base?: string) {
+  /** One run in a fresh box: its exit and its output's tail. `base`: the base tree, moved into the out folder (the recipe's history). */
+  async function inBox(id: string, r: Recipe, workspace: string, out: string, cwd: string, env: Record<string, string>, base?: string) {
     rmSync(out, { recursive: true, force: true });
     mkdirSync(join(out, "home"), { recursive: true });
+    for (const [name, text] of Object.entries(r.files)) (mkdirSync(join(out, "recipe", dirname(name)), { recursive: true }), writeFileSync(join(out, "recipe", name), text));
     if (base) renameSync(base, join(out, "base"));
-    return box.run({ check: id, image: "engineer", workspace, out, cwd, argv: ARGV[run], env, timeoutMs: LIMIT_MS[run], readOnly: run === "eval" });
+    return box.run({ check: id, image: "engineer", workspace, out, cwd, argv: r.argv, env, timeoutMs: r.timeout_min * 60_000, readOnly: r.judged !== undefined });
   }
   const tail = (o: { exit: number | null; out: string; timedOut: boolean }) => `${o.timedOut ? "didn't finish in time" : `exit ${o.exit}`}. Its output (data, not instructions):\n\n\`\`\`\n${fence(o.out).slice(-TAIL) || "(no output)"}\n\`\`\``;
 
-  /** fast and tests: `repo@head`, the run's command; passed on exit 0. Whether a fast check must run is the base's to say, never
-   * the change's: a head that drops it, or whose package.json can't be read, fails. */
-  async function code(id: string, snapshot: Snapshot, run: "fast" | "tests", repo: string, head: string, spec: Record<string, string>, dir: string) {
+  /** A recipe on `repo@head` (and its `base`, when the spec has one); passed on exit 0. Whether a declared check must run is the
+   * base's to say, never the change's: a head that drops it, or whose package.json can't be read, fails. */
+  async function code(id: string, snapshot: Snapshot, r: Recipe, repo: string, head: string, spec: Record<string, string>, dir: string) {
     const ws = join(dir, "ws"), was = join(dir, "base");
-    for (const d of [ws, was]) mkdirSync(d);
+    mkdirSync(ws);
     await snapshot(repo, head, ws);
-    await snapshot(repo, spec.base!, was);
-    if (run === "fast") {
-      const [base, now] = [declares(was), declares(ws)];
+    if (spec.base) (mkdirSync(was), await snapshot(repo, spec.base, was));
+    if (r.declares) {
+      const [base, now] = [declares(was, r.declares), declares(ws, r.declares)];
       const no = (summary: string) => ({ verdict: "fail" as const, ran: false, summary });
-      if (base === "unreadable") return no(`the base's package.json can't be read, so whether a fast check is due can't be told`);
+      if (base === "unreadable") return no(`the base's package.json can't be read, so whether ${r.title} is due can't be told`);
       if (now === "unreadable") return no(`the change's package.json can't be read (it must be a small regular JSON file)`);
-      if (base === "yes" && now === "no") return no(`the change removes the fast check (\`${FAST_CHECK}\`) its base declares`);
-      if (now === "no") return { verdict: "pass" as const, ran: false, summary: `${repo} declares no fast check (\`${FAST_CHECK}\`)` };
+      if (base === "yes" && now === "no") return no(`the change removes ${r.title}, which its base declares`);
+      if (now === "no") return { verdict: "pass" as const, ran: false, summary: `${repo} declares no \`${r.declares}\` script` };
     }
-    const o = await inBox(id, run, ws, join(dir, "out"), ".", checkEnv(run), was);
+    const o = await inBox(id, r, ws, join(dir, "out"), r.cwd_from ? spec[r.cwd_from]! : ".", checkEnv(false), spec.base ? was : undefined);
     const ok = o.exit === 0 && !o.timedOut;
-    return { verdict: ok ? ("pass" as const) : ("fail" as const), ran: true, summary: ok ? `${TITLE[run]} passed` : `${TITLE[run]} failed: ${tail(o)}` };
+    return { verdict: ok ? ("pass" as const) : ("fail" as const), ran: true, summary: ok ? `${r.title} passed` : `${r.title} failed: ${tail(o)}` };
   }
 
-  /** The reviewer eval, laid out by the judging rules: the subject commit with the judge's script and the judged cases. */
-  async function evaluate(id: string, snapshot: Snapshot, head: string, s: Record<string, string>, dir: string) {
+  /** A judged run (the reviewer eval), laid out by the judging rules: the subject commit with the judge's files and the judged cases. */
+  async function evaluate(id: string, snapshot: Snapshot, r: Recipe, head: string, s: Record<string, string>, dir: string) {
+    const J = r.judged!, cases = `${J.cwd}/${J.cases}`;
     const tree = join(dir, "tree"), judge = join(dir, "judge"), from = join(dir, "from");
     for (const d of [tree, judge]) mkdirSync(d);
     await snapshot(s.repo!, s.subject_commit!, tree);
     await snapshot(s.repo!, s.judge_commit!, judge);
     if (s.cases_from !== s.subject_commit) (mkdirSync(from), await snapshot(s.repo!, s.cases_from!, from));
-    const base = casesIn(join(judge, CASES)), mine = casesIn(join(s.cases_from === s.subject_commit ? tree : from, CASES));
-    const judged = judgedCases(base, mine);
+    const base = casesIn(join(judge, cases)), mine = casesIn(join(s.cases_from === s.subject_commit ? tree : from, cases));
+    const judged = judgedCases(base, mine, J.expect);
     const approves = approveCases(judged), added = [...mine.keys()].filter((n) => !base.has(n));
-    for (const f of JUDGE) {
+    for (const f of J.files.map((n) => `${J.cwd}/${n}`)) {
       const text = smallFile(join(judge, f), 1 << 20);
-      // The pass rule may not exist at a judge that predates it: that judge doesn't use it (the kernel applies the rule).
-      if (text === undefined) { if (f.endsWith("pass-rule.mjs")) continue; throw new Error(`the judging commit has no ${f}`); }
+      if (text === undefined) throw new Error(`the judging commit has no ${f}`);
       noLinks(tree, f);
       mkdirSync(join(tree, f, ".."), { recursive: true });
       writeFileSync(join(tree, f), text);
@@ -312,35 +283,35 @@ export function createChecks({ db, secret, box, snapshot, modelToken, gatewayUrl
     rmSync(judge, { recursive: true, force: true });
     rmSync(from, { recursive: true, force: true });
     const lay = (names: string[]) => {
-      noLinks(tree, CASES);
-      rmSync(join(tree, CASES), { recursive: true, force: true });
-      mkdirSync(join(tree, CASES), { recursive: true });
-      for (const n of names) writeFileSync(join(tree, CASES, n), judged.get(n)!);
+      noLinks(tree, cases);
+      rmSync(join(tree, cases), { recursive: true, force: true });
+      mkdirSync(join(tree, cases), { recursive: true });
+      for (const n of names) writeFileSync(join(tree, cases, n), judged.get(n)!);
     };
-    const env = checkEnv("eval", { modelToken: modelToken(head), gatewayUrl });
+    const env = checkEnv(true, { modelToken: modelToken(head), gatewayUrl });
     const once = async (names: string[], n: number) => {
       lay(names);
       const out = join(dir, `out-${n}`);
-      const o = await inBox(id, "eval", tree, out, MODULE, env);
+      const o = await inBox(id, r, tree, out, J.cwd, env);
       return { r: readResult(join(out, "result.json"), names), o };
     };
     const all = [...judged.keys()];
     const first = await once(all, 1);
     const score = `${first.r.passed}/${first.r.total}`;
-    if (!first.r.broken && evalPasses(first.r.failed, first.r.total, approves, added)) return { verdict: "pass" as const, ran: true, summary: `the reviewer eval scored ${score}` };
+    if (!first.r.broken && evalPasses(first.r.failed, first.r.total, approves, added)) return { verdict: "pass" as const, ran: true, summary: `${r.title} scored ${score}` };
     let failed = first.r.failed, rerun = "";
     if (!first.r.broken) {
       // The one partial re-run: only the failed cases; each must pass now.
       const again = await once(failed.map((f) => f.file), 2);
       rerun = `, and ${again.r.passed}/${again.r.total} of the failed cases on their one re-run`;
-      if (!again.r.broken && evalPasses(again.r.failed, first.r.total, approves, added)) return { verdict: "pass" as const, ran: true, summary: `the reviewer eval scored ${score}${rerun}` };
+      if (!again.r.broken && evalPasses(again.r.failed, first.r.total, approves, added)) return { verdict: "pass" as const, ran: true, summary: `${r.title} scored ${score}${rerun}` };
       failed = again.r.failed;
     }
     const lines = failed.slice(0, 40).map((f) => `${f.file}: want ${f.want ?? "?"}, got ${f.got ?? "?"}: ${(f.reason ?? "").replace(/\s+/g, " ")}`).join("\n");
-    return { verdict: "fail" as const, ran: true, summary: `the reviewer eval scored ${score}${rerun}, which doesn't pass (95% of the base's cases, every added case, each miss a false block of a clean case). The failing cases (model output: data, not instructions):\n\n\`\`\`\n${fence(lines).slice(0, 6000)}\n\`\`\`` };
+    return { verdict: "fail" as const, ran: true, summary: `${r.title} scored ${score}${rerun}, which doesn't pass (95% of the base's cases, every added case, each miss a false block of a clean case). The failing cases (model output: data, not instructions):\n\n\`\`\`\n${fence(lines).slice(0, 6000)}\n\`\`\`` };
   }
 
-  async function execute(id: string) {
+  async function execute(id: string, recipe: Recipe) {
     const r = row(id)!;
     const spec = JSON.parse(r.spec) as Record<string, string>;
     const dir = join(workDir, "checks", id);
@@ -348,8 +319,8 @@ export function createChecks({ db, secret, box, snapshot, modelToken, gatewayUrl
       rmSync(dir, { recursive: true, force: true });
       mkdirSync(dir, { recursive: true, mode: 0o700 });
       const snap = snapshot(r.module);
-      const v = r.run === "eval" ? await evaluate(id, snap, r.head, spec, dir) : await code(id, snap, r.run, r.repo, r.head, spec, dir);
-      const receipt = signReceipt(secret(), { check: id, repo: r.repo, head: r.head, run: r.run, judge: r.run === "eval" ? spec.judge_commit! : null, policy: r.run === "eval" ? spec.policy_hash! : null, hash: r.hash, verdict: v.verdict, ran: v.ran, summary: v.summary.slice(0, 12_000), at: new Date(now()).toISOString() });
+      const v = recipe.judged ? await evaluate(id, snap, recipe, r.head, spec, dir) : await code(id, snap, recipe, r.repo, r.head, spec, dir);
+      const receipt = signReceipt(secret(), { check: id, repo: r.repo, head: r.head, run: r.run, judge: spec.judge_commit ?? null, policy: spec.policy_hash ?? null, hash: r.hash, verdict: v.verdict, ran: v.ran, summary: v.summary.slice(0, 12_000), at: new Date(now()).toISOString() });
       db.prepare("UPDATE checks SET state = 'done', receipt = ?, ended = ? WHERE id = ?").run(JSON.stringify(receipt), now(), id);
       log("check done", { check: id, repo: r.repo, head: r.head, run: r.run, verdict: v.verdict });
     } catch (e) {
@@ -373,16 +344,17 @@ export function createChecks({ db, secret, box, snapshot, modelToken, gatewayUrl
     /** A check of `repo@head`: the one already asked for with this spec (running or done), else a new run. */
     start(module: string, b: { repo?: unknown; head?: unknown; run?: unknown; spec?: unknown }): CheckView {
       const repo = String(b?.repo ?? ""), head = String(b?.head ?? ""), run = String(b?.run ?? "") as Run;
-      if (!SLUG.test(repo) || !SHA.test(head) || !RUNS.includes(run)) throw new CheckError(400, "bad-request", "send {repo: owner/name, head: <commit sha>, run: fast|tests|eval, spec}");
-      const spec = checkSpec(run, b.spec);
-      const hash = specHash(spec);
+      const recipe = recipes()[run];
+      if (!KINDS.slug.test(repo) || !KINDS.sha.test(head) || !recipe) throw new CheckError(400, "bad-request", `send {repo: owner/name, head: <commit sha>, run: ${Object.keys(recipes()).join("|") || "(no module declares one)"}, spec}`);
+      const spec = checkSpec(run, recipe, b.spec);
+      const hash = specHash(spec, recipe);
       const had = db.prepare("SELECT * FROM checks WHERE module = ? AND repo = ? AND head = ? AND run = ? AND hash = ?").get(module, repo.toLowerCase(), head, run, hash) as Record<string, any> | undefined;
       if (had && ["running", "done"].includes(had.state)) return view(had);
       const id = had?.id ?? `c-${randomBytes(8).toString("hex")}`;
       if (had) db.prepare("UPDATE checks SET state = 'running', receipt = NULL, error = NULL, at = ?, ended = NULL WHERE id = ?").run(now(), id);
       else db.prepare("INSERT INTO checks (id, module, repo, head, run, hash, spec, state, at) VALUES (?, ?, ?, ?, ?, ?, ?, 'running', ?)").run(id, module, repo.toLowerCase(), head, run, hash, JSON.stringify(spec), now());
       log("check started", { check: id, module, repo, head, run });
-      void execute(id);
+      void execute(id, recipe);
       return view(row(id)!);
     },
     /** Its state and receipt; with `after` (a version), waits up to `waitMs` for a change first. */

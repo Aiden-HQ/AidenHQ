@@ -1,8 +1,11 @@
 // A kernel wired as main.ts wires it, against a fake control plane and module servers, in a temp dir.
 import http from "node:http";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+import YAML from "yaml";
+import { checkJobs as compileCheckJobs } from "../../scripts/modules.mjs";
 import { createGateway, watched } from "../src/gateway/lib.ts";
 import { createAsserter, loadKey } from "../src/assert.ts";
 import { createBackplane } from "../src/backplane.ts";
@@ -24,6 +27,16 @@ import { KERNEL_KINDS } from "../src/kinds.ts";
 import { taskRoutineCap } from "../src/tier.ts";
 import { createProvenance } from "../src/provenance.ts";
 import { createPluginPost } from "../src/outcomes.ts";
+
+/** The check job recipes of the product's own modules, compiled as the kernel's modules.json carries them. */
+export function recipes() {
+  const out = {};
+  for (const m of ["codehost-github", "ai-reviewer", "platform"]) {
+    const root = join(dirname(fileURLToPath(import.meta.url)), `../../modules/${m}`);
+    Object.assign(out, compileCheckJobs(m, YAML.parse(readFileSync(join(root, "module.yaml"), "utf8")), root));
+  }
+  return out;
+}
 
 export const serve = (handler) => new Promise((r) => { const s = http.createServer(handler).listen(0, "127.0.0.1", () => r({ s, url: `http://127.0.0.1:${s.address().port}` })); });
 export const readBody = (req) => new Promise((r) => { let b = ""; req.on("data", (d) => (b += d)); req.on("end", () => r(b)); });

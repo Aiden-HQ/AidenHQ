@@ -3,7 +3,8 @@
 // with its own sha. Git fetches the sha into a cache (through the credential helper the caller passes, per command, never
 // into a checkout's config), checks it is that commit, refuses symlinks and submodules, and extracts the tree; nothing is
 // built or run (no third-party code runs on the host). The tier is computed, never claimed: declared (it compiles), official
-// (from the `aidenhq` marketplace, whose contract kit runs in CI). Sync: the compiler is.
+// (from the `aidenhq` marketplace, whose contract kit runs in CI). A third-party module's kit is a check job (platform's
+// `contract` recipe); a source none can snapshot stays declared. Sync: the compiler is.
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, renameSync, rmSync } from "node:fs";

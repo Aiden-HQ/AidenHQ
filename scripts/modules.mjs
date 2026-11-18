@@ -17,6 +17,7 @@ import { checkout, forkBase, forksOf, hostFetch, marketplaceEntries, OFFICIAL, o
 import { effective } from "./compiler/release.ts";
 import { compilePoints } from "./compiler/points.ts";
 import { gateMode } from "../kernel/src/gates.ts";
+import { KINDS as CHECK_KINDS } from "../kernel/src/checkjobs.ts";
 import { KERNEL_KINDS, KERNEL_ROLES } from "../kernel/src/kinds.ts";
 
 const PROFILES = ["trusted", "untrusted", "code-exec"];
@@ -604,6 +605,7 @@ export function compile(productDir, instanceDir, { revision, fetch = hostFetch(p
   const engines = {};
   const writes = {};
   const checks = {};
+  const checkJobTable = {};
 
   for (const name of enabled) {
     const { root } = all.get(name);
@@ -637,6 +639,7 @@ export function compile(productDir, instanceDir, { revision, fetch = hostFetch(p
       put(paperclip.mcp_servers, k, { ...c, module: name }, "connection");
     }
     Object.assign(writes, writeKinds(name, def, root, instance.writes ?? {}, writes));
+    for (const [run, r] of Object.entries(checkJobs(name, def, root))) { if (checkJobTable[run]) fail(`two modules declare check job ${run}: ${checkJobTable[run].module} and ${name}`); checkJobTable[run] = r; }
     Object.assign(checks, checkEntries(name, def));
     for (const [key, a] of Object.entries(def.agents ?? {})) {
       const file = join(root, "agents", key, "AGENTS.md");
@@ -1045,7 +1048,7 @@ export function compile(productDir, instanceDir, { revision, fetch = hostFetch(p
   // (apps-mcp mounts github_token), and they are recreated with it.
   const mounted = composeSecretFiles(base, compose);
   const mounts = Object.fromEntries(setup.map((f) => [f.secret, [...(mounted[f.secret] ?? [])].sort()]));
-  const kernelModules = { owner: { name: String(settings.owner_name ?? ""), email: String(settings.owner_email).trim().toLowerCase(), timezone: String(settings.timezone ?? "UTC") }, modules: kernelModuleTable(enabledDefs, settings), services, ...(reviewer ? { reviewer } : {}), ...(setup.length ? { setup, mounts } : {}) };
+  const kernelModules = { owner: { name: String(settings.owner_name ?? ""), email: String(settings.owner_email).trim().toLowerCase(), timezone: String(settings.timezone ?? "UTC") }, modules: kernelModuleTable(enabledDefs, settings), services, ...(reviewer ? { reviewer } : {}), ...(Object.keys(checkJobTable).length ? { check_jobs: checkJobTable } : {}), ...(setup.length ? { setup, mounts } : {}) };
   // Every agent (any module's or the instance's) is the job dispatcher's: the one enabled module with kernel.jobs. The kernel
   // starts a job only for an agent its requester dispatches (kernel/src/jobs.ts).
   const dispatchers = Object.entries(kernelModules.modules).filter(([, m]) => (m.roles ?? []).includes("kernel.jobs")).map(([n]) => n);
@@ -1170,6 +1173,51 @@ export function checkEntries(name, def) {
     if (!ownSecrets(def).includes(c.auth)) fail(`${at}: auth must name one of its own secrets`);
     if (c.label != null && !/^[a-z][a-z0-9-]{0,40}$/.test(String(c.label))) fail(`${at}: label is a label name (a-z, 0-9, -)`);
     out[`${name}.${c.id}`] = { module: name, at: c.at, url: c.post, auth_secret: c.auth, ...(c.agents ? { agents: c.agents } : {}), ...(c.label ? { label: String(c.label) } : {}), ...(mode === "observe" ? { mode } : {}) };
+  }
+  return out;
+}
+
+/**
+ * A module's check job recipes (`check_jobs:`, kernel/src/checkjobs.ts), compiled for the kernel (config/kernel/modules.json
+ * `check_jobs`, by run name): the command (argv, run in the workspace or in the spec's `cwd_from` folder), its time limit, how a
+ * result is titled, the spec's fields (each a kind of CHECK_KINDS), the files of its `dir` (laid in the box at
+ * /aidenhq-out/recipe, small text files) and, by field, what the kernel enforces: `declares` (a package.json script the base
+ * keeps) and `judged` (the reviewer eval's layout of judge files and cases, whose spec is exactly the judging commits').
+ */
+const JUDGED_SPEC = ["repo", "judge_commit", "subject_commit", "cases_from", "policy_hash"];
+export function checkJobs(name, def, root) {
+  const out = {};
+  for (const [run, r] of Object.entries(def.check_jobs ?? {})) {
+    const where = `module ${name}: check_jobs.${run}`;
+    if (!/^[a-z][a-z0-9_-]{0,30}$/.test(run)) fail(`${where}: the name is lowercase letters, digits, - and _`);
+    const extra = Object.keys(r ?? {}).filter((f) => !["dir", "argv", "timeout_min", "title", "spec", "declares", "cwd_from", "judged"].includes(f));
+    if (extra.length) fail(`${where}: unknown field ${extra.join(", ")}`);
+    if (!Array.isArray(r.argv) || !r.argv.length || r.argv.some((a) => typeof a !== "string" || !a)) fail(`${where}: argv is the command, a list of strings`);
+    if (!Number.isInteger(r.timeout_min) || r.timeout_min < 1 || r.timeout_min > 120) fail(`${where}: timeout_min is whole minutes, 1 to 120`);
+    if (typeof r.title !== "string" || !r.title || r.title.length > 120) fail(`${where}: title is a short text`);
+    const spec = r.spec ?? {};
+    if (!spec || typeof spec !== "object" || Object.entries(spec).some(([k, v]) => !/^[a-z_]{1,30}$/.test(k) || !(v in CHECK_KINDS))) fail(`${where}: spec maps field names to ${Object.keys(CHECK_KINDS).join(", ")}`);
+    if (r.declares != null && (typeof r.declares !== "string" || spec.base !== "sha")) fail(`${where}: declares names a package.json script and needs spec.base (sha)`);
+    if (r.cwd_from != null && spec[r.cwd_from] !== "dir") fail(`${where}: cwd_from names a spec field of kind dir`);
+    let judged;
+    if (r.judged != null) {
+      const j = r.judged;
+      const same = JSON.stringify(Object.keys(spec).sort()) === JSON.stringify([...JUDGED_SPEC].sort()) && spec.repo === "slug" && spec.policy_hash === "policy" && JUDGED_SPEC.slice(1, 4).every((k) => spec[k] === "sha");
+      if (!same) fail(`${where}: a judged run's spec is exactly ${JUDGED_SPEC.join(", ")}`);
+      const rel = (v) => typeof v === "string" && /^(?!.*\.\.)[\w./-]+$/.test(v);
+      if (!rel(j?.cwd) || !rel(j.cases) || !Array.isArray(j.files) || !j.files.length || !j.files.every(rel) || !Array.isArray(j.expect) || j.expect.some((e) => typeof e !== "string")) fail(`${where}: judged is {cwd, cases, files: [...], expect: [...]}, paths inside the product`);
+      judged = { cwd: j.cwd, cases: j.cases, files: j.files, expect: j.expect };
+    }
+    const files = {};
+    if (r.dir != null) {
+      if (!/^[\w-]+$/.test(String(r.dir))) fail(`${where}: dir is a folder of the module`);
+      const dir = join(root, r.dir);
+      for (const f of existsSync(dir) ? readdirSync(dir, { withFileTypes: true }) : []) {
+        if (!f.isFile() || statSync(join(dir, f.name)).size > 64 * 1024) fail(`${where}: ${r.dir}/${f.name} is a small regular file`);
+        files[f.name] = readFileSync(join(dir, f.name), "utf8");
+      }
+    }
+    out[run] = { module: name, argv: r.argv, timeout_min: r.timeout_min, title: r.title, spec, files, ...(r.declares ? { declares: r.declares } : {}), ...(r.cwd_from ? { cwd_from: r.cwd_from } : {}), ...(judged ? { judged } : {}) };
   }
   return out;
 }

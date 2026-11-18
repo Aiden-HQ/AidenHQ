@@ -11,6 +11,7 @@ import { createChecks } from "../src/checkjobs.ts";
 import { createGateway } from "../src/gateway/lib.ts";
 import { mintToken, verifyToken } from "../src/gateway/token.ts";
 import { createIdentity } from "../src/identity.ts";
+import { recipes } from "./helpers.mjs";
 
 const A = "a".repeat(40), B = "b".repeat(40), J = "1".repeat(40), S = "2".repeat(40);
 const CASES = "modules/ai-reviewer/test/reviewer-cases";
@@ -35,7 +36,7 @@ function setup(trees, judge = () => ({ failed: [] })) {
   const snapshot = async (repo, ref, into) => {
     for (const [f, text] of Object.entries(trees[ref] ?? {})) (mkdirSync(dirname(join(into, f)), { recursive: true }), writeFileSync(join(into, f), text));
   };
-  const checks = createChecks({ db: new DatabaseSync(":memory:"), secret: () => "receipt-secret", box, snapshot: () => snapshot, modelToken: (head) => mintToken("job-secret", { kind: "check", component: `eval:${head}` }), gatewayUrl: "http://gw", workDir: dir, log: () => {} });
+  const checks = createChecks({ db: new DatabaseSync(":memory:"), secret: () => "receipt-secret", recipes, box, snapshot: () => snapshot, modelToken: (head) => mintToken("job-secret", { kind: "check", component: `eval:${head}` }), gatewayUrl: "http://gw", workDir: dir, log: () => {} });
   const done = async (v) => { while (v.state === "running") v = await checks.get("codehost-github", v.id, { after: v.version, waitMs: 1000 }); return v; };
   return { checks, runs, done };
 }
@@ -78,9 +79,19 @@ test("checks: whether a fast check is due is the base's to say, and a check that
   assert.throws(() => checks.start("codehost-github", { repo: "acme/app", head: A, run: "fast", spec: {} }), /names base/);
 });
 
+test("checks: a recipe is the installed module's: unknown runs and bad specs are refused, the module's contract kit runs in its own folder", async () => {
+  const { checks, runs, done } = setup({ [A]: { "mod/module.yaml": "name: mod" } });
+  assert.throws(() => checks.start("codehost-github", { repo: "acme/mod", head: A, run: "deploy", spec: {} }), /run: .*contract/);
+  for (const path of ["../x", "a/../b", "/abs", ""]) assert.throws(() => checks.start("codehost-github", { repo: "acme/mod", head: A, run: "contract", spec: { path } }), /spec\.path/);
+  const v = await done(checks.start("codehost-github", { repo: "acme/mod", head: A, run: "contract", spec: { path: "mod" } }));
+  assert.deepEqual([v.receipt.verdict, v.receipt.ran, runs[0].cwd], ["pass", true, "mod"]);
+  assert.match(runs[0].argv.join(" "), /contract\.sh/);
+  assert.ok(Object.keys(recipes().contract.files).includes("contract.sh"));
+});
+
 test("checks: the eval runs by the judging rules and its receipt binds judge and policy", async () => {
   const ok = (expect) => JSON.stringify({ expect });
-  const base = { "modules/ai-reviewer/scripts/reviewer-eval.mjs": "JUDGE", "modules/ai-reviewer/test/case-pad.mjs": "pad" };
+  const base = { "modules/ai-reviewer/scripts/reviewer-eval.mjs": "JUDGE", "modules/ai-reviewer/test/case-pad.mjs": "pad", "modules/ai-reviewer/scripts/pass-rule.mjs": "rule" };
   for (let i = 0; i < 20; i++) base[`${CASES}/c${i}.json`] = ok(i ? "approve" : "reject");
   const subject = { ...base, "modules/ai-reviewer/scripts/reviewer-eval.mjs": "FORGED", [`${CASES}/c0.json`]: ok("approve"), [`${CASES}/new.json`]: ok("reject") };
   delete subject[`${CASES}/c1.json`];

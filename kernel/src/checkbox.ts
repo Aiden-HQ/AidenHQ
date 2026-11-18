@@ -13,7 +13,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, posix } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
-import { BOX_WORKSPACE, createChecks, type CheckBox, type Snapshot } from "./checkjobs.ts";
+import { BOX_WORKSPACE, createChecks, type CheckBox, type Recipes, type Snapshot } from "./checkjobs.ts";
 import { mintToken } from "./gateway/token.ts";
 import type { IncomingMessage } from "node:http";
 
@@ -84,8 +84,10 @@ export function snapshots(ask: Ask): (module: string) => Snapshot {
 type Ask = (module: string, op: string, body: Record<string, unknown>) => Promise<IncomingMessage>;
 
 /** The kernel's check jobs (checkjobs.ts) on these: the launcher's check boxes, the snapshot provider, `check` model tokens. */
-export function checkJobsFrom({ db, secret, ask, call, workDir, gatewayUrl, log, docker }: {
+export function checkJobsFrom({ db, secret, recipes, ask, call, workDir, gatewayUrl, log, docker }: {
   db: DatabaseSync; secret: (name: string) => string;
+  /** The installed modules' check recipes (config/kernel/modules.json `check_jobs`). */
+  recipes: () => Recipes;
   /** The kernel's codehost broker (codehost.ts ask): snapshots under the asking module's grant. */
   ask: Ask; call: Call; workDir: string;
   /** The model gateway's API base as a box reaches it (the launcher's gateway, `…/api/v1`). */
@@ -95,7 +97,7 @@ export function checkJobsFrom({ db, secret, ask, call, workDir, gatewayUrl, log,
   docker?: typeof dockerRun;
 }) {
   return createChecks({
-    db, log, workDir, gatewayUrl, box: checkBoxes({ call, ...(docker ? { docker } : {}) }),
+    db, log, workDir, gatewayUrl, recipes, box: checkBoxes({ call, ...(docker ? { docker } : {}) }),
     secret: () => secret("receipt_secret"),
     snapshot: snapshots(ask),
     modelToken: (head) => mintToken(secret("gateway_job_secret"), { kind: "check", component: `eval:${head}`, ttlMs: 3 * 3600_000 }),
