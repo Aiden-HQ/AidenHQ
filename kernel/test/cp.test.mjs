@@ -13,6 +13,7 @@ import { kernel, moduleServer, pluginHost } from "./helpers.mjs";
 const ADA = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", BO = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", COS = "cccccccc-cccc-4ccc-8ccc-cccccccccccc", EVE = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee";
 const LEAD = "dddddddd-dddd-4ddd-8ddd-dddddddddddd", REP = "dddddddd-dddd-4ddd-8ddd-ddddddddddd1", ENG = "dddddddd-dddd-4ddd-8ddd-ddddddddddd2";
 const OWN = "10000000-0000-4000-8000-000000000001", OTHER = "10000000-0000-4000-8000-000000000002", CHAT = "10000000-0000-4000-8000-000000000003";
+const FLEET = "10000000-0000-4000-8000-000000000004";
 const KEYS = { "key-ada": ADA, "key-cos": COS, "key-lead": LEAD };
 
 async function setup(t) {
@@ -20,6 +21,7 @@ async function setup(t) {
     [OWN]: { id: OWN, identifier: "WOR-1", status: "in_progress", assigneeAgentId: ADA, companyId: "co", parentId: null },
     [OTHER]: { id: OTHER, identifier: "WOR-2", status: "in_progress", assigneeAgentId: BO, companyId: "co", parentId: null },
     [CHAT]: { id: CHAT, identifier: "WOR-3", status: "todo", assigneeAgentId: BO, companyId: "co", parentId: null },
+    [FLEET]: { id: FLEET, identifier: "WOR-4", status: "todo", assigneeAgentId: null, companyId: "co", parentId: null },
   });
   const plugin = [];
   let k;
@@ -33,6 +35,7 @@ async function setup(t) {
   } });
   const tool = { todo: ["act"] };
   k = await kernel(t, {
+    settings: { fleet_issues: "WOR-4" },
     agents: { ada: { id: ADA, task: OWN }, cos: { id: COS, task: OWN }, lead: { id: LEAD, task: OWN }, eve: { id: EVE, task: OWN } },
     grants: { [ADA]: { key: "ada", tools: tool, delegate_to: ["bo"] }, [BO]: { key: "bo", chat_task: CHAT }, [COS]: { key: "cos", roles: ["fleet-admin"], tools: tool }, [EVE]: { key: "eve", tools: tool }, [LEAD]: { key: "lead", tools: tool }, [REP]: { key: "rep", reports_to: "lead" }, [ENG]: { key: "eng", profile: "engineer" } },
     secrets: { todo_service_key: "todo-key", [`paperclip-agents/${ADA}`]: "key-ada", [`paperclip-agents/${COS}`]: "key-cos", [`paperclip-agents/${LEAD}`]: "key-lead", paperclip_post_key: "post-key" },
@@ -126,6 +129,16 @@ test("the chief of staff comments on any task of its company, heard by that task
   // Ada isn't the chief of staff: her Paperclip metadata and name say so, her grants don't.
   assert.equal((await act("ada", "PATCH", "/api/issues/WOR-2", { comment: "Hello." })).status, 403);
   assert.equal((await act("ada", "POST", "/api/issues/WOR-2/comments", { body: "Hello." })).status, 403);
+});
+
+test("any agent comments on the shared Fleet issues log, and only comments; a refusal's log line names its agent", async (t) => {
+  const { k, h, act } = await setup(t);
+  const r = await act("ada", "POST", "/api/issues/WOR-4/comments", { body: "log · fleet-check · nothing changed" });
+  assert.equal(r.status, 201);
+  assert.equal(h.comments.at(-1).authorAgentId, ADA);
+  assert.equal((await act("ada", "PATCH", "/api/issues/WOR-4", { status: "done" })).status, 403);
+  assert.equal((await act("ada", "POST", "/api/issues/WOR-2/comments", { body: "Hello." })).status, 403);
+  assert.deepEqual(k.log.filter((l) => l.msg === "cp refused").map((l) => [l.module, l.agent, l.path]), [["todo", "ada", "/api/issues/WOR-4"], ["todo", "ada", "/api/issues/WOR-2/comments"]]);
 });
 
 test("no control-plane identity, no call: a caller whose agent the kernel holds no key for is refused before anything runs", async (t) => {
