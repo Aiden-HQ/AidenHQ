@@ -6,16 +6,24 @@ import { existsSync, readFileSync } from "node:fs";
 import pino from "pino";
 import { kernelJwks, verifyCaller } from "./aidenhq-sdk/caller.js";
 import { serveExecutor } from "./aidenhq-sdk/executor.js";
+import { kernelClient } from "./kernel.js";
+import { getOwner } from "./owners.js";
 import { publisher } from "./publish.js";
 import { replier } from "./reply.js";
+import { createSubscriber } from "./subscriber.js";
+import { fileToken, tokenAuth } from "./token.js";
 import { oauth } from "./vendor/oauth.js";
 import { createVendorProxy } from "./vendor/proxy.js";
 
 const log = pino({ level: process.env.LOG_LEVEL ?? "info", base: { svc: "primer-mcp" }, redact: ["authorization", "*.authorization", "token", "*.token", "code"] });
 const readToken = (file: string | undefined) => (file && existsSync(file) ? readFileSync(file, "utf8").trim() || undefined : undefined);
 const stateDir = process.env.PRIMER_STATE_DIR ?? "/state";
-// The URL Connect saved, else the old primer_mcp_url setting's env value (an upgraded instance keeps working).
-const url = readToken(process.env.PRIMER_MCP_URL_FILE) || process.env.PRIMER_MCP_URL;
+// primer_mode: self-host signs in to the module's own Primer (PRIMER_LOCAL_URL) with the service token the owner saved;
+// connect (default) to the hosted Primer whose URL Connect saved (else the old primer_mcp_url setting's env value), as the owner.
+const selfHost = process.env.PRIMER_MODE === "self-host";
+const local = process.env.PRIMER_LOCAL_URL ?? "http://primer-server:3000";
+const url = selfHost ? `${local}/mcp` : readToken(process.env.PRIMER_MCP_URL_FILE) || process.env.PRIMER_MCP_URL;
+const auth = selfHost ? tokenAuth(fileToken(process.env.PRIMER_SERVICE_TOKEN_FILE)) : oauth({ name: "Primer", mcpUrl: url ?? "", stateDir });
 const serviceKey = readToken(process.env.MCP_TOKEN_FILE);
 const jwks = kernelJwks();
 
@@ -23,11 +31,13 @@ const jwks = kernelJwks();
 const PRIMER_READ = /^primer_(whoami|resolve_url|get_|list_|find_)/;
 
 // primer.publish's and primer.reply's executor (executor@1): the kernel calls it with the service key; execute only for an approved record.
-const send = async (name: string, args: Record<string, unknown>) => {
-  const res = await http.call(name, args);
-  log.info({ tool: name, error: Boolean(res.isError) }, "Primer write");
-  return { text: (res.content as { text?: string }[]).map((c) => c.text ?? "").join("\n"), isError: Boolean(res.isError) };
-};
+// Every write runs through the comment loop's guard: the comment ids its receipt names are the connector's own (never a wake).
+const send = (name: string, args: Record<string, unknown>) =>
+  subscriber.guard(name, args, async () => {
+    const res = await http.call(name, args);
+    log.info({ tool: name, error: Boolean(res.isError) }, "Primer write");
+    return { text: (res.content as { text?: string }[]).map((c) => c.text ?? "").join("\n"), isError: Boolean(res.isError) };
+  });
 const publish = publisher(send);
 const reply = replier(send);
 const executor = serviceKey
@@ -43,7 +53,7 @@ const executor = serviceKey
 const http = createVendorProxy({
   name: "Primer",
   upstream: url ? new URL(url) : undefined,
-  auth: oauth({ name: "Primer", mcpUrl: url ?? "", stateDir }),
+  auth,
   log,
   serviceKey,
   readKey: readToken(process.env.MCP_READ_TOKEN_FILE),
@@ -56,5 +66,17 @@ const http = createVendorProxy({
   routes: async (req, res) => Boolean(executor && (await executor(req, res))),
 });
 
+// The comment wake loop (subscriber.ts): Primer's event stream, the ownership map, the kernel's wake and task routes.
+const moduleKey = readToken(process.env.PRIMER_KERNEL_KEY_FILE);
+const subscriber = createSubscriber({
+  primer: selfHost ? local : url ? new URL(url).origin : "",
+  headers: () => auth.headers(),
+  kernel: kernelClient(process.env.AIDENHQ_KERNEL_URL ?? "http://10.231.0.1:3130", () => moduleKey),
+  owner: getOwner,
+  stateFile: `${stateDir}/comments.json`,
+  log: (msg, f) => log.info(f ?? {}, msg),
+});
+if (url && moduleKey) void subscriber.run();
+
 http.listen(Number(process.env.PORT ?? 8084), "0.0.0.0", () => log.info("primer-mcp listening"));
-for (const sig of ["SIGTERM", "SIGINT"] as const) process.on(sig, () => http.close(() => process.exit(0)));
+for (const sig of ["SIGTERM", "SIGINT"] as const) process.on(sig, () => (subscriber.stop(), http.close(() => process.exit(0))));
