@@ -17,6 +17,8 @@ export function kernelClient(url: string, token: string, f: typeof fetch = fetch
       return { sent: r.json.sent === true, off: r.json.off === true };
     },
     /** A task's kernel jobs, newest first (the job ledger). */
+    /** The kernel's running and recently ended jobs (the watcher's health check). */
+    activity: async (): Promise<{ recent: { agent: string; task: string; state: string; ended_at: string | null }[] }> => call("GET", "/v1/work"),
     work: async (task: string): Promise<{ jobs: { agent: string; state: string }[] }> => call("GET", `/v1/work?task=${encodeURIComponent(task)}`),
     brake: (task: string, agent: string, decision: boolean): Promise<{ allow: boolean; note?: string }> => call("POST", "/v1/brake/notify", { task, agent, ...(decision ? { decision: true } : {}) }),
     /** The agent's reply on its chat, posted by the kernel as that agent (this call's assertion). */
