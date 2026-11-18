@@ -17,7 +17,7 @@ import { createRequire } from "node:module";
 import { dirname, join, resolve } from "node:path";
 import { createInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
-import { codexMcpBlock, ensureBackupRetention, ensureFleetIssues, ensureMemoryInboxes, ensureReviewLogs, grantEntry, HEALTH_PROBES, healthProbeAgent, mapLimit, routineAutonomyDefault } from "./modules.mjs";
+import { codexMcpBlock, ensureBackupRetention, ensureCrewSkills, ensureFleetIssues, ensureMemoryInboxes, ensureReviewLogs, grantEntry, HEALTH_PROBES, healthProbeAgent, mapLimit, routineAutonomyDefault } from "./modules.mjs";
 import { routineStatus } from "./setup-paused.mjs";
 import { checkLauncher, computerAdapterConfig, ensureComputers, runnerBox } from "./computers.mjs";
 import { assertNoShell } from "./no-shell.mjs";
@@ -827,6 +827,10 @@ try { await checkLauncher(cfg); } catch (e) { fail(e.message); } // before any a
 // Heartbeat runs note missed wake-ups on one "Fleet issues" task; its identifier goes into their handbook section.
 const fleetIssues = Object.values(cfg.agents ?? {}).some((a) => a.heartbeat != null && a.heartbeat !== false) ? await ensureFleetIssues({ api, companyId: company.id, step }) : "";
 const agents = await ensureAgents(company.id, fleetIssues);
+// Crew agents' skills: Paperclip imports them from its managed root, on the host under the data dir (compose mounts
+// <data>/paperclip at PAPERCLIP_HOME=/paperclip).
+const skillsPath = join("instances", env("PAPERCLIP_INSTANCE_ID", "default"), "skills", company.id);
+await ensureCrewSkills({ api, companyId: company.id, cfg, agents, root: join(resolve(repo, env("AIDENHQ_DATA_DIR", "./data")), "paperclip", skillsPath), mounted: `/paperclip/${skillsPath}`, step }).catch((e) => fail(e.message));
 lap("agents");
 const memoryInboxes = await ensureMemoryInboxes({ api, companyId: company.id, step, keys: Object.entries(cfg.agents ?? {}).filter(([, x]) => x.enabled_tools?.paperclip_tasks?.includes("memory_note")).map(([k]) => k) });
 await dropOldOpenRouterSecret();

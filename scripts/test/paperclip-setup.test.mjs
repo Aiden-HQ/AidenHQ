@@ -154,3 +154,74 @@ test("setup: a write the instance does not keep is a failure, not a logged succe
   const { ensureBackupRetention } = await import("../modules.mjs");
   await assert.rejects(() => ensureBackupRetention({ api, dailyDays: 3, step: () => {} }), /backup retention did not take: \{"dailyDays":7/);
 });
+
+// Crew agents (Paperclip runs) get their skills only through Paperclip's skill sync: a fake Paperclip that, like the real one,
+// imports only from its managed root (as the container sees it) and accepts unknown keys on sync without complaint.
+test("setup: crew agents get exactly their skills, a dropped one leaves, and a key Paperclip doesn't list fails", async () => {
+  const { mkdtempSync, mkdirSync, writeFileSync, symlinkSync, existsSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const { ensureCrewSkills } = await import("../modules.mjs");
+  const tmp = mkdtempSync(join(tmpdir(), "skills-"));
+  const skill = (module, name) => {
+    const dir = join(tmp, "modules", module, "skills", name);
+    mkdirSync(join(dir, "references"), { recursive: true });
+    writeFileSync(join(dir, "SKILL.md"), `---\nname: ${name}\ndescription: ${name}\n---\n`);
+    writeFileSync(join(dir, "references", "more.md"), "more");
+    symlinkSync("/etc/hosts", join(dir, "link"));
+    return dir;
+  };
+  const root = join(tmp, "data", "paperclip", "instances", "default", "skills", "c1");
+  const mounted = "/paperclip/instances/default/skills/c1";
+  const skills = { "engineering.write-code": { dir: skill("engineering", "write-code") }, "apps-platform.design-system": { dir: skill("apps-platform", "design-system") } };
+  const lib = new Map(); // key → skill, Paperclip's company library
+  const stored = {}; // agent id → paperclipSkillSync.desiredSkills
+  const calls = [];
+  let listDrops = "";
+  const api = async (method, path, body) => {
+    calls.push([method, path, body]);
+    if (path === "/api/companies/c1/skills/import") {
+      assert.ok(body.source.startsWith(`${mounted}/`), body.source);
+      const slug = body.source.slice(mounted.length + 1);
+      assert.ok(existsSync(join(root, slug, "SKILL.md")), `${slug} copied before its import`);
+      const s = { key: `local/abc/${slug}`, slug };
+      lib.set(s.key, s);
+      return { json: { imported: [s], warnings: [] } };
+    }
+    if (path === "/api/companies/c1/skills") return { json: [{ key: "paperclipai/paperclip/paperclip", slug: "paperclip" }, ...[...lib.values()].filter((s) => s.slug !== listDrops)] };
+    const sync = /^\/api\/agents\/(\w+)\/skills\/sync$/.exec(path);
+    if (sync) { assert.equal(body.mode, "replace"); stored[sync[1]] = body.desiredSkills; return { json: {} }; }
+    throw new Error(`unexpected ${method} ${path}`);
+  };
+  const agentOf = (id) => ({ id, adapterConfig: stored[id] ? { paperclipSkillSync: { desiredSkills: stored[id] } } : {} });
+  const run = (agentSkills) => {
+    const cfg = { skills, agents: { coder: { skills: agentSkills.coder }, designer: { skills: agentSkills.designer }, chat: {}, engineer: { dispatch: "runner", skills: ["engineering.write-code"] } } };
+    const agents = { coder: agentOf("a1"), designer: agentOf("a2"), chat: agentOf("a3"), engineer: agentOf("a4") };
+    calls.length = 0;
+    return ensureCrewSkills({ api, companyId: "c1", cfg, agents, root, mounted, step: () => {} });
+  };
+
+  await run({ coder: ["apps-platform.design-system", "engineering.write-code"], designer: ["apps-platform.design-system"] });
+  // Each distinct skill copied whole (its references, never a link) and imported once, from the container's path.
+  assert.deepEqual(calls.filter(([, p]) => p.endsWith("/import")).map(([, , b]) => b.source).sort(), [`${mounted}/design-system`, `${mounted}/write-code`]);
+  assert.ok(existsSync(join(root, "write-code", "references", "more.md")));
+  assert.ok(!existsSync(join(root, "write-code", "link")));
+  assert.deepEqual(stored, { a1: ["local/abc/design-system", "local/abc/write-code"], a2: ["local/abc/design-system"] });
+
+  // A smaller set replaces the larger one; an agent whose set is unchanged is left alone (a new set is a new Codex home).
+  await run({ coder: ["engineering.write-code"], designer: ["apps-platform.design-system"] });
+  assert.deepEqual(stored.a1, ["local/abc/write-code"]);
+  assert.deepEqual(calls.filter(([, p]) => p.endsWith("/sync")).map(([, p]) => p), ["/api/agents/a1/skills/sync"]);
+  // An agent whose last skill goes is synced to none.
+  await run({ coder: ["engineering.write-code"], designer: [] });
+  assert.deepEqual(stored.a2, []);
+
+  // Paperclip doesn't list an imported skill: the apply fails naming it, before any agent is synced.
+  listDrops = "write-code";
+  await assert.rejects(() => run({ coder: ["engineering.write-code"], designer: ["apps-platform.design-system"] }), /engineering\.write-code/);
+  assert.ok(!calls.some(([, p]) => p.endsWith("/sync")));
+
+  // Two modules' skills of one name would share a folder and a Paperclip slug: refused, naming both.
+  listDrops = "";
+  skills["design.write-code"] = { dir: skill("design", "write-code") };
+  await assert.rejects(() => run({ coder: ["engineering.write-code"], designer: ["design.write-code"] }), /design\.write-code.*engineering\.write-code|engineering\.write-code.*design\.write-code/);
+});

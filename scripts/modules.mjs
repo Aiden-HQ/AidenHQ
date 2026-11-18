@@ -2,7 +2,7 @@
 // module apps (apps-mcp), compose services (compose.modules.yaml) and the module catalog. Pure: reads files, writes
 // nothing (scripts/compile.mjs writes). See docs/configuration.md.
 import { createHash, randomBytes } from "node:crypto";
-import { existsSync, readdirSync, readFileSync, realpathSync, statSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, lstatSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join, relative, resolve, sep } from "node:path";
 import YAML from "yaml";
 import { validateImages } from "./computers.mjs";
@@ -1509,6 +1509,41 @@ export async function ensureBackupRetention({ api, dailyDays, step }) {
   }
   step(`Backup retention is now ${tiers(after)}`);
   return after;
+}
+
+/**
+ * Crew agents' skills (Paperclip runs see no others): each skill a crew agent has is copied whole into the company's managed
+ * skills root, the one folder Paperclip imports a local skill from (`root` on this host, `mounted` in its container), regular
+ * files only, and imported (a re-import updates it in place). Paperclip accepts unknown keys on sync, so every key is checked
+ * against its list first. Then each crew agent's set is replaced with exactly its own, so a dropped skill leaves; an unchanged
+ * set is left alone (a new set gives the agent a new Codex home). Paperclip's bundled skills are its own. Runner agents get
+ * theirs from the grants table.
+ */
+export async function ensureCrewSkills({ api, companyId, cfg, agents, root, mounted, step }) {
+  const crew = Object.entries(agents).filter(([key]) => cfg.agents[key].dispatch !== "runner");
+  const ids = [...new Set(crew.flatMap(([key]) => cfg.agents[key].skills ?? []))].sort();
+  const folder = (id) => id.slice(id.indexOf(".") + 1);
+  const twin = ids.find((id, i) => ids.some((other, j) => j < i && folder(other) === folder(id)));
+  if (twin) fail(`skills ${ids.find((id) => id !== twin && folder(id) === folder(twin))} and ${twin} share the name ${folder(twin)}: Paperclip keeps one skill per name`);
+  const keys = {};
+  for (const id of ids) {
+    const to = join(root, folder(id));
+    rmSync(to, { recursive: true, force: true });
+    cpSync(cfg.skills[id].dir, to, { recursive: true, filter: (from) => { const s = lstatSync(from); return s.isDirectory() || s.isFile(); } });
+    const { json } = await api("POST", `/api/companies/${companyId}/skills/import`, { source: `${mounted}/${folder(id)}` });
+    keys[id] = json.imported?.find((s) => s.slug === folder(id))?.key;
+  }
+  if (ids.length) {
+    const listed = new Set((await api("GET", `/api/companies/${companyId}/skills`)).json.map((s) => s.key));
+    const missing = ids.filter((id) => !listed.has(keys[id]));
+    if (missing.length) fail(`Paperclip does not list skill(s) ${missing.join(", ")} after importing them from ${mounted}`);
+  }
+  for (const [key, a] of crew) {
+    const want = (cfg.agents[key].skills ?? []).map((id) => keys[id]).sort();
+    if (JSON.stringify(a.adapterConfig?.paperclipSkillSync?.desiredSkills ?? []) === JSON.stringify(want)) continue;
+    await api("POST", `/api/agents/${a.id}/skills/sync`, { mode: "replace", desiredSkills: want });
+    step(`Skills of ${key}: ${want.length ? cfg.agents[key].skills.join(", ") : "none"}`);
+  }
 }
 
 /**
