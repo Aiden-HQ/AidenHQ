@@ -39,14 +39,12 @@ function sandbox() {
   };
   const slow = engine("slow.mjs", `emit({ t: "session", id: "slow-1" });\nlet n = 0;\nwhile (!existsSync(join(dir, "..", "..", "..", "state", "logs", "release"))) { emit({ t: "progress", text: "step " + n++ }); await new Promise((r) => setTimeout(r, 100)); }\nemit({ t: "final", text: "released after " + n });`);
   const envdump = engine("env.mjs", `emit({ t: "final", text: JSON.stringify(process.env) });`);
-  const silent = engine("silent.mjs", `await new Promise((r) => setTimeout(r, 60_000));`);
   // An engine whose program isn't installed: it exits 127, as a shell does for a command it can't find.
   const missing = engine("missing.mjs", `import { spawnSync } from "node:child_process";\nconst r = spawnSync("aidenhq-no-such-program", [], { stdio: "inherit" });\nprocess.exit(r.error?.code === "ENOENT" ? 127 : 1);`);
   const engines = {
     echo: { module: "engine-echo", dir: "fixtures/engine-echo", bin: "fixtures/engine-echo/bin/engine", kind: "echo", live_input: true, box: true },
     slow: { module: "test", dir: join(dir, "engines"), bin: slow, kind: "slow", box: true },
     env: { module: "test", dir: join(dir, "engines"), bin: envdump, kind: "env", box: true },
-    silent: { module: "test", dir: join(dir, "engines"), bin: silent, kind: "silent", box: true },
     missing: { module: "test", dir: join(dir, "engines"), bin: missing, kind: "missing", box: true },
     hostonly: { module: "test", dir: join(dir, "engines"), bin: envdump, kind: "hostonly" },
   };
@@ -54,7 +52,7 @@ function sandbox() {
   const cfg = {
     workDir: join(dir, "work"), stateDir: join(dir, "state"), logsDir: join(dir, "state/logs"),
     secretsDir: join(dir, "secrets"), enginesFile: join(dir, "engines.json"), gatewayUrl: "http://127.0.0.1:8201", boxGatewayUrl: "http://10.231.2.1:8200", boxDir: join(dir, "boxes"),
-    timeout_minutes: 2, stall_minutes: 2, progress_minutes: 2,
+    timeout_minutes: 2,
   };
   writeFileSync(join(dir, "sandbox.json"), JSON.stringify(cfg));
   let n = 0;
@@ -316,17 +314,11 @@ test("a comment reaches a live run while it works; a stop cancels a run", async 
   assert.equal(v.cancelled, true);
 });
 
-test("a program that isn't installed ends the job with the reason; a silent run is stopped as stalled", async () => {
+test("a program that isn't installed ends the job with the reason", async () => {
   const { cfg, req } = sandbox();
-  const jobs = inProcess({ ...cfg, stall_minutes: 0.02 });
+  const jobs = inProcess(cfg);
   const j = await jobs.start("acme-dispatch", req({ engine: { kind: "missing" } }));
   const v = await finished(jobs, j.id);
   assert.notEqual(v.exit, 0);
   assert.match(v.final, /couldn't start \S+: ENOENT/);
-  const t0 = Date.now();
-  const s = await jobs.start("acme-dispatch", req({ engine: { kind: "silent" } }));
-  const w = await finished(jobs, s.id);
-  assert.equal(w.state, "stalled");
-  assert.ok(w.stalled && w.timedOut);
-  assert.ok(Date.now() - t0 < 30_000, "well before the deadline");
 });

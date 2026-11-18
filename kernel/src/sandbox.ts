@@ -18,7 +18,7 @@ export interface Engine { kind: string; model?: string; effort?: string; reads?:
 export interface SandboxConfig {
   workDir: string; stateDir: string; logsDir: string; secretsDir: string;
   enginesFile: string; gatewayUrl: string; boxGatewayUrl: string; boxDir: string;
-  timeout_minutes: number; stall_minutes: number; progress_minutes: number;
+  timeout_minutes: number;
 }
 
 /** Whether a job holds private data (an Engineer with `private_reads`): no web search then. */

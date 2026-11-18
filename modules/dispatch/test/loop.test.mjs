@@ -23,7 +23,7 @@ function fake({ task, comments = [], directory = {}, tasks = {}, paused = [] }) 
     directory: async () => directory,
     start: async (req) => {
       if (k.busy) return (k.busy--, { busy: true });
-      const job = { id: `j${++k.n}`, task: task.id, agent: task.assigneeAgentId, state: "running", exit: null, final: "", session: null, timedOut: false, stalled: false, stopped: null };
+      const job = { id: `j${++k.n}`, task: task.id, agent: task.assigneeAgentId, state: "running", exit: null, final: "", session: null, timedOut: false };
       k.jobs.set(job.id, job);
       k.started.push({ ...req, job: job.id });
       return { job };
@@ -231,4 +231,17 @@ test("a task a module filed starts from its fixed text, as a module's request, n
   assert.match(k.started[0].prompt, /## A task a module filed \(not Dana's words\)/);
   assert.doesNotMatch(k.started[0].prompt, /Instructions from Dana/);
   assert.deepEqual(k.notes, []);
+});
+
+test("a run that reads one file over and over is stopped, and its outcome says why", async () => {
+  const k = fake({ task: { id: "t1", identifier: "WOR-1", title: "Fix", description: "Do it", status: "in_progress", assigneeAgentId: "eng", createdByUserId: "u1" } });
+  k.inbox.push(wake("issue:t1:1", "assigned"));
+  await k.dispatch.tick();
+  const read = (i) => ({ at: new Date(Date.now() + i).toISOString(), text: "Running /bin/bash -c 'sed -n 1,80p src/a.ts'" });
+  k.jobs.get("j1").progress = { steps: Array.from({ length: 20 }, (_, i) => read(i)) };
+  await k.dispatch.tick();
+  assert.deepEqual(k.stopped, ["j1"]);
+  Object.assign(k.jobs.get("j1"), { state: "cancelled", final: "partial" });
+  await k.dispatch.tick();
+  assert.match(k.posts[0].body, /^\*\*Stopped:\*\* src\/a\.ts read 20 times with no edit/);
 });

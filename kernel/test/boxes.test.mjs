@@ -33,7 +33,7 @@ async function host(t) {
   chmodSync(bin, 0o755);
   const engine = { module: "test", dir: join(dir, "engines"), bin, kind: "wait", box: true, state: "task" };
   writeFileSync(join(dir, "engines.json"), JSON.stringify({ wait: engine, wait2: engine }));
-  const cfg = { workDir: join(dir, "work"), stateDir: join(dir, "state"), logsDir: join(dir, "state/logs"), secretsDir: join(dir, "secrets"), enginesFile: join(dir, "engines.json"), boxGatewayUrl: "http://10.231.2.1:8200", boxDir: join(dir, "boxes"), timeout_minutes: 2, stall_minutes: 2, progress_minutes: 2 };
+  const cfg = { workDir: join(dir, "work"), stateDir: join(dir, "state"), logsDir: join(dir, "state/logs"), secretsDir: join(dir, "secrets"), enginesFile: join(dir, "engines.json"), boxGatewayUrl: "http://10.231.2.1:8200", boxDir: join(dir, "boxes"), timeout_minutes: 2 };
   writeFileSync(join(dir, "config/handbooks/agent-1.md"), "# Acme crew handbook\n");
   const calls = [];
   let n = 0;

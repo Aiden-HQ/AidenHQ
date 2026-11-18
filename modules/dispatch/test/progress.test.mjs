@@ -1,8 +1,8 @@
-// The job watcher's progress stop (kernel/src/progress.ts): no edit, commit or test run for the window stops a job; waiting
-// on CI doesn't count and gives the deadline back after a commit.
+// The progress stop (dispatch's progress.ts): no edit, commit or test run for the window stops a job; waiting
+// on CI doesn't count.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { progressTracker } from "../src/progress.ts";
+import { progressTracker } from "../service/src/progress.ts";
 
 const at = (ms) => new Date(ms).toISOString();
 const MIN = 60_000;
