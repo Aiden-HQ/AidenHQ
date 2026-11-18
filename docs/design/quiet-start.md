@@ -31,8 +31,10 @@ Compile (`scripts/modules.mjs`), for module agents only (an instance agent's sch
   compiled agent says `heartbeat: false`, so the board shows it off and offers the module's value as its default.
 
 A module enabled later follows the same rule: its schedules arrive paused. The owner turns one on with the existing
-typed change (`overrides.routines.<key>.status: active`, Tier 1; a heartbeat is `overrides.agents.<key>.heartbeat`, Tier
-1). Turning `quiet_start` off (a Tier 2 setting) brings every module schedule back at once.
+typed change (`overrides.routines.<key>.status: active`; a heartbeat is `overrides.agents.<key>.heartbeat`). While quiet
+start is on, either is the owner's tap after the AI reviewer (`services/runner/src/tiers.mjs`), so the fleet can't undo
+quiet start by itself; so are raising or removing `spend_day_usd` and turning `quiet_start` off, which brings every module
+schedule back at once. Tightening (a lower cap, pausing again) tiers as before.
 
 **No catch-up burst on resume.** Paperclip catches a missed tick up (one run per tick, at most 25) and a paused routine's
 triggers keep their old next-run time. Setup re-saves every schedule trigger on each apply, which moves its next run to
