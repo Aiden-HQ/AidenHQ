@@ -330,7 +330,17 @@ export function createWrites({ records, registry, connections, secret, resolver,
       if (t.tier > 0 && !task) throw fail(400, "no_task", `${connection}.${tool} needs approval: pass your current task`);
       const shown = JSON.stringify(args ?? {}).slice(0, 4000);
       const card = { sentence: `Call ${connection}.${tool}.`, changes: `Whatever ${connection}.${tool} changes, with these arguments.`, reads: "Nothing new.", cost: "No model cost.", details: `tool: ${connection}.${tool}\narguments (written by the requesting agent): ${shown}` };
-      return records.file({ kind: CONN_TOOL, module: c.module, args: { connection, tool, arguments: args ?? {} }, targets: {}, executor: { module: c.module }, policy: "", card: t.rule ? { ...card, reason: capText(t.cap!) } : card, requester: requesterOf(who, task), task, tier: t.tier, merit: t.merit, panel: false, review_first: t.reviewFirst, rule: t.rule ?? null, cap: t.cap ?? null, state: t.state });
+      const requester = requesterOf(who, task);
+      const call = { kind: CONN_TOOL, module: c.module, args: { connection, tool, arguments: args ?? {} }, targets: {}, executor: { module: c.module }, policy: "" };
+      // A repeat of one carded call (same task, arguments and requester), while it waits, runs, or ran in the last 10 minutes, is
+      // that record: one call, one card, one run, but never a record of a lower tier than this call needs. Tier 0 runs inline and is never carded, so it files every time.
+      if (t.tier > 0) {
+        const digest = digestOf(call);
+        const by = (q: Requester) => `${q.kind}|${q.agent}|${q.key}|${q.module ?? ""}`;
+        const prior = [...records.open(task, CONN_TOOL, digest), ...records.ran(task, CONN_TOOL, digest, new Date(Date.now() - 10 * 60_000).toISOString())].find((r) => r.tier >= t.tier && by(r.requester) === by(requester));
+        if (prior) return prior;
+      }
+      return records.file({ ...call, card: t.rule ? { ...card, reason: capText(t.cap!) } : card, requester, task, tier: t.tier, merit: t.merit, panel: false, review_first: t.reviewFirst, rule: t.rule ?? null, cap: t.cap ?? null, state: t.state });
     },
     outcome: outcomeOf,
     /** Resolves once the record has an outcome, or with it as it is after `ms`. */

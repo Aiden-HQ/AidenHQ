@@ -203,7 +203,9 @@ export function createProxy({ whoami, connections, asserter, resolver, secret, w
               return reply(pendingText(r));
             }
             rec = await writes!.fileTool(who, connection, tool, params?.arguments ?? {}, who.task ?? "");
-            if (rec.state !== "claimed") return reply(pendingText(rec));
+            // A carded record (a repeat of an earlier call) is never forwarded here: the kernel replays it once, approved.
+            if (rec.outcome) return reply(own(rec.outcome.text), !rec.outcome.ok);
+            if (rec.state !== "claimed" || rec.tier > 0) return reply(pendingText(rec));
           } catch (e) {
             const err = e as Error & { status?: number };
             if (!err.status || err.status >= 500) throw e;
