@@ -30,7 +30,7 @@ function kernel({ modules = { modules: {}, marketplaces: [] }, inventory = { ent
   const records = openRecords(join(mkdtempSync(join(tmpdir(), "apply-plan-")), "kernel.db"));
   const applies = createApply({
     db: records.db, pollMs: 5, generations: () => [], busy: async () => false, tail: async () => "",
-    codehost: { read: async () => ({ files: ["instance.yaml"], texts: { base: {}, head: {} }, diff: "" }), land: async (s) => (h.lands.push(s), { landed: s.sha }) },
+    codehost: { read: async () => ({ files: ["instance.yaml"], texts: { base: { "instance.yaml": yaml(OLD) }, head: { "instance.yaml": yaml(NEW) } }, diff: "" }), land: async (s) => (h.lands.push(s), { landed: s.sha }) },
     launch: async (u) => { h.launches.push(u); h.units[u] = { loaded: true, active: "active", sub: "exited", result: "success" }; },
     unit: async (u) => h.units[u] ?? { loaded: false, active: "inactive", sub: "dead", result: "" },
   });

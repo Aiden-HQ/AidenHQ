@@ -42,7 +42,7 @@ const until = async (fn) => { for (let i = 0; i < 300 && !(await fn()); i++) awa
 function fakeHost({ files = ["instance.yaml"] } = {}) {
   const h = {
     launches: [], lands: [], units: {}, gens: [{ n: 1, instance: "e".repeat(40), health: "good" }], hang: false,
-    codehost: { read: async () => ({ files, texts: { base: {}, head: {} }, diff: "" }), land: async (s) => (h.lands.push(s), { landed: s.sha }) },
+    codehost: { read: async () => ({ files, texts: { base: { "instance.yaml": "product: x\n" }, head: { "instance.yaml": "product: y\n" } }, diff: "" }), land: async (s) => (h.lands.push(s), { landed: s.sha }) },
     launch: async (u) => { h.launches.push(u); h.units[u] = { loaded: true, active: "active", sub: "running", result: "success" }; },
     // A kernel that hangs here is one the apply has just restarted: it never sees the unit end.
     unit: (u) => (h.hang ? new Promise(() => {}) : Promise.resolve(h.units[u] ?? { loaded: false, active: "inactive", sub: "dead", result: "success" })),
@@ -153,6 +153,8 @@ test("the official modules' pin is read structurally for the land's reviewer-eva
   assert.deepEqual(officialMove("product: x\n", "product: y\n"), { from: null, to: null });
   assert.match(officialMove("product: x\n", flow(A)).error, /adds the official modules' marketplace/);
   assert.match(officialMove(flow(A), "product: x\n").error, /removes/);
+  assert.match(officialMove(undefined, flow(A)).error, /instance.yaml isn't on the instance's main/, "missing is never an empty document");
+  assert.match(officialMove(flow(A), undefined).error, /isn't on the commit/);
   assert.match(officialMove(flow(A), `${flow(B)}marketplaces: []\n`).error, /can't be read/, "duplicate keys");
   assert.match(officialMove(flow(A), `${flow(B)}  - { name: aidenhq, source: { source: github, repo: acme/x }, sha: ${A} }\n`).error, /can't be read/, "listed twice");
 });

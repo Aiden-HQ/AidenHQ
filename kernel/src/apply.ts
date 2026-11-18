@@ -94,8 +94,8 @@ export type OfficialPin = { repo: string; sha: string } | null;
  * the reviewer code the instance runs comes from there, so the code host's land runs the reviewer-eval gate on its move.
  * Throws for anything but a GitHub repository at a full sha.
  */
-export function officialPinOf(text: string | undefined): OfficialPin {
-  const doc = text === undefined ? {} : (YAML.parse(text, { uniqueKeys: true }) ?? {});
+export function officialPinOf(text: string): OfficialPin {
+  const doc = YAML.parse(text, { uniqueKeys: true }) ?? {};
   const at = marketplacesOf(doc).find((m) => m.name === OFFICIAL)?.at;
   if (!at) return null;
   const repo = /^https:\/\/github\.com\/([\w.-]+\/[\w.-]+?)\.git$/.exec(at.url)?.[1];
@@ -107,6 +107,7 @@ export function officialPinOf(text: string | undefined): OfficialPin {
  * reviewer code would move with no eval to judge it) and its texts must read. Fails closed.
  */
 export function officialMove(base: string | undefined, head: string | undefined): { from: OfficialPin; to: OfficialPin } | { error: string } {
+  if (base === undefined || head === undefined) return { error: `instance.yaml isn't on ${base === undefined ? "the instance's main" : "the commit"}, so the official modules' pin can't be read` };
   try {
     const [from, to] = [officialPinOf(base), officialPinOf(head)];
     if (Boolean(from) !== Boolean(to)) return { error: `it ${to ? "adds" : "removes"} the official modules' marketplace, which moves the reviewer's code past its eval` };
