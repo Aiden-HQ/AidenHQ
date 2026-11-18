@@ -29,8 +29,8 @@
 //   POST /v1/wakes             (a module with role kernel.wake) a scheduled wake {task, agent?, at?, cause?, id?}
 //   POST /v1/wakes/claim, POST /v1/wakes/:key/drop  (a module with role kernel.jobs) claim inbox rows; give one up
 //   POST /v1/wakes/:key/note   (the module that claimed it) {body}: a note on its task as its agent, once (no job answers it)
-//   POST /v1/tasks             (a module with role kernel.tasks) {title, description, role, source, parent?}: a task of the module's
-//                              fixed text for the agent holding `role`, once per source (modtasks.ts); POST /v1/tasks/:task/close
+//   POST /v1/tasks             (a module with role kernel.tasks) {title, description, role | agent, source, parent?}: a task of the module's
+//                              fixed text for the agent holding `role` (or `agent`, by id), once per source (modtasks.ts); POST /v1/tasks/:task/close
 //                              {status: done|cancelled, body}: one it filed
 //   POST /v1/reviews           (the runner's reviewer key) a check before filing: one review by the bound reviewer module → its verdict
 //   POST /v1/reviews/:review   (that review's token, once) the reviewer module's verdict

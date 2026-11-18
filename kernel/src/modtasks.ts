@@ -1,6 +1,7 @@
 // A task a module files for an agent (POST /v1/tasks, role kernel.tasks): a background workflow's fixed text (a Dependabot PR to
 // handle, a UI head to review, a decision for the agent that asked), never an agent's or a person's words. The kernel creates it
-// with the owner's client, assigned to the agent holding the role the module names (grants `roles`: never an agent's key),
+// with the owner's client, assigned to the agent holding the role the module names (grants `roles`: never an agent's key) or
+// to an agent by id (the asker of a task, which the module read from the task),
 // marked as the module's (`<!-- aidenhq-module:<module> -->`, which the dispatch module reads as a module's request, not the
 // owner's) and keyed by the module's `source` (`<!-- source:<source> -->`, Paperclip idempotency key pw-<sha256>): filing the
 // same source twice is one task. Its assignment wakes the agent (wakes.ts): no comment is needed to start it. The module
@@ -44,25 +45,27 @@ export function createModuleTasks({ owner, agents, log = () => {} }: {
     return { status: String(b.status), already: false };
   }
 
-  async function file(module: string, b: { title?: unknown; description?: unknown; role?: unknown; source?: unknown; parent?: unknown }) {
+  async function file(module: string, b: { title?: unknown; description?: unknown; role?: unknown; agent?: unknown; source?: unknown; parent?: unknown }) {
     const title = typeof b.title === "string" ? neutral(b.title).trim().slice(0, 200) : "";
     const description = typeof b.description === "string" ? neutral(b.description).trim().slice(0, 20_000) : "";
-    if (!title || !description || typeof b.role !== "string" || typeof b.source !== "string" || !SOURCE.test(b.source)) throw new TaskError(400, "send {title, description, role, source, parent?}");
+    const by = typeof b.role === "string" ? "role" : typeof b.agent === "string" ? "agent" : "";
+    if (!title || !description || !by || (b.role !== undefined && b.agent !== undefined) || typeof b.source !== "string" || !SOURCE.test(b.source)) throw new TaskError(400, "send {title, description, role | agent, source, parent?}");
     if (b.parent !== undefined && (typeof b.parent !== "string" || !UUID.test(b.parent))) throw new TaskError(400, "parent is a task id");
-    const role = b.role;
-    // The first agent holding the role, in the grants table's order (setup writes it in the compiled order): one per role.
-    const agent = Object.entries(agents()).find(([, g]) => (g?.roles ?? []).includes(role))?.[0];
-    if (!agent) throw new TaskError(409, `no agent holds the role ${role}`);
+    const role = String(b.role ?? "");
+    // The first agent holding the role, in the grants table's order (setup writes it in the compiled order): one per role. Or
+    // a named agent (by Paperclip id: a task's asker), which must be in the grants table.
+    const agent = by === "role" ? Object.entries(agents()).find(([, g]) => (g?.roles ?? []).includes(role))?.[0] : agents()[String(b.agent)] ? String(b.agent) : undefined;
+    if (!agent) throw new TaskError(409, by === "role" ? `no agent holds the role ${role}` : `no agent ${String(b.agent).slice(0, 60)}`);
     const a = await owner("GET", `/api/agents/${encodeURIComponent(agent)}`);
     if (a.status !== 200 || !a.json?.companyId) throw new TaskError(502, `the control plane answered ${a.status} for the agent`);
-    if (a.json.status === "paused") throw new TaskError(409, `${role}'s agent is paused`);
+    if (a.json.status === "paused") throw new TaskError(409, `${role || "the"} agent ${agent} is paused`);
     const r = await owner("POST", `/api/companies/${encodeURIComponent(String(a.json.companyId))}/issues`, {
       title, description: `${description}\n\n<!-- source:${b.source} -->\n${MODULE_TASK(module)}`, status: "todo", priority: "medium",
       assigneeAgentId: agent, assigneeUserId: null, allowDuplicate: true, ...OWN_FOLDER, ...(b.parent ? { parentId: b.parent } : {}),
       idempotencyKey: `pw-${createHash("sha256").update(b.source).digest("hex").slice(0, 32)}`,
     });
     if (r.status >= 300 || !r.json?.id) throw new TaskError(502, `the control plane answered ${r.status}`);
-    log("module task filed", { module, task: r.json.identifier, role, source: b.source, deduplicated: Boolean(r.json.deduplicated) });
+    log("module task filed", { module, task: r.json.identifier, agent, source: b.source, deduplicated: Boolean(r.json.deduplicated) });
     return { id: String(r.json.id), identifier: String(r.json.identifier ?? ""), agent, deduplicated: Boolean(r.json.deduplicated) };
   }
   return { file, close };

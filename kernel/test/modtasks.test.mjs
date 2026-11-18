@@ -39,6 +39,8 @@ test("a module's task goes to the agent holding the role, once per source, marke
   const a = await (await file("codehost", req)).json();
   const b = await (await file("codehost", req)).json();
   assert.deepEqual([a.identifier, a.agent, a.deduplicated, b.identifier, b.deduplicated], ["ACME-1", PE, false, "ACME-1", true]);
+  assert.equal((await file("codehost", { ...req, role: undefined, agent: PE, source: "escalation:x" })).status, 200, "or an agent by id");
+  assert.equal((await file("codehost", { ...req, role: undefined, agent: "a-gone", source: "escalation:y" })).status, 409);
   const issue = [...made.values()][0];
   assert.equal(issue.assigneeAgentId, PE);
   assert.equal(issue.status, "todo");
