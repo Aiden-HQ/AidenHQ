@@ -68,7 +68,7 @@ test("trial_writes: an agent in trial compiles with the writes it names, and kee
 });
 
 test("trial_writes: any other name is a compile error naming the agent and the tool", () => {
-  assert.throws(() => compile(product, withAgents({ x: { yaml: { ...ariaYaml, trial_writes: [...ariaWrites, "paperclip_tasks.task_update"] } } }, ["slack"])), /x: trial_writes names paperclip_tasks\.task_update, which it may not use in trial \(only paperclip_tasks\.task_create, chat_lane\.wake_at, chat_lane\.chat_send, telegram\.notify_owner\)/);
+  assert.throws(() => compile(product, withAgents({ x: { yaml: { ...ariaYaml, trial_writes: [...ariaWrites, "paperclip_tasks.task_update"] } } }, ["slack"])), /x: trial_writes names paperclip_tasks\.task_update, which it may not use in trial \(only paperclip_tasks\.task_create, chat_lane\.wake_at, chat_lane\.chat_send, owner_channel\.notify\)/);
   assert.throws(() => compile(product, withAgents({ x: { yaml: { ...ariaYaml, trial_writes: ["chat_lane.slack_post"] } } }, ["slack"])), /x: trial_writes names chat_lane\.slack_post, which it may not use in trial/);
   assert.throws(() => compile(product, withAgents({ x: { yaml: { ...ariaYaml, trial_writes: ["slack.wake_at"] } } }, ["slack"])), /x: trial_writes names slack\.wake_at, which it may not use in trial/);
   assert.throws(() => compile(product, withAgents({ x: { yaml: { ...ariaYaml, trial_writes: ["task_create"] } } }, ["slack"])), /x: trial_writes names "task_create", not a tool written connection\.tool/);
@@ -112,7 +112,7 @@ test("the Architect: max effort, only its own role, no fleet tools, reads every 
   const a = compile(product, withAgents({}, ["slack", "github"])).paperclip.agents.architect;
   assert.deepEqual([a.model, a.reasoning_effort], ["~deepseek/deepseek-flash-latest", "max"]);
   assert.deepEqual(a.roles, ["architect", "repo-checkout"]);
-  assert.deepEqual(a.enabled_tools.telegram, ["notify_owner"]);
+  assert.deepEqual(a.enabled_tools.owner_channel, ["notify"]);
   assert.deepEqual(a.enabled_tools.apps, ["app_list", "app_status", "app_logs", "app_view", "web_view", "warehouse_query"]); // research reads only: no deploys, and the request and role reads would refuse it anyway
   assert.ok(a.enabled_tools.slack.includes("slack_read_thread") && !a.enabled_tools.slack.some((t) => /send|draft/.test(t)));
   assert.ok(a.enabled_tools.github.includes("github_issue_read") && !a.enabled_tools.github.some((t) => /comment|create|update|review|rerun/.test(t)));
@@ -171,7 +171,7 @@ test("the web for every codex agent: live search by default (an agent may opt do
     assert.equal(a.web_search, "disabled", k);
     assert.ok(!a.enabled_tools.apps?.includes("web_view"), k);
     // Reads only, plus the owner's page and its own tasks: no tool a connection tags write that reaches anyone else.
-    const writes = Object.entries(a.enabled_tools).flatMap(([c, list]) => list.filter((t) => c !== "paperclip_tasks" && t !== "notify_owner" && writeTools(r.paperclip.mcp_servers[c]).includes(t)).map((t) => `${c}.${t}`));
+    const writes = Object.entries(a.enabled_tools).flatMap(([c, list]) => list.filter((t) => c !== "paperclip_tasks" && t !== "notify" && writeTools(r.paperclip.mcp_servers[c]).includes(t)).map((t) => `${c}.${t}`));
     assert.deepEqual(writes, [], k);
   }
   // Runner agents get no tools added; one in a computer (the App Engineer) has exactly what it grants itself.

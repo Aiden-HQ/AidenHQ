@@ -56,7 +56,7 @@ export const TRIAL_WRITES = { paperclip_tasks: ["task_comment", "task_handoff", 
 // The writes a trial agent may declare in `trial_writes:`: the channel and lane ones (creating its own background task, a
 // reminder, a reply in its own chat, asking the owner), as connection.tool. Everything else it may only read, or report on
 // its own tasks (TRIAL_WRITES).
-export const TRIAL_WRITE_ALLOWED = ["paperclip_tasks.task_create", "chat_lane.wake_at", "chat_lane.chat_send", "telegram.notify_owner"];
+export const TRIAL_WRITE_ALLOWED = ["paperclip_tasks.task_create", "chat_lane.wake_at", "chat_lane.chat_send", "owner_channel.notify"];
 // A tool whose name says it deletes (Jira's camelCase too) must be tagged `destructive`, never plain write or read: the
 // `write` shorthand never grants a destructive tool; an agent gets one only by naming it.
 export const DESTRUCTIVE_NAME = /delete|trash|remove|purge/i;
@@ -845,7 +845,7 @@ export function compile(productDir, instanceDir, { revision, fetch = hostFetch(p
       tools[name] = list.filter((t) => !(upstreamOff && (c.upstream ?? []).includes(t)));
       if (!tools[name].length) delete tools[name];
     }
-    // Default grants (a module's `default_grants:`, on its own connections, by the same tests as prompts): e.g. notify_owner
+    // Default grants (a module's `default_grants:`, on its own connections, by the same tests as prompts): e.g. owner_channel.notify
     // for every crew agent out of trial and untrusted modules, advisor_ask and memory_note while model-tools and memory are on.
     // An agent without `profile:` is crew (as its grant entry says).
     for (const g of defaultGrants) if (promptApplies(g, { ...a, profile: a.profile ?? "crew", enabled_tools: tools }, enabled)) for (const t of g.tools) {

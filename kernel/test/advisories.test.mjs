@@ -8,7 +8,6 @@ import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { createAdvisories, openAdvisories } from "../src/advisories.ts";
 import { checkout } from "../../scripts/compiler/sources.ts";
-import { createChannels } from "../src/channels.ts";
 
 const env = { ...process.env, GIT_AUTHOR_NAME: "t", GIT_AUTHOR_EMAIL: "t@example.com", GIT_COMMITTER_NAME: "t", GIT_COMMITTER_EMAIL: "t@example.com", GIT_CONFIG_GLOBAL: "/dev/null" };
 const git = (dir, ...a) => execFileSync("git", ["-C", dir, ...a], { env, encoding: "utf8" }).trim();
@@ -39,11 +38,10 @@ function setup(t, { listed = ["widget"] } = {}) {
   const catalog = join(dir, "modules.json");
   const install = (sha) => writeFileSync(catalog, JSON.stringify([{ name: "widget", enabled: true, revision: sha }, { name: "gadget", enabled: true, revision: sha }]));
   const db = new DatabaseSync(":memory:");
-  const board = async (_m, p) => (p === "/internal/owner/grades" ? { status: 200, json: { lines: [] } } : { status: 200, json: {} });
-  const channels = createChannels({ db, records: { since: () => [] }, writes: {}, now: () => Date.parse("2026-01-01T12:00:00Z"), board, owner: async () => ({ status: 404, json: {} }), modules: () => ({ modules: { "channel-acme": { privileged: ["speaks-as-owner"], channel: {} } } }) });
+  const sent = [];
   const log = [];
-  const adv = createAdvisories({ db, repo, catalog, ownerLine: channels.ownerLine, log: (msg, f) => log.push({ msg, ...f }) });
-  const lines = async () => (await channels.notices("channel-acme")).lines;
+  const adv = createAdvisories({ db, repo, catalog, ownerLine: (l) => sent.push(l), log: (msg, f) => log.push({ msg, ...f }) });
+  const lines = async () => sent.splice(0);
   return { affected, between, fixed, publish, install, adv, lines, log, repo };
 }
 const advisory = (a) => ({ id: "AHQ-2026-001", module: "widget", affected: [a.affected], fixed: a.fixed, severity: "high", summary: "Widget leaks.", url: "https://example.com/a/1", ...a.over });

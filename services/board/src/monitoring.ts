@@ -11,7 +11,8 @@
 import { z } from "zod";
 import type { Approval, Records } from "./records.js";
 import type { Store } from "./store.js";
-import { detectorState, queueOwnerLine, type Incident } from "./fleet-ops.js";
+import { detectorState, type Incident } from "./fleet-ops.js";
+import { ownerAlert } from "./notify.js";
 
 const KEY = "monitoring_alerts";
 type Firing = Record<string, { name: string; severity: string; summary: string; since: string }>;
@@ -58,7 +59,7 @@ export function receiveAlerts(store: Pick<Store, "meta" | "setMeta">, body: z.in
     // Free text (the rule's summary with label values in it): bounded here, fenced as data in the incident's reason.
     const summary = String(a.annotations.summary ?? a.annotations.description ?? "").slice(0, 300);
     // The owner hears of a critical alert once, when it starts firing; Fleet Ops works every alert.
-    if (!f[a.fingerprint] && severity === "critical") queueOwnerLine(store, `🚨 **Monitoring: ${name}** (critical): ${OWNER_SENTENCE[name] ?? "a critical alert fired"}. Fleet Ops is on it.`);
+    if (!f[a.fingerprint] && severity === "critical") ownerAlert(`🚨 **Monitoring: ${name}** (critical): ${OWNER_SENTENCE[name] ?? "a critical alert fired"}. Fleet Ops is on it.`);
     const since = f[a.fingerprint]?.since ?? (a.startsAt && /^\d{4}-\d\d-\d\dT[\d:.]+Z$/.test(a.startsAt) && !a.startsAt.startsWith("0001") ? a.startsAt : now.toISOString());
     f[a.fingerprint] = { name, severity, summary, since };
   }

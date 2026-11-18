@@ -161,7 +161,7 @@ export function fakePaperclip({ parent, part, engineers, parentComments = [], pa
   const passed = [];
   const attached = [];
   const unknown = [];
-  const ownerLines = []; // the owner's notices the runner queued on the board (POST /internal/owner/line)
+  const ownerLines = []; // the owner's messages the runner queued at the kernel (POST /v1/notify)
   // The kernel's records for the runner's kinds: the real records, write lifecycle and backplane routes (kernel/src), with
   // the real reviewer module in the reviewer slot. `approvals` and `autos` are views of them as the board once kept them.
   const kdb = openRecords(join(mkdtempSync(join(tmpdir(), "flow-kernel-")), "kernel.db"));
@@ -351,6 +351,10 @@ export function fakePaperclip({ parent, part, engineers, parentComments = [], pa
     }
     // Graded done: the grading module's contract (modules/grading/service/src/grades.ts), simplified, and a scripted grader
     // model; the runner's own closes ask the kernel's finish gate (/v1/finish), which the grading check answers.
+    if (path === "/v1/notify" && req.method === "POST") {
+      ownerLines.push(JSON.parse(body).text);
+      return send({ queued: true });
+    }
     if (path === "/v1/finish" && req.method === "POST") {
       const { task } = JSON.parse(body);
       const g = grades.get(find(task)?.id);
@@ -391,7 +395,6 @@ export function fakePaperclip({ parent, part, engineers, parentComments = [], pa
     // The board's internal API: the runner's activity for the Crew view, and messages passed on.
     if (path.startsWith("/internal/")) {
       if (path.endsWith("/runner/activity")) activity.push(JSON.parse(body));
-      if (path === "/internal/owner/line") ownerLines.push(JSON.parse(body).text);
       if (path.endsWith("/pass")) {
         passed.push({ path, ...JSON.parse(body) });
         return send({ passed: true, to: "Alfred", part: "PEN-3" });

@@ -13,6 +13,7 @@ import type { Grade, Grading } from "./grading.js";
 import { parseRunLog } from "./runs.js";
 import { alertIncidents } from "./monitoring.js";
 import { TOO_LONG } from "./rollover.js";
+import { ownerAlert } from "./notify.js";
 
 const MIN = 60_000;
 const STATE_KEY = "fleet_ops_detector";
@@ -116,7 +117,7 @@ export async function tick(store: Pick<Store, "meta" | "setMeta">, checks: Recor
   const unheard = Object.values(s.open).filter((o) => !o.fired && !o.told && Date.parse(at) - Date.parse(o.at) > DAY_MS);
   if (unheard.length) {
     for (const o of unheard) o.told = true;
-    queueOwnerLine(store, "🩺 **Fleet Ops is unreachable**: its health flags have not reached it for a day. Ask Aiden to check the Fleet Ops routine.");
+    ownerAlert("🩺 **Fleet Ops is unreachable**: its health flags have not reached it for a day. Ask Aiden to check the Fleet Ops routine.");
   }
   const incidents = Object.entries(s.open).filter(([, o]) => !o.fired).map(([key, o]) => ({ key, reason: o.reason, since: o.at, ...(o.critical ? { critical: true } : {}) }));
   const recovered = s.recovered.filter((r) => !r.fired).map(({ key, reason, at }) => ({ key, reason, recovered_at: at }));
@@ -135,17 +136,6 @@ const SILENT_RUNS = 3; // silent runs in a day before the flag opens
 const MISSED_GRACE_MS = 15 * MIN;
 const HARD_FAIL = new Set(["failed", "timed_out"]);
 const SOFT_CODES = new Set(["cap_reached", "issue_reassigned"]); // not the routine's fault
-
-/** One-line owner messages waiting for the owner channel (it collects each once). */
-export function queueOwnerLine(store: Pick<Store, "meta" | "setMeta">, line: string): void {
-  const q: string[] = JSON.parse(store.meta("owner_health_lines") ?? "[]");
-  store.setMeta("owner_health_lines", JSON.stringify([...q, line].slice(-20)));
-}
-export function takeOwnerLines(store: Pick<Store, "meta" | "setMeta">): string[] {
-  const q: string[] = JSON.parse(store.meta("owner_health_lines") ?? "[]");
-  if (q.length) store.setMeta("owner_health_lines", "[]");
-  return q;
-}
 
 interface RoutineRow { id: string; title: string; status: string; triggers?: { kind?: string; enabled?: boolean; label?: string | null; nextRunAt?: string | null }[] }
 /** Active routines whose next fire (by Paperclip's cron) is overdue past the grace: the fire never happened. A coalesced or skipped fire still advances it. */
@@ -245,7 +235,7 @@ export function checks(pc: Paperclip, store: Pick<Store, "meta" | "setMeta" | "r
         await pc.request("PATCH", `/api/routines/${routine.id}`, { status: "paused" });
         since[routine.id] = new Date(t).toISOString();
         store.setMeta("routine_paused_at", JSON.stringify(since));
-        queueOwnerLine(store, `⏸ **Routine paused**: ${routine.title} failed ${failures} runs in a row. Ask Aiden to resume it once it's fixed.`);
+        ownerAlert(`⏸ **Routine paused**: ${routine.title} failed ${failures} runs in a row. Ask Aiden to resume it once it's fixed.`, "done");
       }
       return failing.map(({ routine, failures }) => ({ key: routine.id, reason: `routine ${routine.title}: its last ${failures} runs failed${routine.status === "paused" ? " (paused until the owner resumes it)" : ""}` }));
     },

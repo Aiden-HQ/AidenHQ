@@ -100,7 +100,7 @@ export const continuedIn = (description: string | null | undefined) => /^Continu
 
 // ------------------------------------------------------------------ the conversation
 
-/** An agent's visible reply to the owner (notify_owner(task) posts it; the owner-channel bridge's REPLY_MARKER). */
+/** An agent's visible reply to the owner (notify(task) posts it; owner-channel's REPLY_MARKER). */
 export const REPLY_MARKER = "<!-- aidenhq-reply -->";
 /** A board notice on a chat (an approval's outcome, a file it couldn't read): shown as a line, never as the owner's words. */
 export const NOTICE_MARKER = "<!-- aidenhq-notice -->";
@@ -184,7 +184,7 @@ export function openAsk(comments: ChatComment[], agentId: string | null | undefi
  * runner wrote during a run (status notes, outcomes, "duplicate wake") folded into one line per stretch between
  * messages. The opening message is the chat's description when the chat was started with one (it carries the chat's
  * agent marker; the bridge's daily chat doesn't). Until an agent's replies are tagged (a chat with no tagged reply at
- * all: older chats, or an agent that doesn't use notify_owner), every agent comment is shown as a reply.
+ * all: older chats, or an agent that doesn't use notify), every agent comment is shown as a reply.
  */
 export function conversation(issue: { id: string; description: string | null; createdAt: string; createdByAgentId?: string | null; createdByUserId?: string | null }, comments: ChatComment[], me: string, agentName: (id: string | null | undefined) => string, isChat = true, runnerAs?: string): Message[] {
   const tagged = comments.some((c) => c.authorType === "agent" && c.body.includes(REPLY_MARKER));

@@ -39,7 +39,7 @@ const add = (issueId: string, c: Omit<Comment, "id" | "createdAt">) => {
   for (const i of [chat, child]) if (i.id === issueId) i.updatedAt = made.createdAt;
   return made;
 };
-// What notify_owner(task, questions) posts on the sub-agent's own task (slack-live-mcp replyBody), with its own key.
+// What notify(task, questions) posts on the sub-agent's own task (owner-channel's replyBody), with its own key.
 const ask = (question: string, options: string[]) =>
   add(child.id, { body: `**asking** A few things first.\n\n<!-- aidenhq-reply -->\n<!-- aidenhq-questions:${JSON.stringify([{ question, options }])} -->`, authorType: "agent", authorAgentId: ARCH });
 

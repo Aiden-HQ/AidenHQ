@@ -374,7 +374,7 @@ async function ensureAgents(companyId, fleetIssues) {
     const body = agentBody(key, a, agent);
     revInputs[key] = instructions + JSON.stringify(sections) + JSON.stringify(body.adapterConfig); // the rev's text (revOf)
     // The lane gets the agent's own handbook, the untrusted-text rule and the prompts marked for it (memory), not the shared
-    // run sections (task flow, notify_owner replies).
+    // run sections (task flow, notify replies).
     handbooks[key] = lane;
     if (agent && agent.adapterType !== body.adapterType) fail(`agent ${a.name}: adapter is ${agent.adapterType} in Paperclip, ${body.adapterType} in the config`);
     // runner: "legacy" — since 2026.1106 new agents default to the native Paperclip Runner (adapterType

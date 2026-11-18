@@ -46,18 +46,6 @@ describe("grader evidence routes", () => {
     expect((await get("/internal/grades", runner)).status).toBe(404);
   });
 
-  it("owner notices are the kernel's to collect, and escalated grades are never among them", async () => {
-    expect((await get("/internal/owner/grades", {})).status).toBe(403);
-    expect((await get("/internal/owner/grades", { "x-gateway-key": DECIDE_KEY })).json).toEqual({ lines: [] });
-  });
-
-  it("the runner queues an owner notice, and the kernel collects it once", async () => {
-    expect((await send("/internal/owner/line", { text: "PEN-2 needs you" }, {})).status).toBe(403);
-    expect((await send("/internal/owner/line", { text: "PEN-2 needs you" }, runner)).status).toBe(200);
-    expect((await get("/internal/owner/grades", { "x-gateway-key": DECIDE_KEY })).json).toEqual({ lines: ["PEN-2 needs you"] });
-    expect((await get("/internal/owner/grades", { "x-gateway-key": DECIDE_KEY })).json).toEqual({ lines: [] });
-  });
-
   // The app's status row keeps a bounded deploy list, so a merge it has moved past is looked up by exact commit instead;
   // the board forwards that to apps-mcp with the apps token and the runner's own key.
   it("the grader reads one commit's deploys from apps-mcp, with the runner's key and the apps token", async () => {

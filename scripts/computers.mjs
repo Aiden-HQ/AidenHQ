@@ -80,7 +80,7 @@ export function validateImages(agents) {
     if ((a.adapter ?? "codex_local") !== "codex_local") throw new Error(`${key}: only codex_local agents get a computer`);
     // Until the tasks bridge runs on the host, a trial agent's limits would run inside a box it controls.
     if (a.trial) throw new Error(`${key}: an agent in trial doesn't get a computer yet (its limits would run inside the box)`);
-    // notify_owner from a box is fine: its chat reply lands through the kernel's /v1/cp/agent (the launcher's /cp, as the run itself).
+    // notify from a box is fine: its chat reply lands through the kernel's /v1/cp/agent (the launcher's /cp, as the run itself).
   }
 }
 

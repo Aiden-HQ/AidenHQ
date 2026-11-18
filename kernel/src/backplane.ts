@@ -15,13 +15,12 @@
 //   GET  /v1/writes            (the board's or the runner's key) records by state or task (`tier0=1`: Tier 0 runs too)
 //   POST /v1/writes/:id/claim  (the runner's key) an approved record of its kinds, claimed once
 //   POST /v1/writes/:id/review (the runner's key) a record's review: its tier input and what the reviewer reads (writes.ts)
-//   GET  /v1/channel/cards, POST /v1/channel/{decide,owner-message,stop,thread}, GET /v1/channel/notices  (a speaks-as-owner
-//                              channel's token) cards with decision tokens, a token spent, the owner's words, notices (channels.ts)
-//   POST /v1/channel/outbox, GET /v1/channel/outbox  (a channel) a message for the owner handed to another channel; drained by it
+//   GET  /v1/channel/cards, POST /v1/channel/{decide,owner-message,stop,thread}  (a speaks-as-owner channel's token) cards
+//                              with decision tokens, a token spent, the owner's words (channels.ts)
 //   GET  /v1/cp/read/<path>    (a channel, or a module with role kernel.cp-read) the control plane's read routes, as the owner;
 //                              with the board's key, the board's reads (cp.ts createBoardCp)
 //   ANY  /v1/cp/owner/<path>   (the board's key) the owner's writes the board makes, X-AidenHQ-Account the admin's (cp.ts)
-//   POST /v1/brake/notify      (a channel, or the owner's router) may an agent message the owner about a task again (brake.ts)
+//   POST /v1/brake/notify      (the owner's router) may an agent message the owner about a task again (brake.ts)
 //   POST /v1/channel/exchange  (a module with role kernel.lane) a fast-lane turn written to its agent's chat task (lane.ts)
 //   POST /v1/notify            (the board's or the runner's key, or a module with role kernel.owner-notice) a message for the owner,
 //                              queued for the owner's router (notify.ts)
@@ -108,9 +107,6 @@ export const ROUTES = [
   { method: "POST", path: "/v1/channel/owner-message", auth: "module" },
   { method: "POST", path: "/v1/channel/stop", auth: "module" },
   { method: "POST", path: "/v1/channel/thread", auth: "module" },
-  { method: "GET", path: "/v1/channel/notices", auth: "module" },
-  { method: "POST", path: "/v1/channel/outbox", auth: "module" },
-  { method: "GET", path: "/v1/channel/outbox", auth: "module" },
   { method: "POST", path: "/v1/channel/exchange", auth: "module" },
   { method: "GET", path: "/v1/cp/read/*", auth: "module|board" },
   { method: "ANY", path: "/v1/cp/owner/*", auth: "board" },
@@ -335,9 +331,6 @@ export function createBackplane({ whoami, asserter, proxy, cp, boardCp, grantsFi
             return send(res, 200, await channels.thread(mod, b, (key) => { const e = Object.entries(grantsFile().agents ?? {}).find(([, g]) => key && g.key === key); return e && { id: e[0], trial: Boolean(e[1].trial) }; }));
           }
           case "POST /v1/channel/stop": return send(res, 200, await channels.stop(mod, await json(req)));
-          case "GET /v1/channel/notices": return send(res, 200, await channels.notices(mod));
-          case "POST /v1/channel/outbox": return send(res, 200, channels.file(mod, await json(req)));
-          case "GET /v1/channel/outbox": return send(res, 200, channels.drain(mod));
           case "POST /v1/channel/exchange": {
             if (!w.roles.includes("kernel.lane")) throw fail(403, "forbidden", `${mod} may not write lane exchanges (role kernel.lane)`);
             if (!lane) throw fail(503, "unavailable", "the lane is off");
@@ -365,7 +358,7 @@ export function createBackplane({ whoami, asserter, proxy, cp, boardCp, grantsFi
             return send(res, r.status, r.json);
           }
           case "POST /v1/brake/notify": {
-            if (!isChannel(modules().modules?.[mod]) && !w.roles.includes("kernel.notify")) throw fail(403, "forbidden", "only a channel or the owner's router asks the notify brake");
+            if (!w.roles.includes("kernel.notify")) throw fail(403, "forbidden", "only the owner's router (role kernel.notify) asks the notify brake");
             return send(res, 200, await brake(await json(req)));
           }
           case "POST /v1/wake": {

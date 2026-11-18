@@ -151,16 +151,22 @@ const writes = createWrites({
 const proxy = createProxy({ whoami, connections, asserter, resolver, secret, writes, agentKey: (id) => secret(`paperclip-agents/${id}`), log });
 replay = proxy.replay as never;
 // JSON both ways: the control plane as the owner (only the kernel holds the board key), and the board's internal listener with
-// the kernel's key (gateway_board_key: successors and the owner's notices).
+// the kernel's key (gateway_board_key: successors).
 const asApi = (call: (p: string, init: RequestInit) => Promise<Response>): Api => async (method, p, body) => {
   const r = await call(p, { method, ...(body !== undefined ? { body: JSON.stringify(body) } : {}) });
   return { status: r.status, json: await r.json().catch(() => ({})) };
 };
 const ownerApi = asApi(cpApi);
 const boardApi = asApi((p, init) => fetch(new URL(p, env("BOARD_INTERNAL_URL", "http://127.0.0.1:3122")), { ...init, headers: { authorization: `Bearer ${secret("board_internal_token")}`, "x-gateway-key": secret("gateway_board_key"), "content-type": "application/json" }, signal: AbortSignal.timeout(20_000) }));
-const channels = createChannels({ db: records.db, records, writes, board: boardApi, owner: ownerApi, modules: modulesFile, resetLinks: () => accounts?.takeResetLinks() ?? [], log });
+const channels = createChannels({ db: records.db, records, writes, board: boardApi, owner: ownerApi, modules: modulesFile, log });
+// The owner's messages: the kernel's own (alerts, the approvals digest) and the board's and the runner's, queued for
+// owner-channel's notify (notify.ts). Account reset links are credentials: the kernel keeps them and sends them only to the
+// private owner chat (notify.secret, below).
+const notify = createNotify({ db: records.db, modules: modulesFile, secret, resolver, log, extra: () => [channels.digest()].filter((t): t is string => t !== null).map((text) => ({ kind: "digest" as const, text })) });
+// alert: something is wrong now (a page); done: a plain notice, never muted.
+const toOwner = (kind: "alert" | "done") => (text: string) => notify.queue({ kind, text });
 // Marketplace advisories (advisories.ts): read at start, then whenever a day has passed or an apply rewrote the catalog.
-const advisories = createAdvisories({ db: records.db, repo, catalog: path.join(configDir, "modules.json"), ownerLine: channels.ownerLine, log, ref: env("AIDENHQ_ADVISORY_REF", "main"), fetch: hostFetch(repo) });
+const advisories = createAdvisories({ db: records.db, repo, catalog: path.join(configDir, "modules.json"), ownerLine: toOwner("done"), log, ref: env("AIDENHQ_ADVISORY_REF", "main"), fetch: hostFetch(repo) });
 // Timers a draining kernel stops (the next one runs its own).
 const timers: NodeJS.Timeout[] = [];
 const every = (fn: () => void, ms: number) => timers.push(setInterval(fn, ms).unref());
@@ -170,9 +176,14 @@ once(() => void advisories.tick(), 30_000);
 // The public front door's certificate (exposure public, compiled into config/exposure; the IP is the host's .env): hourly.
 const certWatch = createCertWatch({
   ip: () => { try { return readFileSync(path.join(configDir, "exposure"), "utf8").trim() === "public" ? env("AIDENHQ_PUBLIC_IP") || undefined : undefined; } catch { return undefined; } },
-  notify: channels.ownerLine,
+  notify: toOwner("alert"),
 });
 every(() => void certWatch.tick(), 3_600_000);
+// Account reset links, sent by the kernel itself to the private owner chat until it takes them (notify.ts deliverSecrets).
+every(() => {
+  for (const l of accounts?.takeResetLinks() ?? []) notify.secret(`🔑 **Board account reset** for ${l.email}\n${l.url}\nOne use, 72 hours; it ends that account's sessions and, for an admin, asks for a new authenticator. If it isn't yours, pass it on to them yourself.`);
+  void notify.deliverSecrets().catch((e: Error) => log("credential delivery failed", { err: e.message }));
+}, 20_000);
 once(() => void certWatch.tick(), 10 * 60_000);
 // Release updates (updates.ts, docs/design/release-updates.md): the check (a child process) prepares a release; the kernel files
 // it as a kernel.apply on a task of its own (the platform engineer's, as the release train's), follows it and tells the owner.
@@ -219,7 +230,6 @@ const reviewLoop = createReviewLoop({
 /** Starts the kernel's review loop: the switch that deletes the runner's loop calls this, in the same change (one path). */
 export const startReviews = () => { every(() => void reviewLoop.tick(), 30_000); once(() => void reviewLoop.tick(), 5_000); };
 const brake = createBrake({ db: records.db, owner: ownerApi });
-const notify = createNotify({ db: records.db, modules: modulesFile, secret, resolver, log });
 // The host sandbox as configured here (jobs run in their agents' computers; repo code the host runs itself, fast checks among
 // it, runs in this sandbox). A known no-jail condition is fatal, with the reason in the journal: repo code must never share the
 // host's network (every loopback service).
@@ -346,7 +356,7 @@ const accounts = await import("./accounts.ts").then((a) => a.openAccounts({
   gateAccountsFile: path.join(dataDir, "gate", "accounts.json"),
   ...(ttl > 0 ? { linkTtlHours: ttl } : {}), // settings.owner_email (compile writes it to config/kernel/modules.json): the only email setup makes the owner's account.
   ownerEmail: () => modulesFile().owner?.email,
-  notify: (line) => channels.ownerLine(line), manifest,
+  notify: toOwner("done"), manifest,
   wake: webhookWake(path.join(env("AIDENHQ_SECRETS_DIR", ""), "app_request_webhook_url"), path.join(env("AIDENHQ_SECRETS_DIR", ""), "app_request_webhook_secret"), accountLog, controlUrl),
   feedbackWake: routineWake(ownerApi, accountLog),
   log: accountLog,

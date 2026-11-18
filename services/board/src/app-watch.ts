@@ -1,6 +1,5 @@
 // The owner's app alerts (plain code, no LLM), moved here from the owner channel in lean-core 2f: the channel modules no
-// longer reach apps-mcp, the board does. Each alert is one owner line (fleet-ops.ts queueOwnerLine), which a channel collects
-// through the kernel (/v1/channel/notices). Any app, any channel.
+// longer reach apps-mcp, the board does. Each alert goes to the owner through the one notify (notify.ts). Any app, any channel.
 // - An app incident wakes the DevOps Engineer first (apps-mcp fires its routine); the owner is told only when it has stayed
 //   open over 30 minutes or the app had 3 or more incidents in 24 hours, once per hour, and once when it recovers.
 // - Resources, once per hour per cause: an app over 90% of its memory limit, or the host disk over 85%.
@@ -10,7 +9,7 @@ export interface AppStatus { name: string; incident?: { opened_at: number | stri
 type Kv = Pick<Store, "meta" | "setMeta">;
 const MIN = 60_000, HOUR = 60 * MIN, DAY = 24 * HOUR;
 
-export async function appWatchTick(d: { apps: () => Promise<AppStatus[]>; diskPct?: () => Promise<number>; store: Kv; notify: (line: string) => void; now?: number }): Promise<void> {
+export async function appWatchTick(d: { apps: () => Promise<AppStatus[]>; diskPct?: () => Promise<number>; store: Kv; notify: (line: string, kind?: "alert" | "done") => void; now?: number }): Promise<void> {
   const now = d.now ?? Date.now();
   const get = (k: string) => d.store.meta(`appwatch:${k}`) ?? "";
   const set = (k: string, v: string) => d.store.setMeta(`appwatch:${k}`, v);
@@ -18,7 +17,7 @@ export async function appWatchTick(d: { apps: () => Promise<AppStatus[]>; diskPc
   for (const app of apps) {
     const inc = app.incident;
     if (!inc) {
-      if (get(`paged:${app.name}`)) { d.notify(`✅ ${app.name} recovered`); set(`paged:${app.name}`, ""); }
+      if (get(`paged:${app.name}`)) { d.notify(`✅ ${app.name} recovered`, "done"); set(`paged:${app.name}`, ""); }
       continue;
     }
     const opened = typeof inc.opened_at === "number" ? inc.opened_at : Date.parse(inc.opened_at) || now;

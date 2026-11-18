@@ -19,7 +19,7 @@
   },
   {
     "n": 3,
-    "workflow": "Agent asks the owner (notify_owner), brake at 5",
+    "workflow": "Agent asks the owner (notify), brake at 5",
     "today": [
       "kernel/test/channels.test.mjs",
       "services/board/test/brake.test.ts"

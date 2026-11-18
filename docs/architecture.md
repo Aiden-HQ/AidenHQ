@@ -76,7 +76,9 @@ connections, apps and the fleet. Approvals are kernel records that the board onl
 the owner channel, or an exact typed reply. Each is claimed once and the outcome is shown on the card.
 
 **Owner channels.** `channel-telegram` (the Telegram owner bot, always installed) and `channel-slack` (optional: one
-Slack Socket Mode listener) bridge the owner to Aiden and provide `notify_owner`, the way agents reach the owner.
+Slack Socket Mode listener) bridge the owner to Aiden. `owner-channel`'s `notify` is the one way a message reaches the owner:
+agents call it, and the kernel, the board and the runner queue theirs at the kernel (`/v1/notify`) for it; it routes each
+message once (dedupe, mutes, digest, retry) to the chat on the board and to a channel's transport (`/v1/notify/send`).
 `chat-lane` (always installed) is the fast chat lane. Approval cards are decided with per-card, per-channel,
 single-use decision tokens that the kernel mints (bound to the card's digest) at `/v1/channel/cards` and
 `/v1/channel/decide`. Owner messages from a channel go through the kernel's `/v1/channel/owner-message`; only the

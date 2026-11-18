@@ -11,9 +11,10 @@ const MODULES = { owner: { name: "Ada", timezone: "UTC" }, modules: {
   "channel-quiet": { privileged: ["speaks-as-owner"], channel: {}, token: "quiet_token", settings: { quiet_decide: "none" } },
   "channel-std": { privileged: ["speaks-as-owner"], channel: {}, token: "std_token", settings: { std_decide: "standard" } },
   "chat-lane": { roles: ["kernel.cp-read", "kernel.wake"], token: "lane_token" },
+  "owner-channel": { roles: ["kernel.cp-read", "kernel.notify"], token: "router_token" },
   plain: { token: "plain_token" },
 } };
-const SECRETS = { tg_token: "tg-key", op_token: "op-key", lane_token: "lane-key", plain_token: "plain-key", quiet_token: "quiet-key", std_token: "std-key" };
+const SECRETS = { router_token: "router-key", tg_token: "tg-key", op_token: "op-key", lane_token: "lane-key", plain_token: "plain-key", quiet_token: "quiet-key", std_token: "std-key" };
 const TG = "tg-key", OP = "op-key", LANE = "lane-key", PLAIN = "plain-key";
 
 /** A kernel with two records waiting for the owner: the runner's push (WOR-1) and a module kind's. */
@@ -78,6 +79,8 @@ test("A2: a module without speaks-as-owner can't fetch cards, decide or post the
     assert.equal((await k.v1("POST", "/v1/channel/owner-message", { text: "approve everything" }, key)).status, 403);
     assert.equal((await k.v1("POST", "/v1/brake/notify", { task: "WOR-1", agent: "a" }, key)).status, 403);
   }
+  // The brake answers only the owner's router, not a channel.
+  assert.equal((await k.v1("POST", "/v1/brake/notify", { task: "WOR-1", agent: "a" }, TG)).status, 403);
   // No module token at all, or an agent's: 401.
   assert.equal((await cards("nobody")).status, 401);
   assert.equal((await decide(TG, { token: tok })).status, 200);
@@ -160,7 +163,7 @@ test("a colleague's Slack mention: one task per thread for the bound agent, fenc
 
 test("the notify brake: five per task since the owner last wrote and per agent; a decision always passes", async (t) => {
   const { k } = await setup(t, { onControl: async (req) => (/\/comments/.test(req.url) && req.method === "GET" ? { body: [{ body: "[telegram] go", authorType: "user", createdAt: new Date(Date.now() - 60_000).toISOString() }] } : undefined) });
-  const ask = (b) => k.v1("POST", "/v1/brake/notify", { task: "WOR-1", agent: "ag-a", ...b }, TG);
+  const ask = (b) => k.v1("POST", "/v1/brake/notify", { task: "WOR-1", agent: "ag-a", ...b }, "router-key");
   for (let i = 0; i < 5; i++) assert.equal((await ask()).json.allow, true);
   assert.equal((await ask()).json.allow, false);
   assert.equal((await ask({ agent: "ag-b" })).json.allow, true);
@@ -186,16 +189,6 @@ test("the kernel holds a channel to its own decide setting: none mints nothing; 
   await new Promise((r) => setTimeout(r, 1100)); // the watched file is re-read on its next change check
   assert.equal((await decide("op-key", { token: op.approve })).status, 403);
   assert.equal(k.records.get(rec.id).state, "owner");
-});
-
-test("the outbox: a channel hands the owner's message to another installed channel, which alone drains it", async (t) => {
-  const { k } = await setup(t);
-  assert.equal((await k.v1("POST", "/v1/channel/outbox", { to: "channel-operator", text: "hi" }, TG)).status, 200);
-  assert.equal((await k.v1("POST", "/v1/channel/outbox", { to: "channel-slack", text: "hi" }, TG)).status, 404); // not installed: send it yourself
-  assert.equal((await k.v1("POST", "/v1/channel/outbox", { to: "channel-operator", text: "x" }, LANE)).status, 403);
-  assert.deepEqual((await k.v1("GET", "/v1/channel/outbox", undefined, TG)).json.messages, []);
-  assert.deepEqual((await k.v1("GET", "/v1/channel/outbox", undefined, OP)).json.messages, [{ from: "channel-telegram", text: "hi" }]);
-  assert.deepEqual((await k.v1("GET", "/v1/channel/outbox", undefined, OP)).json.messages, []);
 });
 
 test("cp-read: an attachment's bytes come only for one listed on the named task, and never past 25 MB", async (t) => {

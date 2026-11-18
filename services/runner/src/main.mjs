@@ -2131,16 +2131,15 @@ async function askDelegator(issue, text) {
 }
 
 /**
- * The owner's channel (the board's owner notices, which the kernel hands to Telegram or Slack), in fixed words: the
+ * The owner's notify (queued at the kernel for owner-channel, which reaches them on their phone), in fixed words: the
  * identifier and what it needs, never an agent's title or GitHub's text. The note itself goes on the task, where the owner's
  * reply carries on. Once per distinct note.
  */
 async function tellOwner(issue, kind, text) {
   const key = `owner-told:${issue.id}:${createHash("sha256").update(text).digest("hex").slice(0, 16)}`;
   if (state.get(key)) return true;
-  if (!boardApi) return false;
   const line = `🔧 **${issue.identifier} ${NEEDS_ASKER[kind]}**, and the agent that asked for it is paused or gone. What it needs is on ${issue.identifier}: reply there to carry on, or cancel it.`;
-  const sent = await boardApi.post("/internal/owner/line", { text: line }).then(() => true, (err) => (log("owner notice failed", { task: issue.identifier, err: String(err.message ?? err).slice(0, 200) }), false));
+  const sent = await kernel("POST", "/v1/notify", { kind: "decision", text: line, dedupe_key: key }).then(() => true, (err) => (log("owner notice failed", { task: issue.identifier, err: String(err.message ?? err).slice(0, 200) }), false));
   if (!sent) return false;
   state.set(key, new Date().toISOString());
   log("decision sent to the owner", { task: issue.identifier, kind });

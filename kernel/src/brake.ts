@@ -1,8 +1,7 @@
-// The notify brake (POST /v1/brake/notify; spec §2.5, lean-core 2f): an agent may send at most NOTIFY_LIMIT notify_owner
-// messages about one task since the owner last wrote there (and UTC midnight), so a looping agent can't flood the owner. A
-// decision is never held back (it still counts). Channels ask before they send; the count lives here, so every channel shares
-// it. The owner's last message is read as the owner (the board key);
-// unreadable, nothing is limited (fail open, as the channel's own brake did).
+// The notify brake (POST /v1/brake/notify; spec §2.5, lean-core 2f): an agent may send at most NOTIFY_LIMIT notify messages
+// about one task since the owner last wrote there (and UTC midnight), so a looping agent can't flood the owner. A decision is
+// never held back (it still counts). The owner's router (owner-channel) asks before it sends. The owner's last message is
+// read as the owner (the board key); unreadable, nothing is limited (fail open).
 import type { DatabaseSync } from "node:sqlite";
 import type { Api } from "./channels.ts";
 

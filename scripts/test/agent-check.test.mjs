@@ -44,14 +44,14 @@ test("compile check: trial_writes, the second lock: the four names, granted ones
   const servers2 = {
     paperclip_tasks: { tools: { read: ["task_get"], write: ["task_create", "task_comment", "task_update"] } },
     chat_lane: { tools: { read: ["slack_pending_events"], write: ["wake_at", "chat_send", "slack_post"] } },
-    telegram: { tools: { read: [], write: ["notify_owner"] } },
+    owner_channel: { tools: { read: [], write: ["notify"] } },
   };
   const aria = { trial: true, model: "~deepseek/deepseek-flash-latest", enabled_tools: { paperclip_tasks: ["task_get", "task_comment", "task_create"], chat_lane: ["wake_at", "chat_send"] }, trial_writes: ["paperclip_tasks.task_create", "chat_lane.wake_at", "chat_lane.chat_send"] };
   const cfg = (agents) => ({ mcp_servers: servers2, agents, routines: {} });
   assert.deepEqual(staticCheck(cfg({ aria }), { read: () => "" }).errors, []);
-  assert.deepEqual(staticCheck(cfg({ aria: { ...aria, trial_writes: [...aria.trial_writes, "paperclip_tasks.task_update"] } }), { read: () => "" }).errors, ["aria (in trial): trial_writes names paperclip_tasks.task_update, which it may not use in trial (only paperclip_tasks.task_create, chat_lane.wake_at, chat_lane.chat_send, telegram.notify_owner)"]);
+  assert.deepEqual(staticCheck(cfg({ aria: { ...aria, trial_writes: [...aria.trial_writes, "paperclip_tasks.task_update"] } }), { read: () => "" }).errors, ["aria (in trial): trial_writes names paperclip_tasks.task_update, which it may not use in trial (only paperclip_tasks.task_create, chat_lane.wake_at, chat_lane.chat_send, owner_channel.notify)"]);
   // An allowed name it doesn't grant: the error names it, and nothing else is wrong with the definition.
-  assert.deepEqual(staticCheck(cfg({ aria: { ...aria, trial_writes: [...aria.trial_writes, "telegram.notify_owner"] } }), { read: () => "" }).errors, ["aria (in trial): trial_writes names telegram.notify_owner, which the definition does not grant"]);
+  assert.deepEqual(staticCheck(cfg({ aria: { ...aria, trial_writes: [...aria.trial_writes, "owner_channel.notify"] } }), { read: () => "" }).errors, ["aria (in trial): trial_writes names owner_channel.notify, which the definition does not grant"]);
   assert.deepEqual(staticCheck(cfg({ aria: { ...aria, trial_writes: "paperclip_tasks.task_create" } }), { read: () => "" }).errors, ["aria (in trial): trial_writes must be a list of tools, written connection.tool"]);
   // A malformed entry is named; the writes it then isn't entitled to are reported too.
   assert.deepEqual(staticCheck(cfg({ aria: { ...aria, trial_writes: ["task_create"] } }), { read: () => "" }).errors, ['aria (in trial): trial_writes names "task_create", not a tool written connection.tool', "aria (in trial): has paperclip_tasks write tools (task_create); an agent in trial is read-only", "aria (in trial): has chat_lane write tools (wake_at, chat_send); an agent in trial is read-only"]);
