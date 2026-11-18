@@ -70,7 +70,8 @@ describe("flow-asker: an agent's task whose asker is gone", { concurrency: 1 }, 
   it("with no request, goes to the owner's channel in fixed words: no greeting and no run", async () => {
     await t.waitFor("the owner's notice", () => lines().length > 0);
     assert.equal(lines()[0], "🔧 **PEN-2 needs a decision**, and the agent that asked for it is paused or gone. What it needs is on PEN-2: reply there to carry on, or cancel it.");
-    assert.ok(t.partComments().some((c) => /PEN-2 has no request/.test(c)), "the note is on the task");
+    // The runner posts the note once the board has queued the notice, so the note lands just after the line.
+    await t.waitFor("the note on the task", () => t.partComments().some((c) => /PEN-2 has no request/.test(c)));
     await t.idle(1000);
     assert.equal(lines().length, 1, "once");
     assert.equal(t.agentRuns().length, 0);
