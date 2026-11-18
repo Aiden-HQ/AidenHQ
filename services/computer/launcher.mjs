@@ -47,6 +47,7 @@ const secretsDir = env("AIDENHQ_SECRETS_DIR");
 if (!secretsDir) throw new Error("AIDENHQ_SECRETS_DIR is not set (.env)");
 const secret = (n) => { try { return readFileSync(path.join(secretsDir, n), "utf8").trim(); } catch { return ""; } };
 
+const readJson = (f) => JSON.parse(readFileSync(f, "utf8"));
 const CFG = {
   control: { host: "10.231.0.1", port: 8199 },
   gateway: { host: "10.231.2.1", port: 8200 },
@@ -56,16 +57,11 @@ const CFG = {
   limits: { memory: env("AIDENHQ_COMPUTERS_MEMORY", "6g"), cpus: Number(env("AIDENHQ_COMPUTERS_CPUS", 2)), shm: "1g", pids: 1024 },
   computersFile: path.join(configDir, "computers.json"),
   composeProject: env("COMPOSE_PROJECT_NAME", "aidenhq"),
-  // The host's work and state dirs (work_dir and state_dir in config/runner.yaml): the task folders, the clones' guard hooks
-  // and the per-task Codex homes.
-  runnerWork: runnerDir("work_dir", "~/aidenhq-work"),
-  runnerState: runnerDir("state_dir", "~/.local/state/aidenhq-runner"),
+  // The host's work and state dirs (computers.json work_dir and state_dir, from config/runner.yaml at compile): the task
+  // folders, the clones' guard hooks and the per-task Codex homes.
+  runnerWork: readJson(path.join(configDir, "computers.json")).work_dir,
+  runnerState: readJson(path.join(configDir, "computers.json")).state_dir,
 };
-function runnerDir(key, fallback) {
-  let dir = fallback;
-  try { dir = new RegExp(`^${key}:\\s*["']?([^"'#\\n]+?)["']?\\s*(#.*)?$`, "m").exec(readFileSync(path.join(configDir, "runner.yaml"), "utf8"))?.[1] ?? dir; } catch {}
-  return dir.startsWith("~/") ? path.join(os.homedir(), dir.slice(2)) : dir;
-}
 const GATEWAY_URL = `http://${CFG.gateway.host}:${CFG.gateway.port}`;
 // The model gateway on host loopback (kernel/src/gateway): every box's model call goes on to it.
 const MODEL_GATEWAY_URL = "http://127.0.0.1:8201";
@@ -82,7 +78,6 @@ const resolvConf = path.join(stateDir, "resolv.conf");
 writeFileSync(resolvConf, "nameserver 1.1.1.1\nnameserver 8.8.8.8\n");
 const log = (...a) => console.log(new Date().toISOString(), ...a);
 const DEBUG = env("AIDENHQ_COMPUTERS_DEBUG") === "1"; // log every exec, with its env keys (never values)
-const readJson = (f) => JSON.parse(readFileSync(f, "utf8"));
 /** The pool's size: settings.computers_max (compile writes it to computers.json; the kernel admits jobs against the same number). */
 const maxBoxes = () => {
   const n = readJson(CFG.computersFile).max;

@@ -372,10 +372,6 @@ fi
 # Connect Google from the board (the company's Web-app client); Google refuses a bare IP as a redirect, so not in public.
 set_env BOARD_GOOGLE_CONNECT "$( [ "$PUBLIC" = 1 ] || echo 1)"
 grep -q '^WORK_COMPANY_ID=.' "$ENVF" 2>/dev/null || set_env WORK_COMPANY_ID pending   # known after Paperclip's setup
-if [ ! -f "$REPO/config/runner.yaml" ]; then
-  # The host's job tuning; the code host clones this person's local instance repo from the VM, not GitHub.
-  printf 'repo_sources:\n  local/aidenhq-instance: %s\n' "$REMOTE" | write_user_file "$REPO/config/runner.yaml" 644
-fi
 # The product repo (owner/name, from this checkout's origin) and the instance repo applies land on.
 grep -q '^AIDENHQ_PRODUCT_REPO=.' "$ENVF" 2>/dev/null || set_env AIDENHQ_PRODUCT_REPO "$(ugit -C "$REPO" remote get-url origin | sed -E 's#^.*github\.com[/:]##; s#\.git/*$##')"
 grep -q '^AIDENHQ_INSTANCE_REPO=.' "$ENVF" 2>/dev/null || set_env AIDENHQ_INSTANCE_REPO local/aidenhq-instance
@@ -383,8 +379,8 @@ grep -q '^AIDENHQ_INSTANCE_REPO=.' "$ENVF" 2>/dev/null || set_env AIDENHQ_INSTAN
 runner_set() { # key value
   [ -n "$2" ] || return 0
   if [ "$DRY" = 1 ]; then echo "  + config/runner.yaml: $1: $2"; return 0; fi
-  grep -qx "$1: $2" "$REPO/config/runner.yaml" && return 0
-  as_user K="$1" V="$2" F="$REPO/config/runner.yaml" sh -c 'umask 022; { if grep -q "^$K:" "$F"; then sed "s/^$K:.*/$K: $V/" "$F"; else cat "$F"; echo "$K: $V"; fi; } > "$F.tmp" && mv -f "$F.tmp" "$F"'
+  grep -qx "$1: $2" "$REPO/config/runner.yaml" 2>/dev/null && return 0
+  as_user K="$1" V="$2" F="$REPO/config/runner.yaml" sh -c 'umask 022; { if grep -q "^$K:" "$F" 2>/dev/null; then sed "s/^$K:.*/$K: $V/" "$F"; else cat "$F" 2>/dev/null; echo "$K: $V"; fi; } > "$F.tmp" && mv -f "$F.tmp" "$F"'
   KERNEL_RESTART=1
 }
 runner_set timeout_minutes "$TIMEOUT_MINUTES"

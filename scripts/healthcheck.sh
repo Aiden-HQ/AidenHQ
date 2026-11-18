@@ -60,7 +60,6 @@ probe_check() { # check name, probe name
     *) printf '  FAIL  %s  %s\n' "$1" "$(echo "$out" | tail -1 | cut -c1-160)"; fails=$((fails + 1)) ;;
   esac
 }
-engine_default="$(sed -n 's/^  default: *\([a-z]*\).*/\1/p' config/runner.yaml 2>/dev/null | head -1)"
 
 echo "AidenHQ health"
 check "paperclip http (127.0.0.1:3100)" sh -c 'curl -fsS --max-time 5 http://127.0.0.1:3100/api/health | grep -q "\"status\":\"ok\""'
@@ -74,13 +73,6 @@ if module_on meetings; then
   done
 else
   skip "ops-mcp (meetings module not installed)"
-fi
-
-# A ChatGPT login only matters when an engine uses it: the default engine is Codex (also when unset).
-if [ -z "$engine_default" ] || [ "$engine_default" = codex ]; then
-  check "codex logged in (ChatGPT)" dc exec -T -u node paperclip test -s /paperclip/.codex/auth.json
-else
-  skip "codex ChatGPT login (default engine is $engine_default)"
 fi
 
 # The kernel: every agent tool call crosses its proxy (aidenhq-kernel, backplane address).

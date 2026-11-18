@@ -163,9 +163,6 @@ groups:
               * on (id) group_left (name, project, service) max by (id, name, project, service) (aidenhq_container_running)
           )
       - record: aidenhq:cpu_cores:by_source
-        labels: { source: engineer_jobs }
-        expr: sum(rate(container_cpu_usage_seconds_total{id=~"/user.slice/.+/aidenhq-runner.service"}[2m])) or vector(0)
-      - record: aidenhq:cpu_cores:by_source
         labels: { source: ci_runners }
         expr: sum(aidenhq:container_cpu_cores{name=~"aidenhq-ci-runner.*"}) or vector(0)
       - record: aidenhq:cpu_cores:by_source
