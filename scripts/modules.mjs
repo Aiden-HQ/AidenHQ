@@ -1131,8 +1131,8 @@ export function kernelModuleTable(defs, settings = {}) {
     }
     const e = {
       ...(roles.length ? { roles } : {}), ...(privileged.length ? { privileged } : {}), ...(codehost != null ? { codehost } : {}),
-      // A channel's, a job dispatcher's (kernel.jobs), a check job requester's (kernel.checks), a check's module (its label and its reads) an executor's (its outcomes) or a codehost grant holder's (its App tokens): its own generated `<module>_token`.
-      ...((ch != null || roles.includes("kernel.jobs") || roles.includes("kernel.checks") || roles.includes("kernel.tasks") || (def.checks ?? []).length || def.providers?.executor || codehost != null) && (def.generated_secrets ?? []).includes(token) ? { token } : {}),
+      // A module that generates its own `<module>_token` is known to the kernel by it (whoami): its roles are the kernel.* ones it requests, none otherwise.
+      ...((def.generated_secrets ?? []).includes(token) ? { token } : {}),
       ...(ch != null ? { channel: { ...(ch.stamp ? { stamp: String(ch.stamp) } : {}), ...(ch.stale === true ? { stale: true } : {}), ...(ch.transport ? { transport: String(ch.transport) } : {}), ...(ch.credentials === true ? { credentials: true } : {}) }, settings: Object.fromEntries(Object.keys(def.settings ?? {}).map((k) => [k, settings[k]])) } : {}),
     };
     if (Object.keys(e).length) out[name] = e;

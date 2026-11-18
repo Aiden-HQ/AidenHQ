@@ -116,8 +116,8 @@ routines:
     concurrency: coalesce_if_active
     schedules:
       - { cron: "0 7 * * 1", timezone: "${settings.timezone}", label: "Monday morning" }
-# The service (service/src): the detector on a timer, Alertmanager's webhook (POST /alerts) and Prometheus's scrape (/metrics) on the
-# network only they share with it, and the MCP connection the kernel's proxy calls (the Steward's detector, Coach and generation
+# The service (service/src): the detector on a timer, Alertmanager's webhook (POST /alerts) and Prometheus's scrape (/metrics), which
+# take the monitoring module's own token (checked with the kernel) on the network only they share with it, and the MCP connection the kernel's proxy calls (the Steward's detector, Coach and generation
 # tools). It reads the fleet through the kernel with its own module token and apps-mcp with the same token (apps.read), and files a
 # check task for the Steward (kernel.tasks). The connection's answers are fenced by the proxy; an alert's text carries its own fence.
 connections:

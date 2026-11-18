@@ -32,7 +32,9 @@ scrape_configs:
       credentials_file: /run/secrets/monitoring_token
     static_configs:
       - targets: [ "board:3122" ]
-  # Open detector incidents and firing alerts (modules/fleet-steward/service/src/main.ts): no credentials, the shared network is the boundary.
+  # Open detector incidents and firing alerts (modules/fleet-steward/service/src/main.ts): the monitoring token, checked with the kernel.
   - job_name: fleet-steward
+    authorization:
+      credentials_file: /run/secrets/monitoring_token
     static_configs:
       - targets: [ "fleet-steward:8097" ]

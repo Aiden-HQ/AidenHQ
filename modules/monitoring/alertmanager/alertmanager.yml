@@ -1,6 +1,6 @@
 # Every alert goes to the fleet-steward service (modules/fleet-steward/service/src/alerts.ts), which opens or recovers a detector
 # incident and tells the owner of a critical one. No other receiver: the owner's channel is the owner-channel module's. The
-# receiver carries no credentials: the fleet-steward network, which only this service and the Steward's own share, is the boundary.
+# webhook carries the monitoring module's own token, which the service checks with the kernel (it is module `monitoring`'s).
 route:
   receiver: steward
   group_by: [ alertname, mountpoint, service, unit, job, agent ]
@@ -13,3 +13,6 @@ receivers:
       - url: http://fleet-steward:8097/alerts
         send_resolved: true
         max_alerts: 100
+        http_config:
+          authorization:
+            credentials_file: /run/secrets/monitoring_token

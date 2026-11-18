@@ -30,7 +30,7 @@ services:
       data: ["prometheus:/prometheus"]
       secrets: [monitoring_token] # scrapes the board's /internal/metrics
       links: [board] # the board's internal listener (board:3122) only, on a network only it, Alertmanager and the board share
-      join: [fleet-steward] # scrapes the fleet-steward service's /metrics (incidents open, alerts firing)
+      join: [fleet-steward] # scrapes the fleet-steward service's /metrics (incidents open, alerts firing) with the monitoring token
     # Host metrics: as nobody, the host's / read-only (filesystems), and the textfiles the runner, the kernel and
     # ops/host-metrics.sh write (unit and container states, the runner's queue). Network counters are its own namespace's.
     node-exporter:
@@ -64,6 +64,7 @@ services:
         - --storage.path=/alertmanager
         - --cluster.listen-address=
       data: ["alertmanager:/alertmanager"]
+      secrets: [monitoring_token] # its webhook into the fleet-steward service (/alerts), checked with the kernel as module monitoring
       join: [fleet-steward] # it posts its alerts to the fleet-steward service (/alerts), which reads its alert list; its own API (silences) is reachable only by Prometheus, Grafana and that service
     grafana:
       build: ./grafana

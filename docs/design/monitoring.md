@@ -16,7 +16,7 @@ two critical ones also tell the owner.
 | Grafana (no anonymous access, admin password in the vault) | `aidenhq-mod-monitoring` + `-egress` | `127.0.0.1:3131`, tailnet via `tailscale serve` |
 | mcp-grafana (read tools only, Viewer token from the vault) | `aidenhq-mod-monitoring` + `aidenhq-mod-grafana` (join) | `mcp-grafana:8000`, grafana-mcp only |
 | Board `/internal/metrics` | board's internal listener | `board:3122`, monitoring token only |
-| Fleet Steward service `/alerts`, `/metrics` | `aidenhq-mod-fleet-steward`, shared only with Alertmanager and Prometheus | `fleet-steward:8097`, no credentials: the network is the boundary |
+| Fleet Steward service `/alerts`, `/metrics` | `aidenhq-mod-fleet-steward`, shared only with Alertmanager and Prometheus | `fleet-steward:8097`, the monitoring token only (the service asks the kernel's `/v1/whoami`: module `monitoring`) |
 | Gateway metrics | `data/modules/monitoring/textfile/gateway.prom`, every 30 s | node-exporter's textfile collector |
 | Runner metrics | `data/modules/monitoring/textfile/runner.prom`, every 30 s | the same |
 | Unit and container states | `ops/host-metrics.sh` (user timer `aidenhq-host-metrics`, every 30 s) | the same |

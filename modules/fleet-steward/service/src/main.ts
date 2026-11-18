@@ -1,10 +1,9 @@
 // The Fleet Steward's service (the board's detectors, moved here): the detector on a timer, Alertmanager's webhook, the module's
-// MCP connection (fleet_detector, coach_due, coach_evidence, fleet_generation_status) and Prometheus text. Everything it knows of
+// MCP connection (fleet_detector, coach_due, coach_evidence, fleet_generation_status) and Prometheus text (server.ts). Everything it knows of
 // the fleet it reads through the kernel with its own module token (kernel.cp-read, kernel.work-read) and apps-mcp (apps.read);
 // it files a task for the Steward (kernel.tasks) and tells the owner (kernel.owner-notice). State: /data/state.json.
-import { createHash, timingSafeEqual } from "node:crypto";
+import { createHash } from "node:crypto";
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
-import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { dirname } from "node:path";
 import { kernelClient } from "./aidenhq-sdk/kernel-client.ts";
 import { kernelJwks, verifyCaller } from "./aidenhq-sdk/caller.ts";
@@ -12,6 +11,8 @@ import { alertIncidents, firing, parseAlerts, receiveAlerts } from "./alerts.ts"
 import { coachReads } from "./coach.ts";
 import { checks, detectorState, QUIET_MS, tick, type Kv } from "./detector.ts";
 import { createMcp, fleetTools } from "./mcp.ts";
+import { isModule } from "./module-caller.ts";
+import { createStewardServer } from "./server.ts";
 
 const env = process.env;
 const log = (msg: string, f: Record<string, unknown> = {}) => console.log(new Date().toISOString(), msg, JSON.stringify(f));
@@ -85,38 +86,14 @@ const mcp = createMcp(fleetTools({
 }));
 const jwks = kernelJwks(`${kernelUrl}/v1/jwks`);
 
-const same = (a: string, b: string) => Boolean(a && b) && a.length === b.length && timingSafeEqual(Buffer.from(a), Buffer.from(b));
-const body = async (req: IncomingMessage, max = 2_000_000) => {
-  const chunks: Buffer[] = [];
-  let n = 0;
-  for await (const c of req) { n += (c as Buffer).length; if (n > max) throw Object.assign(new Error("too large"), { status: 413 }); chunks.push(c as Buffer); }
-  return chunks.length ? JSON.parse(Buffer.concat(chunks).toString("utf8")) : undefined;
-};
-const send = (res: ServerResponse, status: number, v: unknown, type = "application/json") => res.writeHead(status, { "content-type": type }).end(typeof v === "string" ? v : JSON.stringify(v));
-
-createServer(async (req, res) => {
-  const path = new URL(req.url ?? "/", "http://x").pathname;
-  try {
-    if (path === "/healthz") return send(res, 200, { ok: true });
-    // Alertmanager's webhook and Prometheus's scrape: no credentials; the network is the boundary (only they share it with this service).
-    if (path === "/alerts" && req.method === "POST") {
-      const r = await receiveAlerts(kv, parseAlerts(await body(req)), notify);
-      void run();
-      return send(res, 200, r);
-    }
-    if (path === "/metrics" && req.method === "GET") {
-      const g = (name: string, help: string, v: number) => `# HELP ${name} ${help}\n# TYPE ${name} gauge\n${name} ${v}\n`;
-      return send(res, 200, g("aidenhq_steward_incidents_open", "Fleet detector incidents open.", Object.keys(detectorState(kv).open).length) + g("aidenhq_steward_alerts_firing", "Monitoring alerts firing, as this service last heard from Alertmanager.", Object.keys(firing(kv)).length), "text/plain; version=0.0.4; charset=utf-8");
-    }
-    if (path === "/mcp" && req.method === "POST") {
-      if (!same(String(req.headers.authorization ?? "").replace(/^Bearer\s+/i, ""), serviceKey)) return void res.writeHead(401).end();
-      const msg = await body(req);
-      const out = Array.isArray(msg) ? (await Promise.all(msg.map((m) => mcp(m, () => verifyCaller(req, jwks, "fleet-steward"))))).filter(Boolean) : await mcp(msg, () => verifyCaller(req, jwks, "fleet-steward"));
-      return out === undefined ? void res.writeHead(202).end() : send(res, 200, out);
-    }
-    return void res.writeHead(404).end();
-  } catch (e) {
-    const status = (e as { status?: number }).status ?? 400;
-    return send(res, status, { error: String((e as Error).message ?? e).slice(0, 300) });
-  }
+createStewardServer({
+  serviceKey,
+  isMonitoring: (authorization) => isModule(kernelUrl, authorization, "monitoring"),
+  receiveAlerts: async (b) => { const r = await receiveAlerts(kv, parseAlerts(b), notify); void run(); return r; },
+  metrics: () => {
+    const g = (name: string, help: string, v: number) => `# HELP ${name} ${help}\n# TYPE ${name} gauge\n${name} ${v}\n`;
+    return g("aidenhq_steward_incidents_open", "Fleet detector incidents open.", Object.keys(detectorState(kv).open).length) + g("aidenhq_steward_alerts_firing", "Monitoring alerts firing, as this service last heard from Alertmanager.", Object.keys(firing(kv)).length);
+  },
+  mcp,
+  caller: (req) => verifyCaller(req, jwks, "fleet-steward"),
 }).listen(Number(env.PORT ?? 8097), () => log("listening", { port: env.PORT ?? 8097 }));

@@ -131,3 +131,23 @@ test("the connection's tools check the caller's signed roles", async () => {
   const forged = await mcp({ id: 2, method: "tools/call", params: { name: "fleet_detector" } }, async () => { throw new Error("no caller assertion"); });
   assert.match(forged.result.content[0].text, /Refused: no caller assertion/);
 });
+
+test("/alerts and /metrics take only the monitoring module's token: no key or a wrong one is a 401 and files nothing", async (t) => {
+  const { createStewardServer } = await import("../service/src/server.ts");
+  const received = [];
+  const server = createStewardServer({
+    serviceKey: "svc", mcp: async () => undefined, caller: async () => ({}), metrics: () => "m 1\n",
+    isMonitoring: async (a) => a === "Bearer monitoring-token",
+    receiveAlerts: async (b) => (received.push(b), { firing: 1 }),
+  }).listen(0);
+  t.after(() => server.close());
+  const call = (path, method, auth) => fetch(`http://127.0.0.1:${server.address().port}${path}`, { method, headers: { ...(auth ? { authorization: auth } : {}), "content-type": "application/json" }, ...(method === "POST" ? { body: JSON.stringify({ alerts: [] }) } : {}) });
+  assert.equal((await call("/alerts", "POST")).status, 401);
+  assert.equal((await call("/alerts", "POST", "Bearer other-token")).status, 401);
+  assert.equal((await call("/metrics", "GET", "Bearer svc")).status, 401, "the connection's key opens neither");
+  assert.deepEqual(received, []);
+  assert.equal((await call("/alerts", "POST", "Bearer monitoring-token")).status, 200);
+  assert.equal(received.length, 1);
+  assert.equal(await (await call("/metrics", "GET", "Bearer monitoring-token")).text(), "m 1\n");
+  assert.equal((await call("/mcp", "POST", "Bearer monitoring-token")).status, 401, "and the monitoring token does not open the connection");
+});
