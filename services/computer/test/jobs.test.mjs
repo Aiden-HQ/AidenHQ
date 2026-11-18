@@ -5,7 +5,7 @@ import { mkdirSync, mkdtempSync, realpathSync, rmSync, statSync, symlinkSync } f
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createServer } from "node:http";
-import { JOB_ENV_NAMES, Jobs, LEASE_MS, Tokens, tokenHash, admit, controlAllowed, jobEnvFile, jobFolder, jobMounts, reapLapsed, serveHelper, stale } from "../lib.mjs";
+import { JOB_ENV_NAMES, Jobs, LEASE_MS, Tokens, mayCheckout, tokenHash, admit, controlAllowed, jobEnvFile, jobFolder, jobMounts, reapLapsed, serveHelper, stale } from "../lib.mjs";
 import { startRepoHelper } from "../../runner/src/repohelper.ts";
 
 const keys = { plugin: "plugin-key", runner: "runner-key", progress: "progress-key" };
@@ -164,10 +164,25 @@ test("a kernel job's box is a live computer to its own job token only (the launc
   const jobs = new Jobs();
   jobs.add({ container: "k-box", agentId: "agent-1", issueId: "iss-1", kernel: true, tokenHash: tokenHash("ahqj_a.sig") });
   jobs.add({ container: "r-box", agentId: "agent-1", issueId: "iss-2", helperPort: 1, helperToken: "x" });
-  assert.deepEqual(jobs.byKernelToken("ahqj_a.sig"), { container: "k-box", agentId: "agent-1" });
+  assert.deepEqual(jobs.byKernelToken("ahqj_a.sig"), { container: "k-box", agentId: "agent-1", roles: [] });
   assert.equal(jobs.byKernelToken("ahqj_b.sig"), undefined);
   assert.equal(jobs.byKernelToken(tokenHash("ahqj_a.sig")), undefined);
   assert.equal(JSON.stringify(jobs.dump()).includes("ahqj_a.sig"), false);
   jobs.delete("k-box");
   assert.equal(jobs.byKernelToken("ahqj_a.sig"), undefined);
+});
+
+test("repo-checkout: a kernel job's box only by the roles its admission froze; any other box by its agent's grants", () => {
+  const jobs = new Jobs();
+  const grants = { agents: { "agent-1": { roles: ["repo-checkout"] } } };
+  // A crew or check job frozen without the role is refused, though its agent holds the role in today's grants.
+  jobs.add({ container: "crew-box", agentId: "agent-1", issueId: "iss-1", kernel: true, tokenHash: tokenHash("ahqj_crew.sig"), roles: ["notes"] });
+  jobs.add({ container: "check-box", agentId: "agent-1", issueId: "iss-2", kernel: true, tokenHash: tokenHash("ahqj_check.sig"), roles: [] });
+  jobs.add({ container: "arch-box", agentId: "agent-2", issueId: "iss-3", kernel: true, tokenHash: tokenHash("ahqj_arch.sig"), roles: ["repo-checkout"] });
+  assert.equal(mayCheckout(jobs.byKernelToken("ahqj_crew.sig"), grants), false);
+  assert.equal(mayCheckout(jobs.byKernelToken("ahqj_check.sig"), grants), false);
+  assert.equal(mayCheckout(jobs.byKernelToken("ahqj_arch.sig"), { agents: {} }), true);
+  // A Paperclip computer's run (no frozen roles): its agent's grants.
+  assert.equal(mayCheckout({ container: "c", agentId: "agent-1" }, grants), true);
+  assert.equal(mayCheckout({ container: "c", agentId: "agent-9" }, grants), false);
 });

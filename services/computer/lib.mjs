@@ -214,6 +214,12 @@ export const LEASE_MS = 15 * 60_000;
  * Runner jobs' boxes (POST /job): one record per box, saved like the run tokens so a launcher restart keeps the lease and the
  * helper binding. { container, agentId, issueId, identifier, workspace, codexHome, helperPort, helperToken, leaseUntil }.
  */
+/**
+ * Whether a box may use repo-checkout: a kernel job's box by the roles its admission froze (the launcher's job record, never
+ * the grants table again); any other box by its agent's grants.
+ */
+export const mayCheckout = (who, grants) => (Array.isArray(who?.roles) ? who.roles : grants?.agents?.[who?.agentId]?.roles ?? []).includes("repo-checkout");
+
 export const tokenHash = (token) => createHash("sha256").update(String(token)).digest("hex");
 
 export class Jobs {
@@ -231,7 +237,7 @@ export class Jobs {
     if (typeof token !== "string" || !token.startsWith("ahqj_")) return undefined;
     const h = tokenHash(token);
     const r = [...this.#by.values()].find((x) => x.kernel && x.tokenHash === h);
-    return r && { container: r.container, agentId: r.agentId };
+    return r && { container: r.container, agentId: r.agentId, roles: [...(r.roles ?? [])] };
   }
   containers() { return [...this.#by.keys()]; }
   /** A live lease: admission and idle reaping leave the box alone. */
