@@ -68,6 +68,11 @@ describe("conversation", () => {
     expect(msgs[5]).toMatchObject({ text: "it's due Thursday", correction: true });
   });
 
+  it("a kernel job's reply is the agent's reply, even in a chat its earlier notify replies tagged", () => {
+    const more = [...comments, owner("[telegram] and the budget?", 8), agent("Budget is approved.\n\n<!-- aidenhq:job=j-1a2b kind=reply -->", 9)];
+    expect(conversation(chat, more, "me", name).at(-1)).toMatchObject({ kind: "reply", agent: "Aiden", text: "Budget is approved." });
+  });
+
 
 
 });
