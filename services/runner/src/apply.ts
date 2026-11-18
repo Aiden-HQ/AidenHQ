@@ -68,13 +68,6 @@ export async function trialEditsText(repoPath: string, base: string, files: stri
  */
 const isArchitect = (grants: any, agentId: string | undefined) => Boolean(agentId) && (grants?.agents?.[agentId!]?.roles ?? []).includes("architect");
 
-/**
- * The delegating agent's follow-ups on its task: the Architect's always, any delegator's on an agent's task (`agentTask`).
- * Only the delegator's: another agent's comment never starts a job (the owner's are read as his own).
- */
-export const architectFollowUps = (comments: any[], delegatorId: string | undefined, grants: any, { agentTask = false } = {}) =>
-  delegatorId && (agentTask || isArchitect(grants, delegatorId)) ? comments.filter((c: any) => c.authorAgentId === delegatorId) : [];
-
 export function trialNoTapBy(issue: any, grants: any, runnerMade = false): boolean {
   if (issue?.createdByAgentId) return isArchitect(grants, issue.createdByAgentId);
   return ownerMade(issue, runnerMade);

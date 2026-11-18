@@ -55,20 +55,6 @@ test("the no-tap path is only for tasks the owner or the Architect (by the grant
   // A task the runner filed with the board key (a Dependabot PR's) names the owner as creator, but is never theirs.
   assert.equal(trialNoTapBy({ createdByUserId: "u1", createdByAgentId: null }, grants, true), false, "runner-made: a card");
 });
-test("only the Architect's follow-ups on a task it created count as a request (review rounds with the Fleet Engineer)", async () => {
-  const { architectFollowUps } = await import("../src/apply.ts");
-  const grants = { agents: { arch: { roles: ["architect"] }, cos: { roles: ["fleet-admin"] } } };
-  const notes = [{ id: "1", authorAgentId: "arch" }, { id: "2", authorAgentId: "cos" }];
-  assert.deepEqual(architectFollowUps(notes, "arch", grants).map((c) => c.id), ["1"]);
-  assert.deepEqual(architectFollowUps(notes, "cos", grants), [], "Aiden's or the Researcher's comments start nothing");
-  assert.deepEqual(architectFollowUps(notes, "arch", undefined), [], "no grants table: nothing");
-  assert.deepEqual(architectFollowUps(notes, undefined, grants), []);
-  // An agent's task (one it delegated): its delegator's follow-ups count whoever it is (e.g. the Roadmap Keeper asking its
-  // Engineer for the PR card); others' still don't.
-  assert.deepEqual(architectFollowUps(notes, "cos", grants, { agentTask: true }).map((c) => c.id), ["2"]);
-  assert.deepEqual(architectFollowUps(notes, undefined, grants, { agentTask: true }), []);
-  assert.deepEqual(architectFollowUps(notes, "arch", grants, { agentTask: true }).map((c) => c.id), ["1"], "only the delegator, never another agent");
-});
 test("trial is read as YAML, like compile", async () => {
   const { isTrial } = await import("../src/apply.ts");
   assert.equal(isTrial("trial: true\n"), true);

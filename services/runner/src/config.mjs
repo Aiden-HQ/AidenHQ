@@ -126,6 +126,8 @@ export function loadConfig() {
     secretsDir: secrets,
     // The kernel's backplane: the runner files a task's document there as a primer.publish record (main.mjs publishToPrimer).
     kernelUrl: env.AIDENHQ_KERNEL_URL ?? "http://10.231.0.1:3130",
+    // The kernel's admin listener, where a card opens (/approvals/<id>), as setup recorded it in .env.
+    adminUrl: String(env.AIDENHQ_ADMIN_URL || "http://localhost:3120").replace(/\/+$/, ""),
     workDir: expand(cfg.work_dir ?? "~/aidenhq-work"),
     stateDir,
     // The monitoring module's textfile directory (node-exporter reads it): the runner's metrics (metrics.ts).

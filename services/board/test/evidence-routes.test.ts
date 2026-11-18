@@ -32,12 +32,29 @@ describe("grader evidence routes", () => {
       req.end();
     });
 
+  const send = (path: string, body: unknown, headers: Record<string, string>) =>
+    new Promise<{ status: number }>((resolve, reject) => {
+      const req = request({ host: "127.0.0.1", port, method: "POST", path, headers: { host: "board:3122", authorization: `Bearer ${TOKEN}`, "content-type": "application/json", ...headers } }, (res) => {
+        res.resume();
+        res.on("end", () => resolve({ status: res.statusCode! }));
+      });
+      req.on("error", reject);
+      req.end(JSON.stringify(body));
+    });
+
   it("the grade-state routes are gone (the grading module owns them)", async () => {
     expect((await get("/internal/grades", runner)).status).toBe(404);
   });
 
   it("owner notices are the kernel's to collect, and escalated grades are never among them", async () => {
     expect((await get("/internal/owner/grades", {})).status).toBe(403);
+    expect((await get("/internal/owner/grades", { "x-gateway-key": DECIDE_KEY })).json).toEqual({ lines: [] });
+  });
+
+  it("the runner queues an owner notice, and the kernel collects it once", async () => {
+    expect((await send("/internal/owner/line", { text: "PEN-2 needs you" }, {})).status).toBe(403);
+    expect((await send("/internal/owner/line", { text: "PEN-2 needs you" }, runner)).status).toBe(200);
+    expect((await get("/internal/owner/grades", { "x-gateway-key": DECIDE_KEY })).json).toEqual({ lines: ["PEN-2 needs you"] });
     expect((await get("/internal/owner/grades", { "x-gateway-key": DECIDE_KEY })).json).toEqual({ lines: [] });
   });
 

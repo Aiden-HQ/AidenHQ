@@ -228,12 +228,28 @@ export function isUserPart(issue, engineers) {
 }
 
 /**
- * A sub-task an agent created (delegated). Its description is the agent's request, never the owner's words; it runs as
- * asked, and the kernel's write tiers gate what it pushes, merges, deploys or applies.
+ * A task an agent created: the asker is that agent (Paperclip's `createdByAgentId`). Its description is the agent's request,
+ * never the owner's words; it runs as asked, with or without a parent, and the kernel's write tiers gate what it pushes,
+ * merges, deploys or applies.
  */
-export function isAgentSubtask(issue) {
-  return Boolean(issue?.parentId && issue.createdByAgentId && !issue.createdByUserId);
+export function agentMade(issue) {
+  return Boolean(issue?.createdByAgentId && !issue.createdByUserId);
 }
+
+/** An agent's task under a parent: the parent is where its outcomes are told. */
+export function isAgentSubtask(issue) {
+  return Boolean(issue?.parentId && agentMade(issue));
+}
+
+/** The chief of staff: an agent holding `fleet-admin` in the host's grants table (never Paperclip metadata, which agents edit). */
+export const isChiefOfStaff = (grants, agentId) => Boolean(agentId) && (grants?.agents?.[agentId]?.roles ?? []).includes("fleet-admin");
+
+/**
+ * The agents' comments on an agent's task that start a job: the asker's and the chief of staff's. Any other agent's start
+ * nothing, and on the owner's own task no agent's do (his comments are read as his own elsewhere).
+ */
+export const startingNotes = (notes, task, grants) =>
+  agentMade(task) ? notes.filter((c) => c.authorAgentId === task.createdByAgentId || isChiefOfStaff(grants, c.authorAgentId)) : [];
 
 /**
  * A task left in progress with a check still ahead (Paperclip's `executionPolicy.monitor.nextCheckAt`): the run settled
@@ -247,31 +263,11 @@ export function settledWait(issue, now = Date.now()) {
 }
 
 /**
- * Where a finished queue leaves its task: an agent's sub-task whose PRs all merged, with no other open PR of its own
- * (openPrUrls: the task's PRs not known merged), is done; the delegating agent hears it on the parent. The owner's own
+ * Where a finished queue leaves its task: an agent's task whose PRs all merged, with no other open PR of its own
+ * (openPrUrls: the task's PRs not known merged), is done; a delegating agent hears it on the parent. The owner's own
  * tasks, a queue that stopped, and a task with another PR still open stay in review.
  */
 export function finishedStatus(issue, queue, openPrUrls = []) {
   const left = openPrUrls.filter((u) => !queue.prs.some((p) => p.url.toLowerCase() === String(u).toLowerCase()));
-  return queue.state === "done" && !left.length && isAgentSubtask(issue) ? "done" : "in_review";
-}
-
-/**
- * A rule or access proposal, Coach finding, product bug or Dependabot sweep an agent filed straight to the Platform Engineer
- * (`task_create`, marker `rule:` / `coach:` / `product-bug:` / `dependabot:`; the
- * Librarian's `task_propose_rule` wraps it as `delegate:<parent>:rule:...`). It runs as the agent's request, as a delegated
- * sub-task does: its only
- * output is a fleet apply card, which the AI reviewer or the owner still decides (the runner pushes and merges nothing without
- * one). Three checks, none of them typeable in free text: the marker is the tool's own last line (the tools strip `<!--` from
- * what agents write, so it can't appear mid-description), the assignee is the Platform Engineer, and the creator is an agent
- * whose grants (the host's table, not Paperclip metadata) let it file tasks.
- */
-export function isRuleProposal(issue, grants) {
-  const filer = grants?.agents?.[issue?.createdByAgentId]?.tools?.paperclip_tasks ?? [];
-  return Boolean(
-    issue?.createdByAgentId && !issue.createdByUserId &&
-    grants?.agents?.[issue.assigneeAgentId]?.key === "fleet-engineer" &&
-    (filer.includes("task_create") || filer.includes("task_propose_rule")) &&
-    /\n<!--\s*source:(?:delegate:[^:\s]+:)?(?:rule|coach|product-bug|dependabot):[A-Za-z0-9:._\/-]+\s*-->\s*$/.test(String(issue.description ?? "")),
-  );
+  return queue.state === "done" && !left.length && agentMade(issue) ? "done" : "in_review";
 }

@@ -176,8 +176,10 @@ the board key (it writes as the owner). Agents never claim something is done unt
 - Cancelling a run that has just started leaves a recovery hold (`executionBlocker`, legacy_execution_requires_reconciliation)
   that parks every later wake on the task; clear it with `POST /api/issues/:id/recovery-actions/resolve` (outcome `restored`,
   actionOutcome `not_performed`). A direct agent wake's `reason` never reaches the Codex prompt.
-- Runner (Engineer) tasks: an agent's delegated sub-task starts on its own (the kernel's write tiers gate its writes). After
-  the first run, only the owner's comments and the delegator's follow-ups start a job; other agent comments are ignored.
+- Runner (Engineer) tasks: the asker is whoever created the task. An agent's task starts on its own, parent or not (the
+  kernel's write tiers gate its writes). Only the asker's, the owner's and, on an agent's task, the chief of staff's
+  (`fleet-admin`) comments start a job; any other agent is told whom to ask. A stop or decision goes to the asker, or to
+  the owner's channel when that agent is gone.
 - OpenRouter runs are unpriced, so any `budgetMonthlyCents` pauses the agent at $0. Keep budgets at 0; cap spend with
   the OpenRouter key limit.
 - Agents in computers cannot share a folder: delegated tasks need `agent_default` (the `tasks` module sets this on

@@ -7,9 +7,9 @@ import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node
 import { basename, dirname, join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
-import { FOR_OTHERS, RUNNER_MARKER, deliveredFrom, finishedStatus, hasMarker, isAgentSubtask, isRuleProposal, isUserPart, ownRequest, findRepos, mentionedRepos, openrouterModels, crewNames, generalEngineers, personaFor, parseCommand, pickedEngine, pickerFor, engineKinds, engineLabel, engineOf, modelPrefix, repoAllowed, resolveEngine, stripHidden, useEngines, settledWait } from "./agents.mjs";
+import { FOR_OTHERS, RUNNER_MARKER, agentMade, deliveredFrom, finishedStatus, hasMarker, isAgentSubtask, isUserPart, startingNotes, ownRequest, findRepos, mentionedRepos, openrouterModels, crewNames, generalEngineers, personaFor, parseCommand, pickedEngine, pickerFor, engineKinds, engineLabel, engineOf, modelPrefix, repoAllowed, resolveEngine, stripHidden, useEngines, settledWait } from "./agents.mjs";
 import { REPO_ROOT, githubSlug, loadConfig } from "./config.mjs";
-import { applyWaitingForLock, architectFollowUps, bumpTitle, definitionsOf, ownerMade, productPin, strayFiles, trialEditsText, trialNoTapBy, untrialedNewAgents } from "./apply.ts";
+import { applyWaitingForLock, bumpTitle, definitionsOf, ownerMade, productPin, strayFiles, trialEditsText, trialNoTapBy, untrialedNewAgents } from "./apply.ts";
 import { applyCardArgs, asApproval, branchCardArgs, cardOf, cardText, planOf } from "./cards.ts";
 import { applyCard, repoKey } from "../../../kernel/src/kinds.ts";
 import { authorityLines, diffAll, forkChanges, grantOverrides, marketplaceChanges, moduleInputs, withGrantOverrides } from "../../../kernel/src/loader/authority.ts";
@@ -1100,17 +1100,24 @@ async function handleIssue(issue, engineerIds) {
   const comments = userComments.filter((c) => !state.handled(c.id));
   const fresh = comments.filter((c) => known || Date.parse(c.createdAt) >= horizon);
   for (const c of comments.filter((x) => !fresh.includes(x))) state.markHandled(c.id, issue.id);
-  // The agent that delegated this task may follow up on it once it has run (the Agent Architect reviewing the Platform Engineer's
-  // diff): a new request on the same task, so its next commit replaces the card. Never a command.
-  const agentNotes = state.get(`history:${issue.id}`) ? all.filter((c) => c.authorType === "agent" && c.authorAgentId && !state.handled(c.id)) : [];
-  const asked = agentNotes.length ? await pc.issue(issue.id) : undefined;
-  const followUps = asked ? architectFollowUps(agentNotes, asked.createdByAgentId, readGrants(), { agentTask: agentAsked(asked) }) : [];
-  for (const c of agentNotes.filter((x) => !followUps.includes(x))) state.markHandled(c.id, issue.id); // other agents: ignored
+  // Agents' comments (never the Engineer's own on its task): the asker's and the chief of staff's start a job on an agent's
+  // task, as an agent's words and never a command; any other agent's is answered once with whom to ask, and starts nothing.
+  // Only on a task an Engineer holds or has run: a task merely labelled for the runner waits for the owner's words.
+  const ours = engineerIds.has(issue.assigneeAgentId) || Boolean(state.get(`history:${issue.id}`));
+  const notes = ours ? all.filter((c) => c.authorType === "agent" && c.authorAgentId && c.authorAgentId !== issue.assigneeAgentId && !state.handled(c.id)) : [];
+  for (const c of notes.filter((x) => !known && Date.parse(x.createdAt) < horizon)) state.markHandled(c.id, issue.id);
+  const recent = notes.filter((x) => known || Date.parse(x.createdAt) >= horizon);
+  const asked = recent.length ? await pc.issue(issue.id) : undefined;
+  const followUps = asked ? startingNotes(recent, asked, readGrants()) : [];
+  const others = recent.filter((x) => !followUps.includes(x));
+  for (const c of others) state.markHandled(c.id, issue.id);
+  if (others.length) await redirectNotes(asked);
   if (!fresh.length && followUps.length) {
     for (const c of followUps) state.markHandled(c.id, issue.id);
     const text = followUps.map((c) => stripHidden(c.body).trim()).filter(Boolean).join("\n\n");
-    if (text) await handleRequest(issue, `(From an agent, not ${cfg.selfName}'s own words.)\n\n${text}`);
-    return;
+    if (!text) return;
+    state.set(`ownreq:${issue.id}`, new Date().toISOString()); // a first run from these words: the description joins it
+    return handleRequest(issue, `(From an agent, not ${cfg.selfName}'s own words.)\n\n${text}`);
   }
   if (!fresh.length) {
     // Newly assigned to an Engineer without comments. A task the user wrote themselves is the
@@ -1119,15 +1126,17 @@ async function handleIssue(issue, engineerIds) {
     // every update until it has been taken up, not only the first time.
     if (engineerIds.has(issue.assigneeAgentId) && !userComments.length && !running.has(issue.id) && !state.get(`ownreq:${issue.id}`) && !state.get(`history:${issue.id}`)) {
       const full = await pc.issue(issue.id);
-      // A task an agent delegated just runs, wherever it sits: the gates that matter are the kernel's write tiers on what it
+      // A task an agent made just runs, wherever it sits: the gates that matter are the kernel's write tiers on what it
       // pushes, merges, deploys or applies.
       if (requestFrom(full)) {
         state.set(`ownreq:${issue.id}`, new Date().toISOString());
         return handleRequest(issue, ""); // the description is the request
       }
+      // An agent's task with no request goes back to its asker; the greeting is for a person writing the task.
       if (!state.get(`greeted:${issue.id}`)) {
         state.set(`greeted:${issue.id}`, new Date().toISOString());
-        await pc.comment(issue.id, "Ready. What would you like me to do, and in which repository? (Or write it in the task description.)");
+        if (agentMade(full)) await tellAsker(full, "decision", `**${full.identifier} has no request:** "${full.title}" reached an Engineer with an empty description, so nothing has started. Write what to do as a comment on ${full.identifier}, or cancel it.`);
+        else await pc.comment(issue.id, "Ready. What would you like me to do, and in which repository? (Or write it in the task description.)");
       }
     }
     return;
@@ -1147,15 +1156,23 @@ async function handleIssue(issue, engineerIds) {
   if (texts.length) await handleRequest(issue, texts.join("\n\n"));
 }
 
-/** An agent's task the runner runs as the agent's request: a sub-task an agent delegated, or a rule proposal. */
-const agentAsked = (full) => isAgentSubtask(full) || isRuleProposal(full, readGrants());
-
 /**
- * The request in a task's description: the user's own task, or an agent's (agentAsked), which stays the agent's words.
+ * The request in a task's description: the user's own task, or an agent's (agentMade), which stays the agent's words.
  * Empty for everything else.
  */
 function requestFrom(full) {
-  return ownRequest(full) || (agentAsked(full) ? stripHidden(full.description).trim() : "");
+  return ownRequest(full) || (agentMade(full) ? stripHidden(full.description).trim() : "");
+}
+
+/**
+ * Agents' comments that start nothing get one reply naming whom to ask (never on a closed or blocked task, which a comment
+ * would reopen). Once per batch: a comment is handled before this runs.
+ */
+async function redirectNotes(full) {
+  if (["done", "cancelled", "blocked"].includes(full.status)) return;
+  const asker = agentMade(full) ? (await pc.agents().catch(() => [])).find((a) => a.id === full.createdByAgentId)?.name ?? "the agent that asked for it" : "";
+  const whom = asker ? `${asker} (who asked for it) or the chief of staff` : cfg.selfName;
+  await pc.comment(full.id, `Not read as a request: only ${whom} start${asker ? "" : "s"} work on ${full.identifier}. Ask ${asker ? "them" : cfg.selfName} to pass it on if it should change the work.`).catch(() => {});
 }
 
 async function handleRequest(issue, latest) {
@@ -1456,7 +1473,7 @@ async function runAutoMerges() {
         if (rec.state === "used") {
           const started = await startMerges(issue, { prs: zero, strict: true, each: true });
           await reportOutcome(rec.id, started ? { ok: true, text: `Merging ${zero.map((p) => p.url).join(", ")}, each once green on the head shown.` } : { ok: false, text: "The merge didn't start (said on the task)." });
-        } else await pc.comment(issueId, `The merge waits for ${rec.tier === 1 ? "the AI reviewer" : `${cfg.selfName}'s tap`} (${rec.id}).`);
+        } else if (!state.get(`held-noted:${rec.id}`)) await pc.comment(issueId, `The merge waits for ${rec.tier === 1 ? "the AI reviewer" : `${cfg.selfName}'s tap`} (${rec.id}).`);
       }
       if (busy || !rest.length) continue;
       const said = rest.filter(([, t]) => t.reject);
@@ -1656,15 +1673,15 @@ async function noteFailure(issue, target, s, head, what) {
 }
 
 /**
- * A trip's new breaker state saved; one just tripped is logged and told once, as an outcome (notices.ts "parked"): the
- * delegator hears it on the parent, a task without one keeps it on itself. True when the task is stopped.
+ * A trip's new breaker state saved; one just tripped is logged and told once, as an outcome (notices.ts "parked"): whoever
+ * asked hears it (tellAsker); the owner's own task keeps it on itself. True when the task is stopped.
  */
 async function settle(issue, { all, notice }, why) {
   state.set(breakerKey(issue.id), JSON.stringify(all));
   if (!notice) return Boolean(stopped(issue.id));
   log("breaker tripped", { issue: issue.identifier, ...why });
   const full = await pc.issue(issue.id).catch(() => undefined);
-  await (full?.parentId ? tellParent(full, "parked", notice(full.identifier)) : pc.comment(issue.id, notice(issue.identifier))).catch(() => {});
+  if (!(full && (await tellAsker(full, "parked", notice(full.identifier)).catch(() => false)))) await pc.comment(issue.id, notice(issue.identifier)).catch(() => {});
   return true;
 }
 
@@ -1772,7 +1789,7 @@ async function finishMerges(issueId, queue, say, { posted = false } = {}) {
     // A failure is told once per what failed (each PR's head, status and note, and the stop's reason): the same environment
     // stop or red checks on the same head again is no news (WOR-5276 woke 15 times on them). A new head or reason is told.
     const failed = kind === "failed" ? JSON.stringify([queue.reason ?? "", queue.prs.map((p) => [p.url, p.head, p.updatedHead, p.status, p.note ?? ""])]) : "", told = failed && state.get(`merge-failure-told:${issueId}`) === failed;
-    if (!told && (await tellParent(full, kind, appliedNote(queue.identifier, "merge queue", { ok: queue.state === "done", text: say.join("\n\n") })).catch(() => false)) && failed) state.set(`merge-failure-told:${issueId}`, failed);
+    if (!told && (await tellAsker(full, kind, appliedNote(queue.identifier, "merge queue", { ok: queue.state === "done", text: say.join("\n\n") })).catch(() => false)) && failed) state.set(`merge-failure-told:${issueId}`, failed);
   }
   // The tasks that opened these PRs close too, so they don't sit "in review" (shown as waiting for the owner).
   const mergedUrls = queue.prs.filter((p) => p.status === "merged").map((p) => p.url);
@@ -1964,7 +1981,7 @@ const gradingApi = (() => {
 })();
 // The grade loop (modules/grading/src/loop.mjs): this runner holds what the grader reads, so it runs it.
 const { runGrades, graded } = createGradeLoop({
-  api: gradingApi, pc, log, state, gather, grade, escalationFor, gradeNote, template, gradeDeps, tellParent, stripHidden, graderSpeaks,
+  api: gradingApi, pc, log, state, gather, grade, escalationFor, gradeNote, template, gradeDeps, tellParent: tellAsker, stripHidden, graderSpeaks,
   recordsOn: (issue) => recordsOn(issue), dispatch: (job) => dispatch(job), isUserInstruction: (c) => Paperclip.isUserInstruction(c), selfName: cfg.selfName,
   // Through the model gateway with the runner's grader token (kind grader: billed to the task, never capped). AIDENHQ_GRADER_URL: tests' fake.
   graderAsk: (issue) => process.env.AIDENHQ_GRADER_URL
@@ -2033,16 +2050,22 @@ function gradeDeps(issue) {
 }
 
 /**
- * A notice about a sub-task for its parent (notices.ts): an outcome is posted there, which wakes the delegator; progress is
- * not (it is on the sub-task already). Only an open parent hears it (an escalation with none goes to the delegator, askDelegator): Paperclip reopens a done or cancelled task on any
- * user-authored comment (the runner's included), which would wake its agent and send finished work round again (WOR-3582).
- * The asking agent's own chat, handed to the owner while it waited for a tap, is given back first so the outcome wakes it.
- * True when it was posted.
+ * Outcomes someone must decide, each with the fixed words the owner's channel uses for it: with no open parent to hear
+ * them, they still go to whoever asked.
  */
-async function tellParent(issue, kind, text) {
+const NEEDS_ASKER = { parked: "was stopped", escalated: "has a decision waiting", decision: "needs a decision" };
+
+/**
+ * A notice about a task for whoever asked (notices.ts): an outcome is posted on its open parent, which wakes the delegator;
+ * progress is not (it is on the task already). Only an open parent hears it: Paperclip reopens a done or cancelled task on any
+ * user-authored comment (the runner's included), which would wake its agent and send finished work round again (WOR-3582).
+ * With no open parent, an outcome someone must act on goes to the asker itself (askAsker). The asking agent's own chat,
+ * handed to the owner while it waited for a tap, is given back first so the outcome wakes it. True when it was delivered.
+ */
+async function tellAsker(issue, kind, text) {
   if (!wakesParent(kind)) return false;
   const p = issue.parentId ? await pc.issue(issue.parentId).catch(() => undefined) : undefined;
-  if (!p || ["done", "cancelled"].includes(p.status)) return kind === "escalated" && (await askDelegator(issue, text));
+  if (!p || ["done", "cancelled"].includes(p.status)) return Boolean(NEEDS_ASKER[kind]) && (await askAsker(issue, kind, text));
   // Only the asking agent's own chat (its id in the chat's end-anchored marker), and only while it sits with the owner.
   const chatAgent = /<!-- aidenhq-chat-agent:([A-Za-z0-9_-]+) -->\s*$/.exec(p.description ?? "")?.[1];
   if (!p.assigneeAgentId && p.assigneeUserId && issue.createdByAgentId && chatAgent === issue.createdByAgentId && isAgentSubtask(issue))
@@ -2051,12 +2074,20 @@ async function tellParent(issue, kind, text) {
   return true;
 }
 
+/**
+ * An agent's task with no open parent to hear what it needs (a stop, an escalation, a missing request): a note on the task
+ * itself would wake only its assignee, who cannot decide it, and one on a closed parent would reopen it. A live asker gets
+ * a task of its own (askDelegator); an asker that is paused or gone leaves it to the owner, through the owner channel's
+ * notices. False for a task no agent made (the owner's own keeps its note on itself) or when neither could be reached.
+ */
+async function askAsker(issue, kind, text) {
+  if (!agentMade(issue)) return false;
+  return (await askDelegator(issue, text)) || tellOwner(issue, kind, text);
+}
 
 /**
- * An escalated grade with no open parent to hear it (none, or already closed): a note on the task itself would wake only its
- * assignee, who cannot decide it, and one on the closed parent would reopen it. The delegator gets a task of its own, filed
- * assigned and started by one comment (as the design review's is: Paperclip never dispatches an assigned task on arrival).
- * Once per distinct note. False when the delegator is not a live agent: the caller then keeps its note on the task.
+ * The asker is a live agent: a task of its own, filed assigned and started by one comment (as the design review's is:
+ * Paperclip never dispatches an assigned task on arrival). Once per distinct note. False when the asker is not a live agent.
  */
 async function askDelegator(issue, text) {
   const to = issue.createdByAgentId;
@@ -2064,13 +2095,31 @@ async function askDelegator(issue, text) {
   const marker = `escalation:${issue.id}:${createHash("sha256").update(text).digest("hex").slice(0, 16)}`;
   const task = await pc.api("POST", `/api/companies/${pc.company}/issues`, {
     title: `Decision needed: ${issue.identifier}`, status: "todo", priority: "medium", assigneeAgentId: to, assigneeUserId: null, allowDuplicate: true, ...OWN_FOLDER,
-    description: `${text}\n\nDecide on ${issue.identifier} itself (it is not this task): close it to accept the work, or reopen it with what to change. Then close this task.\n\n<!-- source:${marker} -->`,
+    description: `${text}\n\nDecide on ${issue.identifier} itself (it is not this task), as the note above says: your comment there is read as your next word on it. Then close this task.\n\n<!-- source:${marker} -->`,
     idempotencyKey: `pw-${createHash("sha256").update(marker).digest("hex").slice(0, 32)}`,
   });
   if (task.deduplicated) return true;
   state.set(`runner-made:${task.id}`, new Date().toISOString());
-  await pc.comment(task.id, `Start now: ${issue.identifier}'s grade escalated to you and waits for your decision.`).catch(() => {});
-  log("escalation sent to its delegator", { task: issue.identifier, delegator: to, issue: task.identifier });
+  await pc.comment(task.id, `Start now: ${issue.identifier} waits for your decision.`).catch(() => {});
+  log("decision sent to the asker", { task: issue.identifier, asker: to, issue: task.identifier });
+  return true;
+}
+
+/**
+ * The owner's channel (the board's owner notices, which the kernel hands to Telegram or Slack), in fixed words: the
+ * identifier and what it needs, never an agent's title or GitHub's text. The note itself goes on the task, where the owner's
+ * reply carries on. Once per distinct note.
+ */
+async function tellOwner(issue, kind, text) {
+  const key = `owner-told:${issue.id}:${createHash("sha256").update(text).digest("hex").slice(0, 16)}`;
+  if (state.get(key)) return true;
+  if (!boardApi) return false;
+  const line = `🔧 **${issue.identifier} ${NEEDS_ASKER[kind]}**, and the agent that asked for it is paused or gone. What it needs is on ${issue.identifier}: reply there to carry on, or cancel it.`;
+  const sent = await boardApi.post("/internal/owner/line", { text: line }).then(() => true, (err) => (log("owner notice failed", { task: issue.identifier, err: String(err.message ?? err).slice(0, 200) }), false));
+  if (!sent) return false;
+  state.set(key, new Date().toISOString());
+  log("decision sent to the owner", { task: issue.identifier, kind });
+  if (!["done", "cancelled", "blocked"].includes(issue.status)) await pc.comment(issue.id, text).catch(() => {});
   return true;
 }
 
@@ -2269,9 +2318,23 @@ async function fileApproval(issue, { action, args, diff, ts, carries }) {
   // A local change's merge card carries its diff (docs/design/codehost-local.md §4), as an apply's does.
   const card = action === "apply" ? applyCard(args, diff ?? "") : diff ? { ...cardOf(action, args), details: `${cardOf(action, args).details}\n\n${diff}` } : cardOf(action, args);
   const plan = { ...planOf(...ts), card, ...(action === "apply" ? { targets: { diff: createHash("sha256").update(diff ?? "").digest("hex") } } : {}), ...(carries?.length ? { carries } : {}) };
-  const a = asApproval(await kernel("POST", "/v1/writes", { kind: kindOf(action), task: issue.id, identifier: issue.identifier, args, plan }));
+  const r = await kernel("POST", "/v1/writes", { kind: kindOf(action), task: issue.id, identifier: issue.identifier, args, plan });
+  const a = asApproval(r);
   log("approval filed", { issue: issue.identifier, approval: a.id, action, state: a.state, tier: a.tier, panel: a.panel });
+  if (r.state === "owner" && r.cap) await noteHeld(a);
   return a;
+}
+
+/**
+ * A record the kernel holds for the owner (a cap at filing, or the AI reviewer's yes held when it was claimed): one short
+ * note on its task, once per record, as the runner's (Paperclip never wakes an Engineer on it). The owner's decision does
+ * the rest: an approval runs it and starts the task's next run, a rejection's notice reaches the task.
+ */
+async function noteHeld(a) {
+  const key = `held-noted:${a.id}`;
+  if (state.get(key)) return;
+  state.set(key, new Date().toISOString());
+  await pc.comment(a.issueId, `Waiting on ${cfg.selfName}'s approval: ${a.sentence || a.action}, ${cfg.adminUrl}/approvals/${a.id}`).catch(() => {});
 }
 // ------------------------------------------------------------------ tiered approvals
 
@@ -2841,8 +2904,8 @@ async function rejectedFollowUp(issue, a, post) {
   // Counted as tiering counts them (an owner's reply since lifts the rejections before it), so parked here is parked there.
   const { records } = await commonTierState(full, a.action);
   const next = afterRejection({ code: post.code, rejects: priorDecisions(records, a.action, [], undefined, undefined, undefined, requestTargets(a.action, a.args)).rejects, maxRejects: MAX_REJECTS, unsure: UNSURE });
-  if (next.tell === "parked") await tellParent(full, "parked", `**${full.identifier} is parked:** the AI reviewer rejected its ${a.action} ${MAX_REJECTS} times, so the runner stops sending it back (its notes are on ${full.identifier}): ${full.title}. Narrow or rewrite the request and reopen it with that, or cancel it.`);
-  if (next.tell === "decision") await tellParent(full, "decision", `**Two AI reviewers were unsure about ${full.identifier}'s ${a.action}:** ${full.title}. Their notes are on ${full.identifier}; its Engineer is fixing the change. If the request itself is unclear (the brief or its authorisation), say what you meant there.`);
+  if (next.tell === "parked") await tellAsker(full, "parked", `**${full.identifier} is parked:** the AI reviewer rejected its ${a.action} ${MAX_REJECTS} times, so the runner stops sending it back (its notes are on ${full.identifier}): ${full.title}. Narrow or rewrite the request and reopen it with that, or cancel it.`);
+  if (next.tell === "decision") await tellAsker(full, "decision", `**Two AI reviewers were unsure about ${full.identifier}'s ${a.action}:** ${full.title}. Their notes are on ${full.identifier}; its Engineer is fixing the change. If the request itself is unclear (the brief or its authorisation), say what you meant there.`);
   const key = `reject-dispatched:${a.id}`;
   if (!next.dispatch || state.get(key)) return;
   state.set(key, new Date().toISOString());
@@ -3490,7 +3553,12 @@ async function runApprovals() {
   for (const a of records.map(asApproval)) {
     if (running.has(a.issueId)) continue; // after the run in progress
     const claimed = await kernel("POST", `/v1/writes/${a.id}/claim`).then(asApproval, (err) => void log("approval claim failed", { approval: a.id, err: String(err.message ?? err).slice(0, 200) }));
-    if (!claimed) continue;
+    if (!claimed) {
+      // Held for the owner instead (the kernel revalidates the AI reviewer's yes at the claim): the task hears it once.
+      const now = await kernel("GET", `/v1/writes/${a.id}`).catch(() => undefined);
+      if (now?.state === "owner") await noteHeld(asApproval(now));
+      continue;
+    }
     log("approval claimed", { approval: a.id, issue: a.identifier, action: a.action });
     // One card's trouble is that card's outcome: a claimed record never goes without one, and the others still run this tick.
     await runClaimed(claimed).catch(async (err) => {
@@ -3547,7 +3615,7 @@ async function runClaimed(claimed) {
   const full = await pc.issue(claimed.issueId).catch(() => null);
   if (full && isAgentSubtask(full)) {
     const kind = !outcome.ok ? "failed" : (await graded(full.id)) ? "applied" : "done";
-    await tellParent(full, kind, appliedNote(claimed.identifier, claimed.id, outcome)).catch(() => {});
+    await tellAsker(full, kind, appliedNote(claimed.identifier, claimed.id, outcome)).catch(() => {});
   }
   if (full && outcome.ok && outcome.next) await nextRunAfter(full, claimed, outcome).catch((err) => log("next run after an approval failed", { approval: claimed.id, err: String(err.message ?? err).slice(0, 200) }));
   await flushOutcomes();
@@ -4803,7 +4871,7 @@ async function reportToParent(issue) {
   summarizing.add(full.parentId);
   try {
     // Only when it is the last word (notices.ts summaryKind): with every task graded and nothing asked, the grades say it.
-    await tellParent(full, summaryKind(rows), text);
+    await tellAsker(full, summaryKind(rows), text);
   } finally {
     summarizing.delete(full.parentId);
   }

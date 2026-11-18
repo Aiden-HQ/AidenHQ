@@ -20,7 +20,7 @@ import { FOR_OTHERS, RELAY_MARKER, crewOf, deliveredFrom, deliveredText, foldedC
 import { AccountError, forwardedProto, type AccountSession, type KernelAuth } from "./kernel-auth.js";
 import { INLINE_TYPES, MAX_UPLOAD_BODY, UploadSchema, decode, fileType, fileViews, isPdf, pdfText, safeName } from "./files.js";
 import { ControlSchema, CostsSchema, RelaySchema, Refused, holdsRole, appsApi, assertMeantTask, boundedFleetStatus, fleetControl, fleetCosts, fleetStatus, relayableWords, requireAgent, requireFleetRole } from "./fleet.js";
-import { detectorState, kickDetector, staleSources, takeOwnerLines } from "./fleet-ops.js";
+import { detectorState, kickDetector, queueOwnerLine, staleSources, takeOwnerLines } from "./fleet-ops.js";
 import { AlertsSchema, metricsText, receiveAlerts } from "./monitoring.js";
 import { kernelRecords, type Approval, type Records } from "./records.js";
 import { wakeCheck } from "./brake.js";
@@ -1011,6 +1011,17 @@ export function createApp(opts: AppOptions): Server {
       handle: async (_m, _b, _u, req) => {
         if (!kernelKeyed(req)) throw new HttpError(403, "only the kernel collects owner notices");
         return { lines: takeOwnerLines(store) };
+      },
+    },
+    {
+      // The runner's one-line notice for the owner (a stop or a decision on an agent's task whose asker is gone): queued with
+      // the others above, for the next channel that collects them.
+      method: "POST",
+      path: /^\/internal\/owner\/line$/,
+      handle: async (_m, body, _u, req) => {
+        requireRunner(req, "queues owner notices");
+        queueOwnerLine(store, parse(z.object({ text: z.string().trim().min(1).max(1000) }).strict(), body).text);
+        return { queued: true };
       },
     },
     {

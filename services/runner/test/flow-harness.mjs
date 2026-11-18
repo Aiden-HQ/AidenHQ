@@ -161,6 +161,7 @@ export function fakePaperclip({ parent, part, engineers, parentComments = [], pa
   const passed = [];
   const attached = [];
   const unknown = [];
+  const ownerLines = []; // the owner's notices the runner queued on the board (POST /internal/owner/line)
   // The kernel's records for the runner's kinds: the real records, write lifecycle and backplane routes (kernel/src), with
   // the real reviewer module in the reviewer slot. `approvals` and `autos` are views of them as the board once kept them.
   const kdb = openRecords(join(mkdtempSync(join(tmpdir(), "flow-kernel-")), "kernel.db"));
@@ -390,6 +391,7 @@ export function fakePaperclip({ parent, part, engineers, parentComments = [], pa
     // The board's internal API: the runner's activity for the Crew view, and messages passed on.
     if (path.startsWith("/internal/")) {
       if (path.endsWith("/runner/activity")) activity.push(JSON.parse(body));
+      if (path === "/internal/owner/line") ownerLines.push(JSON.parse(body).text);
       if (path.endsWith("/pass")) {
         passed.push({ path, ...JSON.parse(body) });
         return send({ passed: true, to: "Alfred", part: "PEN-3" });
@@ -408,7 +410,7 @@ export function fakePaperclip({ parent, part, engineers, parentComments = [], pa
     assert.equal(typeof out, "object", String(out));
     return view(kdb.get(r.id));
   };
-  return { server, comments, patches, activity, held, passed, attached, unknown, addComment, approvals, records, autos, decide, kdb, kw, notices, issues, grades, gradeLog, graderCalls, graderAnswers, created, filings, runs, wakes, hang, failRead, failComment, refuseComment, refuseStart };
+  return { server, comments, patches, activity, held, passed, attached, unknown, ownerLines, addComment, approvals, records, autos, decide, kdb, kw, notices, issues, grades, gradeLog, graderCalls, graderAnswers, created, filings, runs, wakes, hang, failRead, failComment, refuseComment, refuseStart };
 }
 
 /**
