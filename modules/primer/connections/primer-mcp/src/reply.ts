@@ -2,8 +2,8 @@
 // it resolved (primer_resolve_thread). A reply is shown to everyone who can read the document, so it is a kernel record the AI
 // reviewer decides (Tier 1) when the thread is on a document this agent published on this task (owners.ts), and the owner's
 // (Tier 2) on any other. The request names the document; Tier 1 needs the owners map to say this agent published it on this
-// task AND the document's comments (parsed as data) to hold a comment whose `thread_id` field is exactly that thread; an
-// unparseable answer or no exact match is Tier 2. A `body` is a reply; no `body` resolves the thread.
+// task AND the document's comments (primer_get_comments' `comments` array) (parsed as data) to hold a comment whose `thread_id` field is exactly that thread; an
+// unparseable answer or no exact match is Tier 2. The document_id is for this check only: the upstream tools take just the thread. A `body` is a reply; no `body` resolves the thread.
 import type { Executor } from "./aidenhq-sdk/executor.js";
 import { fileOwners, type Owners } from "./owners.js";
 
@@ -20,12 +20,8 @@ export function normaliseReply(a: any): Reply {
   return { document_id, thread_id, ...(body ? { body } : {}) };
 }
 
-/** True when some object in the parsed comments has a `thread_id` field exactly equal to the id (text in a comment body never counts). */
-function hasThread(node: unknown, id: string): boolean {
-  if (Array.isArray(node)) return node.some((n) => hasThread(n, id));
-  if (node && typeof node === "object") return (node as Record<string, unknown>).thread_id === id || Object.values(node).some((n) => hasThread(n, id));
-  return false;
-}
+/** True when the parsed answer's `comments` array holds a comment whose `thread_id` field is exactly the id (text in a comment body never counts). */
+const hasThread = (answer: any, id: string) => Array.isArray(answer?.comments) && answer.comments.some((c: any) => c?.thread_id === id);
 
 export function replier(call: Call, owners: Owners = fileOwners()): Executor {
   return {
@@ -53,7 +49,7 @@ export function replier(call: Call, owners: Owners = fileOwners()): Executor {
     },
     async execute(rec) {
       const a = normaliseReply(rec.args);
-      const r = await (a.body ? call("primer_reply_to_thread", { document_id: a.document_id, thread_id: a.thread_id, body: a.body }) : call("primer_resolve_thread", { document_id: a.document_id, thread_id: a.thread_id }))
+      const r = await (a.body ? call("primer_reply_to_thread", { thread_id: a.thread_id, body: a.body }) : call("primer_resolve_thread", { thread_id: a.thread_id }))
         .catch((e: Error) => ({ text: `outcome unknown (${e.message}): read the thread on Primer before replying again`, isError: true }));
       return r.isError ? { ok: false, text: r.text.slice(0, 2000) } : { ok: true, text: a.body ? `Replied on thread ${a.thread_id}.` : `Resolved thread ${a.thread_id}.` };
     },

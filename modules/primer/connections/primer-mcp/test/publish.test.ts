@@ -56,7 +56,7 @@ describe("primer.publish executor", () => {
     const owners = memory();
     owners.set("01a1-doc0", { agent: "a1", task: "T-1" });
     const calls: string[] = [];
-    const comments = JSON.stringify([{ thread_id: "th-1", comment_id: "c1", body: "see thread th-9" }]);
+    const comments = JSON.stringify({ markdown: "", threadCount: 1, comments: [{ thread_id: "th-1", comment_id: "c1", body: "see thread th-9" }] });
     const ex = replier(async (name) => { calls.push(name); return { text: comments }; }, owners);
     const run = { agent: "a1", key: "researcher", name: "Ada", roles: [], kind: "run" };
     const reply = (thread_id: string, document_id = "01a1-doc0") => ex.plan({ kind: "primer.reply", args: { document_id, thread_id, body: "Addressed in v2: done" }, requester: run, task: "T-1" });
