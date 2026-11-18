@@ -13,7 +13,7 @@
       "name": "services/runner#flows",
       "job": "runner-flows",
       "run": "(cd ../../kernel && npm ci) && npm ci && npm run test:flows",
-      "paths": ["services/runner", "kernel/sdk", "kernel/src", "kernel/test/fixtures", "kernel/package-lock.json", "fixtures/engine-echo"],
+      "paths": ["services/runner", "kernel/sdk", "kernel/src", "scripts/compiler", "kernel/test/fixtures", "kernel/package-lock.json", "fixtures/engine-echo"],
       "ignore": ["services/runner/src/prompt.ts"]
     },
     { "name": "kernel/sdk", "run": "(cd ../../services/runner && npm ci) && npm test", "paths": ["kernel/sdk", "fixtures/engine-echo"] },
@@ -23,7 +23,7 @@
       "paths": ["fixtures/twin", "kernel/sdk", "scripts/sdk-pack.mjs"]
     },
     { "name": "services/computer", "run": "node --test test/*.test.mjs", "paths": ["services/computer", "services/runner/src", "services/runner/bin"] },
-    { "name": "kernel", "run": "npm ci && npm test && npm run typecheck", "paths": ["kernel", "services/computer", "services/paperclip-events", "fixtures", "paths.yaml", "scripts/paths.mjs", "services/runner/src/gate-core.mjs"] },
+    { "name": "kernel", "run": "npm ci && npm test && npm run typecheck", "paths": ["kernel", "scripts/compiler", "services/computer", "services/paperclip-events", "fixtures", "paths.yaml", "scripts/paths.mjs", "services/runner/src/gate-core.mjs"] },
     { "name": "services/board", "job": "board", "run": "npm ci && npx vitest run && npm run typecheck && npm run lint && npm run build", "paths": ["services/board", "services/runner/src", "scripts/identity.mjs"] }
   ]
 }

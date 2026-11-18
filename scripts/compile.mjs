@@ -37,9 +37,9 @@ import { caddyfile, caddyService, publicUrls } from "./front-door.mjs";
 import { ensureIdentityKeys } from "./identity.mjs";
 import { report, staticCheck } from "./agent-check.mjs";
 import { sizesReport } from "./handbook.mjs";
-import { checkDataVersion } from "../kernel/src/loader/data-version.ts";
-import { hostFetch } from "../kernel/src/loader/sources.ts";
-import { readRelease } from "../kernel/src/loader/release.ts";
+import { checkDataVersion } from "./compiler/data-version.ts";
+import { hostFetch } from "./compiler/sources.ts";
+import { readRelease } from "./compiler/release.ts";
 import { computerPulls, useReleaseImages } from "./release-images.mjs";
 
 const repo = resolve(dirname(fileURLToPath(import.meta.url)), "..");

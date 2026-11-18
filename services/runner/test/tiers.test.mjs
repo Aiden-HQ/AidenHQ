@@ -6,7 +6,7 @@ import YAML from "yaml";
 import { classify, newGrants } from "../src/tiers.mjs";
 import { dependabotCommits } from "../../../modules/platform/src/check.mjs";
 import { afterReview, origins, priorDecisions, priorPart, rejectedSince, requestTargets, routineCap } from "../../../kernel/src/tier.ts";
-import { moduleInputs, withGrantOverrides } from "../../../kernel/src/loader/authority.ts";
+import { moduleInputs, withGrantOverrides } from "../../../scripts/compiler/authority.ts";
 
 test("a replayed approval: only a later no on its branches (or a merge, or the owner's veto) outranks it", () => {
   const b = { repo: "acme/aidenhq", branch: "fix/a" };

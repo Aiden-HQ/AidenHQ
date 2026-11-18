@@ -69,7 +69,7 @@ No live instance and no paid keys are needed. Use Node 24 and run `npm ci` once 
 - **The reviewer eval.** `node modules/ai-reviewer/scripts/reviewer-eval.mjs` runs the AI reviewer against every planted
   case in `modules/ai-reviewer/test/reviewer-cases/` and must stay at 100%. It needs a paid `OPENROUTER_API_KEY`, so CI
   doesn't run it. If your PR touches the `modules/ai-reviewer` module (its service, its policy in `service/security/` or
-  the cases), `services/runner/src/tiers.mjs` or `kernel/src/loader/authority.ts`, say so in the PR; the maintainer runs it before merging. A reviewer
+  the cases), `services/runner/src/tiers.mjs` or `scripts/compiler/authority.ts`, say so in the PR; the maintainer runs it before merging. A reviewer
   false reject you hit becomes a new planted case.
 
 ## What a good change looks like

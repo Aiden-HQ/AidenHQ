@@ -9,12 +9,12 @@ import YAML from "yaml";
 import { validateImages } from "./computers.mjs";
 import { AUTH_PORT, checkPorts, edgeConfig, GATE_PORT } from "./edge.mjs";
 import { urlSettingProblem } from "../services/shared/url-setting.ts";
-import { generateCompose, ownSecrets, subnetFor } from "../kernel/src/loader/services.ts";
-import { capabilityProblems, conflictProblems, danglingBindings } from "../kernel/src/loader/bindings.ts";
-import { MANIFEST_KEYS, moduleName } from "../kernel/src/loader/authority.ts";
-import { checkout, forkBase, forksOf, hostFetch, marketplaceEntries, marketplacesOf, OFFICIAL, onFork, onOfficialMain, pinsOf, remoteModules, sourceOf } from "../kernel/src/loader/sources.ts";
-import { effective } from "../kernel/src/loader/release.ts";
-import { compilePoints } from "../kernel/src/loader/points.ts";
+import { generateCompose, ownSecrets, subnetFor } from "./compiler/services.ts";
+import { capabilityProblems, conflictProblems, danglingBindings } from "./compiler/bindings.ts";
+import { MANIFEST_KEYS, moduleName } from "./compiler/authority.ts";
+import { checkout, forkBase, forksOf, hostFetch, marketplaceEntries, marketplacesOf, OFFICIAL, onFork, onOfficialMain, pinsOf, remoteModules, sourceOf } from "./compiler/sources.ts";
+import { effective } from "./compiler/release.ts";
+import { compilePoints } from "./compiler/points.ts";
 import { gateMode } from "../kernel/src/gates.ts";
 import { officialRepo } from "./official-repo.mjs";
 
@@ -84,7 +84,7 @@ const readYaml = (path) => YAML.parse(readFileSync(path, "utf8")) ?? {};
 const fail = (msg) => { throw new Error(msg); };
 
 /**
- * What each module still reaches of the root stack until its kernel route lands (kernel/src/loader/services.ts `Legacy`).
+ * What each module still reaches of the root stack until its kernel route lands (scripts/compiler/services.ts `Legacy`).
  * Closed: each list may only shrink (scripts/test/modules.test.mjs pins them). `until` is the unit that removes the entry.
  * links: root services a module's services share a network with (board: sign-ins, connection health, internal API,
  * metrics, the lane; paperclip:

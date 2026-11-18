@@ -13,9 +13,9 @@ import { applyWaitingForLock, ownerMade, trialEditsText, trialNoTapBy } from "./
 import { bumpTitle, definitionsOf, productPin, strayFiles, untrialedNewAgents } from "../../../kernel/src/apply.ts";
 import { applyCardArgs, asApproval, branchCardArgs, cardOf, cardText, planOf } from "./cards.ts";
 import { applyCard, repoKey } from "../../../kernel/src/kinds.ts";
-import { authorityLines, diffAll, forkChanges, grantOverrides, marketplaceChanges, moduleInputs, withGrantOverrides } from "../../../kernel/src/loader/authority.ts";
-import { OFFICIAL, OFFICIAL_URL, forksOf, hostFetch, officialSides, remoteCodeText, withRemote } from "../../../kernel/src/loader/sources.ts";
-import { effective } from "../../../kernel/src/loader/release.ts";
+import { authorityLines, diffAll, forkChanges, grantOverrides, marketplaceChanges, moduleInputs, withGrantOverrides } from "../../../scripts/compiler/authority.ts";
+import { OFFICIAL, OFFICIAL_URL, forksOf, hostFetch, officialSides, remoteCodeText, withRemote } from "../../../scripts/compiler/sources.ts";
+import { effective } from "../../../scripts/compiler/release.ts";
 import { engineState, followJob, kernelJobs, readEngines, removeLayers, gatewayApi, launcher, modelToken, observes, releaseBox } from "./engines.mjs";
 import { hiding, jailProblem } from "../../../kernel/src/sandbox.ts";
 import { sandboxConfig } from "../../../kernel/src/sandbox-config.ts";

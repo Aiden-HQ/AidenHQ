@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { generateCompose, SERVICE_FIELDS } from "../src/loader/services.ts";
+import { generateCompose, SERVICE_FIELDS } from "../compiler/services.ts";
 
 const IMG = `example.com/acme/tool:1.0@sha256:${"a".repeat(64)}`;
 const root = mkdtempSync(join(tmpdir(), "mod-"));
@@ -83,6 +83,6 @@ test("generated services carry the hardened settings, their own network and the 
 });
 
 test("the schema lists exactly the fields the loader accepts", () => {
-  const schema = JSON.parse(readFileSync(new URL("../schemas/services.json", import.meta.url), "utf8"));
+  const schema = JSON.parse(readFileSync(new URL("../../kernel/schemas/services.json", import.meta.url), "utf8"));
   assert.deepEqual(Object.keys(schema.properties.run.additionalProperties.properties).sort(), [...SERVICE_FIELDS].sort());
 });

@@ -69,7 +69,7 @@ export function branchCardArgs(branches: BranchArg[], { text, merge }: { text?: 
 /** The most authority lines a card carries (ARGS: 200 lines of at most 300 characters). */
 const AUTHORITY_MAX = 200;
 /**
- * An apply card's args: the fleet branch at its exact commit, and the module changes it brings (kernel/src/loader/authority.ts
+ * An apply card's args: the fleet branch at its exact commit, and the module changes it brings (scripts/compiler/authority.ts
  * lines, code-chosen words and cleaned ids), so the owner's card lists them and its digest covers them.
  */
 export function applyCardArgs(b: { r: { repo: string; branch: string }; sha: string; files: string[] }, authority: string[] = [], ownerRequired = false): CardArgs["apply"] {

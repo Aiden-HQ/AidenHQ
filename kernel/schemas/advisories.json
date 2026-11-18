@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://aidenhq.dev/schemas/advisories.json",
-  "title": "A marketplace's advisories.json (spec §6.7): read from the marketplace's head, it flags installed module shas that descend from an affected commit and not from the fix. Notify only: pins never change. kernel/src/loader/advisories.ts holds a file to this; a file that breaks it is ignored and logged.",
+  "title": "A marketplace's advisories.json (spec §6.7): read from the marketplace's head, it flags installed module shas that descend from an affected commit and not from the fix. Notify only: pins never change. kernel/src/advisories.ts holds a file to this; a file that breaks it is ignored and logged.",
   "type": "object",
   "additionalProperties": false,
   "required": ["advisories"],

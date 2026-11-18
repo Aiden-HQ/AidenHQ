@@ -140,7 +140,7 @@ test("generated compose: module services from services:, root services only gain
   assert.throws(() => compile(dir, finst(["a"])), /module a: compose fragments are gone/);
 });
 test("privileged: entries from the closed list only, at most 8 official modules (spec §5.6, raised from 7 for host-metrics)", async () => {
-  const { PRIVILEGED } = await import("../../kernel/src/loader/services.ts");
+  const { PRIVILEGED } = await import("../compiler/services.ts");
   const product = join(here, "../..");
   const priv = JSON.parse(readFileSync(join(product, "modules/marketplace.json"), "utf8")).plugins.map((p) => [p.name, [YAML.parse(readFileSync(join(product, "modules", p.name, "module.yaml"), "utf8")).privileged ?? []].flat()]).filter(([, l]) => l.length);
   for (const [, l] of priv) for (const e of l) assert.ok(PRIVILEGED.includes(e), e);

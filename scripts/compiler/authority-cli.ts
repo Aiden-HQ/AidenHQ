@@ -1,5 +1,5 @@
 // The authority diff of an apply, for the apply log (ops/apply-config-work.sh) and the operator: one line per module change.
-//   node kernel/src/loader/authority-cli.ts <old product sha> <new product sha> [<instance dir> <old instance sha> <new instance sha>]
+//   node scripts/compiler/authority-cli.ts <old product sha> <new product sha> [<instance dir> <old instance sha> <new instance sha>]
 // Without the instance arguments, both sides use the instance checkout's current instance.yaml (AIDENHQ_INSTANCE_DIR), or
 // every module when there is none. Reads module manifests with `git show` at each sha, so any two commits work. Exit 2 when
 // a commit or manifest can't be read: the apply refuses rather than guess.
@@ -12,7 +12,7 @@ import { authorityLines, diffAll, forkChanges, marketplaceChanges, moduleInputs 
 import { effective } from "./release.ts";
 import { hostFetch, officialSides, withRemote } from "./sources.ts";
 
-const repo = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
+const repo = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 // The kernel has no YAML dependency; the compiler's (scripts/, installed by every apply) reads the manifests.
 const YAML = createRequire(join(repo, "scripts/package.json"))("yaml") as { parse: (s: string) => unknown };
 // The product whose commits are read: this checkout, or AIDENHQ_PRODUCT_DIR (tests).
