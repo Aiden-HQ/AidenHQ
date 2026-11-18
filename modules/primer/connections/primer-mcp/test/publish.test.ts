@@ -52,15 +52,19 @@ describe("primer.publish executor", () => {
     expect((await version({ ...run, agent: "a2" }, "T-1")).raise?.tier).toBe(2);
   });
 
-  it("tiers a thread reply by the document the thread is on", async () => {
+  it("tiers a thread reply by the owned document and an exact thread id in its comments", async () => {
     const owners = memory();
     owners.set("01a1-doc0", { agent: "a1", task: "T-1" });
     const calls: string[] = [];
-    const ex = replier(async (name, args) => { calls.push(name); return { text: args.documentId === "01a1-doc0" ? "thread th-1 [open]" : "" }; }, owners);
+    const comments = JSON.stringify([{ thread_id: "th-1", comment_id: "c1", body: "see thread th-9" }]);
+    const ex = replier(async (name) => { calls.push(name); return { text: comments }; }, owners);
     const run = { agent: "a1", key: "researcher", name: "Ada", roles: [], kind: "run" };
-    const own = await ex.plan({ kind: "primer.reply", args: { thread_id: "th-1", body: "Addressed in v2: done" }, requester: run, task: "T-1" });
-    expect([own.raise, own.targets]).toEqual([undefined, { thread: "th-1", document: "01a1-doc0" }]);
-    expect((await ex.plan({ kind: "primer.reply", args: { thread_id: "th-2", body: "x" }, requester: run, task: "T-1" })).raise?.tier).toBe(2);
+    const reply = (thread_id: string, document_id = "01a1-doc0") => ex.plan({ kind: "primer.reply", args: { document_id, thread_id, body: "Addressed in v2: done" }, requester: run, task: "T-1" });
+    const own = await reply("th-1");
+    expect(own.raise).toBeUndefined();
+    // A thread id only quoted in a comment body, or a document the agent didn't publish, stays the owner's.
+    expect((await reply("th-9")).raise?.tier).toBe(2);
+    expect((await reply("th-1", "01a1-doc9")).raise?.tier).toBe(2);
     await ex.execute({ id: "k-0000000000000004", kind: "primer.reply", args: own.args, digest: "d", idempotency_key: "k-0000000000000004" });
     expect(calls.at(-1)).toBe("primer_reply_to_thread");
   });
