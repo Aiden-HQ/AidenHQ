@@ -785,8 +785,8 @@ rreview="modules/ai-reviewer/service/src/review.mjs"
 # Jobs reach connections only through the kernel: a job holds no connection URL or token (its grants and its non-private
 # jobcaps through the kernel's proxy with its job token), private reads go only to Engineers whose definition opts in
 # (private_reads), with web search off; a repository is never created outside the code host's approved create_repo; every
-# Primer publish is a primer.publish record at floor 1.
-[ "$(awk '/^writes:/{on=1} on && /^    (floor|tools):/' modules/primer/module.yaml | tr -s ' ')" = "$(printf ' floor: 1\n tools: [ primer_create_document, primer_add_version ]')" ] \
+# Primer publish is a primer.publish record at floor 1, and a thread reply a primer.reply record at floor 1.
+[ "$(awk '/^writes:/{on=1} on && /^    (floor|tools):/' modules/primer/module.yaml | tr -s ' ')" = "$(printf ' floor: 1\n tools: [ primer_create_document, primer_add_version ]\n floor: 1\n tools: [ primer_reply_to_thread, primer_resolve_thread ]')" ] \
   && grep -qF 'mcp: [], env: [],' kernel/src/sandbox.ts \
   && grep -qF 'if (j.private && a.private_reads !== true) fail(' scripts/modules.mjs \
   && grep -qF 'web: !observes(engine),' kernel/src/sandbox.ts \
