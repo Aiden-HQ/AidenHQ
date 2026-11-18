@@ -1,4 +1,12 @@
-/** The few Paperclip REST calls the board makes, as the user (board API key). */
+import { AsyncLocalStorage } from "node:async_hooks";
+
+/**
+ * The Paperclip REST calls the board makes, as the owner, all through the kernel (kernel/src/cp.ts createBoardCp): reads at
+ * /v1/cp/read/<path>, writes at /v1/cp/owner/<path>, with the board's key on the kernel. The board holds no Paperclip key.
+ */
+
+/** The signed-in admin a write is for (app.ts sets it per request); sent to the kernel, which logs it with the write. */
+export const actingAccount = new AsyncLocalStorage<string>();
 
 export interface Label {
   id: string;
@@ -168,22 +176,29 @@ export class PaperclipError extends Error {
 export class Paperclip {
   private cache = new Map<string, { at: number; value: Promise<unknown>; done: boolean }>();
 
+  /** `kernelUrl`: the kernel's backplane; `key`: the board's key on it (gateway_board_key). */
   constructor(
-    private readonly baseUrl: string,
+    private readonly kernelUrl: string,
     readonly companyId: string,
     private readonly key: string,
     private readonly fetchImpl: typeof fetch = fetch,
   ) {}
 
+  /** A Paperclip path through the kernel: reads and the owner's writes, with the admin a write is for. */
+  private call(method: string, path: string, init: { body?: BodyInit; type?: string; timeoutMs?: number } = {}): Promise<Response> {
+    const account = actingAccount.getStore();
+    return this.fetchImpl(new URL(`/v1/cp/${method === "GET" ? "read" : "owner"}${path}`, this.kernelUrl), {
+      method,
+      headers: { authorization: `Bearer ${this.key}`, accept: "application/json", ...(init.type ? { "content-type": init.type } : {}), ...(account && method !== "GET" ? { "x-aidenhq-account": account } : {}) },
+      body: init.body,
+      signal: AbortSignal.timeout(init.timeoutMs ?? 20_000),
+    });
+  }
+
   async request<T>(method: string, path: string, body?: unknown): Promise<T> {
     // A write may change the open tasks: a read that starts after it never shares one already on its way.
     if (method !== "GET") this.cache.delete("open");
-    const res = await this.fetchImpl(new URL(path, this.baseUrl), {
-      method,
-      headers: { authorization: `Bearer ${this.key}`, accept: "application/json", ...(body ? { "content-type": "application/json" } : {}) },
-      body: body ? JSON.stringify(body) : undefined,
-      signal: AbortSignal.timeout(20_000),
-    });
+    const res = await this.call(method, path, body ? { body: JSON.stringify(body), type: "application/json" } : {});
     const text = await res.text();
     if (!res.ok) throw new PaperclipError(`Paperclip ${method} ${path.split("?")[0]} → ${res.status}: ${errorMessage(text)}`, res.status);
     return (text ? JSON.parse(text) : {}) as T;
@@ -206,13 +221,6 @@ export class Paperclip {
     );
     this.cache.set(key, entry);
     return entry.value as Promise<T>;
-  }
-
-  /** The agent a credential (run JWT or agent key) belongs to; the board uses it to know who is calling. */
-  async agentMe(agentKey: string): Promise<Agent> {
-    const res = await this.fetchImpl(new URL("/api/agents/me", this.baseUrl), { headers: { authorization: `Bearer ${agentKey}`, accept: "application/json" }, signal: AbortSignal.timeout(20_000) });
-    if (!res.ok) throw new PaperclipError(`Paperclip GET /api/agents/me → ${res.status}`, res.status);
-    return (await res.json()) as Agent;
   }
 
   me(): Promise<string> {
@@ -452,23 +460,14 @@ export class Paperclip {
   async addAttachment(issueId: string, name: string, type: string, data: Buffer): Promise<Attachment> {
     const form = new FormData();
     form.append("file", new Blob([new Uint8Array(data)], { type }), name);
-    const path = `/api/companies/${this.companyId}/issues/${encodeURIComponent(issueId)}/attachments`;
-    const res = await this.fetchImpl(new URL(path, this.baseUrl), {
-      method: "POST",
-      headers: { authorization: `Bearer ${this.key}`, accept: "application/json" },
-      body: form,
-      signal: AbortSignal.timeout(60_000),
-    });
+    const res = await this.call("POST", `/api/companies/${this.companyId}/issues/${encodeURIComponent(issueId)}/attachments`, { body: form, timeoutMs: 60_000 });
     const text = await res.text();
     if (!res.ok) throw new PaperclipError(`Paperclip POST attachment → ${res.status}: ${errorMessage(text)}`, res.status);
     return JSON.parse(text) as Attachment;
   }
 
   async attachmentContent(id: string): Promise<Buffer> {
-    const res = await this.fetchImpl(new URL(`/api/attachments/${encodeURIComponent(id)}/content`, this.baseUrl), {
-      headers: { authorization: `Bearer ${this.key}` },
-      signal: AbortSignal.timeout(60_000),
-    });
+    const res = await this.call("GET", `/api/attachments/${encodeURIComponent(id)}/content`, { timeoutMs: 60_000 });
     if (!res.ok) throw new PaperclipError(`Paperclip GET attachment → ${res.status}`, res.status);
     return Buffer.from(await res.arrayBuffer());
   }

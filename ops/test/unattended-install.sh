@@ -189,16 +189,16 @@ http.createServer((req, res) => {
   });
 }).listen(Number(port), "127.0.0.1");
 EOF
-PC_PORT=3998
+PC_PORT=3100 # the kernel's default control plane: the board reaches it only through the kernel
 : > "$work/paperclip.log"; : > "$work/board.log"; chmod 0666 "$work/paperclip.log" "$work/board.log"
 node "$work/paperclip.mjs" "$PC_PORT" "$work/paperclip.log" & pc_pid=$!
 S="$H/.config/aidenhq" B="$H/aidenhq/services/board"
 runuser -u "$U" -- bash -c "cd '$B' && npx tsc -p tsconfig.build.json" || fail "the board doesn't build"
 # As compose runs it: its points, system config and secrets from the checkout and the vault, the kernel on the backplane.
 runuser -u "$U" -- env BOARD_SYSTEM_CONFIG="$H/aidenhq/config/system.yaml" BOARD_POINTS_FILE="$H/aidenhq/config/points/board.json" \
-  BOARD_SECRETS_DIR="$S" BOARD_KEY_FILE="$S/paperclip_board_key" GATEWAY_BOARD_KEY_FILE="$S/gateway_board_key" \
+  BOARD_SECRETS_DIR="$S" GATEWAY_BOARD_KEY_FILE="$S/gateway_board_key" \
   BOARD_DB="$H/aidenhq/data/board/board.sqlite" BOARD_STATIC_DIR="$B/web" BOARD_LAN_HOSTS=127.0.0.1:3121 \
-  PAPERCLIP_URL="http://127.0.0.1:$PC_PORT" AIDENHQ_KERNEL_URL=http://127.0.0.1:3130 AIDENHQ_GATEWAY_URL=http://127.0.0.1:8201 \
+  AIDENHQ_KERNEL_URL=http://127.0.0.1:3130 AIDENHQ_GATEWAY_URL=http://127.0.0.1:8201 \
   AIDENHQ_ADMIN_URL=http://localhost:3120 setsid nohup node "$B/dist/src/main.js" >> "$work/board.log" 2>&1 < /dev/null &
 for _ in $(seq 30); do curl -fsS -o /dev/null http://127.0.0.1:3121/healthz 2>/dev/null && break; sleep 1; done
 curl -fsS -o /dev/null http://127.0.0.1:3121/healthz || fail "the board didn't start"

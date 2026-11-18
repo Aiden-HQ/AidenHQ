@@ -80,7 +80,8 @@ Slack Socket Mode listener) bridge the owner to Aiden and provide `notify_owner`
 `chat-lane` (always installed) is the fast chat lane. Approval cards are decided with per-card, per-channel,
 single-use decision tokens that the kernel mints (bound to the card's digest) at `/v1/channel/cards` and
 `/v1/channel/decide`. Owner messages from a channel go through the kernel's `/v1/channel/owner-message`; only the
-kernel holds the Paperclip board key.
+kernel holds the Paperclip board key. The board reaches Paperclip only through the kernel too: its reads at `/v1/cp/read/*`,
+the owner's writes at `/v1/cp/owner/*`, each on the board's own path list, with the admin the write is for.
 
 **Agent computers (`services/computer`).** Optional per-agent isolated containers for runs, started by a launcher that
 issues each run a token. Off unless an agent definition sets `image:`.

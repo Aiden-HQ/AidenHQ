@@ -18,7 +18,9 @@
 //   GET  /v1/channel/cards, POST /v1/channel/{decide,owner-message,stop,thread}, GET /v1/channel/notices  (a speaks-as-owner
 //                              channel's token) cards with decision tokens, a token spent, the owner's words, notices (channels.ts)
 //   POST /v1/channel/outbox, GET /v1/channel/outbox  (a channel) a message for the owner handed to another channel; drained by it
-//   GET  /v1/cp/read/<path>    (a channel, or a module with role kernel.cp-read) the control plane's read routes, as the owner
+//   GET  /v1/cp/read/<path>    (a channel, or a module with role kernel.cp-read) the control plane's read routes, as the owner;
+//                              with the board's key, the board's reads (cp.ts createBoardCp)
+//   ANY  /v1/cp/owner/<path>   (the board's key) the owner's writes the board makes, X-AidenHQ-Account the admin's (cp.ts)
 //   POST /v1/brake/notify      (a channel, or the owner's router) may an agent message the owner about a task again (brake.ts)
 //   POST /v1/channel/exchange  (a module with role kernel.lane) a fast-lane turn written to its agent's chat task (lane.ts)
 //   POST /v1/notify            (the board's or the runner's key, or a module with role kernel.owner-notice) a message for the owner,
@@ -108,7 +110,8 @@ export const ROUTES = [
   { method: "POST", path: "/v1/channel/outbox", auth: "module" },
   { method: "GET", path: "/v1/channel/outbox", auth: "module" },
   { method: "POST", path: "/v1/channel/exchange", auth: "module" },
-  { method: "GET", path: "/v1/cp/read/*", auth: "module" },
+  { method: "GET", path: "/v1/cp/read/*", auth: "module|board" },
+  { method: "ANY", path: "/v1/cp/owner/*", auth: "board" },
   { method: "POST", path: "/v1/brake/notify", auth: "module" },
   { method: "POST", path: "/v1/notify", auth: "board|runner" },
   { method: "GET", path: "/v1/notify/take", auth: "module" },
@@ -156,8 +159,8 @@ async function json(req: IncomingMessage, max = 1_000_000): Promise<any> {
   try { return JSON.parse(Buffer.concat(chunks).toString("utf8") || "{}"); } catch { throw fail(400, "bad_request", "the body must be JSON"); }
 }
 
-export function createBackplane({ whoami, asserter, proxy, cp, grantsFile, writes, records, channels, brake, notify, owner, modules = () => ({}), boardKey = () => "", reviews, runnerKey = () => "", reviewerKey = () => "", jobs, admission, outcomes, wakes, tasks, eventsKey = () => "", work, graderToken = () => "", dropGraderToken = () => {}, advisories = () => [], accounts, checks, checkJobs, jobTools, ownerRaw, lane, log = () => {} }: {
-  whoami: Whoami; asserter: Asserter; proxy: Handler; cp: Handler; grantsFile: () => { agents?: Record<string, Grant> } & Record<string, unknown>;
+export function createBackplane({ whoami, asserter, proxy, cp, boardCp, grantsFile, writes, records, channels, brake, notify, owner, modules = () => ({}), boardKey = () => "", reviews, runnerKey = () => "", reviewerKey = () => "", jobs, admission, outcomes, wakes, tasks, eventsKey = () => "", work, graderToken = () => "", dropGraderToken = () => {}, advisories = () => [], accounts, checks, checkJobs, jobTools, ownerRaw, lane, log = () => {} }: {
+  whoami: Whoami; asserter: Asserter; proxy: Handler; cp: Handler; boardCp?: Handler; grantsFile: () => { agents?: Record<string, Grant> } & Record<string, unknown>;
   writes?: Writes; records?: Records; boardKey?: () => string; log?: (msg: string, f?: Record<string, unknown>) => void;
   /** The reviewer slot; the runner's key for its kinds (filing, claim, outcome, reads, a record's review: runner_writes_key)
    * and the one its checks before filing ask with (reviewer_key, which the board holds too), each its own secret. */
@@ -271,6 +274,13 @@ export function createBackplane({ whoami, asserter, proxy, cp, grantsFile, write
             if (j.name === "JobToolError") throw fail(j.status!, j.code!, j.message);
             throw e;
           }
+        }
+        case "GET /v1/cp/read/*": case "ANY /v1/cp/owner/*": {
+          const read = hit!.path === "/v1/cp/read/*";
+          if (read && !isBoard(req)) break; // a module's read: below
+          if (!isBoard(req)) throw fail(401, "unauthorized", "the board's key is required");
+          if (!boardCp) throw fail(503, "unavailable", "the board's control-plane routes are off");
+          return await boardCp(req, res, read ? "read" : "owner", m[0]!, query);
         }
         case "GET /v1/advisories": if (!isBoard(req)) throw fail(401, "unauthorized", "the board's key is required"); return send(res, 200, { advisories: advisories() });
       }

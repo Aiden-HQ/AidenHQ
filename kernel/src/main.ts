@@ -35,7 +35,7 @@ import { createNotify } from "./notify.ts";
 import { createChannels, type Api, type ModulesFile } from "./channels.ts";
 import { createLane } from "./lane.ts";
 import { checksFile, createChecks } from "./checks.ts";
-import { createAsCaller, createCp } from "./cp.ts";
+import { createAsCaller, createBoardCp, createCp } from "./cp.ts";
 import { createIdentity, type Connection, type Grant, type Jobcap } from "./identity.ts";
 import { createAdvisories } from "./loader/advisories.ts";
 import { hostFetch } from "./loader/sources.ts";
@@ -70,7 +70,7 @@ const launcherUrl = env("AIDENHQ_LAUNCHER_URL", "http://10.231.0.1:8199"); // na
 const grantsFile = path.join(configDir, "grants", "grants.json");
 const grantsTable = watched(grantsFile, (j) => j as { agents?: Record<string, Grant> } & Record<string, unknown>, {});
 const connections = watched(path.join(configDir, "kernel", "connections.json"), (j) => j as Record<string, Connection>, {});
-// The control plane with the board key (only the kernel holds it): the task a run is on (its run record), and a record's task.
+// The control plane with the owner key (paperclip_board_key: only the kernel holds it; the board reaches it through cp.ts createBoardCp): the task a run is on (its run record), and a record's task.
 const cpApi = (p: string, init: RequestInit = {}) => fetch(new URL(p, controlUrl), { ...init, headers: { authorization: `Bearer ${secret("paperclip_board_key")}`, "content-type": "application/json" }, signal: AbortSignal.timeout(15_000) });
 async function runTask(runId: string): Promise<string | undefined> {
   const res = await cpApi(`/api/heartbeat-runs/${encodeURIComponent(runId)}`);
@@ -265,7 +265,7 @@ const admission = createAdmission({
 admission.recover();
 boxes.start();
 const lane = createLane({ db: records.db, owner: ownerApi, grantsFile: grantsTable, log, postAsAgent: async (agent, task, job, body) => ({ id: String((await outcomes.post({ id: job, agent, task }, { kind: "lane", body })).comment) }) });
-const backplane = createBackplane({ checks, lane, whoami, asserter, grantsFile: grantsTable, log, writes, records, channels, brake, notify, owner: ownerApi, ownerRaw: (p) => cpApi(p), modules: modulesFile, boardKey: () => secret("gateway_board_key"), reviews, runnerKey: () => secret("runner_writes_key"), reviewerKey: () => secret("reviewer_key"), jobs, admission, outcomes, wakes, tasks: createModuleTasks({ owner: ownerApi, agents: () => grantsTable().agents ?? {}, log }), work, graderToken, dropGraderToken: (task) => graderTokens.delete(task), eventsKey: () => secret("paperclip_events_key"), jobTools: createJobTools({ db: records.db, secret: () => secret("gateway_job_secret"), engines: () => Object.keys(readEngines(sandbox)) }), advisories: advisories.list, accounts: createAuthApi({ accounts: () => accounts, whoami, boardKey: () => secret("gateway_board_key"), recoveryKeyWaiting: () => Boolean(firstRun.recoveryKey()), modelReady: modelState.ready, operatorKey: () => secret("board_operator_key"), secrets: moduleSecrets }), proxy: (req, res, c) => proxy(req, res, c!), cp: createCp({ whoami, asserter, controlUrl, launcherUrl, checks, provenance, log }) as never });
+const backplane = createBackplane({ checks, lane, whoami, asserter, grantsFile: grantsTable, log, writes, records, channels, brake, notify, owner: ownerApi, ownerRaw: (p) => cpApi(p), modules: modulesFile, boardKey: () => secret("gateway_board_key"), reviews, runnerKey: () => secret("runner_writes_key"), reviewerKey: () => secret("reviewer_key"), jobs, admission, outcomes, wakes, tasks: createModuleTasks({ owner: ownerApi, agents: () => grantsTable().agents ?? {}, log }), work, graderToken, dropGraderToken: (task) => graderTokens.delete(task), eventsKey: () => secret("paperclip_events_key"), jobTools: createJobTools({ db: records.db, secret: () => secret("gateway_job_secret"), engines: () => Object.keys(readEngines(sandbox)) }), advisories: advisories.list, accounts: createAuthApi({ accounts: () => accounts, whoami, boardKey: () => secret("gateway_board_key"), recoveryKeyWaiting: () => Boolean(firstRun.recoveryKey()), modelReady: modelState.ready, operatorKey: () => secret("board_operator_key"), secrets: moduleSecrets }), proxy: (req, res, c) => proxy(req, res, c!), cp: createCp({ whoami, asserter, controlUrl, launcherUrl, checks, provenance, log }) as never, boardCp: createBoardCp({ controlUrl, key: () => secret("paperclip_board_key"), log }) as never });
 // The admin listener's accounts (data/kernel/auth/auth.db) and pages. Accounts not moved yet, or a malformed URL setting: the
 // listener refuses while every other part of the kernel serves.
 const urlOf = (v: string) => { try { return v ? new URL(v) : undefined; } catch { log("ignoring a malformed URL setting", { value: v.slice(0, 100) }); return undefined; } };

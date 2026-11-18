@@ -40,7 +40,7 @@ import { McpAuthFailed, type McpAuth } from "./mcpauth.js";
 import { setupFlowRoutes, type SetupFlowPoint } from "./setup-flows.js";
 import { welcomeRoutes } from "./welcome.js";
 import { GoogleAuthFailed, loopbackPort, type GoogleAuth } from "./google.js";
-import { OPEN, Paperclip, PaperclipError, type Agent, type Comment, type Issue, type Label, type LiveRun } from "./paperclip.js";
+import { OPEN, Paperclip, PaperclipError, actingAccount, type Agent, type Comment, type Issue, type Label, type LiveRun } from "./paperclip.js";
 import { accountSession, type BoardSession, type SessionOf } from "./session.js";
 import { laneAgents, laneMessages, laneSend, type LaneOptions } from "./lane.js";
 import { latest, successorOf } from "./rollover.js";
@@ -53,7 +53,7 @@ import { AsideSchema, askGateway, asideMessages, holdsActive, lineageStatus, lin
 export interface SignIn { id: string; label: string; connect: string; callback: string; missing: string; stopped: string; auth: McpAuth }
 
 export interface AppOptions {
-  /** The board key's client: every read and every write (all admins write as the owner, 2026-11-12). */
+  /** Paperclip through the kernel, as the owner: every read and every write (all admins write as the owner, 2026-11-12). */
   paperclip: Paperclip;
   /**
    * Who a request comes from, in place of `accounts` (tests only: a stub resolver). The listeners in main.ts never set it;
@@ -191,9 +191,10 @@ export function createApp(opts: AppOptions): Server {
   const gradesOf = (ids: string[]) => grading.grades(ids).catch((err) => (log.warn({ err: String(err) }, "grading module unreachable; not closing graded parts as done"), undefined));
 
   /**
-   * Every admin writes as the owner (the board key: agents act on their words, owner decision 2026-11-12). Which account
-   * wrote a task or comment is recorded (`authored`) from the request's session, for the board's "by <name>" label; never
-   * in the text. Outside a session (the internal listener, timers, the board's own notices) nothing is recorded.
+   * Every admin writes as the owner (through the kernel: agents act on their words, owner decision 2026-11-12). Which
+   * account wrote a task or comment is recorded (`authored`) from the request's session, for the board's "by <name>" label;
+   * never in the text. The kernel is told the account with each write it makes for a session (actingAccount), and logs it.
+   * Outside a session (the internal listener, timers, the board's own notices) nothing is recorded.
    */
   const perRequest = new AsyncLocalStorage<{ session: BoardSession | null }>();
   const pc = new Proxy(boardPc, {
@@ -205,12 +206,12 @@ export function createApp(opts: AppOptions): Server {
       // What the board posts or opens is announced to open boards (events.ts): the task's id only.
       if (prop === "addComment" || prop === "createIssue")
         return async (...args: unknown[]) => {
-          const made = await value.apply(client, args);
+          const made = await (account ? actingAccount.run(account, () => value.apply(client, args)) : value.apply(client, args));
           if (account) store.setAuthored(made.id, account);
           store.events.emit("chat", prop === "addComment" ? String(args[0]) : made?.id);
           return made;
         };
-      return value.bind(client);
+      return account ? (...args: unknown[]) => actingAccount.run(account, () => value.apply(client, args)) : value.bind(client);
     },
   }) as Paperclip;
 
@@ -1940,7 +1941,7 @@ export function createApp(opts: AppOptions): Server {
       send(res, 200, JSON.stringify(await a.handle(path.match(a.path)!, body, who, String(req.headers.host ?? "").toLowerCase())), "application/json");
       return true;
     }
-    // A ready admin: writes as the owner (the board key); `authored` records which account it was.
+    // A ready admin: writes as the owner (through the kernel); `authored` records which account it was.
     const session = accountSession(who);
     if (!session) throw new HttpError(403, "this account has no board access");
     return session;
