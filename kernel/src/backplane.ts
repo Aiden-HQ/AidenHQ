@@ -509,7 +509,7 @@ export function createBackplane({ whoami, asserter, proxy, cp, boardCp, grantsFi
             const r = record(id);
             const own = w.kind === "module" ? w.module === r.requester.module && r.requester.kind === "module" : Boolean(w.agent) && w.agent === r.requester.agent;
             if (!own) throw fail(404, "not_found", `no record ${id}`);
-            return send(res, 200, { id: r.id, kind: r.kind, tier: r.tier, state: r.state, outcome: r.outcome, ...((r.owner_reason ?? r.review) ? { reason: String(r.owner_reason ?? r.review).slice(0, 1000) } : {}) });
+            return send(res, 200, { id: r.id, kind: r.kind, tier: r.tier, state: r.state, outcome: r.outcome, ...(r.owner_reason ? { reason: r.owner_reason } : {}) });
           }
           case "POST /v1/writes/:id/outcome": {
             const r = record(id);
