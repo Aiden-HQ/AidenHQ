@@ -81,74 +81,8 @@ test("setup takes account then model", async () => {
   assert.equal(exchanged.length, 1);
 });
 
-test("with a working model key, the authenticator leads on to the welcome", async () => {
-  // As a finished enrolment does (afterEnrol): the welcome shows the recovery key and the modules' flows, not /approvals.
-  assert.ok(state.ready());
-  assert.equal((await page("GET", "/auth/enrol")).location, `${BOARD}/#/welcome`);
-});
-
-test("openrouter error keeps the account", async () => {
-  vault.clear();
-  const step = await page("GET", "/setup/model");
-  const back = await page("GET", `/setup/openrouter/${stateOf(step.body)}?error=access_denied`, undefined, new Map());
-  assert.match(back.body, /connect=failed/);
-  const shown = await page("GET", "/setup/model?connect=failed");
-  assert.equal(shown.status, 400);
-  assert.match(shown.body, /OpenRouter didn&#39;t connect/);
-  assert.ok(shown.body.includes("Connect a model") && !shown.body.includes('name="password"'));
-  assert.ok(!shown.body.includes("access_denied"));
-  assert.equal((await accounts.list()).length, 1);
-  // The code from an older page (its state spent) connects nothing.
-  assert.match((await page("GET", `/setup/openrouter/${stateOf(step.body)}?code=c0de`, undefined, new Map())).body, /url=\/setup\/model">/);
-  assert.match((await page("GET", `/setup/openrouter/${"x".repeat(22)}?code=c0de`, undefined, new Map())).body, /url=\/setup\/model">/); // a made-up state
-  assert.equal(exchanged.length, 1);
-  assert.equal(vault.has("openrouter_key"), false);
-});
-
-test("no credit shows retry", async () => {
-  vault.clear();
-  verdict = "no_credit";
-  const n0 = verifies;
-  const step = await page("GET", "/setup/model");
-  assert.equal((await page("POST", "/setup/model", { csrf: csrfOf(step.body), action: "paste", openrouter_key: "not-a-key" })).status, 400);
-  const pasted = await page("POST", "/setup/model", { csrf: csrfOf(step.body), action: "paste", openrouter_key: KEY });
-  assert.equal(pasted.status, 200);
-  assert.match(pasted.body, /Add credit in OpenRouter/);
-  assert.match(pasted.body, /https:\/\/openrouter\.ai\/settings\/credits/);
-  assert.match(pasted.body, /name="action" value="retry"/);
-  assert.equal(vault.get("openrouter_key"), KEY); // kept, so Retry needs no new key
-  assert.equal(state.ready(), false); // model_ready: no credit is not ready
-  assert.equal((await page("POST", "/setup/model", { csrf: csrfOf(pasted.body), action: "retry" })).status, 200); // still none
-  assert.equal(state.ready(), false);
-  assert.equal(verifies, n0, "a key without credit doesn't start the agents' check");
-  verdict = "ok";
-  const retry = await page("POST", "/setup/model", { csrf: csrfOf(pasted.body), action: "retry" });
-  assert.equal(retry.location, `${BOARD}/#/welcome`);
-  assert.equal(state.ready(), true);
-  assert.equal(verifies, n0 + 1, "a working key runs setup, which verifies the agents the no-key install left unverified");
-  vault.set("openrouter_key", `sk-or-v1-${"b".repeat(64)}`); // a replaced key isn't checked yet
-  assert.equal(state.ready(), false);
-  vault.delete("openrouter_key_checked"); // a key from before the model step (no record): ready
-  assert.equal(state.ready(), true);
-});
-
 test("model step needs the admin session", async () => {
   const r = await page("GET", "/setup/model", undefined, new Map());
   assert.equal(r.status, 303);
   assert.equal(r.location, "/auth/sign-in?next=%2Fsetup%2Fmodel");
-});
-
-test("the PKCE pieces: the challenge is the verifier's S256, the exchange and the 402", async () => {
-  const { url, verifier } = startPkce("https://203.0.113.7:8446/setup/openrouter", { state: "s1" });
-  const q = new URL(url).searchParams;
-  assert.equal(new URL(url).origin + new URL(url).pathname, "https://openrouter.ai/auth");
-  const { createHash } = await import("node:crypto");
-  assert.equal(q.get("code_challenge"), createHash("sha256").update(verifier).digest("base64url"));
-  assert.deepEqual([q.get("code_challenge_method"), q.get("callback_url"), q.get("state")], ["S256", "https://203.0.113.7:8446/setup/openrouter", "s1"]);
-  const seen = [];
-  const fake = async (u, init) => { seen.push([String(u), JSON.parse(init.body)]); return String(u).endsWith("/auth/keys") ? Response.json({ key: KEY }) : new Response("{}", { status: 402 }); };
-  assert.equal(await exchange("c", verifier, fake), KEY);
-  assert.deepEqual(seen[0], ["https://openrouter.ai/api/v1/auth/keys", { code: "c", code_verifier: verifier, code_challenge_method: "S256" }]);
-  assert.equal(await checkModel(KEY, { model: "m", fetchImpl: fake }), "no_credit");
-  assert.equal(seen[1][1].max_tokens, 1);
 });

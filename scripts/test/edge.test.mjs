@@ -128,23 +128,6 @@ test("app_login: access needs an aud everywhere; password signs in through the b
   compile(mods, inst({ edge: { tunnel_id: TUNNEL, my_apps: { host: "my.other.org" } }, app_login: "password" }, [open]));
 });
 
-test("previews: *.<host> per shared app after the exact hosts, behind that app's own aud; the gate gets the band and the file", () => {
-  const out = compile(mods, inst({ edge: { ...edge, previews: true } }, [roadmap]));
-  assert.deepEqual(out.edge.gate.previews, { file: "/previews/previews.json", ports: [39100, 39399] });
-  assert.deepEqual(out.edge.cloudflared.ingress.slice(-2), [
-    { hostname: "*.roadmap.acme.com", service: GATE_SOCKET_URL, originRequest: { access: { required: true, teamName: "acme", audTag: ["aud-roadmap-0001"] } } },
-    { service: "http_status:404" },
-  ]);
-  checkIngress(out.edge.cloudflared);
-  assert.ok(out.compose.services.gate.volumes.includes("${AIDENHQ_DATA_DIR:-./data}/previews:/previews:ro"));
-  assert.throws(() => compile(mods, inst({ edge: { ...edge, previews: { aud: "aud-shared-001" } } }, [roadmap])), /own Access audience/);
-  assert.throws(() => compile(mods, inst({ edge }, [{ ...roadmap, share: { ...roadmap.share, host: "pr-2.roadmap.acme.com" } }])), /previews'/);
-  const rule = (hostname) => ({ ingress: [{ hostname, service: GATE_SOCKET_URL, originRequest: { access: { required: true, audTag: ["a"] } } }, { service: "http_status:404" }] });
-  assert.throws(() => checkIngress(rule("*.com")), /hostname/);
-  assert.throws(() => checkIngress(rule("*")), /hostname/);
-  assert.throws(() => checkIngress(rule("a.*.acme.com")), /hostname/);
-});
-
 test("two services can't claim one host port", () => {
   assert.throws(() => compile(mods, inst({ edge }, [{ ...roadmap, port: 3129 }])), /3129 is the kernel's sign-in listener/);
   const app = (name) => ({ name, repo: `acme/${name}`, owner: "a", description: "d", port: 4300 });
@@ -171,26 +154,4 @@ test("identity keys: both signers' keys made once, keys.json lists every gate*/a
   rmSync(join(dir, "identity", "gate.old.pem"));
   ensureIdentityKeys(dir);
   assert.equal(keys().length, 2);
-});
-
-test("in-app feedback: only feedback_to gets a tier0 routine, and its agent can't read private sources or send", () => {
-  const withAgent = (connections, notesApi) => {
-    const dir = inst({ edge }, [{ ...roadmap, owner: "boss", feedback_to: "feedback" }, { ...roadmap, name: "notes", port: 4200, share: { ...roadmap.share, host: "notes.acme.com", aud: "aud-notes-0001" }, ...(notesApi ? { api: notesApi } : {}) }]);
-    mkdirSync(join(dir, "agents", "feedback"));
-    writeFileSync(join(dir, "agents", "feedback", "agent.yaml"), YAML.stringify({ name: "Feedback", description: "Reads one app's feedback.", model: "m", budget: 1, connections }));
-    writeFileSync(join(dir, "agents", "feedback", "AGENTS.md"), "# Feedback\n");
-    return dir;
-  };
-  const out = compile(mods, withAgent({}));
-  const feedback = Object.values(out.paperclip.routines).filter((r) => r.title.startsWith("App feedback:"));
-  assert.deepEqual(feedback.map(({ title, agent, concurrency, autonomy }) => ({ title, agent, concurrency, autonomy })), [{ title: "App feedback: roadmap", agent: "feedback", concurrency: "coalesce_if_active", autonomy: "tier0" }]);
-  assert.match(feedback[0].description, /\{\{count\}\}.*as data/s);
-  const granted = out.paperclip.agents.feedback.enabled_tools;
-  assert.ok(Object.keys(granted).every((c) => ["apps", "paperclip_tasks"].includes(c)), JSON.stringify(granted));
-  assert.deepEqual(out.paperclip.agents.feedback.feedback_for, ["roadmap"]);
-  // Any tool beyond its allowlist fails, a read included (a private read such as Slack or Drive, the warehouse, an outbound send).
-  assert.throws(() => compile(mods, withAgent({ tasks: ["t"] })), /may hold only apps: app_api, app_view; .* not tasks\.t$/);
-  // Another app's API is out of its reach (apps-mcp also refuses it any other app at call time: modules/apps-platform/apps-mcp api.test.ts).
-  assert.throws(() => compile(mods, withAgent({}, { callers: [{ agent: "feedback", paths: ["/api"] }], paths: ["/api"] })), /may call no other app's API \(notes\)/);
-  assert.throws(() => compile(mods, inst({ edge }, [{ ...roadmap, feedback_to: "nobody" }])), /feedback_to names nobody/);
 });

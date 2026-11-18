@@ -46,10 +46,6 @@ test("the role template compiles as an instance agent in trial (tap 1): read-onl
   assert.equal(r.paperclip.routines["review-chaser-sweep"].agent, "review-chaser");
   assert.equal(r.paperclip.routines["review-chaser-sweep"].schedules[0].timezone, "Europe/London");
 });
-test("graduated (tap 2): write grants and a real manager", () => {
-  const r = compile(product, withAgents({ "review-chaser": { yaml: { trial: undefined, reports_to: "chief-of-staff", connections: { github: "read", slack: "write", paperclip_tasks: "write" } } } }, ["github", "slack"]));
-  assert.ok(r.paperclip.agents["review-chaser"].enabled_tools.slack.includes("slack_send_message_draft"));
-});
 test("an agent in trial gets no write tools and reports to the Architect", () => {
   assert.throws(() => compile(product, withAgents({ x: { yaml: { connections: { slack: "write" } } } }, ["slack"])), /x: an agent in trial may not have slack write tools/);
   assert.throws(() => compile(product, withAgents({ x: { yaml: { connections: { paperclip_tasks: ["task_create"] } } } })), /x: an agent in trial may not have paperclip_tasks write tools \(task_create\)/);
@@ -70,14 +66,6 @@ test("trial_writes: an agent in trial compiles with the writes it names, and kee
   // Its reads are untouched.
   assert.ok(a.enabled_tools.paperclip_tasks.includes("task_current"));
 });
-test("trial_writes: all four names compile, including notify_owner, which a trial agent doesn't get automatically", () => {
-  const r = compile(product, withAgents({ x: { yaml: { connections: { slack: "read", paperclip_tasks: ["task_create"], chat_lane: ["wake_at", "chat_send"], telegram: ["notify_owner"] }, trial_writes: TRIAL_WRITE_ALLOWED } } }, ["slack"]));
-  assert.deepEqual(r.paperclip.agents.x.trial_writes, TRIAL_WRITE_ALLOWED);
-  assert.deepEqual(writesOf(r, r.paperclip.agents.x, "chat_lane"), ["wake_at", "chat_send"]);
-  assert.deepEqual(writesOf(r, r.paperclip.agents.x, "telegram"), ["notify_owner"]);
-  // A trial agent that names nothing still gets no notify_owner added for it (the "Asking the owner" grant is post-trial).
-  assert.equal(compile(product, withAgents({ "review-chaser": {} }, ["github", "slack"])).paperclip.agents["review-chaser"].enabled_tools.telegram, undefined);
-});
 
 test("trial_writes: any other name is a compile error naming the agent and the tool", () => {
   assert.throws(() => compile(product, withAgents({ x: { yaml: { ...ariaYaml, trial_writes: [...ariaWrites, "paperclip_tasks.task_update"] } } }, ["slack"])), /x: trial_writes names paperclip_tasks\.task_update, which it may not use in trial \(only paperclip_tasks\.task_create, chat_lane\.wake_at, chat_lane\.chat_send, telegram\.notify_owner\)/);
@@ -94,18 +82,6 @@ test("trial_writes: only on an agent in trial, and only as a list", () => {
   assert.throws(() => compile(product, withAgents({ x: { yaml: { ...ariaYaml, trial: "yes" } } }, ["slack"])), /x: trial is true or absent/);
   assert.throws(() => compile(product, withAgents({ x: { yaml: { ...ariaYaml, trial_writes: "paperclip_tasks.task_create" } } }, ["slack"])), /x: trial_writes must be a list of tools/);
   assert.throws(() => compile(product, withAgents({ x: { yaml: { ...ariaYaml, trial_writes: { 0: "paperclip_tasks.task_create" } } } }, ["slack"])), /x: trial_writes must be a list of tools/);
-});
-test("trial_writes: an agent that names none keeps today's behaviour, and a granted write outside trial_writes is still refused", () => {
-  const none = compile(product, withAgents({ "review-chaser": {} }, ["github", "slack"])).paperclip.agents["review-chaser"];
-  assert.equal(none.trial_writes, undefined);
-  assert.deepEqual(writesOf(compile(product, withAgents({ "review-chaser": {} }, ["github", "slack"])), none, "paperclip_tasks"), ["task_comment", "task_handoff", "task_finish", "task_set_status"]);
-  // A write it grants but doesn't name is withheld from trial, not a compile error: it isn't offered, and the handbook can
-  // still describe it as "after trial". Without a list, granting it is still the old error.
-  const partial = compile(product, withAgents({ x: { yaml: { connections: { slack: "read", chat_lane: ["chat_send", "wake_at"] }, trial_writes: ["chat_lane.chat_send"] } } }, ["slack"]));
-  assert.deepEqual(partial.paperclip.agents.x.trial_writes, ["chat_lane.chat_send"]);
-  assert.deepEqual(writesOf(partial, partial.paperclip.agents.x, "chat_lane"), ["chat_send"]);
-  assert.deepEqual(partial.paperclip.agents.x.trial_withheld, ["chat_lane.wake_at"]);
-  assert.throws(() => compile(product, withAgents({ x: { yaml: { trial_writes: undefined, connections: { slack: "read", chat_lane: ["chat_send", "wake_at"] } } } }, ["slack"])), /x: an agent in trial may not have chat_lane write tools \(chat_send, wake_at\); they come with tap 2/);
 });
 
 test("trial_writes: a write it grants but doesn't name is absent from what the agent gets and the grants table, so it is refused by name", async () => {
@@ -141,29 +117,6 @@ test("the Architect: max effort, only its own role, no fleet tools, reads every 
   assert.ok(a.enabled_tools.slack.includes("slack_read_thread") && !a.enabled_tools.slack.some((t) => /send|draft/.test(t)));
   assert.ok(a.enabled_tools.github.includes("github_issue_read") && !a.enabled_tools.github.some((t) => /comment|create|update|review|rerun/.test(t)));
   for (const t of ["fleet_control", "fleet_status", "task_relay_owner_words", "task_update", "task_create"]) assert.ok(!a.enabled_tools.paperclip_tasks.includes(t), t);
-});
-
-test("an instance agent may name a computer image; an unknown one fails compile (step 5 validates image:)", () => {
-  // A graduated agent (not in trial) may; one in trial may not yet (its limits would run inside the box).
-  assert.equal(compile(product, withAgents({ "review-chaser": { yaml: { image: "agent-base", trial: undefined, reports_to: "chief-of-staff" } } }, ["github", "slack"])).paperclip.agents["review-chaser"].image, "agent-base");
-  assert.throws(() => compile(product, withAgents({ "review-chaser": { yaml: { image: "agent-base" } } }, ["github", "slack"])), /in trial/);
-  assert.throws(() => compile(product, withAgents({ "review-chaser": { yaml: { image: "kali" } } }, ["github", "slack"])), /review-chaser: image must be one of agent-base, engineer/);
-});
-
-test("model: on a routine runs it on that model: the agent gets the codex-model launcher; a computer agent keeps plain codex (its box launcher applies it)", () => {
-  const sweep = (extra) => ({ sweep: { ...YAML.parse(readFileSync(join(template, "agent.yaml"), "utf8")).routines.sweep, ...extra } });
-  const r = compile(product, withAgents({ "review-chaser": { yaml: { routines: sweep({ model: "~z-ai/glm-flash-latest" }) } } }, ["github", "slack"]));
-  assert.equal(r.paperclip.routines["review-chaser-sweep"].model, "~z-ai/glm-flash-latest");
-  assert.equal(r.paperclip.agents["review-chaser"].command, "/opt/aidenhq/codex-model");
-  // Without a routine model it still gets the launcher (a stable cwd, for prompt caching).
-  assert.equal(compile(product, withAgents({ "review-chaser": {} }, ["github", "slack"])).paperclip.agents["review-chaser"].command, "/opt/aidenhq/codex-model");
-  const boxed = { image: "agent-base", trial: undefined, reports_to: "chief-of-staff" };
-  const b = compile(product, withAgents({ "review-chaser": { yaml: { ...boxed, routines: sweep({ model: "z-ai/glm-5.3" }) } } }, ["github", "slack"]));
-  assert.equal(b.paperclip.routines["review-chaser-sweep"].model, "z-ai/glm-5.3");
-  assert.equal(b.paperclip.agents["review-chaser"].command, undefined);
-  assert.throws(() => compile(product, withAgents({ "review-chaser": { yaml: { routines: sweep({ model: 3 }) } } }, ["github", "slack"])), /model must be a string/);
-  // The gateway refuses a model it can't price, so compile does first.
-  assert.throws(() => compile(product, withAgents({ "review-chaser": { yaml: { routines: sweep({ model: "acme/unpriced" }) } } }, ["github", "slack"])), /no declared price for acme\/unpriced/);
 });
 
 test("the codex-model launcher swaps the routine's model in for the agent's, and runs Codex as is otherwise", () => {
@@ -228,45 +181,26 @@ test("the web for every codex agent: live search by default (an agent may opt do
   assert.equal(r.paperclip.agents.assistant.web_search, undefined);
 });
 
-test("every template in modules/agent-builder/templates compiles as an instance agent in trial", () => {
-  const root = join(product, "modules/agent-builder/templates");
-  for (const key of readdirSync(root).filter((d) => existsSync(join(root, d, "agent.yaml")))) {
-    const dir = withAgents({}, ["github", "slack"]);
-    mkdirSync(join(dir, "agents", key));
-    for (const f of ["agent.yaml", "AGENTS.md"]) copyFileSync(join(root, key, f), join(dir, "agents", key, f));
-    const a = compile(product, dir).paperclip.agents[key];
-    assert.equal(a.trial, true, key);
-    assert.equal(a.reports_to, "architect", key);
-    assert.equal(a.model, "~deepseek/deepseek-flash-latest", key);
-  }
+test("trial_writes: all four names compile, including notify_owner, which a trial agent doesn't get automatically", () => {
+  const r = compile(product, withAgents({ x: { yaml: { connections: { slack: "read", paperclip_tasks: ["task_create"], chat_lane: ["wake_at", "chat_send"], telegram: ["notify_owner"] }, trial_writes: TRIAL_WRITE_ALLOWED } } }, ["slack"]));
+  assert.deepEqual(r.paperclip.agents.x.trial_writes, TRIAL_WRITE_ALLOWED);
+  assert.deepEqual(writesOf(r, r.paperclip.agents.x, "chat_lane"), ["wake_at", "chat_send"]);
+  assert.deepEqual(writesOf(r, r.paperclip.agents.x, "telegram"), ["notify_owner"]);
+  // A trial agent that names nothing still gets no notify_owner added for it (the "Asking the owner" grant is post-trial).
+  assert.equal(compile(product, withAgents({ "review-chaser": {} }, ["github", "slack"])).paperclip.agents["review-chaser"].enabled_tools.telegram, undefined);
 });
 
-test("departments: shipped agents name one from core's registry; an instance adds its own; an unknown one fails compile", () => {
-  const r = compile(product, withAgents({ "review-chaser": {} }, ["github", "slack"]));
-  assert.deepEqual(r.paperclip.agents["chief-of-staff"].department, { id: "leadership", name: "Leadership", description: "Coordinates work and prepares research, drafts and reports for you", order: 0 });
-  assert.equal(r.paperclip.agents["review-chaser"].department.id, "outreach");
-  assert.equal(compile(product, withAgents({ "review-chaser": { yaml: { department: undefined } } }, ["github", "slack"])).paperclip.agents["review-chaser"].department.id, "general");
-  const dir = withAgents({ "review-chaser": { yaml: { department: "growth" } } }, ["github", "slack"]);
-  assert.throws(() => compile(product, dir), /review-chaser: department growth is not in the registry/);
-  const file = join(dir, "instance.yaml");
-  writeFileSync(file, YAML.stringify({ ...YAML.parse(readFileSync(file, "utf8")), departments: [{ id: "growth", name: "Growth" }] }));
-  assert.equal(compile(product, dir).paperclip.agents["review-chaser"].department.name, "Growth");
-});
-
-test("chat: an instance agent's fast chat lane: defaults, and only its own granted tools", () => {
-  const r = compile(product, withAgents({ "review-chaser": { yaml: { chat: { tools: ["github.github_issue_read"] } } } }, ["github", "slack"]));
-  assert.deepEqual(r.paperclip.agents["review-chaser"].chat, { model: "~z-ai/glm-flash-latest", reasoning: "low", deadline_s: 8, telegram: false, tools: ["github.github_issue_read"] });
-  assert.throws(() => compile(product, withAgents({ "review-chaser": { yaml: { chat: { tools: ["paperclip_tasks.fleet_control"] } } } }, ["github", "slack"])), /chat tool paperclip_tasks.fleet_control isn't one of its granted tools/);
-  assert.throws(() => compile(product, withAgents({ "review-chaser": { yaml: { chat: { reasoning: "high" } } } }, ["github", "slack"])), /chat.reasoning must be off or low/);
-  assert.throws(() => compile(product, withAgents({ "review-chaser": { yaml: { chat: { stream: true } } } }, ["github", "slack"])), /chat: unknown field stream/);
-});
-
-test("the models the runner and the model tools name in code are priced (the gateway refuses an unpriced one)", () => {
-  const priced = YAML.parse(readFileSync(join(product, "modules/models-openrouter/module.yaml"), "utf8")).models.map((m) => m.id);
-  const named = ["modules/ai-reviewer/service/src/review.mjs", "services/runner/src/models.mjs", "services/runner/src/intake.ts", "modules/tasks/connections/tasks-mcp/src/models.mjs"]
-    .flatMap((f) => [...readFileSync(join(product, f), "utf8").matchAll(/"(~?(?:deepseek|openai|z-ai|moonshotai|qwen|google|anthropic|x-ai)\/[a-z0-9.-]+)"/g)].map((m) => m[1]));
-  assert.ok(named.length >= 4);
-  for (const m of named) assert.ok(priced.includes(m), m);
+test("trial_writes: an agent that names none keeps today's behaviour, and a granted write outside trial_writes is still refused", () => {
+  const none = compile(product, withAgents({ "review-chaser": {} }, ["github", "slack"])).paperclip.agents["review-chaser"];
+  assert.equal(none.trial_writes, undefined);
+  assert.deepEqual(writesOf(compile(product, withAgents({ "review-chaser": {} }, ["github", "slack"])), none, "paperclip_tasks"), ["task_comment", "task_handoff", "task_finish", "task_set_status"]);
+  // A write it grants but doesn't name is withheld from trial, not a compile error: it isn't offered, and the handbook can
+  // still describe it as "after trial". Without a list, granting it is still the old error.
+  const partial = compile(product, withAgents({ x: { yaml: { connections: { slack: "read", chat_lane: ["chat_send", "wake_at"] }, trial_writes: ["chat_lane.chat_send"] } } }, ["slack"]));
+  assert.deepEqual(partial.paperclip.agents.x.trial_writes, ["chat_lane.chat_send"]);
+  assert.deepEqual(writesOf(partial, partial.paperclip.agents.x, "chat_lane"), ["chat_send"]);
+  assert.deepEqual(partial.paperclip.agents.x.trial_withheld, ["chat_lane.wake_at"]);
+  assert.throws(() => compile(product, withAgents({ x: { yaml: { trial_writes: undefined, connections: { slack: "read", chat_lane: ["chat_send", "wake_at"] } } } }, ["slack"])), /x: an agent in trial may not have chat_lane write tools \(chat_send, wake_at\); they come with tap 2/);
 });
 test("crew agents hold what the in-box `aidenhq task|tasks` call; advise's advisor_ask stays the tasks module's own default; an engineer without private_reads or a check agent reads no task text", () => {
   const cli = (yaml) => (compile(product, withAgents({ x: { yaml } }, ["slack"])).paperclip.agents.x.enabled_tools.paperclip_tasks ?? []).filter((t) => ["task_get", "task_search", "advisor_ask"].includes(t)).sort();

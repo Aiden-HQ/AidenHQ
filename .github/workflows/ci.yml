@@ -1,5 +1,8 @@
-# Job budgets (timeout-minutes): a floor set from only a few hosted runs on 2026-11-17 (hosted runner-flows already shows timing flakes). They are tightened to 2x the p95 once there are about 20 hosted runs. A failed job is never retried.
+# Job budgets (timeout-minutes): a floor set from only a few hosted runs on 2026-11-17. A failed job is never re-run, but a
+# failed suite re-runs its failed tests once in the same job (.github/ci/run-suite.sh; the board's vitest --retry=1).
 # Tests and typechecks for every package, on pull requests and pushes to main. Offline: no secrets are used.
+# A pull request runs the fast suites its change touches; the slow end-to-end ones (areas.json `main: true`: the runner's
+# flows, the SDK twin) run only on pushes to main, so a flake there never holds a PR (the merge queue counts every check).
 # Jobs run on GitHub-hosted runners (this repository is public, so it costs nothing, but the free plan runs ~20 jobs at
 # once). The heavy jobs (packages, runner, board) overflow to our self-hosted runners (modules/ci, labels self-hosted +
 # aidenhq) only when hosted capacity is saturated (checks' `runner` step), the repository variable CI_SELF_HOSTED is
@@ -19,9 +22,12 @@ on:
 permissions:
   contents: read
 
+# A newer push to a PR cancels its older run. Every push to main and every merge train runs to the end (its own group:
+# GitHub drops a pending run when a newer one joins the group): the merge queue reads main's result, and a cancelled run
+# says nothing about it.
 concurrency:
-  group: ci-${{ github.ref }}
-  cancel-in-progress: true
+  group: ci-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   # The suites this change needs tested that have no job of their own (checks' `tests` step; all of them on a push
@@ -90,8 +96,9 @@ jobs:
           sed -i "/^\$/d" "$logs/list"
           echo "Shard $SHARD: $(cut -f1 "$logs/list" | tr '\n' ' ')"
           # One line per package, run in its directory: its output goes to <log>, its exit code to <log>.rc.
-          one() { dir="${1%%$'\t'*}"; cmd="${1#*$'\t'}"; log="$logs/$(tr / _ <<< "$dir")"; (cd "$dir" && bash -eo pipefail -c "$cmd") > "$log" 2>&1; echo $? > "$log.rc"; }
-          export -f one; export logs
+          one() { dir="${1%%$'\t'*}"; cmd="${1#*$'\t'}"; log="$logs/$(tr / _ <<< "$dir")"; (cd "$dir" && "$retry" "$cmd") > "$log" 2>&1; echo $? > "$log.rc"; }
+          retry="$PWD/.github/ci/run-suite.sh"
+          export -f one; export logs retry
           # scripts/node_modules is read by the scripts suite and the kernel's authority CLI: install it once, here, since two
           # parallel `npm ci` in one directory delete each other's files (ENOTEMPTY, then "Cannot find module yaml").
           grep -qE '^(scripts|kernel|fixtures/twin)[[:space:]]' "$logs/list" && (cd scripts && npm ci)
@@ -107,7 +114,8 @@ jobs:
           done < "$logs/list"
           exit $status
 
-  # The runner's unit tests, and its end-to-end flows in three shards side by side (each only when selected).
+  # The runner's unit tests, and its end-to-end flows in three shards side by side (each only when selected; the flows only
+  # on a push to main).
   runner-unit:
     needs: checks
     if: contains(fromJSON(needs.checks.outputs.tests).*.name, 'services/runner')
@@ -139,7 +147,7 @@ jobs:
       - name: Test
         working-directory: services/runner
         # The command is the suite's `run` in .github/ci/areas.json (scripts/ci-local.mjs runs the same one).
-        run: bash -eo pipefail -c "$(jq -r '.suites[] | select(.name == "services/runner") | .run' ../../.github/ci/areas.json)"
+        run: ../../.github/ci/run-suite.sh "$(jq -r '.suites[] | select(.name == "services/runner") | .run' ../../.github/ci/areas.json)"
 
   runner-flows:
     name: runner-flows (${{ matrix.shard }}/3)
@@ -179,7 +187,7 @@ jobs:
         env:
           SHARD: ${{ matrix.shard }}
           # Seconds each file took on a hosted runner (2026-11-18), for balancing; a file not listed counts 30.
-          WEIGHTS: '{"test/flow-merge-path.test.mjs": 36, "test/flow-local-codehost.test.mjs": 36, "test/flow-autonomy.test.mjs": 31, "test/flow-graded.test.mjs": 31, "test/flow-approvals.test.mjs": 28, "test/flow-product.test.mjs": 22, "test/flow-conversation.test.mjs": 22, "test/flow-running.test.mjs": 14, "test/box.test.mjs": 13, "test/adopt.test.mjs": 11}'
+          WEIGHTS: '{"test/flow-merge-path.test.mjs": 36, "test/flow-local-codehost.test.mjs": 36, "test/flow-autonomy.test.mjs": 31, "test/flow-approvals.test.mjs": 28, "test/flow-running.test.mjs": 14, "test/box.test.mjs": 13, "test/adopt.test.mjs": 11}'
         run: |
           # The files test:flows runs, split greedily by weight, heaviest first, into the lightest of the three shards.
           files=$(node -e '
@@ -192,7 +200,7 @@ jobs:
           # As many files at once as the job has CPUs (cpus: 4 in modules/ci/compose.yaml; ubuntu-latest has 4 too): node
           # counts the host's CPUs, not the container's, and runs the whole shard at once, starving every flow's turns.
           # The kernel's packages too: the flows run the kernel's job half (kernel/test/fixtures/jobs-host.mjs).
-          (cd ../../kernel && npm ci) && npm ci && node --disable-warning=ExperimentalWarning --test --test-concurrency=4 $files
+          (cd ../../kernel && npm ci) && npm ci && ../../.github/ci/run-suite.sh "node --disable-warning=ExperimentalWarning --test --test-concurrency=4 $files"
 
   board:
     needs: checks
@@ -311,6 +319,8 @@ jobs:
           src="$PR_BASE"
           case "$GITHUB_REF" in refs/heads/merge-train/*) src=$(git rev-parse origin/main) ;; refs/heads/main) src="" ;; esac
           if [ "$GITHUB_EVENT_NAME" != pull_request ]; then export ALL="a push to main or a merge train"; fi
+          # the slow suites (areas.json `main: true`) run only on a push to main
+          if [ "$GITHUB_EVENT_NAME" = push ] && [ "$GITHUB_REF" = refs/heads/main ]; then export MAIN=1; fi
           if [ -z "$src" ] || ! { git show "$src:.github/ci/select.mjs" > "$d/select.mjs" && git show "$src:.github/ci/areas.json" > "$d/areas.json"; } 2>/dev/null; then
             export ALL="${ALL:-the base has no suite map}"; cp .github/ci/select.mjs .github/ci/areas.json "$d/"
           fi

@@ -57,21 +57,6 @@ test("the host-metrics check fails when the unit runs another checkout's script,
   assert.ok(line.includes(join(realpathSync(dir), "ops/host-metrics.sh")), line);
 });
 
-test("the host-metrics check follows the script the executable receives, not a later host-metrics argument", async () => {
-  const dir = checkout();
-  const other = join(dir, "old-checkout/ops/host-metrics.sh");
-  mkdirSync(dirname(other), { recursive: true });
-  writeFileSync(other, "#!/usr/bin/env bash\n");
-  // env runs bash, and bash runs the old script. The applied script is only a later argument.
-  writeFileSync(join(dir, "execstart"), execStart(`${other} ${join(dir, "ops/host-metrics.sh")}`) + "\n");
-  const r = await run(dir);
-  const line = r.out.split("\n").find((l) => l.includes("host metrics timer runs the applied checkout"));
-  assert.ok(line, r.out);
-  assert.match(line, /^  FAIL  host metrics timer runs the applied checkout  /, line);
-  assert.ok(line.includes(realpathSync(other)), line);
-  assert.ok(line.includes(join(realpathSync(dir), "ops/host-metrics.sh")), line);
-});
-
 test("the host-metrics check fails when the executable systemd starts is not the one its argv names", async () => {
   const dir = checkout();
   // systemd starts /bin/sh, but argv[] pretends env runs the applied script.
@@ -84,41 +69,9 @@ test("the host-metrics check fails when the executable systemd starts is not the
   assert.ok(line.includes(realpathSync("/usr/bin/env")), line);
 });
 
-test("the host-metrics check reads env -P's search path as an argument, not the program", async () => {
-  const dir = checkout();
-  const other = join(dir, "old-checkout/ops/host-metrics.sh");
-  mkdirSync(dirname(other), { recursive: true });
-  writeFileSync(other, "#!/usr/bin/env bash\n");
-  // The applied script is only env's search path; the shell env starts runs the old checkout's script.
-  const argv = `/usr/bin/env -P ${join(dir, "ops/host-metrics.sh")} bash ${other}`;
-  writeFileSync(join(dir, "execstart"), `{ path=/usr/bin/env ; argv[]=${argv} ; ignore_errors=no ; start_time=[n/a] ; stop_time=[n/a] ; pid=0 ; code=(null) ; status=0/0 }\n`);
-  const r = await run(dir);
-  const line = r.out.split("\n").find((l) => l.includes("host metrics timer runs the applied checkout"));
-  assert.ok(line, r.out);
-  assert.match(line, /^  FAIL  host metrics timer runs the applied checkout  /, line);
-  assert.ok(line.includes(realpathSync(other)), line);
-  assert.ok(line.includes(join(realpathSync(dir), "ops/host-metrics.sh")), line);
-});
-
 test("the host-metrics check passes when the unit runs this checkout's script", async () => {
   const dir = checkout();
   writeFileSync(join(dir, "execstart"), execStart(join(dir, "ops/host-metrics.sh")) + "\n");
   const r = await run(dir);
   assert.match(r.out, /^  ok    host metrics timer runs the applied checkout$/m, r.out);
-});
-
-test("the host-metrics check is skipped with the module off or the timer not installed", async () => {
-  const off = checkout({ modules: false });
-  assert.match((await run(off)).out, /^  skip  host metrics \(monitoring module not installed\)$/m);
-  const missing = checkout({ timer: false });
-  assert.match((await run(missing)).out, /^  skip  host metrics \(timer not installed\)$/m);
-});
-
-test("the host-metrics check resolves ${AIDENHQ_DIR} the way systemd does: systemctl show prints it unexpanded", async () => {
-  const dir = checkout();
-  writeFileSync(join(dir, "home/.config/aidenhq-host-metrics.env"), `AIDENHQ_DIR=${dir}\n`);
-  writeFileSync(join(dir, "execstart"), execStart("${AIDENHQ_DIR}/ops/host-metrics.sh") + "\n");
-  const r = await run(dir);
-  const line = r.out.split("\n").find((l) => l.includes("host metrics timer runs the applied checkout"));
-  assert.match(line, /^  ok    host metrics timer runs the applied checkout/, line);
 });

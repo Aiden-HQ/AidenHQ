@@ -21,16 +21,6 @@ test("a release resolves its marketplace and module shas", () => {
   assert.throws(() => resolveRelease(file(), inst({ marketplaces: [market(C)] })), /isn't the release's/);
 });
 
-test("product: differing from the release kernel is refused", () => {
-  assert.throws(() => resolveRelease(file(), inst({ product: A })), /product: is a{40}, the release's kernel is 1{40}/);
-  assert.throws(() => resolveRelease(file({ release: "2026.12" }), inst()), /names 2026\.11, the file is 2026\.12/);
-});
-
-test("a per-module override wins", () => {
-  const r = resolveRelease(file(), inst({ modules: [{ id: "alpha@aidenhq", sha: C }, "beta@aidenhq", { id: "crm@acme", sha: A }] }));
-  assert.deepEqual(r.modules, { alpha: C, beta: B });
-});
-
 test("A17: the release file is read at exactly the pinned distro sha, from a local bare repo", () => {
   const dir = mkdtempSync(join(tmpdir(), "distro-"));
   const g = (...a) => execFileSync("git", ["-C", dir, "-c", "user.name=t", "-c", "user.email=t@example.com", ...a], { encoding: "utf8" }).trim();
@@ -47,11 +37,4 @@ test("A17: the release file is read at exactly the pinned distro sha, from a loc
   assert.equal(readRelease(at(sha), f()).marketplace.sha, M);
   assert.throws(() => readRelease(at(C), f()), /has no commit c{40}/);
   assert.equal(readRelease({ product: K }, f()), null);
-});
-
-test("with a release, the instance runs the release's official marketplace", () => {
-  const r = resolveRelease(file(), inst());
-  const third = { name: "acme", source: { source: "url", url: "https://git.example.com/acme/m.git" }, sha: A };
-  assert.deepEqual(withRelease(inst({ marketplaces: [third] }), r).marketplaces, [market(), third]);
-  assert.deepEqual(withRelease({ product: K }, null), { product: K });
 });

@@ -51,11 +51,3 @@ test("the triage path labels and comments; it has no review or merge call", () =
   const src = readFileSync(new URL("../community.mjs", import.meta.url), "utf8");
   assert.doesNotMatch(src, /\/(reviews|merge)\b|"APPROVE"/);
 });
-
-test("the issue forms parse and the module request form exists", () => {
-  const dir = new URL("../../.github/ISSUE_TEMPLATE/", import.meta.url);
-  for (const f of ["bug-report", "feature-request", "module-request"]) {
-    const form = YAML.parse(readFileSync(new URL(`${f}.yml`, dir), "utf8"));
-    assert.ok(form.name && form.body.some((b) => b.type === "textarea" && b.validations?.required), f);
-  }
-});

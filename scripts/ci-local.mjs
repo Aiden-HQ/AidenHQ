@@ -1,8 +1,8 @@
 // Runs locally what CI would run for your diff: node scripts/ci-local.mjs [--base <ref>] [--list]
 // The selection is CI's own (.github/ci/select.mjs over .github/ci/areas.json) and each suite's command is its `run` there,
-// the same one ci.yml executes (the flows suite's `run` is the unsharded form of CI's four shards). The diff is the
-// merge-base with the base (default origin/main) plus uncommitted and untracked files. The supply-chain checks run on
-// every change, as in CI. --list prints the selection only.
+// the same one ci.yml executes; the slow suites (`main: true`) run only on main, as in CI. It first syncs the shared copies
+// (scripts/sync-shared.mjs). The diff is the merge-base with the base (default origin/main) plus uncommitted and untracked
+// files. The supply-chain checks run on every change, as in CI. --list prints the selection only.
 import { execFileSync, spawn } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -30,7 +30,8 @@ export function changedFiles(mergeBase) {
 export function select(files) {
   const map = JSON.parse(readFileSync(join(root, ".github/ci/areas.json"), "utf8"));
   const sel = suitesFor(map, files);
-  return { ...sel, suites: map.suites.filter((s) => sel.names.includes(s.name)) };
+  // As on a pull request: the slow suites (`main: true`) run only on a push to main.
+  return { ...sel, suites: map.suites.filter((s) => sel.names.includes(s.name) && !s.main) };
 }
 
 async function main() {
@@ -50,6 +51,12 @@ async function main() {
     console.log(`modules/ is missing or not at ${pin.slice(0, 12)}: materializing`);
     execFileSync("node", ["scripts/modules-repo/materialize.mjs", "."], { cwd: root, stdio: "inherit" });
   }
+
+  // Shared code copied into the services (scripts/sync-shared.mjs) is mechanical: synced here, so drift never reaches CI.
+  const before = new Set(lines(git("diff", "--name-only")));
+  execFileSync("node", ["scripts/sync-shared.mjs"], { cwd: root, stdio: "ignore" });
+  const synced = lines(git("diff", "--name-only")).filter((f) => !before.has(f));
+  if (synced.length) console.log(`sync-shared updated ${synced.length} copied file(s): commit them\n  ${synced.join("\n  ")}`);
 
   // `npm ci` once per package (a suite's own `npm ci` is a no-op below): suites share kernel/ and services/runner/.
   const installs = new Set(sel.suites.length ? ["scripts"] : []);

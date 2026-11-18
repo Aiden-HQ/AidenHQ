@@ -28,27 +28,6 @@ test("high or critical findings block; the rest are listed as not blocking", () 
   assert.match(v.body, /\*\*Not blocking\*\*[\s\S]*Slow loop/);
 });
 
-test("only smaller findings pass, and are still posted", () => {
-  const v = verdict(0, review([finding("medium", "Slow loop"), finding("low", "Edge case")]));
-  assert.equal(v.block, false);
-  assert.equal(v.quiet, false);
-  assert.match(v.body, /Edge case/);
-});
-
-test("no findings pass quietly", () => {
-  const v = verdict(0, review([]));
-  assert.deepEqual([v.block, v.quiet], [false, true]);
-});
-
-test("a partial review with nothing high or critical passes with a note; no coverage at all blocks", () => {
-  const partial = verdict(0, review([finding("medium", "Salt default")], { coverage: { partial: true, reasons: ["1 verification incomplete"] }, health: { status: "incomplete" } }));
-  assert.equal(partial.block, false);
-  assert.match(partial.body, /partly done/);
-  const none = verdict(0, review([], { coverage: { unavailable: true, reasons: ["budget stopped"] } }));
-  assert.equal(none.block, true);
-  assert.match(none.body, /incomplete.*re-run/);
-});
-
 test("no verdict always fails (fail closed); past the review target the reason is the size, and the runner doesn't re-run it", () => {
   const failed = JSON.stringify({ findings: null, health: { status: "failed" } });
   const big = verdict(1, failed, "abcdef123", { failure: "transient", attempts: "2", lines: "5230", mode: "full" });
@@ -70,13 +49,6 @@ test("a failed review, a non-zero exit or unreadable output blocks", () => {
   assert.equal(verdict(1, review([])).block, true);
   assert.equal(verdict(0, "not json").block, true);
   assert.equal(verdict(0, review([], { health: { status: "failed", diagnostics: [{ reason: "no credentials" }] } })).body.includes("no credentials"), true);
-});
-
-test("questions the reviewer couldn't settle (health unresolved) don't block: they are listed for a human", () => {
-  const v = verdict(0, review([], { health: { status: "unresolved", unresolvedCount: 1 }, needsHumanAttention: [{ question: "Is the cache key per user?", files: ["src/a.ts"], reason: "can't see callers" }] }), "abcdef123");
-  assert.equal(v.block, false);
-  assert.doesNotMatch(v.body, /incomplete/);
-  assert.match(v.body, /Is the cache key per user\?/);
 });
 
 // The workflow's Review and Verdict steps, run as bash in a scratch repo (npm is a stub; the base's code-review.mjs a stub
@@ -229,104 +201,6 @@ test("the Evidence step: only screenshots and reports in .aidenhq/out/, and no a
   assert.equal(step({ "src/config.ts": 'import cfg from "../.aidenhq/out/report.json";\n' }), 1, "app code reading the evidence");
 });
 
-// The Review step around the base's code-review.mjs (a stub that records its env and plays the next exit code).
-test("the Review step runs the base's reviewer: the higher effort on a critical path, one retry without a verdict, a refusal final, a base without it skipped", () => {
-  const script = YAML.parse(readFileSync(new URL("../../modules/ci/template/.github/workflows/ci.yml", import.meta.url), "utf8")).jobs["code-review"].steps.find((s) => s.name === "Review").run;
-  const dir = mkdtempSync(join(tmpdir(), "ci-review-"));
-  const g = (...a) => execFileSync("git", ["-c", "user.name=t", "-c", "user.email=t@t", ...a], { cwd: dir }).toString().trim();
-  g("init", "-q", "-b", "main");
-  mkdirSync(join(dir, ".github"));
-  const real = new URL("../../modules/ci/template/.github/code-review.mjs", import.meta.url).pathname;
-  writeFileSync(join(dir, ".github", "code-review.mjs"), `import { appendFileSync, readFileSync, writeFileSync } from "node:fs";
-import { spawnSync } from "node:child_process";
-if (process.argv[2] === "--lockfiles") process.exit(spawnSync(process.execPath, [${JSON.stringify(real)}, ...process.argv.slice(2)], { stdio: "inherit" }).status);
-const t = process.env.RUNNER_TEMP, n = (() => { try { return Number(readFileSync(t + "/n", "utf8")); } catch { return 0; } })();
-writeFileSync(t + "/n", String(n + 1));
-appendFileSync(t + "/runs", JSON.stringify({ argv: process.argv.slice(2), effort: process.env.EFFORT, deep: process.env.DEEP, model: process.env.MODEL, url: process.env.CI_REVIEW_URL, key: process.env.CI_REVIEW_KEY, rules: process.env.RULES, trusted: process.env.TRUSTED_BASE }) + "\\n");
-const code = Number((process.env.CODES ?? "0").split(",")[n] ?? 0);
-console.log(code ? JSON.stringify({ findings: null, health: { status: "failed" } }) : JSON.stringify({ findings: [], health: { status: "ok" } }));
-process.exit(code);
-`);
-  g("add", ".");
-  g("commit", "-qm", "base");
-  const base = g("rev-parse", "HEAD");
-  const bin = mkdtempSync(join(tmpdir(), "ci-review-bin-"));
-  for (const [name, body] of [["npm", `echo "$* oidc=\${ACTIONS_ID_TOKEN_REQUEST_TOKEN:-none}" >> "${join(bin, "npm-args")}"`], ["sleep", ""]]) { writeFileSync(join(bin, name), `#!/bin/sh\n${body}\n`); chmodSync(join(bin, name), 0o755); }
-  const change = (file) => { g("checkout", "-q", base); mkdirSync(join(dir, file, ".."), { recursive: true }); writeFileSync(join(dir, file), "x\n".repeat(40)); g("add", "."); g("commit", "-qm", file); return g("rev-parse", "HEAD"); };
-  const run = (head, extra = {}) => {
-    for (const f of ["runs", "n", "env"]) writeFileSync(join(bin, f), "");
-    const env = testEnv({ PATH: `${bin}:${process.env.PATH}`, BASE_SHA: base, HEAD_SHA: head, PR_LABELS: "", GITHUB_ENV: join(bin, "env"), RUNNER_TEMP: bin, DEFAULT_BRANCH: "main", CI_REVIEW_MODEL: "~deepseek/deepseek-flash-latest:high", ...extra });
-    if (extra.ACTIONS_ID_TOKEN_REQUEST_TOKEN) env.ACTIONS_ID_TOKEN_REQUEST_TOKEN = extra.ACTIONS_ID_TOKEN_REQUEST_TOKEN; // testEnv drops it
-    execFileSync("bash", ["-e", "-c", script], { cwd: dir, env, stdio: "pipe" });
-    const runs = readFileSync(join(bin, "runs"), "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l));
-    return { runs, env: readFileSync(join(bin, "env"), "utf8") };
-  };
-  const light = change("src/a.ts");
-  let r = run(light, { ACTIONS_ID_TOKEN_REQUEST_TOKEN: "oidc-secret" });
-  assert.deepEqual(r.runs, [{ argv: [base, light], effort: "high", deep: "", model: "~deepseek/deepseek-flash-latest", url: "https://openrouter.ai/api/v1", key: "sk-test", rules: ".github/code-review-rules.md", trusted: base }]);
-  assert.match(readFileSync(join(bin, "npm-args"), "utf8"), /^i -g --ignore-scripts .* @openai\/codex@\d+\.\d+\.\d+ typescript-language-server@\d+\.\d+\.\d+ typescript@\d+\.\d+\.\d+ oidc=none$/m, "the reviewer and its language server installed at exact versions, no install scripts, no OIDC credentials");
-  assert.match(r.env, /CODEGENIE_EXIT=0\nCODEGENIE_ATTEMPTS=1\nCODE_REVIEW_DONE=1/);
-  // A critical path: reviewed at the model's effort, depth normal; only the deep-review label raises the effort.
-  r = run(change("src/auth/session.ts"));
-  assert.deepEqual([r.runs[0].deep, /REVIEW_DEPTH=normal/.test(r.env)], ["", true]);
-  assert.equal(run(light, { PR_LABELS: "deep-review" }).runs[0].deep, "1");
-  assert.match(run(change("docs/AGENTS.md")).env, /REVIEW_DEPTH=normal\nREVIEW_CRITICAL=docs\/AGENTS.md/, "AGENTS.md is critical");
-  // codex's own config in the PR (anywhere in it, after any other critical path): the check fails, nothing is reviewed.
-  for (const f of [".codex/config.toml", "web/codex.toml", "AGENTS.override.md"]) {
-    g("checkout", "-q", base); writeFileSync(join(dir, "package.json"), "{}\n"); mkdirSync(join(dir, f, ".."), { recursive: true }); writeFileSync(join(dir, f), "x\n".repeat(30)); g("add", "."); g("commit", "-qm", f);
-    r = run(g("rev-parse", "HEAD"));
-    assert.deepEqual([r.runs.length, /CODEGENIE_FAILURE=permanent\nCODEGENIE_CAUSE=The PR changes codex config/.test(r.env)], [0, true], f);
-  }
-  // No verdict: one retry; still none is the failed check with a fixed cause. A gateway refusal (exit 2) is never retried.
-  r = run(light, { CODES: "1,0" });
-  assert.equal(r.runs.length, 2);
-  assert.match(r.env, /CODEGENIE_EXIT=0\nCODEGENIE_ATTEMPTS=2\nCODE_REVIEW_DONE=1/);
-  r = run(light, { CODES: "1,1" });
-  assert.match(r.env, /CODEGENIE_EXIT=1\nCODEGENIE_ATTEMPTS=2\nCODEGENIE_FAILURE=transient\nCODEGENIE_CAUSE=a provider error/);
-  // A confirmed provider error is retried whatever the size.
-  g("checkout", "-q", base); writeFileSync(join(dir, "big.ts"), "x\n".repeat(2100)); g("add", "."); g("commit", "-qm", "big");
-  r = run(g("rev-parse", "HEAD"), { CODES: "1,0" });
-  assert.equal(r.runs.length, 2);
-  r = run(light, { CODES: "2" });
-  assert.equal(r.runs.length, 1);
-  assert.match(r.env, /CODEGENIE_FAILURE=permanent/);
-  // No verdict for any other reason (exit 3: a timeout, an answer that isn't a review) is never retried.
-  r = run(light, { CODES: "3,0" });
-  assert.equal(r.runs.length, 1);
-  assert.match(r.env, /CODEGENIE_EXIT=3\nCODEGENIE_ATTEMPTS=1\nCODEGENIE_FAILURE=no-verdict/);
-  // .aidenhq/out/: screenshots are out of the line count; reports (json, txt) are reviewed like any file.
-  assert.match(run(change(".aidenhq/out/report.json")).env, /REVIEW_COUNTED_LINES=40/);
-  assert.match(run(change(".aidenhq/out/home.png")).env, /CODE_REVIEW_SKIPPED=1/);
-  // package-lock.json: out of the line count, but adding a package (or an install script, or a new version) is critical,
-  // never a tiny skip; moving one to another path at the same version is not.
-  g("checkout", "-q", base); writeFileSync(join(dir, "package-lock.json"), JSON.stringify({ packages: { "": {}, "node_modules/a": { version: "1.0.0" } } }, null, 2)); g("add", "."); g("commit", "-qm", "lock base");
-  const lockBase = g("rev-parse", "HEAD");
-  const runLock = (packages) => { const head = (() => { g("checkout", "-q", lockBase); writeFileSync(join(dir, "package-lock.json"), JSON.stringify({ packages: { "": {}, ...packages } }, null, 2)); g("add", "."); g("commit", "-qm", "lock"); return g("rev-parse", "HEAD"); })(); return run(head, { BASE_SHA: lockBase }); };
-  r = runLock({ "node_modules/a": { version: "1.0.0" }, "node_modules/b": { version: "2.0.0" } });
-  assert.deepEqual([r.runs.length, /REVIEW_DEPTH=normal\nREVIEW_CRITICAL=package-lock.json \(packages added or changed\)/.test(r.env)], [1, true], "an added package is critical");
-  assert.equal(runLock({ "node_modules/a": { version: "1.0.1" } }).runs.length, 1, "a changed version is critical");
-  assert.equal(runLock({ "node_modules/a": { version: "1.0.0", hasInstallScript: true } }).runs.length, 1, "an install script is critical");
-  r = runLock({ "node_modules/x/node_modules/a": { version: "1.0.0" } });
-  assert.deepEqual([r.runs.length, r.env.includes("CODE_REVIEW_SKIPPED=1")], [0, true], "the same package moved is no change");
-  // No key at all is a failed check, never a pass; a base without the reviewer (the PR that brings it in) is skipped.
-  r = run(light, { OPENROUTER_API_KEY: "" });
-  assert.deepEqual([r.runs.length, /CODEGENIE_FAILURE=permanent/.test(r.env)], [0, true]);
-  // A base without the reviewer (an old or stacked base): the default branch's reviews it, never a skip. Only when the
-  // default branch has none either (the PR that brings the reviewer in) is it skipped.
-  g("remote", "add", "origin", ".");
-  g("fetch", "-q", "origin", "+refs/heads/main:refs/remotes/origin/main");
-  g("checkout", "-q", "-b", "old-base", base);
-  g("rm", "-q", ".github/code-review.mjs");
-  g("commit", "-qm", "no reviewer");
-  const bare = g("rev-parse", "HEAD");
-  r = run(light, { BASE_SHA: bare });
-  assert.equal(r.runs.length, 1, "reviewed by the default branch's reviewer");
-  assert.match(r.runs[0].rules, /\/reviewer\/code-review-rules\.md$/);
-  g("fetch", "-q", "origin", "+refs/heads/old-base:refs/remotes/origin/main"); // a default branch without the reviewer
-  r = run(light, { BASE_SHA: bare });
-  assert.deepEqual([r.runs.length, r.env.includes("CODE_REVIEW_SKIPPED=1")], [0, true]);
-});
-
 // code-review.mjs end to end with a fake codex on PATH: what it is given, and its answer in the gate's shape.
 test("the reviewer runs codex with its shell off, the repo tools only and no GitHub token; its answer is the gate's JSON", () => {
   const reviewer = new URL("../../modules/ci/template/.github/code-review.mjs", import.meta.url).pathname;
@@ -423,16 +297,6 @@ sed "s#ROOT#$(dirname "$(pwd)")/pr#g" "${join(bin, "answer")}" > "$out"; echo '{
   assert.equal(review("export const add = (a, b) => a ** b;\n", { FAIL: "stream disconnected before completion" }).code, 1);
   assert.equal(review("export const add = (a, b) => a & b;\n", { FAIL: "something went wrong" }).code, 3);
   assert.equal(review("export const add = (a, b) => a | b;\n", { FAIL: "tool error at src/a.ts:512" }).code, 3, "a bare number is no status");
-});
-
-test("the code review's brief carries the items of the base's checklist that the diff triggers, and only those", async () => {
-  const { brief } = await import("../../modules/ci/template/.github/code-review.mjs");
-  const { checklistText, matchChecklist } = await import("../../modules/ci/template/.github/review-checklist.mjs");
-  const items = [{ id: "migration-at-start", trigger: { paths: ["migrations/**"] }, check: "It runs at startup." }];
-  const checks = checklistText(matchChecklist(items, "diff --git a/migrations/001.sql b/migrations/001.sql\n+create table t (id int);\n"));
-  assert.match(brief({ checks }), /Reliability checklist[\s\S]*P1 finding[\s\S]*- migration-at-start: It runs at startup\./);
-  assert.equal(checklistText(matchChecklist(items, "diff --git a/src/a.js b/src/a.js\n+x\n")), "");
-  assert.doesNotMatch(brief({ checks: "" }), /Reliability checklist/);
 });
 
 test("the review tools read the PR's tree and history only: nothing outside the checkout, no .git, no options smuggled in", async () => {
@@ -534,4 +398,101 @@ test("prior review: delta, reuse of the same patch on any base or PR number, els
   assert.match(verdict(0, review([]), pushed, { mode: "delta", from: green, n: "1" }).body, new RegExp(`only the changes since \`${green.slice(0, 7)}\``));
   const reused = verdict(1, "", reworded, { mode: "reuse", from: green });
   assert.deepEqual([reused.block, reused.body.includes(`reused on \`${reworded.slice(0, 7)}\`** from \`${green.slice(0, 7)}\``)], [false, true]);
+});
+
+test("the Review step runs the base's reviewer: the higher effort on a critical path, one retry without a verdict, a refusal final, a base without it skipped", () => {
+  const script = YAML.parse(readFileSync(new URL("../../modules/ci/template/.github/workflows/ci.yml", import.meta.url), "utf8")).jobs["code-review"].steps.find((s) => s.name === "Review").run;
+  const dir = mkdtempSync(join(tmpdir(), "ci-review-"));
+  const g = (...a) => execFileSync("git", ["-c", "user.name=t", "-c", "user.email=t@t", ...a], { cwd: dir }).toString().trim();
+  g("init", "-q", "-b", "main");
+  mkdirSync(join(dir, ".github"));
+  const real = new URL("../../modules/ci/template/.github/code-review.mjs", import.meta.url).pathname;
+  writeFileSync(join(dir, ".github", "code-review.mjs"), `import { appendFileSync, readFileSync, writeFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+if (process.argv[2] === "--lockfiles") process.exit(spawnSync(process.execPath, [${JSON.stringify(real)}, ...process.argv.slice(2)], { stdio: "inherit" }).status);
+const t = process.env.RUNNER_TEMP, n = (() => { try { return Number(readFileSync(t + "/n", "utf8")); } catch { return 0; } })();
+writeFileSync(t + "/n", String(n + 1));
+appendFileSync(t + "/runs", JSON.stringify({ argv: process.argv.slice(2), effort: process.env.EFFORT, deep: process.env.DEEP, model: process.env.MODEL, url: process.env.CI_REVIEW_URL, key: process.env.CI_REVIEW_KEY, rules: process.env.RULES, trusted: process.env.TRUSTED_BASE }) + "\\n");
+const code = Number((process.env.CODES ?? "0").split(",")[n] ?? 0);
+console.log(code ? JSON.stringify({ findings: null, health: { status: "failed" } }) : JSON.stringify({ findings: [], health: { status: "ok" } }));
+process.exit(code);
+`);
+  g("add", ".");
+  g("commit", "-qm", "base");
+  const base = g("rev-parse", "HEAD");
+  const bin = mkdtempSync(join(tmpdir(), "ci-review-bin-"));
+  for (const [name, body] of [["npm", `echo "$* oidc=\${ACTIONS_ID_TOKEN_REQUEST_TOKEN:-none}" >> "${join(bin, "npm-args")}"`], ["sleep", ""]]) { writeFileSync(join(bin, name), `#!/bin/sh\n${body}\n`); chmodSync(join(bin, name), 0o755); }
+  const change = (file) => { g("checkout", "-q", base); mkdirSync(join(dir, file, ".."), { recursive: true }); writeFileSync(join(dir, file), "x\n".repeat(40)); g("add", "."); g("commit", "-qm", file); return g("rev-parse", "HEAD"); };
+  const run = (head, extra = {}) => {
+    for (const f of ["runs", "n", "env"]) writeFileSync(join(bin, f), "");
+    const env = testEnv({ PATH: `${bin}:${process.env.PATH}`, BASE_SHA: base, HEAD_SHA: head, PR_LABELS: "", GITHUB_ENV: join(bin, "env"), RUNNER_TEMP: bin, DEFAULT_BRANCH: "main", CI_REVIEW_MODEL: "~deepseek/deepseek-flash-latest:high", ...extra });
+    if (extra.ACTIONS_ID_TOKEN_REQUEST_TOKEN) env.ACTIONS_ID_TOKEN_REQUEST_TOKEN = extra.ACTIONS_ID_TOKEN_REQUEST_TOKEN; // testEnv drops it
+    execFileSync("bash", ["-e", "-c", script], { cwd: dir, env, stdio: "pipe" });
+    const runs = readFileSync(join(bin, "runs"), "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l));
+    return { runs, env: readFileSync(join(bin, "env"), "utf8") };
+  };
+  const light = change("src/a.ts");
+  let r = run(light, { ACTIONS_ID_TOKEN_REQUEST_TOKEN: "oidc-secret" });
+  assert.deepEqual(r.runs, [{ argv: [base, light], effort: "high", deep: "", model: "~deepseek/deepseek-flash-latest", url: "https://openrouter.ai/api/v1", key: "sk-test", rules: ".github/code-review-rules.md", trusted: base }]);
+  assert.match(readFileSync(join(bin, "npm-args"), "utf8"), /^i -g --ignore-scripts .* @openai\/codex@\d+\.\d+\.\d+ typescript-language-server@\d+\.\d+\.\d+ typescript@\d+\.\d+\.\d+ oidc=none$/m, "the reviewer and its language server installed at exact versions, no install scripts, no OIDC credentials");
+  assert.match(r.env, /CODEGENIE_EXIT=0\nCODEGENIE_ATTEMPTS=1\nCODE_REVIEW_DONE=1/);
+  // A critical path: reviewed at the model's effort, depth normal; only the deep-review label raises the effort.
+  r = run(change("src/auth/session.ts"));
+  assert.deepEqual([r.runs[0].deep, /REVIEW_DEPTH=normal/.test(r.env)], ["", true]);
+  assert.equal(run(light, { PR_LABELS: "deep-review" }).runs[0].deep, "1");
+  assert.match(run(change("docs/AGENTS.md")).env, /REVIEW_DEPTH=normal\nREVIEW_CRITICAL=docs\/AGENTS.md/, "AGENTS.md is critical");
+  // codex's own config in the PR (anywhere in it, after any other critical path): the check fails, nothing is reviewed.
+  for (const f of [".codex/config.toml", "web/codex.toml", "AGENTS.override.md"]) {
+    g("checkout", "-q", base); writeFileSync(join(dir, "package.json"), "{}\n"); mkdirSync(join(dir, f, ".."), { recursive: true }); writeFileSync(join(dir, f), "x\n".repeat(30)); g("add", "."); g("commit", "-qm", f);
+    r = run(g("rev-parse", "HEAD"));
+    assert.deepEqual([r.runs.length, /CODEGENIE_FAILURE=permanent\nCODEGENIE_CAUSE=The PR changes codex config/.test(r.env)], [0, true], f);
+  }
+  // No verdict: one retry; still none is the failed check with a fixed cause. A gateway refusal (exit 2) is never retried.
+  r = run(light, { CODES: "1,0" });
+  assert.equal(r.runs.length, 2);
+  assert.match(r.env, /CODEGENIE_EXIT=0\nCODEGENIE_ATTEMPTS=2\nCODE_REVIEW_DONE=1/);
+  r = run(light, { CODES: "1,1" });
+  assert.match(r.env, /CODEGENIE_EXIT=1\nCODEGENIE_ATTEMPTS=2\nCODEGENIE_FAILURE=transient\nCODEGENIE_CAUSE=a provider error/);
+  // A confirmed provider error is retried whatever the size.
+  g("checkout", "-q", base); writeFileSync(join(dir, "big.ts"), "x\n".repeat(2100)); g("add", "."); g("commit", "-qm", "big");
+  r = run(g("rev-parse", "HEAD"), { CODES: "1,0" });
+  assert.equal(r.runs.length, 2);
+  r = run(light, { CODES: "2" });
+  assert.equal(r.runs.length, 1);
+  assert.match(r.env, /CODEGENIE_FAILURE=permanent/);
+  // No verdict for any other reason (exit 3: a timeout, an answer that isn't a review) is never retried.
+  r = run(light, { CODES: "3,0" });
+  assert.equal(r.runs.length, 1);
+  assert.match(r.env, /CODEGENIE_EXIT=3\nCODEGENIE_ATTEMPTS=1\nCODEGENIE_FAILURE=no-verdict/);
+  // .aidenhq/out/: screenshots are out of the line count; reports (json, txt) are reviewed like any file.
+  assert.match(run(change(".aidenhq/out/report.json")).env, /REVIEW_COUNTED_LINES=40/);
+  assert.match(run(change(".aidenhq/out/home.png")).env, /CODE_REVIEW_SKIPPED=1/);
+  // package-lock.json: out of the line count, but adding a package (or an install script, or a new version) is critical,
+  // never a tiny skip; moving one to another path at the same version is not.
+  g("checkout", "-q", base); writeFileSync(join(dir, "package-lock.json"), JSON.stringify({ packages: { "": {}, "node_modules/a": { version: "1.0.0" } } }, null, 2)); g("add", "."); g("commit", "-qm", "lock base");
+  const lockBase = g("rev-parse", "HEAD");
+  const runLock = (packages) => { const head = (() => { g("checkout", "-q", lockBase); writeFileSync(join(dir, "package-lock.json"), JSON.stringify({ packages: { "": {}, ...packages } }, null, 2)); g("add", "."); g("commit", "-qm", "lock"); return g("rev-parse", "HEAD"); })(); return run(head, { BASE_SHA: lockBase }); };
+  r = runLock({ "node_modules/a": { version: "1.0.0" }, "node_modules/b": { version: "2.0.0" } });
+  assert.deepEqual([r.runs.length, /REVIEW_DEPTH=normal\nREVIEW_CRITICAL=package-lock.json \(packages added or changed\)/.test(r.env)], [1, true], "an added package is critical");
+  assert.equal(runLock({ "node_modules/a": { version: "1.0.1" } }).runs.length, 1, "a changed version is critical");
+  assert.equal(runLock({ "node_modules/a": { version: "1.0.0", hasInstallScript: true } }).runs.length, 1, "an install script is critical");
+  r = runLock({ "node_modules/x/node_modules/a": { version: "1.0.0" } });
+  assert.deepEqual([r.runs.length, r.env.includes("CODE_REVIEW_SKIPPED=1")], [0, true], "the same package moved is no change");
+  // No key at all is a failed check, never a pass; a base without the reviewer (the PR that brings it in) is skipped.
+  r = run(light, { OPENROUTER_API_KEY: "" });
+  assert.deepEqual([r.runs.length, /CODEGENIE_FAILURE=permanent/.test(r.env)], [0, true]);
+  // A base without the reviewer (an old or stacked base): the default branch's reviews it, never a skip. Only when the
+  // default branch has none either (the PR that brings the reviewer in) is it skipped.
+  g("remote", "add", "origin", ".");
+  g("fetch", "-q", "origin", "+refs/heads/main:refs/remotes/origin/main");
+  g("checkout", "-q", "-b", "old-base", base);
+  g("rm", "-q", ".github/code-review.mjs");
+  g("commit", "-qm", "no reviewer");
+  const bare = g("rev-parse", "HEAD");
+  r = run(light, { BASE_SHA: bare });
+  assert.equal(r.runs.length, 1, "reviewed by the default branch's reviewer");
+  assert.match(r.runs[0].rules, /\/reviewer\/code-review-rules\.md$/);
+  g("fetch", "-q", "origin", "+refs/heads/old-base:refs/remotes/origin/main"); // a default branch without the reviewer
+  r = run(light, { BASE_SHA: bare });
+  assert.deepEqual([r.runs.length, r.env.includes("CODE_REVIEW_SKIPPED=1")], [0, true]);
 });

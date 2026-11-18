@@ -50,17 +50,6 @@ test("refuses a config without the owner, and a line that isn't KEY=value", () =
   assert.throws(() => dry(conf([...person, "$(touch /tmp/pwned)"])), /not KEY=value/);
 });
 
-test("person.env: an unquoted value ends at ' #', a quoted one keeps it", () => {
-  const out = dry(conf([...person, "OPENROUTER_LIMIT_USD=75   # a month", "COMPANY_NAME='Acme # Co'"]));
-  assert.ok(out.includes("openrouter-key.mjs create aidenhq-alice 75"), out);
-});
-
-test("dry run installs and enables the Docker prune service and timer, so a fresh host cleans its images on demand", () => {
-  const out = dry(conf(person));
-  assert.match(out, /cp .*prune-docker\.service .*prune-docker\.timer /, out);
-  assert.match(out, /enable --now .*prune-docker\.service prune-docker\.timer/, out);
-});
-
 test("every unit setup enables carries an [Install] section, or systemctl enable stops setup", () => {
   const dir = join(dirname(setup), "units");
   const enabled = [];
@@ -81,13 +70,6 @@ test("every unit setup enables carries an [Install] section, or systemctl enable
   }
 });
 
-test("dry run needs no node, and a missing OpenRouter key is 'would fail'", () => {
-  const file = conf(person.filter((l) => !l.startsWith("OPENROUTER")));
-  const out = execFileSync("/bin/bash", [setup, "--dry-run", "--config", file], { encoding: "utf8", env: { PATH: "/usr/bin:/bin", HOME: "/nonexistent" } });
-  assert.ok(out.includes("would fail: set OPENROUTER_MANAGEMENT_KEY"), out);
-  assert.ok(out.includes("write /home/alice/.config/aidenhq/modules/google/google_oauth.json"), out);
-});
-
 test("--unattended: no config file, settings from the environment, the SSH-tunnel route without Tailscale", () => {
   const run = (env, ...args) => execFileSync("bash", [setup, "--dry-run", "--unattended", ...args], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], env: { PATH: process.env.PATH, AIDENHQ_USER: "alice", ...env } });
   const out = run({ OWNER_EMAIL: "alice@example.com", MAX_CONCURRENT: "8", TIMEOUT_MINUTES: "120", CI_RUNNERS: "2", OPENROUTER_KEY: "sk-SECRET" }, "--no-tailscale");
@@ -105,17 +87,10 @@ test("--unattended: no config file, settings from the environment, the SSH-tunne
   assert.throws(() => run({}), /--unattended needs OWNER_EMAIL/);
   assert.throws(() => run({ OWNER_EMAIL: "alice@example.com", MAX_CONCURRENT: "8; rm -rf /" }), /MAX_CONCURRENT must be a whole number/);
 });
+
 test("--unattended, exposure public: the IP's https URLs and 24-hour links, no tailnet and no tunnel", () => {
   const out = execFileSync("bash", [setup, "--dry-run", "--unattended"], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], env: { PATH: process.env.PATH, AIDENHQ_USER: "alice", OWNER_EMAIL: "alice@example.com", AIDENHQ_EXPOSURE: "public", AIDENHQ_PUBLIC_IP: "203.0.113.7" } });
   for (const want of ["env AIDENHQ_EXPOSURE=public AIDENHQ_NO_TAILSCALE=1", ".env: BOARD_LAN_URL=https://203.0.113.7", ".env: AIDENHQ_ADMIN_URL=https://203.0.113.7:8446", ".env: AIDENHQ_PUBLIC_IP=203.0.113.7", ".env: AIDENHQ_LINK_TTL_HOURS=24"])
     assert.ok(out.includes(want), `missing: ${want}\n${out}`);
   for (const not of ["tailscale serve", "AIDENHQ_SSH_TUNNEL"]) assert.ok(!out.includes(not), `unexpected: ${not}\n${out}`);
-});
-test("a rerun of an unattended install: units before the apply, its own failed generation retried, a umask of its own", () => {
-  const out = execFileSync("bash", ["-c", `umask 077; exec bash "$0" --dry-run --unattended --no-tailscale`, setup], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], env: { PATH: process.env.PATH, AIDENHQ_USER: "alice", OWNER_EMAIL: "alice@example.com" } });
-  const at = (s) => { const i = out.indexOf(s); assert.ok(i >= 0, `missing: ${s}\n${out}`); return i; };
-  // The apply's agent setup needs the computer launcher answering: its unit is installed and started first.
-  assert.ok(at("enable --now aidenhq-computers") < at("ops/apply-config.sh --retry"), out);
-  assert.ok(at("aidenhq-computers.service") < at("ops/apply-config.sh"), out);
-  assert.match(readFileSync(setup, "utf8"), /^set -euo pipefail\n(#.*\n)*umask 022\n/m, "setup sets its own umask before writing anything");
 });

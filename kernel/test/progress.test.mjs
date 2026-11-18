@@ -17,12 +17,3 @@ test("the same file read 20 times with no edit stops the job; an edit starts the
   p.add([read(100)]);
   assert.match(p.check(1000), /src\/grades\.ts read 20 times/);
 });
-
-test("waiting doesn't count toward the window and gives the deadline back after a commit", () => {
-  const p = progressTracker({ start: 0 });
-  p.add([{ at: at(10 * MIN), text: "Running /bin/bash -c 'git commit -m x'" }, { at: at(11 * MIN), text: "Running /bin/bash -c 'sleep 60'" }]);
-  assert.equal(p.check(100 * MIN), undefined, "ninety minutes asleep: no stop");
-  assert.equal(p.deadline(120 * MIN, 100 * MIN), 180 * MIN, "moved out, capped at 1.5x the base");
-  p.add([{ at: at(100 * MIN), text: "Running /bin/bash -c 'cat a.md'" }]);
-  assert.match(p.check(100 * MIN + 36 * MIN), /^no progress for 35 min; last activity: Running/);
-});

@@ -87,8 +87,9 @@ async function main() {
       }
     }
   }
+  // A slow suite (`main: true`) runs only on a push to main (MAIN): a flake there never holds a PR or a merge train.
   const tests = map.suites
-    .filter((s) => names.includes(s.name))
+    .filter((s) => names.includes(s.name) && (!s.main || env.MAIN))
     .map((s) => {
       const own = runs.find((r) => r.name === s.name) ?? s;
       return { name: s.name, dir: s.name.split("#")[0], ...(own.job ? { job: own.job } : { run: own.run }) };

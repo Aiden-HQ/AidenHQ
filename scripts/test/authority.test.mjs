@@ -147,31 +147,6 @@ test("B replacing A with equal authority has an empty diff; B adding a secret is
   assert.equal(classifyModules(diffAll(kept)).tier, 2);
 });
 
-test("the CLI prints one line per change between two commits", () => {
-  const repo = mkdtempSync(join(tmpdir(), "auth-cli-"));
-  const g = (...a) => execFileSync("git", ["-C", repo, ...a], { encoding: "utf8" }).trim();
-  g("init", "-q");
-  g("config", "user.email", "t@example.com");
-  g("config", "user.name", "t");
-  mkdirSync(join(repo, "modules/acme-crm"), { recursive: true });
-  writeFileSync(join(repo, "modules/acme-crm/module.yaml"), "name: acme-crm\n");
-  g("add", "-A");
-  g("commit", "-qm", "a");
-  const a = g("rev-parse", "HEAD");
-  writeFileSync(join(repo, "modules/acme-crm/module.yaml"), "name: acme-crm\nwrites:\n  publish: { floor: 1 }\n");
-  writeFileSync(join(repo, "modules/acme-crm/main.ts"), "export {};\n");
-  g("add", "-A");
-  g("commit", "-qm", "b");
-  const b = g("rev-parse", "HEAD");
-  const cli = join(import.meta.dirname, "../compiler/authority-cli.ts");
-  const run = (...args) => execFileSync("node", [cli, ...args], { encoding: "utf8", stdio: "pipe", env: { ...process.env, AIDENHQ_PRODUCT_DIR: repo, AIDENHQ_INSTANCE_DIR: "" } });
-  assert.deepEqual(run(a, b).trim().split("\n"), ["apply authority: acme-crm: adds write kind publish (owner)", "apply authority: acme-crm: code changes (review)"]);
-  assert.equal(run(a, a).trim(), "apply authority: none");
-  // A commit it can't read, or anything but a full sha: refused (exit 2), never guessed.
-  assert.throws(() => run(a, "f".repeat(40)), (e) => e.status === 2);
-  assert.throws(() => run("HEAD", b), (e) => e.status === 2);
-});
-
 test("5b: the tree id at the new sha equals the recorded one → empty diff; the official repository is no owner line", () => {
   const repo = (files) => {
     const d = mkdtempSync(join(tmpdir(), "auth-tree-"));

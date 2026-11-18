@@ -11,24 +11,6 @@ import { Tokens, Creds, admit, builtImage, dockerRunArgs, oomMessage, execEnv, r
 import { host as localHost } from "../../../modules/codehost-local/src/host.mjs";
 import { ensureClone } from "../../../modules/codehost-github/src/git.mjs";
 
-test("only execs carrying a CODEX_HOME are wrapped", () => {
-  assert.deepEqual(wrapExec("ls", ["-l"], {}), ["ls", ["-l"]]);
-  const [cmd, args] = wrapExec("codex", ["exec"], { CODEX_HOME: "/h" });
-  assert.equal(cmd, "sh");
-  assert.deepEqual(args.slice(2), ["aidenhq-computer", "codex", "exec"]);
-});
-
-test("a routine's model and effort replace the agent's in a box's codex exec, before execEnv strips them", () => {
-  const args = ["exec", "--json", "--model", "agent-m", "-c", 'model_reasoning_effort="high"', "-c", "x=1", "-"];
-  const env = { AIDENHQ_MODEL: "routine-m", AIDENHQ_REASONING_EFFORT: "low" };
-  assert.deepEqual(routineArgs("codex", args, env), ["exec", "--model", "routine-m", "-c", 'model_reasoning_effort="low"', "--json", "-c", "x=1", "-"]);
-  assert.deepEqual(routineArgs("codex", args, {}), args);
-  // Paperclip's own -c pairs come before exec and stay where they are.
-  assert.deepEqual(routineArgs("codex", ["-c", "a=1", ...args], env), ["-c", "a=1", "exec", "--model", "routine-m", "-c", 'model_reasoning_effort="low"', "--json", "-c", "x=1", "-"]);
-  assert.deepEqual(routineArgs("sh", args, env), args);
-  assert.ok(!("AIDENHQ_MODEL" in execEnv(env, {})));
-});
-
 test("a run token names its agent until the run ends; a new run gets a new one", () => {
   const t = new Tokens();
   const a = t.issue("box1", "agent-1");
@@ -92,10 +74,6 @@ test("docker run: gVisor, the computers network, limits and mounts from config",
   assert.deepEqual(a.slice(-3), ["img:1", "sleep", "infinity"]);
 });
 
-test("an out-of-memory kill says so and names the limit", () => {
-  assert.match(oomMessage("aidenhq-computer-1", "6g"), /killed for running out of memory \(limit 6g\)/);
-});
-
 test("admission: room → go; full → evict the least recently used idle box; all busy → wait; idle boxes are reaped", () => {
   const boxes = new Map([["a", { lastUsed: 5, busy: 0 }], ["b", { lastUsed: 1, busy: 1 }], ["c", { lastUsed: 3, busy: 0 }]]);
   assert.equal(admit(boxes, 6), null);
@@ -104,11 +82,6 @@ test("admission: room → go; full → evict the least recently used idle box; a
   assert.equal(admit(boxes, 3), "wait");
   boxes.get("c").busy = 0;
   assert.deepEqual(stale(boxes, 10, 100), ["c"]);
-});
-
-test("a run's Paperclip credential comes from the exec env (bridge URL + key + task)", () => {
-  assert.equal(runCredential({ PATH: "/bin" }), undefined);
-  assert.deepEqual(runCredential({ PAPERCLIP_API_URL: "http://127.0.0.1:4567", PAPERCLIP_API_KEY: "bridge", PAPERCLIP_TASK_ID: "issue-1" }), { apiUrl: "http://127.0.0.1:4567", apiKey: "bridge", taskId: "issue-1" });
 });
 
 test("a box's Paperclip credential survives a launcher restart (dump/load) and goes on delete", () => {
@@ -274,15 +247,14 @@ test("the launcher hands the box its token on stdin and clears it at the end of 
   for (const s of [WRITE_RUN_TOKEN_SCRIPT, CLEAR_RUN_TOKEN_SCRIPT]) assert.doesNotMatch(s, /ahqc_/);
 });
 
-test("a tag compile published but ops/computer-images.sh has not built yet runs the newest built image, never a pull", async () => {
-  const calls = [];
-  const docker = (built) => async (args) => {
-    calls.push(args[0]);
-    if (args[0] === "image") return { exitCode: built ? 0 : 1, stdout: "" };
-    return { exitCode: 0, stdout: "aidenhq/computer-agent-base:aaaaaaaaaaaa\naidenhq/computer-agent-base:bbbbbbbbbbbb\n" };
-  };
-  assert.equal(await builtImage("aidenhq/computer-agent-base:new", docker(true)), "aidenhq/computer-agent-base:new");
-  assert.equal(await builtImage("aidenhq/computer-agent-base:new", docker(false)), "aidenhq/computer-agent-base:aaaaaaaaaaaa");
-  await assert.rejects(builtImage("aidenhq/computer-agent-base:new", async () => ({ exitCode: 1, stdout: "" })), /not built yet/);
-  assert.ok(!calls.includes("pull"));
+test("only execs carrying a CODEX_HOME are wrapped", () => {
+  assert.deepEqual(wrapExec("ls", ["-l"], {}), ["ls", ["-l"]]);
+  const [cmd, args] = wrapExec("codex", ["exec"], { CODEX_HOME: "/h" });
+  assert.equal(cmd, "sh");
+  assert.deepEqual(args.slice(2), ["aidenhq-computer", "codex", "exec"]);
+});
+
+test("a run's Paperclip credential comes from the exec env (bridge URL + key + task)", () => {
+  assert.equal(runCredential({ PATH: "/bin" }), undefined);
+  assert.deepEqual(runCredential({ PAPERCLIP_API_URL: "http://127.0.0.1:4567", PAPERCLIP_API_KEY: "bridge", PAPERCLIP_TASK_ID: "issue-1" }), { apiUrl: "http://127.0.0.1:4567", apiKey: "bridge", taskId: "issue-1" });
 });

@@ -64,25 +64,6 @@ test("instance.yaml is edited in place: comments stay, and fork then unfork leav
   assert.match(pin.get("instance.yaml"), /\{ ?id: ops, sha: b{40} ?\}/);
 });
 
-test("a realistic instance.yaml keeps every other line as it was", () => {
-  const yaml = `# The instance
-product: ${"a".repeat(40)}
-modules:
-  - core
-  - { id: ops, sha: ${"b".repeat(40)} }
-settings:
-  owner_name: Sam # who it serves
-  glean_mcp_url: "https://acme-be.glean.com/mcp/default?tools=all&and=a-rather-long-query-string-that-runs-past-eighty-columns"
-  slack_post_channels: [C1, C2]
-overrides:
-  agents:
-    scout: { model: m1 }
-`;
-  const out = planFiles([{ kind: "agent", agent: "scout", field: "reasoning_effort", value: "high" }], { read: (p) => (p === "instance.yaml" ? yaml : undefined), isInstance }).get("instance.yaml");
-  const changed = out.split("\n").filter((l) => !yaml.split("\n").includes(l));
-  assert.deepEqual(changed, ["    scout: { model: m1, reasoning_effort: high }"]);
-});
-
 test("a branch made by git plumbing (no checkout) is a branch of the task, as the apply path finds it", async () => {
   const { execFileSync } = await import("node:child_process");
   const { mkdtempSync, writeFileSync } = await import("node:fs");

@@ -65,7 +65,6 @@
     "workflow": "Engineer job: prompt, run, comment mid-run, finish",
     "today": [
       "services/runner/test/flow-running.test.mjs",
-      "services/runner/test/flow-conversation.test.mjs",
       "kernel/test/jobs.test.mjs"
     ],
     "next": "engineering + engine-codex + K7"
@@ -113,8 +112,7 @@
     "workflow": "Fleet apply, Tier 0 instance changes, land",
     "today": [
       "services/runner/test/apply.test.mjs",
-      "services/runner/test/land.test.mjs",
-      "services/runner/test/flow-product.test.mjs"
+      "services/runner/test/land.test.mjs"
     ],
     "next": "kernel.apply + codehost-github.land"
   },
@@ -122,7 +120,6 @@
     "n": 14,
     "workflow": "Product PR watch, Dependabot pin-only merges, supply chain",
     "today": [
-      "services/runner/test/flow-product.test.mjs",
       "services/runner/test/tiers.test.mjs",
       "scripts/test/supply-chain.test.mjs",
       "scripts/test/pins.test.mjs"
@@ -141,7 +138,6 @@
     "n": 16,
     "workflow": "Graded done, reopen on failed grade",
     "today": [
-      "services/runner/test/flow-graded.test.mjs",
       "modules/grading/test/parity.test.mjs",
       "modules/grading/test/grades.test.mjs"
     ],
@@ -198,8 +194,7 @@
     "workflow": "Vendor sign-ins banner",
     "today": [
       "services/board/test/glean.test.ts",
-      "services/board/test/google.test.ts",
-      "services/board/test/connections-status.test.ts"
+      "services/board/test/google.test.ts"
     ],
     "next": "board.signins"
   },
@@ -255,8 +250,7 @@
     "workflow": "Primer publish",
     "today": [
       "services/runner/test/flow-approvals.test.mjs",
-      "modules/primer/connections/primer-mcp/test/publish.test.ts",
-      "services/runner/test/flow-conversation.test.mjs"
+      "modules/primer/connections/primer-mcp/test/publish.test.ts"
     ],
     "next": "primer.publish kind"
   },
@@ -282,7 +276,6 @@
     "n": 31,
     "workflow": "Monitoring, alerts",
     "today": [
-      "services/board/test/monitoring.test.ts",
       "scripts/test/monitoring.test.mjs"
     ],
     "next": "monitoring module"

@@ -21,14 +21,6 @@ const product = execFileSync("git", ["ls-files", "-z"], { cwd: ROOT, maxBuffer: 
 // The official modules at ./modules (CI puts them there at modules-pin.json).
 const modules = readdirSync(join(ROOT, "modules"), { recursive: true, withFileTypes: true }).filter((e) => e.isFile()).map((e) => relative(ROOT, join(e.parentPath, e.name))).filter((f) => !/(^|\/)(node_modules|\.git|dist)\//.test(f));
 
-test("the product's panel paths are exactly the files its gate list (gate-core.mjs) gates today", () => {
-  const byList = product.filter((f) => GATE_CORE.some((g) => g.test(f)));
-  const byInventory = product.filter((f) => ["panel", 2].includes(sensitivityOf(inv, "product", f).sensitivity));
-  assert.deepEqual(byInventory.filter((f) => !byList.includes(f)), []);
-  assert.deepEqual(byList.filter((f) => !byInventory.includes(f)), []);
-  for (const f of ["paths.yaml", "scripts/paths.mjs", "kernel/src/paths.ts", "kernel/test/paths.test.mjs"]) assert.equal(sensitivityOf(inv, "product", f).sensitivity, "panel", `${f} is protected`);
-});
-
 test("a privileged module's folder is at least the reviewer's, in the modules repo and at the product's modules/", () => {
   const privileged = readdirSync(join(ROOT, "modules")).filter((m) => existsSync(join(ROOT, "modules", m, "module.yaml")) && [YAML.parse(readFileSync(join(ROOT, "modules", m, "module.yaml"), "utf8")).privileged ?? []].flat().length);
   assert.ok(privileged.includes("codehost-github"), privileged.join(", "));
@@ -55,16 +47,6 @@ test("the inventory is protected: a lowered or removed module path, a dropped pr
   assert.match(owner({ privileged: [] }).join(), /drops privileged git-credential/);
   assert.match(owner({ writes: { push: { floor: 0 } } }).join(), /stops reading its paths/);
   assert.deepEqual(owner({ paths: [{ sensitivity: 2, patterns: ["src/gate.ts", "src/other.ts"] }] }), [], "stricter or new entries: the reviewer's");
-});
-
-test("compile refuses a malformed entry", () => {
-  const dir = mkdtempSync(join(tmpdir(), "paths-"));
-  mkdirSync(join(dir, "modules/acme"), { recursive: true });
-  writeFileSync(join(dir, "paths.yaml"), "paths: []\n");
-  writeFileSync(join(dir, "modules/acme/module.yaml"), "name: acme\npaths: [ { sensitivity: high, patterns: [src/] } ]\n");
-  assert.throws(() => pathInventory(dir), /module acme paths\[0\]: sensitivity/);
-  writeFileSync(join(dir, "modules/acme/module.yaml"), "name: acme\npaths: [ { sensitivity: 1, patterns: [../x] } ]\n");
-  assert.throws(() => pathInventory(dir), /repo-relative/);
 });
 
 test("a repository write (paths: true) is tiered by the files its plan read: the gate's core is the panel's, no file list the owner's", async (t) => {

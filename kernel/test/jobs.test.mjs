@@ -181,43 +181,6 @@ test("a job's env in its box: the launcher's env file and its gh read token, not
   }
 });
 
-test("a comment reaches a live run while it works; a stop cancels a run", async () => {
-  const { cfg, req } = sandbox();
-  const jobs = inProcess(cfg);
-  const j = await jobs.start("acme-dispatch", req());
-  await until("the first progress", async () => (await jobs.get("acme-dispatch", j.id)).progress.said);
-  assert.deepEqual(jobs.input("acme-dispatch", j.id, "also this"), { sent: true });
-  await until("the comment heard", async () => (await jobs.get("acme-dispatch", j.id)).progress.said === "heard: also this");
-  assert.equal((await finished(jobs, j.id)).state, "done");
-  assert.deepEqual(jobs.input("acme-dispatch", j.id, "too late"), { sent: false });
-  const s = await jobs.start("acme-dispatch", req({ engine: { kind: "slow" } }));
-  const v0 = await jobs.get("acme-dispatch", s.id);
-  // A status read waits for a change when asked to.
-  const v1 = await jobs.get("acme-dispatch", s.id, { after: v0.version, waitMs: 5000 });
-  assert.ok(v1.version > v0.version);
-  jobs.stop("acme-dispatch", s.id);
-  const v = await finished(jobs, s.id);
-  assert.equal(v.state, "cancelled");
-  assert.equal(v.cancelled, true);
-});
-
-// A missing program fails the one job with a reason (2026-11-10: bwrap not installed); a run whose log and events stop growing
-// (a model call that never answers, WOR-3640) is stopped as stalled, well before its deadline.
-test("a program that isn't installed ends the job with the reason; a silent run is stopped as stalled", async () => {
-  const { cfg, req } = sandbox();
-  const jobs = inProcess({ ...cfg, stall_minutes: 0.02 });
-  const j = await jobs.start("acme-dispatch", req({ engine: { kind: "missing" } }));
-  const v = await finished(jobs, j.id);
-  assert.notEqual(v.exit, 0);
-  assert.match(v.final, /couldn't start \S+: ENOENT/);
-  const t0 = Date.now();
-  const s = await jobs.start("acme-dispatch", req({ engine: { kind: "silent" } }));
-  const w = await finished(jobs, s.id);
-  assert.equal(w.state, "stalled");
-  assert.ok(w.stalled && w.timedOut);
-  assert.ok(Date.now() - t0 < 30_000, "well before the deadline");
-});
-
 test("a job's gh token reaches the box through docker exec's env, by name: never its argv or the env file", async () => {
   const { dir, cfg, req } = sandbox();
   const bin = join(dir, "bin");
@@ -331,4 +294,39 @@ test("only a module with kernel.jobs reaches the job routes, as itself; a refusa
   assert.equal((await k.v1("GET", "/v1/jobs/j-0000000000000001", undefined, "disp-key")).json.module, "acme-dispatch");
   const may = dispatchesFrom(() => ({ "acme-dispatch": { dispatches: ["engineer-a", "fleet-engineer"] }, other: {} }), () => ({ "id-a": { key: "engineer-a" }, "id-f": { key: "fleet-engineer" }, "id-x": { key: "assistant" }, "id-n": {} }));
   assert.deepEqual([may("acme-dispatch", "id-a"), may("acme-dispatch", "id-f"), may("acme-dispatch", "id-x"), may("acme-dispatch", "id-n"), may("other", "id-a"), may("acme-dispatch", "id-missing")], [true, true, false, false, false, false]);
+});
+
+test("a comment reaches a live run while it works; a stop cancels a run", async () => {
+  const { cfg, req } = sandbox();
+  const jobs = inProcess(cfg);
+  const j = await jobs.start("acme-dispatch", req());
+  await until("the first progress", async () => (await jobs.get("acme-dispatch", j.id)).progress.said);
+  assert.deepEqual(jobs.input("acme-dispatch", j.id, "also this"), { sent: true });
+  await until("the comment heard", async () => (await jobs.get("acme-dispatch", j.id)).progress.said === "heard: also this");
+  assert.equal((await finished(jobs, j.id)).state, "done");
+  assert.deepEqual(jobs.input("acme-dispatch", j.id, "too late"), { sent: false });
+  const s = await jobs.start("acme-dispatch", req({ engine: { kind: "slow" } }));
+  const v0 = await jobs.get("acme-dispatch", s.id);
+  // A status read waits for a change when asked to.
+  const v1 = await jobs.get("acme-dispatch", s.id, { after: v0.version, waitMs: 5000 });
+  assert.ok(v1.version > v0.version);
+  jobs.stop("acme-dispatch", s.id);
+  const v = await finished(jobs, s.id);
+  assert.equal(v.state, "cancelled");
+  assert.equal(v.cancelled, true);
+});
+
+test("a program that isn't installed ends the job with the reason; a silent run is stopped as stalled", async () => {
+  const { cfg, req } = sandbox();
+  const jobs = inProcess({ ...cfg, stall_minutes: 0.02 });
+  const j = await jobs.start("acme-dispatch", req({ engine: { kind: "missing" } }));
+  const v = await finished(jobs, j.id);
+  assert.notEqual(v.exit, 0);
+  assert.match(v.final, /couldn't start \S+: ENOENT/);
+  const t0 = Date.now();
+  const s = await jobs.start("acme-dispatch", req({ engine: { kind: "silent" } }));
+  const w = await finished(jobs, s.id);
+  assert.equal(w.state, "stalled");
+  assert.ok(w.stalled && w.timedOut);
+  assert.ok(Date.now() - t0 < 30_000, "well before the deadline");
 });

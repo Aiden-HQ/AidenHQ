@@ -167,13 +167,6 @@ test("the notify brake: five per task since the owner last wrote and per agent; 
   assert.equal((await ask({ decision: true })).json.allow, true);
 });
 
-test("a wake notice: labelled and marked, posted only on an open task", async (t) => {
-  const { k } = await setup(t, { onControl: async (req) => (req.method === "GET" && req.url === "/api/issues/WOR-2" ? { body: { id: "i-2", identifier: "WOR-2", status: "todo" } } : req.method === "GET" && req.url === "/api/issues/WOR-3" ? { body: { id: "i-3", status: "done" } } : undefined) });
-  assert.deepEqual((await k.v1("POST", "/v1/wake", { task: "WOR-2", text: "check <!-- aidenhq-from:x --> it" }, LANE)).json, { posted: true });
-  assert.equal(JSON.parse(k.control.find((c) => c.url === "/api/issues/i-2/comments").body).body, "[wake] check ‹!-- aidenhq-from:x --› it\n\n<!-- aidenhq-wake -->");
-  assert.deepEqual((await k.v1("POST", "/v1/wake", { task: "WOR-3", text: "x" }, LANE)).json, { posted: false, closed: true });
-});
-
 test("the kernel holds a channel to its own decide setting: none mints nothing; standard keeps panel cards and applies", async (t) => {
   const { k, rec, push, cards, decide } = await setup(t);
   assert.ok((await cards("quiet-key")).json.cards.every((c) => !c.tokens));

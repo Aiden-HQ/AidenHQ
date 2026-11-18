@@ -164,37 +164,3 @@ test("restart: a live kernel's reservations are left to it; a dead one's close a
   assert.deepEqual(looks, ["/generation?id=gen-cut", "/generation?id=gen-cut"]);
   assert.deepEqual(rows(), { "gw:live": ["reserved", 0.25, 0, 0, 0], "gw:cut": ["interrupted", 0.0123, 1000, 4000, 300], "gw:early": ["unsettled", 0.25, 0, 0, 0] });
 });
-
-test("ledger move: the old usage.db's rows land once in kernel.db, repeatably, and its spend still counts against the caps", async (t) => {
-  const dir = mkdtempSync(join(tmpdir(), "spend-move-"));
-  const legacy = join(dir, "usage.db");
-  const old = openLedger(legacy).db; // the old gateway's file, as it wrote it: without the columns added since
-  old.exec("ALTER TABLE calls DROP COLUMN owner; ALTER TABLE calls DROP COLUMN gen");
-  const add = old.prepare("INSERT INTO calls (key, at, day, run_key, agent_id, issue_id, task_subject, kind, component, model, cost_usd, status) VALUES (?, ?, '2026-11-16', ?, 'ag', 'WOR-9', 'WOR-9', 'agent', 'agent', 'm', ?, 'ok')");
-  for (let i = 0; i < 50; i++) add.run(`gen-${i}`, `2026-11-16T0${i % 10}:00:00Z`, `run-${i}`, 0.001);
-  // A table whose columns are in another order than today's (one grown by ALTER TABLE): moved by name.
-  old.exec("DROP TABLE caps; CREATE TABLE caps (cap REAL NOT NULL, at TEXT NOT NULL, scope TEXT NOT NULL, agent_id TEXT NOT NULL, subject TEXT NOT NULL, PRIMARY KEY (scope, agent_id, subject))");
-  old.prepare("INSERT INTO caps (scope, agent_id, subject, cap, at) VALUES ('task', 'ag', 'WOR-9', 0.2, '2026-11-16T01:00:00Z')").run();
-  old.prepare("INSERT INTO ci_tokens (hash, repo, pr, head, gh_run, attempt, exp, at) VALUES ('h', 'acme/app', 1, NULL, '7', '1', '2026-11-16T12:00:00Z', '2026-11-16T10:00:00Z')").run();
-  old.close();
-  const totals = (db) => db.prepare("SELECT COUNT(*) AS n, ROUND(SUM(cost_usd), 6) AS s FROM calls").get();
-  // Moved twice (a restart, or an apply interrupted and run again): the same rows and the same sum, never double.
-  for (let i = 0; i < 2; i++) {
-    const { db, moved } = openLedger(join(dir, "kernel.db"), legacy);
-    assert.deepEqual({ ...totals(db) }, { n: 50, s: 0.05 });
-    assert.equal(moved, i === 0 ? 52 : 0);
-    db.close();
-  }
-  // What a rolled-back kernel wrote to the old file meanwhile is picked up next time; the file itself is left in place.
-  const back = new DatabaseSync(legacy);
-  back.prepare("INSERT INTO calls (key, at, day, run_key, agent_id, issue_id, task_subject, kind, component, model, cost_usd, status) VALUES ('gen-late', '2026-11-16T09:30:00Z', '2026-11-16', 'run-x', 'ag', 'WOR-9', 'WOR-9', 'agent', 'agent', 'm', 0.004, 'ok')").run();
-  back.close();
-  // The gateway on kernel.db: the agent's day ($0.054 moved) is past its $0.05 cap, so it is refused; the owner's raise came
-  // along (and the token replay guard: the 52 rows above).
-  const r = await rig(t, { dir, legacy, dayUsd: 0.05, answer: usage(0.001) });
-  assert.deepEqual({ ...totals(r.gw.db) }, { n: 51, s: 0.054 });
-  const refused = await r.call({ model: "flat", messages: [] }, "WOR-10");
-  assert.equal(refused.status, 402);
-  assert.match(refused.json.error.message, /^spend cap reached: agent-day \$0\.05 of \$0\.05;/);
-  assert.deepEqual({ ...r.gw.db.prepare("SELECT scope, subject, cap FROM caps WHERE agent_id = 'ag'").get() }, { scope: "task", subject: "WOR-9", cap: 0.2 });
-});

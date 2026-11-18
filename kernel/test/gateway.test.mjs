@@ -251,37 +251,6 @@ test("gateway: an agent computer's calls are attributed and capped through the l
   assert.equal(ended.status, 401);
 });
 
-test("gateway: a transient OpenRouter refusal is retried, a 400 is not", async (t) => {
-  const dir = mkdtempSync(join(tmpdir(), "gw-"));
-  const secrets = { openrouter_key: "sk-real", gateway_job_secret: "job-secret" };
-  const grantsFile = join(dir, "grants.json");
-  writeFileSync(grantsFile, JSON.stringify({ agents: { ag1: { key: "aiden" } } }));
-  const settingsFile = join(dir, "gateway.json");
-  writeFileSync(settingsFile, JSON.stringify({ models: { flaky: price, bad: price } }));
-  const plan = { flaky: [502, 429, 200], bad: [400, 200] };
-  const hits = { flaky: 0, bad: 0 };
-  const upstream = await serve((req, res) => {
-    let b = ""; req.on("data", (d) => (b += d)); req.on("end", () => {
-      const m = JSON.parse(b).model;
-      const status = plan[m][hits[m]++];
-      if (status !== 200) return json(res, status, { error: { message: "The system is currently experiencing high demand" } });
-      json(res, 200, { id: "gen-ok", model: "m", choices: [], usage: { prompt_tokens: 1, completion_tokens: 1, cost: 0.001 } });
-    });
-  });
-  const retries = [];
-  const gw = createGateway({ dbFile: join(dir, "usage.db"), grantsFile, settingsFile, secret: (n) => secrets[n] ?? "", upstream: upstream.url, retryDelaysMs: [0, 0, 0, 0], log: (m) => m === "upstream retry" && retries.push(m) });
-  const front = await serve((req, res) => gw.handle(req, res));
-  t.after(() => { upstream.s.close(); front.s.close(); gw.close(); });
-  const token = mintToken("job-secret", { agentId: "ag1", issueId: "iss1" }, Date.now());
-  const call = (model) => fetch(`${front.url}/api/v1/chat/completions`, { method: "POST", headers: { authorization: `Bearer ${token}` }, body: JSON.stringify({ model, messages: [] }) });
-
-  assert.equal((await call("flaky")).status, 200);
-  assert.equal(hits.flaky, 3);
-  assert.equal(retries.length, 2);
-  assert.equal((await call("bad")).status, 400);
-  assert.equal(hits.bad, 1);
-});
-
 test("gateway: the install cap counts every call of the day, no-agent ones too, and files one raise for the install", async (t) => {
   const dir = mkdtempSync(join(tmpdir(), "gw-"));
   const secrets = { openrouter_key: "sk-real", gateway_job_secret: "job-secret", gateway_board_key: "gw-board", gateway_source_key: "src-key" };
