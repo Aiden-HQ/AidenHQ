@@ -84,7 +84,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
 }
 
 function accountsConfig(env: NodeJS.ProcessEnv): Config["accounts"] {
-  return { adminUrl: (env.AIDENHQ_ADMIN_URL || "http://127.0.0.1:3120").replace(/\/+$/, "") };
+  return { adminUrl: (env.AIDENHQ_ADMIN_URL || "http://localhost:3120").replace(/\/+$/, "") };
 }
 
 function sessionsConfig(env: NodeJS.ProcessEnv): Config["sessions"] {

@@ -212,7 +212,7 @@ services:
       # The board's https address (default http://<first LAN host>), e.g. the tailnet name.
       BOARD_LAN_URL: "${BOARD_LAN_URL:-}"
       # The kernel's admin listener at its front door: sign-in, admin links and the approval page every card is decided on.
-      AIDENHQ_ADMIN_URL: "${AIDENHQ_ADMIN_URL:-http://127.0.0.1:3120}"
+      AIDENHQ_ADMIN_URL: "${AIDENHQ_ADMIN_URL:-http://localhost:3120}"
       # Google's Connect at BOARD_LAN_URL (a Web-app OAuth client; ops/setup.sh sets it).
       BOARD_GOOGLE_CONNECT: "${BOARD_GOOGLE_CONNECT:-}"
       # apps-mcp's internal API: the Apps tab, and stateful deploys approved in chat (needs the token).

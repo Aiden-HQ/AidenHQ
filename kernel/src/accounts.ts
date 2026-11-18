@@ -247,7 +247,7 @@ export async function openAccounts(o: AccountsOptions) {
     return g?.password && g.myAppsHost ? `https://${g.myAppsHost}` : undefined;
   };
   const linkFor = (a: Account, token: string) =>
-    a.role === "admin" ? `${o.adminUrl ?? "http://127.0.0.1:3120"}/auth/set-password?token=${token}` : signinUrl() ? `${signinUrl()}/.auth/set-password#${token}` : null;
+    a.role === "admin" ? `${o.adminUrl ?? "http://localhost:3120"}/auth/set-password?token=${token}` : signinUrl() ? `${signinUrl()}/.auth/set-password#${token}` : null;
 
   /** One-time handoff codes (memory): code → the sign-in host's session, for one app host, for 60 s. */
   const handoffs = new Map<string, { userId: string; parentId: string; host: string; state: string; until: number }>();
@@ -518,7 +518,7 @@ export async function openAccounts(o: AccountsOptions) {
       db.exec("DELETE FROM setup_token");
       db.prepare("INSERT INTO setup_token (hash, expires) VALUES (?, ?)").run(sha(token), Date.now() + LINK_TTL_MS);
       log.info({}, "first-run setup link minted");
-      return { url: `${o.adminUrl ?? "http://127.0.0.1:3120"}/setup?token=${token}` };
+      return { url: `${o.adminUrl ?? "http://localhost:3120"}/setup?token=${token}` };
     },
 
     /** `token` is the live setup token: no admin yet, unexpired, its hash compared in constant time. */

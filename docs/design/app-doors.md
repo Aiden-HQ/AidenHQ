@@ -11,7 +11,7 @@ owner's identity, on a door chosen by the install's exposure:
 
 | `settings.exposure` | Door | App URL | Where the owner signs in |
 |---|---|---|---|
-| `local` (Mac/Lima, SSH tunnel) | the gate on the host's loopback, plain http | `http://<app>.localhost:3130` | the admin listener, `http://127.0.0.1:3120` (through the tunnel) |
+| `local` (Mac/Lima, SSH tunnel) | the gate on the host's loopback, plain http | `http://<app>.localhost:3130` | the admin listener, `http://localhost:3120` (through the tunnel) |
 | `public` (Caddy on the IP) | Caddy → the gate on loopback | `https://<app>.<ip-with-dashes>.sslip.io` | the admin listener, `https://<ip>:8446` |
 | `tailscale` with the apps node | unchanged: the apps node | `https://<user>-apps.<tailnet>:<port>` | none (anonymous on the tailnet) |
 | any, with `settings.edge` | unchanged: the edge (Cloudflare tunnel or header-jwt front door) | `https://<share.host>` | `edge.my_apps.host` |
@@ -36,7 +36,7 @@ The kernel checks a door origin by its shape (`doorHost`), as it does previews; 
 check.
 
 **No sign-in on a door host.** The owner signs in where they do today: the kernel's admin listener (`https://<ip>:8446`
-on public, `http://127.0.0.1:3120` on local), with password and TOTP. A door has no my-apps host and no sign-in pages:
+on public, `http://localhost:3120` on local), with password and TOTP. A door has no my-apps host and no sign-in pages:
 `/.auth/*` on a door host serves only the handoff and sign-out. An app host without a session sends the browser to the
 admin listener's existing `/auth/handoff?to=<app origin>&state=<nonce>&next=<path>` (the gate sets the state nonce in the
 app host's own cookie first). The admin listener signs the owner in if needed, then, for a ready admin and a `to` that is

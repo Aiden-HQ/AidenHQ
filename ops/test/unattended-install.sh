@@ -148,7 +148,7 @@ ok "ops/setup.sh --unattended ran with no terminal and no tailnet"
 
 [ "$(grep -c '^AIDENHQ_SETUP_URL=' "$work/setup.out")" = 1 ] || fail "not exactly one AIDENHQ_SETUP_URL line"
 URL="$(tail -1 "$work/setup.out" | sed -n 's/^AIDENHQ_SETUP_URL=//p')"
-[[ "$URL" =~ ^http://127\.0\.0\.1:3120/setup\?token=[A-Za-z0-9_-]{43}$ ]] || fail "the last line isn't the loopback /setup URL: $(tail -1 "$work/setup.out")"
+[[ "$URL" =~ ^http://localhost:3120/setup\?token=[A-Za-z0-9_-]{43}$ ]] || fail "the last line isn't the loopback /setup URL: $(tail -1 "$work/setup.out")"
 grep -q '^AIDENHQ_SSH_TUNNEL=ssh -N -L 3121:127.0.0.1:3121 -L 3120:127.0.0.1:3120 -L 3130:127.0.0.1:3130 alice@' "$work/setup.out" || fail "no SSH tunnel line"
 ok "one AIDENHQ_SETUP_URL line, the last: $URL (SSH tunnel printed)"
 
@@ -199,7 +199,7 @@ runuser -u "$U" -- env BOARD_SYSTEM_CONFIG="$H/aidenhq/config/system.yaml" BOARD
   BOARD_SECRETS_DIR="$S" BOARD_KEY_FILE="$S/paperclip_board_key" GATEWAY_BOARD_KEY_FILE="$S/gateway_board_key" \
   BOARD_DB="$H/aidenhq/data/board/board.sqlite" BOARD_STATIC_DIR="$B/web" BOARD_LAN_HOSTS=127.0.0.1:3121 \
   PAPERCLIP_URL="http://127.0.0.1:$PC_PORT" AIDENHQ_KERNEL_URL=http://127.0.0.1:3130 AIDENHQ_GATEWAY_URL=http://127.0.0.1:8201 \
-  AIDENHQ_ADMIN_URL=http://127.0.0.1:3120 setsid nohup node "$B/dist/src/main.js" >> "$work/board.log" 2>&1 < /dev/null &
+  AIDENHQ_ADMIN_URL=http://localhost:3120 setsid nohup node "$B/dist/src/main.js" >> "$work/board.log" 2>&1 < /dev/null &
 for _ in $(seq 30); do curl -fsS -o /dev/null http://127.0.0.1:3121/healthz 2>/dev/null && break; sleep 1; done
 curl -fsS -o /dev/null http://127.0.0.1:3121/healthz || fail "the board didn't start"
 

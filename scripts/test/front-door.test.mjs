@@ -39,7 +39,7 @@ test("front door: the service is named exactly `caddy` in the dumped compose (op
 test("app doors: the gate per exposure, and Caddy's on-demand site for the sslip.io names only when there is a door", () => {
   const door = (exposure) => edgeConfig({ exposure }, [], [], { publicIp: "203.0.113.7", adminUrl: exposure === "public" ? "https://203.0.113.7:8446" : "" });
   const local = door("local");
-  assert.deepEqual([local.gate.doors, local.gate.origin, local.gate.login, local.gate.hosts, local.gate.my_apps], [{ base: "localhost", file: "/previews/doors.json", signin: "http://127.0.0.1:3120" }, { scheme: "http", port: 3130 }, "password", {}, undefined]);
+  assert.deepEqual([local.gate.doors, local.gate.origin, local.gate.login, local.gate.hosts, local.gate.my_apps], [{ base: "localhost", file: "/previews/doors.json", signin: "http://localhost:3120" }, { scheme: "http", port: 3130 }, "password", {}, undefined]);
   assert.equal(local.cloudflared, null);
   assert.ok(local.compose.services.gate.volumes.some((v) => v.endsWith("/previews:/previews:ro")));
   assert.ok(!local.compose.services.gate.volumes.some((v) => v.includes("socket")));

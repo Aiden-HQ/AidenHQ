@@ -200,7 +200,7 @@ function doorConfig(exposure, { publicIp, adminUrl, boardUrl } = {}) {
   // A local door is the viewer's own loopback: only where the board is too (not a LAN VM's board on a LAN address).
   const loopback = !boardUrl || /^http:\/\/(127\.0\.0\.1|localhost)(:\d+)?\/?$/.test(boardUrl);
   if (exposure === "local" && loopback) {
-    doors = { base: "localhost", file: DOORS_FILE, signin: adminUrl || "http://127.0.0.1:3120" };
+    doors = { base: "localhost", file: DOORS_FILE, signin: adminUrl || "http://localhost:3120" };
     origin = { scheme: "http", port: GATE_PORT };
   } else if (exposure === "public" && publicIp) doors = { base: sslipBase(publicIp), file: DOORS_FILE, signin: adminUrl || `https://${publicIp}:8446` };
   else return null;
