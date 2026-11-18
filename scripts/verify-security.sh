@@ -928,7 +928,7 @@ grep -qF 'import { assertNoShell } from "./no-shell.mjs";' scripts/paperclip-set
 # repository that call just created gets the app starter committed on its default branch (seedStarter, a fast-forward publish). `review` asks the
 # AI reviewer about what `pr` would file, files and publishes nothing, and is capped per job.
 # On this server's repos (product #326 ba7db16d): `merge` of local change requests is agentMergeLocal (its own function, so
-# agentMerge's range is anchored on `agentMerge(`): tiered, then always a card (no Tier 0 auto-merge; local-merge is Tier 1),
+# agentMerge's range is anchored on `agentMerge(`; it and requestLocalMerge file through fileLocalMerge since #366 79593141): tiered, then always a card (no Tier 0 auto-merge; local-merge is Tier 1),
 # bound to the heads shown; `create-repo` creates a local/<name> repo only from the same approved create_repo card.
 # A function body piped from awk is matched with plain grep (to /dev/null), never grep -q: under pipefail, grep -q's early
 # exit kills awk with SIGPIPE, failing a match and passing a negated one.
@@ -946,7 +946,8 @@ tools="$(grep -oE '^export const TOOLS = \[[^]]*\]' services/runner/src/repohelp
   && awk '/^async function agentMerge\(/,/^}/' "$rmain" | grep -F 'const now = bound.filter((_, i) => tiers[i].tier === 0);' >/dev/null \
   && awk '/^async function agentMerge\(/,/^}/' "$rmain" | grep -F 'if (bad) throw new UserError(' >/dev/null \
   && [ "$(awk '/^async function agentMerge\(/,/^}/' "$rmain" | grep -oE 'return agentMergeLocal\(|tierFor\(ctx\.issue, "merge"' | tr '\n' '|')" = 'return agentMergeLocal(|tierFor(ctx.issue, "merge"|' ] \
-  && [ "$(awk '/^async function agentMergeLocal\(/,/^}/' "$rmain" | grep -oE 'tierFor\(ctx\.issue, "merge"|if \(bad\) throw|await fileApproval\(ctx\.issue, \{ action: "merge"|requestAutoMerge\(|localHost\.merge\(' | tr '\n' '|')" = 'tierFor(ctx.issue, "merge"|if (bad) throw|await fileApproval(ctx.issue, { action: "merge"|' ] \
+  && [ "$(awk '/^async function agentMergeLocal\(/,/^}/' "$rmain" | grep -oE 'await fileLocalMerge\(|requestAutoMerge\(|localHost\.merge\(' | tr '\n' '|')" = 'await fileLocalMerge(|' ] \
+  && [ "$(awk '/^async function fileLocalMerge\(/,/^}/' "$rmain" | grep -oE 'tierFor\(issue, "merge"|if \(bad\) throw|await fileApproval\(issue, \{ action: "merge"|requestAutoMerge\(|localHost\.merge\(' | tr '\n' '|')" = 'tierFor(issue, "merge"|if (bad) throw|await fileApproval(issue, { action: "merge"|' ] \
   && ! awk '/^async function agentApply/,/^}/' services/runner/src/main.mjs | grep '"push"' >/dev/null \
   && [ ! -e services/runner/src/authorize.mjs ] && ! grep -qE 'allowWrite|primerPublish|primer_mcp_publish_token|mcp/publish' services/runner/src/*.mjs services/runner/src/*.ts \
   && awk '/^async function publishToPrimer/,/^}/' "$rmain" | grep -F 'await kernelWrites("POST", "/v1/writes", who, { kind: "primer.publish", args });' >/dev/null \
