@@ -32,9 +32,23 @@ const CHECKED = new Set(["writes", "privileged", "secrets", "generated_secrets",
 export const MANIFEST_KEYS = new Set([...PLAIN, ...CHECKED]);
 /** Agent fields that hand out nothing (model and engine choice, scheduling, presentation, the module text it reads: skills, like
  * prompts). Others are new authority. */
-const AGENT_PLAIN = new Set(["department", "adapter", "max_parallel", "model", "models", "reasoning_effort", "timeout_sec", "heartbeat", "persona", "graded", "brief", "engine", "dispatch", "image", "web_search", "delegate_to", "jobcaps", "builder", "description", "name", "title", "trial", "skills"]);
+const AGENT_PLAIN = new Set(["department", "adapter", "max_parallel", "model", "models", "reasoning_effort", "timeout_sec", "heartbeat", "persona", "graded", "brief", "engine", "dispatch", "image", "web_search", "delegate_to", "jobcaps", "builder", "description", "name", "title", "trial", "skills", "engines"]);
 /** Service fields that change what runs or how much, not what it may reach (the code diff and the panel judge those). */
 const SERVICE_PLAIN = new Set(["image", "build", "command", "entrypoint", "env", "secrets", "port", "healthcheck", "cpus", "memory", "pids", "tmp", "on_demand"]);
+/** What each kernel role a module requests opens (kinds.ts KERNEL_ROLES, backplane.ts), as its line on the card says. */
+const KERNEL_ROLE_GRANTS: Record<string, string> = {
+  "kernel.apply": "files instance applies",
+  "kernel.checks": "runs check jobs",
+  "kernel.cp-read": "reads the control plane as the owner",
+  "kernel.grader": "mints grader tokens",
+  "kernel.jobs": "runs agents' jobs",
+  "kernel.lane": "writes fast-lane turns to an agent's chat",
+  "kernel.notify": "takes and sends the owner's messages",
+  "kernel.owner-notice": "messages the owner",
+  "kernel.tasks": "files and closes tasks",
+  "kernel.wake": "schedules wakes",
+  "kernel.work-read": "reads the kernel's jobs and records",
+};
 const ISOLATION_RANK: Record<string, number> = { untrusted: 0, "code-exec": 1, trusted: 2 };
 
 /** A module's `paths:` as `repo|pattern` → its sensitivity's rank (an unknown sensitivity ranks lowest: fails closed). */
@@ -170,7 +184,7 @@ export function authorityDiff(name: string, base: ModuleDef | undefined, head: M
 
   const [br, hr] = [map(b.roles), map(head.roles)];
   for (const r of added(br.declares, hr.declares)) owner(`declares role ${id(r)}`);
-  for (const r of added(br.requests, hr.requests)) owner(`requests role ${id(r)}`);
+  for (const r of added(br.requests, hr.requests)) owner(`requests role ${id(r)}${KERNEL_ROLE_GRANTS[String(r)] ? ` (${KERNEL_ROLE_GRANTS[String(r)]})` : ""}`);
   // A default grant hands its tools to every agent its tests match: any change to them is the owner's.
   if (!eq(b.default_grants ?? [], head.default_grants ?? [])) owner("changes its default grants (tools every matching agent gets)");
 
@@ -208,9 +222,14 @@ export function authorityDiff(name: string, base: ModuleDef | undefined, head: M
     for (const j of added(was.join, now.join)) owner(`${at}: joins ${id(j)}'s network`);
     for (const l of added(was.links, now.links)) owner(`${at}: links ${id(l)}`);
     for (const m of added(was.host_mounts, now.host_mounts)) owner(`${at}: host mount ${id(String(m).split(":")[0])}`);
+    // The GitHub App key and the job workspaces (both need privileged git-credential) are the owner's; its own points file
+    // (config/points/<module>.json, read-only: what modules contributed to the points it defines) the reviewer's.
+    if (now.github_app != null && !eq(now.github_app, was.github_app)) owner(`${at}: mounts the GitHub App key (read-only)`);
+    if (now.workspaces != null && !eq(now.workspaces, was.workspaces)) owner(`${at}: job workspaces read-write`);
+    if (now.points != null && !eq(now.points, was.points)) review(`${at}: reads its points file`);
     for (const d of added(was.data, now.data)) (String(d).endsWith(":ro") ? review : owner)(`${at}: data ${id(String(d).split(":")[0])}${String(d).endsWith(":ro") ? " read-only" : " read-write"}`);
     for (const f of keys(was, now)) {
-      if (eq(was[f], now[f]) || SERVICE_PLAIN.has(f) || ["user", "read_only", "egress", "ui_port", "state", "join", "links", "host_mounts", "data"].includes(f)) continue;
+      if (eq(was[f], now[f]) || SERVICE_PLAIN.has(f) || ["user", "read_only", "egress", "ui_port", "state", "join", "links", "host_mounts", "data", "github_app", "workspaces", "points"].includes(f)) continue;
       owner(`${at}: unrecognised field ${id(f)}`);
     }
     if (s in brun && keys(was, now).some((f) => SERVICE_PLAIN.has(f) && !eq(was[f], now[f]))) review(`${at}: changes its image, command, env or limits`);
@@ -246,7 +265,13 @@ export function authorityDiff(name: string, base: ModuleDef | undefined, head: M
     for (const r of added(was.rw, e.rw)) owner(`engine ${id(kind)}: writes ${id(r)}`);
     if (!be.has(kind)) review(`adds engine ${id(kind)}`);
   }
-  for (const k of keys(map(head.providers)).filter((k) => k !== "engine" && !(k in map(b.providers)))) review(`provides ${id(k)}`);
+  const [bpv, hpv] = [map(b.providers), map(head.providers)];
+  for (const k of keys(hpv).filter((k) => k !== "engine" && !eq(bpv[k], hpv[k]))) review(`${k in bpv ? "changes provider" : "provides"} ${id(k)}`);
+  // A channel's transport gets the owner's messages and the channel's token from the kernel; credentials, the owner's own
+  // (account reset links): both the owner's.
+  const [bch, hch] = [map(bpv.channel), map(hpv.channel)];
+  if (hch.transport != null && !eq(hch.transport, bch.transport)) owner(`channel: the kernel sends the owner's messages and its token to ${id(hch.transport)}`);
+  if (hch.credentials === true && bch.credentials !== true) owner("channel: gets the owner's credentials (account reset links)");
 
   // Agents: a write or destructive grant, a role, an isolation toward trusted, or an unknown field is the owner's.
   // A grant is judged by the highest tag a tool has on either side: a tool that was a write still counts as one when retagged.
@@ -275,9 +300,16 @@ export function authorityDiff(name: string, base: ModuleDef | undefined, head: M
     for (const r of added(was.roles, now.roles)) owner(`${at}: role ${id(r)}`);
     const eff = (a: Dict, m: Dict) => a.isolation ?? m.isolation;
     if (iso(eff(now, head)) > iso(key in ba ? eff(was, b) : base ? head.isolation : "untrusted")) owner(`${at}: isolation ${id(eff(now, head) ?? "trusted")}`);
+    // Its profile decides the tools, writes and computer its jobs get (admission.ts): any but check (none of them) is the
+    // owner's. private_reads trades web search for private data: the reviewer's.
+    const profile = (x: Dict) => String(x.profile ?? "crew");
+    if (profile(now) !== profile(was) && profile(now) !== "check") owner(`${at}: profile ${id(profile(now))} (the tools, writes and computer its jobs get)`);
+    else if (profile(now) !== profile(was)) review(`${at}: profile check (its jobs get no tools or writes)`);
+    if (now.private_reads === true && was.private_reads !== true) review(`${at}: reads private data (its jobs get no web search)`);
+    else if (now.private_reads !== true && was.private_reads === true) review(`${at}: stops reading private data`);
     const caps = (x: Dict) => Number(map(x.caps).day_usd ?? 0);
     if (caps(now) > caps(was)) owner(`${at}: day_usd up to ${id(caps(now))}`);
-    for (const f of keys(was, now).filter((f) => !eq(was[f], now[f]) && !AGENT_PLAIN.has(f) && !["connections", "roles", "isolation", "caps"].includes(f))) owner(`${at}: unrecognised field ${id(f)}`);
+    for (const f of keys(was, now).filter((f) => !eq(was[f], now[f]) && !AGENT_PLAIN.has(f) && !["connections", "roles", "isolation", "caps", "profile", "private_reads"].includes(f))) owner(`${at}: unrecognised field ${id(f)}`);
   }
   // Routines: a routine's autonomy (its cap on approvals) is the owner's, as everywhere.
   const [bro, hro] = [map(b.routines), map(head.routines)];
