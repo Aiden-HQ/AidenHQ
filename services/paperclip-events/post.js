@@ -20,7 +20,7 @@
 //   tag, and a task the tag already made, by this agent, is returned (`found`) rather than made twice; with `again` (a retry
 //   after an unknown outcome) a comment the tag already made isn't made twice. Setting a status is the same twice.
 // A refusal is returned as {refused}, never thrown: a thrown error reaches the caller as 502, which means "unknown, retry".
-import { SKEW_MS, verify } from "./sign.js";
+import { HOST_PARAMS, SKEW_MS, verify } from "./sign.js";
 
 export const STATUSES = ["backlog", "todo", "in_progress", "in_review", "blocked", "done", "cancelled"];
 const PARAMS = ["sig", "ts", "tag", "again", "scope", "issueId", "body", "status", "blockedBy", "gated", "patch", "child", "delegateTo"];
@@ -51,7 +51,7 @@ function fields(f, keys, what) {
 
 /** Why these params can't be written, or undefined. */
 function invalid(p) {
-  const extra = Object.keys(p).filter((k) => !PARAMS.includes(k));
+  const extra = Object.keys(p).filter((k) => !PARAMS.includes(k) && !HOST_PARAMS.includes(k));
   if (extra.length) return `unknown params: ${extra.join(", ")} (the writer is the caller; params never name one)`;
   if (p.issueId !== undefined && (typeof p.issueId !== "string" || !UUID.test(p.issueId))) return "issueId must be a task id";
   if (p.issueId === undefined && (p.child === undefined || p.body !== undefined || p.status !== undefined || p.patch !== undefined || (p.scope ?? "own") !== "own")) return "without issueId, only a new top-level task (child)";

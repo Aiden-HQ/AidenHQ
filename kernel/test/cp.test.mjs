@@ -46,7 +46,7 @@ async function setup(t) {
       if (req.url === "/api/plugins/aidenhq.events/actions/post") {
         const b = JSON.parse(body);
         plugin.push(b.params);
-        return { body: { data: await post(h.ctx, b.params, { actor: { type: "agent", agentId: me, runId: null }, companyId: b.companyId }, "post-key") } };
+        return { body: { data: await post(h.ctx, { ...b.params, companyId: b.companyId, renderEnvironment: null }, { actor: { type: "agent", agentId: me, runId: null }, companyId: b.companyId }, "post-key") } };
       }
       if (req.method !== "GET") return { status: 500, body: { error: "a write past the plugin" } };
     },
