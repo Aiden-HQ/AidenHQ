@@ -173,7 +173,7 @@ jobs.adopt();
 // The wake inbox (wakes.ts): Paperclip events scan their task now; the reconcile poll scans every polled agent's open tasks.
 const mayDispatch = dispatchesFrom(() => (modulesFile().modules ?? {}) as never, () => grantsTable().agents ?? {});
 // Outcomes posted on a job's task as its agent, once (outcomes.ts): the agent's own Paperclip key, setup's paperclip-agents/<id>.
-const outcomes = createOutcomes({ db: records.db, controlUrl, log, agentKey: (id) => secret(`paperclip-agents/${id}`), kernelKey: () => secret("paperclip_events_key"), delegates: (id) => delegateIds(grantsTable().agents, id), finish: (task, agent) => checks.finish(task, { agent, via: "job_post" }) });
+const outcomes = createOutcomes({ db: records.db, controlUrl, log, agentKey: (id) => secret(`paperclip-agents/${id}`), postKey: () => secret("paperclip_post_key"), delegates: (id) => delegateIds(grantsTable().agents, id), finish: (task, agent) => checks.finish(task, { agent, via: "job_post" }) });
 const wakes = createWakes({
   db: records.db, owner: ownerApi, post: outcomes.post, log,
   dispatches: { may: mayDispatch, agents: (module) => Object.keys(grantsTable().agents ?? {}).filter((id) => mayDispatch(module, id)) },
