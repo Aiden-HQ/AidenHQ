@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, statSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { JOB_ENV_NAMES, Jobs, LEASE_MS, mayCheckout, tokenHash, admit, controlAllowed, jobEnvFile, jobFolder, reapLapsed, stale } from "../lib.mjs";
+import { JOB_ENV_NAMES, Jobs, LEASE_MS, mayCheckout, tokenHash, admit, controlAllowed, jobEnvFile, jobFolder, jobMounts, reapLapsed, stale } from "../lib.mjs";
 
 const keys = { runner: "runner-key", kernel: "kernel-key", progress: "progress-key" };
 const job = (container, issueId = "iss-1") => ({ container, agentId: "app-eng", issueId, identifier: "PEN-7", workspace: "/w/tasks/PEN-7", codexHome: "/s/codex-openrouter/iss-1", kernel: true, tokenHash: tokenHash(`ahqj_${container}.sig`), roles: [] });
@@ -123,4 +123,12 @@ test("repo-checkout: a job's box only by the roles its admission froze", () => {
   assert.equal(mayCheckout(jobs.byKernelToken("ahqj_crew.sig")), false);
   assert.equal(mayCheckout(jobs.byKernelToken("ahqj_check.sig")), false);
   assert.equal(mayCheckout(jobs.byKernelToken("ahqj_arch.sig")), true);
+});
+
+test("repo-checkout is in a job box only when the job holds the role", () => {
+  const dir = mkdtempSync(join(tmpdir(), "mounts-"));
+  const mounts = (roles) => jobMounts({ resolvConf: "/r", workspace: "/w", outDir: "/o", codexHome: "/c", runnerWork: dir, repo: "/repo", engineDir: "modules/e", roles });
+  assert.equal(mounts(["notes"]).some((m) => m.includes("repo-checkout")), false);
+  assert.ok(mounts(["repo-checkout"]).includes("/repo/services/computer/images/agent-base/repo-checkout:/usr/local/bin/repo-checkout:ro"));
+  rmSync(dir, { recursive: true });
 });

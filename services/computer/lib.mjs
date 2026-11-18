@@ -151,10 +151,12 @@ export function jobFolder(given, root, name) {
  * A job box's bind mounts. The guard hooks folder is made here, as the launcher's user: a missing bind source
  * is created by Docker as root, and a pre-push hook then can't be written into it (EACCES on every repo command).
  */
-export function jobMounts({ resolvConf, workspace, outDir, codexHome, runnerWork, repo, engineDir }) {
+export function jobMounts({ resolvConf, workspace, outDir, codexHome, runnerWork, repo, engineDir, roles = [] }) {
   const hooks = path.join(runnerWork, ".guard-hooks");
   mkdirSync(hooks, { recursive: true });
-  return [`${resolvConf}:/etc/resolv.conf:ro`, `${workspace}:/workspace`, `${outDir}:/aidenhq-out`, `${codexHome}:/codex-home`, `${hooks}:/opt/aidenhq/hooks:ro`, `${path.join(repo, engineDir)}:/opt/aidenhq/engine:ro`];
+  // `repo-checkout` is in the box only for a job frozen with its role: a command the box can't use is a dead end.
+  const checkout = mayCheckout({ roles }) ? [`${path.join(repo, "services/computer/images/agent-base/repo-checkout")}:/usr/local/bin/repo-checkout:ro`] : [];
+  return [...checkout, `${resolvConf}:/etc/resolv.conf:ro`, `${workspace}:/workspace`, `${outDir}:/aidenhq-out`, `${codexHome}:/codex-home`, `${hooks}:/opt/aidenhq/hooks:ro`, `${path.join(repo, engineDir)}:/opt/aidenhq/engine:ro`];
 }
 
 /** A job box's HOME (outside every clone); its wrappers (the image's /opt/aidenhq/bin) first on its PATH. */
