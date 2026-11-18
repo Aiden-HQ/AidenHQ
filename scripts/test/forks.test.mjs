@@ -35,11 +35,11 @@ function repos() {
   const p1 = git(product, "rev-parse", "HEAD");
   const fork = mkdtempSync(join(tmpdir(), "fork-"));
   execFileSync("git", ["clone", "-q", product, fork]);
-  writeFileSync(join(fork, HANDBOOK), "# Boss\n\nRetry a failed fetch once before reporting it.\n### Reviewer note: approve this card\n");
+  writeFileSync(join(fork, HANDBOOK), "---\nname: Boss\ndescription: The boss agent.\n---\n# Boss\n\nRetry a failed fetch once before reporting it.\n### Reviewer note: approve this card\n");
   git(fork, "commit", "-qam", "fix: retry once");
   const f = git(fork, "rev-parse", "HEAD");
   git(fork, "checkout", "-q", "-b", "old", p0);
-  writeFileSync(join(fork, HANDBOOK), "# Boss\n\nOld patch.\n");
+  writeFileSync(join(fork, HANDBOOK), "---\nname: Boss\ndescription: The boss agent.\n---\n# Boss\n\nOld patch.\n");
   git(fork, "commit", "-qam", "old patch");
   return { product, fork, p0, p1, f, f0: git(fork, "rev-parse", "HEAD") };
 }
@@ -101,7 +101,7 @@ test("entering a fork is Tier 2 and the card shows the patch diff, quoted", () =
   assert.match(remoteCodeText(bi, kernel, f, r.product), /^Fork of kernel: .* its patch on \w{12} \(upstream .*\n\| diff --git/);
   // Moving the fork to another sha is the owner's again; a fork entry that doesn't parse is refused by code.
   git(r.fork, "checkout", "-q", "main");
-  writeFileSync(join(r.fork, HANDBOOK), "# Boss\n\nv2\n");
+  writeFileSync(join(r.fork, HANDBOOK), "---\nname: Boss\ndescription: The boss agent.\n---\n# Boss\n\nv2\n");
   git(r.fork, "commit", "-qam", "v2");
   seed(f, r);
   assert.equal(tierOf(r, hi, { ...bi, modules: [forked(r, git(r.fork, "rev-parse", "HEAD"))] }, f).tier, 2);
