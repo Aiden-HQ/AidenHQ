@@ -309,3 +309,9 @@ test("health check probes call as the least-granted agent holding every probe to
   assert.equal(healthProbeAgent(agents, "github"), "assistant");
   assert.equal(healthProbeAgent({ librarian: agents.librarian }, "google_workspace"), undefined);
 });
+
+test("a codehost grant is taken literally: settings are refused, the kernel's @ names pass", async () => {
+  const { kernelModuleTable } = await import("../modules.mjs");
+  assert.throws(() => kernelModuleTable({ m: { codehost: { token: { repos: ["${settings.agents_org}/*"], perms: { contents: "read" } } } } }), /names no settings/);
+  assert.deepEqual(kernelModuleTable({ m: { codehost: { token: { repos: ["@instance", "@agents/*"], perms: { contents: "write" } } } } }).m.codehost.token.repos, ["@instance", "@agents/*"]);
+});

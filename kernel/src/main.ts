@@ -40,6 +40,7 @@ import { createIdentity, type Connection, type Grant, type Jobcap } from "./iden
 import { createAdvisories } from "./advisories.ts";
 import { hostFetch } from "../../scripts/compiler/sources.ts";
 import { createResolver } from "./net.ts";
+import { CODEHOST, createCodehost, type OpsGrant } from "./codehost.ts";
 import { createProxy } from "./proxy.ts";
 import { openRecords } from "./records.ts";
 import { createReviews, type ReviewerSlot } from "./reviews.ts";
@@ -119,10 +120,9 @@ let replay: (r: never) => Promise<{ ok: boolean; text: string }> = async () => (
 // The product and instance repositories (owner/name), as setup recorded them in .env: runner kinds touching them get the
 // kernel's own floors and refusals (kinds.ts runnerFacts), whatever the runner's plan says. Either unknown: every runner
 // kind is the owner's after the reviewer (fails closed).
-// The agents org, as the runner reads it: AIDENHQ_GITHUB_AGENTS_ORG, else the instance's github_agents_org or aidenhq-<instance_name>.
-const instanceSettings = (() => { try { return readFileSync(path.join(env("AIDENHQ_INSTANCE_DIR", "").replace(/^~(?=\/)/, process.env.HOME ?? ""), "instance.yaml"), "utf8"); } catch { return ""; } })();
-const setting = (k: string) => new RegExp(`^\\s+${k}:\\s*["']?([\\w.-]+)`, "m").exec(instanceSettings)?.[1];
-const agentsOrg = env("AIDENHQ_GITHUB_AGENTS_ORG") || setting("github_agents_org") || (setting("instance_name") ? `aidenhq-${setting("instance_name")}` : undefined);
+// The agents org: AIDENHQ_GITHUB_AGENTS_ORG, written once by ops/github-app-setup.mjs, never a setting a later change could move.
+// Unset: no agents org (runner kinds are the owner's; @agents codehost grants name nothing).
+const agentsOrg = env("AIDENHQ_GITHUB_AGENTS_ORG") || undefined;
 // With codehost-local enabled (the compiled catalog), its org `local` is an agents org too (docs/design/codehost-local.md §2).
 const localHost = watched(path.join(configDir, "modules.json"), (j) => Array.isArray(j) && j.some((m: { name?: string; enabled?: boolean }) => m?.name === "codehost-local" && m.enabled === true), false);
 const baseRepos = { product: env("AIDENHQ_PRODUCT_REPO") || undefined, instance: env("AIDENHQ_INSTANCE_REPO") || undefined, agentsOrg };
@@ -270,7 +270,9 @@ boxes.start();
 // Check jobs (checkjobs.ts): credential-free boxes of the launcher's, snapshots from the module that provides them.
 const checkJobs = checkJobsFrom({ db: records.db, secret, modules: modulesFile, resolver, call: launcherClient(launcherUrl, () => secret("launcher_kernel_key")), workDir: sandbox.workDir, gatewayUrl: `${sandbox.boxGatewayUrl}/api/v1`, log });
 const lane = createLane({ db: records.db, owner: ownerApi, grantsFile: grantsTable, log, postAsAgent: async (agent, task, job, body) => ({ id: String((await outcomes.post({ id: job, agent, task }, { kind: "lane", body })).comment) }) });
-const backplane = createBackplane({ checks, checkJobs, lane, whoami, asserter, grantsFile: grantsTable, log, writes, records, channels, brake, notify, owner: ownerApi, ownerRaw: (p) => cpApi(p), modules: modulesFile, boardKey: () => secret("gateway_board_key"), reviews, runnerKey: () => secret("runner_writes_key"), reviewerKey: () => secret("reviewer_key"), jobs, admission, outcomes, wakes, tasks: createModuleTasks({ owner: ownerApi, agents: () => grantsTable().agents ?? {}, log }), work, graderToken, dropGraderToken: (task) => graderTokens.delete(task), eventsKey: () => secret("paperclip_events_key"), jobTools, advisories: advisories.list, accounts: createAuthApi({ accounts: () => accounts, whoami, boardKey: () => secret("gateway_board_key"), recoveryKeyWaiting: () => Boolean(firstRun.recoveryKey()), modelReady: modelState.ready, operatorKey: () => secret("board_operator_key"), secrets: moduleSecrets }), proxy: (req, res, c) => proxy(req, res, c!), cp: createCp({ whoami, asserter, controlUrl, launcherUrl, checks, provenance, log }) as never, boardCp: createBoardCp({ controlUrl, key: () => secret("paperclip_board_key"), log }) as never });
+// The GitHub code host's operations, brokered for modules under their own codehost grants (codehost.ts).
+const codehost = createCodehost({ repos: () => ({ instance: baseRepos.instance, product: baseRepos.product, agentsOrg }), grants: () => Object.entries(modulesFile().modules ?? {}).flatMap(([module, d]) => ((d as { codehost?: OpsGrant }).codehost ? [{ ...(d as { codehost: OpsGrant }).codehost, module }] : [])), kind: () => Object.values(moduleKinds()).find((k) => k.module === CODEHOST && k.executor), secret, resolver, workspace: (module, task) => jobs.workspace(module, task) });
+const backplane = createBackplane({ codehost, checks, checkJobs, lane, whoami, asserter, grantsFile: grantsTable, log, writes, records, channels, brake, notify, owner: ownerApi, ownerRaw: (p) => cpApi(p), modules: modulesFile, boardKey: () => secret("gateway_board_key"), reviews, runnerKey: () => secret("runner_writes_key"), reviewerKey: () => secret("reviewer_key"), jobs, admission, outcomes, wakes, tasks: createModuleTasks({ owner: ownerApi, agents: () => grantsTable().agents ?? {}, log }), work, graderToken, dropGraderToken: (task) => graderTokens.delete(task), eventsKey: () => secret("paperclip_events_key"), jobTools, advisories: advisories.list, accounts: createAuthApi({ accounts: () => accounts, whoami, boardKey: () => secret("gateway_board_key"), recoveryKeyWaiting: () => Boolean(firstRun.recoveryKey()), modelReady: modelState.ready, operatorKey: () => secret("board_operator_key"), secrets: moduleSecrets }), proxy: (req, res, c) => proxy(req, res, c!), cp: createCp({ whoami, asserter, controlUrl, launcherUrl, checks, provenance, log }) as never, boardCp: createBoardCp({ controlUrl, key: () => secret("paperclip_board_key"), log }) as never });
 // The admin listener's accounts (data/kernel/auth/auth.db) and pages. Accounts not moved yet, or a malformed URL setting: the
 // listener refuses while every other part of the kernel serves.
 const urlOf = (v: string) => { try { return v ? new URL(v) : undefined; } catch { log("ignoring a malformed URL setting", { value: v.slice(0, 100) }); return undefined; } };
