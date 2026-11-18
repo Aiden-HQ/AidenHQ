@@ -22,5 +22,19 @@ services:
       env:
         REVIEWER_KEY_FILE: ${secrets.ai_reviewer_key}
         AIDENHQ_GATEWAY_URL: http://10.231.0.1:8201
+# The reviewer eval as a check job (kernel/src/checkjobs.ts; the code host's merge gate asks for it): its layout. The kernel lays
+# the subject commit out with the judging commit's `files` and the judged `cases`, runs `argv` in `cwd` read-only with a capped
+# model token, and applies the pass rule itself (95% of the base's cases, every added case, each miss a false block).
+check_jobs:
+  eval:
+    argv: [ node, scripts/reviewer-eval.mjs ]
+    timeout_min: 60
+    title: the reviewer eval
+    spec: { repo: slug, judge_commit: sha, subject_commit: sha, cases_from: sha, policy_hash: policy }
+    judged:
+      cwd: modules/ai-reviewer
+      cases: test/reviewer-cases
+      files: [ scripts/reviewer-eval.mjs, test/case-pad.mjs, scripts/pass-rule.mjs ]
+      expect: [ expect, expect_code, expect_second, expect_flag, expect_nit ]
 generated_secrets:
   - ai_reviewer_key

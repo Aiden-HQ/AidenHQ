@@ -39,6 +39,23 @@ secrets:
 # kernel plans and tiers like any apply (kernel.apply), on a task for the Platform Engineer's role (kernel.tasks).
 roles:
   requests: [ kernel.tasks, kernel.wake, kernel.checks, kernel.apply ]
+# The code host's check job recipes (kernel/src/checkjobs.ts), whose signed receipts it verifies before it lands: a repo's fast
+# check and its tests (secret scan, supply chain, lint, tests, build), run in a credential-free box from checks/. The kernel
+# reads whether a fast check is due from the base (`declares`), never from the change.
+check_jobs:
+  fast:
+    dir: checks
+    argv: [ bash, /aidenhq-out/recipe/fast.sh ]
+    timeout_min: 10
+    title: "the fast check (`aidenhq:fast-check`)"
+    spec: { base: sha }
+    declares: "aidenhq:fast-check"
+  tests:
+    dir: checks
+    argv: [ bash, /aidenhq-out/recipe/tests.sh ]
+    timeout_min: 30
+    title: "the secret scan, supply-chain checks, lint, tests and build"
+    spec: { base: sha }
 # The service (service/): the executor of the write kinds below, the merge queue, the release train, the PR watch, design
 # reviews and tidying, and narrow GitHub operations other modules get through the kernel (/v1/codehost/:op). It lands in the
 # agents org and the product repo (elsewhere it only opens PRs). It alone mounts the App key (read-only), and the job workspaces.

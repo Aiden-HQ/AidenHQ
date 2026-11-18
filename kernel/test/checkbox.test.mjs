@@ -11,7 +11,7 @@ import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { checkJobsFrom } from "../src/checkbox.ts";
 import { createCodehost } from "../src/codehost.ts";
-import { kernel, readBody, serve } from "./helpers.mjs";
+import { kernel, readBody, recipes, serve } from "./helpers.mjs";
 
 function fixture() {
   const repo = mkdtempSync(join(tmpdir(), "fixture-"));
@@ -77,7 +77,7 @@ test("check jobs: a fixture's fast check runs in a credential-free box; its rece
   });
   const call = async (route, body) => (await fetch(`${launcher.url}${route}`, { method: "POST", headers: { authorization: `Bearer ${secrets.launcher_kernel_key}`, "content-type": "application/json" }, body: JSON.stringify(body) })).json();
   const checkJobs = checkJobsFrom({
-    db: new DatabaseSync(":memory:"), secret: (n) => secrets[n] ?? "", ask: broker.ask, call, docker, log: () => {},
+    db: new DatabaseSync(":memory:"), secret: (n) => secrets[n] ?? "", recipes, ask: broker.ask, call, docker, log: () => {},
     workDir: mkdtempSync(join(tmpdir(), "work-")), gatewayUrl: "http://gw/api/v1",
   });
   const k = await kernel(t, { modules, secrets, checkJobs });

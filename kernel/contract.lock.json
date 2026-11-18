@@ -35,6 +35,7 @@
     "manifest key agents": {"state":"experimental","fp":""},
     "manifest key apps": {"state":"experimental","fp":""},
     "manifest key board_env": {"state":"obsolete","fp":"","remove_after":null},
+    "manifest key check_jobs": {"state":"experimental","fp":""},
     "manifest key checks": {"state":"experimental","fp":""},
     "manifest key codehost": {"state":"experimental","fp":""},
     "manifest key conflicts": {"state":"experimental","fp":""},

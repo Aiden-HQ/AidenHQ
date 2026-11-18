@@ -22,7 +22,8 @@ export const REVIEWER_CODE = [
   /^kernel\/sdk\/src\/reviewer\.ts$/,
   /^services\/shared\/review-files\.(mjs|ts)$/,
   /^modules\/codehost-github\/service\/src\/(plan\.mjs|merges\.ts|merge-gate\.mjs|evalgate\.ts)$/,
-  /^modules\/platform\/src\/check\.mjs$/,
+  /^modules\/platform\/(src\/check\.mjs|checks\/)/,
+  /^modules\/codehost-github\/checks\//,
   /^kernel\/src\/(tier|provenance|writes|records|reviews|review-loop|kinds|checkjobs|apply|apply-tier)\.ts$/,
   /^scripts\/compiler\/authority\.ts$/,
 ];
