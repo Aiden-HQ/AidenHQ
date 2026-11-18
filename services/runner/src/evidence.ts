@@ -66,7 +66,7 @@ export function taskPrRows(rows: any[] | undefined) {
       const key = `${p.repo.toLowerCase()}#${p.number}`;
       byPr.set(key, { ...p, branches: new Set([...(byPr.get(key)?.branches ?? []), String(b.branch)]) });
     }
-  return [...byPr.values()].map(({ branches, ...p }) => ({ ...p, ...(branches.size === 1 ? { head: [...branches][0] } : {}) }));
+  return [...byPr.values()].map(({ branches, ...p }) => (branches.size === 1 ? { ...p, head: [...branches][0] } : { ...p, heads: [...branches] }));
 }
 
 /**
@@ -98,18 +98,18 @@ type Identity = { state: "ok" } | { state: "stale"; why: string } | { state: "un
 
 /**
  * How a stored PR's number reads against GitHub: this task's change, another change now under that number, or neither provably.
- * Every identifier the record keeps must agree, and one that disagrees is enough to refuse: the branch the task recorded
- * (`head`, by staleHead), the head commit it bound (`headOid`), and the merge commit it merged at (`merge`). A record that keeps
- * none of them proves nothing, and nothing proven is never graded as this task's work: `unknown` fails closed.
+ * Every identifier the record keeps must agree, and one that disagrees is enough to refuse: the branches the task recorded
+ * (`head`, each by staleHead), the head commit it bound (`headOid`), and the merge commit it merged at (`merge`). A record that
+ * keeps none of them proves nothing, and nothing proven is never graded as this task's work: `unknown` fails closed.
  */
-function identityOf(p: { head?: string; headOid?: string; merge?: string }, pr: any): Identity {
+function identityOf(p: { head?: string; heads?: string[]; headOid?: string; merge?: string }, pr: any): Identity {
   const why = [
-    p.head ? staleHead(p.head, pr.headRefName) : undefined,
+    ...[...(p.heads ?? (p.head ? [p.head] : []))].map((b) => staleHead(b, pr.headRefName)),
     p.headOid && String(pr.headRefOid ?? "") !== p.headOid ? `its head is \`${String(pr.headRefOid ?? "").slice(0, 12) || "(none)"}\`, not the task's commit \`${p.headOid.slice(0, 12)}\`` : undefined,
     p.merge && (String(pr.state) !== "MERGED" || pr.mergeCommit?.oid !== p.merge) ? `it did not merge at the task's merge commit \`${p.merge.slice(0, 12)}\`` : undefined,
   ].filter(Boolean);
   if (why.length) return { state: "stale", why: why.join(", and ") };
-  return p.head || p.headOid || p.merge ? { state: "ok" } : { state: "unknown" };
+  return p.head || p.heads?.length || p.headOid || p.merge ? { state: "ok" } : { state: "unknown" };
 }
 
 /**
@@ -141,12 +141,16 @@ async function identityWithRecord(p: any, pr: any, deps: any): Promise<{ p: any;
   return { p: full, who: identityOf(full, pr) };
 }
 
-/** The task's own records for one of its PRs, whichever row keeps them: one row's gap is filled by another's fact. */
-async function fullRecord<T extends { repo: string; number: number }>(p: T, deps: any): Promise<T & { head?: string; headOid?: string }> {
+/**
+ * The task's own records for one of its PRs, whichever row keeps them: one row's gap is filled by another's fact. Every branch a
+ * record names is kept (`heads`), so a record whose branch disagrees with the rows' refuses the read instead of one winning.
+ */
+async function fullRecord<T extends { repo: string; number: number }>(p: T, deps: any): Promise<T & { heads?: string[]; headOid?: string }> {
   if (!deps.taskMerged) return p;
   const rows = taskMergePrs(await deps.taskMerged().catch(() => []));
   const row = rows.find((x) => x.repo.toLowerCase() === p.repo.toLowerCase() && x.number === p.number);
-  return { ...row, ...p };
+  const heads = [...new Set([...(row?.head ? [row.head] : []), ...((p as any).head ? [(p as any).head] : [])])];
+  return { ...row, ...p, ...(heads.length > 1 ? { heads } : {}) };
 }
 
 /**

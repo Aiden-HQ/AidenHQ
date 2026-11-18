@@ -937,13 +937,17 @@ test("a task's branch rows reach the grading read with the branch they recorded,
   ]);
   // Two rows name one PR with different branches: ambiguous, so no head, and the grading read refuses it rather than guessing.
   const split = taskPrRows([{ repo: "acme/app", branch: "fix/one", pr_url: ref }, { repo: "acme/app", branch: "fix/two", pr_url: ref }]);
-  assert.deepEqual(split, [{ repo: "acme/app", number: 7, url: ref }]);
+  assert.deepEqual(split, [{ repo: "acme/app", number: 7, url: ref, heads: ["fix/one", "fix/two"] }], "every branch kept, no single head");
   const ambiguous = { taskPrs: async () => split, pr: async () => pr({ state: "MERGED", merge: "b".repeat(40) }), diff: async () => assert.fail("read an ambiguous PR") };
-  assert.match((await gather({ kind: "pr", ref: "" }, deps(ambiguous))).awaiting, /is named by the runner's own record for this task, which keeps no branch, head commit or merge commit to tell the change by/);
-  // A record's merge commit tells it even so: the guard holds the PR as delivered when GitHub merged at that exact commit.
-  assert.equal((await presentNow({ kind: "pr", ref: "" }, deps({ ...ambiguous, taskMerged: async () => [{ repo: "acme/app", number: 7, url: ref, sha: "b".repeat(40) }] }))).present, true);
-  // And a record whose branch disagrees with the rows is a disagreement, never a guess.
-  assert.equal((await presentNow({ kind: "pr", ref: "" }, deps({ ...ambiguous, taskMerged: async () => [{ repo: "acme/app", number: 7, url: ref, headRef: "fix/one", sha: "b".repeat(40) }] }))).present, false);
+  // Every recorded branch must be the PR's head: with two that disagree, at least one never can be, so the read refuses it.
+  assert.match((await gather({ kind: "pr", ref: "" }, deps(ambiguous))).awaiting, /now names a different change \(its head branch is `fix\/legacy`, not the task's `fix\/one`, and its head branch is `fix\/legacy`, not the task's `fix\/two`\)/);
+  assert.match((await presentNow({ kind: "pr", ref: "" }, deps(ambiguous))).facts[0], /now names a different change/);
+  assert.equal((await presentNow({ kind: "pr", ref: "" }, deps(ambiguous))).present, false, "never held as this task's delivery on one of two branches");
+  // A record's merge commit that also agrees cannot rescue a disagreement between the branches.
+  assert.equal((await presentNow({ kind: "pr", ref: "" }, deps({ ...ambiguous, taskMerged: async () => [{ repo: "acme/app", number: 7, url: ref, sha: "b".repeat(40) }] }))).present, false);
+  // A branch row and a record that agree are one head and read as before.
+  const agreed = taskPrRows([{ repo: "acme/app", branch: "fix/legacy", pr_url: ref }]);
+  assert.equal((await presentNow({ kind: "pr", ref: "" }, deps({ taskPrs: async () => agreed, pr: async () => pr({ state: "MERGED" }), taskMerged: async () => [{ repo: "acme/app", number: 7, url: ref, headRef: "fix/legacy" }] }))).present, true);
 });
 
 test("the evidence-wait guard finds a merge and a matching healthy deploy, and nothing where the work is not", async () => {
