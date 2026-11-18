@@ -134,7 +134,7 @@ export function createProxy({ whoami, connections, asserter, resolver, secret, w
 
   const proxy = async function proxy(req: IncomingMessage, res: ServerResponse, connection: string): Promise<void> {
     const t0 = Date.now();
-    const conn = Object.hasOwn(connections(), connection) ? connections()[connection]! : undefined;
+    const conn = Object.hasOwn(connections(), connection) ? connections()[connection] : undefined;
     if (!conn) throw fail(404, "not_found", `no connection ${connection}`);
     let who: Identity;
     const callerToken = String(req.headers.authorization ?? "").replace(/^Bearer\s+/i, "").trim();

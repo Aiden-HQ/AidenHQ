@@ -1,6 +1,7 @@
 // K1 whoami: who a bearer is, from the credential alone. A kernel job's token (`ahqj_`, gateway_job_secret, kind job: its row's
-// frozen authority) or a module's token (its connection's service key, or its own `<module>_token`). Nothing else is a caller. What an agent may do comes from the kernel's records and the
-// grants table setup writes (config/grants/grants.json), never from control-plane metadata, which agents can edit.
+// frozen authority) or a module's token (its connection's service key, or its own `<module>_token`). Nothing else is a caller.
+// What an agent may do comes from the kernel's records and the grants table setup writes (config/grants/grants.json), never
+// from control-plane metadata, which agents can edit.
 import { timingSafeEqual } from "node:crypto";
 import { verifyToken } from "./gateway/token.ts";
 
