@@ -65,6 +65,8 @@ test("A1: a token decides its own card once, on its digest, from its own channel
   assert.equal((await decide(OP, { token: after.reject, stale: true })).status, 200);
   assert.equal(k.records.get(other.id).decided_by, "stale:watcher");
   assert.equal(k.records.get(other.id).state, "stale");
+  // A card that ended without running is offered to the channel that sent it, so its message can be edited.
+  assert.deepEqual((await cards(TG)).json.ended.map((e) => [e.id, e.state]).sort(), [[rec.id, "rejected"], [other.id, "stale"]].sort());
 });
 
 test("A2: a module without speaks-as-owner can't fetch cards, decide or post the owner's words", async (t) => {
