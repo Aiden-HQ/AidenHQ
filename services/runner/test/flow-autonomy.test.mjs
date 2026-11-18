@@ -121,8 +121,8 @@ describe("flow-autonomy", { concurrency: true }, () => {
   describe("waiting on a requested merge, end to end", { concurrency: 1 }, () => {
     const t = tier0();
 
-    // A wait that only CI or the merge queue can end keeps the job's slot for nothing: once the merge is requested, it
-    // answers at once and the turn ends (the runner wakes the agent on a red check).
+    // A wait that only CI or the merge queue can end keeps the job's slot for nothing: once the merge is requested, status
+    // and wait both answer at once that the turn ends (the runner wakes the agent on a red check).
     it("aidenhq wait answers at once once the open PR's merge is requested", async () => {
       const { toolRuns, step, turn, settled } = t;
       await settled();
@@ -140,7 +140,7 @@ describe("flow-autonomy", { concurrency: true }, () => {
       assert.equal(wait.code, 0, wait.out);
       assert.match(wait.out, /^Your merge is requested; end your turn\. The runner wakes you if a check fails and posts the merge\./);
       assert.match(wait.out, /#8 open \| no review needed \| 1 running/);
-      assert.doesNotMatch(status.out, /Your merge is requested/, "status only reports");
+      assert.match(status.out, /^Your merge is requested; end your turn\./, "status says it too: a loop polling status is told to stop");
       assert.ok(Date.now() - started < 60_000, "no minute-long poll");
     });
 
