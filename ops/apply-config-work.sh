@@ -435,19 +435,7 @@ switchOver() {
     systemctl --user disable --now aidenhq-gateway 2>/dev/null || true
     rm -f "$old" && systemctl --user daemon-reload && echo "gateway unit removed (the kernel replaces it)"
   fi
-  # The accounts move into the kernel (lean-core 3a), once, with the board stopped so nothing writes the file mid-move; compose
-  # brings the board back on the new mount. An older product (a revert or rollback) keeps them in data/board: they go back
-  # there, so there is only ever one copy and its board never makes an empty one.
   local data="${AIDENHQ_DATA_DIR:-$PWD/data}"
-  if [ -f kernel/src/auth-move.ts ] && [ -f "$data/board/auth.db" ] && [ ! -f "$data/kernel/auth/auth.db" ]; then
-    stopBoard
-    local moved; moved="$(node kernel/src/auth-move.ts "$data")"
-    echo "accounts: $moved (data/board/auth.db -> data/kernel/auth/)"
-  elif [ ! -f kernel/src/auth-move.ts ] && [ -f "$data/kernel/auth/auth.db" ] && [ ! -f "$data/board/auth.db" ]; then
-    stopBoard
-    local f; for f in auth.secret auth.db-journal auth.db-wal auth.db-shm auth.db; do [ ! -e "$data/kernel/auth/$f" ] || mv "$data/kernel/auth/$f" "$data/board/$f"; done
-    echo "accounts: moved back (data/kernel/auth/ -> data/board/, for this older product)"
-  fi
   # The grade rows move from the board's database to the grading module's (lean-core 3h), once (a marker in its data dir), with
   # the board stopped so the old board writes nothing mid-move; compose then starts the grading service on them.
   if [ -f ops/grades-move.mjs ] && [ ! -f "$data/modules/grading/grades/.moved-from-board" ]; then

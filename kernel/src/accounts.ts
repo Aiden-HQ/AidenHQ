@@ -11,12 +11,11 @@
 import { createHash, createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import type { IncomingMessage, ServerResponse } from "node:http";
-import { dirname } from "node:path";
+import { dirname, join } from "node:path";
 import { betterAuth } from "better-auth";
 import { getMigrations } from "better-auth/db/migration";
 import { createAppAccess, type Manifest, type SharedApp } from "./app-access.ts";
 import { AccountError, authCore, authSecret, forwardedProto, GATE_HEADER, inboundCookies, openAuthDb, outboundCookie, readBody, secretIs, EDGE_HEADER, type Log } from "./auth-rules.ts";
-import { accountsFile } from "./auth-move.ts";
 
 export { AccountError };
 export type Role = "admin" | "user";
@@ -134,7 +133,7 @@ export interface AccountsOptions {
 export async function openAccounts(o: AccountsOptions) {
   const { log } = o;
   const LINK_TTL_MS = (o.linkTtlHours ?? 72) * 3_600_000;
-  const dbPath = o.dataDir === ":memory:" ? ":memory:" : accountsFile(o.dataDir);
+  const dbPath = o.dataDir === ":memory:" ? ":memory:" : join(o.dataDir, "kernel", "auth", "auth.db");
   const secret = authSecret(dbPath); // before the file exists: a fresh install makes both, an old file without its secret refuses
   const db = openAuthDb(dbPath);
   // Module UI sessions (the board's): the token's hash, the admin listener's session it came from, the module and its origin.
