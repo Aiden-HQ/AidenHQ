@@ -4,7 +4,7 @@
 // forwards with the caller's own credential (the run's JWT or agent key; an agent computer's run through its launcher, on the
 // box's own bridge), so the control plane sees the agent itself, never the owner. A status change to `done` passes the
 // finish gate first (checks.ts): held or reopened, the change isn't forwarded and the answer says so (202). A task a job
-// creates gets the kernel's provenance (provenance.ts): its intent before the POST, its row on the 201.
+// creates gets the kernel's provenance (provenance.ts): its intent before the POST, its row on the 201; no PATCH changes its marker.
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type { Asserter } from "./assert.ts";
 import type { Checks } from "./checks.ts";
@@ -52,6 +52,8 @@ export function createCp({ whoami, asserter, controlUrl, launcherUrl, checks, pr
     const intent = company ? await provenance.intend({ company, ...job!, body: body! }) : undefined;
     if (intent) body = intent.body;
     const task = method === "PATCH" ? /^\/api\/issues\/([^/]+)$/.exec(path)?.[1] : undefined;
+    // Any caller's PATCH: a task's provenance marker stays as it is (provenance.ts).
+    if (task) await provenance.guard(decodeURIComponent(task), body);
     if (task && checks) {
       let status: unknown;
       try { status = JSON.parse(body?.toString("utf8") || "{}")?.status; } catch { throw fail(400, "bad_request", "the body must be JSON"); }
