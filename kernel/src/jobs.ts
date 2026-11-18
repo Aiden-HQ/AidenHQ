@@ -61,13 +61,14 @@ const POLL_MS = 250;
 const exitStatus = (file: string) => { try { return readFileSync(file, "utf8").trim(); } catch { return ""; } };
 /**
  * A failed run's cause as its log tells it: the first line that is neither the kernel's header (`# ...`) nor the engine's JSON
- * output, i.e. what the engine wrote to stderr (e.g. Codex's "Error: thread/resume failed: ..."). Read from the log's head only.
+ * output, i.e. what the engine wrote to stderr (e.g. Codex's "Error: thread/resume failed: ..."), its secret shapes blanked: it
+ * reaches the ledger, the Steward and the task. Read from the log's head only.
  */
 export function firstError(logPath: string): string {
   let head = "";
   try { head = readFrom(logPath, 0, 256 * 1024).toString("utf8"); } catch { return ""; }
   const line = head.split("\n").map((l) => l.trim()).find((l) => l && !l.startsWith("#") && !l.startsWith("{"));
-  return line ? clip(line, 300) : "";
+  return line ? clip(redact(line), 300) : "";
 }
 const alive = (pid: number) => {
   try { process.kill(pid, 0); return true; } catch (e) { return (e as NodeJS.ErrnoException).code === "EPERM"; }
@@ -105,7 +106,7 @@ const redact = (t: string) =>
     .replace(/:\/\/[^/\s@]+@/g, "://…@")
     .replace(/([?&](?:token|key|secret|password|sig|access_token)=)[^&\s'"]+/gi, "$1…")
     .replace(/\b([A-Z0-9_]*(?:TOKEN|KEY|SECRET|PASSWORD|PASS)[A-Z0-9_]*)=[^\s'"]+/g, "$1=…")
-    .replace(/\b(sk-|ghp_|gho_|ghs_|github_pat_|xox[abp]-|AKIA)[A-Za-z0-9_-]+/g, "$1…");
+    .replace(/\b(sk-|ghp_|gho_|ghs_|github_pat_|xox[abp]-|AKIA|ahqj_)[A-Za-z0-9_-]+/g, "$1…");
 const PLAN = (p: unknown) => (Array.isArray(p) ? p.slice(0, 20).map((i: any) => ({ text: clip(i?.step, 200), state: i?.done ? "done" : i?.doing ? "doing" : "todo" })).filter((i) => i.text) : undefined);
 const STEPS = (s: unknown) => (Array.isArray(s) ? s.slice(-30).map((x: any) => ({ at: typeof x?.at === "string" ? x.at.slice(0, 40) : new Date().toISOString(), kind: "tool", text: clip(redact(String(x?.text ?? "")), 200) })) : undefined);
 
