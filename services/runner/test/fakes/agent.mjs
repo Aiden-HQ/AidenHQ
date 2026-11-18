@@ -9,6 +9,12 @@ import { log } from "./lib.mjs";
 export async function agent(args, prompt) {
 const out = (event) => console.log(JSON.stringify(event));
 const thread = args[1] === "resume" ? args[2] : "session-1";
+// A session Codex has no record of (one from before the Engineer had a computer): Codex's own error, and no turn.
+if (thread.startsWith("gone-")) {
+  log("agent", { argv: args, prompt });
+  console.error(`Error: thread/resume: thread/resume failed: no rollout found for thread id ${thread} (code -32600)`);
+  process.exit(1);
+}
 log("agent", { argv: args, prompt });
 out({ type: "thread.started", thread_id: thread });
 
