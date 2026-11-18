@@ -41,7 +41,7 @@ import { createWrites, type Kind } from "./writes.ts";
 import { taskRoutineCap } from "./tier.ts";
 import { KERNEL_KINDS, LOCAL_ORG, raiseCapCard } from "./kinds.ts";
 import { createJobs, dispatchesFrom } from "./jobs.ts";
-import { jailProblem, overlayProblem } from "./sandbox.ts";
+import { jailProblem } from "./sandbox.ts";
 import { sandboxConfig } from "./sandbox-config.ts";
 import { createCertWatch } from "./front-door.ts";
 import { BOX_EXEC_WRAP } from "../../services/computer/lib.mjs";
@@ -131,24 +131,19 @@ const certWatch = createCertWatch({
 setInterval(() => void certWatch.tick(), 3_600_000).unref();
 setTimeout(() => void certWatch.tick(), 10 * 60_000).unref();
 const brake = createBrake({ db: records.db, owner: ownerApi });
-// Jobs: the sandbox as configured here. A known no-jail condition is fatal, with the reason in the journal: a job must never
-// share the host's network (every loopback service). Build caches without overlay support are shared.
+// The host sandbox as configured here (jobs run in their agents' computers; repo code the host runs itself, fast checks among
+// it, runs in this sandbox). A known no-jail condition is fatal, with the reason in the journal: repo code must never share the
+// host's network (every loopback service).
 const sandbox = sandboxConfig(env);
 const jailIssue = jailProblem(sandbox);
 if (jailIssue) {
-  log("ERROR: jobs cannot be jailed here", { reason: jailIssue });
+  log("ERROR: the host sandbox cannot be jailed here", { reason: jailIssue });
   process.exit(1);
-}
-if (sandbox.sandbox?.extra_writable_roots?.length) {
-  const overlayIssue = overlayProblem(sandbox);
-  if (overlayIssue) (sandbox.noOverlay = true), log("WARNING: jobs share their build caches read-write (bwrap can't mount overlays; bubblewrap 0.11+ can)", { reason: overlayIssue });
 }
 const jobs = createJobs({
   db: records.db, cfg: sandbox, log, boxWrap: BOX_EXEC_WRAP,
-  // The agents a module dispatches (compile: an agent runs on the engine runner, and this module holds kernel.jobs), by key;
-  // their jobcaps are their own grants.
+  // The agents a module dispatches (compile: an agent runs on the engine runner, and this module holds kernel.jobs), by key.
   mayDispatch: dispatchesFrom(() => (modulesFile().modules ?? {}) as never, () => grantsTable().agents ?? {}),
-  jobcaps: (agent) => [grantsTable().agents?.[agent]?.jobcaps ?? []].flat().map(String),
   cp: {
     agent: async (id) => { const r = await cpApi(`/api/agents/${encodeURIComponent(id)}`); return r.ok ? ((await r.json()) as never) : undefined; },
     task: async (id) => { const r = await cpApi(`/api/issues/${encodeURIComponent(id)}`); return r.ok ? ((await r.json()) as never) : undefined; },

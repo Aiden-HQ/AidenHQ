@@ -7,7 +7,7 @@ import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node
 import { basename, dirname, join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
-import { FOR_OTHERS, RUNNER_MARKER, deliveredFrom, finishedStatus, hasMarker, isAgentSubtask, isRuleProposal, isUserPart, ownRequest, findRepos, mentionedRepos, isClaudeModel, openrouterModels, crewNames, generalEngineers, personaFor, parseCommand, pickedEngine, pickerFor, engineKinds, engineLabel, engineOf, modelPrefix, repoAllowed, resolveEngine, stripHidden, useEngines, settledWait } from "./agents.mjs";
+import { FOR_OTHERS, RUNNER_MARKER, deliveredFrom, finishedStatus, hasMarker, isAgentSubtask, isRuleProposal, isUserPart, ownRequest, findRepos, mentionedRepos, openrouterModels, crewNames, generalEngineers, personaFor, parseCommand, pickedEngine, pickerFor, engineKinds, engineLabel, engineOf, modelPrefix, repoAllowed, resolveEngine, stripHidden, useEngines, settledWait } from "./agents.mjs";
 import { REPO_ROOT, githubSlug, loadConfig } from "./config.mjs";
 import { applyWaitingForLock, architectFollowUps, bumpTitle, definitionsOf, ownerMade, productPin, strayFiles, trialEditsText, trialHandbookOnly, trialNoTapBy, untrialedNewAgents } from "./apply.ts";
 import { applyCardArgs, asApproval, branchCardArgs, cardOf, cardText, planOf } from "./cards.ts";
@@ -15,21 +15,20 @@ import { applyCard, repoKey } from "../../../kernel/src/kinds.ts";
 import { authorityLines, diffAll, forkChanges, grantOverrides, marketplaceChanges, moduleInputs, withGrantOverrides } from "../../../kernel/src/loader/authority.ts";
 import { OFFICIAL, OFFICIAL_URL, forksOf, hostFetch, officialSides, remoteCodeText, withRemote } from "../../../kernel/src/loader/sources.ts";
 import { effective } from "../../../kernel/src/loader/release.ts";
-import { cowRoot, engineState, followJob, kernelJobs, readEngines, removeLayers, gatewayApi, jobcapServers, jobcapsFor, launcher, modelToken, observes, releaseBox, viaGateway } from "./engines.mjs";
+import { engineState, followJob, kernelJobs, readEngines, removeLayers, gatewayApi, launcher, modelToken, observes, releaseBox } from "./engines.mjs";
 import { hiding, jailProblem } from "../../../kernel/src/sandbox.ts";
 import { sandboxConfig } from "../../../kernel/src/sandbox-config.ts";
 import { runAlive } from "../../../kernel/src/jobs.ts";
-import { gcpSession } from "./gcp.ts";
 import { outputs, shareOutputs, syncFiles } from "./files.ts";
 import { ISOLATED_ENV, SAFE_GIT_ARGS, changeBase, defaultBranch, ensureClone, ensureGuardHooks, git, historyRewritten, landOnMain, remoteIsEmpty, replayOnto, patchKey, patchKeyAt, setGitAuth, setUntrusted, treeIs } from "../../../modules/codehost-github/src/git.mjs";
 import { DEFAULT_IDENTITY, READ, WRITE, appClient, appRemoteUrl, ghOptions, identityEnv, inOrg, jobGhToken, mergeOptions, mergePermissions, ownRepo as appOwnRepo, pushPermissions } from "../../../modules/codehost-github/src/github-app.ts";
-import { codexModels, resolveModelAlias, resolveOpenRouterModel, withParent } from "./intake.ts";
+import { resolveOpenRouterModel, withParent } from "./intake.ts";
 import { splitAnswered } from "./answered.ts";
 import { ALL_STATUSES, Paperclip, blockedRefusal, origins, unresolvedBlockers } from "./paperclip.ts";
 import { isTransient, retryTransient, shouldRetryTurn } from "./retry.ts";
 import { branchGuidance, checkBranchName, chooseBranchName, exampleBranches } from "./branch.ts";
 import { cleanMessages, evidenceOf, existingPrUrl, isRepoIn, leakIn, leaksInternal, stripAttribution, withEvidence, writePrDescription } from "./describe.ts";
-import { branchesFooter, slackSources, firstPrompt, followUpPrompt, latestReport, prSummary, prTitle, subtaskSummary, summaryGist, appliedNote, runOutcome, coversHead } from "./prompt.ts";
+import { branchesFooter, firstPrompt, followUpPrompt, latestReport, prSummary, prTitle, subtaskSummary, summaryGist, appliedNote, runOutcome, coversHead } from "./prompt.ts";
 import { staleHead, staleRef } from "./progress.ts";
 import { PRIMER_FILES, primerLink, publishedRef, readDocument } from "./primer.ts";
 import { startRepoHelper } from "./repohelper.ts";
@@ -56,7 +55,6 @@ import { GRADE_SCHEMA, GRADER_MARKER, escalationFor, gather, grade, gradeNote, t
 import { createGradeLoop } from "../../../modules/grading/src/loop.mjs";
 import { createResolver } from "../../../kernel/src/net.ts";
 import { ALREADY_APPLIED, guardBranch, localPullRequest, taskPrRows } from "./evidence.ts";
-import { jobUsage } from "./usage.ts";
 import { createEvalGate, officialOf } from "./evalgate.ts";
 import { fastChecks } from "../../../kernel/src/fastcheck.ts";
 import { localCheckRuns } from "../../../modules/codehost-local/src/checks.ts";
@@ -3937,17 +3935,17 @@ async function agentApply(ctx) {
   return `Nothing to run: when your turn ends, the runner shows ${cfg.selfName} the diff of your committed change as an approval card, and it lands on their tap. End your turn with the change committed, saying in one line what it does.`;
 }
 
-/** `aidenhq engine <claude|codex|codex-openrouter|openrouter> [model]`: this request again, on another engine or model. */
+/** `aidenhq engine openrouter [model]`: this request again, on another OpenRouter model. */
 async function agentEngine(ctx, args) {
   const asked = String(args.engine ?? "").trim().toLowerCase();
-  if (!engineKinds().includes(asked) && asked !== "opencode") throw new UserError(`Name the engine: ${engineKinds().join(", ")}, and optionally a model.`);
-  const kind = resolveEngine({ engine: asked }, cfg).kind; // "openrouter": OpenRouter models, on the primary engine for them
+  if (!engineKinds().includes(asked) && asked !== "openrouter") throw new UserError(`Name the engine: openrouter${engineKinds().length ? ` (or ${engineKinds().join(", ")})` : ""}, and optionally a model.`);
+  const kind = resolveEngine({ engine: asked }, cfg).kind;
   const engineers = await pc.engineerAgents();
   if (!pickerFor({ kind }, engineers)) throw new UserError(`There's no ${kind} Engineer set up.`);
   const raw = String(args.model ?? "").trim();
   let model;
   if (raw) {
-    model = modelPrefix(kind) ? resolveOpenRouterModel(raw, openrouterModels(engineers)) : kind === "claude" ? (isClaudeModel(raw) ? raw.toLowerCase() : undefined) : resolveModelAlias(raw, codexModels());
+    model = modelPrefix(kind) ? resolveOpenRouterModel(raw, openrouterModels(engineers)) : raw;
     if (!model) throw new UserError(`"${raw}" isn't a ${kind} model I know.`);
   }
   ctx.engine = resolveEngine({ engine: kind, model }, cfg);
@@ -4266,7 +4264,6 @@ class MovedHead extends UserError {}
  */
 async function startJob({ issue, instructions }) {
   const controller = new AbortController();
-  let gcp;
   running.set(issue.id, { controller, identifier: issue.identifier, startedAt: new Date().toISOString(), request: instructions, agent: issue.assigneeAgentId });
   reportActivity();
   let jobId;
@@ -4305,7 +4302,8 @@ async function startJob({ issue, instructions }) {
     task = await syncPicker(issue, full, task);
     const engine = task.engine ?? resolveEngine({}, cfg);
 
-    const workspace = await prepareWorkspace(issue, state.task(issue.id), { copy: Boolean(engine.box) });
+    // A copy that shares no file with the runner's cache: the job's computer mounts it read-write.
+    const workspace = await prepareWorkspace(issue, state.task(issue.id), { copy: true });
     // The folder a job gets read-write: inside the work dir, no symlink on the way (bwrap would bind its target).
     safeWorkspace(cfg.workDir, workspace);
     // PRs merged or closed since the last run: never keep working on them.
@@ -4316,11 +4314,6 @@ async function startJob({ issue, instructions }) {
     const stale = await staleRef(`${instructions}\n${full.description ?? ""}`, repos.map((r) => r.path));
     if (stale) throw new UserError(`Not started: ${stale}. Fix the brief and send it again.`);
     state.updateTask(issue.id, { engine });
-    // Grafana and Google Cloud reads for an Engineer with private reads: a one-hour gcloud token of the job's own.
-    gcp = observes(engine) && !engine.box
-      ? await gcpSession({ credentialsFile: cfg.gcp.credentialsFile, dir: join(cfg.stateDir, "gcloud", issue.identifier), project: cfg.gcp.projects[0], log: (m, f) => log(m, { issue: issue.identifier, ...f }) })
-      : undefined;
-    if (gcp && gcp.state !== "ok" && gcp.state !== "missing") log("gcp unavailable for the job", { issue: issue.identifier, state: gcp.state, detail: gcp.detail });
 
     // The job's log is the kernel's (its path comes back when the job starts).
     let logPath = "";
@@ -4350,40 +4343,25 @@ async function startJob({ issue, instructions }) {
     const brief = typeof assigned?.metadata?.brief === "string" ? assigned.metadata.brief : "";
     const build = typeof assigned?.metadata?.build === "string" ? assigned.metadata.build : "";
     const persona = brief ? undefined : personaFor(engine.kind, engineers, assigned);
-    // Billed to the Engineer (a label-only task: the first one on its engine, else on a gateway engine).
+    // Billed to the Engineer (a label-only task: the first general one on its engine, else any general one).
     const general = generalEngineers(engineers);
-    const agentId = assigned?.id ?? (general.find((a) => engineOf(a) === engine.kind) ?? general.find((a) => viaGateway(cfg, engineOf(a))))?.id ?? null;
-    // The agent's jobcaps (grants table): its reads of connections, through the gateway with the job token. A box job reaches
-    // its connections through the launcher instead.
-    const jobcaps = engine.box ? [] : jobcapsFor(cfg, engine, readGrants()?.agents?.[agentId]?.jobcaps ?? []);
-    const reading = new Set(jobcapServers(cfg, jobcaps).map((s) => s.name));
-    // Private reads for an Engineer with them, and the Slack messages the task came from.
-    const observe = observes(engine) && !engine.box
-      ? {
-          grafana: reading.has("grafana"),
-          slack: reading.has("slack"),
-          glean: reading.has("glean"),
-          clickhouse: reading.has("clickhouse"),
-          sources: slackSources(`${full.description ?? ""}\n${parent?.description ?? ""}\n${instructions}`),
-          gcp: { state: gcp.state, detail: gcp.detail, projects: cfg.gcp.projects },
-        }
-      : undefined;
+    const agentId = assigned?.id ?? (general.find((a) => engineOf(a) === engine.kind) ?? general.find((a) => engineOf(a)))?.id ?? null;
     // Comments while it works reach an engine that takes them (live_input).
     const channel = {};
     Object.assign(running.get(issue.id), { channel, who: persona?.name });
     // The conversation (all of it for a new session, what's new for a resumed one) and where the work stands.
     const { thread, stand } = await conversation(issue, workspace, { instructions, resumed, persona });
-    // A box job works in /workspace: the prompt names the paths it sees.
-    const seen = engine.box ? { workspace: "/workspace", repos: repos.map((r) => ({ ...r, path: r.path.replace(workspace, "/workspace") })) } : { workspace, repos };
+    // The job works in its computer's /workspace: the prompt names the paths it sees.
+    const seen = { workspace: "/workspace", repos: repos.map((r) => ({ ...r, path: r.path.replace(workspace, "/workspace") })) };
     const prompt = resumed
-      ? followUpPrompt({ user: cfg.selfName, instructions, ...seen, branches, files, primer, crew, observe, thread, stand, brief })
-      : firstPrompt({ user: cfg.selfName, task: full, ...seen, branches, instructions, files, primer, persona, crew, observe, thread, stand, team: crewNames(engineers), brief, build, orgs: cfg.hostOrgs });
+      ? followUpPrompt({ user: cfg.selfName, instructions, ...seen, branches, files, primer, crew, reads: observes(engine), thread, stand, brief })
+      : firstPrompt({ user: cfg.selfName, task: full, ...seen, branches, instructions, files, primer, persona, crew, reads: observes(engine), thread, stand, team: crewNames(engineers), brief, build, orgs: cfg.hostOrgs });
     const tipsBefore = await branchTips(workspace);
     const identity = await botIdentity();
     const ghToken = await jobGhToken(app, repos.map((r) => r.slug), appFor).catch((err) => (log("no gh token for the job", { issue: issue.identifier, err: String(err.message ?? err).slice(0, 200) }), undefined));
-    // A box job: its box first (the task's last one confirmed gone), bound to this task and to the helper token it will use.
+    // Its box first (the task's last one confirmed gone), bound to this task and to the helper token it will use.
     const helperToken = randomBytes(24).toString("hex");
-    if (engine.box) box = await startBox({ issue, agentId, workspace, helperToken, identity, engine });
+    box = await startBox({ issue, agentId, workspace, helperToken, identity, engine });
     if (stopping) return; // the runner is restarting: the job resumes after it (RESUME_KEY)
     tools = { issue, workspace, instructions, brief: Boolean(brief), kind: engine.kind, reads: observes(engine), who: persona?.name, signal: controller.signal, jobId, box, agentId };
     const helper = repoHelper.register(tools, helperToken);
@@ -4397,7 +4375,7 @@ async function startJob({ issue, instructions }) {
         agent: agentId, task: issue.id, label: issue.identifier, workspace: { module: "engineering", id: basename(workspace) }, prompt,
         ...(sessionId ? { session: sessionId } : {}), engine: { kind: engine.kind, model: engine.model ?? "", effort: engine.effort ?? "" },
         env: { ...helper.env, ...identityEnv(identity), ...(ghToken ? { GH_TOKEN: ghToken, AIDENHQ_GH_AUTH: ghToken } : {}) },
-        ...(gcp ? { cloud: { root: gcp.root, env: gcp.env } } : {}), ...(box ? { box } : {}),
+        box,
       });
     } finally {
       running.get(issue.id).starting = false;
@@ -4412,7 +4390,7 @@ async function startJob({ issue, instructions }) {
     if (started.live_input) channel.send = (text) => jobsApi.input(started.id, text);
     if (stopping) return void (handedOver = true); // the next runner follows it (state.runningJobs): its box and session stay
     const watch = followJob(jobsApi, started.id, { signal: controller.signal, detach: detach.signal, onProgress: progressOf(issue.id), log });
-    launched = { issue, full, workspace, engine, jobId, logPath, tipsBefore, tools, gcp, helper, watch, box, keep: box && keepBox(issue, box, helper) };
+    launched = { issue, full, workspace, engine, jobId, logPath, tipsBefore, tools, helper, watch, box, keep: keepBox(issue, box, helper) };
   } catch (err) {
     if (stopping) return;
     // Paperclip refusing "in progress" on a task blocked meanwhile is no failure: nothing was attempted, so the job is
@@ -4441,7 +4419,6 @@ async function startJob({ issue, instructions }) {
     if (!launched && !handedOver) {
       // A box that never got its run (a failed start, a restart): destroyed, never left holding the task.
       if (box) await stopBox(issue, box).catch((err) => log("box release failed", { issue: issue.identifier, err: String(err.message ?? err).slice(0, 300) }));
-      gcp?.done();
       await endTurn(issue, tools);
     }
   }
@@ -4511,7 +4488,7 @@ async function endTurn(issue, tools) {
  * The end of an Engineer's turn: its reply, branches and outputs on the task. The same for a run this
  * runner started and for one it adopted after a restart (`full` unknown until now).
  */
-async function finishTurn({ issue, full, workspace, engine, jobId, logPath, tipsBefore, tools, gcp, helper, watch, box, keep }) {
+async function finishTurn({ issue, full, workspace, engine, jobId, logPath, tipsBefore, tools, helper, watch, box, keep }) {
   let result;
   let reporting = false;
   try {
@@ -4613,9 +4590,6 @@ async function finishTurn({ issue, full, workspace, engine, jobId, logPath, tips
     else await reportError(issue, err);
   } finally {
     if (!result?.detached) {
-      // Gateway engines' jobs are billed by the model gateway; only the other engines' tokens are self-reported (usage events).
-      if (logPath && !viaGateway(cfg, engine.kind)) reportUsage(jobUsage(logPath, engine, result?.usage));
-      gcp?.done();
       await endTurn(issue, tools);
     }
   }
@@ -4863,12 +4837,7 @@ async function removeWorkspace(issue, workspace) {
   const dirty = await dirtyCheckouts(repos);
   if (dirty.length) return { dirty, kept: 0 };
   for (const r of repos) await keepBranches(r.path, join(cfg.workDir, "repos", r.org, r.name), issue.identifier);
-  removeLayers(workspace); // a job's overlay leaves work dirs only their owner can enter: made writable, then removed
-  try {
-    removeLayers(cowRoot(cfg, workspace)); // its copy-on-write cache layers
-  } catch (err) {
-    log("cache layers not removed", { issue: issue.identifier, err: String(err.message ?? err).slice(0, 200) });
-  }
+  removeLayers(workspace); // read-only files a job left (Go's module cache): made writable, then removed
   state.updateTask(issue.id, { workspace: null });
   return { dirty };
 }
@@ -5817,9 +5786,6 @@ function adoptRuns() {
     running.set(issue.id, { controller, jobId: job.id, identifier: issue.identifier, startedAt: job.started_at, request: run.instructions, pid: run.pid, logPath: job.log_path, channel, who: run.who, info: { engine: engineLabel(run.engine), mode: "working", repo: run.repos } });
     log("following a running job again", { issue: issue.identifier, job: run.kernelJob });
     void (async () => {
-      const gcp = observes(run.engine)
-        ? await gcpSession({ credentialsFile: cfg.gcp.credentialsFile, dir: join(cfg.stateDir, "gcloud", issue.identifier), project: cfg.gcp.projects[0], log: (m, f) => log(m, { issue: issue.identifier, ...f }) }).catch(() => undefined)
-        : undefined;
       // A box job: its lease renewed and its helper binding re-registered, the launcher's record checked against ours. A box
       // gone (its lease lapsed while no runner followed it) means a dead run: the job is stopped and the task resumes from its
       // session in a new box, once this one is confirmed gone.
@@ -5842,7 +5808,7 @@ function adoptRuns() {
         }
       }
       const watch = followJob(jobsApi, run.kernelJob, { signal: controller.signal, detach: detach.signal, onProgress: progressOf(issue.id), log });
-      await finishTurn({ issue, workspace: run.workspace, engine: run.engine, jobId: job.id, logPath: job.log_path, tipsBefore: run.tipsBefore, tools, gcp, helper, watch, box: run.box, keep: run.box && keepBox(issue, run.box, helper) });
+      await finishTurn({ issue, workspace: run.workspace, engine: run.engine, jobId: job.id, logPath: job.log_path, tipsBefore: run.tipsBefore, tools, helper, watch, box: run.box, keep: run.box && keepBox(issue, run.box, helper) });
     })();
   }
   if (lost.length) state.set(RESUME_KEY, JSON.stringify([...JSON.parse(state.get(RESUME_KEY) || "[]"), ...lost]));

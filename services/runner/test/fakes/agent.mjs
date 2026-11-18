@@ -1,44 +1,19 @@
-// Claude Code with streamed input (--input-format stream-json --replay-user-messages): the first
-// message is the runner's prompt. It does what $FAKE_STEP says (first line: what to do in acme/app;
-// then any `aidenhq …` commands to run, as the agent would from its shell), and replies. Messages
-// that arrive while it works are taken in and answered in the same turn; later ones get a turn each.
-// It exits when stdin closes, like the real one.
+// The agent's side of a Codex turn (codex exec --json, from fakes/codex.mjs): the runner's prompt on stdin. It does what
+// $FAKE_STEP says (first line: what to do in acme/app; then any `aidenhq …` commands to run, as the agent would from its
+// shell), and replies: Codex's JSON events on stdout, its last message in the -o file.
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { spawnSync } from "node:child_process";
-import { createInterface } from "node:readline";
 import { log } from "./lib.mjs";
 
+export async function agent(args, prompt) {
 const out = (event) => console.log(JSON.stringify(event));
-const lines = [];
-let prompted = false;
-let closed = false;
-let wake = () => {};
-createInterface({ input: process.stdin })
-  .on("line", (line) => {
-    lines.push(JSON.parse(line).message.content);
-    if (prompted) log("claude-took", lines.at(-1)); // a message during the run, as it reaches the session
-    wake();
-  })
-  .on("close", () => {
-    closed = true;
-    wake();
-  });
-const next = () => (lines.length || closed ? Promise.resolve() : new Promise((r) => (wake = r)));
-const take = () => {
-  const text = lines.shift();
-  out({ type: "user", isReplay: true, message: { role: "user", content: text } });
-  return text;
-};
-
-await next();
-const prompt = take();
-prompted = true;
-log("claude", { argv: process.argv.slice(2), prompt });
-out({ type: "system", subtype: "init", session_id: "session-1" });
+const thread = args[1] === "resume" ? args[2] : "session-1";
+log("agent", { argv: args, prompt });
+out({ type: "thread.started", thread_id: thread });
 
 const repo = [join(process.cwd(), "app"), join(process.cwd(), "acme/app")].find((d) => existsSync(join(d, ".git")));
-const git = (...args) => spawnSync("git", ["-C", repo, ...args], { stdio: "ignore" });
+const git = (...a) => spawnSync("git", ["-C", repo, ...a], { stdio: "ignore" });
 log("workspace", { repo });
 /** policy.txt: two identical blocks; `allowed` (0 or 1) is the one whose last line says allow = true. */
 const policy = (allowed) => [0, 1].map((i) => `# block ${i}\n\nx1\nx2\nx3\nallow = ${i === allowed}\ny1\ny2\ny3\n`).join("\n");
@@ -229,24 +204,16 @@ for (const line of tools) {
     continue;
   }
   const [cmd, ...cmdArgs] = line.split(" ");
-  // `emit <Tool> <command…>`: a tool call the engine shows as a step, as the real agent's calls are.
+  // `emit <Tool> <command…>`: a command the engine shows as a step, as the real agent's are.
   if (cmd === "emit") {
-    out({ type: "assistant", message: { content: [{ type: "tool_use", id: `t${Date.now()}`, name: cmdArgs[0], input: { command: cmdArgs.slice(1).join(" ") } }] } });
+    out({ type: "item.started", item: { type: "command_execution", command: cmdArgs.slice(1).join(" ") } });
     continue;
   }
   const res = spawnSync(cmd, cmdArgs, { cwd: process.cwd(), encoding: "utf8" });
   log("tool", { line, code: res.status, out: (res.stdout ?? "") + (res.stderr ?? "") });
 }
-// Messages that came in while it worked: taken in now, answered in this turn.
-const during = [];
-while (lines.length) during.push(take());
-if (during.length) log("claude-mid-run", during);
 const reply = step === "silent" ? "NO_REPLY" : "Checked every repository; nothing needed changing.";
-out({ type: "result", subtype: "success", result: during.length ? `${reply}\n\nAlso, as you asked while I worked: ${during.join(" / ")}` : reply });
-// Anything after this turn ended gets a turn of its own, until the runner closes the input.
-for (;;) {
-  await next();
-  if (!lines.length && closed) break;
-  const text = take();
-  out({ type: "result", subtype: "success", result: `On your later note (${text}): done.` });
+out({ type: "item.completed", item: { type: "agent_message", text: reply } });
+out({ type: "turn.completed", usage: { input_tokens: prompt.length, cached_input_tokens: 0, output_tokens: reply.length } });
+writeFileSync(args[args.indexOf("-o") + 1], reply);
 }

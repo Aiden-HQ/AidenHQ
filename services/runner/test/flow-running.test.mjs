@@ -11,63 +11,58 @@ describe("flow-running", () => {
 
   // End to end (see flow-harness.mjs): comments that arrive while the agent is working.
   describe("comments during a run, end to end", () => {
-    const { waitFor, partComments, claudeRuns, fakeLog, step, say, reviews, starts, settled, release, idle } = t;
+    const { waitFor, partComments, agentRuns, step, say, reviews, running, settled, release, idle } = t;
 
     it("stops a run when told to, mid-run", async () => {
       await settled();
       step("slow");
-      const n = claudeRuns().length;
+      const n = agentRuns().length;
       say("Check the staging logs for errors.");
-      await waitFor("the run to start", () => claudeRuns().length > n);
+      await waitFor("the run to start", () => agentRuns().length > n);
       say("stop");
       await waitFor("the stop", () => reviews().some((p) => /Stopped on request/.test(p.comment ?? "")), 30_000);
     });
 
-    it("answers a progress question mid-run, and passes other comments into the running session", async () => {
+    it("answers a progress question mid-run; another comment is the next turn's", async () => {
       step("slow");
-      const n = claudeRuns().length;
+      const n = agentRuns().length;
       const c = partComments().length;
       const replies = reviews().length;
       say("Look at the staging logs again.");
-      await waitFor("the run to start", () => claudeRuns().length > n);
+      await waitFor("the run to start", () => agentRuns().length > n);
       say("How's it going?");
       await waitFor("the answer", () => partComments().slice(c).some((x) => /Still running/.test(x)), 20_000);
+      // Codex takes no comment mid-run: this one waits for the turn after this one.
       say("Also check the infra repo.");
-      await waitFor("the hand-over", () => partComments().slice(c).some((x) => /Passed on: Ada reads it now/.test(x)), 20_000);
-      // engine@1: the comment goes into the job's inbox.jsonl, and the engine passes it on to the session within a poll.
-      await waitFor("the session took it in", () => fakeLog().some((e) => e.kind === "claude-took" && e.data === "Also check the infra repo."));
-      release();
-      // Claude Code takes it in mid-run: one reply that covers it, no extra turn.
-      await waitFor("the reply", () => reviews().length > replies);
-      assert.match(reviews().at(-1).comment, /Also, as you asked while I worked: Also check the infra repo\./);
-      assert.deepEqual(fakeLog().filter((e) => e.kind === "claude-mid-run").at(-1).data, ["Also check the infra repo."]);
-      const runs = starts().length;
       await idle();
-      assert.equal(reviews().length, replies + 1, "no second turn for it");
-      assert.equal(starts().length, runs, "and none started");
+      step("none");
+      release();
+      await waitFor("the reply", () => reviews().length > replies);
+      await waitFor("a turn for the later comment", () => agentRuns().slice(n + 1).some((r) => /Also check the infra repo\./.test(r.prompt)));
+      await waitFor("quiet", () => !running());
     });
 
     it("never errors or asks for a repository along the way", () => t.noErrors());
   });
 
-  // End to end (see flow-harness.mjs): the agent switches its own engine.
-  describe("switching engine, end to end", () => {
-    const { waitFor, claudeRuns, step, say, turn, running, settled } = t;
+  // End to end (see flow-harness.mjs): the agent switches its own model.
+  describe("switching model, end to end", () => {
+    const { waitFor, agentRuns, step, say, turn, running, settled } = t;
 
-    it("switches engine when asked, and runs the request again on a fresh session with the whole conversation", async () => {
+    it("switches model when asked, and runs the request again on a fresh session with the whole conversation", async () => {
       await settled();
       step("none");
       await turn("Here's the order: 1. https://github.com/acme/app/pull/1");
-      step("none\naidenhq engine claude sonnet");
-      const runs = claudeRuns().length;
-      say("Use Sonnet for this one, and summarise what changed.");
-      await waitFor("the run on the new model", () => claudeRuns().length >= runs + 2);
-      const again = claudeRuns()[runs + 1];
-      assert.equal(again.argv[again.argv.indexOf("--model") + 1], "sonnet");
-      assert.ok(!again.argv.includes("--resume"), "a fresh session");
+      step("none\naidenhq engine openrouter acme/model-2");
+      const runs = agentRuns().length;
+      say("Use model 2 for this one, and summarise what changed.");
+      await waitFor("the run on the new model", () => agentRuns().length >= runs + 2);
+      const again = agentRuns()[runs + 1];
+      assert.equal(again.argv[again.argv.indexOf("-m") + 1], "acme/model-2");
+      assert.ok(!again.argv.includes("resume"), "a fresh session");
       assert.match(again.prompt, /## The conversation on this task[\s\S]*Here's the order: 1\. https:\/\/github\.com\/acme\/app\/pull\/1/, "the whole conversation, from the start");
-      assert.match(again.prompt, /## Instructions from Dana[\s\S]*Use Sonnet for this one/);
-      assert.ok(t.paperclip.patches.some((p) => p.issue === "PEN-2" && p.assigneeAdapterOverrides?.adapterConfig?.model === "sonnet"), "the picker shows it");
+      assert.match(again.prompt, /## Instructions from Dana[\s\S]*Use model 2 for this one/);
+      assert.ok(t.paperclip.patches.some((p) => p.issue === "PEN-2" && p.assigneeAdapterOverrides?.adapterConfig?.model === "openrouter/acme/model-2"), "the picker shows it");
       step("none");
       await waitFor("quiet", () => !running());
     });
@@ -77,7 +72,7 @@ describe("flow-running", () => {
 
   // End to end (see flow-harness.mjs): a runner restart and a deploy's drain.
   describe("restarting the runner, end to end", () => {
-    const { waitFor, partComments, claudeRuns, step, say, reviews, running, settled } = t;
+    const { waitFor, partComments, agentRuns, step, say, reviews, running, settled } = t;
 
     // A restart leaves the run going for the next kernel and runner to adopt (test/adopt.test.mjs); here (a reboot) the
     // kernel goes down too and the run dies while nothing follows it, so the next kernel reports it lost and the runner resumes it.
@@ -85,9 +80,9 @@ describe("flow-running", () => {
       await settled();
       step("slow");
       const stopped = () => reviews().filter((p) => /Stopped on request/.test(p.comment ?? "")).length;
-      const [stops, replies, runs] = [stopped(), reviews().length, claudeRuns().length];
+      const [stops, replies, runs] = [stopped(), reviews().length, agentRuns().length];
       say("Check the staging logs once more.");
-      await waitFor("the agent at work", () => claudeRuns().length > runs);
+      await waitFor("the agent at work", () => agentRuns().length > runs);
       const exited = new Promise((r) => t.runner.once("exit", r));
       t.runner.kill("SIGTERM");
       await exited;
@@ -107,11 +102,11 @@ describe("flow-running", () => {
       t.startJobs();
       t.startRunner();
       await waitFor("the resumed run's reply", () => reviews().length > replies);
-      const again = claudeRuns().at(-1);
-      assert.ok(again.argv.includes("--resume"), "the same session");
+      const again = agentRuns().at(-1);
+      assert.ok(again.argv.includes("resume"), "the same session");
       assert.match(again.prompt, /cut off by a runner restart[\s\S]*Check the staging logs once more/);
       assert.equal(partComments().filter((c) => c.startsWith("Resumed after a runner restart.")).length, 1);
-      assert.equal(claudeRuns().length, runs + 2, "run once more, not twice");
+      assert.equal(agentRuns().length, runs + 2, "run once more, not twice");
       // A deploy's drain (SIGUSR2): idle, so it exits at once, with a code systemd restarts on.
       await waitFor("quiet", () => !running());
       const code = new Promise((r) => t.runner.once("exit", r));
@@ -126,14 +121,14 @@ describe("flow-running", () => {
 });
 
 // engine@1 end to end: an engine module the runner names nowhere (fixtures/engine-echo, registered only in engines.json) runs
-// the task in the job's sandbox and its final event is the reply.
+// the task in the job's computer and its final event is the reply.
 describe("flow-running: an engine known only from the registry", () => {
   const echo = { id: "engineer-echo", name: "Engineer · Echo", status: "idle", adapterType: "process", adapterConfig: {}, metadata: { setupKey: "aidenhq:engineer-echo", engine: "echo" } };
   const t = flow({ moreEngineers: [echo], part: { assigneeAgentId: "engineer-echo", description: "Go ahead and say hello from the echo engine." } });
   it("a job runs through engine@1 and finishes the task with the echoed final", async () => {
     await t.waitFor("the reply", () => t.reviews().length > 0, 40_000);
     assert.match(t.reviews().at(-1).comment, /say hello from the echo engine/);
-    assert.equal(t.claudeRuns().length, 0, "no other engine ran");
+    assert.equal(t.agentRuns().length, 0, "no other engine ran");
   });
   it("never errors along the way", () => t.noErrors());
 });

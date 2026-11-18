@@ -1,6 +1,8 @@
 # Engineers you talk to
 
-The user talks to an Engineer the way they talk to Claude Code: in their own words, across as many comments as it takes.
+The user talks to an Engineer the way they talk to a coding agent: in their own words, across as many comments as it takes.
+(Since 2026-11-18 every turn runs Codex in the Engineer's agent computer: a comment mid-run waits for the next turn, as
+described below for Codex; the Claude Code and opencode engines are gone.)
 Every comment on a task goes to the Engineer with the whole task in context. There is no classifier standing between
 the user and the agent. The runner's GitHub actions are the Engineer's tools, bounded by code.
 

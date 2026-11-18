@@ -5,7 +5,7 @@
 ARG BASE=aidenhq/computer-agent-base
 FROM ${BASE}
 RUN apt-get update && apt-get install -y --no-install-recommends \
-      build-essential pkg-config libssl-dev python3-pip python3-dev golang-go make gnupg \
+      build-essential pkg-config libssl-dev python3-pip python3-dev golang-go make gnupg openssh-client \
     && rm -rf /var/lib/apt/lists/*
 # gh 2.104.0 (released 2026-11-12), GitHub's release .deb, not Debian's gh (the base is debian:sid-slim, whose gh is 2.46.0-4,
 # with no fix for CVE-2026-48501: the auth layer sent a github.com token to tuf-repo.github.com, fixed upstream in 2.93.0) and

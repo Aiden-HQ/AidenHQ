@@ -465,14 +465,15 @@ grep -qF "pattern: '^https://[a-z0-9-]+\.grafana\.net/?\$'" modules/grafana/modu
   && grep -qF '      if (!secretFits(field, value)) throw fail(400, "bad_request", `that doesn'"'"'t look like a ${field.label}`);' kernel/src/module-secrets.ts \
   && pass "grafana-mcp and clickhouse-mcp: the upstream address is owner-saved and held to its *.grafana.net / *.clickhouse.cloud pattern (kernel/src/module-secrets.ts)" \
   || fail "grafana-mcp or clickhouse-mcp: the saved upstream address's pattern or its owner-only save changed"
-# Engineer jobs' Google Cloud: the user's own access, read-only by the prompt's rule; jobs get a
-# one-hour access token only, never the sign-in's refresh token.
-grep -q '\*\*Read only:\*\* describe, list, get, read and get-iam-policy commands' services/runner/src/prompt.ts \
-  && ! grep -q 'refresh_token' kernel/src/sandbox.ts kernel/src/jobs.ts \
-  && pass "runner: Google Cloud jobs get a one-hour token and the read-only rule (services/runner/src/gcp.ts, prompt.ts)" || fail "runner: Google Cloud jobs lost the read-only rule, or got the refresh token"
+# One way to run a job: every Engineer job in its agent's computer (kernel/src/jobs.ts refuses any other).
+grep -qF 'if (!b.box) throw new JobError(400, "box-required",' kernel/src/jobs.ts \
+  && grep -qF 'if (agent.metadata?.box !== true) throw new JobError(403, "not-a-box-agent",' kernel/src/jobs.ts \
+  && grep -qF 'if (entry.box !== true) throw new JobError(400, "not-a-box-engine",' kernel/src/jobs.ts \
+  && ! grep -q 'hiding(' kernel/src/jobs.ts \
+  && pass "kernel: every job runs in its agent's computer; none on the host" || fail "kernel: a job can run outside an agent computer again"
 grep -q '^export function layout(cfg' kernel/src/sandbox.ts && ! grep -q '"--dev-bind", "/", "/"' kernel/src/sandbox.ts && grep -q '"--tmpfs", "/tmp", "--tmpfs", home' kernel/src/sandbox.ts \
   && grep -q '"--unshare-pid", "--unshare-ipc",' kernel/src/sandbox.ts && grep -q '"--proc", "/proc"' kernel/src/sandbox.ts \
-  && pass "kernel: jobs see an allowlist of the host's files (bwrap): an empty home, so no gcloud or gh sign-ins" || fail "runner: jobs bind the host's whole filesystem again"
+  && pass "kernel: the host sandbox (fast checks, the reviewer eval) sees an allowlist of the host's files (bwrap): an empty home, so no gcloud or gh sign-ins" || fail "kernel: the host sandbox binds the host's whole filesystem again"
 grep -q 'join(homedir(), ".config/gh")' kernel/src/sandbox-config.ts && grep -q 'const ENV_NAMES = new Set(\["AIDENHQ_REPO_URL", "AIDENHQ_REPO_TOKEN", "GH_TOKEN", "AIDENHQ_GH_AUTH", "GIT_AUTHOR_NAME", "GIT_AUTHOR_EMAIL", "GIT_COMMITTER_NAME", "GIT_COMMITTER_EMAIL"\]);' kernel/src/jobs.ts && grep -q '...(gh ? \["-e", "GH_TOKEN", "-e", "AIDENHQ_GH_AUTH"\] : \[\])' kernel/src/sandbox.ts \
   && grep -q 'permissions: READ, fresh: true' modules/codehost-github/src/github-app.ts && node --input-type=module -e 'import { READ } from "./modules/codehost-github/src/github-app.ts"; process.exit(Object.values(READ).every((v) => v === "read") ? 0 : 1)' \
   && pass "runner: jobs can't read the user's gh sign-in; their gh (host and box) reads with a read-only App token for the task's repos" || fail "runner: the user's gh sign-in isn't hidden from jobs, or their gh token changed (or gained a write permission)"
@@ -503,7 +504,7 @@ if job_probe="$(node --input-type=module -e '
   process.stdout.write(leaks.join(", "));
   process.exit(leaks.length ? 1 : 0);
 ' 2>&1)"; then
-  pass "kernel: a job can't reach Docker, tailscaled or systemd --user, nor read the services' data dir, the user's gh sign-in, the runner's state db, the product checkout or other tasks (live, under the jobs' allowlist)"
+  pass "kernel: the host sandbox can't reach Docker, tailscaled or systemd --user, nor read the services' data dir, the user's gh sign-in, the runner's state db, the product checkout or other tasks (live, under the jobs' allowlist)"
 else
   fail "kernel: jobs reach: ${job_probe:-the probe failed to run}"
 fi
@@ -554,7 +555,7 @@ if net_probe="$(node --input-type=module -e '
   process.stdout.write(out.length ? out.join(", ") : `${blocked.length} host address:port pairs refused`);
   process.exit(out.length ? 1 : 0);
 ' 2>&1)"; then
-  pass "kernel: a job has its own network: the Internet, its helper and MCP ports only; no other host listener ($net_probe)"
+  pass "kernel: the host sandbox has its own network: the Internet, its helper and MCP ports only; no other host listener ($net_probe)"
 else
  fail "kernel: job network: ${net_probe:-the probe failed to run}"
 fi
@@ -988,34 +989,26 @@ tools="$(grep -oE '^export const TOOLS = \[[^]]*\]' services/runner/src/repohelp
   && awk '/^async function publishToPrimer/,/^}/' "$rmain" | grep -F 'await kernelWrites("POST", "/v1/writes", who, { kind: "primer.publish", args });' >/dev/null \
   && awk '/^async function kernelWrites/,/^}/' "$rmain" | grep -F 'writes: ["primer.publish"] });' >/dev/null \
   && [ "$(awk '/^writes:/{on=1} on && /^    (floor|tools):/' modules/primer/module.yaml | tr -s ' ')" = "$(printf ' floor: 1\n tools: [ primer_create_document, primer_add_version ]')" ] \
-  && grep -qF 'jobcapsFile: join(configDir, "jobcaps.json"),' services/runner/src/config.mjs \
   && ! grep -qE '_mcp_read_token|_mcp_token' services/runner/src/config.mjs services/runner/src/engines.mjs kernel/src/sandbox.ts \
-  && ! grep -qF '"codex", "sandbox"' kernel/src/sandbox.ts \
-  && grep -qF 'url: `${cfg.gatewayUrl}/c/${c.connection}/mcp`' kernel/src/sandbox.ts \
+  && grep -qF 'mcp: [], env: [],' kernel/src/sandbox.ts \
   && grep -qF 'if (j.private && a.private_reads !== true) fail(' scripts/modules.mjs \
-  && grep -qF 'filter((id) => all[id] && (!all[id].private || observes(engine)))' kernel/src/sandbox.ts \
-  && grep -qF 'const search = observes(engine) || servers.some((s) => s.private) ? "disabled" : "live";' kernel/src/sandbox.ts \
+  && grep -qF 'web: !observes(engine),' kernel/src/sandbox.ts \
   && grep -qF '(!c.private || p.o === true)' kernel/src/identity.ts \
+  && grep -qF 'if (c && !c.private) tools[c.connection]' kernel/src/identity.ts \
   && grep -q 'export const observes = (engine?: Engine) => engine?.reads === true;' kernel/src/sandbox.ts \
   && grep -q 'agent.metadata?.privateReads === true ? { reads: true } : {}' kernel/src/jobs.ts \
-  && pass "runner: the Engineer's merges and closes are tiered (tiers.mjs) before anything runs or a card is filed (a merge on this server's repos always on a card), apply only files a card at the turn's end, and every Primer publish is a primer.publish record at floor 1 the AI reviewer decides (no owner-words check); jobs hold no connection URL or token (their jobcaps go through the gateway with the job token), and Slack, Glean, Grafana, ClickHouse and other tasks go only to Engineers whose definition opts in (private_reads), with web search off" || fail "runner: the Engineer's tools or their check changed: $tools"
+  && pass "runner: the Engineer's merges and closes are tiered (tiers.mjs) before anything runs or a card is filed (a merge on this server's repos always on a card), apply only files a card at the turn's end, and every Primer publish is a primer.publish record at floor 1 the AI reviewer decides (no owner-words check); jobs hold no connection URL or token (a computer reaches its connections through the kernel's proxy with its run token: its grants and its non-private jobcaps), and private reads go only to Engineers whose definition opts in (private_reads), with web search off" || fail "runner: the Engineer's tools or their check changed: $tools"
 # engine@1: the runner writes `web: false` into job.json for a job holding private data; every engine module keeps such a job
 # off the web (by behaviour: each module's own builder, as its bin/engine runs it).
 if web_probe="$(node --input-type=module -e '
-  const spec = { contract: "engine@1", prompt: "", mcp: [], env: [], web: false, limits: { timeout_s: 1 }, model: { base_url: "http://127.0.0.1:1/api/v1", token_env: "AIDENHQ_MODEL_TOKEN", id: "m", effort: "" }, sandbox: { kind: "bwrap", writable: [], network: true } };
+  const spec = { contract: "engine@1", prompt: "", mcp: [], env: [], web: false, limits: { timeout_s: 1 }, model: { base_url: "http://127.0.0.1:1/api/v1", token_env: "AIDENHQ_RUN_TOKEN", id: "m", effort: "" }, sandbox: { kind: "box", writable: [], network: true } };
   const bad = [];
   const { codexCommand } = await import("./modules/engine-codex/src/codex.ts");
-  for (const kind of ["bwrap", "box"]) if (!codexCommand({ ...spec, sandbox: { ...spec.sandbox, kind } }, "/job", {}).argv.includes("web_search=\"disabled\"")) bad.push(`codex (${kind})`);
-  const { claudeCommand } = await import("./modules/engine-claude/src/claude.ts");
-  const argv = claudeCommand(spec, {}).argv;
-  if (/Web/.test(argv[argv.indexOf("--tools") + 1])) bad.push("claude");
-  const { opencodeCommand } = await import("./modules/engine-opencode/src/opencode.ts");
-  const p = JSON.parse(opencodeCommand(spec, {}).env.OPENCODE_CONFIG_CONTENT).permission;
-  if (p.webfetch !== "deny" || p.websearch !== "deny") bad.push("opencode");
+  if (!codexCommand(spec, "/job", {}).argv.includes("web_search=\"disabled\"")) bad.push("codex");
   process.stdout.write(bad.join(", "));
   process.exit(bad.length ? 1 : 0);
 ' 2>&1)"; then
-  pass "engines: a job holding private data gets no web search or fetch from any engine (engine@1 web: false; codex, claude, opencode)"
+  pass "engines: a job holding private data gets no web search (engine@1 web: false; codex)"
 else
   fail "engines: private-data jobs reach the web: ${web_probe:-the probe failed to run}"
 fi

@@ -1,5 +1,5 @@
 // The sandbox settings as the host has them (sandbox.ts takes them as a SandboxConfig): config/runner.yaml's job keys, the vault
-// and data dirs, and what no job may see. Apart from sandbox.ts so that what imports the sandbox needs no YAML parser.
+// and data dirs, and what the host sandbox may never see. Apart from sandbox.ts so that what imports the sandbox needs no YAML parser.
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -45,9 +45,7 @@ export function sandboxConfig(env: (k: string) => string | undefined = (k) => pr
     logsDir: join(stateDir, "logs"),
     secretsDir: secrets,
     enginesFile: join(configDir, "engines.json"),
-    jobcapsFile: join(configDir, "jobcaps.json"),
     gatewayUrl: y.gateway?.url ?? "http://127.0.0.1:8201",
-    helperPort: Number(y.helper_port ?? 3140),
     boxGatewayUrl: "http://10.231.2.1:8200",
     boxDir: join(homedir(), ".local/state/aidenhq-computers/jobs"),
     timeout_minutes: y.timeout_minutes ?? 60,

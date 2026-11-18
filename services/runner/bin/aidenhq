@@ -16,7 +16,7 @@
 //   aidenhq apply                                  (Platform Engineer) nothing to run: the runner files the approval card
 //   aidenhq repo <org/name>                          clone another repository into the workspace (never creates one)
 //   aidenhq create-repo <org/name>                   ask for a new app's repository in the agents org (an approval card)
-//   aidenhq engine <engine> [model]                   run this request again on another engine/model
+//   aidenhq engine openrouter [model]                 run this request again on another OpenRouter model
 //   aidenhq primer [<Primer link>]                   publish .aidenhq/primer.md on Primer after runs (a new
 //                                                       document, or new versions of the one linked)
 //   aidenhq pass <name>                              pass the user's latest message on to another agent on the task
@@ -28,7 +28,7 @@
 //                                                       a second opinion from the advisor model (a few per run)
 import { readFileSync } from "node:fs";
 
-const usage = `usage: aidenhq status | wait [--minutes <n>] | review [push] [<org/repo> <branch>]... [--body-file <file>] | push [<org/repo> <branch>]... | pr [<org/repo> <branch>]... [--title <title>] [--body-file <file>] | merge <PR link>... [--gap <minutes>] | close <PR link>... --reason "<one line>" | apply | repo <org/name> | create-repo <org/name> | engine <claude|codex|openrouter> [model] | primer [<Primer link>] | pass <name> | reset | cleanup | task <PEN-N> | tasks [<words>] [--agent <name>] | advise "<question with context>" [--file <brief>]`;
+const usage = `usage: aidenhq status | wait [--minutes <n>] | review [push] [<org/repo> <branch>]... [--body-file <file>] | push [<org/repo> <branch>]... | pr [<org/repo> <branch>]... [--title <title>] [--body-file <file>] | merge <PR link>... [--gap <minutes>] | close <PR link>... --reason "<one line>" | apply | repo <org/name> | create-repo <org/name> | engine openrouter [model] | primer [<Primer link>] | pass <name> | reset | cleanup | task <PEN-N> | tasks [<words>] [--agent <name>] | advise "<question with context>" [--file <brief>]`;
 const [command, ...rest] = process.argv.slice(2);
 const fail = (msg, code = 1) => {
   console.error(`aidenhq: ${msg}`);
@@ -54,7 +54,7 @@ if (command === "repo" || command === "create-repo") {
   if (words.length !== 1) fail(usage, 2);
   body = { repo: words[0] };
 } else if (command === "engine") {
-  if (!words.length || words.length > 2) fail("usage: aidenhq engine <claude|codex|openrouter> [model]", 2);
+  if (!words.length || words.length > 2) fail("usage: aidenhq engine openrouter [model]", 2);
   body = { engine: words[0], model: words[1] };
 } else if (command === "primer") {
   if (words.length > 1) fail("usage: aidenhq primer [<Primer link>]", 2);

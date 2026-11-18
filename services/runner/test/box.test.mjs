@@ -94,8 +94,8 @@ describe("box jobs", () => {
     for (const d of [home, config, secrets, bin, boxes]) mkdirSync(d, { recursive: true });
     // The fakes' settings baked in: a job's env is the kernel's allowlist.
     const exports = `export FAKE_LOG='${join(dir, "fake.log")}'\nexport FAKE_STEP='${join(dir, "step")}'\n`;
-    for (const name of ["bwrap", "codex", "claude", "gh"]) {
-      writeFileSync(join(bin, name), name === "bwrap" || name === "codex" ? `#!/bin/sh\n${exports}exec "${join(FAKES, `${name}.sh`)}" "$@"\n` : `#!/bin/sh\n${exports}exec "${process.execPath}" "${join(FAKES, `${name}.mjs`)}" "$@"\n`);
+    for (const name of ["codex", "gh"]) {
+      writeFileSync(join(bin, name), name === "codex" ? `#!/bin/sh\n${exports}exec "${join(FAKES, `${name}.sh`)}" "$@"\n` : `#!/bin/sh\n${exports}exec "${process.execPath}" "${join(FAKES, `${name}.mjs`)}" "$@"\n`);
       chmodSync(join(bin, name), 0o755);
     }
     fakeJail(bin, join(dir, "fake.log"));

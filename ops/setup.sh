@@ -261,9 +261,8 @@ say "System packages, Docker, gVisor, Tailscale"
 # Tailscale an SSH tunnel to loopback. The machine step opens the host firewall for it (ops/vm/public-fw.sh).
 EXPOSURE=tailscale; [ "$NO_TS" = 0 ] || EXPOSURE=local; [ "$PUBLIC" = 0 ] || EXPOSURE=public
 run env AIDENHQ_EXPOSURE="$EXPOSURE" AIDENHQ_NO_TAILSCALE="$NO_TS" AIDENHQ_USER="$U" AIDENHQ_CHECKOUT="$REPO" bash "$SRC/ops/vm/setup.sh"
-# The runner's engines on the host: Codex (the primary engine, codex-openrouter) and opencode (the fallback) (engines.mjs).
+# The Codex CLI for the runner's own short model calls (intake.ts); Engineer jobs run Codex in their agent computers.
 command -v codex >/dev/null || run npm install -g --silent @openai/codex@0.166.0
-command -v opencode >/dev/null || run npm install -g --silent opencode-ai@1.19.5
 # The machine step just added the user to the docker group, but their systemd user manager (kept alive by linger, so
 # logging out doesn't restart it) still has the old groups: the user units started below couldn't reach Docker.
 if [ "$DRY" = 0 ]; then
