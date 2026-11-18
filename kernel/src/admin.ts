@@ -141,7 +141,7 @@ export function createAdmin(d: Deps) {
   const redirect = (res: ServerResponse, to: string, cookies: string[] = []) =>
     void res.writeHead(303, { location: to, "cache-control": "no-store", ...(cookies.length ? { "set-cookie": cookies } : {}) }).end();
   const form = (action: string, inner: string, s?: AdminSession | null) => `<form method="post" action="${esc(action)}">${s ? `<input type="hidden" name="csrf" value="${csrf(s)}">` : ""}${inner}</form>`;
-  const safeNext = (n: string | null) => (n && (/^\/(approvals|owner|setup\/model)[\w/?=&.-]*$/.test(n) || /^\/auth\/handoff\?[\w=&.%:-]*$/.test(n)) ? n : "/approvals");
+  const safeNext = (n: string | null) => (n && (/^\/(approvals|owner|recovery-key|setup\/model)[\w/?=&.-]*$/.test(n) || /^\/auth\/handoff\?[\w=&.%:-]*$/.test(n)) ? n : "/approvals");
 
   async function body(req: IncomingMessage): Promise<URLSearchParams> {
     const chunks: Buffer[] = [];
