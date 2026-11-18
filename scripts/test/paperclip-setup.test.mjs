@@ -127,3 +127,30 @@ test("setup never waits on a prompt without a terminal; the owner's email and th
     assert.match(missing.err, /no terminal to ask "Paperclip email:"/, missing.err);
   } finally { server.close(); }
 });
+
+test("setup: the dump keeps 3 daily days and carries the other tiers through; a matching policy writes nothing", async () => {
+  const calls = [];
+  let general = { backupRetention: { dailyDays: 7, weeklyWeeks: 2, monthlyMonths: 3 } };
+  const api = async (method, path, body) => {
+    calls.push([method, path, body]);
+    if (method === "PATCH") general = { backupRetention: body.backupRetention };
+    return { json: general };
+  };
+  const said = [];
+  const { ensureBackupRetention } = await import("../modules.mjs");
+  assert.deepEqual(await ensureBackupRetention({ api, dailyDays: 3, step: (m) => said.push(m) }), { dailyDays: 3, weeklyWeeks: 2, monthlyMonths: 3 });
+  assert.deepEqual(said, ["Backup retention was daily 7d, weekly 2w, monthly 3m", "Backup retention is now daily 3d, weekly 2w, monthly 3m"]);
+  // Written whole, then read back: the read after the write is the confirmation, not the PATCH response.
+  assert.deepEqual(calls.map(([m]) => m), ["GET", "PATCH", "GET"]);
+  assert.deepEqual(calls[1][2], { backupRetention: { dailyDays: 3, weeklyWeeks: 2, monthlyMonths: 3 } });
+  calls.length = 0;
+  await ensureBackupRetention({ api, dailyDays: 3, step: () => {} });
+  assert.deepEqual(calls.map(([m]) => m), ["GET"]);
+});
+
+test("setup: a write the instance does not keep is a failure, not a logged success", async () => {
+  // The instance answers 200 and still reads back 7 days (a hidden or operator-managed setting): setup stops.
+  const api = async (method) => ({ json: method === "PATCH" ? {} : { backupRetention: { dailyDays: 7, weeklyWeeks: 4, monthlyMonths: 1 } } });
+  const { ensureBackupRetention } = await import("../modules.mjs");
+  await assert.rejects(() => ensureBackupRetention({ api, dailyDays: 3, step: () => {} }), /backup retention did not take: \{"dailyDays":7/);
+});

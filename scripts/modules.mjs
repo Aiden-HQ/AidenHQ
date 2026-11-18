@@ -1464,6 +1464,27 @@ export async function ensureFleetIssues({ api, companyId, step }) {
 }
 
 /**
+ * Paperclip's scheduled DB dump keeps its daily tier at `dailyDays`. The scheduler reads the policy from the instance's
+ * general settings row on every tick (config's database.backup.retentionDays is ignored), so a rebuilt host would fall back
+ * to the 7-day default unless setup writes it. The policy object is replaced whole: the other two tiers are carried through.
+ */
+export async function ensureBackupRetention({ api, dailyDays, step }) {
+  const tiers = (p) => `daily ${p.dailyDays}d, weekly ${p.weeklyWeeks}w, monthly ${p.monthlyMonths}m`;
+  const read = async () => (await api("GET", "/api/instance/settings/general")).json?.backupRetention ?? {};
+  const current = await read();
+  step(current.dailyDays == null ? "Backup retention was not set" : `Backup retention was ${tiers(current)}`);
+  if (current.dailyDays === dailyDays) return current;
+  const next = { dailyDays, weeklyWeeks: current.weeklyWeeks ?? 4, monthlyMonths: current.monthlyMonths ?? 1 };
+  await api("PATCH", "/api/instance/settings/general", { backupRetention: next });
+  const after = await read();
+  if (after.dailyDays !== next.dailyDays || after.weeklyWeeks !== next.weeklyWeeks || after.monthlyMonths !== next.monthlyMonths) {
+    fail(`backup retention did not take: ${JSON.stringify(after)} (wanted ${JSON.stringify(next)})`);
+  }
+  step(`Backup retention is now ${tiers(after)}`);
+  return after;
+}
+
+/**
  * ops-mcp's vault folders and reference docs, from the host's .env (never from instance.yaml, which agents can edit
  * through apply): VAULT_DIR + VAULT_FOLDERS (comma-separated, vault-relative) and KNOWLEDGE_BASES (name=/path, read-only).
  */

@@ -17,7 +17,7 @@ import { createRequire } from "node:module";
 import { dirname, join, resolve } from "node:path";
 import { createInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
-import { codexMcpBlock, ensureFleetIssues, ensureMemoryInboxes, ensureReviewLogs, grantEntry, HEALTH_PROBES, healthProbeAgent, mapLimit, routineAutonomyDefault } from "./modules.mjs";
+import { codexMcpBlock, ensureBackupRetention, ensureFleetIssues, ensureMemoryInboxes, ensureReviewLogs, grantEntry, HEALTH_PROBES, healthProbeAgent, mapLimit, routineAutonomyDefault } from "./modules.mjs";
 import { routineStatus } from "./setup-paused.mjs";
 import { checkLauncher, computerAdapterConfig, ensureComputers, runnerBox } from "./computers.mjs";
 import { assertNoShell } from "./no-shell.mjs";
@@ -814,6 +814,8 @@ let lapAt = Date.now();
 const lap = (name) => { const now = Date.now(); laps.push(`${name} ${((now - lapAt) / 1000).toFixed(1)}s`); lapAt = now; };
 const health = await waitForHealth();
 await ensureBoardKey(health);
+// The instance's general settings row is the only place the dump scheduler reads this from (7-day default on a fresh host).
+await ensureBackupRetention({ api, dailyDays: 3, step });
 const company = await ensureCompany();
 await ensureLabels(company.id);
 lap("login");
