@@ -291,6 +291,34 @@ test("a grader that keeps failing escalates to the delegator with honest wording
   assert.match(note, /delegator judges the work from its evidence/);
 });
 
+test("the rubric is the only list of criteria: the request's Graded before done block never reaches the grader", async () => {
+  const rubric = ["merged into main", "ci-required green", "the prompt", "the regression test", "the body", "the evidence"];
+  const request = `Fix: the thing\n\nThe change keeps the description's own context.\n\nGraded before done (pr: acme/app):\n1. merged\n2. green\n3. the prompt\n4. the test\n5. the body\n6. the evidence\n7. and one more\n\nGraded before done (pr: acme/app): the standard pr criteria.\n\nAfter both blocks, still context.`;
+  const { system, user } = gradePrompt({ rubric, deliverable: { kind: "pr", ref }, facts: [], data: {}, request });
+  assert.match(system, /The rubric below is the only list of criteria to answer/);
+  assert.doesNotMatch(String(user), /Graded before done|\n7\. and one more/, "no block, and none of its criteria, is presented beside the rubric");
+  assert.match(String(user), /The change keeps the description's own context\./, "the rest of the description is kept");
+  assert.match(String(user), /After both blocks, still context\./);
+  // The six rubric entries are the criteria list the grader is asked for: an answer of six is accepted.
+  const criteria = rubric.map((_, i) => ({ id: String(i + 1), met: "yes", evidence: "shown" }));
+  const asked = [];
+  const v = await grade({
+    rubric, deliverable: { kind: "pr", ref }, facts: [], data: {}, request, authorModel: "",
+    ask: async (_model, prompt) => (asked.push(String(prompt.user)), { content: JSON.stringify({ verdict: "satisfied", criteria }) }),
+  });
+  assert.equal(v.outcome, "satisfied");
+  assert.deepEqual(v.criteria.map((c) => c.id), ["1", "2", "3", "4", "5", "6"]);
+  assert.doesNotMatch(asked[0], /Graded before done/);
+  // The count check stays the safety net: an answer that still lists both blocks is not a verdict.
+  const thirteen = [...criteria, ...Array.from({ length: 7 }, (_, i) => ({ ...criteria[0], id: String(7 + i) }))];
+  const both = await grade({
+    rubric, deliverable: { kind: "pr", ref }, facts: [], data: {}, request, authorModel: "",
+    ask: async () => ({ content: JSON.stringify({ verdict: "satisfied", criteria: thirteen }) }),
+  });
+  assert.equal(both.outcome, "grading_failed");
+  assert.match(both.reason, /13 criteria for a rubric of 6/);
+});
+
 test("corrupt or empty criteria are a retryable grading failure, never a verdict", async () => {
   const rubric = ["merged into main", "checks green", "the test covers it"];
   const ask = async () => ({ content: JSON.stringify({ verdict: "needs_revision", criteria: [
