@@ -657,3 +657,61 @@ test("the runner creates a repo only in createRepoApproved; cloning a missing on
   assert.ok(fn("createRepoApproved").includes("app.createRepo(slug)") && fn("createRepoApproved").includes("localHost.createRepo(slug)"));
   assert.ok(fn("addRepo").includes("if (await missingRepo(repo.slug)) throw new UserError(missingRepoText(repo.slug));"));
 });
+
+test("apply: spend and quiet start are the owner's to loosen, anyone's to tighten", () => {
+  const f = ["instance.yaml"];
+  const one = (b, h) => apply(f, { "instance.yaml": b }, { "instance.yaml": h });
+  // The owner's after the reviewer (a setting's second reviewer may come with it): Tier 2, review first.
+  const owner = (t) => (t.tier === 2 && t.reviewFirst ? 2 : tierOf(t));
+  const q = { quiet_start: "on", spend_day_usd: 10 };
+  assert.equal(owner(one(inst(q), inst({ ...q, spend_day_usd: 20 }))), 2, "raising the install cap");
+  assert.equal(owner(one(inst(q), inst({ quiet_start: "on" }))), 2, "removing it");
+  assert.equal(owner(one(inst(q), inst({ ...q, quiet_start: "off" }))), 2, "ending quiet start");
+  assert.equal(tierOf(one(inst(q), inst({ ...q, spend_day_usd: 5 }))), "panel", "lowering the cap: a setting like any other");
+  assert.equal(tierOf(one(inst(), inst(q))), "panel", "turning quiet start and the cap on");
+  const on = "overrides:\n  routines:\n    daily-brief: { status: active }\n";
+  const beat = "overrides:\n  agents:\n    chief-of-staff: { heartbeat: true }\n";
+  assert.equal(owner(one(inst(q), inst(q, on))), 2, "a schedule turned on under quiet start");
+  assert.equal(owner(one(inst(q), inst(q, beat))), 2, "a heartbeat turned on under quiet start");
+  assert.equal(tierOf(one(inst(q, on), inst(q))), 1, "turning it back off");
+  assert.equal(tierOf(one(inst(), inst({}, on))), 1, "without quiet start: as before");
+  assert.equal(tierOf(one(inst(), inst({}, beat))), 1, "without quiet start: as before");
+});
+
+test("apply: the install cap tightens only to a finite positive number at or under it", () => {
+  const one = (b, h) => apply(["instance.yaml"], { "instance.yaml": inst(b) }, { "instance.yaml": inst(h) });
+  const owner = (t) => (t.tier === 2 && t.reviewFirst ? 2 : tierOf(t));
+  for (const v of ["5", 0, -1, 1e999, null]) assert.equal(owner(one({ spend_day_usd: 10 }, { spend_day_usd: v })), 2, `10 → ${v}`);
+  assert.equal(owner(one({ spend_day_usd: 10 }, { spend_day_usd: 10.5 })), 2, "a raise");
+  assert.equal(owner(one({}, { spend_day_usd: 50 })), "panel", "unset was no cap: any cap tightens it");
+  assert.equal(owner(one({}, { spend_day_usd: "50" })), 2, "a string is no cap");
+});
+
+test("apply: an instance agent's definition that starts work under quiet start is the owner's", () => {
+  const owner = (t) => (t.tier === 2 && t.reviewFirst ? 2 : tierOf(t));
+  const f = "agents/chaser/agent.yaml";
+  const quiet = inst({ quiet_start: "on" });
+  const was = def({ name: "Chaser", connections: { github: "read" }, routines: { sweep: { schedules: [] } } });
+  const run = (h, i = quiet, extra = {}) => owner(apply([f], { [f]: was, "instance.yaml": i }, { [f]: def({ name: "Chaser", connections: { github: "read" }, ...h }), "instance.yaml": i }, extra));
+  const sched = { sweep: { schedules: [{ cron: "0 9 * * *", label: "daily" }] } };
+  assert.equal(run({ heartbeat: true, routines: { sweep: { schedules: [] } } }), 2, "a heartbeat on");
+  assert.equal(run({ routines: sched }), 2, "a routine's schedule: effectively active");
+  assert.equal(run({ routines: sched }, inst({ quiet_start: "on" }, "overrides:\n  routines:\n    chaser-sweep: { status: paused }\n")), 1, "an override keeps it paused");
+  assert.equal(run({ routines: sched }, inst()), 1, "without quiet start: as before");
+  assert.equal(run({ model: "x", routines: { sweep: { schedules: [] } } }), 1, "other tuning: as before");
+});
+
+test("apply: a definition's gates all run: autonomy and quiet start together, and paused to active on the definition itself", () => {
+  const owner = (t) => (t.tier === 2 && t.reviewFirst ? 2 : tierOf(t));
+  const f = "agents/chaser/agent.yaml";
+  const quiet = inst({ quiet_start: "on" });
+  const d = (routines, extra = {}) => def({ name: "Chaser", connections: { github: "read" }, routines, ...extra });
+  const run = (b, h, i = quiet) => apply([f], { [f]: b, "instance.yaml": i }, { [f]: h, "instance.yaml": i });
+  const sched = [{ cron: "0 9 * * *", label: "daily" }];
+  const both = run(d({ sweep: { schedules: [] } }), d({ sweep: { schedules: sched, autonomy: "full" } }));
+  assert.equal(owner(both), 2, "an autonomy change and a wake: the owner's, the panel's review first");
+  assert.ok(both.panel, "with a second reviewer");
+  assert.equal(owner(run(d({ sweep: { schedules: sched, status: "paused" } }), d({ sweep: { schedules: sched, status: "active" } }))), 2, "the definition's own paused to active");
+  assert.equal(owner(run(d({ sweep: { schedules: sched, status: "paused" } }), d({ sweep: { schedules: sched } }))), 2, "dropping its paused status");
+  assert.equal(owner(run(d({ sweep: { schedules: sched } }), d({ sweep: { schedules: sched, status: "paused" } }))), 1, "pausing: as before");
+});

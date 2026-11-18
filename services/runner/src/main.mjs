@@ -2621,8 +2621,9 @@ async function dependabotPr(repo, number, pr) {
 
 /** The instance change as tiering sees it: every changed file (and the agent.yaml of each handbook) at `baseRev` and at the change. */
 async function applyTierState(b, bump, baseRev = b.base) {
-  // instance.yaml beside any handbook: whether it is a module agent's fork (overrides.agents.<key>.handbook_fork) is read there.
-  const paths = [...new Set([...b.files, ...definitionsOf(b.files), ...(b.files.some((f) => /^agents\/[^/]+\/AGENTS\.md$/.test(f)) ? ["instance.yaml"] : [])])];
+  // instance.yaml beside any handbook or definition: whether it is a module agent's fork (overrides.agents.<key>.handbook_fork)
+  // and whether quiet start is on (tiers.mjs quietWakes) are read there.
+  const paths = [...new Set([...b.files, ...definitionsOf(b.files), ...(b.files.some((f) => /^agents\/[^/]+\/(AGENTS\.md|agent\.yaml)$/.test(f)) ? ["instance.yaml"] : [])])];
   const at = async (rev) => Object.fromEntries((await Promise.all(paths.map(async (p) => [p, await git(b.r.path, "show", `${rev}:${p}`).catch(() => undefined)]))).filter(([, t]) => t !== undefined));
   const [base, head] = [await at(baseRev), await at(b.sha)];
   return { sha: b.sha, files: b.files, base, head, pin: bump && !bump.error ? { forward: Boolean(bump.forward), back: Boolean(bump.back) } : null, ...(await moduleTierState(base["instance.yaml"], head["instance.yaml"])) };
