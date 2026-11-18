@@ -95,7 +95,7 @@ Your configuration lives in a separate private **instance repo**: `instance.yaml
   Access and the gate.
 - **Outbound is open** by design: agents may call any service they are granted.
 - **Gates in code:** tool grants, git writes and approvals are enforced below the model, tiered by code.
-- **Untrusted text is data**, and nothing is sent as the owner's own account.
+- **Untrusted text is data**, and anything sent as the owner is a reviewed write, granted to an agent only by name.
 
 ## Docs
 
