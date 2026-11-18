@@ -34,6 +34,8 @@ charge: auto-updates on by default, off in Settings, and "Update now" for the im
 - **One run** (`ops/update.sh` → `node kernel/src/updates.ts run`, hourly and on Update now) holds the host's apply lock
   on fd 9 for its whole length, waiting for an apply in progress as a land does (up to 15 minutes; still busy, an Update
   now request is kept for the next run). It finishes what a dead run left, checks, and installs when it should.
+- **Release names** are the cut date, `2026.11.18`; a second cut that day is `2026.11.18.1` (the distro's nightly). They
+  compare part by part as numbers: `2026.11.18` < `2026.11.18.1` < `2026.11.19`.
 - **The check** lists the distro repo's release tags (`git ls-remote` over https) newer than the release followed and
   takes the newest that passes verification (below): a refused one is told to the owner once and the next older is tried;
   a network error stops the check until the next run, with no message. The result goes to `data/updates/state.json` and
@@ -81,7 +83,9 @@ Hard gates, from day one (no observe mode):
 - **No downgrade.** The release name must be newer than the one followed, and the kernel and marketplace commits must
   descend from the running ones. The installer's rerun refuses an older release too.
 - **The tested stamp.** The published asset `<release>.json` must equal the file at the tag except for `tested`, and its
-  `tested.ci_run` must be a successful `release.yml` run, on a push, of exactly the tag's commit (GitHub's API). A tag pushed without
+  `tested.ci_run` must be a successful `release.yml` run of exactly the tag's commit, on the tag itself: a push of the tag, or a
+  `workflow_dispatch` on the tag ref (the distro's nightly dispatches it, since a tag pushed with `GITHUB_TOKEN` starts no
+  workflow), never a run on a branch (GitHub's API). A run still in progress is checked again next time. A tag pushed without
   the release workflow passing, or a hand-edited asset, is refused and the owner told once.
 - **Authority.** Auto-updates on is the owner's standing authority; Update now is an admin's tap on the kernel's page. No
   agent can start an install: the unit is started by the timer or the kernel's admin page, and the request file lives in

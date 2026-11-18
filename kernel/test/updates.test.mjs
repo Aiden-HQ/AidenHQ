@@ -10,7 +10,7 @@ import { DatabaseSync } from "node:sqlite";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import YAML from "yaml";
-import { Refused, check, createUpdates, pinTo, readState, run, verify } from "../src/updates.ts";
+import { Refused, check, compareRelease, createUpdates, pinTo, readState, run, verify } from "../src/updates.ts";
 
 // The owner's own git config (signing, hooks) never reaches the fixtures or the updater's commits.
 process.env.GIT_CONFIG_GLOBAL = "/dev/null";
@@ -79,7 +79,7 @@ settings:
   const applied = [];
   const published = {};
   for (const [n, f] of Object.entries(files)) published[n] = { ...f, tested: { ci_run: `https://github.com/Aiden-HQ/aidenhq-distro/actions/runs/${n === "2026.11.3" ? 22 : 11}`, suites: ["kernel-only", "swap"] } };
-  const runs = { 11: { path: ".github/workflows/release.yml", head_sha: D1, event: "push", conclusion: "success" }, 22: { path: ".github/workflows/release.yml", head_sha: D2, event: "push", conclusion: "success" } };
+  const runs = { 11: { path: ".github/workflows/release.yml", head_sha: D1, head_branch: "2026.11.2", event: "push", status: "completed", conclusion: "success" }, 22: { path: ".github/workflows/release.yml", head_sha: D2, head_branch: "2026.11.3", event: "push", status: "completed", conclusion: "success" } };
   const d = {
     base, fetch: { cacheDir: join(root, "cache") }, inst: join(root, "inst"), product: join(root, "product"), dir: join(root, "state", "updates"), board: join(root, "state", "board", "updates.json"), applied: join(root, "applied-product"),
     download: async (u) => {
@@ -105,6 +105,11 @@ settings:
 
 
 const ask = (w, release, by = "account:a1") => { mkdirSync(w.d.dir, { recursive: true }); writeFileSync(join(w.d.dir, "now.json"), JSON.stringify({ release, by })); };
+
+test("nightly names sort by date, and a day's second cut between that day and the next", () => {
+  const names = ["2026.11.19", "2026.11.18.1", "2026.11", "2026.11.18", "2026.12.1", "2026.11.2", "2026.11.18.2"];
+  assert.deepEqual(names.sort(compareRelease), ["2026.11", "2026.11.2", "2026.11.18", "2026.11.18.1", "2026.11.18.2", "2026.11.19", "2026.12.1"]);
+});
 
 test("a newer release is found and verified; by day nothing installs, and the owner is told once", async () => {
   const w = world();
@@ -132,7 +137,14 @@ test("verification refuses a mismatched sha, a stamp from another or a failed ru
   w.published["2026.11.3"] = { ...w.files["2026.11.3"], tested: { ci_run: "https://github.com/Aiden-HQ/aidenhq-distro/actions/runs/11", suites: ["swap"] } };
   await assert.rejects(verify(w.d, text, "2026.11.3", w.D2), /tested stamp doesn't name a successful release run on its commit/);
   w.published["2026.11.3"] = { ...w.files["2026.11.3"], tested: { ci_run: "https://github.com/Aiden-HQ/aidenhq-distro/actions/runs/22", suites: ["swap"] } };
-  w.runs[22] = { ...w.runs[22], conclusion: "failure" };
+  // The nightly's run: a dispatch on the tag counts; a dispatch on a branch at the same commit doesn't; one still running is retried.
+  w.runs[22] = { ...w.runs[22], event: "workflow_dispatch" };
+  assert.equal((await verify(w.d, text, "2026.11.3", w.D2)).name, "2026.11.3");
+  w.runs[22] = { ...w.runs[22], head_branch: "main" };
+  await assert.rejects(verify(w.d, text, "2026.11.3", w.D2), (e) => e instanceof Refused && /successful release run/.test(e.message));
+  w.runs[22] = { ...w.runs[22], head_branch: "2026.11.3", status: "in_progress", conclusion: null };
+  await assert.rejects(verify(w.d, text, "2026.11.3", w.D2), (e) => !(e instanceof Refused) && /still running/.test(e.message));
+  w.runs[22] = { ...w.runs[22], status: "completed", conclusion: "failure" };
   await assert.rejects(verify(w.d, text, "2026.11.3", w.D2), /successful release run/);
   await assert.rejects(verify(w.d, text, "2026.11.1", w.D1), /isn't newer than 2026\.11\.2: downgrades are refused/);
   const off = world({ next: ({ K1 }) => ({ modules: { board: K1 } }) });

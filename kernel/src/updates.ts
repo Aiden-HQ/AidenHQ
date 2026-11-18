@@ -35,7 +35,7 @@ export const DISTRO = "Aiden-HQ/aidenhq-distro";
 export const KERNEL = "Aiden-HQ/AidenHQ";
 export const MODULES = "Aiden-HQ/aidenhq-modules";
 const GITHUB = "https://github.com";
-const NAME = /^\d{4}\.\d{1,2}(\.\d+)?$/;
+const NAME = /^\d{4}\.\d{1,2}(\.\d+){0,2}$/;
 const SHA = /^[0-9a-f]{40}$/;
 /** The night, in the owner's timezone: an automatic install starts at or after FROM and before TO. */
 export const NIGHT = { from: 2, to: 5 };
@@ -44,10 +44,10 @@ const isMap = (v: unknown): v is Dict => !!v && typeof v === "object" && !Array.
 /** A release that failed verification: never installed, and the owner is told once. Anything else (network) is retried. */
 export class Refused extends Error {}
 
-/** Release names in order: 2026.11 < 2026.11.1 < 2026.12. */
+/** Release names in order: 2026.11 < 2026.11.2 < 2026.11.18 (a nightly) < 2026.11.18.1 (its day's second cut) < 2026.11.19. */
 export function compareRelease(a: string, b: string): number {
   const [x, y] = [a, b].map((s) => s.split(".").map(Number));
-  for (let i = 0; i < 3; i++) { const d = (x![i] ?? 0) - (y![i] ?? 0); if (d) return Math.sign(d); }
+  for (let i = 0; i < 4; i++) { const d = (x![i] ?? 0) - (y![i] ?? 0); if (d) return Math.sign(d); }
   return 0;
 }
 
@@ -197,7 +197,11 @@ export async function verify(d: Pick<Deps, "base" | "fetch" | "download">, text:
   const run = /^https:\/\/github\.com\/Aiden-HQ\/aidenhq-distro\/actions\/runs\/(\d{1,20})$/.exec(String(tested.ci_run ?? ""));
   if (!run || !Array.isArray(tested.suites) || !tested.suites.length) throw new Refused(`${name} has no tested stamp from the release workflow`);
   const r = await d.download(`https://api.github.com/repos/${DISTRO}/actions/runs/${run[1]}`);
-  if (!isMap(r) || r.path !== ".github/workflows/release.yml" || r.head_sha !== sha || r.event !== "push" || r.conclusion !== "success") throw new Refused(`${name}'s tested stamp doesn't name a successful release run on its commit`);
+  // A run still going (publish is one of its jobs) is checked again next time. The run is the tag's own: a push of the tag, or a
+  // dispatch on the tag (the nightly's: a tag pushed with GITHUB_TOKEN starts no workflow), never a branch run on that commit.
+  if (isMap(r) && r.status !== "completed") throw new Error(`${name}'s release run is still running`);
+  const onTag = isMap(r) && (r.event === "push" || (r.event === "workflow_dispatch" && r.head_branch === name));
+  if (!isMap(r) || r.path !== ".github/workflows/release.yml" || r.head_sha !== sha || !onTag || r.conclusion !== "success") throw new Refused(`${name}'s tested stamp doesn't name a successful release run on its commit`);
   const notes = (Array.isArray(file.notes) ? file.notes : typeof file.notes === "string" ? [file.notes] : []).slice(0, 20).map((n) => plain(n)).filter(Boolean);
   return { name, sha, kernel, marketplace: market, notes, compare: `${GITHUB}/${KERNEL}/compare/${product.slice(0, 12)}...${kernel.slice(0, 12)}`, images: images.length, from: { name: cur.name, product }, text: next };
 }

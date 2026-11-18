@@ -423,8 +423,8 @@ fi
 # AIDENHQ_RELEASE_SHA (its commit), all three or none; the apply then resolves it and checks `product:` is its kernel.
 RELEASE_LINE=""
 if [ -n "${AIDENHQ_RELEASE:-}${AIDENHQ_RELEASE_REPO:-}${AIDENHQ_RELEASE_SHA:-}" ]; then
-  [[ "${AIDENHQ_RELEASE:-}" =~ ^[0-9]{4}\.[0-9]{1,2}(\.[0-9]+)?$ ]] && [[ "${AIDENHQ_RELEASE_REPO:-}" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] && [[ "${AIDENHQ_RELEASE_SHA:-}" =~ ^[0-9a-f]{40}$ ]] \
-    || die "AIDENHQ_RELEASE, AIDENHQ_RELEASE_REPO and AIDENHQ_RELEASE_SHA must all be set: a YYYY.MM name, <owner>/<repo> and a 40-character sha"
+  [[ "${AIDENHQ_RELEASE:-}" =~ ^[0-9]{4}\.[0-9]{1,2}(\.[0-9]+){0,2}$ ]] && [[ "${AIDENHQ_RELEASE_REPO:-}" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] && [[ "${AIDENHQ_RELEASE_SHA:-}" =~ ^[0-9a-f]{40}$ ]] \
+    || die "AIDENHQ_RELEASE, AIDENHQ_RELEASE_REPO and AIDENHQ_RELEASE_SHA must all be set: a YYYY.M[.D[.N]] name, <owner>/<repo> and a 40-character sha"
   RELEASE_LINE="release: { name: \"$AIDENHQ_RELEASE\", source: { source: github, repo: $AIDENHQ_RELEASE_REPO }, sha: $AIDENHQ_RELEASE_SHA }"
 fi
 PIN_COMMIT=""   # the pin commit an upgrade by the installer made (below): reverted when its apply fails
