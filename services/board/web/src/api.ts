@@ -183,7 +183,7 @@ export const api = {
   /** Installed modules whose setup flow isn't done (docs/design/guided-setup.md); a 404 means no flows. */
   settings: () => call<SettingsData>("GET", "/api/settings"),
   connections: (fresh = false) => call<ConnectionsData>("GET", `/api/settings/connections${fresh ? "?fresh" : ""}`),
-  /** Files a settings change as the Platform Engineer's task; its commit becomes an apply card. */
+  /** Files a settings change as the Engineer's task; its commit becomes an apply card. */
   changeSettings: (changes: SettingChange[]) => call<{ identifier: string }>("POST", "/api/settings/change", { changes }),
   settingsChanges: () => call<{ changes: FiledChange[] }>("GET", "/api/settings/changes"),
   apps: () => call<{ apps: AppRow[]; error?: string }>("GET", "/api/apps"),

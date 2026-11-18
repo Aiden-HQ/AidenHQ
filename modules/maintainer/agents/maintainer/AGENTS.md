@@ -106,7 +106,7 @@ Name the issue as `owner/name#number` everywhere (tasks, comments, searches): is
    merged PRs with `github_search_issues` (`repo:<owner>/<name> is:pr is:merged <keywords>`) and read the fix with
    `github_issue_read`.
 3. Decide one verdict: `real`, `not-real`, `duplicate`, `already-fixed`, `uncertain`, `out-of-scope`.
-4. For `real`, brief the engineer: the Platform Engineer for a `product-pin` repo, a Software Engineer for any other.
+4. For `real`, brief the engineer: an Engineer.
    The brief names the repo, the symptom, the sha, the `path:line`, the repro and the exact change wanted, and asks for a
    PR on that repo; its PR deliverable is the task's own PR (no ref), which grading accepts on any repo. Do not write the
    patch yourself.

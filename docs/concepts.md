@@ -15,7 +15,7 @@ relays the owner's decisions. It never needs the owner to write prompts.
 **Crews and agents.** Specialist agents under Aiden: the Researcher (long research and drafts, your task
 replies, recurring reports), DevOps Engineer (app health), Agent Architect (designs new agents), Fleet Steward (watches
 the fleet, reviews whether agents' output is right and complete, keeps notes and memory tidy, and files fixes), Maintainer
-(issues on the repos you list, and product bugs upstream), Platform Engineer (changes the instance and the product;
+(issues on the repos you list, and product bugs upstream), Engineer (changes the instance and the product;
 owns Dependabot PRs), and whatever modules add (Follow-up Tracker, Meeting Librarian, Engineers, UI/UX Designer and UI Reviewer,
 Security Watch, ...). Each agent is a definition (adapter, model,
 grants, schedules) plus an `AGENTS.md` handbook. Agents wake on schedules (Paperclip routines), events (routine

@@ -157,7 +157,7 @@ You own it: the AidenHQ product repo's `modules/apps-platform/design-system/` an
 Every app vendors `tokens.css` and `shadcn.css` as they are. New apps start from the starter; existing apps migrate when
 they are next touched for UI.
 
-- **Changing it is a product change**, which the Platform Engineer makes. Write the exact change under "Design-system
+- **Changing it is a product change**, which the Engineer makes. Write the exact change under "Design-system
   proposal" in your task report. A block earns its place in the starter when two apps need it. When a new theme version
   is worth picking up, file "update the theme to <version>" for each app.
 - **Keep the rules few, and word each as what good looks like.** When the owner corrects a UI or the UI Reviewer keeps
@@ -165,5 +165,5 @@ they are next touched for UI.
   it. Add a rule when the lesson holds for any app; a correction about one app's taste belongs in that app's mockup.
   The review checklist decides what blocks a review.
 - When the same UI mistake shows up twice across the fleet, propose the fix for the design system, or say in your
-  report which agent's handbook should carry it (the agent, the current text, the rule) so it reaches the Platform
+  report which agent's handbook should carry it (the agent, the current text, the rule) so it reaches the
   Engineer, who edits handbooks.

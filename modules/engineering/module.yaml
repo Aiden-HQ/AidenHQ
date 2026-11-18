@@ -1,22 +1,31 @@
 name: engineering
-description: Engineer agents for coding jobs, run by the kernel in engineer computers (OpenRouter models on Codex through the model gateway).
+description: The Engineer agent for coding jobs (code, apps, the fleet's own setup and the product), run by the kernel in an engineer computer (OpenRouter models on Codex through the model gateway).
 requires:
   # The module that provides the engine (engine-codex): the runner names it per agent.
   - engine
   # Any code host (codehost-github, codehost-local): each repo is hosted by the provider that owns its org.
   - codehost
 isolation: code-exec
+roles:
+  declares:
+    - { id: platform-engineer, description: "The agent that makes fleet and product changes: settings changes, rule proposals and Dependabot PRs are filed to it." }
 agents:
-  engineer-openrouter:
+  engineer:
     department: engineering
+    # Skills of this module apply on their own; design-system (app UI) comes from the apps platform. The dependabot and forks
+    # skills are the routines' and the Dependabot tasks' how-to.
     skills: [ apps-platform.design-system ]
+    # platform-engineer: settings changes, rule proposals, Dependabot tasks and pin bumps are filed to the agent holding it,
+    # and its product-repo writes are the code host's "Platform line" (the kernel's record of who asked, never the args).
+    roles: [ platform-engineer ]
     persona: { name: Linus, voice: "Scrappy; tries the cheap route first and says plainly when it isn't good enough.", avatar: linus }
+    # Briefed and graded: deliverables delegated to it are checked against their rubric before they close (the grader).
+    brief: true
+    graded: true
     engine: codex-openrouter
     reasoning_effort: high
-    # Graded done: deliverables delegated to it are checked against their rubric before they close (the runner's grader).
-    graded: true
     model: openrouter/~deepseek/deepseek-flash-latest
-    # Offered in the board's model picker and known to the runner ("use DeepSeek"). Any other
+    # Offered in the board's model picker and known to the dispatcher ("use DeepSeek"). Any other
     # OpenRouter model id works when typed in full once it has a price (modules/models-openrouter).
     models:
       - openrouter/~deepseek/deepseek-flash-latest
@@ -28,27 +37,17 @@ agents:
       - openrouter/moonshotai/kimi-k3
       - openrouter/qwen/qwen3-coder-next
     # Engineer jobs: the task's repositories cloned into its workspace and the code host's writes, in an `engineer` agent
-    # computer (gVisor), like every Engineer's (owner, 2026-11-18).
+    # computer (gVisor) (owner, 2026-11-18).
     profile: engineer
     image: engineer
-    # Primer reads (optional: only with the primer module); in its computer through the kernel's proxy with its run token.
-    jobcaps: [ primer-read? ]
-  app-engineer:
-    department: engineering
-    # Routed since 2026-11-14, after the live checks (restart, cancel, peak memory: docs/design/sandboxing.md).
-    # The strong tier: its runner jobs run in an `engineer` agent computer (gVisor) with app and data reads and a browser.
-    brief: true
-    graded: true
-    engine: codex-openrouter
-    profile: engineer
-    image: engineer
-    model: openrouter/~deepseek/deepseek-flash-latest
-    reasoning_effort: high
-    max_parallel: 2
+    isolation: code-exec
+    max_parallel: 4 # independent changes run side by side, each in its own task workspace
     # Public reads only (App UI work: web search and web_view on). Data work needs private_reads: true and drops the web
     # (scripts/computers.mjs privateGrants, checked at compile): a separate mode, not this agent's yet.
     connections:
       apps: [ app_list, app_status, app_view, app_check, web_view ]
       github?: read
+    # Primer reads (optional: only with the primer module); in its computer through the kernel's proxy with its run token.
+    jobcaps: [ primer-read? ]
 labels:
   - { name: engineer, color: "#4f46e5" }

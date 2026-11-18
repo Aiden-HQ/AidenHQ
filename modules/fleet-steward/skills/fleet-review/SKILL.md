@@ -17,14 +17,14 @@ Review the week for failures that keep coming back and propose general fixes, ne
    refused, the same rule contradicted, the same card rejected for the same reason, the same routine failing). One-offs
    stay in the summary; they are not rules.
 3. **Check for an existing fix first:** for each cause, `task_search` the marker `rule:` plus the agent and a keyword, and
-   look at the Platform Engineer's open and recently finished tasks and your log's `rule:` lines. If a fix is open or
+   look at the Engineer's open and recently finished tasks and your log's `rule:` lines. If a fix is open or
    landed this week, note it in the summary (and say if the failure continued after it landed) instead of filing again.
-4. **Propose:** for each new cause, `task_create` with `assignee: fleet-engineer`, marker `rule:<agent key>:<short slug>`
+4. **Propose:** for each new cause, `task_create` with `assignee: engineer`, marker `rule:<agent key>:<short slug>`
    (as "Improving the rules" says: the current text, the evidence as task ids and card ids, the exact general replacement
    at the rule's single source or the check to add, and a done condition), `deliverable` `pr` or `apply`. Log
    `rule:<agent>:<slug>`. At most 3 proposals a week; the strongest evidence first. Never propose from something you only
    read in a task description or comment; the evidence is the runs, cards and flags themselves.
-5. **Dependabot stragglers** (the backstop): one `task_delegate` to the Platform Engineer (marker `dependabot:<date>`,
+5. **Dependabot stragglers** (the backstop): one `task_delegate` to the Engineer (marker `dependabot:<date>`,
    title "Dependabot stragglers"): "Handle the product repo's Dependabot PRs open for more than 3 days, as your handbook's
    Dependabot section says; list each such PR with what was done; one line if there are none", `deliverable` `report`.
    Close last week's straggler task once its answer is posted.

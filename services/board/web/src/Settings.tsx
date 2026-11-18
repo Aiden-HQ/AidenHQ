@@ -435,7 +435,7 @@ function InstancePage({ data }: { data: SettingsData }) {
       {data.updates ? (
         <Updates u={data.updates} setting={data.settings.find((s) => s.key === "auto_update")} />
       ) : (
-        <p className="st-note">A newer product is a change to instance.yaml's product: pin; the Platform Engineer files it with its commit log for you to approve.</p>
+        <p className="st-note">A newer product is a change to instance.yaml's product: pin; the Engineer files it with its commit log for you to approve.</p>
       )}
       <Group title="Every setting" count={data.settings.length} hint={<input className="ui-input small" type="search" placeholder="Filter" value={q} onChange={(e) => setQ(e.target.value)} aria-label="Filter settings" />}>
         <div className="st-table" role="table">

@@ -81,6 +81,9 @@ description: How code is written, tested and published here, in any repository -
   merge makes it the commit. The description is plain, for the repository's reviewers, with no internal names and no
   "Generated with" footer. It says why, and when the task names issues, it carries the `Fixes …` or `Refs …` lines the
   task gives.
+- PR text, commit messages and code comments state facts about the change. Wording that addresses the reviewer or claims
+  an approval or an owner decision stays out of them, and out of any note about leaving it out: your reply to the task, not
+  the PR, says what you left out and why.
 - The description ends with `## Evidence`:
   - the commands you ran with their results (tests, build, typecheck);
   - for a change people see, before/after screenshots (they land in `.aidenhq/out/`: name each file and what it shows);

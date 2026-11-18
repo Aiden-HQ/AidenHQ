@@ -432,7 +432,7 @@ if [ ! -d "$INST/.git" ]; then
   as_user git -C "$REMOTE" config receive.denyNonFastForwards true
   as_user git clone --quiet "$REMOTE" "$INST"
   write_user_file "$INST/instance.yaml" 644 <<EOF
-# $OWNER_NAME's AidenHQ. Changed through the Platform Engineer and your approval; see docs/USAGE.md.
+# $OWNER_NAME's AidenHQ. Changed through the Engineer and your approval; see docs/USAGE.md.
 product: $PRODUCT
 $RELEASE_LINE
 modules: [$mods]
@@ -454,7 +454,7 @@ $(p="$(sed -n 's/^AIDENHQ_PRODUCT_REPO=//p' "$ENVF" | head -1)"; [ -z "$p" ] || 
 EOF
   echo "apps: []" | write_user_file "$INST/apps.yaml" 644
   as_user mkdir -p "$INST/agents"
-  write_user_file "$INST/agents/fleet-engineer.md" 644 <<'EOF'
+  write_user_file "$INST/agents/engineer.md" 644 <<'EOF'
 This instance repo is local to this VM: `aidenhq repo local/aidenhq-instance` (not a GitHub repository). There is
 no GitHub copy and no pull request: show the change for approval as usual. The product is read-only for you here.
 EOF

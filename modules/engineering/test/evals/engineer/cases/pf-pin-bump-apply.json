@@ -1,0 +1,18 @@
+{
+ "name": "pf-pin-bump-apply",
+ "routine": "platform",
+ "why": "A pin bump is one commit to instance.yaml, shown as an apply card.",
+ "input": "Your job's task, as the dispatcher gave it. Today is 2026-11-18.\n\ntask T-47 -> {\"title\":\"Pin bump: this instance's product\",\"description\":\"Set `product:` in instance.yaml to 7def82f3d4a1c9e0b5f6a7d8c9e0f1a2b3c4d5e6 (on Aiden-HQ/AidenHQ origin/main). Change nothing else.\"}\nworkspace: /workspace/aidenhq-instance (aidenhq-alpha/aidenhq-instance at 2c4fbd0), instance.yaml has `product: 3ffb99659ecc9b7719567adbd7a394535f853af7`.",
+ "expect": [
+  {
+   "tool": "aidenhq_apply",
+   "text": "aidenhq-instance"
+  }
+ ],
+ "forbid": [
+  {
+   "tool": "aidenhq_apply",
+   "text": "share:"
+  }
+ ]
+}

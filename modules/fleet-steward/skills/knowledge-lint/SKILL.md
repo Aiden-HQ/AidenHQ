@@ -1,6 +1,6 @@
 ---
 name: knowledge-lint
-description: The Monday knowledge lint - walk the notes vault, the people directory, the agents' rules and the owner's corrections, propose rule and profile fixes to the Platform Engineer, and file one weekly report.
+description: The Monday knowledge lint - walk the notes vault, the people directory, the agents' rules and the owner's corrections, propose rule and profile fixes to the Engineer, and file one weekly report.
 when: { fields: { name: Fleet Steward } }
 ---
 

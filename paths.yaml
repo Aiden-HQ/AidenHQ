@@ -46,6 +46,8 @@ paths:
       - modules/platform/
       - modules/grading/
       - modules/engineering/src/merge-queue.mjs
+      # What the platform-engineer role holder is told to do to the fleet and the product (it was its handbook, a role handbook).
+      - modules/engineering/skills/{fleet-change,dependabot,forks}/
       - "**/aidenhq-sdk/executor.ts"
       - modules/apps-platform/module.yaml
       - modules/apps-platform/schemas/

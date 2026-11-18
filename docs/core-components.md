@@ -38,10 +38,10 @@ when an agent has none. Agents never edit a handbook; changes flow through one o
    Each names the agent, the current text, the evidence and the exact replacement.
 3. **Decision.** The Architect judges it (general guidance only, never a special case for one incident), places it
    (instance `agents/<key>.md` for a module agent, the instance agent's own handbook, or a product PR when it is right for
-   every AidenHQ) and delegates it to the Platform Engineer, then reviews the diff.
-4. **Approval.** The Platform Engineer's commit becomes a fleet apply card tiered by code: a trial agent's handbook can
+   every AidenHQ) and delegates it to the Engineer, then reviews the diff.
+4. **Approval.** The Engineer's commit becomes a fleet apply card tiered by code: a trial agent's handbook can
    land without a tap, a graduated agent's goes to the AI reviewer, and a role-holding agent's (Aiden, the Architect, the
-   Platform Engineer, any agent with roles) is the owner's tap. A product PR is merged by the owner.
+   Engineer, any agent with roles) is the owner's tap. A product PR is merged by the owner.
 
 The AI reviewer has its own loop: every false reject becomes a planted case in `modules/ai-reviewer/test/reviewer-cases/`,
 and `node modules/ai-reviewer/scripts/reviewer-eval.mjs` must stay at 100%.

@@ -42,7 +42,7 @@ test("the instance switches one agent on; the launcher learns the image tag and 
 
 test("an unknown image fails compile; an Engineer gets a computer only in the engineer image", () => {
   assert.throws(() => compile(product, inst({ agents: { "app-maintainer": { image: "kali" } } })), /image must be one of agent-base, engineer/);
-  assert.throws(() => compile(product, inst({ agents: { "fleet-engineer": { image: "agent-base" } } })), /only with image: engineer/);
+  assert.throws(() => compile(product, inst({ agents: { engineer: { image: "agent-base" } } })), /only with image: engineer/);
   validateImages({ e: { profile: "engineer", image: "engineer" } });
 });
 

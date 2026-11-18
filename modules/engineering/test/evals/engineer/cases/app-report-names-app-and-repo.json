@@ -1,0 +1,13 @@
+{
+ "name": "app-report-names-app-and-repo",
+ "routine": "app",
+ "why": "A new app's final report names the app and its repository so DevOps can deploy it.",
+ "input": "Your job's task, as the dispatcher gave it. Today is 2026-11-18.\n\ntask T-33 -> {\"title\":\"Build the feedback-board app\",\"description\":\"Build the feedback app in acme-agents/feedback-board. Done: merged into main.\"}\naidenhq publish acme-agents/feedback-board main-first -> card approved, PR opened\naidenhq merge https://github.com/acme-agents/feedback-board/pull/1 5c0ffee -> merged into main.",
+ "expect": [
+  {
+   "tool": "reply",
+   "text": "acme-agents/feedback-board"
+  }
+ ],
+ "forbid": []
+}

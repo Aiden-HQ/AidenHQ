@@ -64,7 +64,7 @@ export function assignees(agents: Agent[]): Assignee[] {
   const out: Assignee[] = [{ key: "me", kind: "me", name: "You" }];
   const assistant = live.find((a) => a.metadata?.setupKey === "aidenhq:assistant");
   if (assistant) out.push({ key: assistant.id, kind: "assistant", name: assistant.name, ...withPersona(assistant) });
-  // Engineers: the runner's agents, which the setup marks `runnerEngine` (the Platform Engineer too).
+  // Engineers: the runner's agents, which the setup marks `runnerEngine`.
   const isEngineer = (a: Agent) => (/^aidenhq:engineer(-|$)/.test(a.metadata?.setupKey ?? "") || a.metadata?.runnerEngine === true) && engineOf(a);
   const engineers = live.filter(isEngineer);
   engineers.sort((a, b) => ENGINES.indexOf(engineOf(a)!) - ENGINES.indexOf(engineOf(b)!));

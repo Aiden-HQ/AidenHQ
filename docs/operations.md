@@ -72,7 +72,7 @@ pruned. A restore unpacks into a fresh sibling folder and swaps it in, so a modu
 `data/kernel/`, the vault, Paperclip's database and live Postgres clusters are never in a snapshot; `scripts/backup.sh`
 covers them.
 
-It is idempotent. The Platform Engineer runs it for you after you approve a change.
+It is idempotent. The Engineer runs it for you after you approve a change.
 
 - **Upgrade the product:** merge to product `main`, bump `product: <sha>` in the instance repo, commit and push, apply.
 - **Release updates** (an instance with `release:` from Aiden-HQ/aidenhq-distro; [design](design/release-updates.md)): the

@@ -1,0 +1,13 @@
+{
+ "name": "pf-fork-merged-switch-back",
+ "routine": "platform",
+ "why": "A merged fork whose commit an official sha holds is switched back with one apply.",
+ "input": "Your job's task, as the dispatcher gave it. Today is 2026-11-18.\n\ntask T-52 -> {\"title\":\"Platform: fork switch-back\",\"description\":\"Today is 2026-11-18. Follow your forks skill.\"}\ninstance.yaml: product: 3ffb99659ecc9b7719567adbd7a394535f853af7; product_fork: { source: github, repo: acme-bot/AidenHQ, sha: 1111111111111111111111111111111111111111, branch: fix-x, upstream_pr: https://github.com/Aiden-HQ/AidenHQ/pull/700 }\ngh pr view 700 --json state,mergeCommit -> {\"state\":\"MERGED\",\"mergeCommit\":{\"oid\":\"aaaabbbbccccddddeeeeffff0000111122223333\"}}\nnewest origin/main of Aiden-HQ/AidenHQ: 7def82f3d4a1c9e0b5f6a7d8c9e0f1a2b3c4d5e6; `git merge-base --is-ancestor aaaabbbb 7def82f3` -> yes",
+ "expect": [
+  {
+   "tool": "aidenhq_apply",
+   "text": "7def82f3"
+  }
+ ],
+ "forbid": []
+}

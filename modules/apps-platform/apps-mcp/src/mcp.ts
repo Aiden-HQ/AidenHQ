@@ -239,7 +239,7 @@ export function buildServer(p: Platform, caller: Caller, repo: { dir: string; pu
 
   tool(
     "app_create",
-    "Register a new app from a repo (path is the folder in the repo that holds compose.yaml, '.' for the repo root) and deploy it. You become its owner. Apps with access, share, panel, stateful, untrusted, caps, database or connects to a restricted app need the owner's approval and the Platform Engineer.",
+    "Register a new app from a repo (path is the folder in the repo that holds compose.yaml, '.' for the repo root) and deploy it. You become its owner. Apps with access, share, panel, stateful, untrusted, caps, database or connects to a restricted app need the owner's approval and the Engineer.",
     { name, repo: z.string(), description: z.string(), branch: z.string().optional(), path: z.string().optional().describe("the folder in the repo that holds compose.yaml ('.' for the repo root)"), port: z.number().int().optional(), health: z.object({ url: z.string().optional(), grace_sec: z.number().optional() }).optional(), connects: z.array(z.string()).optional(), internet: z.boolean().optional(), database: z.literal("warehouse").optional().describe("own login + schema app_<name> on the warehouse (sensitive)") },
     true,
     async (args) => {
@@ -249,7 +249,7 @@ export function buildServer(p: Platform, caller: Caller, repo: { dir: string; pu
       await edit(async () => {
         const all = p.apps();
         if (all.some((a) => a.name === app.name)) throw new Error(`app ${app.name} already exists`);
-        if (isSensitive(app, all)) throw new Error("sensitive app: ask the owner; the Platform Engineer adds it on apply");
+        if (isSensitive(app, all)) throw new Error("sensitive app: ask the owner; the Engineer adds it on apply");
         if (app.port && all.some((a) => a.port === app.port)) throw new Error(`port ${app.port} is taken by another app`);
         checkPort(app);
         appendApp(p.cfg.registryPath, entry);
@@ -266,7 +266,7 @@ export function buildServer(p: Platform, caller: Caller, repo: { dir: string; pu
       const app = p.find(name); // after the pull, so ownership and sensitivity are judged on the latest registry
       checkRemovable(app);
       if (caller.key !== app.owner) throw new Error(`only ${app.owner} can remove ${name}`);
-      if (isSensitive(app, p.apps())) throw new Error("sensitive app: ask the owner; the Platform Engineer removes it on apply");
+      if (isSensitive(app, p.apps())) throw new Error("sensitive app: ask the owner; the Engineer removes it on apply");
       removeApp(p.cfg.registryPath, name);
       await commitPush(p.cfg.git, repo.dir, "apps.yaml", `apps: remove ${name} (by ${caller.name})`, repo.pushUrl);
     });
