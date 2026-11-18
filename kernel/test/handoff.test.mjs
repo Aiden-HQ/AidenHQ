@@ -4,7 +4,7 @@
 import { test, after, before, mock } from "node:test";
 import assert from "node:assert/strict";
 import { request } from "node:http";
-import { openAccounts, AccountError } from "../src/accounts.ts";
+import { doorSource, openAccounts, AccountError } from "../src/accounts.ts";
 import { createAdmin } from "../src/admin.ts";
 import { PASSWORD, authApiServer, jsonBrowser, reqWith, silent, stepListener, totp } from "./auth-helpers.mjs";
 import { serve } from "./helpers.mjs";
@@ -21,7 +21,7 @@ before(async () => {
   accounts = await openAccounts({ dataDir: ":memory:", hosts: [HOST], adminUrl: `http://${HOST}`, edgeSecret: () => "", notify: () => {}, log: silent, gate: () => ({ password: true, appHosts: [], door: { base: "localhost", scheme: "http", port: 3130 } }) });
   steps = await stepListener(accounts);
   const cards = { ownerCards: async () => ({ live: [], finished: [] }), decideCard: async () => { throw new Error("no"); } };
-  adminSrv = await serve(createAdmin({ accounts, cards, ownerMessage: async () => ({ task: { identifier: "WOR-1" } }), owner: async () => ({ status: 200, json: {} }), hosts: () => [HOST], origins: () => [`http://${HOST}`], frameOrigins: () => [], uiOrigins: () => ({ [BOARD]: "board" }) }));
+  adminSrv = await serve(createAdmin({ accounts, cards, ownerMessage: async () => ({ task: { identifier: "WOR-1" } }), owner: async () => ({ status: 200, json: {} }), hosts: () => [HOST], origins: () => [`http://${HOST}`], frameOrigins: () => [], uiOrigins: () => ({ [BOARD]: "board" }), doorSource: () => doorSource({ door: { base: "localhost", scheme: "http", port: 3130 } }) }));
   api = await authApiServer(accounts, { whoami: async (t) => apps[t] });
 });
 after(() => { steps.close(); adminSrv.s.close(); api.close(); accounts.close(); });
@@ -29,7 +29,7 @@ after(() => { steps.close(); adminSrv.s.close(); api.close(); accounts.close(); 
 /** The admin listener (kernel pages) with an optional session cookie jar. */
 const admin = (method, path, jar, { origin = `http://${HOST}` } = {}) => new Promise((ok, no) => {
   const headers = { host: HOST, ...(jar?.size ? { cookie: [...jar].map(([k, v]) => `${k}=${v}`).join("; ") } : {}), ...(method === "POST" ? { "content-type": "application/x-www-form-urlencoded", origin } : {}) };
-  const r = request(`${adminSrv.url}${path}`, { method, headers }, (res) => { let d = ""; res.on("data", (c) => (d += c)); res.on("end", () => ok({ status: res.statusCode, location: String(res.headers.location ?? ""), body: d })); });
+  const r = request(`${adminSrv.url}${path}`, { method, headers }, (res) => { let d = ""; res.on("data", (c) => (d += c)); res.on("end", () => ok({ status: res.statusCode, location: String(res.headers.location ?? ""), body: d, csp: String(res.headers["content-security-policy"] ?? "") })); });
   r.on("error", no);
   r.end(method === "POST" ? "" : undefined);
 });
@@ -233,10 +233,13 @@ test("an app door: a ready admin's /auth/handoff mints the gate's code for exact
   assert.equal(await accounts.gateSession(fromGate, HOST, ""), null);
   assert.equal(await accounts.sessionOf(fromGate), null);
   assert.equal(await accounts.sessionOf({ headers: { cookie: `better-auth.session_token=${encodeURIComponent(token)}` } }), null);
+  assert.equal(await accounts.uiSession("board", token), null);
   await assert.rejects(accounts.redeemHandoff(again, "roadmap.localhost", st), /invalid or expired/); // once
   // only an exact door origin: not another port, scheme or base, not nested, not with a path, not a bad state
   for (const t of ["http://roadmap.localhost:3131", "https://roadmap.localhost:3130", "http://roadmap.localhost", "http://a.roadmap.localhost:3130", "http://localhost:3130", "http://roadmap.localhost:3130/x", "http://evil.example:3130"]) assert.equal((await admin("GET", handoffPath(t, st), owner.jar)).status, 400, t);
   assert.equal((await admin("GET", handoffPath(door, "short"), owner.jar)).status, 400);
-  // signed out: sign-in first, keeping the whole handoff
+  // signed out: sign-in first, keeping the whole handoff; its form's redirect chain may end on a door (browsers apply
+  // form-action to every redirect after a post)
   assert.match((await admin("GET", handoffPath(door, st))).location, /^\/auth\/sign-in\?next=/);
+  assert.match((await admin("GET", "/auth/sign-in")).csp, /form-action 'self' http:\/\/\*\.localhost:3130;/);
 });

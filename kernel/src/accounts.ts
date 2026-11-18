@@ -91,6 +91,9 @@ export function doorHost(g: GateInfo | undefined, origin: string): string | unde
   return /^[a-z][a-z0-9-]{1,30}$/.test(name) ? `${name}.${d.base}` : undefined;
 }
 
+/** Every door origin as one CSP source expression (`http://*.localhost:3130`), or undefined without a door. */
+export const doorSource = (g: GateInfo | undefined): string | undefined => (g?.door ? `${g.door.scheme}://*.${g.door.base}${g.door.port ? `:${g.door.port}` : ""}` : undefined);
+
 const HANDOFF_TTL_MS = 60_000;
 const same = (a: string, b: string) => a.length === b.length && timingSafeEqual(Buffer.from(a), Buffer.from(b));
 const sha = (s: string) => createHash("sha256").update(s).digest("hex");

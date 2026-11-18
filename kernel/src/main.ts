@@ -20,7 +20,7 @@ import { createAdmin, type SetupField } from "./admin.ts";
 import { createAuthApi } from "./auth-api.ts";
 import { checkModel, exchange, readiness, startPkce } from "./openrouter-pkce.ts";
 import { agentSetup, composeRecreate, createModuleSecrets, vaultWriter } from "./module-secrets.ts";
-import { readGate } from "./accounts.ts";
+import { doorSource, readGate } from "./accounts.ts";
 import { routineWake, webhookWake, type Manifest } from "./app-access.ts";
 import { createSignin } from "./signin.ts";
 import { createAsserter, loadKey } from "./assert.ts";
@@ -234,7 +234,7 @@ const model = {
   verifyAgents: agentSetup({ dir: env("AIDENHQ_DIR", repo), log: path.join(dataDir, "kernel", "agent-setup.log"), warn: (m, o) => log(m, o as never) }),
   ...modelState,
 };
-const admin = accounts && createAdmin({ accounts, firstRun, model, uiOrigins, boardUrl: () => boardOrigins[0], cards: channels, ownerMessage: (b) => channels.ownerMessageAs("web", b, () => Object.entries(grantsTable().agents ?? {}).find(([, g]) => g.key === "chief-of-staff")?.[0]), owner: ownerApi, hosts: () => adminHosts, origins: () => adminOrigins, frameOrigins: () => boardOrigins, log });
+const admin = accounts && createAdmin({ accounts, firstRun, model, uiOrigins, doorSource: () => doorSource(gateInfo()), boardUrl: () => boardOrigins[0], cards: channels, ownerMessage: (b) => channels.ownerMessageAs("web", b, () => Object.entries(grantsTable().agents ?? {}).find(([, g]) => g.key === "chief-of-staff")?.[0]), owner: ownerApi, hosts: () => adminHosts, origins: () => adminOrigins, frameOrigins: () => boardOrigins, log });
 
 // Claimed records a restart left without an outcome: their executors say how they went (never replayed). Executors may
 // still be starting at boot, so once, a minute in.
