@@ -23,8 +23,6 @@ export interface Agent {
   status: string;
   /** The agent it reports to (the org chart). */
   reportsTo?: string | null;
-  adapterType: string;
-  adapterConfig?: Record<string, unknown>;
   metadata?: { setupKey?: string; module?: unknown; trial?: unknown; model?: unknown; models?: unknown; persona?: unknown; avatar?: unknown; runnerEngine?: unknown; engine?: unknown; profile?: unknown; department?: unknown } | null;
 }
 
@@ -121,11 +119,6 @@ export interface Comment {
   deletedAt?: string | null;
 }
 
-export interface Model {
-  id: string;
-  label: string;
-}
-
 /** A file on a task (Paperclip stores it; the board uploads the user's). */
 export interface Attachment {
   id: string;
@@ -219,10 +212,6 @@ export class Paperclip {
 
   labels(): Promise<Label[]> {
     return this.cached("labels", 300_000, () => this.request<Label[]>("GET", `/api/companies/${this.companyId}/labels`));
-  }
-
-  models(adapterType: string): Promise<Model[]> {
-    return this.cached(`models:${adapterType}`, 600_000, () => this.request<Model[]>("GET", `/api/companies/${this.companyId}/adapters/${adapterType}/models`));
   }
 
   /**

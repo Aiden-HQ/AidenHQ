@@ -220,7 +220,6 @@ export const BOARD_READ_PATHS: RegExp[] = [
   /^\/api\/cli-auth\/me$/,
   new RegExp(`^/api/companies/${ID}$`),
   new RegExp(`^/api/companies/${ID}/(agents|labels|issues|live-runs|heartbeat-runs|routines|approvals)$`),
-  new RegExp(`^/api/companies/${ID}/adapters/${ID}/models$`),
   new RegExp(`^/api/companies/${ID}/costs/(by-agent|by-agent-model)$`),
   new RegExp(`^/api/heartbeat-runs/${ID}(/log)?$`),
   new RegExp(`^/api/issues/${ID}(/comments|/attachments)?$`),

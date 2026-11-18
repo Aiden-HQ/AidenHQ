@@ -13,8 +13,8 @@ const CO = "00000000-0000-4000-8000-000000000001";
 const KEY = "owner-board-key";
 const ME = "me";
 const agents = [
-  { id: "me-agent", name: "You", status: "idle", adapterType: "codex_local" },
-  { id: "eng", name: "Engineer", status: "idle", adapterType: "codex_local", metadata: { setupKey: "aidenhq:engineer" } },
+  { id: "me-agent", name: "You", status: "idle", },
+  { id: "eng", name: "Engineer", status: "idle", metadata: { engine: "codex", setupKey: "aidenhq:engineer" } },
 ];
 const now = Date.now();
 const at = (min: number) => new Date(now - min * 60_000).toISOString();

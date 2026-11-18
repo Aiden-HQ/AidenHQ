@@ -12,13 +12,13 @@ import { Store } from "../src/store.js";
 
 const ME = "user-1";
 const agents: Agent[] = [
-  { id: "00000000-0000-0000-0000-0000000000d1", name: "Chief of Staff", status: "idle", adapterType: "codex_local", companyId: "co", metadata: { setupKey: "aidenhq:chief-of-staff" } },
-  { id: "00000000-0000-0000-0000-0000000000c0", name: "Fleet Engineer", status: "idle", adapterType: "codex_local", companyId: "co", metadata: { setupKey: "aidenhq:fleet-engineer", runnerEngine: true } },
-  { id: "00000000-0000-0000-0000-00000000000a", name: "Researcher", status: "idle", adapterType: "codex_local", companyId: "co", metadata: { setupKey: "aidenhq:assistant" } },
-  { id: "00000000-0000-0000-0000-0000000000d2", name: "Scout", status: "idle", adapterType: "codex_local", companyId: "co", metadata: { setupKey: "aidenhq:scout" } },
+  { id: "00000000-0000-0000-0000-0000000000d1", name: "Chief of Staff", status: "idle", companyId: "co", metadata: { engine: "codex", setupKey: "aidenhq:chief-of-staff" } },
+  { id: "00000000-0000-0000-0000-0000000000c0", name: "Fleet Engineer", status: "idle", companyId: "co", metadata: { engine: "codex", setupKey: "aidenhq:fleet-engineer", runnerEngine: true } },
+  { id: "00000000-0000-0000-0000-00000000000a", name: "Researcher", status: "idle", companyId: "co", metadata: { engine: "codex", setupKey: "aidenhq:assistant" } },
+  { id: "00000000-0000-0000-0000-0000000000d2", name: "Scout", status: "idle", companyId: "co", metadata: { engine: "codex", setupKey: "aidenhq:scout" } },
   // An agent that edited its own metadata to look like the Chief of Staff: the grants table, not metadata, decides.
-  { id: "00000000-0000-0000-0000-0000000000d3", name: "Impostor", status: "idle", adapterType: "codex_local", companyId: "co", metadata: { setupKey: "aidenhq:chief-of-staff" } },
-  { id: "00000000-0000-0000-0000-0000000000d4", name: "Fleet Ops", status: "idle", adapterType: "codex_local", companyId: "co", metadata: { setupKey: "aidenhq:fleet-ops" } },
+  { id: "00000000-0000-0000-0000-0000000000d3", name: "Impostor", status: "idle", companyId: "co", metadata: { engine: "codex", setupKey: "aidenhq:chief-of-staff" } },
+  { id: "00000000-0000-0000-0000-0000000000d4", name: "Fleet Ops", status: "idle", companyId: "co", metadata: { engine: "codex", setupKey: "aidenhq:fleet-ops" } },
 ];
 const [COS, FLEET, , SCOUT, IMPOSTOR, FLEET_OPS] = agents.map((a) => a.id) as [string, string, string, string, string, string];
 // The grants table setup writes: only the Chief of Staff holds fleet-admin.

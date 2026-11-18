@@ -20,8 +20,8 @@ const comments: Record<string, Comment[]> = {
   [child.id]: [],
 };
 const agents = [
-  { id: "cos", name: "Aiden", status: "idle", adapterType: "codex_local", metadata: { setupKey: "aidenhq:chief-of-staff" } },
-  { id: "fe", name: "Fleet Engineer", status: "idle", adapterType: "codex_local", metadata: { setupKey: "aidenhq:engineer-fleet", runnerEngine: true } },
+  { id: "cos", name: "Aiden", status: "idle", metadata: { engine: "codex", setupKey: "aidenhq:chief-of-staff" } },
+  { id: "fe", name: "Fleet Engineer", status: "idle", metadata: { engine: "codex", setupKey: "aidenhq:engineer-fleet", runnerEngine: true } },
 ];
 const pc = {
   me: async () => "me-1",

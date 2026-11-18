@@ -8,7 +8,7 @@ import { Store } from "../src/store.js";
 
 const calls: string[] = [];
 const pc = {
-  agents: async () => [{ id: "keeper", name: "Roadmap Keeper", status: "idle", adapterType: "codex_local", metadata: { setupKey: "aidenhq:roadmap-keeper", module: "instance" } }],
+  agents: async () => [{ id: "keeper", name: "Roadmap Keeper", status: "idle", metadata: { engine: "codex", setupKey: "aidenhq:roadmap-keeper", module: "instance" } }],
   liveRuns: async () => [{ id: "run1", status: "running", agentId: "keeper", issueId: "i1" }, { id: "run2", status: "running", agentId: "other", issueId: "i2" }],
   pauseAgent: async (id: string) => void calls.push(`pause ${id}`),
   resumeAgent: async (id: string) => void calls.push(`resume ${id}`),

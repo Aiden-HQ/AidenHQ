@@ -22,8 +22,8 @@ export function lineageStatus(state: ChatState, issue: Pick<Issue, "status">): L
 /** The model an agent runs this task on ("deepseek-flash-latest high"), the task's own override first. */
 export function modelOf(issue: Pick<Issue, "assigneeAdapterOverrides">, agent: Agent | undefined): string | null {
   if (!agent) return null;
-  const config = { ...agent.adapterConfig, ...issue.assigneeAdapterOverrides?.adapterConfig };
-  const model = shortModel({ ...agent, adapterConfig: config });
+  const config = issue.assigneeAdapterOverrides?.adapterConfig ?? {};
+  const model = shortModel(config.model ? { metadata: { model: config.model } } : agent);
   const effort = config.modelReasoningEffort ?? config.effort;
   return model ? `${model.replace(/-latest$/, "")}${typeof effort === "string" ? ` ${effort}` : ""}` : null;
 }

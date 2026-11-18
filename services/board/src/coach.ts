@@ -11,6 +11,7 @@ import type { Grading } from "./grading.js";
 import type { Store } from "./store.js";
 import type { RunView } from "./runs.js";
 import { detectorState } from "./fleet-ops.js";
+import { engineOf } from "./board.js";
 import { gatherFacts, scorecard } from "./fleet-stats.js";
 import { appsApi } from "./fleet.js";
 
@@ -118,7 +119,7 @@ export function flagsByAgent(keys: { key: string; at: string }[], agents: { id: 
   const out: { agentId: string; at: string; key: string }[] = [];
   for (const { key, at } of keys) {
     const [group, first] = key.split(":");
-    const agentId = group === "run" || group === "silent" ? first : group === "routine" || group === "missed" ? byRoutine.get(first ?? "") : group === "quality" || group === "app" ? byApp.get(first ?? "") : undefined;
+    const agentId = group === "run" ? first : group === "routine" || group === "missed" ? byRoutine.get(first ?? "") : group === "quality" || group === "app" ? byApp.get(first ?? "") : undefined;
     if (agentId && ids.has(agentId)) out.push({ agentId, at, key });
   }
   return out;
@@ -181,7 +182,7 @@ export async function coachDue(pc: Paperclip, store: Pick<Store, "meta">, caller
 export const LIMITS = { handbook: 24_000, runs: 10, traces: 4, failures: 6, timeline: 12, wakes: 5, corrections: 5, flags: 10, fixes: 10, done: 10, apps: 10, text: 300 };
 
 export interface EvidenceParts {
-  agent: { key: string; name: string; id: string; status: string; createdAt: string | null; adapter: string; model: string | null };
+  agent: { key: string; name: string; id: string; status: string; createdAt: string | null; engine: string | null; model: string | null };
   handbook?: string;
   grants?: unknown;
   routines?: { title: string; status: string; schedules: string[] }[];
@@ -311,7 +312,7 @@ export async function coachEvidence(pc: Paperclip, store: Pick<Store, "meta" | "
     return out;
   });
   return packEvidence({
-    agent: { key: keyOf(a), name: a.name, id: a.id, status: a.status, createdAt: a.createdAt ?? null, adapter: a.adapterType, model: (a.adapterConfig?.model as string | undefined) ?? null },
+    agent: { key: keyOf(a), name: a.name, id: a.id, status: a.status, createdAt: a.createdAt ?? null, engine: engineOf(a) ?? null, model: typeof a.metadata?.model === "string" ? a.metadata.model : null },
     handbook,
     grants: entry ? { roles: entry.roles ?? [], tools: entry.tools ?? {}, caps: entry.caps, models: entry.models, graded: entry.graded, trial: entry.trial ?? false } : undefined,
     routines,

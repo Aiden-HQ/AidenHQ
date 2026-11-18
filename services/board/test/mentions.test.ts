@@ -15,12 +15,12 @@ import { Store } from "../src/store.js";
 const ME = "user-1";
 const persona = (name: string) => ({ persona: { name, voice: "", avatar: name.toLowerCase() } });
 const agents: Agent[] = [
-  { id: "00000000-0000-0000-0000-00000000000a", name: "Researcher", status: "idle", adapterType: "codex_local", metadata: { setupKey: "aidenhq:assistant", ...persona("Alfred") } },
-  { id: "00000000-0000-0000-0000-0000000000c1", name: "Engineer · Claude", status: "idle", adapterType: "claude_local", adapterConfig: {}, metadata: { setupKey: "aidenhq:engineer-claude", ...persona("Ada") } },
-  { id: "00000000-0000-0000-0000-0000000000c0", name: "Engineer · Codex", status: "idle", adapterType: "codex_local", adapterConfig: {}, metadata: { setupKey: "aidenhq:engineer", ...persona("Grace") } },
-  { id: "00000000-0000-0000-0000-0000000000d1", name: "Chief of Staff", status: "idle", adapterType: "codex_local", metadata: { setupKey: "aidenhq:chief-of-staff" } },
-  { id: "00000000-0000-0000-0000-0000000000d2", name: "Slack Scout", status: "idle", adapterType: "codex_local", metadata: { setupKey: "aidenhq:slack-scout", ...persona("Scout") } },
-  { id: "00000000-0000-0000-0000-0000000000d3", name: "Scout", status: "idle", adapterType: "codex_local", metadata: { setupKey: "aidenhq:scout" } },
+  { id: "00000000-0000-0000-0000-00000000000a", name: "Researcher", status: "idle", metadata: { engine: "codex", setupKey: "aidenhq:assistant", ...persona("Alfred") } },
+  { id: "00000000-0000-0000-0000-0000000000c1", name: "Engineer · Claude", status: "idle", metadata: { engine: "claude", setupKey: "aidenhq:engineer-claude", ...persona("Ada") } },
+  { id: "00000000-0000-0000-0000-0000000000c0", name: "Engineer · Codex", status: "idle", metadata: { engine: "codex", setupKey: "aidenhq:engineer", ...persona("Grace") } },
+  { id: "00000000-0000-0000-0000-0000000000d1", name: "Chief of Staff", status: "idle", metadata: { engine: "codex", setupKey: "aidenhq:chief-of-staff" } },
+  { id: "00000000-0000-0000-0000-0000000000d2", name: "Slack Scout", status: "idle", metadata: { engine: "codex", setupKey: "aidenhq:slack-scout", ...persona("Scout") } },
+  { id: "00000000-0000-0000-0000-0000000000d3", name: "Scout", status: "idle", metadata: { engine: "codex", setupKey: "aidenhq:scout" } },
 ];
 const [ALFRED, ADA, GRACE] = [agents[0]!.id, agents[1]!.id, agents[2]!.id];
 // The Chief of Staff holds fleet-admin in the grants table, which is what an agent can't pass to; the Researcher may pass on.
