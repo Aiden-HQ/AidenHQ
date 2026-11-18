@@ -17,8 +17,9 @@
 //   or top-level without one) assigned to the caller, to an agent in `delegateTo`, or to a user.
 // - Once: every write carries the kernel's tag (a job's `aidenhq:job=` tag wakes nobody, wakes.ts SELF_TAG; a cp write on
 //   someone else's task carries `aidenhq:op=`, which wakes its assignee as any agent comment does). A new task's origin is the
-//   tag, and a task the tag already made, by this agent, is returned (`found`) rather than made twice; with `again` (a retry
-//   after an unknown outcome) a comment the tag already made isn't made twice. Setting a status is the same twice.
+//   tag. The kernel runs each tag's write once (once.ts); `again` marks its retry after an unknown outcome (the kernel died or
+//   timed out after Paperclip wrote), and only then a task or comment the tag already made, by this agent, is returned
+//   (`found`) rather than made twice. Setting a status is the same twice.
 // A refusal is returned as {refused}, never thrown: a thrown error reaches the caller as 502, which means "unknown, retry".
 import { HOST_PARAMS, SKEW_MS, verify } from "./sign.js";
 
@@ -122,7 +123,7 @@ export async function post(ctx, params, context, postKey, now = Date.now()) {
   }
   if (p.child !== undefined) {
     const origin = p.tag.slice(5, -4); // aidenhq:job=<job> kind=<kind>, or aidenhq:op=<op>
-    const had = (await ctx.issues.list({ companyId, originId: origin })).find((i) => i.createdByAgentId === agent);
+    const had = p.again ? (await ctx.issues.list({ companyId, originId: origin })).find((i) => i.originKind === ORIGIN && i.originId === origin && i.createdByAgentId === agent) : undefined;
     const c = p.child;
     out.found = Boolean(had);
     out.child = (had ?? await ctx.issues.create({
@@ -133,7 +134,7 @@ export async function post(ctx, params, context, postKey, now = Date.now()) {
     })).id;
   }
   if (p.body !== undefined) {
-    const had = p.again ? (await ctx.issues.listComments(p.issueId, companyId)).find((c) => c.authorAgentId === agent && String(c.body).includes(p.tag)) : undefined;
+    const had = p.again ? (await ctx.issues.listComments(p.issueId, companyId)).find((c) => c.authorAgentId === agent && String(c.body).endsWith(`\n\n${p.tag}`)) : undefined;
     out.comment = (had ?? await ctx.issues.createComment(p.issueId, `${text(p.body, MAX)}\n\n${p.tag}`, companyId, { authorAgentId: agent })).id;
   }
   return out;

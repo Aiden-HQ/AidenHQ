@@ -155,6 +155,11 @@ test("one keyed write: the first result is returned ever after, a refusal clears
   await assert.rejects(once("k3", async () => { throw Object.assign(new Error("?"), { code: "unknown" }); }));
   assert.deepEqual(await once("k3", async (retry) => (tries.push(retry), { id: 3 })), { value: { id: 3 }, again: true }, "the retry is told to look");
   assert.deepEqual(tries, [false, false, true]);
+  // Two calls at once with one key: one write, one result.
+  let writes = 0;
+  const both = await Promise.all([1, 2].map(() => once("k4", async () => (writes++, await new Promise((r) => setTimeout(r, 10)), { id: 4 }))));
+  assert.equal(writes, 1);
+  assert.deepEqual(both.map((r) => r.value), [{ id: 4 }, { id: 4 }]);
 });
 
 test("one reply to the owner: posted once on the task; relayed once to Telegram when they wrote there, never for board words", async (t) => {
