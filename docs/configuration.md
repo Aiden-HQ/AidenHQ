@@ -307,6 +307,17 @@ optional `repo_sources` (repos cloned from a local path), work and state directo
 (`codex-openrouter`, `codex`, `claude`, `openrouter`) and the job sandbox (`sandbox.extra_writable_roots` for shared
 build caches, copy-on-write per task so a job's writes never reach another's, `sandbox.read_only_roots` for toolchains outside the defaults).
 
+The release train (`release.batch_minutes`, default 15; 0 turns it off; `services/runner/src/release.mjs`) writes pin bumps
+in code. A green merge to the official modules repo opens one task, "Pin bump: the product's official modules", that lists
+the merges it carries; once the window from the first of them has passed, the runner commits `modules-pin.json` at the
+modules repo's green tip and files one product PR card (it merges on approval; the card shows the modules commits, files
+and authority diff code read). A green merge to the product opens "Pin bump: this instance's product and modules" the same
+way and files one apply card moving `product:` to the product's green tip and the official marketplace to the modules
+commit that tip pins. Both cards are the AI reviewer's (Tier 1, raised as usual for new authority). Each target has one
+bump in flight at a time; merges after it collect in the next task, which files once it is over. A bump that is rejected,
+expires or fails is cancelled with the reason, and only a newer merge files the next one (a reverted pin is never re-bumped
+on its own). An agent waiting for a merge to go live blocks on the task that lists its merge commit.
+
 An Engineer agent picks its engine with `engine:` in its `module.yaml` (default: its adapter's). The Software and Platform
 Engineers run `codex-openrouter` (Codex on OpenRouter models through the model gateway, DeepSeek at medium effort, no
 private reads); to fall back to opencode, set `overrides.agents.<key>.engine: openrouter` in `instance.yaml` (an

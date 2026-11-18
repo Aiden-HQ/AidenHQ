@@ -1,0 +1,42 @@
+// The release train's decisions (src/release.mjs): one bump in flight per target, a fixed batch window from the first merge,
+// a tip tried once, and instance.yaml edited in exactly its two pins.
+import assert from "node:assert/strict";
+import { test } from "node:test";
+import { bumpInstance, trainStep } from "../src/release.mjs";
+
+const A = "a".repeat(40), B = "b".repeat(40), C = "c".repeat(40);
+const now = "2026-11-18T10:20:00Z";
+const step = (s) => trainStep({ windowMinutes: 15, now, green: true, ...s }).do;
+
+test("a new green tip opens a bump, files it once the window from the first merge has passed, and never twice", () => {
+  assert.equal(step({ tip: B, pinned: A }), "open");
+  assert.equal(step({ tip: B, pinned: A, open: { since: "2026-11-18T10:10:00Z" } }), "wait", "10 minutes in: still batching");
+  assert.equal(step({ tip: C, pinned: A, open: { since: "2026-11-18T10:05:00Z" } }), "file", "a later merge doesn't restart the window");
+  assert.equal(step({ tip: B, pinned: A, flight: { to: B } }), "idle", "the tip in flight is not bumped twice");
+  assert.equal(step({ tip: C, pinned: A, flight: { to: B } }), "open", "a later merge opens the next bump at once");
+  assert.equal(step({ tip: C, pinned: A, flight: { to: B }, open: { since: "2026-11-18T09:00:00Z" } }), "wait", "which files only once the one in flight is over");
+  assert.equal(step({ tip: B, pinned: A, green: false }), "open", "a merge opens its bump before CI is done");
+  assert.equal(step({ tip: B, pinned: A, green: false, open: { since: "2026-11-18T09:00:00Z" } }), "wait", "and files once it passed");
+});
+
+test("a tip already tried (rejected, failed or reverted) is not tried again; a pinned one closes the open task", () => {
+  assert.equal(step({ tip: B, pinned: A, lastTried: B }), "idle");
+  assert.equal(step({ tip: B, pinned: A, lastTried: B, open: { since: now } }), "close");
+  assert.equal(step({ tip: B, pinned: B, open: { since: now } }), "close");
+  assert.equal(step({ tip: C, pinned: A, lastTried: B }), "open", "a newer merge starts the next bump");
+});
+
+test("bumpInstance moves only the product pin and the official marketplace's sha", () => {
+  const text = [
+    "# the instance",
+    `product: ${A} # pinned`,
+    "marketplaces:",
+    `  - { name: aidenhq, source: { source: github, repo: acme/modules }, sha: ${A} }`,
+    `  - { name: other, source: { source: github, repo: acme/other }, sha: ${A} }`,
+    "modules: [core, tasks]",
+    "",
+  ].join("\n");
+  const out = bumpInstance(text, { product: B, modules: C });
+  assert.equal(out, text.replace(`product: ${A}`, `product: ${B}`).replace(`repo: acme/modules }, sha: ${A}`, `repo: acme/modules }, sha: ${C}`));
+  assert.throws(() => bumpInstance("release: x\n", { product: B, modules: C }), /product: <sha>/);
+});
