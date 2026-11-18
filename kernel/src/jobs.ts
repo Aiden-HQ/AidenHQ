@@ -38,6 +38,8 @@ export interface JobView {
   jobcaps: string[]; observing: boolean; live_input: boolean; exit: number | null; final: string; session: string | null;
   timedOut: boolean; cancelled: boolean; usage: { input: number; cached: number; output: number } | null;
   progress: Progress; version: number;
+  /** When the run ended (ms), and whether its dispatcher acknowledged the end (outcome posted, whoever asked told). */
+  ended: number | null; acked: boolean;
 }
 
 export class JobError extends Error {
@@ -146,6 +148,8 @@ export function createJobs({ db, cfg, cp, mayDispatch, log, boxWrap, onEnd = () 
   // A kernel-admitted job's columns (admission.ts, boxes.ts), added where they are missing.
   const cols = new Set((db.prepare("PRAGMA table_info(jobs)").all() as { name: string }[]).map((c) => c.name));
   for (const [c, t] of [["profile", "TEXT"], ["wake", "TEXT"], ["authority", "TEXT"], ["renewed", "INTEGER"], ["released", "INTEGER"], ["identifier", "TEXT"]]) if (!cols.has(c!)) db.exec(`ALTER TABLE jobs ADD COLUMN ${c} ${t}`);
+  // `acked`: the dispatcher's completion acknowledgement. Runs that ended before the column existed were dealt with by the old ledger.
+  if (!cols.has("acked")) db.exec("ALTER TABLE jobs ADD COLUMN acked INTEGER; UPDATE jobs SET acked = COALESCE(ended, at) WHERE state NOT IN ('admitted', 'running')");
   const watchers = new Map<string, { stop: () => void; send?: (text: string, from: string) => boolean; cancel: () => void }>();
   const versions = new Map<string, number>();
   const waiters = new Map<string, Set<() => void>>();
@@ -161,7 +165,7 @@ export function createJobs({ db, cfg, cp, mayDispatch, log, boxWrap, onEnd = () 
       id: r.id, module: r.module, agent: r.agent, task: r.task, state: r.state, pid: r.pid, log: r.log, dir: r.dir, at: r.at,
       jobcaps: JSON.parse(r.jobcaps), observing: r.observing === 1, live_input: r.live_input === 1, exit: r.exit ?? null, final: r.final,
       session: r.session ?? null, timedOut: why.timedOut === true,
-      cancelled: why.cancelled === true, usage: r.usage ? JSON.parse(r.usage) : null, progress: JSON.parse(r.progress || "{}"), version: versions.get(r.id) ?? 0,
+      cancelled: why.cancelled === true, usage: r.usage ? JSON.parse(r.usage) : null, progress: JSON.parse(r.progress || "{}"), version: versions.get(r.id) ?? 0, ended: r.ended ?? null, acked: r.acked != null,
     };
   };
 
@@ -413,8 +417,17 @@ export function createJobs({ db, cfg, cp, mayDispatch, log, boxWrap, onEnd = () 
       }
       return view(row(id)!);
     },
-    /** The module's own job admitted on a wake (none, or one: a wake starts at most one job), so a dispatcher that lost it finds it. */
-    byWake: (module: string, wake: string) => (db.prepare("SELECT * FROM jobs WHERE module = ? AND wake = ?").all(module, wake) as Record<string, any>[]).map(view),
+    /** The module's jobs the kernel keeps for it: a task's (newest first), or every one not yet acknowledged (live, or ended and unacknowledged). */
+    list: (module: string, f: { task: string } | { open: true }) => (("task" in f
+      ? db.prepare("SELECT * FROM jobs WHERE module = ? AND task = ? ORDER BY at DESC").all(module, f.task)
+      : db.prepare("SELECT * FROM jobs WHERE module = ? AND acked IS NULL ORDER BY at").all(module)) as Record<string, any>[]).map(view),
+    /** The dispatcher is done with an ended job (its outcome posted, whoever asked told): it leaves the open list. */
+    ack(module: string, id: string) {
+      const r = own(module, id);
+      if (r.state === "admitted" || r.state === "running") throw new JobError(409, "job-live", `job ${id} is still ${r.state}`);
+      db.prepare("UPDATE jobs SET acked = ? WHERE id = ? AND acked IS NULL").run(Date.now(), id);
+      return view(row(id)!);
+    },
     stop(module: string, id: string) {
       const r = own(module, id);
       if (r.state === "running") watchers.get(id)?.cancel();

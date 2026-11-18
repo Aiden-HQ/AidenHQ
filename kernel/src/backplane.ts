@@ -35,7 +35,7 @@
 //   POST /v1/jobs, GET/DELETE /v1/jobs/:job, POST /v1/jobs/:job/input  (a module with role kernel.jobs) start a job in the
 //                              sandbox, its status (?after=<version>&wait=<ms> waits for a change), stop it, a comment into it (jobs.ts; `wake`: the claimed comment wake it delivers);
 //                              POST /v1/jobs {wake, prompt, session?}: a job on a wake it claimed, admitted (admission.ts);
-//                              GET /v1/jobs?wake=<key>: its own job on that wake, if any (a dispatcher that lost the answer)
+//                              GET /v1/jobs?open=1 | ?task=<id>: its own jobs not yet acknowledged, or a task's; POST /v1/jobs/:job/ack: an ended job is dealt with
 //   POST /v1/codehost/:op      (a module's own token) token | snapshot | clone on the GitHub code host, under the module's
 //                              codehost grant (codehost.ts)
 //   POST /v1/jobs/workspace    (a module with role kernel.jobs) {task}: the workspace folder it may write into (a task of an agent it dispatches)
@@ -125,6 +125,7 @@ export const ROUTES = [
   { method: "GET", path: "/v1/jobs/:job", auth: "module" },
   { method: "DELETE", path: "/v1/jobs/:job", auth: "module" },
   { method: "POST", path: "/v1/jobs/:job/input", auth: "module" },
+  { method: "POST", path: "/v1/jobs/:job/ack", auth: "module" },
   { method: "GET", path: "/v1/work", auth: "module|board" },
   { method: "GET", path: "/v1/work/metrics", auth: "module" },
   { method: "POST", path: "/v1/work/grader-token", auth: "module" },
@@ -420,9 +421,10 @@ export function createBackplane({ whoami, asserter, proxy, cp, boardCp, grantsFi
               return send(res, 200, admission && typeof (b as { wake?: unknown })?.wake === "string" ? await admission.admit(w.module!, b as never) : await jobs.start(w.module!, b as never));
             }
             case "GET /v1/jobs": {
-              const wake = new URLSearchParams(q ?? "").get("wake");
-              if (!wake) throw fail(400, "bad_request", "send ?wake=<key>");
-              return send(res, 200, { jobs: jobs.byWake(w.module!, wake) });
+              const p = new URLSearchParams(q ?? "");
+              const task = p.get("task");
+              if (!task && !p.has("open")) throw fail(400, "bad_request", "send ?open=1 or ?task=<id>");
+              return send(res, 200, { jobs: jobs.list(w.module!, task ? { task } : { open: true }) });
             }
             case "POST /v1/jobs/workspace": return send(res, 200, await jobs.workspace(w.module!, (await json(req)).task));
             case "GET /v1/jobs/:job": {
@@ -438,6 +440,7 @@ export function createBackplane({ whoami, asserter, proxy, cp, boardCp, grantsFi
               if (r.sent && typeof b.wake === "string") wakes?.delivered(w.module!, b.wake);
               return send(res, 200, r);
             }
+            case "POST /v1/jobs/:job/ack": return send(res, 200, jobs.ack(w.module!, m[0]!));
             case "POST /v1/jobs/:job/post": {
               if (!outcomes) throw fail(503, "unavailable", "outcomes are off");
               const job = await jobs.get(w.module!, m[0]!);

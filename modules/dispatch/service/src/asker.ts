@@ -35,15 +35,15 @@ export function createAsker(kernel: Kernel) {
 
   /**
    * When the last of a parent's agent-made sub-tasks ends a run, one summary for whoever asked (the parent's agent), so the
-   * parent isn't silent while the results sit on N tasks. `ended`: each sub-task's last run (state), from this module's jobs;
+   * parent isn't silent while the results sit on N tasks. `ended`: each sub-task's last run (state), from the kernel's jobs;
    * `live`: sub-tasks with a run going. Skipped when every run finished and every one is graded (the grader speaks then).
    * Returns the key of the batch it reported (the newest job), or undefined while a sibling is still busy.
    */
-  async function summarize(task: Issue, { ended, live, dir }: { ended: (task: string) => { seq: number; state: string } | undefined; live: (task: string) => boolean; dir: Directory }) {
+  async function summarize(task: Issue, { ended, live, dir }: { ended: (task: string) => Promise<{ seq: number; state: string } | undefined>; live: (task: string) => Promise<boolean>; dir: Directory }) {
     const siblings = (await kernel.children(task.parentId!, task.companyId!)).filter((c) => agentMade(c) && c.assigneeAgentId && dir[c.assigneeAgentId]);
-    const busy = (c: Issue) => live(c.id) || (!ended(c.id) && ["todo", "in_progress"].includes(String(c.status)));
-    if (!siblings.length || siblings.some(busy)) return undefined;
-    const rows = siblings.map((c) => ({ c, run: ended(c.id) })).sort((a, b) => String(a.c.identifier).localeCompare(String(b.c.identifier), undefined, { numeric: true }));
+    const runs = await Promise.all(siblings.map(async (c) => ({ c, run: await ended(c.id), live: await live(c.id) })));
+    if (!siblings.length || runs.some((r) => r.live || (!r.run && ["todo", "in_progress"].includes(String(r.c.status))))) return undefined;
+    const rows = runs.sort((a, b) => String(a.c.identifier).localeCompare(String(b.c.identifier), undefined, { numeric: true }));
     const batch = Math.max(...rows.map((r) => r.run?.seq ?? 0));
     const failed = rows.filter((r) => r.c.status !== "cancelled" && r.run && r.run.state !== "done");
     if (!failed.length && rows.every((r) => r.c.status === "cancelled" || dir[r.c.assigneeAgentId!]?.graded)) return batch;
