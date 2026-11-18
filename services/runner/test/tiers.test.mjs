@@ -700,3 +700,18 @@ test("apply: an instance agent's definition that starts work under quiet start i
   assert.equal(run({ routines: sched }, inst()), 1, "without quiet start: as before");
   assert.equal(run({ model: "x", routines: { sweep: { schedules: [] } } }), 1, "other tuning: as before");
 });
+
+test("apply: a definition's gates all run: autonomy and quiet start together, and paused to active on the definition itself", () => {
+  const owner = (t) => (t.tier === 2 && t.reviewFirst ? 2 : tierOf(t));
+  const f = "agents/chaser/agent.yaml";
+  const quiet = inst({ quiet_start: "on" });
+  const d = (routines, extra = {}) => def({ name: "Chaser", connections: { github: "read" }, routines, ...extra });
+  const run = (b, h, i = quiet) => apply([f], { [f]: b, "instance.yaml": i }, { [f]: h, "instance.yaml": i });
+  const sched = [{ cron: "0 9 * * *", label: "daily" }];
+  const both = run(d({ sweep: { schedules: [] } }), d({ sweep: { schedules: sched, autonomy: "full" } }));
+  assert.equal(owner(both), 2, "an autonomy change and a wake: the owner's, the panel's review first");
+  assert.ok(both.panel, "with a second reviewer");
+  assert.equal(owner(run(d({ sweep: { schedules: sched, status: "paused" } }), d({ sweep: { schedules: sched, status: "active" } }))), 2, "the definition's own paused to active");
+  assert.equal(owner(run(d({ sweep: { schedules: sched, status: "paused" } }), d({ sweep: { schedules: sched } }))), 2, "dropping its paused status");
+  assert.equal(owner(run(d({ sweep: { schedules: sched } }), d({ sweep: { schedules: sched, status: "paused" } }))), 1, "pausing: as before");
+});

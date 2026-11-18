@@ -231,24 +231,36 @@ function applyParts(s) {
 const forked = (s, key) => ["base", "head"].some((side) => parse(s[side]?.["instance.yaml"])?.overrides?.agents?.[key]?.handbook_fork != null);
 
 /**
+ * A routine's effective status as compile gives it (scripts/modules.mjs): the instance override, else the definition's own
+ * `status`, else active. Compile's quiet-start pause covers module agents only, never an instance agent's own routines.
+ */
+const instanceRoutineStatus = (key, def, rk, instance) => instance?.overrides?.routines?.[`${key}-${rk}`]?.status ?? def?.routines?.[rk]?.status ?? "active";
+
+/**
  * What an instance agent's definition starts running under quiet start (instance.yaml `settings.quiet_start: on`): a heartbeat
- * turned on, or a routine whose effective status becomes active (it has schedules, and no `overrides.routines.<key>-<routine>`
- * pauses it; compile never pauses an instance agent's own schedules). Empty when quiet start is off.
+ * turned on, or a scheduled routine whose effective status is active at head and wasn't at base. Empty when quiet start is off.
  */
 function quietWakes(key, base, head, instance) {
   if (instance?.settings?.quiet_start !== "on" || !head) return [];
   const beats = (d) => d?.heartbeat != null && d.heartbeat !== false;
-  const active = (d, rk) => Boolean(d?.routines?.[rk]?.schedules?.length) && instance.overrides?.routines?.[`${key}-${rk}`]?.status !== "paused";
+  const active = (d, rk) => Boolean(d?.routines?.[rk]?.schedules?.length) && instanceRoutineStatus(key, d, rk, instance) === "active";
   return [...(beats(head) && !beats(base) ? ["turns a heartbeat on"] : []), ...Object.keys(head.routines ?? {}).filter((rk) => active(head, rk) && !active(base, rk)).map((rk) => `starts routine ${rk}`)];
 }
 
+/** Every gate on one definition change, the highest wins: none returns before the others have run. */
 function agentDefPart(key, base, head, s) {
   if (base === null || head === null) return REJECT("unparseable", `agents/${key}/agent.yaml doesn't parse`);
   if (head === undefined) return T(1, "agent-removed", `removes agent ${key}`);
+  const parts = [agentDefFields(key, base, head, s)];
   const caps = routineAutonomyChanges(base?.routines, head.routines);
-  if (caps.length) return PANEL("routine-autonomy", `${key}: routine autonomy changes (${caps.join(", ")})`);
+  if (caps.length) parts.push(PANEL("routine-autonomy", `${key}: routine autonomy changes (${caps.join(", ")})`));
   const woken = quietWakes(key, base, head, parse(s.head?.["instance.yaml"]));
-  if (woken.length) return OWNER_AFTER_REVIEW("quiet-start", `${key}: ${woken.join(", ")} under quiet start, the owner's authority`);
+  if (woken.length) parts.push(OWNER_AFTER_REVIEW("quiet-start", `${key}: ${woken.join(", ")} under quiet start, the owner's authority`));
+  return highest(parts);
+}
+
+/** A definition's own fields: new agent, grants, privileged fields, trial, tuning. */
+function agentDefFields(key, base, head, s) {
   if (base === undefined) {
     if (head.trial !== true) return PANEL("untrialed-agent", `new agent ${key} isn't in trial`);
     // Only the safe fields (no roles, image or other privileges); any write grant goes to the reviewer at least.
