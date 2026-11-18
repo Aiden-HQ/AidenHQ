@@ -121,9 +121,13 @@ export function createOutcomes({ db, plugin, delegates, finish, provenance, rela
 }
 export type Outcomes = ReturnType<typeof createOutcomes>;
 
-/** The ids of the agents `agent` may delegate to: its grants `delegate_to` keys (`key?` optional ones too), mapped to ids. */
+/**
+ * The ids of the agents `agent` may delegate to: its grants `delegate_to` keys (`key?` optional ones too), mapped to ids. An
+ * agent with no list has no limit here (as in the tasks bridge: the chief of staff hands work to anyone in its company); the
+ * bridge limits it to its reports and the Engineers.
+ */
 export const delegateIds = (agents: Record<string, { key?: string; delegate_to?: unknown }> | undefined, agent: string) => {
   const to = agents?.[agent]?.delegate_to;
-  const keys = new Set((Array.isArray(to) ? to : []).map((k) => String(k).replace(/\?$/, "")));
-  return Object.entries(agents ?? {}).filter(([, g]) => g.key && keys.has(g.key)).map(([id]) => id);
+  const keys = Array.isArray(to) ? new Set(to.map((k) => String(k).replace(/\?$/, ""))) : undefined;
+  return Object.entries(agents ?? {}).filter(([, g]) => g.key && (!keys || keys.has(g.key))).map(([id]) => id);
 };
