@@ -39,7 +39,8 @@ export async function fetchRetry(url, init = {}) {
   let err;
   for (let i = 0; i < 4; i++) {
     try {
-      const r = await fetch(url, { ...init, headers, signal: AbortSignal.timeout(30000) });
+      const { timeout = 30000, ...rest } = init;
+      const r = await fetch(url, { ...rest, headers, signal: AbortSignal.timeout(timeout) });
       if (r.ok) return r;
       err = Object.assign(new Error(`${r.status} from ${url}`), { status: r.status, response: r });
       if (r.status >= 400 && r.status < 500 && r.status !== 429) break;
@@ -174,13 +175,20 @@ async function dockerVersions(name) {
 
 // ---------------------------------------------------------------- apt repositories
 
-export async function aptIndex(source) {
+// One download per index per run: a Dockerfile's apt pins share their few indexes, and a large one (noble's main is tens of
+// megabytes uncompressed) fetched once per pin timed out. The compressed index first, with a longer timeout.
+const aptIndexes = new Map();
+export function aptIndex(source) {
+  if (!aptIndexes.has(source)) aptIndexes.set(source, readAptIndex(source).catch((e) => { aptIndexes.delete(source); throw e; }));
+  return aptIndexes.get(source);
+}
+async function readAptIndex(source) {
   const [url, dist, comp = "main"] = source.trim().split(/\s+/);
   const dir = `${url.replace(/\/$/, "")}/dists/${dist}/${comp}/binary-amd64/Packages`;
   let text;
-  try { text = await (await fetchRetry(dir)).text(); } catch {
-    // zlib, not DecompressionStream: Ubuntu 22.04's release-pocket indexes end in zero padding, which the stream rejects.
-    text = gunzipSync(Buffer.from(await (await fetchRetry(`${dir}.gz`)).arrayBuffer())).toString("utf8");
+  // zlib, not DecompressionStream: Ubuntu 22.04's release-pocket indexes end in zero padding, which the stream rejects.
+  try { text = gunzipSync(Buffer.from(await (await fetchRetry(`${dir}.gz`, { timeout: 120000 })).arrayBuffer())).toString("utf8"); } catch {
+    text = await (await fetchRetry(dir, { timeout: 120000 })).text();
   }
   return text.split(/\n\n+/).map((s) => Object.fromEntries(s.split("\n").filter((l) => /^\S+: /.test(l)).map((l) => [l.slice(0, l.indexOf(":")), l.slice(l.indexOf(":") + 2)])))
     .map((p) => ({ ...p, url }));
