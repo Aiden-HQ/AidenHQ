@@ -35,7 +35,7 @@ export const DISTRO = "Aiden-HQ/aidenhq-distro";
 export const KERNEL = "Aiden-HQ/AidenHQ";
 export const MODULES = "Aiden-HQ/aidenhq-modules";
 const GITHUB = "https://github.com";
-const NAME = /^\d{4}\.\d{1,2}(\.\d+)?$/;
+const NAME = /^\d{4}\.\d{1,2}(\.\d+){0,2}$/;
 const SHA = /^[0-9a-f]{40}$/;
 /** The night, in the owner's timezone: an automatic install starts at or after FROM and before TO. */
 export const NIGHT = { from: 2, to: 5 };
@@ -44,10 +44,10 @@ const isMap = (v: unknown): v is Dict => !!v && typeof v === "object" && !Array.
 /** A release that failed verification: never installed, and the owner is told once. Anything else (network) is retried. */
 export class Refused extends Error {}
 
-/** Release names in order: 2026.11 < 2026.11.1 < 2026.12. */
+/** Release names in order: 2026.11 < 2026.11.2 < 2026.11.18 (a nightly) < 2026.11.18.1 (its day's second cut) < 2026.11.19. */
 export function compareRelease(a: string, b: string): number {
   const [x, y] = [a, b].map((s) => s.split(".").map(Number));
-  for (let i = 0; i < 3; i++) { const d = (x![i] ?? 0) - (y![i] ?? 0); if (d) return Math.sign(d); }
+  for (let i = 0; i < 4; i++) { const d = (x![i] ?? 0) - (y![i] ?? 0); if (d) return Math.sign(d); }
   return 0;
 }
 

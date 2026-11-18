@@ -10,7 +10,7 @@ import { DatabaseSync } from "node:sqlite";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import YAML from "yaml";
-import { Refused, check, createUpdates, pinTo, readState, run, verify } from "../src/updates.ts";
+import { Refused, check, compareRelease, createUpdates, pinTo, readState, run, verify } from "../src/updates.ts";
 
 // The owner's own git config (signing, hooks) never reaches the fixtures or the updater's commits.
 process.env.GIT_CONFIG_GLOBAL = "/dev/null";
@@ -105,6 +105,11 @@ settings:
 
 
 const ask = (w, release, by = "account:a1") => { mkdirSync(w.d.dir, { recursive: true }); writeFileSync(join(w.d.dir, "now.json"), JSON.stringify({ release, by })); };
+
+test("nightly names sort by date, and a day's second cut between that day and the next", () => {
+  const names = ["2026.11.19", "2026.11.18.1", "2026.11", "2026.11.18", "2026.12.1", "2026.11.2", "2026.11.18.2"];
+  assert.deepEqual(names.sort(compareRelease), ["2026.11", "2026.11.2", "2026.11.18", "2026.11.18.1", "2026.11.18.2", "2026.11.19", "2026.12.1"]);
+});
 
 test("a newer release is found and verified; by day nothing installs, and the owner is told once", async () => {
   const w = world();

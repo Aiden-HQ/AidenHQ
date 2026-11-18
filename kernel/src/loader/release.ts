@@ -13,7 +13,7 @@ type Dict = Record<string, unknown>;
 export type Resolved = { name: string; kernel: string; marketplace: { name: string; source: unknown; sha: string }; modules: Record<string, string>; images: Record<string, string> };
 
 const SHA = /^[0-9a-f]{40}$/;
-const NAME = /^\d{4}\.\d{1,2}(\.\d+)?$/;
+const NAME = /^\d{4}\.\d{1,2}(\.\d+){0,2}$/;
 const IMAGE = /^[a-z0-9][a-z0-9.-]*(:[0-9]+)?(\/[a-z0-9][a-z0-9._-]*)+@sha256:[0-9a-f]{64}$/;
 const isMap = (v: unknown): v is Dict => !!v && typeof v === "object" && !Array.isArray(v);
 const sha = (v: unknown, what: string) => {
@@ -25,7 +25,7 @@ const sha = (v: unknown, what: string) => {
 export function releaseOf(instance: Dict): { name: string; at: Where } | null {
   const r = instance.release;
   if (r == null) return null;
-  if (!isMap(r) || typeof r.name !== "string" || !NAME.test(r.name)) throw new Error("instance.yaml release: needs { name: <YYYY.MM[.N]>, source, sha }");
+  if (!isMap(r) || typeof r.name !== "string" || !NAME.test(r.name)) throw new Error("instance.yaml release: needs { name: <YYYY.M[.D[.N]]>, source, sha }");
   const at = sourceOf(r.source, "instance.yaml release", undefined, r.sha, true);
   return { name: r.name, at: { ...at, path: "" } };
 }

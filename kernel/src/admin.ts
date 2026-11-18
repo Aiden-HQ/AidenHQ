@@ -452,7 +452,7 @@ export function createAdmin(d: Deps) {
         case "POST /updates": {
           if (!d.updates) throw new Refusal(404, "not found");
           const release = String(f.get("release") ?? "");
-          if (!/^\d{4}\.\d{1,2}(\.\d+)?$/.test(release)) throw new Refusal(400, "which release?");
+          if (!/^\d{4}\.\d{1,2}(\.\d+){0,2}$/.test(release)) throw new Refusal(400, "which release?");
           let said: string;
           try { said = d.updates.requestNow(release, by); } catch (e) { throw new Refusal(409, (e as Error).message); }
           log("update now", { release, by });
