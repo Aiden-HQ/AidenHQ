@@ -187,7 +187,7 @@ jobs:
         env:
           SHARD: ${{ matrix.shard }}
           # Seconds each file took on a hosted runner (2026-11-18), for balancing; a file not listed counts 30.
-          WEIGHTS: '{"test/flow-merge-path.test.mjs": 36, "test/flow-local-codehost.test.mjs": 36, "test/flow-autonomy.test.mjs": 31, "test/flow-graded.test.mjs": 31, "test/flow-approvals.test.mjs": 28, "test/flow-product.test.mjs": 22, "test/flow-conversation.test.mjs": 22, "test/flow-running.test.mjs": 14, "test/box.test.mjs": 13, "test/adopt.test.mjs": 11}'
+          WEIGHTS: '{"test/flow-merge-path.test.mjs": 36, "test/flow-local-codehost.test.mjs": 36, "test/flow-autonomy.test.mjs": 31, "test/flow-approvals.test.mjs": 28, "test/flow-running.test.mjs": 14, "test/box.test.mjs": 13, "test/adopt.test.mjs": 11}'
         run: |
           # The files test:flows runs, split greedily by weight, heaviest first, into the lightest of the three shards.
           files=$(node -e '

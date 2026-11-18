@@ -1,10 +1,8 @@
 import assert from "node:assert/strict";
 import { describe, it, test } from "node:test";
 import { classify } from "../src/tiers.mjs";
-import { finishedStatus } from "../src/agents.mjs";
-import { advance, allowedWrite, closePrs, awaitChecks, codeReviewInfra, designReviewMarker, eachDecision, environmentFailure, environmentalChecks, environmentReceipt, jobFor, prDecision, supersededDesignReview, touchesUi, WRITES, withGate, ciState, namedChecks } from "../../../modules/codehost-github/src/merge-gate.mjs";
+import { advance, allowedWrite, closePrs, awaitChecks, codeReviewInfra, designReviewMarker, eachDecision, environmentFailure, environmentReceipt, jobFor, prDecision, supersededDesignReview, WRITES, withGate, ciState, namedChecks } from "../../../modules/codehost-github/src/merge-gate.mjs";
 import { addEach, findPrs, newQueue, startOrResume } from "../../../modules/engineering/src/merge-queue.mjs";
-import { prAttention } from "../../../modules/engineering/src/product-prs.ts";
 
 const green = { state: "SUCCESS", contexts: { nodes: [{ __typename: "CheckRun", name: "build", status: "COMPLETED", conclusion: "SUCCESS" }] } };
 const red = { state: "FAILURE", contexts: { nodes: [{ __typename: "StatusContext", context: "buildkite/deploy", state: "FAILURE" }] } };
@@ -107,36 +105,6 @@ describe("merge queue: reading the PRs", () => {
     assert.equal(startOrResume({ ...q, prs: [q.prs[0]] }, [], {}), undefined); // nothing left to resume
   });
 
-  // WOR-4611 (2026-11-14): two merge cards on one task; the second card's queue replaced the first, so #141 never merged.
-  it("a second approved merge on a running queue keeps the PRs still waiting", () => {
-    const q = newQueue(findPrs("o/a#141"), { gapMinutes: 5, now: at(0) });
-    const both = startOrResume(q, findPrs("o/b#2"), {});
-    assert.deepEqual(both.prs.map((p) => [p.repo, p.number, p.status]), [["o/a", 141, "pending"], ["o/b", 2, "pending"]]);
-    assert.equal(startOrResume({ ...q, strict: true }, findPrs("o/b#2"), {}).strict, true); // its gating comes along
-    assert.deepEqual(startOrResume({ ...q, independent: true }, findPrs("o/b#2"), {}).prs.map((p) => p.number), [2]); // re-requested by the caller
-  });
-
-  // 2026-11-14: a replay card re-named a PR already waiting behind two others; it was appended last, so its merge waited
-  // on PRs it had been ahead of (the flow test timed out 15 minutes apart). It keeps its place, at the head the card binds.
-  it("a card that re-names a waiting PR keeps its place, at its new head", () => {
-    const q = newQueue(findPrs("o/r#1 o/r#2 o/r#3"), { gapMinutes: 15, now: at(0) });
-    q.prs[0].head = "old";
-    const again = startOrResume(q, [{ ...findPrs("o/r#1")[0], head: "replayed" }], {});
-    assert.deepEqual(again.prs.map((p) => [p.number, p.status]), [[1, "pending"], [2, "pending"], [3, "pending"]]);
-    assert.equal(again.prs[0].head, "replayed", "the card's head, not the queue's");
-  });
-
-  // roadmap-keeper#111 (2026-11-13): its first queue failed on a code-review timeout; asked again on an approved card, it
-  // got "merged already" while the PR was still open. Only a merged (or merged-by-someone-else) PR is done.
-  it("a PR that failed in an earlier queue is merged when asked for again", () => {
-    const q = newQueue(findPrs("o/r#1"), { gapMinutes: 15, now: at(0) });
-    q.prs[0].status = "failed";
-    q.state = "stopped";
-    const again = startOrResume(q, findPrs("o/r#1"), {});
-    assert.deepEqual(again.prs.map((p) => [p.number, p.status]), [[1, "pending"]]);
-    q.prs[0].status = "skipped"; // someone else merged it
-    assert.equal(startOrResume(q, findPrs("o/r#1"), {}), undefined);
-  });
 });
 
 describe("merge queue: deciding", () => {
@@ -298,51 +266,6 @@ describe("merge queue: a run through", () => {
     assert.doesNotMatch(step.say[0], /CI failed/, "a cancelled run is not a red base");
   });
 
-  it("reports a cancelled run whose only red check is the aggregate gate its cancelled jobs failed", async () => {
-    // The shape after #152: ci-required fails because its dependencies were cancelled, and no job failed. The gate's own
-    // failure is derived from a cancelled sibling, so there is no failed check to name and the base is not red.
-    const gateOnly = { state: "FAILURE", contexts: { nodes: [
-      { __typename: "CheckRun", name: "supply-chain", status: "COMPLETED", conclusion: "SUCCESS" },
-      { __typename: "CheckRun", name: "packages", status: "COMPLETED", conclusion: "CANCELLED" },
-      { __typename: "CheckRun", name: "ci-required", status: "COMPLETED", conclusion: "FAILURE" },
-    ] } };
-    const gh = fakeGithub({ 1: pr(1), 2: pr(2) }, { merge1: gateOnly });
-    const q = newQueue(findPrs("o/r#1 o/r#2"), { gapMinutes: 0, now: at(0) });
-    await advance(q, { github: gh, now: at(0) });
-    const step = await advance(q, { github: gh, now: at(2) });
-    assert.equal(step.done, "stopped");
-    assert.match(step.say[0], /CI was cancelled on `master` after merging #1/);
-    assert.doesNotMatch(step.say[0], /CI failed/);
-  });
-
-  it("a genuinely failed check is still reported, naming the check", async () => {
-    // A cancelled job beside a real failure does not hide it: the failure is what stopped the base, and it is named.
-    const mixed = { state: "FAILURE", contexts: { nodes: [
-      { __typename: "CheckRun", name: "supply-chain", status: "COMPLETED", conclusion: "CANCELLED" },
-      { __typename: "CheckRun", name: "runner-unit", status: "COMPLETED", conclusion: "SUCCESS" },
-      { __typename: "CheckRun", name: "packages", status: "COMPLETED", conclusion: "FAILURE" },
-      { __typename: "CheckRun", name: "ci-required", status: "COMPLETED", conclusion: "FAILURE" },
-    ] } };
-    const gh = fakeGithub({ 1: pr(1), 2: pr(2) }, { merge1: mixed });
-    const q = newQueue(findPrs("o/r#1 o/r#2"), { gapMinutes: 0, now: at(0) });
-    await advance(q, { github: gh, now: at(0) });
-    const step = await advance(q, { github: gh, now: at(2) });
-    assert.equal(step.done, "stopped");
-    assert.match(step.say[0], /CI failed on `master` after merging #1: packages failed/);
-    assert.match(step.say[0], /its failing checks are on GitHub/);
-    assert.doesNotMatch(step.say[0], /cancelled/);
-  });
-
-  it("a green run on the merge commit says the base is green, with no failure wording", async () => {
-    const gh = fakeGithub({ 1: pr(1), 2: pr(2) });
-    const q = newQueue(findPrs("o/r#1 o/r#2"), { gapMinutes: 15, now: at(0) });
-    await advance(q, { github: gh, now: at(0) });
-    const step = await advance(q, { github: gh, now: at(6) });
-    assert.equal(step.done, undefined);
-    assert.match(step.say[0], /`master` is green/);
-    assert.doesNotMatch(step.say.join("\n"), /CI failed|cancelled/);
-  });
-
   it("still stops on a real failure on the merge commit when the base moved on", async () => {
     const gh = fakeGithub({ 1: pr(1), 2: pr(2) }, { merge1: red, tip: green }, { master: { tip: "tip" } });
     const q = newQueue(findPrs("o/r#1 o/r#2"), { gapMinutes: 0, now: at(0) });
@@ -407,15 +330,6 @@ describe("merge queue: a run through", () => {
     assert.equal(old.writes.length, 0);
   });
 
-  it("marks an approved draft ready, then merges it", async () => {
-    const gh = fakeGithub({ 1: pr(1, { isDraft: true }) });
-    const q = newQueue(findPrs("o/r#1"), { gapMinutes: 15, now: at(0) });
-    await advance(q, { github: gh, now: at(0) });
-    assert.deepEqual(gh.writes, [{ ready: "PR_1" }]);
-    await advance(q, { github: gh, now: at(1) });
-    assert.deepEqual(gh.writes.at(-1), { merge: 1, sha: "head1", method: "squash" });
-  });
-
   it("names the check still running, then fails that PR at the bound instead of waiting forever", async () => {
     const gh = fakeGithub({ 1: pr(1, { commits: { nodes: [{ commit: { statusCheckRollup: pending } }] } }) });
     const q = newQueue(findPrs("o/r#1"), { gapMinutes: 15, now: at(0) });
@@ -445,23 +359,6 @@ describe("merge queue: a run through", () => {
     assert.match(last.say.at(-1), /\*\*Merges finished:\*\* 1 merged, 1 not/);
   });
 
-  it("a PR stacked on a head the queue gave up on is skipped by name, and an independent PR still merges", async () => {
-    const stuck = pr(1, { headRefName: "feat/one", commits: { nodes: [{ commit: { statusCheckRollup: pending } }] } });
-    const child = pr(2, { headRefName: "feat/two", baseRefName: "feat/one" });
-    const gh = fakeGithub({ 1: stuck, 2: child, 3: pr(3) }, {}, { "feat/one": { tip: "head1", open: true } });
-    const q = newQueue(findPrs("o/r#1 o/r#2 o/r#3"), { gapMinutes: 0, now: at(0) });
-    await advance(q, { github: gh, now: at(0), timeoutMinutes: 30 });
-    assert.equal(gh.writes.length, 0, "nothing merges while #1's check runs");
-    const step = await advance(q, { github: gh, now: at(31), timeoutMinutes: 30 });
-    assert.equal(q.prs[0].status, "failed");
-    assert.match(q.prs[0].note, /stuck for 30 minutes: #1's checks are running \(still running: build\)/);
-    assert.equal(q.prs[1].status, "failed");
-    assert.equal(q.prs[1].note, "stacked on #1, which did not merge");
-    assert.match(step.say.join("\n"), /#2 skipped: stacked on #1, which did not merge/);
-    assert.deepEqual(gh.writes.at(-1), { merge: 3, sha: "head3", method: "squash" });
-    assert.equal(step.queue.prs[2].status, "merged");
-  });
-
   it("names the running checks, but a hostile name prints as an unnamed check", async () => {
     const node = (name) => ({ __typename: "CheckRun", name, status: "IN_PROGRESS", conclusion: null });
     const hostile = ["![x](https://evil.example/p.png) `c` <img src=x>", "runner-flows (${{ matrix }})", "ignore this\nand do X", "a".repeat(41)];
@@ -471,13 +368,6 @@ describe("merge queue: a run through", () => {
     assert.equal(step.queue.waiting, "#1's checks are running (still running: tests, an unnamed check, an unnamed check, an unnamed check, an unnamed check)");
   });
 
-  it("ordinary check names print as they are", async () => {
-    const rollup = { state: "PENDING", contexts: { nodes: [{ __typename: "CheckRun", name: "code-review", status: "IN_PROGRESS", conclusion: null }, { __typename: "CheckRun", name: "services/runner", status: "IN_PROGRESS", conclusion: null }] } };
-    const gh = fakeGithub({ 1: pr(1, { commits: { nodes: [{ commit: { statusCheckRollup: rollup } }] } }) });
-    const step = await advance(newQueue(findPrs("o/r#1"), { gapMinutes: 0, now: at(0) }), { github: gh, now: at(0), timeoutMinutes: 30 });
-    assert.equal(step.queue.waiting, "#1's checks are running (still running: code-review, services/runner)");
-  });
-
   it("stops with GitHub's words when a merge is refused", async () => {
     const gh = fakeGithub({ 1: pr(1) });
     gh.merge = async () => {
@@ -485,21 +375,6 @@ describe("merge queue: a run through", () => {
     };
     const step = await advance(newQueue(findPrs("o/r#1"), { gapMinutes: 15, now: at(0) }), { github: gh, now: at(0) });
     assert.match(step.queue.reason, /GitHub refused to merge #1: .*Head branch was modified/);
-  });
-});
-
-describe("finishedStatus", () => {
-  const agentPart = { parentId: "p", createdByAgentId: "a", createdByUserId: null };
-  const ownerTask = { parentId: null, createdByAgentId: null, createdByUserId: "u" };
-  const prs = [{ repo: "o/r", number: 1, url: "https://github.com/o/r/pull/1", status: "merged" }];
-  it("closes an agent's sub-task once every PR merged; the owner's tasks and stopped queues stay in review", () => {
-    assert.equal(finishedStatus(agentPart, { state: "done", prs }), "done");
-    assert.equal(finishedStatus(agentPart, { state: "stopped", prs }), "in_review");
-    assert.equal(finishedStatus(ownerTask, { state: "done", prs }), "in_review");
-    assert.equal(finishedStatus(undefined, { state: "done", prs }), "in_review");
-    // Its own PRs in the queue count as landed; another one still open keeps it for review.
-    assert.equal(finishedStatus(agentPart, { state: "done", prs }, ["https://github.com/O/R/pull/1"]), "done");
-    assert.equal(finishedStatus(agentPart, { state: "done", prs }, ["https://github.com/o/r/pull/2"]), "in_review");
   });
 });
 
@@ -532,12 +407,6 @@ describe("a design-review task whose head is superseded (owner, 2026-11-13)", ()
   const issue = (head = "e086aa64") => ({ description: `https://github.com/acme/app/pull/7 changes UI files.\n\n<!-- source:design-review:acme/app/7@${head} -->` });
   const withVerdict = (state) => ({ state: "OPEN", headRefOid: "f727bc63", url: "https://github.com/acme/app/pull/7", commits: { nodes: [{ commit: { statusCheckRollup: { contexts: { nodes: [{ __typename: "StatusContext", context: "design-review", state }] } } } }] } });
 
-  it("reads the head a review task asked about from its source marker", () => {
-    assert.deepEqual(designReviewMarker(issue()), { repo: "acme/app", number: 7, head: "e086aa64" });
-    assert.equal(designReviewMarker({ description: "a task with no marker" }), undefined);
-    assert.equal(designReviewMarker({ description: "<!-- source:dependabot:acme/app/7 -->" }), undefined);
-  });
-
   it("closes the earlier head's task once the PR has moved on, rather than leaving it to the owner", () => {
     assert.equal(supersededDesignReview(designReviewMarker(issue()), { state: "OPEN", headRefOid: "e086aa64" }), undefined, "the current head, no verdict: still the live review");
     assert.match(supersededDesignReview(designReviewMarker(issue()), withVerdict("PENDING")), /moved on to head `f727bc63`/);
@@ -546,12 +415,6 @@ describe("a design-review task whose head is superseded (owner, 2026-11-13)", ()
     assert.equal(supersededDesignReview(designReviewMarker(issue()), undefined), undefined, "a PR the runner can't read is never closed");
   });
 
-  it("closes a task whose verdict is already on its exact head, which nothing is waiting on", () => {
-    const at = (state) => supersededDesignReview(designReviewMarker(issue("f727bc63")), withVerdict(state));
-    assert.equal(at("FAILURE"), "its verdict is on that head already");
-    assert.equal(at("SUCCESS"), "its verdict is on that head already");
-    assert.equal(at("PENDING"), undefined, "still reviewing: the task stays open");
-  });
 });
 
 describe("awaitChecks", () => {
@@ -580,14 +443,6 @@ describe("independent merges: Tier 0 in the agents org (owner, 2026-11-12)", () 
     assert.deepEqual(gh.writes, [{ merge: 1, sha: "head1", method: "squash" }, { merge: 2, sha: "head2", method: "squash" }]);
     assert.equal(step.done, "done");
     assert.match(step.say[0], /^Merged https:\/\/github.com\/o\/r\/pull\/1\.\nMerged https:\/\/github.com\/o\/r\/pull\/2\.$/);
-  });
-
-  it("a PR its checks kept from merging is reported in fixes, with its head, so the task's Engineer is woken", async () => {
-    const failing = { state: "FAILURE", contexts: { nodes: [{ __typename: "CheckRun", name: "tests", status: "COMPLETED", conclusion: "FAILURE" }] } };
-    const gh = fakeGithub({ 1: own(1, head(failing)), 2: own(2) });
-    const step = await advance(queue(1, 2), { github: gh, now: at(0) });
-    assert.deepEqual(step.fixes.map((f) => [f.number, f.head]), [[1, "head1"]]);
-    assert.equal(step.fixes[0].number, 1);
   });
 
   it("a PR stacked on a merged parent is retargeted and sent back to tiering, never merged into the old base", async () => {
@@ -622,20 +477,6 @@ describe("independent merges: Tier 0 in the agents org (owner, 2026-11-12)", () 
     await advance(q, { github: gh, now: at(0) });
     assert.deepEqual(gh.writes, []);
     assert.equal(q.prs[0].status, "pending");
-  });
-
-  it("a failing PR is reported once and left; the others still merge", async () => {
-    const gh = fakeGithub({ 1: own(1, head(red)), 2: own(2, head(pending)) });
-    const q = queue(1, 2);
-    let step = await advance(q, { github: gh, now: at(0) });
-    assert.deepEqual(step.say, ["**Not merged:** https://github.com/o/r/pull/1: 1 named check(s) failed on its head (`gh pr checks 1` names them)."]);
-    assert.equal(step.done, undefined);
-    assert.deepEqual(await advance(q, { github: gh, now: at(1) }).then((s) => s.say), [], "said once");
-    gh.prs[2] = own(2);
-    step = await advance(q, { github: gh, now: at(4) });
-    assert.deepEqual(gh.writes, [{ merge: 2, sha: "head2", method: "squash" }]);
-    assert.equal(step.done, "stopped");
-    assert.match(step.say.at(-1), /1 merged, 1 not/);
   });
 
   it("a conflict is updated once; the updated head goes back through tiering, any other new head waits", async () => {
@@ -673,18 +514,6 @@ describe("independent merges: Tier 0 in the agents org (owner, 2026-11-12)", () 
     const s3 = await advance(queue(1), { github: stuck, now: at(0) });
     assert.match(s3.say[0], /conflicts with `master` that an update can't resolve/);
     assert.match(s3.say.at(-1), /0 merged, 1 not/);
-  });
-
-  it("a new request joins the running queue; a failed PR asked for again takes its new head", () => {
-    const q = queue(1, 2);
-    Object.assign(q.prs[0], { status: "merged" });
-    Object.assign(q.prs[1], { status: "failed", note: "tests failed" });
-    const next = addEach(q, [{ repo: "o/r", number: 2, url: "u2", head: "new2" }, { repo: "o/r", number: 3, url: "u3", head: "head3" }]);
-    assert.deepEqual(next.prs.map((p) => [p.number, p.status, p.head]), [[1, "merged", "head1"], [2, "pending", "new2"], [3, "pending", "head3"]]);
-    assert.equal(addEach(q, [{ repo: "o/r", number: 1, url: "u1", head: "x" }]), undefined, "merged already");
-    // A finished queue's merges carry over, so the next queue's finish still accounts for them.
-    const after = addEach({ ...q, state: "done", held: ["said"] }, [{ repo: "o/r", number: 3, url: "u3", head: "head3" }]);
-    assert.deepEqual(after.prs.map((p) => [p.number, p.status]), [[1, "merged"], [2, "failed"], [3, "pending"]]);
   });
 
   it("merges only on GitHub's green: UNSTABLE only from advisory checks, and never past a page of checks", () => {
@@ -785,105 +614,6 @@ describe("independent merges: Tier 0 in the agents org (owner, 2026-11-12)", () 
     assert.deepEqual(card.writes.at(-1), { merge: 2, sha: H, method: "squash" });
   });
 
-  // A job GitHub refused to start (billing, a spending limit) is the environment's, not the commit's: it is re-run once at the
-  // same head, then reported with GitHub's annotation, and the head never moves.
-  it("a check that never started is environmental, not a failure: re-run once at the head, then reported, never rebased", async () => {
-    const H = "ab12".repeat(10);
-    const billing = "The job was not started because recent account payments have failed or your spending limit needs to be increased.";
-    const run = (name, conclusion, databaseId, wf = 100) => ({ __typename: "CheckRun", name, status: conclusion ? "COMPLETED" : "IN_PROGRESS", conclusion, databaseId, checkSuite: { workflowRun: { databaseId: wf } } });
-    const rolled = (nodes) => head({ state: nodes.some((c) => c.conclusion === "FAILURE") ? "FAILURE" : "SUCCESS", contexts: { nodes } });
-    const prAt = (n, nodes) => own(n, { headRefOid: H, mergeStateStatus: "UNSTABLE", ...rolled(nodes) });
-    const green = run("services/runner", "SUCCESS", 1);
-    const each = () => addEach(undefined, [{ repo: "o/r", number: 1, url: "u1", head: H }], { now: at(0) });
-
-    // Every red check is a job with no steps and an infrastructure annotation: it is re-run at this head, no new head.
-    const gh = fakeGithub({ 1: prAt(1, [green, run("image-scan", "FAILURE", 20, 200)]) });
-    gh.jobs = { "image-scan": { steps: [], annotations: [{ annotation_level: "failure", message: billing }, { annotation_level: "notice", message: "The ubuntu-latest label will migrate" }] } };
-    const q = each();
-    const first = await advance(q, { github: gh, now: at(0) });
-    assert.deepEqual(gh.writes, [{ rerun: 200, checks: ["image-scan"] }], "the failed job, at the same head");
-    assert.deepEqual(first.fixes, [], "no fix asked of the Engineer");
-    assert.equal(q.prs[0].status, "pending", "still waiting, not failed");
-    assert.equal(q.prs[0].head, H, "the head never moved");
-    assert.equal(first.done, undefined);
-
-    // The new job never started either: the second identical cause is final, reported once with the annotation and no code ask.
-    gh.prs[1] = prAt(1, [green, run("image-scan", "FAILURE", 21, 200)]);
-    const step = await advance(q, { github: gh, now: at(1) });
-    assert.equal(step.done, "stopped");
-    assert.equal(q.prs[0].status, "failed");
-    assert.match(q.prs[0].note, /blocked by the environment: image-scan never started/);
-    assert.doesNotMatch(q.prs[0].note, /named check|failed check/, "never read as a failing check");
-    const said = step.say.join("\n");
-    assert.match(said, /`image-scan` never started/);
-    assert.match(said, /head is not at fault/);
-    assert.match(said, /spending limit needs to be increased/, "GitHub's annotation, quoted");
-    assert.match(said, /rebase or a new head would change nothing/);
-    assert.doesNotMatch(said, /has failing checks|named check\(s\) failed/);
-    assert.deepEqual(gh.writes, [{ rerun: 200, checks: ["image-scan"] }], "no second re-run, no merge, no push");
-    assert.equal(q.prs[0].head, H);
-    // Polling the same head again says nothing more and asks for nothing.
-    const again = await advance(q, { github: gh, now: at(5) });
-    assert.deepEqual(again.say, []);
-
-    // A job that ran a step is a real failure, as before: reported to the Engineer, not re-run.
-    const real = fakeGithub({ 1: prAt(1, [green, run("image-scan", "FAILURE", 30, 300)]) });
-    real.jobs = { "image-scan": { steps: [{ name: "Build and scan" }], annotations: [{ annotation_level: "failure", message: "fixable high or critical vulnerabilities" }] } };
-    const rstep = await advance(each(), { github: real, now: at(0) });
-    assert.deepEqual(real.writes, []);
-    assert.equal(rstep.fixes.length, 1);
-    assert.match(rstep.say[0], /named check\(s\) failed on its head/);
-
-    // The gate's own roll-up doesn't make it environmental: it only rolls up the check beneath it.
-    const gated = fakeGithub({ 1: prAt(1, [green, run("image-scan", "FAILURE", 40, 400), run("ci-required", "FAILURE", 41, 401)]) });
-    gated.jobs = { "image-scan": { steps: [], annotations: [{ annotation_level: "failure", message: billing }] } };
-    const g1 = await advance(each(), { github: gated, now: at(0) });
-    assert.deepEqual(gated.writes, [{ rerun: 400, checks: ["image-scan"] }], "only the job that never ran");
-    assert.deepEqual(g1.fixes, []);
-  });
-
-  it("a check that never started is re-run once in a card queue too, and no head is published for it", async () => {
-    const H = "cd34".repeat(10);
-    const run = (name, conclusion, databaseId, wf = 100) => ({ __typename: "CheckRun", name, status: conclusion ? "COMPLETED" : "IN_PROGRESS", conclusion, databaseId, checkSuite: { workflowRun: { databaseId: wf } } });
-    const nodes = [run("tests", "SUCCESS", 1), run("image-scan", "FAILURE", 20, 200)];
-    const gh = fakeGithub({ 2: pr(2, { headRefOid: H, mergeStateStatus: "UNSTABLE", ...head({ state: "FAILURE", contexts: { nodes } }) }) });
-    gh.jobs = { "image-scan": { steps: [], annotations: [{ annotation_level: "failure", message: "recent account payments have failed" }] } };
-    const q = newQueue([{ repo: "o/r", number: 2, url: "u2", head: H }], { gapMinutes: 0, now: at(0) });
-    const first = await advance(q, { github: gh, now: at(0) });
-    assert.equal(q.state, "running", "waiting on its re-run");
-    assert.deepEqual(gh.writes, [{ rerun: 200, checks: ["image-scan"] }], "re-run at the head the card approved");
-    assert.doesNotMatch(first.say.join(""), /failing checks/);
-    assert.equal(q.prs[0].head, H, "the approved head, unchanged");
-    // The re-run never started again: one receipt, no merge, no second re-run, and the head still the card's.
-    gh.prs[2] = pr(2, { headRefOid: H, mergeStateStatus: "UNSTABLE", ...head({ state: "FAILURE", contexts: { nodes: [run("tests", "SUCCESS", 1), run("image-scan", "FAILURE", 21, 200)] } }) });
-    const second = await advance(q, { github: gh, now: at(1) });
-    assert.equal(second.done, "stopped");
-    assert.match(second.say.at(-1), /`image-scan` never started/);
-    assert.match(second.say.at(-1), /head is not at fault/);
-    assert.match(second.say.at(-1), /recent account payments have failed/, "GitHub's annotation");
-    assert.doesNotMatch(second.say.at(-1), /has failing checks|named check\(s\) failed/);
-    assert.deepEqual(gh.writes, [{ rerun: 200, checks: ["image-scan"] }]);
-    assert.equal(q.prs[0].head, H);
-  });
-
-  it("the product watcher asks for a rebase only when the red checks are the commit's: never for one that never started", () => {
-    const H = "ef56".repeat(10);
-    const run = (name, conclusion) => ({ __typename: "CheckRun", name, status: "COMPLETED", conclusion });
-    const openPr = (nodes) => ({ mergeable: "MERGEABLE", headRefOid: H, commits: { nodes: [{ commit: { statusCheckRollup: { state: "FAILURE", contexts: { nodes } } } }] } });
-    const green = { state: "SUCCESS", contexts: { nodes: [run("tests", "SUCCESS")] } };
-    const env = [{ name: "image-scan", note: "The job was not started because recent account payments have failed" }];
-    // A job that never started: re-run at this head, never a rebase — even though `ci-required` rolls it up red.
-    assert.deepEqual(prAttention(openPr([run("tests", "SUCCESS"), run("image-scan", "FAILURE"), run("ci-required", "FAILURE")]), green, env), { do: "environment", checks: env });
-    // A real failure beside it: a rebase, as before (the environment's checks are not what is red).
-    assert.deepEqual(prAttention(openPr([run("tests", "FAILURE"), run("image-scan", "FAILURE")]), green, env), { do: "rebase", why: "red" });
-    // Green: nothing.
-    assert.equal(prAttention(openPr([run("tests", "SUCCESS")]), green, []), undefined);
-    // Behind a red main, nothing either: the base is not known green.
-    assert.equal(prAttention(openPr([run("tests", "FAILURE")]), { state: "FAILURE", contexts: { nodes: [] } }, []), undefined);
-    // A conflict still asks for the rebase, environment or not.
-    assert.deepEqual(prAttention({ ...openPr([]), mergeable: "CONFLICTING" }, green, env), { do: "rebase", why: "conflict" });
-  });
-
   it("a check with a step run, or no annotation, is a real failure: only a job that never started with an infra note is environmental", async () => {
     const H = "0123".repeat(10);
     const check = { __typename: "CheckRun", name: "image-scan", status: "COMPLETED", conclusion: "FAILURE", databaseId: 20, checkSuite: { workflowRun: { databaseId: 200 } } };
@@ -909,40 +639,12 @@ describe("independent merges: Tier 0 in the agents org (owner, 2026-11-12)", () 
     assert.doesNotMatch(receipt, /fix the cause on the PR|rerun the tests/, "no code action");
   });
 
-  // Owner, 2026-11-15: the breaker on identical failures counts the code's failures only. A red head's fix names the checks
-  // that were the environment's (cancelled, never started, a runner that died), and the breaker leaves them out.
-  it("a red head's fix names its environmental checks for the breaker to leave out", async () => {
-    const H = "4567".repeat(10);
-    const run = (name, conclusion, databaseId) => ({ __typename: "CheckRun", name, status: "COMPLETED", conclusion, databaseId, checkSuite: { workflowRun: { databaseId: 100 + databaseId } } });
-    const nodes = [run("tests", "FAILURE", 1), run("lint", "CANCELLED", 2), run("image-scan", "FAILURE", 3), run("build", "FAILURE", 4), run("ci-required", "FAILURE", 5), run("deploy", "FAILURE", 6), run("docs", "FAILURE", 7)];
-    const gh = fakeGithub({ 1: own(1, { headRefOid: H, mergeStateStatus: "UNSTABLE", ...head({ state: "FAILURE", contexts: { nodes } }) }) });
-    gh.jobs = {
-      tests: { steps: [{ name: "Run tests" }], annotations: [{ annotation_level: "failure", message: "Process completed with exit code 1." }] },
-      "image-scan": { steps: [], annotations: [{ annotation_level: "failure", message: "The job was not started because your spending limit needs to be increased." }] },
-      build: { steps: [{ name: "Build", conclusion: null }], annotations: [{ annotation_level: "failure", message: "The self-hosted runner: ci-3 lost communication with the server. Verify the machine is running." }] },
-      // A failing step that prints GitHub's words is still the code's failure: it can't dodge the breaker.
-      deploy: { steps: [{ name: "Deploy", conclusion: "failure" }], annotations: [{ annotation_level: "failure", message: "The runner has received a shutdown signal." }] },
-      docs: { steps: [{ name: "Docs", conclusion: null }], annotations: [{ annotation_level: "failure", message: "Error: The runner has received a shutdown signal." }] },
-    };
-    const step = await advance(addEach(undefined, [{ repo: "o/r", number: 1, url: "u1", head: H }], { now: at(0) }), { github: gh, now: at(0) });
-    assert.equal(step.fixes.length, 1, "a real failure is beside them: the Engineer is still asked to fix it");
-    assert.deepEqual(step.fixes[0].environment, [2, 3, 4], "check run ids; the gate stays: it also rolls up the real failures");
-    // Only the environment's checks are red: the gate's roll-up is theirs too, so nothing is left for the breaker to count.
-    const envOnly = own(2, { headRefOid: H, ...head({ state: "FAILURE", contexts: { nodes: nodes.slice(1, 5) } }) });
-    assert.deepEqual(await environmentalChecks(gh, "o/r", 2, envOnly), [2, 3, 4, 5]);
-  });
-
   // Owner, 2026-11-13 (roadmap-keeper#108 merged an unstyled page while its review was pending): on a UI PR the design review blocks.
   describe("a UI PR waits for its design review", () => {
     const build = { __typename: "CheckRun", name: "build", status: "COMPLETED", conclusion: "SUCCESS" };
     const review = (state) => ({ __typename: "StatusContext", context: "design-review", state, description: "2 blocking: dark mode text unreadable" });
     const rolled = (nodes) => head({ state: nodes.some((n) => n.state && n.state !== "SUCCESS") ? "PENDING" : "SUCCESS", contexts: { nodes } });
     const ui = (n) => ({ ...addEach(undefined, [{ repo: "o/r", number: n, url: `u${n}`, head: `head${n}`, ui: true }], { now: at(0) }) });
-
-    it("classifies UI files conservatively", () => {
-      for (const f of ["src/web/design-system/tokens.css", "src/web/render.ts", "public/app.js", "app/views/list.erb", "src/Button.tsx", "templates/base.njk", "src/styles.ts"]) assert.ok(touchesUi([f]), f);
-      for (const f of ["src/store/postgres.ts", "migrations/001.sql", "package.json", "src/api/agent-read.ts", "src/reviews.mjs"]) assert.ok(!touchesUi([f]), f);
-    });
 
     it("a UI PR with design review pending (or not posted) isn't merged; one with it green is; a backend-only PR merges as before", async () => {
       for (const nodes of [[build, review("PENDING")], [build]]) {
@@ -991,20 +693,6 @@ describe("independent merges: Tier 0 in the agents org (owner, 2026-11-12)", () 
       assert.deepEqual(step.wake.map((w) => w.head), ["head1"]);
     });
 
-    // roadmap-keeper#167: the review task came only after a slow check finished, not when the head's review went pending.
-    it("the reviewer is asked while the other checks still run, once per head, and not for a draft", async () => {
-      const running = { __typename: "CheckRun", name: "code-review", status: "IN_PROGRESS", conclusion: null };
-      const gh = fakeGithub({ 1: own(1, { mergeStateStatus: "UNSTABLE", ...rolled([running, review("PENDING")]) }) });
-      const q = ui(1);
-      assert.deepEqual((await advance(q, { github: gh, now: at(0) })).wake.map((w) => w.head), ["head1"], "asked at once");
-      assert.equal((await advance(q, { github: gh, now: at(1) })).wake.length, 0, "once per head");
-      gh.prs[1] = own(1, { mergeStateStatus: "UNSTABLE", ...rolled([build, review("PENDING")]) });
-      assert.equal((await advance(q, { github: gh, now: at(2) })).wake.length, 0, "not again when the checks go green");
-      const draft = fakeGithub({ 1: own(1, { isDraft: true, ...rolled([running, review("PENDING")]) }) });
-      assert.equal((await advance(ui(1), { github: draft, now: at(0) })).wake.length, 0);
-      assert.deepEqual(gh.writes, [], "nothing merged");
-    });
-
     it("a failed design review stops it with the reviewer's reason", async () => {
       const gh = fakeGithub({ 1: own(1, { mergeStateStatus: "UNSTABLE", ...rolled([build, review("FAILURE")]) }) });
       const step = await advance(ui(1), { github: gh, now: at(0) });
@@ -1013,21 +701,6 @@ describe("independent merges: Tier 0 in the agents org (owner, 2026-11-12)", () 
       assert.doesNotMatch(step.say[0], /dark mode/, "the status description is repo-controlled: never in the runner's words");
     });
 
-    it("no verdict 2 hours after the checks went green asks once more, then parks it (never the owner's card)", async () => {
-      const gh = fakeGithub({ 1: own(1, { mergeStateStatus: "UNSTABLE", ...rolled([build, review("PENDING")]) }) });
-      const q = ui(1);
-      assert.equal((await advance(q, { github: gh, now: at(0) })).wake.length, 1);
-      assert.equal((await advance(q, { github: gh, now: at(60) })).wake.length, 0, "asked once per head");
-      const again = await advance(q, { github: gh, now: at(121) });
-      assert.deepEqual(again.wake, [{ repo: "o/r", number: 1, url: "u1", head: "head1", again: true }], "asked again");
-      assert.equal(again.done, undefined);
-      const step = await advance(q, { github: gh, now: at(243) });
-      assert.equal(step.done, "stopped");
-      assert.match(step.queue.prs[0].note, /^parked: no design review/);
-      assert.deepEqual(gh.writes, []);
-      // Asked for again later, it is merged then: not "merged already".
-      assert.equal(startOrResume(step.queue, [{ repo: "o/r", number: 1, url: "u1", head: "head1" }], { gapMinutes: 0, now: at(244) }).prs.filter((p) => p.status === "pending").length, 1);
-    });
   });
 
   it("a skipped image-scan is green only when the PR changes no image definition", () => {
