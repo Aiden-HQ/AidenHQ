@@ -90,6 +90,7 @@
     "route POST /v1/auth/:op": {"state":"experimental","fp":"auth=board"},
     "route POST /v1/brake/notify": {"state":"experimental","fp":"auth=module"},
     "route POST /v1/channel/decide": {"state":"experimental","fp":"auth=module"},
+    "route POST /v1/channel/exchange": {"state":"experimental","fp":"auth=module"},
     "route POST /v1/channel/outbox": {"state":"experimental","fp":"auth=module"},
     "route POST /v1/channel/owner-message": {"state":"experimental","fp":"auth=module"},
     "route POST /v1/channel/stop": {"state":"experimental","fp":"auth=module"},

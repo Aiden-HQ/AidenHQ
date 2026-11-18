@@ -20,6 +20,7 @@
 //   POST /v1/channel/outbox, GET /v1/channel/outbox  (a channel) a message for the owner handed to another channel; drained by it
 //   GET  /v1/cp/read/<path>    (a channel, or a module with role kernel.cp-read) the control plane's read routes, as the owner
 //   POST /v1/brake/notify      (a channel) may an agent message the owner about a task again (brake.ts)
+//   POST /v1/channel/exchange  (a module with role kernel.lane) a fast-lane turn written to its agent's chat task (lane.ts)
 //   POST /v1/wake              (a module with role kernel.wake) a labelled wake notice on a task, which wakes its agent
 //   POST /v1/wakes/events      (the paperclip-events plugin's key) a Paperclip event's ids: its task is scanned (wakes.ts)
 //   POST /v1/wakes             (a module with role kernel.wake) a scheduled wake {task, agent?, at?, cause?, id?}
@@ -42,6 +43,7 @@ import { timingSafeEqual } from "node:crypto";
 import type { Asserter } from "./assert.ts";
 import type { Brake } from "./brake.ts";
 import type { Checks } from "./checks.ts";
+import type { Lane } from "./lane.ts";
 import { CP_READ_PATHS, isChannel, neutral, type Api, type Channels, type ModulesFile } from "./channels.ts";
 import type { Grant, Whoami } from "./identity.ts";
 import type { Jobs } from "./jobs.ts";
@@ -84,6 +86,7 @@ export const ROUTES = [
   { method: "GET", path: "/v1/channel/notices", auth: "module" },
   { method: "POST", path: "/v1/channel/outbox", auth: "module" },
   { method: "GET", path: "/v1/channel/outbox", auth: "module" },
+  { method: "POST", path: "/v1/channel/exchange", auth: "module" },
   { method: "GET", path: "/v1/cp/read/*", auth: "module" },
   { method: "POST", path: "/v1/brake/notify", auth: "module" },
   { method: "POST", path: "/v1/wake", auth: "module" },
@@ -120,7 +123,7 @@ async function json(req: IncomingMessage, max = 1_000_000): Promise<any> {
   try { return JSON.parse(Buffer.concat(chunks).toString("utf8") || "{}"); } catch { throw fail(400, "bad_request", "the body must be JSON"); }
 }
 
-export function createBackplane({ whoami, asserter, proxy, cp, grantsFile, writes, records, channels, brake, owner, modules = () => ({}), boardKey = () => "", reviews, runnerKey = () => "", reviewerKey = () => "", jobs, outcomes, wakes, eventsKey = () => "", work, graderToken = () => "", dropGraderToken = () => {}, advisories = () => [], accounts, checks, ownerRaw, log = () => {} }: {
+export function createBackplane({ whoami, asserter, proxy, cp, grantsFile, writes, records, channels, brake, owner, modules = () => ({}), boardKey = () => "", reviews, runnerKey = () => "", reviewerKey = () => "", jobs, outcomes, wakes, eventsKey = () => "", work, graderToken = () => "", dropGraderToken = () => {}, advisories = () => [], accounts, checks, ownerRaw, lane, log = () => {} }: {
   whoami: Whoami; asserter: Asserter; proxy: Handler; cp: Handler; grantsFile: () => { agents?: Record<string, Grant> } & Record<string, unknown>;
   writes?: Writes; records?: Records; boardKey?: () => string; log?: (msg: string, f?: Record<string, unknown>) => void;
   /** The reviewer slot; the runner's key for its kinds (filing, claim, outcome, reads, a record's review: runner_writes_key)
@@ -130,6 +133,8 @@ export function createBackplane({ whoami, asserter, proxy, cp, grantsFile, write
   channels?: Channels; brake?: Brake; owner?: Api; modules?: () => ModulesFile;
   /** The control plane as the owner, the raw response (an attachment's bytes, which `owner`'s JSON can't carry). */
   ownerRaw?: (path: string) => Promise<Response>;
+  /** The fast chat lane's exchanges onto its agents' chat tasks (lane.ts). */
+  lane?: Lane;
   /** 3e: jobs in the sandbox. */
   jobs?: Jobs;
   /** F5: a job's outcome posted as its agent. */
@@ -239,6 +244,11 @@ export function createBackplane({ whoami, asserter, proxy, cp, grantsFile, write
           case "GET /v1/channel/notices": return send(res, 200, await channels.notices(mod));
           case "POST /v1/channel/outbox": return send(res, 200, channels.file(mod, await json(req)));
           case "GET /v1/channel/outbox": return send(res, 200, channels.drain(mod));
+          case "POST /v1/channel/exchange": {
+            if (!w.roles.includes("kernel.lane")) throw fail(403, "forbidden", `${mod} may not write lane exchanges (role kernel.lane)`);
+            if (!lane) throw fail(503, "unavailable", "the lane is off");
+            return send(res, 200, await lane.exchange(mod, await json(req)));
+          }
           case "GET /v1/cp/read/*": {
             if (!isChannel(modules().modules?.[mod]) && !w.roles.includes("kernel.cp-read")) throw fail(403, "forbidden", `${mod} has no read access to the control plane (role kernel.cp-read)`);
             const att = /^\/attachments\/([A-Za-z0-9_-]{1,100})\/content$/.exec(m[0]!);

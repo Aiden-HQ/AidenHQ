@@ -17,7 +17,7 @@ import { createRequire } from "node:module";
 import { dirname, join, resolve } from "node:path";
 import { createInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
-import { codexMcpBlock, ensureBackupRetention, ensureCrewSkills, ensureFleetIssues, ensureMemoryInboxes, ensureReviewLogs, grantEntry, HEALTH_PROBES, healthProbeAgent, mapLimit, routineAutonomyDefault } from "./modules.mjs";
+import { codexMcpBlock, ensureBackupRetention, ensureChatTasks, ensureCrewSkills, ensureFleetIssues, ensureMemoryInboxes, ensureReviewLogs, grantEntry, HEALTH_PROBES, healthProbeAgent, mapLimit, routineAutonomyDefault } from "./modules.mjs";
 import { routineStatus } from "./setup-paused.mjs";
 import { checkLauncher, computerAdapterConfig, ensureComputers, runnerBox } from "./computers.mjs";
 import { ensureAgentKeys, ensureEventsPlugin } from "./paperclip-events.mjs";
@@ -502,11 +502,11 @@ async function ensureOpsKey(agent) {
 
 /**
  * The fast chat lane's config (secret `lane_config`, read by the chat-lane module): per agent with a `chat:` block, its id, name,
- * its own agent key (`paperclip_lane_key_<agent>`, kept while it still names that agent), its chat settings, handbook,
+ * its chat task, its own agent key (`paperclip_lane_key_<agent>`, kept while it still names that agent), its chat settings, handbook,
  * lane tools (connection and tool: called through the kernel's proxy with its own key), and its own Telegram bot token (`chat_<agent>_telegram_bot_token`)
  * when chat.telegram is on. Rewritten in place only when it changes (the lane re-reads it; no restart).
  */
-async function ensureLaneConfig(agents) {
+async function ensureLaneConfig(agents, chatTasks) {
   const out = {};
   for (const [key, a] of Object.entries(cfg.agents ?? {})) {
     if (!a.chat || !agents[key]) continue;
@@ -524,7 +524,7 @@ async function ensureLaneConfig(agents) {
     });
     const telegram = a.chat.telegram ? readSecret(`chat_${key}_telegram_bot_token`) : "";
     if (a.chat.telegram && !telegram) console.warn(`warning: ${a.name} has chat.telegram on but no chat_${key}_telegram_bot_token in the vault; board chat only`);
-    out[key] = { id: agents[key].id, name: a.name, api_key: token, model: a.chat.model, reasoning: a.chat.reasoning, deadline_s: a.chat.deadline_s, prompt: handbooks[key] ?? "", tools, ...(telegram ? { telegram_token: telegram } : {}) };
+    out[key] = { id: agents[key].id, name: a.name, chat_task: chatTasks[key], api_key: token, model: a.chat.model, reasoning: a.chat.reasoning, deadline_s: a.chat.deadline_s, prompt: handbooks[key] ?? "", tools, ...(telegram ? { telegram_token: telegram } : {}) };
   }
   const text = Object.keys(out).length ? JSON.stringify({ agents: out }) : "";
   if (readSecret("lane_config") === text) return;
@@ -604,7 +604,7 @@ async function ensureRoutines(companyId, agents) {
     }
     // Its cap is in the grants table before any trigger can fire it (the runner treats an unknown routine as off).
     routineAutonomy[routine.id] = r.autonomy ?? routineAutonomyDefault(r);
-    writeGrants(agents, memoryInboxes, reviewLogs);
+    writeGrants(agents, memoryInboxes, reviewLogs, chatTasks);
     const { json: detail } = await api("GET", `/api/routines/${routine.id}`);
     const triggers = detail.triggers ?? [];
 
@@ -778,7 +778,7 @@ const routineAutonomy = (() => {
   }
 })();
 
-function writeGrants(agents, memoryInboxes = {}, reviewLogs = {}) {
+function writeGrants(agents, memoryInboxes = {}, reviewLogs = {}, chatTasks = {}) {
   if (!isWork) return;
   // autonomy: the board and the runner read the tiered-approvals switch here, fresh on every use.
   // agents_org, product_repo: the repos a graded PR deliverable may name (the board refuses others; the runner agrees).
@@ -788,6 +788,8 @@ function writeGrants(agents, memoryInboxes = {}, reviewLogs = {}) {
   for (const [key, a] of Object.entries(agents)) if (memoryInboxes[key]) table.agents[a.id].memory_inbox = memoryInboxes[key];
   // Each fleet-audit agent's review log issue id (ensureReviewLogs): the tasks bridge's coach_record writes there, coach_due reads it.
   for (const [key, a] of Object.entries(agents)) if (reviewLogs[key]) table.agents[a.id].review_log = reviewLogs[key];
+  // Each lane agent's chat task (ensureChatTasks): the kernel writes the fast lane's turns there, and only there.
+  for (const [key, a] of Object.entries(agents)) if (chatTasks[key]) table.agents[a.id].chat_task = chatTasks[key];
   // Each agent's skills (compile resolved them): the runner copies exactly these into its jobs' engine home.
   for (const [key, a] of Object.entries(agents)) if (agentSkills(cfg, key).length) table.agents[a.id].skills = agentSkills(cfg, key);
   const file = join(configDir, "grants", "grants.json");
@@ -837,7 +839,9 @@ await dropOldOpenRouterSecret();
 await ensureReportingLines(agents);
 // The Agent Coach's review log (one task per fleet-audit agent), found again by its setup marker, never by search at run time.
 const reviewLogs = await ensureReviewLogs({ api, companyId: company.id, step, keys: Object.entries(cfg.agents ?? {}).filter(([, x]) => x.roles?.includes("fleet-audit")).map(([k]) => k) });
-writeGrants(agents, memoryInboxes, reviewLogs);
+// The fast chat lane's conversation: one chat task per agent with a `chat:` block (kernel/src/lane.ts writes each turn there).
+const chatTasks = isWork ? await ensureChatTasks({ api, companyId: company.id, step, ownerName: cfg.owner_name, agents: Object.fromEntries(Object.entries(cfg.agents ?? {}).filter(([k, x]) => x.chat && agents[k]).map(([k, x]) => [k, x.name])) }) : {};
+writeGrants(agents, memoryInboxes, reviewLogs, chatTasks);
 lap("tasks");
 // Agent computers: the agents with image: get the computer environment; the others are pointed back to local (scripts/computers.mjs).
 try {
@@ -853,7 +857,7 @@ const opsAgent = opsAgents.length ? agents[opsAgents[0]] : undefined;
 const keyChanged = opsAgent ? await ensureOpsKey(opsAgent) : false;
 if (isWork) await ensureHealthKeys(agents);
 if (isWork) await ensureAgentKeys({ api, agents, secretsDir, baseUrl, step });
-if (isWork) await ensureLaneConfig(agents); // the fast chat lane serves the work company only (phase 1)
+if (isWork) await ensureLaneConfig(agents, chatTasks); // the fast chat lane serves the work company only (phase 1)
 const cfgChanged = isWork ? updateSystemYaml(company.id) : false;
 if (opsAgent && (keyChanged || cfgChanged)) restartOpsMcp(); // ops-mcp exists only with the meetings module
 ensureCodexConfig();
