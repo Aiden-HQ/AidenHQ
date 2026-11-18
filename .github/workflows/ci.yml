@@ -92,6 +92,9 @@ jobs:
           # scripts/node_modules is read by the scripts suite and the kernel's authority CLI: install it once, here, since two
           # parallel `npm ci` in one directory delete each other's files (ENOTEMPTY, then "Cannot find module yaml").
           grep -qE '^(scripts|kernel|fixtures/twin)[[:space:]]' "$logs/list" && (cd scripts && npm ci)
+          # The scripts suite imports kernel sources (the apply planner), which resolve their packages from kernel/: install
+          # them here when this shard runs scripts without the kernel suite (which installs them itself).
+          grep -qE '^scripts[[:space:]]' "$logs/list" && ! grep -qE '^kernel[[:space:]]' "$logs/list" && (cd kernel && npm ci)
           tr '\n' '\0' < "$logs/list" | xargs -0 -r -P 4 -I{} bash -c 'one "$1"' _ {}
           status=0
           while IFS=$'\t' read -r dir cmd; do
