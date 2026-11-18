@@ -87,6 +87,9 @@ test("a job writes on its own task and the tasks it created, as its agent throug
   assert.equal(r.status, 409);
   assert.match(r.json.error.message, /delegates to/);
   assert.equal((await act("ada", "POST", "/api/companies/co/issues", { title: "For someone", assigneeUserId: "u-other" })).status, 403);
+  // An agent with no delegate_to (the chief of staff) hands work to any agent of its company: the tasks bridge limits it to its reports.
+  r = await act("cos", "POST", "/api/companies/co/issues", { title: "Take this", assigneeAgentId: BO, status: "todo" });
+  assert.deepEqual([r.status, h.issues[r.json.id].assigneeAgentId, h.issues[r.json.id].createdByAgentId], [201, BO, COS]);
   r = await act("ada", "POST", "/api/companies/co/issues", { title: "Read this", assigneeUserId: "u-owner", labelIds: [OTHER], priority: "low" });
   assert.equal(r.status, 201);
   assert.deepEqual([h.issues[r.json.id].parentId, h.issues[r.json.id].assigneeUserId, h.issues[r.json.id].labelIds], [undefined, "u-owner", [OTHER]]);
