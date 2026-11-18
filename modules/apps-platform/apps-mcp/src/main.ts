@@ -107,7 +107,7 @@ const readBody = async (req: IncomingMessage): Promise<any> => {
   return chunks.length ? JSON.parse(Buffer.concat(chunks).toString("utf8")) : undefined;
 };
 const internalAuthorized = (req: IncomingMessage): boolean => bearerIs(req, internalToken);
-// The grader's reads (deploys, view): a module holding apps.read (readers.ts).
+// The reads of a module holding apps.read (readers.ts): the grader's deploys and view, the Fleet Steward's sources, quality and open PRs.
 const reader = appsReader(kernelUrl);
 
 // Nothing is published to the host: only containers on the compose network reach this port. /internal/* is the board's and
@@ -127,7 +127,7 @@ const http = createServer(async (req, res) => {
     // Each source's last good pass and whether its latest pass failed (the board's Fleet Ops detector; never the error text,
     // which agents read with warehouse_query). No sources until the warehouse is set up.
     if (url.pathname === "/internal/sources" && req.method === "GET") {
-      if (!internalAuthorized(req)) return send(res, 401, { error: "unauthorized" });
+      if (!internalAuthorized(req) && (await reader(req)) !== 0) return send(res, 401, { error: "unauthorized" });
       let d;
       try {
         d = p.warehouse();
@@ -142,14 +142,14 @@ const http = createServer(async (req, res) => {
     // Each app's quality checks from its last health probe (quality.ts): name, ok and count only, never samples (app data,
     // read through app_status by a caller who may read the app). The board's detector raises the failing ones for Fleet Ops.
     if (url.pathname === "/internal/quality" && req.method === "GET") {
-      if (!internalAuthorized(req)) return send(res, 401, { error: "unauthorized" });
+      if (!internalAuthorized(req) && (await reader(req)) !== 0) return send(res, 401, { error: "unauthorized" });
       return send(res, 200, { apps: p.qualityOf() });
     }
     // Open pull requests in the agents org's repos, from the warehouse (src_github syncs every 15 minutes), and the open change
     // requests of this server's repos (codehost-local), each with its preview's URL when one runs: the board's Fleet Ops
     // detector raises the ones nobody has merged. Empty when there is neither.
     if (url.pathname === "/internal/open-prs" && req.method === "GET") {
-      if (!internalAuthorized(req)) return send(res, 401, { error: "unauthorized" });
+      if (!internalAuthorized(req) && (await reader(req)) !== 0) return send(res, 401, { error: "unauthorized" });
       const local = codehost ? await localOpenPrs() : [];
       let d;
       try {

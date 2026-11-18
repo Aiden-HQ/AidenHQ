@@ -256,7 +256,7 @@ let drain: () => void = () => stop("SIGUSR2");
 for (const sig of ["SIGTERM", "SIGINT"] as const) process.on(sig, () => stop(sig));
 process.on("SIGUSR2", () => drain());
 // The finish gate (checks.ts): modules' task.finish checks (compile), holds placed as the owner.
-const work = createWork({ db: records.db, records });
+const work = createWork({ db: records.db, records, generationsFile: path.join(env("AIDENHQ_STATE_DIR", path.join(process.env.HOME ?? "", ".local/state/aidenhq")), "generations.jsonl") });
 // One live grader token per task, reused while it has time left and dropped when the task's hold resolves. Kind grader (never an
 // agent's identity: whoami and every agent check refuse it) that names the assignee, so the gateway charges its calls to that
 // agent's task and day caps (gateway/lib.ts).

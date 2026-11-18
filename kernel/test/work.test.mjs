@@ -2,7 +2,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import http from "node:http";
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createBackplane } from "../src/backplane.ts";
@@ -52,4 +52,33 @@ test("the board reads GET /v1/work with its key, one job included, and nothing e
   assert.equal((await get("/v1/work/metrics")).status, 401, "the metrics are a module's");
   assert.equal((await fetch(`http://127.0.0.1:${server.address().port}/v1/work/grader-token`, { method: "POST", headers: { authorization: "Bearer board-key" }, body: "{}" })).status, 401, "so is a grader token");
   assert.equal((await get("/v1/work", "wrong")).status, 401);
+});
+
+test("the host's apply generations: the pin skips a refused apply, and a missing file is an error", async () => {
+  const { fleetGenerations } = await import("../src/generations.ts");
+  const dir = mkdtempSync(join(tmpdir(), "gens-"));
+  const file = join(dir, "generations.jsonl");
+  assert.match(fleetGenerations(file).error, /cannot read/);
+  writeFileSync(file, [{ n: 1, product: "aaa", health: "good" }, { n: 2, product: "bbb", health: "refused", reason: "validation" }].map((r) => JSON.stringify(r)).join("\n") + "\n");
+  const g = fleetGenerations(file);
+  assert.deepEqual([g.pin, g.generations.map((x) => x.n), g.generations[0].reason], ["aaa", [2, 1], "validation"]);
+});
+
+test("an agent's jobs and the records and billed cost since a time are reads of the role", async (t) => {
+  const { work, records } = setup();
+  records.db.exec("CREATE TABLE calls (key TEXT PRIMARY KEY, at TEXT NOT NULL, day TEXT NOT NULL, agent_id TEXT, cost_usd REAL)");
+  const call = records.db.prepare("INSERT INTO calls (key, at, day, agent_id, cost_usd) VALUES (?, ?, ?, ?, ?)");
+  call.run("c1", "2026-01-02T10:00:00.000Z", "2026-01-02", "a1", 0.5);
+  call.run("c2", "2026-01-02T11:00:00.000Z", "2026-01-02", "a1", null);
+  call.run("c3", "2025-12-01T11:00:00.000Z", "2025-12-01", "a1", 9);
+  records.db.prepare("UPDATE jobs SET exit = 1, state = 'failed', progress = ? WHERE id = 'j-1'").run(JSON.stringify({ steps: [1, 2] }));
+  const whoami = async () => ({ kind: "module", module: "fleet-steward", roles: ["kernel.work-read"], tools: [] });
+  const handle = createBackplane({ whoami, asserter: { jwks: {} }, proxy: async () => {}, cp: async () => {}, grantsFile: () => ({}), work, graderToken: () => "tok" });
+  const server = http.createServer(handle).listen(0);
+  t.after(() => server.close());
+  const get = (path) => fetch(`http://127.0.0.1:${server.address().port}${path}`, { headers: { authorization: "Bearer m" } });
+  const a = await (await get("/v1/work?agent=a1")).json();
+  assert.deepEqual(a.jobs.map((j) => [j.id, j.state, j.exit, j.steps]), [["j-2", "running", null, 0], ["j-1", "failed", 1, 2]]);
+  assert.deepEqual((await (await get("/v1/work?since=2026-01-01T00:00:00Z")).json()).usage, [{ agent: "a1", day: "2026-01-02", cost_usd: 0.5, calls: 2, priced: 1 }]);
+  assert.equal((await get("/v1/work?since=yesterday")).status, 400);
 });
