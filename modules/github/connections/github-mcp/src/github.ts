@@ -112,6 +112,17 @@ const LOG_BYTES = 64_000;
 const LOG_READ_MAX = 50_000_000;
 
 /** The last LOG_BYTES characters of a response body, read as a stream (never the whole body in memory). `total` counts what was read. */
+/** The hosts GitHub redirects a job's log to: Actions' own pipelines hosts and its Azure results blob storage. */
+const LOG_HOSTS = [/(^|\.)actions\.githubusercontent\.com$/, /^productionresultssa\d*\.blob\.core\.windows\.net$/];
+function logHostAllowed(to: string): boolean {
+  try {
+    const u = new URL(to);
+    return u.protocol === "https:" && LOG_HOSTS.some((h) => h.test(u.hostname));
+  } catch {
+    return false;
+  }
+}
+
 async function tailOf(res: Response): Promise<{ tail: string; total: number; capped: boolean }> {
   if (Number(res.headers.get("content-length") ?? 0) > LOG_READ_MAX) return { tail: "", total: Number(res.headers.get("content-length")), capped: true };
   const decoder = new TextDecoder();
@@ -219,7 +230,7 @@ export class GitHub {
     // A job's log answers with a redirect to a pre-signed download: followed once, without the token.
     if (opts.text) {
       const to = res.headers.get("location");
-      if (res.status !== 302 || !to?.startsWith("https://")) throw new Error(`GitHub ${res.status} for ${method} ${url.pathname}: no log download`);
+      if (res.status !== 302 || !to || !logHostAllowed(to)) throw new Error(`GitHub ${res.status} for ${method} ${url.pathname}: no log download`);
       const dl = await this.fetchImpl(to, { redirect: "error", signal: AbortSignal.timeout(30_000) });
       if (!dl.ok) throw new Error(`log download answered ${dl.status}`);
       return (await tailOf(dl)) as T;

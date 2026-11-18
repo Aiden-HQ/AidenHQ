@@ -161,7 +161,7 @@ describe("GitHub", () => {
     const calls: { url: string; auth?: string }[] = [];
     const impl = (async (input: URL | string, init?: RequestInit) => {
       calls.push({ url: String(input), auth: (init?.headers as Record<string, string> | undefined)?.authorization });
-      return String(input).startsWith("https://blob.example.com/") ? new Response("x".repeat(70_000) + "END") : new Response(null, { status: 302, headers: { location: "https://blob.example.com/log" } });
+      return String(input).startsWith("https://productionresultssa1.blob.core.windows.net/") ? new Response("x".repeat(70_000) + "END") : new Response(null, { status: 302, headers: { location: "https://productionresultssa1.blob.core.windows.net/log" } });
     }) as typeof fetch;
     const out = (await new GitHub(tokenFile(), new Set(), impl).jobLog("a/b", 5)) as { clipped: boolean; log: string };
     expect(out.clipped).toBe(true);
@@ -171,10 +171,20 @@ describe("GitHub", () => {
     expect(calls[1]!.auth).toBeUndefined();
   });
 
+  it("refuses a log redirect to any other host without fetching it", async () => {
+    const calls: string[] = [];
+    const impl = (async (input: URL | string) => {
+      calls.push(String(input));
+      return new Response(null, { status: 302, headers: { location: "https://evil.example.com/log" } });
+    }) as typeof fetch;
+    await expect(new GitHub(tokenFile(), new Set(), impl).jobLog("a/b", 5)).rejects.toThrow("no log download");
+    expect(calls).toHaveLength(1);
+  });
+
   it("stops reading a log past the cap and refuses one that declares itself too big", async () => {
     let pulled = 0;
     const big = new ReadableStream<Uint8Array>({ pull(c) { pulled += 1_000_000; c.enqueue(new Uint8Array(1_000_000).fill(120)); } });
-    const mk = (body: BodyInit, headers: Record<string, string> = {}) => (async (input: URL | string) => (String(input).startsWith("https://blob.example.com/") ? new Response(body, { headers }) : new Response(null, { status: 302, headers: { location: "https://blob.example.com/log" } }))) as typeof fetch;
+    const mk = (body: BodyInit, headers: Record<string, string> = {}) => (async (input: URL | string) => (String(input).startsWith("https://productionresultssa1.blob.core.windows.net/") ? new Response(body, { headers }) : new Response(null, { status: 302, headers: { location: "https://productionresultssa1.blob.core.windows.net/log" } }))) as typeof fetch;
     const out = (await new GitHub(tokenFile(), new Set(), mk(big)).jobLog("a/b", 5)) as { clipped: boolean; log: string };
     expect(out.clipped).toBe(true);
     expect(out.log).toHaveLength(64_000);
