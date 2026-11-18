@@ -165,7 +165,7 @@ export function mentionedAgents(text: string, assignees: Assignee[]): Assignee[]
 const displayTextOf = (s: string) => s.replace(/<!--[\s\S]*?-->/g, "").replace(/```[\s\S]*?```|`[^`\n]*`/g, " ");
 
 /** Marks a message on the user's task that names only other agents: the Researcher leaves it to them. */
-export const FOR_OTHERS = "<!-- aidenhq-for-others -->";
+export { FOR_OTHERS } from "./aidenhq-sdk/for-others.js";
 
 /** Where a message delivered to an agent's part came from: the chat, the original comment, and a line saying so. */
 export interface DeliveredFrom {

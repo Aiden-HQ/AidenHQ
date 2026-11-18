@@ -7,6 +7,7 @@
 // key, with the channel's label set here. Every card is a kernel record (records.ts), the runner's git and apply writes too.
 import { createHash, randomBytes } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
+import { FOR_OTHERS } from "../sdk/src/for-others.ts";
 import { fail } from "./proxy.ts";
 import { actionOf, type Records } from "./records.ts";
 import type { Writes } from "./writes.ts";
@@ -252,7 +253,7 @@ export function createChannels({ db, records, writes, board, owner, modules, log
       const issue = known ? await get(known) : null;
       if (issue) {
         if (issue.assigneeAgentId !== a.id || issue.status === "done" || issue.status === "cancelled") await owner("PATCH", `/api/issues/${encodeURIComponent(issue.id)}`, { status: "todo", assigneeAgentId: a.id, assigneeUserId: null }).catch(() => undefined);
-        await ok(owner("POST", `/api/issues/${encodeURIComponent(issue.id)}/comments`, { body: `${body}\n\n<!-- aidenhq-for-others -->` }), "posting the mention");
+        await ok(owner("POST", `/api/issues/${encodeURIComponent(issue.id)}/comments`, { body: `${body}\n\n${FOR_OTHERS}` }), "posting the mention");
         return { task: { id: String(issue.id), identifier: String(issue.identifier ?? "") }, created: false };
       }
       const company = String((await ok(owner("GET", `/api/agents/${encodeURIComponent(a.id)}`), "the agent")).companyId ?? "");

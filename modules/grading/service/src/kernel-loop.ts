@@ -5,6 +5,7 @@
 // An app's status, deploys and rendered view are read from apps-mcp with this module's own token (role apps.read, apps-evidence.ts).
 import type { DatabaseSync } from "node:sqlite";
 import { createGradeLoop } from "./loop.mjs";
+import { forOthers } from "./aidenhq-sdk/for-others.ts";
 import { GRADE_SCHEMA, escalationFor, gather, grade, gradeNote, template } from "./grader/grade.ts";
 import { findPrs, stripHidden } from "./grader/compat.ts";
 import { openRouterAsk } from "./aidenhq-sdk/judge.ts";
@@ -119,7 +120,7 @@ export function createKernelGradeLoop({ db, runner, due, kernel, kernelBytes, ap
     pc, log, state, gather, grade, escalationFor, gradeNote, template, gradeDeps, tellParent, recordsOn,
     graderAsk,
     stripHidden, graderSpeaks: (s?: string) => ["open", "pending", "awaiting_evidence", "needs_revision", "grading_failed"].includes(String(s)),
-    isUserInstruction: (c: Json) => c.authorType === "user" && !String(c.body ?? "").includes("<!-- aidenhq-runner -->"),
+    isUserInstruction: (c: Json) => c.authorType === "user" && !String(c.body ?? "").includes("<!-- aidenhq-runner -->") && !forOthers(c.body),
   });
   return loop;
 }

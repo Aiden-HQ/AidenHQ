@@ -76,6 +76,8 @@ export function sharedCopies(root = repo) {
     "modules/google/connections/google-workspace-mcp/src/source-store.ts",
     "modules/security/scanner/src/source-store.ts",
   ],
+  // Who said it: a comment posted for someone else is never the owner's words (dispatch, the grader, task_comments, the board).
+  "kernel/sdk/src/for-others.ts": ["modules/dispatch/service/src/aidenhq-sdk/for-others.ts", "modules/grading/service/src/aidenhq-sdk/for-others.ts", "modules/tasks/connections/tasks-mcp/src/aidenhq-sdk/for-others.ts", "services/board/src/aidenhq-sdk/for-others.ts"],
   "services/shared/reason-codes.ts": ["services/board/src/reason-codes.ts"],
   "services/shared/url-setting.ts": ["services/board/src/url-setting.ts"],
   // The supply-chain checks, version picker and image scan, for app repos (the app CI template is copied into each as it is).
