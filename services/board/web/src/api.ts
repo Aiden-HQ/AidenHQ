@@ -43,7 +43,6 @@ export interface SignInView {
   fields: { secret: string; label: string; pattern: string; help?: string }[];
   scopes: { supported: string[]; recommended: string[] } | null;
   state: string;
-  since: string | null;
   /** The loopback address the sign-in ends on, whose full address (with its code) the owner pastes back; null: one click only. */
   redirect: string | null;
   /** The board's https name a one-click sign-in returns to (a company may have to allow it first); null: none. */

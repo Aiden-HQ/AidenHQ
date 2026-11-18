@@ -1231,7 +1231,6 @@ export function createApp(opts: AppOptions): Server {
           fields: s.fields,
           scopes: offer && offer.supported.length > 1 ? offer : null,
           state: status?.state ?? "unknown",
-          since: status?.since ?? null,
           // The address the default sign-in ends on (pasted back below), and the domain one click returns to instead.
           redirect: s.httpsOnly ? null : `${SIGNIN_LOOPBACK}${s.callback}`,
           oneClick: s.httpsOnly ? null : (httpsBoard?.hostname ?? null),
@@ -2103,7 +2102,9 @@ export function createApp(opts: AppOptions): Server {
 
   async function handleSignIn(req: IncomingMessage, res: ServerResponse, url: URL, s: SignIn) {
     const { label: name, connect, callback, auth } = s;
-    const origin = redirectOrigin(s, String(req.headers.host ?? ""), url.searchParams.has("oneclick"));
+    // A callback lands only where a redirect can: the loopback board (a tunnel) or its https name.
+    const host = String(req.headers.host ?? "");
+    const origin = url.pathname === connect ? redirectOrigin(s, host, url.searchParams.has("oneclick")) : vendorOrigin(host);
     if (!origin) return signInFailed(res, s.id, `Couldn't connect ${name}: ${httpsBoard ? `sign in from ${httpsBoard.origin}` : `sign in from ${TUNNEL}`}`);
     try {
       if (url.pathname === connect && (await needsSetup(req, s))) {
