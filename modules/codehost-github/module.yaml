@@ -3,7 +3,7 @@ description: "GitHub as the code host: task workspaces and the cache clones, rep
 license: MIT
 # A holder of the GitHub App key (vault github-app/) and the admin PAT, and the owner of all git state. Its code runs in
 # the host runner today (src/: the runner imports it); the write kinds codehost-github.{push,pr,merge,create_repo,deploy_key}
-# go through the kernel's /v1/writes once the runner files its git writes there (lean-core 3b), with src/plan.mjs as their
+# go through the kernel's /v1/writes once the runner files its git writes there (lean-core 3b), with service/src/plan.mjs as their
 # executor@1 plan. Outside the agents org it is PR-only (no merge, no creation, no workflows), except product-repo merges the
 # reviewer or the owner approved.
 privileged: [ git-credential ]
@@ -65,7 +65,7 @@ services:
         PRODUCT_REPO: "${AIDENHQ_PRODUCT_REPO:-}"
         INSTANCE_REPO: "${AIDENHQ_INSTANCE_REPO:-}"
         OWNER_NAME: "${settings.owner_name}"
-# The kernel calls the kinds' plan, execute and status here with the module's own token (executor@1); plan is src/plan.mjs's
+# The kernel calls the kinds' plan, execute and status here with the module's own token (executor@1); plan is service/src/plan.mjs's
 # rules on the state the service reads itself (the workspace, its cache clone, GitHub), never the args.
 providers:
   executor:

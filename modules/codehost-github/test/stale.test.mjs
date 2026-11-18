@@ -7,7 +7,7 @@ import { utimesSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { serveExecutor } from "../../../kernel/sdk/src/executor.ts";
 import { kernel, serve } from "../../../kernel/test/helpers.mjs";
-import { plan } from "../src/plan.mjs";
+import { plan } from "../service/src/plan.mjs";
 
 const sha = (c) => c.repeat(40);
 const until = async (fn) => { for (let i = 0; i < 300 && !fn(); i++) await new Promise((r) => setTimeout(r, 10)); assert.ok(fn()); };

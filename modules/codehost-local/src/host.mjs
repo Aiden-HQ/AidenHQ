@@ -9,14 +9,13 @@
 // same head for another change or another base never stands in for this one; a missing check is not passed. The merge is landOnMain's squash, pushed to the bare repo
 // without force: receive-pack's ref lock refuses a non-fast-forward, so that push is the compare-and-swap.
 //
-// `host(deps)` returns the code host role's shape (codehost-github/src/host.mjs documents it) plus the local extras the
+// `host(deps)` returns the code host role's shape (modules/codehost-github/module.yaml `provides`) plus the local extras the
 // runner and the apps platform read: changes(slug), updateChange(slug, n, fields), writeCheck(slug, sha, entry).
 import { execFile } from "node:child_process";
 import { existsSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { promisify } from "node:util";
-import { ISOLATED_ENV, SAFE_GIT_ARGS, ensureClone, git, landOnMain } from "../../codehost-github/src/git.mjs";
-import { DEFAULT_IDENTITY, identityEnv } from "../../codehost-github/src/github-app.ts";
+import { DEFAULT_IDENTITY, ISOLATED_ENV, SAFE_GIT_ARGS, ensureClone, git, identityEnv, landOnMain } from "./git.mjs";
 
 const run = promisify(execFile);
 /** The org this host owns (codehost-github's plan.mjs tiers it as an agents org). */

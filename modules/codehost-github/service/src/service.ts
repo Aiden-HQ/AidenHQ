@@ -34,14 +34,14 @@ import { noteKept } from "./tidy.ts";
 
 const run = promisify(execFile);
 
-/** codehost-github/src/git.mjs SAFE_GIT_ARGS (test/service.test.mjs checks they match). */
+/** The hardened git arguments: hooks, fsmonitor and ext:: transports off whatever a workspace's config says. */
 export const SAFE_GIT_ARGS = ["-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=", "-c", "protocol.ext.allow=never", "-c", "safe.bareRepository=explicit"];
 
 type Gh = (method: string, path: string, token: string, body?: unknown) => Promise<{ status: number; body: any }>;
 type App = { token(org: string, o: { repositories?: string[]; permissions?: Record<string, string>; fresh?: boolean }): Promise<string>; createRepo(slug: string): Promise<"exists" | "created">; identity(): Promise<{ name: string }> };
 export type Options = {
   key: string; kernelUrl: string; cacheDir: string; tasksDir?: string;
-  /** The App (src/github-app.ts appClient); undefined without the key: every GitHub action fails, saying so. */
+  /** The App (github-app.ts appClient); undefined without the key: every GitHub action fails, saying so. */
   app?: App; gh: Gh; remoteUrl?: (slug: string) => string;
   agentsOrg: string; instanceRepo?: string; productRepo?: string;
   log?: (msg: string, f?: Record<string, unknown>) => void;

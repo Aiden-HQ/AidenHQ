@@ -3,7 +3,7 @@
 // A base whose parent is still open, and one whose parent merged, keep behaving as before.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { advance } from "../src/merge-gate.mjs";
+import { advance } from "../service/src/merge-gate.mjs";
 import { newQueue } from "../../engineering/src/merge-queue.mjs";
 
 const HEAD = "a1".repeat(20);

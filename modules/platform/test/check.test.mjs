@@ -9,7 +9,7 @@ const facts = { productRepo: "acme/aidenhq", roles: {}, gateCore: ["^services\\/
 const push = (files, repo = "acme/aidenhq", extra = {}) => check({ kind: "codehost-github.push", args: { repo, branch: "fix/a", files, ...extra }, facts });
 
 test("product files: gate core to the panel, a compose file by content, an unreadable one denied, ordinary code ok", () => {
-  assert.deepEqual(push(["modules/codehost-github/src/plan.mjs"]), { verdict: "raise", tier: 1, panel: true, rule: "gate-core", reason: "it changes the gate's own core (modules/codehost-github/src/plan.mjs)" });
+  assert.deepEqual(push(["modules/codehost-github/service/src/plan.mjs"]), { verdict: "raise", tier: 1, panel: true, rule: "gate-core", reason: "it changes the gate's own core (modules/codehost-github/service/src/plan.mjs)" });
   assert.equal(push(["services/board/src/tasks.ts"]).verdict, "ok");
   assert.equal(push(["compose.yaml"]).verdict, "deny");
   const doc = (tag, extra = {}) => ({ services: { a: { image: `example.com/acme/a:${tag}`, ...extra } } });
@@ -23,7 +23,7 @@ test("product files: gate core to the panel, a compose file by content, an unrea
   const bare = check({ kind: "codehost-github.push", args: { repo: "acme/aidenhq", branch: "fix/a", files: ["services/board/src/tasks.ts"] }, facts: { productRepo: "acme/aidenhq", roles: {} } });
   assert.deepEqual([bare.verdict, bare.rule], ["deny", "gate-list-unknown"]);
   // Another repo's files are the code host's to judge.
-  assert.equal(push(["modules/codehost-github/src/plan.mjs"], "acme-agents/app").verdict, "ok");
+  assert.equal(push(["modules/codehost-github/service/src/plan.mjs"], "acme-agents/app").verdict, "ok");
 });
 
 test("the owner-approval records are the owner's in any repo", () => {

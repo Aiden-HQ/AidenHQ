@@ -29,7 +29,7 @@ export const REVIEWER_CODE = [
 ];
 export const touchesReviewer = (files: string[]) => files.some((f) => REVIEWER_CODE.some((r) => r.test(f)));
 /** The reviewer's content in a product commit, by git object id: the same ids are the same reviewer, whatever commit holds them. */
-const REVIEWER_TREE = ["modules/ai-reviewer", "modules/codehost-github/src/plan.mjs", "modules/codehost-github/service/src/plan.mjs", "modules/platform/src/check.mjs"];
+const REVIEWER_TREE = ["modules/ai-reviewer", "modules/codehost-github/service/src/plan.mjs", "modules/platform/src/check.mjs"];
 /** The policy whose hash a receipt binds: its git tree id at the commit under test. */
 const POLICY = "modules/ai-reviewer/service/security";
 

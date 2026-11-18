@@ -3,7 +3,7 @@
 // when it carries the PR that breaks the combined build.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { advanceTrains } from "../src/merge-gate.mjs";
+import { advanceTrains } from "../service/src/merge-gate.mjs";
 import { newQueue } from "../../engineering/src/merge-queue.mjs";
 
 const green = { state: "SUCCESS", contexts: { nodes: [{ __typename: "CheckRun", name: "test", status: "COMPLETED", conclusion: "SUCCESS" }] } };

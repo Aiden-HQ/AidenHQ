@@ -2,7 +2,7 @@
 // in code, no Engineer turn), and the fixed settle after a merge on a base whose CI ends with the gate check.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { advance } from "../src/merge-gate.mjs";
+import { advance } from "../service/src/merge-gate.mjs";
 import { newQueue } from "../../engineering/src/merge-queue.mjs";
 
 const APPROVED = "a1".repeat(20);

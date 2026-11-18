@@ -9,7 +9,7 @@ import { fileURLToPath } from "node:url";
 import { createServer } from "node:http";
 import { Tokens, Creds, admit, builtImage, dockerRunArgs, oomMessage, execEnv, routineArgs, mcpBlock, stale, wrapExec, runCredential, CP_SCRIPT, CODEX_CONFIG_SCRUB, checkoutRequest, archiveArgs, UNTAR_SCRIPT, RUN_TOKEN_PATH, WRITE_RUN_TOKEN_SCRIPT, CLEAR_RUN_TOKEN_SCRIPT } from "../lib.mjs";
 import { host as localHost } from "../../../modules/codehost-local/src/host.mjs";
-import { ensureClone } from "../../../modules/codehost-github/src/git.mjs";
+import { ensureClone } from "../../../modules/codehost-local/src/git.mjs";
 
 test("a run token names its agent until the run ends; a new run gets a new one", () => {
   const t = new Tokens();

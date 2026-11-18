@@ -1,6 +1,6 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { planParts, plan } from "../src/plan.mjs";
+import { planParts, plan } from "../service/src/plan.mjs";
 
 const s = { agentsOrgs: ["acme-agents", "local"], productRepo: "acme/aidenhq", instanceRepo: "local/aidenhq-instance", requester: {} };
 const green = [{ name: "tests", ok: true }, { name: "secrets", ok: true }];

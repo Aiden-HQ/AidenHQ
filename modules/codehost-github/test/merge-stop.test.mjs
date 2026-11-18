@@ -2,7 +2,7 @@
 // error, so the delegator can tell a red diff from a stale base without running `gh pr checks` themselves.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { advance } from "../src/merge-gate.mjs";
+import { advance } from "../service/src/merge-gate.mjs";
 import { newQueue } from "../../engineering/src/merge-queue.mjs";
 
 const HEAD = "ab12".repeat(10);

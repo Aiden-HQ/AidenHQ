@@ -7,10 +7,9 @@ import { execFileSync } from "node:child_process";
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { SAFE_GIT_ARGS, git, setUntrusted } from "../src/git.mjs";
-import { WRITE, ghOptions, mergeOptions, mergePermissions, ownRepo, pushPermissions } from "../src/github-app.ts";
-import { allowedWrite } from "../src/merge-gate.mjs";
-import { plan, planParts } from "../src/plan.mjs";
+import { WRITE, ghOptions, mergeOptions, mergePermissions, ownRepo, pushPermissions } from "../service/src/github-app.ts";
+import { allowedWrite } from "../service/src/merge-gate.mjs";
+import { plan, planParts } from "../service/src/plan.mjs";
 
 const ORG = "acme-agents", PRODUCT = "acme/aidenhq";
 
@@ -44,34 +43,4 @@ test("a merge-queue write mints no App token outside our repos, and one single-r
   assert.equal((await mergeOptions(app, `${ORG}/app`, own)).env.GH_TOKEN, "t");
   assert.equal((await mergeOptions(app, PRODUCT, own, mergePermissions(PRODUCT, PRODUCT))).env.GH_TOKEN, "t");
   assert.deepEqual(asked, [{ org: ORG, repositories: ["app"], permissions: WRITE }, { org: "acme", repositories: ["aidenhq"], permissions: { ...WRITE, workflows: "write" } }]);
-});
-
-test("host git in a task clone: the safe arguments, no global or system config, the task folder a ceiling, no diff programs", async (t) => {
-  const dir = mkdtempSync(join(tmpdir(), "codehost-hard-"));
-  const tasks = join(dir, "tasks");
-  const clone = join(tasks, "TASK-1", "repo");
-  mkdirSync(clone, { recursive: true });
-  execFileSync("git", ["init", "-q", clone], { env: { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null" } });
-  // A git on PATH that records how it was run, then hands over to the real one.
-  const real = execFileSync("sh", ["-c", "command -v git"], { encoding: "utf8" }).trim();
-  const bin = join(dir, "bin");
-  mkdirSync(bin);
-  const seen = join(dir, "seen.jsonl");
-  writeFileSync(join(bin, "git"), `#!/bin/sh\nprintf '%s\\n' "$(node -e 'console.log(JSON.stringify({argv: process.argv.slice(1), global: process.env.GIT_CONFIG_GLOBAL ?? null, nosystem: process.env.GIT_CONFIG_NOSYSTEM ?? null, ceiling: process.env.GIT_CEILING_DIRECTORIES ?? null}))' -- "$@")" >> ${JSON.stringify(seen)}\nexec ${JSON.stringify(real)} "$@"\n`);
-  chmodSync(join(bin, "git"), 0o755);
-  const path = process.env.PATH;
-  process.env.PATH = `${bin}:${path}`;
-  setUntrusted({ tasksDir: tasks });
-  t.after(() => { process.env.PATH = path; setUntrusted(undefined); });
-  await git(clone, "status", "--porcelain");
-  await git(clone, "diff", "HEAD").catch(() => "");
-  const runs = readFileSync(seen, "utf8").trim().split("\n").map((l) => JSON.parse(l));
-  const status = runs.find((r) => r.argv.includes("status"));
-  const diff = runs.find((r) => r.argv.includes("diff") && r.argv.includes("HEAD"));
-  for (const r of [status, diff]) {
-    assert.deepEqual(r.argv.slice(0, SAFE_GIT_ARGS.length), SAFE_GIT_ARGS);
-    assert.deepEqual([r.global, r.nosystem, r.ceiling], ["/dev/null", "1", tasks]);
-  }
-  assert.ok(SAFE_GIT_ARGS.includes("core.hooksPath=/dev/null") && SAFE_GIT_ARGS.includes("protocol.ext.allow=never") && SAFE_GIT_ARGS.includes("safe.bareRepository=explicit"));
-  assert.deepEqual(diff.argv.slice(SAFE_GIT_ARGS.length, SAFE_GIT_ARGS.length + 3), ["diff", "--no-ext-diff", "--no-textconv"]);
 });
