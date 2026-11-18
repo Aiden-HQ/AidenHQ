@@ -7,7 +7,7 @@ import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node
 import { basename, dirname, join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
-import { FOR_OTHERS, RUNNER_MARKER, deliveredFrom, finishedStatus, hasMarker, isAgentSubtask, isRuleProposal, isUserPart, ownRequest, runsUnasked, findRepos, mentionedRepos, isClaudeModel, openrouterModels, crewNames, personaFor, parseCommand, pickedEngine, pickerFor, engineKinds, engineLabel, engineOf, modelPrefix, repoAllowed, resolveEngine, stripHidden, useEngines } from "./agents.mjs";
+import { FOR_OTHERS, RUNNER_MARKER, deliveredFrom, finishedStatus, hasMarker, isAgentSubtask, isRuleProposal, isUserPart, ownRequest, runsUnasked, findRepos, mentionedRepos, isClaudeModel, openrouterModels, crewNames, personaFor, parseCommand, pickedEngine, pickerFor, engineKinds, engineLabel, engineOf, modelPrefix, repoAllowed, resolveEngine, stripHidden, useEngines, settledWait } from "./agents.mjs";
 import { REPO_ROOT, githubSlug, loadConfig } from "./config.mjs";
 import { applyWaitingForLock, architectFollowUps, bumpTitle, definitionsOf, ownerMade, productPin, strayFiles, trialEditsText, trialHandbookOnly, trialNoTapBy, untrialedNewAgents } from "./apply.ts";
 import { applyCardArgs, asApproval, branchCardArgs, cardOf, cardText, planOf } from "./cards.ts";
@@ -4269,6 +4269,11 @@ async function finishTurn({ issue, full, workspace, engine, jobId, logPath, tips
     // The heads this run ended on, for the parent's run-end receipt: the exact commits a pending pr/merge card would cover.
     state.set(`heads:${issue.id}`, JSON.stringify(rows.filter((r) => !r.merged && !r.readOnly && (r.unpublished.length || !r.prUrl) && r.head).map(({ repo, branch, head }) => ({ repo, branch, sha: head }))));
     const stillDirty = (await dirtyCheckouts(after)).length > 0;
+    // The agent left a check armed and still ahead: the turn settled into that wait, not finished. The task keeps its status
+    // and Paperclip wakes it at the check's time. Any status write or comment here wakes it now and runs the same check again,
+    // so the wait is where the turn ends: the job is recorded and said in the log, and nothing is posted on the task.
+    // Read again: the check the agent armed during this run is on the task as it is now, not as the turn found it.
+    const wait = outcome.finished && settledWait(await retryTransient(() => pc.issue(issue.id)).catch(() => full));
     const primerNote = outcome.finished ? await publishToPrimer(issue, full, workspace, tools?.agentId ?? null) : "";
     const sharedNote = outcome.finished ? await shareWork(issue, full, workspace) : "";
     const footer = [
@@ -4283,9 +4288,13 @@ async function finishTurn({ issue, full, workspace, engine, jobId, logPath, tips
     if (outcome.finished) {
       // The agent's reply, in its own words. None: a comment that needed no answer ("thanks").
       const reply = [outcome.silent ? "" : String(result.lastMessage ?? "").trim(), primerNote, sharedNote, ...(footer.length ? ["---", ...footer] : [])].filter(Boolean).join("\n\n");
-      await retryTransient(() => pc.finishStatus(issue.id, "in_review", reply.trim() ? `${REPLY_MARKER}${reply}` : undefined));
-      // A graded deliverable's turn ended: the grader looks at it (a task without a rubric passes untouched).
-      await mayClose(issue.id, "finish_turn");
+      if (wait) {
+        log("job finished into an armed wait", { issue: issue.identifier, until: wait, reply: reply.slice(0, 2000) });
+      } else {
+        await retryTransient(() => pc.finishStatus(issue.id, "in_review", reply.trim() ? `${REPLY_MARKER}${reply}` : undefined));
+        // A graded deliverable's turn ended: the grader looks at it (a task without a rubric passes untouched).
+        await mayClose(issue.id, "finish_turn");
+      }
     } else {
       // Failures also go to review (Paperclip refuses "blocked" without a blocker); the runner says what failed.
       const report = String(result.lastMessage ?? "").trim();

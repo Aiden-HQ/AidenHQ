@@ -3,7 +3,7 @@
 export default {
   id: "aidenhq.computer",
   apiVersion: 1,
-  version: "0.1.3", // keep equal to package.json: setup reinstalls when it changes
+  version: "0.1.4", // keep equal to package.json: setup reinstalls when it changes
   displayName: "AidenHQ computers",
   description: "Each agent run in its own gVisor computer, started by the AidenHQ launcher on the host.",
   author: "AidenHQ",
