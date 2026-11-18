@@ -95,12 +95,18 @@ test("save_secret is the owner's: another admin gets 403, a session that isn't r
   assert.equal((await post("setup_status", { module: "channel-telegram" }, "admin")).status, 200, "any ready admin sees which are set");
 });
 
-test("a failed recreate answers 502 with compose's last line, the secret kept", async (t) => {
+test("a save answers once the value is written, while the recreate is still waiting on the apply lock", async () => {
+  const v = vault(() => new Promise(() => {}));
+  const r = await v.secrets.save("channel-telegram", "telegram_bot_token", TOKEN);
+  assert.deepEqual(r, { restarted: ["telegram"] });
+  assert.equal(readFileSync(join(v.dir, "telegram_bot_token"), "utf8"), TOKEN);
+});
+
+test("a failed recreate is logged, the secret kept, the save still answered", async () => {
   const v = vault(async () => { throw new Error("service \"telegram\" failed to start"); });
-  const post = await api(t, v);
-  const r = await post("save_secret", { module: "channel-telegram", secret: "telegram_bot_token", value: TOKEN });
-  assert.equal(r.status, 502);
-  assert.match(r.json.error.message, /failed to start/);
+  await v.secrets.save("channel-telegram", "telegram_bot_token", TOKEN);
+  await new Promise((r) => setImmediate(r));
+  assert.match(v.lines.join("\n"), /recreate failed.*failed to start/);
   assert.equal(readFileSync(join(v.dir, "telegram_bot_token"), "utf8"), TOKEN);
 });
 
