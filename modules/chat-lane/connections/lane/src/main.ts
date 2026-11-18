@@ -10,6 +10,7 @@ import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/
 import pino from "pino";
 import { buildServer } from "./mcp.js";
 import { kernelJwks, verifyCaller } from "./aidenhq-sdk/caller.js";
+import { kernelClient } from "./aidenhq-sdk/kernel-client.js";
 import { laneConfig } from "./lane/config.js";
 import { makeLane } from "./lane/lane.js";
 import { kernelChat } from "./lane/chat.js";
@@ -28,11 +29,7 @@ const env = (name: string): string => {
 const port = Number(process.env.PORT ?? 8089);
 const inboundToken = env("MCP_BEARER_TOKEN");
 if (!inboundToken) throw new Error("MCP_BEARER_TOKEN(_FILE) is required");
-const kernel = async (method: string, path: string, body?: unknown) => {
-  const res = await fetch(`${kernelUrl}${path}`, { method, headers: { authorization: `Bearer ${inboundToken}`, "content-type": "application/json" }, ...(body ? { body: JSON.stringify(body) } : {}), signal: AbortSignal.timeout(20_000) });
-  if (!res.ok) throw new Error(`${method} ${path} -> ${res.status}`);
-  return res.json() as Promise<any>;
-};
+const kernel = kernelClient(kernelUrl, inboundToken, { timeoutMs: 20_000 }).call;
 
 const store = openLaneStore(process.env.LANE_DB ?? "/data/lane.sqlite");
 const agents = laneConfig(process.env.LANE_CONFIG_FILE, (msg) => log.warn(msg));

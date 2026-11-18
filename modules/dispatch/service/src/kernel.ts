@@ -1,6 +1,7 @@
 // Every kernel call the dispatch module makes, with its own module token (roles kernel.jobs and kernel.cp-read): it holds no
 // other credential, reads Paperclip only through the kernel's read routes and writes to tasks only through the kernel.
 import type { Step } from "./progress.ts";
+import { KernelError, kernelClient } from "./aidenhq-sdk/kernel-client.ts";
 import type { Agent, Comment, Directory, Issue } from "./thread.ts";
 
 /** An inbox row the module claimed (kernel wakes.ts); `live_job`: a comment for that running job. */
@@ -41,19 +42,10 @@ export interface Kernel {
   note(wake: string, body: string): Promise<void>;
 }
 
-export class KernelError extends Error {
-  status: number;
-  constructor(status: number, message: string) { super(message); this.status = status; }
-}
+export { KernelError };
 
 export function createKernel(url: string, token: string, fetcher: typeof fetch = fetch): Kernel {
-  const base = url.replace(/\/$/, "");
-  async function call(method: string, path: string, body?: unknown) {
-    const r = await fetcher(`${base}${path}`, { method, headers: { authorization: `Bearer ${token}`, "content-type": "application/json" }, ...(body !== undefined ? { body: JSON.stringify(body) } : {}), signal: AbortSignal.timeout(30_000) });
-    const json = await r.json().catch(() => ({}));
-    if (!r.ok) throw new KernelError(r.status, `kernel ${method} ${path} → ${r.status}: ${JSON.stringify(json).slice(0, 200)}`);
-    return json;
-  }
+  const { call } = kernelClient(url, token, { fetcher });
   const e = encodeURIComponent;
   return {
     claim: async (limit) => (await call("POST", "/v1/wakes/claim", { limit })).wakes ?? [],
