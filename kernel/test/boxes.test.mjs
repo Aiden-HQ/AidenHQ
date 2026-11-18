@@ -98,8 +98,8 @@ test("admit → box → run: the kernel's key, the job token as the box's creden
   assert.notEqual(tokenB, acquire.body.token);
   // The end: the box is released, and the token buys nothing any more.
   h.release();
-  await until("the box released", () => h.calls.filter((c) => c.route === "/job/release").length === 2);
-  assert.equal(h.db.prepare("SELECT COUNT(*) AS n FROM jobs WHERE released IS NOT NULL").get().n, 2);
+  await until("both boxes released", () => h.db.prepare("SELECT COUNT(*) AS n FROM jobs WHERE released IS NOT NULL").get().n === 2);
+  assert.equal(h.calls.filter((c) => c.route === "/job/release").length, 2);
   await assert.rejects(h.whoami(acquire.body.token), /ended/);
   assert.ok(other.id);
 });
