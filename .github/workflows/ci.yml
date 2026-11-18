@@ -250,13 +250,14 @@ jobs:
     steps:
       # Where the heavy jobs run: GitHub-hosted, unless CI_SELF_HOSTED is 'true', the run is a push to main or a same-repo
       # PR, and this repo's other runs already hold BUSY+ hosted jobs (queued or running). Any API error keeps them hosted.
-      # Fork PRs never route there; the runner's own job-started hook (modules/ci/runner) refuses them anyway.
+      # Fork PRs and merge trains (main plus PRs that may come from forks) never route there; the runners' job-started hook
+      # (modules/ci/runner) refuses them anyway.
       - id: runner
         env:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
           RUN_ID: ${{ github.run_id }}
-          ENABLED: ${{ vars.CI_SELF_HOSTED == 'true' && (github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository) }}
+          ENABLED: ${{ vars.CI_SELF_HOSTED == 'true' && ((github.event_name == 'push' && github.ref == 'refs/heads/main') || github.event.pull_request.head.repo.full_name == github.repository) }}
         run: |
           BUSY=12 # of the free plan's ~20 concurrent hosted jobs, leaving room for this run's ~9
           runner='"ubuntu-latest"'
