@@ -16,13 +16,14 @@ function fake() {
   const runs: { id: string; status: string; agentId: string; issueId: string; startedAt: string; finishedAt: string | null; errorCode?: string }[] = [];
   const holds = new Map<string, { runId: string; recoveryActionId: string; cause: string }>();
   const released: string[] = [];
+  const cleared: string[] = [];
   const comments: { issue: string; body: string }[] = [];
   const pc = {
     routines: async () => [
       { id: "r1", title: "Heartbeat: chief-of-staff", status: "active", assigneeAgentId: "a" },
       { id: "r2", title: "Heartbeat: architect", status: "active", assigneeAgentId: "b" },
     ],
-    agents: async () => [{ id: "a", status: "idle" }, { id: "b", status: "idle" }, { id: "e", status: "idle" }],
+    agents: async () => [{ id: "a", status: cleared.length ? "idle" : "error" }, { id: "b", status: "idle" }, { id: "e", status: "idle" }],
     openIssues: async () => [...tasks.values()].filter((t) => !["done", "cancelled"].includes(t.status)),
     closedSince: async (since: string) => [...tasks.values()].filter((t) => ["done", "cancelled"].includes(t.status) && t.updatedAt >= since),
     liveRuns: async () => runs.filter((r) => !r.finishedAt),
@@ -33,13 +34,15 @@ function fake() {
     },
     issue: async (id: string) => ({ ...tasks.get(id), executionBlocker: holds.get(id) ?? null }),
     wakeAgent: async () => ({}),
+    updateIssue: async (id: string, b: { status: string }) => void Object.assign(tasks.get(id)!, b),
+    clearAgentError: async (id: string) => void cleared.push(id),
     releaseCancelledRun: async (issue: { id: string }, runId: string) => {
       if (holds.get(issue.id)?.runId === runId) holds.delete(issue.id);
       released.push(issue.id);
     },
   };
   const put = (t: Partial<T> & { id: string }, at: number) => tasks.set(t.id, { identifier: `WOR-${t.id}`, title: t.id, status: "todo", assigneeAgentId: null, ...tasks.get(t.id), ...t, updatedAt: iso(at) });
-  return { pc, tasks, runs, comments, put, holds, released };
+  return { pc, tasks, runs, comments, put, holds, released, cleared };
 }
 
 function deps(f: ReturnType<typeof fake>, store: Store, records = fakeRecords(), grading = fakeGrading()) {
@@ -261,5 +264,22 @@ describe("event wake-ups", () => {
     expect(f.holds.has("1")).toBe(false);
     await wakeTick(deps(f, store), new Map(), t0 + 3 * MIN);
     expect(f.released).toEqual(["1"]); // once
+  });
+
+  it("a run cut off at max_output_tokens does not leave the agent's own task blocked and the agent in error, once", async () => {
+    const f = fake();
+    const store = new Store(":memory:");
+    f.put({ id: "1", assigneeAgentId: "a", status: "blocked" }, t0);
+    f.put({ id: "2", assigneeAgentId: "a", status: "blocked" }, t0); // blocked by something else: left alone
+    const err = { status: "failed", agentId: "a", startedAt: iso(t0), finishedAt: iso(t0), errorCode: "configuration_incomplete" };
+    f.runs.push({ id: "cut", issueId: "1", error: "Incomplete response returned, reason: max_output_tokens", ...err } as never);
+    f.runs.push({ id: "bad", issueId: "2", error: "model not found", ...err } as never);
+    await wakeTick(deps(f, store), new Map(), t0 + MIN);
+    expect(f.tasks.get("1")!.status).toBe("todo");
+    expect(f.tasks.get("2")!.status).toBe("blocked");
+    expect(f.cleared).toEqual(["a"]);
+    f.tasks.get("1")!.status = "blocked"; // blocked again by the same run: not repaired a second time
+    await wakeTick(deps(f, store), new Map(), t0 + 3 * MIN);
+    expect(f.tasks.get("1")!.status).toBe("blocked");
   });
 });
