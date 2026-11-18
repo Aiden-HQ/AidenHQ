@@ -29,9 +29,9 @@ export function chatState(issue: Issue, live: LiveRun[], lastRun: PastRun | unde
   // because the task changed hands (an agent handing it back) is not a stop.
   if (lastRun?.status === "cancelled" && lastRun.errorCode !== "issue_reassigned" && !/reassign/i.test(lastRun.error ?? "")) return { state: "idle" };
   if (!issue.assigneeAgentId && issue.assigneeUserId === me) return { state: "waiting for you" };
-  // In review on an agent's task: the owner's call for his own chats; for work one agent handed another (a child task)
-  // it is the reviewing agent's. Such a task asks him only through a pending approval, a question (shownState) or his own assignment.
-  if (issue.status === "in_review") return issue.parentId && issue.assigneeAgentId ? { state: "in review" } : { state: "waiting for you" };
+  // In review on an agent's task: the grader, the AI reviewer, CI or the merge queue has it, never the owner. It asks him
+  // only through a pending approval, a question (shownState, needsYou's `asking`) or being handed to him.
+  if (issue.status === "in_review") return { state: "in review" };
   return { state: "idle" };
 }
 
@@ -57,12 +57,25 @@ export function pickAgent(text: string, agents: Agent[]): { agent: Agent; note?:
   return { agent: aiden, note: `(No agent called @${m[1]!.split(/\s/)[0]}; sent to Aiden.)` };
 }
 
-/** What needs the owner (Approvals, notifications): what an agent asks for, never the owner's own plain to-dos. */
-export function needsYou(open: Issue[], live: LiveRun[], runs: PastRun[], me: string, awaiting: Set<string> = new Set()): (Issue & { state: ChatState; reason?: string })[] {
+/**
+ * What waits on the owner (Approvals, its badge, notifications, an agent's page), and nothing else: a pending Tier 2 record
+ * on the task; an agent's question he hasn't answered (`asking`: task ids, read from the newest comments); or a task an agent
+ * handed to him (his chat handed back, or one moved to him in review or blocked). Never a failed run (Fleet Ops repairs
+ * those), work the grader, AI reviewer, CI or merge queue has, his own plain to-dos, or anything parked in backlog.
+ */
+export function needsYou(open: Issue[], live: LiveRun[], runs: PastRun[], me: string, awaiting: Set<string> = new Set(), asking: Set<string> = new Set()): (Issue & { state: ChatState; reason?: string })[] {
+  const handedToHim = (i: Issue) => !i.assigneeAgentId && i.assigneeUserId === me && (Boolean(chatAgent(i)) || i.status === "in_review" || i.status === "blocked");
   return open
-    .map((i) => ({ ...i, ...chatState(i, live, runs.find((r) => r.issueId === i.id && r.finishedAt), me, awaiting) }))
-    .filter((i) => i.state === "failed" || i.state === "waiting for approval" || (i.status === "in_review" && i.state === "waiting for you"));
+    .filter((i) => i.status !== "backlog")
+    .map((i) => {
+      const s = chatState(i, live, runs.find((r) => r.issueId === i.id && r.finishedAt), me, awaiting);
+      return { ...i, ...(asking.has(i.id) && ["idle", "in review", "failed"].includes(s.state) ? { state: "waiting for you" as const } : s) };
+    })
+    .filter((i) => i.state === "waiting for approval" || (i.state === "waiting for you" && (asking.has(i.id) || handedToHim(i))));
 }
+
+/** The states that wait on the owner (needsYou decides which tasks are in them). */
+export const WAITS_ON_OWNER: ChatState[] = ["waiting for you", "waiting for approval"];
 
 /** Recorded in a chat's description when it is created: the agent the chat belongs to. */
 export const chatAgentMarker = (agentId: string) => `<!-- aidenhq-chat-agent:${agentId} -->`;

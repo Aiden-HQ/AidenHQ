@@ -21,7 +21,7 @@ describe("tasks of a chat", () => {
     expect(taskSummary(kids)).toEqual({ total: 4, needs: 1, busy: true });
     const at = "2026-11-12T00:00:00Z";
     const g = groupTasks([{ state: "failed", updatedAt: at }, { state: "queued", updatedAt: at }, { state: "in review", updatedAt: at }, { state: "done", updatedAt: at }, { state: "done", updatedAt: "2026-01-01T00:00:00Z" }], Date.parse(at));
-    expect([g.needs.length, g.working.length, g.waiting.length, g.finished.length]).toEqual([1, 0, 2, 1]);
+    expect([g.needs.length, g.working.length, g.waiting.length, g.finished.length]).toEqual([0, 0, 3, 1]);
   });
 });
 
