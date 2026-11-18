@@ -1,7 +1,10 @@
 # Job budgets (timeout-minutes): a floor set from only a few hosted runs on 2026-11-17 (hosted runner-flows already shows timing flakes). They are tightened to 2x the p95 once there are about 20 hosted runs. A failed job is never retried.
 # Tests and typechecks for every package, on pull requests and pushes to main. Offline: no secrets are used.
-# Every job runs on a GitHub-hosted runner (this repository is public, so it costs nothing). The self-hosted runners
-# (modules/ci) serve the private agents-org repositories only.
+# Jobs run on GitHub-hosted runners (this repository is public, so it costs nothing, but the free plan runs ~20 jobs at
+# once). The heavy jobs (packages, runner, board) overflow to our self-hosted runners (modules/ci, labels self-hosted +
+# aidenhq) only when hosted capacity is saturated (checks' `runner` step), the repository variable CI_SELF_HOSTED is
+# 'true' (docs/operations.md) and the run is a push to main or a same-repo pull request. Fork PRs stay hosted, and the
+# runners' job-started hook refuses any job that is not a push or same-repo PR of a repo they serve.
 # The AI reviewer's exit test (modules/ai-reviewer/scripts/reviewer-eval.mjs) needs a paid OpenRouter key, so the
 # maintainer runs it by hand for changes to the reviewer, its policy or its cases.
 name: ci
@@ -21,82 +24,14 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  # The 7-day rule: lockfile entries, images, actions, apt packages and global installs this change adds or alters must
-  # be 7+ days old, unless an owner-approved security exception in .github/supply-chain-exceptions.yaml (read from the
-  # base) covers them; and every one of them is pinned (scripts/supply-chain/pins.mjs).
-  supply-chain:
-    runs-on: ubuntu-latest
-    timeout-minutes: 3
-    permissions:
-      contents: read
-      packages: read # ghcr.io images are dated by the GitHub Packages API
-    env:
-      PR_BASE: ${{ github.event.pull_request.base.sha }}
-      PUSH_BEFORE: ${{ github.event.before }}
-      HEAD_SHA: ${{ github.sha }}
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          fetch-depth: 0
-          persist-credentials: false
-      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
-        with:
-          node-version: 24.x
-      # Both checks have no dependencies: nothing is installed before the lockfiles are vetted.
-      - name: Age check (lockfiles) and pins (images, actions, apt, global installs)
-        env:
-          GITHUB_TOKEN: ${{ github.token }}
-        run: |
-          # a merge train is a push of main plus the PRs: its base is main, never an earlier train commit
-          case "$GITHUB_REF" in refs/heads/merge-train/*) PUSH_BEFORE= ;; esac
-          base="${PR_BASE:-$PUSH_BEFORE}"
-          # a new branch or a force push has no usable before: compare with the default branch
-          if [ -z "$base" ] || [ "$base" = 0000000000000000000000000000000000000000 ] || ! git cat-file -e "$base^{commit}" 2>/dev/null; then
-            base=$(git merge-base origin/main "$HEAD_SHA" 2>/dev/null || git rev-parse "$HEAD_SHA~1")
-          fi
-          status=0
-          node scripts/supply-chain/npm-age.mjs "$base" "$HEAD_SHA" || status=1
-          node scripts/supply-chain/pins.mjs "$base" "$HEAD_SHA" || status=1
-          exit $status
-
-  # The PR title becomes the squash commit on main, so it must be a Conventional Commit (CONTRIBUTING.md, "Pull requests
-  # and commits"). It reads the title live from the API, so after fixing a title, re-run the failed jobs. The title is never
-  # interpolated into the script: it is untrusted text.
-  pr-title:
-    if: github.event_name == 'pull_request'
-    runs-on: ubuntu-latest
-    timeout-minutes: 2
-    permissions:
-      pull-requests: read
-    steps:
-      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
-        with:
-          node-version: 24.x
-      - name: Conventional Commit title
-        env:
-          GITHUB_TOKEN: ${{ github.token }}
-          PR_URL: ${{ github.event.pull_request.url }}
-        run: |
-          node --input-type=module -e '
-            const res = await fetch(process.env.PR_URL, { headers: { authorization: `Bearer ${process.env.GITHUB_TOKEN}`, accept: "application/vnd.github+json" } });
-            if (!res.ok) throw new Error(`reading the PR failed: ${res.status}`);
-            const { title } = await res.json();
-            const ok = /^(feat|fix|docs|chore|test|refactor|perf|ci|build|style|revert)(\([a-z0-9][a-z0-9._\/-]*\))?!?: \S/.test(title);
-            console.log(`Title: ${JSON.stringify(title)}`);
-            if (!ok) {
-              console.log("::error::The PR title must be a Conventional Commit, e.g. \"fix(board): keep the drawer open\" or \"docs: explain pins\". Types: feat, fix, docs, chore, test, refactor, perf, ci, build, style, revert. Edit the title, then re-run the failed jobs.");
-              process.exit(1);
-            }
-          '
-
-  # The suites this change needs tested that have no job of their own (image-changes' `tests` step; all of them on a push
-  # to main), skipped when there are none. They share two jobs, split by weight (below), four suites at a time in each:
-  # alone, each spent ~14 s of setup and about a minute of queue on 1-9 s of tests.
+  # The suites this change needs tested that have no job of their own (checks' `tests` step; all of them on a push
+  # to main), skipped when there are none. They share two jobs, split by weight (below), four suites at a time in each: alone, each spent ~14 s of setup and about
+  # a minute of queue on 1-9 s of tests.
   packages:
     name: packages (${{ matrix.shard }}/2)
-    needs: image-changes
-    if: needs.image-changes.outputs.packages == 'true'
-    runs-on: ubuntu-latest
+    needs: checks
+    if: needs.checks.outputs.packages == 'true'
+    runs-on: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository && 'ubuntu-latest' || fromJSON(needs.checks.outputs.runner) }}
     timeout-minutes: 4
     strategy:
       fail-fast: false
@@ -139,8 +74,8 @@ jobs:
           node --disable-warning=ExperimentalWarning scripts/lean/contract-lock.mjs --check --base "$PR_BASE"
       - name: Test
         env:
-          TESTS: ${{ needs.image-changes.outputs.tests }}
-          CHANGED_FILES: ${{ needs.image-changes.outputs.changed }}
+          TESTS: ${{ needs.checks.outputs.tests }}
+          CHANGED_FILES: ${{ needs.checks.outputs.changed }}
           SHARD: ${{ matrix.shard }}
           # Seconds each suite took (GitHub-hosted, 2026-11-17), for balancing; a suite not listed counts 30. The selected
           # suites go heaviest first into the lighter shard.
@@ -174,9 +109,9 @@ jobs:
 
   # The runner's unit tests, and its end-to-end flows in four shards side by side (each only when selected).
   runner-unit:
-    needs: image-changes
-    if: contains(fromJSON(needs.image-changes.outputs.tests).*.name, 'services/runner')
-    runs-on: ubuntu-latest
+    needs: checks
+    if: contains(fromJSON(needs.checks.outputs.tests).*.name, 'services/runner')
+    runs-on: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository && 'ubuntu-latest' || fromJSON(needs.checks.outputs.runner) }}
     timeout-minutes: 4
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -208,9 +143,9 @@ jobs:
 
   runner-flows:
     name: runner-flows (${{ matrix.shard }}/4)
-    needs: image-changes
-    if: contains(fromJSON(needs.image-changes.outputs.tests).*.name, 'services/runner#flows')
-    runs-on: ubuntu-latest
+    needs: checks
+    if: contains(fromJSON(needs.checks.outputs.tests).*.name, 'services/runner#flows')
+    runs-on: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository && 'ubuntu-latest' || fromJSON(needs.checks.outputs.runner) }}
     timeout-minutes: 5
     strategy:
       fail-fast: false
@@ -260,9 +195,9 @@ jobs:
           (cd ../../kernel && npm ci) && npm ci && node --disable-warning=ExperimentalWarning --test --test-concurrency=4 $files
 
   board:
-    needs: image-changes
-    if: contains(fromJSON(needs.image-changes.outputs.tests).*.name, 'services/board')
-    runs-on: ubuntu-latest
+    needs: checks
+    if: contains(fromJSON(needs.checks.outputs.tests).*.name, 'services/board')
+    runs-on: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository && 'ubuntu-latest' || fromJSON(needs.checks.outputs.runner) }}
     timeout-minutes: 3
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -292,24 +227,48 @@ jobs:
         # The command is the suite's `run` in .github/ci/areas.json (scripts/ci-local.mjs runs the same one).
         run: bash -eo pipefail -c "$(jq -r '.suites[] | select(.name == "services/board") | .run' ../../.github/ci/areas.json)"
 
-  # Which images this change could alter: each Dockerfile it changes, or whose directory gets a changed dependency manifest
-  # or lockfile. Every one is listed, whatever its FROM: a FROM that can't be resolved fails the scan, never skips it.
-  image-changes:
+  # The plan the jobs below wait for, kept to fast steps (~10-15 s): the suites to test, the images to scan and where the
+  # heavy jobs run. Which images this change could alter: each Dockerfile it changes, or whose directory gets a changed
+  # dependency manifest or lockfile. Every one is listed, whatever its FROM: a FROM that can't be resolved fails the
+  # scan, never skips it.
+  checks:
     runs-on: ubuntu-latest
-    timeout-minutes: 2
+    timeout-minutes: 5
     permissions:
       contents: read
-      actions: read # the earlier green runs of a rebased PR (.github/ci/select.mjs)
+      actions: read # the earlier green runs of a rebased PR (.github/ci/select.mjs) and how busy hosted runners are
     outputs:
       dockerfiles: ${{ steps.find.outputs.dockerfiles }}
       tests: ${{ steps.tests.outputs.tests }}
       packages: ${{ steps.tests.outputs.packages }}
       changed: ${{ steps.tests.outputs.changed }}
+      runner: ${{ steps.runner.outputs.runner }}
     env:
       PR_BASE: ${{ github.event.pull_request.base.sha }}
       PUSH_BEFORE: ${{ github.event.before }}
       HEAD_SHA: ${{ github.sha }}
     steps:
+      # Where the heavy jobs run: GitHub-hosted, unless CI_SELF_HOSTED is 'true', the run is a push to main or a same-repo
+      # PR, and this repo's other runs already hold BUSY+ hosted jobs (queued or running). Any API error keeps them hosted.
+      # Fork PRs never route there; the runner's own job-started hook (modules/ci/runner) refuses them anyway.
+      - id: runner
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          RUN_ID: ${{ github.run_id }}
+          ENABLED: ${{ vars.CI_SELF_HOSTED == 'true' && (github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository) }}
+        run: |
+          BUSY=12 # of the free plan's ~20 concurrent hosted jobs, leaving room for this run's ~9
+          runner='"ubuntu-latest"'
+          if [ "$ENABLED" = true ] && busy=$(set -o pipefail; for status in queued in_progress; do
+              gh api "repos/$REPO/actions/runs?status=$status&per_page=100" --jq ".workflow_runs[] | select(.id != $RUN_ID) | .id" || exit 1
+            done | while read -r id; do
+              gh api "repos/$REPO/actions/runs/$id/jobs?per_page=100" --jq '[.jobs[] | select((.status == "queued" or .status == "in_progress") and ((.labels | index("self-hosted")) | not))] | length' || exit 1
+            done | awk '{n += $1} END {print n + 0}') && [ "$busy" -ge "$BUSY" ]; then
+            runner='["self-hosted","aidenhq"]'
+          fi
+          echo "hosted jobs busy in other runs: ${busy:-not counted}; heavy jobs run on $runner"
+          echo "runner=$runner" >> "$GITHUB_OUTPUT"
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
@@ -379,6 +338,64 @@ jobs:
           echo "Images to scan:${found:- none}"
           echo "dockerfiles=${found# }" >> "$GITHUB_OUTPUT"
 
+  # The 7-day rule (lockfile entries, images, actions, apt packages and global installs this change adds or alters must be
+  # 7+ days old, unless an owner-approved security exception in .github/supply-chain-exceptions.yaml (read from the base)
+  # covers them, and every one is pinned: scripts/supply-chain/pins.mjs) and the PR title. Beside the plan, never before
+  # the tests: only ci-required waits for it.
+  policy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      packages: read # ghcr.io images are dated by the GitHub Packages API
+      pull-requests: read # the PR title
+    env:
+      PR_BASE: ${{ github.event.pull_request.base.sha }}
+      PUSH_BEFORE: ${{ github.event.before }}
+      HEAD_SHA: ${{ github.sha }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24.x
+      # Both checks have no dependencies: nothing is installed before the lockfiles are vetted.
+      - name: Age check (lockfiles) and pins (images, actions, apt, global installs)
+        if: ${{ !cancelled() }}
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          # a merge train is a push of main plus the PRs: its base is main, never an earlier train commit
+          case "$GITHUB_REF" in refs/heads/merge-train/*) PUSH_BEFORE= ;; esac
+          base="${PR_BASE:-$PUSH_BEFORE}"
+          # a new branch or a force push has no usable before: compare with the default branch
+          if [ -z "$base" ] || [ "$base" = 0000000000000000000000000000000000000000 ] || ! git cat-file -e "$base^{commit}" 2>/dev/null; then
+            base=$(git merge-base origin/main "$HEAD_SHA" 2>/dev/null || git rev-parse "$HEAD_SHA~1")
+          fi
+          status=0
+          node scripts/supply-chain/npm-age.mjs "$base" "$HEAD_SHA" || status=1
+          node scripts/supply-chain/pins.mjs "$base" "$HEAD_SHA" || status=1
+          exit $status
+      - name: Conventional Commit title
+        if: ${{ !cancelled() && github.event_name == 'pull_request' }}
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          PR_URL: ${{ github.event.pull_request.url }}
+        run: |
+          node --input-type=module -e '
+            const res = await fetch(process.env.PR_URL, { headers: { authorization: `Bearer ${process.env.GITHUB_TOKEN}`, accept: "application/vnd.github+json" } });
+            if (!res.ok) throw new Error(`reading the PR failed: ${res.status}`);
+            const { title } = await res.json();
+            const ok = /^(feat|fix|docs|chore|test|refactor|perf|ci|build|style|revert)(\([a-z0-9][a-z0-9._\/-]*\))?!?: \S/.test(title);
+            console.log(`Title: ${JSON.stringify(title)}`);
+            if (!ok) {
+              console.log("::error::The PR title must be a Conventional Commit, e.g. \"fix(board): keep the drawer open\" or \"docs: explain pins\". Types: feat, fix, docs, chore, test, refactor, perf, ci, build, style, revert. Edit the title, then re-run the failed jobs.");
+              process.exit(1);
+            }
+          '
+
   # The `image-scan` check: for each image this change could alter, grype scans its directory (lock files, manifests) and
   # every base image its FROM and COPY --from lines name, pulled from the registry, and fails on a high or critical
   # vulnerability that has a fix. Nothing is built and no PR code runs (a build would run the PR's RUN steps on our
@@ -387,12 +404,12 @@ jobs:
   # the evidence for image and CVE work (Engineers have no Docker); skipped when no image could change. grype is
   # installed below, at the version the security module pins.
   image-scan:
-    needs: image-changes
-    if: needs.image-changes.outputs.dockerfiles != ''
+    needs: checks
+    if: needs.checks.outputs.dockerfiles != ''
     runs-on: ubuntu-latest
     timeout-minutes: 30
     env:
-      DOCKERFILES: ${{ needs.image-changes.outputs.dockerfiles }}
+      DOCKERFILES: ${{ needs.checks.outputs.dockerfiles }}
       PR_BASE: ${{ github.event.pull_request.base.sha }}
       PUSH_BEFORE: ${{ github.event.before }}
     steps:
@@ -440,13 +457,13 @@ jobs:
             --local aidenhq/computer-agent-base=services/computer/images/agent-base/Dockerfile \
             --local aidenhq/computer-browser=services/computer/images/browser/Dockerfile -- $DOCKERFILES
 
-  # The one result a merge waits for: every job above passed (pr-title, packages, the runner, board and image-scan jobs may
+  # The one result a merge waits for: every job above passed (packages, the runner, board and image-scan jobs may
   # be skipped: not a pull request, or the change doesn't touch them). Jobs that
   # need another appear only once it finishes, so without this a PR can look all green for a moment before its tests
   # exist; the runner treats this check as required once the base branch has it (modules/codehost-github/src/merge-gate.mjs withGate).
   ci-required:
     if: always()
-    needs: [supply-chain, pr-title, image-changes, packages, runner-unit, runner-flows, board, image-scan]
+    needs: [checks, policy, packages, runner-unit, runner-flows, board, image-scan]
     runs-on: ubuntu-latest
     timeout-minutes: 2
     steps:
@@ -454,4 +471,4 @@ jobs:
           RESULTS: ${{ toJSON(needs) }}
         run: |
           echo "$RESULTS" | jq -r 'to_entries[] | "\(.key): \(.value.result)"'
-          echo "$RESULTS" | jq -e '(.["supply-chain"].result == "success") and (.["image-changes"].result == "success") and ([.["pr-title"], .packages, .["runner-unit"], .["runner-flows"], .board, .["image-scan"]] | all(.result | IN("success", "skipped")))' >/dev/null
+          echo "$RESULTS" | jq -e '(.checks.result == "success") and (.policy.result == "success") and ([.packages, .["runner-unit"], .["runner-flows"], .board, .["image-scan"]] | all(.result | IN("success", "skipped")))' >/dev/null
