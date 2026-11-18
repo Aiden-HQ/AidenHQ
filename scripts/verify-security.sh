@@ -52,6 +52,8 @@ for c in $containers; do
   # own socket mount). Matched by its compose service, never by name; any other container with it fails.
   if [ "$service" = "apps-mcp" ]; then
     pass "$c: Docker socket allowed (apps-mcp builds and runs the apps)"
+    # Its App tokens come from the kernel's /v1/codehost/token: codehost-github alone holds the App key.
+    echo "$mounts" | grep -q 'github-app' && fail "$c (apps-mcp) mounts the GitHub App key" || pass "$c: apps-mcp has no GitHub App key"
   else
     echo "$mounts" | grep -q 'docker.sock' && fail "$c mounts the Docker socket" || pass "$c: no Docker socket"
   fi
