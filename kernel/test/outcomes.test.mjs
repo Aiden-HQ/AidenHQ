@@ -31,7 +31,8 @@ async function paperclip(t, { lose = 0 } = {}) {
     if (req.url === "/api/plugins/aidenhq.events/actions/post") {
       sent.push(body.params);
       const actor = KEYS[key] ? { type: "agent", agentId: KEYS[key], userId: null, runId: null, companyId: "c-1" } : { type: "user", userId: "u-1", agentId: null, runId: null, companyId: "c-1" };
-      const data = await post(h.ctx, body.params, { actor, companyId: body.companyId }, SECRET);
+      // As Paperclip's action route does: the request's companyId and renderEnvironment (null) join the params.
+      const data = await post(h.ctx, { ...body.params, companyId: body.companyId, renderEnvironment: null }, { actor, companyId: body.companyId }, SECRET);
       // The worker wrote, then its answer was lost (a crash after Paperclip's 201): the caller sees a 502.
       if (losing-- > 0) return out(502, { code: "WORKER_ERROR" });
       return out(200, { data });
@@ -137,5 +138,7 @@ test("a signed post verifies after Paperclip adds the request's companyId to its
   const sig = signature("k", "co-1", "ag-1", p);
   // Paperclip's action route (actionParamsWithAuthorizedCompanyScope) injects companyId before the worker sees params.
   assert.equal(verify("k", "co-1", "ag-1", { ...p, sig, companyId: "co-1" }), true);
+  // ...and renderEnvironment: null (the route's `body.renderEnvironment ?? null`).
+  assert.equal(verify("k", "co-1", "ag-1", { ...p, sig, companyId: "co-1", renderEnvironment: null }), true);
   assert.equal(verify("k", "co-2", "ag-1", { ...p, sig, companyId: "co-2" }), false);
 });
