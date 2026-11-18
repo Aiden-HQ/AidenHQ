@@ -196,7 +196,7 @@ test("a routine run's unparented task keeps the cap: traced through Paperclip's 
     "t-3": { id: "t-3", parentId: "t-2", originRunId: "hb-2" },
   };
   const runs = { "hb-1": { issueId: "run-1" }, "hb-2": { issueId: "t-2" } };
-  const pc = { issue: async (id) => issues[id], run: async (id) => runs[id] ?? Promise.reject(new Error("404 Heartbeat run not found")) };
+  const pc = { issue: async (id) => issues[id], run: async (id) => runs[id] ?? Promise.reject(new Error("404 Heartbeat run not found")), provenance: () => undefined };
   for (const t of ["t-2", "t-3"]) {
     const { issues: found, complete } = await origins(pc, issues[t]);
     assert.deepEqual(routineCap(found, complete, { r1: "tier0" }), { cap: "tier0", routine: "r1" }, `${t} keeps r1's cap`);

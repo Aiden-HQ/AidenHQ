@@ -140,6 +140,9 @@ export function createJobs({ db, cfg, cp, mayDispatch, log, boxWrap, onEnd = () 
   boxWrap: string;
 }) {
   db.exec(DDL);
+  // What admission records (wake, profile, the job that started it) and the routine cap it froze (provenance.ts reads it).
+  const have = new Set((db.prepare("PRAGMA table_info(jobs)").all() as { name: string }[]).map((c) => c.name));
+  for (const c of ["wake", "profile", "parent_job", "routine", "routine_cap"]) if (!have.has(c)) db.exec(`ALTER TABLE jobs ADD COLUMN ${c} TEXT`);
   db.exec("CREATE INDEX IF NOT EXISTS jobs_task ON jobs (task, state)");
   // A kernel-admitted job's columns (admission.ts, boxes.ts), added where they are missing.
   const cols = new Set((db.prepare("PRAGMA table_info(jobs)").all() as { name: string }[]).map((c) => c.name));
