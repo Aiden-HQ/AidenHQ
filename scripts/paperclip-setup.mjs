@@ -20,6 +20,7 @@ import { fileURLToPath } from "node:url";
 import { codexMcpBlock, ensureBackupRetention, ensureCrewSkills, ensureFleetIssues, ensureMemoryInboxes, ensureReviewLogs, grantEntry, HEALTH_PROBES, healthProbeAgent, mapLimit, routineAutonomyDefault } from "./modules.mjs";
 import { routineStatus } from "./setup-paused.mjs";
 import { checkLauncher, computerAdapterConfig, ensureComputers, runnerBox } from "./computers.mjs";
+import { ensureEventsPlugin } from "./paperclip-events.mjs";
 import { assertNoShell } from "./no-shell.mjs";
 import { agentSkills, handbookParts, HOW_WE_BUILD_SECTION, laneHandbook, onDemandSections, personaOf, readInstructions as readHandbook } from "./handbook.mjs";
 import { recoverStalePid } from "./paperclip-recover.mjs";
@@ -844,6 +845,7 @@ try {
   const pluginVersion = JSON.parse(readFileSync(join(repo, "services/computer/plugin/package.json"), "utf8")).version;
   await ensureComputers({ api, companyId: company.id, cfg, agents, step, pluginVersion });
 } catch (e) { fail(e.message); }
+await ensureEventsPlugin({ api, step, version: JSON.parse(readFileSync(join(repo, "services/paperclip-events/package.json"), "utf8")).version }).catch((e) => fail(e.message));
 lap("computers");
 // ops-mcp acts in Paperclip as the agent with the ops-key role (the Meeting Librarian).
 const opsAgents = Object.keys(cfg.agents ?? {}).filter((k) => cfg.agents[k].roles?.includes("ops-key"));

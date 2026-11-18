@@ -67,11 +67,14 @@ services:
       - ./services/paperclip-tasks-mcp:/opt/aidenhq:ro
       # The agent-computer provider plugin (services/computer): setup installs it from here when an agent has an image.
       - ./services/computer/plugin:/opt/aidenhq-computer:ro
+      # The wake events plugin (services/paperclip-events): task events to the kernel's wake inbox.
+      - ./services/paperclip-events:/opt/aidenhq-events:ro
     secrets:
       - paperclip_auth_secret
       - paperclip_agent_jwt_secret
       - paperclip_master_key
       - computer_launcher_token # the computer plugin's key to the launcher on the host
+      - paperclip_events_key # the events plugin's key to the kernel's wake inbox
     pids_limit: 2048
     # Fixed public resolvers: containers keep the host's DNS servers from when they started, and
     # a network or WARP change left every agent run failing at startup (2026-10-07).
@@ -337,6 +340,8 @@ secrets:
     file: ${AIDENHQ_SECRETS_DIR}/paperclip_master_key
   computer_launcher_token:
     file: ${AIDENHQ_SECRETS_DIR}/computer_launcher_token
+  paperclip_events_key:
+    file: ${AIDENHQ_SECRETS_DIR}/paperclip_events_key
   computer_progress_token:
     file: ${AIDENHQ_SECRETS_DIR}/computer_progress_token
   apps_internal_token:

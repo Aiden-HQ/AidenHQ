@@ -23,7 +23,7 @@
       "paths": ["fixtures/twin", "kernel/sdk", "scripts/sdk-pack.mjs"]
     },
     { "name": "services/computer", "run": "node --test test/*.test.mjs", "paths": ["services/computer", "services/runner/src", "services/runner/bin"] },
-    { "name": "kernel", "run": "npm ci && npm test && npm run typecheck", "paths": ["kernel", "services/computer", "fixtures"] },
+    { "name": "kernel", "run": "npm ci && npm test && npm run typecheck", "paths": ["kernel", "services/computer", "services/paperclip-events", "fixtures"] },
     { "name": "services/board", "job": "board", "run": "npm ci && npx vitest run && npm run typecheck && npm run lint && npm run build", "paths": ["services/board", "services/runner/src", "scripts/identity.mjs"] }
   ]
 }
