@@ -33,7 +33,8 @@
 //   POST /v1/reviews/:review   (that review's token, once) the reviewer module's verdict
 //   POST /v1/jobs, GET/DELETE /v1/jobs/:job, POST /v1/jobs/:job/input  (a module with role kernel.jobs) start a job in the
 //                              sandbox, its status (?after=<version>&wait=<ms> waits for a change), stop it, a comment into it (jobs.ts; `wake`: the claimed comment wake it delivers);
-//                              POST /v1/jobs {wake, prompt, session?}: a job on a wake it claimed, admitted (admission.ts)
+//                              POST /v1/jobs {wake, prompt, session?}: a job on a wake it claimed, admitted (admission.ts);
+//                              GET /v1/jobs?wake=<key>: its own job on that wake, if any (a dispatcher that lost the answer)
 //   GET  /v1/work[?task=], GET /v1/work/metrics  (a module with role kernel.work-read) the jobs and records of the kernel's
 //                              work: a task's, or what runs and ended lately; Prometheus text (work.ts)
 //   POST /v1/work/grader-token  (the one module with role kernel.grader) {task} -> a gateway
@@ -112,6 +113,7 @@ export const ROUTES = [
   { method: "POST", path: "/v1/reviews", auth: "reviewer-key" },
   { method: "POST", path: "/v1/reviews/:review", auth: "review-token" },
   { method: "POST", path: "/v1/jobs", auth: "module" },
+  { method: "GET", path: "/v1/jobs", auth: "module" },
   { method: "GET", path: "/v1/jobs/:job", auth: "module" },
   { method: "DELETE", path: "/v1/jobs/:job", auth: "module" },
   { method: "POST", path: "/v1/jobs/:job/input", auth: "module" },
@@ -364,6 +366,11 @@ export function createBackplane({ whoami, asserter, proxy, cp, grantsFile, write
               // {wake, prompt, session?}: admitted by the kernel; the runner's box-carrying request stays until C1b.
               const b = await json(req, 4_000_000);
               return send(res, 200, admission && typeof (b as { wake?: unknown })?.wake === "string" ? await admission.admit(w.module!, b as never) : await jobs.start(w.module!, b as never));
+            }
+            case "GET /v1/jobs": {
+              const wake = new URLSearchParams(q ?? "").get("wake");
+              if (!wake) throw fail(400, "bad_request", "send ?wake=<key>");
+              return send(res, 200, { jobs: jobs.byWake(w.module!, wake) });
             }
             case "GET /v1/jobs/:job": {
               const p = new URLSearchParams(q ?? "");

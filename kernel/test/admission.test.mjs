@@ -9,7 +9,7 @@ import { createWakes } from "../src/wakes.ts";
 
 function setup({ capacity = 12, spend = () => [], launch = async () => {}, grants: g } = {}) {
   const db = new DatabaseSync(":memory:");
-  createJobs({ db, cfg: {}, cp: {}, mayDispatch: () => false, log: () => {}, boxWrap: "" });
+  const jobs = createJobs({ db, cfg: {}, cp: {}, mayDispatch: () => false, log: () => {}, boxWrap: "" });
   const grants = g ?? {
     "agent-1": { key: "acme-crew", tools: { slack: ["search"], tasks: ["create"] }, models: ["acme/m1", "acme/m2"], model: "acme/m1", effort: "high", skills: [{ id: "engineering.write-code", dir: "/x" }], routines: { digest: { model: "acme/m2", effort: "low" } } },
     "agent-2": { key: "acme-engineer", profile: "engineer", tools: { github: ["read"] }, jobcaps: ["gh-read"], max_parallel: 2 },
@@ -34,7 +34,7 @@ function setup({ capacity = 12, spend = () => [], launch = async () => {}, grant
     launch: async (job) => { launched.push(job); await launch(job); },
     log: () => {},
   });
-  return { db, adm, grants, wake, wakes, inbox, launched };
+  return { db, adm, jobs, grants, wake, wakes, inbox, launched };
 }
 
 const req = (wake) => ({ wake, prompt: "do the thing" });
@@ -118,4 +118,12 @@ test("a job admitted but never started when the kernel stopped is deferred at th
   next.recover();
   assert.equal(db.prepare("SELECT COUNT(*) AS n FROM jobs").get().n, 0);
   assert.equal(wakes.get("w1").job, null);
+});
+
+test("a dispatcher that lost the admission's answer finds its job by the wake; another module doesn't", async () => {
+  const { adm, jobs, wake } = setup();
+  const job = await adm.admit("acme-dispatch", req(wake("w1", "task-1", "agent-1")));
+  assert.deepEqual(jobs.byWake("acme-dispatch", "w1").map((j) => [j.id, j.task, j.agent]), [[job.id, "task-1", "agent-1"]]);
+  assert.deepEqual(jobs.byWake("acme-other", "w1"), []);
+  assert.deepEqual(jobs.byWake("acme-dispatch", "w2"), []);
 });

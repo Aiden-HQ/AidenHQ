@@ -414,6 +414,8 @@ export function createJobs({ db, cfg, cp, mayDispatch, log, boxWrap, onEnd = () 
       }
       return view(row(id)!);
     },
+    /** The module's own job admitted on a wake (none, or one: a wake starts at most one job), so a dispatcher that lost it finds it. */
+    byWake: (module: string, wake: string) => (db.prepare("SELECT * FROM jobs WHERE module = ? AND wake = ?").all(module, wake) as Record<string, any>[]).map(view),
     stop(module: string, id: string) {
       const r = own(module, id);
       if (r.state === "running") watchers.get(id)?.cancel();
