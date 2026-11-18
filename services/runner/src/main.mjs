@@ -446,6 +446,13 @@ async function commitsBetween(repo, from, to) {
 /** The modules commit a product commit pins (its modules-pin.json), or undefined. */
 const modulesPinAt = async (sha) => pinOf(await githubText(cfg.productRepo, "modules-pin.json", sha));
 
+/** The product's main, fetched into this host's checkout: where the module manifests at each pin are read. */
+async function productMain() {
+  const branch = await githubDefault(cfg.productRepo);
+  await git(REPO_ROOT, "fetch", "--quiet", "origin", branch);
+  return asSha(await git(REPO_ROOT, "rev-parse", "--verify", `refs/remotes/origin/${branch}^{commit}`));
+}
+
 /**
  * The two targets (release.mjs): what each reads, what its bump task says, and how its bump is written and carded. `read()`
  * gives { tip, green, pinned, carries(from) }: the source's tip and whether CI passed there, what the target pins now, and the
@@ -461,6 +468,13 @@ const RELEASE_TARGETS = {
       const [{ tip, green }, pinned] = await Promise.all([mainTip(cfg.modulesRepo), githubDefault(cfg.productRepo).then((main) => githubText(cfg.productRepo, "modules-pin.json", main)).then(pinOf)]);
       return { tip, green, pinned, carries: (from = pinned) => commitsBetween(cfg.modulesRepo, from, tip) };
     },
+    /** The authority the pinned manifests add, at the product main the PR is made from: modules-pin.json there → the tip. */
+    async authority(to) {
+      // The product commit it is evaluated under is the PR's base, the product's main; the pin is what that main carries.
+      const product = await productMain();
+      const from = product && pinOf(await githubText(cfg.productRepo, "modules-pin.json", product));
+      return from && from !== to ? bumpAuthority(instanceDoc(), { product, modules: from }, { product, modules: to }) : undefined;
+    },
     file: (issue, to) => fileModulesPin(issue, to),
   },
   instance: {
@@ -474,6 +488,18 @@ const RELEASE_TARGETS = {
       const modules = asSha((YAML.parse(text ?? "") ?? {}).marketplaces?.find((m) => m?.name === OFFICIAL)?.sha);
       const carries = async (from = pinned) => [...(await commitsBetween(cfg.productRepo, from, tip)), ...(cfg.modulesRepo ? await commitsBetween(cfg.modulesRepo, from === pinned ? modules : await modulesPinAt(from), await modulesPinAt(tip)) : [])];
       return { tip, green, pinned, carries };
+    },
+    /** The authority the pinned manifests add: the instance's product and official marketplace → the tip and its pin. */
+    async authority(to) {
+      const text = await githubText(cfg.apply.repo, "instance.yaml", await githubDefault(cfg.apply.repo));
+      const from = productPin(text);
+      // No official marketplace entry: the product pin's modules-pin.json is what the modules come from.
+      const modulesFrom = asSha((YAML.parse(text ?? "") ?? {}).marketplaces?.find((m) => m?.name === OFFICIAL)?.sha) ?? (from ? await modulesPinAt(from) : undefined);
+      const modulesTo = await modulesPinAt(to);
+      if (!from || !modulesFrom || !modulesTo || (from === to && modulesFrom === modulesTo)) return undefined;
+      // Both product pins must be in this host's checkout, where their manifests are read.
+      await productMain();
+      return bumpAuthority(YAML.parse(text) ?? {}, { product: from, modules: modulesFrom }, { product: to, modules: modulesTo });
     },
     file: (issue, to) => serialInstance(() => fileInstancePin(issue, to)),
   },
@@ -515,11 +541,11 @@ async function releaseTarget(target, t) {
   // Past a bump in flight, only what it doesn't carry.
   const carries = await read.carries(r.flight?.to);
   if (step.do === "open") {
-    r.open = await openRelease(target, t, carries);
+    r.open = await openRelease(target, t, carries, read.tip);
     return saveRelease(target, r);
   }
   if (carries.length !== r.open.count) {
-    await pc.api("PATCH", `/api/issues/${encodeURIComponent(r.open.issueId)}`, { description: releaseText(target, t, carries, r.open.marker) });
+    await pc.api("PATCH", `/api/issues/${encodeURIComponent(r.open.issueId)}`, { description: await releaseText(target, t, carries, r.open.marker, read.tip) });
     r.open.count = carries.length;
     saveRelease(target, r);
   }
@@ -544,13 +570,24 @@ async function releaseTarget(target, t) {
   saveRelease(target, r);
 }
 
-const releaseText = (target, t, carries, marker) => trainDescription({ target, what: t.what(), carries, windowMinutes: releaseWindow(), marker });
+/** A bump's description, with the authority its pinned manifests add: never its own prose, and never a reason not to file. */
+const releaseText = async (target, t, carries, marker, to) => {
+  const authority = await t.authority(to).catch((err) => void log("release authority unread", { target, err: String(err.message ?? err).split("\n")[0].slice(0, 200) }));
+  return trainDescription({ target, what: t.what(), carries, authority, windowMinutes: releaseWindow(), marker });
+};
+
+/** A bump's authority section ({ modules: { from, to }, lines }), or undefined when it can't be computed or adds nothing. */
+const bumpAuthority = async (doc, base, head) => {
+  const a = await pinAuthorityLines(doc, base, head).catch((err) => ({ modulesError: String(err.message ?? err).split("\n")[0].slice(0, 200) }));
+  if (a.modulesError) return void log("release authority unread", { modules: head.modules, err: a.modulesError });
+  return a.lines.length ? { modules: { from: base.modules, to: head.modules }, lines: a.lines } : undefined;
+};
 
 /** A bump's task: the Platform Engineer's (the product's writer), marked runner-made and already taken up, so no Engineer runs on it. */
-async function openRelease(target, t, carries) {
+async function openRelease(target, t, carries, to) {
   const marker = `release:${target}:${Date.now()}`;
   const issue = await pc.api("POST", `/api/companies/${pc.company}/issues`, {
-    title: t.title, description: releaseText(target, t, carries, marker), status: "in_review", priority: "medium", assigneeAgentId: platformEngineer() ?? null, allowDuplicate: true,
+    title: t.title, description: await releaseText(target, t, carries, marker, to), status: "in_review", priority: "medium", assigneeAgentId: platformEngineer() ?? null, allowDuplicate: true,
     idempotencyKey: `pw-${createHash("sha256").update(marker).digest("hex").slice(0, 32)}`,
   });
   const now = new Date().toISOString();
@@ -2461,13 +2498,28 @@ async function modulesPinDelta(r, base, sha) {
  * instance runs (its instance.yaml with only the official marketplace's sha changed): the same lines an apply card carries.
  */
 async function pinAuthority(product, from, to) {
+  const a = await pinAuthorityLines(instanceDoc(), { product, modules: from }, { product, modules: to });
+  if (a.modulesError) return `Module changes: couldn't be computed (${a.modulesError}): judge the commits and files above without them.`;
+  return `Module changes for the modules this instance runs (the authority diff, computed by code from the module manifests; owner = new authority):\n${a.lines.join("\n") || "(none)"}`;
+}
+
+/** The instance document the host runs, or {} when it isn't there: the modules and pins a bump is judged against. */
+function instanceDoc() {
   const dir = process.env.AIDENHQ_INSTANCE_DIR?.replace(/^~(?=\/)/, process.env.HOME ?? "");
-  const doc = (dir && YAML.parse(readFileSync(join(dir, "instance.yaml"), "utf8"))) || {};
-  const side = (sha) => YAML.stringify({ ...doc, product, marketplaces: [...(doc.marketplaces ?? []).filter((m) => m?.name !== OFFICIAL), { name: OFFICIAL, source: { source: "github", repo: cfg.modulesRepo }, sha }] });
-  const st = await moduleTierState(side(from), side(to));
-  if (st.modulesError || !st.modules) return `Module changes: couldn't be computed (${st.modulesError ?? "no module manifests were read"}): judge the commits and files above without them.`;
-  const [lines] = authorityOf(st);
-  return `Module changes for the modules this instance runs (the authority diff, computed by code from the module manifests; owner = new authority):\n${lines.join("\n") || "(none)"}`;
+  return (dir && YAML.parse(readFileSync(join(dir, "instance.yaml"), "utf8"))) || {};
+}
+
+/**
+ * The authority diff of moving the official modules from `base.modules` to `head.modules` under each side's product commit
+ * (`base.product` and `head.product`), for the modules `doc` runs: the instance document with only the official
+ * marketplace's sha and the product pin changed, as an apply of the pin bump would read. { modulesError } when it can't
+ * be computed, or a read that finds no module manifests. { lines } otherwise, possibly empty.
+ */
+async function pinAuthorityLines(doc, base, head) {
+  const side = ({ product, modules: sha }) => YAML.stringify({ ...doc, product, marketplaces: [...(doc.marketplaces ?? []).filter((m) => m?.name !== OFFICIAL), { name: OFFICIAL, source: { source: "github", repo: cfg.modulesRepo }, sha }] });
+  const st = await moduleTierState(side(base), side(head));
+  if (st.modulesError || !st.modules) return { modulesError: st.modulesError ?? "no module manifests were read" };
+  return { lines: authorityOf(st)[0] };
 }
 
 async function trustedPatch(slug, sha, { from, pr } = {}) {
