@@ -595,11 +595,10 @@ async function ensureRoutines(companyId, agents) {
       env: r.model || r.reasoning_effort ? { ...(r.model ? { AIDENHQ_MODEL: r.model } : {}), ...(r.reasoning_effort ? { AIDENHQ_REASONING_EFFORT: r.reasoning_effort } : {}) } : null,
     };
     let routine = routines.find((x) => x.title === r.title);
+    const existed = Boolean(routine);
     if (!routine) {
       routine = (await api("POST", `/api/companies/${companyId}/routines`, body)).json;
       step(`Created routine ${r.title}`);
-    } else {
-      await api("PATCH", `/api/routines/${routine.id}`, body);
     }
     // Its cap is in the grants table before any trigger can fire it (the runner treats an unknown routine as off).
     routineAutonomy[routine.id] = r.autonomy ?? routineAutonomyDefault(r);
@@ -618,6 +617,9 @@ async function ensureRoutines(companyId, agents) {
     }
     // Schedules are matched by label, so a renamed or removed one would keep firing next to its replacement: it stops.
     for (const t of triggers.filter((t) => t.kind === "schedule" && t.enabled && !(r.schedules ?? []).some((s) => s.label === t.label))) await api("PATCH", `/api/routine-triggers/${t.id}`, { enabled: false }).then(() => step(`Disabled schedule "${t.label}" on ${r.title}: its config no longer names it`));
+    // An existing routine's own fields last: re-saving a schedule moves its next run to the next tick from now, so a routine
+    // resumed after a long pause starts there instead of Paperclip catching up every tick it missed (up to 25 runs).
+    if (existed) await api("PATCH", `/api/routines/${routine.id}`, body);
 
     if (r.webhook) {
       // Webhooks come from modules only: an instance agent (writable through apply) could otherwise take another routine's secret.

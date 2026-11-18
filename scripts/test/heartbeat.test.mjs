@@ -67,3 +67,26 @@ test("heartbeat cadence: the instance setting, an agent's hours, an override", (
   writeFileSync(join(dir, "instance.yaml"), YAML.stringify({ modules: ["core", "runnerheartbeat"], settings: { timezone: "UTC", owner_name: "Sam", owner_email: "o@x" } }));
   assert.throws(() => compile(mods, dir), /eng: a runner-dispatched agent can't have a heartbeat/);
 });
+
+test("quiet start: module schedules compile paused and heartbeats off until an override turns one on; unset changes nothing", () => {
+  const tools = { paperclip_tasks: ["task_list", "task_comments", "task_approvals", "task_comment", "task_finish"] };
+  const chaser = { chaser: { heartbeat: 2, connections: tools } };
+  const before = compile(product, instance(chaser));
+  const quiet = compile(product, instance(chaser, [], undefined, { quiet_start: "on", spend_day_usd: 10 }));
+  for (const [key, r] of Object.entries(before.paperclip.routines)) {
+    if (key.startsWith("heartbeat-") && key !== "heartbeat-chaser") continue;
+    // A module routine with a schedule waits; one fired by an event, and an instance agent's own routines, are as before.
+    const own = before.paperclip.agents[r.agent].module === "instance";
+    assert.equal(quiet.paperclip.routines[key].status, r.schedules?.length && !own ? "paused" : r.status, key);
+  }
+  assert.deepEqual(Object.keys(quiet.paperclip.routines).filter((k) => k.startsWith("heartbeat-")), ["heartbeat-chaser"]);
+  assert.equal(quiet.paperclip.agents["chief-of-staff"].heartbeat, false);
+  assert.equal(quiet.gateway.install_day_usd, 10);
+  assert.ok(Object.values(before.paperclip.routines).every((r) => r.status !== "paused"), "unset: nothing paused");
+  assert.equal(before.gateway.install_day_usd, undefined);
+
+  const on = compile(product, instance({}, [], undefined, { quiet_start: "on" }, { routines: { "daily-brief": { status: "active" } }, agents: { "chief-of-staff": { heartbeat: true } } }));
+  assert.equal(on.paperclip.routines["daily-brief"].status, "active");
+  assert.ok(on.paperclip.routines["heartbeat-chief-of-staff"].status !== "paused");
+  assert.equal(on.paperclip.routines["coach-review"].status, "paused");
+});

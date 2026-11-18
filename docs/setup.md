@@ -130,7 +130,7 @@ One run sets up the whole machine. It is idempotent: if it stops partway, fix th
    commit you checked out, your name, email, timezone and modules), an empty `apps.yaml` and `agents/`. There is no
    separate template: setup writes these files itself;
 5. makes your OpenRouter key: with `OPENROUTER_MANAGEMENT_KEY`, a new key named `aidenhq-<you>` with a monthly limit
-   of `OPENROUTER_LIMIT_USD` (default 50); with `OPENROUTER_KEY`, that key as given;
+   of `OPENROUTER_LIMIT_USD` (default 100); with `OPENROUTER_KEY`, that key as given;
 6. stores the Google OAuth client, the apps node's Tailscale key and a generated Paperclip password;
 7. turns the secrets folder into the encrypted **vault** (`ops/vault/init.sh`);
 8. runs `ops/apply-config.sh`: compiles the modules, starts the stack, creates your Paperclip account and company,
@@ -149,7 +149,7 @@ OWNER_EMAIL=alex@example.com
 TIMEZONE=UTC
 # Or OPENROUTER_KEY=sk-or-v1-... (a key you made yourself) instead of the management key.
 OPENROUTER_MANAGEMENT_KEY=sk-or-v1-...
-OPENROUTER_LIMIT_USD=50
+OPENROUTER_LIMIT_USD=100
 GOOGLE_CLIENT_ID=....apps.googleusercontent.com
 GOOGLE_CLIENT_SECRET=...
 TS_AUTHKEY=tskey-auth-...
