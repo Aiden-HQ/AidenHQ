@@ -47,3 +47,8 @@ default_grants:
   - { tools: [ paperclip_tasks.memory_note ], when: { fields: { adapter: codex_local }, modules: [ memory ] }, unless: { fields: { image: true } } }
   # handbook_section: each crew agent reads its own on-demand handbook sections (setup writes them to catalog/sections).
   - { tools: [ paperclip_tasks.handbook_section ], when: { fields: { adapter: codex_local } } }
+  # task_get, task_search: what the in-box `aidenhq task|tasks` call as the job. Task text is private data, so a crew agent holds
+  # them, and an Engineer (dispatch: runner, profile: engineer) only with private_reads (its jobs get no web search); never a
+  # check job, a trial agent or an agent of an untrusted module. (Compile reads an agent without `profile:` as crew.)
+  - { tools: [ paperclip_tasks.task_get, paperclip_tasks.task_search ], when: { fields: { profile: crew } }, unless: { fields: { dispatch: runner, trial: true, isolation: untrusted } } }
+  - { tools: [ paperclip_tasks.task_get, paperclip_tasks.task_search ], when: { fields: { private_reads: true } }, unless: { fields: { profile: check, trial: true, isolation: untrusted } } }
