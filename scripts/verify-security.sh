@@ -171,8 +171,9 @@ for c in $containers; do
       ;;
     *github-mcp*)
       [ "$(docker inspect "$c" --format '{{json .HostConfig.PortBindings}}')" = "{}" ] && pass "github-mcp: no published ports" || fail "github-mcp publishes ports"
-      ! echo "$mounts" | tr ';' '\n' | grep -v '/run/secrets' | grep -v '|/secrets/github-app|' | grep -q . \
-        && pass "github-mcp: only its secrets and the GitHub App key mounted" || fail "github-mcp has unexpected mounts: $mounts"
+      # Only its own secrets, and never the GitHub App key (codehost-github alone holds it; github-mcp asks it for tokens).
+      ! echo "$mounts" | tr ';' '\n' | grep -v '/run/secrets' | grep -q . && ! echo "$mounts" | grep -q 'github-app\|github_app' \
+        && pass "github-mcp: only its own secrets mounted, never the GitHub App key" || fail "github-mcp has unexpected mounts: $mounts"
       ;;
     *apps-edge*)
       # The apps' tailnet node: its own way out plus the exposed apps' own networks (apps-mcp joins it), nothing else.
