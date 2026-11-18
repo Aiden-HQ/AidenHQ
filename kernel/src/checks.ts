@@ -7,7 +7,9 @@
 // agent's task (the grants table's `graded`) that no check covers: the gate never fails open. The check's module later
 // releases its label, or resolves a hold it placed (POST /v1/checks/:task). A check in observe mode (`mode: observe`, gates.ts)
 // is asked like the others, but a verdict other than ok, or its failure, is only recorded as a would-block: it never moves,
-// holds or refuses the task, and it doesn't count as covering a graded agent's task.
+// holds or refuses the task, and it doesn't count as covering a graded agent's task. A task with an undecided approval card
+// (a record of its own in review, owner or approved) doesn't close, whatever the modules' checks say: the card would be
+// claimed on a closed task and its write dropped, so it is refused until it is decided or has run (the `pending` source).
 import http from "node:http";
 import { randomBytes } from "node:crypto";
 import { readFileSync, statSync } from "node:fs";
@@ -37,12 +39,15 @@ export function checksFile(file: string): () => Record<string, Check> {
   };
 }
 
-export function createChecks({ db, registry, owner, secret, resolver, agentKey = () => undefined, graded = () => false, log = () => {} }: {
+export function createChecks({ db, registry, owner, secret, resolver, agentKey = () => undefined, graded = () => false, pending = () => [], log = () => {} }: {
   db: DatabaseSync; registry: () => Record<string, Check>; owner: Api; secret: (n: string) => string; resolver: Resolver;
   /** An agent id's key (the grants table), for a check scoped to `agents`. */
   agentKey?: (id: string) => string | undefined;
   /** Whether an agent's work is graded (the grants table): its task closes only through a check. */
-  graded?: (id: string) => boolean; log?: (msg: string, f?: Record<string, unknown>) => void;
+  graded?: (id: string) => boolean;
+  /** The task's records still undecided (records.list over review, owner and approved): none may when it closes. */
+  pending?: (task: string) => { id: string; kind: string }[];
+  log?: (msg: string, f?: Record<string, unknown>) => void;
 }) {
   db.exec("CREATE TABLE IF NOT EXISTS check_holds (task TEXT NOT NULL, check_id TEXT NOT NULL, at TEXT NOT NULL, PRIMARY KEY (task, check_id))");
   db.exec("CREATE TABLE IF NOT EXISTS events (id TEXT PRIMARY KEY, type TEXT NOT NULL, at TEXT NOT NULL, data TEXT NOT NULL)");
@@ -106,6 +111,13 @@ export function createChecks({ db, registry, owner, secret, resolver, agentKey =
   async function finish(ref: string, caller: { agent?: string; tool?: string; via: string }): Promise<Finish> {
     const all = finishing();
     const i = await issue(ref);
+    // An approval card still undecided would be claimed on the closed task and fail its write (writes.ts run): the task
+    // stays as it is until every card of it is decided or has run.
+    const undecided = pending(i.id);
+    if (undecided.length) {
+      const named = undecided.slice(0, 10).map((r) => `${r.id} (${r.kind})`).join(", ");
+      throw fail(409, "refused", `${undecided.length} approval${undecided.length === 1 ? " is" : "s are"} on ${i.identifier ?? i.id} still undecided: ${named}${undecided.length > 10 ? `, and ${undecided.length - 10} more` : ""}. They run when approved, so the task can't be done until they are decided: decide or reject them, or finish again once they have run.`);
+    }
     const key = i.assigneeAgentId ? agentKey(i.assigneeAgentId) : undefined;
     const scoped = all.filter(([, c]) => !c.agents?.length || (key !== undefined && c.agents.includes(key)));
     const mine = scoped.filter(([, c]) => c.mode !== "observe");
