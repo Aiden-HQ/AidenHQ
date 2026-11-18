@@ -317,7 +317,10 @@ function instanceParts(s) {
   // Module authority: what the modules hand out moves with the pins and lists, and with an agent's grants override
   // (overrides.agents.<key>.connections, folded into its module's def, so the authority diff judges it like a module grant).
   if (["product", "modules", "marketplaces", "release", "product_fork"].some((k) => keys.includes(k)) || !eq(grantOverrides(base), grantOverrides(head))) parts.push(...moduleAuthorityParts(s, base, head));
-  if (keys.includes("release") && !parts.length) parts.push(T(1, "release-pin", "the release pin moves; what it resolves to (the kernel, the official marketplace) is unchanged"));
+  // Following a release enrols the instance in unattended updates (docs/design/release-updates.md): adding or moving the pin is
+  // the owner's, whatever it resolves to; dropping it leaves the module parts above to judge.
+  if (keys.includes("release") && head.release != null) parts.push(OWNER_AFTER_REVIEW("release-pin", "adds or moves the release this instance follows, and a release install updates itself: the owner's authority"));
+  else if (keys.includes("release") && !parts.length) parts.push(T(1, "release-pin", "the release pin is removed; what it resolved to is unchanged"));
   for (const k of keys) {
     if (k === "modules" || k === "marketplaces" || k === "release" || k === "product_fork") continue; // the module parts above (a release by what it resolves to)
     // A rollback can undo a security fix: the panel's. A pin off product main is refused.
@@ -332,6 +335,8 @@ function instanceParts(s) {
       const tighter = typeof now === "number" && Number.isFinite(now) && now > 0 && now <= Number(was);
       if (!eq(base.settings?.spend_day_usd, now) && !tighter) parts.push(OWNER_AFTER_REVIEW("spend-cap", `raises or removes the install's daily spend cap (${base.settings?.spend_day_usd ?? "none"} → ${now == null ? "none" : JSON.stringify(now).slice(0, 40)}): the owner's authority`));
       if (base.settings?.quiet_start === "on" && head.settings?.quiet_start !== "on") parts.push(OWNER_AFTER_REVIEW("quiet-start", "turns quiet start off, so every module schedule and heartbeat starts: the owner's authority"));
+      // Release updates (docs/design/release-updates.md): auto-updates on is the owner's standing authority to install releases.
+      if (base.settings?.auto_update === "off" && head.settings?.auto_update !== "off") parts.push(OWNER_AFTER_REVIEW("auto-update", "turns release auto-updates back on, so each new release installs itself at night: the owner's authority"));
     } else if (k === "overrides") {
       for (const kind of changedKeys(base.overrides, head.overrides)) {
         const safe = OVERRIDE_SAFE[kind];

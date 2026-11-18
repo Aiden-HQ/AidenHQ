@@ -563,12 +563,14 @@ test("a new marketplace is the owner's after the reviewer; a sha bump without ne
 });
 
 // Releases (spec §6.8, lean-core 5c): a `release:` move counts by what it resolves to (the runner's s.effective: each side
-// with the release's official marketplace), not by the key.
-test("a release move is tiered by the modules it resolves to", () => {
+// with the release's official marketplace), and adding or moving one is the owner's (it enrols unattended updates).
+test("a release move is tiered by the modules it resolves to, and following one is the owner's", () => {
   const rel = (sha) => `product: ${PIN_A}\nrelease: { name: "2026.11", source: { source: github, repo: acme/aidenhq-distro }, sha: ${sha} }\nmodules: []\n`;
   const run = (st) => apply(["instance.yaml"], { "instance.yaml": `product: ${PIN_A}\nmodules: []\n` }, { "instance.yaml": rel("1".repeat(40)) }, { modules: {}, ...st });
   const same = run({});
-  assert.deepEqual([same.tier, Boolean(same.panel), Boolean(same.reviewFirst), same.rule], [1, false, false, "release-pin"], "the same modules: AI review only");
+  assert.deepEqual([same.tier, Boolean(same.reviewFirst), same.rule], [2, true, "release-pin"], "following a release enrols unattended updates: the owner's after the reviewer");
+  const drop = apply(["instance.yaml"], { "instance.yaml": rel("1".repeat(40)) }, { "instance.yaml": `product: ${PIN_A}\nmodules: []\n` }, { modules: {} });
+  assert.deepEqual([drop.tier, drop.rule], [1, "release-pin"], "dropping the release: AI review only");
   const official = (repo) => ({ product: PIN_A, modules: [], marketplaces: [{ name: "aidenhq", source: { source: "github", repo }, sha: "2".repeat(40) }] });
   const moved = run({ effective: { base: { product: PIN_A, modules: [] }, head: official("evil/modules") } });
   assert.deepEqual([moved.tier, moved.reviewFirst], [2, true], "a release whose official marketplace is another repository: the owner's");
@@ -665,6 +667,9 @@ test("apply: spend and quiet start are the owner's to loosen, anyone's to tighte
   assert.equal(owner(one(inst(q), inst({ ...q, quiet_start: "off" }))), 2, "ending quiet start");
   assert.equal(tierOf(one(inst(q), inst({ ...q, spend_day_usd: 5 }))), "panel", "lowering the cap: a setting like any other");
   assert.equal(tierOf(one(inst(), inst(q))), "panel", "turning quiet start and the cap on");
+  assert.equal(owner(one(inst({ auto_update: "off" }), inst({ auto_update: "on" }))), 2, "turning release auto-updates back on");
+  assert.equal(owner(one(inst({ auto_update: "off" }), inst())), 2, "unsetting it (unset is on)");
+  assert.equal(tierOf(one(inst(), inst({ auto_update: "off" }))), "panel", "turning them off: a setting like any other");
   const on = "overrides:\n  routines:\n    daily-brief: { status: active }\n";
   const beat = "overrides:\n  agents:\n    chief-of-staff: { heartbeat: true }\n";
   assert.equal(owner(one(inst(q), inst(q, on))), 2, "a schedule turned on under quiet start");
