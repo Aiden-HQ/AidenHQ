@@ -41,6 +41,7 @@ test("H4: another module's network only through requires; root services and netw
 
 test("H5: a module mounts only its own secrets, data dir and vault dir", () => {
   const def = { secrets: { state: true, provided: ["a_key"] }, services: { data: true, run: { srv: { image: IMG, data: ["db:/data"], state: "/state", env: { KEY: "${secrets.a_key}" } } } } };
+  assert.deepEqual(gen("a", def).stateDirs, ["modules/a"]); // compile makes it before compose (a FUSE vault: Docker can't)
   const out = JSON.stringify(gen("a", def));
   assert.ok(out.includes("modules/a/db") && out.includes("modules/a:/state") && out.includes("/a_key"));
   assert.ok(!/modules\/b|b_key|model_provider/.test(out));
