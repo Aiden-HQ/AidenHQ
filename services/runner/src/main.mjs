@@ -4548,6 +4548,7 @@ async function reportToParent(issue) {
 /**
  * Remove a task's workspace unless a checkout has uncommitted changes (returned as `dirty`, nothing removed): its local
  * branches stay in the runner's cache clones (refs/kept/<task>/…), in case they're needed again, and its cache layers go.
+ * The task's branch records and session stay (the merge queue and a resumed run still read them).
  */
 async function removeWorkspace(issue, workspace) {
   const repos = await workspaceRepos(workspace);
@@ -4560,10 +4561,8 @@ async function removeWorkspace(issue, workspace) {
   } catch (err) {
     log("cache layers not removed", { issue: issue.identifier, err: String(err.message ?? err).slice(0, 200) });
   }
-  const kept = state.branches(issue.id).length;
-  for (const b of state.branches(issue.id)) state.deleteBranch(issue.id, b.repo, b.branch);
-  state.updateTask(issue.id, { workspace: null, session_id: null });
-  return { dirty, kept };
+  state.updateTask(issue.id, { workspace: null });
+  return { dirty };
 }
 
 /** A task closed (done or cancelled) this long ago loses its workspace, as `cleanup` removes it (owner, 2026-11-18). */
@@ -4578,8 +4577,12 @@ async function removeClosedWorkspaces() {
     if (running.has(t.issue_id) || busy.has(t.issue_id) || !existsSync(t.workspace)) continue;
     const issue = await pc.issue(t.issue_id).catch(() => null);
     if (!["done", "cancelled"].includes(issue?.status) || !(Date.parse(issue.updatedAt) < Date.now() - CLOSED_WORKSPACE_DAYS * 86_400_000)) continue;
-    const { dirty } = await removeWorkspace(issue, t.workspace);
-    log(dirty.length ? "closed task's workspace kept: uncommitted changes" : "closed task's workspace removed", { issue: issue.identifier });
+    try {
+      const { dirty } = await removeWorkspace(issue, t.workspace);
+      log(dirty.length ? "closed task's workspace kept: uncommitted changes" : "closed task's workspace removed", { issue: issue.identifier });
+    } catch (err) {
+      log("closed task's workspace not removed", { issue: issue.identifier, err: String(err.message ?? err).slice(0, 200) });
+    }
   }
 }
 
@@ -4592,10 +4595,13 @@ async function runCommand(issue, task, command) {
   const workspace = await prepareWorkspace(issue, task, { clone: false });
 
   if (command === "cleanup") {
-    const { dirty, kept } = await removeWorkspace(issue, workspace);
+    const { dirty } = await removeWorkspace(issue, workspace);
     if (dirty.length) {
       return void (await pc.comment(issue.id, `I didn't remove the workspace: it has uncommitted changes (${dirty.map((d) => `\`${d.path}\``).join(", ")}). Ask me to commit or discard them first.`));
     }
+    const kept = state.branches(issue.id).length;
+    for (const b of state.branches(issue.id)) state.deleteBranch(issue.id, b.repo, b.branch);
+    state.updateTask(issue.id, { session_id: null });
     return void (await pc.comment(issue.id, `Removed the workspace.${kept ? " Its branches are kept in the runner's copies of the repositories, and pushed ones are on their code host." : ""}`));
   }
   // Publishing takes minutes for many branches (a push and a PR description each): it shows on the
