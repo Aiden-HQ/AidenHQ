@@ -105,12 +105,12 @@ test("a job writes on its own task and the tasks it created, as its agent throug
   assert.match(r.json.error.message, /only this job's own task is finished here/);
 });
 
-test("the chief of staff comments on any task of its company, silently, and nothing more", async (t) => {
+test("the chief of staff comments on any task of its company, heard by that task's agent, and nothing more", async (t) => {
   const { h, act } = await setup(t);
   let r = await act("cos", "POST", "/api/issues/WOR-2/comments", { body: "The owner asks for the summary by noon." });
   assert.equal(r.status, 201);
   assert.equal(h.comments.at(-1).authorAgentId, COS);
-  assert.ok(SELF_TAG.test(h.comments.at(-1).body), "wakes no loop");
+  assert.ok(!SELF_TAG.test(h.comments.at(-1).body), "the task's agent hears it (dispatch: the chief of staff's words start work)");
   assert.equal((await act("cos", "PATCH", "/api/issues/WOR-2", { status: "cancelled" })).status, 403);
   assert.equal((await act("cos", "PATCH", "/api/issues/WOR-2", { comment: "Also: keep it short." })).status, 200);
   // Ada isn't the chief of staff.

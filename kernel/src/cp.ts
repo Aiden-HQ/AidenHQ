@@ -150,7 +150,10 @@ export function createCp({ whoami, asserter, plugin, agentKey, grants, controlUr
       const r = await read(`/api/issues/${encodeURIComponent(id)}`);
       answer(r.status === 200 ? status : r.status, r.status === 200 ? Buffer.from(JSON.stringify({ ...JSON.parse(r.out.toString("utf8")), ...extra })) : r.out);
     };
-    const tagOf = (scope: string, op: string) => (scope === "own" || scope === "admin" || scope === "listed" ? `<!-- aidenhq:job=${op} kind=cp -->` : `<!-- aidenhq:op=${op} -->`);
+    // The kernel's self tag (wakes.ts SELF_TAG: wakes nobody) on the agent's own task and the tasks its grants list; anywhere
+    // else (a child, a part, the chief of staff's comment on another agent's task) the op tag, so the task's own agent hears it
+    // by the dispatch rules (who started work there), never the writer itself.
+    const tagOf = (scope: string, op: string) => (scope === "own" || scope === "listed" ? `<!-- aidenhq:job=${op} kind=cp -->` : `<!-- aidenhq:op=${op} -->`);
 
     // POST /api/companies/:cid/issues: a new task, as the job's agent, in its own company.
     const company = method === "POST" ? new RegExp(`^/api/companies/(${ID})/issues$`).exec(path)?.[1] : undefined;
