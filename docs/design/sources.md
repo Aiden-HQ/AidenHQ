@@ -35,7 +35,7 @@ prompt version it came from, is made only after the document has been quiet a fe
 evidence: consumers read the document live before quoting or acting. Document text is fenced as data for the
 summariser, which has no tools.
 
-## Conventions in services/shared/source-store.ts
+## Conventions in kernel/sdk/src/source-store.ts
 
 All writers share one `SourceStore` (a byte-identical copy lives in each connection; edit the shared one and run
 `node scripts/sync-shared.mjs`).
