@@ -188,7 +188,9 @@ export function createAdmin(d: Deps) {
   // The model step. Connect needs a callback OpenRouter takes: https, or localhost on any port; elsewhere the paste field leads.
   // Pending Connects, by their state: the verifier and the owner who started it.
   const pkce = new Map<string, { verifier: string; account: string; at: number }>();
-  const welcome = () => (d.boardUrl?.() ? `${d.boardUrl()}/#/welcome` : "/approvals");
+  // The board's own sign-in handoff (services/board/src/kernel-auth.ts): the owner arrives signed in there, and the board's
+  // welcome gate opens #/welcome until setup is finished.
+  const welcome = () => (d.boardUrl?.() ? `${d.boardUrl()}/auth/start` : "/approvals");
   // The owner goes on to the model step, or (a model key given at install) straight to the board's welcome, which shows the
   // recovery key and the modules' flows until it is finished.
   const afterEnrol = (s: AdminSession) => (d.model && s.account.owner ? (d.model.ready() ? welcome() : "/setup/model") : "/approvals");
