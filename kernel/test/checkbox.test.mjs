@@ -10,6 +10,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { checkJobsFrom } from "../src/checkbox.ts";
+import { createCodehost } from "../src/codehost.ts";
 import { kernel, readBody, serve } from "./helpers.mjs";
 
 function fixture() {
@@ -42,7 +43,7 @@ test("check jobs: a fixture's fast check runs in a credential-free box; its rece
   const fx = fixture();
   const asked = [];
   let lie;
-  // codehost-github's snapshot op: git archive of the commit, as the asking module (its own token).
+  // codehost-github's snapshot op: git archive of the commit, asked by the kernel's broker with the code host's own key.
   const codehost = await serve(async (req, res) => {
     const b = JSON.parse(await readBody(req));
     asked.push({ auth: req.headers.authorization, ...b });
@@ -67,11 +68,16 @@ test("check jobs: a fixture's fast check runs in a credential-free box; its rece
     return { exit: r.status, out: `${r.stdout}${r.stderr}`, timedOut: false };
   };
   const secrets = { codehost_github_token: "codehost-token", receipt_secret: "receipt-secret", launcher_kernel_key: "kernel-key", gateway_job_secret: "job-secret" };
-  const modules = { snapshot: `${codehost.url}/ops/snapshot`, modules: { "codehost-github": { roles: ["kernel.checks"], token: "codehost_github_token" } } };
+  const modules = { modules: { "codehost-github": { roles: ["kernel.checks"], token: "codehost_github_token", codehost: { snapshot: { repos: ["acme/*"] } } } } };
+  const broker = createCodehost({
+    grants: () => Object.entries(modules.modules).map(([module, d]) => ({ ...d.codehost, module })), repos: () => ({}),
+    kind: () => ({ module: "codehost-github", floor: 0, tools: [], executor: { url: `${codehost.url}/aidenhq/v1/executor`, auth_secret: "codehost_github_token" } }),
+    secret: (n) => secrets[n] ?? "", resolver: { resolve: async (u) => { const x = new URL(u); return { host: x.hostname, port: Number(x.port), path: x.pathname }; }, forget: () => {} },
+    workspace: async () => { throw new Error("no clones here"); },
+  });
   const call = async (route, body) => (await fetch(`${launcher.url}${route}`, { method: "POST", headers: { authorization: `Bearer ${secrets.launcher_kernel_key}`, "content-type": "application/json" }, body: JSON.stringify(body) })).json();
   const checkJobs = checkJobsFrom({
-    db: new DatabaseSync(":memory:"), secret: (n) => secrets[n] ?? "", modules: () => modules, call, docker, log: () => {},
-    resolver: { resolve: async (u) => { const x = new URL(u); return { host: x.hostname, port: Number(x.port), path: x.pathname }; } },
+    db: new DatabaseSync(":memory:"), secret: (n) => secrets[n] ?? "", ask: broker.ask, call, docker, log: () => {},
     workDir: mkdtempSync(join(tmpdir(), "work-")), gatewayUrl: "http://gw/api/v1",
   });
   const k = await kernel(t, { modules, secrets, checkJobs });

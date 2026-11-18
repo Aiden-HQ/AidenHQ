@@ -28,7 +28,7 @@ async function setup(t, { enabled = true } = {}) {
   // The backplane's side: the caller's module (resolved from its token there) and the op, then whatever op answers.
   const kernel = createServer((req, res) => {
     let body = "";
-    req.on("data", (c) => (body += c)).on("end", () => op(req.headers["x-module"], req.url.slice(1), JSON.parse(body), res).catch((e) => res.writeHead(e.status ?? 500).end(JSON.stringify({ error: e.message }))));
+    req.on("data", (c) => (body += c)).on("end", () => op.op(req.headers["x-module"], req.url.slice(1), JSON.parse(body), res).catch((e) => res.writeHead(e.status ?? 500).end(JSON.stringify({ error: e.message }))));
   });
   await new Promise((ok) => kernel.listen(0, "127.0.0.1", ok));
   t.after(() => kernel.close());

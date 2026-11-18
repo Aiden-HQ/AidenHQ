@@ -1104,8 +1104,7 @@ export function compile(productDir, instanceDir, { revision, fetch = hostFetch(p
   // (apps-mcp mounts github_token), and they are recreated with it.
   const mounted = composeSecretFiles(base, compose);
   const mounts = Object.fromEntries(setup.map((f) => [f.secret, [...(mounted[f.secret] ?? [])].sort()]));
-  const snapshot = snapshotProvider(enabledDefs);
-  const kernelModules = { owner: { name: String(settings.owner_name ?? ""), email: String(settings.owner_email).trim().toLowerCase(), timezone: String(settings.timezone ?? "UTC") }, modules: kernelModuleTable(enabledDefs, settings), services, ...(reviewer ? { reviewer } : {}), ...(snapshot ? { snapshot } : {}), ...(setup.length ? { setup, mounts } : {}) };
+  const kernelModules = { owner: { name: String(settings.owner_name ?? ""), email: String(settings.owner_email).trim().toLowerCase(), timezone: String(settings.timezone ?? "UTC") }, modules: kernelModuleTable(enabledDefs, settings), services, ...(reviewer ? { reviewer } : {}), ...(setup.length ? { setup, mounts } : {}) };
   // The engine-run agents (`dispatch: runner`, any module's or the instance's) are the job dispatcher's: the one enabled module
   // with kernel.jobs. The kernel starts a job only for an agent its requester dispatches (kernel/src/jobs.ts).
   const dispatchers = Object.entries(kernelModules.modules).filter(([, m]) => (m.roles ?? []).includes("kernel.jobs")).map(([n]) => n);
@@ -1188,22 +1187,6 @@ export function kernelModuleTable(defs, settings = {}) {
     if (Object.keys(e).length) out[name] = e;
   }
   return out;
-}
-
-/**
- * The snapshot provider (`providers.snapshot.url`): where the kernel's check jobs get a repo's tree at a commit (kernel/src/
- * checkbox.ts), asked with the token of the module that asked for the check. At most one enabled module, and only one that
- * holds the git credential (privileged: [git-credential]): the trees it serves are what receipts vouch for.
- */
-export function snapshotProvider(defs) {
-  const all = Object.entries(defs).filter(([, d]) => d.providers?.snapshot);
-  if (all.length > 1) fail(`modules ${all.map(([n]) => n).join(", ")} all provide snapshots (providers.snapshot): enable one`);
-  if (!all.length) return undefined;
-  const [name, def] = all[0];
-  if (![def.privileged ?? []].flat().includes("git-credential")) fail(`module ${name}: providers.snapshot needs privileged: [git-credential]`);
-  const url = def.providers.snapshot?.url;
-  if (!/^https?:\/\/[\w.-]+:\d+\/[\w/.-]*$/.test(url ?? "")) fail(`module ${name}: providers.snapshot.url must be http://<service>:<port>/<path>`);
-  return url;
 }
 
 /**
