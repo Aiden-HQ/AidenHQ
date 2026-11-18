@@ -21,7 +21,7 @@ import { codexMcpBlock, ensureBackupRetention, ensureFleetIssues, ensureMemoryIn
 import { routineStatus } from "./setup-paused.mjs";
 import { checkLauncher, computerAdapterConfig, ensureComputers, runnerBox } from "./computers.mjs";
 import { assertNoShell } from "./no-shell.mjs";
-import { handbookParts, HOW_WE_BUILD_SECTION, laneHandbook, onDemandSections, personaOf, readInstructions as readHandbook } from "./handbook.mjs";
+import { agentSkills, handbookParts, HOW_WE_BUILD_SECTION, laneHandbook, onDemandSections, personaOf, readInstructions as readHandbook } from "./handbook.mjs";
 import { recoverStalePid } from "./paperclip-recover.mjs";
 import { awaitVerified, probeConfig } from "./agent-probe.mjs";
 import { officialRepo } from "./official-repo.mjs";
@@ -788,6 +788,8 @@ function writeGrants(agents, memoryInboxes = {}, reviewLogs = {}) {
   for (const [key, a] of Object.entries(agents)) if (memoryInboxes[key]) table.agents[a.id].memory_inbox = memoryInboxes[key];
   // Each fleet-audit agent's review log issue id (ensureReviewLogs): the tasks bridge's coach_record writes there, coach_due reads it.
   for (const [key, a] of Object.entries(agents)) if (reviewLogs[key]) table.agents[a.id].review_log = reviewLogs[key];
+  // Each agent's skills (compile resolved them): the runner copies exactly these into its jobs' engine home.
+  for (const [key, a] of Object.entries(agents)) if (agentSkills(cfg, key).length) table.agents[a.id].skills = agentSkills(cfg, key);
   const file = join(configDir, "grants", "grants.json");
   mkdirSync(dirname(file), { recursive: true });
   appendRevs(table);

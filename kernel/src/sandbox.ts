@@ -4,7 +4,8 @@
 // (the runner). The engine registry (config/engines.json), an engine's state folder and the job credentials are here too;
 // scripts/verify-security.sh probes the sandbox's layout and jail live.
 import { execFileSync, spawnSync } from "node:child_process";
-import { cpSync, existsSync, lstatSync, mkdirSync, readFileSync, readlinkSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { chmodSync, cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, join, relative, resolve, sep } from "node:path";
 import { mintToken } from "./gateway/token.ts";
@@ -160,23 +161,59 @@ export function engineEntry(cfg: Pick<SandboxConfig, "enginesFile">, kind: strin
 }
 const fromProduct = (p: string) => resolve(repoRoot, p);
 
+/** A skill compile resolved for the job's agent (the grants table's `skills`): `<module>.<name>` and its module folder. */
+export interface Skill { id: string; dir: string }
+
 /**
  * The engine's state folder for this run (its sessions persist for a resume): one per kind (`state: shared`) or per kind and task
- * (`state: task`, no task reads another's transcripts), made 0700. Its `reset` names are removed and its `seed` copied in from the
- * module first, so no run leaves instructions, config, hooks or skills for a later one. Undefined for an engine without one.
+ * (`state: task`, no task reads another's transcripts), made 0700. Its `reset` names are removed first, so no run leaves
+ * instructions, config, hooks or skills for a later one. Then skills/ is replaced, whatever the list: the agent's `skills` are
+ * built into skills/<name> in a fresh folder outside the job's reach (regular files only, read-only, links never followed, with
+ * skills/.hash over the copy) and renamed into place; the job's own skills/ (a link it planted too) is removed, never followed.
+ * No skills: no skills/ of ours. The module's `seed` is copied in last. Skills need a per-task folder (`state: task`): a shared
+ * one would hand one agent's skills to another. Undefined for an engine without a state folder.
  */
-export function engineState(cfg: Pick<SandboxConfig, "enginesFile" | "stateDir">, kind: string, task?: string) {
+export function engineState(cfg: Pick<SandboxConfig, "enginesFile" | "stateDir">, kind: string, task?: string, skills: Skill[] = []) {
   const e = engineEntry(cfg, kind);
   if (!e.state) return undefined;
+  if (skills.length && e.state !== "task") throw new Error(`engine ${kind}: skills need a per-task state folder (state: task)`);
   const dir = join(cfg.stateDir, kind, ...(e.state === "task" ? [String(task ?? "none").replace(/[^\w.-]/g, "_")] : []));
   mkdirSync(dir, { recursive: true, mode: 0o700 });
   for (const f of e.reset ?? []) rmSync(join(dir, f), { recursive: true, force: true });
+  const built = skills.length ? buildSkills(cfg.stateDir, skills) : undefined;
+  rmSync(join(dir, "skills"), { recursive: true, force: true });
+  if (built) renameSync(built, join(dir, "skills"));
   for (const { from, to } of e.seed ?? []) {
     const src = from.startsWith("/") ? fromProduct(from.slice(1)) : join(fromProduct(e.dir), from);
     mkdirSync(dirname(join(dir, to)), { recursive: true });
     cpSync(src, join(dir, to), { recursive: true, filter: (p) => !/[\\/](node_modules|dist)$/.test(p) });
   }
   return dir;
+}
+
+/** The skills tree, built in a new folder under the kernel's state root (no job reaches it; same filesystem for the rename). */
+function buildSkills(root: string, skills: Skill[]) {
+  mkdirSync(root, { recursive: true, mode: 0o700 });
+  const to = mkdtempSync(join(root, ".skills-"));
+  const hash = createHash("sha256");
+  try {
+    for (const s of [...skills].sort((a, b) => a.id.localeCompare(b.id))) {
+      const name = /^[a-z0-9][a-z0-9-]*\.([a-z0-9][a-z0-9-]*)$/.exec(s.id)?.[1];
+      if (!name) throw new Error(`skill ${s.id}: not a skill id (<module>.<name>)`);
+      cpSync(s.dir, join(to, name), { recursive: true, errorOnExist: true, filter: (p) => { const st = lstatSync(p); return st.isFile() || st.isDirectory(); } });
+      for (const f of (readdirSync(join(to, name), { recursive: true }) as string[]).sort()) {
+        const file = join(to, name, f);
+        if (!lstatSync(file).isFile()) continue;
+        chmodSync(file, 0o444);
+        hash.update(`${name}/${f}\0`).update(readFileSync(file)).update("\0");
+      }
+    }
+    writeFileSync(join(to, ".hash"), `${hash.digest("hex")}\n`);
+    return to;
+  } catch (err) {
+    rmSync(to, { recursive: true, force: true });
+    throw err;
+  }
 }
 
 // A session id an engine reported, before it goes on a command line.
