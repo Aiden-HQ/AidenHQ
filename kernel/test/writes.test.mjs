@@ -333,3 +333,20 @@ test("revalidate at execution: a reviewer's yes doesn't run once autonomy is off
   assert.deepEqual([held.state, held.tier, held.cap], ["owner", 2, { by: "autonomy", value: "off" }]);
   assert.match(held.review, /Held for the owner before it ran: since the AI reviewer approved it, autonomy is off/);
 });
+
+test("a kernel job's write names its own workspace, whatever its args say", async (t) => {
+  const plans = [];
+  const ex = await serve(async (req, res) => {
+    const b = JSON.parse(await readBody(req));
+    if (req.url.endsWith("/plan")) plans.push(b.args);
+    res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify(req.url.endsWith("/plan") ? { args: b.args, targets: {} } : { ok: true, text: "pushed" }));
+  });
+  t.after(() => ex.s.close());
+  const rows = { "j-1": { agent: "ag-bo", task: "task-uuid-7", state: "running", identifier: "PEN-7", authority: { tools: { code: ["push"] }, jobcaps: [], writes: [], roles: [] } } };
+  const args = { type: "object", additionalProperties: false, required: ["workspace", "branch"], properties: { workspace: { type: "string", pattern: "^[A-Za-z][A-Za-z0-9]*-[0-9]+$" }, branch: { type: "string" } } };
+  const k = await kernel(t, { secrets, grants, connections: {}, job: (id) => rows[id], writes: { "code.push": { module: "code", floor: 1, tools: ["code.push"], args, executor: { url: `${ex.url}/x`, auth_secret: "twin_service_key" } } } });
+  const token = mintToken("job-secret", { kind: "job", job: "j-1", agentId: "ag-bo", issueId: "task-uuid-7" });
+  const filed = await k.v1("POST", "/v1/writes", { kind: "code.push", args: { workspace: "PEN-9", branch: "fix" } }, token);
+  assert.equal(filed.status, 200);
+  assert.deepEqual([plans[0].workspace, k.records.get(filed.json.id).args.workspace], ["PEN-7", "PEN-7"]);
+});

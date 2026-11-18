@@ -347,6 +347,12 @@ export function createWrites({ records, registry, connections, secret, resolver,
       if (!granted) throw fail(403, "no-grant", `no grant on ${kind}`);
       // An agent's record is on the task its run is on (its notices land there, as the owner); only a module names one.
       const t = who.kind === "module" && typeof task === "string" && task ? task : who.task ?? "";
+      // A kernel job's write names its own workspace (its row's task identifier), whatever its args say: set before the plan,
+      // validation and tiering, for any kind whose args take a workspace. No row identifier: refused, never the caller's.
+      if (who.workspace !== undefined && k.args?.properties?.workspace) {
+        if (!who.workspace) throw fail(409, "no_workspace", "this job has no workspace on record");
+        if (args && typeof args === "object" && !Array.isArray(args)) args = { ...args, workspace: who.workspace };
+      }
       const r = await file(kind, k, requesterOf(who, t), args, t, evidence);
       if (r.state === "claimed") await execute(r, k);
       return r;

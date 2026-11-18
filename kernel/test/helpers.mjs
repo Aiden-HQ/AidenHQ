@@ -28,7 +28,7 @@ export const readBody = (req) => new Promise((r) => { let b = ""; req.on("data",
  * agents: { token: {id, name} } the control plane knows; boxes: { ahqc_token: {agentId, runId, issueId} } the launcher knows;
  * grants: the grants table's agents; connections(urls): config/kernel/connections.json from the fake servers' URLs.
  */
-export async function kernel(t, { agents = {}, boxes = {}, grants = {}, settings = {}, connections, jobcaps = {}, secrets = {}, onControl, writes: kinds = {}, closed = [], modules = {}, board = async () => ({ status: 404, json: {} }), reviewer, native = {}, parents = {}, repos = {}, jobs: jobsApi, checks: checkTable, checkJobs, paths } = {}) {
+export async function kernel(t, { agents = {}, boxes = {}, grants = {}, settings = {}, connections, jobcaps = {}, secrets = {}, onControl, writes: kinds = {}, closed = [], modules = {}, board = async () => ({ status: 404, json: {} }), reviewer, native = {}, parents = {}, repos = {}, jobs: jobsApi, checks: checkTable, checkJobs, paths, job } = {}) {
   const dir = mkdtempSync(join(tmpdir(), "kernel-"));
   const control = [];
   const cpServer = await serve(async (req, res) => {
@@ -60,7 +60,7 @@ export async function kernel(t, { agents = {}, boxes = {}, grants = {}, settings
   const grantsTable = watched(join(dir, "grants.json"), (j) => j, {});
   const connectionsTable = watched(join(dir, "connections.json"), (j) => j, {});
   const modulesFile = watched(join(dir, "modules.json"), (j) => j, {});
-  const whoami = createIdentity({ grants: () => grantsTable().agents ?? {}, connections: connectionsTable, modules: () => modulesFile().modules ?? {}, jobcaps: watched(join(dir, "jobcaps.json"), (j) => j, {}), secret, controlUrl: cpServer.url, launcherUrl: launcher.url, runTask: async () => "TASK-1" });
+  const whoami = createIdentity({ grants: () => grantsTable().agents ?? {}, connections: connectionsTable, modules: () => modulesFile().modules ?? {}, jobcaps: watched(join(dir, "jobcaps.json"), (j) => j, {}), secret, controlUrl: cpServer.url, launcherUrl: launcher.url, runTask: async () => "TASK-1", job });
   const asserter = createAsserter(loadKey(join(dir, "caller-key.pem")));
   // Records (kernel.db) and the write lifecycle, as main.ts wires them; notices on onTask are kept in `notices`.
   const notices = [];

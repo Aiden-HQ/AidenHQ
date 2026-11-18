@@ -146,7 +146,7 @@ export function createJobs({ db, cfg, cp, mayDispatch, log, boxWrap, onEnd = () 
   db.exec("CREATE INDEX IF NOT EXISTS jobs_task ON jobs (task, state)");
   // A kernel-admitted job's columns (admission.ts, boxes.ts), added where they are missing.
   const cols = new Set((db.prepare("PRAGMA table_info(jobs)").all() as { name: string }[]).map((c) => c.name));
-  for (const [c, t] of [["profile", "TEXT"], ["wake", "TEXT"], ["authority", "TEXT"], ["renewed", "INTEGER"], ["released", "INTEGER"]]) if (!cols.has(c!)) db.exec(`ALTER TABLE jobs ADD COLUMN ${c} ${t}`);
+  for (const [c, t] of [["profile", "TEXT"], ["wake", "TEXT"], ["authority", "TEXT"], ["renewed", "INTEGER"], ["released", "INTEGER"], ["identifier", "TEXT"]]) if (!cols.has(c!)) db.exec(`ALTER TABLE jobs ADD COLUMN ${c} ${t}`);
   const watchers = new Map<string, { stop: () => void; send?: (text: string, from: string) => boolean; cancel: () => void }>();
   const versions = new Map<string, number>();
   const waiters = new Map<string, Set<() => void>>();
@@ -451,6 +451,6 @@ export type Jobs = ReturnType<typeof createJobs>;
 
 /** A kernel-admitted job's row as the job token's holders read it (identity.ts, the gateway): undefined for any other job. */
 export function admittedJob(db: DatabaseSync, id: string) {
-  const r = db.prepare("SELECT agent, task, state, authority FROM jobs WHERE id = ? AND authority IS NOT NULL").get(id) as { agent: string; task: string; state: string; authority: string } | undefined;
-  return r && { agent: r.agent, task: r.task, state: r.state, authority: JSON.parse(r.authority) };
+  const r = db.prepare("SELECT agent, task, state, authority, identifier FROM jobs WHERE id = ? AND authority IS NOT NULL").get(id) as { agent: string; task: string; state: string; authority: string; identifier: string | null } | undefined;
+  return r && { agent: r.agent, task: r.task, state: r.state, authority: JSON.parse(r.authority), identifier: r.identifier ?? "" };
 }
