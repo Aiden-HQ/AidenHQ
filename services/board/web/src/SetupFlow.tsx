@@ -69,7 +69,7 @@ function FlowBody({ flow, board, reload, onDone, onSignIn }: { flow: SetupFlowVi
   const fail = (e: unknown) => (e instanceof SignInRequired ? onSignIn() : setError((e as Error).message));
   const later = (
     <button className="btn" onClick={() => api.setupDismiss(flow.module).then(onDone, fail)}>
-      Later
+      Skip this step
     </button>
   );
   const head = <PageHeader title={flow.title} sub={flow.why} status={<span className="setup-effort">{flow.effort}</span>} />;

@@ -127,7 +127,7 @@ function Wizard({ state, onFinished }: { state: WelcomeState; onFinished: () => 
         </div>
         {error && <span className="welcome-error" role="alert">{error}</span>}
         <span className="spacer" />
-        <button className="btn" onClick={finish}>Later</button>
+        <button className="btn" onClick={finish}>Finish setup later</button>
         {screen.kind !== "summary" && <button className="btn primary" onClick={finish}>Meet Aiden now</button>}
       </nav>
     </>

@@ -452,27 +452,16 @@ export const GearIcon = () => (
 );
 
 /**
- * Google accounts whose sign-in Google refused: what's paused, and a way back. Reconnecting
+ * Google accounts whose sign-in Google refused: what's paused, and a way back (Google not connected at all is no alert: it is
+ * an optional connection, offered in Settings > Connections like the others). Reconnecting
  * works only on the laptop's loopback address, where Google can send the sign-in back.
  */
 export function GoogleBanner({ google, canReconnect }: { google: Board["google"]; canReconnect: boolean }) {
   if (!google) return null;
   const expired = google.accounts.filter((a) => a.state === "expired");
-  if (!expired.length && !google.error) return null;
+  if (!expired.length) return null;
   return (
     <div className="alert" role="alert">
-      {google.error && !google.accounts.length && (
-        <div className="alert-row">
-          <span>Google isn't connected yet. Agents can't read your email, calendar or Drive until it is.</span>
-          {canReconnect ? (
-            <a className="btn" href="/google/connect">
-              Connect Google
-            </a>
-          ) : (
-            <span className="alert-hint">{SIGN_IN_HINT}</span>
-          )}
-        </div>
-      )}
       {expired.map((a) => (
         <div key={a.email} className="alert-row">
           <span>
