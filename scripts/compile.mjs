@@ -131,6 +131,14 @@ if (Object.keys(images).length) {
   out.compose = useReleaseImages(out.compose, YAML.parse(readFileSync(join(repo, "compose.yaml"), "utf8")), images);
   computers.pull = computerPulls(computers.images, images);
 }
+// The apps' tailnet node is the door only in tailscale mode with its join key in the vault (compose.yaml apps-edge): only
+// there may apps-mcp let token-less callers into an app as anonymous (AIDENHQ_ANONYMOUS; docs/design/app-identity.md).
+// Anywhere else the way in is the host's loopback, so every app requires a signed identity.
+const appsKey = secretsDir && join(secretsDir, "tailscale_apps_authkey");
+const appsNode = out.exposure === "tailscale" && appsKey && existsSync(appsKey) && readFileSync(appsKey, "utf8").trim() !== "";
+// Without that node compose.yaml's apps-edge must not run (it would register a new Tailscale node on every restart): an
+// inactive profile takes it out of the stack, and the apply removes a container left from before.
+if (!appsNode) out.compose.services["apps-edge"] = { profiles: ["off"] };
 const compose = Object.fromEntries(Object.entries(out.compose).filter(([k, v]) => k === "services" || Object.keys(v).length));
 writeFileSync(composeOut, dump(compose));
 writeFileSync(join(cfgOut, "modules.json"), JSON.stringify(out.catalog, null, 2) + "\n");
@@ -145,11 +153,6 @@ writeFileSync(join(cfgOut, "kernel/checks.json"), JSON.stringify(out.checks, nul
 writeFileSync(join(cfgOut, "kernel/modules.json"), JSON.stringify(out.kernelModules, null, 2) + "\n");
 writeFileSync(join(cfgOut, "engines.json"), JSON.stringify(out.engines, null, 2) + "\n");
 writeFileSync(join(cfgOut, "exposure"), `${out.exposure}\n`);
-// The apps' tailnet node is the door only in tailscale mode with its join key in the vault (compose.yaml apps-edge): only
-// there may apps-mcp let token-less callers into an app as anonymous (AIDENHQ_ANONYMOUS; docs/design/app-identity.md).
-// Anywhere else the way in is the host's loopback, so every app requires a signed identity.
-const appsKey = secretsDir && join(secretsDir, "tailscale_apps_authkey");
-const appsNode = out.exposure === "tailscale" && appsKey && existsSync(appsKey) && readFileSync(appsKey, "utf8").trim() !== "";
 writeFileSync(join(cfgOut, "apps-node"), `${appsNode ? "tailnet" : "none"}\n`);
 if (caddy) writeFileSync(join(cfgOut, "Caddyfile"), caddy);
 else rmSync(join(cfgOut, "Caddyfile"), { force: true });
