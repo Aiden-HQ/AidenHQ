@@ -34,6 +34,8 @@ charge: auto-updates on by default, off in Settings, and "Update now" for the im
 - **One run** (`ops/update.sh` → `node kernel/src/updates.ts run`, hourly and on Update now) holds the host's apply lock
   on fd 9 for its whole length, waiting for an apply in progress as a land does (up to 15 minutes; still busy, an Update
   now request is kept for the next run). It finishes what a dead run left, checks, and installs when it should.
+- **Release names** are the cut date, `2026.11.18`; a second cut that day is `2026.11.18.1` (the distro's nightly). They
+  compare part by part as numbers: `2026.11.18` < `2026.11.18.1` < `2026.11.19`.
 - **The check** lists the distro repo's release tags (`git ls-remote` over https) newer than the release followed and
   takes the newest that passes verification (below): a refused one is told to the owner once and the next older is tried;
   a network error stops the check until the next run, with no message. The result goes to `data/updates/state.json` and
