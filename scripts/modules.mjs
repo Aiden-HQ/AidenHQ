@@ -444,11 +444,13 @@ function ownerTerms(own, settings, declared) {
 }
 
 /**
- * Replaces ${settings.x} in every string. `compose`: the result is a compose file, which expands `$` itself, so a setting
- * holding one (`${SOME_SECRET}`) fails rather than smuggle another variable in.
+ * Replaces ${settings.x} in every string. A value holding an object (a list of entries) becomes JSON; a scalar or a list of
+ * scalars keeps its plain text (a list comma-joined). `compose`: the result is a compose file, which expands `$` itself, so
+ * a setting holding one (`${SOME_SECRET}`) fails rather than smuggle another variable in.
  */
+const settingText = (v) => (v && typeof v === "object" && [v].flat().some((x) => x && typeof x === "object") ? JSON.stringify(v) : String(v));
 function substitute(value, settings, compose = false) {
-  const one = (s) => s.replace(SETTING, (_, k) => (!(k in settings) ? fail(`unknown setting: ${k}`) : compose && String(settings[k]).includes("$") ? fail(`settings.${k}: no $ in a value a compose file uses`) : String(settings[k])));
+  const one = (s) => s.replace(SETTING, (_, k) => (!(k in settings) ? fail(`unknown setting: ${k}`) : compose && settingText(settings[k]).includes("$") ? fail(`settings.${k}: no $ in a value a compose file uses`) : settingText(settings[k])));
   if (typeof value === "string") return one(value);
   if (Array.isArray(value)) return value.map((v) => substitute(v, settings, compose));
   if (value && typeof value === "object") return Object.fromEntries(Object.entries(value).map(([k, v]) => [k, substitute(v, settings, compose)]));

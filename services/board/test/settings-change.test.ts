@@ -17,7 +17,7 @@ const dir = mkdtempSync(join(tmpdir(), "settings-change-"));
 writeFileSync(
   join(dir, "paperclip.yaml"),
   stringify({
-    settings: { glean_mcp_url: { value: "", set: false }, grading: { value: "on", set: false } },
+    settings: { glean_mcp_url: { value: "", set: false }, grading: { value: "on", set: false }, maintainer_repos: { value: [{ repo: "acme/product", after_merge: "product-pin" }], set: true } },
     agents: { "chief-of-staff": { name: "Aiden", module: "chief-of-staff", adapter: "codex_local", model: "openrouter/a" }, "fleet-engineer": { name: "Platform Engineer", adapter: "opencode_local", dispatch: "runner" }, helper: { name: "Helper", module: "instance" } },
     mcp_servers: { crm: { tools: { read: ["crm_find"], write: ["crm_update"] } } },
     routines: { digest: { title: "Digest" } },
@@ -69,6 +69,8 @@ describe("POST /api/settings/change", () => {
     expect((await post({ changes: [{ kind: "setting", key: "nope", value: "x" }] })).status).toBe(400);
     expect((await post({ changes: [{ kind: "setting", key: "grading", value: "maybe" }] })).status).toBe(400);
     expect((await post({ changes: [{ kind: "agent", agent: "fleet-engineer", field: "heartbeat", value: 4 }] })).status).toBe(400);
+    // A setting holding entries would lose them to a flat list: instance.yaml only.
+    expect(await post({ changes: [{ kind: "setting", key: "maintainer_repos", value: ["acme/product"] }] })).toMatchObject({ status: 400, body: { error: expect.stringContaining("instance.yaml") } });
     expect(created).toHaveLength(0);
   });
 
