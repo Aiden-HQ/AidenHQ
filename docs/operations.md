@@ -115,9 +115,11 @@ It is idempotent. The Platform Engineer runs it for you after you approve a chan
 
 - The Maintainer (`services/board/src/maintainer.ts`): every `maintainer_poll_minutes` (default 5; the board reads
   `MAINTAINER_POLL_MINUTES`) the board asks
-  github-mcp for the product issues labelled since its cursor and fires the "Maintainer: issue" webhook once per trusted
-  issue, with `{{number}}` and `{{title}}`. A label from anyone else is logged once and starts nothing. Cursor and fired
-  issues are in the board's store (meta `maintainer_issues`), so a restart repeats and skips none. It reads the host's
+  github-mcp for the issues labelled since each repo's cursor on every repo in the github setting `maintainer_repos`
+  (`[{ repo, label, trusted, after_merge }]`; github-mcp holds the list, the board only its cursors) and fires the
+  "Maintainer: issue" webhook once per trusted issue, with `{{repo}}`, `{{number}}` and `{{title}}`. A label from anyone
+  else is logged once and starts nothing; one repo's failed read holds up no other. Each repo's cursor and fired issues
+  are in the board's store (meta `maintainer_issues`), so a restart repeats and skips none. It reads the host's
   `generations.jsonl` read-only (`AIDENHQ_STATE_DIR`, its mirror in `board/` mounted at `/generations`) for the
   `fleet_generation_status` tool: the current pin (the newest generation that got past validation) and the last 20
   generations, newest first. The watcher runs when both modules mount their files through `board_env`: the github module's

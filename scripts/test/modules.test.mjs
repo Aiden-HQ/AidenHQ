@@ -258,6 +258,14 @@ test("upstream: off grants no upstream tool; issues grants both; the scrub's ter
   // Names and each word of them (but common words), the instance and its org, emails with their local part and domain, hosts.
   assert.deepEqual(env.GITHUB_OWNER_TERMS.split(",").sort(), ["Ada Lovelace", "Ada", "Lovelace", "Acme Labs", "Acme", "acme", "aidenhq-acme", "acme-co", "upstream-org", "ada.l@acme.example", "ada.l", "acme.example", "jira.acme.example"].sort());
 });
+test("a setting holding entries reaches a service as JSON; a list of plain values stays comma-joined", () => {
+  const settings = (maintainer_repos) => ({ timezone: "UTC", owner_name: "Sam", owner_email: "o@x", maintainer_repos });
+  const env = (repos) => compile(repo, pinst(["github", "maintainer"], settings(repos))).compose.services["github-mcp"].environment.GITHUB_MAINTAINER_REPOS;
+  const repos = [{ repo: "acme/aidenhq", after_merge: "product-pin" }, { repo: "acme/widgets", trusted: ["admin"] }];
+  assert.deepEqual(JSON.parse(env(repos)), repos);
+  assert.equal(env(["acme/aidenhq", "acme/widgets"]), "acme/aidenhq,acme/widgets");
+  assert.equal(env([]), "");
+});
 test("Slack Scout's read grant has no draft tool", () => {
   const dir = pinst(["open-loops", "primer"], { timezone: "Europe/London", owner_name: "Sam", owner_slack_user_id: "U1", owner_email: "e@x", product_repo: "acme/aidenhq" });
   const r = compile(repo, dir);
