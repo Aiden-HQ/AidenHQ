@@ -10,14 +10,14 @@ export function StatusDot({ tone, children, title }: { tone: StatusTone; childre
   );
 }
 
-/** A task or chat state (ChatState, or "stopped") as a tone and a short word. */
+/** A task or chat state (ChatState, or "stopped") as a tone and a short word. Only work under way is green. */
 export function taskStatus(state: string): { tone: StatusTone; word: string } {
   switch (state) {
     case "working": return { tone: "working", word: "Working" };
-    case "queued": return { tone: "working", word: "Queued" };
+    case "queued": return { tone: "idle", word: "Queued" };
     case "waiting for you": return { tone: "needs", word: "Needs you" };
     case "waiting for approval": return { tone: "needs", word: "Approval" };
-    case "in review": return { tone: "working", word: "In review" };
+    case "in review": return { tone: "idle", word: "In review" };
     case "failed": return { tone: "failed", word: "Failed" };
     case "done": return { tone: "done", word: "Done" };
     case "stopped": return { tone: "idle", word: "Stopped" };
