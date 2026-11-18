@@ -46,8 +46,9 @@ charge: auto-updates on by default, off in Settings, and "Update now" for the im
   exactly the pin the planner's own verification of that release writes for this base (`updates.ts verify`: tag on the
   distro's main, newer than the current release, the tested stamp, the kernel descending), is the AI reviewer's (`release-pin`,
   Tier 1: the owner's standing authority). Every other release move is the owner's after the reviewer, and new module
-  authority the release brings is the owner's either way. The `autonomy` setting still caps Tier 1: below `full`, the
-  reviewer's yes goes on to the owner. The code host
+  authority the release brings is the owner's either way. The autonomy and routine caps limit what agents do on their
+  own, so they don't hold a write the kernel itself requests: with `auto_update` on, a verified release installs on the
+  reviewer's yes with no owner approval (owner, 2026-11-18). The code host
   that owns the instance repo lands it (codehost-local's land for `local/…`, the bare repo on this host; codehost-github's
   otherwise) and the kernel's apply executor runs `ops/apply-config.sh` once.
 - **The outcome.** The kernel follows the record: done is installed; anything else (a rejected card, a failed apply) is

@@ -19,7 +19,7 @@ const codehost = { kind: "module", module: "codehost-github", roles: ["kernel.ta
 const NEW_AUTHORITY = { modules: { acme: { base: { name: "acme" }, head: { name: "acme", privileged: ["git-credential"] }, codeChanged: false } }, marketplaces: [] };
 
 /** One kernel: records, the planner over a fake code host and product git, the executor over a fake host that counts. */
-function kernel({ modules = { modules: {}, marketplaces: [] }, inventory = { entries: [] }, reviewer = "approve", texts = { base: yaml(OLD), head: yaml(NEW) }, verifyRelease = async () => null } = {}) {
+function kernel({ modules = { modules: {}, marketplaces: [] }, inventory = { entries: [] }, reviewer = "approve", texts = { base: yaml(OLD), head: yaml(NEW) }, verifyRelease = async () => null, autonomy = "full" } = {}) {
   const h = { reads: 0, lands: [], launches: [], units: {} };
   const planner = createApplyPlanner({
     instanceRepo: () => "acme/aidenhq-instance",
@@ -41,7 +41,7 @@ function kernel({ modules = { modules: {}, marketplaces: [] }, inventory = { ent
     repos: () => ({ product: "acme/aidenhq", instance: "acme/aidenhq-instance" }),
     reviews: { request: async () => ({ decision: reviewer, reason: "read it", model: "~acme/reviewer" }) },
     onTask: { open: async () => true, notify: async () => {} }, replay: async () => ({ ok: false, text: "" }),
-    native: { "kernel.apply": applies.execute }, planners: { "kernel.apply": planner }, resume: ["kernel.apply"],
+    native: { "kernel.apply": applies.execute }, planners: { "kernel.apply": planner }, resume: ["kernel.apply"], autonomy: () => autonomy,
   });
   return { h, records, writes };
 }
@@ -147,4 +147,15 @@ test("a release move is the reviewer's only as the updater's verified move under
   const off = { base: rel(OLD, "2026.11.2", D2, "off"), head: rel(NEW, "2026.11.3", D3, "off") };
   assert.deepEqual(await tierOf(kernel({ texts: off, verifyRelease: async () => off.head }), "updater"), [2, "release-pin"]);
   assert.equal(UPDATER.kind, "kernel", "a kind no token yields (identity.ts: run, job, module)");
+  // The autonomy cap limits agents' writes: under `off` the updater's verified move stays the reviewer's (the owner's standing
+  // authority, auto_update), while anyone else's same move is the owner's as before.
+  assert.deepEqual(await tierOf(kernel({ texts, verifyRelease: verified, autonomy: "off" }), "updater"), [1, "release-pin"]);
+  assert.deepEqual(await tierOf(kernel({ texts, verifyRelease: verified, autonomy: "off" }), "module"), [2, "release-pin"]);
+  // ...and the reviewer's yes runs it: no owner card, no shadow note.
+  const k = kernel({ texts, verifyRelease: verified, autonomy: "off" });
+  const r = await k.writes.fileUpdater("kernel.apply", { args: BUMP, task: "TASK-1" });
+  const { record } = await k.writes.review(r.id, { input: { tier: 1, rule: "release-pin", reason: "verified" }, request: {} });
+  assert.equal(record.state, "approved");
+  await settle();
+  assert.equal(k.h.lands.length, 1, "landed on the reviewer's yes");
 });
