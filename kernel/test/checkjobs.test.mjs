@@ -42,10 +42,10 @@ function setup(trees, judge = () => ({ failed: [] })) {
 
 test("checks: a receipt binds its head, run, judge and policy; the box gets no credential", async () => {
   const pkg = JSON.stringify({ scripts: { "aidenhq:fast-check": "eslint ." } });
-  const { checks, runs, done } = setup({ [A]: { "package.json": pkg } });
+  const { checks, runs, done } = setup({ [A]: { "package.json": pkg }, [B]: { "package.json": pkg } });
   const v = await done(checks.start("codehost-github", { repo: "acme/app", head: A, run: "fast", spec: { base: B } }));
   assert.equal(v.state, "done");
-  assert.equal(v.receipt.verdict, "pass");
+  assert.deepEqual([v.receipt.verdict, v.receipt.ran], ["pass", true]);
   assert.deepEqual(checks.verify(v.receipt, { repo: "acme/app", head: A, run: "fast" }), { ok: true });
   assert.equal(checks.verify(v.receipt, { repo: "acme/app", head: B, run: "fast" }).ok, false);
   assert.equal(checks.verify(v.receipt, { repo: "acme/app", head: A, run: "eval" }).ok, false);
@@ -55,6 +55,27 @@ test("checks: a receipt binds its head, run, judge and policy; the box gets no c
   // Exactly the allowlisted env: no GitHub, run or tool token, nothing of the kernel's own.
   assert.deepEqual(Object.keys(runs[0].env).sort(), ["AIDENHQ_BASE", "CI", "HOME", "npm_config_audit", "npm_config_fund", "npm_config_update_notifier"]);
   assert.equal(runs[0].image, "engineer");
+});
+
+test("checks: whether a fast check is due is the base's to say, and a check that didn't run is no evidence", async () => {
+  const pkg = JSON.stringify({ scripts: { "aidenhq:fast-check": "eslint ." } });
+  const C = "c".repeat(40), D = "d".repeat(40), E = "e".repeat(40);
+  const { checks, runs, done } = setup({ [B]: { "package.json": pkg }, [A]: { "package.json": JSON.stringify({ scripts: {} }) }, [C]: { "package.json": "{ not json" }, [D]: {}, [E]: {} });
+  const fast = async (head, base) => (await done(checks.start("codehost-github", { repo: "acme/app", head, run: "fast", spec: { base } }))).receipt;
+  // The base declares it; the head deletes it: fail, nothing run.
+  const dropped = await fast(A, B);
+  assert.deepEqual([dropped.verdict, dropped.ran], ["fail", false]);
+  assert.match(dropped.summary, /removes the fast check/);
+  // The head's package.json can't be read: fail.
+  assert.deepEqual([(await fast(C, B)).verdict, (await fast(C, D)).verdict], ["fail", "fail"]);
+  assert.equal(runs.length, 0);
+  // Neither declares one: nothing to run, and that receipt is refused unless the caller's policy accepts "none".
+  const none = await fast(E, D);
+  assert.deepEqual([none.verdict, none.ran], ["pass", false]);
+  assert.deepEqual(checks.verify(none, { repo: "acme/app", head: E, run: "fast" }), { ok: false, why: "no check ran" });
+  assert.deepEqual(checks.verify(none, { repo: "acme/app", head: E, run: "fast", none: true }), { ok: true });
+  // A fast check names its base.
+  assert.throws(() => checks.start("codehost-github", { repo: "acme/app", head: A, run: "fast", spec: {} }), /names base/);
 });
 
 test("checks: the eval runs by the judging rules and its receipt binds judge and policy", async () => {
