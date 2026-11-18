@@ -49,6 +49,7 @@
   ],
   "generated_secrets": [
     "computer_launcher_token",
+    "paperclip_events_key",
     "board_internal_token",
     "gate_board_secret",
     "edge_board_secret",

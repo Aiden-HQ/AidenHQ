@@ -21,10 +21,13 @@
 //   GET  /v1/cp/read/<path>    (a channel, or a module with role kernel.cp-read) the control plane's read routes, as the owner
 //   POST /v1/brake/notify      (a channel) may an agent message the owner about a task again (brake.ts)
 //   POST /v1/wake              (a module with role kernel.wake) a labelled wake notice on a task, which wakes its agent
+//   POST /v1/wakes/events      (the paperclip-events plugin's key) a Paperclip event's ids: its task is scanned (wakes.ts)
+//   POST /v1/wakes             (a module with role kernel.wake) a scheduled wake {task, agent?, at?, cause?, id?}
+//   POST /v1/wakes/claim, POST /v1/wakes/:key/drop  (a module with role kernel.jobs) claim inbox rows; give one up
 //   POST /v1/reviews           (the runner's reviewer key) a check before filing: one review by the bound reviewer module → its verdict
 //   POST /v1/reviews/:review   (that review's token, once) the reviewer module's verdict
 //   POST /v1/jobs, GET/DELETE /v1/jobs/:job, POST /v1/jobs/:job/input  (a module with role kernel.jobs) start a job in the
-//                              sandbox, its status (?after=<version>&wait=<ms> waits for a change), stop it, a comment into it (jobs.ts)
+//                              sandbox, its status (?after=<version>&wait=<ms> waits for a change), stop it, a comment into it (jobs.ts; `wake`: the claimed comment wake it delivers)
 //   GET  /v1/advisories        (the board's key) the marketplace advisories open against installed modules (loader/advisories.ts)
 //   POST /v1/auth/:op, /v1/accounts/:op, /v1/apps/:op, /v1/operator/:op  the accounts' routes (auth-api.ts): module UI
 //                              sessions and account admin (the board), in-app requests (apps-platform), setup links (operator)
@@ -39,6 +42,7 @@ import type { Jobs } from "./jobs.ts";
 import { fail } from "./proxy.ts";
 import type { Records, State } from "./records.ts";
 import type { Reviews } from "./reviews.ts";
+import type { Wakes } from "./wakes.ts";
 import { CONN_TOOL, type Writes } from "./writes.ts";
 
 type Handler = (req: IncomingMessage, res: ServerResponse, ...a: string[]) => Promise<void>;
@@ -74,6 +78,10 @@ export const ROUTES = [
   { method: "GET", path: "/v1/cp/read/*", auth: "module" },
   { method: "POST", path: "/v1/brake/notify", auth: "module" },
   { method: "POST", path: "/v1/wake", auth: "module" },
+  { method: "POST", path: "/v1/wakes/events", auth: "events-key" },
+  { method: "POST", path: "/v1/wakes", auth: "module" },
+  { method: "POST", path: "/v1/wakes/claim", auth: "module" },
+  { method: "POST", path: "/v1/wakes/:key/drop", auth: "module" },
   { method: "POST", path: "/v1/reviews", auth: "reviewer-key" },
   { method: "POST", path: "/v1/reviews/:review", auth: "review-token" },
   { method: "POST", path: "/v1/jobs", auth: "module" },
@@ -87,7 +95,7 @@ export const ROUTES = [
   { method: "POST", path: "/v1/operator/:op", auth: "operator-key" },
 ] as const;
 // `:id` matches a record id, any other `:name` [a-z0-9_]+, a trailing `/*` the rest of the path, slash included.
-const compiled = ROUTES.map((r) => ({ ...r, re: new RegExp(`^${r.path.replace(/:id\b/g, "(k-[0-9a-f]{16})").replace(/:review\b/g, "(r-[0-9a-f]{16})").replace(/:job\b/g, "(j-[0-9a-f]{16})").replace(/:task\b/g, "([0-9a-f-]{36})").replace(/:\w+/g, "([a-z0-9_]+)").replace(/\/\*$/, "(/.*)")}$`) }));
+const compiled = ROUTES.map((r) => ({ ...r, re: new RegExp(`^${r.path.replace(/:id\b/g, "(k-[0-9a-f]{16})").replace(/:review\b/g, "(r-[0-9a-f]{16})").replace(/:job\b/g, "(j-[0-9a-f]{16})").replace(/:task\b/g, "([0-9a-f-]{36})").replace(/:key\b/g, "([^/]{1,200})").replace(/:\w+/g, "([a-z0-9_]+)").replace(/\/\*$/, "(/.*)")}$`) }));
 /** The record lists the board and the runner read (`?state=`). */
 const ALL: State[] = ["review", "owner", "approved", "claimed", "done", "failed", "rejected", "stale", "cancelled", "unknown"];
 const LISTS: { [k: string]: State[] } = { review: ["review"], owner: ["owner"], pending: ["review", "owner"], approved: ["approved"], recent: ALL, finished: ["done", "failed", "unknown"] };
@@ -99,7 +107,7 @@ async function json(req: IncomingMessage, max = 1_000_000): Promise<any> {
   try { return JSON.parse(Buffer.concat(chunks).toString("utf8") || "{}"); } catch { throw fail(400, "bad_request", "the body must be JSON"); }
 }
 
-export function createBackplane({ whoami, asserter, proxy, cp, grantsFile, writes, records, channels, brake, owner, modules = () => ({}), boardKey = () => "", reviews, runnerKey = () => "", reviewerKey = () => "", jobs, advisories = () => [], accounts, checks, log = () => {} }: {
+export function createBackplane({ whoami, asserter, proxy, cp, grantsFile, writes, records, channels, brake, owner, modules = () => ({}), boardKey = () => "", reviews, runnerKey = () => "", reviewerKey = () => "", jobs, wakes, eventsKey = () => "", advisories = () => [], accounts, checks, log = () => {} }: {
   whoami: Whoami; asserter: Asserter; proxy: Handler; cp: Handler; grantsFile: () => { agents?: Record<string, Grant> } & Record<string, unknown>;
   writes?: Writes; records?: Records; boardKey?: () => string; log?: (msg: string, f?: Record<string, unknown>) => void;
   /** The reviewer slot; the runner's key for its kinds (filing, claim, outcome, reads, a record's review: runner_writes_key)
@@ -109,6 +117,8 @@ export function createBackplane({ whoami, asserter, proxy, cp, grantsFile, write
   channels?: Channels; brake?: Brake; owner?: Api; modules?: () => ModulesFile;
   /** 3e: jobs in the sandbox. */
   jobs?: Jobs;
+  /** The wake inbox (wakes.ts), and the paperclip-events plugin's key. */
+  wakes?: Wakes; eventsKey?: () => string;
   /** 4e: the open marketplace advisories. */
   advisories?: () => unknown[];
   /** 3g: the accounts' routes (auth-api.ts). */
@@ -170,6 +180,24 @@ export function createBackplane({ whoami, asserter, proxy, cp, grantsFile, write
         }
         case "GET /v1/advisories": if (!isBoard(req)) throw fail(401, "unauthorized", "the board's key is required"); return send(res, 200, { advisories: advisories() });
       }
+      if (hit && hit.path.startsWith("/v1/wakes")) {
+        if (!wakes) throw fail(503, "unavailable", "the wake inbox is off");
+        if (hit.path === "/v1/wakes/events") {
+          if (!keyIs(req, eventsKey())) throw fail(401, "unauthorized", "the events plugin's key is required");
+          return send(res, 200, await wakes.event(await json(req)));
+        }
+        const w = await moduleOf(req);
+        if (hit.path === "/v1/wakes") {
+          if (!w.roles.includes("kernel.wake")) throw fail(403, "forbidden", `${w.module} may not schedule wakes (role kernel.wake)`);
+          const r = await wakes.schedule(w.module!, await json(req));
+          if ("error" in r) throw fail(400, "bad_request", r.error!);
+          return send(res, 200, r);
+        }
+        if (!w.roles.includes("kernel.jobs")) throw fail(403, "forbidden", `${w.module} may not claim wakes (role kernel.jobs)`);
+        const b = await json(req);
+        if (hit.path === "/v1/wakes/claim") return send(res, 200, { wakes: wakes.claim(w.module!, Math.min(Math.max(Number(b.limit) || 20, 1), 100)) });
+        return send(res, 200, wakes.drop(w.module!, decodeURIComponent(m[0]!), String(b.why ?? "")));
+      }
       if (hit && /^\/v1\/(channel|cp\/read|brake|wake)/.test(hit.path)) {
         const w = await moduleOf(req);
         const mod = w.module!;
@@ -230,7 +258,10 @@ export function createBackplane({ whoami, asserter, proxy, cp, grantsFile, write
             case "POST /v1/jobs/:job/input": {
               const b = await json(req);
               if (typeof b.text !== "string") throw fail(400, "bad_request", "send {text}");
-              return send(res, 200, jobs.input(w.module!, m[0]!, b.text, typeof b.from === "string" ? b.from : "owner"));
+              const r = jobs.input(w.module!, m[0]!, b.text, typeof b.from === "string" ? b.from : "owner");
+              // A claimed comment wake is delivered only once the run took it.
+              if (r.sent && typeof b.wake === "string") wakes?.delivered(w.module!, b.wake);
+              return send(res, 200, r);
             }
           }
         } catch (e) {
