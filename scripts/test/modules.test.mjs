@@ -144,7 +144,7 @@ test("H4: a module can't take another's network or service name (a link network'
 test("legacy lists stay closed: links, root secrets and host variables may only shrink", () => {
   const was = {
     links: { "owner-channel": ["board", "paperclip", "sources"], monitoring: ["board"], tasks: ["backplane"], meetings: ["backplane", "sources"], google: ["board", "sources"], jira: ["board", "sources"], hubspot: ["board", "sources"], glean: ["board"], grafana: ["board"], clickhouse: ["board"], github: ["board", "sources"], primer: ["board"], slack: ["board"], security: ["paperclip", "sources"] },
-    secrets: { "owner-channel": ["paperclip_board_key", "board_internal_token", "owner_decide_key"], tasks: ["board_internal_token"], google: ["google_auth_token", "gateway_source_key"], jira: ["gateway_source_key"], glean: ["glean_auth_token"], grafana: ["grafana_auth_token"], clickhouse: ["clickhouse_auth_token"], github: ["github_token", "github_app"] },
+    secrets: { "owner-channel": ["paperclip_board_key", "board_internal_token", "owner_decide_key"], tasks: ["board_internal_token"], google: ["google_auth_token", "gateway_source_key"], jira: ["gateway_source_key"], glean: ["glean_auth_token"], grafana: ["grafana_auth_token"], clickhouse: ["clickhouse_auth_token"], github: ["github_token"] },
     host: { "owner-channel": ["OWNER_SLACK_USER_ID", "SLACK_LIVE_IGNORE_CHANNELS", "TELEGRAM_OWNER_CHAT_ID", "TELEGRAM_TASK_URL", "OWNER_COMMAND_CHANNEL", "AIDENHQ_GATEWAY_URL"], google: ["BOARD_LAN_URL", "GOOGLE_CALENDAR_ID", "AIDENHQ_GATEWAY_URL"], jira: ["AIDENHQ_GATEWAY_URL"], tasks: ["AIDENHQ_GATEWAY_URL"], github: ["GITHUB_COMMENT_ORGS"], slack: ["SLACK_CLIENT_ID"] },
   };
   // 2f split owner-channel into channel-telegram, channel-slack and chat-lane: each may keep only a part of what it had.
@@ -219,7 +219,6 @@ test("an install with no model key: an optional mounted secret starts empty, a m
   const r = compile(product, pinst([], owner));
   const mounts = composeSecretFiles(YAML.parse(readFileSync(join(product, "compose.yaml"), "utf8")), r.compose);
   assert.ok(mounts.openrouter_key.includes("board"), "the board mounts the model key");
-  assert.equal(mounts.github_app, undefined, "a folder mounted under another name is left alone");
   const dir = mkdtempSync(join(tmpdir(), "sec-"));
   writeFileSync(join(dir, "paperclip_auth_secret"), "x");
   writeFileSync(join(dir, "telegram_service_key"), ""); // made empty earlier: still generated
