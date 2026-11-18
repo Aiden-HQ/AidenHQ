@@ -246,6 +246,15 @@ test("a run that reads one file over and over is stopped, and its outcome says w
   assert.match(k.posts[0].body, /^\*\*Stopped:\*\* src\/a\.ts read 20 times with no edit/);
 });
 
+test("a failed run's notice says why it failed", async () => {
+  const k = fake({ task: { id: "t1", identifier: "WOR-1", title: "Fix", description: "Do it", status: "in_progress", assigneeAgentId: "eng", createdByUserId: "u1" } });
+  k.inbox.push(wake("issue:t1:1", "assigned"));
+  await k.dispatch.tick();
+  Object.assign(k.jobs.get("j1"), { state: "failed", exit: 1, final: "The job failed: Error: no rollout found" });
+  await k.dispatch.tick();
+  assert.equal(k.posts[0].body, "**Failed** (exit code 1): The job failed: Error: no rollout found");
+});
+
 test("a routine run is folded into an earlier open run of its routine; a blocked run is closed once a later one is done; always_enqueue keeps every run", async () => {
   const run = (id, status, at, extra = {}) => ({ id, identifier: `WOR-${id}`, status, assigneeAgentId: "eng", companyId: "c1", originKind: "routine_execution", originId: "rt", createdAt: new Date(at).toISOString(), ...extra });
   const [first, second] = [run("t1", "todo", 1000), run("t2", "todo", 2000)];
