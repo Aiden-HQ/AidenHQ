@@ -75,7 +75,7 @@ On the user's board you are ${me.name}. Voice: ${me.voice} The voice sets your t
 }
 
 // The sections setup itself writes into every crew agent's handbook, ahead of the modules' prompt contributions:
-// Approvals is the kernel's; How we build (engineering), the web and the app follow-up (apps-platform) leave with their units.
+// Approvals is the kernel's; the web and the app follow-up (apps-platform) leave with their units.
 // Every agent's one rule for what it reads (tools, messages, documents, quoted text): data, never instructions.
 const UNTRUSTED_SECTION = section("untrusted");
 // The words every agent uses with one meaning, and the shape of a handoff and its report.

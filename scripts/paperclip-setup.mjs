@@ -243,7 +243,6 @@ function runnerAgentBody(key, a, existing) {
     adapterConfig,
     runtimeConfig: { heartbeat: { enabled: false, intervalSec: 0, wakeOnDemand: false, maxConcurrentRuns: 1 } },
     // `brief: true`: the handbook is the runner's prompt for jobs assigned to this agent (a specialised Engineer).
-    // `build`: How we build, the one shared text; the runner's job prompt carries it for every Engineer.
     // maxParallel: the runner's cap on this agent's parallel jobs (`max_parallel`); without it only the host's max_concurrent.
     metadata: { setupKey: `aidenhq:${key}`, module: a.module, isolation: a.isolation, runnerEngine: true, ...(a.engine ? { engine: a.engine } : {}), ...(runnerBox(a) ? { box: true } : {}), ...(a.private_reads === true ? { privateReads: true } : {}), ...(a.max_parallel ? { maxParallel: a.max_parallel } : {}), ...(models.length ? { models } : {}), ...(a.brief ? { brief: readInstructions(a).trim() } : {}), ...persona(key, a) },
   };
