@@ -15,7 +15,9 @@ const canonical = (v) => Array.isArray(v) ? `[${v.map(canonical).join(",")}]`
  * @returns {string} hex HMAC of the request (params' own `sig` is left out)
  */
 export function signature(key, companyId, agentId, params) {
-  const { sig: _sig, ...rest } = params;
+  // Paperclip adds the request's companyId to an action's params before the plugin sees them; the company is signed as
+  // the first element (from the action's verified context), so a `companyId` param is left out on both sides.
+  const { sig: _sig, companyId: _company, ...rest } = params;
   return createHmac("sha256", key).update(canonical([companyId, agentId, rest])).digest("hex");
 }
 

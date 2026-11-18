@@ -130,3 +130,12 @@ test("a child goes only to the agent itself or one in its delegate_to", async (t
   await o.post({ ...JOB, id: "j-0000000000000003" }, { kind: "reply", body: "my own follow-up", child: { title: "Later", assigneeAgentId: AGENT } });
   assert.equal(Object.values(pc.issues).filter((i) => i.parentId === TASK).length, 2);
 });
+
+test("a signed post verifies after Paperclip adds the request's companyId to its params", async () => {
+  const { signature, verify } = await import("../../services/paperclip-events/sign.js");
+  const p = { scope: "own", issueId: "i-1", tag: "t", body: "b", kind: "reply", ts: 1 };
+  const sig = signature("k", "co-1", "ag-1", p);
+  // Paperclip's action route (actionParamsWithAuthorizedCompanyScope) injects companyId before the worker sees params.
+  assert.equal(verify("k", "co-1", "ag-1", { ...p, sig, companyId: "co-1" }), true);
+  assert.equal(verify("k", "co-2", "ag-1", { ...p, sig, companyId: "co-2" }), false);
+});
