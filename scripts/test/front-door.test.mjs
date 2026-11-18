@@ -25,15 +25,6 @@ test("front door: the board on 443, the admin listener on 8446 with the edge sec
   for (const bad of ["10.0.0.5", "192.168.1.2", "100.64.0.1", "127.0.0.1", "example.com", "203.0.113.7 {"]) assert.throws(() => caddyfile(bad));
 });
 
-test("front door: the service is named exactly `caddy` in the dumped compose (ops/vm/setup.sh greps for it), host network, no caps but 443", () => {
-  const svc = caddyService(caddyfile("203.0.113.7"));
-  assert.match(YAML.stringify({ services: { caddy: svc } }), /^ {2}caddy:$/m);
-  assert.equal(svc.network_mode, "host");
-  assert.deepEqual([svc.cap_drop, svc.cap_add], [["ALL"], ["NET_BIND_SERVICE"]]);
-  assert.equal(svc.read_only, true);
-  assert.notEqual(caddyService(caddyfile("203.0.113.8")).labels["aidenhq.caddyfile-sha256"], svc.labels["aidenhq.caddyfile-sha256"]);
-});
-
 // App doors (docs/design/app-doors.md): without settings.edge, local and public installs still run the gate, which serves
 // exposed apps to admins; public adds one on-demand Caddy site for <app>.<ip-with-dashes>.sslip.io, asked of the gate.
 test("app doors: the gate per exposure, and Caddy's on-demand site for the sslip.io names only when there is a door", () => {

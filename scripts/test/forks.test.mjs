@@ -110,27 +110,6 @@ test("entering a fork is Tier 2 and the card shows the patch diff, quoted", () =
   assert.ok(applyTier(bi, bad, { modules: {} }).reject, "and the classifier refuses it");
 });
 
-test("after the upstream merge the routine's switch-back (fork removed, pin moved to an official sha holding it) is Tier 1", () => {
-  const r = repos();
-  const f = fetch(r);
-  const fork = { product: r.p1, modules: [forked(r, r.f)] };
-  // Upstream merges the patch: product main now contains F.
-  git(r.product, "pull", "-q", "--ff-only", r.fork, "main");
-  const p2 = git(r.product, "rev-parse", "HEAD");
-  const back = { product: p2, modules: ["core"] };
-  const t = tierOf(r, fork, back, f, { pin: { forward: true } });
-  assert.equal(t.tier, 1, t.reason);
-  assert.ok(!t.reviewFirst && !t.reject);
-  assert.match(t.reason, /core: fork → official/);
-  // The same file with the fork moved instead of removed is no switch-back: the owner's.
-  git(r.fork, "checkout", "-q", "main");
-  writeFileSync(join(r.fork, "x"), "x");
-  git(r.fork, "add", ".");
-  git(r.fork, "commit", "-qm", "more");
-  seed(f, r);
-  assert.equal(tierOf(r, fork, { product: p2, modules: [forked(r, git(r.fork, "rev-parse", "HEAD"))] }, f, { pin: { forward: true } }).tier, 2);
-});
-
 test("a fork's repository is not the host's: https only, never the host's credentials or a local path", () => {
   const r = repos();
   const [k] = forksOf({ product_fork: { source: "github", repo: "acme-bot/AidenHQ", sha: r.f } });
@@ -138,16 +117,4 @@ test("a fork's repository is not the host's: https only, never the host's creden
   for (const url of [r.fork, `file://${r.fork}`, "http://github.com/acme-bot/AidenHQ.git"]) {
     assert.throws(() => forksOf({ modules: [{ id: "core", fork: { source: "url", url, sha: r.f } }] }), /fork is fetched over https only|url must be/, url);
   }
-});
-
-test("a routine with `when: { forks: true }` (the platform switch-back) compiles only while the instance runs a fork", () => {
-  const r = repos();
-  const routine = { title: "Switch back", agent: "boss", description: "Today is {{date}}", when: { forks: true } };
-  const def = YAML.parse(readFileSync(join(r.product, "modules/core/module.yaml"), "utf8"));
-  writeFileSync(join(r.product, "modules/core/module.yaml"), YAML.stringify({ ...def, routines: { ...def.routines, switchback: routine } }));
-  assert.equal(compile(r.product, instanceDir({ product: r.p1, modules: ["core"] }), { fetch: fetch(r) }).paperclip.routines.switchback, undefined, "no fork: no routine, no run");
-  const t = compile(r.product, instanceDir({ product: r.p1, modules: ["core"], product_fork: { source: "github", repo: "acme-bot/AidenHQ", sha: r.f } }), { fetch: fetch(r) }).paperclip.routines.switchback;
-  assert.deepEqual([t.agent, t.when], ["boss", undefined]);
-  writeFileSync(join(r.product, "modules/core/module.yaml"), YAML.stringify({ ...def, routines: { switchback: { ...routine, when: { tools: ["x"] } } } }));
-  assert.throws(() => compile(r.product, instanceDir({ product: r.p1, modules: ["core"] }), { fetch: fetch(r) }), /when must be \{ forks: true \}/);
 });

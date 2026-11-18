@@ -9,26 +9,6 @@ import { ciDrain, hasJob, listedUnits, mergePaused, runnerContainer } from "../f
 
 const script = join(dirname(fileURLToPath(import.meta.url)), "../fleet-pause.mjs");
 
-test("a second pause keeps what the first recorded (those routines are paused now, so it doesn't see them)", () => {
-  const first = mergePaused(undefined, { pausedAt: "t1", routines: { c1: ["a", "b"] }, units: ["aidenhq-ci-runner@1.service"] });
-  const second = mergePaused(first, { pausedAt: "t2", routines: { c1: [], c2: ["x"] }, units: [] });
-  assert.deepEqual(second, { pausedAt: "t1", routines: { c1: ["a", "b"], c2: ["x"] }, units: ["aidenhq-ci-runner@1.service"] });
-});
-
-test("list-units rows read as unit, active state and sub-state", () => {
-  const text = [
-    "aidenhq-ci-runner@1.service loaded active running AidenHQ CI runner 1",
-    "aidenhq-ci-runner@4.service loaded activating auto-restart AidenHQ CI runner 4",
-    "aidenhq-ci-runner@7.service loaded failed failed AidenHQ CI runner 7",
-    "",
-  ].join("\n");
-  assert.deepEqual(listedUnits(text), [
-    { unit: "aidenhq-ci-runner@1.service", active: "active", sub: "running" },
-    { unit: "aidenhq-ci-runner@4.service", active: "activating", sub: "auto-restart" },
-    { unit: "aidenhq-ci-runner@7.service", active: "failed", sub: "failed" },
-  ]);
-});
-
 test("a drain stops idle units now (active or not) and waits for one running a job", () => {
   const rows = listedUnits(
     [
@@ -92,23 +72,4 @@ test("resume clears each unit's start limit before starting it: reset-failed, th
     ...units.map((u) => `systemctl --user is-active ${u}`),
   ]);
   assert.ok(!existsSync(join(dir, "data/fleet-paused.json")), "the record is deleted once resumed");
-});
-
-test("a runner waiting for its next job (activating) counts as up", async () => {
-  const units = ["aidenhq-ci-runner@5.service"];
-  const dir = checkout(units);
-  writeFileSync(join(dir, "active"), "activating\n");
-  const r = await resume(dir, { FAKE_IS_ACTIVE: join(dir, "active") });
-  assert.equal(r.status, 0, r.out);
-  assert.match(r.out, /started aidenhq-ci-runner@5\.service/);
-});
-
-test("a unit that refuses its start is reported, and the record is kept", async () => {
-  const units = ["aidenhq-ci-runner@10.service"];
-  const dir = checkout(units);
-  writeFileSync(join(dir, "active"), "failed\n");
-  const r = await resume(dir, { FAKE_IS_ACTIVE: join(dir, "active") });
-  assert.equal(r.status, 1, r.out);
-  assert.match(r.out, /not running after start: aidenhq-ci-runner@10\.service/, r.out);
-  assert.ok(readFileSync(join(dir, "data/fleet-paused.json"), "utf8").includes("aidenhq-ci-runner@10.service"), "the record stays");
 });

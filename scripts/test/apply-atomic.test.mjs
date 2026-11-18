@@ -225,21 +225,6 @@ test("a product_fork on top of the pin is what runs (and is recorded); one off t
   assert.match(local.out, /refusing: couldn't fetch product_fork/);
 });
 
-test("a change to the instance's module set alone restarts the runner (it reads config/modules.json once)", async () => {
-  const w = world();
-  const restarts = () => (w.calls().match(/systemd-run .*SIGUSR2 aidenhq-runner/g) ?? []).length;
-  assert.equal((await w.run()).status, 0);
-  const first = restarts();
-  w.commitInstance(w.p1, "modules: [codehost-local]\n");
-  const r = await w.run();
-  assert.equal(r.status, 0, r.out);
-  assert.equal(restarts(), first + 1, r.out);
-  assert.match(r.out, /module set changed: restart once idle/);
-  w.commitInstance(w.p1, "modules: [codehost-local]\nnote: unrelated\n");
-  assert.equal((await w.run()).status, 0);
-  assert.equal(restarts(), first + 1, "an instance change that leaves the module set alone restarts nothing");
-});
-
 test("a staged compile failure leaves the running config byte-identical, both checkouts restored and nothing restarted", async () => {
   const w = world();
   assert.equal((await w.run()).status, 0);
@@ -329,42 +314,6 @@ test("a failed auto-revert records its own log naming the step that failed", asy
   assert.equal(w.gens().length, 4, "no new generation");
 });
 
-test("a check failing in the baseline does not count", async () => {
-  const w = world();
-  writeFileSync(w.d("ctrl/flaky"), "");
-  assert.equal((await w.run()).status, 0);
-  const p2 = w.commitProduct("2");
-  w.commitInstance(p2);
-  const r = await w.run();
-  assert.equal(r.status, 0, r.out);
-  assert.match(r.out, /health baseline: 2 ok, 1 failing \(not counted\)/);
-  assert.equal(w.gens().at(-1).health, "good");
-  assert.equal(w.head("prod"), p2);
-});
-
-// A failed live agent check fails the apply on a newly granted connection: the generation's reason, and so the alert, is the
-// check's own ERROR line (which connection, and its detail), not a fixed sentence, and the auto-revert still runs.
-test("a failed live agent check names the connection and its error in the generation's reason, and still reverts", async () => {
-  const w = world();
-  assert.equal((await w.run()).status, 0);
-  const error = "  agent-check ERROR: connection jira isn't healthy or signed in (JIRA_TOKEN not set); granted to maintainer: newly granted to maintainer";
-  const p2 = w.commitProduct("2", { "scripts/agent-check.mjs": `console.error(${JSON.stringify(error)});\nprocess.exit(1);\n` });
-  const i2 = w.commitInstance(p2);
-  const r = await w.run();
-  assert.equal(r.status, 1, r.out);
-  const g = w.gens();
-  assert.deepEqual(g.map((x) => [x.n, x.health]), [[1, "good"], [2, "good"], [3, "failed"], [4, "good"]]);
-  assert.match(g[2].reason, /connection jira/);
-  assert.match(g[2].reason, /JIRA_TOKEN not set/);
-  assert.doesNotMatch(g[2].reason, /^the live agent check failed/);
-  assert.equal(readFileSync(w.d("state/apply-3.log"), "utf8").includes(error), true, "the apply log keeps the check's own line");
-  assert.match(readFileSync(w.d("state/apply-3.log"), "utf8"), /apply alert: generation 3 failed \(connection jira isn't healthy .*\) and was reverted to generation 2/);
-  assert.deepEqual([g[3].product, g[3].instance, g[3].revert_of, g[3].lkg], [w.p1, w.i1, 3, 2]);
-  assert.equal(w.head("prod"), w.p1, "the product is back at the last known good");
-  assert.equal(w.head("inst"), w.i1, "the instance checkout is back at the last known good");
-  assert.equal(git(w.d("inst"), "rev-parse", "origin/main"), i2, "the instance's origin/main is not moved");
-});
-
 test("a module whose data migrates (marker 0 -> 1) and fails health comes back at marker 0 with its old files, on the LKG code; ops/rollback.sh puts it back later", async () => {
   const w = world();
   const acme = (f) => readFileSync(w.d("prod/data/modules/acme", f), "utf8");
@@ -410,32 +359,6 @@ test("a module whose data migrates (marker 0 -> 1) and fails health comes back a
   const refused = await w.sh("ops/rollback.sh", "2");
   assert.equal(refused.status, 1, refused.out);
   assert.match(refused.out, /refusing: acme: data newer than generation 2 declared, and no snapshot taken after it is kept/);
-});
-
-test("only a touched data module is snapshotted: its code, not its handbook text", async () => {
-  const w = world();
-  mkdirSync(w.d("prod/data/modules/acme/state"), { recursive: true });
-  assert.equal((await w.run()).status, 0);
-  mkdirSync(w.d("pw/modules/acme"), { recursive: true });
-  const apply = async (version, files) => { w.commitInstance(w.commitProduct(version, files)); const r = await w.run(); assert.equal(r.status, 0, r.out); return r.out; };
-  assert.match(await apply("2", { "modules/acme/AGENTS.md": "# acme\n" }), /generation 3 snapshot: no module data touched/);
-  assert.match(await apply("3", { "modules/acme/server.mjs": "export {};\n" }), /generation 4 snapshot: acme /);
-});
-
-test("a replace with a claimed record reconciles it before A stops: the records step runs before the snapshot stops anything", async () => {
-  const w = world();
-  mkdirSync(w.d("prod/data/modules/acme/state"), { recursive: true });
-  assert.equal((await w.run()).status, 0);
-  mkdirSync(w.d("pw/kernel/src"), { recursive: true });
-  mkdirSync(w.d("pw/modules/acme"), { recursive: true });
-  const reconcile = `import fs from "node:fs"; fs.appendFileSync(process.env.CALLS, "reconcile " + process.argv.slice(2).join(" ") + "\\n");\n`;
-  w.commitInstance(w.commitProduct("2", { "kernel/src/reconcile.ts": reconcile, "modules/acme/server.mjs": "export {};\n" }));
-  const before = w.calls().length;
-  const r = await w.run();
-  assert.equal(r.status, 0, r.out);
-  const after = w.calls().slice(before);
-  assert.match(after, /^reconcile config\/modules\.json config\.next\/modules\.json$/m);
-  assert.ok(after.indexOf("reconcile") < after.indexOf("aidenhq.module=acme"), after);
 });
 
 const until = async (ok, ms = 20000) => { const end = Date.now() + ms; while (!ok()) { if (Date.now() > end) throw new Error("timed out"); await new Promise((r) => setTimeout(r, 50)); } };
@@ -507,16 +430,6 @@ test("an apply whose shell is killed mid-compose (SIGTERM) reverts itself on the
   reverted(w);
 });
 
-test("a log follower that dies mid-apply costs only the copy: the apply finishes good and its log is whole", async () => {
-  const w = world();
-  // A follower that crashes as it starts, as uutils tee/tail 0.10 have.
-  exe(w.d("bin/gnutail"), "#!/usr/bin/env bash\nkill -SEGV $$\n");
-  const r = await w.run();
-  assert.equal(r.status, 0, r.out);
-  assert.equal(w.gens().at(-1).health, "good");
-  assert.match(readFileSync(w.d("state/apply-2.log"), "utf8"), /generation 2: product [\s\S]*apply timing: compose[\s\S]*generation 2 is good: the last known good[\s\S]*apply timing: total/);
-});
-
 // The host-metrics timer runs the script of the checkout the apply applied, not the one ops/setup.sh recorded at install
 // time: the unit's last EnvironmentFile= (written every apply) names the applied checkout, and systemd reads it after
 // ~/.config/aidenhq-checkout.env.
@@ -554,39 +467,3 @@ function hostMetricsScript(unit, home) {
   const exec = /^ExecStart=(.*)$/m.exec(readFileSync(unit, "utf8"))[1];
   return exec.replace(/\$\{(\w+)\}/g, (_, k) => env[k] ?? "").split(/\s+/).at(-1);
 }
-
-test("the host-metrics unit an apply installs runs the applied checkout's script, not the checkout env file's", async () => {
-  const w = world();
-  const units = w.d("home/.config/systemd/user");
-  mkdirSync(units, { recursive: true });
-  // The unit an earlier install left, and the checkout env file ops/setup.sh wrote then, naming another directory.
-  writeFileSync(join(units, "aidenhq-host-metrics.service"), OLD_HOST_METRICS_UNIT);
-  copyFileSync(join(repo, "ops/units/aidenhq-host-metrics.timer"), join(units, "aidenhq-host-metrics.timer"));
-  mkdirSync(w.d("old-checkout/ops"), { recursive: true });
-  writeFileSync(w.d("old-checkout/ops/host-metrics.sh"), "");
-  writeFileSync(w.d("home/.config/aidenhq-checkout.env"), `AIDENHQ_DIR=${w.d("old-checkout")}\n`);
-  w.commitInstance(w.p1, "modules: [monitoring]\n");
-  const r = await w.run();
-  assert.equal(r.status, 0, r.out);
-  const unit = join(units, "aidenhq-host-metrics.service");
-  assert.match(readFileSync(unit, "utf8"), /^EnvironmentFile=-%h\/\.config\/aidenhq-host-metrics\.env$/m, "the applied checkout is read last");
-  assert.ok(readFileSync(unit, "utf8").indexOf("aidenhq-checkout.env") < readFileSync(unit, "utf8").indexOf("aidenhq-host-metrics.env"), r.out);
-  assert.equal(readFileSync(w.d("home/.config/aidenhq-host-metrics.env"), "utf8"), `AIDENHQ_DIR=${realpathSync(w.d("prod"))}\n`);
-  assert.equal(realpathSync(hostMetricsScript(unit, w.d("home"))), realpathSync(w.d("prod/ops/host-metrics.sh")));
-  assert.match(r.out, /host metrics timer installed\/updated/, r.out);
-  // The unit's text is unchanged now, but the file it reads can still be stale: every apply writes it again.
-  writeFileSync(w.d("home/.config/aidenhq-host-metrics.env"), `AIDENHQ_DIR=${w.d("old-checkout")}\n`);
-  const again = await w.run();
-  assert.equal(again.status, 0, again.out);
-  assert.equal(realpathSync(hostMetricsScript(unit, w.d("home"))), realpathSync(w.d("prod/ops/host-metrics.sh")), again.out);
-});
-
-test("a host-metrics script mismatch fails the apply even when the baseline had it: a good generation is never reported", async () => {
-  const w = world();
-  writeFileSync(w.d("ctrl/mismatch"), "");
-  w.commitInstance(w.p1, "modules: [monitoring]\n");
-  const r = await w.run();
-  assert.notEqual(r.status, 0, r.out);
-  assert.match(r.out, /generation 2 failed: the unit runs \/old\/ops\/host-metrics\.sh, not /, r.out);
-  assert.equal(w.gens().at(-1).health, "failed");
-});

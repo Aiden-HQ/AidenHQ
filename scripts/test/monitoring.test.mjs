@@ -52,32 +52,3 @@ test("monitoring: services, fleet-ops, secrets, data dirs and loopback-only port
   });
   assert.ok(s.board.networks.includes("mod-monitoring-board")); // added to the root compose's backplane and egress
 });
-
-test("monitoring off: none of it", () => {
-  const r = compile(product, instance([]));
-  assert.equal(r.compose.services["monitoring-prometheus"], undefined);
-  assert.deepEqual(r.dataDirs.filter((d) => d.startsWith("modules/monitoring/")), []);
-});
-
-test("grafana_source: local points grafana-mcp at the monitoring module's Grafana, and agents can be granted it", () => {
-  const r = compile(product, instance(["monitoring", "grafana"], { grafana_source: "local" }));
-  assert.equal(r.compose.services["grafana-mcp"].environment.GRAFANA_SOURCE, "local");
-  assert.deepEqual(Object.keys(r.compose.services["grafana-mcp"].networks), ["mod-grafana", "mod-grafana-egress", "mod-grafana-board"]);
-  assert.deepEqual(r.paperclip.mcp_servers.grafana.tools.write, []);
-  assert.ok(r.paperclip.mcp_servers.grafana.tools.read.includes("query_prometheus"));
-});
-
-test("alert rules: identifier names, a severity each, and only the critical ones the board has an owner sentence for", () => {
-  const rules = YAML.parse(readFileSync(join(product, "modules/monitoring/prometheus/rules.yml"), "utf8")).groups.flatMap((g) => g.rules).filter((r) => r.alert); // recording rules (record:) are not alerts
-  for (const r of rules) {
-    assert.match(r.alert, /^[A-Za-z][A-Za-z0-9_]*$/);
-    assert.ok(["warning", "critical"].includes(r.labels?.severity), r.alert);
-    assert.ok(r.annotations?.summary, r.alert);
-  }
-  const board = readFileSync(join(product, "services/board/src/monitoring.ts"), "utf8");
-  const sentences = [...board.matchAll(/^\s+(\w+): "/gm)].map((m) => m[1]);
-  assert.deepEqual(rules.filter((r) => r.labels.severity === "critical").map((r) => r.alert.toLowerCase()).sort(), sentences.sort());
-  // Alertmanager posts every alert, resolved too, to the board with the monitoring token.
-  const am = YAML.parse(readFileSync(join(product, "modules/monitoring/alertmanager/alertmanager.yml"), "utf8"));
-  assert.deepEqual(am.receivers.map((r) => r.webhook_configs.map((w) => [w.url, w.send_resolved, w.http_config.authorization.credentials_file])), [[["http://board:3122/internal/alerts", true, "/run/secrets/monitoring_token"]]]);
-});

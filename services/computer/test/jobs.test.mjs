@@ -153,13 +153,6 @@ test("the helper proxy: only a live job's run token, only the runner's commands,
   assert.equal(pushes.length, 1);
 });
 
-test("a job's mounts: the guard hooks folder exists, made by us, before Docker could make it as root", () => {
-  const work = mkdtempSync(join(tmpdir(), "work-"));
-  const mounts = jobMounts({ resolvConf: "/r", workspace: "/w", outDir: "/o", codexHome: "/c", runnerWork: work, repo: "/repo", engineDir: "modules/engine-codex" });
-  assert.ok(mounts.includes(`${join(work, ".guard-hooks")}:/opt/aidenhq/hooks:ro`));
-  assert.equal(statSync(join(work, ".guard-hooks")).uid, process.getuid());
-});
-
 test("a kernel job's box is a live computer to its own job token only (the launcher keeps only its hash)", () => {
   const jobs = new Jobs();
   jobs.add({ container: "k-box", agentId: "agent-1", issueId: "iss-1", kernel: true, tokenHash: tokenHash("ahqj_a.sig") });

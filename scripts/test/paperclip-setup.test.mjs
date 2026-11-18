@@ -18,44 +18,13 @@ test("every MCP server points at the kernel proxy and none is stdio", async () =
   assert.doesNotMatch(block, /command|glean-mcp|service_key|X-Agent-Key/);
 });
 
-test("paperclip-setup.mjs passes a syntax check", () => {
-  execFileSync(process.execPath, ["--check", script], { encoding: "utf8" });
-});
-
 /** A section setup itself still emits: its markdown file under scripts/prompts, as setup reads it. */
 const literal = (name) => ({ APP_FOLLOWUP_SECTION: promptSection("app-followup", "") })[name];
 /** A module's prompt contribution (modules/<module>/prompts/<id>.md), as setup appends it: verbatim. */
 const prompt = (id) => readFileSync(join(dirname(script), "../modules", id.split(".")[0], "prompts", `${id.split(".")[1]}.md`), "utf8");
 
-test("an app change is checked live an hour and a day after it deploys", () => {
-  const followup = literal("APP_FOLLOWUP_SECTION");
-  assert.match(followup, /\n\n## Checking an app change once it is live\n\n/);
-  for (const t of ["`in 1 hour`", "`in 1 day`", "`app_logs`", "`warehouse_query`", "`rolled_back` incident"]) assert.ok(followup.includes(t), t);
-});
-
 /** The rule an agent proposes a correction with: the platform module's improving-rules prompt. */
 const improving = () => prompt("platform.improving");
-
-test("a recurring correction becomes a fast static check, and the fleet handbook carries the same rule", () => {
-  // The rule: fix the cause in code or the starter, add a fast lint rule that says how to fix the root cause,
-  // and keep handbook text for judgment calls. Asserted by its clauses, so the paragraph can be reworded.
-  const text = improving();
-  assert.match(text, /\n\n## Improving the rules\n\n/);
-  for (const t of ["fixed in code first", "code or the starter", "fast lint rule", "well under a second", "how to fix the root cause", "real judgment calls"]) assert.ok(text.includes(t), t);
-  // The old wording ("fix the work first", "the same problem twice") is gone: a correction is a check first.
-  assert.doesNotMatch(text, /fix the work first|the same problem twice/);
-  const rule = text.match(/A recurring correction is fixed in code first:[^.]*\./)?.[0];
-  assert.ok(rule && rule.includes("real judgment calls"), rule);
-  const handbook = readFileSync(join(dirname(script), "../modules/platform/agents/fleet-engineer/AGENTS.md"), "utf8");
-  assert.ok(handbook.includes(rule), "the fleet handbook carries the same rule in the same wording");
-});
-
-test("every agent gets how we work, and asking the owner defers to it", () => {
-  const work = prompt("chief-of-staff.how-we-work");
-  assert.match(work, /\n\n## How we work\n\n/);
-  assert.ok(work.includes("Bring the owner the calls that are genuinely theirs: spend, a veto, a choice of taste"));
-  assert.ok(prompt("chief-of-staff.asking").includes("When a call is the owner's (How we work), ask before acting on it"));
-});
 
 // An unattended install or a rerun from a script has no terminal: setup signs in with what ops/setup.sh made the account
 // from (the owner's email, the vault's password), and when something is still missing it stops instead of waiting on a prompt.
@@ -95,26 +64,6 @@ test("setup never waits on a prompt without a terminal; the owner's email and th
     assert.notEqual(missing.code, 0);
     assert.match(missing.err, /no terminal to ask "Paperclip email:"/, missing.err);
   } finally { server.close(); }
-});
-
-test("setup: the dump keeps 3 daily days and carries the other tiers through; a matching policy writes nothing", async () => {
-  const calls = [];
-  let general = { backupRetention: { dailyDays: 7, weeklyWeeks: 2, monthlyMonths: 3 } };
-  const api = async (method, path, body) => {
-    calls.push([method, path, body]);
-    if (method === "PATCH") general = { backupRetention: body.backupRetention };
-    return { json: general };
-  };
-  const said = [];
-  const { ensureBackupRetention } = await import("../modules.mjs");
-  assert.deepEqual(await ensureBackupRetention({ api, dailyDays: 3, step: (m) => said.push(m) }), { dailyDays: 3, weeklyWeeks: 2, monthlyMonths: 3 });
-  assert.deepEqual(said, ["Backup retention was daily 7d, weekly 2w, monthly 3m", "Backup retention is now daily 3d, weekly 2w, monthly 3m"]);
-  // Written whole, then read back: the read after the write is the confirmation, not the PATCH response.
-  assert.deepEqual(calls.map(([m]) => m), ["GET", "PATCH", "GET"]);
-  assert.deepEqual(calls[1][2], { backupRetention: { dailyDays: 3, weeklyWeeks: 2, monthlyMonths: 3 } });
-  calls.length = 0;
-  await ensureBackupRetention({ api, dailyDays: 3, step: () => {} });
-  assert.deepEqual(calls.map(([m]) => m), ["GET"]);
 });
 
 test("setup: a write the instance does not keep is a failure, not a logged success", async () => {

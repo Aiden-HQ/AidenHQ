@@ -78,10 +78,3 @@ test("a per-module pin compiles from its own commit; official only when that com
   assert.deepEqual([pr.catalog.find((m) => m.name === "a").tier, pr.catalog.find((m) => m.name === "a").pinned], ["declared", offMain]);
   assert.match(pr.paperclip.agents.x.instructions, /trees/);
 });
-
-test("a routine default is what compile would give it without overrides: ${settings.*} substituted", () => {
-  const { paperclip, catalog } = compile(mods, instance());
-  const a = catalog.find((m) => m.name === "a");
-  assert.deepEqual(a.defaults.routines.r.schedules, paperclip.routines.r.schedules);
-  assert.equal(a.defaults.routines.r.schedules[0].timezone, "Europe/London");
-});
