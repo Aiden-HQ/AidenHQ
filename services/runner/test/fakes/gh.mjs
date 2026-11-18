@@ -66,17 +66,8 @@ if (args[0] === "pr" && args[1] === "view" && args[4] === "state,isDraft,reviewD
   console.log(JSON.stringify({ state: p.merged ? "MERGED" : "OPEN", isDraft: false, reviewDecision: "", mergeStateStatus: "CLEAN", statusCheckRollup: checks }));
   process.exit(0);
 }
-// A PR's state and head branch, as the runner reads it before it acts on a stored PR number (gh pr view, not the API). A
-// transient read failure (opt-in, counted down: a pr-view-failures.json { "n": 1, "number": 32 } next to $FAKE_LOG) fails that
-// many reads of that PR, and no other PR's.
+// A PR's state and head branch, as the runner reads it before it acts on a stored PR number (gh pr view, not the API).
 if (args[0] === "pr" && args[1] === "view" && args[4] === "state,number,headRefOid,headRefName" && existsSync(fixture)) {
-  const blip = join(dir, "pr-view-failures.json");
-  const want = existsSync(blip) ? JSON.parse(readFileSync(blip, "utf8")) : { n: 0 };
-  if (want.n > 0 && String(want.number) === /\/pull\/(\d+)$/.exec(args[2])?.[1]) {
-    writeFileSync(blip, JSON.stringify({ ...want, n: want.n - 1 }));
-    console.error("fetch failed");
-    process.exit(1);
-  }
   const p = JSON.parse(readFileSync(fixture, "utf8"))[/\/pull\/(\d+)$/.exec(args[2])?.[1]];
   if (!p) process.exit(1);
   // The head branch is the fixture's; its tip only when the branch is on this fake GitHub (a PR of a branch not pushed here
@@ -244,16 +235,6 @@ if (args.includes("PATCH") && field("state") === "closed") {
 } else if (route) {
   console.log(p.files.length);
 } else if (field("query")?.includes("pullRequest(number")) {
-  // A transient read failure (opt-in, counted down: a pr-read-failures.json { "n": 2, "number": 30 } next to $FAKE_LOG fails
-  // that many reads of PR 30 with "fetch failed", as a network blip or a restarting API does). Only that PR's reads count it
-  // down: the runner's background reads of other PRs (an earlier card's checks) never take the blip meant for this one.
-  const blip = join(dir, "pr-read-failures.json");
-  const want = existsSync(blip) ? JSON.parse(readFileSync(blip, "utf8")) : { n: 0 };
-  if (want.n > 0 && Number(want.number) === Number(number)) {
-    writeFileSync(blip, JSON.stringify({ ...want, n: want.n - 1 }));
-    console.error("fetch failed");
-    process.exit(1);
-  }
   const pullRequest = {
     id: `PR_${number}`, number: Number(number), title: p.title ?? `PR ${number}`, body: p.body ?? "", url: `https://github.com/acme/app/pull/${number}`, state: p.merged ? "MERGED" : "OPEN", isDraft: false, reviewDecision: null,
     mergedAt: p.merged ? (p.mergedAt ?? "2026-11-01T10:00:00Z") : null, mergeCommit: p.merged ? { oid: p.merge ?? tip(p.branch) } : null,
