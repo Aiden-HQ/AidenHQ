@@ -21,6 +21,14 @@ async function kernelBytes(path: string) {
   if (!r.ok) throw Object.assign(new Error(`kernel GET ${path} → ${r.status}`), { status: r.status });
   return Buffer.from(await r.arrayBuffer());
 }
+// apps-mcp's grader reads (an app deliverable's evidence), with this module's own token: role apps.read. A view renders for up to 45 s.
+const appsUrl = (process.env.APPS_URL ?? "http://apps-mcp:8090").replace(/\/$/, "");
+async function appsCall(method: string, path: string, body?: unknown) {
+  const r = await fetch(`${appsUrl}${path}`, { method, headers: { authorization: `Bearer ${token}`, "content-type": "application/json" }, ...(body !== undefined ? { body: JSON.stringify(body) } : {}), signal: AbortSignal.timeout(60_000) });
+  const json = await r.json().catch(() => ({}));
+  if (!r.ok) throw Object.assign(new Error(`apps-mcp ${method} ${path} → ${r.status}: ${JSON.stringify(json).slice(0, 200)}`), { status: r.status });
+  return json;
+}
 const kernel: Kernel = {
   issue: (ref) => kernelCall("GET", `/v1/cp/read/api/issues/${encodeURIComponent(ref)}`),
   settings: async () => (await kernelCall("GET", "/v1/agents")).settings ?? {},
@@ -35,7 +43,7 @@ server.listen(port, () => log("listening", { port }));
 setInterval(() => void tick(), 5 * 60_000).unref();
 setTimeout(() => void tick(), 30_000).unref();
 
-// The grade loop on the kernel's jobs (kernel-loop.ts), once a minute: roles kernel.cp-read, kernel.work-read, kernel.grader and kernel.wake.
-const loop = createKernelGradeLoop({ db, runner, due: () => ({ grades: grades.due(), resubmitted: grades.resubmitted() }), kernel: kernelCall, kernelBytes, gatewayUrl: process.env.AIDENHQ_GATEWAY_URL ?? "http://10.231.0.1:8201", log });
+// The grade loop on the kernel's jobs (kernel-loop.ts), once a minute: roles kernel.cp-read, kernel.work-read, kernel.grader, kernel.wake and apps.read.
+const loop = createKernelGradeLoop({ db, runner, due: () => ({ grades: grades.due(), resubmitted: grades.resubmitted() }), kernel: kernelCall, kernelBytes, apps: appsCall, gatewayUrl: process.env.AIDENHQ_GATEWAY_URL ?? "http://10.231.0.1:8201", log });
 let grading = false;
 setInterval(() => { if (!grading) { grading = true; loop.runGrades().catch((e) => log("grade loop failed", { err: String(e.message ?? e) })).finally(() => (grading = false)); } }, 60_000).unref();

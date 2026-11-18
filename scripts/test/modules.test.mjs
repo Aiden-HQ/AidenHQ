@@ -151,7 +151,8 @@ test("legacy lists stay closed: links, root secrets and host variables may only 
   const split = { "channel-telegram": "owner-channel", "channel-slack": "owner-channel", "chat-lane": "owner-channel", grading: "board-grades" };
   // 3h moved the grade rows out of the board into the grading module: its one link is the pair network to the board, for the
   // board's reads of those rows, until the board is a module (4a). No root secret, no host variable.
-  was.links["board-grades"] = ["board"];
+  // One-way phase 2: and a pair link to apps-mcp for the grader's app reads (role apps.read), until 4c.
+  was.links["board-grades"] = ["board", "apps-mcp"];
   const within = (now, before) => Object.entries(now).every(([m, l]) => l.every((x) => (before[m] ?? before[split[m]] ?? []).includes(x)));
   assert.ok(within(Object.fromEntries(Object.entries(LEGACY_LINKS).map(([m, v]) => [m, v.to])), was.links));
   assert.ok(within(LEGACY_SECRETS, was.secrets));
@@ -308,6 +309,10 @@ test("checks: a task.finish check may observe; a hard gate or a write.filed chec
   assert.throws(() => checkEntries("judge", def({ mode: "warn" })), /mode is observe or enforce/);
   assert.throws(() => checkEntries("platform", { checks: [{ id: "product-gate", at: "write.filed", mode: "observe" }] }), /hard gate: it always enforces/);
   assert.throws(() => checkEntries("judge", { checks: [{ id: "lint", at: "write.filed", mode: "observe" }] }), /write\.filed check gates writes/);
+});
+test("a module's token holds the kernel roles and the enabled modules' declared roles it requests (whoami's roles)", () => {
+  const t = kernelModuleTable({ apps: { roles: { declares: [{ id: "apps.read", description: "d" }] } }, grading: { roles: { requests: ["kernel.wake", "apps.read", "nobody.declares"] } } });
+  assert.deepEqual(t.grading.roles, ["kernel.wake", "apps.read"]);
 });
 test("a channel's transport is a compose service (the kernel sends the channel's token there); credentials need a transport", () => {
   const ch = (channel) => ({ x: { privileged: ["speaks-as-owner"], providers: { channel }, generated_secrets: ["x_token"] } });
