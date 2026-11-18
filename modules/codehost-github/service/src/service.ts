@@ -1,7 +1,8 @@
 // The code host as its own service: the executor of codehost-github.{push,pr,merge,close,create_repo} (executor@1; the
 // kernel tiers each record with plan.mjs and calls execute only for an approved, claimed and revalidated one), and narrow
-// GitHub operations for other modules (/ops/token, /ops/snapshot, /ops/clone), each granted by that module's contribution
-// to the point codehost-github.ops.
+// GitHub operations for other modules (/ops/token, /ops/snapshot, /ops/clone), which only the kernel calls: it checks each
+// module's grant (its own module.yaml `codehost:`) at POST /v1/codehost/:op and calls here with this
+// service's key.
 //
 // Repo code never runs here. Every git command carries SAFE_GIT_ARGS and no global or system config but the service's own
 // (no hooks, no filters, no fsmonitor); a job's commits come in by a fetch from its workspace's .git into this service's
@@ -38,14 +39,12 @@ export const SAFE_GIT_ARGS = ["-c", "core.hooksPath=/dev/null", "-c", "core.fsmo
 
 type Gh = (method: string, path: string, token: string, body?: unknown) => Promise<{ status: number; body: any }>;
 type App = { token(org: string, o: { repositories?: string[]; permissions?: Record<string, string>; fresh?: boolean }): Promise<string>; createRepo(slug: string): Promise<"exists" | "created">; identity(): Promise<{ name: string }> };
-/** One module's grant (its contribution to codehost-github.ops; schemas/ops.json). */
-export type Grant = { module: string; token?: { repos: string[]; perms: Record<string, string> }; snapshot?: { repos: string[] }; clone?: { repos: string[] } };
 export type Options = {
   key: string; kernelUrl: string; cacheDir: string; tasksDir?: string;
   /** The App (src/github-app.ts appClient); undefined without the key: every GitHub action fails, saying so. */
   app?: App; gh: Gh; remoteUrl?: (slug: string) => string;
   agentsOrg: string; instanceRepo?: string; productRepo?: string; modulesRepo?: string;
-  landsPlatformRepos: boolean; grants: () => Grant[]; log?: (msg: string, f?: Record<string, unknown>) => void;
+  landsPlatformRepos: boolean; log?: (msg: string, f?: Record<string, unknown>) => void;
   /** The release train's batch window, minutes (the instance's release_window_minutes). */
   releaseWindowMinutes?: number;
   /** Tests: the merge loop's clock and its poll interval. */
@@ -68,9 +67,6 @@ const slugOf = (repo: unknown) => {
   if (!m || m[2]!.endsWith(".git") || m.slice(1).some((p) => /^\.+$/.test(p))) throw fail(400, `${String(repo)} is not owner/name`);
   return { slug: `${m[1]}/${m[2]}`, org: m[1]!, name: m[2]! };
 };
-// A grant's repos: owner/name, owner/* (every repo of owner, and owner's org-wide tokens) or */* (any repo or owner the App
-// covers).
-const matches = (slug: string, patterns: string[] = []) => patterns.some((p) => p === "*/*" || same(p, slug) || (p.endsWith("/*") && same(p.slice(0, -2), slug.split("/")[0])));
 // An org-wide token's target: owner/*.
 const ORG_WIDE = /^([\w.-]+)\/\*$/;
 
@@ -423,14 +419,6 @@ export function createService(o: Options) {
     return { landed: c.sha };
   }
 
-  /** The calling module (its own token, as the kernel's /v1/whoami resolves it) and its grant. */
-  async function caller(req: IncomingMessage): Promise<Grant> {
-    const auth = String(req.headers.authorization ?? "");
-    const r = await fetch(`${o.kernelUrl}/v1/whoami`, { headers: { authorization: auth }, signal: AbortSignal.timeout(10_000) }).catch(() => undefined);
-    const who = r?.ok ? ((await r.json()) as { kind?: string; module?: string }) : undefined;
-    if (!who || who.kind !== "module" || !who.module) throw fail(401, "a module's own token only");
-    return o.grants().find((g) => g.module === who.module) ?? { module: who.module };
-  }
   async function body(req: IncomingMessage): Promise<any> {
     let raw = "";
     for await (const c of req) { raw += c; if (raw.length > 100_000) throw fail(413, "too large"); }
@@ -439,27 +427,25 @@ export function createService(o: Options) {
   const send = (res: ServerResponse, status: number, b: unknown) => void res.writeHead(status, { "content-type": "application/json" }).end(JSON.stringify(b));
 
   async function ops(op: string, req: IncomingMessage, res: ServerResponse) {
-    const g = await caller(req);
+    // Only the kernel calls the ops, with this service's key: POST /v1/codehost/:op brokers them under each module's grant.
+    if (!keyed(req)) throw fail(401, "the kernel only");
     const b = await body(req);
+    // b.module: the module the kernel checked the grant of (for the log).
+    log("ops", { op, module: String(b.module ?? ""), repo: String(b.repo ?? "") });
     if (op === "token") {
       // owner/name: a token narrowed to that repo; owner/*: an org-wide one (org permissions such as self-hosted runners or
-      // projects, org search), which only a grant on owner/* or */* allows.
+      // projects, org search).
       const org = ORG_WIDE.exec(String(b.repo ?? ""))?.[1];
       const s = org ? { slug: `${org}/*`, org, name: "" } : slugOf(b.repo);
-      if (!(org ? g.token?.repos.some((p) => p === "*/*" || same(p, s.slug)) : matches(s.slug, g.token?.repos))) throw fail(403, `${g.module} has no token grant on ${s.slug}`);
       const perms: Record<string, string> = b.perms && typeof b.perms === "object" ? b.perms : {};
-      if (!Object.keys(perms).length) throw fail(400, "name the permissions");
-      for (const [p, l] of Object.entries(perms)) if (!LEVEL[l] || !(LEVEL[l]! <= (LEVEL[g.token!.perms[p] ?? ""] ?? 0))) throw fail(403, `${g.module} has no ${p}:${l} grant`);
+      if (!Object.keys(perms).length || Object.values(perms).some((l) => !LEVEL[l])) throw fail(400, "name the permissions (read or write)");
       const token = await app().token(s.org, { ...(org ? {} : { repositories: [s.name] }), permissions: perms, fresh: true });
       // A fresh installation token lasts an hour; the App's slug tells its own events (performed_via_github_app) from others'.
       const slug = (await app().identity()).name.replace(/\[bot\]$/, "");
       return send(res, 200, { token, repo: s.slug, perms, expires_at: new Date(Date.now() + 55 * 60_000).toISOString(), app: { slug } });
     }
     const s = slugOf(b.repo);
-    const allowed = (what: { repos: string[] } | undefined) => { if (!matches(s.slug, what?.repos)) throw fail(403, `${g.module} has no ${op} grant on ${s.slug}`); };
-    if (op === "snapshot") allowed(g.snapshot);
-    else if (op === "clone") allowed(g.clone);
-    else throw fail(404, "no such operation");
+    if (op !== "snapshot" && op !== "clone") throw fail(404, "no such operation");
     const name = String(b.ref ?? "").replace(/^refs\/heads\//, "");
     if (!BRANCH.test(name)) throw fail(400, "name a branch or a commit");
     const { dir, ref, sha } = await fetchRemote(s, name);
@@ -472,11 +458,10 @@ export function createService(o: Options) {
     }
     {
       if (!o.tasksDir) throw fail(503, "the job workspaces aren't mounted");
-      // `into` is a task: the kernel says, from the caller's own token, whether it may write into that task's workspace (a
-      // dispatcher, for an open task of an agent it dispatches) and which folder that is.
-      const r = await fetch(`${o.kernelUrl}/v1/jobs/workspace`, { method: "POST", headers: { authorization: String(req.headers.authorization ?? ""), "content-type": "application/json" }, body: JSON.stringify({ task: String(b.into ?? "") }), signal: AbortSignal.timeout(15_000) }).catch(() => undefined);
-      const into = r?.ok ? String(((await r.json()) as { workspace?: unknown }).workspace ?? "") : "";
-      if (!IDENT.test(into)) throw fail(r && r.status >= 400 && r.status < 500 ? 403 : 503, `${g.module} may not write into task ${String(b.into)}'s workspace (the kernel said ${r?.status ?? "nothing"})`);
+      // `into`: the workspace folder the kernel resolved for the caller's task (a dispatcher, for an open task of an agent it
+      // dispatches).
+      const into = String(b.into ?? "");
+      if (!IDENT.test(into)) throw fail(400, `${into} is not a task's workspace folder`);
       // Only an existing, plain task folder under the tasks dir; the clone is a new directory made here, exclusively.
       const root = realpathSync(o.tasksDir);
       const ws = join(root, into);
