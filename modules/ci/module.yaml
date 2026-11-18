@@ -53,6 +53,13 @@ services:
       cpus: 4
       memory: 8g
       pids: 2048
+# The runner registration token's source (ops/ci-runner.sh → ops/ci-runner-token.mjs on the host): an org-wide App token
+# narrowed to organization_self_hosted_runners, from the kernel's POST /v1/codehost/token with this module's own ci_token
+# (owner authority; only codehost-github holds the App's key). Any org the App serves runners for.
+codehost:
+  token:
+    repos: ["*/*"]
+    perms: { organization_self_hosted_runners: write }
 settings:
   # Repositories outside the agents org whose jobs the runners take (space-separated owner/name), from a push to the
   # default branch or a same-repo PR only (runner/job-started.mjs). The App and that org's runner group
@@ -75,3 +82,6 @@ settings:
     default: 5
   ci_review_day_usd:
     default: 20
+# The host's runner registration (ops/ci-runner-token.mjs) asks the kernel with it.
+generated_secrets:
+  - ci_token
