@@ -1,0 +1,4 @@
+node_modules/
+dist/
+.aidenhq/
+test-results/

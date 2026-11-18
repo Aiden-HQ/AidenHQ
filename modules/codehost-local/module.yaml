@@ -1,0 +1,6 @@
+name: codehost-local
+description: "Repositories on this server as the code host: bare repos under the data dir, change requests as git refs, checks run in the job jail at the exact head, and an atomic squash merge. No GitHub needed."
+license: MIT
+# The code host role (docs/design/codehost-local.md): it owns the org `local` (setup's local/aidenhq-instance included);
+# codehost-github owns every other org. The runner imports src/host.mjs; nothing here runs as a service.
+provides: [ codehost ]

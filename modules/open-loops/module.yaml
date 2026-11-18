@@ -1,0 +1,95 @@
+name: open-loops
+description: "Tracks what others owe you (waiting-on loops) and turns Slack and labelled email into your tasks (Intake)."
+requires:
+  - slack
+  - google
+settings:
+  # Learned from the paired Slack channel (channel-slack's slack_owner). Only an instance that set it by hand keeps using it, as the
+  # fallback while nothing is paired.
+  owner_slack_user_id:
+    default: ""
+  owner_email:
+    required: true
+agents:
+  inbox-agent:
+    # Intake: the Slack scan, the live Slack triage and the inbox scan, one routine and one skill each (design §4.5).
+    department: intake
+    adapter: codex_local
+    model: ~deepseek/deepseek-flash-latest
+    reasoning_effort: high
+    timeout_sec: 1200
+    # A live triage batch never waits behind a half-hour scan.
+    max_parallel: 3
+    web_search: disabled
+    connections:
+      # No web: it reads untrusted email/Slack, so no outbound fetch (owner, 2026-11-11). app_view only.
+      apps: [ app_view ]
+      # Reads only.
+      slack: read
+      # The live Slack events it triages, the owner's Slack user id and the Slack DM page for an urgent one (channel-slack, when installed).
+      slack_live?: [ slack_pending_events, notify_owner, slack_owner ]
+      google_workspace: [ gmail_search, gmail_read_thread ]
+      telegram: [ notify_owner ]
+      paperclip_tasks: [ task_current, task_get, task_search, task_list, task_create, task_update, task_comment, task_set_status, task_finish ]
+  open-loops:
+    department: outreach
+    adapter: codex_local
+    model: ~deepseek/deepseek-flash-latest
+    reasoning_effort: high
+    timeout_sec: 1800
+    connections:
+      # Public web pages (web_view) and the apps' live pages (app_view): reads, like every agent.
+      # The shared warehouse's sources (Slack, GitHub, Jira): new rows since its cursor, and ad-hoc reads.
+      apps: [ web_view, app_view, warehouse_query, source_new, source_ack ]
+      slack: write
+      github?: [ github_issue_read, github_search_issues ]
+      google_workspace: [ docs_read, drive_search_files, drive_read_file, calendar_list_events, calendar_get_event, gmail_search, gmail_read_thread ]
+      telegram: [ notify_owner ]
+      paperclip_tasks: [ task_current, task_get, task_comments, task_list, task_update, task_comment, task_handoff, task_set_status, task_join, task_team, task_delegate, task_finish ]
+routines:
+  slack-scan:
+    title: Slack scan
+    agent: inbox-agent
+    description: |
+      Today is {{date}}, now {{timestamp}}. Your Slack user ID is what slack_owner returns (if it returns none, use "${settings.owner_slack_user_id}" when that is not empty). Your task emoji is :pushpin:. Follow your
+      scan-slack skill: find Slack messages that need the user and the messages they pinned with
+      their task emoji, create or update tasks (deduplicated), close tasks the user has
+      answered or unpinned, then close this task with a count summary.
+    concurrency: skip_if_active
+    schedules:
+      - { cron: "*/30 8-20 * * 1-5", timezone: "${settings.timezone}", label: "work hours" }
+  open-loops-sweep:
+    title: Open loops sweep
+    agent: open-loops
+    description: |
+      Today is {{date}}, now {{timestamp}}. Follow your instructions: join every open waiting-on
+      task, close those with evidence of delivery, draft chases for overdue or quiet ones, then close
+      this task with a count summary.
+    concurrency: skip_if_active
+    schedules:
+      - { cron: "0 9-19/2 * * 1-5", timezone: "${settings.timezone}", label: "work hours" }
+  inbox-scan:
+    title: Inbox scan
+    agent: inbox-agent
+    description: |
+      Today is {{date}}. Your user's email address is ${settings.owner_email}. Follow your triage-email skill:
+      one task per thread labelled Aiden in Gmail (deduplicated), close tasks whose
+      label was removed, then close this task with a count summary.
+    concurrency: skip_if_active
+    schedules:
+      - { cron: "*/30 8-19 * * 1-5", timezone: "${settings.timezone}", label: "work hours" }
+  slack-triage:
+    title: Slack triage
+    agent: inbox-agent
+    description: |
+      New Slack events arrived. Today is {{date}}. The user's Slack user ID is what slack_owner returns (if it returns none, use "${settings.owner_slack_user_id}" when that is not empty).
+      Follow your triage-slack skill: triage each event into nothing, a task (task_create) or, rarely, an urgent notify_owner DM; you never post
+      to Slack. Then close this task with one line saying what you did.
+    concurrency: coalesce_if_active
+    webhook: true # fired by slack-live-mcp (TRIAGE_WEBHOOK_URL/SECRET)
+    webhook_base: http://paperclip:3100 # slack-live-mcp calls it from inside the compose network
+    secrets_prefix: slack_live_triage_webhook # setup saves <prefix>_url / _secret for slack-live-mcp
+labels:
+  - { name: waiting-on, color: "#7c3aed" }
+  - { name: email, color: "#ea580c" }
+  - { name: chase-draft, color: "#be185d" }

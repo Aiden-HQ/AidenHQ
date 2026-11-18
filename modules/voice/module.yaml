@@ -1,0 +1,26 @@
+name: voice
+description: "Voice notes: talk to Aiden on Telegram and your voice notes are transcribed on this server (audio never leaves it). Off by default; turn it on here, nothing to set up. Typed messages work without it. Adds a 2 GB speech-to-text service and about 8 GB of disk."
+# Telegram voice notes (channel-telegram) go to this Whisper, reached under the name `whisper` on channel-telegram's network
+# (its WHISPER_URL). Without this module the name doesn't resolve and a voice note gets "Voice notes are off".
+requires: [ channel-telegram ]
+services:
+  data: true
+  run:
+    # Local speech-to-text (faster-whisper, CPU). The model downloads once into the data dir.
+    # Built here from upstream v1.10.0 on patched bases (see whisper/Dockerfile), not pulled from the upstream tag.
+    whisper:
+      build: ./whisper
+      # Runs as the instance owner (the default user), who owns its data dir: root with all capabilities dropped cannot write there.
+      read_only: false
+      egress: true
+      join: [ channel-telegram ]
+      data: ["whisper:/data/whisper"]
+      env:
+        HOME: /data/whisper # the model download (huggingface xet) and matplotlib caches need a writable home, and only the data dir is
+        ASR_ENGINE: faster_whisper
+        ASR_MODEL: small
+        ASR_MODEL_PATH: /data/whisper
+        MODEL_IDLE_TIMEOUT: "300" # unload the model after 5 idle minutes (it holds ~1.5 GB); reloads on the next note
+      memory: 2g
+      cpus: 2
+data_version: 0 # its data dir's format: bumped by each forward-only migration (docs/configuration.md)

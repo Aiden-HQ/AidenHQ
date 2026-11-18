@@ -1,0 +1,154 @@
+# The alert rules' behaviour (docs/design/monitoring.md, "Alerts and routing"), run by promtool in CI's `rules` job:
+#   promtool test rules modules/monitoring/prometheus/rules.test.yml
+# Prometheus's own rule test: synthetic series in, alerts out at each eval time.
+rule_files:
+  - rules.yml
+evaluation_interval: 1m
+tests:
+  # Host CPU pressure alone (node-exporter carries no project label) is not app starvation: no alert, hence no
+  # "deployed apps are starved of CPU ()" summary. The app container here is busy but its cgroup is not waiting.
+  - name: host pressure alone fires nothing
+    interval: 1m
+    input_series:
+      - series: 'node_pressure_cpu_waiting_seconds_total{instance="node-exporter:9100",job="node"}'
+        values: '0+60x12'
+      - series: 'container_pressure_cpu_waiting_seconds_total{id="/system.slice/docker-aaa.scope",job="cadvisor"}'
+        values: '0+2x12'
+      - series: 'aidenhq_container_running{id="/system.slice/docker-aaa.scope",project="app-roadmap-keeper",service="app-1"}'
+        values: '1x12'
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: AppsCpuStarved
+        exp_alerts: []
+
+  # An app container's cgroup waiting while the host is too: one alert, labelled with the project it matched.
+  - name: a waiting app container names its project
+    interval: 1m
+    input_series:
+      - series: 'node_pressure_cpu_waiting_seconds_total{instance="node-exporter:9100",job="node"}'
+        values: '0+18x12'
+      - series: 'container_pressure_cpu_waiting_seconds_total{id="/system.slice/docker-bbb.scope",job="cadvisor"}'
+        values: '0+30x12'
+      - series: 'aidenhq_container_running{id="/system.slice/docker-bbb.scope",project="app-warehouse",service="app-1"}'
+        values: '1x12'
+      # A second app whose cgroup waits well under the threshold: it does not join the alert.
+      - series: 'container_pressure_cpu_waiting_seconds_total{id="/system.slice/docker-ccc.scope",job="cadvisor"}'
+        values: '0+3x12'
+      - series: 'aidenhq_container_running{id="/system.slice/docker-ccc.scope",project="app-roadmap-keeper",service="app-1"}'
+        values: '1x12'
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: AppsCpuStarved
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              id: /system.slice/docker-bbb.scope
+              job: cadvisor
+              project: app-warehouse
+              service: app-1
+            exp_annotations:
+              summary: "deployed apps are starved of CPU (app-warehouse): CPU waiting 50% of the time for over 5 minutes (CPU by source dashboard)"
+
+  # An app at its own CPU limit on an idle host is the app's business alone: no alert.
+  - name: an app waiting on an idle host fires nothing
+    interval: 1m
+    input_series:
+      - series: 'node_pressure_cpu_waiting_seconds_total{instance="node-exporter:9100",job="node"}'
+        values: '0+3x12'
+      - series: 'container_pressure_cpu_waiting_seconds_total{id="/system.slice/docker-ddd.scope",job="cadvisor"}'
+        values: '0+30x12'
+      - series: 'aidenhq_container_running{id="/system.slice/docker-ddd.scope",project="app-roadmap-keeper",service="app-1"}'
+        values: '1x12'
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: AppsCpuStarved
+        exp_alerts: []
+
+  # A CI runner unit stopped and disabled together is retired: it leaves units.prom and is no longer declared, so its
+  # absence is expected and raises nothing even past the 1-day lookback. A second, declared runner unit stays live here, so
+  # the run exercises a real declared set and not the absent-metric case below.
+  - name: a retired CI runner unit raises nothing past the 1-day lookback
+    interval: 1m
+    input_series:
+      - series: 'aidenhq_unit_active{scope="user",unit="aidenhq-ci-runner@7.service"}'
+        values: '1x1440 _'
+      - series: 'aidenhq_unit_active{scope="user",unit="aidenhq-ci-runner@8.service"}'
+        values: '1x1800'
+      - series: 'aidenhq_unit_declared{scope="user",unit="aidenhq-ci-runner@8.service"}'
+        values: '1x1800'
+      - series: 'aidenhq_fleet_draining'
+        values: '0x1800'
+      - series: 'node_textfile_mtime_seconds{file="/data/modules/monitoring/textfile/units.prom"}'
+        values: '0+60x1800'
+    alert_rule_test:
+      - eval_time: 26h
+        alertname: CiRunnerUnitMissing
+        exp_alerts: []
+
+  # The same disappearance while systemd still has the unit enabled is a runner unit that went missing: named by unit.
+  - name: a declared CI runner unit that stops reporting is named by unit
+    interval: 1m
+    input_series:
+      - series: 'aidenhq_unit_active{scope="user",unit="aidenhq-ci-runner@7.service"}'
+        values: '1x60 _'
+      - series: 'aidenhq_unit_declared{scope="user",unit="aidenhq-ci-runner@7.service"}'
+        values: '1x1200'
+      - series: 'aidenhq_fleet_draining'
+        values: '0x1200'
+      - series: 'node_textfile_mtime_seconds{file="/data/modules/monitoring/textfile/units.prom"}'
+        values: '0+60x1200'
+    alert_rule_test:
+      - eval_time: 12h
+        alertname: CiRunnerUnitMissing
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              scope: user
+              unit: aidenhq-ci-runner@7.service
+            exp_annotations:
+              summary: "CI runner unit aidenhq-ci-runner@7.service stopped reporting (it was in units.prom within the last day)"
+
+  # A unit that failed is still in the snapshot, so it reads as UnitFailed and the missing-unit rule leaves it alone.
+  - name: a failed CI runner unit reads as UnitFailed, not as missing
+    interval: 1m
+    input_series:
+      - series: 'aidenhq_unit_active{scope="user",unit="aidenhq-ci-runner@7.service"}'
+        values: '0x1200'
+      - series: 'aidenhq_unit_failed{scope="user",unit="aidenhq-ci-runner@7.service"}'
+        values: '1x1200'
+      - series: 'aidenhq_unit_declared{scope="user",unit="aidenhq-ci-runner@7.service"}'
+        values: '1x1200'
+      - series: 'aidenhq_fleet_draining'
+        values: '0x1200'
+      - series: 'node_textfile_mtime_seconds{file="/data/modules/monitoring/textfile/units.prom"}'
+        values: '0+60x1200'
+    alert_rule_test:
+      - eval_time: 12h
+        alertname: CiRunnerUnitMissing
+        exp_alerts: []
+      - eval_time: 12h
+        alertname: UnitFailed
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              scope: user
+              unit: aidenhq-ci-runner@7.service
+            exp_annotations:
+              summary: "systemd unit aidenhq-ci-runner@7.service (user) has failed (CI runners, aidenhq-ci-net, timers)"
+
+  # With aidenhq_unit_declared absent from the whole scrape the declared operand is empty, so the rule is silent for every
+  # unit, a genuinely missing one included: this case pins that gap, so closing it becomes a failing test instead of a silent
+  # alert. Only a dead or stale units.prom fires HostMetricsExporterStale, so this state is otherwise unannounced.
+  - name: with the declared metric entirely absent the rule is silent
+    interval: 1m
+    input_series:
+      - series: 'aidenhq_unit_active{scope="user",unit="aidenhq-ci-runner@7.service"}'
+        values: '1x60 _'
+      - series: 'aidenhq_fleet_draining'
+        values: '0x1200'
+      - series: 'node_textfile_mtime_seconds{file="/data/modules/monitoring/textfile/units.prom"}'
+        values: '0+60x1200'
+    alert_rule_test:
+      - eval_time: 12h
+        alertname: CiRunnerUnitMissing
+        exp_alerts: []

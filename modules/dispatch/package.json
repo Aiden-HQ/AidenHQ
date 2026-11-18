@@ -1,0 +1,14 @@
+{
+  "name": "dispatch",
+  "version": "0.1.0",
+  "private": true,
+  "license": "MIT",
+  "type": "module",
+  "engines": {
+    "node": ">=24"
+  },
+  "description": "Turns the kernel's wakes into jobs: wake selection by the asker rules, and the job's prompt.",
+  "scripts": {
+    "test": "node --disable-warning=ExperimentalWarning --test test/*.test.mjs"
+  }
+}

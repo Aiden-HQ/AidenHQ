@@ -1,0 +1,409 @@
+# CI: tests, an automated code review and, when a PR could change the image, an image scan without a build, all on the
+# org's self-hosted runners (one fresh container per job, no Docker).
+# The job names `tests`, `code-review` and `image-scan` are the check names graders and rubrics cite: don't rename them,
+# don't add a matrix.
+# code-review's model key: on AidenHQ's runners none (it spends through the instance's model gateway, below, which also
+# names the review model and effort: settings.ci_review_model); elsewhere the secret OPENROUTER_API_KEY and the optional
+# variable CI_REVIEW_MODEL (`<OpenRouter id>:<effort>`, default below).
+# The review: codex with codex review's guidelines (.github/code-review.mjs) on every PR but a tiny one, from an empty
+# directory with its shell off and read-only repo tools as its only tools. Effort: the model's (high), critical paths
+# included; one higher (xhigh) only with the `deep-review` label or text addressed to a reviewer. A critical path is never
+# skipped as tiny.
+# Critical paths are built in (dependency manifests such as package.json, lockfiles by name, .github/, Dockerfiles, binary
+# files, AGENTS.md, and paths naming auth, security, tokens, sessions or permissions) plus the app's own `.github/code-review-critical`: one glob per
+# line (bash pattern: `*` also matches `/`, so `src/server/db/*` covers everything under it), `#` comments allowed. That
+# file is read from the default branch, never the PR, so a PR can't drop its own critical paths (and editing it is itself
+# critical: it is under .github/). package-lock.json (any depth) is left out of the changed-line count (npm-age.mjs in
+# the supply-chain job validates every entry it changes), but a change that adds a package, changes one's version or source,
+# or adds an install script makes the PR critical, and the reviewer gets a summary of it. Other lockfiles (npm-shrinkwrap.json,
+# pnpm-lock.yaml, yarn.lock, Cargo.lock, ...) have no supply-chain check, so they count and stay critical. The small-change
+# skip counts added plus deleted lines (a deletion can remove a guard).
+name: ci
+
+on:
+  pull_request:
+    # labeled: adding `deep-review` re-runs the review at the higher effort.
+    types: [opened, synchronize, reopened, labeled]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  # Runs the PR's code, so it gets no secrets.
+  tests:
+    runs-on: [self-hosted, aidenhq]
+    timeout-minutes: 20
+    env:
+      BASE_SHA: ${{ github.event.pull_request.base.sha }}
+      HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24.x
+      # The 7-day rule: everything is pinned, and what this PR adds or bumps (lockfile entries, images, actions, global
+      # installs) is 7+ days old or a security exception in .github/supply-chain-exceptions.yaml. Before any install.
+      # The checks and the exceptions come from the base commit, so a PR can't loosen its own check (the PR that adds
+      # them runs its own copies).
+      - name: Supply chain
+        run: |
+          d="$RUNNER_TEMP/supply-chain"; mkdir -p "$d"
+          for f in best-version pins npm-age; do
+            git show "$BASE_SHA:.github/supply-chain/$f.mjs" > "$d/$f.mjs" 2>/dev/null || cp ".github/supply-chain/$f.mjs" "$d/$f.mjs"
+          done
+          status=0
+          node "$d/npm-age.mjs" "$BASE_SHA" "$HEAD_SHA" || status=1
+          node "$d/pins.mjs" "$BASE_SHA" "$HEAD_SHA" || status=1
+          exit $status
+      # .aidenhq/out/ holds an agent's evidence: screenshots and reports only, so nothing that runs can hide there. Its images
+      # are left out of the code review (code-review.mjs OUT_TYPES); its reports (json, txt) are reviewed like any file. No
+      # app code may read from it: a tracked file outside .aidenhq/ that names it fails, except docs and the screenshot
+      # tooling that writes there (e2e/, playwright.config.*). Changing this is a .github/ change, so critical. Read from the
+      # PR's own ci.yml: a PR that edits it is reviewed at the higher effort anyway.
+      - name: Evidence
+        run: |
+          bad=$(git diff --name-only --diff-filter=AMR "$BASE_SHA...$HEAD_SHA" -- .aidenhq/out | grep -viE '\.(png|jpe?g|webp|gif|json|txt)$' || true)
+          [ -z "$bad" ] || { echo "::error::.aidenhq/out/ takes only screenshots and reports (png, jpg, webp, gif, json, txt): $(printf '%s' "$bad" | head -5 | tr '\n' ' ')"; exit 1; }
+          refs=$(git grep -l -F '.aidenhq/out' "$HEAD_SHA" -- . ':(exclude).aidenhq/**' ':(exclude).github/**' ':(exclude,glob)**/*.md' ':(exclude)e2e/**' ':(exclude,glob)playwright.config.*' ':(exclude).gitignore' ':(exclude).dockerignore' | sed "s/^$HEAD_SHA://" || true)
+          [ -z "$refs" ] || { echo "::error::app code may not read an agent's evidence in .aidenhq/out/ (it is not reviewed as code): $(printf '%s' "$refs" | head -5 | tr '\n' ' ')"; exit 1; }
+      - name: Test
+        run: npm ci && npm run --if-present lint && npm test
+
+  # Secret scan over the PR's new commits: the pinned, checksummed scanner binary (no licence key, no secrets used).
+  # Fake test values go in a .gitleaks.toml by exact value; it is read from the base commit, so land it in its own PR.
+  secrets:
+    runs-on: [self-hosted, aidenhq]
+    timeout-minutes: 10
+    env:
+      GITLEAKS_VERSION: 8.30.1 # released 2026-03-21
+      GITLEAKS_SHA256: 551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb # gitleaks_8.30.1_linux_x64.tar.gz
+      BASE_SHA: ${{ github.event.pull_request.base.sha }}
+      HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Scan
+        run: |
+          curl -sSfL -o gl.tgz "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          echo "${GITLEAKS_SHA256}  gl.tgz" | sha256sum -c -
+          tar xzf gl.tgz gitleaks
+          # The config comes from the base, so a PR cannot allowlist its own findings (defaults if the base has none).
+          git show "${BASE_SHA}:.gitleaks.toml" > "$RUNNER_TEMP/gl.toml" 2>/dev/null || printf '[extend]\nuseDefault = true\n' > "$RUNNER_TEMP/gl.toml"
+          ./gitleaks git --redact --exit-code 1 --config "$RUNNER_TEMP/gl.toml" --log-opts "${BASE_SHA}..${HEAD_SHA}" .
+
+  # Which images the PR could change: each Dockerfile it changes, or whose directory gets a changed dependency manifest or
+  # lockfile. Every one is listed, whatever its FROM: a FROM that can't be resolved fails the scan, never skips it. No build
+  # here, so self-hosted.
+  image-changes:
+    runs-on: [self-hosted, aidenhq]
+    timeout-minutes: 5
+    outputs:
+      dockerfiles: ${{ steps.find.outputs.dockerfiles }}
+    env:
+      BASE_SHA: ${{ github.event.pull_request.base.sha }}
+      HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - id: find
+        run: |
+          set -f # DOCKERFILES is split on spaces below, never globbed
+          changed=$(git diff --name-only "$BASE_SHA" "$HEAD_SHA")
+          found=""
+          while IFS= read -r -d '' df; do
+            # A path with whitespace would split in DOCKERFILES, one starting with - could pass for an option: refuse both.
+            case "$df" in *[[:space:]]*|-*) echo "::error::Dockerfile path $(printf '%q' "$df") has whitespace or starts with -"; exit 1 ;; esac
+            d=$(dirname "$df"); prefix=""; [ "$d" = . ] || prefix="$d/"
+            while IFS= read -r f; do
+              case "$f" in "$prefix"*) ;; *) continue ;; esac
+              case "${f##*/}" in
+                [Dd]ockerfile*|[Cc]ontainerfile*|*.dockerfile|.dockerignore|package.json|package-lock.json|npm-shrinkwrap.json|yarn.lock|pnpm-lock.yaml|requirements*.txt|poetry.lock|Pipfile.lock|uv.lock|go.mod|go.sum|Cargo.lock|Gemfile.lock)
+                  found="$found $df"; break ;;
+              esac
+            done <<< "$changed"
+          done < <(git ls-files -z | grep -izE '(^|/)(Dockerfile|Containerfile)[^/]*$|\.dockerfile$')
+          echo "Images to scan:${found:- none}"
+          echo "dockerfiles=${found# }" >> "$GITHUB_OUTPUT"
+
+  # The `image-scan` check: for each image this change could alter, grype scans its directory (lock files, manifests) and
+  # every base image its FROM and COPY --from lines name, pulled from the registry, and fails on a high or critical
+  # vulnerability that has a fix. Nothing is built and no PR code runs (a build would run the PR's RUN steps on our
+  # runner): .github/supply-chain/image-scan.mjs reads each Dockerfile as text and passes grype only digest-pinned
+  # references. Not covered: packages RUN steps install, so only base-image and lock-file changes are proven here. It is
+  # the evidence for image and CVE work (Engineers have no Docker); skipped when no image could change. grype is baked
+  # into AidenHQ's runner image, the security scanner's pin.
+  image-scan:
+    needs: image-changes
+    if: needs.image-changes.outputs.dockerfiles != ''
+    runs-on: [self-hosted, aidenhq]
+    timeout-minutes: 30
+    env:
+      DOCKERFILES: ${{ needs.image-changes.outputs.dockerfiles }}
+      BASE_SHA: ${{ github.event.pull_request.base.sha }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      # Node 24 is in our runner image's tool cache (modules/ci/runner): found there, nothing is downloaded.
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24.x
+      - name: Scan (no build)
+        run: |
+          # The scanner and its exceptions come from the base commit, so a PR can't run its own code here or loosen its own
+          # scan; a base without the scanner fails closed.
+          git show "$BASE_SHA:.github/supply-chain/image-scan.mjs" > "$RUNNER_TEMP/image-scan.mjs" \
+            || { echo "::error::the base commit has no .github/supply-chain/image-scan.mjs: the PR that adds the scanner can't run it"; exit 1; }
+          git show "$BASE_SHA:.github/image-scan-exceptions.yaml" > "$RUNNER_TEMP/exceptions.yaml" 2>/dev/null || : > "$RUNNER_TEMP/exceptions.yaml"
+          mkdir -p "$RUNNER_TEMP/grype-db"
+          # DOCKERFILES is split on spaces, never globbed (set -f); the find step refused any path with whitespace or a leading -, and
+          # -- ends the options.
+          set -f
+          GRYPE_DB_CACHE_DIR="$RUNNER_TEMP/grype-db" node "$RUNNER_TEMP/image-scan.mjs" --exceptions "$RUNNER_TEMP/exceptions.yaml" -- $DOCKERFILES
+
+  # Never runs the PR's code: the reviewer only reads it (code-review.mjs, review-tools.mjs). Its scripts and rules come from
+  # the base commit (reviewed code), so a PR can't loosen its own review; the gate comes from the default branch's current
+  # tip, so a gate update protects every open PR at once. Only the PR that first adds CI (no gate on the default branch yet)
+  # passes unreviewed; changes under .github/ get a human review anyway.
+  code-review:
+    runs-on: [self-hosted, aidenhq]
+    timeout-minutes: 90 # a first review (up to 40 min) and a retry; the Review step stops retrying at 85
+    permissions:
+      contents: read
+      pull-requests: write
+      actions: read # Prior review: this workflow's earlier runs on the PR
+      statuses: write # Record: the code-review/state status on a head that passed
+      id-token: write # Review: GitHub's OIDC token for this job, traded at the model gateway for a CI token
+    env:
+      BASE_SHA: ${{ github.event.pull_request.base.sha }}
+      HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+      DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24.x
+      # Review only what changed since this PR's last green code review (codegenie-prior.mjs, from the base commit; full
+      # when it isn't there yet, or on any doubt): delta, reuse when the patch is the same (a stacked rebase onto a base that only moved forward, or the branch reopened as a new PR), or full. Its own step,
+      # so the reviewer never gets the token.
+      - name: Prior review
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
+          PR_LABELS: ${{ join(github.event.pull_request.labels.*.name, ',') }}
+        run: |
+          out=""
+          [ -f .github/codegenie-prior.mjs ] && { out=$(node .github/codegenie-prior.mjs) || out=""; }
+          read -r mode from n lines mb <<< "${out:-full - 0 0 -}"
+          [[ "$mode $from" =~ ^((delta|reuse)\ [0-9a-f]{40}|full\ -)$ && "$n $lines" =~ ^[0-9]+\ [0-9]+$ ]] || { mode=full; from=-; n=0; lines=0; }
+          [[ "$mb" =~ ^[0-9a-f]{40}$ ]] || mb=-
+          echo "Review mode: $mode (from $from; $n deltas, $lines delta lines since the last full review)"
+          printf 'REVIEW_MODE=%s\nREVIEW_FROM=%s\nREVIEW_N=%s\nREVIEW_LINES=%s\nREVIEW_MB=%s\n' "$mode" "$from" "$n" "$lines" "$mb" >> "$GITHUB_ENV"
+      - name: Review
+        env:
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          # Off AidenHQ's runners: the model and effort (on them the gateway names both, settings.ci_review_model).
+          CI_REVIEW_MODEL: ${{ vars.CI_REVIEW_MODEL || '~deepseek/deepseek-flash-latest:high' }}
+          PR_LABELS: ${{ join(github.event.pull_request.labels.*.name, ',') }}
+          # The PR's request, given to the reviewer fenced as data (code-review.mjs): through env, never the script text.
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+        # fetch-depth 0 fetched every branch, the PR's head included (app PRs come from branches of the same repo).
+        run: |
+          set +e
+          if [ "${REVIEW_MODE:-}" = reuse ]; then
+            echo "::notice::The PR's patch is the same as at its green review of $REVIEW_FROM: that verdict stands, no new review."
+            echo "CODE_REVIEW_DONE=1" >> "$GITHUB_ENV"
+            exit 0
+          fi
+          # A delta reviews only the commits since the last green review; the reviewer's tools still read any file at the head.
+          from="$BASE_SHA"
+          [ "${REVIEW_MODE:-}" = delta ] && from="$REVIEW_FROM"
+          # package-lock.json (see the header) is out of both the line count and the critical-path list, and so are an agent's
+          # screenshots under .aidenhq/out/ (roadmap-keeper#167 counted 40,230 lines of them): image types only (code-review.mjs
+          # OUT_TYPES), so its reports (json, txt) and any code there are reviewed.
+          nolock=(':(exclude,glob)**/package-lock.json')
+          for t in png jpg jpeg webp gif; do nolock+=(":(exclude,glob).aidenhq/out/**/*.$t"); done
+          # The reviewer's scripts and rules: the base commit's. A base without them (an old or stacked base) gets the default
+          # branch's, never a skip; only when the default branch has none either (the one PR that brings the reviewer in) is
+          # the PR not reviewed, like the PR that first adds CI.
+          # Chosen first: its code-review.mjs also summarises the PR's package-lock.json changes (below).
+          rv=.github
+          if [ ! -f .github/code-review.mjs ]; then
+            if ! git cat-file -e "origin/$DEFAULT_BRANCH:.github/code-review.mjs" 2>/dev/null; then
+              echo "::notice::The default branch has no .github/code-review.mjs yet: this PR brings the reviewer in, so it is not reviewed."
+              echo "CODE_REVIEW_SKIPPED=1" >> "$GITHUB_ENV"
+              exit 0
+            fi
+            rv="$RUNNER_TEMP/reviewer"; mkdir -p "$rv"
+            for f in code-review.mjs review-tools.mjs code-review-rules.md review-checklist.mjs code-review-checklist.json; do
+              git show "origin/$DEFAULT_BRANCH:.github/$f" > "$rv/$f" 2>/dev/null || rm -f "$rv/$f"
+            done
+            echo "::notice::The base commit has no reviewer: the default branch's reviews it."
+          fi
+          unreadable=""
+          stat=$(git diff --numstat "$from...$HEAD_SHA" -- . "${nolock[@]}") || { stat=""; unreadable=1; }
+          # Added plus deleted lines (the small-change skip below). A binary file has no lines a reviewer reads: 20 (so never
+          # a tiny-change skip).
+          lines=$(printf '%s\n' "$stat" | awk '$1 == "-" {n += 20; next} {n += $1 + $2} END {print n + 0}')
+          # The app's own list comes from the default branch (as fetched at checkout), never the PR's head.
+          # A binary file anywhere else is critical: no reviewer reads it.
+          binary=$(printf '%s\n' "$stat" | awk -F'\t' '$1 == "-" {print $3; exit}')
+          globs=$(git show "origin/$DEFAULT_BRANCH:.github/code-review-critical" 2>/dev/null | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' | grep -v -e '^#' -e '^$')
+          critical=""; codexcfg=""
+          # Paths raw and NUL-separated (no quoting of odd names, so a tab or non-ASCII name still matches its glob); a
+          # list that fails is critical. Each glob is only a [[ == ]] pattern (set -f: never expanded against files).
+          if git -c core.quotePath=false diff --name-only -z --no-renames "$from...$HEAD_SHA" -- . "${nolock[@]}" > "$RUNNER_TEMP/changed-paths"; then
+            set -f
+            while IFS= read -r -d '' p; do
+              # codex config and AGENTS.md; lockfiles by name (any *.lock, *-lock.json/yaml, bun.lockb, go.sum, npm-shrinkwrap.json), never a name that only
+              # contains "lock" (roadmap-keeper#167: "blockstm").
+              if printf '%s' "$p" | grep -qiE '(^|/)\.codex/|(^|/)codex\.toml$|(^|/)AGENTS(\.override)?\.md$|package\.json|(^|/)([^/]+\.lock|[^/]+-lock\.(json|ya?ml)|bun\.lockb|go\.sum|npm-shrinkwrap\.json)$|\.github/|dockerfile|auth|secur|token|session|permission'; then critical=$p; break; fi
+              while IFS= read -r g; do
+                case "$g" in ''|'#'*) continue ;; esac
+                if [[ "$p" == $g ]]; then critical=$p; break 2; fi
+              done <<< "$globs"
+            done < "$RUNNER_TEMP/changed-paths"
+            set +f
+            # codex's own config, hooks, skills and instruction overrides: never in an app repo (the reviewer runs from an
+            # empty directory and loads none of them, but nothing else should either): the check fails on them (below).
+            codexcfg=$(tr '\0' '\n' < "$RUNNER_TEMP/changed-paths" | grep -m1 -E '(^|/)\.codex/|(^|/)codex\.toml$|(^|/)AGENTS\.override\.md$')
+          else
+            critical="(a diff that can't be listed)"
+          fi
+          [ -z "$critical" ] && [ -n "$binary" ] && critical="$binary (binary)"
+          # package-lock.json is out of the line count, but a change that adds a package, changes one's version or source, or
+          # adds an install script is critical (never a tiny skip); the reviewer gets the same summary (code-review.mjs).
+          if [ -z "$critical" ] && git diff --quiet "$from...$HEAD_SHA" -- ':(glob)**/package-lock.json'; then :
+          elif [ -z "$critical" ]; then
+            node "$rv/code-review.mjs" --lockfiles "$from" "$HEAD_SHA" > "$RUNNER_TEMP/lockfiles.txt"; lc=$?
+            [ -s "$RUNNER_TEMP/lockfiles.txt" ] && { echo "package-lock.json changes:"; cat "$RUNNER_TEMP/lockfiles.txt"; }
+            case "$lc" in 0) ;; 3) critical="package-lock.json (packages added or changed)" ;; *) critical="(a package-lock.json that can't be read)" ;; esac
+          fi
+          [ -n "$unreadable" ] && critical="(a diff that can't be read)"
+          depth=light
+          [ -n "$critical" ] && depth=normal
+          case ",$PR_LABELS," in *,deep-review,*) depth=deep ;; esac
+          printf 'REVIEW_DEPTH=%s\nREVIEW_CRITICAL=%s\nREVIEW_COUNTED_LINES=%s\n' "$depth" "$(printf '%s' "$critical" | tr -d '\r\n')" "$lines" >> "$GITHUB_ENV"
+          # Tiny PRs in non-sensitive files (no critical path, no deep-review label) skip the review. Only a whole PR: a delta
+          # is always reviewed, or a big PR could skip its review through small follow-up pushes.
+          if [ "${REVIEW_MODE:-full}" = full ] && [ "$depth" = light ] && [ "$lines" -lt 20 ]; then
+            echo "::notice::$lines changed lines, no sensitive files: no code review needed."
+            echo "CODE_REVIEW_SKIPPED=1" >> "$GITHUB_ENV"
+            exit 0
+          fi
+          echo "Changed lines: $lines, review depth: $depth${critical:+ (touches $critical)}"
+          gave_up() { # $1: cause. No review, permanent: the gate fails the check.
+            echo "::error::$1"
+            printf 'CODEGENIE_EXIT=1\nCODEGENIE_ATTEMPTS=0\nCODEGENIE_FAILURE=permanent\nCODEGENIE_CAUSE=%s\n' "$1" >> "$GITHUB_ENV"
+            exit 0
+          }
+          [ -z "$codexcfg" ] || gave_up "The PR changes codex config ($codexcfg): .codex/, codex.toml and AGENTS.override.md don't belong in an app repo. Remove it."
+          # The model key. On AidenHQ's runners (AIDENHQ_GATEWAY_URL, set on the runner container) the review spends through
+          # the instance's model gateway: this job's GitHub OIDC token is traded there for a CI token bound to this repo and
+          # PR, which may call only the review models, under the gateway's CI caps, into its cost ledger, with zero data
+          # retention forced; the gateway holds the OpenRouter key and names the model and effort. Without the gateway: the
+          # repo secret (its OpenRouter account must have zero data retention on). A gateway refusal never falls back to it.
+          model="${CI_REVIEW_MODEL%:*}"; effort="${CI_REVIEW_MODEL##*:}"
+          [ "$effort" = "$CI_REVIEW_MODEL" ] && effort=high
+          url=https://openrouter.ai/api/v1; key="${OPENROUTER_API_KEY:-}"
+          unset OPENROUTER_API_KEY
+          if [ -n "${AIDENHQ_GATEWAY_URL:-}" ]; then
+            oidc=$(curl -sSf -m 30 --retry 2 -H "Authorization: bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN:-}" "${ACTIONS_ID_TOKEN_REQUEST_URL:-}&audience=aidenhq-gateway" | jq -r '.value // empty') || oidc=""
+            [ -n "$oidc" ] || gave_up "The model gateway gave no CI token: no GitHub OIDC token (the job needs id-token: write)."
+            echo "::add-mask::$oidc"
+            answer=$(curl -sS -m 30 --retry 2 --retry-connrefused -X POST -H "Authorization: Bearer $oidc" -H 'content-type: application/json' \
+              -d "{\"head\":\"$HEAD_SHA\"}" "$AIDENHQ_GATEWAY_URL/ci/token") || answer=""
+            key=$(printf '%s' "$answer" | jq -r '.token // empty' 2>/dev/null) || key=""
+            [ -n "$key" ] || gave_up "The model gateway gave no CI token: $(printf '%s' "$answer" | jq -r '.error.message // empty' 2>/dev/null | head -c 300)"
+            echo "::add-mask::$key"
+            url="$AIDENHQ_GATEWAY_URL/api/v1"
+            m=$(printf '%s' "$answer" | jq -r '.review.model // empty'); e=$(printf '%s' "$answer" | jq -r '.review.effort // empty')
+            [[ "$m" =~ ^[A-Za-z0-9~._/-]{1,120}$ ]] && model="$m"
+            [[ "$e" =~ ^(minimal|low|medium|high|xhigh)$ ]] && effort="$e"
+          fi
+          [ -n "$key" ] || gave_up "No model key: neither AidenHQ's model gateway nor the OPENROUTER_API_KEY secret."
+          # The reviewer and its TypeScript navigation, pinned (it reads the PR through review-tools.mjs only: no shell, nothing
+          # of the PR runs or is installed). Its scripts and the house rules (.github/code-review-rules.md) are the base
+          # commit's, like everything here.
+          # The job's OIDC request credentials are spent (traded above): nothing after this point gets them. The packages run no
+          # install scripts (none of these three has one; --ignore-scripts keeps it so).
+          unset ACTIONS_ID_TOKEN_REQUEST_TOKEN ACTIONS_ID_TOKEN_REQUEST_URL oidc
+          npm i -g --ignore-scripts --no-audit --no-fund --loglevel=error @openai/codex@0.167.0 typescript-language-server@6.0.3 typescript@6.0.3 || gave_up "Couldn't install the reviewer (npm)."
+          review() { # $1: minutes. Sets $code.
+            CI_REVIEW_KEY="$key" CI_REVIEW_URL="$url" MODEL="$model" EFFORT="$effort" DEEP="$( [ "$depth" = deep ] && echo 1)" \
+              TRUSTED_BASE="$BASE_SHA" RULES="$rv/code-review-rules.md" CRITICAL_GLOBS="$globs" REVIEW_LSP="$(npm prefix -g)/bin/typescript-language-server" \
+              REVIEW_MINUTES="$1" node "$rv/code-review.mjs" "$from" "$HEAD_SHA" > "$RUNNER_TEMP/review.json"
+            code=$?
+          }
+          # No verdict is never a pass: the gate fails it (fail closed, whatever the size). One retry only after a confirmed
+          # provider error (exit 1: HTTP 429 or 5xx, a dropped connection), when time is left; never after a timeout or an
+          # answer that isn't a review (exit 3: the PR's content can cause it).
+          review 40
+          attempts=1
+          if [ "$code" = 1 ]; then
+            left=$(( (85 * 60 - SECONDS) / 60 - 1 ))
+            if [ "$left" -ge 10 ]; then
+              echo "::warning::The model provider failed: retrying in 60 seconds."
+              sleep 60
+              review $(( left < 40 ? left : 40 ))
+              attempts=2
+            fi
+          fi
+          printf 'CODEGENIE_EXIT=%s\nCODEGENIE_ATTEMPTS=%s\n' "$code" "$attempts" >> "$GITHUB_ENV"
+          case "$code" in
+            0) echo "CODE_REVIEW_DONE=1" >> "$GITHUB_ENV" ;;
+            2) printf 'CODEGENIE_FAILURE=permanent\nCODEGENIE_CAUSE=the model gateway refused the review\n' >> "$GITHUB_ENV" ;;
+            # The cause goes into a PR comment: a fixed class only; the detail is in this log (code-review.mjs's stderr).
+            1) printf 'CODEGENIE_FAILURE=transient\nCODEGENIE_CAUSE=a provider error\n' >> "$GITHUB_ENV" ;;
+            *) printf "CODEGENIE_FAILURE=no-verdict\nCODEGENIE_CAUSE=no verdict (a timeout or an answer that isn't a review)\n" >> "$GITHUB_ENV" ;;
+          esac
+      - name: Verdict
+        if: ${{ !cancelled() }}
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          if [ "${CODE_REVIEW_SKIPPED:-}" = 1 ]; then
+            echo "::notice::A tiny change: not reviewed, and it passes."; exit 0
+          fi
+          # The gate is the default branch's current tip, not this PR's recorded base: a merged gate update applies to
+          # every open PR without a rebase, and a PR still can't weaken the gate it is checked against. Checkout removed
+          # its credentials, so this fetch carries the read-only token itself.
+          git -c http.extraHeader="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$GITHUB_TOKEN" | base64 | tr -d '\n')" \
+            fetch --no-tags origin "+refs/heads/$DEFAULT_BRANCH:refs/remotes/origin/$DEFAULT_BRANCH"
+          if ! git cat-file -e "origin/$DEFAULT_BRANCH:.github/codegenie-gate.mjs" 2>/dev/null; then
+            echo "::notice::No code-review gate on the default branch yet: this PR adds CI, so it is not reviewed."; exit 0
+          fi
+          git show "origin/$DEFAULT_BRANCH:.github/codegenie-gate.mjs" > "$RUNNER_TEMP/codegenie-gate.mjs"
+          node "$RUNNER_TEMP/codegenie-gate.mjs" "$RUNNER_TEMP/review.json" "${CODEGENIE_EXIT:-1}"
+      # Only once the job has passed: what this head's review covered, for the next push's Prior review step. A commit
+      # status, not a comment: only this workflow's token sets it, and it points at this run, which that step checks.
+      # None after a partial review (its uncovered hunks must be reviewed again). Failing to set it costs only a full
+      # review next time, never this verdict.
+      - name: Record
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          if [ "${CODE_REVIEW_DONE:-}" != 1 ] || [ "${CODE_REVIEW_PARTIAL:-}" = 1 ] || [ "${REVIEW_MB:--}" = - ]; then exit 0; fi
+          curl -sSf -o /dev/null -X POST -H "Authorization: Bearer $GITHUB_TOKEN" -H "Accept: application/vnd.github+json" \
+            "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/statuses/$HEAD_SHA" \
+            -d "{\"state\":\"success\",\"context\":\"code-review/state\",\"description\":\"$REVIEW_MODE n=$REVIEW_N lines=$REVIEW_LINES mb=$REVIEW_MB\",\"target_url\":\"$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID\"}" \
+            || echo "::warning::Couldn't record this review for the next push: it will review the whole PR."

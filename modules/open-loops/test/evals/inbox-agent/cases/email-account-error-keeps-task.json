@@ -1,0 +1,19 @@
+{
+  "name": "email-account-error-keeps-task",
+  "why": "Never close on doubt: an account that errored keeps its tasks open.",
+  "routine": "inbox-scan",
+  "input": "Run task: Today is 2026-11-18. Your user's email address is owner@example.com.\n\ngmail_search label:Aiden -> [{\"account\":\"owner@example.com\",\"thread_id\":\"18c0b2\",\"id\":\"m2\",\"from\":\"Lee Chen <lee@example.com>\",\"subject\":\"Contoso NDA\",\"date\":\"2026-11-18T08:00:00Z\",\"link\":\"https://mail.google.com/mail/u/0/#all/18c0b2\"},{\"account\":\"owner@personal.example.org\",\"error\":\"token expired\"}]\ntask_list label email -> [{\"id\":\"T-70\",\"status\":\"todo\",\"title\":\"Reply to Sam: school trip form\"}]\ntask_get T-70 -> marker source:gmail:label:18c0c3, Source section \"Account: owner@personal.example.org\"\ngmail_read_thread 18c0b2 -> \"Please sign the Contoso NDA in DocuSign today.\"\ntask_create 18c0b2 -> {\"deduplicated\":false}\n",
+  "expect": [
+    {
+      "tool": "task_create",
+      "marker": "source:gmail:label:18c0b2",
+      "count": 1
+    }
+  ],
+  "forbid": [
+    {
+      "tool": "task_set_status",
+      "status": "done"
+    }
+  ]
+}
