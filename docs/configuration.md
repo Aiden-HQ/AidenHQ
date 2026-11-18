@@ -136,7 +136,10 @@ outcomes:
   optional `when`/`unless`), with id `<module>.<name>`, for the agents the module defines and those granted one of its
   connections, plus any agent (module or instance, any adapter) that names it in its `skills:` list. Compile lists every
   skill under `skills:` in `config/paperclip.yaml` and each agent's under its own `skills:`; an unknown id, two skills of
-  one name for one agent, or a skill folder outside its module fail compile.
+  one name for one agent, or a skill folder outside its module fail compile. Engineer jobs get theirs in the engine
+  home; at every apply, setup imports crew agents' skills into Paperclip (copied into its managed skills root under
+  `<data>/paperclip/instances/default/skills/<company id>/`) and sets each crew agent's to exactly its list. Two crew
+  skills of one name fail the apply.
   `node scripts/compile.mjs --sizes` prints each crew agent's handbook bytes per section (`scripts/handbook.mjs`) and
   writes nothing.
 - Disabling a module pauses its agents and routines; nothing is deleted.
