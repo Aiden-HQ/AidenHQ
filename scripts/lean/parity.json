@@ -80,7 +80,6 @@
     "n": 10,
     "workflow": "Push / PR to agents org and outside it",
     "today": [
-      "modules/codehost-github/test/pr-base.test.mjs",
       "modules/codehost-github/test/stale.test.mjs"
     ],
     "next": "codehost-github executor tests"

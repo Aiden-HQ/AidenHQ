@@ -32,7 +32,7 @@
     {"name": "modules/security", "job": "modules", "run": "node --test test/*.test.mjs", "paths": ["modules/security"]},
     {"name": "modules/engine-codex", "job": "modules", "run": "NODE_PATH=../../scripts/node_modules node --test test/*.test.mjs", "paths": ["modules/engine-codex", "kernel/sdk"]},
     {"name": "modules/ai-reviewer", "job": "modules", "run": "npm test", "paths": ["modules/ai-reviewer", "kernel/src", "services/shared"]},
-    {"name": "modules/codehost-github", "job": "modules", "run": "npm test", "paths": ["modules/codehost-github", "kernel/src", "kernel/sdk", "kernel/test/helpers.mjs", "kernel/package-lock.json", "modules/engineering"]},
+    {"name": "modules/codehost-github", "job": "modules", "run": "npm test", "paths": ["modules/codehost-github", "modules/ai-reviewer/service/security/checklist.json", "kernel/src", "kernel/sdk", "kernel/test/helpers.mjs", "kernel/package-lock.json", "modules/engineering"]},
     {"name": "modules/codehost-local", "job": "modules", "run": "npm test", "paths": ["modules/codehost-local", "kernel/src", "modules/codehost-github"]},
     {"name": "modules/platform", "job": "modules", "run": "npm test", "paths": ["modules/platform", "modules"]},
     {"name": "modules/engineering", "job": "modules", "run": "npm test", "paths": ["modules/engineering", "modules/codehost-github"]},
