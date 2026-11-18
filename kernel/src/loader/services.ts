@@ -97,7 +97,10 @@ export function generateCompose(name: string, def: Dict, ctx: { root: string; lo
     if (!own.has(s) || rootSecrets.has(s)) fail(`${what}: secret ${s} isn't one of ${name}'s own (declare it under secrets, generated_secrets or optional_secrets)`);
     out.secrets[s] = { file: `\${AIDENHQ_SECRETS_DIR}/${s}` };
   };
-  const host = lg.hostEnv ?? [];
+  // A module whose sign-in returns to the board (board.signins) may read the board's https address (BOARD_LAN_URL): the one
+  // redirect besides loopback its sign-in accepts.
+  const signIns = isMap(def.contributes) ? def.contributes["board.signins"] : undefined;
+  const host = [...(lg.hostEnv ?? []), ...(Array.isArray(signIns) && signIns.length ? ["BOARD_LAN_URL"] : [])];
   const envOf = (env: unknown, what: string, mounts: string[]) => {
     if (env == null) return {};
     if (!isMap(env)) return fail(`${what} must be a map`);

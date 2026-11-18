@@ -1,5 +1,6 @@
-// A module's guided setup at #/setup/<module>, rendered from its board.setup_flows declaration: why and effort, the steps, one
-// paste field per secret, then the sign-in's Connect button or a pairing code. Nothing here knows which module it is.
+// A module's guided setup at #/setup/<module>, rendered from its board.setup_flows declaration: why and effort, the steps (with
+// the board's address and the sign-in's exact redirect, each copyable) and the vendor's console link, one paste field per
+// secret, then the sign-in's Connect button or a pairing code. Nothing here knows which module it is.
 import { useCallback, useEffect, useRef, useState } from "react";
 import { SignInRequired, api, type SetupFlowView } from "./api";
 import { Markdown } from "./markdown";
@@ -93,7 +94,12 @@ function FlowBody({ flow, board, reload, onDone, onSignIn }: { flow: SetupFlowVi
   return (
     <Page title={flow.title} sub={flow.why} tools={<span className="setup-effort">{flow.effort}</span>}>
       <section className="setup-card">
-        <Steps text={flow.steps.split("{board_url}").join(board.url)} />
+        <Steps text={flow.steps.split("{board_url}").join(board.url).split("{redirect_url}").join(flow.redirect_url ?? "")} />
+        {flow.console_url && (
+          <a className="btn" href={flow.console_url} target="_blank" rel="noreferrer">
+            Open {flow.title}'s console
+          </a>
+        )}
       </section>
       {fields.length > 0 && (
         <section className="setup-card">

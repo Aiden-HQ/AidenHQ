@@ -220,6 +220,9 @@ for c in $containers; do
       [ "$code" = "401" ] && pass "board: writes only for a signed-in admin" || fail "board took a write from a bare host process ($code)"
       code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 -H "Host: $bh" http://127.0.0.1:3121/api/board)"
       [ "$code" = "401" ] && pass "board: reads need a session" || fail "board answered a read without a session ($code)"
+      # Sign-ins start at the board's https address (BOARD_LAN_URL) or on loopback, and only for a signed-in admin.
+      code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 -H "Host: $bh" http://127.0.0.1:3121/google/connect)"
+      [ "$code" = "403" ] && pass "board: Connect only for a signed-in admin" || fail "board started a sign-in without a session ($code)"
       # 3129 is the kernel's sign-in listener now (lean 3g): the board never publishes it.
       [ "$(docker inspect "$c" --format '{{json (index .HostConfig.PortBindings "3129/tcp")}}')" = "null" ] \
         && pass "board: 3129 not published (the kernel's sign-in listener)" || fail "board publishes 3129 (a compose.override.yaml port?): the kernel's sign-in listener needs it"

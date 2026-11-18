@@ -466,9 +466,13 @@ an `ops/setup.sh` host.
 | gcloud | `scripts/gcloud-auth.sh`. |
 | Glean, Jira, Grafana, ClickHouse | Open the module's setup on the board (`#/setup/<module>`): paste the address (Glean, Grafana, ClickHouse), then press Connect. Jira's site URL stays the `jira_url` setting. Grafana with `grafana_source: local` needs no sign-in. |
 
-Sign-ins started on the board (Google, Glean, Jira, Grafana Cloud, ClickHouse) return to the board's loopback address, so start
-them there: on your laptop run `ssh -N -L 3121:127.0.0.1:3121 -L 3120:127.0.0.1:3120 <you>@<host>`, sign in at
-`http://127.0.0.1:3120`, open `http://127.0.0.1:3121` and press Connect (Settings, Connections).
+Sign-ins started on the board (Google, Glean, Jira, Grafana Cloud, ClickHouse, Slack, Primer, HubSpot) return to the board's
+https address (`BOARD_LAN_URL`, which `ops/setup.sh` sets to the tailnet name or the public front door): open the board there
+and press Connect (Settings, Connections, or the module's setup), one click, signed in as an admin. A vendor that needs a
+client you make by hand (HubSpot) shows its exact redirect URL, with a copy button, on its setup page. Only a board without an
+https address (local exposure with no Tailscale) still signs in on its loopback address: on your laptop run
+`ssh -N -L 3121:127.0.0.1:3121 -L 3120:127.0.0.1:3120 <you>@<host>`, sign in at `http://127.0.0.1:3120`, open
+`http://127.0.0.1:3121` and press Connect.
 
 ## The apps node's tailnet key
 
