@@ -287,7 +287,7 @@ if [ -z "$BOARD_HOST" ] && [ "$NO_TS" = 0 ]; then
   else die "this VM isn't on the tailnet: set TS_AUTHKEY in ${CONFIG:-a --config file}, or run 'sudo tailscale up', then run setup again"; fi
 fi
 # The board's URL for links: its tailnet name over https, or (no Tailscale) loopback, reached through an SSH tunnel.
-if [ -n "$BOARD_HOST" ]; then BOARD_URL="https://$BOARD_HOST"; else BOARD_URL="http://127.0.0.1:3121"; fi
+if [ -n "$BOARD_HOST" ]; then BOARD_URL="https://$BOARD_HOST"; else BOARD_URL="http://localhost:3121"; fi
 # The kernel's admin listener (sign-in and approvals) on its own origin: a second tailnet port, or the second tunnel.
 if [ -n "$BOARD_HOST" ]; then ADMIN_URL="https://$BOARD_HOST:8446"; else ADMIN_URL="http://localhost:3120"; fi
 say "Board address: $BOARD_URL (sign-in and approvals: $ADMIN_URL)"
@@ -300,7 +300,7 @@ fall_back_local() { # WHY
   echo "!!! The board stays on this host's loopback instead, reached through the SSH tunnel printed at the end."
   echo "!!! To try public again once that is fixed: sudo AIDENHQ_EXPOSURE=public ops/setup.sh (with the same options)"; echo
   PUBLIC=0 PUBLIC_IP="" EXPOSURE=local
-  BOARD_URL="http://127.0.0.1:3121"; ADMIN_URL="http://localhost:3120"
+  BOARD_URL="http://localhost:3121"; ADMIN_URL="http://localhost:3120"
   if [ "$DRY" = 0 ] && grep -qx '  exposure: public' "$INST/instance.yaml" 2>/dev/null; then
     as_user sed -i 's/^  exposure: public$/  exposure: local/' "$INST/instance.yaml"
     as_user git -C "$INST" -c user.name=setup -c user.email=setup@aidenhq.invalid commit --quiet -m "exposure: local (public mode got no certificate)" -- instance.yaml

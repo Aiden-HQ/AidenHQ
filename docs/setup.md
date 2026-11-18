@@ -471,7 +471,7 @@ and press Connect (Settings, Connections, or the module's setup), one click, sig
 client you make by hand (HubSpot) shows its exact redirect URL, with a copy button, on its setup page. Only a board without an
 https address (local exposure with no Tailscale) still signs in on its loopback address: on your laptop run
 `ssh -N -L 3121:127.0.0.1:3121 -L 3120:127.0.0.1:3120 <you>@<host>`, sign in at `http://localhost:3120`, open
-`http://127.0.0.1:3121` and press Connect.
+`http://localhost:3121` and press Connect.
 
 ## The apps node's tailnet key
 
