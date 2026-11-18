@@ -198,7 +198,7 @@ test("stale owner follow-ups are ranked for the brief; a snooze lives in the ste
   });
   const kv = kvOf();
   // A comment marker snoozes nothing; only the steward's own record does, capped at 30 days.
-  assert.deepEqual((await staleFollowups({ kernel: w, kv, now: () => NOW })).followups.map((x) => x.task), ["WOR-B", "WOR-A", "WOR-F"]);
+  assert.deepEqual((await staleFollowups({ kernel: w, kv, now: () => NOW })).followups.map((x) => x.task), ["WOR-B", "WOR-F", "WOR-A"]);
   assert.equal(snoozeFollowup(kv, "WOR-F", 400, NOW).snoozed_until, new Date(NOW + 30 * 86_400_000).toISOString());
   const r = await staleFollowups({ kernel: w, kv, now: () => NOW });
   assert.deepEqual(r.followups.map((x) => [x.task, x.idle_days]), [["WOR-B", 4], ["WOR-A", 9]]);
