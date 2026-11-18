@@ -75,8 +75,8 @@ own domain or Tailscale."
 
 **Board (product).** The Apps tab and panel links show `url` or the reason, never a dead link. For a local door the
 board first checks this browser keeps a Secure cookie on plain http (a throwaway `__Host-` cookie on its own origin);
-where it doesn't (Safari), the row says "Open it in Chrome or Firefox: Safari can't keep an app's sign-in on a local
-install" instead of the link.
+where it doesn't (Safari), the row says "Apps open in Chrome or Firefox on this Mac." with a Copy link button instead of
+Open (owner's choice, 2026-11-18). Nav panels link a local door only where it opens.
 
 **Aiden (modules handbook text).** When an app is unpublished with a reason, Aiden offers the two lasting doors:
 Tailscale (exposure `tailscale` with the apps node key) or the owner's own domain. **The own domain today means
@@ -99,13 +99,18 @@ tunnel line and the Lima template forward 3130 as well (the template forwards on
 - **No shared cookie.** Each app host gets its own host-only `__Host-` session cookie through the one-time handoff (60
   s, bound to the host and the browser's state nonce). The gate always drops `Domain` from an app's `Set-Cookie` on a
   door host (`hostOnly`, today only with previews or header-jwt), so no app can set a cookie for a sibling or the base.
+- **Cookies ignore ports.** On plain-http `*.localhost` any local listener on an app's host name can be sent its cookie,
+  so isolation never rests on the host name alone: the gate never forwards its session cookie to an app and drops any app
+  `Set-Cookie` naming it; the kernel accepts a handed-off session only from the gate's session lookup for the exact host
+  it was redeemed on (the gate caches per host too), never on the admin listener or the board; and an app's own loopback
+  port takes no session at all, only the gate's signed identity.
 - **Local: no shared origin.** `<app>.localhost` is its own site (no public-suffix entry, so the registrable name is
   `<app>.localhost`). The board and admin listener stay on `127.0.0.1`, a different cookie jar; no door host is bare
   `localhost` or an IP. Checked in Chromium and Firefox (Playwright, 2026-11-18): `__Host-` + Secure cookies on
   `http://a.localhost:<port>` are kept, not sent to `b.localhost`, and a `Domain=localhost` cookie is refused. WebKit
   keeps no Secure cookie on http and accepts `Domain=localhost`, so it could neither finish a handoff nor stop one app
-  tossing cookies at another: Safari is refused up front (board check above; the gate's handoff says "this browser
-  doesn't keep secure sign-ins on localhost" rather than "didn't start in this browser"). There is no non-Secure fallback.
+  tossing cookies at another: Safari is refused up front (board check above; the gate's handoff says "on a local
+  install open apps in Chrome or Firefox" rather than "didn't start in this browser"). There is no non-Secure fallback.
 - **Public: same-site strangers (why section 4.1 rejected sslip.io).** sslip.io is not on the Public Suffix List, so
   every `*.sslip.io` page in the world is same-site with ours. What protects us: cookies are `__Host-` (a stranger can't
   set them with `Domain=sslip.io`) and host-only; app `Set-Cookie` loses any `Domain`; writes and upgrades need the exact
