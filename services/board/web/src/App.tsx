@@ -33,11 +33,10 @@ import { CrewPicker, Drawer } from "./Drawer";
 import { SetupFlow } from "./SetupFlow";
 import { Markdown, setSlackTeams } from "./markdown";
 import { BUCKETS, BUCKET_NAMES, type Board, type Bucket, type Card } from "./types";
-import { dayDate, matches } from "./util";
+import { dayDate, keepsSecureCookies, matches } from "./util";
 import { panelsOf } from "./sidebar";
 
 // Pages off the first screen load as their own chunks (warmed on hover and when the browser is idle: queries.ts).
-const ActivityView = lazy(() => VIEW_CHUNKS.activity().then((m) => ({ default: m.ActivityView })));
 const AppsView = lazy(() => VIEW_CHUNKS.apps().then((m) => ({ default: m.AppsView })));
 const CostsView = lazy(() => VIEW_CHUNKS.costs().then((m) => ({ default: m.CostsView })));
 const CrewView = lazy(() => VIEW_CHUNKS.agents().then((m) => ({ default: m.CrewView })));
@@ -117,7 +116,7 @@ function parseRoute(): Route {
     return { kind: "settings", cat: isCategory(cat) ? cat : null };
   }
   if (h === "connections" || h === "accounts") return { kind: "settings", cat: h };
-  // #/approvals, #/activity, ...: deep links to a tab.
+  // #/approvals, #/costs, ...: deep links to a tab.
   // A tab link may carry the tab's own state after "?" (#/costs?range=7d).
   if ((VIEWS as string[]).includes(h.split("?")[0]!)) return { kind: "view", view: h.split("?")[0] as View };
   const setup = /^setup\/([a-z0-9-]{1,63})$/.exec(h);
@@ -141,10 +140,10 @@ function useMedia(query: string) {
   return on;
 }
 
-type View = "chat" | "agents" | "modules" | "approvals" | "activity" | "board" | "apps" | "costs" | "settings";
-const VIEWS: View[] = ["chat", "agents", "modules", "approvals", "activity", "board", "apps", "costs", "settings"];
+type View = "chat" | "agents" | "modules" | "approvals" | "board" | "apps" | "costs" | "settings";
+const VIEWS: View[] = ["chat", "agents", "modules", "approvals", "board", "apps", "costs", "settings"];
 // Daily work in the bar; configuration (connections, accounts, instance settings) is behind the Settings gear.
-const TABS: [View, string][] = [["chat", "Chat"], ["approvals", "Approvals"], ["agents", "Agents"], ["modules", "Modules"], ["apps", "Apps"], ["board", "Tasks"], ["activity", "Activity"], ["costs", "Costs"]];
+const TABS: [View, string][] = [["chat", "Chat"], ["approvals", "Approvals"], ["agents", "Agents"], ["modules", "Modules"], ["apps", "Apps"], ["board", "Tasks"], ["costs", "Costs"]];
 const VIEW_KEY = "aidenhq.view";
 const savedView = (): View => {
   try {
@@ -177,7 +176,7 @@ export function App() {
   const [items, setItems] = useState<Items | null>(() => cachedBoard()?.buckets ?? null);
   const [error, setError] = useState("");
   const [route, setRoute] = useState<Route>(parseRoute);
-  // The Approvals badge counts the cards the owner can decide there (not every needs-you item: some are tasks outside it).
+  // The Approvals badge: what the page lists as waiting on the owner (his Tier 2 cards and the other tasks waiting on him).
   const [approvalsOpen, setApprovalsOpen] = useState(0);
   const [notifyAsk, setNotifyAsk] = useState(() => notificationsSupported() && Notification.permission === "default");
   const signInNeeded = useCallback(() => setNeedsSignIn(true), []);
@@ -185,7 +184,7 @@ export function App() {
   useEffect(
     () =>
       watchNeedsYou(
-        () => api.needsYou().then((r) => (setApprovalsOpen(r.approvals), r)),
+        () => api.needsYou().then((r) => (setApprovalsOpen(r.approvals + r.items.filter((i) => i.state !== "waiting for approval").length), r)),
         (identifier) => go(`#/c/${identifier}`),
         (tick) => subscribe(["approvals", "chat"], tick),
       ),
@@ -575,6 +574,8 @@ export function App() {
   useEffect(() => {
     if (needsSignIn) void api.session().then(setSession, () => {});
   }, [needsSignIn]);
+  // Every hook runs before the early returns below (React needs the same hooks on every render).
+  const appsQ = useQuery(QUERIES.apps, signInNeeded);
   // Signed out, or an admin without an authenticator yet: both are done on the kernel's sign-in pages.
   if (session && !session.account) return <SignInScreen />;
 
@@ -586,12 +587,13 @@ export function App() {
   const mergeTargets = BUCKETS.flatMap((b) => items[b]).filter((c) => c.assignee === "me" && !c.recurring);
   const openChat = (identifier: string) => go(`#/c/${identifier}`);
   const tabs = TABS;
-  const panels = panelsOf(useQuery(QUERIES.apps, signInNeeded).data?.apps ?? []);
+  const panels = panelsOf(appsQ.data?.apps ?? [], keepsSecureCookies());
   const onBoard = view === "board";
   // A chat (or a settings category) open on a phone takes the whole screen (back arrow to the list).
   const chatFull = mobile && ((view === "chat" && route.kind === "chat") || (view === "settings" && route.kind === "settings" && route.cat !== null));
   const local = ["localhost", "127.0.0.1"].includes(location.hostname); // a tunnel to 3121: the loopback sign-ins work
   const googleConnect = local || !!session?.googleConnect;
+  const signInConnect = local || !!session?.signInConnect;
   const connectionsOk = !board.google?.error && !board.google?.accounts.some((a) => a.state === "expired") && (board.signIns ?? []).map((s) => s.status).every((c) => !c || !c.configured || c.state === "ok" || c.state === "unknown");
   const openCard = (c: Card) => {
     setSelected(c.id);
@@ -649,6 +651,11 @@ export function App() {
             Notify me
           </button>
         )}
+        {board.spend && (
+          <a className={`spend-today${board.spend.spent >= board.spend.cap ? " over" : ""}`} href="#/costs" title="Today's model spend (UTC day) against the daily cap; change the cap in Settings">
+            ${board.spend.spent.toFixed(2)} / ${board.spend.cap % 1 ? board.spend.cap.toFixed(2) : board.spend.cap} today
+          </a>
+        )}
         {board.brief && (
           <a className="btn" href="#/brief" title="Today's brief (b)">
             Brief
@@ -669,7 +676,7 @@ export function App() {
 
       {error && <div className="offline">Offline: {error}. Retrying…</div>}
       <GoogleBanner google={board.google} canReconnect={googleConnect} />
-      <SignInBanners board={board} canConnect={local} />
+      <SignInBanners board={board} canConnect={signInConnect} />
 
       {mobile && !chatFull && (
         <nav className="tabs">
@@ -695,8 +702,7 @@ export function App() {
 
       {view === "chat" && <ChatWorkspace selected={route.kind === "chat" ? route.ref : null} composing={route.kind === "chat" && !route.ref} mobile={mobile} crew={board.assignees} prefix={board.prefix} go={go} onSignIn={signInNeeded} toast={toast} />}
       {view === "approvals" && <ApprovalsView open={openChat} onSignIn={signInNeeded} />}
-      {view === "activity" && <Suspense fallback={<PageLoading />}><ActivityView onSignIn={signInNeeded} /></Suspense>}
-      {view === "settings" && <SettingsView cat={route.kind === "settings" ? route.cat : null} mobile={mobile} session={session} go={go} onSignIn={signInNeeded} can={{ signIn: local, google: googleConnect }} />}
+      {view === "settings" && <SettingsView cat={route.kind === "settings" ? route.cat : null} mobile={mobile} session={session} go={go} onSignIn={signInNeeded} can={{ signIn: signInConnect, google: googleConnect }} />}
       {view === "modules" && route.kind !== "module" && <Suspense fallback={<PageLoading />}><ModulesView onSignIn={signInNeeded} /></Suspense>}
       {view === "modules" && route.kind === "module" && <Suspense fallback={<PageLoading />}><ModulePage key={route.name} name={route.name} tab={route.tab} go={go} onSignIn={signInNeeded} /></Suspense>}
       {view === "apps" && <Suspense fallback={<PageLoading />}><AppsView onSignIn={signInNeeded} /></Suspense>}

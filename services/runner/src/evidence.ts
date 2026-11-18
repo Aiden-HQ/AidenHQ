@@ -262,24 +262,27 @@ const termsOf = (text: unknown) => new Set((String(text).toLowerCase().match(/[a
 
 /**
  * The comments the grader reads, within COMMENTS_TOTAL: the NEWEST newest (anyone's but the grader's), then the task agent's
- * own earlier ones (`own(c)`), ranked: those whose id the rubric or the agent's latest result names, then by how many of
- * their distinctive words those name, then the newest. A report posted in parts, or evidence posted before a short closing
- * note, is read this way, not lost behind the last few comments. Each is cut to COMMENT_MAX; they go in the task's order.
- * { text, fact }: the fact says what was sent, cut or left out.
+ * own earlier ones (`own(c)`) and the task's delegator's earlier ones (`delegator(c)`: a comment is the delegator's only way
+ * to amend the ask, so an amendment older than the newest comments is never lost), ranked: those whose id the rubric or the
+ * agent's latest result names, then by how many of their distinctive words those name, then the delegator's before the
+ * agent's, then the newest. A report posted in parts, or evidence posted before a short closing note, is read this way, not
+ * lost behind the last few comments. Each is cut to COMMENT_MAX; they go in the task's order. Each header names the writer's
+ * role ([who]) so the grader can tell the delegator's ask from the agent's working notes. { text, fact }: the fact says
+ * what was sent, cut or left out.
  */
-export function pickComments(all: any[], own: (c: any) => boolean, rubric = "") {
+export function pickComments(all: any[], own: (c: any) => boolean, rubric = "", delegator: (c: any) => boolean = () => false, who: (c: any) => string = () => "someone else") {
   const newest = all.slice(-NEWEST);
-  const earlier = all.slice(0, -NEWEST).filter(own);
+  const earlier = all.slice(0, -NEWEST).filter((c) => own(c) || delegator(c));
   const latest = [...all].reverse().find(own);
   const named = `${rubric}\n${latest?.body ?? ""}`;
   const want = termsOf(named);
   const score = (c: any): number => (c.id && named.includes(c.id) ? 1e6 : [...termsOf(c.body)].filter((w) => want.has(w)).length);
-  const ranked = earlier.map((c, i) => ({ c, i, s: score(c) })).sort((a, b) => b.s - a.s || b.i - a.i).map((x) => x.c);
+  const ranked = earlier.map((c, i) => ({ c, i, s: score(c) })).sort((a, b) => b.s - a.s || Number(delegator(b.c)) - Number(delegator(a.c)) || b.i - a.i).map((x) => x.c);
   let left = COMMENTS_TOTAL;
   const shown = new Map<any, string>();
   let cut = 0;
   let out = 0;
-  const head = (c: any) => `--- comment ${String(c.createdAt ?? "").slice(0, 25)} ---\n`;
+  const head = (c: any) => `--- comment ${String(c.createdAt ?? "").slice(0, 25)} by ${who(c)} ---\n`;
   for (const c of [...newest].reverse().concat(ranked)) {
     const body = String(c.body ?? "");
     left -= head(c).length + 2; // the header and separator count too, so the fence never cuts the block
@@ -294,14 +297,15 @@ export function pickComments(all: any[], own: (c: any) => boolean, rubric = "") 
   }
   const text = all.filter((c) => shown.has(c)).map((c) => `${head(c)}${shown.get(c)}`).join("\n\n");
   const extra = [...shown.keys()].filter((c) => !newest.includes(c)).length;
-  const fact = `TASK_COMMENTS holds ${shown.size} of the task's ${all.length} comments (the grader's own not counted): the newest${extra ? `, and ${extra} earlier one${extra > 1 ? "s" : ""} by the task's agent picked by what the rubric and its latest result name` : ""}${cut ? `; ${cut} cut to fit (each at most ${COMMENT_MAX} characters, all at most ${COMMENTS_TOTAL})` : ""}${out ? `; ${out} more left out over that budget` : ""}`;
+  const fact = `TASK_COMMENTS holds ${shown.size} of the task's ${all.length} comments (the grader's own not counted): the newest${extra ? `, and ${extra} earlier one${extra > 1 ? "s" : ""} by the task's agent or delegator picked by what the rubric and its latest result name` : ""}${cut ? `; ${cut} cut to fit (each at most ${COMMENT_MAX} characters, all at most ${COMMENTS_TOTAL})` : ""}${out ? `; ${out} more left out over that budget` : ""}`;
   return { text, fact };
 }
 
 /**
  * The task's own words (the newest comments other than the grader's, and the agent's earlier ones that bear on the rubric:
  * pickComments) and its files: the evidence for file and report, context for the rest. The task's agent is deps.assignee
- * (its own comments) or the runner posting an Engineer's (its marker). File names and types are the agents' own strings: the
+ * (its own comments) or the runner posting an Engineer's (its marker); the delegator is deps.delegator ({ agentId, userId }),
+ * whose comments can amend the ask. File names and types are the agents' own strings: the
  * trusted facts call each file by a code-made label (file_1, file_2, ... in the attachments' order) and its name and type go
  * in the fenced FILE_NAMES block, as data. The version stays the newest comments' and the files' ids.
  */
@@ -309,7 +313,14 @@ export async function wordsEvidence(deps: any, rubric: string[] = []): Promise<a
   const all = (await deps.comments()).filter((c: any) => !String(c.body ?? "").includes(GRADER_MARKER));
   const comments = all.slice(-NEWEST);
   const own = (c: any) => String(c.body ?? "").includes(RUNNER_MARKER) || (deps.assignee ? c.authorAgentId === deps.assignee : c.authorType === "agent");
-  const picked = pickComments(all, own, rubric.join("\n"));
+  // The delegator is the task's creator: an agent's id for an agent-authored task, else the user's. The runner's own
+  // comments carry its marker and are never the delegator's words, whatever user id it posts under.
+  const delegator = (c: any) =>
+    Boolean(deps.delegator?.agentId || deps.delegator?.userId) &&
+    !String(c.body ?? "").includes(RUNNER_MARKER) &&
+    (c.authorAgentId ? c.authorAgentId === deps.delegator.agentId : c.authorType === "user" && c.authorUserId === deps.delegator.userId);
+  const who = (c: any) => (delegator(c) ? "the task's delegator" : own(c) ? "the task's agent" : "someone else");
+  const picked = pickComments(all, own, rubric.join("\n"), delegator, who);
   const files = (await deps.attachments().catch(() => [])).map((f: any, i: number) => ({ ...f, label: `file_${i + 1}` }));
   const facts = files.length ? [`${files.length} file${files.length > 1 ? "s" : ""} attached: ${files.map((f: any) => f.label).join(", ")} (their names, types and sizes, as the agent gave them, are in FILE_NAMES)`] : ["no files attached"];
   if (all.length) facts.push(picked.fact);

@@ -1,4 +1,4 @@
-import type { AgentProfile, TaskRow, FeatureCost, Features, Advisory, ActivityItem, Agents, AsideMessage, Lineage, SettledItem, AppRow, Approval, Board, Bucket, Cadence, ChatAgent, ChatDetail, LaneAgent, LaneMessage, ChatRow, CostLedger, CostTop, CostWindow, Costs, IssueView, Models, ModuleDetail, ModuleRow, NeedsYou, RecurringView, RosterAgent, RunTrace, Scorecard, SettingChange, FiledChange, SettingsData, Update } from "./types";
+import type { AgentProfile, TaskRow, FeatureCost, Features, Advisory, Agents, AsideMessage, Lineage, SettledItem, AppRow, Approval, Board, Bucket, Cadence, ChatAgent, ChatDetail, LaneAgent, LaneMessage, ChatRow, CostLedger, CostTop, CostWindow, Costs, IssueView, Models, ModuleDetail, ModuleRow, NeedsYou, RecurringView, RosterAgent, RunTrace, Scorecard, SettingChange, FiledChange, SettingsData, Update } from "./types";
 import type { ConnectionsData } from "./connections";
 import type { BrowseModule, GrantConnection, MarketplaceRow } from "./types";
 
@@ -56,6 +56,9 @@ export interface SetupFlowView {
   connect_url?: string;
   needs_name?: string;
   pair_url?: string;
+  console_url?: string;
+  /** The exact redirect its sign-in sends (the steps' {redirect_url}): what a hand-made client must list. */
+  redirect_url?: string;
   present: Record<string, boolean>;
   signedIn: boolean;
   paired: boolean;
@@ -68,6 +71,8 @@ export interface Session {
   account?: { id: string; email: string; name: string; role: "admin" | "user"; owner: boolean } | null;
   /** Google's Connect works from this address (the board's https address). */
   googleConnect?: boolean;
+  /** The modules' sign-ins (board.signins) work from this address: the board's https address, or loopback. */
+  signInConnect?: boolean;
   /** The kernel's admin listener: sign-in, your password, and the approval page every card is decided on. */
   adminUrl?: string | null;
 }
@@ -131,7 +136,6 @@ export const api = {
   laneSend: (key: string, text: string) => call<{ ok: boolean }>("POST", `/api/lane/${encodeURIComponent(key)}/messages`, { text }),
   stopChat: (ref: string) => call<{ stopped: number }>("POST", `/api/chats/${encodeURIComponent(ref)}/stop`, {}),
   notRight: (ref: string, text: string) => call<IssueView>("POST", `/api/issues/${encodeURIComponent(ref)}/not-right`, { text }),
-  activity: (days = 7) => call<{ days: { day: string; items: ActivityItem[] }[] }>("GET", `/api/activity?days=${days}`),
   needsYou: () => call<NeedsYou>("GET", "/api/needs-you"),
   approvals: () => call<{ approvals: Approval[] }>("GET", "/api/approvals"),
   agents: () => call<Agents>("GET", "/api/agents"),

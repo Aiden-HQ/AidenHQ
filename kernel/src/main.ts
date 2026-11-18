@@ -15,12 +15,12 @@ import http from "node:http";
 import { existsSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { configDir, dataDir, env, repo, secret } from "./env.ts";
-import { createGateway, watched } from "./gateway/lib.ts";
+import { INSTALL_CAP, createGateway, watched } from "./gateway/lib.ts";
 import { createAdmin, type SetupField } from "./admin.ts";
 import { createAuthApi } from "./auth-api.ts";
 import { checkModel, exchange, readiness, startPkce } from "./openrouter-pkce.ts";
 import { agentSetup, composeRecreate, createModuleSecrets, vaultWriter } from "./module-secrets.ts";
-import { readGate } from "./accounts.ts";
+import { doorSource, readGate } from "./accounts.ts";
 import { routineWake, webhookWake, type Manifest } from "./app-access.ts";
 import { createSignin } from "./signin.ts";
 import { createAsserter, loadKey } from "./assert.ts";
@@ -152,7 +152,7 @@ jobs.adopt();
 // A restart: the jobs go on for the next kernel (KillMode=process); this one stops following them, offsets saved.
 for (const sig of ["SIGTERM", "SIGINT", "SIGUSR2"] as const) process.on(sig, () => { log("stopping: jobs left running for the next kernel", { signal: sig, jobs: jobs.running() }); jobs.detach(); process.exit(0); });
 // The finish gate (checks.ts): modules' task.finish checks (compile), holds placed as the owner.
-const checks = createChecks({ db: records.db, registry: checksFile(path.join(configDir, "kernel", "checks.json")), owner: ownerApi, secret, resolver, log, agentKey: (id) => grantsTable().agents?.[id]?.key, graded: (id) => grantsTable().agents?.[id]?.graded === true });
+const checks = createChecks({ db: records.db, registry: checksFile(path.join(configDir, "kernel", "checks.json")), owner: ownerApi, secret, resolver, log, agentKey: (id) => grantsTable().agents?.[id]?.key, graded: (id) => grantsTable().agents?.[id]?.graded === true, pending: (task) => records.list(["review", "owner", "approved"], 100, { task }) });
 // First-run setup (/setup): the keys the modules ask for go into the vault view (AIDENHQ_SECRETS_DIR) as new 0600 files renamed into place; the
 // vault's recovery key waits there (ops/setup.sh --unattended moves it out of root's home) until the owner has seen it.
 const secretsDir = env("AIDENHQ_SECRETS_DIR", "");
@@ -230,10 +230,11 @@ const model = {
   exchange: (code: string, verifier: string) => exchange(code, verifier, fetch, upstream),
   check: (key: string) => checkModel(key, { model: Object.keys(gatewaySettings().models ?? {})[0] ?? "~deepseek/deepseek-flash-latest", upstream }),
   saved: () => secret("openrouter_key"),
+  dayCap: () => { const n = Number((gatewaySettings() as { install_day_usd?: unknown }).install_day_usd); return n > 0 ? n : undefined; },
   verifyAgents: agentSetup({ dir: env("AIDENHQ_DIR", repo), log: path.join(dataDir, "kernel", "agent-setup.log"), warn: (m, o) => log(m, o as never) }),
   ...modelState,
 };
-const admin = accounts && createAdmin({ accounts, firstRun, model, uiOrigins, boardUrl: () => boardOrigins[0], cards: channels, ownerMessage: (b) => channels.ownerMessageAs("web", b, () => Object.entries(grantsTable().agents ?? {}).find(([, g]) => g.key === "chief-of-staff")?.[0]), owner: ownerApi, hosts: () => adminHosts, origins: () => adminOrigins, frameOrigins: () => boardOrigins, log });
+const admin = accounts && createAdmin({ accounts, firstRun, model, uiOrigins, doorSource: () => doorSource(gateInfo()), boardUrl: () => boardOrigins[0], cards: channels, ownerMessage: (b) => channels.ownerMessageAs("web", b, () => Object.entries(grantsTable().agents ?? {}).find(([, g]) => g.key === "chief-of-staff")?.[0]), owner: ownerApi, hosts: () => adminHosts, origins: () => adminOrigins, frameOrigins: () => boardOrigins, log });
 
 // Claimed records a restart left without an outcome: their executors say how they went (never replayed). Executors may
 // still be starting at boot, so once, a minute in.
@@ -250,15 +251,28 @@ const gw = createGateway({
   upstream,
   paperclipUrl: controlUrl,
   // The numbers are the gateway's ledger; the task's identifier and the agent's name are looked up here.
+  // The install cap's card (agent INSTALL_CAP, no task) goes on an unassigned task of the owner's own, so no agent wakes.
   fileRaiseCap: async ({ task, ...r }) => {
-    const [issue, agent] = await Promise.all([issueOf(task), cpApi(`/api/agents/${encodeURIComponent(r.agentId)}`).then((x) => (x.ok ? (x.json() as Promise<{ name?: string }>) : {}))]);
-    if (!issue) throw new Error(`no task ${task}`);
+    const install = r.agentId === INSTALL_CAP;
+    const [issue, agent] = await Promise.all([task ? issueOf(task) : installCapTask(r.subject), install ? { name: "AidenHQ" } : cpApi(`/api/agents/${encodeURIComponent(r.agentId)}`).then((x) => (x.ok ? (x.json() as Promise<{ name?: string }>) : {}))]);
+    if (!issue) throw new Error(`no task ${task ?? "for the install cap"}`);
     const args = { ...r, to: Math.round(r.cap * 200) / 100 };
-    writes.fileNative("kernel.raise_cap", { task: issue.id, identifier: issue.identifier, args, card: raiseCapCard(args, String((agent as { name?: string }).name ?? ""), issue.identifier ?? issue.id), reason: `a ${r.scope} spend cap is the owner's to raise`, rule: "raise-cap" });
+    writes.fileNative("kernel.raise_cap", { task: issue.id, identifier: issue.identifier, args, card: raiseCapCard(args, String((agent as { name?: string }).name ?? ""), issue.identifier ?? issue.id), reason: install ? "the install-wide daily spend cap is the owner's to raise" : `a ${r.scope} spend cap is the owner's to raise`, rule: "raise-cap" });
   },
   launcherUrl,
   log,
 });
+
+/** A new unassigned task for the install cap's raise card, in the company of the instance's agents. */
+async function installCapTask(day: string) {
+  const someAgent = Object.keys(grantsTable().agents ?? {})[0];
+  const a = someAgent ? await cpApi(`/api/agents/${encodeURIComponent(someAgent)}`) : undefined;
+  const company = a?.ok ? String(((await a.json()) as { companyId?: string }).companyId ?? "") : "";
+  if (!company) throw new Error("no company to file the install cap's card in");
+  const r = await cpApi(`/api/companies/${company}/issues`, { method: "POST", body: JSON.stringify({ title: `Daily spend cap reached (${day})`, description: "AidenHQ reached its daily spend cap (settings.spend_day_usd), so model calls are paused until tomorrow (UTC). Approve the card to double today's cap, or change the setting in Settings.", status: "todo" }) });
+  if (!r.ok) throw new Error(`Paperclip answered ${r.status} creating the install cap's task`);
+  return (await r.json()) as { id: string; identifier?: string };
+}
 
 raiseCap = async (r) => {
   gw.setCap(r.scope, r.agentId, r.subject, r.to);

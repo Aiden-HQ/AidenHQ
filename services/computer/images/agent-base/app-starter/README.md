@@ -25,7 +25,7 @@ npm run catalog   # the starter's dev-only component catalog (catalog.html): eve
 
 ## Publishing the port
 
-`compose.yaml` publishes the app on the host's loopback: `127.0.0.1:<port>:8080`. Keep that `<port>` equal to the app's `port:` in `apps.yaml` (pick a free one; 8080 is only the example). That port is what makes the app reachable: the board's Open link, the tailnet node and the checks all use it.
+`compose.yaml` publishes the app on the host's loopback (`127.0.0.1:8080:8080`). On deploy the platform sets that host port to the app's `port:` in `apps.yaml` (pick a free one), so leave the line as it is. That port is what makes the app reachable: the board's Open link, the tailnet node and the checks all use it.
 
 ## What's where
 

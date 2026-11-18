@@ -8,7 +8,7 @@ import { existsSync } from "node:fs";
 import { join, resolve, sep } from "node:path";
 
 type Dict = Record<string, unknown>;
-export type Generated = { services: Record<string, Dict>; networks: Record<string, Dict>; secrets: Record<string, Dict>; roots: Record<string, Dict>; dataDirs: string[] };
+export type Generated = { services: Record<string, Dict>; networks: Record<string, Dict>; secrets: Record<string, Dict>; roots: Record<string, Dict>; dataDirs: string[]; stateDirs: string[] };
 
 /**
  * What the caller (the compiler) still lets this module reach of the root stack before its kernel routes exist, from its
@@ -78,7 +78,7 @@ export function ownSecrets(def: Dict): string[] {
  * rootSecrets: the root compose's, which a module reaches only through ctx.legacy.
  */
 export function generateCompose(name: string, def: Dict, ctx: { root: string; local: boolean; rootServices?: string[]; rootNetworks?: string[]; rootSecrets?: string[]; legacy?: Legacy }): Generated {
-  const out: Generated = { services: {}, networks: {}, secrets: {}, roots: {}, dataDirs: [] };
+  const out: Generated = { services: {}, networks: {}, secrets: {}, roots: {}, dataDirs: [], stateDirs: [] };
   const svcs = def.services;
   const where = (f: string) => `${name}: ${f}`;
   const privileged = def.privileged == null ? [] : strings(def.privileged, where("privileged"));
@@ -97,7 +97,10 @@ export function generateCompose(name: string, def: Dict, ctx: { root: string; lo
     if (!own.has(s) || rootSecrets.has(s)) fail(`${what}: secret ${s} isn't one of ${name}'s own (declare it under secrets, generated_secrets or optional_secrets)`);
     out.secrets[s] = { file: `\${AIDENHQ_SECRETS_DIR}/${s}` };
   };
-  const host = lg.hostEnv ?? [];
+  // A module whose sign-in returns to the board (board.signins) may read the board's https address (BOARD_LAN_URL): the one
+  // redirect besides loopback its sign-in accepts.
+  const signIns = isMap(def.contributes) ? def.contributes["board.signins"] : undefined;
+  const host = [...(lg.hostEnv ?? []), ...(Array.isArray(signIns) && signIns.length ? ["BOARD_LAN_URL"] : [])];
   const envOf = (env: unknown, what: string, mounts: string[]) => {
     if (env == null) return {};
     if (!isMap(env)) return fail(`${what} must be a map`);
@@ -174,6 +177,7 @@ export function generateCompose(name: string, def: Dict, ctx: { root: string; lo
       if (!m || !PATH.test(m[1]!) || !noDots(m[1]!)) fail(`${at("state")} is a container path (/state), optionally :ro`);
       if (secretsDecl.state !== true) fail(`${at("state")}: declare secrets.state: true (the module's own vault dir)`);
       volumes.push(`\${AIDENHQ_SECRETS_DIR}/modules/${name}:${m![1]}${m![2] ?? ""}`);
+      out.stateDirs.push(`modules/${name}`);
     }
     for (const h of s.host_mounts == null ? [] : strings(s.host_mounts, at("host_mounts"))) {
       if (!privileged.includes("host-metrics")) fail(`${at("host_mounts")}: needs privileged: [host-metrics]`);

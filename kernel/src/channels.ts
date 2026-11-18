@@ -200,7 +200,9 @@ export function createChannels({ db, records, writes, board, owner, modules, res
         return { id: a.id, identifier: a.identifier, kind: a.action, tier: a.tier, panel: Boolean(a.panel), digest: a.digest, sentence: a.sentence, changes: a.changes, reads: a.reads, cost: a.cost,
           requestedBy: a.requestedBy, replaced: Boolean(a.replaced), ...(a.reason ? { reason: a.reason } : {}), ...(a.review ? { review: a.review } : {}), ...(tokens ? { tokens } : {}) };
       });
-      return { cards, finished: finished.map((a) => ({ id: a.id, identifier: a.identifier, state: a.state, outcome: a.outcome ?? null, outcomeText: a.outcomeText ?? null, sentence: a.sentence })) };
+      // Owner cards that ended without running (rejected anywhere, replaced or expired): a channel edits the message it sent for them.
+      const ended = records.list(["rejected", "stale", "cancelled"], 50, { reviewed: true }).filter((r) => r.tier === 2).map((r) => ({ id: r.id, identifier: r.identifier ?? r.task, state: r.state }));
+      return { cards, finished: finished.map((a) => ({ id: a.id, identifier: a.identifier, state: a.state, outcome: a.outcome ?? null, outcomeText: a.outcomeText ?? null, sentence: a.sentence })), ended };
     },
 
     ownerCards,

@@ -81,3 +81,10 @@ test("live check: a failing connection fails the apply only where it is newly gr
   assert.deepEqual(v, { errors: ["connection slack isn't healthy or signed in (SLACK_TOKEN not set); granted to old, fresh: newly granted to fresh"], warnings: [] });
   assert.deepEqual(liveVerdict(prev, { slack: { ok: false, detail: "x" } }, newGrants(prev, prev)), { errors: [], warnings: ["connection slack isn't healthy or signed in (x); granted to old"] });
 });
+
+test("live check: a newly granted connection that is up but not signed in is a warning", () => {
+  const cfg = { agents: { fresh: { mcp_servers: ["hubspot"] } } };
+  const v = liveVerdict(cfg, { hubspot: { ok: false, detail: "HubSpot not connected (Connect on the board)" } }, newGrants(cfg, { agents: {} }));
+  assert.deepEqual(v.errors, []);
+  assert.equal(v.warnings.length, 1);
+});

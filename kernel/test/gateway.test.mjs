@@ -275,3 +275,44 @@ test("gateway: a transient OpenRouter refusal is retried, a 400 is not", async (
   assert.equal((await call("bad")).status, 400);
   assert.equal(hits.bad, 1);
 });
+
+test("gateway: the install cap counts every call of the day, no-agent ones too, and files one raise for the install", async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "gw-"));
+  const secrets = { openrouter_key: "sk-real", gateway_job_secret: "job-secret", gateway_board_key: "gw-board", gateway_source_key: "src-key" };
+  const grantsFile = join(dir, "grants.json");
+  writeFileSync(grantsFile, JSON.stringify({ agents: { ag1: { key: "aiden" } } }));
+  const settingsFile = join(dir, "gateway.json");
+  writeFileSync(settingsFile, JSON.stringify({ models: { m: price }, install_day_usd: 0.05 }));
+  const upstream = await serve((req, res) => { req.resume(); req.on("end", () => json(res, 200, { id: `gen-${Math.random()}`, model: "m", choices: [], usage: { prompt_tokens: 1, completion_tokens: 1, cost: 0.03 } })); });
+  const filed = [];
+  const now = Date.parse("2026-11-18T10:00:00Z");
+  const gw = createGateway({ dbFile: join(dir, "usage.db"), grantsFile, settingsFile, secret: (n) => secrets[n] ?? "", upstream: upstream.url, fileRaiseCap: async (b) => void filed.push(b), now: () => now });
+  const front = await serve((req, res) => gw.handle(req, res));
+  t.after(() => { upstream.s.close(); front.s.close(); gw.close(); });
+  const call = async (cred) => {
+    const res = await fetch(`${front.url}/api/v1/chat/completions`, { method: "POST", headers: { authorization: `Bearer ${cred}` }, body: JSON.stringify({ model: "m", max_tokens: 1024, messages: [] }) });
+    return { status: res.status, body: await res.json() };
+  };
+  const spend = async () => (await fetch(`${front.url}/spend`, { method: "POST", headers: { authorization: "Bearer gw-board" } })).json();
+  const reviewer = mintToken("job-secret", { kind: "reviewer" }, now); // a system kind: no agent, never capped per agent
+
+  // Two calls of different callers (an agent's job, then the uncapped reviewer) spend 0.06 of the install's 0.05.
+  assert.equal((await call(mintToken("job-secret", { agentId: "ag1", issueId: "iss1" }, now))).status, 200);
+  assert.equal((await call(reviewer)).status, 200);
+  assert.deepEqual(await spend(), { day: "2026-11-18", spent: 0.06, cap: 0.05 });
+  // Past it every caller is refused, the reviewer, the source writers and the board's side chat included: one raise, no task.
+  for (const cred of [reviewer, "src-key", "gw-board", mintToken("job-secret", { agentId: "ag1", issueId: "iss1" }, now)]) {
+    const r = await call(cred);
+    assert.equal(r.status, 402);
+    assert.equal(r.body.error.type, "cap_reached");
+    assert.match(r.body.error.message, /^spend cap reached: the install's daily \$0\.06 of \$0\.05; the owner has been asked to raise it$/);
+  }
+  assert.deepEqual(filed, [{ task: null, scope: "day", agentId: "install", subject: "2026-11-18", cap: 0.05, spent: 0.06 }]);
+  // The owner's raise (the approved card): calls go through again, and the header shows the raised cap.
+  gw.setCap("day", "install", "2026-11-18", 0.1);
+  assert.equal((await call(reviewer)).status, 200);
+  assert.equal((await spend()).cap, 0.1);
+  // Unset, no install cap at all.
+  writeFileSync(settingsFile, JSON.stringify({ models: { m: price } }));
+  assert.equal((await spend()).cap, null);
+});

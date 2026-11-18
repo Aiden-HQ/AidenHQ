@@ -1,0 +1,39 @@
+// Items as tiles in a grid that adds columns as the screen grows. A tile is one link (the whole tile opens `href`) with
+// its action raised above it, so a button inside stays its own target. Its monogram takes the item's tone (avatar.ts).
+import { initials, tone } from "../avatar";
+import { hueClass } from "./hue";
+
+/** A rounded square with the item's initials on its tone (styles.css .tone-0…7, 7:1 in both themes); "chief-of-staff" → "CS". */
+export function Monogram({ name, size = 32 }: { name: string; size?: number }) {
+  return (
+    <span className={`ui-mono tone-${tone(name)}`} style={{ width: size, height: size, fontSize: Math.round(size * 0.38) }} aria-hidden>
+      {initials(name.replace(/(^|[-_\s])(of|and|the)(?=[-_\s]|$)/g, "$1"))}
+    </span>
+  );
+}
+
+export function TileGrid({ children }: { children: React.ReactNode }) {
+  return <div className="ui-tiles">{children}</div>;
+}
+
+export function Tile({ href, name, title, status, children, facts, foot, action, tone: t }: { href: string; name: string; title: string; status?: React.ReactNode; children?: React.ReactNode; facts?: React.ReactNode; foot?: React.ReactNode; action?: React.ReactNode; tone?: "needs" | "failed" }) {
+  return (
+    <article className={`ui-tile ${hueClass(name)}${t ? ` ui-tile-${t}` : ""}`}>
+      <div className="ui-tile-head">
+        <Monogram name={name} />
+        <h3 className="ui-tile-title">
+          <a href={href}>{title}</a>
+        </h3>
+        {status}
+      </div>
+      {children && <p className="ui-tile-desc">{children}</p>}
+      {facts && <div className="ui-tile-facts">{facts}</div>}
+      {(foot || action) && (
+        <div className="ui-tile-foot">
+          <span className="ui-tile-foot-text">{foot}</span>
+          {action && <span className="ui-tile-action">{action}</span>}
+        </div>
+      )}
+    </article>
+  );
+}

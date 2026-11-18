@@ -100,27 +100,6 @@ export function CardGridSkeleton({ count = 4 }: { count?: number }) {
   );
 }
 
-/** Days of the Activity page. */
-export function DaysSkeleton({ days = 2, items = 4 }: { days?: number; items?: number }) {
-  return (
-    <div className="sk-stack" style={{ gap: 18 }} role="status" aria-label="Loading activity" aria-busy>
-      {Array.from({ length: days }, (_, d) => (
-        <section key={d} className="activity-day" aria-hidden>
-          <Bone w={160} h={13} />
-          <ul>
-            {Array.from({ length: items }, (_, i) => (
-              <li key={i}>
-                <Bone w={38} />
-                <Bone w={widths[(d + i) % widths.length]} />
-              </li>
-            ))}
-          </ul>
-        </section>
-      ))}
-    </div>
-  );
-}
-
 /** Cards in a list (Approvals). */
 export function CardListSkeleton({ count = 3 }: { count?: number }) {
   return (

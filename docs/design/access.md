@@ -12,7 +12,9 @@ browser -> Cloudflare Access (optional per login mode) -> Tunnel -> cloudflared 
 admins  -> the exposure mode's front door -> board listener (127.0.0.1) -> Better Auth session on every route
 ```
 
-Sharing is optional. An instance without the `edge` setting stays tailnet-only. An app is shared when its entry in the
+Sharing is optional. An instance without the `edge` setting shares nothing: on exposure `local` or `public` the gate
+still serves each exposed app to AidenHQ admins only, at `<app>.localhost:3130` or `<app>.<ip-with-dashes>.sslip.io`
+([app-doors.md](app-doors.md)). An app is shared when its entry in the
 instance `apps.yaml` has `share.host`; modules cannot declare `share`, and changing it is a Tier 2 approval.
 
 ## Exposure modes

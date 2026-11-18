@@ -28,6 +28,9 @@ test("H4: a bind mount, a capability, host namespaces, devices, extra hosts, DNS
   // Compose interpolation of anything but its own secrets and allowed host variables.
   assert.throws(() => gen("a", svc({ env: { X: "${AIDENHQ_SECRETS_DIR}/b" } })), /is not allowed/);
   assert.throws(() => gen("a", svc({ command: ["sh", "-c", "cat $HOME/x"] })), /is not allowed/);
+  // The board's address, only to a module whose sign-in returns there.
+  assert.throws(() => gen("a", svc({ env: { BOARD_URL: "${BOARD_LAN_URL:-}" } })), /is not allowed/);
+  assert.equal(gen("a", svc({ env: { BOARD_URL: "${BOARD_LAN_URL:-}" } }, { contributes: { "board.signins": [{ id: "a" }] } })).services["a-srv"].environment.BOARD_URL, "${BOARD_LAN_URL:-}");
 });
 
 test("H4: another module's network only through requires; root services and networks only through the legacy list", () => {
@@ -41,6 +44,7 @@ test("H4: another module's network only through requires; root services and netw
 
 test("H5: a module mounts only its own secrets, data dir and vault dir", () => {
   const def = { secrets: { state: true, provided: ["a_key"] }, services: { data: true, run: { srv: { image: IMG, data: ["db:/data"], state: "/state", env: { KEY: "${secrets.a_key}" } } } } };
+  assert.deepEqual(gen("a", def).stateDirs, ["modules/a"]); // compile makes it before compose (a FUSE vault: Docker can't)
   const out = JSON.stringify(gen("a", def));
   assert.ok(out.includes("modules/a/db") && out.includes("modules/a:/state") && out.includes("/a_key"));
   assert.ok(!/modules\/b|b_key|model_provider/.test(out));

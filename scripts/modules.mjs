@@ -551,7 +551,7 @@ export function linkPairServices(flows, compose, serviceModule, networkModule) {
  * productDir holds modules/<name>/module.yaml; instanceDir holds instance.yaml, agents/<key>.md additions to a module
  * agent's handbook, and agents/<key>/ folders (agent.yaml + AGENTS.md): the instance's own agents.
  */
-export function compile(productDir, instanceDir, { revision, fetch = hostFetch(productDir) } = {}) {
+export function compile(productDir, instanceDir, { revision, fetch = hostFetch(productDir), door } = {}) {
   const instFile = join(instanceDir, "instance.yaml");
   if (!existsSync(instFile)) fail(`no instance.yaml in ${instanceDir}: set AIDENHQ_INSTANCE_DIR to your instance checkout (see docs/USAGE.md)`);
   const instance = readYaml(instFile);
@@ -619,7 +619,7 @@ export function compile(productDir, instanceDir, { revision, fetch = hostFetch(p
   const serviceModule = {};
   const secretOwner = {};
   const networkModule = {};
-  const dataDirs = [];
+  const dataDirs = [], stateDirs = [];
   const dataModules = {};
   const labelNames = new Set();
   const routineTitles = new Set();
@@ -714,6 +714,7 @@ export function compile(productDir, instanceDir, { revision, fetch = hostFetch(p
       compose.networks[k] = v;
     }
     dataDirs.push(...gen.dataDirs);
+    stateDirs.push(...gen.stateDirs);
     // A module with a data dir: its data_version (spec §6.4.1; compile.mjs keeps the marker) and a digest of its services, so
     // the apply snapshots it when its services or code change (ops/lib/generations.sh).
     if (def.data_version != null && !(Number.isInteger(def.data_version) && def.data_version >= 0)) fail(`module ${name}: data_version is a whole number, 0 or more`);
@@ -735,8 +736,9 @@ export function compile(productDir, instanceDir, { revision, fetch = hostFetch(p
     if (sub) subnets[sub] = k;
   }
 
-  // Shared access: the gate and cloudflared, only when the instance sets `edge` (scripts/edge.mjs).
-  const edge = edgeConfig(settings, instanceAppDefs, apps);
+  // Shared access: the gate and cloudflared when the instance sets `edge`, else the gate's door (scripts/edge.mjs).
+  // Without `edge`, a door on exposure local or public (docs/design/app-doors.md): `door` is the host's public IP and admin URL.
+  const edge = edgeConfig(settings, instanceAppDefs, apps, door);
   if (edge) {
     for (const [k, svc] of Object.entries(edge.compose.services)) mergeService(compose.services, k, svc);
     Object.assign(compose.secrets, edge.compose.secrets);
@@ -894,6 +896,9 @@ export function compile(productDir, instanceDir, { revision, fetch = hostFetch(p
     for (const k of a.delegate_to) if (k !== "app-owners" && !k.endsWith("?") && !paperclip.agents[k]) fail(`${key}: delegate_to names ${k}, which is not an enabled agent (write "${k}?" if optional)`);
     a.delegate_to = a.delegate_to.map((k) => k.replace(/\?$/, "")).filter((k) => k === "app-owners" || paperclip.agents[k]);
   }
+  // Quiet start (docs/design/quiet-start.md): a module's scheduled routines start paused until an override turns one on
+  // (before the heartbeats, which quiet start leaves off unless the instance turned one on).
+  if (settings.quiet_start === "on") for (const r of Object.values(paperclip.routines)) if (r.schedules?.length && paperclip.agents[r.agent]?.module !== "instance") r.status = "paused";
   heartbeatRoutines(paperclip, settings, instance.overrides?.agents ?? {}, routineTitles); // before the overrides, which may change their schedules
   appFeedbackRoutines(paperclip, instanceAppDefs, routineTitles);
   for (const [key, r] of Object.entries(paperclip.routines)) if (!paperclip.agents[r.agent]) fail(`routine ${key}: agent ${r.agent} is not enabled`);
@@ -1013,7 +1018,9 @@ export function compile(productDir, instanceDir, { revision, fetch = hostFetch(p
   // A runner agent's engine (after the overrides that may set it, and its image) is one an enabled module provides.
   for (const [key, a] of Object.entries(paperclip.agents)) if (a.dispatch === "runner" && a.engine && !engines[a.engine]) fail(`agent ${key}: unknown engine ${a.engine} (enabled: ${Object.keys(engines).sort().join(", ") || "none"})`);
   // The model gateway's prices and CI review (config/gateway.json, re-read per call).
-  const gateway = { models: modelPrices(enabledDefs), ...(enabled.includes("ci") ? { ci: ciReview(settings) } : {}) };
+  // spend_day_usd: the install-wide daily cap on every model call (docs/design/quiet-start.md); unset, none.
+  if (settings.spend_day_usd != null && !(typeof settings.spend_day_usd === "number" && settings.spend_day_usd > 0 && settings.spend_day_usd <= 10_000)) fail("settings.spend_day_usd: USD a day, above 0 (unset for no cap)");
+  const gateway = { models: modelPrices(enabledDefs), ...(enabled.includes("ci") ? { ci: ciReview(settings) } : {}), ...(settings.spend_day_usd != null ? { install_day_usd: settings.spend_day_usd } : {}) };
   const named = [...Object.entries(paperclip.agents).flatMap(([key, a]) => grantEntry(key, a, paperclip.routines).models), ...(gateway.ci?.models ?? [])];
   // Checked once some module prices models (the default bundle has models-openrouter); with none, the gateway refuses every call.
   const unpriced = Object.keys(gateway.models).length ? [...new Set(named.filter((m) => !gateway.models[m]))] : [];
@@ -1038,7 +1045,7 @@ export function compile(productDir, instanceDir, { revision, fetch = hostFetch(p
   const runAgents = Object.entries(paperclip.agents).filter(([, a]) => a.dispatch === "runner").map(([k]) => k).sort();
   if (dispatchers.length > 1) fail(`modules ${dispatchers.join(", ")} all request kernel.jobs: one job dispatcher at a time`);
   if (dispatchers.length) kernelModules.modules[dispatchers[0]].dispatches = runAgents;
-  return { paperclip, apps: { apps }, points, compose, catalog, warnings, optionalSecrets, askedSecrets: setup.map((f) => f.secret), generatedSecrets, dataDirs, dataModules, gateway, jobcaps, engines, connections, writes, checks, kernelModules, exposure: settings.exposure, edge: edge && { gate: edge.gate, cloudflared: edge.cloudflared } };
+  return { paperclip, apps: { apps }, points, compose, catalog, warnings, optionalSecrets, askedSecrets: setup.map((f) => f.secret), generatedSecrets, dataDirs, stateDirs, dataModules, gateway, jobcaps, engines, connections, writes, checks, kernelModules, exposure: settings.exposure, edge: edge && { gate: edge.gate, cloudflared: edge.cloudflared } };
 }
 
 /**
@@ -1248,6 +1255,8 @@ function heartbeatRoutines(paperclip, settings, agentOverrides, routineTitles) {
   const every = Number(settings.heartbeat_hours ?? 4);
   if (!HEARTBEAT_HOURS.includes(every)) fail(`settings.heartbeat_hours: one of ${HEARTBEAT_HOURS.join(", ")}`);
   for (const [key, a] of Object.entries(paperclip.agents)) {
+    // Quiet start: a module agent's heartbeat counts only once the instance turns it on (overrides.agents.<key>.heartbeat).
+    if (settings.quiet_start === "on" && a.module !== "instance" && agentOverrides[key]?.heartbeat == null && a.heartbeat != null) a.heartbeat = false;
     const hb = agentOverrides[key]?.heartbeat ?? a.heartbeat;
     if (hb == null || hb === false) continue;
     const hours = hb === true ? every : hb;

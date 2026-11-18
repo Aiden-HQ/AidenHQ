@@ -113,6 +113,10 @@ applies to changes to the module (its service, policy `service/security/`, cases
   exceptions in `.github/supply-chain-exceptions.yaml`, read from the base) and gitleaks (`.gitleaks.toml`) enforce it.
   The app CI template carries copies in `.github/supply-chain/` (kept identical by `scripts/sync-shared.mjs`).
 - **Minimal tests.** A few that prove the thing works end to end; no tests for obvious code.
+- **Fluid UI, checked at real sizes.** Board and app pages are fluid at every common resolution: fluid widths with clamp()
+  gutters, a clamp() type scale, grids that reflow, never a fixed narrow column floating on a large screen. Before
+  calling a UI change done, set the browser viewport explicitly and screenshot it at 1512x982, 1920x1080, 2560x1440,
+  768, 1024 and 390 wide, never in a small default window.
 - **Simple.** Less code, fewer moving parts. No speculative abstractions, knobs or compatibility shims. Handle the
   common path and let rare cases fail loudly.
 - **No owner data in the product.** Real names, emails, IPs, hostnames, org names and ids belong in the instance repo

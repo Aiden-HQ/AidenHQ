@@ -203,6 +203,8 @@ export interface Board {
   rollsTomorrow: boolean;
   /** Agent sessions running now. */
   agentsActive: number;
+  /** Today's model spend against the install-wide daily cap (settings.spend_day_usd); null without one. */
+  spend?: { spent: number; cap: number } | null;
   /** Google sign-in per account; null when the board can't ask. */
   google: { accounts: GoogleAccount[]; error?: string } | null;
   /** The modules' sign-ins (board.signins): each one's banner text and state (null when the board can't ask). */
@@ -363,6 +365,8 @@ export interface ModuleDetail {
   module: ModuleRow;
   agents: AgentProfile[];
   ongoing: TaskRow[];
+  /** Its routines as compiled: on or off, and the agent whose Settings tab changes them. */
+  routines?: { key: string; title: string; agent: string; on: boolean; scheduled: boolean }[];
   authority: { connections: string[]; writes: { kind: string; tier?: number }[]; secrets: string[]; prompts: { id: string; file: string }[]; readme: string | null };
   neededBy: string[];
   requires: string[];
@@ -484,8 +488,8 @@ export interface AppRow {
   deploys?: { sha: string; at: string; by: string; status: string }[];
   owner?: string;
   url?: string;
-  /** Serves a port but has no browser door: no apps' tailnet node, and only the gate signs people in. */
-  unpublished?: boolean;
+  /** Serves a port but its browser door doesn't open (yet): why, in words for the owner (older apps-mcp: true). */
+  unpublished?: string | boolean;
   /** Pinned into the nav under this label (apps.yaml `panel`). */
   panel?: string;
   incident?: { opened_at: string; kind: string; detail: string };
@@ -631,14 +635,6 @@ export interface RunTrace {
   timeline: { at: string; kind: "tool" | "shell" | "message" | "error"; name: string; text: string; ok: boolean; error?: string; ms?: number }[];
   ledger: { rows: { at: string; kind: string | null; model: string; input: number; cached: number; output: number; costUsd: number | null; ms: number | null; status: string | null; runKey: string | null }[]; usd: number | null; capUsd: number | null };
   notes: string[];
-}
-export interface ActivityItem {
-  when: string;
-  agent: string;
-  chat: string;
-  sentence: string;
-  link: string;
-  kind: "done" | "failed";
 }
 export interface NeedsYou {
   count: number;

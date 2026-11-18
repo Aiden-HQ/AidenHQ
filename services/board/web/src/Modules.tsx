@@ -1,137 +1,224 @@
-// The Modules tab (#/modules): what is on and what is available, with a switch for each chosen module.
-import { useEffect, useState } from "react";
+// The Modules tab (#/modules): every module as a tile, installed first, then available; one search over both, and
+// Marketplaces (where modules come from) one click away.
+import { useEffect, useMemo, useRef, useState } from "react";
 import { SignInRequired, api } from "./api";
-import { RowsSkeleton } from "./SettingsConnections";
-import { ChangesScope, Group, Page, Row, StatusPill } from "./settings-ui";
-import { useModuleToggle, useSetupNeeded } from "./ModuleParts";
-import { SetupButton } from "./SetupButton";
 import { Marketplaces } from "./Marketplaces";
-import { ModulesBrowse } from "./ModulesBrowse";
-import type { Advisory, ModuleRow } from "./types";
+import { LockIcon, ModuleFacts, ModuleStatus, TurnOnCard, lockedWhy, moduleState, publisher, useModuleToggle, useSetupNeeded } from "./ModuleParts";
+import { ChangesScope, IN_FLIGHT } from "./settings-ui";
+import { SetupButton } from "./SetupButton";
+import { SkeletonLines } from "./Skeleton";
+import type { Advisory, BrowseModule, MarketplaceRow, ModuleRow } from "./types";
+import { EmptyState } from "./ui/EmptyState";
+import { PageHeader } from "./ui/PageHeader";
+import { Section } from "./ui/Section";
+import { Segmented } from "./ui/Segmented";
+import { Tile, TileGrid } from "./ui/Tile";
+import "./ui/ui.css";
 import "./settings.css";
+import "./modules.css";
+
+type Show = "installed" | "available" | "all";
+const SHOW = [["installed", "Installed"], ["available", "Available"], ["all", "All"]] as const;
 
 export function ModulesView({ onSignIn }: { onSignIn: () => void }) {
+  const [markets, setMarkets] = useState(false);
   return (
     <ChangesScope onSignIn={onSignIn}>
-      <div className="st-shell">
-        <div className="st-pane">
-          <div className="page wide">
-            <ModulesTabs onSignIn={onSignIn} />
-          </div>
-        </div>
+      <div className="mods">
+        {markets ? (
+          <>
+            <PageHeader crumb={<><a href="#/modules" onClick={(e) => (e.preventDefault(), setMarkets(false))}>Modules</a> / Marketplaces</>} title="Marketplaces" sub="Where modules come from, each held at a commit at least 7 days old. Updating one moves every module it holds." />
+            <div className="mods-markets">
+              <Marketplaces onSignIn={onSignIn} />
+            </div>
+          </>
+        ) : (
+          <ModulesList onSignIn={onSignIn} onMarkets={() => setMarkets(true)} />
+        )}
       </div>
     </ChangesScope>
   );
 }
 
-type ModulesTab = "installed" | "browse" | "marketplaces";
-const MODULE_TABS: [ModulesTab, string][] = [["installed", "Installed"], ["browse", "Browse"], ["marketplaces", "Marketplaces"]];
-
-/** Installed (lane D), Browse and Marketplaces (lane E). */
-function ModulesTabs({ onSignIn }: { onSignIn: () => void }) {
-  const [tab, setTab] = useState<ModulesTab>("installed");
-  return (
-    <>
-      <div className="st-seg" role="tablist">
-        {MODULE_TABS.map(([t, name]) => (
-          <button key={t} role="tab" aria-selected={tab === t} className={tab === t ? "on" : ""} onClick={() => setTab(t)}>
-            {name}
-          </button>
-        ))}
-      </div>
-      {tab === "installed" && <ModulesPage onSignIn={onSignIn} />}
-      {tab === "browse" && <ModulesBrowse onSignIn={onSignIn} />}
-      {tab === "marketplaces" && <Marketplaces onSignIn={onSignIn} />}
-    </>
-  );
-}
-
-function ModulesPage({ onSignIn }: { onSignIn: () => void }) {
+function ModulesList({ onSignIn, onMarkets }: { onSignIn: () => void; onMarkets: () => void }) {
   const [mods, setMods] = useState<ModuleRow[] | null>(null);
   const [advisories, setAdvisories] = useState<Advisory[]>([]);
+  const [info, setInfo] = useState<Map<string, BrowseModule>>(new Map());
+  const [newer, setNewer] = useState<MarketplaceRow[]>([]);
   const [error, setError] = useState("");
+  const [show, setShow] = useState<Show>("installed");
+  const [q, setQ] = useState("");
   const needsSetup = useSetupNeeded();
   useEffect(() => {
     api.modules().then(
       (r) => (setMods(r.modules), setAdvisories(r.advisories ?? [])),
       (e) => (e instanceof SignInRequired ? onSignIn() : setError((e as Error).message)),
     );
+    // What turning one on adds, and newer marketplace commits: both optional extras.
+    api.browse("", "").then((r) => setInfo(new Map(r.modules.map((m) => [m.name, m]))), () => {});
+    api.marketplaces().then((r) => setNewer(r.marketplaces.filter((m) => m.newer)), () => {});
   }, [onSignIn]);
+
+  const advisoryOf = useMemo(() => new Map(advisories.map((a) => [a.module, a])), [advisories]);
+  const needle = q.trim().toLowerCase();
+  const match = (m: ModuleRow) => !needle || `${m.name} ${m.description} ${m.marketplace} ${m.agents.join(" ")} ${m.connections.join(" ")}`.toLowerCase().includes(needle);
+  // Installed: what needs you first, then what you chose, then what they need, the core last.
+  const rank = (m: ModuleRow) => (advisoryOf.has(m.name) || needsSetup.has(m.name) ? 0 : m.state === "on" ? 1 : m.state === "dependency" ? 2 : 3);
+  const installed = (mods ?? []).filter((m) => m.state !== "off").sort((a, b) => rank(a) - rank(b) || a.name.localeCompare(b.name));
+  const available = (mods ?? []).filter((m) => m.state === "off").sort((a, b) => a.name.localeCompare(b.name));
+  const shownInstalled = show === "available" ? [] : installed.filter(match);
+  const shownAvailable = show === "installed" ? [] : available.filter(match);
+
+  const header = (
+    <PageHeader
+      title="Modules"
+      sub="Each module brings agents, connections and apps. Turning one on or off is a change you approve."
+      actions={
+        <button className="btn" onClick={onMarkets}>
+          Marketplaces
+        </button>
+      }
+    />
+  );
   if (!mods)
     return (
-      <Page title="Modules" sub={error ? `Couldn't load modules: ${error}` : "Loading…"}>
-        {!error && <RowsSkeleton />}
-      </Page>
+      <>
+        {header}
+        {error ? (
+          <EmptyState action={<button className="btn" onClick={() => location.reload()}>Try again</button>}>
+            <strong>Couldn't load modules.</strong> The board couldn't read the module list: {error}
+          </EmptyState>
+        ) : (
+          <TileGrid>
+            {[0, 1, 2, 3, 4, 5].map((i) => (
+              <div key={i} className="ui-tile mods-skeleton">
+                <SkeletonLines lines={3} />
+              </div>
+            ))}
+          </TileGrid>
+        )}
+      </>
     );
-  const chosen = mods.filter((m) => m.state === "on");
-  const fixed = mods.filter((m) => m.state === "core" || m.state === "dependency");
-  const off = mods.filter((m) => m.state === "off");
+
+  const grid = (list: ModuleRow[]) => (
+    <TileGrid>
+      {list.map((m) => (
+        <ModuleTile key={m.name} m={m} setup={needsSetup.has(m.name)} advisory={advisoryOf.get(m.name)} info={info.get(m.name)} />
+      ))}
+    </TileGrid>
+  );
+  const nothing = shownInstalled.length + shownAvailable.length === 0;
   return (
-    <Page title="Modules" sub={`${chosen.length + fixed.length} on, ${off.length} available. A module brings its agents, connections and apps; turning one on or off is a change you approve.`}>
+    <>
+      {header}
       {advisories.map((a) => (
-        <div key={a.id} className={`st-banner${a.severity === "high" || a.severity === "critical" ? " bad" : ""}`} role="alert">
-          <strong>Advisory {a.id}</strong> ({a.severity}) affects the installed {a.module}: {a.summary.replace(/^`|`$/g, "")}
+        <div key={a.id} className={`mods-alert${a.severity === "high" || a.severity === "critical" ? " bad" : ""}`} role="alert">
+          <span className="mods-alert-text">
+            <strong>Security advisory for {a.module}</strong> ({a.severity}): {a.summary.replace(/^`|`$/g, "")} The fix is an ordinary update to a newer pin.
+          </span>
           {a.url && (
-            <>
-              {" "}
-              <a href={a.url} target="_blank" rel="noreferrer noopener">
-                Details
-              </a>
-            </>
+            <a className="btn" href={a.url} target="_blank" rel="noreferrer noopener">
+              Details
+            </a>
           )}
-          . The fix is an ordinary update to a newer pin.
+          <a className="btn primary" href={`#/modules/${a.module}`}>
+            Open {a.module}
+          </a>
         </div>
       ))}
-      <Group title="Chosen by you" count={chosen.length}>
-        {chosen.map((m) => (
-          <ModuleItem key={m.name} m={m} setup={needsSetup.has(m.name)} />
-        ))}
-      </Group>
-      <Group title="Core and dependencies" count={fixed.length}>
-        {fixed.map((m) => (
-          <ModuleItem key={m.name} m={m} setup={needsSetup.has(m.name)} />
-        ))}
-      </Group>
-      {off.length > 0 && (
-        <Group title="Available" count={off.length}>
-          {off.map((m) => (
-            <ModuleItem key={m.name} m={m} setup={false} />
-          ))}
-        </Group>
+      {newer.length > 0 && advisories.length === 0 && (
+        <div className="mods-alert info">
+          <span className="mods-alert-text">A newer version of {newer.map((m) => m.name).join(", ")} is available.</span>
+          <button className="btn" onClick={onMarkets}>
+            Review update
+          </button>
+        </div>
       )}
-    </Page>
+      <div className="mods-bar">
+        <Segmented<Show> label="Show" value={show} onChange={setShow} options={SHOW} />
+        <input className="mods-search" type="search" placeholder="Search modules" aria-label="Search modules" value={q} onChange={(e) => setQ(e.target.value)} />
+      </div>
+      {nothing ? (
+        needle ? (
+          <EmptyState action={<button className="btn" onClick={() => (setQ(""), setShow("all"))}>Clear search</button>}>
+            <strong>Nothing matches "{q.trim()}".</strong>{" "}
+            {show === "all" ? "No installed or available module has that in its name, description, agents or connections." : `Nothing ${show} matches. It may be under ${show === "installed" ? "Available" : "Installed"}.`}
+          </EmptyState>
+        ) : show === "available" ? (
+          <EmptyState action={<button className="btn" onClick={onMarkets}>Add a marketplace</button>}>
+            <strong>Every module is on.</strong> Your marketplaces have nothing else to offer. Add a marketplace to find more modules.
+          </EmptyState>
+        ) : (
+          <EmptyState action={available.length > 0 ? <button className="btn primary" onClick={() => setShow("available")}>See available modules</button> : <button className="btn" onClick={onMarkets}>Add a marketplace</button>}>
+            <strong>Only the core is installed.</strong> Turn on a module to give your agents something to do: a chief of staff, engineers, connections to your tools.
+          </EmptyState>
+        )
+      ) : show === "all" ? (
+        <>
+          {shownInstalled.length > 0 && <Section title="Installed" count={shownInstalled.length}>{grid(shownInstalled)}</Section>}
+          {shownAvailable.length > 0 && <Section title="Available" count={shownAvailable.length}>{grid(shownAvailable)}</Section>}
+        </>
+      ) : (
+        grid(show === "installed" ? shownInstalled : shownAvailable)
+      )}
+    </>
   );
 }
 
-/** Why a module that isn't chosen is on: always (the kernel) or because other modules need it. */
-const why = (m: ModuleRow) => (m.state === "core" ? "always on" : m.state === "dependency" ? (m.neededBy.length ? `needed by ${m.neededBy.join(", ")}` : "needed by another") : undefined);
-
-function ModuleItem({ m, setup }: { m: ModuleRow; setup: boolean }) {
+function ModuleTile({ m, setup, advisory, info }: { m: ModuleRow; setup: boolean; advisory?: Advisory; info?: BrowseModule }) {
   const t = useModuleToggle(m);
-  const counts = [m.agents.length && `${m.agents.length} agent${m.agents.length === 1 ? "" : "s"}`, m.connections.length && `${m.connections.length} connection${m.connections.length === 1 ? "" : "s"}`].filter(Boolean).join(", ");
+  const [asking, setAsking] = useState(false);
+  const s = moduleState(m, { filed: t.filed, setup, advisory });
+  const href = `#/modules/${m.name}`;
+  // A module turned on while the owner is still here opens its setup flow (the design's "Setup flows").
+  const was = useRef(t.filed?.stage);
+  useEffect(() => {
+    const turnedOn = t.filed?.items.some((c) => c.kind === "module" && c.name === m.name && c.on);
+    if (info?.setupFlow && turnedOn && t.filed?.stage === "applied" && was.current && IN_FLIGHT.includes(was.current)) location.hash = `#/setup/${m.name}`;
+    was.current = t.filed?.stage;
+  }, [t.filed, m.name, info?.setupFlow]);
+  const locked = lockedWhy(m);
+  const stopped = t.filed && (t.filed.stage === "failed" || t.filed.stage === "rejected");
+  const action = t.busy ? null : setup ? (
+    <SetupButton module={m.name} primary />
+  ) : advisory ? (
+    <a className="btn primary" href={href}>Review fix</a>
+  ) : m.state === "off" ? (
+    <button className="btn" onClick={() => setAsking(true)}>{stopped ? "Try again" : "Turn on"}</button>
+  ) : (
+    t.switchEl
+  );
   return (
     <>
       {t.dialog}
-      <Row
-        title={<a href={`#/modules/${m.name}`}>{m.name}</a>}
-        sub={`${m.description}${counts ? ` · ${counts}` : ""} · ${m.marketplace} ${m.tier}${m.pinned ? ` · pinned at ${m.pinned}` : ""}`}
-        meta={
-          <>
-            {t.meta}
-            {setup && <StatusPill tone="warn">Needs setup</StatusPill>}
-            {why(m) && <span className="st-chip">{why(m)}</span>}
-          </>
+      {asking && <TurnOnCard m={m} info={info} onClose={() => setAsking(false)} />}
+      <Tile
+        href={href}
+        name={m.name}
+        title={m.name}
+        status={<ModuleStatus s={s} />}
+        tone={s.tone === "failed" ? "failed" : s.tone === "needs" ? "needs" : undefined}
+        facts={<ModuleFacts m={m} />}
+        foot={
+          t.busy ? (
+            <a className="mods-foot-link busy" href={`#/c/${t.filed!.identifier}`}>Follow it ({t.filed!.identifier})</a>
+          ) : stopped ? (
+            <a className="mods-foot-link" href={`#/c/${t.filed!.identifier}`}>See why ({t.filed!.identifier})</a>
+          ) : locked ? (
+            <span className="mods-locked" title="Can't be turned off">
+              <LockIcon />
+              {locked}
+            </span>
+          ) : m.state === "off" && info?.setupFlow ? (
+            `Then: ${info.setupFlow.title.charAt(0).toLowerCase()}${info.setupFlow.title.slice(1)}`
+          ) : m.tier !== "official" ? (
+            publisher(m)
+          ) : undefined
         }
-        action={
-          <>
-            {setup && <SetupButton module={m.name} primary />}
-            {t.switchEl}
-          </>
-        }
-        open={t.want !== null || Boolean(t.filed) || undefined}
-        onToggle={(o) => !o && t.setWant(null)}
-        details={t.preview || t.progress ? <>{t.progress}{t.preview}</> : undefined}
-      />
+        action={action}
+      >
+        {m.description}
+      </Tile>
     </>
   );
 }

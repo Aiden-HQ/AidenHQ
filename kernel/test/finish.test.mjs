@@ -142,6 +142,30 @@ test("the finish gate never fails open: a graded assignee's task with no check c
   assert.deepEqual(s.writes, []);
 });
 
+test("an undecided approval card of the task refuses the close, whatever the checks say; once decided or run, the same finish passes", async (t) => {
+  const card = { sentence: "Post the note.", changes: "", reads: "", cost: "", details: "" };
+  const file = (k, state, task = TASK) => k.records.file({ kind: "conn.tool", module: "twin", args: { connection: "twin", tool: "post", arguments: { note: state } }, targets: {}, executor: { module: "twin" }, policy: "", tier: 1, panel: false, card, requester: { agent: "ag-ada", key: "ada", name: "Ada", roles: [], kind: "run" }, task, state });
+  for (const state of ["review", "owner"]) {
+    // No module check installed either: the gate holds its own line.
+    for (const checks of [undefined, {}]) {
+      const s = await setup(t, () => ({ verdict: "ok" }), { checks });
+      const rec = file(s.k, state);
+      file(s.k, state, "another-task");
+      let r = await s.finish({ status: "done", comment: "Done." });
+      assert.equal(r.status, 409, state);
+      assert.match(r.json.error.message, /^1 approval is on WOR-1 still undecided: k-[0-9a-f]+ \(conn\.tool\)\. They run when approved/);
+      assert.deepEqual(s.writes, [], "nothing moved");
+      assert.equal(s.issue.status, "in_progress");
+      // Decided: the review rejects it, the owner's card is approved and its write runs.
+      if (state === "review") s.k.records.review(rec.id, rec.digest, { decision: "reject", by: "reviewer:x", note: "no" });
+      else { s.k.records.decide(rec.id, rec.digest, "approve", "owner:board", "board"); s.k.records.claim(rec.id); s.k.records.finish(rec.id, true, "posted"); }
+      r = await s.finish({ status: "done", comment: "Done." });
+      assert.equal(r.status, 200, state);
+      assert.deepEqual(s.writes, [{ as: "run-jwt-ada", body: { status: "done", comment: "Done." } }]);
+    }
+  }
+});
+
 test("checksFile: a missing or unparsable file throws; a map loads and is reread when it changes", async () => {
   const { checksFile } = await import("../src/checks.ts");
   const { mkdtempSync, writeFileSync } = await import("node:fs");

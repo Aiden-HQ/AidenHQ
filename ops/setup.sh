@@ -28,7 +28,7 @@
 #                                                      owner's Telegram (never printed here)
 #   ops/setup.sh --config person.env --dry-run         print what it would do; changes nothing
 # person.env (KEY=value, read here, never printed): OWNER_NAME, OWNER_EMAIL, TIMEZONE (required); AIDENHQ_USER (default
-# the sudo user), COMPANY_NAME (work), MODULES (google), OPENROUTER_MANAGEMENT_KEY + OPENROUTER_LIMIT_USD (50) or
+# the sudo user), COMPANY_NAME (work), MODULES (google), OPENROUTER_MANAGEMENT_KEY + OPENROUTER_LIMIT_USD (100) or
 # OPENROUTER_KEY, GOOGLE_CLIENT_ID + GOOGLE_CLIENT_SECRET (optional: an OAuth app you already have; otherwise the board's Google setup asks), TS_AUTHKEY (tailnet join key),
 # TS_APPS_AUTHKEY (the apps' own tailnet node: a reusable, tagged, pre-authorized key; docs/setup.md),
 # BOARD_HOST (default: this VM's tailnet name), PAPERCLIP_PASSWORD
@@ -122,7 +122,7 @@ in_range TIMEOUT_MINUTES "$TIMEOUT_MINUTES" 5 1440
 in_range CI_RUNNERS "$CI_RUNNERS" 0 32
 AGENTS_ORG="$(cfg GITHUB_AGENTS_ORG)"
 [[ -z "$AGENTS_ORG" || "$AGENTS_ORG" =~ ^[A-Za-z0-9][A-Za-z0-9-]*$ ]] || die "GITHUB_AGENTS_ORG must be a GitHub organization name"
-COMPANY="$(cfg COMPANY_NAME work)"; MODULES="$(cfg MODULES google)"; LIMIT="$(cfg OPENROUTER_LIMIT_USD 50)"
+COMPANY="$(cfg COMPANY_NAME work)"; MODULES="$(cfg MODULES google)"; LIMIT="$(cfg OPENROUTER_LIMIT_USD 100)"
 SECRETS="$H/.config/aidenhq"; INST="$H/aidenhq-instance"; REMOTE="$H/aidenhq-instance.git"; ENVF="$REPO/.env"
 
 if [ "$DRY" = 1 ]; then
@@ -454,6 +454,9 @@ settings:
   company_name: $(json "$COMPANY")
   channels: [web]
   exposure: $EXPOSURE
+  # Quiet start (docs/design/quiet-start.md): schedules and heartbeats wait until you turn them on; spend stops at \$10 a day.
+  quiet_start: "on"
+  spend_day_usd: 10
 ${AGENTS_ORG:+  github_agents_org: $AGENTS_ORG}
 $(p="$(sed -n 's/^AIDENHQ_PRODUCT_REPO=//p' "$ENVF" | head -1)"; [ -z "$p" ] || echo "  product_repo: $(json "$p")")
 EOF
@@ -545,7 +548,7 @@ say "Runner, model gateway and run pruning (user units)"
 # aidenhq-kernel: every model and tool call (kernel/src); the only holder of the OpenRouter key and the connections' keys.
 # A new size reaches a runner that was already running: it exits once nothing is half done (jobs keep running).
 runner_up=0; [ "$DRY" = 1 ] || ! as_user systemctl --user is-active --quiet aidenhq-runner || runner_up=1
-as_user systemctl --user enable --now aidenhq-kernel aidenhq-runner aidenhq-computers prune-runs.timer prune-docker.timer
+as_user systemctl --user enable --now aidenhq-kernel aidenhq-runner aidenhq-computers prune-runs.timer prune-docker.service prune-docker.timer
 # aidenhq-apply-recover: at boot, finishes an apply that died mid-run (ops/apply-config.sh --recover).
 as_user systemctl --user enable aidenhq-apply-recover
 [ "${KERNEL_RESTART:-0}" = 0 ] || as_user systemctl --user restart aidenhq-kernel
@@ -598,7 +601,7 @@ fi
 [ -z "$CONFIG" ] || echo "Delete $CONFIG: it holds secrets (the OpenRouter key)."
 if [ "$UNATTENDED" = 0 ] && [ -e /root/aidenhq-vault-recovery.txt ]; then echo "Vault recovery key: /root/aidenhq-vault-recovery.txt. Store it, then: sudo shred -u /root/aidenhq-vault-recovery.txt"; fi
 if [ -z "$BOARD_HOST" ] && [ "$PUBLIC" = 0 ]; then
-  tunnel="ssh -N -L 3121:127.0.0.1:3121 -L 3120:127.0.0.1:3120 $U@$(hostname -f 2>/dev/null || hostname)"
+  tunnel="ssh -N -L 3121:127.0.0.1:3121 -L 3120:127.0.0.1:3120 -L 3130:127.0.0.1:3130 $U@$(hostname -f 2>/dev/null || hostname)"
   echo "The board listens on this host's loopback only. From $OWNER_NAME's laptop, open a tunnel first and leave it open:"
   echo "  $tunnel"
   [ "$UNATTENDED" = 0 ] || echo "AIDENHQ_SSH_TUNNEL=$tunnel"

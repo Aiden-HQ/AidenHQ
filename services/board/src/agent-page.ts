@@ -29,8 +29,6 @@ export interface TaskRow {
   from: string | null;
 }
 
-/** States that wait on the owner. */
-const NEEDS: string[] = ["waiting for you", "waiting for approval", "failed"];
 export const HISTORY_PAGE = 30;
 
 export function agentByKey(agents: Agent[], key: string): Agent | undefined {
@@ -45,13 +43,11 @@ export function taskRow(i: Issue, state: TaskRow["state"], agents: Agent[], upda
   return { identifier: i.identifier, title: i.title, state, updatedAt, from };
 }
 
-/** The agent's open tasks (chats are not tasks), split into what waits on the owner and the rest, newest first. */
-export function splitTasks(issues: Issue[], agentId: string, chatLabelId: string | undefined, stateOf: (i: Issue) => ChatState, agents: Agent[] = []): { needs: TaskRow[]; ongoing: TaskRow[] } {
-  const rows = issues
-    .filter((i) => i.assigneeAgentId === agentId && !(chatLabelId && (i.labelIds?.includes(chatLabelId) || i.labels?.some((l) => l.id === chatLabelId))))
-    .map((i) => taskRow(i, stateOf(i), agents))
-    .sort(newest);
-  return { needs: rows.filter((r) => NEEDS.includes(r.state)), ongoing: rows.filter((r) => !NEEDS.includes(r.state)) };
+/** The agent's open tasks (chats are not tasks), split into what waits on the owner (`needs`: chats.ts needsYou's ids) and the rest, newest first. */
+export function splitTasks(issues: Issue[], agentId: string, chatLabelId: string | undefined, stateOf: (i: Issue) => ChatState, agents: Agent[] = [], needs: Set<string> = new Set()): { needs: TaskRow[]; ongoing: TaskRow[] } {
+  const mine = issues.filter((i) => i.assigneeAgentId === agentId && !(chatLabelId && (i.labelIds?.includes(chatLabelId) || i.labels?.some((l) => l.id === chatLabelId))));
+  const rows = (list: Issue[]) => list.map((i) => taskRow(i, stateOf(i), agents)).sort(newest);
+  return { needs: rows(mine.filter((i) => needs.has(i.id))), ongoing: rows(mine.filter((i) => !needs.has(i.id))) };
 }
 
 /** One page of finished tasks (Paperclip filtered and paged them), chats left out; `next` is the following offset when the raw page was full. */

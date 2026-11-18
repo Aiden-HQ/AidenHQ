@@ -61,7 +61,7 @@ let revision;
 try { revision = execFileSync("git", ["-C", repo, "rev-parse", "HEAD"], { encoding: "utf8" }).trim(); } catch {}
 
 let out, computers;
-try { out = compile(repo, instanceDir, { revision }); computers = computersConfig(out.paperclip, repo, out.catalog.filter((m) => m.enabled).map((m) => m.name)); } catch (e) { die(e.message); }
+try { out = compile(repo, instanceDir, { revision, door: { publicIp: env("AIDENHQ_PUBLIC_IP"), adminUrl: env("AIDENHQ_ADMIN_URL"), boardUrl: env("BOARD_LAN_URL") } }); computers = computersConfig(out.paperclip, repo, out.catalog.filter((m) => m.enabled).map((m) => m.name)); } catch (e) { die(e.message); }
 if (process.argv.includes("--sizes")) {
   try { console.log(sizesReport(out.paperclip, { repo, instanceDir, engines: out.engines })); } catch (e) { die(e.message); }
   process.exit(0);
@@ -92,6 +92,9 @@ if (secretsDir && !stage) {
   if (missing.length) die(`missing secret files in ${secretsDir}: ${missing.map((m) => `${m.secret} (mounted by ${m.services.join(", ")})`).join("; ")}. Run scripts/bootstrap.sh, or put the secret there.`);
 }
 
+// A module's own vault folder (secrets.state) too: the secrets dir is a FUSE mount, so Docker (root) can't create its bind source.
+if (secretsDir && !stage) for (const d of new Set(out.stateDirs)) mkdirSync(join(secretsDir, d), { recursive: true, mode: 0o700 });
+
 // The grants table's directory exists before compose mounts it (Docker would create a root-owned one setup can't write).
 if (!stage) mkdirSync(join(resolve(repo, env("AIDENHQ_CONFIG_DIR") ?? "config"), "grants"), { recursive: true });
 // Likewise the apps node's state and serve config (compose.yaml apps-edge; apps-mcp writes the serve config), and the
@@ -111,7 +114,7 @@ if (!stage && out.compose.services["security-scanner"]) writeFileSync(join(dataD
 let caddy;
 if (out.exposure === "public") {
   const ip = env("AIDENHQ_PUBLIC_IP"), urls = publicUrls(ip);
-  try { caddy = caddyfile(ip); } catch (e) { die(`exposure public: AIDENHQ_PUBLIC_IP in .env: ${e.message} (sudo ops/setup.sh sets it)`); }
+  try { caddy = caddyfile(ip, undefined, out.edge?.gate?.doors?.base); } catch (e) { die(`exposure public: AIDENHQ_PUBLIC_IP in .env: ${e.message} (sudo ops/setup.sh sets it)`); }
   if (env("BOARD_LAN_URL") !== urls.board || env("AIDENHQ_ADMIN_URL") !== urls.admin) die(`exposure public: .env needs BOARD_LAN_URL=${urls.board} and AIDENHQ_ADMIN_URL=${urls.admin} (sudo ops/setup.sh sets them)`);
   out.compose.services.caddy = caddyService(caddy);
   if (!stage) mkdirSync(join(dataDir, "caddy"), { recursive: true, mode: 0o700 });

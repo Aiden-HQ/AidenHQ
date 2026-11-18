@@ -31,7 +31,7 @@ import { CommitUnreadable, agentGrants, browseModules, createResolver, marketpla
 import { connectionsView, probe, readSources, settingsView, type Probe } from "./settings.js";
 import { ChangeRefused, ChangesSchema, SETTINGS_LABEL, changesOf, checkChange, stageOf, taskFor, type Change } from "./settings-change.js";
 import { createGrading, gradePassed, type Grading } from "./grading.js";
-import { UsageSchema, WINDOWS, costs, keyUsage, prices, type CostWindow } from "./costs.js";
+import { UsageSchema, WINDOWS, costs, keyUsage, prices, spendToday, type CostWindow } from "./costs.js";
 import { ledgerRange, ledgerSummary, ledgerTop } from "./cost-ledger.js";
 import { descendants, featureCost, recentFeatures } from "./feature-cost.js";
 import { MergeSchema, mergedDescription } from "./merge.js";
@@ -44,8 +44,7 @@ import { OPEN, Paperclip, PaperclipError, type Agent, type Comment, type Issue, 
 import { accountSession, type BoardSession, type SessionOf } from "./session.js";
 import { laneAgents, laneMessages, laneSend, type LaneOptions } from "./lane.js";
 import { latest, successorOf } from "./rollover.js";
-import { NOTICE_MARKER, chatAgent, chatAgentMarker, chatState, conversation, lastWord, needsYou, openAsk, pickAgent, shownState, type Message } from "./chats.js";
-import { activityDays } from "./days.js";
+import { NOTICE_MARKER, asksOwner, chatAgent, chatAgentMarker, chatState, conversation, lastWord, needsYou, openAsk, pickAgent, shownState, type Message } from "./chats.js";
 import { addDays, nextWorkday, type Weekday } from "./recurrence.js";
 import { BUCKETS, isBucket, localDate, type Store } from "./store.js";
 import { AsideSchema, askGateway, asideMessages, holdsActive, lineageStatus, lineageTotal, modelOf, settleable, stillSettled, type LineageRow } from "./lineage.js";
@@ -547,6 +546,24 @@ export function createApp(opts: AppOptions): Server {
     };
   }
 
+  /**
+   * Everything waiting on the owner now (chats.ts needsYou): an agent's open question is read from each open task's newest
+   * comments (chats: the conversation the chat list shows; tasks: openAsk), cached per task until it changes, a few at a time.
+   */
+  async function waiting(ctx: Awaited<ReturnType<typeof context>>) {
+    const [open, live, runs, awaiting] = await Promise.all([pc.openIssues(), pc.liveRuns(), pc.recentRuns(100), records.awaiting().catch(() => new Set<string>())]);
+    const candidates = open.filter((i) => i.status !== "backlog" && chatAgent(i));
+    const asking = new Set<string>();
+    for (let n = 0; n < candidates.length; n += 4)
+      await Promise.all(
+        candidates.slice(n, n + 4).map(async (i) => {
+          const asks = isChat(i, ctx) ? asksOwner(await chatMessages(i, ctx).catch(() => [] as Message[])) : Boolean(await askOf(i, ctx.me));
+          if (asks) asking.add(i.id);
+        }),
+      );
+    return needsYou(open, live, runs, ctx.me, awaiting, asking);
+  }
+
   // A chat's conversation, re-read only when the chat has changed (the list asks for every chat's last word).
   const conversations = new Map<string, { stamp: string; messages: Message[] }>();
   async function chatMessages(issue: Issue, ctx: Awaited<ReturnType<typeof context>>, comments?: Comment[]): Promise<Message[]> {
@@ -626,19 +643,20 @@ export function createApp(opts: AppOptions): Server {
   const handedOutBy = (chat: Issue, k: Issue, me: string) =>
     k.parentId === chat.id && (k.createdByAgentId ? k.createdByAgentId === chatAgent(chat) : k.createdByUserId === me);
 
+  /** The question a task's agent is still waiting on the owner for; its comments are read again only when it has changed. */
+  async function askOf(task: Issue, me: string) {
+    const stamp = `${task.lastActivityAt ?? task.updatedAt}|${task.assigneeAgentId}`;
+    const hit = asks.get(task.id);
+    if (hit?.stamp === stamp) return hit.ask;
+    const comments = await pc.comments(task.id).catch(() => undefined);
+    const ask = openAsk(comments ?? [], task.assigneeAgentId, me);
+    if (comments) asks.set(task.id, { stamp, ask });
+    return ask;
+  }
+
   async function askingKids(chat: Issue, kids: Issue[], me: string) {
     const open = kids.filter((k) => k.assigneeAgentId && !["done", "cancelled"].includes(k.status) && handedOutBy(chat, k, me));
-    // A task's comments are read again only when it has changed (every open chat refresh asks).
-    const askOf = async (task: Issue) => {
-      const stamp = `${task.lastActivityAt ?? task.updatedAt}|${task.assigneeAgentId}`;
-      const hit = asks.get(task.id);
-      if (hit?.stamp === stamp) return hit.ask;
-      const comments = await pc.comments(task.id).catch(() => undefined);
-      const ask = openAsk(comments ?? [], task.assigneeAgentId, me);
-      if (comments) asks.set(task.id, { stamp, ask });
-      return ask;
-    };
-    const found = await Promise.all(open.map(async (task) => ({ task, ask: await askOf(task) })));
+    const found = await Promise.all(open.map(async (task) => ({ task, ask: await askOf(task, me) })));
     return found.filter((x): x is { task: Issue; ask: NonNullable<typeof x.ask> } => Boolean(x.ask));
   }
 
@@ -1117,11 +1135,22 @@ export function createApp(opts: AppOptions): Server {
     },
   ];
 
-  // Where OAuth sign-ins must start: the loopback board, reached from a laptop through an SSH tunnel (docs/setup.md).
+  // Where OAuth sign-ins start on a board without an https address: the loopback board, through an SSH tunnel (docs/setup.md).
   const TUNNEL = "http://127.0.0.1:3121 through ssh -N -L 3121:127.0.0.1:3121 <you>@<host> from your laptop";
   const googleViaBoard = mode === "lan" && !!opts.lan?.googleConnect && !!opts.lan.url.startsWith("https://");
   /** Where the board's sign-ins return for a request to `host`: its https address when Connect runs there, else the request's own. */
   const signInOrigin = (host: string) => (googleViaBoard ? opts.lan!.url : `http://${host}`);
+  /**
+   * Where a module sign-in (board.signins) started at `host` returns: the loopback address it came from (a tunnel), or the
+   * board's https address (BOARD_LAN_URL) when the request reached the board by that name. Undefined anywhere else: plain
+   * http off loopback never carries a sign-in.
+   */
+  const httpsBoard = mode === "lan" && !!opts.lan?.url.startsWith("https://") ? new URL(opts.lan!.url) : undefined;
+  const vendorOrigin = (host: string): string | undefined => {
+    const h = host.toLowerCase();
+    if (loopbackPort(h)) return `http://${h}`;
+    return httpsBoard && h.replace(/:\d+$/, "") === httpsBoard.hostname ? httpsBoard.origin : undefined;
+  };
 
   // ------------------------------------------------------------------ Settings (settings.ts)
 
@@ -1171,7 +1200,7 @@ export function createApp(opts: AppOptions): Server {
         const ctx = await context();
         const since = new Date(Date.now() - RECENT_MS).toISOString();
         // Who is working and the connections' states don't depend on the tasks: started with them, not after.
-        const extras = Promise.all([working(ctx), opts.google?.status(), signInStates(), bylines()]);
+        const extras = Promise.all([working(ctx), opts.google?.status(), signInStates(), bylines(), spendToday(opts.gateway)]);
         extras.catch(() => {}); // awaited below; this only keeps a failure there from going unhandled meanwhile
         const settledAt = store.settledAt();
         // A settled task stays off the board until something happens on it.
@@ -1187,7 +1216,7 @@ export function createApp(opts: AppOptions): Server {
         const folded = foldedChildren([...open, ...closed], ctx.assignees);
         store.placeNew(open.filter((i) => !folded.has(i.id)).map((i) => ({ id: i.id, createdAt: i.createdAt, status: i.status })));
         const recurring = new Map([...store.allRecurring()].map(([id, r]) => [id, { summary: recurringView(r, opts.timezone).summary, nextRun: r.nextRun, paused: r.paused }]));
-        const [busy, google, signIns, names] = await extras;
+        const [busy, google, signIns, names, spend] = await extras;
         const board = buildBoard({ open, closed, placements: store.placements(), seen: store.allSeen(), schedules: store.schedules(), recurring, installedAt: store.meta("installed_at")!, assignees: ctx.assignees, crew: { working: busy.map, jobs: latestJobs(shared.runner) } });
         for (const card of [...Object.values(board.buckets).flat(), ...board.recurring]) {
           const w = busy.map.get(card.identifier);
@@ -1200,7 +1229,7 @@ export function createApp(opts: AppOptions): Server {
         // When Tomorrow next rolls into Today: the next calendar day, except before days off.
         const today = localDate(opts.timezone);
         const rollsOn = nextWorkday(today, opts.workdays ?? WORKWEEK);
-        return { ...board, assignees: ctx.assignees, labels: ctx.labels, prefix: ctx.prefix, timezone: opts.timezone, slackTeams: opts.slackTeams ?? {}, rollsOn, rollsTomorrow: rollsOn === addDays(today, 1), buckets: board.buckets, agentsActive: busy.active, google: google ?? null, signIns: signIns.map(({ id, label, missing, stopped, status }) => ({ id, label, missing, stopped, status: status ?? null })) };
+        return { ...board, assignees: ctx.assignees, labels: ctx.labels, prefix: ctx.prefix, timezone: opts.timezone, slackTeams: opts.slackTeams ?? {}, rollsOn, rollsTomorrow: rollsOn === addDays(today, 1), buckets: board.buckets, agentsActive: busy.active, spend, google: google ?? null, signIns: signIns.map(({ id, label, missing, stopped, status }) => ({ id, label, missing, stopped, status: status ?? null })) };
       },
     },
     { method: "GET", path: /^\/api\/issues\/([^/]+)$/, handle: async (m) => issueView(decodeURIComponent(m[1]!)) },
@@ -1275,8 +1304,9 @@ export function createApp(opts: AppOptions): Server {
         }
         const [live, runs] = await Promise.all([pc.liveRuns(), pc.recentRuns(100)]);
         const lastRun = (i: Issue) => runs.find((r) => r.issueId === i.id && r.finishedAt);
-        const [open, awaiting] = await Promise.all([pc.openIssues(), records.awaiting().catch(() => new Set<string>())]);
-        return splitTasks(open, agent.id, chat?.id, (i) => chatState(i, live, lastRun(i), ctx.me, awaiting).state, ctx.agents);
+        const [open, awaiting, needs] = await Promise.all([pc.openIssues(), records.awaiting().catch(() => new Set<string>()), waiting(ctx)]);
+        const owed = new Map(needs.map((i) => [i.id, i.state]));
+        return splitTasks(open, agent.id, chat?.id, (i) => owed.get(i.id) ?? chatState(i, live, lastRun(i), ctx.me, awaiting).state, ctx.agents, new Set(owed.keys()));
       },
     },
     { method: "GET", path: /^\/api\/agents\/([0-9a-f-]{36})\/scorecard$/, handle: async (m) => scorecard(await gatherFacts(pc, store, records, grading), m[1]!) },
@@ -1344,49 +1374,14 @@ export function createApp(opts: AppOptions): Server {
       },
     },
     {
-      // Activity: what each agent did, by the owner's local day (finished tasks and failed runs).
-      method: "GET",
-      path: /^\/api\/activity$/,
-      handle: async (_m, _b, url) => {
-        const days = Math.min(30, Math.max(1, Number(url.searchParams.get("days") ?? 7) || 7));
-        const ctx = await context();
-        const since = new Date(Date.now() - days * 86_400_000).toISOString();
-        const [closed, runs] = await Promise.all([pc.closedSince(since), pc.recentRuns(200)]);
-        const failed = runs.filter((r) => (r.status === "failed" || r.status === "timed_out") && r.finishedAt && r.finishedAt >= since);
-        const titles = new Map<string, { identifier: string; title: string }>();
-        for (const id of new Set(failed.map((r) => r.issueId).filter((x): x is string => !!x && !closed.some((c) => c.id === x)))) {
-          const i = await pc.issueSummary(id).catch(() => undefined);
-          if (i) titles.set(id, { identifier: i.identifier, title: i.title });
-        }
-        return { days: activityDays(closed.filter((i) => !i.originKind), failed, ctx.agents, opts.timezone, titles) };
-      },
-    },
-    {
-      // What needs the owner: chats and tasks waiting for them, waiting for approval, or failed; and the open approval cards.
+      // What waits on the owner (chats.ts needsYou): his Tier 2 cards' tasks, agents' open questions, work handed to him.
       method: "GET",
       path: /^\/api\/needs-you$/,
       handle: async () => {
         const ctx = await context();
-        const [open, live, runs] = await Promise.all([pc.openIssues(), pc.liveRuns(), pc.recentRuns(100)]);
-        const awaiting = await records.awaiting();
-        const base = needsYou(open, live, runs, ctx.me, awaiting);
-        // Chats also need the owner when their messages say so (a reply asking him, a run that ended without a reply):
-        // the same state the chat list and the conversation show.
-        const lastRun = (id: string) => runs.find((r) => r.issueId === id && r.finishedAt);
-        const chats = open.filter((i) => isChat(i, ctx) && !base.some((b) => b.id === i.id));
-        const more = (
-          await Promise.all(
-            chats.map(async (i) => {
-              const base = chatState(i, live, lastRun(i.id), ctx.me, awaiting);
-              if (base.state !== "idle" && base.state !== "in review") return undefined;
-              const shown = shownState(base, await chatMessages(i, ctx).catch(() => [] as Message[]), lastRun(i.id));
-              return shown.state === "idle" || shown.state === "in review" ? undefined : { ...i, ...shown };
-            }),
-          )
-        ).filter((x) => x !== undefined);
         const agentName = (i: Issue) => ctx.agents.find((a) => a.id === (i.assigneeAgentId ?? chatAgent(i)))?.name ?? "You";
-        const items = [...base, ...more].map((i) => ({ identifier: i.identifier, title: i.title, agent: agentName(i), state: i.state, ...(i.reason ? { reason: i.reason } : {}) }));
-        // approvals: the Tier 2 cards the owner decides in Approvals (its badge); items: everything else that waits on him too.
+        const items = (await waiting(ctx)).map((i) => ({ identifier: i.identifier, title: i.title, agent: agentName(i), state: i.state }));
+        // approvals: the Tier 2 cards the owner decides in Approvals; items: every task waiting on him (those cards' tasks too).
         return { count: items.length, items, approvals: (await records.list("owner")).length };
       },
     },
@@ -1534,6 +1529,8 @@ export function createApp(opts: AppOptions): Server {
           module,
           agents: mine.map(({ key, a }) => agentProfile({ agent: a, agents: ctx.agents, routines, effort: compiled?.agents?.[key]?.reasoning_effort ?? null, catalog })),
           ongoing,
+          // Its routines as compiled: on or off (quiet start pauses a schedule until the owner turns it on), and whose.
+          routines: module.routines.flatMap((key) => { const r = compiled?.routines?.[key]; return r ? [{ key, title: r.title ?? key, agent: r.agent ?? "", on: r.status !== "paused", scheduled: Boolean(r.schedules?.length) }] : []; }),
           authority: moduleAuthority(text, module.name),
           neededBy: module.neededBy,
           requires: module.requires,
@@ -1871,6 +1868,10 @@ export function createApp(opts: AppOptions): Server {
           signedIn: async (id) => (await signInStates()).find((x) => x.id === id)?.status?.state === "ok",
           connected: connectionSignedIn,
           boardUrl: signInOrigin,
+          redirectUrl: (signin, host) => {
+            const s = (opts.signIns ?? []).find((x) => x.id === signin);
+            return s && `${vendorOrigin(host) ?? httpsBoard?.origin ?? "http://127.0.0.1:3121"}${s.callback}`;
+          },
         })
       : []),
     { method: "GET", path: /^\/api\/app-admins$/, handle: async (_m, _b, who) => opts.accounts!.call("app_admins", who) },
@@ -1897,7 +1898,7 @@ export function createApp(opts: AppOptions): Server {
     const who = await accounts.sessionOf(req);
     if (path === "/api/session" && req.method === "GET") {
       const account = who ? { id: who.account.id, email: who.account.email, name: who.account.name, role: who.account.role, owner: who.account.owner } : null;
-      send(res, 200, JSON.stringify({ mode, account, googleConnect: googleViaBoard, adminUrl: opts.adminUrl ?? null }), "application/json");
+      send(res, 200, JSON.stringify({ mode, account, googleConnect: googleViaBoard, signInConnect: !!vendorOrigin(String(req.headers.host ?? "")), adminUrl: opts.adminUrl ?? null }), "application/json");
       return true;
     }
     if (!who) throw new HttpError(401, "sign in");
@@ -1994,16 +1995,16 @@ export function createApp(opts: AppOptions): Server {
 
   /**
    * A module's sign-in (board.signins): /<id>/connect sends the browser to the service's sign-in, which sends it back to
-   * the callback, and the proxy keeps the token. On the laptop's loopback address only, like Google's Reconnect: the
-   * sign-in client is registered for that redirect (a vendor may permit only the bare /callback shape).
+   * the callback, and the proxy keeps the token. At the board's https address (one click, no tunnel) or on a loopback
+   * address (a tunnel); the redirect is that origin plus the callback, and the proxy registers its client for it (or the
+   * owner's hand-made client lists it: the setup flow shows it). A vendor may permit only the bare /callback shape.
    */
   const signInFor = (path: string) => (opts.signIns ?? []).find((s) => s.connect === path || s.callback === path);
 
   async function handleSignIn(req: IncomingMessage, res: ServerResponse, url: URL, s: SignIn) {
     const { label: name, connect, callback, auth } = s;
-    const port = loopbackPort(req.headers.host);
-    if (!port) throw new HttpError(403, `sign in to ${name} from ${TUNNEL}`);
-    const host = String(req.headers.host).toLowerCase();
+    const origin = vendorOrigin(String(req.headers.host ?? ""));
+    if (!origin) throw new HttpError(403, httpsBoard ? `sign in to ${name} from ${httpsBoard.origin}` : `sign in to ${name} from ${TUNNEL}`);
     try {
       if (url.pathname === connect) {
         // The owner picks what to grant (owner, 2026-11-18): when the vendor offers a choice of scopes, a short form comes
@@ -2017,7 +2018,7 @@ export function createApp(opts: AppOptions): Server {
             return;
           }
         }
-        const { url: signIn } = await auth.start(`http://${host}${callback}`, picked ? url.searchParams.getAll("scope") : undefined);
+        const { url: signIn } = await auth.start(`${origin}${callback}`, picked ? url.searchParams.getAll("scope") : undefined);
         log.info(`${name} sign-in started`);
         res.writeHead(302, { ...SECURITY_HEADERS, location: signIn, "cache-control": "no-store" }).end();
         return;

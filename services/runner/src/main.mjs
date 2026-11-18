@@ -7,7 +7,7 @@ import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node
 import { basename, dirname, join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
-import { FOR_OTHERS, RUNNER_MARKER, deliveredFrom, finishedStatus, hasMarker, isAgentSubtask, isRuleProposal, isUserPart, ownRequest, runsUnasked, findRepos, mentionedRepos, isClaudeModel, openrouterModels, crewNames, personaFor, parseCommand, pickedEngine, pickerFor, engineKinds, engineLabel, engineOf, modelPrefix, repoAllowed, resolveEngine, stripHidden, useEngines, settledWait } from "./agents.mjs";
+import { FOR_OTHERS, RUNNER_MARKER, deliveredFrom, finishedStatus, hasMarker, isAgentSubtask, isRuleProposal, isUserPart, ownRequest, runsUnasked, findRepos, mentionedRepos, isClaudeModel, openrouterModels, crewNames, generalEngineers, personaFor, parseCommand, pickedEngine, pickerFor, engineKinds, engineLabel, engineOf, modelPrefix, repoAllowed, resolveEngine, stripHidden, useEngines, settledWait } from "./agents.mjs";
 import { REPO_ROOT, githubSlug, loadConfig } from "./config.mjs";
 import { applyWaitingForLock, architectFollowUps, bumpTitle, definitionsOf, ownerMade, productPin, strayFiles, trialEditsText, trialHandbookOnly, trialNoTapBy, untrialedNewAgents } from "./apply.ts";
 import { applyCardArgs, asApproval, branchCardArgs, cardOf, cardText, planOf } from "./cards.ts";
@@ -2025,6 +2025,8 @@ function gradeDeps(issue) {
     deployHistory: async (name, sha) => (await boardApi.get(`/internal/grades/deploys/${name}/${sha}`)).deploys,
     view: (name, path) => boardApi.post("/internal/grades/view", { name, path }),
     assignee: issue.assigneeAgentId, // whose comments are the task agent's own (wordsEvidence)
+    // The task's creator: whose comments can amend the ask (wordsEvidence), an agent's id for an agent-authored task.
+    delegator: { agentId: issue.createdByAgentId, userId: issue.createdByUserId },
     comments,
     attachments: () => pc.attachments(issue.id),
     content: (id) => pc.attachmentContent(id),
@@ -2792,8 +2794,8 @@ async function reviewOne(a) {
   let input;
   try {
     if (notRunners(a) && a.action === "raise_cap") {
-      // The model gateway's spend-cap raise (the kernel files it): the owner's on its merits, read by the reviewer first. Its
-      // card is the change; every number on it is the gateway's.
+      // The model gateway's spend-cap raise (the kernel files it): Tier 2 from code, so it goes to the owner at once with no
+      // reviewer call (one the install-wide cap would refuse). Its card is the change; every number on it is the gateway's.
       input = { ...classify("raise_cap", {}), diff: [a.sentence, a.changes, a.cost, a.details].join("\n") };
     } else if (notRunners(a)) {
       // The kernel files them without classify(): earlier decisions on the task count as for any request (the card's digest
@@ -3411,7 +3413,7 @@ function readGrants() {
     return undefined;
   }
 }
-const grantsPath = () => cfg.grants_file ?? join(process.env.AIDENHQ_CONFIG_DIR ?? join(REPO_ROOT, "config"), "grants", "grants.json");
+const grantsPath = () => join(process.env.AIDENHQ_CONFIG_DIR ?? join(REPO_ROOT, "config"), "grants", "grants.json");
 /** The instance commit this host last applied: the latest `instance_sha` setup recorded in revs.jsonl, beside the grants. */
 function deployedInstance() {
   try {
@@ -3715,8 +3717,9 @@ async function agentPublish(ctx, command, args) {
       only,
       text,
       check: async (ordered) => {
-        // The repo's own fast check (kernel/src/fastcheck.ts), in the job sandbox, before any card: a failure goes back to the agent.
-        const refused = ctx.box ? void log("fast check skipped: a computer job", { issue: ctx.issue.identifier }) : await fastChecks({ cfg: evalSandbox, log, git }, ordered);
+        // The repo's own fast check (kernel/src/fastcheck.ts), in the job sandbox (a box job's: its box), before any card: a
+        // failure goes back to the agent.
+        const refused = await fastChecks({ cfg: evalSandbox, log, git, ...(ctx.box ? { jail: inBox(ctx.box.container, ctx.workspace) } : {}) }, ordered);
         if (refused) throw new UserError(refused);
         // History rewritten in place (replace refs, grafts, shallow) shows one commit and publishes another: refused before tiering.
         await refuseRewritten(ordered);
@@ -4397,7 +4400,8 @@ async function startJob({ issue, instructions }) {
     const build = typeof assigned?.metadata?.build === "string" ? assigned.metadata.build : "";
     const persona = brief ? undefined : personaFor(engine.kind, engineers, assigned);
     // Billed to the Engineer (a label-only task: the first one on its engine, else on a gateway engine).
-    const agentId = assigned?.id ?? (engineers.find((a) => a.metadata?.box !== true && engineOf(a) === engine.kind) ?? engineers.find((a) => a.metadata?.box !== true && viaGateway(cfg, engineOf(a))))?.id ?? null;
+    const general = generalEngineers(engineers);
+    const agentId = assigned?.id ?? (general.find((a) => engineOf(a) === engine.kind) ?? general.find((a) => viaGateway(cfg, engineOf(a))))?.id ?? null;
     // The agent's jobcaps (grants table): its reads of connections, through the gateway with the job token. A box job reaches
     // its connections through the launcher instead.
     const jobcaps = engine.box ? [] : jobcapsFor(cfg, engine, readGrants()?.agents?.[agentId]?.jobcaps ?? []);
@@ -4466,6 +4470,10 @@ async function startJob({ issue, instructions }) {
       if (jobId) state.finishJob(jobId, "cancelled", "blocked");
       return void (state.park({ issueId: issue.id, instructions, retryAfter: new Date(Date.now() + 5_000).toISOString() }), log("job parked: its task is blocked", { issue: issue.identifier }));
     }
+    if (err instanceof BoxesFull) {
+      if (jobId) state.finishJob(jobId, "cancelled", "no free computer");
+      return void (state.park({ issueId: issue.id, instructions, retryAfter: new Date(Date.now() + 60_000).toISOString() }), log("job parked: every computer is busy", { issue: issue.identifier }));
+    }
     if (jobId) state.finishJob(jobId, "failed", String(err).slice(0, 500));
     // A turn that failed before its run started (its workspace couldn't be prepared) is still this task's latest job:
     // recorded, it reads as failed, never as the run before it ("Done, nothing changed", on a task that did nothing).
@@ -4496,6 +4504,10 @@ const progressOf = (issueId) => (p) => (Object.assign(running.get(issueId) ?? {}
 const boxCall = launcher(cfg);
 const boxKey = (issueId) => `box:${issueId}`;
 const helperPort = () => Number(new URL(repoHelper.url()).port);
+/** A command in a box job's box, in the clone at host `path` (its workspace is the box's /workspace), with a time limit there too. */
+const inBox = (container, workspace) => (argv, path) => ["docker", "exec", "-e", "CI", "-e", "AIDENHQ_BASE", "-w", path.replace(workspace, "/workspace"), container, "timeout", "-s", "KILL", "100", ...argv];
+/** Every computer is busy (the launcher's 503): the turn waits for a free one instead of failing. */
+class BoxesFull extends Error {}
 
 /**
  * A box for this turn of a box job: the task's last box released first (confirmed gone: two executions never share a
@@ -4504,7 +4516,8 @@ const helperPort = () => Number(new URL(repoHelper.url()).port);
 async function startBox({ issue, agentId, workspace, helperToken, identity, engine }) {
   const before = state.get(boxKey(issue.id));
   if (before) await stopBox(issue, { container: before });
-  const box = await boxCall("/job", { agentId, issueId: issue.id, identifier: issue.identifier, workspace, engine: engine.kind, state: engineState(cfg, engine.kind, issue.id), helperPort: helperPort(), helperToken, identity: { name: identity.name, email: identity.email } });
+  const box = await boxCall("/job", { agentId, issueId: issue.id, identifier: issue.identifier, workspace, engine: engine.kind, state: engineState(cfg, engine.kind, issue.id), helperPort: helperPort(), helperToken, identity: { name: identity.name, email: identity.email } })
+    .catch((err) => { throw err.status === 503 ? new BoxesFull(err.message) : err; });
   state.set(boxKey(issue.id), box.container);
   log("box job started", { issue: issue.identifier, container: box.container });
   return { container: box.container, envFile: box.envFile, outDir: box.outDir };

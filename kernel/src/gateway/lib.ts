@@ -7,6 +7,7 @@
 //   POST /api/v1/chat/completions  (Bearer gateway_board_key) kind aside: the board's side chat, capped per UTC day
 //   POST /usage {since}           (Bearer gateway_board_key) the ledger since then → {records} (the board's Costs tab)
 //   POST /internal/caps {scope, agentId, subject, cap}  (Bearer gateway_board_key) the owner raised a cap: the new cap
+//   POST /spend                   (Bearer gateway_board_key) today's spend and the install cap in force → {day, spent, cap}
 //   POST /c/<connection>/mcp      (Bearer: a job's own `ahqj_` token) the job's reads of a connection, its jobcaps only (../proxy.ts)
 //   GET /health
 // CI listener (gateway.ts, the CI runners' bridge address; only these routes, only `ahqci_` credentials, never on the others):
@@ -28,7 +29,8 @@
 // Caps: run / task / agent-day (grants caps, defaults 2/10/30 USD), always enforced; only the owner raises one (raise_cap). A
 // task labelled `chat` or a routine's execution task is perpetual: its task cap counts the UTC day only. System kinds
 // (reviewer, grader, source) are never capped. CI caps (config/gateway.json `ci`: per repo per UTC day, all CI per day) are
-// never filed for raising.
+// never filed for raising. The install cap (config/gateway.json `install_day_usd`, settings.spend_day_usd; absent, none)
+// counts every call of the UTC day, every kind and CI included; its raise_cap is filed as agent INSTALL_CAP, scope day.
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, statSync } from "node:fs";
 import { dirname } from "node:path";
@@ -63,7 +65,7 @@ type CallRow = {
 };
 type CiTokenRow = { hash: string; repo: string; pr: number; head: string | null; gh_run: string; attempt: string; exp: string; at: string };
 type Sum = { s: number };
-type Over = { scope: string; subject: string; cap: number; spent: number };
+type Over = { scope: string; subject: string; cap: number; spent: number; install?: boolean };
 /** A model's declared prices (config/gateway.json `models`): USD per million tokens, the reservation's multiple, the output limit. */
 type Price = { in: number; cached_in: number; out: number; peak: number; max_output: number };
 /** What OpenRouter billed for one call. */
@@ -76,6 +78,8 @@ type Answer = { id?: unknown; model?: unknown; usage?: UsageBlock };
 type Log = (msg: string, fields?: Record<string, unknown>) => void;
 
 export const DEFAULT_CAPS: Caps = { run_usd: 2, task_usd: 10, day_usd: 30 };
+/** The install-wide cap's "agent" in the caps and filed tables and on its raise_cap card (never a Paperclip id). */
+export const INSTALL_CAP = "install";
 const SYSTEM: { source: string } & Record<string, string> = { reviewer: "AI reviewer", grader: "Grader", source: "Source writers" };
 const ROUTE = /^\/(?:(advisor|fanout)\/)?api\/v1\/(responses|chat\/completions)$/;
 const MAX_BODY = 32 * 1024 * 1024;
@@ -125,6 +129,7 @@ export function openLedger(file: string, legacy?: string): { db: DatabaseSync; m
     CREATE INDEX IF NOT EXISTS calls_run ON calls (run_key);
     CREATE INDEX IF NOT EXISTS calls_task ON calls (agent_id, task_subject);
     CREATE INDEX IF NOT EXISTS calls_day ON calls (agent_id, day);
+    CREATE INDEX IF NOT EXISTS calls_all_day ON calls (day);
     CREATE INDEX IF NOT EXISTS calls_at ON calls (at);
     CREATE INDEX IF NOT EXISTS calls_status ON calls (status);
     -- Who a run key is: settled at its first call (a gateway restart or the JWT's expiry never re-derives it), with its rev.
@@ -221,8 +226,8 @@ export function createGateway({ dbFile, legacyDbFile, grantsFile, settingsFile, 
   launcherUrl?: string; githubJwksUrl?: string; log?: Log; now?: () => number;
   /** Waits between attempts at a transient OpenRouter failure (tests pass zeros). */
   retryDelaysMs?: number[];
-  /** Files a kernel.raise_cap record (writes.ts fileNative): the owner's, after the AI reviewer. */
-  fileRaiseCap?: (b: { task: string; scope: string; agentId: string; subject: string; cap: number; spent: number }) => Promise<void>;
+  /** Files a kernel.raise_cap record (writes.ts fileNative): the owner's, after the AI reviewer. No task: the install cap's. */
+  fileRaiseCap?: (b: { task: string | null; scope: string; agentId: string; subject: string; cap: number; spent: number }) => Promise<void>;
 }) {
   const { db, moved } = openLedger(dbFile, legacyDbFile);
   if (moved) log("ledger rows moved into kernel.db", { rows: moved });
@@ -232,6 +237,8 @@ export function createGateway({ dbFile, legacyDbFile, grantsFile, settingsFile, 
   const prices = watched(settingsFile, (j) => (j.models && typeof j.models === "object" ? (j.models as Record<string, Price>) : {}), {});
   // CI code review (compile writes it from the ci module's settings): { orgs, models, repo_day_usd, day_usd } or null.
   const ciConf = watched<CiConf | null>(settingsFile, (j) => (j.ci && typeof j.ci === "object" ? (j.ci as CiConf) : null), null);
+  // The install-wide daily cap (settings.spend_day_usd); 0: none.
+  const installDay = watched(settingsFile, (j) => (Number(j.install_day_usd) > 0 ? Number(j.install_day_usd) : 0), 0);
   const keyFor = githubKeys(githubJwksUrl, now);
   const q = {
     run: db.prepare("SELECT * FROM runs WHERE run_key = ?"),
@@ -240,6 +247,7 @@ export function createGateway({ dbFile, legacyDbFile, grantsFile, settingsFile, 
     spentRun: db.prepare("SELECT COALESCE(SUM(cost_usd), 0) AS s FROM calls WHERE run_key = ?"),
     spentTask: db.prepare("SELECT COALESCE(SUM(cost_usd), 0) AS s FROM calls WHERE agent_id = ? AND task_subject = ?"),
     spentDay: db.prepare("SELECT COALESCE(SUM(cost_usd), 0) AS s FROM calls WHERE agent_id = ? AND day = ?"),
+    spentAll: db.prepare("SELECT COALESCE(SUM(cost_usd), 0) AS s FROM calls WHERE day = ?"),
     cap: db.prepare("SELECT cap FROM caps WHERE scope = ? AND agent_id = ? AND subject = ?"),
     setCap: db.prepare("INSERT INTO caps (scope, agent_id, subject, cap, at) VALUES (?, ?, ?, ?, ?) ON CONFLICT (scope, agent_id, subject) DO UPDATE SET cap = excluded.cap, at = excluded.at"),
     file: db.prepare("INSERT OR IGNORE INTO filed (scope, agent_id, subject, cap, at) VALUES (?, ?, ?, ?, ?)"),
@@ -371,7 +379,15 @@ export function createGateway({ dbFile, legacyDbFile, grantsFile, settingsFile, 
   };
   const taskSubject = (who: { issueId: string | null; perpetual: boolean }, t: number) => (who.issueId ? (who.perpetual ? `${who.issueId}:${day(t)}` : who.issueId) : null);
 
-  /** The caps this call counts against, each with what is spent on it (settled + reserved): none for an uncapped kind. */
+  /** The install cap in force today (the setting, or what the owner raised it to), with everything spent today; or none. */
+  function installScope(today: string): Over[] {
+    const set = installDay();
+    if (!set) return [];
+    const cap = (q.cap.get("day", INSTALL_CAP, today) as { cap: number } | undefined)?.cap ?? set;
+    return [{ scope: "day", subject: today, cap, spent: (q.spentAll.get(today) as Sum).s, install: true }];
+  }
+
+  /** The caps this call counts against, each with what is spent on it (settled + reserved): only the install cap for an uncapped kind. */
   function capScopes(who: Caller, t: number): Over[] {
     const today = day(t);
     if (who.ci) {
@@ -379,14 +395,15 @@ export function createGateway({ dbFile, legacyDbFile, grantsFile, settingsFile, 
       return [
         { scope: "repo-day", subject: who.ci.repo, cap: Number(c.repo_day_usd) > 0 ? Number(c.repo_day_usd) : 0, spent: (q.ciSpentRepo.get(today, prefix, prefix) as Sum).s },
         { scope: "day", subject: today, cap: Number(c.day_usd) > 0 ? Number(c.day_usd) : 0, spent: (q.ciSpent.get(today) as Sum).s },
+        ...installScope(today),
       ];
     }
-    if (!who.capped) return [];
+    if (!who.capped) return installScope(today);
     const subject = taskSubject(who, t);
     const scopes: [string, string, number][] = [["run", who.runKey, (q.spentRun.get(who.runKey) as Sum).s]];
     if (who.agentId && subject) scopes.push(["task", subject, (q.spentTask.get(who.agentId, subject) as Sum).s]);
     if (who.agentId) scopes.push(["day", today, (q.spentDay.get(who.agentId, today) as Sum).s]);
-    return scopes.map(([scope, subj, spent]) => ({ scope, subject: subj, cap: capOf(who, scope, subj), spent }));
+    return [...scopes.map(([scope, subj, spent]) => ({ scope, subject: subj, cap: capOf(who, scope, subj), spent })), ...installScope(today)];
   }
 
   /** The prices a call is reserved and settled at: its model's, the dearest of any fallback `models`; a 403 when one has none. */
@@ -460,15 +477,19 @@ export function createGateway({ dbFile, legacyDbFile, grantsFile, settingsFile, 
     send(res, 200, { token, expires_at: exp, review: c.review ?? null });
   }
 
-  /** One raise_cap per scope, subject and cap value, filed as a kernel.raise_cap record (needs the run's task). */
+  /**
+   * One raise_cap per scope, subject and cap value, filed as a kernel.raise_cap record (needs the run's task). The install
+   * cap's is filed whoever hit it, with no task (main.ts gives it one of the owner's own).
+   */
   async function fileRaise(who: Caller, over: Over): Promise<boolean> {
     // A run cap is on the credential's hash: the next run has a new one, so a raised run cap would never be used.
-    if (over.scope === "run" || !who.agentId || !who.issueId || !fileRaiseCap) return false;
-    const args = [over.scope, who.agentId, over.subject, over.cap];
+    if (!fileRaiseCap || (!over.install && (over.scope === "run" || !who.agentId || !who.issueId))) return false;
+    const agentId = over.install ? INSTALL_CAP : who.agentId!;
+    const args = [over.scope, agentId, over.subject, over.cap];
     if (!q.file.run(...args, new Date(now()).toISOString()).changes) return true;
     try {
-      await fileRaiseCap({ task: who.issueId, scope: over.scope, agentId: who.agentId, subject: over.subject, cap: over.cap, spent: Math.round(over.spent * 1e4) / 1e4 });
-      log("raise_cap filed", { scope: over.scope, agent: who.agentId, subject: over.subject, cap: over.cap });
+      await fileRaiseCap({ task: over.install ? null : who.issueId, scope: over.scope, agentId, subject: over.subject, cap: over.cap, spent: Math.round(over.spent * 1e4) / 1e4 });
+      log("raise_cap filed", { scope: over.scope, agent: agentId, subject: over.subject, cap: over.cap });
       return true;
     } catch (e) {
       q.unfile.run(...args); // the next refused call files it again
@@ -520,6 +541,12 @@ export function createGateway({ dbFile, legacyDbFile, grantsFile, settingsFile, 
     const r = reserve(who, t0, id, body.model, Math.ceil(Buffer.byteLength(raw) / 3) * price.in * per, price.out * per, Math.min(price.max_output, ...asked));
     if ("over" in r) {
       const over = r.over;
+      if (over.install) {
+        // Every call stops at the install cap; one raise_cap for today and this cap, whoever hit it.
+        const filed = await fileRaise(who, over);
+        record(who, { key: `cap:${who.runKey}:install:${over.cap}`, model: body.model, status: "cap_reached", t: t0, ms: 0 });
+        throw fail(402, "cap_reached", `spend cap reached: the install's daily $${over.spent.toFixed(2)} of $${over.cap.toFixed(2)}; ${filed ? "the owner has been asked to raise it" : "the owner must raise it"}`, { scope: "install", cap: over.cap, spent: over.spent });
+      }
       if (who.ci) {
         record(who, { key: `cap:${who.ci.repo}:${over.scope}:${day(t0)}:${over.cap}`, model: body.model, status: "cap_reached", t: t0, ms: 0 });
         throw fail(402, "cap_reached", `spend cap reached: CI ${over.scope} $${over.spent.toFixed(2)} of $${over.cap.toFixed(2)}; the owner can raise it in settings`, { scope: over.scope, cap: over.cap, spent: over.spent });
@@ -637,6 +664,12 @@ export function createGateway({ dbFile, legacyDbFile, grantsFile, settingsFile, 
         const { since } = JSON.parse((await readBody(req)) || "{}") as { since?: unknown };
         const records = (q.since.all(String(since ?? "")) as CallRow[]).map((r) => ({ key: r.key, at: r.at, agentId: r.agent_id, component: r.component, model: r.model, input: r.input, cached: r.cached, output: r.output, costUsd: r.cost_usd, runKey: r.run_key, runId: r.run_id, issueId: r.issue_id, rev: r.rev, kind: r.kind, ms: r.ms, status: r.status, ...(r.kind === CI_KIND ? { subject: r.task_subject } : {}) }));
         return send(res, 200, { records });
+      }
+      if (req.method === "POST" && path === "/spend") {
+        // The board's header: today's spend (settled and in flight, as the install cap counts it) and the cap in force.
+        boardKeyed(req);
+        const today = day(now()), [inst] = installScope(today);
+        return send(res, 200, { day: today, spent: Math.round((q.spentAll.get(today) as Sum).s * 1e4) / 1e4, cap: inst?.cap ?? null });
       }
       if (req.method === "POST" && path === "/internal/caps") {
         boardKeyed(req);
