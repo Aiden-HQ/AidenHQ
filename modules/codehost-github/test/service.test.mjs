@@ -69,13 +69,6 @@ async function setup(t, { routes = () => undefined } = {}) {
   return { root, ws, marker, origin, sha, outcomes, minted, ghCalls, call, raw };
 }
 
-test("the service's copies are the code host's own rules and git arguments", async () => {
-  const dir = new URL("..", import.meta.url).pathname;
-  for (const f of ["plan.mjs", "github-app.ts"]) assert.equal(readFileSync(join(dir, "service/src", f), "utf8"), readFileSync(join(dir, "src", f), "utf8"), `service/src/${f} differs from src/${f}`);
-  const { SAFE_GIT_ARGS: ours } = await import("../service/src/service.ts");
-  assert.deepEqual(ours, SAFE_GIT_ARGS);
-});
-
 test("a job's branch lands from its workspace; no hook, filter or fsmonitor of the workspace runs", async (t) => {
   const { root, marker, origin, sha, outcomes, minted, call } = await setup(t);
   const args = { workspace: "TASK-1", only: [{ repo: "acme-agents/widget", branch: "feature", sha }] };

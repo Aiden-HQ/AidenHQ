@@ -34,14 +34,14 @@ secrets:
 # The design review's tasks (service/src/design-review.ts, W6) are filed for the UI Reviewer's role and cancelled when
 # superseded (kernel.tasks).
 # The merge queue's reviewer eval (service/src/evalgate.ts) is a kernel check job (kernel.checks) whose signed receipt it
-# verifies before a product or official modules PR merges.
+# verifies before a product PR that changes the reviewer merges.
 # The release train (service/src/train.ts, W3) files the instance's pin bump as a kernel.apply, which the
 # kernel plans and tiers like any apply (kernel.apply), on a task for the Platform Engineer's role (kernel.tasks).
 roles:
   requests: [ kernel.tasks, kernel.wake, kernel.checks, kernel.apply ]
 # The service (service/): the executor of the write kinds below, the merge queue, the release train, the PR watch, design
-# reviews and tidying, and narrow GitHub operations other modules get through the kernel (/v1/codehost/:op). It alone mounts
-# the App key (read-only), and the job workspaces.
+# reviews and tidying, and narrow GitHub operations other modules get through the kernel (/v1/codehost/:op). It lands in the
+# agents org and the product repo (elsewhere it only opens PRs). It alone mounts the App key (read-only), and the job workspaces.
 services:
   data: true
   run:

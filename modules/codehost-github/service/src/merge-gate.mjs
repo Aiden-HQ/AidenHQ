@@ -73,6 +73,9 @@ export function supersededDesignReview(marker, pr) {
   return dr === "success" || dr === "failure" ? "its verdict is on that head already" : undefined;
 }
 
+/** Whether a PR's head waits on the UI Reviewer: it changes UI files, isn't a draft, and has no design-review verdict yet. */
+export const awaitsDesignReview = (pr) => Boolean(pr) && !pr.isDraft && prTouchesUi(pr) && ["missing", "pending"].includes(designReview(pr.commits?.nodes?.[0]?.commit?.statusCheckRollup));
+
 /** The named checks in a rollup, the design review left out: { name, ok, pending }. */
 export function namedChecks(rollup) {
   const pass = new Set(["SUCCESS", "NEUTRAL", "SKIPPED"]);
@@ -124,7 +127,7 @@ function approved(pr) {
 
 /**
  * What to do with one PR of an approved record, from `data` (PR_QUERY's answer, withGate applied) and the record's bound `head`:
- * { do: "merge" | "done" | "wait" | "fail", why, limit? }. Before a "merge", merges.ts still asks the eval gate.
+ * { do: "merge" | "done" | "wait" | "fail", why, limit?, review? }. Before a "merge", merges.ts still asks the eval gate.
  * `ownRepo`: the record is the review (agents org and the product's repos); `uiReview`: a UI PR needs the design review's pass.
  */
 export function decide(data, head, { ownRepo, uiReview }) {
@@ -151,7 +154,7 @@ export function decide(data, head, { ownRepo, uiReview }) {
   if (uiReview && prTouchesUi(pr)) {
     const dr = designReview(rollup);
     if (dr === "failure") return { do: "fail", why: "the UI Reviewer's design review failed on its head" };
-    if (dr !== "success") return { do: "wait", why: "waiting for the UI Reviewer's design review on its head", limit: DESIGN_REVIEW.minutes };
+    if (dr !== "success") return { do: "wait", why: "waiting for the UI Reviewer's design review on its head", limit: DESIGN_REVIEW.minutes, review: true };
   }
   switch (pr.mergeStateStatus) {
     case "CLEAN":

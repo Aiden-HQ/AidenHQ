@@ -16,7 +16,7 @@ const HEAD = "a".repeat(40);
 const check = (name, state) => ({ __typename: "CheckRun", name, status: state === "PENDING" ? "IN_PROGRESS" : "COMPLETED", conclusion: state === "PENDING" ? null : state });
 const rollup = (state, { names = ["build"], more = false } = {}) => ({ state, contexts: { pageInfo: { hasNextPage: more }, nodes: names.map((n) => check(n, state)) } });
 
-/** GitHub with one open PR per repo (`prs[repo]`: { head, checks, names?, more?, baseNames? }); merges and writes are recorded. */
+/** GitHub with one open PR per repo (`prs[repo]`: { head, checks, names?, more?, baseNames?, files? }); merges and writes are recorded. */
 function fakeGitHub(prs) {
   const writes = [];
   const gh = async (method, path, token, body) => {
@@ -29,7 +29,7 @@ function fakeGitHub(prs) {
         return { status: 200, body: { data: { repository: { defaultBranchRef: { name: "main" }, squashMergeAllowed: true, pullRequest: {
           id: "PR_1", number: v.number, url: `https://github.com/${repo}/pull/${v.number}`, state: p.state ?? "OPEN", isDraft: false, reviewDecision: p.review ?? null,
           mergeStateStatus: p.checks === "SUCCESS" ? "CLEAN" : "BLOCKED", headRefOid: p.head, headRefName: "feature", isCrossRepository: false, baseRefName: "main",
-          files: { pageInfo: { hasNextPage: false }, nodes: [{ path: "lib/x.mjs" }] }, latestOpinionatedReviews: { nodes: [] },
+          files: { pageInfo: { hasNextPage: false }, nodes: (p.files ?? ["lib/x.mjs"]).map((path) => ({ path })) }, latestOpinionatedReviews: { nodes: [] },
           commits: { nodes: [{ commit: { statusCheckRollup: rollup(p.checks, p) } }] },
           baseRef: { compare: { behindBy: 0 }, target: { oid: "b".repeat(40), statusCheckRollup: rollup("SUCCESS", { names: p.baseNames }) } },
         } } } } };
@@ -168,7 +168,7 @@ test("a queue outlives a restart: the kernel hears it still runs, and its outcom
 });
 
 test("a product PR merges only on a verified eval receipt for its bound head; a moved head never merges", async (t) => {
-  // "GitHub": the official modules repo and the product that pins it, as local repos the service fetches from.
+  // "GitHub": the product (its modules/ the official modules), as a local repo the service fetches from.
   const root = mkdtempSync(join(tmpdir(), "codehost-platform-"));
   const env = { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null", GIT_AUTHOR_NAME: "a", GIT_AUTHOR_EMAIL: "a@example.com", GIT_COMMITTER_NAME: "a", GIT_COMMITTER_EMAIL: "a@example.com" };
   const sh = (cwd, ...args) => execFileSync("git", args, { cwd, env, encoding: "utf8" }).trim();
@@ -196,7 +196,7 @@ test("a product PR merges only on a verified eval receipt for its bound head; a 
   const eval_ = { state: "running", verifies: false };
   const checks = (method, url, b) => {
     if (method === "POST" && url === "/v1/checks") return (asked.push(b), { id: "c-0000000000000001", state: eval_.state, receipt: { repo: b.repo, head: b.head, run: "eval", judge: b.spec.judge_commit, policy: b.spec.policy_hash, verdict: "pass" } });
-    if (method === "GET" && url === "/v1/checks/c-0000000000000001") return { id: "c-0000000000000001", state: eval_.state, receipt: { repo: "acme/aidenhq", head, run: "eval", judge: M0, policy: asked[0].spec.policy_hash, verdict: "pass" } };
+    if (method === "GET" && url === "/v1/checks/c-0000000000000001") return { id: "c-0000000000000001", state: eval_.state, receipt: { repo: "acme/aidenhq", head, run: "eval", judge: P0, policy: asked[0].spec.policy_hash, verdict: "pass" } };
     if (method === "POST" && url === "/v1/receipts/verify") return { ok: eval_.verifies && b.receipt.head === b.for.head && b.receipt.judge === b.for.judge && b.receipt.policy === b.for.policy };
   };
   const clock = { t: Date.now() };
@@ -205,7 +205,7 @@ test("a product PR merges only on a verified eval receipt for its bound head; a 
 
   await merge("k-00000000000000b1", [{ repo: "acme/aidenhq", number: 5, head }]);
   await handle.stepMerges();
-  assert.deepEqual({ repo: asked[0].repo, head: asked[0].head, judge: asked[0].spec.judge_commit, subject: asked[0].spec.subject_commit }, { repo: "acme/aidenhq", head, judge: M0, subject: M0 });
+  assert.deepEqual({ repo: asked[0].repo, head: asked[0].head, judge: asked[0].spec.judge_commit, subject: asked[0].spec.subject_commit }, { repo: "acme/aidenhq", head, judge: P0, subject: head });
   assert.deepEqual(github.merges(), [], "green checks, but the eval is still running: no receipt, no merge");
   eval_.state = "done";
   await handle.stepMerges();
@@ -239,4 +239,22 @@ test("a product PR merges only on a verified eval receipt for its bound head; a 
   assert.equal(github.merges().length, 1);
   assert.equal(outcomes[0]?.ok, false);
   assert.match(outcomes[0].text, /head moved since the merge was approved/);
+});
+
+test("a UI head waiting on its design review gets the UI Reviewer's task beside its checks, asked once more past its time", async (t) => {
+  const prs = { "acme-agents/widget": { head: HEAD, checks: "PENDING", files: ["web/app.css"] } };
+  const tasks = [];
+  const checks = (method, url, b) => method === "POST" && url === "/v1/tasks" ? (tasks.push(b), { id: `t${tasks.length}`, identifier: `T-${tasks.length}` }) : undefined;
+  const { handle, github, outcomes, merge, clock } = await setup(t, { prs, checks });
+  await merge("k-00000000000000d1", [{ repo: "acme-agents/widget", number: 1, head: HEAD }]);
+  await handle.stepMerges();
+  await handle.stepMerges();
+  assert.deepEqual(tasks.map((x) => [x.role, x.source]), [["design-review", `design-review:acme-agents/widget/1@${HEAD}`]], "asked once for the head, while its checks still run");
+  prs["acme-agents/widget"].checks = "SUCCESS";
+  await handle.stepMerges();
+  clock.t += 121 * 60_000;
+  await handle.stepMerges();
+  assert.equal(tasks[1]?.source, `design-review:acme-agents/widget/1@${HEAD}#again`, "no verdict in time: asked once more");
+  assert.deepEqual(github.merges(), [], "never merged without the design review's pass");
+  assert.equal(outcomes.length, 0);
 });
