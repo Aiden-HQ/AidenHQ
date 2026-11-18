@@ -93,7 +93,8 @@ export async function reviewInput(r: Rec, { records, task, decisions, product }:
     chain,
     siblings: "",
     decisions,
-    requesterModel: "",
+    // The job's model (a module's own write has none): the reviewer module never picks a reviewer of its family.
+    requesterModel: r.requester.model ?? "",
     panel: Boolean(input.panel || r.panel),
     previous: (input.previous as string[] | undefined) ?? [],
     relift: input.relift,
