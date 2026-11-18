@@ -72,7 +72,7 @@ the gate, with the app's own Access audience and roles, once `settings.edge.prev
 consumers.
 
 **Board.** The owner's daily surface (`services/board`): today's tasks, chats with agents, the Approvals page,
-connections, apps and the fleet. Approvals are board records: the exact request, one tap by a signed-in admin or from
+connections, apps and the fleet. Approvals are kernel records that the board only reads and shows: the exact request, one tap by a signed-in admin or from
 the owner channel, or an exact typed reply. Each is claimed once and the outcome is shown on the card.
 
 **Owner channels.** `channel-telegram` (the Telegram owner bot, always installed) and `channel-slack` (optional: one
@@ -102,10 +102,12 @@ the Paperclip config and grants table. See [configuration.md](configuration.md).
   Admin actions run only on the owner's own words.
 - **Gates live in code.** Tool grants, push and merge gates, approvals and deploy rules are enforced below the model.
   No agent holds the token that decides an approval.
-- **Approvals are records.** Pushes, PRs, merges, fleet changes and sensitive app deploys are approval records, tiered
+- **Approvals are records.** Pushes, PRs, merges, fleet changes and sensitive app deploys are approval records (kernel records,
+  `kernel/src/records.ts`, `kinds.ts`), tiered
   by code (Tier 2 is the owner's tap); an agent's change to its own configuration lands in the instance repo only through
   one.
 - **Separation of config.** Product code and handbooks live in the product repo; per-deployment choices live in the
   private instance repo; secrets live only in the vault; host paths stay in the host `.env`, never in
   `instance.yaml`, which agents may edit through an approved change.
-- **Nothing is sent as the owner.** Agents post as a labelled bot or leave drafts the owner sends.
+- **Sends as the owner are gated writes.** Agents may send as the owner's own account; each such send is a kernel write
+  record, tiered like any other send. Otherwise they post as a labelled bot or leave drafts.
