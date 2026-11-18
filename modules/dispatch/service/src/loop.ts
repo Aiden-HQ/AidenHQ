@@ -8,6 +8,7 @@ import { KernelError, type Kernel, type Wake } from "./kernel.ts";
 import { buildPrompt, outcome, type Words } from "./prompt.ts";
 import { createAsker } from "./asker.ts";
 import { dataBlock as fence } from "./aidenhq-sdk/fence.ts";
+import { createRoutines } from "./routines.ts";
 import { progressTracker } from "./progress.ts";
 import { agentMade, freshWords, moduleMade, ownRequest, redirectNote, speaker, spoke, stripHidden, threadEntries, threadSection, type Agent, type Directory, type Issue } from "./thread.ts";
 
@@ -31,6 +32,7 @@ export function createDispatch({ kernel, db, owner, log = () => {} }: { kernel: 
   db.exec(DDL);
   const q = (sql: string) => db.prepare(sql);
   const asker = createAsker(kernel);
+  const routines = createRoutines(kernel, log);
   // Each running job's progress judge, and why this module stopped a job (until its outcome is posted; a restart starts both fresh).
   const judges = new Map<string, ReturnType<typeof progressTracker>>();
   const stoppedFor = new Map<string, string>();
@@ -91,6 +93,7 @@ export function createDispatch({ kernel, db, owner, log = () => {} }: { kernel: 
     const agents = tick.agents;
     for (const id of new Set([task.assigneeAgentId, task.createdByAgentId, ...comments.map((c) => c.authorAgentId)])) if (id && !agents.has(id)) { const a = await kernel.agent(id); if (a) agents.set(id, a); }
 
+    if (/^routine(:|$)/.test(w.cause) && (await routines.coalesce(task))) return kernel.drop(w.key, "folded into an earlier run of its routine");
     if (w.cause === "comment") {
       const c = comments.find((x) => `comment:${x.id}` === w.key);
       const who = c ? speaker(c, task, dir) : "ours";
@@ -158,6 +161,7 @@ export function createDispatch({ kernel, db, owner, log = () => {} }: { kernel: 
   return {
     async tick() {
       await follow();
+      await routines.sweep(async () => Object.keys(await kernel.directory()));
       const tick = { agents: new Map<string, Agent>(), redirected: new Set<string>() };
       for (const w of await kernel.claim(20)) await handle(w, tick).catch((e: Error) => log("wake failed", { wake: w.key, err: e.message }));
     },

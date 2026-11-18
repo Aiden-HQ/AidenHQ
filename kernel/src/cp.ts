@@ -223,6 +223,7 @@ export const BOARD_READ_PATHS: RegExp[] = [
   new RegExp(`^/api/companies/${ID}/costs/(by-agent|by-agent-model)$`),
   new RegExp(`^/api/heartbeat-runs/${ID}(/log)?$`),
   new RegExp(`^/api/issues/${ID}(/comments|/attachments)?$`),
+  new RegExp(`^/api/routines/${ID}$`),
   new RegExp(`^/api/attachments/${ID}/content$`),
   new RegExp(`^/api/agents/${ID}/instructions-bundle/file$`),
 ];

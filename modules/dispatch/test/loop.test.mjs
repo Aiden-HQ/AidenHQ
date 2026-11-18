@@ -245,3 +245,27 @@ test("a run that reads one file over and over is stopped, and its outcome says w
   await k.dispatch.tick();
   assert.match(k.posts[0].body, /^\*\*Stopped:\*\* src\/a\.ts read 20 times with no edit/);
 });
+
+test("a routine run is folded into an earlier open run of its routine; a blocked run is closed once a later one is done; always_enqueue keeps every run", async () => {
+  const run = (id, status, at, extra = {}) => ({ id, identifier: `WOR-${id}`, status, assigneeAgentId: "eng", companyId: "c1", originKind: "routine_execution", originId: "rt", createdAt: new Date(at).toISOString(), ...extra });
+  const [first, second] = [run("t1", "todo", 1000), run("t2", "todo", 2000)];
+  const k = fake({ task: second, tasks: { t1: first }, directory: { eng: { key: "eng" } } });
+  const cancels = [];
+  let policy = "coalesce_if_active";
+  Object.assign(k.kernel, {
+    routine: async () => ({ concurrencyPolicy: policy }),
+    issues: async (_c, query) => (/status=todo/.test(query) ? [first, second] : /status=blocked/.test(query) ? [run("t0", "blocked", 500)] : [run("t3", "done", 3000)]),
+    cancelRoutineRun: async (task, why, body) => void cancels.push({ task, why, body }),
+    agent: async (id) => ({ id, name: id, companyId: "c1" }),
+  });
+  k.inbox.push(wake("routine-run:t2", "routine:digest", { task: "t2" }));
+  await k.dispatch.tick();
+  assert.deepEqual(cancels.map((c) => [c.task, c.why]), [["t0", "stale"], ["t2", "coalesced"]]);
+  assert.equal(k.started.length, 0, "the folded run starts nothing");
+  assert.equal(k.dropped.length, 1);
+  policy = "always_enqueue";
+  k.inbox.push(wake("routine-run:t2b", "routine:digest", { task: "t2" }));
+  await k.dispatch.tick();
+  assert.equal(cancels.length, 2, "an always_enqueue routine's run is not folded");
+  assert.equal(k.started.length, 1);
+});

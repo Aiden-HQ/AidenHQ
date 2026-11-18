@@ -15,7 +15,7 @@ import { signature } from "../../services/paperclip-events/sign.js";
 
 const PLUGIN = "aidenhq.events";
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-/** The kinds a dispatcher posts (POST /v1/jobs/:job/post); the kernel's own (`coalesced`, wakes.ts; `lane`, lane.ts) go through `post` too. */
+/** The kinds a dispatcher posts (POST /v1/jobs/:job/post); the kernel's own (`coalesced` and `stale` routine runs, wakes.ts; `lane`, lane.ts) go through `post` too. */
 export const JOB_KINDS = ["reply", "status", "notice"];
 export const tag = (job: string, kind: string) => `<!-- aidenhq:job=${job} kind=${kind} -->`;
 

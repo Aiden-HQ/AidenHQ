@@ -26,6 +26,8 @@
 //   POST /v1/wakes             (a module with role kernel.wake) a scheduled wake {task, agent?, at?, cause?, id?}; with
 //                              {task, text}: a labelled wake notice on the task now, which wakes its agent (no scheduled row)
 //   POST /v1/wakes/claim, POST /v1/wakes/:key/drop  (a module with role kernel.jobs) claim inbox rows; give one up
+//   POST /v1/routines/cancel   (a module with role kernel.jobs) {task, why: coalesced|stale, body}: an open or blocked routine run of an
+//                              agent it dispatches, cancelled as that agent (wakes.ts)
 //   POST /v1/wakes/:key/note   (the module that claimed it) {body}: a note on its task as its agent, once (no job answers it)
 //   POST /v1/tasks             (a module with role kernel.tasks) {title, description, role | agent, source, parent?}: a task of the module's
 //                              fixed text for the agent holding `role` (or `agent`, by id), once per source (modtasks.ts); POST /v1/tasks/:task/close
@@ -114,6 +116,7 @@ export const ROUTES = [
   { method: "POST", path: "/v1/wakes/claim", auth: "module" },
   { method: "POST", path: "/v1/wakes/:key/drop", auth: "module" },
   { method: "POST", path: "/v1/wakes/:key/note", auth: "module" },
+  { method: "POST", path: "/v1/routines/cancel", auth: "module" },
   { method: "POST", path: "/v1/tasks", auth: "module" },
   { method: "POST", path: "/v1/tasks/:task/close", auth: "module" },
   { method: "POST", path: "/v1/reviews", auth: "reviewer-key" },
@@ -287,7 +290,7 @@ export function createBackplane({ whoami, asserter, proxy, cp, boardCp, grantsFi
         const r = await (hit.path === "/v1/tasks" ? tasks.file(w.module!, b) : tasks.close(w.module!, decodeURIComponent(m[0]!), b)).catch((e: { name?: string; status?: number; message: string }) => { throw e.name === "TaskError" ? fail(e.status!, "bad_request", e.message) : e; });
         return send(res, 200, r);
       }
-      if (hit && hit.path.startsWith("/v1/wakes")) {
+      if (hit && (hit.path.startsWith("/v1/wakes") || hit.path === "/v1/routines/cancel")) {
         if (hit.path === "/v1/wakes/events") {
           if (!wakes) throw fail(503, "unavailable", "the wake inbox is off");
           if (!keyIs(req, eventsKey())) throw fail(401, "unauthorized", "the events plugin's key is required");
@@ -319,6 +322,13 @@ export function createBackplane({ whoami, asserter, proxy, cp, boardCp, grantsFi
         if (!w.roles.includes("kernel.jobs")) throw fail(403, "forbidden", `${w.module} may not claim wakes (role kernel.jobs)`);
         const b = await json(req);
         if (hit.path === "/v1/wakes/claim") return send(res, 200, { wakes: wakes.claim(w.module!, Math.min(Math.max(Number(b.limit) || 20, 1), 100)) });
+        if (hit.path === "/v1/routines/cancel") {
+          const r = await wakes.cancelRoutineRun(w.module!, b).catch((e: { name?: string; status?: number; code?: string; message: string }) => {
+            throw e.name === "OutcomeError" ? fail(e.status!, e.code!, e.message) : e;
+          });
+          if ("error" in r) throw fail(r.status, "bad_request", r.error);
+          return send(res, 200, r);
+        }
         if (hit.path === "/v1/wakes/:key/note") {
           const r = await wakes.note(w.module!, decodeURIComponent(m[0]!), b.body).catch((e: { name?: string; status?: number; code?: string; message: string }) => {
             throw e.name === "OutcomeError" ? fail(e.status!, e.code!, e.message) : e;
