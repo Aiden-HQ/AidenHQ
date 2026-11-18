@@ -293,6 +293,8 @@ Design: [design/access.md](design/access.md).
 Copy `.env.example` to `.env`. It holds host paths and endpoints, never agent-editable values:
 
 - Identity and paths: `PUID`/`PGID`, `AIDENHQ_SECRETS_DIR` (the vault view), `AIDENHQ_DATA_DIR`, `AIDENHQ_INSTANCE_DIR`.
+  The Paperclip image only runs as uid 1000, so the AidenHQ user's uid must be 1000; `ops/setup.sh` refuses an install
+  whose service user has another uid.
 - `AIDENHQ_INSTANCE_PUSH_URL`: where apps-mcp pushes instance changes. It defaults to
   `https://github.com/<agents org>/aidenhq-instance.git` (App token) when the GitHub App is configured, else the
   instance checkout's `origin` remote; `ops/setup.sh` sets it to a local bare repo (`AIDENHQ_INSTANCE_REMOTE`).

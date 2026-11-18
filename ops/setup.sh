@@ -340,12 +340,19 @@ PRODUCT="$(ugit -C "$REPO" rev-parse HEAD)"
 # ---------------------------------------------------------------- 3. host config
 phase host
 say "Host config (.env, config/runner.yaml)"
+PUID="$(id -u "$U" 2>/dev/null || echo 1000)"
+PGID="$(id -g "$U" 2>/dev/null || echo 1000)"
+# Paperclip's image ships node_modules owned by uid 1000, its entrypoint remaps users only when it starts as root (it runs
+# non-root here), and it writes library aliases into /app/node_modules: under any other uid it crash-loops at boot.
+if [ "$PUID" != 1000 ]; then
+  die "the service user $U has uid $PUID, but the Paperclip container runs as that uid and only works as 1000: set AIDENHQ_USER to a user whose uid is 1000, or change the uid of $U to 1000 (usermod -u 1000 $U)"
+fi
 if [ ! -f "$ENVF" ]; then
   if [ "$DRY" = 1 ]; then echo "  + write $ENVF (from .env.example)"
   else as_user sh -c 'umask 077; sed "s#/home/USER#$1#g" "$2/.env.example" > "$2/.env"' _ "$H" "$REPO"; fi
 fi
-set_env PUID "$(id -u "$U" 2>/dev/null || echo 1000)"
-set_env PGID "$(id -g "$U" 2>/dev/null || echo 1000)"
+set_env PUID "$PUID"
+set_env PGID "$PGID"
 set_env AIDENHQ_SECRETS_DIR "$SECRETS"
 # The host's apply state (generations.jsonl): the board reads it, read-only, for fleet_generation_status.
 set_env AIDENHQ_STATE_DIR "$H/.local/state/aidenhq"

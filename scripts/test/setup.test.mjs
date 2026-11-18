@@ -50,6 +50,21 @@ test("refuses a config without the owner, and a line that isn't KEY=value", () =
   assert.throws(() => dry(conf([...person, "$(touch /tmp/pwned)"])), /not KEY=value/);
 });
 
+test("refuses a service user whose uid isn't 1000 before the compose apply (Paperclip only runs as 1000)", () => {
+  const realId = execFileSync("sh", ["-c", "command -v id"], { encoding: "utf8" }).trim();
+  const bin = mkdtempSync(join(tmpdir(), "setup-bin-"));
+  writeFileSync(join(bin, "id"), `#!/bin/sh\ncase "$*" in\n  "-u alice"|"-g alice") echo 501 ;;\n  *) exec ${realId} "$@" ;;\nesac\n`, { mode: 0o755 });
+  let err;
+  try {
+    execFileSync("bash", [setup, "--dry-run", "--config", conf(person)], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], env: { PATH: `${bin}:${process.env.PATH}` } });
+  } catch (e) { err = e; }
+  assert.ok(err, "setup accepted uid 501");
+  assert.match(String(err.stderr), /setup: the service user alice has uid 501, but the Paperclip container runs as that uid and only works as 1000/);
+  assert.match(String(err.stderr), /AIDENHQ_USER to a user whose uid is 1000/);
+  assert.ok(!String(err.stdout).includes("ops/apply-config.sh"), `compose apply ran:\n${err.stdout}`);
+  assert.ok(!String(err.stdout).includes(".env: PUID"), `PUID was written:\n${err.stdout}`);
+});
+
 test("every unit setup enables carries an [Install] section, or systemctl enable stops setup", () => {
   const dir = join(dirname(setup), "units");
   const enabled = [];
