@@ -40,7 +40,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, writeFile
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { answerSlowly, archiveArgs, forwardModel, PROGRESS_SCRIPT, CP_SCRIPT, UNTAR_SCRIPT, WRITE_RUN_TOKEN_SCRIPT, CLEAR_RUN_TOKEN_SCRIPT, boxOf, checkoutRequest, EXEC_ID, EXEC_ROOT, EXEC_MISSING, EXEC_PREP_SCRIPT, EXEC_RUN_SCRIPT, EXEC_WAIT_SCRIPT, Tokens, Creds, Jobs, JOB_HOME, JOB_ROUTES, admit, controlAllowed, jobEnvFile, jobFolder, jobMounts, reapLapsed, serveHelper, builtImage, dockerRunArgs, oomMessage, execEnv, mcpBlock, runCredential, stale, wrapExec, routineArgs } from "./lib.mjs";
+import { answerSlowly, archiveArgs, forwardModel, PROGRESS_SCRIPT, CP_SCRIPT, UNTAR_SCRIPT, WRITE_RUN_TOKEN_SCRIPT, CLEAR_RUN_TOKEN_SCRIPT, boxOf, checkoutRequest, EXEC_ID, EXEC_ROOT, EXEC_MISSING, EXEC_PREP_SCRIPT, EXEC_RUN_SCRIPT, EXEC_WAIT_SCRIPT, Tokens, Creds, Jobs, tokenHash, JOB_HOME, JOB_ROUTES, admit, controlAllowed, jobEnvFile, jobFolder, jobMounts, reapLapsed, serveHelper, builtImage, dockerRunArgs, oomMessage, execEnv, mcpBlock, runCredential, stale, wrapExec, routineArgs } from "./lib.mjs";
 
 const repo = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
 const dotenv = {};
@@ -366,7 +366,7 @@ const runnerControl = {
     await makeRoom();
     const name = newName();
     boxes.set(name, { agentId, lastUsed: Date.now(), busy: 1 }); // reserve the slot while starting
-    jobs.add({ container: name, agentId, issueId, identifier, workspace, codexHome, ...(kernel ? { kernel: true } : { helperPort, helperToken }) }); saveJobs();
+    jobs.add({ container: name, agentId, issueId, identifier, workspace, codexHome, ...(kernel ? { kernel: true, tokenHash: tokenHash(kernelToken) } : { helperPort, helperToken }) }); saveJobs();
     // A kernel job's only credential is the kernel's job token; a runner job gets a run token bound to its task.
     const token = kernel ? kernelToken : tokens.issue(name, agentId);
     if (!kernel) {
@@ -512,6 +512,9 @@ const controlServer = http.createServer((req, res) => {
 
 // ------------------------------------------------------------------ gateway (boxes only)
 
+/** The live box a box-side credential is: a run token of ours, or a kernel job's token for the box made for it. */
+const liveBox = (token) => tokens.whoami(token) ?? jobs.byKernelToken(token);
+
 const gatewayServer = http.createServer(async (req, res) => {
   const deny = (status, msg) => { log("gateway", req.method, req.url, status, msg); res.writeHead(status, { "content-type": "text/plain" }).end(`gateway: ${msg}`); };
   try {
@@ -520,13 +523,13 @@ const gatewayServer = http.createServer(async (req, res) => {
     if (req.method === "POST" && req.url === "/api/v1/responses") {
       // The model: the box's "API key" is its run token; the model gateway, not a box or the launcher, holds the real key.
       const token = bearer(req);
-      const who = tokens.whoami(token);
+      const who = liveBox(token);
       if (!who) return deny(401, "not a live computer");
       boxes.get(who.container) && (boxes.get(who.container).lastUsed = Date.now());
       return await forwardModel(req, res, `${MODEL_GATEWAY_URL}/api/v1/responses`, token);
     }
     if (req.method === "POST" && req.url === "/repo") {
-      const who = tokens.whoami(String(req.headers["x-agent-key"] ?? ""));
+      const who = liveBox(String(req.headers["x-agent-key"] ?? ""));
       if (!who) return deny(401, "not a live computer");
       const chunks = [];
       for await (const c of req) chunks.push(c);
@@ -539,7 +542,7 @@ const gatewayServer = http.createServer(async (req, res) => {
     if (!m) return deny(403, "refused");
     if (!readJson(CFG.computersFile).connections?.[m[1]]) return deny(404, `no connection ${m[1]}`);
     const token = String(req.headers["x-agent-key"] ?? "");
-    if (!tokens.whoami(token)) return deny(401, "not a live computer");
+    if (!liveBox(token)) return deny(401, "not a live computer");
     // The kernel's proxy decides: the run token is the caller (it asks /whoami here); only MCP transport headers go on.
     const k = new URL(`/c/${m[1]}/mcp`, KERNEL_URL);
     const headers = { authorization: `Bearer ${token}` };

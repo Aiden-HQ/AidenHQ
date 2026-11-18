@@ -5,7 +5,7 @@ import { mkdirSync, mkdtempSync, realpathSync, rmSync, statSync, symlinkSync } f
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createServer } from "node:http";
-import { JOB_ENV_NAMES, Jobs, LEASE_MS, Tokens, admit, controlAllowed, jobEnvFile, jobFolder, jobMounts, reapLapsed, serveHelper, stale } from "../lib.mjs";
+import { JOB_ENV_NAMES, Jobs, LEASE_MS, Tokens, tokenHash, admit, controlAllowed, jobEnvFile, jobFolder, jobMounts, reapLapsed, serveHelper, stale } from "../lib.mjs";
 import { startRepoHelper } from "../../runner/src/repohelper.ts";
 
 const keys = { plugin: "plugin-key", runner: "runner-key", progress: "progress-key" };
@@ -158,4 +158,16 @@ test("a job's mounts: the guard hooks folder exists, made by us, before Docker c
   const mounts = jobMounts({ resolvConf: "/r", workspace: "/w", outDir: "/o", codexHome: "/c", runnerWork: work, repo: "/repo", engineDir: "modules/engine-codex" });
   assert.ok(mounts.includes(`${join(work, ".guard-hooks")}:/opt/aidenhq/hooks:ro`));
   assert.equal(statSync(join(work, ".guard-hooks")).uid, process.getuid());
+});
+
+test("a kernel job's box is a live computer to its own job token only (the launcher keeps only its hash)", () => {
+  const jobs = new Jobs();
+  jobs.add({ container: "k-box", agentId: "agent-1", issueId: "iss-1", kernel: true, tokenHash: tokenHash("ahqj_a.sig") });
+  jobs.add({ container: "r-box", agentId: "agent-1", issueId: "iss-2", helperPort: 1, helperToken: "x" });
+  assert.deepEqual(jobs.byKernelToken("ahqj_a.sig"), { container: "k-box", agentId: "agent-1" });
+  assert.equal(jobs.byKernelToken("ahqj_b.sig"), undefined);
+  assert.equal(jobs.byKernelToken(tokenHash("ahqj_a.sig")), undefined);
+  assert.equal(JSON.stringify(jobs.dump()).includes("ahqj_a.sig"), false);
+  jobs.delete("k-box");
+  assert.equal(jobs.byKernelToken("ahqj_a.sig"), undefined);
 });

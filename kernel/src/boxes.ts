@@ -14,8 +14,6 @@ import { JobError, insideNoLinks, type Jobs } from "./jobs.ts";
 import { engineState, type Box, type SandboxConfig } from "./sandbox.ts";
 
 const RENEW_MS = 5 * 60_000; // the launcher's lease is 15 minutes
-// What a box's Codex reaches its connections through: the launcher's gateway on the computers' network.
-const BOX_GATEWAY = "http://10.231.2.1:8200";
 
 type Call = (route: string, body: Record<string, unknown>) => Promise<Record<string, unknown>>;
 
@@ -56,8 +54,12 @@ export function createBoxes({ db, cfg, jobs, call, secret, whoami, connections, 
     writeFileSync(join(state, "AGENTS.md"), book, { mode: 0o600 });
     const token = mintToken(secret("gateway_job_secret"), { kind: "job", job: job.id, agentId: job.agent, issueId: job.task, ttlMs: (cfg.timeout_minutes + 60) * 60_000 }, now());
     // The box's connections: exactly what this job's token resolves to (its frozen authority), never the grants table.
-    const mcp = mcpBlock((await whoami(token)).tools, connections(), BOX_GATEWAY);
-    const box = (await call("/job", { agentId: job.agent, issueId: job.task, identifier: job.identifier, workspace, engine: a.engine, state, image: a.image, token, mcp })) as unknown as Box;
+    const mcp = mcpBlock((await whoami(token)).tools, connections(), cfg.boxGatewayUrl);
+    // The task's last box goes first (the launcher keeps one per task); while it is still going, the job waits a tick.
+    for (const r of db.prepare("SELECT id FROM jobs WHERE task = ? AND authority IS NOT NULL AND box IS NOT NULL AND released IS NULL AND state NOT IN ('admitted', 'running')").all(job.task) as { id: string }[]) await release(r.id);
+    const box = (await call("/job", { agentId: job.agent, issueId: job.task, identifier: job.identifier, workspace, engine: a.engine, state, image: a.image, token, mcp }).catch((e: { status?: number }) => {
+      throw e.status === 409 ? Object.assign(e, { status: 503 }) : e;
+    })) as unknown as Box;
     db.prepare("UPDATE jobs SET box = ?, renewed = ? WHERE id = ?").run(JSON.stringify(box), now(), job.id);
     try {
       jobs.runAdmitted(job.id, { box, worktree: workspace, prompt: job.prompt, session: job.session ?? lastSession(job.agent, job.task), label: job.identifier });

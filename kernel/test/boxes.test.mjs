@@ -117,9 +117,10 @@ test("a restarted kernel renews a running job's lease; a fresh session resumes t
   assert.equal(h.calls.filter((c) => c.route === "/job/renew").length, 1);
   h.release();
   await until("the first job's end", () => h.db.prepare("SELECT state FROM jobs").get().state === "done");
-  // The next job on this task resumes the engine's session.
-  await until("the box released", () => h.calls.some((c) => c.route === "/job/release"));
+  // The next job on this task (its last box released first) resumes the engine's session.
   const again = await h.admit("task-1");
   const spec = JSON.parse(readFileSync(join(h.db.prepare("SELECT dir FROM jobs WHERE id = ?").get(again.id).dir, "job.json"), "utf8"));
   assert.equal(spec.session, "s-1");
+  const routes = h.calls.map((c) => c.route);
+  assert.ok(routes.indexOf("/job/release") < routes.lastIndexOf("/job"), "the last box goes before the next is asked for");
 });

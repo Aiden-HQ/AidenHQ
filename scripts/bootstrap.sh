@@ -62,7 +62,6 @@ gen_secret paperclip_master_key  # Paperclip's secret-store key (PAPERCLIP_SECRE
 gen_secret computer_launcher_token  # the computer plugin (in paperclip) → the launcher on the host (services/computer)
 gen_secret computer_progress_token  # the board → the launcher's /progress only (live view)
 gen_secret computers_runner_key     # the runner → the launcher's job routes only (/job, /job/renew, /job/release)
-gen_secret launcher_kernel_key      # the kernel → the launcher's job routes only (kernel/src/boxes.ts)
 placeholder paperclip_ops_key ""
 placeholder paperclip_board_key ""   # written by scripts/paperclip-setup.mjs (the board restarts to read it)
 mkdir -p "$AIDENHQ_SECRETS_DIR/modules/google" && chmod 0700 "$AIDENHQ_SECRETS_DIR/modules" "$AIDENHQ_SECRETS_DIR/modules/google"

@@ -319,24 +319,14 @@ export function createJobs({ db, cfg, cp, mayDispatch, log, boxWrap, onEnd = () 
       extra[k] = v;
     }
     const id = `j-${randomBytes(8).toString("hex")}`;
-    const run = spawnRun({ agent: b.agent, task: b.task, engine, worktree, box, prompt: b.prompt, session: b.session, label: b.label ?? b.task, gh: extra.GH_TOKEN });
-    db.prepare("INSERT INTO jobs (id, module, agent, task, engine, pid, log, dir, at, jobcaps, observing, live_input, box, session, state) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'running')")
-      .run(id, module, b.agent, b.task, engine.kind, run.pid, run.log, run.dir, run.at, "[]", observes(engine) ? 1 : 0, entry.live_input ? 1 : 0, JSON.stringify(box), b.session && SESSION.test(b.session) ? b.session : null);
-    log("job started", { job: id, module, agent: b.agent, task: b.task, engine: engine.kind, pid: run.pid, box: box.container });
-    watch(id);
-    return view(row(id)!);
-  }
-
-  /** A job's engine started in its box (detached, under WRAP): its log, its job folder and job.json. */
-  function spawnRun({ agent, task, engine, worktree, box, prompt, session, label, gh }: { agent: string; task: string; engine: Engine; worktree: string; box: Box; prompt: string; session?: string; label: string; gh?: string }) {
     const at = Date.now();
     mkdirSync(cfg.logsDir, { recursive: true });
-    const logPath = join(cfg.logsDir, `${String(label).replace(/[^\w.-]/g, "_").slice(0, 60)}-${at}.log`);
+    const logPath = join(cfg.logsDir, `${String(b.label ?? b.task).replace(/[^\w.-]/g, "_").slice(0, 60)}-${at}.log`);
     const jobDir = join(box.outDir, "job");
     mkdirSync(jobDir, { mode: 0o700 }); // new for every run: nothing of the job's is in it yet
-    const built = buildJob({ cfg, engine, worktree, jobDir, sessionId: session, prompt, job: { agentId: agent, issueId: task, at }, box, gh: Boolean(gh), boxWrap });
+    const built = buildJob({ cfg, engine, worktree, jobDir, sessionId: b.session, prompt: b.prompt, job: { agentId: b.agent, issueId: b.task, at }, box, gh: Boolean(extra.GH_TOKEN), boxWrap });
     const pick = (names: string[]) => Object.fromEntries(names.filter((k) => process.env[k] !== undefined).map((k) => [k, process.env[k]!]));
-    const env: Record<string, string> = { ...pick(BOX_ENV), ...(gh ? { GH_TOKEN: gh, AIDENHQ_GH_AUTH: gh } : {}) };
+    const env: Record<string, string> = { ...pick(BOX_ENV), ...(extra.GH_TOKEN ? { GH_TOKEN: extra.GH_TOKEN, AIDENHQ_GH_AUTH: extra.GH_TOKEN } : {}) };
     appendFileSync(logPath, `# ${new Date(at).toISOString()} ${engine.kind}${engine.model ? ` (${engine.model})` : ""} in box ${box.container} (${worktree})\n`);
     const out = openSync(logPath, "a");
     const child = spawn("/bin/sh", ["-c", WRAP, `${logPath}.exit`, ...built.argv], { cwd: "/", env, detached: true, stdio: ["ignore", out, out] });
@@ -344,24 +334,41 @@ export function createJobs({ db, cfg, cp, mayDispatch, log, boxWrap, onEnd = () 
     // Only /bin/sh itself failing to start lands here; a missing engine is the shell's exit 127.
     child.on("error", (e: NodeJS.ErrnoException) => { try { writeFileSync(`${logPath}.exit`, "1\n"); appendFileSync(logPath, `# couldn't start /bin/sh: ${e.code ?? e.message}\n`); } catch {} });
     child.unref();
-    return { pid: child.pid ?? 0, log: logPath, dir: jobDir, at };
+    db.prepare("INSERT INTO jobs (id, module, agent, task, engine, pid, log, dir, at, jobcaps, observing, live_input, box, session, state) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'running')")
+      .run(id, module, b.agent, b.task, engine.kind, child.pid ?? 0, logPath, jobDir, at, "[]", observes(engine) ? 1 : 0, entry.live_input ? 1 : 0, JSON.stringify(box), b.session && SESSION.test(b.session) ? b.session : null);
+    log("job started", { job: id, module, agent: b.agent, task: b.task, engine: engine.kind, pid: child.pid, box: box.container });
+    watch(id);
+    return view(row(id)!);
   }
 
   /**
    * An admitted job (admission.ts) starts in the box the kernel got it (boxes.ts): its engine and authority are the row's,
-   * frozen at admission; the request adds only the prompt and the session to resume.
+   * frozen at admission; the caller adds only the prompt and the session to resume.
    */
   function runAdmitted(id: string, { box, worktree, prompt, session, label }: { box: Box; worktree: string; prompt: string; session?: string; label: string }) {
     const r = row(id);
     if (!r || r.state !== "admitted" || !r.authority) throw new JobError(409, "not-admitted", `job ${id} isn't waiting to start`);
-    const a = JSON.parse(r.authority) as { engine: string; model: string; effort: string };
+    const a = JSON.parse(r.authority) as { engine: string; model: string; effort: string; web: boolean };
     const entry = readEngines(cfg)[a.engine];
     if (entry?.box !== true) throw new JobError(400, "not-a-box-engine", `the ${a.engine} engine doesn't run in an agent computer`);
-    const engine: Engine = { kind: a.engine, model: a.model, effort: a.effort };
-    const run = spawnRun({ agent: r.agent, task: r.task, engine, worktree, box, prompt, session, label });
-    db.prepare("UPDATE jobs SET pid = ?, log = ?, dir = ?, at = ?, box = ?, session = ?, live_input = ?, state = 'running' WHERE id = ?")
-      .run(run.pid, run.log, run.dir, run.at, JSON.stringify(box), session && SESSION.test(session) ? session : null, entry.live_input ? 1 : 0, id);
-    log("job started", { job: id, module: r.module, agent: r.agent, task: r.task, engine: engine.kind, pid: run.pid, box: box.container });
+    // An engine that "reads" runs without web search (sandbox.ts observes).
+    const engine: Engine = { kind: a.engine, model: a.model, effort: a.effort, ...(a.web === false ? { reads: true } : {}) };
+    const at = Date.now();
+    mkdirSync(cfg.logsDir, { recursive: true });
+    const logPath = join(cfg.logsDir, `${String(label).replace(/[^\w.-]/g, "_").slice(0, 60)}-${at}.log`);
+    const jobDir = join(box.outDir, "job");
+    mkdirSync(jobDir, { mode: 0o700 });
+    const built = buildJob({ cfg, engine, worktree, jobDir, sessionId: session, prompt, job: { agentId: r.agent, issueId: r.task, at }, box, boxWrap });
+    const env = Object.fromEntries(BOX_ENV.filter((k) => process.env[k] !== undefined).map((k) => [k, process.env[k]!]));
+    appendFileSync(logPath, `# ${new Date(at).toISOString()} ${engine.kind}${engine.model ? ` (${engine.model})` : ""} in box ${box.container} (${worktree})\n`);
+    const out = openSync(logPath, "a");
+    const child = spawn("/bin/sh", ["-c", WRAP, `${logPath}.exit`, ...built.argv], { cwd: "/", env, detached: true, stdio: ["ignore", out, out] });
+    closeSync(out);
+    child.on("error", (e: NodeJS.ErrnoException) => { try { writeFileSync(`${logPath}.exit`, "1\n"); appendFileSync(logPath, `# couldn't start /bin/sh: ${e.code ?? e.message}\n`); } catch {} });
+    child.unref();
+    db.prepare("UPDATE jobs SET pid = ?, log = ?, dir = ?, at = ?, box = ?, session = ?, observing = ?, live_input = ?, state = 'running' WHERE id = ?")
+      .run(child.pid ?? 0, logPath, jobDir, at, JSON.stringify(box), session && SESSION.test(session) ? session : null, observes(engine) ? 1 : 0, entry.live_input ? 1 : 0, id);
+    log("job started", { job: id, module: r.module, agent: r.agent, task: r.task, engine: engine.kind, pid: child.pid, box: box.container });
     watch(id);
     return view(row(id)!);
   }

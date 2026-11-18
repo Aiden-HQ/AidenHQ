@@ -1,6 +1,6 @@
 // The computer launcher's logic, kept free of Docker so it can be tested: run tokens, the env an exec gets, the Codex
 // config the box gets, the `docker run` line and the model call's hand-off to the gateway. launcher.mjs wires it up.
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { mkdirSync, realpathSync, statSync } from "node:fs";
 import http from "node:http";
 import path from "node:path";
@@ -214,6 +214,8 @@ export const LEASE_MS = 15 * 60_000;
  * Runner jobs' boxes (POST /job): one record per box, saved like the run tokens so a launcher restart keeps the lease and the
  * helper binding. { container, agentId, issueId, identifier, workspace, codexHome, helperPort, helperToken, leaseUntil }.
  */
+export const tokenHash = (token) => createHash("sha256").update(String(token)).digest("hex");
+
 export class Jobs {
   #by = new Map();
   add(rec, now = Date.now()) {
@@ -224,6 +226,13 @@ export class Jobs {
   has(container) { return this.#by.has(container); }
   delete(container) { return this.#by.delete(container); }
   byIssue(issueId) { return [...this.#by.values()].find((r) => r.issueId === issueId); }
+  /** A kernel job's box by its job token (the kernel minted it; only its hash is kept): its container and agent, else undefined. */
+  byKernelToken(token) {
+    if (typeof token !== "string" || !token.startsWith("ahqj_")) return undefined;
+    const h = tokenHash(token);
+    const r = [...this.#by.values()].find((x) => x.kernel && x.tokenHash === h);
+    return r && { container: r.container, agentId: r.agentId };
+  }
   containers() { return [...this.#by.keys()]; }
   /** A live lease: admission and idle reaping leave the box alone. */
   leased(container, now = Date.now()) { return (this.#by.get(container)?.leaseUntil ?? 0) > now; }

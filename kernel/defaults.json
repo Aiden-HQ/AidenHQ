@@ -60,6 +60,7 @@
     "gateway_job_secret",
     "gateway_board_key",
     "gateway_source_key",
-    "gateway_harness_key"
+    "gateway_harness_key",
+    "launcher_kernel_key"
   ]
 }
