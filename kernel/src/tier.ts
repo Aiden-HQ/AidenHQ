@@ -175,13 +175,21 @@ export function recordKey(r: Prior): string | undefined {
 
 /** One branch or PR a request changes, as the retry bound counts it, and its patch key (the change's content key). */
 export type Target = { key: string; patch?: string };
+/** The arguments that say where a connection tool call is aimed (never its text): an issue, a PR, a channel, a thread. */
+const AIM = ["repo", "number", "issue_number", "pull_number", "channel", "thread_ts", "id"];
 /**
  * Where a request is aimed, for MAX_REJECTS: every branch (`repo|branch`, its patch key) or PR (`repo#number`, its patch
  * key) it changes, and a label for the agent. `s` is either the verified request state (`branches`, `prs`) or an approval
- * record's args (`only`, `prs`). A request of an action that names neither (apply, create_repo, a module digest) has the
- * task as its target.
+ * record's args (`only`, `prs`). A connection tool call (conn.tool) is aimed at its tool and the AIM arguments it names, so
+ * rejected comments on one issue never park a close on another. A request of an action that names none of these (apply,
+ * create_repo, a module digest) has the task as its target.
  */
 export function requestTargets(action: string, s: any): { targets: Target[]; label: string } | undefined {
+  if (action === "conn.tool" && s?.connection && s?.tool) {
+    const aim = AIM.filter((k) => ["string", "number"].includes(typeof s.arguments?.[k])).map((k) => `${k}=${String(s.arguments[k]).toLowerCase()}`);
+    const label = `${s.connection}.${s.tool}${aim.length ? ` (${aim.join(", ")})` : ""}`;
+    return { targets: [{ key: label }], label };
+  }
   const of = (x: any, key: string): Target => ({ key, ...(typeof x?.patch === "string" ? { patch: x.patch } : {}) });
   const branches = action === "push" || action === "pr" ? (s?.branches ?? s?.only ?? []).filter((b: any) => b?.repo && b?.branch) : [];
   if (branches.length) return { targets: branches.map((b: any) => of(b, `${String(b.repo).toLowerCase()}|${b.branch}`)), label: `branch${branches.length > 1 ? "es" : ""} ${branches.map((b: any) => `\`${b.branch}\``).join(", ")}` };
@@ -258,7 +266,7 @@ export function priorPart(p: ReturnType<typeof priorDecisions> | undefined): Par
   if (!p) return undefined;
   if (p.ownerVeto) return T(2, "owner-veto", "the owner rejected this action on this task, and only their own yes lifts it");
   if (p.same !== undefined) return REJECT("rejected-content", `the AI reviewer already rejected exactly this change on this task (its note: ${String(p.same).slice(0, 400)}). Fix what it found and ask again with the changed commits`);
-  if (p.rejects >= MAX_REJECTS) return REJECT("retries-exhausted", `parked: the AI reviewer rejected this action ${p.rejects} times on ${(p as { scope?: string }).scope ?? "this task"}, so it isn't reviewed again here. A different branch or PR of the task is reviewed on its own; report what it found to whoever asked for this work`);
+  if (p.rejects >= MAX_REJECTS) return REJECT("retries-exhausted", `parked: the AI reviewer rejected this action ${p.rejects} times on ${(p as { scope?: string }).scope ?? "this task"}, so it isn't reviewed again here. A different branch, PR or tool target of the task is reviewed on its own; report what it found to whoever asked for this work`);
   return undefined;
 }
 

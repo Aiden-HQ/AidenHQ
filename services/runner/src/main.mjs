@@ -2463,7 +2463,7 @@ async function reviewOne(a) {
       // The kernel files them without classify(): earlier decisions on the task count as for any request (the card's digest
       // is its content), and a routine's cap (tier0 or off) makes them review-first, as classify() does.
       const common = await commonTierState(issue, a.action);
-      const prior = priorDecisions(common.records, a.action, [], requestKey(a.action, { digest: a.digest }), undefined, common.requestChain);
+      const prior = priorDecisions(common.records, a.action, [], requestKey(a.action, { digest: a.digest }), undefined, common.requestChain, requestTargets(a.action, a.args));
       const veto = priorPart(prior);
       const reviewed = { tier: 1, rule: `${a.action}`, reason: a.reason, previous: [...common.answers, ...prior.findings], relift: prior.relift, panel: a.panel === true, ...kernelCardDiff(a) };
       // Tier 2 on its merits (the owner's veto here, or the kernel's own tier before any autonomy cap): reviewed, then the owner's.
