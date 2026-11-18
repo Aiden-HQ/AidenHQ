@@ -394,8 +394,20 @@ saveJobs();
 for (const name of orphans) await destroy(name, "a box without its job record");
 if (boxes.size) log(`found ${boxes.size} job box(es) from before`);
 // Listen only now: a call answered before the boxes from before are known would miss them.
-controlServer.listen(CFG.control.port, CFG.control.host, () => log(`launcher on ${CFG.control.host}:${CFG.control.port}`));
-gatewayServer.listen(CFG.gateway.port, CFG.gateway.host, () => log(`gateway on ${CFG.gateway.host}:${CFG.gateway.port}`));
+// The bridge's address can come up after the launcher starts (a fresh install): wait for it quietly, no crash loop.
+const listen = async (server, { host, port }, what) => {
+  for (let waited = false; ; waited = true) {
+    try {
+      await new Promise((ok, fail) => { server.once("error", fail); server.listen(port, host, () => { server.off("error", fail); ok(); }); });
+      return log(`${what} on ${host}:${port}`);
+    } catch (e) {
+      if (e.code !== "EADDRNOTAVAIL") throw e;
+      if (!waited) log(`${host} isn't up yet; waiting for it (${what})`);
+      await new Promise((r) => setTimeout(r, 1000));
+    }
+  }
+};
+await Promise.all([listen(controlServer, CFG.control, "launcher"), listen(gatewayServer, CFG.gateway, "gateway")]);
 // Idle boxes go; a leased job's never does. A lapsed lease (the kernel gone 15 minutes) takes its box.
 setInterval(() => {
   const lapsed = reapLapsed(jobs);
