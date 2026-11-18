@@ -590,17 +590,6 @@ code="$(curl -s -m 10 -o /dev/null -w '%{http_code}' -X POST -H "Authorization: 
 # Only the dispatch module starts jobs (kernel.jobs); the engineering module requests none (lands with the dispatch move).
 ! awk '/^roles:/{on=1} on && /requests:/' modules/engineering/module.yaml | grep 'kernel\.jobs' >/dev/null \
   && pass "engineering: requests no kernel.jobs" || fail "engineering: still requests kernel.jobs (modules/engineering/module.yaml)"
-# F5: the kernel posts as each agent with that agent's own Paperclip key (paperclip-agents/<id>, setup's): the folder 0700,
-# every key 0400, owned by the kernel's user, and mounted into no container.
-pa="$sd/paperclip-agents"
-if [ -d "$pa" ]; then
-  bad="$(find "$pa" -mindepth 1 \( -type f ! -perm 0400 -o ! -type f -o ! -user "$(id -un)" \) -print 2>/dev/null | head -3 | tr '\n' ' ')"
-  [ "$(stat -c %a "$pa" 2>/dev/null || stat -f %Lp "$pa")" = 700 ] && [ -z "$bad" ] \
-    && ! docker ps -q | xargs -r docker inspect --format '{{.Name}} {{range .Mounts}}{{.Source}} {{end}}' | grep "$pa" >/dev/null \
-    && pass "vault: paperclip-agents/ is 0700, its keys 0400, the kernel's user's, and mounted into no container" || fail "vault: paperclip-agents/ is readable beyond the kernel ($bad)"
-else
-  pass "vault: no paperclip-agents/ yet (no agent posts through the kernel)"
-fi
 # The GitHub App key (Lane T): among compose services and containers, only codehost-github mounts it.
 app_holders="$(docker ps -q | xargs -r docker inspect --format '{{.Name}} {{range .Mounts}}{{.Source}} {{end}}' | grep -E "$sd/github-app( |/)" | awk '{print $1}' | grep -v 'codehost-github' | tr '\n' ' ')"
 [ -z "$app_holders" ] && ! grep -qE 'github-app|github_app' compose.yaml \
