@@ -2001,7 +2001,7 @@ function gradeDeps(issue) {
     // The task's own branches' PRs; a task with none (an agent that handed the code to an Engineer) has those of the tasks
     // its own agent delegated under it instead (created by that agent, not by anyone else filing a child onto it), still
     // from this runner's own rows, never a comment. Cancelled delegations are not its work.
-    // Each PR keeps the branch its own row recorded (`head`), so the grader can check the number still names that change.
+    // Each PR keeps every branch its own rows recorded (`heads`), so the grader can check the number still names that change.
     taskPrs: async () => {
       let rows = state.branches(issue.id);
       const delegated = (c) => isAgentSubtask(c) && Boolean(issue.assigneeAgentId) && c.createdByAgentId === issue.assigneeAgentId && c.status !== "cancelled";

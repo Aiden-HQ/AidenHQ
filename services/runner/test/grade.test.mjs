@@ -823,9 +823,10 @@ test("only the runner's own records for the task name a PR when no branch row do
   const queue = [{ repo: "acme/app", number: 7, url: ref, status: "merged", headRef: "fix/legacy" }, { repo: "acme/app", number: 7, url: ref, status: "merged", headRef: "fix/legacy" }];
   assert.deepEqual(taskMergePrs(queue).map((p) => `${p.repo}#${p.number}`), ["acme/app#7"], "one row per PR, however many records name it");
   assert.deepEqual(taskMergePrs([{ repo: "acme/app", number: 8 }]).map((p) => p.url), ["https://github.com/acme/app/pull/8"]);
-  // A record that holds the branch, or the merge commit, carries it to the read; one record's gap is filled by another's fact.
+  // Every branch and commit the records hold is kept: one record's gap is filled by another's, and two that disagree both stay.
   const sha = "e".repeat(40);
-  assert.deepEqual(taskMergePrs([{ ...queue[0], headRef: "fix/one", sha }, { ...queue[1], headRef: "fix/two" }]), [{ repo: "acme/app", number: 7, url: ref, head: "fix/one", merge: sha }]);
+  assert.deepEqual(taskMergePrs([{ ...queue[0], headRef: "fix/one", sha }, { ...queue[1], headRef: "fix/one" }]), [{ repo: "acme/app", number: 7, url: ref, heads: ["fix/one"], headOids: [], merges: [sha] }]);
+  assert.deepEqual(taskMergePrs([{ repo: "acme/app", number: 7, headRef: "fix/one" }, { repo: "acme/app", number: 7, headRef: "fix/two" }])[0].heads, ["fix/one", "fix/two"]);
 
   // The wait itself reads it: with no branch row, the recorded PR is fetched, and what GitHub says decides.
   const read = [];
@@ -833,14 +834,37 @@ test("only the runner's own records for the task name a PR when no branch row do
   const ev = await gather({ kind: "pr", ref: "" }, deps(over));
   assert.deepEqual(read, ["acme/app#7"]);
   assert.match(ev.facts[0], /named by the runner's own record for this task/);
+  // Two records for one PR that disagree about its branch are a contradiction, never resolved to the first one.
+  const clash = await gather({ kind: "pr", ref: "" }, deps({ ...over, taskMerged: async () => [{ ...queue[0], headRef: "fix/one" }, { ...queue[0], headRef: "fix/two" }] }));
+  assert.match(clash.awaiting, /the task's own records name different branches \(`fix\/one`, `fix\/two`\)/);
+  assert.equal(clash.version, undefined, "a contradicting record is not graded");
+  assert.equal((await presentNow({ kind: "pr", ref: "" }, deps({ ...over, taskMerged: async () => [{ ...queue[0], headRef: "fix/one" }, { ...queue[0], headRef: "fix/two" }] }))).present, false, "nor held as delivered");
+  // A first record that happens to match GitHub does not settle it: the second one still contradicts the first.
+  const firstMatches = [{ ...queue[0], headRef: "fix/legacy" }, { ...queue[0], headRef: "fix/other" }];
+  const bothBranches = await gather({ kind: "pr", ref: "" }, deps({ ...over, taskMerged: async () => firstMatches }));
+  assert.match(bothBranches.awaiting, /the task's own records name different branches \(`fix\/legacy`, `fix\/other`\)/);
+  assert.equal(bothBranches.version, undefined, "a matching first record never grades over a contradicting one");
+  assert.equal((await presentNow({ kind: "pr", ref: "" }, deps({ ...over, taskMerged: async () => firstMatches }))).present, false);
+  // The same for the head commit the task bound, even when the first record's is the one GitHub has.
+  const firstHead = [{ ...queue[0], headOid: "a".repeat(40) }, { ...queue[0], headOid: "b".repeat(40) }];
+  assert.match((await gather({ kind: "pr", ref: "" }, deps({ ...over, taskMerged: async () => firstHead }))).awaiting, /the task's own records name different head commits \(`a{40}`, `b{40}`\)/);
+  // The same for the merge commit: two commits for one number contradict, whichever one matches today.
+  const twoMerges = await gather({ kind: "pr", ref: "" }, deps({ ...over, taskMerged: async () => [{ ...queue[0], sha: "a".repeat(40) }, { ...queue[0], sha: "b".repeat(40) }] }));
+  assert.match(twoMerges.awaiting, /the task's own records name different merge commits \(`a{40}`, `b{40}`\)/);
+  assert.doesNotMatch(twoMerges.awaiting, /the runner's own record has this task's merge commit/, "no one of two contradicting commits is cited as the task's");
+  const firstMerge = [{ ...queue[0], sha: "c".repeat(40) }, { ...queue[0], sha: "b".repeat(40) }];
+  const bothMerges = await gather({ kind: "pr", ref: "" }, deps({ ...over, taskMerged: async () => firstMerge, pr: async () => pr({ state: "MERGED", merge: "c".repeat(40) }) }));
+  assert.match(bothMerges.awaiting, /the task's own records name different merge commits/);
+  assert.doesNotMatch(bothMerges.awaiting, /has this task's merge commit/, "the matching first commit is not cited over the contradicting one");
   assert.match((await gather({ kind: "pr", ref: "" }, deps({ ...over, pr: async () => pr({ state: "OPEN", check: "SUCCESS" }) }))).awaiting, /not merged yet/);
   assert.match((await gather({ kind: "pr", ref: "" }, deps({ ...over, pr: async () => pr({ state: "CLOSED" }) }))).awaiting, /closed without merging/);
 
   // A comment saying "merged" is not a record: its runner marker is text any writer can copy, so it names nothing.
+  read.length = 0;
   const said = { taskPrs: async () => [], comments: async () => [{ authorType: "user", authorUserId: "user-1", body: `Merged ${ref} (1 of 1).\n\n<!-- aidenhq-runner -->` }], pr: async (repo, n) => (read.push(`${repo}#${n}`), pr({ state: "MERGED" })), diff: async () => "+x" };
   assert.match((await gather({ kind: "pr", ref: "" }, deps(said))).awaiting, /no pull request/);
   assert.deepEqual((await presentNow({ kind: "pr", ref: "" }, deps(said))), { present: false, facts: [] });
-  assert.equal(read.filter((r) => r === "acme/app#7").length, 1, "the guard never read a PR a comment named");
+  assert.deepEqual(read, [], "a comment names nothing, so neither the read nor the guard fetched a PR for it");
 });
 
 // A re-created repository restarts its PR numbering, so a number a task stored can now name an unrelated change (issue #437).
@@ -932,15 +956,15 @@ test("a task's branch rows reach the grading read with the branch they recorded,
     { repo: "acme/app", branch: "feat/unrelated", pr_url: null },
   ];
   assert.deepEqual(taskPrRows(rows), [
-    { repo: "acme/app", number: 7, url: ref, head: "fix/legacy" },
-    { repo: "acme/app", number: 8, url: "https://github.com/acme/app/pull/8", head: "feat/other" },
+    { repo: "acme/app", number: 7, url: ref, heads: ["fix/legacy"] },
+    { repo: "acme/app", number: 8, url: "https://github.com/acme/app/pull/8", heads: ["feat/other"] },
   ]);
-  // Two rows name one PR with different branches: ambiguous, so no head, and the grading read refuses it rather than guessing.
+  // Two rows name one PR with different branches: a contradiction, and the grading read refuses it rather than guessing.
   const split = taskPrRows([{ repo: "acme/app", branch: "fix/one", pr_url: ref }, { repo: "acme/app", branch: "fix/two", pr_url: ref }]);
   assert.deepEqual(split, [{ repo: "acme/app", number: 7, url: ref, heads: ["fix/one", "fix/two"] }], "every branch kept, no single head");
   const ambiguous = { taskPrs: async () => split, pr: async () => pr({ state: "MERGED", merge: "b".repeat(40) }), diff: async () => assert.fail("read an ambiguous PR") };
-  // Every recorded branch must be the PR's head: with two that disagree, at least one never can be, so the read refuses it.
-  assert.match((await gather({ kind: "pr", ref: "" }, deps(ambiguous))).awaiting, /now names a different change \(its head branch is `fix\/legacy`, not the task's `fix\/one`, and its head branch is `fix\/legacy`, not the task's `fix\/two`\)/);
+  // A contradiction between the task's own rows is said as such, and nothing of that PR is read.
+  assert.match((await gather({ kind: "pr", ref: "" }, deps(ambiguous))).awaiting, /the task's own records name different branches \(`fix\/one`, `fix\/two`\)/);
   assert.match((await presentNow({ kind: "pr", ref: "" }, deps(ambiguous))).facts[0], /now names a different change/);
   assert.equal((await presentNow({ kind: "pr", ref: "" }, deps(ambiguous))).present, false, "never held as this task's delivery on one of two branches");
   // A record's merge commit that also agrees cannot rescue a disagreement between the branches.
