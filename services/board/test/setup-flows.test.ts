@@ -45,8 +45,8 @@ describe("setup flows", () => {
     const accounts = createKernelAuth({ kernel: { url: kernel.url, token: BOARD_KEY }, adminUrl: "http://localhost:3120" });
     const paperclip = new Paperclip("http://paperclip", "00000000-0000-4000-8000-000000000001", "k", (async () => new Response("[]")) as unknown as typeof fetch);
     app = createApp({ paperclip, store, records: fakeRecords(), log: pino({ level: "silent" }), staticDir: "/nonexistent", timezone: "UTC", accounts, allowedHosts: ["localhost:3121"], mode: "lan", lan: { url: "https://aiden.example.com", googleConnect: true }, google, signIns: [
-        { id: "working", label: "Working", connect: "/working/connect", callback: "/working/callback", missing: "m", stopped: "s", auth: { status: async () => ({ state: "ok" }) } as never },
-        ...["plain", "hub"].map((id) => ({ id, label: id, connect: `/${id}/connect`, callback: `/${id}/callback`, missing: "m", stopped: "s", auth: { status: async () => ({ state: "missing" }), scopes: async () => null, start: async () => ({ url: `https://${id}.example.com/authorize` }) } as never })),
+        { id: "working", label: "Working", connect: "/working/connect", callback: "/working/callback", missing: "m", stopped: "s", auth: { status: async () => ({ state: "ok" }), scopes: async () => undefined } as never },
+        ...["plain", "hub"].map((id) => ({ id, label: id, connect: `/${id}/connect`, callback: `/${id}/callback`, missing: "m", stopped: "s", auth: { status: async () => ({ state: "missing" }), scopes: async () => null, start: async () => ({ url: `https://${id}.example.com/authorize` }), finish: async () => {} } as never })),
       ], setupFlows: { flows, fetchImpl: fakePair } });
     await new Promise<void>((r) => app.listen(0, "127.0.0.1", r));
     port = (app.address() as AddressInfo).port;
@@ -115,6 +115,7 @@ describe("setup flows", () => {
     expect(await admin("GET", "/plain/connect")).toMatchObject({ status: 302, location: "https://plain.example.com/authorize" }); // no secrets to ask for
     await admin("POST", "/api/setup-flows/hub/secret", { secret: "hub_client_id", value: "client-1" });
     expect(await admin("GET", "/hub/connect")).toMatchObject({ status: 302, location: "https://hub.example.com/authorize" });
+    expect(await admin("GET", "/hub/callback?state=s&code=c")).toMatchObject({ status: 302, location: "/#/setup/hub" }); // back to the flow, to see it connected
   });
 
   it("dismissing is remembered", async () => {

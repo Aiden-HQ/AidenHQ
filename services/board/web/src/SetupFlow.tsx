@@ -140,7 +140,7 @@ function FlowBody({ flow, board, reload, onDone, onSignIn }: { flow: SetupFlowVi
               {flow.signedIn ? (
                 <div className="setup-actions setup-paired">
                   <p className="setup-ok-line">Connected.</p>
-                  <a className="btn" href={connect}>Reconnect</a>
+                  {flow.signin && <a className="btn" href={connect}>{flow.scopes ? "Change access" : "Reconnect"}</a>}
                 </div>
               ) : secretsDone ? (
                 <a className="btn primary" href={connect}>Connect {flow.title}</a>

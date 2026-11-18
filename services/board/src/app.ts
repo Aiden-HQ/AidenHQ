@@ -1869,6 +1869,7 @@ export function createApp(opts: AppOptions): Server {
           accounts: opts.accounts,
           store,
           signedIn: async (id) => (await signInStates()).find((x) => x.id === id)?.status?.state === "ok",
+          scopeChoice: async (id) => ((await (opts.signIns ?? []).find((x) => x.id === id)?.auth.scopes())?.supported.length ?? 0) > 1,
           connected: connectionSignedIn,
           boardUrl: signInOrigin,
           redirectUrl: (signin, host) => {
