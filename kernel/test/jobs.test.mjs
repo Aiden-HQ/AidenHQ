@@ -42,7 +42,7 @@ function sandbox() {
   // An engine whose program isn't installed: it exits 127, as a shell does for a command it can't find.
   const missing = engine("missing.mjs", `import { spawnSync } from "node:child_process";\nconst r = spawnSync("aidenhq-no-such-program", [], { stdio: "inherit" });\nprocess.exit(r.error?.code === "ENOENT" ? 127 : 1);`);
   // An engine that dies at start on stderr, as Codex does resuming a session its home doesn't have.
-  const dies = engine("dies.mjs", `console.log(JSON.stringify({ type: "noise" }));\nconsole.error("Error: thread/resume failed: no rollout found for thread id s-gone; OPENROUTER_API_KEY=sk-or-v1-abc123 Bearer sk-or-v1-def456");\nprocess.exit(1);`);
+  const dies = engine("dies.mjs", `console.log(JSON.stringify({ type: "noise" }));\nconsole.error("Error: thread/resume failed: no rollout found for thread id s-gone; OPENROUTER_API_KEY=sk-or-v1-abc123 Bearer sk-or-v1-def456 run ahqj_body.sig");\nprocess.exit(1);`);
   const engines = {
     dies: { module: "test", dir: join(dir, "engines"), bin: dies, kind: "dies", box: true },
     echo: { module: "engine-echo", dir: "fixtures/engine-echo", bin: "fixtures/engine-echo/bin/engine", kind: "echo", live_input: true, box: true },
@@ -346,5 +346,5 @@ test("a job that fails without a word carries its first error line as its final 
   const j = await jobs.start("acme-dispatch", req({ engine: { kind: "dies" } }));
   const v = await finished(jobs, j.id);
   assert.equal(v.state, "failed");
-  assert.equal(v.final, "The job failed: Error: thread/resume failed: no rollout found for thread id s-gone; OPENROUTER_API_KEY=… Bearer …");
+  assert.equal(v.final, "The job failed: Error: thread/resume failed: no rollout found for thread id s-gone; OPENROUTER_API_KEY=… Bearer … run ahqj_…");
 });
