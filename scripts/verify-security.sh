@@ -390,7 +390,7 @@ else
 fi
 
 echo "Repository"
-if git ls-files -z --cached --others --exclude-standard -- . ':!scripts/verify-security.sh' | xargs -0 grep -lE '(sk-[A-Za-z0-9]{20,}|pcp_[a-f0-9]{20,}|GOCSPX-|refresh_token"\s*:\s*"1//|xox[bp]-[0-9]{6,})' 2>/dev/null | grep -q .; then
+if git ls-files -z --cached --others --exclude-standard -- . ':!scripts/verify-security.sh' | xargs -0 grep -lE '(sk-[A-Za-z0-9]{20,}|pcp_[a-f0-9]{20,}|GOCSPX-[A-Za-z0-9_-]{20,}|refresh_token"\s*:\s*"1//|xox[bp]-[0-9]{6,})' 2>/dev/null | grep -q .; then
   fail "possible secrets in tracked files"
 else
   pass "no secret patterns in tracked files"
@@ -888,7 +888,8 @@ gate_before_merge() { awk "/^$1/,/^}/" "$rm_" | grep -nE 'await github\.evalGate
   && grep -qF '        if (d.do !== "merge" || gate?.stop || gate?.wait || !method) {' "$rm_" \
   && grep -qF '  keyFile: join(cfg.secretsDir, "openrouter_eval_key"),' "$rmain" && ! grep -qE 'openrouter_key|openRouterKey|openrouterKeyFile' "$rgate" \
   && grep -qF 'const JUDGE = ["ai-reviewer/scripts/reviewer-eval.mjs", "ai-reviewer/test/case-pad.mjs", "ai-reviewer/scripts/pass-rule.mjs"];' "$rgate" \
-  && grep -qF '      writeFileSync(join(tree, f), `${await d.git(path, "show", `${base}:${f}`)}\n`);' "$rgate" \
+  && grep -qF '      writeFileSync(join(tree, f), `${await d.git(path, "show", inTree(base, f))}\n`);' "$rgate" \
+  && grep -qF 'const inTree = (m: ModulesAt, rel: string) => `${m.sha}:${m.path ? `${m.path}/` : ""}${rel}`;' "$rgate" \
   && grep -qF 'const argv = d.jail([process.execPath, "scripts/reviewer-eval.mjs"], { rw: [out], ro: [tree] });' "$rgate" \
   && grep -qF 'r = JSON.parse(smallFile(file, 4 * 1024 * 1024) ?? "");' "$rgate" \
   && grep -qF '  /^modules\/codehost-github\/src\/plan\.mjs$/,' "$rgate" && grep -qF '  /^modules\/platform\/src\/check\.mjs$/,' "$rgate" \
@@ -944,7 +945,7 @@ rreview="modules/ai-reviewer/service/src/review.mjs"
   && grep -qF '/(^|\/)\.github\//,' "$rcore" && grep -qF 'gateCore: PRODUCT_GATE_CORE' "$rtiers" \
   && grep -qF '.some((g) => g.test(f))) parts.push(PANEL("gate-core"' "$rcheck" \
   && grep -qF 'const PANEL = (rule, reason) => ({ tier: 1, rule, reason, panel: true });' "$rcheck" \
-  && grep -qF 'const PANEL = (rule, reason) => ({ tier: 1, rule, reason, panel: true });' "$rtiers" \
+  && grep -qF 'import { PANEL, ' "$rtiers" && grep -qF 'export const PANEL = (rule: string, reason: string): Part => ({ tier: 1, rule, reason, panel: true });' kernel/src/apply-tier.ts \
   && grep -qF 'const rank = (p: Part) => p.tier * 2 + (p.panel ? 1 : 0);' kernel/src/tier.ts \
   && grep -qF '  const second = v.second_review !== false;' "$rreview" \
   && grep -qF '  if (v1.decision !== "approve" || !(panel || flagged)) return v1;' "$rreview" \
@@ -995,7 +996,8 @@ tools="$(grep -oE '^export const TOOLS = \[[^]]*\]' services/runner/src/repohelp
   && ! grep -qE 'POST.*/repos\b|/user/repos' modules/codehost-github/src/repos.ts \
   && [ "$(awk '/^async function agentTasks?\(/,/^}/' services/runner/src/main.mjs | grep -c '^  requireTaskReads(ctx);')" = 2 ] \
   && [ "$(awk '/^async function agentMerge\(/,/^}/' "$rmain" | grep -n 'tierFor(ctx.issue, "merge"' | head -1 | cut -d: -f1)" -lt "$(awk '/^async function agentMerge\(/,/^}/' "$rmain" | grep -n 'await fileApproval(ctx.issue, { action: "merge"' | cut -d: -f1)" ] \
-  && awk '/^async function agentMerge\(/,/^}/' "$rmain" | grep -F 'const now = bound.filter((_, i) => tiers[i].tier === 0);' >/dev/null \
+  && awk '/^async function agentMerge\(/,/^}/' "$rmain" | grep -F 'const zero = tiers.some((t) => t.tier === 0) && !(await heldNow(ctx.issue));' >/dev/null \
+  && awk '/^async function agentMerge\(/,/^}/' "$rmain" | grep -F 'const now = bound.filter((_, i) => zero && tiers[i].tier === 0);' >/dev/null \
   && awk '/^async function agentMerge\(/,/^}/' "$rmain" | grep -F 'if (bad) throw new UserError(' >/dev/null \
   && [ "$(awk '/^async function agentMerge\(/,/^}/' "$rmain" | grep -oE 'return agentMergeLocal\(|tierFor\(ctx\.issue, "merge"' | tr '\n' '|')" = 'return agentMergeLocal(|tierFor(ctx.issue, "merge"|' ] \
   && [ "$(awk '/^async function agentMergeLocal\(/,/^}/' "$rmain" | grep -oE 'await fileLocalMerge\(|requestAutoMerge\(|localHost\.merge\(' | tr '\n' '|')" = 'await fileLocalMerge(|' ] \
