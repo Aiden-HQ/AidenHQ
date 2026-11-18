@@ -113,3 +113,12 @@ test("the host-metrics check is skipped with the module off or the timer not ins
   const missing = checkout({ timer: false });
   assert.match((await run(missing)).out, /^  skip  host metrics \(timer not installed\)$/m);
 });
+
+test("the host-metrics check resolves ${AIDENHQ_DIR} the way systemd does: systemctl show prints it unexpanded", async () => {
+  const dir = checkout();
+  writeFileSync(join(dir, "home/.config/aidenhq-host-metrics.env"), `AIDENHQ_DIR=${dir}\n`);
+  writeFileSync(join(dir, "execstart"), execStart("${AIDENHQ_DIR}/ops/host-metrics.sh") + "\n");
+  const r = await run(dir);
+  const line = r.out.split("\n").find((l) => l.includes("host metrics timer runs the applied checkout"));
+  assert.match(line, /^  ok    host metrics timer runs the applied checkout/, line);
+});
