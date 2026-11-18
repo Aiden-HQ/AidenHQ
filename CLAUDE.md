@@ -109,6 +109,9 @@ that moves `product:` to a different reviewer needs a receipt for that reviewer 
   kernel's `computeTier` (`kernel/src/tier.ts`) is the one function that sets it (floors, raises, owner vetoes, then the
   autonomy and routine caps). Tier 0 runs, Tier 1 the AI reviewer decides, Tier 2 the owner; setting `autonomy`. Every
   reviewer false reject becomes a planted case in `modules/ai-reviewer/test/reviewer-cases/`.
+  **Auto-update installs without the owner.** With `auto_update` on, the updater installs each verified release (its
+  own filing, tag on the distro's main, newer than the current one, tested stamp) with no owner approval; turning
+  auto-update on is the owner's decision to accept that risk. Any other release move stays the owner's.
 - **Cross-agent behaviour goes in a module, not in each handbook.** A skill (`modules/<m>/skills/<name>/SKILL.md`) is the
   on-demand mechanism: its one-line description is in the handbook's index and the agent reads the text when it needs it. A
   module `prompts:` entry (`modules/<module>/prompts/<id>.md`) is for always-on text (replying in chief-of-staff,
