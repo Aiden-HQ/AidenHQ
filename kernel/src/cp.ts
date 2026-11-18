@@ -16,13 +16,14 @@
 // - A status change to `done` is for the job's own task only and passes the finish gate first (checks.ts): held or reopened,
 //   nothing is written and the answer says so (202).
 // - A task a job creates gets the kernel's provenance row (provenance.ts) from the plugin's answer.
+// A user assignee is only ever the owner; a PATCH hands a task back (assigneeAgentId null), never to another agent.
 // Answers look like Paperclip's: the task as it is now (a PATCH 200, a create 201 with `deduplicated`), a comment's {id} (201).
 import { createHash } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type { Asserter } from "./assert.ts";
 import type { Checks } from "./checks.ts";
 import type { Connection, Grant, Whoami } from "./identity.ts";
-import type { PluginPost } from "./outcomes.ts";
+import { delegateIds, type PluginPost } from "./outcomes.ts";
 import type { Provenance } from "./provenance.ts";
 import { fail } from "./proxy.ts";
 
@@ -45,7 +46,6 @@ const MAX = 32 * 1024 * 1024;
 /** What a PATCH may change besides its status and comment (post.js PATCH_KEYS), and what a create may carry. */
 const PATCH = ["title", "description", "priority", "assigneeAgentId", "assigneeUserId", "labelIds", "blockedByIssueIds"];
 const CREATE = ["title", "description", "priority", "status", "assigneeAgentId", "assigneeUserId", "labelIds", "parentId", "idempotencyKey", "allowDuplicate"];
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 type Issue = { id: string; identifier?: string; assigneeAgentId?: string | null; createdByAgentId?: string | null; parentId?: string | null; status?: string };
 
 export function createCp({ whoami, asserter, plugin, agentKey, grants, controlUrl, checks, provenance, log = () => {} }: {
@@ -54,7 +54,7 @@ export function createCp({ whoami, asserter, plugin, agentKey, grants, controlUr
   agentKey: (agent: string) => string;
   /** The grants table's agents: roles, delegation targets and the tasks it names for each agent. */
   grants: () => Record<string, Grant>;
-  controlUrl: string; checks?: Checks; provenance: Pick<Provenance, "carried" | "record">; log?: (msg: string, f?: Record<string, unknown>) => void;
+  controlUrl: string; checks?: Checks; provenance: Pick<Provenance, "carried" | "intend" | "record">; log?: (msg: string, f?: Record<string, unknown>) => void;
 }) {
   // Writes whose answer was lost (a 5xx): the next try of the same write asks the plugin to look for it first.
   const unknown = new Set<string>();
@@ -115,10 +115,28 @@ export function createCp({ whoami, asserter, plugin, agentKey, grants, controlUr
       const who = t.assigneeAgentId ? `its assignee (${keyOf(t.assigneeAgentId)})` : "the owner";
       throw fail(403, "forbidden", `${t.identifier ?? t.id} isn't yours to change: ask ${who} or the chief of staff to pass it on`);
     };
-    // The write's once-only key: an idempotency key the module sent, else this call's write itself (a retry of it is the same op).
-    const opOf = (seed: string) => createHash("sha256").update(seed).digest("base64url").slice(0, 32);
-    const send = async (params: Record<string, unknown>, op: string) => {
-      const r = await plugin.post(agent, { ...params, ...(unknown.has(op) ? { again: true } : {}) });
+    // The write's once-only key: this call's write itself, so a module's retry of it within the call is the same op.
+    const op = createHash("sha256").update(`${c.call}\n${method}\n${path}\n${JSON.stringify(b)}`).digest("base64url").slice(0, 32);
+    /** The plugin's call (outcomes.ts), its errors as this route's: an unknown outcome is looked for on the retry. */
+    const viaPlugin = async <T>(f: () => Promise<T>): Promise<T> => {
+      try { return await f(); } catch (e) {
+        const o = e as { name?: string; status?: number; code?: string; message: string };
+        if (o.name !== "OutcomeError") throw e;
+        if (o.code === "unknown") unknown.add(op);
+        throw fail(o.status!, o.code!, o.message);
+      }
+    };
+    const delegateTo = delegateIds(table, agent);
+    /** A user assignee is the owner only (the company's responsible user). */
+    const ownerOnly = async (user: unknown) => {
+      if (user === undefined || user === null) return;
+      const co = await viaPlugin(() => plugin.company(agent));
+      const r = await read(`/api/companies/${encodeURIComponent(co)}`);
+      const owner = r.status === 200 ? JSON.parse(r.out.toString("utf8")).defaultResponsibleUserId : undefined;
+      if (!owner || user !== owner) throw fail(403, "forbidden", "a task goes to an agent or to the owner, no other user");
+    };
+    const send = async (params: Record<string, unknown>) => {
+      const r = await viaPlugin(() => plugin.post(agent, { ...params, ...(unknown.has(op) ? { again: true } : {}) }));
       if (r.status >= 500 || !r.data) { unknown.add(op); throw fail(502, "unknown", `the post action answered ${r.status}; retry the same write`); }
       unknown.delete(op);
       if (r.status >= 300) throw fail(502, "bad_upstream", `the post action answered ${r.status}`);
@@ -139,15 +157,17 @@ export function createCp({ whoami, asserter, plugin, agentKey, grants, controlUr
     if (company) {
       const extra = Object.keys(b).filter((k) => !CREATE.includes(k));
       if (extra.length) throw fail(400, "bad_request", `a new task takes ${CREATE.join(", ")}; not ${extra.join(", ")}`);
-      if (decodeURIComponent(company) !== (await plugin.company(agent))) throw fail(403, "forbidden", "a job creates tasks in its own company only");
+      if (decodeURIComponent(company) !== (await viaPlugin(() => plugin.company(agent)))) throw fail(403, "forbidden", "a job creates tasks in its own company only");
+      await ownerOnly(b.assigneeUserId);
       const parent = typeof b.parentId === "string" && b.parentId ? await issue(b.parentId) : undefined;
       const scope = parent ? (await scopeOf(parent)) ?? (b.assigneeAgentId === agent ? "part" : refuse(parent)) : "own";
-      const op = opOf(typeof b.idempotencyKey === "string" && b.idempotencyKey ? `${agent}\n${b.idempotencyKey}` : `${c.call}\n${path}\n${JSON.stringify(b)}`);
       const child = Object.fromEntries(CREATE.slice(0, 7).filter((k) => b[k] !== undefined).map((k) => [k, b[k]]));
-      const carried = await provenance.carried(agent, task);
-      const d = await send({ tag: tagOf("created", op), ...(parent ? { issueId: parent.id, scope } : {}), child, delegateTo: Object.keys(table).filter((id) => UUID.test(id)) }, op);
+      const tag = tagOf("created", op);
+      // The cap goes on record under the new task's origin (its tag) before the task exists.
+      provenance.intend(tag.slice(5, -4), await provenance.carried({ agent, task }));
+      const d = await send({ tag, ...(parent ? { issueId: parent.id, scope } : {}), child, delegateTo });
       if (!d) return;
-      provenance.record(d.child!, carried);
+      provenance.record(d.child!, tag.slice(5, -4));
       return issueAnswer(d.child!, 201, { deduplicated: d.found });
     }
 
@@ -160,6 +180,8 @@ export function createCp({ whoami, asserter, plugin, agentKey, grants, controlUr
     const patch = method === "PATCH" ? Object.fromEntries(Object.entries(b).filter(([k]) => k !== "status" && k !== "comment")) : {};
     const extra = Object.keys(patch).filter((k) => !PATCH.includes(k));
     if (extra.length) throw fail(400, "bad_request", `a task's change takes status, comment, ${PATCH.join(", ")}; not ${extra.join(", ")}`);
+    if (patch.assigneeAgentId !== undefined && patch.assigneeAgentId !== null) throw fail(403, "forbidden", "a task is handed to another agent by its delegator, not reassigned here (assigneeAgentId: null hands it back)");
+    await ownerOnly(patch.assigneeUserId);
     const scope = (await scopeOf(t)) ?? (status === undefined && !Object.keys(patch).length ? commentScope(t) : undefined) ?? refuse(t);
     let gated = false;
     if (status === "done") {
@@ -177,15 +199,13 @@ export function createCp({ whoami, asserter, plugin, agentKey, grants, controlUr
     }
     const blocked = status === "blocked";
     const { blockedByIssueIds, ...rest } = patch;
-    const op = opOf(`${c.call}\n${method}\n${path}\n${JSON.stringify(b)}`);
     const d = await send({
       issueId: t.id, tag: tagOf(scope, op), scope,
       ...(typeof comment === "string" && comment.trim() ? { body: comment } : {}),
       ...(status !== undefined ? { status } : {}), ...(gated ? { gated } : {}),
       ...(blocked ? { blockedBy: blockedByIssueIds ?? [] } : {}),
       ...(Object.keys(rest).length || (!blocked && blockedByIssueIds !== undefined) ? { patch: { ...rest, ...(!blocked && blockedByIssueIds !== undefined ? { blockedByIssueIds } : {}) } } : {}),
-      delegateTo: Object.keys(table).filter((id) => UUID.test(id)),
-    }, op);
+    });
     if (!d) return;
     if (method === "POST") return answer(201, Buffer.from(JSON.stringify({ id: d.comment, issueId: t.id })));
     return issueAnswer(t.id, 200);

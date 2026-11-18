@@ -80,7 +80,7 @@ export function createOutcomes({ db, plugin, delegates, finish, provenance, log 
   /** The finish gate (checks.ts): a `done` that doesn't pass is posted without its status. */
   finish: (task: string, agent: string) => Promise<Finish>;
   /** A child the job creates gets its provenance row (provenance.ts). */
-  provenance: Pick<Provenance, "carried" | "record">;
+  provenance: Pick<Provenance, "carried" | "intend" | "record">;
   log?: (msg: string, f?: Record<string, unknown>) => void;
 }) {
   db.exec("CREATE TABLE IF NOT EXISTS posted (job TEXT NOT NULL, kind TEXT NOT NULL, comment TEXT, status TEXT, at INTEGER NOT NULL, PRIMARY KEY (job, kind))");
@@ -98,7 +98,8 @@ export function createOutcomes({ db, plugin, delegates, finish, provenance, log 
       gate = await finish(job.task, job.agent);
       if (!gate.pass) status = undefined;
     }
-    const carried = req.child ? await provenance.carried(job.agent, job.task) : undefined;
+    const origin = tag(job.id, req.kind).slice(5, -4);
+    if (req.child) provenance.intend(origin, await provenance.carried({ job: job.id, agent: job.agent, task: job.task }));
     if (!done) db.prepare("INSERT INTO posted (job, kind, at) VALUES (?, ?, ?)").run(job.id, req.kind, Date.now());
     const params = { issueId: job.task, tag: tag(job.id, req.kind), body: req.body, ...(done ? { again: true } : {}), ...(status ? { status } : {}), ...(status === "blocked" ? { blockedBy: req.blockedBy ?? [] } : {}), ...(status === "done" ? { gated: true } : {}), ...(req.child ? { child: req.child, delegateTo: delegates(job.agent) } : {}) };
     const r = await plugin.post(job.agent, params);
@@ -109,7 +110,7 @@ export function createOutcomes({ db, plugin, delegates, finish, provenance, log 
       db.prepare("DELETE FROM posted WHERE job = ? AND kind = ? AND comment IS NULL").run(job.id, req.kind);
       throw new OutcomeError(r.status >= 300 ? 502 : 422, "refused", data?.refused ?? `the post action answered ${r.status}`);
     }
-    if (carried && data.child) provenance.record(data.child, carried);
+    if (req.child && data.child) provenance.record(data.child, origin);
     db.prepare("UPDATE posted SET comment = ?, status = ? WHERE job = ? AND kind = ?").run(data.comment, data.status ?? null, job.id, req.kind);
     log("outcome posted", { job: job.id, kind: req.kind, task: job.task, status: data.status ?? null, ...(gate && !gate.pass ? { finish: "held" in gate ? "held" : "reopened" } : {}) });
     return { comment: data.comment, status: data.status ?? null, ...(done ? { again: true } : {}), ...(gate ? { finish: gate } : {}) };

@@ -27,6 +27,8 @@ const PARAMS = ["sig", "ts", "tag", "again", "scope", "issueId", "body", "status
 const SCOPES = ["own", "child", "created", "part", "admin", "listed"];
 const PATCH_KEYS = ["title", "description", "priority", "assigneeAgentId", "assigneeUserId", "blockedByIssueIds", "labelIds"];
 const CHILD_KEYS = ["title", "description", "priority", "status", "assigneeAgentId", "assigneeUserId", "labelIds"];
+/** The origin kind of every task this action makes (Paperclip allows a plugin only its own, `plugin:<id>`): the kernel's provenance keys on it. */
+export const ORIGIN = "plugin:aidenhq.events";
 const PRIORITIES = ["critical", "high", "medium", "low"];
 const TAG = /^<!-- aidenhq:(?:job=[A-Za-z0-9_-]{1,64} kind=[a-z_]{1,32}|op=[A-Za-z0-9_-]{1,64}) -->$/;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -52,7 +54,7 @@ function invalid(p) {
   const extra = Object.keys(p).filter((k) => !PARAMS.includes(k));
   if (extra.length) return `unknown params: ${extra.join(", ")} (the writer is the caller; params never name one)`;
   if (p.issueId !== undefined && (typeof p.issueId !== "string" || !UUID.test(p.issueId))) return "issueId must be a task id";
-  if (p.issueId === undefined && (p.child === undefined || p.body !== undefined || p.status !== undefined || p.patch !== undefined)) return "without issueId, only a new top-level task (child)";
+  if (p.issueId === undefined && (p.child === undefined || p.body !== undefined || p.status !== undefined || p.patch !== undefined || (p.scope ?? "own") !== "own")) return "without issueId, only a new top-level task (child)";
   if (typeof p.tag !== "string" || !TAG.test(p.tag)) return "tag must be <!-- aidenhq:job=<job> kind=<kind> --> or <!-- aidenhq:op=<op> -->";
   const scope = p.scope ?? "own";
   if (!SCOPES.includes(scope)) return `scope is one of ${SCOPES.join(", ")}`;
@@ -99,15 +101,15 @@ export async function post(ctx, params, context, postKey, now = Date.now()) {
   const scope = p.scope ?? "own";
   const issue = p.issueId ? await ctx.issues.get(p.issueId, companyId) : undefined;
   if (p.issueId && !issue) return { refused: "no such task" };
-  if (scope === "own" && issue.assigneeAgentId !== agent) return { refused: "the task isn't assigned to this agent" };
-  if (scope === "created" && issue.createdByAgentId !== agent) return { refused: "this agent didn't create the task" };
-  if (scope === "child" && (!issue.parentId || (await ctx.issues.get(issue.parentId, companyId))?.assigneeAgentId !== agent)) return { refused: "the task's parent isn't assigned to this agent" };
+  if (issue && scope === "own" && issue.assigneeAgentId !== agent) return { refused: "the task isn't assigned to this agent" };
+  if (issue && scope === "created" && issue.createdByAgentId !== agent) return { refused: "this agent didn't create the task" };
+  if (issue && scope === "child" && (!issue.parentId || (await ctx.issues.get(issue.parentId, companyId))?.assigneeAgentId !== agent)) return { refused: "the task's parent isn't assigned to this agent" };
   if (scope === "part" && p.child.assigneeAgentId !== agent) return { refused: "a part is assigned to the agent itself" };
   const may = (to) => !to || to === agent || (p.delegateTo ?? []).includes(to);
   if (!may(p.child?.assigneeAgentId) || !may(p.patch?.assigneeAgentId)) return { refused: "a task goes to the agent itself or one it delegates to" };
   const as = { actorAgentId: agent };
   const out = { comment: null, child: null, found: false, status: issue?.status ?? null };
-  const change = { ...(p.patch ?? {}), ...(p.status !== undefined && p.status !== issue.status ? { status: p.status } : {}), ...(p.blockedBy ? { blockedByIssueIds: p.blockedBy } : {}) };
+  const change = { ...(p.patch ?? {}), ...(p.status !== undefined && p.status !== issue?.status ? { status: p.status } : {}), ...(p.blockedBy ? { blockedByIssueIds: p.blockedBy } : {}) };
   if (change.description !== undefined) change.description = text(change.description, MAX);
   if (Object.keys(change).length) {
     try {
@@ -124,7 +126,7 @@ export async function post(ctx, params, context, postKey, now = Date.now()) {
     const c = p.child;
     out.found = Boolean(had);
     out.child = (had ?? await ctx.issues.create({
-      companyId, title: text(c.title, 200), originId: origin, actor: as,
+      companyId, title: text(c.title, 200), originKind: ORIGIN, originId: origin, actor: as,
       ...(p.issueId ? { parentId: p.issueId } : {}),
       ...(c.description !== undefined ? { description: text(c.description, MAX) } : {}),
       ...Object.fromEntries(["priority", "status", "assigneeAgentId", "assigneeUserId", "labelIds"].filter((k) => c[k] !== undefined).map((k) => [k, c[k]])),

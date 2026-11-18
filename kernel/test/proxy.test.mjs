@@ -84,11 +84,11 @@ test("A4: an assertion opens /v1/cp/agent/* only while its call is in flight, an
     return { content: [{ type: "text", text: "ok" }] };
   } });
   const other = await moduleServer(t, { key: "other-key", tools: ["x"] });
-  k = await kernel(t, { agents, grants, secrets, connections: { docs: conn(docs.url, "docs", { read: ["doc_read"] }), other: conn(other.url, "other", { read: ["x"] }) } });
+  k = await kernel(t, { agents, grants, secrets: { ...secrets, "paperclip-agents/ag-ada": "ada-key" }, connections: { docs: conn(docs.url, "docs", { read: ["doc_read"] }), other: conn(other.url, "other", { read: ["x"] }) } });
   assert.equal((await k.call("docs", "run-jwt-ada", { method: "tools/call", params: { name: "doc_read" } })).status, 200);
-  // Inside the call: the assertion opens the route, but a kernel job has no control-plane credential of its own (identity.ts),
-  // so the kernel never acts for it there; never as the owner either.
-  assert.deepEqual(inside, { a: 403, b: 403, as: undefined, other: 401, off: 403, dots: 403 });
+  // Inside the call: the assertion opens the route, as many times as the call needs; the kernel reads with the job's agent's
+  // own key (never the owner's, never handed to the module).
+  assert.deepEqual(inside, { a: 200, b: 200, as: "ada-key", other: 401, off: 403, dots: 403 });
   // Once the call's answer ended: refused.
   assert.equal((await cp(assertion, "docs-key")).status, 401);
   // A forged one, or none: refused.

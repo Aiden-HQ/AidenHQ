@@ -144,7 +144,7 @@
     "n": 17,
     "workflow": "Delegation and outcomes to parents",
     "today": [
-      "modules/tasks/connections/tasks-mcp/test/parent-wake.test.mjs"
+      "modules/dispatch/test/loop.test.mjs"
     ],
     "next": "tasks + K6 notices"
   },

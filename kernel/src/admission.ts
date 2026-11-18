@@ -55,9 +55,11 @@ export type Admitted = { id: string; module: string; agent: string; task: string
 const LIVE = "state IN ('admitted', 'running')";
 const ID = /^[\w.:-]{1,200}$/;
 
-export function createAdmission({ db, grants, kinds, capacity, spend, mayDispatch, cp, wakes, routineCap, nextTurn, launch, log }: {
+export function createAdmission({ db, grants, kinds, capacity, spend, mayDispatch, cp, wakes, provenance, routineCap, nextTurn, launch, log }: {
   /** What the task's last job asked of this turn (jobtools.ts): read in the transaction, spent once the job has started. */
   nextTurn: Pick<JobTools, "pending" | "taken" | "refusal">;
+  /** Kernel provenance (provenance.ts): a task the kernel's plugin made runs only with its provenance row. */
+  provenance: { settled(issue: { id: string; originKind?: string | null; originId?: string | null }): boolean };
   /** The task's routine cap as the kernel traces it now (tier.ts taskRoutineCap): frozen on the job row at admission. */
   routineCap: (task: string) => Promise<RoutineCap | undefined>;
   /** kernel.db, with the jobs table (jobs.ts) already made. */
@@ -71,7 +73,7 @@ export function createAdmission({ db, grants, kinds, capacity, spend, mayDispatc
   /** The spend caps a new job of this agent on this task would start over (the gateway's `exhausted`). */
   spend: (agent: string, task: string) => { scope: string }[];
   mayDispatch: (module: string, agent: string) => boolean;
-  cp: { task(id: string): Promise<{ id: string; identifier?: string; assigneeAgentId?: string | null; status?: string; description?: string | null } | undefined> };
+  cp: { task(id: string): Promise<{ id: string; identifier?: string; assigneeAgentId?: string | null; status?: string; description?: string | null; originKind?: string | null; originId?: string | null } | undefined> };
   wakes: Wakes;
   /** Gets the job its computer and starts it (boxes.ts); a 503 means the computers are full: the job waits for the next tick. */
   launch: (job: Admitted) => Promise<void>;
@@ -121,6 +123,8 @@ export function createAdmission({ db, grants, kinds, capacity, spend, mayDispatc
       const w = wakes.claimed(module, b.wake);
       if (!w || w.task !== task || w.agent !== agent) throw new JobError(409, "wake-not-claimed", `wake ${b.wake} isn't one this module claimed`);
       if (db.prepare(`SELECT 1 FROM jobs WHERE task = ? AND ${LIVE}`).get(task)) throw new JobError(409, "job-running", `task ${task} already has a job`);
+      // A task the plugin made with no provenance behind it: its routine cap is unknown, so nothing runs on it.
+      if (!provenance.settled(t)) throw new JobError(409, "provenance-unsettled", `task ${task} was made through the kernel's plugin with no provenance; it doesn't run`);
       const g = grants()[agent];
       if (!g) throw new JobError(403, "no-grants", `agent ${agent} has no grants`);
       const live = (db.prepare(`SELECT COUNT(*) AS n FROM jobs WHERE ${LIVE}`).get() as { n: number }).n;

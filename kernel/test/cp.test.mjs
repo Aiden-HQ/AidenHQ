@@ -24,19 +24,22 @@ async function setup(t) {
   let k;
   // The module's tool makes the control-plane call its arguments name, for the caller it serves.
   const todo = await moduleServer(t, { key: "todo-key", tools: ["act"], answer: async (msg, req) => {
-    const { method = "POST", path, body } = msg.params.arguments;
+    const { method = "POST", path, body, twice } = msg.params.arguments;
+    // `twice`: the module retries the same write within its call (a lost answer): one op, written once.
+    if (twice) await fetch(`${k.url}/v1/cp/agent${path}`, { method, headers: { authorization: "Bearer todo-key", "x-aidenhq-caller": req.headers["x-aidenhq-caller"], "content-type": "application/json" }, body: JSON.stringify(body) });
     const r = await fetch(`${k.url}/v1/cp/agent${path}`, { method, headers: { authorization: "Bearer todo-key", "x-aidenhq-caller": req.headers["x-aidenhq-caller"], "content-type": "application/json" }, ...(body ? { body: JSON.stringify(body) } : {}) });
     return { content: [{ type: "text", text: JSON.stringify({ status: r.status, json: await r.json() }) }] };
   } });
   const tool = { todo: ["act"] };
   k = await kernel(t, {
     agents: { ada: { id: ADA, task: OWN }, cos: { id: COS, task: OWN }, eve: { id: EVE, task: OWN } },
-    grants: { [ADA]: { key: "ada", tools: tool }, [BO]: { key: "bo", chat_task: CHAT }, [COS]: { key: "cos", roles: ["fleet-admin"], tools: tool }, [EVE]: { key: "eve", tools: tool } },
+    grants: { [ADA]: { key: "ada", tools: tool, delegate_to: ["bo"] }, [BO]: { key: "bo", chat_task: CHAT }, [COS]: { key: "cos", roles: ["fleet-admin"], tools: tool }, [EVE]: { key: "eve", tools: tool } },
     secrets: { todo_service_key: "todo-key", [`paperclip-agents/${ADA}`]: "key-ada", [`paperclip-agents/${COS}`]: "key-cos", paperclip_post_key: "post-key" },
     connections: { todo: { url: `${todo.url}/mcp`, auth_secret: "todo_service_key", module: "todo", returns: "trusted", tools: { read: [], write: ["act"], destructive: [] } } },
     onControl: async (req, body, auth) => {
       const me = KEYS[auth];
       if (req.url === "/api/agents/me") return me ? { body: { id: me, companyId: "co" } } : { status: 401, body: {} };
+      if (req.url === "/api/companies/co") return { body: { id: "co", defaultResponsibleUserId: "u-owner" } };
       const ref = /^\/api\/issues\/([^/?]+)$/.exec(req.url)?.[1];
       if (ref && req.method === "GET") { const i = Object.values(h.issues).find((x) => x.id === decodeURIComponent(ref) || x.identifier === decodeURIComponent(ref)); return i ? { body: i } : { status: 404, body: {} }; }
       if (req.url === "/api/plugins/aidenhq.events/actions/post") {
@@ -49,7 +52,7 @@ async function setup(t) {
   });
   createJobs({ db: k.records.db, cfg: {}, cp: {}, mayDispatch: () => false, log: () => {}, boxWrap: "" });
   k.records.db.prepare("INSERT INTO jobs (id, module, agent, task, engine, pid, log, dir, at, jobcaps, observing, live_input, state, routine, routine_cap) VALUES ('job-1', 'dispatch', ?, ?, 'codex', 1, '', '', 0, '[]', 0, 0, 'running', 'digest', 'off')").run(ADA, OWN);
-  const act = async (who, method, path, body) => JSON.parse((await (await k.call("todo", who, { method: "tools/call", params: { name: "act", arguments: { method, path, body } } })).json()).result.content[0].text);
+  const act = async (who, method, path, body, twice = false) => JSON.parse((await (await k.call("todo", who, { method: "tools/call", params: { name: "act", arguments: { method, path, body, twice } } })).json()).result.content[0].text);
   return { k, h, act, plugin };
 }
 
@@ -70,14 +73,22 @@ test("a job writes on its own task and the tasks it created, as its agent throug
   assert.match(r.json.error.message, /WOR-2 isn't yours to change: ask its assignee \(bo\) or the chief of staff/);
   assert.equal((await act("ada", "PATCH", "/api/issues/WOR-2", { status: "cancelled" })).status, 403);
   assert.equal(plugin.length, before);
-  // A child it creates, delegated: created by the agent under its task, once per idempotency key, with the job's routine cap.
+  // A child it creates, delegated (bo is in its delegate_to): created by the agent under its task, once however often the
+  // module retries the write within its call, with the job's routine cap.
   const child = { title: "Check the numbers", description: "Please.", parentId: OWN, assigneeAgentId: BO, status: "todo", idempotencyKey: "check:1" };
-  r = await act("ada", "POST", "/api/companies/co/issues", child);
-  assert.equal(r.status, 201);
+  r = await act("ada", "POST", "/api/companies/co/issues", child, true);
+  assert.deepEqual([r.status, r.json.deduplicated], [201, true]);
   const kid = h.issues[r.json.id];
-  assert.deepEqual([kid.parentId, kid.assigneeAgentId, kid.createdByAgentId, r.json.deduplicated], [OWN, BO, ADA, false]);
-  r = await act("ada", "POST", "/api/companies/co/issues", child);
-  assert.deepEqual([r.status, r.json.id, r.json.deduplicated], [201, kid.id, true]);
+  assert.equal(Object.values(h.issues).filter((i) => i.title === child.title).length, 1);
+  assert.deepEqual([kid.parentId, kid.assigneeAgentId, kid.createdByAgentId, kid.originKind], [OWN, BO, ADA, ORIGIN]);
+  // Never to an agent outside its delegate_to, nor to a user but the owner; a top-level task for the owner, with labels.
+  r = await act("ada", "POST", "/api/companies/co/issues", { title: "Ask the chief", parentId: OWN, assigneeAgentId: COS });
+  assert.equal(r.status, 409);
+  assert.match(r.json.error.message, /delegates to/);
+  assert.equal((await act("ada", "POST", "/api/companies/co/issues", { title: "For someone", assigneeUserId: "u-other" })).status, 403);
+  r = await act("ada", "POST", "/api/companies/co/issues", { title: "Read this", assigneeUserId: "u-owner", labelIds: [OTHER], priority: "low" });
+  assert.equal(r.status, 201);
+  assert.deepEqual([h.issues[r.json.id].parentId, h.issues[r.json.id].assigneeUserId, h.issues[r.json.id].labelIds], [undefined, "u-owner", [OTHER]]);
   assert.deepEqual({ ...k.records.db.prepare("SELECT created_by_job, routine, routine_cap FROM provenance WHERE task = ?").get(kid.id) }, { created_by_job: "job-1", routine: "digest", routine_cap: "off" });
   // The cap follows the task's children; a plugin-made task with no row (its answer lost) is capped off too.
   const capOf = (id) => taskRoutineCap({ issue: async (x) => h.issues[x] ?? { id: x }, provenance: k.provenance.trace }, id, { digest: "full" });
