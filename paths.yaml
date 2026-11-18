@@ -45,7 +45,6 @@ paths:
       - modules/codehost-local/
       - modules/platform/
       - modules/grading/
-      - modules/engineering/src/merge-queue.mjs
       # The platform-engineer role's declaration and holder (the Engineer's manifest and handbook), and what it is told to do to the
       # fleet and the product.
       - modules/engineering/module.yaml

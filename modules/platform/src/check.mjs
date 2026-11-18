@@ -69,12 +69,11 @@ export const GATE_CORE = [
   // The code host (privileged git-credential, lean-core 3d): the GitHub App's tokens and their narrowing, host git with the
   // hardened arguments on agent clones, task workspaces and reviewed refs, the merge gate (its only GitHub writes) and the
   // git rules that tier every push, PR, merge and create_repo. The platform check (this file: the gate's core, the
-  // owner-approval records, Dependabot pin-only and supply chain). The merge queue (which approved PRs wait, in what order).
+  // owner-approval records, Dependabot pin-only and supply chain).
   /^modules\/codehost-github\//,
   // The on-server code host: bare repos, change-request refs, the checks receipt and the compare-and-swap merge.
   /^modules\/codehost-local\//,
   /^modules\/platform\//,
-  /^modules\/engineering\/src\/merge-queue\.mjs$/,
   // The Engineer holds the platform-engineer role: its manifest (the role's declaration), its handbook and the skills that tell it
   // how to change the fleet and the product.
   /^modules\/engineering\/module\.yaml$/,
@@ -108,7 +107,6 @@ export const GATE_DIRS = [
   "modules/codehost-github/",
   "modules/codehost-local/",
   "modules/platform/",
-  "modules/engineering/src/",
   "modules/engineering/module.yaml",
   "modules/engineering/agents/engineer/",
   "modules/engineering/skills/fleet-change/",
@@ -118,10 +116,7 @@ export const GATE_DIRS = [
   "modules/apps-platform/schemas/",
 ];
 /** Files in a gate dir deliberately outside the core. Adding one here is a gate-core change. */
-export const OUTSIDE_GATE = [
-  "modules/engineering/src/breaker.ts",
-  "modules/engineering/src/product-prs.ts",
-];
+export const OUTSIDE_GATE = [];
 /** `uncovered: <file>` for a file in a gate dir that no entry matches and OUTSIDE_GATE doesn't list; `dead entry: <source>`
  * for an entry that matches no file. */
 export function coverageProblems(files, core = GATE_CORE, outside = OUTSIDE_GATE, dirs = GATE_DIRS) {

@@ -524,17 +524,18 @@ export function linkPairServices(flows, compose, serviceModule, networkModule) {
  * agent's handbook, and agents/<key>/ folders (agent.yaml + AGENTS.md): the instance's own agents.
  */
 /**
- * The host's work_dir (config/runner.yaml, else ~/aidenhq-work; ~ is the user's home): where the kernel keeps the job workspaces
- * (kernel/src/sandbox-config.ts reads the same file the same way).
+ * The host's work_dir and state_dir (config/runner.yaml, else ~/aidenhq-work and ~/.local/state/aidenhq-runner; ~ is the user's
+ * home): where the kernel keeps the job workspaces (kernel/src/sandbox-config.ts reads the same file the same way). Compile
+ * hands both to the launcher in computers.json.
  */
-export function hostWorkDir(productDir, env = process.env) {
-  const dir = resolve(productDir, env.AIDENHQ_CONFIG_DIR ?? "config");
-  const file = join(dir, "runner.yaml");
-  const p = String((existsSync(file) ? YAML.parse(readFileSync(file, "utf8")) : {})?.work_dir ?? "~/aidenhq-work");
-  return p.startsWith("~/") ? join(homedir(), p.slice(2)) : p;
+export function hostDirs(productDir, env = process.env) {
+  const file = join(resolve(productDir, env.AIDENHQ_CONFIG_DIR ?? "config"), "runner.yaml");
+  const y = (existsSync(file) ? YAML.parse(readFileSync(file, "utf8")) : {}) ?? {};
+  const expand = (p) => (p.startsWith("~/") ? join(homedir(), p.slice(2)) : p);
+  return { work_dir: expand(String(y.work_dir ?? "~/aidenhq-work")), state_dir: expand(String(y.state_dir ?? "~/.local/state/aidenhq-runner")) };
 }
 
-export function compile(productDir, instanceDir, { revision, fetch = hostFetch(productDir), door, workDir = hostWorkDir(productDir) } = {}) {
+export function compile(productDir, instanceDir, { revision, fetch = hostFetch(productDir), door, workDir = hostDirs(productDir).work_dir } = {}) {
   const instFile = join(instanceDir, "instance.yaml");
   if (!existsSync(instFile)) fail(`no instance.yaml in ${instanceDir}: set AIDENHQ_INSTANCE_DIR to your instance checkout (see docs/USAGE.md)`);
   const instance = readYaml(instFile);

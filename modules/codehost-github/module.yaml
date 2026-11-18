@@ -12,7 +12,7 @@ paths:
   - sensitivity: panel
     owner_role: platform-engineer
     patterns: [ service/src/merges.ts, service/src/merge-gate.mjs, service/src/evalgate.ts ]
-# The code host role (docs/design/codehost-local.md §2): it hosts every org codehost-local doesn't own (src/host.mjs).
+# The code host role (docs/design/codehost-local.md §2): it hosts every org codehost-local doesn't own.
 provides: [ codehost ]
 settings:
   # The agents org (where create_repo creates repos by default; any org the App is installed on and the runner's allowed_orgs lists works too): aidenhq-<instance_name> unless this names another.
