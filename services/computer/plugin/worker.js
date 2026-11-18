@@ -94,7 +94,8 @@ const plugin = definePlugin({
 
 /**
  * Every computer task (not chat) ends with a status change: a run that left its task in_progress would make Paperclip wake the
- * agent again just to repair the state (~85k tokens). The task goes to blocked, saying why, so a person looks.
+ * agent again just to repair the state (~85k tokens). The task goes to blocked, saying why, so a person looks. A run that armed
+ * a check ahead (executionPolicy.monitor.nextCheckAt) settled into that wait instead: it is left as it is, and the check fires.
  */
 async function statusCheck(p) {
   const agentId = p.leaseMetadata?.agentId;
