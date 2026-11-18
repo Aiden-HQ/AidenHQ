@@ -1,4 +1,4 @@
-// Telegram output for notify_owner: readable formatting and one-tap buttons, without letting agent text inject markup.
+// Telegram output for owner messages: readable formatting and one-tap buttons, without letting agent text inject markup.
 // Formatting: the text is HTML-escaped first, then a small markdown subset is rendered (bold, italics, headings, inline code,
 // code blocks, bullets). Task IDs become links only through a host-configured URL template; agent links stay literal
 // (Telegram links bare URLs itself), so a label can't hide a different URL.

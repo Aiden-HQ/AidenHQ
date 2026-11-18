@@ -142,6 +142,10 @@
       "source": "./open-loops"
     },
     {
+      "name": "owner-channel",
+      "source": "./owner-channel"
+    },
+    {
       "name": "platform",
       "source": "./platform"
     },
@@ -189,6 +193,7 @@
     "memory",
     "model-tools",
     "models-openrouter",
+    "owner-channel",
     "platform",
     "tasks",
     "warehouse"

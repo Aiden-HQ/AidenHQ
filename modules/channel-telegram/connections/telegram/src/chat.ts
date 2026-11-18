@@ -14,7 +14,7 @@ import { approvalPress, decideByReply, decideCard, decideList, decidedText, pars
 import type { Kernel } from "./kernel.js";
 import { fromTelegramCallback } from "./telegram.js";
 import { chatAgentOf, routeOwnerMessage, type AgentLite } from "./threads.js";
-import { markOwnerMessage } from "./urgent.js";
+import { markOwnerMessage } from "./send.js";
 
 export interface ChatConfig {
   telegramToken: string;

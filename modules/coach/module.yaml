@@ -43,7 +43,7 @@ routines:
     title: "Agent Coach: weekly digest"
     agent: coach
     description: |
-      Today is {{date}}. Follow "Weekly digest" in your instructions: file one digest task for the owner (task_create) and, only when it is new, send one notify_owner
+      Today is {{date}}. Follow "Weekly digest" in your instructions: file one digest task for the owner (task_create) and, only when it is new, send one notify
       line about it. Then close this task with one line.
     concurrency: skip_if_active
     schedules:

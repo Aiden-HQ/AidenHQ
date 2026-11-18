@@ -12,7 +12,7 @@
 #     reads them, and src_slack stores them (edits and deletes arrive as message subtypes).
 #   - User scopes: the src_slack gap sync (conversations.history / replies over the owner's conversations,
 #     users.conversations) and user names and emails (users.list).
-#   - Bot: DMs the owner (notify_owner, urgent pages) and posts to the allowed channels (slack_post), labelled as a bot.
+#   - Bot: DMs the owner (owner-channel's notify, alerts too) and posts to the allowed channels (slack_post), labelled as a bot.
 #   - Slack's MCP server (modules/slack, slack-mcp → mcp.slack.com): the search:read.* user scopes and the localhost
 #     callback below are what `node src/auth.ts <client_id> …` signs in with.
 #

@@ -31,7 +31,7 @@ The task has the digest comment covering every named source, or a line saying wh
 
 ## What needs approval
 
-Posting anywhere other than your task, and any message to the owner (after trial, one `notify_owner` line pointing at the digest): draft it and ask.
+Posting anywhere other than your task, and any message to the owner (after trial, one `notify` line pointing at the digest): draft it and ask.
 
 ## Escalation
 

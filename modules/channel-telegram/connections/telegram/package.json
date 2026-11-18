@@ -14,10 +14,8 @@
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.32.0",
     "better-sqlite3": "^13.0.3",
-    "pino": "^10.4.0",
-    "zod": "^4.6.5"
+    "pino": "^10.4.0"
   },
   "devDependencies": {
     "@types/better-sqlite3": "^9.6.0",

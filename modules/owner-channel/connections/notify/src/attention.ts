@@ -1,7 +1,7 @@
 import type { Store } from "./store.js";
-import type { NotifyKind } from "./urgent.js";
+import type { Kind } from "./notify.js";
 
-// Attention control on notify_owner (lane B): per-agent caps, an owner block list and a digest of routine messages. A decision
+// Attention control on notify: per-agent caps, an owner block list and a digest of routine messages. A decision
 // and an urgent alert always pass; the chief of staff (role fleet-admin) is never blocked or digested. The block list and the digest
 // are the owner's preferences and always act; only the cap is a gate, and it ships in observe mode (logs what it would
 // have blocked and lets the message through).
@@ -19,7 +19,7 @@ type Item = { agent: string; task?: string; text: string };
 const dayOf = (now: number) => new Date(now).toISOString().slice(0, 10);
 
 /** What happens to one normal message. `conversing`: the owner is writing on its chat, so the reply goes straight back. */
-export function attend(store: Store, cfg: AttentionConfig, who: { id: string; key: string; roles: string[] } | undefined, kind: NotifyKind, o: { conversing: boolean; buttons: boolean }, now = Date.now()): Attend {
+export function attend(store: Store, cfg: AttentionConfig, who: { id: string; key: string; roles: string[] } | undefined, kind: Kind, o: { conversing: boolean; buttons: boolean }, now = Date.now()): Attend {
   if (!who) return { do: "pass" };
   const cos = who.roles.includes("fleet-admin");
   // The block list holds for every kind (an agent could label anything a decision); only urgent alerts bypass this function.
@@ -34,7 +34,7 @@ export function attend(store: Store, cfg: AttentionConfig, who: { id: string; ke
   if (out.do === "pass" || out.do === "digest") n[who.id] = (n[who.id] ?? 0) + 1;
   store.setKv("attn:counts", JSON.stringify({ day, n }));
   if (out.do === "limit" && cfg.mode === "observe") {
-    cfg.warn?.({ event: "gate.would_block", gate: "notify-attention", outcome: out.do, agent: who.key }, "notify_owner attention gate would act");
+    cfg.warn?.({ event: "gate.would_block", gate: "notify-attention", outcome: out.do, agent: who.key }, "notify attention gate would act");
     return { do: "pass" };
   }
   return out;

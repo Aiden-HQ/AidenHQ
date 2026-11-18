@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { toEvent } from "../src/map.js";
 import { openStore } from "../src/store.js";
-import { notifyOwner } from "../src/urgent.js";
+import { transportSend } from "../src/send.js";
 
 afterEach(() => vi.unstubAllGlobals());
 
@@ -17,15 +17,16 @@ describe("slack-live-mcp", () => {
     expect(store.takePending(10)).toHaveLength(1);
   });
 
-  it("urgent DMs: one per thread per 60 min unless escalate is passed", async () => {
-    const fetchMock = vi.fn(async () => new Response(JSON.stringify({ ok: true })));
+  it("the transport: a DM to the paired owner, an alert as a STOP page; off until a bot and an owner are set up", async () => {
+    const fetchMock = vi.fn(async (_u: string, _i?: RequestInit) => new Response(JSON.stringify({ ok: true })));
     vi.stubGlobal("fetch", fetchMock);
-    const store = openStore(":memory:");
-    const cfg = { botToken: "xoxb-test", ownerId: "U1", cooldownMs: 60 * 60_000 };
-    const thread = { priority: "urgent" as const, channel_id: "C1", ts: "1.1", thread_ts: "1.0" };
-    expect(await notifyOwner(store, cfg, { ...thread, text: "[C1] db is slow" })).toEqual({ sent: true });
-    expect(await notifyOwner(store, cfg, { ...thread, text: "[C1] db is slow again" })).toEqual({ sent: false, reason: "cooldown" });
-    expect(await notifyOwner(store, cfg, { ...thread, text: "[C1] prod down", escalate: "customer impact" })).toEqual({ sent: true });
-    expect(fetchMock.mock.calls.filter((c) => String((c as unknown[])[0]).includes("chat.postMessage"))).toHaveLength(2);
+    expect(await transportSend({ botToken: "", ownerId: "U1" }, { kind: "done", text: "x" })).toEqual({ sent: false, off: true });
+    const cfg = { botToken: "xoxb-test", ownerId: "U1" };
+    expect(await transportSend(cfg, { kind: "done", text: "**PR merged** <@U9>", head: { agent: "Aiden", task: "WOR-9", issue: "i9" } })).toEqual({ sent: true });
+    expect(await transportSend(cfg, { kind: "alert", text: "[C1] prod down" })).toEqual({ sent: true });
+    const [dm, page] = fetchMock.mock.calls.map((c) => JSON.parse(String(c[1]!.body)));
+    expect(dm).toMatchObject({ channel: "U1", text: "*Aiden* · WOR-9\n*PR merged* &lt;@U9&gt;" });
+    expect(page.blocks[0].text.text).toMatch(/STOP/);
+    expect(page.blocks[1].text.text).toBe("<#C1> · prod down");
   });
 });

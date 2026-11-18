@@ -29,7 +29,7 @@ agents:
       # The CRM (hubspot module): reads, plus manage_crm_objects (a note, a task, a deal update): a kernel record the AI
       # reviewer decides first, and the owner when it touches more than 5 records.
       hubspot?: [ get_user_details, get_organization_details, discover_hubspot_schema, search_crm_objects, get_crm_objects, query_crm_data, search_properties, get_properties, search_owners, tool_guidance, manage_crm_objects ]
-      telegram: [ notify_owner ]
+      owner_channel: [ notify ]
       # Product bugs as issues on the product repo, as the GitHub App (never the owner's account), with the github module:
       # report one (deduped by fingerprint) and read their state. No other GitHub reads, and no repo input.
       github?: [ github_app_issue, github_app_issue_status ]
@@ -114,7 +114,7 @@ prompts:
   - { id: how-we-work, file: prompts/how-we-work.md, order: first }
   - { id: progress, file: prompts/progress.md, order: first }
   - { id: replying, file: prompts/replying.md, order: first }
-  - { id: asking, file: prompts/asking.md, order: first, when: { tools: [ telegram.notify_owner ] } }
+  - { id: asking, file: prompts/asking.md, order: first, when: { tools: [ owner_channel.notify ] } }
   - { id: privacy, file: prompts/privacy.md }
   # {{fleet_issues}}: the "Fleet issues" task where heartbeat runs note missed wake-ups (setup finds or creates it).
   - { id: heartbeat, file: prompts/heartbeat.md, order: last, when: { fields: { heartbeat: true } } }

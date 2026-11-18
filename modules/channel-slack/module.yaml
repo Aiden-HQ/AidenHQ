@@ -1,5 +1,5 @@
 name: channel-slack
-description: "The instance's Slack app: the live listener (Socket Mode) that feeds triage and src_slack, the owner's Slack command channel as chat with Aiden, notify_owner as a Slack DM, slack_post (the channel-slack.post write kind), and channel binding (/aiden assign-channel: @mentions in a bound channel become the agent's tasks)."
+description: "The instance's Slack app: the live listener (Socket Mode) that feeds triage and src_slack, the owner's Slack command channel as chat with Aiden, a transport for owner-channel's notify (Slack DMs to the owner), slack_post (the channel-slack.post write kind), and channel binding (/aiden assign-channel: @mentions in a bound channel become the agent's tasks)."
 requires:
   - warehouse # its source schema lives in the shared warehouse
   - board # its setup flow
@@ -30,10 +30,12 @@ contributes:
         - { name: messages, time: ingested_at, channel: channel_id, tsv: true }
         - { name: threads, time: ingested_at, channel: channel_id }
         - { name: changes, time: observed_at, channel: channel_id }
-# A channel (channel@1): what the owner writes in their command channel is posted as theirs (stamped [slack]).
+# A channel (channel@1): what the owner writes in their command channel is posted as theirs (stamped [slack]). As a transport,
+# the kernel sends it owner-channel's messages one at a time (transport: below), with this module's own token.
 privileged: [ speaks-as-owner ]
 providers:
-  channel: {}
+  channel:
+    transport: http://slack:8089/transport/send
   # The kernel calls channel-slack.post's plan, execute and status here, with the connection's key (executor@1).
   executor:
     url: http://slack:8089/aidenhq/v1/executor
@@ -46,8 +48,8 @@ connections:
     tools:
       # slack_channel_context: a bound channel's history and threads, for the agent it is bound to only (bind.ts).
       read: [ slack_pending_events, slack_owner, slack_channel_context ]
-      # notify_owner: a Slack DM to the owner (urgent pages too). slack_post: filed as channel-slack.post; granted per agent.
-      write: [ notify_owner, slack_post ]
+      # slack_post: filed as channel-slack.post; granted per agent.
+      write: [ slack_post ]
 # Every agent post is a kernel record the AI reviewer reads first; a channel outside slack_post_channels is the owner's too.
 writes:
   post:
@@ -97,8 +99,9 @@ services:
         IGNORE_CHANNELS: "${SLACK_LIVE_IGNORE_CHANNELS:-}"
         OWNER_COMMAND_CHANNEL: "${OWNER_COMMAND_CHANNEL:-}"
         SLACK_POST_CHANNELS: "${settings.slack_post_channels}"
-        URGENT_COOLDOWN_MIN: "60"
         MCP_BEARER_TOKEN_FILE: ${secrets.slack_live_service_key}
+        # The kernel's bearer on /transport/send: this module's own token.
+        CHANNEL_TOKEN_FILE: ${secrets.channel_slack_token}
         PAIR_TOKEN_FILE: ${secrets.channel_slack_pair_token}
         SLACK_APP_TOKEN_FILE: ${secrets.slack_live_app_token}
         SLACK_BOT_TOKEN_FILE: ${secrets.slack_live_bot_token}
@@ -130,6 +133,7 @@ optional_secrets:
   - slack_live_user_token
 generated_secrets:
   - slack_live_service_key
+  - channel_slack_token
   # src_slack's warehouse login (ops/warehouse-sources.sh gives the role this password).
   - warehouse_src_slack_password
 data_version: 0 # its data dir's format: bumped by each forward-only migration (docs/configuration.md)

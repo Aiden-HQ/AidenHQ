@@ -27,9 +27,9 @@ agents:
       # Reads only.
       slack: read
       # The live Slack events it triages, the owner's Slack user id and the Slack DM page for an urgent one (channel-slack, when installed).
-      slack_live?: [ slack_pending_events, notify_owner, slack_owner ]
+      slack_live?: [ slack_pending_events, slack_owner ]
       google_workspace: [ gmail_search, gmail_read_thread ]
-      telegram: [ notify_owner ]
+      owner_channel: [ notify ]
       paperclip_tasks: [ task_current, task_get, task_search, task_list, task_create, task_update, task_comment, task_set_status, task_finish ]
   open-loops:
     department: outreach
@@ -44,7 +44,7 @@ agents:
       slack: write
       github?: [ github_issue_read, github_search_issues ]
       google_workspace: [ docs_read, drive_search_files, drive_read_file, calendar_list_events, calendar_get_event, gmail_search, gmail_read_thread ]
-      telegram: [ notify_owner ]
+      owner_channel: [ notify ]
       paperclip_tasks: [ task_current, task_get, task_comments, task_list, task_update, task_comment, task_handoff, task_set_status, task_join, task_team, task_delegate, task_finish ]
 routines:
   slack-scan:
@@ -83,7 +83,7 @@ routines:
     agent: inbox-agent
     description: |
       New Slack events arrived. Today is {{date}}. The user's Slack user ID is what slack_owner returns (if it returns none, use "${settings.owner_slack_user_id}" when that is not empty).
-      Follow your triage-slack skill: triage each event into nothing, a task (task_create) or, rarely, an urgent notify_owner DM; you never post
+      Follow your triage-slack skill: triage each event into nothing, a task (task_create) or, rarely, an alert (notify, kind alert); you never post
       to Slack. Then close this task with one line saying what you did.
     concurrency: coalesce_if_active
     webhook: true # fired by slack-live-mcp (TRIAGE_WEBHOOK_URL/SECRET)

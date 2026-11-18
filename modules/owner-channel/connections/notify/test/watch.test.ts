@@ -24,12 +24,12 @@ const failedRun = (min: number, error = "unexpected status 402 Payment Required:
 describe("watch", () => {
   it("alerts once per cause per hour, then once on recovery", async () => {
     const store = openStore(":memory:");
-    const notify = vi.fn(async (_text: string) => true);
+    const notify = vi.fn(async (_text: string, _kind: "alert" | "done") => true);
     const { w, api } = world({ runs: [failedRun(3), failedRun(4)] });
     await tick({ api, notify, store, now: NOW });
     await tick({ api, notify, store, now: NOW + 5 * 60_000 });
     expect(notify).toHaveBeenCalledTimes(1);
-    expect(notify).toHaveBeenCalledWith("⚠️ Agents are failing: out of OpenRouter credits (402) (2 failed runs, e.g. Fleet Engineer/WOR-9)");
+    expect(notify).toHaveBeenCalledWith("⚠️ Agents are failing: out of OpenRouter credits (402) (2 failed runs, e.g. Fleet Engineer/WOR-9)", "alert");
     await tick({ api, notify, store, now: NOW + 61 * 60_000 }); // failures aged out of the window, nothing new
     w.runs = [{ id: "ok", status: "succeeded", finishedAt: new Date(NOW + 62 * 60_000).toISOString() }];
     await tick({ api, notify, store, now: NOW + 63 * 60_000 });

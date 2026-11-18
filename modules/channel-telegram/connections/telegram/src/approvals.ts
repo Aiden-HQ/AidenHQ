@@ -160,17 +160,6 @@ export async function sendBatch(cards: Card[], store: Kv, send: (text: string, m
 export const decidedText = (r: Decided, decision: "approve" | "reject") =>
   !r.ok ? `Not ${decision === "approve" ? "approved" : "rejected"}: ${r.reason}.` : r.state === "rejected" ? `Rejected: ${r.sentence} Nothing will run.` : `Approved: ${r.sentence} It runs now; the result shows on the board's card and the task.`;
 
-/** The kernel's one-shot notices: account reset links (only ever here), the daily approvals digest and owner lines. */
-export async function sendNotices(kernel: Pick<Kernel, "notices">, send: (text: string) => Promise<boolean>): Promise<number> {
-  const n = await kernel.notices();
-  let sent = 0;
-  for (const l of n.links)
-    if (await send(`🔑 **Board account reset** for ${l.email}\n${l.url}\nOne use, 72 hours; it ends that account's sessions and, for an admin, asks for a new authenticator. If it isn't yours, pass it on to them yourself.`)) sent++;
-  if (n.digest && (await send(n.digest))) sent++;
-  for (const l of n.lines) if (await send(l)) sent++;
-  return sent;
-}
-
 /**
  * Shows, once, how each request the owner was sent a card for ended: applied, failed, stopped without reporting, or (`ended`)
  * rejected, replaced or expired without running. The outcome edits the card's own message (its buttons go); no separate

@@ -23,7 +23,7 @@ agents:
     # Its own computer (services/computer): Chrome + agent-browser to build a mockup and screenshot it, and repo-checkout for an app's code.
     image: agent-base
     connections:
-      telegram: [ notify_owner ]
+      owner_channel: [ notify ]
       apps: [ app_list, app_status, app_view, app_check, web_view ]
       github?: [ github_whoami, github_issue_read, github_search_issues ]
       # fleet_catalog: which agent owns an app, so a redesign or a review brings that agent in.
@@ -43,7 +43,7 @@ agents:
     timeout_sec: 2400
     image: agent-base
     connections:
-      telegram: [ notify_owner ]
+      owner_channel: [ notify ]
       apps: [ app_list, app_status, app_view, app_check, web_view ]
       # Reads PRs and their checks; commit_status_set is the design-review verdict (role-checked in github-mcp).
       github?: [ github_whoami, github_issue_read, github_search_issues, commit_status_set ]

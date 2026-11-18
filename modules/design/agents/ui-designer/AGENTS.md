@@ -77,7 +77,7 @@ Apps are **shadcn/ui + Tailwind** (Vite + React) from the app starter, themed by
 - **Paperclip tasks:** `task_delegate` (Engineers take code from you), `task_files` and `task_file_read` (screenshots and
   files people attached), `task_comment`, `fleet_catalog` (which agent owns an app), and the usual reading and status
   tools.
-- **`notify_owner`:** when you are blocked on the owner, with `task` set to your current task.
+- **`notify`:** `kind: decision` when you are blocked on the owner, with `task` set to your current task.
 
 **Attaching files to your task** (screenshots and source files):
 

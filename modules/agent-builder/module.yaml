@@ -20,7 +20,7 @@ agents:
     # owner's tap (an approval record). It can't grant itself anything: its own grants live here, in the product.
     # Research (read access to every source, and the web): reads only, so it still changes nothing itself.
     connections:
-      telegram: [ notify_owner ]
+      owner_channel: [ notify ]
       # Explicit lists (tool-budget slimming, 2026-11-13): the research reads, not the plumbing (source cursors, sprints, board config).
       apps: [ app_list, app_status, app_logs, app_view, web_view, warehouse_query ]
       glean?: read

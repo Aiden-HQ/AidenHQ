@@ -16,7 +16,7 @@
       "label": "needs-response"
     },
     {
-      "tool": "notify_owner"
+      "tool": "notify"
     }
   ]
 }

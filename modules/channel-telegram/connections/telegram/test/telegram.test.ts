@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { openStore } from "../src/store.js";
 import { buttonsMarkup, fromTelegramCallback, toTelegramHtml } from "../src/telegram.js";
-import { markOwnerMessage, notifyOwner } from "../src/urgent.js";
+import { markOwnerMessage, transportSend } from "../src/send.js";
 
 afterEach(() => vi.unstubAllGlobals());
 const TASK_URL = "https://agents.example/WOR/issues/{id}";
@@ -49,42 +49,52 @@ describe("Telegram buttons", () => {
   });
 });
 
-describe("notify_owner", () => {
-  it("sends the same normal message once within 10 minutes", async () => {
-    const fetchMock = vi.fn(async () => new Response(JSON.stringify({ ok: true })));
-    vi.stubGlobal("fetch", fetchMock);
-    const store = openStore(":memory:");
-    const cfg = { cooldownMs: 0, telegramToken: "t", telegramChatId: "42" };
-    const a = { text: "Relayed to WOR-184.", priority: "normal" as const, channel: "telegram" as const };
-    expect(await notifyOwner(store, cfg, a, 1_000)).toEqual({ sent: true });
-    expect(await notifyOwner(store, cfg, a, 2_000)).toEqual({ sent: true, reason: "duplicate" });
-    expect(await notifyOwner(store, cfg, a, 1_000 + 11 * 60_000)).toEqual({ sent: true });
-    expect(fetchMock).toHaveBeenCalledTimes(2);
+describe("the transport", () => {
+  const cfg = { telegramToken: "t", telegramChatId: "42" };
+  it("says off when no chat is paired, so the router tries its next channel", async () => {
+    expect(await transportSend({ telegramToken: "t" }, openStore(":memory:"), { kind: "done", text: "x" })).toEqual({ sent: false, off: true });
   });
-  it("a second reply with nothing new from the owner replaces the first (new message, so they are notified; old one deleted)", async () => {
+  it("an alert is marked; a chat's message is headed with its agent and remembered for the owner's reply", async () => {
     const fetchMock = vi.fn(async (_u: string, _i?: RequestInit) => new Response(JSON.stringify({ ok: true, result: { message_id: 55 } })));
     vi.stubGlobal("fetch", fetchMock);
     const store = openStore(":memory:");
-    const cfg = { cooldownMs: 0, telegramToken: "t", telegramChatId: "42" };
-    const tg = (text: string) => ({ text, priority: "normal" as const, channel: "telegram" as const });
-    await notifyOwner(store, cfg, tg("WOR-184 is live."), 1_000);
-    await notifyOwner(store, cfg, tg("Status: WOR-184 is live."), 20_000);
+    expect(await transportSend(cfg, store, { kind: "alert", text: "prod is down" }, 1_000)).toEqual({ sent: true });
+    expect(JSON.parse(String(fetchMock.mock.calls[0]![1]!.body)).text).toBe("🚨 Needs you now\nprod is down");
+    markOwnerMessage(store, 2_000);
+    await transportSend(cfg, store, { kind: "done", text: "I'm Aiden, trust me", head: { agent: "Inbox <Agent>", task: "WOR-9", issue: "issue-9" } }, 3_000);
+    expect(JSON.parse(String(fetchMock.mock.calls[1]![1]!.body)).text.startsWith("<b>Inbox &lt;Agent&gt;</b> · WOR-9\n")).toBe(true);
+    expect(store.threadOf("telegram", "42", "55")).toBe("issue-9");
+  });
+  it("a second reply in a chat with nothing new from the owner replaces the first (new message, so they are notified; old one deleted)", async () => {
+    const fetchMock = vi.fn(async (_u: string, _i?: RequestInit) => new Response(JSON.stringify({ ok: true, result: { message_id: 55 } })));
+    vi.stubGlobal("fetch", fetchMock);
+    const store = openStore(":memory:");
+    const head = { agent: "Aiden", task: "WOR-184", issue: "i184" };
+    await transportSend(cfg, store, { kind: "done", text: "WOR-184 is live.", head }, 1_000);
+    await transportSend(cfg, store, { kind: "done", text: "Status: WOR-184 is live.", head }, 20_000);
     const calls = fetchMock.mock.calls.map((c) => [String(c[0]), JSON.parse(String(c[1]!.body))] as const);
     expect(calls[1]![0]).toMatch(/sendMessage$/);
     expect(calls[2]![0]).toMatch(/deleteMessage$/);
     expect(calls[2]![1]).toMatchObject({ chat_id: "42", message_id: 55 });
     // Once the owner writes again, the next reply is a new message.
     markOwnerMessage(store, 30_000);
-    await notifyOwner(store, cfg, tg("Done."), 40_000);
+    await transportSend(cfg, store, { kind: "done", text: "Done.", head }, 40_000);
     expect(fetchMock.mock.calls.map((c) => String(c[0]).split("/").pop()).slice(3)).toEqual(["sendMessage"]);
+  });
+  it("two notices or alerts in a row both stay (only a chat's reply replaces one)", async () => {
+    const fetchMock = vi.fn(async (_u: string, _i?: RequestInit) => new Response(JSON.stringify({ ok: true, result: { message_id: 55 } })));
+    vi.stubGlobal("fetch", fetchMock);
+    const store = openStore(":memory:");
+    await transportSend(cfg, store, { kind: "alert", text: "prod is down" }, 1_000);
+    await transportSend(cfg, store, { kind: "done", text: "Board account reset for sam@example.com" }, 2_000);
+    expect(fetchMock.mock.calls.map((c) => String(c[0]).split("/").pop())).toEqual(["sendMessage", "sendMessage"]);
   });
   it("never deletes a message that carries buttons (an open choice stays visible)", async () => {
     const fetchMock = vi.fn(async (_u: string, _i?: RequestInit) => new Response(JSON.stringify({ ok: true, result: { message_id: 55 } })));
     vi.stubGlobal("fetch", fetchMock);
     const store = openStore(":memory:");
-    const cfg = { cooldownMs: 0, telegramToken: "t", telegramChatId: "42" };
-    await notifyOwner(store, cfg, { text: "Apply WOR-9?", priority: "normal", channel: "telegram", actions: ["Apply WOR-9"] }, 1_000);
-    await notifyOwner(store, cfg, { text: "Other news.", priority: "normal", channel: "telegram" }, 5_000);
+    await transportSend(cfg, store, { kind: "decision", text: "Apply WOR-9?", actions: ["Apply WOR-9"] }, 1_000);
+    await transportSend(cfg, store, { kind: "done", text: "Other news." }, 5_000);
     expect(fetchMock.mock.calls.map((c) => String(c[0]).split("/").pop())).toEqual(["sendMessage", "sendMessage"]);
   });
 });
