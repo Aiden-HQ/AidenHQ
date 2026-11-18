@@ -1,6 +1,6 @@
 // Model credentials the runner mints for the gateway: `ahqj_<payload>.<hmac>`, signed with the secret gateway_job_secret
 // (held by the runner and the gateway only). Stateless, so a runner or gateway restart never strands a running job.
-// payload: { k: kind (agent | reviewer | grader | source), a: agent id | null, i: task id | null, c: component, x: expiry ms,
+// payload: { k: kind (agent | reviewer | grader | source | check: a check job's model calls, capped by the eval day cap), a: agent id | null, i: task id | null, c: component, x: expiry ms,
 // j?: the job's jobcaps (connections it may read through POST /c/<connection>/mcp, jobcaps.ts), o?: the job observes (an
 // Engineer with private_reads, web search off): only then may it use a private jobcap, w?: the write kinds it may request at
 // POST /v1/writes for its agent on its task (the runner mints one for its own request, e.g. a job's document to publish) }.
@@ -15,7 +15,7 @@ export interface TokenPayload { k: string; a: string | null; i: string | null; c
 export type VerifiedToken = Brand<TokenPayload, "VerifiedToken">;
 
 export const JOB_TOKEN_PREFIX = "ahqj_";
-const KINDS = new Set(["agent", "job", "reviewer", "grader", "source"]);
+const KINDS = new Set(["agent", "job", "reviewer", "grader", "source", "check"]);
 const sign = (secret: string, body: string) => createHmac("sha256", secret).update(body).digest("base64url");
 
 /** A token for one job or one system call; `ttlMs` past now. */
