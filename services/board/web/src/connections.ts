@@ -15,6 +15,8 @@ export interface SignIn {
   configured: boolean;
   since: string;
   detail?: string;
+  /** Connected, and the owner may pick what to grant on a Reconnect. */
+  scopes?: boolean;
 }
 export interface GoogleState {
   accounts: { email: string; primary: boolean; state: string; since: string; detail?: string }[];

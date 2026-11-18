@@ -1185,7 +1185,10 @@ export function createApp(opts: AppOptions): Server {
         () => null,
       ),
     ]);
-    const signIns = Object.fromEntries(states.map((s) => [s.id, s.status]));
+    // A connected sign-in's Reconnect reads "Change access" where the proxy offers a choice of scopes.
+    const signIns = Object.fromEntries(
+      await Promise.all(states.map(async (s) => [s.id, s.status?.state === "ok" ? { ...s.status, scopes: ((await s.auth.scopes())?.supported.length ?? 0) > 1 } : s.status] as const)),
+    );
     return connectionsView({ compiled, catalog, probes: probed.probes, signIns, google, sources, staleSources: new Set(staleSources(sources ?? [], Date.now()).map((s) => s.key)) });
   }
 
@@ -1866,6 +1869,7 @@ export function createApp(opts: AppOptions): Server {
           accounts: opts.accounts,
           store,
           signedIn: async (id) => (await signInStates()).find((x) => x.id === id)?.status?.state === "ok",
+          scopeChoice: async (id) => ((await (opts.signIns ?? []).find((x) => x.id === id)?.auth.scopes())?.supported.length ?? 0) > 1,
           connected: connectionSignedIn,
           boardUrl: signInOrigin,
           redirectUrl: (signin, host) => {
@@ -2000,12 +2004,29 @@ export function createApp(opts: AppOptions): Server {
    * owner's hand-made client lists it: the setup flow shows it). A vendor may permit only the bare /callback shape.
    */
   const signInFor = (path: string) => (opts.signIns ?? []).find((s) => s.connect === path || s.callback === path);
+  /** The setup flow (board.setup_flows) whose sign-in this is: Connect starts there while its secrets are missing, and returns there. */
+  const flowOf = (s: SignIn) => opts.setupFlows?.flows.find((f) => f.signin === s.id);
+  /**
+   * Whether a Connect must open the flow first: it asks for secrets the vault hasn't got and the sign-in has never worked (a
+   * Reconnect of an expired sign-in goes on: an upgraded instance can work with its values outside the vault).
+   */
+  async function needsSetup(req: IncomingMessage, s: SignIn): Promise<boolean> {
+    const f = flowOf(s);
+    const who = f?.secrets?.length && opts.accounts ? await opts.accounts.sessionOf(req) : null;
+    if (!f || !who) return false;
+    const { secrets } = await opts.accounts!.call<{ secrets: Record<string, boolean> }>("setup_status", who, { module: f.module });
+    return f.secrets!.some((x) => !secrets[x]) && (await s.auth.status())?.state === "missing";
+  }
 
   async function handleSignIn(req: IncomingMessage, res: ServerResponse, url: URL, s: SignIn) {
     const { label: name, connect, callback, auth } = s;
     const origin = vendorOrigin(String(req.headers.host ?? ""));
     if (!origin) throw new HttpError(403, httpsBoard ? `sign in to ${name} from ${httpsBoard.origin}` : `sign in to ${name} from ${TUNNEL}`);
     try {
+      if (url.pathname === connect && (await needsSetup(req, s))) {
+        res.writeHead(302, { ...SECURITY_HEADERS, location: `/#/setup/${flowOf(s)!.module}`, "cache-control": "no-store" }).end();
+        return;
+      }
       if (url.pathname === connect) {
         // The owner picks what to grant (owner, 2026-11-18): when the vendor offers a choice of scopes, a short form comes
         // first with the recommended ones ticked, and comes back here with `picked` and the ticked scopes.
@@ -2029,7 +2050,8 @@ export function createApp(opts: AppOptions): Server {
         if (!code) throw new McpAuthFailed(`${name} didn't grant access (${url.searchParams.get("error") ?? "no code"})`);
         await auth.finish(state, code);
         log.info(`${name} connected`);
-        res.writeHead(302, { ...SECURITY_HEADERS, location: "/", "cache-control": "no-store" }).end();
+        const f = flowOf(s);
+        res.writeHead(302, { ...SECURITY_HEADERS, location: f ? `/#/setup/${f.module}` : "/", "cache-control": "no-store" }).end();
         return;
       }
     } catch (err) {

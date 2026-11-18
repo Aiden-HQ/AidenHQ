@@ -61,6 +61,8 @@ export interface SetupFlowView {
   redirect_url?: string;
   present: Record<string, boolean>;
   signedIn: boolean;
+  /** Signed in, and its Reconnect may pick what to grant. */
+  scopes?: boolean;
   paired: boolean;
   done: boolean;
   dismissed: boolean;
