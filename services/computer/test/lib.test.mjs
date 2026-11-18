@@ -7,7 +7,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createServer } from "node:http";
-import { Tokens, admit, builtImage, dockerRunArgs, oomMessage, execEnv, routineArgs, mcpBlock, stale, wrapExec, runCredential, CP_SCRIPT, CODEX_CONFIG_SCRUB, checkoutRequest, archiveArgs, UNTAR_SCRIPT, RUN_TOKEN_PATH, WRITE_RUN_TOKEN_SCRIPT, CLEAR_RUN_TOKEN_SCRIPT } from "../lib.mjs";
+import { Tokens, Creds, admit, builtImage, dockerRunArgs, oomMessage, execEnv, routineArgs, mcpBlock, stale, wrapExec, runCredential, CP_SCRIPT, CODEX_CONFIG_SCRUB, checkoutRequest, archiveArgs, UNTAR_SCRIPT, RUN_TOKEN_PATH, WRITE_RUN_TOKEN_SCRIPT, CLEAR_RUN_TOKEN_SCRIPT } from "../lib.mjs";
 import { host as localHost } from "../../../modules/codehost-local/src/host.mjs";
 import { ensureClone } from "../../../modules/codehost-github/src/git.mjs";
 
@@ -109,6 +109,42 @@ test("admission: room → go; full → evict the least recently used idle box; a
 test("a run's Paperclip credential comes from the exec env (bridge URL + key + task)", () => {
   assert.equal(runCredential({ PATH: "/bin" }), undefined);
   assert.deepEqual(runCredential({ PAPERCLIP_API_URL: "http://127.0.0.1:4567", PAPERCLIP_API_KEY: "bridge", PAPERCLIP_TASK_ID: "issue-1" }), { apiUrl: "http://127.0.0.1:4567", apiKey: "bridge", taskId: "issue-1" });
+});
+
+test("a box's Paperclip credential survives a launcher restart (dump/load) and goes on delete", () => {
+  const c = new Creds();
+  assert.equal(c.get("box1"), undefined);
+  c.set("box1", { apiUrl: "http://127.0.0.1:4567", apiKey: "bridge", taskId: "issue-1" });
+  assert.deepEqual(c.get("box1"), { apiUrl: "http://127.0.0.1:4567", apiKey: "bridge", taskId: "issue-1" });
+  // The detached turn outlives the launcher: the saved file reloads into /cp's lookup as it was.
+  const reloaded = new Creds();
+  reloaded.load(JSON.parse(JSON.stringify(c.dump())));
+  assert.deepEqual(reloaded.get("box1"), { apiUrl: "http://127.0.0.1:4567", apiKey: "bridge", taskId: "issue-1" });
+  // Rows a broken file might carry are skipped, never a credential without a key.
+  const junk = new Creds();
+  junk.load([{ container: "box2", apiUrl: "http://127.0.0.1:1" }, null]);
+  assert.equal(junk.get("box2"), undefined);
+  // The box's token is revoked: the credential goes with it, so a later box reusing the name has none.
+  reloaded.delete("box1");
+  assert.equal(reloaded.get("box1"), undefined);
+  const afterRestart = new Creds();
+  afterRestart.load(reloaded.dump());
+  assert.equal(afterRestart.get("box1"), undefined);
+});
+
+test("a credential goes when its box's token does, expiry included", () => {
+  const creds = new Creds();
+  const tokens = new Tokens({ onRevoke: (container) => creds.delete(container) });
+  const token = tokens.issue("box1", "agent-1", 0);
+  creds.set("box1", { apiUrl: "http://127.0.0.1:4567", apiKey: "bridge" });
+  assert.ok(creds.get("box1"));
+  assert.equal(tokens.whoami(token, 7 * 3600_000), undefined); // expired: whoami revokes
+  assert.equal(creds.get("box1"), undefined);
+  // A new token for the same name (a resumed box, or a reused name) takes the old credential with it.
+  tokens.issue("box1", "agent-2");
+  creds.set("box1", { apiUrl: "http://127.0.0.1:4567", apiKey: "bridge-2" });
+  tokens.revoke("box1");
+  assert.equal(creds.get("box1"), undefined);
 });
 
 test("the cp script makes one control-plane call through the box's bridge with the key from stdin, never argv", async () => {

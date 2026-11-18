@@ -37,7 +37,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, writeFile
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { answerSlowly, archiveArgs, forwardModel, PROGRESS_SCRIPT, CP_SCRIPT, UNTAR_SCRIPT, WRITE_RUN_TOKEN_SCRIPT, CLEAR_RUN_TOKEN_SCRIPT, boxOf, checkoutRequest, EXEC_ID, EXEC_ROOT, EXEC_MISSING, EXEC_PREP_SCRIPT, EXEC_RUN_SCRIPT, EXEC_WAIT_SCRIPT, Tokens, Jobs, JOB_HOME, JOB_ROUTES, admit, controlAllowed, jobEnvFile, jobFolder, jobMounts, reapLapsed, serveHelper, builtImage, dockerRunArgs, oomMessage, execEnv, mcpBlock, runCredential, stale, wrapExec, routineArgs } from "./lib.mjs";
+import { answerSlowly, archiveArgs, forwardModel, PROGRESS_SCRIPT, CP_SCRIPT, UNTAR_SCRIPT, WRITE_RUN_TOKEN_SCRIPT, CLEAR_RUN_TOKEN_SCRIPT, boxOf, checkoutRequest, EXEC_ID, EXEC_ROOT, EXEC_MISSING, EXEC_PREP_SCRIPT, EXEC_RUN_SCRIPT, EXEC_WAIT_SCRIPT, Tokens, Creds, Jobs, JOB_HOME, JOB_ROUTES, admit, controlAllowed, jobEnvFile, jobFolder, jobMounts, reapLapsed, serveHelper, builtImage, dockerRunArgs, oomMessage, execEnv, mcpBlock, runCredential, stale, wrapExec, routineArgs } from "./lib.mjs";
 
 const repo = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
 const dotenv = {};
@@ -104,7 +104,14 @@ const MOUNTS = [
 const log = (...a) => console.log(new Date().toISOString(), ...a);
 const DEBUG = env("AIDENHQ_COMPUTERS_DEBUG") === "1"; // log every exec, with its env keys (never values)
 const readJson = (f) => JSON.parse(readFileSync(f, "utf8"));
-const tokens = new Tokens();
+// The boxes' Paperclip credentials, saved like the tokens: an agent's turn is one detached exec that outlives a launcher
+// restart, so /cp must still find the credential the turn started with.
+const creds = new Creds();
+const credsFile = path.join(stateDir, "run-creds.json");
+try { creds.load(readJson(credsFile)); } catch {}
+const saveCreds = () => { try { writeFileSync(`${credsFile}.tmp`, JSON.stringify(creds.dump()), { mode: 0o600 }); renameSync(`${credsFile}.tmp`, credsFile); } catch (e) { log("couldn't save run credentials:", e.message); } };
+// A container's credential goes when its token does, expiry included: a later box reusing the name never inherits one.
+const tokens = new Tokens({ onRevoke: (container) => { if (creds.delete(container)) saveCreds(); } });
 // Run tokens survive a launcher restart (a running box keeps its token in its env): a 0600 file, rewritten on every change.
 const tokensFile = path.join(stateDir, "run-tokens.json");
 try { tokens.load(readJson(tokensFile)); } catch {}
@@ -249,7 +256,7 @@ const control = {
     const token = tokens.current(container);
     if (token) await writeRunToken(container, token); // a launcher restart, or a box from before this code, still gets it
     const cred = token && runCredential(e);
-    if (cred) b.cred = cred;
+    if (cred) { b.cred = cred; creds.set(container, cred); saveCreds(); }
     // The run's token names its Paperclip run and task from here on: the model gateway attributes and caps by them.
     if (cred && tokens.bind(container, { runId: e.PAPERCLIP_RUN_ID, issueId: cred.taskId })) saveTokens();
     const xenv = execEnv(e, { token, mcp: e.CODEX_HOME && token ? await mcpFor(token) : undefined });
@@ -536,7 +543,12 @@ saveJobs();
 // A saved token whose computer is gone never comes back.
 for (const t of tokens.dump()) if (!boxes.has(t.container)) tokens.revoke(t.container);
 saveTokens();
+// A saved credential whose computer is gone never comes back either.
+for (const c of creds.dump()) if (!boxes.has(c.container) || !tokens.current(c.container)) creds.delete(c.container);
+saveCreds();
 for (const name of orphans) await destroy(name, "a runner job's box without its record");
+// A box from before the restart keeps its turn (a detached exec runs on): /cp answers from the saved credential again.
+for (const [name, b] of boxes) { const cred = creds.get(name); if (cred) b.cred = cred; }
 // A box from before the restart keeps its run: put the saved token back where its shell tools read it (Paperclip's boxes;
 // a runner job's token is in its env file).
 for (const name of boxes.keys()) { const token = tokens.current(name); if (token && !jobs.has(name)) await writeRunToken(name, token).catch((e) => log("couldn't restore a run token:", name, e.message)); }

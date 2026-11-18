@@ -24,6 +24,9 @@ export const CLEAR_RUN_TOKEN_SCRIPT = `rm -f ${RUN_TOKEN_PATH}`;
 export class Tokens {
   #byToken = new Map(); // token → { container, agentId, at, runId?, issueId? }
   #byContainer = new Map(); // container → token
+  #onRevoke;
+  /** `onRevoke(container)` runs whenever a container's token goes: expiry included, so nothing keyed by the token outlives it. */
+  constructor({ onRevoke } = {}) { this.#onRevoke = onRevoke; }
   issue(container, agentId, now = Date.now()) {
     this.revoke(container);
     const token = RUN_TOKEN_PREFIX + randomBytes(32).toString("base64url");
@@ -35,6 +38,7 @@ export class Tokens {
     const t = this.#byContainer.get(container);
     if (t) this.#byToken.delete(t);
     this.#byContainer.delete(container);
+    if (t) this.#onRevoke?.(container);
   }
   current(container) { return this.#byContainer.get(container); }
   /** The container's current token names this Paperclip run and task; true when that changed (save the tokens). */
@@ -381,6 +385,21 @@ export function runCredential(env) {
   const apiUrl = env?.PAPERCLIP_API_URL, apiKey = env?.PAPERCLIP_API_KEY;
   if (!apiUrl || !apiKey) return undefined;
   return { apiUrl: String(apiUrl), apiKey: String(apiKey), taskId: env.PAPERCLIP_TASK_ID ? String(env.PAPERCLIP_TASK_ID) : undefined };
+}
+
+/**
+ * The per-box Paperclip credential /cp calls with: one live credential per container, set by the exec that carried it. Saved
+ * like the run tokens, because an agent's whole turn is one detached exec: a launcher restarted mid-turn finds it when it
+ * reloads the box, instead of answering 409 for the rest of the turn. Dropped with the box's token, so a reused name never
+ * inherits one.
+ */
+export class Creds {
+  #by = new Map(); // container → { apiUrl, apiKey, taskId? }
+  set(container, cred) { this.#by.set(container, { apiUrl: cred.apiUrl, apiKey: cred.apiKey, ...(cred.taskId ? { taskId: cred.taskId } : {}) }); }
+  get(container) { return this.#by.get(container); }
+  delete(container) { return this.#by.delete(container); }
+  dump() { return [...this.#by].map(([container, c]) => ({ container, ...c })); }
+  load(rows) { for (const r of rows ?? []) if (r?.container && r.apiUrl && r.apiKey) this.set(r.container, { apiUrl: r.apiUrl, apiKey: r.apiKey, taskId: r.taskId }); }
 }
 
 /** Runs in the box (node): one control-plane call through the box's bridge. Everything, the key included, comes on stdin. */
