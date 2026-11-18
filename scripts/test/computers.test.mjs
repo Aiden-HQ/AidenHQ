@@ -28,7 +28,7 @@ test("the instance switches one agent on; the launcher learns the image tag and 
   assert.match(computersConfig(compile(product, inst({})).paperclip, product).images.browser, /^aidenhq\/computer-browser:/);
   // One capacity setting: the launcher's pool and the kernel's admission both read computers.json `max`.
   assert.equal(r.computersMax, 12);
-  assert.equal(computersConfig(r.paperclip, product, [], r.computersMax).max, 12);
+  assert.equal(computersConfig(r.paperclip, product, r.computersMax).max, 12);
   // A profile is compiled into the grants entry the kernel freezes into each job (crew unless the agent says otherwise).
   assert.equal(grantEntry("assistant", r.paperclip.agents.assistant, r.paperclip.routines).profile, "crew");
   const eng = compile(product, inst({ agents: { assistant: { image: "agent-base" } } }));

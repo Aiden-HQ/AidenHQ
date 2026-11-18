@@ -10,8 +10,8 @@
 //   POST /api/v1/responses | /api/v1/chat/completions   model calls, passed on to the kernel's model gateway with that token
 //   /c/<connection>/mcp       tool calls to a connection (X-Agent-Key = the job token), passed on to the kernel's proxy
 //                             (aidenhq-kernel) with that token as the bearer: the kernel checks the grants and holds the keys
-//   POST /repo {repo, sha}    the box's `repo-checkout`: a snapshot (no .git, no credentials) of an agents-org repo at a commit,
-//                             from the cache clone, into /workspace/repos/<name>; jobs with the repo-checkout role
+//   POST /repo {repo, sha}    the box's `repo-checkout`: the kernel's code host snapshot (no .git, no credentials) of an agents-org
+//                             repo at a commit, into /workspace/repos/<name>; the kernel checks the repo-checkout role
 //   POST /v1/writes, GET /v1/writes/<id>, POST /v1/jobtools/<cmd>  a kernel job box's `aidenhq` commands (bearer = its job token), on to the kernel as it
 //
 // Jobs (bearer = secret launcher_kernel_key, the kernel's; it opens nothing else).
@@ -26,11 +26,12 @@
 //
 import http from "node:http";
 import { spawn } from "node:child_process";
+import { Readable } from "node:stream";
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync, rmSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { archiveArgs, forwardModel, PROGRESS_SCRIPT, UNTAR_SCRIPT, boxOf, checkoutRequest, Jobs, mayCheckout, tokenHash, JOB_HOME, JOB_ROUTES, CHECK_ROUTES, checkMounts, admit, controlAllowed, jobEnvFile, jobFolder, jobMounts, reapLapsed, builtImage, dockerRunArgs, stale } from "./lib.mjs";
+import { forwardModel, PROGRESS_SCRIPT, UNTAR_SCRIPT, boxOf, checkoutDest, Jobs, tokenHash, JOB_HOME, JOB_ROUTES, CHECK_ROUTES, checkMounts, admit, controlAllowed, jobEnvFile, jobFolder, jobMounts, reapLapsed, builtImage, dockerRunArgs, stale } from "./lib.mjs";
 
 const repo = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
 const dotenv = {};
@@ -60,7 +61,6 @@ const CFG = {
   runnerWork: runnerDir("work_dir", "~/aidenhq-work"),
   runnerState: runnerDir("state_dir", "~/.local/state/aidenhq-runner"),
 };
-CFG.runnerRepos = path.join(CFG.runnerWork, "repos");
 function runnerDir(key, fallback) {
   let dir = fallback;
   try { dir = new RegExp(`^${key}:\\s*["']?([^"'#\\n]+?)["']?\\s*(#.*)?$`, "m").exec(readFileSync(path.join(configDir, "runner.yaml"), "utf8"))?.[1] ?? dir; } catch {}
@@ -258,36 +258,30 @@ const jobControl = {
 };
 
 /**
- * `repo-checkout <org/name> <sha>` from a box: `git archive` of that commit in the cache clone, streamed into the calling
- * box (its own job token names it). Read-only on the cache: a commit it doesn't have yet is refused, never fetched.
+ * `repo-checkout <org/name> [sha]` from a box: the kernel's code host snapshot (POST /v1/checkout with the box's own job token;
+ * the kernel checks the repo-checkout role and the agents org), streamed into the calling box.
  */
-async function checkout(who, raw) {
-  if (!mayCheckout(who)) throw fail(403, "repo-checkout needs the repo-checkout role");
+async function checkout(who, token, raw) {
   let p;
   try { p = JSON.parse(raw || "{}"); } catch { throw fail(400, "bad json"); }
-  let { cache, sha, dest } = checkoutRequest(p, { agentsOrg: readJson(CFG.computersFile).agents_org, agentsOrgs: readJson(CFG.computersFile).agents_orgs, cacheRoot: CFG.runnerRepos });
-  const gitEnv = { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1", GIT_TERMINAL_PROMPT: "0" };
-  const has = spawn("git", ["-C", cache, "rev-parse", "--verify", "--quiet", `${sha ?? "refs/remotes/origin/HEAD"}^{commit}`], { env: gitEnv, stdio: ["ignore", "pipe", "ignore"] });
-  let out = "";
-  has.stdout.on("data", (x) => (out += x));
-  if ((await new Promise((r) => has.on("close", r))) !== 0) throw fail(404, `${p.repo}${sha ? ` at ${sha.slice(0, 12)}` : ""} isn't in the runner's copy yet (the runner fetches when an Engineer pushes or works on it); try again in a minute`);
-  sha = out.trim();
+  const dest = checkoutDest(p.repo);
+  const r = await fetch(new URL("/v1/checkout", KERNEL_URL), { method: "POST", headers: { authorization: `Bearer ${token}`, "content-type": "application/json" }, body: JSON.stringify({ repo: p.repo, sha: p.sha }), signal: AbortSignal.timeout(120_000) });
+  if (!r.ok) throw fail(r.status, String(await r.json().then((j) => j.error ?? j.message, () => "")).slice(0, 300) || `the kernel answered ${r.status}`);
+  const sha = r.headers.get("x-aidenhq-commit") ?? "";
+  if (p.sha && sha !== String(p.sha).toLowerCase()) throw fail(502, `the snapshot is of ${sha.slice(0, 12)}, not ${String(p.sha).slice(0, 12)}`);
   const b = boxes.get(who.container);
   if (b) { b.busy++; b.lastUsed = Date.now(); }
   try {
-    // Piped straight from git to the box (binary; never through docker()'s string buffer).
-    const g = spawn("git", archiveArgs(cache, sha), { env: gitEnv, stdio: ["ignore", "pipe", "pipe"] });
     const d = spawn("docker", ["exec", "-i", who.container, "sh", "-c", UNTAR_SCRIPT, "sh", dest], { stdio: ["pipe", "ignore", "pipe"] });
-    // A box gone mid-stream (evicted, tar failed) is an EPIPE here: the exit codes report it; it must never crash the launcher.
-    for (const s of [g, d, g.stdout, d.stdin]) s.on("error", () => {});
-    g.stdout.pipe(d.stdin);
+    // A box gone mid-stream (evicted, tar failed) is an EPIPE here: the exit code reports it; it must never crash the launcher.
+    d.on("error", () => {}); d.stdin.on("error", () => {});
+    Readable.fromWeb(r.body).on("error", () => d.kill("SIGKILL")).pipe(d.stdin);
     let err = "";
-    g.stderr.on("data", (x) => (err += x));
     d.stderr.on("data", (x) => (err += x));
-    const t = setTimeout(() => { g.kill("SIGKILL"); d.kill("SIGKILL"); }, 120_000);
-    const [gc, dc] = await Promise.all([g, d].map((c) => new Promise((r) => c.on("close", r))));
+    const t = setTimeout(() => d.kill("SIGKILL"), 120_000);
+    const dc = await new Promise((ok) => d.on("close", ok));
     clearTimeout(t);
-    if (gc !== 0 || dc !== 0) throw fail(500, `checkout failed: ${err.trim().slice(-300) || `git ${gc}, tar ${dc}`}`);
+    if (dc !== 0) throw fail(500, `checkout failed: ${err.trim().slice(-300) || `tar ${dc}`}`);
   } finally {
     if (b) { b.busy--; b.lastUsed = Date.now(); }
   }
@@ -346,7 +340,7 @@ const gatewayServer = http.createServer(async (req, res) => {
       if (!who) return deny(401, "not a live computer");
       const chunks = [];
       for await (const c of req) chunks.push(c);
-      return checkout(who, Buffer.concat(chunks).toString("utf8").slice(0, 4096)).then(
+      return checkout(who, String(req.headers["x-agent-key"]), Buffer.concat(chunks).toString("utf8").slice(0, 4096)).then(
         (out) => res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify(out)),
         (e) => deny(e.status ?? 500, e.message),
       );

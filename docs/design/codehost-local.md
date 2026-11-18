@@ -223,8 +223,8 @@ Existing rule ids and reason strings stay byte-identical; local behaviour only a
 The same flow as on GitHub, with the verdict carried by the task instead of a commit status. No new tool.
 - **Asking:** a local change that touches UI files (`merge-gate.mjs` `touchesUi`), with a design reviewer in the fleet
   (`main.mjs:485`), gets the same "Design review" task the runner files today (`fileDesignReviewTask`, `main.mjs:503`),
-  naming `local/<app>`, change `n` and its head sha. `repo-checkout` already places that head from the runner's cache
-  clone (`services/computer/launcher.mjs:402-410`); its org check takes the providers' org list.
+  naming `local/<app>`, change `n` and its head sha. `repo-checkout` places a GitHub head through the kernel's code host snapshot; a `local/*` head needs
+  a snapshot op on this code host (not built: the runner's cache clone it once read is gone).
 - **The verdict:** the UI Reviewer's handbook gains a short local section: for a `local/*` change, it ends its review
   with a comment of exactly `design-review: success <sha>` or `design-review: failure <sha>` plus its findings, on that
   task, using the task tools it already has.

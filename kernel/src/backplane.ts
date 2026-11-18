@@ -52,6 +52,8 @@
 //   POST /v1/checks, GET /v1/checks/:check, POST /v1/receipts/verify  (a module with role kernel.checks) a credential-free check
 //                              job of repo@head and its signed receipt (?after=<version>&wait=<ms>), a receipt checked against
 //                              {repo, head, run, judge?, policy?} (checkjobs.ts)
+//   POST /v1/checkout          (a kernel job's own token) {repo, sha?}: a code host snapshot (tar.gz) for a job holding the
+//                              repo-checkout role, an agents-org repo only (jobtools.ts checkout)
 //   POST /v1/jobtools/:cmd     (a kernel job's own token) reset | engine {engine, model?} | cleanup: what the running job asks of its
 //                              task's next turn (jobtools.ts)
 //   GET  /v1/advisories        (the board's key) the marketplace advisories open against installed modules (advisories.ts)
@@ -73,6 +75,7 @@ import type { Admission } from "./admission.ts";
 import { JOB_KINDS, type Outcomes } from "./outcomes.ts";
 import { notice, type Notify } from "./notify.ts";
 import type { JobTools } from "./jobtools.ts";
+import { CODEHOST } from "./codehost.ts";
 import { fail } from "./proxy.ts";
 import type { Records, State } from "./records.ts";
 import type { Work } from "./work.ts";
@@ -138,6 +141,7 @@ export const ROUTES = [
   { method: "GET", path: "/v1/checks/:check", auth: "module" },
   { method: "POST", path: "/v1/receipts/verify", auth: "module" },
   { method: "POST", path: "/v1/jobtools/:cmd", auth: "job" },
+  { method: "POST", path: "/v1/checkout", auth: "job" },
   { method: "GET", path: "/v1/advisories", auth: "board" },
   { method: "POST", path: "/v1/auth/:op", auth: "board" },
   { method: "POST", path: "/v1/accounts/:op", auth: "board+session" },
@@ -278,6 +282,16 @@ export function createBackplane({ whoami, asserter, proxy, cp, boardCp, grantsFi
           if (!want.length || given.length !== want.length || !timingSafeEqual(given, want)) throw fail(401, "unauthorized", "the health probe key is required");
           if (!healthProbe) throw fail(503, "unavailable", "the health probe is off");
           return send(res, 200, await healthProbe(await json(req)));
+        }
+        case "POST /v1/checkout": {
+          if (!jobTools || !codehost) throw fail(503, "unavailable", "repo-checkout is off");
+          let snap;
+          try { snap = jobTools.checkout(bearer(req), await json(req)); } catch (e) {
+            const j = e as { name?: string; status?: number; code?: string; message: string };
+            if (j.name === "JobToolError") throw fail(j.status!, j.code!, j.message);
+            throw e;
+          }
+          return await codehost(CODEHOST, "snapshot", snap, res);
         }
         case "POST /v1/jobtools/:cmd": {
           if (!jobTools) throw fail(503, "unavailable", "job tools are off");

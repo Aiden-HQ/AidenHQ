@@ -6,9 +6,7 @@ import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync, readFileSync
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { admit, dockerRunArgs, mcpBlock, stale, CODEX_CONFIG_SCRUB, checkoutRequest, archiveArgs, UNTAR_SCRIPT } from "../lib.mjs";
-import { host as localHost } from "../../../modules/codehost-local/src/host.mjs";
-import { ensureClone } from "../../../modules/codehost-local/src/git.mjs";
+import { admit, dockerRunArgs, mcpBlock, stale, CODEX_CONFIG_SCRUB, checkoutDest, UNTAR_SCRIPT } from "../lib.mjs";
 
 test("the box's Codex config lists only granted connections, through the gateway, keyed by the job token", () => {
   const conns = { apps: { tool_timeout_sec: 600 }, slack: { tool_timeout_sec: 300 }, paperclip_tasks: { tool_timeout_sec: 300 } };
@@ -49,46 +47,9 @@ test("admission: room → go; full → evict the least recently used idle box; a
   assert.deepEqual(stale(boxes, 10, 100), ["c"]);
 });
 
-test("repo-checkout: only the agents org, only a full SHA; the launcher picks the folder", () => {
-  const opts = { agentsOrg: "acme-agents", cacheRoot: "/w/repos" };
-  const sha = "a".repeat(40);
-  assert.deepEqual(checkoutRequest({ repo: "ACME-agents/roadmap-keeper", sha }, opts), { cache: "/w/repos/acme-agents/roadmap-keeper", sha, dest: "/workspace/repos/roadmap-keeper" });
-  for (const bad of [{ repo: "other-org/x", sha }, { repo: "acme-agents/..", sha }, { repo: "acme-agents/x", sha: "abc123" }, { repo: "acme-agents/x", sha: "main" }, { repo: "acme-agents/x/y", sha }]) {
-    assert.throws(() => checkoutRequest(bad, opts));
-  }
-  assert.throws(() => checkoutRequest({ repo: "acme-agents/x", sha }, { cacheRoot: "/w/repos" }), /agents org/);
-  // With codehost-local on, this server's repos are checked out from the runner's cache clone too.
-  const both = { agentsOrg: "acme-agents", agentsOrgs: ["acme-agents", "local"], cacheRoot: "/w/repos" };
-  assert.deepEqual(checkoutRequest({ repo: "local/expense-tracker", sha }, both), { cache: "/w/repos/local/expense-tracker", sha, dest: "/workspace/repos/expense-tracker" });
-  assert.throws(() => checkoutRequest({ repo: "local/expense-tracker", sha }, opts), /agents org/);
-});
-
-// The UI Reviewer on an instance with no GitHub: `repo-checkout local/<name> <sha>` places a change request's head from the
-// runner's cache clone of this server's bare repo (codehost-local), exactly where the launcher looks for it.
-test("repo-checkout local/<name> <sha>: a local change's head, from the runner's cache clone of the bare repo", async (t) => {
-  const dir = mkdtempSync(join(tmpdir(), "checkout-local-"));
-  t.after(() => rmSync(dir, { recursive: true, force: true }));
-  const h = localHost({ dataDir: join(dir, "data"), workDir: join(dir, "work") });
-  await h.createRepo("local/expense-tracker");
-  const work = join(dir, "clone");
-  const sh = (...a) => execFileSync("git", ["-C", work, "-c", "user.email=a@example.com", "-c", "user.name=a", "-c", "commit.gpgsign=false", ...a], { encoding: "utf8" }).trim();
-  execFileSync("git", ["clone", "-q", h.bare("local/expense-tracker"), work]);
-  sh("checkout", "-qb", "feat/page");
-  mkdirSync(join(work, "src"));
-  writeFileSync(join(work, "src/page.tsx"), "export const Page = () => null;\n");
-  sh("add", "-A"), sh("commit", "-qm", "feat: page");
-  await h.publish({ path: work, slug: "local/expense-tracker", sha: sh("rev-parse", "HEAD"), branch: "feat/page" });
-  const { number } = await h.openChange({ slug: "local/expense-tracker", branch: "feat/page", base: "main", title: "feat: page" });
-  const { head } = await h.readChange("local/expense-tracker", number);
-  // The runner refreshes its cache clone before filing the design review (main.mjs publishLocal); the launcher reads it.
-  const runnerWork = join(dir, "runner-work");
-  const cachePath = await ensureClone(runnerWork, { org: "local", name: "expense-tracker", slug: "local/expense-tracker" }, h.bare("local/expense-tracker"));
-  const { cache, sha, dest } = checkoutRequest({ repo: "local/expense-tracker", sha: head }, { agentsOrgs: ["local"], cacheRoot: join(runnerWork, "repos") });
-  assert.equal(cache, cachePath);
-  const box = join(dir, "box", dest);
-  execFileSync("sh", ["-c", UNTAR_SCRIPT, "sh", box], { input: execFileSync("git", archiveArgs(cache, sha)) });
-  assert.equal(readFileSync(join(box, "src/page.tsx"), "utf8"), "export const Page = () => null;\n");
-  assert.ok(existsSync(join(box, "README.md")));
+test("repo-checkout: the launcher picks the folder from the name alone", () => {
+  assert.equal(checkoutDest("acme-agents/roadmap-keeper.git"), "/workspace/repos/roadmap-keeper");
+  for (const bad of ["acme-agents/..", "acme-agents/x/y", "x", "../x"]) assert.throws(() => checkoutDest(bad));
 });
 
 // A design review passed on PNGs an earlier PR had committed under .aidenhq/out/: the checkout carried them as if they
@@ -105,17 +66,17 @@ test("repo-checkout's snapshot leaves out every .aidenhq/ folder", (t) => {
   execFileSync("git", ["-C", repo, "add", "-A"]);
   execFileSync("git", ["-C", repo, "-c", "user.email=a@example.com", "-c", "user.name=a", "-c", "commit.gpgsign=false", "commit", "-qm", "init"]);
   const sha = execFileSync("git", ["-C", repo, "rev-parse", "HEAD"], { encoding: "utf8" }).trim();
-  const tar = execFileSync("git", archiveArgs(repo, sha));
+  const tar = execFileSync("git", ["-C", repo, "archive", "--format=tar.gz", sha]);
   const dest = join(dir, "box", "repos", "repo");
   execFileSync("sh", ["-c", UNTAR_SCRIPT, "sh", dest], { input: tar });
   assert.ok(existsSync(join(dest, "src/app.ts")));
   assert.ok(!existsSync(join(dest, ".aidenhq")), "the top-level .aidenhq/ is left out");
   assert.ok(!existsSync(join(dest, "web/.aidenhq")), "and a nested one");
-  // Most repositories have no .aidenhq/ at all: the exclude matching nothing must not fail the archive.
+  // Most repositories have no .aidenhq/ at all: the cleanup matching nothing must not fail the untar.
   execFileSync("git", ["-C", repo, "rm", "-rq", ".aidenhq", "web/.aidenhq"]);
   execFileSync("git", ["-C", repo, "-c", "user.email=a@example.com", "-c", "user.name=a", "-c", "commit.gpgsign=false", "commit", "-qm", "plain"]);
   const plain = execFileSync("git", ["-C", repo, "rev-parse", "HEAD"], { encoding: "utf8" }).trim();
-  execFileSync("sh", ["-c", UNTAR_SCRIPT, "sh", dest], { input: execFileSync("git", archiveArgs(repo, plain)) });
+  execFileSync("sh", ["-c", UNTAR_SCRIPT, "sh", dest], { input: execFileSync("git", ["-C", repo, "archive", "--format=tar.gz", plain]) });
   assert.ok(existsSync(join(dest, "src/app.ts")));
 });
 

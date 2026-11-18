@@ -1,7 +1,7 @@
 #!/bin/sh
 # repo-checkout <org/name> [full commit sha]: a snapshot of that commit (default: the default branch) of an agents-org repo
 # at /workspace/repos/<name>.
-# The launcher places it from the cache clone (POST /repo on the gateway); no git credentials ever enter this box.
+# The launcher places the kernel's code host snapshot (POST /repo on the gateway); no git credentials ever enter this box.
 # Only agents with the repo-checkout role may use it.
 set -e
 [ $# -eq 1 ] || [ $# -eq 2 ] || { echo "usage: repo-checkout <org/name> [full 40-character commit sha]" >&2; exit 2; }
