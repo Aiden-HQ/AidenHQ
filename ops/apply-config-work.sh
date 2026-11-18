@@ -513,15 +513,20 @@ switchOver() {
     rm -f "$units/aidenhq-backup.service" "$units/aidenhq-backup.timer" && systemctl --user daemon-reload && echo "backup timer removed (no backup_repository)"
   fi
   # The monitoring module's host metrics (ops/host-metrics.sh): its timer runs while compile made the textfile directory
-  # (the module is on), and is removed once the module is off.
+  # (the module is on), and is removed once the module is off. Its last EnvironmentFile= names the checkout this apply
+  # applied, written every apply: an unchanged unit would otherwise keep running whatever ~/.config/aidenhq-checkout.env
+  # recorded at install time.
   if grep -q '^  monitoring-node-exporter:' compose.modules.yaml 2>/dev/null; then
+    local host_metrics_env="$HOME/.config/aidenhq-host-metrics.env"
+    mkdir -p "$(dirname "$host_metrics_env")"
+    printf 'AIDENHQ_DIR=%s\n' "$(realpath "$product_dir")" > "$host_metrics_env.tmp" && mv -f "$host_metrics_env.tmp" "$host_metrics_env"
     if ! cmp -s ops/units/aidenhq-host-metrics.service "$units/aidenhq-host-metrics.service" || ! cmp -s ops/units/aidenhq-host-metrics.timer "$units/aidenhq-host-metrics.timer"; then
       cp ops/units/aidenhq-host-metrics.service ops/units/aidenhq-host-metrics.timer "$units/" && systemctl --user daemon-reload && echo "host metrics timer installed/updated"
     fi
     systemctl --user enable --now --quiet aidenhq-host-metrics.timer
   elif [ -e "$units/aidenhq-host-metrics.timer" ]; then
     systemctl --user disable --now --quiet aidenhq-host-metrics.timer
-    rm -f "$units/aidenhq-host-metrics.service" "$units/aidenhq-host-metrics.timer" && systemctl --user daemon-reload && echo "host metrics timer removed (monitoring off)"
+    rm -f "$units/aidenhq-host-metrics.service" "$units/aidenhq-host-metrics.timer" "$HOME/.config/aidenhq-host-metrics.env" && systemctl --user daemon-reload && echo "host metrics timer removed (monitoring off)"
   fi
   # The CI runner units the config declares (the instances systemd has enabled) that are failed, and the ones a recorded
   # drain stopped (data/fleet-paused.json, modules/ci): running again after an apply, each start limit cleared before its
@@ -561,6 +566,11 @@ health() {
         [ -n "$name" ] || continue
         grep -qF -- "  FAIL  $name  " <<< "$out" && regress+="${regress:+, }$name"
       done <<< "$(sed -n 's/^  ok    //p' "$base")"
+      # The apply installs this unit itself: a mismatch after the switch is never excused by a baseline that had one too.
+      if grep -qF -- "  FAIL  host metrics timer runs the applied checkout  " <<< "$out"; then
+        HEALTH_WHY="$(grep -F -- "  FAIL  host metrics timer runs the applied checkout  " <<< "$out" | tail -1 | sed 's/^  FAIL  host metrics timer runs the applied checkout  //')"
+        return 1
+      fi
       [ -n "$regress" ] || break
       [ "$(date +%s)" -lt "$deadline" ] || { HEALTH_WHY="checks that passed before the apply fail now: $regress"; return 1; }
       echo "health: waiting on $regress"
