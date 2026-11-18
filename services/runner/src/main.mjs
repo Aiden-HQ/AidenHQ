@@ -2025,6 +2025,8 @@ function gradeDeps(issue) {
     deployHistory: async (name, sha) => (await boardApi.get(`/internal/grades/deploys/${name}/${sha}`)).deploys,
     view: (name, path) => boardApi.post("/internal/grades/view", { name, path }),
     assignee: issue.assigneeAgentId, // whose comments are the task agent's own (wordsEvidence)
+    // The task's creator: whose comments can amend the ask (wordsEvidence), an agent's id for an agent-authored task.
+    delegator: { agentId: issue.createdByAgentId, userId: issue.createdByUserId },
     comments,
     attachments: () => pc.attachments(issue.id),
     content: (id) => pc.attachmentContent(id),
