@@ -58,7 +58,7 @@ async function setup(t, { routes = () => undefined } = {}) {
   const handle = createService({
     key: "ch-key", kernelUrl: kernel.url, cacheDir: join(root, "cache"), tasksDir: join(root, "tasks"), app, gh,
     remoteUrl: (slug) => join(root, "github", `${slug}.git`), agentsOrg: "acme-agents", instanceRepo: "acme-agents/aidenhq-instance",
-    productRepo: "acme/aidenhq", modulesRepo: "acme/aidenhq-modules", landsPlatformRepos: false
+    productRepo: "acme/aidenhq", landsPlatformRepos: false
   });
   const svc = await listen((req, res) => void handle(req, res));
   t.after(() => { kernel.s.close(); svc.s.close(); });
@@ -189,13 +189,12 @@ test("kernel.apply's land: the instance commit is read and landed on main once, 
   const read = await call("/aidenhq/v1/apply/read", src);
   assert.deepEqual([read.json.files.sort(), read.json.texts], [["agents/chaser/agent.yaml", "instance.yaml"], { base: { "instance.yaml": "product: x\n" }, head: { "agents/chaser/agent.yaml": "trial: true\n", "instance.yaml": "product: y\n" } }]);
   assert.match(read.json.diff, /\+product: y/);
-  // The land's reviewer-eval gate: the kernel names the official modules' pin on both sides, or nothing lands; a marketplace
-  // that appears, or moves to another repository, is refused before anything is pushed.
+  // The kernel names the official modules' pin on both sides, or nothing lands; a marketplace pin that appears or moves is
+  // refused before anything is pushed (the official modules come with the product pin).
   assert.equal((await call("/aidenhq/v1/apply/land", src)).status, 400, "no pin named: refused");
   const pinAt = (repo, c) => ({ repo, sha: c.repeat(40) });
   assert.equal((await call("/aidenhq/v1/apply/land", { ...src, official: { from: null, to: pinAt("acme/aidenhq-modules", "a") } })).status, 422);
-  const moved = await call("/aidenhq/v1/apply/land", { ...src, official: { from: pinAt("acme/aidenhq-modules", "a"), to: pinAt("evil/modules", "a") } });
-  assert.deepEqual([moved.status, /not landed: .*evil\/modules/.test(moved.json.error)], [409, true]);
+  assert.equal((await call("/aidenhq/v1/apply/land", { ...src, official: { from: pinAt("acme/aidenhq-modules", "a"), to: pinAt("evil/modules", "a") } })).status, 422);
   assert.notEqual(sh(origin, "rev-parse", "main"), sha, "nothing was pushed");
   assert.deepEqual((await call("/aidenhq/v1/apply/land", { ...src, ...NONE })).json, { landed: sha });
   assert.equal(sh(origin, "rev-parse", "main"), sha);

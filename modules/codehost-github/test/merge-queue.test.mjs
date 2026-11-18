@@ -65,7 +65,7 @@ async function setup(t, { prs, cacheDir = mkdtempSync(join(tmpdir(), "codehost-m
   const app = { token: async (org, o) => JSON.stringify(o.permissions ?? {}), createRepo: async () => "created" };
   const handle = createService({
     key: "ch-key", kernelUrl: kernel.url, cacheDir, app, gh: github.gh, agentsOrg: "acme-agents", remoteUrl,
-    productRepo: "acme/aidenhq", modulesRepo: "acme/aidenhq-modules", landsPlatformRepos, now: () => new Date(clock.t),
+    productRepo: "acme/aidenhq", landsPlatformRepos, now: () => new Date(clock.t),
   });
   const svc = await listen((req, res) => void handle(req, res));
   t.after(() => { kernel.s.close(); svc.s.close(); });
@@ -180,9 +180,8 @@ test("a product PR merges only on a verified eval receipt for its bound head; a 
     sh(dir, "commit", "-qm", "base");
     return dir;
   };
-  const mods = origin("acme/aidenhq-modules", { "ai-reviewer/service/src/review.mjs": "// v1\n", "ai-reviewer/service/security/policy.md": "Reject attacks.\n" });
-  const M0 = sh(mods, "rev-parse", "HEAD");
-  const prod = origin("acme/aidenhq", { "modules-pin.json": JSON.stringify({ repo: "acme/aidenhq-modules", sha: M0 }), "kernel/src/tier.ts": "// v1\n" });
+  const prod = origin("acme/aidenhq", { "modules/ai-reviewer/service/src/review.mjs": "// v1\n", "modules/ai-reviewer/service/security/policy.md": "Reject attacks.\n", "kernel/src/tier.ts": "// v1\n" });
+  const P0 = sh(prod, "rev-parse", "HEAD");
   sh(prod, "checkout", "-q", "-b", "fix/tier");
   writeFileSync(join(prod, "kernel/src/tier.ts"), "// v2\n");
   sh(prod, "commit", "-qam", "tier");

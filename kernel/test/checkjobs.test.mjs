@@ -13,7 +13,7 @@ import { mintToken, verifyToken } from "../src/gateway/token.ts";
 import { createIdentity } from "../src/identity.ts";
 
 const A = "a".repeat(40), B = "b".repeat(40), J = "1".repeat(40), S = "2".repeat(40);
-const CASES = "ai-reviewer/test/reviewer-cases";
+const CASES = "modules/ai-reviewer/test/reviewer-cases";
 
 function setup(trees, judge = () => ({ failed: [] })) {
   const dir = mkdtempSync(join(tmpdir(), "checks-"));
@@ -23,7 +23,7 @@ function setup(trees, judge = () => ({ failed: [] })) {
       runs.push(o);
       if (o.argv.includes("scripts/reviewer-eval.mjs")) {
         const cases = readdirSync(join(o.workspace, CASES)).sort();
-        const script = readFileSync(join(o.workspace, "ai-reviewer/scripts/reviewer-eval.mjs"), "utf8");
+        const script = readFileSync(join(o.workspace, "modules/ai-reviewer/scripts/reviewer-eval.mjs"), "utf8");
         const failed = judge(cases, runs.filter((r) => r.argv.includes("scripts/reviewer-eval.mjs")).length).failed;
         o.seen = { total: cases.length, script, cases: Object.fromEntries(cases.map((c) => [c, readFileSync(join(o.workspace, CASES, c), "utf8")])) };
         writeFileSync(join(o.out, "result.json"), JSON.stringify({ total: cases.length, passed: cases.length - failed.length, failed }));
@@ -80,13 +80,13 @@ test("checks: whether a fast check is due is the base's to say, and a check that
 
 test("checks: the eval runs by the judging rules and its receipt binds judge and policy", async () => {
   const ok = (expect) => JSON.stringify({ expect });
-  const base = { "ai-reviewer/scripts/reviewer-eval.mjs": "JUDGE", "ai-reviewer/test/case-pad.mjs": "pad" };
+  const base = { "modules/ai-reviewer/scripts/reviewer-eval.mjs": "JUDGE", "modules/ai-reviewer/test/case-pad.mjs": "pad" };
   for (let i = 0; i < 20; i++) base[`${CASES}/c${i}.json`] = ok(i ? "approve" : "reject");
-  const subject = { ...base, "ai-reviewer/scripts/reviewer-eval.mjs": "FORGED", [`${CASES}/c0.json`]: ok("approve"), [`${CASES}/new.json`]: ok("reject") };
+  const subject = { ...base, "modules/ai-reviewer/scripts/reviewer-eval.mjs": "FORGED", [`${CASES}/c0.json`]: ok("approve"), [`${CASES}/new.json`]: ok("reject") };
   delete subject[`${CASES}/c1.json`];
   // First run: an added case fails; the one re-run passes it.
   const { checks, runs, done } = setup({ [J]: base, [S]: subject }, (cases, n) => ({ failed: n === 1 ? [{ file: "new.json", got: "approve" }] : [] }));
-  const spec = { repo: "acme/modules", judge_commit: J, subject_commit: S, cases_from: S, policy_hash: "abc1234" };
+  const spec = { repo: "acme/aidenhq", judge_commit: J, subject_commit: S, cases_from: S, policy_hash: "abc1234" };
   const v = await done(checks.start("codehost-github", { repo: "acme/product", head: A, run: "eval", spec }));
   assert.equal(v.receipt.verdict, "pass", v.receipt.summary);
   const evals = runs.filter((r) => r.argv.includes("scripts/reviewer-eval.mjs"));

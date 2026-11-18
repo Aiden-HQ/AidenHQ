@@ -35,7 +35,7 @@ import type { DatabaseSync } from "node:sqlite";
 
 export const RUNS = ["fast", "tests", "eval"] as const;
 export type Run = (typeof RUNS)[number];
-/** The eval's spec (the code host builds it): the modules repo and its commits under test, judging and supplying the change's cases. */
+/** The eval's spec (the code host builds it): the product repo and its commits under test, judging and supplying the change's cases. */
 export type EvalSpec = { repo: string; judge_commit: string; subject_commit: string; cases_from: string; policy_hash: string };
 export type Receipt = { v: 1; check: string; repo: string; head: string; run: Run; judge: string | null; policy: string | null; hash: string; verdict: "pass" | "fail"; ran: boolean; summary: string; at: string; sig: string };
 /** What a receipt must be bound to for the caller: the eval's judge and policy too. `none`: the caller's policy accepts a fast
@@ -102,8 +102,8 @@ const ARGV: Record<Run, string[]> = {
 };
 /** What a failed run's summary names it by. */
 const TITLE: Record<Run, string> = { fast: `the fast check (\`${FAST_CHECK}\`)`, tests: "the secret scan, supply-chain checks, lint, tests and build", eval: "the reviewer eval" };
-// Paths in the official modules repo (its modules sit at its root).
-const MODULE = "ai-reviewer";
+// Paths in the product repo (the official modules are its modules/).
+const MODULE = "modules/ai-reviewer";
 const CASES = `${MODULE}/test/reviewer-cases`;
 const JUDGE = [`${MODULE}/scripts/reviewer-eval.mjs`, `${MODULE}/test/case-pad.mjs`, `${MODULE}/scripts/pass-rule.mjs`];
 const EXPECT = ["expect", "expect_code", "expect_second", "expect_flag", "expect_nit"] as const;

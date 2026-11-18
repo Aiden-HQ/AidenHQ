@@ -13,8 +13,8 @@
 //
 // The instance's land for kernel.apply (the kernel's executor, with this service's executor key): POST /aidenhq/v1/apply/read
 // {repo, sha, branch, workspace?} → what the kernel plans and tiers the commit on (its files, texts, diff and trial edits against
-// the instance's main); /apply/land → the commit on main, never forced, once (a commit main already has is a no-op), and only
-// on a passing reviewer-eval receipt when it moves the official modules to new reviewer code.
+// the instance's main); /apply/land → the commit on main, never forced, once (a commit main already has is a no-op), and never
+// one that moves an `aidenhq` marketplace pin (the official modules come with the product pin).
 // The commit comes from this service's own copy when it made it, else from the task's workspace. The instance repo only.
 import { execFile, spawn } from "node:child_process";
 import { timingSafeEqual } from "node:crypto";
@@ -286,10 +286,10 @@ export function createService(o: Options) {
     if (!r.ok) throw new Error(`the kernel's ${path.split("/").slice(0, 3).join("/")} answered ${r.status}: ${String(j?.error?.message ?? j?.error ?? "").slice(0, 200)}`);
     return j;
   }
-  // The product's and the official modules repo's PRs that bring the AI reviewer's own code merge only on a passing
+  // The product's PRs that bring the AI reviewer's own code merge only on a passing
   // reviewer-eval receipt for their head (evalgate.ts; the eval is a kernel check job).
   const evalGate = createEvalGate({
-    productRepo: o.productRepo, modulesRepo: o.modulesRepo, dir: join(o.cacheDir, "merges"), kernel, log,
+    productRepo: o.productRepo, dir: join(o.cacheDir, "merges"), kernel, log,
     fetch: async (repo, ref) => fetchRemote(slugOf(repo), ref),
     git: (dir, args) => git(dir, args),
     defaultBranch: async (repo) => String((await api("GET", `/repos/${slugOf(repo).slug}`, await tokenFor(slugOf(repo), READ))).default_branch ?? "main"),
@@ -403,17 +403,14 @@ export function createService(o: Options) {
     // Already on main (a land that ran before a restart): main is what applies, and it contains this commit.
     if (c.base === c.sha) return { landed: c.main, already: true };
     if (c.base !== c.main) throw fail(409, `the instance's ${c.def} moved on since this commit's base; it needs a rebase and a new approval`);
-    // The one choke point for new reviewer code reaching this host through an apply: any move of the official modules' pin
-    // (repository or sha) needs a passing reviewer-eval receipt (evalgate.ts bump), whoever filed the apply. The kernel reads
-    // the pin structurally from both sides (apply.ts officialMove) and names it; without it nothing lands.
+    // The official modules are the product's modules/: their reviewer code reaches this host only with the product pin, whose
+    // reviewer changes merged on a passing reviewer-eval receipt (evalgate.ts). An `aidenhq` marketplace pin an apply moves
+    // would bring reviewer code past that gate, so it never lands. The kernel reads the pin structurally from both sides
+    // (apply.ts officialMove) and names it; without it nothing lands.
     const pin = (x: any) => x === null || (x && typeof x.repo === "string" && SLUG.test(x.repo) && /^[0-9a-f]{40}$/.test(String(x.sha)));
     const off = b.official;
     if (!off || !pin(off.from) || !pin(off.to)) throw fail(400, "name the official modules' pin on both sides (official: {from, to}, each {repo, sha} or null)");
-    if (JSON.stringify(off.from) !== JSON.stringify(off.to)) {
-      if (!off.from || !off.to) throw fail(422, "the official modules' marketplace appears or disappears: the reviewer-eval gate can't judge it");
-      const gate = await evalGate.bump(off.from, off.to, "this apply");
-      if (gate) throw fail(409, `not landed: ${"wait" in gate ? gate.wait : gate.stop}`);
-    }
+    if (JSON.stringify(off.from) !== JSON.stringify(off.to)) throw fail(422, "not landed: it moves an `aidenhq` marketplace pin; the official modules come with the product pin");
     await git(c.dir, ["push", "--quiet", "--no-verify", remote(c.s.slug), `${c.sha}:refs/heads/${c.def}`], await tokenFor(c.s, PUSH));
     log("instance landed", { repo: c.s.slug, sha: c.sha });
     return { landed: c.sha };
@@ -519,10 +516,10 @@ export function createService(o: Options) {
       rmSync(join(index, ".."), { recursive: true, force: true });
     }
   }
-  const train = o.productRepo && o.instanceRepo && o.modulesRepo ? createReleaseTrain({
-    dir: join(o.cacheDir, "release"), productRepo: o.productRepo, instanceRepo: o.instanceRepo, modulesRepo: o.modulesRepo, windowMinutes: o.releaseWindowMinutes ?? 15, kernel, log, now: o.now,
+  const train = o.productRepo && o.instanceRepo ? createReleaseTrain({
+    dir: join(o.cacheDir, "release"), productRepo: o.productRepo, instanceRepo: o.instanceRepo, windowMinutes: o.releaseWindowMinutes ?? 15, kernel, log, now: o.now,
     commit: trainCommit,
-    evalBump: (from, to) => evalGate.bump({ repo: o.modulesRepo, sha: from }, { repo: o.modulesRepo, sha: to }, "the release bump"),
+    evalBump: (from, to) => evalGate.bump(from, to),
     github: {
       async tip(repo) {
         const s = slugOf(repo);
@@ -532,9 +529,9 @@ export function createService(o: Options) {
         const checks = await checksAt(s, tip, token);
         return { tip: /^[0-9a-f]{40}$/.test(tip) ? tip : undefined, green: checks.length > 0 && checks.every((c) => c.ok && !c.pending) };
       },
-      async text(repo, path, at) {
+      async text(repo, path) {
         const s = slugOf(repo);
-        const ref = at ?? String((await api("GET", `/repos/${s.slug}`, await tokenFor(s, READ))).default_branch ?? "main");
+        const ref = String((await api("GET", `/repos/${s.slug}`, await tokenFor(s, READ))).default_branch ?? "main");
         const { dir, sha } = await fetchRemote(s, ref);
         return fileAt(dir, sha, path);
       },
