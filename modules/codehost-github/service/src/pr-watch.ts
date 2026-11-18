@@ -8,6 +8,7 @@
 // reported, never a rebase), closing the PR of a cancelled task, rebaseInCode, and the parked-branch refusal (MAX_REJECTS).
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { namedChecks } from "./aidenhq-sdk/checks.ts";
 
 type Json = any;
 type Gh = (method: string, path: string, token: string, body?: unknown) => Promise<{ status: number; body: any }>;
@@ -30,15 +31,7 @@ const OPEN_PRS_QUERY = `query($owner: String!, $repo: String!) {
   }
 }`;
 
-// The checks as engineering/src/product-prs.ts reads a rollup (advisory checks, the runner's list, are none here).
 const rollupOf = (pr: Json) => pr.commits?.nodes?.[0]?.commit?.statusCheckRollup;
-function namedChecks(rollup: Json): { name: string; ok: boolean; pending: boolean }[] {
-  const pass = new Set(["SUCCESS", "NEUTRAL", "SKIPPED"]);
-  return (rollup?.contexts?.nodes ?? [])
-    .map((n: Json) => ({ name: n.name ?? n.context, status: n.__typename === "CheckRun" ? (n.status === "COMPLETED" ? n.conclusion : "PENDING") : n.state }))
-    .filter((c: Json) => c.name)
-    .map((c: Json) => ({ name: c.name, ok: pass.has(c.status), pending: ["PENDING", "EXPECTED", null, undefined].includes(c.status) }));
-}
 const isDependabot = (pr: Json) => pr.author?.__typename === "Bot" && /^(app\/)?dependabot(\[bot\])?$/.test(pr.author?.login ?? "") && pr.isCrossRepository === false;
 function dependabotDue(pr: Json) {
   if (!isDependabot(pr)) return false;
