@@ -1,0 +1,51 @@
+/* The agent page's own layout (AgentPage.tsx); its parts are the shared primitives in ui/ui.css. */
+.page.wide.agp { max-width: none; padding: clamp(16px, 2vw, 32px) clamp(16px, 3vw, 56px) 56px; gap: 18px; }
+.agp-ctx { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); text-decoration: none; }
+a.agp-ctx:hover { color: var(--text); text-decoration: underline; }
+.agp-note { margin: 0; font-size: 13px; color: var(--muted); }
+
+/* Tabs: a crisp underline in the agent's hue. */
+.agp-tabs { display: flex; gap: 22px; border-bottom: 1px solid var(--border); overflow-x: auto; scrollbar-width: none; }
+.agp-tabs button { position: relative; border: 0; background: none; padding: 8px 0 10px; font-size: 14px; color: var(--muted); cursor: pointer; white-space: nowrap; }
+.agp-tabs button:hover { color: var(--text); }
+.agp-tabs button[aria-selected="true"] { color: var(--text); font-weight: 600; }
+.agp-tabs button[aria-selected="true"]::after { content: ""; position: absolute; left: 0; right: 0; bottom: -1px; height: 2px; border-radius: 2px; background: var(--hue, var(--accent)); }
+.agp-tabs button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 4px; }
+
+/* Overview: the work on the left, the week in a rail on the right; one column on narrow screens. */
+.agp-grid { display: grid; grid-template-columns: minmax(0, 1fr) clamp(300px, 24vw, 520px); gap: clamp(20px, 2.4vw, 44px); align-items: start; }
+.agp-main { display: grid; gap: 26px; min-width: 0; }
+.agp-search { width: clamp(160px, 16vw, 260px); padding: 5px 10px; border-radius: 8px; border: 1px solid var(--border-strong); background: var(--surface); font-size: 13px; outline: none; transition: border-color var(--fast) var(--ease), box-shadow var(--fast) var(--ease); }
+.agp-search:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+.agp-more { justify-self: start; }
+.agp-rail { position: sticky; top: 16px; }
+.agp-week { display: grid; gap: 22px; padding: 18px; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); box-shadow: var(--shadow); }
+.agp-counts { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; padding-top: 16px; border-top: 1px solid var(--border); }
+.agp-counts .ui-stat-value { font-size: 20px; }
+@media (max-width: 960px) {
+  .agp-grid { grid-template-columns: minmax(0, 1fr); }
+  .agp-rail { position: static; }
+  .agp-week { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .agp-counts { grid-column: 1 / -1; }
+}
+@media (max-width: 560px) {
+  .agp-week { grid-template-columns: minmax(0, 1fr); }
+  .agp-search { flex: 1; width: auto; min-width: 0; }
+  .agp-main .ui-section-aside { margin-left: 0; width: 100%; }
+}
+
+.agp-dialog p { margin: 0 0 16px; color: var(--muted); }
+.agp-dialog-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+.agp-dialog-actions .spacer { flex: 1; }
+
+/* The Handbook and Settings tabs keep their own markup: spacing and headings match the page. */
+.agp :where(section:not(.ui-section)) { display: grid; gap: 8px; align-content: start; }
+.agp h4 { margin: 0; font-size: 15px; font-weight: 600; text-transform: none; letter-spacing: 0; color: var(--text); }
+.agp-details { display: flex; flex-wrap: wrap; gap: 6px 28px; margin: 0; font-size: 13px; }
+.agp-details div { display: flex; gap: 8px; }
+.agp-details dt { color: var(--muted); }
+.agp-details dd { margin: 0; }
+/* Settings forms keep a readable width: a value at the far end of a 2000px row loses its label. */
+.agp .st-embedded { gap: 22px; max-width: 1100px; }
+.agp .st-group-head h2 { font-size: 15px; font-weight: 600; }
+.agp .st-group { margin-bottom: 14px; }
