@@ -132,6 +132,21 @@ test("a box's Paperclip credential survives a launcher restart (dump/load) and g
   assert.equal(afterRestart.get("box1"), undefined);
 });
 
+test("a credential goes when its box's token does, expiry included", () => {
+  const creds = new Creds();
+  const tokens = new Tokens({ onRevoke: (container) => creds.delete(container) });
+  const token = tokens.issue("box1", "agent-1", 0);
+  creds.set("box1", { apiUrl: "http://127.0.0.1:4567", apiKey: "bridge" });
+  assert.ok(creds.get("box1"));
+  assert.equal(tokens.whoami(token, 7 * 3600_000), undefined); // expired: whoami revokes
+  assert.equal(creds.get("box1"), undefined);
+  // A new token for the same name (a resumed box, or a reused name) takes the old credential with it.
+  tokens.issue("box1", "agent-2");
+  creds.set("box1", { apiUrl: "http://127.0.0.1:4567", apiKey: "bridge-2" });
+  tokens.revoke("box1");
+  assert.equal(creds.get("box1"), undefined);
+});
+
 test("the cp script makes one control-plane call through the box's bridge with the key from stdin, never argv", async () => {
   const got = [];
   const srv = createServer((req, res) => { let b = ""; req.on("data", (d) => (b += d)); req.on("end", () => { got.push({ method: req.method, url: req.url, auth: req.headers.authorization, body: JSON.parse(b) }); res.writeHead(201, { "content-type": "application/json" }).end('{"id":"c1"}'); }); });

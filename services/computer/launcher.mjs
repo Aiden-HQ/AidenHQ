@@ -104,17 +104,19 @@ const MOUNTS = [
 const log = (...a) => console.log(new Date().toISOString(), ...a);
 const DEBUG = env("AIDENHQ_COMPUTERS_DEBUG") === "1"; // log every exec, with its env keys (never values)
 const readJson = (f) => JSON.parse(readFileSync(f, "utf8"));
-const tokens = new Tokens();
+// The boxes' Paperclip credentials, saved like the tokens: an agent's turn is one detached exec that outlives a launcher
+// restart, so /cp must still find the credential the turn started with.
+const creds = new Creds();
+const credsFile = path.join(stateDir, "run-creds.json");
+try { creds.load(readJson(credsFile)); } catch {}
+const saveCreds = () => { try { writeFileSync(`${credsFile}.tmp`, JSON.stringify(creds.dump()), { mode: 0o600 }); renameSync(`${credsFile}.tmp`, credsFile); } catch (e) { log("couldn't save run credentials:", e.message); } };
+// A container's credential goes when its token does, expiry included: a later box reusing the name never inherits one.
+const tokens = new Tokens({ onRevoke: (container) => { if (creds.delete(container)) saveCreds(); } });
 // Run tokens survive a launcher restart (a running box keeps its token in its env): a 0600 file, rewritten on every change.
 const tokensFile = path.join(stateDir, "run-tokens.json");
 try { tokens.load(readJson(tokensFile)); } catch {}
 // Written whole then renamed, so a crash never leaves a half file.
 const saveTokens = () => { try { writeFileSync(`${tokensFile}.tmp`, JSON.stringify(tokens.dump()), { mode: 0o600 }); renameSync(`${tokensFile}.tmp`, tokensFile); } catch (e) { log("couldn't save run tokens:", e.message); } };
-// The boxes' Paperclip credentials, saved the same way: an agent's turn outlives a launcher restart, so /cp must keep answering.
-const creds = new Creds();
-const credsFile = path.join(stateDir, "run-creds.json");
-try { creds.load(readJson(credsFile)); } catch {}
-const saveCreds = () => { try { writeFileSync(`${credsFile}.tmp`, JSON.stringify(creds.dump()), { mode: 0o600 }); renameSync(`${credsFile}.tmp`, credsFile); } catch (e) { log("couldn't save run credentials:", e.message); } };
 const boxes = new Map(); // container → { agentId, lastUsed, busy, cred? } (cred: the current run's Paperclip credential, for /cp)
 // Runner jobs' records (lease, task, helper binding), saved the same way: a restart reloads them before it admits or reaps.
 const jobs = new Jobs();
@@ -150,7 +152,6 @@ const pluginBox = (container) => { if (jobs.has(container)) throw fail(404, `not
 
 async function destroy(name, why) {
   tokens.revoke(name); saveTokens();
-  creds.delete(name); saveCreds();
   boxes.delete(name);
   if (jobs.delete(name)) saveJobs();
   rmSync(path.join(jobEnvDir, `${name}.env`), { force: true });
@@ -243,7 +244,6 @@ const control = {
     const b = boxes.get(container);
     b.lastUsed = Date.now();
     delete b.cred;
-    creds.delete(container); saveCreds(); // a resumed box gets a new token, and its next exec a new credential
     const token = tokens.issue(container, b.agentId); saveTokens();
     await writeRunToken(container, token);
     return { container };
@@ -303,7 +303,6 @@ const control = {
     if (!ours(container)) throw fail(400, "not a computer");
     pluginBox(container);
     tokens.revoke(container); saveTokens();
-    creds.delete(container); saveCreds();
     if (!d) await clearRunToken(container);
     if (boxes.has(container)) delete boxes.get(container).cred;
     if (d) await destroy(container, "released");

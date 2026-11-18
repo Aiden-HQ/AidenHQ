@@ -24,6 +24,9 @@ export const CLEAR_RUN_TOKEN_SCRIPT = `rm -f ${RUN_TOKEN_PATH}`;
 export class Tokens {
   #byToken = new Map(); // token → { container, agentId, at, runId?, issueId? }
   #byContainer = new Map(); // container → token
+  #onRevoke;
+  /** `onRevoke(container)` runs whenever a container's token goes: expiry included, so nothing keyed by the token outlives it. */
+  constructor({ onRevoke } = {}) { this.#onRevoke = onRevoke; }
   issue(container, agentId, now = Date.now()) {
     this.revoke(container);
     const token = RUN_TOKEN_PREFIX + randomBytes(32).toString("base64url");
@@ -35,6 +38,7 @@ export class Tokens {
     const t = this.#byContainer.get(container);
     if (t) this.#byToken.delete(t);
     this.#byContainer.delete(container);
+    if (t) this.#onRevoke?.(container);
   }
   current(container) { return this.#byContainer.get(container); }
   /** The container's current token names this Paperclip run and task; true when that changed (save the tokens). */
