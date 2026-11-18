@@ -166,7 +166,9 @@ export function moveLedger(db: DatabaseSync, legacy?: string): number {
     db.exec("BEGIN IMMEDIATE");
     let n = 0;
     // Columns by name, whatever order the old file's tables have.
-    const cols = (t: string) => (db.prepare(`PRAGMA main.table_info(${t})`).all() as { name: string }[]).map((c) => c.name).join(", ");
+    // Only the columns both have: columns added since (owner, gen) stay empty on the moved rows.
+    const names = (s: string, t: string) => (db.prepare(`PRAGMA ${s}.table_info(${t})`).all() as { name: string }[]).map((c) => c.name);
+    const cols = (t: string) => { const old = new Set(names("legacy", t)); return names("main", t).filter((c) => old.has(c)).join(", "); };
     for (const t of ["calls", "runs", "caps", "filed", "ci_tokens"]) if (has.has(t)) n += Number(db.prepare(`INSERT OR IGNORE INTO main.${t} (${cols(t)}) SELECT ${cols(t)} FROM legacy.${t}`).run().changes);
     db.exec("COMMIT");
     return n;
