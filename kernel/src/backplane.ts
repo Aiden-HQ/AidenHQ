@@ -158,9 +158,10 @@ async function json(req: IncomingMessage, max = 1_000_000): Promise<any> {
   try { return JSON.parse(Buffer.concat(chunks).toString("utf8") || "{}"); } catch { throw fail(400, "bad_request", "the body must be JSON"); }
 }
 
-/** GET /v1/work's reads, by query: ?job=, ?task=, ?agent=, ?since=[&to=], or what runs now (work.ts). */
+/** GET /v1/work's reads, by query: ?job=, ?task=, ?agent=, ?since=[&to=], ?generations=1, or what runs now (work.ts). */
 function workRead(work: Work, p: URLSearchParams) {
   const [job, task, agent, since] = [p.get("job"), p.get("task"), p.get("agent"), p.get("since")];
+  if (p.get("generations")) return work.generations();
   if (job) return work.job(job.slice(0, 40)) ?? (() => { throw fail(404, "not_found", `no job ${job.slice(0, 40)}`); })();
   if (agent) return work.agent(agent.slice(0, 100));
   if (since) {

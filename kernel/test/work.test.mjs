@@ -2,7 +2,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import http from "node:http";
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createBackplane } from "../src/backplane.ts";
@@ -52,6 +52,16 @@ test("the board reads GET /v1/work with its key, one job included, and nothing e
   assert.equal((await get("/v1/work/metrics")).status, 401, "the metrics are a module's");
   assert.equal((await fetch(`http://127.0.0.1:${server.address().port}/v1/work/grader-token`, { method: "POST", headers: { authorization: "Bearer board-key" }, body: "{}" })).status, 401, "so is a grader token");
   assert.equal((await get("/v1/work", "wrong")).status, 401);
+});
+
+test("the host's apply generations: the pin skips a refused apply, and a missing file is an error", async () => {
+  const { fleetGenerations } = await import("../src/generations.ts");
+  const dir = mkdtempSync(join(tmpdir(), "gens-"));
+  const file = join(dir, "generations.jsonl");
+  assert.match(fleetGenerations(file).error, /cannot read/);
+  writeFileSync(file, [{ n: 1, product: "aaa", health: "good" }, { n: 2, product: "bbb", health: "refused", reason: "validation" }].map((r) => JSON.stringify(r)).join("\n") + "\n");
+  const g = fleetGenerations(file);
+  assert.deepEqual([g.pin, g.generations.map((x) => x.n), g.generations[0].reason], ["aaa", [2, 1], "validation"]);
 });
 
 test("an agent's jobs and the records and billed cost since a time are reads of the role", async (t) => {

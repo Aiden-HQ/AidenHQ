@@ -7,15 +7,17 @@
 //   GET /v1/work?agent=<id>  an agent's last 50 jobs (newest first), each with how it ended: { jobs }
 //   GET /v1/work?since=<iso>[&to=<iso>]  the records filed or decided since then (tier 1 and 2) and the billed cost per agent and
 //                            UTC day from the gateway ledger: { records, usage } (the Fleet Steward's scorecards)
+//   GET /v1/work?generations=1  the host's apply generations: the current product pin and the last 20 applies (generations.ts)
 //   GET /v1/work/metrics     Prometheus text (aidenhq_kernel_jobs_*) over the same rows
 import type { DatabaseSync } from "node:sqlite";
+import { fleetGenerations } from "./generations.ts";
 import type { Records } from "./records.ts";
 
 /** Job duration buckets, seconds: a quick reply to a two-hour build. */
 const BUCKETS = [60, 300, 900, 1800, 3600, 7200, Infinity];
 const iso = (ms: unknown) => (typeof ms === "number" && ms > 0 ? new Date(ms).toISOString() : null);
 
-export function createWork({ db, records }: { db: DatabaseSync; records: Records }) {
+export function createWork({ db, records, generationsFile = "" }: { db: DatabaseSync; records: Records; generationsFile?: string }) {
   const rows = (sql: string, ...args: (string | number)[]) => db.prepare(sql).all(...args) as Record<string, any>[];
   const job = (r: Record<string, any>) => ({ id: r.id, agent: r.agent, task: r.task, engine: r.engine, state: r.state, started_at: iso(r.at), ended_at: iso(r.ended), session: r.session ?? null });
   return {
@@ -38,6 +40,7 @@ export function createWork({ db, records }: { db: DatabaseSync; records: Records
       const usage = rows("SELECT agent_id AS agent, day, COALESCE(SUM(cost_usd), 0) AS cost_usd, COUNT(*) AS calls, COUNT(cost_usd) AS priced FROM calls WHERE at >= ? AND at < ? GROUP BY agent_id, day", from, to);
       return { records: recs, usage };
     },
+    generations: () => fleetGenerations(generationsFile),
     job(id: string) {
       const r = rows("SELECT * FROM jobs WHERE id = ?", id)[0];
       if (!r) return null;
