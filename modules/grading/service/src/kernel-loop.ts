@@ -2,8 +2,7 @@
 // task's jobs, comments, agents and verdict moves, run once a minute by main.ts. A PR's facts and diff are read from GitHub with a
 // token the kernel's broker mints (github.ts); its PRs are named by the codehost-github pr and merge records on the task (/v1/work):
 // by what their executor wrote in their outcome, never by the args an agent filed.
-// Evidence the module cannot read (an app's status, its deploys, its rendered view: apps-mcp's internal API is not reachable from
-// here and its token can deploy) throws "not available", so its row stays and is retried, never passed or judged on a guess.
+// An app's status, deploys and rendered view are read from apps-mcp with this module's own token (role apps.read, apps-evidence.ts).
 import type { DatabaseSync } from "node:sqlite";
 import { createGradeLoop } from "./loop.mjs";
 import { GRADE_SCHEMA, escalationFor, gather, grade, gradeNote, template } from "./grader/grade.ts";
@@ -11,6 +10,7 @@ import { findPrs, stripHidden } from "./grader/compat.ts";
 import { openRouterAsk } from "./aidenhq-sdk/judge.ts";
 import { taskPrRows } from "./grader/evidence.ts";
 import { createGithub } from "./github.ts";
+import { appsEvidence, type AppsCall } from "./apps-evidence.ts";
 
 type Json = any;
 /** The kernel as the grading loop needs it: its calls with this module's token (kernel.cp-read, kernel.work-read, kernel.grader, kernel.wake). */
@@ -35,8 +35,8 @@ export function verifiedMerges(r: Json): { repo: string; number: number; head: s
     .map((p: Json) => ({ repo: p.repo, number: p.number, head: p.head, sha: p.sha }));
 }
 
-export function createKernelGradeLoop({ db, runner, due, kernel, kernelBytes, gatewayUrl, github = createGithub({ kernel }), log }: {
-  db: DatabaseSync; runner: Runner; due: () => Json; kernel: KernelCall; /** A kernel GET's raw bytes (the attachment read). */ kernelBytes: (path: string) => Promise<Buffer>; gatewayUrl: string;
+export function createKernelGradeLoop({ db, runner, due, kernel, kernelBytes, apps, gatewayUrl, github = createGithub({ kernel }), log }: {
+  db: DatabaseSync; runner: Runner; due: () => Json; kernel: KernelCall; /** apps-mcp's grader reads (apps-evidence.ts); a fake in tests. */ apps: AppsCall; /** A kernel GET's raw bytes (the attachment read). */ kernelBytes: (path: string) => Promise<Buffer>; gatewayUrl: string;
   /** A PR's facts and diff (github.ts); a fake in tests. */ github?: ReturnType<typeof createGithub>; log: (msg: string, f?: Record<string, unknown>) => void;
 }) {
   db.exec("CREATE TABLE IF NOT EXISTS loop_state (k TEXT PRIMARY KEY, v TEXT NOT NULL)");
@@ -99,8 +99,8 @@ export function createKernelGradeLoop({ db, runner, due, kernel, kernelBytes, ga
       taskMerged: async () => (await records(issue, "merge", ["done"])).flatMap(verifiedMerges),
       // The grant reads only the fleet's own repositories (the agents org and the product): a PR that reads is an own PR.
       ownRepo: () => true,
-      pr: github.pr, diff: github.diff, app: notAvailable("an app's status"),
-      appOfRepo: notAvailable("an app's repository"), deployHistory: notAvailable("an app's deploys"), view: notAvailable("an app's rendered view"),
+      pr: github.pr, diff: github.diff,
+      ...appsEvidence(apps),
       assignee: issue.assigneeAgentId,
       delegator: { agentId: issue.createdByAgentId, userId: issue.createdByUserId },
       comments: () => (thread ??= pc.comments(issue.id)),

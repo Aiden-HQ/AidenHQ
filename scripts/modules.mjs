@@ -82,8 +82,9 @@ export const LEGACY_LINKS = {
   // into Paperclip (no key), and the board's calls to the fast lane.
   "channel-slack": { until: "3g", to: ["sources", "paperclip"] },
   "chat-lane": { until: "3a", to: ["board"] },
-  // 3h: the board reads grade rows from the grading module (its own key) until the board is a module.
-  grading: { until: "4a", to: ["board"] },
+  // 3h: the board reads grade rows from the grading module (its own key) until the board is a module; apps-mcp's grader reads
+  // (role apps.read) until 4c moves apps-mcp into apps-platform (owner-approved via the coordinator, 2026-11-18).
+  grading: { until: "4a", to: ["board", "apps-mcp"] },
   monitoring: { until: "4c", to: ["board"] },
   tasks: { until: "3e", to: ["backplane"] },
   meetings: { until: "4c", to: ["backplane", "sources"] },

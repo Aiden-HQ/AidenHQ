@@ -36,7 +36,7 @@ services:
       port: 8096
       # The kernel's listener is a host address: reached the way every module with no legacy link reaches it.
       egress: true
-      links: [ board ] # the board's reads (until the board is a module)
+      links: [ board, apps-mcp ] # the board's reads (until the board is a module); apps-mcp's grader reads (until 4c moves it into apps-platform)
       data: ["grades:/data"]
       env:
         GRADES_DB: /data/grades.sqlite

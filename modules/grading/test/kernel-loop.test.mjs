@@ -38,7 +38,7 @@ test("a kernel job's graded task is graded, reopened with the unmet criterion, t
   const db = new DatabaseSync(":memory:");
   const { runner, grades } = createGrading({ db, kernel: { issue: async () => issue, settings: async () => ({}), release: async () => {} }, keys: { check: "c", runner: "r", board: "b" } });
   grades.file("t1", ["says where Legacy is used", "links each source", "names the next step"], { kind: "report", ref: "" });
-  const loop = createKernelGradeLoop({ db, runner, due: () => ({ grades: grades.due(), resubmitted: [] }), kernel, kernelBytes: async () => { throw new Error("no attachment bytes"); }, gatewayUrl: `http://127.0.0.1:${gateway.address().port}`, log: () => {} });
+  const loop = createKernelGradeLoop({ db, runner, due: () => ({ grades: grades.due(), resubmitted: [] }), kernel, kernelBytes: async () => { throw new Error("no attachment bytes"); }, apps: async () => { throw new Error("no apps"); }, gatewayUrl: `http://127.0.0.1:${gateway.address().port}`, log: () => {} });
 
   completionGate(grades, "t1", "finish_turn"); // the agent finished: the gate holds the task and the row waits for the grader
   // A just-filed row waits 5 s for a bridge close's comment; the clock moves past it.
@@ -87,7 +87,7 @@ test("a graded PR task's PR is read through the broker's token and graded; a PR 
   const db = new DatabaseSync(":memory:");
   const { runner, grades } = createGrading({ db, kernel: { issue: async () => issue, settings: async () => ({}), release: async () => {} }, keys: { check: "c", runner: "r", board: "b" } });
   grades.file("t2", ["the change fixes the thing"], { kind: "pr", ref: "https://github.com/acme-agents/app/pull/7" });
-  const loop = createKernelGradeLoop({ db, runner, due: () => ({ grades: grades.due(), resubmitted: [] }), kernel, kernelBytes: async () => { throw new Error("no bytes"); }, gatewayUrl: `http://127.0.0.1:${gateway.address().port}`, github, log: () => {} });
+  const loop = createKernelGradeLoop({ db, runner, due: () => ({ grades: grades.due(), resubmitted: [] }), kernel, kernelBytes: async () => { throw new Error("no bytes"); }, apps: async () => { throw new Error("no apps"); }, gatewayUrl: `http://127.0.0.1:${gateway.address().port}`, github, log: () => {} });
   completionGate(grades, "t2", "finish_turn");
   const realNow = Date.now;
   Date.now = () => realNow() + 10_000;
