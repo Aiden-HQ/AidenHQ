@@ -29,6 +29,8 @@
 //   POST /v1/wakes             (a module with role kernel.wake) a scheduled wake {task, agent?, at?, cause?, id?}
 //   POST /v1/wakes/claim, POST /v1/wakes/:key/drop  (a module with role kernel.jobs) claim inbox rows; give one up
 //   POST /v1/wakes/:key/note   (the module that claimed it) {body}: a note on its task as its agent, once (no job answers it)
+//   POST /v1/tasks             (a module with role kernel.tasks) {title, description, role, source, parent?}: a task of the module's
+//                              fixed text for the agent holding `role`, once per source (modtasks.ts)
 //   POST /v1/reviews           (the runner's reviewer key) a check before filing: one review by the bound reviewer module → its verdict
 //   POST /v1/reviews/:review   (that review's token, once) the reviewer module's verdict
 //   POST /v1/jobs, GET/DELETE /v1/jobs/:job, POST /v1/jobs/:job/input  (a module with role kernel.jobs) start a job in the
@@ -68,6 +70,7 @@ import type { Records, State } from "./records.ts";
 import type { Work } from "./work.ts";
 import type { Reviews } from "./reviews.ts";
 import type { Wakes } from "./wakes.ts";
+import type { ModuleTasks } from "./modtasks.ts";
 import { CONN_TOOL, type Writes } from "./writes.ts";
 
 const MAX_ATTACHMENT = 25 * 1024 * 1024;
@@ -113,6 +116,7 @@ export const ROUTES = [
   { method: "POST", path: "/v1/wakes/claim", auth: "module" },
   { method: "POST", path: "/v1/wakes/:key/drop", auth: "module" },
   { method: "POST", path: "/v1/wakes/:key/note", auth: "module" },
+  { method: "POST", path: "/v1/tasks", auth: "module" },
   { method: "POST", path: "/v1/reviews", auth: "reviewer-key" },
   { method: "POST", path: "/v1/reviews/:review", auth: "review-token" },
   { method: "POST", path: "/v1/jobs", auth: "module" },
@@ -147,7 +151,7 @@ async function json(req: IncomingMessage, max = 1_000_000): Promise<any> {
   try { return JSON.parse(Buffer.concat(chunks).toString("utf8") || "{}"); } catch { throw fail(400, "bad_request", "the body must be JSON"); }
 }
 
-export function createBackplane({ whoami, asserter, proxy, cp, grantsFile, writes, records, channels, brake, notify, owner, modules = () => ({}), boardKey = () => "", reviews, runnerKey = () => "", reviewerKey = () => "", jobs, admission, outcomes, wakes, eventsKey = () => "", work, graderToken = () => "", dropGraderToken = () => {}, advisories = () => [], accounts, checks, checkJobs, jobTools, ownerRaw, lane, log = () => {} }: {
+export function createBackplane({ whoami, asserter, proxy, cp, grantsFile, writes, records, channels, brake, notify, owner, modules = () => ({}), boardKey = () => "", reviews, runnerKey = () => "", reviewerKey = () => "", jobs, admission, outcomes, wakes, tasks, eventsKey = () => "", work, graderToken = () => "", dropGraderToken = () => {}, advisories = () => [], accounts, checks, checkJobs, jobTools, ownerRaw, lane, log = () => {} }: {
   whoami: Whoami; asserter: Asserter; proxy: Handler; cp: Handler; grantsFile: () => { agents?: Record<string, Grant> } & Record<string, unknown>;
   writes?: Writes; records?: Records; boardKey?: () => string; log?: (msg: string, f?: Record<string, unknown>) => void;
   /** The reviewer slot; the runner's key for its kinds (filing, claim, outcome, reads, a record's review: runner_writes_key)
@@ -169,6 +173,8 @@ export function createBackplane({ whoami, asserter, proxy, cp, grantsFile, write
   outcomes?: Outcomes;
   /** The wake inbox (wakes.ts), and the paperclip-events plugin's key. */
   wakes?: Wakes; eventsKey?: () => string;
+  /** Tasks modules file for agents (modtasks.ts). */
+  tasks?: ModuleTasks;
   /** Reads of the work the kernel owns (work.ts). */
   work?: Work;
   /** A grader-kind gateway token for a task (the kernel is the only minter). */
@@ -261,6 +267,13 @@ export function createBackplane({ whoami, asserter, proxy, cp, grantsFile, write
           }
         }
         case "GET /v1/advisories": if (!isBoard(req)) throw fail(401, "unauthorized", "the board's key is required"); return send(res, 200, { advisories: advisories() });
+      }
+      if (hit?.path === "/v1/tasks") {
+        const w = await moduleOf(req);
+        if (!w.roles.includes("kernel.tasks")) throw fail(403, "forbidden", `${w.module} may not file tasks (role kernel.tasks)`);
+        if (!tasks) throw fail(503, "unavailable", "module tasks are off");
+        const r = await tasks(w.module!, await json(req)).catch((e: { name?: string; status?: number; message: string }) => { throw e.name === "TaskError" ? fail(e.status!, "bad_request", e.message) : e; });
+        return send(res, 200, r);
       }
       if (hit && hit.path.startsWith("/v1/wakes")) {
         if (!wakes) throw fail(503, "unavailable", "the wake inbox is off");

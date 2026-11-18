@@ -110,6 +110,7 @@
     "route POST /v1/receipts/verify": {"state":"experimental","fp":"auth=module"},
     "route POST /v1/reviews": {"state":"experimental","fp":"auth=reviewer-key"},
     "route POST /v1/reviews/:review": {"state":"experimental","fp":"auth=review-token"},
+    "route POST /v1/tasks": {"state":"experimental","fp":"auth=module"},
     "route POST /v1/wake": {"state":"experimental","fp":"auth=module"},
     "route POST /v1/wakes": {"state":"experimental","fp":"auth=module"},
     "route POST /v1/wakes/:key/drop": {"state":"experimental","fp":"auth=module"},
