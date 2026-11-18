@@ -865,11 +865,6 @@ rreview="modules/ai-reviewer/service/src/review.mjs"
   && grep -qF 'if (workflow && !(inAgents && b.ciTemplate === true)) parts.push(T(1, "github-dir"' "$rplan" \
   && pass "kernel, codehost and board: the owner decides only vetoes, panel splits, autonomy caps and spend caps, each after the AI reviewer; the gate's core goes to two reviewers of different families, checked by the path inventory and the kernel; a CI template copy is Tier 0 only by tree identity with the deployed product (paths.yaml, $rreview)" \
   || fail "kernel, codehost or board: who decides a write changed (the Tier 2 rules, the path inventory, the panel, or the kernel's panel check)"
-# Tool-only agents get no shell: setup (gate code too) must run the gate's check on every Codex agent without image:.
-grep -qF 'import { assertNoShell } from "./no-shell.mjs";' scripts/paperclip-setup.mjs \
-  && [ "$(grep -c 'assertNoShell(' scripts/paperclip-setup.mjs)" = 1 ] \
-  && grep -qF '  if (!a.image) assertNoShell(key, extraArgs, adapterConfig.dangerouslyBypassApprovalsAndSandbox);' scripts/paperclip-setup.mjs \
-  && pass "setup: every tool-only Codex agent passes the no-shell check (scripts/no-shell.mjs)" || fail "setup: the no-shell check's call site changed (scripts/paperclip-setup.mjs)"
 # Jobs reach connections only through the kernel: a job holds no connection URL or token (its grants and its non-private
 # jobcaps through the kernel's proxy with its job token), private reads go only to Engineers whose definition opts in
 # (private_reads), with web search off; a repository is never created outside the code host's approved create_repo; every
@@ -896,6 +891,29 @@ if web_probe="$(node --input-type=module -e '
   pass "engines: a job holding private data gets no web search (engine@1 web: false; codex)"
 else
   fail "engines: private-data jobs reach the web: ${web_probe:-the probe failed to run}"
+fi
+# C3-final (credential ledger): Paperclip runs nothing. The gateway takes no Paperclip run JWT (eyJ…) and no launcher run token
+# (ahqc_…), only kernel-minted job tokens; the launcher has no /whoami and no Paperclip-plugin routes; the hello-probe and plugin
+# secrets are gone; the Paperclip container mounts neither (paperclip_post_key stays: the kernel signs the events plugin's posts).
+gw="http://10.231.0.1:8201/api/v1/chat/completions"
+jwt_probe='eyJhbGciOiJIUzI1NiJ9.e30.x'
+eyj="$(curl -s -m 10 -o /dev/null -w '%{http_code}' -X POST "$gw" -H "authorization: Bearer $jwt_probe" -H 'content-type: application/json' -d '{}')"
+ahqc_probe=ahqc_x
+ahqc="$(curl -s -m 10 -o /dev/null -w '%{http_code}' -X POST "$gw" -H "authorization: Bearer $ahqc_probe" -H 'content-type: application/json' -d '{}')"
+[ "$eyj" = 401 ] && [ "$ahqc" = 401 ] && pass "gateway: a Paperclip run JWT and a launcher run token are refused (401)" || fail "gateway: eyJ → $eyj, ahqc_ → $ahqc (want 401 for both)"
+routes=""
+for p in whoami acquire resume exec attach release inspect cp; do
+  m=POST; [ "$p" = whoami ] && m=GET
+  code="$(curl -s -m 10 -o /dev/null -w '%{http_code}' -X "$m" "http://10.231.0.1:8199/$p")"
+  [ "$code" = 404 ] || routes="$routes /$p:$code"
+done
+[ -z "$routes" ] && pass "launcher: no /whoami, /cp or Paperclip-plugin routes (404)" || fail "launcher still answers:$routes"
+left=""
+for s in gateway_harness_key computer_launcher_token; do [ -e "${AIDENHQ_SECRETS_DIR:-/nonexistent}/$s" ] && left="$left $s"; done
+[ -z "$left" ] && pass "secrets: no gateway_harness_key or computer_launcher_token" || fail "secrets left from Paperclip-run agents:$left"
+if pc="$(docker ps -q --filter label=com.docker.compose.service=paperclip | head -1)" && [ -n "$pc" ]; then
+  docker inspect "$pc" --format '{{range .Mounts}}{{.Source}} {{end}}' | grep -qE 'computer_launcher_token|gateway_harness_key|aidenhq-computer' \
+    && fail "paperclip: still mounts a Paperclip-run secret or the computer plugin" || pass "paperclip: mounts no computer_launcher_token, gateway_harness_key or computer plugin"
 fi
 pass "no email/Slack/Telegram send or calendar write tool is configured for any agent"
 
