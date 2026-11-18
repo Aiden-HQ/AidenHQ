@@ -146,7 +146,7 @@ const writes = createWrites({
   planners: { "kernel.apply": applyPlanner },
   resume: ["kernel.apply"],
 });
-const proxy = createProxy({ whoami, connections, asserter, resolver, secret, writes, log });
+const proxy = createProxy({ whoami, connections, asserter, resolver, secret, writes, agentKey: (id) => secret(`paperclip-agents/${id}`), log });
 replay = proxy.replay as never;
 // JSON both ways: the control plane as the owner (only the kernel holds the board key), and the board's internal listener with
 // the kernel's key (gateway_board_key: successors and the owner's notices).
