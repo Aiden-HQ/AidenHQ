@@ -915,6 +915,20 @@ if pc="$(docker ps -q --filter label=com.docker.compose.service=paperclip | head
   docker inspect "$pc" --format '{{range .Mounts}}{{.Source}} {{end}}' | grep -qE 'computer_launcher_token|gateway_harness_key|aidenhq-computer' \
     && fail "paperclip: still mounts a Paperclip-run secret or the computer plugin" || pass "paperclip: mounts no computer_launcher_token, gateway_harness_key or computer plugin"
 fi
+# Agent keys: the kernel acts as each agent with that agent's own Paperclip key (secrets paperclip-agents/<id>, setup's) and
+# hands it to nobody (kernel/src/cp.ts, outcomes.ts): the folder 0700, every key 0400, the kernel's user's, named by no compose
+# file, and mounted into no container (neither the folder nor the secrets dir above it).
+sd="${AIDENHQ_SECRETS_DIR:-/nonexistent}"; pa="$sd/paperclip-agents"
+if [ -d "$pa" ]; then
+  bad="$(find "$pa" -mindepth 1 \( -type f ! -perm 0400 -o ! -type f -o ! -user "$(id -un)" \) -print 2>/dev/null | head -3 | tr '\n' ' ')"
+  mounted="$(docker ps -q | xargs -r docker inspect --format '{{.Name}} {{range .Mounts}}{{.Source}} {{end}}' | grep -E " ($sd/?|$pa(/[^ ]*)?) " | cut -d' ' -f1 | tr '\n' ' ')"
+  named="$(grep -l 'paperclip-agents' compose*.yaml 2>/dev/null | tr '\n' ' ')"
+  [ "$(stat -c %a "$pa" 2>/dev/null || stat -f %Lp "$pa")" = 700 ] && [ -z "$bad$mounted$named" ] \
+    && pass "vault: paperclip-agents/ is 0700, its keys 0400, the kernel's user's, in no compose file and mounted into no container" \
+    || fail "vault: paperclip-agents/ is readable beyond the kernel (${bad}${mounted:+mounted by $mounted}${named:+named in $named})"
+else
+  pass "vault: no paperclip-agents/ yet (no agent acts through the kernel)"
+fi
 pass "no email/Slack/Telegram send or calendar write tool is configured for any agent"
 
 echo
