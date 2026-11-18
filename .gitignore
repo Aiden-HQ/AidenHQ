@@ -17,7 +17,6 @@ config/paperclip.yaml
 # gThumb image metadata sidecars
 .comments/
 config/runner.yaml
-config/intake-cases.yaml
 config/busy-cases.yaml
 
 # aidenhq

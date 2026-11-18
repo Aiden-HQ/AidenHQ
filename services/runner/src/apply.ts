@@ -75,12 +75,12 @@ export async function trialEditsText(repoPath: string, base: string, files: stri
  */
 const isArchitect = (grants: any, agentId: string | undefined) => Boolean(agentId) && (grants?.agents?.[agentId!]?.roles ?? []).includes("architect");
 
-/** The delegating agent's follow-ups on its task: always the Architect's; any delegator's on a task that runs without the owner's go-ahead (`approved`). */
-export const architectFollowUps = (comments: any[], delegatorId: string | undefined, grants: any, { approved = false, reopened = false } = {}) =>
-  // Reopened (todo) by an agent after a run, on a task that already runs unasked: any agent's comment is the next request, as a
-  // fresh task_delegate from that agent would be (so Aiden can restart an Engineer task another agent delegated).
-  approved && reopened ? comments
-  : delegatorId && (approved || isArchitect(grants, delegatorId)) ? comments.filter((c: any) => c.authorAgentId === delegatorId) : [];
+/**
+ * The delegating agent's follow-ups on its task: the Architect's always, any delegator's on an agent's task (`agentTask`).
+ * Only the delegator's: another agent's comment never starts a job (the owner's are read as his own).
+ */
+export const architectFollowUps = (comments: any[], delegatorId: string | undefined, grants: any, { agentTask = false } = {}) =>
+  delegatorId && (agentTask || isArchitect(grants, delegatorId)) ? comments.filter((c: any) => c.authorAgentId === delegatorId) : [];
 
 export function trialNoTapBy(issue: any, grants: any, runnerMade = false): boolean {
   if (issue?.createdByAgentId) return isArchitect(grants, issue.createdByAgentId);

@@ -888,7 +888,7 @@ export function createApp(opts: AppOptions): Server {
           if (!dest || !agent || dest.assigneeAgentId === cos.id) throw new Refused("refused: target must be a task assigned to an engineer");
           if (["done", "cancelled"].includes(dest.status)) throw new Refused("refused: that task is closed");
           // An answer to the questions an agent this chat handed work to is asking (never an engineer's: the runner reads
-          // relayed words there as go-aheads): handed out by the chat's own agent or the owner, and written after it asked.
+          // relayed words there as the owner's instructions): handed out by the chat's own agent or the owner, and written after it asked.
           const asking = await askingKids(source.chat, await pc.children(source.chat.id), ctx.me);
           const ask = agent.kind === "engineer" ? undefined : asking.find((x) => x.task.id === dest.id)?.ask;
           if (ask && source.comment.createdAt <= ask.at) throw new Refused("refused: that message was written before the agent asked; ask the owner again");

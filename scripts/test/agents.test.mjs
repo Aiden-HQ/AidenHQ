@@ -140,7 +140,7 @@ test("the Architect: max effort, only its own role, no fleet tools, reads every 
   assert.deepEqual(a.enabled_tools.apps, ["app_list", "app_status", "app_logs", "app_view", "web_view", "warehouse_query"]); // research reads only: no deploys, and the request and role reads would refuse it anyway
   assert.ok(a.enabled_tools.slack.includes("slack_read_thread") && !a.enabled_tools.slack.some((t) => /send|draft/.test(t)));
   assert.ok(a.enabled_tools.github.includes("github_issue_read") && !a.enabled_tools.github.some((t) => /comment|create|update|review|rerun/.test(t)));
-  for (const t of ["fleet_control", "fleet_status", "task_relay_owner_words", "task_create_engineer_task", "task_update", "task_create"]) assert.ok(!a.enabled_tools.paperclip_tasks.includes(t), t);
+  for (const t of ["fleet_control", "fleet_status", "task_relay_owner_words", "task_update", "task_create"]) assert.ok(!a.enabled_tools.paperclip_tasks.includes(t), t);
 });
 
 test("an instance agent may name a computer image; an unknown one fails compile (step 5 validates image:)", () => {

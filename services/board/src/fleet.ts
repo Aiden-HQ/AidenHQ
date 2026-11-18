@@ -293,7 +293,7 @@ export function relayableWords(c: { body: string; authorType: string; authorUser
 
 /**
  * Binds an approval to the task the owner meant. Words naming task identifiers (the company's own prefix, any case) must name
- * only the target; words naming none are relayed only when the target is the single engineer task waiting for his go-ahead
+ * only the target; words naming none are relayed only when the target is the single engineer task waiting on him
  * (`waiting`: identifiers of open engineer tasks in review, children of his chat included).
  */
 export function assertMeantTask(words: string, target: string, waiting: string[], prefix: string): void {

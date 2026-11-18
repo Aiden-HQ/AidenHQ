@@ -391,7 +391,7 @@ function Overview({ issue, board, editable, update, reload, toast, pick, onAdd, 
   );
 }
 
-const STATE_PILLS: Record<CrewState, string> = { needs: "needs you", failed: "stuck", proposed: "proposed", working: "working", queued: "queued", done: "done" };
+const STATE_PILLS: Record<CrewState, string> = { needs: "needs you", failed: "stuck", working: "working", queued: "queued", done: "done" };
 const ENGINE_NAMES: Record<string, string> = { codex: "Codex", claude: "Claude Code", openrouter: "OpenRouter" };
 
 /** One agent's part of the task: who they are, where they stand, and a direct chat with them. */
@@ -467,11 +467,6 @@ function AgentPane({ task, member, focus, board, reload, onChanged, toast, moved
               <b>
                 {member.finished ?? 0} of {member.issues.length} finished
               </b>
-              {member.issues.some((i) => i.state === "proposed") && (
-                <button className="btn primary" disabled={busy} onClick={() => void act(() => api.comment(task.id, "Go."), `Starting ${name}'s tasks`)}>
-                  Approve all
-                </button>
-              )}
             </div>
             {member.issues.map((i) => (
               <button key={i.id} className={`fan-row${i.identifier === selected ? " on" : ""}`} onClick={() => setSelected(i.identifier)}>
@@ -481,20 +476,6 @@ function AgentPane({ task, member, focus, board, reload, onChanged, toast, moved
               </button>
             ))}
           </section>
-        )}
-        {state === "proposed" && part && (
-          <div className="crew-banner proposed">
-            <span>
-              <b>Proposed for this task.</b> {name} starts once you approve; the instructions are below.
-            </span>
-            <span className="spacer" />
-            <button className="btn" disabled={busy} onClick={() => void act(() => api.update(part.id, { status: "cancelled" }), `Dismissed ${name}`)}>
-              Dismiss
-            </button>
-            <button className="btn primary" disabled={busy} onClick={() => void act(() => api.comment(part.id, "Approved."), `${name} is starting`)}>
-              Approve
-            </button>
-          </div>
         )}
         {state === "failed" && part && (
           <div className="crew-banner failed">

@@ -20,7 +20,7 @@ export function Avatar({ assignee, size }: { assignee: Assignee | undefined; siz
   );
 }
 
-const STATE_WORDS: Record<CrewState, string> = { needs: "needs you", failed: "got stuck", proposed: "waiting for your approval", working: "working", queued: "queued", done: "done" };
+const STATE_WORDS: Record<CrewState, string> = { needs: "needs you", failed: "got stuck", working: "working", queued: "queued", done: "done" };
 
 /** A crew member's portrait with a ring for where they stand. */
 export function CrewAvatar({ member, assignee, size }: { member: Pick<CrewMember, "state" | "since">; assignee: Assignee | undefined; size?: number }) {
@@ -37,13 +37,13 @@ export const memberIssue = (m: CrewMember) => (m.issues.find((i) => i.state === 
 
 /** The line under a card's title: the most urgent crew member, in words. */
 export function crewLine(crew: CrewMember[], assignees: Assignee[]): { text: string; tone: CrewState } | undefined {
-  const order: CrewState[] = ["needs", "failed", "proposed", "working", "queued"];
+  const order: CrewState[] = ["needs", "failed", "working", "queued"];
   for (const state of order) {
     const m = crew.find((x) => x.state === state);
     if (!m) continue;
     const name = shortName(assignees.find((a) => a.key === m.agent));
     const fan = m.issues.length > 1 ? ` · ${m.finished ?? 0}/${m.issues.length}` : "";
-    const text = { needs: `${name} needs you`, failed: `${name} got stuck`, proposed: `Approve ${name}?`, working: `${name} is working${m.since ? ` · ${elapsed(m.since)}` : ""}`, queued: `${name} is queued`, done: "" }[state];
+    const text = { needs: `${name} needs you`, failed: `${name} got stuck`, working: `${name} is working${m.since ? ` · ${elapsed(m.since)}` : ""}`, queued: `${name} is queued`, done: "" }[state];
     return { text: text + fan, tone: state };
   }
   return undefined;

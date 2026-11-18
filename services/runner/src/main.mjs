@@ -7,7 +7,7 @@ import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node
 import { basename, dirname, join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
-import { FOR_OTHERS, RUNNER_MARKER, deliveredFrom, finishedStatus, hasMarker, isAgentSubtask, isRuleProposal, isUserPart, ownRequest, runsUnasked, findRepos, mentionedRepos, isClaudeModel, openrouterModels, crewNames, generalEngineers, personaFor, parseCommand, pickedEngine, pickerFor, engineKinds, engineLabel, engineOf, modelPrefix, repoAllowed, resolveEngine, stripHidden, useEngines, settledWait } from "./agents.mjs";
+import { FOR_OTHERS, RUNNER_MARKER, deliveredFrom, finishedStatus, hasMarker, isAgentSubtask, isRuleProposal, isUserPart, ownRequest, findRepos, mentionedRepos, isClaudeModel, openrouterModels, crewNames, generalEngineers, personaFor, parseCommand, pickedEngine, pickerFor, engineKinds, engineLabel, engineOf, modelPrefix, repoAllowed, resolveEngine, stripHidden, useEngines, settledWait } from "./agents.mjs";
 import { REPO_ROOT, githubSlug, loadConfig } from "./config.mjs";
 import { applyWaitingForLock, architectFollowUps, bumpTitle, definitionsOf, ownerMade, productPin, strayFiles, trialEditsText, trialHandbookOnly, trialNoTapBy, untrialedNewAgents } from "./apply.ts";
 import { applyCardArgs, asApproval, branchCardArgs, cardOf, cardText, planOf } from "./cards.ts";
@@ -23,7 +23,7 @@ import { gcpSession } from "./gcp.ts";
 import { outputs, shareOutputs, syncFiles } from "./files.ts";
 import { ISOLATED_ENV, SAFE_GIT_ARGS, changeBase, defaultBranch, ensureClone, ensureGuardHooks, git, historyRewritten, landOnMain, remoteIsEmpty, replayOnto, patchKey, patchKeyAt, setGitAuth, setUntrusted, treeIs } from "../../../modules/codehost-github/src/git.mjs";
 import { DEFAULT_IDENTITY, READ, WRITE, appClient, appRemoteUrl, ghOptions, identityEnv, inOrg, jobGhToken, mergeOptions, mergePermissions, ownRepo as appOwnRepo, pushPermissions } from "../../../modules/codehost-github/src/github-app.ts";
-import { codexModels, readApproval, resolveModelAlias, resolveOpenRouterModel, withParent } from "./intake.ts";
+import { codexModels, resolveModelAlias, resolveOpenRouterModel, withParent } from "./intake.ts";
 import { splitAnswered } from "./answered.ts";
 import { ALL_STATUSES, Paperclip, blockedRefusal, origins, unresolvedBlockers } from "./paperclip.ts";
 import { isTransient, retryTransient, shouldRetryTurn } from "./retry.ts";
@@ -1103,15 +1103,15 @@ async function handleIssue(issue, engineerIds) {
   const fresh = comments.filter((c) => known || Date.parse(c.createdAt) >= horizon);
   for (const c of comments.filter((x) => !fresh.includes(x))) state.markHandled(c.id, issue.id);
   // The agent that delegated this task may follow up on it once it has run (the Agent Architect reviewing the Platform Engineer's
-  // diff): a new request on the same task, so its next commit replaces the card. Never a command, never a go-ahead.
+  // diff): a new request on the same task, so its next commit replaces the card. Never a command.
   const agentNotes = state.get(`history:${issue.id}`) ? all.filter((c) => c.authorType === "agent" && c.authorAgentId && !state.handled(c.id)) : [];
-  const delegator = agentNotes.length ? (issue.createdByAgentId ?? (await pc.issue(issue.id)).createdByAgentId) : undefined;
-  const followUps = agentNotes.length ? architectFollowUps(agentNotes, delegator, readGrants(), { approved: Boolean(state.get(`auto:${issue.id}`)), reopened: issue.status === "todo" }) : [];
+  const asked = agentNotes.length ? await pc.issue(issue.id) : undefined;
+  const followUps = asked ? architectFollowUps(agentNotes, asked.createdByAgentId, readGrants(), { agentTask: agentAsked(asked) }) : [];
   for (const c of agentNotes.filter((x) => !followUps.includes(x))) state.markHandled(c.id, issue.id); // other agents: ignored
   if (!fresh.length && followUps.length) {
     for (const c of followUps) state.markHandled(c.id, issue.id);
     const text = followUps.map((c) => stripHidden(c.body).trim()).filter(Boolean).join("\n\n");
-    if (text) await handleRequest(issue, `(From an agent, not ${cfg.selfName}'s own words.)\n\n${text}`, { fromAgent: true });
+    if (text) await handleRequest(issue, `(From an agent, not ${cfg.selfName}'s own words.)\n\n${text}`);
     return;
   }
   if (!fresh.length) {
@@ -1121,22 +1121,12 @@ async function handleIssue(issue, engineerIds) {
     // every update until it has been taken up, not only the first time.
     if (engineerIds.has(issue.assigneeAgentId) && !userComments.length && !running.has(issue.id) && !state.get(`ownreq:${issue.id}`) && !state.get(`history:${issue.id}`)) {
       const full = await pc.issue(issue.id);
-      // A task an agent delegated from the owner's own chat, or under a task an agent or routine created (an app incident), just
-      // runs: the gate that matters is `apply`, which needs his words. Under his own board tasks, the user's go-ahead stays.
-      const chain = [full];
-      for (let hops = 0; isAgentSubtask(full) && chain.at(-1)?.parentId && hops < 10; hops++) chain.push(await pc.issue(chain.at(-1).parentId).catch(() => null));
-      if (runsUnasked(chain) || isRuleProposal(full, readGrants())) {
-        // Runs without the owner's go-ahead (agent work from a chat or app): `auto:` lets its delegator follow up (not `approved:` alone, which the user's go-ahead also sets).
-        state.set(`approved:${full.id}`, new Date().toISOString());
-        state.set(`auto:${full.id}`, new Date().toISOString());
-      }
+      // A task an agent delegated just runs, wherever it sits: the gates that matter are the kernel's write tiers on what it
+      // pushes, merges, deploys or applies.
       if (requestFrom(full)) {
         state.set(`ownreq:${issue.id}`, new Date().toISOString());
         return handleRequest(issue, ""); // the description is the request
       }
-      // An agent's sub-task under the owner's own task waits for his go-ahead, and says so once (one log line, one comment).
-      const root = chain.at(-1), why = root ? ` under ${root.identifier}, ${cfg.selfName}'s own task,` : " (its parent tasks couldn't be read)";
-      if (isAgentSubtask(full)) return full.status !== "todo" || state.get(`held:${issue.id}`) ? undefined : (state.set(`held:${issue.id}`, new Date().toISOString()), log("held for the go-ahead", { issue: issue.identifier, root: root?.identifier ?? null }), pc.comment(issue.id, `Waiting for ${cfg.selfName}'s go-ahead: an agent wrote this task${why} so its description is the agent's request, not ${cfg.selfName}'s words. A comment from ${cfg.selfName} on this task starts it.`));
       if (!state.get(`greeted:${issue.id}`)) {
         state.set(`greeted:${issue.id}`, new Date().toISOString());
         await pc.comment(issue.id, "Ready. What would you like me to do, and in which repository? (Or write it in the task description.)");
@@ -1159,17 +1149,18 @@ async function handleIssue(issue, engineerIds) {
   if (texts.length) await handleRequest(issue, texts.join("\n\n"));
 }
 
+/** An agent's task the runner runs as the agent's request: a sub-task an agent delegated, or a rule proposal. */
+const agentAsked = (full) => isAgentSubtask(full) || isRuleProposal(full, readGrants());
+
 /**
- * The request in a task's description: the user's own task, or a sub-task the Researcher created
- * that the user has given the go-ahead for. Empty for everything else.
+ * The request in a task's description: the user's own task, or an agent's (agentAsked), which stays the agent's words.
+ * Empty for everything else.
  */
 function requestFrom(full) {
-  const own = ownRequest(full);
-  if (own) return own;
-  return (isAgentSubtask(full) || isRuleProposal(full, readGrants())) && state.get(`approved:${full.id}`) ? stripHidden(full.description).trim() : "";
+  return ownRequest(full) || (agentAsked(full) ? stripHidden(full.description).trim() : "");
 }
 
-async function handleRequest(issue, latest, { fromAgent = false } = {}) {
+async function handleRequest(issue, latest) {
   // A new word from whoever asked (the delegator or the owner) lifts a stop (identical failures, or ROUNDS_AT red rounds on one
   // check), starts the red rounds over (red-check wakes included; identical failures still count across it), and gives the
   // task its reviewer checks before filing again (agentReview).
@@ -1182,9 +1173,7 @@ async function handleRequest(issue, latest, { fromAgent = false } = {}) {
   }
   const full = await pc.issue(issue.id);
   let instructions = latest;
-  // Commenting on a sub-task the Researcher created is the go-ahead for that one; an agent's comment never is.
-  if (latest && !fromAgent && isAgentSubtask(full)) state.set(`approved:${issue.id}`, new Date().toISOString());
-  // First run on a task the user wrote (or approved): its title and description are part of the request.
+  // First run on a task the user or an agent wrote: its title and description are part of the request.
   if (!state.get(`history:${issue.id}`)) {
     const own = requestFrom(full);
     // An agent-written description is shown once, under the Task block, and is the agent's request, never the owner's words.
@@ -2120,8 +2109,6 @@ async function dispatchReplies() {
     if (!fresh.length) continue;
     // Wait until the newest comment on this task is older than the debounce window.
     if (Date.now() - Date.parse(fresh.at(-1).createdAt) < debounceMs) continue;
-    // Sub-tasks waiting for a go-ahead on this task: the runner reads the comment first.
-    if (await handleGoAhead(issue, fresh)) continue;
     ready.push(issue.identifier);
     pending.push(...fresh.map((c) => [c.id, issue.id]));
   }
@@ -2129,43 +2116,6 @@ async function dispatchReplies() {
   await pc.runRoutine(r.routine ?? "Process task replies", { tasks: ready.join(", ") });
   for (const [cid, iid] of pending) state.markHandled(cid, iid);
   log("replies dispatched to Researcher", { tasks: ready });
-}
-
-/**
- * If Engineer sub-tasks the Researcher created under this task are waiting, decide whether the
- * user's new comments are the go-ahead. "start" starts them all, "hold" keeps them waiting; anything
- * else (changes, questions) goes to the Researcher as usual. True when the comments were handled here.
- */
-async function handleGoAhead(parent, fresh) {
-  const engineers = await pc.engineerAgents();
-  const waiting = (await pc.children(parent.id)).filter(
-    (c) => engineers.some((a) => a.id === c.assigneeAgentId) && isAgentSubtask(c) && c.status === "todo" && !state.get(`approved:${c.id}`) && !state.get(`history:${c.id}`),
-  );
-  if (!waiting.length) return false;
-  const comment = fresh.map((c) => stripHidden(c.body).trim()).filter(Boolean).join("\n\n");
-  const decision = await readApproval({ cfg, user: cfg.selfName, title: parent.title, waiting, comment }).catch((err) => {
-    log("go-ahead check failed", { issue: parent.identifier, err: String(err.message ?? err).slice(0, 300) });
-    return "other";
-  });
-  log("go-ahead read", { issue: parent.identifier, decision, waiting: waiting.length });
-  if (decision === "other") return false;
-  for (const c of fresh) state.markHandled(c.id, parent.id);
-  if (decision === "hold") {
-    await pc.comment(parent.id, `OK, the ${waiting.length} Engineer task${waiting.length === 1 ? "" : "s"} will wait until you say go.`);
-    return true;
-  }
-  const now = new Date().toISOString();
-  for (const c of waiting) state.set(`approved:${c.id}`, now), state.set(`ownreq:${c.id}`, now);
-  await pc.comment(
-    parent.id,
-    `Starting ${waiting.length} Engineer task${waiting.length === 1 ? "" : "s"}: ${waiting.map((c) => c.identifier).join(", ")}. They run ${cfg.max_concurrent ?? 2} at a time, and each one reports on its own task; reply **pr** there to open its PR.`,
-  );
-  log("sub-tasks approved", { issue: parent.identifier, tasks: waiting.map((c) => c.identifier) });
-  // Read each sub-task's request in the background; dispatch() queues the runs.
-  void (async () => {
-    for (const c of waiting) await handleRequest(c, "").catch((err) => reportError(c, err));
-  })();
-  return true;
 }
 
 /**
@@ -4825,8 +4775,9 @@ async function handleParentPr(parent, fresh) {
   const asks = fresh.filter((c) => parseCommand(c.body) === "pr");
   if (!asks.length) return false;
   const engineers = await pc.engineerAgents();
-  // Approved sub-tasks the Researcher made, and the parts the user gave Engineers themselves.
-  const kids = (await pc.children(parent.id)).filter((c) => (isAgentSubtask(c) && state.get(`approved:${c.id}`)) || isUserPart(c, engineers));
+  // Only the parts the user gave Engineers themselves: his "pr" publishes with no card, so it never reaches a sub-task an agent
+  // wrote (that one files its own push/PR records, tiered by the kernel, or takes his "pr" on the sub-task itself).
+  const kids = (await pc.children(parent.id)).filter((c) => isUserPart(c, engineers));
   if (!kids.length) return false;
   for (const c of asks) state.markHandled(c.id, parent.id);
   kids.sort((a, b) => a.identifier.localeCompare(b.identifier, undefined, { numeric: true }));
@@ -4860,14 +4811,15 @@ async function handleParentPr(parent, fresh) {
 // retried on the next finish), so this keeps two siblings finishing together from posting it twice.
 const summarizing = new Set();
 /**
- * When the last of a parent's approved Engineer sub-tasks finishes, post one summary on the parent
+ * When the last of a parent's agent-made Engineer sub-tasks finishes, post one summary on the parent
  *: otherwise the parent stays silent after "Starting N tasks" while the results are spread over
  * N tasks. Once per batch: keyed on the newest job among the siblings.
  */
 async function reportToParent(issue) {
   const full = await pc.issue(issue.id);
-  if (!isAgentSubtask(full) || !state.get(`approved:${issue.id}`)) return;
-  const siblings = (await pc.children(full.parentId, ALL_STATUSES)).filter((c) => isAgentSubtask(c) && state.get(`approved:${c.id}`));
+  if (!isAgentSubtask(full)) return;
+  const engineers = await pc.engineerAgents();
+  const siblings = (await pc.children(full.parentId, ALL_STATUSES)).filter((c) => isAgentSubtask(c) && engineers.some((e) => e.id === c.assigneeAgentId));
   const busy = (c) => running.has(c.id) || queue.some((j) => j.issue.id === c.id) || (!state.lastJob(c.id) && ["todo", "in_progress"].includes(c.status));
   if (!siblings.length || siblings.some(busy)) return;
   const newest = Math.max(...siblings.map((c) => state.lastJob(c.id)?.id ?? 0));

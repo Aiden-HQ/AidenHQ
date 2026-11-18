@@ -55,7 +55,7 @@ export function personaOf(key, a) {
 
 /**
  * What a woken agent with a persona learns about itself and the Engineers: its name and voice (tone only), and which engine
- * each Engineer's name stands for, so "ask Ada" maps onto task_create_engineer_task. `engines`: config/engines.json.
+ * each Engineer's name stands for, so "ask Ada" maps onto delegating to that Engineer. `engines`: config/engines.json.
  */
 function personaSection(cfg, engines, key, a) {
   const me = personaOf(key, a);
