@@ -19,7 +19,7 @@ function modulesRepo(root, starter) {
   if (!existsSync(join(materialised, "apps-platform/starter/AGENTS.md"))) return undefined;
   const dir = join(root, "modules");
   mkdirSync(dir);
-  for (const d of ["apps-platform/starter", "apps-platform/design-system", "vendor-mcp/src/vendor", "ci/template/.github"]) cpSync(join(materialised, d), join(dir, d), { recursive: true });
+  for (const d of ["apps-platform/starter", "apps-platform/design-system", "ci/template/.github"]) cpSync(join(materialised, d), join(dir, d), { recursive: true });
   if (starter != null) writeFileSync(join(dir, "apps-platform/starter/AGENTS.md"), starter);
   git(dir, "init", "-q", "-b", "main");
   git(dir, "add", "-A");
