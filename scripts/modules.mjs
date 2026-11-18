@@ -1136,10 +1136,13 @@ export function kernelModuleTable(defs, settings = {}) {
     const token = `${name.replace(/-/g, "_")}_token`;
     const ch = def.providers?.channel;
     if (ch != null) {
-      if (typeof ch !== "object" || Array.isArray(ch)) fail(`module ${name}: providers.channel is a map ({} or {stamp, stale, transport})`);
-      for (const k of Object.keys(ch)) if (!["stamp", "stale", "transport"].includes(k)) fail(`module ${name}: providers.channel.${k} is not allowed (stamp, stale, transport)`);
+      if (typeof ch !== "object" || Array.isArray(ch)) fail(`module ${name}: providers.channel is a map ({} or {stamp, stale, transport, credentials})`);
+      for (const k of Object.keys(ch)) if (!["stamp", "stale", "transport", "credentials"].includes(k)) fail(`module ${name}: providers.channel.${k} is not allowed (stamp, stale, transport, credentials)`);
       // transport: where the owner's router (role kernel.notify) has the kernel send this channel's owner messages, with its own token.
-      if (ch.transport != null && !/^https?:\/\/[\w.-]+:\d+\/[\w/.-]*$/.test(String(ch.transport))) fail(`module ${name}: providers.channel.transport must be http://<service>:<port>/<path>`);
+      // A compose service only (never an address or localhost): the kernel sends the channel's token there.
+      if (ch.transport != null && (!/^http:\/\/[a-z][a-z0-9-]*:\d+\/[\w/.-]*$/.test(String(ch.transport)) || /^http:\/\/localhost:/.test(String(ch.transport)))) fail(`module ${name}: providers.channel.transport must be http://<service>:<port>/<path>, a compose service`);
+      // credentials: its owner chat is private (paired), so the kernel sends the owner's credentials (reset links) there only.
+      if (ch.credentials != null && (ch.credentials !== true || ch.transport == null)) fail(`module ${name}: providers.channel.credentials is true, on a channel with a transport`);
       if (ch.transport != null && !(def.generated_secrets ?? []).includes(token)) fail(`module ${name}: a channel transport needs the module's own token (generated_secrets: [${token}])`);
       if (!privileged.includes("speaks-as-owner")) fail(`module ${name}: a channel (providers.channel) needs privileged: [speaks-as-owner]`);
       if (ch.stamp != null && !/^[a-z]{1,16}$/.test(String(ch.stamp))) fail(`module ${name}: providers.channel.stamp is one lowercase word`);
@@ -1149,7 +1152,7 @@ export function kernelModuleTable(defs, settings = {}) {
       ...(roles.length ? { roles } : {}), ...(privileged.length ? { privileged } : {}),
       // A channel's, a job dispatcher's (kernel.jobs), a check job requester's (kernel.checks), a check's module (its label and its reads) or an executor's (its outcomes): its own generated `<module>_token`.
       ...((ch != null || roles.includes("kernel.jobs") || roles.includes("kernel.checks") || (def.checks ?? []).length || def.providers?.executor) && (def.generated_secrets ?? []).includes(token) ? { token } : {}),
-      ...(ch != null ? { channel: { ...(ch.stamp ? { stamp: String(ch.stamp) } : {}), ...(ch.stale === true ? { stale: true } : {}), ...(ch.transport ? { transport: String(ch.transport) } : {}) }, settings: Object.fromEntries(Object.keys(def.settings ?? {}).map((k) => [k, settings[k]])) } : {}),
+      ...(ch != null ? { channel: { ...(ch.stamp ? { stamp: String(ch.stamp) } : {}), ...(ch.stale === true ? { stale: true } : {}), ...(ch.transport ? { transport: String(ch.transport) } : {}), ...(ch.credentials === true ? { credentials: true } : {}) }, settings: Object.fromEntries(Object.keys(def.settings ?? {}).map((k) => [k, settings[k]])) } : {}),
     };
     if (Object.keys(e).length) out[name] = e;
   }

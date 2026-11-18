@@ -163,7 +163,7 @@ const certWatch = createCertWatch({
 every(() => void certWatch.tick(), 3_600_000);
 once(() => void certWatch.tick(), 10 * 60_000);
 const brake = createBrake({ db: records.db, owner: ownerApi });
-const notify = createNotify({ db: records.db, modules: modulesFile, secret, resolver });
+const notify = createNotify({ db: records.db, modules: modulesFile, secret, resolver, log });
 // The host sandbox as configured here (jobs run in their agents' computers; repo code the host runs itself, fast checks among
 // it, runs in this sandbox). A known no-jail condition is fatal, with the reason in the journal: repo code must never share the
 // host's network (every loopback service).

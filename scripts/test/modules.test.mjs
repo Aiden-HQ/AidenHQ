@@ -7,7 +7,7 @@ import { fileURLToPath } from "node:url";
 import YAML from "yaml";
 import { BUNDLE } from "./bundle.mjs";
 import { ensureIdentityKeys } from "../identity.mjs";
-import { checkEntries, compile, composeSecretFiles, ensureMountedSecrets, writeKinds, ensureOptionalSecrets, grantEntry, healthProbeAgent, hostMounts, LEGACY_HOST_ENV, LEGACY_LINKS, LEGACY_SECRETS, mapLimit, OPS_NETWORKS } from "../modules.mjs";
+import { checkEntries, compile, composeSecretFiles, ensureMountedSecrets, writeKinds, ensureOptionalSecrets, grantEntry, healthProbeAgent, hostMounts, kernelModuleTable, LEGACY_HOST_ENV, LEGACY_LINKS, LEGACY_SECRETS, mapLimit, OPS_NETWORKS } from "../modules.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const mods = join(here, "fixtures/mods");
@@ -444,4 +444,10 @@ test("checks: a task.finish check may observe; a hard gate or a write.filed chec
   assert.throws(() => checkEntries("judge", def({ mode: "warn" })), /mode is observe or enforce/);
   assert.throws(() => checkEntries("platform", { checks: [{ id: "product-gate", at: "write.filed", mode: "observe" }] }), /hard gate: it always enforces/);
   assert.throws(() => checkEntries("judge", { checks: [{ id: "lint", at: "write.filed", mode: "observe" }] }), /write\.filed check gates writes/);
+});
+test("a channel's transport is a compose service (the kernel sends the channel's token there); credentials need a transport", () => {
+  const ch = (channel) => ({ x: { privileged: ["speaks-as-owner"], providers: { channel }, generated_secrets: ["x_token"] } });
+  assert.deepEqual(kernelModuleTable(ch({ transport: "http://telegram:8089/transport/send", credentials: true })).x.channel, { transport: "http://telegram:8089/transport/send", credentials: true });
+  for (const t of ["http://127.0.0.1:8089/t", "http://localhost:8089/t", "http://169.254.169.254:80/t", "https://example.com:443/t"]) assert.throws(() => kernelModuleTable(ch({ transport: t })), /a compose service/, t);
+  assert.throws(() => kernelModuleTable(ch({ credentials: true })), /credentials is true, on a channel with a transport/);
 });
