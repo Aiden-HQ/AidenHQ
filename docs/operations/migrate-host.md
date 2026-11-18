@@ -164,8 +164,7 @@ its remote console.
    ```
 
    This installs:
-   - Docker, gVisor (runsc), Node, Tailscale, gh, gocryptfs, bubblewrap, passt and fail2ban;
-   - a private bwrap copy for the runner and its AppArmor profile;
+   - Docker, gVisor (runsc), Node, Tailscale, gh, gocryptfs and fail2ban;
    - the browser for Engineer jobs;
    - the computer and CI network rules;
    - the public-interface firewall and the SSH hardening (step 2);

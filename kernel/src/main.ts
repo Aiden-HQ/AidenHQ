@@ -62,7 +62,7 @@ import { createWakes } from "./wakes.ts";
 import { createWorkspaceSweep } from "./workspaces.ts";
 import { createModuleTasks } from "./modtasks.ts";
 import { createWork } from "./work.ts";
-import { jailProblem, readEngines } from "./sandbox.ts";
+import { readEngines } from "./sandbox.ts";
 import { sandboxConfig } from "./sandbox-config.ts";
 import { createCertWatch } from "./front-door.ts";
 import { createUpdates, runCheck, runVerify } from "./updates.ts";
@@ -230,15 +230,8 @@ const reviewLoop = createReviewLoop({
 every(() => void reviewLoop.tick(), 30_000);
 once(() => void reviewLoop.tick(), 5_000);
 const brake = createBrake({ db: records.db, owner: ownerApi });
-// The host sandbox as configured here (jobs run in their agents' computers; repo code the host runs itself, fast checks among
-// it, runs in this sandbox). A known no-jail condition is fatal, with the reason in the journal: repo code must never share the
-// host's network (every loopback service).
+// The job settings as configured here (jobs run in their agents' computers; no repo code runs on the host).
 const sandbox = sandboxConfig(env);
-const jailIssue = jailProblem(sandbox);
-if (jailIssue) {
-  log("ERROR: the host sandbox cannot be jailed here", { reason: jailIssue });
-  process.exit(1);
-}
 // A kernel-admitted job's computer (boxes.ts): made below, once the gateway it needs is up; a job that ends releases it.
 let boxes: Boxes | undefined;
 const jobs = createJobs({

@@ -52,7 +52,7 @@ function sandbox() {
   };
   writeFileSync(join(dir, "engines.json"), JSON.stringify(engines));
   const cfg = {
-    bwrap: "bwrap", hidden: [], binDir: join(dir, "bin"), browserDir: join(dir, "browser"), workDir: join(dir, "work"), stateDir: join(dir, "state"), logsDir: join(dir, "state/logs"),
+    workDir: join(dir, "work"), stateDir: join(dir, "state"), logsDir: join(dir, "state/logs"),
     secretsDir: join(dir, "secrets"), enginesFile: join(dir, "engines.json"), gatewayUrl: "http://127.0.0.1:8201", boxGatewayUrl: "http://10.231.2.1:8200", boxDir: join(dir, "boxes"),
     timeout_minutes: 2, stall_minutes: 2, progress_minutes: 2,
   };

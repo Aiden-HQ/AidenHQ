@@ -485,93 +485,16 @@ grep -qF 'if (!b.box) throw new JobError(400, "box-required",' kernel/src/jobs.t
   && grep -qF 'if (entry.box !== true) throw new JobError(400, "not-a-box-engine",' kernel/src/jobs.ts \
   && ! grep -q 'hiding(' kernel/src/jobs.ts \
   && pass "kernel: every job runs in its agent's computer; none on the host" || fail "kernel: a job can run outside an agent computer again"
-grep -q '^export function layout(cfg' kernel/src/sandbox.ts && ! grep -q '"--dev-bind", "/", "/"' kernel/src/sandbox.ts && grep -q '"--tmpfs", "/tmp", "--tmpfs", home' kernel/src/sandbox.ts \
-  && grep -q '"--unshare-pid", "--unshare-ipc",' kernel/src/sandbox.ts && grep -q '"--proc", "/proc"' kernel/src/sandbox.ts \
-  && pass "kernel: the host sandbox (fast checks, the reviewer eval) sees an allowlist of the host's files (bwrap): an empty home, so no gcloud or gh sign-ins" || fail "kernel: the host sandbox binds the host's whole filesystem again"
-grep -q 'join(homedir(), ".config/gh")' kernel/src/sandbox-config.ts && grep -q 'const ENV_NAMES = new Set(\["AIDENHQ_REPO_URL", "AIDENHQ_REPO_TOKEN", "GH_TOKEN", "AIDENHQ_GH_AUTH", "GIT_AUTHOR_NAME", "GIT_AUTHOR_EMAIL", "GIT_COMMITTER_NAME", "GIT_COMMITTER_EMAIL"\]);' kernel/src/jobs.ts && grep -q '...(gh ? \["-e", "GH_TOKEN", "-e", "AIDENHQ_GH_AUTH"\] : \[\])' kernel/src/sandbox.ts \
+grep -q 'const ENV_NAMES = new Set(\["AIDENHQ_REPO_URL", "AIDENHQ_REPO_TOKEN", "GH_TOKEN", "AIDENHQ_GH_AUTH", "GIT_AUTHOR_NAME", "GIT_AUTHOR_EMAIL", "GIT_COMMITTER_NAME", "GIT_COMMITTER_EMAIL"\]);' kernel/src/jobs.ts && grep -q '...(gh ? \["-e", "GH_TOKEN", "-e", "AIDENHQ_GH_AUTH"\] : \[\])' kernel/src/sandbox.ts \
   && grep -q 'permissions: READ, fresh: true' modules/codehost-github/service/src/github-app.ts && node --input-type=module -e 'import { READ } from "./modules/codehost-github/service/src/github-app.ts"; process.exit(Object.values(READ).every((v) => v === "read") ? 0 : 1)' \
-  && pass "runner: jobs can't read the user's gh sign-in; their gh (host and box) reads with a read-only App token for the task's repos" || fail "runner: the user's gh sign-in isn't hidden from jobs, or their gh token changed (or gained a write permission)"
-# Live, under the jobs' own mask (kernel/src/sandbox.ts hiding, from the kernel's sandbox config): the host user is in the docker group
-# (root on the host) and is tailscaled's operator; the data dir holds the board's and Paperclip's sessions.
-if job_probe="$(node --input-type=module -e '
-  import { spawnSync } from "node:child_process";
-  import { hiding } from "./kernel/src/sandbox.ts";
-  import { sandboxConfig } from "./kernel/src/sandbox-config.ts";
-  const cfg = sandboxConfig();
-  const run = (cmd) => { const [c, ...a] = hiding(cfg, ["sh", "-c", cmd]); return spawnSync(c, a, { encoding: "utf8", timeout: 20000 }); };
-  const leaks = [];
-  if (run("docker version --format {{.Server.Version}}").status === 0) leaks.push("docker");
-  if (run("DOCKER_HOST=unix:///var/run/docker.sock docker version --format {{.Server.Version}}").status === 0) leaks.push("docker via /var/run");
-  if (run("tailscale serve status").status === 0) leaks.push("tailscaled");
-  if (run("systemctl --user show-environment").status === 0) leaks.push("systemd --user");
-  const data = cfg.hidden.find((p) => p.endsWith("/data"));
-  if (!data || run(`ls -A "${data}" | grep -q .`).status === 0) leaks.push("data dir");
-  // The gh sign-in of the user acts as the owner on GitHub; a job gets only the App read token (GH_TOKEN).
-  if (run("test -e \"$HOME/.config/gh/hosts.yml\" || env -u GH_TOKEN -u GITHUB_TOKEN -u AIDENHQ_GH_AUTH gh auth token >/dev/null 2>&1").status === 0) leaks.push("the gh sign-in");
-  // The runner state db holds the helper token of every run; the product checkout and other tasks are not the jobs to read.
-  if (run(`test -s "${cfg.stateDir}/state.sqlite"`).status === 0) leaks.push("the runner state db");
-  if (run(`test -e "${process.cwd()}/CLAUDE.md"`).status === 0) leaks.push("the product checkout");
-  if (run(`ls "${cfg.workDir}" >/dev/null 2>&1`).status === 0) leaks.push("the task folders");
-  // Its own PID namespace: no other process (the runner and its environment, the host root through /proc/1/root).
-  if (run(`cat /proc/${process.pid}/environ >/dev/null 2>&1`).status === 0) leaks.push("another process environment");
-  if (run(`test -e "/proc/1/root${process.cwd()}/CLAUDE.md"`).status === 0) leaks.push("the host root through /proc/1/root");
-  process.stdout.write(leaks.join(", "));
-  process.exit(leaks.length ? 1 : 0);
-' 2>&1)"; then
-  pass "kernel: the host sandbox can't reach Docker, tailscaled or systemd --user, nor read the services' data dir, the user's gh sign-in, the runner's state db, the product checkout or other tasks (live, under the jobs' allowlist)"
+  && pass "kernel: jobs run in boxes with no gh sign-in of the user's; their gh reads with a read-only App token for the task's repos" || fail "runner: the user's gh sign-in isn't hidden from jobs, or their gh token changed (or gained a write permission)"
+# No process on the host runs repo code (one-way spec §4.2a): a repo's checks are check jobs in credential-free boxes, so the
+# host keeps no jail for them: no bwrap binary under /opt/aidenhq, no aidenhq-bwrap AppArmor profile loaded or on disk, and
+# nothing in the kernel that wraps a command in one.
+if ! grep -rqE 'bwrap|hiding\(' kernel/src && [ ! -e /opt/aidenhq/bwrap ] && [ ! -e /etc/apparmor.d/aidenhq-bwrap ] && ! grep -qs 'aidenhq-bwrap' /sys/kernel/security/apparmor/profiles 2>/dev/null; then
+  pass "kernel: no process on the host runs repo code (no bwrap under /opt/aidenhq, no aidenhq-bwrap AppArmor profile, none in kernel/src)"
 else
-  fail "kernel: jobs reach: ${job_probe:-the probe failed to run}"
-fi
-# Live, in a job's own network (kernel/src/sandbox.ts jailed): every host listener outside the jail (loopback, the LAN address,
-# Docker bridges, the tailnet) is out of reach from inside it, except the ports a job is given (a helper, the model
-# gateway: its model calls and its jobcaps, the one MCP port); the connections' own read ports (3123-3127) are refused like
-# any other; the Internet and the allowed ports must work, so a broken jail can't pass as "blocked".
-if net_probe="$(node --input-type=module -e '
-  import { spawn, spawnSync } from "node:child_process";
-  import { hiding, jailProblem, loopbackPorts } from "./kernel/src/sandbox.ts";
-  import { sandboxConfig } from "./kernel/src/sandbox-config.ts";
-  const cfg = sandboxConfig();
-  const gatewayUrl = (c) => c.gatewayUrl;
-  const problem = jailProblem(cfg);
-  if (problem) { process.stdout.write(`no network jail: ${problem}`); process.exit(1); }
-  const helper = spawn(process.execPath, ["-e", "require(\"http\").createServer((q, s) => s.end(\"ok\")).listen(0, \"127.0.0.1\", function () { console.log(this.address().port) })"]);
-  const hp = Number(await new Promise((r) => helper.stdout.once("data", (d) => r(String(d).trim()))));
-  const mcp = [gatewayUrl(cfg)];
-  const allowed = loopbackPorts([...mcp, `http://127.0.0.1:${hp}`]);
-  // Every IPv4 address of the host (the LAN, Docker bridges, the tailnet): a wildcard listener answers on each.
-  const own = [...spawnSync("ip", ["-4", "-o", "addr"], { encoding: "utf8" }).stdout.matchAll(/inet (\d+\.\d+\.\d+\.\d+)\//g)].map((m) => m[1]);
-  const targets = new Set();
-  const local = new Set(); // ports listening on the host loopback
-  for (const l of spawnSync("ss", ["-ltnH"], { encoding: "utf8" }).stdout.split("\n")) {
-    const m = /^\S+\s+\d+\s+\d+\s+(\S+):(\d+)\s/.exec(l);
-    if (!m || m[1].startsWith("[")) continue; // IPv6: the jail has none
-    const [addr, port] = [m[1].split("%")[0], Number(m[2])];
-    if (["0.0.0.0", "*", "127.0.0.1"].includes(addr)) local.add(port);
-    // Each host address on every port, a loopback-only one (3120) too: the jail must not route to the host at all.
-    for (const a of new Set([...own, ...(addr === "0.0.0.0" || addr === "*" ? [] : [addr])])) targets.add(`${a}:${port}`);
-  }
-  const blocked = [...targets].filter((t) => !(t.startsWith("127.0.0.1:") && allowed.includes(Number(t.split(":")[1]))));
-  const tcp = (t) => `timeout 3 bash -c "exec 3<>/dev/tcp/${t.replace(":", "/")}" 2>/dev/null && echo "open ${t}"`;
-  const script = [
-    `[ "$(curl -s -o /dev/null -m 10 -w %{http_code} https://openrouter.ai/api/v1/models)" = 200 ] || echo "no Internet (openrouter.ai)"`,
-    `[ "$(curl -s -m 5 http://127.0.0.1:${hp}/)" = ok ] || echo "the helper port ${hp} is not reachable"`,
-    ...loopbackPorts(mcp).filter((p) => local.has(p)).map((p) => `${tcp(`127.0.0.1:${p}`)} >/dev/null || echo "MCP port ${p} is not reachable"`),
-    // One list piped to xargs, 32 at a time: a line per target outgrew the 128 KB limit of one argument (E2BIG) at ~1200 pairs.
-    `printf "%s\\n" ${blocked.map((t) => t.replace(":", "/")).join(" ")} | xargs -P 32 -I@ bash -c "timeout 3 bash -c \x27exec 3<>/dev/tcp/@\x27 2>/dev/null && echo reaches @" | sed "s|/|:|"`,
-    "echo probe-done",
-  ].join("\n");
-  const [c, ...a] = hiding(cfg, ["bash", "-c", script], [...mcp, `http://127.0.0.1:${hp}`]);
-  const r = spawnSync(c, a, { encoding: "utf8", timeout: 180000 });
-  helper.kill();
-  const out = `${r.stdout}`.trim().split("\n").filter((l) => l && l !== "probe-done");
-  if (r.error) out.push(`the jailed probe could not start: ${r.error.message} (${c})`);
-  else if (!r.stdout.includes("probe-done")) out.push(`the jailed probe did not run (exit ${r.status ?? r.signal}): ${r.stderr.trim().slice(0, 200)}`);
-  process.stdout.write(out.length ? out.join(", ") : `${blocked.length} host address:port pairs refused`);
-  process.exit(out.length ? 1 : 0);
-' 2>&1)"; then
-  pass "kernel: the host sandbox has its own network: the Internet, its helper and MCP ports only; no other host listener ($net_probe)"
-else
- fail "kernel: job network: ${net_probe:-the probe failed to run}"
+  fail "kernel: host-side repo code isolation is back or left over (remove /opt/aidenhq/bwrap and the aidenhq-bwrap AppArmor profile; no bwrap in kernel/src)"
 fi
 # Live, the kernel's proxy for jobs (kernel/src/proxy.ts, on 8201): a job token with primer-read is refused a write; the read
 # token and the service key themselves (not a job token) are refused. Only where config/jobcaps.json has primer-read.

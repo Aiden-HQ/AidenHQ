@@ -342,7 +342,7 @@ export interface ModuleRow {
   description: string;
   agents: string[];
   requires: string[];
-  /** Where it comes from and its computed tier: declared, conformant or official (never claimed by the module). */
+  /** Where it comes from and its computed tier: declared or official (never claimed by the module). */
   marketplace: string;
   tier: string;
   state: "core" | "on" | "dependency" | "off";

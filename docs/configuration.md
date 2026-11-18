@@ -325,7 +325,7 @@ Copy `.env.example` to `.env`. It holds host paths and endpoints, never agent-ed
 `config/runner.yaml` (from `config/runner.example.yaml`) configures the host runner: the `engineer` label it polls,
 `allowed_orgs` (the organizations it may implement, push and open PRs in; public repositories elsewhere are read-only),
 optional `repo_sources` (repos cloned from a local path), work and state directories, concurrency, the default OpenRouter
-model (`engines.openrouter.model`) and the host sandbox (`sandbox.read_only_roots` for toolchains outside the defaults).
+model (`engines.openrouter.model`).
 
 The release train (`release.batch_minutes`, default 15; 0 turns it off; `services/runner/src/release.mjs`) writes pin bumps
 in code. A green merge to the product opens one task, "Pin bump: this instance's product and modules", that lists the

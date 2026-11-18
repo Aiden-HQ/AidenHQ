@@ -335,7 +335,7 @@ function discover(productDir, instance, fetch) {
     const def = readYaml(join(r, "module.yaml"));
     if (def.name !== k.target) fail(`${k.target}: its fork's module.yaml name is ${def.name}`);
     if (def.apps != null || Object.values(def.services?.run ?? {}).some((s) => s?.build != null)) fail(`${k.target}: apps and service builds from a fork aren't supported yet`);
-    out.set(k.target, { name: k.target, root: r, def, marketplace: OFFICIAL, tier: fetch.kit?.(r, def, at) ? "conformant" : "declared", sha: at.sha, source: { url: at.url, path: at.path } });
+    out.set(k.target, { name: k.target, root: r, def, marketplace: OFFICIAL, tier: "declared", sha: at.sha, source: { url: at.url, path: at.path } });
   }
   for (const r of remoteModules(instance, { ...fetch, parse: (t) => YAML.parse(t) })) {
     if (out.has(r.name)) fail(`${r.name}@${r.marketplace}: a module named ${r.name} is already installed from ${out.get(r.name).marketplace}`);

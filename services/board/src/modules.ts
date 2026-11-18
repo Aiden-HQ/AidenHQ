@@ -25,7 +25,7 @@ interface CatalogEntry {
   /** Its handbook sections (id and file) and the start of its README. */
   prompts?: { id: string; file: string }[];
   readme?: string;
-  /** Where it comes from and its computed tier (spec §6.5: declared, conformant or official). */
+  /** Where it comes from and its computed tier (spec §6.5: declared or official). */
   marketplace?: string;
   tier?: string;
 }

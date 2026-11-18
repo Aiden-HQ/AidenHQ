@@ -120,7 +120,7 @@ both fail; that is expected, and step 3 makes the local mirror.)
 
 One run sets up the whole machine. It is idempotent: if it stops partway, fix the cause and run it again. It:
 
-1. installs system packages, Docker, Node 24, gVisor, bubblewrap (a private copy with its own AppArmor profile), passt, gocryptfs and
+1. installs system packages, Docker, Node 24, gVisor, gocryptfs and
    Tailscale (`ops/vm/setup.sh`);
 2. joins the tailnet with `TS_AUTHKEY` as `aidenhq-<you>` (unless the VM is already on it, or `BOARD_HOST` is set);
 3. writes `.env` and `config/runner.yaml`, and runs `scripts/bootstrap.sh` (secrets folder, generated tokens, data
@@ -437,7 +437,7 @@ shared access for colleagues.
 ## By hand
 
 The route `ops/setup.sh` automates, for a host you prepare yourself (Ubuntu 22.04, 24.04 or 26.04, or Debian 12 or 13, with Docker and Compose, Node.js 24,
-git, `bubblewrap` plus the private copy (and, on AppArmor 4 hosts, the `aidenhq-bwrap` profile), `passt` where packaged; `sudo bash ops/vm/setup.sh` installs these). Use it only
+git; `sudo bash ops/vm/setup.sh` installs these). Use it only
 if `ops/setup.sh` doesn't fit.
 
 ```sh

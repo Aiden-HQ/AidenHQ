@@ -22,8 +22,7 @@
 #   sudo bash ops/test/unattended-install.sh   (root, git, curl, node 24, kernel/, scripts/ and services/board npm ci'd; it adds a user and
 #                                               /opt/aidenhq, so it runs only where /.dockerenv exists or CI is set)
 # Not in CI: our runners' job containers set no-new-privileges, so sudo can't reach root there. Run it in a container,
-# e.g. a Node 24 Debian image with the checkout mounted, after npm ci in kernel/, scripts/ and services/board. The kernel refuses to start
-# where jobs can't be jailed, so the container runs --privileged with passt, bubblewrap and iproute2 installed. The release
+# e.g. a Node 24 Debian image with the checkout mounted, after npm ci in kernel/, scripts/ and services/board. The release
 # pins the kernel alone: the official modules are its own modules/.
 set -euo pipefail
 src="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"

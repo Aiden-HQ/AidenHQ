@@ -43,9 +43,8 @@ module and agent definitions; the check lives in `kernel/src/proxy.ts`. Roles ga
 agent computer (a gVisor box from the computer launcher, with the task's workspace mounted), and exposes a small `aidenhq`
 CLI to the Engineer ([design](design/conversational-engineers.md)). There is one engine, `codex-openrouter`: the Codex CLI
 on OpenRouter models through the box's gateway with the box's run token (ZDR only), a runner-owned Codex home per task with
-the product's skills, effort low to max (max: DeepSeek). Repo code the host runs itself (a fast check outside a job, the
-reviewer eval, local CI) runs under bwrap with an allowlist of the host's files, in its own PID, IPC and network
-namespaces (pasta).
+the product's skills, effort low to max (max: DeepSeek). No repo code runs on the host: a repo's checks and the
+reviewer eval run as check jobs in credential-free boxes.
 
 Every job gets Primer read-only. Private reads (Grafana, Slack, Glean, ClickHouse, other tasks) go only to an Engineer
 whose definition sets `private_reads: true`, and such a job has no web search. See [the codex-openrouter design](design/codex-openrouter-engine.md). Pushes, pull requests and merges are checked in code: allowed

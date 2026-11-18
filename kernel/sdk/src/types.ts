@@ -22,7 +22,7 @@ export interface JobSpec {     // <job dir>/job.json, written by the runner
   limits: { timeout_s: number };
   web: boolean;                // minor: false when the job holds private data (no web search or fetch)
   state?: string;              // minor: the engine's own state folder (its sessions), read-write
-  sandbox: { kind: "bwrap" | "box"; writable: string[]; network: boolean };   // minor: the boundary the engine runs in
+  sandbox: { kind: "box"; writable: string[]; network: boolean };   // minor: the boundary the engine runs in
 }
 export type EngineEvent =      // <job dir>/events.jsonl, appended by the engine
   | { t: "progress"; text: string; plan?: { step: string; done: boolean; doing?: boolean }[]; steps?: { at: string; text: string }[] }
