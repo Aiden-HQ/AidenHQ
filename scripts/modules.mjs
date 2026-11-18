@@ -775,7 +775,7 @@ export function compile(productDir, instanceDir, { revision, fetch = hostFetch(p
     a.department = { id, name: d.name.trim(), ...(d.description ? { description: String(d.description).trim() } : {}), order };
   }
 
-  // The description is how other agents route work to an agent: the generated Team list (scripts/handbook.mjs) is built from it.
+  // The description is how other agents route work to an agent: setup puts it in the agent directory, where task_team and fleet_catalog read it.
   for (const [key, a] of Object.entries(paperclip.agents)) if (!a.description) fail(`agent ${key} has no description: it is how others route work to it`);
 
   // Roles (spec §3.1 `roles`): each module declares the roles it checks, and its agents hold those or the ones it requests.

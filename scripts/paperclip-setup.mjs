@@ -689,13 +689,11 @@ function ensureCodexConfig() {
  */
 function writeCatalog() {
   if (!isWork) return;
-  // The handbook's first paragraph (as paperclip-tasks-mcp's task_team reads it), past the owner and agents-org lines.
-  const firstLine = (a) => readInstructions(a).split(/\n\s*\n/).map((x) => x.trim().replace(/\s*\n\s*/g, " ")).find((x) => x && !x.startsWith("#") && !x.startsWith("This AidenHQ")) ?? "";
   const agentsOut = Object.entries(cfg.agents ?? {}).map(([key, a]) => ({
     key,
     name: a.name,
     title: a.title ?? "",
-    description: firstLine(a),
+    description: a.description,
     reports_to: a.reports_to ?? null,
     roles: a.roles ?? [],
     mcp_servers: a.mcp_servers ?? [],
@@ -783,7 +781,7 @@ function writeGrants(agents, memoryInboxes = {}, reviewLogs = {}) {
   if (!isWork) return;
   // autonomy: the board and the runner read the tiered-approvals switch here, fresh on every use.
   // agents_org, product_repo: the repos a graded PR deliverable may name (the board refuses others; the runner agrees).
-  const table = { autonomy: cfg.autonomy ?? "off", agents_org: cfg.github_agents_org ?? "", product_repo: productRepo(), modules_repo: officialRepo(instanceYaml(), repo) ?? "", agents: Object.fromEntries(Object.entries(agents).map(([key, a]) => [a.id, { key, roles: cfg.agents[key].roles ?? [], tools: cfg.agents[key].enabled_tools ?? {}, ...grantEntry(key, cfg.agents[key], cfg.routines), rev: revOf(key), ...(cfg.agents[key].trial ? { trial: true } : {}), ...(cfg.agents[key].delegate_to ? { delegate_to: cfg.agents[key].delegate_to } : {}), ...(cfg.agents[key].image ? { image: cfg.agents[key].image } : {}) }])) };
+  const table = { autonomy: cfg.autonomy ?? "off", agents_org: cfg.github_agents_org ?? "", product_repo: productRepo(), modules_repo: officialRepo(instanceYaml(), repo) ?? "", agents: Object.fromEntries(Object.entries(agents).map(([key, a]) => [a.id, { key, roles: cfg.agents[key].roles ?? [], tools: cfg.agents[key].enabled_tools ?? {}, ...grantEntry(key, cfg.agents[key], cfg.routines), rev: revOf(key), description: cfg.agents[key].description, ...(cfg.agents[key].trial ? { trial: true } : {}), ...(cfg.agents[key].delegate_to ? { delegate_to: cfg.agents[key].delegate_to } : {}), ...(cfg.agents[key].image ? { image: cfg.agents[key].image } : {}) }])) };
   table.routines = { ...routineAutonomy };
   // Each agent's memory inbox issue id (ensureMemoryInboxes): memory_note posts there, the tasks bridge guards it.
   for (const [key, a] of Object.entries(agents)) if (memoryInboxes[key]) table.agents[a.id].memory_inbox = memoryInboxes[key];
