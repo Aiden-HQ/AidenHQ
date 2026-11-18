@@ -182,12 +182,6 @@ const http = createServer(async (req, res) => {
       );
       return send(res, 200, { prs: [...r.rows, ...local] });
     }
-    // The exact commit a deploy approval names (full sha + subject), on the app's branch; 400 when there's no such commit.
-    if (url.pathname === "/internal/commit" && req.method === "GET") {
-      if (!internalAuthorized(req)) return send(res, 401, { error: "unauthorized" });
-      const name = url.searchParams.get("name") ?? "";
-      return send(res, 200, await p.commit(p.find(name), url.searchParams.get("sha") ?? "").catch((err: Error) => ({ error: err.message })));
-    }
     // Every deploy of one exact commit, over the app's whole deploy table (the grading module): a commit the bounded status
     // list has moved past is still provable here, and a commit with no row really was never deployed.
     const deployHistory = /^\/internal\/deploys\/([a-z0-9-]{1,63})\/([0-9a-f]{40})$/.exec(url.pathname);
