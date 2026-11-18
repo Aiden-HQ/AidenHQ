@@ -20,8 +20,7 @@ RUN ln -s "$(find "$(npm root -g)/@openai/codex" -path '*/vendor/*/bin/codex' -t
 # `aidenhq-browse`) and cargo: put them back for login shells.
 RUN echo 'case ":$PATH:" in *:/opt/aidenhq/bin:*) ;; *) PATH="/opt/aidenhq/bin:/opt/rust/cargo/bin:$PATH" ;; esac' > /etc/profile.d/aidenhq-path.sh
 WORKDIR /workspace
-# repo-checkout: a commit of an agents-org repo, placed by the launcher (services/computer/launcher.mjs POST /repo); no credentials.
-COPY --chmod=755 repo-checkout /usr/local/bin/repo-checkout
+# repo-checkout is not in the image: the launcher mounts it (lib.mjs jobMounts) only into a job box whose agent holds the role.
 # ui-review: screenshots, axe (embedded in agent-browser), web vitals and layout checks for a running app; the design system
 # (synced from modules/apps-platform/design-system by scripts/sync-shared.mjs) as the review reference; the app starter (synced from
 # modules/apps-platform/starter: shadcn/ui on Vite + React) to scaffold new apps and mockups from, and to serve /catalog.
