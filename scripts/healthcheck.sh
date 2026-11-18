@@ -37,23 +37,23 @@ module_on() { # name: installed unless modules.json says it isn't
   node -e 'const m=JSON.parse(require("fs").readFileSync("config/modules.json","utf8")).find(x=>x.name===process.argv[1]); process.exit(m&&!m.enabled?1:0)' "$1"
 }
 secrets="${AIDENHQ_SECRETS_DIR:-/nonexistent}"
-# Read tools on a connection are called by the kernel as the narrowest agent granted them (POST /v1/health/probe, the
-# operator's key). Prints the tool's answer; 0 ok, 1 failed, 3 when no agent holds the tool (the probe is skipped).
-probe() { # connection, tool, json args
-  local key out code
-  key="$(cat "$secrets/board_operator_key" 2>/dev/null)"
-  out="$(curl -sS -m 60 -w '\n%{http_code}' -X POST -H "x-operator-key: $key" -H 'content-type: application/json' \
-    -d "{\"connection\":\"$1\",\"tool\":\"$2\",\"args\":$3}" http://10.231.0.1:3130/v1/health/probe 2>&1)" || { printf '%s\n' "$out" | tail -1; return 1; }
+# The kernel's fixed read probes (gmail, calendar, github: POST /v1/health/probe, the host's health_probe_key, sent as a header
+# from stdin so it never shows in argv). Prints nothing on success, the reason on failure; 0 ok, 1 failed, 3 when no agent holds
+# the probe's tool (skipped).
+probe() { # name
+  local out code
+  out="$(printf 'x-health-key: %s\n' "$(cat "$secrets/health_probe_key" 2>/dev/null)" \
+    | curl -sS -m 60 -w '\n%{http_code}' -X POST -H @- -H 'content-type: application/json' -d "{\"probe\":\"$1\"}" http://10.231.0.1:3130/v1/health/probe 2>&1)" || { printf '%s\n' "$out" | tail -1; return 1; }
   code="${out##*$'\n'}"; out="${out%$'\n'*}"
   case "$code" in
-    200) printf '%s' "$out" | node -e 'let d="";process.stdin.on("data",c=>d+=c).on("end",()=>{const r=JSON.parse(d);console.log(r.text);process.exit(r.ok?0:1)})' ;;
+    200) printf '%s' "$out" | node -e 'let d="";process.stdin.on("data",c=>d+=c).on("end",()=>{const r=JSON.parse(d);if(!r.ok)console.log(r.error||"failed");process.exit(r.ok?0:1)})' ;;
     409) printf '%s\n' "$out"; return 3 ;;
     *) printf '%s\n' "$out"; return 1 ;;
   esac
 }
-probe_check() { # name, connection, tool, json args
+probe_check() { # check name, probe name
   local out rc
-  out="$(probe "$2" "$3" "$4")"; rc=$?
+  out="$(probe "$2")"; rc=$?
   case "$rc" in
     0) printf '  ok    %s\n' "$1" ;;
     3) skip "$1 ($out)" ;;
@@ -94,9 +94,8 @@ fi
 
 g_health="$(curl -s -m 10 "$(svc google-workspace-mcp 8081)/healthz" 2>&1)"
 if echo "$g_health" | grep -q '"ok":true'; then
-  # Harmless reads: one message, today's events.
-  probe_check "gmail read (1 message)" google_workspace gmail_search '{"query":"in:inbox","max_results":1}'
-  probe_check "google calendar read" google_workspace calendar_list_events "{\"start\":\"$(date -u +%Y-%m-%dT00:00:00Z)\",\"end\":\"$(date -u +%Y-%m-%dT23:59:59Z)\",\"max_results\":5}"
+  probe_check "gmail read (1 message)" gmail
+  probe_check "google calendar read" calendar
   # Every connected account, not just the one the reads above happened to use.
   atoken="$(cat "${AIDENHQ_SECRETS_DIR:-/nonexistent}/google_auth_token" 2>/dev/null)"
   if [ -n "$atoken" ]; then
@@ -168,19 +167,7 @@ fi
 
 gh_health="$(curl -s -m 10 "$(svc github-mcp 8086)/healthz" 2>&1)"
 if echo "$gh_health" | grep -q '"ok":true'; then
-  gh_whoami() {
-    local out rc
-    out="$(probe github github_whoami '{}')"; rc=$?
-    [ "$rc" -eq 3 ] && return 3
-    [ "$rc" -eq 0 ] || { echo "$(printf '%s' "$out" | tail -1) (if GitHub rejected the token: paste a new one in the GitHub setup on the board)"; return 1; }
-    printf '%s' "$out" | grep -q '"login"' || { echo 'GitHub rejected the token: paste a new one in the GitHub setup on the board'; return 1; }
-  }
-  gh_out="$(gh_whoami)"; rc=$?
-  case "$rc" in
-    0) printf '  ok    github (whoami)\n' ;;
-    3) skip "github (whoami) (no agent is granted github_whoami)" ;;
-    *) printf '  FAIL  github (whoami)  %s\n' "$(echo "$gh_out" | tail -1 | cut -c1-160)"; fails=$((fails + 1)) ;;
-  esac
+  probe_check "github (whoami; if GitHub rejected the token, paste a new one in the GitHub setup on the board)" github
 else
   printf '  skip  github (not connected: %s)\n' "$(echo "$gh_health" | cut -c1-80)"
 fi
