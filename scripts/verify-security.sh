@@ -729,22 +729,19 @@ rgate="modules/codehost-github/service/src/evalgate.ts"
   && grep -qF 'if (gate && "stop" in gate) return fail(gate.stop);' "$rq" && grep -qF 'if (gate) return wait("eval", gate.wait, EVAL_WAIT_MINUTES);' "$rq" \
   && pass "codehost: a PR that changes the AI reviewer's code merges only on a passing eval receipt for its exact head, verified by the kernel ($rgate)" \
   || fail "codehost: the reviewer-eval receipt gate on merges changed ($rgate, $rq)"
-# ...and it must see the reviewer where it lives: the product's own modules/ai-reviewer again since 2026-11-18. A product PR
-# that changes it runs its head's modules/, judged by its base's; one that takes the modules back out of the product is refused.
+# ...and it must see the reviewer where it lives: the product's own modules/ai-reviewer (one repo since 2026-11-18). A product
+# PR that changes it is judged by its base branch's tip; nothing reads a separate official modules repo or its pin.
 git -C "$repo" cat-file -e "HEAD:modules/ai-reviewer/scripts/reviewer-eval.mjs" 2>/dev/null \
-  && grep -qF 'takes the official modules from' "$rgate" \
-  && pass "codehost: the reviewer-eval gate refuses official modules from anywhere but the official modules ($rgate)" \
+  && ! grep -qE 'modules-pin|modulesRepo' "$rgate" \
+  && grep -qF 'const REVIEWER_TREE = ["modules/ai-reviewer", "modules/codehost-github/service/src/plan.mjs", "modules/platform/src/check.mjs"];' "$rgate" \
+  && pass "codehost: the reviewer-eval gate judges the product's own modules/ai-reviewer, by the base branch's tip ($rgate)" \
   || fail "codehost: the reviewer-eval gate takes the official modules from elsewhere ($rgate)"
-# An apply that moves the product (or, before 2026-11-18, the instance's `aidenhq` marketplace) to a commit whose reviewer (the
-# module, plan.mjs, check.mjs by object id) differs lands only on a passing receipt for that reviewer: the passed PR's (keyed
-# by content, so its squash merge needs no second eval), else its own eval of the new commit, in its own namespace: no PR's
-# skip or receipt answers a bump. The new commit must be on its repository's default branch (merged, so reviewed there) before
-# any receipt counts; across the move into the product only the same content or such a receipt covers it. The apply asks at
-# its card and again right before it lands.
-grep -qF '  async function bump(from: ModulesAt, to: ModulesAt, what = "the change"): Promise<Gate> {' "$rgate" \
-  && grep -qF 'const REVIEWER_TREE = ["ai-reviewer", "codehost-github/service/src/plan.mjs", "platform/src/check.mjs"];' "$rgate" \
-  && pass "codehost: a move of the official modules to a changed AI reviewer lands only on a passing eval receipt for it ($rgate)" \
-  || fail "codehost: a modules move can bring a changed AI reviewer with no eval receipt ($rgate)"
+# A release bump of the instance's product pin to a commit whose reviewer content (REVIEWER_TREE by object id) differs lands
+# only on a passing receipt for that reviewer, judged by the pinned commit; adding or moving an `aidenhq` marketplace pin is refused.
+grep -qE 'async function bump\(' "$rgate" \
+  && grep -qF 'if (off.to !== null && JSON.stringify(off.from) !== JSON.stringify(off.to)) throw fail(422' modules/codehost-github/service/src/service.ts \
+  && pass "codehost: a product pin move to a changed AI reviewer lands only on a passing eval receipt for it; no marketplace pin moves ($rgate)" \
+  || fail "codehost: a pin move can bring a changed AI reviewer with no eval receipt ($rgate)"
 # Who decides a write (owner, 2026-11-14): the owner only for their own veto, a split panel, a routine's or the instance's
 # autonomy cap (autonomy off: after the AI review, #110), an owner-recorded source exception (#101), a spend-cap raise or nothing recognised (the only Tier 2 rules left in tiers.mjs).
 # Every one of them is AI-reviewed before it reaches the owner (owner, 2026-11-16): classify() makes a Tier 2-by-merit
@@ -778,7 +775,7 @@ rreview="modules/ai-reviewer/service/src/review.mjs"
   && grep -qF '  if (v2.decision === "approve") return { decision: "approve"' "$rreview" \
   && grep -qF 'if (merit === 1 && caps[0]) return' kernel/src/tier.ts && grep -qF 'if (merit === 0 && off) return' kernel/src/tier.ts \
   && grep -qF '!(await revalidate(pre)) || !records.claim(id)' kernel/src/writes.ts \
-  && grep -qF 'let v = codeVerdict(input, model) ?? afterReview(input, await ask(r, b.request ?? {}, model));' kernel/src/writes.ts && grep -qF 'const post = shadowed(v, autonomy());' kernel/src/writes.ts \
+  && grep -qF 'let v = codeVerdict(input, model) ?? afterReview(input, await ask(r, b.request ?? {}, model));' kernel/src/writes.ts && grep -qF 'const post = shadowed(v, r.requester.kind === "kernel" ? "full" : autonomy());' kernel/src/writes.ts \
   && grep -qF 'if (v.decision === "approve" && (r.review_first || r.tier === 2' kernel/src/records.ts \
   && grep -qF 'if (v.decision === "reject" && r.review_first === "owner" && !FINAL_CODES.includes(v.code ?? "")) return' kernel/src/records.ts \
   && grep -qF 'const migration = touchesMigrations(com.diff);' modules/apps-platform/apps-mcp/src/executor.ts && grep -qF 'raise: { tier: 1, panel: migration, rule:' modules/apps-platform/apps-mcp/src/executor.ts \

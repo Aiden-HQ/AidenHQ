@@ -7,7 +7,7 @@ import { readFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
-const repo = fileURLToPath(new URL("../../..", import.meta.url));
+const repo = fileURLToPath(new URL("../..", import.meta.url));
 const lines = readFileSync(`${repo}/scripts/verify-security.sh`, "utf8").split("\n");
 const slice = (from, to) => {
   const a = lines.findIndex((l) => from.test(l)), b = lines.findIndex((l, i) => i > a && to.test(l));
