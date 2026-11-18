@@ -20,9 +20,17 @@ test("aidenhq: writes, task reads and next-turn requests go to the kernel with t
     req.on("data", (d) => (b += d));
     req.on("end", () => {
       const body = JSON.parse(b || "{}");
-      seen.push({ path: req.url, auth: req.headers.authorization, key: req.headers["x-agent-key"], body });
+      if (req.method !== "GET") seen.push({ path: req.url, auth: req.headers.authorization, key: req.headers["x-agent-key"], body });
       const json = (s, o, h = {}) => res.writeHead(s, { "content-type": "application/json", ...h }).end(JSON.stringify(o));
-      if (req.url === "/v1/writes") return json(200, { id: `k-${String(seen.length).padStart(16, "0")}`, tier: 1, state: "review" });
+      // A write's record: claimed at first and done on the next read; the reviewed ones wait; a close of PR 9 fails, of PR 10 is held for the owner.
+      if (req.url === "/v1/writes") return json(200, { id: `k-${String(seen.length).padStart(16, "0")}`, tier: body.kind === "codehost-github.pr" ? 1 : 0, state: "claimed", kind: body.kind, args: body.args });
+      if (req.method === "GET" && req.url.startsWith("/v1/writes/")) {
+        const w = seen.findLast((x) => x.path === "/v1/writes");  // GETs are not recorded in `seen`
+        const n = w.body.args.prs?.[0]?.number;
+        if (n === 9) return json(200, { id: "k-9", state: "failed", outcome: { ok: false, text: "push refused: repository archived" } });
+        if (n === 10) return json(200, { id: "k-10", state: "owner" });
+        return json(200, { id: req.url.split("/").pop(), state: "done", outcome: { ok: true, text: "opened https://github.com/acme/app/pull/1" } });
+      }
       if (req.url === "/v1/jobtools/reset") return json(200, { text: "The next turn starts with a fresh session." });
       if (req.url === "/c/paperclip_tasks/mcp" && body.method === "initialize") return json(200, { jsonrpc: "2.0", id: 1, result: {} }, { "mcp-session-id": "s1" });
       if (req.url === "/c/paperclip_tasks/mcp") return res.writeHead(200, { "content-type": "text/event-stream" }).end(`data: ${JSON.stringify({ jsonrpc: "2.0", id: 2, result: { content: [{ type: "text", text: `${body.params.name} ${JSON.stringify(body.params.arguments)}` }] } })}\n\n`);
@@ -43,8 +51,11 @@ test("aidenhq: writes, task reads and next-turn requests go to the kernel with t
   const aidenhq = async (...args) => (await run(process.execPath, [CLI, ...args], { env })).stdout;
 
   // The args are the kind's schema's, with no workspace: the kernel names the job's own.
-  assert.match(await aidenhq("publish", "acme/app", "fix-login", "--title", "Fix login", "--body-file", join(ws, "body.md")), /acme\/app fix-login: k-\d+: tier 1, review/);
+  assert.match(await aidenhq("publish", "acme/app", "fix-login", "--title", "Fix login", "--body-file", join(ws, "body.md")), /acme\/app fix-login: k-\d+: done: opened https:\/\/github.com\/acme\/app\/pull\/1/);
   assert.deepEqual(seen.at(-1), { path: "/v1/writes", auth: "Bearer ahqj_job", key: undefined, body: { kind: "codehost-github.pr", args: { only: [{ repo: "acme/app", branch: "fix-login", sha }], text: { title: "Fix login", body: "Why." } } } });
+  // A write that ends badly exits non-zero with the reason; one held for the owner says so and exits 0.
+  await assert.rejects(aidenhq("close", "https://github.com/acme/app/pull/9"), (e) => e.code === 1 && /failed: push refused: repository archived/.test(e.stdout));
+  assert.match(await aidenhq("close", "https://github.com/acme/app/pull/10"), /waiting on the owner's approval/);
   await aidenhq("merge", "https://github.com/acme/app/pull/7", sha);
   assert.deepEqual(seen.at(-1).body, { kind: "codehost-github.merge", args: { prs: [{ repo: "acme/app", number: 7, head: sha }] } });
   await aidenhq("close", "https://github.com/acme/app/pull/8");
