@@ -10,6 +10,7 @@ import { fileURLToPath } from "node:url";
 import { GRADER_MARKER, appEvidence, applyEvidence, deploysOf, fileEvidence, namedTasks, otherTaskEvidence, predatesDeploys, presentNow, prEvidence, stamp, wordsEvidence } from "./evidence.ts";
 import { stripRubric } from "./compat.ts";
 import { MAX_DIFF, judgeModels } from "../aidenhq-sdk/judge.ts";
+import { dataBlock as fence } from "../aidenhq-sdk/fence.ts";
 
 export { GRADER_MARKER };
 
@@ -71,19 +72,6 @@ export function rubricAlternative(rubric: string[] = []): { n: number; criterion
   if (rubric.some((c, i) => i !== n && requirePr(String(c)))) return undefined;
   return { n: n + 1, criterion: String(rubric[n]) };
 }
-
-/**
- * Author text in its own block, and never able to end it: every run of three or more fence characters in the text is
- * neutralised, in every spelling a prompt here uses (`<<<`/`>>>` and the `‹‹‹`/`›››` the neutralised text itself used to
- * keep). Since a marker and the block's own terminator are made of exactly such runs (`NAME>>>`), no text can close a block
- * early or open another one, whatever it says (a PR body is untrusted: it may claim to be the grader, the owner or this
- * system). Shorter runs stay as written: ordinary text and code keep their `<`, `>`, `‹` and `›`.
- */
-const neutral = (text: unknown) => String(text ?? "").replace(/[<>‹›]{3,}/g, (run) => [...run].map((c) => (c === "<" || c === "‹" ? "≪" : "≫")).join(""));
-const fence = (name: string, text: unknown, max: number) => {
-  const body = neutral(text).slice(0, max);
-  return `<<<${name}\n${body || "(none)"}\n${name}>>>`;
-};
 
 /**
  * The evidence for one graded task: { awaiting } (why it can't be graded yet) or { version, facts, data }. `deps` reach

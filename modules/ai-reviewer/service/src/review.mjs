@@ -18,6 +18,7 @@ import { createHash } from "node:crypto";
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { MAX_FILES } from "./review-files.mjs";
+import { dataBlock as fence } from "./aidenhq-sdk/fence.ts";
 import { checklistText, matchChecklist } from "./review-checklist.mjs";
 
 import { LUNA, MAX_DIFF, RETRY_DELAYS_MS, judgeModels, openRouterAsk as judgeAsk, secondModels } from "./aidenhq-sdk/judge.ts";
@@ -212,14 +213,6 @@ export function sourcesInDiff(records, diff, anywhere = false) {
 /** One record as the reviewer reads it: code's labels on one line, so a record can never add a line of its own. */
 const recordLine = (r, inDiff, elsewhere = false) =>
   `${r.repo ? `base: ${r.repo} ${r.base ?? ""}; ` : ""}${["ecosystem", "package", "from", "to", "version", "approved_by", "reference", "reason"].filter((k) => r[k]).map((k) => `${k}: ${String(r[k]).replace(/\s+/g, " ").slice(0, 300)}`).join("; ")}${inDiff ? " [the diff adds this source]" : elsewhere ? " [the diff adds this source only in a part for another repository or base: this record does not cover that change]" : ""}`;
-
-const fence = (name, text, max, middle = false) => {
-  let body = String(text ?? "").replace(/<<<|>>>/g, "‹‹‹");
-  // middle: past the cap keep the start and the end and say so, so the reviewer can tell code clipped it (a long delegated chain).
-  if (middle && body.length > max) body = `${body.slice(0, max >> 1)}\n[… ${body.length - max} characters omitted by code …]\n${body.slice(-(max >> 1))}`;
-  else body = body.slice(0, max);
-  return `<<<${name}\n${body || "(none)"}\n${name}>>>`;
-};
 
 export function reviewPrompt({ policy, card, diff, files = "", chain, panel = false, previous = [], unsure, siblings = "", sources, checks = [], evidence, decisions }) {
   const system = `You are the security reviewer for an AI agent fleet. Agents ask to push code, open or merge pull requests, change the fleet's configuration, deploy apps, run one-off scripts or publish documents. Code already sorted this request into Tier 1: routine, but it needs an independent check before it runs. Decide, following the policy below:
