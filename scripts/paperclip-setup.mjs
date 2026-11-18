@@ -606,6 +606,7 @@ async function ensureRoutines(companyId, agents) {
     }
     // Its cap is in the grants table before any trigger can fire it (the runner treats an unknown routine as off).
     routineAutonomy[routine.id] = r.autonomy ?? routineAutonomyDefault(r);
+    routineKeys[routine.id] = key;
     writeGrants(agents, memoryInboxes, reviewLogs, chatTasks);
     const { json: detail } = await api("GET", `/api/routines/${routine.id}`);
     const triggers = detail.triggers ?? [];
@@ -772,13 +773,16 @@ const instanceYaml = () => {
  * as the last table's, so the first write of an apply keeps it; ensureRoutines adds each routine's and writes the grants
  * again before that routine's triggers are added (the runner treats a routine it doesn't find here as off).
  */
-const routineAutonomy = (() => {
+const lastGrants = (() => {
   try {
-    return JSON.parse(readFileSync(join(configDir, "grants", "grants.json"), "utf8")).routines ?? {};
+    return JSON.parse(readFileSync(join(configDir, "grants", "grants.json"), "utf8"));
   } catch {
     return {};
   }
 })();
+const routineAutonomy = { ...lastGrants.routines };
+/** Each routine's compiled key by Paperclip routine id: a routine run's wake names it (`routine:<key>`), so its own model applies. */
+const routineKeys = { ...lastGrants.routine_keys };
 
 function writeGrants(agents, memoryInboxes = {}, reviewLogs = {}, chatTasks = {}) {
   if (!isWork) return;
@@ -786,6 +790,7 @@ function writeGrants(agents, memoryInboxes = {}, reviewLogs = {}, chatTasks = {}
   // agents_org, product_repo: the repos a graded PR deliverable may name (the board refuses others; the runner agrees).
   const table = { autonomy: cfg.autonomy ?? "off", agents_org: cfg.github_agents_org ?? "", product_repo: productRepo(), modules_repo: officialRepo(instanceYaml(), repo) ?? "", agents: Object.fromEntries(Object.entries(agents).map(([key, a]) => [a.id, { key, roles: cfg.agents[key].roles ?? [], tools: cfg.agents[key].enabled_tools ?? {}, ...grantEntry(key, cfg.agents[key], cfg.routines), rev: revOf(key), description: cfg.agents[key].description, ...(cfg.agents[key].trial ? { trial: true } : {}), ...(cfg.agents[key].delegate_to ? { delegate_to: cfg.agents[key].delegate_to } : {}), ...(cfg.agents[key].image ? { image: cfg.agents[key].image } : {}) }])) };
   table.routines = { ...routineAutonomy };
+  table.routine_keys = { ...routineKeys };
   // Each agent's memory inbox issue id (ensureMemoryInboxes): memory_note posts there, the tasks bridge guards it.
   for (const [key, a] of Object.entries(agents)) if (memoryInboxes[key]) table.agents[a.id].memory_inbox = memoryInboxes[key];
   // Each fleet-audit agent's review log issue id (ensureReviewLogs): the tasks bridge's coach_record writes there, coach_due reads it.

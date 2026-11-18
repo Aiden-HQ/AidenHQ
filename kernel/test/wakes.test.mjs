@@ -34,7 +34,7 @@ function world() {
   // Writes as the agent (outcomes.ts): recorded, and the status applied.
   const posts = [];
   const post = async (job, req) => { posts.push({ ...job, ...req }); if (req.status) issues[job.task].status = req.status; return { comment: `c-${posts.length}`, status: req.status ?? null }; };
-  const wakes = createWakes({ db, owner, post, now: () => clock, dispatches: { may: (mod, a) => mod === "dispatch" && a === AGENT, agents: (mod) => (mod === "dispatch" ? [AGENT] : []) } });
+  const wakes = createWakes({ db, owner, post, now: () => clock, routineKey: (id) => ({ rt: "digest" })[id], dispatches: { may: (mod, a) => mod === "dispatch" && a === AGENT, agents: (mod) => (mod === "dispatch" ? [AGENT] : []) } });
   const w = {
     db, wakes, issues, posts,
     tick: (ms = 1000) => (clock += ms),
@@ -71,7 +71,7 @@ test("a routine's todo task with no event wakes after one poll; later ticks coal
   assert.equal(w.issues.r2.status, "cancelled", "the later tick is cancelled while the first is open");
   assert.deepEqual(w.posts.map((p) => [p.agent, p.task, p.kind, p.status]), [[AGENT, "r2", "coalesced", "cancelled"]], "cancelled by its own agent, never the owner");
   const [c] = w.wakes.claim("dispatch");
-  assert.equal(c.key, "routine-run:run-r1");
+  assert.deepEqual([c.key, c.cause], ["routine-run:run-r1", "routine:digest"], "the cause names the routine's key: its own model applies");
   w.db.prepare("UPDATE wakes SET job = 'j-1' WHERE key = ?").run(c.key);
   w.db.prepare("INSERT INTO jobs VALUES ('j-1', 'r1', ?, 'done', ?)").run(AGENT, w.tick());
   w.tick();
