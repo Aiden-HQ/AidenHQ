@@ -2199,7 +2199,7 @@ export function createApp(opts: AppOptions): Server {
     // Local mode (the kernel's sign-in is on localhost): a page opened at 127.0.0.1 moves to localhost first. Sign-in
     // crosses to the kernel's localhost origin and back, and a 127.0.0.1 board bookmarked before that dead-ends there.
     const host = String(req.headers.host ?? "").toLowerCase(), local = host.replace(/^127\.0\.0\.1/, "localhost");
-    if (opts.mode === "lan" && (req.method === "GET" || req.method === "HEAD") && local !== host && opts.allowedHosts.includes(local) && opts.adminUrl && new URL(opts.adminUrl).hostname === "localhost") {
+    if (opts.mode === "lan" && (req.method === "GET" || req.method === "HEAD") && req.headers["sec-fetch-mode"] === "navigate" && local !== host && opts.allowedHosts.includes(local) && opts.adminUrl && new URL(opts.adminUrl).hostname === "localhost") {
       res.writeHead(308, { location: `http://${local}${req.url ?? "/"}`, "cache-control": "no-store" }).end();
       return;
     }
