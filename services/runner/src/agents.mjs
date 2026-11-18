@@ -181,8 +181,10 @@ export function pickedEngine(issue, engineers, cfg) {
  * The Paperclip fields that show `engine` as the task's picker: the matching Engineer as assignee,
  * and a model override unless the model is that Engineer's primary model. Undefined if no Engineer runs it.
  */
-// A box Engineer (metadata.box, the App Engineer) runs only what is assigned to it: never picked by its engine kind.
-const byKind = (engineers) => engineers.filter((a) => a.metadata?.box !== true);
+// A specialised Engineer (its own brief: the App Engineer, the Platform Engineer) runs only what is assigned to it: never
+// picked, or borrowed as a persona, by its engine kind. Whether its jobs run in a computer doesn't matter here.
+export const generalEngineers = (engineers) => engineers.filter((a) => !a.metadata?.brief);
+const byKind = generalEngineers;
 
 export function pickerFor(engine, engineers) {
   const agent = byKind(engineers).find((a) => engineOf(a) === engine.kind);
@@ -202,8 +204,8 @@ export function openrouterModels(engineers) {
 
 /** The Engineer's board identity for an engine: name and voice, when setup gave it one. */
 export function personaFor(kind, engineers, assigned) {
-  // A box Engineer is its own persona; the others share one per engine.
-  const p = (assigned?.metadata?.box === true ? assigned : byKind(engineers).find((a) => engineOf(a) === kind))?.metadata?.persona;
+  // A specialised Engineer is its own persona; the others share one per engine.
+  const p = (assigned?.metadata?.brief ? assigned : byKind(engineers).find((a) => engineOf(a) === kind))?.metadata?.persona;
   return typeof p?.name === "string" && p.name ? { name: p.name, voice: typeof p.voice === "string" ? p.voice : "" } : undefined;
 }
 
