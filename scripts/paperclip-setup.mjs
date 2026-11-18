@@ -17,7 +17,7 @@ import { createRequire } from "node:module";
 import { dirname, join, resolve } from "node:path";
 import { createInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
-import { ensureBackupRetention, ensureChatTasks, ensureFleetIssues, ensureMemoryInboxes, ensureReviewLogs, grantEntry, HEALTH_PROBES, healthProbeAgent, mapLimit, routineAutonomyDefault } from "./modules.mjs";
+import { ensureBackupRetention, ensureChatTasks, ensureFleetIssues, ensureMemoryInboxes, ensureReviewLogs, grantEntry, mapLimit, routineAutonomyDefault } from "./modules.mjs";
 import { retireUnconfigured } from "./retire-agents.mjs";
 import { ensureAgentKeys, ensureEventsPlugin } from "./paperclip-events.mjs";
 import { agentSkills, handbookParts, laneHandbook, personaOf, readInstructions as readHandbook } from "./handbook.mjs";
@@ -365,29 +365,6 @@ async function ensureLaneConfig(agents, chatTasks) {
   step(`Wrote the fast lane config (${Object.keys(out).join(", ") || "no lane agents"})`);
 }
 
-/**
- * scripts/healthcheck.sh's caller per probed connection (HEALTH_PROBES): a key, `paperclip_health_key_<connection>`, for
- * the agent healthProbeAgent picks from the grants. Kept while it still names that agent; emptied when no agent qualifies.
- */
-async function ensureHealthKeys(agents) {
-  for (const conn of Object.keys(HEALTH_PROBES)) {
-    const name = `paperclip_health_key_${conn}`;
-    const key = healthProbeAgent(cfg.agents, conn);
-    if (!key) {
-      if (readSecret(name)) writeSecret(name, "");
-      continue;
-    }
-    const existing = readSecret(name);
-    if (existing) {
-      const res = await fetch(new URL("/api/agents/me", baseUrl), { headers: { authorization: `Bearer ${existing}` } });
-      if (res.ok && (await res.json()).id === agents[key].id) continue;
-    }
-    const { json } = await api("POST", `/api/agents/${agents[key].id}/keys`, { name: `healthcheck-${conn}` });
-    writeSecret(name, json.token);
-    step(`Created the health check's ${conn} key, as ${key}`);
-  }
-}
-
 function updateSystemYaml(companyId) {
   const path = join(configDir, "system.yaml");
   if (!existsSync(path)) fail("config/system.yaml missing (run scripts/bootstrap.sh)");
@@ -636,7 +613,6 @@ const opsAgents = Object.keys(cfg.agents ?? {}).filter((k) => cfg.agents[k].role
 if (opsAgents.length > 1) fail(`only one agent may hold the ops-key role (${opsAgents.join(", ")})`);
 const opsAgent = opsAgents.length ? agents[opsAgents[0]] : undefined;
 const keyChanged = opsAgent ? await ensureOpsKey(opsAgent) : false;
-if (isWork) await ensureHealthKeys(agents);
 if (isWork) await ensureAgentKeys({ api, agents, secretsDir, baseUrl, step });
 if (isWork) await ensureLaneConfig(agents, chatTasks); // the fast chat lane serves the work company only (phase 1)
 const cfgChanged = isWork ? updateSystemYaml(company.id) : false;
