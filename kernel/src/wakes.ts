@@ -5,7 +5,8 @@
 // Keys (never Paperclip's eventId): comment:<commentId>, issue:<issueId>:<updatedAt> (assigned or moved to todo),
 // routine-run:<runId> (a routine run's new task, cause routine:<key>: the routine's compiled key, so admission applies its own
 // model; routine tasks of a non-always_enqueue routine coalesce here), reopen:<issueId>:<statusVersion> (a comment reopened a finished task),
-// wake_at:<module>.<id> (a module's scheduled wake, due at `until`).
+// wake_at:<module>.<id> (a module's scheduled wake, due at `until`), unblocked:<issueId>:<closure> (a blocked task whose first-class
+// blockers (blockedBy) are all done or cancelled: the poll moves it to todo with one tagged notice, then files this wake).
 // Polled agents: those the modules that claim wakes dispatch (compile's `dispatches`); a module joins on its first claim.
 // So nothing is polled until a dispatcher claims, and an agent's first scan only wakes for comments after its dispatcher
 // joined or the old executor's last word on the task, whichever is later (the handoff boundary).
@@ -32,7 +33,7 @@ CREATE TABLE IF NOT EXISTS wake_dispatchers (module TEXT PRIMARY KEY, since INTE
 CREATE TABLE IF NOT EXISTS dispatch_since (agent TEXT PRIMARY KEY, at INTEGER NOT NULL);`;
 
 export interface Wake { key: string; task: string; agent: string; cause: string; at: number; state: string; claimed_by: string | null; job: string | null; until: number | null }
-type Issue = { id: string; status?: string; assigneeAgentId?: string | null; updatedAt?: string; createdAt?: string; statusVersion?: number; originKind?: string | null; originId?: string | null; companyId?: string };
+type Issue = { id: string; status?: string; assigneeAgentId?: string | null; updatedAt?: string; createdAt?: string; statusVersion?: number; blockedBy?: { id: string; identifier?: string | null; status: string }[]; originKind?: string | null; originId?: string | null; companyId?: string };
 type Comment = { id: string; body?: string; authorAgentId?: string | null; createdAt?: string; deletedAt?: string | null };
 type Log = (msg: string, f?: Record<string, unknown>) => void;
 const ms = (t?: string) => (t ? Date.parse(t) || 0 : 0);
@@ -118,10 +119,36 @@ export function createWakes({ db, owner, post, dispatches, routineKey = () => un
     q("INSERT INTO wake_tasks (task, agent, status, comment) VALUES (?, ?, ?, ?) ON CONFLICT(task) DO UPDATE SET agent = excluded.agent, status = excluded.status, comment = excluded.comment").run(issue.id, agent, status, newest);
   }
 
+  /**
+   * A blocked task whose blockers (first-class, read from the single issue: a list row may leave them out) are all done or
+   * cancelled leaves `blocked` for `todo` with one notice naming what closed (the PATCH carries it, tagged: it wakes nobody),
+   * and its assignee is woken. Stateless: a task still blocked is simply retried next poll, and the wake key (the closure) files
+   * once. Paperclip counts a cancelled blocker as unresolved for a status write, so those relations are cleared first; a 409 is
+   * retried once with them all cleared.
+   */
+  async function unblock(issue: Issue, agent: string) {
+    const r = await owner("GET", `/api/issues/${encodeURIComponent(issue.id)}`);
+    if (r.status !== 200) throw new Error(`control plane GET issue → ${r.status}`);
+    const task = r.json as Issue;
+    const blockers = task.blockedBy ?? [];
+    if (task.status !== "blocked" || !blockers.length || !blockers.every((b) => b.status === "done" || b.status === "cancelled")) return;
+    const closure = blockers.map((b) => `${b.id}:${b.status}`).sort().join(",");
+    const line = `${blockers.map((b) => b.identifier ?? b.id).join(", ")} closed (${blockers.map((b) => b.status).join(", ")}).`;
+    const patch = (b: object) => owner("PATCH", `/api/issues/${encodeURIComponent(task.id)}`, b);
+    const ok = (res: { status: number }) => { if (res.status >= 300) throw new Error(`control plane PATCH issue → ${res.status}`); return res; };
+    const keep = blockers.filter((b) => b.status !== "cancelled").map((b) => b.id);
+    if (keep.length !== blockers.length) ok(await patch({ blockedByIssueIds: keep }));
+    const move = { status: "todo", comment: `Unblocked: ${line}\n\n<!-- aidenhq:job=kernel kind=unblocked -->` };
+    let res = await patch(move);
+    if (res.status === 409) { ok(await patch({ blockedByIssueIds: [] })); res = await patch(move); }
+    ok(res);
+    insert(`unblocked:${task.id}:${closure}`, task.id, agent, "unblocked", now());
+  }
+
   const companies = new Map<string, string>();
   return {
     scan,
-    /** The reconcile poll: every open task of every polled agent; and wakes whose jobs ended are done. */
+    /** The reconcile poll: every open task of every polled agent, and its blocked tasks whose blockers closed; and wakes whose jobs ended are done. */
     async poll() {
       q(`UPDATE wakes SET state = 'done' WHERE state = 'claimed' AND job IS NOT NULL AND job NOT IN (SELECT id FROM jobs WHERE state IN ${LIVE})`).run();
       for (const agent of polled().keys()) {
@@ -134,6 +161,9 @@ export function createWakes({ db, owner, post, dispatches, routineKey = () => un
           const l = await owner("GET", `/api/companies/${encodeURIComponent(companies.get(agent)!)}/issues?status=${OPEN}&limit=500&assigneeAgentId=${encodeURIComponent(agent)}`);
           if (l.status !== 200 || !Array.isArray(l.json)) throw new Error(`control plane GET issues → ${l.status}`);
           for (const issue of l.json as Issue[]) await scan(issue, { open: l.json }).catch((e: Error) => log("wake scan failed", { task: issue.id, err: e.message }));
+          const b = await owner("GET", `/api/companies/${encodeURIComponent(companies.get(agent)!)}/issues?status=blocked&limit=200&assigneeAgentId=${encodeURIComponent(agent)}`);
+          if (b.status !== 200 || !Array.isArray(b.json)) throw new Error(`control plane GET blocked issues → ${b.status}`);
+          for (const issue of b.json as Issue[]) await unblock(issue, agent).catch((e: Error) => log("wake unblock failed", { task: issue.id, err: e.message }));
           // Its blocked routine runs a later run of the same routine finished are moot: cancelled as the agent (stale-routines.ts).
           await closeStaleRoutineRuns({ owner, post, log }, agent, companies.get(agent)!).catch((e: Error) => log("stale routine runs not closed", { agent, err: e.message }));
         } catch (e) {
