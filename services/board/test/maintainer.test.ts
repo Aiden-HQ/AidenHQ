@@ -2,7 +2,7 @@ import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
-import { maintainerIssues, maintainerTick, maintainerWake, startMaintainer, type MaintainerBatch, type MaintainerIssue, type MaintainerRepoBatch } from "../src/maintainer.js";
+import { maintainerIssues, maintainerTick, maintainerTriageWake, maintainerWake, startMaintainer, type MaintainerBatch, type MaintainerIssue, type MaintainerRepoBatch } from "../src/maintainer.js";
 
 const kv = () => {
   const m = new Map<string, string>();
@@ -201,5 +201,53 @@ describe("the Maintainer's issue watcher", () => {
     } finally {
       vi.unstubAllGlobals();
     }
+  });
+});
+
+describe("the Maintainer's per-issue triage", () => {
+  const at = (h: number) => `2026-01-01T${String(h).padStart(2, "0")}:00:00Z`;
+  it("each new unlabelled issue fires one triage run, number only; a refusal resumes there; the backlog is never fired", async () => {
+    const store = kv(), asked: (Record<string, string> | undefined)[] = [];
+    let refuse = 0;
+    const fired: number[] = [];
+    const batches: MaintainerBatch[] = [
+      { repos: [{ repo: R, issues: [], cursor: "c1", untriaged: [], triage_cursor: at(1) }] }, // the first look: cursor only
+      { repos: [{ repo: R, issues: [], cursor: "c1", untriaged: [{ number: 5, created_at: at(2) }, { number: 6, created_at: at(3) }], triage_cursor: at(3) }] },
+      { repos: [{ repo: R, issues: [], cursor: "c1", untriaged: [{ number: 6, created_at: at(3) }], triage_cursor: at(3) }] },
+      { repos: [{ repo: R, issues: [], cursor: "c1" }] }, // an older github-mcp: nothing to triage, the state kept
+    ];
+    let i = 0;
+    const issues = async (_c: Record<string, string>, triage?: Record<string, string>) => (asked.push(triage), batches[i++]!);
+    const triage = async (repo: string, n: number) => (repo === R && n === 6 && refuse-- > 0 ? false : (fired.push(n), true));
+    const tick = () => maintainerTick({ issues, fire: async () => true, triage, store, log: logs() });
+    await tick();
+    refuse = 1;
+    expect(await tick()).toBe(1);
+    expect(stored(store).repos[R].triage_cursor).toBe(at(2));
+    await tick();
+    await tick();
+    expect(fired).toEqual([5, 6]);
+    expect(asked).toEqual([{}, { [R]: at(1) }, { [R]: at(2) }, { [R]: at(3) }]);
+    expect(stored(store).repos[R]).toMatchObject({ triage_cursor: at(3), triaged: [5, 6] });
+    // Without the triage webhook the read asks for no new issues at all.
+    const plain: unknown[] = [];
+    await maintainerTick({ issues: async (...a: unknown[]) => (plain.push(a.length), { repos: [] }), fire: async () => true, store: kv(), log: logs() });
+    expect(plain).toEqual([1]);
+  });
+
+  it("is off when external triage is off, and sends the repo and number only", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "triage-"));
+    writeFileSync(join(dir, "url"), "http://paperclip:3100/hook");
+    writeFileSync(join(dir, "secret"), "s".repeat(32));
+    const env = { MAINTAINER_TRIAGE_WEBHOOK_URL_FILE: join(dir, "url"), MAINTAINER_TRIAGE_WEBHOOK_SECRET_FILE: join(dir, "secret") };
+    expect(maintainerTriageWake({ ...env, MAINTAINER_EXTERNAL_TRIAGE: "false" })).toBeUndefined();
+    const sent: string[] = [];
+    vi.stubGlobal("fetch", async (_u: string, init: RequestInit) => (sent.push(String(init.body)), new Response("", { status: 202 })));
+    try {
+      expect(await maintainerTriageWake({ ...env, MAINTAINER_EXTERNAL_TRIAGE: "true" })!(R, 9)).toBe(true);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+    expect(JSON.parse(sent[0]!)).toEqual({ repo: R, number: "9" });
   });
 });

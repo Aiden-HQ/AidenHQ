@@ -8,6 +8,12 @@
  * Each repo's cursor, the issues already fired and the ones already noted as untrusted live in the board's store (meta
  * `maintainer_issues`, per repo), so a restart with the stored cursors neither repeats a delivery nor skips a new issue. A
  * failed read leaves that repo's cursor where it was and fires nothing there; the next tick asks again.
+ *
+ * With the triage webhook set (the maintainer module's external_triage), the same read also brings each repo's issues
+ * opened since its triage cursor with no fix label that our App didn't file, and each fires the triage routine once, with
+ * its repo and number only (the title is a stranger's text). Labelling stays the Maintainer's judgment in that run; its
+ * label then comes back through the trusted path above. The first look only sets the cursor: the issues already open are
+ * the daily triage's.
  */
 import { createHmac } from "node:crypto";
 import { readFileSync } from "node:fs";
@@ -25,18 +31,25 @@ export interface MaintainerIssue {
   labeled_at?: string;
   actor?: string;
 }
-/** One repo's answer: its issues since its cursor and the new cursor, or why it couldn't be read. */
+/** One repo's answer: its issues since its cursor and the new cursor, or why it couldn't be read; and, when asked, its new
+ * unlabelled issues (oldest first) and their cursor, or why those couldn't be read. */
 export interface MaintainerRepoBatch {
   repo: string;
   issues?: MaintainerIssue[];
   skipped?: { number: number; reason: string }[];
   cursor?: string | null;
   error?: string;
+  untriaged?: { number: number; created_at: string }[];
+  triage_cursor?: string;
+  triage_error?: string;
 }
 export interface MaintainerBatch {
   repos: MaintainerRepoBatch[];
 }
 type Kv = Pick<Store, "meta" | "setMeta">;
+type Issues = (cursors: Record<string, string>, triage?: Record<string, string>) => Promise<MaintainerBatch>;
+type Fire = (repo: string, issue: MaintainerIssue) => Promise<boolean>;
+type Triage = (repo: string, number: number) => Promise<boolean>;
 type Log = { info(o: object, m: string): void; warn(o: object, m: string): void };
 
 interface RepoState {
@@ -45,6 +58,9 @@ interface RepoState {
   noted?: number[];
   /** The last error logged for this repo, so a run of the same one is said once. */
   error?: string;
+  triage_cursor?: string;
+  triaged?: number[];
+  triage_error?: string;
 }
 interface State {
   repos?: Record<string, RepoState>;
@@ -70,16 +86,17 @@ const keep = (xs: Iterable<number>) => [...new Set(xs)].slice(-KEEP);
  * One look over every maintained repo: fire each new trusted issue once, name each new untrusted one once, and move a
  * repo's cursor only when its whole batch was delivered. Returns how many webhooks were fired.
  */
-export async function maintainerTick(d: { issues: (cursors: Record<string, string>) => Promise<MaintainerBatch>; fire: (repo: string, issue: MaintainerIssue) => Promise<boolean>; store: Kv; log: Log }): Promise<number> {
+export async function maintainerTick(d: { issues: Issues; fire: Fire; triage?: Triage; store: Kv; log: Log }): Promise<number> {
   const state = readState(d.store);
   const repos: Record<string, RepoState> = { ...(state.repos ?? {}) };
   let legacy: RepoState | undefined = state.repos ? undefined : { cursor: state.cursor, fired: state.fired, noted: state.noted };
   // The legacy state is kept as it was until a repo takes it over.
   const save = (error?: string) => d.store.setMeta(STATE_KEY, JSON.stringify({ ...(legacy ?? { repos }), ...(error ? { error } : {}) }));
   const cursors = Object.fromEntries(Object.entries(repos).flatMap(([r, s]) => (s.cursor ? [[r, s.cursor]] : [])));
+  const triageCursors = Object.fromEntries(Object.entries(repos).flatMap(([r, s]) => (s.triage_cursor ? [[r, s.triage_cursor]] : [])));
   let batch: MaintainerBatch;
   try {
-    batch = await d.issues(cursors);
+    batch = d.triage ? await d.issues(cursors, triageCursors) : await d.issues(cursors);
   } catch (err) {
     const message = String(err instanceof Error ? err.message : err).slice(0, 300);
     if (message !== state.error) d.log.warn({ err: message }, "maintainer issues not read; the next tick asks again");
@@ -91,9 +108,11 @@ export async function maintainerTick(d: { issues: (cursors: Record<string, strin
   for (const b of batch.repos ?? []) {
     const before = repos[b.repo] ?? legacy ?? {};
     legacy = undefined;
+    const { count: triaged = 0, ...triage } = d.triage ? await triageRepo(b, before, d.triage, d.log) : {};
+    count += triaged;
     if (b.error) {
       if (b.error !== before.error) d.log.warn({ repo: b.repo, err: b.error }, "maintainer issues not read for this repo; the next tick asks again");
-      repos[b.repo] = { ...before, error: b.error };
+      repos[b.repo] = { ...before, ...triage, error: b.error };
       continue;
     }
     const fired = new Set(before.fired ?? []);
@@ -118,17 +137,47 @@ export async function maintainerTick(d: { issues: (cursors: Record<string, strin
       fired.add(issue.number);
       count++;
     }
-    repos[b.repo] = { cursor: (delivered ? b.cursor : undefined) ?? before.cursor, fired: keep(fired), noted: keep(noted) };
+    repos[b.repo] = { cursor: (delivered ? b.cursor : undefined) ?? before.cursor, fired: keep(fired), noted: keep(noted), ...triage };
   }
   save();
   return count;
 }
 
 /**
+ * One repo's new unlabelled issues: each fires the triage routine once. The triage cursor moves past what was delivered:
+ * a refused webhook stops there, and the next tick reads it again (the fired set keeps a repeat out). A github-mcp that
+ * sends no `untriaged` (older than this board) leaves the state as it was.
+ */
+async function triageRepo(b: MaintainerRepoBatch, before: RepoState, fire: Triage, log: Log): Promise<Partial<RepoState> & { count?: number }> {
+  const kept = { triage_cursor: before.triage_cursor, triaged: before.triaged };
+  if (b.triage_error) {
+    if (b.triage_error !== before.triage_error) log.warn({ repo: b.repo, err: b.triage_error }, "new issues not read for triage on this repo; the next tick asks again");
+    return { ...kept, triage_error: b.triage_error };
+  }
+  if (!b.untriaged || !b.triage_cursor) return kept;
+  const triaged = new Set(before.triaged ?? []);
+  // The issues come oldest first: the cursor follows the last one delivered, and reaches the read's own once all are.
+  let cursor = before.triage_cursor;
+  let count = 0;
+  for (const i of b.untriaged) {
+    if (!triaged.has(i.number)) {
+      if (!(await fire(b.repo, i.number).catch(() => false))) {
+        log.warn({ repo: b.repo, issue: i.number }, "maintainer triage webhook refused; the next tick retries it");
+        return { triage_cursor: cursor, triaged: keep(triaged), count };
+      }
+      triaged.add(i.number);
+      count++;
+    }
+    cursor = i.created_at;
+  }
+  return { triage_cursor: b.triage_cursor, triaged: keep(triaged), count };
+}
+
+/**
  * github-mcp's internal read on the compose network, with the token it shares with this board only. Undefined until the
  * module that runs it mounts that token: the watcher is off, rather than failing every tick.
  */
-export function maintainerIssues(env: NodeJS.ProcessEnv = process.env): ((cursors: Record<string, string>) => Promise<MaintainerBatch>) | undefined {
+export function maintainerIssues(env: NodeJS.ProcessEnv = process.env): Issues | undefined {
   const url = (env.MAINTAINER_ISSUES_URL ?? "http://github-mcp:8086/internal/maintainer/issues").replace(/\/+$/, "");
   const tokenFile = env.MAINTAINER_ISSUES_TOKEN_FILE;
   if (!tokenFile) return undefined;
@@ -137,19 +186,17 @@ export function maintainerIssues(env: NodeJS.ProcessEnv = process.env): ((cursor
   } catch {
     return undefined;
   }
-  return async (cursors) => {
+  return async (cursors, triage) => {
     const token = readFileSync(tokenFile, "utf8").trim();
-    const res = await fetch(`${url}?cursors=${encodeURIComponent(JSON.stringify(cursors))}`, { headers: { authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(20_000) });
+    const query = `cursors=${encodeURIComponent(JSON.stringify(cursors))}${triage ? `&triage_cursors=${encodeURIComponent(JSON.stringify(triage))}` : ""}`;
+    const res = await fetch(`${url}?${query}`, { headers: { authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(20_000) });
     if (!res.ok) throw new Error(`github-mcp: ${res.status} ${(await res.text()).slice(0, 200)}`);
     return (await res.json()) as MaintainerBatch;
   };
 }
 
-/**
- * The Maintainer routine's webhook, signed like the other routine webhooks. Undefined until setup has written both files:
- * the watcher is then off, rather than failing every tick.
- */
-export function maintainerWake(env: NodeJS.ProcessEnv = process.env): ((repo: string, issue: MaintainerIssue) => Promise<boolean>) | undefined {
+/** A routine's signed webhook from its two files, or undefined until setup has written both. */
+function signedWebhook(urlFile: string | undefined, secretFile: string | undefined): ((payload: object) => Promise<boolean>) | undefined {
   const read = (f: string | undefined) => {
     try {
       return f ? readFileSync(f, "utf8").trim() : "";
@@ -157,11 +204,11 @@ export function maintainerWake(env: NodeJS.ProcessEnv = process.env): ((repo: st
       return "";
     }
   };
-  const [url, secret] = [read(env.MAINTAINER_WEBHOOK_URL_FILE), read(env.MAINTAINER_WEBHOOK_SECRET_FILE)];
+  const [url, secret] = [read(urlFile), read(secretFile)];
   if (!url || !secret) return undefined;
-  return async (repo, issue) => {
+  return async (payload) => {
     const ts = String(Math.floor(Date.now() / 1000));
-    const body = JSON.stringify({ repo, number: String(issue.number), title: issue.title ?? "" });
+    const body = JSON.stringify(payload);
     const sig = createHmac("sha256", secret).update(`${ts}.${body}`).digest("hex");
     const res = await fetch(url, { method: "POST", headers: { "content-type": "application/json", "x-paperclip-timestamp": ts, "x-paperclip-signature": `sha256=${sig}` }, body, signal: AbortSignal.timeout(15_000) });
     // 409: a run is already going (coalesced) and reads the issue itself.
@@ -169,7 +216,26 @@ export function maintainerWake(env: NodeJS.ProcessEnv = process.env): ((repo: st
   };
 }
 
-type Wiring = { issues: (cursors: Record<string, string>) => Promise<MaintainerBatch>; fire: (repo: string, issue: MaintainerIssue) => Promise<boolean> };
+/**
+ * The Maintainer routine's webhook, signed like the other routine webhooks. Undefined until setup has written both files:
+ * the watcher is then off, rather than failing every tick.
+ */
+export function maintainerWake(env: NodeJS.ProcessEnv = process.env): Fire | undefined {
+  const send = signedWebhook(env.MAINTAINER_WEBHOOK_URL_FILE, env.MAINTAINER_WEBHOOK_SECRET_FILE);
+  return send && ((repo, issue) => send({ repo, number: String(issue.number), title: issue.title ?? "" }));
+}
+
+/**
+ * The per-issue triage routine's webhook: the repo and number only. Undefined with external triage off, or until setup has
+ * written its files: the watcher then reads no new issues.
+ */
+export function maintainerTriageWake(env: NodeJS.ProcessEnv = process.env): Triage | undefined {
+  if (String(env.MAINTAINER_EXTERNAL_TRIAGE ?? "").trim() === "false") return undefined;
+  const send = signedWebhook(env.MAINTAINER_TRIAGE_WEBHOOK_URL_FILE, env.MAINTAINER_TRIAGE_WEBHOOK_SECRET_FILE);
+  return send && ((repo, number) => send({ repo, number: String(number) }));
+}
+
+type Wiring = { issues: Issues; fire: Fire; triage?: Triage };
 
 /**
  * Starts the watcher (main.ts). `wiring` is asked on every tick, so the webhook setup writes after this board started is
