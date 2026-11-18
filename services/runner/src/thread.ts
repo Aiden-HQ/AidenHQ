@@ -109,8 +109,15 @@ export function prSnapshot(pr: any): PrSnapshot {
 
 const prNumber = (url: string | null | undefined) => (/\/pull\/(\d+)/.exec(url ?? "")?.[1] ? `#${/\/pull\/(\d+)/.exec(url!)![1]}` : "");
 
-/** What `aidenhq wait` answers at once when only CI or the merge queue is left on PRs whose merges are requested. */
+/** What `aidenhq status` and `wait` lead with when only CI or the merge queue is left on PRs whose merges are requested. */
 export const MERGE_REQUESTED = "Your merge is requested; end your turn. The runner wakes you if a check fails and posts the merge.";
+
+/** What `aidenhq status` ends with while checks or merges are still running: the turn ends, it doesn't poll. */
+export const STILL_RUNNING =
+  "Still running. Nothing here needs you while it runs: end your turn, and the runner wakes you if a check fails, a card is decided or a merge lands. Use `aidenhq wait` only if this turn needs the outcome to go on, never a loop of `status`, `gh` or `git ls-remote` with `sleep`.";
+
+/** True while a PR's checks are running or the task's merge queue is. */
+export const stillRunning = (prs: Map<string, PrSnapshot>, queueRunning: boolean) => queueRunning || [...prs.values()].some((p) => (p.checks?.pending ?? 0) > 0);
 
 /**
  * True when the task has PRs in flight and each one reads open just now, has its branch's commits all on GitHub, has checks on

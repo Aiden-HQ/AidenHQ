@@ -43,7 +43,7 @@ import * as prQueue from "../../../modules/engineering/src/merge-queue.mjs";
 import { BASE_FILES_QUERY, baseFilesSince, cardBase, followUpNote, gradeOutcome, gradedRevisions, graderNotes, metCriteria, pickBranchPr, siblingBlock, siblingCandidates, siblingsOf, unmetCriteria } from "./siblings.ts";
 import { OPEN_PRS_QUERY, dependabotDue, isDependabot, prAttention, redChecks } from "../../../modules/engineering/src/product-prs.ts";
 import { State } from "./state.ts";
-import { MERGE_REQUESTED, REPLY_MARKER, fence, onlyMergesLeft, prSnapshot, stateSection, threadEntries, threadSection, transcript } from "./thread.ts";
+import { MERGE_REQUESTED, REPLY_MARKER, STILL_RUNNING, fence, onlyMergesLeft, prSnapshot, stateSection, stillRunning, threadEntries, threadSection, transcript } from "./thread.ts";
 import { afterNewWord, checkSignature, roundsTrip, twiceTrip } from "../../../modules/engineering/src/breaker.ts";
 import YAML from "yaml";
 import { classify, normalizeApp, sensitiveTraits } from "./tiers.mjs";
@@ -1970,10 +1970,12 @@ async function conversation(issue, workspace, { instructions, resumed, persona }
 }
 
 /**
- * Where the task's work stands, read now: branches, their PRs on GitHub, and the merge queue. For `wait`, led by
- * MERGE_REQUESTED when every PR in flight has its merge requested or queued and only CI or the queue is left.
+ * Where the task's work stands, read now: branches, their PRs on GitHub, and the merge queue. For the agent's own `status`
+ * and `wait` (`tool`), led by MERGE_REQUESTED when every PR in flight has its merge requested or queued and only CI or the
+ * queue is left, and otherwise ending with STILL_RUNNING while checks or the queue run: a turn that polls them holds a job
+ * slot until the progress watchdog stops it.
  */
-async function liveState(issue, workspace, { wait = false } = {}) {
+async function liveState(issue, workspace, { tool = false } = {}) {
   const rows = await branchRows(issue, workspace).catch(() => []);
   const prs = new Map();
   const gh = await findRealGh().catch(() => "");
@@ -1986,17 +1988,18 @@ async function liveState(issue, workspace, { wait = false } = {}) {
   );
   const queue = mergeQueue(issue.id);
   const text = stateSection({ rows, prs, merges: queue ? merges.summary(queue, queue.state === "running" ? "Running." : queue.state === "stopped" ? `Stopped: ${queue.reason}.` : queue.state === "handed" ? "Asked for again on a new head." : "Done.") : "" });
-  if (!wait) return text;
+  if (!tool) return text;
   const requested = JSON.parse(state.get("auto_merges") || "{}")[issue.id]?.prs ?? [];
   const queued = queue?.state === "running" ? queue.prs.filter((p) => p.status === "pending") : [];
-  return onlyMergesLeft(rows, prs, [...requested, ...queued].map((p) => p.url.toLowerCase())) ? `${MERGE_REQUESTED}\n\n${text}` : text;
+  if (onlyMergesLeft(rows, prs, [...requested, ...queued].map((p) => p.url.toLowerCase()))) return `${MERGE_REQUESTED}\n\n${text}`;
+  return text && stillRunning(prs, queue?.state === "running") ? `${text}\n\n${STILL_RUNNING}` : text;
 }
 
 // ------------------------------------------------------------------ the agent's tools (aidenhq …)
 
-/** `aidenhq status` (and `aidenhq wait`, with `wait`): where the task's work stands, read now. */
-async function agentStatus({ issue, workspace }, { wait } = {}) {
-  return (await liveState(issue, workspace, { wait: wait === true })) || "No branches, PRs or merges on this task yet.";
+/** `aidenhq status` (and `aidenhq wait`): where the task's work stands, read now, and whether the turn should end. */
+async function agentStatus({ issue, workspace }) {
+  return (await liveState(issue, workspace, { tool: true })) || "No branches, PRs or merges on this task yet.";
 }
 
 // ------------------------------------------------------------------ approval records
@@ -3778,7 +3781,7 @@ async function agentMerge(ctx, args) {
   const card = bound.filter((_, i) => tiers[i].tier !== 0);
   if (now.length) requestAutoMerge(ctx.issue, now);
   const merging = now.length ? `Merging ${now.map((p) => `#${p.number}`).join(", ")} now, each as soon as its named checks are green on its current head; results are posted on this task.` : "";
-  if (!card.length) return `${merging} No card is needed.`;
+  if (!card.length) return `${merging} No card is needed. End your turn now: the runner wakes you if a check fails and posts each merge.`;
   const rest = tiers.filter((t) => t.tier !== 0);
   const a = await fileApproval(ctx.issue, { action: "merge", args: { prs: card, ...(gap !== undefined ? { gap } : {}) }, ts: rest });
   return `${merging ? `${merging} ` : ""}${waitingFor(a, ctx.issue)} Once approved, ${card.map((p) => `#${p.number}`).join(", ")} merge one at a time${gap !== undefined ? `, ${gap} minutes apart` : ""}, each only at the commit the card shows, with green checks and a green base branch (outside ${cfg.agentsOrg ?? "the agents org"} also approved on GitHub), or the queue stops and says why on the task.`;

@@ -251,6 +251,23 @@ describe("gh wrapper", () => {
   });
 });
 
+describe("sleep wrapper", () => {
+  it("passes short pauses on, and refuses a long one or a polling loop's total, saying to end the turn", () => {
+    const bin = fileURLToPath(new URL("../bin", import.meta.url));
+    const TMPDIR = mkdtempSync(join(tmpdir(), "sleep-"));
+    const sleep = (...args) => spawnSync(join(bin, "sleep"), args, { env: { PATH: `${bin}:/usr/bin:/bin`, TMPDIR }, encoding: "utf8" });
+    assert.equal(sleep("0.1").status, 0);
+    for (const args of [["2m"], ["61"], ["infinity"]]) {
+      const r = sleep(...args);
+      assert.equal(r.status, 1, args.join(" "));
+      assert.match(r.stderr, /end your turn/);
+    }
+    writeFileSync(join(TMPDIR, ".aidenhq-slept"), "299"); // a loop's earlier pauses
+    assert.equal(sleep("1").status, 0);
+    assert.equal(sleep("1").status, 1, "past five minutes in all");
+  });
+});
+
 describe("push guards", () => {
   it("git-ssh-no-push refuses receive-pack and allows upload-pack", () => {
     const wrapper = fileURLToPath(new URL("../bin/git-ssh-no-push", import.meta.url));
