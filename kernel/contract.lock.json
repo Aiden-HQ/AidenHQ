@@ -108,6 +108,7 @@
     "route POST /v1/wake": {"state":"experimental","fp":"auth=module"},
     "route POST /v1/wakes": {"state":"experimental","fp":"auth=module"},
     "route POST /v1/wakes/:key/drop": {"state":"experimental","fp":"auth=module"},
+    "route POST /v1/wakes/:key/note": {"state":"experimental","fp":"auth=module"},
     "route POST /v1/wakes/claim": {"state":"experimental","fp":"auth=module"},
     "route POST /v1/wakes/events": {"state":"experimental","fp":"auth=events-key"},
     "route POST /v1/work/grader-token": {"state":"experimental","fp":"auth=module"},
