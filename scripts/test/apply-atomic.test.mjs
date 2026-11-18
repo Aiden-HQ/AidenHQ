@@ -302,6 +302,29 @@ test("a check failing in the baseline does not count", async () => {
   assert.equal(w.head("prod"), p2);
 });
 
+// A failed live agent check fails the apply on a newly granted connection: the generation's reason, and so the alert, is the
+// check's own ERROR line (which connection, and its detail), not a fixed sentence, and the auto-revert still runs.
+test("a failed live agent check names the connection and its error in the generation's reason, and still reverts", async () => {
+  const w = world();
+  assert.equal((await w.run()).status, 0);
+  const error = "  agent-check ERROR: connection jira isn't healthy or signed in (JIRA_TOKEN not set); granted to maintainer: newly granted to maintainer";
+  const p2 = w.commitProduct("2", { "scripts/agent-check.mjs": `console.error(${JSON.stringify(error)});\nprocess.exit(1);\n` });
+  const i2 = w.commitInstance(p2);
+  const r = await w.run();
+  assert.equal(r.status, 1, r.out);
+  const g = w.gens();
+  assert.deepEqual(g.map((x) => [x.n, x.health]), [[1, "good"], [2, "good"], [3, "failed"], [4, "good"]]);
+  assert.match(g[2].reason, /connection jira/);
+  assert.match(g[2].reason, /JIRA_TOKEN not set/);
+  assert.doesNotMatch(g[2].reason, /^the live agent check failed/);
+  assert.equal(readFileSync(w.d("state/apply-3.log"), "utf8").includes(error), true, "the apply log keeps the check's own line");
+  assert.match(readFileSync(w.d("state/apply-3.log"), "utf8"), /apply alert: generation 3 failed \(connection jira isn't healthy .*\) and was reverted to generation 2/);
+  assert.deepEqual([g[3].product, g[3].instance, g[3].revert_of, g[3].lkg], [w.p1, w.i1, 3, 2]);
+  assert.equal(w.head("prod"), w.p1, "the product is back at the last known good");
+  assert.equal(w.head("inst"), w.i1, "the instance checkout is back at the last known good");
+  assert.equal(git(w.d("inst"), "rev-parse", "origin/main"), i2, "the instance's origin/main is not moved");
+});
+
 test("a module whose data migrates (marker 0 -> 1) and fails health comes back at marker 0 with its old files, on the LKG code; ops/rollback.sh puts it back later", async () => {
   const w = world();
   const acme = (f) => readFileSync(w.d("prod/data/modules/acme", f), "utf8");
