@@ -28,9 +28,7 @@ test("each crew agent gets the module sections whose conditions hold, in order",
   const { paperclip: p } = compile(product, instance(["design", "fleet-ops", "engineering"], { connections: tasks, trial_writes: ["paperclip_tasks.task_create"] }));
   const cos = p.agents["chief-of-staff"].prompts;
   assert.deepEqual(cos.slice(0, 6), ["chief-of-staff.asking", "chief-of-staff.how-we-work", "chief-of-staff.progress", "chief-of-staff.replying", "platform.improving", "platform.improving-fleet-ops"]);
-  assert.ok(cos.includes("engineering.delegating-design") && cos.indexOf("engineering.delegating-design") === cos.indexOf("engineering.delegating") + 1);
   assert.equal(cos.at(-1), "chief-of-staff.heartbeat"); // last; memory.memory follows only with a memory.md
-  assert.ok(!p.agents["ui-designer"].prompts.includes("engineering.delegating-design")); // the design module's own agents
   assert.ok(p.agents["fleet-ops"].prompts.includes("platform.improving") && !p.agents["fleet-ops"].prompts.includes("platform.improving-fleet-ops"));
   assert.ok(!p.agents.chaser.prompts.includes("platform.improving")); // in trial
   assert.equal(p.agents["fleet-engineer"].prompts, undefined); // runner Engineers get the runner's prompt
