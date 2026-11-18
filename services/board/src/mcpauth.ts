@@ -52,8 +52,17 @@ export class McpAuth {
     return this.cached?.status;
   }
 
-  start(redirectUri: string) {
-    return this.call<{ url: string }>("POST", "/auth/start", { redirect_uri: redirectUri });
+  /**
+   * The scopes the owner may grant on this sign-in, and the ones pre-selected. Undefined when the proxy offers no choice (it
+   * asks for none, or predates the choice).
+   */
+  async scopes(): Promise<{ supported: string[]; recommended: string[] } | undefined> {
+    return this.call<{ supported: string[]; recommended: string[] }>("GET", "/auth/scopes").catch(() => undefined);
+  }
+
+  /** The vendor's sign-in URL, asking for `scopes` (the owner's pick; unset: the proxy's recommended ones). */
+  start(redirectUri: string, scopes?: string[]) {
+    return this.call<{ url: string }>("POST", "/auth/start", { redirect_uri: redirectUri, ...(scopes ? { scopes } : {}) });
   }
 
   async finish(state: string, code: string): Promise<void> {
