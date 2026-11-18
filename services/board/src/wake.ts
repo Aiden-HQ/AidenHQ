@@ -29,6 +29,7 @@ import { NOTICE_MARKER } from "./chats.js";
 import { appsApi } from "./fleet.js";
 import { OPEN, REPAIR_SUPPRESSED, REPAIR_SUPPRESSED_WHY, type Agent, type Issue, type LiveRun, type Paperclip, type PastRun, type Routine } from "./paperclip.js";
 import type { Approval, Records } from "./records.js";
+import { mirrorTick } from "./mirror.js";
 import type { Grading, GradesView } from "./grading.js";
 import type { Store } from "./store.js";
 
@@ -288,6 +289,13 @@ export function startWake(pc: Paperclip, store: Store, records: Records, grading
       await wakeTick(deps, recent);
     } catch (err) {
       log.warn({ err: String(err) }, "wake-ups failed");
+    }
+    // An open card is a durable wait for its task (mirror.ts): Paperclip only counts its own approvals, so each open
+    // record is mirrored as one. Bookkeeping only, and a failure here never keeps the wake-up pass from running.
+    try {
+      await mirrorTick({ pc, records, log });
+    } catch (err) {
+      log.warn({ err: String(err) }, "card mirrors not reconciled; retried next tick");
     } finally {
       busy = false;
     }
