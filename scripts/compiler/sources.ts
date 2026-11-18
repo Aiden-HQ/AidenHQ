@@ -356,13 +356,12 @@ export function remoteModules(instance: Dict, f: Fetch & { parse: (s: string) =>
 }
 
 /**
- * How the host fetches: the default cache, the jailed kit, and the host's credential helper (ops/git-credential-app.mjs, the
- * code host module's App tokens; it answers nothing for a repo the App can't read, and git then fetches anonymously).
+ * How the host fetches: the default cache and the jailed kit. The host holds no GitHub credential (only codehost-github holds
+ * the App's key), so module sources are fetched anonymously: the official repositories are public.
  */
-export function hostFetch(repo: string): Fetch & { kit: ReturnType<typeof kitInJail> } {
+export function hostFetch(_repo: string): Fetch & { kit: ReturnType<typeof kitInJail> } {
   const cacheDir = defaultCache();
-  const helper = join(repo, "ops/git-credential-app.mjs");
-  return { cacheDir, kit: kitInJail(cacheDir), ...(existsSync(helper) ? { credentialHelper: `!node ${helper}` } : {}) };
+  return { cacheDir, kit: kitInJail(cacheDir) };
 }
 
 /**

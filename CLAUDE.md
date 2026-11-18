@@ -192,10 +192,10 @@ the board key (it writes as the owner). Agents never claim something is done unt
 ## GitHub App and data apps
 
 - The instance's GitHub App (key in the vault at `github-app/{app_id,key.pem}`, made by `ops/github-app-setup.mjs`)
-  gives repo-narrowed tokens: the runner uses them for git (credential helper) and `gh` in its cache clone; apps-mcp
-  uses them to read private agents-org app repos and to pull and push the registry (instance repo) over https. Host
-  checkouts of agents-org repos pull with `ops/git-credential-app.mjs` as that checkout's credential helper
-  (`credential.useHttpPath true`). Outside the agents org the App is PR-only, except that it merges product-repo and official-modules-repo PRs the reviewer or the owner approved.
+  gives repo-narrowed tokens. codehost-github alone mounts the key (the runner keeps its copy until the switch deletes it);
+  every other caller (github-mcp, apps-mcp, the ci module's runner registration) asks the kernel's `POST /v1/codehost/:op`
+  with its own token, under the `codehost:` grant in its manifest (owner authority). The host's instance checkout pulls
+  with a read-only deploy key from the vault (`ops/instance-deploy-key.sh`, once at setup). Outside the agents org the App is PR-only, except that it merges product-repo and official-modules-repo PRs the reviewer or the owner approved.
 - `REGISTRY_PUSH_URL` defaults to `https://github.com/<agents org>/aidenhq-instance.git` when the App is configured,
   else the instance checkout's `origin` (deploy key).
 - An app with `database: warehouse` gets its own warehouse role and schema `app_<name>`; apps-mcp writes its
