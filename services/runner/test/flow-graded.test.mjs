@@ -159,9 +159,9 @@ describe("flow-graded", { concurrency: true }, () => {
     state.db.close();
   };
   /** PR #7 on the fake GitHub, its branch behind it so the head reads as a real commit. */
-  const seedPr = ({ dir }, { merged = true, checks = "SUCCESS" } = {}) => {
-    git(dir, "--git-dir", join(dir, "github/acme/app.git"), "branch", "-f", "fix/legacy", "main");
-    writeFileSync(join(dir, "github-prs.json"), JSON.stringify({ 7: { branch: "fix/legacy", files: ["x.txt"], checks, merged } }));
+  const seedPr = ({ dir }, { merged = true, checks = "SUCCESS", branch = "fix/legacy" } = {}) => {
+    git(dir, "--git-dir", join(dir, "github/acme/app.git"), "branch", "-f", branch, "main");
+    writeFileSync(join(dir, "github-prs.json"), JSON.stringify({ 7: { branch, files: ["x.txt"], checks, merged } }));
   };
   /** The task's own branch row naming PR #7, for when the fixture has one. */
   const branchRow = ({ dir }) => {
@@ -183,6 +183,23 @@ describe("flow-graded", { concurrency: true }, () => {
       assert.equal(paperclip.grades.get("part").state, "satisfied");
       assert.ok(!partComments().some((c) => /escalated to the delegator/.test(c)), "no decision asked on delivered work");
       assert.ok(!(paperclip.comments.get("parent") ?? []).some((c) => /needs your decision/.test(c.body)));
+    });
+  });
+
+  // The repository was re-created and its numbering restarted: PR #7 today is another change. The grade must not read that
+  // change's diff or description; it says the number is stale and cites the merge commit the task's own record holds.
+  describe("flow-graded: a stored PR number that now names another change", () => {
+    const t = flow(heldPr("stale-number", { setup: (f) => (branchRow(f), mergedRecord(f, { repo: "acme/app", number: 7, url: prUrl }), seedPr(f, { branch: "feat/another-change" })) }));
+
+    it("escalates on the task's own record, never grading the other change", async () => {
+      const { waitFor, paperclip, partComments } = t;
+      await waitFor("the escalation", () => (paperclip.comments.get("parent") ?? []).some((c) => /needs your decision/.test(c.body)), 60_000);
+      assert.equal(paperclip.grades.get("part").state, "escalated");
+      const note = (paperclip.comments.get("parent") ?? []).find((c) => /needs your decision/.test(c.body)).body;
+      assert.ok(note.includes(`${prUrl} now names a different change (its head branch is \`feat/another-change\`, not the task's \`fix/legacy\`)`), note);
+      assert.match(note, /merge commit [0-9a-f]{40}/, "the record's own merge commit");
+      assert.equal(paperclip.graderCalls.length, 0, "the grader was never sent the other change's diff or description");
+      assert.ok(!partComments().some((c) => /Graded: needs revision/.test(c)), "nor graded against it");
     });
   });
 
