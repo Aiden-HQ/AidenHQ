@@ -454,6 +454,8 @@ settings:
   # Quiet start (docs/design/quiet-start.md): schedules and heartbeats wait until you turn them on; spend stops at \$10 a day.
   quiet_start: "on"
   spend_day_usd: 10
+  # The AI reviewer decides writes; your taps are for authority (vetoes, autonomy, spend caps, following a release).
+  autonomy: full
 $AUTO_UPDATE
 ${AGENTS_ORG:+  github_agents_org: $AGENTS_ORG}
 $(p="$(sed -n 's/^AIDENHQ_PRODUCT_REPO=//p' "$ENVF" | head -1)"; [ -z "$p" ] || echo "  product_repo: $(json "$p")")
