@@ -1,6 +1,5 @@
 // A task created blocked is not dispatchable: its blocker is unresolved, so Paperclip would refuse the runner's own
-// status write with a 422 and the run would be reported Failed with nothing attempted. These are the pieces of the gate
-// the flow (flow-blocked.test.mjs) drives end to end.
+// status write with a 422 and the run would be reported Failed with nothing attempted. These are the pieces of the gate.
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync } from "node:fs";

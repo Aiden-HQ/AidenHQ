@@ -107,7 +107,7 @@ jobs:
           done < "$logs/list"
           exit $status
 
-  # The runner's unit tests, and its end-to-end flows in four shards side by side (each only when selected).
+  # The runner's unit tests, and its end-to-end flows in three shards side by side (each only when selected).
   runner-unit:
     needs: checks
     if: contains(fromJSON(needs.checks.outputs.tests).*.name, 'services/runner')
@@ -142,7 +142,7 @@ jobs:
         run: bash -eo pipefail -c "$(jq -r '.suites[] | select(.name == "services/runner") | .run' ../../.github/ci/areas.json)"
 
   runner-flows:
-    name: runner-flows (${{ matrix.shard }}/4)
+    name: runner-flows (${{ matrix.shard }}/3)
     needs: checks
     if: contains(fromJSON(needs.checks.outputs.tests).*.name, 'services/runner#flows')
     runs-on: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository && 'ubuntu-latest' || fromJSON(needs.checks.outputs.runner) }}
@@ -150,7 +150,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        shard: [1, 2, 3, 4]
+        shard: [1, 2, 3]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -178,14 +178,14 @@ jobs:
         working-directory: services/runner
         env:
           SHARD: ${{ matrix.shard }}
-          # Seconds each file took alone (14-core dedicated host, 2026-11-14), for balancing; a file not listed counts 30.
-          WEIGHTS: '{"test/flow-merge-path.test.mjs": 43, "test/flow-approvals.test.mjs": 38, "test/flow-autonomy.test.mjs": 30, "test/flow-graded.test.mjs": 25, "test/flow-product.test.mjs": 23, "test/flow-running.test.mjs": 21, "test/flow-design-review.test.mjs": 18, "test/box.test.mjs": 14, "test/flow-conversation.test.mjs": 14, "test/flow-workspace.test.mjs": 8, "test/flow-delegated.test.mjs": 6, "test/adopt.test.mjs": 3}'
+          # Seconds each file took on a hosted runner (2026-11-18), for balancing; a file not listed counts 30.
+          WEIGHTS: '{"test/flow-merge-path.test.mjs": 36, "test/flow-local-codehost.test.mjs": 36, "test/flow-autonomy.test.mjs": 31, "test/flow-graded.test.mjs": 31, "test/flow-approvals.test.mjs": 28, "test/flow-product.test.mjs": 22, "test/flow-conversation.test.mjs": 22, "test/flow-running.test.mjs": 14, "test/box.test.mjs": 13, "test/adopt.test.mjs": 11}'
         run: |
-          # The files test:flows runs, split greedily by weight, heaviest first, into the lightest of the four shards.
+          # The files test:flows runs, split greedily by weight, heaviest first, into the lightest of the three shards.
           files=$(node -e '
             const w = JSON.parse(process.env.WEIGHTS), shard = Number(process.env.SHARD) - 1;
             const files = require("fs").readdirSync("test").filter((f) => /^(flow-.*|box|adopt)\.test\.mjs$/.test(f)).map((f) => `test/${f}`);
-            const load = [0, 0, 0, 0], out = [[], [], [], []];
+            const load = [0, 0, 0], out = [[], [], []];
             for (const f of files.sort((a, b) => (w[b] ?? 30) - (w[a] ?? 30) || a.localeCompare(b))) { const i = load.indexOf(Math.min(...load)); load[i] += w[f] ?? 30; out[i].push(f); }
             console.log(out[shard].join(" "));')
           echo "Shard $SHARD: $files"

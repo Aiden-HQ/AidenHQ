@@ -83,7 +83,6 @@
     "n": 10,
     "workflow": "Push / PR to agents org and outside it",
     "today": [
-      "services/runner/test/flow-workspace.test.mjs",
       "services/runner/test/open-pr.test.mjs",
       "modules/codehost-github/test/pr-base.test.mjs",
       "modules/codehost-github/test/stale.test.mjs"
@@ -95,8 +94,6 @@
     "workflow": "Merge at reviewed head once green, queue, breaker",
     "today": [
       "services/runner/test/flow-merge-path.test.mjs",
-      "services/runner/test/flow-reviewed-heads.test.mjs",
-      "services/runner/test/flow-breaker.test.mjs",
       "modules/codehost-github/test/stale.test.mjs"
     ],
     "next": "codehost-github + engineering"
@@ -136,7 +133,7 @@
     "n": 15,
     "workflow": "Design-review tasks and status",
     "today": [
-      "services/runner/test/flow-design-review.test.mjs"
+      "services/runner/test/merges.test.mjs"
     ],
     "next": "design events + check"
   },
@@ -154,7 +151,6 @@
     "n": 17,
     "workflow": "Delegation and outcomes to parents",
     "today": [
-      "services/runner/test/flow-delegated.test.mjs",
       "services/runner/test/notices.test.mjs",
       "modules/tasks/connections/tasks-mcp/test/parent-wake.test.mjs"
     ],
