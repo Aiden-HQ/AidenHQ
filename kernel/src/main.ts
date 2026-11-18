@@ -219,7 +219,7 @@ if (accounts) {
   setInterval(() => void accounts.syncGate(), 60_000).unref();
 }
 // The board's origins: its front door (BOARD_LAN_URL) and its loopback addresses (the SSH tunnel, local mode).
-const boardOrigins = env("AIDENHQ_BOARD_ORIGINS", [boardUrl?.origin, "http://127.0.0.1:3121", "http://localhost:3121"].filter(Boolean).join(",")).split(",").map((o) => o.trim()).filter(Boolean);
+const boardOrigins = env("AIDENHQ_BOARD_ORIGINS", [boardUrl?.origin, "http://localhost:3121", "http://127.0.0.1:3121"].filter(Boolean).join(",")).split(",").map((o) => o.trim()).filter(Boolean);
 // The board's origins are the module UI origins a session may be handed to (/auth/handoff).
 const uiOrigins = () => Object.fromEntries(boardOrigins.map((o) => [o, "board"]));
 // The first run's model step (/setup/model): OpenRouter's PKCE and a 1-token check on the gateway's upstream, against the first

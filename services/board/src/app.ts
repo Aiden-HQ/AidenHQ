@@ -1136,7 +1136,7 @@ export function createApp(opts: AppOptions): Server {
   ];
 
   // Where OAuth sign-ins start on a board without an https address: the loopback board, through an SSH tunnel (docs/setup.md).
-  const TUNNEL = "http://127.0.0.1:3121 through ssh -N -L 3121:127.0.0.1:3121 <you>@<host> from your laptop";
+  const TUNNEL = "http://localhost:3121 through ssh -N -L 3121:127.0.0.1:3121 <you>@<host> from your laptop";
   const googleViaBoard = mode === "lan" && !!opts.lan?.googleConnect && !!opts.lan.url.startsWith("https://");
   /** Where the board's sign-ins return for a request to `host`: its https address when Connect runs there, else the request's own. */
   const signInOrigin = (host: string) => (googleViaBoard ? opts.lan!.url : `http://${host}`);
@@ -1874,7 +1874,7 @@ export function createApp(opts: AppOptions): Server {
           boardUrl: signInOrigin,
           redirectUrl: (signin, host) => {
             const s = (opts.signIns ?? []).find((x) => x.id === signin);
-            return s && `${vendorOrigin(host) ?? httpsBoard?.origin ?? "http://127.0.0.1:3121"}${s.callback}`;
+            return s && `${vendorOrigin(host) ?? httpsBoard?.origin ?? "http://localhost:3121"}${s.callback}`;
           },
         })
       : []),
