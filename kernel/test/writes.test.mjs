@@ -225,6 +225,16 @@ test("a repeat of one carded conn.tool call returns its record: one card, one ru
   assert.notEqual((await pending(await tool("note_drop", { id: 8 }))).approval, p.approval);
 });
 
+test("a finished Tier 0 record of the same call never stands in for a call that now needs a card", async (t) => {
+  const { k, tool, pending, moduleCalls } = await twin(t);
+  const card = { sentence: "s", changes: "c", reads: "r", cost: "c", details: "d" };
+  const old = k.records.file({ kind: "conn.tool", module: "twin", args: { connection: "twin", tool: "note_drop", arguments: { id: 7 } }, targets: {}, executor: { module: "twin" }, policy: "", tier: 0, panel: false, card, requester: { agent: "ag-ada", key: "ada", name: "Ada", roles: [], kind: "run", task: "TASK-1" }, task: "TASK-1", state: "done" });
+  const p = await pending(await tool("note_drop", { id: 7 }));
+  assert.notEqual(p.approval, old.id);
+  assert.equal(k.records.get(p.approval).state, "review");
+  assert.deepEqual(moduleCalls(), []);
+});
+
 test("a destructive tool with no kind is conn.tool at Tier 1: replayed once, as its requester, only after approval", async (t) => {
   const { k, mod, tool, pending, review, moduleCalls } = await twin(t);
   const p = await pending(await tool("note_drop", { id: 7 }));

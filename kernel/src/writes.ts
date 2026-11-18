@@ -333,11 +333,11 @@ export function createWrites({ records, registry, connections, secret, resolver,
       const requester = requesterOf(who, task);
       const call = { kind: CONN_TOOL, module: c.module, args: { connection, tool, arguments: args ?? {} }, targets: {}, executor: { module: c.module }, policy: "" };
       // A repeat of one carded call (same task, arguments and requester), while it waits, runs, or ran in the last 10 minutes, is
-      // that record: one call, one card, one run. Tier 0 runs inline and is never carded, so it files every time.
+      // that record: one call, one card, one run, but never a record of a lower tier than this call needs. Tier 0 runs inline and is never carded, so it files every time.
       if (t.tier > 0) {
         const digest = digestOf(call);
         const by = (q: Requester) => `${q.kind}|${q.agent}|${q.key}|${q.module ?? ""}`;
-        const prior = [...records.open(task, CONN_TOOL, digest), ...records.ran(task, CONN_TOOL, digest, new Date(Date.now() - 10 * 60_000).toISOString())].find((r) => by(r.requester) === by(requester));
+        const prior = [...records.open(task, CONN_TOOL, digest), ...records.ran(task, CONN_TOOL, digest, new Date(Date.now() - 10 * 60_000).toISOString())].find((r) => r.tier >= t.tier && by(r.requester) === by(requester));
         if (prior) return prior;
       }
       return records.file({ ...call, card: t.rule ? { ...card, reason: capText(t.cap!) } : card, requester, task, tier: t.tier, merit: t.merit, panel: false, review_first: t.reviewFirst, rule: t.rule ?? null, cap: t.cap ?? null, state: t.state });
