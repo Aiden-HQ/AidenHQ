@@ -1,5 +1,5 @@
 name: clickhouse
-description: ClickHouse for the runner's Engineer jobs (loopback MCP).
+description: "ClickHouse Cloud's MCP server, passed through as the owner: its services, schemas and read-only SELECT queries."
 requires:
   - board # its sign-in banner
 # Its sign-in on the board (the board's point, modules/board/schemas/signins.json).
@@ -16,6 +16,18 @@ settings:
 setup: "Press Connect on the board (Settings, Connections) and allow access. Used by the runner's Engineer jobs."
 secrets:
   state: true # its own vault dir, read-write at /state: the registered client and the token pair, refreshed here
+# Agents granted `clickhouse: read` query it too (none by default).
+connections:
+  clickhouse:
+    setup: "Press Connect on the board (Settings, Connections) and allow access."
+    guide: "ClickHouse Cloud: `get_services_list` and `get_service_details` find a service, `list_databases` and `list_tables` its schema, `run_select_query` runs one read-only SELECT (no external table functions, no SETTINGS; up to two minutes). Aggregate or LIMIT: long answers are cut."
+    url: http://clickhouse-mcp:8088/mcp
+    auth: clickhouse_service_key
+    # The reads jobs had before the vendor pass-through. ClickHouse's other tools (probed 2026-11-18) are costs, backups,
+    # ClickPipes and Managed Postgres: untagged, so the kernel refuses them until a module change tags them.
+    tools:
+      read: [ get_organizations, get_services_list, get_service_details, list_databases, list_tables, run_select_query ]
+      write: []
 services:
   run:
     clickhouse-mcp:
@@ -30,16 +42,22 @@ services:
         CLICKHOUSE_STATE_DIR: /state
         # The board's https address: its Connect returns there (besides loopback).
         BOARD_URL: "${BOARD_LAN_URL:-}"
-        MCP_TOKEN_FILE: ${secrets.clickhouse_mcp_token}
+        # Jobs reach /mcp/read with clickhouse_mcp_token (through the kernel); the kernel presents the service key on /mcp for agents.
+        MCP_READ_TOKEN_FILE: ${secrets.clickhouse_mcp_token}
+        # The read endpoint serves only these: the connection's read tags (CI checks they match).
+        READ_TOOLS: "get_organizations,get_services_list,get_service_details,list_databases,list_tables,run_select_query"
+        MCP_SERVICE_TOKEN_FILE: ${secrets.clickhouse_service_key}
         # The board's sign-in endpoints: state, and starting or finishing a sign-in.
         CLICKHOUSE_AUTH_TOKEN_FILE: ${secrets.clickhouse_auth_token}
+generated_secrets:
+  - clickhouse_service_key
 # Runner jobs of an Engineer with private reads, through the model gateway with their own token (scripts/modules.mjs jobcapEntries).
 # Queries run up to two minutes (clickhouse-mcp caps them), past Codex's 60-second tool timeout.
 jobcaps:
   - id: clickhouse-read
     connection: clickhouse
     private: true
-    read_url: "http://clickhouse-mcp:8088/mcp"
+    read_url: "http://clickhouse-mcp:8088/mcp/read"
     read_secret: clickhouse_mcp_token
     tool_timeout_s: 180
-    tools: [ get_organizations, get_services_list, get_service_details, list_databases, list_tables, run_select_query ]
+    tools: read

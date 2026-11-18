@@ -40,6 +40,8 @@ export interface Hooks {
   args?(name: string, args: Record<string, unknown>, tool: Tool): Record<string, unknown>;
   /** Tools never listed or called (a real security rule; most connections have none). */
   deny?: RegExp;
+  /** A tool's answer as it goes back (ClickHouse: cut to a size). */
+  result?(result: CallToolResult): CallToolResult;
   /** Whether the upstream says a tool only reads. Default: it marks it readOnlyHint. */
   isRead?(tool: Tool): boolean;
   /** A problem that makes the connection unusable though signed in (Jira: the site isn't reachable). */
@@ -65,6 +67,8 @@ export interface ProxyOptions {
   caller(req: IncomingMessage): Promise<unknown>;
   /** The MCP server's instructions to agents. */
   instructions: string;
+  /** How long one tool call may take (ClickHouse's queries run up to two minutes); default: the MCP SDK's 60 seconds. */
+  callTimeoutMs?: number;
   /** Remembers the tool list here (tools.json), for stand-ins while not connected. */
   stateDir?: string;
   hooks?: Hooks;
@@ -164,7 +168,8 @@ export function createVendorProxy(o: ProxyOptions): VendorProxy {
       // Only what the upstream lists: its schema is what the hooks pin arguments against.
       if (!tool) throw new Error(`${o.name} doesn't offer ${name}`);
       const sent = hooks.args ? hooks.args(name, args, tool) : args;
-      return (await u.client.callTool({ name, arguments: sent })) as CallToolResult;
+      const result = (await u.client.callTool({ name, arguments: sent }, undefined, o.callTimeoutMs ? { timeout: o.callTimeoutMs } : undefined)) as CallToolResult;
+      return hooks.result ? hooks.result(result) : result;
     });
   }
 
