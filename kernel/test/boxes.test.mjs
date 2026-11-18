@@ -62,6 +62,7 @@ async function host(t) {
   boxes = make();
   const wakes = new Map();
   const admission = createAdmission({
+    provenance: { pending: () => false }, routineCap: async () => undefined,
     db, grants: () => grants, kinds: () => ({}), capacity: () => 12, spend: () => [], mayDispatch: () => true, log: () => {},
     cp: { task: async (id) => ({ id, identifier: id === "task-1" ? "PEN-1" : "PEN-2", assigneeAgentId: "agent-1", status: "todo" }) },
     wakes: { claimed: (_m, k) => wakes.get(k), bind: () => {}, unclaim: () => {} },
