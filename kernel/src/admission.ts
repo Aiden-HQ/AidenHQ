@@ -50,7 +50,7 @@ export const wakeInbox = (db: DatabaseSync): Wakes => ({
   unclaim: (key) => { db.prepare("UPDATE wakes SET job = NULL, until = 0 WHERE key = ?").run(key); },
 });
 /** `fresh`: the last job asked for a fresh session (`aidenhq reset`): no session resumes, the dispatcher's included. */
-export type Admitted = { id: string; module: string; agent: string; task: string; identifier: string; profile: Profile; authority: Authority; prompt: string; session?: string; fresh: boolean; wake: string };
+export type Admitted = { id: string; module: string; agent: string; task: string; identifier: string; profile: Profile; authority: Authority; prompt: string; fullPrompt?: string; fresh: boolean; wake: string };
 
 const LIVE = "state IN ('admitted', 'running')";
 const ID = /^[\w.:-]{1,200}$/;
@@ -101,8 +101,8 @@ export function createAdmission({ db, grants, kinds, capacity, spend, mayDispatc
     };
   }
 
-  async function admit(module: string, b: { wake: string; prompt: string; session?: string }) {
-    if (!b || typeof b !== "object" || !ID.test(String(b.wake)) || typeof b.prompt !== "string") throw new JobError(400, "bad-request", "send {wake, prompt, session?}");
+  async function admit(module: string, b: { wake: string; prompt: string; full_prompt?: string }) {
+    if (!b || typeof b !== "object" || !ID.test(String(b.wake)) || typeof b.prompt !== "string" || (b.full_prompt !== undefined && typeof b.full_prompt !== "string")) throw new JobError(400, "bad-request", "send {wake, prompt, full_prompt?}");
     const first = wakes.claimed(module, b.wake);
     if (!first) throw new JobError(409, "wake-not-claimed", `wake ${b.wake} isn't one this module claimed`);
     const { task, agent } = first;
@@ -147,7 +147,7 @@ export function createAdmission({ db, grants, kinds, capacity, spend, mayDispatc
         .run(id, module, agent, task, authority.engine, Date.now(), JSON.stringify(authority.jobcaps), authority.profile, b.wake, JSON.stringify(authority), cap?.routine ?? null, cap?.cap ?? null, identifier);
       wakes.bind(b.wake, id);
       db.exec("COMMIT");
-      job = { id, module, agent, task, identifier, profile: authority.profile, authority, prompt: b.prompt, ...(b.session && !fresh ? { session: b.session } : {}), fresh, wake: b.wake };
+      job = { id, module, agent, task, identifier, profile: authority.profile, authority, prompt: b.prompt, ...(b.full_prompt ? { fullPrompt: b.full_prompt } : {}), fresh, wake: b.wake };
     } catch (e) {
       if (db.isTransaction) db.exec("ROLLBACK");
       throw e;

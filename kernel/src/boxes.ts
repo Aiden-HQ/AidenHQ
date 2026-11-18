@@ -87,14 +87,16 @@ export function createBoxes({ db, cfg, jobs, call, secret, whoami, connections, 
     mkdirSync(workspace, { recursive: true });
     insideNoLinks(join(cfg.workDir, "tasks"), workspace, "workspace");
     const notes = a.profile === "engineer" ? await cloneNamed(job) : [];
-    const prompt = notes.length ? `(Kernel note: ${notes.join(" ")})\n\n${job.prompt}` : job.prompt;
+    const session = job.fresh ? undefined : lastSession(job.agent, job.task, a.engine);
+    const base = session ? job.prompt : job.fullPrompt ?? job.prompt;
+    const prompt = notes.length ? `(Kernel note: ${notes.join(" ")})\n\n${base}` : base;
     const box = (await call("/job", { agentId: job.agent, issueId: job.task, identifier: job.identifier, workspace, engine: a.engine, state, image: a.image, token, mcp, roles: a.roles }).catch((e: { status?: number }) => {
       throw e.status === 409 ? Object.assign(e, { status: 503 }) : e;
     })) as unknown as Box;
     // The row's box names its workspace too, for a cleanup at release.
     db.prepare("UPDATE jobs SET box = ?, renewed = ? WHERE id = ?").run(JSON.stringify({ ...box, workspace }), now(), job.id);
     try {
-      jobs.runAdmitted(job.id, { box: { ...box, workspace } as Box, worktree: workspace, prompt, session: job.fresh ? undefined : job.session ?? lastSession(job.agent, job.task, a.engine), label: job.identifier });
+      jobs.runAdmitted(job.id, { box: { ...box, workspace } as Box, worktree: workspace, prompt, session, label: job.identifier });
     } catch (e) {
       await release(job.id).catch(() => {});
       throw e;

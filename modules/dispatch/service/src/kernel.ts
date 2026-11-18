@@ -14,8 +14,8 @@ export interface Kernel {
   comments(task: string): Promise<Comment[]>;
   agent(id: string): Promise<Agent | undefined>;
   directory(): Promise<Directory>;
-  /** Admission (F3): one job for the claimed wake, or busy (429: the wake stays claimed and comes back). */
-  start(req: { wake: string; prompt: string; session?: string }): Promise<{ job: JobView } | { busy: true }>;
+  /** Admission (F3): one job for the claimed wake (`full_prompt`: what runs when no session is resumed), or busy (429: the wake stays claimed and comes back). */
+  start(req: { wake: string; prompt: string; full_prompt?: string }): Promise<{ job: JobView } | { busy: true }>;
   job(id: string): Promise<JobView>;
   /** This module's job admitted on a wake, if any: a start whose answer was lost (a crash, a timeout) is found here. */
   jobsOn(wake: string): Promise<JobView[]>;

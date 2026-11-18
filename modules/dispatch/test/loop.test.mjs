@@ -78,7 +78,8 @@ test("a comment during a run goes into it; after the run the owner's next commen
   k.inbox.push(wake("comment:c2", "comment"));
   await k.dispatch.tick();
   assert.equal(k.started.length, 2);
-  assert.equal(k.started[1].session, "s-1", "resumes the task's session");
+  assert.match(k.started[1].full_prompt, /AidenHQ/, "the full form rides along for a start that finds no session");
+  assert.equal(k.started[0].full_prompt, undefined, "a first run has only the full prompt");
   assert.match(k.started[1].prompt, /^Dana has more to say on this task/);
   assert.match(k.started[1].prompt, /Their newest comment\(s\), to act on now[^\n]*\n\nThanks, now add a test\./);
   assert.doesNotMatch(k.started[1].prompt, /Also check the logout/, "delivered before the reply: not repeated");
