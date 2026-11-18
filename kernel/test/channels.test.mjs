@@ -204,3 +204,19 @@ test("the outbox: a channel hands the owner's message to another installed chann
   assert.deepEqual((await k.v1("GET", "/v1/channel/outbox", undefined, OP)).json.messages, [{ from: "channel-telegram", text: "hi" }]);
   assert.deepEqual((await k.v1("GET", "/v1/channel/outbox", undefined, OP)).json.messages, []);
 });
+
+test("cp-read: an attachment's bytes come only for one listed on the named task, and never past 25 MB", async (t) => {
+  const { k } = await setup(t, { onControl: async (req) => {
+    if (req.url === "/api/issues/WOR-1/attachments") return { body: [{ id: "att-1" }, { id: "att-big" }] };
+    if (req.url === "/api/attachments/att-1/content") return { body: { hello: "bytes" } };
+    if (req.url === "/api/attachments/att-big/content") return { body: "x".repeat(26 * 1024 * 1024) };
+    if (req.url === "/api/attachments/att-other/content") return { body: "secret" };
+  } });
+  const get = (path, token = LANE) => fetch(`${k.url}${path}`, { headers: { authorization: `Bearer ${token}` } });
+  const ok = await get("/v1/cp/read/attachments/att-1/content?task=WOR-1");
+  assert.deepEqual([ok.status, ok.headers.get("content-type"), await ok.text()], [200, "application/json", '{"hello":"bytes"}']);
+  assert.equal((await get("/v1/cp/read/attachments/att-1/content?task=WOR-1", PLAIN)).status, 403);
+  assert.equal((await get("/v1/cp/read/attachments/att-1/content")).status, 400);
+  assert.equal((await get("/v1/cp/read/attachments/att-other/content?task=WOR-1")).status, 404);
+  assert.equal((await get("/v1/cp/read/attachments/att-big/content?task=WOR-1")).status, 413);
+});
