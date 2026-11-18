@@ -100,12 +100,12 @@ test("on an agent's task, the chief of staff's comment starts work as an agent's
   assert.equal(k.started.length, 0, "no job");
   assert.deepEqual(k.dropped.map((d) => d.key), ["comment:c1", "comment:c2"]);
   assert.equal(k.notes.length, 1, "one redirect");
-  assert.equal(k.notes[0].body, "Not read as a request: only Researcher (who asked for it) or the chief of staff start work on WOR-2. Ask them to pass it on if it should change the work.");
+  assert.equal(k.notes[0].body, "Not read as a request: only Researcher (who asked for it) or a fleet overseer start work on WOR-2. Ask them to pass it on if it should change the work.");
   comments.push({ id: "c3", authorType: "agent", authorAgentId: "cos", body: "Keep the Legacy flag in the config.", createdAt: "2026-11-18T10:01:00Z" });
   k.inbox.push(wake("comment:c3", "comment"));
   await k.dispatch.tick();
   assert.equal(k.started.length, 1);
-  assert.match(k.started[0].prompt, /## Request from an agent \(the one that delegated this task, or the chief of staff; not Dana's words\)\n\n[^#]*Aiden \(the chief of staff, not Dana\) wrote:\n<<<CHIEF_OF_STAFF\nKeep the Legacy flag in the config\.\nCHIEF_OF_STAFF>>>\n\n## Your reply/);
+  assert.match(k.started[0].prompt, /## Request from an agent \(the one that delegated this task, or a fleet overseer; not Dana's words\)\n\n[^#]*Aiden \(an agent, not Dana\) wrote:\n<<<AGENT\nKeep the Legacy flag in the config\.\nAGENT>>>\n\n## Your reply/);
   assert.doesNotMatch(k.started[0].prompt, /Instructions from Dana/);
 });
 
@@ -124,6 +124,15 @@ test("a Fleet Steward-role comment on another agent's task starts a job; the ass
   k.inbox.push(wake("comment:c2", "comment"));
   await k.dispatch.tick();
   assert.equal(k.started.length, 1, "the assignee holding the role does not wake itself");
+  const o = fake({
+    task: { id: "t1", identifier: "WOR-5", title: "Fix it", description: "Fix the login.", status: "in_progress", assigneeAgentId: "eng", createdByAgentId: null, createdByUserId: "u1" },
+    comments: [{ id: "c1", authorType: "agent", authorAgentId: "steward", body: "Status check: are you stuck?", createdAt: "2026-11-18T10:00:00Z" }],
+    directory: { steward: { key: "steward", roles: ["fleet-audit"] } },
+  });
+  o.inbox.push(wake("comment:c1", "comment"));
+  await o.dispatch.tick();
+  assert.equal(o.started.length, 1, "an owner-created task too");
+  assert.match(o.started[0].prompt, /\(an agent, not Dana\) wrote:/);
 });
 
 test("an agent's task with no request gets one note and starts nothing", async () => {

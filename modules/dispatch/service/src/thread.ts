@@ -1,6 +1,6 @@
 // Who said what on a task, and whose words start work. Ported from the runner (services/runner/src/{thread.ts,agents.mjs},
 // handleIssue): the asker is whoever created the task. The owner's comments are his words; on a task an agent made, its
-// asker's and a fleet overseer's (the chief of staff, role fleet-admin, or the Fleet Steward, role fleet-audit, in the grants table, never Paperclip metadata) start work as an agent's
+// asker's and a fleet overseer's, on any task (the chief of staff, role fleet-admin, or the Fleet Steward, role fleet-audit, in the grants table, never Paperclip metadata) start work as an agent's
 // request; any other agent's comment starts nothing and is told, once, whom to ask.
 import { dataBlock as fence } from "./aidenhq-sdk/fence.ts";
 import { forOthers } from "./aidenhq-sdk/for-others.ts";
@@ -50,14 +50,14 @@ export const spoke = (comments: Comment[], t: Issue) => comments.some((c) => (c.
 
 /**
  * Whose words a comment is: "owner" (his own, typed or through his key, never a post of ours), "agent" (an agent's request:
- * the asker's or the chief of staff's, on a task an agent made), "notice" (a module's labelled wake notice, kernel POST
+ * the asker's on a task an agent made, or a fleet overseer's on any task), "notice" (a module's labelled wake notice, kernel POST
  * /v1/wakes, or a comment a bridge posted for someone else: it wakes the agent, never as the owner's words), "ours" (nothing to act on), or "other" (any other agent: it
  * starts nothing).
  */
 export function speaker(c: Comment, t: Issue, dir: Directory): "owner" | "agent" | "notice" | "ours" | "other" {
   if (ours(c, t)) return "ours";
   if (c.authorType !== "agent") return String(c.body ?? "").includes(WAKE_NOTICE) || forOthers(c.body) ? "notice" : "owner";
-  return agentMade(t) && (c.authorAgentId === t.createdByAgentId || isOverseer(dir, c.authorAgentId)) ? "agent" : "other";
+  return isOverseer(dir, c.authorAgentId) || (agentMade(t) && c.authorAgentId === t.createdByAgentId) ? "agent" : "other";
 }
 
 /**
@@ -70,17 +70,15 @@ export function freshWords(comments: Comment[], t: Issue, dir: Directory, { seen
   return live.slice(from + 1).flatMap((c) => {
     const who = speaker(c, t, dir);
     const text = stripHidden(c.body).trim();
-    // A chief-of-staff comment on a task it didn't ask for: its own words, labelled as such in the prompt (never the asker's, never the owner's).
-    const chief = who === "agent" && c.authorAgentId !== t.createdByAgentId;
-    return (who === "owner" || who === "agent" || who === "notice") && text && !delivered.has(c.id) ? [{ id: c.id, who, text, chief, by: c.authorAgentId }] : [];
+    return (who === "owner" || who === "agent" || who === "notice") && text && !delivered.has(c.id) ? [{ id: c.id, who, text, by: c.authorAgentId }] : [];
   });
 }
 
 /** The one note an agent whose comment starts nothing gets: whom to ask instead. */
 export function redirectNote(t: Issue, owner: string, agents: Map<string, Agent>) {
   const asker = agentMade(t) ? agents.get(t.createdByAgentId!)?.name ?? "the agent that asked for it" : "";
-  const whom = asker ? `${asker} (who asked for it) or the chief of staff` : owner;
-  return `Not read as a request: only ${whom} start${asker ? "" : "s"} work on ${t.identifier}. Ask ${asker ? "them" : owner} to pass it on if it should change the work.`;
+  const whom = `${asker ? `${asker} (who asked for it)` : owner} or a fleet overseer`;
+  return `Not read as a request: only ${whom} start work on ${t.identifier}. Ask ${asker ? "them" : owner} to pass it on if it should change the work.`;
 }
 
 /** One conversation entry for the prompt. */

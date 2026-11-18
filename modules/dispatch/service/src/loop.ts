@@ -101,7 +101,7 @@ export function createDispatch({ kernel, db, owner, log = () => {} }: { kernel: 
       if (who === "other") {
         if (!QUIET.has(String(task.status)) && !tick.redirected.has(task.id)) await kernel.note(w.key, redirectNote(task, owner, agents));
         tick.redirected.add(task.id);
-        return kernel.drop(w.key, "another agent's comment: only the asker, the owner or the chief of staff start work");
+        return kernel.drop(w.key, "another agent's comment: only the asker, the owner or a fleet overseer start work");
       }
       if (w.live_job) {
         const from = who === "owner" ? "owner" : who === "notice" ? "wake notice" : agents.get(c!.authorAgentId!)?.name ?? "agent";
@@ -121,7 +121,7 @@ export function createDispatch({ kernel, db, owner, log = () => {} }: { kernel: 
     const fresh = freshWords(comments, task, dir, { seen, delivered });
     // A routine run's wake (routine, or routine:<key> naming the routine) or a module's scheduled wake.
     const scheduled = /^(routine|scheduled)(:|$)/.test(w.cause);
-    const said = (who: string) => fresh.filter((f) => f.who === who).map((f) => (f.chief ? `${agents.get(f.by!)?.name ?? "The chief of staff"} (the chief of staff, not ${owner}) wrote:\n${fence("CHIEF_OF_STAFF", f.text)}` : f.text));
+    const said = (who: string) => fresh.filter((f) => f.who === who).map((f) => (who === "agent" ? `${agents.get(f.by!)?.name ?? "An agent"} (an agent, not ${owner}) wrote:\n${fence("AGENT", f.text)}` : f.text));
     const words: Words = { owner: said("owner"), agent: said("agent"), notice: said("notice") };
     if (first && ownRequest(task)) words.task = "owner";
     else if (first && agentMade(task) && stripHidden(task.description).trim()) words.task = "agent";
