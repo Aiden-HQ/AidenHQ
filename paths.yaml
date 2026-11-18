@@ -45,6 +45,7 @@ paths:
       - modules/codehost-local/
       - modules/platform/
       - modules/grading/
+      - modules/engineering/src/merge-queue.mjs
       - "**/aidenhq-sdk/executor.ts"
       - modules/apps-platform/module.yaml
       - modules/apps-platform/schemas/

@@ -15,7 +15,7 @@
 // supply-chain checks (the product's scripts/supply-chain, mounted read-only); only then installs and runs the repo's lint,
 // tests and build. The eval's workspace is read-only.
 //
-// The eval runs the judging rules the runner's eval gate ran (services/runner/src/evalgate.ts), unchanged: the code host
+// The eval runs the judging rules the runner's eval gate ran, unchanged: the code host
 // builds the spec (which commits judge which), the kernel lays it out and decides. The eval script and case-pad.mjs come
 // from the judging commit; every base case runs at its base version (a deleted case included); a case the change adds runs
 // as written; a changed case runs twice (its base version, and the change's fixture held to the base's expectations). The
@@ -179,7 +179,7 @@ function noLinks(root: string, rel: string) {
   }
 }
 
-// The judging rules (from services/runner/src/evalgate.ts, which goes with the runner).
+// The judging rules (from the runner's eval gate, deleted at the big switch).
 /** The cases the judge runs: every base case at its base version, new ones as written, a changed one twice (`.head.json`: its fixture, the base's expectations). */
 export function judgedCases(base: Map<string, string>, head: Map<string, string>): Map<string, string> {
   const out = new Map(base);

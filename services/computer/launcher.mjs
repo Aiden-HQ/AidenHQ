@@ -65,8 +65,8 @@ const CFG = {
   grantsFile: path.join(configDir, "grants", "grants.json"),
   computersFile: path.join(configDir, "computers.json"),
   composeProject: env("COMPOSE_PROJECT_NAME", "aidenhq"),
-  // The runner's work and state dirs (services/runner/src/config.mjs: work_dir and state_dir in config/runner.yaml): its cache
-  // clones, and for runner jobs the task folders, the clones' guard hooks and the per-task Codex homes.
+  // The host's work and state dirs (work_dir and state_dir in config/runner.yaml): the task folders, the clones' guard hooks
+  // and the per-task Codex homes.
   runnerWork: runnerDir("work_dir", "~/aidenhq-work"),
   runnerState: runnerDir("state_dir", "~/.local/state/aidenhq-runner"),
 };

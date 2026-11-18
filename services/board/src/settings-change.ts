@@ -1,6 +1,6 @@
 // A settings change from the board's pages (docs/design/settings-changes.md): a typed change, checked against the compiled
 // config and the module catalog, and filed as the owner's own task with no assignee. The runner writes exactly the files the
-// change names (services/runner/src/typed-change.mjs, which checks it again: that is the gate) and files the fleet apply
+// change names (the runner's typed-change.mjs checked it again; nothing reads it since the runner was deleted) and files the fleet apply
 // card, tiered by its code; nothing here writes or applies anything.
 import { z } from "zod";
 import type { Approval } from "./records.js";

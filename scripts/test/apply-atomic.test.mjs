@@ -131,7 +131,7 @@ function world() {
   for (const f of REAL) exe(d("pw", f), readFileSync(join(repo, f), "utf8"));
   for (const [f, t] of Object.entries(FAKES)) { mkdirSync(dirname(d("pw", f)), { recursive: true }); writeFileSync(d("pw", f), t); }
   for (const [f, t] of Object.entries(SCRIPTS)) exe(d("pw", f), t);
-  for (const u of ["aidenhq-kernel.service", "aidenhq-runner.service", "aidenhq-apply-recover.service", "aidenhq-backup.service", "aidenhq-backup.timer", "aidenhq-host-metrics.service", "aidenhq-host-metrics.timer"]) {
+  for (const u of ["aidenhq-kernel.service", "aidenhq-apply-recover.service", "aidenhq-backup.service", "aidenhq-backup.timer", "aidenhq-host-metrics.service", "aidenhq-host-metrics.timer"]) {
     mkdirSync(d("pw", "ops/units"), { recursive: true });
     // The host-metrics unit is the product's own: the apply compares the installed copy with it.
     writeFileSync(d("pw", "ops/units", u), u.startsWith("aidenhq-host-metrics.") ? readFileSync(join(repo, "ops/units", u), "utf8") : `[Unit]\nDescription=${u}\n`);

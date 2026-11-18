@@ -2,8 +2,8 @@
 // runs at once (still a record), Tier 1 is the reviewer's, Tier 2 the owner's. A record headed for the reviewer carries how
 // the owner follows it (`reviewFirst`): null, the reviewer decides; "final", its approve goes on to the owner and its reject
 // is final; "owner", Tier 2 on its merits, every verdict goes on to the owner (code's own refusals aside). Pure.
-// The requesters' own rules (which repo, file or module change is which tier) stay with them: the runner's classify() in
-// services/runner/src/tiers.mjs proposes a tier for its kinds. The kernel tiers every write with computeTier: floors,
+// The requesters' own rules (which repo, file or module change is which tier) stay with them: a module's executor plan
+// (the code host's plan.mjs) and the kernel's apply planner propose a raise. The kernel tiers every write with computeTier: floors,
 // raises, the owner's veto, then the caps (the instance's autonomy off, a routine's). What else they share is here:
 // combining parts, earlier decisions on a task, and what a review-first record does with the reviewer's verdict.
 export type Tier = 0 | 1 | 2;

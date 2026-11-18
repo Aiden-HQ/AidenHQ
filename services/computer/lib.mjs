@@ -281,9 +281,9 @@ export function jobMounts({ resolvConf, workspace, outDir, codexHome, runnerWork
   return [`${resolvConf}:/etc/resolv.conf:ro`, `${workspace}:/workspace`, `${outDir}:/aidenhq-out`, `${codexHome}:/codex-home`, `${hooks}:/opt/aidenhq/hooks:ro`, `${path.join(repo, engineDir)}:/opt/aidenhq/engine:ro`];
 }
 
-/** A job box's HOME (outside every clone). */
+/** A job box's HOME (outside every clone); its wrappers (the image's /opt/aidenhq/bin) first on its PATH. */
 export const JOB_HOME = "/workspace/.aidenhq/home";
-const JOB_PATH = "/opt/rust/cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin";
+const JOB_PATH = "/opt/aidenhq/bin:/opt/rust/cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin";
 
 /** Every name a job box's env file may hold: the job's revocable capabilities and plain settings. Nothing of the kernel's own env (it adds only the job's read-only gh token, by docker exec -e). */
 export const JOB_ENV_NAMES = [

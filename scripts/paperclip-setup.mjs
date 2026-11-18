@@ -206,7 +206,6 @@ async function ensureLabels(companyId) {
 const RUNNER_ADAPTERS = ["codex_local", "claude_local", "opencode_local"];
 // The engine kinds the enabled engine modules provide (config/engines.json, written by compile): `engine:` on a runner agent
 // picks one, else the kind that names its adapter; each kind says where its effort lives in the adapter config
-// (services/runner/src/agents.mjs reads the same).
 const ENGINES = (() => { try { return JSON.parse(readFileSync(join(configDir, "engines.json"), "utf8")); } catch { return {}; } })();
 const engineOf = (a) => a.engine ?? Object.keys(ENGINES).find((k) => ENGINES[k].adapter === a.adapter);
 const instanceDir = env("AIDENHQ_INSTANCE_DIR", "");
@@ -705,7 +704,7 @@ function appendRevs(table) {
  * Paperclip lets agents edit their own metadata (setupKey, roles). Written in place, never renamed: the board bind-mounts
  * its directory read-only.
  */
-/** owner/name of the product repo: AIDENHQ_PRODUCT_REPO, else this checkout's GitHub origin (services/runner/src/config.mjs agrees). */
+/** owner/name of the product repo: AIDENHQ_PRODUCT_REPO, else this checkout's GitHub origin */
 function productRepo() {
   const env = process.env.AIDENHQ_PRODUCT_REPO || dotenv.AIDENHQ_PRODUCT_REPO;
   if (env) return env;
