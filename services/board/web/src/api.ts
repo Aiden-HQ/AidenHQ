@@ -41,7 +41,7 @@ export interface SignInView {
   /** Its per-install values are in place (asked afresh: the dialog waits on it after a save). */
   configured: boolean;
   fields: { secret: string; label: string; pattern: string; help?: string }[];
-  scopes: { supported: string[]; recommended: string[] } | null;
+  scopes: { supported: string[]; recommended: string[]; granted?: string[] } | null;
 }
 
 /** One module's setup flow as GET /api/setup-flows returns it (services/board/src/setup-flows.ts). */
