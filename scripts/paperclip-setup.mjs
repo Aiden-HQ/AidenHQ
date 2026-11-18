@@ -20,7 +20,7 @@ import { fileURLToPath } from "node:url";
 import { ensureBackupRetention, ensureChatTasks, ensureFleetIssues, ensureMemoryInboxes, ensureReviewLogs, grantEntry, HEALTH_PROBES, healthProbeAgent, mapLimit, routineAutonomyDefault } from "./modules.mjs";
 import { retireUnconfigured } from "./retire-agents.mjs";
 import { ensureAgentKeys, ensureEventsPlugin } from "./paperclip-events.mjs";
-import { agentSkills, handbookParts, laneHandbook, readInstructions as readHandbook } from "./handbook.mjs";
+import { agentSkills, handbookParts, laneHandbook, personaOf, readInstructions as readHandbook } from "./handbook.mjs";
 import { recoverStalePid } from "./paperclip-recover.mjs";
 
 const repo = resolve(dirname(fileURLToPath(import.meta.url)), "..");
