@@ -25,6 +25,9 @@ export type FastCheckDeps = {
   log: (msg: string, f?: object) => void;
   /** Host git on a task clone (the code host's hardened git). */
   git: (cwd: string, ...args: string[]) => Promise<string>;
+  /** Where the check runs, as a command line around `argv` in the clone at `path`: the job sandbox (hiding) by default; a
+   * box job's own box while it is up (its workspace is the box's, so nothing else may run in it then). */
+  jail?: (argv: string[], path: string) => string[];
 };
 type Branch = { repo: string; branch: string; path: string; baseRef: string };
 
@@ -51,15 +54,15 @@ export async function fastChecks(d: FastCheckDeps, branches: Branch[]): Promise<
  */
 async function fastCheck(d: FastCheckDeps, path: string, base: string, label: string): Promise<string | undefined> {
   const env = { PATH: process.env.PATH ?? "/usr/bin:/bin", HOME: process.env.HOME ?? "/tmp", CI: "1", AIDENHQ_BASE: base };
-  const paths = { rw: [path] };
+  const jail = d.jail ?? ((argv: string[]) => hiding(d.cfg, argv, [], { rw: [path] }));
   // The same layout with nothing in it first: a jail that can't start says nothing about the repo.
-  const [tc, ...ta] = hiding(d.cfg, ["true"], [], paths);
+  const [tc, ...ta] = jail(["true"], path);
   const trial = spawnSync(tc!, ta, { cwd: path, env, timeout: 20_000 });
   if (trial.error || trial.status !== 0) {
     d.log("WARNING: fast check skipped: the sandbox didn't start", { repo: label, err: String(trial.error?.message ?? trial.stderr ?? trial.status).slice(0, 300) });
     return undefined;
   }
-  const [cmd, ...args] = hiding(d.cfg, ["npm", "run", "--silent", FAST_CHECK], [], paths);
+  const [cmd, ...args] = jail(["npm", "run", "--silent", FAST_CHECK], path);
   const limit = LIMIT_MS;
   const started = Date.now();
   const r = await new Promise<{ code: number | null; out: string; timedOut: boolean; error?: Error }>((done) => {

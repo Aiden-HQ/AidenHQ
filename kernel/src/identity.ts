@@ -42,10 +42,14 @@ export function createIdentity({ grants, connections, jobcaps, modules = () => (
   runTask?: (runId: string) => Promise<string | undefined>; now?: () => number;
 }) {
   const ids = new Map<string, { at: number; id: string; name: string; run?: string; task?: string }>();
-  const agent = (id: string, name: string | undefined, credential: string, extra: { run?: string; task?: string } = {}): Identity => {
+  const agent = (id: string, name: string | undefined, credential: string, extra: { run?: string; task?: string } = {}, box = false): Identity => {
     const g = grants()[id];
     if (!g) throw new NoGrants(`${name || id} has no grants`);
-    return { kind: "run", agent: id, key: String(g.key ?? ""), name: name || String(g.key ?? ""), roles: rolesOf(g), tools: g.tools ?? {}, credential, ...extra };
+    // A computer reaches its connections only through here: its agent's jobcaps (reads its runner jobs hold) come with it. A
+    // private one stays a job token's (observing); a computer's private reads are grants (scripts/computers.mjs privateGrants).
+    const tools: Record<string, string[]> = Object.fromEntries(Object.entries(g.tools ?? {}).map(([c, t]) => [c, [...t]]));
+    if (box) for (const j of g.jobcaps ?? []) { const c = jobcaps()[j]; if (c && !c.private) tools[c.connection] = [...new Set([...(tools[c.connection] ?? []), ...c.tools])]; }
+    return { kind: "run", agent: id, key: String(g.key ?? ""), name: name || String(g.key ?? ""), roles: rolesOf(g), tools, credential, ...extra };
   };
 
   return async function whoami(token: string): Promise<Identity> {
@@ -71,7 +75,7 @@ export function createIdentity({ grants, connections, jobcaps, modules = () => (
       const j = (await res.json()) as { agentId?: unknown; runId?: unknown; issueId?: unknown };
       const id = String(j.agentId ?? "");
       if (!id) throw new NoGrants("this computer has no grants");
-      return agent(id, undefined, token, { ...(typeof j.runId === "string" && j.runId ? { run: j.runId } : {}), ...(typeof j.issueId === "string" && j.issueId ? { task: j.issueId } : {}) });
+      return agent(id, undefined, token, { ...(typeof j.runId === "string" && j.runId ? { run: j.runId } : {}), ...(typeof j.issueId === "string" && j.issueId ? { task: j.issueId } : {}) }, true);
     }
     if (!controlUrl) throw new Unknown("the control plane isn't configured");
     const h = sha(token);

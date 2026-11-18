@@ -253,7 +253,8 @@ export function createJobs({ db, cfg, cp, jobcaps, mayDispatch, log, boxWrap }: 
       if (!timedOut && (stopped = tracker.check())) (timedOut = true), kill();
       if (!timedOut && !tracker.waiting && Date.now() - grewAt > stallMs) (timedOut = stalled = true), kill();
     };
-    const send = r.live_input === 1 && !r.box
+    // A box job's dir is the launcher's out folder, mounted in its box: the inbox reaches it the same way.
+    const send = r.live_input === 1
       ? (text: string, from: string) => {
           read();
           if (over || final !== undefined || exitStatus(exitFile) || !alive(pid)) return false;

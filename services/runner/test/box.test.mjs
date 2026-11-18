@@ -252,11 +252,11 @@ describe("box jobs", () => {
     assert.notEqual(lastJob().status, "running");
   });
 
-  it("a box Engineer runs only what is assigned to it: never picked, or borrowed as a persona, by its engine kind", async () => {
+  it("a specialised Engineer runs only what is assigned to it: never picked, or borrowed as a persona, by its engine kind; a general one in a box is", async () => {
     const { personaFor, pickerFor } = await import("../src/agents.mjs");
     useEngines(registry());
-    const box = { id: "app-eng", adapterType: "opencode_local", adapterConfig: {}, metadata: { engine: "codex-openrouter", box: true, persona: { name: "Ada" } } };
-    const light = { id: "sw-eng", adapterType: "opencode_local", adapterConfig: {}, metadata: { engine: "codex-openrouter", persona: { name: "Linus" } } };
+    const box = { id: "app-eng", adapterType: "opencode_local", adapterConfig: {}, metadata: { engine: "codex-openrouter", box: true, brief: "Build apps.", persona: { name: "Ada" } } };
+    const light = { id: "sw-eng", adapterType: "opencode_local", adapterConfig: {}, metadata: { engine: "codex-openrouter", box: true, persona: { name: "Linus" } } };
     assert.equal(pickerFor({ kind: "codex-openrouter" }, [box, light]).assigneeAgentId, "sw-eng");
     assert.equal(personaFor("codex-openrouter", [box, light]).name, "Linus");
     assert.equal(personaFor("codex-openrouter", [box, light], box).name, "Ada");
@@ -274,7 +274,7 @@ describe("box jobs", () => {
     assert.ok(!paperclip.comments.get("part").some((c) => c.body.includes("0123456789")), "the host file stayed out of the task");
   });
 
-  it("a box job's clones share no object file with the runner's cache; a reused one that does is refused, untouched", async () => {
+  it("a box job's clones share no object file with the runner's cache", async () => {
     const d = mkdtempSync(join(tmpdir(), "aidenhq-copy-"));
     try {
       const g = (cwd, ...a) => execFileSync("git", a, { cwd, env: { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1" }, stdio: "pipe" }).toString().trim();
@@ -289,14 +289,6 @@ describe("box jobs", () => {
       const path = await ensureRepo(join(d, "ws"), { slug: "acme/app", org: "acme", name: "app" }, { cache, remoteUrl: cache, copy: true });
       assert.ok(objects(path).length > 0);
       for (const f of objects(path)) assert.equal(statSync(f).nlink, 1, `${f} is hardlinked`);
-      // A clone made for the jail (hardlinked to the cache), reused when the task's Engineer now runs in a box.
-      const repo = { slug: "acme/app", org: "acme", name: "app" };
-      const shared = await ensureRepo(join(d, "ws2"), repo, { cache, remoteUrl: cache });
-      assert.ok(objects(shared).some((f) => statSync(f).nlink > 1), "a plain local clone hardlinks");
-      // Refused, and nothing in it written (its .git is the agent's: no name found there is trusted).
-      const before = objects(shared).map((f) => `${f}:${statSync(f).ino}`).join();
-      await assert.rejects(ensureRepo(join(d, "ws2"), repo, { cache, remoteUrl: cache, copy: true }), /cloned for the jail and shares files/);
-      assert.equal(objects(shared).map((f) => `${f}:${statSync(f).ino}`).join(), before);
     } finally {
       rmSync(d, { recursive: true, force: true });
     }

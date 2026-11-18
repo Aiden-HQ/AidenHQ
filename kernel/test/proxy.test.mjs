@@ -210,6 +210,20 @@ test("an agent computer's run token: the launcher names the agent, and a revoked
   assert.equal((await k.call("docs", "ahqc_live", { method: "tools/list" })).status, 401);
 });
 
+test("a computer's run holds its agent's jobcaps (a private one stays a job token's); a control-plane run doesn't", async (t) => {
+  const docs = await moduleServer(t, { key: "docs-key", tools: ["doc_read", "doc_search", "doc_secret"] });
+  const boxes = { ahqc_job: { agentId: "ag-cy", issueId: "TASK-3" } };
+  const grantsCy = { "ag-cy": { key: "cy", roles: [], tools: {}, jobcaps: ["docs-read", "docs-private"] } };
+  const jobcaps = { "docs-read": { connection: "docs", url: `${docs.url}/mcp`, bearer_secret: "docs_service_key", tools: ["doc_read", "doc_search"] }, "docs-private": { connection: "docs", url: `${docs.url}/mcp`, bearer_secret: "docs_service_key", tools: ["doc_secret"], private: true } };
+  const k = await kernel(t, { agents: { "agent-key-cy": { id: "ag-cy", name: "Cy" } }, grants: grantsCy, boxes, jobcaps, secrets, connections: { docs: conn(docs.url, "docs", { read: ["doc_read", "doc_search", "doc_secret"] }) } });
+  let r = await k.call("docs", "ahqc_job", { method: "tools/list" });
+  assert.deepEqual((await r.json()).result.tools.map((x) => x.name), ["doc_read", "doc_search"]);
+  r = await k.call("docs", "ahqc_job", { method: "tools/call", params: { name: "doc_secret" } });
+  assert.deepEqual((await r.json()).error, { code: -32602, message: "no-grant" });
+  r = await k.call("docs", "agent-key-cy", { method: "tools/call", params: { name: "doc_read" } });
+  assert.deepEqual((await r.json()).error, { code: -32602, message: "no-grant" });
+});
+
 test("a module's model calls for its caller: only a module that declares it, only while the call is in flight", async (t) => {
   let k, inside;
   const as = (key, jwt) => k.asCaller({ headers: { authorization: `Bearer ${key}`, "x-aidenhq-caller": jwt } }).then((c) => c, (e) => e.status);
