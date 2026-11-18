@@ -195,6 +195,8 @@ export function grantEntry(key, a, routines = {}) {
     max_parallel: a.max_parallel ?? 1, ...(a.private_reads === true ? { private_reads: true } : {}), ...(a.web_search ? { web_search: a.web_search } : {}), ...(own.length ? { routines: Object.fromEntries(own.map(([k, r]) => [k, { ...(r.model ? { model: r.model.replace(/^openrouter\//, "") } : {}), ...(r.reasoning_effort ? { effort: r.reasoning_effort } : {}) }])) } : {}),
   };
 }
+/** paperclip_tasks tools the in-box `aidenhq` CLI calls as the job (services/computer/images/engineer/bin/aidenhq). */
+const JOB_CLI_TOOLS = ["task_get", "task_search", "advisor_ask"];
 /** An agent's profile (kernel/src/admission.ts PROFILES): which tools, writes and computer its kernel jobs get. */
 const JOB_PROFILES = ["crew", "engineer", "check"];
 
@@ -853,6 +855,14 @@ export function compile(productDir, instanceDir, { revision, fetch = hostFetch(p
       const [c, tool] = t.split(".");
       if (!tools[c]?.includes(tool)) tools[c] = [...(tools[c] ?? []), tool];
     }
+    // The in-box CLI's `aidenhq task|tasks|advise` call these as the job, so crew and engineer agents hold them (a check job
+    // holds no tools); advisor_ask on the tasks module's own terms (model-tools on, not an agent with its own computer). They
+    // read private data, so an Engineer (runner or engineer profile) holds them only with private_reads (computers.mjs).
+    const engineer = a.dispatch === "runner" || a.profile === "engineer";
+    if ((a.profile ?? "crew") !== "check" && (!engineer || a.private_reads === true) && paperclip.mcp_servers.paperclip_tasks) {
+      const want = JOB_CLI_TOOLS.filter((t) => t !== "advisor_ask" || (enabled.includes("model-tools") && !a.image));
+      tools.paperclip_tasks = [...new Set([...(tools.paperclip_tasks ?? []), ...want])];
+    }
     const memory = memoryOf(instanceDir, key, warnings);
     if (memory) a.memory = memory;
     delete a.connections;
@@ -1345,8 +1355,8 @@ function appFeedbackRoutines(paperclip, appDefs, routineTitles) {
   for (const a of appDefs) {
     if (!a?.share?.host || !a.feedback_to) continue;
     const agent = paperclip.agents[a.feedback_to] ?? fail(`app ${a.name}: feedback_to names ${a.feedback_to}, which is not an enabled agent`);
-    // Every Codex agent gets advisor_ask and notify_owner by default; the feedback agent holds only FEEDBACK_TOOLS, so drop them.
-    for (const [c, list] of Object.entries(agent.enabled_tools)) agent.enabled_tools[c] = list.filter((t) => FEEDBACK_TOOLS[c]?.includes(t) || !(c === "paperclip_tasks" && t === "advisor_ask") && !(c === "telegram" && t === "notify_owner"));
+    // Agents get notify_owner and the in-box CLI's tools by default; the feedback agent holds only FEEDBACK_TOOLS, so drop them.
+    for (const [c, list] of Object.entries(agent.enabled_tools)) agent.enabled_tools[c] = list.filter((t) => FEEDBACK_TOOLS[c]?.includes(t) || !(c === "paperclip_tasks" && JOB_CLI_TOOLS.includes(t)) && !(c === "telegram" && t === "notify_owner"));
     for (const c of Object.keys(agent.enabled_tools)) if (!agent.enabled_tools[c].length) delete agent.enabled_tools[c];
     const extra = Object.entries(agent.enabled_tools).flatMap(([c, list]) => list.filter((t) => !FEEDBACK_TOOLS[c]?.includes(t)).map((t) => `${c}.${t}`));
     if (extra.length) fail(`app ${a.name}: its feedback agent ${a.feedback_to} may hold only ${Object.entries(FEEDBACK_TOOLS).map(([c, l]) => `${c}: ${l.join(", ")}`).join("; ")}, not ${extra.join(", ")}`);
