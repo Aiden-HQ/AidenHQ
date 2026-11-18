@@ -40,7 +40,7 @@ import { createIdentity, type Connection, type Grant, type Jobcap } from "./iden
 import { createAdvisories } from "./advisories.ts";
 import { hostFetch } from "../../scripts/compiler/sources.ts";
 import { createResolver } from "./net.ts";
-import { CODEHOST, createCodehost, type OpsGrant } from "./codehost.ts";
+import { CODEHOST, covers, createCodehost, type OpsGrant } from "./codehost.ts";
 import { createProxy } from "./proxy.ts";
 import { openRecords } from "./records.ts";
 import { createReviews, type ReviewerSlot } from "./reviews.ts";
@@ -314,9 +314,27 @@ const moduleSecrets = createModuleSecrets({
 const computers = watched(path.join(configDir, "computers.json"), (j) => j as { max?: unknown; connections?: Record<string, { tool_timeout_sec?: number }> }, {});
 // A job's requests for its task's next turn (`aidenhq reset|engine|cleanup`): boxes does the cleanup, admission the rest.
 const jobTools = createJobTools({ db: records.db, secret: () => secret("gateway_job_secret"), engines: () => Object.entries(readEngines(sandbox)).filter(([, e]) => e.box === true).map(([k]) => k) });
+// Each module's GitHub App grant (its module.yaml `codehost:`), and what its @ names resolve to: the code host broker's, and
+// what an engineer job's dispatcher may clone into its task's workspace.
+const codehostGrants = (): OpsGrant[] => Object.entries(modulesFile().modules ?? {}).flatMap(([module, d]) => ((d as { codehost?: OpsGrant }).codehost ? [{ ...(d as { codehost: OpsGrant }).codehost, module }] : []));
+const codehostRepos = () => ({ instance: baseRepos.instance, product: baseRepos.product, agentsOrg });
 boxes = createBoxes({
   db: records.db, cfg: sandbox, jobs, call: launcherClient(launcherUrl, () => secret("launcher_kernel_key")), secret, whoami,
   connections: () => computers().connections ?? {}, handbook: handbookFrom(configDir), cleanup: jobTools.cleanup, log,
+  clones: {
+    text: async (task) => { const i = (await cpJson(`/api/issues/${encodeURIComponent(task)}`)) as { title?: string; description?: string | null }; return `${i.title ?? ""}\n${i.description ?? ""}`; },
+    may: (module, repo) => covers(repo, codehostGrants().find((g) => g.module === module)?.clone?.repos, codehostRepos()),
+    // The default branch (HEAD); the code host's answer, read whole: a non-2xx throws with its status.
+    clone: async (module, repo, task) => {
+      const r = await codehost.ask(module, "clone", { repo, ref: "HEAD", into: task });
+      let body = "";
+      for await (const c of r) body += c;
+      if ((r.statusCode ?? 502) < 300) return;
+      let said = body;
+      try { said = String((JSON.parse(body) as { error?: string }).error ?? body); } catch {}
+      throw Object.assign(new Error(said.slice(0, 300)), { status: r.statusCode ?? 502 });
+    },
+  },
 });
 const admission = createAdmission({
   db: records.db, grants: () => (grantsTable().agents ?? {}) as never, kinds: registry, capacity: () => Number(computers().max) || 0,
@@ -327,7 +345,7 @@ const admission = createAdmission({
 admission.recover();
 boxes.start();
 // The GitHub code host's operations, brokered for modules under their own codehost grants (codehost.ts).
-const codehost = createCodehost({ repos: () => ({ instance: baseRepos.instance, product: baseRepos.product, agentsOrg }), grants: () => Object.entries(modulesFile().modules ?? {}).flatMap(([module, d]) => ((d as { codehost?: OpsGrant }).codehost ? [{ ...(d as { codehost: OpsGrant }).codehost, module }] : [])), kind: () => Object.values(moduleKinds()).find((k) => k.module === CODEHOST && k.executor), secret, resolver, workspace: (module, task) => jobs.workspace(module, task) });
+const codehost = createCodehost({ repos: codehostRepos, grants: codehostGrants, kind: () => Object.values(moduleKinds()).find((k) => k.module === CODEHOST && k.executor), secret, resolver, workspace: (module, task) => jobs.workspace(module, task) });
 // Check jobs (checkjobs.ts): credential-free boxes of the launcher's, snapshots from the module that provides them.
 const checkJobs = checkJobsFrom({ db: records.db, secret, ask: codehost.ask, call: launcherClient(launcherUrl, () => secret("launcher_kernel_key")), workDir: sandbox.workDir, gatewayUrl: `${sandbox.boxGatewayUrl}/api/v1`, log });
 const lane = createLane({ db: records.db, owner: ownerApi, grantsFile: grantsTable, log, postAsAgent: async (agent, task, job, body) => ({ id: String((await outcomes.post({ id: job, agent, task }, { kind: "lane", body })).comment) }) });

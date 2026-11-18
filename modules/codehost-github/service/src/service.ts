@@ -446,7 +446,15 @@ export function createService(o: Options) {
     }
     const s = slugOf(b.repo);
     if (op !== "snapshot" && op !== "clone") throw fail(404, "no such operation");
-    const name = String(b.ref ?? "").replace(/^refs\/heads\//, "");
+    // HEAD: the repo's default branch, by its name (a clone then has origin/<that branch>). A repo GitHub doesn't show is a 404.
+    const asked = String(b.ref ?? "").replace(/^refs\/heads\//, "");
+    let name = asked;
+    if (asked === "HEAD") {
+      const r = await o.gh("GET", `/repos/${s.slug}`, await tokenFor(s, READ));
+      if (r.status === 404) throw fail(404, `${s.slug} isn't on GitHub (or the App can't see it)`);
+      if (r.status >= 300) throw fail(502, `GitHub GET /repos/${s.slug}: ${r.status}`);
+      name = String(r.body?.default_branch ?? "");
+    }
     if (!BRANCH.test(name)) throw fail(400, "name a branch or a commit");
     const { dir, ref, sha } = await fetchRemote(s, name);
     if (op === "snapshot") {

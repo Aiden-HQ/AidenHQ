@@ -8,6 +8,10 @@ roles:
   # kernel.jobs: the one job dispatcher (compile gives it every agent). kernel.wake, kernel.tasks, kernel.owner-notice: what an
   # agent's task needs reaches whoever asked (asker.ts).
   requests: [ kernel.jobs, kernel.cp-read, kernel.wake, kernel.tasks, kernel.owner-notice ]
+# An Engineer job's workspace (kernel/src/boxes.ts): the kernel clones the repositories its task names, for this module as the
+# agent's dispatcher, on its default branch. Only the fleet's own repos: the agents org's, the product's and the instance's.
+codehost:
+  clone: { repos: [ "@agents/*", "@product", "@instance" ] }
 services:
   data: true
   run:
