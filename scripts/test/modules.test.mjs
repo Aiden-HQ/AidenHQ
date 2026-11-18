@@ -214,7 +214,7 @@ const repo = join(here, "../..");
 test("disabling open-loops removes its agents, routines and labels only", () => {
   const dir = pinst(["meetings", "engineering", "warehouse", "github", "glean", "primer"], { timezone: "Europe/London", owner_name: "Sam", owner_slack_user_id: "U1", product_repo: "acme/aidenhq", owner_email: "o@x" });
   const r = compile(repo, dir);
-  for (const k of ["open-loops", "slack-triage", "slack-scout", "inbox-agent"]) assert.equal(r.paperclip.agents[k], undefined);
+  assert.ok(!Object.values(r.paperclip.agents).some((a) => a.module === "open-loops"));
   for (const k of ["chief-of-staff", "assistant", "app-maintainer", "fleet-engineer", "meeting-librarian"]) assert.ok(r.paperclip.agents[k], k);
   assert.ok(!r.paperclip.labels.some((l) => l.name === "waiting-on"));
   assert.ok(r.paperclip.mcp_servers.telegram && r.paperclip.mcp_servers.chat_lane, "the Telegram channel and the chat lane stay: the bundle lists them");
@@ -280,11 +280,12 @@ test("a setting holding entries reaches a service as JSON; a list of plain value
   assert.equal(env(["acme/aidenhq", "acme/widgets"]), "acme/aidenhq,acme/widgets");
   assert.equal(env([]), "");
 });
-test("Slack Scout's read grant has no draft tool", () => {
+test("the intake agents' Slack read grant has no draft tool", () => {
   const dir = pinst(["open-loops", "primer"], { timezone: "Europe/London", owner_name: "Sam", owner_slack_user_id: "U1", owner_email: "e@x", product_repo: "acme/aidenhq" });
   const r = compile(repo, dir);
-  assert.ok(r.paperclip.agents["slack-scout"].enabled_tools.slack.includes("slack_read_thread"));
-  assert.ok(!r.paperclip.agents["slack-scout"].enabled_tools.slack.includes("slack_send_message_draft"));
+  const scanners = Object.values(r.paperclip.agents).filter((a) => a.module === "open-loops" && a.department.id === "intake" && a.enabled_tools.slack?.includes("slack_read_thread"));
+  assert.ok(scanners.length);
+  for (const a of scanners) assert.ok(!a.enabled_tools.slack.includes("slack_send_message_draft"), a.name);
 });
 test("module apps are pinned to the product revision", () => {
   const rev = "e".repeat(40);
