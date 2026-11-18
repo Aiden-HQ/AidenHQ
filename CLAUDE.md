@@ -70,6 +70,27 @@ applies to changes to the module (its service, policy `service/security/`, cases
 
 ## Conventions
 
+- **One way to do each thing.** Every concern has exactly one path:
+  - No fallbacks, no compatibility shims, no "until X" second path.
+  - A change that replaces a path deletes the old one in the same PR, or in the follow-up its body names. A half-finished
+    migration gets finished, not left beside the old path.
+  - Variation lives in a module behind one interface, never in a branch in core.
+  - Before adding a path, find the existing one (grep the concern) and extend it. If you find two, collapse them first.
+- **One authority per concern.** A new caller uses the owner below; it never adds a second:
+  - The kernel: identity, credentials, policy, write records and their tier (`computeTier` in `kernel/src/tier.ts` is the
+    only tier function).
+  - codehost-github: the only holder of the GitHub App key. Others get narrow tokens through the kernel.
+  - `notify`: the only path to the owner.
+  - The wake inbox and dispatch: the only way an agent job starts.
+  - Paperclip: tasks and schedules only.
+- **Rules live in one place.**
+  - How code is written lives in the `write-code` skill. How work is delegated lives in `delegate-work`. Whom to route
+    work to lives in each agent's one-line `description:` (served by `task_team`). Cross-agent behaviour is a module skill
+    or prompt.
+  - A handbook links the skill; it never copies the rule. Fix a rule at its source.
+  - Agent handbooks state the mission; how-to lives in skills.
+- **Every new path gets a security review before it switches on**, and each finding is fixed with a test. The reviewer
+  eval gates the files listed above.
 - **Generic core.** The core knows nothing about specific workflows. New behaviour is an agent definition, handbook
   text or a tool, never a special-case branch. Code finds an agent by its role (grants table `roles`), never by its key.
 - **One shared tools repository.** Every tool is usable by any agent it is granted; grants and roles decide access.
@@ -79,13 +100,16 @@ applies to changes to the module (its service, policy `service/security/`, cases
   A new non-security gate ships in observe mode (`mode: observe` on a module check, `kernel/src/gates.ts`): it logs what it would
   block (`gate.would_block` events) without blocking; promote it to enforce after reviewing those entries. Security gates
   (secrets, outbound sends, unapproved merges and pushes, credential scoping; `HARD_GATES`) enforce from day one.
-  Writes are kernel records tiered in code (`kernel/src/tier.ts`, the runner's `tiers.mjs` proposing for its kinds, the
-  kernel enforcing floors, owner authority and vetoes itself): Tier 0 runs, Tier 1 the AI reviewer
-  decides, Tier 2 the owner; setting `autonomy`. Every reviewer false reject becomes a planted case in
-  `modules/ai-reviewer/test/reviewer-cases/`.
-- **Cross-agent behaviour goes in a module's `prompts:`** (`modules/<module>/prompts/<id>.md`: replying in chief-of-staff,
-  delegating in engineering, improving in platform; the kernel's own sections stay in `scripts/prompts/`; `scripts/handbook.mjs` assembles a handbook and `node scripts/compile.mjs --sizes` prints its bytes per section),
-  not copied into each handbook. Fix behaviour at the source; don't suppress it afterwards.
+  Writes are kernel records tiered in code: the runner's `tiers.mjs` proposes a tier on the merits for its kinds, and the
+  kernel's `computeTier` (`kernel/src/tier.ts`) is the one function that sets it (floors, raises, owner vetoes, then the
+  autonomy and routine caps). Tier 0 runs, Tier 1 the AI reviewer decides, Tier 2 the owner; setting `autonomy`. Every
+  reviewer false reject becomes a planted case in `modules/ai-reviewer/test/reviewer-cases/`.
+- **Cross-agent behaviour goes in a module, not in each handbook.** A skill (`modules/<m>/skills/<name>/SKILL.md`) is the
+  on-demand mechanism: its one-line description is in the handbook's index and the agent reads the text when it needs it. A
+  module `prompts:` entry (`modules/<module>/prompts/<id>.md`) is for always-on text (replying in chief-of-staff,
+  delegating in engineering; `load: on_demand` still works on a prompt until the one-way switch). The kernel's own sections
+  stay in `scripts/prompts/`; `scripts/handbook.mjs` assembles a handbook and `node scripts/compile.mjs --sizes` prints its
+  bytes per section. Fix behaviour at the source; don't suppress it afterwards.
 - **Source writers:** one bad item never fails a pass (skip only permanent errors, rethrow transient ones); passes
   are time-bounded. Probe a vendor MCP's real tool shapes live before trusting guessed params
   (`docker compose exec jira-mcp node dist/src/probe.js [tool '<json>']`).
