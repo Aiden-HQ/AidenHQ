@@ -162,10 +162,9 @@ export function replyQuestions(body: string): Question[] | undefined {
 type ChatComment = Pick<Comment, "id" | "body" | "authorType" | "authorAgentId" | "authorUserId" | "createdAt">;
 
 /**
- * The questions a task's agent is still waiting on the owner for: its latest comment is a reply asking `questions`, with
- * nothing from the owner (typed, tapped or relayed) since. Anything it wrote after a question means it moved on. Only the
- * task's own agent counts: another agent commenting on the task can't put a question in front of the owner as if it were
- * this one's. Comments oldest first.
+ * The questions a task's agent is still waiting on the owner for: its newest reply asking `questions`, with nothing
+ * from the owner (typed, tapped or relayed) since. Only the task's own agent's reply counts: another agent commenting
+ * on the task can't put a question in front of the owner as if it were this one's. Comments oldest first.
  */
 export function openAsk(comments: ChatComment[], agentId: string | null | undefined, me: string): { id: string; at: string; text: string; questions: Question[] } | undefined {
   if (!agentId) return undefined;
@@ -173,9 +172,9 @@ export function openAsk(comments: ChatComment[], agentId: string | null | undefi
     const c = comments[i]!;
     const system = c.authorType !== "agent" && (!c.authorUserId || c.authorUserId === me);
     if (system && !has(c.body, NOTICE_MARKER) && !has(c.body, APPROVAL_MARKER) && !has(c.body, RUNNER_MARKER)) return undefined;
-    if (c.authorType !== "agent" || c.authorAgentId !== agentId) continue;
-    const questions = c.body.includes(REPLY_MARKER) ? replyQuestions(c.body) : undefined;
-    return questions && { id: c.id, at: c.createdAt, text: strip(c.body), questions };
+    if (c.authorType !== "agent" || c.authorAgentId !== agentId || !c.body.includes(REPLY_MARKER)) continue;
+    const questions = replyQuestions(c.body);
+    if (questions) return { id: c.id, at: c.createdAt, text: strip(c.body), questions };
   }
   return undefined;
 }

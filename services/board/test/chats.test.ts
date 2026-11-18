@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { chatAgent, chatAgentMarker, chatState, needsYou, pickAgent, shownState, type Message } from "../src/chats.js";
+import { REPLY_MARKER, chatAgent, chatAgentMarker, chatState, needsYou, openAsk, pickAgent, shownState, type Message } from "../src/chats.js";
 import type { Agent, Issue, PastRun } from "../src/paperclip.js";
 
 const issue = (o: Partial<Issue> = {}): Issue => ({ id: "i1", identifier: "WOR-1", title: "t", description: null, status: "todo", priority: "medium", assigneeUserId: null, assigneeAgentId: "a1", assigneeAdapterOverrides: null, createdAt: "", updatedAt: "", ...o });
@@ -62,6 +62,16 @@ describe("needsYou", () => {
     const runs = [{ ...past("timed_out", "Timed out after 1200s"), issueId: "timedout" }];
     const got = needsYou(open, [], runs, "me", new Set(["card"]), new Set(["asks", "parked"]));
     expect(got.map((x) => [x.id, x.state])).toEqual([["card", "waiting for approval"], ["asks", "waiting for you"], ["handed", "waiting for you"]]);
+  });
+});
+
+describe("openAsk", () => {
+  it("a question stays open through the agent's later notes until the owner answers; the runner's notices aren't answers", () => {
+    const c = (id: string, o: Record<string, unknown>) => ({ id, body: "", authorType: "agent", authorAgentId: "a1", authorUserId: null, createdAt: id, ...o });
+    const ask = c("1", { body: `Which exception? ${REPLY_MARKER} <!-- aidenhq-questions:[{"question":"Which?","options":["Source build","Wait upstream"]}] -->` });
+    const later = [ask, c("2", { body: `Still waiting on your call. ${REPLY_MARKER}` }), c("3", { authorType: "user", authorAgentId: null, authorUserId: "me", body: "Graded. <!-- aidenhq-runner -->" })];
+    expect(openAsk(later, "a1", "me")?.id).toBe("1");
+    expect(openAsk([...later, c("4", { authorType: "user", authorAgentId: null, authorUserId: "me", body: "Source build." })], "a1", "me")).toBeUndefined();
   });
 });
 
