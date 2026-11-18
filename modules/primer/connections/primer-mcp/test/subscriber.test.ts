@@ -32,7 +32,8 @@ function harness(closed = new Set<string>(), gone = new Set<string>()) {
     return new Response(body, { status: 200, headers: { "content-type": "text/event-stream" } });
   }) as typeof globalThis.fetch;
   const emit = (data: Record<string, unknown>) => {
-    const e = `id: ${events.length + 1}\nevent: primer.comment.created\ndata: ${JSON.stringify(data)}\n\n`;
+    // Primer's frames: unnamed, id = the row id, data = the event row (namespace primer, dotted type, snake_case payload).
+    const e = `id: ${events.length + 1}\ndata: ${JSON.stringify({ id: events.length + 1, namespace: "primer", type: "comment.created", payload: data })}\n\n`;
     events.push(e);
     streams.at(-1)?.ctl.enqueue(new TextEncoder().encode(e));
   };
