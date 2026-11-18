@@ -146,7 +146,7 @@ fi
 gf_health="$(curl -s -m 10 "$(svc grafana-mcp 8087)/healthz" 2>/dev/null)"
 if echo "$gf_health" | grep -q '"ok":true'; then
   gftoken="$(cat "${AIDENHQ_SECRETS_DIR:-/nonexistent}/grafana_mcp_token" 2>/dev/null)"
-  check "grafana (read tools)" sh -c "curl -fsS -m 30 -X POST '$(svc grafana-mcp 8087)/mcp' -H 'Authorization: Bearer $gftoken' -H 'content-type: application/json' -H 'accept: application/json, text/event-stream' -d '{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/list\"}' | grep -q query_prometheus"
+  check "grafana (read tools)" sh -c "curl -fsS -m 30 -X POST '$(svc grafana-mcp 8087)/mcp/read' -H 'Authorization: Bearer $gftoken' -H 'content-type: application/json' -H 'accept: application/json, text/event-stream' -d '{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/list\"}' | grep -q query_prometheus"
 elif echo "$gf_health" | grep -q '"ok":false' && ! echo "$gf_health" | grep -q "not set"; then
   # Set up but not signed in, or Grafana stopped accepting the sign-in.
   check "grafana sign-in" sh -c "echo '$(echo "$gf_health" | cut -c1-140)' | grep -o '\"detail\":\"[^\"]*' | cut -d'\"' -f4 | grep . || echo 'grafana-mcp unreachable'; exit 1"

@@ -23,7 +23,7 @@ read_split() { # service container-address:port
   call() { curl -s -m 30 -o "${3:-/dev/null}" -w '%{http_code}' -X POST "http://$2/$1" -H "Authorization: Bearer $4" -H 'content-type: application/json' -H 'accept: application/json, text/event-stream' -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}'; }
   list="$(mktemp)"
   if [ -n "$rt" ] && [ "$(call mcp "$2" "" "$rt")" = 401 ] && [ "$(call mcp/read "$2" "" "$mt")" = 401 ] && [ "$(call mcp/read "$2" "$list" "$rt")" = 200 ] \
-    && ! grep -qiE '"name":"[a-z_]*(send|draft|post|create|add_version|update|delete|publish|write)' "$list"; then
+    && ! grep -qiE '"name":"[a-z_]*(send|draft|post|create|add_version|update|delete|publish|write|schedule|share|upload)' "$list"; then
     pass "$1-mcp: jobs' read token opens /mcp/read only, which lists no writes; the service key doesn't open it"
   else
     fail "$1-mcp: the read endpoint's token split or tool list is wrong"
@@ -389,10 +389,40 @@ git ls-files --cached --others --exclude-standard | grep -E '(^|/)(\.env|system\
 echo "Capabilities (by construction)"
 pass "ops-mcp exposes no delete/replace/arbitrary-write tools (see modules/meetings/connections/ops-mcp/src/mcp/tools.ts)"
 pass "google-workspace-mcp requests only *.readonly scopes and has GET-only client code"
-# Slack: reads, plus saving a draft by exact name with fixed arguments; the name guard refuses every other write.
-grep -qF 'export const DRAFT_TOOL = "slack_send_message_draft";' modules/slack/connections/slack-mcp/src/policy.ts && grep -qF 'export const DRAFT_ARGS = ["channel_id", "message", "thread_ts"];' modules/slack/connections/slack-mcp/src/policy.ts \
-  && grep -qF 'upstreamArgs(name,' modules/slack/connections/slack-mcp/src/main.ts && grep -qE '^const NEVER = /\(send\|post\|schedule' modules/slack/connections/slack-mcp/src/policy.ts \
-  && pass "slack-mcp exposes allowlisted read tools and the draft tool only; never send/react/edit tools (modules/slack/connections/slack-mcp/src/policy.ts)" || fail "slack-mcp: write policy changed"
+# Vendor connections pass the vendor's MCP server through whole (owner, 2026-11-18; modules vendor-mcp/src/vendor/proxy.ts):
+# the gate is the manifest's tags and the kernel. Every tool whose name says it acts is tagged write or destructive, never
+# read; the jobs' read endpoint serves only the manifest's read tags that the vendor also marks read-only (READ_TOOLS equals
+# the read tags); and the pins stay (Slack's draft arguments, Jira's site, Grafana's untrustworthy families).
+vendor_tags="$(node --input-type=module -e '
+  import { existsSync, readFileSync } from "node:fs";
+  import YAML from "./scripts/node_modules/yaml/dist/index.js";
+  const bad = [], seen = [];
+  for (const { name } of JSON.parse(readFileSync("modules/marketplace.json", "utf8")).plugins) {
+    const def = YAML.parse(readFileSync(`modules/${name}/module.yaml`, "utf8"));
+    for (const [svc, s] of Object.entries(def.services?.run ?? {})) {
+      if (!existsSync(`modules/${name}/${s.build ?? "-"}/src/vendor/proxy.ts`)) continue;
+      const [k, c] = Object.entries(def.connections ?? {}).find(([, c]) => new URL(c.url).hostname === svc) ?? [];
+      if (!c) continue;
+      seen.push(k);
+      // A name acts when a word in it is an acting verb, unless it starts with a reading one (slack_get_reactions reads).
+      const words = (t) => t.replace(/([a-z])([A-Z])/g, "$1_$2").toLowerCase().split("_").filter((w) => !["slack", "primer", "grafana", "github"].includes(w));
+      const READS = /^(get|list|read|search|query|find|lookup|resolve|check|analyze|diff|download|export|show|discover|whoami)$/;
+      const ACTS = /^(send|post|schedule|create|update|edit|upload|share|manage|add|delete|remove|write|publish|complete|set|move|transition|assign|request|invite)$/;
+      const acts = c.tools.read.filter((t) => !READS.test(words(t)[0] ?? "") && words(t).some((w) => ACTS.test(w)));
+      if (acts.length) bad.push(`${k} tags ${acts.join(", ")} read`);
+      if (s.env?.MCP_READ_TOKEN_FILE && s.env?.READ_TOOLS !== c.tools.read.join(",")) bad.push(`${k}: READ_TOOLS is not its read tags`);
+    }
+  }
+  console.log(bad.length ? `BAD ${bad.join("; ")}` : `ok ${seen.join(" ")}`);
+' 2>&1)"
+case "$vendor_tags" in ok*) pass "vendor connections (${vendor_tags#ok }): no acting tool tagged read; each read endpoint serves only its read tags";; *) fail "vendor connections: $vendor_tags";; esac
+vp="modules/vendor-mcp/src/vendor/proxy.ts"
+grep -qF 'const servesRead = (t: Tool) => reads.has(t.name) && isRead(t);' "$vp" && grep -qF 'if (!tool) throw new Error(`${o.name} doesn'"'"'t offer ${name}`);' "$vp" \
+  && grep -qF 'export const DRAFT_ARGS = ["channel_id", "message", "thread_ts"];' modules/slack/connections/slack-mcp/src/slack.ts && grep -qF 'hooks: { args: (name, args) => upstreamArgs(name, args) },' modules/slack/connections/slack-mcp/src/main.ts \
+  && grep -qF 'args(_name, { [SITE_ARG]: _caller, ...args }, tool) {' modules/jira/connections/jira-mcp/src/site.ts \
+  && grep -qF 'hooks: { deny: /sql|investigation|assistant|gcx/i },' modules/grafana/connections/grafana-mcp/src/main.ts \
+  && pass "vendor proxy: read endpoint = read tags and read-only upstream; unlisted tools refused; Slack draft arguments, Jira site and Grafana deny pinned" \
+  || fail "vendor proxy: the read rule or a pin changed ($vp, slack.ts, site.ts, grafana main.ts)"
 for a in config/paperclip.yaml; do   # generated by scripts/compile.mjs
   [ -f "$a" ] || { echo "  skip  $a not generated (run node scripts/compile.mjs)"; continue; }
   # Agents only (mcp_servers lists every connection's tools too). Follow-up Tracker drafts chases (it had the tool before step 2).
@@ -401,17 +431,6 @@ for a in config/paperclip.yaml; do   # generated by scripts/compile.mjs
   bad_drafters="$(echo "$drafters" | tr ' ' '\n' | grep . | grep -Ev '^(assistant|open-loops):$' | tr '\n' ' ')"
   [ -z "$bad_drafters" ] && pass "$a: only the Researcher and Follow-up Tracker can save Slack drafts (now: ${drafters:-none})" || fail "$a: Slack drafts allowed for: $drafters"
 done
-pass "primer-mcp exposes reads plus create-document/add-version only; never delete, share, visibility or page-event tools (modules/primer/connections/primer-mcp/src/policy.ts)"
-# Glean: reads only, and the name guard refuses write-like tools even if allowlisted.
-glean_tools="$(sed -n 's/^export const READ_TOOLS = \[\(.*\)\];/\1/p' modules/glean/connections/glean-mcp/src/policy.ts | tr -d '" ' | tr ',' '\n')"
-bad_glean="$(echo "$glean_tools" | grep -Ev '^(search|read_document|employee_search|meeting_lookup|code_search|chat)$' || true)"
-[ -n "$glean_tools" ] && [ -z "$bad_glean" ] && pass "glean-mcp exposes only search/read tools (modules/glean/connections/glean-mcp/src/policy.ts)" || fail "glean-mcp: unexpected tools allowed: $bad_glean"
-# Grafana: signed in with read and query scopes only, and only read tools on the list.
-grafana_scopes="$(sed -n 's/^export const SCOPES = \[\(.*\)\];/\1/p' modules/grafana/connections/grafana-mcp/src/policy.ts | tr -d '" ')"
-[ "$grafana_scopes" = "grafana:read,grafana:query" ] && pass "grafana-mcp asks for grafana:read and grafana:query only, never write (modules/grafana/connections/grafana-mcp/src/policy.ts)" || fail "grafana-mcp: unexpected scopes: $grafana_scopes"
-grafana_tools="$(sed -n '/^export const READ_TOOLS = \[/,/^\];/p' modules/grafana/connections/grafana-mcp/src/policy.ts | grep -oE '^  "[a-z0-9_]+"' | tr -d '" ')"
-bad_grafana="$(echo "$grafana_tools" | grep -Ev '^(query|list|get|search|analyze|diff|check|run_panel_query$|alerting_(rules|silences)_read$)' ; echo "$grafana_tools" | grep -E 'creat|add_|update|delete|remove|manage|exec|write|edit|patch|send|post|resolve|investigation|assistant|handler|gcx|sql' || true)"
-[ -n "$grafana_tools" ] && [ -z "$bad_grafana" ] && pass "grafana-mcp exposes only read/query tools (modules/grafana/connections/grafana-mcp/src/policy.ts)" || fail "grafana-mcp: unexpected tools allowed: $bad_grafana"
 # ClickHouse: the token carries the user's own access, so the tool list and the query check are the boundary.
 ch_tools="$(sed -n 's/^export const READ_TOOLS = \[\(.*\)\];/\1/p' modules/clickhouse/connections/clickhouse-mcp/src/policy.ts | tr -d '" ' | tr ',' '\n')"
 bad_ch="$(echo "$ch_tools" | grep -Ev '^(get_organizations|get_services_list|get_service_details|list_databases|list_tables|run_select_query)$' || true)"
