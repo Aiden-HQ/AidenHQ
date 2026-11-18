@@ -1,6 +1,6 @@
 // Immutable provenance (spec §4.2a, §6 "caps follow kernel provenance"): every task a kernel job creates through the agent
 // control-plane route (cp.ts) gets a kernel row naming the job and the routine cap it carried, so the cap of whatever runs on
-// that task never depends on a control-plane field (a job's task has no originRunId). The row is written once and never
+// that task never depends on a control-plane field. The row is written once and never
 // changes. No crash window: an intent (the company, the job, its cap) is recorded before the POST, and its marker rides in the
 // new task's description; the 201 turns it into the row. An intent the kernel lost track of (a crash, a timeout, a 5xx) is
 // reconciled by searching the company's issues for its marker; until then a task carrying a marker and no row is capped

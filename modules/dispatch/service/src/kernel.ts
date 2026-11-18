@@ -65,7 +65,7 @@ export function createKernel(url: string, token: string, fetcher: typeof fetch =
     post: async (job, b) => void (await call("POST", `/v1/jobs/${e(job)}/post`, b)),
     stop: async (job) => void (await call("DELETE", `/v1/jobs/${e(job)}`)),
     children: (parent, company) => call("GET", `/v1/cp/read/api/companies/${e(company)}/issues?parentId=${e(parent)}&status=todo,in_progress,in_review,blocked,done,cancelled&limit=200`).then((l: Issue[]) => l.filter((i) => i.parentId === parent)),
-    wake: async (task, text) => void (await call("POST", "/v1/wake", { task, text })),
+    wake: async (task, text) => void (await call("POST", "/v1/wakes", { task, text })),
     fileTask: async (b) => void (await call("POST", "/v1/tasks", b)),
     notify: async (b) => void (await call("POST", "/v1/notify", b)),
     note: async (wake, body) => void (await call("POST", `/v1/wakes/${e(wake)}/note`, { body })),

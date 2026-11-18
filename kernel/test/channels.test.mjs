@@ -90,7 +90,9 @@ test("A2: a module without speaks-as-owner can't fetch cards, decide or post the
   assert.equal((await k.v1("GET", "/v1/cp/read/api/issues/WOR-1", undefined, PLAIN)).status, 403);
   assert.equal((await k.v1("GET", "/v1/cp/read/api/agents/me/keys", undefined, TG)).status, 403);
   assert.equal((await k.v1("GET", "/v1/cp/read/api/issues/../agents", undefined, TG)).status, 403);
-  assert.equal((await k.v1("POST", "/v1/wake", { task: "WOR-1", text: "x" }, TG)).status, 403);
+  assert.equal((await k.v1("POST", "/v1/wakes", { task: "WOR-1", text: "x" }, TG)).status, 403);
+  // A wake notice (POST /v1/wakes with text): posted on the task now, no scheduled row.
+  assert.deepEqual((await k.v1("POST", "/v1/wakes", { task: "WOR-1", text: "Look again." }, LANE)).json, { posted: true });
 });
 
 test("A3: the owner's words are labelled by the kernel from the calling channel, never by the body", async (t) => {

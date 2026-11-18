@@ -1,7 +1,7 @@
 // The product repo's open PRs, read once a minute (W5; the runner's watchProductPrs, moved): a Dependabot PR whose checks have
 // finished becomes one task for the agent holding the platform-engineer role (kernel POST /v1/tasks, role kernel.tasks), closed
 // again once the PR is merged or closed; an agent's own PR (one this service opened: notePrTask) that conflicts with the default
-// branch, or is red while behind a green one, wakes the task that opened it (POST /v1/wake, role kernel.wake), at most once per
+// branch, or is red while behind a green one, wakes the task that opened it (POST /v1/wakes with text, role kernel.wake), at most once per
 // head of main and half hour. Task text is fixed here: a PR's title, body, commits and check output never reach a task.
 //
 // Started by main.ts. Not ported from the runner: the environment path (red checks that never started are re-run once at the same head and
@@ -129,7 +129,7 @@ export function startPrWatch(o: PrWatchOptions) {
       const what = why === "conflict"
         ? `${pr.url} now conflicts with \`${main.name}\` (at \`${main.oid.slice(0, 12)}\`).`
         : `${pr.url}'s checks failed (\`gh pr checks ${pr.url}\` names them) while it is behind \`${main.name}\` (at \`${main.oid.slice(0, 12)}\`, green): perhaps only because \`${main.name}\` moved.`;
-      await kernel("POST", "/v1/wake", { task: opener.task, text: `${what} Rebase the PR's branch onto \`origin/${main.name}\`, resolve any conflict, rerun the tests and publish once with \`aidenhq pr\`, without \`--title\` or \`--body-file\` (the PR keeps its own, and a rebase that leaves the change exactly as approved needs no new approval). If a check still fails for another reason, fix that on the same branch first. Nothing else.` });
+      await kernel("POST", "/v1/wakes", { task: opener.task, text: `${what} Rebase the PR's branch onto \`origin/${main.name}\`, resolve any conflict, rerun the tests and publish once with \`aidenhq pr\`, without \`--title\` or \`--body-file\` (the PR keeps its own, and a rebase that leaves the change exactly as approved needs no new approval). If a check still fails for another reason, fix that on the same branch first. Nothing else.` });
       log("rebase requested", { pr: pr.url, task: opener.task, why, main: main.oid });
     }
   }

@@ -34,7 +34,6 @@ const OVERRIDABLE = { agents: ["model", "reasoning_effort", "engine", "timeout_s
  */
 export const ROUTINE_AUTONOMY = ["off", "tier0", "full"];
 export const routineAutonomyDefault = (r) => (r.webhook ? "tier0" : "full");
-// The Codex launcher (services/paperclip-tasks-mcp/codex-model, mounted at /opt/aidenhq) for agents with a per-routine model.
 // The kernel's own settings (kernel/settings.json) and what every instance has beside its modules (kernel/defaults.json): the
 // company's description, the department registry and the secrets the kernel and the host services generate.
 const kernelJson = (f) => JSON.parse(readFileSync(new URL(`../kernel/${f}`, import.meta.url), "utf8"));

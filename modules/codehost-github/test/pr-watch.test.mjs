@@ -22,7 +22,7 @@ test("a Dependabot PR becomes one task once its checks finish and closes with it
     for await (const c of req) body += c;
     calls.push({ method: req.method, url: req.url, auth: req.headers.authorization, body: body ? JSON.parse(body) : undefined });
     if (req.url === "/v1/tasks") return res.writeHead(200).end(JSON.stringify({ id: "11111111-1111-4111-8111-111111111111", identifier: "ACME-1", agent: "pe", deduplicated: false }));
-    if (req.url === "/v1/wake") return res.writeHead(200).end(JSON.stringify({ posted: true }));
+    if (req.url === "/v1/wakes") return res.writeHead(200).end(JSON.stringify({ posted: true }));
     res.writeHead(200).end(JSON.stringify({ status: "done" }));
   });
   t.after(() => kernel.s.close());
@@ -35,7 +35,7 @@ test("a Dependabot PR becomes one task once its checks finish and closes with it
   const watch = startPrWatch({ repo: "acme/app", kernelUrl: kernel.url, key: "k", cacheDir, app: { token: async () => "tok" }, gh });
   t.after(() => watch.stop());
   const made = () => calls.filter((c) => c.url === "/v1/tasks");
-  const wakes = () => calls.filter((c) => c.url === "/v1/wake");
+  const wakes = () => calls.filter((c) => c.url === "/v1/wakes");
 
   open = [pr(10, { checks: "PENDING" })];
   await watch.tick();

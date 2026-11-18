@@ -22,9 +22,9 @@
 //                              queued for the owner's router (notify.ts)
 //   GET  /v1/notify/take, POST /v1/notify/send  (the module with role kernel.notify) the queued owner messages, each once; one
 //                              message to a channel's transport
-//   POST /v1/wake              (a module with role kernel.wake) a labelled wake notice on a task, which wakes its agent
 //   POST /v1/wakes/events      (the paperclip-events plugin's key) a Paperclip event's ids: its task is scanned (wakes.ts)
-//   POST /v1/wakes             (a module with role kernel.wake) a scheduled wake {task, agent?, at?, cause?, id?}
+//   POST /v1/wakes             (a module with role kernel.wake) a scheduled wake {task, agent?, at?, cause?, id?}; with
+//                              {task, text}: a labelled wake notice on the task now, which wakes its agent (no scheduled row)
 //   POST /v1/wakes/claim, POST /v1/wakes/:key/drop  (a module with role kernel.jobs) claim inbox rows; give one up
 //   POST /v1/wakes/:key/note   (the module that claimed it) {body}: a note on its task as its agent, once (no job answers it)
 //   POST /v1/tasks             (a module with role kernel.tasks) {title, description, role | agent, source, parent?}: a task of the module's
@@ -107,7 +107,6 @@ export const ROUTES = [
   { method: "POST", path: "/v1/notify", auth: "board" },
   { method: "GET", path: "/v1/notify/take", auth: "module" },
   { method: "POST", path: "/v1/notify/send", auth: "module" },
-  { method: "POST", path: "/v1/wake", auth: "module" },
   { method: "POST", path: "/v1/wakes/events", auth: "events-key" },
   { method: "POST", path: "/v1/wakes", auth: "module" },
   { method: "POST", path: "/v1/wakes/claim", auth: "module" },
@@ -276,18 +275,34 @@ export function createBackplane({ whoami, asserter, proxy, cp, boardCp, grantsFi
         return send(res, 200, r);
       }
       if (hit && hit.path.startsWith("/v1/wakes")) {
-        if (!wakes) throw fail(503, "unavailable", "the wake inbox is off");
         if (hit.path === "/v1/wakes/events") {
+          if (!wakes) throw fail(503, "unavailable", "the wake inbox is off");
           if (!keyIs(req, eventsKey())) throw fail(401, "unauthorized", "the events plugin's key is required");
           return send(res, 200, await wakes.event(await json(req)));
         }
         const w = await moduleOf(req);
         if (hit.path === "/v1/wakes") {
           if (!w.roles.includes("kernel.wake")) throw fail(403, "forbidden", `${w.module} may not schedule wakes (role kernel.wake)`);
-          const r = await wakes.schedule(w.module!, await json(req));
+          const b = await json(req);
+          if (typeof b.text === "string") {
+            // A wake notice now: the labelled comment on the task, posted as the owner, which wakes its agent.
+            if (!owner) throw fail(503, "unavailable", "the control plane is off");
+            const task = typeof b.task === "string" ? b.task.slice(0, 100) : "", text = neutral(b.text).trim().slice(0, 2000);
+            if (!task || !text) throw fail(400, "bad_request", "send {task, text}");
+            const issue = await owner("GET", `/api/issues/${encodeURIComponent(task)}`);
+            if (issue.status !== 200) throw fail(404, "not_found", `no task ${task}`);
+            if (["done", "cancelled"].includes(issue.json.status)) return send(res, 200, { posted: false, closed: true });
+            const c = await owner("POST", `/api/issues/${encodeURIComponent(issue.json.id)}/comments`, { body: `[wake] ${text}\n\n<!-- aidenhq-wake -->` });
+            if (c.status >= 300) throw fail(502, "upstream", `the control plane answered ${c.status}`);
+            log("wake notice", { module: w.module, task: issue.json.identifier });
+            return send(res, 200, { posted: true });
+          }
+          if (!wakes) throw fail(503, "unavailable", "the wake inbox is off");
+          const r = await wakes.schedule(w.module!, b);
           if ("error" in r) throw fail(400, "bad_request", r.error!);
           return send(res, 200, r);
         }
+        if (!wakes) throw fail(503, "unavailable", "the wake inbox is off");
         if (!w.roles.includes("kernel.jobs")) throw fail(403, "forbidden", `${w.module} may not claim wakes (role kernel.jobs)`);
         const b = await json(req);
         if (hit.path === "/v1/wakes/claim") return send(res, 200, { wakes: wakes.claim(w.module!, Math.min(Math.max(Number(b.limit) || 20, 1), 100)) });
@@ -300,7 +315,7 @@ export function createBackplane({ whoami, asserter, proxy, cp, boardCp, grantsFi
         }
         return send(res, 200, wakes.drop(w.module!, decodeURIComponent(m[0]!), String(b.why ?? "")));
       }
-      if (hit && /^\/v1\/(channel|cp\/read|brake|wake)/.test(hit.path)) {
+      if (hit && /^\/v1\/(channel|cp\/read|brake)/.test(hit.path)) {
         const w = await moduleOf(req);
         const mod = w.module!;
         if (!channels || !brake || !owner) throw fail(503, "unavailable", "channels are off");
@@ -342,19 +357,6 @@ export function createBackplane({ whoami, asserter, proxy, cp, boardCp, grantsFi
           case "POST /v1/brake/notify": {
             if (!w.roles.includes("kernel.notify")) throw fail(403, "forbidden", "only the owner's router (role kernel.notify) asks the notify brake");
             return send(res, 200, await brake(await json(req)));
-          }
-          case "POST /v1/wake": {
-            if (!w.roles.includes("kernel.wake")) throw fail(403, "forbidden", `${mod} may not post wake notices (role kernel.wake)`);
-            const b = await json(req);
-            const task = typeof b.task === "string" ? b.task.slice(0, 100) : "", text = typeof b.text === "string" ? neutral(b.text).trim().slice(0, 2000) : "";
-            if (!task || !text) throw fail(400, "bad_request", "send {task, text}");
-            const issue = await owner("GET", `/api/issues/${encodeURIComponent(task)}`);
-            if (issue.status !== 200) throw fail(404, "not_found", `no task ${task}`);
-            if (["done", "cancelled"].includes(issue.json.status)) return send(res, 200, { posted: false, closed: true });
-            const c = await owner("POST", `/api/issues/${encodeURIComponent(issue.json.id)}/comments`, { body: `[wake] ${text}\n\n<!-- aidenhq-wake -->` });
-            if (c.status >= 300) throw fail(502, "upstream", `the control plane answered ${c.status}`);
-            log("wake notice", { module: mod, task: issue.json.identifier });
-            return send(res, 200, { posted: true });
           }
         }
       }

@@ -233,7 +233,6 @@
     "n": 27,
     "workflow": "Agent computers",
     "today": [
-      "services/computer/test/exec.test.mjs",
       "services/computer/test/jobs.test.mjs",
       "services/computer/test/lib.test.mjs",
       "scripts/test/computers.test.mjs"

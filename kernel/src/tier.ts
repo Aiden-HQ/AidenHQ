@@ -95,9 +95,8 @@ export const reviewFirstOf = (...ts: (Part | undefined)[]): ReviewFirst | undefi
 export const AUTONOMY: Autonomy[] = ["off", "tier0", "full"];
 /**
  * The cap on a task from the routines its work came from. `origins`: the task and every issue it traces back to, as the
- * control plane returns them: its parents, and through each one's `originRunId` (its record of the run that created it,
- * which no agent sets) the issue that run worked on, and so on. So an unparented task a routine's run created keeps the
- * cap. `complete`: the trace finished; `routines`: the grants table's {<routine id>: autonomy}. The strictest routine found
+ * control plane returns them: its parents, and so on, up to a routine's execution task. A task a job created carries its
+ * job's cap in kernel provenance (`recorded`), so an unparented task a routine's job created keeps the cap. `complete`: the trace finished; `routines`: the grants table's {<routine id>: autonomy}. The strictest routine found
  * wins (`routine`: its id). `recorded`: the caps kernel provenance holds for issues on the trace. Fails closed: a routine the table doesn't know, or an invalid value, is "off" (setup writes each
  * routine's autonomy into the table before it adds the routine's triggers), and so is a trace that didn't finish (no
  * `routine` then). None found is no cap.
@@ -113,12 +112,11 @@ export function routineCap(origins: ({ originKind?: string; originId?: string } 
 
 const ORIGIN_MAX = 24;
 /**
- * Every issue a task traces back to, for its routine cap (routineCap): its parents, and through each one's
- * originRunId (Paperclip records the run that created an issue; agents never set it) the issue that run worked on, then
- * theirs. So a parent the agent picked, or none, can't shed a routine's cap. `runIssue` caches run id → issueId (a run's
- * issue never changes). Past ORIGIN_MAX issues the trace is incomplete (the cap is then the strictest).
+ * Every issue a task traces back to, for its routine cap (routineCap): its parents, then theirs, with kernel provenance for
+ * each (the cap the job that created it carried). So a parent the agent picked, or none, can't shed a routine's cap. Past
+ * ORIGIN_MAX issues the trace is incomplete (the cap is then the strictest).
  */
-export async function origins(pc: Trace, full: any, runIssue: Map<string, string | null> = new Map()): Promise<{ issues: any[]; complete: boolean; recorded: RoutineCap[] }> {
+export async function origins(pc: Trace, full: any): Promise<{ issues: any[]; complete: boolean; recorded: RoutineCap[] }> {
   const seen = new Map<string, any>();
   const recorded: RoutineCap[] = [];
   const queue: any[] = [full];
@@ -127,24 +125,18 @@ export async function origins(pc: Trace, full: any, runIssue: Map<string, string
     if (!i || seen.has(i.id)) continue;
     if (seen.size >= ORIGIN_MAX) return { issues: [...seen.values()], complete: false, recorded };
     seen.set(i.id, i);
-    // Every issue on the trace, not only the task: a run's child of a job-created task reaches it through originRunId.
+    // Every issue on the trace, not only the task: a child of a job-created task carries that job's cap.
     const p = pc.provenance(i);
     if (p) recorded.push(p === "pending" ? { cap: "off" } : p);
     if (i.parentId) queue.push(await pc.issue(i.parentId));
-    // A routine run task is the root: its originRunId is the routine run (not a heartbeat run) and nothing created it.
-    if (i.originRunId && i.originKind !== "routine_execution") {
-      if (!runIssue.has(i.originRunId)) runIssue.set(i.originRunId, (await pc.run(i.originRunId))?.issueId ?? null);
-      const from = runIssue.get(i.originRunId);
-      if (from && !seen.has(from)) queue.push(await pc.issue(from));
-    }
   }
   return { issues: [...seen.values()], complete: true, recorded };
 }
-/** What the routine trace reads: the control plane's issues and runs, and kernel provenance for an issue (provenance.ts trace: its row's cap, "pending" for a marked task with no row yet). */
-export type Trace = { issue(id: string): Promise<any>; run(id: string): Promise<any>; provenance(issue: any): RoutineCap | "pending" | undefined };
+/** What the routine trace reads: the control plane's issues, and kernel provenance for an issue (provenance.ts trace: its row's cap, "pending" for a marked task with no row yet). */
+export type Trace = { issue(id: string): Promise<any>; provenance(issue: any): RoutineCap | "pending" | undefined };
 /** A task's routine cap: kernel provenance first, then the control plane; a trace that fails (a read that throws) is incomplete: "off". Never throws. */
-export const taskRoutineCap = (pc: Trace, task: string, routines: Record<string, string> | null = {}, runIssue?: Map<string, string | null>): Promise<RoutineCap | undefined> =>
-  pc.issue(task).then((full) => (full?.id ? origins(pc, full, runIssue) : { issues: [], complete: false, recorded: [] })).then(({ issues, complete, recorded }) => routineCap(issues, complete, routines, recorded), () => routineCap([], false, routines));
+export const taskRoutineCap = (pc: Trace, task: string, routines: Record<string, string> | null = {}): Promise<RoutineCap | undefined> =>
+  pc.issue(task).then((full) => (full?.id ? origins(pc, full) : { issues: [], complete: false, recorded: [] })).then(({ issues, complete, recorded }) => routineCap(issues, complete, routines, recorded), () => routineCap([], false, routines));
 
 // ------------------------------------------------------------------ earlier decisions on a task
 

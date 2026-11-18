@@ -47,8 +47,7 @@ test("a job's routine cap follows every task it creates, and a lost 201 fails cl
     return fetch(`${k.url}/v1/cp/agent/api/issues/${id}`, { method: "PATCH", headers: { authorization: "Bearer twin-key", "x-aidenhq-caller": jwt, "content-type": "application/json" }, body: JSON.stringify(body) });
   };
   const write = async () => (await (await k.call("twin", ADA, { method: "tools/call", params: { name: "note_write", arguments: {} } })).json()).result.content[0].text;
-  const runs = { "hb-9": { issueId: "CHILD-1" } };
-  const capOf = (task) => taskRoutineCap({ issue: async (id) => issues[id], run: async (id) => runs[id], provenance: k.provenance.trace }, task, {});
+  const capOf = (task) => taskRoutineCap({ issue: async (id) => issues[id], provenance: k.provenance.trace }, task, {});
 
   // A Tier 0 write on TASK-1 before any job made it runs at once.
   assert.equal(k.records.list(["done"]).length, 0);
@@ -67,9 +66,9 @@ test("a job's routine cap follows every task it creates, and a lost 201 fails cl
   assert.deepEqual(k.records.db.prepare("SELECT task, created_by_job, routine_cap FROM provenance ORDER BY task").all().map((r) => ({ ...r })), [
     { task: "CHILD-1", created_by_job: "job-1", routine_cap: "off" }, { task: "TASK-1", created_by_job: "job-2", routine_cap: "off" }]);
   const p = JSON.parse((await write()).split("\n")[0]);
-  // A Paperclip run's unparented child of a job-created task reaches it through originRunId: capped too.
-  issues.RUNCHILD = { id: "RUNCHILD", parentId: null, originRunId: "hb-9" };
-  assert.deepEqual(await capOf("RUNCHILD"), { cap: "off" });
+  // A child of a job-created task: capped too.
+  issues.KID = { id: "KID", parentId: "CHILD-1" };
+  assert.deepEqual(await capOf("KID"), { cap: "off" });
   assert.deepEqual([p.tier, p.state, k.records.get(p.approval).rule, k.records.get(p.approval).cap], [2, "owner", "routine-autonomy", { by: "routine", value: "off" }]);
 
   // Killed between the 201 and the row: the task is capped off and unadmittable, and the job creates nothing more until a

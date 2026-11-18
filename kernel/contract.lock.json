@@ -115,7 +115,6 @@
     "route POST /v1/reviews/:review": {"state":"experimental","fp":"auth=review-token"},
     "route POST /v1/tasks": {"state":"experimental","fp":"auth=module"},
     "route POST /v1/tasks/:task/close": {"state":"experimental","fp":"auth=module"},
-    "route POST /v1/wake": {"state":"experimental","fp":"auth=module"},
     "route POST /v1/wakes": {"state":"experimental","fp":"auth=module"},
     "route POST /v1/wakes/:key/drop": {"state":"experimental","fp":"auth=module"},
     "route POST /v1/wakes/:key/note": {"state":"experimental","fp":"auth=module"},

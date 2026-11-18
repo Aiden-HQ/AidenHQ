@@ -43,14 +43,14 @@ export function createKernelGradeLoop({ db, runner, due, kernel, kernelBytes, ga
     // A verdict's move is the finish check's own resolve: done accepts the work, todo reopens it with the note (which wakes the agent).
     setStatus: async (id: string, status: string, note: string) => void (await kernel("POST", `/v1/checks/${encodeURIComponent(id)}`, { verdict: status === "done" ? "ok" : "reopen", comment: note })),
     // A note on a task: a labelled wake notice (the kernel posts it and wakes the assignee).
-    comment: async (id: string, text: string) => void (await kernel("POST", "/v1/wake", { task: id, text })),
+    comment: async (id: string, text: string) => void (await kernel("POST", "/v1/wakes", { task: id, text })),
     attachments: (id: string) => read(`/api/issues/${encodeURIComponent(id)}/attachments`),
     // One attachment's bytes, only one listed on the task (the kernel refuses another, and anything over 25 MB).
     attachmentContent: (task: string, id: string) => kernelBytes(`/v1/cp/read/attachments/${encodeURIComponent(id)}/content${q({ task })}`),
   };
   const tellParent = async (issue: Json, _kind: string, text: string) => {
     if (!issue.parentId) return false;
-    return (await kernel("POST", "/v1/wake", { task: issue.parentId, text })).posted === true;
+    return (await kernel("POST", "/v1/wakes", { task: issue.parentId, text })).posted === true;
   };
   const recordsOn = async (issue: Json) => ((await work(issue.id)).records ?? []).map((r: Json) => ({
     id: r.id, action: r.kind, state: r.state === "review" || r.state === "owner" ? "pending" : r.state === "claimed" || r.state === "done" || r.state === "failed" ? "used" : r.state,

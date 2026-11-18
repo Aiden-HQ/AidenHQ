@@ -1,15 +1,12 @@
 #!/bin/sh
 # repo-checkout <org/name> [full commit sha]: a snapshot of that commit (default: the default branch) of an agents-org repo
 # at /workspace/repos/<name>.
-# The launcher places it from the runner's cache clone (POST /repo on the gateway); no git credentials ever enter this box.
+# The launcher places it from the cache clone (POST /repo on the gateway); no git credentials ever enter this box.
 # Only agents with the repo-checkout role may use it.
 set -e
 [ $# -eq 1 ] || [ $# -eq 2 ] || { echo "usage: repo-checkout <org/name> [full 40-character commit sha]" >&2; exit 2; }
-# The launcher writes this run's token here when the run starts and removes it when the run ends. Read it at use time:
-# the shell's environment may hold a token from an earlier run (or none), and reusing that would look like a dead computer.
-token_file="${AIDENHQ_RUN_TOKEN_FILE:-/dev/shm/aidenhq/run-token}"
-token=$(cat "$token_file" 2>/dev/null) || token=""
-[ -n "$token" ] || { echo "repo-checkout: no live run token (this run has ended; start a new run)" >&2; exit 1; }
-curl -sS --fail-with-body --max-time 180 -X POST -H "X-Agent-Key: $token" -H "content-type: application/json" \
+# The job's own token (the launcher's job env file) names this box to the gateway.
+[ -n "${AIDENHQ_RUN_TOKEN:-}" ] || { echo "repo-checkout: no job token (AIDENHQ_RUN_TOKEN)" >&2; exit 1; }
+curl -sS --fail-with-body --max-time 180 -X POST -H "X-Agent-Key: $AIDENHQ_RUN_TOKEN" -H "content-type: application/json" \
   --data "$(jq -nc --arg r "$1" --arg s "${2:-}" '{repo: $r, sha: $s}')" "${AIDENHQ_GATEWAY_URL:-http://10.231.2.1:8200}/repo"
 echo

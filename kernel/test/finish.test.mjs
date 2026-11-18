@@ -73,17 +73,17 @@ test("a deny refuses the close with its status and reason, and a failed check re
   assert.deepEqual(writes, []);
 });
 
-test("ok passes the agent's own change through as the agent; ok with unlabel drops the check's label first; other changes skip the gate", async (t) => {
+test("ok passes the close on to the forward (refused there: a job has no control-plane credential); ok with unlabel drops the check's label first; other changes skip the gate", async (t) => {
   let answer = { verdict: "ok" };
   const { asked, writes, issue, finish } = await setup(t, () => answer);
   let r = await finish({ status: "done", comment: "Done." });
-  assert.equal(r.status, 200);
-  assert.deepEqual(writes, [{ as: "run-jwt-ada", body: { status: "done", comment: "Done." } }]);
+  assert.equal(r.status, 403); // past the gate: refused only for want of the caller's own credential (identity.ts)
+  assert.deepEqual(writes, []);
   writes.length = 0;
   Object.assign(issue, { status: "in_review", labelIds: ["lbl-x", "lbl-held"] });
   answer = { verdict: "ok", unlabel: true };
   await finish({ status: "done" });
-  assert.deepEqual(writes, [{ as: "board-key", body: { labelIds: ["lbl-x"] } }, { as: "run-jwt-ada", body: { status: "done" } }]);
+  assert.deepEqual(writes, [{ as: "board-key", body: { labelIds: ["lbl-x"] } }]);
   const n = asked.length;
   await finish({ status: "blocked" });
   assert.equal(asked.length, n, "only a move to done asks the checks");
@@ -107,7 +107,7 @@ test("the finish gate never fails open: a graded assignee's task with no check c
   // No finish check registered (the check's module isn't installed, or compile wrote none): an ungraded agent's close goes
   // ahead, a graded agent's is refused and nothing moves.
   let s = await setup(t, () => ({ verdict: "ok" }), { checks: {} });
-  assert.equal((await s.finish({ status: "done" })).status, 200);
+  assert.equal((await s.finish({ status: "done" })).status, 403);
   s = await setup(t, () => ({ verdict: "ok" }), { checks: {}, graded: true });
   let r = await s.finish({ status: "done" });
   assert.equal(r.status, 503);
@@ -142,8 +142,8 @@ test("an undecided approval card of the task refuses the close, whatever the che
       if (state === "review") s.k.records.review(rec.id, rec.digest, { decision: "reject", by: "reviewer:x", note: "no" });
       else { s.k.records.decide(rec.id, rec.digest, "approve", "owner:board", "board"); s.k.records.claim(rec.id); s.k.records.finish(rec.id, true, "posted"); }
       r = await s.finish({ status: "done", comment: "Done." });
-      assert.equal(r.status, 200, state);
-      assert.deepEqual(s.writes, [{ as: "run-jwt-ada", body: { status: "done", comment: "Done." } }]);
+      assert.equal(r.status, 403, state);
+      assert.deepEqual(s.writes, []);
     }
   }
 });
@@ -156,8 +156,8 @@ test("observe mode (gates.ts): a check's deny becomes a would-block entry and th
   t.after(() => check.s.close());
   const url = check.url;
   let s = await setup(t, deny, { checks: judge(url, "observe") });
-  assert.equal((await s.finish({ status: "done" })).status, 200);
-  assert.deepEqual(s.writes, [{ as: "run-jwt-ada", body: { status: "done" } }]);
+  assert.equal((await s.finish({ status: "done" })).status, 403);
+  assert.deepEqual(s.writes, []);
   const rows = s.k.records.db.prepare("SELECT data FROM events WHERE type = 'gate.would_block'").all().map((r) => JSON.parse(r.data));
   assert.deepEqual(rows, [{ gate: "judge.finish", task: "WOR-1", verdict: "deny", reason: "no rubric attached", via: "task_finish" }]);
   // Enforcing: the same deny refuses.

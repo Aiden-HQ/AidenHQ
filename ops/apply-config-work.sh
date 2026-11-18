@@ -469,9 +469,9 @@ switchOver() {
   ops/warehouse-sources.sh # shared sources: roles, schemas, src_meta (skips while the warehouse isn't running)
   lap warehouse
 
-  # The daily Docker and weekly run-history prunes: setup installed them once, so a changed unit reaches the host here.
+  # The daily Docker prune: setup installed it once, so a changed unit reaches the host here.
   local u
-  for u in prune-docker prune-runs; do
+  for u in prune-docker; do
     if ! cmp -s "ops/units/$u.service" "$HOME/.config/systemd/user/$u.service" || ! cmp -s "ops/units/$u.timer" "$HOME/.config/systemd/user/$u.timer"; then
       cp "ops/units/$u.service" "ops/units/$u.timer" "$HOME/.config/systemd/user/" && systemctl --user daemon-reload \
         && systemctl --user enable --quiet "$u.timer" && systemctl --user restart "$u.timer" && echo "$u timer installed/updated"

@@ -159,12 +159,11 @@ test("a changed target on revalidate gives stale and a refile; the owner's decis
   assert.equal((await review(capped.id, { decision: "reject", reason: "no", model: "~acme/model-a" })).json.record.state, "rejected");
 });
 
-test("a module write on a task a routine's run started gets that routine's autonomy cap", async (t) => {
-  // TASK-1 was made, unparented, by an agent's run on RUN-1, the routine r1's run task: traced through originRunId.
-  const issues = { "TASK-1": { id: "TASK-1", parentId: null, originRunId: "hb-1" }, "RUN-1": { id: "RUN-1", originKind: "routine_execution", originId: "r1" } };
+test("a module write on a task under a routine's run task gets that routine's autonomy cap, as the runner's kinds do", async (t) => {
+  // TASK-1 is a child of RUN-1, the routine r1's run task.
+  const issues = { "TASK-1": { id: "TASK-1", parentId: "RUN-1" }, "RUN-1": { id: "RUN-1", originKind: "routine_execution", originId: "r1" } };
   let down = false;
   const onControl = (req) => {
-    if (req.url === "/api/heartbeat-runs/hb-1") return { body: { issueId: "RUN-1" } };
     const id = /^\/api\/issues\/([^/]+)$/.exec(req.url)?.[1];
     if (id) return down ? { status: 500, body: {} } : { body: issues[id] };
   };
