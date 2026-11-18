@@ -49,6 +49,7 @@ function sandbox() {
 
 test("the harness on today's path: the kernel killed after the spawn, restarted, follows the one job to its end; the box is released once", async (t) => {
   const sb = sandbox();
+  t.after(sb.release); // a failed run never leaves the held engine waiting
   const launcher = await fakeLauncher(t, { dir: sb.dir, boxDir: join(sb.dir, "boxes"), engineDir: sb.engines });
   const kernel = await child(t, HOST, { JOBS_DIR: sb.dir });
   // The dispatcher's part, as the runner plays it today: a box from the launcher, then the job in it.
@@ -57,7 +58,7 @@ test("the harness on today's path: the kernel killed after the spawn, restarted,
   assert.match(j.id ?? "", /^j-[0-9a-f]{16}$/, JSON.stringify(j));
   await kernel.restart();
   sb.release();
-  const end = await until("the adopted job's end", async () => { const v = (await kernel.call("GET", `/v1/jobs/${j.id}`)).json; return v.state !== "running" && v; }, 60_000);
+  const end = await until("the adopted job's end", async () => { const v = (await kernel.call("GET", `/v1/jobs/${j.id}`)).json; return v.state !== "running" && v; }, 60_000).catch((e) => assert.fail(`${e.message}\nrow: ${JSON.stringify(jobRows(sb.dbFile, { task: "task-1" }))}\nkernel: ${kernel.log()}`));
   assert.equal(end.state, "done");
   assert.equal(jobRows(sb.dbFile, { task: "task-1" }).length, 1, "one job row");
   await fetch(`${launcher.url}/job/release`, { method: "POST", body: JSON.stringify({ container: box.container }) });
@@ -104,6 +105,7 @@ test("the harness's kill points: the gate cuts an exchange before or after the r
  */
 async function system(t) {
   const sb = sandbox();
+  t.after(sb.release);
   const pc = await fakeControl(t);
   const launcher = await fakeLauncher(t, { dir: sb.dir, boxDir: join(sb.dir, "boxes"), engineDir: sb.engines });
   const kernel = await child(t, HOST, { JOBS_DIR: sb.dir, PAPERCLIP_URL: pc.url, AIDENHQ_LAUNCHER_URL: launcher.url, WAKE_POLL_SECONDS: "1" });
