@@ -401,7 +401,9 @@ export function createGateway({ dbFile, legacyDbFile, grantsFile, settingsFile, 
       const row = (q.run.get(runKey) as RunRow | undefined) ?? settle(runKey, { agentId: p.a, issueId: p.i });
       const system = p.k !== "agent";
       const component = String(p.c ?? (system ? SYSTEM[p.k] : "Engineer jobs")).slice(0, 80);
-      return as(row, system ? p.k : routeKind, component, !system);
+      // A grader token that names an agent (the grading module's, minted per held task) is capped as that agent's; the runner's own
+      // grader/reviewer/source tokens name none and stay system calls.
+      return as(row, system ? p.k : routeKind, component, !system || (p.k === "grader" && Boolean(p.a)));
     }
     if (cred.startsWith("ahqc_")) {
       const box = await computerRun(cred);

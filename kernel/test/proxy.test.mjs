@@ -137,7 +137,9 @@ test("jobs: their jobcaps only, their own token only, on the job listener only, 
   const lane = mintToken("lane-secret", { kind: "agent", agentId: "ag-ada", jobcaps: ["docs-read"] });
   const reviewer = mintToken("job-secret", { kind: "reviewer", jobcaps: ["docs-read"] });
   const bare = mintToken("job-secret", { kind: "agent", agentId: "ag-ada", issueId: "iss1" });
-  for (const tok of [undefined, "read-token", "docs-key", lane, reviewer, bare, "run-jwt-ada"]) assert.equal((await k.call("docs", tok, { method: "tools/list" }, opts)).status, 401, String(tok));
+  // A grader token names the graded agent for billing only: it is never that agent's identity.
+  const grader = mintToken("job-secret", { kind: "grader", agentId: "ag-ada", issueId: "iss1", jobcaps: ["docs-read"] });
+  for (const tok of [undefined, "read-token", "docs-key", lane, reviewer, bare, grader, "run-jwt-ada"]) assert.equal((await k.call("docs", tok, { method: "tools/list" }, opts)).status, 401, String(tok));
   assert.equal((await k.call("docs", job, { method: "tools/list" })).status, 401);
   // A private jobcap: only for a job minted as observing.
   const light = mintToken("job-secret", { kind: "agent", agentId: "ag-ada", jobcaps: ["private-read"] });

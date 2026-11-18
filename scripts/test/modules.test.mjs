@@ -247,6 +247,16 @@ test("engineering is the job dispatcher: its token, and every dispatch: runner a
   assert.deepEqual(e.dispatches, runAgents);
   for (const [n, m] of Object.entries(r.kernelModules.modules)) if (n !== "engineering") assert.equal(m.dispatches, undefined, n);
 });
+test("kernel.grader: one holder, and it declares a finish check", () => {
+  const dir = mkdtempSync(join(tmpdir(), "prod-"));
+  cpSync(join(here, "fixtures/mods"), dir, { recursive: true });
+  const edit = (name, f) => writeFileSync(join(dir, "modules", name, "module.yaml"), f(readFileSync(join(dir, "modules", name, "module.yaml"), "utf8")));
+  const grader = (y) => `${y}\nroles:\n  requests: [ kernel.grader ]\n`;
+  edit("a", grader);
+  assert.throws(() => compile(dir, finst(["a"])), /kernel\.grader needs a finish check/);
+  edit("b", grader);
+  assert.throws(() => compile(dir, finst(["a", "b"])), /all request kernel\.grader: one grading module at a time/);
+});
 test("upstream: off grants no upstream tool; issues grants both; the scrub's terms and the instance reach github-mcp", () => {
   const settings = (upstream) => ({ timezone: "Europe/London", owner_name: "Ada Lovelace", company_name: "Acme Labs", owner_slack_user_id: "U1", owner_email: "ada.l@acme.example", instance_name: "acme", github_orgs: ["acme-co", "upstream-org"], product_repo: "upstream-org/product", jira_url: "https://jira.acme.example/x", ...(upstream ? { upstream } : {}) });
   const fleet = (upstream) => compile(repo, pinst(["github", "fleet-ops", "primer"], settings(upstream))).paperclip.agents["fleet-ops"];
