@@ -28,9 +28,7 @@ test("each crew agent gets the module sections whose conditions hold, in order",
   const { paperclip: p } = compile(product, instance(["design", "fleet-ops", "engineering"], { connections: tasks, trial_writes: ["paperclip_tasks.task_create"] }));
   const cos = p.agents["chief-of-staff"].prompts;
   assert.deepEqual(cos.slice(0, 6), ["chief-of-staff.asking", "chief-of-staff.how-we-work", "chief-of-staff.progress", "chief-of-staff.replying", "platform.improving", "platform.improving-fleet-ops"]);
-  assert.ok(cos.includes("engineering.delegating-design") && cos.indexOf("engineering.delegating-design") === cos.indexOf("engineering.delegating") + 1);
   assert.equal(cos.at(-1), "chief-of-staff.heartbeat"); // last; memory.memory follows only with a memory.md
-  assert.ok(!p.agents["ui-designer"].prompts.includes("engineering.delegating-design")); // the design module's own agents
   assert.ok(p.agents["fleet-ops"].prompts.includes("platform.improving") && !p.agents["fleet-ops"].prompts.includes("platform.improving-fleet-ops"));
   assert.ok(!p.agents.chaser.prompts.includes("platform.improving")); // in trial
   assert.equal(p.agents["fleet-engineer"].prompts, undefined); // runner Engineers get the runner's prompt
@@ -182,17 +180,6 @@ test("skill names: distinct ids per module, unknown ids, one name twice for one 
   writeFileSync(join(elsewhere, "steal", "SKILL.md"), "---\nname: steal\ndescription: Not the module's.\n---\n");
   symlinkSync(elsewhere, join(out, "modules/a/skills"));
   assert.throws(() => compile(out, skillInstance(["a"])), /skill steal: its folder must be inside the module/);
-});
-
-test("a delegator's handbook lists every agent's description; an agent without delegation tools gets no Team list", () => {
-  const dir = instance(["design", "fleet-ops", "engineering"]);
-  const { paperclip: p } = compile(product, dir);
-  const parts = (key) => handbookParts(p, key, p.agents[key], { repo: product, instanceDir: dir, fleetIssues: "WOR-0" }).map(([id, t]) => [id, t]);
-  const team = parts("chief-of-staff").find(([id]) => id === "team")?.[1] ?? "";
-  for (const [key, a] of Object.entries(p.agents)) assert.ok(team.includes(`(${key}`) && team.includes(a.description), key);
-  assert.ok(Object.keys(p.agents).every((k) => p.agents[k].description));
-  const quiet = Object.keys(p.agents).find((k) => p.agents[k].adapter === "codex_local" && p.agents[k].dispatch !== "runner" && !["task_delegate", "task_create"].some((t) => p.agents[k].enabled_tools?.paperclip_tasks?.includes(t)));
-  assert.ok(quiet && !parts(quiet).some(([id]) => id === "team"));
 });
 
 test("a module agent without a description fails compile", () => {

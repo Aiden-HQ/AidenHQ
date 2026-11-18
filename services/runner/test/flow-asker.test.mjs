@@ -102,6 +102,6 @@ describe("flow-asker: an agent's task whose asker is gone", { concurrency: 1 }, 
     await rejected(2);
     await t.waitFor("the stop told", () => lines().length === 2);
     assert.equal(lines()[1], "🔧 **PEN-2 was stopped**, and the agent that asked for it is paused or gone. What it needs is on PEN-2: reply there to carry on, or cancel it.");
-    assert.ok(t.partComments().some((c) => /Stopped: the same failure twice/.test(c)), "the stop is on the task");
+    await t.waitFor("the stop on the task", () => t.partComments().some((c) => /Stopped: the same failure twice/.test(c)));
   });
 });

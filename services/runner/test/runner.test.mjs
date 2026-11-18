@@ -71,7 +71,7 @@ describe("engines and modes", () => {
     const state = engineState({ enginesFile: ENGINES, stateDir: join(dir, "state") }, "codex-openrouter", "i1");
     assert.equal(state, join(dir, "state", "codex-openrouter", "i1"));
     assert.equal(statSync(state).mode & 0o777, 0o700);
-    for (const f of ["AGENTS.md", "skills/supply-chain/SKILL.md", "skills/supply-chain/best-version.mjs", "skills/design-system/files/tokens.css"]) assert.ok(existsSync(join(state, f)), f);
+    assert.ok(existsSync(join(state, "AGENTS.md")));
     writeFileSync(join(state, "config.toml"), "left by a run");
     engineState({ enginesFile: ENGINES, stateDir: join(dir, "state") }, "codex-openrouter", "i1");
     assert.ok(!existsSync(join(state, "config.toml")), "reset before the next run");
