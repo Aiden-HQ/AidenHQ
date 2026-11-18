@@ -3,6 +3,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
+import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { createServer } from "node:http";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -39,6 +41,14 @@ test("aidenhq: writes, task reads and next-turn requests go to the kernel with t
   assert.match(await aidenhq("task", "PEN-12"), /task_get \{"issue":"PEN-12"\}/);
   // The tool proxy, as the box's own MCP config calls it: the token as X-Agent-Key.
   assert.deepEqual([seen.at(-1).path, seen.at(-1).key, seen.at(-1).auth], ["/c/paperclip_tasks/mcp", "ahqj_job", undefined]);
+  // A Primer document: the workspace's .aidenhq/primer.md, its heading as the title; a link makes it a new version of that one.
+  const ws = mkdtempSync(join(tmpdir(), "ws-"));
+  mkdirSync(join(ws, ".aidenhq"));
+  writeFileSync(join(ws, ".aidenhq/primer.md"), "# Q3 plan\n\nShip it.");
+  const inWs = async (...args) => (await run(process.execPath, [CLI, ...args], { env, cwd: ws })).stdout;
+  assert.match(await inWs("primer", "https://primer.example.com/d/abcd1234"), /\.aidenhq\/primer\.md: k-\d+: tier 1, review/);
+  assert.deepEqual(seen.at(-1).body, { kind: "primer.publish", args: { title: "Q3 plan", content: "# Q3 plan\n\nShip it.", format: "markdown", path: ".aidenhq/primer.md", documentId: "abcd1234" } });
+  await assert.rejects(run(process.execPath, [CLI, "primer"], { env }), /write the document to \.aidenhq\/primer\.md/);
   assert.match(await aidenhq("reset"), /fresh session/);
   // Outside a job's computer, nothing is sent.
   await assert.rejects(run(process.execPath, [CLI, "reset"], { env: { PATH: process.env.PATH } }), /only available inside a job's computer/);

@@ -9,6 +9,8 @@
 //   aidenhq merge <PR link>...                       merge each PR at its reviewed head: one codehost-github.merge write each
 //   aidenhq close <PR link>... --reason "<one line>" close superseded or duplicate PRs: one codehost-github.close write each
 //   aidenhq create-repo <org/name>                   a new app's repository: one codehost-github.create_repo write
+//   aidenhq primer [<Primer link>]                   publish .aidenhq/primer.md (or .html) on Primer, or as a new version of the
+//                                                    linked document: one primer.publish write (the AI reviewer reads it all)
 //   aidenhq task <PEN-N>                             read a task (tasks-mcp task_get, when the job's profile grants it)
 //   aidenhq tasks <words>                            search open tasks (tasks-mcp task_search)
 //   aidenhq advise "<question>" [--file <brief>]     a second opinion from the advisor (tasks-mcp advisor_ask)
@@ -19,10 +21,10 @@
 // The box's env (the launcher's job env file): AIDENHQ_GATEWAY_URL (the computers' gateway, which passes these calls on to the
 // kernel with the token: /v1/writes, /v1/jobtools, /c/<connection>/mcp) and AIDENHQ_RUN_TOKEN (the job's `ahqj_` token, which
 // names the job: the kernel takes the job, its task and its workspace from it, never from the request).
-import { readFileSync } from "node:fs";
+import { lstatSync, readFileSync } from "node:fs";
 
-const usage = `usage: aidenhq publish <org/repo> <branch>... [--title <title>] [--body-file <file>] | merge <PR link>... | close <PR link>... --reason "<one line>" | create-repo <org/name> | task <PEN-N> | tasks <words> | advise "<question>" [--file <brief>] | reset | engine <kind> [model] | cleanup`;
-const COMMANDS = ["publish", "merge", "close", "create-repo", "task", "tasks", "advise", "reset", "engine", "cleanup"];
+const usage = `usage: aidenhq publish <org/repo> <branch>... [--title <title>] [--body-file <file>] | merge <PR link>... | close <PR link>... --reason "<one line>" | create-repo <org/name> | primer [<Primer link>] | task <PEN-N> | tasks <words> | advise "<question>" [--file <brief>] | reset | engine <kind> [model] | cleanup`;
+const COMMANDS = ["publish", "merge", "close", "create-repo", "primer", "task", "tasks", "advise", "reset", "engine", "cleanup"];
 const [command, ...rest] = process.argv.slice(2);
 const fail = (msg, code = 1) => {
   console.error(`aidenhq: ${msg}`);
@@ -90,6 +92,22 @@ async function tool(name, args) {
   return out;
 }
 
+/** The newest of .aidenhq/primer.md and .aidenhq/primer.html in the workspace (a regular file, no link), and its title. */
+function primerDocument() {
+  const found = [".aidenhq/primer.md", ".aidenhq/primer.html"].flatMap((path) => {
+    try {
+      const st = lstatSync(path);
+      const content = st.isFile() ? readFileSync(path, "utf8").trim() : "";
+      return content ? [{ path, content, at: st.mtimeMs }] : [];
+    } catch { return []; }
+  }).sort((a, b) => b.at - a.at);
+  if (!found.length) fail("write the document to .aidenhq/primer.md (or .aidenhq/primer.html) first", 2);
+  const { path, content } = found[0];
+  const format = path.endsWith(".html") ? "html" : "markdown";
+  const heading = format === "html" ? (/<title[^>]*>([\s\S]*?)<\/title>/i.exec(content) ?? /<h1[^>]*>([\s\S]*?)<\/h1>/i.exec(content))?.[1]?.replace(/<[^>]*>/g, "") : /^#\s+(.+?)\s*#*\s*$/m.exec(content)?.[1];
+  return { path, content, format, title: (heading ?? "Report").replace(/[*_`]/g, "").replace(/\s+/g, " ").trim().slice(0, 200) || "Report" };
+}
+
 const lines = [];
 if (command === "publish") {
   if (!words.length || words.length % 2) fail("name branches as <org/repo> <branch> pairs", 2);
@@ -105,6 +123,11 @@ if (command === "publish") {
 } else if (command === "create-repo") {
   if (words.length !== 1) fail("usage: aidenhq create-repo <org/name>", 2);
   lines.push(`${words[0]}: ${said(await write("codehost-github.create_repo", { repo: words[0] }))}`);
+} else if (command === "primer") {
+  if (words.length > 1) fail("usage: aidenhq primer [<Primer link>]", 2);
+  const doc = primerDocument();
+  const documentId = words[0] ? /^https:\/\/[^/\s]+\/d\/([A-Za-z0-9-]{8,64})\/?$/.exec(words[0])?.[1] ?? fail(`\`${words[0]}\` isn't a Primer document link (https://<host>/d/<id>)`, 2) : undefined;
+  lines.push(`${doc.path}: ${said(await write("primer.publish", { title: doc.title, content: doc.content, format: doc.format, path: doc.path, ...(documentId ? { documentId } : {}) }))}`);
 } else if (command === "task") {
   if (words.length !== 1) fail("usage: aidenhq task <PEN-N>", 2);
   lines.push(await tool("task_get", { issue: words[0] }));
