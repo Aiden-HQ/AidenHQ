@@ -99,15 +99,18 @@ test("the executor sees nothing before approval; approved, it runs once and the 
   const filed = await k.v1("POST", "/v1/writes", { kind: "twin.post", args: { note: "x" }, task: "OTHER-9" }, ADA);
   assert.equal(k.records.get(filed.json.id).task, "TASK-1");
   assert.equal((await k.v1("POST", "/v1/writes", { kind: "twin.post", args: { note: "x" } }, BO)).status, 403);
-  // A job's token files only the kinds it names, as its agent on its own task (whatever task it names); a job's ordinary
-  // token (no kinds) files nothing.
+  // A job's token files only the kinds it names, as its agent on its own task (whatever task it names), tiered as anyone's
+  // request; a job's ordinary token (no kinds) files nothing.
   const job = (writes) => mintToken("job-secret", { agentId: "ag-bo", issueId: "TASK-7", component: "test", writes });
   const byJob = await k.v1("POST", "/v1/writes", { kind: "twin.post", args: { note: "y" }, task: "OTHER-9" }, job(["twin.post"]));
   assert.deepEqual({ tier: byJob.json.tier, state: byJob.json.state }, { tier: 1, state: "review" });
   assert.deepEqual([k.records.get(byJob.json.id).task, k.records.get(byJob.json.id).requester.agent], ["TASK-7", "ag-bo"]);
   assert.equal((await k.v1("POST", "/v1/writes", { kind: "twin.post", args: { note: "y" } }, job([]))).status, 403);
   assert.equal((await k.v1("POST", "/v1/writes", { kind: "twin.post", args: { note: "y" } }, job(["twin.ping"]))).status, 403);
-  assert.equal((await k.v1("POST", "/v1/writes", { kind: "twin.ping", args: {} }, job(["twin.ping"]))).status, 403, "never a Tier 0 kind");
+  // A floor-0 kind it names is tiered as anyone's: Tier 0 here, so it runs at once.
+  const ping = await k.v1("POST", "/v1/writes", { kind: "twin.ping", args: {} }, job(["twin.ping"]));
+  assert.equal(ping.json.tier, 0);
+  await until(() => fx.executes.some((e) => e.id === ping.json.id));
 });
 
 test("a changed target on revalidate gives stale and a refile; the owner's decision is a channel's token, stamped as one", async (t) => {

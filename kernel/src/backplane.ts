@@ -35,6 +35,7 @@
 //                              sandbox, its status (?after=<version>&wait=<ms> waits for a change), stop it, a comment into it (jobs.ts; `wake`: the claimed comment wake it delivers);
 //                              POST /v1/jobs {wake, prompt, session?}: a job on a wake it claimed, admitted (admission.ts);
 //                              GET /v1/jobs?wake=<key>: its own job on that wake, if any (a dispatcher that lost the answer)
+//   POST /v1/jobs/workspace    (a module with role kernel.jobs) {task}: the workspace folder it may write into (a task of an agent it dispatches)
 //   GET  /v1/work[?task=], GET /v1/work/metrics  (a module with role kernel.work-read) the jobs and records of the kernel's
 //                              work: a task's, or what runs and ended lately; Prometheus text (work.ts)
 //   POST /v1/work/grader-token  (the one module with role kernel.grader) {task} -> a gateway
@@ -117,6 +118,7 @@ export const ROUTES = [
   { method: "POST", path: "/v1/reviews/:review", auth: "review-token" },
   { method: "POST", path: "/v1/jobs", auth: "module" },
   { method: "GET", path: "/v1/jobs", auth: "module" },
+  { method: "POST", path: "/v1/jobs/workspace", auth: "module" },
   { method: "GET", path: "/v1/jobs/:job", auth: "module" },
   { method: "DELETE", path: "/v1/jobs/:job", auth: "module" },
   { method: "POST", path: "/v1/jobs/:job/input", auth: "module" },
@@ -387,6 +389,7 @@ export function createBackplane({ whoami, asserter, proxy, cp, grantsFile, write
               if (!wake) throw fail(400, "bad_request", "send ?wake=<key>");
               return send(res, 200, { jobs: jobs.byWake(w.module!, wake) });
             }
+            case "POST /v1/jobs/workspace": return send(res, 200, await jobs.workspace(w.module!, (await json(req)).task));
             case "GET /v1/jobs/:job": {
               const p = new URLSearchParams(q ?? "");
               return send(res, 200, await jobs.get(w.module!, m[0]!, { ...(p.has("after") ? { after: Number(p.get("after")) } : {}), waitMs: Number(p.get("wait") ?? 0) || 0 }));

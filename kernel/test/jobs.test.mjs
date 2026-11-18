@@ -125,6 +125,16 @@ test("identity binding: only an engine agent, on a task assigned to it now and s
   await finished(jobs, j.id);
 });
 
+test("a dispatcher may write into the workspace of an open task of an agent it dispatches, by the same binding as start", async () => {
+  const { cfg } = sandbox();
+  const code = async (jobs, module, task) => (await jobs.workspace(module, task).catch((e) => e)).code;
+  assert.deepEqual(await inProcess(cfg).workspace("acme-dispatch", "task-2"), { task: "task-2", workspace: "PEN-2" });
+  assert.equal(await code(inProcess(cfg), "other", "task-2"), "not-your-task");
+  assert.equal(await code(inProcess(cfg, { task: async (id) => ({ id, identifier: "PEN-1", assigneeAgentId: "agent-2", status: "todo" }) }), "acme-dispatch", "task-1"), "not-your-task");
+  assert.equal(await code(inProcess(cfg, { task: async (id) => ({ id, identifier: "PEN-1", assigneeAgentId: "agent-1", status: "done" }) }), "acme-dispatch", "task-1"), "task-closed");
+  assert.equal(await code(inProcess(cfg), "acme-dispatch", "../x"), "bad-request");
+});
+
 test("a job's workspace and box are its own task's: another task's, a symlinked one or another module's is refused", async () => {
   const { dir, cfg, req, box } = sandbox();
   const code = async (jobs, over) => (await jobs.start("acme-dispatch", req(over)).catch((e) => e)).code;

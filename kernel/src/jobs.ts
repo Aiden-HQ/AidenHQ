@@ -400,6 +400,19 @@ export function createJobs({ db, cfg, cp, mayDispatch, log, boxWrap, onEnd = () 
     start,
     runAdmitted,
     adopt,
+    /**
+     * The workspace a dispatcher may have written into before a job starts (the code host's clone asks, with the caller's own
+     * token): an open task assigned now to an agent this module dispatches, the same binding as start. Its folder's name.
+     */
+    async workspace(module: string, taskId: unknown): Promise<{ task: string; workspace: string }> {
+      if (!ID.test(String(taskId))) throw new JobError(400, "bad-request", "send {task}");
+      const task = await cp.task(String(taskId));
+      if (!task?.assigneeAgentId || !mayDispatch(module, String(task.assigneeAgentId))) throw new JobError(403, "not-your-task", `module ${module} doesn't dispatch task ${taskId}'s agent`);
+      if (["done", "cancelled"].includes(String(task.status))) throw new JobError(409, "task-closed", `task ${taskId} is ${task.status}`);
+      const ident = String(task.identifier ?? "");
+      if (!ID.test(ident)) throw new JobError(400, "bad-task", `task ${taskId} has no identifier`);
+      return { task: String(taskId), workspace: ident };
+    },
     /** Status; with `after` (a version), waits up to `waitMs` for a change first. */
     async get(module: string, id: string, { after, waitMs = 0 }: { after?: number; waitMs?: number } = {}) {
       own(module, id);
