@@ -1,29 +1,28 @@
-// Model credentials the runner mints for the gateway: `ahqj_<payload>.<hmac>`, signed with the secret gateway_job_secret
-// (held by the runner and the gateway only). Stateless, so a runner or gateway restart never strands a running job.
-// payload: { k: kind (agent | reviewer | grader | source | check: a check job's model calls, capped by the eval day cap), a: agent id | null, i: task id | null, c: component, x: expiry ms,
-// j?: the job's jobcaps (connections it may read through POST /c/<connection>/mcp, jobcaps.ts), o?: the job observes (an
-// Engineer with private_reads, web search off): only then may it use a private jobcap, w?: the write kinds it may request at
-// POST /v1/writes for its agent on its task (the runner mints one for its own request, e.g. a job's document to publish) }.
-// An Engineer job's token is kind agent (capped); the runner's own calls (reviewer, grader, intake) are system kinds.
+// Model credentials the kernel mints for the gateway: `ahqj_<payload>.<hmac>`, signed with the secret gateway_job_secret
+// (held by the kernel only). Stateless, so a restart never strands a running job.
+// payload: { k: kind (job | reviewer | grader | check), a: agent id | null, i: task id | null, c: component, x: expiry ms, id?: the job }.
 // Kind job: a kernel-admitted job's only credential (boxes.ts), id: the job; what it may do is its job row's frozen authority.
+// A fast chat lane signs its own turn tokens in this format, kind agent, with gateway_lane_secret (chat-lane model.ts).
 import { createHmac, timingSafeEqual } from "node:crypto";
 
 type Brand<T, B extends string> = T & { readonly __brand: B };
 /** A token's payload (kind, agent, task, component, expiry). */
-export interface TokenPayload { k: string; a: string | null; i: string | null; c: string | null; x: number; j?: string[]; o?: true; w?: string[]; id?: string }
+export interface TokenPayload { k: string; a: string | null; i: string | null; c: string | null; x: number; id?: string }
 /** The payload of a genuine, unexpired token: only verifyToken() makes one, after the HMAC and expiry checks. */
 export type VerifiedToken = Brand<TokenPayload, "VerifiedToken">;
 
 export const JOB_TOKEN_PREFIX = "ahqj_";
-const KINDS = new Set(["agent", "job", "reviewer", "grader", "source", "check"]);
+/** What the kernel mints; a verified token may also be a lane's (agent), which only the gateway's lane check accepts. */
+const MINTED = new Set(["job", "reviewer", "grader", "check"]);
+const KINDS = new Set([...MINTED, "agent"]);
 const sign = (secret: string, body: string) => createHmac("sha256", secret).update(body).digest("base64url");
 
 /** A token for one job or one system call; `ttlMs` past now. */
-export function mintToken(secret: string, { kind = "agent", agentId = null, issueId = null, component, ttlMs = 2 * 3600_000, jobcaps = [], observing = false, writes = [], job }: { kind?: string; agentId?: string | null; issueId?: string | null; component?: string | null; ttlMs?: number; jobcaps?: string[]; observing?: boolean; writes?: string[]; job?: string }, now = Date.now()) {
+export function mintToken(secret: string, { kind, agentId = null, issueId = null, component, ttlMs = 2 * 3600_000, job }: { kind: string; agentId?: string | null; issueId?: string | null; component?: string | null; ttlMs?: number; job?: string }, now = Date.now()) {
   if (!secret) throw new Error("the model gateway isn't set up on this host (no gateway_job_secret)");
-  if (!KINDS.has(kind)) throw new Error(`not a token kind: ${kind}`);
+  if (!MINTED.has(kind)) throw new Error(`not a token kind: ${kind}`);
   if ((kind === "job") !== Boolean(job)) throw new Error("a job token names its job, and only a job token does");
-  const body = Buffer.from(JSON.stringify({ k: kind, a: agentId, i: issueId, c: component ?? null, x: now + ttlMs, ...(jobcaps.length ? { j: jobcaps } : {}), ...(observing ? { o: true } : {}), ...(writes.length ? { w: writes } : {}), ...(job ? { id: job } : {}) })).toString("base64url");
+  const body = Buffer.from(JSON.stringify({ k: kind, a: agentId, i: issueId, c: component ?? null, x: now + ttlMs, ...(job ? { id: job } : {}) })).toString("base64url");
   return `${JOB_TOKEN_PREFIX}${body}.${sign(secret, body)}`;
 }
 

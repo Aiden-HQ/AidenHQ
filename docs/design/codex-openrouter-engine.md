@@ -105,7 +105,7 @@ The product's `codex-home` contains:
   `design-system` (building UI with `modules/apps-platform/design-system/`).
 
 **MCP servers.** The agent's jobcaps (Primer; the four private reads for an Engineer with `private_reads`), each at the
-model gateway's `/c/<connection>/mcp` with the job token (`AIDENHQ_JOB_TOKEN`), each with `default_tools_approval_mode="approve"` (the same as
+box's `/c/<connection>/mcp` (the computer launcher forwards it to the kernel's tool proxy) with the job's own token, each with `default_tools_approval_mode="approve"` (the same as
 `codex`). There are no local stdio servers. A stdio MCP server is a child of Codex, outside the tool sandbox, so any
 server that executes repository code (a language server does) would escape the write boundary.
 

@@ -1,9 +1,8 @@
 #!/usr/bin/env node
 // The kernel host service, systemd user unit aidenhq-kernel (ops/units/aidenhq-kernel.service).
 // - The model gateway (gateway/lib.ts; CI credentials gateway/ci.ts): the only holder of the model key (read from the vault at
-//   each call), on host loopback and the backplane's gateway address (8201), and with CI on, on the CI runners' bridge. Runner
-//   jobs' tool calls (their jobcaps) come in on 8201 too, the one port their jail reaches. Fails closed: if it is down, no
-//   model or tool call is made.
+//   each call), on host loopback and the backplane's gateway address (8201), and with CI on, on the CI runners' bridge. Fails
+//   closed: if it is down, no model call is made.
 // - The backplane listener (10.231.0.1:3130, backplane.ts): the tool proxy in front of every connection, caller identity
 //   and assertions, the control plane as the calling agent, and the records of every write (writes.ts, kernel.db).
 // - Jobs (jobs.ts, sandbox.ts): engine runs in the sandbox, detached, so a restart (KillMode=process) leaves them running;
@@ -85,7 +84,7 @@ const cpApi = (p: string, init: RequestInit = {}) => fetch(new URL(p, controlUrl
 const modulesFile = watched(path.join(configDir, "kernel", "modules.json"), (j) => j as ModulesFile & { snapshot?: string; reviewer?: ReviewerSlot; setup?: SetupField[]; services?: Record<string, string[]>; mounts?: Record<string, string[]>; check_jobs?: Recipes }, {});
 const whoami = createIdentity({
   grants: () => grantsTable().agents ?? {}, connections, modules: () => modulesFile().modules ?? {},
-  jobcaps: watched(path.join(configDir, "jobcaps.json"), (j) => j as Record<string, Jobcap>, {}), // runner jobs' reads (compile)
+  jobcaps: watched(path.join(configDir, "jobcaps.json"), (j) => j as Record<string, Jobcap>, {}), // the reads a job's jobcaps add to its tools (compile)
   secret,
   job: (id) => admittedJob(records.db, id), // a kernel job's token: its row's frozen authority (admission.ts)
 });
@@ -230,7 +229,6 @@ const jobs = createJobs({
   // The agents a module dispatches (compile: an agent runs on the engine runner, and this module holds kernel.jobs), by key.
   mayDispatch: dispatchesFrom(() => (modulesFile().modules ?? {}) as never, () => grantsTable().agents ?? {}),
   cp: {
-    agent: async (id) => { const r = await cpApi(`/api/agents/${encodeURIComponent(id)}`); return r.ok ? ((await r.json()) as never) : undefined; },
     task: async (id) => { const r = await cpApi(`/api/issues/${encodeURIComponent(id)}`); return r.ok ? ((await r.json()) as never) : undefined; },
   },
 });
@@ -410,7 +408,6 @@ const gw = createGateway({
   legacyDbFile: path.join(dataDir, "gateway", "usage.db"), // the old ledger: merged in at every start while it is there
   grantsFile,
   settingsFile: path.join(configDir, "gateway.json"),
-  tools: proxy, // runner jobs' reads of connections (POST /c/<connection>/mcp, job tokens only)
   asCaller: createAsCaller({ whoami, connections, asserter, log }), // a module's model calls for its caller (cp.ts)
   secret,
   upstream,

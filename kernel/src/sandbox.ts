@@ -4,7 +4,6 @@
 import { createHash } from "node:crypto";
 import { chmodSync, cpSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { basename, dirname, join, relative, resolve } from "node:path";
-import { mintToken } from "./gateway/token.ts";
 
 const repoRoot = resolve(import.meta.dirname, "../..");
 
@@ -125,8 +124,8 @@ function skillCopyFailure(s: Skill, err: unknown) {
 // A session id an engine reported, before it goes on a command line.
 export const SESSION = /^[\w.:-]{1,200}$/;
 
-/** A job: who and what it is for, its jobcaps and start time (`at`). */
-export interface JobClaims { agentId?: string | null; issueId?: string | null; at?: number; jobcaps?: string[]; observing?: boolean; token?: string }
+/** A job: who and what it is for, and its start time (`at`). */
+export interface JobClaims { agentId?: string | null; issueId?: string | null; at?: number }
 
 /** A box job's box (the computer launcher made it): its container, the env file of its credentials and its out folder. */
 export interface Box { container: string; envFile: string; outDir: string }
@@ -135,11 +134,10 @@ export interface Box { container: string; envFile: string; outDir: string }
  * One run of an engine under engine@1, in the job's agent computer: job.json in its out folder (the box's /aidenhq-out/job),
  * then `docker exec` of the module's bin there, under `boxWrap` (the launcher's scrub), with the module the launcher mounted
  * read-only at /opt/aidenhq/engine. The model comes through the box gateway with the box's run token; its connections are in
- * its Codex home already (the launcher's). `gh`: the job's read-only gh token, passed by name from the docker client's env
- * (never argv or the env file). Only an engine that runs in a box (`box: true`) runs at all.
+ * its Codex home already (the launcher's). Only an engine that runs in a box (`box: true`) runs at all.
  */
-export function buildJob({ cfg, engine, worktree, jobDir, sessionId, prompt = "", job = {}, box, gh = false, boxWrap }: {
-  cfg: SandboxConfig; engine: Engine; worktree: string; jobDir: string; sessionId?: string; prompt?: string; job?: JobClaims; box: Box; gh?: boolean; boxWrap: string;
+export function buildJob({ cfg, engine, worktree, jobDir, sessionId, prompt = "", job = {}, box, boxWrap }: {
+  cfg: SandboxConfig; engine: Engine; worktree: string; jobDir: string; sessionId?: string; prompt?: string; job?: JobClaims; box: Box; boxWrap: string;
 }) {
   const entry = engineEntry(cfg, engine.kind);
   if (entry.box !== true) throw new Error(`The ${entry.label ?? engine.kind} engine doesn't run in an agent computer, and every job does.`);
@@ -151,6 +149,6 @@ export function buildJob({ cfg, engine, worktree, jobDir, sessionId, prompt = ""
     sandbox: { kind: "box", writable: [worktree], network: true },
   };
   writeFileSync(join(jobDir, "job.json"), JSON.stringify(spec), { mode: 0o600, flag: "wx" });
-  const argv = ["docker", "exec", "--env-file", box.envFile, ...(gh ? ["-e", "GH_TOKEN", "-e", "AIDENHQ_GH_AUTH"] : []), "-w", "/workspace", box.container, "sh", "-c", boxWrap, "aidenhq-computer", join("/opt/aidenhq/engine", relative(entry.dir, entry.bin)), "/aidenhq-out/job"];
+  const argv = ["docker", "exec", "--env-file", box.envFile, "-w", "/workspace", box.container, "sh", "-c", boxWrap, "aidenhq-computer", join("/opt/aidenhq/engine", relative(entry.dir, entry.bin)), "/aidenhq-out/job"];
   return { argv, spec, entry };
 }

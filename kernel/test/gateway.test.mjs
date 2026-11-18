@@ -3,6 +3,7 @@
 // to switch the caps off (G10).
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { createHmac } from "node:crypto";
 import http from "node:http";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -15,6 +16,8 @@ const json = (res, status, body) => res.writeHead(status, { "content-type": "app
 // Declared prices (USD per million tokens): a call reserves about $0.004, well under what the fake upstream bills ($0.03).
 const price = { in: 1, cached_in: 0.1, out: 1, peak: 1, max_output: 4096 };
 const MODELS = { models: { "~deepseek/deepseek-flash-latest": price, breaks: price, m: price } };
+// A token signed by hand (`ahqj_<payload>.<hmac>`): a fast lane's turn token as the chat lane signs it, or a forged kind.
+const signed = (secret, p, now) => { const body = Buffer.from(JSON.stringify({ i: null, c: null, x: now + 3600_000, ...p })).toString("base64url"); return `ahqj_${body}.${createHmac("sha256", secret).update(body).digest("base64url")}`; };
 
 test("gateway: attribution, billed cost, caps, raise_cap once, daily reset, no off switch", async (t) => {
   const dir = mkdtempSync(join(tmpdir(), "gw-"));
@@ -78,24 +81,21 @@ test("gateway: attribution, billed cost, caps, raise_cap once, daily reset, no o
   assert.equal(rows.length, 1);
   assert.deepEqual({ ...rows[0], runKey: rows[0].runKey.length }, { key: "gen-1", at: rows[0].at, agentId: "ag1", component: "agent", model: "deepseek/v4", input: 60, cached: 40, output: 20, costUsd: 0.03, runKey: 64, runId: "run1", issueId: "iss1", rev: "abc123", kind: "agent", ms: 0, status: "ok" });
 
-  // An Engineer job's token (responses, non-streamed); unknown credentials are refused.
-  const job = mintToken("job-secret", { agentId: "ag2", issueId: "iss9" }, now);
-  assert.equal((await call(job, { path: "/api/v1/responses" })).status, 200);
+  // Unknown credentials are refused, and so is the old agent-kind token under the job secret (only a lane signs that kind).
   assert.equal((await call("sk-guess")).status, 401);
-  assert.equal((await call(mintToken("wrong", { agentId: "ag2" }, now))).status, 401);
-  rows = await usage();
-  assert.deepEqual([rows[1].agentId, rows[1].issueId, rows[1].component, rows[1].costUsd], ["ag2", "iss9", "Engineer jobs", 0.03]);
+  assert.equal((await call(mintToken("wrong", { kind: "reviewer" }, now))).status, 401);
+  assert.equal((await call(signed("job-secret", { k: "agent", a: "ag2", i: "iss9" }, now), { path: "/api/v1/responses" })).status, 401);
 
   // A fast chat lane's turn token: a capped agent call, attributed to the lane; the lane secret never mints a system kind.
-  assert.equal((await call(mintToken("lane-secret", { agentId: "ag2", component: "Aria" }, now))).status, 200);
+  assert.equal((await call(signed("lane-secret", { k: "agent", a: "ag2", c: "Aria" }, now))).status, 200);
   assert.equal((await call(mintToken("lane-secret", { kind: "reviewer" }, now))).status, 401);
   rows = await usage();
-  assert.deepEqual([rows[2].agentId, rows[2].component, rows[2].kind], ["ag2", "Fast lane: Aria", "agent"]);
+  assert.deepEqual([rows[1].agentId, rows[1].component, rows[1].kind], ["ag2", "Fast lane: Aria", "agent"]);
 
   // The board's side chat (its own key): a capped call of its own kind, with no agent behind it.
   assert.equal((await call("gw-board")).status, 200);
   rows = await usage();
-  assert.deepEqual([rows[3].agentId, rows[3].component, rows[3].kind], [null, "Board side chat", "aside"]);
+  assert.deepEqual([rows[2].agentId, rows[2].component, rows[2].kind], [null, "Board side chat", "aside"]);
 
   // Run cap $0.05: the second call starts at $0.03 (allowed), the third at $0.06 is refused. A run cap is never filed for
   // raising (the next run has a new key): one ledger row, a message that says the run stops.
@@ -127,7 +127,7 @@ test("gateway: attribution, billed cost, caps, raise_cap once, daily reset, no o
   assert.match(text, /^aidenhq_gateway_agent_day_cap_usd\{agent="aiden"\} 30$/m);
   assert.match(text, /^aidenhq_gateway_agent_day_spend_usd\{agent="aiden"\} 0\.\d+$/m);
   assert.match(text, /^aidenhq_gateway_cap_refusals_today\{agent="aiden",kind="agent"\} 2$/m);
-  assert.match(text, /^aidenhq_gateway_spend_usd_today\{agent="eng",kind="agent"\} 0\.06$/m); // its Engineer job and its fast lane turn
+  assert.match(text, /^aidenhq_gateway_spend_usd_today\{agent="eng",kind="agent"\} 0\.03$/m); // its fast lane turn
   assert.doesNotMatch(text, /ag1|sk-real/); // ids and secrets never ride along
   for (const l of text.trim().split("\n")) assert.match(l, /^(# (HELP|TYPE) \w+ .+|[a-z_]+(\{[^}]*\})? -?\d+(\.\d+)?)$/);
 
@@ -155,8 +155,9 @@ test("gateway: attribution, billed cost, caps, raise_cap once, daily reset, no o
 
   // The agent-day cap, across tasks; no refusal text may look like a quota or a retry time to Paperclip.
   writeFileSync(grantsFile, JSON.stringify({ agents: { ag1: { key: "aiden", rev: "abc123", caps: { run_usd: 0.05, task_usd: 0.08, day_usd: 30 } }, ag3: { key: "x", caps: { run_usd: 1, task_usd: 1, day_usd: 0.05 } } } }));
-  for (const i of ["d1", "d2"]) assert.equal((await call(mintToken("job-secret", { agentId: "ag3", issueId: i }, now))).status, 200);
-  const dayRefused = await call(mintToken("job-secret", { agentId: "ag3", issueId: "d3" }, now));
+  const dayJob = (i) => mintToken("job-secret", { kind: "job", job: `j-${i}`, agentId: "ag3", issueId: i }, now);
+  for (const i of ["d1", "d2"]) assert.equal((await call(dayJob(i))).status, 200);
+  const dayRefused = await call(dayJob("d3"));
   assert.match(JSON.parse(dayRefused.text).error.message, /^spend cap reached: agent-day \$0\.06 of \$0\.05;/);
   for (const r of [refused, chatRefused, dayRefused]) assert.doesNotMatch(JSON.parse(r.text).error.message, /usage limit|rate[- ]?limit|try again|quota|capacity|429|service unavailable|temporary|spawn|ENOENT|\d{4}-\d{2}-\d{2}|\d+:\d\d/i);
 
@@ -179,7 +180,7 @@ test("gateway: attribution, billed cost, caps, raise_cap once, daily reset, no o
   assert.equal(rows.filter((r) => r.kind === "source").length, 1);
 
   // An advisor call is counted against the caller's run as kind advisor.
-  assert.equal((await call(mintToken("job-secret", { agentId: "ag2", issueId: "iss9" }, now), { path: "/advisor/api/v1/chat/completions" })).status, 200);
+  assert.equal((await call(mintToken("job-secret", { kind: "job", job: "j-adv", agentId: "ag2", issueId: "iss9" }, now), { path: "/advisor/api/v1/chat/completions" })).status, 200);
   const last = (await usage()).at(-1);
   assert.deepEqual([last.kind, last.agentId, last.issueId], ["advisor", "ag2", "iss9"]);
 });
@@ -227,7 +228,7 @@ test("gateway: the install cap counts every call of the day, no-agent ones too, 
   assert.equal(jobCall.runId, "j-0123456789abcdef");
   assert.equal((await fetch(`${front.url}/v1/spend/summary`, { headers: { authorization: "Bearer nope" } })).status, 401);
   // Past it every caller is refused, the reviewer, the source writers and the board's side chat included: one raise, no task.
-  for (const cred of [reviewer, "src-key", "gw-board", mintToken("job-secret", { agentId: "ag1", issueId: "iss1" }, now)]) {
+  for (const cred of [reviewer, "src-key", "gw-board", mintToken("job-secret", { kind: "job", job: "j-0123456789abcdef", agentId: "ag1", issueId: "iss1" }, now)]) {
     const r = await call(cred);
     assert.equal(r.status, 402);
     assert.equal(r.body.error.type, "cap_reached");

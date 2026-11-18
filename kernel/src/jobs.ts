@@ -1,36 +1,20 @@
-// Jobs (K7, spec §3.3.1, §5.11): POST /v1/jobs starts an engine run in the agent's computer (sandbox.ts buildJob: `docker exec` in
-// the box the computer launcher made for this task) for a dispatcher module (role kernel.jobs, checked by the backplane), only
-// for an engine-run agent with a computer on a task the control plane assigns to it. Each run is a detached process group
+// Jobs (K7, spec §3.3.1, §5.11): an admitted job (admission.ts, POST /v1/jobs {wake}) runs its engine in the box the kernel got
+// for it (boxes.ts, sandbox.ts buildJob: `docker exec` in the agent's computer), with the engine and authority frozen on its row.
+// Each run is a detached process group
 // under a small `sh` that records its exit status, writing straight to its log: nothing ties it to the kernel, so a kernel
 // restart (KillMode=process) leaves it running and the next kernel adopts it from kernel.db (its pid and events offset). The
 // watcher follows events.jsonl (untrusted: regular files only, no links, capped lines), the exit file, the deadline and a
 // cancel. Judging a run's progress (no work for too long) is its dispatcher's: it stops the run (dispatch progress.ts).
 import { execFileSync, spawn } from "node:child_process";
-import { randomBytes } from "node:crypto";
-import { appendFileSync, closeSync, existsSync, lstatSync, mkdirSync, openSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
-import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { appendFileSync, closeSync, lstatSync, mkdirSync, openSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
+import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
 import { appendLine, lines, readFrom } from "../sdk/src/engine-io.ts";
 import { SESSION, buildJob, observes, readEngines, type Box, type Engine, type SandboxConfig } from "./sandbox.ts";
 
-/** What the control plane says: the agent (setup's metadata: its module, engine run, private reads, box) and the task. */
+/** What the control plane says about a task. */
 export interface ControlPlane {
-  agent(id: string): Promise<{ id: string; metadata?: Record<string, unknown> } | undefined>;
   task(id: string): Promise<{ id: string; identifier?: string; assigneeAgentId?: string | null; status?: string } | undefined>;
-}
-// Every resource a job gets is derived from the verified (module, agent, task), never taken from the request: its workspace is
-// work/tasks/<the task's identifier>, its box the one the launcher recorded for this task and agent. A request that names
-// anything else is refused.
-export interface JobRequest {
-  agent: string; task: string; workspace?: { module: string; id: string }; prompt: string; session?: string;
-  engine: { kind: string; model?: string; effort?: string };
-  /** The job's own settings from its dispatcher, by name only from ENV_NAMES; only its gh read token reaches the box (its
-   * helper and identity are in the launcher's env file). */
-  env?: Record<string, string>;
-  /** The job's box (the computer launcher made it for this task). */
-  box: Box;
-  /** A name for the log file (the task's identifier). */
-  label?: string;
 }
 type Progress = { said?: string; saidAt?: string; plan?: unknown[]; steps?: unknown[] };
 export interface JobView {
@@ -48,9 +32,7 @@ export class JobError extends Error {
   constructor(status: number, code: string, message: string) { super(message); this.name = "JobError"; this.status = status; this.code = code; }
 }
 
-// The names a dispatcher may set in a job's env. Of them only the gh read token reaches the box; nothing of the kernel's own
-// environment does (the docker client gets BOX_ENV).
-const ENV_NAMES = new Set(["AIDENHQ_REPO_URL", "AIDENHQ_REPO_TOKEN", "GH_TOKEN", "AIDENHQ_GH_AUTH", "GIT_AUTHOR_NAME", "GIT_AUTHOR_EMAIL", "GIT_COMMITTER_NAME", "GIT_COMMITTER_EMAIL"]);
+// Nothing of the kernel's own environment reaches a box: the docker client gets BOX_ENV only.
 const BOX_ENV = ["PATH", "HOME", "DOCKER_HOST", "DOCKER_CONFIG", "DOCKER_CONTEXT"];
 const ID = /^[\w.-]{1,100}$/;
 
@@ -297,58 +279,6 @@ export function createJobs({ db, cfg, cp, mayDispatch, log, boxWrap, onEnd = () 
     }
   }
 
-  async function start(module: string, b: JobRequest): Promise<JobView> {
-    if (!b || typeof b !== "object" || !ID.test(String(b.agent)) || !ID.test(String(b.task)) || typeof b.prompt !== "string" || !b.engine || typeof b.engine.kind !== "string") throw new JobError(400, "bad-request", "send {agent, task, workspace: {module, id}, prompt, engine: {kind, model?, effort?}}");
-    // Identity binding (spec §5.11): an engine-run agent, on a task the control plane assigns to it now.
-    if (!mayDispatch(module, b.agent)) throw new JobError(403, "not-your-agent", `module ${module} doesn't dispatch agent ${b.agent}'s jobs`);
-    const agent = await cp.agent(b.agent);
-    if (agent?.metadata?.runnerEngine !== true) throw new JobError(403, "not-an-engine-agent", `agent ${b.agent} isn't one that runs engine jobs`);
-    const task = await cp.task(b.task);
-    if (!task || task.assigneeAgentId !== b.agent) throw new JobError(403, "task-not-assigned", `task ${b.task} isn't assigned to agent ${b.agent}`);
-    const ident = String(task.identifier ?? "");
-    if (!ID.test(ident)) throw new JobError(400, "bad-task", `task ${b.task} has no identifier`);
-    if (["done", "cancelled"].includes(String(task.status))) throw new JobError(409, "task-closed", `task ${b.task} is ${task.status}`);
-    if (db.prepare("SELECT 1 FROM jobs WHERE task = ? AND state IN ('admitted', 'running')").get(b.task)) throw new JobError(409, "job-running", `task ${b.task} already has a job running`);
-    const entry = readEngines(cfg)[b.engine.kind];
-    if (!entry) throw new JobError(400, "unknown-engine", `no engine module provides "${b.engine.kind}"`);
-    if (entry.box !== true) throw new JobError(400, "not-a-box-engine", `the ${b.engine.kind} engine doesn't run in an agent computer`);
-    // Every job runs in its agent's computer: a box agent's, in the box the launcher made for this task. Private reads come
-    // with the agent, never with the request.
-    if (agent.metadata?.box !== true) throw new JobError(403, "not-a-box-agent", `agent ${b.agent} has no computer (image: in its definition) to run its jobs in`);
-    if (!b.box) throw new JobError(400, "box-required", "a job runs in its agent's computer: name the launcher's box");
-    const workPath = join(cfg.workDir, "tasks", ident);
-    const box = checkBox(b.box, b.task, b.agent, workPath);
-    const engine: Engine = { kind: b.engine.kind, model: String(b.engine.model ?? ""), effort: String(b.engine.effort ?? ""), ...(agent.metadata?.privateReads === true ? { reads: true } : {}) };
-    if (b.workspace && (b.workspace.module !== module || b.workspace.id !== ident)) throw new JobError(403, "workspace-refused", `a job works in its own task's workspace (${module}, ${ident})`);
-    const worktree = insideNoLinks(join(cfg.workDir, "tasks"), workPath, "workspace");
-    const extra: Record<string, string> = {};
-    for (const [k, v] of Object.entries(b.env ?? {})) {
-      if (!ENV_NAMES.has(k) || typeof v !== "string" || v.length > 4096) throw new JobError(400, "env-refused", `a job's env may not set ${k}`);
-      extra[k] = v;
-    }
-    const id = `j-${randomBytes(8).toString("hex")}`;
-    const at = Date.now();
-    mkdirSync(cfg.logsDir, { recursive: true });
-    const logPath = join(cfg.logsDir, `${String(b.label ?? b.task).replace(/[^\w.-]/g, "_").slice(0, 60)}-${at}.log`);
-    const jobDir = join(box.outDir, "job");
-    mkdirSync(jobDir, { mode: 0o700 }); // new for every run: nothing of the job's is in it yet
-    const built = buildJob({ cfg, engine, worktree, jobDir, sessionId: b.session, prompt: b.prompt, job: { agentId: b.agent, issueId: b.task, at }, box, gh: Boolean(extra.GH_TOKEN), boxWrap });
-    const pick = (names: string[]) => Object.fromEntries(names.filter((k) => process.env[k] !== undefined).map((k) => [k, process.env[k]!]));
-    const env: Record<string, string> = { ...pick(BOX_ENV), ...(extra.GH_TOKEN ? { GH_TOKEN: extra.GH_TOKEN, AIDENHQ_GH_AUTH: extra.GH_TOKEN } : {}) };
-    appendFileSync(logPath, `# ${new Date(at).toISOString()} ${engine.kind}${engine.model ? ` (${engine.model})` : ""} in box ${box.container} (${worktree})\n`);
-    const out = openSync(logPath, "a");
-    const child = spawn("/bin/sh", ["-c", WRAP, `${logPath}.exit`, ...built.argv], { cwd: "/", env, detached: true, stdio: ["ignore", out, out] });
-    closeSync(out);
-    // Only /bin/sh itself failing to start lands here; a missing engine is the shell's exit 127.
-    child.on("error", (e: NodeJS.ErrnoException) => { try { writeFileSync(`${logPath}.exit`, "1\n"); appendFileSync(logPath, `# couldn't start /bin/sh: ${e.code ?? e.message}\n`); } catch {} });
-    child.unref();
-    db.prepare("INSERT INTO jobs (id, module, agent, task, engine, pid, log, dir, at, jobcaps, observing, live_input, box, session, state) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'running')")
-      .run(id, module, b.agent, b.task, engine.kind, child.pid ?? 0, logPath, jobDir, at, "[]", observes(engine) ? 1 : 0, entry.live_input ? 1 : 0, JSON.stringify(box), b.session && SESSION.test(b.session) ? b.session : null);
-    log("job started", { job: id, module, agent: b.agent, task: b.task, engine: engine.kind, pid: child.pid, box: box.container });
-    watch(id);
-    return view(row(id)!);
-  }
-
   /**
    * An admitted job (admission.ts) starts in the box the kernel got it (boxes.ts): its engine and authority are the row's,
    * frozen at admission; the caller adds only the prompt and the session to resume.
@@ -381,20 +311,6 @@ export function createJobs({ db, cfg, cp, mayDispatch, log, boxWrap, onEnd = () 
     return view(row(id)!);
   }
 
-  /** The box the computer launcher recorded (its jobs.json) for this task and agent, in this task's workspace; its paths are derived. */
-  function checkBox(x: Box, task: string, agent: string, workspace: string): Box {
-    const container = String(x?.container ?? "");
-    if (!ID.test(container)) throw new JobError(400, "box-refused", "a box job names the launcher's box by its container");
-    let recs: { container?: string; issueId?: string; agentId?: string; workspace?: string }[] = [];
-    try { recs = JSON.parse(readFileSync(join(dirname(cfg.boxDir), "jobs.json"), "utf8")); } catch {}
-    const rec = Array.isArray(recs) ? recs.find((r) => r?.container === container) : undefined;
-    if (!rec || rec.issueId !== task || rec.agentId !== agent || resolve(String(rec.workspace)) !== resolve(workspace)) throw new JobError(403, "box-refused", `box ${container} isn't this task's and agent's (the launcher's record)`);
-    const box = { container, envFile: join(cfg.boxDir, `${container}.env`), outDir: join(cfg.boxDir, container) };
-    if ((x.envFile && x.envFile !== box.envFile) || (x.outDir && x.outDir !== box.outDir)) throw new JobError(400, "box-refused", "a box's files are the launcher's, under its jobs folder");
-    if (!existsSync(box.outDir)) throw new JobError(400, "box-refused", `no box folder for ${container}`);
-    return box;
-  }
-
   const own = (module: string, id: string) => {
     const r = row(id);
     if (!r || r.module !== module) throw new JobError(404, "no-job", `no job ${id}`);
@@ -402,12 +318,11 @@ export function createJobs({ db, cfg, cp, mayDispatch, log, boxWrap, onEnd = () 
   };
 
   return {
-    start,
     runAdmitted,
     adopt,
     /**
      * The workspace a dispatcher may have written into before a job starts (the code host's clone asks, with the caller's own
-     * token): an open task assigned now to an agent this module dispatches, the same binding as start. Its folder's name.
+     * token): an open task assigned now to an agent this module dispatches. Its folder's name.
      */
     async workspace(module: string, taskId: unknown): Promise<{ task: string; workspace: string }> {
       if (!ID.test(String(taskId))) throw new JobError(400, "bad-request", "send {task}");

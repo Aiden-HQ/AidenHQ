@@ -1,7 +1,7 @@
-// K1 whoami: who a bearer is, from the credential alone. A kernel job's token (`ahqj_`, gateway_job_secret: its row's frozen
-// authority), a runner job's token (the same secret, kind agent: its jobcaps), or a module's token (its connection's service
-// key, or its own `<module>_token`). Nothing else is a caller. What an agent may do comes from the kernel's records and the
-// grants table setup writes (config/grants/grants.json), never from control-plane metadata, which agents can edit.
+// K1 whoami: who a bearer is, from the credential alone. A kernel job's token (`ahqj_`, gateway_job_secret, kind job: its row's
+// frozen authority) or a module's token (its connection's service key, or its own `<module>_token`). Nothing else is a caller.
+// What an agent may do comes from the kernel's records and the grants table setup writes (config/grants/grants.json), never
+// from control-plane metadata, which agents can edit.
 import { timingSafeEqual } from "node:crypto";
 import { verifyToken } from "./gateway/token.ts";
 
@@ -9,18 +9,16 @@ export type Grant = { key?: string; roles?: string[]; tools?: Record<string, str
 export type Connection = { url: string; auth_secret: string; module: string; returns: "trusted" | "untrusted"; tools: { read: string[]; write: string[]; destructive: string[]; named?: string[] }; tool_timeout_s?: number;
   /** The module may make model calls billed to the caller of a tool call in flight (its manifest says so; off by default). */
   model_as_caller?: boolean };
-/** A runner job's read of a connection (config/jobcaps.json): the read endpoint and its read secret, never the service key. */
-export type Jobcap = { connection: string; url: string; bearer_secret: string; tools: string[]; tool_timeout_s?: number; private?: boolean };
+/** A read a job may hold on a connection (config/jobcaps.json): its tools, and whether it is private data. */
+export type Jobcap = { connection: string; tools: string[]; private?: boolean };
 export type Identity = {
-  kind: "run" | "job" | "module";
+  kind: "run" | "module";
   agent?: string; key?: string; name?: string; roles: string[];
   task?: string; run?: string; module?: string;
-  /** Granted tools by connection: an agent's grants, a job's jobcaps, a module's services.grants. */
+  /** Granted tools by connection: a kernel job's frozen tools and jobcaps; a module's none. */
   tools: Record<string, string[]>;
-  /** The write kinds a job's token names (w): what it may request at POST /v1/writes, for its agent on its task. */
+  /** The write kinds a kernel job's authority names: what it may request at POST /v1/writes, for its agent on its task. */
   writes?: string[];
-  /** A job's jobcaps by connection: where its reads go. */
-  caps?: Record<string, Jobcap[]>;
   /** A kernel job's workspace: its task's identifier, from its row (admission). Its writes name this one, whatever their args say. */
   workspace?: string;
   /** A kernel job's model, frozen at admission: its writes carry it, so their reviewer is never of its family. */
@@ -63,13 +61,7 @@ export function createIdentity({ grants, connections, jobcaps, modules = () => (
         const g = grants()[j.agent];
         return { kind: "run", agent: j.agent, key: String(g?.key ?? ""), name: String(g?.key ?? ""), roles: [...j.authority.roles], tools, writes: [...j.authority.writes], task: j.task, workspace: j.identifier, ...(j.authority.model ? { model: j.authority.model } : {}), credential: "" };
       }
-      if (!p || p.k !== "agent") throw new Unknown("a job's token is invalid or expired");
-      const all = jobcaps();
-      const tools: Record<string, string[]> = {}, caps: Record<string, Jobcap[]> = {};
-      // A private jobcap only for a job minted as observing (private_reads, web search off): private data never meets the web.
-      for (const id of p.j ?? []) { const c = all[id]; if (c && (!c.private || p.o === true)) { (tools[c.connection] ??= []).push(...c.tools); (caps[c.connection] ??= []).push(c); } }
-      const g = p.a ? grants()[p.a] : undefined;
-      return { kind: "job", ...(p.a ? { agent: p.a } : {}), key: String(g?.key ?? ""), name: String(g?.key ?? "job"), roles: [], tools, caps, writes: p.w ?? [], credential: "", ...(p.i ? { task: p.i } : {}) };
+      throw new Unknown("a job's token is invalid or expired");
     }
     throw new Unknown("not a credential the kernel knows");
   };

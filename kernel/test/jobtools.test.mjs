@@ -32,10 +32,10 @@ test("jobtools: a job token reaches only its own live job", () => {
   assert.deepEqual(tools.pending("task-a"), { job: "j-a", fresh: true, engine: { kind: "codex", model: "~openai/gpt-sol-latest" }, cleanup: false });
   tools.taken("task-a");
   assert.equal(tools.pending("task-a"), undefined);
-  // A token naming another task's job, an ended job, or an agent token: refused.
+  // A token naming another task's job, an ended job, or another kind's token: refused.
   assert.throws(() => tools.run(mintToken("s", { kind: "job", job: "j-b", agentId: "ag1", issueId: "task-a" }), "cleanup", {}), /ended/);
   assert.throws(() => tools.run(mintToken("s", { kind: "job", job: "j-old", agentId: "ag1", issueId: "task-a" }), "cleanup", {}), /ended/);
-  assert.throws(() => tools.run(mintToken("s", { agentId: "ag1", issueId: "task-a" }), "cleanup", {}), /kernel job's own token/);
+  assert.throws(() => tools.run(mintToken("s", { kind: "grader", agentId: "ag1", issueId: "task-a" }), "cleanup", {}), /kernel job's own token/);
 });
 
 // `repo-checkout`: a job box's request reaches the code host's snapshot op through the kernel's broker, only for a live job

@@ -26,7 +26,9 @@ async function twin(t, { satisfied, settings, onControl } = {}) {
   const executor = { url: `${ex.url}/aidenhq/v1/executor`, auth_secret: "twin_service_key" };
   const verdicts = [];
   const k = await kernel(t, {
-    agents, grants, secrets, settings, onControl, reviewer: () => verdicts.shift(), repos: { product: "acme/aidenhq", instance: "acme/aidenhq-instance", agentsOrg: "acme" },
+    agents, grants, secrets, settings, onControl, reviewer: () => verdicts.shift(),
+    // A kernel job of ag-bo on TASK-7 whose frozen authority names the write kinds after its id's "jw:" (a comma list).
+    job: (id) => (id.startsWith("jw:") ? { agent: "ag-bo", task: "TASK-7", state: "running", identifier: "TASK-7", authority: { tools: {}, jobcaps: [], writes: id.slice(3).split(",").filter(Boolean), roles: [] } } : undefined), repos: { product: "acme/aidenhq", instance: "acme/aidenhq-instance", agentsOrg: "acme" },
     connections: {
       twin: { url: `${mod.url}/mcp`, auth_secret: "twin_service_key", module: "twin", returns: "untrusted", tools: { read: ["note_read"], write: ["post_note", "ping", "note_write"], destructive: ["note_drop"] } },
       other: { url: `${mod.url}/mcp`, auth_secret: "other_service_key", module: "other", returns: "untrusted", tools: { read: [], write: [], destructive: [] } },
@@ -95,9 +97,9 @@ test("the executor sees nothing before approval; approved, it runs once and the 
   const filed = await k.v1("POST", "/v1/writes", { kind: "twin.post", args: { note: "x" }, task: "OTHER-9" }, ADA);
   assert.equal(k.records.get(filed.json.id).task, "TASK-1");
   assert.equal((await k.v1("POST", "/v1/writes", { kind: "twin.post", args: { note: "x" } }, BO)).status, 403);
-  // A job's token files only the kinds it names, as its agent on its own task (whatever task it names), tiered as anyone's
-  // request; a job's ordinary token (no kinds) files nothing.
-  const job = (writes) => mintToken("job-secret", { agentId: "ag-bo", issueId: "TASK-7", component: "test", writes });
+  // A kernel job files only the kinds its frozen authority names, as its agent on its own task (whatever task it names), tiered
+  // as anyone's request; a job whose authority names none files nothing.
+  const job = (writes) => mintToken("job-secret", { kind: "job", job: `jw:${writes.join(",")}`, agentId: "ag-bo", issueId: "TASK-7" });
   const byJob = await k.v1("POST", "/v1/writes", { kind: "twin.post", args: { note: "y" }, task: "OTHER-9" }, job(["twin.post"]));
   assert.deepEqual({ tier: byJob.json.tier, state: byJob.json.state }, { tier: 1, state: "review" });
   assert.deepEqual([k.records.get(byJob.json.id).task, k.records.get(byJob.json.id).requester.agent], ["TASK-7", "ag-bo"]);
