@@ -4,7 +4,7 @@
 // conversations.history per channel the owner is in, plus conversations.replies for recently active threads; once a week it
 // re-reads the last week in full and tombstones what Slack no longer returns (Events have no replay). No LLM.
 import type { Logger } from "pino";
-import { capText, SourceStore, tableDdl, USERS, type Row, type Table } from "./source-store.js";
+import { capText, SourceStore, tableDdl, USERS, type Row, type Table } from "@aidenhq/sdk/source-store";
 import { permalink } from "./map.js";
 
 export const MESSAGE: Table = {

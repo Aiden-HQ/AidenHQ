@@ -48,9 +48,11 @@ cd services/board && npx vitest run && npx tsc -p tsconfig.build.json --noEmit &
 npm test && npm run typecheck
 ```
 
-The board's Docker build is stricter than vitest: always run `tsc -p tsconfig.build.json` for board changes. After
-editing `kernel/sdk/src/caller.ts` or `fence.ts`, `services/shared/source-store.ts`, `modules/apps-platform/design-system/` or the app starter (`modules/apps-platform/starter/`), run `node scripts/sync-shared.mjs` (a
-test fails on drift, the copies under `modules/` included). The official modules are this repo's `modules/` (MIT by folder:
+The board's Docker build is stricter than vitest: always run `tsc -p tsconfig.build.json` for board changes. Module
+servers and the board import shared code from `@aidenhq/sdk` (`kernel/sdk`, on npm, pinned exactly): a change there ships
+by tagging `sdk-vX.Y.Z` and bumping the pins (kernel/sdk/README.md). After editing `modules/apps-platform/design-system/`,
+the app starter (`modules/apps-platform/starter/`) or another canonical in `scripts/sync-shared.mjs`, run it (a test fails
+on drift). The official modules are this repo's `modules/` (MIT by folder:
 `modules/LICENSE`, `NOTICE`, `LICENSES/`), so a change across the kernel and a module is one PR. CI (`.github/workflows/ci.yml`)
 runs the suites a PR touches (map: `.github/ci/areas.json`, read from the base: each module package is a suite of its own
 whose paths list what it imports; `scripts/test/ci-areas.test.mjs` fails when a module with tests has no suite or a suite's

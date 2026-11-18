@@ -2,7 +2,7 @@
 // The kernel is the only client: it checks grants, then forwards each tools/call with a caller assertion (aud = tasks).
 import { createServer } from "node:http";
 import { timingSafeEqual } from "node:crypto";
-import { kernelJwks, verifyCaller } from "./aidenhq-sdk/caller.ts";
+import { kernelJwks, verifyCaller } from "@aidenhq/sdk/caller";
 import { SERVICE_KEY, TOOL_LIST, callTool } from "./tools.mjs";
 
 const MODULE = process.env.AIDENHQ_MODULE || "tasks";

@@ -36,7 +36,8 @@ test("a vendor connection's read endpoint gets exactly its connection's read tag
     for (const [svc, s] of Object.entries(def.services?.run ?? {})) {
       const env = s?.env ?? {};
       const conn = Object.entries(def.connections ?? {}).find(([, c]) => new URL(c.url).hostname === svc);
-      if (env.READ_TOOLS == null && !(env.MCP_READ_TOKEN_FILE && existsSync(join(product, "modules", n, String(s.build ?? ""), "src/vendor/proxy.ts")))) continue;
+      const main = join(product, "modules", n, String(s.build ?? ""), "src/main.ts");
+      if (env.READ_TOOLS == null && !(env.MCP_READ_TOKEN_FILE && existsSync(main) && readFileSync(main, "utf8").includes("@aidenhq/sdk/vendor/proxy"))) continue;
       assert.equal(env.READ_TOOLS, (conn?.[1].tools.read ?? []).join(","), `${n}: ${svc}'s READ_TOOLS must be its connection's read tags`);
     }
   }

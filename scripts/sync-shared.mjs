@@ -1,19 +1,16 @@
 #!/usr/bin/env node
-// Copies shared code into the services that use it. Each service is its own Docker build context, so it holds a
-// byte-identical copy; scripts/test/shared.test.mjs fails when one drifts (the official modules' under modules/ included).
-//   kernel/sdk/src/{caller,fence}.ts the caller assertion check and the fence, in every module server (src/aidenhq-sdk/)
-//   kernel/sdk/src/executor.ts       the executor side of write kinds, in each module server with an executor
-//   kernel/sdk/src/vendor/{proxy,oauth}.ts  the vendor pass-through, in each vendor connection (src/vendor/)
+// Copies shared code where an import can't reach it: a Docker build context, a template copied into app repos, an agent
+// computer's image. Each copy is byte-identical; scripts/test/shared.test.mjs fails when one drifts. Module servers import
+// the SDK from npm instead (@aidenhq/sdk, kernel/sdk/README.md).
+//   kernel/sdk/src/caller.ts, executor.ts  in the two images that install no dependencies (grading, codehost-github)
 //   kernel/sdk/src/reviewer.ts       the reviewer side of reviewer@1, in the reviewer module's service
 //   kernel/sdk/src/judge.ts          the judges' models, cross-family choice and model call, in the reviewer and grading services
 //   services/shared/review-files.mjs  the changed files as the reviewer reads them, in the reviewer module's service
-//   kernel/sdk/src/source-store.ts   the shared-sources writer side, in every source writer
 //   services/shared/reason-codes.ts  reason codes on approvals and refusals, in the board
 //   services/shared/url-setting.ts   the URL setting check, in the board and the runner (the compiler imports the original)
 //   modules/apps-platform/design-system/      the design system, in the app starter and the agent computers
 //   modules/apps-platform/starter/      the app starter, in the agent computers (a whole folder: SHARED_DIRS)
 //   kernel/sdk/src/{types,engine-io,progress}.ts  the SDK's engine side, in every module with an sdk/ folder
-//   services/shared/aidenhq-identity.mjs  apps' identity middleware, in the app template
 //   node scripts/sync-shared.mjs
 import { copyFileSync, existsSync, mkdirSync, readdirSync, rmSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
@@ -27,31 +24,9 @@ export const repo = resolve(dirname(fileURLToPath(import.meta.url)), "..");
  */
 export function sharedCopies(root = repo) {
   const files = {
-  // Every module server checks the kernel's caller assertion (and fences what it must) with the SDK (lean-core 2a).
-  ...Object.fromEntries(["caller.ts", "fence.ts"].map((f) => [`kernel/sdk/src/${f}`, [
-    "modules/apps-platform/apps-mcp/src",
-    "services/board/src",
-    "modules/clickhouse/connections/clickhouse-mcp/src",
-    "modules/github/connections/github-mcp/src",
-    "modules/glean/connections/glean-mcp/src",
-    "modules/google/connections/google-workspace-mcp/src",
-    "modules/grafana/connections/grafana-mcp/src",
-    "modules/hubspot/connections/hubspot-mcp/src",
-    "modules/jira/connections/jira-mcp/src",
-    "modules/meetings/connections/ops-mcp/src",
-    "modules/channel-slack/connections/slack/src",
-    "modules/chat-lane/connections/lane/src",
-    "modules/primer/connections/primer-mcp/src",
-    "modules/slack/connections/slack-mcp/src",
-    "modules/tasks/connections/tasks-mcp/src",
-    // The grading service checks the tasks module's assertion when it files a rubric; it fences nothing.
-    ...(f === "caller.ts" ? ["modules/grading/service/src"] : []),
-  ].map((d) => `${d}/aidenhq-sdk/${f}`)])),
-  // The executor side of write kinds (executor@1), in each module server that declares an executor.
-  "kernel/sdk/src/executor.ts": ["modules/apps-platform/apps-mcp/src/aidenhq-sdk/executor.ts", "modules/primer/connections/primer-mcp/src/aidenhq-sdk/executor.ts", "modules/channel-slack/connections/slack/src/aidenhq-sdk/executor.ts", "modules/hubspot/connections/hubspot-mcp/src/aidenhq-sdk/executor.ts", "modules/codehost-github/service/src/aidenhq-sdk/executor.ts"],
-  // The vendor connections' shared pass-through (owner, 2026-11-18: every connection exposes its vendor's whole MCP server),
-  // in each vendor connection's src/vendor/.
-  ...Object.fromEntries(["proxy.ts", "oauth.ts"].map((f) => [`kernel/sdk/src/vendor/${f}`, ["clickhouse/connections/clickhouse-mcp", "glean/connections/glean-mcp", "grafana/connections/grafana-mcp", "hubspot/connections/hubspot-mcp", "jira/connections/jira-mcp", "primer/connections/primer-mcp", "slack/connections/slack-mcp"].map((d) => `modules/${d}/src/vendor/${f}`)])),
+  // Module servers import the SDK from npm (@aidenhq/sdk). These two images install no dependencies, so they keep a copy.
+  "kernel/sdk/src/caller.ts": ["modules/grading/service/src/aidenhq-sdk/caller.ts"],
+  "kernel/sdk/src/executor.ts": ["modules/codehost-github/service/src/aidenhq-sdk/executor.ts"],
   // The reviewer side of reviewer@1, in the reviewer module's service (its own Docker build context).
   "kernel/sdk/src/reviewer.ts": ["modules/ai-reviewer/service/src/aidenhq-sdk/reviewer.ts"],
   // The judges' shared library (design §4.4): the reviewer and the grader keep their own contracts and credentials.
@@ -60,19 +35,8 @@ export function sharedCopies(root = repo) {
   "services/shared/review-files.mjs": ["modules/ai-reviewer/service/src/review-files.mjs"],
   // The reliability checklist's matcher: the CI template's (MIT), used by its code review and by the AI reviewer.
   "modules/ci/template/.github/review-checklist.mjs": ["modules/ai-reviewer/service/src/review-checklist.mjs"],
-  "kernel/sdk/src/source-store.ts": [
-    "modules/channel-slack/connections/slack/src/source-store.ts",
-    "modules/github/connections/github-mcp/src/source-store.ts",
-    "modules/hubspot/connections/hubspot-mcp/src/source-store.ts",
-    "modules/jira/connections/jira-mcp/src/source-store.ts",
-    "modules/meetings/connections/ops-mcp/src/source-store.ts",
-    "modules/google/connections/google-workspace-mcp/src/source-store.ts",
-    "modules/security/scanner/src/source-store.ts",
-  ],
   "services/shared/reason-codes.ts": ["services/board/src/reason-codes.ts"],
   "services/shared/url-setting.ts": ["services/board/src/url-setting.ts", "services/runner/src/url-setting.ts"],
-  // App identity (docs/design/app-identity.md): the middleware every app copies, from the app template.
-  "services/shared/aidenhq-identity.mjs": ["modules/apps-platform/starter/aidenhq-identity.mjs"],
   // The supply-chain checks, version picker and image scan, for app repos (the app CI template is copied into each as it is).
   "scripts/supply-chain/best-version.mjs": ["modules/ci/template/.github/supply-chain/best-version.mjs", "modules/engineering/skills/supply-chain/best-version.mjs"],
   "scripts/supply-chain/pins.mjs": ["modules/ci/template/.github/supply-chain/pins.mjs"],

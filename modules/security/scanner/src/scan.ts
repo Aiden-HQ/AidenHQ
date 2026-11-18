@@ -12,7 +12,7 @@
 // batch resolves nothing.
 import { createHash } from "node:crypto";
 import { join } from "node:path";
-import { capText, tableDdl, type Row, type SourceStore, type Table } from "./source-store.js";
+import { capText, tableDdl, type Row, type SourceStore, type Table } from "@aidenhq/sdk/source-store";
 
 export const FINDING: Table = {
   name: "finding",

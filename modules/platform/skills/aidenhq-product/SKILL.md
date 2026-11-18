@@ -20,8 +20,8 @@ Read `CLAUDE.md` at the repo root first: it is the source for layout, convention
   the `modules/ai-reviewer` module (its policy and `test/reviewer-cases/`) or `scripts/compiler/authority.ts` needs the maintainer's reviewer eval:
   say so in the PR.
 - **No owner data.** Tests and docs use `acme`, `example.com` and documentation IP ranges.
-- **Shared code.** After editing `kernel/sdk/src/caller.ts`, `kernel/sdk/src/fence.ts` or `services/shared/source-store.ts`, or the design
-  system, run `node scripts/sync-shared.mjs`; a test fails on drift.
+- **Shared code.** Module servers import it from `@aidenhq/sdk` (`kernel/sdk`, pinned exactly; releasing: its README).
+  After editing the design system or the starter, run `node scripts/sync-shared.mjs`; a test fails on drift.
 
 ## Tests
 

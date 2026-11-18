@@ -7,7 +7,7 @@
 import { createHash } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
 import type { Logger } from "./util/log.js";
-import { capText, type SourceStore, tableDdl, type Table } from "./source-store.js";
+import { capText, type SourceStore, tableDdl, type Table } from "@aidenhq/sdk/source-store";
 import type { Vault } from "./vault/vault.js";
 
 /** A note is stored up to 200 KB (note_truncated past that; note_path has the rest). */

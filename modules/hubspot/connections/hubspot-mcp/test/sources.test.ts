@@ -1,7 +1,7 @@
 import { expect, it } from "vitest";
 import { WINDOW } from "../src/adapter.js";
 import { selected, syncObject } from "../src/sources.js";
-import type { SourceStore } from "../src/source-store.js";
+import type { SourceStore } from "@aidenhq/sdk/source-store";
 
 // The writer side against a fake store: what lands, with which baseline flag, and how the cursor moves (the SQL itself is the
 // shared source-store's, smoke-run on postgres in the other source writers).

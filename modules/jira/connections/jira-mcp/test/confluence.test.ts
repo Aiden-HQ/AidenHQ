@@ -1,6 +1,6 @@
 import { expect, it } from "vitest";
 import { CONFLUENCE_PROMPT_VERSION, summarisePages, syncConfluence } from "../src/confluence.js";
-import type { SourceStore } from "../src/source-store.js";
+import type { SourceStore } from "@aidenhq/sdk/source-store";
 
 // The writer side against a fake store (the SQL is the shared source-store's): what lands, with which baseline flag.
 function fakeStore(due: Record<string, unknown>[] = []) {

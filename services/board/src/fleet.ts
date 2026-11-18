@@ -2,7 +2,7 @@
 import { readFileSync } from "node:fs";
 import { z } from "zod";
 import type { IncomingMessage } from "node:http";
-import { kernelJwks, verifyCaller } from "./aidenhq-sdk/caller.js";
+import { kernelJwks, verifyCaller } from "@aidenhq/sdk/caller";
 import { grantsTable, type Grant } from "./grants.js";
 import { OPEN, type Agent, type Issue, type Paperclip, type Routine } from "./paperclip.js";
 import type { Records } from "./records.js";

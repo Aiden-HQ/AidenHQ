@@ -20,7 +20,7 @@ import { flushDigest } from "./attention.js";
 import { editTelegram, makePostReply, notifyOwner, postTelegram, type NotifyConfig } from "./urgent.js";
 import { transcribe, voiceOn } from "./voice.js";
 import { startWatch } from "./watch.js";
-import { kernelJwks, verifyCaller } from "./aidenhq-sdk/caller.js";
+import { kernelJwks, verifyCaller } from "@aidenhq/sdk/caller";
 
 const log = pino({ level: process.env.LOG_LEVEL ?? "info", base: { svc: "channel-telegram" }, redact: ["authorization", "*.authorization", "token", "*.token"] });
 const jwks = kernelJwks();

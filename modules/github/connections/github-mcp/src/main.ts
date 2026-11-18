@@ -7,14 +7,14 @@ import { timingSafeEqual } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { Projects, productTarget, upstreamReport } from "./projects.js";
 import { originIds, ownerTerms } from "./scrub.js";
-import { SourceStore } from "./source-store.js";
+import { SourceStore } from "@aidenhq/sdk/source-store";
 import { startSync } from "./sources.js";
 import { createServer, type IncomingMessage } from "node:http";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import pino from "pino";
 import { z } from "zod";
-import { kernelJwks, verifyCaller, type Caller } from "./aidenhq-sdk/caller.js";
+import { kernelJwks, verifyCaller, type Caller } from "@aidenhq/sdk/caller";
 import { GitHub, GitHubAuthError, GitHubRefused, parseRef } from "./github.js";
 import { describeRepos, Maintainer, parseRepos } from "./maintainer.js";
 

@@ -3,13 +3,13 @@
 // on the board with the scopes the owner picks there, every call pinned to the configured site (src/site.ts).
 import { existsSync, readFileSync } from "node:fs";
 import pino from "pino";
-import { kernelJwks, verifyCaller } from "./aidenhq-sdk/caller.js";
+import { kernelJwks, verifyCaller } from "@aidenhq/sdk/caller";
 import { startConfluenceSync } from "./confluence.js";
 import { siteHooks, SCOPES } from "./site.js";
-import { SourceStore } from "./source-store.js";
+import { SourceStore } from "@aidenhq/sdk/source-store";
 import { startSync } from "./sources.js";
-import { oauth } from "./vendor/oauth.js";
-import { createVendorProxy } from "./vendor/proxy.js";
+import { oauth } from "@aidenhq/sdk/vendor/oauth";
+import { createVendorProxy } from "@aidenhq/sdk/vendor/proxy";
 
 const log = pino({ level: process.env.LOG_LEVEL ?? "info", base: { svc: "jira-mcp" }, redact: ["authorization", "*.authorization", "token", "*.token", "code"] });
 const readToken = (file: string | undefined) => (file && existsSync(file) ? readFileSync(file, "utf8").trim() || undefined : undefined);

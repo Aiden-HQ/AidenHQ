@@ -4,7 +4,7 @@
 import type { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import type { Tool } from "@modelcontextprotocol/sdk/types.js";
 import type { Logger } from "pino";
-import type { Hooks } from "./vendor/proxy.js";
+import type { Hooks } from "@aidenhq/sdk/vendor/proxy";
 
 /** The scopes pre-selected at sign-in: who you are, a refresh token, and Jira/Confluence read and search. The owner may pick more. */
 export const SCOPES = ["read:me", "read:account", "read:jira:agent-interface", "search:jira:agent-interface", "read:confluence:agent-interface", "search:confluence:agent-interface"];

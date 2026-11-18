@@ -3,7 +3,7 @@
 // so the digest covers exactly what was reviewed. Creating or updating one or a few records and logging activities
 // (note, task, call, meeting) is the reviewer's (floor Tier 1); a change to more than BULK records is the owner's.
 // HubSpot has no delete tool in the exposed set, so nothing here deletes.
-import type { Executor } from "./aidenhq-sdk/executor.js";
+import type { Executor } from "@aidenhq/sdk/executor";
 
 /** More records than this in one call is the owner's decision. */
 export const BULK = 5;

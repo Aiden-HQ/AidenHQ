@@ -9,7 +9,7 @@
 // Optional one-time history backfill per listed project (history_projects, history_days; syncHistory).
 // Confluence pages (src_jira.confluence_page) share this schema, DDL and sign-in; their passes are in src/confluence.ts.
 import type { Logger } from "pino";
-import { capText, SourceStore, tableDdl, USERS, type Row, type Table } from "./source-store.js";
+import { capText, SourceStore, tableDdl, USERS, type Row, type Table } from "@aidenhq/sdk/source-store";
 
 const ISSUE: Table = {
   name: "issue",

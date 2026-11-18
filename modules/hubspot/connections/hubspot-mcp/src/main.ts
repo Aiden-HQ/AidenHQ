@@ -5,12 +5,12 @@
 // kind hubspot.crm_write: the kernel calls the executor (src/writes.ts, /aidenhq/v1/executor) only for an approved record.
 import { existsSync, readFileSync } from "node:fs";
 import pino from "pino";
-import { kernelJwks, verifyCaller } from "./aidenhq-sdk/caller.js";
-import { serveExecutor } from "./aidenhq-sdk/executor.js";
+import { kernelJwks, verifyCaller } from "@aidenhq/sdk/caller";
+import { serveExecutor } from "@aidenhq/sdk/executor";
 import { selected, startSync } from "./sources.js";
-import { SourceStore } from "./source-store.js";
-import { oauth } from "./vendor/oauth.js";
-import { createVendorProxy } from "./vendor/proxy.js";
+import { SourceStore } from "@aidenhq/sdk/source-store";
+import { oauth } from "@aidenhq/sdk/vendor/oauth";
+import { createVendorProxy } from "@aidenhq/sdk/vendor/proxy";
 import { crmWriter } from "./writes.js";
 
 const log = pino({ level: process.env.LOG_LEVEL ?? "info", base: { svc: "hubspot-mcp" }, redact: ["authorization", "*.authorization", "token", "*.token", "code"] });

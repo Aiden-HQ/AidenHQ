@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { DRAFT_TOOL, READ_SCOPES, slackAnswer, upstreamArgs, WRITE_SCOPES } from "../src/slack.js";
-import { oauth } from "../src/vendor/oauth.js";
+import { oauth } from "@aidenhq/sdk/vendor/oauth";
 
 describe("slack-mcp draft arguments", () => {
   it("passes the draft tool only its documented arguments", () => {

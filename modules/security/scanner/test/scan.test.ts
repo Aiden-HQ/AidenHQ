@@ -1,6 +1,6 @@
 import { expect, it } from "vitest";
 import { parseTargets, scanPass, type Batch } from "../src/scan.js";
-import type { SourceStore } from "../src/source-store.js";
+import type { SourceStore } from "@aidenhq/sdk/source-store";
 
 // The writer against an in-memory store that keys rows like Postgres would (the SQL itself follows the other writers).
 function fakeStore() {

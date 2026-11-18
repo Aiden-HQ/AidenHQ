@@ -4,9 +4,14 @@
   "private": true,
   "license": "MIT",
   "type": "module",
-  "engines": { "node": ">=24" },
+  "engines": {
+    "node": ">=24"
+  },
   "scripts": {
     "start": "node src/main.mjs",
     "test": "node --test test/*.test.mjs"
+  },
+  "dependencies": {
+    "@aidenhq/sdk": "0.3.0"
   }
 }

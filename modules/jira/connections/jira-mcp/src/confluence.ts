@@ -12,7 +12,7 @@
 import { readFileSync } from "node:fs";
 import type { Logger } from "pino";
 import { BASELINE_DAYS, type CallJira, DAY, DDL, PAGE_T, textsOf, toolJson } from "./sources.js";
-import { capText, type Row, type SourceStore, USERS } from "./source-store.js";
+import { capText, type Row, type SourceStore, USERS } from "@aidenhq/sdk/source-store";
 
 const MAX_PAGES = 500;
 const PAGE = 50;

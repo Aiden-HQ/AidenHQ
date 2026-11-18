@@ -11,7 +11,7 @@ import { promisify } from "node:util";
 import YAML from "yaml";
 import { auditorClient, auditorPass } from "./auditor.js";
 import { DDL, parseTargets, scanPass, type Batch } from "./scan.js";
-import { SourceStore } from "./source-store.js";
+import { SourceStore } from "@aidenhq/sdk/source-store";
 
 const run = promisify(execFile);
 const env = (k: string, d = "") => process.env[k] || d;

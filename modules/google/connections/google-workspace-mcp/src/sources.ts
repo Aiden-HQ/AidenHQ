@@ -12,7 +12,7 @@
 import type { Logger } from "pino";
 import { readFileSync } from "node:fs";
 import type { DriveFile } from "./workspace.js";
-import { capText, type SourceStore, tableDdl, type Table } from "./source-store.js";
+import { capText, type SourceStore, tableDdl, type Table } from "@aidenhq/sdk/source-store";
 
 const BASELINE_DAYS = 30;
 const MAX_FILES = 500;

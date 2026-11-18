@@ -6,7 +6,7 @@
 // start_vibe_audit, get_job_status and get_findings are called. At most one new job per pass (the auditor's MCP cap is
 // 2 jobs, shared with people's /audit runs). Full audits (/audit, with a questionnaire) stay the owner's call.
 // Tool shapes are from the auditor's source (mcp_server/server.py, jobs.py); not yet probed live.
-import { capText, type Row, type SourceStore } from "./source-store.js";
+import { capText, type Row, type SourceStore } from "@aidenhq/sdk/source-store";
 import { findingId, FINDING, Skip } from "./scan.js";
 
 export interface AuditorConfig {

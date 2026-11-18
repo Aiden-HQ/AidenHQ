@@ -4,11 +4,11 @@
 // (/aidenhq/v1/executor, publish.ts) only for an approved record. /mcp/read serves the runner's Engineer jobs Primer's reads.
 import { existsSync, readFileSync } from "node:fs";
 import pino from "pino";
-import { kernelJwks, verifyCaller } from "./aidenhq-sdk/caller.js";
-import { serveExecutor } from "./aidenhq-sdk/executor.js";
+import { kernelJwks, verifyCaller } from "@aidenhq/sdk/caller";
+import { serveExecutor } from "@aidenhq/sdk/executor";
 import { publisher } from "./publish.js";
-import { oauth } from "./vendor/oauth.js";
-import { createVendorProxy } from "./vendor/proxy.js";
+import { oauth } from "@aidenhq/sdk/vendor/oauth";
+import { createVendorProxy } from "@aidenhq/sdk/vendor/proxy";
 
 const log = pino({ level: process.env.LOG_LEVEL ?? "info", base: { svc: "primer-mcp" }, redact: ["authorization", "*.authorization", "token", "*.token", "code"] });
 const readToken = (file: string | undefined) => (file && existsSync(file) ? readFileSync(file, "utf8").trim() || undefined : undefined);

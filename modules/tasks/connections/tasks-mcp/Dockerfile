@@ -1,9 +1,15 @@
 # syntax=docker/dockerfile:1.28@sha256:bb22d9815c728170f72750f4e5b0d672e06176142e1d602c7e66c050100b7e5b
+FROM node:24.22.2-bookworm-slim@sha256:01d566e8d94d8c619591d78652babfccd3c6992a3dffa9ed5ab39e11cf6c70e9 AS build
+WORKDIR /app
+COPY package.json package-lock.json ./
+RUN npm ci --omit=dev --ignore-scripts
+
 FROM node:24.22.2-bookworm-slim@sha256:01d566e8d94d8c619591d78652babfccd3c6992a3dffa9ed5ab39e11cf6c70e9
 ENV NODE_ENV=production
-# No dependencies and no npm at run time: drop the bundled npm (its undici and brace-expansion carry advisories).
+# No npm at run time: drop the bundled npm (its undici and brace-expansion carry advisories).
 RUN rm -rf /usr/local/lib/node_modules/npm /usr/local/bin/npm /usr/local/bin/npx
 WORKDIR /app
+COPY --from=build /app/node_modules ./node_modules
 COPY package.json ./
 COPY src ./src
 USER 1000:1000

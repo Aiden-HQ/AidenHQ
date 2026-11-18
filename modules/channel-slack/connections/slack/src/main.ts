@@ -14,9 +14,9 @@ import { startSocket } from "./socket.js";
 import { createPairing, handlePairingDm } from "./pair.js";
 import { openStore } from "./store.js";
 import { postMessage, relayOutbox, type NotifyConfig } from "./urgent.js";
-import { kernelJwks, verifyCaller } from "./aidenhq-sdk/caller.js";
-import { serveExecutor } from "./aidenhq-sdk/executor.js";
-import { SourceStore } from "./source-store.js";
+import { kernelJwks, verifyCaller } from "@aidenhq/sdk/caller";
+import { serveExecutor } from "@aidenhq/sdk/executor";
+import { SourceStore } from "@aidenhq/sdk/source-store";
 import { slackTee, startGapSync } from "./sources.js";
 
 const log = pino({ level: process.env.LOG_LEVEL ?? "info", base: { svc: "channel-slack" }, redact: ["authorization", "*.authorization", "token", "*.token"] });

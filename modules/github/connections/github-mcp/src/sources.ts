@@ -6,7 +6,7 @@
 // A first sync (an org's issues, a newly found board) is a baseline: rows marked baseline, no change log. No LLM.
 import type { Logger } from "pino";
 import type { Projects } from "./projects.js";
-import { capText, SourceStore, tableDdl, USERS, type Row, type Table } from "./source-store.js";
+import { capText, SourceStore, tableDdl, USERS, type Row, type Table } from "@aidenhq/sdk/source-store";
 
 export const ISSUE: Table = {
   name: "issue",

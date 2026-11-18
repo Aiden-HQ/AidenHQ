@@ -6,7 +6,7 @@
 // that the task's own publish made that document or the owner's own comment asked for that link to be updated (`own`, taken
 // only from a job token, which only the runner mints); an agent's word for it never counts.
 import { createHash } from "node:crypto";
-import type { Executor } from "./aidenhq-sdk/executor.js";
+import type { Executor } from "@aidenhq/sdk/executor";
 
 export type Publish = { title?: string; content: string; format: "markdown" | "html"; description?: string; documentId?: string; versionNote?: string; path?: string; own?: true };
 type Call = (tool: string, args: Record<string, unknown>) => Promise<{ text: string; isError?: boolean }>;

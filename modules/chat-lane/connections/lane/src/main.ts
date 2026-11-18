@@ -8,7 +8,7 @@ import { timingSafeEqual } from "node:crypto";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import pino from "pino";
 import { buildServer } from "./mcp.js";
-import { kernelJwks, verifyCaller } from "./aidenhq-sdk/caller.js";
+import { kernelJwks, verifyCaller } from "@aidenhq/sdk/caller";
 import { laneConfig } from "./lane/config.js";
 import { makeLane } from "./lane/lane.js";
 import { followOwnerChat, laneRoutes, startLaneTelegram, startWakes, telegramSend } from "./lane/serve.js";

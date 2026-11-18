@@ -1,5 +1,5 @@
 import { expect, it } from "vitest";
-import type { SourceStore } from "../src/source-store.js";
+import type { SourceStore } from "@aidenhq/sdk/source-store";
 import { PROMPT_VERSION, summariseDocs, syncDrive } from "../src/sources.js";
 
 // The writer side against a fake store (the SQL is the shared source-store's): what lands, with which baseline flag.

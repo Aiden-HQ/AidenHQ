@@ -3,7 +3,7 @@
 // owner (Tier 2); the AI reviewer reads every post first (floor 1). execute posts it from the instance's bot, headed with the
 // agent's name as an AI agent. Never as the owner: only the bot token is used.
 import { createHash } from "node:crypto";
-import type { Executor } from "./aidenhq-sdk/executor.js";
+import type { Executor } from "@aidenhq/sdk/executor";
 import { bindings } from "./bind.js";
 import type { Store } from "./store.js";
 

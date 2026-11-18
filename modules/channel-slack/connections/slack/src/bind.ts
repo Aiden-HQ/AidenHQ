@@ -5,8 +5,8 @@
 // a kernel record, so every change is on the record) after checking the Slack user id against OWNER_SLACK_USER_ID, and the
 // executor checks it again. The table lives in this module's store; the kernel never reads it.
 import { randomBytes } from "node:crypto";
-import type { Executor } from "./aidenhq-sdk/executor.js";
-import { fence } from "./aidenhq-sdk/fence.js";
+import type { Executor } from "@aidenhq/sdk/executor";
+import { fence } from "@aidenhq/sdk/fence";
 import { permalink } from "./map.js";
 import type { Store } from "./store.js";
 

@@ -14,6 +14,7 @@
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
+    "@aidenhq/sdk": "0.3.0",
     "@modelcontextprotocol/sdk": "^1.32.0",
     "better-sqlite3": "^13.0.3",
     "pino": "^10.4.0",

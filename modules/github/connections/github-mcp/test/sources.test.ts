@@ -1,6 +1,6 @@
 import { expect, it } from "vitest";
 import { syncOrg } from "../src/sources.js";
-import type { SourceStore } from "../src/source-store.js";
+import type { SourceStore } from "@aidenhq/sdk/source-store";
 
 // The writer side against a fake store: what lands, and with which baseline flag (the SQL itself was smoke-run on postgres:17).
 function fakeStore() {

@@ -8,7 +8,7 @@
 // HubSpot sends no delete signal, so a record deleted there stays here. No LLM.
 import type { Logger } from "pino";
 import { ACTIVITY_TYPES, dealStages, isoOf, listOwners, OBJECTS, searchPage, SETTING_OBJECTS, WINDOW, withAssociations, type CallHubSpot, type CrmRecord, type ObjectDef } from "./adapter.js";
-import { capText, SourceStore, tableDdl, USERS, type Row, type Table } from "./source-store.js";
+import { capText, SourceStore, tableDdl, USERS, type Row, type Table } from "@aidenhq/sdk/source-store";
 
 const CONTACT: Table = {
   name: "contact",

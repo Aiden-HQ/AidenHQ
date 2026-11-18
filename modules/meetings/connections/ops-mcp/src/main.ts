@@ -6,8 +6,8 @@ import { createApp, healthChecks } from "./app.js";
 import { loadConfig } from "./config.js";
 import { buildServer } from "./mcp/tools.js";
 import { createLogger } from "./util/log.js";
-import { kernelJwks, verifyCaller, type Caller } from "./aidenhq-sdk/caller.js";
-import { SourceStore } from "./source-store.js";
+import { kernelJwks, verifyCaller, type Caller } from "@aidenhq/sdk/caller";
+import { SourceStore } from "@aidenhq/sdk/source-store";
 import { startMeetingsSync } from "./warehouse.js";
 
 const cfg = loadConfig(process.env.OPS_MCP_CONFIG ?? "/config/system.yaml");

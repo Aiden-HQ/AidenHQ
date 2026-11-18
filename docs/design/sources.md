@@ -35,10 +35,9 @@ prompt version it came from, is made only after the document has been quiet a fe
 evidence: consumers read the document live before quoting or acting. Document text is fenced as data for the
 summariser, which has no tools.
 
-## Conventions in services/shared/source-store.ts
+## Conventions in kernel/sdk/src/source-store.ts
 
-All writers share one `SourceStore` (a byte-identical copy lives in each connection; edit the shared one and run
-`node scripts/sync-shared.mjs`).
+All writers share one `SourceStore`, imported from `@aidenhq/sdk/source-store`.
 
 - **Typed upserts** keep `first_seen_at` and write the common columns `baseline`, `ingested_at` and `seq`.
 - **`seq`** comes from one sequence, `src_meta.seq`, and is bumped whenever a row is written with a difference. "New

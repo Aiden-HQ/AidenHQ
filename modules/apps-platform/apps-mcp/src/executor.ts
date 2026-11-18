@@ -7,7 +7,7 @@ import { callApi, authorize, METHODS, type Method } from "./api.js";
 import { canMutate, type Caller } from "./mcp.js";
 import type { Platform } from "./platform.js";
 import { assertOwner, RUN_TIMEOUT_MS } from "./run.js";
-import type { Executor, PlanResult, Requester } from "./aidenhq-sdk/executor.js";
+import type { Executor, PlanResult, Requester } from "@aidenhq/sdk/executor";
 
 /** Where a deploy card's details end and the author's commit message begins (the runner's reviewer splits on it). */
 export const DEPLOY_CLAIM = "\n\nCommit message (written by the app's author): ";

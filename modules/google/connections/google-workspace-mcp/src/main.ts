@@ -9,8 +9,8 @@ import { MultiWorkspace } from "./accounts.js";
 import { FixtureWorkspace } from "./fixtures.js";
 import { GoogleAuthError } from "./google.js";
 import { Reconnect, ReconnectError } from "./reconnect.js";
-import { kernelJwks, verifyCaller, type Caller } from "./aidenhq-sdk/caller.js";
-import { SourceStore } from "./source-store.js";
+import { kernelJwks, verifyCaller, type Caller } from "@aidenhq/sdk/caller";
+import { SourceStore } from "@aidenhq/sdk/source-store";
 import { startSync } from "./sources.js";
 
 const log = pino({ level: process.env.LOG_LEVEL ?? "info", base: { svc: "google-workspace-mcp" }, redact: ["authorization", "*.authorization", "token", "*.token"] });
