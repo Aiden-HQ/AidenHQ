@@ -2,7 +2,8 @@
 // the duplicate-card guard (item 4). Facts here were checked by code and are trusted; anything an agent wrote is returned
 // as data for the caller to fence. Nothing here closes a task or decides a card: it only reports what is true.
 import { createHash } from "node:crypto";
-import { GATE_CHECK, MAX_DIFF, RUNNER_MARKER, findPrs, namedChecks, skippedImageScan, staleHead } from "./compat.ts";
+import { GATE_CHECK, RUNNER_MARKER, findPrs, namedChecks, skippedImageScan, staleHead } from "./compat.ts";
+import { MAX_DIFF } from "../aidenhq-sdk/judge.ts";
 import { downscalePng, imageInfo, pngStamp, type ImageInfo } from "./images.ts";
 
 /** Marks the grader's own notes on a task, so they never count as the deliverable's evidence. */

@@ -13,7 +13,7 @@ import { createReviewLoop } from "../src/review-loop.ts";
 import { createResolver } from "../src/net.ts";
 import { REVIEW_TRIES } from "../src/tier.ts";
 import { readBody, serve } from "./helpers.mjs";
-import { reviewerModels, secondModels } from "../../modules/ai-reviewer/service/src/review.mjs";
+import { judgeModels as reviewerModels, secondModels } from "../sdk/src/judge.ts";
 
 const until = async (fn) => { for (let i = 0; i < 300 && !fn(); i++) await new Promise((r) => setTimeout(r, 10)); assert.ok(fn()); };
 const KIND = "acme.post";

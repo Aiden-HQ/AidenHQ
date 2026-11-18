@@ -5,6 +5,7 @@
 //   kernel/sdk/src/executor.ts       the executor side of write kinds, in each module server with an executor
 //   kernel/sdk/src/vendor/{proxy,oauth}.ts  the vendor pass-through, in each vendor connection (src/vendor/)
 //   kernel/sdk/src/reviewer.ts       the reviewer side of reviewer@1, in the reviewer module's service
+//   kernel/sdk/src/judge.ts          the judges' models, cross-family choice and model call, in the reviewer and grading services
 //   services/shared/review-files.mjs  the changed files as the reviewer reads them, in the reviewer module's service
 //   kernel/sdk/src/source-store.ts   the shared-sources writer side, in every source writer
 //   services/shared/reason-codes.ts  reason codes on approvals and refusals, in the board
@@ -52,6 +53,8 @@ export function sharedCopies(root = repo) {
   ...Object.fromEntries(["proxy.ts", "oauth.ts"].map((f) => [`kernel/sdk/src/vendor/${f}`, ["glean/connections/glean-mcp", "grafana/connections/grafana-mcp", "hubspot/connections/hubspot-mcp", "jira/connections/jira-mcp", "primer/connections/primer-mcp", "slack/connections/slack-mcp"].map((d) => `modules/${d}/src/vendor/${f}`)])),
   // The reviewer side of reviewer@1, in the reviewer module's service (its own Docker build context).
   "kernel/sdk/src/reviewer.ts": ["modules/ai-reviewer/service/src/aidenhq-sdk/reviewer.ts"],
+  // The judges' shared library (design §4.4): the reviewer and the grader keep their own contracts and credentials.
+  "kernel/sdk/src/judge.ts": ["modules/ai-reviewer/service/src/aidenhq-sdk/judge.ts", "modules/grading/service/src/aidenhq-sdk/judge.ts"],
   // The changed files' shaping (the runner imports the canonical copy; the eval and the reviewer's verdicts use this one).
   "services/shared/review-files.mjs": ["modules/ai-reviewer/service/src/review-files.mjs"],
   // The reliability checklist's matcher: the CI template's (MIT), used by its code review and by the AI reviewer.
