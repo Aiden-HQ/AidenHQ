@@ -3,7 +3,8 @@
 // with the owner's client, assigned to the agent holding the role the module names (grants `roles`: never an agent's key),
 // marked as the module's (`<!-- aidenhq-module:<module> -->`, which the dispatch module reads as a module's request, not the
 // owner's) and keyed by the module's `source` (`<!-- source:<source> -->`, Paperclip idempotency key pw-<sha256>): filing the
-// same source twice is one task. Its assignment wakes the agent (wakes.ts): no comment is needed to start it.
+// same source twice is one task. Its assignment wakes the agent (wakes.ts): no comment is needed to start it. The module
+// closes its own tasks (POST /v1/tasks/:task/close) when their work is moot.
 import { createHash } from "node:crypto";
 import { neutral, type Api } from "./channels.ts";
 
@@ -26,7 +27,24 @@ export function createModuleTasks({ owner, agents, log = () => {} }: {
   agents: () => Record<string, { roles?: string[] } | undefined>;
   log?: (msg: string, f?: Record<string, unknown>) => void;
 }) {
-  return async function file(module: string, b: { title?: unknown; description?: unknown; role?: unknown; source?: unknown; parent?: unknown }) {
+  /**
+   * Close a task this module filed (its marker, and no agent made it): done or cancelled, with one line why. The line carries
+   * the kernel's tag (wakes.ts SELF_TAG), so it wakes nobody and is never read as the owner's words.
+   */
+  async function close(module: string, id: string, b: { status?: unknown; body?: unknown }) {
+    const body = typeof b.body === "string" ? neutral(b.body).trim().slice(0, 2000) : "";
+    if (!UUID.test(id) || !["done", "cancelled"].includes(String(b.status)) || !body) throw new TaskError(400, "send {status: done|cancelled, body}");
+    const r = await owner("GET", `/api/issues/${encodeURIComponent(id)}`);
+    if (r.status !== 200) throw new TaskError(404, `no task ${id}`);
+    if (r.json.createdByAgentId || !String(r.json.description ?? "").includes(MODULE_TASK(module))) throw new TaskError(403, `${r.json.identifier ?? id} isn't a task ${module} filed`);
+    if (["done", "cancelled"].includes(r.json.status)) return { status: String(r.json.status), already: true };
+    const u = await owner("PATCH", `/api/issues/${encodeURIComponent(id)}`, { status: b.status, comment: `${body}\n\n<!-- aidenhq:job=${module.replace(/[^\w-]/g, "")} kind=status -->` });
+    if (u.status >= 300) throw new TaskError(502, `the control plane answered ${u.status}`);
+    log("module task closed", { module, task: r.json.identifier, status: b.status });
+    return { status: String(b.status), already: false };
+  }
+
+  async function file(module: string, b: { title?: unknown; description?: unknown; role?: unknown; source?: unknown; parent?: unknown }) {
     const title = typeof b.title === "string" ? neutral(b.title).trim().slice(0, 200) : "";
     const description = typeof b.description === "string" ? neutral(b.description).trim().slice(0, 20_000) : "";
     if (!title || !description || typeof b.role !== "string" || typeof b.source !== "string" || !SOURCE.test(b.source)) throw new TaskError(400, "send {title, description, role, source, parent?}");
@@ -46,6 +64,7 @@ export function createModuleTasks({ owner, agents, log = () => {} }: {
     if (r.status >= 300 || !r.json?.id) throw new TaskError(502, `the control plane answered ${r.status}`);
     log("module task filed", { module, task: r.json.identifier, role, source: b.source, deduplicated: Boolean(r.json.deduplicated) });
     return { id: String(r.json.id), identifier: String(r.json.identifier ?? ""), agent, deduplicated: Boolean(r.json.deduplicated) };
-  };
+  }
+  return { file, close };
 }
 export type ModuleTasks = ReturnType<typeof createModuleTasks>;

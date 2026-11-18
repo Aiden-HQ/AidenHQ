@@ -11,10 +11,17 @@ test("a module's task goes to the agent holding the role, once per source, marke
   const made = new Map();
   const owner = async (method, path, body) => {
     if (method === "GET" && path === `/api/agents/${PE}`) return { status: 200, json: { id: PE, companyId: "c-1", status: "idle" } };
+    const m = /^\/api\/issues\/([^/]+)$/.exec(path);
+    if (m) {
+      const issue = [...made.values()].find((i) => i.id === m[1]);
+      if (!issue) return { status: 404, json: {} };
+      if (method === "PATCH") Object.assign(issue, { status: body.status, closing: body.comment });
+      return { status: 200, json: issue };
+    }
     if (method === "POST" && path === "/api/companies/c-1/issues") {
       const had = made.get(body.idempotencyKey);
       if (had) return { status: 200, json: { ...had, deduplicated: true } };
-      const issue = { id: `t-${made.size + 1}`, identifier: `ACME-${made.size + 1}`, ...body };
+      const issue = { id: `${made.size + 1}1111111-1111-4111-8111-111111111111`, identifier: `ACME-${made.size + 1}`, ...body };
       made.set(body.idempotencyKey, issue);
       return { status: 201, json: issue };
     }
@@ -37,4 +44,12 @@ test("a module's task goes to the agent holding the role, once per source, marke
   assert.equal(issue.status, "todo");
   assert.match(issue.description, /<!-- source:dependabot:acme\/app\/7 -->\n<!-- aidenhq-module:codehost-github -->$/);
   assert.doesNotMatch(issue.description, /<!-- source:forged -->/, "the module's text can't add a marker");
+  // It closes its own task, tagged so the line wakes nobody; another module can't.
+  const close = (key, b) => fetch(`${url}/v1/tasks/${issue.id}/close`, { method: "POST", headers: { authorization: `Bearer ${key}` }, body: JSON.stringify(b) });
+  const otherTasks = { ...who.other, roles: ["kernel.tasks"], module: "github" };
+  who.github = otherTasks;
+  assert.equal((await close("github", { status: "done", body: "merged" })).status, 403);
+  assert.equal((await close("codehost", { status: "done", body: "acme/app#7 is merged or closed: nothing left to do." })).status, 200);
+  assert.equal(issue.status, "done");
+  assert.match(issue.closing, /<!-- aidenhq:job=codehost-github kind=status -->$/);
 });
