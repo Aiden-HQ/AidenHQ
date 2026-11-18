@@ -70,8 +70,10 @@ write tools (comment, create issue) until you grant them. Every call is pinned t
    ~/.config/aidenhq/jira`. Without it Docker creates a root-owned folder and the sign-in cannot be saved.
 2. In the instance repo, add `jira` to `modules:` in `instance.yaml`, set `settings.jira_url` to your Atlassian site
    (for example `https://your-company.atlassian.net`), and apply.
-3. Open the board at its https address ([docs/setup.md](setup.md#connecting-accounts)), Connections, Jira: **Connect**. Sign in with your own Atlassian account and approve read and search access to Jira
-   and Confluence. The banner disappears when it works.
+3. On the board, Settings, Connections, Jira: **Connect**. Sign in with your own Atlassian account in the tab that opens and
+   approve read and search access to Jira and Confluence. Atlassian then sends that tab to `http://localhost:3121/jira/callback?...`,
+   which can't load: copy its full address into the Connect dialog and press **Finish**
+   ([docs/setup.md](setup.md#connecting-accounts)). The banner disappears when it works.
 4. Check: ask the CoS "what's open in Jira for project X?".
 
 If the sign-in says your account cannot reach the site, your Atlassian account lacks access to Atlassian's remote MCP

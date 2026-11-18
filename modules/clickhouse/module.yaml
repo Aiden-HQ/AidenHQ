@@ -28,7 +28,7 @@ services:
       env:
         CLICKHOUSE_MCP_URL: "${settings.clickhouse_mcp_url}"
         CLICKHOUSE_STATE_DIR: /state
-        # The board's https address: its Connect returns there (besides loopback).
+        # The board's https address: Connect's one-click link returns there (the default is loopback).
         BOARD_URL: "${BOARD_LAN_URL:-}"
         MCP_TOKEN_FILE: ${secrets.clickhouse_mcp_token}
         # The board's sign-in endpoints: state, and starting or finishing a sign-in.

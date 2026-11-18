@@ -83,3 +83,28 @@ export class McpAuth {
 }
 
 export class McpAuthFailed extends Error {}
+
+/**
+ * Where a module sign-in returns by default (RFC 8252 loopback): the board's port on the owner's own machine. Vendors don't hold
+ * a loopback redirect to a company's domain allowlist (Atlassian blocked the board's https name until an admin allowed it), so a
+ * sign-in needs no admin. Without a tunnel the page doesn't load and the owner pastes its address on Connect; through the
+ * documented tunnel (localhost:3121) it lands on the board's callback itself. Fixed, so a hand-made client (HubSpot) registers it
+ * once; `localhost`, since HubSpot refuses IP addresses.
+ */
+export const SIGNIN_LOOPBACK = "http://localhost:3121";
+
+/**
+ * The state and code (or the vendor's error) from the address a loopback sign-in ended on, pasted by the owner: exactly the
+ * sign-in's redirect (`expected`), on 127.0.0.1 or localhost. Anything else is refused without echoing it (it may hold a code).
+ */
+export function pastedCallback(pasted: string, expected: string): { state: string; code?: string; error?: string } {
+  const want = new URL(expected);
+  const u = URL.canParse(pasted.trim()) ? new URL(pasted.trim()) : undefined;
+  const ok =
+    u?.protocol === "http:" && ["localhost", "127.0.0.1"].includes(u.hostname) && u.port === want.port && u.pathname === want.pathname && !u.username && !u.password;
+  const state = u?.searchParams.get("state") ?? "";
+  const code = u?.searchParams.get("code") ?? "";
+  const error = u?.searchParams.get("error") ?? "";
+  if (!ok || !state || (!code && !error)) throw new McpAuthFailed(`that isn't the address the sign-in ended on: copy the whole address of the tab that couldn't load (it starts with ${expected})`);
+  return { state, ...(code ? { code } : { error: error.slice(0, 100) }) };
+}

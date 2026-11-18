@@ -36,7 +36,7 @@ import { ledgerRange, ledgerSummary, ledgerTop } from "./cost-ledger.js";
 import { descendants, featureCost, recentFeatures } from "./feature-cost.js";
 import { MergeSchema, mergedDescription } from "./merge.js";
 import { fleetGenerationStatus, updatesFile } from "./generations.js";
-import { McpAuthFailed, type McpAuth } from "./mcpauth.js";
+import { McpAuthFailed, SIGNIN_LOOPBACK, pastedCallback, type McpAuth } from "./mcpauth.js";
 import { setupFlowRoutes, type SetupFlowPoint } from "./setup-flows.js";
 import type { SetupField } from "./config.js";
 import { welcomeRoutes } from "./welcome.js";
@@ -51,7 +51,7 @@ import { BUCKETS, isBucket, localDate, type Store } from "./store.js";
 import { AsideSchema, askGateway, asideMessages, holdsActive, lineageStatus, lineageTotal, modelOf, settleable, stillSettled, type LineageRow } from "./lineage.js";
 
 /** One module sign-in (board.signins), with its proxy client. */
-export interface SignIn { id: string; label: string; connect: string; callback: string; missing: string; stopped: string; fields: SetupField[]; auth: McpAuth }
+export interface SignIn { id: string; label: string; connect: string; callback: string; httpsOnly?: boolean; missing: string; stopped: string; fields: SetupField[]; auth: McpAuth }
 
 export interface AppOptions {
   /** Paperclip through the kernel, as the owner: every read and every write (all admins write as the owner, 2026-11-12). */
@@ -1164,6 +1164,8 @@ export function createApp(opts: AppOptions): Server {
     if (loopbackPort(h)) return `http://${h}`;
     return httpsBoard && h.replace(/:\d+$/, "") === httpsBoard.hostname ? httpsBoard.origin : undefined;
   };
+  /** Where a sign-in started at `host` returns: loopback (pasted back) unless the vendor takes only https (`https_only`). */
+  const redirectOrigin = (s: SignIn, host: string, oneClick = false) => (s.httpsOnly || oneClick ? vendorOrigin(host) : SIGNIN_LOOPBACK);
 
   // ------------------------------------------------------------------ Settings (settings.ts)
 
@@ -1221,7 +1223,41 @@ export function createApp(opts: AppOptions): Server {
         const s = (opts.signIns ?? []).find((x) => x.id === id);
         if (!s) throw new HttpError(404, "no such sign-in");
         const [status, offer] = await Promise.all([s.auth.status(0), s.auth.scopes()]);
-        return { id, label: s.label, connect: s.connect, configured: Boolean(status?.configured), fields: s.fields, scopes: offer && offer.supported.length > 1 ? offer : null };
+        return {
+          id,
+          label: s.label,
+          connect: s.connect,
+          configured: Boolean(status?.configured),
+          fields: s.fields,
+          scopes: offer && offer.supported.length > 1 ? offer : null,
+          state: status?.state ?? "unknown",
+          since: status?.since ?? null,
+          // The address the default sign-in ends on (pasted back below), and the domain one click returns to instead.
+          redirect: s.httpsOnly ? null : `${SIGNIN_LOOPBACK}${s.callback}`,
+          oneClick: s.httpsOnly ? null : (httpsBoard?.hostname ?? null),
+        };
+      },
+    },
+    // Finishing a loopback sign-in: the address its tab ended on, pasted on Connect. Checked to be exactly that redirect; the
+    // proxy then exchanges the code as the callback would (its state is single-use, the PKCE verifier never left it).
+    {
+      method: "POST",
+      path: /^\/api\/sign-ins\/([a-z0-9-]{1,63})\/finish$/,
+      handle: async (m, body) => {
+        const s = (opts.signIns ?? []).find((x) => x.id === m[1] && !x.httpsOnly);
+        if (!s) throw new HttpError(404, "no such sign-in");
+        const { url: pasted } = parse(z.object({ url: z.string().max(8000) }).strict(), body);
+        try {
+          const back = pastedCallback(pasted, `${SIGNIN_LOOPBACK}${s.callback}`);
+          if (!back.code) throw new McpAuthFailed(`${s.label} didn't grant access (${back.error})`);
+          await s.auth.finish(back.state, back.code);
+        } catch (err) {
+          log.warn({ err: String((err as Error).message ?? err).slice(0, 500) }, `${s.label} sign-in failed`);
+          throw err instanceof McpAuthFailed ? new HttpError(400, `Couldn't connect ${s.label}: ${err.message}`) : new HttpError(502, `Couldn't connect ${s.label}: ${s.label.toLowerCase()}-mcp isn't answering`);
+        }
+        log.info(`${s.label} connected`);
+        store.events.emit("connections");
+        return { ok: true };
       },
     },
     {
@@ -1917,7 +1953,7 @@ export function createApp(opts: AppOptions): Server {
           boardUrl: signInOrigin,
           redirectUrl: (signin, host) => {
             const s = (opts.signIns ?? []).find((x) => x.id === signin);
-            return s && `${vendorOrigin(host) ?? httpsBoard?.origin ?? "http://localhost:3121"}${s.callback}`;
+            return s && `${redirectOrigin(s, host) ?? httpsBoard?.origin ?? SIGNIN_LOOPBACK}${s.callback}`;
           },
         })
       : []),
@@ -1945,7 +1981,7 @@ export function createApp(opts: AppOptions): Server {
     const who = await accounts.sessionOf(req);
     if (path === "/api/session" && req.method === "GET") {
       const account = who ? { id: who.account.id, email: who.account.email, name: who.account.name, role: who.account.role, owner: who.account.owner } : null;
-      send(res, 200, JSON.stringify({ mode, account, googleConnect: googleViaBoard, signInConnect: !!vendorOrigin(String(req.headers.host ?? "")), adminUrl: opts.adminUrl ?? null }), "application/json");
+      send(res, 200, JSON.stringify({ mode, account, googleConnect: googleViaBoard, signInConnect: true, adminUrl: opts.adminUrl ?? null }), "application/json");
       return true;
     }
     if (!who) throw new HttpError(401, "sign in");
@@ -2042,9 +2078,11 @@ export function createApp(opts: AppOptions): Server {
 
   /**
    * A module's sign-in (board.signins): /<id>/connect sends the browser to the service's sign-in, which sends it back to
-   * the callback, and the proxy keeps the token. At the board's https address (one click, no tunnel) or on a loopback
-   * address (a tunnel); the redirect is that origin plus the callback, and the proxy registers its client for it (or the
-   * owner's hand-made client lists it: the setup flow shows it). A vendor may permit only the bare /callback shape.
+   * the callback, and the proxy keeps the token. By default the redirect is loopback (SIGNIN_LOOPBACK plus the callback): the
+   * owner pastes the address that tab ends on into Connect (POST /api/sign-ins/<id>/finish), or a tunnel lands it here.
+   * `?oneclick=1` (and an `https_only` vendor) return to the board's https address instead, which a company may first have
+   * to allow. The proxy registers its client for the redirect it is given (or the owner's hand-made client lists it: the
+   * setup flow shows it). A vendor may permit only the bare /callback shape.
    */
   const signInFor = (path: string) => (opts.signIns ?? []).find((s) => s.connect === path || s.callback === path);
   /** The setup flow (board.setup_flows) whose sign-in this is: Connect starts there while its secrets are missing. */
@@ -2065,8 +2103,8 @@ export function createApp(opts: AppOptions): Server {
 
   async function handleSignIn(req: IncomingMessage, res: ServerResponse, url: URL, s: SignIn) {
     const { label: name, connect, callback, auth } = s;
-    const origin = vendorOrigin(String(req.headers.host ?? ""));
-    if (!origin) throw new HttpError(403, httpsBoard ? `sign in to ${name} from ${httpsBoard.origin}` : `sign in to ${name} from ${TUNNEL}`);
+    const origin = redirectOrigin(s, String(req.headers.host ?? ""), url.searchParams.has("oneclick"));
+    if (!origin) return signInFailed(res, s.id, `Couldn't connect ${name}: ${httpsBoard ? `sign in from ${httpsBoard.origin}` : `sign in from ${TUNNEL}`}`);
     try {
       if (url.pathname === connect && (await needsSetup(req, s))) {
         res.writeHead(302, { ...SECURITY_HEADERS, location: `/#/setup/${flowOf(s)!.module}`, "cache-control": "no-store" }).end();

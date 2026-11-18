@@ -55,7 +55,7 @@ services:
         PRIMER_MCP_URL_FILE: ${secrets.primer_mcp_url}
         PRIMER_MCP_URL: "${settings.primer_mcp_url}"
         PRIMER_STATE_DIR: /state
-        # The board's https address: its Connect returns there (besides loopback).
+        # The board's https address: Connect's one-click link returns there (the default is loopback).
         BOARD_URL: "${BOARD_LAN_URL:-}"
         # The board's sign-in endpoints: state, and starting or finishing a sign-in.
         PRIMER_AUTH_TOKEN_FILE: ${secrets.primer_auth_token}

@@ -66,7 +66,7 @@ services:
         JIRA_URL: "${settings.jira_url}"
         ATLASSIAN_MCP_URL: "${settings.atlassian_mcp_url}"
         JIRA_STATE_DIR: /state
-        # The board's https address: its Connect returns there (besides loopback).
+        # The board's https address: Connect's one-click link returns there (the default is loopback).
         BOARD_URL: "${BOARD_LAN_URL:-}"
         HISTORY_PROJECTS: "${settings.history_projects}"
         HISTORY_DAYS: "${settings.history_days}"

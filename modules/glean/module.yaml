@@ -56,7 +56,7 @@ services:
         GLEAN_MCP_URL_FILE: ${secrets.glean_mcp_url}
         GLEAN_MCP_URL: "${settings.glean_mcp_url}"
         GLEAN_STATE_DIR: /state
-        # The board's https address: its Connect returns there (besides loopback).
+        # The board's https address: Connect's one-click link returns there (the default is loopback).
         BOARD_URL: "${BOARD_LAN_URL:-}"
         MCP_TOKEN_FILE: ${secrets.glean_service_key}
         MCP_READ_TOKEN_FILE: ${secrets.glean_mcp_read_token}

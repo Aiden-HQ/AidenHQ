@@ -96,7 +96,9 @@ that moves `product:` to a different reviewer needs a receipt for that reviewer 
   text or a tool, never a special-case branch. Code finds an agent by its role (grants table `roles`), never by its key.
 - **One shared tools repository.** Every tool is usable by any agent it is granted; grants and roles decide access.
 - **A connection connects in one click.** One Connect wherever it is listed (a `board.signins` entry), and the vendor's
-  sign-in does the rest. A fixed or discoverable value is a module default; only a genuinely per-install value is asked
+  sign-in does the rest. It returns to loopback (`http://localhost:3121/<callback>`, RFC 8252: no company domain allowlist
+  applies) and the owner pastes that page's address into the same Connect; one click back to the board's https address is
+  the secondary link, and the only path for a vendor that takes https redirects alone (`https_only`, Slack). A fixed or discoverable value is a module default; only a genuinely per-install value is asked
   for, as one inline field on that Connect (the sign-in's `secrets`). A setup flow is only for what the owner must make
   elsewhere first (an OAuth client, an app, a token, a bot) or a channel to pair.
 - **Judgment in agents, gates in code.** Matching, routing, writes and approvals are enforced below the model. Gate
