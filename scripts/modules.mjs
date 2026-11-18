@@ -7,6 +7,7 @@ import { homedir } from "node:os";
 import { dirname, join, relative, resolve, sep } from "node:path";
 import YAML from "yaml";
 import { validateImages } from "./computers.mjs";
+import { validate } from "../kernel/src/writes.ts";
 import { AUTH_PORT, checkPorts, edgeConfig, GATE_PORT } from "./edge.mjs";
 import { urlSettingProblem } from "../services/shared/url-setting.ts";
 import { generateCompose, ownSecrets, subnetFor } from "./compiler/services.ts";
@@ -1142,6 +1143,7 @@ export function setupSecrets(defs, generated) {
   return out;
 }
 
+const CODEHOST_SCHEMA = JSON.parse(readFileSync(new URL("../kernel/schemas/codehost.json", import.meta.url), "utf8"));
 export function kernelModuleTable(defs, settings = {}) {
   const out = {};
   for (const [name, def] of Object.entries(defs)) {
@@ -1162,10 +1164,18 @@ export function kernelModuleTable(defs, settings = {}) {
       if (ch.stamp != null && !/^[a-z]{1,16}$/.test(String(ch.stamp))) fail(`module ${name}: providers.channel.stamp is one lowercase word`);
       if (ch.stale != null && typeof ch.stale !== "boolean") fail(`module ${name}: providers.channel.stale is true or false`);
     }
+    // Its GitHub App grant (codehost:): what it may ask the kernel's POST /v1/codehost/:op for (kernel/src/codehost.ts). It is
+    // taken literally, as the authority diff showed it to the owner: no settings, so no setting can widen it. The kernel
+    // resolves @instance, @product and @agents/<name|*> from its own configuration.
+    const codehost = def.codehost ?? undefined;
+    if (codehost != null) {
+      if (JSON.stringify(codehost).includes("${")) fail(`module ${name}: codehost: names no settings (use @instance, @product or @agents/…)`);
+      try { validate(CODEHOST_SCHEMA, codehost, "codehost"); } catch (err) { fail(`module ${name}: ${err.message}`); }
+    }
     const e = {
-      ...(roles.length ? { roles } : {}), ...(privileged.length ? { privileged } : {}),
-      // A channel's, a job dispatcher's (kernel.jobs), a check job requester's (kernel.checks), a check's module (its label and its reads) or an executor's (its outcomes): its own generated `<module>_token`.
-      ...((ch != null || roles.includes("kernel.jobs") || roles.includes("kernel.checks") || (def.checks ?? []).length || def.providers?.executor) && (def.generated_secrets ?? []).includes(token) ? { token } : {}),
+      ...(roles.length ? { roles } : {}), ...(privileged.length ? { privileged } : {}), ...(codehost != null ? { codehost } : {}),
+      // A channel's, a job dispatcher's (kernel.jobs), a check job requester's (kernel.checks), a check's module (its label and its reads) an executor's (its outcomes) or a codehost grant holder's (its App tokens): its own generated `<module>_token`.
+      ...((ch != null || roles.includes("kernel.jobs") || roles.includes("kernel.checks") || (def.checks ?? []).length || def.providers?.executor || codehost != null) && (def.generated_secrets ?? []).includes(token) ? { token } : {}),
       ...(ch != null ? { channel: { ...(ch.stamp ? { stamp: String(ch.stamp) } : {}), ...(ch.stale === true ? { stale: true } : {}), ...(ch.transport ? { transport: String(ch.transport) } : {}), ...(ch.credentials === true ? { credentials: true } : {}) }, settings: Object.fromEntries(Object.keys(def.settings ?? {}).map((k) => [k, settings[k]])) } : {}),
     };
     if (Object.keys(e).length) out[name] = e;

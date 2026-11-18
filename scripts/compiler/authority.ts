@@ -27,7 +27,7 @@ const added = (b: unknown, h: unknown) => list(h).map((x) => (isMap(x) ? x.name 
 /** Top-level keys that never hand out authority by themselves (their contents are checked where they can). */
 const PLAIN = new Set(["name", "version", "description", "license", "publisher", "homepage", "kernel", "requires", "provides", "conflicts", "replaces", "data_version", "labels", "company", "departments", "setup", "settings", "apps", "events", "checks", "points", "contributes", "prompts", "skills", "models", "jobcaps"]);
 /** Checked below, field by field. */
-const CHECKED = new Set(["writes", "privileged", "secrets", "generated_secrets", "optional_secrets", "roles", "default_grants", "connections", "services", "agents", "providers", "isolation", "routines", "board_env", "workspaces", "paths"]);
+const CHECKED = new Set(["writes", "privileged", "secrets", "generated_secrets", "optional_secrets", "roles", "default_grants", "connections", "services", "agents", "providers", "isolation", "routines", "board_env", "workspaces", "paths", "codehost"]);
 /** Every top-level module.yaml key the kernel knows: any other is a compile error (module.yaml is strict, spec §3.1). */
 export const MANIFEST_KEYS = new Set([...PLAIN, ...CHECKED]);
 /** Agent fields that hand out nothing (model and engine choice, scheduling, presentation, the module text it reads: skills, like
@@ -152,6 +152,10 @@ export function authorityDiff(name: string, base: ModuleDef | undefined, head: M
     else if (!eq(bw[k], hw[k])) review(`changes write kind ${id(k)}`);
   }
   for (const p of added(b.privileged, head.privileged)) owner(`adds privileged ${id(p)}`);
+  // Its GitHub App grant (codehost:): tokens, snapshots and clones derived from the App's key. Any new or changed grant is
+  // the owner's; dropping it hands out nothing.
+  if (head.codehost != null && !eq(b.codehost, head.codehost)) owner("changes its GitHub App grant (codehost: tokens, snapshots or clones)");
+  else if (!eq(b.codehost, head.codehost)) review("drops its GitHub App grant");
   // Its path inventory (paths:, kernel/src/paths.ts): a path read less carefully than before, or no longer listed, is the
   // owner's; a new or stricter entry the reviewer's.
   const [bp, hp] = [pathRanks(b.paths), pathRanks(head.paths)];

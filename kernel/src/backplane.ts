@@ -41,6 +41,8 @@
 //                              sandbox, its status (?after=<version>&wait=<ms> waits for a change), stop it, a comment into it (jobs.ts; `wake`: the claimed comment wake it delivers);
 //                              POST /v1/jobs {wake, prompt, session?}: a job on a wake it claimed, admitted (admission.ts);
 //                              GET /v1/jobs?wake=<key>: its own job on that wake, if any (a dispatcher that lost the answer)
+//   POST /v1/codehost/:op      (a module's own token) token | snapshot | clone on the GitHub code host, under the module's
+//                              codehost grant (codehost.ts)
 //   POST /v1/jobs/workspace    (a module with role kernel.jobs) {task}: the workspace folder it may write into (a task of an agent it dispatches)
 //   GET  /v1/work[?task=], GET /v1/work/metrics  (a module with role kernel.work-read) the jobs and records of the kernel's
 //                              work: a task's, or what runs and ended lately; Prometheus text (work.ts)
@@ -129,6 +131,7 @@ export const ROUTES = [
   { method: "POST", path: "/v1/jobs", auth: "module" },
   { method: "GET", path: "/v1/jobs", auth: "module" },
   { method: "POST", path: "/v1/jobs/workspace", auth: "module" },
+  { method: "POST", path: "/v1/codehost/:op", auth: "module" },
   { method: "GET", path: "/v1/jobs/:job", auth: "module" },
   { method: "DELETE", path: "/v1/jobs/:job", auth: "module" },
   { method: "POST", path: "/v1/jobs/:job/input", auth: "module" },
@@ -159,7 +162,7 @@ async function json(req: IncomingMessage, max = 1_000_000): Promise<any> {
   try { return JSON.parse(Buffer.concat(chunks).toString("utf8") || "{}"); } catch { throw fail(400, "bad_request", "the body must be JSON"); }
 }
 
-export function createBackplane({ whoami, asserter, proxy, cp, boardCp, grantsFile, writes, records, channels, brake, notify, owner, modules = () => ({}), boardKey = () => "", reviews, runnerKey = () => "", reviewerKey = () => "", jobs, admission, outcomes, wakes, tasks, eventsKey = () => "", work, graderToken = () => "", dropGraderToken = () => {}, advisories = () => [], accounts, checks, checkJobs, jobTools, ownerRaw, lane, log = () => {} }: {
+export function createBackplane({ whoami, asserter, proxy, cp, boardCp, grantsFile, writes, records, channels, brake, notify, owner, modules = () => ({}), boardKey = () => "", reviews, runnerKey = () => "", reviewerKey = () => "", jobs, codehost, admission, outcomes, wakes, tasks, eventsKey = () => "", work, graderToken = () => "", dropGraderToken = () => {}, advisories = () => [], accounts, checks, checkJobs, jobTools, ownerRaw, lane, log = () => {} }: {
   whoami: Whoami; asserter: Asserter; proxy: Handler; cp: Handler; boardCp?: Handler; grantsFile: () => { agents?: Record<string, Grant> } & Record<string, unknown>;
   writes?: Writes; records?: Records; boardKey?: () => string; log?: (msg: string, f?: Record<string, unknown>) => void;
   /** The reviewer slot; the runner's key for its kinds (filing, claim, outcome, reads, a record's review: runner_writes_key)
@@ -175,6 +178,8 @@ export function createBackplane({ whoami, asserter, proxy, cp, boardCp, grantsFi
   notify?: Notify;
   /** 3e: jobs in the sandbox. */
   jobs?: Jobs;
+  /** The GitHub code host's operations for modules (codehost.ts). */
+  codehost?: (module: string, op: string, body: Record<string, unknown>, res: ServerResponse) => Promise<void>;
   /** Admission (admission.ts): a job on a wake the module claimed, its authority frozen, its computer the kernel's (boxes.ts). */
   admission?: Admission;
   /** F5: a job's outcome posted as its agent. */
@@ -400,6 +405,11 @@ export function createBackplane({ whoami, asserter, proxy, cp, boardCp, grantsFi
         const task = new URLSearchParams(q ?? "").get("task");
         if (hit.path === "/v1/work/metrics") return void res.writeHead(200, { "content-type": "text/plain; version=0.0.4" }).end(work.metrics());
         return send(res, 200, task ? work.task(task.slice(0, 100)) : work.activity());
+      }
+      if (hit?.path === "/v1/codehost/:op") {
+        const w = await moduleOf(req);
+        if (!codehost) throw fail(404, "not_found", "no GitHub code host here");
+        return await codehost(w.module!, m[0]!, await json(req), res);
       }
       if (hit && hit.path.startsWith("/v1/jobs")) {
         const w = await moduleOf(req);

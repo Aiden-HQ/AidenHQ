@@ -5,7 +5,7 @@
 // install the App on the agents org (link shown at the end) and restart the runner. The key is never printed.
 //   node ops/github-app-setup.mjs [owner-org]     (default: the agents org, aidenhq-<instance_name> or github_agents_org)
 import { randomBytes } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -72,6 +72,9 @@ const server = createServer(async (req, res) => {
     mkdirSync(out, { recursive: true, mode: 0o700 });
     writeFileSync(join(out, "key.pem"), app.pem, { mode: 0o600 });
     writeFileSync(join(out, "app_id"), `${app.id}\n`, { mode: 0o600 });
+    // The agents org, recorded once beside the App: the kernel's @agents codehost grants resolve from it alone, never from a
+    // setting a later change could move (kernel/src/codehost.ts).
+    if (!dotenv.AIDENHQ_GITHUB_AGENTS_ORG) appendFileSync(join(root, ".env"), `AIDENHQ_GITHUB_AGENTS_ORG=${org}\n`);
     const install = `https://github.com/apps/${app.slug}/installations/new`;
     console.log(`Saved App ${app.id} (${app.slug}) to ${out}. Now install it: ${install}`);
     send(200, `<h2>Saved</h2><p>App <code>${esc(app.slug)}</code> (id ${app.id}) is in the vault. Last step: <a href="${esc(install)}">install it on ${esc(org)}</a> (All repositories), then restart the runner. Other orgs (e.g. your company's): an owner there opens the same link and picks the repositories the runner may change.</p>`);

@@ -205,3 +205,11 @@ test("a per-module pin is official only on the official repository's main; one o
   assert.ok(d.changes.some((c) => c.owner && /unreviewed/.test(c.what)));
   assert.equal(authorityDiff("crm", { name: "crm" }, { name: "crm" }, false, undefined, { head: `aidenhq pinned at ${onMain.slice(0, 12)}` }).changes.some((c) => c.owner), false);
 });
+
+test("a GitHub App grant (codehost:) is the owner's to give or widen; dropping it is the reviewer's", () => {
+  const grant = { token: { repos: ["acme/*"], perms: { issues: "read" } } };
+  const lines = (b, h) => authorityLines([authorityDiff("acme-crm", b, h, false)]);
+  assert.deepEqual(lines(base, with_({ codehost: grant })), ["acme-crm: changes its GitHub App grant (codehost: tokens, snapshots or clones) (owner)"]);
+  assert.deepEqual(lines(with_({ codehost: grant }), with_({ codehost: { token: { ...grant.token, perms: { issues: "write" } } } })), ["acme-crm: changes its GitHub App grant (codehost: tokens, snapshots or clones) (owner)"]);
+  assert.deepEqual(lines(with_({ codehost: grant }), base), ["acme-crm: drops its GitHub App grant (review)"]);
+});
