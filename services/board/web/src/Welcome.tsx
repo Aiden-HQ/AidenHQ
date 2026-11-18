@@ -49,11 +49,17 @@ function ModelGate() {
   );
 }
 
+const STEP = "aidenhq.welcome.step";
+const read = () => { try { return sessionStorage.getItem(STEP); } catch { return null; } };
+const write = (v: string) => { try { sessionStorage.setItem(STEP, v); } catch { /* the wizard still works without it */ } };
+
 type Screen = { kind: "key" } | { kind: "flow"; module: string } | { kind: "summary" };
 
 function Wizard({ state, onFinished }: { state: WelcomeState; onFinished: () => void }) {
   const screens: Screen[] = [...(state.recoveryKeyWaiting ? [{ kind: "key" as const }] : []), ...state.wizard.map((module) => ({ kind: "flow" as const, module })), { kind: "summary" as const }];
-  const [at, setAt] = useState(0);
+  // The screen survives a reload (and the round trip to the kernel's own pages): kept by identity, since the screens vary.
+  const id = (sc: Screen) => (sc.kind === "flow" ? sc.module : sc.kind);
+  const [at, setAt] = useState(() => Math.max(0, screens.findIndex((sc) => id(sc) === read())));
   const [flows, setFlows] = useState<SetupFlowView[]>([]);
   const [error, setError] = useState("");
   const finishing = useRef(false);
@@ -61,6 +67,8 @@ function Wizard({ state, onFinished }: { state: WelcomeState; onFinished: () => 
   useEffect(() => void refresh(), [refresh, at]);
 
   const screen = screens[Math.min(at, screens.length - 1)]!;
+  const here = id(screen);
+  useEffect(() => write(here), [here]);
   const next = () => setAt((i) => Math.min(i + 1, screens.length - 1));
   const finish = async () => {
     if (finishing.current) return;
