@@ -63,9 +63,8 @@ write, per-user data and history, keyed by `req.user.sub` and `req.user.role`.
 
 ## The middleware
 
-`services/shared/aidenhq-identity.mjs`, copied byte-identical to `modules/apps-platform/starter/aidenhq-identity.mjs` by
-`scripts/sync-shared.mjs` (an app's Engineer copies it into the app; drift in the product is a test failure). About 50
-lines, no dependencies:
+`modules/apps-platform/starter/aidenhq-identity.mjs`: every app starts from the starter, so it carries the file unchanged.
+About 50 lines, no dependencies:
 
 - reads the public keys from `/run/secrets/AIDENHQ_IDENTITY_KEYS` (re-read when its mtime changes);
 - verifies `alg` EdDSA, a known `kid`, the signature, that the key's issuer equals `iss`, `aud` = `AIDENHQ_APP`, `exp` not

@@ -4,7 +4,8 @@
 // log tracked-field changes, a baseline flag for first syncs, per-scope sync state, and one src_meta.ingest_run per pass.
 // No LLM anywhere: ingest is code.
 //
-// Writers import it as @aidenhq/sdk/source-store (pg is theirs: a peer dependency).
+// First-party modules hold byte-identical copies (scripts/sync-shared.mjs: edit this one and run it); third-party modules import
+// @aidenhq/sdk/source-store (pg is theirs: a peer dependency).
 import { readFileSync } from "node:fs";
 import pg from "pg";
 

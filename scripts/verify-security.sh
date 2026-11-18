@@ -405,9 +405,12 @@ pass "google-workspace-mcp requests only *.readonly scopes and has GET-only clie
 # the gate is the manifest's tags and the kernel. Every read tag is a reading verb or a reviewed exception (fail closed); the jobs' read endpoint serves only the manifest's read tags that the vendor also marks read-only (READ_TOOLS equals
 # the read tags); and the pins stay (Slack's draft arguments, Jira's site, Grafana's untrustworthy families).
 vendor_tags="$(node --input-type=module -e '
-  import { existsSync, readFileSync } from "node:fs";
+  import { existsSync, readdirSync, readFileSync } from "node:fs";
   import YAML from "./scripts/node_modules/yaml/dist/index.js";
   const bad = [], seen = [];
+  // A service runs the vendor proxy when any of its sources imports it (its synced copy or the SDK): every file is read.
+  const PROXY = /"[^"]*vendor\/proxy(\.[jt]s)?"/;
+  const runsProxy = (dir) => existsSync(`${dir}/src`) && readdirSync(`${dir}/src`, { recursive: true }).some((f) => /\.(ts|mjs|js)$/.test(f) && f !== "vendor/proxy.ts" && PROXY.test(readFileSync(`${dir}/src/${f}`, "utf8")));
   // Reviewed read tags whose first word is not a reading verb (read-only upstream, checked 2026-11-18). Add one only after reading the tool.
   const EXCEPTIONS = {
     clickhouse: ["run_select_query"],
@@ -419,9 +422,9 @@ vendor_tags="$(node --input-type=module -e '
   for (const { name } of JSON.parse(readFileSync("modules/marketplace.json", "utf8")).plugins) {
     const def = YAML.parse(readFileSync(`modules/${name}/module.yaml`, "utf8"));
     for (const [svc, s] of Object.entries(def.services?.run ?? {})) {
-      if (!existsSync(`modules/${name}/${s.build ?? "-"}/src/vendor/proxy.ts`)) continue;
+      if (!runsProxy(`modules/${name}/${s.build ?? "-"}`)) continue;
       const [k, c] = Object.entries(def.connections ?? {}).find(([, c]) => new URL(c.url).hostname === svc) ?? [];
-      if (!c) { bad.push(`${name}/${svc} has src/vendor/proxy.ts but no connection points at it`); continue; }
+      if (!c) { bad.push(`${name}/${svc} runs the vendor proxy but no connection points at it`); continue; }
       seen.push(k);
       // Fail closed: a read tag passes only when its first word (vendor prefix stripped) is a reading verb, or the tool is in
       // the reviewed exception list for its module. Anything else is refused, whatever else its name says.

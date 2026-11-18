@@ -13,7 +13,6 @@
 //   modules/apps-platform/design-system/      the design system, in the app starter and the agent computers
 //   modules/apps-platform/starter/      the app starter, in the agent computers (a whole folder: SHARED_DIRS)
 //   kernel/sdk/src/{types,engine-io,progress}.ts  the SDK's engine side, in every module with an sdk/ folder
-//   services/shared/aidenhq-identity.mjs  apps' identity middleware, in the app template
 //   node scripts/sync-shared.mjs
 import { copyFileSync, existsSync, mkdirSync, readdirSync, rmSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
@@ -40,6 +39,7 @@ export function sharedCopies(root = repo) {
     "modules/jira/connections/jira-mcp/src",
     "modules/meetings/connections/ops-mcp/src",
     "modules/channel-slack/connections/slack/src",
+    "modules/channel-telegram/connections/telegram/src",
     "modules/chat-lane/connections/lane/src",
     "modules/primer/connections/primer-mcp/src",
     "modules/slack/connections/slack-mcp/src",
@@ -71,8 +71,6 @@ export function sharedCopies(root = repo) {
   ],
   "services/shared/reason-codes.ts": ["services/board/src/reason-codes.ts"],
   "services/shared/url-setting.ts": ["services/board/src/url-setting.ts", "services/runner/src/url-setting.ts"],
-  // App identity (docs/design/app-identity.md): the middleware every app copies, from the app template.
-  "services/shared/aidenhq-identity.mjs": ["modules/apps-platform/starter/aidenhq-identity.mjs"],
   // The supply-chain checks, version picker and image scan, for app repos (the app CI template is copied into each as it is).
   "scripts/supply-chain/best-version.mjs": ["modules/ci/template/.github/supply-chain/best-version.mjs", "modules/engineering/skills/supply-chain/best-version.mjs"],
   "scripts/supply-chain/pins.mjs": ["modules/ci/template/.github/supply-chain/pins.mjs"],
