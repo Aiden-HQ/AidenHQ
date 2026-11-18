@@ -16,6 +16,7 @@ import { createProxy } from "../src/proxy.ts";
 import { openRecords } from "../src/records.ts";
 import { createWrites } from "../src/writes.ts";
 import { KERNEL_KINDS } from "../src/kinds.ts";
+import { taskRoutineCap } from "../src/tier.ts";
 
 export const serve = (handler) => new Promise((r) => { const s = http.createServer(handler).listen(0, "127.0.0.1", () => r({ s, url: `http://127.0.0.1:${s.address().port}` })); });
 export const readBody = (req) => new Promise((r) => { let b = ""; req.on("data", (d) => (b += d)); req.on("end", () => r(b)); });
@@ -34,6 +35,8 @@ export async function kernel(t, { agents = {}, boxes = {}, grants = {}, settings
     if (onControl) { const out = await onControl(req, body, auth); if (out) return res.writeHead(out.status ?? 200, { "content-type": "application/json" }).end(JSON.stringify(out.body)); }
     if (req.url === "/api/agents/me") { const a = agents[auth]; return a ? res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify(a)) : res.writeHead(401).end(); }
     if (req.url.startsWith("/api/heartbeat-runs/")) return res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ issueId: "TASK-1" }));
+    // The kernel's own read of a task (its routine cap): the task, with no origin.
+    if (auth === "board-key" && req.method === "GET" && /^\/api\/issues\/[^/]+$/.test(req.url)) return res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ id: decodeURIComponent(req.url.split("/")[3]) }));
     res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ ok: true, url: req.url, as: auth }));
   });
   const launcher = await serve((req, res) => {
@@ -64,8 +67,12 @@ export async function kernel(t, { agents = {}, boxes = {}, grants = {}, settings
   // The bound reviewer: `reviewer(request)` answers each review as the module would (its verdict); every request is kept.
   const reviewed = [];
   const reviews = { request: async (request) => { reviewed.push(request); if (!reviewer) throw new Error("no reviewer module is installed"); return reviewer(request); } };
+  // The control plane as main.ts reads it for a task's routine cap (a fetch that isn't ok throws).
+  const cpJson = async (p) => { const r = await fetch(new URL(p, cpServer.url), { headers: { authorization: "Bearer board-key" } }); if (!r.ok) throw new Error(`${p} → ${r.status}`); return r.json(); };
+  const cpTrace = { issue: (id) => cpJson(`/api/issues/${encodeURIComponent(id)}`), run: (id) => cpJson(`/api/heartbeat-runs/${encodeURIComponent(id)}`) };
   const writes = createWrites({ records, registry: () => ({ ...moduleKinds(), ...KERNEL_KINDS }), connections: connectionsTable, secret, resolver: createResolver(), log: logf, replay: (r) => replay(r), reviews, native, repos: () => repos,
-    autonomy: () => grantsTable().autonomy ?? "full", onTask: { open: async (task) => !closed.includes(task), notify: async (task, text) => void notices.push({ task, text }), parent: async (task) => parents[task] } });
+    autonomy: () => grantsTable().autonomy ?? "full", onTask: { open: async (task) => !closed.includes(task), notify: async (task, text) => void notices.push({ task, text }), parent: async (task) => parents[task],
+      routineCap: (task) => taskRoutineCap(cpTrace, task, grantsTable().routines) } });
   const proxy = createProxy({ whoami, connections: connectionsTable, asserter, resolver: createResolver(), secret, writes, log: logf });
   replay = proxy.replay;
   // The control plane as the owner (board key) and the board's internal listener (a fake: `board(method, path, body)`).

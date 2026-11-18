@@ -38,6 +38,7 @@ import { openRecords } from "./records.ts";
 import { createReviews, type ReviewerSlot } from "./reviews.ts";
 import { mintToken } from "./gateway/token.ts";
 import { createWrites, type Kind } from "./writes.ts";
+import { taskRoutineCap } from "./tier.ts";
 import { KERNEL_KINDS, LOCAL_ORG, raiseCapCard } from "./kinds.ts";
 import { createJobs, dispatchesFrom } from "./jobs.ts";
 import { jailProblem, overlayProblem } from "./sandbox.ts";
@@ -71,10 +72,15 @@ const asserter = createAsserter(loadKey(path.join(dataDir, "kernel", "caller-key
 const resolver = createResolver({ project: env("COMPOSE_PROJECT_NAME", "aidenhq") });
 // A record's task: still open, and the notices on it (written with the board key, as the board's approval notices are).
 const issueOf = async (task: string) => { const r = await cpApi(`/api/issues/${encodeURIComponent(task)}`); return r.ok ? ((await r.json()) as { id: string; identifier?: string; status?: string; parentId?: string | null }) : undefined; };
+const cpJson = async (p: string) => { const r = await cpApi(p); if (!r.ok) throw new Error(`control plane GET ${p} → ${r.status}`); return r.json(); };
+const cpTrace = { issue: (id: string) => cpJson(`/api/issues/${encodeURIComponent(id)}`), run: (id: string) => cpJson(`/api/heartbeat-runs/${encodeURIComponent(id)}`) };
+const runIssue = new Map<string, string | null>(); // a run's issue never changes
 const onTask = {
   open: async (task: string) => { const i = await issueOf(task); return Boolean(i) && !["done", "cancelled"].includes(String(i!.status)); },
   parent: async (task: string) => (await issueOf(task))?.parentId ?? undefined,
   notify: async (task: string, body: string) => { const r = await cpApi(`/api/issues/${encodeURIComponent(task)}/comments`, { method: "POST", body: JSON.stringify({ body }) }); if (!r.ok) log("notice failed", { task, status: r.status }); },
+  // The cap of a routine whose run started the task's chain, traced as the runner traces it; a read that fails is "off".
+  routineCap: (task: string) => taskRoutineCap(cpTrace, task, grantsTable().routines as Record<string, string> | undefined, runIssue),
 };
 const records = openRecords(path.join(dataDir, "kernel", "kernel.db"));
 // The modules' kinds (compile) and the kernel's own and the runner's (kinds.ts).
