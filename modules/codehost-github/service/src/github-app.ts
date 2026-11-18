@@ -1,7 +1,7 @@
 // GitHub access through the instance's GitHub App, whose key only the runner holds. It is owned by the agents org
 // (where an approved create_repo card creates repos) and public, so other orgs can install it on selected repos. Per action the runner
 // mints a short-lived installation token narrowed to one repo and the permissions it needs, hands it to that one git or
-// gh child (credential helper / GH_TOKEN env). An agent gets only a read token (READ) for its task's repos, for its gh.
+// gh child (credential helper / GH_TOKEN env). Jobs never hold a token.
 // Repos no App covers keep the old path.
 import { createSign } from "node:crypto";
 
@@ -182,19 +182,6 @@ export const CREDENTIAL_ARGS = [
 
 /** git args + env for a command that carries the token. */
 export const withGitToken = (args: string[], env: NodeJS.ProcessEnv, token: string) => ({ args: [...CREDENTIAL_ARGS, ...args], env: { ...env, GIT_CONFIG_NOSYSTEM: "1", AIDENHQ_GIT_TOKEN: token } });
-
-/**
- * A job's gh token, host or box alike: the App's, read-only (READ), narrowed to the task's repos it covers (`covered`) in the
- * first such repo's org (one token, one org), and fresh so it lasts an hour (never refreshed: a longer run's gh then fails).
- * Undefined when it covers none: the job's gh then has no GitHub access at all, never the user's own sign-in.
- */
-export async function jobGhToken(app: AppClient | null | undefined, slugs: string[], covered: (slug: string) => Promise<unknown>): Promise<string | undefined> {
-  const names: string[][] = [];
-  for (const s of slugs) if (await covered(s)) names.push(s.split("/"));
-  if (!app || !names.length) return undefined;
-  const org = names[0]![0]!;
-  return app.token(org, { repositories: names.filter(([o]) => o!.toLowerCase() === org.toLowerCase()).map(([, n]) => n!), permissions: READ, fresh: true });
-}
 
 /**
  * A merge-queue write's gh options: the App's token (one repo, `perms`) only in our own repos (ownRepo); anywhere else

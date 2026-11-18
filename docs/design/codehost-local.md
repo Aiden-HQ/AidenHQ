@@ -31,7 +31,7 @@ Line numbers are at product `26a5bd5e` and modules `b2b31f1` (`modules/` is the 
 | `main.mjs:336-390`, `789-800` | Researcher activity (GraphQL), review-request closing, public-repo lookup. |
 | `main.mjs:1353-1366`, `evalgate.ts:262` | The reviewer-eval gate on product merges (reads `refs/pull/<n>/head`). |
 | `main.mjs:3502-3525` | `create_repo`: `app.createRepo`, card text "a new GitHub repository" (`main.mjs:3515`, `cards.ts:103`). |
-| `main.mjs:3743` | `jobGhToken`: each job gets a read-only `gh` for its task's repos; handbooks tell Engineers to run `gh pr checks`. |
+| jobs | A job holds no GitHub token and has no `gh`: Engineers read GitHub through the `github` connection's tools (`github_issue_read`, `github_search_issues`); writes are codehost-github records. |
 | `cards.ts:93,100` | Card sentences: "Push … to GitHub", PR URLs. |
 | `siblings.ts:28-62`, `progress.ts:39-41`, `branch.ts:5,96` | Merged-ness, stale PR numbers and branch names are judged from GitHub reads. |
 | `config.mjs:23-39,56-84` | `githubSlug`, the agents org `aidenhq-<instance_name>`, the App key and admin PAT paths. |
