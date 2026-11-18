@@ -223,7 +223,9 @@ function firing(points, now = NOW) {
 
 // ---- fixtures ------------------------------------------------------------------------------------------------
 const point = (metric, labels, value, t = NOW) => ({ metric, labels, value, t });
-const snapshot = (units, { active = 1, failed = 0, mtime = NOW - 20, draining = 0 } = {}) => [
+// `declared` is what the exporter reads from `systemctl --user list-unit-files`, so a unit can be declared and still be
+// absent from the snapshot: that is the case CiRunnerUnitMissing names. It defaults to the units listed here.
+const snapshot = (units, { active = 1, failed = 0, mtime = NOW - 20, draining = 0, declared = units } = {}) => [
   point("aidenhq_fleet_draining", {}, draining),
   // node-exporter labels this with the path it read (the module mounts the textfile dir at /textfile), not the bare name.
   point("node_textfile_mtime_seconds", { file: "/textfile/units.prom" }, mtime),
@@ -233,6 +235,7 @@ const snapshot = (units, { active = 1, failed = 0, mtime = NOW - 20, draining = 
     point("aidenhq_unit_active", { scope: "user", unit }, active),
     point("aidenhq_unit_failed", { scope: "user", unit }, failed),
   ]),
+  ...declared.map((unit) => point("aidenhq_unit_declared", { scope: "user", unit }, 1)),
 ];
 
 test("the exporter alert exists, warns, and has a for: window", () => {
@@ -282,7 +285,8 @@ test("a real failure with fresh data still raises UnitFailed and CiRunnersDown",
 test("a single missing unit is named, and only that unit", () => {
   const missing = UNITS[5];
   const points = [
-    ...snapshot(UNITS.filter((u) => u !== missing)),
+    // systemd still has it enabled, so it is declared: a unit that is declared and gone is the one to name.
+    ...snapshot(UNITS.filter((u) => u !== missing), { declared: UNITS }),
     // it reported a quarter of an hour ago, before the last scrape: gone now, but not from a broken exporter
     point("aidenhq_unit_active", { scope: "user", unit: missing }, 1, NOW - 600),
     point("aidenhq_unit_failed", { scope: "user", unit: missing }, 0, NOW - 600),
@@ -290,6 +294,17 @@ test("a single missing unit is named, and only that unit", () => {
   const fired = firing(points);
   assert.deepEqual(fired.map((a) => a.alert), ["CiRunnerUnitMissing"]);
   assert.equal(fired[0].unit, missing);
+});
+
+test("a unit stopped and disabled in one step is not named by CiRunnerUnitMissing", () => {
+  const retired = UNITS[5];
+  const points = [
+    ...snapshot(UNITS.filter((u) => u !== retired)),
+    // it reported within the last day, but it is no longer declared: retired, not missing
+    point("aidenhq_unit_active", { scope: "user", unit: retired }, 1, NOW - 600),
+    point("aidenhq_unit_failed", { scope: "user", unit: retired }, 0, NOW - 600),
+  ];
+  assert.deepEqual(firing(points), []);
 });
 
 test("one failed unit on fresh data is named by unit, and CiRunnersDown waits for the rest", () => {
