@@ -68,12 +68,12 @@ test("a rubric that defines another completion path is graded without a PR; one 
   assert.equal(waited.missing, true);
   assert.match(waited.awaiting, /no pull request yet/);
   assert.deepEqual(await escalationFor(waited, { kind: "pr", ref: "" }, deps({ taskPrs: async () => [] })), { reason: "finished without its deliverable: no pull request yet", facts: [] });
-  // A criterion about what the PR says is a requirement on the PR, not a path instead of it.
-  const aboutPr = await noPr(["the PR records why the change was made rather than how"]);
-  assert.equal(aboutPr.missing, true);
-  assert.match(aboutPr.awaiting, /no pull request yet/);
-  // A path taken instead of opening one is still a path, even when it says so by naming the PR it replaces.
-  const insteadOf = await noPr(["the task records which release it waits for, rather than opening a pull request"]);
+  // An alternative beside a criterion that still requires the PR (or its merge) is not a replacement: it waits and escalates.
+  const beside = await noPr([...alternative, "Merged into the default branch", "Every named check is green on the PR's head"]);
+  assert.equal(beside.missing, true);
+  assert.match(beside.awaiting, /no pull request yet/);
+  // A path taken instead of opening one is a replacement even when it says so by naming the PR it does not open.
+  const insteadOf = await noPr(["the task records which release it waits for, rather than opening a pull request", "the report names the floors"]);
   assert.equal(insteadOf.missing, undefined);
   assert.ok(insteadOf.version);
 });

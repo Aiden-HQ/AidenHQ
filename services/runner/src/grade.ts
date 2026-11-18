@@ -44,24 +44,24 @@ export function template(kind: string, dir: string = join(REPO_ROOT, "modules/gr
 const ALTERNATIVE = /\b(?:instead of|rather than|if no(?:ne)?\b|otherwise\b)/i;
 /** What such a path leaves to grade: the task's own record of what it found and did. */
 const RECORDED = /\b(?:record|report|name|state|document|explain|note|describe|list|say)\w*/i;
-/** A pull request as a requirement on itself, once the paths taken instead of one are set aside. */
-const ABOUT_PR = /\b(?:pr|pull requests?)\b/i;
-const OPENED_PR = /\b(?:instead of|rather than)\s+(?:open(?:ing)?\s+)?(?:a\s+)?(?:pull request|pr)s?\b/gi;
+/** A pull request, or its merge, as the deliverable itself. */
+const REQUIRES_PR = /\b(?:pr|pull requests?|merg(?:e|ed|ing))\b/i;
+/** A pull request named only as the thing a path is taken instead of, or as one that doesn't exist. */
+const REPLACED_PR = /\b(?:(?:instead of|rather than)\s+(?:open(?:ing)?\s+)?|no\s+)(?:a\s+)?(?:pull request|pr)s?\b/gi;
 
 /**
  * The rubric criterion that defines the deliverable another way, for a `pr` task that has no PR: one worded to be taken
  * instead of opening a pull request, and leaving the task's own record to grade ("If no upstream release meets the floors,
- * the task records that and names the floors rather than patching the image locally"). A criterion that requires a pull
- * request ("the PR records why, rather than how") is a requirement on it, never a path instead of it. Only the rubric's own
- * text decides this, never a comment claiming it; a rubric with no such path returns undefined, so the missing-PR wait and
- * escalation stand. { n, criterion }: the first such criterion, n its 1-based number.
+ * the task records that and names the floors rather than patching the image locally"). It has to replace the PR, not sit
+ * beside one: a rubric with any other criterion that still requires a pull request, or its merge, returns undefined, so the
+ * missing-PR wait and escalation stand. Only the rubric's own text decides this, never a comment claiming it.
+ * { n, criterion }: the first such criterion, n its 1-based number.
  */
 export function rubricAlternative(rubric: string[] = []): { n: number; criterion: string } | undefined {
-  const n = rubric.findIndex((c) => {
-    const text = String(c);
-    return ALTERNATIVE.test(text) && RECORDED.test(text) && !ABOUT_PR.test(text.replace(OPENED_PR, ""));
-  });
-  return n < 0 ? undefined : { n: n + 1, criterion: String(rubric[n]) };
+  const n = rubric.findIndex((c) => ALTERNATIVE.test(String(c)) && RECORDED.test(String(c)));
+  if (n < 0) return undefined;
+  if (rubric.some((c, i) => i !== n && REQUIRES_PR.test(String(c).replace(REPLACED_PR, "")))) return undefined;
+  return { n: n + 1, criterion: String(rubric[n]) };
 }
 
 /**
