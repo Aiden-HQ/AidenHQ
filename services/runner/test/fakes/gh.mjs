@@ -67,11 +67,13 @@ if (args[0] === "pr" && args[1] === "view" && args[4] === "state,isDraft,reviewD
   process.exit(0);
 }
 // A PR's state and head branch, as the runner reads it before it acts on a stored PR number (gh pr view, not the API). A
-// transient read failure (opt-in, counted down: a pr-view-failures.json { "n": 1 } next to $FAKE_LOG) fails that many reads.
+// transient read failure (opt-in, counted down: a pr-view-failures.json { "n": 1, "number": 32 } next to $FAKE_LOG) fails that
+// many reads of that PR, and no other PR's.
 if (args[0] === "pr" && args[1] === "view" && args[4] === "state,number,headRefOid,headRefName" && existsSync(fixture)) {
   const blip = join(dir, "pr-view-failures.json");
-  if (existsSync(blip) && JSON.parse(readFileSync(blip, "utf8")).n > 0) {
-    writeFileSync(blip, JSON.stringify({ n: JSON.parse(readFileSync(blip, "utf8")).n - 1 }));
+  const want = existsSync(blip) ? JSON.parse(readFileSync(blip, "utf8")) : { n: 0 };
+  if (want.n > 0 && String(want.number) === /\/pull\/(\d+)$/.exec(args[2])?.[1]) {
+    writeFileSync(blip, JSON.stringify({ ...want, n: want.n - 1 }));
     console.error("fetch failed");
     process.exit(1);
   }
@@ -242,12 +244,13 @@ if (args.includes("PATCH") && field("state") === "closed") {
 } else if (route) {
   console.log(p.files.length);
 } else if (field("query")?.includes("pullRequest(number")) {
-  // A transient read failure (opt-in, counted down: a pr-read-failures.json { "n": 2 } next to $FAKE_LOG fails that many
-  // reads with "fetch failed", as a network blip or a restarting API does).
+  // A transient read failure (opt-in, counted down: a pr-read-failures.json { "n": 2, "number": 30 } next to $FAKE_LOG fails
+  // that many reads of PR 30 with "fetch failed", as a network blip or a restarting API does). Only that PR's reads count it
+  // down: the runner's background reads of other PRs (an earlier card's checks) never take the blip meant for this one.
   const blip = join(dir, "pr-read-failures.json");
-  if (existsSync(blip) && JSON.parse(readFileSync(blip, "utf8")).n > 0) {
-    const left = JSON.parse(readFileSync(blip, "utf8")).n;
-    writeFileSync(blip, JSON.stringify({ n: left - 1 }));
+  const want = existsSync(blip) ? JSON.parse(readFileSync(blip, "utf8")) : { n: 0 };
+  if (want.n > 0 && Number(want.number) === Number(number)) {
+    writeFileSync(blip, JSON.stringify({ ...want, n: want.n - 1 }));
     console.error("fetch failed");
     process.exit(1);
   }
