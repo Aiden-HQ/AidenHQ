@@ -181,13 +181,13 @@ test("the web for every codex agent: live search by default (an agent may opt do
   assert.equal(r.paperclip.agents.assistant.web_search, undefined);
 });
 
-test("trial_writes: all four names compile, including notify_owner, which a trial agent doesn't get automatically", () => {
-  const r = compile(product, withAgents({ x: { yaml: { connections: { slack: "read", paperclip_tasks: ["task_create"], chat_lane: ["wake_at", "chat_send"], telegram: ["notify_owner"] }, trial_writes: TRIAL_WRITE_ALLOWED } } }, ["slack"]));
+test("trial_writes: all four names compile, including notify, which a trial agent doesn't get automatically", () => {
+  const r = compile(product, withAgents({ x: { yaml: { connections: { slack: "read", paperclip_tasks: ["task_create"], chat_lane: ["wake_at", "chat_send"], owner_channel: ["notify"] }, trial_writes: TRIAL_WRITE_ALLOWED } } }, ["slack"]));
   assert.deepEqual(r.paperclip.agents.x.trial_writes, TRIAL_WRITE_ALLOWED);
   assert.deepEqual(writesOf(r, r.paperclip.agents.x, "chat_lane"), ["wake_at", "chat_send"]);
-  assert.deepEqual(writesOf(r, r.paperclip.agents.x, "telegram"), ["notify_owner"]);
-  // A trial agent that names nothing still gets no notify_owner added for it (the "Asking the owner" grant is post-trial).
-  assert.equal(compile(product, withAgents({ "review-chaser": {} }, ["github", "slack"])).paperclip.agents["review-chaser"].enabled_tools.telegram, undefined);
+  assert.deepEqual(writesOf(r, r.paperclip.agents.x, "owner_channel"), ["notify"]);
+  // A trial agent that names nothing still gets no notify added for it (the "Asking the owner" grant is post-trial).
+  assert.equal(compile(product, withAgents({ "review-chaser": {} }, ["github", "slack"])).paperclip.agents["review-chaser"].enabled_tools.owner_channel, undefined);
 });
 
 test("trial_writes: an agent that names none keeps today's behaviour, and a granted write outside trial_writes is still refused", () => {
