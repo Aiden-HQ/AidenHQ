@@ -112,3 +112,15 @@ test("security-sbom: a container whose configured reference no longer exists is 
   assert.match(syft(calls, "image:sha256:4444").line, / docker-archive:\/work\/image\.tar( |$)/);
   assert.ok(!calls.some((c) => c.includes("sha256:5555") || c.includes("--source-name image:anchore/syft")), "the throwaway syft container is not a target");
 });
+
+test("security-sbom: a container configured with an image id is still scanned from the saved image, never as a docker: source", async () => {
+  // Docker reports `Config.Image` as the id when the container was started from one: it resolves to the running image, but
+  // syft can't read a bare id as a source (it would try to pull it), so the archive path is the only one that works.
+  const { status, out, calls } = await run({}, {
+    containers: [{ id: "c5", image: "sha256:6666", config: "sha256:6666" }],
+    tags: { "sha256:6666": "sha256:6666" },
+  });
+  assert.equal(status, 0, out);
+  assert.match(syft(calls, "image:sha256:6666").line, / docker-archive:\/work\/image\.tar( |$)/);
+  assert.ok(!calls.some((c) => c.startsWith("run ") && c.includes("docker:sha256:")), calls.join("\n"));
+});

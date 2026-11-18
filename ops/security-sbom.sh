@@ -70,9 +70,9 @@ for p in "${host_excludes[@]}"; do host_args+=(--exclude "$p"); done
 scan host "" -v /:/host:ro -- dir:/host "${host_args[@]}"
 # Each running container's own image, `.Image`: after a rebuild a container's configured tag (`.Config.Image`) names the new
 # build, and once the image is untagged names nothing at all, so a target keyed on it stops covering what runs and the
-# running image is never inventoried. An image a configured tag still resolves to keeps its `image:<ref>` target; any other
-# is named by its own id, which is stable across passes, and syft reads it from a `docker save` archive (a bare id makes syft
-# try to pull it).
+# running image is never inventoried. An image a configured name still resolves to keeps its `image:<ref>` target; any other
+# is named by its own id, which is stable across passes, and syft reads it from a `docker save` archive. A name only counts
+# when it isn't an image id itself: syft can't resolve a bare id, it would try to pull it.
 fail() { # <target> <error>: a target that never reached syft is a line with its error, like a failed scan
   n=$((n + 1))
   printf '%s\t-\t%s\t\n' "$1" "$(printf '%s' "$2" | tr '\t\n' '  ' | tail -c 300)" >> "$next/targets.tsv"
@@ -82,7 +82,8 @@ while read -r cid image config; do
   [ -n "$cid" ] || continue
   case "$config" in *anchore/syft*) continue ;; esac
   running[$image]=1
-  if [ "$(docker image inspect -f '{{.Id}}' "$config" 2>/dev/null)" = "$image" ] && { [ -z "${tags[$image]:-}" ] || [[ "$config" < "${tags[$image]}" ]]; }; then
+  if [ "${config#sha256:}" = "$config" ] && [ "$(docker image inspect -f '{{.Id}}' "$config" 2>/dev/null)" = "$image" ] \
+    && { [ -z "${tags[$image]:-}" ] || [[ "$config" < "${tags[$image]}" ]]; }; then
     tags[$image]="$config"
   fi
 done <<< "$(docker ps -q | xargs -r docker inspect -f '{{.Id}} {{.Image}} {{.Config.Image}}' 2>/dev/null)"
