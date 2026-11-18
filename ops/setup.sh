@@ -556,6 +556,8 @@ as_user systemctl --user enable --now aidenhq-kernel aidenhq-computers prune-doc
 # aidenhq-apply-recover: at boot, finishes an apply that died mid-run (ops/apply-config.sh --recover).
 as_user systemctl --user enable aidenhq-apply-recover
 [ "${KERNEL_RESTART:-0}" = 0 ] || as_user systemctl --user restart aidenhq-kernel
+# A release install's first update check now, so the kernel's /updates page has its state from the start (it checks hourly after).
+[ "$DRY" = 1 ] || [ -z "${AIDENHQ_RELEASE:-}" ] || as_user AIDENHQ_INSTANCE_DIR="$INST" node "$REPO/kernel/src/updates.ts" check || echo "  (the first update check failed; the kernel's hourly check retries it)"
 # CI runners (modules/ci): AIDENHQ_CI_RUNNERS units, once the GitHub App exists and the instance has the ci module (each
 # unit mints its token from the App); until then a rerun of setup starts them.
 ci_n="$(sed -n 's/^AIDENHQ_CI_RUNNERS=\([0-9]*\)$/\1/p' "$ENVF" 2>/dev/null | tail -1 || true)"; ci_n="${CI_RUNNERS:-${ci_n:-0}}"

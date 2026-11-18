@@ -360,8 +360,11 @@ const HOUR = 3_600_000;
  * The kernel's half: runs the check (hourly, and at once on Update now), files the release it prepared as a kernel.apply and
  * follows that record to its end, tells the owner each event once (kernel.db), and the /updates page reads the state.
  */
-export function createUpdates({ db, dir, board, ownerLine, check, file, record, close, log = () => {}, now = Date.now }: {
-  db: DatabaseSync; dir: string; board?: string; ownerLine: (text: string) => void;
+export function createUpdates({ db, dir, board, inst, ownerLine, check, file, record, close, log = () => {}, now = Date.now }: {
+  db: DatabaseSync; dir: string; board?: string;
+  /** The instance checkout: until the first check has run, the page reads the release followed from its instance.yaml. */
+  inst?: string;
+  ownerLine: (text: string) => void;
   /** Runs `node kernel/src/updates.ts check [release by]` (a child process: its git and network work stays off the kernel's loop). */
   check: (asked: Asked) => Promise<void>;
   /** Files the prepared release: a task of the kernel's and a kernel.apply on it; returns both ids. */
@@ -440,7 +443,15 @@ export function createUpdates({ db, dir, board, ownerLine, check, file, record, 
     tick(): Promise<void> {
       return (running ??= (async () => { try { do await pass(); while (asked); } finally { running = null; } })());
     },
-    view: () => readState(dir),
+    view: (): State => {
+      const s = readState(dir);
+      if (s.current || !inst) return s;
+      try {
+        const instance = (YAML.parse(readFileSync(join(inst, "instance.yaml"), "utf8")) ?? {}) as Dict;
+        const cur = followed(instance);
+        return cur ? { ...s, current: { name: cur.name, product: String(instance.product ?? "") }, auto: autoOn(instance) } : s;
+      } catch { return s; }
+    },
     /** Update now: only the release the page showed, still the one available; it is filed at once (its tier as any release's). */
     requestNow(release: string, by: string): string {
       const s = readState(dir);
