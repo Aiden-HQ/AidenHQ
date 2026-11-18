@@ -36,6 +36,7 @@ import { createHash, createHmac, randomBytes, timingSafeEqual } from "node:crypt
 import { closeSync, constants, existsSync, fstatSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
+import { isFalseBlock, passes } from "../sdk/src/pass-rule.ts";
 
 /** A recipe's name (`fast`, `tests`, `eval`, `contract`, …): whatever the installed modules declare. */
 export type Run = string;
@@ -170,13 +171,9 @@ export function judgedCases(base: Map<string, string>, head: Map<string, string>
 const approveCases = (judged: Map<string, string>) => [...judged].filter(([, t]) => { try { return [JSON.parse(t).expect].flat().includes("approve"); } catch { return false; } }).map(([n]) => n);
 type Failure = { file: string; want?: string; got?: string; reason?: string };
 type EvalResult = { total: number; passed: number; failed: Failure[]; broken?: true };
-/** The pass rule over `total` judged cases, `added` of them the change's own; `failed` are the misses. */
-export function evalPasses(failed: Failure[], total: number, approves: string[], added: string[]): boolean {
-  const baseTotal = total - added.length;
-  const baseMisses = failed.filter((f) => !added.includes(f.file));
-  const falseBlock = (f: Failure) => approves.includes(f.file) && /^(reject|escalate)\b/.test(f.got ?? "");
-  return baseTotal > 0 && failed.length === baseMisses.length && baseMisses.every(falseBlock) && Math.floor(((baseTotal - baseMisses.length) / baseTotal) * 100) >= 95;
-}
+/** The shared pass rule (kernel/sdk/src/pass-rule.ts) over the first run's failures; a miss is a false block when its case wants approve and was blocked. */
+const evalPasses = (failed: Failure[], total: number, approves: string[], added: string[]) =>
+  passes(total, failed.map((f) => ({ file: f.file, falseBlock: approves.includes(f.file) && isFalseBlock("approve", (f.got ?? "").split(" ")[0]!) })), added);
 /** The judge's result, checked against the cases it was given; missing, malformed or miscounted, every case failed (broken). */
 function readResult(file: string, cases: string[]): EvalResult {
   let r: any;

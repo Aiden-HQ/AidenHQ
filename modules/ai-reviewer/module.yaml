@@ -34,7 +34,7 @@ check_jobs:
     judged:
       cwd: modules/ai-reviewer
       cases: test/reviewer-cases
-      files: [ scripts/reviewer-eval.mjs, test/case-pad.mjs, scripts/pass-rule.mjs ]
+      files: [ scripts/reviewer-eval.mjs, test/case-pad.mjs, service/src/aidenhq-sdk/pass-rule.ts ]
       expect: [ expect, expect_code, expect_second, expect_flag, expect_nit ]
 generated_secrets:
   - ai_reviewer_key

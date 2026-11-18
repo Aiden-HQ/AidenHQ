@@ -19,7 +19,7 @@ import { join } from "node:path";
 /** The AI reviewer's own code, as product paths (the official modules sit under modules/ there). */
 export const REVIEWER_CODE = [
   /^modules\/ai-reviewer\//,
-  /^kernel\/sdk\/src\/reviewer\.ts$/,
+  /^kernel\/sdk\/src\/(reviewer|pass-rule)\.ts$/,
   /^services\/shared\/review-files\.(mjs|ts)$/,
   /^modules\/codehost-github\/service\/src\/(plan\.mjs|merges\.ts|merge-gate\.mjs|evalgate\.ts)$/,
   /^modules\/platform\/(src\/check\.mjs|checks\/)/,

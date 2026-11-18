@@ -91,7 +91,7 @@ test("checks: a recipe is the installed module's: unknown runs and bad specs are
 
 test("checks: the eval runs by the judging rules and its receipt binds judge and policy", async () => {
   const ok = (expect) => JSON.stringify({ expect });
-  const base = { "modules/ai-reviewer/scripts/reviewer-eval.mjs": "JUDGE", "modules/ai-reviewer/test/case-pad.mjs": "pad", "modules/ai-reviewer/scripts/pass-rule.mjs": "rule" };
+  const base = { "modules/ai-reviewer/scripts/reviewer-eval.mjs": "JUDGE", "modules/ai-reviewer/test/case-pad.mjs": "pad", "modules/ai-reviewer/service/src/aidenhq-sdk/pass-rule.ts": "rule" };
   for (let i = 0; i < 20; i++) base[`${CASES}/c${i}.json`] = ok(i ? "approve" : "reject");
   const subject = { ...base, "modules/ai-reviewer/scripts/reviewer-eval.mjs": "FORGED", [`${CASES}/c0.json`]: ok("approve"), [`${CASES}/new.json`]: ok("reject") };
   delete subject[`${CASES}/c1.json`];
