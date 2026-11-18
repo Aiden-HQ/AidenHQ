@@ -4508,6 +4508,14 @@ async function finishTurn({ issue, full, workspace, engine, jobId, logPath, tips
     // A box job's process may outlive its `docker exec` client (a cancel, a timeout): the box goes, confirmed, before
     // anything below reads, signs or cleans the workspace. If it can't be confirmed, nothing below runs.
     if (box) await stopBox(issue, box);
+    // A session the engine can't find (one made before its Engineer had a computer: its record names a host path): the turn
+    // runs again at once on a fresh session, with the whole conversation in its prompt. Not a failure, and nothing is posted.
+    if (result.code && tools?.run?.sessionId && /no rollout found for thread id/.test(logTail(logPath, 20))) {
+      state.updateTask(issue.id, { session_id: null });
+      state.finishJob(jobId, "interrupted", "session not found");
+      queue.push({ issue, instructions: tools.instructions ?? "" });
+      return void log("session not found: the turn runs again on a fresh session", { issue: issue.identifier, session: tools.run.sessionId });
+    }
     if (result.sessionId) {
       state.updateTask(issue.id, { session_id: result.sessionId });
       state.set(`session_engine:${issue.id}`, engine.kind);

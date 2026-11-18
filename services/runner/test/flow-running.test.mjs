@@ -133,3 +133,26 @@ describe("flow-running: an engine known only from the registry", () => {
   it("never errors along the way", () => t.noErrors());
 });
 
+
+// A task whose stored session was made before its Engineer had a computer: Codex in the box has no record of it. The turn runs
+// again at once on a fresh session, with nothing reported as failed (WOR-7731, 2026-11-18).
+describe("flow-running: a session from before the computer", () => {
+  const t = flow({
+    setup: ({ dir }) => {
+      const state = new State(join(dir, "state"));
+      state.ensureTask("part", "PEN-2");
+      state.updateTask("part", { session_id: "gone-01a1ede8" });
+      state.set("session_engine:part", "codex-openrouter");
+      state.db.close();
+    },
+  });
+  it("starts the turn again on a fresh session, and replies as usual", async () => {
+    await t.waitFor("the reply", () => t.reviews().length > 0);
+    const runs = t.agentRuns();
+    assert.deepEqual(runs.map((r) => r.argv.includes("resume")), [true, false], "the stale session once, then a fresh one");
+    assert.match(runs[1].prompt, /Ada, go ahead and start this on dev please/);
+    assert.match(t.reviews().at(-1).comment, /Checked every repository/);
+    assert.ok(!t.partComments().some((c) => /failed|Last lines of the log|Resumed/i.test(c)), t.partComments().join("\n---\n"));
+  });
+  it("never errors along the way", () => t.noErrors());
+});
