@@ -69,8 +69,8 @@
   --tone-6-bg: light-dark(#e7defc, #33275a); --tone-6-fg: light-dark(#46238f, #dacdfc);
   --tone-7-bg: light-dark(#e2e6ea, #2b333c); --tone-7-fg: light-dark(#2f3a45, #d2d9e0);
 
-  /* Who a chat message is from (styles.css .avatar-*). */
-  --who-me: #495057; --who-assistant: #0c8599; --who-agent: #5c7cfa; --who-codex: #1c1c1c; --who-claude: #d9773e; --who-openrouter: #6741d9;
+  /* The owner's own avatar (styles.css .avatar-me). */
+  --who-me: #495057;
 
   /* Costs chart series (Costs.tsx). */
   --cost-s1: light-dark(#2a78d6, #3987e5); --cost-s2: light-dark(#eb6834, #d95926); --cost-s3: light-dark(#1baf7a, #199e70);
