@@ -47,7 +47,7 @@ export function raiseCapCard(a: { scope: string; agentId: string; subject: strin
  * fleet's own repos live in: one per enabled code host (`agentsOrgs`: the GitHub agents org, and `local` with codehost-local);
  * `agentsOrg` alone is the GitHub-only shape.
  */
-export type Repos = { product?: string; instance?: string; modules?: string; agentsOrg?: string; agentsOrgs?: string[] };
+export type Repos = { product?: string; instance?: string; agentsOrg?: string; agentsOrgs?: string[] };
 /** The org codehost-local owns: a change request there is `codehost:local/<name>/change/<n>`. */
 export const LOCAL_ORG = "local";
 /**

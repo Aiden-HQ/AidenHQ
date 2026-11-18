@@ -137,7 +137,7 @@ export function createWrites({ records, registry, connections, secret, resolver,
    * Which of the inventory's repositories `repo` is: the product, the official modules repo or another; undefined when it
    * can't be told (not owner/name, or the product repo isn't set here: fails closed).
    */
-  const repoKindOf = (repo: string) => { const k = repoKey(repo), product = repoKey(repos().product); return !k || !product ? undefined : k === product ? "product" as const : k === repoKey(repos().modules) ? "modules" as const : "other" as const; };
+  const repoKindOf = (repo: string) => { const k = repoKey(repo), product = repoKey(repos().product); return !k || !product ? undefined : k === product ? "product" as const : "other" as const; };
   const routineOf = async (task: string) => (task && onTask.routineCap ? onTask.routineCap(task) : undefined);
   /** The cap now that outranks the AI reviewer's yes on a task: the instance's autonomy below full, or a routine's below full. */
   const capOverReviewer = (routine: RoutineCap | undefined): Cap | undefined =>
