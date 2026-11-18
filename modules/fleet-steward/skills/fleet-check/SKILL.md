@@ -95,7 +95,7 @@ request open over an hour without merging) or something recovered.
   stands, and a waiver is the owner's to give.
 - **Repeated failed runs** (`run:<agent>:repeat:<task>`: three runs of one task ended the same way within half an hour):
   read the failed jobs' last lines. A transient cause (a lost session, a restarted box) gets one bounded wake with the
-  evidence and a fresh start; a cause that repeats is a finding for the owner of the fix (the Platform Engineer for a
+  evidence and a fresh start; a cause that repeats is a finding for the owner of the fix (the Engineer for a
   product defect, via the product-bug path). Raising a timeout or a spend cap is the owner's.
 - **Finished but not closed** (`grade:<task>:unclosed`: in review six hours with no running job, open card or open PR):
   read the task, its last comment and its PR's state (`task_get`, `task_comments`). A merged PR is evidence the work landed,
