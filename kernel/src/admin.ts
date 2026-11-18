@@ -25,6 +25,7 @@ type Deps = {
   accounts: {
     sessionOf: (req: IncomingMessage) => Promise<AdminSession | null>; step: (req: IncomingMessage, sub: string, body: Record<string, unknown>) => Promise<Step>; secret: string;
     mintUiCode: (who: AdminSession, module: string, origin: string, state: string) => string;
+    mintDoorCode?: (who: AdminSession, origin: string, state: string) => string;
     setupOpen: (token: string) => boolean; claimSetup: (token: string, input: { email: string; name: string; password: string }) => Promise<{ id: string }>;
   };
   /** First-run setup's vault side: the owner email settings fix, the recovery key shown once, and secret writes. */
@@ -45,6 +46,8 @@ type Deps = {
   uiOrigins?: () => Record<string, string>;
   /** The model step: OpenRouter's PKCE start and exchange, the 1-token check, and the key the vault holds (for Retry). */
   model?: { start: (callback: string, state: string) => { url: string; verifier: string }; exchange: (code: string, verifier: string) => Promise<string>; check: (key: string) => Promise<"ok" | "no_credit" | "error">; saved: () => string; /** The install-wide daily cap (settings.spend_day_usd), if set. */ dayCap?: () => number | undefined; ready: () => boolean; checked: (key: string, ok: boolean) => void; verifyAgents?: () => void };
+  /** The app doors' origins as one CSP source (`http://*.localhost:3130`), when there is a door: sign-in ends on a door host. */
+  doorSource?: () => string | undefined;
   /** The board's front door: /recovery-key and the model step send the owner on to its welcome. */
   boardUrl?: () => string | undefined;
   log?: (msg: string, f?: Record<string, unknown>) => void;
@@ -125,8 +128,9 @@ export function createAdmin(d: Deps) {
       // same-origin, not no-referrer: under no-referrer a browser posts these forms with Origin: null, which the check refuses.
       "referrer-policy": "same-origin",
       ...(frame ? {} : { "x-frame-options": "DENY" }),
-      // A form that succeeds redirects to the board's welcome: browsers apply form-action to that redirect too.
-      "content-security-policy": `default-src 'none'; style-src 'unsafe-inline'; form-action 'self'${boardOrigin()}; base-uri 'none'; frame-ancestors ${frame?.length ? frame.join(" ") : "'none'"}`,
+      // A form that succeeds redirects to the board's welcome, or (sign-in from an app door) through /auth/handoff to that
+      // door: browsers apply form-action to the whole redirect chain.
+      "content-security-policy": `default-src 'none'; style-src 'unsafe-inline'; form-action 'self'${boardOrigin()}${d.doorSource?.() ? ` ${d.doorSource()}` : ""}; base-uri 'none'; frame-ancestors ${frame?.length ? frame.join(" ") : "'none'"}`,
       ...extra,
     }).end(html);
   }
@@ -324,6 +328,13 @@ export function createAdmin(d: Deps) {
         case "GET /auth/handoff": {
           const to = url.searchParams.get("to") ?? "", state = url.searchParams.get("state") ?? "";
           const module = Object.hasOwn(d.uiOrigins?.() ?? {}, to) ? d.uiOrigins!()[to]! : undefined;
+          // An app door (docs/design/app-doors.md): the gate's own handoff on that app host, which sets its host-only cookie.
+          if (!module && d.accounts.mintDoorCode) {
+            const code = d.accounts.mintDoorCode(s, to, state);
+            const next = url.searchParams.get("next") ?? "/";
+            log("session handed to an app door", { origin: to, by });
+            return redirect(res, `${to}/.auth/handoff?${new URLSearchParams({ code, state, next: next.length <= 2000 ? next : "/" })}`);
+          }
           if (!module) throw new Refusal(400, "that address isn't an installed module's");
           const code = d.accounts.mintUiCode(s, module, to, state);
           log("session handed to a module", { module, origin: to, by });

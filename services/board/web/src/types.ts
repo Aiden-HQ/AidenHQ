@@ -488,8 +488,8 @@ export interface AppRow {
   deploys?: { sha: string; at: string; by: string; status: string }[];
   owner?: string;
   url?: string;
-  /** Serves a port but has no browser door: no apps' tailnet node, and only the gate signs people in. */
-  unpublished?: boolean;
+  /** Serves a port but its browser door doesn't open (yet): why, in words for the owner (older apps-mcp: true). */
+  unpublished?: string | boolean;
   /** Pinned into the nav under this label (apps.yaml `panel`). */
   panel?: string;
   incident?: { opened_at: string; kind: string; detail: string };

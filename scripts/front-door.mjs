@@ -4,6 +4,8 @@
 //   https://<ip>       → the board (127.0.0.1:3121)
 //   https://<ip>:8446  → the kernel's admin listener (127.0.0.1:3120): sign-in, links, approvals. Its own origin, as the
 //                        kernel's forms require; Caddy names the client there (X-AidenHQ-Client-IP) beside the edge secret.
+//   https://<app>.<ip-with-dashes>.sslip.io → the gate (127.0.0.1:3130), with an app door (docs/design/app-doors.md): one
+//                        certificate per name, ordered on demand only for a name the gate's door-ask approves.
 // The IP comes from the host's .env (AIDENHQ_PUBLIC_IP, which ops/setup.sh writes), never from instance.yaml: agents can
 // edit that through an apply. Compile (scripts/compile.mjs) writes config/Caddyfile and the `caddy` service from it.
 //   node scripts/front-door.mjs detect                  the default route's public IPv4, or exit 1 saying why there is none
@@ -15,7 +17,8 @@ import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { fileURLToPath } from "node:url";
 
-export const ADMIN_PORT = 8446; // the admin listener's public port (tailscale serve uses the same one)
+export const ADMIN_PORT = 8446;
+const GATE_PORT = 3130; // scripts/edge.mjs GATE_PORT: the gate on the host's loopback // the admin listener's public port (tailscale serve uses the same one)
 export const EDGE_SECRET_FILE = "/run/secrets/edge_board_secret"; // compose secret edge_board_secret, read per request
 const fail = (m) => { throw new Error(m); };
 
@@ -44,11 +47,11 @@ export function detectPublicIPv4() {
 }
 
 /**
- * The Caddyfile for `ip`. Only `set` for the headers Caddy owns: a header_up delete of a name it also sets runs after the
+ * The Caddyfile for `ip` (and, with `doorBase`, the gate's app doors under it). Only `set` for the headers Caddy owns: a header_up delete of a name it also sets runs after the
  * set and removes it. The deletes are for forwarding headers Caddy doesn't set, so the listeners only see Caddy's own.
  * `directory`: another ACME directory (Let's Encrypt staging, for the exit check); unset is Let's Encrypt production.
  */
-export function caddyfile(ip, directory) {
+export function caddyfile(ip, directory, doorBase) {
   const problem = publicIPv4Problem(ip);
   if (problem) fail(problem);
   const site = (port, upstream, edge) => `https://${ip}${port ? `:${port}` : ""} {
@@ -80,7 +83,11 @@ ${edge ? `		header_up X-AidenHQ-Client-IP {remote_host}
 		}
 		max_header_size 64KB
 	}
-}
+${doorBase ? `	# App doors: a certificate is ordered at a name's first handshake, only if the gate serves an app there.
+	on_demand_tls {
+		ask http://127.0.0.1:${GATE_PORT}/.aidenhq/door-ask
+	}
+` : ""}}
 # Each site names its issuer: Caddy's automatic choice for an IP can be its own local CA, whose certificate is never served.
 (ip_cert) {
 	tls {
@@ -110,7 +117,22 @@ ${directory ? `			dir ${directory}\n` : ""}			profile shortlived
 		-Via
 	}
 }
-${site(0, "127.0.0.1:3121", false)}${site(ADMIN_PORT, "127.0.0.1:3120", true)}`;
+${site(0, "127.0.0.1:3121", false)}${site(ADMIN_PORT, "127.0.0.1:3120", true)}${doorBase ? `# App doors: each one name under ${doorBase} (one label), its own certificate, then the gate. No sign-in passes here.
+https://*.${doorBase} {
+	tls {
+		on_demand
+		issuer acme {
+${directory ? `			dir ${directory}\n` : ""}			disable_http_challenge
+		}
+	}
+	reverse_proxy 127.0.0.1:${GATE_PORT} {
+		import strip
+		header_up -X-AidenHQ-Client-IP
+		header_up -X-AidenHQ-Edge
+	}
+	import response
+}
+` : ""}`;
 }
 
 /** Whether https://<ip> and https://<ip>:8446 both answer (any status) over a verified certificate within `seconds`. */

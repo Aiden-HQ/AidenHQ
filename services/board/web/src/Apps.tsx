@@ -2,7 +2,7 @@ import { useEffect } from "react";
 import { QUERIES, useQuery } from "./queries";
 import { CardGridSkeleton, Updating } from "./Skeleton";
 import type { AppRow } from "./types";
-import { agoLabel } from "./util";
+import { agoLabel, isLocalDoor, keepsSecureCookies } from "./util";
 
 const mb = (n: number) => `${Math.round(n / 1048576)} MB`;
 
@@ -44,22 +44,30 @@ export function AppsView({ onSignIn }: { onSignIn: () => void }) {
   );
 }
 
-/** One app: its name and health on top, the facts below; a note (never in the header) when it has no browser door. */
-export function AppCard({ a }: { a: AppRow }) {
+/**
+ * One app: its name and health on top, the facts below; a note (never in the header) when it has no browser door, saying
+ * why. A local door doesn't open in Safari (it keeps no Secure cookie on plain http): there, a note and the link to copy.
+ */
+export function AppCard({ a, secureCookies = keepsSecureCookies() }: { a: AppRow; secureCookies?: boolean }) {
+  const otherBrowser = isLocalDoor(a.url) && !secureCookies;
   return (
     <article className={`app-card${a.healthy ? "" : " sick"}`}>
       <header className="app-card-head">
         <h3>{a.name}</h3>
         <span className={`pill ${a.healthy ? "pill-working" : "pill-failed"}`}>{a.healthy ? "Healthy" : a.state}</span>
-        {a.url && (
+        {a.url && !otherBrowser && (
           <a className="btn" href={a.url} target="_blank" rel="noreferrer noopener">
             Open
           </a>
         )}
       </header>
-      {!a.url && a.unpublished && (
-        <p className="app-note muted" title="Apps require a signed-in visitor; on this server no door signs one in for this app">
-          Opens in a browser through Tailscale's apps node or a shared host
+      {!a.url && a.unpublished && <p className="app-note muted">{typeof a.unpublished === "string" ? a.unpublished : "Opens in a browser through Tailscale's apps node or a shared host"}</p>}
+      {otherBrowser && (
+        <p className="app-note muted">
+          Apps open in Chrome or Firefox on this Mac.{" "}
+          <button type="button" className="btn" onClick={() => void navigator.clipboard?.writeText(a.url!)}>
+            Copy link
+          </button>
         </p>
       )}
       <dl className="panel-facts">

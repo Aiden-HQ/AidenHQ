@@ -143,7 +143,7 @@ export function createSignin(o: { accounts: Accounts; hosts: string[]; gate: () 
         return json(res, 403, { error: rejected });
       }
       // An app host session whose sign-in host session ended is no session.
-      if (path === "/.auth/api/get-session" && req.method === "GET") return json(res, 200, await o.accounts.gateSession(req, o.hosts[0] ?? ""));
+      if (path === "/.auth/api/get-session" && req.method === "GET") return json(res, 200, await o.accounts.gateSession(req, o.hosts[0] ?? "", String(req.headers["x-forwarded-host"] ?? "")));
       // Signing out here ends the app host sessions handed off from this one too.
       if (path === "/.auth/api/sign-out" && req.method === "POST") await o.accounts.endHandedOff(req);
       if (path.startsWith("/.auth/api/") && BETTER_AUTH.has(path.slice("/.auth/api".length)))

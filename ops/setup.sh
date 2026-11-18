@@ -601,7 +601,7 @@ fi
 [ -z "$CONFIG" ] || echo "Delete $CONFIG: it holds secrets (the OpenRouter key)."
 if [ "$UNATTENDED" = 0 ] && [ -e /root/aidenhq-vault-recovery.txt ]; then echo "Vault recovery key: /root/aidenhq-vault-recovery.txt. Store it, then: sudo shred -u /root/aidenhq-vault-recovery.txt"; fi
 if [ -z "$BOARD_HOST" ] && [ "$PUBLIC" = 0 ]; then
-  tunnel="ssh -N -L 3121:127.0.0.1:3121 -L 3120:127.0.0.1:3120 $U@$(hostname -f 2>/dev/null || hostname)"
+  tunnel="ssh -N -L 3121:127.0.0.1:3121 -L 3120:127.0.0.1:3120 -L 3130:127.0.0.1:3130 $U@$(hostname -f 2>/dev/null || hostname)"
   echo "The board listens on this host's loopback only. From $OWNER_NAME's laptop, open a tunnel first and leave it open:"
   echo "  $tunnel"
   [ "$UNATTENDED" = 0 ] || echo "AIDENHQ_SSH_TUNNEL=$tunnel"

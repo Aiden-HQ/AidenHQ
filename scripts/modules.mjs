@@ -551,7 +551,7 @@ export function linkPairServices(flows, compose, serviceModule, networkModule) {
  * productDir holds modules/<name>/module.yaml; instanceDir holds instance.yaml, agents/<key>.md additions to a module
  * agent's handbook, and agents/<key>/ folders (agent.yaml + AGENTS.md): the instance's own agents.
  */
-export function compile(productDir, instanceDir, { revision, fetch = hostFetch(productDir) } = {}) {
+export function compile(productDir, instanceDir, { revision, fetch = hostFetch(productDir), door } = {}) {
   const instFile = join(instanceDir, "instance.yaml");
   if (!existsSync(instFile)) fail(`no instance.yaml in ${instanceDir}: set AIDENHQ_INSTANCE_DIR to your instance checkout (see docs/USAGE.md)`);
   const instance = readYaml(instFile);
@@ -736,8 +736,9 @@ export function compile(productDir, instanceDir, { revision, fetch = hostFetch(p
     if (sub) subnets[sub] = k;
   }
 
-  // Shared access: the gate and cloudflared, only when the instance sets `edge` (scripts/edge.mjs).
-  const edge = edgeConfig(settings, instanceAppDefs, apps);
+  // Shared access: the gate and cloudflared when the instance sets `edge`, else the gate's door (scripts/edge.mjs).
+  // Without `edge`, a door on exposure local or public (docs/design/app-doors.md): `door` is the host's public IP and admin URL.
+  const edge = edgeConfig(settings, instanceAppDefs, apps, door);
   if (edge) {
     for (const [k, svc] of Object.entries(edge.compose.services)) mergeService(compose.services, k, svc);
     Object.assign(compose.secrets, edge.compose.secrets);

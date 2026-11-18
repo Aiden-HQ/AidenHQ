@@ -61,7 +61,7 @@ let revision;
 try { revision = execFileSync("git", ["-C", repo, "rev-parse", "HEAD"], { encoding: "utf8" }).trim(); } catch {}
 
 let out, computers;
-try { out = compile(repo, instanceDir, { revision }); computers = computersConfig(out.paperclip, repo, out.catalog.filter((m) => m.enabled).map((m) => m.name)); } catch (e) { die(e.message); }
+try { out = compile(repo, instanceDir, { revision, door: { publicIp: env("AIDENHQ_PUBLIC_IP"), adminUrl: env("AIDENHQ_ADMIN_URL"), boardUrl: env("BOARD_LAN_URL") } }); computers = computersConfig(out.paperclip, repo, out.catalog.filter((m) => m.enabled).map((m) => m.name)); } catch (e) { die(e.message); }
 if (process.argv.includes("--sizes")) {
   try { console.log(sizesReport(out.paperclip, { repo, instanceDir, engines: out.engines })); } catch (e) { die(e.message); }
   process.exit(0);
@@ -114,7 +114,7 @@ if (!stage && out.compose.services["security-scanner"]) writeFileSync(join(dataD
 let caddy;
 if (out.exposure === "public") {
   const ip = env("AIDENHQ_PUBLIC_IP"), urls = publicUrls(ip);
-  try { caddy = caddyfile(ip); } catch (e) { die(`exposure public: AIDENHQ_PUBLIC_IP in .env: ${e.message} (sudo ops/setup.sh sets it)`); }
+  try { caddy = caddyfile(ip, undefined, out.edge?.gate?.doors?.base); } catch (e) { die(`exposure public: AIDENHQ_PUBLIC_IP in .env: ${e.message} (sudo ops/setup.sh sets it)`); }
   if (env("BOARD_LAN_URL") !== urls.board || env("AIDENHQ_ADMIN_URL") !== urls.admin) die(`exposure public: .env needs BOARD_LAN_URL=${urls.board} and AIDENHQ_ADMIN_URL=${urls.admin} (sudo ops/setup.sh sets them)`);
   out.compose.services.caddy = caddyService(caddy);
   if (!stage) mkdirSync(join(dataDir, "caddy"), { recursive: true, mode: 0o700 });
