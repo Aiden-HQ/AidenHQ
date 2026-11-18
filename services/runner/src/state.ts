@@ -131,6 +131,11 @@ export class State {
     return { ...row, engine: row.engine_json ? JSON.parse(row.engine_json) : undefined };
   }
 
+  /** Tasks that have a workspace folder on record. */
+  withWorkspace(): any[] {
+    return this.db.prepare("SELECT * FROM tasks WHERE workspace IS NOT NULL").all() as any[];
+  }
+
   ensureTask(issueId: string, identifier: string) {
     const now = new Date().toISOString();
     this.db.prepare("INSERT OR IGNORE INTO tasks (issue_id, identifier, first_seen, updated_at) VALUES (?, ?, ?, ?)").run(issueId, identifier, now, now);

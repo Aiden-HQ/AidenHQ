@@ -479,6 +479,14 @@ switchOver() {
   if ! cmp -s ops/units/aidenhq-runner.service "$unit"; then
     cp ops/units/aidenhq-runner.service "$unit" && systemctl --user daemon-reload && echo "runner unit updated"
   fi
+  # The daily Docker and weekly run-history prunes: setup installed them once, so a changed unit reaches the host here.
+  local u
+  for u in prune-docker prune-runs; do
+    if ! cmp -s "ops/units/$u.service" "$HOME/.config/systemd/user/$u.service" || ! cmp -s "ops/units/$u.timer" "$HOME/.config/systemd/user/$u.timer"; then
+      cp "ops/units/$u.service" "ops/units/$u.timer" "$HOME/.config/systemd/user/" && systemctl --user daemon-reload \
+        && systemctl --user enable --quiet "$u.timer" && systemctl --user restart "$u.timer" && echo "$u timer installed/updated"
+    fi
+  done
   # Boot finishes an apply that died (ops/apply-config.sh --recover): installed and enabled, never started here.
   local rec="$HOME/.config/systemd/user/aidenhq-apply-recover.service"
   if ! cmp -s ops/units/aidenhq-apply-recover.service "$rec"; then
@@ -533,8 +541,9 @@ switchOver() {
   ops/ci-runner-units.sh "${AIDENHQ_DATA_DIR:-$PWD/data}"
   lap units
   # Apply-time rebuilds leave images nothing runs any more (content-tagged, so not dangling) and build cache behind: drop
-  # what is older than 48 hours. Images a container uses and volumes are never touched.
-  docker builder prune -f --filter until=48h >/dev/null 2>&1 || true
+  # images older than 48 hours and cap the cache at 40 GB (least recently used first; prune-docker.service says why).
+  # Images a container uses and volumes are never touched.
+  docker builder prune -f --max-used-space 40GB >/dev/null 2>&1 || true
   docker image prune -af --filter until=48h >/dev/null 2>&1 || true
   lap prune
   echo "$product" > "$applied"

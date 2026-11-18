@@ -145,8 +145,8 @@ runs, its live database is left out and its hourly dumps carry it; for a complet
 first. A Postgres volume in use (the warehouse's `pgdata`) is skipped; its nightly dump volume is copied. The secret
 vault and the notes vault are not included. The backup holds `auth.secret`, so it is mode 0700. It refuses to start
 unless the output filesystem has 1.2 times the sources' size plus 20 GB free (a full root disk crashed Paperclip's
-Postgres on 2026-11-16). Each successful apply prunes build cache and unused images older than 48 hours; `prune-docker.timer`
-does the same daily on a host that hasn't applied.
+Postgres on 2026-11-16). Each successful apply prunes unused images older than 48 hours and caps the build cache at 40 GB (least recently used
+first); `prune-docker.timer` does the same daily on a host that hasn't applied. Apply installs changed prune units.
 
 `scripts/restore.sh <backup>` refuses to run while containers or the runner are up, and moves existing state aside
 (`.pre-restore-<stamp>/`) rather than deleting it. It leaves an app volume that already exists alone. A new host can be
@@ -159,6 +159,10 @@ Moving a running instance to another host (drain, cold copy, tailnet names, roll
 Paperclip has no pruning of its own and long run history exhausts memory. `ops/prune-runs.sh` deletes run logs and
 `heartbeat_run_events` older than `PRUNE_DAYS` (default 30); the `prune-runs.timer` unit runs it weekly. Enable it
 with `systemctl --user enable --now prune-runs.timer`.
+
+Task workspaces (`~/aidenhq-work/tasks/<task>`): once a day the runner removes the workspace of every task closed (done or
+cancelled) over 3 days ago, as `aidenhq cleanup` does: a workspace with uncommitted changes stays, and local branches are
+kept in the runner's cache clones (`refs/kept/<task>/…`). A reopened task gets a fresh clone.
 
 ## Logs and debugging a run
 
