@@ -4,8 +4,10 @@
 //   GET /v1/work             what runs now and what ended lately, the shape the board's Agents view reads
 //   GET /v1/work?job=<id>    one job for its run page (the board): state, times, why it ended, its engine's token count, its
 //                            progress (said, plan, steps) and final words (both the agent's: untrusted)
+//   GET /v1/work?agent=<id>  an agent's last 50 jobs (newest first), each with how it ended: { jobs }
+//   GET /v1/work?since=<iso>[&to=<iso>]  the records filed or decided since then (tier 1 and 2) and the billed cost per agent and
+//                            UTC day from the gateway ledger: { records, usage } (the Fleet Steward's scorecards)
 //   GET /v1/work/metrics     Prometheus text (aidenhq_kernel_jobs_*) over the same rows
-// Usage needs no route: model calls of a job are in the gateway ledger (`calls`: agent_id, issue_id, cost_usd) already.
 import type { DatabaseSync } from "node:sqlite";
 import type { Records } from "./records.ts";
 
@@ -24,6 +26,17 @@ export function createWork({ db, records }: { db: DatabaseSync; records: Records
         busy: jobs.some((j) => j.state === "running"), jobs,
         records: recs.map((r) => ({ id: r.id, kind: r.kind, state: r.state, ok: r.outcome?.ok ?? null, args: r.args ?? null, outcome_text: r.outcome?.text ?? null, decided_at: r.decided_at ?? null, updated_at: r.updated_at, created_at: r.created_at })),
       };
+    },
+    agent(id: string) {
+      return { jobs: rows("SELECT * FROM jobs WHERE agent = ? ORDER BY at DESC LIMIT 50", id).map((r) => {
+        const why = JSON.parse(r.why || "{}"), progress = JSON.parse(r.progress || "{}");
+        return { ...job(r), exit: r.exit ?? null, timed_out: why.timedOut === true, steps: Array.isArray(progress.steps) ? progress.steps.length : 0, has_final: Boolean(r.final) };
+      }) };
+    },
+    since(from: string, to = new Date().toISOString()) {
+      const recs = records.since(from).map((r) => ({ id: r.id, kind: r.kind, state: r.state, tier: r.tier, panel: r.panel, requester: r.requester?.key || r.requester?.module || null, task: r.task, identifier: r.identifier ?? null, decided_by: r.decided_by ?? null, outcome_ok: r.outcome?.ok ?? null, outcome_text: r.outcome?.text ?? null, created_at: r.created_at, decided_at: r.decided_at ?? null }));
+      const usage = rows("SELECT agent_id AS agent, day, COALESCE(SUM(cost_usd), 0) AS cost_usd, COUNT(*) AS calls, COUNT(cost_usd) AS priced FROM calls WHERE at >= ? AND at < ? GROUP BY agent_id, day", from, to);
+      return { records: recs, usage };
     },
     job(id: string) {
       const r = rows("SELECT * FROM jobs WHERE id = ?", id)[0];

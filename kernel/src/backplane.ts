@@ -41,9 +41,10 @@
 //   POST /v1/codehost/:op      (a module's own token) token | snapshot | clone on the GitHub code host, under the module's
 //                              codehost grant (codehost.ts)
 //   POST /v1/jobs/workspace    (a module with role kernel.jobs) {task}: the workspace folder it may write into (a task of an agent it dispatches)
-//   GET  /v1/work[?task=], GET /v1/work/metrics  (a module with role kernel.work-read) the jobs and records of the kernel's
-//                              work: a task's, or what runs and ended lately; Prometheus text (work.ts)
-//   GET  /v1/work[?task=|?job=]  (the board) the same reads, and one job for its run page; never the metrics or a token
+//   GET  /v1/work[?task=|?job=|?agent=|?since=], GET /v1/work/metrics  (a module with role kernel.work-read) the jobs and records
+//                              of the kernel's work: a task's, one job, an agent's, the records and billed cost since a time, or what
+//                              runs and ended lately; Prometheus text (work.ts)
+//   GET  /v1/work[?task=|?job=|?agent=|?since=]  (the board) the same reads; never the metrics or a token
 //   POST /v1/work/grader-token  (the one module with role kernel.grader) {task} -> a gateway
 //                              token billed to the task's assignee under its caps, for a task its finish check holds; one live token per task
 //   POST /v1/jobs/:job/post    (that job's module) {kind: reply|status|notice, body, status?, blocked_by?}: posted on the job's
@@ -155,6 +156,19 @@ async function json(req: IncomingMessage, max = 1_000_000): Promise<any> {
   let n = 0;
   for await (const c of req) { n += c.length; if (n > max) throw fail(413, "too_large", "too large"); chunks.push(c); }
   try { return JSON.parse(Buffer.concat(chunks).toString("utf8") || "{}"); } catch { throw fail(400, "bad_request", "the body must be JSON"); }
+}
+
+/** GET /v1/work's reads, by query: ?job=, ?task=, ?agent=, ?since=[&to=], or what runs now (work.ts). */
+function workRead(work: Work, p: URLSearchParams) {
+  const [job, task, agent, since] = [p.get("job"), p.get("task"), p.get("agent"), p.get("since")];
+  if (job) return work.job(job.slice(0, 40)) ?? (() => { throw fail(404, "not_found", `no job ${job.slice(0, 40)}`); })();
+  if (agent) return work.agent(agent.slice(0, 100));
+  if (since) {
+    const to = p.get("to") ?? undefined;
+    if (Number.isNaN(Date.parse(since)) || (to && Number.isNaN(Date.parse(to)))) throw fail(400, "bad_request", "since and to are ISO timestamps");
+    return work.since(since, to);
+  }
+  return task ? work.task(task.slice(0, 100)) : work.activity();
 }
 
 export function createBackplane({ whoami, asserter, proxy, cp, boardCp, grantsFile, writes, records, channels, brake, notify, owner, modules = () => ({}), boardKey = () => "", reviews, reviewerKey = () => "", jobs, codehost, admission, outcomes, wakes, tasks, eventsKey = () => "", work, graderToken = () => "", dropGraderToken = () => {}, advisories = () => [], accounts, checks, checkJobs, jobTools, ownerRaw, lane, healthProbe, healthKey = () => "", log = () => {} }: {
@@ -389,11 +403,7 @@ export function createBackplane({ whoami, asserter, proxy, cp, boardCp, grantsFi
       }
       if (hit?.path === "/v1/work" && isBoard(req)) {
         if (!work) throw fail(503, "unavailable", "work reads are off");
-        const p = new URLSearchParams(q ?? ""), job = p.get("job"), task = p.get("task");
-        const one = job && work.job(job.slice(0, 40));
-        if (job && !one) throw fail(404, "not_found", `no job ${job.slice(0, 40)}`);
-        if (one) return send(res, 200, one);
-        return send(res, 200, task ? work.task(task.slice(0, 100)) : work.activity());
+        return send(res, 200, workRead(work, new URLSearchParams(q ?? "")));
       }
       if (hit && hit.path.startsWith("/v1/work")) {
         const w = await moduleOf(req);
@@ -410,9 +420,8 @@ export function createBackplane({ whoami, asserter, proxy, cp, boardCp, grantsFi
           if (issue.status !== 200 || typeof issue.json.assigneeAgentId !== "string") throw fail(404, "not_found", `no task ${b.task.slice(0, 100)} with an assignee`);
           return send(res, 200, { token: graderToken(b.task.slice(0, 100), issue.json.assigneeAgentId) });
         }
-        const task = new URLSearchParams(q ?? "").get("task");
         if (hit.path === "/v1/work/metrics") return void res.writeHead(200, { "content-type": "text/plain; version=0.0.4" }).end(work.metrics());
-        return send(res, 200, task ? work.task(task.slice(0, 100)) : work.activity());
+        return send(res, 200, workRead(work, new URLSearchParams(q ?? "")));
       }
       if (hit?.path === "/v1/codehost/:op") {
         const w = await moduleOf(req);
