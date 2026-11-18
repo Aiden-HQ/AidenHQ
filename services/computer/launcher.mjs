@@ -73,8 +73,6 @@ const CFG = {
   // clones, and for runner jobs the task folders, the clones' guard hooks and the per-task Codex homes.
   runnerWork: runnerDir("work_dir", "~/aidenhq-work"),
   runnerState: runnerDir("state_dir", "~/.local/state/aidenhq-runner"),
-  // A runner job's box: its own memory limit (the pool's RAM: docs/design/sandboxing.md, launcher pool).
-  jobMemory: env("AIDENHQ_COMPUTERS_JOB_MEMORY", "3g"),
 };
 CFG.runnerRepos = path.join(CFG.runnerWork, "repos");
 function runnerDir(key, fallback) {
@@ -231,7 +229,7 @@ async function unlessGone(container, r) {
   if (r.exitCode === 0) return r;
   if (!boxes.has(container) || ["missing", "exited", "dead", "removing"].includes(await jobState(container))) {
     const oom = (await docker(["inspect", "-f", "{{.State.OOMKilled}}", container])).stdout.trim() === "true";
-    const msg = oomMessage(container, jobs.has(container) ? CFG.jobMemory : CFG.limits.memory);
+    const msg = oomMessage(container, CFG.limits.memory);
     if (oom) log(msg);
     throw fail(404, oom ? msg : `computer gone: ${container} went away during the command (destroyed or stopped)`);
   }
@@ -384,7 +382,7 @@ const runnerControl = {
       mkdirSync(outDir, { mode: 0o700 });
       const mounts = jobMounts({ resolvConf, workspace, outDir, codexHome, runnerWork: CFG.runnerWork, repo, engineDir: entry.dir });
       // aidenhq-browse uses the image's own agent-browser and Chrome (the browser image every computer builds on).
-      const r = await docker(dockerRunArgs({ name, image, agentId, network: CFG.network, limits: { ...CFG.limits, memory: CFG.jobMemory }, mounts, user: JOB_USER, labels: [`aidenhq.job=${issueId}`], home: JOB_HOME }));
+      const r = await docker(dockerRunArgs({ name, image, agentId, network: CFG.network, limits: CFG.limits, mounts, user: JOB_USER, labels: [`aidenhq.job=${issueId}`], home: JOB_HOME }));
       if (r.exitCode !== 0) throw fail(500, `docker run failed: ${r.stderr.trim()}`);
       writeFileSync(envFile, jobEnvFile({ token, mcp: kernel ? kernelMcp : await mcpFor(token), gatewayUrl: GATEWAY_URL, identity }), { mode: 0o600 });
     } catch (e) {
@@ -432,7 +430,7 @@ const runnerControl = {
     jobs.add({ container: name, agentId: "check", issueId: `check:${check}`, check, kernel: true, ...(token ? { tokenHash: tokenHash(token) } : {}) }, Date.now(), ms + 5 * 60_000); saveJobs();
     try {
       const mounts = checkMounts({ resolvConf, workspace: ws, out: o, readOnly: readOnly === true, supplyChain: path.join(repo, "scripts/supply-chain") });
-      const r = await docker(dockerRunArgs({ name, image, agentId: "check", network: CFG.network, limits: { ...CFG.limits, memory: CFG.jobMemory }, mounts, user: JOB_USER, labels: [`aidenhq.check=${check}`], home: "/aidenhq-out/home" }));
+      const r = await docker(dockerRunArgs({ name, image, agentId: "check", network: CFG.network, limits: CFG.limits, mounts, user: JOB_USER, labels: [`aidenhq.check=${check}`], home: "/aidenhq-out/home" }));
       if (r.exitCode !== 0) throw fail(500, `docker run failed: ${r.stderr.trim()}`);
     } catch (e) {
       await destroy(name, "check box failed to start");

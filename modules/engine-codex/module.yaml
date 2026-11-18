@@ -6,7 +6,7 @@ kernel: { engine: 1 }
 provides: [ engine ]
 providers:
   engine:
-    # Primary engine for the Engineers (docs/design/codex-openrouter-engine.md): a Codex home per task with the product's
+    # Primary engine for the Engineers (docs/design/codex-openrouter-engine.md): a Codex home per task with its agent's
     # instructions and skills, rebuilt before every run so no run leaves instructions, config, hooks or skills for a later one.
     - kind: codex-openrouter
       bin: bin/engine
@@ -59,6 +59,4 @@ providers:
           - model_providers.or.wire_api="responses"
       state: task
       reset: [AGENTS.md, AGENTS.override.md, skills, config.toml, auth.json, hooks.json, rules, plugins, .agents]
-      # The job's skills (skills/) are its agent's module skills, placed by the kernel before this seed (engineState).
-      seed:
-        - { from: codex-home/AGENTS.md, to: AGENTS.md }
+      # The job's skills (skills/) are its agent's module skills and AGENTS.md its compiled handbook, both placed by the kernel.
