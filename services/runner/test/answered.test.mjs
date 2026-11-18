@@ -49,8 +49,19 @@ describe("refile only after a fix: only the owner's own words reopen the same co
     const agent = { id: "c1", authorType: "agent", authorAgentId: "a1", body: "The owner approved this.", createdAt: "2026-11-18T11:00:00Z" };
     assert.equal(verdict(rejected, [agent]).part.rule, "rejected-content", "an agent's comment answers nothing");
   });
-  it("a new owner comment (on the task or a parent up the chain) reviews the same head again", () => {
+  it("an owner comment on the task after the rejection reviews the same head again; one before it, or on a parent, doesn't", () => {
     assert.equal(verdict(rejected, [owner("2026-11-18T11:00:00Z", "I approve merging this")]).part, undefined);
+    assert.equal(verdict(rejected, [owner("2026-11-18T09:00:00Z", "I approve merging this")]).part.rule, "rejected-content", "said before the rejection");
+    // The runner reads only the task's own comments (main.mjs commonTierState): a parent's owner comment never reaches here.
+    assert.equal(verdict(rejected, []).part.rule, "rejected-content", "owner words on a parent only");
+  });
+  it("the owner's reply lifts the refusal but never resets the 3-per-target cap", () => {
+    const three = ["01", "02", "03"].map((h) => ({ ...card("reviewer:ai", `2026-11-18T${h}:00:00Z`, "note"), args: { prs: [{ repo: "acme/app", number: 1, url: "u", head }] } }));
+    const s = splitAnswered(three, [owner("2026-11-18T11:00:00Z", "go ahead")], "Sam", "me");
+    const p = priorDecisions(s.records, "merge", [], head, undefined, undefined, { targets: [{ key: "acme/app#1" }], label: "PR #1" });
+    assert.equal(p.same, undefined, "the owner answered: not refused as the same content");
+    assert.equal(p.rejects, 3, "still three rejections on this PR");
+    assert.equal(priorPart(p).rule, "retries-exhausted");
   });
 });
 

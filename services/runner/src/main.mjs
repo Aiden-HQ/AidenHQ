@@ -2398,12 +2398,9 @@ async function commonTierState(issue, action, also = []) {
   const ownerMade = ownerMadeTask(full);
   // Two reviewers' unsure carries the request chain it saw (its hash, kept on the record by the kernel): the same content is
   // reviewed again only once that chain changed (tier.ts priorDecisions).
-  // The owner's own words anywhere up the chain (this task and its parents) answer a rejection: never the task's title or
-  // description, which the agent can edit (answered.ts reads only the owner's typed comments).
-  const chainIds = [full.id];
-  for (let i = full, n = 0; n < 6 && i?.parentId; n++) { chainIds.push(i.parentId); i = await pc.issue(i.parentId).catch(() => undefined); }
-  const comments = (await Promise.all(chainIds.map((id) => pc.comments(id).catch(() => [])))).flat().sort((a, b) => String(a?.createdAt ?? "").localeCompare(String(b?.createdAt ?? "")));
-  const split = splitAnswered(await recordsOn(full), comments, cfg.selfName, await pc.me().catch(() => undefined));
+  // Only the owner's own words on this task, after a rejection, answer it (answered.ts): never a parent's comments (an agent
+  // can change a task's parent) and never the task's title or description (the agent can edit those).
+  const split = splitAnswered(await recordsOn(full), await pc.comments(full.id).catch(() => []), cfg.selfName, await pc.me().catch(() => undefined));
   const { records } = split;
   return {
     answers: split.answers,

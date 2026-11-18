@@ -146,7 +146,8 @@ export const taskRoutineCap = (pc: Trace, task: string, routines: Record<string,
 // ------------------------------------------------------------------ earlier decisions on a task
 
 /** A task's approval record as tiering reads it (the runner's view of a kernel record). */
-export type Prior = { id?: string; action: string; args?: any; state: string; decidedBy?: string | null; decidedAt?: string | null; reviewCode?: string | null; review?: string | null; requestChain?: string; digest?: string };
+/** `answered`: the owner replied on the task after this rejection (answered.ts): it no longer blocks or attaches its note, but still counts toward MAX_REJECTS. */
+export type Prior = { id?: string; action: string; args?: any; state: string; decidedBy?: string | null; decidedAt?: string | null; reviewCode?: string | null; review?: string | null; requestChain?: string; digest?: string; answered?: boolean };
 /** The actions a record carries: a product PR card with `args.merge` is also a merge, so neither dodges the other's no. */
 const carried = (r: Prior) => [r.action, ...(r.action === "pr" && r.args?.merge ? ["merge"] : [])];
 /** A watcher's no on a stale or duplicate card (decided_by `stale:watcher`) judged nothing: neither a veto nor a rejection. */
@@ -172,7 +173,7 @@ export function rejectedSince(records: Prior[], action: string, also: string[] =
  */
 export function laterRejections(records: Prior[], action: string, also: string[] = [], since = ""): Prior[] {
   const want = [action, ...also];
-  return (records ?? []).filter((r) => r.state === "rejected" && !STALE(r) && carried(r).some((x) => want.includes(x)) && !CODE_REJECTS.includes(r.reviewCode ?? "") && String(r.decidedAt ?? "") >= String(since));
+  return (records ?? []).filter((r) => r.state === "rejected" && !r.answered && !STALE(r) && carried(r).some((x) => want.includes(x)) && !CODE_REJECTS.includes(r.reviewCode ?? "") && String(r.decidedAt ?? "") >= String(since));
 }
 
 const keyOf = (list: unknown[]) => (list.length && list.every((x) => typeof x === "string" && /^[0-9a-f]{7,64}$/i.test(x)) ? (list as string[]).map((x) => x.toLowerCase()).sort().join(",") : undefined);
@@ -290,7 +291,7 @@ export function priorDecisions(records: Prior[], action: string, also: string[] 
   // gets `relift` (the first round's note), and unsure again there goes to the owner (the reviewer module). Unchanged or unknown
   // chain, or any other rejection of the content, and it stays rejected. It still counts toward MAX_REJECTS (on the branch
   // it was raised against). Content is judged task-wide: this is about what was written, not where it was aimed.
-  const rejectedSame = key || typeof patches === "string" ? judged.filter((r) => (key !== undefined && recordKey(r) === key) || (typeof patches === "string" && recordPatches(r) === patches)) : [];
+  const rejectedSame = key || typeof patches === "string" ? judged.filter((r) => !r.answered).filter((r) => (key !== undefined && recordKey(r) === key) || (typeof patches === "string" && recordPatches(r) === patches)) : [];
   const [only] = rejectedSame;
   const lifted = rejectedSame.length === 1 && only!.reviewCode === "reviewer_unsure" && Boolean(only!.requestChain) && Boolean(chain) && only!.requestChain !== chain;
   const sameOne = lifted ? undefined : rejectedSame[0];
@@ -299,7 +300,7 @@ export function priorDecisions(records: Prior[], action: string, also: string[] 
   // (null) fail closed: any owner rejection of the action on the task makes it theirs.
   const sameContent = (r: Prior) => (key !== undefined && recordKey(r) === key) || (typeof patches === "string" && recordPatches(r) === patches);
   const ownerNo = mine.some((r) => byOwner(r) && r.state === "rejected" && (patches === null || (sameContent(r) && !mine.some((y) => byOwner(y) && y.state !== "rejected" && sameContent(y) && String(y.decidedAt) > String(r.decidedAt)))));
-  return { ownerVeto: lastOwner?.state === "rejected" || ownerNo, same: sameOne ? sameOne.review || "no note" : undefined, relift: lifted ? only!.review || "no note" : undefined, rejects, findings: judged.map((r) => r.review).filter(Boolean) as string[], ...(targets?.targets.length ? { scope: targets.label } : {}) };
+  return { ownerVeto: lastOwner?.state === "rejected" || ownerNo, same: sameOne ? sameOne.review || "no note" : undefined, relift: lifted ? only!.review || "no note" : undefined, rejects, findings: judged.filter((r) => !r.answered).map((r) => r.review).filter(Boolean) as string[], ...(targets?.targets.length ? { scope: targets.label } : {}) };
 }
 
 /** What earlier decisions do to a request: the owner's veto (their card), a rejected change resent, a retry past the bound. */
