@@ -126,6 +126,7 @@ if (app) {
  */
 const githubHost = githubCodehost({
   appFor,
+  allowedOrgs: cfg.allowed_orgs,
   repoSources: cfg.repo_sources ?? {},
   git,
   gh: async (slug, write, args, opts = {}) => (await execFileP(await findRealGh(), args, await gho(slug, write ? WRITE : READ, opts))).stdout,
@@ -2401,6 +2402,7 @@ async function commonTierState(issue, action, also = []) {
     requestChain: chainHash(await prRequest(full).catch(() => "")),
     agentsOrg: cfg.agentsOrg,
     agentsOrgs: cfg.agentsOrgs,
+    allowedOrgs: cfg.allowed_orgs,
     productRepo: cfg.productRepo,
     modulesRepo: cfg.modulesRepo,
     instanceRepo: cfg.apply?.repo,

@@ -406,14 +406,11 @@ test("close", () => {
   assert.equal(tierOf(close({ repo: "acme/bor" }, P)), "reject", "outside the agents org");
 });
 
-test("create_repo: the panel in the agents org, a plain lowercase name; refused anywhere else", () => {
-  const create = (repo) => classify("create_repo", { ...base, repo });
-  assert.equal(tierOf(create("acme-agents/expense-tracker")), "panel", "a new app's repo grows the org: authority-expanding");
-  for (const repo of ["acme/expense-tracker", "acme-agents/.github", "acme-agents/Apps", "acme-agents/x--y", base.instanceRepo, `acme-agents/${"a".repeat(64)}`]) assert.equal(tierOf(create(repo)), "reject", repo);
-  // A reviewer's no on one name holds for that name (requestKey), not for another.
-  const no = { action: "create_repo", args: { repo: "acme-agents/zzz-fake" }, state: "rejected", decidedBy: "reviewer:x", decidedAt: "2026-11-14T02:00:00Z" };
-  assert.equal(classify("create_repo", { ...base, repo: "acme-agents/zzz-fake", records: [no] }).rule, "rejected-content");
-  assert.equal(tierOf(classify("create_repo", { ...base, repo: "acme-agents/expense-tracker", records: [no] })), "panel");
+test("create_repo: Tier 0 in any org, a plain lowercase name; the product and instance repos refused", () => {
+  const create = (repo) => classify("create_repo", { ...base, allowedOrgs: ["acme-agents", "other-org"], repo });
+  for (const repo of ["acme-agents/expense-tracker", "other-org/expense-tracker"]) assert.equal(tierOf(create(repo)), 0, repo);
+  assert.equal(tierOf(create("stranger/expense-tracker")), "reject", "an org nobody allowed");
+  for (const repo of ["acme-agents/.github", "acme-agents/Apps", "acme-agents/x--y", base.instanceRepo, base.productRepo, `acme-agents/${"a".repeat(64)}`]) assert.equal(tierOf(create(repo)), "reject", repo);
 });
 
 test("merge in the agents org", () => {
