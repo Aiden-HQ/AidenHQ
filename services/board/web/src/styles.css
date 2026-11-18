@@ -1029,15 +1029,6 @@ button.live-toggle:focus-visible { outline: 2px solid var(--accent); border-radi
 .app.mobile .approval-head .approval-actions { margin-left: auto; }
 
 /* ------------------------------------------------------------ apps, activity, tasks */
-.app-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 380px), 1fr)); gap: 14px; align-items: start; }
-.app-card { display: grid; gap: 12px; padding: 16px 18px; background: var(--surface); border: 1px solid var(--border); border-radius: 14px; box-shadow: var(--shadow); min-width: 0; }
-.app-card.sick { border-color: color-mix(in srgb, var(--urgent) 45%, var(--border)); }
-.app-card-head { display: flex; align-items: center; gap: 10px; min-width: 0; }
-.app-card-head h3 { margin: 0; flex: 1; min-width: 0; font-size: var(--text-lg); font-weight: 650; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.app-card .mono { font-family: var(--mono); font-size: var(--text-sm); }
-.app-card .meter { margin-top: 6px; }
-.app-note { margin: 0; font-size: var(--text-base); }
-.app-incident { margin: 0; padding: 8px 12px; border-radius: 8px; font-size: var(--text-base); color: var(--bad-text); background: color-mix(in srgb, var(--urgent) 10%, transparent); }
 .column { max-width: 520px; }
 .monogram.portrait { display: inline-block; object-fit: cover; background: var(--surface-2); }
 

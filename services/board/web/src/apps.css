@@ -1,0 +1,14 @@
+/* Apps and an app's page (Apps.tsx): layout only; the parts come from ui/ui.css. */
+.apps-skeleton { min-height: 150px; border-radius: var(--radius); background: var(--surface-2); border: 1px solid var(--border); }
+.apps-url { color: var(--muted); text-decoration: none; overflow-wrap: anywhere; }
+.apps-url:hover { color: var(--text); text-decoration: underline; }
+.apps-deploy { display: grid; grid-template-columns: 8.5rem 5.5rem minmax(0, 1fr) auto; align-items: center; gap: 14px; min-height: 42px; padding: 0 14px; font-size: var(--text-md); }
+.apps-deploy + .apps-deploy { border-top: 1px solid var(--border); }
+.apps-deploy code { font-size: var(--text-sm); color: var(--muted); }
+.apps-deploy-by { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); }
+.apps-deploy time { font-size: var(--text-sm); color: var(--muted); font-variant-numeric: tabular-nums; }
+.apps-mem { display: grid; gap: 6px; }
+@media (max-width: 560px) {
+  .apps-deploy { grid-template-columns: minmax(0, 1fr) auto; row-gap: 2px; padding: 9px 14px; }
+  .apps-deploy-by { grid-column: 1; }
+}

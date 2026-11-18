@@ -481,11 +481,14 @@ export interface AppRow {
   healthy: boolean;
   state: string;
   sha?: string;
-  deployed_at?: string;
+  /** Epoch ms (apps-mcp's deploy store). */
+  deployed_at?: number;
   deployed_by?: string;
   auto_deploy?: boolean;
-  /** Newest first: which commits were deployed, by whom, and how each ended. */
-  deploys?: { sha: string; at: string; by: string; status: string }[];
+  /** Its source repo. */
+  repo?: string;
+  /** Newest first: which commits were deployed (at: epoch ms), by whom, and how each ended (healthy, failed, build_failed, rolled_back). */
+  deploys?: { sha: string; at: number; by: string; status: string }[];
   owner?: string;
   url?: string;
   /** Serves a port but its browser door doesn't open (yet): why, in words for the owner (older apps-mcp: true). */

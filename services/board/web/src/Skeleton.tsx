@@ -1,4 +1,4 @@
-// Loading placeholders shaped like the content they stand for, built from the same layout classes (.fleet, .app-grid,
+// Loading placeholders shaped like the content they stand for, built from the same layout classes (.fleet,
 // .activity-day, .approval-card), so nothing shifts when the data lands. A subtle sheen, off with reduced motion.
 import { Fragment, type CSSProperties } from "react";
 
@@ -67,34 +67,6 @@ export function FleetSkeleton({ groups = [4, 3] }: { groups?: number[] }) {
             <FleetRowSkeleton key={n} i={n++} />
           ))}
         </div>
-      ))}
-    </div>
-  );
-}
-
-/** Cards in the apps / modules grid. */
-export function CardGridSkeleton({ count = 4 }: { count?: number }) {
-  return (
-    <div className="app-grid" role="status" aria-label="Loading" aria-busy>
-      {Array.from({ length: count }, (_, i) => (
-        <article key={i} className="app-card" aria-hidden>
-          <header className="app-card-head">
-            <Bone w={widths[i % widths.length]} h={19} />
-            <Bone className="tag-sk" />
-          </header>
-          <dl className="panel-facts">
-            {["32%", "54%", "46%"].map((w, r) => (
-              <Fragment key={r}>
-                <dt>
-                  <Bone w={56} />
-                </dt>
-                <dd>
-                  <Bone w={w} />
-                </dd>
-              </Fragment>
-            ))}
-          </dl>
-        </article>
       ))}
     </div>
   );

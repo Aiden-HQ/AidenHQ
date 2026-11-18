@@ -49,7 +49,7 @@ const DesignView = lazy(() => VIEW_CHUNKS.design().then((m) => ({ default: m.Des
 const PageLoading = () => <main className="page wide" aria-busy="true" />;
 
 type Items = Record<Bucket, Card[]>;
-type Route = { kind: "board" } | { kind: "chat"; ref: string | null } | { kind: "view"; view: View } | { kind: "settings"; cat: Category | null } | { kind: "agent"; key: string; tab: AgentTab } | { kind: "module"; name: string; tab: ModuleTab } | { kind: "task"; ref: string; focus?: string } | { kind: "run"; id: string } | { kind: "brief" } | { kind: "help" } | { kind: "design" } | { kind: "setup"; module: string };
+type Route = { kind: "board" } | { kind: "chat"; ref: string | null } | { kind: "view"; view: View } | { kind: "settings"; cat: Category | null } | { kind: "agent"; key: string; tab: AgentTab } | { kind: "module"; name: string; tab: ModuleTab } | { kind: "task"; ref: string; focus?: string } | { kind: "run"; id: string } | { kind: "brief" } | { kind: "help" } | { kind: "design" } | { kind: "app"; name: string } | { kind: "setup"; module: string };
 
 const HINTS: Record<Bucket, string> = {
   triage: "New tasks land here",
@@ -125,6 +125,9 @@ function parseRoute(): Route {
   if (h === "brief") return { kind: "brief" };
   if (h === "help") return { kind: "help" };
   if (h === "design") return { kind: "design" };
+  // #/apps/<name> opens an app's page.
+  const app = /^apps\/([a-z0-9-]+)$/.exec(h);
+  if (app) return { kind: "app", name: app[1]! };
   return { kind: "board" };
 }
 const go = (hash: string) => {
@@ -283,6 +286,7 @@ export function App() {
       if (r.kind === "module") setView("modules");
       if (r.kind === "settings") setView("settings");
       if (r.kind === "design") setView("design");
+      if (r.kind === "app") setView("apps");
     };
     hash();
     window.addEventListener("hashchange", hash);
@@ -709,7 +713,7 @@ export function App() {
       {view === "settings" && <SettingsView cat={route.kind === "settings" ? route.cat : null} mobile={mobile} session={session} go={go} onSignIn={signInNeeded} can={{ signIn: signInConnect, google: googleConnect }} />}
       {view === "modules" && route.kind !== "module" && <Suspense fallback={<PageLoading />}><ModulesView onSignIn={signInNeeded} /></Suspense>}
       {view === "modules" && route.kind === "module" && <Suspense fallback={<PageLoading />}><ModulePage key={route.name} name={route.name} tab={route.tab} go={go} onSignIn={signInNeeded} /></Suspense>}
-      {view === "apps" && <Suspense fallback={<PageLoading />}><AppsView onSignIn={signInNeeded} /></Suspense>}
+      {view === "apps" && <Suspense fallback={<PageLoading />}><AppsView key={route.kind === "app" ? route.name : ""} app={route.kind === "app" ? route.name : undefined} onSignIn={signInNeeded} /></Suspense>}
       {view === "design" && <Suspense fallback={<PageLoading />}><DesignView /></Suspense>}
       {view === "costs" && <Suspense fallback={<PageLoading />}><CostsView onSignIn={signInNeeded} /></Suspense>}
       {view === "agents" && route.kind === "agent" && <Suspense fallback={<PageLoading />}><AgentPage key={route.key} agentKey={route.key} tab={route.tab} go={go} onSignIn={signInNeeded} /></Suspense>}
