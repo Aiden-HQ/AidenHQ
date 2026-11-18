@@ -27,8 +27,8 @@ import { fileURLToPath } from "node:url";
 import { isDeepStrictEqual } from "node:util";
 import type { DatabaseSync } from "node:sqlite";
 import YAML, { Scalar } from "yaml";
-import { resolveRelease } from "./loader/release.ts";
-import { OFFICIAL, repoAt, type Fetch, type Where } from "./loader/sources.ts";
+import { resolveRelease } from "../../scripts/compiler/release.ts";
+import { OFFICIAL, repoAt, type Fetch, type Where } from "../../scripts/compiler/sources.ts";
 
 type Dict = Record<string, unknown>;
 export const DISTRO = "Aiden-HQ/aidenhq-distro";
