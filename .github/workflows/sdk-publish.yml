@@ -22,6 +22,10 @@ jobs:
       # Trusted publishing needs npm 11.5.1 or later; Node 24 bundles it.
       - name: npm supports trusted publishing
         run: node -e 'const [a,b,c]=process.argv[1].split(".").map(Number); if (a<11||(a===11&&(b<5||(b===5&&c<1)))) { console.error("npm "+process.argv[1]+" is older than 11.5.1"); process.exit(1) }' "$(npm --version)"
+      # The pack step compiles with the SDK's own TypeScript.
+      - name: Install
+        working-directory: kernel/sdk
+        run: npm ci --ignore-scripts
       - name: Version from the tag
         if: github.ref_type == 'tag'
         working-directory: kernel/sdk

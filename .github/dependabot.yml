@@ -26,7 +26,7 @@ updates:
       - /modules/meetings/connections/ops-mcp
       - /modules/apps-platform/starter
       - /modules/hubspot/connections/hubspot-mcp
-      - /modules/vendor-mcp
+      - /kernel/sdk
     schedule: { interval: weekly }
     cooldown: { default-days: 7 }
     open-pull-requests-limit: 5

@@ -3,8 +3,7 @@
 // there. The client is registered dynamically (RFC 7591) or is one the owner made in the vendor (HubSpot, Slack). Only this
 // service sees the tokens: the pair lives in /state/token.json (0600), refreshed here, rotated pairs written back atomically.
 //
-// Canonical copy: vendor-mcp/src/vendor/oauth.ts in the product's modules/. Each vendor connection holds a byte-identical copy at
-// src/vendor/oauth.ts (the product's scripts/sync-shared.mjs copies them and its tests fail on drift).
+// Vendor connections import it as @aidenhq/sdk/vendor/oauth.
 import { createHash, randomBytes } from "node:crypto";
 import { chmodSync, existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";

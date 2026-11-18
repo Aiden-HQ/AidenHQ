@@ -14,8 +14,7 @@ Copyright (c) 2026 Taylan Pince, used under the MIT License (see LICENSES/pennyw
 Files derived from it, wholly or in part, include:
 - meetings/connections/ops-mcp/, google/connections/google-workspace-mcp/, clickhouse/connections/clickhouse-mcp/,
   grafana/connections/grafana-mcp/, glean/connections/glean-mcp/, primer/connections/primer-mcp/,
-  slack/connections/slack-mcp/, github/connections/github-mcp/, parts of jira/connections/jira-mcp/, and vendor-mcp/
-  (the vendor connections' shared proxy, from those proxies)
+  slack/connections/slack-mcp/, github/connections/github-mcp/, and parts of jira/connections/jira-mcp/
 - code moved out of the product's runner (Pennyworth's): engine-codex/,
   codehost-github/, ai-reviewer/, grading/, platform/ and engineering/
 - the inbox-agent handbook, the open-loops skills scan-slack and triage-email, and the meetings skill meeting-notes

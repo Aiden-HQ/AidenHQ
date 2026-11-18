@@ -1,16 +1,51 @@
 {
   "name": "@aidenhq/sdk",
   "version": "0.1.0",
-  "description": "Contract types, engine IO, the executor side of write kinds and the contract kit for AidenHQ modules.",
+  "description": "The shared code of AidenHQ modules: contract types, engine IO, the caller check and fence, write executors, the reviewer side, the source writer and the vendor MCP pass-through.",
   "license": "MIT",
   "repository": { "type": "git", "url": "git+https://github.com/Aiden-HQ/AidenHQ.git", "directory": "kernel/sdk" },
   "type": "module",
   "engines": { "node": ">=24" },
   "bin": { "aidenhq-module-test": "dist/bin/aidenhq-module-test.js" },
-  "exports": { "./types": "./dist/src/types.js", "./engine-io": "./dist/src/engine-io.js", "./kit": "./dist/src/kit.js", "./executor": "./dist/src/executor.js" },
+  "exports": {
+    "./types": "./dist/src/types.js",
+    "./engine-io": "./dist/src/engine-io.js",
+    "./kit": "./dist/src/kit.js",
+    "./executor": "./dist/src/executor.js",
+    "./caller": "./dist/src/caller.js",
+    "./fence": "./dist/src/fence.js",
+    "./reviewer": "./dist/src/reviewer.js",
+    "./progress": "./dist/src/progress.js",
+    "./source-store": "./dist/src/source-store.js",
+    "./vendor/proxy": "./dist/src/vendor/proxy.js",
+    "./vendor/oauth": "./dist/src/vendor/oauth.js"
+  },
   "files": ["dist", "LICENSE"],
+  "peerDependencies": {
+    "@modelcontextprotocol/sdk": "^1.32.2",
+    "pg": "^8.23.1",
+    "pino": "^10.4.0",
+    "zod": "^4.6.5"
+  },
+  "peerDependenciesMeta": {
+    "@modelcontextprotocol/sdk": { "optional": true },
+    "pg": { "optional": true },
+    "pino": { "optional": true },
+    "zod": { "optional": true }
+  },
+  "devDependencies": {
+    "@modelcontextprotocol/sdk": "1.32.2",
+    "@types/node": "24.19.2",
+    "@types/pg": "8.23.1",
+    "pg": "8.23.1",
+    "pino": "10.4.0",
+    "typescript": "5.9.3",
+    "vitest": "5.1.0",
+    "zod": "4.6.7"
+  },
   "scripts": {
-    "test": "NODE_PATH=../../services/runner/node_modules node --test test/*.test.mjs ../../modules/engine-*/test/*.test.mjs",
+    "test": "NODE_PATH=../../services/runner/node_modules node --test test/*.test.mjs ../../modules/engine-*/test/*.test.mjs && vitest run test/vendor-proxy.test.ts",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
     "prepack": "node ../../scripts/sdk-pack.mjs"
   }
 }
