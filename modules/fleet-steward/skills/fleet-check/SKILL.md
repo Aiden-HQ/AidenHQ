@@ -1,6 +1,6 @@
 ---
 name: fleet-check
-description: A detector check - find the cause of each open fleet incident (stuck or failing runs, sources and apps down, alerts, stale PRs, health flags), nudge or route the fix once, report product bugs through the Maintainer, and tell the owner only what needs them.
+description: A detector check - find the cause of each open fleet incident (stuck, failing or looping runs, reviewer-rejection loops, unclosed work, a silent front door, sources and apps down, alerts, stale PRs, health flags), nudge or route the fix once, report product bugs through the Maintainer, and tell the owner only what needs them.
 when: { fields: { name: Fleet Steward } }
 ---
 
@@ -78,7 +78,7 @@ request open over an hour without merging) or something recovered.
   agent once: merge it if the checks are green, fix it if red, or close it as superseded (its Engineer closes it with
   `aidenhq close <PR link> --reason "<one line>"`). If the task is done, `task_create` to the app's owner (else the
   Engineer): "merge, fix or close <PR> with one line why". Log `pr · <repo>#<n>`; never the same nudge twice.
-- **Health flags** (`run:<agent>:stuck|failing|silent`, `grade:<task>`; a flag open a day is the owner's too):
+- **Health flags** (`run:<agent>:stuck|failing|silent|repeat:<task>`, `grade:<task>`, `grade:<task>:unclosed`; a flag open a day is the owner's too):
   - `run:<agent>:stuck` or `:failing`: the kernel's job ledger shows a job running far past its timeout, or the agent's last
     three jobs all failed. Read the failed jobs' tasks and comments, route the fix like a failing agent, log it.
   - `run:<agent>:silent`: jobs that finished with no steps and no output. If the agent clearly isn't doing its job, treat it
@@ -86,8 +86,31 @@ request open over an hour without merging) or something recovered.
   - `grade:<task>`: a task held in grading over a day. Nudge nobody; list it in the digest.
   - A routine that fails again and again is dispatch's to schedule and clean up: when a run's failures name one, ask the
     Chief of Staff (`task_delegate`) to pause it until it is fixed.
+- **A reviewer-rejection loop** (`loop:<task>:<branch>`): the AI reviewer rejected the same branch three times in six hours,
+  and the kernel has parked it. Read the task's cards and the reviewer's notes (`task_approvals`, `task_comments`). Post one
+  summary on the task: the rejection codes, what the reviewer asks, and whether that contradicts the task or a test. Wake the
+  agent that owns the task once with those notes and one concrete way forward, and send the delegator the same summary. When
+  the reviewer and the task disagree, or the work is the same after the wake, ask the owner (below) with a recommended
+  default: split the task, narrow the diff to the files the reviewer names, or close and re-scope. The reviewer's decision
+  stands, and a waiver is the owner's to give.
+- **Repeated failed runs** (`run:<agent>:repeat:<task>`: three runs of one task ended the same way within half an hour):
+  read the failed jobs' last lines. A transient cause (a lost session, a restarted box) gets one bounded wake with the
+  evidence and a fresh start; a cause that repeats is a finding for the owner of the fix (the Engineer for a
+  product defect, via the product-bug path). Raising a timeout or a spend cap is the owner's.
+- **Finished but not closed** (`grade:<task>:unclosed`: in review six hours with no running job, open card or open PR):
+  read the task, its last comment and its PR's state (`task_get`, `task_comments`). A merged PR is evidence the work landed,
+  not proof it was accepted: wake the assignee once with what you found and the done condition left to check, and tell the
+  delegator in one line. A closed unmerged PR, or one that is red, goes to the delegator with a recommended default (close,
+  re-scope or fix).
+- **The front door is silent** (`front:<chat task>`: an owner message with no reply for 15 minutes): this is urgent.
+  Read `fleet_status` for the chief of staff's state and its latest run, and `fleet_detector` for the run flags. If its run
+  stopped or its task is blocked, comment once on that chat with exactly what changed so it wakes, then `notify`
+  (`kind: alert`, dedupe key `front:<chat>`) in one plain line: the owner's message is waiting, what you did, what you
+  need from them. It recovers when anything answers.
 - **A card waiting:** Tier 1 is the AI reviewer's and Tier 2 the owner's. Never nudge an agent about a card, never approve
-  one, and never tell the owner about one.
+  one. A Tier 2 card waiting over 24 hours (`fleet_status` `approvals`, `tier` 2, `ageMinutes`) gets one reminder to the
+  owner, once per card (your log says whether it went): one `notify` (`kind: fyi`) with the card's title, how long it has
+  waited and your recommended default for them to tap. Silence never approves a card, and the owner decides it.
 - **Hard cases** (two causes equally likely, or a fix touching more than one agent): don't guess. Log it with `deep-look`
   and what you checked; the evening digest takes a second look. If it is on the alert list, alert the owner now anyway.
 
@@ -97,6 +120,8 @@ request open over an hour without merging) or something recovered.
 
 - a run stuck or an agent failing repeatedly that your nudge didn't fix (or can't);
 - a service or source down over 15 minutes, or anything that needs the owner's sign-in or setup;
+- a reviewer-rejection loop or a repeated failure your wake didn't resolve, the front door being silent, or an unclosed task whose
+  next step is the owner's (a waiver, spend or a Tier 2 card): each with a recommended default and what you did;
 - a security or data-loss signal (a secret in a comment or log, data deleted, an agent acting outside its grants).
 
 One message, plain words: what is wrong, since when, what you did, what you need from them. Everything else waits for

@@ -81,4 +81,11 @@ test("an agent's jobs and the records and billed cost since a time are reads of 
   assert.deepEqual(a.jobs.map((j) => [j.id, j.state, j.exit, j.steps]), [["j-2", "running", null, 0], ["j-1", "failed", 1, 2]]);
   assert.deepEqual((await (await get("/v1/work?since=2026-01-01T00:00:00Z")).json()).usage, [{ agent: "a1", day: "2026-01-02", cost_usd: 0.5, calls: 2, priced: 1 }]);
   assert.equal((await get("/v1/work?since=yesterday")).status, 400);
+  // A reviewer rejection of a branch is `judged` and names its branch; code's own refusal (a moved head) is not judged.
+  const file = (args) => records.file({ kind: "runner.pr", module: "runner", args, targets: {}, executor: { module: "runner" }, policy: "p", tier: 1, panel: false, card: {}, requester: { agent: "", key: "eng", name: "eng", roles: [], kind: "run" }, task: "t-1", identifier: "WOR-1", state: "review" });
+  const [judged, stale] = [file({ only: [{ repo: "acme/app", branch: "feat-a" }] }), file({ only: [{ repo: "acme/app", branch: "feat-b" }] })];
+  records.db.prepare("UPDATE records SET state = 'rejected', decided_by = 'reviewer:m', review_code = ? WHERE id = ?").run("out_of_scope", judged.id ?? judged);
+  records.db.prepare("UPDATE records SET state = 'rejected', decided_by = 'reviewer:m', review_code = ? WHERE id = ?").run("stale_head", stale.id ?? stale);
+  const rows = (await (await get("/v1/work?since=2000-01-01T00:00:00Z")).json()).records;
+  assert.deepEqual(rows.map((r) => [r.judged, r.targets]), [[true, ["acme/app|feat-a"]], [false, ["acme/app|feat-b"]]]);
 });

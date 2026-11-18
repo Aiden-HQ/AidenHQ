@@ -127,11 +127,12 @@ connections:
     auth: fleet_steward_service_key
     returns: untrusted
     tools:
-      read: [ fleet_detector, coach_due, coach_evidence, fleet_generation_status ]
-      # fleet_generation_status: the apply generations. Tagged named, so the read shorthand keeps it to the agents that name it
-      # (the Fleet Steward and the Maintainer).
-      named: [ fleet_generation_status ]
-      write: []
+      read: [ fleet_detector, coach_due, coach_evidence, fleet_generation_status, fleet_stale_followups ]
+      # fleet_generation_status: the apply generations; fleet_stale_followups: the owner's stale todos for the daily brief. Tagged named,
+      # so the read shorthand keeps them to the agents that name them (the Fleet Steward, the Maintainer and the chief of staff).
+      named: [ fleet_generation_status, fleet_stale_followups ]
+      # fleet_followup_snooze: the owner's snooze of a brief line, a note in the steward's own record (role fleet-admin).
+      write: [ fleet_followup_snooze ]
 services:
   data: true
   run:
