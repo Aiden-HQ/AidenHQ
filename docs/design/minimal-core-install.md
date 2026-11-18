@@ -348,11 +348,17 @@ In public mode:
     only admins get in until roles are set.
 - **Without a domain**, apps build, deploy and run. Agents test them from the jail's browser on loopback. Nothing is
   published.
-  - The board's Apps tab says "add a domain or turn on Tailscale to open apps in a browser".
-  - The owner can still look at one through an SSH tunnel to its loopback port, which is safe because the board lives
-    on the IP's host, not on `localhost`.
-- **`AIDENHQ_ANONYMOUS=tailnet` is set only when the app's exposure is the tailnet apps node.** In any other mode every
-  app requires a gate token. `verify-security` checks this per app.
+  - The board's Apps tab says the app opens in a browser through Tailscale's apps node or a shared host (apps-mcp's
+    status row: `unpublished`, no URL). Built; it names only the doors that exist today, not the domain ingress above.
+  - An SSH tunnel to an app's loopback port gets 401 (on a Mac, so does the owner's own browser): the app requires a gate
+    token and no gate runs without `settings.edge`. Opening apps in `local` mode needs a signed browser door first (not
+    built; an owner decision). An unverified sketch: the gate without `edge`, on loopback, with the `password` login
+    through the kernel's 3129, each app on its own host name (`<app>.localhost`, since cookies ignore ports) and a my-apps
+    host for sign-in; whether `__Host-` cookies and the handoff work on plain-http `localhost` names is unchecked.
+- **`AIDENHQ_ANONYMOUS=tailnet` is set only when the app's exposure is the tailnet apps node** (built: compile's
+  `config/apps-node`, read by apps-mcp at each deploy and probe). In any other mode every app requires a gate token, and
+  the deploy's identity probe refuses an app that answers a token-less request. `verify-security` checking this per app
+  is not built yet.
 - **The gate's client address.** `gate.ts:270` reads `cf-connecting-ip` unconditionally. Under Caddy, a client could
   forge it. Change: the gate takes the client address from a header only when the front door's edge secret accompanies
   it (as the board will). Caddy sets `X-AidenHQ-Client-IP` and the secret, and strips both from the client.

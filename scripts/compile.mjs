@@ -14,6 +14,7 @@
 //   config/kernel/modules.json → the kernel: modules' kernel roles, privileged entries, own tokens and channels (stamp, settings),
 //                                each enabled module's compose services and its setup secrets
 //   config/exposure           → ops/vm/setup.sh (root) and verify-security: settings.exposure, one word
+//   config/apps-node          → apps-mcp: `tailnet` when the apps' tailnet node is the instance's door, else `none`
 //   config/Caddyfile           → the `caddy` service, the public front door (only with exposure public, scripts/front-door.mjs)
 //   config/module-data.json    → the apply (ops/lib/generations.sh): each data module's data_version and services digest
 //   config/points/<module>.json → that module's own services only: the contributions to its points (spec §3.6)
@@ -141,6 +142,12 @@ writeFileSync(join(cfgOut, "kernel/checks.json"), JSON.stringify(out.checks, nul
 writeFileSync(join(cfgOut, "kernel/modules.json"), JSON.stringify(out.kernelModules, null, 2) + "\n");
 writeFileSync(join(cfgOut, "engines.json"), JSON.stringify(out.engines, null, 2) + "\n");
 writeFileSync(join(cfgOut, "exposure"), `${out.exposure}\n`);
+// The apps' tailnet node is the door only in tailscale mode with its join key in the vault (compose.yaml apps-edge): only
+// there may apps-mcp let token-less callers into an app as anonymous (AIDENHQ_ANONYMOUS; docs/design/app-identity.md).
+// Anywhere else the way in is the host's loopback, so every app requires a signed identity.
+const appsKey = secretsDir && join(secretsDir, "tailscale_apps_authkey");
+const appsNode = out.exposure === "tailscale" && appsKey && existsSync(appsKey) && readFileSync(appsKey, "utf8").trim() !== "";
+writeFileSync(join(cfgOut, "apps-node"), `${appsNode ? "tailnet" : "none"}\n`);
 if (caddy) writeFileSync(join(cfgOut, "Caddyfile"), caddy);
 else rmSync(join(cfgOut, "Caddyfile"), { force: true });
 writeFileSync(join(cfgOut, "module-data.json"), JSON.stringify(out.dataModules, null, 2) + "\n");

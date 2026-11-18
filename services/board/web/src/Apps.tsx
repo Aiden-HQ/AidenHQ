@@ -3,12 +3,6 @@ import { QUERIES, useQuery } from "./queries";
 import { CardGridSkeleton, Updating } from "./Skeleton";
 import { agoLabel } from "./util";
 
-/** A loopback app link (an instance on no tailnet): on a server, its port needs an SSH tunnel first. */
-const tunnelHint = (url: string) => {
-  const port = /^http:\/\/127\.0\.0\.1:(\d+)/.exec(url)?.[1];
-  return port ? `On this server's loopback: from your computer, ssh -L ${port}:127.0.0.1:${port} <server>, then open it` : undefined;
-};
-
 const mb = (n: number) => `${Math.round(n / 1048576)} MB`;
 
 /** The apps platform, read-only: what runs, whether it's healthy, who owns it, and any open incident. */
@@ -45,10 +39,16 @@ export function AppsView({ onSignIn }: { onSignIn: () => void }) {
               <header className="app-card-head">
                 <h3>{a.name}</h3>
                 <span className={`pill ${a.healthy ? "pill-working" : "pill-failed"}`}>{a.healthy ? "Healthy" : a.state}</span>
-                {a.url && (
-                  <a className="btn" href={a.url} target="_blank" rel="noreferrer noopener" title={tunnelHint(a.url)}>
+                {a.url ? (
+                  <a className="btn" href={a.url} target="_blank" rel="noreferrer noopener">
                     Open
                   </a>
+                ) : (
+                  a.unpublished && (
+                    <span className="muted" title="Apps require a signed-in visitor; on this server no door signs one in for this app">
+                      Opens in a browser through Tailscale's apps node or a shared host
+                    </span>
+                  )
                 )}
               </header>
               <dl className="panel-facts">
