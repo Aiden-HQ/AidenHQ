@@ -779,7 +779,7 @@ export function compile(productDir, instanceDir, { revision, fetch = hostFetch(p
   for (const [key, a] of Object.entries(paperclip.agents)) if (!a.description) fail(`agent ${key} has no description: it is how others route work to it`);
 
   // Roles (spec §3.1 `roles`): each module declares the roles it checks, and its agents hold those or the ones it requests.
-  const rolesOf = (m) => ({ declares: [all.get(m)?.def.roles?.declares ?? []].flat().map((d) => String(d?.id ?? d)), requests: [all.get(m)?.def.roles?.requests ?? []].flat().map(String) });
+  const rolesOf = (m) => ({ declares: [all.get(m)?.def.roles?.declares ?? []].flat().map((d) => String(d?.id ?? d)), requests: [all.get(m)?.def.roles?.requests ?? []].flat().map((r) => String(r).replace(/\?$/, "")) });
   const roleOwner = {};
   for (const name of enabled) for (const r of rolesOf(name).declares) roleOwner[r] = roleOwner[r] ? fail(`role ${r}: declared by ${roleOwner[r]} and ${name}`) : name;
   const defaultGrants = enabled.flatMap((name) => [all.get(name).def.default_grants ?? []].flat().map((g) => {
@@ -804,6 +804,8 @@ export function compile(productDir, instanceDir, { revision, fetch = hostFetch(p
   }
   for (const [key, a] of Object.entries(paperclip.agents)) {
     if (a.reports_to && !paperclip.agents[a.reports_to]) fail(`${key}: reports_to ${a.reports_to}, which is not enabled`);
+    // A role written `id?` is held only while the module declaring it is enabled (like an optional grant `connection?`).
+    a.roles = (a.roles ?? []).filter((r) => !String(r).endsWith("?") || roleOwner[r.slice(0, -1)]).map((r) => String(r).replace(/\?$/, ""));
     const tools = {};
     for (const [raw, grant] of Object.entries(a.connections ?? {})) {
       const name = raw.replace(/\?$/, "");
@@ -846,7 +848,6 @@ export function compile(productDir, instanceDir, { revision, fetch = hostFetch(p
     a.mcp_servers = Object.keys(tools);
     a.enabled_tools = tools;
     if (a.chat != null) a.chat = chatBlock(key, a.chat, tools);
-    a.roles = a.roles ?? [];
     for (const r of a.roles) {
       if (!roleOwner[r]) fail(`${key}: unknown role ${r} (declared: ${Object.keys(roleOwner).join(", ")})`);
       if (roleOwner[r] !== a.module && !rolesOf(a.module).requests.includes(r)) fail(`${key}: module ${a.module} may not grant ${r} (declare it, or list it under roles.requests)`);

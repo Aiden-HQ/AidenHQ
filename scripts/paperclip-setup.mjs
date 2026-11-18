@@ -484,11 +484,12 @@ async function ensureReportingLines(agents) {
 }
 
 async function ensureOpsKey(agent) {
-  // ops-mcp creates tasks as the Meeting Librarian (agent key, standard trust).
+  // ops-mcp creates tasks as the agent holding the ops-key role (agent key, standard trust); a key of another agent (the role
+  // moved) is replaced.
   const existing = readSecret(`paperclip_ops_key${companySuffix}`);
   if (existing) {
     const res = await fetch(new URL("/api/agents/me", baseUrl), { headers: { authorization: `Bearer ${existing}` } });
-    if (res.ok) {
+    if (res.ok && (await res.json()).id === agent.id) {
       step("ops-mcp agent key is valid");
       return false;
     }
@@ -845,16 +846,16 @@ try {
 } catch (e) { fail(e.message); }
 await ensureEventsPlugin({ api, step, version: JSON.parse(readFileSync(join(repo, "services/paperclip-events/package.json"), "utf8")).version }).catch((e) => fail(e.message));
 lap("computers");
-// ops-mcp acts in Paperclip as the agent with the ops-key role (the Meeting Librarian).
+// ops-mcp acts in Paperclip as the agent with the ops-key role.
 const opsAgents = Object.keys(cfg.agents ?? {}).filter((k) => cfg.agents[k].roles?.includes("ops-key"));
 if (opsAgents.length > 1) fail(`only one agent may hold the ops-key role (${opsAgents.join(", ")})`);
-const librarian = opsAgents.length ? agents[opsAgents[0]] : undefined;
-const keyChanged = librarian ? await ensureOpsKey(librarian) : false;
+const opsAgent = opsAgents.length ? agents[opsAgents[0]] : undefined;
+const keyChanged = opsAgent ? await ensureOpsKey(opsAgent) : false;
 if (isWork) await ensureHealthKeys(agents);
 if (isWork) await ensureAgentKeys({ api, agents, secretsDir, baseUrl, step });
 if (isWork) await ensureLaneConfig(agents); // the fast chat lane serves the work company only (phase 1)
 const cfgChanged = isWork ? updateSystemYaml(company.id) : false;
-if (librarian && (keyChanged || cfgChanged)) restartOpsMcp(); // ops-mcp exists only with the meetings module
+if (opsAgent && (keyChanged || cfgChanged)) restartOpsMcp(); // ops-mcp exists only with the meetings module
 ensureCodexConfig();
 writeCatalog();
 lap("keys");
