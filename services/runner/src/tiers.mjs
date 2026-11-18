@@ -230,11 +230,25 @@ function applyParts(s) {
 /** Whether instance.yaml on either side forks this module agent's handbook (overrides.agents.<key>.handbook_fork). */
 const forked = (s, key) => ["base", "head"].some((side) => parse(s[side]?.["instance.yaml"])?.overrides?.agents?.[key]?.handbook_fork != null);
 
+/**
+ * What an instance agent's definition starts running under quiet start (instance.yaml `settings.quiet_start: on`): a heartbeat
+ * turned on, or a routine whose effective status becomes active (it has schedules, and no `overrides.routines.<key>-<routine>`
+ * pauses it; compile never pauses an instance agent's own schedules). Empty when quiet start is off.
+ */
+function quietWakes(key, base, head, instance) {
+  if (instance?.settings?.quiet_start !== "on" || !head) return [];
+  const beats = (d) => d?.heartbeat != null && d.heartbeat !== false;
+  const active = (d, rk) => Boolean(d?.routines?.[rk]?.schedules?.length) && instance.overrides?.routines?.[`${key}-${rk}`]?.status !== "paused";
+  return [...(beats(head) && !beats(base) ? ["turns a heartbeat on"] : []), ...Object.keys(head.routines ?? {}).filter((rk) => active(head, rk) && !active(base, rk)).map((rk) => `starts routine ${rk}`)];
+}
+
 function agentDefPart(key, base, head, s) {
   if (base === null || head === null) return REJECT("unparseable", `agents/${key}/agent.yaml doesn't parse`);
   if (head === undefined) return T(1, "agent-removed", `removes agent ${key}`);
   const caps = routineAutonomyChanges(base?.routines, head.routines);
   if (caps.length) return PANEL("routine-autonomy", `${key}: routine autonomy changes (${caps.join(", ")})`);
+  const woken = quietWakes(key, base, head, parse(s.head?.["instance.yaml"]));
+  if (woken.length) return OWNER_AFTER_REVIEW("quiet-start", `${key}: ${woken.join(", ")} under quiet start, the owner's authority`);
   if (base === undefined) {
     if (head.trial !== true) return PANEL("untrialed-agent", `new agent ${key} isn't in trial`);
     // Only the safe fields (no roles, image or other privileges); any write grant goes to the reviewer at least.
@@ -301,8 +315,10 @@ function instanceParts(s) {
       // slack_post_channels is itself a Tier 2 channel-slack.post record.)
       for (const sk of changedKeys(base.settings, head.settings)) parts.push(PANEL("settings", `changes the setting ${sk}`));
       // Spend is the owner's authority (docs/design/quiet-start.md): raising or removing the install cap, or ending quiet start.
-      const [was, now] = [base.settings?.spend_day_usd, head.settings?.spend_day_usd];
-      if (was != null && (now == null || !(Number(now) <= Number(was)))) parts.push(OWNER_AFTER_REVIEW("spend-cap", `raises or removes the install's daily spend cap (${was} → ${now ?? "none"}): the owner's authority`));
+      // Only a finite positive number at or under the old cap tightens it; unset was no cap at all (the gateway's default).
+      const [was, now] = [base.settings?.spend_day_usd ?? Infinity, head.settings?.spend_day_usd];
+      const tighter = typeof now === "number" && Number.isFinite(now) && now > 0 && now <= Number(was);
+      if (!eq(base.settings?.spend_day_usd, now) && !tighter) parts.push(OWNER_AFTER_REVIEW("spend-cap", `raises or removes the install's daily spend cap (${base.settings?.spend_day_usd ?? "none"} → ${now == null ? "none" : JSON.stringify(now).slice(0, 40)}): the owner's authority`));
       if (base.settings?.quiet_start === "on" && head.settings?.quiet_start !== "on") parts.push(OWNER_AFTER_REVIEW("quiet-start", "turns quiet start off, so every module schedule and heartbeat starts: the owner's authority"));
     } else if (k === "overrides") {
       for (const kind of changedKeys(base.overrides, head.overrides)) {

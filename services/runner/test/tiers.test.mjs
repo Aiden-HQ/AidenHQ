@@ -677,3 +677,26 @@ test("apply: spend and quiet start are the owner's to loosen, anyone's to tighte
   assert.equal(tierOf(one(inst(), inst({}, on))), 1, "without quiet start: as before");
   assert.equal(tierOf(one(inst(), inst({}, beat))), 1, "without quiet start: as before");
 });
+
+test("apply: the install cap tightens only to a finite positive number at or under it", () => {
+  const one = (b, h) => apply(["instance.yaml"], { "instance.yaml": inst(b) }, { "instance.yaml": inst(h) });
+  const owner = (t) => (t.tier === 2 && t.reviewFirst ? 2 : tierOf(t));
+  for (const v of ["5", 0, -1, 1e999, null]) assert.equal(owner(one({ spend_day_usd: 10 }, { spend_day_usd: v })), 2, `10 → ${v}`);
+  assert.equal(owner(one({ spend_day_usd: 10 }, { spend_day_usd: 10.5 })), 2, "a raise");
+  assert.equal(owner(one({}, { spend_day_usd: 50 })), "panel", "unset was no cap: any cap tightens it");
+  assert.equal(owner(one({}, { spend_day_usd: "50" })), 2, "a string is no cap");
+});
+
+test("apply: an instance agent's definition that starts work under quiet start is the owner's", () => {
+  const owner = (t) => (t.tier === 2 && t.reviewFirst ? 2 : tierOf(t));
+  const f = "agents/chaser/agent.yaml";
+  const quiet = inst({ quiet_start: "on" });
+  const was = def({ name: "Chaser", connections: { github: "read" }, routines: { sweep: { schedules: [] } } });
+  const run = (h, i = quiet, extra = {}) => owner(apply([f], { [f]: was, "instance.yaml": i }, { [f]: def({ name: "Chaser", connections: { github: "read" }, ...h }), "instance.yaml": i }, extra));
+  const sched = { sweep: { schedules: [{ cron: "0 9 * * *", label: "daily" }] } };
+  assert.equal(run({ heartbeat: true, routines: { sweep: { schedules: [] } } }), 2, "a heartbeat on");
+  assert.equal(run({ routines: sched }), 2, "a routine's schedule: effectively active");
+  assert.equal(run({ routines: sched }, inst({ quiet_start: "on" }, "overrides:\n  routines:\n    chaser-sweep: { status: paused }\n")), 1, "an override keeps it paused");
+  assert.equal(run({ routines: sched }, inst()), 1, "without quiet start: as before");
+  assert.equal(run({ model: "x", routines: { sweep: { schedules: [] } } }), 1, "other tuning: as before");
+});
