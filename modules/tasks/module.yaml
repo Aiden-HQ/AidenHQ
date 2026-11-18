@@ -11,8 +11,8 @@ connections:
     model_as_caller: true
     tools:
       # advisor_ask, fanout_map (models.mjs): model calls billed to the caller's run through the gateway; they change nothing.
-      # memory_note: a comment on the caller's own memory inbox task (a note for the Librarian), so trial agents have it too.
-      # coach_due, coach_evidence, coach_record: the Agent Coach's (fleet-audit role; services/board/src/coach.ts).
+      # memory_note: a comment on the caller's own memory inbox task (a note for the Fleet Steward), so trial agents have it too.
+      # coach_due, coach_evidence, coach_record: the fleet-audit role's (the Fleet Steward; services/board/src/coach.ts).
       read: [ task_current, task_get, task_search, task_list, task_team, task_comments, task_files, task_file_read, task_approvals, fleet_status, fleet_costs, fleet_catalog, handbook_list, handbook_read, handbook_section, advisor_ask, fanout_map, memory_note, coach_due, coach_evidence, fleet_generation_status ]
       # fleet_generation_status: the host's apply generations. Tagged named, so the read shorthand keeps it to the agents that
       # name it (the Maintainer's grants table does).
@@ -40,7 +40,7 @@ services:
 generated_secrets:
   - tasks_service_key
 data_version: 0 # its data dir's format: bumped by each forward-only migration (docs/configuration.md)
-# With model-tools, every crew agent can consult the advisor; with memory, note a fact for the Librarian. Not from a computer,
+# With model-tools, every crew agent can consult the advisor; with memory, note a fact for the Fleet Steward. Not from a computer,
 # which can't reach the model gateway yet.
 default_grants:
   - { tools: [ paperclip_tasks.advisor_ask ], when: { fields: { adapter: codex_local }, modules: [ model-tools ] }, unless: { fields: { image: true } } }

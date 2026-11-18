@@ -13,8 +13,9 @@ widely, turns messages and forwards into tasks, delegates the doing to other age
 relays the owner's decisions. It never needs the owner to write prompts.
 
 **Crews and agents.** Specialist agents under Aiden: the Researcher (long research and drafts, your task
-replies, recurring reports), DevOps Engineer (app health), Agent Architect (designs new agents), Agent Coach (reviews
-whether agents' output is right and complete, and files fixes), Platform Engineer (changes the instance and the product;
+replies, recurring reports), DevOps Engineer (app health), Agent Architect (designs new agents), Fleet Steward (watches
+the fleet, reviews whether agents' output is right and complete, keeps notes and memory tidy, and files fixes), Maintainer
+(issues on the repos you list, and product bugs upstream), Platform Engineer (changes the instance and the product;
 owns Dependabot PRs), and whatever modules add (Follow-up Tracker, Meeting Librarian, Engineers, UI/UX Designer and UI Reviewer,
 Security Watch, ...). Each agent is a definition (adapter, model,
 grants, schedules) plus an `AGENTS.md` handbook. Agents wake on schedules (Paperclip routines), events (routine
@@ -26,7 +27,7 @@ applies it idempotently; edits made in Paperclip's UI are overwritten by the nex
 
 **Modules.** Product features ship as `modules/<name>/`: a `module.yaml` (settings, agents, routines), agent
 handbooks, connection services, apps and a `compose.yaml`. `core`, `channel-telegram` and `chat-lane` are always installed; the rest
-(`open-loops`, `meetings`, `engineering`, `design`, `security`, `fleet-ops`, `librarian`, `ci`, `warehouse`, and the
+(`open-loops`, `meetings`, `engineering`, `design`, `security`, `fleet-steward`, `maintainer`, `ci`, `warehouse`, and the
 connection modules) are switched on per instance.
 
 **Instance repo.** Your private repo holding everything specific to your deployment: `instance.yaml` (the pinned

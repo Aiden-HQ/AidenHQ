@@ -34,7 +34,7 @@ const errorOf = (b: any) => String(b?.error?.message ?? b?.error ?? "");
 
 /**
  * Where product issues go: only the configured product repo (no tool input names a repo), and only for a caller holding the
- * product-issues role (the chief of staff, and Fleet Ops), whatever its grant says.
+ * product-issues role (the chief of staff, and the Maintainer), whatever its grant says.
  */
 export function productTarget(roles: readonly string[] | undefined, configured: string): [string, string] {
   if (!roles?.includes("product-issues")) throw new Error("product issues need the product-issues role");

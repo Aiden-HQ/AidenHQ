@@ -6,8 +6,8 @@ roles:
   declares:
     - { id: fleet-admin, description: "The board's fleet tools and relaying the owner's words; the chief of staff: never paused, never passed to by an agent." }
     - { id: board-writer, description: "Board moves and recurring tasks." }
-    # Declared here (every instance has the chief of staff) so the upstream tools have a holder even without Fleet Ops; Fleet
-    # Ops requests it.
+    # Declared here (every instance has the chief of staff) so the upstream tools have a holder even without the Maintainer;
+    # the Maintainer requests it (it files the Fleet Steward's product-bug reports).
     - { id: product-issues, description: "Product bugs as issues on the product repo, as the GitHub App (github-mcp github_app_issue)." }
   # ops-key (the meetings module's): the Researcher runs the meeting scan, so ops-mcp acts as it, while meetings is on.
   requests: [ ops-key? ]

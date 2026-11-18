@@ -160,7 +160,6 @@ test("the web for every codex agent: live search by default (an agent may opt do
   assert.ok(codex.length >= 8);
   // Every codex agent can view apps; web_view goes to all but those with web search off (the email/Slack scouts).
   for (const [key, a] of codex) {
-    if (key === "fleet-ops") continue; // reads app status and logs only
     assert.ok(a.enabled_tools.apps?.includes("app_view"), `${key} lacks app_view`);
     if (a.web_search !== "disabled") assert.ok(a.enabled_tools.apps?.includes("web_view"), `${key} lacks web_view`);
   }
@@ -201,6 +200,23 @@ test("trial_writes: an agent that names none keeps today's behaviour, and a gran
   assert.deepEqual(writesOf(partial, partial.paperclip.agents.x, "chat_lane"), ["chat_send"]);
   assert.deepEqual(partial.paperclip.agents.x.trial_withheld, ["chat_lane.wake_at"]);
   assert.throws(() => compile(product, withAgents({ x: { yaml: { trial_writes: undefined, connections: { slack: "read", chat_lane: ["chat_send", "wake_at"] } } } }, ["slack"])), /x: an agent in trial may not have chat_lane write tools \(chat_send, wake_at\); they come with tap 2/);
+});
+test("the Fleet Steward's grants: reads, plus exactly its predecessors' writes; no public GitHub write and no web", () => {
+  // Roster merge 5.3 (Fleet Ops, Agent Coach, Librarian). It reads every agent's evidence (fleet-audit), so it must never
+  // gain a write that reaches outside the fleet: product bugs go to the Maintainer. An edit that widens this fails here.
+  const dir = mkdtempSync(join(tmpdir(), "inst-"));
+  mkdirSync(join(dir, "agents"));
+  writeFileSync(join(dir, "instance.yaml"), YAML.stringify({ product: "0".repeat(40), modules: [...BUNDLE, "github", "meetings", "grafana", "maintainer", "agent-builder"], settings: owner }));
+  const r = compile(product, dir);
+  const a = r.paperclip.agents["fleet-steward"];
+  const writes = Object.entries(a.enabled_tools).flatMap(([c, list]) => list.filter((t) => writeTools(r.paperclip.mcp_servers[c]).includes(t)).map((t) => `${c}.${t}`)).sort();
+  assert.deepEqual(writes, ["apps.person_identity_decide", "ops_mcp.meeting_note_correct", "paperclip_tasks.coach_record", "paperclip_tasks.task_comment", "paperclip_tasks.task_create", "paperclip_tasks.task_delegate", "paperclip_tasks.task_finish", "paperclip_tasks.task_handoff", "paperclip_tasks.task_propose_rule", "paperclip_tasks.task_set_status", "telegram.notify_owner"]);
+  assert.deepEqual(a.enabled_tools.github, ["github_app_issue_status"]);
+  assert.equal(a.web_search, "disabled");
+  assert.ok(!a.enabled_tools.apps.includes("web_view"));
+  assert.deepEqual(a.roles, ["fleet-read", "fleet-audit", "librarian"]);
+  assert.deepEqual(a.delegate_to, ["fleet-engineer", "app-maintainer", "app-owners", "architect", "maintainer"]);
+  assert.ok(r.paperclip.agents.maintainer.enabled_tools.github.includes("github_app_issue"), "the Maintainer files product bugs");
 });
 test("the in-box `aidenhq task|tasks` reads are the tasks module's default grant: crew yes; trial, check, and an Engineer without private_reads no", () => {
   const reads = (yaml) => (compile(product, withAgents({ x: { yaml } }, ["slack"])).paperclip.agents.x.enabled_tools.paperclip_tasks ?? []).filter((t) => ["task_get", "task_search"].includes(t)).sort();

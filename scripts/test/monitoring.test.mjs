@@ -20,7 +20,7 @@ function instance(modules, settings = {}) {
 }
 
 const M = ["prometheus", "node-exporter", "cadvisor", "alertmanager", "grafana", "mcp-grafana"].map((k) => `monitoring-${k}`);
-test("monitoring: services, fleet-ops, secrets, data dirs and loopback-only ports", () => {
+test("monitoring: services, fleet-steward, secrets, data dirs and loopback-only ports", () => {
   const r = compile(product, instance(["monitoring"], { monitoring_retention: "45d" }));
   const s = r.compose.services;
   for (const k of M) {
@@ -28,7 +28,7 @@ test("monitoring: services, fleet-ops, secrets, data dirs and loopback-only port
     if (s[k].build) assert.match(readFileSync(join(s[k].build, "Dockerfile"), "utf8"), /^FROM \S+@sha256:[0-9a-f]{64}$/m, `${k}: base pinned by digest`);
     else assert.match(s[k].image, /@sha256:[0-9a-f]{64}$/, `${k} pinned by digest`);
   }
-  assert.ok(r.catalog.find((m) => m.name === "fleet-ops").enabled, "fleet-ops comes along");
+  assert.ok(r.catalog.find((m) => m.name === "fleet-steward").enabled, "fleet-steward comes along");
   assert.ok(s["monitoring-prometheus"].command.includes("--storage.tsdb.retention.time=45d"));
   assert.deepEqual(s.board.secrets.filter((x) => x === "monitoring_token"), ["monitoring_token"]);
   assert.equal(s.board.environment.MONITORING_TOKEN_FILE, "/run/secrets/monitoring_token");

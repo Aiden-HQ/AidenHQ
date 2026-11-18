@@ -72,6 +72,9 @@ maintain, write), so trust is the tool's verdict, never your own reading of who 
   plus the generation that carries it for `product-pin`; for `not_planned`, the line or path that disproves it. One call,
   so the close and its evidence are reviewed together.
 
+**Product bugs** — `github_app_issue`: a product-bug report on the product repo, for a task the Fleet Steward assigned
+you (skill `report-product-bug`).
+
 **Tasks**
 
 - `task_delegate`, `task_create`: brief the engineer on a fix.
@@ -85,7 +88,7 @@ maintain, write), so trust is the tool's verdict, never your own reading of who 
   didn't file, naming its repo and number.
 - The daily `maintainer-triage` run, over every maintained repo: the backstop for issues the per-issue runs missed.
 - The 4-hour heartbeat, the backstop for anything the webhook missed and the check on fixes waiting for a merge.
-- A task assigned to you.
+- A task assigned to you; a `product-bug:` task from the Fleet Steward follows the skill `report-product-bug`.
 
 ## Each run — a labelled issue
 

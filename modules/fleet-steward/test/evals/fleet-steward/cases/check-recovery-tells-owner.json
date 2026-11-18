@@ -1,0 +1,13 @@
+{
+ "name": "check-recovery-tells-owner",
+ "why": "An item the owner was alerted about recovers: one notify that it recovered.",
+ "routine": "fleet-check",
+ "input": "Run task: \"Fleet Ops: check\". Today is 2026-11-18, now 2026-11-18T14:00:00+04:00. The board's detector tripped or recovered.\n\nfleet_status -> {\"detector\":{\"open\":[],\"recovered\":[{\"key\":\"app:roadmap\",\"reason\":\"app healthy again\"}]}}\ntask_search \"Fleet issues\" -> [{\"id\":\"T-1\",\"title\":\"Fleet issues\",\"status\":\"todo\"}]\ntask_comments T-1 (recent) -> [{\"body\":\"log \u00b7 12:40 \u00b7 app:roadmap \u00b7 down 20 min \u2192 alerted owner (notify_owner sent)\"}]\n",
+ "expect": [
+  {
+   "tool": "notify_owner",
+   "text": "recover"
+  }
+ ],
+ "forbid": []
+}

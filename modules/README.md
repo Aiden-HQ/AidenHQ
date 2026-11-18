@@ -15,7 +15,7 @@ in [aidenhq-modules](https://github.com/Aiden-HQ/aidenhq-modules), which takes n
 |---|---|
 | `apps-platform` | Apps platform: DevOps Engineer, apps-mcp, the gate, the app starter, the design system. Always installed. |
 | `board`, `tasks`, `chief-of-staff` | The owner's board, task tools, and Aiden, the chief of staff. |
-| `agent-builder`, `coach`, `design`, `fleet-ops`, `librarian`, `security`, `engineering` | Specialist agents: Agent Architect, Agent Coach, Designer, Fleet Ops, Librarian, Security Watch, Engineers. |
+| `agent-builder`, `design`, `fleet-steward`, `maintainer`, `security`, `engineering` | Specialist agents: Agent Architect, Designer, Fleet Steward, Maintainer, Security Watch, Engineers. |
 | `ai-reviewer`, `grading`, `platform` | AI review of writes, graded "done", and the product's own change gate. |
 | `engine-codex` | The coding-job engine: Codex on OpenRouter models, in an agent computer. |
 | `codehost-github`, `github`, `ci` | GitHub as code host, issue and PR tools, self-hosted CI runners. |

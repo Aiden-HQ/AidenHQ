@@ -50,10 +50,6 @@
       "source": "./clickhouse"
     },
     {
-      "name": "coach",
-      "source": "./coach"
-    },
-    {
       "name": "codehost-github",
       "source": "./codehost-github"
     },
@@ -78,8 +74,8 @@
       "source": "./engineering"
     },
     {
-      "name": "fleet-ops",
-      "source": "./fleet-ops"
+      "name": "fleet-steward",
+      "source": "./fleet-steward"
     },
     {
       "name": "github",
@@ -108,10 +104,6 @@
     {
       "name": "jira",
       "source": "./jira"
-    },
-    {
-      "name": "librarian",
-      "source": "./librarian"
     },
     {
       "name": "maintainer",
@@ -183,11 +175,10 @@
     "channel-telegram",
     "chat-lane",
     "chief-of-staff",
-    "coach",
     "codehost-local",
     "engine-codex",
     "engineering",
-    "fleet-ops",
+    "fleet-steward",
     "google",
     "grading",
     "memory",

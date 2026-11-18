@@ -28,7 +28,7 @@ contributes:
 
         The token is stored in your private vault and is only used to read.
 settings:
-  # owner/repo of the AidenHQ product this instance runs (the warehouse module requires it): where Fleet Ops reports product
+  # owner/repo of the AidenHQ product this instance runs (the warehouse module requires it): where the Maintainer reports product
   # bugs. Unset (null) leaves github_app_issue refusing.
   product_repo:
     default: null
@@ -60,7 +60,7 @@ connections:
       # commit_status_set: the design-review check on agents-org PRs, as the GitHub App; it also needs the design-review role.
       write: [ commit_status_set ]
       # github_app_issue: product bugs on settings.product_repo only, as the GitHub App, and only for the product-issues role
-      # (Fleet Ops). Tagged destructive so neither `github: read` nor `github: write` includes it: an agent gets it only by
+      # (the Maintainer, for the Fleet Steward). Tagged destructive so neither `github: read` nor `github: write` includes it: an agent gets it only by
       # naming it.
       # The Maintainer's App writes (github_app_issue_comment, github_app_issue_label, github_app_issue_state) act on the
       # maintained repos only (setting maintainer_repos), refuse an untrusted label and scrub outgoing text. Tagged destructive for the same

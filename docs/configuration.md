@@ -55,7 +55,7 @@ apps.yaml                     apps agents created (read and written by apps-mcp)
 agents/<key>.md               extra rules appended to that module agent's handbook
 agents/<key>/agent.yaml       an instance-defined agent
 agents/<key>/AGENTS.md        its handbook
-agents/<key>/memory.md        its curated memory (the Librarian's)
+agents/<key>/memory.md        its curated memory (the Fleet Steward's)
 owner/profile.md              how the owner works, in every crew handbook and chat lane
 decisions.md                  product decisions and "not building" entries the AI reviewer holds changes to
 ```
@@ -82,8 +82,7 @@ outcomes:
 - **The owner's profile** (`owner/profile.md`, at most 4 KB; longer is cut at a line end with a compile warning): how the
   owner likes to work (length, format, channels, what to lead with, taste), one preference per line. Every crew handbook
   carries it under "How the owner works", and so does each agent's chat lane; it shapes how agents work with the owner
-  and never changes a rule, grant or approval. The Librarian proposes edits from the owner's corrections (the Coach
-  hands it evidence), and the Platform Engineer lands them through the usual apply card.
+  and never changes a rule, grant or approval. The Fleet Steward proposes edits from the owner's corrections, and the Platform Engineer lands them through the usual apply card.
 
 - **Overrides** change a fixed set of fields on things that exist: agents (`model`, `reasoning_effort`, `timeout_sec`,
   `image`, `max_parallel` for a bigger host) and routines (`schedules`, `status`, `model`, `autonomy`). Anything else is refused.
@@ -172,9 +171,9 @@ outcomes:
 Every tool call to a connection is checked against `config/grants/grants.json`, keyed by the caller's Paperclip agent
 id: the tools it may use per connection and its roles. Roles gate a few capabilities and may be granted only by the
 modules the registry allows: `fleet-admin` (the board's fleet tools), `board-writer`,
-`app-incidents`, `security-verdict` (security-watch records finding verdicts), `ops-key`, `architect`, `fleet-read` (fleet-ops and core: the board's fleet status only) and `fleet-audit` (core: any agent's evidence packet and its own review log, the Agent Coach's `coach_due`, `coach_evidence`, `coach_record`). Instance agents get none. A module agent may set `delegate_to: [<agent key>, <key>?, app-owners]`: the tasks bridge then
+`app-incidents`, `security-verdict` (security-watch records finding verdicts), `ops-key`, `architect`, `fleet-read` (fleet-steward and core: the board's fleet status only) and `fleet-audit` (fleet-steward: any agent's evidence packet and its own review log, `coach_due`, `coach_evidence`, `coach_record`). Instance agents get none. A module agent may set `delegate_to: [<agent key>, <key>?, app-owners]`: the tasks bridge then
 refuses its `task_create` and `task_delegate` to anyone else (`key?` only when that agent is on; `app-owners`: any agent that
-owns an app); the Agent Coach has one. After editing `kernel/src/proxy.ts`,
+owns an app); the Fleet Steward has one. After editing `kernel/src/proxy.ts`,
 run `node scripts/sync-shared.mjs`.
 
 ## The web and apps' pages
@@ -216,7 +215,7 @@ run `node scripts/sync-shared.mjs`.
 An app's health URL may return JSON with `checks: [{name, ok, count, sample}]`: rules about its own data it can evaluate
 (names: letters, digits, `_ . -`, up to 60; at most 20; `ok` must be a boolean). Health is still the HTTP status alone, so
 a failing check never opens an incident or rolls a deploy back; the board's detector raises it as `quality:<app>:<check>`
-and Fleet Ops routes it to the app's owner. A check that can't be evaluated (malformed, the app down) is unknown and keeps
+and the Fleet Steward routes it to the app's owner. A check that can't be evaluated (malformed, the app down) is unknown and keeps
 its finding open. Samples stay in apps-mcp: `app_status` shows them to a caller who may read the app. No `checks` field
 is the same as an empty list.
 
@@ -237,7 +236,7 @@ Set under `settings:` in `instance.yaml`. The board's Settings page (gear in the
 | `quiet_start` | core | no | | `on` (`ops/setup.sh` writes it for a new install): every module routine with `schedules:` compiles paused and every module agent's heartbeat off, until `overrides.routines.<key>.status: active` or `overrides.agents.<key>.heartbeat` turns one on (Aiden offers them; the agent's Settings tab has the switch). Webhook and runner-started routines and instance agents are untouched. Unset or `off`: as the modules declare. [design/quiet-start.md](design/quiet-start.md) |
 | `spend_day_usd` | core | no | | The install-wide cap on every model call (agents, jobs, the AI reviewer, grader, source writers, side chat, CI), USD per UTC day; `ops/setup.sh` writes 10. Past it the gateway refuses calls (402) and files one `raise_cap` card for today; the board's header shows today's spend against it. Unset: no install-wide cap. |
 | `heartbeat_hours` | core | no | `4` | Hours between each `heartbeat: true` agent's "Heartbeat: <key>" routine run (1, 2, 3, 4, 6, 8, 12 or 24; DeepSeek Flash at low effort). An agent's `heartbeat: <hours>` or `overrides.agents.<key>.heartbeat` sets its own; `false` turns it off for that agent. |
-| `agent_memory` | core | no | `on` | Agent memory: every Codex agent has `memory_note` (a fact and its source, to its own `Memory inbox: <key>` task, 10 a run); the Librarian curates the inboxes daily against run history and proposes `agents/<key>/memory.md` (max 4 KB, cut at a line end past that) through the Platform Engineer and an apply (Tier 1 for an agent without a role, Tier 2 for one with); compile adds it to the handbook as "What you've learned". `off` is the kill switch: no tool, no section (the files stay in git). |
+| `agent_memory` | core | no | `on` | Agent memory: every Codex agent has `memory_note` (a fact and its source, to its own `Memory inbox: <key>` task, 10 a run); the Fleet Steward curates the inboxes daily against run history and proposes `agents/<key>/memory.md` (max 4 KB, cut at a line end past that) through the Platform Engineer and an apply (Tier 1 for an agent without a role, Tier 2 for one with); compile adds it to the handbook as "What you've learned". `off` is the kill switch: no tool, no section (the files stay in git). |
 | `ci_review_model` | ci | no | `~deepseek/deepseek-flash-latest:high` | The template's code review (codex review): `<OpenRouter id>:<effort>` (minimal, low, medium, high, xhigh), handed to the job with its CI token; critical paths run one effort higher. Always allowed. |
 | `ci_review_models` | ci | no | `[~deepseek/deepseek-flash-latest]` | Models a CI token may call besides `ci_review_model`: repos still on the older template (OpenRouter ids; codegenie's `openrouter/` and `:<reasoning>` are dropped). |
 | `ci_review_repo_day_usd`, `ci_review_day_usd` | ci | no | `5`, `20` | CI code review's spend caps per UTC day: each repo's, and all repos' together. Always enforced; past one, reviews fail until the next day. |
@@ -254,7 +253,7 @@ Set under `settings:` in `instance.yaml`. The board's Settings page (gear in the
 | `history_projects` | jira | no | `[]` | Jira project keys whose history to backfill once (for quiet projects the live sync's 30-day window misses). Each project is read back `history_days`, resumably, as baseline rows (hidden from `source_new` unless `include_baseline`, visible to `warehouse_query`), and never again; a newly listed project is picked up on the next pass. |
 | `history_days` | jira | no | `365` | How far back the `history_projects` backfill reaches (read when a project is first backfilled). |
 | `atlassian_mcp_url` | jira | no | Atlassian's v2 MCP URL | Atlassian's remote MCP server. |
-| `fleet_ops_interval_minutes` | fleet-ops | no | `10` | Minutes between the board's Fleet Ops detector checks (lower while developing). |
+| `fleet_ops_interval_minutes` | fleet-steward | no | `10` | Minutes between the board's fleet detector checks (lower while developing). |
 | `product_repo` | warehouse | yes | | `owner/repo` of your AidenHQ product checkout; the warehouse app is built from it at the pinned commit. Its org must be in `github_orgs` or be the agents org. |
 | `upstream` | github | no | `issues` | `off`, `issues` or `prs`: whether agents may report product bugs upstream as issues on `product_repo` (`off` grants none of the upstream tools). Every report is refused while it holds owner data (names, emails, hosts, IPs, ids, credentials). `prs` acts as `issues` until upstream PRs exist. |
 

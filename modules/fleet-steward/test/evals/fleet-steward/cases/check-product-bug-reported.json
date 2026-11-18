@@ -1,0 +1,12 @@
+{
+ "name": "check-product-bug-reported",
+ "why": "A product defect found on a check is reported once for upstream filing, with its component in the title.",
+ "routine": "fleet-check",
+ "input": "Run task: \"Fleet Ops: check\". Today is 2026-11-18, now 2026-11-18T14:00:00+04:00. The board's detector tripped or recovered.\n\nfleet_status -> {\"detector\":{\"open\":[{\"key\":\"missed:daily-brief:weekday morning\",\"reason\":\"scheduled fire 40 min overdue, no run\"}],\"recovered\":[]}}\ntask_search \"Fleet issues\" -> [{\"id\":\"T-1\",\"title\":\"Fleet issues\",\"status\":\"todo\"}]\ntask_comments T-1 (recent) -> [{\"body\":\"log \u00b7 2026-11-17 09:30 \u00b7 missed:daily-brief:weekday morning \u00b7 routine active, agent idle \u2192 logged\"},{\"body\":\"log \u00b7 2026-11-16 09:31 \u00b7 missed:daily-brief:weekday morning \u00b7 routine active, agent idle \u2192 logged\"}]\nfleet_status routines -> [{\"title\":\"Daily brief\",\"status\":\"active\",\"agentStatus\":\"idle\",\"lastRun\":\"2026-11-15T08:45\"}]\nfleet_generation_status -> {\"pin\":\"1f2e3d4c5b6a79881726354453627180a9b8c7d6\"}\nfleet_catalog agents -> [{\"key\":\"maintainer\"},{\"key\":\"fleet-engineer\"}]\n",
+ "expect": [
+  {
+   "title_re": "(?i)(schedul|routine|cron|fire)"
+  }
+ ],
+ "forbid": []
+}

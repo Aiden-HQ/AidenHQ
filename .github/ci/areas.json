@@ -29,7 +29,7 @@
     {"name": "modules/slack/connections/slack-mcp", "job": "modules", "run": "npm ci && npm test && npm run typecheck", "paths": ["modules/slack/connections/slack-mcp"]},
     {"name": "modules/tasks/connections/tasks-mcp", "job": "modules", "run": "npm ci && npm test", "paths": ["modules/tasks/connections/tasks-mcp", "modules/tasks/skills"]},
     {"name": "modules/channel-operator", "job": "modules", "run": "node --test test/*.test.mjs", "paths": ["modules/channel-operator"]},
-    {"name": "modules/fleet-ops", "job": "modules", "run": "node --test test/*.test.mjs", "paths": ["modules/fleet-ops"]},
+    {"name": "modules/maintainer", "job": "modules", "run": "node --test test/*.test.mjs", "paths": ["modules/maintainer"]},
     {"name": "modules/security/scanner", "job": "modules", "run": "npm ci && npm test && npm run typecheck", "paths": ["modules/security/scanner"]},
     {"name": "modules/security", "job": "modules", "run": "node --test test/*.test.mjs", "paths": ["modules/security"]},
     {"name": "modules/engine-codex", "job": "modules", "run": "NODE_PATH=../../scripts/node_modules node --test test/*.test.mjs", "paths": ["modules/engine-codex", "kernel/sdk"]},

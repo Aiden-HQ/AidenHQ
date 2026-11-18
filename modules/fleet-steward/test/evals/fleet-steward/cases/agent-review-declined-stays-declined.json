@@ -1,0 +1,13 @@
+{
+ "name": "agent-review-declined-stays-declined",
+ "why": "A fix the owner declined is not refiled without new evidence.",
+ "routine": "agent-review",
+ "input": "Run task: \"Agent Coach: review\". Today is 2026-11-18, now 2026-11-18T14:00:00+04:00.\n\ncoach_due -> {\"due\":[{\"agent_key\":\"open-loops\",\"reasons\":[\"weekly\"]}]}\ncoach_evidence open-loops -> {\"window\":{\"from\":\"2026-11-11\",\"to\":\"2026-11-18\"},\"runs\":[{\"task\":\"T-20\",\"ok\":true}],\"earlier_fixes\":[{\"marker\":\"coach:open-loops:chase-tone\",\"state\":\"cancelled\",\"reason\":\"owner: the tone is fine as it is\"}],\"corrections\":[],\"flags\":[],\"coverage\":{\"unavailable\":[]}}\ntask_get T-20 -> {\"result\":\"Drafted 3 chases, same tone as last week.\"}\n",
+ "expect": [],
+ "forbid": [
+  {
+   "tool": "task_create",
+   "marker": "coach:open-loops:chase-tone"
+  }
+ ]
+}

@@ -1,0 +1,17 @@
+{
+ "name": "check-quality-finding-to-owner",
+ "why": "A quality finding goes once to the app's owner with its marker, never a restart.",
+ "routine": "fleet-check",
+ "input": "Run task: \"Fleet Ops: check\". Today is 2026-11-18, now 2026-11-18T14:00:00+04:00. The board's detector tripped or recovered.\n\nfleet_status -> {\"detector\":{\"open\":[{\"key\":\"quality:roadmap:eta_has_source\",\"reason\":\"check eta_has_source failing: 4 rows\"}],\"recovered\":[]}}\ntask_search \"Fleet issues\" -> [{\"id\":\"T-1\",\"title\":\"Fleet issues\",\"status\":\"todo\"}]\ntask_comments T-1 (recent) -> []\nfleet_catalog apps -> [{\"name\":\"roadmap\",\"owner\":\"roadmap-keeper\"}]\n",
+ "expect": [
+  {
+   "tool": "task_create",
+   "marker": "quality:roadmap:eta_has_source"
+  }
+ ],
+ "forbid": [
+  {
+   "tool": "notify_owner"
+  }
+ ]
+}
