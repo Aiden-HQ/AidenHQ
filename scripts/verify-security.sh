@@ -915,7 +915,8 @@ grep -qF 'import { assertNoShell } from "./no-shell.mjs";' scripts/paperclip-set
 # files with a token naming only that kind; no owner-words check, no publish URL or token in the runner).
 # `close` is tiered only: Tier 0 for agents-org PRs outside the instance repo and for the product repo's Dependabot PRs
 # (the Platform Engineer's line), refused anywhere else. A repository is created only by an approved create_repo card
-# (`create-repo` files it, the panel's): one call, in createRepoApproved, never from naming or cloning one. `review` asks the
+# (`create-repo` files it, the panel's): one call, in createRepoApproved, never from naming or cloning one. Only a
+# repository that call just created gets the app starter committed on its default branch (seedStarter, a fast-forward publish). `review` asks the
 # AI reviewer about what `pr` would file, files and publishes nothing, and is capped per job.
 # On this server's repos (product #326 ba7db16d): `merge` of local change requests is agentMergeLocal (its own function, so
 # agentMerge's range is anchored on `agentMerge(`): tiered, then always a card (no Tier 0 auto-merge; local-merge is Tier 1),
@@ -928,6 +929,8 @@ tools="$(grep -oE '^export const TOOLS = \[[^]]*\]' services/runner/src/repohelp
   && [ "$(grep -c 'createRepo(' "$rmain")" = 1 ] && awk '/^async function createRepoApproved\(/,/^}/' "$rmain" | grep -F '  const done = await (local ? localHost.createRepo(slug) : app.createRepo(slug));' >/dev/null \
   && awk '/^async function createRepoApproved\(/,/^}/' "$rmain" | grep -F '  if (!local && (!app || !inOrg(cfg.agentsOrg, slug))) throw new UserError(' >/dev/null \
   && [ "$(grep -c 'createRepoApproved(' "$rmain")" = 2 ] && grep -qF '  if (a.action === "create_repo") return createRepoApproved(issue, a);' "$rmain" \
+  && [ "$(grep -c 'seedStarter(' "$rmain")" = 2 ] && awk '/^async function createRepoApproved\(/,/^}/' "$rmain" | grep -F 'const seeded = done === "created" ? await seedStarter(slug)' >/dev/null \
+  && [ "$(grep -c 'hostOf(slug).publish(' "$rmain")" = 1 ] && awk '/^async function seedStarter\(/,/^}/' "$rmain" | grep -F 'await hostOf(slug).publish({ path: clone, slug, sha, branch });' >/dev/null \
   && ! grep -qE 'POST.*/repos\b|/user/repos' modules/codehost-github/src/repos.ts \
   && [ "$(awk '/^async function agentTasks?\(/,/^}/' services/runner/src/main.mjs | grep -c '^  requireTaskReads(ctx);')" = 2 ] \
   && [ "$(awk '/^async function agentMerge\(/,/^}/' "$rmain" | grep -n 'tierFor(ctx.issue, "merge"' | head -1 | cut -d: -f1)" -lt "$(awk '/^async function agentMerge\(/,/^}/' "$rmain" | grep -n 'await fileApproval(ctx.issue, { action: "merge"' | cut -d: -f1)" ] \
