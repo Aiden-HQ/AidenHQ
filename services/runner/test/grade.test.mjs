@@ -4,7 +4,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
 import { crc32, deflateSync } from "node:zlib";
-import { TEXT_TOTAL, fileEvidence, presentNow, taskMergePrs } from "../src/evidence.ts";
+import { TEXT_TOTAL, fileEvidence, presentNow, taskMergePrs, taskPrRows } from "../src/evidence.ts";
 import { GRADE_SCHEMA, escalationFor, evidencePremise, gather, grade, gradeNote, gradePrompt, graderModels, rubricPaths, template } from "../src/grade.ts";
 import { DEEPSEEK, LUNA, openRouterAsk } from "../src/models.mjs";
 
@@ -865,7 +865,7 @@ test("a stored PR number that now names another change waits on the task's own r
   const sha = "e".repeat(40);
   const record = [{ repo: "acme/app", number: 7, url: ref, status: "merged", headRef: branch, sha }];
   const held = await gather({ kind: "pr", ref: "" }, deps({ taskPrs: async () => [], taskMerged: async () => record, pr: async () => elsewhere, diff: unread }));
-  assert.match(held.awaiting, new RegExp(`the runner's record has its merge commit ${sha}`));
+  assert.match(held.awaiting, new RegExp(`the runner's own record has this task's merge commit ${sha}`));
   assert.deepEqual(read, [], "still no diff read");
   assert.doesNotMatch(JSON.stringify(held), new RegExp("f{40}"));
 
@@ -907,7 +907,7 @@ test("a stored PR number that now names another change waits on the task's own r
   assert.match(byHead.version, new RegExp(`^acme/app#7@${"b".repeat(40)}\\+`), "the record's head commit matches, so the change is this task's");
   const moved = await gather({ kind: "pr", ref: "" }, deps({ taskPrs: async () => [], taskMerged: async () => bound, pr: async () => pr({ state: "MERGED", head: "c".repeat(40), headRef: "lean/host-installer-handover" }), diff: unread }));
   assert.match(moved.awaiting, new RegExp(`its head is \`${"c".repeat(12)}\`, not the task's commit \`${"a".repeat(12)}\``));
-  assert.match(moved.awaiting, new RegExp(`the runner's record has its merge commit ${"b".repeat(40)}`));
+  assert.match(moved.awaiting, new RegExp(`the runner's own record has this task's merge commit ${"b".repeat(40)}`));
 
   // A matching branch name does not excuse a record's commit that disagrees: every identifier must agree.
   const both = [{ repo: "acme/app", number: 7, headRef: "lean/host-installer-handover", headOid: "a".repeat(40), sha: "b".repeat(40) }];
@@ -922,6 +922,28 @@ test("a stored PR number that now names another change waits on the task's own r
   const atMerge = [{ repo: "acme/app", number: 7, sha: "b".repeat(40) }];
   assert.match((await gather({ kind: "pr", ref: "" }, deps({ taskPrs: async () => [], taskMerged: async () => atMerge, pr: async () => pr({ state: "MERGED", headRef: "lean/host-installer-handover", merge: "b".repeat(40) }) }))).version, /^acme\/app#7@b{40}\+/);
   assert.match((await gather({ kind: "pr", ref: "" }, deps({ taskPrs: async () => [], taskMerged: async () => atMerge, pr: async () => pr({ state: "MERGED", headRef: "lean/host-installer-handover", merge: "f".repeat(40) }) }))).awaiting, /did not merge at the task's merge commit `b{12}`/);
+});
+
+test("a task's branch rows reach the grading read with the branch they recorded, and an ambiguous PR with none", async () => {
+  const rows = [
+    { repo: "acme/app", branch: "fix/legacy", pr_url: ref },
+    { repo: "acme/app", branch: "fix/legacy", pr_url: `${ref}` },
+    { repo: "acme/app", branch: "feat/other", pr_url: "https://github.com/acme/app/pull/8" },
+    { repo: "acme/app", branch: "feat/unrelated", pr_url: null },
+  ];
+  assert.deepEqual(taskPrRows(rows), [
+    { repo: "acme/app", number: 7, url: ref, head: "fix/legacy" },
+    { repo: "acme/app", number: 8, url: "https://github.com/acme/app/pull/8", head: "feat/other" },
+  ]);
+  // Two rows name one PR with different branches: ambiguous, so no head, and the grading read refuses it rather than guessing.
+  const split = taskPrRows([{ repo: "acme/app", branch: "fix/one", pr_url: ref }, { repo: "acme/app", branch: "fix/two", pr_url: ref }]);
+  assert.deepEqual(split, [{ repo: "acme/app", number: 7, url: ref }]);
+  const ambiguous = { taskPrs: async () => split, pr: async () => pr({ state: "MERGED", merge: "b".repeat(40) }), diff: async () => assert.fail("read an ambiguous PR") };
+  assert.match((await gather({ kind: "pr", ref: "" }, deps(ambiguous))).awaiting, /is named by the runner's own record for this task, which keeps no branch, head commit or merge commit to tell the change by/);
+  // A record's merge commit tells it even so: the guard holds the PR as delivered when GitHub merged at that exact commit.
+  assert.equal((await presentNow({ kind: "pr", ref: "" }, deps({ ...ambiguous, taskMerged: async () => [{ repo: "acme/app", number: 7, url: ref, sha: "b".repeat(40) }] }))).present, true);
+  // And a record whose branch disagrees with the rows is a disagreement, never a guess.
+  assert.equal((await presentNow({ kind: "pr", ref: "" }, deps({ ...ambiguous, taskMerged: async () => [{ repo: "acme/app", number: 7, url: ref, headRef: "fix/one", sha: "b".repeat(40) }] }))).present, false);
 });
 
 test("the evidence-wait guard finds a merge and a matching healthy deploy, and nothing where the work is not", async () => {

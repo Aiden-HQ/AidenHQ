@@ -55,7 +55,7 @@ import { fileContext } from "../../shared/review-files.mjs";
 import { GRADE_SCHEMA, GRADER_MARKER, escalationFor, gather, grade, gradeNote, template } from "./grade.ts";
 import { createGradeLoop } from "../../../modules/grading/src/loop.mjs";
 import { createResolver } from "../../../kernel/src/net.ts";
-import { ALREADY_APPLIED, guardBranch, localPullRequest } from "./evidence.ts";
+import { ALREADY_APPLIED, guardBranch, localPullRequest, taskPrRows } from "./evidence.ts";
 import { jobUsage } from "./usage.ts";
 import { createEvalGate, officialOf } from "./evalgate.ts";
 import { fastChecks } from "../../../kernel/src/fastcheck.ts";
@@ -2006,14 +2006,7 @@ function gradeDeps(issue) {
       let rows = state.branches(issue.id);
       const delegated = (c) => isAgentSubtask(c) && Boolean(issue.assigneeAgentId) && c.createdByAgentId === issue.assigneeAgentId && c.status !== "cancelled";
       if (!rows.length) rows = (await pc.children(issue.id, ALL_STATUSES)).filter(delegated).flatMap((c) => state.branches(c.id));
-      const out = [];
-      for (const b of rows) {
-        for (const p of prQueue.findPrs(b.pr_url ?? "")) {
-          if (out.some((x) => x.repo.toLowerCase() === p.repo.toLowerCase() && x.number === p.number)) continue;
-          out.push({ ...p, head: b.branch });
-        }
-      }
-      return out;
+      return taskPrRows(rows);
     },
     // The PRs this task's own runner records tie to it when no branch row does: its merge queue for the task, the merges it was
     // asked to run, and the merge cards it filed on it. The runner's own state and the board's cards, never a comment: a
