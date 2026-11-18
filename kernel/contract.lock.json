@@ -81,7 +81,6 @@
     "route GET /v1/whoami": {"state":"experimental","fp":"auth=bearer"},
     "route GET /v1/work": {"state":"experimental","fp":"auth=module"},
     "route GET /v1/work/metrics": {"state":"experimental","fp":"auth=module"},
-    "route POST /v1/work/grader-token": {"state":"experimental","fp":"auth=module"},
     "route GET /v1/writes": {"state":"experimental","fp":"auth=board|runner"},
     "route GET /v1/writes/:id": {"state":"experimental","fp":"auth=bearer"},
     "route POST /c/:connection/mcp": {"state":"stable","fp":"auth=bearer"},
@@ -107,6 +106,7 @@
     "route POST /v1/wakes/:key/drop": {"state":"experimental","fp":"auth=module"},
     "route POST /v1/wakes/claim": {"state":"experimental","fp":"auth=module"},
     "route POST /v1/wakes/events": {"state":"experimental","fp":"auth=events-key"},
+    "route POST /v1/work/grader-token": {"state":"experimental","fp":"auth=module"},
     "route POST /v1/writes": {"state":"experimental","fp":"auth=bearer"},
     "route POST /v1/writes/:id/claim": {"state":"experimental","fp":"auth=runner"},
     "route POST /v1/writes/:id/outcome": {"state":"experimental","fp":"auth=module|runner"},
@@ -174,6 +174,7 @@
     "schema writes.json.*.card.sentence": {"state":"experimental","fp":"{\"req\":false,\"type\":\"string\"}"},
     "schema writes.json.*.floor": {"state":"experimental","fp":"{\"req\":true,\"enum\":[0,1,2]}"},
     "schema writes.json.*.panel": {"state":"experimental","fp":"{\"req\":false,\"type\":\"boolean\"}"},
+    "schema writes.json.*.paths": {"state":"experimental","fp":"{\"req\":false,\"const\":true}"},
     "schema writes.json.*.tools": {"state":"experimental","fp":"{\"req\":false,\"type\":\"array\"}"},
     "schema writes.json.*.tools[]": {"state":"experimental","fp":"{\"req\":false,\"type\":\"string\"}"}
   }
