@@ -7,6 +7,7 @@ import { randomBytes } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
 import { rolesOf } from "./identity.ts";
 import { JobError } from "./jobs.ts";
+import type { JobTools } from "./jobtools.ts";
 import type { RoutineCap } from "./tier.ts";
 import type { Skill } from "./sandbox.ts";
 
@@ -46,12 +47,15 @@ export const wakeInbox = (db: DatabaseSync): Wakes => ({
   bind: (key, job) => { db.prepare("UPDATE wakes SET job = ? WHERE key = ?").run(job, key); },
   unclaim: (key) => { db.prepare("UPDATE wakes SET job = NULL, until = 0 WHERE key = ?").run(key); },
 });
-export type Admitted = { id: string; module: string; agent: string; task: string; identifier: string; profile: Profile; authority: Authority; prompt: string; session?: string; wake: string };
+/** `fresh`: the last job asked for a fresh session (`aidenhq reset`): no session resumes, the dispatcher's included. */
+export type Admitted = { id: string; module: string; agent: string; task: string; identifier: string; profile: Profile; authority: Authority; prompt: string; session?: string; fresh: boolean; wake: string };
 
 const LIVE = "state IN ('admitted', 'running')";
 const ID = /^[\w.:-]{1,200}$/;
 
-export function createAdmission({ db, grants, kinds, capacity, spend, mayDispatch, cp, wakes, provenance, routineCap, launch, log }: {
+export function createAdmission({ db, grants, kinds, capacity, spend, mayDispatch, cp, wakes, provenance, routineCap, nextTurn, launch, log }: {
+  /** What the task's last job asked of this turn (jobtools.ts): read in the transaction, spent once the job has started. */
+  nextTurn: Pick<JobTools, "pending" | "taken" | "refusal">;
   /** Kernel provenance (provenance.ts): a task carrying a creation intent with no row yet is not admitted until reconciled. */
   provenance: { pending(issue: { id: string; description?: string | null }): boolean };
   /** The task's routine cap as the kernel traces it now (tier.ts taskRoutineCap): frozen on the job row at admission. */
@@ -123,11 +127,20 @@ export function createAdmission({ db, grants, kinds, capacity, spend, mayDispatc
       const over = spend(agent, task);
       if (over.length) throw new JobError(429, "over-cap", `the ${over.map((o) => o.scope).join(", ")} spend cap is used up`);
       const authority = freeze(g, w.cause);
+      // The last job's `aidenhq engine`: applied when the agent may still run it now, else ignored loudly (refusing would
+      // wedge the task: the request would stand at every retry). Never widens `models`.
+      const asked = nextTurn.pending(task);
+      if (asked?.engine) {
+        const why = nextTurn.refusal(asked.engine, authority.models);
+        if (why) log("a job's next-turn engine request is ignored", { job: asked.job, task, why });
+        else Object.assign(authority, { engine: asked.engine.kind }, asked.engine.model ? { model: asked.engine.model } : {});
+      }
+      const fresh = asked?.fresh === true;
       db.prepare("INSERT INTO jobs (id, module, agent, task, engine, pid, log, dir, at, jobcaps, observing, live_input, state, profile, wake, authority, routine, routine_cap) VALUES (?, ?, ?, ?, ?, 0, '', '', ?, ?, 0, 0, 'admitted', ?, ?, ?, ?, ?)")
         .run(id, module, agent, task, authority.engine, Date.now(), JSON.stringify(authority.jobcaps), authority.profile, b.wake, JSON.stringify(authority), cap?.routine ?? null, cap?.cap ?? null);
       wakes.bind(b.wake, id);
       db.exec("COMMIT");
-      job = { id, module, agent, task, identifier, profile: authority.profile, authority, prompt: b.prompt, ...(b.session ? { session: b.session } : {}), wake: b.wake };
+      job = { id, module, agent, task, identifier, profile: authority.profile, authority, prompt: b.prompt, ...(b.session && !fresh ? { session: b.session } : {}), fresh, wake: b.wake };
     } catch (e) {
       if (db.isTransaction) db.exec("ROLLBACK");
       throw e;
@@ -145,6 +158,7 @@ export function createAdmission({ db, grants, kinds, capacity, spend, mayDispatc
       log("job deferred: no free computer", { job: id, task });
       return { ...v, state: "deferred" };
     }
+    nextTurn.taken(task);
     return view(id);
   }
 

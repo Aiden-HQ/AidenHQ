@@ -1,13 +1,14 @@
 // A running job's own requests for its task's next turn (POST /v1/jobtools/<cmd>, the in-box `aidenhq reset|engine|cleanup`):
 // a fresh session, another engine or model, the workspace removed when the turn ends. The caller is a kernel job's token
 // (boxes.ts: `ahqj_` kind job, naming its job); the job is that one, live, on the token's own agent and task, never one the
-// body names. Each request is recorded on the job; the next turn's admission reads it once (nextTurn) and checks an engine
-// or model against the agent's profile like any other.
+// body names. Each request is recorded on the job. `cleanup` happens when the asking job's box is released (boxes.ts); the
+// next turn's admission (admission.ts) applies `reset` and `engine`, checking the engine and model against the agent's grants
+// then, and the requests go once that turn has started (taken), so a deferred or failed start keeps them for the next try.
 import type { DatabaseSync } from "node:sqlite";
 import { verifyToken } from "./gateway/token.ts";
 
 export const JOB_TOOLS = ["reset", "engine", "cleanup"] as const;
-export type NextTurn = { fresh: boolean; engine: { kind: string; model?: string } | null; cleanup: boolean };
+export type NextTurn = { job: string; fresh: boolean; engine: { kind: string; model?: string } | null; cleanup: boolean };
 
 export class JobToolError extends Error {
   status: number;
@@ -22,7 +23,7 @@ export function createJobTools({ db, secret, engines, now = Date.now }: {
   db: DatabaseSync;
   /** The kernel's gateway_job_secret, read fresh. */
   secret: () => string;
-  /** The engine kinds the compiled registry provides (config/engines.json). */
+  /** The engine kinds the compiled registry provides that run in an agent computer (config/engines.json `box: true`). */
   engines: () => string[];
   now?: () => number;
 }) {
@@ -39,6 +40,12 @@ export function createJobTools({ db, secret, engines, now = Date.now }: {
     return p.id;
   }
 
+  /** Why an engine request can't run now (`models`: the agent's allowed models, its grant's), or undefined. */
+  function refusal(e: { kind: string; model?: string }, models: string[]): string | undefined {
+    if (!engines().includes(e.kind)) return `no engine "${e.kind}" (${engines().join(", ") || "none"})`;
+    if (e.model !== undefined && !models.includes(e.model)) return `model ${e.model} isn't one this agent may use (${models.join(", ") || "none"})`;
+  }
+
   return {
     /** One command from a job's box: what it prints. */
     run(token: string, cmd: string, b: { engine?: unknown; model?: unknown }): string {
@@ -47,16 +54,28 @@ export function createJobTools({ db, secret, engines, now = Date.now }: {
       if (cmd === "reset") return (save.run(job, 1, null, 0, now()), "The next turn starts with a fresh session.");
       if (cmd === "cleanup") return (save.run(job, 0, null, 1, now()), "The workspace is removed when this turn ends.");
       const kind = String(b?.engine ?? ""), model = b?.model == null || b.model === "" ? undefined : String(b.model);
-      if (!KIND.test(kind) || !engines().includes(kind)) throw new JobToolError(400, "unknown-engine", `no engine "${kind}" (${engines().join(", ") || "none"})`);
+      if (!KIND.test(kind)) throw new JobToolError(400, "unknown-engine", `no engine "${kind}" (${engines().join(", ") || "none"})`);
       if (model !== undefined && !MODEL.test(model)) throw new JobToolError(400, "bad-model", `"${model}" isn't a model id (vendor/model)`);
+      // Told now, against this job's own models; the next admission checks again against the agent's grants then.
+      const a = db.prepare("SELECT authority FROM jobs WHERE id = ?").get(job) as { authority: string | null } | undefined;
+      const why = refusal({ kind, ...(model ? { model } : {}) }, a?.authority ? (JSON.parse(a.authority) as { models: string[] }).models : []);
+      if (why) throw new JobToolError(400, "not-allowed", why);
       save.run(job, 0, JSON.stringify({ kind, ...(model ? { model } : {}) }), 0, now());
       return `The next turn runs on ${kind}${model ? ` (${model})` : ""}.`;
     },
-    /** What a finished job asked of its task's next turn: read once, then gone. */
-    nextTurn(job: string): NextTurn {
-      const r = db.prepare("DELETE FROM jobtools WHERE job = ? RETURNING fresh, engine, cleanup").get(job) as { fresh: number; engine: string | null; cleanup: number } | undefined;
-      return { fresh: r?.fresh === 1, engine: r?.engine ? JSON.parse(r.engine) : null, cleanup: r?.cleanup === 1 };
+    /** What the task's last ended job asked of its next turn, if anything (read in the admission transaction). */
+    pending(task: string): NextTurn | undefined {
+      const r = db.prepare(`SELECT t.job, t.fresh, t.engine, t.cleanup FROM jobtools t JOIN jobs j ON j.id = t.job
+        WHERE j.task = ? AND j.state NOT IN ('admitted', 'running') ORDER BY t.at DESC LIMIT 1`).get(task) as { job: string; fresh: number; engine: string | null; cleanup: number } | undefined;
+      return r && { job: r.job, fresh: r.fresh === 1, engine: r.engine ? JSON.parse(r.engine) : null, cleanup: r.cleanup === 1 };
     },
+    /** The task's next turn has started: its ended jobs' requests are spent. */
+    taken(task: string) {
+      db.prepare("DELETE FROM jobtools WHERE job IN (SELECT id FROM jobs WHERE task = ? AND state NOT IN ('admitted', 'running'))").run(task);
+    },
+    /** Whether this job asked for its workspace to go when it ends. */
+    cleanup: (job: string) => (db.prepare("SELECT cleanup FROM jobtools WHERE job = ?").get(job) as { cleanup: number } | undefined)?.cleanup === 1,
+    refusal,
   };
 }
 export type JobTools = ReturnType<typeof createJobTools>;

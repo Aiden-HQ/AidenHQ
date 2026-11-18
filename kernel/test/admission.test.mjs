@@ -7,6 +7,7 @@ import { createJobs } from "../src/jobs.ts";
 import { createAdmission, wakeInbox } from "../src/admission.ts";
 import { createWakes } from "../src/wakes.ts";
 import { createProvenance } from "../src/provenance.ts";
+import { createJobTools } from "../src/jobtools.ts";
 
 function setup({ capacity = 12, spend = () => [], launch = async () => {}, grants: g } = {}) {
   const db = new DatabaseSync(":memory:");
@@ -30,7 +31,7 @@ function setup({ capacity = 12, spend = () => [], launch = async () => {}, grant
   const provenance = createProvenance({ db, cap: async () => undefined, search: async () => [], log: () => {} });
   const descriptions = {}, caps = {};
   const adm = createAdmission({
-    provenance, routineCap: async (task) => caps[task],
+    provenance, routineCap: async (task) => caps[task], nextTurn: createJobTools({ db, secret: () => "s", engines: () => [] }),
     db, grants: () => grants, capacity: () => capacity, spend,
     kinds: () => ({ "tasks.create_task": { floor: 1, tools: ["tasks.create"] }, "slack.post": { floor: 1, tools: ["slack.post"] }, "tasks.now": { floor: 0, tools: ["tasks.create"] } }),
     mayDispatch: (module, agent) => module === "acme-dispatch" && agent !== "agent-3",
@@ -98,10 +99,14 @@ test("spend caps used up → 429 and no job", async () => {
 
 test("a launcher 503 after admission defers the job: no job row, the wake back with its dispatcher for the next tick", async () => {
   const { adm, wake, wakes, inbox, db } = setup({ launch: async () => { throw Object.assign(new Error("all computers are busy"), { status: 503 }); } });
+  // The task's last job asked for a fresh session: a deferred start doesn't spend the request.
+  db.prepare("INSERT INTO jobs (id, module, agent, task, engine, pid, log, dir, at, jobcaps, observing, live_input, state) VALUES ('j-last', 'acme-dispatch', 'agent-1', 'task-1', 'codex', 0, '', '', 1, '[]', 0, 0, 'done')").run();
+  db.prepare("INSERT INTO jobtools (job, fresh, cleanup, at) VALUES ('j-last', 1, 0, 1)").run();
   const job = await adm.admit("acme-dispatch", req(wake("w1", "task-1", "agent-1")));
   assert.equal(job.state, "deferred");
   assert.equal(wakes.get("w1").job, null);
-  assert.equal(db.prepare("SELECT COUNT(*) AS n FROM jobs").get().n, 0);
+  assert.equal(db.prepare("SELECT COUNT(*) AS n FROM jobs WHERE id != 'j-last'").get().n, 0);
+  assert.equal(db.prepare("SELECT fresh FROM jobtools WHERE job = 'j-last'").get().fresh, 1);
   // The inbox hands it to the same dispatcher again at once, and it is admitted again.
   assert.deepEqual(inbox.claim("acme-dispatch").map((w) => w.key), ["w1"]);
   assert.equal((await adm.admit("acme-dispatch", req("w1"))).state, "deferred");
@@ -119,7 +124,7 @@ test("a job admitted but never started when the kernel stopped is deferred at th
   await new Promise((r) => setTimeout(r, 20));
   assert.equal(db.prepare("SELECT state FROM jobs").get().state, "admitted");
   assert.ok(wakes.get("w1").job);
-  const next = createAdmission({ db, grants: () => grants, capacity: () => 12, spend: () => [], kinds: () => ({}), mayDispatch: () => true, cp: {}, wakes: wakeInbox(db), provenance: { pending: () => false }, routineCap: async () => undefined, launch: async () => {}, log: () => {} });
+  const next = createAdmission({ db, grants: () => grants, capacity: () => 12, spend: () => [], kinds: () => ({}), mayDispatch: () => true, cp: {}, wakes: wakeInbox(db), provenance: { pending: () => false }, routineCap: async () => undefined, nextTurn: createJobTools({ db, secret: () => "s", engines: () => [] }), launch: async () => {}, log: () => {} });
   next.recover();
   assert.equal(db.prepare("SELECT COUNT(*) AS n FROM jobs").get().n, 0);
   assert.equal(wakes.get("w1").job, null);

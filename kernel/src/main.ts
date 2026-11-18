@@ -252,20 +252,22 @@ const moduleSecrets = createModuleSecrets({
 // Admission (admission.ts) and the kernel's own computers for the jobs it admits (boxes.ts): capacity is settings.computers_max,
 // the number the launcher's pool reads too (config/computers.json `max`; missing, nothing is admitted).
 const computers = watched(path.join(configDir, "computers.json"), (j) => j as { max?: unknown; connections?: Record<string, { tool_timeout_sec?: number }> }, {});
+// A job's requests for its task's next turn (`aidenhq reset|engine|cleanup`): boxes does the cleanup, admission the rest.
+const jobTools = createJobTools({ db: records.db, secret: () => secret("gateway_job_secret"), engines: () => Object.entries(readEngines(sandbox)).filter(([, e]) => e.box === true).map(([k]) => k) });
 boxes = createBoxes({
   db: records.db, cfg: sandbox, jobs, call: launcherClient(launcherUrl, () => secret("launcher_kernel_key")), secret, whoami,
-  connections: () => computers().connections ?? {}, handbook: handbookFrom(configDir), log,
+  connections: () => computers().connections ?? {}, handbook: handbookFrom(configDir), cleanup: jobTools.cleanup, log,
 });
 const admission = createAdmission({
   db: records.db, grants: () => (grantsTable().agents ?? {}) as never, kinds: registry, capacity: () => Number(computers().max) || 0,
-  spend: (agent, task) => gw.exhausted(agent, task), mayDispatch, wakes: wakeInbox(records.db), launch: (job) => boxes!.launch(job), log,
+  spend: (agent, task) => gw.exhausted(agent, task), mayDispatch, wakes: wakeInbox(records.db), nextTurn: jobTools, launch: (job) => boxes!.launch(job), log,
   provenance, routineCap: (task) => taskRoutineCap(cpTrace, task, grantsTable().routines as Record<string, string> | undefined, runIssue),
   cp: { task: async (id) => { const r = await cpApi(`/api/issues/${encodeURIComponent(id)}`); return r.ok ? ((await r.json()) as never) : undefined; } },
 });
 admission.recover();
 boxes.start();
 const lane = createLane({ db: records.db, owner: ownerApi, grantsFile: grantsTable, log, postAsAgent: async (agent, task, job, body) => ({ id: String((await outcomes.post({ id: job, agent, task }, { kind: "lane", body })).comment) }) });
-const backplane = createBackplane({ checks, lane, whoami, asserter, grantsFile: grantsTable, log, writes, records, channels, brake, notify, owner: ownerApi, ownerRaw: (p) => cpApi(p), modules: modulesFile, boardKey: () => secret("gateway_board_key"), reviews, runnerKey: () => secret("runner_writes_key"), reviewerKey: () => secret("reviewer_key"), jobs, admission, outcomes, wakes, tasks: createModuleTasks({ owner: ownerApi, agents: () => grantsTable().agents ?? {}, log }), work, graderToken, dropGraderToken: (task) => graderTokens.delete(task), eventsKey: () => secret("paperclip_events_key"), jobTools: createJobTools({ db: records.db, secret: () => secret("gateway_job_secret"), engines: () => Object.keys(readEngines(sandbox)) }), advisories: advisories.list, accounts: createAuthApi({ accounts: () => accounts, whoami, boardKey: () => secret("gateway_board_key"), recoveryKeyWaiting: () => Boolean(firstRun.recoveryKey()), modelReady: modelState.ready, operatorKey: () => secret("board_operator_key"), secrets: moduleSecrets }), proxy: (req, res, c) => proxy(req, res, c!), cp: createCp({ whoami, asserter, controlUrl, launcherUrl, checks, provenance, log }) as never, boardCp: createBoardCp({ controlUrl, key: () => secret("paperclip_board_key"), log }) as never });
+const backplane = createBackplane({ checks, lane, whoami, asserter, grantsFile: grantsTable, log, writes, records, channels, brake, notify, owner: ownerApi, ownerRaw: (p) => cpApi(p), modules: modulesFile, boardKey: () => secret("gateway_board_key"), reviews, runnerKey: () => secret("runner_writes_key"), reviewerKey: () => secret("reviewer_key"), jobs, admission, outcomes, wakes, tasks: createModuleTasks({ owner: ownerApi, agents: () => grantsTable().agents ?? {}, log }), work, graderToken, dropGraderToken: (task) => graderTokens.delete(task), eventsKey: () => secret("paperclip_events_key"), jobTools, advisories: advisories.list, accounts: createAuthApi({ accounts: () => accounts, whoami, boardKey: () => secret("gateway_board_key"), recoveryKeyWaiting: () => Boolean(firstRun.recoveryKey()), modelReady: modelState.ready, operatorKey: () => secret("board_operator_key"), secrets: moduleSecrets }), proxy: (req, res, c) => proxy(req, res, c!), cp: createCp({ whoami, asserter, controlUrl, launcherUrl, checks, provenance, log }) as never, boardCp: createBoardCp({ controlUrl, key: () => secret("paperclip_board_key"), log }) as never });
 // The admin listener's accounts (data/kernel/auth/auth.db) and pages. Accounts not moved yet, or a malformed URL setting: the
 // listener refuses while every other part of the kernel serves.
 const urlOf = (v: string) => { try { return v ? new URL(v) : undefined; } catch { log("ignoring a malformed URL setting", { value: v.slice(0, 100) }); return undefined; } };
