@@ -5,7 +5,7 @@ import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
 import { crc32, deflateSync } from "node:zlib";
 import { TEXT_TOTAL, fileEvidence, presentNow, taskMergePrs } from "../src/evidence.ts";
-import { GRADE_SCHEMA, escalationFor, evidencePremise, gather, grade, gradeNote, gradePrompt, graderModels, rubricPaths } from "../src/grade.ts";
+import { GRADE_SCHEMA, escalationFor, evidencePremise, gather, grade, gradeNote, gradePrompt, graderModels, rubricPaths, template } from "../src/grade.ts";
 import { DEEPSEEK, LUNA, openRouterAsk } from "../src/models.mjs";
 
 const pr = ({ state = "OPEN", check = "SUCCESS", head = "h".repeat(40), merge = "m".repeat(40), imageScan = null, files = undefined, title = "fix: a change", body = "" } = {}) => {
@@ -314,6 +314,56 @@ test("corrupt or empty criteria are a retryable grading failure, never a verdict
   }
   const emptyRubric = await grade({ rubric: [], deliverable: { kind: "report", ref: "" }, facts: [], data: {}, request: "", authorModel: "", ask });
   assert.equal(emptyRubric.outcome, "grading_failed");
+});
+
+// The case that filed AidenHQ#407: a description carries an authored "Graded before done" block (7 criteria) and the
+// runner-appended standard line, while the row's rubric is the 6-line template. The grader answers the rubric alone, so the
+// description's criteria lines cannot inflate the answer, and the pass is a verdict instead of a permanent count mismatch.
+test("the grader answers the row's rubric once, not the criteria lines copied into the description", async () => {
+  const rubric = template("pr");
+  assert.equal(rubric.length, 6, "the standard pr rubric");
+  const description = [
+    "**Outcome:** none.",
+    "",
+    "**Change wanted.** Number the rubric and strip the copied blocks.",
+    "",
+    "Graded before done (pr: acme/app):",
+    "1. PR merged into the default branch, checks green on the head.",
+    "2. The diff makes the criteria the grader answers exactly the row's rubric.",
+    "3. A description with extra criteria lines cannot change the answer count.",
+    "",
+    "4. A description with no such block still reaches the model unchanged.",
+    "5. Typecheck is clean and the tests pass.",
+    "6. The test asserts the answer count.",
+    "7. Nothing else reads as a criterion.",
+    "",
+    "Graded before done (pr): the standard pr criteria.",
+    "",
+    "When done: comment your result, then call task_finish.",
+  ].join("\n");
+  let asked;
+  const ask = async (_model, prompt) => {
+    asked = prompt;
+    // Every numbered line the model can see, as it would count criteria: the rubric's, then the request's copies.
+    const ids = [...String(prompt.user).matchAll(/^(\d+)\. /gm)].map((m) => m[1]);
+    return { content: JSON.stringify({ verdict: "satisfied", criteria: ids.map((id) => ({ id, met: "yes", evidence: `criterion ${id} is shown by the diff` })) }) };
+  };
+  const v = await grade({ rubric, deliverable: { kind: "pr", ref }, facts: ["acme/app#7 merged into main"], data: { DIFF: "+x" }, request: `A task title\n\n${description}`, authorModel: "", ask });
+  assert.equal(v.outcome, "satisfied", v.reason);
+  assert.equal(v.criteria.length, rubric.length);
+  // The rubric is numbered once, 1..6, and each line is the row's own criterion.
+  assert.match(String(asked.user), /The rubric \(trusted[^)]*\):\n1\. Merged into the default branch[^]*\n6\. The description's Evidence section/);
+  // No copied criteria block reaches the model, and the request itself still does, with its ask and its repro.
+  const request = String(asked.user).split("<<<REQUEST\n")[1].split("\nREQUEST>>>")[0];
+  assert.doesNotMatch(request, /Graded before done/);
+  assert.doesNotMatch(request, /7\. Nothing else reads as a criterion/);
+  assert.match(request, /\*\*Change wanted\.\*\* Number the rubric and strip the copied blocks\./);
+  assert.match(request, /When done: comment your result, then call task_finish\./);
+  // A description with no such block is the request, unchanged.
+  const plain = "**Outcome:** none.\n\nA repro: run the test and see the count mismatch.";
+  let kept;
+  await grade({ rubric: ["the ask is done"], deliverable: { kind: "pr", ref }, facts: [], data: {}, request: plain, authorModel: "", ask: async (_m, p) => ((kept = p), { content: JSON.stringify({ verdict: "satisfied", criteria: [{ id: "1", met: "yes", evidence: "shown" }] }) }) });
+  assert.match(String(kept.user), new RegExp(`<<<REQUEST\\n${plain.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\nREQUEST>>>`));
 });
 
 test("parseable criteria still take the genuine satisfied and needs_revision paths", async () => {

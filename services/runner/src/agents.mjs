@@ -29,6 +29,44 @@ const COMMANDS = new Map([
 /** Remove HTML comments: hidden text never counts as the user's words. */
 export const stripHidden = (s) => String(s ?? "").replace(/<!--[\s\S]*?-->/g, "");
 
+/**
+ * Remove a description's copies of a grade's rubric: each `Graded before done (…)` line and the numbered criteria under
+ * it. A removed block is rubric material, not the request: the row's own rubric is the only criteria list the grader
+ * answers (grade.ts), so extra criteria lines in the task's words must not reach the model as if they were criteria.
+ */
+export const stripRubric = (s) => {
+  const text = String(s ?? "");
+  const heading = /^[ \t]*Graded before done \([^)]*\):/;
+  const criterion = /^[ \t]*\d+\.[ \t]/;
+  const blank = /^[ \t]*$/;
+  const kept = [];
+  const lines = text.split("\n");
+  let removed = false;
+  for (let i = 0; i < lines.length; i++) {
+    if (!heading.test(lines[i])) {
+      kept.push(lines[i]);
+      continue;
+    }
+    removed = true;
+    // The heading and every criterion line after it; blank lines only when another criterion follows, so the request's
+    // own text after the block stays as it was.
+    while (i + 1 < lines.length) {
+      if (criterion.test(lines[i + 1])) {
+        i++;
+        continue;
+      }
+      let k = i + 1;
+      while (k < lines.length && blank.test(lines[k])) k++;
+      if (k > i + 1 && k < lines.length && criterion.test(lines[k])) {
+        i = k - 1;
+        continue;
+      }
+      break;
+    }
+  }
+  return removed ? kept.join("\n").replace(/\n{3,}/g, "\n\n").trim() : text;
+};
+
 /** "push" or "pr" when the whole comment is exactly that word; otherwise undefined. */
 export function parseCommand(body) {
   // Only a message the Chief of Staff relayed from chat (relay marker and its "Written in chat" line) may be a command.
