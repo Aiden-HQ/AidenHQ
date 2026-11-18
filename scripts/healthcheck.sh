@@ -239,6 +239,13 @@ if module_on monitoring; then
       # argument rather than any later path that happens to end in ops/host-metrics.sh. A command string is refused.
       path="$(sed -n 's/.*path=\([^ ;]*\).*/\1/p' <<< "$line")"
       argv_text="$(sed -n 's/.*argv\[\]=\([^;]*\).*/\1/p' <<< "$line")"
+      # systemd shows ${AIDENHQ_DIR} unexpanded: resolve it as the unit does (its default, then its environment files in order).
+      local dir="$HOME/aidenhq" f v
+      for f in "$HOME/.config/aidenhq-checkout.env" "$HOME/.config/aidenhq-host-metrics.env"; do
+        v="$(sed -n 's/^AIDENHQ_DIR=//p' "$f" 2>/dev/null | tail -1)"
+        [ -z "$v" ] || dir="$v"
+      done
+      argv_text="${argv_text//\$\{AIDENHQ_DIR\}/$dir}"
       read -r -a argv <<< "$argv_text"
       [ -n "$path" ] && [ "${#argv[@]}" -gt 0 ] || { echo "the unit's ExecStart has no executable or argv: $line"; return 1; }
       executable="$(realpath "$path" 2>/dev/null || printf '%s' "$path")"
