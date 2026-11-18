@@ -410,3 +410,33 @@ describe("a release that fails part-way", () => {
     expect(f.woken).toHaveLength(1);
   });
 });
+
+describe("a blocker read that fails", () => {
+  const blocker = (id: string, status: string): Blocker => ({ id, identifier: `WOR-${id}`, status, updatedAt: iso(t0 - 60 * MIN) });
+  it("keeps the last cursor, so a closure during the outage is still news", async () => {
+    const f = fake();
+    const store = new Store(":memory:");
+    const recent: Recent = new Map();
+    f.put({ id: "2", assigneeAgentId: "e", status: "in_progress" }, t0 - 60 * MIN);
+    f.put({ id: "1", assigneeAgentId: "a", status: "blocked", blockedBy: [blocker("2", "in_progress")] }, t0 - 60 * MIN);
+    const d = deps(f, store);
+    await wakeTick(d, recent, t0); // the baseline: open, acknowledged
+
+    // The control plane is down while the blocker closes: the signal is missing this tick, not "open" again.
+    const issue = f.pc.issue;
+    f.pc.issue = async () => { throw new Error("control plane down"); };
+    f.put({ id: "2", status: "done", completedAt: iso(t0 + MIN) }, t0 + MIN);
+    for (const t of f.tasks.values()) for (const b of t.blockedBy ?? []) Object.assign(b, { status: "done", updatedAt: iso(t0 + MIN), completedAt: iso(t0 + MIN) });
+    expect(await wakeTick(d, recent, t0 + 2 * MIN)).toEqual([]);
+    expect(f.tasks.get("1")!.status).toBe("blocked");
+
+    // The read answers again: the closure is compared with the last good value, so it is news, not a new baseline.
+    f.pc.issue = issue;
+    expect(await wakeTick(d, recent, t0 + 4 * MIN)).toEqual(["1"]);
+    expect(f.tasks.get("1")!.status).toBe("todo");
+    expect(f.comments).toHaveLength(1);
+    expect(f.comments[0]!.body).toContain("WOR-2 closed (done).");
+    expect(f.woken).toEqual(["a:1"]);
+    expect(await wakeTick(d, recent, t0 + 10 * MIN)).toEqual([]);
+  });
+});

@@ -284,7 +284,8 @@ export async function wakeTick(deps: WakeDeps, recent: Recent, now = Date.now())
     const was = state.cursors[t.id];
     const kids = ownKids(t);
     // A list row may leave a blocked task's blockers out: read them, as the runner does (no blockers shown is not the
-    // same as none). A failed read leaves the signal out, and the next tick reads again.
+    // same as none). A failed read is not an answer, so the last good read's cursor stays (below) and the next tick
+    // reads again: a blocker closing during the outage must not become the next read's baseline.
     const full = t.status === "blocked" ? await pc.issue(t.id).catch(() => undefined) : t;
     const sig = signals(full ? { ...t, blockedBy: full.blockedBy } : t, kids, cardsOf.get(t.id) ?? [], grades ?? {}, prs);
     const next: Record<string, string> = {};
@@ -301,6 +302,8 @@ export async function wakeTick(deps: WakeDeps, recent: Recent, now = Date.now())
     if (!found) for (const [k, v] of Object.entries(was ?? {})) if (k.startsWith("pr:")) next[k] ??= v;
     // The grading module didn't answer: its graded: signals keep their cursors (a merge meanwhile is still news next tick).
     if (!grades) for (const [k, v] of Object.entries(was ?? {})) if (k.startsWith("graded:")) next[k] ??= v;
+    // The task's own read didn't answer: its blockers keep their cursor, so a closure during the outage is still news.
+    if (!full) for (const [k, v] of Object.entries(was ?? {})) if (k === "blockers") next[k] ??= v;
     // A grade signals() stopped presenting (its row settled, or its sub-task closed) keeps its cursor for the same reason a
     // closed sub-task does: the task reopened, graded again and escalated is still news. A sub-task that has dropped out of
     // the closed window is known closed by its own cursor, so its grade's cursor is kept too.
