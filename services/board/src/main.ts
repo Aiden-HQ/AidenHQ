@@ -19,6 +19,7 @@ import { weekdayOf } from "./recurrence.js";
 import { Store, localDate } from "./store.js";
 import { startWake } from "./wake.js";
 import { startRollover } from "./rollover.js";
+import { startRecurringRuns } from "./recurring-start.js";
 import { startWatch } from "./watch.js";
 import { liveActivity } from "./live-activity.js";
 import type { RunnerReport } from "./activity.js";
@@ -65,6 +66,8 @@ startWake(paperclip, store, records, grading, log);
 if (process.env.MAINTAINER_WEBHOOK_URL_FILE && process.env.MAINTAINER_ISSUES_TOKEN_FILE) {
   startMaintainer({ wiring: () => { const [fire, issues, triage] = [maintainerWake(), maintainerIssues(), maintainerTriageWake()]; return fire && issues ? { fire, issues, triage, limits: triageLimits() } : undefined; }, store, log });
 } else log.info({}, "maintainer issue watcher off: MAINTAINER_WEBHOOK_URL_FILE or MAINTAINER_ISSUES_TOKEN_FILE is not set");
+// Recurring runs that are due start the Researcher's "Run recurring task" routine (recurring-start.ts).
+startRecurringRuns({ pc: paperclip, store, timezone: cfg.timezone, log });
 // Long-lived tasks move to a successor before Paperclip's fresh-session prompt outgrows the model's input (rollover.ts).
 startRollover(paperclip, store, records, grading, log);
 // The Costs tab: model calls with what OpenRouter billed for each, from the model gateway (kernel/src/gateway), agent
