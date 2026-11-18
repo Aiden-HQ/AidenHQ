@@ -171,6 +171,18 @@ describe("GitHub", () => {
     expect(calls[1]!.auth).toBeUndefined();
   });
 
+  it("stops reading a log past the cap and refuses one that declares itself too big", async () => {
+    let pulled = 0;
+    const big = new ReadableStream<Uint8Array>({ pull(c) { pulled += 1_000_000; c.enqueue(new Uint8Array(1_000_000).fill(120)); } });
+    const mk = (body: BodyInit, headers: Record<string, string> = {}) => (async (input: URL | string) => (String(input).startsWith("https://blob.example.com/") ? new Response(body, { headers }) : new Response(null, { status: 302, headers: { location: "https://blob.example.com/log" } }))) as typeof fetch;
+    const out = (await new GitHub(tokenFile(), new Set(), mk(big)).jobLog("a/b", 5)) as { clipped: boolean; log: string };
+    expect(out.clipped).toBe(true);
+    expect(out.log).toHaveLength(64_000);
+    expect(pulled).toBeLessThan(60_000_000);
+    const declared = (await new GitHub(tokenFile(), new Set(), mk("x", { "content-length": "999999999" })).jobLog("a/b", 5)) as { clipped: boolean; log: string };
+    expect(declared).toMatchObject({ clipped: true, log: "" });
+  });
+
   it("lists a pull request's files with clipped patches", async () => {
     const { impl } = fake({ "GET /repos/a/b/pulls/7/files": [{ filename: "a.ts", status: "modified", additions: 1, deletions: 0, patch: "p".repeat(5000) }, { filename: "b.png", status: "added", additions: 0, deletions: 0 }] });
     const out = (await new GitHub(tokenFile(), new Set(), impl).prFiles({ owner: "a", repo: "b", number: 7 })) as { files: { filename: string; patch: string; patch_clipped?: boolean }[] };

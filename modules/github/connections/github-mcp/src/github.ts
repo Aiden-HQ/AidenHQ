@@ -108,6 +108,30 @@ const labelNames = (i: GhIssue) => i.labels.map((l) => (typeof l === "string" ? 
 const statusKey = (s: string) => s.normalize("NFKC").toLowerCase().replace(/[^\p{L}\p{N}]+/gu, " ").trim();
 
 const LOG_BYTES = 64_000;
+/** The most of a log that is read; a bigger one is refused up front or its read stops here. */
+const LOG_READ_MAX = 50_000_000;
+
+/** The last LOG_BYTES characters of a response body, read as a stream (never the whole body in memory). `total` counts what was read. */
+async function tailOf(res: Response): Promise<{ tail: string; total: number; capped: boolean }> {
+  if (Number(res.headers.get("content-length") ?? 0) > LOG_READ_MAX) return { tail: "", total: Number(res.headers.get("content-length")), capped: true };
+  const decoder = new TextDecoder();
+  let tail = "";
+  let total = 0;
+  let capped = false;
+  const reader = res.body?.getReader();
+  for (;;) {
+    const r = await reader?.read();
+    if (!r || r.done) break;
+    total += r.value.length;
+    tail = (tail + decoder.decode(r.value, { stream: true })).slice(-LOG_BYTES);
+    if (total >= LOG_READ_MAX) {
+      capped = true;
+      await reader!.cancel();
+      break;
+    }
+  }
+  return { tail, total, capped };
+}
 const PATCH_FILE = 4_000;
 const PATCH_TOTAL = 60_000;
 
@@ -198,7 +222,7 @@ export class GitHub {
       if (res.status !== 302 || !to?.startsWith("https://")) throw new Error(`GitHub ${res.status} for ${method} ${url.pathname}: no log download`);
       const dl = await this.fetchImpl(to, { redirect: "error", signal: AbortSignal.timeout(30_000) });
       if (!dl.ok) throw new Error(`log download answered ${dl.status}`);
-      return (await dl.text()) as T;
+      return (await tailOf(dl)) as T;
     }
     if (!res.ok) {
       const detail = await res.text().catch(() => "");
@@ -283,9 +307,9 @@ export class GitHub {
   /** The tail of a failed (or any finished) job's log, at most LOG_BYTES characters. */
   async jobLog(repo: string, jobId: number): Promise<unknown> {
     const { owner, name } = splitRepo(repo);
-    const log = await this.request<string>("GET", `/repos/${owner}/${name}/actions/jobs/${jobId}/logs`, { text: true });
-    const clipped = log.length > LOG_BYTES;
-    return { repo: `${owner}/${name}`, job_id: jobId, clipped, ...(clipped ? { note: `only the last ${LOG_BYTES} of ${log.length} characters` } : {}), log: clipped ? log.slice(-LOG_BYTES) : log };
+    const { tail, total, capped } = await this.request<{ tail: string; total: number; capped: boolean }>("GET", `/repos/${owner}/${name}/actions/jobs/${jobId}/logs`, { text: true });
+    const clipped = capped || total > LOG_BYTES;
+    return { repo: `${owner}/${name}`, job_id: jobId, clipped, ...(clipped ? { note: capped ? `the log is over ${LOG_READ_MAX} bytes: ${total ? "the tail of its first part" : "not read"}` : `only the last ${LOG_BYTES} of ${total} bytes` } : {}), log: tail };
   }
 
   /** A pull request's changed files with their patches: each patch clipped, the whole capped (first 100 files). */
