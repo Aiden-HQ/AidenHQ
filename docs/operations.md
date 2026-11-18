@@ -175,11 +175,7 @@ built from a backup with `ops/setup.sh --restore`. Off-host, nightly: [operation
 
 Moving a running instance to another host (drain, cold copy, tailnet names, rollback): [operations/migrate-host.md](operations/migrate-host.md).
 
-## Run-history pruning
-
-Paperclip has no pruning of its own and long run history exhausts memory. `ops/prune-runs.sh` deletes run logs and
-`heartbeat_run_events` older than `PRUNE_DAYS` (default 30); the `prune-runs.timer` unit runs it weekly. Enable it
-with `systemctl --user enable --now prune-runs.timer`.
+## Task workspaces
 
 ## Logs and debugging a run
 

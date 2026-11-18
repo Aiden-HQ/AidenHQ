@@ -145,7 +145,7 @@ export function checkChange(ch: Change, compiled: Compiled | null, catalog: Cata
     if (!efforts.includes(String(ch.value))) throw new ChangeRefused(efforts.length ? `effort is one of ${efforts.join(", ")}` : `${a.name ?? ch.agent} has no effort setting`);
   } else {
     if (ch.value !== false && !HEARTBEAT_HOURS.includes(Number(ch.value))) throw new ChangeRefused(`a heartbeat is off or every ${HEARTBEAT_HOURS.join(", ")} hours`);
-    if (ch.value !== false && a.dispatch === "runner") throw new ChangeRefused("a runner agent has no heartbeat (the runner wakes it)");
+    if (ch.value !== false && a.profile === "engineer") throw new ChangeRefused("an Engineer has no heartbeat (it works on the tasks it is given)");
     if (ch.value !== false && !HEARTBEAT_TOOLS.every((t) => a.enabled_tools?.paperclip_tasks?.includes(t))) throw new ChangeRefused(`${a.name ?? ch.agent} lacks the task tools a heartbeat needs (${HEARTBEAT_TOOLS.join(", ")})`);
   }
   return ch;

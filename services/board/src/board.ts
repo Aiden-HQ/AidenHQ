@@ -18,7 +18,7 @@ const ENGINES: Engine[] = ["codex", "codex-openrouter", "claude", "openrouter"];
 export const engineOf = (a: { adapterType?: string; metadata?: { engine?: unknown } | null }): Engine | undefined =>
   ENGINES.includes(a.metadata?.engine as Engine) ? (a.metadata!.engine as Engine) : ADAPTER_ENGINE[a.adapterType ?? ""];
 /** The same for an agent in the compiled config (module.yaml fields). */
-export const compiledEngine = (a: { adapter?: string; engine?: string }): Engine | undefined => engineOf({ adapterType: a.adapter, metadata: { engine: a.engine } });
+export const compiledEngine = (a: { engine?: string }): Engine | undefined => engineOf({ metadata: { engine: a.engine } });
 export const openrouterEngine = (e: Engine | undefined) => e === "openrouter" || e === "codex-openrouter";
 // Where the task's effort override is read (each engine module's effort_key).
 const EFFORT_KEY: Record<Engine, string> = { codex: "modelReasoningEffort", "codex-openrouter": "modelReasoningEffort", openrouter: "modelReasoningEffort", claude: "effort" };

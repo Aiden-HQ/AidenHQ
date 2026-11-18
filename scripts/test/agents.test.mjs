@@ -119,44 +119,11 @@ test("the Architect: max effort, only its own role, no fleet tools, reads every 
   for (const t of ["fleet_control", "fleet_status", "task_relay_owner_words", "task_update", "task_create"]) assert.ok(!a.enabled_tools.paperclip_tasks.includes(t), t);
 });
 
-test("the codex-model launcher swaps the routine's model in for the agent's, and runs Codex as is otherwise", () => {
-  const bin = mkdtempSync(join(tmpdir(), "codex-"));
-  writeFileSync(join(bin, "codex"), '#!/bin/sh\nprintf "%s|" "$@"\n', { mode: 0o755 });
-  const run = (args, model) => execFileSync(join(product, "services/paperclip-tasks-mcp/codex-model"), args, { encoding: "utf8", env: { PATH: `${bin}:/usr/bin:/bin`, ...(model ? { AIDENHQ_MODEL: model } : {}) } });
-  assert.equal(run(["exec", "--json", "--model", "agent-m", "-c", 'x="a b"', "resume", "s1", "-"], "routine-m"), 'exec|--model|routine-m|--json|-c|x="a b"|resume|s1|-|');
-  assert.equal(run(["exec", "--json", "-"], "routine-m"), "exec|--model|routine-m|--json|-|");
-  assert.equal(run(["exec", "--json", "--model", "agent-m", "-"]), "exec|--json|--model|agent-m|-|");
-  assert.equal(run(["--version"], "routine-m"), "--version|");
-  // Paperclip puts its own -c pairs before `exec`.
-  assert.equal(run(["-c", "a=1", "exec", "--json", "--model", "agent-m", "-"], "routine-m"), "-c|a=1|exec|--model|routine-m|--json|-|");
-  assert.equal(run(["-c", "a=1", "exec", "-"]), "-c|a=1|exec|-|");
-  // A run starts in one stable directory per agent, not the task's.
-  writeFileSync(join(bin, "codex"), "#!/bin/sh\npwd\n", { mode: 0o755 });
-  const here = (id) => execFileSync(join(product, "services/paperclip-tasks-mcp/codex-model"), ["-c", "x=1", "exec"], { encoding: "utf8", cwd: tmpdir(), env: { PATH: `${bin}:/usr/bin:/bin`, ...(id ? { PAPERCLIP_AGENT_ID: id } : {}) } });
-  assert.equal(here("a1"), "/tmp/aidenhq-cwd/a1\n");
-  assert.equal(statSync("/tmp/aidenhq-cwd/a1").mode & 0o777, 0o555); // read-only: Codex loads AGENTS.md from its cwd
-  assert.doesNotMatch(here(""), /aidenhq-cwd/); // no agent id: left alone
-  assert.doesNotMatch(here("../x"), /aidenhq-cwd/);
-  chmodSync("/tmp/aidenhq-cwd/a1", 0o755); writeFileSync("/tmp/aidenhq-cwd/a1/AGENTS.md", "planted"); // a run made it writable again
-  assert.doesNotMatch(here("a1"), /aidenhq-cwd/); // not empty: Paperclip's own cwd
-  rmSync("/tmp/aidenhq-cwd/a1", { recursive: true });
-  mkdirSync("/tmp/aidenhq-cwd/.git"); // a planted git root above the cwd would make Codex read AGENTS.md from the parent
-  assert.doesNotMatch(here("a1"), /aidenhq-cwd/);
-  rmSync("/tmp/aidenhq-cwd", { recursive: true, force: true });
-  writeFileSync(join(bin, "codex"), '#!/bin/sh\nprintf "%s|" "$@"\n', { mode: 0o755 });
-  // The routine's reasoning effort replaces the agent's -c model_reasoning_effort, other -c settings stay.
-  const eff = ["exec", "--json", "-c", 'model_reasoning_effort="high"', "-c", "x=1", "-"];
-  assert.equal(execFileSync(join(product, "services/paperclip-tasks-mcp/codex-model"), eff, { encoding: "utf8", env: { PATH: `${bin}:/usr/bin:/bin`, AIDENHQ_REASONING_EFFORT: "low" } }), 'exec|-c|model_reasoning_effort="low"|--json|-c|x=1|-|');
-});
-
-test("the web for every codex agent: live search by default (an agent may opt down), web_view and app_view granted; never runner agents", () => {
+test("the web for every crew agent: web_view and app_view granted (an agent may opt its search down); Engineers get only their own grants", () => {
   const dir = withAgents({ "review-chaser": { yaml: { web_search: "disabled" } } }, ["slack", "github", "open-loops", "meetings", "engineering", "primer"]);
   writeFileSync(join(dir, "instance.yaml"), YAML.stringify({ product: "0".repeat(40), modules: [...BUNDLE, "slack", "github", "open-loops", "meetings", "engineering", "primer"], settings: { ...owner, owner_slack_user_id: "U1", owner_email: "e@x", product_repo: "acme/aidenhq" } }));
   const r = compile(product, dir);
-  const args = r.paperclip.codex_args.join(" ");
-  assert.match(args, /web_search="live"/);
-  assert.doesNotMatch(args, /web_search="(disabled|cached)"/);
-  const codex = Object.entries(r.paperclip.agents).filter(([, a]) => a.adapter === "codex_local");
+  const codex = Object.entries(r.paperclip.agents).filter(([, a]) => a.profile === "crew");
   assert.ok(codex.length >= 8);
   // Every codex agent can view apps; web_view goes to all but those with web search off (the email/Slack scouts).
   for (const [key, a] of codex) {
@@ -173,8 +140,7 @@ test("the web for every codex agent: live search by default (an agent may opt do
     const writes = Object.entries(a.enabled_tools).flatMap(([c, list]) => list.filter((t) => c !== "paperclip_tasks" && t !== "notify" && writeTools(r.paperclip.mcp_servers[c]).includes(t)).map((t) => `${c}.${t}`));
     assert.deepEqual(writes, [], k);
   }
-  // Runner agents get no tools added; one in a computer (the App Engineer) has exactly what it grants itself.
-  for (const [key, a] of Object.entries(r.paperclip.agents)) if (a.dispatch === "runner" && !a.image) assert.ok(!a.mcp_servers.includes("apps"), key);
+  // An Engineer gets no tools added: the App Engineer has exactly what it grants itself.
   assert.deepEqual(r.paperclip.agents["app-engineer"].enabled_tools, { apps: ["app_list", "app_status", "app_view", "app_check", "web_view"], github: ["github_whoami", "github_project_read", "github_issue_read", "github_search_issues", "github_app_issue_status"] });
   assert.equal(r.paperclip.agents["review-chaser"].web_search, "disabled");
   assert.equal(r.paperclip.agents.assistant.web_search, undefined);

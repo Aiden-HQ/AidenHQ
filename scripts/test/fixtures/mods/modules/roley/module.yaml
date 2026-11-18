@@ -1,4 +1,4 @@
 name: roley
 description: grants a role core declares and it doesn't request
 agents:
-  r: { adapter: codex_local, roles: [fleet-admin] }
+  r: { roles: [fleet-admin] }

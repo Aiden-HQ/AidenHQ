@@ -22,7 +22,6 @@ settings:
 agents:
   security-watch:
     department: security
-    adapter: codex_local
     model: ~deepseek/deepseek-flash-latest
     reasoning_effort: high
     timeout_sec: 1800
@@ -34,7 +33,6 @@ agents:
     roles: [ security-verdict ]
   red-teamer:
     department: security
-    adapter: codex_local
     # GLM: a lower refusal rate for offensive security work (owner, 2026-11-11). GLM Flash at high since 2026-11-13 (the
     # owner's pick after a blind bake-off).
     model: ~z-ai/glm-flash-latest

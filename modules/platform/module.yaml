@@ -19,11 +19,9 @@ agents:
     roles: [ platform-engineer ]
     brief: true
     graded: true
-    adapter: opencode_local
     engine: codex-openrouter # Codex through the model gateway, in an agent computer
     reasoning_effort: high
     model: openrouter/~deepseek/deepseek-flash-latest
-    dispatch: runner
     # Engineer jobs: the task's repositories cloned into its workspace and the code host's writes, in an `engineer` agent
     # computer (gVisor), like every Engineer's (owner, 2026-11-18).
     profile: engineer

@@ -3,4 +3,4 @@ description: holds a role only while the module declaring it is enabled
 roles:
   requests: [ helper? ]
 agents:
-  o: { adapter: codex_local, roles: [helper?] }
+  o: { roles: [helper?] }

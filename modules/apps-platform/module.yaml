@@ -75,7 +75,6 @@ agents:
   app-maintainer:
     department: platform
     skills: [ engineering.write-code, engineering.supply-chain ]
-    adapter: codex_local
     max_parallel: 2 # independent app jobs; a backlog also made a 30-minute routine pile up duplicates
     # Graded done: deliverables delegated to it are checked against their rubric before they close (the runner's grader).
     graded: true

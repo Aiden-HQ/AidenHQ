@@ -1,4 +1,4 @@
 name: dup1
 description: dup1
 agents:
-  x: { adapter: codex_local }
+  x: {}

@@ -17,7 +17,6 @@ settings:
 agents:
   fleet-steward:
     department: platform
-    adapter: codex_local
     model: ~deepseek/deepseek-flash-latest
     reasoning_effort: high
     timeout_sec: 1800

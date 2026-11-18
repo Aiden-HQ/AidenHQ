@@ -169,13 +169,6 @@ async function nameOf(agentId) {
 }
 
 /**
- * A task one agent gives another runs in the assignee's own folder, never the parent's shared one: in Paperclip a
- * shared folder is held by one run at a time for agents in computers, so a child running on it blocked its parent's
- * agent (the Agent Architect couldn't answer its chat while the Roadmap Keeper worked, 2026-11-11).
- */
-const OWN_FOLDER = { executionWorkspacePreference: "agent_default", executionWorkspaceSettings: { mode: "agent_default" } };
-
-/**
  * Long text as comment-sized parts (2026-11-11: a 10-feature backfill report was silently cut at 20,000 characters and
  * failed review). Splits at paragraph, then line, boundaries; each part is labelled when there is more than one.
  */
@@ -617,7 +610,6 @@ async function assignTask(me, target, { title, description, parent, marker, prio
     ...(p ? { parentId: p.id } : {}),
     assigneeAgentId: target.id,
     allowDuplicate: true,
-    ...OWN_FOLDER,
     ...(src ? { idempotencyKey: idempotencyKey(src) } : {}),
   };
   const open = p ? await openSiblings(p.id, target.id) : [];
@@ -652,7 +644,8 @@ async function openSiblings(parentId, agentId) {
   return (Array.isArray(kids) ? kids : []).filter((k) => k.parentId === parentId && k.assigneeAgentId === agentId);
 }
 const keyOf = (a) => (a.metadata?.setupKey ?? "").replace(/^aidenhq:/, "") || a.name;
-const isRunner = (a) => a.runtimeConfig?.heartbeat?.wakeOnDemand === false && a.runtimeConfig?.heartbeat?.enabled === false;
+// An Engineer (setup marks it runnerEngine in its metadata): code work goes to it with a brief.
+const isRunner = (a) => a.metadata?.runnerEngine === true;
 
 const issueRef = (v) => {
   const s = String(v ?? "").trim();
@@ -830,7 +823,6 @@ const TOOLS = {
         labelIds: await labelIds(labels ?? []),
         idempotencyKey: idempotencyKey(m),
         allowDuplicate: true,
-        ...OWN_FOLDER,
       };
       if (isBrief(`<!-- source:${m} -->`, labels)) warning = [warning, metricWarning(description, Date.now())].filter(Boolean).join(" ") || undefined;
       if (assigneeAgent) body.assigneeAgentId = assigneeAgent;
@@ -910,23 +902,6 @@ const TOOLS = {
       return { agent_key: keyOf(a), handbook: String(content ?? "") };
     },
   },
-  handbook_section: {
-    description:
-      "One section of your own handbook that loads on demand, by its id from your handbook's \"Sections on demand\" list. Read it before the work its summary names, and follow it like the rest of your handbook. Read-only.",
-    inputSchema: { type: "object", properties: { id: { type: "string", description: "the section's id, e.g. engineering.delegating" } }, required: ["id"], additionalProperties: false },
-    annotations: { readOnlyHint: true, openWorldHint: false },
-    run: async ({ id }) => {
-      // Setup writes each agent's sections (only those that apply to it) to sections/<agent id>.json.
-      const me = grant().id;
-      let mine = {};
-      try {
-        if (/^[\w-]+$/.test(me)) mine = JSON.parse(readFileSync(`${SECTIONS_DIR()}/${me}.json`, "utf8"));
-      } catch {}
-      const want = String(id ?? "").trim();
-      if (!Object.hasOwn(mine, want)) throw new Error(`no on-demand section "${want}" for you; yours: ${Object.keys(mine).join(", ") || "none"}`);
-      return { id: want, text: mine[want] };
-    },
-  },
   task_propose_rule: {
     description:
       "Librarian role only: hand a proposed rule fix to the Platform Engineer (the only possible assignee), as a task under your current task. Give the agent, the current rule text, the problem with evidence, and the exact replacement. The Platform Engineer judges it; the fleet change still waits for the owner's tap. Idempotent per parent and marker.",
@@ -984,7 +959,6 @@ const TOOLS = {
         assigneeAgentId: me.id,
         idempotencyKey: idempotencyKey(`part:${p.identifier}:${me.id}`),
         allowDuplicate: true,
-        ...OWN_FOLDER,
       });
       return { identifier: i.identifier, created: true };
     },
@@ -1285,7 +1259,6 @@ const fleet = (what, body) => boardApi(`/internal/fleet/${what}`, body, 20_000);
 const ACTIONS = ["run_routine", "pause_agent", "resume_agent", "pause_routine", "resume_routine"];
 const APPS_URL = (process.env.APPS_MCP_URL || "http://apps-mcp:8090").replace(/\/$/, "");
 const CATALOG_FILE = process.env.AIDENHQ_CATALOG_FILE || "/catalog/catalog.static.json";
-const SECTIONS_DIR = () => process.env.AIDENHQ_SECTIONS_DIR || "/catalog/sections";
 
 Object.assign(TOOLS, {
   fleet_status: {

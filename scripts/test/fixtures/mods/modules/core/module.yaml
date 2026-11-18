@@ -11,6 +11,6 @@ labels: [ { name: todo, color: "#000" } ]
 connections:
   tasks: { url: "http://tasks-mcp:8080/mcp", auth: tasks_service_key, tools: { read: [t], write: [t2] } }
 agents:
-  boss: { adapter: codex_local, connections: { tasks: [t] } }
+  boss: { connections: { tasks: [t] } }
 routines:
   daily: { title: Daily, agent: boss, description: "Today is {{date}}", schedules: [ { cron: "0 9 * * *", timezone: "${settings.timezone}", label: m } ] }

@@ -88,7 +88,7 @@ test("overrides apply to allowed fields only", () => {
 });
 test("grants entry: models, fleet caps under the agent's override, graded off by default; a bad cap fails compile", () => {
   const r = compile(mods, finst(["a"], base, { overrides: { agents: { x: { model: "openrouter/m2", caps: { task_usd: 20 } } } } })).paperclip;
-  assert.deepEqual(grantEntry("x", r.agents.x, { r1: { agent: "x", model: "m3" }, r2: { agent: "y", model: "m4" } }), { models: ["m2", "m3"], caps: { run_usd: 2, task_usd: 20, day_usd: 30 }, graded: false, profile: "crew", model: "m2", max_parallel: 1, routines: { r1: { model: "m3" } } });
+  assert.deepEqual(grantEntry("x", r.agents.x, { r1: { agent: "x", model: "m3" }, r2: { agent: "y", model: "m4" } }), { models: ["m2", "m3"], caps: { run_usd: 2, task_usd: 20, day_usd: 30 }, graded: false, profile: "crew", engine: "codex-openrouter", model: "m2", max_parallel: 1, routines: { r1: { model: "m3" } } });
   assert.throws(() => compile(mods, finst(["a"], base, { overrides: { agents: { x: { caps: { month_usd: 5 } } } } })), /x: caps\.month_usd isn't a cap/);
 });
 test("jobcaps: compiled for the gateway, carried in the grants entry; unknown or private-without-private_reads fail", () => {
@@ -247,7 +247,8 @@ test("an install with no model key: an optional mounted secret starts empty, a m
 });
 test("secrets the setup must not leave to a manual step are generated", () => {
   const g = compile(product, pinst(["primer"], owner)).generatedSecrets;
-  for (const k of ["primer_service_key", "telegram_service_key", "computer_launcher_token"]) assert.ok(g.includes(k), k);
+  for (const k of ["primer_service_key", "telegram_service_key"]) assert.ok(g.includes(k), k);
+  assert.ok(!g.includes("computer_launcher_token"));
 });
 test("autonomy: off by default, reaches the compiled config, a bad value fails; the reviewer key is generated, no decide key", () => {
   assert.equal(compile(product, pinst([], owner)).paperclip.autonomy, "off");

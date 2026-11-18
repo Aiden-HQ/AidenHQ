@@ -11,9 +11,6 @@ agents:
     department: engineering
     skills: [ apps-platform.design-system ]
     persona: { name: Linus, voice: "Scrappy; tries the cheap route first and says plainly when it isn't good enough.", avatar: linus }
-    # Paperclip never runs runner agents: opencode_local only holds the openrouter/<model> ids. The runner's engine is Codex
-    # through the model gateway (codex-openrouter), in an agent computer.
-    adapter: opencode_local
     engine: codex-openrouter
     reasoning_effort: high
     # Graded done: deliverables delegated to it are checked against their rubric before they close (the runner's grader).
@@ -30,7 +27,6 @@ agents:
       - openrouter/deepseek/deepseek-v4-pro
       - openrouter/moonshotai/kimi-k3
       - openrouter/qwen/qwen3-coder-next
-    dispatch: runner
     # Engineer jobs: the task's repositories cloned into its workspace and the code host's writes, in an `engineer` agent
     # computer (gVisor), like every Engineer's (owner, 2026-11-18).
     profile: engineer
@@ -43,9 +39,7 @@ agents:
     # The strong tier: its runner jobs run in an `engineer` agent computer (gVisor) with app and data reads and a browser.
     brief: true
     graded: true
-    adapter: opencode_local
     engine: codex-openrouter
-    dispatch: runner
     profile: engineer
     image: engineer
     model: openrouter/~deepseek/deepseek-flash-latest

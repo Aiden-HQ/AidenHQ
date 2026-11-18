@@ -1,4 +1,4 @@
 name: runnerheartbeat
 description: runnerheartbeat
 agents:
-  eng: { adapter: opencode_local, dispatch: runner, heartbeat: true }
+  eng: { profile: engineer, heartbeat: true }

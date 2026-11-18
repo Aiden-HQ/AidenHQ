@@ -6,7 +6,7 @@ settings:
 connections:
   aconn: { url: "http://a-mcp:1/mcp", auth: a_service_key, tools: { read: [a_get], write: [a_set] } }
 agents:
-  x: { adapter: codex_local, model: m1, connections: { tasks: [t], "glean?": [search], bconn: read, aconn: write } }
+  x: { model: m1, connections: { tasks: [t], "glean?": [search], bconn: read, aconn: write } }
 routines:
   r: { title: R, agent: x, description: "Today is {{date}}; mail ${settings.owner_email}", schedules: [{ cron: "0 9 * * *", timezone: "${settings.timezone}" }] }
 generated_secrets: [a_mcp_token]

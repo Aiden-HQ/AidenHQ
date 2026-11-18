@@ -17,14 +17,11 @@ import { createRequire } from "node:module";
 import { dirname, join, resolve } from "node:path";
 import { createInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
-import { codexMcpBlock, ensureBackupRetention, ensureChatTasks, ensureCrewSkills, ensureFleetIssues, ensureMemoryInboxes, ensureReviewLogs, grantEntry, HEALTH_PROBES, healthProbeAgent, mapLimit, routineAutonomyDefault } from "./modules.mjs";
+import { ensureBackupRetention, ensureChatTasks, ensureFleetIssues, ensureMemoryInboxes, ensureReviewLogs, grantEntry, HEALTH_PROBES, healthProbeAgent, mapLimit, routineAutonomyDefault } from "./modules.mjs";
 import { retireUnconfigured } from "./retire-agents.mjs";
-import { checkLauncher, computerAdapterConfig, ensureComputers, runnerBox } from "./computers.mjs";
 import { ensureAgentKeys, ensureEventsPlugin } from "./paperclip-events.mjs";
-import { assertNoShell } from "./no-shell.mjs";
-import { agentSkills, handbookParts, laneHandbook, onDemandSections, personaOf, readInstructions as readHandbook } from "./handbook.mjs";
+import { agentSkills, handbookParts, laneHandbook, readInstructions as readHandbook } from "./handbook.mjs";
 import { recoverStalePid } from "./paperclip-recover.mjs";
-import { awaitVerified, probeConfig } from "./agent-probe.mjs";
 
 const repo = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const requireFromScripts = createRequire(join(repo, "scripts/package.json"));
@@ -201,105 +198,47 @@ async function ensureLabels(companyId) {
   }
 }
 
-// Executors for aidenhq-runner: the assignee picks the engine, Paperclip's per-task
-// model override picks the model. Paperclip never runs them.
-const RUNNER_ADAPTERS = ["codex_local", "claude_local", "opencode_local"];
-// The engine kinds the enabled engine modules provide (config/engines.json, written by compile): `engine:` on a runner agent
-// picks one, else the kind that names its adapter; each kind says where its effort lives in the adapter config
+// The engine kinds the enabled engine modules provide (config/engines.json, written by compile).
 const ENGINES = (() => { try { return JSON.parse(readFileSync(join(configDir, "engines.json"), "utf8")); } catch { return {}; } })();
-const engineOf = (a) => a.engine ?? Object.keys(ENGINES).find((k) => ENGINES[k].adapter === a.adapter);
 const instanceDir = env("AIDENHQ_INSTANCE_DIR", "");
 // An agent's own handbook (scripts/handbook.mjs); a bad path fails setup.
 const readInstructions = (a) => { try { return readHandbook(cfg, a, { repo, instanceDir }); } catch (e) { fail(e.message); } };
 
+// What setup once wrote into an agent's adapter config when Paperclip ran it. Paperclip merges adapterConfig on PATCH, so each
+// is cleared by name (null) and nothing of the old execution config stays.
+const RUN_CONFIG = ["engine", "command", "extraArgs", "env", "model", "modelReasoningEffort", "effort", "timeoutSec", "dangerouslyBypassApprovalsAndSandbox", "dangerouslySkipPermissions", "paperclipSkillSync"];
+// The adapter type a new record gets: Paperclip requires one, and never runs it (the kernel runs every job).
+const RECORD_ADAPTER = "codex_local";
 
-function runnerAgentBody(key, a, existing) {
-  if (!RUNNER_ADAPTERS.includes(a.adapter)) fail(`agent ${key}: dispatch: runner needs one of ${RUNNER_ADAPTERS.join(", ")}`);
-  // A runner agent in a computer (image:) reaches its granted connections from its box, through the launcher's gateway.
-  if (a.mcp_servers?.length && !runnerBox(a)) fail(`agent ${key}: runner agents get no MCP servers unless they run in a computer (image: engineer)`);
+/**
+ * An agent's Paperclip record. Paperclip tracks and schedules (tasks are assigned to it, its routines file tasks for it); it runs
+ * nothing: no adapter config, env or secrets, and Paperclip never wakes it. The kernel runs its jobs (grants.json). The
+ * metadata is the board's and the tools' view of it (setupKey is its identity).
+ */
+function agentBody(key, a) {
   if (a.private_reads !== undefined && typeof a.private_reads !== "boolean") fail(`agent ${key}: private_reads is true or false`);
-  if (a.engine !== undefined && !ENGINES[a.engine]) fail(`agent ${key}: no enabled engine module provides engine ${a.engine} (config/engines.json)`);
-  // A primary model chosen in the Paperclip UI survives re-running setup unless the YAML sets one.
-  const model = a.model || existing?.adapterConfig?.model || "";
-  if (a.adapter === "opencode_local" && !/^openrouter\/\S+$/.test(model)) fail(`agent ${key}: opencode_local needs model: openrouter/<model>`);
-  const adapterConfig = { ...(model ? { model } : {}) };
-  // Models offered in the board picker and known to the runner (opencode ids, openrouter/<model>).
   const models = a.models ?? [];
-  if (!Array.isArray(models) || models.some((m) => typeof m !== "string" || (a.adapter === "opencode_local" && !/^openrouter\/\S+$/.test(m)))) fail(`agent ${key}: models must be a list of model ids${a.adapter === "opencode_local" ? " (openrouter/<model>)" : ""}`);
-  if (a.adapter === "codex_local") adapterConfig.dangerouslyBypassApprovalsAndSandbox = false;
-  if (a.adapter === "claude_local") adapterConfig.dangerouslySkipPermissions = false;
-  // A kind whose models carry a prefix (a router's) takes only those ids from its adapter.
-  const prefix = ENGINES[engineOf(a)]?.model_prefix;
-  if (prefix && model && !model.startsWith(prefix)) fail(`agent ${key}: engine ${engineOf(a)} needs model: ${prefix}<model>`);
-  const effortKey = ENGINES[engineOf(a)]?.effort_key;
-  if (a.reasoning_effort && effortKey) adapterConfig[effortKey] = a.reasoning_effort;
+  if (!Array.isArray(models) || models.some((m) => typeof m !== "string")) fail(`agent ${key}: models must be a list of model ids`);
+  // A kind whose models carry a prefix (a router's) takes only those ids.
+  const prefix = ENGINES[a.engine]?.model_prefix;
+  if (prefix && a.profile === "engineer" && a.model && !a.model.startsWith(prefix)) fail(`agent ${key}: engine ${a.engine} needs model: ${prefix}<model>`);
+  const engineer = a.profile === "engineer";
   return {
     name: a.name,
     role: "general",
     title: a.title ?? null,
-    adapterType: a.adapter,
-    adapterConfig,
+    adapterConfig: Object.fromEntries(RUN_CONFIG.map((k) => [k, null])),
     runtimeConfig: { heartbeat: { enabled: false, intervalSec: 0, wakeOnDemand: false, maxConcurrentRuns: 1 } },
-    // `brief: true`: the handbook is the runner's prompt for jobs assigned to this agent (a specialised Engineer).
-    // maxParallel: the runner's cap on this agent's parallel jobs (`max_parallel`); without it only the host's max_concurrent.
-    metadata: { setupKey: `aidenhq:${key}`, module: a.module, isolation: a.isolation, runnerEngine: true, ...(a.engine ? { engine: a.engine } : {}), ...(runnerBox(a) ? { box: true } : {}), ...(a.private_reads === true ? { privateReads: true } : {}), ...(a.max_parallel ? { maxParallel: a.max_parallel } : {}), ...(models.length ? { models } : {}), ...(a.brief ? { brief: readInstructions(a).trim() } : {}), ...persona(key, a) },
-  };
-}
-
-function agentBody(key, a, existing) {
-  if (a.dispatch === "runner") return runnerAgentBody(key, a, existing);
-  if (a.adapter !== "codex_local") fail(`agent ${key}: only codex_local agents receive Paperclip tool connections`);
-  const base = cfg.codex_args ?? ["--sandbox", "read-only"];
-  if (!base.includes("--sandbox")) fail("codex_args must include --sandbox (never run agents without Codex's sandbox)");
-  // Per-agent tool scoping: every MCP server in the shared Codex config is disabled
-  // for this agent unless listed in its mcp_servers; enabled_tools narrows further.
-  const allowed = a.mcp_servers;
-  if (!Array.isArray(allowed)) fail(`agent ${key}: mcp_servers must list the MCP servers it may use`);
-  const known = Object.keys(cfg.mcp_servers ?? {});
-  for (const n of allowed) if (!known.includes(n)) fail(`agent ${key}: unknown MCP server ${n}`);
-  const scoping = [];
-  for (const n of known) if (!allowed.includes(n)) scoping.push("-c", `mcp_servers.${n}.enabled=false`);
-  for (const [n, tools] of Object.entries(a.enabled_tools ?? {})) {
-    if (!allowed.includes(n)) fail(`agent ${key}: enabled_tools for ${n}, which is not in its mcp_servers`);
-    scoping.push("-c", `mcp_servers.${n}.enabled_tools=${JSON.stringify(tools)}`);
-  }
-  // Live web search by default (codex_args); an agent may set cached or disabled instead.
-  if (a.web_search !== undefined && !WEB_SEARCH.includes(a.web_search)) fail(`agent ${key}: web_search must be one of ${WEB_SEARCH.join(", ")}`);
-  if (a.web_search) scoping.push("-c", `web_search="${a.web_search}"`);
-  const extraArgs = [...base, ...scoping];
-  const adapterConfig = {
-    engine: "cli",
-    dangerouslyBypassApprovalsAndSandbox: false,
-    extraArgs,
-    timeoutSec: a.timeout_sec ?? 1800,
-  };
-  if (!a.image) assertNoShell(key, extraArgs, adapterConfig.dangerouslyBypassApprovalsAndSandbox);
-  if (a.model) adapterConfig.model = a.model;
-  // A routine of this agent has its own model (compile sets command): the launcher reads it from the run's env.
-  if (a.command) adapterConfig.command = a.command;
-  // Codex on a non-OpenAI provider (codex_args set model_provider, e.g. OpenRouter) still insists on an OpenAI credential: give it a dummy secret.
-  // The model gateway takes the run's own credential (env_key PAPERCLIP_API_KEY, which every run sets to its run JWT). Paperclip's
-  // harness test (the new-agent hello probe) runs Codex with only the adapter env and no run, so it gets the gateway's harness key.
-  if (base.some((x) => String(x).startsWith("model_provider="))) adapterConfig.env = { OPENAI_API_KEY: { type: "secret_ref", secretId: dummyOpenAiSecretId, version: "latest" }, ...(harnessSecretId ? { PAPERCLIP_API_KEY: { type: "secret_ref", secretId: harnessSecretId, version: "latest" } } : {}) };
-  // Paperclip's own server secrets sit in the container env and Codex inherits it; adapter env overrides process env, so blank
-  // them. Computer agents get a stripped env.
-  adapterConfig.env = { ...adapterConfig.env, ...Object.fromEntries(SERVER_SECRETS.map((k) => [k, ""])) };
-  if (a.reasoning_effort) adapterConfig.modelReasoningEffort = a.reasoning_effort;
-  return {
-    name: a.name,
-    role: "general",
-    title: a.title ?? null,
-    adapterType: "codex_local",
-    // image: the agent runs in its computer (scripts/computers.mjs); without it, the tool-only form above (the rollback).
-    adapterConfig: a.image ? computerAdapterConfig({ codexArgs: base, agent: a, timeoutSec: adapterConfig.timeoutSec, dummyOpenAiSecretId }) : adapterConfig,
-    // dispatch: runner → never woken by Paperclip (assignments and comments are handled by
-    // aidenhq-runner on the host instead).
-    // max_parallel: more of the same work runs as parallel tasks on one definition.
-    runtimeConfig: { heartbeat: { enabled: false, intervalSec: 0, wakeOnDemand: a.dispatch !== "runner", maxConcurrentRuns: a.max_parallel ?? 1 } },
-    // budget: informational for now, never Paperclip's hard stop: Paperclip can't price OpenRouter
-    // runs, so a limit paused the Roadmap Keeper after one run with $0 recorded. 0 = no limit.
+    // budget: informational, never Paperclip's hard stop (spend caps are the kernel's). 0 = no limit.
     budgetMonthlyCents: 0,
-    metadata: { setupKey: `aidenhq:${key}`, module: a.module, isolation: a.isolation, ...(a.trial ? { trial: true } : {}), ...persona(key, a) },
+    defaultEnvironmentId: null,
+    // An Engineer (runnerEngine): the board's picker and the tasks tools' engineer list. `brief: true`: its handbook is the
+    // brief its delegators read. maxParallel: its parallel jobs (`max_parallel`).
+    metadata: {
+      setupKey: `aidenhq:${key}`, module: a.module, isolation: a.isolation, profile: a.profile, engine: a.engine, ...(a.model ? { model: a.model } : {}), ...(a.trial ? { trial: true } : {}),
+      ...(engineer ? { runnerEngine: true, ...(a.image ? { box: true } : {}), ...(a.private_reads === true ? { privateReads: true } : {}), ...(a.max_parallel ? { maxParallel: a.max_parallel } : {}), ...(models.length ? { models } : {}), ...(a.brief ? { brief: readInstructions(a).trim() } : {}) } : {}),
+      ...persona(key, a),
+    },
   };
 }
 
@@ -312,123 +251,54 @@ const persona = (key, a) => {
   return { ...(p ? { persona: p } : {}), ...(a.avatar ? { avatar: a.avatar } : {}), ...(a.department ? { department: a.department } : {}) };
 };
 
-let dummyOpenAiSecretId, harnessSecretId, oldOpenRouterSecretId;
-async function ensureDummyOpenAiSecret(companyId) {
+// Paperclip secrets only Paperclip-run agents used: deleted once no agent refers to them (after ensureAgents).
+const OLD_SECRETS = ["openrouter-key", "unused-openai-key", "gateway-harness-key"];
+async function dropOldSecrets(companyId) {
   const { json } = await api("GET", `/api/companies/${companyId}/secrets`);
-  dummyOpenAiSecretId = (json.find((x) => x.name === "unused-openai-key") ?? (await api("POST", `/api/companies/${companyId}/secrets`, { name: "unused-openai-key", value: "unused" })).json).id;
-  // Created once from the secrets file; to rotate the key, delete this Paperclip secret and re-run setup.
-  const harnessKey = readSecret("gateway_harness_key");
-  if (harnessKey) harnessSecretId = (json.find((x) => x.name === "gateway-harness-key") ?? (await api("POST", `/api/companies/${companyId}/secrets`, { name: "gateway-harness-key", value: harnessKey })).json).id;
-  // The OpenRouter key itself is the gateway's alone: the old copy goes once no agent refers to it (after ensureAgents).
-  oldOpenRouterSecretId = json.find((x) => x.name === "openrouter-key")?.id;
-}
-async function dropOldOpenRouterSecret() {
-  if (!oldOpenRouterSecretId) return;
-  try {
-    await api("DELETE", `/api/secrets/${oldOpenRouterSecretId}`);
-    step("Removed the OpenRouter key from Paperclip's secrets (the model gateway holds it)");
-  } catch (e) {
-    console.warn(`! couldn't remove Paperclip's old openrouter-key secret (delete it in Paperclip's UI): ${e.message}`);
+  for (const x of json.filter((x) => OLD_SECRETS.includes(x.name))) {
+    try {
+      await api("DELETE", `/api/secrets/${x.id}`);
+      step(`Removed Paperclip's ${x.name} secret (no agent runs in Paperclip)`);
+    } catch (e) {
+      console.warn(`! couldn't remove Paperclip's ${x.name} secret (delete it in Paperclip's UI): ${e.message}`);
+    }
   }
-}
-
-// Paperclip's check of a new or reconfigured agent is a Codex hello probe (up to 45 s) through the model gateway; a failure is
-// retried a minute later. Without a model key it can only fail, so setup doesn't wait for it: the agent stays unverified (Paperclip shows it paused, never working)
-// until the kernel's model step saves a key that works and runs this setup again (kernel/src/main.ts verifyAgents).
-const modelKey = Boolean(readSecret("openrouter_key"));
-async function verified(id, name) {
-  if (!modelKey) return false;
-  const ok = await awaitVerified(async () => (await api("GET", `/api/agents/${id}`)).json);
-  if (!ok) console.warn(`! ${name}: not verified by Paperclip after 3 min (its Configuration page shows why); the next setup run checks it again`);
-  return ok;
-}
-
-// The owner watches a Codex agent's plan live on the board (services/board/src/codex-activity.ts reads update_plan calls).
-const WEB_SEARCH = ["live", "cached", "disabled"];
-const SERVER_SECRETS = ["BETTER_AUTH_SECRET", "PAPERCLIP_AGENT_JWT_SECRET", "PAPERCLIP_SECRETS_MASTER_KEY_FILE"];
-
-// Each agent's on-demand handbook sections, by its Paperclip id: the tasks module's handbook_section reads the caller's file
-// (its data dir's catalog folder, mounted read-only), so an agent reads only the sections that apply to it.
-function writeSections(agentId, sections) {
-  if (!/^[\w-]+$/.test(agentId)) fail(`agent id ${agentId} is not a plain id`);
-  const dir = join(resolve(repo, env("AIDENHQ_DATA_DIR", "./data")), "modules", "tasks", "catalog", "sections");
-  mkdirSync(dir, { recursive: true });
-  writeFileSync(join(dir, `${agentId}.json`), JSON.stringify(sections));
 }
 
 const revInputs = {};
 const handbooks = {}; // each agent's compiled AGENTS.md (the fast lane's prompt)
 async function ensureAgents(companyId, fleetIssues) {
-  await ensureDummyOpenAiSecret(companyId);
   const { json: agents } = await api("GET", `/api/companies/${companyId}/agents`);
-  // Everything that needs no Paperclip call first, in config order (revInputs and handbooks stay keyed by config).
   const plans = Object.entries(cfg.agents ?? {}).map(([key, a]) => {
-    let instructions, sections, lane;
+    let instructions, lane;
     try {
-      instructions = handbookParts(cfg, key, a, { repo, instanceDir, engines: ENGINES, fleetIssues }).map(([, t]) => t).join("");
-      sections = onDemandSections(cfg, a, { repo, fleetIssues });
+      instructions = handbookParts(cfg, key, a, { repo, instanceDir, fleetIssues }).map(([, t]) => t).join("");
       lane = laneHandbook(cfg, a, { repo, instanceDir, fleetIssues });
     } catch (e) { fail(e.message); }
     const agent = agents.find((x) => x.metadata?.setupKey === `aidenhq:${key}` && x.status !== "terminated") ?? agents.find((x) => x.name === a.name && x.status !== "terminated");
-    const body = agentBody(key, a, agent);
-    revInputs[key] = instructions + JSON.stringify(sections) + JSON.stringify(body.adapterConfig); // the rev's text (revOf)
+    const body = agentBody(key, a);
+    revInputs[key] = instructions; // the rev's text (revOf)
     // The lane gets the agent's own handbook, the untrusted-text rule and the prompts marked for it (memory), not the shared
     // run sections (task flow, notify replies).
     handbooks[key] = lane;
-    if (agent && agent.adapterType !== body.adapterType) fail(`agent ${a.name}: adapter is ${agent.adapterType} in Paperclip, ${body.adapterType} in the config`);
-    // runner: "legacy" — since 2026.1106 new agents default to the native Paperclip Runner (adapterType
-    // paperclip_runner), which drops our extraArgs (MCP scoping, sandbox). Pin legacy on create and update.
-    // Paperclip verifies a new agent with a Codex hello probe in an empty CODEX_HOME, where our
-    // `mcp_servers.<x>.enabled=false` scoping is invalid (no such server). Verify without it, then scope.
-    // A computer agent is verified in its tool-only form: the probe runs outside any computer.
-    // The probe also runs only for command `codex` (the codex-model launcher skips it, and an unprobed agent never
-    // leaves verifying), so verify with plain codex; the real command goes in with the scoped config below. An OpenCode runner
-    // agent verifies with opencode on the model gateway (agent-probe.mjs), and the update below drops that env again.
-    const probeBody = a.image && !runnerBox(a) ? agentBody(key, { ...a, image: undefined }, agent) : body;
-    const unscoped = probeConfig(body.adapterType, probeBody.adapterConfig, { codexArgs: cfg.codex_args, harnessSecretId });
-    return { key, a, agent, body, unscoped, instructions, sections };
+    return { key, a, agent, body, instructions };
   });
-  // The agent's real (scoped) config. Paperclip merges adapterConfig: an OpenCode runner agent's probe env (the harness key) is cleared here.
-  const scope = async ({ agent, body }) => {
-    const adapterConfig = body.adapterType === "opencode_local" ? { ...body.adapterConfig, env: {} } : body.adapterConfig;
-    await api("PATCH", `/api/agents/${agent.id}`, { name: body.name, title: body.title, runner: "legacy", adapterConfig, runtimeConfig: body.runtimeConfig, metadata: body.metadata, budgetMonthlyCents: body.budgetMonthlyCents });
-  };
-  // An agent that is new or still verifying is handled whole, each on its own (side by side, so the whole
-  // wait is about one agent's, not the sum): created or verified on the probe's unscoped config, scoped as soon as its probe ends,
-  // and only then left to run. An unverified agent can't run (Paperclip keeps it paused), so scoping it right after its own probe
-  // means no agent ever runs unscoped. One that isn't verified keeps its scoped config and is checked again by the next run.
-  // Rare after the first apply.
-  await mapLimit(plans, 8, async (p) => {
-    const { a, body, unscoped, instructions } = p;
-    if (!p.agent) {
-      p.agent = (await api("POST", `/api/companies/${companyId}/agents`, { ...body, adapterConfig: unscoped, runner: "legacy", instructionsBundle: { entryFile: "AGENTS.md", files: { "AGENTS.md": instructions } } })).json;
-      step(`Created agent ${a.name}${modelKey ? "" : " (verified once a model key is set)"}`);
-      await verified(p.agent.id, a.name);
-    } else if (["preparing", "verifying"].includes(p.agent.lifecycleState)) {
-      if (!modelKey) return; // nothing to check it with yet: it keeps its scoped config (below)
-      // Checked as a new agent is: on the probe's config, outside any computer (ensureComputers below sets its environment again).
-      await api("PATCH", `/api/agents/${p.agent.id}`, { adapterConfig: unscoped, ...(p.agent.defaultEnvironmentId ? { defaultEnvironmentId: null } : {}) });
-      if (await verified(p.agent.id, a.name)) step(`Verified agent ${a.name}`);
-    } else return;
-    await scope(p);
-    p.scoped = true;
-  });
-  // Every other agent already runs scoped: its new config replaces the old in one PATCH, so these run a few side by side
-  // (three round trips per agent otherwise add up), with the handbook sync and the read-back.
+  // A few side by side: each agent's record, its handbook (Paperclip's copy, which the Librarian and the board read) and the
+  // kernel's copy, then the read-back.
   const updated = await mapLimit(plans, 4, async (p) => {
-    const { a, body, instructions, sections } = p;
-    if (!p.scoped) await scope(p);
+    const { a, body, instructions } = p;
+    if (!p.agent) {
+      p.agent = (await api("POST", `/api/companies/${companyId}/agents`, { ...body, adapterType: RECORD_ADAPTER, adapterConfig: {}, instructionsBundle: { entryFile: "AGENTS.md", files: { "AGENTS.md": instructions } } })).json;
+      step(`Created agent ${a.name}`);
+    } else await api("PATCH", `/api/agents/${p.agent.id}`, body);
     // Instructions are revisioned (2026.1106): write against the current revision, and only when changed.
     const cur = (await api("GET", `/api/agents/${p.agent.id}/instructions-bundle/file?path=AGENTS.md`, undefined, { allow: [404] })).json;
     if (cur.content !== instructions) await api("PUT", `/api/agents/${p.agent.id}/instructions-bundle/file`, { path: "AGENTS.md", content: instructions, baseRevisionId: cur.revision?.id ?? null });
-    writeSections(p.agent.id, sections);
     // The kernel's copy: a kernel job's engine home gets it as its instructions file (kernel/src/boxes.ts).
     mkdirSync(join(configDir, "handbooks"), { recursive: true });
     writeFileSync(join(configDir, "handbooks", `${p.agent.id}.md`), instructions);
     step(`Updated agent ${a.name}`);
-    const agent = (await api("GET", `/api/agents/${p.agent.id}`)).json;
-    if (agent.adapterType !== body.adapterType) fail(`agent ${a.name}: Paperclip has adapter ${agent.adapterType} after setup, expected ${body.adapterType} on the legacy runner`);
-    return agent;
+    return (await api("GET", `/api/agents/${p.agent.id}`)).json;
   });
   return Object.fromEntries(plans.map((p, i) => [p.key, updated[i]]));
 }
@@ -554,8 +424,8 @@ async function ensureRoutines(companyId, agents) {
         .map((name) => ({ name, type: "text", required: false, defaultValue: "" })),
       // A lost scheduler tick still fires on the next one (Paperclip enqueues one run per missed tick, at most one for sub-hourly crons); always_enqueue routines already queue every event, so they skip.
       catchUpPolicy: (r.concurrency ?? "coalesce_if_active") === "always_enqueue" ? "skip_missed" : "enqueue_missed_with_cap",
-      // model and reasoning_effort reach its runs as env (the codex-model launcher, or the computer launcher, swaps them in); null clears a removed one.
-      env: r.model || r.reasoning_effort ? { ...(r.model ? { AIDENHQ_MODEL: r.model } : {}), ...(r.reasoning_effort ? { AIDENHQ_REASONING_EFFORT: r.reasoning_effort } : {}) } : null,
+      // A routine's model and reasoning_effort are the kernel's (grants.json `routines`); nothing rides in the routine's env.
+      env: null,
     };
     let routine = routines.find((x) => x.title === r.title);
     const existed = Boolean(routine);
@@ -608,41 +478,6 @@ async function ensureRoutines(companyId, agents) {
       }
     }
   });
-}
-
-/**
- * Every connection in the shared Codex config, at the kernel's tool proxy with the run's own credential (PAPERCLIP_API_KEY):
- * no service URL, token or stdio bridge. Paperclip copies this file into each company's managed Codex home before every run.
- */
-
-function ensureCodexConfig() {
-  const dataDir = resolve(repo, env("AIDENHQ_DATA_DIR", "./data"));
-  const path = join(dataDir, "paperclip", ".codex", "config.toml");
-  const block = codexMcpBlock(cfg.mcp_servers);
-  const upsert = (file, create) => {
-    if (!create && !existsSync(file)) return false;
-    const current = existsSync(file) ? readFileSync(file, "utf8") : "";
-    const stripped = current.replace(/# >>> aidenhq[\s\S]*?# <<< aidenhq\n?/, "").trimEnd();
-    const next = `${stripped ? `${stripped}\n\n` : ""}${block}\n`;
-    if (next === current) return false;
-    mkdirSync(dirname(file), { recursive: true });
-    writeFileSync(file, next, { mode: 0o600 });
-    return true;
-  };
-  if (upsert(path, true)) step(`Wrote MCP servers to the shared Codex config (${Object.keys(cfg.mcp_servers ?? {}).join(", ")})`);
-  // Paperclip copies the shared config into a managed Codex home only once, so keep
-  // already-seeded homes in sync (Paperclip's own managed block is left untouched).
-  const companies = join(dataDir, "paperclip", "instances", env("PAPERCLIP_INSTANCE_ID", "default"), "companies");
-  if (!existsSync(companies)) return;
-  let updated = 0;
-  for (const c of readdirSync(companies)) {
-    const homes = [join(companies, c, "codex-home", "config.toml")];
-    const agentsDir = join(companies, c, "agents");
-    if (existsSync(agentsDir)) for (const a of readdirSync(agentsDir)) homes.push(join(agentsDir, a, "codex-home", "config.toml"));
-    // Every agent's seed home needs the servers: a run seeds its home from it, and the per-agent `enabled=false` scoping is invalid without them.
-    for (const h of homes) if (upsert(h, h.includes(`${join("agents", "")}`))) updated++;
-  }
-  if (updated) step(`Updated MCP servers in ${updated} existing managed Codex home(s)`);
 }
 
 /**
@@ -780,17 +615,12 @@ await ensureBackupRetention({ api, dailyDays: 3, step });
 const company = await ensureCompany();
 await ensureLabels(company.id);
 lap("login");
-try { await checkLauncher(cfg); } catch (e) { fail(e.message); } // before any agent is switched to its computer
 // Heartbeat runs note missed wake-ups on one "Fleet issues" task; its identifier goes into their handbook section.
 const fleetIssues = Object.values(cfg.agents ?? {}).some((a) => a.heartbeat != null && a.heartbeat !== false) ? await ensureFleetIssues({ api, companyId: company.id, step }) : "";
 const agents = await ensureAgents(company.id, fleetIssues);
-// Crew agents' skills: Paperclip imports them from its managed root, on the host under the data dir (compose mounts
-// <data>/paperclip at PAPERCLIP_HOME=/paperclip).
-const skillsPath = join("instances", env("PAPERCLIP_INSTANCE_ID", "default"), "skills", company.id);
-await ensureCrewSkills({ api, companyId: company.id, cfg, agents, root: join(resolve(repo, env("AIDENHQ_DATA_DIR", "./data")), "paperclip", skillsPath), mounted: `/paperclip/${skillsPath}`, step }).catch((e) => fail(e.message));
 lap("agents");
 const memoryInboxes = await ensureMemoryInboxes({ api, companyId: company.id, step, keys: Object.entries(cfg.agents ?? {}).filter(([, x]) => x.enabled_tools?.paperclip_tasks?.includes("memory_note")).map(([k]) => k) });
-await dropOldOpenRouterSecret();
+await dropOldSecrets(company.id);
 await ensureReportingLines(agents);
 // The Agent Coach's review log (one task per fleet-audit agent), found again by its setup marker, never by search at run time.
 const reviewLogs = await ensureReviewLogs({ api, companyId: company.id, step, keys: Object.entries(cfg.agents ?? {}).filter(([, x]) => x.roles?.includes("fleet-audit")).map(([k]) => k) });
@@ -798,13 +628,8 @@ const reviewLogs = await ensureReviewLogs({ api, companyId: company.id, step, ke
 const chatTasks = isWork ? await ensureChatTasks({ api, companyId: company.id, step, ownerName: cfg.owner_name, agents: Object.fromEntries(Object.entries(cfg.agents ?? {}).filter(([k, x]) => x.chat && agents[k]).map(([k, x]) => [k, x.name])) }) : {};
 writeGrants(agents, memoryInboxes, reviewLogs, chatTasks);
 lap("tasks");
-// Agent computers: the agents with image: get the computer environment; the others are pointed back to local (scripts/computers.mjs).
-try {
-  const pluginVersion = JSON.parse(readFileSync(join(repo, "services/computer/plugin/package.json"), "utf8")).version;
-  await ensureComputers({ api, companyId: company.id, cfg, agents, step, pluginVersion });
-} catch (e) { fail(e.message); }
 await ensureEventsPlugin({ api, step, version: JSON.parse(readFileSync(join(repo, "services/paperclip-events/package.json"), "utf8")).version }).catch((e) => fail(e.message));
-lap("computers");
+lap("plugins");
 // ops-mcp acts in Paperclip as the agent with the ops-key role.
 const opsAgents = Object.keys(cfg.agents ?? {}).filter((k) => cfg.agents[k].roles?.includes("ops-key"));
 if (opsAgents.length > 1) fail(`only one agent may hold the ops-key role (${opsAgents.join(", ")})`);
@@ -815,29 +640,14 @@ if (isWork) await ensureAgentKeys({ api, agents, secretsDir, baseUrl, step });
 if (isWork) await ensureLaneConfig(agents, chatTasks); // the fast chat lane serves the work company only (phase 1)
 const cfgChanged = isWork ? updateSystemYaml(company.id) : false;
 if (opsAgent && (keyChanged || cfgChanged)) restartOpsMcp(); // ops-mcp exists only with the meetings module
-ensureCodexConfig();
 writeCatalog();
 lap("keys");
 await ensureRoutines(company.id, agents); // writes each routine's autonomy into the grants table before its triggers
 await retireUnconfigured({ api, companyId: company.id, cfg, step });
 lap("routines");
 
-const codexAuth = execFileSafe(["compose", "exec", "-T", "-u", "node", "paperclip", "test", "-s", "/paperclip/.codex/auth.json"]);
 console.log("\nPaperclip is configured.");
 console.log(`setup timing: ${laps.join(", ")}`);
-if (!codexAuth) {
-  console.log("Next: log Codex in with your ChatGPT account (once):");
-  console.log("  docker compose exec -it -u node paperclip codex -c 'cli_auth_credentials_store=\"file\"' login --device-auth");
-}
 if (readSecret("modules/google/google_oauth.json") === "{}" || !readSecret("modules/google/google_oauth.json")) {
   console.log("Google Calendar/Drive is not connected yet: see README.md › Google.");
-}
-
-function execFileSafe(args) {
-  try {
-    execFileSync("docker", args, { cwd: repo, stdio: "ignore", env: { ...process.env, ...dotenv } });
-    return true;
-  } catch {
-    return false;
-  }
 }

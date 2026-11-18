@@ -446,8 +446,8 @@ scripts/bootstrap.sh                 # secrets dir, data dirs
 # create your private instance repo (instance.yaml, apps.yaml, agents/), check it out, and set
 # AIDENHQ_INSTANCE_DIR=<checkout> in .env
 ops/apply-config.sh                  # instance -> pinned product -> compile -> compose up -> setup
-mkdir -p ~/.config/systemd/user && cp ops/units/aidenhq-{gateway,computers}.service ops/units/prune-runs.* ops/units/prune-docker.* ~/.config/systemd/user/
-systemctl --user enable --now aidenhq-kernel aidenhq-computers prune-runs.timer prune-docker.service prune-docker.timer
+mkdir -p ~/.config/systemd/user && cp ops/units/aidenhq-{gateway,computers}.service ops/units/prune-docker.* ~/.config/systemd/user/
+systemctl --user enable --now aidenhq-kernel aidenhq-computers prune-docker.service prune-docker.timer
 ```
 
 Set `PAPERCLIP_DISABLE_SIGN_UP=true` in `.env` once you have created your

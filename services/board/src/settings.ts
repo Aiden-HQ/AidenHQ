@@ -53,8 +53,7 @@ interface CompiledAgent {
   module?: string;
   /** Set when the instance forked this module agent's handbook (the module blob it was copied from). */
   handbook_fork?: string;
-  adapter?: string;
-  /** A runner Engineer's engine, when not its adapter's (module.yaml `engine:`). */
+  /** The engine its jobs run on (compile sets it for every agent). */
   engine?: string;
   model?: string;
   models?: string[];
@@ -62,7 +61,8 @@ interface CompiledAgent {
   heartbeat?: boolean | number | null;
   trial?: boolean;
   image?: string;
-  dispatch?: string;
+  /** crew, engineer or check (compile sets it for every agent). */
+  profile?: string;
   department?: { id: string; name: string; description?: string; order: number };
   roles?: string[];
   enabled_tools?: Record<string, string[]>;
@@ -184,15 +184,13 @@ export function settingsView(s: Sources) {
       key,
       name: a.name ?? key,
       module: a.module ?? "",
-      adapter: a.adapter ?? "",
-      runsOn: a.dispatch === "runner" ? "runner" : a.image ? `computer (${a.image})` : "Paperclip",
       model: a.model ?? "",
       models: a.models ?? [],
       effort: a.reasoning_effort ?? "",
       heartbeatHours: a.heartbeat === true ? hours : typeof a.heartbeat === "number" ? a.heartbeat : null,
-      /** Whether a heartbeat may be turned on (compile refuses one for a runner agent, or one without the tools). */
-      canHeartbeat: a.dispatch !== "runner" && HEARTBEAT_TOOLS.every((t) => a.enabled_tools?.paperclip_tasks?.includes(t)),
-      // Only an engine that takes an effort shows the setting: Paperclip's own agents run Codex; an engine without efforts, none.
+      /** Whether a heartbeat may be turned on (compile refuses one for an Engineer, or one without the tools). */
+      canHeartbeat: a.profile !== "engineer" && HEARTBEAT_TOOLS.every((t) => a.enabled_tools?.paperclip_tasks?.includes(t)),
+      // Only an engine that takes an effort shows the setting; an engine without efforts, none.
       efforts: EFFORTS[compiledEngine(a) ?? "codex"] ?? [],
       department: a.department ?? { id: "general", name: "General", order: 1_000 },
       routines,

@@ -666,8 +666,6 @@ export interface AgentSettings {
   key: string;
   name: string;
   module: string;
-  adapter: string;
-  runsOn: string;
   model: string;
   models: string[];
   effort: string;

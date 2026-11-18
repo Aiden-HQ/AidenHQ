@@ -217,22 +217,15 @@ the board key (it writes as the owner). Agents never claim something is done unt
 
 ## Paperclip quirks
 
+- Paperclip tracks and schedules (tasks, assignees, comments, routines); it runs nothing. The kernel runs every agent's
+  jobs in computers (wake inbox, dispatch module, admission); setup gives each agent a Paperclip record only.
 - A user-authored comment (board key, runner) on a done, cancelled or blocked task with an agent assignee reopens it and
   wakes the agent; `reopen: false` doesn't stop it. Never post notices on finished tasks (runner `tellOpenParent`).
-- Cancelling a run that has just started leaves a recovery hold (`executionBlocker`, legacy_execution_requires_reconciliation)
-  that parks every later wake on the task; clear it with `POST /api/issues/:id/recovery-actions/resolve` (outcome `restored`,
-  actionOutcome `not_performed`). A direct agent wake's `reason` never reaches the Codex prompt.
 - Runner (Engineer) tasks: the asker is whoever created the task. An agent's task starts on its own, parent or not (the
   kernel's write tiers gate its writes). Only the asker's, the owner's and, on an agent's task, the chief of staff's
   (`fleet-admin`) comments start a job; any other agent is told whom to ask. A stop or decision goes to the asker, or to
   the owner's channel when that agent is gone.
-- OpenRouter runs are unpriced, so any `budgetMonthlyCents` pauses the agent at $0. Keep budgets at 0; cap spend with
-  the OpenRouter key limit.
-- Agents in computers cannot share a folder: delegated tasks need `agent_default` (the `tasks` module sets this on
-  every delegated task) or the parent's agent gets `workspace_busy`.
-- A routine may set its own `model:` (routine env + the `codex-model` launcher; docs/configuration.md).
-- Debug a run from its Codex session log: `**/sessions/**/*.jsonl` under the Paperclip container's codex home, or
-  `/workspace/.paperclip-runtime/codex/home/sessions` in a computer. Tool calls are `function_call` lines.
+- A routine may set its own `model:` and `reasoning_effort:` (the grants table's `routines`, applied at admission).
 - The host needs the private bwrap copy `/opt/aidenhq/bwrap/bwrap` and its `aidenhq-bwrap` AppArmor profile
   (userns) and `passt` for the host sandbox (fast checks, the reviewer eval, local CI): without them the kernel and the
   runner refuse to start; `ops/vm/setup.sh` installs them. Every Engineer job runs in an agent computer (`image: engineer`).

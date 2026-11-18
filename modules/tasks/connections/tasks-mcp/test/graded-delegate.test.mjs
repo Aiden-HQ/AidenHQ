@@ -19,7 +19,7 @@ async function call(name, args, { finish, gradingDown = false, assignee = "cos",
       if (url === "/grades") return (seen.filed.push({ ...json, as }), send({ created: true, state: "open" }));
       if (url === "/api/agents/me") return send({ id: "cos", name: "Aiden" });
       if (url.endsWith("/agents")) return send([
-        { id: "eng", name: "Engineer", metadata: { setupKey: "aidenhq:engineer-openrouter", persona: { name: "Linus" } }, status: "idle", runtimeConfig: { heartbeat: { wakeOnDemand: false, enabled: false } } },
+        { id: "eng", name: "Engineer", metadata: { setupKey: "aidenhq:engineer-openrouter", persona: { name: "Linus" }, runnerEngine: true }, status: "idle" },
         { id: "ops", name: "Fleet Ops", metadata: { setupKey: "aidenhq:fleet-ops", persona: { name: "Fleet Ops" } }, status: "idle" },
       ]);
       if (req.method === "POST" && url.endsWith("/issues")) return (seen.created.push(json), send({ id: "new", identifier: "WOR-9", title: "t", status: "todo" }));

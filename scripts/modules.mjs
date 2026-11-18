@@ -2,7 +2,7 @@
 // module apps (apps-mcp), compose services (compose.modules.yaml) and the module catalog. Pure: reads files, writes
 // nothing (scripts/compile.mjs writes). See docs/configuration.md.
 import { createHash, randomBytes } from "node:crypto";
-import { cpSync, existsSync, lstatSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, realpathSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, relative, resolve, sep } from "node:path";
 import YAML from "yaml";
@@ -35,7 +35,6 @@ const OVERRIDABLE = { agents: ["model", "reasoning_effort", "engine", "timeout_s
 export const ROUTINE_AUTONOMY = ["off", "tier0", "full"];
 export const routineAutonomyDefault = (r) => (r.webhook ? "tier0" : "full");
 // The Codex launcher (services/paperclip-tasks-mcp/codex-model, mounted at /opt/aidenhq) for agents with a per-routine model.
-const CODEX_MODEL_COMMAND = "/opt/aidenhq/codex-model";
 // The kernel's own settings (kernel/settings.json) and what every instance has beside its modules (kernel/defaults.json): the
 // company's description, the department registry and the secrets the kernel and the host services generate.
 const kernelJson = (f) => JSON.parse(readFileSync(new URL(`../kernel/${f}`, import.meta.url), "utf8"));
@@ -66,20 +65,6 @@ export const writeTools = (c) => [...(c?.tools?.write ?? []), ...(c?.tools?.dest
 export const readTools = (c) => (c?.tools?.read ?? []).filter((t) => !(c?.tools?.named ?? []).includes(t));
 // Every connection is reached through the kernel's tool proxy, which holds the grants and the service keys.
 export const KERNEL_URL = "http://10.231.0.1:3130";
-
-/** The shared Codex config's MCP block: every connection at the kernel's proxy with the run's own credential, never stdio. */
-export function codexMcpBlock(mcpServers = {}) {
-  const toml = (v) => JSON.stringify(String(v));
-  const lines = ["# >>> aidenhq (managed by scripts/paperclip-setup.mjs)"];
-  for (const [name, m] of Object.entries(mcpServers)) {
-    if (!/^[a-z0-9_]+$/.test(name)) fail(`invalid MCP server name ${name}`);
-    lines.push(`[mcp_servers.${name}]`, `url = ${toml(`${KERNEL_URL}/c/${name}/mcp`)}`, 'bearer_token_env_var = "PAPERCLIP_API_KEY"');
-    // Tools are pre-approved: the agents' only capabilities are these vetted servers.
-    lines.push("startup_timeout_sec = 20", `tool_timeout_sec = ${m.tool_timeout_sec ?? 300}`, 'default_tools_approval_mode = "approve"', "");
-  }
-  lines.push("# <<< aidenhq");
-  return lines.join("\n");
-}
 
 const readYaml = (path) => YAML.parse(readFileSync(path, "utf8")) ?? {};
 const fail = (msg) => { throw new Error(msg); };
@@ -199,14 +184,14 @@ export function grantEntry(key, a, routines = {}) {
 /** An agent's profile (kernel/src/admission.ts PROFILES): which tools, writes and computer its kernel jobs get. */
 const JOB_PROFILES = ["crew", "engineer", "check"];
 
-const ENGINE_FIELDS = ["kind", "bin", "live_input", "label", "adapter", "effort_key", "model_prefix", "gateway", "box", "state", "reset", "seed", "crew"];
+const ENGINE_FIELDS = ["kind", "bin", "live_input", "label", "effort_key", "model_prefix", "gateway", "box", "state", "reset", "seed"];
 const relPath = (p) => typeof p === "string" && p && !p.split("/").includes("..") && !/^\/\//.test(p);
 /**
  * A module's `providers.engine` (spec §3.3.1, engine@1): one or more engine kinds, each a `bin` the runner runs in the
  * job's agent computer (only a kind with `box: true` runs at all). The rest is data the runner reads instead of knowing
- * engines: how to pick one (adapter, effort_key, model_prefix), where its model calls go (gateway), its state folder (state:
+ * engines: how to pick one (effort_key, model_prefix), where its model calls go (gateway), its state folder (state:
  * task | shared, under the runner's state dir; reset names and seed copies made before each run; seed `from` is the module's,
- * or the product's with a leading /) and the crew adapter args Paperclip uses (crew). Returns config/engines.json's entries, by kind.
+ * or the product's with a leading /). Returns config/engines.json's entries, by kind.
  */
 export function engineEntries(name, def, root, productDir) {
   const out = {};
@@ -219,7 +204,6 @@ export function engineEntries(name, def, root, productDir) {
     for (const r of e.reset ?? []) if (!relPath(r) || r.startsWith("/")) fail(`${where}: reset names paths in its state folder`);
     for (const s of e.seed ?? []) if (!relPath(s?.from) || !relPath(s?.to) || s.to.startsWith("/") || !existsSync(s.from.startsWith("/") ? join(productDir, s.from) : join(root, s.from))) fail(`${where}: seed entries are { from, to }: an existing module (or /product) path into the state folder`);
     if ((e.reset || e.seed) && !e.state) fail(`${where}: reset and seed need a state folder`);
-    if (e.crew != null && (typeof e.crew.adapter !== "string" || !Array.isArray(e.crew.args))) fail(`${where}: crew is { adapter, args: [...] }`);
     const dir = relative(productDir, root);
     out[e.kind] = { ...e, module: name, dir, bin: join(dir, e.bin), live_input: e.live_input === true };
   }
@@ -620,7 +604,7 @@ export function compile(productDir, instanceDir, { revision, fetch = hostFetch(p
   // Derived for upstream contributions (spec §6.9): the owner-data scrub's literals (ownerTerms).
   settings.owner_terms = ownerTerms(instance.settings ?? {}, settings, declaredSettings.map(([, defs]) => defs));
 
-  const paperclip = { company: { name: String(settings.company_name), description: KERNEL_DEFAULTS.company_description }, ...(settings.owner_name ? { owner_name: String(settings.owner_name) } : {}), ...(agentsOrg(settings) ? { github_agents_org: agentsOrg(settings) } : {}), agents_orgs: codehostOrgs(enabled, settings), autonomy: String(settings.autonomy ?? "off"), settings: shownSettings, labels: [], mcp_servers: {}, codex_args: [], agents: {}, routines: {} };
+  const paperclip = { company: { name: String(settings.company_name), description: KERNEL_DEFAULTS.company_description }, ...(settings.owner_name ? { owner_name: String(settings.owner_name) } : {}), ...(agentsOrg(settings) ? { github_agents_org: agentsOrg(settings) } : {}), agents_orgs: codehostOrgs(enabled, settings), autonomy: String(settings.autonomy ?? "off"), settings: shownSettings, labels: [], mcp_servers: {}, agents: {}, routines: {} };
   const apps = [];
   const instanceAppDefs = existsSync(join(instanceDir, "apps.yaml")) ? (readYaml(join(instanceDir, "apps.yaml")).apps ?? []) : [];
   const instanceApps = instanceAppDefs.map((a) => a.name);
@@ -768,8 +752,6 @@ export function compile(productDir, instanceDir, { revision, fetch = hostFetch(p
   checkPorts([base, compose], [[GATE_PORT, "gate"], [AUTH_PORT, "the kernel's sign-in listener"], ...[...instanceAppDefs, ...apps].filter((a) => Number.isInteger(a.port)).map((a) => [a.port, `app ${a.name}`])]);
 
   instanceAgents(instanceDir, settings, paperclip, routineTitles);
-  // Paperclip's crew adapter args come from the engine module that contributes them.
-  for (const e of Object.values(engines)) if (e.crew?.adapter === "codex_local") paperclip.codex_args = e.crew.args;
 
   // Departments: where the board's Agents page lists each agent. One registry, the kernel's (kernel/defaults.json) then the instance's
   // own (instance.yaml `departments:`); an agent's `department:` must name one, and without one it is `general`. Setup
@@ -824,6 +806,8 @@ export function compile(productDir, instanceDir, { revision, fetch = hostFetch(p
     a.connections = conns;
   }
   for (const [key, a] of Object.entries(paperclip.agents)) {
+    // An agent's profile (crew, engineer, check): crew unless it says otherwise. Grant and prompt tests read it.
+    a.profile ??= "crew";
     if (a.reports_to && !paperclip.agents[a.reports_to]) fail(`${key}: reports_to ${a.reports_to}, which is not enabled`);
     // A role written `id?` is held only while the module declaring it is enabled (like an optional grant `connection?`).
     a.roles = (a.roles ?? []).filter((r) => !String(r).endsWith("?") || roleOwner[r.slice(0, -1)]).map((r) => String(r).replace(/\?$/, ""));
@@ -960,19 +944,9 @@ export function compile(productDir, instanceDir, { revision, fetch = hostFetch(p
     for (const [f, v] of Object.entries(a.caps)) if (!(f in CAPS) || typeof v !== "number" || !(v > 0) || v > 1000) fail(`${key}: caps.${f} isn't a cap (${Object.keys(CAPS).join(", ")}: USD, above 0, at most 1000)`);
   }
 
-  // model: and reasoning_effort: on a routine run its tasks with those instead of the agent's (setup puts them in the routine's
-  // env; the launcher swaps them in). Codex agents Paperclip runs locally get the codex-model launcher; a computer agent's
-  // launcher (services/computer) applies them to the exec in the box. Not runner-dispatched agents.
-  for (const [key, r] of Object.entries(paperclip.routines)) {
-    if (r.model == null && r.reasoning_effort == null) continue;
-    const a = paperclip.agents[r.agent];
-    for (const f of ["model", "reasoning_effort"]) if (r[f] != null && (typeof r[f] !== "string" || !r[f].trim())) fail(`routine ${key}: ${f} must be a string`);
-    if (a.adapter !== "codex_local" || a.dispatch === "runner") fail(`routine ${key}: model and reasoning_effort work only for a codex_local agent without dispatch: runner`);
-    if (!a.image) a.command = CODEX_MODEL_COMMAND;
-  }
-  // Every codex agent Paperclip runs locally starts through the launcher: it gives the run a stable cwd, which Codex prints before
-  // the handbook, so the handbook is a cached prefix across runs (Paperclip's own cwd is new per task).
-  for (const a of Object.values(paperclip.agents)) if (a.adapter === "codex_local" && a.dispatch !== "runner" && !a.image) a.command = CODEX_MODEL_COMMAND;
+  // model: and reasoning_effort: on a routine run its tasks with those instead of the agent's (grantEntry's `routines`: the
+  // kernel's admission reads them from the grants table).
+  for (const [key, r] of Object.entries(paperclip.routines)) for (const f of ["model", "reasoning_effort"]) if (r[f] != null && (typeof r[f] !== "string" || !r[f].trim())) fail(`routine ${key}: ${f} must be a string`);
 
   // Each connection's service learns its module (the caller assertion's audience) and where the kernel is (its keys). It
   // never gets the grants table. A connection served from the root compose (apps-mcp) is wired the same way there, by hand.
@@ -1001,14 +975,15 @@ export function compile(productDir, instanceDir, { revision, fetch = hostFetch(p
     ...(c.model_as_caller === true ? { model_as_caller: true } : {}),
   }]));
 
-  // Prompt contributions (spec §3.1 `prompts`): each crew (codex_local) agent's handbook gets the sections whose `when` holds and
+  // Prompt contributions (spec §3.1 `prompts`): each crew agent's handbook gets the sections whose `when` holds and
   // whose `unless` doesn't, after the kernel's own, in order first, normal, last, then module, then id. Last, after the
   // overrides (an override may set heartbeat or image).
   const prompts = enabled.flatMap((n) => promptEntries(n, all.get(n).def, all.get(n).root)).sort(promptOrder);
   if (new Set(prompts.map((p) => p.id)).size !== prompts.length) fail("two prompts share an id");
-  paperclip.prompts = Object.fromEntries(prompts.map((p) => [p.id, { file: p.file, ...(p.lane ? { lane: true } : {}), ...(p.load === "on_demand" ? { load: p.load, summary: p.summary } : {}) }]));
-  for (const a of Object.values(paperclip.agents)) if (a.adapter === "codex_local" && prompts.some((p) => promptApplies(p, a, enabled))) a.prompts = prompts.filter((p) => promptApplies(p, a, enabled)).map((p) => p.id);
-  // Skills (modules/<m>/skills/<name>/SKILL.md), for every agent whatever its adapter: the ones promptApplies picks (its own
+  const sections = prompts.filter((p) => !p.skill);
+  paperclip.prompts = Object.fromEntries(sections.map((p) => [p.id, { file: p.file, ...(p.lane ? { lane: true } : {}) }]));
+  for (const a of Object.values(paperclip.agents)) if (a.profile === "crew" && sections.some((p) => promptApplies(p, a, enabled))) a.prompts = sections.filter((p) => promptApplies(p, a, enabled)).map((p) => p.id);
+  // Skills (modules/<m>/skills/<name>/SKILL.md), for every agent whatever its profile: the ones promptApplies picks (its own
   // module's, or a module's whose connection it holds a grant on) plus those it names in `skills:`. Jobs get exactly these.
   const skills = prompts.filter((p) => p.skill);
   if (skills.length) paperclip.skills = Object.fromEntries(skills.map((s) => [s.id, { dir: dirname(s.file), description: s.summary }]));
@@ -1057,8 +1032,13 @@ export function compile(productDir, instanceDir, { revision, fetch = hostFetch(p
   // Host-only tokens a module needs: created random when missing (compile.mjs).
   const generatedSecrets = [...KERNEL_DEFAULTS.generated_secrets, ...enabled.flatMap((name) => all.get(name).def.generated_secrets ?? [])];
   validateImages(paperclip.agents); // image: an agent computer (module, instance override or instance agent)
-  // A runner agent's engine (after the overrides that may set it, and its image) is one an enabled module provides.
-  for (const [key, a] of Object.entries(paperclip.agents)) if (a.dispatch === "runner" && a.engine && !engines[a.engine]) fail(`agent ${key}: unknown engine ${a.engine} (enabled: ${Object.keys(engines).sort().join(", ") || "none"})`);
+  // Every agent's jobs run on an engine (after the overrides that may set it): its own `engine:`, else the one enabled engine
+  // that runs in a computer.
+  const boxEngines = Object.keys(engines).filter((k) => engines[k].box === true).sort();
+  for (const [key, a] of Object.entries(paperclip.agents)) {
+    a.engine ??= boxEngines.length === 1 ? boxEngines[0] : fail(`agent ${key}: set engine: (enabled engines that run in a computer: ${boxEngines.join(", ") || "none"})`);
+    if (!engines[a.engine]) fail(`agent ${key}: unknown engine ${a.engine} (enabled: ${Object.keys(engines).sort().join(", ") || "none"})`);
+  }
   // engines: the engines a kernel job may ask its next turn to run on (`aidenhq engine`); absent, only its own.
   for (const [key, a] of Object.entries(paperclip.agents)) if (a.engines != null && (!Array.isArray(a.engines) || a.engines.some((k) => !engines[k]))) fail(`agent ${key}: engines is a list of enabled engine kinds (${Object.keys(engines).sort().join(", ") || "none"})`);
   // The model gateway's prices and CI review (config/gateway.json, re-read per call).
@@ -1292,7 +1272,7 @@ function instanceAgents(instanceDir, settings, paperclip, routineTitles) {
     if (def.max_parallel != null && !(Number.isInteger(def.max_parallel) && def.max_parallel >= 1 && def.max_parallel <= 10)) fail(`agent ${key}: max_parallel must be 1 to 10`);
     if (def.trial != null && def.trial !== true) fail(`agent ${key}: trial is true or absent`);
     const { description, routines, ...rest } = def;
-    put(paperclip.agents, key, { adapter: "codex_local", ...rest, title: String(description).trim(), description: String(description).trim(), instructions: handbook, module: "instance", isolation: "trusted" }, "agent");
+    put(paperclip.agents, key, { ...rest, title: String(description).trim(), description: String(description).trim(), instructions: handbook, module: "instance", isolation: "trusted" }, "agent");
     for (const [rk, r] of Object.entries(routines ?? {})) {
       // Schedules only: webhooks and their secrets (webhook, webhook_base, secrets_prefix) come from modules.
       for (const f of Object.keys(r ?? {})) if (!INSTANCE_ROUTINE_FIELDS.includes(f)) fail(`agent ${key}: routine ${rk}: ${f} isn't allowed (known: ${INSTANCE_ROUTINE_FIELDS.join(", ")})`);
@@ -1305,8 +1285,8 @@ function instanceAgents(instanceDir, settings, paperclip, routineTitles) {
 }
 
 // Heartbeats: `heartbeat: true` (every `heartbeat_hours`, default 4) or `heartbeat: <hours>` on an agent adds one routine that
-// wakes it on a schedule to check the work it waits on. Event wake-ups (services/board/src/wake.ts) do the real work; a
-// heartbeat is the backstop for what they miss. Runner-dispatched agents (Software and Platform Engineers) are woken by the runner.
+// wakes it on a schedule to check the work it waits on. The kernel's wake inbox does the real work; a heartbeat is the backstop
+// for what it misses. Engineers have none.
 // Not Paperclip's per-agent `runtimeConfig.heartbeat` timer (kept off) nor its "heartbeat runs" (every run): a routine.
 const HEARTBEAT_TOOLS = ["task_list", "task_comments", "task_approvals", "task_comment", "task_finish"];
 const HEARTBEAT_HOURS = [1, 2, 3, 4, 6, 8, 12, 24]; // divisors of 24, so the cron fires evenly
@@ -1326,7 +1306,7 @@ function heartbeatRoutines(paperclip, settings, agentOverrides, routineTitles) {
     if (hb == null || hb === false) continue;
     const hours = hb === true ? every : hb;
     if (!HEARTBEAT_HOURS.includes(hours)) fail(`agent ${key}: heartbeat is true, false or hours between heartbeats (${HEARTBEAT_HOURS.join(", ")})`);
-    if (a.dispatch === "runner") fail(`agent ${key}: a runner-dispatched agent can't have a heartbeat (the runner wakes it)`);
+    if (a.profile === "engineer") fail(`agent ${key}: an Engineer can't have a heartbeat (it works on the tasks it is given)`);
     const tools = a.enabled_tools.paperclip_tasks ?? [];
     const missing = HEARTBEAT_TOOLS.filter((t) => !tools.includes(t));
     if (missing.length) fail(`agent ${key}: heartbeat needs paperclip_tasks: ${missing.join(", ")}`);
@@ -1348,7 +1328,7 @@ function heartbeatRoutines(paperclip, settings, agentOverrides, routineTitles) {
  * App users' words drive the run, so it is tier0 and its agent is a narrow one: exactly the tools below (task_delegate hands
  * code fixes to an Engineer, through every gate), no other app's API, and apps-mcp keeps it to the apps that name it.
  */
-const FEEDBACK_TOOLS = { apps: ["app_api", "app_view"], paperclip_tasks: ["task_current", "task_get", "task_comments", "task_list", "task_comment", "task_finish", "task_set_status", "task_delegate", "memory_note", "handbook_section"] };
+const FEEDBACK_TOOLS = { apps: ["app_api", "app_view"], paperclip_tasks: ["task_current", "task_get", "task_comments", "task_list", "task_comment", "task_finish", "task_set_status", "task_delegate", "memory_note"] };
 function appFeedbackRoutines(paperclip, appDefs, routineTitles, defaulted) {
   for (const a of appDefs) {
     if (!a?.share?.host || !a.feedback_to) continue;
@@ -1388,23 +1368,24 @@ function cappedFile(instanceDir, path, warnings, fix) {
   return text;
 }
 
-const PROMPT = { fields: ["id", "file", "order", "when", "unless", "lane"], order: ["first", "normal", "last"], tests: ["tools", "roles", "modules", "fields"], meta: ["summary", "load"], load: ["always", "on_demand"] };
+const PROMPT = { fields: ["id", "file", "order", "when", "unless", "lane"], order: ["first", "normal", "last"], tests: ["tools", "roles", "modules", "fields"] };
 /**
  * A module's handbook sections: its `prompts:` (spec §3.1): [{id: <module>.<id>, file, order, when, unless, lane}], and its
  * skills (`skills/<name>/SKILL.md`). A prompt `file` is a prompts/<name>.md in the module, used verbatim past its optional
  * frontmatter (its leading blank lines included). `when` and `unless` test presence: `tools` (`connection.tool` granted),
  * `roles`, `modules` (enabled) and `fields` (an agent field: `true` = set and not false, anything else = equal). Every `when`
- * test must hold, and no `unless` test. `lane: true`: the fast chat lane's prompt gets it too. Frontmatter: `load: always`
- * (the default: in the handbook) or `on_demand` (its `summary` line is in the handbook's index, its text is read with the
- * tasks module's `handbook_section`). A skill is an on-demand section in Codex's SKILL.md format (`name`, `description` as
- * its summary, optional `when`/`unless`) for the agents its module defines or that hold a grant on one of its connections.
+ * test must hold, and no `unless` test. `lane: true`: the fast chat lane's prompt gets it too. A skill is a folder in Codex's
+ * SKILL.md format (`name`, a one-line `description`, optional `when`/`unless`) for the agents its module defines or that hold
+ * a grant on one of its connections: the engine reads it natively from the job's engine home, never from the handbook.
  */
 export function promptEntries(name, def, root) {
   const prompts = [def.prompts ?? []].flat().map((p) => {
     const bad = Object.keys(p ?? {}).find((f) => !PROMPT.fields.includes(f)) ?? ["when", "unless"].flatMap((k) => Object.keys(p[k] ?? {}).filter((t) => !PROMPT.tests.includes(t)).map((t) => `${k}.${t}`))[0];
     if (bad || !/^[a-z0-9][a-z0-9-]*$/.test(p.id ?? "") || !PROMPT.order.includes(p.order ?? "normal") || !/^prompts\/[a-z0-9-]+\.md$/.test(p.file ?? "") || !existsSync(join(root, p.file))) fail(`module ${name}: prompt ${p?.id}: ${bad ? `unknown ${bad} (fields: ${PROMPT.fields.join(", ")}; tests: ${PROMPT.tests.join(", ")})` : "needs an id (a-z, 0-9, -), a prompts/<name>.md file that exists and an order of first, normal or last"}`);
     const { meta } = frontmatter(readFileSync(join(root, p.file), "utf8"));
-    return section(name, `prompt ${p.id}`, { id: `${name}.${p.id}`, module: name, file: join(root, p.file), order: p.order ?? "normal", when: p.when ?? {}, unless: p.unless ?? {}, lane: p.lane === true }, meta, PROMPT.meta);
+    const bad2 = Object.keys(meta)[0];
+    if (bad2) fail(`module ${name}: prompt ${p.id}: unknown frontmatter ${bad2} (a prompt has none)`);
+    return { id: `${name}.${p.id}`, module: name, file: join(root, p.file), order: p.order ?? "normal", when: p.when ?? {}, unless: p.unless ?? {}, lane: p.lane === true };
   });
   const dir = join(root, "skills");
   const skills = (existsSync(dir) ? readdirSync(dir, { withFileTypes: true }) : []).filter((d) => d.isDirectory() && existsSync(join(dir, d.name, "SKILL.md"))).map((d) => {
@@ -1416,19 +1397,13 @@ export function promptEntries(name, def, root) {
     if (skillName !== d.name) fail(`module ${name}: skill ${d.name}: its SKILL.md name must be its folder name (${d.name})`);
     const bad = ["when", "unless"].flatMap((k) => Object.keys((k === "when" ? when : unless) ?? {}).filter((t) => !PROMPT.tests.includes(t)).map((t) => `${k}.${t}`))[0];
     if (bad) fail(`module ${name}: skill ${d.name}: unknown ${bad} (tests: ${PROMPT.tests.join(", ")})`);
-    return section(name, `skill ${d.name}`, { id: `${name}.${d.name}`, module: name, file, order: "normal", when: when ?? {}, unless: unless ?? {}, lane: false, skill: Object.keys(def.connections ?? {}) }, { ...meta, summary: description, load: "on_demand" }, [...PROMPT.meta, "license", "metadata", "allowed-tools"]);
+    const extra = Object.keys(meta).find((k) => !["license", "metadata", "allowed-tools"].includes(k));
+    if (extra) fail(`module ${name}: skill ${d.name}: unknown frontmatter ${extra} (allowed: license, metadata, allowed-tools)`);
+    const summary = typeof description === "string" ? description.trim() : "";
+    if (!summary || summary.includes("\n")) fail(`module ${name}: skill ${d.name}: needs a one-line description`);
+    return { id: `${name}.${d.name}`, module: name, file, order: "normal", when: when ?? {}, unless: unless ?? {}, lane: false, skill: Object.keys(def.connections ?? {}), summary };
   });
   return [...prompts, ...skills];
-}
-/** A section's entry with its frontmatter checked: `load` always or on_demand, and an on-demand one has a one-line summary. */
-function section(name, what, entry, meta, allowed) {
-  const bad = Object.keys(meta).find((k) => !allowed.includes(k));
-  if (bad) fail(`module ${name}: ${what}: unknown frontmatter ${bad} (allowed: ${allowed.join(", ")})`);
-  const load = meta.load ?? "always";
-  if (!PROMPT.load.includes(load)) fail(`module ${name}: ${what}: load is always or on_demand`);
-  const summary = typeof meta.summary === "string" ? meta.summary.trim() : "";
-  if (load === "on_demand" && (!summary || summary.includes("\n"))) fail(`module ${name}: ${what}: an on-demand section needs a one-line summary${entry.skill ? " (its description)" : ""}`);
-  return { ...entry, load, ...(summary ? { summary } : {}) };
 }
 /** Handbook order: first, normal, last; then module; then id. */
 export const promptOrder = (a, b) => PROMPT.order.indexOf(a.order) - PROMPT.order.indexOf(b.order) || a.module.localeCompare(b.module) || a.id.localeCompare(b.id);
@@ -1584,41 +1559,6 @@ export async function ensureBackupRetention({ api, dailyDays, step }) {
   }
   step(`Backup retention is now ${tiers(after)}`);
   return after;
-}
-
-/**
- * Crew agents' skills (Paperclip runs see no others): each skill a crew agent has is copied whole into the company's managed
- * skills root, the one folder Paperclip imports a local skill from (`root` on this host, `mounted` in its container), regular
- * files only, and imported (a re-import updates it in place). Paperclip accepts unknown keys on sync, so every key is checked
- * against its list first. Then each crew agent's set is replaced with exactly its own, so a dropped skill leaves; an unchanged
- * set is left alone (a new set gives the agent a new Codex home). Paperclip's bundled skills are its own. Runner agents get
- * theirs from the grants table.
- */
-export async function ensureCrewSkills({ api, companyId, cfg, agents, root, mounted, step }) {
-  const crew = Object.entries(agents).filter(([key]) => cfg.agents[key].dispatch !== "runner");
-  const ids = [...new Set(crew.flatMap(([key]) => cfg.agents[key].skills ?? []))].sort();
-  const folder = (id) => id.slice(id.indexOf(".") + 1);
-  const twin = ids.find((id, i) => ids.some((other, j) => j < i && folder(other) === folder(id)));
-  if (twin) fail(`skills ${ids.find((id) => id !== twin && folder(id) === folder(twin))} and ${twin} share the name ${folder(twin)}: Paperclip keeps one skill per name`);
-  const keys = {};
-  for (const id of ids) {
-    const to = join(root, folder(id));
-    rmSync(to, { recursive: true, force: true });
-    cpSync(cfg.skills[id].dir, to, { recursive: true, filter: (from) => { const s = lstatSync(from); return s.isDirectory() || s.isFile(); } });
-    const { json } = await api("POST", `/api/companies/${companyId}/skills/import`, { source: `${mounted}/${folder(id)}` });
-    keys[id] = json.imported?.find((s) => s.slug === folder(id))?.key;
-  }
-  if (ids.length) {
-    const listed = new Set((await api("GET", `/api/companies/${companyId}/skills`)).json.map((s) => s.key));
-    const missing = ids.filter((id) => !listed.has(keys[id]));
-    if (missing.length) fail(`Paperclip does not list skill(s) ${missing.join(", ")} after importing them from ${mounted}`);
-  }
-  for (const [key, a] of crew) {
-    const want = (cfg.agents[key].skills ?? []).map((id) => keys[id]).sort();
-    if (JSON.stringify(a.adapterConfig?.paperclipSkillSync?.desiredSkills ?? []) === JSON.stringify(want)) continue;
-    await api("POST", `/api/agents/${a.id}/skills/sync`, { mode: "replace", desiredSkills: want });
-    step(`Skills of ${key}: ${want.length ? cfg.agents[key].skills.join(", ") : "none"}`);
-  }
 }
 
 /**

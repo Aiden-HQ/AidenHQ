@@ -88,16 +88,13 @@ outcomes:
   `image`, `max_parallel` for a bigger host) and routines (`schedules`, `status`, `model`, `autonomy`). Anything else is refused.
 - **Missed schedule ticks:** setup sets every routine to catch up (`enqueue_missed_with_cap`), so a tick Paperclip lost (a stalled scheduler, a restart) runs on the next one instead of being dropped. Paperclip enqueues one run per missed tick (at most 25; one for crons that fire 24+ times a day); `always_enqueue` routines skip missed ticks.
 - **A model per routine:** `model: <id>` on a routine runs its tasks on that model instead of the agent's (e.g. a cheap
-  model for a frequent sweep, the agent's stronger one for everything else). Setup puts it in the routine's env
-  (`AIDENHQ_MODEL`), Paperclip passes that env to the routine's runs, and the agent's Codex is started through
-  `/opt/aidenhq/codex-model` (`services/paperclip-tasks-mcp/codex-model`), which swaps it in for the agent's `--model`.
-  `reasoning_effort:` on a routine works the same way (`AIDENHQ_REASONING_EFFORT`; generated heartbeats use both). For an
-  agent in a computer (`image:`) the computer launcher applies them to the exec in the box (`routineArgs`). Only for
-  `codex_local` agents (not `dispatch: runner`); compile refuses others. Removing them clears the env on the next apply.
+  model for a frequent sweep, the agent's stronger one for everything else). Compile writes it into the agent's grants
+  entry (`routines`), and the kernel's admission gives a routine run's job that model. `reasoning_effort:` on a routine
+  works the same way (generated heartbeats use both).
 - **Autonomy per routine:** `autonomy: off | tier0 | full` on a routine (module, instance agent, or
   `overrides.routines.<key>.autonomy`) caps the approval cards of the tasks its runs start: the run task itself and every
-  task traced back to it, through parents and through Paperclip's `originRunId` (the run that created an issue, which no
-  agent sets), so an unparented `task_create` from a routine's run keeps the cap. The strictest of the routines found and
+  task traced back to it, through parents and the kernel's provenance (the job that created an issue), so an unparented
+  `task_create` from a routine's run keeps the cap. The strictest of the routines found and
   the instance's `autonomy` applies, in code (`services/runner/src/tiers.mjs` `routineCap`, `paperclip.ts` `origins`):
   `tier0` makes Tier 1 the owner's after the AI reviewer has read it (its reject is final; Tier 0 still runs),
   `off` makes Tier 0 the owner's too, `full` adds no cap. The default is `full` for scheduled and owner-started
@@ -118,28 +115,26 @@ outcomes:
   `chat_lane.chat_send`, `owner_channel.notify` (any other name, an entry it doesn't grant, or one on an agent not in
   trial is a compile error). Every other granted write stays refused until trial ends. The Agent Architect designs these
   and the Platform Engineer commits them after the owner approves.
-- `private_reads: true` on a `dispatch: runner` agent: its jobs may hold private data (private grants: Grafana, Slack,
+- `private_reads: true` on an Engineer (`profile: engineer`): its jobs may hold private data (private grants: Grafana, Slack,
   Glean, ClickHouse; other tasks) and get no web search. Without it (the Software and Platform Engineers), web search and
   only the non-private jobcaps (Primer).
-- `image: engineer` on a `dispatch: runner` agent: every Engineer has one; its jobs run in that agent computer (a job for an
+- `image: engineer` on an Engineer (`profile: engineer`): every Engineer has one; its jobs run in that agent computer (a job for an
   agent without one is refused).
-- `jobcaps: [<id>]` on a `dispatch: runner` agent (`<id>?` when its module is optional): the non-private reads its jobs hold,
+- `jobcaps: [<id>]` on an Engineer (`profile: engineer`) (`<id>?` when its module is optional): the non-private reads its jobs hold,
   through the kernel's proxy with the box's run token; no connection URL or token enters a job. A module declares them under
-  `jobcaps:` (`id`, `connection`, `tools` or `read`, `private`, `tool_timeout_s`, `read_url`, `read_secret`). `engine:` on a
-  runner agent names its engine (`codex-openrouter`).
-- `max_parallel` on an agent: how many of its runs go at once (Paperclip's `maxConcurrentRuns`). For a `dispatch: runner`
-  agent (the Engineers, the Platform Engineer) it caps that agent's parallel runner jobs, each in its own task workspace,
-  within the host's `max_concurrent` (config/runner.yaml); unset, only the host's cap applies.
-- `prompts:` in a module: handbook sections it adds to every crew (`codex_local`) agent's handbook, after the kernel's
+  `jobcaps:` (`id`, `connection`, `tools` or `read`, `private`, `tool_timeout_s`, `read_url`, `read_secret`). `engine:` on an
+  agent names the engine its jobs run on; without one, the one enabled engine that runs in a computer (compile fails when
+  there are none or several).
+- `profile:` on an agent: `crew` (the default), `engineer` or `check`: which tools, writes and computer its kernel jobs get.
+- `max_parallel` on an agent: how many of its kernel jobs run at once, each on its own task.
+- `prompts:` in a module: handbook sections it adds to every crew (`profile: crew`) agent's handbook, after the kernel's
   Approvals: `{id, file: prompts/<id>.md, order: first|normal|last, when, unless, lane}`. The file goes in verbatim (its
   leading blank lines included); `{{memory}}` and `{{fleet_issues}}` are filled in. `when` and `unless` test `tools`
   (`connection.tool` granted), `roles`, `modules` (enabled) and `fields` (an agent field: `true` means set and not false,
   anything else equal): every `when` test holds and no `unless` test. Ordered first, normal, last, then by module, then id.
   `lane: true` adds it to the fast chat lane's prompt too. A section that serves only some agents says so in `when`.
-  A section file may open with frontmatter: `load: on_demand` with a one-line `summary` keeps its text out of the
-  handbook; the handbook lists `id: summary` under "Sections on demand" and the agent reads the text with
-  `handbook_section` (tasks module) when its work calls for it. `load: always` (the default) is for rules that guard
-  risk and for what applies to every turn.
+  A section is always in the handbook; what an agent needs only for some work is a skill (below), which its engine
+  reads natively from the job's engine home.
 - `skills/<name>/SKILL.md` in a module: a skill in Codex's format (`name`, which is its folder's name, `description`,
   optional `when`/`unless`), with id `<module>.<name>`, for the agents the module defines and those granted one of its
   connections, plus any agent (module or instance, any adapter) that names it in its `skills:` list. Compile lists every
@@ -178,7 +173,7 @@ run `node scripts/sync-shared.mjs`.
 
 ## The web and apps' pages
 
-- **Web search** is live for every codex agent (`web_search="live"` in core's `codex_args`).
+- **Web search** is live for every agent's jobs unless they hold private data (the kernel's admission).
   An agent may set `web_search: cached` or `disabled` (module or instance `agent.yaml`); computers inherit both.
 - **`web_view(url, screenshot?, width?)`** and **`app_view(name, path?, screenshot?, width?)`** (apps-mcp, read tools):
   every codex agent is granted both explicitly (`apps: [web_view, app_view]`). One renderer

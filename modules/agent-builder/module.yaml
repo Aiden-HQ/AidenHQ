@@ -12,7 +12,6 @@ agents:
     # handbooks are what the other agents run on. Max can reason 60-90k tokens a turn: nothing in its path sets an output cap
     # (Codex and the gateway send none), and the longer timeout covers slow turns. A 90k-token turn costs about $0.05, so
     # the default $2 run cap allows about 40 of them.
-    adapter: codex_local
     model: ~deepseek/deepseek-flash-latest
     reasoning_effort: max
     timeout_sec: 3600

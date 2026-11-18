@@ -14,7 +14,6 @@ agents:
   inbox-agent:
     # Intake: the Slack scan, the live Slack triage and the inbox scan, one routine and one skill each (design §4.5).
     department: intake
-    adapter: codex_local
     model: ~deepseek/deepseek-flash-latest
     reasoning_effort: high
     timeout_sec: 1200
@@ -33,7 +32,6 @@ agents:
       paperclip_tasks: [ task_current, task_get, task_search, task_list, task_create, task_update, task_comment, task_set_status, task_finish ]
   open-loops:
     department: outreach
-    adapter: codex_local
     model: ~deepseek/deepseek-flash-latest
     reasoning_effort: high
     timeout_sec: 1800

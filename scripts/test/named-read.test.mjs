@@ -16,7 +16,10 @@ function build(connections, agents = {}) {
   const product = mkdtempSync(join(tmpdir(), "named-product-"));
   mkdirSync(join(product, "modules", "m"), { recursive: true });
   writeFileSync(join(product, "modules", "marketplace.json"), JSON.stringify({ name: "t", owner: { name: "T" }, description: "t", plugins: [{ name: "m", source: "./m" }] }));
-  writeFileSync(join(product, "modules", "m", "module.yaml"), YAML.stringify({ name: "m", description: "named reads", connections, agents }));
+  // Every agent runs on an engine: the module brings the one it runs on.
+  mkdirSync(join(product, "modules", "m", "bin"));
+  writeFileSync(join(product, "modules", "m", "bin", "engine"), "");
+  writeFileSync(join(product, "modules", "m", "module.yaml"), YAML.stringify({ name: "m", description: "named reads", connections, agents, providers: { engine: { kind: "e", bin: "bin/engine", box: true } } }));
   for (const key of Object.keys(agents)) {
     mkdirSync(join(product, "modules", "m", "agents", key), { recursive: true });
     writeFileSync(join(product, "modules", "m", "agents", key, "AGENTS.md"), `---\nname: ${key}\ntitle: ${key}\ndescription: The ${key} agent.\n---\n\n${key} handbook\n`);

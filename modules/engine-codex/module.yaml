@@ -15,48 +15,6 @@ providers:
       model_prefix: openrouter/
       gateway: true
       box: true
-      # Paperclip's own Codex agents (the crew): their adapter's args.
-      crew:
-        adapter: codex_local
-        args:
-          - --sandbox
-          - read-only
-          # Paperclip run workspaces are not git repositories.
-          - --skip-git-repo-check
-          # ChatGPT connectors (Gmail etc.) off: Paperclip GHSA-gqqj-85qm-8qhf, codex_local sent real email through an inherited
-          # ChatGPT-connected Gmail. Only our own connections may act.
-          - -c
-          - features.apps=false
-          - -c
-          - features.shell_tool=false
-          - -c
-          - features.unified_exec=false
-          - -c
-          - features.apps=false
-          - -c
-          - features.browser_use=false
-          - -c
-          - features.browser_use_external=false
-          - -c
-          - features.in_app_browser=false
-          - -c
-          - features.computer_use=false
-          - -c
-          - features.image_generation=false
-          - -c
-          # Live web search for every agent; an agent may set web_search: cached | disabled.
-          - web_search="live"
-          - -c
-          - model_provider="or"
-          - -c
-          - model_providers.or.name="OpenRouter"
-          - -c
-          # The model gateway on the backplane (services/gateway): the run's own Paperclip credential is the key.
-          - model_providers.or.base_url="http://10.231.0.1:8201/api/v1"
-          - -c
-          - model_providers.or.env_key="PAPERCLIP_API_KEY"
-          - -c
-          - model_providers.or.wire_api="responses"
       state: task
       reset: [AGENTS.md, AGENTS.override.md, skills, config.toml, auth.json, hooks.json, rules, plugins, .agents]
       # The job's skills (skills/) are its agent's module skills and AGENTS.md its compiled handbook, both placed by the kernel.
