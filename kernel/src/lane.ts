@@ -6,8 +6,8 @@
 // (wakes.ts SELF_TAG: no wake), and each is posted at most once per turn. The kernel resolves the task and the author itself:
 // the lane names only the agent, never a task, so it can speak as the owner only in a lane agent's own chat. Both texts are
 // neutralised, so neither can forge a marker.
-import type { DatabaseSync } from "node:sqlite";
 import { neutral, type Api } from "./channels.ts";
+import type { Once } from "./once.ts";
 import { fail } from "./proxy.ts";
 
 /** Posts a comment as an agent once per `job` (outcomes.ts `post`, kind `lane`): the agent's own words, which wake nobody. */
@@ -16,34 +16,29 @@ export type PostAsAgent = (agent: string, task: string, job: string, body: strin
 const TURN = /^[A-Za-z0-9_-]{1,59}$/;
 const ownerTag = (job: string) => `<!-- aidenhq:job=${job} kind=owner -->`;
 
-export function createLane({ db, owner, postAsAgent, grantsFile, log = () => {} }: {
-  db: DatabaseSync;
+export function createLane({ once, owner, postAsAgent, grantsFile, log = () => {} }: {
+  /** The one durable once-only write (once.ts). */
+  once: Once;
   /** The control plane as the owner. */
   owner: Api;
   postAsAgent: PostAsAgent;
   grantsFile: () => { agents?: Record<string, Record<string, unknown>> };
   log?: (msg: string, f?: Record<string, unknown>) => void;
 }) {
-  // The owner's side, once: a row written before the post (comment NULL) and completed after it; a row a crash left NULL is
-  // looked up by its tag. (The agent's side is the outcome post's own once.)
-  db.exec("CREATE TABLE IF NOT EXISTS lane_owner_posts (job TEXT PRIMARY KEY, comment TEXT)");
-
-  async function ownerOnce(task: string, job: string, text: string): Promise<string> {
-    const had = db.prepare("SELECT comment FROM lane_owner_posts WHERE job = ?").get(job) as { comment: string | null } | undefined;
-    if (had?.comment) return had.comment;
-    if (had) {
-      const r = await owner("GET", `/api/issues/${encodeURIComponent(task)}/comments?order=desc&limit=100`);
+  // The owner's side, once (once.ts): a retry after an unknown outcome looks for the turn's tag first. (The agent's side is the
+  // outcome post's own once.)
+  const ownerOnce = async (task: string, job: string, text: string): Promise<string> => (await once(ownerTag(job), async (retry) => {
+    const unknown = (e: Error) => fail(502, "unknown", `posting the owner's words: ${e.message}`);
+    if (retry) {
+      const r = await owner("GET", `/api/issues/${encodeURIComponent(task)}/comments?order=desc&limit=100`).catch((e) => { throw unknown(e); });
       const found = (Array.isArray(r.json) ? r.json : []).find((c: { body?: unknown }) => typeof c.body === "string" && c.body.includes(ownerTag(job)));
-      if (found) {
-        db.prepare("UPDATE lane_owner_posts SET comment = ? WHERE job = ?").run(String(found.id), job);
-        return String(found.id);
-      }
-    } else db.prepare("INSERT INTO lane_owner_posts (job) VALUES (?)").run(job);
-    const r = await owner("POST", `/api/issues/${encodeURIComponent(task)}/comments`, { body: `${text}\n\n${ownerTag(job)}` });
+      if (found) return String(found.id);
+    }
+    const r = await owner("POST", `/api/issues/${encodeURIComponent(task)}/comments`, { body: `${text}\n\n${ownerTag(job)}` }).catch((e) => { throw unknown(e); });
+    if (r.status >= 500) throw fail(502, "unknown", `posting the owner's words: ${r.status}`);
     if (r.status >= 300) throw fail(502, "upstream", `posting the owner's words: ${r.status}`);
-    db.prepare("UPDATE lane_owner_posts SET comment = ? WHERE job = ?").run(String(r.json?.id), job);
     return String(r.json?.id);
-  }
+  })).value;
 
   return {
     /** One lane turn onto the agent's chat task: the owner's words first (when the lane received them), then its reply. */

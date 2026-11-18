@@ -11,6 +11,7 @@ import { createChannels } from "../src/channels.ts";
 import { createNotify } from "../src/notify.ts";
 import { createChecks } from "../src/checks.ts";
 import { createLane } from "../src/lane.ts";
+import { createOnce } from "../src/once.ts";
 import { createAsCaller, createBoardCp, createCp } from "../src/cp.ts";
 import { createIdentity, rolesOf } from "../src/identity.ts";
 import { mintToken } from "../src/gateway/token.ts";
@@ -95,13 +96,13 @@ export async function kernel(t, { agents = {}, grants = {}, settings = {}, conne
   const checks = checkTable ? createChecks({ db: records.db, registry: typeof checkTable === "function" ? checkTable : () => checkTable, owner, secret, resolver: createResolver(), log: logf, agentKey: (id) => grants[id]?.key, graded: (id) => grants[id]?.graded === true, pending: (task) => records.list(["review", "owner", "approved"], 100, { task }) }) : undefined;
   // The fast lane's exchanges; agent posts (outcomes.ts's, once per job) are kept in `agentPosts`.
   const agentPosts = [];
-  const lane = createLane({ db: records.db, owner, grantsFile: grantsTable, postAsAgent: async (agent, task, job, body) => {
+  const lane = createLane({ once: createOnce(records.db), owner, grantsFile: grantsTable, postAsAgent: async (agent, task, job, body) => {
     const i = agentPosts.findIndex((p) => p.job === job);
     return { id: `ac-${(i >= 0 ? i : agentPosts.push({ agent, task, job, body }) - 1) + 1}` };
   } });
   const notify = createNotify({ db: records.db, modules: modulesFile, secret, resolver: createResolver(), testHosts: true });
   const healthProbe = createHealthProbe({ grants: () => grantsTable().agents ?? {}, connections: connectionsTable, kindOf: writes.kindOf, callAs: proxy.callAs, log: logf });
-  const backplane = createBackplane({ healthProbe, healthKey: () => secret("health_probe_key"), checks, checkJobs, lane, whoami, asserter, grantsFile: grantsTable, log: logf, writes, records, channels, brake, notify, owner, ownerRaw: (p) => fetch(new URL(p, cpServer.url), { headers: { authorization: "Bearer board-key" } }), modules: modulesFile, boardKey: () => secret("gateway_board_key"), reviewerKey: () => secret("reviewer_key"), reviews, jobs: jobsApi, proxy: (req, res, c) => proxy(req, res, c), cp: createCp({ whoami, asserter, plugin: createPluginPost({ controlUrl: cpServer.url, agentKey: (id) => secret(`paperclip-agents/${id}`), postKey: () => secret("paperclip_post_key") }), agentKey: (id) => secret(`paperclip-agents/${id}`), grants: () => grantsTable().agents ?? {}, controlUrl: cpServer.url, checks, provenance, log: logf }), boardCp: createBoardCp({ controlUrl: cpServer.url, key: () => secret("paperclip_board_key"), log: logf }) });
+  const backplane = createBackplane({ healthProbe, healthKey: () => secret("health_probe_key"), checks, checkJobs, lane, whoami, asserter, grantsFile: grantsTable, log: logf, writes, records, channels, brake, notify, owner, ownerRaw: (p) => fetch(new URL(p, cpServer.url), { headers: { authorization: "Bearer board-key" } }), modules: modulesFile, boardKey: () => secret("gateway_board_key"), reviewerKey: () => secret("reviewer_key"), reviews, jobs: jobsApi, proxy: (req, res, c) => proxy(req, res, c), cp: createCp({ whoami, asserter, once: createOnce(records.db), plugin: createPluginPost({ controlUrl: cpServer.url, agentKey: (id) => secret(`paperclip-agents/${id}`), postKey: () => secret("paperclip_post_key") }), agentKey: (id) => secret(`paperclip-agents/${id}`), grants: () => grantsTable().agents ?? {}, controlUrl: cpServer.url, checks, provenance, log: logf }), boardCp: createBoardCp({ controlUrl: cpServer.url, key: () => secret("paperclip_board_key"), log: logf }) });
   const asCaller = createAsCaller({ whoami, connections: connectionsTable, asserter, log: logf });
   const gw = createGateway({ asCaller, dbFile: join(dir, "usage.db"), grantsFile: join(dir, "grants.json"), settingsFile: join(dir, "gateway.json"), tools: proxy, secret });
   const bp = await serve(backplane);
