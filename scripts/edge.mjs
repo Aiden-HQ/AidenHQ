@@ -17,6 +17,10 @@
 // pr-<n>.<host> under each share.host, through the gate, with the parent's access: one ingress rule *.<host> per shared
 // app behind the parent's own aud (its Access application must cover *.<host> too). apps-mcp writes which previews run
 // (data/previews/previews.json); the gate takes only ports in PREVIEW_PORTS from it.
+// App doors (docs/design/app-doors.md): without `edge`, on exposure local or public, compile still runs the gate, serving
+// every exposed app to AidenHQ admins at <app>.<base> (`localhost` over http on loopback; <ip-with-dashes>.sslip.io behind
+// Caddy, scripts/front-door.mjs), with each app's port from apps-mcp's doors file and sign-in only on the kernel's admin
+// listener (it hands a one-time code back to the app host). Tailscale's apps node and `edge` keep their own doors.
 import { createHash } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -37,6 +41,10 @@ export const AUTH_SECRET_FILE = "/secrets/auth_listener"; // gate_board_secret i
 export const LOGINS = ["access", "password", "header-jwt"];
 export const IDENTITY_KEY_FILE = "/secrets/identity_key"; // the vault's identity/gate.pem in the gate: it mints app identity tokens
 export const PREVIEWS_FILE = "/previews/previews.json"; // apps-mcp's running previews (data/previews), mounted read-only
+export const DOORS_FILE = "/previews/doors.json"; // apps-mcp's door apps and their loopback ports, beside the previews file
+const PREVIEWS_MOUNT = `\${AIDENHQ_DATA_DIR:-./data}/previews:${dirname(PREVIEWS_FILE)}:ro`;
+/** A public door's base name for the host's IPv4: 203.0.113.7 → 203-0-113-7.sslip.io. */
+export const sslipBase = (ip) => `${String(ip).replaceAll(".", "-")}.sslip.io`;
 export const PREVIEW_PORTS = [39100, 39399]; // modules/apps-platform/apps-mcp/src/registry.ts PREVIEW_PORTS
 // cloudflared 2026.10.7 (multi-arch index), pinned by digest.
 const CLOUDFLARED_IMAGE = "cloudflare/cloudflared:2026.10.7@sha256:4955524aeaa379e154023d5a027c250f7b35041a2e7e950cf13f144bc9b9c5ba";
@@ -45,10 +53,11 @@ const fail = (m) => { throw new Error(m); };
 const emails = (l, where) => (Array.isArray(l ?? []) ? l ?? [] : fail(`${where} must be a list`)).map((e) => (typeof e === "string" && e.includes("@") ? e.trim().toLowerCase() : fail(`${where}: ${e} is not an email`)));
 
 /**
- * edgeConfig(settings, instanceApps, moduleApps) → { gate, cloudflared, compose } or null when `edge` isn't set.
+ * edgeConfig(settings, instanceApps, moduleApps, { publicIp, adminUrl }) → { gate, cloudflared, compose }, or a door's
+ * { gate, cloudflared: null, compose } without `edge` on exposure local or public, or null.
  * `share` lives only in the instance apps.yaml; a module app may not declare it.
  */
-export function edgeConfig(settings, instanceApps, moduleApps) {
+export function edgeConfig(settings, instanceApps, moduleApps, door = {}) {
   for (const a of moduleApps) if (a.share) fail(`app ${a.name}: share is set only in the instance apps.yaml, never by a module`);
   const shared = instanceApps.filter((a) => a.share?.host);
   // A shared app is reached only through the gate: no other app may join its network (apps-mcp refuses it too).
@@ -59,7 +68,7 @@ export function edgeConfig(settings, instanceApps, moduleApps) {
   const edge = settings.edge;
   if (!edge) {
     if (shared.length) fail(`app ${shared[0].name} has share.host, but settings.edge isn't set (docs/setup.md, Shared access)`);
-    return null;
+    return doorConfig(settings.exposure, door);
   }
   const login = settings.app_login ?? "access";
   if (!LOGINS.includes(login)) fail(`settings.app_login must be ${LOGINS.join(" or ")}`);
@@ -146,25 +155,18 @@ export function edgeConfig(settings, instanceApps, moduleApps) {
       { service: "http_status:404" },
     ],
   };
-  const hardening = { security_opt: ["no-new-privileges:true"], cap_drop: ["ALL"], restart: "unless-stopped", user: "${PUID:-1000}:${PGID:-100}", read_only: true };
+  const hardening = HARDENING;
   const compose = {
     services: {
       // Host networking: it listens on 127.0.0.1:<GATE_PORT> and reaches the apps' loopback ports. No secrets, no sockets.
       // Its signing key (vault identity/gate.pem, read-only; compile creates it) and nothing else of the identity dir.
       // The kernel's account map is the one file of data/ it sees (never data/kernel: no sessions, hashes or TOTP secrets).
-      gate: {
-        ...hardening, build: "./modules/apps-platform/gate", image: "aidenhq/gate:local", network_mode: "host", environment: { GATE_CONFIG: "/config/gate.json" },
-        volumes: [
-          "./config/gate.json:/config/gate.json:ro", `\${AIDENHQ_DATA_DIR:-./data}/gate/accounts.json:${ACCOUNTS_FILE}:ro`,
-          `\${AIDENHQ_SECRETS_DIR}/identity/gate.pem:${IDENTITY_KEY_FILE}:ro`,
-          // Its proof to the kernel's sign-in listener (core's generated gate_board_secret): sign-in and app access.
-          `\${AIDENHQ_SECRETS_DIR}/gate_board_secret:${AUTH_SECRET_FILE}:ro`,
-          // Which previews run (apps-mcp writes it; a directory, so its atomic replace is seen).
-          ...(previews ? [`\${AIDENHQ_DATA_DIR:-./data}/previews:${dirname(PREVIEWS_FILE)}:ro`] : []),
-          // cloudflared's socket (the gate listens there too); not with a front door.
-          ...(front ? [] : [SOCKET_MOUNT]),
-        ],
-      },
+      gate: gateService([
+        // Which previews run (apps-mcp writes it; a directory, so its atomic replace is seen).
+        ...(previews ? [PREVIEWS_MOUNT] : []),
+        // cloudflared's socket (the gate listens there too); not with a front door.
+        ...(front ? [] : [SOCKET_MOUNT]),
+      ]),
       // Outbound only; locally managed, so its ingress is this file and the dashboard can't change it.
       // The label carries the ingress's hash: compose recreates cloudflared exactly when its config changes (it reads it once).
       ...(front ? {} : { cloudflared: { ...hardening, labels: { "aidenhq.ingress-sha256": createHash("sha256").update(JSON.stringify(cloudflared)).digest("hex") }, image: CLOUDFLARED_IMAGE, network_mode: "host", command: ["tunnel", "--config", "/etc/cloudflared/config.yml", "run"], volumes: ["./config/cloudflared.yml:/etc/cloudflared/config.yml:ro", SOCKET_MOUNT], secrets: ["cloudflared_credentials"], depends_on: ["gate"] } }),
@@ -172,6 +174,39 @@ export function edgeConfig(settings, instanceApps, moduleApps) {
     secrets: front ? {} : { cloudflared_credentials: { file: "${AIDENHQ_SECRETS_DIR}/cloudflared_credentials.json" } },
   };
   return { gate, cloudflared, compose };
+}
+
+const HARDENING = { security_opt: ["no-new-privileges:true"], cap_drop: ["ALL"], restart: "unless-stopped", user: "${PUID:-1000}:${PGID:-100}", read_only: true };
+/** The gate's service. Host networking: it listens on 127.0.0.1:<GATE_PORT> and reaches the apps' loopback ports. */
+const gateService = (extra) => ({
+  ...HARDENING, build: "./modules/apps-platform/gate", image: "aidenhq/gate:local", network_mode: "host", environment: { GATE_CONFIG: "/config/gate.json" },
+  // No secrets, no sockets: its signing key (vault identity/gate.pem, read-only; compile creates it) and nothing else of the
+  // identity dir; the kernel's account map is the one file of data/ it sees (never data/kernel: no sessions, hashes or TOTP).
+  volumes: [
+    "./config/gate.json:/config/gate.json:ro", `\${AIDENHQ_DATA_DIR:-./data}/gate/accounts.json:${ACCOUNTS_FILE}:ro`,
+    `\${AIDENHQ_SECRETS_DIR}/identity/gate.pem:${IDENTITY_KEY_FILE}:ro`,
+    // Its proof to the kernel's sign-in listener (core's generated gate_board_secret): sessions and handoffs.
+    `\${AIDENHQ_SECRETS_DIR}/gate_board_secret:${AUTH_SECRET_FILE}:ro`,
+    ...extra,
+  ],
+});
+
+/**
+ * The door without `edge` (docs/design/app-doors.md), or null: `local` serves <app>.localhost:<GATE_PORT> over http, `public`
+ * <app>.<ip-with-dashes>.sslip.io through Caddy. Sign-in is the admin listener's (`adminUrl`), never the gate's.
+ */
+function doorConfig(exposure, { publicIp, adminUrl } = {}) {
+  let doors, origin;
+  if (exposure === "local") {
+    doors = { base: "localhost", file: DOORS_FILE, signin: adminUrl || "http://127.0.0.1:3120" };
+    origin = { scheme: "http", port: GATE_PORT };
+  } else if (exposure === "public" && publicIp) doors = { base: sslipBase(publicIp), file: DOORS_FILE, signin: adminUrl || `https://${publicIp}:8446` };
+  else return null;
+  const gate = {
+    port: GATE_PORT, login: "password", auth_url: AUTH_URL, auth_secret_file: AUTH_SECRET_FILE, accounts_file: ACCOUNTS_FILE, identity_key_file: IDENTITY_KEY_FILE,
+    hosts: {}, ...(origin ? { origin } : {}), doors,
+  };
+  return { gate, cloudflared: null, compose: { services: { gate: gateService([PREVIEWS_MOUNT]) }, secrets: {} } };
 }
 
 /**

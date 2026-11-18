@@ -317,17 +317,18 @@ done
 # The connections' old loopback read ports (3123-3127) are gone: the kernel reaches each service at its container address.
 [ "$(ss -ltnH 2>/dev/null | grep -cE '127\.0\.0\.1:312[3-7] ')" = 0 ] && pass "no loopback port 3123-3127 (module services publish nothing)" || fail "a loopback port 3123-3127 is published"
 
-# App identity (docs/design/app-identity.md): a shared app answers nothing without a valid token, and the gate never
+# App identity (docs/design/app-identity.md): a shared app (or a door's app) answers nothing without a valid token, and the gate never
 # passes a client's own X-AidenHQ-Identity on (a request with a forged one and no sign-in is refused).
 if [ -f config/gate.json ]; then
   echo "Shared apps"
   while read -r host port; do
     [ -n "$host" ] || continue
-    code="$(curl -s -o /dev/null -w '%{http_code}' -H 'X-AidenHQ-Identity: forged.token.here' "http://127.0.0.1:$port/")"
+    code="$(curl -s -o /dev/null -w '%{http_code}' -H 'X-AidenHQ-Identity: forged.token.here' "http://127.0.0.1:$port/aidenhq-verify-security")" # never its health path
     [ "$code" = "401" ] || [ "$code" = "403" ] && pass "$host: the app refuses a request without a valid identity ($code)" || fail "$host: the app on 127.0.0.1:$port answered without a valid identity ($code)"
     code="$(curl -s -o /dev/null -w '%{http_code}' -H "Host: $host" -H 'X-AidenHQ-Identity: forged.token.here' http://127.0.0.1:3130/)"
     [ "$code" != "200" ] && pass "$host: the gate refuses a forged identity without sign-in ($code)" || fail "$host: the gate let a forged identity through"
-  done < <(node -e 'const g=JSON.parse(require("fs").readFileSync("config/gate.json","utf8"));for(const[h,s]of Object.entries(g.hosts??{}))console.log(h,s.port)')
+  # App doors (docs/design/app-doors.md) too: each app apps-mcp's doors file serves, at <app>.<base>.
+  done < <(node -e 'const fs=require("fs"),g=JSON.parse(fs.readFileSync("config/gate.json","utf8"));for(const[h,s]of Object.entries(g.hosts??{}))console.log(h,s.port);if(g.doors){let d={};try{d=JSON.parse(fs.readFileSync(process.argv[1],"utf8"))}catch{}for(const[a,p]of Object.entries(d))console.log(`${a}.${g.doors.base}`,p)}' "${AIDENHQ_DATA_DIR:-data}/previews/doors.json")
 fi
 
 # Monitoring (modules/monitoring): its token opens only the board's metrics and alert routes; the board's internal token
