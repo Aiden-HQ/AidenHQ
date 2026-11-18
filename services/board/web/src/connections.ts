@@ -68,10 +68,10 @@ export interface Verdict {
 }
 
 /**
- * How to reach the board's loopback address, where OAuth sign-ins return, from a laptop (docs/setup.md, Connecting accounts).
- * Shown wherever a Connect button can't be offered.
+ * Where a Connect works when this address can't: the board's https address, or (a board without one) its loopback address
+ * through a tunnel (docs/setup.md, Connecting accounts). Shown wherever a Connect button can't be offered.
  */
-export const SIGN_IN_HINT = "To sign in, run ssh -N -L 3120:127.0.0.1:3120 <you>@<host> on your laptop, then open http://127.0.0.1:3120 and press Connect.";
+export const SIGN_IN_HINT = "To sign in, open the board at its https address and press Connect. A board without one: run ssh -N -L 3121:127.0.0.1:3121 -L 3120:127.0.0.1:3120 <you>@<host> on your laptop, then open http://127.0.0.1:3121.";
 
 /** What a built-in connection is for, in the owner's words (it runs inside each agent run: nothing to check). */
 const BUILT_IN: Record<string, string> = { paperclip_tasks: "How agents read and update their tasks, delegate, and ask for approvals." };
@@ -82,8 +82,8 @@ export const displayName = (name: string) => NAMES[name] ?? name.replace(/[_-]+/
 const day = (iso: string) => new Date(iso).toLocaleString(undefined, { weekday: "short", hour: "2-digit", minute: "2-digit", hour12: false });
 
 /**
- * One row's status. `canConnect`: this browser can start that sign-in (sign-ins through an MCP proxy only on the host's
- * loopback address; Google also at the board's https address when the board says so).
+ * One row's status. `canConnect`: this browser can start that sign-in (at the board's https address, or on the host's
+ * loopback address; the board says which, per sign-in kind).
  */
 export function connectionStatus(row: ConnectionRow, canConnect: { signIn: boolean; google: boolean }): Verdict {
   const connect = (label: string, href: string, can: boolean): Pick<Verdict, "action" | "hint"> => (can ? { action: { label, href } } : { hint: SIGN_IN_HINT });

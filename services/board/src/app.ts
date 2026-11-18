@@ -1117,11 +1117,22 @@ export function createApp(opts: AppOptions): Server {
     },
   ];
 
-  // Where OAuth sign-ins must start: the loopback board, reached from a laptop through an SSH tunnel (docs/setup.md).
+  // Where OAuth sign-ins start on a board without an https address: the loopback board, through an SSH tunnel (docs/setup.md).
   const TUNNEL = "http://127.0.0.1:3121 through ssh -N -L 3121:127.0.0.1:3121 <you>@<host> from your laptop";
   const googleViaBoard = mode === "lan" && !!opts.lan?.googleConnect && !!opts.lan.url.startsWith("https://");
   /** Where the board's sign-ins return for a request to `host`: its https address when Connect runs there, else the request's own. */
   const signInOrigin = (host: string) => (googleViaBoard ? opts.lan!.url : `http://${host}`);
+  /**
+   * Where a module sign-in (board.signins) started at `host` returns: the loopback address it came from (a tunnel), or the
+   * board's https address (BOARD_LAN_URL) when the request reached the board by that name. Undefined anywhere else: plain
+   * http off loopback never carries a sign-in.
+   */
+  const httpsBoard = mode === "lan" && !!opts.lan?.url.startsWith("https://") ? new URL(opts.lan!.url) : undefined;
+  const vendorOrigin = (host: string): string | undefined => {
+    const h = host.toLowerCase();
+    if (loopbackPort(h)) return `http://${h}`;
+    return httpsBoard && h.replace(/:\d+$/, "") === httpsBoard.hostname ? httpsBoard.origin : undefined;
+  };
 
   // ------------------------------------------------------------------ Settings (settings.ts)
 
@@ -1873,6 +1884,10 @@ export function createApp(opts: AppOptions): Server {
           signedIn: async (id) => (await signInStates()).find((x) => x.id === id)?.status?.state === "ok",
           connected: connectionSignedIn,
           boardUrl: signInOrigin,
+          redirectUrl: (signin, host) => {
+            const s = (opts.signIns ?? []).find((x) => x.id === signin);
+            return s && `${vendorOrigin(host) ?? httpsBoard?.origin ?? "http://127.0.0.1:3121"}${s.callback}`;
+          },
         })
       : []),
     { method: "GET", path: /^\/api\/app-admins$/, handle: async (_m, _b, who) => opts.accounts!.call("app_admins", who) },
@@ -1899,7 +1914,7 @@ export function createApp(opts: AppOptions): Server {
     const who = await accounts.sessionOf(req);
     if (path === "/api/session" && req.method === "GET") {
       const account = who ? { id: who.account.id, email: who.account.email, name: who.account.name, role: who.account.role, owner: who.account.owner } : null;
-      send(res, 200, JSON.stringify({ mode, account, googleConnect: googleViaBoard, adminUrl: opts.adminUrl ?? null }), "application/json");
+      send(res, 200, JSON.stringify({ mode, account, googleConnect: googleViaBoard, signInConnect: !!vendorOrigin(String(req.headers.host ?? "")), adminUrl: opts.adminUrl ?? null }), "application/json");
       return true;
     }
     if (!who) throw new HttpError(401, "sign in");
@@ -1996,16 +2011,16 @@ export function createApp(opts: AppOptions): Server {
 
   /**
    * A module's sign-in (board.signins): /<id>/connect sends the browser to the service's sign-in, which sends it back to
-   * the callback, and the proxy keeps the token. On the laptop's loopback address only, like Google's Reconnect: the
-   * sign-in client is registered for that redirect (a vendor may permit only the bare /callback shape).
+   * the callback, and the proxy keeps the token. At the board's https address (one click, no tunnel) or on a loopback
+   * address (a tunnel); the redirect is that origin plus the callback, and the proxy registers its client for it (or the
+   * owner's hand-made client lists it: the setup flow shows it). A vendor may permit only the bare /callback shape.
    */
   const signInFor = (path: string) => (opts.signIns ?? []).find((s) => s.connect === path || s.callback === path);
 
   async function handleSignIn(req: IncomingMessage, res: ServerResponse, url: URL, s: SignIn) {
     const { label: name, connect, callback, auth } = s;
-    const port = loopbackPort(req.headers.host);
-    if (!port) throw new HttpError(403, `sign in to ${name} from ${TUNNEL}`);
-    const host = String(req.headers.host).toLowerCase();
+    const origin = vendorOrigin(String(req.headers.host ?? ""));
+    if (!origin) throw new HttpError(403, httpsBoard ? `sign in to ${name} from ${httpsBoard.origin}` : `sign in to ${name} from ${TUNNEL}`);
     try {
       if (url.pathname === connect) {
         // The owner picks what to grant (owner, 2026-11-18): when the vendor offers a choice of scopes, a short form comes
@@ -2019,7 +2034,7 @@ export function createApp(opts: AppOptions): Server {
             return;
           }
         }
-        const { url: signIn } = await auth.start(`http://${host}${callback}`, picked ? url.searchParams.getAll("scope") : undefined);
+        const { url: signIn } = await auth.start(`${origin}${callback}`, picked ? url.searchParams.getAll("scope") : undefined);
         log.info(`${name} sign-in started`);
         res.writeHead(302, { ...SECURITY_HEADERS, location: signIn, "cache-control": "no-store" }).end();
         return;

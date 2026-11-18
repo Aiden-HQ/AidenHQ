@@ -493,7 +493,7 @@ export function GoogleBanner({ google, canReconnect }: { google: Board["google"]
 }
 
 /**
- * A banner when AidenHQ isn't signed in to a service behind an MCP proxy yet (a module's board.signins), or it stopped accepting the sign-in, with Connect / Reconnect on the laptop (it returns to its loopback address).
+ * A banner when AidenHQ isn't signed in to a service behind an MCP proxy yet (a module's board.signins), or it stopped accepting the sign-in, with Connect / Reconnect where it works (the board's https address, or loopback).
  */
 function SignInBanner({ name, path, status, canConnect, missing, stopped }: { name: string; path: string; status: SignInStatus | null; canConnect: boolean; missing: string; stopped: string }) {
   if (!status?.configured || (status.state !== "missing" && status.state !== "expired")) return null;

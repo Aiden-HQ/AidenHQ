@@ -592,6 +592,7 @@ export function App() {
   const chatFull = mobile && ((view === "chat" && route.kind === "chat") || (view === "settings" && route.kind === "settings" && route.cat !== null));
   const local = ["localhost", "127.0.0.1"].includes(location.hostname); // a tunnel to 3121: the loopback sign-ins work
   const googleConnect = local || !!session?.googleConnect;
+  const signInConnect = local || !!session?.signInConnect;
   const connectionsOk = !board.google?.error && !board.google?.accounts.some((a) => a.state === "expired") && (board.signIns ?? []).map((s) => s.status).every((c) => !c || !c.configured || c.state === "ok" || c.state === "unknown");
   const openCard = (c: Card) => {
     setSelected(c.id);
@@ -674,7 +675,7 @@ export function App() {
 
       {error && <div className="offline">Offline: {error}. Retrying…</div>}
       <GoogleBanner google={board.google} canReconnect={googleConnect} />
-      <SignInBanners board={board} canConnect={local} />
+      <SignInBanners board={board} canConnect={signInConnect} />
 
       {mobile && !chatFull && (
         <nav className="tabs">
@@ -701,7 +702,7 @@ export function App() {
       {view === "chat" && <ChatWorkspace selected={route.kind === "chat" ? route.ref : null} composing={route.kind === "chat" && !route.ref} mobile={mobile} crew={board.assignees} prefix={board.prefix} go={go} onSignIn={signInNeeded} toast={toast} />}
       {view === "approvals" && <ApprovalsView open={openChat} onSignIn={signInNeeded} />}
       {view === "activity" && <Suspense fallback={<PageLoading />}><ActivityView onSignIn={signInNeeded} /></Suspense>}
-      {view === "settings" && <SettingsView cat={route.kind === "settings" ? route.cat : null} mobile={mobile} session={session} go={go} onSignIn={signInNeeded} can={{ signIn: local, google: googleConnect }} />}
+      {view === "settings" && <SettingsView cat={route.kind === "settings" ? route.cat : null} mobile={mobile} session={session} go={go} onSignIn={signInNeeded} can={{ signIn: signInConnect, google: googleConnect }} />}
       {view === "modules" && route.kind !== "module" && <Suspense fallback={<PageLoading />}><ModulesView onSignIn={signInNeeded} /></Suspense>}
       {view === "modules" && route.kind === "module" && <Suspense fallback={<PageLoading />}><ModulePage key={route.name} name={route.name} tab={route.tab} go={go} onSignIn={signInNeeded} /></Suspense>}
       {view === "apps" && <Suspense fallback={<PageLoading />}><AppsView onSignIn={signInNeeded} /></Suspense>}
