@@ -11,8 +11,9 @@ import { post } from "../../services/paperclip-events/post.js";
 import { kernel, moduleServer, pluginHost } from "./helpers.mjs";
 
 const ADA = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", BO = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", COS = "cccccccc-cccc-4ccc-8ccc-cccccccccccc", EVE = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee";
+const LEAD = "dddddddd-dddd-4ddd-8ddd-dddddddddddd", REP = "dddddddd-dddd-4ddd-8ddd-ddddddddddd1", ENG = "dddddddd-dddd-4ddd-8ddd-ddddddddddd2";
 const OWN = "10000000-0000-4000-8000-000000000001", OTHER = "10000000-0000-4000-8000-000000000002", CHAT = "10000000-0000-4000-8000-000000000003";
-const KEYS = { "key-ada": ADA, "key-cos": COS };
+const KEYS = { "key-ada": ADA, "key-cos": COS, "key-lead": LEAD };
 
 async function setup(t) {
   const h = pluginHost({
@@ -32,9 +33,9 @@ async function setup(t) {
   } });
   const tool = { todo: ["act"] };
   k = await kernel(t, {
-    agents: { ada: { id: ADA, task: OWN }, cos: { id: COS, task: OWN }, eve: { id: EVE, task: OWN } },
-    grants: { [ADA]: { key: "ada", tools: tool, delegate_to: ["bo"] }, [BO]: { key: "bo", chat_task: CHAT }, [COS]: { key: "cos", roles: ["fleet-admin"], tools: tool }, [EVE]: { key: "eve", tools: tool } },
-    secrets: { todo_service_key: "todo-key", [`paperclip-agents/${ADA}`]: "key-ada", [`paperclip-agents/${COS}`]: "key-cos", paperclip_post_key: "post-key" },
+    agents: { ada: { id: ADA, task: OWN }, cos: { id: COS, task: OWN }, lead: { id: LEAD, task: OWN }, eve: { id: EVE, task: OWN } },
+    grants: { [ADA]: { key: "ada", tools: tool, delegate_to: ["bo"] }, [BO]: { key: "bo", chat_task: CHAT }, [COS]: { key: "cos", roles: ["fleet-admin"], tools: tool }, [EVE]: { key: "eve", tools: tool }, [LEAD]: { key: "lead", tools: tool }, [REP]: { key: "rep", reports_to: "lead" }, [ENG]: { key: "eng", profile: "engineer" } },
+    secrets: { todo_service_key: "todo-key", [`paperclip-agents/${ADA}`]: "key-ada", [`paperclip-agents/${COS}`]: "key-cos", [`paperclip-agents/${LEAD}`]: "key-lead", paperclip_post_key: "post-key" },
     connections: { todo: { url: `${todo.url}/mcp`, auth_secret: "todo_service_key", module: "todo", returns: "trusted", tools: { read: [], write: ["act"], destructive: [] } } },
     onControl: async (req, body, auth) => {
       const me = KEYS[auth];
@@ -87,9 +88,14 @@ test("a job writes on its own task and the tasks it created, as its agent throug
   assert.equal(r.status, 409);
   assert.match(r.json.error.message, /delegates to/);
   assert.equal((await act("ada", "POST", "/api/companies/co/issues", { title: "For someone", assigneeUserId: "u-other" })).status, 403);
-  // An agent with no delegate_to (the chief of staff) hands work to any agent of its company: the tasks bridge limits it to its reports.
-  r = await act("cos", "POST", "/api/companies/co/issues", { title: "Take this", assigneeAgentId: BO, status: "todo" });
-  assert.deepEqual([r.status, h.issues[r.json.id].assigneeAgentId, h.issues[r.json.id].createdByAgentId], [201, BO, COS]);
+  // One rule, in the kernel (delegateIds): with no delegate_to the chief of staff delegates to anyone in its company, a lead to its
+  // direct reports and the Engineers, and the lead is refused for an agent that isn't its own.
+  const give = (who, to) => act(who, "POST", "/api/companies/co/issues", { title: "Take this", assigneeAgentId: to, status: "todo" });
+  for (const to of [BO, REP, ENG]) assert.equal((await give("cos", to)).status, 201);
+  for (const to of [REP, ENG]) assert.equal((await give("lead", to)).status, 201);
+  r = await give("lead", BO);
+  assert.equal(r.status, 409);
+  assert.match(r.json.error.message, /delegates to/);
   r = await act("ada", "POST", "/api/companies/co/issues", { title: "Read this", assigneeUserId: "u-owner", labelIds: [OTHER], priority: "low" });
   assert.equal(r.status, 201);
   assert.deepEqual([h.issues[r.json.id].parentId, h.issues[r.json.id].assigneeUserId, h.issues[r.json.id].labelIds], [undefined, "u-owner", [OTHER]]);

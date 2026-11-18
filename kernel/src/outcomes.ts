@@ -76,7 +76,7 @@ export type PluginPost = ReturnType<typeof createPluginPost>;
 export function createOutcomes({ db, plugin, delegates, finish, provenance, relay, log = () => {} }: {
   db: DatabaseSync; plugin: PluginPost;
   /** The ids of the agents an agent may hand a child task to (grants `delegate_to`). */
-  delegates: (agent: string) => string[];
+  delegates: (agent: string) => Promise<string[]>;
   /** The finish gate (checks.ts): a `done` that doesn't pass is posted without its status. */
   finish: (task: string, agent: string) => Promise<Finish>;
   /** A child the job creates gets its provenance row (provenance.ts). */
@@ -103,7 +103,7 @@ export function createOutcomes({ db, plugin, delegates, finish, provenance, rela
       }
       const origin = tag(job.id, req.kind).slice(5, -4);
       if (req.child) provenance.intend(origin, await provenance.carried({ job: job.id, agent: job.agent, task: job.task }));
-      const params = { issueId: job.task, tag: tag(job.id, req.kind), body: req.body, ...(retry ? { again: true } : {}), ...(status ? { status } : {}), ...(status === "blocked" ? { blockedBy: req.blockedBy ?? [] } : {}), ...(status === "done" ? { gated: true } : {}), ...(req.child ? { child: req.child, delegateTo: delegates(job.agent) } : {}) };
+      const params = { issueId: job.task, tag: tag(job.id, req.kind), body: req.body, ...(retry ? { again: true } : {}), ...(status ? { status } : {}), ...(status === "blocked" ? { blockedBy: req.blockedBy ?? [] } : {}), ...(status === "done" ? { gated: true } : {}), ...(req.child ? { child: req.child, delegateTo: await delegates(job.agent) } : {}) };
       const r = await plugin.post(job.agent, params);
       // A 5xx (502: the plugin is down, or it threw) leaves the key pending: whether it wrote is unknown, and the retry looks.
       if (r.status >= 500) throw new OutcomeError(502, "unknown", `the post action answered ${r.status}`);
@@ -121,13 +121,20 @@ export function createOutcomes({ db, plugin, delegates, finish, provenance, rela
 }
 export type Outcomes = ReturnType<typeof createOutcomes>;
 
+type Delegator = { key?: string; roles?: string[]; profile?: string; reports_to?: string; delegate_to?: unknown };
 /**
- * The ids of the agents `agent` may delegate to: its grants `delegate_to` keys (`key?` optional ones too), mapped to ids. An
- * agent with no list has no limit here (as in the tasks bridge: the chief of staff hands work to anyone in its company); the
- * bridge limits it to its reports and the Engineers.
+ * The ids of the agents `agent` may hand a task to, the one place the rule lives: its `delegate_to` keys when it has them
+ * (`key?` optional ones too; `app-owners` adds the keys of the apps' owners), else anyone in the company for the chief of staff
+ * (role fleet-admin), else its direct reports (grants `reports_to`) and the Engineers (profile engineer).
  */
-export const delegateIds = (agents: Record<string, { key?: string; delegate_to?: unknown }> | undefined, agent: string) => {
-  const to = agents?.[agent]?.delegate_to;
-  const keys = Array.isArray(to) ? new Set(to.map((k) => String(k).replace(/\?$/, ""))) : undefined;
-  return Object.entries(agents ?? {}).filter(([, g]) => g.key && (!keys || keys.has(g.key))).map(([id]) => id);
+export const delegateIds = async (agents: Record<string, Delegator> | undefined, agent: string, appOwners: () => Promise<string[]> = async () => []) => {
+  const me = agents?.[agent];
+  const all = Object.entries(agents ?? {}).filter(([, g]) => g.key);
+  if (Array.isArray(me?.delegate_to)) {
+    const keys = new Set(me.delegate_to.map((k) => String(k).replace(/\?$/, "")));
+    if (keys.has("app-owners")) for (const o of await appOwners()) keys.add(o);
+    return all.filter(([, g]) => keys.has(g.key!)).map(([id]) => id);
+  }
+  if (me?.roles?.includes("fleet-admin")) return all.map(([id]) => id);
+  return all.filter(([, g]) => g.profile === "engineer" || (me?.key !== undefined && g.reports_to === me.key)).map(([id]) => id);
 };

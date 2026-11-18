@@ -377,24 +377,6 @@ async function refuseMemoryInbox(issue, { librarian = false } = {}) {
   const i = await api("GET", `/api/issues/${issueRef(issue)}`);
   if (memoryInboxes().has(i.id) && !(librarian && grant().roles.includes("librarian"))) throw new Error("Refused: that task is a memory inbox; only memory_note writes there.");
 }
-/**
- * An agent's `delegate_to` (its definition, copied into the grants table by setup): the only agents its task_create and
- * task_delegate may assign work to, by key, plus `app-owners` (any agent that owns an app in the registry). No list: no limit.
- */
-async function refuseUnlistedAssignee(target) {
-  const list = dirAgents()[grant().id]?.delegate_to;
-  if (!Array.isArray(list)) return;
-  // The target's key from the directory (by Paperclip id), never from agent-editable metadata.
-  const key = dirAgents()[target.id]?.key;
-  if (!key) throw new Error(`Refused: ${target.name ?? target.id} isn't a known agent for delegate_to.`);
-  if (list.includes(key)) return;
-  if (list.includes("app-owners")) {
-    const res = await fetch(`${APPS_URL}/internal/apps`, { signal: AbortSignal.timeout(10_000) }).catch(() => undefined);
-    const apps = res?.ok ? await res.json() : [];
-    if (apps.some((a) => a.owner === key)) return;
-  }
-  throw new Error(`Refused: you may assign work only to ${list.join(", ")} (your delegate_to); ${key} isn't one of them.`);
-}
 /** An agent in trial ("draft, don't do") reports only on its own tasks: the current one, or one assigned to it. */
 const TRIAL_OWN_TASK = ["task_comment", "task_handoff", "task_set_status"];
 async function requireOwnTask(g, issue) {
@@ -773,7 +755,6 @@ const TOOLS = {
         // Assigning work to another agent is a delegation: never from an agent on trial.
         if (g.trial && target.id !== g.id)
           throw new Error(`Refused: ${g.key} is in trial and may only create tasks assigned to itself; assigning work to ${keyOf(target)} is a delegation, which comes after the trial.`);
-        await refuseUnlistedAssignee(target);
         if (isRunner(target)) warning = briefWarning(description);
         assigneeAgent = target.id;
         const me = await api("GET", "/api/agents/me");
@@ -844,11 +825,12 @@ const TOOLS = {
     run: async ({ agent, title, description, parent, marker, priority, rubric, deliverable }) => {
       refuseReservedMarker(marker);
       if (!COMPANY()) throw new Error("no company for this agent");
-      const { me, reports } = await reportsOf();
+      // Whom this agent may delegate to is the kernel's rule (kernel/src/outcomes.ts delegateIds): its refusal comes back as the error.
+      const me = await api("GET", "/api/agents/me");
+      const all = await api("GET", `/api/companies/${encodeURIComponent(COMPANY())}/agents`);
       const want = String(agent ?? "").trim().toLowerCase();
-      const hits = reports.filter((a) => [keyOf(a), a.name, a.metadata?.persona?.name].some((n) => String(n ?? "").toLowerCase() === want));
-      if (hits.length !== 1) throw new Error(hits.length ? `"${agent}" is ambiguous: use the key from task_team` : `"${agent}" is not one of your reports (see task_team)`);
-      await refuseUnlistedAssignee(hits[0]);
+      const hits = all.filter((a) => a.status !== "terminated" && a.id !== me.id && [keyOf(a), a.name, a.metadata?.persona?.name].some((n) => String(n ?? "").toLowerCase() === want));
+      if (hits.length !== 1) throw new Error(hits.length ? `"${agent}" is ambiguous: use the key from task_team` : `"${agent}" is not an agent here (see task_team, fleet_catalog)`);
       const warning = isRunner(hits[0]) && briefWarning(description);
       return { ...(await assignTask(me, hits[0], { title, description, parent, marker, priority, rubric, deliverable }, "Delegated by")), ...(warning ? { warning } : {}) };
     },
