@@ -191,7 +191,7 @@ export function grantEntry(key, a, routines = {}) {
   const own = Object.entries(routines).filter(([, r]) => r.agent === key && (r.model || r.reasoning_effort));
   return {
     models, caps: { ...CAPS, ...(a.caps ?? {}) }, graded: a.graded === true, ...(a.jobcaps?.length ? { jobcaps: a.jobcaps } : {}), ...(a.feedback_for ? { feedback_for: a.feedback_for } : {}),
-    profile: a.profile ?? "crew", ...(a.engine ? { engine: a.engine } : {}), ...(a.model ? { model: a.model.replace(/^openrouter\//, "") } : {}), ...(a.reasoning_effort ? { effort: a.reasoning_effort } : {}),
+    profile: a.profile ?? "crew", ...(a.engine ? { engine: a.engine } : {}), ...(a.engines ? { engines: a.engines } : {}), ...(a.model ? { model: a.model.replace(/^openrouter\//, "") } : {}), ...(a.reasoning_effort ? { effort: a.reasoning_effort } : {}),
     max_parallel: a.max_parallel ?? 1, ...(a.private_reads === true ? { private_reads: true } : {}), ...(a.web_search ? { web_search: a.web_search } : {}), ...(own.length ? { routines: Object.fromEntries(own.map(([k, r]) => [k, { ...(r.model ? { model: r.model.replace(/^openrouter\//, "") } : {}), ...(r.reasoning_effort ? { effort: r.reasoning_effort } : {}) }])) } : {}),
   };
 }
@@ -1072,6 +1072,8 @@ export function compile(productDir, instanceDir, { revision, fetch = hostFetch(p
   validateImages(paperclip.agents); // image: an agent computer (module, instance override or instance agent)
   // A runner agent's engine (after the overrides that may set it, and its image) is one an enabled module provides.
   for (const [key, a] of Object.entries(paperclip.agents)) if (a.dispatch === "runner" && a.engine && !engines[a.engine]) fail(`agent ${key}: unknown engine ${a.engine} (enabled: ${Object.keys(engines).sort().join(", ") || "none"})`);
+  // engines: the engines a kernel job may ask its next turn to run on (`aidenhq engine`); absent, only its own.
+  for (const [key, a] of Object.entries(paperclip.agents)) if (a.engines != null && (!Array.isArray(a.engines) || a.engines.some((k) => !engines[k]))) fail(`agent ${key}: engines is a list of enabled engine kinds (${Object.keys(engines).sort().join(", ") || "none"})`);
   // The model gateway's prices and CI review (config/gateway.json, re-read per call).
   // spend_day_usd: the install-wide daily cap on every model call (docs/design/quiet-start.md); unset, none.
   if (settings.spend_day_usd != null && !(typeof settings.spend_day_usd === "number" && settings.spend_day_usd > 0 && settings.spend_day_usd <= 10_000)) fail("settings.spend_day_usd: USD a day, above 0 (unset for no cap)");

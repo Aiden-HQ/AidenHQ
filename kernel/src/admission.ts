@@ -7,6 +7,7 @@ import { randomBytes } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
 import { rolesOf } from "./identity.ts";
 import { JobError } from "./jobs.ts";
+import type { JobTools } from "./jobtools.ts";
 import type { RoutineCap } from "./tier.ts";
 import type { Skill } from "./sandbox.ts";
 
@@ -17,12 +18,13 @@ const IMAGE: Record<Profile, string> = { crew: "agent-base", engineer: "engineer
 
 /** A grants-table entry (config/grants/grants.json `agents`, compiled by scripts/modules.mjs grantEntry). */
 export type AgentGrant = {
-  key?: string; roles?: string[]; trial?: boolean; private_reads?: boolean; web_search?: string; profile?: Profile; image?: string; engine?: string; model?: string; effort?: string; models?: string[]; skills?: Skill[];
+  key?: string; roles?: string[]; trial?: boolean; private_reads?: boolean; web_search?: string; profile?: Profile; image?: string; engine?: string; engines?: string[]; model?: string; effort?: string; models?: string[]; skills?: Skill[];
   tools?: Record<string, string[]>; jobcaps?: string[]; max_parallel?: number; routines?: Record<string, { model?: string; effort?: string }>;
 };
 /** What a job may do, frozen at admission: the job token and the tool proxy read this, never the grants table again. */
 export type Authority = {
-  profile: Profile; image: string; engine: string; model: string; effort: string; models: string[]; skills: Skill[];
+  /** `engines`: the engines a job may ask its next turn to run on (`aidenhq engine`): the grant's, else only its own. */
+  profile: Profile; image: string; engine: string; engines: string[]; model: string; effort: string; models: string[]; skills: Skill[];
   tools: Record<string, string[]>; jobcaps: string[]; writes: string[]; roles: string[];
   /** The agent reads private data (private_reads): its jobs get no web search, and only they its private jobcaps. */
   reads: boolean;
@@ -46,12 +48,15 @@ export const wakeInbox = (db: DatabaseSync): Wakes => ({
   bind: (key, job) => { db.prepare("UPDATE wakes SET job = ? WHERE key = ?").run(job, key); },
   unclaim: (key) => { db.prepare("UPDATE wakes SET job = NULL, until = 0 WHERE key = ?").run(key); },
 });
-export type Admitted = { id: string; module: string; agent: string; task: string; identifier: string; profile: Profile; authority: Authority; prompt: string; session?: string; wake: string };
+/** `fresh`: the last job asked for a fresh session (`aidenhq reset`): no session resumes, the dispatcher's included. */
+export type Admitted = { id: string; module: string; agent: string; task: string; identifier: string; profile: Profile; authority: Authority; prompt: string; session?: string; fresh: boolean; wake: string };
 
 const LIVE = "state IN ('admitted', 'running')";
 const ID = /^[\w.:-]{1,200}$/;
 
-export function createAdmission({ db, grants, kinds, capacity, spend, mayDispatch, cp, wakes, provenance, routineCap, launch, log }: {
+export function createAdmission({ db, grants, kinds, capacity, spend, mayDispatch, cp, wakes, provenance, routineCap, nextTurn, launch, log }: {
+  /** What the task's last job asked of this turn (jobtools.ts): read in the transaction, spent once the job has started. */
+  nextTurn: Pick<JobTools, "pending" | "taken" | "refusal">;
   /** Kernel provenance (provenance.ts): a task carrying a creation intent with no row yet is not admitted until reconciled. */
   provenance: { pending(issue: { id: string; description?: string | null }): boolean };
   /** The task's routine cap as the kernel traces it now (tier.ts taskRoutineCap): frozen on the job row at admission. */
@@ -83,7 +88,7 @@ export function createAdmission({ db, grants, kinds, capacity, spend, mayDispatc
     const holds = (ct: string) => { const [c, t] = ct.split("."); return Boolean(tools[c!]?.includes(t!)); };
     const writes = Object.entries(kinds()).filter(([, k]) => k.floor >= 1 && k.tools.length > 0 && k.tools.some(holds)).map(([id]) => id).sort();
     return {
-      profile, image: g.image ?? IMAGE[profile], engine: String(g.engine ?? ""), model: String(routine?.model ?? g.model ?? ""), effort: String(routine?.effort ?? g.effort ?? ""),
+      profile, image: g.image ?? IMAGE[profile], engine: String(g.engine ?? ""), engines: [...(g.engines ?? [g.engine ?? ""])].filter(Boolean), model: String(routine?.model ?? g.model ?? ""), effort: String(routine?.effort ?? g.effort ?? ""),
       models: [...(g.models ?? [])], skills: (g.skills ?? []).map((k) => ({ ...k })), tools, jobcaps: profile === "check" ? [] : [...(g.jobcaps ?? [])], writes,
       roles: profile === "check" ? [] : rolesOf(g), reads: g.private_reads === true,
       web: g.private_reads !== true && g.web_search !== "disabled",
@@ -123,11 +128,20 @@ export function createAdmission({ db, grants, kinds, capacity, spend, mayDispatc
       const over = spend(agent, task);
       if (over.length) throw new JobError(429, "over-cap", `the ${over.map((o) => o.scope).join(", ")} spend cap is used up`);
       const authority = freeze(g, w.cause);
+      // The last job's `aidenhq engine`: applied when the agent may still run it now, else ignored loudly (refusing would
+      // wedge the task: the request would stand at every retry). Never widens `models`.
+      const asked = nextTurn.pending(task);
+      if (asked?.engine) {
+        const why = nextTurn.refusal(asked.engine, authority);
+        if (why) log("a job's next-turn engine request is ignored", { job: asked.job, task, why });
+        else Object.assign(authority, { engine: asked.engine.kind }, asked.engine.model ? { model: asked.engine.model } : {});
+      }
+      const fresh = asked?.fresh === true;
       db.prepare("INSERT INTO jobs (id, module, agent, task, engine, pid, log, dir, at, jobcaps, observing, live_input, state, profile, wake, authority, routine, routine_cap) VALUES (?, ?, ?, ?, ?, 0, '', '', ?, ?, 0, 0, 'admitted', ?, ?, ?, ?, ?)")
         .run(id, module, agent, task, authority.engine, Date.now(), JSON.stringify(authority.jobcaps), authority.profile, b.wake, JSON.stringify(authority), cap?.routine ?? null, cap?.cap ?? null);
       wakes.bind(b.wake, id);
       db.exec("COMMIT");
-      job = { id, module, agent, task, identifier, profile: authority.profile, authority, prompt: b.prompt, ...(b.session ? { session: b.session } : {}), wake: b.wake };
+      job = { id, module, agent, task, identifier, profile: authority.profile, authority, prompt: b.prompt, ...(b.session && !fresh ? { session: b.session } : {}), fresh, wake: b.wake };
     } catch (e) {
       if (db.isTransaction) db.exec("ROLLBACK");
       throw e;
@@ -145,6 +159,7 @@ export function createAdmission({ db, grants, kinds, capacity, spend, mayDispatc
       log("job deferred: no free computer", { job: id, task });
       return { ...v, state: "deferred" };
     }
+    nextTurn.taken(task);
     return view(id);
   }
 
