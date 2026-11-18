@@ -12,7 +12,6 @@ import { appsApi } from "./fleet.js";
 import type { Grade, Grading } from "./grading.js";
 import { firstArg } from "./codex-activity.js";
 import { alertIncidents } from "./monitoring.js";
-import { TOO_LONG } from "./rollover.js";
 import { ownerAlert } from "./notify.js";
 
 const MIN = 60_000;
@@ -185,11 +184,7 @@ export function checks(pc: Paperclip, store: Pick<Store, "meta" | "setMeta" | "r
         if (stuck) out.push({ key: `${a.id}:stuck`, reason: `${a.name}: a run has been running ${mins(age(stuck.startedAt ?? stuck.createdAt, t))} (limit ${mins(limit)})` });
         const finished = mine.filter((r) => !["running", "queued", "cancelled"].includes(r.status)).slice(0, FAILS);
         if (finished.length === FAILS && finished.every((r) => r.status !== "succeeded")) {
-          // Over the model's input limit: the task's history outgrew a fresh session. Rollover moves it (rollover.ts) unless
-          // it is graded, an Engineer task, agent-made or waits on a card; say which task, so it isn't read as a flaky model.
-          const long = TOO_LONG.test(finished[0]!.error ?? "") ? finished[0]!.issueId : undefined;
-          const task = long ? (await pc.issueSummary(long).catch(() => undefined))?.identifier ?? long : undefined;
-          out.push({ key: `${a.id}:failing`, reason: task ? `${a.name}: its last ${FAILS} runs failed: ${task} is too long for a fresh session (over the model's input limit). The board moves such a task to a successor within 10 minutes unless a run is on it, a card waits on it, it is graded, an Engineer task or not the owner's own (made by an agent or from a source): if it is still open, move its open sub-tasks to a new task and close it without an agent.` : `${a.name}: its last ${FAILS} runs failed (${finished.map((r) => r.status).join(", ")})` });
+          out.push({ key: `${a.id}:failing`, reason: `${a.name}: its last ${FAILS} runs failed (${finished.map((r) => r.status).join(", ")})` });
         }
       }
       return out;

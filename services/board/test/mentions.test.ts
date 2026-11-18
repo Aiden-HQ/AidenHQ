@@ -48,7 +48,6 @@ describe("routing mentions and passed-on messages", () => {
   let issues: Issue[];
   let comments: Map<string, Comment[]>;
   let seq = 0;
-  let woken: { agentId: string; reason: string }[] = [];
   const uuid = () => `00000000-0000-4000-8000-${String(++seq).padStart(12, "0")}`;
   const make = (over: Partial<Issue>): Issue => ({ id: uuid(), identifier: `PEN-${seq}`, title: "Wallet copy", description: "", status: "todo", priority: "medium", assigneeUserId: null, assigneeAgentId: null, assigneeAdapterOverrides: null, labels: [], createdAt: "2026-11-02T10:00:00Z", updatedAt: "2026-11-02T10:00:00Z", ...over });
   const find = (ref: string) => issues.find((i) => i.id === ref || i.identifier === ref);
@@ -72,7 +71,6 @@ describe("routing mentions and passed-on messages", () => {
     recentRuns: async () => [],
     addComment: async (id: string, body: string) => comment(id, body, { user: ME }),
     updateIssue: async (id: string, patch: Partial<Issue>) => Object.assign(find(id)!, patch),
-    wakeAgent: async (agentId: string, reason: string) => void woken.push({ agentId, reason }),
     createIssue: async (body: Partial<Issue>) => {
       const i = make({ ...body, assigneeUserId: body.assigneeUserId ?? null });
       issues.push(i);
@@ -112,7 +110,6 @@ describe("routing mentions and passed-on messages", () => {
   beforeEach(() => {
     issues = [];
     comments = new Map();
-    woken = [];
     task = make({ assigneeUserId: ME });
     issues.push(task);
     alfred = make({ parentId: task.id, assigneeAgentId: ALFRED });
@@ -149,15 +146,6 @@ describe("routing mentions and passed-on messages", () => {
     await say(loose.identifier, "@Ada look");
     expect(said(loose)).toEqual(["@Ada look"]);
     expect(said(ada)).toEqual([]);
-  });
-
-  it("a message on a task Paperclip holds wakes its agent directly; an unheld one is left to Paperclip", async () => {
-    await say(alfred.identifier, "thanks");
-    expect(woken).toEqual([]);
-    alfred.executionBlocker = { cause: "legacy_execution_requires_reconciliation" };
-    await say(alfred.identifier, "are you there?");
-    expect(said(alfred)).toEqual(["thanks", "are you there?"]);
-    expect(woken).toEqual([{ agentId: ALFRED, reason: expect.stringContaining(alfred.identifier) }]);
   });
 
   it("an agent passes on the user's own comment, word for word, once", async () => {

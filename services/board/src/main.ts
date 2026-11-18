@@ -17,8 +17,6 @@ import { kernelRecords } from "./records.js";
 import { kernelWork } from "./runs.js";
 import { weekdayOf } from "./recurrence.js";
 import { Store, localDate } from "./store.js";
-import { startWake } from "./wake.js";
-import { startRollover } from "./rollover.js";
 import { startRecurringRuns } from "./recurring-start.js";
 import { startWatch } from "./watch.js";
 import { liveActivity } from "./live-activity.js";
@@ -58,8 +56,6 @@ startDetector(paperclip, store, grading, log);
 // The owner's app alerts (app-watch.ts), through the one notify. apps-mcp unreachable: skipped.
 const appWatch = () => void appWatchTick({ apps: () => appsApi<AppStatus[]>("/internal/status"), diskPct: async () => (await appsApi<{ disk_pct: number }>("/internal/host")).disk_pct, store, notify: ownerAlert }).catch((err) => log.warn({ err: String(err) }, "app alerts tick failed"));
 setInterval(appWatch, 2 * 60_000).unref();
-// Event wake-ups for heartbeat agents (wake.ts).
-startWake(paperclip, store, records, grading, log);
 // The Maintainer's issue wake-up (maintainer.ts): off until the modules mount the webhook and github-mcp's token. Their
 // files are read on every tick: setup writes the webhook after apply has started this board.
 if (process.env.MAINTAINER_WEBHOOK_URL_FILE && process.env.MAINTAINER_ISSUES_TOKEN_FILE) {
@@ -67,8 +63,6 @@ if (process.env.MAINTAINER_WEBHOOK_URL_FILE && process.env.MAINTAINER_ISSUES_TOK
 } else log.info({}, "maintainer issue watcher off: MAINTAINER_WEBHOOK_URL_FILE or MAINTAINER_ISSUES_TOKEN_FILE is not set");
 // Recurring runs that are due start the Researcher's "Run recurring task" routine (recurring-start.ts).
 startRecurringRuns({ pc: paperclip, store, timezone: cfg.timezone, log });
-// Long-lived tasks move to a successor before Paperclip's fresh-session prompt outgrows the model's input (rollover.ts).
-startRollover(paperclip, store, records, grading, log);
 // The Costs tab: model calls with what OpenRouter billed for each, from the model gateway (kernel/src/gateway), agent
 // computers' included (the launcher forwards their calls there).
 pullUsage(cfg.gateway, store, log, 60_000, "gateway_usage_pulled_at");

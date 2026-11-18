@@ -67,13 +67,6 @@ describe("internal listener", () => {
     expect((await refused("/internal/issues/PEN-1/schedule", { clear: true }, asAgent("ra", { exp: 1 }))).error).toMatch(/expired/);
   });
 
-  it("where a moved chat continues: the board's own record, and only for the owner channel's key", async () => {
-    store.setMeta("task_rollover", JSON.stringify({ moved: { old: "new" } }));
-    const get = (headers: Record<string, string>) => call("GET", "/internal/successor/old", undefined, { host: "board:3122", authorization: `Bearer ${TOKEN}`, ...headers });
-    expect((await get({})).status).toBe(403); // the internal token alone opens nothing
-    expect(await (await get({ "x-gateway-key": "d".repeat(40) })).json()).toEqual({ id: "new" });
-  });
-
   it("serves only /internal/ routes: not the user's API or the page", async () => {
     expect((await post("/api/issues", { title: "x" })).status).toBe(404);
     expect((await call("GET", "/", undefined, { host: "board:3122", authorization: `Bearer ${TOKEN}` })).status).toBe(404);

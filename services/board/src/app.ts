@@ -44,7 +44,6 @@ import { GoogleAuthFailed, loopbackPort, type GoogleAuth } from "./google.js";
 import { OPEN, Paperclip, PaperclipError, actingAccount, type Agent, type Comment, type Issue, type Label, type LiveRun } from "./paperclip.js";
 import { accountSession, type BoardSession, type SessionOf } from "./session.js";
 import { laneAgents, laneMessages, laneSend, type LaneOptions } from "./lane.js";
-import { latest, successorOf } from "./rollover.js";
 import { NOTICE_MARKER, asksOwner, chatAgent, chatAgentMarker, chatState, conversation, lastWord, needsYou, openAsk, pickAgent, shownState, type Message } from "./chats.js";
 import { addDays, nextWorkday, type Weekday } from "./recurrence.js";
 import { BUCKETS, isBucket, localDate, type Store } from "./store.js";
@@ -444,22 +443,6 @@ export function createApp(opts: AppOptions): Server {
     return part;
   }
 
-  /**
-   * Paperclip wakes a task's agent on the owner's comment, except while the task carries a recovery hold: then the wake
-   * is parked until the hold clears, and some never do (a run it cancels before starting leaves no stop record, so every
-   * later message waits forever). A held task's agent is woken without the task (a task-scoped wake is parked too); it
-   * finds the message among its open tasks.
-   */
-  async function wakeIfHeld(issueId: string, commentId: string) {
-    const now = await pc.issue(issueId).catch(() => undefined);
-    if (!now?.assigneeAgentId || !now.executionBlocker) return;
-    const reason = `The owner wrote on ${now.identifier}, and Paperclip is holding that task's own wake (${now.executionBlocker.cause}). Read the newest comments on ${now.identifier} and reply there.`;
-    await pc.wakeAgent(now.assigneeAgentId, reason, `board-held-comment:${commentId}`).then(
-      () => log.warn({ issue: now.identifier, cause: now.executionBlocker!.cause }, "task wake held by Paperclip; woke its agent directly"),
-      (err) => log.warn({ issue: now.identifier, err: String(err) }, "couldn't wake the agent of a held task"),
-    );
-  }
-
   /** The user's task a chat belongs to: the task itself, or the task an agent's part is part of. */
   async function userTaskOf(issue: Issue, ctx: Awaited<ReturnType<typeof context>>): Promise<Issue | undefined> {
     if (issue.assigneeUserId === ctx.me && !issue.assigneeAgentId) return issue;
@@ -720,7 +703,7 @@ export function createApp(opts: AppOptions): Server {
     const [comments, kids] = await Promise.all([pc.comments(issue.id), pc.children(issue.id).catch(() => [] as Issue[])]);
     const name = (id: string | null | undefined) => ctx.agents.find((a) => a.id === id)?.name ?? "Agent";
     const front = ctx.agents.find((a) => a.metadata?.setupKey === "aidenhq:chief-of-staff") ?? ctx.agents[0];
-    const model = String(front?.adapterConfig?.model ?? "~deepseek/deepseek-flash-latest").replace(/^openrouter\//, "");
+    const model = String(front?.metadata?.model ?? "~deepseek/deepseek-flash-latest").replace(/^openrouter\//, "");
     const prompt = asideMessages(
       {
         issue,
@@ -898,7 +881,6 @@ export function createApp(opts: AppOptions): Server {
             store.delMeta(key);
             throw err;
           }
-          await wakeIfHeld(dest.id, posted.id);
           log.info({ chat: source.chat.identifier, task: dest.identifier }, "chat message relayed");
           return { relayed: true, task: dest.identifier, to: agent.persona?.name ?? agent.name, comment_id: posted.id };
         }),
@@ -927,16 +909,6 @@ export function createApp(opts: AppOptions): Server {
           log.info({ app, request: r.id }, "owner's app request filed");
           return { request_id: r.id, app, note: `Pass ${r.id} to ${app}'s agent; it acts on it with app_role_set.` };
         }),
-    },
-    {
-      // Where a message to a task the board moved to a successor goes (rollover.ts): read-only, from the board's own record.
-      // Only the kernel asks, before it delivers a channel's message to the owner's chat.
-      method: "GET",
-      path: /^\/internal\/successor\/([A-Za-z0-9_-]+)$/,
-      handle: async (m, _b, _u, req) => {
-        if (!kernelKeyed(req)) throw new HttpError(403, "only the kernel asks where a chat continues");
-        return { id: successorOf(store, m[1]!) ?? null };
-      },
     },
     {
       // Every card on one task, any state, read from the kernel's records (an agent's task_approvals through the tasks bridge; no args).
@@ -1352,7 +1324,7 @@ export function createApp(opts: AppOptions): Server {
         }
         const label = await labelNamed(ctx, "chat", "#0ea5e9");
         const title = input.text.split("\n")[0]!.replace(/^@\S+\s*/, "").slice(0, 80) || "New chat";
-        const issue = await pc.createIssue({ title, description: `${note ? `${input.text}\n\n${note}` : input.text}\n\n${chatAgentMarker(agent.id)}`, status: "todo", assigneeAgentId: agent.id, labelIds: [label.id], executionWorkspacePreference: "agent_default", executionWorkspaceSettings: { mode: "agent_default" } });
+        const issue = await pc.createIssue({ title, description: `${note ? `${input.text}\n\n${note}` : input.text}\n\n${chatAgentMarker(agent.id)}`, status: "todo", assigneeAgentId: agent.id, labelIds: [label.id] });
         log.info({ issue: issue.identifier, agent: agent.name }, "chat started");
         return { identifier: issue.identifier };
       },
@@ -1388,7 +1360,7 @@ export function createApp(opts: AppOptions): Server {
       handle: async (m, body) => {
         const own = await editableIssue(decodeURIComponent(m[1]!), "this task isn't yours");
         const { ctx } = own;
-        const issue = await latest(pc, store, own.issue); // a moved task's correction goes to its successor
+        const { issue } = own;
         const { text } = parse(z.object({ text: z.string().trim().min(1).max(500) }).strict(), body);
         const label = await labelNamed(ctx, "correction", "#dc2626");
         await pc.addComment(issue.id, `Not right: ${text}\n\n<!-- aidenhq-correction -->`);
@@ -1560,9 +1532,7 @@ export function createApp(opts: AppOptions): Server {
       path: /^\/api\/issues\/([^/]+)\/comments$/,
       handle: async (m, body, _u, req) => {
         const { ctx, issue: asked } = await editableIssue(decodeURIComponent(m[1]!));
-        // A task moved to a successor (rollover.ts): the message goes there, and the board opens it.
-        const issue = await latest(pc, store, asked);
-        const moved = issue.id !== asked.id ? { movedTo: issue.identifier } : {};
+        const issue = asked;
         // `brief`: the chat's send, which refetches the chat itself, so the reply skips building the whole task view.
         const { body: text, brief } = parse(z.object({ body: z.string().trim().min(1).max(30_000), answer: z.boolean().optional(), brief: z.boolean().optional() }).strict(), body);
         const view = async () => (brief ? { identifier: issue.identifier } : issueView(issue.id));
@@ -1583,12 +1553,11 @@ export function createApp(opts: AppOptions): Server {
           const agentId = chatAgent(issue);
           await pc.updateIssue(issue.id, { status: "todo", ...(agentId && !issue.assigneeAgentId ? { assigneeAgentId: agentId, assigneeUserId: null } : {}) });
         }
-        if (posted) await wakeIfHeld(issue.id, posted.id);
         const where = issue.id === task?.id ? "the team chat" : `${ctx.assignees.find((a) => a.key === issue.assigneeAgentId)?.persona?.name ?? "another agent"}'s chat`;
         const parts = [];
         for (const a of others) parts.push(await deliver(ctx, task!, a, text, { identifier: issue.identifier, commentId: posted?.id, note: `Written in ${where} on ${issue.identifier}.` }));
         // A message that left this chat for another agent's: the board opens that one.
-        return { ...(await view()), ...moved, ...(!posted && parts[0] ? { movedTo: parts[0].identifier } : {}) };
+        return { ...(await view()), ...(!posted && parts[0] ? { movedTo: parts[0].identifier } : {}) };
       },
     },
     {
