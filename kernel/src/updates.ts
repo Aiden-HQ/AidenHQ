@@ -197,7 +197,11 @@ export async function verify(d: Pick<Deps, "base" | "fetch" | "download">, text:
   const run = /^https:\/\/github\.com\/Aiden-HQ\/aidenhq-distro\/actions\/runs\/(\d{1,20})$/.exec(String(tested.ci_run ?? ""));
   if (!run || !Array.isArray(tested.suites) || !tested.suites.length) throw new Refused(`${name} has no tested stamp from the release workflow`);
   const r = await d.download(`https://api.github.com/repos/${DISTRO}/actions/runs/${run[1]}`);
-  if (!isMap(r) || r.path !== ".github/workflows/release.yml" || r.head_sha !== sha || r.event !== "push" || r.conclusion !== "success") throw new Refused(`${name}'s tested stamp doesn't name a successful release run on its commit`);
+  // A run still going (publish is one of its jobs) is checked again next time. The run is the tag's own: a push of the tag, or a
+  // dispatch on the tag (the nightly's: a tag pushed with GITHUB_TOKEN starts no workflow), never a branch run on that commit.
+  if (isMap(r) && r.status !== "completed") throw new Error(`${name}'s release run is still running`);
+  const onTag = isMap(r) && (r.event === "push" || (r.event === "workflow_dispatch" && r.head_branch === name));
+  if (!isMap(r) || r.path !== ".github/workflows/release.yml" || r.head_sha !== sha || !onTag || r.conclusion !== "success") throw new Refused(`${name}'s tested stamp doesn't name a successful release run on its commit`);
   const notes = (Array.isArray(file.notes) ? file.notes : typeof file.notes === "string" ? [file.notes] : []).slice(0, 20).map((n) => plain(n)).filter(Boolean);
   return { name, sha, kernel, marketplace: market, notes, compare: `${GITHUB}/${KERNEL}/compare/${product.slice(0, 12)}...${kernel.slice(0, 12)}`, images: images.length, from: { name: cur.name, product }, text: next };
 }
