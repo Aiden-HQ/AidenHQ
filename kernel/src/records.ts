@@ -140,6 +140,8 @@ export function openRecords(file: string, now = () => new Date()) {
     shownState,
     /** The open records of this content on this task (a repeated request returns its own, never a second card). */
     open: (task: string, kind: string, digest: string): Rec[] => rows(db.prepare("SELECT * FROM records WHERE task = ? AND kind = ? AND digest = ? AND state IN ('review','owner','approved') AND created_at > ?").all(task, kind, digest, cutoff())),
+    /** The open records of this content on this task, and any claimed one still running: the same call, never a second. */
+    live: (task: string, kind: string, digest: string): Rec[] => rows(db.prepare("SELECT * FROM records WHERE task = ? AND kind = ? AND digest = ? AND state IN ('review','owner','approved','claimed') AND created_at > ?").all(task, kind, digest, cutoff())),
     /** Records of this content on this task created since then, newest first, in any state (a call that already ran). */
     recent: (task: string, kind: string, digest: string, since: string): Rec[] => rows(db.prepare("SELECT * FROM records WHERE task = ? AND kind = ? AND digest = ? AND created_at > ? ORDER BY created_at DESC, rowid DESC").all(task, kind, digest, since)),
     /** Records of these modules' kinds in these states (a reconcile before the modules are removed). */

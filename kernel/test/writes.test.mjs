@@ -17,12 +17,12 @@ const secrets = { twin_service_key: "twin-key", other_service_key: "other-key" }
 const until = async (fn) => { for (let i = 0; i < 200 && !fn(); i++) await new Promise((r) => setTimeout(r, 10)); assert.ok(fn()); };
 const text = async (r) => (await r.json()).result.content[0].text;
 
-async function twin(t, { satisfied, settings, onControl } = {}) {
+async function twin(t, { satisfied, settings, onControl, hold } = {}) {
   const fx = { plans: [], executes: [], target: "c1", satisfied: false, ...(satisfied ? { satisfied } : {}) };
   let handler = () => false;
   const ex = await serve(async (req, res) => { if (!(await handler(req, res))) res.writeHead(404).end(); });
   t.after(() => ex.s.close());
-  const mod = await moduleServer(t, { key: "twin-key", tools: TOOLS, answer: (msg) => ({ content: [{ type: "text", text: `${msg.params.name} done` }] }) });
+  const mod = await moduleServer(t, { key: "twin-key", tools: TOOLS, answer: async (msg) => { if (hold && msg.params.name === "note_write") await hold; return { content: [{ type: "text", text: `${msg.params.name} done` }] }; } });
   const executor = { url: `${ex.url}/aidenhq/v1/executor`, auth_secret: "twin_service_key" };
   const verdicts = [];
   const k = await kernel(t, {
@@ -232,6 +232,22 @@ test("a repeat of a conn.tool call that already ran returns its record, not a se
   const again = await tool("note_write", { text: "same" });
   assert.match(await text(again), /note_write done/);
   assert.deepEqual(k.records.list(["done"]).map((r) => r.id), [first.id]);
+  assert.deepEqual(moduleCalls(), ["note_write"]);
+});
+
+test("a repeat while the first conn.tool call is still claimed waits for it, never forwarding again", async (t) => {
+  let release;
+  const hold = new Promise((r) => { release = r; });
+  const { k, tool, moduleCalls } = await twin(t, { hold });
+  const first = tool("note_write", { text: "slow" });
+  await until(() => k.records.list(["claimed"]).length === 1);
+  const second = tool("note_write", { text: "slow" });
+  await new Promise((r) => setTimeout(r, 50));
+  release();
+  const [a, b] = await Promise.all([first, second]);
+  assert.match(await text(a), /note_write done/);
+  assert.match(await text(b), /note_write done/);
+  assert.deepEqual(k.records.list(["done"]).map((r) => r.args.arguments.text), ["slow"]);
   assert.deepEqual(moduleCalls(), ["note_write"]);
 });
 

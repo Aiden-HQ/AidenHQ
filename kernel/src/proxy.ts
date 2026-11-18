@@ -193,8 +193,14 @@ export function createProxy({ whoami, connections, asserter, resolver, secret, w
               if (r.tier === 0) return reply(r.outcome ? own(r.outcome.text) : `${pendingText(r)}\n(still running past the tool timeout)`, r.outcome ? !r.outcome.ok : false);
               return reply(pendingText(r));
             }
-            rec = await writes!.fileTool(who, connection, tool, params?.arguments ?? {}, who.task ?? "");
+            const filed = await writes!.fileTool(who, connection, tool, params?.arguments ?? {}, who.task ?? "");
+            rec = filed.record;
             if (rec.outcome) return reply(own(rec.outcome.text), !rec.outcome.ok);
+            if (!filed.forward) {
+              const r = rec.state === "claimed" || rec.state === "approved" ? await writes!.wait(rec.id, (conn!.tool_timeout_s ?? 300) * 1000) : rec;
+              if (r.outcome) return reply(own(r.outcome.text), !r.outcome.ok);
+              return reply(`${JSON.stringify({ approval: r.id, tier: r.tier, state: r.state })}\nThe same call was already filed as approval ${r.id}; it is not sent again.${r.state === "claimed" ? " It is running, and its outcome lands when it ends." : ""}`);
+            }
             if (rec.state !== "claimed") return reply(pendingText(rec));
           } catch (e) {
             const err = e as Error & { status?: number };

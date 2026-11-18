@@ -367,8 +367,11 @@ export function createWrites({ records, registry, connections, secret, resolver,
       const t = computeTier({ floor: k.floor });
       return records.file({ ...base, tier: t.tier, merit: t.merit, panel: false, review_first: t.reviewFirst, rule: b.rule, identifier: b.identifier ?? null, target: b.card.target ?? null, state: "review" });
     },
-    /** The proxy's record for a conn.tool call. Tier 0 comes back claimed: the proxy forwards it and reports with `outcome`. */
-    async fileTool(who: Identity, connection: string, tool: string, args: unknown, task: string): Promise<Rec> {
+    /**
+     * The proxy's record for a conn.tool call. A fresh Tier 0 record comes back claimed and `forward` true: the proxy sends it
+     * and reports with `outcome`. A repeat is that record with `forward` false, never a second send.
+     */
+    async fileTool(who: Identity, connection: string, tool: string, args: unknown, task: string): Promise<{ record: Rec; forward: boolean }> {
       const c = conn(connection)!;
       const floor: Tier = c.tools.destructive.includes(tool) ? 1 : 0;
       // The owner's no on a destructive tool holds for that tool on the task, never for the task's other writes.
@@ -383,11 +386,12 @@ export function createWrites({ records, registry, connections, secret, resolver,
       // outcome instead of running the module again while it is at most 10 minutes old (from its created_at). A different tier,
       // requester, task or arguments still files its own; a rejected or otherwise closed earlier record is not reused.
       const same = (r: Rec) => by(r.requester) === by(base.requester) && r.tier === t.tier;
-      const open = records.open(task, CONN_TOOL, digest).find(same);
-      if (open) return open;
+      const live = records.live(task, CONN_TOOL, digest).find(same);
+      if (live) return { record: live, forward: false };
       const ran = records.recent(task, CONN_TOOL, digest, new Date(Date.now() - CONN_TOOL_REUSE_MS).toISOString()).find((r) => same(r) && (r.state === "done" || r.state === "failed"));
-      if (ran) return ran;
-      return records.file({ ...base, tier: t.tier, merit: t.merit, panel: false, review_first: t.reviewFirst, rule: t.rule ?? null, cap: t.cap ?? null, state: t.state });
+      if (ran) return { record: ran, forward: false };
+      const record = records.file({ ...base, tier: t.tier, merit: t.merit, panel: false, review_first: t.reviewFirst, rule: t.rule ?? null, cap: t.cap ?? null, state: t.state });
+      return { record, forward: record.state === "claimed" };
     },
     outcome: outcomeOf,
     /** Resolves once the record has an outcome, or with it as it is after `ms`. */
