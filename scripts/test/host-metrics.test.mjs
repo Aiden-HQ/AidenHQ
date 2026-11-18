@@ -50,7 +50,7 @@ awk -v q="$q" -v fs="\${filters[*]}" -v want="\${ids[*]}" 'BEGIN { n = split(fs,
     for (i = 1; i <= n; i++) for (j in kv) if (kv[j] == f[i] || index(kv[j], f[i] "=") == 1) keep = 1
     if (!keep) next
     if (want != "" && index(" " want " ", " " $1 " ") == 0) next
-    if (q) print $1; else print $1, $2, $3, $4, $5, $6, $7, $8, $9 }' "$CONTAINERS"
+    if (q) print $1; else print $1, $2, $3, $4, $5, $6, $7, $8, $9, $10 }' "$CONTAINERS"
 exit 0
 `);
   for (const f of ["systemctl", "docker"]) chmodSync(join(dir, "bin", f), 0o755);
@@ -126,10 +126,10 @@ test("a declared unit reads 1, a unit the host has disabled has no declared seri
   assert.equal(value(r.prom, "aidenhq_unit_active", 'scope="user",unit="aidenhq-runner.service"'), 1);
 });
 
-// A container as the fake reports it: the fields `docker inspect` fills, its labels as one `key=value,key=value` field, and
-// the two label flags the writer reads (`computer`, `oneoff`).
-const box = (id, project, service, name, { running = "true", restarts = 0, health = "none", computer = false, oneoff = false } = {}) => ({
-  id, project, service, name, running, restarts, health, computer: computer ? "yes" : "no", oneoff: oneoff ? "yes" : "no",
+// A container as the fake reports it: the fields `docker inspect` fills (its image last), its labels as one
+// `key=value,key=value` field, and the two label flags the writer reads (`computer`, `oneoff`).
+const box = (id, project, service, name, { running = "true", restarts = 0, health = "none", computer = false, oneoff = false, image = "aidenhq/gate:local" } = {}) => ({
+  id, project, service, name, running, restarts, health, computer: computer ? "yes" : "no", oneoff: oneoff ? "yes" : "no", image,
   labels: [project === "-" ? "" : `com.docker.compose.project=${project}`, service === "-" ? "" : `com.docker.compose.service=${service}`, computer ? "aidenhq.computer=" : "", oneoff ? "aidenhq.oneoff=1" : ""].filter(Boolean).join(",") || "-",
 });
 
@@ -139,9 +139,11 @@ test("a live container with no compose labels and one whose tag has moved are na
     // `docker run` with no labels at all, and its image rebuilt under it since: the writing keys on neither.
     box("d4e5f6", "-", "-", "/n-whisper", { restarts: 2, health: "unhealthy" }),
     box("f7a8b9", "aidenhq-mod-monitoring", "gateway", "/aidenhq-mod-monitoring-gateway-1"),
-    // The security scan's container, still running: not part of the fleet. A stopped service keeps a 0, which
-    // CoreServiceDown reads; a finished one-off gets no series.
-    box("b0b0", "-", "-", "/gallant_syft", { oneoff: true }),
+    // The security scan's own container while it runs: not part of the fleet. A one-off running another image is,
+    // so only the syft container is left out. A stopped service keeps a 0, which CoreServiceDown reads; a finished
+    // one-off gets no series.
+    box("b0b0", "-", "-", "/gallant_syft", { oneoff: true, image: "anchore/syft:v1.57.1" }),
+    box("b1b1", "-", "-", "/adhoc_check", { oneoff: true, image: "alpine:3.22" }),
     box("c0ffee", "aidenhq", "board", "/aidenhq-board-1", { running: "false" }),
     box("5ca9", "-", "-", "/sad_syft", { running: "false" }),
   ]), "containers.prom");
@@ -153,5 +155,6 @@ test("a live container with no compose labels and one whose tag has moved are na
   assert.equal(value(r.prom, "aidenhq_container_running", 'id="/system.slice/docker-f7a8b9.scope",project="aidenhq-mod-monitoring",service="gateway",name="aidenhq-mod-monitoring-gateway-1"'), 1);
   assert.equal(value(r.prom, "aidenhq_container_running", 'id="/system.slice/docker-c0ffee.scope",project="aidenhq",service="board",name="aidenhq-board-1"'), 0);
   assert.doesNotMatch(r.prom, /docker-(b0b0|5ca9)\.scope/);
-  assert.equal(r.prom.split("\n").filter((l) => l.startsWith("aidenhq_container_running{")).length, 4);
+  assert.equal(value(r.prom, "aidenhq_container_running", 'id="/system.slice/docker-b1b1.scope",project="-",service="-",name="adhoc_check"'), 1);
+  assert.equal(r.prom.split("\n").filter((l) => l.startsWith("aidenhq_container_running{")).length, 5);
 });

@@ -73,12 +73,12 @@ ids="$(docker ps -aq 2>/dev/null | sort -u)"
   echo "# TYPE aidenhq_container_restarts gauge"
   echo "# HELP aidenhq_container_unhealthy 1 when the container's healthcheck reports unhealthy."
   echo "# TYPE aidenhq_container_unhealthy gauge"
-  [ -n "$ids" ] && docker inspect $ids --format '{{.Id}} {{or (index .Config.Labels "com.docker.compose.project") "-"}} {{or (index .Config.Labels "com.docker.compose.service") "-"}} {{.Name}} {{.State.Running}} {{.RestartCount}} {{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}} {{if index .Config.Labels "aidenhq.computer"}}yes{{else}}no{{end}} {{if index .Config.Labels "aidenhq.oneoff"}}yes{{else}}no{{end}}' 2>/dev/null \
-    | clean | while read -r id project service name running restarts health computer oneoff; do
-      # The security scan's thrown-away container runs for the whole batch and is no part of the fleet; and a finished
-      # one-off has no identity worth a series, while a finished compose service or computer box keeps its 0, which
-      # CoreServiceDown reads.
-      [ "$oneoff" = yes ] && continue
+  [ -n "$ids" ] && docker inspect $ids --format '{{.Id}} {{or (index .Config.Labels "com.docker.compose.project") "-"}} {{or (index .Config.Labels "com.docker.compose.service") "-"}} {{.Name}} {{.State.Running}} {{.RestartCount}} {{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}} {{if index .Config.Labels "aidenhq.computer"}}yes{{else}}no{{end}} {{if index .Config.Labels "aidenhq.oneoff"}}yes{{else}}no{{end}} {{.Config.Image}}' 2>/dev/null \
+    | clean | while read -r id project service name running restarts health computer oneoff image; do
+      # The security scan's thrown-away container runs for the whole batch and is no part of the fleet: only that one is
+      # left out, a container labelled aidenhq.oneoff that runs another image still shows. And a finished one-off has no
+      # identity worth a series, while a finished compose service or computer box keeps its 0, which CoreServiceDown reads.
+      [ "$oneoff" = yes ] && case "$image" in *anchore/syft*) continue ;; esac
       [ "$running" = false ] && [ "$project" = - ] && [ "$computer" != yes ] && continue
       l="id=\"/system.slice/docker-$id.scope\",project=\"$project\",service=\"$service\",name=\"${name#/}\""
       echo "aidenhq_container_running{$l} $([ "$running" = true ] && echo 1 || echo 0)"
