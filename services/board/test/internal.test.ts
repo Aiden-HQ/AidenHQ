@@ -72,13 +72,9 @@ describe("internal listener", () => {
     expect((await call("GET", "/", undefined, { host: "board:3122", authorization: `Bearer ${TOKEN}` })).status).toBe(404);
   });
 
-  it("fleet_status answers with detector.open and detector.recovered readable, even behind long lists", async () => {
+  it("fleet_status answers whole JSON behind long lists, with the cut notice first", async () => {
     const big = "t".repeat(200);
-    const row = (k: number) => ({ id: `i${k}`, identifier: `PEN-${k}`, title: big, status: "blocked", priority: "medium", assigneeUserId: null, assigneeAgentId: "a1", assigneeAdapterOverrides: null, createdAt: "2026-11-01T00:00:00Z", updatedAt: "2026-11-01T00:00:00Z" });
-    store.setMeta("fleet_ops_detector", JSON.stringify({
-      open: { "routine:daily-brief": { reason: "routine daily brief: its last 3 runs failed", at: "2026-11-13T10:00:00Z", fired: true } },
-      recovered: [{ key: "source:slack", reason: "source src_slack: last good pass 20 min ago", at: "2026-11-13T11:00:00Z", fired: true }],
-    }));
+    const row = (k: number) => ({ id: `i${k}`, identifier: `PEN-${k}`, title: big, status: "blocked", priority: "medium", assigneeUserId: null, assigneeAgentId: "a1", assigneeAdapterOverrides: null, createdAt: "2026-11-13T10:00:00Z", updatedAt: "2026-10-01T10:00:00Z" });
     (pc as any).request = async (m: string, path: string) => (path.includes("/issues?") ? Array.from({ length: 500 }, (_, k) => row(k)) : []);
     // The summary's own reads (a failed one is allowed to be null, but it must not outlive the stub above).
     (pc as any).closedSince = async () => [];
@@ -87,40 +83,14 @@ describe("internal listener", () => {
       // The body as it goes over the wire, not the object a caller happened to build.
       const res = await post("/internal/fleet/status", {});
       expect(res.status).toBe(200);
-      const body = (await res.json()) as { detector: unknown; truncated?: string[] } & Record<string, unknown>;
-      const text = JSON.stringify(body);
-      expect(text.length).toBeLessThanOrEqual(24_000);
-      expect(body.detector).toEqual({
-        open: { "routine:daily-brief": { reason: "routine daily brief: its last 3 runs failed", at: "2026-11-13T10:00:00Z", fired: true } },
-        recovered: [{ key: "source:slack", reason: "source src_slack: last good pass 20 min ago", at: "2026-11-13T11:00:00Z", fired: true }],
-      });
-      expect(Object.keys(body)[0]).toBe("detector");
+      const body = (await res.json()) as { truncated?: string[] } & Record<string, unknown>;
+      expect(JSON.stringify(body).length).toBeLessThanOrEqual(24_000);
+      expect(Object.keys(body)[0]).toBe("truncated");
       expect(body.truncated?.some((t) => /^(stuck|agents): \d+ of 500$/.test(t))).toBe(true);
     } finally {
       delete (pc as any).request;
       delete (pc as any).closedSince;
       delete (pc as any).recentRuns;
-      store.delMeta("fleet_ops_detector");
-    }
-  });
-
-  it("serves the host's apply generations only to an agent granted the tool, not to a fleet reader", async () => {
-    const generationsGrants = join(mkdtempSync(join(tmpdir(), "grants-")), "grants.json");
-    writeFileSync(generationsGrants, JSON.stringify({ agents: { ra: { key: "assistant", roles: [], tools: { paperclip_tasks: ["fleet_generation_status"] } }, scout: { key: "scout", roles: ["fleet-read", "fleet-admin"] } } }));
-    const file = join(mkdtempSync(join(tmpdir(), "generations-")), "generations.jsonl");
-    writeFileSync(file, JSON.stringify({ n: 2, at: "2026-01-02T00:00:00Z", product: "b".repeat(40), health: "good", data_versions: { meetings: 3 } }) + "\n");
-    process.env.AIDENHQ_GENERATIONS_FILE = file;
-    try {
-      // A fleet role is not this tool's grant: only an agent naming it on paperclip_tasks may call.
-      expect((await post("/internal/fleet/generation_status", {})).status).toBe(403);
-      process.env.AIDENHQ_GRANTS_FILE = generationsGrants;
-      const res = await post("/internal/fleet/generation_status", {});
-      expect(res.status).toBe(200);
-      expect(await res.json()).toMatchObject({ pin: "b".repeat(40), generations: [{ n: 2, product: "b".repeat(40), health: "good", data_versions: { meetings: 3 } }] });
-      expect((await post("/internal/fleet/generation_status", {}, asAgent("scout"))).status).toBe(403);
-    } finally {
-      delete process.env.AIDENHQ_GENERATIONS_FILE;
-      process.env.AIDENHQ_GRANTS_FILE = grantsFile;
     }
   });
 

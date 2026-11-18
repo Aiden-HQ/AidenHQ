@@ -2,7 +2,7 @@
 // moves them, each behind its own caller's key:
 //   POST /check/finish                     the kernel (grading_check_key): the task.finish check (kernel/src/checks.ts)
 //   POST /grades                           the tasks module, as the delegating agent (its caller assertion, aud tasks): file a rubric
-//   POST /board/grades, GET /board/grades/stale, POST /board/grades/<task>/settle   the board (grading_board_key): its reads
+//   POST /board/grades, POST /board/grades/<task>/settle   the board (grading_board_key): its reads
 // It reads tasks and settings from the kernel with its own token (kernel.cp-read) and releases its label there
 // (POST /v1/checks/:task); it never writes to the control plane itself. Every five minutes it settles rows whose task closed.
 import http from "node:http";
@@ -125,10 +125,6 @@ export function createGrading({ db, kernel, keys, jwks = kernelJwks(), log = () 
       if (!Array.isArray(ids) || ids.length > 500) throw new HttpError(400, "send {ids} (at most 500)");
       // Every id asked about: its row, or null for none (the board reads an id it wasn't answered as unknown).
       return { grades: Object.fromEntries(ids.map((id) => [String(id), grades.get(String(id)) ?? null])) };
-    }
-    if (method === "GET" && path === "/board/grades/stale") {
-      await settleClosedGrades(grades, (id) => kernel.issue(id));
-      return { grades: [...grades.due(), ...grades.escalated()] };
     }
     const m = /^\/board\/grades\/([^/]+)\/settle$/.exec(path);
     if (method === "POST" && m) return { grade: grades.settle(decodeURIComponent(m[1]!), String((body as { reason?: unknown })?.reason ?? "the task closed").slice(0, 300)) ?? null };

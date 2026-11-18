@@ -8,7 +8,7 @@ when: { fields: { name: Fleet Steward } }
 
 Review the week for failures that keep coming back and propose general fixes, never a patch for one incident.
 
-1. **Read the week:** `fleet_status` with `window: "7d"` (`summary.failed`, `summary.waiting`, and `detector`); your own
+1. **Read the week:** `fleet_status` with `window: "7d"` (`summary.failed`, `summary.waiting`) and `fleet_detector`; your own
    "Fleet Ops: check" tasks from the last 7 days (`task_search`, then `task_get` each; the detector keeps only open
    incidents, so those tasks are the history); your log; and the rejected cards (`task_approvals` on the tasks in
    `summary.failed` and on your check tasks, with the reviewer's or owner's reason). Also the health flags and tasks whose

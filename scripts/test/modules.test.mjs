@@ -153,6 +153,8 @@ test("legacy lists stay closed: links, root secrets and host variables may only 
   // board's reads of those rows, until the board is a module (4a). No root secret, no host variable.
   // One-way phase 2: and a pair link to apps-mcp for the grader's app reads (role apps.read), until 4c.
   was.links["board-grades"] = ["board", "apps-mcp"];
+  // The Fleet Steward service reads apps-mcp as a module holding apps.read (the detector moved out of the board).
+  was.links["fleet-steward"] = ["apps-mcp"];
   const within = (now, before) => Object.entries(now).every(([m, l]) => l.every((x) => (before[m] ?? before[split[m]] ?? []).includes(x)));
   assert.ok(within(Object.fromEntries(Object.entries(LEGACY_LINKS).map(([m, v]) => [m, v.to])), was.links));
   assert.ok(within(LEGACY_SECRETS, was.secrets));

@@ -335,7 +335,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "aidenhq_board_fleet_incidents_open",
+          "expr": "aidenhq_steward_incidents_open",
           "legendFormat": "incidents open"
         },
         {
@@ -344,7 +344,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "aidenhq_board_alerts_firing",
+          "expr": "aidenhq_steward_alerts_firing",
           "legendFormat": "alerts firing"
         }
       ]

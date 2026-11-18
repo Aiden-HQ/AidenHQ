@@ -39,9 +39,10 @@ agents:
                  github_app_repo_tree, github_app_repo_file ]
       apps: [ app_status, app_logs, app_view, web_view ]
       grafana?: read
-      # fleet_generation_status: the host's apply generations, read through the board (gated by its own tool grant).
+      # fleet_generation_status: the host's apply generations, from the fleet-steward module's connection (named: only agents that name it hold it).
+      fleet_steward?: [ fleet_generation_status ]
       paperclip_tasks: [ task_current, task_get, task_comments, task_search, task_list,
-                         task_approvals, task_team, fleet_catalog, fleet_generation_status,
+                         task_approvals, task_team, fleet_catalog,
                          task_comment, task_handoff, task_finish, task_set_status,
                          task_delegate, task_create ]
     roles: [ maintainer, product-issues ]

@@ -43,11 +43,12 @@ test("monitoring: services, fleet-steward, secrets, data dirs and loopback-only 
   assert.deepEqual(M.flatMap((k) => (s[k].volumes ?? []).filter((v) => !v.includes("/modules/monitoring/"))), ["/:/host:ro,rslave", "/sys:/sys:ro", "/proc:/rootfs/proc:ro"]);
   for (const k of M) assert.ok(!JSON.stringify(s[k]).includes("docker.sock"), `${k}: no Docker socket`);
   for (const n of ["mod-monitoring", "mod-monitoring-board"]) assert.equal(r.compose.networks[n].internal, true, n);
-  // Nothing unauthenticated sits on the backplane: Prometheus and Alertmanager meet the board on their own network, and
-  // mcp-grafana meets grafana-mcp on the grafana module's.
+  // Nothing unauthenticated sits on the backplane: Prometheus meets the board on its own network, Prometheus and Alertmanager
+  // meet the fleet-steward service (its /metrics and /alerts take no credentials) on that module's, and mcp-grafana meets
+  // grafana-mcp on the grafana module's.
   const nets = Object.fromEntries(M.map((k) => [k, Object.keys(s[k].networks).sort()]));
   assert.deepEqual(nets, {
-    "monitoring-prometheus": ["mod-monitoring", "mod-monitoring-board"], "monitoring-alertmanager": ["mod-monitoring", "mod-monitoring-board"], "monitoring-mcp-grafana": ["mod-grafana", "mod-monitoring"],
+    "monitoring-prometheus": ["mod-fleet-steward", "mod-monitoring", "mod-monitoring-board"], "monitoring-alertmanager": ["mod-fleet-steward", "mod-monitoring"], "monitoring-mcp-grafana": ["mod-grafana", "mod-monitoring"],
     "monitoring-node-exporter": ["mod-monitoring"], "monitoring-cadvisor": ["mod-monitoring"], "monitoring-grafana": ["mod-monitoring", "mod-monitoring-egress"],
   });
   assert.ok(s.board.networks.includes("mod-monitoring-board")); // added to the root compose's backplane and egress

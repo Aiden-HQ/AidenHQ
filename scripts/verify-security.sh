@@ -344,8 +344,8 @@ mon="$(cat "${AIDENHQ_SECRETS_DIR:-/nonexistent}/monitoring_token" 2>/dev/null)"
 if [ -n "$mon" ]; then
   bi="$(cat "${AIDENHQ_SECRETS_DIR:-/nonexistent}/board_internal_token" 2>/dev/null)"
   b() { curl -s -m 10 -o /dev/null -w '%{http_code}' -X "$1" "http://127.0.0.1:3122$2" -H 'Host: 127.0.0.1:3122' -H "Authorization: Bearer $3" -H 'content-type: application/json' -d '{}'; }
-  [ "$(b GET /internal/metrics "$mon")" = 200 ] && [ "$(b POST /internal/fleet/status "$mon")" = 401 ] && [ "$(b GET /internal/metrics "$bi")" = 401 ] && [ "$(b POST /internal/alerts "$bi")" = 401 ] \
-    && pass "board: the monitoring token opens its metrics and alerts only; the internal token opens neither" || fail "board: monitoring routes and tokens are not split"
+  [ "$(b GET /internal/metrics "$mon")" = 200 ] && [ "$(b POST /internal/fleet/status "$mon")" = 401 ] && [ "$(b GET /internal/metrics "$bi")" = 401 ] \
+    && pass "board: the monitoring token opens its metrics only; the internal token opens neither" || fail "board: monitoring routes and tokens are not split"
 fi
 
 # One host port, one owner (compile checks the config; this checks what actually runs).

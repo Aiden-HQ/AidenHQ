@@ -4,7 +4,6 @@ import { createKernelAuth } from "./kernel-auth.js";
 import { createApp } from "./app.js";
 import { appsApi } from "./fleet.js";
 import { appWatchTick, type AppStatus } from "./app-watch.js";
-import { startDetector } from "./fleet-ops.js";
 import { ownerAlert, startNotify } from "./notify.js";
 import { createGrading } from "./grading.js";
 import { loadConfig } from "./config.js";
@@ -50,8 +49,6 @@ rollover();
 setInterval(rollover, 60_000).unref();
 // The board's owner alerts go through the kernel's queue to owner-channel's notify (notify.ts).
 if (cfg.gateway) startNotify({ url: (process.env.AIDENHQ_KERNEL_URL ?? "http://10.231.0.1:3130").replace(/\/+$/, ""), token: cfg.gateway.token }, log);
-// Fleet Ops' detector: only when the fleet-ops module is enabled (it sets FLEET_OPS_INTERVAL_MINUTES).
-startDetector(paperclip, store, grading, log);
 // The owner's app alerts (app-watch.ts), through the one notify. apps-mcp unreachable: skipped.
 const appWatch = () => void appWatchTick({ apps: () => appsApi<AppStatus[]>("/internal/status"), diskPct: async () => (await appsApi<{ disk_pct: number }>("/internal/host")).disk_pct, store, notify: ownerAlert }).catch((err) => log.warn({ err: String(err) }, "app alerts tick failed"));
 setInterval(appWatch, 2 * 60_000).unref();

@@ -12,10 +12,11 @@ two critical ones also tell the owner.
 | Prometheus (30 days, `monitoring_retention`) | `aidenhq-mod-monitoring` + `-board` | not published |
 | node-exporter (as nobody; host `/`, `/proc`, `/sys` read-only; textfiles) | `aidenhq-mod-monitoring` | not published |
 | cAdvisor (cgroup CPU, memory, disk IO; no Docker socket) | `aidenhq-mod-monitoring` | not published |
-| Alertmanager | `aidenhq-mod-monitoring` + `-board` | not published |
+| Alertmanager | `aidenhq-mod-monitoring` + `aidenhq-mod-fleet-steward` (join) | not published |
 | Grafana (no anonymous access, admin password in the vault) | `aidenhq-mod-monitoring` + `-egress` | `127.0.0.1:3131`, tailnet via `tailscale serve` |
 | mcp-grafana (read tools only, Viewer token from the vault) | `aidenhq-mod-monitoring` + `aidenhq-mod-grafana` (join) | `mcp-grafana:8000`, grafana-mcp only |
-| Board `/internal/metrics`, `/internal/alerts` | board's internal listener | `board:3122`, monitoring token only |
+| Board `/internal/metrics` | board's internal listener | `board:3122`, monitoring token only |
+| Fleet Steward service `/alerts`, `/metrics` | `aidenhq-mod-fleet-steward`, shared only with Alertmanager and Prometheus | `fleet-steward:8097`, the monitoring token only (the service asks the kernel's `/v1/whoami`: module `monitoring`) |
 | Gateway metrics | `data/modules/monitoring/textfile/gateway.prom`, every 30 s | node-exporter's textfile collector |
 | Runner metrics | `data/modules/monitoring/textfile/runner.prom`, every 30 s | the same |
 | Unit and container states | `ops/host-metrics.sh` (user timer `aidenhq-host-metrics`, every 30 s) | the same |
@@ -51,7 +52,8 @@ Images (pinned by digest; `scripts/supply-chain/best-version.mjs`, release dates
 ## Metrics
 
 - Board: `aidenhq_board_cards_created_today{tier}`, `aidenhq_board_cards_decided_today{tier,state}`,
-  `aidenhq_board_cards_pending{tier}`, `aidenhq_board_fleet_incidents_open`, `aidenhq_board_alerts_firing`.
+  `aidenhq_board_cards_pending{tier}`.
+- Fleet Steward service: `aidenhq_steward_incidents_open`, `aidenhq_steward_alerts_firing`.
 - Gateway: `aidenhq_gateway_spend_usd_today{agent,kind}`, `aidenhq_gateway_agent_day_spend_usd{agent}` and
   `_agent_day_cap_usd{agent}`, `aidenhq_gateway_cap_refusals_today{agent,kind}`, `aidenhq_gateway_ci_spend_usd_today`,
   `aidenhq_gateway_ci_day_cap_usd`, `aidenhq_gateway_inflight`. Labels are agent keys.
@@ -83,23 +85,22 @@ checker is the build the module serves:
 `docker run --rm --entrypoint /bin/promtool -v "$PWD/modules/monitoring/prometheus:/rules:ro" -w /rules prom/prometheus:v3.16.0@sha256:e04987641b57704f408e31f6373ba4138ecf27cb4a165d24aabb6c38fddd0f06 check rules rules.yml`
 (and `test rules rules.test.yml`).
 
-Alertmanager has one receiver: the board's `POST /internal/alerts` (`services/board/src/monitoring.ts`), with
-`send_resolved`. The board keeps what is firing and the Fleet Ops detector (`fleet-ops.ts`) gets an `alert` check group, so
-an alert takes the detector's existing path: one incident per alert, the "Fleet Ops: check" webhook fired once, the
-incident recovered (and fired once more) when the alert resolves. The board runs the detector at once when an alert
-arrives. So the module requires `fleet-steward`.
+Alertmanager has one receiver: the fleet-steward service's `POST /alerts` (`modules/fleet-steward/service/src/alerts.ts`), with
+`send_resolved`. The service keeps what is firing and its detector gets an `alert` check group, so an alert takes the
+detector's existing path: one incident per alert, a "Fleet Ops: check" task filed once, the incident recovered (and a task filed
+once more) when the alert resolves. The service runs the detector at once when an alert arrives. So the module requires
+`fleet-steward`.
 
 The webhook is one-shot news, so the detector does not rely on it alone: each tick its `alert` group also reads
 Alertmanager's `GET /api/v2/alerts` and reconciles. An alert no longer in that list recovers even when its whole label set
 vanished — `aidenhq_apply_failed` is exported under each apply generation's `n`, `reason`, `log` and `health`, so a later
-generation replaces a failed one's series, and the failed apply is itself restarting the board that would have taken the
+generation replaces a failed one's series, and the failed apply is itself restarting the service that would have taken the
 resolve. One still in the list stays open, silenced and inhibited included: a silence stops notifications, not the alert.
 When Alertmanager cannot be asked the webhook's record stands, so nothing recovers on a guess.
 
-A newly firing critical alert also queues one owner line (`🚨 Monitoring: <rule> (critical): <fixed sentence>`), which the
-owner channel collects with the detector's other health lines. Label and annotation text never reaches the owner (an app
+A newly firing critical alert also sends one owner line through `notify` (`Monitoring: <rule> (critical): <fixed sentence>`). Label and annotation text never reaches the owner (an app
 can choose names that appear in labels): the line is the rule's name (identifiers only) and a fixed sentence per critical
-rule. In the Fleet Ops incident the alert's text is fenced as data, after a first line built from slugs.
+rule. In the detector's incident the alert's text is fenced with the SDK's `fence()`, after a first line built from slugs.
 
 ## Access
 

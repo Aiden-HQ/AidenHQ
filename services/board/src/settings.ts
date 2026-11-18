@@ -134,6 +134,12 @@ export function readSources(files: { compiled?: string; catalog?: string; grants
   return { compiled, catalog, grants, lastRev };
 }
 
+/** A source with no good pass within its allowance (the security scanner runs daily), or failing with its last good pass over 15 minutes old: the connections view's badge. */
+const staleSource = (x: { source: string; last_ok: string | null; failing: boolean }, now: number) => {
+  const age = x.last_ok ? now - Date.parse(x.last_ok) : Infinity;
+  return age > (x.source === "security" ? 26 * 60 : 60) * 60_000 || (x.failing && age > 15 * 60_000);
+};
+
 /** Settings the board, the runner or the gateway re-read per use from the grants table (the rest take an apply to change). */
 const LIVE_IN_GRANTS = ["autonomy"];
 
@@ -280,7 +286,6 @@ export function connectionsView(input: {
   signIns: Record<string, SignIn | null | undefined>;
   google: { accounts: { email: string; primary: boolean; state: string; since: string; detail?: string }[]; error?: string } | null | undefined;
   sources: { source: string; last_ok: string | null; failing: boolean }[] | null;
-  staleSources: Set<string>;
 }) {
   const c = input.compiled ?? {};
   const moduleOf = new Map(input.catalog.flatMap((m) => (m.connections ?? []).map((n) => [n, m.name] as const)));
@@ -308,6 +313,6 @@ export function connectionsView(input: {
   // Modules that serve the runner rather than an agent connection (Grafana, ClickHouse): their sign-in, if the board has one.
   for (const m of input.catalog.filter((x) => x.enabled && x.setup && !(x.connections ?? []).length))
     rows.push({ name: m.name, module: m.name, kind: "service", transport: "runner", tools: { read: 0, write: 0 }, grants: [], setup: m.setup ?? null, probe: null, signIn: input.signIns[m.name] ?? null });
-  const sources = (input.sources ?? []).map((x) => ({ name: `src_${x.source}`, lastOk: x.last_ok, failing: x.failing, stale: input.staleSources.has(x.source) }));
+  const sources = (input.sources ?? []).map((x) => ({ name: `src_${x.source}`, lastOk: x.last_ok, failing: x.failing, stale: staleSource(x, Date.now()) }));
   return { compiled: Boolean(input.compiled), connections: rows, sources, sourcesError: input.sources === null };
 }
