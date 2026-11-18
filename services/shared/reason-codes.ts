@@ -12,8 +12,6 @@
 export const REVIEW_CODES = [
   // approve
   "in_scope",
-  // approve, with unrequested harmless extras beside the asked change (the model names them, for the audit trail)
-  "in_scope_with_extras",
   // reject or escalate (the model's judgement)
   "out_of_scope",
   "secret_exfiltration",
@@ -45,8 +43,6 @@ export const REVIEW_CODES = [
   "shadow",
   // the panel's two reviewers disagreed (or the second couldn't decide): the owner decides
   "panel_split",
-  // code escalated an approval whose unrequested extras touch agent instructions, policy, CI or a test's env, network or secrets
-  "extras_need_review",
   // code refused the request at review time (it moved, it was rejected before, retries ran out): back to the agent
   "refused_by_code",
   // code closed the card because its head moved before review: not a verdict, and not a rejection

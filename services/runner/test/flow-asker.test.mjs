@@ -96,8 +96,9 @@ describe("flow-asker: an agent's task whose asker is gone", { concurrency: 1 }, 
     t.step("second\naidenhq pr acme/app feat/second");
     await t.turn("Add the second change to acme/app and open its PR.");
     await rejected(1);
-    // The same lines under a new commit: rejected the same way, which stops the task.
-    t.step("reword feat/second\naidenhq pr acme/app feat/second");
+    // A changed second.txt (an unchanged patch is refused before review: refile only after a fix): rejected the same way,
+    // which stops the task.
+    t.step("write feat/second second.txt second, changed\naidenhq pr acme/app feat/second");
     await t.turn("Publish it again.");
     await rejected(2);
     await t.waitFor("the stop told", () => lines().length === 2);

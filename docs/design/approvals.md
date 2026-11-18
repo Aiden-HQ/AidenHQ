@@ -68,8 +68,7 @@ agent, never to the owner.
   owner's own comment on that task, after the rejection, answers it (never a parent's comment, nor an edit of the task's
   title or description, which the agent can make): the agent changes it or reports back (owner, 2026-11-18: refile only
   after a fix). Every rejection, answered or not, counts toward the 3-per-target bound, on whatever branch the same
-  content is filed. The reviewer judges risk, not tidiness: harmless
-  extras beside the asked change are approved; different work, or a risky extra, is rejected.
+  content is filed.
 - **Tier 2: owner.** A board card plus a message on the owner channel: a panel split, a reviewer's
   "escalate" (a destructive migration), the owner's own veto, a routine's or the instance's autonomy cap, a spend-cap
   raise, or nothing recognised. The AI reviewer reads every one first (owner, 2026-11-16: every write is reviewed before it
