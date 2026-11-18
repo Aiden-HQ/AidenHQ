@@ -383,6 +383,21 @@ export function runCredential(env) {
   return { apiUrl: String(apiUrl), apiKey: String(apiKey), taskId: env.PAPERCLIP_TASK_ID ? String(env.PAPERCLIP_TASK_ID) : undefined };
 }
 
+/**
+ * The per-box Paperclip credential /cp calls with: one live credential per container, set by the exec that carried it. Saved
+ * like the run tokens, because an agent's whole turn is one detached exec: a launcher restarted mid-turn finds it when it
+ * reloads the box, instead of answering 409 for the rest of the turn. Dropped with the box's token, so a reused name never
+ * inherits one.
+ */
+export class Creds {
+  #by = new Map(); // container → { apiUrl, apiKey, taskId? }
+  set(container, cred) { this.#by.set(container, { apiUrl: cred.apiUrl, apiKey: cred.apiKey, ...(cred.taskId ? { taskId: cred.taskId } : {}) }); }
+  get(container) { return this.#by.get(container); }
+  delete(container) { return this.#by.delete(container); }
+  dump() { return [...this.#by].map(([container, c]) => ({ container, ...c })); }
+  load(rows) { for (const r of rows ?? []) if (r?.container && r.apiUrl && r.apiKey) this.set(r.container, { apiUrl: r.apiUrl, apiKey: r.apiKey, taskId: r.taskId }); }
+}
+
 /** Runs in the box (node): one control-plane call through the box's bridge. Everything, the key included, comes on stdin. */
 export const CP_SCRIPT = `let s="";process.stdin.on("data",d=>s+=d).on("end",async()=>{const r=JSON.parse(s);try{const res=await fetch(new URL(r.path,r.url),{method:r.method,headers:{authorization:"Bearer "+r.key,accept:"application/json",...(r.body?{"content-type":"application/json"}:{})},body:r.body?Buffer.from(r.body,"base64"):undefined,signal:AbortSignal.timeout(50000)});const b=Buffer.from(await res.arrayBuffer());console.log(JSON.stringify({status:res.status,type:res.headers.get("content-type")||"application/json",body:b.toString("base64")}))}catch(e){console.log(JSON.stringify({status:502,type:"text/plain",body:Buffer.from("the bridge failed: "+e.message).toString("base64")}))}});`;
 
