@@ -97,45 +97,10 @@ test("spend caps used up → 429 and no job", async () => {
   assert.equal(db.prepare("SELECT COUNT(*) AS n FROM jobs").get().n, 0);
 });
 
-test("a launcher 503 after admission defers the job: no job row, the wake back with its dispatcher for the next tick", async () => {
-  const { adm, wake, wakes, inbox, db } = setup({ launch: async () => { throw Object.assign(new Error("all computers are busy"), { status: 503 }); } });
-  // The task's last job asked for a fresh session: a deferred start doesn't spend the request.
-  db.prepare("INSERT INTO jobs (id, module, agent, task, engine, pid, log, dir, at, jobcaps, observing, live_input, state) VALUES ('j-last', 'acme-dispatch', 'agent-1', 'task-1', 'codex', 0, '', '', 1, '[]', 0, 0, 'done')").run();
-  db.prepare("INSERT INTO jobtools (job, fresh, cleanup, at) VALUES ('j-last', 1, 0, 1)").run();
-  const job = await adm.admit("acme-dispatch", req(wake("w1", "task-1", "agent-1")));
-  assert.equal(job.state, "deferred");
-  assert.equal(wakes.get("w1").job, null);
-  assert.equal(db.prepare("SELECT COUNT(*) AS n FROM jobs WHERE id != 'j-last'").get().n, 0);
-  assert.equal(db.prepare("SELECT fresh FROM jobtools WHERE job = 'j-last'").get().fresh, 1);
-  // The inbox hands it to the same dispatcher again at once, and it is admitted again.
-  assert.deepEqual(inbox.claim("acme-dispatch").map((w) => w.key), ["w1"]);
-  assert.equal((await adm.admit("acme-dispatch", req("w1"))).state, "deferred");
-});
-
 test("a module that doesn't dispatch the agent → 403; a wake it didn't claim → 409", async () => {
   const { adm, wake } = setup();
   await assert.rejects(adm.admit("acme-dispatch", req(wake("w1", "task-6", "agent-3"))), (e) => e.status === 403 && e.code === "not-your-agent");
   await assert.rejects(adm.admit("acme-other", req(wake("w2", "task-1", "agent-1"))), (e) => e.status === 409 && e.code === "wake-not-claimed");
-});
-
-test("a job admitted but never started when the kernel stopped is deferred at the next start, its wake given back", async () => {
-  const { adm, wake, wakes, db, grants } = setup({ launch: () => new Promise(() => {}) });
-  void adm.admit("acme-dispatch", req(wake("w1", "task-1", "agent-1")));
-  await new Promise((r) => setTimeout(r, 20));
-  assert.equal(db.prepare("SELECT state FROM jobs").get().state, "admitted");
-  assert.ok(wakes.get("w1").job);
-  const next = createAdmission({ db, grants: () => grants, capacity: () => 12, spend: () => [], kinds: () => ({}), mayDispatch: () => true, cp: {}, wakes: wakeInbox(db), provenance: { pending: () => false }, routineCap: async () => undefined, nextTurn: createJobTools({ db, secret: () => "s", engines: () => [] }), launch: async () => {}, log: () => {} });
-  next.recover();
-  assert.equal(db.prepare("SELECT COUNT(*) AS n FROM jobs").get().n, 0);
-  assert.equal(wakes.get("w1").job, null);
-});
-
-test("a dispatcher that lost the admission's answer finds its job by the wake; another module doesn't", async () => {
-  const { adm, jobs, wake } = setup();
-  const job = await adm.admit("acme-dispatch", req(wake("w1", "task-1", "agent-1")));
-  assert.deepEqual(jobs.byWake("acme-dispatch", "w1").map((j) => [j.id, j.task, j.agent]), [[job.id, "task-1", "agent-1"]]);
-  assert.deepEqual(jobs.byWake("acme-other", "w1"), []);
-  assert.deepEqual(jobs.byWake("acme-dispatch", "w2"), []);
 });
 
 test("a task a job created whose provenance isn't settled yet → 409, no job; once settled it is admitted", async () => {

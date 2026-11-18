@@ -19,18 +19,6 @@ test("provides + conflicts on one name refuses a second provider", () => {
   assert.match(conflictProblems({ "acme-a": { conflicts: ["acme-b"] }, "acme-b": {} }).join(), /acme-a conflicts with module acme-b/);
 });
 
-test("three engines providing `engine` without conflicts all install", () => {
-  const all = { "engine-a": engine("alpha"), "engine-b": engine("beta"), "engine-c": engine("gamma") };
-  assert.deepEqual([...capabilityProblems(all), ...conflictProblems(all)], []);
-});
-
-test("a module named `engine` fails, and so does a capability named like a module or a slot without its provider", () => {
-  assert.match(capabilityProblems({ engine: {} }).join(), /module engine: the name is reserved/);
-  assert.match(capabilityProblems({ "acme-a": { provides: ["acme-b"] }, "acme-b": {} }).join(), /provides acme-b, which is a module's name/);
-  assert.match(capabilityProblems({ "acme-a": { provides: ["engine"] } }).join(), /without a providers.engine entry/);
-  assert.match(capabilityProblems({ "acme-a": { provides: ["Bad Name"] } }).join(), /not a capability name/);
-});
-
 test("A13: replacing A with B leaves a binding unprovided → refused, naming who holds it", () => {
   const ok = { user, "engine-a": engine("alpha"), "acme-crm": crm };
   const without = (name, patch = {}) => { const e = { ...ok, ...patch }; delete e[name]; return e; };

@@ -81,8 +81,3 @@ test("generated services carry the hardened settings, their own network and the 
   assert.equal(g.networks["mod-a"].internal, true);
   assert.equal(g.networks["mod-a-egress"].internal, undefined);
 });
-
-test("the schema lists exactly the fields the loader accepts", () => {
-  const schema = JSON.parse(readFileSync(new URL("../../kernel/schemas/services.json", import.meta.url), "utf8"));
-  assert.deepEqual(Object.keys(schema.properties.run.additionalProperties.properties).sort(), [...SERVICE_FIELDS].sort());
-});

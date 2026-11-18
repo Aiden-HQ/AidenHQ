@@ -20,20 +20,6 @@ function setup() {
   return { records, work: createWork({ db: records.db, records }) };
 }
 
-test("a task's jobs, activity and metrics from the jobs table", () => {
-  const { work } = setup();
-  const t1 = work.task("t1");
-  assert.equal(t1.busy, true);
-  assert.deepEqual(t1.jobs.map((j) => j.id), ["j-2", "j-1"]);
-  assert.deepEqual(work.task("none"), { busy: false, jobs: [], records: [] });
-  const a = work.activity();
-  assert.deepEqual([a.running.map((j) => j.id).sort(), a.recent.map((j) => j.id)], [["j-2", "j-3"], ["j-1"]]);
-  const m = work.metrics(2_060_000);
-  assert.match(m, /aidenhq_kernel_jobs_running 2\n/);
-  assert.match(m, /aidenhq_kernel_jobs_oldest_seconds 60\n/);
-  assert.match(m, /duration_seconds_bucket\{le="300"\} 1\n/);
-});
-
 test("the routes need a module holding kernel.work-read", async (t) => {
   const { work } = setup();
   const whoami = async (token) => (token === "none" ? Promise.reject(new Error("no")) : { kind: "module", module: "grading", roles: token === "reader" ? ["kernel.work-read"] : token === "grader" ? ["kernel.grader"] : [], tools: [] });

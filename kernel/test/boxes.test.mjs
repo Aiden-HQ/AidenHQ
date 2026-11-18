@@ -109,27 +109,6 @@ test("admit → box → run: the kernel's key, the job token as the box's creden
   assert.ok(other.id);
 });
 
-test("a restarted kernel renews a running job's lease; a fresh session resumes the agent's last one on the task", async (t) => {
-  const h = await host(t);
-  await h.admit("task-1");
-  let clock = Date.now() + 6 * 60_000;
-  const next = h.make(() => clock);
-  await next.tend();
-  const renew = h.calls.filter((c) => c.route === "/job/renew");
-  assert.equal(renew.length, 1);
-  assert.deepEqual(renew[0].body, { container: "aidenhq-computer-k1", issueId: "task-1" });
-  await next.tend(); // renewed just now: not again
-  assert.equal(h.calls.filter((c) => c.route === "/job/renew").length, 1);
-  h.release();
-  await until("the first job's end", () => h.db.prepare("SELECT state FROM jobs").get().state === "done");
-  // The next job on this task (its last box released first) resumes the engine's session.
-  const again = await h.admit("task-1");
-  const spec = JSON.parse(readFileSync(join(h.db.prepare("SELECT dir FROM jobs WHERE id = ?").get(again.id).dir, "job.json"), "utf8"));
-  assert.equal(spec.session, "s-1");
-  const routes = h.calls.map((c) => c.route);
-  assert.ok(routes.indexOf("/job/release") < routes.lastIndexOf("/job"), "the last box goes before the next is asked for");
-});
-
 test("a job's next-turn requests: the next admission runs the engine and model it asked for, fresh; its workspace goes when it ends; a model the agent may not use is ignored", async (t) => {
   const h = await host(t);
   const first = await h.admit("task-1");

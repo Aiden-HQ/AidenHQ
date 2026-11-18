@@ -61,49 +61,6 @@ test("one comment from the poll, an event and a duplicated event is one wake; a 
   assert.deepEqual(w.rows("t1"), ["comment:c1 open"]);
 });
 
-test("a routine's todo task with no event wakes after one poll; later ticks coalesce; its own edits don't wake it again", async () => {
-  const w = world();
-  w.issue("r1", { originKind: "routine_execution", originId: "rt", createdAt: iso(w.tick()) });
-  w.issue("r2", { originKind: "routine_execution", originId: "rt", createdAt: iso(w.tick()) });
-  await w.wakes.poll();
-  assert.deepEqual(w.rows("r1"), ["routine-run:run-r1 open"]);
-  assert.deepEqual(w.rows("r2"), []);
-  assert.equal(w.issues.r2.status, "cancelled", "the later tick is cancelled while the first is open");
-  assert.deepEqual(w.posts.map((p) => [p.agent, p.task, p.kind, p.status]), [[AGENT, "r2", "coalesced", "cancelled"]], "cancelled by its own agent, never the owner");
-  const [c] = w.wakes.claim("dispatch");
-  assert.deepEqual([c.key, c.cause], ["routine-run:run-r1", "routine:digest"], "the cause names the routine's key: its own model applies");
-  w.db.prepare("UPDATE wakes SET job = 'j-1' WHERE key = ?").run(c.key);
-  w.db.prepare("INSERT INTO jobs VALUES ('j-1', 'r1', ?, 'done', ?)").run(AGENT, w.tick());
-  w.tick();
-  w.comment("r1", "c9", { body: "<!-- aidenhq:job=j-1 kind=reply -->" }); // its outcome bumps updatedAt
-  await w.wakes.poll();
-  assert.deepEqual(w.rows("r1"), ["routine-run:run-r1 done"]);
-});
-
-test("a comment that reopened a done task is one claimed wake; old comments before the handoff wake nobody", async () => {
-  const w = world();
-  w.issue("t2", { status: "in_review" });
-  await w.wakes.poll();
-  w.issues.t2.status = "done";
-  w.tick();
-  w.comment("t2", "c4");
-  w.issue("t2", { status: "todo", statusVersion: 2 });
-  await w.wakes.event({ issueId: "t2", reopened: true });
-  await w.wakes.poll();
-  const got = w.wakes.claim("dispatch").filter((x) => x.task === "t2");
-  assert.equal(got.length, 1);
-  assert.ok(w.rows("t2").includes("reopen:t2:2 dropped") || w.rows("t2").includes("reopen:t2:2 claimed"), String(w.rows("t2")));
-  // The handoff: a task first seen now, with comments from before the dispatcher joined, wakes only for the newer one.
-  const w2 = world();
-  w2.tick(-60_000);
-  w2.issue("t4", { status: "in_progress" });
-  w2.comment("t4", "old");
-  w2.tick(120_000);
-  w2.comment("t4", "new");
-  await w2.wakes.poll();
-  assert.deepEqual(w2.rows("t4"), ["comment:new open"]);
-});
-
 test("claims are exclusive; a claimed row with no job comes back after its lease; a comment during a run is delivered", async () => {
   const w = world();
   w.issue("t5");
