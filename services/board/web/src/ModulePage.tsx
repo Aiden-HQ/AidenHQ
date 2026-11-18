@@ -2,6 +2,7 @@
 import { useEffect, useState, type ReactNode } from "react";
 import { AgentAvatar } from "./AgentAvatar";
 import { SignInRequired, api } from "./api";
+import { ConnectButton, useConnectNeeded, type Can, type Connectable } from "./Connect";
 import { STATUS_LABEL, connectionStatus, displayName, type ConnectionRow } from "./connections";
 import { LockIcon, ModuleFacts, ModuleStatus, TurnOnCard, lockedWhy, moduleState, publisher, useModuleToggle, useSetupNeeded } from "./ModuleParts";
 import { SettingItem } from "./Settings";
@@ -26,7 +27,7 @@ const TABS = [["overview", "Overview"], ["contents", "Contents"], ["settings", "
 
 const sentence = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
 
-export function ModulePage(props: { name: string; tab: ModuleTab; go: (hash: string) => void; onSignIn: () => void }) {
+export function ModulePage(props: { name: string; tab: ModuleTab; go: (hash: string) => void; onSignIn: () => void; can: Can }) {
   return (
     <ChangesScope onSignIn={props.onSignIn}>
       <ModuleBody {...props} />
@@ -34,11 +35,12 @@ export function ModulePage(props: { name: string; tab: ModuleTab; go: (hash: str
   );
 }
 
-function ModuleBody({ name, tab, go, onSignIn }: { name: string; tab: ModuleTab; go: (hash: string) => void; onSignIn: () => void }) {
+function ModuleBody({ name, tab, go, onSignIn, can }: { name: string; tab: ModuleTab; go: (hash: string) => void; onSignIn: () => void; can: Can }) {
   const [d, setD] = useState<ModuleDetail | null>(null);
   const [advisory, setAdvisory] = useState<Advisory | undefined>();
   const [error, setError] = useState("");
   const needsSetup = useSetupNeeded();
+  const needsConnect = useConnectNeeded(can);
   useEffect(() => {
     api.module(name).then(setD, (e) => (e instanceof SignInRequired ? onSignIn() : setError((e as Error).message)));
     api.modules().then((r) => setAdvisory(r.advisories?.find((a) => a.module === name)), () => {});
@@ -61,10 +63,10 @@ function ModuleBody({ name, tab, go, onSignIn }: { name: string; tab: ModuleTab;
         )}
       </main>
     );
-  return <Loaded d={d} tab={tab} go={go} onSignIn={onSignIn} setup={needsSetup.has(name)} advisory={advisory} />;
+  return <Loaded d={d} tab={tab} go={go} onSignIn={onSignIn} setup={needsSetup.has(name)} connect={needsConnect.get(name)} can={can} advisory={advisory} />;
 }
 
-function Loaded({ d, tab, go, onSignIn, setup, advisory }: { d: ModuleDetail; tab: ModuleTab; go: (hash: string) => void; onSignIn: () => void; setup: boolean; advisory?: Advisory }) {
+function Loaded({ d, tab, go, onSignIn, setup, connect, can, advisory }: { d: ModuleDetail; tab: ModuleTab; go: (hash: string) => void; onSignIn: () => void; setup: boolean; connect?: { c: Connectable; word: string }; can: Can; advisory?: Advisory }) {
   const m = d.module;
   const t = useModuleToggle(m);
   const [asking, setAsking] = useState(false);
@@ -72,7 +74,7 @@ function Loaded({ d, tab, go, onSignIn, setup, advisory }: { d: ModuleDetail; ta
   useEffect(() => {
     if (m.state === "off") api.browse(m.name, "").then((r) => setInfo(r.modules.find((b) => b.name === m.name)), () => {});
   }, [m.name, m.state]);
-  const s = moduleState(m, { filed: t.filed, setup, advisory });
+  const s = moduleState(m, { filed: t.filed, setup, connect: Boolean(connect), advisory });
   const locked = lockedWhy(m);
   return (
     <main className={`mods ${hueClass(m.name)}`}>
@@ -93,6 +95,7 @@ function Loaded({ d, tab, go, onSignIn, setup, advisory }: { d: ModuleDetail; ta
         actions={
           <>
             <SetupButton module={m.name} primary={setup} />
+            {connect && !setup && <ConnectButton c={connect.c} word={connect.word} variant="primary" />}
             {m.state === "off" && !t.busy && <button className="btn primary" onClick={() => setAsking(true)}>Turn on</button>}
             {m.state !== "off" && t.switchEl && (
               <span className="mod-switch">
@@ -125,7 +128,7 @@ function Loaded({ d, tab, go, onSignIn, setup, advisory }: { d: ModuleDetail; ta
         <Tabs<ModuleTab> label="Section" value={tab} tabs={TABS} href={(k) => `#/modules/${m.name}${k === "overview" ? "" : `/${k}`}`} />
       </div>
       {tab === "overview" && <Overview d={d} />}
-      {tab === "contents" && <Contents d={d} onSignIn={onSignIn} />}
+      {tab === "contents" && <Contents d={d} onSignIn={onSignIn} can={can} />}
       {tab === "settings" && <ModuleSettings m={m} onSignIn={onSignIn} />}
       {tab === "changes" && <ModuleChanges m={m} />}
     </main>
@@ -228,7 +231,7 @@ function Overview({ d }: { d: ModuleDetail }) {
   );
 }
 
-function Contents({ d, onSignIn }: { d: ModuleDetail; onSignIn: () => void }) {
+function Contents({ d, onSignIn, can }: { d: ModuleDetail; onSignIn: () => void; can: Can }) {
   const m = d.module;
   const [conns, setConns] = useState<ConnectionRow[] | null>(null);
   useEffect(() => {
@@ -243,7 +246,7 @@ function Contents({ d, onSignIn }: { d: ModuleDetail; onSignIn: () => void }) {
             <div className="mod-rows">
               {m.connections.map((c) => {
                 const row = conns?.find((r) => r.name === c);
-                const v = row ? connectionStatus(row, { signIn: false, google: false }) : null;
+                const v = row ? connectionStatus(row, can) : null;
                 return <ModRow key={c} href="#/settings/connections" title={displayName(c)} meta={v && <span>{STATUS_LABEL[v.status]}</span>} />;
               })}
             </div>

@@ -22,7 +22,7 @@ export function flows(): Promise<Flow[]> {
   return cache;
 }
 
-export function SetupButton({ module, primary }: { module: string; primary?: boolean }) {
+export function SetupButton({ module, primary, size }: { module: string; primary?: boolean; size?: "sm" }) {
   const [flow, setFlow] = useState<Flow | undefined>();
   useEffect(() => {
     let live = true;
@@ -33,7 +33,7 @@ export function SetupButton({ module, primary }: { module: string; primary?: boo
   }, [module]);
   if (!flow) return null;
   return (
-    <a className={`btn${primary && !flow.done ? " primary" : ""}`} href={`#/setup/${module}`}>
+    <a className={`btn${primary && !flow.done ? " primary" : ""}${size ? ` ${size}` : ""}`} href={`#/setup/${module}`}>
       {flow.done ? "Run setup again" : "Set up"}
     </a>
   );

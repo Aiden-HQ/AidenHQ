@@ -50,7 +50,7 @@ export interface Hooks {
 export interface ProxyOptions {
   /** The vendor's name in messages ("Glean"). */
   name: string;
-  /** Unset: not configured yet (the setup flow saves the address). */
+  /** Unset: not configured yet (Connect on the board, or its setup flow, saves the value it needs). */
   upstream: URL | undefined;
   auth: Auth;
   log: Logger;
@@ -97,7 +97,7 @@ export function createVendorProxy(o: ProxyOptions): VendorProxy {
   const cacheFile = o.stateDir ? join(o.stateDir, "tools.json") : undefined;
   let upstream: { client: Client; tools: Tool[]; at: number } | undefined;
 
-  const notConnected = () => (!o.upstream ? `${o.name} isn't set up: open its setup on the board.` : auth.status().state === "expired" ? `${o.name}'s sign-in stopped working: the owner reconnects it on the board.` : `${o.name} isn't connected: the owner signs in from the board.`);
+  const notConnected = () => (!o.upstream ? `${o.name} isn't connected yet: the owner presses Connect on the board (Settings, Connections).` : auth.status().state === "expired" ? `${o.name}'s sign-in stopped working: the owner reconnects it on the board.` : `${o.name} isn't connected: the owner signs in from the board.`);
 
   async function connect(): Promise<NonNullable<typeof upstream>> {
     if (!o.upstream) throw new AuthError(notConnected());

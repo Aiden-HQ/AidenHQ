@@ -489,21 +489,26 @@ function put(target, key, value, kind) {
 
 /**
  * board.setup_flows (modules/board/schemas/setup_flows.json): one flow per module, naming only that module's own `setup:` secrets
- * and board.signins. A flow with `pair_url` gets the module's generated `<module>_pair_token` (its secret's name in the flow, never
- * its value): mounted on the board (`board_env`), and the module's service reads it as `${secrets.<module>_pair_token}`.
+ * and board.signins; a sign-in's own `secrets` (asked for on its Connect) get their fields the same way. A flow with `pair_url`
+ * gets the module's generated `<module>_pair_token` (its secret's name in the flow, never its value): mounted on the board (`board_env`), and the module's service reads it as `${secrets.<module>_pair_token}`.
  */
 export function setupFlows(defs, compiled) {
-  const flows = compiled.board?.setup_flows ?? [];
-  for (const f of flows) {
-    const where = `module ${f.module}: setup_flows`;
-    if (flows.filter((x) => x.module === f.module).length > 1) fail(`${where}: one flow per module`);
-    const declared = [defs[f.module].secrets?.provided ?? []].flat().filter((p) => p?.setup != null);
-    // Each paste field's label, pattern and help, from the secret's `setup:` (the board shows and checks them; the kernel checks again).
-    f.fields = (f.secrets ?? []).map((s) => {
+  // Each paste field's label, pattern and help, from the secret's `setup:` (the board shows and checks them; the kernel checks again).
+  const fieldsOf = (module, secrets, where) => {
+    const declared = [defs[module].secrets?.provided ?? []].flat().filter((p) => p?.setup != null);
+    return (secrets ?? []).map((s) => {
       const p = declared.find((x) => x.name === s);
       if (!p) fail(`${where} names a secret without setup: ${s} (give it \`setup:\` under secrets.provided)`);
       return { secret: s, label: p.setup.label, pattern: p.setup.pattern, ...(p.setup.help ? { help: p.setup.help } : {}) };
     });
+  };
+  // A sign-in's per-install values, asked for inline on its Connect.
+  for (const x of compiled.board?.signins ?? []) if (x.secrets) x.fields = fieldsOf(x.module, x.secrets, `module ${x.module}: signins ${x.id}`);
+  const flows = compiled.board?.setup_flows ?? [];
+  for (const f of flows) {
+    const where = `module ${f.module}: setup_flows`;
+    if (flows.filter((x) => x.module === f.module).length > 1) fail(`${where}: one flow per module`);
+    f.fields = fieldsOf(f.module, f.secrets, where);
     if (f.signin != null && !(compiled.board.signins ?? []).some((x) => x.module === f.module && x.id === f.signin)) fail(`${where}: signin ${f.signin} is not one of its board.signins`);
     if (f.pair_url == null) continue;
     const token = `${f.module.replace(/-/g, "_")}_pair_token`;

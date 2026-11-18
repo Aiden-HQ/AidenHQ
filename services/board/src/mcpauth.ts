@@ -17,6 +17,7 @@ export interface McpAuthStatus {
  */
 export class McpAuth {
   private cached: { at: number; status: McpAuthStatus } | undefined;
+  private offered: { at: number; scopes: { supported: string[]; recommended: string[] } | undefined } | undefined;
 
   constructor(
     /** The service's name in logs and messages ("Glean"); its proxy is `<name>-mcp` in lower case. */
@@ -57,7 +58,17 @@ export class McpAuth {
    * asks for none, or predates the choice).
    */
   async scopes(): Promise<{ supported: string[]; recommended: string[] } | undefined> {
-    return this.call<{ supported: string[]; recommended: string[] }>("GET", "/auth/scopes").catch(() => undefined);
+    // The offer is the proxy's own config: kept ten minutes once it answers (every Connections and board load reads it). A
+    // proxy without its address yet answers nothing, so that is asked again each time.
+    if (this.offered && Date.now() - this.offered.at < 600_000) return this.offered.scopes;
+    const scopes = await this.call<{ supported: string[]; recommended: string[] }>("GET", "/auth/scopes").catch(() => undefined);
+    if (scopes) this.offered = { at: Date.now(), scopes };
+    return scopes;
+  }
+
+  /** Whether Connect offers a choice of scopes: its button opens the picker first, and a Reconnect reads "Change access". */
+  async offers(): Promise<boolean> {
+    return ((await this.scopes())?.supported.length ?? 0) > 1;
   }
 
   /** The vendor's sign-in URL, asking for `scopes` (the owner's pick; unset: the proxy's recommended ones). */

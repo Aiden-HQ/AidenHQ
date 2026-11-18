@@ -33,12 +33,14 @@ export class SignInRequired extends Error {
   }
 }
 
-/** A sign-in's page (#/connect/<id>) as GET /api/sign-ins/<id> returns it: `scopes` only when the vendor offers a choice. */
+/** A sign-in's Connect dialog (Connect.tsx) as GET /api/sign-ins/<id> returns it: `scopes` only when the vendor offers a choice. */
 export interface SignInView {
   id: string;
   label: string;
   connect: string;
-  setup: string | null;
+  /** Its per-install values are in place (asked afresh: the dialog waits on it after a save). */
+  configured: boolean;
+  fields: { secret: string; label: string; pattern: string; help?: string }[];
   scopes: { supported: string[]; recommended: string[] } | null;
 }
 
@@ -162,6 +164,7 @@ export const api = {
   },
   scorecard: (id: string) => call<Scorecard>("GET", `/api/agents/${encodeURIComponent(id)}/scorecard`),
   signIn: (id: string) => call<SignInView>("GET", `/api/sign-ins/${encodeURIComponent(id)}`),
+  signInSecret: (id: string, secret: string, value: string) => call<{ ok: boolean }>("POST", `/api/sign-ins/${encodeURIComponent(id)}/secret`, { secret, value }),
   setupFlows: () => call<{ flows: SetupFlowView[]; board_url: string; named: boolean }>("GET", "/api/setup-flows"),
   setupSecret: (module: string, secret: string, value: string) => call<{ ok: boolean }>("POST", `/api/setup-flows/${module}/secret`, { secret, value }),
   setupDismiss: (module: string) => call<{ ok: boolean }>("POST", `/api/setup-flows/${module}/dismiss`, {}),

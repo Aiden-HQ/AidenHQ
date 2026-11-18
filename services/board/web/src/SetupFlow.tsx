@@ -3,6 +3,8 @@
 // secret, then the sign-in's Connect button or a pairing code, as numbered stages. Nothing here knows which module it is.
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { SignInRequired, api, type SetupFlowView } from "./api";
+import { ConnectButton } from "./Connect";
+import { useEvents } from "./events";
 import { Markdown } from "./markdown";
 import { Page } from "./settings-ui";
 import { PageHeader } from "./ui/PageHeader";
@@ -27,6 +29,12 @@ export function SetupFlow({ module, onDone, onSignIn }: { module: string; onDone
     [module, onSignIn],
   );
   useEffect(() => void load(), [load]);
+  // Its sign-in finished in the tab Connect opened.
+  useEvents(["connections"], load);
+  // No flow: a module whose sign-in is one Connect (an old #/setup link), on Settings > Connections.
+  useEffect(() => {
+    if (flow === null) location.replace("#/settings/connections");
+  }, [flow]);
 
   return (
     <div className="setup-overlay">
@@ -144,10 +152,14 @@ function FlowBody({ flow, board, reload, onDone, onSignIn }: { flow: SetupFlowVi
               {flow.signedIn ? (
                 <div className="setup-actions setup-paired">
                   <p className="setup-ok-line">Connected.</p>
-                  {flow.signin && <a className="btn" href={connect}>{flow.scopes ? "Change access" : "Reconnect"}</a>}
+                  {flow.signin && <ConnectButton c={{ id: flow.signin, label: flow.title, signIn: { state: "ok", offer: flow.scopes } }} />}
                 </div>
               ) : secretsDone ? (
-                <a className="btn primary" href={connect}>Connect {flow.title}</a>
+                flow.signin ? (
+                  <ConnectButton c={{ id: flow.signin, label: flow.title, signIn: { state: "missing", offer: flow.scopes } }} variant="primary" />
+                ) : (
+                  <a className="btn primary" href={connect}>Connect {flow.title}</a>
+                )
               ) : (
                 <p className="setup-hint">Save the details above first; then connect here and allow access.</p>
               )}

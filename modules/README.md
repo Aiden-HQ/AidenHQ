@@ -25,6 +25,14 @@ in [aidenhq-modules](https://github.com/Aiden-HQ/aidenhq-modules), which takes n
 | `clickhouse`, `grafana`, `monitoring`, `warehouse` | Data and observability. |
 | `vendor-mcp` (not a module) | The shared pass-through proxy for vendor MCP servers (`src/vendor/`). Each vendor connection holds a byte-identical copy at its own `src/vendor/`; edit this one and copy it (`scripts/sync-shared.mjs`). |
 
+## Connections
+
+A connection connects with one Connect click from wherever the board lists it: declare a `board.signins` entry and the
+vendor's sign-in does the rest. Make every fixed or discoverable value (a vendor's MCP address) a module default. Ask only
+for a genuinely per-install value (a company's own address), as one field on that Connect: list its secret (with `setup:`)
+under the sign-in's `secrets`. Add a `board.setup_flows` entry only when the owner must make something elsewhere first (an
+OAuth client, an app, a token, a bot) or pair a channel.
+
 ## Test locally
 
 Each module package is a CI suite of its own (`.github/ci/areas.json`, job `modules`); `node scripts/ci-local.mjs` runs the

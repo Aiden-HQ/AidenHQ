@@ -4,6 +4,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { SignInRequired, api } from "./api";
 import { Marketplaces } from "./Marketplaces";
 import { LockIcon, ModuleFacts, ModuleStatus, TurnOnCard, lockedWhy, moduleState, publisher, useModuleToggle, useSetupNeeded } from "./ModuleParts";
+import { ConnectButton, useConnectNeeded, type Can, type Connectable } from "./Connect";
 import { ChangesScope, IN_FLIGHT } from "./settings-ui";
 import { SetupButton } from "./SetupButton";
 import { SkeletonLines } from "./Skeleton";
@@ -19,7 +20,7 @@ import "./modules.css";
 type Show = "installed" | "available" | "all";
 const SHOW = [["installed", "Installed"], ["available", "Available"], ["all", "All"]] as const;
 
-export function ModulesView({ onSignIn }: { onSignIn: () => void }) {
+export function ModulesView({ onSignIn, can }: { onSignIn: () => void; can: Can }) {
   const [markets, setMarkets] = useState(false);
   return (
     <ChangesScope onSignIn={onSignIn}>
@@ -32,14 +33,14 @@ export function ModulesView({ onSignIn }: { onSignIn: () => void }) {
             </div>
           </>
         ) : (
-          <ModulesList onSignIn={onSignIn} onMarkets={() => setMarkets(true)} />
+          <ModulesList onSignIn={onSignIn} onMarkets={() => setMarkets(true)} can={can} />
         )}
       </div>
     </ChangesScope>
   );
 }
 
-function ModulesList({ onSignIn, onMarkets }: { onSignIn: () => void; onMarkets: () => void }) {
+function ModulesList({ onSignIn, onMarkets, can }: { onSignIn: () => void; onMarkets: () => void; can: Can }) {
   const [mods, setMods] = useState<ModuleRow[] | null>(null);
   const [advisories, setAdvisories] = useState<Advisory[]>([]);
   const [info, setInfo] = useState<Map<string, BrowseModule>>(new Map());
@@ -48,6 +49,7 @@ function ModulesList({ onSignIn, onMarkets }: { onSignIn: () => void; onMarkets:
   const [show, setShow] = useState<Show>("installed");
   const [q, setQ] = useState("");
   const needsSetup = useSetupNeeded();
+  const needsConnect = useConnectNeeded(can);
   useEffect(() => {
     api.modules().then(
       (r) => (setMods(r.modules), setAdvisories(r.advisories ?? [])),
@@ -62,7 +64,7 @@ function ModulesList({ onSignIn, onMarkets }: { onSignIn: () => void; onMarkets:
   const needle = q.trim().toLowerCase();
   const match = (m: ModuleRow) => !needle || `${m.name} ${m.description} ${m.marketplace} ${m.agents.join(" ")} ${m.connections.join(" ")}`.toLowerCase().includes(needle);
   // Installed: what needs you first, then what you chose, then what they need, the core last.
-  const rank = (m: ModuleRow) => (advisoryOf.has(m.name) || needsSetup.has(m.name) ? 0 : m.state === "on" ? 1 : m.state === "dependency" ? 2 : 3);
+  const rank = (m: ModuleRow) => (advisoryOf.has(m.name) || needsSetup.has(m.name) || needsConnect.has(m.name) ? 0 : m.state === "on" ? 1 : m.state === "dependency" ? 2 : 3);
   const installed = (mods ?? []).filter((m) => m.state !== "off").sort((a, b) => rank(a) - rank(b) || a.name.localeCompare(b.name));
   const available = (mods ?? []).filter((m) => m.state === "off").sort((a, b) => a.name.localeCompare(b.name));
   const shownInstalled = show === "available" ? [] : installed.filter(match);
@@ -102,7 +104,7 @@ function ModulesList({ onSignIn, onMarkets }: { onSignIn: () => void; onMarkets:
   const grid = (list: ModuleRow[]) => (
     <TileGrid>
       {list.map((m) => (
-        <ModuleTile key={m.name} m={m} setup={needsSetup.has(m.name)} advisory={advisoryOf.get(m.name)} info={info.get(m.name)} />
+        <ModuleTile key={m.name} m={m} setup={needsSetup.has(m.name)} connect={needsConnect.get(m.name)} advisory={advisoryOf.get(m.name)} info={info.get(m.name)} />
       ))}
     </TileGrid>
   );
@@ -164,10 +166,10 @@ function ModulesList({ onSignIn, onMarkets }: { onSignIn: () => void; onMarkets:
   );
 }
 
-function ModuleTile({ m, setup, advisory, info }: { m: ModuleRow; setup: boolean; advisory?: Advisory; info?: BrowseModule }) {
+function ModuleTile({ m, setup, connect, advisory, info }: { m: ModuleRow; setup: boolean; connect?: { c: Connectable; word: string }; advisory?: Advisory; info?: BrowseModule }) {
   const t = useModuleToggle(m);
   const [asking, setAsking] = useState(false);
-  const s = moduleState(m, { filed: t.filed, setup, advisory });
+  const s = moduleState(m, { filed: t.filed, setup, connect: Boolean(connect), advisory });
   const href = `#/modules/${m.name}`;
   // A module turned on while the owner is still here opens its setup flow (the design's "Setup flows").
   const was = useRef(t.filed?.stage);
@@ -180,6 +182,8 @@ function ModuleTile({ m, setup, advisory, info }: { m: ModuleRow; setup: boolean
   const stopped = t.filed && (t.filed.stage === "failed" || t.filed.stage === "rejected");
   const action = t.busy ? null : setup ? (
     <SetupButton module={m.name} primary />
+  ) : connect ? (
+    <ConnectButton c={connect.c} word={connect.word} variant="primary" />
   ) : advisory ? (
     <a className="btn primary" href={href}>Review fix</a>
   ) : m.state === "off" ? (

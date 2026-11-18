@@ -327,7 +327,8 @@ Slack has two parts, both served by one Slack app.
 
 ### Others (optional)
 
-GitHub reads, Glean, Jira, Grafana and ClickHouse: open the module's setup on the board (`#/setup/<module>`). Primer: see
+Glean, Jira, Grafana, ClickHouse and Primer: press Connect on the board (Settings, Connections). GitHub reads: open its setup
+(`#/setup/github`). Primer: see
 [the reference below](#connecting-accounts) and [docs/USAGE.md](USAGE.md#connect-jira). Each one is a
 module you add to `modules:`, plus a sign-in.
 
@@ -481,8 +482,7 @@ an `ops/setup.sh` host.
 | Google (Calendar, Drive, Gmail) | On an `ops/setup.sh` host: Connect Google on the board. By hand: `scripts/google-auth.sh <client.json>` with a Desktop-app OAuth client, once per account (`--email`, `--primary`). |
 | Slack (read) | Open its setup on the board (`#/setup/slack`): paste the Slack app's Client ID and press Connect. |
 | GitHub (read) | Open its setup on the board (`#/setup/github`) and paste a read-only token. |
-| Primer | Open its setup on the board (`#/setup/primer`): paste its MCP address and press Connect. |
-| Glean, Jira, Grafana, ClickHouse | Open the module's setup on the board (`#/setup/<module>`): paste the address (Glean, Grafana, ClickHouse), then press Connect. Jira's site URL stays the `jira_url` setting. Grafana with `grafana_source: local` needs no sign-in. |
+| Glean, Jira, Grafana, ClickHouse, Primer | Press Connect on the board (Settings, Connections, or the module's page). Glean, Grafana and Primer ask for their own address in the same dialog; Jira and ClickHouse ask for nothing. Jira's site URL stays the `jira_url` setting. Grafana with `grafana_source: local` needs no sign-in. |
 
 Sign-ins started on the board (Google, Glean, Jira, Grafana Cloud, ClickHouse, Slack, Primer, HubSpot) return to the board's
 https address (`BOARD_LAN_URL`, which `ops/setup.sh` sets to the tailnet name or the public front door): open the board there

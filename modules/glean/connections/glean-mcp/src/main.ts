@@ -10,7 +10,7 @@ import { createVendorProxy } from "./vendor/proxy.js";
 const log = pino({ level: process.env.LOG_LEVEL ?? "info", base: { svc: "glean-mcp" }, redact: ["authorization", "*.authorization", "token", "*.token", "code"] });
 const readToken = (file: string | undefined) => (file && existsSync(file) ? readFileSync(file, "utf8").trim() || undefined : undefined);
 const stateDir = process.env.GLEAN_STATE_DIR ?? "/state";
-// The URL the setup flow saved, else the old glean_mcp_url setting's env value (an upgraded instance keeps working).
+// The URL Connect saved, else the old glean_mcp_url setting's env value (an upgraded instance keeps working).
 const url = readToken(process.env.GLEAN_MCP_URL_FILE) || process.env.GLEAN_MCP_URL;
 const jwks = kernelJwks();
 

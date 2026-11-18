@@ -3,6 +3,7 @@ import { AccountsView } from "./Accounts";
 import { SignInRequired, admin, api, type Session } from "./api";
 import { PoweredBy } from "./components";
 import { needsAttention, type ConnectionsData } from "./connections";
+import { useEvents } from "./events";
 import { askForNotifications, notificationsSupported } from "./notify";
 import { ConnectionsPage, RowsSkeleton } from "./SettingsConnections";
 import { parseInput, shown } from "./settings-format";
@@ -57,6 +58,8 @@ export function SettingsView({ cat, mobile, session, go, onSignIn, can }: Props)
     void loadChanges();
   }, [loadSettings, loadConns, loadChanges]);
 
+  // A sign-in finished in the tab its Connect opened: its tile turns Connected now.
+  useEvents(["connections"], () => loadConns(true));
   // While a change is under way, follow it closely (and the connections, which come up after it); otherwise every 30 s.
   const busy = changes.some((c) => IN_FLIGHT.includes(c.stage));
   const wasBusy = useRef(busy);

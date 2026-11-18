@@ -130,7 +130,7 @@ for c in $containers; do
       [ "$(curl -s -o /dev/null -w '%{http_code}' -X POST "http://$(cip "$c"):8087/mcp")" = "401" ] \
         && pass "grafana-mcp: its endpoint requires the token" || fail "grafana-mcp: its endpoint answers without the token"
       # Exactly: its secrets, read-only (the board's sign-in token, the jobs' read token, the kernel's service key, and the
-      # Grafana Cloud address the board's setup flow saves: aidenhq-modules ad67a18, #54), and its own token directory, the only
+      # Grafana Cloud address the board's Connect saves: aidenhq-modules ad67a18, #54), and its own token directory, the only
       # writable mount. grafana_url is an optional secret (compile creates it empty), so the mount is there on every instance;
       # only the owner saves it, and the kernel holds it to the module's anchored *.grafana.net pattern (checked below), the
       # host rule the grafana_url setting had, so it can't point the sign-in elsewhere. No grants table: the kernel checks agents' grants.
@@ -142,11 +142,10 @@ for c in $containers; do
       [ "$(docker inspect "$c" --format '{{json .HostConfig.PortBindings}}')" = "{}" ] && pass "clickhouse-mcp: no published ports" || fail "clickhouse-mcp publishes ports"
       [ "$(curl -s -o /dev/null -w '%{http_code}' -X POST "http://$(cip "$c"):8088/mcp")" = "401" ] \
         && pass "clickhouse-mcp: its endpoint requires the token" || fail "clickhouse-mcp: its endpoint answers without the token"
-      # Exactly: its secrets, read-only (the board's sign-in token, the jobs' read token, and the MCP address the board's setup
-      # flow saves: aidenhq-modules a86ccb5, #55), and its own token directory, the only writable mount. clickhouse_mcp_url is
-      # an optional secret (created empty), owner-saved and held to the module's anchored *.clickhouse.cloud pattern (checked
-      # below), the setting's old host rule. No grants table: it serves only the runner's jobs, not a Paperclip connection.
-      [ "$(echo "$mounts" | tr ';' '\n' | grep . | cut -d'|' -f2- | LC_ALL=C sort | tr '\n' ' ')" = '/run/secrets/clickhouse_auth_token|false /run/secrets/clickhouse_mcp_token|false /run/secrets/clickhouse_mcp_url|false /state|true ' ] \
+      # Exactly: its secrets, read-only (the board's sign-in token and the jobs' read token), and its own token directory, the
+      # only writable mount. Its MCP address is the clickhouse_mcp_url setting (ClickHouse Cloud's fixed one by default), held to
+      # *.clickhouse.cloud by compile (checked below). No grants table: it serves only the runner's jobs, not a Paperclip connection.
+      [ "$(echo "$mounts" | tr ';' '\n' | grep . | cut -d'|' -f2- | LC_ALL=C sort | tr '\n' ' ')" = '/run/secrets/clickhouse_auth_token|false /run/secrets/clickhouse_mcp_token|false /state|true ' ] \
         && pass "clickhouse-mcp: only its secrets (read-only) and its own token directory mounted" || fail "clickhouse-mcp has unexpected mounts: $mounts"
       ;;
     *mcp-grafana*|*prometheus*|*alertmanager*|*cadvisor*)
@@ -464,15 +463,17 @@ bad_ch="$(echo "$ch_tools" | grep -Ev '^(get_organizations|get_services_list|get
   && grep -q 'args = checkCall(name' modules/clickhouse/connections/clickhouse-mcp/src/main.ts \
   && grep -qE 'const EXTERNAL = .*url.*s3.*remote.*file.*executable' modules/clickhouse/connections/clickhouse-mcp/src/policy.ts \
   && pass "clickhouse-mcp asks for mcp:access only and checks every query (one read statement, no external table functions, no SETTINGS)" || fail "clickhouse-mcp: scopes or query check changed"
-# The upstream addresses the setup flows save (aidenhq-modules #54, #55) decide where each sign-in and its tokens go: only the
-# owner saves a module's setup secret (kernel/src/auth-api.ts), and the kernel refuses a value that doesn't match the module's
-# anchored pattern (kernel/src/module-secrets.ts secretFits), here the *.grafana.net and *.clickhouse.cloud host rules.
+# The upstream addresses decide where each sign-in and its tokens go. Grafana's is the one Connect asks for (aidenhq-modules
+# #54): only the owner saves a module's setup secret (kernel/src/auth-api.ts), and the kernel refuses a value that doesn't match
+# the module's anchored pattern (kernel/src/module-secrets.ts secretFits), here *.grafana.net. ClickHouse's is a setting with
+# ClickHouse Cloud's fixed address as its default, which compile holds to *.clickhouse.cloud (its host rule).
 grep -qF "pattern: '^https://[a-z0-9-]+\.grafana\.net/?\$'" modules/grafana/module.yaml \
-  && grep -qF "pattern: '^https://([a-z0-9-]+\.)+clickhouse\.cloud(/[A-Za-z0-9._/-]*)?\$'" modules/clickhouse/module.yaml \
+  && grep -qF 'host: "*.clickhouse.cloud"' modules/clickhouse/module.yaml \
+  && grep -qF 'default: https://mcp.clickhouse.cloud/mcp' modules/clickhouse/module.yaml \
   && grep -qF 'if (!by.owner) throw fail(403, "forbidden", "only the owner");' kernel/src/auth-api.ts \
   && grep -qF 'export const secretFits = (f: SetupField, value: string) => value.length > 0 && value.length <= 300 && new RegExp(f.pattern).test(value);' kernel/src/module-secrets.ts \
   && grep -qF '      if (!secretFits(field, value)) throw fail(400, "bad_request", `that doesn'"'"'t look like a ${field.label}`);' kernel/src/module-secrets.ts \
-  && pass "grafana-mcp and clickhouse-mcp: the upstream address is owner-saved and held to its *.grafana.net / *.clickhouse.cloud pattern (kernel/src/module-secrets.ts)" \
+  && pass "grafana-mcp and clickhouse-mcp: the upstream address is held to *.grafana.net (owner-saved, kernel/src/module-secrets.ts) / *.clickhouse.cloud (a setting's host rule)" \
   || fail "grafana-mcp or clickhouse-mcp: the saved upstream address's pattern or its owner-only save changed"
 # One way to run a job: every Engineer job in its agent's computer (kernel/src/jobs.ts refuses any other).
 grep -qF 'if (!b.box) throw new JobError(400, "box-required",' kernel/src/jobs.ts \
