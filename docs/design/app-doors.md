@@ -1,6 +1,6 @@
 # App doors: opening agent-built apps without Tailscale
 
-Status: design (2026-11-18), owner decision of the same day. Companion to [access.md](access.md),
+Status: built (2026-11-18), owner decision of the same day. Companion to [access.md](access.md),
 [app-identity.md](app-identity.md) and [minimal-core-install.md](minimal-core-install.md) section 4.6, whose "without a
 domain, nothing is published" this replaces for the owner's own use.
 
@@ -29,10 +29,10 @@ helper each. The readers land first (modules: gate, apps-mcp; product: kernel), 
 
 **Door hosts are dynamic.** `app_create` commits `apps.yaml` without an apply, so the door can't be compiled per app.
 `gate.json` gets `doors: { base, file }` (`base`: `localhost` or `<ip-with-dashes>.sslip.io`). apps-mcp writes the file
-(`data/doors/doors.json`, `{ "<app>": <port> }`) from exactly the set it serves on the apps node: exposed, local, once
+(`doors.json` beside its previews file in `data/previews`, `{ "<app>": <port> }`) from exactly the set it serves on the apps node: exposed, local, once
 healthy. The gate maps `<app>.<base>` to that port, as it maps a preview host from apps-mcp's previews file: the name must
 be in the file, the port must not be a platform port (the apps-mcp `RESERVED` list) or below 1024. Anything else is 404.
-The kernel's `isAppHost` accepts `<name>.<base>` by pattern, as it does previews; whether the app runs is the gate's to
+The kernel checks a door origin by its shape (`doorHost`), as it does previews; whether the app runs is the gate's to
 check.
 
 **No sign-in on a door host.** The owner signs in where they do today: the kernel's admin listener (`https://<ip>:8446`
@@ -48,7 +48,8 @@ listener signs in admins only, which is the door's audience anyway.
 
 **Compile (product, `scripts/edge.mjs`).** With no `settings.edge` and exposure `local` or `public`, compile emits the
 gate (the same service, `login: password`, `hosts: {}`, the doors block, `origin` for local) instead of nothing. The gate
-service gains a read-only mount of `data/doors`; apps-mcp gains it read-write (compose.yaml). In `public` mode the
+mounts `data/previews` read-only (apps-mcp already writes there). A `local` door is compiled only when the board is on
+loopback (not a LAN VM's board, where `<app>.localhost` would be the viewer's own machine). In `public` mode the
 Caddyfile (`scripts/front-door.mjs`) gains one site:
 
 ```caddyfile
@@ -132,13 +133,16 @@ tunnel line and the Lima template forward 3130 as well (the template forwards on
   no sign-in pages; a user account gets 403, an admin gets a token; `http://` origin with
   port: a same-origin write passes, `https://<host>` and a sibling are 403;  app `Set-Cookie` loses `Domain`; door-ask answers 200 only for known names.
 - **apps-mcp:** status url per door; `unpublished` reason when the handshake fails; doors.json holds exactly the served
-  set; a door app's compose never has `AIDENHQ_ANONYMOUS`.
+  set.
 - **Product `scripts/test`:** compile per mode: local → gate with doors and `origin`; public → doors and the
   Caddyfile's wildcard on-demand site and ask; edge or tailscale → no doors. Kernel: the admin listener's `/auth/handoff` mints a gate
   code for an exact door origin (a ready admin only) and refuses any other origin, and the gate redeems it. Setup's tunnel line (`setup.test.mjs`, `unattended-install.sh`). Board:
   the row shows the reason, and the Safari note.
-- **Browsers (scratch, recorded in the PR):** the local door end to end in Chromium, Firefox and WebKit through the
-  real gate and kernel: sign in, handoff, app request with a token, a sibling's cookie absent; WebKit shows the reason.
+- **Browsers (run 2026-11-18, Playwright):** the local door end to end through the real gate, the real admin listener
+  (password and TOTP pages) and sign-in listener, and an app on the shared middleware. Chromium and Firefox land on the
+  app as the admin with no auth cookie reaching it, and a sibling door host gets nothing; WebKit stops at the handoff
+  with the Chrome-or-Firefox reason. The run found one bug, now fixed: the admin pages' CSP `form-action` must list the
+  door origins (`http://*.localhost:3130`), because Chromium applies it to the redirect chain after the TOTP post.
 - **Live, owner-run:** on a throwaway VM with a public IPv4, `ops/test/caddy-staging-issuance.sh` extended with one
   app host on staging (on-demand, TLS-ALPN-01, the ask refusing another name); `scripts/verify-security.sh` gains: every
   door host refuses a request without a session, and a door app's port refuses a token-less request.
