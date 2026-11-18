@@ -59,3 +59,48 @@ test("a kernel job's graded task is graded, reopened with the unmet criterion, t
   assert.deepEqual(calls.resolve.map((c) => c.verdict), ["reopen", "ok"]);
   assert.equal(grades.get("t1").state, "satisfied");
 });
+
+test("a graded PR task's PR is read through the broker's token and graded; a PR GitHub cannot be read holds the row", async (t) => {
+  const answers = [];
+  const gateway = http.createServer(async (req, res) => {
+    for await (const _ of req);
+    res.end(JSON.stringify({ choices: [{ message: { content: JSON.stringify(answers.shift()) } }] }));
+  }).listen(0);
+  t.after(() => gateway.close());
+
+  const issue = { id: "t2", identifier: "WOR-2", title: "fix", description: "Fix it.", status: "in_review", companyId: "co", assigneeAgentId: "eng", createdByAgentId: "cos", parentId: null };
+  const calls = { resolve: [], tokens: [] };
+  const pr = { number: 7, url: "https://github.com/acme-agents/app/pull/7", state: "MERGED", title: "Fix it", body: "Fixes the thing.", headRefOid: "a".repeat(40), headRefName: "fix-it", baseRefName: "main", mergedAt: "2026-11-18T09:00:00Z", mergeCommit: { oid: "b".repeat(40) },
+    commits: { nodes: [{ commit: { statusCheckRollup: { contexts: { nodes: [{ __typename: "CheckRun", name: "ci-required", status: "COMPLETED", conclusion: "SUCCESS" }] } } } }] }, history: { nodes: [] }, files: { pageInfo: {}, nodes: [] } };
+  const kernel = async (method, path, body) => {
+    if (path === "/v1/cp/read/api/issues/t2") return issue;
+    if (path === "/v1/cp/read/api/issues/t2/comments") return [];
+    if (path === "/v1/cp/read/api/issues/t2/attachments") return [];
+    if (path === "/v1/cp/read/api/companies/co/agents") return [{ id: "eng", name: "Dana" }];
+    if (path === "/v1/work?task=t2") return { busy: false, jobs: [{ id: "j-2", state: "done", engine: "codex", ended_at: new Date(Date.now() - 60_000).toISOString() }], records: [{ id: "r1", kind: "codehost-github.pr", state: "done", ok: true, args: { workspace: "WOR-2", only: [{ repo: "acme-agents/app", branch: "fix-it", sha: "a".repeat(40) }] }, outcome_text: "PRs: https://github.com/acme-agents/app/pull/7" }] };
+    if (path === "/v1/work/grader-token") return { token: "tok" };
+    if (path === "/v1/checks/t2") return calls.resolve.push(body), {};
+    throw new Error(`unexpected ${method} ${path}`);
+  };
+  let readable = true;
+  const github = { pr: async (repo, n) => { calls.tokens.push(`${repo}#${n}`); if (!readable) throw new Error("GitHub has no readable PR"); return { repository: { pullRequest: pr } }; }, diff: async () => "diff --git a/x b/x\n+fixed" };
+  const db = new DatabaseSync(":memory:");
+  const { runner, grades } = createGrading({ db, kernel: { issue: async () => issue, settings: async () => ({}), release: async () => {} }, keys: { check: "c", runner: "r", board: "b" } });
+  grades.file("t2", ["the change fixes the thing"], { kind: "pr", ref: "https://github.com/acme-agents/app/pull/7" });
+  const loop = createKernelGradeLoop({ db, runner, due: () => ({ grades: grades.due(), resubmitted: [] }), kernel, kernelBytes: async () => { throw new Error("no bytes"); }, gatewayUrl: `http://127.0.0.1:${gateway.address().port}`, github, log: () => {} });
+  completionGate(grades, "t2", "finish_turn");
+  const realNow = Date.now;
+  Date.now = () => realNow() + 10_000;
+  t.after(() => { Date.now = realNow; });
+
+  readable = false;
+  await loop.runGrades().catch(() => {});
+  assert.equal(calls.resolve.length, 0, "an unreadable PR is no evidence: nothing is passed or reopened");
+
+  readable = true;
+  Date.now = () => realNow() + 20 * 60_000; // past the retry wait
+  answers.push(answer(["yes"]));
+  await loop.runGrades();
+  assert.deepEqual(calls.resolve.map((c) => c.verdict), ["ok"]);
+  assert.equal(grades.get("t2").state, "satisfied");
+});

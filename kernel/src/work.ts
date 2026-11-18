@@ -1,6 +1,6 @@
 // Reads of the kernel's jobs (phase 2 W7, W12): what the grading module and the monitoring side see, from the jobs table and the
 // records. Read-only; the loops that use them are started at the big switch, where the runner's copies are deleted.
-//   GET /v1/work?task=<id>   a task's jobs (newest first) and the write records filed on it: { owned, busy, jobs, records }
+//   GET /v1/work?task=<id>   a task's jobs (newest first) and the write records filed on it (with their args and outcome text, which the grading module reads PRs from): { owned, busy, jobs, records }
 //   GET /v1/work             what runs now and what ended lately, the shape the board's Agents view reads
 //   GET /v1/work?job=<id>    one job for its run page (the board): state, times, why it ended, its engine's token count, its
 //                            progress (said, plan, steps) and final words (both the agent's: untrusted)
@@ -22,7 +22,7 @@ export function createWork({ db, records }: { db: DatabaseSync; records: Records
       const recs = records.list(["review", "owner", "approved", "claimed", "done", "failed", "rejected", "stale", "cancelled", "unknown"], 100, { task });
       return {
         busy: jobs.some((j) => j.state === "running"), jobs,
-        records: recs.map((r) => ({ id: r.id, kind: r.kind, state: r.state, ok: r.outcome?.ok ?? null, decided_at: r.decided_at ?? null, updated_at: r.updated_at, created_at: r.created_at })),
+        records: recs.map((r) => ({ id: r.id, kind: r.kind, state: r.state, ok: r.outcome?.ok ?? null, args: r.args ?? null, outcome_text: r.outcome?.text ?? null, decided_at: r.decided_at ?? null, updated_at: r.updated_at, created_at: r.created_at })),
       };
     },
     job(id: string) {

@@ -118,6 +118,23 @@ export function taskMergePrs(rows: any[] | undefined) {
   return [...byPr.values()];
 }
 
+/**
+ * The task's PRs the ref narrows to: a PR ref (link or owner/name#n) by repo and number, a repo ref by repo, else all. A repo
+ * ref is the delegator's guess at where the work lands: when the task has PRs but none there (a fix briefed against the
+ * product that belongs in the modules repo), they are all its deliverable, and `elsewhere` says so as a fact.
+ */
+function byRef(prs: any[], ref: unknown): any[] & { elsewhere?: string } {
+  const same = (a: unknown, b: unknown) => String(a).toLowerCase() === String(b).toLowerCase();
+  const named = findPrs(ref);
+  if (named.length) return prs.filter((p: any) => named.some((n: any) => same(n.repo, p.repo) && n.number === p.number));
+  const repo = /^(?:https:\/\/github\.com\/)?([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+?)(?:\.git)?\/?$/.exec(String(ref ?? "").trim())?.[1];
+  if (!repo) return prs;
+  const there = prs.filter((p: any) => same(p.repo, repo));
+  if (there.length || !prs.length) return there;
+  const repos = [...new Set(prs.map((p: any) => p.repo))].join(", ");
+  return Object.assign([...prs], { elsewhere: `the deliverable names ${repo}, where this task opened no pull request; its pull requests are in ${repos}, and they are graded as its deliverable` });
+}
+
 type Identity = { state: "ok" } | { state: "stale"; why: string } | { state: "unknown" };
 
 /**
