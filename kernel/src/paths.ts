@@ -82,7 +82,7 @@ export function writeRaise(inv: Inventory | undefined, planPaths: unknown, repoK
   if (!Array.isArray(planPaths) || !planPaths.length) return { tier: 2, rule: "unknown-files", reason: "the plan didn't say which files this write changes, so the owner decides" };
   const raises = planPaths.map((p: { repo?: unknown; files?: ChangedFile[] }) => {
     const kind = repoKind(String(p?.repo ?? ""));
-    return kind ? pathRaise(inv, kind, p?.files) : ({ tier: 2, rule: "unknown-repos", reason: `${String(p?.repo).slice(0, 100)} isn't a repository (owner/name), so the owner decides` } as PathRaise);
+    return kind ? pathRaise(inv, kind, p?.files) : ({ tier: 2, rule: "unknown-repos", reason: `${String(p?.repo).slice(0, 100)} can't be told apart from the product repo here (not owner/name, or the product repo isn't set), so the owner decides` } as PathRaise);
   }).filter((r): r is PathRaise => Boolean(r));
   const at = (r: PathRaise) => r.tier * 2 + (r.panel ? 1 : 0);
   return raises.reduce<PathRaise | undefined>((a, b) => (!a || at(b) > at(a) ? b : a), undefined);
