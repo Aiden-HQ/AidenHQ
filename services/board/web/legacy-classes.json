@@ -17,6 +17,11 @@
     "st-check": "Checks",
     "st-checks": "Checks",
     "agp-tabs": "Tabs",
-    "mods-alert": "Banner"
+    "mods-alert": "Banner",
+    "app-grid": "TileGrid",
+    "app-card": "Tile",
+    "app-card-head": "Tile",
+    "app-note": "Tile foot or Banner",
+    "app-incident": "Banner tone=\"danger\""
   }
 }

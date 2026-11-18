@@ -1,6 +1,6 @@
 // The board's cached reads (cache.ts): one place names each route's cache key and whether it may be kept on the device,
 // so a page and the tab that prefetches it share the same entry.
-import { api } from "./api";
+import { accountsApi, api } from "./api";
 import { adoptStoredAccount, load, prefetch, useCached, type Persist } from "./cache";
 import { chatListForDevice } from "./conversation";
 
@@ -16,6 +16,8 @@ export const QUERIES = {
   roster: q("agents.roster", api.roster),
   agents: q("agents", api.agents),
   apps: q("apps", api.apps),
+  // Who may open each app (emails): memory only.
+  appAccess: q("app-admins", accountsApi.appAdmins, false),
   modules: q("modules", api.modules),
   // What the owner decides on is never read back from the device: memory only, refetched on every visit.
   approvals: q("approvals", api.approvals, false),
