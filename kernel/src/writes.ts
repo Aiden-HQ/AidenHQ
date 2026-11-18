@@ -384,6 +384,15 @@ export function createWrites({ records, registry, connections, secret, resolver,
       return records.get(id);
     },
     isRunnerKind: (kind: string) => Boolean(kindOf_(kind)?.runner),
+    /**
+     * Why a Tier 0 write on this task would be held for the owner now (computeTier's caps), or undefined: it runs. For a
+     * requester's Tier 0 act that has no record of its own (the runner's close, its merge queue's split), never a second
+     * tier function.
+     */
+    async held(task: string): Promise<string | undefined> {
+      const t = computeTier({ floor: 0, autonomy: autonomy(), routine: await routineOf(task) });
+      return t.cap ? capText(t.cap) : undefined;
+    },
     /** The owner's decision (a channel's token or the kernel's page). `by` names who, never the reviewer or the code. */
     decide(id: string, b: { digest: string; decision: "approve" | "reject"; by: string; via: string; reason?: string }): Rec | string {
       if (!/^(owner:[a-z]{1,16}|account:[\w-]{1,64}|watcher|stale:watcher)$/.test(b.by) || !/^[a-z]{1,16}$/.test(b.via)) return "by or via isn't a decider this route stamps";

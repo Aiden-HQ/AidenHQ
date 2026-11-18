@@ -61,6 +61,7 @@ export const ROUTES = [
   { method: "GET", path: "/v1/writes/:id", auth: "bearer" },
   { method: "POST", path: "/v1/writes/:id/outcome", auth: "module|runner" },
   { method: "POST", path: "/v1/writes/:id/claim", auth: "runner" },
+  { method: "POST", path: "/v1/writes/held", auth: "runner" },
   { method: "POST", path: "/v1/writes/:id/review", auth: "runner" },
   { method: "GET", path: "/v1/channel/cards", auth: "module" },
   { method: "POST", path: "/v1/channel/decide", auth: "module" },
@@ -294,6 +295,12 @@ export function createBackplane({ whoami, asserter, proxy, cp, grantsFile, write
             const b = await json(req);
             if (!writes.outcome(id, b.ok === true, String(b.text ?? "").slice(0, 200_000))) throw fail(409, "conflict", `this record is ${record(id).state}`);
             return send(res, 200, { ok: true });
+          }
+          case "POST /v1/writes/held": {
+            // What the kernel would do with a Tier 0 write on this task now: run it, or hold it for the owner (the caps).
+            runner(req);
+            const b = await json(req);
+            return send(res, 200, { held: (await writes.held(String(b.task ?? ""))) ?? null });
           }
           case "POST /v1/writes/:id/claim": {
             runner(req);

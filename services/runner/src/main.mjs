@@ -2256,6 +2256,8 @@ async function kernel(method, path, body, { key = cfg.runnerWritesKeyFile, ms = 
 /** A task's records, newest first, as tiering reads them (cards.ts asApproval). */
 const recordsOn = async (issue) => ((await kernel("GET", `/v1/writes?state=recent&task=${encodeURIComponent(issue.id)}&limit=50`)).records ?? []).map(asApproval);
 const kindOf = (action) => (action === "apply" ? "kernel.apply" : `runner.${action}`);
+/** Why the kernel would hold a Tier 0 write on this task for the owner now (autonomy off, a routine's cap), or null. */
+const heldNow = async (issue) => (await kernel("POST", "/v1/writes/held", { task: issue.id })).held;
 
 /**
  * File (or find, when the same request is already open) the record for one exact request, with the runner's plan from its
@@ -3875,14 +3877,14 @@ async function showFleetDiff(issue, workspace) {
   const t = await agentTexts(b);
   const untrialed = untrialedNewAgents(b.files, t.base, t.head);
   if (untrialed.length) return `**Can't be applied:** a new agent starts in trial (\`trial: true\` in agents/${untrialed[0]}/agent.yaml, read-only grants, reporting to architect); its write grants come with a second change after the trial.`;
-  // The tier from the verified instance diff. Tier 0 lands after this run (runTrialEdits files it: the kernel may hold it
-  // for the owner instead).
+  // The tier from the verified instance diff. Tier 0 lands after this run (runTrialEdits), unless the kernel would hold it
+  // for the owner now (autonomy off, a routine's cap): then it is a card like the rest.
   const bump = await productBump(b).catch((e) => ({ error: e.message }));
   if (bump?.error) return `**Can't be applied:** ${bump.error}.`;
   const st = await applyTierState(b, bump);
   const tier = await tierFor(issue, "apply", st);
   if (tier.reject) return `**Can't be applied:** ${tier.reason}.`;
-  if (tier.tier === 0) {
+  if (tier.tier === 0 && !(await heldNow(issue))) {
     // Lands after this run (runTrialEdits). The diff stays here, in Activity.
     state.set("trial_edits", JSON.stringify({ ...JSON.parse(state.get("trial_edits") || "{}"), [issue.id]: { sha: b.sha, branch: b.r.branch } }));
     return `**Runs at once (Tier 0: ${tier.reason})** (commit \`${b.sha.slice(0, 12)}\`): no tap needed, it lands in a moment.\n\n\`\`\`diff\n${diff.replaceAll("```", "‵‵‵")}\n\`\`\``;
@@ -4021,12 +4023,14 @@ async function agentMerge(ctx, args) {
   states.forEach((s, i) => s.patch && (bound[i].patch = s.patch)); // the card carries each PR's content key
   const bad = tiers.find((t) => t.reject);
   if (bad) throw new UserError(`Not done: ${bad.reason}.`);
-  const now = bound.filter((_, i) => tiers[i].tier === 0);
-  const card = bound.filter((_, i) => tiers[i].tier !== 0);
+  // Tier 0 merges run from the merge queue, unless the kernel would hold them now: then they go on the card too.
+  const zero = tiers.some((t) => t.tier === 0) && !(await heldNow(ctx.issue));
+  const now = bound.filter((_, i) => zero && tiers[i].tier === 0);
+  const card = bound.filter((p) => !now.includes(p));
   if (now.length) requestAutoMerge(ctx.issue, now);
   const merging = now.length ? `Merging ${now.map((p) => `#${p.number}`).join(", ")} now, each as soon as its named checks are green on its current head; results are posted on this task.` : "";
   if (!card.length) return `${merging} No card is needed. End your turn now: the runner wakes you if a check fails and posts each merge.`;
-  const rest = tiers.filter((t) => t.tier !== 0);
+  const rest = tiers.filter((_, i) => !now.includes(bound[i]));
   const a = await fileApproval(ctx.issue, { action: "merge", args: { prs: card, ...(gap !== undefined ? { gap } : {}) }, ts: rest });
   return `${merging ? `${merging} ` : ""}${waitingFor(a, ctx.issue)} Once approved, ${card.map((p) => `#${p.number}`).join(", ")} merge one at a time${gap !== undefined ? `, ${gap} minutes apart` : ""}, each only at the commit the card shows, with green checks and a green base branch (outside ${cfg.agentsOrg ?? "the agents org"} also approved on GitHub), or the queue stops and says why on the task.`;
 }
@@ -4044,6 +4048,8 @@ async function agentClose(ctx, args) {
   if (local.length) {
     const t = await tierFor(ctx.issue, "close", { prs: local });
     if (t.tier !== 0) throw new UserError(`Not closed: ${t.reason}.`);
+    const held = await heldNow(ctx.issue);
+    if (held) throw new UserError(`Not closed: ${held}. Closing runs only while nothing holds the task's writes for ${cfg.selfName}; ask them to close it.`);
     const lines = [];
     for (const p of local) lines.push(`${p.url}: ${await localHost.close(p.repo, p.number).catch((err) => `not closed (${String(err.message).slice(0, 200)})`)}. Reason: ${reason.slice(0, 300)}`);
     return lines.join("\n");
@@ -4052,9 +4058,10 @@ async function agentClose(ctx, args) {
   const isBot = (a) => a.login === DEPENDABOT && a.type === "Bot";
   const read = await Promise.all(prs.map(async (p) => (sameRepo(p.repo, cfg.productRepo) ? { ...p, dependabot: isBot(await prAuthor(p.repo, p.number).catch(() => ({}))) } : p)));
   const t = await tierFor(ctx.issue, "close", { prs: read });
-  // No card for a close: with autonomy off (the pause switch) it is refused, like any other Tier 0 run.
-  if (t.rule === "autonomy-off") throw new UserError(`Not closed: ${t.reason}. Closing PRs runs only while autonomy is on; ask ${cfg.selfName} to close them.`);
   if (t.tier !== 0) throw new UserError(`Not closed: ${t.reason}. Only PRs in the agents org (${cfg.agentsOrg}) and the product repo's Dependabot PRs can be closed; the instance repo's and the product repo's other PRs are ${cfg.selfName}'s.`);
+  // No card for a close: held by a cap (autonomy off, a routine's), it is refused instead.
+  const held = await heldNow(ctx.issue);
+  if (held) throw new UserError(`Not closed: ${held}. Closing PRs runs only while nothing holds the task's writes for ${cfg.selfName}; ask them to close them.`);
   const lines = await merges.closePrs(prs, reason, mergeGithub);
   return lines.join("\n");
 }
