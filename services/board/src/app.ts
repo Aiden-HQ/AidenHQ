@@ -31,7 +31,7 @@ import { CommitUnreadable, agentGrants, browseModules, createResolver, marketpla
 import { connectionsView, probe, readSources, settingsView, type Probe } from "./settings.js";
 import { ChangeRefused, ChangesSchema, SETTINGS_LABEL, changesOf, checkChange, stageOf, taskFor, type Change } from "./settings-change.js";
 import { createGrading, gradePassed, type Grading } from "./grading.js";
-import { UsageSchema, WINDOWS, costs, keyUsage, prices, type CostWindow } from "./costs.js";
+import { UsageSchema, WINDOWS, costs, keyUsage, prices, spendToday, type CostWindow } from "./costs.js";
 import { ledgerRange, ledgerSummary, ledgerTop } from "./cost-ledger.js";
 import { descendants, featureCost, recentFeatures } from "./feature-cost.js";
 import { MergeSchema, mergedDescription } from "./merge.js";
@@ -1171,7 +1171,7 @@ export function createApp(opts: AppOptions): Server {
         const ctx = await context();
         const since = new Date(Date.now() - RECENT_MS).toISOString();
         // Who is working and the connections' states don't depend on the tasks: started with them, not after.
-        const extras = Promise.all([working(ctx), opts.google?.status(), signInStates(), bylines()]);
+        const extras = Promise.all([working(ctx), opts.google?.status(), signInStates(), bylines(), spendToday(opts.gateway)]);
         extras.catch(() => {}); // awaited below; this only keeps a failure there from going unhandled meanwhile
         const settledAt = store.settledAt();
         // A settled task stays off the board until something happens on it.
@@ -1187,7 +1187,7 @@ export function createApp(opts: AppOptions): Server {
         const folded = foldedChildren([...open, ...closed], ctx.assignees);
         store.placeNew(open.filter((i) => !folded.has(i.id)).map((i) => ({ id: i.id, createdAt: i.createdAt, status: i.status })));
         const recurring = new Map([...store.allRecurring()].map(([id, r]) => [id, { summary: recurringView(r, opts.timezone).summary, nextRun: r.nextRun, paused: r.paused }]));
-        const [busy, google, signIns, names] = await extras;
+        const [busy, google, signIns, names, spend] = await extras;
         const board = buildBoard({ open, closed, placements: store.placements(), seen: store.allSeen(), schedules: store.schedules(), recurring, installedAt: store.meta("installed_at")!, assignees: ctx.assignees, crew: { working: busy.map, jobs: latestJobs(shared.runner) } });
         for (const card of [...Object.values(board.buckets).flat(), ...board.recurring]) {
           const w = busy.map.get(card.identifier);
@@ -1200,7 +1200,7 @@ export function createApp(opts: AppOptions): Server {
         // When Tomorrow next rolls into Today: the next calendar day, except before days off.
         const today = localDate(opts.timezone);
         const rollsOn = nextWorkday(today, opts.workdays ?? WORKWEEK);
-        return { ...board, assignees: ctx.assignees, labels: ctx.labels, prefix: ctx.prefix, timezone: opts.timezone, slackTeams: opts.slackTeams ?? {}, rollsOn, rollsTomorrow: rollsOn === addDays(today, 1), buckets: board.buckets, agentsActive: busy.active, google: google ?? null, signIns: signIns.map(({ id, label, missing, stopped, status }) => ({ id, label, missing, stopped, status: status ?? null })) };
+        return { ...board, assignees: ctx.assignees, labels: ctx.labels, prefix: ctx.prefix, timezone: opts.timezone, slackTeams: opts.slackTeams ?? {}, rollsOn, rollsTomorrow: rollsOn === addDays(today, 1), buckets: board.buckets, agentsActive: busy.active, spend, google: google ?? null, signIns: signIns.map(({ id, label, missing, stopped, status }) => ({ id, label, missing, stopped, status: status ?? null })) };
       },
     },
     { method: "GET", path: /^\/api\/issues\/([^/]+)$/, handle: async (m) => issueView(decodeURIComponent(m[1]!)) },
@@ -1534,6 +1534,8 @@ export function createApp(opts: AppOptions): Server {
           module,
           agents: mine.map(({ key, a }) => agentProfile({ agent: a, agents: ctx.agents, routines, effort: compiled?.agents?.[key]?.reasoning_effort ?? null, catalog })),
           ongoing,
+          // Its routines as compiled: on or off (quiet start pauses a schedule until the owner turns it on), and whose.
+          routines: module.routines.flatMap((key) => { const r = compiled?.routines?.[key]; return r ? [{ key, title: r.title ?? key, agent: r.agent ?? "", on: r.status !== "paused", scheduled: Boolean(r.schedules?.length) }] : []; }),
           authority: moduleAuthority(text, module.name),
           neededBy: module.neededBy,
           requires: module.requires,

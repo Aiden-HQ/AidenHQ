@@ -649,6 +649,11 @@ export function App() {
             Notify me
           </button>
         )}
+        {board.spend && (
+          <a className={`spend-today${board.spend.spent >= board.spend.cap ? " over" : ""}`} href="#/costs" title="Today's model spend (UTC day) against the daily cap; change the cap in Settings">
+            ${board.spend.spent.toFixed(2)} / ${board.spend.cap % 1 ? board.spend.cap.toFixed(2) : board.spend.cap} today
+          </a>
+        )}
         {board.brief && (
           <a className="btn" href="#/brief" title="Today's brief (b)">
             Brief

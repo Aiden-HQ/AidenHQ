@@ -420,3 +420,18 @@ export function pullUsage(gateway: { url: string; token: string } | undefined, s
   void tick();
   setInterval(tick, everyMs).unref();
 }
+
+/**
+ * The header's spend line: today's spend against the install-wide daily cap, from the gateway (POST /spend: the sum the cap
+ * enforces, raises included). Null without a cap, or when the gateway doesn't answer.
+ */
+export async function spendToday(gateway: { url: string; token: string } | undefined): Promise<{ spent: number; cap: number } | null> {
+  if (!gateway) return null;
+  try {
+    const res = await fetch(`${gateway.url}/spend`, { method: "POST", headers: { authorization: `Bearer ${gateway.token}` }, signal: AbortSignal.timeout(3_000) });
+    const j = (res.ok ? await res.json() : {}) as { spent?: unknown; cap?: unknown };
+    return typeof j.cap === "number" && typeof j.spent === "number" ? { spent: j.spent, cap: j.cap } : null;
+  } catch {
+    return null;
+  }
+}
