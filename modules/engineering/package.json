@@ -7,8 +7,5 @@
   "engines": {
     "node": ">=24"
   },
-  "description": "Engineer agents.",
-  "scripts": {
-    "test": "true"
-  }
+  "description": "The Engineer agent."
 }
