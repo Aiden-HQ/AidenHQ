@@ -183,7 +183,7 @@ export function usageTap(sse: boolean): { feed(text: string): void; done(): Usag
     if (!text.includes('"usage"')) return;
     try {
       const j = JSON.parse(text) as (Answer & { type?: unknown; response?: Answer }) | null;
-      const r = j?.type === "response.completed" ? j.response : j;
+      const r = j?.type === "response.completed" || j?.type === "response.incomplete" ? j.response : j; // an answer cut at its output limit is billed too
       if (r?.usage && typeof r.id === "string") found = r as Answer & { id: string; usage: UsageBlock };
     } catch {}
   };

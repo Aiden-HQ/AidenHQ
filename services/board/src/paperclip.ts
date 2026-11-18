@@ -101,6 +101,8 @@ const BRAKE_CANCEL: ReleaseWhy = {
 };
 /** Paperclip's own disposition repair, cancelled before dispatch because the task already had a disposition. */
 export const REPAIR_SUPPRESSED = "legacy_disposition_repair_suppressed";
+/** What Paperclip calls a run whose adapter reported an incomplete response (Codex: "Incomplete response returned, reason: max_output_tokens"). */
+export const CONFIG_INCOMPLETE = "configuration_incomplete";
 export const REPAIR_SUPPRESSED_WHY: ReleaseWhy = {
   note: "Paperclip suppressed its own disposition repair run before dispatch; it did nothing.",
   evidence: "The run ended with legacy_disposition_repair_suppressed: Paperclip cancels it before the adapter starts, so no action ran.",
@@ -279,6 +281,11 @@ export class Paperclip {
   pauseAgent(id: string): Promise<unknown> {
     this.cache.clear();
     return this.request("POST", `/api/agents/${encodeURIComponent(id)}/pause`, {});
+  }
+
+  /** Clears an agent's `error` status (Paperclip sets it when a run fails with a configuration error). */
+  clearAgentError(id: string): Promise<unknown> {
+    return this.request("POST", `/api/agents/${encodeURIComponent(id)}/clear-error`, {});
   }
 
   resumeAgent(id: string): Promise<unknown> {
