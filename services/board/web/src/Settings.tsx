@@ -1,16 +1,16 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { AccountsView } from "./Accounts";
-import { SignInRequired, api, type Session } from "./api";
+import { SignInRequired, admin, api, type Session } from "./api";
 import { PoweredBy } from "./components";
 import { needsAttention, type ConnectionsData } from "./connections";
 import { askForNotifications, notificationsSupported } from "./notify";
 import { ConnectionsPage, RowsSkeleton } from "./SettingsConnections";
 import { parseInput, shown } from "./settings-format";
 import { ChangePreview, ChangeProgress, Changes, Group, IN_FLIGHT, Page, Row, Toasts, useFiled } from "./settings-ui";
-import type { Advisory, FiledChange, ModuleRow, SettingChange, SettingRow, SettingsData } from "./types";
+import type { Advisory, FiledChange, ModuleRow, SettingChange, SettingRow, SettingsData, UpdatesData } from "./types";
 import { urlSettingProblem } from "../../src/url-setting";
 import "./settings.css";
-import { Banner, Button, Segmented, StatusDot, Switch, Tag } from "./ui";
+import { Banner, Button, LinkButton, Segmented, StatusDot, Switch, Tag } from "./ui";
 
 // Settings: categories in a side nav (a selector at phone width), each a page of grouped rows (#/settings/<category>).
 // Instance settings live in git (instance.yaml): a change made here is filed as the owner's task the runner writes, and lands
@@ -429,7 +429,11 @@ function InstancePage({ data }: { data: SettingsData }) {
         <Fig n={i.lastChangeAt ? new Date(i.lastChangeAt).toLocaleString(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", hour12: false }) : "unknown"} l="Last applied change" />
         <Fig n={i.node} l={`Board runtime, ${i.boardTimezone}`} />
       </div>
-      <p className="st-note">A newer product is a change to instance.yaml's product: pin; the Platform Engineer files it with its commit log for you to approve.</p>
+      {data.updates ? (
+        <Updates u={data.updates} setting={data.settings.find((s) => s.key === "auto_update")} />
+      ) : (
+        <p className="st-note">A newer product is a change to instance.yaml's product: pin; the Platform Engineer files it with its commit log for you to approve.</p>
+      )}
       <Group title="Every setting" count={data.settings.length} hint={<input className="ui-input small" type="search" placeholder="Filter" value={q} onChange={(e) => setQ(e.target.value)} aria-label="Filter settings" />}>
         <div className="st-table" role="table">
           <div className="st-tr st-th" role="row">
@@ -450,6 +454,45 @@ function InstancePage({ data }: { data: SettingsData }) {
         </div>
       </Group>
     </Page>
+  );
+}
+
+// Release updates (docs/design/release-updates.md): the release this server follows, the one available with what changed, and
+// Update now, which is the kernel's own page (an owner tap happens there, never on the board).
+function Updates({ u, setting }: { u: UpdatesData; setting?: SettingRow }) {
+  const when = (t: string | null) => (t ? new Date(t).toLocaleString(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", hour12: false }) : "never");
+  const a = u.available;
+  return (
+    <Group title="Updates" hint={<span className="muted">Release {u.current?.name}, checked {when(u.checkedAt)}</span>}>
+      {a ? (
+        <Banner action={<LinkButton variant="primary" size="sm" href={`${admin.url}/updates`}>Update now</LinkButton>}>
+          AidenHQ {a.name} is available.{" "}
+          {u.auto ? `It installs tonight between 02:00 and 05:00 (${u.timezone ?? "UTC"}).` : "Auto-updates are off: install it when you're ready."}
+        </Banner>
+      ) : (
+        <p className="st-note">{u.error ? `Update check: ${u.error}` : `This server runs ${u.current?.name}, the newest release.`}</p>
+      )}
+      {a && (
+        <div className="st-note">
+          {a.notes.length > 0 && (
+            <ul>
+              {a.notes.map((n, i) => (
+                <li key={i}>{n}</li>
+              ))}
+            </ul>
+          )}
+          <a href={a.compare} target="_blank" rel="noreferrer">
+            Every change since {u.current?.name}
+          </a>
+        </div>
+      )}
+      {u.last && (
+        <p className="st-note">
+          Last update: {u.last.release} {u.last.outcome === "installed" ? "installed" : `failed (${u.last.why ?? "see the apply log"}); this server went back to the release before it`}, {when(u.last.at)}.
+        </p>
+      )}
+      {setting && <SettingItem s={setting} title="Install updates automatically, at night" />}
+    </Group>
   );
 }
 

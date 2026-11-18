@@ -1,0 +1,17 @@
+[Unit]
+Description=AidenHQ release updates: check for a newer release, install it at night or when the owner asks (ops/update.sh)
+After=network-online.target
+
+[Service]
+Type=oneshot
+# The product checkout: ~/aidenhq, or where ops/setup.sh recorded it (~/.config/aidenhq-checkout.env).
+Environment=AIDENHQ_DIR=%h/aidenhq
+EnvironmentFile=-%h/.config/aidenhq-checkout.env
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+# An install recreates services: the vault and Docker must be up.
+ExecStartPre=/usr/bin/mountpoint -q %h/.config/aidenhq
+ExecStart=/usr/bin/env bash ${AIDENHQ_DIR}/ops/update.sh
+# An install is a whole apply (image pulls included).
+TimeoutStartSec=3h
+# A stop signals the updater only: an apply it started finishes (or is finished by the next apply, ops/apply-config.sh).
+KillMode=process

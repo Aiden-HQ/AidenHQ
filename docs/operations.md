@@ -75,6 +75,18 @@ covers them.
 It is idempotent. The Platform Engineer runs it for you after you approve a change.
 
 - **Upgrade the product:** merge to product `main`, bump `product: <sha>` in the instance repo, commit and push, apply.
+- **Release updates** (an instance with `release:` from Aiden-HQ/aidenhq-distro; [design](design/release-updates.md)): apply
+  installs `aidenhq-update.timer` (hourly) while the instance follows a release, and removes it otherwise. `ops/update.sh`
+  runs `node kernel/src/updates.ts check` (newest release tag, verified: shas on each official repo's main, no downgrade,
+  the published asset's `tested` stamp from a `release.yml` run on the tag's commit) and, at 02:00-05:00 in
+  `settings.timezone` with `auto_update` on (unset = on) or after Update now (the kernel's `/updates` page), takes the apply
+  lock on fd 9 and runs `… install`: one instance commit (`product:`, `release:`, the `aidenhq` marketplace sha), then
+  `ops/apply-config.sh <commit>` with the lock handed over. A failed apply (apply's own auto-revert puts the last known
+  good back) gets its commit reverted on main and the release marked failed in `data/updates/state.json`: the night skips
+  it, Update now retries. The board reads `~/.local/state/aidenhq/board/updates.json`; the kernel tells the owner each event
+  once. By hand: `systemctl --user start aidenhq-update.service`, `journalctl --user -u aidenhq-update`. The installer run
+  again also moves the pin (`node kernel/src/updates.ts pin <release> <distro sha>`, from `ops/setup.sh`) and refuses an
+  older release.
 - **Roll back:** revert the instance commit (or set `product:` to the earlier sha), push, apply again. That rolls back
   code, not module data. `ops/rollback.sh <n> [--plan]` goes back to apply generation `n`
   (`~/.local/state/aidenhq/generations.jsonl`) with the data it needs (above); `--plan` prints the shas and each module

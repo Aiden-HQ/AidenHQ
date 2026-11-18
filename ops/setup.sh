@@ -427,6 +427,9 @@ if [ -n "${AIDENHQ_RELEASE:-}${AIDENHQ_RELEASE_REPO:-}${AIDENHQ_RELEASE_SHA:-}" 
     || die "AIDENHQ_RELEASE, AIDENHQ_RELEASE_REPO and AIDENHQ_RELEASE_SHA must all be set: a YYYY.MM name, <owner>/<repo> and a 40-character sha"
   RELEASE_LINE="release: { name: \"$AIDENHQ_RELEASE\", source: { source: github, repo: $AIDENHQ_RELEASE_REPO }, sha: $AIDENHQ_RELEASE_SHA }"
 fi
+# A release install updates itself (docs/design/release-updates.md): a newer release installs at night; "off" only tells you.
+AUTO_UPDATE=""
+[ -z "$RELEASE_LINE" ] || AUTO_UPDATE='  auto_update: "on"'
 if [ ! -d "$INST/.git" ]; then
   say "Instance repo $INST (origin: $REMOTE)"
   # The official modules (their own repository since 5b) at the product's pin, put at ./modules; the instance's default
@@ -456,6 +459,7 @@ settings:
   # Quiet start (docs/design/quiet-start.md): schedules and heartbeats wait until you turn them on; spend stops at \$10 a day.
   quiet_start: "on"
   spend_day_usd: 10
+$AUTO_UPDATE
 ${AGENTS_ORG:+  github_agents_org: $AGENTS_ORG}
 $(p="$(sed -n 's/^AIDENHQ_PRODUCT_REPO=//p' "$ENVF" | head -1)"; [ -z "$p" ] || echo "  product_repo: $(json "$p")")
 EOF
@@ -468,6 +472,10 @@ EOF
   as_user git -C "$INST" add -A
   as_user git -C "$INST" -c user.name=setup -c user.email=setup@aidenhq.invalid commit --quiet -m "instance for $OWNER_NAME"
   as_user git -C "$INST" push --quiet origin main
+elif [ -n "$RELEASE_LINE" ] && [ "$DRY" = 0 ]; then
+  # The installer run again on this server (an upgrade by hand): the instance's pin moves to the release it verified when that
+  # is newer (one commit, as the updater makes it); the same release is a repair, an older one is refused.
+  as_user node "$REPO/kernel/src/updates.ts" pin "$AIDENHQ_RELEASE" "$AIDENHQ_RELEASE_SHA" || die "the instance's pin could not move to $AIDENHQ_RELEASE (above)"
 fi
 
 # ---------------------------------------------------------------- 6. logins AidenHQ holds for this person

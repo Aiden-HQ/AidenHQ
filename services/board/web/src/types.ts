@@ -731,6 +731,17 @@ export interface SettingsData {
   choices: { heartbeatHours: number[]; models: string[] };
   approvals: { pending: number };
   spend: { defaults: Record<string, number>; pendingRaises: number };
+  /** Release updates (services/board/src/settings.ts UpdatesView); null when the instance pins its product by hand. */
+  updates: UpdatesData | null;
+}
+export interface UpdatesData {
+  current: { name: string; product: string } | null;
+  auto: boolean | null;
+  timezone: string | null;
+  checkedAt: string | null;
+  available: { name: string; notes: string[]; compare: string } | null;
+  error: string | null;
+  last: { release: string; outcome: "installed" | "failed"; why?: string; at: string; by: string } | null;
 }
 
 // Lane D: the pin change (lane A's schema, settings-change.ts).
