@@ -10,12 +10,13 @@ import { Store } from "../src/store.js";
 // One Connect per connection (owner, 2026-11-18): a sign-in with nothing to ask goes straight to the vendor (no setup page); one
 // whose vendor offers scopes, or that needs a per-install value, opens its Connect dialog on Settings > Connections first, which
 // reads the offer from the API and comes back with a plain navigation (no form: the CSP allows none).
+let signedIn = false;
 const seen: { path: string; body: unknown }[] = [];
 const proxy = (offer: boolean, configured = true) =>
   new McpAuth("Acme", "http://acme", "t", undefined, (async (u: string | URL, init?: RequestInit) => {
     const path = new URL(String(u)).pathname;
     seen.push({ path, body: init?.body ? JSON.parse(String(init.body)) : undefined });
-    if (path === "/auth/status") return Response.json({ state: "missing", configured, since: "2026-11-18T00:00:00Z" });
+    if (path === "/auth/status") return Response.json({ state: signedIn ? "ok" : "missing", configured, since: "2026-11-18T00:00:00Z", ...(signedIn ? { scope: "read:things write:things offline_access" } : {}) });
     if (path === "/auth/scopes") return offer ? Response.json({ supported: ["read:things", "write:things"], recommended: ["read:things"] }) : Response.json({}, { status: 404 });
     if (path === "/auth/start") return Response.json({ url: "https://auth.example.com/authorize?state=s" });
     return Response.json({}, { status: 404 });
@@ -74,4 +75,11 @@ it("sends a failed sign-in back to its Connect dialog, the reason in the address
   expect(denied.status).toBe(302);
   expect(denied.location).toMatch(/^\/#\/settings\/connections\?connect=acme&error=/);
   expect(new URLSearchParams(denied.location!.split("?")[1]).get("error")).toBe("Couldn't connect Acme: Acme didn't grant access (access_denied)");
+});
+
+it("offers the scopes a signed-in connection already grants, so the picker opens on them", async () => {
+  signedIn = true;
+  const view = JSON.parse((await get("/api/sign-ins/acme")).body);
+  signedIn = false;
+  expect(view.scopes).toEqual({ supported: ["read:things", "write:things"], recommended: ["read:things"], granted: ["read:things", "write:things"] });
 });

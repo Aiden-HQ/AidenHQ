@@ -89,7 +89,7 @@ export function ConnectDialog({ c, error, onClose }: { c: Connectable; error: st
   const [touched, setTouched] = useState(false);
   useEffect(() => {
     api.signIn(c.id).then(
-      (v) => (setView(v), setOn(v.scopes ? new Set(v.scopes.recommended.filter((s) => v.scopes!.supported.includes(s))) : null)),
+      (v) => (setView(v), setOn(v.scopes ? new Set((v.scopes.granted ?? v.scopes.recommended).filter((s) => v.scopes!.supported.includes(s))) : null)),
       (e) => setProblem(e instanceof SignInRequired ? "Your session ended. Sign in again, then press Connect." : `Couldn't load this connection: ${(e as Error).message}`),
     );
   }, [c.id]);
@@ -118,7 +118,7 @@ export function ConnectDialog({ c, error, onClose }: { c: Connectable; error: st
         if (fresh.scopes && !on) {
           w?.close();
           setView(fresh);
-          setOn(new Set(fresh.scopes.recommended.filter((s) => fresh.scopes!.supported.includes(s))));
+          setOn(new Set((fresh.scopes.granted ?? fresh.scopes.recommended).filter((s) => fresh.scopes!.supported.includes(s))));
           setBusy("");
           return;
         }
@@ -182,7 +182,7 @@ export function ConnectDialog({ c, error, onClose }: { c: Connectable; error: st
   );
 }
 
-/** What agents may do as the owner in the vendor: its scopes grouped by product, the recommended ones on. */
+/** What agents may do as the owner in the vendor: its scopes grouped by product, what is granted now (else the recommended ones) on. */
 function Picker({ offer, on, setOn }: { offer: NonNullable<SignInView["scopes"]>; on: Set<string>; setOn: (s: Set<string>) => void }) {
   const groups = useMemo(() => groupScopes(offer.supported), [offer.supported]);
   const [raw, setRaw] = useState(false);

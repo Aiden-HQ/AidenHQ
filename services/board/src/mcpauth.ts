@@ -7,6 +7,8 @@ export interface McpAuthStatus {
   configured: boolean;
   since: string;
   detail?: string;
+  /** The scopes the stored token holds, space separated (the proxy adds it when signed in). */
+  scope?: string;
 }
 
 /**
