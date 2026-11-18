@@ -13,7 +13,7 @@ paths:
   - sensitivity: panel
     owner_role: platform-engineer
     patterns:
-      - scripts/{computers,modules,paperclip-setup,no-shell}.{mjs,ts}
+      - scripts/{computers,modules,paperclip-setup}.{mjs,ts}
       - kernel/
       - scripts/compiler/
       - services/shared/review-files.{mjs,ts}
