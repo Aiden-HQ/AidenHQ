@@ -413,6 +413,8 @@ read it).
    systemctl --user enable --now aidenhq-ci-runner@1 aidenhq-ci-runner@2`. Check: the org's Settings → Actions →
    Runners lists `aidenhq-<container id>` idle; `journalctl --user -u aidenhq-ci-runner@1`.
 
+CI health on demand (queue time, red rate, slow and failing jobs, merged-PR flakes, both repos): `node scripts/ci-report.mjs [--hours 24]`.
+
 **The product repo's org.** The product workflows' heavy jobs can overflow to `[self-hosted, aidenhq]` (below).
 `image-scan` builds nothing (a build would run a PR's RUN steps on our runner, and the runner has no Docker): the grype
 baked into the runner image scans each changed image's directory (lock files) and the digest-pinned base images its
