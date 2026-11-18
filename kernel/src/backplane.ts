@@ -61,6 +61,7 @@ export const ROUTES = [
   { method: "GET", path: "/v1/writes/:id", auth: "bearer" },
   { method: "POST", path: "/v1/writes/:id/outcome", auth: "module|runner" },
   { method: "POST", path: "/v1/writes/:id/claim", auth: "runner" },
+  { method: "POST", path: "/v1/writes/held", auth: "runner" },
   { method: "POST", path: "/v1/writes/:id/review", auth: "runner" },
   { method: "GET", path: "/v1/channel/cards", auth: "module" },
   { method: "POST", path: "/v1/channel/decide", auth: "module" },
@@ -258,7 +259,7 @@ export function createBackplane({ whoami, asserter, proxy, cp, grantsFile, write
           case "POST /v1/writes": {
             if (isRunner(req)) {
               const b = await json(req, 8_000_000);
-              const r = writes.fileRunner({ kind: String(b.kind ?? ""), task: String(b.task ?? ""), ...(typeof b.identifier === "string" ? { identifier: b.identifier.slice(0, 40) } : {}), args: b.args, plan: b.plan ?? {} });
+              const r = await writes.fileRunner({ kind: String(b.kind ?? ""), task: String(b.task ?? ""), ...(typeof b.identifier === "string" ? { identifier: b.identifier.slice(0, 40) } : {}), args: b.args, plan: b.plan ?? {} });
               return send(res, 200, r);
             }
             const w = await whoami(bearer(req)).catch((e: Error) => { throw fail(401, "unauthorized", e.message); });
@@ -295,9 +296,15 @@ export function createBackplane({ whoami, asserter, proxy, cp, grantsFile, write
             if (!writes.outcome(id, b.ok === true, String(b.text ?? "").slice(0, 200_000))) throw fail(409, "conflict", `this record is ${record(id).state}`);
             return send(res, 200, { ok: true });
           }
+          case "POST /v1/writes/held": {
+            // What the kernel would do with a Tier 0 write on this task now: run it, or hold it for the owner (the caps).
+            runner(req);
+            const b = await json(req);
+            return send(res, 200, { held: (await writes.held(String(b.task ?? ""))) ?? null });
+          }
           case "POST /v1/writes/:id/claim": {
             runner(req);
-            const r = writes.claim(id);
+            const r = await writes.claim(id);
             if (!r) throw fail(409, "conflict", `this record is ${records.shownState(record(id))}`);
             return send(res, 200, r);
           }

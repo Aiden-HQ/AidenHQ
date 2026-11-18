@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { bumpTitle, definitionsOf, strayFiles, trialHandbookOnly, untrialedNewAgents } from "../src/apply.ts";
+import { bumpTitle, definitionsOf, strayFiles, untrialedNewAgents } from "../src/apply.ts";
 
 test("only instance config can be applied", () => {
   assert.deepEqual(strayFiles(["instance.yaml", "apps.yaml", "agents/chief-of-staff.md", "agents/review-chaser/agent.yaml", "agents/review-chaser/AGENTS.md"]), []);
@@ -43,15 +43,6 @@ test("tap 1: a new agent must start in trial", () => {
   assert.deepEqual(untrialedNewAgents([def, book], {}, { [def]: trialYaml }), []);
   assert.deepEqual(untrialedNewAgents([def, book], {}, { [def]: graduated }), ["review-chaser"]);
   assert.deepEqual(untrialedNewAgents([def], { [def]: trialYaml }, { [def]: graduated }), [], "tap 2 changes an existing agent: a card, allowed");
-});
-test("the trial exception: only handbook edits to agents in trial (on main) land without a tap", () => {
-  assert.equal(trialHandbookOnly([book], { [def]: trialYaml }), true);
-  assert.equal(trialHandbookOnly([book], { [def]: graduated }), false, "on its own: every change is a card");
-  assert.equal(trialHandbookOnly([book], {}), false, "a new agent (not on main yet): tap 1");
-  assert.equal(trialHandbookOnly([book, def], { [def]: trialYaml }), false, "its definition changes too: a card");
-  assert.equal(trialHandbookOnly([book, "instance.yaml"], { [def]: trialYaml }), false);
-  assert.equal(trialHandbookOnly(["agents/review-chaser.md"], { [def]: trialYaml }), false);
-  assert.equal(trialHandbookOnly([], {}), false);
 });
 test("the no-tap path is only for tasks the owner or the Architect (by the grants table's role) started", async () => {
   const { trialNoTapBy } = await import("../src/apply.ts");
@@ -110,7 +101,7 @@ test("landing refuses when the guard fails on the exact main it would merge onto
   g(w, "checkout", "-q", "main");
   writeFileSync(join(w, def), graduated);
   g(w, "commit", "-qam", "graduate"); g(w, "push", "-q", "origin", "main");
-  const stillTrial = async (main) => trialHandbookOnly([book], { [def]: g(w, "show", `${main}:${def}`) });
+  const stillTrial = async (main) => /^trial: true$/m.test(g(w, "show", `${main}:${def}`));
   await assert.rejects(landOnMain(w, "main", shown, "note", { guard: stillTrial }), /no longer/);
   assert.equal(g(w, "show", `origin/main:${book}`), "v1");
 });

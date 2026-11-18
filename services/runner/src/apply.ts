@@ -35,13 +35,6 @@ export const untrialedNewAgents = (files: string[], base: Record<string, string 
   files.filter((f) => DEFINITION.test(f) && base[f] === undefined && head[f] !== undefined && !isTrial(head[f])).map((f) => DEFINITION.exec(f)![1]);
 
 /**
- * The trial exception: a change that only edits the handbooks of agents in trial lands without a
- * tap. In trial means at the merge base (main as it was), not on the branch, and the definition isn't in the change.
- */
-export const trialHandbookOnly = (files: string[], base: Record<string, string | undefined>) =>
-  files.length > 0 && files.every((f) => HANDBOOK.test(f) && isTrial(base[`agents/${HANDBOOK.exec(f)![1]}/agent.yaml`]));
-
-/**
  * The graduation card's list of what changed without a tap: when the change flips an agent from trial to not-trial,
  * the handbook-only commits on main touching its AGENTS.md since the commit that added its agent.yaml (tap 1), up to the
  * change's merge base. Built from git by the runner, never from agent-written text. "" when nothing graduates.

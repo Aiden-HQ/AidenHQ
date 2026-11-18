@@ -5,9 +5,8 @@ import { readFileSync } from "node:fs";
 import YAML from "yaml";
 import { classify, newGrants } from "../src/tiers.mjs";
 import { dependabotCommits } from "../../../modules/platform/src/check.mjs";
-import { afterReview, priorDecisions, priorPart, rejectedSince, requestTargets, routineCap } from "../../../kernel/src/tier.ts";
+import { afterReview, origins, priorDecisions, priorPart, rejectedSince, requestTargets, routineCap } from "../../../kernel/src/tier.ts";
 import { moduleInputs, withGrantOverrides } from "../../../kernel/src/loader/authority.ts";
-import { origins } from "../src/paperclip.ts";
 
 test("a replayed approval: only a later no on its branches (or a merge, or the owner's veto) outranks it", () => {
   const b = { repo: "acme/aidenhq", branch: "fix/a" };
@@ -200,7 +199,7 @@ test("a routine run's unparented task keeps the cap: traced through Paperclip's 
   const pc = { issue: async (id) => issues[id], run: async (id) => runs[id] ?? Promise.reject(new Error("404 Heartbeat run not found")) };
   for (const t of ["t-2", "t-3"]) {
     const { issues: found, complete } = await origins(pc, issues[t]);
-    assert.equal(routineCap(found, complete, { r1: "tier0" }), "tier0", `${t} keeps r1's cap`);
+    assert.deepEqual(routineCap(found, complete, { r1: "tier0" }), { cap: "tier0", routine: "r1" }, `${t} keeps r1's cap`);
   }
   const own = await origins(pc, { id: "o-1", parentId: null });
   assert.equal(routineCap(own.issues, own.complete, { r1: "tier0" }), undefined, "the owner's own task: no cap");
@@ -208,17 +207,14 @@ test("a routine run's unparented task keeps the cap: traced through Paperclip's 
 
 test("a routine's autonomy caps the tasks its run started; changing it is the owner's", () => {
   const run = { originKind: "routine_execution", originId: "r1" };
-  assert.equal(routineCap([{}, run], true, { r1: "tier0" }), "tier0", "a delegation under the run task");
-  assert.equal(routineCap([run], true, {}), "off", "a routine the table doesn't know: fails closed");
-  assert.equal(routineCap([run], true, { r1: "yes" }), "off", "an invalid value: fails closed");
-  assert.equal(routineCap([run], true, { r1: "full" }), "full", "full: no cap");
-  assert.equal(routineCap([{}, {}], true, {}), undefined, "no routine run: no cap");
-  assert.equal(routineCap([{}], false, {}), "off", "a trace too long to finish: strictest");
-  assert.equal(routineCap([{}, run, { originKind: "routine_execution", originId: "r2" }], true, { r1: "full", r2: "tier0" }), "tier0", "the strictest routine found");
-  assert.equal(tierOf(pub("pr", { repo: "acme/bor" }, { routineAutonomy: "tier0" })), 2, "tier0: Tier 1 is the owner's");
-  assert.equal(tierOf(pub("push", {}, { routineAutonomy: "tier0" })), 0, "tier0: Tier 0 still runs");
-  assert.equal(tierOf(pub("push", {}, { routineAutonomy: "off" })), 2, "off: Tier 0 is the owner's too");
-  assert.equal(tierOf(pub("pr", { repo: "acme/bor" }, { routineAutonomy: "full" })), 1, "full: no cap");
+  const capOf = (...a) => routineCap(...a)?.cap;
+  assert.equal(capOf([{}, run], true, { r1: "tier0" }), "tier0", "a delegation under the run task");
+  assert.equal(capOf([run], true, {}), "off", "a routine the table doesn't know: fails closed");
+  assert.equal(capOf([run], true, { r1: "yes" }), "off", "an invalid value: fails closed");
+  assert.equal(capOf([run], true, { r1: "full" }), "full", "full: no cap");
+  assert.equal(capOf([{}, {}], true, {}), undefined, "no routine run: no cap");
+  assert.equal(capOf([{}], false, {}), "off", "a trace too long to finish: strictest");
+  assert.equal(capOf([{}, run, { originKind: "routine_execution", originId: "r2" }], true, { r1: "full", r2: "tier0" }), "tier0", "the strictest routine found");
   const agent = (r) => def({ name: "K", description: "d", model: "m", budget: 5, routines: r });
   const r0 = { scan: { title: "S", schedules: [] } };
   assert.equal(tierOf(apply(["agents/k/agent.yaml"], { "agents/k/agent.yaml": agent(r0) }, { "agents/k/agent.yaml": agent({ scan: { ...r0.scan, autonomy: "full" } }) })), "panel", "an instance routine raising its own cap");

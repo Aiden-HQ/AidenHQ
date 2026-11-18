@@ -16,7 +16,7 @@ import type { Resolver } from "./net.ts";
 import { canonical, digestOf, type Card, type Rec, type Records, type Requester } from "./records.ts";
 import type { Reviews } from "./reviews.ts";
 import { LOCAL_ORG, repoKey, runnerFacts, type Repos } from "./kinds.ts";
-import { REVIEW_TRIES, afterReview, codeVerdict, computeTier, failedVerdict, heldInput, shadowed, type Autonomy, type Raise, type ReviewFirst, type ReviewInput, type Tier, type Verdict } from "./tier.ts";
+import { REVIEW_TRIES, afterReview, capText, codeVerdict, computeTier, failedVerdict, heldInput, shadowed, type Autonomy, type Raise, type ReviewFirst, type ReviewInput, type Cap, type RoutineCap, type Tier, type Verdict } from "./tier.ts";
 
 export type Schema = { type?: string; properties?: { [k: string]: Schema }; required?: string[]; additionalProperties?: boolean; enum?: unknown[]; pattern?: string; minLength?: number; maxLength?: number; items?: Schema; minItems?: number; maxItems?: number; minimum?: number; maximum?: number; exclusiveMinimum?: number };
 /**
@@ -26,12 +26,12 @@ export type Schema = { type?: string; properties?: { [k: string]: Schema }; requ
 export type Kind = { module: string; floor: Tier; panel?: boolean; tools: string[]; card?: Partial<Card>; args?: Schema; executor?: { url: string; auth_secret: string; rev?: string }; runner?: boolean };
 type Plan = { args: unknown; targets?: { [k: string]: unknown }; facts?: { [k: string]: unknown }; raise?: Raise; card?: { [k: string]: string }; satisfied?: { evidence: string } };
 /**
- * The runner's plan for its own kind (it is that kind's planner until 3d): the tier its classifier gave (caps applied),
+ * The runner's plan for its own kind (it is that kind's planner until 3d): the tier its classifier gave on the merits,
  * whether and how the record is review-first, and the card text. A proposal only: the kernel raises it by what it derives
- * itself (kinds.ts runnerFacts, the autonomy setting, the owner's veto in its records) and never lowers anything.
+ * itself (kinds.ts runnerFacts, the owner's veto in its records, the caps: computeTier) and never lowers anything.
  */
 export type RunnerPlan = {
-  tier: Tier; merit?: Tier; reviewFirst?: ReviewFirst | null; panel?: boolean; reason?: string; rule?: string;
+  tier: Tier; reviewFirst?: ReviewFirst | null; panel?: boolean; reason?: string; rule?: string;
   card: Partial<Card>; targets?: { [k: string]: unknown };
   /** A rebuild's replay of approved commits: those records (approved, on this task, a push or PR on the same target). */
   carries?: string[];
@@ -88,7 +88,7 @@ export function createWrites({ records, registry, connections, secret, resolver,
   /** The product and instance repositories (runner kinds' floors and refusals). */
   repos?: () => Repos;
   /** The task a record is on: still open (and its parent), and a notice on it (fixed text; the module's words only fenced). */
-  onTask: { open(task: string): Promise<boolean>; notify(task: string, text: string): Promise<void>; parent?(task: string): Promise<string | undefined>; routineCap?(task: string): Promise<string | undefined> };
+  onTask: { open(task: string): Promise<boolean>; notify(task: string, text: string): Promise<void>; parent?(task: string): Promise<string | undefined>; routineCap?(task: string): Promise<RoutineCap | undefined> };
   /** Executes an approved conn.tool record: the stored call, through the proxy, as its requester. */
   replay: (r: Rec) => Promise<{ ok: boolean; text: string }>;
   /** The kernel's own executors, by kind (kernel.raise_cap). */
@@ -134,15 +134,21 @@ export function createWrites({ records, registry, connections, secret, resolver,
     return c && (c.tools.write.includes(tool) || c.tools.destructive.includes(tool)) ? CONN_TOOL : undefined;
   }
 
+  /** The cap of a routine whose run started the task's chain (tier.ts taskRoutineCap: an unreadable trace is off). */
+  const routineOf = async (task: string) => (task && onTask.routineCap ? onTask.routineCap(task) : undefined);
+  /** The cap now that outranks the AI reviewer's yes on a task: the instance's autonomy below full, or a routine's below full. */
+  const capOverReviewer = (routine: RoutineCap | undefined): Cap | undefined =>
+    routine && routine.cap !== "full" ? { by: "routine", value: routine.cap, ...(routine.routine ? { routine: routine.routine } : {}) } : autonomy() !== "full" ? { by: "autonomy", value: autonomy() } : undefined;
   /**
-   * The tier with the cap of a routine whose run started the task's chain (tier.ts routineCap, as the runner caps its own
-   * kinds): traced only when it can matter, a Tier 1 write on a task.
+   * Revalidate at execution: a record the AI reviewer approved runs only while its yes still stands, under the autonomy and
+   * the routine cap now (traced again; an unreadable trace is off). Tightened since: held for the owner instead (false).
    */
-  async function capped(task: string, input: Parameters<typeof computeTier>[0]): Promise<ReturnType<typeof computeTier> & { routineCap?: Autonomy }> {
-    const t = computeTier(input);
-    if (t.tier !== 1 || !task || !onTask.routineCap) return t;
-    const routineCap = (await onTask.routineCap(task)) as Autonomy | undefined;
-    return routineCap && routineCap !== "full" ? { ...computeTier({ ...input, routineCap }), routineCap } : t;
+  async function revalidate(r: Rec): Promise<boolean> {
+    if (!r.decided_by?.startsWith("reviewer:")) return true;
+    const cap = capOverReviewer(await routineOf(r.task));
+    if (!cap) return true;
+    records.hold(r.id, cap, `since the AI reviewer approved it, ${capText(cap)}, so the owner decides`);
+    return false;
   }
 
   /** Plan, tier, card and file. Tier 0 comes back claimed (the caller executes it); `satisfied` comes back done. */
@@ -159,7 +165,7 @@ export function createWrites({ records, registry, connections, secret, resolver,
       return records.get(r.id)!;
     }
     const raise = plan.raise && (plan.raise.tier === 1 || plan.raise.tier === 2) ? plan.raise : undefined;
-    const t = await capped(task, { floor: k.floor, raise, priorVeto: task ? records.vetoed(task, kind, { digest: digestOf(base) }) : false, autonomy: autonomy(), panel: k.panel === true });
+    const t = computeTier({ floor: k.floor, raise, priorVeto: task ? records.vetoed(task, kind, { digest: digestOf(base) }) : false, autonomy: autonomy(), routine: await routineOf(task), panel: k.panel === true });
     if (t.tier > 0 && !task) throw fail(400, "no_task", `${kind} needs approval: pass your current task`);
     // The same requester's same request still open on the task is that record, never a second card that would run twice,
     // while it is at least as strict (tier and panel). A stricter one replaces it only while it waits for the reviewer; a
@@ -168,17 +174,17 @@ export function createWrites({ records, registry, connections, secret, resolver,
     const same = t.tier > 0 ? records.open(task, kind, digestOf(base)).find((r) => who(r.requester) === who(requester)) : undefined;
     if (same && same.tier >= t.tier && (same.panel || !t.panel)) return same;
     if (same?.state === "review") records.close(same.id, "cancelled", "replaced by the same request at a stricter tier");
-    return records.file({ ...base, card: { ...card, reason: raise?.reason?.slice(0, 300) ?? "" }, tier: t.tier, merit: t.merit, panel: t.panel, review_first: t.tier > 0 ? t.reviewFirst : null, rule: raise?.rule ?? (t.routineCap ? "routine-autonomy" : null), state: t.tier === 0 ? "claimed" : "review" });
+    return records.file({ ...base, card: { ...card, reason: (t.rule ? capText(t.cap!) : raise?.reason)?.slice(0, 300) ?? "" }, tier: t.tier, merit: t.merit, panel: t.panel, review_first: t.reviewFirst, rule: t.rule ?? raise?.rule ?? null, cap: t.cap ?? null, state: t.state });
   }
 
   /**
-   * A runner kind (or kernel.apply), filed with the runner's plan, which only proposes: the tier is the highest of the plan's,
-   * the kind's floor and what the kernel reads from the args (runnerFacts); autonomy off lifts Tier 0 to the owner and Tier 1
-   * to review-first; new module authority and the owner's veto (its own records, on every filing) make it Tier 2 after the
-   * reviewer. The same request still open is that record; a changed one on the same target replaces it. Tier 0 comes back
-   * claimed: the runner runs it and reports the outcome.
+   * A runner kind (or kernel.apply), filed with the runner's plan, which only proposes: the merit tier is the highest of the
+   * plan's, the kind's floor and what the kernel reads from the args (runnerFacts); new module authority and the owner's veto
+   * (its own records, on every filing) make it Tier 2 after the reviewer; then the caps (computeTier). The same request still
+   * open is that record; a changed one on the same target replaces it. Tier 0 comes back claimed: the runner runs it and
+   * reports the outcome.
    */
-  function fileRunner(kind: string, k: Kind, { task, identifier, args, plan }: { task: string; identifier?: string; args: unknown; plan: RunnerPlan }): Rec {
+  async function fileRunner(kind: string, k: Kind, { task, identifier, args, plan }: { task: string; identifier?: string; args: unknown; plan: RunnerPlan }): Promise<Rec> {
     if (!task) throw fail(400, "no_task", "a runner request names its task");
     if (k.args) validate(k.args, args);
     const f = runnerFacts(kind, args, repos());
@@ -187,36 +193,36 @@ export function createWrites({ records, registry, connections, secret, resolver,
     const card = render(literal(plan.card ?? {}), plan.card ?? {}, 4_000_000);
     const base = { kind, module: k.module, args, targets: plan.targets ?? {}, executor: { module: k.module }, policy: policy(k), card, requester: { agent: "", key: "", name: "the runner", roles: [], kind: "runner" }, task };
     const digest = digestOf(base);
-    const open = records.open(task, kind, digest)[0];
+    const routine = await routineOf(task);
+    const open = records.open(task, kind, digest)[0]; // after the trace: a concurrent filing of the same request is found
     if (open) return open;
     const proposed = ([0, 1, 2].includes(plan.tier) ? plan.tier : 2) as Tier;
     // A replay of approved commits onto a new base (the runner's rebuild) is carried by those approvals, which the kernel
     // checks: on this task, the same kind, merge flag, target and content (patch keys), never stale, and the reviewer's
-    // yes only while autonomy is full.
+    // yes only while autonomy is full and no routine caps the task.
+    const reviewerCarries = !capOverReviewer(routine);
     const carries = Array.isArray(plan.carries) ? plan.carries.map((id) => records.get(String(id))) : [];
     const sameMerge = (c: Rec) => Boolean((c.args as { merge?: unknown })?.merge) === Boolean((args as { merge?: unknown })?.merge);
     const carried = carries.length > 0 && carries.every((c) => Boolean(c && c.task === task && c.kind === kind && ["runner.push", "runner.pr"].includes(kind) && sameMerge(c) && ["approved", "claimed", "done"].includes(c.state)
-      && c.decided_by && !c.decided_by.startsWith("stale:") && (!c.decided_by.startsWith("reviewer:") || autonomy() === "full") && f.target && c.target === f.target && f.content && f.content !== "?" && c.content === f.content));
+      && c.decided_by && !c.decided_by.startsWith("stale:") && (!c.decided_by.startsWith("reviewer:") || reviewerCarries) && f.target && c.target === f.target && f.content && f.content !== "?" && c.content === f.content));
     // A replay the approvals don't carry is refused, never turned into a card: the runner files the request on its own then.
     if (carries.length && !carried) throw fail(422, "refused", "those approvals don't carry this replay");
-    // The owner's own yes carries a replay whatever the autonomy setting (the runner's approvalStands); the reviewer's doesn't.
+    // The owner's own yes carries a replay whatever the caps (the runner's approvalStands); the reviewer's doesn't.
     const ownerCarried = carried && carries.every((c) => !c!.decided_by!.startsWith("reviewer:"));
     let tier = Math.max(proposed, carried ? 0 : k.floor, carried ? 0 : f.floor) as Tier;
     let reviewFirst: ReviewFirst | null = plan.reviewFirst === "owner" || plan.reviewFirst === "final" ? plan.reviewFirst : null;
     let rule = plan.rule && /^[a-z0-9]+(-[a-z0-9]+)*$/.test(plan.rule) ? plan.rule : null;
     let reason = plan.reason ?? "";
     if (tier === 2 && proposed < 2) reviewFirst ??= "final"; // raised by a floor: reviewed first, then the owner's
-    if (autonomy() === "off" && tier === 0 && !ownerCarried) [tier, reviewFirst, rule, reason] = [2, null, "autonomy-off", `autonomy is off (was: ${reason})`];
-    if (tier === 1 && autonomy() === "off") reviewFirst ??= "final";
     if (f.ownerRequired) { tier = 2; reviewFirst = reviewFirst === "owner" ? "owner" : "final"; }
     if (f.owner) [tier, reviewFirst, rule, reason] = [2, "owner", "unknown-repos", `the product or instance repo isn't set here, so the owner decides (was: ${reason})`];
     const veto = records.vetoed(task, kind, { digest, content: f.content });
     if (veto) [tier, reviewFirst, rule, reason] = [2, "owner", "owner-veto", `the owner rejected this action on this task, so they decide (was: ${reason})`];
     if (tier === 1 && reviewFirst) tier = 2;
-    const toReviewer = tier === 1 || reviewFirst !== null;
+    const t = computeTier({ floor: tier, reviewFirst, ...(ownerCarried ? {} : { autonomy: autonomy(), routine }) });
     return records.file({
-      ...base, card: { ...card, reason: reason.slice(0, 1000) }, tier, merit: (plan.merit ?? tier) as Tier, panel: Boolean(plan.panel || k.panel) && toReviewer, review_first: toReviewer ? reviewFirst : null,
-      rule, identifier: identifier ?? null, target: f.target ?? null, content: f.content, state: tier === 0 ? "claimed" : toReviewer ? "review" : "owner",
+      ...base, card: { ...card, reason: (t.rule ? `${capText(t.cap!)} (was: ${reason})` : reason).slice(0, 1000) }, tier: t.tier, merit: t.merit, panel: Boolean(plan.panel || k.panel) && t.state === "review", review_first: t.reviewFirst,
+      rule: t.rule ?? rule, identifier: identifier ?? null, target: f.target ?? null, content: f.content, cap: t.cap ?? null, state: t.state,
     });
   }
 
@@ -247,7 +253,7 @@ export function createWrites({ records, registry, connections, secret, resolver,
   async function run(id: string): Promise<void> {
     const pre = records.get(id);
     if (!pre || kindOf_(pre.kind)?.runner) return;
-    if (!records.claim(id)) return;
+    if (pre.state !== "approved" || !(await revalidate(pre)) || !records.claim(id)) return;
     const r = records.get(id)!;
     try {
       if (r.task && !(await onTask.open(r.task))) return void records.finish(id, false, "Not run: the task is closed, so a leftover request runs nothing.");
@@ -334,7 +340,7 @@ export function createWrites({ records, registry, connections, secret, resolver,
       return r;
     },
     /** POST /v1/writes with the runner's key: one of its kinds (or kernel.apply), with its plan. */
-    fileRunner(b: { kind: string; task: string; identifier?: string; args: unknown; plan: RunnerPlan }): Rec {
+    fileRunner(b: { kind: string; task: string; identifier?: string; args: unknown; plan: RunnerPlan }): Promise<Rec> {
       const k = kindOf_(b.kind);
       if (!k?.runner) throw fail(404, "unknown_kind", `no runner kind ${b.kind}`);
       return fileRunner(b.kind, k, b);
@@ -354,11 +360,11 @@ export function createWrites({ records, registry, connections, secret, resolver,
       const c = conn(connection)!;
       const floor: Tier = c.tools.destructive.includes(tool) ? 1 : 0;
       // The owner's no on a destructive tool holds for that tool on the task, never for the task's other writes.
-      const t = await capped(task, { floor, priorVeto: floor > 0 && task ? records.vetoed(task, CONN_TOOL, { tool: `${connection}.${tool}` }) : false, autonomy: autonomy() });
+      const t = computeTier({ floor, priorVeto: floor > 0 && task ? records.vetoed(task, CONN_TOOL, { tool: `${connection}.${tool}` }) : false, autonomy: autonomy(), routine: await routineOf(task) });
       if (t.tier > 0 && !task) throw fail(400, "no_task", `${connection}.${tool} needs approval: pass your current task`);
       const shown = JSON.stringify(args ?? {}).slice(0, 4000);
       const card = { sentence: `Call ${connection}.${tool}.`, changes: `Whatever ${connection}.${tool} changes, with these arguments.`, reads: "Nothing new.", cost: "No model cost.", details: `tool: ${connection}.${tool}\narguments (written by the requesting agent): ${shown}` };
-      return records.file({ kind: CONN_TOOL, module: c.module, args: { connection, tool, arguments: args ?? {} }, targets: {}, executor: { module: c.module }, policy: "", card, requester: requesterOf(who, task), task, tier: t.tier, merit: t.merit, panel: false, review_first: t.tier > 0 ? t.reviewFirst : null, state: t.tier === 0 ? "claimed" : "review" });
+      return records.file({ kind: CONN_TOOL, module: c.module, args: { connection, tool, arguments: args ?? {} }, targets: {}, executor: { module: c.module }, policy: "", card: t.rule ? { ...card, reason: capText(t.cap!) } : card, requester: requesterOf(who, task), task, tier: t.tier, merit: t.merit, panel: false, review_first: t.reviewFirst, rule: t.rule ?? null, cap: t.cap ?? null, state: t.state });
     },
     outcome: outcomeOf,
     /** Resolves once the record has an outcome, or with it as it is after `ms`. */
@@ -372,12 +378,21 @@ export function createWrites({ records, registry, connections, secret, resolver,
     },
     run,
     /** approved → claimed by the runner, for its own kinds. */
-    claim(id: string): Rec | undefined {
+    async claim(id: string): Promise<Rec | undefined> {
       const r = records.get(id);
-      if (!r || !kindOf_(r.kind)?.runner || !records.claim(id)) return undefined;
+      if (!r || !kindOf_(r.kind)?.runner || r.state !== "approved" || !(await revalidate(r)) || !records.claim(id)) return undefined;
       return records.get(id);
     },
     isRunnerKind: (kind: string) => Boolean(kindOf_(kind)?.runner),
+    /**
+     * Why a Tier 0 write on this task would be held for the owner now (computeTier's caps), or undefined: it runs. For a
+     * requester's Tier 0 act that has no record of its own (the runner's close, its merge queue's split), never a second
+     * tier function.
+     */
+    async held(task: string): Promise<string | undefined> {
+      const t = computeTier({ floor: 0, autonomy: autonomy(), routine: await routineOf(task) });
+      return t.cap ? capText(t.cap) : undefined;
+    },
     /** The owner's decision (a channel's token or the kernel's page). `by` names who, never the reviewer or the code. */
     decide(id: string, b: { digest: string; decision: "approve" | "reject"; by: string; via: string; reason?: string }): Rec | string {
       if (!/^(owner:[a-z]{1,16}|account:[\w-]{1,64}|watcher|stale:watcher)$/.test(b.by) || !/^[a-z]{1,16}$/.test(b.via)) return "by or via isn't a decider this route stamps";
@@ -405,7 +420,8 @@ export function createWrites({ records, registry, connections, secret, resolver,
       reviewing.add(id);
       try {
         const model = typeof b.input?.model === "string" && MODEL.test(b.input.model) ? b.input.model : "kernel/code";
-        const input = heldInput({ ...(b.input ?? { tier: 1 }) }, r.review_first);
+        // The cap is the record's, as it was tiered at filing: the label of a capped approve never depends on a second trace.
+        const input = heldInput({ ...(b.input ?? { tier: 1 }), cap: r.cap ?? null }, r.review_first);
         let v = codeVerdict(input, model) ?? afterReview(input, await ask(r, b.request ?? {}, model));
         if (v.code === "reviewer_failed") {
           const n = (wait?.n ?? 0) + 1;

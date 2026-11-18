@@ -220,6 +220,3 @@ export const unresolvedBlockers = (issue: any): any[] => (issue?.blockedBy ?? []
 
 /** Paperclip refuses a status write on a task with an unresolved blocker with a 422; that is no run failure. */
 export const blockedRefusal = (err: any) => /→ 422:.*blocked by unresolved blockers/i.test(String(err?.message ?? err));
-
-/** Every issue a task traces back to, for its routine cap: kernel/src/tier.ts origins. */
-export { origins } from "../../../kernel/src/tier.ts";

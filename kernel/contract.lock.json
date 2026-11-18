@@ -103,6 +103,7 @@
     "route POST /v1/writes/:id/claim": {"state":"experimental","fp":"auth=runner"},
     "route POST /v1/writes/:id/outcome": {"state":"experimental","fp":"auth=module|runner"},
     "route POST /v1/writes/:id/review": {"state":"experimental","fp":"auth=runner"},
+    "route POST /v1/writes/held": {"state":"experimental","fp":"auth=runner"},
     "schema advisories.json": {"state":"experimental","fp":"{\"req\":true,\"closed\":true,\"type\":\"object\"}"},
     "schema advisories.json.advisories": {"state":"experimental","fp":"{\"req\":true,\"type\":\"array\"}"},
     "schema advisories.json.advisories[]": {"state":"experimental","fp":"{\"req\":false,\"closed\":true,\"type\":\"object\"}"},

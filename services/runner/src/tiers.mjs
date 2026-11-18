@@ -6,10 +6,11 @@
 // request with several parts takes its highest part (Tier 1 with the panel above plain Tier 1).
 // The git rules are the code host's (modules/codehost-github/src/plan.mjs), the product's own files and the owner-approval
 // records the platform check's (modules/platform/src/check.mjs); this file combines them with the module and apply rules,
-// and the shared rules (kernel/src/tier.ts: earlier decisions and the caps).
+// and the shared rules (kernel/src/tier.ts: earlier decisions). The tier is a proposal on the merits: the kernel applies the
+// caps (the instance's autonomy, a routine's) when the request is filed (tier.ts computeTier).
 import YAML from "yaml";
 import { classifyModules, diffAll, forkChanges, grantOverrides, marketplaceChanges } from "../../../kernel/src/loader/authority.ts";
-import { REJECT, T, highest, meritOwner, priorDecisions, priorPart, requestKey, requestPatches, requestTargets, routineCapped } from "../../../kernel/src/tier.ts";
+import { REJECT, T, highest, meritOwner, priorDecisions, priorPart, requestKey, requestPatches, requestTargets } from "../../../kernel/src/tier.ts";
 import { planParts } from "../../../modules/codehost-github/src/plan.mjs";
 import { COMPOSE, GATE_CORE as MODULES_GATE_CORE, check, imageRepo } from "../../../modules/platform/src/check.mjs";
 import { GATE_CORE as PRODUCT_GATE_CORE } from "./gate-core.mjs";
@@ -26,8 +27,7 @@ const same = (a, b) => String(a ?? "").toLowerCase() === String(b ?? "").toLower
 /**
  * The tier of one request. `s` is the verified state:
  * - every action: { agentsOrg, agentsOrgs (one per enabled code host: the GitHub agents org, local), productRepo, modulesRepo (the official modules repo: its PR card may merge, plan.mjs), instanceRepo, requester: { platform }, records (the task's approval records,
- *   from the board: earlier decisions, see priorDecisions), also (the actions the request also carries), routineAutonomy }
- * - routineAutonomy: the cap of the routine whose run the task chain started from (routineCap); absent when none
+ *   from the board: earlier decisions, see priorDecisions), also (the actions the request also carries) }
  * - connections: each connection's tool tags from the compiled config ({ name: { tools: { read, write, destructive } } })
  * - every action's requester.platform: the Platform Engineer's line (the Platform Engineer itself, a task the Agent
  *   Architect made, or the owner's own task), the only one that writes to the product repo below Tier 2
@@ -43,7 +43,7 @@ const same = (a, b) => String(a ?? "").toLowerCase() === String(b ?? "").toLower
  * - create_repo: { repo } (the runner checked it doesn't exist yet)
  */
 export function classify(action, s) {
-  return routineCapped(meritOwner(onMerits(action, s)), s.routineAutonomy);
+  return meritOwner(onMerits(action, s));
 }
 
 function onMerits(action, s) {

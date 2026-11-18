@@ -73,10 +73,12 @@ agent, never to the owner.
     (`owner_tier`). Only code's own refusals (the head moved, `refused_by_code`) close it, and a reviewer that keeps failing
     hands it to the owner with that note. The kernel refuses a reviewer approve or reject on such a card (`review_first =
     owner`), and its own owner-veto check files the card for the reviewer first.
-  - **A cap on a Tier 1 write** (a routine's autonomy, `routineCapped`, code `routine_autonomy`; the instance's, `autonomyCap`,
-    `autonomy_off`): Tier 1 semantics, so the reviewer's reject is final and its approve goes on to the owner. The kernel
+  - **A cap on a Tier 1 write** (a routine's autonomy, code `routine_autonomy`; the instance's, `autonomy_off`; the kernel's
+    `computeTier` applies both on every path and keeps the cap on the record, `cap`): Tier 1 semantics, so the reviewer's
+    reject is final and its approve goes on to the owner. The kernel
     refuses a reviewer approve on it (`review_first = final`).
-  - A capped Tier 0 write (autonomy off, or a routine's `off`) still waits for the owner's tap without a review.
+  - A capped Tier 0 write (autonomy off, or a routine's `off`, or a routine trace that can't be read) waits for the owner's
+    tap without a review, on every path.
 
   The kernel's records do the same: each keeps its tier before the autonomy caps (`merit`), and a merit-2 record's reject goes
   to the owner (`records.ts` `review`).
@@ -163,12 +165,12 @@ reason_code, reason, second_review}`.
 
 ## Autonomy
 
-The instance setting `autonomy` (a kernel setting, `kernel/settings.json`) controls how far this goes. The runner reads it fresh each
-time, so it is also the pause switch.
+The instance setting `autonomy` (a kernel setting, `kernel/settings.json`) controls how far this goes. The kernel reads it fresh
+for every write it tiers, so it is also the pause switch.
 
 - `off` (default): the owner decides every write, but the AI review still runs first (every install and update is
   reviewed regardless). Tier 0 is a card for the owner; Tier 1 goes to the reviewer first: its reject is final, its
-  approve goes on to the owner's card with its verdict (`tiers.mjs` `autonomyCap`). Tier 2 is reviewed first too, then the owner decides.
+  approve goes on to the owner's card with its verdict (`tier.ts` `computeTier`). Tier 2 is reviewed first too, then the owner decides.
 - `tier0`: Tier 0 runs. On Tier 1, the reviewer comments with what it would do and the owner decides (shadow mode).
 - `full`: the reviewer decides Tier 1.
 
