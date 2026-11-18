@@ -1,5 +1,5 @@
-// A fast-lane agent's chat (slack-live-mcp's lane, proxied by the board at /api/lane): the conversation lives in the lane,
-// not in a Paperclip task. Polls every 1.5s while the agent is busy or for 10s after a send, else every 15s.
+// A fast-lane agent's chat (/api/lane): its chat task, which the chat-lane module answers in seconds. Polls every 1.5s while
+// the agent owes a reply or for 10s after a send, else every 15s.
 import { useCallback, useEffect, useRef, useState } from "react";
 import { api } from "./api";
 import { Markdown } from "./markdown";
@@ -79,25 +79,19 @@ export function LaneChat({ agent, mobile, crew, go }: { agent: LaneAgent; mobile
         <div className="conv-inner">
           {error && <div className="alert">{error}</div>}
           {!all.length && !error && <p className="conv-empty muted">No messages yet.</p>}
-          {all.map((m) =>
-            m.role === "wake" ? (
-              <div key={m.id} className="notice" title={m.text}>
-                reminder · {clock(m.at)}
-              </div>
-            ) : (
-              <div key={m.id} className={`msg ${m.role}`}>
-                {m.role === "agent" && (
-                  <div className="msg-who">
-                    <Monogram name={agent.name} size={26} avatar={portraitOf(crew, agent.key)} /> <b className="msg-name">{agent.name}</b> <span className="msg-time">{clock(m.at)}</span>
-                  </div>
-                )}
-                <div className="bubble">
-                  <Markdown text={m.text} prefix="" className="md" />
+          {all.map((m) => (
+            <div key={m.id} className={`msg ${m.role}`}>
+              {m.role === "agent" && (
+                <div className="msg-who">
+                  <Monogram name={agent.name} size={26} avatar={portraitOf(crew, agent.key)} /> <b className="msg-name">{agent.name}</b> <span className="msg-time">{clock(m.at)}</span>
                 </div>
-                {m.role === "owner" && <div className="msg-meta">{clock(m.at)}</div>}
+              )}
+              <div className="bubble">
+                <Markdown text={m.text} prefix="" className="md" />
               </div>
-            ),
-          )}
+              {m.role === "owner" && <div className="msg-meta">{clock(m.at)}</div>}
+            </div>
+          ))}
           {replying && <div className="notice">{agent.name} is replying…</div>}
           <div ref={end} />
         </div>

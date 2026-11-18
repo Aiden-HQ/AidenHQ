@@ -82,7 +82,7 @@ export interface AppOptions {
   /** googleConnect: Google's Connect from the board's https address `url` (a Web-app OAuth client, ops/setup.sh). */
   lan?: { url: string; googleConnect?: boolean };
   internalToken?: string;
-  /** The fast chat lane (slack-live-mcp /lane); without it the lane routes answer empty. */
+  /** The fast chat lane: its agents and their chat tasks, from the grants table; without it the lane routes answer empty. */
   lane?: LaneOptions;
   /** Shared by the listeners: the runner reports to the internal one, the board reads it on the others. */
   activity?: { runner?: RunnerReport };
@@ -1461,9 +1461,9 @@ export function createApp(opts: AppOptions): Server {
         const named = input.agent ? crew.find((a) => a.id === input.agent || a.metadata?.setupKey === `aidenhq:${input.agent}` || a.name.toLowerCase() === input.agent!.toLowerCase()) : undefined;
         const { agent, note } = named && named.status !== "paused" ? { agent: named, note: undefined } : pickAgent(input.text, crew);
         // A fast-lane agent answers in the lane, not in a task: the board opens its lane chat (`lane:<key>`).
-        const lane = (await laneAgents(opts.lane)).find((l) => l.id === agent.id);
+        const lane = (await laneAgents(pc, opts.lane)).find((l) => l.id === agent.id);
         if (lane) {
-          await laneSend(opts.lane, lane.key, input.text, await laneByline(req));
+          await laneSend(pc, opts.lane, lane.key, input.text, await laneByline(req));
           return { identifier: `lane:${lane.key}` };
         }
         const label = await labelNamed(ctx, "chat", "#0ea5e9");
@@ -1473,15 +1473,15 @@ export function createApp(opts: AppOptions): Server {
         return { identifier: issue.identifier };
       },
     },
-    // The fast chat lane's agents and conversations (lane.ts): proxied with the internal token.
-    { method: "GET", path: /^\/api\/lane$/, handle: async () => ({ agents: await laneAgents(opts.lane) }) },
-    { method: "GET", path: /^\/api\/lane\/([^/]+)\/messages$/, handle: async (m, _b, url) => laneMessages(opts.lane, decodeURIComponent(m[1]!), url.searchParams.get("after") ?? "") },
+    // The fast chat lane's agents and their chats (lane.ts): each agent's chat task.
+    { method: "GET", path: /^\/api\/lane$/, handle: async () => ({ agents: await laneAgents(pc, opts.lane) }) },
+    { method: "GET", path: /^\/api\/lane\/([^/]+)\/messages$/, handle: async (m, _b, url) => laneMessages(pc, opts.lane, decodeURIComponent(m[1]!), url.searchParams.get("after") ?? "") },
     {
       method: "POST",
       path: /^\/api\/lane\/([^/]+)\/messages$/,
       handle: async (m, body, _u, req) => {
         const { text } = parse(z.object({ text: z.string().trim().min(1).max(8000) }).strict(), body);
-        await laneSend(opts.lane, decodeURIComponent(m[1]!), text, await laneByline(req));
+        await laneSend(pc, opts.lane, decodeURIComponent(m[1]!), text, await laneByline(req));
         return { ok: true };
       },
     },

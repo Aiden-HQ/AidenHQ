@@ -553,7 +553,7 @@ export interface LaneAgent {
 }
 export interface LaneMessage {
   id: string;
-  role: "owner" | "agent" | "wake";
+  role: "owner" | "agent";
   text: string;
   at: number;
 }
