@@ -9,14 +9,14 @@ import { mintToken } from "../src/gateway/token.ts";
 test("jobtools: a job token reaches only its own live job", () => {
   const db = new DatabaseSync(":memory:");
   db.exec("CREATE TABLE jobs (id TEXT PRIMARY KEY, agent TEXT, task TEXT, state TEXT, authority TEXT)");
-  const a = JSON.stringify({ models: ["~openai/gpt-sol-latest"] });
+  const a = JSON.stringify({ engine: "codex", engines: ["codex"], models: ["~openai/gpt-sol-latest"] });
   db.prepare("INSERT INTO jobs VALUES ('j-a', 'ag1', 'task-a', 'running', ?), ('j-b', 'ag1', 'task-b', 'running', ?), ('j-old', 'ag1', 'task-a', 'done', ?)").run(a, a, a);
-  const tools = createJobTools({ db, secret: () => "s", engines: () => ["codex"] });
+  const tools = createJobTools({ db, secret: () => "s", engines: () => ["codex", "other"] });
   const tokenA = mintToken("s", { kind: "job", job: "j-a", agentId: "ag1", issueId: "task-a" });
   tools.run(tokenA, "reset", { job: "j-b" });
   tools.run(tokenA, "engine", { engine: "codex", model: "~openai/gpt-sol-latest" });
   assert.throws(() => tools.run(tokenA, "engine", { engine: "codex", model: "acme/other" }), /isn't one this agent may use/);
-  assert.throws(() => tools.run(tokenA, "engine", { engine: "other" }), /no engine/);
+  assert.throws(() => tools.run(tokenA, "engine", { engine: "other" }), /isn't one this agent may run/); // in the registry, not in its engines
   // Read by the task's next turn once the job has ended; spent once that turn has started.
   assert.equal(tools.pending("task-a"), undefined);
   db.prepare("UPDATE jobs SET state = 'done' WHERE id IN ('j-a', 'j-b')").run();

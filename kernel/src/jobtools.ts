@@ -40,10 +40,15 @@ export function createJobTools({ db, secret, engines, now = Date.now }: {
     return p.id;
   }
 
-  /** Why an engine request can't run now (`models`: the agent's allowed models, its grant's), or undefined. */
-  function refusal(e: { kind: string; model?: string }, models: string[]): string | undefined {
-    if (!engines().includes(e.kind)) return `no engine "${e.kind}" (${engines().join(", ") || "none"})`;
-    if (e.model !== undefined && !models.includes(e.model)) return `model ${e.model} isn't one this agent may use (${models.join(", ") || "none"})`;
+  /**
+   * Why an engine request can't run now, or undefined. `a`: the agent's authority (its engine, the engines and models its grant
+   * allows): the kind must be one of its engines that the registry runs in a computer, and a change of engine names its model,
+   * one of the agent's models.
+   */
+  function refusal(e: { kind: string; model?: string }, a: { engine: string; engines: string[]; models: string[] }): string | undefined {
+    if (!engines().includes(e.kind) || !a.engines.includes(e.kind)) return `engine "${e.kind}" isn't one this agent may run (${a.engines.filter((k) => engines().includes(k)).join(", ") || "none"})`;
+    if (e.kind !== a.engine && e.model === undefined) return `a change of engine names its model too (aidenhq engine ${e.kind} <model>)`;
+    if (e.model !== undefined && !a.models.includes(e.model)) return `model ${e.model} isn't one this agent may use (${a.models.join(", ") || "none"})`;
   }
 
   return {
@@ -54,11 +59,11 @@ export function createJobTools({ db, secret, engines, now = Date.now }: {
       if (cmd === "reset") return (save.run(job, 1, null, 0, now()), "The next turn starts with a fresh session.");
       if (cmd === "cleanup") return (save.run(job, 0, null, 1, now()), "The workspace is removed when this turn ends.");
       const kind = String(b?.engine ?? ""), model = b?.model == null || b.model === "" ? undefined : String(b.model);
-      if (!KIND.test(kind)) throw new JobToolError(400, "unknown-engine", `no engine "${kind}" (${engines().join(", ") || "none"})`);
+      if (!KIND.test(kind)) throw new JobToolError(400, "bad-engine", `"${kind}" isn't an engine name`);
       if (model !== undefined && !MODEL.test(model)) throw new JobToolError(400, "bad-model", `"${model}" isn't a model id (vendor/model)`);
-      // Told now, against this job's own models; the next admission checks again against the agent's grants then.
-      const a = db.prepare("SELECT authority FROM jobs WHERE id = ?").get(job) as { authority: string | null } | undefined;
-      const why = refusal({ kind, ...(model ? { model } : {}) }, a?.authority ? (JSON.parse(a.authority) as { models: string[] }).models : []);
+      // Told now, against this job's own authority; the next admission checks again against the agent's grants then.
+      const r = db.prepare("SELECT authority FROM jobs WHERE id = ?").get(job) as { authority: string | null } | undefined;
+      const why = refusal({ kind, ...(model ? { model } : {}) }, r?.authority ? JSON.parse(r.authority) : { engine: "", engines: [], models: [] });
       if (why) throw new JobToolError(400, "not-allowed", why);
       save.run(job, 0, JSON.stringify({ kind, ...(model ? { model } : {}) }), 0, now());
       return `The next turn runs on ${kind}${model ? ` (${model})` : ""}.`;

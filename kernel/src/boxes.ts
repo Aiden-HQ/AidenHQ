@@ -78,12 +78,22 @@ export function createBoxes({ db, cfg, jobs, call, secret, whoami, connections, 
   const lastSession = (agent: string, task: string, engine: string) =>
     (db.prepare("SELECT session FROM jobs WHERE agent = ? AND task = ? AND engine = ? AND session IS NOT NULL ORDER BY at DESC LIMIT 1").get(agent, task, engine) as { session: string } | undefined)?.session;
 
+  /**
+   * The job's box goes, once: a release claims the row first (released = -1), so two at once (the job's end and tend) never
+   * both run; a failed launcher call gives the claim back for the next tend. The workspace goes too when the job asked
+   * (`aidenhq cleanup`), unless a later job on the task is already admitted or running in it.
+   */
   async function release(id: string) {
-    const r = db.prepare("SELECT box FROM jobs WHERE id = ? AND authority IS NOT NULL AND released IS NULL").get(id) as { box: string | null } | undefined;
-    if (!r?.box) return;
+    const r = db.prepare("SELECT task, box FROM jobs WHERE id = ? AND authority IS NOT NULL AND released IS NULL").get(id) as { task: string; box: string | null } | undefined;
+    if (!r?.box || db.prepare("UPDATE jobs SET released = -1 WHERE id = ? AND released IS NULL").run(id).changes !== 1) return;
     const { container, workspace } = JSON.parse(r.box) as Box & { workspace?: string };
-    await call("/job/release", { container });
-    if (workspace && cleanup(id) && existsSync(workspace)) {
+    try {
+      await call("/job/release", { container });
+    } catch (e) {
+      db.prepare("UPDATE jobs SET released = NULL WHERE id = ? AND released = -1").run(id);
+      throw e;
+    }
+    if (workspace && cleanup(id) && existsSync(workspace) && !db.prepare("SELECT 1 FROM jobs WHERE task = ? AND state IN ('admitted', 'running')").get(r.task)) {
       insideNoLinks(join(cfg.workDir, "tasks"), workspace, "workspace");
       rmSync(workspace, { recursive: true, force: true, maxRetries: 2 });
       log("job's workspace removed (aidenhq cleanup)", { job: id, workspace });
@@ -115,6 +125,8 @@ export function createBoxes({ db, cfg, jobs, call, secret, whoami, connections, 
     tend,
     /** Tends now (adopted jobs keep their leases) and every minute after. */
     start() {
+      // A release this kernel's last run claimed but never finished is tended again.
+      db.prepare("UPDATE jobs SET released = NULL WHERE released = -1").run();
       void tend();
       const t = setInterval(() => void tend(), 60_000);
       t.unref();
