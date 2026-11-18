@@ -274,6 +274,16 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
+      # The official modules, their own (public) repository since 5b, at the product's pin (modules-pin.json), where the tree had them.
+      - id: modules-pin
+        run: echo "sha=$(jq -r .sha modules-pin.json)" >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: Aiden-HQ/aidenhq-modules
+          ref: ${{ steps.modules-pin.outputs.sha }}
+          path: modules
+          fetch-depth: 0
+          persist-credentials: false
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 24.x
@@ -323,6 +333,21 @@ jobs:
             base=$(git merge-base origin/main "$HEAD_SHA" 2>/dev/null || git rev-parse "$HEAD_SHA~1")
           fi
           changed=$(git diff --name-only "$base" "$HEAD_SHA")
+          # The official modules are a separate repository at modules-pin.json, so the only product change that can bring in a
+          # module image is a pin bump: the images its range touches are the ones it could alter. Without a modules checkout
+          # (a plain clone of the product), there are none.
+          new_pin=$(jq -r '.sha // empty' modules-pin.json 2>/dev/null || true)
+          if [ -d modules ] && [ -n "$new_pin" ]; then
+            old_pin=$(git show "$base:modules-pin.json" 2>/dev/null | jq -r '.sha // empty' || true)
+            if [ "$old_pin" != "$new_pin" ]; then
+              # A pin that moved must be diffable: skipping it silently would scan nothing and still look green.
+              if [ -z "$old_pin" ] || ! git -C modules cat-file -e "$old_pin^{commit}" 2>/dev/null; then
+                echo "::error::modules-pin.json moves from ${old_pin:-none} to $new_pin, but the previous pin is not a commit in the modules checkout"
+                exit 1
+              fi
+              changed="$changed"$'\n'"$(git -C modules diff --name-only "$old_pin" "$new_pin" | sed 's|^|modules/|')"
+            fi
+          fi
           found=""
           while IFS= read -r -d '' df; do
             # A path with whitespace would split in DOCKERFILES, one starting with - could pass for an option: refuse both.
@@ -335,7 +360,12 @@ jobs:
                   found="$found $df"; break ;;
               esac
             done <<< "$changed"
-          done < <(git ls-files -z | grep -izE '(^|/)(Dockerfile|Containerfile)[^/]*$|\.dockerfile$' | grep -zvE '\.(m?[jt]s|json|md|ya?ml|sh)$')
+          done < <(
+            git ls-files -z | grep -izE '(^|/)(Dockerfile|Containerfile)[^/]*$|\.dockerfile$' | grep -zvE '\.(m?[jt]s|json|md|ya?ml|sh)$'
+            if [ -d modules ]; then
+              git -C modules ls-files -z | grep -izE '(^|/)(Dockerfile|Containerfile)[^/]*$|\.dockerfile$' | grep -zvE '\.(m?[jt]s|json|md|ya?ml|sh)$' | sed -z 's|^|modules/|'
+            fi
+          )
           echo "Images to scan:${found:- none}"
           echo "dockerfiles=${found# }" >> "$GITHUB_OUTPUT"
 
@@ -417,6 +447,15 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
+          persist-credentials: false
+      # The official modules at the product's pin (modules-pin.json), where the tree had them: the module Dockerfiles the find step selected live here.
+      - id: modules-pin
+        run: echo "sha=$(jq -r .sha modules-pin.json)" >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: Aiden-HQ/aidenhq-modules
+          ref: ${{ steps.modules-pin.outputs.sha }}
+          path: modules
           persist-credentials: false
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
