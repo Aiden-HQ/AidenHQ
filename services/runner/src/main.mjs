@@ -3146,7 +3146,7 @@ async function reviewScope(issue, chain, bases) {
 async function cardContext(issue, target, known, chain = "") {
   const bases = known ?? (await cardBases(target));
   // The decisions digest (readDecisions): from the instance repo's default branch, whatever the card's base; unread is none.
-  const decisions = await readDecisions(cfg.apply?.repo, githubDefault, repoRaw).catch((err) => void log("decisions unread", { err: String(err.message ?? err).slice(0, 200) }));
+  const decisions = await readDecisions(cfg.apply?.repo, githubDefault, repoRaw).catch((err) => void (/does not exist in|HTTP 404/.test(String(err.message ?? err)) || log("decisions unread", { err: String(err.message ?? err).slice(0, 200) }))); // no decisions.md is the empty state
   const { scope, siblings } = await reviewScope(issue, chain, bases);
   return { scope, siblings, sources: await cardSources(bases), decisions };
 }
