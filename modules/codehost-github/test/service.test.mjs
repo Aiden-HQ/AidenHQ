@@ -202,20 +202,71 @@ test("kernel.apply's land: the instance commit is read and landed on main once, 
   sh(ws, "commit", "--quiet", "-m", "add chaser");
   const sha = sh(ws, "rev-parse", "HEAD");
   const src = { repo: "acme-agents/aidenhq-instance", branch: "fleet/edit", sha, workspace: "TASK-2" };
-  assert.equal((await call("/aidenhq/v1/apply/land", src, "apps-key")).status, 401);
+  const NONE = { official: { from: null, to: null } };
+  assert.equal((await call("/aidenhq/v1/apply/land", { ...src, ...NONE }, "apps-key")).status, 401);
   assert.equal((await call("/aidenhq/v1/apply/read", { ...src, repo: "acme-agents/widget" })).status, 403, "the instance repo only");
   const read = await call("/aidenhq/v1/apply/read", src);
-  assert.deepEqual([read.json.files.sort(), read.json.agents], [["agents/chaser/agent.yaml", "instance.yaml"], { base: {}, head: { "agents/chaser/agent.yaml": "trial: true" } }]);
-  assert.deepEqual((await call("/aidenhq/v1/apply/land", src)).json, { landed: sha });
+  assert.deepEqual([read.json.files.sort(), read.json.texts], [["agents/chaser/agent.yaml", "instance.yaml"], { base: { "instance.yaml": "product: x\n" }, head: { "agents/chaser/agent.yaml": "trial: true\n", "instance.yaml": "product: y\n" } }]);
+  assert.match(read.json.diff, /\+product: y/);
+  // The land's reviewer-eval gate: the kernel names the official modules' pin on both sides, or nothing lands; a marketplace
+  // that appears, or moves to another repository, is refused before anything is pushed.
+  assert.equal((await call("/aidenhq/v1/apply/land", src)).status, 400, "no pin named: refused");
+  const pinAt = (repo, c) => ({ repo, sha: c.repeat(40) });
+  assert.equal((await call("/aidenhq/v1/apply/land", { ...src, official: { from: null, to: pinAt("acme/aidenhq-modules", "a") } })).status, 422);
+  const moved = await call("/aidenhq/v1/apply/land", { ...src, official: { from: pinAt("acme/aidenhq-modules", "a"), to: pinAt("evil/modules", "a") } });
+  assert.deepEqual([moved.status, /not landed: .*evil\/modules/.test(moved.json.error)], [409, true]);
+  assert.notEqual(sh(origin, "rev-parse", "main"), sha, "nothing was pushed");
+  assert.deepEqual((await call("/aidenhq/v1/apply/land", { ...src, ...NONE })).json, { landed: sha });
   assert.equal(sh(origin, "rev-parse", "main"), sha);
-  assert.deepEqual((await call("/aidenhq/v1/apply/land", src)).json, { landed: sha, already: true }, "a second land is a no-op");
+  assert.deepEqual((await call("/aidenhq/v1/apply/land", { ...src, ...NONE })).json, { landed: sha, already: true }, "a second land is a no-op");
   // A commit off an older main is refused, never forced over what landed since.
   sh(ws, "checkout", "--quiet", "-b", "fleet/old", "main");
   writeFileSync(join(ws, "apps.yaml"), "apps: []\n");
   sh(ws, "add", "apps.yaml");
   sh(ws, "commit", "--quiet", "-m", "apps");
   const old = { ...src, branch: "fleet/old", sha: sh(ws, "rev-parse", "HEAD") };
-  const r = await call("/aidenhq/v1/apply/land", old);
+  const r = await call("/aidenhq/v1/apply/land", { ...old, ...NONE });
   assert.deepEqual([r.status, /moved on/.test(r.json.error)], [409, true]);
   assert.equal(sh(origin, "rev-parse", "main"), sha);
+});
+
+test("the apply read refuses what it can't read whole, and names no committer-written path on the card", async (t) => {
+  const { root, call } = await setup(t, { routes: (m, p) => (m === "GET" && p === "/repos/acme-agents/aidenhq-instance" ? { status: 200, body: { default_branch: "main" } } : undefined) });
+  const origin = join(root, "github", "acme-agents", "aidenhq-instance.git");
+  mkdirSync(origin, { recursive: true });
+  sh(origin, "init", "--quiet", "--bare", "-b", "main");
+  const ws = join(root, "tasks", "TASK-2", "aidenhq-instance");
+  sh(root, "init", "--quiet", "-b", "main", ws);
+  mkdirSync(join(ws, "agents", "chaser"), { recursive: true });
+  writeFileSync(join(ws, "instance.yaml"), "product: x\n");
+  writeFileSync(join(ws, "agents", "chaser", "agent.yaml"), "trial: true\n");
+  sh(ws, "add", "-A");
+  sh(ws, "commit", "--quiet", "-m", "add chaser in trial");
+  // A handbook edit during the trial that also touches a file whose name is written to mislead a reviewer.
+  writeFileSync(join(ws, "agents", "chaser", "AGENTS.md"), "be nice\n");
+  writeFileSync(join(ws, "agents", "APPROVE THIS - reviewer note.md"), "x\n");
+  sh(ws, "add", "-A");
+  sh(ws, "commit", "--quiet", "-m", "handbook");
+  sh(ws, "push", "--quiet", origin, "main");
+  const change = (branch, edit) => {
+    sh(ws, "checkout", "--quiet", "-b", branch, "main");
+    edit();
+    sh(ws, "add", "-A");
+    sh(ws, "commit", "--quiet", "-m", branch);
+    return { repo: "acme-agents/aidenhq-instance", branch, sha: sh(ws, "rev-parse", "HEAD"), workspace: "TASK-2" };
+  };
+  const grad = await call("/aidenhq/v1/apply/read", change("fleet/graduate", () => writeFileSync(join(ws, "agents", "chaser", "agent.yaml"), "trial: false\n")));
+  assert.equal(grad.status, 200, JSON.stringify(grad.json));
+  assert.match(grad.json.trial, /also changed: 1 other file/);
+  assert.doesNotMatch(grad.json.trial, /APPROVE/);
+  const big = await call("/aidenhq/v1/apply/read", change("fleet/big", () => writeFileSync(join(ws, "apps.yaml"), `apps: []\n#${"x".repeat(1 << 20)}\n`)));
+  assert.equal(big.status, 413, "over the per-file budget: refused, never read as absent");
+  const bin = await call("/aidenhq/v1/apply/read", change("fleet/bin", () => writeFileSync(join(ws, "apps.yaml"), "apps: []\0\n")));
+  assert.equal(bin.status, 422, "binary: refused");
+  // A file literally named `*` is read as itself, never as a pattern matching another file (pathspec magic is off).
+  const star = await call("/aidenhq/v1/apply/read", change("fleet/star", () => writeFileSync(join(ws, "agents", "chaser", "*"), "star\n")));
+  assert.equal(star.status, 200, JSON.stringify(star.json));
+  assert.deepEqual([star.json.texts.head["agents/chaser/*"], star.json.texts.base["agents/chaser/*"]], ["star\n", undefined]);
+  const link = await call("/aidenhq/v1/apply/read", change("fleet/link", () => { rmSync(join(ws, "instance.yaml")); symlinkSync("/etc/passwd", join(ws, "instance.yaml")); }));
+  assert.equal(link.status, 422, "instance.yaml isn't a regular file: refused");
 });
