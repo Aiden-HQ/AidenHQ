@@ -39,6 +39,9 @@
 //                              token billed to the task's assignee under its caps, for a task its finish check holds; one live token per task
 //   POST /v1/jobs/:job/post    (that job's module) {kind: reply|status|notice, body, status?, blocked_by?}: posted on the job's
 //                              task as its agent, once per kind (outcomes.ts)
+//   POST /v1/checks, GET /v1/checks/:check, POST /v1/receipts/verify  (a module with role kernel.checks) a credential-free check
+//                              job of repo@head and its signed receipt (?after=<version>&wait=<ms>), a receipt checked against
+//                              {repo, head, run, judge?, policy?} (checkjobs.ts)
 //   GET  /v1/advisories        (the board's key) the marketplace advisories open against installed modules (loader/advisories.ts)
 //   POST /v1/auth/:op, /v1/accounts/:op, /v1/apps/:op, /v1/operator/:op  the accounts' routes (auth-api.ts): module UI
 //                              sessions and account admin (the board), in-app requests (apps-platform), setup links (operator)
@@ -48,6 +51,7 @@ import type { Asserter } from "./assert.ts";
 import type { Brake } from "./brake.ts";
 import type { Checks } from "./checks.ts";
 import type { Lane } from "./lane.ts";
+import type { Checks as CheckJobs } from "./checkjobs.ts";
 import { CP_READ_PATHS, isChannel, neutral, type Api, type Channels, type ModulesFile } from "./channels.ts";
 import type { Grant, Whoami } from "./identity.ts";
 import type { Jobs } from "./jobs.ts";
@@ -113,6 +117,9 @@ export const ROUTES = [
   { method: "GET", path: "/v1/work/metrics", auth: "module" },
   { method: "POST", path: "/v1/work/grader-token", auth: "module" },
   { method: "POST", path: "/v1/jobs/:job/post", auth: "module" },
+  { method: "POST", path: "/v1/checks", auth: "module" },
+  { method: "GET", path: "/v1/checks/:check", auth: "module" },
+  { method: "POST", path: "/v1/receipts/verify", auth: "module" },
   { method: "GET", path: "/v1/advisories", auth: "board" },
   { method: "POST", path: "/v1/auth/:op", auth: "board" },
   { method: "POST", path: "/v1/accounts/:op", auth: "board+session" },
@@ -120,7 +127,7 @@ export const ROUTES = [
   { method: "POST", path: "/v1/operator/:op", auth: "operator-key" },
 ] as const;
 // `:id` matches a record id, any other `:name` [a-z0-9_]+, a trailing `/*` the rest of the path, slash included.
-const compiled = ROUTES.map((r) => ({ ...r, re: new RegExp(`^${r.path.replace(/:id\b/g, "(k-[0-9a-f]{16})").replace(/:review\b/g, "(r-[0-9a-f]{16})").replace(/:job\b/g, "(j-[0-9a-f]{16})").replace(/:task\b/g, "([0-9a-f-]{36})").replace(/:key\b/g, "([^/]{1,200})").replace(/:\w+/g, "([a-z0-9_]+)").replace(/\/\*$/, "(/.*)")}$`) }));
+const compiled = ROUTES.map((r) => ({ ...r, re: new RegExp(`^${r.path.replace(/:id\b/g, "(k-[0-9a-f]{16})").replace(/:review\b/g, "(r-[0-9a-f]{16})").replace(/:job\b/g, "(j-[0-9a-f]{16})").replace(/:check\b/g, "(c-[0-9a-f]{16})").replace(/:task\b/g, "([0-9a-f-]{36})").replace(/:key\b/g, "([^/]{1,200})").replace(/:\w+/g, "([a-z0-9_]+)").replace(/\/\*$/, "(/.*)")}$`) }));
 /** The record lists the board and the runner read (`?state=`). */
 const ALL: State[] = ["review", "owner", "approved", "claimed", "done", "failed", "rejected", "stale", "cancelled", "unknown"];
 const LISTS: { [k: string]: State[] } = { review: ["review"], owner: ["owner"], pending: ["review", "owner"], approved: ["approved"], recent: ALL, finished: ["done", "failed", "unknown"] };
@@ -132,7 +139,7 @@ async function json(req: IncomingMessage, max = 1_000_000): Promise<any> {
   try { return JSON.parse(Buffer.concat(chunks).toString("utf8") || "{}"); } catch { throw fail(400, "bad_request", "the body must be JSON"); }
 }
 
-export function createBackplane({ whoami, asserter, proxy, cp, grantsFile, writes, records, channels, brake, notify, owner, modules = () => ({}), boardKey = () => "", reviews, runnerKey = () => "", reviewerKey = () => "", jobs, admission, outcomes, wakes, eventsKey = () => "", work, graderToken = () => "", dropGraderToken = () => {}, advisories = () => [], accounts, checks, ownerRaw, lane, log = () => {} }: {
+export function createBackplane({ whoami, asserter, proxy, cp, grantsFile, writes, records, channels, brake, notify, owner, modules = () => ({}), boardKey = () => "", reviews, runnerKey = () => "", reviewerKey = () => "", jobs, admission, outcomes, wakes, eventsKey = () => "", work, graderToken = () => "", dropGraderToken = () => {}, advisories = () => [], accounts, checks, checkJobs, ownerRaw, lane, log = () => {} }: {
   whoami: Whoami; asserter: Asserter; proxy: Handler; cp: Handler; grantsFile: () => { agents?: Record<string, Grant> } & Record<string, unknown>;
   writes?: Writes; records?: Records; boardKey?: () => string; log?: (msg: string, f?: Record<string, unknown>) => void;
   /** The reviewer slot; the runner's key for its kinds (filing, claim, outcome, reads, a record's review: runner_writes_key)
@@ -166,6 +173,8 @@ export function createBackplane({ whoami, asserter, proxy, cp, grantsFile, write
   accounts?: (req: IncomingMessage, res: ServerResponse, group: string, op: string) => Promise<void>;
   /** 3h: the finish gate (checks.ts). */
   checks?: Checks;
+  /** Check jobs and their receipts (checkjobs.ts). */
+  checkJobs?: CheckJobs;
 }) {
   /** The calling module (its own token), or 401. */
   const moduleOf = async (req: IncomingMessage) => {
@@ -372,6 +381,21 @@ export function createBackplane({ whoami, asserter, proxy, cp, grantsFile, write
         } catch (e) {
           const j = e as { name?: string; status?: number; code?: string; message: string };
           if (j.name === "JobError" || j.name === "OutcomeError") throw fail(j.status!, j.code!, j.message);
+          throw e;
+        }
+      }
+      if (hit && (hit.path === "/v1/checks" || hit.path === "/v1/checks/:check" || hit.path === "/v1/receipts/verify")) {
+        const w = await moduleOf(req);
+        if (!w.roles.includes("kernel.checks")) throw fail(403, "forbidden", `${w.module} may not run checks (role kernel.checks)`);
+        if (!checkJobs) throw fail(503, "unavailable", "check jobs are off");
+        try {
+          if (hit.path === "/v1/checks") return send(res, 200, checkJobs.start(w.module!, await json(req)));
+          if (hit.path === "/v1/receipts/verify") { const b = await json(req); return send(res, 200, checkJobs.verify(b.receipt, b.for ?? {})); }
+          const p = new URLSearchParams(q ?? "");
+          return send(res, 200, await checkJobs.get(w.module!, m[0]!, { ...(p.has("after") ? { after: Number(p.get("after")) } : {}), waitMs: Number(p.get("wait") ?? 0) || 0 }));
+        } catch (e) {
+          const c = e as { name?: string; status?: number; code?: string; message: string };
+          if (c.name === "CheckError") throw fail(c.status!, c.code!, c.message);
           throw e;
         }
       }

@@ -1050,7 +1050,8 @@ export function compile(productDir, instanceDir, { revision, fetch = hostFetch(p
   // The model gateway's prices and CI review (config/gateway.json, re-read per call).
   // spend_day_usd: the install-wide daily cap on every model call (docs/design/quiet-start.md); unset, none.
   if (settings.spend_day_usd != null && !(typeof settings.spend_day_usd === "number" && settings.spend_day_usd > 0 && settings.spend_day_usd <= 10_000)) fail("settings.spend_day_usd: USD a day, above 0 (unset for no cap)");
-  const gateway = { models: modelPrices(enabledDefs), ...(enabled.includes("ci") ? { ci: ciReview(settings) } : {}), ...(settings.spend_day_usd != null ? { install_day_usd: settings.spend_day_usd } : {}) };
+  if (!(typeof settings.eval_day_usd === "number" && settings.eval_day_usd >= 0 && settings.eval_day_usd <= 10_000)) fail("settings.eval_day_usd: USD a day, 0 or more");
+  const gateway = { models: modelPrices(enabledDefs), ...(enabled.includes("ci") ? { ci: ciReview(settings) } : {}), ...(settings.spend_day_usd != null ? { install_day_usd: settings.spend_day_usd } : {}), eval_day_usd: settings.eval_day_usd };
   const named = [...Object.entries(paperclip.agents).flatMap(([key, a]) => grantEntry(key, a, paperclip.routines).models), ...(gateway.ci?.models ?? [])];
   // Checked once some module prices models (the default bundle has models-openrouter); with none, the gateway refuses every call.
   const unpriced = Object.keys(gateway.models).length ? [...new Set(named.filter((m) => !gateway.models[m]))] : [];
@@ -1132,8 +1133,8 @@ export function kernelModuleTable(defs, settings = {}) {
     }
     const e = {
       ...(roles.length ? { roles } : {}), ...(privileged.length ? { privileged } : {}),
-      // A channel's, a job dispatcher's (kernel.jobs), or a check's module (its label and its reads): its own generated `<module>_token`.
-      ...((ch != null || roles.includes("kernel.jobs") || (def.checks ?? []).length) && (def.generated_secrets ?? []).includes(token) ? { token } : {}),
+      // A channel's, a job dispatcher's (kernel.jobs), a check job requester's (kernel.checks), or a check's module (its label and its reads): its own generated `<module>_token`.
+      ...((ch != null || roles.includes("kernel.jobs") || roles.includes("kernel.checks") || (def.checks ?? []).length) && (def.generated_secrets ?? []).includes(token) ? { token } : {}),
       ...(ch != null ? { channel: { ...(ch.stamp ? { stamp: String(ch.stamp) } : {}), ...(ch.stale === true ? { stale: true } : {}), ...(ch.transport ? { transport: String(ch.transport) } : {}) }, settings: Object.fromEntries(Object.keys(def.settings ?? {}).map((k) => [k, settings[k]])) } : {}),
     };
     if (Object.keys(e).length) out[name] = e;

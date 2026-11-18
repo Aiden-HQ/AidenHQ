@@ -34,6 +34,8 @@
 // (reviewer, grader, source) are never capped. CI caps (config/gateway.json `ci`: per repo per UTC day, all CI per day) are
 // never filed for raising. The install cap (config/gateway.json `install_day_usd`, settings.spend_day_usd; absent, none)
 // counts every call of the UTC day, every kind and CI included; its raise_cap is filed as agent INSTALL_CAP, scope day.
+// A check job's token (kind check, ../checkjobs.ts: the reviewer eval) is capped by the eval day cap (config/gateway.json
+// `eval_day_usd`, settings.eval_day_usd; absent, 0: refused), attributed to `eval:<head>`, never filed for raising.
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, statSync } from "node:fs";
 import { dirname } from "node:path";
@@ -51,7 +53,7 @@ export type RunKey = Brand<string, "RunKey">;
  */
 export type Caller = Brand<{
   runKey: RunKey; agentId: string | null; runId: string | null; issueId: string | null; perpetual: boolean; rev: string | null;
-  kind: string; component: string; capped: boolean; ci?: { repo: string; subject: string };
+  kind: string; component: string; capped: boolean; ci?: { repo: string; subject: string }; check?: { subject: string };
 }, "Caller">;
 type GatewayError = Error & { status?: number; type?: string; extra?: Record<string, unknown> };
 type Caps = { run_usd: number; task_usd: number; day_usd: number };
@@ -272,6 +274,7 @@ export function createGateway({ dbFile, legacyDbFile, grantsFile, settingsFile, 
   const ciConf = watched<CiConf | null>(settingsFile, (j) => (j.ci && typeof j.ci === "object" ? (j.ci as CiConf) : null), null);
   // The install-wide daily cap (settings.spend_day_usd); 0: none.
   const installDay = watched(settingsFile, (j) => (Number(j.install_day_usd) > 0 ? Number(j.install_day_usd) : 0), 0);
+  const evalDay = watched(settingsFile, (j) => (Number(j.eval_day_usd) > 0 ? Number(j.eval_day_usd) : 0), 0);
   const keyFor = githubKeys(githubJwksUrl, now);
   const q = {
     run: db.prepare("SELECT * FROM runs WHERE run_key = ?"),
@@ -297,6 +300,7 @@ export function createGateway({ dbFile, legacyDbFile, grantsFile, settingsFile, 
     // A CI call's task_subject is `<owner>/<repo>#<pr>`.
     ciSpentRepo: db.prepare("SELECT COALESCE(SUM(cost_usd), 0) AS s FROM calls WHERE kind = 'ci-code-review' AND day = ? AND substr(task_subject, 1, length(?)) = ?"),
     ciSpent: db.prepare("SELECT COALESCE(SUM(cost_usd), 0) AS s FROM calls WHERE kind = 'ci-code-review' AND day = ?"),
+    checkSpent: db.prepare("SELECT COALESCE(SUM(cost_usd), 0) AS s FROM calls WHERE kind = 'check' AND day = ?"),
   };
   const prune = () => {
     const cut = new Date(now() - 40 * DAY_MS).toISOString();
@@ -408,6 +412,7 @@ export function createGateway({ dbFile, legacyDbFile, grantsFile, settingsFile, 
         const row = (q.run.get(runKey) as RunRow | undefined) ?? settle(runKey, { agentId: p.a, ...(await runTask(null, p.i)) });
         return as(row, routeKind, "agent", true);
       }
+      if (p.k === "check") return { ...as(null, "check", "Check jobs", true), check: { subject: String(p.c ?? "").slice(0, 80) } } as Caller;
       const row = (q.run.get(runKey) as RunRow | undefined) ?? settle(runKey, { agentId: p.a, issueId: p.i });
       const system = p.k !== "agent";
       const component = String(p.c ?? (system ? SYSTEM[p.k] : "Engineer jobs")).slice(0, 80);
@@ -470,6 +475,7 @@ export function createGateway({ dbFile, legacyDbFile, grantsFile, settingsFile, 
         ...installScope(today),
       ];
     }
+    if (who.check) return [{ scope: "eval-day", subject: today, cap: evalDay(), spent: (q.checkSpent.get(today) as Sum).s }, ...installScope(today)];
     if (!who.capped) return installScope(today);
     const subject = taskSubject(who, t);
     const scopes: [string, string, number][] = [["run", who.runKey, (q.spentRun.get(who.runKey) as Sum).s]];
@@ -573,7 +579,7 @@ export function createGateway({ dbFile, legacyDbFile, grantsFile, settingsFile, 
   // Stamped when the call ends (the board pulls by that time); counted on the UTC day it started.
   function record(who: Caller, r: Partial<Usage> & { key?: string; t?: number; model?: unknown; costUsd?: number | null; ms?: number | null; status: string }) {
     const t = r.t ?? now();
-    q.add.run(r.key ?? `gw:${randomUUID()}`, new Date(now()).toISOString(), day(t), who.runKey, who.runId, who.agentId, who.issueId, who.ci ? who.ci.subject : taskSubject(who, t), who.rev, who.kind, who.component, String(r.model ?? "").slice(0, 120) || "unknown", r.input ?? 0, r.cached ?? 0, r.output ?? 0, r.costUsd ?? null, r.ms ?? null, r.status, me);
+    q.add.run(r.key ?? `gw:${randomUUID()}`, new Date(now()).toISOString(), day(t), who.runKey, who.runId, who.agentId, who.issueId, who.ci?.subject ?? who.check?.subject ?? taskSubject(who, t), who.rev, who.kind, who.component, String(r.model ?? "").slice(0, 120) || "unknown", r.input ?? 0, r.cached ?? 0, r.output ?? 0, r.costUsd ?? null, r.ms ?? null, r.status, me);
   }
 
   const send = (res: ServerResponse, status: number, body: unknown) => res.writeHead(status, { "content-type": "application/json" }).end(JSON.stringify(body));
