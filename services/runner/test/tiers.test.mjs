@@ -119,6 +119,15 @@ test("earlier decisions: owner veto, same content, bounded retries per target", 
   assert.deepEqual(requestTargets("pr", card)?.targets.map((t) => t.key), ["acme/roadmap|feat/x"], "case-insensitive repo, the branch exactly");
   assert.deepEqual(requestTargets("merge", { prs: [{ repo: "acme/roadmap", number: 7 }] })?.targets.map((t) => t.key), ["acme/roadmap#7"], "a PR's number");
   assert.equal(requestTargets("apply", { files: [] }), undefined, "an action that names no branch or PR: the task");
+  // A connection tool call is aimed at its tool and the issue it names (kernel-park-scope, WOR-7373): one rejected comment
+  // each on three issues parks none, three on one issue (reworded) park it, and another issue or tool stays reviewed.
+  const call = (tool, number, body = "x") => ({ connection: "github", tool, arguments: { repo: "Acme/Product", number, body } });
+  const onIssue = (numbers) => numbers.map((n, i) => ({ action: "conn.tool", args: call("github_app_issue_comment", n, `text ${i}`), state: "rejected", decidedBy: "reviewer:~openai/gpt-luna-latest", decidedAt: `2026-11-18T0${i + 1}:00:00Z`, review: "note" }));
+  const toolPart = (records, args) => priorPart(priorDecisions(records, "conn.tool", [], undefined, undefined, undefined, requestTargets("conn.tool", args)));
+  assert.equal(toolPart(onIssue([180, 186, 187]), call("github_app_issue_comment", 180)), undefined, "one rejection each on three issues parks none");
+  assert.equal(toolPart(onIssue([180, 180, 180]), call("github_app_issue_comment", 180, "reworded"))?.rule, "retries-exhausted", "three on one issue park it");
+  assert.equal(toolPart(onIssue([180, 180, 180]), call("github_app_issue_comment", 362)), undefined, "another issue is reviewed");
+  assert.equal(toolPart(onIssue([180, 180, 180]), call("github_app_issue_state", 362)), undefined, "another tool on another issue is reviewed");
   // The rejection follow-up counts a card from its own args: a third rejection on `feat/x` parks that branch, and the same
   // branch's earlier rejections are not what a sibling's card is counted with (main.mjs rejectedFollowUp).
   const third = { action: "pr", args: { only: [{ repo: "acme/roadmap", branch: "feat/x", sha: SHA("c") }] } };
