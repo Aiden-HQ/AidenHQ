@@ -77,6 +77,7 @@
     "route GET /v1/channel/outbox": {"state":"experimental","fp":"auth=module"},
     "route GET /v1/checks/:check": {"state":"experimental","fp":"auth=module"},
     "route GET /v1/cp/read/*": {"state":"experimental","fp":"auth=module"},
+    "route GET /v1/jobs": {"state":"experimental","fp":"auth=module"},
     "route GET /v1/jobs/:job": {"state":"experimental","fp":"auth=module"},
     "route GET /v1/jwks": {"state":"stable","fp":"auth=none"},
     "route GET /v1/notify/take": {"state":"experimental","fp":"auth=module"},
