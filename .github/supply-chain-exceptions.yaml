@@ -5,7 +5,7 @@
 #
 # One entry per line, in this flow style (other YAML shapes are not read):
 #   - { ecosystem: npm, package: fast-uri, version: 3.1.1, advisory: GHSA-xxxx-xxxx-xxxx, reason: "why it cannot wait" }
-# An owner-approved entry (npm only) has no advisory: { ecosystem: npm, package: X, version: Y, owner: approved, expires: YYYY-MM-DD,
+# An owner-approved entry has no advisory (npm; with #593, any pin by its exact digest or sha): { ecosystem: npm, package: X, version: Y, owner: approved, expires: YYYY-MM-DD,
 # reason: "..." }. It clears only that exact version, only while today < expires and expires is at most 14 days away.
 # Use it only when waiting would block a release of code already running elsewhere in the product.
 # ecosystem: npm (lockfiles and global installs), pypi, docker (package = the image without its tag, version = the
@@ -43,3 +43,4 @@ exceptions:
   - { ecosystem: npm, package: better-auth, version: 1.7.21, owner: approved, expires: 2026-11-19, reason: "owner-approved 2026-11-16: same version the board already runs; only new to the kernel lockfile (lean-core 3a)" }
   - { ecosystem: npm, package: jose, version: 6.2.17, owner: approved, expires: 2026-11-19, reason: "owner-approved 2026-11-16: same version the board already runs; only new to the kernel lockfile (lean-core 3a)" }
   - { ecosystem: docker, package: caddy, version: 2.11.9, advisory: GHSA-mgcc-cww5-fp2q, reason: "owner-approved 2026-11-17: 2.11.9 (released 2026-11-05; digest re-pushed 2026-11-16) fixes the high go-jose JWK parsing DoS that 2.11.8 carries; Caddy is the public HTTPS front door (U2, #316)" }
+  - { ecosystem: docker, package: ghcr.io/actions/actions-runner, version: 2.338.2, digest: sha256:6d0b2d80d80f143f77dcb676e50920100bbb547e39e883454d57f45ab8c31300, owner: approved, expires: 2026-11-20, reason: "owner-approved 2026-11-18: the CI runner image already running (modules/ci/runner), imported with the official modules (#593); no older ghcr image is listable to pin instead; it turns 7 days old about 20:00 UTC 2026-11-18, so this entry can be removed after that" }
