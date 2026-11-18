@@ -3,8 +3,7 @@
 
 label: engineer
 poll_seconds: 20
-# The loopback port of the agents' `aidenhq` commands: the only host port besides the kernel's 8201 a job's jail opens (the
-# kernel refuses a job whose helper is anywhere else).
+# The loopback port of the agents' `aidenhq` commands (a job's box reaches it through the computer launcher's gateway).
 helper_port: 3140
 # Comments written up to this long before the runner first sees a task still count.
 first_seen_lookback_minutes: 30
@@ -25,27 +24,10 @@ max_concurrent: 2
 timeout_minutes: 60
 
 engines:
-  default: codex-openrouter          # a job with no engine named runs here; needs an Engineer agent for it (codex if unset)
-  codex:
-    model: ""                         # empty = your Codex default
-  codex-openrouter:                   # the primary engine: Codex on OpenRouter models through the model gateway
-    # model: unset = openrouter.model below. Its Codex homes, one per task: <state_dir>/codex-openrouter/<task> (engine-codex)
-  openrouter:                         # opencode on OpenRouter (the fallback); models are listed in config/paperclip.yaml
-    model: ~deepseek/deepseek-flash-latest
+  # Every job runs Codex on OpenRouter models in its Engineer's agent computer (codex-openrouter), through the model gateway.
+  openrouter:
+    model: ~deepseek/deepseek-flash-latest  # the model a job runs on when its Engineer names none
     key_file: ~/.config/aidenhq/openrouter_key
-  claude:                             # "engine: claude" / "use Claude": Claude Code, headless, under bwrap
-    model: ""                         # empty = Claude Code's default; or opus, sonnet, haiku, fable, claude-…
-    # Its token: the vault's claude_oauth_token, from `claude setup-token` (0600). Its own config folder (none of your
-    # plugins, hooks, MCP servers or claude.ai connectors): <state_dir>/claude (engine-claude).
-
-# Jobs read Primer, Grafana, Slack, Glean and ClickHouse through the model gateway's /c/<connection>/mcp with their own
-# token: the agent's `jobcaps:` (modules/<m>/module.yaml), compiled into config/jobcaps.json. Nothing to set here.
-# Google Cloud, for an Engineer with private_reads: scripts/gcloud-auth.sh signs in (again after the 16-hour session); each
-# job gets a one-hour token with the user's access and the prompt's read-only rule, never the sign-in itself.
-gcp:
-  credentials: ~/.config/aidenhq/gcloud/application_default_credentials.json
-  # Projects jobs are told to start with; the first is gcloud's default.
-  projects: []
 
 # Reads plain-language requests (target repo, reference repos, mode, model) with a short Codex call.
 intake:
@@ -57,21 +39,10 @@ intake:
   # `codex exec` args for the intake; unset = OpenRouter, [] = the host's ChatGPT login.
   # codex_args: []
 
-sandbox:
-  network: true                       # gh, gcloud, Grafana and package registries need it
-  # A job sees only its task folder, the toolchains (/usr, /etc, /opt, the home's ~/.local, ~/.cargo, ~/go/bin…) and its
-  # engine's state; read_only_roots adds more toolchain paths (e.g. ~/.sdkman).
-  # read_only_roots: []
-  # Build caches, copy-on-write per task: every job reads what's here, and its writes stay in its task's own layer
-  # (<work_dir>/.cache-layers/<task>), so no job changes what another reads. Fill them from the host to warm them.
-  extra_writable_roots:
-    - ~/.cache
-    - ~/go/pkg/mod
-    - ~/.npm
-    - ~/.local/share/pnpm
-    - ~/.cargo/registry
-    - ~/.cargo/git
-    - ~/.gradle
+# The host sandbox (repo code the host runs itself: fast checks outside a job, the reviewer eval, local CI) sees only the
+# clone it checks and the toolchains (/usr, /etc, /opt, the home's ~/.local, ~/.cargo, ~/go/bin…); read_only_roots adds more.
+# sandbox:
+#   read_only_roots: []
 
 # Review-request tasks close themselves once GitHub shows you reviewed the PR (after the ask), or the
 # PR was merged or closed. Read-only GraphQL queries with your gh login.

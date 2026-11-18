@@ -5,7 +5,7 @@ import { join, relative } from "node:path";
 import { parse } from "yaml";
 
 const ROOT = join(import.meta.dirname, "../../../..");
-const DIRS = ["modules/engine-codex", "modules/engine-claude", "modules/engine-opencode", "fixtures/engine-echo"];
+const DIRS = ["modules/engine-codex", "fixtures/engine-echo"];
 
 export function registry() {
   const out = {};

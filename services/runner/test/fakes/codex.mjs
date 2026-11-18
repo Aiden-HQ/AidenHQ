@@ -1,11 +1,16 @@
-// codex exec --output-schema … answers (codex sandbox is codex.sh)
-// the runner's short calls: the check on a GitHub write, and a comment while the task is busy.
-// Anything else (a PR description, a branch name) fails, so the runner falls back.
+// codex exec: a job's turn (--json, the agent: agent.mjs), or one of the runner's short calls (--output-schema): the check on a
+// GitHub write, and a comment while the task is busy. Anything else (a PR description, a branch name) fails, so the runner
+// falls back.
 import { readFileSync, writeFileSync } from "node:fs";
 import { log } from "./lib.mjs";
 
 const args = process.argv.slice(2);
 const prompt = readFileSync(0, "utf8");
+if (args.includes("--json")) {
+  const { agent } = await import("./agent.mjs");
+  await agent(args, prompt);
+  process.exit(0);
+}
 const answer = (json) => {
   writeFileSync(args[args.indexOf("-o") + 1], JSON.stringify(json));
   process.exit(0);

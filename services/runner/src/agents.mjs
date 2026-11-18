@@ -106,26 +106,20 @@ export function mentionedRepos(text) {
 }
 
 /**
- * Resolve the engine for a job: `engines.default` in the config (codex if unset), `engine: claude` (Claude Code),
- * `engine: openrouter` / `glm` (configured default OpenRouter model), `engine: openrouter:<model>`,
- * or a bare OpenRouter model id like `z-ai/glm-5.3`. A Claude model name alone (`model: opus`)
- * picks Claude Code.
+ * Resolve the engine for a job: `engines.default` in the config (codex-openrouter if unset), `engine: openrouter` / `glm` (the
+ * configured OpenRouter model), `engine: openrouter:<model>`, or a bare OpenRouter model id like `z-ai/glm-5.3`. Every job runs
+ * Codex on OpenRouter models in its agent's computer (codex-openrouter); a model name alone keeps the engine.
  */
 export function resolveEngine(directives, cfg, previous) {
   const raw = (directives.engine ?? "").trim().toLowerCase();
   const model = directives.model?.trim();
-  if (!raw && !model) return previous ?? resolveEngine({ engine: cfg.engines.default ?? "codex" }, cfg); // engines.default: the engine with an Engineer
-  if (raw === "codex") return { kind: "codex", model: model || cfg.engines.codex.model || undefined };
-  if (["claude", "claude-code", "claude code", "anthropic"].includes(raw)) return { kind: "claude", model: model || cfg.engines.claude?.model || undefined };
-  // OpenRouter models run on Codex through the gateway (codex-openrouter); `opencode` names the fallback engine.
-  if (raw === "opencode") return { kind: "openrouter", model: model || cfg.engines.openrouter.model };
-  if (raw === "glm" || raw === "openrouter" || raw === "codex-openrouter") return { kind: "codex-openrouter", model: model || cfg.engines["codex-openrouter"]?.model || cfg.engines.openrouter.model };
+  if (!raw && !model) return previous ?? resolveEngine({ engine: cfg.engines?.default ?? "codex-openrouter" }, cfg);
+  if (raw === "glm" || raw === "openrouter" || raw === "codex-openrouter") return { kind: "codex-openrouter", model: model || defaultModel("codex-openrouter", cfg) };
   if (raw.startsWith("openrouter:")) return { kind: "codex-openrouter", model: directives.engine.trim().slice("openrouter:".length) };
   if (raw.includes("/")) return { kind: "codex-openrouter", model: directives.engine.trim() };
-  if (!raw && isClaudeModel(model)) return { kind: "claude", model };
-  if (!raw && model) return { kind: previous?.kind === "claude" ? "codex" : previous?.kind ?? "codex", model };
+  if (!raw && model) return { kind: previous?.kind ?? "codex-openrouter", model };
   if (ENGINES_REG[raw]) return { kind: raw, model: model || defaultModel(raw, cfg) }; // any other kind a module provides
-  throw new Error(`unknown engine "${directives.engine}" (use codex, codex-openrouter, claude, openrouter, or openrouter:<model>)`);
+  throw new Error(`unknown engine "${directives.engine}" (use openrouter, or openrouter:<model>)`);
 }
 
 // The engine registry (config/engines.json), set once by the runner at start and by tests.
@@ -139,8 +133,8 @@ export const engineOf = (agent) => (ENGINES_REG[agent?.metadata?.engine] ? agent
 export const modelPrefix = (kind) => ENGINES_REG[kind]?.model_prefix ?? "";
 /** Where a kind's effort override is stored in the adapter config. */
 const effortKey = (kind) => ENGINES_REG[kind]?.effort_key;
-// A kind's default model: config/runner.yaml engines.<kind>.model; a router kind without one takes the router's.
-const defaultModel = (kind, cfg) => cfg.engines?.[kind]?.model || (modelPrefix(kind) ? cfg.engines?.openrouter?.model : undefined) || undefined;
+// A kind's default model: config/runner.yaml engines.<kind>.model, else the OpenRouter default (engines.openrouter.model).
+const defaultModel = (kind, cfg) => cfg.engines?.[kind]?.model || cfg.engines?.openrouter?.model || undefined;
 const EFFORTS = new Set(["minimal", "low", "medium", "high", "xhigh", "max"]);
 /** How the board names a run's engine: the kind's label ("{model}" filled in), with the model and effort. */
 export function engineLabel(e) {
@@ -173,8 +167,7 @@ export function pickedEngine(issue, engineers, cfg) {
   const key = effortKey(kind);
   const effort = key ? String(override[key] ?? primary[key] ?? "").trim().toLowerCase() : "";
   // Private reads come with the Engineer (module.yaml `private_reads: true`), never with an engine or a task.
-  // A box Engineer (module.yaml `image:` on a runner agent, setup's metadata.box) runs its jobs in an agent computer (engines.mjs boxCommand).
-  return { kind, model, ...(EFFORTS.has(effort) ? { effort } : {}), ...(agent.metadata?.privateReads === true ? { reads: true } : {}), ...(agent.metadata?.box === true && kind === "codex-openrouter" ? { box: true } : {}) };
+  return { kind, model, ...(EFFORTS.has(effort) ? { effort } : {}), ...(agent.metadata?.privateReads === true ? { reads: true } : {}) };
 }
 
 /**
@@ -216,11 +209,6 @@ export function crewNames(engineers) {
     const name = a.metadata?.persona?.name;
     return engine && typeof name === "string" && name ? [{ name, engine }] : [];
   });
-}
-
-/** Claude Code model names: the aliases (opus, sonnet, haiku, fable) or a full `claude-…` id. */
-export function isClaudeModel(model) {
-  return /^(opus|sonnet|haiku|fable|claude-[a-z0-9.-]+)(\[1m\])?$/i.test(String(model ?? "").trim());
 }
 
 /**

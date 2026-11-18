@@ -15,7 +15,7 @@ Files derived from it, wholly or in part, include:
 - meetings/connections/ops-mcp/, google/connections/google-workspace-mcp/, clickhouse/connections/clickhouse-mcp/,
   grafana/connections/grafana-mcp/, glean/connections/glean-mcp/, primer/connections/primer-mcp/,
   slack/connections/slack-mcp/, github/connections/github-mcp/, and parts of jira/connections/jira-mcp/
-- code moved out of the product's runner (Pennyworth's): engine-codex/, engine-claude/, engine-opencode/,
+- code moved out of the product's runner (Pennyworth's): engine-codex/,
   codehost-github/, ai-reviewer/, grading/, platform/ and engineering/
 - the handbooks of the meeting-librarian, slack-scout and inbox-agent agents
 Modifications to these files are Copyright (c) 2026 Mudit Gupta and the AidenHQ contributors.

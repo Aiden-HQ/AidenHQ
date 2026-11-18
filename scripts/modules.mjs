@@ -187,16 +187,14 @@ export function grantEntry(key, a, routines = {}) {
   return { models, caps: { ...CAPS, ...(a.caps ?? {}) }, graded: a.graded === true, ...(a.jobcaps?.length ? { jobcaps: a.jobcaps } : {}), ...(a.feedback_for ? { feedback_for: a.feedback_for } : {}) };
 }
 
-const ENGINE_FIELDS = ["kind", "bin", "live_input", "label", "adapter", "effort_key", "model_prefix", "gateway", "box", "state", "reset", "seed", "rw", "ro", "gcloud", "secret_env", "crew"];
+const ENGINE_FIELDS = ["kind", "bin", "live_input", "label", "adapter", "effort_key", "model_prefix", "gateway", "box", "state", "reset", "seed", "crew"];
 const relPath = (p) => typeof p === "string" && p && !p.split("/").includes("..") && !/^\/\//.test(p);
 /**
- * A module's `providers.engine` (spec §3.3.1, engine@1): one or more engine kinds, each a `bin` the runner runs inside the
- * job's sandbox. The rest is data the runner reads instead of knowing engines: how to pick one (adapter, effort_key,
- * model_prefix), where its model calls go (gateway), its state folder (state: task | shared, under the runner's state dir;
- * reset names and seed copies made before each run; seed `from` is the module's, or the product's with a leading /), home
- * folders it writes (rw, ~/…) or only reads (ro: its own toolchain), whether an observing job's gcloud session folder is
- * bound (gcloud: false leaves it out), secrets it gets as env (secret_env: ENV → vault file), whether it runs in a computer box (box)
- * and the crew adapter args Paperclip uses (crew). Returns config/engines.json's entries, by kind.
+ * A module's `providers.engine` (spec §3.3.1, engine@1): one or more engine kinds, each a `bin` the runner runs in the
+ * job's agent computer (only a kind with `box: true` runs at all). The rest is data the runner reads instead of knowing
+ * engines: how to pick one (adapter, effort_key, model_prefix), where its model calls go (gateway), its state folder (state:
+ * task | shared, under the runner's state dir; reset names and seed copies made before each run; seed `from` is the module's,
+ * or the product's with a leading /) and the crew adapter args Paperclip uses (crew). Returns config/engines.json's entries, by kind.
  */
 export function engineEntries(name, def, root, productDir) {
   const out = {};
@@ -209,8 +207,6 @@ export function engineEntries(name, def, root, productDir) {
     for (const r of e.reset ?? []) if (!relPath(r) || r.startsWith("/")) fail(`${where}: reset names paths in its state folder`);
     for (const s of e.seed ?? []) if (!relPath(s?.from) || !relPath(s?.to) || s.to.startsWith("/") || !existsSync(s.from.startsWith("/") ? join(productDir, s.from) : join(root, s.from))) fail(`${where}: seed entries are { from, to }: an existing module (or /product) path into the state folder`);
     if ((e.reset || e.seed) && !e.state) fail(`${where}: reset and seed need a state folder`);
-    for (const f of ["rw", "ro"]) for (const r of e[f] ?? []) if (typeof r !== "string" || !r.startsWith("~/") || !relPath(r.slice(2))) fail(`${where}: ${f} lists home folders (~/…)`);
-    for (const [k, v] of Object.entries(e.secret_env ?? {})) if (!/^[A-Z][A-Z0-9_]*$/.test(k) || !/^[a-z0-9_]+$/.test(String(v))) fail(`${where}: secret_env maps ENV_NAME to a vault file name`);
     if (e.crew != null && (typeof e.crew.adapter !== "string" || !Array.isArray(e.crew.args))) fail(`${where}: crew is { adapter, args: [...] }`);
     const dir = relative(productDir, root);
     out[e.kind] = { ...e, module: name, dir, bin: join(dir, e.bin), live_input: e.live_input === true };

@@ -121,7 +121,7 @@ both fail; that is expected, and step 3 makes the local mirror.)
 One run sets up the whole machine. It is idempotent: if it stops partway, fix the cause and run it again. It:
 
 1. installs system packages, Docker, Node 24, gVisor, bubblewrap (a private copy with its own AppArmor profile), passt, gocryptfs and
-   Tailscale (`ops/vm/setup.sh`), plus the Codex and opencode CLIs the runner uses;
+   Tailscale (`ops/vm/setup.sh`), plus the Codex CLI the runner's own short model calls use;
 2. joins the tailnet with `TS_AUTHKEY` as `aidenhq-<you>` (unless the VM is already on it, or `BOARD_HOST` is set);
 3. writes `.env` and `config/runner.yaml`, and runs `scripts/bootstrap.sh` (secrets folder, generated tokens, data
    folders);
@@ -463,7 +463,6 @@ an `ops/setup.sh` host.
 | Slack (read) | Open its setup on the board (`#/setup/slack`): paste the Slack app's Client ID and press Connect. |
 | GitHub (read) | Open its setup on the board (`#/setup/github`) and paste a read-only token. |
 | Primer | Open its setup on the board (`#/setup/primer`): paste its MCP address and press Connect. |
-| gcloud | `scripts/gcloud-auth.sh`. |
 | Glean, Jira, Grafana, ClickHouse | Open the module's setup on the board (`#/setup/<module>`): paste the address (Glean, Grafana, ClickHouse), then press Connect. Jira's site URL stays the `jira_url` setting. Grafana with `grafana_source: local` needs no sign-in. |
 
 Sign-ins started on the board (Google, Glean, Jira, Grafana Cloud, ClickHouse, Slack, Primer, HubSpot) return to the board's

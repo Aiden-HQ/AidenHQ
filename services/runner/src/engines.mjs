@@ -1,10 +1,10 @@
 // The runner's side of jobs: the kernel runs them (kernel/src/jobs.ts, the sandbox in kernel/src/sandbox.ts). The runner, as the
 // engineering module's dispatcher (role kernel.jobs, its own token), asks for one (POST /v1/jobs) and follows it to its end
-// (GET /v1/jobs/:id); a box job's box comes from the computer launcher first (its job routes, computers_runner_key).
+// (GET /v1/jobs/:id); the job's box comes from the computer launcher first (its job routes, computers_runner_key).
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
-export { cowRoot, engineState, jobcapServers, jobcapsFor, jobToken, modelToken, observes, readEngines, removeLayers, viaGateway } from "../../../kernel/src/sandbox.ts";
+export { engineState, jobToken, modelToken, observes, readEngines, removeLayers } from "../../../kernel/src/sandbox.ts";
 
 export const gatewayUrl = (cfg) => cfg.gatewayUrl ?? "http://127.0.0.1:8201";
 export const gatewayApi = (cfg) => `${gatewayUrl(cfg)}/api/v1`;

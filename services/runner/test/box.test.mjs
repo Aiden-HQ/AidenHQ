@@ -94,8 +94,8 @@ describe("box jobs", () => {
     for (const d of [home, config, secrets, bin, boxes]) mkdirSync(d, { recursive: true });
     // The fakes' settings baked in: a job's env is the kernel's allowlist.
     const exports = `export FAKE_LOG='${join(dir, "fake.log")}'\nexport FAKE_STEP='${join(dir, "step")}'\n`;
-    for (const name of ["bwrap", "codex", "claude", "gh"]) {
-      writeFileSync(join(bin, name), name === "bwrap" || name === "codex" ? `#!/bin/sh\n${exports}exec "${join(FAKES, `${name}.sh`)}" "$@"\n` : `#!/bin/sh\n${exports}exec "${process.execPath}" "${join(FAKES, `${name}.mjs`)}" "$@"\n`);
+    for (const name of ["codex", "gh"]) {
+      writeFileSync(join(bin, name), name === "codex" ? `#!/bin/sh\n${exports}exec "${join(FAKES, `${name}.sh`)}" "$@"\n` : `#!/bin/sh\n${exports}exec "${process.execPath}" "${join(FAKES, `${name}.mjs`)}" "$@"\n`);
       chmodSync(join(bin, name), 0o755);
     }
     fakeJail(bin, join(dir, "fake.log"));
@@ -103,7 +103,7 @@ describe("box jobs", () => {
     writeFileSync(join(dir, "secret"), "the owner key 0123456789\n");
     writeFileSync(join(bin, "docker"), `#!/bin/sh\nFAKE_SECRET="${join(dir, "secret")}" FAKE_LOG="${join(dir, "fake.log")}" FAKE_STEP="${join(dir, "step")}" FAKE_BOXES="${boxes}" exec "${process.execPath}" "${join(FAKES, "docker.mjs")}" "$@"\n`);
     chmodSync(join(bin, "docker"), 0o755);
-    writeFileSync(join(home, ".gitconfig"), "[user]\n\tname = Test\n\temail = test@example.com\n");
+    writeFileSync(join(home, ".gitconfig"), "[user]\n\tname = Test\n\temail = test@example.com\n[gc]\n\tauto = 0\n[maintenance]\n\tauto = false\n");
     writeFileSync(join(config, "system.yaml"), `paperclip:\n  company_id: "${COMPANY}"\nuser:\n  names: ["Dana"]\n`);
     writeFileSync(join(config, "engines.json"), JSON.stringify(registry()));
     writeFileSync(join(config, "runner.yaml"), `label: engineer\npoll_seconds: 0.2\nhelper_port: ${await freePort()}\nallowed_orgs: [acme]\nwork_dir: ${join(dir, "work")}\nstate_dir: ${join(dir, "state")}\nmax_concurrent: 1\ntimeout_minutes: 2\nengines:\n  openrouter:\n    model: acme/model-1\nintake:\n  codex_args: []\n  timeout_seconds: 30\nreplies:\n  enabled: false\nreviews:\n  enabled: false\nrecurring:\n  enabled: false\n`);

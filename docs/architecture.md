@@ -39,20 +39,16 @@ an agent computer) and checks that agent's grant in `config/grants/grants.json`.
 module and agent definitions; the check lives in `kernel/src/proxy.ts`. Roles gate a few extra capabilities
 (for example the board's fleet tools, or changing any app with an open incident).
 
-**Runner.** A host service that picks up Paperclip tasks labelled `engineer`, runs coding engines (Codex, OpenRouter
-models, Claude Code) in sandboxed per-task workspaces, and exposes a small `aidenhq` CLI to the Engineer
-([design](design/conversational-engineers.md)). Each job runs under bwrap with an allowlist of the host's files (its
-task folder, the toolchains, its engine's state), in its own PID, IPC and network namespaces (pasta).
+**Runner.** A host service that picks up Paperclip tasks labelled `engineer` and runs each turn as a job in the Engineer's
+agent computer (a gVisor box from the computer launcher, with the task's workspace mounted), and exposes a small `aidenhq`
+CLI to the Engineer ([design](design/conversational-engineers.md)). There is one engine, `codex-openrouter`: the Codex CLI
+on OpenRouter models through the box's gateway with the box's run token (ZDR only), a runner-owned Codex home per task with
+the product's skills, effort low to max (max: DeepSeek). Repo code the host runs itself (a fast check outside a job, the
+reviewer eval, local CI) runs under bwrap with an allowlist of the host's files, in its own PID, IPC and network
+namespaces (pasta).
 
-| Engine | Harness | Model access | Effort |
-|---|---|---|---|
-| `codex-openrouter` (primary) | Codex CLI, its own sandbox, a runner-owned Codex home per task with the product's skills | OpenRouter through the model gateway, a per-job token, ZDR only | low to max (max: DeepSeek) |
-| `codex` | Codex CLI, its own sandbox | the host's Codex login | low to xhigh |
-| `claude` | Claude Code under bwrap | a subscription token | low to max |
-| `openrouter` (fallback) | opencode under bwrap | OpenRouter through the model gateway, a per-job token | low to high (model variants) |
-
-Every job gets Primer read-only. Private reads (Grafana, Slack, Glean, ClickHouse, gcloud, other tasks) go only to an
-Engineer whose definition sets `private_reads: true`, on any engine, and such a job has no web search. See [the codex-openrouter design](design/codex-openrouter-engine.md). Pushes, pull requests and merges are checked in code: allowed
+Every job gets Primer read-only. Private reads (Grafana, Slack, Glean, ClickHouse, other tasks) go only to an Engineer
+whose definition sets `private_reads: true`, and such a job has no web search. See [the codex-openrouter design](design/codex-openrouter-engine.md). Pushes, pull requests and merges are checked in code: allowed
 organizations only, branch and leak checks, a lease on rewritten branches, and a merge queue that requires approved,
 green, mergeable PRs. Each write is an approval record tiered by code from verified state (`services/runner/src/tiers.mjs`):
 Tier 0 runs at once, the AI reviewer decides Tier 1, the owner decides Tier 2; the tier is never taken from untrusted

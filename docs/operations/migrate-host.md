@@ -40,7 +40,7 @@ Commands run as `<you>` on the host named in the step, unless a step says `sudo`
 | Secrets | The vault view `~/.config/aidenhq` | Plaintext over SSH into the new host's mounted view, which encrypts it under the new vault |
 | Runner state and Engineer work dirs | `~/.local/state/aidenhq-runner`, `~/.local/state/aidenhq-computers`, `~/aidenhq-work` | rsync, cold final pass |
 | Instance checkout | `~/aidenhq-instance` | rsync (its credential helper config comes with it) |
-| Host logins | `~/.ssh`, `~/.gitconfig`, `~/.config/gh`, `~/.config/gcloud`, `~/.codex`, `~/.local/state/{gh,opencode}` | rsync |
+| Host logins | `~/.ssh`, `~/.gitconfig`, `~/.config/gh`, `~/.codex`, `~/.local/state/gh` | rsync |
 | Notes vault and transcripts | `VAULT_DIR`, `TRANSCRIPTS_DIR` in `.env` | rsync |
 | Docker images | | **Rebuilt** on the new host (`docker compose build`, `ops/computer-images.sh`, app deploys), never copied |
 | CI runners | `aidenhq-ci-runner@*` user units | Nothing to move: they register ephemerally per job. Stop them on the old host and enable the same instances on the new one. |
@@ -177,10 +177,10 @@ its remote console.
    groups. Log out and back in, then run `sudo systemctl restart user@$(id -u <you>)`; step 2's reboot also covers
    it. Check: `docker ps` works as `<you>`.
 
-   Then install the host's coding engines, at the versions `ops/setup.sh` pins:
+   Then install the Codex CLI (the runner's short model calls), at the version `ops/setup.sh` pins:
 
    ```sh
-   sudo npm install -g @openai/codex@<pin> opencode-ai@<pin>
+   sudo npm install -g @openai/codex@<pin>
    ```
 3. **Tailscale.**
    - Run `sudo tailscale up --hostname=aidenhq-new`, then `sudo tailscale set --operator=<you>`.
@@ -241,8 +241,7 @@ $R --exclude=/authorized_keys <you>@old:.ssh/ ~/.ssh/
 $R <you>@old:.gitconfig ~/.gitconfig
 $R <you>@old:.codex/ ~/.codex/
 $R <you>@old:.config/gh/ ~/.config/gh/
-$R <you>@old:.config/gcloud/ ~/.config/gcloud/
-$R <you>@old:.local/state/gh/ <you>@old:.local/state/opencode/ ~/.local/state/
+$R <you>@old:.local/state/gh/ ~/.local/state/
 $R <you>@old:notes/ ~/notes/                             # the folders VAULT_DIR and TRANSCRIPTS_DIR name
 ```
 

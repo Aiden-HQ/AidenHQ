@@ -22,10 +22,10 @@ describe("flow-graded", { concurrency: true }, () => {
     const t = flow(delegated("pass"));
 
     it("reopens with the unmet criteria, dispatches the Engineer again, then closes it and tells the parent", async () => {
-      const { waitFor, paperclip, claudeRuns, partComments } = t;
+      const { waitFor, paperclip, agentRuns, partComments } = t;
       paperclip.graderAnswers.push(answer(["yes", "no", "yes"]), answer(["yes", "yes", "yes"]));
       await waitFor("the first verdict", () => paperclip.gradeLog.some((v) => v.outcome === "needs_revision"));
-      await waitFor("the Engineer dispatched again", () => claudeRuns().length >= 2 || /From the grader/.test(JSON.stringify(t.fakeLog())));
+      await waitFor("the Engineer dispatched again", () => agentRuns().length >= 2 || /From the grader/.test(JSON.stringify(t.fakeLog())));
       assert.ok(partComments().some((c) => /Graded: needs revision[\s\S]*\*\*not met\*\*: each claim links its source/.test(c)), "the unmet criterion on the task");
       await waitFor("done", () => paperclip.issues.get("part").status === "done");
       assert.deepEqual(paperclip.gradeLog.map((v) => v.outcome), ["needs_revision", "satisfied"]);
@@ -58,12 +58,12 @@ describe("flow-graded", { concurrency: true }, () => {
     const t = flow(delegated("unverified"));
 
     it("asks the delegator about what couldn't be verified, and never sends the Engineer back", async () => {
-      const { waitFor, paperclip, claudeRuns } = t;
+      const { waitFor, paperclip, agentRuns } = t;
       paperclip.graderAnswers.push(answer(["yes", "unknown", "yes"]));
       await waitFor("the question", () => (paperclip.comments.get("parent") ?? []).some((c) => /PEN-2 needs your decision[\s\S]*Graded: unverified[\s\S]*\*\*not shown\*\*: each claim links its source/.test(c.body)), 60_000);
       assert.equal(paperclip.grades.get("part").state, "escalated");
       await t.idle(600);
-      assert.equal(claudeRuns().length, 1, "no rework");
+      assert.equal(agentRuns().length, 1, "no rework");
       assert.notEqual(paperclip.issues.get("part").status, "todo");
     });
   });

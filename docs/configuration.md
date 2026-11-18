@@ -110,12 +110,15 @@ outcomes:
   `chat_lane.chat_send`, `telegram.notify_owner` (any other name, an entry it doesn't grant, or one on an agent not in
   trial is a compile error). Every other granted write stays refused until trial ends. The Agent Architect designs these
   and the Platform Engineer commits them after the owner approves.
-- `private_reads: true` on a `dispatch: runner` agent: its jobs may hold private data (the private jobcaps: Grafana, Slack,
-  Glean, ClickHouse; the job's gcloud session; other tasks) and get no web search. Without it (the Software and Platform
-  Engineers), web search and only the non-private jobcaps (Primer).
-- `jobcaps: [<id>]` on a `dispatch: runner` agent (`<id>?` when its module is optional): what its jobs read, through the
-  model gateway's `/c/<connection>/mcp` with the job's own token; no connection URL or token enters a job. A module declares
-  them under `jobcaps:` (`id`, `connection`, `tools` or `read`, `private`, `tool_timeout_s`, `read_url`, `read_secret`). `engine:` on a runner agent picks its engine (`codex-openrouter` or `openrouter` for `opencode_local`).
+- `private_reads: true` on a `dispatch: runner` agent: its jobs may hold private data (private grants: Grafana, Slack,
+  Glean, ClickHouse; other tasks) and get no web search. Without it (the Software and Platform Engineers), web search and
+  only the non-private jobcaps (Primer).
+- `image: engineer` on a `dispatch: runner` agent: every Engineer has one; its jobs run in that agent computer (a job for an
+  agent without one is refused).
+- `jobcaps: [<id>]` on a `dispatch: runner` agent (`<id>?` when its module is optional): the non-private reads its jobs hold,
+  through the kernel's proxy with the box's run token; no connection URL or token enters a job. A module declares them under
+  `jobcaps:` (`id`, `connection`, `tools` or `read`, `private`, `tool_timeout_s`, `read_url`, `read_secret`). `engine:` on a
+  runner agent names its engine (`codex-openrouter`).
 - `max_parallel` on an agent: how many of its runs go at once (Paperclip's `maxConcurrentRuns`). For a `dispatch: runner`
   agent (the Engineers, the Platform Engineer) it caps that agent's parallel runner jobs, each in its own task workspace,
   within the host's `max_concurrent` (config/runner.yaml); unset, only the host's cap applies.
@@ -309,9 +312,8 @@ Copy `.env.example` to `.env`. It holds host paths and endpoints, never agent-ed
 
 `config/runner.yaml` (from `config/runner.example.yaml`) configures the host runner: the `engineer` label it polls,
 `allowed_orgs` (the organizations it may implement, push and open PRs in; public repositories elsewhere are read-only),
-optional `repo_sources` (repos cloned from a local path), work and state directories, concurrency, the engines
-(`codex-openrouter`, `codex`, `claude`, `openrouter`) and the job sandbox (`sandbox.extra_writable_roots` for shared
-build caches, copy-on-write per task so a job's writes never reach another's, `sandbox.read_only_roots` for toolchains outside the defaults).
+optional `repo_sources` (repos cloned from a local path), work and state directories, concurrency, the default OpenRouter
+model (`engines.openrouter.model`) and the host sandbox (`sandbox.read_only_roots` for toolchains outside the defaults).
 
 The release train (`release.batch_minutes`, default 15; 0 turns it off; `services/runner/src/release.mjs`) writes pin bumps
 in code. A green merge to the official modules repo opens one task, "Pin bump: the product's official modules", that lists
@@ -324,11 +326,8 @@ bump in flight at a time; merges after it collect in the next task, which files 
 expires or fails is cancelled with the reason, and only a newer merge files the next one (a reverted pin is never re-bumped
 on its own). An agent waiting for a merge to go live blocks on the task that lists its merge commit.
 
-An Engineer agent picks its engine with `engine:` in its `module.yaml` (default: its adapter's). The Software and Platform
-Engineers run `codex-openrouter` (Codex on OpenRouter models through the model gateway, DeepSeek at medium effort, no
-private reads); to fall back to opencode, set `overrides.agents.<key>.engine: openrouter` in `instance.yaml` (an
-owner-tier change) and `engines.default: opencode` in runner.yaml. Effort is
-`reasoning_effort:` (low, medium, high, xhigh, max; `max` is DeepSeek's top effort on OpenRouter, which Codex passes
-through as is; `openrouter` takes low, medium, high as opencode's model variant).
+Every Engineer runs `codex-openrouter` (Codex on OpenRouter models through the model gateway) in its agent computer; the
+model is the agent's `model:` (or the task's override), the effort its `reasoning_effort:` (low, medium, high, xhigh, max;
+`max` is DeepSeek's top effort on OpenRouter, which Codex passes through as is).
 Design: [codex-openrouter engine](design/codex-openrouter-engine.md). Other example files in `config/` (`routing`, `busy-cases`,
 `system`) configure the runner's evals and ops-mcp.

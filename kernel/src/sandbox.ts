@@ -1,9 +1,11 @@
-// The job sandbox (K7, spec §3.3.1, §5.11): what a job sees of the host's files (bwrap), its own network (netjail.ts, pasta),
-// the engine registry (config/engines.json), an engine's state folder, the job's credential and jobcaps, and job.json. The
-// kernel is the only launcher of jobs (jobs.ts); scripts/verify-security.sh probes this same layout and jail live.
+// Jobs and the host sandbox (K7, spec §3.3.1, §5.11). Every Engineer job runs in its agent computer (a box: buildJob writes its
+// job.json and the `docker exec` line; jobs.ts runs it). The host sandbox (bwrap with its own network, netjail.ts and pasta) is
+// for what runs repo code on the host itself: the repos' fast checks (fastcheck.ts), the reviewer eval and local CI checks
+// (the runner). The engine registry (config/engines.json), an engine's state folder and the job credentials are here too;
+// scripts/verify-security.sh probes the sandbox's layout and jail live.
 import { execFileSync, spawnSync } from "node:child_process";
-import { cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, rmSync, statSync, writeFileSync } from "node:fs";
-import { homedir, tmpdir } from "node:os";
+import { cpSync, existsSync, lstatSync, mkdirSync, readFileSync, readlinkSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
 import { basename, dirname, join, relative, resolve, sep } from "node:path";
 import { mintToken } from "./gateway/token.ts";
 
@@ -13,50 +15,24 @@ const repoRoot = resolve(import.meta.dirname, "../..");
 /** Engine registry entry (compile: modules' providers.engine). */
 export interface EngineEntry {
   module: string; dir: string; bin: string; kind: string; label?: string; live_input?: boolean; gateway?: boolean; box?: boolean;
-  state?: "shared" | "task"; reset?: string[]; seed?: { from: string; to: string }[]; rw?: string[]; ro?: string[]; secret_env?: Record<string, string>; gcloud?: boolean;
+  state?: "shared" | "task"; reset?: string[]; seed?: { from: string; to: string }[];
 }
 /** An engine choice: its kind, model and effort, and whether the job holds private reads (no web search then). */
-export interface Engine { kind: string; model?: string; effort?: string; reads?: boolean; box?: boolean }
+export interface Engine { kind: string; model?: string; effort?: string; reads?: boolean }
 export interface SandboxConfig {
-  bwrap: string; pasta?: string; noOverlay?: boolean;
-  hidden: string[]; sandbox?: { read_only_roots?: string[]; extra_writable_roots?: string[]; network?: boolean };
+  bwrap: string; pasta?: string;
+  hidden: string[]; sandbox?: { read_only_roots?: string[] };
   binDir: string; browserDir: string; workDir: string; stateDir: string; logsDir: string; secretsDir: string;
-  enginesFile: string; jobcapsFile: string; gatewayUrl: string; boxGatewayUrl: string; boxDir: string;
-  /** The job helper's loopback port (its dispatcher's `aidenhq` commands): the one host port besides 8201 a job reaches. */
-  helperPort: number;
+  enginesFile: string; gatewayUrl: string; boxGatewayUrl: string; boxDir: string;
   timeout_minutes: number; stall_minutes: number; progress_minutes: number;
-  /** Unit tests' fake engines: no host layout, unconfined. */
+  /** Unit tests: no host layout, unconfined. */
   unconfined?: boolean;
 }
 
-/** Whether a job holds private data (an Engineer with `private_reads`): its private jobcaps and cloud session, and no web search. */
+/** Whether a job holds private data (an Engineer with `private_reads`): no web search then. */
 export const observes = (engine?: Engine) => engine?.reads === true;
 
-type Jobcap = { connection?: string; tool_timeout_s?: number; private?: boolean };
-const readJobcaps = (cfg: SandboxConfig): Record<string, Jobcap> => { try { return JSON.parse(readFileSync(cfg.jobcapsFile, "utf8")); } catch { return {}; } };
-/**
- * A job's MCP servers: its jobcaps, each reached through the kernel's /c/<connection>/mcp on 8201 with the job's own token. The
- * job holds no connection URL and no service token; the proxy forwards with the read secret and only the jobcap's tools.
- */
-export function jobcapServers(cfg: SandboxConfig, ids: string[] = []) {
-  const all = readJobcaps(cfg);
-  const out = new Map<string, { name: string; url: string; toolTimeout?: number; private?: boolean }>();
-  for (const id of ids) {
-    const c = all[id];
-    if (!c?.connection || out.has(c.connection)) continue;
-    out.set(c.connection, { name: c.connection, url: `${cfg.gatewayUrl}/c/${c.connection}/mcp`, ...(c.tool_timeout_s ? { toolTimeout: c.tool_timeout_s } : {}), ...(c.private ? { private: true } : {}) });
-  }
-  return [...out.values()];
-}
-/** The jobcaps a job gets: the private ones only when it observes, so private data and the live web never meet. Sorted. */
-export const jobcapsFor = (cfg: SandboxConfig, engine: Engine, ids: string[] = []) => {
-  const all = readJobcaps(cfg);
-  return [...new Set(ids)].filter((id) => all[id] && (!all[id].private || observes(engine))).sort();
-};
-export const JOB_TOKEN_ENV = "AIDENHQ_JOB_TOKEN";
-export const MODEL_TOKEN_ENV = "AIDENHQ_MODEL_TOKEN";
-
-// The host's toolchains, read-only in every job: the system (merged-/usr links are recreated as links) and /etc.
+// The host's toolchains, read-only in the sandbox: the system (merged-/usr links are recreated as links) and /etc.
 const SYSTEM_RO = ["/usr", "/etc", "/opt", "/snap"];
 const SYSTEM_LINKS = ["/bin", "/sbin", "/lib", "/lib32", "/lib64", "/libx32"];
 // Toolchains people install in their home: read-only when present (sandbox.read_only_roots adds more; an engine module its own, `ro`).
@@ -64,14 +40,13 @@ const HOME_RO = ["~/.local/bin", "~/.local/lib", "~/.cargo", "~/.rustup", "~/go/
 const inside = (p: string, root: string) => p === root || p.startsWith(root.endsWith(sep) ? root : root + sep);
 
 /**
- * What a job sees of the host's files (bwrap): an allowlist, not the whole host. Read-only: the toolchains (/usr and its links,
- * /etc, /opt, the home's toolchains, node's own prefix), the job wrappers (cfg.binDir), the pinned headless browser and `ro`.
- * Read-write: `rw` (the workspace, the engine's state dirs). Copy-on-write: `cow` (the build caches, each over the task's own
- * layer; read-write binds when cfg.noOverlay). A private /tmp and an empty home under them; the host's /dev and /sys, a procfs
- * of the job's own. Nothing else exists in the job. What cfg.hidden names inside an allowed path is still masked: a directory
- * gets an empty tmpfs, a file or socket /dev/null.
+ * What the sandbox sees of the host's files (bwrap): an allowlist, not the whole host. Read-only: the toolchains (/usr and its
+ * links, /etc, /opt, the home's toolchains, node's own prefix), the wrappers (cfg.binDir), the pinned headless browser and `ro`.
+ * Read-write: `rw` (the clone being checked). A private /tmp and an empty home under them; the host's /dev and /sys, a procfs
+ * of its own. Nothing else exists there. What cfg.hidden names inside an allowed path is still masked: a directory gets an
+ * empty tmpfs, a file or socket /dev/null.
  */
-export function layout(cfg: SandboxConfig, { rw = [], ro = [], cow = [] }: { rw?: string[]; ro?: string[]; cow?: [string, string][] } = {}) {
+export function layout(cfg: SandboxConfig, { rw = [], ro = [] }: { rw?: string[]; ro?: string[] } = {}) {
   const home = homedir();
   const node = dirname(dirname(process.execPath));
   const roPaths = [...SYSTEM_RO, ...HOME_RO.map(expand), ...(cfg.sandbox?.read_only_roots ?? []).map(expand), ...(node.startsWith(home + sep) ? [node] : []), cfg.binDir, cfg.browserDir, ...ro];
@@ -85,19 +60,11 @@ export function layout(cfg: SandboxConfig, { rw = [], ro = [], cow = [] }: { rw?
   }
   // /run: only the host's resolver (the jail replaces it with its own tmpfs; without the jail it links into /run/systemd/resolve).
   if (existsSync("/run/systemd/resolve")) args.push("--ro-bind", "/run/systemd/resolve", "/run/systemd/resolve");
-  // Shallower paths first, so a deeper bind lands on top of its parent's. `cow`: [host dir, the task's own upper dir] pairs
-  // (overlayfs): the job reads the host dir and writes go to the task's upper dir, so one job can't change what another reads.
-  const mounts = [...roPaths.filter(Boolean).map((p) => ["--ro-bind", resolve(p)]), ...rw.filter(Boolean).map((p) => ["--bind", resolve(p)]), ...cow.map(([p, up]) => (cfg.noOverlay ? ["--bind", resolve(p)] : ["--overlay", resolve(p), up]))]
+  // Shallower paths first, so a deeper bind lands on top of its parent's.
+  const mounts = [...roPaths.filter(Boolean).map((p) => ["--ro-bind", resolve(p)]), ...rw.filter(Boolean).map((p) => ["--bind", resolve(p)])]
     .filter(([, p]) => existsSync(p!))
-    .sort((a, b) => a[1]!.split(sep).length - b[1]!.split(sep).length) as [string, string, string?][];
-  for (const [how, p, up] of mounts) {
-    if (how !== "--overlay") args.push(how, p, p);
-    else {
-      mkdirSync(join(up!, "upper"), { recursive: true });
-      mkdirSync(join(up!, "work"), { recursive: true });
-      args.push("--overlay-src", p, "--overlay", join(up!, "upper"), join(up!, "work"), p);
-    }
-  }
+    .sort((a, b) => a[1]!.split(sep).length - b[1]!.split(sep).length) as [string, string][];
+  for (const [how, p] of mounts) args.push(how, p, p);
   const allowed = mounts.map(([, p]) => p);
   for (const p of cfg.hidden.filter((d) => existsSync(d) && allowed.some((a) => inside(d, a)))) {
     args.push(...(statSync(p).isDirectory() ? ["--tmpfs", p] : ["--ro-bind", "/dev/null", p]));
@@ -131,19 +98,7 @@ export function jailProblem(cfg: SandboxConfig) {
   return r.status === 0 ? undefined : `a trial job failed (exit ${r.status ?? r.signal}): ${(r.stderr || r.error?.message || "").trim().slice(0, 300)}`;
 }
 
-/** Why this bwrap can't mount the copy-on-write cache layers (--overlay needs bubblewrap 0.11+), or undefined when it can. */
-export function overlayProblem(cfg: SandboxConfig) {
-  const dir = mkdtempSync(join(tmpdir(), "aidenhq-overlay-"));
-  try {
-    for (const d of ["lower", "upper", "work"]) mkdirSync(join(dir, d));
-    const r = spawnSync(cfg.bwrap, ["--ro-bind", "/", "/", "--overlay-src", join(dir, "lower"), "--overlay", join(dir, "upper"), join(dir, "work"), join(dir, "lower"), "true"], { encoding: "utf8", timeout: 20000 });
-    return r.status === 0 ? undefined : `${(r.stderr || r.error?.message || "").trim().slice(0, 200) || `exit ${r.status ?? r.signal}`}`;
-  } finally {
-    removeLayers(dir);
-  }
-}
-
-/** Remove a copy-on-write layer folder: Go's module cache and overlayfs's work dir are read-only, so made writable first. */
+/** Remove a folder a job wrote: Go's module cache is read-only, so made writable first. */
 export function removeLayers(dir: string) {
   spawnSync("chmod", ["-R", "u+rwx", dir]);
   rmSync(dir, { recursive: true, force: true });
@@ -203,8 +158,6 @@ export function engineEntry(cfg: Pick<SandboxConfig, "enginesFile">, kind: strin
   if (!e) throw new Error(`no engine module provides "${kind}" (config/engines.json: enable its module and apply)`);
   return e;
 }
-/** Engines whose model calls go through the model gateway with the job's own token: billed and capped there. */
-export const viaGateway = (cfg: Pick<SandboxConfig, "enginesFile">, kind: string) => readEngines(cfg)[kind]?.gateway === true;
 const fromProduct = (p: string) => resolve(repoRoot, p);
 
 /**
@@ -241,62 +194,29 @@ export interface JobClaims { agentId?: string | null; issueId?: string | null; a
 /** The job's own credential to the gateway and the tool proxy, valid past its deadline (an adopted run keeps its env). */
 export const jobToken = (cfg: Pick<SandboxConfig, "secretsDir" | "timeout_minutes">, job: JobClaims) => job.token ?? modelToken(cfg, { kind: "agent", agentId: job.agentId ?? null, issueId: job.issueId ?? null, jobcaps: [...(job.jobcaps ?? [])].sort(), observing: job.observing === true, ttlMs: ((cfg.timeout_minutes ?? 60) + 60) * 60_000 }, job.at);
 
-/** A task's copy-on-write cache layers: beside the task folders, never inside one (no job sees another's, or its own raw). */
-export const cowRoot = (cfg: Pick<SandboxConfig, "workDir">, worktree: string) => join(cfg.workDir ?? dirname(dirname(worktree)), ".cache-layers", basename(worktree));
-
 /** A box job's box (the computer launcher made it): its container, the env file of its credentials and its out folder. */
 export interface Box { container: string; envFile: string; outDir: string }
 
 /**
- * One run of an engine under engine@1: job.json in the job dir, then the module's bin with the job dir as its argument. bwrap
- * (hiding) is the write boundary; the engine sees its module folder read-only, and read-write the workspace, the job dir, its
- * state folder (rw) and the job's cloud session (`cloud`, for engines that observe). `loopback`: further host URLs the job may
- * reach (its helper), besides the model gateway (its model calls and jobcaps). A box job runs the same bin in its computer.
+ * One run of an engine under engine@1, in the job's agent computer: job.json in its out folder (the box's /aidenhq-out/job),
+ * then `docker exec` of the module's bin there, under `boxWrap` (the launcher's scrub), with the module the launcher mounted
+ * read-only at /opt/aidenhq/engine. The model comes through the box gateway with the box's run token; its connections are in
+ * its Codex home already (the launcher's). `gh`: the job's read-only gh token, passed by name from the docker client's env
+ * (never argv or the env file). Only an engine that runs in a box (`box: true`) runs at all.
  */
-export function buildJob({ cfg, engine, worktree, jobDir, sessionId, prompt = "", cloud, loopback = [], job = {}, box, gh = false, boxWrap }: {
-  cfg: SandboxConfig; engine: Engine; worktree: string; jobDir: string; sessionId?: string; prompt?: string; cloud?: { root: string; env: Record<string, string> };
-  loopback?: (string | undefined)[]; job?: JobClaims; box?: Box; gh?: boolean; boxWrap: string;
+export function buildJob({ cfg, engine, worktree, jobDir, sessionId, prompt = "", job = {}, box, gh = false, boxWrap }: {
+  cfg: SandboxConfig; engine: Engine; worktree: string; jobDir: string; sessionId?: string; prompt?: string; job?: JobClaims; box: Box; gh?: boolean; boxWrap: string;
 }) {
   const entry = engineEntry(cfg, engine.kind);
-  const caps = box ? [] : jobcapsFor(cfg, engine, job.jobcaps);
-  job = { ...job, jobcaps: caps, observing: observes(engine) };
-  const servers = jobcapServers(cfg, caps);
-  let minted: string | undefined;
-  const token = () => (minted ??= jobToken(cfg, job)); // one credential per job: its model calls and its reads
-  const search = observes(engine) || servers.some((s) => s.private) ? "disabled" : "live"; // no web search for a job holding private data
-  cloud = observes(engine) && !box ? cloud : undefined;
-  const cloudRoots = cloud ? [cloud.root] : [];
-  const state = box ? undefined : engineState(cfg, engine.kind, job.issueId ?? undefined);
-  const secrets = Object.fromEntries(Object.entries(box ? {} : entry.secret_env ?? {}).map(([k, f]) => {
-    const file = join(cfg.secretsDir, f);
-    if (!existsSync(file)) throw new Error(`The ${entry.label ?? engine.kind} engine isn't set up: save its token to \`${file}\` (0600).`);
-    return [k, readFileSync(file, "utf8").trim()];
-  }));
-  const env: Record<string, string> = { ...(servers.length ? { [JOB_TOKEN_ENV]: token() } : {}), ...(entry.gateway && !box ? { [MODEL_TOKEN_ENV]: token() } : {}), ...(cloud?.env ?? {}), ...secrets };
-  const extra = (cfg.sandbox?.extra_writable_roots ?? []).map(expand);
+  if (entry.box !== true) throw new Error(`The ${entry.label ?? engine.kind} engine doesn't run in an agent computer, and every job does.`);
   const spec = {
     contract: "engine@1", job: basename(jobDir), agent: job.agentId ?? "", task: job.issueId ?? "", prompt,
     ...(sessionId && SESSION.test(sessionId) ? { session: sessionId } : {}),
-    model: { base_url: box ? `${cfg.boxGatewayUrl}/api/v1` : entry.gateway ? `${cfg.gatewayUrl}/api/v1` : "", token_env: box ? "AIDENHQ_RUN_TOKEN" : MODEL_TOKEN_ENV, id: engine.model ?? "", effort: engine.effort ?? "" },
-    mcp: servers.map((s) => ({ name: s.name, url: s.url, token_env: JOB_TOKEN_ENV, ...(s.toolTimeout ? { tool_timeout_s: s.toolTimeout } : {}) })),
-    env: Object.keys(env), limits: { timeout_s: (cfg.timeout_minutes ?? 60) * 60 }, web: search === "live",
-    ...(state ? { state } : {}),
-    sandbox: { kind: box ? "box" : "bwrap", writable: [worktree, ...cloudRoots, ...extra.filter((p) => existsSync(p))], network: cfg.sandbox?.network !== false },
+    model: { base_url: `${cfg.boxGatewayUrl}/api/v1`, token_env: "AIDENHQ_RUN_TOKEN", id: engine.model ?? "", effort: engine.effort ?? "" },
+    mcp: [], env: [], limits: { timeout_s: (cfg.timeout_minutes ?? 60) * 60 }, web: !observes(engine), // no web search for a job holding private data
+    sandbox: { kind: "box", writable: [worktree], network: true },
   };
-  const bin = relative(entry.dir, entry.bin);
   writeFileSync(join(jobDir, "job.json"), JSON.stringify(spec), { mode: 0o600, flag: "wx" });
-  if (box) {
-    // The box's own job dir (/aidenhq-out/job) and the engine module the launcher mounted read-only. `gh`: the job's read-only
-    // gh token, passed by name from the docker client's env (never argv or the env file).
-    const argv = ["docker", "exec", "--env-file", box.envFile, ...(gh ? ["-e", "GH_TOKEN", "-e", "AIDENHQ_GH_AUTH"] : []), "-w", "/workspace", box.container, "sh", "-c", boxWrap, "aidenhq-computer", join("/opt/aidenhq/engine", bin), "/aidenhq-out/job"];
-    return { argv, env: {} as Record<string, string>, spec, entry };
-  }
-  // The model gateway (gateway engines' model calls) and every job's jobcaps, on host loopback (forwarded into the jail).
-  const mcp = entry.gateway || caps.length ? [cfg.gatewayUrl] : [];
-  const rw = [worktree, jobDir, ...(state ? [state] : []), ...(entry.rw ?? []).map(expand), ...(entry.gcloud === false ? [] : cloudRoots)];
-  // The shared build caches (sandbox.extra_writable_roots: ~/.npm, ~/.cache): copy-on-write per task, never written back.
-  const cow = extra.map((p, i) => [p, join(cowRoot(cfg, worktree), `${i}-${basename(p)}`)] as [string, string]);
-  // The clones' core.hooksPath (a pre-push that refuses), read-only; the engine's module folder.
-  const ro = [join(cfg.workDir, ".guard-hooks"), fromProduct(entry.dir), ...(entry.ro ?? []).map(expand)];
-  return { argv: hiding(cfg, [process.execPath, fromProduct(entry.bin), jobDir], [...mcp, ...loopback] as string[], { rw, ro, cow }), env, spec, entry };
+  const argv = ["docker", "exec", "--env-file", box.envFile, ...(gh ? ["-e", "GH_TOKEN", "-e", "AIDENHQ_GH_AUTH"] : []), "-w", "/workspace", box.container, "sh", "-c", boxWrap, "aidenhq-computer", join("/opt/aidenhq/engine", relative(entry.dir, entry.bin)), "/aidenhq-out/job"];
+  return { argv, spec, entry };
 }

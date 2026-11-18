@@ -72,7 +72,7 @@ describe("flow-product", () => {
     assert.equal(task.assigneeAgentId, "engineer-claude");
     assert.match(task.description, /pull\/10[\s\S]*<!-- source:dependabot:acme\/app\/10 -->$/);
     assert.doesNotMatch(task.description, /package-lock/, "nothing of the PR's own text");
-    await t.waitFor("its run", () => t.claudeRuns().some((r) => /Dependabot PR acme\/app#10/.test(r.prompt)));
+    await t.waitFor("its run", () => t.agentRuns().some((r) => /Dependabot PR acme\/app#10/.test(r.prompt)));
     await restart();
     await t.idle(2000);
     assert.equal(t.paperclip.created.length, 1, "filed once");
@@ -83,7 +83,7 @@ describe("flow-product", () => {
     setPrs({ 9: { branch: "fix/remove-legacy", files: ["chains.txt"], checks: "SUCCESS", mergeable: "CONFLICTING" } });
     await restart();
     await t.waitFor("the ping", () => pings().length === 1);
-    await t.waitFor("the rebase run", () => t.claudeRuns().some((r) => /Rebase the PR's branch onto `origin\/main`/.test(r.prompt)));
+    await t.waitFor("the rebase run", () => t.agentRuns().some((r) => /Rebase the PR's branch onto `origin\/main`/.test(r.prompt)));
     await restart();
     await t.idle(2000);
     assert.equal(pings().length, 1, "once per main commit");
@@ -107,7 +107,7 @@ describe("flow-product", () => {
     state.updateBranch("part", "acme/app", "feat/old", { pr_url: "https://github.com/acme/app/pull/11" });
     state.db.close();
     t.paperclip.issues.get("part").status = "cancelled";
-    const runs = t.claudeRuns().length;
+    const runs = t.agentRuns().length;
     const said = t.partComments().length;
     const closes = () => t.fakeLog().filter((e) => e.kind === "gh" && e.data.includes("repos/acme/app/pulls/11") && e.data.includes("state=closed"));
     const notes = () => t.fakeLog().filter((e) => e.kind === "gh" && e.data.includes("repos/acme/app/issues/11/comments"));
@@ -120,7 +120,7 @@ describe("flow-product", () => {
     assert.equal(closes().length, 1, "closed once");
     assert.equal(t.partComments().length, said, "nothing on the task (a comment would reopen it)");
     assert.equal(t.paperclip.issues.get("part").status, "cancelled", "not reopened");
-    assert.equal(t.claudeRuns().length, runs, "nothing dispatched");
+    assert.equal(t.agentRuns().length, runs, "nothing dispatched");
   });
 
   it("never errors or asks for a repository along the way", () => t.noErrors());

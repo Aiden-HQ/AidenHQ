@@ -11,27 +11,26 @@ describe("flow-conversation", () => {
   // End to end (see flow-harness.mjs): the first run, from the user's own words on assignment (PEN-2713/PEN-2714's shape:
   // the user's task lists the repositories, Ada's part of it says "go ahead"), its reply, and the "pr" shortcut.
   describe("starting an Engineer on a task, end to end", () => {
-    const { waitFor, reviews, starts, partComments, claudeRuns, fakeLog, context, say } = t;
+    const { waitFor, reviews, starts, partComments, agentRuns, fakeLog, context, say } = t;
 
     it("starts from the user's own words on assignment, in every repository their task lists, without asking", async () => {
       await waitFor("the first reply", () => reviews().length > 0);
       const started = t.output.split("\n").filter((l) => l.includes('"job started"')).map((l) => JSON.parse(l));
       assert.deepEqual([...started[0].repos].sort(), ["acme/app", "acme/infra"]);
-      assert.equal(started[0].engine, "claude");
+      assert.equal(started[0].engine, "codex-openrouter");
       assert.ok(!partComments().some((c) => /which repositor|Runner error|Failed/i.test(c)), `no questions or errors${context()}`);
-      const { prompt, argv } = claudeRuns()[0];
+      const { prompt, argv } = agentRuns()[0];
       assert.match(prompt, /acme\/app[\s\S]*acme\/infra|acme\/infra[\s\S]*acme\/app/);
       assert.match(prompt, /The task this is part of[\s\S]*Drop Legacy support/);
       assert.match(prompt, /<<<PARENT_CONVERSATION\n### Alfred · [^\n]*\n\n## Legacy usage — preliminary\n\nLegacy is still read by the infra alerts\./, "Alfred's report on the user's task");
       assert.match(prompt, /`aidenhq task PEN-N` prints one in full/);
       assert.match(prompt, /## Instructions from Dana \(authoritative\)[\s\S]*Ada, go ahead and start this on dev please/);
-      assert.match(prompt, /The engineering agents, by name: Ada \(claude\), Grace \(codex\)/);
+      assert.match(prompt, /The engineering agents, by name: Ada \(codex-openrouter\), Grace \(codex-openrouter\)/);
       assert.doesNotMatch(prompt, /Mode: \*\*|## Summary/, "no modes, no report template");
-      assert.ok(argv.includes("--strict-mcp-config"), "Claude Code keeps away from the user's own setup");
-      // Engines run on an allowlist of the host's files: an empty home, so no gcloud sign-ins, and no secrets dir.
-      const bwrap = fakeLog().find((e) => e.kind === "bwrap")?.data ?? [];
-      assert.ok(bwrap.includes("--tmpfs") && !bwrap.includes("/"), "the host's root is not bound");
-      assert.ok(!bwrap.some((a) => a.endsWith(".config/gcloud") || a.startsWith(join(t.dir, "secrets"))), "the gcloud sign-ins and the secrets dir aren't in the job");
+      // The job ran in its computer: Codex on the box's own key, in /workspace, never on the host.
+      assert.ok(argv.includes('sandbox_mode="danger-full-access"') && argv.join(" ").includes('env_key="AIDENHQ_RUN_TOKEN"'), argv.join(" "));
+      assert.match(prompt, /\/workspace\/app/);
+      assert.equal(t.launcher.calls.filter((c) => c.route === "/job").length, 1);
     });
 
     it("posts the agent's reply as its own, with no start notes around it", () => {
@@ -50,7 +49,7 @@ describe("flow-conversation", () => {
       await waitFor("the board's view of it", () => publishing() && t.paperclip.activity.at(-1).running.length === 0);
       assert.equal(publishing().running.find((r) => r.identifier === "PEN-2").mode, "opening PRs");
       assert.ok(git(t.dir, "--git-dir", join(t.dir, "github/acme/app.git"), "branch", "--list", "fix/remove-legacy"), "pushed");
-      assert.equal(claudeRuns().length, 1, "no agent turn for the shortcut");
+      assert.equal(agentRuns().length, 1, "no agent turn for the shortcut");
     });
 
     it("never errors or asks for a repository along the way", () => t.noErrors());
@@ -58,7 +57,7 @@ describe("flow-conversation", () => {
 
   // End to end (see flow-harness.mjs): what an agent can read of other tasks and chats, and a comment that needs no answer.
   describe("reading around the task, end to end", () => {
-    const { partComments, claudeRuns, toolRuns, step, turn, settled } = t;
+    const { partComments, agentRuns, toolRuns, step, turn, settled } = t;
 
     it("reads another task's whole conversation, and finds tasks by agent or words", async () => {
       await settled();
@@ -77,7 +76,7 @@ describe("flow-conversation", () => {
     it("reads Alfred's chat when the user wrote to Ada from there", async () => {
       step("none");
       await turn("@Ada put this into the release notes too\n\n_Written in Alfred's chat on PEN-3._\n\n<!-- aidenhq-from:PEN-3 -->");
-      const { prompt } = claudeRuns().at(-1);
+      const { prompt } = agentRuns().at(-1);
       assert.match(prompt, /## Alfred's chat, where Dana wrote to you from[\s\S]*<<<SOURCE_CHAT\n[\s\S]*Draft: Legacy support is removed from the app and the alerts\.[\s\S]*SOURCE_CHAT>>>/);
       assert.match(prompt, /@Ada put this into the release notes too/);
     });
@@ -95,7 +94,7 @@ describe("flow-conversation", () => {
 
   // End to end (see flow-harness.mjs): --help, files the agent made, and a message passed on to Alfred.
   describe("sharing and passing on, end to end", () => {
-    const { claudeRuns, toolRuns, step, turn, settled } = t;
+    const { agentRuns, toolRuns, step, turn, settled } = t;
 
     it("answers --help itself, shares what it made on the task, and passes a message on to Alfred", async () => {
       await settled();
@@ -116,7 +115,7 @@ describe("flow-conversation", () => {
       step("report");
       await turn("Anything else?");
       assert.equal(t.paperclip.attached.length, 2);
-      assert.doesNotMatch(claudeRuns().at(-1).prompt, /## Files from Dana/);
+      assert.doesNotMatch(agentRuns().at(-1).prompt, /## Files from Dana/);
     });
 
     it("never errors or asks for a repository along the way", () => t.noErrors());

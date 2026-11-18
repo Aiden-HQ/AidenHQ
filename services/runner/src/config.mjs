@@ -80,7 +80,6 @@ export function loadConfig() {
   // GitHub is a code host unless the catalog has codehost-local on and codehost-github off (an instance with no GitHub).
   const githubHost = !localHost || enabledIn(join(configDir, "modules.json"), "codehost-github");
   if (localHost && !allowed.some((o) => o.toLowerCase() === "local")) allowed.push("local");
-  const gcpCredentials =expand(cfg.gcp?.credentials ?? join(secrets, "gcloud/application_default_credentials.json"));
   return {
     ...cfg,
     allowed_orgs: allowed,
@@ -112,27 +111,21 @@ export function loadConfig() {
     repoAccessScript: join(REPO_ROOT, "ops/vm/add-deploy-key.sh"),
     boardInternalUrl: env.BOARD_INTERNAL_URL ?? cfg.recurring?.board_url ?? "http://127.0.0.1:3122",
     openrouterKeyFile: expand(cfg.engines?.openrouter?.key_file ?? join(secrets, "openrouter_key")),
-    // The model gateway (kernel/src/gateway) on host loopback: opencode jobs, the AI reviewer and the intake call it with
+    // The model gateway (kernel/src/gateway) on host loopback: the advisor, the AI reviewer and the intake call it with
     // tokens the runner signs with gateway_job_secret; only the gateway holds the OpenRouter key.
     gatewayUrl: cfg.gateway?.url ?? "http://127.0.0.1:8201",
     // The agents' `aidenhq` commands (repohelper.ts): a fixed loopback port, the only one besides 8201 a job reaches.
     helperPort: Number(cfg.helper_port ?? 3140),
-    // Box jobs (an Engineer with a computer, the App Engineer): the computer launcher's job routes and the key that opens only
-    // them; the box reaches the model and its connections through the launcher's gateway.
+    // Jobs (every Engineer's, in its computer): the computer launcher's job routes and the key that opens only them; the box
+    // reaches the model and its connections through the launcher's gateway.
     launcherUrl: env.AIDENHQ_LAUNCHER_URL ?? "http://10.231.0.1:8199",
     computersRunnerKeyFile: join(secrets, "computers_runner_key"),
     // The engine registry (compile writes it from the modules' providers.engine): kinds, their module, bin and data.
     enginesFile: join(configDir, "engines.json"),
     // The vault (the job token's secret, for `aidenhq advise`; the engineering module's token for the kernel's job routes).
     secretsDir: secrets,
-    // Jobs' reads of connections (compile writes it from the modules' jobcaps): through the gateway's /c/<connection>/mcp.
-    jobcapsFile: join(configDir, "jobcaps.json"),
     // The kernel's backplane: the runner files a task's document there as a primer.publish record (main.mjs publishToPrimer).
     kernelUrl: env.AIDENHQ_KERNEL_URL ?? "http://10.231.0.1:3130",
-    gcp: {
-      credentialsFile: gcpCredentials,
-      projects: (cfg.gcp?.projects ?? []).filter(Boolean),
-    },
     workDir: expand(cfg.work_dir ?? "~/aidenhq-work"),
     stateDir,
     // The monitoring module's textfile directory (node-exporter reads it): the runner's metrics (metrics.ts).

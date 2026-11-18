@@ -14,7 +14,7 @@ import { State } from "../src/state.ts";
 import { readLog } from "./fakes/lib.mjs";
 import { registry } from "./fakes/engines.mjs";
 import { fakeJail } from "./fakes/jail.mjs";
-import { forwardJobs, freePort, jobsHost } from "./flow-harness.mjs";
+import { fakeDocker, forwardJobs, freePort, jobLauncher, jobsHost } from "./flow-harness.mjs";
 
 const RUNNER = join(import.meta.dirname, "../src/main.mjs");
 const FAKES = join(import.meta.dirname, "fakes");
@@ -69,23 +69,24 @@ test("a runner and a kernel restart leave a running job alone; the next kernel a
   for (const d of [home, config, secrets, bin]) mkdirSync(d, { recursive: true });
   // The fakes' settings baked in: a job's env is the kernel's allowlist.
   const exports = `export FAKE_LOG='${join(dir, "fake.log")}'\nexport FAKE_STEP='${join(dir, "claude-step")}'\n`;
-  for (const name of ["bwrap", "codex", "claude", "gh"]) {
-    writeFileSync(join(bin, name), name === "bwrap" || name === "codex" ? `#!/bin/sh\n${exports}exec "${join(FAKES, `${name}.sh`)}" "$@"\n` : `#!/bin/sh\n${exports}exec "${process.execPath}" "${join(FAKES, `${name}.mjs`)}" "$@"\n`);
+  for (const name of ["codex", "gh"]) {
+    writeFileSync(join(bin, name), name === "codex" ? `#!/bin/sh\n${exports}exec "${join(FAKES, `${name}.sh`)}" "$@"\n` : `#!/bin/sh\n${exports}exec "${process.execPath}" "${join(FAKES, `${name}.mjs`)}" "$@"\n`);
     chmodSync(join(bin, name), 0o755);
   }
   fakeJail(bin, join(dir, "fake.log"));
+  const jobsDir = join(home, ".local/state/aidenhq-computers/jobs");
+  fakeDocker(bin, jobsDir);
   writeFileSync(join(config, "system.yaml"), `paperclip:\n  company_id: "${COMPANY}"\nuser:\n  names: ["Dana"]\n`);
   writeFileSync(join(config, "engines.json"), JSON.stringify(registry()));
   writeFileSync(
     join(config, "runner.yaml"),
     `label: engineer\npoll_seconds: 1\nhelper_port: ${await freePort()}\nallowed_orgs: [acme]\nwork_dir: ${join(dir, "work")}\nstate_dir: ${join(dir, "state")}\nmax_concurrent: 1\ntimeout_minutes: 2\n` +
-      `engines:\n  claude:\n    token_file: ${join(secrets, "claude_oauth_token")}\n    config_dir: ${join(dir, "state/claude")}\n` +
-      `gcp:\n  credentials: ${join(secrets, "gcloud.json")}\nreplies:\n  enabled: false\nreviews:\n  enabled: false\nrecurring:\n  enabled: false\n`,
+      `engines:\n  openrouter:\n    model: acme/model-1\nreplies:\n  enabled: false\nreviews:\n  enabled: false\nrecurring:\n  enabled: false\n`,
   );
-  for (const [f, v] of [["paperclip_board_key", "board-key"], ["claude_oauth_token", "claude-token"], ["board_internal_token", "board-token"], ["engineering_token", "engineering-token"]]) writeFileSync(join(secrets, f), `${v}\n`, { mode: 0o600 });
-  writeFileSync(join(home, ".gitconfig"), "[user]\n\tname = Test\n\temail = test@example.com\n");
+  for (const [f, v] of [["paperclip_board_key", "board-key"], ["computers_runner_key", "runner-key"], ["board_internal_token", "board-token"], ["engineering_token", "engineering-token"]]) writeFileSync(join(secrets, f), `${v}\n`, { mode: 0o600 });
+  writeFileSync(join(home, ".gitconfig"), "[user]\n\tname = Test\n\temail = test@example.com\n[gc]\n\tauto = 0\n[maintenance]\n\tauto = false\n");
 
-  const engineers = [{ id: "engineer-claude", name: "Engineer · Claude", status: "idle", adapterType: "claude_local", adapterConfig: {}, metadata: { setupKey: "aidenhq:engineer-claude", runnerEngine: true, persona: { name: "Ada" }, privateReads: true } }];
+  const engineers = [{ id: "engineer-claude", name: "Software Engineer", status: "idle", adapterType: "opencode_local", adapterConfig: {}, metadata: { setupKey: "aidenhq:engineer-openrouter", runnerEngine: true, engine: "codex-openrouter", box: true, persona: { name: "Ada" }, privateReads: true } }];
   const issue = { id: "task", identifier: "PEN-7", title: "Look into the flaky test", status: "todo", assigneeAgentId: "engineer-claude", assigneeUserId: null, createdByUserId: USER, labels: [], description: "Ada, look into why the login test is flaky" };
   let jobs;
   const paperclip = fakePaperclip(issue, engineers, () => jobs.port);
@@ -94,8 +95,12 @@ test("a runner and a kernel restart leave a running job alone; the next kernel a
   const step = join(dir, "claude-step");
   // Its `aidenhq` command runs after the restart: the agent's tools still reach the (new) runner.
   writeFileSync(step, "slow\naidenhq status"); // works until the test writes `release` next to the step file
+  const launcher = jobLauncher(jobsDir, { AIDENHQ_CONFIG_DIR: config, PATH: `${bin}:${join(import.meta.dirname, "../bin")}:${dirname(process.execPath)}:/usr/bin:/bin`, HOME: home, FAKE_LOG: join(dir, "fake.log"), FAKE_STEP: step });
+  await new Promise((r) => launcher.server.listen(0, "127.0.0.1", r));
   const env = {
     PATH: `${bin}:${dirname(process.execPath)}:/usr/bin:/bin:${process.env.PATH}`,
+    AIDENHQ_LAUNCHER_URL: `http://127.0.0.1:${launcher.server.address().port}`,
+    AIDENHQ_BOX_RELEASE_RETRY_MS: "50",
     HOME: home,
     GIT_CONFIG_NOSYSTEM: "1",
     AIDENHQ_CONFIG_DIR: config,
@@ -114,7 +119,7 @@ test("a runner and a kernel restart leave a running job alone; the next kernel a
     runner.stderr.on("data", (d) => (output += d));
     return runner;
   };
-  const claudeRuns = () => readLog(env.FAKE_LOG).filter((e) => e.kind === "claude");
+  const agentRuns = () => readLog(env.FAKE_LOG).filter((e) => e.kind === "agent");
   const replies = () => paperclip.patches.filter((p) => p.status === "in_review");
   const waitFor = async (what, ok, ms = 30_000) => {
     for (const end = Date.now() + ms; Date.now() < end; await new Promise((r) => setTimeout(r, 50))) if (ok()) return;
@@ -138,11 +143,12 @@ test("a runner and a kernel restart leave a running job alone; the next kernel a
       if (pid) process.kill(-pid, "SIGKILL");
     } catch {}
     paperclip.server.close();
+    launcher.server.close();
     rmSync(dir, { recursive: true, force: true });
   });
 
   // The job starts and works (the fake holds its turn open).
-  await waitFor("the agent at work", () => claudeRuns().length === 1 && job()?.run_json);
+  await waitFor("the agent at work", () => agentRuns().length === 1 && job()?.run_json);
   pid = JSON.parse(job().run_json).pid;
 
   // A deploy's drain: the runner exits at once with the code systemd restarts on, and the job runs on.
@@ -170,8 +176,8 @@ test("a runner and a kernel restart leave a running job alone; the next kernel a
   assert.equal(replies().length, 1, "reported once");
   assert.match(replies()[0].comment, /Checked every repository; nothing needed changing\./);
   assert.equal(job().status, "done");
-  assert.equal(claudeRuns().length, 1, "one run: not resumed, not run again");
-  assert.ok(!claudeRuns()[0].data.argv.includes("--resume"));
+  assert.equal(agentRuns().length, 1, "one run: not resumed, not run again");
+  assert.ok(!agentRuns()[0].data.argv.includes("resume"));
   const tool = readFileSync(env.FAKE_LOG, "utf8").trim().split("\n").map((l) => JSON.parse(l)).find((e) => e.kind === "tool").data;
   assert.equal(tool.code, 0, tool.out);
   assert.ok(!paperclip.comments.some((c) => /Resumed after a runner restart|Runner error/.test(c.body)), paperclip.comments.map((c) => c.body).join("\n---\n"));
