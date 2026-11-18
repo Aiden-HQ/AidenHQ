@@ -133,6 +133,14 @@ squash-merges. The PR title is a Conventional Commit (`type(scope): summary`; CI
 commit on `main`; the body says why. Never push to `main`. Instances pin product commits that are on `main`, so a change reaches an instance only
 after it is merged and that instance's owner bumps the pin.
 
+Merging your own PR (a maintainer session): `gh pr merge <n> --auto --squash --match-head-commit <head>` once it is
+ready, and move on; GitHub merges it when `ci-required` is green. A PR the reviewer eval applies to is armed only after
+its eval passed on that head. Arming, then pushing, merges the new head: push before arming, or `--disable-auto` first.
+Auto-merge doesn't resolve conflicts: a conflicting PR is rebased on `origin/main` by whoever owns it and pushed with
+`--force-with-lease`. Fleet PRs are the runner's: its merge queue merges each at its bound head (reviewer, eval
+receipt, trains), so never arm them. `main` doesn't require branches to be up to date: the runner re-tiers a head it
+updated, so that rule would re-review every open PR on every merge.
+
 ## Running an instance (deploy flow)
 
 1. The product change is merged to `main`.
