@@ -1,8 +1,8 @@
 name: chat-lane
 description: "The fast chat lane: agents with a `chat:` block answer their chat (one task each, written on the board or to their own Telegram bots) in seconds with a light model, plus wake_at, wake_list and chat_send. Always installed (core requires it)."
 # Its chats live only in each agent's chat task: the kernel writes every turn there (kernel.lane: the owner's words as the
-# owner, the replies as the agent), it reads them through the kernel (kernel.cp-read), and task wakes are the kernel's
-# labelled notices (kernel.wake).
+# owner, the replies as the agent), it reads them through the kernel (kernel.cp-read), and task wakes go into the
+# kernel's wake inbox (kernel.wake).
 requires: [ channel-telegram ] # the paired owner chat (its service's /owner-chat)
 roles:
   requests: [ kernel.cp-read, kernel.wake, kernel.lane ]

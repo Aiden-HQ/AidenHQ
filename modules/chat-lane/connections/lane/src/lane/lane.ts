@@ -118,7 +118,7 @@ export function makeLane(d: LaneDeps) {
   /** A continuation that didn't produce the answer: the owner hears why, and it retries once. */
   async function failed(agent: LaneAgent, c: Owed, reason: string): Promise<void> {
     const ask = c.ask.length > 80 ? `${c.ask.slice(0, 80)}…` : c.ask;
-    const key = `o${c.id}.${c.attempts}`;
+    const key = `o${c.id}-${c.attempts}`;
     if (c.attempts + 1 < CONTINUE_TRIES) {
       d.store.retryAt(c.id, now() + RETRY_MS);
       await send(agent, key, `Couldn't finish "${ask}" yet (${reason}). Retrying in a minute.`, true);
@@ -159,7 +159,7 @@ export function makeLane(d: LaneDeps) {
       if (first) return;
       first = true;
       d.store.firstSent(turnId, now());
-      void send(agent, `t${turnId}.ack`, ACK, telegram).catch((e: Error) => d.log.warn({ agent: agent.key, err: e.message }, "lane ack not posted"));
+      void send(agent, `t${turnId}-ack`, ACK, telegram).catch((e: Error) => d.log.warn({ agent: agent.key, err: e.message }, "lane ack not posted"));
     }, agent.deadlineS * 1000);
     const abort = new AbortController();
     const limit = setTimeout(() => abort.abort(new Error("the turn took too long")), c ? CONTINUE_LIMIT_MS : TURN_LIMIT_MS);

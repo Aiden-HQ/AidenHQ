@@ -2,7 +2,7 @@
 // board or through their own Telegram bots) in seconds with a light model, calling tools through the kernel as themselves;
 // wake_at, wake_list and chat_send (MCP, behind the kernel's proxy). Its chats live only in those tasks: the kernel writes
 // each turn there (POST /v1/channel/exchange, role kernel.lane), the owner's words as the owner and the replies as the agent;
-// a wake on a task is the kernel's labelled notice (POST /v1/wake), and it reads tasks through the kernel.
+// a wake on a task goes into the kernel's wake inbox (POST /v1/wakes), and it reads tasks through the kernel.
 import { readFileSync } from "node:fs";
 import { createServer, type IncomingMessage } from "node:http";
 import { timingSafeEqual } from "node:crypto";
@@ -119,9 +119,6 @@ startWakes({
   lane,
   agents,
   taskIsClosed,
-  noticeOnTask: async (task, note) => {
-    const r = await kernel("POST", "/v1/wake", { task, text: note });
-    if (!r?.posted) log.info({ task, closed: Boolean(r?.closed) }, "wake not posted");
-  },
+  wakeTask: async (id, task, note) => void (await kernel("POST", "/v1/wakes", { task, cause: note, id: `lane-${id}` })),
   log,
 });

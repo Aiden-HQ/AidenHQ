@@ -97,12 +97,12 @@ describe("the wake cap counts only wakes on open tasks", () => {
     const now = Date.now();
     laneStore.addWake("aria", now - 2000, "superseded check", false, "WOR-5244");
     laneStore.addWake("aria", now - 1000, "the real check", false, "WOR-5245");
-    const noticeOnTask = vi.fn(async () => {});
+    const wakeTask = vi.fn(async () => {});
 
-    await wakePass({ store: laneStore, lane: { tick: async () => {} } as unknown as Lane, agents: () => ({ aria }), taskIsClosed: async (t) => t === "WOR-5244", noticeOnTask, log: quiet });
+    await wakePass({ store: laneStore, lane: { tick: async () => {} } as unknown as Lane, agents: () => ({ aria }), taskIsClosed: async (t) => t === "WOR-5244", wakeTask, log: quiet });
 
-    expect(noticeOnTask).toHaveBeenCalledTimes(1);
-    expect(noticeOnTask).toHaveBeenCalledWith("WOR-5245", "the real check"); // the kernel labels it [wake]
+    expect(wakeTask).toHaveBeenCalledTimes(1);
+    expect(wakeTask).toHaveBeenCalledWith(expect.any(Number), "WOR-5245", "the real check");
     expect(laneStore.pendingWakes("aria")).toEqual([]);
   });
 });

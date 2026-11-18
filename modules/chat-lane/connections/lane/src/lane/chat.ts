@@ -1,6 +1,6 @@
 // A lane agent's chat task: the only place its conversation lives (the kernel's lane, kernel/src/lane.ts). Read through the
 // kernel's control-plane read route; written through POST /v1/channel/exchange, where the kernel posts the owner's words
-// as the owner and the lane's replies as the agent, each tagged and posted once per key.
+// as the owner and the lane's replies as the agent, each tagged and posted once per key ([A-Za-z0-9_-]).
 // Roles come from the kernel's tag and the comment's author, never from the text: a comment by anyone but the owner or this
 // agent's own lane reply is information on the task, not the owner's words.
 import type { LaneAgent } from "./config.js";
@@ -26,7 +26,8 @@ export interface Chat {
 type Kernel = (method: string, path: string, body?: unknown) => Promise<any>;
 interface Comment { id: string; body?: string; authorAgentId?: string | null; authorUserId?: string | null; createdAt?: string; deletedAt?: string | null }
 
-const TAG = /\n*<!-- aidenhq:lane=[\w.:-]+ side=(owner|agent) -->\s*$/;
+/** The kernel's self tag on a lane post: `kind=owner` the owner's words it posted, `kind=lane` the agent's reply. */
+const TAG = /\n*<!-- aidenhq:job=lane-[\w-]+ kind=(owner|lane) -->\s*$/;
 
 /** One comment as a chat line for `agent`. */
 export function lineOf(agent: LaneAgent, c: Comment): ChatLine {
@@ -34,7 +35,7 @@ export function lineOf(agent: LaneAgent, c: Comment): ChatLine {
   const side = TAG.exec(body)?.[1];
   const text = body.replace(TAG, "");
   const at = Date.parse(c.createdAt ?? "") || 0;
-  if (side === "agent" && c.authorAgentId === agent.id) return { id: c.id, role: "agent", text, at };
+  if (side === "lane" && c.authorAgentId === agent.id) return { id: c.id, role: "agent", text, at };
   if (c.authorUserId && !c.authorAgentId) {
     const label = side === "owner" ? /^\[([a-z]+)\] /.exec(text) : null;
     return { id: c.id, role: "owner", text: label ? text.slice(label[0].length) : text, at, ...(label ? { via: label[1] } : {}) };
