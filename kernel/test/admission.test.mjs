@@ -4,7 +4,8 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { DatabaseSync } from "node:sqlite";
 import { createJobs } from "../src/jobs.ts";
-import { createAdmission } from "../src/admission.ts";
+import { createAdmission, wakeInbox } from "../src/admission.ts";
+import { createWakes } from "../src/wakes.ts";
 
 function setup({ capacity = 12, spend = () => [], launch = async () => {}, grants: g } = {}) {
   const db = new DatabaseSync(":memory:");
@@ -14,9 +15,14 @@ function setup({ capacity = 12, spend = () => [], launch = async () => {}, grant
     "agent-2": { key: "acme-engineer", profile: "engineer", tools: { github: ["read"] }, jobcaps: ["gh-read"], max_parallel: 2 },
     "agent-3": { key: "acme-other", tools: {} },
   };
-  // Wakes (the inbox, Task F1): rows a module claimed; admission binds a job to one, or gives it back for another try.
-  const wakes = new Map();
-  const wake = (key, task, agent, cause = {}) => (wakes.set(key, { module: "acme-dispatch", task, agent, cause, job: null }), key);
+  // The wake inbox (wakes.ts): a row the dispatcher claimed; admission binds a job to it, or gives it back for another try.
+  const inbox = createWakes({ db, owner: async () => ({}), dispatches: { may: () => true, agents: () => [] } });
+  let at = 1;
+  const wake = (key, task, agent, cause = "assigned") => {
+    db.prepare("INSERT INTO wakes (key, task, agent, cause, at, state, claimed_by, until) VALUES (?, ?, ?, ?, ?, 'claimed', 'acme-dispatch', ?)").run(key, task, agent, cause, at++, Date.now() + 60_000);
+    return key;
+  };
+  const wakes = { get: (key) => db.prepare("SELECT * FROM wakes WHERE key = ?").get(key) };
   const tasks = { "task-1": "agent-1", "task-2": "agent-1", "task-3": "agent-2", "task-4": "agent-2", "task-5": "agent-2", "task-6": "agent-3" };
   const launched = [];
   const adm = createAdmission({
@@ -24,15 +30,11 @@ function setup({ capacity = 12, spend = () => [], launch = async () => {}, grant
     kinds: () => ({ "tasks.create_task": { floor: 1, tools: ["tasks.create"] }, "slack.post": { floor: 1, tools: ["slack.post"] }, "tasks.now": { floor: 0, tools: ["tasks.create"] } }),
     mayDispatch: (module, agent) => module === "acme-dispatch" && agent !== "agent-3",
     cp: { task: async (id) => (tasks[id] ? { id, identifier: id.toUpperCase(), assigneeAgentId: tasks[id], status: "todo" } : undefined) },
-    wakes: {
-      claimed: (module, key) => { const w = wakes.get(key); return w && w.module === module && !w.job ? w : undefined; },
-      bind: (key, job) => { wakes.get(key).job = job; },
-      unclaim: (key) => { wakes.get(key).job = null; },
-    },
+    wakes: wakeInbox(db),
     launch: async (job) => { launched.push(job); await launch(job); },
     log: () => {},
   });
-  return { db, adm, grants, wake, wakes, launched };
+  return { db, adm, grants, wake, wakes, inbox, launched };
 }
 
 const req = (wake) => ({ wake, prompt: "do the thing" });
@@ -47,7 +49,7 @@ test("two admits for one task make one job; the second is refused while the firs
 
 test("the job's authority is frozen at admission: later grant edits neither widen nor narrow it", async () => {
   const { adm, grants, wake, db } = setup();
-  const job = await adm.admit("acme-dispatch", req(wake("w1", "task-1", "agent-1", { routine: "digest" })));
+  const job = await adm.admit("acme-dispatch", req(wake("w1", "task-1", "agent-1", "routine:digest")));
   assert.equal(job.profile, "crew");
   assert.deepEqual(job.authority.tools, { slack: ["search"], tasks: ["create"] });
   // Only reviewed kinds whose tools it holds: slack.post needs a tool it doesn't have; a floor-0 kind never.
@@ -76,7 +78,7 @@ test("at capacity or at the agent's max_parallel → 429 busy and the wake stays
   await adm.admit("acme-dispatch", req(wake("w1", "task-3", "agent-2")));
   await adm.admit("acme-dispatch", req(wake("w2", "task-4", "agent-2")));
   await assert.rejects(adm.admit("acme-dispatch", req(wake("w3", "task-1", "agent-1"))), (e) => e.status === 429 && e.code === "busy");
-  assert.equal(wakes.get("w3").job, null);
+  assert.deepEqual([wakes.get("w3").state, wakes.get("w3").job], ["claimed", null]);
   const roomy = setup({ capacity: 12 });
   await roomy.adm.admit("acme-dispatch", req(roomy.wake("w1", "task-3", "agent-2")));
   await roomy.adm.admit("acme-dispatch", req(roomy.wake("w2", "task-4", "agent-2")));
@@ -89,14 +91,15 @@ test("spend caps used up → 429 and no job", async () => {
   assert.equal(db.prepare("SELECT COUNT(*) AS n FROM jobs").get().n, 0);
 });
 
-test("a launcher 503 after admission defers the job and gives the wake back; never a failed job", async () => {
-  const { adm, wake, wakes, db } = setup({ launch: async () => { throw Object.assign(new Error("all computers are busy"), { status: 503 }); } });
+test("a launcher 503 after admission defers the job: no job row, the wake back with its dispatcher for the next tick", async () => {
+  const { adm, wake, wakes, inbox, db } = setup({ launch: async () => { throw Object.assign(new Error("all computers are busy"), { status: 503 }); } });
   const job = await adm.admit("acme-dispatch", req(wake("w1", "task-1", "agent-1")));
   assert.equal(job.state, "deferred");
   assert.equal(wakes.get("w1").job, null);
-  assert.equal(db.prepare("SELECT COUNT(*) AS n FROM jobs WHERE state = 'failed'").get().n, 0);
-  // The task is free again: the next tick admits it (and, the computers still full, defers it again).
-  assert.equal((await adm.admit("acme-dispatch", req(wake("w2", "task-1", "agent-1")))).state, "deferred");
+  assert.equal(db.prepare("SELECT COUNT(*) AS n FROM jobs").get().n, 0);
+  // The inbox hands it to the same dispatcher again at once, and it is admitted again.
+  assert.deepEqual(inbox.claim("acme-dispatch").map((w) => w.key), ["w1"]);
+  assert.equal((await adm.admit("acme-dispatch", req("w1"))).state, "deferred");
 });
 
 test("a module that doesn't dispatch the agent → 403; a wake it didn't claim → 409", async () => {
@@ -110,8 +113,9 @@ test("a job admitted but never started when the kernel stopped is deferred at th
   void adm.admit("acme-dispatch", req(wake("w1", "task-1", "agent-1")));
   await new Promise((r) => setTimeout(r, 20));
   assert.equal(db.prepare("SELECT state FROM jobs").get().state, "admitted");
-  const next = createAdmission({ db, grants: () => grants, capacity: () => 12, spend: () => [], kinds: () => ({}), mayDispatch: () => true, cp: {}, wakes: { claimed: () => undefined, bind: () => {}, unclaim: (k) => { wakes.get(k).job = null; } }, launch: async () => {}, log: () => {} });
+  assert.ok(wakes.get("w1").job);
+  const next = createAdmission({ db, grants: () => grants, capacity: () => 12, spend: () => [], kinds: () => ({}), mayDispatch: () => true, cp: {}, wakes: wakeInbox(db), launch: async () => {}, log: () => {} });
   next.recover();
-  assert.equal(db.prepare("SELECT state FROM jobs").get().state, "deferred");
+  assert.equal(db.prepare("SELECT COUNT(*) AS n FROM jobs").get().n, 0);
   assert.equal(wakes.get("w1").job, null);
 });

@@ -23,16 +23,23 @@ export type Authority = {
   profile: Profile; image: string; engine: string; model: string; effort: string; models: string[]; skills: Skill[];
   tools: Record<string, string[]>; jobcaps: string[]; writes: string[];
 };
-/** A wake in the inbox (Task F1): the task and agent it is for and why (a routine's run names the routine's key). */
-export type Wake = { task: string; agent: string; cause?: { routine?: string } };
+/** A wake in the inbox (wakes.ts): the task and agent it is for and why (`routine:<key>` names the routine whose run it is). */
+export type Wake = { task: string; agent: string; cause: string };
 export type Wakes = {
   /** The wake, if this module claimed it and no job is bound to it yet. Synchronous: it runs inside the admission transaction. */
   claimed(module: string, key: string): Wake | undefined;
   /** The admitted job is this wake's (at most one job per wake). */
   bind(key: string, job: string): void;
-  /** No job came of it (deferred): claimed again, for the next tick. */
+  /** No job came of it (deferred): no job bound, claimable again by the same module at once. */
   unclaim(key: string): void;
 };
+
+/** The kernel's wake inbox (wakes.ts's table) as admission uses it. */
+export const wakeInbox = (db: DatabaseSync): Wakes => ({
+  claimed: (module, key) => db.prepare("SELECT task, agent, cause FROM wakes WHERE key = ? AND state = 'claimed' AND claimed_by = ? AND job IS NULL").get(key, module) as Wake | undefined,
+  bind: (key, job) => { db.prepare("UPDATE wakes SET job = ? WHERE key = ?").run(job, key); },
+  unclaim: (key) => { db.prepare("UPDATE wakes SET job = NULL, until = 0 WHERE key = ?").run(key); },
+});
 export type Admitted = { id: string; module: string; agent: string; task: string; identifier: string; profile: Profile; authority: Authority; prompt: string; session?: string; wake: string };
 
 const LIVE = "state IN ('admitted', 'running')";
@@ -58,11 +65,11 @@ export function createAdmission({ db, grants, kinds, capacity, spend, mayDispatc
   const cols = new Set((db.prepare("PRAGMA table_info(jobs)").all() as { name: string }[]).map((c) => c.name));
   for (const c of ["profile", "wake", "authority"]) if (!cols.has(c)) db.exec(`ALTER TABLE jobs ADD COLUMN ${c} TEXT`);
 
-  function freeze(g: AgentGrant, cause: Wake["cause"]): Authority {
+  function freeze(g: AgentGrant, cause: string): Authority {
     const profile: Profile = g.profile ?? "crew";
     if (!PROFILES.includes(profile)) throw new JobError(403, "bad-profile", `profile ${profile} isn't one of ${PROFILES.join(", ")}`);
-    const routine = cause?.routine ? g.routines?.[cause.routine] : undefined;
-    if (cause?.routine && !routine) throw new JobError(400, "unknown-routine", `the agent has no routine ${cause.routine}`);
+    const key = /^routine:(.+)$/.exec(cause)?.[1];
+    const routine = key ? g.routines?.[key] : undefined;
     // A check job runs repo code: no tools, no writes, nothing to reach.
     const tools = profile === "check" ? {} : Object.fromEntries(Object.entries(g.tools ?? {}).map(([c, t]) => [c, [...t]]));
     const holds = (ct: string) => { const [c, t] = ct.split("."); return Boolean(tools[c!]?.includes(t!)); };
@@ -119,20 +126,26 @@ export function createAdmission({ db, grants, kinds, capacity, spend, mayDispatc
         db.prepare("UPDATE jobs SET state = 'failed', final = ?, ended = ? WHERE id = ? AND state = 'admitted'").run(`couldn't start: ${(e as Error).message}`.slice(0, 500), Date.now(), id);
         throw e;
       }
+      const v = view(id);
       defer(id, b.wake);
       log("job deferred: no free computer", { job: id, task });
+      return { ...v, state: "deferred" };
     }
     return view(id);
   }
 
-  /** No computer for it now: the job never ran, so the wake goes back to its dispatcher for the next tick. */
+  /**
+   * No computer for it now: the job never ran, so its row goes (a job row would read as the task's last job, and the inbox
+   * would drop the wake as older) and the wake goes back to its dispatcher for the next tick.
+   */
   function defer(id: string, wake: string) {
-    db.prepare("UPDATE jobs SET state = 'deferred', ended = ? WHERE id = ? AND state = 'admitted'").run(Date.now(), id);
     wakes.unclaim(wake);
+    db.prepare("DELETE FROM jobs WHERE id = ? AND state = 'admitted'").run(id);
   }
 
   const view = (id: string) => {
     const r = db.prepare("SELECT id, module, agent, task, state, profile, wake, authority FROM jobs WHERE id = ?").get(id) as Record<string, string>;
+    if (!r) throw new JobError(404, "no-job", `no job ${id}`);
     return { id: r.id, module: r.module, agent: r.agent, task: r.task, state: r.state, profile: r.profile as Profile, wake: r.wake, authority: JSON.parse(r.authority!) as Authority };
   };
 
