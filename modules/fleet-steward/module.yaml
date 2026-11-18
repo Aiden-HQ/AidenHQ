@@ -5,14 +5,18 @@ description: "Fleet Steward: watches the fleet (stuck or failing runs, sources a
 # them upstream (owner, 2026-11-18: no single agent both reads every agent's private data and writes public GitHub issues).
 replaces: [ fleet-ops, coach, librarian ] # the updater lists this module for an instance that ran any of them (kernel/src/updates.ts)
 roles:
+  # kernel.cp-read, kernel.work-read: the control plane's tasks and agents and the kernel's jobs, records and cost, read for the detector and
+  # the Coach; kernel.tasks: the check task for the Steward; kernel.owner-notice: the owner's one line for a critical alert or a lost Steward;
+  # apps.read: apps-mcp's status, quality, sources and open PRs.
+  requests: [ kernel.cp-read, kernel.work-read, kernel.tasks, kernel.owner-notice, apps.read ]
   declares:
-    - { id: fleet-read, description: "The board's fleet status only (never fleet_control or relaying the owner's words)." }
-    - { id: fleet-audit, description: "Read any agent's evidence (the board's coach routes) and keep a review log (tasks bridge coach_*)." }
+    - { id: fleet-read, description: "The board's fleet status and the detector's incidents only (never fleet_control or relaying the owner's words)." }
+    - { id: fleet-audit, description: "Read any agent's evidence (the fleet_steward connection's coach_* reads) and keep a review log (tasks bridge coach_record)." }
     - { id: librarian, description: "Read every handbook, decide proposed identity links, hand rule proposals to the Platform Engineer (tasks bridge, apps-mcp)." }
 settings:
-  # Minutes between the board's detector checks (lower while developing). The detector wakes the Steward only when a
+  # Minutes between the detector's checks (lower while developing). The detector files a check task for the Steward only when a
   # threshold trips or recovers, at most once per 30 minutes unless an app or apps-mcp is down or a critical alert fires
-  # (services/board/src/fleet-ops.ts).
+  # (service/src/detector.ts).
   fleet_ops_interval_minutes:
     default: 10
 agents:
@@ -33,30 +37,21 @@ agents:
       grafana?: read
       # Where the product-bug issues the Maintainer filed for it stand: a read. Filing is the Maintainer's.
       github?: [ github_app_issue_status ]
-      # fleet_status through fleet-read (no fleet_control, no relaying, no approvals decided); coach_* through fleet-audit;
+      # fleet_status through fleet-read (no fleet_control, no relaying, no approvals decided); coach_record through fleet-audit;
       # handbook_list/handbook_read/task_propose_rule through librarian. task_create/task_delegate only to delegate_to below.
       paperclip_tasks: [ task_current, task_get, task_comments, task_search, task_list, task_approvals, task_team,
                          task_create, task_comment, task_delegate, task_handoff, task_set_status, task_finish,
-                         fleet_status, fleet_catalog, fleet_generation_status, fanout_map,
-                         coach_due, coach_evidence, coach_record, handbook_list, handbook_read, task_propose_rule ]
+                         fleet_status, fleet_catalog, fanout_map,
+                         coach_record, handbook_list, handbook_read, task_propose_rule ]
+      # The detector's open and recovered incidents (fleet-read), the Coach's reads (fleet-audit) and the apply generations.
+      fleet_steward: [ fleet_detector, coach_due, coach_evidence, fleet_generation_status ]
     # It reads untrusted content broadly: the tasks module lets it assign work only to these. Fixes are theirs, under tiers:
     # the Platform Engineer (rules, product and instance changes), an app's owner (app-owners; the
     # DevOps Engineer for an app with none), the Agent Architect (an agent's definition), the Maintainer (product bugs upstream).
     delegate_to: [ fleet-engineer, app-maintainer?, app-owners, architect?, maintainer? ]
     roles: [ fleet-read, fleet-audit, librarian ]
-# Routine titles stay as they were: setup matches routines by title (and the check's webhook secrets by secrets_prefix).
+# Routine titles stay as they were: setup matches routines by title. The check task itself is filed by the service (kernel.tasks).
 routines:
-  fleet-ops-check:
-    title: "Fleet Ops: check"
-    agent: fleet-steward
-    description: |
-      Now {{timestamp}}. The board's detector tripped or recovered. Follow your fleet-check skill: `fleet_status` →
-      `detector` lists what is open and what recovered. Close this task with one line.
-    concurrency: coalesce_if_active
-    webhook: true # fired by the board's detector
-    webhook_base: http://paperclip:3100 # the board calls it from inside the compose network
-    secrets_prefix: fleet_ops_webhook # setup saves <prefix>_url / _secret; the module's compose mounts them into the board
-    autonomy: full # fired by our own detector over fleet state, not outside text: its fixes stay the AI reviewer's
   fleet-ops-digest:
     title: "Fleet Ops: daily digest"
     agent: fleet-steward
@@ -121,12 +116,39 @@ routines:
     concurrency: coalesce_if_active
     schedules:
       - { cron: "0 7 * * 1", timezone: "${settings.timezone}", label: "Monday morning" }
-# Switches on the board's detector (added to the root compose's board service).
-board_env:
-  FLEET_OPS_INTERVAL_MINUTES: "${settings.fleet_ops_interval_minutes}"
-  FLEET_OPS_WEBHOOK_URL_FILE: ${secrets.fleet_ops_webhook_url}
-  FLEET_OPS_WEBHOOK_SECRET_FILE: ${secrets.fleet_ops_webhook_secret}
-# Written by setup once the routine's webhook exists; empty until then (the detector stays off while they're empty).
-optional_secrets:
-  - fleet_ops_webhook_url
-  - fleet_ops_webhook_secret
+# The service (service/src): the detector on a timer, Alertmanager's webhook (POST /alerts) and Prometheus's scrape (/metrics) on the
+# network only they share with it, and the MCP connection the kernel's proxy calls (the Steward's detector, Coach and generation
+# tools). It reads the fleet through the kernel with its own module token and apps-mcp with the same token (apps.read), and files a
+# check task for the Steward (kernel.tasks). The connection's answers are fenced by the proxy; an alert's text carries its own fence.
+connections:
+  fleet_steward:
+    setup: "Built in (fleet-steward). If it is down, run `docker compose up -d fleet-steward`, then read `docker compose logs fleet-steward`."
+    url: http://fleet-steward:8097/mcp
+    auth: fleet_steward_service_key
+    returns: untrusted
+    tools:
+      read: [ fleet_detector, coach_due, coach_evidence, fleet_generation_status ]
+      # fleet_generation_status: the apply generations. Tagged named, so the read shorthand keeps it to the agents that name it
+      # (the Fleet Steward and the Maintainer).
+      named: [ fleet_generation_status ]
+      write: []
+services:
+  data: true
+  run:
+    fleet-steward:
+      build: ./service
+      tmp: 16m
+      port: 8097
+      egress: true # the kernel's listener is a host address
+      links: [ apps-mcp ] # apps-mcp's reads (role apps.read), until 4c moves it into apps-platform
+      data: ["steward:/data"]
+      env:
+        FLEET_STEWARD_STATE_FILE: /data/state.json
+        AIDENHQ_KERNEL_URL: http://10.231.0.1:3130
+        FLEET_STEWARD_TOKEN_FILE: ${secrets.fleet_steward_token}
+        FLEET_STEWARD_SERVICE_KEY_FILE: ${secrets.fleet_steward_service_key}
+        FLEET_OPS_INTERVAL_MINUTES: "${settings.fleet_ops_interval_minutes}"
+generated_secrets:
+  - fleet_steward_token
+  - fleet_steward_service_key
+data_version: 0 # its data dir's format: bumped by each forward-only migration (docs/configuration.md)

@@ -2,7 +2,7 @@
  "name": "review-digest-already-filed",
  "why": "This week's digest exists: never file it twice.",
  "routine": "review-digest",
- "input": "Run task: \"Agent Coach: weekly digest\". Today is 2026-11-18, now 2026-11-18T14:00:00+04:00.\n\ncoach_due -> {\"due\":[]}\ntask_search \"coach-digest:2026-11-18\" -> [{\"id\":\"T-80\",\"title\":\"Agent Coach \u2014 2026-11-18\",\"marker\":\"coach-digest:2026-11-18\"}]\n",
+ "input": "Run task: \"Agent Coach: weekly digest\". Today is 2026-11-18, now 2026-11-18T14:00:00+04:00.\n\ncoach_due -> {\"due\":[]}\ntask_search \"coach-digest:2026-11-18\" -> [{\"id\":\"T-80\",\"title\":\"Agent Coach — 2026-11-18\",\"marker\":\"coach-digest:2026-11-18\"}]\n",
  "expect": [],
  "forbid": [
   {

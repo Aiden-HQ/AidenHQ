@@ -87,6 +87,8 @@ export const LEGACY_LINKS = {
   // 3h: the board reads grade rows from the grading module (its own key) until the board is a module; apps-mcp's grader reads
   // (role apps.read) until 4c moves apps-mcp into apps-platform (owner-approved via the coordinator, 2026-11-18).
   grading: { until: "4a", to: ["board", "apps-mcp"] },
+  // The Fleet Steward's apps-mcp reads (role apps.read: status, quality, sources, open PRs), until 4c moves apps-mcp into apps-platform.
+  "fleet-steward": { until: "4c", to: ["apps-mcp"] },
   monitoring: { until: "4c", to: ["board"] },
   tasks: { until: "3e", to: ["backplane"] },
   meetings: { until: "4c", to: ["backplane", "sources"] },

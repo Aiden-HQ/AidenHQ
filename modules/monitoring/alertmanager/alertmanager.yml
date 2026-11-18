@@ -1,17 +1,15 @@
-# Every alert goes to the board (services/board/src/monitoring.ts), which opens or recovers a Fleet Ops incident and tells
-# the owner of a critical one. No other receiver: the owner's channel is the board's.
+# Every alert goes to the fleet-steward service (modules/fleet-steward/service/src/alerts.ts), which opens or recovers a detector
+# incident and tells the owner of a critical one. No other receiver: the owner's channel is the owner-channel module's. The
+# receiver carries no credentials: the fleet-steward network, which only this service and the Steward's own share, is the boundary.
 route:
-  receiver: board
+  receiver: steward
   group_by: [ alertname, mountpoint, service, unit, job, agent ]
   group_wait: 30s
   group_interval: 5m
   repeat_interval: 4h
 receivers:
-  - name: board
+  - name: steward
     webhook_configs:
-      - url: http://board:3122/internal/alerts
+      - url: http://fleet-steward:8097/alerts
         send_resolved: true
         max_alerts: 100
-        http_config:
-          authorization:
-            credentials_file: /run/secrets/monitoring_token

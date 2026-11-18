@@ -43,7 +43,6 @@ export const GRADES_BATCH = 500;
 
 export interface Grading {
   grades(ids: string[]): Promise<GradesView>;
-  stale(): Promise<Grade[]>;
   settle(id: string, reason: string): Promise<Grade | null>;
 }
 
@@ -69,7 +68,6 @@ export function createGrading({ url = process.env.GRADING_URL ?? "http://grading
       }
       return out;
     },
-    stale: async () => (await call<{ grades: Grade[] }>("GET", "/board/grades/stale")).grades,
     settle: async (id, reason) => (await call<{ grade: Grade | null }>("POST", `/board/grades/${encodeURIComponent(id)}/settle`, { reason })).grade,
   };
 }

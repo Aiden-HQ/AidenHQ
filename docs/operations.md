@@ -105,12 +105,19 @@ It is idempotent. The Platform Engineer runs it for you after you approve a chan
   exposure). Run with the stack up.
 - The board's Apps tab lists each app's health; the DevOps Engineer owns an unhealthy app and pages the owner only when
   it cannot fix it.
-- The Fleet Steward (module `fleet-steward`): the board's detector (`services/board/src/fleet-ops.ts`) checks every
-  `fleet_ops_interval_minutes` for a run stuck past twice its timeout, an agent's last
-  3 runs failed, an app incident open over 15 minutes (or apps-mcp not answering for 15 minutes) a source with no good pass in an hour and an agents-org pull request open over an hour without merging (from the warehouse)
-  (or failing for 15 minutes; apps-mcp's `/internal/sources`). It fires the "Fleet Ops: check" webhook once per incident
-  and once on recovery (state in the board's store, meta `fleet_ops_detector`); the Steward reads it from `fleet_status`
-  → `detector` and logs on the "Fleet issues" task (`log ·` lines).
+- The Fleet Steward (module `fleet-steward`): its service (`modules/fleet-steward/service/src`) runs the detector every
+  `fleet_ops_interval_minutes`: from the kernel's job ledger (`/v1/work`) a run stuck past twice its timeout, an agent's last 3
+  runs failed, or 3 runs in a day with no steps and no output; a task held for grading over a day; from apps-mcp (a module token
+  holding `apps.read`) an app incident open over 15 minutes (or apps-mcp not answering for 15 minutes), a source with no good
+  pass in an hour or failing for 15 minutes, an app's failing quality check and an agents-org pull request open over an hour
+  without merging; and Alertmanager's alerts (one incident per firing alert, posted to `POST /alerts` and reconciled against its
+  list each tick). It files one "Fleet Ops: check" task for the Steward (`POST /v1/tasks`, kernel.tasks; fixed text, never an
+  incident's words) once per new incident and once on recovery, at most every 30 minutes unless one is critical. State is in
+  `data/modules/fleet-steward/state.json`; the Steward reads it with `fleet_detector` (the proxy fences the answer, an alert's
+  label text carries a second fence) and logs on the "Fleet issues" task (`log ·` lines). The same service serves the Coach's
+  `coach_due` and `coach_evidence` and `fleet_generation_status` (the kernel's `/v1/work?generations=1`), and `/metrics`
+  (`aidenhq_steward_incidents_open`, `aidenhq_steward_alerts_firing`). A routine that keeps failing is dispatch's to schedule;
+  the Steward asks the Chief of Staff to pause one.
 
 - The Maintainer (the maintainer module's `maintainer-watcher` service, `modules/maintainer/service/src/watcher.ts`): every
   `maintainer_poll_minutes` (default 5; it reads `MAINTAINER_POLL_MINUTES`) the watcher asks
@@ -125,7 +132,7 @@ It is idempotent. The Platform Engineer runs it for you after you approve a chan
   An entry's `after_merge` is `done` (the merge closes the issue) or `product-pin` (the pin bump, its apply and a `good`
   generation close it). It reads the host's
   `generations.jsonl` read-only (`AIDENHQ_STATE_DIR`, its mirror in `board/` mounted at `/generations`) for the
-  `fleet_generation_status` tool: the current pin (the newest generation that got past validation) and the last 20
+  `fleet_generation_status` tool (now the fleet-steward service's, from the kernel): the current pin (the newest generation that got past validation) and the last 20
   generations, newest first. The watcher runs once the module's own token (`maintainer_token`, `MAINTAINER_TOKEN_FILE`) has its content; github-mcp lets that token open its one issue read (`/internal/maintainer/issues`, never `/mcp`) by asking the kernel's `/v1/whoami`, so the github module shares no secret with it. Each tick reads the token file again: the watcher logs "maintainer issue watcher waiting" until it is filled, then "maintainer issue watcher on", with no restart. With the maintainer module's
   `external_triage` on, the same read
   brings each repo's issues opened since its triage cursor with no fix label that our App didn't file (at most 10 per repo

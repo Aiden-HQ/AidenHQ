@@ -3,7 +3,7 @@ import { timingSafeEqual } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { readFile, stat } from "node:fs/promises";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
-import { extname, join, normalize } from "node:path";
+import { dirname, extname, join, normalize } from "node:path";
 import { promisify } from "node:util";
 import { brotliCompress, constants as zlibConstants, gzip } from "node:zlib";
 import type { Logger } from "pino";
@@ -20,12 +20,10 @@ import { FOR_OTHERS, RELAY_MARKER, crewOf, deliveredFrom, deliveredText, foldedC
 import { AccountError, forwardedProto, type AccountSession, type KernelAuth } from "./kernel-auth.js";
 import { INLINE_TYPES, MAX_UPLOAD_BODY, UploadSchema, decode, fileType, fileViews, isPdf, pdfText, safeName } from "./files.js";
 import { ControlSchema, CostsSchema, RelaySchema, Refused, holdsRole, appsApi, assertMeantTask, boundedFleetStatus, fleetControl, fleetCosts, fleetStatus, relayableWords, requireAgent, requireFleetRole } from "./fleet.js";
-import { detectorState, kickDetector, staleSources } from "./fleet-ops.js";
-import { AlertsSchema, metricsText, receiveAlerts } from "./monitoring.js";
+import { metricsText } from "./monitoring.js";
 import { kernelRecords, type Approval, type Records } from "./records.js";
 import { wakeCheck } from "./brake.js";
 import { gatherFacts, scorecard, statusSummary } from "./fleet-stats.js";
-import { coachDue, coachEvidence } from "./coach.js";
 import { moduleAuthority, moduleStates } from "./modules.js";
 import { CommitUnreadable, agentGrants, browseModules, createResolver, marketplacesOf } from "./marketplace.js";
 import { connectionsView, probe, readSources, readUpdates, settingsView, type Probe } from "./settings.js";
@@ -35,7 +33,6 @@ import { UsageSchema, keyUsage, prices, spendSummary } from "./costs.js";
 import { ledgerRange, ledgerSummary, ledgerTop } from "./cost-ledger.js";
 import { descendants, featureCost, recentFeatures } from "./feature-cost.js";
 import { MergeSchema, mergedDescription } from "./merge.js";
-import { fleetGenerationStatus, updatesFile } from "./generations.js";
 import { McpAuthFailed, SIGNIN_LOOPBACK, pastedCallback, type McpAuth } from "./mcpauth.js";
 import { setupFlowRoutes, type SetupFlowPoint } from "./setup-flows.js";
 import type { SetupField } from "./config.js";
@@ -817,23 +814,16 @@ export function createApp(opts: AppOptions): Server {
   // The tasks bridge (agents' tools, with the agent's own credential) and the runner (its key), behind the internal token.
   const internal: typeof routes = [
     // Fleet tools of the Chief of Staff: the kernel's caller assertion names the caller, who must be the CoS.
-    // The status read also takes fleet-read (Fleet Ops), with the detector's open and recovered incidents.
+    // The status read also takes fleet-read (the Fleet Steward).
     { method: "POST", path: /^\/internal\/fleet\/status$/, handle: async (_m, body, _u, req) => fleetCall(req, async (pc) => {
       // The summary is extra: a failed read there never fails fleet_status (summary: null). After the status reads, not beside
       // them (Paperclip limits concurrent list requests per client).
       const window = (body as { window?: string } | null)?.window === "7d" ? "7d" : "24h";
       const status = await fleetStatus(pc, records);
       const summary = await statusSummary(pc, store, records, grading, window).catch((err) => (log.warn({ err: String(err) }, "fleet summary failed"), null));
-      // `detector` first and a bounded reply: the lists are what get long, and a cut-off payload leaves its open and
-      // recovered keys (the block Fleet Ops acts on) unreadable.
-      return boundedFleetStatus({ detector: detectorState(store), ...status, summary });
+      // A bounded reply: the lists are what get long, and a cut-off payload is unreadable.
+      return boundedFleetStatus({ ...status, summary });
     }, ["fleet-admin", "fleet-read"]) },
-    // fleet_generation_status (generations.ts): the current pin and the last 20 applies, newest first. Its own grant, not a
-    // fleet role's: granted to nobody until an agent names it on paperclip_tasks.
-    { method: "POST", path: /^\/internal\/fleet\/generation_status$/, handle: async (_m, _b, _u, req) => requireAgentTool(req, "fleet_generation_status").then(() => fleetGenerationStatus()) },
-    // The Agent Coach's reads (coach.ts), for the fleet-audit role: who is due a review (never the caller) and one agent's bounded evidence.
-    { method: "POST", path: /^\/internal\/coach\/due$/, handle: async (_m, _b, _u, req) => fleetCall(req, (pc, caller) => coachDue(pc, store, caller), ["fleet-audit"]) },
-    { method: "POST", path: /^\/internal\/coach\/evidence$/, handle: async (_m, body, _u, req) => fleetCall(req, (pc, caller) => coachEvidence(pc, store, records, grading, runOf, parse(z.object({ agent_key: z.string().trim().min(1).max(64) }).strict(), body).agent_key, caller), ["fleet-audit"]) },
     { method: "POST", path: /^\/internal\/fleet\/costs$/, handle: async (_m, body, _u, req) => fleetCall(req, (pc) => fleetCosts(pc, parse(CostsSchema, body ?? {}).days)) },
     { method: "POST", path: /^\/internal\/fleet\/control$/, handle: async (_m, body, _u, req) => fleetCall(req, async (pc, cos) => fleetControl(pc, cos, parse(ControlSchema, body), store)) },
     {
@@ -1016,7 +1006,7 @@ export function createApp(opts: AppOptions): Server {
       boardTimezone: opts.timezone,
       pendingRaises: pending.filter((a) => a.action === "raise_cap").length,
       pendingApprovals: pending.length,
-      updates: readUpdates(updatesFile()),
+      updates: readUpdates(join(dirname(process.env.AIDENHQ_GENERATIONS_FILE ?? "/generations/generations.jsonl"), "updates.json")),
     });
   }
 
@@ -1041,7 +1031,7 @@ export function createApp(opts: AppOptions): Server {
     ]);
     // Its Connect: the picker first where the proxy offers a choice of scopes, and the per-install values first while it has none.
     const signIns = Object.fromEntries(states.map((s) => [s.id, s.status && { ...s.status, offer: s.offer, ...(!s.status.configured && s.fields.length ? { fields: s.fields } : {}) }] as const));
-    return connectionsView({ compiled, catalog, probes: probed.probes, signIns, google, sources, staleSources: new Set(staleSources(sources ?? [], Date.now()).map((s) => s.key)) });
+    return connectionsView({ compiled, catalog, probes: probed.probes, signIns, google, sources });
   }
 
   /**
@@ -1994,15 +1984,12 @@ export function createApp(opts: AppOptions): Server {
     if (mode === "internal") {
       try {
         // The monitoring module's routes (monitoring.ts): their own token, which opens nothing else.
-        if (url.pathname === "/internal/metrics" || url.pathname === "/internal/alerts") {
+        if (url.pathname === "/internal/metrics") {
           const token = monitoringToken();
           if (!token || !bearerMatches(req.headers.authorization, token)) throw new HttpError(401, "unauthorized");
           if (!String(req.headers.host ?? "") || !opts.allowedHosts.includes(String(req.headers.host).toLowerCase())) throw new HttpError(403, "unknown host");
-          if (req.method === "GET" && url.pathname === "/internal/metrics") return send(res, 200, await metricsText(store, records), "text/plain; version=0.0.4; charset=utf-8");
-          if (req.method !== "POST" || url.pathname !== "/internal/alerts") throw new HttpError(405, "method not allowed");
-          const r = receiveAlerts(store, parse(AlertsSchema, await readJson(req, 2_000_000)));
-          kickDetector();
-          return send(res, 200, JSON.stringify(r), "application/json");
+          if (req.method !== "GET") throw new HttpError(405, "method not allowed");
+          return send(res, 200, await metricsText(records), "text/plain; version=0.0.4; charset=utf-8");
         }
         // Only the board's internal token.
         const token = opts.internalToken;

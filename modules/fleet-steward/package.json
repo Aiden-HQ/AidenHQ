@@ -1,0 +1,9 @@
+{
+  "name": "fleet-steward",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": { "node": ">=24" },
+  "description": "The Fleet Steward's service (detector, alerts, coach reads) and its handbook.",
+  "scripts": { "test": "node --disable-warning=ExperimentalWarning --test test/*.test.mjs" }
+}

@@ -331,10 +331,6 @@ export class Store {
   }
 
   /** Gateway refusals and upstream failures since `from`: the run each belonged to (when known) and when. Not the agent's fault. */
-  refusalsSince(from: string): { runId: string | null; at: string }[] {
-    return this.db.prepare("SELECT run_id AS runId, at FROM usage WHERE status IN ('cap_reached', 'upstream_402', 'upstream_5xx', 'upstream_aborted') AND at >= ?").all(from) as unknown as { runId: string | null; at: string }[];
-  }
-
   placements(): Map<string, Placement> {
     const rows = this.db.prepare("SELECT issue_id, bucket, rank, carried FROM placements").all() as { issue_id: string; bucket: string; rank: number; carried: number }[];
     return new Map(rows.filter((r) => isBucket(r.bucket)).map((r) => [r.issue_id, { bucket: r.bucket as Bucket, rank: r.rank, carried: r.carried }]));
