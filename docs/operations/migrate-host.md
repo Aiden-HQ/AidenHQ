@@ -430,7 +430,7 @@ Telegram task links and the app links people have.
    ```sh
    cp ops/units/{aidenhq-runner,aidenhq-computers,prune-runs,prune-docker,aidenhq-security-sbom}.* ops/units/aidenhq-ci-runner@.service ~/.config/systemd/user/
    systemctl --user daemon-reload
-   systemctl --user enable --now aidenhq-runner aidenhq-computers prune-runs.timer prune-docker.timer aidenhq-security-sbom.timer
+   systemctl --user enable --now aidenhq-runner aidenhq-computers prune-runs.timer prune-docker.service prune-docker.timer aidenhq-security-sbom.timer
    systemctl --user enable --now aidenhq-ci-runner@1 aidenhq-ci-runner@2   # the instances the old host had
    ```
 

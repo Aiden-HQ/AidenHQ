@@ -9,3 +9,6 @@ Type=oneshot
 # (104 GB of cache on the EX44, 2026-11-18).
 ExecStart=/usr/bin/docker builder prune -f --max-used-space 40GB
 ExecStart=/usr/bin/docker image prune -af --filter until=48h
+
+[Install]
+WantedBy=default.target
