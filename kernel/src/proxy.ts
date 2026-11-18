@@ -193,7 +193,7 @@ export function createProxy({ whoami, connections, asserter, resolver, secret, w
               if (r.tier === 0) return reply(r.outcome ? own(r.outcome.text) : `${pendingText(r)}\n(still running past the tool timeout)`, r.outcome ? !r.outcome.ok : false);
               return reply(pendingText(r));
             }
-            rec = writes!.fileTool(who, connection, tool, params?.arguments ?? {}, who.task ?? "");
+            rec = await writes!.fileTool(who, connection, tool, params?.arguments ?? {}, who.task ?? "");
             if (rec.state !== "claimed") return reply(pendingText(rec));
           } catch (e) {
             const err = e as Error & { status?: number };

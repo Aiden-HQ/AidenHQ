@@ -17,7 +17,7 @@ const secrets = { twin_service_key: "twin-key", other_service_key: "other-key" }
 const until = async (fn) => { for (let i = 0; i < 200 && !fn(); i++) await new Promise((r) => setTimeout(r, 10)); assert.ok(fn()); };
 const text = async (r) => (await r.json()).result.content[0].text;
 
-async function twin(t, { satisfied } = {}) {
+async function twin(t, { satisfied, settings, onControl } = {}) {
   const fx = { plans: [], executes: [], target: "c1", satisfied: false, ...(satisfied ? { satisfied } : {}) };
   let handler = () => false;
   const ex = await serve(async (req, res) => { if (!(await handler(req, res))) res.writeHead(404).end(); });
@@ -26,7 +26,7 @@ async function twin(t, { satisfied } = {}) {
   const executor = { url: `${ex.url}/aidenhq/v1/executor`, auth_secret: "twin_service_key" };
   const verdicts = [];
   const k = await kernel(t, {
-    agents, grants, secrets, reviewer: () => verdicts.shift(), repos: { product: "acme/aidenhq", instance: "acme/aidenhq-instance", agentsOrg: "acme" },
+    agents, grants, secrets, settings, onControl, reviewer: () => verdicts.shift(), repos: { product: "acme/aidenhq", instance: "acme/aidenhq-instance", agentsOrg: "acme" },
     connections: {
       twin: { url: `${mod.url}/mcp`, auth_secret: "twin_service_key", module: "twin", returns: "untrusted", tools: { read: ["note_read"], write: ["post_note", "ping", "note_write"], destructive: ["note_drop"] } },
       other: { url: `${mod.url}/mcp`, auth_secret: "other_service_key", module: "other", returns: "untrusted", tools: { read: [], write: [], destructive: [] } },
@@ -158,6 +158,28 @@ test("a changed target on revalidate gives stale and a refile; the owner's decis
   assert.equal((await k.v1("GET", "/v1/writes?state=owner")).json.records.find((r) => r.id === merit.id)?.merit, 2);
   const capped = k.records.file({ ...merit, args: { note: "capped" }, tier: 2, merit: 1, review_first: "final", state: "review" });
   assert.equal((await review(capped.id, { decision: "reject", reason: "no", model: "~acme/model-a" })).json.record.state, "rejected");
+});
+
+test("a module write on a task a routine's run started gets that routine's autonomy cap, as the runner's kinds do", async (t) => {
+  // TASK-1 was made, unparented, by an agent's run on RUN-1, the routine r1's run task: traced through originRunId.
+  const issues = { "TASK-1": { id: "TASK-1", parentId: null, originRunId: "hb-1" }, "RUN-1": { id: "RUN-1", originKind: "routine_execution", originId: "r1" } };
+  let down = false;
+  const onControl = (req) => {
+    if (req.url === "/api/heartbeat-runs/hb-1") return { body: { issueId: "RUN-1" } };
+    const id = /^\/api\/issues\/([^/]+)$/.exec(req.url)?.[1];
+    if (id) return down ? { status: 500, body: {} } : { body: issues[id] };
+  };
+  const capped = await twin(t, { settings: { routines: { r1: "tier0" } }, onControl });
+  const p = await capped.pending(await capped.tool("post_note", { note: "a" }));
+  assert.deepEqual(((r) => [r.tier, r.merit, r.review_first, r.rule])(capped.k.records.get(p.approval)), [2, 1, "final", "routine-autonomy"]);
+  // A destructive tool (conn.tool, Tier 1) is capped the same way; a trace the control plane can't finish is "off".
+  down = true;
+  const d = await capped.pending(await capped.tool("note_drop", { id: "1" }));
+  assert.deepEqual([d.tier, capped.k.records.get(d.approval).review_first], [2, "final"]);
+  // A routine with full autonomy leaves it the reviewer's.
+  down = false;
+  const full = await twin(t, { settings: { routines: { r1: "full" } }, onControl });
+  assert.equal((await full.pending(await full.tool("post_note", { note: "a" }))).tier, 1);
 });
 
 test("a Tier 0 conn.tool call leaves a completed record whose outcome is the MCP result; a Tier 0 kind answers with its outcome", async (t) => {

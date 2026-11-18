@@ -87,7 +87,7 @@ export function createWrites({ records, registry, connections, secret, resolver,
   /** The product and instance repositories (runner kinds' floors and refusals). */
   repos?: () => Repos;
   /** The task a record is on: still open (and its parent), and a notice on it (fixed text; the module's words only fenced). */
-  onTask: { open(task: string): Promise<boolean>; notify(task: string, text: string): Promise<void>; parent?(task: string): Promise<string | undefined> };
+  onTask: { open(task: string): Promise<boolean>; notify(task: string, text: string): Promise<void>; parent?(task: string): Promise<string | undefined>; routineCap?(task: string): Promise<string | undefined> };
   /** Executes an approved conn.tool record: the stored call, through the proxy, as its requester. */
   replay: (r: Rec) => Promise<{ ok: boolean; text: string }>;
   /** The kernel's own executors, by kind (kernel.raise_cap). */
@@ -133,6 +133,17 @@ export function createWrites({ records, registry, connections, secret, resolver,
     return c && (c.tools.write.includes(tool) || c.tools.destructive.includes(tool)) ? CONN_TOOL : undefined;
   }
 
+  /**
+   * The tier with the cap of a routine whose run started the task's chain (tier.ts routineCap, as the runner caps its own
+   * kinds): traced only when it can matter, a Tier 1 write on a task.
+   */
+  async function capped(task: string, input: Parameters<typeof computeTier>[0]): Promise<ReturnType<typeof computeTier> & { routineCap?: Autonomy }> {
+    const t = computeTier(input);
+    if (t.tier !== 1 || !task || !onTask.routineCap) return t;
+    const routineCap = (await onTask.routineCap(task)) as Autonomy | undefined;
+    return routineCap && routineCap !== "full" ? { ...computeTier({ ...input, routineCap }), routineCap } : t;
+  }
+
   /** Plan, tier, card and file. Tier 0 comes back claimed (the caller executes it); `satisfied` comes back done. */
   async function file(kind: string, k: Kind, requester: Requester, args: unknown, task: string, evidence?: unknown): Promise<Rec> {
     const executor = { module: k.module, url: k.executor?.url, ...(k.executor?.rev ? { rev: k.executor.rev } : {}) };
@@ -147,7 +158,7 @@ export function createWrites({ records, registry, connections, secret, resolver,
       return records.get(r.id)!;
     }
     const raise = plan.raise && (plan.raise.tier === 1 || plan.raise.tier === 2) ? plan.raise : undefined;
-    const t = computeTier({ floor: k.floor, raise, priorVeto: task ? records.vetoed(task, kind, { digest: digestOf(base) }) : false, autonomy: autonomy(), panel: k.panel === true });
+    const t = await capped(task, { floor: k.floor, raise, priorVeto: task ? records.vetoed(task, kind, { digest: digestOf(base) }) : false, autonomy: autonomy(), panel: k.panel === true });
     if (t.tier > 0 && !task) throw fail(400, "no_task", `${kind} needs approval: pass your current task`);
     // The same requester's same request still open on the task is that record, never a second card that would run twice,
     // while it is at least as strict (tier and panel). A stricter one replaces it only while it waits for the reviewer; a
@@ -156,7 +167,7 @@ export function createWrites({ records, registry, connections, secret, resolver,
     const same = t.tier > 0 ? records.open(task, kind, digestOf(base)).find((r) => who(r.requester) === who(requester)) : undefined;
     if (same && same.tier >= t.tier && (same.panel || !t.panel)) return same;
     if (same?.state === "review") records.close(same.id, "cancelled", "replaced by the same request at a stricter tier");
-    return records.file({ ...base, card: { ...card, reason: raise?.reason?.slice(0, 300) ?? "" }, tier: t.tier, merit: t.merit, panel: t.panel, review_first: t.tier > 0 ? t.reviewFirst : null, rule: raise?.rule ?? null, state: t.tier === 0 ? "claimed" : "review" });
+    return records.file({ ...base, card: { ...card, reason: raise?.reason?.slice(0, 300) ?? "" }, tier: t.tier, merit: t.merit, panel: t.panel, review_first: t.tier > 0 ? t.reviewFirst : null, rule: raise?.rule ?? (t.routineCap ? "routine-autonomy" : null), state: t.tier === 0 ? "claimed" : "review" });
   }
 
   /**
@@ -335,11 +346,11 @@ export function createWrites({ records, registry, connections, secret, resolver,
       return records.file({ ...base, tier: t.tier, merit: t.merit, panel: false, review_first: t.reviewFirst, rule: b.rule, identifier: b.identifier ?? null, target: b.card.target ?? null, state: "review" });
     },
     /** The proxy's record for a conn.tool call. Tier 0 comes back claimed: the proxy forwards it and reports with `outcome`. */
-    fileTool(who: Identity, connection: string, tool: string, args: unknown, task: string): Rec {
+    async fileTool(who: Identity, connection: string, tool: string, args: unknown, task: string): Promise<Rec> {
       const c = conn(connection)!;
       const floor: Tier = c.tools.destructive.includes(tool) ? 1 : 0;
       // The owner's no on a destructive tool holds for that tool on the task, never for the task's other writes.
-      const t = computeTier({ floor, priorVeto: floor > 0 && task ? records.vetoed(task, CONN_TOOL, { tool: `${connection}.${tool}` }) : false, autonomy: autonomy() });
+      const t = await capped(task, { floor, priorVeto: floor > 0 && task ? records.vetoed(task, CONN_TOOL, { tool: `${connection}.${tool}` }) : false, autonomy: autonomy() });
       if (t.tier > 0 && !task) throw fail(400, "no_task", `${connection}.${tool} needs approval: pass your current task`);
       const shown = JSON.stringify(args ?? {}).slice(0, 4000);
       const card = { sentence: `Call ${connection}.${tool}.`, changes: `Whatever ${connection}.${tool} changes, with these arguments.`, reads: "Nothing new.", cost: "No model cost.", details: `tool: ${connection}.${tool}\narguments (written by the requesting agent): ${shown}` };

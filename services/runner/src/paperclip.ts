@@ -221,28 +221,5 @@ export const unresolvedBlockers = (issue: any): any[] => (issue?.blockedBy ?? []
 /** Paperclip refuses a status write on a task with an unresolved blocker with a 422; that is no run failure. */
 export const blockedRefusal = (err: any) => /→ 422:.*blocked by unresolved blockers/i.test(String(err?.message ?? err));
 
-const ORIGIN_MAX = 24;
-/**
- * Every issue a task traces back to, for its routine cap (tiers.mjs routineCap): its parents, and through each one's
- * originRunId (Paperclip records the run that created an issue; agents never set it) the issue that run worked on, then
- * theirs. So a parent the agent picked, or none, can't shed a routine's cap. `runIssue` caches run id → issueId (a run's
- * issue never changes). Past ORIGIN_MAX issues the trace is incomplete (the cap is then the strictest).
- */
-export async function origins(pc: Paperclip, full: any, runIssue: Map<string, string | null> = new Map()): Promise<{ issues: any[]; complete: boolean }> {
-  const seen = new Map<string, any>();
-  const queue: any[] = [full];
-  while (queue.length) {
-    const i = queue.shift();
-    if (!i || seen.has(i.id)) continue;
-    if (seen.size >= ORIGIN_MAX) return { issues: [...seen.values()], complete: false };
-    seen.set(i.id, i);
-    if (i.parentId) queue.push(await pc.issue(i.parentId));
-    // A routine run task is the root: its originRunId is the routine run (not a heartbeat run) and nothing created it.
-    if (i.originRunId && i.originKind !== "routine_execution") {
-      if (!runIssue.has(i.originRunId)) runIssue.set(i.originRunId, (await pc.run(i.originRunId))?.issueId ?? null);
-      const from = runIssue.get(i.originRunId);
-      if (from && !seen.has(from)) queue.push(await pc.issue(from));
-    }
-  }
-  return { issues: [...seen.values()], complete: true };
-}
+/** Every issue a task traces back to, for its routine cap: kernel/src/tier.ts origins. */
+export { origins } from "../../../kernel/src/tier.ts";
