@@ -110,7 +110,7 @@ export function outcome(v: { exit?: number | null; timedOut?: boolean; stopped?:
   const again = "Say **continue** to pick up where it stopped.";
   const body = v.stopped ? `**Stopped:** ${v.stopped}. Rethink the approach, or ${again.toLowerCase()}`
     : v.timedOut ? `**Timed out.** ${again}`
-      : v.exit ? `**Failed** (exit code ${v.exit}).`
+      : v.exit ? `**Failed** (exit code ${v.exit})${reply ? `: ${reply.split("\n")[0]!.slice(0, 300)}` : "."}`
         : `**Stopped before finishing:** the agent ended without a reply. ${again}`;
   return { kind: "notice", body };
 }

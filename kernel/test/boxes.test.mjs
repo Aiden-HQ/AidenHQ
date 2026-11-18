@@ -163,6 +163,20 @@ test("a job's next-turn requests: the next admission runs the engine and model i
   assert.equal(h.jobTools.pending("task-1"), undefined);
 });
 
+test("a job resumes only a session its engine ran in: never one from before the kernel admitted jobs, never one whose resume died at start", async (t) => {
+  const h = await host(t);
+  const session = (job) => JSON.parse(readFileSync(join(h.db.prepare("SELECT dir FROM jobs WHERE id = ?").get(job.id).dir, "job.json"), "utf8")).session;
+  const row = (id, at, sessionId, offset, authority) => h.db.prepare("INSERT INTO jobs (id, module, agent, task, engine, pid, log, dir, at, jobcaps, observing, live_input, state, authority, session, offset, released) VALUES (?, 'acme-dispatch', 'agent-1', 'task-1', 'wait', 0, '', '', ?, '[]', 0, 0, ?, ?, ?, ?, 1)").run(id, at, authority ? "failed" : "done", authority, sessionId, offset);
+  row("j-old", 1, "s-old", 500, null); // the old executor's job: its session is in another engine home
+  const first = await h.admit("task-1");
+  assert.equal(session(first), undefined);
+  h.release();
+  await until("the first job's end", () => h.db.prepare("SELECT state FROM jobs WHERE id = ?").get(first.id).state === "done");
+  row("j-dead", Date.now() + 1000, "s-1", 0, "{}"); // resumed s-1, died before writing anything
+  const second = await h.admit("task-1");
+  assert.equal(session(second), undefined); // fresh, not s-1 again
+});
+
 test("a release runs once however often it is asked; a cleanup spares a workspace a later job on the task is in", async (t) => {
   const h = await host(t);
   const boxes = h.make();

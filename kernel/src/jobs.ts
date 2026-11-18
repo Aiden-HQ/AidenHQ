@@ -59,6 +59,17 @@ const ID = /^[\w.-]{1,100}$/;
 const WRAP = 'trap : TERM INT HUP; "$@"; echo "$?" > "$0"';
 const POLL_MS = 250;
 const exitStatus = (file: string) => { try { return readFileSync(file, "utf8").trim(); } catch { return ""; } };
+/**
+ * A failed run's cause as its log tells it: the first line that is neither the kernel's header (`# ...`) nor the engine's JSON
+ * output, i.e. what the engine wrote to stderr (e.g. Codex's "Error: thread/resume failed: ..."), its secret shapes blanked: it
+ * reaches the ledger, the Steward and the task. Read from the log's head only.
+ */
+export function firstError(logPath: string): string {
+  let head = "";
+  try { head = readFrom(logPath, 0, 256 * 1024).toString("utf8"); } catch { return ""; }
+  const line = head.split("\n").map((l) => l.trim()).find((l) => l && !l.startsWith("#") && !l.startsWith("{"));
+  return line ? clip(redact(line), 300) : "";
+}
 const alive = (pid: number) => {
   try { process.kill(pid, 0); return true; } catch (e) { return (e as NodeJS.ErrnoException).code === "EPERM"; }
 };
@@ -95,7 +106,7 @@ const redact = (t: string) =>
     .replace(/:\/\/[^/\s@]+@/g, "://…@")
     .replace(/([?&](?:token|key|secret|password|sig|access_token)=)[^&\s'"]+/gi, "$1…")
     .replace(/\b([A-Z0-9_]*(?:TOKEN|KEY|SECRET|PASSWORD|PASS)[A-Z0-9_]*)=[^\s'"]+/g, "$1=…")
-    .replace(/\b(sk-|ghp_|gho_|ghs_|github_pat_|xox[abp]-|AKIA)[A-Za-z0-9_-]+/g, "$1…");
+    .replace(/\b(sk-|ghp_|gho_|ghs_|github_pat_|xox[abp]-|AKIA|ahqj_)[A-Za-z0-9_.-]+/g, "$1…");
 const PLAN = (p: unknown) => (Array.isArray(p) ? p.slice(0, 20).map((i: any) => ({ text: clip(i?.step, 200), state: i?.done ? "done" : i?.doing ? "doing" : "todo" })).filter((i) => i.text) : undefined);
 const STEPS = (s: unknown) => (Array.isArray(s) ? s.slice(-30).map((x: any) => ({ at: typeof x?.at === "string" ? x.at.slice(0, 40) : new Date().toISOString(), kind: "tool", text: clip(redact(String(x?.text ?? "")), 200) })) : undefined);
 
@@ -232,6 +243,10 @@ export function createJobs({ db, cfg, cp, mayDispatch, log, boxWrap, onEnd = () 
         appendFileSync(logPath, `# ${startError}\n`);
         lastMessage = `The job couldn't start: ${startError}.`;
       }
+      // A failed run that said nothing: its first error line is its last message, so the ledger, the Steward and the task's
+      // failure notice carry the cause.
+      const error = !lastMessage && code !== 0 && !timedOut && !cancelled ? firstError(logPath) : "";
+      if (error) lastMessage = `The job failed: ${error}`;
       if (lastMessage) writeFileSync(`${logPath}.last.md`, lastMessage);
       // No status: the run died without its shell, by its own stop or timeout (killed), else by hand (a failure).
       const exit = code === null && !killed ? 1 : code;

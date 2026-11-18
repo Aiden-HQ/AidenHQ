@@ -126,9 +126,16 @@ export function createBoxes({ db, cfg, jobs, call, secret, whoami, connections, 
     return notes;
   }
 
-  /** The engine's last session for this agent on this task: a crew agent resumes per task, as Paperclip ran it (never another engine's). */
-  const lastSession = (agent: string, task: string, engine: string) =>
-    (db.prepare("SELECT session FROM jobs WHERE agent = ? AND task = ? AND engine = ? AND session IS NOT NULL ORDER BY at DESC LIMIT 1").get(agent, task, engine) as { session: string } | undefined)?.session;
+  /**
+   * The session to resume: the one of this agent's last finished job on this task with this engine, when that job's engine ran
+   * (it wrote events). A resume that died at start (no events: its session isn't in the engine home) starts the next job
+   * fresh, so one lost session never fails every later job; a job the kernel didn't admit (before the engine home was per agent
+   * and task) is never resumed.
+   */
+  const lastSession = (agent: string, task: string, engine: string) => {
+    const r = db.prepare("SELECT session, offset FROM jobs WHERE agent = ? AND task = ? AND engine = ? AND authority IS NOT NULL AND state NOT IN ('admitted', 'running') ORDER BY at DESC LIMIT 1").get(agent, task, engine) as { session: string | null; offset: number } | undefined;
+    return r && r.offset > 0 ? r.session ?? undefined : undefined;
+  };
 
   /**
    * The job's box goes, once: a release claims the row first (released = -1), so two at once (the job's end and tend) never
