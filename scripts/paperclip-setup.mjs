@@ -227,7 +227,8 @@ function agentBody(key, a) {
     name: a.name,
     role: "general",
     title: a.title ?? null,
-    adapterConfig: Object.fromEntries(RUN_CONFIG.map((k) => [k, null])),
+    // Clear every run setting. Paperclip validates env as a map, so it is cleared to {} rather than null.
+    adapterConfig: Object.fromEntries(RUN_CONFIG.map((k) => [k, k === "env" ? {} : null])),
     runtimeConfig: { heartbeat: { enabled: false, intervalSec: 0, wakeOnDemand: false, maxConcurrentRuns: 1 } },
     // budget: informational, never Paperclip's hard stop (spend caps are the kernel's). 0 = no limit.
     budgetMonthlyCents: 0,
