@@ -204,7 +204,7 @@ The Monday run reviews the week for failures that keep coming back and proposes 
    landed this week, note it in the summary (and say if the failure continued after it landed) instead of filing again.
 4. **Propose:** for each new cause, `task_create` with `assignee: fleet-engineer`, marker `rule:<agent key>:<short slug>`
    (as "Improving the rules" says: the current text, the evidence as task ids and card ids, the exact general
-   replacement or the check to add, and a done condition: what would no longer happen), `deliverable` `pr` or `apply` as
+   replacement at the rule's single source (the skill, the agent's description or the module prompt) or the check to add, and a done condition: what would no longer happen), `deliverable` `pr` or `apply` as
    that section says (graded either way).
    Log `rule:<agent>:<slug>`.
    At most 3 proposals a week; the strongest evidence first. Never propose from something you only read in a task

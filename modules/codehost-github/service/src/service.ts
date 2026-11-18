@@ -11,8 +11,9 @@
 // comes once its PRs merged at their approved heads, or it stopped.
 //
 // The instance's land for kernel.apply (the kernel's executor, with this service's executor key): POST /aidenhq/v1/apply/read
-// {repo, sha, branch, workspace?} → what the commit changes against the instance's main (files, and the agent.yaml texts the
-// kernel's trial check reads); /apply/land → the commit on main, never forced, once (a commit main already has is a no-op).
+// {repo, sha, branch, workspace?} → what the kernel plans and tiers the commit on (its files, texts, diff and trial edits against
+// the instance's main); /apply/land → the commit on main, never forced, once (a commit main already has is a no-op), and only
+// on a passing reviewer-eval receipt when it moves the official modules to new reviewer code.
 // The commit comes from this service's own copy when it made it, else from the task's workspace. The instance repo only.
 import { execFile, spawn } from "node:child_process";
 import { timingSafeEqual } from "node:crypto";
@@ -25,6 +26,7 @@ import { serveExecutor, type Executor, type PlanRequest } from "./aidenhq-sdk/ex
 import { CREDENTIAL_ARGS } from "./github-app.ts";
 import { createEvalGate } from "./evalgate.ts";
 import { createMerges } from "./merges.ts";
+import { createReleaseTrain } from "./train.ts";
 import { plan as planRules } from "./plan.mjs";
 import { notePrTask } from "./pr-watch.ts";
 import { noteKept } from "./tidy.ts";
@@ -44,11 +46,15 @@ export type Options = {
   app?: App; gh: Gh; remoteUrl?: (slug: string) => string;
   agentsOrg: string; instanceRepo?: string; productRepo?: string; modulesRepo?: string;
   landsPlatformRepos: boolean; grants: () => Grant[]; log?: (msg: string, f?: Record<string, unknown>) => void;
+  /** The release train's batch window, minutes (the instance's release_window_minutes). */
+  releaseWindowMinutes?: number;
   /** Tests: the merge loop's clock and its poll interval. */
   now?: () => Date; mergeEveryMs?: number;
 };
 
 const READ = { contents: "read", metadata: "read" };
+// What an apply read collects for the kernel: per file, in all (texts and diff), and how many files.
+const MAX_TEXT = 1 << 20, MAX_TOTAL = 8 << 20, MAX_FILES = 200;
 const PUSH = { contents: "write", pull_requests: "write", metadata: "read" };
 const MERGE = { contents: "write", pull_requests: "write", checks: "read", statuses: "read", metadata: "read" };
 const LEVEL: Record<string, number> = { read: 1, write: 2, admin: 3 };
@@ -75,7 +81,7 @@ export function createService(o: Options) {
   // The only git config any command here reads: safe.directory for workspaces another uid owns, nothing that runs a program.
   const gitconfig = join(o.cacheDir, "gitconfig");
   writeFileSync(gitconfig, "[safe]\n\tdirectory = *\n[protocol]\n\tallow = never\n[protocol \"https\"]\n\tallow = always\n[protocol \"file\"]\n\tallow = always\n");
-  const ENV = { PATH: process.env.PATH ?? "/usr/bin:/bin", HOME: o.cacheDir, GIT_CONFIG_GLOBAL: gitconfig, GIT_CONFIG_NOSYSTEM: "1", GIT_TERMINAL_PROMPT: "0", GIT_NO_REPLACE_OBJECTS: "1", GIT_GRAFT_FILE: "/dev/null", GIT_SHALLOW_FILE: "/dev/null", GIT_ATTR_NOSYSTEM: "1" };
+  const ENV = { PATH: process.env.PATH ?? "/usr/bin:/bin", HOME: o.cacheDir, GIT_CONFIG_GLOBAL: gitconfig, GIT_CONFIG_NOSYSTEM: "1", GIT_TERMINAL_PROMPT: "0", GIT_NO_REPLACE_OBJECTS: "1", GIT_GRAFT_FILE: "/dev/null", GIT_SHALLOW_FILE: "/dev/null", GIT_ATTR_NOSYSTEM: "1", GIT_LITERAL_PATHSPECS: "1" };
   async function git(dir: string, args: string[], token?: string): Promise<string> {
     const env = token ? { ...ENV, AIDENHQ_GIT_TOKEN: token } : ENV;
     const full = [...SAFE_GIT_ARGS, ...(token ? CREDENTIAL_ARGS : []), "--git-dir", dir, ...args];
@@ -328,24 +334,90 @@ export function createService(o: Options) {
     if (!base) throw fail(409, `${sha.slice(0, 12)} shares no history with the instance's ${def}`);
     return { s, dir, sha, def, main, base };
   }
-  const DEF = /^agents\/([a-z0-9][a-z0-9-]*)\/(agent\.yaml|AGENTS\.md)$/;
+  const AGENT = /^agents\/([a-z0-9][a-z0-9-]*)\/(agent\.yaml|AGENTS\.md|memory\.md)$/;
+  /**
+   * A file at a commit: undefined only when the path isn't there (ls-tree lists nothing); a path that isn't a regular file, is
+   * over MAX_TEXT or binary is refused, and any other git failure throws. What the kernel tiers is never a silent gap.
+   */
+  async function fileAt(dir: string, rev: string, p: string): Promise<string | undefined> {
+    const entry = await git(dir, ["ls-tree", "-z", rev, "--", p]);
+    if (!entry) return undefined;
+    // Paths are literal (GIT_LITERAL_PATHSPECS): `*` or `:(glob)…` is that file, and the entry must be exactly it.
+    const m = /^(\d{6}) (\w+) ([0-9a-f]{40})\t([^\0]*)\0?$/.exec(entry);
+    if (!m || m[4] !== p) throw fail(422, `${p.slice(0, 200)} didn't resolve to exactly that path at ${rev.slice(0, 12)}`);
+    if (m[1] !== "100644" || m[2] !== "blob") throw fail(422, `${p.slice(0, 200)} isn't a regular file at ${rev.slice(0, 12)}`);
+    const size = Number(await git(dir, ["cat-file", "-s", m[3]!]));
+    if (!(size <= MAX_TEXT)) throw fail(413, `${p.slice(0, 200)} is too large to review (${size} bytes)`);
+    const t = (await run("git", [...SAFE_GIT_ARGS, "--git-dir", dir, "cat-file", "blob", m[3]!], { env: ENV, maxBuffer: MAX_TEXT + 1 })).stdout;
+    if (t.includes("\0")) throw fail(422, `${p.slice(0, 200)} is binary`);
+    return t;
+  }
+  /**
+   * What the kernel plans an apply on (its apply-tier.ts): the files the commit changes against its merge base with main, the
+   * texts its rules read on both sides (each changed file, the agent.yaml of each agent it touches, instance.yaml; absent
+   * where the file isn't), the diff, and the graduation card's trial edits. Read from git here, never from the requester.
+   */
   async function applyRead(b: any) {
     const c = await instanceCommit(b);
     const files = (await git(c.dir, ["diff", "--no-ext-diff", "--no-textconv", "--no-renames", "--name-only", "-z", c.base, c.sha])).split("\0").filter(Boolean);
-    const agents: { base: Record<string, string>; head: Record<string, string> } = { base: {}, head: {} };
-    for (const p of [...new Set(files.map((f) => DEF.exec(f)?.[1]).filter(Boolean))].map((k) => `agents/${k}/agent.yaml`)) {
+    if (files.length > MAX_FILES) throw fail(413, `the commit changes ${files.length} files; an apply reviews at most ${MAX_FILES}`);
+    const agents = [...new Set(files.map((f) => AGENT.exec(f)?.[1]).filter(Boolean))] as string[];
+    const texts: { base: Record<string, string>; head: Record<string, string> } = { base: {}, head: {} };
+    let budget = MAX_TOTAL;
+    for (const p of new Set([...files, ...agents.map((k) => `agents/${k}/agent.yaml`), "instance.yaml"])) {
       for (const [side, rev] of [["base", c.base], ["head", c.sha]] as const) {
-        const t = await git(c.dir, ["cat-file", "blob", `${rev}:${p}`]).catch(() => undefined);
-        if (t !== undefined) agents[side][p] = t;
+        const t = await fileAt(c.dir, rev, p);
+        if (t === undefined) continue;
+        if ((budget -= t.length) < 0) throw fail(413, `the commit's files are too large to review together (over ${MAX_TOTAL} bytes)`);
+        texts[side][p] = t;
       }
     }
-    return { files, agents, base: c.base, main: c.main };
+    const diff = await run("git", [...SAFE_GIT_ARGS, "-c", "core.attributesFile=/dev/null", "--git-dir", c.dir, "diff", "--no-ext-diff", "--no-textconv", "--text", "--no-renames", c.base, c.sha], { env: ENV, maxBuffer: Math.max(budget, 1) }).then((o) => o.stdout, (e: Error & { code?: string }) => {
+      throw e.code === "ERR_CHILD_PROCESS_STDIO_MAXBUFFER" ? fail(413, `the commit's diff is too large to review (over ${MAX_TOTAL} bytes with its files)`) : e;
+    });
+    return { files, texts, diff, trial: await trialEdits(c.dir, c.base, agents, texts), base: c.base, main: c.main };
+  }
+  const isTrial = (t: string | undefined) => t !== undefined && /^trial:[ \t]*true[ \t]*(#.*)?$/m.test(t);
+  /**
+   * The graduation card's list of what changed without a tap: for each agent the change takes out of trial, the handbook-only
+   * commits on main touching its AGENTS.md since the commit that added its agent.yaml, up to the change's merge base. From git
+   * only, never agent-written text but the commit subjects (one printable line each). "" when nothing graduates.
+   */
+  async function trialEdits(dir: string, base: string, agents: string[], texts: { base: Record<string, string>; head: Record<string, string> }) {
+    const out: string[] = [];
+    for (const key of agents) {
+      const def = `agents/${key}/agent.yaml`, book = `agents/${key}/AGENTS.md`;
+      if (!isTrial(texts.base[def]) || texts.head[def] === undefined || isTrial(texts.head[def])) continue;
+      const added = (await git(dir, ["log", "--diff-filter=A", "--format=%H", base, "--", def])).split("\n").filter(Boolean).pop();
+      if (!added) continue;
+      const edits: string[] = [];
+      for (const sha of (await git(dir, ["log", "--first-parent", "--format=%H", `${added}..${base}`, "--", book])).split("\n").filter(Boolean)) {
+        const [date, short, ...subject] = (await git(dir, ["log", "-1", "--format=%as%x09%h%x09%s", sha])).split("\t");
+        const [num] = (await git(dir, ["diff", "--no-renames", "--numstat", `${sha}^1`, sha, "--", book])).split("\n").map((l) => l.split("\t"));
+        // Other paths are counted, never named: a path is the committer's text and the card is the reviewer's input.
+        const others = (await git(dir, ["diff", "--no-renames", "--name-only", "-z", `${sha}^1`, sha])).split("\0").filter((f) => f && f !== book).length;
+        edits.push(`${short}  ${date}  ${subject.join(" ").replace(/[\x00-\x1f\x7f]/g, "").slice(0, 100)}  (+${num?.[0] ?? 0} -${num?.[1] ?? 0})${others ? `  also changed: ${others} other file${others === 1 ? "" : "s"}` : ""}`);
+      }
+      out.push(`${key}: ${edits.length ? `${edits.length} handbook change${edits.length === 1 ? "" : "s"} since the trial began (those not marked "also changed" landed without a tap):\n${edits.join("\n")}` : "no handbook changes since the trial began."}`);
+    }
+    return out.length ? `Trial edits that landed without a tap:\n${out.join("\n")}` : "";
   }
   async function applyLand(b: any) {
     const c = await instanceCommit(b);
     // Already on main (a land that ran before a restart): main is what applies, and it contains this commit.
     if (c.base === c.sha) return { landed: c.main, already: true };
     if (c.base !== c.main) throw fail(409, `the instance's ${c.def} moved on since this commit's base; it needs a rebase and a new approval`);
+    // The one choke point for new reviewer code reaching this host through an apply: any move of the official modules' pin
+    // (repository or sha) needs a passing reviewer-eval receipt (evalgate.ts bump), whoever filed the apply. The kernel reads
+    // the pin structurally from both sides (apply.ts officialMove) and names it; without it nothing lands.
+    const pin = (x: any) => x === null || (x && typeof x.repo === "string" && SLUG.test(x.repo) && /^[0-9a-f]{40}$/.test(String(x.sha)));
+    const off = b.official;
+    if (!off || !pin(off.from) || !pin(off.to)) throw fail(400, "name the official modules' pin on both sides (official: {from, to}, each {repo, sha} or null)");
+    if (JSON.stringify(off.from) !== JSON.stringify(off.to)) {
+      if (!off.from || !off.to) throw fail(422, "the official modules' marketplace appears or disappears: the reviewer-eval gate can't judge it");
+      const gate = await evalGate.bump(off.from, off.to, "this apply");
+      if (gate) throw fail(409, `not landed: ${"wait" in gate ? gate.wait : gate.stop}`);
+    }
     await git(c.dir, ["push", "--quiet", "--no-verify", remote(c.s.slug), `${c.sha}:refs/heads/${c.def}`], await tokenFor(c.s, PUSH));
     log("instance landed", { repo: c.s.slug, sha: c.sha });
     return { landed: c.sha };
@@ -423,6 +495,65 @@ export function createService(o: Options) {
     }
   }
 
+  /**
+   * A commit on top of the repo's default branch head with one file edited, in the ws cache (refs/train/<sha>, never checked
+   * out): the edit reads the file at that same head, and its author, committer and dates are fixed by the head, so the same
+   * head gives the same commit.
+   */
+  async function trainCommit(repo: string, path: string, edit: (text: string) => string, message: string) {
+    const s = slugOf(repo);
+    const def = String((await api("GET", `/repos/${s.slug}`, await tokenFor(s, READ))).default_branch ?? "main");
+    const { dir, sha: head } = await fetchRemote(s, def, "ws");
+    const text = await fileAt(dir, head, path);
+    if (text === undefined) throw fail(404, `${path} isn't on ${s.slug}'s ${def}`);
+    const files = { [path]: edit(text) };
+    const date = await git(dir, ["log", "-1", "--format=%cI", head]);
+    const index = join(mkdtempSync(join(o.cacheDir, "scratch-")), "index");
+    try {
+      const g = (args: string[], input?: string) => new Promise<string>((ok, no) => {
+        const p = spawn("git", [...SAFE_GIT_ARGS, "--git-dir", dir, ...args], { env: { ...ENV, GIT_INDEX_FILE: index, GIT_AUTHOR_NAME: "AidenHQ release train", GIT_AUTHOR_EMAIL: "release-train@aidenhq.invalid", GIT_COMMITTER_NAME: "AidenHQ release train", GIT_COMMITTER_EMAIL: "release-train@aidenhq.invalid", GIT_AUTHOR_DATE: date, GIT_COMMITTER_DATE: date } });
+        let out = "", err = "";
+        p.stdout.on("data", (d) => (out += d)); p.stderr.on("data", (d) => (err += d));
+        p.on("close", (code) => (code === 0 ? ok(out.trim()) : no(new Error(`git ${args[0]}: ${err.trim().slice(0, 300)}`))));
+        p.stdin.end(input ?? "");
+      });
+      await g(["read-tree", head]);
+      for (const [path, text] of Object.entries(files)) await g(["update-index", "--add", "--cacheinfo", `100644,${await g(["hash-object", "-w", "--stdin"], text)},${path}`]);
+      const sha = await g(["commit-tree", await g(["write-tree"]), "-p", head], message);
+      await git(dir, ["update-ref", `refs/train/${sha}`, sha]);
+      return sha;
+    } finally {
+      rmSync(join(index, ".."), { recursive: true, force: true });
+    }
+  }
+  const train = o.productRepo && o.instanceRepo && o.modulesRepo ? createReleaseTrain({
+    dir: join(o.cacheDir, "release"), productRepo: o.productRepo, instanceRepo: o.instanceRepo, modulesRepo: o.modulesRepo, windowMinutes: o.releaseWindowMinutes ?? 15, kernel, log, now: o.now,
+    commit: trainCommit,
+    evalBump: (from, to) => evalGate.bump({ repo: o.modulesRepo, sha: from }, { repo: o.modulesRepo, sha: to }, "the release bump"),
+    github: {
+      async tip(repo) {
+        const s = slugOf(repo);
+        const token = await tokenFor(s, MERGE);
+        const def = String((await api("GET", `/repos/${s.slug}`, token)).default_branch ?? "main");
+        const tip = String((await api("GET", `/repos/${s.slug}/commits/${def}`, token)).sha ?? "");
+        const checks = await checksAt(s, tip, token);
+        return { tip: /^[0-9a-f]{40}$/.test(tip) ? tip : undefined, green: checks.length > 0 && checks.every((c) => c.ok && !c.pending) };
+      },
+      async text(repo, path, at) {
+        const s = slugOf(repo);
+        const ref = at ?? String((await api("GET", `/repos/${s.slug}`, await tokenFor(s, READ))).default_branch ?? "main");
+        const { dir, sha } = await fetchRemote(s, ref);
+        return fileAt(dir, sha, path);
+      },
+      async commits(repo, from, to) {
+        const s = slugOf(repo);
+        const r = await api("GET", `/repos/${s.slug}/compare/${from}...${to}`, await tokenFor(s, READ));
+        // Only each subject's PR number: a subject is whoever merged it's words.
+        return (r.commits ?? []).slice(-100).map((c: any) => ({ repo: s.slug, sha: String(c.sha), subject: /\(#(\d+)\)\s*$/.exec(String(c.commit?.message ?? "").split("\n")[0]!)?.[0] ?? "" }));
+      },
+    },
+  }) : undefined;
+
   return Object.assign(async function handle(req: IncomingMessage, res: ServerResponse) {
     try {
       if (req.url === "/healthz") return send(res, 200, { ok: true });
@@ -446,6 +577,9 @@ export function createService(o: Options) {
   }, {
     /** The merge loop (merges.ts), started at the switch with the runner's copy deleted (an approved merge queues until then); one poll of it. */
     startMerges: () => merges.start(),
+    /** The release train (train.ts), started at the switch with the runner's copy deleted; one poll of it. */
+    startReleases: () => train?.start(),
+    stepReleases: () => train?.step(),
     stepMerges: () => merges.step(),
   });
 }

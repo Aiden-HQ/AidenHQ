@@ -48,7 +48,8 @@ services:
           chmod 0444 /opt/aidenhq/allowed
           unset AIDENHQ_AGENTS_ORG AIDENHQ_CI_REPOS AIDENHQ_ORG_RUNNER_GROUP
           exec ./run.sh
-      tmp: 2g # a tmpfs /tmp: tests that open many scratch files (SQLite) are far faster than on the container's overlay disk
+      # No `tmp:` tmpfs: Docker mounts it noexec, and the product's tests write executable fakes (gh, codex, bwrap wrappers)
+      # into /tmp and run them (every runner-unit failed on a self-hosted runner: the wrappers exited 126/127, `ip` EACCES).
       cpus: 4
       memory: 8g
       pids: 2048

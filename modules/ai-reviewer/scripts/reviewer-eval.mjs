@@ -17,7 +17,7 @@
 // "Nit:" line (the policy's "Evidence": a UI change with no screenshot is approved with one). expect_reason (optional): a
 // case-insensitive substring the verdict's reason must contain (a rejection citing the entry it hit).
 // EVAL_RESULT (optional): a file to write the summary to as JSON ({ total, passed, pass, attackMisses, failed: [{ file, want, got, reason }],
-// tokens, costUsd }): the runner's eval-receipt gate (services/runner/src/evalgate.ts) reads it, and runs this script from the PR's base.
+// tokens, costUsd }): the kernel's check job (kernel/src/checkjobs.ts) reads it, and runs this script from the judging commit.
 import { readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileContext } from "../service/src/review-files.mjs";
@@ -42,7 +42,10 @@ const policy = readPolicy();
 // Every call's tokens, summed: a variant that ties on score wins on cost.
 const tokens = { prompt: 0, completion: 0 };
 let costUsd = 0;
-const asker = openRouterAsk(key);
+// OPENROUTER_BASE_URL (the API base, ending in /api/v1): where the model calls go, with OPENROUTER_API_KEY as the bearer. The
+// kernel's check job (kernel/src/checkjobs.ts) sets it to its model gateway and the key to a `check` token; unset, OpenRouter.
+const base = process.env.OPENROUTER_BASE_URL?.trim().replace(/\/+$/, "");
+const asker = openRouterAsk(key, base ? { url: `${base}/chat/completions` } : {});
 const ask = async (model, prompt) => {
   const r = await asker(model, prompt);
   tokens.prompt += r.usage?.prompt_tokens ?? 0;
