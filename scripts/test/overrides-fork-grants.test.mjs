@@ -62,7 +62,7 @@ test("a per-module pin compiles from its own commit; official only when that com
   g("add", "."), g("commit", "-qm", "a");
   const onMain = g("rev-parse", "HEAD");
   g("checkout", "-qb", "pr");
-  writeFileSync(join(repo, "a", "agents", "x", "AGENTS.md"), "---\nname: X\n---\nFrom a PR.\n");
+  writeFileSync(join(repo, "a", "agents", "x", "AGENTS.md"), "---\nname: X\ndescription: X does one thing.\n---\nFrom a PR.\n");
   g("commit", "-qam", "pr");
   const offMain = g("rev-parse", "HEAD");
   const fetch = { cacheDir: mkdtempSync(join(tmpdir(), "cache-")) };

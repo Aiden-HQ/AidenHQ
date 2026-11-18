@@ -663,7 +663,7 @@ export function compile(productDir, instanceDir, { revision, fetch = hostFetch(p
       const { meta } = frontmatter(readFileSync(file, "utf8"));
       const extra = join(instanceDir, "agents", `${key}.md`);
       put(paperclip.agents, key, {
-        name: meta.name, title: meta.title, ...(meta.avatar ? { avatar: meta.avatar } : {}), ...(meta.reportsTo ? { reports_to: meta.reportsTo } : {}), instructions: file,
+        name: meta.name, title: meta.title, ...(meta.description ? { description: String(meta.description).trim() } : {}), ...(meta.avatar ? { avatar: meta.avatar } : {}), ...(meta.reportsTo ? { reports_to: meta.reportsTo } : {}), instructions: file,
         ...a, module: name, isolation: isolationOf(a.isolation ?? def.isolation, `agent ${key}`),
         ...(existsSync(extra) ? { instructions_extra: extra } : {}),
       }, "agent");
@@ -774,6 +774,9 @@ export function compile(productDir, instanceDir, { revision, fetch = hostFetch(p
     const d = departments[order];
     a.department = { id, name: d.name.trim(), ...(d.description ? { description: String(d.description).trim() } : {}), order };
   }
+
+  // The description is how other agents route work to an agent: the generated Team list (scripts/handbook.mjs) is built from it.
+  for (const [key, a] of Object.entries(paperclip.agents)) if (!a.description) fail(`agent ${key} has no description: it is how others route work to it`);
 
   // Roles (spec §3.1 `roles`): each module declares the roles it checks, and its agents hold those or the ones it requests.
   const rolesOf = (m) => ({ declares: [all.get(m)?.def.roles?.declares ?? []].flat().map((d) => String(d?.id ?? d)), requests: [all.get(m)?.def.roles?.requests ?? []].flat().map(String) });
@@ -1242,7 +1245,7 @@ function instanceAgents(instanceDir, settings, paperclip, routineTitles) {
     if (def.trial != null && def.trial !== true) fail(`agent ${key}: trial is true or absent`);
     if (def.builder != null && typeof def.builder !== "boolean") fail(`agent ${key}: builder is true, false or absent`);
     const { description, routines, ...rest } = def;
-    put(paperclip.agents, key, { adapter: "codex_local", ...rest, title: String(description).trim(), instructions: handbook, module: "instance", isolation: "trusted" }, "agent");
+    put(paperclip.agents, key, { adapter: "codex_local", ...rest, title: String(description).trim(), description: String(description).trim(), instructions: handbook, module: "instance", isolation: "trusted" }, "agent");
     for (const [rk, r] of Object.entries(routines ?? {})) {
       // Schedules only: webhooks and their secrets (webhook, webhook_base, secrets_prefix) come from modules.
       for (const f of Object.keys(r ?? {})) if (!INSTANCE_ROUTINE_FIELDS.includes(f)) fail(`agent ${key}: routine ${rk}: ${f} isn't allowed (known: ${INSTANCE_ROUTINE_FIELDS.join(", ")})`);

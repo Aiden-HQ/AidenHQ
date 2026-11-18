@@ -43,6 +43,18 @@ function orgLine(orgs) {
   return `This AidenHQ's agents org${named.length > 1 ? "s are" : " is"} ${named.join(" and ")}${named.length > 1 ? "; a new app's repository goes in the one its task names" : ""}.\n\n`;
 }
 
+/**
+ * The Team list: one line per agent, by department, from each agent's `description` (its routing contract). Every agent that
+ * holds `task_delegate` or `task_create` reads it, so no handbook carries its own table of who does what.
+ */
+export function teamSection(cfg) {
+  const lines = Object.entries(cfg.agents ?? {})
+    .sort(([ka, a], [kb, b]) => (a.department?.order ?? 0) - (b.department?.order ?? 0) || ka.localeCompare(kb))
+    .map(([key, a]) => `- **${a.name}** (${key}${a.roles?.length ? `; roles: ${a.roles.join(", ")}` : ""}): ${a.description}`);
+  return `${section("team")}\n${lines.join("\n")}\n`;
+}
+const delegates = (a) => ["task_delegate", "task_create"].some((t) => a.enabled_tools?.paperclip_tasks?.includes(t));
+
 /** The crew member's board identity, stored in the agent's metadata for the board and the runner. */
 export function personaOf(key, a) {
   const p = a.persona;
@@ -145,6 +157,7 @@ export function handbookParts(cfg, key, a, { repo, instanceDir, engines = {}, fl
     ["glossary", codex ? GLOSSARY_SECTION : ""],
     ["outcomes", codex ? outcomesSection(cfg) : ""],
     ["handoff", codex ? HANDOFF_SECTION : ""],
+    ["team", codex && delegates(a) ? teamSection(cfg) : ""],
     ["approvals", codex ? APPROVALS_SECTION : ""],
     ["how-we-build", codex && a.builder === true ? HOW_WE_BUILD_SECTION : ""],
     ["web", !codex ? "" : a.web_search === "disabled" ? WEB_SECTION.replace("You have live web search, `web_view`", "You have `web_view`") : WEB_SECTION],

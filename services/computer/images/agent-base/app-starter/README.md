@@ -15,7 +15,7 @@ blocks are a starting point, not a required look.
 npm ci
 npm run lint     # ESLint (about a second): nav, header, colour and effect rules; each message says the fix
 npm test          # component tests (Vitest), then builds, serves and checks the page, its CSP, the health check and the API
-npm run screens   # Playwright: starts the seeded preview, screenshots every feature-map page at 1440 and 390 in light and dark, runs e2e/ flows, stops it
+npm run screens   # Playwright: starts the seeded preview, screenshots every feature-map page at 1440, 1920, 2560, 768 and 390 in light and dark, runs e2e/ flows, stops it
 npm run preview   # build, then serve dist/ and the API with the sample data on 4173 (what `screens` starts)
 npm run build     # typecheck + production build into dist/
 npm start         # serves dist/ and the API on PORT (8080; compose.yaml publishes it on the host's loopback, see below)
