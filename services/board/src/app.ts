@@ -44,7 +44,7 @@ import { OPEN, Paperclip, PaperclipError, type Agent, type Comment, type Issue, 
 import { accountSession, type BoardSession, type SessionOf } from "./session.js";
 import { laneAgents, laneMessages, laneSend, type LaneOptions } from "./lane.js";
 import { latest, successorOf } from "./rollover.js";
-import { NOTICE_MARKER, chatAgent, chatAgentMarker, chatState, conversation, lastWord, needsYou, openAsk, pickAgent, shownState, type Message } from "./chats.js";
+import { NOTICE_MARKER, asksOwner, chatAgent, chatAgentMarker, chatState, conversation, lastWord, needsYou, openAsk, pickAgent, shownState, type Message } from "./chats.js";
 import { activityDays } from "./days.js";
 import { addDays, nextWorkday, type Weekday } from "./recurrence.js";
 import { BUCKETS, isBucket, localDate, type Store } from "./store.js";
@@ -547,6 +547,24 @@ export function createApp(opts: AppOptions): Server {
     };
   }
 
+  /**
+   * Everything waiting on the owner now (chats.ts needsYou): an agent's open question is read from each open task's newest
+   * comments (chats: the conversation the chat list shows; tasks: openAsk), cached per task until it changes, a few at a time.
+   */
+  async function waiting(ctx: Awaited<ReturnType<typeof context>>) {
+    const [open, live, runs, awaiting] = await Promise.all([pc.openIssues(), pc.liveRuns(), pc.recentRuns(100), records.awaiting().catch(() => new Set<string>())]);
+    const candidates = open.filter((i) => i.status !== "backlog" && chatAgent(i));
+    const asking = new Set<string>();
+    for (let n = 0; n < candidates.length; n += 4)
+      await Promise.all(
+        candidates.slice(n, n + 4).map(async (i) => {
+          const asks = isChat(i, ctx) ? asksOwner(await chatMessages(i, ctx).catch(() => [] as Message[])) : Boolean(await askOf(i, ctx.me));
+          if (asks) asking.add(i.id);
+        }),
+      );
+    return needsYou(open, live, runs, ctx.me, awaiting, asking);
+  }
+
   // A chat's conversation, re-read only when the chat has changed (the list asks for every chat's last word).
   const conversations = new Map<string, { stamp: string; messages: Message[] }>();
   async function chatMessages(issue: Issue, ctx: Awaited<ReturnType<typeof context>>, comments?: Comment[]): Promise<Message[]> {
@@ -626,19 +644,20 @@ export function createApp(opts: AppOptions): Server {
   const handedOutBy = (chat: Issue, k: Issue, me: string) =>
     k.parentId === chat.id && (k.createdByAgentId ? k.createdByAgentId === chatAgent(chat) : k.createdByUserId === me);
 
+  /** The question a task's agent is still waiting on the owner for; its comments are read again only when it has changed. */
+  async function askOf(task: Issue, me: string) {
+    const stamp = `${task.lastActivityAt ?? task.updatedAt}|${task.assigneeAgentId}`;
+    const hit = asks.get(task.id);
+    if (hit?.stamp === stamp) return hit.ask;
+    const comments = await pc.comments(task.id).catch(() => undefined);
+    const ask = openAsk(comments ?? [], task.assigneeAgentId, me);
+    if (comments) asks.set(task.id, { stamp, ask });
+    return ask;
+  }
+
   async function askingKids(chat: Issue, kids: Issue[], me: string) {
     const open = kids.filter((k) => k.assigneeAgentId && !["done", "cancelled"].includes(k.status) && handedOutBy(chat, k, me));
-    // A task's comments are read again only when it has changed (every open chat refresh asks).
-    const askOf = async (task: Issue) => {
-      const stamp = `${task.lastActivityAt ?? task.updatedAt}|${task.assigneeAgentId}`;
-      const hit = asks.get(task.id);
-      if (hit?.stamp === stamp) return hit.ask;
-      const comments = await pc.comments(task.id).catch(() => undefined);
-      const ask = openAsk(comments ?? [], task.assigneeAgentId, me);
-      if (comments) asks.set(task.id, { stamp, ask });
-      return ask;
-    };
-    const found = await Promise.all(open.map(async (task) => ({ task, ask: await askOf(task) })));
+    const found = await Promise.all(open.map(async (task) => ({ task, ask: await askOf(task, me) })));
     return found.filter((x): x is { task: Issue; ask: NonNullable<typeof x.ask> } => Boolean(x.ask));
   }
 
@@ -1286,8 +1305,9 @@ export function createApp(opts: AppOptions): Server {
         }
         const [live, runs] = await Promise.all([pc.liveRuns(), pc.recentRuns(100)]);
         const lastRun = (i: Issue) => runs.find((r) => r.issueId === i.id && r.finishedAt);
-        const [open, awaiting] = await Promise.all([pc.openIssues(), records.awaiting().catch(() => new Set<string>())]);
-        return splitTasks(open, agent.id, chat?.id, (i) => chatState(i, live, lastRun(i), ctx.me, awaiting).state, ctx.agents);
+        const [open, awaiting, needs] = await Promise.all([pc.openIssues(), records.awaiting().catch(() => new Set<string>()), waiting(ctx)]);
+        const owed = new Map(needs.map((i) => [i.id, i.state]));
+        return splitTasks(open, agent.id, chat?.id, (i) => owed.get(i.id) ?? chatState(i, live, lastRun(i), ctx.me, awaiting).state, ctx.agents, new Set(owed.keys()));
       },
     },
     { method: "GET", path: /^\/api\/agents\/([0-9a-f-]{36})\/scorecard$/, handle: async (m) => scorecard(await gatherFacts(pc, store, records, grading), m[1]!) },
@@ -1373,31 +1393,14 @@ export function createApp(opts: AppOptions): Server {
       },
     },
     {
-      // What needs the owner: chats and tasks waiting for them, waiting for approval, or failed; and the open approval cards.
+      // What waits on the owner (chats.ts needsYou): his Tier 2 cards' tasks, agents' open questions, work handed to him.
       method: "GET",
       path: /^\/api\/needs-you$/,
       handle: async () => {
         const ctx = await context();
-        const [open, live, runs] = await Promise.all([pc.openIssues(), pc.liveRuns(), pc.recentRuns(100)]);
-        const awaiting = await records.awaiting();
-        const base = needsYou(open, live, runs, ctx.me, awaiting);
-        // Chats also need the owner when their messages say so (a reply asking him, a run that ended without a reply):
-        // the same state the chat list and the conversation show.
-        const lastRun = (id: string) => runs.find((r) => r.issueId === id && r.finishedAt);
-        const chats = open.filter((i) => isChat(i, ctx) && !base.some((b) => b.id === i.id));
-        const more = (
-          await Promise.all(
-            chats.map(async (i) => {
-              const base = chatState(i, live, lastRun(i.id), ctx.me, awaiting);
-              if (base.state !== "idle" && base.state !== "in review") return undefined;
-              const shown = shownState(base, await chatMessages(i, ctx).catch(() => [] as Message[]), lastRun(i.id));
-              return shown.state === "idle" || shown.state === "in review" ? undefined : { ...i, ...shown };
-            }),
-          )
-        ).filter((x) => x !== undefined);
         const agentName = (i: Issue) => ctx.agents.find((a) => a.id === (i.assigneeAgentId ?? chatAgent(i)))?.name ?? "You";
-        const items = [...base, ...more].map((i) => ({ identifier: i.identifier, title: i.title, agent: agentName(i), state: i.state, ...(i.reason ? { reason: i.reason } : {}) }));
-        // approvals: the Tier 2 cards the owner decides in Approvals (its badge); items: everything else that waits on him too.
+        const items = (await waiting(ctx)).map((i) => ({ identifier: i.identifier, title: i.title, agent: agentName(i), state: i.state }));
+        // approvals: the Tier 2 cards the owner decides in Approvals; items: every task waiting on him (those cards' tasks too).
         return { count: items.length, items, approvals: (await records.list("owner")).length };
       },
     },

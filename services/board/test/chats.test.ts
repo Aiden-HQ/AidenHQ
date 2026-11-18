@@ -19,18 +19,15 @@ describe("chatState", () => {
   });
 });
 
-describe("a handed-out task in review", () => {
-  it("is neutral for an agent-assigned child task; waits on the owner only when asked, approved-pending or assigned to him", () => {
+describe("a task in review", () => {
+  it("is with its reviewer (grader, AI reviewer, CI, merge queue), never the owner, unless asked or handed to him", () => {
     const kid = issue({ status: "in_review", parentId: "chat" });
     const base = chatState(kid, [], undefined, "me");
     expect(base.state).toBe("in review");
-    expect(needsYou([kid], [], [], "me")).toEqual([]);
+    expect(chatState(issue({ status: "in_review" }), [], undefined, "me").state).toBe("in review");
     const asked = [{ kind: "reply", text: "Ship it?", at: "2026-11-10T10:00:00Z", actions: ["Yes"] }] as unknown as Message[];
     expect(shownState(base, asked, undefined).state).toBe("waiting for you");
     expect(chatState(kid, [], undefined, "me", new Set(["i1"])).state).toBe("waiting for approval");
-    expect(chatState({ ...kid, assigneeAgentId: null, assigneeUserId: "me" }, [], undefined, "me").state).toBe("waiting for you");
-    // The owner's own chat in review keeps asking for him.
-    expect(chatState(issue({ status: "in_review" }), [], undefined, "me").state).toBe("waiting for you");
   });
 });
 
@@ -51,13 +48,20 @@ describe("replyActions", () => {
 });
 
 describe("needsYou", () => {
-  it("only what an agent asks for: in review, failed, waiting for approval; never plain to-dos", () => {
-    const todo = issue({ id: "t", identifier: "WOR-2", assigneeAgentId: null, assigneeUserId: "me" });
-    const review = issue({ id: "r", identifier: "WOR-3", status: "in_review" });
-    const failed = issue({ id: "f", identifier: "WOR-4" });
-    const quiet = issue({ id: "q", identifier: "WOR-5" });
-    const runs = [{ ...past("failed", "boom"), issueId: "f" }];
-    expect(needsYou([todo, review, failed, quiet], [], runs, "me").map((x) => [x.identifier, x.state])).toEqual([["WOR-3", "waiting for you"], ["WOR-4", "failed"]]);
+  it("lists only what the owner must decide: a Tier 2 card, an open question, work handed to him", () => {
+    const t = (id: string, o: Partial<Issue> = {}) => issue({ id, identifier: id, ...o });
+    const open = [
+      t("card", { status: "in_review" }), // a pending Tier 2 record
+      t("asks", { status: "in_progress" }), // its agent's question, unanswered
+      t("handed", { assigneeAgentId: null, assigneeUserId: "me", description: `over to you\n\n${chatAgentMarker("a1")}` }), // a chat handed back
+      t("pr", { status: "in_review" }), // a PR with the AI reviewer / CI / merge queue
+      t("timedout"), // its run timed out: Fleet Ops' to repair
+      t("todo", { assigneeAgentId: null, assigneeUserId: "me" }), // his own plain to-do
+      t("parked", { status: "backlog" }), // an old question on a parked chat
+    ];
+    const runs = [{ ...past("timed_out", "Timed out after 1200s"), issueId: "timedout" }];
+    const got = needsYou(open, [], runs, "me", new Set(["card"]), new Set(["asks", "parked"]));
+    expect(got.map((x) => [x.id, x.state])).toEqual([["card", "waiting for approval"], ["asks", "waiting for you"], ["handed", "waiting for you"]]);
   });
 });
 

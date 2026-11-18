@@ -194,18 +194,21 @@ export function ApprovalsView({ open, onSignIn }: { open: (identifier: string) =
   const all = cards ?? [];
   // Only Tier 2 waits for you; Tier 1 (with the reviewer) and Tier 0 runs (audit rows) are history lines.
   const pending = all.filter(forOwner);
-  const f: Filter = filter ?? (pending.length ? "pending" : "all");
+  // Everything else waiting on you (the server's needs-you: an agent's open question, work handed to you); a task with
+  // a Tier 2 card is already one of the cards above.
   const others = (data?.items ?? []).filter((i) => i.state !== "waiting for approval");
+  const waitingCount = pending.length + others.length;
+  const f: Filter = filter ?? (waitingCount ? "pending" : "all");
   const past = groups(all.filter((a) => !forOwner(a)));
   const history = past.filter((g) => inFilter(g[0]!, f));
-  const count = (k: Filter) => (k === "pending" ? pending.length : k === "all" ? pending.length + past.length : past.filter((g) => inFilter(g[0]!, k)).length);
+  const count = (k: Filter) => (k === "pending" ? waitingCount : k === "all" ? waitingCount + past.length : past.filter((g) => inFilter(g[0]!, k)).length);
   return (
     <main className="page wide">
       <header className="page-head">
         <div>
           <h1>Approvals</h1>
           <p className="page-sub">
-            {!cards ? "Checking what waits for you…" : pending.length ? `${pending.length} waiting for you` : "Nothing waiting for you"}
+            {!cards ? "Checking what waits for you…" : waitingCount ? `${waitingCount} waiting for you` : !data && !needsQ.error ? "Checking what waits for you…" : "Nothing waiting for you"}
             <Updating on={hold || needsQ.stale} />
           </p>
         </div>

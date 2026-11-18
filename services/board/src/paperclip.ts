@@ -374,9 +374,10 @@ export class Paperclip {
     return this.request<Issue>("GET", `/api/issues/${encodeURIComponent(id)}`);
   }
 
+  /** A task's newest 500 comments (Paperclip's most per page), oldest first: the latest word is always in it. */
   async comments(id: string): Promise<Comment[]> {
-    const list = await this.request<Comment[]>("GET", `/api/issues/${encodeURIComponent(id)}/comments?order=asc&limit=500`);
-    return list.filter((c) => !c.deletedAt);
+    const list = await this.request<Comment[]>("GET", `/api/issues/${encodeURIComponent(id)}/comments?order=desc&limit=500`);
+    return list.filter((c) => !c.deletedAt).sort((a, b) => (a.createdAt ?? "").localeCompare(b.createdAt ?? ""));
   }
 
   /** One page of a task's comments (Paperclip's most: 500): oldest first after the comment `after`, or the newest first. */

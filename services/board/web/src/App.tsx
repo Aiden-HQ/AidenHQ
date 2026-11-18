@@ -177,7 +177,7 @@ export function App() {
   const [items, setItems] = useState<Items | null>(() => cachedBoard()?.buckets ?? null);
   const [error, setError] = useState("");
   const [route, setRoute] = useState<Route>(parseRoute);
-  // The Approvals badge counts the cards the owner can decide there (not every needs-you item: some are tasks outside it).
+  // The Approvals badge: what the page lists as waiting on the owner (his Tier 2 cards and the other tasks waiting on him).
   const [approvalsOpen, setApprovalsOpen] = useState(0);
   const [notifyAsk, setNotifyAsk] = useState(() => notificationsSupported() && Notification.permission === "default");
   const signInNeeded = useCallback(() => setNeedsSignIn(true), []);
@@ -185,7 +185,7 @@ export function App() {
   useEffect(
     () =>
       watchNeedsYou(
-        () => api.needsYou().then((r) => (setApprovalsOpen(r.approvals), r)),
+        () => api.needsYou().then((r) => (setApprovalsOpen(r.approvals + r.items.filter((i) => i.state !== "waiting for approval").length), r)),
         (identifier) => go(`#/c/${identifier}`),
         (tick) => subscribe(["approvals", "chat"], tick),
       ),

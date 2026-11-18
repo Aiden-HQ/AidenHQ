@@ -25,7 +25,7 @@ const pc = {
   routines: async () => [],
   labels: async () => [{ id: "chat-label", name: "chat", color: "#0ea5e9" }],
   openIssues: async () => [
-    issue(100), // its last run failed: needs the owner
+    issue(100), // its last run failed: Fleet Ops' to repair, not the owner's
     issue(101),
     issue(102, { labelIds: ["chat-label"] }),
     issue(103, { assigneeAgentId: "someone-else" }),
@@ -36,6 +36,7 @@ const pc = {
   liveRuns: async () => [],
   recentRuns: async () => [{ id: "r1", status: "failed", agentId: "keeper", issueId: "i100", startedAt: "2026-11-01T00:00:00Z", finishedAt: "2026-11-01T00:01:00Z", error: "boom" }],
   lastRuns: async () => new Map(),
+  comments: async () => [],
 } as unknown as Paperclip;
 
 describe("agent page routes", () => {
@@ -74,8 +75,8 @@ describe("agent page routes", () => {
 
   it("splits open tasks and leaves chats and other agents' tasks out", async () => {
     const { body } = await get("/api/agents/by-key/roadmap-keeper/tasks?view=open");
-    expect(body.needs.map((r: any) => r.identifier)).toEqual(["WOR-100"]);
-    expect(body.ongoing.map((r: any) => r.identifier)).toEqual(["WOR-101"]);
+    expect(body.needs).toEqual([]);
+    expect(body.ongoing.map((r: any) => [r.identifier, r.state])).toEqual([["WOR-101", "idle"], ["WOR-100", "failed"]]);
   });
 
   it("pages history, newest first, and searches", async () => {

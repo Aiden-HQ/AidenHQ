@@ -23,11 +23,13 @@ export interface AgentGroup {
 
 export const VISIBLE = 5;
 const newest = (a: ChatRow, b: ChatRow) => (b.preview?.at ?? b.updatedAt).localeCompare(a.preview?.at ?? a.updatedAt);
-export const NEEDS: ChatState[] = ["waiting for you", "waiting for approval", "failed"];
+/** What waits on the owner (the server's chats.ts WAITS_ON_OWNER): a failed run is Fleet Ops' to repair, not his. */
+export const NEEDS: ChatState[] = ["waiting for you", "waiting for approval"];
 
 /** Only states that ask for attention get a chip: an idle or finished chat shows none. */
 export const showsChip = (s: ChatState) => s !== "idle" && s !== "done";
-const WAITING: ChatState[] = ["queued", "in review", "idle"];
+// A failed task waits on its agent (Fleet Ops repairs it), shown with its chip among the rest.
+const WAITING: ChatState[] = ["queued", "in review", "idle", "failed"];
 
 /** What a chat's handed-out work comes to, for its sidebar line: "4 tasks · 1 needs you". */
 export function taskSummary(kids: { state: ChatState }[]): { total: number; needs: number; busy: boolean } {
