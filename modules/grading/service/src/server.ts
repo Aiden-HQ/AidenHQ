@@ -83,7 +83,7 @@ export function createGrading({ db, kernel, keys, jwks = kernelJwks(), log = () 
     if (!FILERS.includes(tool)) throw new HttpError(403, `only an agent granted one of ${FILERS.join(", ")} may file a rubric`);
     const b = parseFiling(body);
     // The grader reads only the task's own PRs; a ref naming another org's repo is refused here too.
-    if (b.deliverable.kind === "pr" && !prRefAllowed(b.deliverable.ref, await kernel.settings())) throw new HttpError(400, "deliverable.ref: a repo or PR in the agents org, a codehost:local repo or change, the product repo or the official modules repo, or empty for the task's own PRs");
+    if (b.deliverable.kind === "pr" && !prRefAllowed(b.deliverable.ref, await kernel.settings())) throw new HttpError(400, "deliverable.ref: a repo or PR in the agents org, a codehost:local repo or change, or the product repo, or empty for the task's own PRs");
     const issue = await kernel.issue(b.issue);
     if (issue.createdByAgentId !== caller.agent) throw new HttpError(403, "only the agent that delegated a task files its rubric");
     const r = grades.file(issue.id, b.rubric, b.deliverable);

@@ -221,14 +221,14 @@ test("a product PR merges only on a verified eval receipt for its bound head; a 
   assert.deepEqual(github.merges().map((w) => w.body), [{ merge_method: "squash", sha: head }], "merged at the bound head");
   assert.equal(outcomes[0]?.ok, true, JSON.stringify(outcomes));
 
-  // A PR outside our repos: GitHub's own review must approve it too, whatever the record says.
+  // A PR outside our repos: the App is PR-only there, whatever the record says.
   outcomes.length = 0;
   await merge("k-00000000000000b2", [{ repo: "other/lib", number: 2, head: HEAD }]);
   await handle.stepMerges();
   await settle();
   assert.equal(github.merges().length, 1);
   assert.equal(outcomes[0]?.ok, false);
-  assert.match(outcomes[0].text, /isn't approved on GitHub/);
+  assert.match(outcomes[0].text, /outside the agents org and the product repo/);
 
   // The product PR moved after its record was approved: stopped at once, never merged.
   prs["acme/aidenhq"] = { head: "e".repeat(40), checks: "SUCCESS" };

@@ -81,10 +81,12 @@ export function createMerges(d: {
       else p.reviewAsked = p.head;
       await d.designReview?.({ repo: p.repo, number: p.number, head: p.head, ...(again ? { again } : {}) }).catch((e: Error) => log("design review task failed", { pr: p.url, err: says(e) }));
     };
+    // Outside the agents org and the product repo the App is PR-only: it merges nothing there.
+    if (!ownRepo(p.repo, d.agentsOrg, platform)) return fail(`\`${p.repo}\` is outside the agents org and the product repo, where the code host only opens PRs: merge it there`);
     try {
       const data = await readPr(p.repo, p.number);
       const uiReview = inAgentsOrg(p.repo);
-      const v = decide(data, p.head, { ownRepo: ownRepo(p.repo, d.agentsOrg, platform), uiReview });
+      const v = decide(data, p.head, { uiReview });
       // The design reviewer is asked as soon as a UI head waits without a verdict: its review runs beside the checks.
       if (v.do === "wait" && uiReview && p.reviewAsked !== p.head && awaitsDesignReview(data.repository.pullRequest)) await askReview(false);
       if (v.do === "done") {

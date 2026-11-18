@@ -677,98 +677,36 @@ bad_gh="$(echo "$gh_routes" | grep -v '{ method: "GET", path: ' | grep -vxF \
 gh_mutations="$(sed -n '/^export const GRAPHQL/,/^} as const;/p' modules/github/connections/github-mcp/src/github.ts | grep -oE 'mutation\([^)]*\) \{ [A-Za-z0-9]+' | awk '{print $NF}' | sort -u | tr '\n' ' ')"
 [ "$gh_mutations" = "addProjectV2ItemById updateProjectV2ItemFieldValue " ] && grep -q 'GRAPHQL_DOCS.has(' modules/github/connections/github-mcp/src/github.ts \
   && pass "github-mcp: GraphQL limited to fixed documents whose only mutations add an issue to a project and set its status" || fail "github-mcp: unexpected GraphQL mutations: $gh_mutations"
-# The code host (codehost-github) merges the PRs a task lists. Its only GitHub writes (REST, checked against merges.WRITES; one fixed GraphQL
-# mutation marks a draft ready) are: merge and update-branch; in the agents org only, retargeting a stacked PR to the
-# default branch once its parent merged, deleting a merged PR's own head branch (never the default branch, only at the
-# merged head, never under an open PR), `aidenhq close` (a comment, then the PR closed), and re-running a queued PR's
-# failed jobs when every red check is an infrastructure failure (once per check per head, only from a started queue:
-# merges.mjs infraRetry), or when a pending check's workflow run has been over for ten minutes (merges.mjs ghostRetry: the whole run re-runs, its one call site, once per check per head, never read as passed), or when a red check's job never started (merges.mjs environmentRetry: once per check per head, the
-# head never moves; from a started queue, or from watchProductPrs on the product repo's own same-repo PRs that a task here
-# opened, authored by the App's bot), and a `pending` commit status where the design review is woken (main.mjs, the
-# only status write; never success or failure, so the runner can only hold a merge, never pass the review). A sequential queue on a card that is the review (agents org, product repo, official modules repo) may also replay a
-# stacked PR's approved commits onto the default branch and push them as its head (github.rebuild: only when its parent
-# merged in the same queue at its approved head and the PR's head is still the approved one; the push is leased to that
-# head), then retarget it; the replayed head merges only with every named check green on it. A Tier 0 queue only
-# retargets and hands the PR back to be tiered again. allowedWrite refuses all but
-# PUT outside the agents org, except comments, PR edits, job re-runs and statuses (never a branch delete) on the product repo
-# and the official modules repo (the product's repos: runner productRepos), for closing its
-# Dependabot PRs (Tier 0 only when the runner read the author as dependabot[bot] from the API), and for closing, once, an
-# agent's own product PR whose task is cancelled (watchProductPrs, #174: the App bot's same-repo PR of a task here, no other
-# task on its branch, marked before the close so it never repeats). The card is the review (bound to the head) in the agents org, the product repo and the
-# official modules repo (owner, 2026-11-18: a modules PR card merges, Platform Engineer's line, the panel's: plan.mjs), whose
-# merges go through the App; elsewhere the host gh login merges, behind GitHub's own review. WRITES allows paths, not
-# bodies or orgs, so the call sites and their gates are asserted here too. Pushes and draft PRs stay on the exact word.
-# Merge trains (aidenhq-modules 79038e3, #12; product c19e96cb, #249), on the product repo's card queues only: two or more
-# ready PRs are merged at their bound heads into `merge-build/<n>` (POST merges), made once as `merge-train/<n>` (POST
-# git/refs) so CI runs once, and both branches deleted after. branchWrites refuses any other branch name and allowedWrite
-# refuses any other branch delete on the product repo, since WRITES can't see a body. Each PR then merges as before:
-# prDecision again at merge time (its approval bound to its head, its own checks), the eval gate, merged at that head with
-# the base still the tree CI tested; the train's run stands in only for the base's CI (red or a missing gate check never
-# reads as green). Every automatic re-run also leaves a note on the PR (aidenhq-modules 95be3e7, #40: a second comment site).
-# Repos on this server (codehost-local: product #324 0c527d0f and #326 ba7db16d, aidenhq-modules #66, #68 b86cae3, #71
-# 2dcd6a8): the org `local` joins the agents orgs only when the module is enabled (runner config.mjs, kernel main.ts; the
-# runner's isLocal needs localHost too), so a github.com/local/* repo is never one of ours and every GitHub write keeps the
-# singular agents org (allowedWrite above). The runner is the only writer of the bare repos (under the data dir, hidden from
-# jobs), one call site each: a close only after its own tierFor and a Tier 0 check (agentClose's local branch, the same
-# closePart rules: agents-org-close, never the instance repo), a push fast-forward only (publishLocal, after publish's tiering),
-# check receipts only from runLocalChecks (the checks run in the jail) and, for the design-review entry alone, from
-# readLocalDesignVerdicts (product #336 d047e4aa: a verdict line counts only from an agent holding the design-review role in
-# the grants table, by Paperclip id, naming the change's current head; the GitHub path's equivalent is the reviewer's own
-# commit status), and a merge only from runLocalMerges, i.e. only on an
-# approved card (executeApproval -> mergeLocalApproved), at the card's head with every required check green (host.mjs refuses
-# head-moved and checks-not-green itself).
-rm_="modules/codehost-github/service/src/merge-gate.mjs"; rq="modules/engineering/src/merge-queue.mjs"
-rplan="modules/codehost-github/service/src/plan.mjs"; rcheck="modules/platform/src/check.mjs"
-merge_writes="$(sed -n '/^export const WRITES/,/^\];/p' "$rm_" | grep -oE 'method: "[A-Z]+", path: /[^ ]+/' | tr '\n' ' ')"
-[ "$merge_writes" = 'method: "PUT", path: /^repos\/[\w.-]+\/[\w.-]+\/pulls\/\d+\/merge$/ method: "PUT", path: /^repos\/[\w.-]+\/[\w.-]+\/pulls\/\d+\/update-branch$/ method: "POST", path: /^repos\/[\w.-]+\/[\w.-]+\/issues\/\d+\/comments$/ method: "PATCH", path: /^repos\/[\w.-]+\/[\w.-]+\/pulls\/\d+$/ method: "DELETE", path: /^repos\/[\w.-]+\/[\w.-]+\/git\/refs\/heads\/[\w./-]+$/ method: "POST", path: /^repos\/[\w.-]+\/[\w.-]+\/actions\/runs\/\d+\/rerun-failed-jobs$/ method: "POST", path: /^repos\/[\w.-]+\/[\w.-]+\/actions\/runs\/\d+\/rerun$/ method: "POST", path: /^repos\/[\w.-]+\/[\w.-]+\/statuses\/[0-9a-f]{7,40}$/ method: "POST", path: /^repos\/[\w.-]+\/[\w.-]+\/git\/refs$/ method: "POST", path: /^repos\/[\w.-]+\/[\w.-]+\/merges$/ ' ] \
-  && [ "$(grep -o 'mutation([^)]*) { [A-Za-z]*' "$rm_" | awk '{print $NF}' | tr '\n' ' ')" = "markPullRequestReadyForReview " ] \
-  && grep -qF 'if (method === "PUT" || (Boolean(agentsOrg) && path.split("/")[1].toLowerCase() === agentsOrg.toLowerCase())) return true;' "$rm_" \
-  && grep -qF '  if (![productRepo ?? []].flat().some((p) => p.toLowerCase() === repo)) return false;' "$rm_" \
-  && grep -qF '  return method !== "DELETE" || TRAIN_BRANCH.test(path.split("/").slice(6).join("/"));' "$rm_" \
-  && grep -qF 'export const TRAIN_BRANCH = /^merge-(train|build)\/\d+$/;' "$rm_" \
-  && [ "$(awk '/^export const branchWrites = /,/^}\);/' "$rm_" | grep -c 'await write(repo, ')" = 3 ] \
-  && [ "$(awk '/^export const branchWrites = /,/^}\);/' "$rm_" | grep -cF '    if (!TRAIN_BRANCH.test(branch)) throw new Error(`not a merge train branch: ${branch}`);')" = 2 ] \
-  && grep -qF '    await write(repo, `repos/${repo}/git/refs/heads/${branch}`, {}, "DELETE");' "$rm_" \
-  && grep -qF '    await write(repo, `repos/${repo}/git/refs`, { ref: `refs/heads/${branch}`, sha }, "POST");' "$rm_" \
-  && grep -qF '      return (await write(repo, `repos/${repo}/merges`, { base: branch, head, commit_message: message }, "POST")).sha;' "$rm_" \
-  && [ "$(grep -c 'github\.createRef(' "$rm_")" = 2 ] && [ "$(grep -c 'github\.mergeInto(' "$rm_")" = 1 ] \
-  && grep -qF '        if (!pr || pr.headRefOid !== m.head) {' "$rm_" && grep -qF '        if (pr.baseRef?.target?.oid !== T.expect) {' "$rm_" \
-  && grep -qF '        const d = prDecision(asTested, { updatedHead: p.updatedHead, cardIsReview: cardIsReview(m.repo), approvedHead: p.head, strictChecks: Boolean(e.queue.strict) });' "$rm_" \
-  && grep -qF '          sha = await github.merge(m.repo, m.number, { sha: m.head, method });' "$rm_" \
-  && grep -qF '  if (named.some((c) => !c.ok && !c.pending)) return "red";' "$rm_" \
-  && grep -qF '  if (named.some((c) => c.pending) || (gate && !named.some((c) => c.name === GATE_CHECK))) return "pending";' "$rm_" \
+# The code host (codehost-github) merges the PRs an approved merge record lists (merges.ts over merge-gate.mjs's decide, #630):
+# one queue per repo, at most one merge per repo a poll, only in our own repos (the agents org and the product repo; elsewhere
+# the App only opens PRs: plan.mjs refuses an outside merge and the queue refuses it again). Each PR merges by one PUT carrying
+# the head the record bound (GitHub refuses any other), only after decide says so (open on the default branch, at that head,
+# every named check green, none truncated, the base's gate check present) and, last, the reviewer-eval gate. Nothing in the
+# queue updates, rebases, retargets, re-runs, deletes or closes: a moved head or base goes back to the PR's own path. Its only
+# other GitHub write is the design review's `pending` commit status (design-review.ts; never success or failure, so the code
+# host can only hold a merge, never pass the review). The record is the review in our own repos; a product merge is never
+# Tier 0. Closes (plan.mjs): agents org Tier 0; on the product repo only Dependabot's PRs, for a platform requester; never the
+# instance repo. Repos on this server (codehost-local) join the agents orgs only when that module is enabled (kernel main.ts);
+# its host refuses a moved head and checks that aren't green itself.
+rm_="modules/codehost-github/service/src/merge-gate.mjs"; rq="modules/codehost-github/service/src/merges.ts"
+rplan="modules/codehost-github/service/src/plan.mjs"; rcheck="modules/platform/src/check.mjs"; rdr="modules/codehost-github/service/src/design-review.ts"
+[ "$(grep -c 'd\.gh(' "$rq")" = 2 ] && grep -qF 'const r = await d.gh("POST", "/graphql", await d.token(repo, READ), { query: PR_QUERY,' "$rq" \
+  && grep -qF 'const r = await d.gh("PUT", `/repos/${repo}/pulls/${number}/merge`, await d.token(repo, mergePermissions(repo, platform)), { merge_method: method, sha });' "$rq" \
+  && grep -qF 'p.sha = await mergePut(p.repo, p.number, p.head, method);' "$rq" \
+  && grep -qF 'if (!ownRepo(p.repo, d.agentsOrg, platform)) return fail(' "$rq" \
+  && [ "$(cat "$rm_" "$rq" | grep -c 'mutation')" = 0 ] \
+  && grep -qF 'if (pr.headRefOid !== head) return { do: "fail"' "$rm_" \
+  && grep -qF 'if (!def || pr.baseRefName !== def) return { do: "fail"' "$rm_" \
+  && grep -qF 'if (rollup?.contexts?.pageInfo?.hasNextPage) return { do: "fail"' "$rm_" \
+  && grep -qF 'if (!named.length) return { do: "wait"' "$rm_" \
+  && [ "$(grep -c 'o\.gh("POST"' "$rdr")" = 2 ] && grep -qF 'o.gh("POST", `/repos/${ask.repo}/statuses/${ask.head}`' "$rdr" && grep -qF '{ state: "pending", context: DESIGN_REVIEW.name,' "$rdr" \
+  && grep -qF 'if (!inAgentsOrg(p.repo, s)) return [REJECT("outside-merge"' "$rplan" \
   && grep -qF 'export const mergePermissions = (slug: string | undefined, productRepo: ProductRepos) => (isProduct(slug, productRepo) ? { ...WRITE, workflows: "write" } : WRITE);' modules/codehost-github/service/src/github-app.ts \
-  && [ "$(grep -c 'github\.status(' "$rm_")" = 0 ] \
-  && [ "$(grep -c 'github\.rerun(' "$rm_")" = 2 ] && [ "$(grep -c 'retryInfra(' "$rm_")" = 3 ] \
-  && [ "$(grep -c 'ghostRetry(' "$rm_")" = 3 ] && [ "$(grep -c 'whole: key === "ghost"' "$rm_")" = 1 ] && [ "$(grep -c 'rerunChecks(' "$rm_")" = 3 ] && grep -qF '    if (advisory(n) || n.__typename !== "CheckRun" || n.status === "COMPLETED" || !n.databaseId || !run || reruns[n.name]?.head === head) continue;' "$rm_" \
-  && [ "$(grep -c 'environmentRetry(' "$rm_")" = 3 ] \
-  && grep -qF '  if (checks.some((c) => reruns[c.name]?.head === head && reruns[c.name].id !== c.id)) return { stop: environmentReceipt(ref, shown, head), names };' "$rm_" \
-  && grep -qF '  if (checks.every((c) => reruns[c.name]?.head === head)) return { wait: RERUN_SHOWS_MINUTES };' "$rm_" \
-  && grep -qF '    const retry = d.do === "stop" && d.red ? await retryInfra(github, next.repo, next.number, pr) : undefined;' "$rm_" \
-  && grep -qF '        const retry = d.red ? await retryInfra(github, p.repo, p.number, pr) : undefined;' "$rm_" \
-  && grep -qF '    if (was?.head === head) {' "$rm_" \
-  && [ "$(grep -c 'github\.retarget(' "$rm_")" = 2 ] && grep -qF 'await github.retarget(p.repo, p.number, defaultBranch);' "$rm_" \
-  && grep -qF '      await github.retarget(next.repo, next.number, defaultBranch);' "$rm_" \
-  && [ "$(grep -c 'github\.rebuild(' "$rm_")" = 1 ] \
-  && grep -qF 'if (!review || !parent || !github.rebuild || pr.headRefOid !== next.head) return stop(' "$rm_" \
-  && grep -qF 'if (!parent.head || parent.headOid !== parent.head) return stop(' "$rm_" \
-  && grep -qF 'const review = pr.state === "OPEN" && cardIsReview(next.repo) && Boolean(next.head);' "$rm_" \
-  && grep -qF 'strictChecks: Boolean(queue.strict || next.rebound)' "$rm_" \
-  && [ "$(grep -c 'github\.deleteBranch(' "$rm_")" = 3 ] \
-  && grep -qF '    for (const b of [`merge-build/${T.n}`, `merge-train/${T.n}`]) await github.deleteBranch(T.repo, b).catch(() => {});' "$rm_" \
-  && grep -qF '    const branch = `merge-build/${T.n}`;' "$rm_" && grep -qF '    await github.deleteBranch(T.repo, branch).catch(() => {});' "$rm_" \
-  && grep -qF 'if (pr.isCrossRepository || !pr.headRefName || pr.headRefName === defaultBranch) return;' "$rm_" \
-  && grep -qF 'if (b.tip === pr.headRefOid && !b.stacked) await github.deleteBranch(repo, pr.headRefName);' "$rm_" \
-  && [ "$(grep -c 'deleteHead(' "$rm_")" = 4 ] && grep -qF 'if (cardIsReview(next.repo)) await deleteHead(' "$rm_" && grep -qF 'if (cardIsReview(m.repo)) await deleteHead(' "$rm_" \
   && grep -qF 'export const ownRepo = (slug: string | undefined, agentsOrg: string | undefined, productRepo: ProductRepos) => inOrg(agentsOrg, slug) || isProduct(slug, productRepo);' modules/codehost-github/service/src/github-app.ts \
   && grep -qF 'const isProduct = (slug: string | undefined, product: ProductRepos) => [product ?? []].flat().some((p) => sameSlug(slug, p));' modules/codehost-github/service/src/github-app.ts \
   && grep -qF 'if (same(p.repo, s.productRepo)) return [productMergePart(p, ref, s)];' "$rplan" \
   && [ "$(awk '/^function productMergePart/,/^}/' "$rplan" | grep -oE 'T\([0-9]' | sort -u | tr '\n' ' ')" = "T(1 " ] \
-  && [ "$(awk '/^function mergeParts/,/^}/' "$rplan" | grep -nE 'const friction = mergeFriction\(p, ref\);|if \(outside\) parts.push\(PANEL\("outside-merge"|return parts;' | cut -d: -f2- | sed 's/^ *//' | cut -c1-30 | tr '\n' '|')" = 'const friction = mergeFriction|if (outside) parts.push(PANEL(|return parts;|' ] \
   && grep -qF 'if (same(p.repo, s.instanceRepo)) return [REJECT("core-repo-merge"' "$rplan" \
-  && [ "$(grep -c 'advanceEach(' "$rm_")" = 2 ] && grep -qF 'if (queue.independent) return advanceEach(' "$rm_" \
-  && [ "$(grep -c 'independent: true' "$rq")" = 1 ] && [ "$(grep -c 'independent: true' "$rm_")" = 0 ] \
-  && [ "$(grep -c 'github\.comment(' "$rm_")" = 2 ] && grep -qF '  await github.comment(repo, number, body).catch(() => {});' "$rm_" && grep -qF '  const body = `Re-running once at \`${String(head).slice(0, 12)}\` for an infrastructure failure, not the code:' "$rm_" && [ "$(grep -c 'github\.close(' "$rm_")" = 1 ] \
   && grep -qF 'if (!inAgentsOrg(p.repo, s)) return REJECT("outside-close"' "$rplan" \
   && grep -qF 'const inAgentsOrg = (repo, s) => agentsOrgs(s).some((o) => same(orgOf(repo), o));' "$rplan" && grep -qF 'const agentsOrgs = (s) => [s.agentsOrgs ?? s.agentsOrg].flat().filter(Boolean);' "$rplan" \
   && grep -qF 'agentsOrgs: [agentsOrg, ...(localHost() ? [LOCAL_ORG] : [])]' kernel/src/main.ts \
@@ -778,25 +716,19 @@ merge_writes="$(sed -n '/^export const WRITES/,/^\];/p' "$rm_" | grep -oE 'metho
   && grep -qF 'if (same(p.repo, s.instanceRepo)) return REJECT("core-repo-close"' "$rplan" \
   && grep -qF 'if (p.dependabot !== true) return REJECT("core-repo-close"' "$rplan" \
   && grep -qF 'if (!s.requester?.platform) return REJECT("product-close-requester"' "$rplan" \
-  && pass "codehost: merge queue writes only merges, branch updates and ready-for-review, plus, in the agents org only, retargets to the default branch (Tier 0 queues re-tier; reviewed queues replay the approved commits first, leased push), merged-head branch deletes (after any agents-org merge), one re-run per head of a queued PR's infrastructure-failed jobs or of an agent's product PR's never-started jobs (each with a note on the PR), on this server's repos (codehost-local) a close after its own Tier 0 check and a merge only from an approved card at its head with its required checks green, merge trains on the product repo (their own merge-build/merge-train branches only: made, merged into at bound heads, deleted; each PR still merges on its own decision and eval gate at its head), a pending design-review status (never a verdict), and closes (Tier 0; on the product repo only Dependabot's PRs, author read from the API; never the instance repo; and, once, the App bot's own same-repo product PR of a cancelled task here that no other task holds); a product merge is never Tier 0 ($rm_)" || fail "codehost: unexpected merge-queue writes or their gates changed: $merge_writes"
-# The AI reviewer's own code merges only on a passing reviewer-eval receipt for its exact head (owner, 2026-11-16): all three merge
-# sites in the queue (advance, advanceEach, and a merge train's merge phase: aidenhq-modules 79038e3, #12, where a gate stop or
-# wait takes the train apart before any merge) ask the gate (src/evalgate.ts) right before GitHub's merge; the gate runs the eval with the eval's own
-# key (secrets openrouter_eval_key, never the fleet's openrouter_key), the base's judge (eval script and case-pad), in the
-# job jail (kernel/src/sandbox.ts hiding over the kernel's own sandboxConfig: Engineer jobs' layout and hidden paths, its
+  && pass "codehost: the merge queue merges only in the agents org and the product repo, one PUT per PR at the head its record bound, after the gate's decide (default branch, bound head, named checks green and complete) and the eval gate; its only other write is a pending design-review status; outside merges refused in plan and queue; a product merge is never Tier 0 ($rq, $rm_)" || fail "codehost: the merge queue's writes or their gates changed ($rq, $rm_, $rplan)"
+# The AI reviewer's own code merges only on a passing reviewer-eval receipt for its exact head (owner, 2026-11-16): the queue's
+# one merge site asks the gate (evalgate.ts) right before GitHub's merge, and a stop or wait returns before it; the gate runs the
+# eval with the eval's own key (secrets openrouter_eval_key, never the fleet's openrouter_key), the base branch tip's judge, in
+# the job jail (kernel/src/sandbox.ts hiding over the kernel's own sandboxConfig: Engineer jobs' layout and hidden paths, its
 # own network, required at startup; never unconfined), the tree read-only, one writable folder whose result is read as a small
 # regular file, and the kernel signs the receipt (check jobs).
 rgate="modules/codehost-github/service/src/evalgate.ts"
-gate_before_merge() { awk "/^$1/,/^}/" "$rm_" | grep -nE 'await github\.evalGate\(|await github\.merge\(' | cut -d: -f2- | sed 's/^ *//' | cut -c1-24 | tr '\n' '|'; }
-[ "$(grep -c 'await github.evalGate(' "$rm_")" = 3 ] \
-  && [ "$(gate_before_merge 'export async function advance\(')" = 'const gate = await githu|next.sha = await github.|' ] \
-  && [ "$(gate_before_merge 'async function advanceEach\(')" = 'const gate = await githu|p.sha = await github.mer|' ] \
-  && [ "$(gate_before_merge 'export async function advanceTrains\(')" = 'const gate = d.do === "m|sha = await github.merge|' ] \
-  && grep -qF '        if (d.do !== "merge" || gate?.stop || gate?.wait || !method) {' "$rm_" \
-  && grep -qF '  const ok = await d.kernel("POST", "/v1/receipts/verify", { receipt: v.receipt, for: { repo, head, run: "eval", judge, policy } });' "$rgate" \
-  && grep -qF 'evalGate: (repo: string, pr: any) => d.evalGate(repo, pr),' modules/codehost-github/service/src/merges.ts \
+[ "$(grep -c 'await d\.evalGate(' "$rq")" = 1 ] && [ "$(grep -c 'await mergePut(' "$rq")" = 1 ] \
+  && [ "$(awk '/^  async function poll\(/,/^  }$/' "$rq" | grep -nE 'await d\.evalGate\(|await mergePut\(' | cut -d: -f2- | sed 's/^ *//' | cut -c1-24 | tr '\n' '|')" = 'const gate = await d.eva|p.sha = await mergePut(p|' ] \
+  && grep -qF 'if (gate && "stop" in gate) return fail(gate.stop);' "$rq" && grep -qF 'if (gate) return wait("eval", gate.wait, EVAL_WAIT_MINUTES);' "$rq" \
   && pass "codehost: a PR that changes the AI reviewer's code merges only on a passing eval receipt for its exact head, verified by the kernel ($rgate)" \
-  || fail "codehost: the reviewer-eval receipt gate on merges changed ($rgate, $rm_)"
+  || fail "codehost: the reviewer-eval receipt gate on merges changed ($rgate, $rq)"
 # ...and it must see the reviewer where it lives: the product's own modules/ai-reviewer again since 2026-11-18. A product PR
 # that changes it runs its head's modules/, judged by its base's; one that takes the modules back out of the product is refused.
 git -C "$repo" cat-file -e "HEAD:modules/ai-reviewer/scripts/reviewer-eval.mjs" 2>/dev/null \

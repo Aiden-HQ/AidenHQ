@@ -1,6 +1,6 @@
 // The code host's merge gate: whether an approved merge record's PR merges now, from GitHub's view of it. One decision per PR
 // (`decide`); merges.ts polls, merges and reports. A PR merges only when it is open on the default branch, at the head the
-// record bound, approved (the record is the review in our own repos; elsewhere GitHub's review must approve too), every named
+// record bound (only our own repos: agents org and product; the approved record is the review), every named
 // check is green on that head, GitHub can merge it and, where required, the reviewer-eval receipt verifies (merges.ts asks
 // evalgate.ts last). Anything else waits a bounded time or fails with the reason: nothing here updates, rebases, retargets,
 // re-runs or forces. A moved head, a moved base (behind, conflicts) or a red check goes back to the PR's own path, which asks
@@ -118,19 +118,12 @@ export function mergeMethod(repo) {
   return undefined;
 }
 
-/** GitHub's review decision, or (where reviews aren't required) an approval and no change requests. */
-function approved(pr) {
-  if (pr.reviewDecision) return pr.reviewDecision === "APPROVED";
-  const states = (pr.latestOpinionatedReviews?.nodes ?? []).map((r) => r.state);
-  return states.includes("APPROVED") && !states.includes("CHANGES_REQUESTED");
-}
-
 /**
  * What to do with one PR of an approved record, from `data` (PR_QUERY's answer, withGate applied) and the record's bound `head`:
  * { do: "merge" | "done" | "wait" | "fail", why, limit?, review? }. Before a "merge", merges.ts still asks the eval gate.
- * `ownRepo`: the record is the review (agents org and the product's repos); `uiReview`: a UI PR needs the design review's pass.
+ * Only our own repos (agents org, product) reach it, so the record is the review. `uiReview`: a UI PR needs the design review's pass.
  */
-export function decide(data, head, { ownRepo, uiReview }) {
+export function decide(data, head, { uiReview }) {
   const pr = data?.repository?.pullRequest;
   if (!pr) return { do: "fail", why: "not found on GitHub" };
   if (pr.state === "MERGED") return pr.headRefOid === head ? { do: "done", why: "already merged" } : { do: "fail", why: `merged by someone else at \`${String(pr.headRefOid).slice(0, 12)}\`, not the approved head` };
@@ -140,7 +133,6 @@ export function decide(data, head, { ownRepo, uiReview }) {
   if (pr.headRefOid !== head) return { do: "fail", why: `its head moved since the merge was approved (now \`${String(pr.headRefOid).slice(0, 12)}\`): ask for its merge again at the new head` };
   const states = (pr.latestOpinionatedReviews?.nodes ?? []).map((r) => r.state);
   if (pr.reviewDecision === "CHANGES_REQUESTED" || states.includes("CHANGES_REQUESTED")) return { do: "fail", why: "changes are requested on it" };
-  if (!ownRepo && !approved(pr)) return { do: "fail", why: "it isn't approved on GitHub" };
   if (pr.isDraft) return { do: "fail", why: "it is a draft" };
   const rollup = pr.commits?.nodes?.[0]?.commit?.statusCheckRollup;
   if (rollup?.contexts?.pageInfo?.hasNextPage) return { do: "fail", why: "more than 100 checks on its head, so not all of them can be read" };
