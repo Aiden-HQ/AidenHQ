@@ -5361,7 +5361,7 @@ async function runLocalMerges() {
   const box = JSON.parse(state.get("local_merges") || "{}");
   for (const [issueId, q] of Object.entries(box)) {
     const p = q.prs[0];
-    let done;
+    let done, merged;
     try {
       const required = await localRequired(p);
       const now = await localHost.readChange(p.repo, p.number);
@@ -5392,6 +5392,7 @@ async function runLocalMerges() {
       state.branches(issueId).filter((b) => String(b.pr_url ?? "").toLowerCase() === p.url.toLowerCase()).forEach((b) => state.updateBranch(issueId, b.repo, b.branch, { merged: 1 }));
       log("local change merged", { issue: q.identifier, url: p.url, sha });
       done = `**Merged** ${p.url} as \`${sha.slice(0, 12)}\` on its base branch.`;
+      merged = true;
     } catch (err) {
       done = `**Not merged:** ${err.code ? err.message : `${p.url}: ${String(err.message ?? err).slice(0, 300)}`}`;
       log("local merge refused", { issue: q.identifier, url: p.url, code: err.code ?? "error" });
@@ -5402,6 +5403,12 @@ async function runLocalMerges() {
     else delete box[issueId];
     state.set("local_merges", JSON.stringify(box));
     await pc.comment(issueId, done).catch(() => {});
+    // The Engineer ended its turn on the merge card: a merged change is where its work goes on (deploying the app), so its
+    // task gets the next run unless it is closed, as after an approved create_repo.
+    if (merged) {
+      const full = await pc.issue(issueId).catch(() => null);
+      if (full) await nextRunAfter(full, { id: p.url, action: "merge" }, { text: done }).catch((err) => log("next run after a merge failed", { url: p.url, err: String(err.message ?? err).slice(0, 200) }));
+    }
   }
 }
 

@@ -1,7 +1,7 @@
 // End to end (see flow-harness.mjs) on the on-server code host (codehost-local, docs/design/codehost-local.md): a repo of
 // the org `local` is a bare repo under the data dir; `pr` opens a change request, its checks run here at the exact head, a
 // merge is requested once they are green, its card is approved and the change lands as one squash commit. A head that moved after the card is refused; a red
-// check wakes the task's Engineer with its log tail. An approved create_repo starts the Engineer's next run.
+// check wakes the task's Engineer with its log tail. An approved create_repo or a local merge starts the Engineer's next run.
 import { after, describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { chmodSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
@@ -63,8 +63,14 @@ describe("flow-local-codehost", () => {
     const card = [...t.paperclip.approvals.values()].find((x) => x.action === "merge" && x.state === "pending");
     assert.match(JSON.stringify(card), /\+chain/, "the merge card carries the change's diff");
     const before = git(t.dir, "--git-dir", bare, "rev-parse", "main");
+    const runs = agentRuns().length;
     t.paperclip.decide("merge", "approved");
     await waitFor("the merge", () => partComments().some((c) => c.startsWith("**Merged** codehost:local/app/change/1")));
+    // The merged change is where the task's work goes on (deploying): its Engineer gets the next run.
+    await waitFor("the next run", () => agentRuns().slice(runs).some((r) => /Your merge card codehost:local\/app\/change\/1 was approved and applied: \*\*Merged\*\*/.test(r.prompt)));
+    await t.settled();
+    await t.idle();
+    assert.equal(agentRuns().length, runs + 1, "one run, not more");
     const main = git(t.dir, "--git-dir", bare, "rev-parse", "main");
     assert.equal(git(t.dir, "--git-dir", bare, "rev-parse", `${main}^`), before, "one new commit on main");
     assert.equal(git(t.dir, "--git-dir", bare, "show", "main:chains.txt"), "chain");
