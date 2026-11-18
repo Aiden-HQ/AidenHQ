@@ -26,8 +26,8 @@ pieces fit together.
 
 Every agent runs on its module handbook (`modules/<m>/agents/<key>/AGENTS.md`), the instance's additions
 (`agents/<key>.md`, or an instance agent's own `agents/<key>/AGENTS.md`) and the shared sections setup appends
-(the kernel's Approvals, assembled by `scripts/handbook.mjs`, then the modules' `prompts:`, `modules/<m>/prompts/<id>.md`). Its frontmatter `description:` (one line; an instance agent's `description` in `agent.yaml`) is its routing contract: compile
-builds the Team list from them, appended to the handbook of every agent that can delegate (`task_delegate` or `task_create`), and fails
+(the kernel's Approvals, assembled by `scripts/handbook.mjs`, then the modules' `prompts:`, `modules/<m>/prompts/<id>.md`). Its frontmatter `description:` (one line; an instance agent's `description` in `agent.yaml`) is its routing contract: setup
+puts it in the agent directory, where `task_team` and `fleet_catalog` return it on demand, and compile fails
 when an agent has none. Agents never edit a handbook; changes flow through one owner, the Agent Architect:
 
 1. **Evidence.** The owner's "Not right" on a task (label `correction`, comment `Not right: …`), an agent's own repeated

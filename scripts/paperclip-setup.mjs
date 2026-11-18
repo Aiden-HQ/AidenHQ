@@ -17,12 +17,12 @@ import { createRequire } from "node:module";
 import { dirname, join, resolve } from "node:path";
 import { createInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
-import { codexMcpBlock, ensureBackupRetention, ensureCrewSkills, ensureFleetIssues, ensureMemoryInboxes, ensureReviewLogs, grantEntry, HEALTH_PROBES, healthProbeAgent, mapLimit, routineAutonomyDefault } from "./modules.mjs";
+import { codexMcpBlock, ensureBackupRetention, ensureChatTasks, ensureCrewSkills, ensureFleetIssues, ensureMemoryInboxes, ensureReviewLogs, grantEntry, HEALTH_PROBES, healthProbeAgent, mapLimit, routineAutonomyDefault } from "./modules.mjs";
 import { routineStatus } from "./setup-paused.mjs";
 import { checkLauncher, computerAdapterConfig, ensureComputers, runnerBox } from "./computers.mjs";
-import { ensureEventsPlugin } from "./paperclip-events.mjs";
+import { ensureAgentKeys, ensureEventsPlugin } from "./paperclip-events.mjs";
 import { assertNoShell } from "./no-shell.mjs";
-import { agentSkills, handbookParts, HOW_WE_BUILD_SECTION, laneHandbook, onDemandSections, personaOf, readInstructions as readHandbook } from "./handbook.mjs";
+import { agentSkills, handbookParts, laneHandbook, onDemandSections, personaOf, readInstructions as readHandbook } from "./handbook.mjs";
 import { recoverStalePid } from "./paperclip-recover.mjs";
 import { awaitVerified, probeConfig } from "./agent-probe.mjs";
 import { officialRepo } from "./official-repo.mjs";
@@ -243,9 +243,8 @@ function runnerAgentBody(key, a, existing) {
     adapterConfig,
     runtimeConfig: { heartbeat: { enabled: false, intervalSec: 0, wakeOnDemand: false, maxConcurrentRuns: 1 } },
     // `brief: true`: the handbook is the runner's prompt for jobs assigned to this agent (a specialised Engineer).
-    // `build`: How we build, the one shared text; the runner's job prompt carries it for every Engineer.
     // maxParallel: the runner's cap on this agent's parallel jobs (`max_parallel`); without it only the host's max_concurrent.
-    metadata: { setupKey: `aidenhq:${key}`, module: a.module, isolation: a.isolation, runnerEngine: true, ...(a.engine ? { engine: a.engine } : {}), ...(runnerBox(a) ? { box: true } : {}), ...(a.private_reads === true ? { privateReads: true } : {}), ...(a.max_parallel ? { maxParallel: a.max_parallel } : {}), ...(models.length ? { models } : {}), ...(a.brief ? { brief: readInstructions(a).trim() } : {}), build: HOW_WE_BUILD_SECTION, ...persona(key, a) },
+    metadata: { setupKey: `aidenhq:${key}`, module: a.module, isolation: a.isolation, runnerEngine: true, ...(a.engine ? { engine: a.engine } : {}), ...(runnerBox(a) ? { box: true } : {}), ...(a.private_reads === true ? { privateReads: true } : {}), ...(a.max_parallel ? { maxParallel: a.max_parallel } : {}), ...(models.length ? { models } : {}), ...(a.brief ? { brief: readInstructions(a).trim() } : {}), ...persona(key, a) },
   };
 }
 
@@ -431,6 +430,9 @@ async function ensureAgents(companyId, fleetIssues) {
     const cur = (await api("GET", `/api/agents/${p.agent.id}/instructions-bundle/file?path=AGENTS.md`, undefined, { allow: [404] })).json;
     if (cur.content !== instructions) await api("PUT", `/api/agents/${p.agent.id}/instructions-bundle/file`, { path: "AGENTS.md", content: instructions, baseRevisionId: cur.revision?.id ?? null });
     writeSections(p.agent.id, sections);
+    // The kernel's copy: a kernel job's engine home gets it as its instructions file (kernel/src/boxes.ts).
+    mkdirSync(join(configDir, "handbooks"), { recursive: true });
+    writeFileSync(join(configDir, "handbooks", `${p.agent.id}.md`), instructions);
     step(`Updated agent ${a.name}`);
     const agent = (await api("GET", `/api/agents/${p.agent.id}`)).json;
     if (agent.adapterType !== body.adapterType) fail(`agent ${a.name}: Paperclip has adapter ${agent.adapterType} after setup, expected ${body.adapterType} on the legacy runner`);
@@ -484,11 +486,12 @@ async function ensureReportingLines(agents) {
 }
 
 async function ensureOpsKey(agent) {
-  // ops-mcp creates tasks as the Meeting Librarian (agent key, standard trust).
+  // ops-mcp creates tasks as the agent holding the ops-key role (agent key, standard trust); a key of another agent (the role
+  // moved) is replaced.
   const existing = readSecret(`paperclip_ops_key${companySuffix}`);
   if (existing) {
     const res = await fetch(new URL("/api/agents/me", baseUrl), { headers: { authorization: `Bearer ${existing}` } });
-    if (res.ok) {
+    if (res.ok && (await res.json()).id === agent.id) {
       step("ops-mcp agent key is valid");
       return false;
     }
@@ -501,11 +504,11 @@ async function ensureOpsKey(agent) {
 
 /**
  * The fast chat lane's config (secret `lane_config`, read by the chat-lane module): per agent with a `chat:` block, its id, name,
- * its own agent key (`paperclip_lane_key_<agent>`, kept while it still names that agent), its chat settings, handbook,
+ * its chat task, its own agent key (`paperclip_lane_key_<agent>`, kept while it still names that agent), its chat settings, handbook,
  * lane tools (connection and tool: called through the kernel's proxy with its own key), and its own Telegram bot token (`chat_<agent>_telegram_bot_token`)
  * when chat.telegram is on. Rewritten in place only when it changes (the lane re-reads it; no restart).
  */
-async function ensureLaneConfig(agents) {
+async function ensureLaneConfig(agents, chatTasks) {
   const out = {};
   for (const [key, a] of Object.entries(cfg.agents ?? {})) {
     if (!a.chat || !agents[key]) continue;
@@ -523,7 +526,7 @@ async function ensureLaneConfig(agents) {
     });
     const telegram = a.chat.telegram ? readSecret(`chat_${key}_telegram_bot_token`) : "";
     if (a.chat.telegram && !telegram) console.warn(`warning: ${a.name} has chat.telegram on but no chat_${key}_telegram_bot_token in the vault; board chat only`);
-    out[key] = { id: agents[key].id, name: a.name, api_key: token, model: a.chat.model, reasoning: a.chat.reasoning, deadline_s: a.chat.deadline_s, prompt: handbooks[key] ?? "", tools, ...(telegram ? { telegram_token: telegram } : {}) };
+    out[key] = { id: agents[key].id, name: a.name, chat_task: chatTasks[key], api_key: token, model: a.chat.model, reasoning: a.chat.reasoning, deadline_s: a.chat.deadline_s, prompt: handbooks[key] ?? "", tools, ...(telegram ? { telegram_token: telegram } : {}) };
   }
   const text = Object.keys(out).length ? JSON.stringify({ agents: out }) : "";
   if (readSecret("lane_config") === text) return;
@@ -603,7 +606,8 @@ async function ensureRoutines(companyId, agents) {
     }
     // Its cap is in the grants table before any trigger can fire it (the runner treats an unknown routine as off).
     routineAutonomy[routine.id] = r.autonomy ?? routineAutonomyDefault(r);
-    writeGrants(agents, memoryInboxes, reviewLogs);
+    routineKeys[routine.id] = key;
+    writeGrants(agents, memoryInboxes, reviewLogs, chatTasks);
     const { json: detail } = await api("GET", `/api/routines/${routine.id}`);
     const triggers = detail.triggers ?? [];
 
@@ -689,13 +693,11 @@ function ensureCodexConfig() {
  */
 function writeCatalog() {
   if (!isWork) return;
-  // The handbook's first paragraph (as paperclip-tasks-mcp's task_team reads it), past the owner and agents-org lines.
-  const firstLine = (a) => readInstructions(a).split(/\n\s*\n/).map((x) => x.trim().replace(/\s*\n\s*/g, " ")).find((x) => x && !x.startsWith("#") && !x.startsWith("This AidenHQ")) ?? "";
   const agentsOut = Object.entries(cfg.agents ?? {}).map(([key, a]) => ({
     key,
     name: a.name,
     title: a.title ?? "",
-    description: firstLine(a),
+    description: a.description,
     reports_to: a.reports_to ?? null,
     roles: a.roles ?? [],
     mcp_servers: a.mcp_servers ?? [],
@@ -771,24 +773,30 @@ const instanceYaml = () => {
  * as the last table's, so the first write of an apply keeps it; ensureRoutines adds each routine's and writes the grants
  * again before that routine's triggers are added (the runner treats a routine it doesn't find here as off).
  */
-const routineAutonomy = (() => {
+const lastGrants = (() => {
   try {
-    return JSON.parse(readFileSync(join(configDir, "grants", "grants.json"), "utf8")).routines ?? {};
+    return JSON.parse(readFileSync(join(configDir, "grants", "grants.json"), "utf8"));
   } catch {
     return {};
   }
 })();
+const routineAutonomy = { ...lastGrants.routines };
+/** Each routine's compiled key by Paperclip routine id: a routine run's wake names it (`routine:<key>`), so its own model applies. */
+const routineKeys = { ...lastGrants.routine_keys };
 
-function writeGrants(agents, memoryInboxes = {}, reviewLogs = {}) {
+function writeGrants(agents, memoryInboxes = {}, reviewLogs = {}, chatTasks = {}) {
   if (!isWork) return;
   // autonomy: the board and the runner read the tiered-approvals switch here, fresh on every use.
   // agents_org, product_repo: the repos a graded PR deliverable may name (the board refuses others; the runner agrees).
-  const table = { autonomy: cfg.autonomy ?? "off", agents_org: cfg.github_agents_org ?? "", product_repo: productRepo(), modules_repo: officialRepo(instanceYaml(), repo) ?? "", agents: Object.fromEntries(Object.entries(agents).map(([key, a]) => [a.id, { key, roles: cfg.agents[key].roles ?? [], tools: cfg.agents[key].enabled_tools ?? {}, ...grantEntry(key, cfg.agents[key], cfg.routines), rev: revOf(key), ...(cfg.agents[key].trial ? { trial: true } : {}), ...(cfg.agents[key].delegate_to ? { delegate_to: cfg.agents[key].delegate_to } : {}), ...(cfg.agents[key].image ? { image: cfg.agents[key].image } : {}) }])) };
+  const table = { autonomy: cfg.autonomy ?? "off", agents_org: cfg.github_agents_org ?? "", product_repo: productRepo(), modules_repo: officialRepo(instanceYaml(), repo) ?? "", agents: Object.fromEntries(Object.entries(agents).map(([key, a]) => [a.id, { key, roles: cfg.agents[key].roles ?? [], tools: cfg.agents[key].enabled_tools ?? {}, ...grantEntry(key, cfg.agents[key], cfg.routines), rev: revOf(key), description: cfg.agents[key].description, ...(cfg.agents[key].trial ? { trial: true } : {}), ...(cfg.agents[key].delegate_to ? { delegate_to: cfg.agents[key].delegate_to } : {}), ...(cfg.agents[key].image ? { image: cfg.agents[key].image } : {}) }])) };
   table.routines = { ...routineAutonomy };
+  table.routine_keys = { ...routineKeys };
   // Each agent's memory inbox issue id (ensureMemoryInboxes): memory_note posts there, the tasks bridge guards it.
   for (const [key, a] of Object.entries(agents)) if (memoryInboxes[key]) table.agents[a.id].memory_inbox = memoryInboxes[key];
   // Each fleet-audit agent's review log issue id (ensureReviewLogs): the tasks bridge's coach_record writes there, coach_due reads it.
   for (const [key, a] of Object.entries(agents)) if (reviewLogs[key]) table.agents[a.id].review_log = reviewLogs[key];
+  // Each lane agent's chat task (ensureChatTasks): the kernel writes the fast lane's turns there, and only there.
+  for (const [key, a] of Object.entries(agents)) if (chatTasks[key]) table.agents[a.id].chat_task = chatTasks[key];
   // Each agent's skills (compile resolved them): the runner copies exactly these into its jobs' engine home.
   for (const [key, a] of Object.entries(agents)) if (agentSkills(cfg, key).length) table.agents[a.id].skills = agentSkills(cfg, key);
   const file = join(configDir, "grants", "grants.json");
@@ -838,7 +846,9 @@ await dropOldOpenRouterSecret();
 await ensureReportingLines(agents);
 // The Agent Coach's review log (one task per fleet-audit agent), found again by its setup marker, never by search at run time.
 const reviewLogs = await ensureReviewLogs({ api, companyId: company.id, step, keys: Object.entries(cfg.agents ?? {}).filter(([, x]) => x.roles?.includes("fleet-audit")).map(([k]) => k) });
-writeGrants(agents, memoryInboxes, reviewLogs);
+// The fast chat lane's conversation: one chat task per agent with a `chat:` block (kernel/src/lane.ts writes each turn there).
+const chatTasks = isWork ? await ensureChatTasks({ api, companyId: company.id, step, ownerName: cfg.owner_name, agents: Object.fromEntries(Object.entries(cfg.agents ?? {}).filter(([k, x]) => x.chat && agents[k]).map(([k, x]) => [k, x.name])) }) : {};
+writeGrants(agents, memoryInboxes, reviewLogs, chatTasks);
 lap("tasks");
 // Agent computers: the agents with image: get the computer environment; the others are pointed back to local (scripts/computers.mjs).
 try {
@@ -847,15 +857,16 @@ try {
 } catch (e) { fail(e.message); }
 await ensureEventsPlugin({ api, step, version: JSON.parse(readFileSync(join(repo, "services/paperclip-events/package.json"), "utf8")).version }).catch((e) => fail(e.message));
 lap("computers");
-// ops-mcp acts in Paperclip as the agent with the ops-key role (the Meeting Librarian).
+// ops-mcp acts in Paperclip as the agent with the ops-key role.
 const opsAgents = Object.keys(cfg.agents ?? {}).filter((k) => cfg.agents[k].roles?.includes("ops-key"));
 if (opsAgents.length > 1) fail(`only one agent may hold the ops-key role (${opsAgents.join(", ")})`);
-const librarian = opsAgents.length ? agents[opsAgents[0]] : undefined;
-const keyChanged = librarian ? await ensureOpsKey(librarian) : false;
+const opsAgent = opsAgents.length ? agents[opsAgents[0]] : undefined;
+const keyChanged = opsAgent ? await ensureOpsKey(opsAgent) : false;
 if (isWork) await ensureHealthKeys(agents);
-if (isWork) await ensureLaneConfig(agents); // the fast chat lane serves the work company only (phase 1)
+if (isWork) await ensureAgentKeys({ api, agents, secretsDir, baseUrl, step });
+if (isWork) await ensureLaneConfig(agents, chatTasks); // the fast chat lane serves the work company only (phase 1)
 const cfgChanged = isWork ? updateSystemYaml(company.id) : false;
-if (librarian && (keyChanged || cfgChanged)) restartOpsMcp(); // ops-mcp exists only with the meetings module
+if (opsAgent && (keyChanged || cfgChanged)) restartOpsMcp(); // ops-mcp exists only with the meetings module
 ensureCodexConfig();
 writeCatalog();
 lap("keys");

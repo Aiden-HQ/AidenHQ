@@ -1,0 +1,123 @@
+#!/usr/bin/env node
+// The `aidenhq` commands in a kernel job's computer (one-way spec §4.2a). Each one is a call to the kernel with the job's own
+// token: git writes are write records the kernel tiers and codehost-github executes, task reads and the advisor go through
+// the tool proxy as the job, and a job's requests for its next turn go to /v1/jobtools. Nothing here holds a credential
+// beyond the job token, and nothing is decided here.
+//
+//   aidenhq publish <org/repo> <branch>... [--title <title>] [--body-file <file>]
+//                                                    push each branch and open (or update) its PR: one codehost-github.pr write each
+//   aidenhq merge <PR link>...                       merge each PR at its reviewed head: one codehost-github.merge write each
+//   aidenhq close <PR link>... --reason "<one line>" close superseded or duplicate PRs: one codehost-github.close write each
+//   aidenhq create-repo <org/name>                   a new app's repository: one codehost-github.create_repo write
+//   aidenhq task <PEN-N>                             read a task (tasks-mcp task_get, when the job's profile grants it)
+//   aidenhq tasks <words>                            search open tasks (tasks-mcp task_search)
+//   aidenhq advise "<question>" [--file <brief>]     a second opinion from the advisor (tasks-mcp advisor_ask)
+//   aidenhq reset                                    start the next turn with a fresh session
+//   aidenhq engine <kind> [model]                    run the next turn on another engine or model
+//   aidenhq cleanup                                  remove the workspace when this turn ends
+//
+// The box's env (the launcher's job env file): AIDENHQ_GATEWAY_URL (the computers' gateway, which passes these calls on to the
+// kernel with the token: /v1/writes, /v1/jobtools, /c/<connection>/mcp) and AIDENHQ_RUN_TOKEN (the job's `ahqj_` token, which
+// names the job: the kernel takes the job, its task and its workspace from it, never from the request).
+import { readFileSync } from "node:fs";
+
+const usage = `usage: aidenhq publish <org/repo> <branch>... [--title <title>] [--body-file <file>] | merge <PR link>... | close <PR link>... --reason "<one line>" | create-repo <org/name> | task <PEN-N> | tasks <words> | advise "<question>" [--file <brief>] | reset | engine <kind> [model] | cleanup`;
+const COMMANDS = ["publish", "merge", "close", "create-repo", "task", "tasks", "advise", "reset", "engine", "cleanup"];
+const [command, ...rest] = process.argv.slice(2);
+const fail = (msg, code = 1) => {
+  console.error(`aidenhq: ${msg}`);
+  process.exit(code);
+};
+// Help is answered here: asking how a command works never reaches the kernel as a request.
+if (!command || ["help", "-h", "--help"].includes(command) || rest.some((w) => w === "-h" || w === "--help")) {
+  console.log(usage);
+  process.exit(0);
+}
+if (!COMMANDS.includes(command)) fail(usage, 2);
+const { AIDENHQ_GATEWAY_URL: gateway, AIDENHQ_RUN_TOKEN: token } = process.env;
+if (!gateway || !token) fail("only available inside a job's computer", 2);
+
+const flags = {};
+const words = [];
+for (let i = 0; i < rest.length; i++) {
+  if (["--title", "--body-file", "--reason", "--file"].includes(rest[i])) flags[rest[i].slice(2)] = rest[++i];
+  else if (rest[i].startsWith("--")) fail(`unknown option ${rest[i]}\n${usage}`, 2);
+  else words.push(rest[i]);
+}
+
+async function call(path, body, auth = { authorization: `Bearer ${token}` }) {
+  const res = await fetch(new URL(path, gateway), {
+    method: "POST",
+    headers: { ...auth, "content-type": "application/json", accept: "application/json, text/event-stream" },
+    body: JSON.stringify(body),
+    signal: AbortSignal.timeout(10 * 60_000),
+  }).catch((e) => fail(`the gateway didn't answer (${e.message})`));
+  const text = await res.text();
+  if (!res.ok) {
+    let msg = text;
+    try { msg = JSON.parse(text).error?.message ?? text; } catch {}
+    fail(msg);
+  }
+  return { text, session: res.headers.get("mcp-session-id") };
+}
+const write = async (kind, args) => JSON.parse((await call("/v1/writes", { kind, args })).text);
+const said = (r) => `${r.id}: tier ${r.tier}, ${r.state}`;
+/** A PR link → {repo, number}. */
+const pr = (link) => {
+  const m = /^https:\/\/github\.com\/([\w.-]+\/[\w.-]+)\/pull\/(\d+)\/?$/.exec(link);
+  if (!m) fail(`\`${link}\` isn't a pull request link (https://github.com/<org>/<repo>/pull/<n>)`, 2);
+  return { repo: m[1], number: Number(m[2]) };
+};
+/** One tool of tasks-mcp, through the kernel's tool proxy as this job (its frozen tools), as the box's own MCP config calls it. */
+async function tool(name, args) {
+  const path = "/c/paperclip_tasks/mcp";
+  const first = await call(path, { jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "aidenhq", version: "1" } } }, { "x-agent-key": token });
+  const answer = await fetch(new URL(path, gateway), {
+    method: "POST",
+    headers: { "x-agent-key": token, "content-type": "application/json", accept: "application/json, text/event-stream", ...(first.session ? { "mcp-session-id": first.session } : {}) },
+    body: JSON.stringify({ jsonrpc: "2.0", id: 2, method: "tools/call", params: { name, arguments: args } }),
+    signal: AbortSignal.timeout(10 * 60_000),
+  }).catch((e) => fail(`the gateway didn't answer (${e.message})`));
+  const text = await answer.text();
+  if (!answer.ok) fail(text);
+  // JSON, or SSE whose data lines carry the answer.
+  const msgs = text.trimStart().startsWith("{") ? [text] : text.split("\n").filter((l) => l.startsWith("data: ")).map((l) => l.slice(6));
+  const r = msgs.map((m) => { try { return JSON.parse(m); } catch { return undefined; } }).find((m) => m?.id === 2);
+  if (!r) fail("the tool sent no answer");
+  if (r.error) fail(r.error.message ?? JSON.stringify(r.error));
+  const out = (r.result?.content ?? []).filter((c) => c?.type === "text").map((c) => c.text).join("\n");
+  if (r.result?.isError) fail(out || "the tool refused");
+  return out;
+}
+
+const lines = [];
+if (command === "publish") {
+  if (!words.length || words.length % 2) fail("name branches as <org/repo> <branch> pairs", 2);
+  const body = flags["body-file"] ? readFileSync(flags["body-file"], "utf8") : undefined;
+  for (let i = 0; i < words.length; i += 2) lines.push(`${words[i]} ${words[i + 1]}: ${said(await write("codehost-github.pr", { repo: words[i], branch: words[i + 1], ...(flags.title ? { title: flags.title } : {}), ...(body ? { body } : {}) }))}`);
+} else if (command === "merge") {
+  if (!words.length) fail("name the pull requests to merge, in order", 2);
+  for (const link of words) lines.push(`${link}: ${said(await write("codehost-github.merge", pr(link)))}`);
+} else if (command === "close") {
+  if (!words.length) fail("name the pull requests to close", 2);
+  if (!flags.reason?.trim()) fail('give a reason: aidenhq close <PR link>... --reason "<one line>"', 2);
+  for (const link of words) lines.push(`${link}: ${said(await write("codehost-github.close", { ...pr(link), reason: flags.reason }))}`);
+} else if (command === "create-repo") {
+  if (words.length !== 1) fail("usage: aidenhq create-repo <org/name>", 2);
+  lines.push(`${words[0]}: ${said(await write("codehost-github.create_repo", { repo: words[0] }))}`);
+} else if (command === "task") {
+  if (words.length !== 1) fail("usage: aidenhq task <PEN-N>", 2);
+  lines.push(await tool("task_get", { issue: words[0] }));
+} else if (command === "tasks") {
+  if (!words.length) fail("usage: aidenhq tasks <words>", 2);
+  lines.push(await tool("task_search", { query: words.join(" ") }));
+} else if (command === "advise") {
+  const question = words.join(" ").trim();
+  if (!question) fail('usage: aidenhq advise "<question>" [--file <brief>]', 2);
+  lines.push(await tool("advisor_ask", { question, ...(flags.file ? { context: readFileSync(flags.file, "utf8") } : {}) }));
+} else {
+  if (command === "engine" ? !words.length || words.length > 2 : words.length) fail(usage, 2);
+  const body = command === "engine" ? { engine: words[0], ...(words[1] ? { model: words[1] } : {}) } : {};
+  lines.push(JSON.parse((await call(`/v1/jobtools/${command}`, body)).text).text);
+}
+console.log(lines.join("\n"));

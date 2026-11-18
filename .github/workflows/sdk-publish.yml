@@ -26,8 +26,13 @@ jobs:
         if: github.ref_type == 'tag'
         working-directory: kernel/sdk
         run: npm version "${GITHUB_REF_NAME#sdk-v}" --no-git-tag-version
-      - name: Publish (dry run on PRs)
+      # A dry run still refuses a version already on npm, so a PR checks a throwaway prerelease.
+      - name: Prerelease version for the dry run
+        if: github.ref_type != 'tag'
+        working-directory: kernel/sdk
+        run: npm version "0.0.0-pr.${{ github.run_id }}" --no-git-tag-version
+      - name: Publish
         working-directory: kernel/sdk
         env:
-          DRY: ${{ github.ref_type == 'tag' && ' ' || '--dry-run' }}
+          DRY: ${{ github.ref_type == 'tag' && ' ' || '--dry-run --tag pr' }}
         run: npm publish --provenance --access public $DRY

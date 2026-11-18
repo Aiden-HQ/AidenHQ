@@ -186,6 +186,8 @@ export function createChecks({ db, registry, owner, secret, resolver, agentKey =
     log("finish check resolved", { task: i.identifier, check: id, verdict: b.verdict });
     return { ok: true };
   }
-  return { finish, resolve };
+  /** Whether one of this module's finish checks holds the task now (its label is on it): the module's work is that task. */
+  const held = (module: string, task: string) => finishing().some(([id, c]) => c.module === module && db.prepare("SELECT 1 FROM check_holds WHERE task = ? AND check_id = ?").get(task, id) !== undefined);
+  return { finish, resolve, held };
 }
 export type Checks = ReturnType<typeof createChecks>;

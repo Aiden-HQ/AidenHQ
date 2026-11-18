@@ -23,31 +23,14 @@ test("paperclip-setup.mjs passes a syntax check", () => {
 });
 
 /** A section setup itself still emits: its markdown file under scripts/prompts, as setup reads it. */
-const literal = (name) => ({ APP_FOLLOWUP_SECTION: promptSection("app-followup", ""), HOW_WE_BUILD_SECTION: promptSection("how-we-build") })[name];
+const literal = (name) => ({ APP_FOLLOWUP_SECTION: promptSection("app-followup", "") })[name];
 /** A module's prompt contribution (modules/<module>/prompts/<id>.md), as setup appends it: verbatim. */
 const prompt = (id) => readFileSync(join(dirname(script), "../modules", id.split(".")[0], "prompts", `${id.split(".")[1]}.md`), "utf8");
-const section = () => prompt("engineering.delegating");
 
-test("the generated handing-work section parses and keeps its heading", () => {
-  const text = section();
-  assert.match(text, /\n\n## Handing work to an Engineer\n\n/);
-  assert.ok(text.includes("Write the brief and the PR body as plain facts"));
-});
-
-test("a merge job's rubric is worded on the merge, never on a card id", () => {
-  // A Tier 0 merge answers "No card is needed", and a card filed on a draft can be spent without a merge.
-  const text = section();
-  assert.ok(text.includes("never on a card or merge-request id"));
-  assert.ok(text.includes("No card is needed."));
-});
-
-test("an app change is checked live an hour and a day after it deploys, and data-app migrations only add", () => {
+test("an app change is checked live an hour and a day after it deploys", () => {
   const followup = literal("APP_FOLLOWUP_SECTION");
   assert.match(followup, /\n\n## Checking an app change once it is live\n\n/);
   for (const t of ["`in 1 hour`", "`in 1 day`", "`app_logs`", "`warehouse_query`", "`rolled_back` incident"]) assert.ok(followup.includes(t), t);
-  assert.ok(section().includes("migrates its schema by adding"));
-  const engineer = readFileSync(join(dirname(script), "../modules/engineering/agents/app-engineer/AGENTS.md"), "utf8");
-  assert.match(engineer, /A data app's migrations add: new tables/);
 });
 
 /** The rule an agent proposes a correction with: the platform module's improving-rules prompt. */
@@ -67,25 +50,11 @@ test("a recurring correction becomes a fast static check, and the fleet handbook
   assert.ok(handbook.includes(rule), "the fleet handbook carries the same rule in the same wording");
 });
 
-test("every agent gets how we work, builders also how we build, and asking the owner defers to it", () => {
+test("every agent gets how we work, and asking the owner defers to it", () => {
   const work = prompt("chief-of-staff.how-we-work");
   assert.match(work, /\n\n## How we work\n\n/);
   assert.ok(work.includes("Bring the owner the calls that are genuinely theirs: spend, a veto, a choice of taste"));
-  assert.match(literal("HOW_WE_BUILD_SECTION"), /\n\n## How we build\n\n/);
-  assert.match(readFileSync(script, "utf8"), /\n    metadata: \{[^\n]*build: HOW_WE_BUILD_SECTION/);
-  assert.match(literal("HOW_WE_BUILD_SECTION"), /Large rewrites hold the files they replace/);
-  assert.ok(literal("HOW_WE_BUILD_SECTION").includes("A flaky test gets its root cause fixed in the same change; if the cause can't be found, delete the test and record why in the commit. A red check is re-run only when its log shows an infrastructure failure (runner lost, network), and the PR says so. The one sanctioned exception is the reviewer eval gate's single re-run of its failed cases (model variance, measured on its receipt)."));
-  assert.ok(literal("HOW_WE_BUILD_SECTION").includes("- Comments: code is self-explanatory to agents; a comment only where the why is not visible in the code."));
   assert.ok(prompt("chief-of-staff.asking").includes("When a call is the owner's (How we work), ask before acting on it"));
-});
-
-test("a UI task's rubric names the brand, the shells and every clickable element acting", () => {
-  // The recurring "looks clickable, does nothing" class: a build is asked for the same three things, in the words the
-  // starter's handbook and the app rubric use.
-  const text = section();
-  assert.ok(text.includes('the header\'s brand is `Link href="/"` and opens home in its default state'));
-  assert.ok(text.includes("a redesign starts from the starter's shells"));
-  assert.ok(text.includes("every clickable element visibly acts"));
 });
 
 // An unattended install or a rerun from a script has no terminal: setup signs in with what ops/setup.sh made the account

@@ -34,6 +34,8 @@
 // (reviewer, grader, source) are never capped. CI caps (config/gateway.json `ci`: per repo per UTC day, all CI per day) are
 // never filed for raising. The install cap (config/gateway.json `install_day_usd`, settings.spend_day_usd; absent, none)
 // counts every call of the UTC day, every kind and CI included; its raise_cap is filed as agent INSTALL_CAP, scope day.
+// A check job's token (kind check, ../checkjobs.ts: the reviewer eval) is capped by the eval day cap (config/gateway.json
+// `eval_day_usd`, settings.eval_day_usd; absent, 0: refused), attributed to `eval:<head>`, never filed for raising.
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, statSync } from "node:fs";
 import { dirname } from "node:path";
@@ -51,7 +53,7 @@ export type RunKey = Brand<string, "RunKey">;
  */
 export type Caller = Brand<{
   runKey: RunKey; agentId: string | null; runId: string | null; issueId: string | null; perpetual: boolean; rev: string | null;
-  kind: string; component: string; capped: boolean; ci?: { repo: string; subject: string };
+  kind: string; component: string; capped: boolean; ci?: { repo: string; subject: string }; check?: { subject: string };
 }, "Caller">;
 type GatewayError = Error & { status?: number; type?: string; extra?: Record<string, unknown> };
 type Caps = { run_usd: number; task_usd: number; day_usd: number };
@@ -166,7 +168,9 @@ export function moveLedger(db: DatabaseSync, legacy?: string): number {
     db.exec("BEGIN IMMEDIATE");
     let n = 0;
     // Columns by name, whatever order the old file's tables have.
-    const cols = (t: string) => (db.prepare(`PRAGMA main.table_info(${t})`).all() as { name: string }[]).map((c) => c.name).join(", ");
+    // Only the columns both have: columns added since (owner, gen) stay empty on the moved rows.
+    const names = (s: string, t: string) => (db.prepare(`PRAGMA ${s}.table_info(${t})`).all() as { name: string }[]).map((c) => c.name);
+    const cols = (t: string) => { const old = new Set(names("legacy", t)); return names("main", t).filter((c) => old.has(c)).join(", "); };
     for (const t of ["calls", "runs", "caps", "filed", "ci_tokens"]) if (has.has(t)) n += Number(db.prepare(`INSERT OR IGNORE INTO main.${t} (${cols(t)}) SELECT ${cols(t)} FROM legacy.${t}`).run().changes);
     db.exec("COMMIT");
     return n;
@@ -237,7 +241,9 @@ const RETRY_DELAYS_MS = [1000, 3000, 9000, 20000];
  * The gateway: handle(req, res). `secret(name)` reads a secret file (fresh each time, so a rotation needs no restart);
  * `upstream` is OpenRouter's API base; Paperclip and the board's internal API as URLs.
  */
-export function createGateway({ dbFile, legacyDbFile, grantsFile, settingsFile, tools, asCaller, secret, upstream = "https://openrouter.ai/api/v1", paperclipUrl, fileRaiseCap, launcherUrl, githubJwksUrl, log = () => {}, now = Date.now, retryDelaysMs = RETRY_DELAYS_MS }: {
+export function createGateway({ dbFile, legacyDbFile, grantsFile, settingsFile, tools, asCaller, secret, upstream = "https://openrouter.ai/api/v1", paperclipUrl, fileRaiseCap, launcherUrl, githubJwksUrl, jobLive = () => false, log = () => {}, now = Date.now, retryDelaysMs = RETRY_DELAYS_MS }: {
+  /** Whether a kernel job (a job token's id) is still admitted or running: an ended job's token buys nothing. */
+  jobLive?: (id: string) => boolean;
   dbFile: string; legacyDbFile?: string; grantsFile: string; settingsFile: string; tools?: (req: IncomingMessage, res: ServerResponse, connection: string, o: { jobs: boolean }) => Promise<void>;
   /** A module's model call for the agent whose tool call it serves (module token + caller assertion): that caller's own credential. */
   asCaller?: (req: IncomingMessage) => Promise<string | undefined>; secret: (name: string) => string; upstream?: string; paperclipUrl?: string;
@@ -268,6 +274,7 @@ export function createGateway({ dbFile, legacyDbFile, grantsFile, settingsFile, 
   const ciConf = watched<CiConf | null>(settingsFile, (j) => (j.ci && typeof j.ci === "object" ? (j.ci as CiConf) : null), null);
   // The install-wide daily cap (settings.spend_day_usd); 0: none.
   const installDay = watched(settingsFile, (j) => (Number(j.install_day_usd) > 0 ? Number(j.install_day_usd) : 0), 0);
+  const evalDay = watched(settingsFile, (j) => (Number(j.eval_day_usd) > 0 ? Number(j.eval_day_usd) : 0), 0);
   const keyFor = githubKeys(githubJwksUrl, now);
   const q = {
     run: db.prepare("SELECT * FROM runs WHERE run_key = ?"),
@@ -293,6 +300,7 @@ export function createGateway({ dbFile, legacyDbFile, grantsFile, settingsFile, 
     // A CI call's task_subject is `<owner>/<repo>#<pr>`.
     ciSpentRepo: db.prepare("SELECT COALESCE(SUM(cost_usd), 0) AS s FROM calls WHERE kind = 'ci-code-review' AND day = ? AND substr(task_subject, 1, length(?)) = ?"),
     ciSpent: db.prepare("SELECT COALESCE(SUM(cost_usd), 0) AS s FROM calls WHERE kind = 'ci-code-review' AND day = ?"),
+    checkSpent: db.prepare("SELECT COALESCE(SUM(cost_usd), 0) AS s FROM calls WHERE kind = 'check' AND day = ?"),
   };
   const prune = () => {
     const cut = new Date(now() - 40 * DAY_MS).toISOString();
@@ -398,10 +406,19 @@ export function createGateway({ dbFile, legacyDbFile, grantsFile, settingsFile, 
       }
       const p = verifyToken(secret("gateway_job_secret"), cred, now());
       if (!p) throw fail(401, "unauthorized", "this run's model credential is invalid or expired");
+      if (p.k === "job") {
+        // A kernel job (boxes.ts): capped as its agent on its task (a chat or routine task by the day), while the job lives.
+        if (!jobLive(String(p.id))) throw fail(401, "unauthorized", "this job has ended");
+        const row = (q.run.get(runKey) as RunRow | undefined) ?? settle(runKey, { agentId: p.a, ...(await runTask(null, p.i)) });
+        return as(row, routeKind, "agent", true);
+      }
+      if (p.k === "check") return { ...as(null, "check", "Check jobs", true), check: { subject: String(p.c ?? "").slice(0, 80) } } as Caller;
       const row = (q.run.get(runKey) as RunRow | undefined) ?? settle(runKey, { agentId: p.a, issueId: p.i });
       const system = p.k !== "agent";
       const component = String(p.c ?? (system ? SYSTEM[p.k] : "Engineer jobs")).slice(0, 80);
-      return as(row, system ? p.k : routeKind, component, !system);
+      // A grader token that names an agent (the grading module's, minted per held task) is capped as that agent's; the runner's own
+      // grader/reviewer/source tokens name none and stay system calls.
+      return as(row, system ? p.k : routeKind, component, !system || (p.k === "grader" && Boolean(p.a)));
     }
     if (cred.startsWith("ahqc_")) {
       const box = await computerRun(cred);
@@ -458,6 +475,7 @@ export function createGateway({ dbFile, legacyDbFile, grantsFile, settingsFile, 
         ...installScope(today),
       ];
     }
+    if (who.check) return [{ scope: "eval-day", subject: today, cap: evalDay(), spent: (q.checkSpent.get(today) as Sum).s }, ...installScope(today)];
     if (!who.capped) return installScope(today);
     const subject = taskSubject(who, t);
     const scopes: [string, string, number][] = [["run", who.runKey, (q.spentRun.get(who.runKey) as Sum).s]];
@@ -561,7 +579,7 @@ export function createGateway({ dbFile, legacyDbFile, grantsFile, settingsFile, 
   // Stamped when the call ends (the board pulls by that time); counted on the UTC day it started.
   function record(who: Caller, r: Partial<Usage> & { key?: string; t?: number; model?: unknown; costUsd?: number | null; ms?: number | null; status: string }) {
     const t = r.t ?? now();
-    q.add.run(r.key ?? `gw:${randomUUID()}`, new Date(now()).toISOString(), day(t), who.runKey, who.runId, who.agentId, who.issueId, who.ci ? who.ci.subject : taskSubject(who, t), who.rev, who.kind, who.component, String(r.model ?? "").slice(0, 120) || "unknown", r.input ?? 0, r.cached ?? 0, r.output ?? 0, r.costUsd ?? null, r.ms ?? null, r.status, me);
+    q.add.run(r.key ?? `gw:${randomUUID()}`, new Date(now()).toISOString(), day(t), who.runKey, who.runId, who.agentId, who.issueId, who.ci?.subject ?? who.check?.subject ?? taskSubject(who, t), who.rev, who.kind, who.component, String(r.model ?? "").slice(0, 120) || "unknown", r.input ?? 0, r.cached ?? 0, r.output ?? 0, r.costUsd ?? null, r.ms ?? null, r.status, me);
   }
 
   const send = (res: ServerResponse, status: number, body: unknown) => res.writeHead(status, { "content-type": "application/json" }).end(JSON.stringify(body));
@@ -762,5 +780,8 @@ export function createGateway({ dbFile, legacyDbFile, grantsFile, settingsFile, 
     q.setCap.run(scope, agentId, subject, cap, new Date(now()).toISOString());
     log("cap set", { scope, agent: agentId, subject, cap });
   };
-  return { handle, db, metricsText, setCap, trueUp, inflight: () => live, ciEnabled: () => Boolean(ciConf()), close: () => { clearInterval(pruner); clearInterval(trueUps); db.close(); } };
+  /** The caps a new job of this agent on this task would start over (admission.ts): its task, its day and the install's. */
+  const exhausted = (agentId: string, task: string) =>
+    capScopes({ runKey: "admission", agentId, issueId: task, perpetual: false, capped: true } as unknown as Caller, now()).filter((o) => o.scope !== "run" && o.cap > 0 && o.spent >= o.cap);
+  return { handle, db, metricsText, setCap, exhausted, trueUp, inflight: () => live, ciEnabled: () => Boolean(ciConf()), close: () => { clearInterval(pruner); clearInterval(trueUps); db.close(); } };
 }

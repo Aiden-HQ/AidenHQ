@@ -16,7 +16,9 @@ Thanks for helping. Contributors have read access to this repository; the mainta
 ### Pull requests and commits
 
 - **Every change lands through a pull request**, and is **squash-merged**: one PR becomes one commit on `main`.
-  Nobody pushes to `main` directly, the maintainer included.
+  Nobody pushes to `main` directly, the maintainer included. Auto-merge is on: a maintainer arms a ready PR
+  (`gh pr merge --auto --squash`) and GitHub merges it once `ci-required` is green. A PR with conflicts needs a rebase
+  on `main` first.
 - **The PR title follows [Conventional Commits](https://www.conventionalcommits.org/)** and becomes the squash
   commit's subject: `type(scope): summary`, lower-case type, the scope optional, `!` before the colon for a breaking
   change. Types: `feat`, `fix`, `docs`, `chore`, `test`, `refactor`, `perf`, `ci`, plus `build`, `style` and `revert`.

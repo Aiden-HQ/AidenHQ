@@ -1,13 +1,14 @@
-// Paperclip task events to the kernel's wake inbox (kernel/src/wakes.ts): ids only, no state. Plain JS, no build; mounted
+// The kernel's Paperclip plugin: task events to its wake inbox (kernel/src/wakes.ts; ids only, no state), and the `post`
+// action, the kernel's writes as an agent without a Paperclip run (post.js, kernel/src/outcomes.ts). Plain JS, no build; mounted
 // read-only into the paperclip container at /opt/aidenhq-events (compose.yaml) and installed by setup (scripts/paperclip-events.mjs).
 export default {
   id: "aidenhq.events",
   apiVersion: 1,
-  version: "0.1.0", // keep equal to package.json: setup reinstalls when it changes
-  displayName: "AidenHQ wake events",
-  description: "Tells the AidenHQ kernel which task changed, so its wake inbox scans it now instead of at the next poll.",
+  version: "0.2.2", // keep equal to package.json: setup reinstalls when it changes
+  displayName: "AidenHQ kernel",
+  description: "Tells the AidenHQ kernel which task changed, and posts a job's outcome on its task as the agent itself.",
   author: "AidenHQ",
   categories: ["automation"],
-  capabilities: ["events.subscribe", "http.outbound"],
+  capabilities: ["events.subscribe", "http.outbound", "issues.read", "issues.create", "issues.update", "issue.comments.read", "issue.comments.create"],
   entrypoints: { worker: "./worker.js" },
 };

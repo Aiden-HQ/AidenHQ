@@ -16,6 +16,7 @@ import type { Resolver } from "./net.ts";
 import { canonical, digestOf, type Card, type Rec, type Records, type Requester } from "./records.ts";
 import type { Reviews } from "./reviews.ts";
 import { LOCAL_ORG, repoKey, runnerFacts, type Repos } from "./kinds.ts";
+import { writeRaise, type Inventory } from "./paths.ts";
 import { REVIEW_TRIES, afterReview, capText, codeVerdict, computeTier, failedVerdict, heldInput, shadowed, type Autonomy, type Raise, type ReviewFirst, type ReviewInput, type Cap, type RoutineCap, type Tier, type Verdict } from "./tier.ts";
 
 export type Schema = { type?: string; properties?: { [k: string]: Schema }; required?: string[]; additionalProperties?: boolean; enum?: unknown[]; pattern?: string; minLength?: number; maxLength?: number; items?: Schema; minItems?: number; maxItems?: number; minimum?: number; maximum?: number; exclusiveMinimum?: number };
@@ -23,8 +24,8 @@ export type Schema = { type?: string; properties?: { [k: string]: Schema }; requ
  * One kind (config/kernel/writes.json and kinds.ts, keyed `<module>.<kind>`); `tools` are `connection.tool`. `runner`: the
  * runner plans it (it files with its plan), claims it and reports its outcome.
  */
-export type Kind = { module: string; floor: Tier; panel?: boolean; tools: string[]; card?: Partial<Card>; args?: Schema; executor?: { url: string; auth_secret: string; rev?: string }; runner?: boolean };
-type Plan = { args: unknown; targets?: { [k: string]: unknown }; facts?: { [k: string]: unknown }; raise?: Raise; card?: { [k: string]: string }; satisfied?: { evidence: string } };
+export type Kind = { module: string; floor: Tier; panel?: boolean; paths?: boolean; tools: string[]; card?: Partial<Card>; args?: Schema; executor?: { url: string; auth_secret: string; rev?: string }; runner?: boolean };
+type Plan = { args: unknown; targets?: { [k: string]: unknown }; facts?: { [k: string]: unknown }; raise?: Raise; paths?: unknown; card?: { [k: string]: string }; satisfied?: { evidence: string } };
 /**
  * The runner's plan for its own kind (it is that kind's planner until 3d): the tier its classifier gave on the merits,
  * whether and how the record is review-first, and the card text. A proposal only: the kernel raises it by what it derives
@@ -80,13 +81,15 @@ const hash = (s: string) => createHash("sha256").update(s).digest("hex");
 const UNSURE = "reviewer_unsure";
 const MODEL = /^~?[\w.-]+\/[\w.:-]+$/;
 
-export function createWrites({ records, registry, connections, secret, resolver, reviews, autonomy = () => "full", repos = () => ({}), onTask, replay, native = {}, log = () => {} }: {
+export function createWrites({ records, registry, connections, secret, resolver, reviews, autonomy = () => "full", repos = () => ({}), paths = () => undefined, onTask, replay, native = {}, log = () => {} }: {
   records: Records; registry: () => { [kind: string]: Kind }; connections: () => { [c: string]: Connection }; secret: (n: string) => string; resolver: Resolver;
   /** The bound reviewer module (reviews.ts): every record's review goes there. */
   reviews?: Reviews;
   autonomy?: () => Autonomy;
   /** The product and instance repositories (runner kinds' floors and refusals). */
   repos?: () => Repos;
+  /** The path inventory (config/kernel/paths.json, paths.ts): a `paths: true` kind's files raise its tier; missing is the owner's. */
+  paths?: () => Inventory | undefined;
   /** The task a record is on: still open (and its parent), and a notice on it (fixed text; the module's words only fenced). */
   onTask: { open(task: string): Promise<boolean>; notify(task: string, text: string): Promise<void>; parent?(task: string): Promise<string | undefined>; routineCap?(task: string): Promise<RoutineCap | undefined> };
   /** Executes an approved conn.tool record: the stored call, through the proxy, as its requester. */
@@ -135,6 +138,11 @@ export function createWrites({ records, registry, connections, secret, resolver,
   }
 
   /** The cap of a routine whose run started the task's chain (tier.ts taskRoutineCap: an unreadable trace is off). */
+  /**
+   * Which of the inventory's repositories `repo` is: the product, the official modules repo or another; undefined when it
+   * can't be told (not owner/name, or the product repo isn't set here: fails closed, as runnerFacts does).
+   */
+  const repoKindOf = (repo: string) => { const k = repoKey(repo), product = repoKey(repos().product); return !k || !product ? undefined : k === product ? "product" as const : k === repoKey(repos().modules) ? "modules" as const : "other" as const; };
   const routineOf = async (task: string) => (task && onTask.routineCap ? onTask.routineCap(task) : undefined);
   /** The cap now that outranks the AI reviewer's yes on a task: the instance's autonomy below full, or a routine's below full. */
   const capOverReviewer = (routine: RoutineCap | undefined): Cap | undefined =>
@@ -165,7 +173,8 @@ export function createWrites({ records, registry, connections, secret, resolver,
       return records.get(r.id)!;
     }
     const raise = plan.raise && (plan.raise.tier === 1 || plan.raise.tier === 2) ? plan.raise : undefined;
-    const t = computeTier({ floor: k.floor, raise, priorVeto: task ? records.vetoed(task, kind, { digest: digestOf(base) }) : false, autonomy: autonomy(), routine: await routineOf(task), panel: k.panel === true });
+    const byPaths = k.paths ? writeRaise(paths(), plan.paths, repoKindOf) : undefined;
+    const t = computeTier({ floor: k.floor, raise, ...(byPaths ? { checkRaises: [byPaths] } : {}), priorVeto: task ? records.vetoed(task, kind, { digest: digestOf(base) }) : false, autonomy: autonomy(), routine: await routineOf(task), panel: k.panel === true });
     if (t.tier > 0 && !task) throw fail(400, "no_task", `${kind} needs approval: pass your current task`);
     // The same requester's same request still open on the task is that record, never a second card that would run twice,
     // while it is at least as strict (tier and panel). A stricter one replaces it only while it waits for the reviewer; a
@@ -174,7 +183,8 @@ export function createWrites({ records, registry, connections, secret, resolver,
     const same = t.tier > 0 ? records.open(task, kind, digestOf(base)).find((r) => who(r.requester) === who(requester)) : undefined;
     if (same && same.tier >= t.tier && (same.panel || !t.panel)) return same;
     if (same?.state === "review") records.close(same.id, "cancelled", "replaced by the same request at a stricter tier");
-    return records.file({ ...base, card: { ...card, reason: (t.rule ? capText(t.cap!) : raise?.reason)?.slice(0, 300) ?? "" }, tier: t.tier, merit: t.merit, panel: t.panel, review_first: t.reviewFirst, rule: t.rule ?? raise?.rule ?? null, cap: t.cap ?? null, state: t.state });
+    const top = byPaths && byPaths.tier * 2 + (byPaths.panel ? 1 : 0) > (raise ? raise.tier * 2 + (raise.panel ? 1 : 0) : 0) ? byPaths : raise;
+    return records.file({ ...base, card: { ...card, reason: (t.rule ? capText(t.cap!) : top?.reason)?.slice(0, 300) ?? "" }, tier: t.tier, merit: t.merit, panel: t.panel, review_first: t.reviewFirst, rule: t.rule ?? top?.rule ?? null, cap: t.cap ?? null, state: t.state });
   }
 
   /**
@@ -329,9 +339,9 @@ export function createWrites({ records, registry, connections, secret, resolver,
     async request(who: Identity, { kind, args, task, evidence }: { kind: string; args: unknown; task?: string; evidence?: unknown }): Promise<Rec> {
       const k = kindOf_(kind);
       if (!k || k.runner || !k.executor) throw fail(404, "unknown_kind", `no write kind ${kind}`);
-      // A job only by the kinds its token names (the runner mints them for its own request), on the token's task, and only a
-      // reviewed kind (floor 1 or more): a job token never runs a write at once.
-      const granted = (who.kind === "module" && who.module === k.module) || (who.kind === "job" ? Boolean(who.task && who.writes?.includes(kind) && k.floor >= 1) : k.tools.some((ct) => { const [c, t] = ct.split("."); return who.tools[c!]?.includes(t!); }));
+      // A job only by the kinds its token names (its minter names them), on the token's task; its tier is the kind's, as any
+      // requester's (floor, the executor's plan, caps and the routine cap: computeTier).
+      const granted = (who.kind === "module" && who.module === k.module) || (who.kind === "job" ? Boolean(who.task && who.writes?.includes(kind)) : k.tools.some((ct) => { const [c, t] = ct.split("."); return who.tools[c!]?.includes(t!); }));
       if (!granted) throw fail(403, "no-grant", `no grant on ${kind}`);
       // An agent's record is on the task its run is on (its notices land there, as the owner); only a module names one.
       const t = who.kind === "module" && typeof task === "string" && task ? task : who.task ?? "";

@@ -82,7 +82,7 @@ Codex session log (timestamps per tool call and per model turn) and the owning a
 ## What the runner gives a job at start
 
 - the task text, fenced as untrusted, plus the owner's newest comment (or the description again) as instructions;
-- the job rules and how-we-build section;
+- the job rules, and the `write-code` skill;
 - the Engineer's handbook and the engine's working-habits file (`modules/engine-codex/codex-home/AGENTS.md`);
 - full clones of the task's repositories with remote branches fetched.
 
@@ -97,7 +97,7 @@ There is no summary of recent PRs. A job reads the repo's own `AGENTS.md` first,
    - for a restore, the removing commit's `git show <sha> -- <path>`.
 
    This brief already had most of it; the missing piece was the sha.
-2. **Engineers work in fewer, bigger steps** (how-we-build section, which reaches every Engineer job and builder, and the
+2. **Engineers work in fewer, bigger steps** (the `write-code` skill, which reaches every Engineer job and builder, and the
    engine's habits file):
    - start from the task's pointers and the history of those paths before broad searching;
    - read several files per command, each once;

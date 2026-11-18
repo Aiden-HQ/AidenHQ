@@ -3,14 +3,16 @@
 // plugin, at most once and with duplicates) only scans its one task sooner. A dispatcher (role kernel.jobs) claims rows and
 // turns them into jobs; admission binds `job` (unique, so a wake starts at most one job).
 // Keys (never Paperclip's eventId): comment:<commentId>, issue:<issueId>:<updatedAt> (assigned or moved to todo),
-// routine-run:<runId> (a routine run's new task; routine tasks of a non-always_enqueue routine coalesce here), reopen:<issueId>:<statusVersion> (a comment reopened a finished task),
+// routine-run:<runId> (a routine run's new task, cause routine:<key>: the routine's compiled key, so admission applies its own
+// model; routine tasks of a non-always_enqueue routine coalesce here), reopen:<issueId>:<statusVersion> (a comment reopened a finished task),
 // wake_at:<module>.<id> (a module's scheduled wake, due at `until`).
 // Polled agents: those the modules that claim wakes dispatch (compile's `dispatches`); a module joins on its first claim.
 // So nothing is polled until a dispatcher claims, and an agent's first scan only wakes for comments after its dispatcher
 // joined or the old executor's last word on the task, whichever is later (the handoff boundary).
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
 import type { Api } from "./channels.ts";
+import type { Outcomes } from "./outcomes.ts";
 
 /** A comment the kernel posted for a job (outcomes.ts): it never wakes anyone. */
 export const SELF_TAG = /<!-- aidenhq:job=/;
@@ -34,12 +36,16 @@ type Comment = { id: string; body?: string; authorAgentId?: string | null; creat
 type Log = (msg: string, f?: Record<string, unknown>) => void;
 const ms = (t?: string) => (t ? Date.parse(t) || 0 : 0);
 
-export function createWakes({ db, owner, dispatches, log = () => {}, now = Date.now }: {
+export function createWakes({ db, owner, post, dispatches, routineKey = () => undefined, log = () => {}, now = Date.now }: {
   db: DatabaseSync;
   /** The control plane as the owner (only reads). */
   owner: Api;
+  /** Writes as the task's agent (outcomes.ts): a coalesced routine task is cancelled by its own agent. */
+  post: Outcomes["post"];
   /** Whether a module dispatches an agent (jobs.ts dispatchesFrom), and the agents it dispatches (ids). */
   dispatches: { may: (module: string, agent: string) => boolean; agents: (module: string) => string[] };
+  /** A Paperclip routine's compiled key (grants `routine_keys`, setup): none for a routine setup didn't make. */
+  routineKey?: (routine: string) => string | undefined;
   log?: Log; now?: () => number;
 }) {
   db.exec(DDL);
@@ -74,12 +80,12 @@ export function createWakes({ db, owner, dispatches, log = () => {}, now = Date.
     if (def.status !== 200 || !run) { log("wake: routine run not found yet", { task: issue.id, routine: issue.originId }); return false; }
     const earlier = open.find((o) => o.id !== issue.id && o.originKind === "routine_execution" && o.originId === issue.originId && (ms(o.createdAt) < ms(issue.createdAt) || (ms(o.createdAt) === ms(issue.createdAt) && o.id < issue.id)));
     if (def.json?.concurrencyPolicy !== "always_enqueue" && earlier) {
-      const c = await owner("PATCH", `/api/issues/${encodeURIComponent(issue.id)}`, { status: "cancelled" });
-      if (c.status >= 300) throw new Error(`control plane PATCH → ${c.status}`);
+      await post({ id: issue.id, agent, task: issue.id }, { kind: "coalesced", status: "cancelled", body: "Cancelled: an earlier run of this routine is still open, so this one is folded into it." });
       log("wake: routine task coalesced", { task: issue.id, into: earlier.id, routine: issue.originId });
       return true;
     }
-    insert(`routine-run:${run.id}`, issue.id, agent, "routine", ms(issue.updatedAt) || now());
+    const key = routineKey(String(issue.originId ?? ""));
+    insert(`routine-run:${run.id}`, issue.id, agent, key ? `routine:${key}` : "routine", ms(issue.updatedAt) || now());
     return true;
   }
 
@@ -200,6 +206,17 @@ export function createWakes({ db, owner, dispatches, log = () => {}, now = Date.
       const r = q("UPDATE wakes SET state = 'dropped', until = NULL WHERE key = ? AND state = 'claimed' AND claimed_by = ? AND job IS NULL").run(key, module);
       if (r.changes) log("wake dropped", { key, module, why: why.slice(0, 200) });
       return { dropped: r.changes > 0 };
+    },
+    /**
+     * A note on a claimed wake's task that no job will answer (a redirect, a task with no request), posted as the task's agent
+     * with the kernel's tag (SELF_TAG: it wakes nobody), once per wake. The task and agent are the wake's, never the caller's.
+     */
+    async note(module: string, key: string, body: unknown) {
+      const w = q("SELECT task, agent FROM wakes WHERE key = ? AND state = 'claimed' AND claimed_by = ? AND job IS NULL").get(key, module) as { task: string; agent: string } | undefined;
+      if (!w) return { status: 409, error: `wake ${key} isn't one this module claimed, or a job already answers it` };
+      if (typeof body !== "string" || !body.trim()) return { status: 400, error: "send {body}" };
+      const id = `w-${createHash("sha256").update(key).digest("hex").slice(0, 24)}`;
+      return post({ id, agent: w.agent, task: w.task }, { kind: "note", body: body.slice(0, 20_000) });
     },
     /** A claimed comment delivered into its live job (the input's ack). */
     delivered(module: string, key: string) {

@@ -10,6 +10,7 @@
 //   config/jobcaps.json        → the kernel (job tokens on /c/<connection>/mcp) and the runner: what jobs may read (modules' jobcaps:)
 //   config/kernel/connections.json → the kernel's tool proxy: each connection's endpoint, service key secret, module and tool tags
 //   config/kernel/writes.json  → the kernel's write kinds (modules' `writes:`): floor, card, args schema, executor, routed tools
+//   config/kernel/paths.json   → the kernel's tier function: each path's sensitivity and owning role (paths.yaml, modules' paths:)
 //   config/kernel/checks.json  → the kernel's finish gate: modules' task.finish checks (url, key secret, label, scope)
 //   config/kernel/modules.json → the kernel: modules' kernel roles, privileged entries, own tokens and channels (stamp, settings),
 //                                each enabled module's compose services and its setup secrets
@@ -28,8 +29,9 @@ import { existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } 
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import YAML from "yaml";
-import { compile, composeSecretFiles, ensureMountedSecrets, ensureOptionalSecrets, hostMounts } from "./modules.mjs";
+import { compile, composeSecretFiles, ensureMountedSecrets, ensureOptionalSecrets, hostMounts, hostWorkDir } from "./modules.mjs";
 import { computersConfig } from "./computers.mjs";
+import { pathInventory } from "./paths.mjs";
 import { checkIngress } from "./edge.mjs";
 import { caddyfile, caddyService, publicUrls } from "./front-door.mjs";
 import { ensureIdentityKeys } from "./identity.mjs";
@@ -61,7 +63,7 @@ let revision;
 try { revision = execFileSync("git", ["-C", repo, "rev-parse", "HEAD"], { encoding: "utf8" }).trim(); } catch {}
 
 let out, computers;
-try { out = compile(repo, instanceDir, { revision, door: { publicIp: env("AIDENHQ_PUBLIC_IP"), adminUrl: env("AIDENHQ_ADMIN_URL"), boardUrl: env("BOARD_LAN_URL") } }); computers = computersConfig(out.paperclip, repo, out.catalog.filter((m) => m.enabled).map((m) => m.name)); } catch (e) { die(e.message); }
+try { out = compile(repo, instanceDir, { revision, door: { publicIp: env("AIDENHQ_PUBLIC_IP"), adminUrl: env("AIDENHQ_ADMIN_URL"), boardUrl: env("BOARD_LAN_URL") } }); computers = computersConfig(out.paperclip, repo, out.catalog.filter((m) => m.enabled).map((m) => m.name), out.computersMax); } catch (e) { die(e.message); }
 if (process.argv.includes("--sizes")) {
   try { console.log(sizesReport(out.paperclip, { repo, instanceDir, engines: out.engines })); } catch (e) { die(e.message); }
   process.exit(0);
@@ -102,6 +104,8 @@ if (!stage) mkdirSync(join(resolve(repo, env("AIDENHQ_CONFIG_DIR") ?? "config"),
 // not in apply-config.sh: the apply that brings this in still runs the old script, which then runs this compile.
 const dataDir = resolve(repo, env("AIDENHQ_DATA_DIR") ?? "data");
 if (!stage) for (const d of ["apps-edge/state", "apps-edge/serve", "previews", "codehost", ...out.dataDirs]) mkdirSync(join(dataDir, d), { recursive: true });
+// The job workspaces, before compose bind-mounts them into the code host (Docker would make a missing one as root).
+if (!stage) mkdirSync(join(hostWorkDir(repo), "tasks"), { recursive: true });
 // Code never starts on data newer than it (spec §6.4.1): staged, only checked (the apply snapshots the data after this); for
 // real, each data module's marker is set to its data_version before compose starts it.
 try { for (const [m, d] of Object.entries(out.dataModules)) checkDataVersion(m, d.data_version, join(dataDir, "modules", m), !stage); } catch (e) { die(e.message); }
@@ -148,6 +152,7 @@ writeFileSync(join(cfgOut, "jobcaps.json"), JSON.stringify(out.jobcaps, null, 2)
 mkdirSync(join(cfgOut, "kernel"), { recursive: true });
 writeFileSync(join(cfgOut, "kernel/connections.json"), JSON.stringify(out.connections, null, 2) + "\n");
 writeFileSync(join(cfgOut, "kernel/writes.json"), JSON.stringify(out.writes, null, 2) + "\n");
+try { writeFileSync(join(cfgOut, "kernel/paths.json"), JSON.stringify(pathInventory(repo), null, 2) + "\n"); } catch (e) { die(e.message); }
 // Always written ({} when no module checks): the kernel's finish gate refuses every close when it is missing.
 writeFileSync(join(cfgOut, "kernel/checks.json"), JSON.stringify(out.checks, null, 2) + "\n");
 writeFileSync(join(cfgOut, "kernel/modules.json"), JSON.stringify(out.kernelModules, null, 2) + "\n");

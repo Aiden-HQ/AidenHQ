@@ -8,7 +8,7 @@ import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import YAML from "yaml";
-import { compile, grantEntry, TRIAL_WRITE_ALLOWED } from "../modules.mjs";
+import { compile, grantEntry, TRIAL_WRITE_ALLOWED, writeTools } from "../modules.mjs";
 import { BUNDLE } from "./bundle.mjs";
 
 const product = join(dirname(fileURLToPath(import.meta.url)), "../..");
@@ -211,9 +211,15 @@ test("the web for every codex agent: live search by default (an agent may opt do
     assert.ok(a.enabled_tools.apps?.includes("app_view"), `${key} lacks app_view`);
     if (a.web_search !== "disabled") assert.ok(a.enabled_tools.apps?.includes("web_view"), `${key} lacks web_view`);
   }
-  for (const k of ["slack-scout", "inbox-agent", "slack-triage"]) {
-    assert.equal(r.paperclip.agents[k].web_search, "disabled", k);
-    assert.ok(!r.paperclip.agents[k].enabled_tools.apps?.includes("web_view"), k);
+  // The intake agents (Slack and email): untrusted text in, so no web out.
+  const intake = Object.entries(r.paperclip.agents).filter(([, a]) => a.module === "open-loops" && a.department.id === "intake");
+  assert.ok(intake.length);
+  for (const [k, a] of intake) {
+    assert.equal(a.web_search, "disabled", k);
+    assert.ok(!a.enabled_tools.apps?.includes("web_view"), k);
+    // Reads only, plus the owner's page and its own tasks: no tool a connection tags write that reaches anyone else.
+    const writes = Object.entries(a.enabled_tools).flatMap(([c, list]) => list.filter((t) => c !== "paperclip_tasks" && t !== "notify_owner" && writeTools(r.paperclip.mcp_servers[c]).includes(t)).map((t) => `${c}.${t}`));
+    assert.deepEqual(writes, [], k);
   }
   // Runner agents get no tools added; one in a computer (the App Engineer) has exactly what it grants itself.
   for (const [key, a] of Object.entries(r.paperclip.agents)) if (a.dispatch === "runner" && !a.image) assert.ok(!a.mcp_servers.includes("apps"), key);
@@ -253,13 +259,6 @@ test("chat: an instance agent's fast chat lane: defaults, and only its own grant
   assert.throws(() => compile(product, withAgents({ "review-chaser": { yaml: { chat: { tools: ["paperclip_tasks.fleet_control"] } } } }, ["github", "slack"])), /chat tool paperclip_tasks.fleet_control isn't one of its granted tools/);
   assert.throws(() => compile(product, withAgents({ "review-chaser": { yaml: { chat: { reasoning: "high" } } } }, ["github", "slack"])), /chat.reasoning must be off or low/);
   assert.throws(() => compile(product, withAgents({ "review-chaser": { yaml: { chat: { stream: true } } } }, ["github", "slack"])), /chat: unknown field stream/);
-});
-
-test("builder: true reaches the compiled config (setup adds How we build from it), on module and instance agents", () => {
-  const r = compile(product, withAgents({ "review-chaser": { yaml: { builder: true } } }, ["github", "design"]));
-  const builders = Object.entries(r.paperclip.agents).filter(([, a]) => a.builder === true).map(([k]) => k);
-  assert.deepEqual(builders.sort(), ["app-maintainer", "architect", "review-chaser", "ui-designer", "ui-reviewer"]);
-  assert.throws(() => compile(product, withAgents({ x: { yaml: { builder: "yes" } } })), /x: builder is true, false or absent/);
 });
 
 test("the models the runner and the model tools name in code are priced (the gateway refuses an unpriced one)", () => {

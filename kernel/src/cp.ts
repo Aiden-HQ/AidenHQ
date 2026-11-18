@@ -3,11 +3,13 @@
 // the module it was addressed to (assert.ts). The path must be one of the control plane's agent routes below; the kernel
 // forwards with the caller's own credential (the run's JWT or agent key; an agent computer's run through its launcher, on the
 // box's own bridge), so the control plane sees the agent itself, never the owner. A status change to `done` passes the
-// finish gate first (checks.ts): held or reopened, the change isn't forwarded and the answer says so (202).
+// finish gate first (checks.ts): held or reopened, the change isn't forwarded and the answer says so (202). A task a job
+// creates gets the kernel's provenance (provenance.ts): its intent before the POST, its row on the 201.
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type { Asserter } from "./assert.ts";
 import type { Checks } from "./checks.ts";
 import type { Connection, Whoami } from "./identity.ts";
+import type { Provenance } from "./provenance.ts";
 import { fail } from "./proxy.ts";
 
 // One path segment: never a dot segment, which URL resolution would turn into another route.
@@ -27,8 +29,8 @@ export const CP_AGENT_PATHS: [string, RegExp][] = [
 ];
 const MAX = 32 * 1024 * 1024;
 
-export function createCp({ whoami, asserter, controlUrl, launcherUrl, checks, log = () => {} }: {
-  whoami: Whoami; asserter: Asserter; controlUrl: string; launcherUrl?: string; checks?: Checks; log?: (msg: string, f?: Record<string, unknown>) => void;
+export function createCp({ whoami, asserter, controlUrl, launcherUrl, checks, provenance, log = () => {} }: {
+  whoami: Whoami; asserter: Asserter; controlUrl: string; launcherUrl?: string; checks?: Checks; provenance: Provenance; log?: (msg: string, f?: Record<string, unknown>) => void;
 }) {
   return async function cp(req: IncomingMessage, res: ServerResponse, path: string, query: string): Promise<void> {
     const mod = await whoami(String(req.headers.authorization ?? "").replace(/^Bearer\s+/i, "").trim()).catch(() => undefined);
@@ -42,8 +44,13 @@ export function createCp({ whoami, asserter, controlUrl, launcherUrl, checks, lo
     const chunks: Buffer[] = [];
     let n = 0;
     for await (const c of req) { n += c.length; if (n > 4 * 1024 * 1024) throw fail(413, "too_large", "too large"); chunks.push(c); }
-    const body = method === "GET" || method === "HEAD" ? undefined : Buffer.concat(chunks);
+    let body = method === "GET" || method === "HEAD" ? undefined : Buffer.concat(chunks);
     const target = `${path}${query}`;
+    const job = live.caller.kind === "job" ? { agent: live.caller.agent, task: live.caller.task ?? "" } : undefined;
+    if (job && provenance.stuck(job.agent, job.task)) throw fail(503, "reconciling", "a task this job created is still being reconciled; retry in a few minutes");
+    const company = job && method === "POST" ? new RegExp(`^/api/companies/(${ID})/issues$`).exec(path)?.[1] : undefined;
+    const intent = company ? await provenance.intend({ company, ...job!, body: body! }) : undefined;
+    if (intent) body = intent.body;
     const task = method === "PATCH" ? /^\/api\/issues\/([^/]+)$/.exec(path)?.[1] : undefined;
     if (task && checks) {
       let status: unknown;
@@ -60,6 +67,7 @@ export function createCp({ whoami, asserter, controlUrl, launcherUrl, checks, lo
       }
     }
     let status: number, type: string, out: Buffer;
+    try {
     if (cred.startsWith("ahqc_")) {
       // An agent computer's run: its control-plane credential works only inside its box (the launcher runs the call there).
       if (!launcherUrl) throw fail(503, "unavailable", "the computer launcher isn't configured");
@@ -75,6 +83,8 @@ export function createCp({ whoami, asserter, controlUrl, launcherUrl, checks, lo
       });
       status = r.status; type = r.headers.get("content-type") ?? "application/json"; out = Buffer.from(await r.arrayBuffer());
     }
+    } catch (e) { if (intent) provenance.settle(intent.id); throw e; }
+    if (intent) provenance.settle(intent.id, status, out);
     if (out.length > MAX) throw fail(502, "too_large", "the control plane's answer is too large");
     log("cp", { module: mod.module, agent: live.caller.key, method, path, status });
     res.writeHead(status, { "content-type": type, "content-length": out.length }).end(out);

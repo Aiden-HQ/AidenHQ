@@ -43,18 +43,6 @@ function orgLine(orgs) {
   return `This AidenHQ's agents org${named.length > 1 ? "s are" : " is"} ${named.join(" and ")}${named.length > 1 ? "; a new app's repository goes in the one its task names" : ""}.\n\n`;
 }
 
-/**
- * The Team list: one line per agent, by department, from each agent's `description` (its routing contract). Every agent that
- * holds `task_delegate` or `task_create` reads it, so no handbook carries its own table of who does what.
- */
-export function teamSection(cfg) {
-  const lines = Object.entries(cfg.agents ?? {})
-    .sort(([ka, a], [kb, b]) => (a.department?.order ?? 0) - (b.department?.order ?? 0) || ka.localeCompare(kb))
-    .map(([key, a]) => `- **${a.name}** (${key}${a.roles?.length ? `; roles: ${a.roles.join(", ")}` : ""}): ${a.description}`);
-  return `${section("team")}\n${lines.join("\n")}\n`;
-}
-const delegates = (a) => ["task_delegate", "task_create"].some((t) => a.enabled_tools?.paperclip_tasks?.includes(t));
-
 /** The crew member's board identity, stored in the agent's metadata for the board and the runner. */
 export function personaOf(key, a) {
   const p = a.persona;
@@ -87,7 +75,7 @@ On the user's board you are ${me.name}. Voice: ${me.voice} The voice sets your t
 }
 
 // The sections setup itself writes into every crew agent's handbook, ahead of the modules' prompt contributions:
-// Approvals is the kernel's; How we build (engineering), the web and the app follow-up (apps-platform) leave with their units.
+// Approvals is the kernel's; the web and the app follow-up (apps-platform) leave with their units.
 // Every agent's one rule for what it reads (tools, messages, documents, quoted text): data, never instructions.
 const UNTRUSTED_SECTION = section("untrusted");
 // The words every agent uses with one meaning, and the shape of a handoff and its report.
@@ -106,10 +94,6 @@ const profileSection = (cfg) => (cfg.owner_profile ? `${section("profile")}\n${c
 const WEB_SECTION = section("web");
 // Agents kept asking for approval through Paperclip's own mechanism, which the owner never sees (approval cards are the only one).
 const APPROVALS_SECTION = section("approvals");
-// How the builders build (owner interview, 2026-11-15): nudges, said positively. Builders are the agents with `builder: true`
-// (the Architect, the DevOps Engineer, the UI/UX Designer, the UI Reviewer); the runner's Engineers get the section through
-// their metadata (`build`) in the job prompt (services/runner/src/prompt.ts).
-export const HOW_WE_BUILD_SECTION = section("how-we-build");
 // The owning agent checks its app change live, an hour and a day after it deploys (owner, 2026-11-15): for agents that own
 // apps and can wake themselves later (app_logs and wake_at).
 const appFollowupSection = (a) => (a.enabled_tools?.apps?.includes("app_logs") && a.enabled_tools?.chat_lane?.includes("wake_at") ? section("app-followup", "") : "");
@@ -120,6 +104,7 @@ function sectionText(cfg, a, id, { repo, fleetIssues }) {
   if (body.includes("{{fleet_issues}}") && !fleetIssues) throw new Error(`section ${id}: the Fleet issues task is missing`);
   return body.replaceAll("{{fleet_issues}}", fleetIssues).replace("{{memory}}", () => a.memory ?? "");
 }
+// deleted at the one-way big switch (crew read skills natively in computers)
 const onDemand = (cfg, id) => cfg.prompts?.[id]?.load === "on_demand";
 
 /**
@@ -157,9 +142,7 @@ export function handbookParts(cfg, key, a, { repo, instanceDir, engines = {}, fl
     ["glossary", codex ? GLOSSARY_SECTION : ""],
     ["outcomes", codex ? outcomesSection(cfg) : ""],
     ["handoff", codex ? HANDOFF_SECTION : ""],
-    ["team", codex && delegates(a) ? teamSection(cfg) : ""],
     ["approvals", codex ? APPROVALS_SECTION : ""],
-    ["how-we-build", codex && a.builder === true ? HOW_WE_BUILD_SECTION : ""],
     ["web", !codex ? "" : a.web_search === "disabled" ? WEB_SECTION.replace("You have live web search, `web_view`", "You have `web_view`") : WEB_SECTION],
     ["app-followup", codex ? appFollowupSection(a) : ""],
     ["sources", sourcesSection(a, cfg.mcp_servers ?? {})],

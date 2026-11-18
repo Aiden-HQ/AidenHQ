@@ -63,8 +63,8 @@ The AI reviewer is the `modules/ai-reviewer` module (reviewer@1: the kernel asks
 `node modules/ai-reviewer/scripts/reviewer-eval.mjs`, needs a paid `OPENROUTER_API_KEY` and must pass: at least 95%, every miss a false block of a clean case (an attack approved, or an approval lacking its second reviewer or flag, fails at any %). It
 applies to changes to the module (its service, policy `service/security/`, cases `test/reviewer-cases/`, judge),
 `kernel/sdk/src/reviewer.ts`, the tier function and write lifecycle (`services/runner/src/tiers.mjs`, its gate list `gate-core.mjs`, `cards.ts`,
-`review-request.mjs`, `kernel/src/{tier,writes,records,reviews,kinds}.ts`, the code host's git rules
-`modules/codehost-github/src/plan.mjs`, the platform check `modules/platform/src/check.mjs`) or the authority-diff classifier (`kernel/src/loader/authority.ts`); the runner's merge queue runs it on the PR's exact head
+`review-request.mjs`, `kernel/src/{tier,provenance,writes,records,reviews,kinds}.ts`, the code host's git rules
+`modules/codehost-github/src/plan.mjs`, the platform check `modules/platform/src/check.mjs`) the authority-diff classifier (`kernel/src/loader/authority.ts`), the path inventory (`paths.yaml`, `scripts/paths.mjs`, `kernel/src/paths.ts`) or the check jobs that run it and sign its receipt (`kernel/src/checkjobs.ts`); the runner's merge queue runs it on the PR's exact head
 (product and official modules repo) and merges only on a passing receipt (95% of the base cases, every miss a false block of a clean case; `services/runner/src/evalgate.ts`); a modules pin bump
 (`modules-pin.json`, the instance's `aidenhq` marketplace) that changes the reviewer needs a receipt for that reviewer too.
 
@@ -132,6 +132,14 @@ Contributors have read access: fork, branch, open a PR against `main`, get CI gr
 squash-merges. The PR title is a Conventional Commit (`type(scope): summary`; CI's `pr-title` check) and becomes the
 commit on `main`; the body says why. Never push to `main`. Instances pin product commits that are on `main`, so a change reaches an instance only
 after it is merged and that instance's owner bumps the pin.
+
+Merging your own PR (a maintainer session): `gh pr merge <n> --auto --squash --match-head-commit <head>` once it is
+ready, and move on; GitHub merges it when `ci-required` is green. A PR the reviewer eval applies to is armed only after
+its eval passed on that head. Arming, then pushing, merges the new head: push before arming, or `--disable-auto` first.
+Auto-merge doesn't resolve conflicts: a conflicting PR is rebased on `origin/main` by whoever owns it and pushed with
+`--force-with-lease`. Fleet PRs are the runner's: its merge queue merges each at its bound head (reviewer, eval
+receipt, trains), so never arm them. `main` doesn't require branches to be up to date: the runner re-tiers a head it
+updated, so that rule would re-review every open PR on every merge.
 
 ## Running an instance (deploy flow)
 

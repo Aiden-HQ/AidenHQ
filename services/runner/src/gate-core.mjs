@@ -33,6 +33,9 @@ export const GATE_CORE = [
   /^services\/computer\//,
   /^ops\//,
   /^scripts\/verify-security\.sh$/,
+  // The path inventory and its compiler (the kernel's tier function reads what they make: kernel/src/paths.ts).
+  /^paths\.yaml$/,
+  /^scripts\/paths\.(mjs|ts)$/,
   /^scripts\/supply-chain\//,
   /^\.gitleaks\.toml$/,
   // The lean counters and checklists, and the tests that hold this list: loosening either would hide an ungated file.

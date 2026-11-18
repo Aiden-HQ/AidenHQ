@@ -77,6 +77,7 @@ test("a granted tool the connection doesn't have fails compile", () =>
 test("roles: unknown ones, and ones a module may not grant, fail compile", () => {
   assert.throws(() => compile(mods, finst(["rolez"])), /r: unknown role helper/);
   assert.throws(() => compile(mods, finst(["roley"])), /r: module roley may not grant fleet-admin/);
+  assert.deepEqual(compile(mods, finst(["roleopt"])).paperclip.agents.o.roles, [], "an optional role whose module is off is dropped");
 });
 test("an agent from an untrusted module gets no roles and no write grants", () =>
   assert.throws(() => compile(mods, finst(["wild"])), /w: an untrusted module's agent may not have tasks write tools \(t2\)/));
@@ -115,7 +116,7 @@ test("overrides apply to allowed fields only", () => {
 });
 test("grants entry: models, fleet caps under the agent's override, graded off by default; a bad cap fails compile", () => {
   const r = compile(mods, finst(["a"], base, { overrides: { agents: { x: { model: "openrouter/m2", caps: { task_usd: 20 } } } } })).paperclip;
-  assert.deepEqual(grantEntry("x", r.agents.x, { r1: { agent: "x", model: "m3" }, r2: { agent: "y", model: "m4" } }), { models: ["m2", "m3"], caps: { run_usd: 2, task_usd: 20, day_usd: 30 }, graded: false });
+  assert.deepEqual(grantEntry("x", r.agents.x, { r1: { agent: "x", model: "m3" }, r2: { agent: "y", model: "m4" } }), { models: ["m2", "m3"], caps: { run_usd: 2, task_usd: 20, day_usd: 30 }, graded: false, profile: "crew", model: "m2", max_parallel: 1, routines: { r1: { model: "m3" } } });
   assert.throws(() => compile(mods, finst(["a"], base, { overrides: { agents: { x: { caps: { month_usd: 5 } } } } })), /x: caps\.month_usd isn't a cap/);
 });
 test("jobcaps: compiled for the gateway, carried in the grants entry; unknown or private-without-private_reads fail", () => {
@@ -214,8 +215,8 @@ const repo = join(here, "../..");
 test("disabling open-loops removes its agents, routines and labels only", () => {
   const dir = pinst(["meetings", "engineering", "warehouse", "github", "glean", "primer"], { timezone: "Europe/London", owner_name: "Sam", owner_slack_user_id: "U1", product_repo: "acme/aidenhq", owner_email: "o@x" });
   const r = compile(repo, dir);
-  for (const k of ["open-loops", "slack-triage", "slack-scout", "inbox-agent"]) assert.equal(r.paperclip.agents[k], undefined);
-  for (const k of ["chief-of-staff", "assistant", "app-maintainer", "fleet-engineer", "meeting-librarian"]) assert.ok(r.paperclip.agents[k], k);
+  assert.ok(!Object.values(r.paperclip.agents).some((a) => a.module === "open-loops"));
+  for (const k of ["chief-of-staff", "assistant", "app-maintainer", "fleet-engineer"]) assert.ok(r.paperclip.agents[k], k);
   assert.ok(!r.paperclip.labels.some((l) => l.name === "waiting-on"));
   assert.ok(r.paperclip.mcp_servers.telegram && r.paperclip.mcp_servers.chat_lane, "the Telegram channel and the chat lane stay: the bundle lists them");
   assert.ok(r.kernelModules.mounts.github_token.includes("apps-mcp"), "a setup secret's services include other modules' that mount it");
@@ -226,7 +227,7 @@ test("the grading module: its finish check, its token, the board's key, tasks on
   const r = compile(repo, pinst([], { timezone: "UTC", owner_name: "Sam", owner_email: "o@x" }));
   assert.deepEqual(r.checks["grading.finish"], { module: "grading", at: "task.finish", url: "http://grading:8096/check/finish", auth_secret: "grading_check_key", label: "grading" });
   assert.equal(r.kernelModules.modules.grading.token, "grading_token");
-  assert.deepEqual(r.kernelModules.modules.grading.roles, ["kernel.cp-read"]);
+  assert.deepEqual(r.kernelModules.modules.grading.roles, ["kernel.cp-read", "kernel.work-read", "kernel.grader", "kernel.wake"]);
   assert.deepEqual(r.kernelModules.services.grading, ["grading-grading"], "the services the kernel recreates for its setup secrets");
   const g = r.compose.services["grading-grading"];
   assert.ok(g && !g.ports && !JSON.stringify(g).includes("paperclip_board_key"), "no published port, no control-plane key");
@@ -246,6 +247,16 @@ test("engineering is the job dispatcher: its token, and every dispatch: runner a
   assert.ok(runAgents.includes("fleet-engineer") && runAgents.includes("engineer-openrouter"), runAgents.join(","));
   assert.deepEqual(e.dispatches, runAgents);
   for (const [n, m] of Object.entries(r.kernelModules.modules)) if (n !== "engineering") assert.equal(m.dispatches, undefined, n);
+});
+test("kernel.grader: one holder, and it declares a finish check", () => {
+  const dir = mkdtempSync(join(tmpdir(), "prod-"));
+  cpSync(join(here, "fixtures/mods"), dir, { recursive: true });
+  const edit = (name, f) => writeFileSync(join(dir, "modules", name, "module.yaml"), f(readFileSync(join(dir, "modules", name, "module.yaml"), "utf8")));
+  const grader = (y) => `${y}\nroles:\n  requests: [ kernel.grader ]\n`;
+  edit("a", grader);
+  assert.throws(() => compile(dir, finst(["a"])), /kernel\.grader needs a finish check/);
+  edit("b", grader);
+  assert.throws(() => compile(dir, finst(["a", "b"])), /all request kernel\.grader: one grading module at a time/);
 });
 test("upstream: off grants no upstream tool; issues grants both; the scrub's terms and the instance reach github-mcp", () => {
   const settings = (upstream) => ({ timezone: "Europe/London", owner_name: "Ada Lovelace", company_name: "Acme Labs", owner_slack_user_id: "U1", owner_email: "ada.l@acme.example", instance_name: "acme", github_orgs: ["acme-co", "upstream-org"], product_repo: "upstream-org/product", jira_url: "https://jira.acme.example/x", ...(upstream ? { upstream } : {}) });
@@ -270,11 +281,12 @@ test("a setting holding entries reaches a service as JSON; a list of plain value
   assert.equal(env(["acme/aidenhq", "acme/widgets"]), "acme/aidenhq,acme/widgets");
   assert.equal(env([]), "");
 });
-test("Slack Scout's read grant has no draft tool", () => {
+test("the intake agents' Slack read grant has no draft tool", () => {
   const dir = pinst(["open-loops", "primer"], { timezone: "Europe/London", owner_name: "Sam", owner_slack_user_id: "U1", owner_email: "e@x", product_repo: "acme/aidenhq" });
   const r = compile(repo, dir);
-  assert.ok(r.paperclip.agents["slack-scout"].enabled_tools.slack.includes("slack_read_thread"));
-  assert.ok(!r.paperclip.agents["slack-scout"].enabled_tools.slack.includes("slack_send_message_draft"));
+  const scanners = Object.values(r.paperclip.agents).filter((a) => a.module === "open-loops" && a.department.id === "intake" && a.enabled_tools.slack?.includes("slack_read_thread"));
+  assert.ok(scanners.length);
+  for (const a of scanners) assert.ok(!a.enabled_tools.slack.includes("slack_send_message_draft"), a.name);
 });
 test("module apps are pinned to the product revision", () => {
   const rev = "e".repeat(40);
@@ -417,7 +429,7 @@ test("enumeration (spec §9): every shipped write or destructive tool maps to a 
   const kindOf = Object.fromEntries(writes.map(([ct, floor]) => [ct, routed[ct] ?? `conn.tool@${floor}`]));
   assert.deepEqual(["apps.app_deploy", "apps.app_run_request", "apps.app_restart", "apps.app_rollback", "apps.app_api", "apps.app_remove", "apps.app_create"].map((ct) => kindOf[ct]),
     ["apps-platform.deploy", "apps-platform.run", "apps-platform.restart", "apps-platform.rollback", "apps-platform.api_write", "conn.tool@1", "conn.tool@0"]);
-  assert.deepEqual(Object.fromEntries(Object.entries(kinds).map(([id, k]) => [id, k.floor])), { "apps-platform.deploy": 0, "apps-platform.run": 1, "apps-platform.restart": 0, "apps-platform.rollback": 0, "apps-platform.api_write": 0, "hubspot.crm_write": 1, "primer.publish": 1, "channel-slack.post": 1, "channel-slack.bind": 0 });
+  assert.deepEqual(Object.fromEntries(Object.entries(kinds).map(([id, k]) => [id, k.floor])), { "apps-platform.deploy": 0, "apps-platform.run": 1, "apps-platform.restart": 0, "apps-platform.rollback": 0, "apps-platform.api_write": 0, "hubspot.crm_write": 1, "primer.publish": 1, "channel-slack.post": 1, "channel-slack.bind": 0, "codehost-github.push": 0, "codehost-github.pr": 0, "codehost-github.merge": 0, "codehost-github.close": 0, "codehost-github.create_repo": 0 });
   assert.deepEqual(["primer.primer_create_document", "primer.primer_add_version"].map((ct) => kindOf[ct]), ["primer.publish", "primer.publish"]);
   assert.equal(kindOf["slack_live.slack_post"], "channel-slack.post");
   // A kind naming a tool that isn't one of its module's writes, or one another kind took, fails compile.

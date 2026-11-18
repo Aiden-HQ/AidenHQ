@@ -69,6 +69,8 @@ test("caps keep their values: at the day cap refused, a reservation past it refu
   assert.equal(refused.status, 402);
   assert.match(refused.json.error.message, /^spend cap reached: agent-day \$0\.06 of \$0\.05;/);
   assert.equal(r.seen.length, 2);
+  // Admission reads the same caps: no new job for this agent today, on any task.
+  assert.deepEqual(r.gw.exhausted("ag", "WOR-9").map((o) => o.scope), ["day"]);
   // A cap with room for some output, not all: the call is cut to what is left, never past it.
   const s = await rig(t, { dayUsd: 0.005, answer: usage(0.001) });
   assert.equal((await s.call({ model: "flat", max_tokens: 10_000, messages: [] })).status, 200);
@@ -166,7 +168,8 @@ test("restart: a live kernel's reservations are left to it; a dead one's close a
 test("ledger move: the old usage.db's rows land once in kernel.db, repeatably, and its spend still counts against the caps", async (t) => {
   const dir = mkdtempSync(join(tmpdir(), "spend-move-"));
   const legacy = join(dir, "usage.db");
-  const old = openLedger(legacy).db; // the old gateway's file, as it wrote it
+  const old = openLedger(legacy).db; // the old gateway's file, as it wrote it: without the columns added since
+  old.exec("ALTER TABLE calls DROP COLUMN owner; ALTER TABLE calls DROP COLUMN gen");
   const add = old.prepare("INSERT INTO calls (key, at, day, run_key, agent_id, issue_id, task_subject, kind, component, model, cost_usd, status) VALUES (?, ?, '2026-11-16', ?, 'ag', 'WOR-9', 'WOR-9', 'agent', 'agent', 'm', ?, 'ok')");
   for (let i = 0; i < 50; i++) add.run(`gen-${i}`, `2026-11-16T0${i % 10}:00:00Z`, `run-${i}`, 0.001);
   // A table whose columns are in another order than today's (one grown by ALTER TABLE): moved by name.

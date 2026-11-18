@@ -22,7 +22,12 @@ export type Legacy = { links?: string[]; secrets?: string[]; secretPaths?: Recor
 /** The closed privileged list (spec §5.6) plus host-metrics: read-only host /, /sys and /proc for collectors (ruling c). */
 export const PRIVILEGED = ["docker", "host-unit", "sandbox-provider", "paperclip-plugin", "speaks-as-owner", "git-credential", "reviewer", "host-metrics"];
 
-export const SERVICE_FIELDS = ["image", "build", "command", "entrypoint", "env", "secrets", "port", "ui_port", "healthcheck", "cpus", "memory", "pids", "user", "read_only", "tmp", "data", "state", "host_mounts", "egress", "links", "join", "on_demand"];
+export const SERVICE_FIELDS = ["image", "build", "command", "entrypoint", "env", "secrets", "port", "ui_port", "healthcheck", "cpus", "memory", "pids", "user", "read_only", "tmp", "data", "state", "points", "github_app", "workspaces", "host_mounts", "egress", "links", "join", "on_demand"];
+/**
+ * The code host's (privileged: [git-credential]): the GitHub App's vault dir read-only, the job workspaces (the kernel's
+ * work_dir/tasks) read-write, and the host variables that name the product and instance repositories.
+ */
+const GIT_CREDENTIAL_HOST_ENV = ["AIDENHQ_PRODUCT_REPO", "AIDENHQ_INSTANCE_REPO"];
 const SERVICES_FIELDS = ["run", "data"];
 const HEALTH_FIELDS = ["test", "interval", "timeout", "retries", "start_period"];
 const USERS: Record<string, string | undefined> = { owner: "${PUID:-1000}:${PGID:-100}", nobody: "65534:65534", image: undefined };
@@ -77,7 +82,7 @@ export function ownSecrets(def: Dict): string[] {
  * ctx.local: the module comes from a local-path marketplace source (only those may build). ctx.rootServices, rootNetworks,
  * rootSecrets: the root compose's, which a module reaches only through ctx.legacy.
  */
-export function generateCompose(name: string, def: Dict, ctx: { root: string; local: boolean; rootServices?: string[]; rootNetworks?: string[]; rootSecrets?: string[]; legacy?: Legacy }): Generated {
+export function generateCompose(name: string, def: Dict, ctx: { root: string; local: boolean; rootServices?: string[]; rootNetworks?: string[]; rootSecrets?: string[]; legacy?: Legacy; workDir?: string }): Generated {
   const out: Generated = { services: {}, networks: {}, secrets: {}, roots: {}, dataDirs: [], stateDirs: [] };
   const svcs = def.services;
   const where = (f: string) => `${name}: ${f}`;
@@ -100,7 +105,8 @@ export function generateCompose(name: string, def: Dict, ctx: { root: string; lo
   // A module whose sign-in returns to the board (board.signins) may read the board's https address (BOARD_LAN_URL): the one
   // redirect besides loopback its sign-in accepts.
   const signIns = isMap(def.contributes) ? def.contributes["board.signins"] : undefined;
-  const host = [...(lg.hostEnv ?? []), ...(Array.isArray(signIns) && signIns.length ? ["BOARD_LAN_URL"] : [])];
+  const gitCredential = privileged.includes("git-credential");
+  const host = [...(lg.hostEnv ?? []), ...(Array.isArray(signIns) && signIns.length ? ["BOARD_LAN_URL"] : []), ...(gitCredential ? GIT_CREDENTIAL_HOST_ENV : [])];
   const envOf = (env: unknown, what: string, mounts: string[]) => {
     if (env == null) return {};
     if (!isMap(env)) return fail(`${what} must be a map`);
@@ -178,6 +184,21 @@ export function generateCompose(name: string, def: Dict, ctx: { root: string; lo
       if (secretsDecl.state !== true) fail(`${at("state")}: declare secrets.state: true (the module's own vault dir)`);
       volumes.push(`\${AIDENHQ_SECRETS_DIR}/modules/${name}:${m![1]}${m![2] ?? ""}`);
       out.stateDirs.push(`modules/${name}`);
+    }
+    const mountAt = (f: string) => (typeof s[f] === "string" && PATH.test(s[f] as string) && noDots(s[f] as string) ? (s[f] as string) : fail(`${at(f)} is a container path (/points.json)`));
+    // Its own points' contributions (config/points/<module>.json), read-only.
+    if (s.points != null) {
+      if (!isMap(def.points)) fail(`${at("points")}: the module defines no points`);
+      volumes.push(`\${AIDENHQ_CONFIG_DIR:-./config}/points/${name}.json:${mountAt("points")}:ro`);
+    }
+    if (s.github_app != null) {
+      if (!gitCredential) fail(`${at("github_app")}: needs privileged: [git-credential]`);
+      volumes.push(`\${AIDENHQ_SECRETS_DIR}/github-app:${mountAt("github_app")}:ro`);
+    }
+    if (s.workspaces != null) {
+      if (!gitCredential) fail(`${at("workspaces")}: needs privileged: [git-credential]`);
+      if (!ctx.workDir || !ctx.workDir.startsWith("/") || ctx.workDir.includes(":")) fail(`${at("workspaces")}: the host's work_dir isn't known`);
+      volumes.push(`${ctx.workDir}/tasks:${mountAt("workspaces")}`);
     }
     for (const h of s.host_mounts == null ? [] : strings(s.host_mounts, at("host_mounts"))) {
       if (!privileged.includes("host-metrics")) fail(`${at("host_mounts")}: needs privileged: [host-metrics]`);

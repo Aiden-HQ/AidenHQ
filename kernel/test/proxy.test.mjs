@@ -8,7 +8,7 @@ import { kernel, moduleServer } from "./helpers.mjs";
 const conn = (url, module, tools, extra = {}) => ({ url: `${url}/mcp`, auth_secret: `${module}_service_key`, module, returns: "untrusted", tools: { read: [], write: [], destructive: [], ...tools }, ...extra });
 const secrets = { docs_service_key: "docs-key", other_service_key: "other-key" };
 const agents = { "run-jwt-ada": { id: "ag-ada", name: "Ada" }, "agent-key-bo": { id: "ag-bo", name: "Bo" } };
-const grants = { "ag-ada": { key: "ada", roles: ["writer"], tools: { docs: ["doc_read", "doc_write"] } }, "ag-bo": { key: "bo", roles: [], trial: true, tools: { docs: ["doc_read"] } } };
+const grants = { "ag-ada": { key: "ada", roles: ["writer"], profile: "engineer", tools: { docs: ["doc_read", "doc_write"] } }, "ag-bo": { key: "bo", roles: [], trial: true, tools: { docs: ["doc_read"] } } };
 
 test("the proxy: grants, listing, the service key, assertions, fencing", async (t) => {
   let hold;
@@ -106,7 +106,7 @@ test("A5: a module token without services.grants cannot call another connection;
   assert.deepEqual((await r.json()).error, { code: -32602, message: "no-grant" });
   assert.equal(docs.seen.filter((s) => s.method === "tools/call").length, 0);
   const dir = await fetch(`${k.url}/v1/agents`, { headers: { authorization: "Bearer other-key" } }).then((x) => x.json());
-  assert.deepEqual(dir, { agents: { "ag-ada": { key: "ada", roles: ["writer"] }, "ag-bo": { key: "bo", roles: [], trial: true } }, settings: { coach: "off", agents_org: "acme" } });
+  assert.deepEqual(dir, { agents: { "ag-ada": { key: "ada", roles: ["writer"], profile: "engineer" }, "ag-bo": { key: "bo", roles: [], trial: true } }, settings: { coach: "off", agents_org: "acme" } });
   assert.equal((await fetch(`${k.url}/v1/agents`, { headers: { authorization: "Bearer run-jwt-ada" } })).status, 401);
   const me = await fetch(`${k.url}/v1/whoami`, { headers: { authorization: "Bearer run-jwt-ada" } }).then((x) => x.json());
   assert.deepEqual(me, { kind: "run", agent: "ag-ada", roles: ["writer"], tools: { docs: ["doc_read", "doc_write"] } });
@@ -137,7 +137,9 @@ test("jobs: their jobcaps only, their own token only, on the job listener only, 
   const lane = mintToken("lane-secret", { kind: "agent", agentId: "ag-ada", jobcaps: ["docs-read"] });
   const reviewer = mintToken("job-secret", { kind: "reviewer", jobcaps: ["docs-read"] });
   const bare = mintToken("job-secret", { kind: "agent", agentId: "ag-ada", issueId: "iss1" });
-  for (const tok of [undefined, "read-token", "docs-key", lane, reviewer, bare, "run-jwt-ada"]) assert.equal((await k.call("docs", tok, { method: "tools/list" }, opts)).status, 401, String(tok));
+  // A grader token names the graded agent for billing only: it is never that agent's identity.
+  const grader = mintToken("job-secret", { kind: "grader", agentId: "ag-ada", issueId: "iss1", jobcaps: ["docs-read"] });
+  for (const tok of [undefined, "read-token", "docs-key", lane, reviewer, bare, grader, "run-jwt-ada"]) assert.equal((await k.call("docs", tok, { method: "tools/list" }, opts)).status, 401, String(tok));
   assert.equal((await k.call("docs", job, { method: "tools/list" })).status, 401);
   // A private jobcap: only for a job minted as observing.
   const light = mintToken("job-secret", { kind: "agent", agentId: "ag-ada", jobcaps: ["private-read"] });

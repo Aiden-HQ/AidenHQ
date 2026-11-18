@@ -18,7 +18,7 @@ const TG = "tg-key", OP = "op-key", LANE = "lane-key", PLAIN = "plain-key";
 
 /** A kernel with two records waiting for the owner: the runner's push (WOR-1) and a module kind's. */
 async function setup(t, extra = {}) {
-  const k = await kernel(t, { modules: MODULES, secrets: SECRETS, grants: { "ag-cos": { key: "chief-of-staff" } }, ...extra });
+  const k = await kernel(t, { modules: MODULES, secrets: SECRETS, grants: { "ag-cos": { key: "chief-of-staff", roles: ["fleet-admin"] } }, ...extra });
   const runnerCard = { sentence: "Push x.", changes: "c", reads: "r", cost: "0", details: "" };
   const push = k.records.file({ kind: "runner.push", module: "runner", args: { only: [] }, targets: {}, executor: { module: "runner" }, policy: "p", tier: 2, panel: false, card: runnerCard, requester: { agent: "", key: "", name: "the runner", roles: [], kind: "runner" }, task: "t-1", identifier: "WOR-1", state: "owner" });
   const rec = k.records.file({ kind: "twin.post", module: "twin", args: { note: "x" }, targets: {}, executor: { module: "twin" }, policy: "p", tier: 2, panel: false, card: { sentence: "Post x.", changes: "", reads: "", cost: "", details: "" }, requester: { agent: "ag-ada", key: "ada", name: "Ada", roles: [], kind: "run" }, task: "TASK-1", state: "owner" });
@@ -203,4 +203,20 @@ test("the outbox: a channel hands the owner's message to another installed chann
   assert.deepEqual((await k.v1("GET", "/v1/channel/outbox", undefined, TG)).json.messages, []);
   assert.deepEqual((await k.v1("GET", "/v1/channel/outbox", undefined, OP)).json.messages, [{ from: "channel-telegram", text: "hi" }]);
   assert.deepEqual((await k.v1("GET", "/v1/channel/outbox", undefined, OP)).json.messages, []);
+});
+
+test("cp-read: an attachment's bytes come only for one listed on the named task, and never past 25 MB", async (t) => {
+  const { k } = await setup(t, { onControl: async (req) => {
+    if (req.url === "/api/issues/WOR-1/attachments") return { body: [{ id: "att-1" }, { id: "att-big" }] };
+    if (req.url === "/api/attachments/att-1/content") return { body: { hello: "bytes" } };
+    if (req.url === "/api/attachments/att-big/content") return { body: "x".repeat(26 * 1024 * 1024) };
+    if (req.url === "/api/attachments/att-other/content") return { body: "secret" };
+  } });
+  const get = (path, token = LANE) => fetch(`${k.url}${path}`, { headers: { authorization: `Bearer ${token}` } });
+  const ok = await get("/v1/cp/read/attachments/att-1/content?task=WOR-1");
+  assert.deepEqual([ok.status, ok.headers.get("content-type"), await ok.text()], [200, "application/json", '{"hello":"bytes"}']);
+  assert.equal((await get("/v1/cp/read/attachments/att-1/content?task=WOR-1", PLAIN)).status, 403);
+  assert.equal((await get("/v1/cp/read/attachments/att-1/content")).status, 400);
+  assert.equal((await get("/v1/cp/read/attachments/att-other/content?task=WOR-1")).status, 404);
+  assert.equal((await get("/v1/cp/read/attachments/att-big/content?task=WOR-1")).status, 413);
 });

@@ -3,6 +3,7 @@
 // nothing (scripts/compile.mjs writes). See docs/configuration.md.
 import { createHash, randomBytes } from "node:crypto";
 import { cpSync, existsSync, lstatSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
 import { dirname, join, relative, resolve, sep } from "node:path";
 import YAML from "yaml";
 import { validateImages } from "./computers.mjs";
@@ -15,6 +16,7 @@ import { checkout, forkBase, forksOf, hostFetch, marketplaceEntries, marketplace
 import { effective } from "../kernel/src/loader/release.ts";
 import { compilePoints } from "../kernel/src/loader/points.ts";
 import { gateMode } from "../kernel/src/gates.ts";
+import { officialRepo } from "./official-repo.mjs";
 
 const PROFILES = ["trusted", "untrusted", "code-exec"];
 // image: the agent's computer (scripts/computers.mjs); the instance turns it on or off per agent.
@@ -41,7 +43,7 @@ const KERNEL_DEFAULTS = kernelJson("defaults.json");
 const SETTING = /\$\{settings\.([A-Za-z0-9_]+)\}/g;
 // Agents defined in the instance repo (agents/<key>/agent.yaml + AGENTS.md): their fields, and the
 // write tools an agent in trial keeps (to report on its own tasks; everything else it may only read).
-const INSTANCE_AGENT_FIELDS = ["name", "description", "reports_to", "model", "reasoning_effort", "timeout_sec", "connections", "routines", "budget", "max_parallel", "image", "trial", "trial_writes", "heartbeat", "web_search", "graded", "builder", "department", "chat", "skills"];
+const INSTANCE_AGENT_FIELDS = ["name", "description", "reports_to", "model", "reasoning_effort", "timeout_sec", "connections", "routines", "budget", "max_parallel", "image", "trial", "trial_writes", "heartbeat", "web_search", "graded", "department", "chat", "skills", "profile"];
 // An instance agent's fast chat lane (`chat:`, the chat-lane module): its chats answered in seconds by a light model
 // loop with a few of its granted tools, instead of Paperclip runs. The default model is the 2026-11-14 bake-off's pick.
 const CHAT_FIELDS = ["model", "reasoning", "tools", "deadline_s", "telegram"];
@@ -184,8 +186,17 @@ export function chatBlock(key, c, tools) {
 export function grantEntry(key, a, routines = {}) {
   const ids = [a.model, ...(a.models ?? []), ...Object.values(routines).filter((r) => r.agent === key).map((r) => r.model)];
   const models = [...new Set(ids.filter((m) => typeof m === "string" && m.trim()).map((m) => m.replace(/^openrouter\//, "")))];
-  return { models, caps: { ...CAPS, ...(a.caps ?? {}) }, graded: a.graded === true, ...(a.jobcaps?.length ? { jobcaps: a.jobcaps } : {}), ...(a.feedback_for ? { feedback_for: a.feedback_for } : {}) };
+  // What the kernel freezes into each job at admission (kernel/src/admission.ts): the profile, its engine, model and effort, how
+  // many of its jobs run at once, and each of its routines' model.
+  const own = Object.entries(routines).filter(([, r]) => r.agent === key && (r.model || r.reasoning_effort));
+  return {
+    models, caps: { ...CAPS, ...(a.caps ?? {}) }, graded: a.graded === true, ...(a.jobcaps?.length ? { jobcaps: a.jobcaps } : {}), ...(a.feedback_for ? { feedback_for: a.feedback_for } : {}),
+    profile: a.profile ?? "crew", ...(a.engine ? { engine: a.engine } : {}), ...(a.model ? { model: a.model.replace(/^openrouter\//, "") } : {}), ...(a.reasoning_effort ? { effort: a.reasoning_effort } : {}),
+    max_parallel: a.max_parallel ?? 1, ...(a.private_reads === true ? { private_reads: true } : {}), ...(a.web_search ? { web_search: a.web_search } : {}), ...(own.length ? { routines: Object.fromEntries(own.map(([k, r]) => [k, { ...(r.model ? { model: r.model.replace(/^openrouter\//, "") } : {}), ...(r.reasoning_effort ? { effort: r.reasoning_effort } : {}) }])) } : {}),
+  };
 }
+/** An agent's profile (kernel/src/admission.ts PROFILES): which tools, writes and computer its kernel jobs get. */
+const JOB_PROFILES = ["crew", "engineer", "check"];
 
 const ENGINE_FIELDS = ["kind", "bin", "live_input", "label", "adapter", "effort_key", "model_prefix", "gateway", "box", "state", "reset", "seed", "crew"];
 const relPath = (p) => typeof p === "string" && p && !p.split("/").includes("..") && !/^\/\//.test(p);
@@ -547,7 +558,18 @@ export function linkPairServices(flows, compose, serviceModule, networkModule) {
  * productDir holds modules/<name>/module.yaml; instanceDir holds instance.yaml, agents/<key>.md additions to a module
  * agent's handbook, and agents/<key>/ folders (agent.yaml + AGENTS.md): the instance's own agents.
  */
-export function compile(productDir, instanceDir, { revision, fetch = hostFetch(productDir), door } = {}) {
+/**
+ * The host's work_dir (config/runner.yaml, else the example's; ~ is the user's home): where the kernel keeps the job workspaces
+ * (kernel/src/sandbox-config.ts reads the same file the same way).
+ */
+export function hostWorkDir(productDir, env = process.env) {
+  const dir = resolve(productDir, env.AIDENHQ_CONFIG_DIR ?? "config");
+  const file = existsSync(join(dir, "runner.yaml")) ? join(dir, "runner.yaml") : join(productDir, "config/runner.example.yaml");
+  const p = String((existsSync(file) ? YAML.parse(readFileSync(file, "utf8")) : {})?.work_dir ?? "~/aidenhq-work");
+  return p.startsWith("~/") ? join(homedir(), p.slice(2)) : p;
+}
+
+export function compile(productDir, instanceDir, { revision, fetch = hostFetch(productDir), door, workDir = hostWorkDir(productDir) } = {}) {
   const instFile = join(instanceDir, "instance.yaml");
   if (!existsSync(instFile)) fail(`no instance.yaml in ${instanceDir}: set AIDENHQ_INSTANCE_DIR to your instance checkout (see docs/USAGE.md)`);
   const instance = readYaml(instFile);
@@ -590,11 +612,13 @@ export function compile(productDir, instanceDir, { revision, fetch = hostFetch(p
 
   // settings.exposure: one mode, never a list; unset is tailscale, the mode of every install made before the setting.
   if (Array.isArray(settings.exposure)) fail("settings.exposure: one of public, tailscale, cloudflare or local, not a list");
+  if (!(Number.isInteger(settings.computers_max) && settings.computers_max >= 1 && settings.computers_max <= 64)) fail("settings.computers_max: a whole number, 1 to 64");
   settings.exposure ??= "tailscale";
 
 
   // Derived (not settable): the orgs the src_github sync covers, github_orgs plus the agents org.
   settings.agents_org = agentsOrg(settings); // the only org github-mcp's commit_status_set may write to
+  settings.modules_repo = officialRepo(instance, productDir) ?? ""; // the official modules repo: the code host treats it as the product
   settings.github_sync_orgs = [...new Set([...[settings.github_orgs ?? []].flat(), agentsOrg(settings)].filter(Boolean))].join(",");
 
   // What the board's Settings shows (services/board/src/settings.ts): every setting an enabled module declares or the instance
@@ -692,7 +716,7 @@ export function compile(productDir, instanceDir, { revision, fetch = hostFetch(p
     }
     // Its compose services, generated from `services:` (no module compose); settings substituted as compose text (no $).
     const raw = all.get(name).def;
-    const gen = generateCompose(name, { ...def, services: substitute(raw.services, settings, true), board_env: substitute(raw.board_env, settings, true) }, { root, local: true, rootServices: Object.keys(base.services ?? {}), rootNetworks: Object.keys(base.networks ?? {}), rootSecrets: Object.keys(base.secrets ?? {}), legacy: legacyOf(name) });
+    const gen = generateCompose(name, { ...def, services: substitute(raw.services, settings, true), board_env: substitute(raw.board_env, settings, true) }, { root, local: true, rootServices: Object.keys(base.services ?? {}), rootNetworks: Object.keys(base.networks ?? {}), rootSecrets: Object.keys(base.secrets ?? {}), legacy: legacyOf(name), workDir });
     for (const [k, s] of Object.entries(gen.services)) {
       if (k in (base.services ?? {})) fail(`module ${name}: its service ${k} has a root service's name`);
       put(compose.services, k, s, "compose service");
@@ -775,11 +799,11 @@ export function compile(productDir, instanceDir, { revision, fetch = hostFetch(p
     a.department = { id, name: d.name.trim(), ...(d.description ? { description: String(d.description).trim() } : {}), order };
   }
 
-  // The description is how other agents route work to an agent: the generated Team list (scripts/handbook.mjs) is built from it.
+  // The description is how other agents route work to an agent: setup puts it in the agent directory, where task_team and fleet_catalog read it.
   for (const [key, a] of Object.entries(paperclip.agents)) if (!a.description) fail(`agent ${key} has no description: it is how others route work to it`);
 
   // Roles (spec §3.1 `roles`): each module declares the roles it checks, and its agents hold those or the ones it requests.
-  const rolesOf = (m) => ({ declares: [all.get(m)?.def.roles?.declares ?? []].flat().map((d) => String(d?.id ?? d)), requests: [all.get(m)?.def.roles?.requests ?? []].flat().map(String) });
+  const rolesOf = (m) => ({ declares: [all.get(m)?.def.roles?.declares ?? []].flat().map((d) => String(d?.id ?? d)), requests: [all.get(m)?.def.roles?.requests ?? []].flat().map((r) => String(r).replace(/\?$/, "")) });
   const roleOwner = {};
   for (const name of enabled) for (const r of rolesOf(name).declares) roleOwner[r] = roleOwner[r] ? fail(`role ${r}: declared by ${roleOwner[r]} and ${name}`) : name;
   const defaultGrants = enabled.flatMap((name) => [all.get(name).def.default_grants ?? []].flat().map((g) => {
@@ -804,6 +828,8 @@ export function compile(productDir, instanceDir, { revision, fetch = hostFetch(p
   }
   for (const [key, a] of Object.entries(paperclip.agents)) {
     if (a.reports_to && !paperclip.agents[a.reports_to]) fail(`${key}: reports_to ${a.reports_to}, which is not enabled`);
+    // A role written `id?` is held only while the module declaring it is enabled (like an optional grant `connection?`).
+    a.roles = (a.roles ?? []).filter((r) => !String(r).endsWith("?") || roleOwner[r.slice(0, -1)]).map((r) => String(r).replace(/\?$/, ""));
     const tools = {};
     for (const [raw, grant] of Object.entries(a.connections ?? {})) {
       const name = raw.replace(/\?$/, "");
@@ -846,7 +872,6 @@ export function compile(productDir, instanceDir, { revision, fetch = hostFetch(p
     a.mcp_servers = Object.keys(tools);
     a.enabled_tools = tools;
     if (a.chat != null) a.chat = chatBlock(key, a.chat, tools);
-    a.roles = a.roles ?? [];
     for (const r of a.roles) {
       if (!roleOwner[r]) fail(`${key}: unknown role ${r} (declared: ${Object.keys(roleOwner).join(", ")})`);
       if (roleOwner[r] !== a.module && !rolesOf(a.module).requests.includes(r)) fail(`${key}: module ${a.module} may not grant ${r} (declare it, or list it under roles.requests)`);
@@ -917,7 +942,7 @@ export function compile(productDir, instanceDir, { revision, fetch = hostFetch(p
           if (!existsSync(fork)) fail(`override agents.${key}.handbook_fork: missing agents/${key}/AGENTS.md`);
           target.instructions = fork;
         }
-        // A bigger host runs more of one agent's work at once; the computer pool (AIDENHQ_COMPUTERS_MAX) must still cover box agents.
+        // A bigger host runs more of one agent's work at once; the computer pool (settings.computers_max) must still cover box agents.
         if (f === "max_parallel" && !(Number.isInteger(v) && v >= 1 && v <= 10)) fail(`override ${kind}.${key}.max_parallel must be 1 to 10`);
         target[f] = v;
       }
@@ -931,6 +956,7 @@ export function compile(productDir, instanceDir, { revision, fetch = hostFetch(p
   // The gateway's and grader's grants fields (grantEntry), checked after the overrides that may set them.
   for (const [key, a] of Object.entries(paperclip.agents)) {
     if (a.graded != null && typeof a.graded !== "boolean") fail(`${key}: graded is true, false or absent`);
+    if (a.profile != null && !JOB_PROFILES.includes(a.profile)) fail(`${key}: profile is ${JOB_PROFILES.join(", ")} (absent: crew)`);
     if (a.caps == null) continue;
     if (typeof a.caps !== "object" || Array.isArray(a.caps)) fail(`${key}: caps is {run_usd, task_usd, day_usd}`);
     for (const [f, v] of Object.entries(a.caps)) if (!(f in CAPS) || typeof v !== "number" || !(v > 0) || v > 1000) fail(`${key}: caps.${f} isn't a cap (${Object.keys(CAPS).join(", ")}: USD, above 0, at most 1000)`);
@@ -1038,7 +1064,8 @@ export function compile(productDir, instanceDir, { revision, fetch = hostFetch(p
   // The model gateway's prices and CI review (config/gateway.json, re-read per call).
   // spend_day_usd: the install-wide daily cap on every model call (docs/design/quiet-start.md); unset, none.
   if (settings.spend_day_usd != null && !(typeof settings.spend_day_usd === "number" && settings.spend_day_usd > 0 && settings.spend_day_usd <= 10_000)) fail("settings.spend_day_usd: USD a day, above 0 (unset for no cap)");
-  const gateway = { models: modelPrices(enabledDefs), ...(enabled.includes("ci") ? { ci: ciReview(settings) } : {}), ...(settings.spend_day_usd != null ? { install_day_usd: settings.spend_day_usd } : {}) };
+  if (!(typeof settings.eval_day_usd === "number" && settings.eval_day_usd >= 0 && settings.eval_day_usd <= 10_000)) fail("settings.eval_day_usd: USD a day, 0 or more");
+  const gateway = { models: modelPrices(enabledDefs), ...(enabled.includes("ci") ? { ci: ciReview(settings) } : {}), ...(settings.spend_day_usd != null ? { install_day_usd: settings.spend_day_usd } : {}), eval_day_usd: settings.eval_day_usd };
   const named = [...Object.entries(paperclip.agents).flatMap(([key, a]) => grantEntry(key, a, paperclip.routines).models), ...(gateway.ci?.models ?? [])];
   // Checked once some module prices models (the default bundle has models-openrouter); with none, the gateway refuses every call.
   const unpriced = Object.keys(gateway.models).length ? [...new Set(named.filter((m) => !gateway.models[m]))] : [];
@@ -1063,14 +1090,20 @@ export function compile(productDir, instanceDir, { revision, fetch = hostFetch(p
   const runAgents = Object.entries(paperclip.agents).filter(([, a]) => a.dispatch === "runner").map(([k]) => k).sort();
   if (dispatchers.length > 1) fail(`modules ${dispatchers.join(", ")} all request kernel.jobs: one job dispatcher at a time`);
   if (dispatchers.length) kernelModules.modules[dispatchers[0]].dispatches = runAgents;
-  return { paperclip, apps: { apps }, points, compose, catalog, warnings, optionalSecrets, askedSecrets: setup.map((f) => f.secret), generatedSecrets, dataDirs, stateDirs, dataModules, gateway, jobcaps, engines, connections, writes, checks, kernelModules, exposure: settings.exposure, edge: edge && { gate: edge.gate, cloudflared: edge.cloudflared } };
+  // kernel.grader (grader tokens for a task a finish check holds) is the one grading module's: exactly one holder, and it declares a
+  // task.finish check (the hold the kernel checks before it mints), the same way kernel.jobs has one dispatcher.
+  const graders = Object.entries(kernelModules.modules).filter(([, m]) => (m.roles ?? []).includes("kernel.grader")).map(([n]) => n);
+  if (graders.length > 1) fail(`modules ${graders.join(", ")} all request kernel.grader: one grading module at a time`);
+  for (const n of graders) if (!(enabledDefs[n]?.checks ?? []).some((c) => c.at === "task.finish")) fail(`module ${n}: kernel.grader needs a finish check (checks: at: task.finish)`);
+  return { paperclip, computersMax: settings.computers_max, apps: { apps }, points, compose, catalog, warnings, optionalSecrets, askedSecrets: setup.map((f) => f.secret), generatedSecrets, dataDirs, stateDirs, dataModules, gateway, jobcaps, engines, connections, writes, checks, kernelModules, exposure: settings.exposure, edge: edge && { gate: edge.gate, cloudflared: edge.cloudflared } };
 }
 
 /**
  * config/kernel/modules.json's `modules`: what the kernel knows of a module beyond its connections (spec §2.4, §3.3.4, §5.6):
  * the kernel.* roles it requests, its privileged entries, a channel's or a job dispatcher's own token (a generated secret named
  * `<module>_token`, dashes as underscores) and, for a channel (`providers.channel`, which needs privileged speaks-as-owner),
- * the stamp its decisions carry, whether it may close stale cards, and its own settings (a host CLI channel reads them here).
+ * the stamp its decisions carry, whether it may close stale cards, its transport (where owner messages are sent) and its own
+ * settings (a host CLI channel reads them here).
  */
 /**
  * Modules' setup fields (spec §6.10): a module's provided secrets with `setup: { label, pattern, help?, required? }`, which
@@ -1103,17 +1136,20 @@ export function kernelModuleTable(defs, settings = {}) {
     const token = `${name.replace(/-/g, "_")}_token`;
     const ch = def.providers?.channel;
     if (ch != null) {
-      if (typeof ch !== "object" || Array.isArray(ch)) fail(`module ${name}: providers.channel is a map ({} or {stamp, stale})`);
-      for (const k of Object.keys(ch)) if (!["stamp", "stale"].includes(k)) fail(`module ${name}: providers.channel.${k} is not allowed (stamp, stale)`);
+      if (typeof ch !== "object" || Array.isArray(ch)) fail(`module ${name}: providers.channel is a map ({} or {stamp, stale, transport})`);
+      for (const k of Object.keys(ch)) if (!["stamp", "stale", "transport"].includes(k)) fail(`module ${name}: providers.channel.${k} is not allowed (stamp, stale, transport)`);
+      // transport: where the owner's router (role kernel.notify) has the kernel send this channel's owner messages, with its own token.
+      if (ch.transport != null && !/^https?:\/\/[\w.-]+:\d+\/[\w/.-]*$/.test(String(ch.transport))) fail(`module ${name}: providers.channel.transport must be http://<service>:<port>/<path>`);
+      if (ch.transport != null && !(def.generated_secrets ?? []).includes(token)) fail(`module ${name}: a channel transport needs the module's own token (generated_secrets: [${token}])`);
       if (!privileged.includes("speaks-as-owner")) fail(`module ${name}: a channel (providers.channel) needs privileged: [speaks-as-owner]`);
       if (ch.stamp != null && !/^[a-z]{1,16}$/.test(String(ch.stamp))) fail(`module ${name}: providers.channel.stamp is one lowercase word`);
       if (ch.stale != null && typeof ch.stale !== "boolean") fail(`module ${name}: providers.channel.stale is true or false`);
     }
     const e = {
       ...(roles.length ? { roles } : {}), ...(privileged.length ? { privileged } : {}),
-      // A channel's, a job dispatcher's (kernel.jobs), or a check's module (its label and its reads): its own generated `<module>_token`.
-      ...((ch != null || roles.includes("kernel.jobs") || (def.checks ?? []).length) && (def.generated_secrets ?? []).includes(token) ? { token } : {}),
-      ...(ch != null ? { channel: { ...(ch.stamp ? { stamp: String(ch.stamp) } : {}), ...(ch.stale === true ? { stale: true } : {}) }, settings: Object.fromEntries(Object.keys(def.settings ?? {}).map((k) => [k, settings[k]])) } : {}),
+      // A channel's, a job dispatcher's (kernel.jobs), a check job requester's (kernel.checks), a check's module (its label and its reads) or an executor's (its outcomes): its own generated `<module>_token`.
+      ...((ch != null || roles.includes("kernel.jobs") || roles.includes("kernel.checks") || (def.checks ?? []).length || def.providers?.executor) && (def.generated_secrets ?? []).includes(token) ? { token } : {}),
+      ...(ch != null ? { channel: { ...(ch.stamp ? { stamp: String(ch.stamp) } : {}), ...(ch.stale === true ? { stale: true } : {}), ...(ch.transport ? { transport: String(ch.transport) } : {}) }, settings: Object.fromEntries(Object.keys(def.settings ?? {}).map((k) => [k, settings[k]])) } : {}),
     };
     if (Object.keys(e).length) out[name] = e;
   }
@@ -1198,10 +1234,11 @@ export function writeKinds(name, def, root, instanceWrites = {}, taken = {}) {
   for (const [k, w] of entries) {
     const id = `${name}.${k}`;
     if (!/^[a-z][a-z0-9_]{0,40}$/.test(k)) fail(`write kind ${id}: the name is lowercase letters, digits and _`);
-    const extra = Object.keys(w ?? {}).filter((f) => !["args", "floor", "panel", "card", "tools"].includes(f));
+    const extra = Object.keys(w ?? {}).filter((f) => !["args", "floor", "panel", "paths", "card", "tools"].includes(f));
     if (extra.length) fail(`write kind ${id}: unknown field ${extra.join(", ")} (kernel/schemas/writes.json)`);
     if (![0, 1, 2].includes(w.floor)) fail(`write kind ${id}: floor is 0, 1 or 2`);
     if (w.panel != null && typeof w.panel !== "boolean") fail(`write kind ${id}: panel is true or false`);
+    if (w.paths != null && w.paths !== true) fail(`write kind ${id}: paths is true (a repository write: its plan returns the files it changes)`);
     const card = w.card ?? {};
     if (typeof card !== "object" || Object.entries(card).some(([f, v]) => !CARD_FIELDS.includes(f) || typeof v !== "string")) fail(`write kind ${id}: card has only ${CARD_FIELDS.join(", ")}, each a template string`);
     const tools = (w.tools ?? []).map((t) => {
@@ -1219,7 +1256,7 @@ export function writeKinds(name, def, root, instanceWrites = {}, taken = {}) {
       args = JSON.parse(readFileSync(file, "utf8"));
     }
     const floor = Math.max(w.floor, Number(instanceWrites[id]?.floor ?? 0));
-    out[id] = { module: name, floor, ...(w.panel ? { panel: true } : {}), tools, card, ...(args ? { args } : {}), executor: { url: ex.url, auth_secret: ex.auth, rev: moduleRev(root) } };
+    out[id] = { module: name, floor, ...(w.panel ? { panel: true } : {}), ...(w.paths ? { paths: true } : {}), tools, card, ...(args ? { args } : {}), executor: { url: ex.url, auth_secret: ex.auth, rev: moduleRev(root) } };
   }
   return out;
 }
@@ -1243,7 +1280,6 @@ function instanceAgents(instanceDir, settings, paperclip, routineTitles) {
     if (typeof def.budget !== "number" || !(def.budget > 0)) fail(`agent ${key}: budget is USD per month, a number above 0`);
     if (def.max_parallel != null && !(Number.isInteger(def.max_parallel) && def.max_parallel >= 1 && def.max_parallel <= 10)) fail(`agent ${key}: max_parallel must be 1 to 10`);
     if (def.trial != null && def.trial !== true) fail(`agent ${key}: trial is true or absent`);
-    if (def.builder != null && typeof def.builder !== "boolean") fail(`agent ${key}: builder is true, false or absent`);
     const { description, routines, ...rest } = def;
     put(paperclip.agents, key, { adapter: "codex_local", ...rest, title: String(description).trim(), description: String(description).trim(), instructions: handbook, module: "instance", isolation: "trusted" }, "agent");
     for (const [rk, r] of Object.entries(routines ?? {})) {
@@ -1444,6 +1480,31 @@ export async function ensureMemoryInboxes({ api, companyId, keys, step }) {
       description: `Facts ${key} noted for its memory, one comment each (memory_note). The Librarian curates them daily into agents/${key}/memory.md; nobody else reads or edits this task.\n\n<!-- source:${marker} -->`,
     });
     step(`Created task ${made.identifier} (memory inbox of ${key})`);
+    return made.id;
+  });
+  return Object.fromEntries(keys.map((key, i) => [key, ids[i]]));
+}
+
+/**
+ * One unassigned backlog "Chat with <name>" task per agent with a `chat:` block (marker chat-task:<key>): the fast chat
+ * lane's conversation, where the kernel writes each lane turn (kernel/src/lane.ts). Held by nobody and in backlog, so
+ * nothing in Paperclip or the wake inbox runs on it; the lane answers the owner's words there. Returns { key: issue id }.
+ */
+export async function ensureChatTasks({ api, companyId, agents, ownerName, step }) {
+  const keys = Object.keys(agents);
+  if (!keys.length) return {};
+  const { json: me } = await api("GET", "/api/cli-auth/me");
+  const ids = await mapLimit(keys, 4, async (key) => {
+    const marker = `chat-task:${key}`;
+    const q = new URLSearchParams({ q: key, status: "backlog,todo,in_progress,in_review,blocked", limit: "50", excludeRoutineExecutions: "true" });
+    const { json: open } = await api("GET", `/api/companies/${companyId}/issues?${q}`);
+    const ours = open.find((i) => String(i.description ?? "").includes(`<!-- source:${marker} -->`) && me.userId && i.createdByUserId === me.userId && !i.createdByAgentId && !i.assigneeAgentId && !i.assigneeUserId);
+    if (ours) return ours.id;
+    const { json: made } = await api("POST", `/api/companies/${companyId}/issues`, {
+      title: `Chat with ${agents[key]}`, status: "backlog", priority: "low",
+      description: `${ownerName || "The owner"}'s fast chat with ${agents[key]}: every message and reply, on every channel. Write here to talk to ${agents[key]}.\n\n<!-- source:${marker} -->`,
+    });
+    step(`Created task ${made.identifier} (chat with ${key})`);
     return made.id;
   });
   return Object.fromEntries(keys.map((key, i) => [key, ids[i]]));

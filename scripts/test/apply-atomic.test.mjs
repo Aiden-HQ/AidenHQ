@@ -9,14 +9,14 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { execFile, execFileSync, spawn } from "node:child_process";
-import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import YAML from "yaml";
 
 const repo = join(dirname(fileURLToPath(import.meta.url)), "../..");
-const REAL = ["ops/apply-config.sh", "ops/apply-config-work.sh", "ops/lib/apply-lock.sh", "ops/lib/generations.sh", "ops/lib/progress.sh", "ops/rollback.sh", "kernel/src/loader/data-version.ts"];
+const REAL = ["ops/apply-config.sh", "ops/apply-config-work.sh", "ops/host-metrics.sh", "ops/lib/apply-lock.sh", "ops/lib/generations.sh", "ops/lib/progress.sh", "ops/rollback.sh", "kernel/src/loader/data-version.ts"];
 
 const exe = (file, text) => { mkdirSync(dirname(file), { recursive: true }); writeFileSync(file, text); chmodSync(file, 0o755); };
 const git = (cwd, ...args) => execFileSync("git", args, { cwd, encoding: "utf8", env: { ...process.env, GIT_AUTHOR_NAME: "t", GIT_AUTHOR_EMAIL: "t@example.com", GIT_COMMITTER_NAME: "t", GIT_COMMITTER_EMAIL: "t@example.com" } }).trim();
@@ -37,7 +37,8 @@ fs.mkdirSync(out + "/kernel", { recursive: true });
 fs.writeFileSync(out + "/paperclip.yaml", inst + v);
 fs.writeFileSync(out + "/kernel/connections.json", "{}\\n");
 fs.writeFileSync(out + "/modules.json", JSON.stringify({ modules: /^modules: (.*)$/m.exec(inst)?.[1] ?? "" }) + "\\n");
-fs.writeFileSync(stage ? "compose.modules.next.yaml" : "compose.modules.yaml", "services: {}\\n# " + v);
+fs.writeFileSync(stage ? "compose.modules.next.yaml" : "compose.modules.yaml",
+  (inst.includes("monitoring") ? "services:\\n  monitoring-node-exporter:\\n    image: x\\n" : "services: {}\\n") + "# " + v);
 const dv = fs.existsSync("DATA_VERSION") ? Number(fs.readFileSync("DATA_VERSION", "utf8")) : 0;
 fs.writeFileSync(out + "/module-data.json", JSON.stringify({ acme: { data_version: dv, services: "s" } }));
 const acme = "data/modules/acme";
@@ -61,6 +62,8 @@ const SCRIPTS = {
 echo "AidenHQ health"
 echo "  ok    paperclip http (127.0.0.1:3100)"
 [ -f "$CTRL/flaky" ] && echo "  FAIL  flaky probe  red before the apply too"
+# What scripts/healthcheck.sh says when the unit's ExecStart names another checkout (scripts/test/healthcheck.test.mjs).
+[ -f "$CTRL/mismatch" ] && echo "  FAIL  host metrics timer runs the applied checkout  the unit runs /old/ops/host-metrics.sh, not $PWD/ops/host-metrics.sh"
 echo "  skip  ops-mcp (meetings module not installed)"
 # What is applied decides (data/applied-product), as on a host the running services do, never the checkout alone.
 if [ -f "$CTRL/break" ] && git cat-file -e "$(cat data/applied-product 2>/dev/null)":BAD_HEALTH 2>/dev/null; then echo "  FAIL  kernel (10.231.0.1:3130)  down"; exit 1; fi
@@ -115,7 +118,8 @@ function world() {
   for (const [f, t] of Object.entries(SCRIPTS)) exe(d("pw", f), t);
   for (const u of ["aidenhq-kernel.service", "aidenhq-runner.service", "aidenhq-apply-recover.service", "aidenhq-backup.service", "aidenhq-backup.timer", "aidenhq-host-metrics.service", "aidenhq-host-metrics.timer"]) {
     mkdirSync(d("pw", "ops/units"), { recursive: true });
-    writeFileSync(d("pw", "ops/units", u), `[Unit]\nDescription=${u}\n`);
+    // The host-metrics unit is the product's own: the apply compares the installed copy with it.
+    writeFileSync(d("pw", "ops/units", u), u.startsWith("aidenhq-host-metrics.") ? readFileSync(join(repo, "ops/units", u), "utf8") : `[Unit]\nDescription=${u}\n`);
   }
   writeFileSync(d("pw", ".gitignore"), "config/\ndata/\nconfig.next/\ncompose.modules.yaml\ncompose.modules.next.yaml\nnode_modules/\n");
   const commitProduct = (version, extra = {}, remove = []) => {
@@ -474,4 +478,78 @@ test("a log follower that dies mid-apply costs only the copy: the apply finishes
   assert.equal(r.status, 0, r.out);
   assert.equal(w.gens().at(-1).health, "good");
   assert.match(readFileSync(w.d("state/apply-2.log"), "utf8"), /generation 2: product [\s\S]*apply timing: compose[\s\S]*generation 2 is good: the last known good[\s\S]*apply timing: total/);
+});
+
+// The host-metrics timer runs the script of the checkout the apply applied, not the one ops/setup.sh recorded at install
+// time: the unit's last EnvironmentFile= (written every apply) names the applied checkout, and systemd reads it after
+// ~/.config/aidenhq-checkout.env.
+const OLD_HOST_METRICS_UNIT = `[Unit]
+Description=AidenHQ host metrics for the monitoring module: unit and container states as node-exporter textfiles (ops/host-metrics.sh)
+
+[Service]
+# The product checkout: ~/aidenhq, or where ops/setup.sh recorded it (~/.config/aidenhq-checkout.env).
+Environment=AIDENHQ_DIR=%h/aidenhq
+EnvironmentFile=-%h/.config/aidenhq-checkout.env
+Type=oneshot
+ExecStart=/usr/bin/env bash \${AIDENHQ_DIR}/ops/host-metrics.sh
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+`;
+
+// What systemd does with the unit's environment: Environment= first, then each EnvironmentFile= in order (a later one
+// wins), then expand ${AIDENHQ_DIR} in ExecStart.
+function hostMetricsScript(unit, home) {
+  const env = {};
+  for (const line of readFileSync(unit, "utf8").split("\n")) {
+    const m = /^(Environment|EnvironmentFile)=(.*)$/.exec(line);
+    if (!m) continue;
+    const value = m[2].replaceAll("%h", home);
+    if (m[1] === "Environment") {
+      for (const kv of value.split(/\s+/)) { const [k, ...v] = kv.split("="); env[k] = v.join("="); }
+    } else {
+      const file = value.replace(/^-/, "");
+      if (!existsSync(file)) continue;
+      for (const l of readFileSync(file, "utf8").split("\n")) {
+        if (!l || l.startsWith("#")) continue;
+        const [k, ...v] = l.split("="); env[k] = v.join("=");
+      }
+    }
+  }
+  const exec = /^ExecStart=(.*)$/m.exec(readFileSync(unit, "utf8"))[1];
+  return exec.replace(/\$\{(\w+)\}/g, (_, k) => env[k] ?? "").split(/\s+/).at(-1);
+}
+
+test("the host-metrics unit an apply installs runs the applied checkout's script, not the checkout env file's", async () => {
+  const w = world();
+  const units = w.d("home/.config/systemd/user");
+  mkdirSync(units, { recursive: true });
+  // The unit an earlier install left, and the checkout env file ops/setup.sh wrote then, naming another directory.
+  writeFileSync(join(units, "aidenhq-host-metrics.service"), OLD_HOST_METRICS_UNIT);
+  copyFileSync(join(repo, "ops/units/aidenhq-host-metrics.timer"), join(units, "aidenhq-host-metrics.timer"));
+  mkdirSync(w.d("old-checkout/ops"), { recursive: true });
+  writeFileSync(w.d("old-checkout/ops/host-metrics.sh"), "");
+  writeFileSync(w.d("home/.config/aidenhq-checkout.env"), `AIDENHQ_DIR=${w.d("old-checkout")}\n`);
+  w.commitInstance(w.p1, "modules: [monitoring]\n");
+  const r = await w.run();
+  assert.equal(r.status, 0, r.out);
+  const unit = join(units, "aidenhq-host-metrics.service");
+  assert.match(readFileSync(unit, "utf8"), /^EnvironmentFile=-%h\/\.config\/aidenhq-host-metrics\.env$/m, "the applied checkout is read last");
+  assert.ok(readFileSync(unit, "utf8").indexOf("aidenhq-checkout.env") < readFileSync(unit, "utf8").indexOf("aidenhq-host-metrics.env"), r.out);
+  assert.equal(readFileSync(w.d("home/.config/aidenhq-host-metrics.env"), "utf8"), `AIDENHQ_DIR=${realpathSync(w.d("prod"))}\n`);
+  assert.equal(realpathSync(hostMetricsScript(unit, w.d("home"))), realpathSync(w.d("prod/ops/host-metrics.sh")));
+  assert.match(r.out, /host metrics timer installed\/updated/, r.out);
+  // The unit's text is unchanged now, but the file it reads can still be stale: every apply writes it again.
+  writeFileSync(w.d("home/.config/aidenhq-host-metrics.env"), `AIDENHQ_DIR=${w.d("old-checkout")}\n`);
+  const again = await w.run();
+  assert.equal(again.status, 0, again.out);
+  assert.equal(realpathSync(hostMetricsScript(unit, w.d("home"))), realpathSync(w.d("prod/ops/host-metrics.sh")), again.out);
+});
+
+test("a host-metrics script mismatch fails the apply even when the baseline had it: a good generation is never reported", async () => {
+  const w = world();
+  writeFileSync(w.d("ctrl/mismatch"), "");
+  w.commitInstance(w.p1, "modules: [monitoring]\n");
+  const r = await w.run();
+  assert.notEqual(r.status, 0, r.out);
+  assert.match(r.out, /generation 2 failed: the unit runs \/old\/ops\/host-metrics\.sh, not /, r.out);
+  assert.equal(w.gens().at(-1).health, "failed");
 });

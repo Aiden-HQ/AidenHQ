@@ -158,6 +158,12 @@ test("gateway: attribution, billed cost, caps, raise_cap once, daily reset, no o
   assert.match(JSON.parse(dayRefused.text).error.message, /^spend cap reached: agent-day \$0\.06 of \$0\.05;/);
   for (const r of [refused, chatRefused, dayRefused]) assert.doesNotMatch(JSON.parse(r.text).error.message, /usage limit|rate[- ]?limit|try again|quota|capacity|429|service unavailable|temporary|spawn|ENOENT|\d{4}-\d{2}-\d{2}|\d+:\d\d/i);
 
+  // A grader token (the grading module's, per held task) names the agent it is billed to: its calls count against that agent's caps.
+  const graded = await call(mintToken("job-secret", { kind: "grader", agentId: "ag3", issueId: "g1", component: "Grader" }, now));
+  assert.match(JSON.parse(graded.text).error.message, /^spend cap reached: agent-day/, "charged to the graded agent's day cap");
+  assert.equal((await call(mintToken("job-secret", { kind: "grader", agentId: "ag2", issueId: "g2", component: "Grader" }, now))).status, 200);
+  assert.equal((await usage()).filter((r) => r.kind === "grader" && r.status === "ok").at(-1).agentId, "ag2");
+
   // System kinds are never capped. The old kill switch is gone: a stale enforce_caps: false still refuses (G10).
   const reviewer = mintToken("job-secret", { kind: "reviewer", issueId: "iss1" }, now);
   cost = 5;

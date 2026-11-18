@@ -102,9 +102,9 @@ outcomes:
   `app_api` are governed by grants. Setting or changing a routine's autonomy is always a Tier 2 change.
 - **Instance agents** (`agents/<key>/`) take `name`, `description` (the routing contract), `reports_to`, `model`,
   `reasoning_effort`, `timeout_sec`, `connections`, `routines` (schedules, `model` and `autonomy` only), `budget` (USD, required), `max_parallel`,
-  `image`, `trial`, `trial_writes`, `heartbeat`, `builder` and `skills` (module skill ids). They cannot have roles. `builder: true` (as on the Agent
-  Architect, the DevOps Engineer and the design agents) adds the shared "How we build" section to the handbook; every agent
-  gets "How we work". `trial: true` keeps writes to reporting on the
+  `image`, `trial`, `trial_writes`, `heartbeat` and `skills` (module skill ids). They cannot have roles. An agent that writes
+  or designs code lists `engineering.write-code` in `skills` (how code is written here); every agent gets "How we work".
+  `trial: true` keeps writes to reporting on the
   agent's own tasks; `trial_writes: [connection.tool, …]` on a trial agent says which more it may use, so a definition can
   give it the owner-channel writes before tap 2: `paperclip_tasks.task_create`, `chat_lane.wake_at`,
   `chat_lane.chat_send`, `telegram.notify_owner` (any other name, an entry it doesn't grant, or one on an agent not in
