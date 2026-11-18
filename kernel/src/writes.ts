@@ -135,7 +135,7 @@ export function createWrites({ records, registry, connections, secret, resolver,
     });
   }
 
-  const requesterOf = (who: Identity, task: string): Requester => ({ agent: who.agent ?? "", key: who.key ?? "", name: who.name ?? "", roles: who.roles, kind: who.kind, ...(task ? { task } : {}), ...(who.run ? { run: who.run } : {}), ...(who.module ? { module: who.module } : {}) });
+  const requesterOf = (who: Identity, task: string): Requester => ({ agent: who.agent ?? "", key: who.key ?? "", name: who.name ?? "", roles: who.roles, kind: who.kind, ...(task ? { task } : {}), ...(who.run ? { run: who.run } : {}), ...(who.module ? { module: who.module } : {}), ...(who.model ? { model: who.model } : {}) });
   const conn = (connection: string) => (Object.hasOwn(connections(), connection) ? connections()[connection] : undefined);
 
   /** The kind a connection's tool is routed into: a declared kind, conn.tool for an unmapped write or destructive tool, else none. */

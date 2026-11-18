@@ -339,11 +339,13 @@ test("a kernel job's write names its own workspace, whatever its args say", asyn
     res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify(req.url.endsWith("/plan") ? { args: b.args, targets: {} } : { ok: true, text: "pushed" }));
   });
   t.after(() => ex.s.close());
-  const rows = { "j-1": { agent: "ag-bo", task: "task-uuid-7", state: "running", identifier: "PEN-7", authority: { tools: { code: ["push"] }, jobcaps: [], writes: [], roles: [] } } };
+  const rows = { "j-1": { agent: "ag-bo", task: "task-uuid-7", state: "running", identifier: "PEN-7", authority: { tools: { code: ["push"] }, jobcaps: [], writes: [], roles: [], model: "~z-ai/glm-flash-latest" } } };
   const args = { type: "object", additionalProperties: false, required: ["workspace", "branch"], properties: { workspace: { type: "string", pattern: "^[A-Za-z][A-Za-z0-9]*-[0-9]+$" }, branch: { type: "string" } } };
   const k = await kernel(t, { secrets, grants, connections: {}, job: (id) => rows[id], writes: { "code.push": { module: "code", floor: 1, tools: ["code.push"], args, executor: { url: `${ex.url}/x`, auth_secret: "twin_service_key" } } } });
   const token = mintToken("job-secret", { kind: "job", job: "j-1", agentId: "ag-bo", issueId: "task-uuid-7" });
   const filed = await k.v1("POST", "/v1/writes", { kind: "code.push", args: { workspace: "PEN-9", branch: "fix" } }, token);
   assert.equal(filed.status, 200);
   assert.deepEqual([plans[0].workspace, k.records.get(filed.json.id).args.workspace], ["PEN-7", "PEN-7"]);
+  // Its record carries the job's model, so its reviewer is never of that family (review-loop.ts requesterModel).
+  assert.equal(k.records.get(filed.json.id).requester.model, "~z-ai/glm-flash-latest");
 });

@@ -13,6 +13,7 @@ import { createReviewLoop } from "../src/review-loop.ts";
 import { createResolver } from "../src/net.ts";
 import { REVIEW_TRIES } from "../src/tier.ts";
 import { readBody, serve } from "./helpers.mjs";
+import { reviewerModels, secondModels } from "../../modules/ai-reviewer/service/src/review.mjs";
 
 const until = async (fn) => { for (let i = 0; i < 300 && !fn(); i++) await new Promise((r) => setTimeout(r, 10)); assert.ok(fn()); };
 const KIND = "acme.post";
@@ -44,9 +45,9 @@ async function reviewer(t) {
   t.after(() => m.s.close());
   return { url: `${m.url}/aidenhq/v1/reviewer`, seen };
 }
-const fileRecord = (records, { panel = false, args = { note: "hello" } } = {}) => records.file({
+const fileRecord = (records, { panel = false, args = { note: "hello" }, model } = {}) => records.file({
   kind: KIND, module: "acme", args, targets: {}, executor: { module: "acme" }, policy: "p", card: { sentence: "Post a note.", changes: "c", reads: "r", cost: "none", details: "note: hello" },
-  requester: { agent: "ag-ada", key: "ada", name: "Ada", roles: [], kind: "job" }, task: "TASK-1", tier: 1, merit: 1, panel, review_first: null, rule: null, state: "review",
+  requester: { agent: "ag-ada", key: "ada", name: "Ada", roles: [], kind: "job", ...(model ? { model } : {}) }, task: "TASK-1", tier: 1, merit: 1, panel, review_first: null, rule: null, state: "review",
 });
 const db = () => join(mkdtempSync(join(tmpdir(), "review-loop-")), "kernel.db");
 
@@ -146,4 +147,20 @@ test("a kernel restart mid-review: the record is reviewed once more, never twice
   assert.deepEqual(after.ran, [r.id]);
   await after.loop.tick();
   assert.equal(mod.seen.length, 2);
+});
+
+test("a GLM job's write is reviewed by a non-GLM reviewer; a module's own write names no requester model", async (t) => {
+  const mod = await reviewer(t);
+  const k = await side(t, db(), mod);
+  fileRecord(k.records, { model: "~z-ai/glm-flash-latest" });
+  fileRecord(k.records, { args: { note: "a module's" } });
+  const sweep = k.loop.tick();
+  await until(() => mod.seen.length === 2);
+  const asked = mod.seen.map((s) => s.request.requesterModel).sort();
+  assert.deepEqual(asked, ["", "~z-ai/glm-flash-latest"]);
+  const glm = "~z-ai/glm-flash-latest";
+  const picked = [...reviewerModels(glm), ...secondModels(glm, reviewerModels(glm)[0])];
+  assert.ok(picked.length > 0 && picked.every((m) => !/z-ai|glm/i.test(m)), `no GLM reviewer: ${picked}`);
+  for (const s of mod.seen) k.reviews.verdict(s.id, s.token, OK);
+  await sweep;
 });
