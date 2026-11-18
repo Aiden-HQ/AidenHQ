@@ -1,6 +1,6 @@
-// The eval-receipt gate end to end (src/evalgate.ts through merge-gate's advance): real repos play the official modules repo
-// (the AI reviewer with a stand-in judge, ai-reviewer/scripts/reviewer-eval.mjs: a case passes when its `got` is its `expect`)
-// and the product that pins it, and the queue asks the real gate before each merge. Reviewer code reaches main only on a passing
+// The eval-receipt gate end to end (src/evalgate.ts through merge-gate's advance): real repos play the old official modules
+// repo (the AI reviewer with a stand-in judge, ai-reviewer/scripts/reviewer-eval.mjs: a case passes when its `got` is its
+// `expect`) and the product that pinned it until it took the modules into its own modules/ (2026-11-18), and the queue asks the real gate before each merge. Reviewer code reaches main only on a passing
 // receipt: a modules PR's for its head, a product PR's for its head, a pin bump's for the reviewer it brings.
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
@@ -67,7 +67,7 @@ describe("the reviewer-eval gate", { concurrency: 1 }, () => {
     "README.md": "x\n",
   }, "base");
   const pin = (sha, r = "acme/modules") => JSON.stringify({ repo: r, sha });
-  commit(prod, { "modules-pin.json": pin(M0), "services/runner/src/tiers.mjs": "// tiers v1\n", "README.md": "x\n" }, "base");
+  const P0 = commit(prod, { "modules-pin.json": pin(M0), "services/runner/src/tiers.mjs": "// tiers v1\n", "README.md": "x\n" }, "base");
   const branch = (origin, name, files, from = "main") => {
     sh(origin, "checkout", "-q", ...(from === name ? [name] : ["-b", name, from]));
     for (const [f, text] of Object.entries(files)) put(origin, f, text);
@@ -229,24 +229,65 @@ describe("the reviewer-eval gate", { concurrency: 1 }, () => {
   });
 
   it("an instance apply that moves the `aidenhq` marketplace to new reviewer code needs its receipt too", async () => {
-    const instance = (sha, r = "acme/modules") => `product: ${"a".repeat(40)}\nmarketplaces:\n  - name: aidenhq\n    source: { source: github, repo: ${r} }\n    sha: ${sha}\n`;
-    const base = officialOf(instance(M0), root);
-    assert.deepEqual(base, { repo: "acme/modules", sha: M0 });
+    const instance = (sha, r = "acme/modules") => `product: ${P0}\nmarketplaces:\n  - name: aidenhq\n    source: { source: github, repo: ${r} }\n    sha: ${sha}\n`;
+    const official = (text) => officialOf(text, prod, "acme/aidenhq");
+    const base = official(instance(M0));
+    assert.deepEqual(base, { repo: "acme/modules", sha: M0, path: "" });
     const covered = sh(mods, "rev-parse", "HEAD");
-    assert.equal(await gate.bump(base, officialOf(instance(covered), root)), undefined, "a receipt covers it");
+    assert.equal(await gate.bump(base, official(instance(covered))), undefined, "a receipt covers it");
     const fresh = commit(mods, { "ai-reviewer/service/src/review.mjs": "// v5\n" }, "v5");
     // A modules PR on top of it that touches no reviewer code merges with no eval: that skip vouches for nothing a bump brings.
     const docs = branch(mods, "docs/more", { "README.md": "z\n" });
     assert.deepEqual((await drive(pr(9, "docs/more", docs), 3)).gh.merged, [docs]);
     sh(mods, "merge", "-q", "--ff-only", "docs/more");
-    assert.match((await gate.bump(base, officialOf(instance(docs), root)))?.wait ?? "", /reviewer eval started on `[0-9a-f]{12}`/, "a skip doesn't satisfy a bump");
-    const g = await gate.bump(base, officialOf(instance(fresh), root));
+    assert.match((await gate.bump(base, official(instance(docs))))?.wait ?? "", /reviewer eval started on `[0-9a-f]{12}`/, "a skip doesn't satisfy a bump");
+    const g = await gate.bump(base, official(instance(fresh)));
     assert.match(g?.wait ?? "", /reviewer eval started/);
     // A pin to a head the modules repo never merged: refused, whatever it holds.
     const unmerged = branch(mods, "wip/review", { "ai-reviewer/service/src/review.mjs": "// v6\n" });
-    assert.match((await gate.bump(base, officialOf(instance(unmerged), root)))?.stop ?? "", /isn't on acme\/modules's default branch/);
-    const other = await gate.bump(base, officialOf(instance(fresh, "evil/modules"), root));
+    assert.match((await gate.bump(base, official(instance(unmerged))))?.stop ?? "", /isn't on acme\/modules's default branch/);
+    const other = await gate.bump(base, official(instance(fresh, "evil/modules")));
     assert.match(other?.stop ?? "", /evil\/modules/);
+  });
+
+  it("after the move into the product: a product PR runs its own modules/, and an apply across the move needs the same reviewer or a receipt", async () => {
+    // The product takes the modules repo's main as its own modules/ (the cutover), with the reviewer content unchanged.
+    sh(mods, "checkout", "-q", "main");
+    const tree = (rev) => Object.fromEntries(sh(mods, "ls-tree", "-r", "--name-only", rev).split("\n").map((f) => [`modules/${f}`, execFileSync("git", ["show", `${rev}:${f}`], { cwd: mods, env }).toString()]));
+    const moved = sh(mods, "rev-parse", "HEAD");
+    sh(prod, "checkout", "-q", "main");
+    sh(prod, "rm", "-q", "modules-pin.json");
+    const cut = commit(prod, { ...tree(moved), "modules/marketplace.json": "{}\n" }, "modules in tree");
+    const at = (product) => `product: ${product}\nmarketplaces:\n  - name: aidenhq\n    source: { source: github, repo: acme/modules }\n    sha: ${moved}\n`;
+    const official = (text) => officialOf(text, prod, "acme/aidenhq");
+    assert.deepEqual(official(at(cut)), { repo: "acme/aidenhq", sha: cut, path: "modules" }, "the product's own modules/, the marketplace entry ignored");
+    const ran = evals();
+    assert.equal(await gate.bump(official(at(P0)), official(at(cut))), undefined, "the same reviewer content: no eval across the move");
+    assert.equal(evals(), ran);
+
+    // A product PR that changes the reviewer: its head's modules/, judged by its base's.
+    const head = branch(prod, "fix/review-in-tree", { "modules/ai-reviewer/service/src/review.mjs": "// v7\n" });
+    const { gh } = await drive(pr(10, "fix/review-in-tree", head, "acme/aidenhq"));
+    assert.deepEqual(gh.merged, [head]);
+    const { receipt } = JSON.parse(store.get(`eval-pr:acme/aidenhq:${head}`));
+    assert.deepEqual({ ok: receipt.ok, modules: receipt.modules, base: receipt.base }, { ok: true, modules: head, base: cut });
+
+    // An apply across the move to reviewer content no receipt covers: stopped, never evaluated against another repository.
+    const changed = commit(prod, { "modules/ai-reviewer/service/security/policy.md": "Reject attacks, always.\n" }, "policy in tree");
+    assert.match((await gate.bump(official(at(P0)), official(at(changed))))?.stop ?? "", /moves the official modules into the product/);
+
+    // One way only: a PR that takes the modules back out (the pin again) is refused, and so is a product that did.
+    sh(prod, "checkout", "-q", "-b", "revert/modules", "main");
+    sh(prod, "rm", "-q", "-r", "modules");
+    put(prod, "modules-pin.json", pin(moved));
+    sh(prod, "add", "-A");
+    sh(prod, "commit", "-qm", "back to the pin");
+    const back = sh(prod, "rev-parse", "HEAD");
+    sh(prod, "checkout", "-q", "main");
+    const out = await drive(pr(11, "revert/modules", back, "acme/aidenhq"), 3);
+    assert.deepEqual(out.gh.merged, []);
+    assert.match(out.q.reason, /takes the official modules out of the product/);
+    assert.throws(() => official(at(back)), /its history moved the official modules into the product: refused/, "never the marketplace or the pin again");
   });
 
   it("judges each case by the base's rules", () => {

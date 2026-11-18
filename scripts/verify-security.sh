@@ -885,29 +885,26 @@ gate_before_merge() { awk "/^$1/,/^}/" "$rm_" | grep -nE 'await github\.evalGate
   && grep -qF '  jail: (argv, paths) => hiding(evalSandbox, argv, [], paths),' "$rmain" && grep -qF 'import { hiding, jailProblem } from "../../../kernel/src/sandbox.ts";' "$rmain" && [ "$(grep -E 'evalSandbox( =|\.[a-zA-Z]+ =)' "$rmain" | tr '\n' '|')" = 'const evalSandbox = sandboxConfig();|' ] && grep -qF 'const evalJailIssue = jailProblem(evalSandbox);' "$rmain" && grep -qF '  log("ERROR: reviewer eval runs cannot be jailed here", { reason: evalJailIssue });' "$rmain" && grep -qF '  process.exit(1);' "$rmain" && ! grep -q 'unconfined' "$rmain" \
   && pass "runner: a product PR that changes the AI reviewer's code merges only on a passing eval receipt for its exact head (base judge, eval key, jailed; $rgate)" \
   || fail "runner: the reviewer-eval receipt gate on product merges changed ($rgate, $rm_)"
-# ...and it must see the reviewer where it lives. Since the official modules left the product (44646a3b, #213) the AI reviewer,
-# its judge (JUDGE) and the module paths in REVIEWER_CODE are in the official modules repo (modules-pin.json, instance.yaml's
-# `aidenhq` marketplace), not under the product's modules/ (gitignored, materialized). The gate reads the reviewer from the
-# modules repo: a modules-repo PR that changes it runs its own head, a product PR touching the product's reviewer files runs
-# the modules commit its merge pins, each judged by its base's.
-{ git -C "$repo" cat-file -e "HEAD:modules/ai-reviewer/scripts/reviewer-eval.mjs" 2>/dev/null || grep -qF 'modules-pin.json' "$rgate"; } \
-  && grep -q 'modulesRepo' "$rgate" && ! grep -qF 'if (!d.productRepo || !sameSlug(repo, d.productRepo)) return undefined;' "$rgate" \
-  && pass "runner: the reviewer-eval gate reads the AI reviewer from the product tree or the modules pin, and no longer skips every repo but the product ($rgate)" \
-  || fail "runner: the reviewer-eval gate can't see the AI reviewer in the official modules repo (since #213): it reads modules/ai-reviewer from the product, which no longer has it (reviewer-code product PRs stop), and skips every repo but the product (modules-repo PRs changing the reviewer merge with no receipt) ($rgate)"
-# A pin bump brings reviewer code too: a product PR moving modules-pin.json, or an apply moving the instance's `aidenhq`
-# marketplace (or the product, so its pin), to a modules commit whose reviewer (the module, plan.mjs, check.mjs by object id)
-# differs lands only on a passing receipt for that reviewer: the passed modules PR's (keyed by content, so its squash merge needs
-# no second eval), else its own eval of the new commit, in its own namespace: no PR's skip or receipt answers a bump. A pin
-# that changes the reviewer must name a commit on the modules repo's default branch (merged, so reviewed there) before any
-# receipt counts. The apply asks at its card and again right before it lands.
-grep -qF '      const moved = await bump(judge, lands, `#${pr.number}`);' "$rgate" \
-  && [ "$(awk '/^  async function bump\(/,/^  }/' "$rgate" | grep -nE 'reviewerAt\(path, from\.sha\)|await merged\(path, to\.sha\)|if \(passed\(reviewer\)\)|await begin\(' | cut -d: -f2- | sed 's/^ *//' | cut -c1-24 | tr '\n' '|')" = 'if (reviewer === (await |const unmerged = await m|if (passed(reviewer)) re|return had === "none" ? |' ] \
+# ...and it must see the reviewer where it lives: the product's own modules/ai-reviewer again since 2026-11-18. A product PR
+# that changes it runs its head's modules/, judged by its base's; one that takes the modules back out of the product is refused.
+git -C "$repo" cat-file -e "HEAD:modules/ai-reviewer/scripts/reviewer-eval.mjs" 2>/dev/null \
+  && grep -qF 'return await begin(key, head, path, lands, judge, apiKey);' "$rgate" && grep -qF 'takes the official modules out of the product' "$rgate" \
+  && pass "runner: the reviewer-eval gate reads the AI reviewer from the product's modules/ and refuses taking it back out ($rgate)" \
+  || fail "runner: the reviewer-eval gate doesn't read the AI reviewer from the product's modules/, or lets a PR take the modules back out of the product ($rgate)"
+# An apply that moves the product (or, before 2026-11-18, the instance's `aidenhq` marketplace) to a commit whose reviewer (the
+# module, plan.mjs, check.mjs by object id) differs lands only on a passing receipt for that reviewer: the passed PR's (keyed
+# by content, so its squash merge needs no second eval), else its own eval of the new commit, in its own namespace: no PR's
+# skip or receipt answers a bump. The new commit must be on its repository's default branch (merged, so reviewed there) before
+# any receipt counts; across the move into the product only the same content or such a receipt covers it. The apply asks at
+# its card and again right before it lands.
+grep -qF '      const moved = await bump(judge, pinned, `#${pr.number}`);' "$rgate" \
+  && [ "$(awk '/^  async function bump\(/,/^  }/' "$rgate" | grep -nE 'reviewerAt\(fromPath, from\)|await merged\(path, to\)|if \(passed\(reviewer\)\)|await begin\(' | cut -d: -f2- | sed 's/^ *//' | cut -c1-24 | tr '\n' '|')" = 'if (reviewer === (await |const unmerged = await m|if (passed(reviewer)) re|return had === "none" ? |' ] \
   && grep -qF '      const key = `eval-bump:${to.sha}`;' "$rgate" && ! grep -qF 'skip: true' "$rgate" \
   && grep -qF 'const REVIEWER_TREE = ["ai-reviewer", "codehost-github/src/plan.mjs", "platform/src/check.mjs"];' "$rgate" \
   && [ "$(awk '/^async function landFleet\(/,/^}/' "$rmain" | grep -nE 'await evalGateApply\(|whileApplying\(' | cut -d: -f2- | sed 's/^ *//' | cut -c1-22 | tr '\n' '|')" = 'await evalGateApply(r,|return whileApplying(i|' ] \
   && grep -qF '  if (!files.includes("instance.yaml")) return;' "$rmain" \
-  && pass "runner: a modules pin bump (modules-pin.json, the instance's aidenhq marketplace) that changes the AI reviewer lands only on a passing eval receipt for it ($rgate, $rmain)" \
-  || fail "runner: a modules pin bump can bring a changed AI reviewer with no eval receipt ($rgate, $rmain)"
+  && pass "runner: an apply that moves the product (or the old aidenhq marketplace) to a changed AI reviewer lands only on a passing eval receipt for it ($rgate, $rmain)" \
+  || fail "runner: an apply can bring a changed AI reviewer with no eval receipt ($rgate, $rmain)"
 # Who decides a write (owner, 2026-11-14): the owner only for their own veto, a split panel, a routine's or the instance's
 # autonomy cap (autonomy off: after the AI review, #110), an owner-recorded source exception (#101), a spend-cap raise or nothing recognised (the only Tier 2 rules left in tiers.mjs).
 # Every one of them is AI-reviewed before it reaches the owner (owner, 2026-11-16): classify() makes a Tier 2-by-merit

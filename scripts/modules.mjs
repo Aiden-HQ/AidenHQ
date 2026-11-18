@@ -13,12 +13,11 @@ import { urlSettingProblem } from "../services/shared/url-setting.ts";
 import { generateCompose, ownSecrets, subnetFor } from "./compiler/services.ts";
 import { capabilityProblems, conflictProblems, danglingBindings } from "./compiler/bindings.ts";
 import { MANIFEST_KEYS, moduleName } from "./compiler/authority.ts";
-import { checkout, forkBase, forksOf, hostFetch, marketplaceEntries, marketplacesOf, OFFICIAL, onFork, onOfficialMain, pinsOf, remoteModules, sourceOf } from "./compiler/sources.ts";
+import { checkout, forkBase, forksOf, hostFetch, marketplaceEntries, OFFICIAL, onFork, pinsOf, remoteModules } from "./compiler/sources.ts";
 import { effective } from "./compiler/release.ts";
 import { compilePoints } from "./compiler/points.ts";
 import { gateMode } from "../kernel/src/gates.ts";
 import { KERNEL_KINDS, KERNEL_ROLES } from "../kernel/src/kinds.ts";
-import { officialRepo } from "./official-repo.mjs";
 
 const PROFILES = ["trusted", "untrusted", "code-exec"];
 // image: the agent's computer (scripts/computers.mjs); the instance turns it on or off per agent.
@@ -332,23 +331,9 @@ function discover(productDir, instance, fetch) {
   // computed tier that is never official.
   const parse = (t) => YAML.parse(t);
   const forks = forksOf(instance).filter((x) => x.target !== "kernel" && out.has(x.target));
-  const pins = pinsOf(instance).filter((p) => p.marketplace === OFFICIAL);
-  const resolved = forks.length || pins.length ? effective(instance, fetch) : instance; // on top of what the release (if any) resolves to
-  // An official module pinned at its own commit (instance.yaml `modules: - { id, sha }`): its folder in the official
-  // repository at that sha; the others follow the marketplace.
-  for (const p of pins) {
-    if (!out.has(p.name)) fail(`modules: ${p.name} is pinned but the official marketplace has no such module`);
-    const pinFile = () => JSON.parse(readFileSync(join(productDir, "modules-pin.json"), "utf8"));
-    const w = marketplacesOf(resolved).find((m) => m.name === OFFICIAL)?.at ?? sourceOf({ source: "github", repo: pinFile().repo }, "modules-pin.json", undefined, pinFile().sha, true);
-    const at = { ...w, path: join(w.path, p.name), sha: p.sha };
-    const r = checkout(at, fetch);
-    const def = readYaml(join(r, "module.yaml"));
-    if (def.name !== p.name) fail(`${p.name}: its module.yaml at ${p.sha.slice(0, 12)} names ${def.name}`);
-    if (def.apps != null || Object.values(def.services?.run ?? {}).some((s) => s?.build != null)) fail(`${p.name}: apps and service builds from a per-module pin aren't supported yet; pin the marketplace`);
-    // Official only when the sha is on the official repository's main; otherwise a computed tier, as a fork's.
-    const tier = onOfficialMain(at, fetch) ? "official" : fetch.kit?.(r, def, at) ? "conformant" : "declared";
-    out.set(p.name, { ...out.get(p.name), root: r, def, tier, sha: p.sha, pinned: p.sha, source: { url: at.url, path: at.path } });
-  }
+  // An official module is part of the product (2026-11-18): the product pin (product:) moves it, never a per-module sha.
+  for (const p of pinsOf(instance).filter((x) => x.marketplace === OFFICIAL)) fail(`modules: ${p.name} is pinned at ${p.sha.slice(0, 12)}, but an official module is part of the product: pin the product (product:), not the module`);
+  const resolved = forks.length ? effective(instance, fetch) : instance; // on top of what the release (if any) resolves to
   for (const k of forks) {
     const at = onFork(forkBase(resolved, k, productDir, { ...fetch, parse }), k, fetch);
     const r = checkout(at, fetch);
@@ -625,7 +610,7 @@ export function compile(productDir, instanceDir, { revision, fetch = hostFetch(p
 
   // Derived (not settable): the orgs the src_github sync covers, github_orgs plus the agents org.
   settings.agents_org = agentsOrg(settings); // the only org github-mcp's commit_status_set may write to
-  settings.modules_repo = officialRepo(instance, productDir) ?? ""; // the official modules repo: the code host treats it as the product
+  settings.modules_repo = ""; // no separate official modules repo since 2026-11-18: they are the product's modules/
   settings.github_sync_orgs = [...new Set([...[settings.github_orgs ?? []].flat(), agentsOrg(settings)].filter(Boolean))].join(",");
 
   // What the board's Settings shows (services/board/src/settings.ts): every setting an enabled module declares or the instance

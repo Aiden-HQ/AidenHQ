@@ -659,15 +659,15 @@ async function fileInstancePin(issue, to) {
   const repo = cfg.apply.repo;
   const r = await releaseClone(issue, repo);
   const tip = await git(r.path, "rev-parse", "--verify", `refs/remotes/origin/${await defaultBranch(r.path)}^{commit}`);
+  // A product from before the official modules were its own also moves the instance's `aidenhq` marketplace to its pin.
   const modules = await modulesPinAt(to);
-  if (!modules) throw new UserError(`product ${to.slice(0, 12)} pins no modules`);
   let text;
   try {
     text = bumpInstance(await git(r.path, "show", `${tip}:instance.yaml`), { product: to, modules, official: OFFICIAL });
   } catch (err) {
     throw new UserError(`instance.yaml can't be bumped in place: ${err.message}`);
   }
-  await commitFiles({ path: r.path, tip, branch: `fleet/release-${issue.identifier.toLowerCase()}`, files: { "instance.yaml": text }, index: join(cfg.stateDir, `release-index-${issue.id}`), env: identityEnv(await botIdentity()), message: `chore: product ${to.slice(0, 8)} + modules ${modules.slice(0, 8)} (${issue.identifier})\n\nWritten by the runner's release train; no agent wrote it.` });
+  await commitFiles({ path: r.path, tip, branch: `fleet/release-${issue.identifier.toLowerCase()}`, files: { "instance.yaml": text }, index: join(cfg.stateDir, `release-index-${issue.id}`), env: identityEnv(await botIdentity()), message: `chore: product ${to.slice(0, 8)}${modules ? ` + modules ${modules.slice(0, 8)}` : ""} (${issue.identifier})\n\nWritten by the runner's release train; no agent wrote it.` });
   // A bump that brings new reviewer code lands only on a passing eval of it: started here, and the bump stays open (filed on
   // a later poll) while it runs, rather than carded to fail.
   const b = await fleetBranch(issue, state.task(issue.id).workspace);
@@ -1834,7 +1834,8 @@ async function finishMerges(issueId, queue, say, { posted = false } = {}) {
  */
 const evalGate = createEvalGate({
   productRepo: cfg.productRepo,
-  modulesRepo: cfg.modulesRepo,
+  // The old official modules repo: an apply across the move into the product (2026-11-18) reads its side there.
+  modulesRepo: /github\.com\/([\w.-]+\/[\w.-]+?)\.git$/.exec(OFFICIAL_URL)?.[1],
   workDir: cfg.workDir,
   keyFile: join(cfg.secretsDir, "openrouter_eval_key"),
   state,
@@ -3398,14 +3399,14 @@ async function closeTyped(issue, out) {
 }
 
 /**
- * An instance change that moves the official modules it runs (its `aidenhq` marketplace, its release or its product's pin)
- * to a different AI reviewer lands only on a passing reviewer-eval receipt for that reviewer (evalgate.ts bump): the merged
- * modules PR's own receipt, else an eval of the new modules commit, started here.
+ * An instance change that moves the official modules it runs (its product's modules/; before 2026-11-18 its `aidenhq`
+ * marketplace, its release or its product's pin) to a different AI reviewer lands only on a passing reviewer-eval receipt for
+ * that reviewer (evalgate.ts bump): the merged PR's own receipt, else an eval of the new commit, started here.
  */
 async function evalGateApply(r, sha, files) {
   if (!files.includes("instance.yaml")) return;
   const { base } = await fleetChange(r, sha);
-  const g = await evalGate.bump(...(await Promise.all([base, sha].map(async (rev) => officialOf(await git(r.path, "show", `${rev}:instance.yaml`), REPO_ROOT)))), "the instance change");
+  const g = await evalGate.bump(...(await Promise.all([base, sha].map(async (rev) => officialOf(await git(r.path, "show", `${rev}:instance.yaml`), REPO_ROOT, cfg.productRepo)))), "the instance change");
   if (g) throw new UserError("stop" in g ? g.stop : `${g.wait}; ask for the apply again once it passes`);
 }
 

@@ -18,7 +18,7 @@ import { kernel, serve } from "./helpers.mjs";
 const ROOT = join(import.meta.dirname, "../..");
 const inv = pathInventory(ROOT);
 const product = execFileSync("git", ["ls-files", "-z"], { cwd: ROOT, maxBuffer: 64 << 20, encoding: "utf8" }).split("\0").filter(Boolean);
-// The official modules at ./modules (CI puts them there at modules-pin.json).
+// The official modules: the product's own modules/.
 const modules = readdirSync(join(ROOT, "modules"), { recursive: true, withFileTypes: true }).filter((e) => e.isFile()).map((e) => relative(ROOT, join(e.parentPath, e.name))).filter((f) => !/(^|\/)(node_modules|\.git|dist)\//.test(f));
 
 test("a privileged module's folder is at least the reviewer's, in the modules repo and at the product's modules/", () => {

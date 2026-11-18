@@ -191,8 +191,9 @@ export function engineState(cfg: Pick<SandboxConfig, "enginesFile" | "stateDir">
   return dir;
 }
 
-/** An apply swaps the product's modules/ tree in place (materialize.mjs renames it away and back), so a skills build that
- * lands in the gap is retried for about two seconds, reading the skill folders fresh on each attempt. */
+/** An apply moves the product's modules/ tree under a running kernel (a checkout, or a rollback's fetch that renames it away
+ * and back), so a skills build that lands in the gap is retried for about two seconds, reading the skill folders fresh on each
+ * attempt. */
 const SKILL_BUILD_ATTEMPTS = 10;
 const SKILL_BUILD_RETRY_MS = 200;
 const swappedAway = (err: unknown) => { const code = (err as NodeJS.ErrnoException)?.code; return code === "ENOENT" || code === "ESTALE"; };

@@ -197,16 +197,17 @@ score must keep passing.
 **The eval-receipt gate** (`services/runner/src/evalgate.ts`, owner 2026-11-16). Reviewer code reaches the fleet only on a
 passing receipt (95% of the base cases, every miss a false block). The reviewer's own code is the whole `ai-reviewer` module (service, policy, cases, `case-pad.mjs`,
 `reviewer-eval.mjs`), `kernel/sdk/src/reviewer.ts`, `tiers.mjs`, the kernel's `tier.ts` and the authority-diff classifier
-(`scripts/compiler/authority.ts`). The module lives in the official modules repo since 5b, so the eval always runs a commit
-of that repo, judged by an earlier one:
+(`scripts/compiler/authority.ts`). The module is the product's own `modules/ai-reviewer` (again since 2026-11-18; it lived
+in the official modules repo from 5b), so the eval runs a product commit's `modules/` tree, judged by an earlier one:
 
-- a modules-repo PR that changes the reviewer: its head, judged by its base branch, receipt for its head;
-- a product PR that changes the product's reviewer code: the modules commit its merge pins, judged by the base's pin,
-  receipt for the product head;
-- a pin bump (a product PR moving `modules-pin.json`, an apply moving the instance's `aidenhq` marketplace, release or
-  product) whose reviewer differs, by object id of the module, `plan.mjs` and `check.mjs`: covered by any passing receipt for
-  that same reviewer (so a passed modules PR's squash merge needs no second eval), else the new modules commit runs once,
-  judged by the old one, receipt for that commit. The apply asks when its card is checked and again right before it lands.
+- a product PR that changes the reviewer's code: its head, judged by its base branch, receipt for its head. A PR that
+  changes where the official modules come from (`modules/marketplace.json`) is always judged; one that takes them back out
+  of the product is refused;
+- an apply that moves `product:` (or, before the move, the instance's `aidenhq` marketplace) whose reviewer differs, by
+  object id of the module, `plan.mjs` and `check.mjs`: covered by any passing receipt for that same reviewer (so a passed
+  PR's squash merge needs no second eval), else the new commit runs once, judged by the old one, receipt for that commit.
+  Across the move itself only the same content or such a receipt covers it. The apply asks when its card is checked and
+  again right before it lands.
 
 - **When it runs.** Every merge site of the queue asks the gate right before GitHub's merge. On a head it hasn't seen, the
   runner fetches the head and the PR's base branch into its cache clone and reads the changed files itself. If no reviewer

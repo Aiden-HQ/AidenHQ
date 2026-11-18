@@ -92,9 +92,12 @@ async function main() {
     .filter((s) => names.includes(s.name) && (!s.main || env.MAIN))
     .map((s) => {
       const own = runs.find((r) => r.name === s.name) ?? s;
-      return { name: s.name, dir: s.name.split("#")[0], ...(own.job ? { job: own.job } : { run: own.run }) };
+      return { name: s.name, dir: s.name.split("#")[0], run: own.run, ...(own.job ? { job: own.job } : {}) };
     });
-  process.stdout.write(`${JSON.stringify({ tests, packages: tests.some((t) => !t.job) })}\n`);
+  // The official modules' suites (job "modules"), dealt into at most 3 shards in map order.
+  const mods = tests.filter((t) => t.job === "modules");
+  const shards = [0, 1, 2].map((i) => ({ shard: i + 1, entries: mods.filter((_, j) => j % 3 === i).map((t) => ({ dir: t.dir, run: t.run })) })).filter((x) => x.entries.length);
+  process.stdout.write(`${JSON.stringify({ tests, packages: tests.some((t) => !t.job), modules: shards })}\n`);
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) await main();

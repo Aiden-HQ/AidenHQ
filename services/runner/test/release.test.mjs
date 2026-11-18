@@ -42,6 +42,15 @@ test("bumpInstance moves only the product pin and the official marketplace's sha
   assert.throws(() => bumpInstance("release: x\n", { product: B, modules: C }), /product: <sha>/);
 });
 
+test("bumpInstance to a product that holds the official modules drops the obsolete `aidenhq` entry in the same commit", () => {
+  const text = (...markets) => ["# the instance", `product: ${A}`, "marketplaces:", ...markets, "modules: [core]", ""].join("\n");
+  const official = `  - { name: aidenhq, source: { source: github, repo: acme/modules }, sha: ${A} } # pinned`;
+  const other = `  - { name: other, source: { source: github, repo: acme/other }, sha: ${A} }`;
+  assert.equal(bumpInstance(text(official, other), { product: B }), text(other).replace(`product: ${A}`, `product: ${B}`));
+  assert.equal(bumpInstance(text(official), { product: B }), `# the instance\nproduct: ${B}\nmodules: [core]\n`, "its only entry: the key goes too");
+  assert.equal(bumpInstance(`product: ${A}\nmodules: [core]\n`, { product: B }), `product: ${B}\nmodules: [core]\n`);
+});
+
 test("a modules pin is only a full sha: anything else (a git option, say) is no pin", () => {
   assert.equal(pinOf(`{ "repo": "acme/modules", "sha": "${A}" }`), A);
   for (const bad of ["--output=/home/x/.bashrc", "HEAD", A.slice(0, 12), `${A} --stat`, 7]) assert.equal(pinOf(JSON.stringify({ sha: bad })), undefined, String(bad));
