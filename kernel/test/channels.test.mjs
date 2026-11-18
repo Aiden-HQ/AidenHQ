@@ -18,7 +18,7 @@ const TG = "tg-key", OP = "op-key", LANE = "lane-key", PLAIN = "plain-key";
 
 /** A kernel with two records waiting for the owner: the runner's push (WOR-1) and a module kind's. */
 async function setup(t, extra = {}) {
-  const k = await kernel(t, { modules: MODULES, secrets: SECRETS, grants: { "ag-cos": { key: "chief-of-staff" } }, ...extra });
+  const k = await kernel(t, { modules: MODULES, secrets: SECRETS, grants: { "ag-cos": { key: "chief-of-staff", roles: ["fleet-admin"] } }, ...extra });
   const runnerCard = { sentence: "Push x.", changes: "c", reads: "r", cost: "0", details: "" };
   const push = k.records.file({ kind: "runner.push", module: "runner", args: { only: [] }, targets: {}, executor: { module: "runner" }, policy: "p", tier: 2, panel: false, card: runnerCard, requester: { agent: "", key: "", name: "the runner", roles: [], kind: "runner" }, task: "t-1", identifier: "WOR-1", state: "owner" });
   const rec = k.records.file({ kind: "twin.post", module: "twin", args: { note: "x" }, targets: {}, executor: { module: "twin" }, policy: "p", tier: 2, panel: false, card: { sentence: "Post x.", changes: "", reads: "", cost: "", details: "" }, requester: { agent: "ag-ada", key: "ada", name: "Ada", roles: [], kind: "run" }, task: "TASK-1", state: "owner" });

@@ -28,13 +28,15 @@ function world() {
     }
     if ((m = /^\/api\/routines\/([^/]+)\/runs$/.exec(u.pathname))) return { status: 200, json: Object.values(issues).filter((i) => i.originId === m[1]).map((i) => ({ id: `run-${i.id}`, linkedIssueId: i.id })) };
     if ((m = /^\/api\/routines\/([^/]+)$/.exec(u.pathname))) return { status: 200, json: { id: m[1], concurrencyPolicy: "coalesce_if_active" } };
-    if (method === "PATCH" && (m = /^\/api\/issues\/([^/]+)$/.exec(u.pathname))) return (Object.assign(issues[m[1]], body), { status: 200, json: issues[m[1]] });
     if ((m = /^\/api\/issues\/([^/]+)$/.exec(u.pathname))) return issues[m[1]] ? { status: 200, json: issues[m[1]] } : { status: 404, json: {} };
     return { status: 404, json: {} };
   };
-  const wakes = createWakes({ db, owner, now: () => clock, dispatches: { may: (mod, a) => mod === "dispatch" && a === AGENT, agents: (mod) => (mod === "dispatch" ? [AGENT] : []) } });
+  // Writes as the agent (outcomes.ts): recorded, and the status applied.
+  const posts = [];
+  const post = async (job, req) => { posts.push({ ...job, ...req }); if (req.status) issues[job.task].status = req.status; return { comment: `c-${posts.length}`, status: req.status ?? null }; };
+  const wakes = createWakes({ db, owner, post, now: () => clock, dispatches: { may: (mod, a) => mod === "dispatch" && a === AGENT, agents: (mod) => (mod === "dispatch" ? [AGENT] : []) } });
   const w = {
-    db, wakes, issues,
+    db, wakes, issues, posts,
     tick: (ms = 1000) => (clock += ms),
     issue: (id, f = {}) => (issues[id] = { id, status: "todo", assigneeAgentId: AGENT, updatedAt: iso(clock), statusVersion: 1, ...issues[id], ...f }),
     comment: (task, id, f = {}) => { (comments[task] ??= []).push({ id, body: "hi", authorAgentId: null, createdAt: iso(clock), ...f }); issues[task].updatedAt = iso(clock); },
@@ -67,6 +69,7 @@ test("a routine's todo task with no event wakes after one poll; later ticks coal
   assert.deepEqual(w.rows("r1"), ["routine-run:run-r1 open"]);
   assert.deepEqual(w.rows("r2"), []);
   assert.equal(w.issues.r2.status, "cancelled", "the later tick is cancelled while the first is open");
+  assert.deepEqual(w.posts.map((p) => [p.agent, p.task, p.kind, p.status]), [[AGENT, "r2", "coalesced", "cancelled"]], "cancelled by its own agent, never the owner");
   const [c] = w.wakes.claim("dispatch");
   assert.equal(c.key, "routine-run:run-r1");
   w.db.prepare("UPDATE wakes SET job = 'j-1' WHERE key = ?").run(c.key);

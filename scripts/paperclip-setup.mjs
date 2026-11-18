@@ -20,7 +20,7 @@ import { fileURLToPath } from "node:url";
 import { codexMcpBlock, ensureBackupRetention, ensureCrewSkills, ensureFleetIssues, ensureMemoryInboxes, ensureReviewLogs, grantEntry, HEALTH_PROBES, healthProbeAgent, mapLimit, routineAutonomyDefault } from "./modules.mjs";
 import { routineStatus } from "./setup-paused.mjs";
 import { checkLauncher, computerAdapterConfig, ensureComputers, runnerBox } from "./computers.mjs";
-import { ensureEventsPlugin } from "./paperclip-events.mjs";
+import { ensureAgentKeys, ensureEventsPlugin } from "./paperclip-events.mjs";
 import { assertNoShell } from "./no-shell.mjs";
 import { agentSkills, handbookParts, HOW_WE_BUILD_SECTION, laneHandbook, onDemandSections, personaOf, readInstructions as readHandbook } from "./handbook.mjs";
 import { recoverStalePid } from "./paperclip-recover.mjs";
@@ -853,6 +853,7 @@ if (opsAgents.length > 1) fail(`only one agent may hold the ops-key role (${opsA
 const librarian = opsAgents.length ? agents[opsAgents[0]] : undefined;
 const keyChanged = librarian ? await ensureOpsKey(librarian) : false;
 if (isWork) await ensureHealthKeys(agents);
+if (isWork) await ensureAgentKeys({ api, agents, secretsDir, baseUrl, step });
 if (isWork) await ensureLaneConfig(agents); // the fast chat lane serves the work company only (phase 1)
 const cfgChanged = isWork ? updateSystemYaml(company.id) : false;
 if (librarian && (keyChanged || cfgChanged)) restartOpsMcp(); // ops-mcp exists only with the meetings module
