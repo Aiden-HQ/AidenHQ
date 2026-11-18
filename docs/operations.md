@@ -198,7 +198,10 @@ app deployed before it is served after its next deploy). The node joins once wit
 `tailscale_apps_authkey` (a reusable, tagged, pre-authorized key; compile creates the file empty), then keeps its
 identity in `data/apps-edge/state`. Until the key is there it waits, unjoined (`docker compose logs apps-edge`);
 after adding it, `docker compose up -d --force-recreate apps-edge` (the key is read only at start). Set
-`APPS_URL_BASE` in `.env` to its address.
+`APPS_URL_BASE` in `.env` to its address. The node is the apps' door only in `tailscale` exposure with that key and
+`APPS_URL_BASE` set (compile writes `config/apps-node`: `tailnet` or `none`): only then may an exposed, unshared app take
+token-less callers as anonymous (`AIDENHQ_ANONYMOUS`, set at deploy, so redeploy apps after it changes). Without it every
+app requires a signed identity and has no Open link (docs/design/app-identity.md).
 
 ## Tiered approvals
 

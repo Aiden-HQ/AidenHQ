@@ -80,8 +80,12 @@ The app wraps its whole handler; only `GET` on the exact health path passes with
 at request or upgrade time.
 
 **Tailnet-only apps** (`expose: true`, no `share.host`) are reached by tailnet browsers through apps-edge, which cannot mint
-tokens yet. For them only, apps-mcp sets `AIDENHQ_ANONYMOUS=tailnet` and `identify` returns `null` for a request with no
-token (a bad token still fails). The app treats `null` as an anonymous caller who gets only what it gives anyone (reads, a
+tokens yet. For them only, and only when the apps' tailnet node really is the instance's door (`exposure: tailscale`, the
+node's join key in the vault, so compile writes `config/apps-node` = `tailnet`, and `APPS_URL_BASE` set; apps-mcp re-reads
+it at every deploy and probe, and anything else fails closed), apps-mcp sets `AIDENHQ_ANONYMOUS=tailnet` and `identify`
+returns `null` for a request with no token (a bad token still fails). In every other mode (`local`, `public`,
+`cloudflare`, or tailscale without the node) the only ways to an app's port are the host's loopback and Docker bridges, so
+the app requires a signed identity and the deploy's identity probe requires it to refuse a token-less request. The app treats `null` as an anonymous caller who gets only what it gives anyone (reads, a
 public form), as the roadmap app does today. The default
 (the variable absent) refuses: the platform must opt an app out, never the app itself. A Tailscale adapter (apps-edge →
 gate) removes this case later.
