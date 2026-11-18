@@ -28,6 +28,7 @@ import { fileURLToPath } from "node:url";
 import { isDeepStrictEqual } from "node:util";
 import type { DatabaseSync } from "node:sqlite";
 import YAML, { Scalar } from "yaml";
+import { migrateModules, type Tree } from "../../scripts/compiler/migrate.ts";
 import { resolveRelease } from "../../scripts/compiler/release.ts";
 import { OFFICIAL, repoAt, type Fetch, type Where } from "../../scripts/compiler/sources.ts";
 
@@ -151,15 +152,30 @@ export function newerTags(d: Pick<Deps, "base">, than: string): { name: string; 
  * from before 2026-11-18 carries is dropped (the official modules are the kernel's own modules/), and `marketplaces:` with it
  * when that was its only entry.
  */
-export function pinText(text: string, file: Dict, name: string, sha: string): string {
+export function pinText(text: string, file: Dict, name: string, sha: string, migrate?: (listed: unknown[]) => unknown[]): string {
   const doc = YAML.parseDocument(text);
   const quoted = (s: string) => Object.assign(new Scalar(s), { type: Scalar.QUOTE_DOUBLE });
   doc.set("product", file.kernel);
+  // The module list moves with the product, in the same commit (replaced modules swapped, the bundle's additions made).
+  const listed = (doc.toJS() as Dict).modules;
+  const moved = Array.isArray(listed) && migrate ? migrate(listed) : listed;
+  if (migrate && !isDeepStrictEqual(listed, moved)) doc.set("modules", doc.createNode(moved, { flow: true }));
   if (!doc.has("release")) doc.set("release", doc.createNode({ name, source: { source: "github", repo: DISTRO }, sha }, { flow: true }));
   doc.setIn(["release", "name"], quoted(name));
   doc.setIn(["release", "sha"], sha);
   return dropOfficial(doc);
 }
+
+/** A product commit's files, read from a bare repository (a path or a missing file reads as undefined). */
+function gitTree(repo: string, sha: string): Tree {
+  const run = (a: string[]) => spawnSync("git", ["--git-dir", repo, ...a], { encoding: "utf8" });
+  return {
+    file: (p) => { const r = run(["show", `${sha}:${p}`]); return r.status === 0 ? r.stdout : undefined; },
+    modules: () => run(["ls-tree", "--name-only", sha, "modules/"]).stdout.split("\n").filter(Boolean).map((p) => p.slice("modules/".length)),
+  };
+}
+/** The module-list move from product `from` to product `to`, both in `repo`. */
+export const moduleMove = (repo: string, from: string, to: string) => (listed: unknown[]) => migrateModules(listed, gitTree(repo, from), gitTree(repo, to));
 
 /** The document without an `aidenhq` marketplace entry (nor an emptied `marketplaces:`), as text. */
 function dropOfficial(doc: YAML.Document): string {
@@ -191,11 +207,12 @@ export async function verify(d: Pick<Deps, "base" | "fetch" | "download">, text:
   const images = isMap(file.images) ? Object.values(file.images) : [];
   if (images.some((i) => typeof i !== "string" || !i.startsWith("ghcr.io/aiden-hq/"))) throw new Refused(`${name} names an image outside ghcr.io/aiden-hq`);
   // What the instance would pin, resolved as the apply will (shapes, shas, product: = kernel).
-  const next = pinText(text, file, name, sha);
-  try { resolveRelease(file, (YAML.parse(next) ?? {}) as Dict); } catch (e) { throw new Refused((e as Error).message); }
+  try { resolveRelease(file, (YAML.parse(pinText(text, file, name, sha)) ?? {}) as Dict); } catch (e) { throw new Refused((e as Error).message); }
   const kernel = String(file.kernel);
   const product = String(instance.product ?? "");
-  if (!isAncestor(onMain(d, at(d, KERNEL, kernel), `${name}'s kernel`), product, kernel)) throw new Refused(`${name}'s kernel ${kernel.slice(0, 12)} doesn't descend from the running product ${product.slice(0, 12)}`);
+  const kernelRepo = onMain(d, at(d, KERNEL, kernel), `${name}'s kernel`);
+  if (!isAncestor(kernelRepo, product, kernel)) throw new Refused(`${name}'s kernel ${kernel.slice(0, 12)} doesn't descend from the running product ${product.slice(0, 12)}`);
+  const next = pinText(text, file, name, sha, moduleMove(kernelRepo, product, kernel));
   // The release workflow's stamp: the published asset is this file with `tested` written, from a release.yml run on this commit.
   const asset = await d.download(`${GITHUB}/${DISTRO}/releases/download/${name}/${name}.json`);
   const bare = (f: unknown) => { const { tested: _t, todo: _d, ...rest } = isMap(f) ? f : {}; return rest; };
@@ -344,7 +361,7 @@ export function pinTo(d: Pick<Deps, "base" | "fetch" | "inst">, name: string, sh
   const distro = repoAt(at(d, DISTRO, sha), d.fetch);
   const file = JSON.parse(execFileSync("git", ["--git-dir", distro, "show", `${sha}:releases/${name}.json`], { encoding: "utf8" })) as Dict;
   if (file.kernel !== product) throw new Refused(`${name}'s kernel is ${String(file.kernel).slice(0, 12)}, but this checkout is at ${product.slice(0, 12)}`);
-  const next = pinText(text, file, name, sha);
+  const next = pinText(text, file, name, sha, moduleMove(repoAt(at(d, KERNEL, product), d.fetch), String(instance.product ?? ""), product));
   resolveRelease(file, (YAML.parse(next) ?? {}) as Dict);
   commitOn(d.inst, "main", `update: AidenHQ ${name} (the installer, from ${cur.name})`, (clone) => writeFileSync(join(clone, "instance.yaml"), next));
   return `instance.yaml now pins ${name} (from ${cur.name})`;

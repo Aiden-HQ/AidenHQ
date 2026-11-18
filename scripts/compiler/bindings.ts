@@ -29,7 +29,7 @@ export function capabilityProblems(all: Record<string, ModuleDef>): string[] {
       else if (c in all) p.push(`module ${name}: provides ${c}, which is a module's name`);
       else if (SLOTS.includes(c.split(":")[0]!) && !map(def.providers)[c.split(":")[0]!]) p.push(`module ${name}: provides ${c} without a providers.${c.split(":")[0]} entry`);
     }
-    for (const r of strs(def.replaces)) if (!(r in all) || r === name) p.push(`module ${name}: replaces ${r}, which is not another module`);
+    for (const r of strs(def.replaces)) if (r === name) p.push(`module ${name}: replaces itself`);
   }
   return p;
 }

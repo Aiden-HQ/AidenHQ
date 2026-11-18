@@ -3,6 +3,7 @@ description: "Fleet Steward: watches the fleet (stuck or failing runs, sources a
 # One agent for fleet upkeep (roster merge 5.3: Fleet Ops, the Agent Coach and the Knowledge Librarian), one skill per
 # routine. It reads every agent's evidence, so it holds no public write: product bugs go to the Maintainer, which files
 # them upstream (owner, 2026-11-18: no single agent both reads every agent's private data and writes public GitHub issues).
+replaces: [ fleet-ops, coach, librarian ] # the updater lists this module for an instance that ran any of them (kernel/src/updates.ts)
 roles:
   declares:
     - { id: fleet-read, description: "The board's fleet status only (never fleet_control or relaying the owner's words)." }

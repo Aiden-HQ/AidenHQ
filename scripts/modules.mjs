@@ -13,6 +13,7 @@ import { urlSettingProblem } from "../services/shared/url-setting.ts";
 import { generateCompose, ownSecrets, subnetFor } from "./compiler/services.ts";
 import { capabilityProblems, conflictProblems, danglingBindings } from "./compiler/bindings.ts";
 import { MANIFEST_KEYS, moduleName } from "./compiler/authority.ts";
+import { replacedBy } from "./compiler/migrate.ts";
 import { checkout, forkBase, forksOf, hostFetch, marketplaceEntries, OFFICIAL, onFork, pinsOf, remoteModules } from "./compiler/sources.ts";
 import { effective } from "./compiler/release.ts";
 import { compilePoints } from "./compiler/points.ts";
@@ -326,7 +327,10 @@ function resolveEnabled(all, wanted) {
   const enabled = new Set();
   const visit = (name, path) => {
     if (path.includes(name)) fail(`module cycle: ${[...path.slice(path.indexOf(name)), name].join(" → ")}`);
-    if (!all.has(name)) fail(`unknown module: ${name}${path.length ? ` (required by ${path.at(-1)})` : ""}`);
+    if (!all.has(name)) {
+      const by = replacedBy(Object.fromEntries([...all].map(([n, m]) => [n, m.def])), name);
+      fail(by ? `${name} was replaced by ${by}; the updater rewrites this, or edit modules: by hand` : `unknown module: ${name}${path.length ? ` (required by ${path.at(-1)})` : ""}`);
+    }
     if (enabled.has(name)) return;
     for (const dep of all.get(name).def.requires ?? []) if (!virtual.has(String(dep))) visit(dep, [...path, name]);
     enabled.add(name);
