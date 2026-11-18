@@ -15,7 +15,7 @@ A change is **authority-expanding** when it:
   planner, job admission and boxes), the code host (`modules/codehost-github/`: its git rules, merge queue, merge gate and
   eval gate), the path inventory (`paths.yaml`), what a job can reach (`scripts/computers.mjs`), the engine modules (`modules/engine-*/`: what
   runs inside a job and what it passes on) and the SDK (`kernel/sdk/`), the AI reviewer module (`modules/ai-reviewer/`: its service, this policy,
-  its eval cases, `scripts/reviewer-eval.mjs` and its pass rule `scripts/pass-rule.mjs`), the board's `approvals.ts`, `app.ts`,
+  its eval cases, `scripts/reviewer-eval.mjs` and its pass rule `service/src/aidenhq-sdk/pass-rule.ts`), the board's `approvals.ts`, `app.ts`,
   `fleet.ts`, `accounts.ts` and `session.ts`, the kernel (`kernel/`: the tool proxy, caller identity, the model gateway, and the job sandbox and lifecycle in
   `sandbox.ts` and `jobs.ts`: mounts, network jail, env, the job's identity binding) and
   each module server's caller check (`aidenhq-sdk/caller.ts`), `scripts/modules.mjs` and `scripts/paperclip-setup.mjs`,
