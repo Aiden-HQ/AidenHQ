@@ -4,23 +4,14 @@ import { readFileSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 import { createGrading, type Kernel } from "./server.ts";
 import { createKernelGradeLoop } from "./kernel-loop.ts";
+import { kernelClient } from "./aidenhq-sdk/kernel-client.ts";
 
 const log = (msg: string, f: Record<string, unknown> = {}) => console.log(new Date().toISOString(), msg, JSON.stringify(f));
 const file = (name: string) => readFileSync(process.env[name] ?? "", "utf8").trim();
 const kernelUrl = (process.env.AIDENHQ_KERNEL_URL ?? "http://10.231.0.1:3130").replace(/\/$/, "");
 const token = file("GRADING_TOKEN_FILE");
 
-async function kernelCall(method: string, path: string, body?: unknown) {
-  const r = await fetch(`${kernelUrl}${path}`, { method, headers: { authorization: `Bearer ${token}`, "content-type": "application/json" }, ...(body !== undefined ? { body: JSON.stringify(body) } : {}), signal: AbortSignal.timeout(15_000) });
-  const json = await r.json().catch(() => ({}));
-  if (!r.ok) throw Object.assign(new Error(`kernel ${method} ${path} → ${r.status}: ${JSON.stringify(json).slice(0, 200)}`), { status: r.status });
-  return json;
-}
-async function kernelBytes(path: string) {
-  const r = await fetch(`${kernelUrl}${path}`, { headers: { authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(60_000) });
-  if (!r.ok) throw Object.assign(new Error(`kernel GET ${path} → ${r.status}`), { status: r.status });
-  return Buffer.from(await r.arrayBuffer());
-}
+const { call: kernelCall, bytes: kernelBytes } = kernelClient(kernelUrl, token, { timeoutMs: 60_000 });
 // apps-mcp's grader reads (an app deliverable's evidence), with this module's own token: role apps.read. A view renders for up to 45 s.
 const appsUrl = (process.env.APPS_URL ?? "http://apps-mcp:8090").replace(/\/$/, "");
 async function appsCall(method: string, path: string, body?: unknown) {
