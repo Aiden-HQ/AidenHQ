@@ -101,6 +101,10 @@ test("settings substitute and {{date}} passes through", () => {
   assert.equal(r.paperclip.routines.daily.schedules[0].timezone, "Europe/London");
   assert.equal(r.paperclip.company.name, "work");
 });
+test("an overridden schedule without a timezone runs in the owner's", () => {
+  const r = compile(mods, finst(["a"], base, { overrides: { routines: { daily: { schedules: [{ cron: "30 8 * * 1-5", label: "brief" }] } } } }));
+  assert.equal(r.paperclip.routines.daily.schedules[0].timezone, "Europe/London");
+});
 test("overrides apply to allowed fields only", () => {
   assert.equal(compile(mods, finst(["a"], base, { overrides: { agents: { x: { model: "m2" } } } })).paperclip.agents.x.model, "m2");
   assert.equal(compile(mods, finst(["a"], base, { overrides: { agents: { x: { max_parallel: 4 } } } })).paperclip.agents.x.max_parallel, 4);

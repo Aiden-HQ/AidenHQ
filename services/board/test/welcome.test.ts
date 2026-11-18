@@ -75,7 +75,7 @@ describe("first-run welcome", () => {
   });
 
   it("finish posts one welcome with done and skipped; a second call posts nothing", async () => {
-    const r = await owner("POST", "/api/welcome/finish", { done: ["first", "optional", "nope"], skipped: ["later"] });
+    const r = await owner("POST", "/api/welcome/finish", { done: ["first", "optional", "nope"], skipped: ["later"], timezone: "Asia/Dubai" });
     expect(r.json).toEqual({ ok: true, identifier: "WOR-1" });
     expect(created).toHaveLength(1);
     expect(created[0]!.description).toContain("Welcome\n\n[setup] Mo's AidenHQ is new. Connected: FIRST. Skipped: LATER. Start the first chat with a new owner (your handbook).");

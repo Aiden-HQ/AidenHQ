@@ -923,6 +923,7 @@ export function compile(productDir, instanceDir, { revision, fetch = hostFetch(p
   for (const [key, r] of Object.entries(paperclip.routines)) {
     r.autonomy ??= routineAutonomyDefault(r);
     if (!ROUTINE_AUTONOMY.includes(r.autonomy)) fail(`routine ${key}: autonomy is ${ROUTINE_AUTONOMY.join(", ")}`);
+    for (const sc of r.schedules ?? []) sc.timezone ??= settings.timezone; // else Paperclip runs it in UTC
   }
   // The gateway's and grader's grants fields (grantEntry), checked after the overrides that may set them.
   for (const [key, a] of Object.entries(paperclip.agents)) {
