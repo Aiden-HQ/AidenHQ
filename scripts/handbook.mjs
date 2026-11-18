@@ -130,6 +130,9 @@ function indexSection(cfg, a) {
   return `${section("on-demand", "\n")}${ids.map((id) => `- \`${id}\`: ${cfg.prompts[id].summary}`).join("\n")}\n`;
 }
 
+/** The skills compile resolved for an agent (its `skills:` ids), with each one's folder: what a job's engine home gets. */
+export const agentSkills = (cfg, key) => (cfg.agents?.[key]?.skills ?? []).map((id) => ({ id, dir: cfg.skills[id].dir }));
+
 /** An agent's whole handbook as [id, text] parts, in the order setup writes them. */
 export function handbookParts(cfg, key, a, { repo, instanceDir, engines = {}, fleetIssues }) {
   const codex = a.adapter === "codex_local";

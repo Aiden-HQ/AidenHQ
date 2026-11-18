@@ -2,8 +2,8 @@
 // module apps (apps-mcp), compose services (compose.modules.yaml) and the module catalog. Pure: reads files, writes
 // nothing (scripts/compile.mjs writes). See docs/configuration.md.
 import { createHash, randomBytes } from "node:crypto";
-import { existsSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
-import { join, relative, resolve } from "node:path";
+import { existsSync, readdirSync, readFileSync, realpathSync, statSync, writeFileSync } from "node:fs";
+import { dirname, join, relative, resolve, sep } from "node:path";
 import YAML from "yaml";
 import { validateImages } from "./computers.mjs";
 import { AUTH_PORT, checkPorts, edgeConfig, GATE_PORT } from "./edge.mjs";
@@ -41,7 +41,7 @@ const KERNEL_DEFAULTS = kernelJson("defaults.json");
 const SETTING = /\$\{settings\.([A-Za-z0-9_]+)\}/g;
 // Agents defined in the instance repo (agents/<key>/agent.yaml + AGENTS.md): their fields, and the
 // write tools an agent in trial keeps (to report on its own tasks; everything else it may only read).
-const INSTANCE_AGENT_FIELDS = ["name", "description", "reports_to", "model", "reasoning_effort", "timeout_sec", "connections", "routines", "budget", "max_parallel", "image", "trial", "trial_writes", "heartbeat", "web_search", "graded", "builder", "department", "chat"];
+const INSTANCE_AGENT_FIELDS = ["name", "description", "reports_to", "model", "reasoning_effort", "timeout_sec", "connections", "routines", "budget", "max_parallel", "image", "trial", "trial_writes", "heartbeat", "web_search", "graded", "builder", "department", "chat", "skills"];
 // An instance agent's fast chat lane (`chat:`, the chat-lane module): its chats answered in seconds by a light model
 // loop with a few of its granted tools, instead of Paperclip runs. The default model is the 2026-11-14 bake-off's pick.
 const CHAT_FIELDS = ["model", "reasoning", "tools", "deadline_s", "telegram"];
@@ -984,6 +984,24 @@ export function compile(productDir, instanceDir, { revision, fetch = hostFetch(p
   if (new Set(prompts.map((p) => p.id)).size !== prompts.length) fail("two prompts share an id");
   paperclip.prompts = Object.fromEntries(prompts.map((p) => [p.id, { file: p.file, ...(p.lane ? { lane: true } : {}), ...(p.load === "on_demand" ? { load: p.load, summary: p.summary } : {}) }]));
   for (const a of Object.values(paperclip.agents)) if (a.adapter === "codex_local" && prompts.some((p) => promptApplies(p, a, enabled))) a.prompts = prompts.filter((p) => promptApplies(p, a, enabled)).map((p) => p.id);
+  // Skills (modules/<m>/skills/<name>/SKILL.md), for every agent whatever its adapter: the ones promptApplies picks (its own
+  // module's, or a module's whose connection it holds a grant on) plus those it names in `skills:`. Jobs get exactly these.
+  const skills = prompts.filter((p) => p.skill);
+  if (skills.length) paperclip.skills = Object.fromEntries(skills.map((s) => [s.id, { dir: dirname(s.file), description: s.summary }]));
+  for (const [key, a] of Object.entries(paperclip.agents)) {
+    const named = a.skills ?? [];
+    if (!Array.isArray(named) || named.some((id) => typeof id !== "string")) fail(`agent ${key}: skills is a list of skill ids (<module>.<name>)`);
+    for (const id of named) if (!paperclip.skills?.[id]) fail(`unknown skill ${id} for agent ${key}`);
+    const ids = [...new Set([...skills.filter((s) => promptApplies(s, a, enabled)).map((s) => s.id), ...named])].sort();
+    const from = {};
+    for (const id of ids) {
+      const [module, name] = [id.slice(0, id.indexOf(".")), id.slice(id.indexOf(".") + 1)];
+      if (from[name]) fail(`agent ${key}: modules ${from[name]} and ${module} both give it a skill named ${name}`);
+      from[name] = module;
+    }
+    if (ids.length) a.skills = ids;
+    else delete a.skills;
+  }
   // The owner's standing outcomes (instance.yaml `outcomes:`): every crew handbook lists them, and tasks name the one they serve.
   paperclip.outcomes = outcomesOf(instance.outcomes, paperclip.agents);
   // How the owner works (owner/profile.md): every crew handbook and the chat lane carry it.
@@ -1345,7 +1363,10 @@ export function promptEntries(name, def, root) {
   const skills = (existsSync(dir) ? readdirSync(dir, { withFileTypes: true }) : []).filter((d) => d.isDirectory() && existsSync(join(dir, d.name, "SKILL.md"))).map((d) => {
     if (!/^[a-z0-9][a-z0-9-]*$/.test(d.name)) fail(`module ${name}: skill ${d.name}: a skill's folder name is a-z, 0-9 and -`);
     const file = join(dir, d.name, "SKILL.md");
-    const { name: _n, description, when, unless, ...meta } = frontmatter(readFileSync(file, "utf8")).meta;
+    // A skill is the module's own files: its folder resolves inside the module (jobs get a copy of it).
+    if (!realpathSync(join(dir, d.name)).startsWith(realpathSync(root) + sep)) fail(`module ${name}: skill ${d.name}: its folder must be inside the module`);
+    const { name: skillName, description, when, unless, ...meta } = frontmatter(readFileSync(file, "utf8")).meta;
+    if (skillName !== d.name) fail(`module ${name}: skill ${d.name}: its SKILL.md name must be its folder name (${d.name})`);
     const bad = ["when", "unless"].flatMap((k) => Object.keys((k === "when" ? when : unless) ?? {}).filter((t) => !PROMPT.tests.includes(t)).map((t) => `${k}.${t}`))[0];
     if (bad) fail(`module ${name}: skill ${d.name}: unknown ${bad} (tests: ${PROMPT.tests.join(", ")})`);
     return section(name, `skill ${d.name}`, { id: `${name}.${d.name}`, module: name, file, order: "normal", when: when ?? {}, unless: unless ?? {}, lane: false, skill: Object.keys(def.connections ?? {}) }, { ...meta, summary: description, load: "on_demand" }, [...PROMPT.meta, "license", "metadata", "allowed-tools"]);

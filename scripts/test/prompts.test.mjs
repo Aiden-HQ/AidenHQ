@@ -2,13 +2,13 @@
 // `when`/`unless` and orders them first, normal, last, then module, then id. Setup appends the files verbatim.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, writeFileSync, mkdirSync, readFileSync } from "node:fs";
+import { cpSync, mkdtempSync, writeFileSync, mkdirSync, readFileSync, realpathSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import YAML from "yaml";
 import { compile, promptApplies, promptEntries } from "../modules.mjs";
-import { handbookParts, laneHandbook, onDemandSections, sizesReport } from "../handbook.mjs";
+import { agentSkills, handbookParts, laneHandbook, onDemandSections, sizesReport } from "../handbook.mjs";
 import { BUNDLE } from "./bundle.mjs";
 
 const product = join(dirname(fileURLToPath(import.meta.url)), "../..");
@@ -126,4 +126,60 @@ test("with no GitHub, design compiles on codehost-local and the handbooks name t
     assert.match(text, /This AidenHQ's agents org is `local` on this server \(its repositories are `local\/<name>`\)\./, key);
     assert.doesNotMatch(text, /agents org is `aidenhq-acme`/, key);
   }
+});
+
+// Skills resolved per agent at compile (one-way plan, Task 4): config/paperclip.yaml lists every enabled module's skill once
+// (`skills: {<module>.<name>: {dir, description}}`) and each agent, whatever its adapter, the ids it gets.
+const fixtures = join(dirname(fileURLToPath(import.meta.url)), "fixtures/mods");
+function skillProduct(skills, agentYaml = {}) {
+  const dir = mkdtempSync(join(tmpdir(), "product-"));
+  cpSync(fixtures, dir, { recursive: true });
+  for (const [id, body] of Object.entries(skills)) {
+    const [m, name] = id.split(".");
+    mkdirSync(join(dir, "modules", m, "skills", name), { recursive: true });
+    writeFileSync(join(dir, "modules", m, "skills", name, "SKILL.md"), body ?? `---\nname: ${name}\ndescription: Use when ${m} work needs ${name}.\n---\n\nSteps.\n`);
+  }
+  for (const [m, yaml] of Object.entries(agentYaml)) writeFileSync(join(dir, "modules", m, "module.yaml"), yaml);
+  return dir;
+}
+function skillInstance(modules, agents = {}) {
+  const dir = mkdtempSync(join(tmpdir(), "inst-"));
+  writeFileSync(join(dir, "instance.yaml"), YAML.stringify({ product: "0".repeat(40), modules: ["core", ...modules], settings: { timezone: "UTC", owner_name: "Sam", owner_email: "me@example.com" } }));
+  for (const [key, def] of Object.entries(agents)) {
+    mkdirSync(join(dir, "agents", key), { recursive: true });
+    writeFileSync(join(dir, "agents", key, "agent.yaml"), YAML.stringify({ name: "Helper", description: "Helps", model: "m1", budget: 5, ...def }));
+    writeFileSync(join(dir, "agents", key, "AGENTS.md"), "Helper handbook.\n");
+  }
+  return dir;
+}
+const RUNNER = "name: engrunner\ndescription: a runner agent\nagents:\n  coder: { adapter: opencode_local, dispatch: runner, engine: codex-openrouter, skills: [eng.review] }\n";
+
+test("a module skill reaches its own module's agents and agents granted its connections, and is listed in the agent's compiled skills", () => {
+  const product = skillProduct({ "a.lint": null, "b.fetch": null, "core.triage": null, "eng.review": null }, { engrunner: RUNNER });
+  const { paperclip: p } = compile(product, skillInstance(["a", "engrunner"], { helper: { skills: ["a.lint"] } }));
+  assert.deepEqual(p.agents.x.skills, ["a.lint", "b.fetch", "core.triage"]); // its module's, and the modules it holds grants on
+  assert.deepEqual(p.agents.boss.skills, ["core.triage"]);
+  assert.deepEqual(p.agents.coder.skills, ["eng.review"]); // a runner Engineer too, by naming it
+  assert.deepEqual(p.agents.helper.skills, ["a.lint"]); // an instance agent names module skills only
+  assert.deepEqual(p.skills["b.fetch"], { dir: join(product, "modules/b/skills/fetch"), description: "Use when b work needs fetch." });
+  // Review focus 4: a skill is module files only; every folder a job will copy resolves inside its module.
+  for (const [id, s] of Object.entries(p.skills)) assert.ok(realpathSync(s.dir).startsWith(realpathSync(join(product, "modules", id.split(".")[0])) + "/"), id);
+  assert.deepEqual(agentSkills(p, "boss"), [{ id: "core.triage", dir: join(product, "modules/core/skills/triage") }]);
+  assert.deepEqual(agentSkills(p, "helper-without-skills"), []);
+});
+
+test("skill names: distinct ids per module, unknown ids, one name twice for one agent, and folders outside the module fail compile", () => {
+  // Two modules shipping review: two ids, each agent gets one of them.
+  const both = compile(skillProduct({ "a.review": null, "eng.review": null }, { engrunner: RUNNER }), skillInstance(["a", "engrunner"])).paperclip;
+  assert.deepEqual(Object.keys(both.skills).sort(), ["a.review", "eng.review"]);
+  assert.deepEqual([both.agents.x.skills, both.agents.coder.skills], [["a.review"], ["eng.review"]]);
+  assert.throws(() => compile(skillProduct({ "a.lint": null }), skillInstance(["a"], { helper: { skills: ["a.nope"] } })), /unknown skill a\.nope for agent helper/);
+  assert.throws(() => compile(skillProduct({ "a.review": null, "b.review": null }), skillInstance(["a"])), /agent x: modules a and b both give it a skill named review/);
+  assert.throws(() => compile(skillProduct({ "a.lint": "---\nname: lint-it\ndescription: Lint.\n---\n" }), skillInstance(["a"])), /skill lint: its SKILL.md name must be its folder name/);
+  const out = skillProduct({});
+  const elsewhere = mkdtempSync(join(tmpdir(), "elsewhere-"));
+  mkdirSync(join(elsewhere, "steal"));
+  writeFileSync(join(elsewhere, "steal", "SKILL.md"), "---\nname: steal\ndescription: Not the module's.\n---\n");
+  symlinkSync(elsewhere, join(out, "modules/a/skills"));
+  assert.throws(() => compile(out, skillInstance(["a"])), /skill steal: its folder must be inside the module/);
 });
