@@ -30,6 +30,7 @@ export const ROUTES: { method: Method; path: RegExp }[] = [
   { method: "GET", path: /^\/search\/issues$/ },
   { method: "GET", path: new RegExp(`^/repos/${NAME}/${NAME}/actions/runs$`) },
   { method: "GET", path: new RegExp(`^/repos/${NAME}/${NAME}/actions/runs/${RUN}$`) },
+  { method: "GET", path: new RegExp(`^/repos/${NAME}/${NAME}/actions/jobs/${RUN}/logs$`) },
   // The writes, in the user's allowed organizations: a comment, a new issue, and GraphQL,
   // which `guard` limits to the documents in GRAPHQL.
   { method: "POST", path: new RegExp(`^/repos/${NAME}/${NAME}/issues/${NUM}/comments$`) },
@@ -106,6 +107,16 @@ const labelNames = (i: GhIssue) => i.labels.map((l) => (typeof l === "string" ? 
 /** "🔍  Triage" and "triage" are the same status. */
 const statusKey = (s: string) => s.normalize("NFKC").toLowerCase().replace(/[^\p{L}\p{N}]+/gu, " ").trim();
 
+const LOG_BYTES = 64_000;
+const PATCH_FILE = 4_000;
+const PATCH_TOTAL = 60_000;
+
+function splitRepo(repo: string): { owner: string; name: string } {
+  const m = repo.match(new RegExp(`^(${NAME})/(${NAME})$`));
+  if (!m) throw new Error("repo is owner/repo");
+  return { owner: m[1]!, name: m[2]! };
+}
+
 type Fetch = typeof fetch;
 
 /** A source of GitHub App installation tokens for a repository. */
@@ -155,7 +166,7 @@ export class GitHub {
     }
   }
 
-  async request<T>(method: Method, path: string, opts: { query?: Record<string, string | number>; body?: unknown } = {}): Promise<T> {
+  async request<T>(method: Method, path: string, opts: { query?: Record<string, string | number>; body?: unknown; text?: boolean } = {}): Promise<T> {
     guard(method, path, opts.body);
     const url = new URL(path, API);
     // ".." passes the name pattern but URL resolution would move the path.
@@ -169,7 +180,7 @@ export class GitHub {
     for (const [k, v] of Object.entries(opts.query ?? {})) url.searchParams.set(k, String(v));
     const res = await this.fetchImpl(url, {
       method,
-      redirect: "error",
+      redirect: opts.text ? "manual" : "error",
       headers: {
         authorization: `Bearer ${appToken ?? this.token()}`,
         accept: "application/vnd.github+json",
@@ -181,6 +192,14 @@ export class GitHub {
       signal: AbortSignal.timeout(30_000),
     });
     if (res.status === 401) throw new GitHubAuthError("GitHub rejected the token (run scripts/github-auth.sh)");
+    // A job's log answers with a redirect to a pre-signed download: followed once, without the token.
+    if (opts.text) {
+      const to = res.headers.get("location");
+      if (res.status !== 302 || !to?.startsWith("https://")) throw new Error(`GitHub ${res.status} for ${method} ${url.pathname}: no log download`);
+      const dl = await this.fetchImpl(to, { redirect: "error", signal: AbortSignal.timeout(30_000) });
+      if (!dl.ok) throw new Error(`log download answered ${dl.status}`);
+      return (await dl.text()) as T;
+    }
     if (!res.ok) {
       const detail = await res.text().catch(() => "");
       // GitHub answers 404 for private repositories the token can't see.
@@ -259,6 +278,31 @@ export class GitHub {
       };
     }
     return out;
+  }
+
+  /** The tail of a failed (or any finished) job's log, at most LOG_BYTES characters. */
+  async jobLog(repo: string, jobId: number): Promise<unknown> {
+    const { owner, name } = splitRepo(repo);
+    const log = await this.request<string>("GET", `/repos/${owner}/${name}/actions/jobs/${jobId}/logs`, { text: true });
+    const clipped = log.length > LOG_BYTES;
+    return { repo: `${owner}/${name}`, job_id: jobId, clipped, ...(clipped ? { note: `only the last ${LOG_BYTES} of ${log.length} characters` } : {}), log: clipped ? log.slice(-LOG_BYTES) : log };
+  }
+
+  /** A pull request's changed files with their patches: each patch clipped, the whole capped (first 100 files). */
+  async prFiles(ref: Ref): Promise<unknown> {
+    const files = await this.request<{ filename: string; status: string; additions: number; deletions: number; patch?: string }[]>("GET", `/repos/${ref.owner}/${ref.repo}/pulls/${ref.number}/files`, { query: { per_page: 100 } });
+    let budget = PATCH_TOTAL;
+    return {
+      repo: `${ref.owner}/${ref.repo}`,
+      number: ref.number,
+      files: files.map((f) => {
+        const patch = f.patch ?? "";
+        const shown = patch.slice(0, Math.min(PATCH_FILE, budget));
+        budget -= shown.length;
+        return { filename: f.filename, status: f.status, additions: f.additions, deletions: f.deletions, patch: shown, ...(shown.length < patch.length ? { patch_clipped: true } : {}) };
+      }),
+      ...(files.length === 100 ? { note: "the first 100 files; more may exist" } : {}),
+    };
   }
 
   async search(query: string, limit = 20): Promise<unknown> {

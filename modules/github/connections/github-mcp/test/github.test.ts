@@ -39,6 +39,7 @@ describe("guard", () => {
       ["GET", "/repos/a/b/labels"],
       ["GET", "/repos/a/b/actions/runs"],
       ["GET", "/repos/a/b/actions/runs/123"],
+      ["GET", "/repos/a/b/actions/jobs/123/logs"],
       ["POST", "/repos/a/b/issues/3/labels"],
       ["DELETE", "/repos/a/b/issues/3/labels/needs%20triage"],
       ["POST", "/repos/a/b/issues/3/assignees"],
@@ -154,6 +155,26 @@ describe("GitHub", () => {
     expect(out.pull_request.check_runs[2]).toMatchObject({ run_id: 90000000001, job_id: 50000000003 });
     expect(out.pull_request.check_runs_error).toBeUndefined();
     expect(calls.some((c) => c.url.pathname.endsWith("/check-runs") && c.url.searchParams.get("filter") === "latest")).toBe(true);
+  });
+
+  it("returns the tail of a job log, fetched from the redirect without the token", async () => {
+    const calls: { url: string; auth?: string }[] = [];
+    const impl = (async (input: URL | string, init?: RequestInit) => {
+      calls.push({ url: String(input), auth: (init?.headers as Record<string, string> | undefined)?.authorization });
+      return String(input).startsWith("https://blob.example.com/") ? new Response("x".repeat(70_000) + "END") : new Response(null, { status: 302, headers: { location: "https://blob.example.com/log" } });
+    }) as typeof fetch;
+    const out = (await new GitHub(tokenFile(), new Set(), impl).jobLog("a/b", 5)) as { clipped: boolean; log: string };
+    expect(out.clipped).toBe(true);
+    expect(out.log).toHaveLength(64_000);
+    expect(out.log.endsWith("END")).toBe(true);
+    expect(calls[0]!.auth).toContain("gho_test");
+    expect(calls[1]!.auth).toBeUndefined();
+  });
+
+  it("lists a pull request's files with clipped patches", async () => {
+    const { impl } = fake({ "GET /repos/a/b/pulls/7/files": [{ filename: "a.ts", status: "modified", additions: 1, deletions: 0, patch: "p".repeat(5000) }, { filename: "b.png", status: "added", additions: 0, deletions: 0 }] });
+    const out = (await new GitHub(tokenFile(), new Set(), impl).prFiles({ owner: "a", repo: "b", number: 7 })) as { files: { filename: string; patch: string; patch_clipped?: boolean }[] };
+    expect(out.files.map((f) => [f.filename, f.patch.length, f.patch_clipped])).toEqual([["a.ts", 4000, true], ["b.png", 0, undefined]]);
   });
 
   it("says a check read failed instead of returning an empty list", async () => {
