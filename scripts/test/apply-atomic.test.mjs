@@ -66,12 +66,18 @@ echo "  ok    paperclip http (127.0.0.1:3100)"
 [ -f "$CTRL/mismatch" ] && echo "  FAIL  host metrics timer runs the applied checkout  the unit runs /old/ops/host-metrics.sh, not $PWD/ops/host-metrics.sh"
 echo "  skip  ops-mcp (meetings module not installed)"
 # What is applied decides (data/applied-product), as on a host the running services do, never the checkout alone.
-if [ -f "$CTRL/break" ] && git cat-file -e "$(cat data/applied-product 2>/dev/null)":BAD_HEALTH 2>/dev/null; then echo "  FAIL  kernel (10.231.0.1:3130)  down"; exit 1; fi
+if [ -f "$CTRL/break" ] && git cat-file -e "$(cat data/applied-product 2>/dev/null)":BAD_HEALTH 2>/dev/null; then
+  echo "  FAIL  kernel (10.231.0.1:3130)  down"
+  # Arms the auto-revert's switch to fail after this health check: between the failed generation's switch and its revert.
+  [ -f "$CTRL/arm-badrevert" ] && touch "$CTRL/badrevert"
+  exit 1
+fi
 echo "  ok    kernel (10.231.0.1:3130)"
 `,
   // With ctrl/block the step waits (blocked) until ctrl/release, then lets later applies through: an apply to kill mid-compose.
   "ops/compose-recreate.sh": `#!/usr/bin/env bash
 echo recreate >> "$CALLS"
+[ -f "$CTRL/badrevert" ] && { echo "compose: recreate failed in the revert"; exit 1; }
 if [ -f "$CTRL/block" ]; then touch "$CTRL/blocked"; while [ ! -f "$CTRL/release" ]; do sleep 0.1; done; rm -f "$CTRL/block"; fi
 echo "compose: recreated what moved"
 `,
@@ -293,6 +299,36 @@ test("A14: a post-apply health failure reverts to the LKG and marks the generati
   assert.equal(git(w.d("inst"), "symbolic-ref", "--short", "HEAD"), "main");
 });
 
+// A failed auto-revert writes its own log: when the revert's switch fails, its generation names the file that holds the
+// failing step's output, not the log of the generation it reverted.
+test("a failed auto-revert records its own log naming the step that failed", async () => {
+  const w = world();
+  assert.equal((await w.run()).status, 0);
+  writeFileSync(w.d("ctrl/break"), "");
+  writeFileSync(w.d("ctrl/arm-badrevert"), "");
+  const p2 = w.commitProduct("2", { BAD_HEALTH: "" });
+  const i2 = w.commitInstance(p2);
+  const r = await w.run();
+  assert.equal(r.status, 1, r.out);
+  const g = w.gens();
+  assert.deepEqual(g.map((x) => [x.n, x.health]), [[1, "good"], [2, "good"], [3, "failed"], [4, "failed"]]);
+  assert.deepEqual([g[3].product, g[3].instance, g[3].revert_of, g[3].lkg], [w.p1, w.i1, 3, 2]);
+  assert.equal(g[2].log, w.d("state/apply-3.log"), "the failed generation keeps its own log");
+  assert.equal(g[3].log, w.d("state/apply-4.log"), "the failed revert names its own log");
+  const revert = readFileSync(g[3].log, "utf8");
+  assert.match(revert, /generation 4: re-applying generation 2/);
+  assert.match(revert, /compose: recreate failed in the revert/);
+  assert.match(revert, /generation 4 failed: the switch failed \(exit 1\)/);
+  assert.equal(w.head("prod"), w.p1, "the product is back at the last known good");
+  assert.equal(w.head("inst"), w.i1, "the instance checkout is back at the last known good");
+
+  // The failed pair is still held.
+  const held = await w.run();
+  assert.equal(held.status, 1, held.out);
+  assert.match(held.out, /failed its health check as generation 3 .* --retry/);
+  assert.equal(w.gens().length, 4, "no new generation");
+});
+
 test("a check failing in the baseline does not count", async () => {
   const w = world();
   writeFileSync(w.d("ctrl/flaky"), "");
@@ -429,7 +465,8 @@ const reverted = (w) => {
   assert.equal(w.head("prod"), w.p1);
   assert.equal(w.head("inst"), w.i1);
   assert.equal(readFileSync(w.d("prod/data/applied-product"), "utf8").trim(), w.p1);
-  assert.match(readFileSync(w.d("state/apply-3.log"), "utf8"), /generation 3: the apply died mid-run, and no apply is finishing it: reverting[\s\S]*compose: recreated what moved[\s\S]*apply alert: generation 3 failed \(the apply died mid-run\) and was reverted to generation 2/);
+  assert.match(readFileSync(w.d("state/apply-3.log"), "utf8"), /generation 3: the apply died mid-run, and no apply is finishing it: reverting[\s\S]*apply alert: generation 3 failed \(the apply died mid-run\) and was reverted to generation 2/);
+  assert.match(readFileSync(w.d("state/apply-4.log"), "utf8"), /generation 4: re-applying generation 2[\s\S]*compose: recreated what moved[\s\S]*generation 4 is good/);
 };
 
 test("an apply SIGKILLed mid-compose is reverted to the last known good by the next apply, which then holds the dead pair", async () => {

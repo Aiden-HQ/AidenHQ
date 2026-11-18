@@ -285,6 +285,8 @@ applyGeneration() {
   local mods_before mods_after
   materializeModules || { echo "refusing: the official modules of generation $gen could not be fetched" >&2; exit 1; }
   local m; m="$(genAppend "$product" "$instance" pending "" "${AIDENHQ_REVERT_OF:-}" "$gen")"
+  local log="$GEN_DIR/apply-$m.log"
+  logTo "$log"
   echo "generation $m: re-applying generation $gen (product ${product:0:12}, instance ${instance:0:12})"
   local prev_config; prev_config="$(mktemp)"; cp config/paperclip.yaml "$prev_config" 2>/dev/null || true
   local rc=0 staged=0
@@ -297,7 +299,7 @@ applyGeneration() {
   if [ "$rc" -ne 0 ]; then HEALTH_WHY="the switch failed (exit $rc)"; elif health "${AIDENHQ_HEALTH_BASELINE:-}" "$prev_config"; then ok=1; fi
   rm -f "$prev_config"
   if [ "$ok" = 1 ]; then genMark "$m" good; echo "generation $m is good"; return 0; fi
-  genMark "$m" failed "$HEALTH_WHY"
+  genMark "$m" failed "$HEALTH_WHY" "$log"
   echo "generation $m failed: $HEALTH_WHY"
   return 1
 }
