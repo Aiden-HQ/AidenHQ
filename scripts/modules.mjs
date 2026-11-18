@@ -1468,13 +1468,16 @@ export async function ensureFleetIssues({ api, companyId, step }) {
  */
 export async function ensureBackupRetention({ api, dailyDays, step }) {
   const tiers = (p) => `daily ${p.dailyDays}d, weekly ${p.weeklyWeeks}w, monthly ${p.monthlyMonths}m`;
-  const { json: general } = await api("GET", "/api/instance/settings/general");
-  const current = general?.backupRetention ?? {};
+  const read = async () => (await api("GET", "/api/instance/settings/general")).json?.backupRetention ?? {};
+  const current = await read();
   step(current.dailyDays == null ? "Backup retention was not set" : `Backup retention was ${tiers(current)}`);
   if (current.dailyDays === dailyDays) return current;
   const next = { dailyDays, weeklyWeeks: current.weeklyWeeks ?? 4, monthlyMonths: current.monthlyMonths ?? 1 };
-  const { json } = await api("PATCH", "/api/instance/settings/general", { backupRetention: next });
-  const after = json?.backupRetention ?? next;
+  await api("PATCH", "/api/instance/settings/general", { backupRetention: next });
+  const after = await read();
+  if (after.dailyDays !== next.dailyDays || after.weeklyWeeks !== next.weeklyWeeks || after.monthlyMonths !== next.monthlyMonths) {
+    fail(`backup retention did not take: ${JSON.stringify(after)} (wanted ${JSON.stringify(next)})`);
+  }
   step(`Backup retention is now ${tiers(after)}`);
   return after;
 }

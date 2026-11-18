@@ -140,9 +140,17 @@ test("setup: the dump keeps 3 daily days and carries the other tiers through; a 
   const { ensureBackupRetention } = await import("../modules.mjs");
   assert.deepEqual(await ensureBackupRetention({ api, dailyDays: 3, step: (m) => said.push(m) }), { dailyDays: 3, weeklyWeeks: 2, monthlyMonths: 3 });
   assert.deepEqual(said, ["Backup retention was daily 7d, weekly 2w, monthly 3m", "Backup retention is now daily 3d, weekly 2w, monthly 3m"]);
-  assert.deepEqual(calls.map(([m, p]) => `${m} ${p}`), ["GET /api/instance/settings/general", "PATCH /api/instance/settings/general"]);
+  // Written whole, then read back: the read after the write is the confirmation, not the PATCH response.
+  assert.deepEqual(calls.map(([m]) => m), ["GET", "PATCH", "GET"]);
   assert.deepEqual(calls[1][2], { backupRetention: { dailyDays: 3, weeklyWeeks: 2, monthlyMonths: 3 } });
   calls.length = 0;
   await ensureBackupRetention({ api, dailyDays: 3, step: () => {} });
   assert.deepEqual(calls.map(([m]) => m), ["GET"]);
+});
+
+test("setup: a write the instance does not keep is a failure, not a logged success", async () => {
+  // The instance answers 200 and still reads back 7 days (a hidden or operator-managed setting): setup stops.
+  const api = async (method) => ({ json: method === "PATCH" ? {} : { backupRetention: { dailyDays: 7, weeklyWeeks: 4, monthlyMonths: 1 } } });
+  const { ensureBackupRetention } = await import("../modules.mjs");
+  await assert.rejects(() => ensureBackupRetention({ api, dailyDays: 3, step: () => {} }), /backup retention did not take: \{"dailyDays":7/);
 });
