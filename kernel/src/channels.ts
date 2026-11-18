@@ -335,6 +335,7 @@ export const CP_READ_PATHS: RegExp[] = [
   new RegExp(`^/api/companies/${ID}/(agents|labels|issues|live-runs|heartbeat-runs)$`),
   new RegExp(`^/api/issues/${ID}$`),
   new RegExp(`^/api/issues/${ID}/comments$`),
+  new RegExp(`^/api/issues/${ID}/attachments$`),
   new RegExp(`^/api/heartbeat-runs/${ID}/log$`),
   new RegExp(`^/api/agents/${ID}$`),
 ];

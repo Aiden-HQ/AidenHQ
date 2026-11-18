@@ -28,6 +28,10 @@
 //   POST /v1/reviews/:review   (that review's token, once) the reviewer module's verdict
 //   POST /v1/jobs, GET/DELETE /v1/jobs/:job, POST /v1/jobs/:job/input  (a module with role kernel.jobs) start a job in the
 //                              sandbox, its status (?after=<version>&wait=<ms> waits for a change), stop it, a comment into it (jobs.ts; `wake`: the claimed comment wake it delivers)
+//   GET  /v1/work[?task=], GET /v1/work/metrics  (a module with role kernel.work-read) the jobs and records of the kernel's
+//                              work: a task's, or what runs and ended lately; Prometheus text (work.ts)
+//   POST /v1/work/grader-token  (the one module with role kernel.grader) {task} -> a gateway
+//                              token billed to the task's assignee under its caps, for a task its finish check holds; one live token per task
 //   GET  /v1/advisories        (the board's key) the marketplace advisories open against installed modules (loader/advisories.ts)
 //   POST /v1/auth/:op, /v1/accounts/:op, /v1/apps/:op, /v1/operator/:op  the accounts' routes (auth-api.ts): module UI
 //                              sessions and account admin (the board), in-app requests (apps-platform), setup links (operator)
@@ -41,6 +45,7 @@ import type { Grant, Whoami } from "./identity.ts";
 import type { Jobs } from "./jobs.ts";
 import { fail } from "./proxy.ts";
 import type { Records, State } from "./records.ts";
+import type { Work } from "./work.ts";
 import type { Reviews } from "./reviews.ts";
 import type { Wakes } from "./wakes.ts";
 import { CONN_TOOL, type Writes } from "./writes.ts";
@@ -88,6 +93,9 @@ export const ROUTES = [
   { method: "GET", path: "/v1/jobs/:job", auth: "module" },
   { method: "DELETE", path: "/v1/jobs/:job", auth: "module" },
   { method: "POST", path: "/v1/jobs/:job/input", auth: "module" },
+  { method: "GET", path: "/v1/work", auth: "module" },
+  { method: "GET", path: "/v1/work/metrics", auth: "module" },
+  { method: "POST", path: "/v1/work/grader-token", auth: "module" },
   { method: "GET", path: "/v1/advisories", auth: "board" },
   { method: "POST", path: "/v1/auth/:op", auth: "board" },
   { method: "POST", path: "/v1/accounts/:op", auth: "board+session" },
@@ -107,7 +115,7 @@ async function json(req: IncomingMessage, max = 1_000_000): Promise<any> {
   try { return JSON.parse(Buffer.concat(chunks).toString("utf8") || "{}"); } catch { throw fail(400, "bad_request", "the body must be JSON"); }
 }
 
-export function createBackplane({ whoami, asserter, proxy, cp, grantsFile, writes, records, channels, brake, owner, modules = () => ({}), boardKey = () => "", reviews, runnerKey = () => "", reviewerKey = () => "", jobs, wakes, eventsKey = () => "", advisories = () => [], accounts, checks, log = () => {} }: {
+export function createBackplane({ whoami, asserter, proxy, cp, grantsFile, writes, records, channels, brake, owner, modules = () => ({}), boardKey = () => "", reviews, runnerKey = () => "", reviewerKey = () => "", jobs, wakes, eventsKey = () => "", work, graderToken = () => "", dropGraderToken = () => {}, advisories = () => [], accounts, checks, log = () => {} }: {
   whoami: Whoami; asserter: Asserter; proxy: Handler; cp: Handler; grantsFile: () => { agents?: Record<string, Grant> } & Record<string, unknown>;
   writes?: Writes; records?: Records; boardKey?: () => string; log?: (msg: string, f?: Record<string, unknown>) => void;
   /** The reviewer slot; the runner's key for its kinds (filing, claim, outcome, reads, a record's review: runner_writes_key)
@@ -119,6 +127,12 @@ export function createBackplane({ whoami, asserter, proxy, cp, grantsFile, write
   jobs?: Jobs;
   /** The wake inbox (wakes.ts), and the paperclip-events plugin's key. */
   wakes?: Wakes; eventsKey?: () => string;
+  /** Reads of the work the kernel owns (work.ts). */
+  work?: Work;
+  /** A grader-kind gateway token for a task (the kernel is the only minter). */
+  graderToken?: (task: string, agent: string) => string;
+  /** Forget a task's cached grader token (its hold resolved or was released). */
+  dropGraderToken?: (task: string) => void;
   /** 4e: the open marketplace advisories. */
   advisories?: () => unknown[];
   /** 3g: the accounts' routes (auth-api.ts). */
@@ -176,7 +190,9 @@ export function createBackplane({ whoami, asserter, proxy, cp, grantsFile, write
         case "POST /v1/checks/:task": {
           const w = await moduleOf(req);
           if (!checks) throw fail(503, "unavailable", "checks are off");
-          return send(res, 200, await checks.resolve(w.module!, m[0]!, await json(req)));
+          const resolved = await checks.resolve(w.module!, m[0]!, await json(req));
+          dropGraderToken(m[0]!);
+          return send(res, 200, resolved);
         }
         case "GET /v1/advisories": if (!isBoard(req)) throw fail(401, "unauthorized", "the board's key is required"); return send(res, 200, { advisories: advisories() });
       }
@@ -242,6 +258,25 @@ export function createBackplane({ whoami, asserter, proxy, cp, grantsFile, write
       if (hit && /^\/v1\/(auth|accounts|apps|operator)\/:op$/.test(hit.path)) {
         if (!accounts) throw fail(503, "unavailable", "accounts are off");
         return await accounts(req, res, hit.path.split("/")[2]!, m[0]!);
+      }
+      if (hit && hit.path.startsWith("/v1/work")) {
+        const w = await moduleOf(req);
+        if (hit.path !== "/v1/work/grader-token" && !w.roles.includes("kernel.work-read")) throw fail(403, "forbidden", `${w.module} may not read kernel work (role kernel.work-read)`);
+        if (!work) throw fail(503, "unavailable", "work reads are off");
+        if (hit.path === "/v1/work/grader-token") {
+          if (!w.roles.includes("kernel.grader")) throw fail(403, "forbidden", `${w.module} may not ask for grader tokens (role kernel.grader)`);
+          const b = await json(req);
+          if (typeof b.task !== "string" || !b.task) throw fail(400, "bad_request", "send {task}");
+          // Only a task the module's own finish check holds (finished, waiting for its verdict), and only for as long as it does.
+          if (!checks?.held(w.module!, b.task.slice(0, 100))) throw fail(403, "forbidden", `no finish check of ${w.module} holds task ${b.task.slice(0, 100)}`);
+          if (!owner) throw fail(503, "unavailable", "the control plane is off");
+          const issue = await owner("GET", `/api/issues/${encodeURIComponent(b.task.slice(0, 100))}`);
+          if (issue.status !== 200 || typeof issue.json.assigneeAgentId !== "string") throw fail(404, "not_found", `no task ${b.task.slice(0, 100)} with an assignee`);
+          return send(res, 200, { token: graderToken(b.task.slice(0, 100), issue.json.assigneeAgentId) });
+        }
+        const task = new URLSearchParams(q ?? "").get("task");
+        if (hit.path === "/v1/work/metrics") return void res.writeHead(200, { "content-type": "text/plain; version=0.0.4" }).end(work.metrics());
+        return send(res, 200, task ? work.task(task.slice(0, 100)) : work.activity());
       }
       if (hit && hit.path.startsWith("/v1/jobs")) {
         const w = await moduleOf(req);
