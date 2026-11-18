@@ -1853,11 +1853,6 @@ export function createApp(opts: AppOptions): Server {
           store,
           flows: opts.setupFlows?.flows ?? [],
           marker: opts.welcomeMarker,
-          timezone: opts.timezone,
-          setTimezone: (timezone) => {
-            const change = routes.find((r) => r.method === "POST" && r.path.test("/api/settings/change"))!;
-            return change.handle([] as unknown as RegExpMatchArray, { changes: [{ kind: "setting", key: "timezone", value: timezone }] }, undefined as never, undefined as never);
-          },
           post: (text) => {
             const chats = routes.find((r) => r.method === "POST" && r.path.test("/api/chats"))!;
             return perRequest.run({ session: OPERATOR }, () => chats.handle([] as unknown as RegExpMatchArray, { text }, undefined as never, undefined as never)) as Promise<{ identifier: string }>;

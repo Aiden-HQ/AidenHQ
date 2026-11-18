@@ -17,20 +17,7 @@ export interface WelcomeDeps {
   marker: string;
   /** Opens the welcome chat with Aiden, written as the owner. */
   post: (text: string) => Promise<{ identifier: string }>;
-  /** The zone the install runs in (a server's clock is UTC) and the typed setting change that sets it. */
-  timezone: string;
-  setTimezone: (timezone: string) => Promise<unknown>;
 }
-
-/** The IANA zone the browser named, or "". */
-const zoneOf = (tz: string) => {
-  try {
-    new Intl.DateTimeFormat("en", { timeZone: tz });
-    return /^[A-Za-z_]+(\/[A-Za-z0-9_+-]+){1,2}$/.test(tz) ? tz : "";
-  } catch {
-    return "";
-  }
-};
 
 export const welcomeText = (owner: string, done: string[], skipped: string[]) =>
   `Welcome\n\n[setup] ${owner}'s AidenHQ is new. Connected: ${done.join(", ") || "nothing yet"}. Skipped: ${skipped.join(", ") || "nothing"}. Start the first chat with a new owner (your handbook).`;
@@ -56,16 +43,13 @@ export function welcomeRoutes(d: WelcomeDeps): SetupRoute[] {
       path: /^\/api\/welcome\/finish$/,
       handle: async (_m, body, who) => {
         if (!who.account.owner) throw new AccountError(403, "only the owner finishes the welcome");
-        const input = z.object({ done: z.array(z.string().max(63)).max(50), skipped: z.array(z.string().max(63)).max(50), timezone: z.string().max(64).optional() }).strict().parse(body);
+        const input = z.object({ done: z.array(z.string().max(63)).max(50), skipped: z.array(z.string().max(63)).max(50) }).strict().parse(body);
         if (finished() || finishing) return { ok: true };
         finishing = true;
         try {
           // Only the modules' own declared titles reach Aiden's chat, never text from the request.
           const titles = (ids: string[]) => wizard.filter((f) => ids.includes(f.module)).map((f) => f.title);
           const { identifier } = await d.post(welcomeText(who.account.name || who.account.email, titles(input.done), titles(input.skipped)));
-          // A server's clock is UTC, so an install still on it takes the owner's own zone from their browser, once, here.
-          const tz = zoneOf(input.timezone ?? "");
-          if (tz && /^(Etc\/)?(UTC|GMT)$/.test(d.timezone)) await d.setTimezone(tz).catch(() => {});
           d.store.setMeta(FINISHED, new Date().toISOString());
           writeFileSync(d.marker, "");
           return { ok: true, identifier };

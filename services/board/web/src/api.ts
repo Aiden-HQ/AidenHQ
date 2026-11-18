@@ -156,7 +156,7 @@ export const api = {
   setupPair: (module: string) => call<{ code: string; link?: string; minted_at: number }>("POST", `/api/setup-flows/${module}/pair`, {}),
   setupPaired: (module: string) => call<{ paired: boolean; paired_at?: string | number }>("GET", `/api/setup-flows/${module}/pair`),
   welcome: () => call<WelcomeState>("GET", "/api/welcome"),
-  welcomeFinish: (done: string[], skipped: string[]) => call<{ ok: boolean; identifier?: string }>("POST", "/api/welcome/finish", { done, skipped, timezone: Intl.DateTimeFormat().resolvedOptions().timeZone }),
+  welcomeFinish: (done: string[], skipped: string[]) => call<{ ok: boolean; identifier?: string }>("POST", "/api/welcome/finish", { done, skipped }),
   modules: () => call<{ modules: ModuleRow[]; advisories: Advisory[] }>("GET", "/api/modules"),
   module: (name: string) => call<ModuleDetail>("GET", `/api/modules/${encodeURIComponent(name)}`),
   /** Installed modules whose setup flow isn't done (docs/design/guided-setup.md); a 404 means no flows. */
