@@ -13,7 +13,9 @@
  * opened since its triage cursor with no fix label that our App didn't file, and each fires the triage routine once, with
  * its repo and number only (the title is a stranger's text). Labelling stays the Maintainer's judgment in that run; its
  * label then comes back through the trusted path above. The first look only sets the cursor: the issues already open are
- * the daily triage's.
+ * the daily triage's. A stranger's issue starts a model run that reads untrusted text before the App's trusted label, so
+ * the runs are capped a day per issue author and per repo (`limits`, the maintainer module's settings): past either, the
+ * issue is left to the daily triage run.
  */
 import { createHmac } from "node:crypto";
 import { readFileSync } from "node:fs";
@@ -39,7 +41,7 @@ export interface MaintainerRepoBatch {
   skipped?: { number: number; reason: string }[];
   cursor?: string | null;
   error?: string;
-  untriaged?: { number: number; created_at: string }[];
+  untriaged?: { number: number; created_at: string; author?: string }[];
   triage_cursor?: string;
   triage_error?: string;
 }
@@ -60,6 +62,8 @@ interface RepoState {
   error?: string;
   triage_cursor?: string;
   triaged?: number[];
+  /** The triage runs fired in the last day, with their issue's author: what the daily limits count. */
+  recent?: { at: number; author: string }[];
   triage_error?: string;
 }
 interface State {
@@ -86,7 +90,13 @@ const keep = (xs: Iterable<number>) => [...new Set(xs)].slice(-KEEP);
  * One look over every maintained repo: fire each new trusted issue once, name each new untrusted one once, and move a
  * repo's cursor only when its whole batch was delivered. Returns how many webhooks were fired.
  */
-export async function maintainerTick(d: { issues: Issues; fire: Fire; triage?: Triage; store: Kv; log: Log }): Promise<number> {
+export interface TriageLimits {
+  perAuthor: number;
+  perRepo: number;
+}
+const DAY = 24 * 60 * MIN;
+
+export async function maintainerTick(d: { issues: Issues; fire: Fire; triage?: Triage; limits?: TriageLimits; store: Kv; log: Log }): Promise<number> {
   const state = readState(d.store);
   const repos: Record<string, RepoState> = { ...(state.repos ?? {}) };
   let legacy: RepoState | undefined = state.repos ? undefined : { cursor: state.cursor, fired: state.fired, noted: state.noted };
@@ -108,7 +118,7 @@ export async function maintainerTick(d: { issues: Issues; fire: Fire; triage?: T
   for (const b of batch.repos ?? []) {
     const before = repos[b.repo] ?? legacy ?? {};
     legacy = undefined;
-    const { count: triaged = 0, ...triage } = d.triage ? await triageRepo(b, before, d.triage, d.log) : {};
+    const { count: triaged = 0, ...triage } = d.triage ? await triageRepo(b, before, d.triage, d.limits ?? triageLimits({}), d.log) : {};
     count += triaged;
     if (b.error) {
       if (b.error !== before.error) d.log.warn({ repo: b.repo, err: b.error }, "maintainer issues not read for this repo; the next tick asks again");
@@ -148,8 +158,9 @@ export async function maintainerTick(d: { issues: Issues; fire: Fire; triage?: T
  * a refused webhook stops there, and the next tick reads it again (the fired set keeps a repeat out). A github-mcp that
  * sends no `untriaged` (older than this board) leaves the state as it was.
  */
-async function triageRepo(b: MaintainerRepoBatch, before: RepoState, fire: Triage, log: Log): Promise<Partial<RepoState> & { count?: number }> {
-  const kept = { triage_cursor: before.triage_cursor, triaged: before.triaged };
+async function triageRepo(b: MaintainerRepoBatch, before: RepoState, fire: Triage, limits: TriageLimits, log: Log): Promise<Partial<RepoState> & { count?: number }> {
+  const recent = (before.recent ?? []).filter((r) => Date.now() - r.at < DAY);
+  const kept = { triage_cursor: before.triage_cursor, triaged: before.triaged, recent };
   if (b.triage_error) {
     if (b.triage_error !== before.triage_error) log.warn({ repo: b.repo, err: b.triage_error }, "new issues not read for triage on this repo; the next tick asks again");
     return { ...kept, triage_error: b.triage_error };
@@ -160,17 +171,23 @@ async function triageRepo(b: MaintainerRepoBatch, before: RepoState, fire: Triag
   let cursor = before.triage_cursor;
   let count = 0;
   for (const i of b.untriaged) {
+    const author = String(i.author ?? "").toLowerCase();
     if (!triaged.has(i.number)) {
-      if (!(await fire(b.repo, i.number).catch(() => false))) {
+      const byAuthor = recent.filter((r) => r.author === author).length;
+      if (recent.length >= limits.perRepo || byAuthor >= limits.perAuthor) {
+        log.info({ repo: b.repo, issue: i.number, author, today: { repo: recent.length, author: byAuthor } }, "triage limit reached: left to the daily triage run");
+      } else if (!(await fire(b.repo, i.number).catch(() => false))) {
         log.warn({ repo: b.repo, issue: i.number }, "maintainer triage webhook refused; the next tick retries it");
-        return { triage_cursor: cursor, triaged: keep(triaged), count };
+        return { triage_cursor: cursor, triaged: keep(triaged), recent, count };
+      } else {
+        recent.push({ at: Date.now(), author });
+        count++;
       }
       triaged.add(i.number);
-      count++;
     }
     cursor = i.created_at;
   }
-  return { triage_cursor: b.triage_cursor, triaged: keep(triaged), count };
+  return { triage_cursor: b.triage_cursor, triaged: keep(triaged), recent, count };
 }
 
 /**
@@ -235,7 +252,13 @@ export function maintainerTriageWake(env: NodeJS.ProcessEnv = process.env): Tria
   return send && ((repo, number) => send({ repo, number: String(number) }));
 }
 
-type Wiring = { issues: Issues; fire: Fire; triage?: Triage };
+/** The daily triage limits from the maintainer module's settings (MAINTAINER_TRIAGE_PER_AUTHOR_DAY / _PER_REPO_DAY). */
+export function triageLimits(env: NodeJS.ProcessEnv = process.env): TriageLimits {
+  const n = (v: string | undefined, d: number) => (Number.isInteger(Number(v)) && Number(v) >= 0 && String(v ?? "").trim() !== "" ? Number(v) : d);
+  return { perAuthor: n(env.MAINTAINER_TRIAGE_PER_AUTHOR_DAY, 3), perRepo: n(env.MAINTAINER_TRIAGE_PER_REPO_DAY, 30) };
+}
+
+type Wiring = { issues: Issues; fire: Fire; triage?: Triage; limits?: TriageLimits };
 
 /**
  * Starts the watcher (main.ts). `wiring` is asked on every tick, so the webhook setup writes after this board started is

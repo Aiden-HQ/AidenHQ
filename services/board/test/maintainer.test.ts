@@ -235,6 +235,19 @@ describe("the Maintainer's per-issue triage", () => {
     expect(plain).toEqual([1]);
   });
 
+  it("caps the runs a day per author and per repo, leaving the rest to the daily run", async () => {
+    const fired: number[] = [], store = kv(), log = logs();
+    const u = (number: number, author: string) => ({ number, created_at: at(number), author });
+    const batch: MaintainerBatch = { repos: [{ repo: R, issues: [], cursor: "c1", untriaged: [u(1, "spam"), u(2, "Spam"), u(3, "ada"), u(4, "bob")], triage_cursor: at(4) }] };
+    store.setMeta("maintainer_issues", JSON.stringify({ repos: { [R]: { triage_cursor: at(0) } } }));
+    const tick = () => maintainerTick({ issues: async () => batch, fire: async () => true, triage: async (_r, n) => (fired.push(n), true), limits: { perAuthor: 1, perRepo: 2 }, store, log });
+    await tick();
+    await tick();
+    expect(fired).toEqual([1, 3]);
+    expect(log.infoLines.filter((l) => /triage limit reached/.test(l.m)).map((l) => (l.o as { issue: number }).issue)).toEqual([2, 4]);
+    expect(stored(store).repos[R].triaged).toEqual([1, 2, 3, 4]);
+  });
+
   it("is off when external triage is off, and sends the repo and number only", async () => {
     const dir = mkdtempSync(join(tmpdir(), "triage-"));
     writeFileSync(join(dir, "url"), "http://paperclip:3100/hook");

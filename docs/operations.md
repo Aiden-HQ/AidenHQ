@@ -135,6 +135,9 @@ It is idempotent. The Platform Engineer runs it for you after you approve a chan
   brings each repo's issues opened since its triage cursor with no fix label that our App didn't file (at most 10 per repo
   per tick, oldest first), and each fires "Maintainer: a new issue to triage" once with `{{repo}}` and `{{number}}` only.
   The first look only sets the cursor to now; issues already open, and any a per-issue run missed, are the daily triage's.
+  Those runs read a stranger's text before the App's trusted label, so they are capped a day per issue author and per repo
+  (maintainer settings `triage_per_author_day`, default 3, and `triage_per_repo_day`, default 30); past either, the issue
+  waits for the daily run. A fix that a label leads to still passes the Engineer's gates, the AI reviewer and the merge checks.
 
 - Monitoring (module `monitoring`, [docs/design/monitoring.md](design/monitoring.md)): Prometheus, node-exporter, cAdvisor,
   Alertmanager and Grafana. Every alert becomes a detector incident (group `alert`), so Fleet Ops works it; `DiskNearlyFull`

@@ -5,7 +5,7 @@ import { createKernelAuth } from "./kernel-auth.js";
 import { createApp } from "./app.js";
 import { appsApi } from "./fleet.js";
 import { appWatchTick, type AppStatus } from "./app-watch.js";
-import { maintainerIssues, maintainerTriageWake, maintainerWake, startMaintainer } from "./maintainer.js";
+import { maintainerIssues, maintainerTriageWake, maintainerWake, startMaintainer, triageLimits } from "./maintainer.js";
 import { queueOwnerLine, startDetector } from "./fleet-ops.js";
 import { createGrading } from "./grading.js";
 import { loadConfig } from "./config.js";
@@ -55,7 +55,7 @@ startWake(paperclip, store, records, grading, log);
 // The Maintainer's issue wake-up (maintainer.ts): off until the modules mount the webhook and github-mcp's token. Their
 // files are read on every tick: setup writes the webhook after apply has started this board.
 if (process.env.MAINTAINER_WEBHOOK_URL_FILE && process.env.MAINTAINER_ISSUES_TOKEN_FILE) {
-  startMaintainer({ wiring: () => { const [fire, issues, triage] = [maintainerWake(), maintainerIssues(), maintainerTriageWake()]; return fire && issues ? { fire, issues, triage } : undefined; }, store, log });
+  startMaintainer({ wiring: () => { const [fire, issues, triage] = [maintainerWake(), maintainerIssues(), maintainerTriageWake()]; return fire && issues ? { fire, issues, triage, limits: triageLimits() } : undefined; }, store, log });
 } else log.info({}, "maintainer issue watcher off: MAINTAINER_WEBHOOK_URL_FILE or MAINTAINER_ISSUES_TOKEN_FILE is not set");
 // Long-lived tasks move to a successor before Paperclip's fresh-session prompt outgrows the model's input (rollover.ts).
 startRollover(paperclip, store, records, grading, log);
