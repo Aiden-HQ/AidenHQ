@@ -84,7 +84,7 @@ test("a runner and a kernel restart leave a running job alone; the next kernel a
       `engines:\n  openrouter:\n    model: acme/model-1\nreplies:\n  enabled: false\nreviews:\n  enabled: false\nrecurring:\n  enabled: false\n`,
   );
   for (const [f, v] of [["paperclip_board_key", "board-key"], ["computers_runner_key", "runner-key"], ["board_internal_token", "board-token"], ["engineering_token", "engineering-token"]]) writeFileSync(join(secrets, f), `${v}\n`, { mode: 0o600 });
-  writeFileSync(join(home, ".gitconfig"), "[user]\n\tname = Test\n\temail = test@example.com\n");
+  writeFileSync(join(home, ".gitconfig"), "[user]\n\tname = Test\n\temail = test@example.com\n[gc]\n\tauto = 0\n[maintenance]\n\tauto = false\n");
 
   const engineers = [{ id: "engineer-claude", name: "Software Engineer", status: "idle", adapterType: "opencode_local", adapterConfig: {}, metadata: { setupKey: "aidenhq:engineer-openrouter", runnerEngine: true, engine: "codex-openrouter", box: true, persona: { name: "Ada" }, privateReads: true } }];
   const issue = { id: "task", identifier: "PEN-7", title: "Look into the flaky test", status: "todo", assigneeAgentId: "engineer-claude", assigneeUserId: null, createdByUserId: USER, labels: [], description: "Ada, look into why the login test is flaky" };

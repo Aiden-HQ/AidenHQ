@@ -458,8 +458,9 @@ export function flow({ parent: parentOver, part: partOver, alfredPart: alfredOve
     const bin = join(dir, "bin");
     for (const d of [home, config, secrets, bin]) mkdirSync(d, { recursive: true });
 
-    // GitHub: bare repositories that git@github.com:<org>/<name>.git resolves to.
-    writeFileSync(join(home, ".gitconfig"), `[user]\n\tname = Test\n\temail = test@example.com\n[init]\n\tdefaultBranch = main\n[protocol "file"]\n\tallow = always\n[url "${join(dir, "github")}/"]\n\tinsteadOf = git@github.com:\n`);
+    // GitHub: bare repositories that git@github.com:<org>/<name>.git resolves to. No auto-maintenance: a real box's git dies
+    // with the box, but here the agent runs on the host and its detached gc would outlive the turn.
+    writeFileSync(join(home, ".gitconfig"), `[user]\n\tname = Test\n\temail = test@example.com\n[gc]\n\tauto = 0\n[maintenance]\n\tauto = false\n[init]\n\tdefaultBranch = main\n[protocol "file"]\n\tallow = always\n[url "${join(dir, "github")}/"]\n\tinsteadOf = git@github.com:\n`);
     for (const slug of ["acme/app", "acme/infra"]) {
       const src = join(dir, "src", slug);
       mkdirSync(src, { recursive: true });
