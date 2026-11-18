@@ -62,7 +62,7 @@ import { afterRejection, graderSpeaks, summaryKind, wakesParent } from "./notice
 import { readBusy } from "./busy.ts";
 import { SETTINGS_LABEL, TypedRefused, allowedPaths, assertOnly, checkTyped, planFiles, typedTaskChanges } from "./typed-change.mjs";
 import { asSha, bumpInstance, pinOf, trainDescription, trainStep } from "./release.mjs";
-import { bumpFiles, extractTree } from "./release-sync.mjs";
+import { bumpFiles, commitFiles, extractTree } from "./release-sync.mjs";
 import { normalizeRepo, repoAccess } from "../../../modules/codehost-github/src/repos.ts";
 import { host as githubCodehost } from "../../../modules/codehost-github/src/host.mjs";
 import { LOCAL_ORG, changeUrl, host as localCodehost, parseChangeUrl } from "../../../modules/codehost-local/src/host.mjs";
@@ -610,10 +610,9 @@ async function fileModulesPin(issue, to) {
   // The product copies of the shared tree move with the pin: materialise the modules at `to`, run the sync on a scratch
   // checkout of the product tip, and commit exactly the files it changes beside modules-pin.json.
   const modules = await ensureClone(cfg.workDir, normalizeRepo(cfg.modulesRepo), await hostOf(cfg.modulesRepo).source(cfg.modulesRepo));
-  await git(modules, "fetch", "--quiet", "origin");
   const files = await bumpFiles({ product: r.path, tip, to, pin: next, fetchModules: (sha, dest) => extractTree(modules, sha, dest) });
   const branch = `fleet/modules-pin-${issue.identifier.toLowerCase()}`;
-  await commitFiles(issue, r.path, tip, branch, files, `chore(modules): pin the official modules at ${to.slice(0, 12)}\n\nWritten by the runner's release train on ${issue.identifier}; no agent wrote it.`);
+  await commitFiles({ path: r.path, tip, branch, files, index: join(cfg.stateDir, `release-index-${issue.id}`), env: identityEnv(await botIdentity()), message: `chore(modules): pin the official modules at ${to.slice(0, 12)}\n\nWritten by the runner's release train on ${issue.identifier}; no agent wrote it.` });
   return agentPublish({ issue, workspace: state.task(issue.id).workspace, box: false }, "pr", { branches: [{ repo, branch }], title: `chore(modules): pin the official modules at ${to.slice(0, 7)}`, body: `Moves \`modules-pin.json\` to ${cfg.modulesRepo}@${to}: the merges ${issue.identifier} lists. Written by the release train.` });
 }
 
@@ -630,7 +629,7 @@ async function fileInstancePin(issue, to) {
   } catch (err) {
     throw new UserError(`instance.yaml can't be bumped in place: ${err.message}`);
   }
-  await commitFiles(issue, r.path, tip, `fleet/release-${issue.identifier.toLowerCase()}`, { "instance.yaml": text }, `chore: product ${to.slice(0, 8)} + modules ${modules.slice(0, 8)} (${issue.identifier})\n\nWritten by the runner's release train; no agent wrote it.`);
+  await commitFiles({ path: r.path, tip, branch: `fleet/release-${issue.identifier.toLowerCase()}`, files: { "instance.yaml": text }, index: join(cfg.stateDir, `release-index-${issue.id}`), env: identityEnv(await botIdentity()), message: `chore: product ${to.slice(0, 8)} + modules ${modules.slice(0, 8)} (${issue.identifier})\n\nWritten by the runner's release train; no agent wrote it.` });
   // A bump that brings new reviewer code lands only on a passing eval of it: started here, and the bump stays open (filed on
   // a later poll) while it runs, rather than carded to fail.
   const b = await fleetBranch(issue, state.task(issue.id).workspace);
@@ -651,30 +650,6 @@ async function releaseClone(issue, repo) {
   if (!r) throw new Error(`${repo} isn't in ${issue.identifier}'s workspace`);
   await git(r.path, "fetch", "--quiet", "origin");
   return r;
-}
-
-/** A commit on `tip` with exactly `files` (path → bytes, or null to delete it) changed, made with git's plumbing (a private index) and set as `branch`. */
-async function commitFiles(issue, path, tip, branch, files, message) {
-  const env = { ...ISOLATED_ENV, ...identityEnv(await botIdentity()), GIT_INDEX_FILE: join(cfg.stateDir, `release-index-${issue.id}`) };
-  const g = (args, input) =>
-    new Promise((res, rej) => {
-      const p = execFile("git", [...SAFE_GIT_ARGS, ...args], { cwd: path, env, maxBuffer: 8 * 1024 * 1024 }, (err, out) => (err ? rej(err) : res(String(out).trim())));
-      p.stdin.end(input ?? "");
-    });
-  try {
-    await g(["read-tree", tip]);
-    for (const [p, text] of Object.entries(files)) {
-      if (text === null) await g(["update-index", "--force-remove", "--", p]);
-      else await g(["update-index", "--add", "--cacheinfo", `100644,${await g(["hash-object", "-w", "--stdin"], text)},${p}`]);
-    }
-    const sha = await g(["commit-tree", await g(["write-tree"]), "-p", tip, "-F", "-"], message);
-    const changed = (await git(path, "diff", "--no-renames", "--name-only", tip, sha)).split("\n").filter(Boolean).sort();
-    if (JSON.stringify(changed) !== JSON.stringify(Object.keys(files).sort())) throw new Error(`the bump commit changes ${changed.join(", ") || "nothing"}`);
-    await git(path, "branch", "-f", branch, sha);
-    return sha;
-  } finally {
-    rmSync(env.GIT_INDEX_FILE, { force: true });
-  }
 }
 
 // ------------------------------------------------------------------ stale routine runs

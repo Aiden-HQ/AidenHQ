@@ -46,8 +46,38 @@ export async function bumpFiles({ product, tip, to, pin, fetchModules }) {
     await g("add", "--all", "--force", "--", ".", ":(exclude)modules");
     const changed = (await g("diff", "--cached", "--no-renames", "--name-only", "-z", tip, "--", ".", ":(exclude)modules")).stdout.split("\0").filter(Boolean);
     if (!changed.includes("modules-pin.json")) throw new Error("the bump changed no modules pin");
+    // The commit writes plain files; a synced copy that moves its mode would lose it silently, so refuse it here.
+    const modes = new Map((await g("ls-files", "-s", "-z", "--", ...changed)).stdout.split("\0").filter(Boolean).map((e) => [e.slice(e.indexOf("\t") + 1), e.split(" ")[0]]));
+    const odd = changed.find((p) => modes.has(p) && modes.get(p) !== "100644");
+    if (odd) throw new Error(`the bump would change the mode of ${odd}`);
     return Object.fromEntries(changed.sort().map((p) => [p, existsSync(join(root, p)) ? readFileSync(join(root, p)) : null]));
   } finally {
     rmSync(tmp, { recursive: true, force: true });
+  }
+}
+
+/**
+ * A commit on `tip` with exactly `files` (path → bytes, or null to delete it) changed, made with git's plumbing and a
+ * private index in `path`'s repository, set as `branch`. `env` is the commit identity; the index is removed afterwards.
+ */
+export async function commitFiles({ path, tip, branch, files, message, env, index }) {
+  const g = (args, input) =>
+    new Promise((res, rej) => {
+      const p = execFile("git", [...SAFE_GIT_ARGS, ...args], { cwd: path, env: { ...ISOLATED_ENV, ...env, GIT_INDEX_FILE: index }, maxBuffer: 8 * 1024 * 1024 }, (err, out) => (err ? rej(err) : res(String(out).trim())));
+      p.stdin.end(input ?? "");
+    });
+  try {
+    await g(["read-tree", tip]);
+    for (const [p, text] of Object.entries(files)) {
+      if (text === null) await g(["update-index", "--force-remove", "--", p]);
+      else await g(["update-index", "--add", "--cacheinfo", `100644,${await g(["hash-object", "-w", "--stdin"], text)},${p}`]);
+    }
+    const sha = await g(["commit-tree", await g(["write-tree"]), "-p", tip, "-F", "-"], message);
+    const changed = (await g(["diff", "--no-renames", "--name-only", tip, sha])).split("\n").filter(Boolean).sort();
+    if (JSON.stringify(changed) !== JSON.stringify(Object.keys(files).sort())) throw new Error(`the bump commit changes ${changed.join(", ") || "nothing"}`);
+    await g(["branch", "--force", branch, sha]);
+    return sha;
+  } finally {
+    rmSync(index, { force: true });
   }
 }
