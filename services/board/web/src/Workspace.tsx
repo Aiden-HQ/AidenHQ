@@ -466,7 +466,7 @@ function Conversation({ refId, row, mobile, crew, prefix, go, onSignIn, toast, p
   useLayoutEffect(() => {
     const el = scroller.current;
     if (el && atEnd) el.scrollTop = el.scrollHeight;
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    // Follows the end only when the chat grows or its state changes, not on every render.
   }, [count, chat?.working?.said, chat?.state]);
   // At the end, stay there as the conversation grows under you: a failed send's Retry line, a card's outcome, rows
   // drawn at their real height after an estimate (content-visibility).

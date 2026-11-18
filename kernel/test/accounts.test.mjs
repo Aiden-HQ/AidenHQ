@@ -3,7 +3,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createHmac } from "node:crypto";
-import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { copyFileSync, mkdirSync, mkdtempSync, readFileSync } from "node:fs";
 import { request } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -11,7 +11,6 @@ import { openAccounts } from "../src/accounts.ts";
 import { createAdmin } from "../src/admin.ts";
 import { openRecords } from "../src/records.ts";
 import { authSecret, tailnetPeer } from "../src/auth-rules.ts";
-import { accountsFile, moveAccounts } from "../src/auth-move.ts";
 import { createChannels } from "../src/channels.ts";
 import { serve } from "./helpers.mjs";
 
@@ -36,10 +35,10 @@ function totp(b32, step = 0) {
 }
 
 /** A data dir holding the board's accounts where 3a finds them (data/board/). */
-function boardData() {
+function kernelData() {
   const dir = mkdtempSync(join(tmpdir(), "kernel-auth-"));
-  mkdirSync(join(dir, "board"));
-  for (const f of ["auth.db", "auth.secret"]) copyFileSync(join(FIXTURE, f), join(dir, "board", f));
+  mkdirSync(join(dir, "kernel", "auth"), { recursive: true });
+  for (const f of ["auth.db", "auth.secret"]) copyFileSync(join(FIXTURE, f), join(dir, "kernel", "auth", f));
   return dir;
 }
 
@@ -95,17 +94,8 @@ async function signIn(b, spent = new Set()) {
   return code;
 }
 
-test("move keeps the account and TOTP; a missing source refuses to start", async (t) => {
-  const dir = boardData();
-  // Not moved yet: the kernel refuses rather than open (and so create) an empty accounts file.
-  assert.throws(() => accountsFile(dir), /still at/);
-  await assert.rejects(openAccounts({ dataDir: dir, hosts: [HOST], edgeSecret: () => "", notify: () => {}, log: silent }), /still at/);
-  assert.equal(moveAccounts(dir), "moved");
-  assert.ok(!existsSync(join(dir, "board", "auth.db")) && existsSync(join(dir, "kernel", "auth", "auth.db")) && existsSync(join(dir, "kernel", "auth", "auth.secret")));
-  // An older board started after a revert makes an empty file at the old path: never moved over the kernel's.
-  writeFileSync(join(dir, "board", "auth.db"), "stale");
-  writeFileSync(join(dir, "board", "auth.secret"), "stale");
-  assert.equal(moveAccounts(dir), "present");
+test("the account and TOTP sign in; an accounts file without its secret refuses", async (t) => {
+  const dir = kernelData();
 
   const { url, notices } = await adminOn(t, dir);
   const b = browser(url);
@@ -120,14 +110,10 @@ test("move keeps the account and TOTP; a missing source refuses to start", async
   const bare = mkdtempSync(join(tmpdir(), "kernel-auth-"));
   copyFileSync(join(FIXTURE, "auth.db"), join(bare, "auth.db"));
   assert.throws(() => authSecret(join(bare, "auth.db")), /without its auth\.secret/);
-  const fresh = mkdtempSync(join(tmpdir(), "kernel-auth-"));
-  assert.equal(moveAccounts(fresh), "fresh");
-  assert.equal(accountsFile(fresh), join(fresh, "kernel", "auth", "auth.db"));
 });
 
 test("a card is decided on the kernel page, stamped with the admin's account; the board's origin and a page without the token can't", async (t) => {
-  const dir = boardData();
-  moveAccounts(dir);
+  const dir = kernelData();
   const { url, decided, push, deploy } = await adminOn(t, dir);
   const b = browser(url);
   await signIn(b);
@@ -148,9 +134,9 @@ test("a card is decided on the kernel page, stamped with the admin's account; th
   assert.match(decided[0].by, /^account:[\w-]+$/);
   assert.equal(decided[0].via, "web");
   // Several at once: each against the digest the owner saw; the kernel's record through the records.
-  const batch = await b("POST", "/approvals/batch", { item: `${deploy.id}:${deploy.digest}`, decision: "reject", csrf: page.csrf });
+  const batch = await b("POST", "/approvals/batch", { item: `${deploy.id}:${deploy.digest}`, decision: "reject", reason: "Wrong fix", csrf: page.csrf });
   assert.equal(batch.status, 200, batch.html);
-  assert.deepEqual(decided[1], { id: deploy.id, digest: deploy.digest, decision: "reject", by: decided[0].by, via: "web" });
+  assert.deepEqual(decided[1], { id: deploy.id, digest: deploy.digest, decision: "reject", by: decided[0].by, via: "web", reason: "Wrong fix" });
 
   // Signed out, a user's account and an unknown host never decide.
   const stranger = browser(url);
@@ -163,8 +149,7 @@ test("a card is decided on the kernel page, stamped with the admin's account; th
 });
 
 test("an invited admin's first sign-in through the front door: claim the link, sign in, enrol an authenticator, decide", async (t) => {
-  const dir = boardData();
-  moveAccounts(dir);
+  const dir = kernelData();
   const { url } = await adminOn(t, dir);
   const b = browser(url, FRONT, true);
   const set = await b("POST", "/auth/set-password", { token: OWNER.invited.link, password: "a long enough password" });
@@ -186,8 +171,7 @@ test("an invited admin's first sign-in through the front door: claim the link, s
 
 // Last: its burst spends Better Auth's per-address limit for the shared loopback peer (module-wide memory) for a minute.
 test("every kernel page refuses a frame (A7); unidentified guessing hits its ceiling while the owner over the tailnet signs in; a forged tailnet identity counts for nothing", async (t) => {
-  const dir = boardData();
-  moveAccounts(dir);
+  const dir = kernelData();
   let clock = Date.now();
   const { url, notices } = await adminOn(t, dir, () => clock);
   const b = browser(url);
@@ -244,8 +228,7 @@ test("every kernel page refuses a frame (A7); unidentified guessing hits its cei
   await signIn(named("198.51.100.6"), spent);
 
   // Signed in (on a fresh copy: TOTP steps above are spent), the pages a session reaches refuse frames too.
-  const fresh = boardData();
-  moveAccounts(fresh);
+  const fresh = kernelData();
   const other = await adminOn(t, fresh);
   const o = browser(other.url, HOST, false, { "x-aidenhq-client-ip": "198.51.100.5", "x-aidenhq-edge": "edge-secret" });
   await signIn(o);
@@ -260,8 +243,7 @@ test("every kernel page refuses a frame (A7); unidentified guessing hits its cei
 
   // The tailnet is one peer whatever login it names, rate-limited only: sustained failures under varied logins never lock or
   // ban it; past 20 a minute it waits (429), and once the minute has passed the right password and code get in.
-  const third = boardData();
-  moveAccounts(third);
+  const third = kernelData();
   let tclock = Date.now();
   const tn = await adminOn(t, third, () => tclock);
   const as = (login) => browser(tn.url, HOST, false, { "tailscale-user-login": login });
@@ -283,8 +265,7 @@ test("wrong codes back off per account, whatever the peer: 100 from the tailnet 
   assert.equal(rules.enabled, true);
   for (const p of ["/sign-in/email", "/two-factor/verify-totp"]) assert.deepEqual(rules.customRules[p], { window: 60, max: 20 });
 
-  const dir = boardData();
-  moveAccounts(dir);
+  const dir = kernelData();
   let clock = Date.now();
   const { url } = await adminOn(t, dir, () => clock);
   const b = browser(url, HOST, false, { "tailscale-user-login": "owner@example.com" });

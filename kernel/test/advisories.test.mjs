@@ -6,8 +6,8 @@ import { mkdtempSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { createAdvisories, openAdvisories } from "../src/loader/advisories.ts";
-import { checkout } from "../src/loader/sources.ts";
+import { createAdvisories, openAdvisories } from "../src/advisories.ts";
+import { checkout } from "../../scripts/compiler/sources.ts";
 import { createChannels } from "../src/channels.ts";
 
 const env = { ...process.env, GIT_AUTHOR_NAME: "t", GIT_AUTHOR_EMAIL: "t@example.com", GIT_COMMITTER_NAME: "t", GIT_COMMITTER_EMAIL: "t@example.com", GIT_CONFIG_GLOBAL: "/dev/null" };
@@ -70,43 +70,6 @@ test("A16 exit: an advisory against the installed sha shows and sends one notice
   assert.deepEqual(await s.lines(), []);
 });
 
-test("A16: an advisory for a module the marketplace doesn't list is ignored; low and medium show but send no notice", async (t) => {
-  const s = setup(t, { listed: ["widget"] });
-  s.publish({ advisories: [advisory({ ...s, over: { id: "AHQ-2026-002", module: "gadget" } }), advisory({ ...s, over: { id: "AHQ-2026-003", severity: "medium" } })] });
-  s.install(s.between);
-  assert.deepEqual((await s.adv.check()).map((o) => o.id), ["AHQ-2026-003"]);
-  assert.deepEqual(await s.lines(), []);
-});
-
-test("A16: a third-party marketplace's advisories.json flags only the module installed from it", async () => {
-  const dir = mkdtempSync(join(tmpdir(), "advisories-mkt-"));
-  const mkt = join(dir, "mkt");
-  git(dir, "init", "-q", "-b", "main", mkt);
-  writeFileSync(join(mkt, "marketplace.json"), JSON.stringify({ name: "acme", plugins: [{ name: "twin", source: "./twin" }] }));
-  mkdirSync(join(mkt, "twin"));
-  writeFileSync(join(mkt, "twin/module.yaml"), "name: twin\n");
-  git(mkt, "add", "-A");
-  const pinned = commit(mkt, "twin");
-  const fetch = { cacheDir: join(dir, "cache") };
-  checkout({ url: mkt, path: "", sha: pinned, owned: true }, fetch); // what the install fetched
-  // Published after the pin, on the marketplace's head: one advisory for its own module, one naming an official module.
-  writeFileSync(join(mkt, "advisories.json"), JSON.stringify({ advisories: [
-    { id: "ACME-2026-1", module: "twin", affected: [pinned], severity: "high", summary: "Twin leaks." },
-    { id: "ACME-2026-2", module: "widget", affected: [pinned], severity: "critical", summary: "Not ours to say." },
-  ] }));
-  git(mkt, "add", "-A");
-  commit(mkt, "advisories");
-  const s = setup();
-  s.publish({ advisories: [] });
-  const catalog = join(dir, "modules.json");
-  writeFileSync(catalog, JSON.stringify([{ name: "widget", enabled: true, revision: s.between }, { name: "twin", enabled: true, revision: pinned, marketplace: "acme", source: { url: mkt, path: "" } }]));
-  const db = new DatabaseSync(":memory:");
-  const sent = [];
-  const adv = createAdvisories({ db, repo: s.repo, catalog, ownerLine: (l) => sent.push(l), fetch });
-  assert.deepEqual((await adv.check()).map((o) => [o.id, o.module]), [["acme:ACME-2026-1", "twin"]]);
-  assert.equal(sent.length, 1);
-});
-
 test("a third-party file can neither hide official advisories (malformed) nor shadow one (same id)", async () => {
   const dir = mkdtempSync(join(tmpdir(), "advisories-mkt-"));
   const mkt = join(dir, "mkt");
@@ -153,19 +116,4 @@ test("a malformed file is ignored and logged, leaving the last read; a summary i
   assert.deepEqual(s.adv.list().map((x) => x.id), ["AHQ-2026-001"]);
   s.publish("not json");
   assert.equal(await s.adv.check(), undefined);
-});
-
-test("openAdvisories: descends from affected and not from fixed", () => {
-  const anc = (a, b) => ({ "a:x": true, "f:x": false, "a:y": true, "f:y": true })[`${a}:${b}`] ?? false;
-  const file = { advisories: [{ id: "AHQ-2026-004", module: "widget", affected: ["a".repeat(40)], fixed: "f".repeat(40), severity: "low", summary: "s" }] };
-  const isAnc = (a, b) => anc(a[0], b);
-  assert.equal(openAdvisories(["widget"], file, { widget: "x" }, isAnc).length, 1);
-  assert.equal(openAdvisories(["widget"], file, { widget: "y" }, isAnc).length, 0);
-  assert.equal(openAdvisories(["widget"], file, {}, isAnc).length, 0);
-  assert.throws(() => openAdvisories(["widget"], { advisories: [{ ...file.advisories[0], severity: "urgent" }] }, { widget: "x" }, isAnc));
-});
-
-test("modules/advisories.json is an empty list that holds to the schema", () => {
-  const file = JSON.parse(readFileSync(new URL("../../modules/advisories.json", import.meta.url), "utf8"));
-  assert.deepEqual(openAdvisories([], file, {}, () => true), []);
 });

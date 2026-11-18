@@ -28,7 +28,7 @@
 #                                                      owner's Telegram (never printed here)
 #   ops/setup.sh --config person.env --dry-run         print what it would do; changes nothing
 # person.env (KEY=value, read here, never printed): OWNER_NAME, OWNER_EMAIL, TIMEZONE (required); AIDENHQ_USER (default
-# the sudo user), COMPANY_NAME (work), MODULES (google), OPENROUTER_MANAGEMENT_KEY + OPENROUTER_LIMIT_USD (50) or
+# the sudo user), COMPANY_NAME (work), MODULES (google), OPENROUTER_MANAGEMENT_KEY + OPENROUTER_LIMIT_USD (100) or
 # OPENROUTER_KEY, GOOGLE_CLIENT_ID + GOOGLE_CLIENT_SECRET (optional: an OAuth app you already have; otherwise the board's Google setup asks), TS_AUTHKEY (tailnet join key),
 # TS_APPS_AUTHKEY (the apps' own tailnet node: a reusable, tagged, pre-authorized key; docs/setup.md),
 # BOARD_HOST (default: this VM's tailnet name), PAPERCLIP_PASSWORD
@@ -122,7 +122,7 @@ in_range TIMEOUT_MINUTES "$TIMEOUT_MINUTES" 5 1440
 in_range CI_RUNNERS "$CI_RUNNERS" 0 32
 AGENTS_ORG="$(cfg GITHUB_AGENTS_ORG)"
 [[ -z "$AGENTS_ORG" || "$AGENTS_ORG" =~ ^[A-Za-z0-9][A-Za-z0-9-]*$ ]] || die "GITHUB_AGENTS_ORG must be a GitHub organization name"
-COMPANY="$(cfg COMPANY_NAME work)"; MODULES="$(cfg MODULES google)"; LIMIT="$(cfg OPENROUTER_LIMIT_USD 50)"
+COMPANY="$(cfg COMPANY_NAME work)"; MODULES="$(cfg MODULES google)"; LIMIT="$(cfg OPENROUTER_LIMIT_USD 100)"
 SECRETS="$H/.config/aidenhq"; INST="$H/aidenhq-instance"; REMOTE="$H/aidenhq-instance.git"; ENVF="$REPO/.env"
 
 if [ "$DRY" = 1 ]; then
@@ -239,7 +239,7 @@ setup_link() {
 }
 
 if [ "$LINK_ONLY" = 1 ]; then
-  if [ "$UNATTENDED" = 1 ]; then ADMIN_URL="${AIDENHQ_ADMIN_URL:-http://127.0.0.1:3120}"; setup_link; exit 0; fi
+  if [ "$UNATTENDED" = 1 ]; then ADMIN_URL="${AIDENHQ_ADMIN_URL:-http://localhost:3120}"; setup_link; exit 0; fi
   echo "Link for $OWNER_NAME (open it on their laptop, on the tailnet; one use):"
   owner_link
   exit 0
@@ -261,9 +261,8 @@ say "System packages, Docker, gVisor, Tailscale"
 # Tailscale an SSH tunnel to loopback. The machine step opens the host firewall for it (ops/vm/public-fw.sh).
 EXPOSURE=tailscale; [ "$NO_TS" = 0 ] || EXPOSURE=local; [ "$PUBLIC" = 0 ] || EXPOSURE=public
 run env AIDENHQ_EXPOSURE="$EXPOSURE" AIDENHQ_NO_TAILSCALE="$NO_TS" AIDENHQ_USER="$U" AIDENHQ_CHECKOUT="$REPO" bash "$SRC/ops/vm/setup.sh"
-# The runner's engines on the host: Codex (the primary engine, codex-openrouter) and opencode (the fallback) (engines.mjs).
+# The Codex CLI for the runner's own short model calls (intake.ts); Engineer jobs run Codex in their agent computers.
 command -v codex >/dev/null || run npm install -g --silent @openai/codex@0.166.0
-command -v opencode >/dev/null || run npm install -g --silent opencode-ai@1.19.5
 # The machine step just added the user to the docker group, but their systemd user manager (kept alive by linger, so
 # logging out doesn't restart it) still has the old groups: the user units started below couldn't reach Docker.
 if [ "$DRY" = 0 ]; then
@@ -288,9 +287,9 @@ if [ -z "$BOARD_HOST" ] && [ "$NO_TS" = 0 ]; then
   else die "this VM isn't on the tailnet: set TS_AUTHKEY in ${CONFIG:-a --config file}, or run 'sudo tailscale up', then run setup again"; fi
 fi
 # The board's URL for links: its tailnet name over https, or (no Tailscale) loopback, reached through an SSH tunnel.
-if [ -n "$BOARD_HOST" ]; then BOARD_URL="https://$BOARD_HOST"; else BOARD_URL="http://127.0.0.1:3121"; fi
+if [ -n "$BOARD_HOST" ]; then BOARD_URL="https://$BOARD_HOST"; else BOARD_URL="http://localhost:3121"; fi
 # The kernel's admin listener (sign-in and approvals) on its own origin: a second tailnet port, or the second tunnel.
-if [ -n "$BOARD_HOST" ]; then ADMIN_URL="https://$BOARD_HOST:8446"; else ADMIN_URL="http://127.0.0.1:3120"; fi
+if [ -n "$BOARD_HOST" ]; then ADMIN_URL="https://$BOARD_HOST:8446"; else ADMIN_URL="http://localhost:3120"; fi
 say "Board address: $BOARD_URL (sign-in and approvals: $ADMIN_URL)"
 # The machine step installs node; everything after it needs it.
 [ "$DRY" = 1 ] || command -v node >/dev/null || die "node is missing after the machine step: ops/vm/setup.sh installs it (NodeSource); see its output above"
@@ -301,7 +300,7 @@ fall_back_local() { # WHY
   echo "!!! The board stays on this host's loopback instead, reached through the SSH tunnel printed at the end."
   echo "!!! To try public again once that is fixed: sudo AIDENHQ_EXPOSURE=public ops/setup.sh (with the same options)"; echo
   PUBLIC=0 PUBLIC_IP="" EXPOSURE=local
-  BOARD_URL="http://127.0.0.1:3121"; ADMIN_URL="http://127.0.0.1:3120"
+  BOARD_URL="http://localhost:3121"; ADMIN_URL="http://localhost:3120"
   if [ "$DRY" = 0 ] && grep -qx '  exposure: public' "$INST/instance.yaml" 2>/dev/null; then
     as_user sed -i 's/^  exposure: public$/  exposure: local/' "$INST/instance.yaml"
     as_user git -C "$INST" -c user.name=setup -c user.email=setup@aidenhq.invalid commit --quiet -m "exposure: local (public mode got no certificate)" -- instance.yaml
@@ -424,10 +423,14 @@ fi
 # AIDENHQ_RELEASE_SHA (its commit), all three or none; the apply then resolves it and checks `product:` is its kernel.
 RELEASE_LINE=""
 if [ -n "${AIDENHQ_RELEASE:-}${AIDENHQ_RELEASE_REPO:-}${AIDENHQ_RELEASE_SHA:-}" ]; then
-  [[ "${AIDENHQ_RELEASE:-}" =~ ^[0-9]{4}\.[0-9]{1,2}(\.[0-9]+)?$ ]] && [[ "${AIDENHQ_RELEASE_REPO:-}" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] && [[ "${AIDENHQ_RELEASE_SHA:-}" =~ ^[0-9a-f]{40}$ ]] \
-    || die "AIDENHQ_RELEASE, AIDENHQ_RELEASE_REPO and AIDENHQ_RELEASE_SHA must all be set: a YYYY.MM name, <owner>/<repo> and a 40-character sha"
+  [[ "${AIDENHQ_RELEASE:-}" =~ ^[0-9]{4}\.[0-9]{1,2}(\.[0-9]+){0,2}$ ]] && [[ "${AIDENHQ_RELEASE_REPO:-}" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] && [[ "${AIDENHQ_RELEASE_SHA:-}" =~ ^[0-9a-f]{40}$ ]] \
+    || die "AIDENHQ_RELEASE, AIDENHQ_RELEASE_REPO and AIDENHQ_RELEASE_SHA must all be set: a YYYY.M[.D[.N]] name, <owner>/<repo> and a 40-character sha"
   RELEASE_LINE="release: { name: \"$AIDENHQ_RELEASE\", source: { source: github, repo: $AIDENHQ_RELEASE_REPO }, sha: $AIDENHQ_RELEASE_SHA }"
 fi
+PIN_COMMIT=""   # the pin commit an upgrade by the installer made (below): reverted when its apply fails
+# A release install updates itself (docs/design/release-updates.md): a newer release installs at night; "off" only tells you.
+AUTO_UPDATE=""
+[ -z "$RELEASE_LINE" ] || AUTO_UPDATE='  auto_update: "on"'
 if [ ! -d "$INST/.git" ]; then
   say "Instance repo $INST (origin: $REMOTE)"
   # The official modules (their own repository since 5b) at the product's pin, put at ./modules; the instance's default
@@ -454,6 +457,10 @@ settings:
   company_name: $(json "$COMPANY")
   channels: [web]
   exposure: $EXPOSURE
+  # Quiet start (docs/design/quiet-start.md): schedules and heartbeats wait until you turn them on; spend stops at \$10 a day.
+  quiet_start: "on"
+  spend_day_usd: 10
+$AUTO_UPDATE
 ${AGENTS_ORG:+  github_agents_org: $AGENTS_ORG}
 $(p="$(sed -n 's/^AIDENHQ_PRODUCT_REPO=//p' "$ENVF" | head -1)"; [ -z "$p" ] || echo "  product_repo: $(json "$p")")
 EOF
@@ -466,6 +473,12 @@ EOF
   as_user git -C "$INST" add -A
   as_user git -C "$INST" -c user.name=setup -c user.email=setup@aidenhq.invalid commit --quiet -m "instance for $OWNER_NAME"
   as_user git -C "$INST" push --quiet origin main
+elif [ -n "$RELEASE_LINE" ] && [ "$DRY" = 0 ]; then
+  # The installer run again on this server (an upgrade by hand): the instance's pin moves to the release it verified when that
+  # is newer (one commit, as the updater makes it); the same release is a repair, an older one is refused.
+  pinned="$(as_user node "$REPO/kernel/src/updates.ts" pin "$AIDENHQ_RELEASE" "$AIDENHQ_RELEASE_SHA")" || die "the instance's pin could not move to $AIDENHQ_RELEASE (above)"
+  say "$pinned"
+  case "$pinned" in *"now pins"*) PIN_COMMIT="$(ugit -C "$REMOTE" rev-parse main)" ;; esac
 fi
 
 # ---------------------------------------------------------------- 6. logins AidenHQ holds for this person
@@ -521,7 +534,14 @@ say "Apply: compile, start, Paperclip (ops/apply-config.sh)"
 PW="$( [ "$DRY" = 1 ] || read_secret paperclip_owner_password)"
 # --retry: setup is the owner's own command, and its contract is "fix the cause and run it again", so a generation an
 # earlier run of it left failed is applied again rather than held (ops/apply-config-work.sh).
-as_user AIDENHQ_PROGRESS_BASE="$(progress_slice SETUP_PHASES apply)" PAPERCLIP_EMAIL="$OWNER_EMAIL" PAPERCLIP_PASSWORD="$PW" PAPERCLIP_NAME="$OWNER_NAME" bash "$REPO/ops/apply-config.sh" --retry
+# An upgrade whose apply fails is back on the release before it (apply's own revert); its pin commit is reverted too, so the
+# instance's main says what runs and no later commit applies the failed release again.
+if ! as_user AIDENHQ_PROGRESS_BASE="$(progress_slice SETUP_PHASES apply)" PAPERCLIP_EMAIL="$OWNER_EMAIL" PAPERCLIP_PASSWORD="$PW" PAPERCLIP_NAME="$OWNER_NAME" bash "$REPO/ops/apply-config.sh" --retry; then
+  [ -z "$PIN_COMMIT" ] || as_user sh -c 'set -e; t="$(mktemp -d)"; git clone -q "$1" "$t/c"; cd "$t/c"; git revert --no-commit "$2"
+    git -c user.name="AidenHQ updates" -c user.email=updates@aidenhq.invalid commit -q -m "update: back from $3 (its apply failed)"; git push -q origin HEAD:main; rm -rf "$t"' _ "$REMOTE" "$PIN_COMMIT" "$AIDENHQ_RELEASE" \
+    || echo "!!! the instance still pins $AIDENHQ_RELEASE: revert its last commit ($PIN_COMMIT) in $INST"
+  die "the apply failed (above)${PIN_COMMIT:+; the pin of the instance is back on the release before $AIDENHQ_RELEASE}"
+fi
 if [ "$DRY" = 1 ]; then echo "  + .env: WORK_COMPANY_ID=<from config/system.yaml>, PAPERCLIP_DISABLE_SIGN_UP=true; docker compose up -d"
 else
   company="$(sed -n 's/^ *company_id: *"\{0,1\}\([0-9a-f-]\{36\}\)"\{0,1\}.*/\1/p' "$REPO/config/system.yaml" | head -1)"
@@ -545,7 +565,7 @@ say "Runner, model gateway and run pruning (user units)"
 # aidenhq-kernel: every model and tool call (kernel/src); the only holder of the OpenRouter key and the connections' keys.
 # A new size reaches a runner that was already running: it exits once nothing is half done (jobs keep running).
 runner_up=0; [ "$DRY" = 1 ] || ! as_user systemctl --user is-active --quiet aidenhq-runner || runner_up=1
-as_user systemctl --user enable --now aidenhq-kernel aidenhq-runner aidenhq-computers prune-runs.timer prune-docker.timer
+as_user systemctl --user enable --now aidenhq-kernel aidenhq-runner aidenhq-computers prune-runs.timer prune-docker.service prune-docker.timer
 # aidenhq-apply-recover: at boot, finishes an apply that died mid-run (ops/apply-config.sh --recover).
 as_user systemctl --user enable aidenhq-apply-recover
 [ "${KERNEL_RESTART:-0}" = 0 ] || as_user systemctl --user restart aidenhq-kernel
@@ -598,7 +618,7 @@ fi
 [ -z "$CONFIG" ] || echo "Delete $CONFIG: it holds secrets (the OpenRouter key)."
 if [ "$UNATTENDED" = 0 ] && [ -e /root/aidenhq-vault-recovery.txt ]; then echo "Vault recovery key: /root/aidenhq-vault-recovery.txt. Store it, then: sudo shred -u /root/aidenhq-vault-recovery.txt"; fi
 if [ -z "$BOARD_HOST" ] && [ "$PUBLIC" = 0 ]; then
-  tunnel="ssh -N -L 3121:127.0.0.1:3121 -L 3120:127.0.0.1:3120 $U@$(hostname -f 2>/dev/null || hostname)"
+  tunnel="ssh -N -L 3121:127.0.0.1:3121 -L 3120:127.0.0.1:3120 -L 3130:127.0.0.1:3130 $U@$(hostname -f 2>/dev/null || hostname)"
   echo "The board listens on this host's loopback only. From $OWNER_NAME's laptop, open a tunnel first and leave it open:"
   echo "  $tunnel"
   [ "$UNATTENDED" = 0 ] || echo "AIDENHQ_SSH_TUNNEL=$tunnel"

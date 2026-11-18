@@ -106,26 +106,20 @@ export function mentionedRepos(text) {
 }
 
 /**
- * Resolve the engine for a job: `engines.default` in the config (codex if unset), `engine: claude` (Claude Code),
- * `engine: openrouter` / `glm` (configured default OpenRouter model), `engine: openrouter:<model>`,
- * or a bare OpenRouter model id like `z-ai/glm-5.3`. A Claude model name alone (`model: opus`)
- * picks Claude Code.
+ * Resolve the engine for a job: `engines.default` in the config (codex-openrouter if unset), `engine: openrouter` / `glm` (the
+ * configured OpenRouter model), `engine: openrouter:<model>`, or a bare OpenRouter model id like `z-ai/glm-5.3`. Every job runs
+ * Codex on OpenRouter models in its agent's computer (codex-openrouter); a model name alone keeps the engine.
  */
 export function resolveEngine(directives, cfg, previous) {
   const raw = (directives.engine ?? "").trim().toLowerCase();
   const model = directives.model?.trim();
-  if (!raw && !model) return previous ?? resolveEngine({ engine: cfg.engines.default ?? "codex" }, cfg); // engines.default: the engine with an Engineer
-  if (raw === "codex") return { kind: "codex", model: model || cfg.engines.codex.model || undefined };
-  if (["claude", "claude-code", "claude code", "anthropic"].includes(raw)) return { kind: "claude", model: model || cfg.engines.claude?.model || undefined };
-  // OpenRouter models run on Codex through the gateway (codex-openrouter); `opencode` names the fallback engine.
-  if (raw === "opencode") return { kind: "openrouter", model: model || cfg.engines.openrouter.model };
-  if (raw === "glm" || raw === "openrouter" || raw === "codex-openrouter") return { kind: "codex-openrouter", model: model || cfg.engines["codex-openrouter"]?.model || cfg.engines.openrouter.model };
+  if (!raw && !model) return previous ?? resolveEngine({ engine: cfg.engines?.default ?? "codex-openrouter" }, cfg);
+  if (raw === "glm" || raw === "openrouter" || raw === "codex-openrouter") return { kind: "codex-openrouter", model: model || defaultModel("codex-openrouter", cfg) };
   if (raw.startsWith("openrouter:")) return { kind: "codex-openrouter", model: directives.engine.trim().slice("openrouter:".length) };
   if (raw.includes("/")) return { kind: "codex-openrouter", model: directives.engine.trim() };
-  if (!raw && isClaudeModel(model)) return { kind: "claude", model };
-  if (!raw && model) return { kind: previous?.kind === "claude" ? "codex" : previous?.kind ?? "codex", model };
+  if (!raw && model) return { kind: previous?.kind ?? "codex-openrouter", model };
   if (ENGINES_REG[raw]) return { kind: raw, model: model || defaultModel(raw, cfg) }; // any other kind a module provides
-  throw new Error(`unknown engine "${directives.engine}" (use codex, codex-openrouter, claude, openrouter, or openrouter:<model>)`);
+  throw new Error(`unknown engine "${directives.engine}" (use openrouter, or openrouter:<model>)`);
 }
 
 // The engine registry (config/engines.json), set once by the runner at start and by tests.
@@ -139,8 +133,8 @@ export const engineOf = (agent) => (ENGINES_REG[agent?.metadata?.engine] ? agent
 export const modelPrefix = (kind) => ENGINES_REG[kind]?.model_prefix ?? "";
 /** Where a kind's effort override is stored in the adapter config. */
 const effortKey = (kind) => ENGINES_REG[kind]?.effort_key;
-// A kind's default model: config/runner.yaml engines.<kind>.model; a router kind without one takes the router's.
-const defaultModel = (kind, cfg) => cfg.engines?.[kind]?.model || (modelPrefix(kind) ? cfg.engines?.openrouter?.model : undefined) || undefined;
+// A kind's default model: config/runner.yaml engines.<kind>.model, else the OpenRouter default (engines.openrouter.model).
+const defaultModel = (kind, cfg) => cfg.engines?.[kind]?.model || cfg.engines?.openrouter?.model || undefined;
 const EFFORTS = new Set(["minimal", "low", "medium", "high", "xhigh", "max"]);
 /** How the board names a run's engine: the kind's label ("{model}" filled in), with the model and effort. */
 export function engineLabel(e) {
@@ -173,16 +167,17 @@ export function pickedEngine(issue, engineers, cfg) {
   const key = effortKey(kind);
   const effort = key ? String(override[key] ?? primary[key] ?? "").trim().toLowerCase() : "";
   // Private reads come with the Engineer (module.yaml `private_reads: true`), never with an engine or a task.
-  // A box Engineer (module.yaml `image:` on a runner agent, setup's metadata.box) runs its jobs in an agent computer (engines.mjs boxCommand).
-  return { kind, model, ...(EFFORTS.has(effort) ? { effort } : {}), ...(agent.metadata?.privateReads === true ? { reads: true } : {}), ...(agent.metadata?.box === true && kind === "codex-openrouter" ? { box: true } : {}) };
+  return { kind, model, ...(EFFORTS.has(effort) ? { effort } : {}), ...(agent.metadata?.privateReads === true ? { reads: true } : {}) };
 }
 
 /**
  * The Paperclip fields that show `engine` as the task's picker: the matching Engineer as assignee,
  * and a model override unless the model is that Engineer's primary model. Undefined if no Engineer runs it.
  */
-// A box Engineer (metadata.box, the App Engineer) runs only what is assigned to it: never picked by its engine kind.
-const byKind = (engineers) => engineers.filter((a) => a.metadata?.box !== true);
+// A specialised Engineer (its own brief: the App Engineer, the Platform Engineer) runs only what is assigned to it: never
+// picked, or borrowed as a persona, by its engine kind. Whether its jobs run in a computer doesn't matter here.
+export const generalEngineers = (engineers) => engineers.filter((a) => !a.metadata?.brief);
+const byKind = generalEngineers;
 
 export function pickerFor(engine, engineers) {
   const agent = byKind(engineers).find((a) => engineOf(a) === engine.kind);
@@ -202,8 +197,8 @@ export function openrouterModels(engineers) {
 
 /** The Engineer's board identity for an engine: name and voice, when setup gave it one. */
 export function personaFor(kind, engineers, assigned) {
-  // A box Engineer is its own persona; the others share one per engine.
-  const p = (assigned?.metadata?.box === true ? assigned : byKind(engineers).find((a) => engineOf(a) === kind))?.metadata?.persona;
+  // A specialised Engineer is its own persona; the others share one per engine.
+  const p = (assigned?.metadata?.brief ? assigned : byKind(engineers).find((a) => engineOf(a) === kind))?.metadata?.persona;
   return typeof p?.name === "string" && p.name ? { name: p.name, voice: typeof p.voice === "string" ? p.voice : "" } : undefined;
 }
 
@@ -214,11 +209,6 @@ export function crewNames(engineers) {
     const name = a.metadata?.persona?.name;
     return engine && typeof name === "string" && name ? [{ name, engine }] : [];
   });
-}
-
-/** Claude Code model names: the aliases (opus, sonnet, haiku, fable) or a full `claude-…` id. */
-export function isClaudeModel(model) {
-  return /^(opus|sonnet|haiku|fable|claude-[a-z0-9.-]+)(\[1m\])?$/i.test(String(model ?? "").trim());
 }
 
 /**
@@ -232,18 +222,34 @@ export function ownRequest(issue) {
   return stripHidden(text).trim();
 }
 
-/** A part of the user's task they gave an Engineer themselves: their own request, no go-ahead needed. */
+/** A part of the user's task they gave an Engineer themselves: their own request. */
 export function isUserPart(issue, engineers) {
   return Boolean(issue?.parentId && issue.createdByUserId && !issue.createdByAgentId && engineers.some((e) => e.id === issue.assigneeAgentId));
 }
 
 /**
- * A sub-task an agent (the Researcher) created for an Engineer under one of the user's tasks. Its
- * description is agent-written, so it waits for the user's go-ahead before it is the request.
+ * A task an agent created: the asker is that agent (Paperclip's `createdByAgentId`). Its description is the agent's request,
+ * never the owner's words; it runs as asked, with or without a parent, and the kernel's write tiers gate what it pushes,
+ * merges, deploys or applies.
  */
-export function isAgentSubtask(issue) {
-  return Boolean(issue?.parentId && issue.createdByAgentId && !issue.createdByUserId);
+export function agentMade(issue) {
+  return Boolean(issue?.createdByAgentId && !issue.createdByUserId);
 }
+
+/** An agent's task under a parent: the parent is where its outcomes are told. */
+export function isAgentSubtask(issue) {
+  return Boolean(issue?.parentId && agentMade(issue));
+}
+
+/** The chief of staff: an agent holding `fleet-admin` in the host's grants table (never Paperclip metadata, which agents edit). */
+export const isChiefOfStaff = (grants, agentId) => Boolean(agentId) && (grants?.agents?.[agentId]?.roles ?? []).includes("fleet-admin");
+
+/**
+ * The agents' comments on an agent's task that start a job: the asker's and the chief of staff's. Any other agent's start
+ * nothing, and on the owner's own task no agent's do (his comments are read as his own elsewhere).
+ */
+export const startingNotes = (notes, task, grants) =>
+  agentMade(task) ? notes.filter((c) => c.authorAgentId === task.createdByAgentId || isChiefOfStaff(grants, c.authorAgentId)) : [];
 
 /**
  * A task left in progress with a check still ahead (Paperclip's `executionPolicy.monitor.nextCheckAt`): the run settled
@@ -257,43 +263,11 @@ export function settledWait(issue, now = Date.now()) {
 }
 
 /**
- * Where a finished queue leaves its task: an agent's sub-task whose PRs all merged, with no other open PR of its own
- * (openPrUrls: the task's PRs not known merged), is done; the delegating agent hears it on the parent. The owner's own
+ * Where a finished queue leaves its task: an agent's task whose PRs all merged, with no other open PR of its own
+ * (openPrUrls: the task's PRs not known merged), is done; a delegating agent hears it on the parent. The owner's own
  * tasks, a queue that stopped, and a task with another PR still open stay in review.
  */
 export function finishedStatus(issue, queue, openPrUrls = []) {
   const left = openPrUrls.filter((u) => !queue.prs.some((p) => p.url.toLowerCase() === String(u).toLowerCase()));
-  return queue.state === "done" && !left.length && isAgentSubtask(issue) ? "done" : "in_review";
-}
-
-/**
- * Whether an agent's Engineer sub-task runs without the owner's go-ahead: one delegated from a chat, or under a task an
- * agent or routine created (an app incident). A routine's run is its own root even when started by hand (the run's task
- * then carries the owner as creator): its request is the routine's prompt, from config. `chain`: the sub-task, then each
- * parent up to the root (null: one that couldn't be read).
- */
-export function runsUnasked(chain) {
-  const [full] = chain;
-  const root = chain.at(-1);
-  if (!isAgentSubtask(full) || chain.length < 2 || chain.includes(null) || root.parentId) return false;
-  return Boolean(root.labels?.some((l) => l.name === "chat") || !root.createdByUserId || root.originKind === "routine_execution");
-}
-
-/**
- * A rule or access proposal, Coach finding, product bug or Dependabot sweep an agent filed straight to the Platform Engineer
- * (`task_create`, marker `rule:` / `coach:` / `product-bug:` / `dependabot:`; the
- * Librarian's `task_propose_rule` wraps it as `delegate:<parent>:rule:...`). It runs without the owner's go-ahead: its only
- * output is a fleet apply card, which the AI reviewer or the owner still decides (the runner pushes and merges nothing without
- * one). Three checks, none of them typeable in free text: the marker is the tool's own last line (the tools strip `<!--` from
- * what agents write, so it can't appear mid-description), the assignee is the Platform Engineer, and the creator is an agent
- * whose grants (the host's table, not Paperclip metadata) let it file tasks.
- */
-export function isRuleProposal(issue, grants) {
-  const filer = grants?.agents?.[issue?.createdByAgentId]?.tools?.paperclip_tasks ?? [];
-  return Boolean(
-    issue?.createdByAgentId && !issue.createdByUserId &&
-    grants?.agents?.[issue.assigneeAgentId]?.key === "fleet-engineer" &&
-    (filer.includes("task_create") || filer.includes("task_propose_rule")) &&
-    /\n<!--\s*source:(?:delegate:[^:\s]+:)?(?:rule|coach|product-bug|dependabot):[A-Za-z0-9:._\/-]+\s*-->\s*$/.test(String(issue.description ?? "")),
-  );
+  return queue.state === "done" && !left.length && agentMade(issue) ? "done" : "in_review";
 }

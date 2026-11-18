@@ -11,12 +11,11 @@
 import { createHash, createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import type { IncomingMessage, ServerResponse } from "node:http";
-import { dirname } from "node:path";
+import { dirname, join } from "node:path";
 import { betterAuth } from "better-auth";
 import { getMigrations } from "better-auth/db/migration";
 import { createAppAccess, type Manifest, type SharedApp } from "./app-access.ts";
 import { AccountError, authCore, authSecret, forwardedProto, GATE_HEADER, inboundCookies, openAuthDb, outboundCookie, readBody, secretIs, EDGE_HEADER, type Log } from "./auth-rules.ts";
-import { accountsFile } from "./auth-move.ts";
 
 export { AccountError };
 export type Role = "admin" | "user";
@@ -52,13 +51,16 @@ export interface GateInfo {
   previews?: boolean;
   /** The shared apps by name: their host and the registry's default role (share.default_role), if any. */
   apps?: Record<string, SharedApp>;
+  /** App doors (docs/design/app-doors.md): every exposed app at <name>.<base>, named by browsers with this scheme and port. */
+  door?: { base: string; scheme: "http" | "https"; port?: number };
 }
 
 export function readGate(file: string): GateInfo | undefined {
   try {
-    const g = JSON.parse(readFileSync(file, "utf8")) as { login?: string; my_apps?: { host?: string }; hosts?: Record<string, { app?: string; default_role?: string }>; previews?: unknown };
+    const g = JSON.parse(readFileSync(file, "utf8")) as { login?: string; my_apps?: { host?: string }; hosts?: Record<string, { app?: string; default_role?: string }>; previews?: unknown; doors?: { base?: unknown }; origin?: { scheme?: unknown; port?: unknown } };
+    const door = typeof g.doors?.base === "string" && g.doors.base ? { base: g.doors.base.toLowerCase(), scheme: g.origin?.scheme === "http" ? "http" as const : "https" as const, ...(Number.isInteger(g.origin?.port) ? { port: g.origin!.port as number } : {}) } : undefined;
     const apps = Object.fromEntries(Object.entries(g.hosts ?? {}).map(([host, h]) => [String(h.app), { host: host.toLowerCase(), ...(h.default_role ? { defaultRole: h.default_role } : {}) }]));
-    return { password: g.login === "password", myAppsHost: g.my_apps?.host?.toLowerCase(), appHosts: Object.keys(g.hosts ?? {}).map((h) => h.toLowerCase()), previews: !!g.previews, apps };
+    return { password: g.login === "password", myAppsHost: g.my_apps?.host?.toLowerCase(), appHosts: Object.keys(g.hosts ?? {}).map((h) => h.toLowerCase()), previews: !!g.previews, apps, ...(door ? { door } : {}) };
   } catch {
     return undefined;
   }
@@ -74,6 +76,22 @@ export function isAppHost(g: GateInfo | undefined, host: string): boolean {
   const m = /^pr-[1-9][0-9]{0,5}\.(.+)$/.exec(host);
   return !!g.previews && !!m && g.appHosts.includes(m[1]!);
 }
+
+/**
+ * The app host a door origin names (`<scheme>://<name>.<base>[:<port>]`, exactly, as the gate builds it), or undefined. Only
+ * the name's shape is checked here; whether that app runs is the gate's to check, as for previews.
+ */
+export function doorHost(g: GateInfo | undefined, origin: string): string | undefined {
+  const d = g?.door;
+  if (!d) return undefined;
+  const prefix = `${d.scheme}://`, suffix = `.${d.base}${d.port ? `:${d.port}` : ""}`;
+  if (!origin.startsWith(prefix) || !origin.endsWith(suffix)) return undefined;
+  const name = origin.slice(prefix.length, origin.length - suffix.length);
+  return /^[a-z][a-z0-9-]{1,30}$/.test(name) ? `${name}.${d.base}` : undefined;
+}
+
+/** Every door origin as one CSP source expression (`http://*.localhost:3130`), or undefined without a door. */
+export const doorSource = (g: GateInfo | undefined): string | undefined => (g?.door ? `${g.door.scheme}://*.${g.door.base}${g.door.port ? `:${g.door.port}` : ""}` : undefined);
 
 const HANDOFF_TTL_MS = 60_000;
 const same = (a: string, b: string) => a.length === b.length && timingSafeEqual(Buffer.from(a), Buffer.from(b));
@@ -115,7 +133,7 @@ export interface AccountsOptions {
 export async function openAccounts(o: AccountsOptions) {
   const { log } = o;
   const LINK_TTL_MS = (o.linkTtlHours ?? 72) * 3_600_000;
-  const dbPath = o.dataDir === ":memory:" ? ":memory:" : accountsFile(o.dataDir);
+  const dbPath = o.dataDir === ":memory:" ? ":memory:" : join(o.dataDir, "kernel", "auth", "auth.db");
   const secret = authSecret(dbPath); // before the file exists: a fresh install makes both, an old file without its secret refuses
   const db = openAuthDb(dbPath);
   // Module UI sessions (the board's): the token's hash, the admin listener's session it came from, the module and its origin.
@@ -228,7 +246,7 @@ export async function openAccounts(o: AccountsOptions) {
     return g?.password && g.myAppsHost ? `https://${g.myAppsHost}` : undefined;
   };
   const linkFor = (a: Account, token: string) =>
-    a.role === "admin" ? `${o.adminUrl ?? "http://127.0.0.1:3120"}/auth/set-password?token=${token}` : signinUrl() ? `${signinUrl()}/.auth/set-password#${token}` : null;
+    a.role === "admin" ? `${o.adminUrl ?? "http://localhost:3120"}/auth/set-password?token=${token}` : signinUrl() ? `${signinUrl()}/.auth/set-password#${token}` : null;
 
   /** One-time handoff codes (memory): code → the sign-in host's session, for one app host, for 60 s. */
   const handoffs = new Map<string, { userId: string; parentId: string; host: string; state: string; until: number }>();
@@ -339,14 +357,18 @@ export async function openAccounts(o: AccountsOptions) {
 
     /**
      * The gate's get-session, resolved once from the forwarded cookies: Better Auth's { session, user }, or null when there's
-     * none, it's ambiguous (two session cookies), or it's an app host session whose sign-in host session has ended.
+     * none, it's ambiguous (two session cookies), or it's an app host session for another host or whose sign-in host session
+     * has ended.
      */
-    async gateSession(req: Pick<IncomingMessage, "headers">, host: string): Promise<unknown> {
+    async gateSession(req: Pick<IncomingMessage, "headers">, host: string, appHost = ""): Promise<unknown> {
       const cookie = inboundCookies(req.headers.cookie, https(req));
       if (!cookie) return null;
       const s = await auth.api.getSession({ headers: new Headers({ cookie, host }) }).catch(() => null);
       if (!s) return null;
-      const row = db.prepare("SELECT parent_id FROM handoff_session WHERE token = ?").get(s.session.token) as { parent_id: string } | undefined;
+      const row = db.prepare("SELECT parent_id, host FROM handoff_session WHERE token = ?").get(s.session.token) as { parent_id: string; host: string } | undefined;
+      // An app host's session counts only on the host it was handed to (`appHost`: the gate's X-Forwarded-Host). Cookies ignore
+      // ports, so on plain-http *.localhost doors another host can be sent it (docs/design/app-doors.md).
+      if (row && row.host !== appHost.toLowerCase().replace(/:\d+$/, "")) return null;
       if (row && !(await liveSession(row.parent_id))) {
         await endHostSession(s.session.token);
         return null;
@@ -386,6 +408,24 @@ export async function openAccounts(o: AccountsOptions) {
       const code = randomBytes(32).toString("base64url");
       uiCodes.set(code, { parentId: who.session.id, module, origin, state, until: now + HANDOFF_TTL_MS });
       log.info({ account: who.account.id, module, origin }, "module UI code minted");
+      return code;
+    },
+
+    /**
+     * An app door's handoff (the admin listener's /auth/handoff with a door origin; docs/design/app-doors.md): the same code
+     * the gate redeems for an app host (redeemHandoff), minted from the admin listener's own session, so a door never shows
+     * a sign-in form of its own. A ready admin only, for exactly a door origin, bound to its host and the gate's state nonce.
+     */
+    mintDoorCode(who: AdminSession, origin: string, state: string): string {
+      if (!who.ready) throw new AccountError(403, "an admin with an authenticator");
+      if (!/^[0-9a-f]{32}$/.test(state)) throw new AccountError(400, "bad state");
+      const host = doorHost(o.gate?.(), origin);
+      if (!host) throw new AccountError(400, "that address isn't an app door");
+      const now = Date.now();
+      for (const [k, h] of handoffs) if (h.until < now) handoffs.delete(k);
+      const code = randomBytes(32).toString("base64url");
+      handoffs.set(code, { userId: who.account.id, parentId: who.session.id, host, state, until: now + HANDOFF_TTL_MS });
+      log.info({ account: who.account.id, host }, "door handoff code minted");
       return code;
     },
 
@@ -477,7 +517,7 @@ export async function openAccounts(o: AccountsOptions) {
       db.exec("DELETE FROM setup_token");
       db.prepare("INSERT INTO setup_token (hash, expires) VALUES (?, ?)").run(sha(token), Date.now() + LINK_TTL_MS);
       log.info({}, "first-run setup link minted");
-      return { url: `${o.adminUrl ?? "http://127.0.0.1:3120"}/setup?token=${token}` };
+      return { url: `${o.adminUrl ?? "http://localhost:3120"}/setup?token=${token}` };
     },
 
     /** `token` is the live setup token: no admin yet, unexpired, its hash compared in constant time. */

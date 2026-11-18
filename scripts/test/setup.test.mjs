@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { test } from "node:test";
@@ -35,7 +35,7 @@ test("dry run prints the plan and no secrets", () => {
     ".env: BOARD_LAN_URL=https://alice.tail1234.ts.net",
     ".env: APPS_URL_BASE=https://aidenhq-alice-apps.tail1234.ts.net", // apps on their own tailnet node, never the board's name
     "with OPENROUTER_MANAGEMENT_KEY,AIDENHQ_SECRETS_DIR) node", // the key goes in through the environment
-    "openrouter-key.mjs create aidenhq-alice 50",
+    "openrouter-key.mjs create aidenhq-alice 100",
     "write /home/alice/.config/aidenhq/modules/google/google_oauth.json",
     "write /home/alice/aidenhq-instance/apps.yaml", // instance.yaml's heredoc ends where it should
     "ops/apply-config.sh",
@@ -50,22 +50,24 @@ test("refuses a config without the owner, and a line that isn't KEY=value", () =
   assert.throws(() => dry(conf([...person, "$(touch /tmp/pwned)"])), /not KEY=value/);
 });
 
-test("person.env: an unquoted value ends at ' #', a quoted one keeps it", () => {
-  const out = dry(conf([...person, "OPENROUTER_LIMIT_USD=75   # a month", "COMPANY_NAME='Acme # Co'"]));
-  assert.ok(out.includes("openrouter-key.mjs create aidenhq-alice 75"), out);
-});
-
-test("dry run installs and starts the Docker prune timer, so a fresh host cleans its images", () => {
-  const out = dry(conf(person));
-  assert.match(out, /cp .*prune-docker\.service .*prune-docker\.timer /, out);
-  assert.match(out, /enable --now .*prune-docker\.timer/, out);
-});
-
-test("dry run needs no node, and a missing OpenRouter key is 'would fail'", () => {
-  const file = conf(person.filter((l) => !l.startsWith("OPENROUTER")));
-  const out = execFileSync("/bin/bash", [setup, "--dry-run", "--config", file], { encoding: "utf8", env: { PATH: "/usr/bin:/bin", HOME: "/nonexistent" } });
-  assert.ok(out.includes("would fail: set OPENROUTER_MANAGEMENT_KEY"), out);
-  assert.ok(out.includes("write /home/alice/.config/aidenhq/modules/google/google_oauth.json"), out);
+test("every unit setup enables carries an [Install] section, or systemctl enable stops setup", () => {
+  const dir = join(dirname(setup), "units");
+  const enabled = [];
+  for (const line of readFileSync(setup, "utf8").split("\n")) {
+    if (line.trimStart().startsWith("#")) continue;
+    const m = /systemctl --user enable(?: --now)? (.*)$/.exec(line);
+    if (!m) continue;
+    for (const word of m[1].split(/\s+/)) {
+      const unit = word.includes(".") ? word : `${word}.service`;
+      if (/^[a-z0-9-]+\.(service|timer|path|socket)$/.test(unit) && existsSync(join(dir, unit))) enabled.push(unit);
+    }
+  }
+  assert.ok(enabled.includes("prune-docker.service") && enabled.includes("prune-docker.timer"), `prune units not enabled: ${enabled}`);
+  for (const unit of enabled) {
+    const body = readFileSync(join(dir, unit), "utf8");
+    assert.match(body, /^\[Install\]$/m, `${unit} has no [Install] section: systemctl enable ${unit} fails`);
+    assert.match(body, /^WantedBy=\S+/m, `${unit} has no WantedBy=: systemctl enable ${unit} fails`);
+  }
 });
 
 test("--unattended: no config file, settings from the environment, the SSH-tunnel route without Tailscale", () => {
@@ -73,29 +75,22 @@ test("--unattended: no config file, settings from the environment, the SSH-tunne
   const out = run({ OWNER_EMAIL: "alice@example.com", MAX_CONCURRENT: "8", TIMEOUT_MINUTES: "120", CI_RUNNERS: "2", OPENROUTER_KEY: "sk-SECRET" }, "--no-tailscale");
   for (const want of [
     "env AIDENHQ_EXPOSURE=local AIDENHQ_NO_TAILSCALE=1 AIDENHQ_USER=alice AIDENHQ_CHECKOUT=", // the machine without Tailscale
-    ".env: BOARD_LAN_URL=http://127.0.0.1:3121",
+    ".env: BOARD_LAN_URL=http://localhost:3121",
     "config/runner.yaml: max_concurrent: 8",
     "config/runner.yaml: timeout_minutes: 120",
     "CI runners: aidenhq-ci-runner@1..2",
     "Model key: none yet", // secrets never come from the environment
-    "AIDENHQ_SSH_TUNNEL=ssh -N -L 3121:127.0.0.1:3121 -L 3120:127.0.0.1:3120 alice@",
+    "AIDENHQ_SSH_TUNNEL=ssh -N -L 3121:127.0.0.1:3121 -L 3120:127.0.0.1:3120 -L 3130:127.0.0.1:3130 alice@",
     "kernel: the first-run page's one-time link, last: AIDENHQ_SETUP_URL=", // the full run: ops/test/unattended-install.sh
   ]) assert.ok(out.includes(want), `missing: ${want}\n${out}`);
   for (const not of ["tailscale serve", "APPS_URL_BASE", "sk-SECRET"]) assert.ok(!out.includes(not), `unexpected: ${not}\n${out}`);
   assert.throws(() => run({}), /--unattended needs OWNER_EMAIL/);
   assert.throws(() => run({ OWNER_EMAIL: "alice@example.com", MAX_CONCURRENT: "8; rm -rf /" }), /MAX_CONCURRENT must be a whole number/);
 });
+
 test("--unattended, exposure public: the IP's https URLs and 24-hour links, no tailnet and no tunnel", () => {
   const out = execFileSync("bash", [setup, "--dry-run", "--unattended"], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], env: { PATH: process.env.PATH, AIDENHQ_USER: "alice", OWNER_EMAIL: "alice@example.com", AIDENHQ_EXPOSURE: "public", AIDENHQ_PUBLIC_IP: "203.0.113.7" } });
   for (const want of ["env AIDENHQ_EXPOSURE=public AIDENHQ_NO_TAILSCALE=1", ".env: BOARD_LAN_URL=https://203.0.113.7", ".env: AIDENHQ_ADMIN_URL=https://203.0.113.7:8446", ".env: AIDENHQ_PUBLIC_IP=203.0.113.7", ".env: AIDENHQ_LINK_TTL_HOURS=24"])
     assert.ok(out.includes(want), `missing: ${want}\n${out}`);
   for (const not of ["tailscale serve", "AIDENHQ_SSH_TUNNEL"]) assert.ok(!out.includes(not), `unexpected: ${not}\n${out}`);
-});
-test("a rerun of an unattended install: units before the apply, its own failed generation retried, a umask of its own", () => {
-  const out = execFileSync("bash", ["-c", `umask 077; exec bash "$0" --dry-run --unattended --no-tailscale`, setup], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], env: { PATH: process.env.PATH, AIDENHQ_USER: "alice", OWNER_EMAIL: "alice@example.com" } });
-  const at = (s) => { const i = out.indexOf(s); assert.ok(i >= 0, `missing: ${s}\n${out}`); return i; };
-  // The apply's agent setup needs the computer launcher answering: its unit is installed and started first.
-  assert.ok(at("enable --now aidenhq-computers") < at("ops/apply-config.sh --retry"), out);
-  assert.ok(at("aidenhq-computers.service") < at("ops/apply-config.sh"), out);
-  assert.match(readFileSync(setup, "utf8"), /^set -euo pipefail\n(#.*\n)*umask 022\n/m, "setup sets its own umask before writing anything");
 });

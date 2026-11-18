@@ -6,7 +6,7 @@ Configuration has two sources: **modules** in the product repo (`modules/<name>/
 ## Modules
 
 A module is a folder with a `module.yaml` and any of `agents/<key>/AGENTS.md`, `connections/<svc>/` and `apps/<app>/`. It
-ships no compose file: compile generates its services from `services:`. There is no core module: `instance.yaml` `modules:` lists every module the instance runs (closed over `requires`); `modules/marketplace.json` `bundle` is the default set `ops/setup.sh` writes. The kernel's own settings (`owner_name`, `owner_email`, `timezone`, `company_name`, `instance_name`, `autonomy`, `backup_repository`, `exposure`) are declared in `kernel/settings.json`; the department registry and the kernel's generated secrets in `kernel/defaults.json`.
+ships no compose file: compile generates its services from `services:`. There is no core module: `instance.yaml` `modules:` lists every module the instance runs (closed over `requires`); `modules/marketplace.json` `bundle` is the default set `ops/setup.sh` writes. The kernel's own settings (`owner_name`, `owner_email`, `timezone`, `company_name`, `instance_name`, `autonomy`, `backup_repository`, `exposure`, `quiet_start`, `spend_day_usd`) are declared in `kernel/settings.json`; the department registry and the kernel's generated secrets in `kernel/defaults.json`.
 
 `module.yaml` fields:
 
@@ -102,20 +102,23 @@ outcomes:
   `app_api` are governed by grants. Setting or changing a routine's autonomy is always a Tier 2 change.
 - **Instance agents** (`agents/<key>/`) take `name`, `description` (the routing contract), `reports_to`, `model`,
   `reasoning_effort`, `timeout_sec`, `connections`, `routines` (schedules, `model` and `autonomy` only), `budget` (USD, required), `max_parallel`,
-  `image`, `trial`, `trial_writes`, `heartbeat` and `builder`. They cannot have roles. `builder: true` (as on the Agent
-  Architect, the DevOps Engineer and the design agents) adds the shared "How we build" section to the handbook; every agent
-  gets "How we work". `trial: true` keeps writes to reporting on the
+  `image`, `trial`, `trial_writes`, `heartbeat` and `skills` (module skill ids). They cannot have roles. An agent that writes
+  or designs code lists `engineering.write-code` in `skills` (how code is written here); every agent gets "How we work".
+  `trial: true` keeps writes to reporting on the
   agent's own tasks; `trial_writes: [connection.tool, …]` on a trial agent says which more it may use, so a definition can
   give it the owner-channel writes before tap 2: `paperclip_tasks.task_create`, `chat_lane.wake_at`,
   `chat_lane.chat_send`, `telegram.notify_owner` (any other name, an entry it doesn't grant, or one on an agent not in
   trial is a compile error). Every other granted write stays refused until trial ends. The Agent Architect designs these
   and the Platform Engineer commits them after the owner approves.
-- `private_reads: true` on a `dispatch: runner` agent: its jobs may hold private data (the private jobcaps: Grafana, Slack,
-  Glean, ClickHouse; the job's gcloud session; other tasks) and get no web search. Without it (the Software and Platform
-  Engineers), web search and only the non-private jobcaps (Primer).
-- `jobcaps: [<id>]` on a `dispatch: runner` agent (`<id>?` when its module is optional): what its jobs read, through the
-  model gateway's `/c/<connection>/mcp` with the job's own token; no connection URL or token enters a job. A module declares
-  them under `jobcaps:` (`id`, `connection`, `tools` or `read`, `private`, `tool_timeout_s`, `read_url`, `read_secret`). `engine:` on a runner agent picks its engine (`codex-openrouter` or `openrouter` for `opencode_local`).
+- `private_reads: true` on a `dispatch: runner` agent: its jobs may hold private data (private grants: Grafana, Slack,
+  Glean, ClickHouse; other tasks) and get no web search. Without it (the Software and Platform Engineers), web search and
+  only the non-private jobcaps (Primer).
+- `image: engineer` on a `dispatch: runner` agent: every Engineer has one; its jobs run in that agent computer (a job for an
+  agent without one is refused).
+- `jobcaps: [<id>]` on a `dispatch: runner` agent (`<id>?` when its module is optional): the non-private reads its jobs hold,
+  through the kernel's proxy with the box's run token; no connection URL or token enters a job. A module declares them under
+  `jobcaps:` (`id`, `connection`, `tools` or `read`, `private`, `tool_timeout_s`, `read_url`, `read_secret`). `engine:` on a
+  runner agent names its engine (`codex-openrouter`).
 - `max_parallel` on an agent: how many of its runs go at once (Paperclip's `maxConcurrentRuns`). For a `dispatch: runner`
   agent (the Engineers, the Platform Engineer) it caps that agent's parallel runner jobs, each in its own task workspace,
   within the host's `max_concurrent` (config/runner.yaml); unset, only the host's cap applies.
@@ -129,9 +132,14 @@ outcomes:
   handbook; the handbook lists `id: summary` under "Sections on demand" and the agent reads the text with
   `handbook_section` (tasks module) when its work calls for it. `load: always` (the default) is for rules that guard
   risk and for what applies to every turn.
-- `skills/<name>/SKILL.md` in a module: a skill in Codex's format (`name`, `description`, optional `when`/`unless`), an
-  on-demand section `<module>.<name>` (its description is the summary) for the agents the module defines and those
-  granted one of its connections.
+- `skills/<name>/SKILL.md` in a module: a skill in Codex's format (`name`, which is its folder's name, `description`,
+  optional `when`/`unless`), with id `<module>.<name>`, for the agents the module defines and those granted one of its
+  connections, plus any agent (module or instance, any adapter) that names it in its `skills:` list. Compile lists every
+  skill under `skills:` in `config/paperclip.yaml` and each agent's under its own `skills:`; an unknown id, two skills of
+  one name for one agent, or a skill folder outside its module fail compile. Engineer jobs get theirs in the engine
+  home; at every apply, setup imports crew agents' skills into Paperclip (copied into its managed skills root under
+  `<data>/paperclip/instances/default/skills/<company id>/`) and sets each crew agent's to exactly its list. Two crew
+  skills of one name fail the apply.
   `node scripts/compile.mjs --sizes` prints each crew agent's handbook bytes per section (`scripts/handbook.mjs`) and
   writes nothing.
 - Disabling a module pauses its agents and routines; nothing is deleted.
@@ -154,7 +162,7 @@ outcomes:
 
 Every tool call to a connection is checked against `config/grants/grants.json`, keyed by the caller's Paperclip agent
 id: the tools it may use per connection and its roles. Roles gate a few capabilities and may be granted only by the
-modules the registry allows: `fleet-admin` (the board's fleet tools), `board-writer`, `engineer-dispatch`,
+modules the registry allows: `fleet-admin` (the board's fleet tools), `board-writer`,
 `app-incidents`, `security-verdict` (security-watch records finding verdicts), `ops-key`, `architect`, `fleet-read` (fleet-ops and core: the board's fleet status only) and `fleet-audit` (core: any agent's evidence packet and its own review log, the Agent Coach's `coach_due`, `coach_evidence`, `coach_record`). Instance agents get none. A module agent may set `delegate_to: [<agent key>, <key>?, app-owners]`: the tasks bridge then
 refuses its `task_create` and `task_delegate` to anyone else (`key?` only when that agent is on; `app-owners`: any agent that
 owns an app); the Agent Coach has one. After editing `kernel/src/proxy.ts`,
@@ -217,6 +225,8 @@ Set under `settings:` in `instance.yaml`. The board's Settings page (gear in the
 | `github_agents_org` | core | no | derived | The GitHub org where the runner works and, by default, creates repositories (`create-repo` is Tier 0 in any org the App is installed on and `allowed_orgs` lists); overrides the derived name. |
 | `github_orgs` | core | no | `[]` | GitHub orgs or users, besides the agents org, whose repos apps may be deployed from. |
 | `autonomy` | core | no | `off` | Tiered approvals: `off` = every write is the owner's card, the AI reviewer reading Tier 1 first (its reject is final; also the pause switch); `tier0` = Tier 0 runs at once, the AI reviewer only notes its verdict on Tier 1; `full` = the reviewer decides Tier 1. Move to `full` only after `modules/ai-reviewer/scripts/reviewer-eval.mjs` prints 100%. Changing it is itself a Tier 2 apply. |
+| `quiet_start` | core | no | | `on` (`ops/setup.sh` writes it for a new install): every module routine with `schedules:` compiles paused and every module agent's heartbeat off, until `overrides.routines.<key>.status: active` or `overrides.agents.<key>.heartbeat` turns one on (Aiden offers them; the agent's Settings tab has the switch). Webhook and runner-started routines and instance agents are untouched. Unset or `off`: as the modules declare. [design/quiet-start.md](design/quiet-start.md) |
+| `spend_day_usd` | core | no | | The install-wide cap on every model call (agents, jobs, the AI reviewer, grader, source writers, side chat, CI), USD per UTC day; `ops/setup.sh` writes 10. Past it the gateway refuses calls (402) and files one `raise_cap` card for today; the board's header shows today's spend against it. Unset: no install-wide cap. |
 | `heartbeat_hours` | core | no | `4` | Hours between each `heartbeat: true` agent's "Heartbeat: <key>" routine run (1, 2, 3, 4, 6, 8, 12 or 24; DeepSeek Flash at low effort). An agent's `heartbeat: <hours>` or `overrides.agents.<key>.heartbeat` sets its own; `false` turns it off for that agent. |
 | `agent_memory` | core | no | `on` | Agent memory: every Codex agent has `memory_note` (a fact and its source, to its own `Memory inbox: <key>` task, 10 a run); the Librarian curates the inboxes daily against run history and proposes `agents/<key>/memory.md` (max 4 KB, cut at a line end past that) through the Platform Engineer and an apply (Tier 1 for an agent without a role, Tier 2 for one with); compile adds it to the handbook as "What you've learned". `off` is the kill switch: no tool, no section (the files stay in git). |
 | `ci_review_model` | ci | no | `~deepseek/deepseek-flash-latest:high` | The template's code review (codex review): `<OpenRouter id>:<effort>` (minimal, low, medium, high, xhigh), handed to the job with its CI token; critical paths run one effort higher. Always allowed. |
@@ -294,7 +304,9 @@ Copy `.env.example` to `.env`. It holds host paths and endpoints, never agent-ed
 - Board: `BOARD_ALLOWED_HOSTS`, and the second listener's (3121: behind the front door, `tailscale serve` today;
   signed-in admins only) `BOARD_LAN_BIND`, `BOARD_LAN_PORT`, `BOARD_LAN_HOSTS`, `BOARD_LAN_URL`. It stays on loopback:
   it trusts `X-Forwarded-Proto` from whoever reaches it. Only a LAN-only VM in `local` exposure with
-  `AIDENHQ_PUBLIC_IF=none` may publish it on the LAN; `scripts/verify-security.sh` fails it anywhere else.
+  `AIDENHQ_PUBLIC_IF=none` may publish it on the LAN; `scripts/verify-security.sh` fails it anywhere else. An https
+  `BOARD_LAN_URL` is where every vendor sign-in (board.signins) connects and returns, from a request that reached the board by
+  that name; a module contributing board.signins may pass it to its service (`${BOARD_LAN_URL:-}`) as its allowed redirect.
 - Host firewall: `AIDENHQ_PUBLIC_IF`, read by `ops/vm/setup.sh` with `settings.exposure` (default: the default-route interface; see
   [operations/migrate-host.md](operations/migrate-host.md#2-the-new-host-what-reaches-it-from-the-internet)).
 - `PAPERCLIP_DISABLE_SIGN_UP`, `OWNER_SLACK_USER_ID`, `TELEGRAM_TASK_URL`, `COMPOSE_FILE`.
@@ -303,26 +315,23 @@ Copy `.env.example` to `.env`. It holds host paths and endpoints, never agent-ed
 
 `config/runner.yaml` (from `config/runner.example.yaml`) configures the host runner: the `engineer` label it polls,
 `allowed_orgs` (the organizations it may implement, push and open PRs in; public repositories elsewhere are read-only),
-optional `repo_sources` (repos cloned from a local path), work and state directories, concurrency, the engines
-(`codex-openrouter`, `codex`, `claude`, `openrouter`) and the job sandbox (`sandbox.extra_writable_roots` for shared
-build caches, copy-on-write per task so a job's writes never reach another's, `sandbox.read_only_roots` for toolchains outside the defaults).
+optional `repo_sources` (repos cloned from a local path), work and state directories, concurrency, the default OpenRouter
+model (`engines.openrouter.model`) and the host sandbox (`sandbox.read_only_roots` for toolchains outside the defaults).
 
 The release train (`release.batch_minutes`, default 15; 0 turns it off; `services/runner/src/release.mjs`) writes pin bumps
 in code. A green merge to the official modules repo opens one task, "Pin bump: the product's official modules", that lists
 the merges it carries; once the window from the first of them has passed, the runner commits `modules-pin.json` at the
-modules repo's green tip and files one product PR card (it merges on approval; the card shows the modules commits, files
-and authority diff code read). A green merge to the product opens "Pin bump: this instance's product and modules" the same
+modules repo's green tip, beside the product copies the shared sync changes at that pin (`scripts/sync-shared.mjs`, run on a
+scratch checkout of the product tip), and files one product PR card (it merges on approval; the card shows the modules
+commits, files and authority diff code read). A green merge to the product opens "Pin bump: this instance's product and modules" the same
 way and files one apply card moving `product:` to the product's green tip and the official marketplace to the modules
 commit that tip pins. Both cards are the AI reviewer's (Tier 1, raised as usual for new authority). Each target has one
 bump in flight at a time; merges after it collect in the next task, which files once it is over. A bump that is rejected,
 expires or fails is cancelled with the reason, and only a newer merge files the next one (a reverted pin is never re-bumped
 on its own). An agent waiting for a merge to go live blocks on the task that lists its merge commit.
 
-An Engineer agent picks its engine with `engine:` in its `module.yaml` (default: its adapter's). The Software and Platform
-Engineers run `codex-openrouter` (Codex on OpenRouter models through the model gateway, DeepSeek at medium effort, no
-private reads); to fall back to opencode, set `overrides.agents.<key>.engine: openrouter` in `instance.yaml` (an
-owner-tier change) and `engines.default: opencode` in runner.yaml. Effort is
-`reasoning_effort:` (low, medium, high, xhigh, max; `max` is DeepSeek's top effort on OpenRouter, which Codex passes
-through as is; `openrouter` takes low, medium, high as opencode's model variant).
+Every Engineer runs `codex-openrouter` (Codex on OpenRouter models through the model gateway) in its agent computer; the
+model is the agent's `model:` (or the task's override), the effort its `reasoning_effort:` (low, medium, high, xhigh, max;
+`max` is DeepSeek's top effort on OpenRouter, which Codex passes through as is).
 Design: [codex-openrouter engine](design/codex-openrouter-engine.md). Other example files in `config/` (`routing`, `busy-cases`,
-`intake-cases`, `system`) configure the runner's evals and ops-mcp.
+`system`) configure the runner's evals and ops-mcp.

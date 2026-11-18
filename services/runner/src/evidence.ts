@@ -7,6 +7,7 @@ import { patchKey } from "../../../modules/codehost-github/src/git.mjs";
 import { GATE_CHECK, namedChecks, skippedImageScan } from "../../../modules/codehost-github/src/merge-gate.mjs";
 import { findPrs } from "../../../modules/engineering/src/merge-queue.mjs";
 import { MAX_DIFF } from "./models.mjs";
+import { staleHead } from "./progress.ts";
 import { downscalePng, imageInfo, pngStamp, type ImageInfo } from "./images.ts";
 
 /** Marks the grader's own notes on a task, so they never count as the deliverable's evidence. */
@@ -54,16 +55,122 @@ function checkState(pr: any, c: any, gate: string): string {
 }
 
 /**
+ * What the task's own rows and records keep about one of its PRs: every distinct value of each identifier. A list holding more
+ * than one value is a contradiction among the task's own records, and it is never resolved by picking one.
+ */
+export interface RecordedIds {
+  heads: string[];
+  headOids: string[];
+  merges: string[];
+}
+
+const SHA40 = /^[0-9a-f]{40}$/;
+const addId = (list: string[], v: unknown, re?: RegExp) => {
+  if (typeof v === "string" && v && (!re || re.test(v)) && !list.includes(v)) list.push(v);
+};
+const samePr = (a: { repo: string; number: number }, b: { repo: string; number: number }) => a.repo.toLowerCase() === b.repo.toLowerCase() && Number(a.number) === Number(b.number);
+
+/**
+ * Identifiers from anything that names a PR: a merged record (the arrays taskPrRows and taskMergePrs return) or a record as it
+ * is stored. `head` is a branch on a branch row and a bound head commit on a merge card (a 40-hex value), so it goes wherever
+ * its shape says.
+ */
+export function idsOf(p: any): RecordedIds {
+  const ids: RecordedIds = { heads: [], headOids: [], merges: [] };
+  const list = (v: unknown) => (Array.isArray(v) ? v : []);
+  for (const v of [p?.head, p?.headRef, ...list(p?.heads), ...list(p?.headRefs)]) addId(SHA40.test(String(v)) ? ids.headOids : ids.heads, v, SHA40.test(String(v)) ? SHA40 : undefined);
+  for (const v of [p?.headOid, ...list(p?.headOids)]) addId(ids.headOids, v, SHA40);
+  for (const v of [p?.merge, p?.sha, ...list(p?.merges)]) addId(ids.merges, v, SHA40);
+  return ids;
+}
+
+/**
+ * The PRs a task's branch rows name, one per PR, with every branch its rows recorded (`heads`). Rows that name one PR with
+ * different branches are a contradiction, which the grading read refuses rather than resolving to one of them.
+ */
+export function taskPrRows(rows: any[] | undefined) {
+  const byPr = new Map<string, { repo: string; number: number; url: string; heads: string[] }>();
+  for (const b of rows ?? [])
+    for (const p of findPrs(b?.pr_url ?? "")) {
+      const key = `${p.repo.toLowerCase()}#${p.number}`;
+      const seen = byPr.get(key) ?? { ...p, heads: [] };
+      addId(seen.heads, b?.branch);
+      byPr.set(key, seen);
+    }
+  return [...byPr.values()];
+}
+
+/**
  * The PRs the task's own runner records tie to it, for a merge its branch rows no longer name: the queue it ran for this task,
- * the merges it was asked to run, and the merge cards it filed on it (deps.taskMerged). dedupe: one row per PR.
+ * the merges it was asked to run, and the merge cards it filed on it (deps.taskMerged). dedupe: one row per PR, keeping every
+ * identifier any of its records holds (`heads`, `headOids`, `merges`) so that records which disagree contradict rather than one
+ * of them winning.
  */
 export function taskMergePrs(rows: any[] | undefined) {
-  const out: { repo: string; number: number; url: string }[] = [];
+  const byPr = new Map<string, { repo: string; number: number; url: string } & RecordedIds>();
   for (const r of rows ?? []) {
     const p = r?.url ? findPrs(String(r.url))[0] : r?.repo && r?.number ? { repo: String(r.repo), number: Number(r.number), url: `https://github.com/${r.repo}/pull/${r.number}` } : undefined;
-    if (p && !out.some((x) => x.repo.toLowerCase() === p.repo.toLowerCase() && x.number === p.number)) out.push(p);
+    if (!p) continue;
+    const key = `${p.repo.toLowerCase()}#${p.number}`;
+    const seen = byPr.get(key) ?? { ...p, heads: [], headOids: [], merges: [] };
+    addId(seen.heads, typeof r.headRef === "string" ? r.headRef : undefined);
+    addId(seen.headOids, r.headOid, SHA40);
+    addId(seen.headOids, r.head, SHA40);
+    addId(seen.merges, r.sha, SHA40);
+    byPr.set(key, seen);
   }
-  return out;
+  return [...byPr.values()];
+}
+
+type Identity = { state: "ok" } | { state: "stale"; why: string } | { state: "unknown" };
+
+/**
+ * How a stored PR's number reads against GitHub: this task's change, another change now under that number, or neither provably.
+ * Every identifier the task's own rows and records keep must agree — with each other and with GitHub's read: the branches
+ * (`heads`, each by staleHead), the head commits bound (`headOids`) and the merge commits (`merges`). Two different values of
+ * one identifier are a contradiction in the task's own record and are refused, never resolved. A record that keeps none of them
+ * proves nothing, and nothing proven is never graded as this task's work: `unknown` fails closed.
+ */
+function identityOf(ids: RecordedIds, pr: any): Identity {
+  const conflicting = (what: string, list: string[]) => `the task's own records name different ${what} (${list.map((v) => `\`${v}\``).join(", ")})`;
+  const why: string[] = [];
+  if (ids.heads.length > 1) why.push(conflicting("branches", ids.heads));
+  if (ids.headOids.length > 1) why.push(conflicting("head commits", ids.headOids));
+  if (ids.merges.length > 1) why.push(conflicting("merge commits", ids.merges));
+  for (const head of ids.heads) {
+    const whyNot = staleHead(head, pr.headRefName);
+    if (whyNot) why.push(whyNot);
+  }
+  for (const headOid of ids.headOids)
+    if (String(pr.headRefOid ?? "") !== headOid) why.push(`its head is \`${String(pr.headRefOid ?? "").slice(0, 12) || "(none)"}\`, not the task's commit \`${headOid.slice(0, 12)}\``);
+  for (const merge of ids.merges)
+    if (String(pr.state) !== "MERGED" || pr.mergeCommit?.oid !== merge) why.push(`it did not merge at the task's merge commit \`${merge.slice(0, 12)}\``);
+  if (why.length) return { state: "stale", why: [...new Set(why)].join(", and ") };
+  return ids.heads.length || ids.headOids.length || ids.merges.length ? { state: "ok" } : { state: "unknown" };
+}
+
+/**
+ * The fact a stale number states: what GitHub's read disagrees on, and the merge commit the task's own record holds for it.
+ * The commit is cited only when the record names exactly one: with several, which of them is the task's merge is the very
+ * contradiction identityOf refused, so citing one would state as a fact what the record does not settle.
+ */
+const staleFact = (url: string, why: string, merges: string[]) =>
+  `${url} now names a different change (${why})${merges.length === 1 ? `; the runner's own record has this task's merge commit ${merges[0]}` : ""}`;
+
+/** What a record that keeps no branch, head commit or merge commit says: the number is not read as this task's change. */
+const unverifiable = (url: string) => `${url} is named by the runner's own record for this task, which keeps no branch, head commit or merge commit to tell the change by, so it is not read as this task's change`;
+
+/**
+ * Every identifier the task keeps for one of its PRs, its branch rows and the runner's own merge records together: one row's
+ * gap is filled by another's fact, and two rows that disagree stay two values for identityOf to refuse.
+ */
+async function idsWithRecord(p: any, deps: any): Promise<RecordedIds> {
+  const ids = idsOf(p);
+  if (!deps.taskMerged) return ids;
+  const row = taskMergePrs(await deps.taskMerged().catch(() => [])).find((x) => samePr(x, p));
+  if (!row) return ids;
+  const other = idsOf(row);
+  return { heads: [...new Set([...ids.heads, ...other.heads])], headOids: [...new Set([...ids.headOids, ...other.headOids])], merges: [...new Set([...ids.merges, ...other.merges])] };
 }
 
 /**
@@ -85,6 +192,15 @@ export async function presentNow(deliverable: any, deps: any) {
       const pr = (await deps.pr(p.repo, p.number).catch(() => null))?.repository?.pullRequest;
       if (!pr) {
         facts.push(`${p.url} could not be read just now`);
+        continue;
+      }
+      // The stored number is this task's change only while the identifiers the task keeps say so (identityOf). When it names
+      // another change, or proves nothing, that change's state is not this task's: the fact is the merge commit the task's own
+      // record holds, and it is never "present", so the row escalates with what the record does hold instead.
+      const ids = await idsWithRecord(p, deps);
+      const who = identityOf(ids, pr);
+      if (who.state !== "ok") {
+        facts.push(who.state === "unknown" ? unverifiable(p.url) : staleFact(p.url, who.why, ids.merges));
         continue;
       }
       if (pr.state !== "MERGED") {
@@ -130,7 +246,7 @@ export function localPullRequest(c: any, checks: { name: string; ok: boolean; pe
     repository: {
       pullRequest: {
         number: c.number, url: c.url, state: c.state === "open" ? "OPEN" : c.state === "merged" ? "MERGED" : "CLOSED", title: c.title ?? "", body: c.body ?? "",
-        headRefOid: c.head, baseRefName: c.into, mergeCommit: c.merged ? { oid: c.merged } : null, mergedAt: c.merged ? mergedAt : null,
+        headRefOid: c.head, headRefName: c.branch, baseRefName: c.into, mergeCommit: c.merged ? { oid: c.merged } : null, mergedAt: c.merged ? mergedAt : null,
         commits: { nodes: [{ commit: { oid: c.head, statusCheckRollup: { contexts: { nodes } } } }] }, history: { nodes: [] },
       },
     },
@@ -142,7 +258,8 @@ const PR_TEXT_TOTAL = 20_000;
 
 /**
  * The task's PRs as evidence: { awaiting } or { version, facts, data }. `prs` are the runner's own PRs for the task, narrowed
- * by the ref (a PR named only in the ref is never read). deps: pr(repo, n) (merges.PR_QUERY's data), diff(repo, n), ownRepo(slug).
+ * by the ref (a PR named only in the ref is never read), each with the branch or branches its records name (`heads`).
+ * deps: pr(repo, n) (merges.PR_QUERY's data), diff(repo, n), ownRepo(slug).
  * Each PR's title and description are the author's own text, so they go to the grader fenced (PR_DESCRIPTION), never as facts:
  * a rubric may ask what the PR records, which only that text can show.
  */
@@ -163,6 +280,16 @@ export async function prEvidence(prs: any[], ref: string, deps: any): Promise<an
   for (const p of prs.slice(0, 5)) {
     const pr = (await deps.pr(p.repo, p.number))?.repository?.pullRequest;
     if (!pr) return { awaiting: `${p.url} can't be read yet` };
+    // The stored number is this task's change only while the record's own identifier says so (identityOf): a re-created
+    // repository restarts numbering, and the number can then name an unrelated change. That change's diff and description are
+    // not this task's, so nothing of it is read or graded; the wait says so, and names the merge commit the record holds.
+    // A record that proves nothing is not graded either: the wait says the number can't be checked, rather than trusting it.
+    const ids = await idsWithRecord(p, deps);
+    const who = identityOf(ids, pr);
+    if (who.state !== "ok") {
+      if (who.state === "unknown") return { awaiting: unverifiable(p.url) };
+      return { awaiting: `${staleFact(p.url, who.why, ids.merges)}, so this task's change cannot be read by its stored number` };
+    }
     const checks = namedChecks(pr.commits?.nodes?.[0]?.commit?.statusCheckRollup);
     const gate = gateOn(pr, checks);
     // A read caught mid-run is never a verdict. A check still queued or running is one (GitHub also reports the rollup as
@@ -185,7 +312,7 @@ export async function prEvidence(prs: any[], ref: string, deps: any): Promise<an
     const own = history.findLast((c: any) => c.parents?.totalCount === 1);
     const shows = { commits: [pr.headRefOid, merged ? pr.mergeCommit?.oid : "", own?.oid].filter(Boolean), trees: [history.find((c: any) => c.oid === pr.headRefOid)?.tree?.oid, own?.tree?.oid].filter(Boolean) };
     prs_.push({ repo: p.repo, number: p.number, merge: merged ? (pr.mergeCommit?.oid ?? "") : "", mergedAt: pr.mergedAt ?? "", shows });
-    facts.push(`${p.url}: ${pr.state.toLowerCase()}${merged ? ` into ${pr.baseRefName}` : ` (base ${pr.baseRefName})`}, head ${pr.headRefOid}${merged && pr.mergeCommit?.oid ? `, merge commit ${pr.mergeCommit.oid}` : ""}; checks: ${checks.length ? checks.map((c: any) => `${c.name} ${checkState(pr, c, gate)}`).join(", ") : "none"}${byRecord ? "; named by the runner's own record for this task" : ""}`);
+    facts.push(`${p.url}: ${pr.state.toLowerCase()}${merged ? ` into ${pr.baseRefName}` : ` (base ${pr.baseRefName})`}, head ${pr.headRefOid}${merged && pr.mergeCommit?.oid ? `, merge commit ${pr.mergeCommit.oid}` : ""}; checks: ${checks.length ? checks.map((c: any) => `${c.name} ${checkState(pr, c, gate)}`).join(", ") : "none"}${byRecord ? "; named by the runner's own record for this task, which is how its number was told from another change" : ""}`);
     // The author's own words: code labels them and says whether they were cut; the text itself goes fenced, as data.
     const kept = text.slice(0, Math.max(0, left - head.length)).trim();
     left -= head.length + kept.length + 2;
@@ -262,24 +389,27 @@ const termsOf = (text: unknown) => new Set((String(text).toLowerCase().match(/[a
 
 /**
  * The comments the grader reads, within COMMENTS_TOTAL: the NEWEST newest (anyone's but the grader's), then the task agent's
- * own earlier ones (`own(c)`), ranked: those whose id the rubric or the agent's latest result names, then by how many of
- * their distinctive words those name, then the newest. A report posted in parts, or evidence posted before a short closing
- * note, is read this way, not lost behind the last few comments. Each is cut to COMMENT_MAX; they go in the task's order.
- * { text, fact }: the fact says what was sent, cut or left out.
+ * own earlier ones (`own(c)`) and the task's delegator's earlier ones (`delegator(c)`: a comment is the delegator's only way
+ * to amend the ask, so an amendment older than the newest comments is never lost), ranked: those whose id the rubric or the
+ * agent's latest result names, then by how many of their distinctive words those name, then the delegator's before the
+ * agent's, then the newest. A report posted in parts, or evidence posted before a short closing note, is read this way, not
+ * lost behind the last few comments. Each is cut to COMMENT_MAX; they go in the task's order. Each header names the writer's
+ * role ([who]) so the grader can tell the delegator's ask from the agent's working notes. { text, fact }: the fact says
+ * what was sent, cut or left out.
  */
-export function pickComments(all: any[], own: (c: any) => boolean, rubric = "") {
+export function pickComments(all: any[], own: (c: any) => boolean, rubric = "", delegator: (c: any) => boolean = () => false, who: (c: any) => string = () => "someone else") {
   const newest = all.slice(-NEWEST);
-  const earlier = all.slice(0, -NEWEST).filter(own);
+  const earlier = all.slice(0, -NEWEST).filter((c) => own(c) || delegator(c));
   const latest = [...all].reverse().find(own);
   const named = `${rubric}\n${latest?.body ?? ""}`;
   const want = termsOf(named);
   const score = (c: any): number => (c.id && named.includes(c.id) ? 1e6 : [...termsOf(c.body)].filter((w) => want.has(w)).length);
-  const ranked = earlier.map((c, i) => ({ c, i, s: score(c) })).sort((a, b) => b.s - a.s || b.i - a.i).map((x) => x.c);
+  const ranked = earlier.map((c, i) => ({ c, i, s: score(c) })).sort((a, b) => b.s - a.s || Number(delegator(b.c)) - Number(delegator(a.c)) || b.i - a.i).map((x) => x.c);
   let left = COMMENTS_TOTAL;
   const shown = new Map<any, string>();
   let cut = 0;
   let out = 0;
-  const head = (c: any) => `--- comment ${String(c.createdAt ?? "").slice(0, 25)} ---\n`;
+  const head = (c: any) => `--- comment ${String(c.createdAt ?? "").slice(0, 25)} by ${who(c)} ---\n`;
   for (const c of [...newest].reverse().concat(ranked)) {
     const body = String(c.body ?? "");
     left -= head(c).length + 2; // the header and separator count too, so the fence never cuts the block
@@ -294,14 +424,15 @@ export function pickComments(all: any[], own: (c: any) => boolean, rubric = "") 
   }
   const text = all.filter((c) => shown.has(c)).map((c) => `${head(c)}${shown.get(c)}`).join("\n\n");
   const extra = [...shown.keys()].filter((c) => !newest.includes(c)).length;
-  const fact = `TASK_COMMENTS holds ${shown.size} of the task's ${all.length} comments (the grader's own not counted): the newest${extra ? `, and ${extra} earlier one${extra > 1 ? "s" : ""} by the task's agent picked by what the rubric and its latest result name` : ""}${cut ? `; ${cut} cut to fit (each at most ${COMMENT_MAX} characters, all at most ${COMMENTS_TOTAL})` : ""}${out ? `; ${out} more left out over that budget` : ""}`;
+  const fact = `TASK_COMMENTS holds ${shown.size} of the task's ${all.length} comments (the grader's own not counted): the newest${extra ? `, and ${extra} earlier one${extra > 1 ? "s" : ""} by the task's agent or delegator picked by what the rubric and its latest result name` : ""}${cut ? `; ${cut} cut to fit (each at most ${COMMENT_MAX} characters, all at most ${COMMENTS_TOTAL})` : ""}${out ? `; ${out} more left out over that budget` : ""}`;
   return { text, fact };
 }
 
 /**
  * The task's own words (the newest comments other than the grader's, and the agent's earlier ones that bear on the rubric:
  * pickComments) and its files: the evidence for file and report, context for the rest. The task's agent is deps.assignee
- * (its own comments) or the runner posting an Engineer's (its marker). File names and types are the agents' own strings: the
+ * (its own comments) or the runner posting an Engineer's (its marker); the delegator is deps.delegator ({ agentId, userId }),
+ * whose comments can amend the ask. File names and types are the agents' own strings: the
  * trusted facts call each file by a code-made label (file_1, file_2, ... in the attachments' order) and its name and type go
  * in the fenced FILE_NAMES block, as data. The version stays the newest comments' and the files' ids.
  */
@@ -309,7 +440,14 @@ export async function wordsEvidence(deps: any, rubric: string[] = []): Promise<a
   const all = (await deps.comments()).filter((c: any) => !String(c.body ?? "").includes(GRADER_MARKER));
   const comments = all.slice(-NEWEST);
   const own = (c: any) => String(c.body ?? "").includes(RUNNER_MARKER) || (deps.assignee ? c.authorAgentId === deps.assignee : c.authorType === "agent");
-  const picked = pickComments(all, own, rubric.join("\n"));
+  // The delegator is the task's creator: an agent's id for an agent-authored task, else the user's. The runner's own
+  // comments carry its marker and are never the delegator's words, whatever user id it posts under.
+  const delegator = (c: any) =>
+    Boolean(deps.delegator?.agentId || deps.delegator?.userId) &&
+    !String(c.body ?? "").includes(RUNNER_MARKER) &&
+    (c.authorAgentId ? c.authorAgentId === deps.delegator.agentId : c.authorType === "user" && c.authorUserId === deps.delegator.userId);
+  const who = (c: any) => (delegator(c) ? "the task's delegator" : own(c) ? "the task's agent" : "someone else");
+  const picked = pickComments(all, own, rubric.join("\n"), delegator, who);
   const files = (await deps.attachments().catch(() => [])).map((f: any, i: number) => ({ ...f, label: `file_${i + 1}` }));
   const facts = files.length ? [`${files.length} file${files.length > 1 ? "s" : ""} attached: ${files.map((f: any) => f.label).join(", ")} (their names, types and sizes, as the agent gave them, are in FILE_NAMES)`] : ["no files attached"];
   if (all.length) facts.push(picked.fact);

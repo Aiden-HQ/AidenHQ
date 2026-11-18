@@ -2,7 +2,7 @@
 // built in one place and checked by the kernel against its own strict schemas (kernel/src/kinds.ts): a field added here
 // must be added there, and the card-contract test fails until it is. The types below mirror those schemas action by action.
 // Also here: the card text the runner plans for its kinds (the owner and the reviewer read it), the plan it files with
-// (its classifier's tier, caps applied), and the runner's view of a kernel record as tiering reads it.
+// (its classifier's tier on the merits), and the runner's view of a kernel record as tiering reads it.
 import { highest, requestPatches, reviewFirstOf, type Part } from "../../../kernel/src/tier.ts";
 
 /**
@@ -69,7 +69,7 @@ export function branchCardArgs(branches: BranchArg[], { text, merge }: { text?: 
 /** The most authority lines a card carries (ARGS: 200 lines of at most 300 characters). */
 const AUTHORITY_MAX = 200;
 /**
- * An apply card's args: the fleet branch at its exact commit, and the module changes it brings (kernel/src/loader/authority.ts
+ * An apply card's args: the fleet branch at its exact commit, and the module changes it brings (scripts/compiler/authority.ts
  * lines, code-chosen words and cleaned ids), so the owner's card lists them and its digest covers them.
  */
 export function applyCardArgs(b: { r: { repo: string; branch: string }; sha: string; files: string[] }, authority: string[] = [], ownerRequired = false): CardArgs["apply"] {
@@ -120,18 +120,17 @@ export const cardText = (action: "push" | "pr", args: CardArgs["pr"]): { target:
 };
 
 /**
- * The plan the runner files a record with, from its classifier's tier (caps applied): the tier, the merit tier (before the
- * caps), how the owner follows the reviewer (tier.ts reviewFirstOf), the panel, and why. Several parts (a merge card's PRs)
+ * The plan the runner files a record with, from its classifier's tier on the merits (the kernel applies the caps): the
+ * tier, how the owner follows the reviewer (tier.ts reviewFirstOf), the panel, and why. Several parts (a merge card's PRs)
  * plan as one card: the owner's at once if any part is (Tier 2 and not reviewed first, or Tier 0 beside higher ones), else the
  * highest tier, review-first if any part is, the panel if any part needs it.
  */
-export function planOf(...ts: Part[]): { tier: 0 | 1 | 2; merit: 0 | 1 | 2 | undefined; reviewFirst: "final" | "owner" | null; panel: boolean; reason: string; rule?: string } {
+export function planOf(...ts: Part[]): { tier: 0 | 1 | 2; reviewFirst: "final" | "owner" | null; panel: boolean; reason: string; rule?: string } {
   const live = ts.filter((t) => !t.reject);
   const direct = live.some((t) => t.tier === 2 && !t.reviewFirst) || (live.some((t) => t.tier === 0) && live.some((t) => t.tier !== 0));
   const tier = direct ? 2 : (Math.max(...ts.map((t) => (t.reject ? 2 : t.tier))) as 0 | 1 | 2);
-  const merit = ts.length && ts.every(Boolean) ? (Math.max(...ts.map((t) => (t.reject ? 2 : (t.baseTier ?? t.tier)))) as 0 | 1 | 2) : undefined;
   const rule = highest(ts).rule;
-  return { tier, merit, reviewFirst: direct ? null : (reviewFirstOf(...ts) ?? null), panel: ts.some((t) => t.panel), reason: ts.map((t) => t.reason).filter(Boolean).join("; "), ...(rule ? { rule } : {}) };
+  return { tier, reviewFirst: direct ? null : (reviewFirstOf(...ts) ?? null), panel: ts.some((t) => t.panel), reason: ts.map((t) => t.reason).filter(Boolean).join("; "), ...(rule ? { rule } : {}) };
 }
 
 /**

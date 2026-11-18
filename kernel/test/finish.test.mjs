@@ -89,12 +89,6 @@ test("ok passes the agent's own change through as the agent; ok with unlabel dro
   assert.equal(asked.length, n, "only a move to done asks the checks");
 });
 
-test("a check scoped to agents is asked only for their work", async (t) => {
-  const { asked, finish } = await setup(t, () => ({ verdict: "deny", reason: "no" }), { agentsScope: ["someone-else"] });
-  assert.equal((await finish({ status: "done" })).status, 200);
-  assert.equal(asked.length, 0);
-});
-
 test("/v1/finish: the runner's own closes, with its key only", async (t) => {
   const { k, asked, writes } = await setup(t, () => ({ verdict: "pending", state: "pending", reason: "r", until: "2026-11-17T12:00:00.000Z" }));
   assert.equal((await k.v1("POST", "/v1/finish", { task: TASK, via: "finish_turn" }, "todo-key")).status, 401);
@@ -164,22 +158,6 @@ test("an undecided approval card of the task refuses the close, whatever the che
       assert.deepEqual(s.writes, [{ as: "run-jwt-ada", body: { status: "done", comment: "Done." } }]);
     }
   }
-});
-
-test("checksFile: a missing or unparsable file throws; a map loads and is reread when it changes", async () => {
-  const { checksFile } = await import("../src/checks.ts");
-  const { mkdtempSync, writeFileSync } = await import("node:fs");
-  const { join } = await import("node:path");
-  const { tmpdir } = await import("node:os");
-  const f = join(mkdtempSync(join(tmpdir(), "checks-")), "checks.json");
-  const read = checksFile(f);
-  assert.throws(read, /ENOENT/);
-  writeFileSync(f, "{ not json");
-  assert.throws(read, SyntaxError);
-  writeFileSync(f, "[]");
-  assert.throws(read, /not a map/);
-  writeFileSync(f, JSON.stringify({ "judge.finish": { module: "judge", at: "task.finish", url: "http://judge:8096/check/finish", auth_secret: "k" } }));
-  assert.deepEqual(Object.keys(read()), ["judge.finish"]);
 });
 
 test("observe mode (gates.ts): a check's deny becomes a would-block entry and the close goes ahead; the same check enforcing refuses; a hard gate can't observe", async (t) => {

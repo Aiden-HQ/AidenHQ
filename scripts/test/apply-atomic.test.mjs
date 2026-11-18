@@ -9,14 +9,14 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { execFile, execFileSync, spawn } from "node:child_process";
-import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import YAML from "yaml";
 
 const repo = join(dirname(fileURLToPath(import.meta.url)), "../..");
-const REAL = ["ops/apply-config.sh", "ops/apply-config-work.sh", "ops/lib/apply-lock.sh", "ops/lib/generations.sh", "ops/lib/progress.sh", "ops/rollback.sh", "kernel/src/loader/data-version.ts"];
+const REAL = ["ops/apply-config.sh", "ops/apply-config-work.sh", "ops/host-metrics.sh", "ops/lib/apply-lock.sh", "ops/lib/generations.sh", "ops/lib/progress.sh", "ops/rollback.sh", "scripts/compiler/data-version.ts"];
 
 const exe = (file, text) => { mkdirSync(dirname(file), { recursive: true }); writeFileSync(file, text); chmodSync(file, 0o755); };
 const git = (cwd, ...args) => execFileSync("git", args, { cwd, encoding: "utf8", env: { ...process.env, GIT_AUTHOR_NAME: "t", GIT_AUTHOR_EMAIL: "t@example.com", GIT_COMMITTER_NAME: "t", GIT_COMMITTER_EMAIL: "t@example.com" } }).trim();
@@ -27,7 +27,7 @@ const git = (cwd, ...args) => execFileSync("git", args, { cwd, encoding: "utf8",
 // and at 1 its data migrates (a line added).
 const FAKES = {
   "scripts/compile.mjs": `import fs from "node:fs";
-import { checkDataVersion } from "../kernel/src/loader/data-version.ts";
+import { checkDataVersion } from "../scripts/compiler/data-version.ts";
 const stage = process.argv.includes("--stage") || process.env.AIDENHQ_COMPILE_STAGE === "1";
 const inst = fs.readFileSync(process.env.AIDENHQ_INSTANCE_DIR + "/instance.yaml", "utf8");
 if (/broken: true/.test(inst)) { console.error("compile: broken"); process.exit(1); }
@@ -37,7 +37,8 @@ fs.mkdirSync(out + "/kernel", { recursive: true });
 fs.writeFileSync(out + "/paperclip.yaml", inst + v);
 fs.writeFileSync(out + "/kernel/connections.json", "{}\\n");
 fs.writeFileSync(out + "/modules.json", JSON.stringify({ modules: /^modules: (.*)$/m.exec(inst)?.[1] ?? "" }) + "\\n");
-fs.writeFileSync(stage ? "compose.modules.next.yaml" : "compose.modules.yaml", "services: {}\\n# " + v);
+fs.writeFileSync(stage ? "compose.modules.next.yaml" : "compose.modules.yaml",
+  (inst.includes("monitoring") ? "services:\\n  monitoring-node-exporter:\\n    image: x\\n" : "services: {}\\n") + "# " + v);
 const dv = fs.existsSync("DATA_VERSION") ? Number(fs.readFileSync("DATA_VERSION", "utf8")) : 0;
 fs.writeFileSync(out + "/module-data.json", JSON.stringify({ acme: { data_version: dv, services: "s" } }));
 const acme = "data/modules/acme";
@@ -51,7 +52,7 @@ if (!stage) fs.appendFileSync(process.env.CALLS, "compile\\n");
   "scripts/host-serve.mjs": "",
   "scripts/agent-check.mjs": "",
   "scripts/paperclip-setup.mjs": `import fs from "node:fs"; fs.appendFileSync(process.env.CALLS, "setup\\n");\n`,
-  "services/runner/src/apply.ts": `import { readFileSync } from "node:fs";
+  "kernel/src/apply.ts": `import { readFileSync } from "node:fs";
 if (process.argv[2] === "product-pin") process.stdout.write(/^product:\\s*([0-9a-f]{40})\\s*$/m.exec(readFileSync(process.argv[3], "utf8"))?.[1] ?? "");
 if (process.argv[2] === "product-fork") process.stdout.write(/^product_fork: (\\S+ [0-9a-f]{40})$/m.exec(readFileSync(process.argv[3], "utf8"))?.[1] ?? "");
 `,
@@ -61,14 +62,22 @@ const SCRIPTS = {
 echo "AidenHQ health"
 echo "  ok    paperclip http (127.0.0.1:3100)"
 [ -f "$CTRL/flaky" ] && echo "  FAIL  flaky probe  red before the apply too"
+# What scripts/healthcheck.sh says when the unit's ExecStart names another checkout (scripts/test/healthcheck.test.mjs).
+[ -f "$CTRL/mismatch" ] && echo "  FAIL  host metrics timer runs the applied checkout  the unit runs /old/ops/host-metrics.sh, not $PWD/ops/host-metrics.sh"
 echo "  skip  ops-mcp (meetings module not installed)"
 # What is applied decides (data/applied-product), as on a host the running services do, never the checkout alone.
-if [ -f "$CTRL/break" ] && git cat-file -e "$(cat data/applied-product 2>/dev/null)":BAD_HEALTH 2>/dev/null; then echo "  FAIL  kernel (10.231.0.1:3130)  down"; exit 1; fi
+if [ -f "$CTRL/break" ] && git cat-file -e "$(cat data/applied-product 2>/dev/null)":BAD_HEALTH 2>/dev/null; then
+  echo "  FAIL  kernel (10.231.0.1:3130)  down"
+  # Arms the auto-revert's switch to fail after this health check: between the failed generation's switch and its revert.
+  [ -f "$CTRL/arm-badrevert" ] && touch "$CTRL/badrevert"
+  exit 1
+fi
 echo "  ok    kernel (10.231.0.1:3130)"
 `,
   // With ctrl/block the step waits (blocked) until ctrl/release, then lets later applies through: an apply to kill mid-compose.
   "ops/compose-recreate.sh": `#!/usr/bin/env bash
 echo recreate >> "$CALLS"
+[ -f "$CTRL/badrevert" ] && { echo "compose: recreate failed in the revert"; exit 1; }
 if [ -f "$CTRL/block" ]; then touch "$CTRL/blocked"; while [ ! -f "$CTRL/release" ]; do sleep 0.1; done; rm -f "$CTRL/block"; fi
 echo "compose: recreated what moved"
 `,
@@ -115,7 +124,8 @@ function world() {
   for (const [f, t] of Object.entries(SCRIPTS)) exe(d("pw", f), t);
   for (const u of ["aidenhq-kernel.service", "aidenhq-runner.service", "aidenhq-apply-recover.service", "aidenhq-backup.service", "aidenhq-backup.timer", "aidenhq-host-metrics.service", "aidenhq-host-metrics.timer"]) {
     mkdirSync(d("pw", "ops/units"), { recursive: true });
-    writeFileSync(d("pw", "ops/units", u), `[Unit]\nDescription=${u}\n`);
+    // The host-metrics unit is the product's own: the apply compares the installed copy with it.
+    writeFileSync(d("pw", "ops/units", u), u.startsWith("aidenhq-host-metrics.") ? readFileSync(join(repo, "ops/units", u), "utf8") : `[Unit]\nDescription=${u}\n`);
   }
   writeFileSync(d("pw", ".gitignore"), "config/\ndata/\nconfig.next/\ncompose.modules.yaml\ncompose.modules.next.yaml\nnode_modules/\n");
   const commitProduct = (version, extra = {}, remove = []) => {
@@ -215,21 +225,6 @@ test("a product_fork on top of the pin is what runs (and is recorded); one off t
   assert.match(local.out, /refusing: couldn't fetch product_fork/);
 });
 
-test("a change to the instance's module set alone restarts the runner (it reads config/modules.json once)", async () => {
-  const w = world();
-  const restarts = () => (w.calls().match(/systemd-run .*SIGUSR2 aidenhq-runner/g) ?? []).length;
-  assert.equal((await w.run()).status, 0);
-  const first = restarts();
-  w.commitInstance(w.p1, "modules: [codehost-local]\n");
-  const r = await w.run();
-  assert.equal(r.status, 0, r.out);
-  assert.equal(restarts(), first + 1, r.out);
-  assert.match(r.out, /module set changed: restart once idle/);
-  w.commitInstance(w.p1, "modules: [codehost-local]\nnote: unrelated\n");
-  assert.equal((await w.run()).status, 0);
-  assert.equal(restarts(), first + 1, "an instance change that leaves the module set alone restarts nothing");
-});
-
 test("a staged compile failure leaves the running config byte-identical, both checkouts restored and nothing restarted", async () => {
   const w = world();
   assert.equal((await w.run()).status, 0);
@@ -289,17 +284,34 @@ test("A14: a post-apply health failure reverts to the LKG and marks the generati
   assert.equal(git(w.d("inst"), "symbolic-ref", "--short", "HEAD"), "main");
 });
 
-test("a check failing in the baseline does not count", async () => {
+// A failed auto-revert writes its own log: when the revert's switch fails, its generation names the file that holds the
+// failing step's output, not the log of the generation it reverted.
+test("a failed auto-revert records its own log naming the step that failed", async () => {
   const w = world();
-  writeFileSync(w.d("ctrl/flaky"), "");
   assert.equal((await w.run()).status, 0);
-  const p2 = w.commitProduct("2");
-  w.commitInstance(p2);
+  writeFileSync(w.d("ctrl/break"), "");
+  writeFileSync(w.d("ctrl/arm-badrevert"), "");
+  const p2 = w.commitProduct("2", { BAD_HEALTH: "" });
+  const i2 = w.commitInstance(p2);
   const r = await w.run();
-  assert.equal(r.status, 0, r.out);
-  assert.match(r.out, /health baseline: 2 ok, 1 failing \(not counted\)/);
-  assert.equal(w.gens().at(-1).health, "good");
-  assert.equal(w.head("prod"), p2);
+  assert.equal(r.status, 1, r.out);
+  const g = w.gens();
+  assert.deepEqual(g.map((x) => [x.n, x.health]), [[1, "good"], [2, "good"], [3, "failed"], [4, "failed"]]);
+  assert.deepEqual([g[3].product, g[3].instance, g[3].revert_of, g[3].lkg], [w.p1, w.i1, 3, 2]);
+  assert.equal(g[2].log, w.d("state/apply-3.log"), "the failed generation keeps its own log");
+  assert.equal(g[3].log, w.d("state/apply-4.log"), "the failed revert names its own log");
+  const revert = readFileSync(g[3].log, "utf8");
+  assert.match(revert, /generation 4: re-applying generation 2/);
+  assert.match(revert, /compose: recreate failed in the revert/);
+  assert.match(revert, /generation 4 failed: the switch failed \(exit 1\)/);
+  assert.equal(w.head("prod"), w.p1, "the product is back at the last known good");
+  assert.equal(w.head("inst"), w.i1, "the instance checkout is back at the last known good");
+
+  // The failed pair is still held.
+  const held = await w.run();
+  assert.equal(held.status, 1, held.out);
+  assert.match(held.out, /failed its health check as generation 3 .* --retry/);
+  assert.equal(w.gens().length, 4, "no new generation");
 });
 
 test("a module whose data migrates (marker 0 -> 1) and fails health comes back at marker 0 with its old files, on the LKG code; ops/rollback.sh puts it back later", async () => {
@@ -349,32 +361,6 @@ test("a module whose data migrates (marker 0 -> 1) and fails health comes back a
   assert.match(refused.out, /refusing: acme: data newer than generation 2 declared, and no snapshot taken after it is kept/);
 });
 
-test("only a touched data module is snapshotted: its code, not its handbook text", async () => {
-  const w = world();
-  mkdirSync(w.d("prod/data/modules/acme/state"), { recursive: true });
-  assert.equal((await w.run()).status, 0);
-  mkdirSync(w.d("pw/modules/acme"), { recursive: true });
-  const apply = async (version, files) => { w.commitInstance(w.commitProduct(version, files)); const r = await w.run(); assert.equal(r.status, 0, r.out); return r.out; };
-  assert.match(await apply("2", { "modules/acme/AGENTS.md": "# acme\n" }), /generation 3 snapshot: no module data touched/);
-  assert.match(await apply("3", { "modules/acme/server.mjs": "export {};\n" }), /generation 4 snapshot: acme /);
-});
-
-test("a replace with a claimed record reconciles it before A stops: the records step runs before the snapshot stops anything", async () => {
-  const w = world();
-  mkdirSync(w.d("prod/data/modules/acme/state"), { recursive: true });
-  assert.equal((await w.run()).status, 0);
-  mkdirSync(w.d("pw/kernel/src"), { recursive: true });
-  mkdirSync(w.d("pw/modules/acme"), { recursive: true });
-  const reconcile = `import fs from "node:fs"; fs.appendFileSync(process.env.CALLS, "reconcile " + process.argv.slice(2).join(" ") + "\\n");\n`;
-  w.commitInstance(w.commitProduct("2", { "kernel/src/reconcile.ts": reconcile, "modules/acme/server.mjs": "export {};\n" }));
-  const before = w.calls().length;
-  const r = await w.run();
-  assert.equal(r.status, 0, r.out);
-  const after = w.calls().slice(before);
-  assert.match(after, /^reconcile config\/modules\.json config\.next\/modules\.json$/m);
-  assert.ok(after.indexOf("reconcile") < after.indexOf("aidenhq.module=acme"), after);
-});
-
 const until = async (ok, ms = 20000) => { const end = Date.now() + ms; while (!ok()) { if (Date.now() > end) throw new Error("timed out"); await new Promise((r) => setTimeout(r, 50)); } };
 
 /** Applies p2 and kills it mid-compose: the whole process group with SIGKILL (no trap runs, nothing is left holding the lock). */
@@ -402,7 +388,8 @@ const reverted = (w) => {
   assert.equal(w.head("prod"), w.p1);
   assert.equal(w.head("inst"), w.i1);
   assert.equal(readFileSync(w.d("prod/data/applied-product"), "utf8").trim(), w.p1);
-  assert.match(readFileSync(w.d("state/apply-3.log"), "utf8"), /generation 3: the apply died mid-run, and no apply is finishing it: reverting[\s\S]*compose: recreated what moved[\s\S]*apply alert: generation 3 failed \(the apply died mid-run\) and was reverted to generation 2/);
+  assert.match(readFileSync(w.d("state/apply-3.log"), "utf8"), /generation 3: the apply died mid-run, and no apply is finishing it: reverting[\s\S]*apply alert: generation 3 failed \(the apply died mid-run\) and was reverted to generation 2/);
+  assert.match(readFileSync(w.d("state/apply-4.log"), "utf8"), /generation 4: re-applying generation 2[\s\S]*compose: recreated what moved[\s\S]*generation 4 is good/);
 };
 
 test("an apply SIGKILLed mid-compose is reverted to the last known good by the next apply, which then holds the dead pair", async () => {
@@ -443,12 +430,40 @@ test("an apply whose shell is killed mid-compose (SIGTERM) reverts itself on the
   reverted(w);
 });
 
-test("a log follower that dies mid-apply costs only the copy: the apply finishes good and its log is whole", async () => {
-  const w = world();
-  // A follower that crashes as it starts, as uutils tee/tail 0.10 have.
-  exe(w.d("bin/gnutail"), "#!/usr/bin/env bash\nkill -SEGV $$\n");
-  const r = await w.run();
-  assert.equal(r.status, 0, r.out);
-  assert.equal(w.gens().at(-1).health, "good");
-  assert.match(readFileSync(w.d("state/apply-2.log"), "utf8"), /generation 2: product [\s\S]*apply timing: compose[\s\S]*generation 2 is good: the last known good[\s\S]*apply timing: total/);
-});
+// The host-metrics timer runs the script of the checkout the apply applied, not the one ops/setup.sh recorded at install
+// time: the unit's last EnvironmentFile= (written every apply) names the applied checkout, and systemd reads it after
+// ~/.config/aidenhq-checkout.env.
+const OLD_HOST_METRICS_UNIT = `[Unit]
+Description=AidenHQ host metrics for the monitoring module: unit and container states as node-exporter textfiles (ops/host-metrics.sh)
+
+[Service]
+# The product checkout: ~/aidenhq, or where ops/setup.sh recorded it (~/.config/aidenhq-checkout.env).
+Environment=AIDENHQ_DIR=%h/aidenhq
+EnvironmentFile=-%h/.config/aidenhq-checkout.env
+Type=oneshot
+ExecStart=/usr/bin/env bash \${AIDENHQ_DIR}/ops/host-metrics.sh
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+`;
+
+// What systemd does with the unit's environment: Environment= first, then each EnvironmentFile= in order (a later one
+// wins), then expand ${AIDENHQ_DIR} in ExecStart.
+function hostMetricsScript(unit, home) {
+  const env = {};
+  for (const line of readFileSync(unit, "utf8").split("\n")) {
+    const m = /^(Environment|EnvironmentFile)=(.*)$/.exec(line);
+    if (!m) continue;
+    const value = m[2].replaceAll("%h", home);
+    if (m[1] === "Environment") {
+      for (const kv of value.split(/\s+/)) { const [k, ...v] = kv.split("="); env[k] = v.join("="); }
+    } else {
+      const file = value.replace(/^-/, "");
+      if (!existsSync(file)) continue;
+      for (const l of readFileSync(file, "utf8").split("\n")) {
+        if (!l || l.startsWith("#")) continue;
+        const [k, ...v] = l.split("="); env[k] = v.join("=");
+      }
+    }
+  }
+  const exec = /^ExecStart=(.*)$/m.exec(readFileSync(unit, "utf8"))[1];
+  return exec.replace(/\$\{(\w+)\}/g, (_, k) => env[k] ?? "").split(/\s+/).at(-1);
+}

@@ -1,5 +1,5 @@
 // Short no-tools Codex calls with a JSON schema for their answer (askCodex), used by the runner's
-// small readings: the go-ahead on sub-tasks and comments that arrive while a task is busy (busy.ts). Also the model names a
+// small readings: comments that arrive while a task is busy (busy.ts), branch names and PR descriptions. Also the model names a
 // request can use. The runner no longer reads requests for the agent: every comment goes to the
 // Engineer (docs/design/conversational-engineers.md).
 import { spawn } from "node:child_process";
@@ -100,37 +100,6 @@ async function askCodexOnce(cfg: any, prompt: string, schema: object) {
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
-}
-
-// ------------------------------------------------------------------ go-ahead for sub-tasks
-
-export const APPROVAL_SCHEMA = {
-  type: "object",
-  additionalProperties: false,
-  required: ["decision"],
-  properties: { decision: { type: "string", enum: ["start", "hold", "other"] } },
-};
-
-export function approvalPrompt({ user, title, waiting, comment }: { user: string; title: string; waiting: { identifier: string; title: string }[]; comment: unknown }) {
-  return `${user} asked the Researcher to split the task "${title}" into Engineer tasks. These are created and waiting for ${user}'s go-ahead before any of them starts:
-
-${waiting.map((w) => `- ${w.identifier}: ${String(w.title).replace(/[\r\n]+/g, " ").slice(0, 160)}`).join("\n")}
-
-Read ${user}'s newest comment on that task and answer with JSON:
-- "start": a clear go-ahead to start ALL of the waiting tasks as they are ("go", "go ahead", "start them", "looks good, run them", "👍").
-- "hold": explicitly not yet ("wait", "don't start yet", "hold off").
-- "other": anything else, including a go-ahead with changes or exceptions ("go, but skip X", "use opus instead", "add repo Y first"), questions and edits. Those go to the Researcher.
-When in doubt, "other". Do not run any tools.
-
-<<<COMMENT
-${String(comment).replace(/<<<|>>>/g, "‹‹‹").slice(0, 4000)}
-COMMENT>>>`;
-}
-
-/** Is the newest comment on a parent task the go-ahead for its waiting sub-tasks? Rejects on failure. */
-export async function readApproval({ cfg, user, title, waiting, comment }: { cfg: any; user: string; title: string; waiting: { identifier: string; title: string }[]; comment: unknown }) {
-  const raw = await askCodex(cfg, approvalPrompt({ user, title, waiting, comment }), APPROVAL_SCHEMA);
-  return ["start", "hold", "other"].includes(raw?.decision) ? raw.decision : "other";
 }
 
 /**

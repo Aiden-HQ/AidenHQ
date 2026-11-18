@@ -3,8 +3,8 @@ services:
   app:
     build: .
     restart: unless-stopped
-    # The host port (left of the colon, on loopback) is the app's `port:` in apps.yaml: keep the two equal, and pick
-    # a free one (app_create refuses a taken port). The platform shows Open at that port and serves it on the tailnet.
+    # On deploy the platform sets the host port (left of the colon, on loopback) to the app's `port:` in apps.yaml, so
+    # leave it as is; the app listens on 8080 inside its container. Open and the tailnet route use the registry port.
     ports:
       - "127.0.0.1:8080:8080"
     environment:

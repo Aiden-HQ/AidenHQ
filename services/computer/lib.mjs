@@ -1,6 +1,6 @@
 // The computer launcher's logic, kept free of Docker so it can be tested: run tokens, the env an exec gets, the Codex
 // config the box gets, the `docker run` line and the model call's hand-off to the gateway. launcher.mjs wires it up.
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { mkdirSync, realpathSync, statSync } from "node:fs";
 import http from "node:http";
 import path from "node:path";
@@ -24,6 +24,9 @@ export const CLEAR_RUN_TOKEN_SCRIPT = `rm -f ${RUN_TOKEN_PATH}`;
 export class Tokens {
   #byToken = new Map(); // token → { container, agentId, at, runId?, issueId? }
   #byContainer = new Map(); // container → token
+  #onRevoke;
+  /** `onRevoke(container)` runs whenever a container's token goes: expiry included, so nothing keyed by the token outlives it. */
+  constructor({ onRevoke } = {}) { this.#onRevoke = onRevoke; }
   issue(container, agentId, now = Date.now()) {
     this.revoke(container);
     const token = RUN_TOKEN_PREFIX + randomBytes(32).toString("base64url");
@@ -35,6 +38,7 @@ export class Tokens {
     const t = this.#byContainer.get(container);
     if (t) this.#byToken.delete(t);
     this.#byContainer.delete(container);
+    if (t) this.#onRevoke?.(container);
   }
   current(container) { return this.#byContainer.get(container); }
   /** The container's current token names this Paperclip run and task; true when that changed (save the tokens). */
@@ -210,16 +214,31 @@ export const LEASE_MS = 15 * 60_000;
  * Runner jobs' boxes (POST /job): one record per box, saved like the run tokens so a launcher restart keeps the lease and the
  * helper binding. { container, agentId, issueId, identifier, workspace, codexHome, helperPort, helperToken, leaseUntil }.
  */
+/**
+ * Whether a box may use repo-checkout: a kernel job's box by the roles its admission froze (the launcher's job record, never
+ * the grants table again); any other box by its agent's grants.
+ */
+export const mayCheckout = (who, grants) => (Array.isArray(who?.roles) ? who.roles : grants?.agents?.[who?.agentId]?.roles ?? []).includes("repo-checkout");
+
+export const tokenHash = (token) => createHash("sha256").update(String(token)).digest("hex");
+
 export class Jobs {
   #by = new Map();
-  add(rec, now = Date.now()) {
-    this.#by.set(rec.container, { ...rec, leaseUntil: now + LEASE_MS });
+  add(rec, now = Date.now(), leaseMs = LEASE_MS) {
+    this.#by.set(rec.container, { ...rec, leaseUntil: now + leaseMs });
     return this.#by.get(rec.container);
   }
   get(container) { return this.#by.get(container); }
   has(container) { return this.#by.has(container); }
   delete(container) { return this.#by.delete(container); }
   byIssue(issueId) { return [...this.#by.values()].find((r) => r.issueId === issueId); }
+  /** A kernel job's box by its job token (the kernel minted it; only its hash is kept): its container and agent, else undefined. */
+  byKernelToken(token) {
+    if (typeof token !== "string" || !token.startsWith("ahqj_")) return undefined;
+    const h = tokenHash(token);
+    const r = [...this.#by.values()].find((x) => x.kernel && x.tokenHash === h);
+    return r && { container: r.container, agentId: r.agentId, roles: [...(r.roles ?? [])] };
+  }
   containers() { return [...this.#by.keys()]; }
   /** A live lease: admission and idle reaping leave the box alone. */
   leased(container, now = Date.now()) { return (this.#by.get(container)?.leaseUntil ?? 0) > now; }
@@ -269,7 +288,7 @@ const JOB_PATH = "/opt/aidenhq/bin:/opt/rust/cargo/bin:/usr/local/sbin:/usr/loca
 
 /** Every name a job box's env file may hold: the run's revocable capabilities and plain settings. Nothing of the runner's own env (the runner adds only the job's read-only gh token, by docker exec -e). */
 export const JOB_ENV_NAMES = [
-  "AIDENHQ_RUN_TOKEN", "AIDENHQ_REPO_URL", "AIDENHQ_REPO_TOKEN", "AIDENHQ_MCP_B64", "AIDENHQ_TASK_WORKTREE", "HOME", "CODEX_HOME", "PATH",
+  "AIDENHQ_RUN_TOKEN", "AIDENHQ_GATEWAY_URL", "AIDENHQ_REPO_URL", "AIDENHQ_REPO_TOKEN", "AIDENHQ_MCP_B64", "AIDENHQ_TASK_WORKTREE", "HOME", "CODEX_HOME", "PATH",
   "GIT_AUTHOR_NAME", "GIT_AUTHOR_EMAIL", "GIT_COMMITTER_NAME", "GIT_COMMITTER_EMAIL", "GIT_TERMINAL_PROMPT",
   "GIT_CONFIG_COUNT", "GIT_CONFIG_KEY_0", "GIT_CONFIG_VALUE_0", "GIT_CONFIG_KEY_1", "GIT_CONFIG_VALUE_1", "GIT_CONFIG_KEY_2", "GIT_CONFIG_VALUE_2",
 ];
@@ -284,6 +303,7 @@ export function jobEnvFile({ token, mcp, gatewayUrl, identity = {} }) {
   const clean = (v) => String(v ?? "").replace(/[\r\n]/g, " ").trim();
   const env = {
     AIDENHQ_RUN_TOKEN: token,
+    AIDENHQ_GATEWAY_URL: gatewayUrl, // a kernel job's `aidenhq` commands (images/engineer/bin/aidenhq)
     AIDENHQ_REPO_URL: `${gatewayUrl}/helper`,
     AIDENHQ_REPO_TOKEN: token,
     AIDENHQ_MCP_B64: Buffer.from(mcp ?? "").toString("base64"),
@@ -359,16 +379,28 @@ export function reapLapsed(jobs, tokens, now = Date.now()) {
   return names;
 }
 
-/** The runner's control routes: only computers_runner_key opens them, and that key opens nothing else. */
+/** The job routes: only computers_runner_key (the runner) and launcher_kernel_key (the kernel) open them, and nothing else. */
 export const JOB_ROUTES = ["/job", "/job/renew", "/job/release"];
+/** The kernel's check boxes (kernel/src/checkbox.ts): only launcher_kernel_key opens it; /job/release ends one. */
+export const CHECK_ROUTES = ["/check"];
 
 /**
- * Whether a control call's bearer opens its route: the runner's key only the job routes, the board's progress key only
- * /progress, the plugin's key every other route. An empty secret is no key.
+ * A check box's bind mounts: the check's snapshot at /workspace (read-only for the reviewer eval), its out folder, and the
+ * product's own supply-chain checks read-only (the change under test can't edit the copy that judges it). Nothing else: no
+ * engine, no Codex home, no hooks, no `aidenhq` commands.
  */
-export function controlAllowed(bearer, method, url, { plugin, runner, progress }) {
+export function checkMounts({ resolvConf, workspace, out, readOnly, supplyChain }) {
+  return [`${resolvConf}:/etc/resolv.conf:ro`, `${workspace}:/workspace${readOnly ? ":ro" : ""}`, `${out}:/aidenhq-out`, `${supplyChain}:/opt/aidenhq/supply-chain:ro`];
+}
+
+/**
+ * Whether a control call's bearer opens its route: the runner's and the kernel's keys only the job routes, the board's
+ * progress key only /progress, the plugin's key every other route. An empty secret is no key.
+ */
+export function controlAllowed(bearer, method, url, { plugin, runner, kernel, progress }) {
   if (method !== "POST" || !bearer) return false;
-  if (JOB_ROUTES.includes(url)) return Boolean(runner) && bearer === runner;
+  if (JOB_ROUTES.includes(url)) return (Boolean(runner) && bearer === runner) || (Boolean(kernel) && bearer === kernel);
+  if (CHECK_ROUTES.includes(url)) return Boolean(kernel) && bearer === kernel;
   if (url === "/progress" && progress && bearer === progress) return true;
   return Boolean(plugin) && bearer === plugin;
 }
@@ -381,6 +413,21 @@ export function runCredential(env) {
   const apiUrl = env?.PAPERCLIP_API_URL, apiKey = env?.PAPERCLIP_API_KEY;
   if (!apiUrl || !apiKey) return undefined;
   return { apiUrl: String(apiUrl), apiKey: String(apiKey), taskId: env.PAPERCLIP_TASK_ID ? String(env.PAPERCLIP_TASK_ID) : undefined };
+}
+
+/**
+ * The per-box Paperclip credential /cp calls with: one live credential per container, set by the exec that carried it. Saved
+ * like the run tokens, because an agent's whole turn is one detached exec: a launcher restarted mid-turn finds it when it
+ * reloads the box, instead of answering 409 for the rest of the turn. Dropped with the box's token, so a reused name never
+ * inherits one.
+ */
+export class Creds {
+  #by = new Map(); // container → { apiUrl, apiKey, taskId? }
+  set(container, cred) { this.#by.set(container, { apiUrl: cred.apiUrl, apiKey: cred.apiKey, ...(cred.taskId ? { taskId: cred.taskId } : {}) }); }
+  get(container) { return this.#by.get(container); }
+  delete(container) { return this.#by.delete(container); }
+  dump() { return [...this.#by].map(([container, c]) => ({ container, ...c })); }
+  load(rows) { for (const r of rows ?? []) if (r?.container && r.apiUrl && r.apiKey) this.set(r.container, { apiUrl: r.apiUrl, apiKey: r.apiKey, taskId: r.taskId }); }
 }
 
 /** Runs in the box (node): one control-plane call through the box's bridge. Everything, the key included, comes on stdin. */

@@ -87,7 +87,8 @@ export type LedgerGroup = keyof typeof LEDGER_GROUPS;
 export type LedgerFilter = { agentId?: string; model?: string };
 /** Per group: spend, calls, tokens, failed calls, and latency summed over the ok calls that timed themselves (msN of them). */
 const METRICS = `COALESCE(SUM(cost_usd), 0) AS usd, COUNT(*) AS calls, COALESCE(SUM(input), 0) AS input, COALESCE(SUM(cached), 0) AS cached,
-  COALESCE(SUM(output), 0) AS output, COALESCE(SUM(status IS NOT NULL AND status <> 'ok'), 0) AS errors,
+  COALESCE(SUM(output), 0) AS output, COALESCE(SUM(status IS NOT NULL AND status NOT IN ('ok', 'unsettled', 'interrupted')), 0) AS errors,
+  COALESCE(SUM(status IN ('unsettled', 'interrupted')), 0) AS interrupted,
   COALESCE(SUM(CASE WHEN COALESCE(status, 'ok') = 'ok' THEN ms END), 0) AS msSum, COUNT(CASE WHEN COALESCE(status, 'ok') = 'ok' THEN ms END) AS msN`;
 /** One run's calls on one task (store.usageByRun); engineer is 1 for an Engineer job. */
 export interface RunUsage {
@@ -107,6 +108,7 @@ export interface LedgerMetrics {
   cached: number;
   output: number;
   errors: number;
+  interrupted: number;
   msSum: number;
   msN: number;
 }
@@ -235,6 +237,8 @@ export class Store {
     if (!usageColumns.includes("agent_id")) this.db.exec("ALTER TABLE usage ADD COLUMN agent_id TEXT");
     // Run attribution (wave 1): which run, task, config revision and caller kind each call was for, and how it went.
     for (const [c, type] of [["run_key", "TEXT"], ["run_id", "TEXT"], ["issue_id", "TEXT"], ["rev", "TEXT"], ["kind", "TEXT"], ["ms", "INTEGER"], ["status", "TEXT"], ["subject", "TEXT"]]) if (!usageColumns.includes(c!)) this.db.exec(`ALTER TABLE usage ADD COLUMN ${c} ${type}`);
+    // An unsettled call's amount is the gateway's fail-closed hold, not spend (addUsage).
+    this.db.exec("UPDATE usage SET cost_usd = NULL WHERE status = 'unsettled' AND cost_usd IS NOT NULL");
     this.db.exec("CREATE INDEX IF NOT EXISTS usage_run ON usage (run_key); CREATE INDEX IF NOT EXISTS usage_issue ON usage (issue_id); CREATE INDEX IF NOT EXISTS usage_at_cost ON usage (at, cost_usd)");
     if (!this.meta("installed_at")) this.setMeta("installed_at", new Date().toISOString());
   }
@@ -251,11 +255,16 @@ export class Store {
     this.db.prepare("DELETE FROM meta WHERE key = ?").run(key);
   }
 
-  /** One usage record; the same key again (a retried report) is ignored. */
+  /**
+   * One usage record; the same key again (a retried report) is ignored, except over an `unsettled` call (the gateway's
+   * reservation for a call a kernel restart cut off), which its trued-up `interrupted` record replaces. An unsettled call's
+   * reserved amount is the gateway's fail-closed hold, not spend: it counts as unpriced here.
+   */
   addUsage(u: UsageRecord): void {
     this.db
-      .prepare("INSERT OR IGNORE INTO usage (key, at, component, model, input, cached, output, cost_usd, agent_id, run_key, run_id, issue_id, rev, kind, ms, status, subject) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
-      .run(u.key, u.at, u.component, u.model, u.input, u.cached, u.output, u.costUsd ?? null, u.agentId ?? null, u.runKey ?? null, u.runId ?? null, u.issueId ?? null, u.rev ?? null, u.kind ?? null, u.ms ?? null, u.status ?? null, u.subject ?? null);
+      .prepare(`INSERT INTO usage (key, at, component, model, input, cached, output, cost_usd, agent_id, run_key, run_id, issue_id, rev, kind, ms, status, subject) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT (key) DO UPDATE SET at = excluded.at, model = excluded.model, input = excluded.input, cached = excluded.cached, output = excluded.output, cost_usd = excluded.cost_usd, ms = excluded.ms, status = excluded.status WHERE usage.status = 'unsettled'`)
+      .run(u.key, u.at, u.component, u.model, u.input, u.cached, u.output, u.status === "unsettled" ? null : (u.costUsd ?? null), u.agentId ?? null, u.runKey ?? null, u.runId ?? null, u.issueId ?? null, u.rev ?? null, u.kind ?? null, u.ms ?? null, u.status ?? null, u.subject ?? null);
   }
 
   /** Usage records older than `before` go (the Costs tab compares 30 days with the 30 before). */
@@ -320,7 +329,7 @@ export class Store {
   /** Failed calls (a status other than ok) in [from, to) by agent and status: what they billed and how many. Most spend, then most calls, first. */
   failedCalls(from: string, to: string): { agentId: string | null; status: string; calls: number; usd: number }[] {
     return this.db
-      .prepare("SELECT agent_id AS agentId, status, COUNT(*) AS calls, COALESCE(SUM(cost_usd), 0) AS usd FROM usage WHERE at >= ? AND at < ? AND status IS NOT NULL AND status <> 'ok' GROUP BY 1, 2 ORDER BY usd DESC, calls DESC")
+      .prepare("SELECT agent_id AS agentId, status, COUNT(*) AS calls, COALESCE(SUM(cost_usd), 0) AS usd FROM usage WHERE at >= ? AND at < ? AND status IS NOT NULL AND status NOT IN ('ok', 'unsettled', 'interrupted') GROUP BY 1, 2 ORDER BY usd DESC, calls DESC")
       .all(from, to) as unknown as { agentId: string | null; status: string; calls: number; usd: number }[];
   }
 

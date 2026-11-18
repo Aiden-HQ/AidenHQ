@@ -26,15 +26,19 @@ describe("Glean sign-in routes", () => {
   const base = { paperclip: {} as Paperclip, store, log: pino({ level: "silent" }), staticDir: "/nonexistent", timezone: "UTC", signIns: [{ id: "glean", label: "Glean", connect: "/glean/connect", callback: "/callback", missing: "m", stopped: "s", auth: glean }], session: () => ({ accountId: "owner", role: "admin" as const }) };
   const local = createApp({ ...base, allowedHosts: ["localhost:3121", "127.0.0.1:3121", "board.example.ts.net"], mode: "lan" });
   const lan = createApp({ ...base, allowedHosts: ["aidenhq.local"], mode: "lan", lan: { url: "http://aidenhq.local" } });
+  // A board with an https address (tailscale serve or Caddy in front of 3121): Connect works there, one click.
+  const https = createApp({ ...base, allowedHosts: ["board.example.ts.net", "aidenhq.local"], mode: "lan", lan: { url: "https://board.example.ts.net" } });
   let localBase = "";
   let lanBase = "";
+  let httpsBase = "";
   beforeAll(async () => {
-    for (const s of [local, lan]) await new Promise<void>((r) => s.listen(0, "127.0.0.1", r));
+    for (const s of [local, lan, https]) await new Promise<void>((r) => s.listen(0, "127.0.0.1", r));
     localBase = `http://127.0.0.1:${(local.address() as AddressInfo).port}`;
     lanBase = `http://127.0.0.1:${(lan.address() as AddressInfo).port}`;
+    httpsBase = `http://127.0.0.1:${(https.address() as AddressInfo).port}`;
   });
   afterAll(() => {
-    for (const s of [local, lan]) s.close();
+    for (const s of [local, lan, https]) s.close();
   });
   const get = async (url: string, host: string) => {
     const { request } = await import("node:http");
@@ -56,21 +60,29 @@ describe("Glean sign-in routes", () => {
     expect(seen.at(-1)).toEqual({ path: "/auth/start", body: { redirect_uri: "http://localhost:3121/callback" } });
   });
 
-  it("refuses away from the laptop's loopback address", async () => {
+  it("connects from the board's https address and finishes there; plain http off loopback stays refused", async () => {
+    const r = await get(`${httpsBase}/glean/connect`, "board.example.ts.net");
+    expect(r.status).toBe(302);
+    expect(seen.at(-1)).toEqual({ path: "/auth/start", body: { redirect_uri: "https://board.example.ts.net/callback" } });
+    expect(await get(`${httpsBase}/callback?state=s&code=good`, "board.example.ts.net")).toMatchObject({ status: 302, location: "/" });
+    const refused = await get(`${httpsBase}/glean/connect`, "aidenhq.local");
+    expect(refused.status).toBe(403);
+    expect(refused.body).toContain("https://board.example.ts.net");
+  });
+
+  it("refuses away from the laptop's loopback address without an https board", async () => {
     expect((await get(`${localBase}/glean/connect`, "board.example.ts.net")).status).toBe(403);
     expect((await get(`${lanBase}/glean/connect`, "aidenhq.local")).status).toBe(403);
     expect((await get(`${localBase}/glean/connect`, "evil.example")).status).toBe(403);
   });
 
-  it("finishes the sign-in and returns to the board, or explains (escaped) why not", async () => {
+  it("finishes the sign-in and returns to the board, or to its page with why not", async () => {
     expect(await get(`${localBase}/callback?state=s&code=good`, "127.0.0.1:3121")).toMatchObject({ status: 302, location: "/" });
     const bad = await get(`${localBase}/callback?state=s&code=bad`, "127.0.0.1:3121");
-    expect(bad.status).toBe(400);
-    expect(bad.body).toContain("invalid_grant");
-    expect(bad.body).not.toContain("<i>");
+    expect(bad).toMatchObject({ status: 302, location: expect.stringMatching(/^\/#\/connect\/glean\?error=/) });
+    expect(decodeURIComponent(bad.location!)).toContain("invalid_grant");
     const denied = await get(`${localBase}/callback?state=s&error=access_denied`, "127.0.0.1:3121");
-    expect(denied.status).toBe(400);
-    expect(denied.body).toContain("access_denied");
+    expect(denied).toMatchObject({ status: 302, location: expect.stringContaining("access_denied") });
   });
 });
 
@@ -112,8 +124,8 @@ describe("Grafana sign-in routes", () => {
     expect(await get("/grafana/callback?state=s&code=good")).toMatchObject({ status: 302, location: "/" });
     expect(seen.at(-1)).toEqual({ path: "/auth/finish", body: { state: "s", code: "good" } });
     const bad = await get("/grafana/callback?state=s&code=bad");
-    expect(bad.status).toBe(400);
-    expect(bad.body).toContain("connect Grafana: Grafana refused the sign-in");
+    expect(bad).toMatchObject({ status: 302, location: expect.stringMatching(/^\/#\/connect\/grafana\?error=/) });
+    expect(decodeURIComponent(bad.location!)).toContain("connect Grafana: Grafana refused the sign-in");
   });
 
   it("leaves Glean's /callback alone when Glean isn't set up", async () => {

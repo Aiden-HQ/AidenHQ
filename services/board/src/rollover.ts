@@ -98,7 +98,7 @@ function unanswered(newestFirst: Comment[], me: string): Comment[] {
   const out: Comment[] = [];
   for (const c of newestFirst) {
     if (c.authorType === "agent") break;
-    // Only the board key's own words are re-posted with it (another admin's stay on the old task, linked).
+    // Only the owner's own words are re-posted with it (another admin's stay on the old task, linked).
     if (c.authorUserId !== me || c.deletedAt || c.createdByRunId || [NOTICE_MARKER, APPROVAL_MARKER, RUNNER_MARKER].some((m) => c.body.includes(m)) || !displayText(c.body)) continue;
     out.push(c);
   }

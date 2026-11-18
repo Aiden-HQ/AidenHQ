@@ -80,7 +80,7 @@ main() {
 
   # The product commit the instance pins. It must be on product main: nothing unmerged runs here.
   local product
-  product="$(node services/runner/src/apply.ts product-pin "$inst/instance.yaml")"
+  product="$(node kernel/src/apply.ts product-pin "$inst/instance.yaml")"
   [ -n "$product" ] || { echo "refusing: instance.yaml has no full-sha 'product:' line" >&2; exit 1; }
   git merge-base --is-ancestor "$product" origin/main || { echo "refusing: product $product is not on origin/main" >&2; exit 1; }
   # The kernel the instance runs: the pin, or its own fork of it (product_fork:) when that descends from the pin.
@@ -263,7 +263,7 @@ applyGeneration() {
   git -C "$inst" merge-base --is-ancestor "$instance" origin/main || { echo "refusing: generation $gen's instance $instance is not on the instance's origin/main" >&2; exit 1; }
   # Its product is what its instance commit runs: that commit's pin on origin/main, or the pin's fork (product_fork:).
   local file pin; file="$(mktemp)"; git -C "$inst" show "$instance:instance.yaml" > "$file"
-  pin="$(node services/runner/src/apply.ts product-pin "$file")"
+  pin="$(node kernel/src/apply.ts product-pin "$file")"
   git merge-base --is-ancestor "$pin" origin/main || { rm -f "$file"; echo "refusing: generation $gen's product $pin is not on origin/main" >&2; exit 1; }
   [ "$(kernelRun "$file" "$pin")" = "$product" ] || { rm -f "$file"; echo "refusing: generation $gen's product $product is not what its instance commit runs" >&2; exit 1; }
   rm -f "$file"
@@ -285,6 +285,8 @@ applyGeneration() {
   local mods_before mods_after
   materializeModules || { echo "refusing: the official modules of generation $gen could not be fetched" >&2; exit 1; }
   local m; m="$(genAppend "$product" "$instance" pending "" "${AIDENHQ_REVERT_OF:-}" "$gen")"
+  local log="$GEN_DIR/apply-$m.log"
+  logTo "$log"
   echo "generation $m: re-applying generation $gen (product ${product:0:12}, instance ${instance:0:12})"
   local prev_config; prev_config="$(mktemp)"; cp config/paperclip.yaml "$prev_config" 2>/dev/null || true
   local rc=0 staged=0
@@ -297,7 +299,7 @@ applyGeneration() {
   if [ "$rc" -ne 0 ]; then HEALTH_WHY="the switch failed (exit $rc)"; elif health "${AIDENHQ_HEALTH_BASELINE:-}" "$prev_config"; then ok=1; fi
   rm -f "$prev_config"
   if [ "$ok" = 1 ]; then genMark "$m" good; echo "generation $m is good"; return 0; fi
-  genMark "$m" failed "$HEALTH_WHY"
+  genMark "$m" failed "$HEALTH_WHY" "$log"
   echo "generation $m failed: $HEALTH_WHY"
   return 1
 }
@@ -316,7 +318,7 @@ refuseGeneration() {
 # descends from the pin.
 kernelRun() {
   local f url sha
-  f="$(node services/runner/src/apply.ts product-fork "$1")" || { echo "refusing: instance.yaml product_fork: doesn't parse" >&2; exit 1; }
+  f="$(node kernel/src/apply.ts product-fork "$1")" || { echo "refusing: instance.yaml product_fork: doesn't parse" >&2; exit 1; }
   [ -n "$f" ] || { echo "$2"; return 0; }
   read -r url sha <<< "$f"
   git cat-file -e "$sha^{commit}" 2>/dev/null || git -c credential.helper= -c protocol.allow=never -c protocol.https.allow=always fetch --quiet --no-tags --no-recurse-submodules -- "$url" "$sha" >&2 \
@@ -331,7 +333,7 @@ instancePinning() {
   local c tmp; tmp="$(mktemp)"
   for c in $(git -C "$inst" rev-list --first-parent --max-count=500 HEAD); do
     git -C "$inst" show "$c:instance.yaml" > "$tmp" 2>/dev/null || continue
-    [ "$(node services/runner/src/apply.ts product-pin "$tmp" 2>/dev/null)" = "$1" ] && { rm -f "$tmp"; echo "$c"; return 0; }
+    [ "$(node kernel/src/apply.ts product-pin "$tmp" 2>/dev/null)" = "$1" ] && { rm -f "$tmp"; echo "$c"; return 0; }
   done
   rm -f "$tmp"
 }
@@ -387,15 +389,15 @@ validate() {
     why="the board still publishes 3129 (compose.override.yaml?): the kernel's sign-in listener binds it; drop that port from the override"; return 1
   fi
   # A pinned release (instance.yaml release:, spec §6.8) is read from the distro repo at its sha; `product:` must be its kernel.
-  if [ -f kernel/src/loader/release.ts ]; then
-    node kernel/src/loader/release.ts "$inst/instance.yaml" || { why="the release in instance.yaml could not be resolved"; return 1; }
+  if [ -f scripts/compiler/release.ts ]; then
+    node scripts/compiler/release.ts "$inst/instance.yaml" || { why="the release in instance.yaml could not be resolved"; return 1; }
   fi
-  # The authority diff (kernel/src/loader/authority-cli.ts): one `apply authority:` line per module change. A hand apply is
+  # The authority diff (scripts/compiler/authority-cli.ts): one `apply authority:` line per module change. A hand apply is
   # the owner's own act, so it is printed, not filed; an unreadable diff refuses.
-  if [ -f kernel/src/loader/authority-cli.ts ]; then
+  if [ -f scripts/compiler/authority-cli.ts ]; then
     # Without the instance commit that ran before (none pins `before`), both sides read the instance as it is now.
     local inst_args=(); [ -z "$inst_before" ] || inst_args=("$inst" "$inst_before" "$want")
-    node kernel/src/loader/authority-cli.ts "$before" "$product" "${inst_args[@]}" || { why="the authority diff could not be computed"; return 1; }
+    node scripts/compiler/authority-cli.ts "$before" "$product" "${inst_args[@]}" || { why="the authority diff could not be computed"; return 1; }
   fi
   # A release's prebuilt images (compile swapped them in for the builds) are pulled, all at once, by digest; what is already
   # here is kept. Then the images still built locally build beside the running containers (a build never touches one).
@@ -435,19 +437,7 @@ switchOver() {
     systemctl --user disable --now aidenhq-gateway 2>/dev/null || true
     rm -f "$old" && systemctl --user daemon-reload && echo "gateway unit removed (the kernel replaces it)"
   fi
-  # The accounts move into the kernel (lean-core 3a), once, with the board stopped so nothing writes the file mid-move; compose
-  # brings the board back on the new mount. An older product (a revert or rollback) keeps them in data/board: they go back
-  # there, so there is only ever one copy and its board never makes an empty one.
   local data="${AIDENHQ_DATA_DIR:-$PWD/data}"
-  if [ -f kernel/src/auth-move.ts ] && [ -f "$data/board/auth.db" ] && [ ! -f "$data/kernel/auth/auth.db" ]; then
-    stopBoard
-    local moved; moved="$(node kernel/src/auth-move.ts "$data")"
-    echo "accounts: $moved (data/board/auth.db -> data/kernel/auth/)"
-  elif [ ! -f kernel/src/auth-move.ts ] && [ -f "$data/kernel/auth/auth.db" ] && [ ! -f "$data/board/auth.db" ]; then
-    stopBoard
-    local f; for f in auth.secret auth.db-journal auth.db-wal auth.db-shm auth.db; do [ ! -e "$data/kernel/auth/$f" ] || mv "$data/kernel/auth/$f" "$data/board/$f"; done
-    echo "accounts: moved back (data/kernel/auth/ -> data/board/, for this older product)"
-  fi
   # The grade rows move from the board's database to the grading module's (lean-core 3h), once (a marker in its data dir), with
   # the board stopped so the old board writes nothing mid-move; compose then starts the grading service on them.
   if [ -f ops/grades-move.mjs ] && [ ! -f "$data/modules/grading/grades/.moved-from-board" ]; then
@@ -524,16 +514,32 @@ switchOver() {
     systemctl --user disable --now --quiet aidenhq-backup.timer
     rm -f "$units/aidenhq-backup.service" "$units/aidenhq-backup.timer" && systemctl --user daemon-reload && echo "backup timer removed (no backup_repository)"
   fi
+  # Release updates (ops/update.sh, docs/design/release-updates.md): the hourly timer runs while the instance follows a release
+  # from the official distro repo, and is removed once it pins its product by hand.
+  if grep -q '^release:' "$inst/instance.yaml" && grep -q 'Aiden-HQ/aidenhq-distro' "$inst/instance.yaml" && [ -f ops/units/aidenhq-update.timer ]; then
+    if ! cmp -s ops/units/aidenhq-update.service "$units/aidenhq-update.service" || ! cmp -s ops/units/aidenhq-update.timer "$units/aidenhq-update.timer"; then
+      cp ops/units/aidenhq-update.service ops/units/aidenhq-update.timer "$units/" && systemctl --user daemon-reload && echo "release update timer installed/updated"
+    fi
+    systemctl --user enable --now --quiet aidenhq-update.timer
+  elif [ -e "$units/aidenhq-update.timer" ]; then
+    systemctl --user disable --now --quiet aidenhq-update.timer
+    rm -f "$units/aidenhq-update.service" "$units/aidenhq-update.timer" && systemctl --user daemon-reload && echo "release update timer removed (no release followed)"
+  fi
   # The monitoring module's host metrics (ops/host-metrics.sh): its timer runs while compile made the textfile directory
-  # (the module is on), and is removed once the module is off.
+  # (the module is on), and is removed once the module is off. Its last EnvironmentFile= names the checkout this apply
+  # applied, written every apply: an unchanged unit would otherwise keep running whatever ~/.config/aidenhq-checkout.env
+  # recorded at install time.
   if grep -q '^  monitoring-node-exporter:' compose.modules.yaml 2>/dev/null; then
+    local host_metrics_env="$HOME/.config/aidenhq-host-metrics.env"
+    mkdir -p "$(dirname "$host_metrics_env")"
+    printf 'AIDENHQ_DIR=%s\n' "$(realpath "$product_dir")" > "$host_metrics_env.tmp" && mv -f "$host_metrics_env.tmp" "$host_metrics_env"
     if ! cmp -s ops/units/aidenhq-host-metrics.service "$units/aidenhq-host-metrics.service" || ! cmp -s ops/units/aidenhq-host-metrics.timer "$units/aidenhq-host-metrics.timer"; then
       cp ops/units/aidenhq-host-metrics.service ops/units/aidenhq-host-metrics.timer "$units/" && systemctl --user daemon-reload && echo "host metrics timer installed/updated"
     fi
     systemctl --user enable --now --quiet aidenhq-host-metrics.timer
   elif [ -e "$units/aidenhq-host-metrics.timer" ]; then
     systemctl --user disable --now --quiet aidenhq-host-metrics.timer
-    rm -f "$units/aidenhq-host-metrics.service" "$units/aidenhq-host-metrics.timer" && systemctl --user daemon-reload && echo "host metrics timer removed (monitoring off)"
+    rm -f "$units/aidenhq-host-metrics.service" "$units/aidenhq-host-metrics.timer" "$HOME/.config/aidenhq-host-metrics.env" && systemctl --user daemon-reload && echo "host metrics timer removed (monitoring off)"
   fi
   # The CI runner units the config declares (the instances systemd has enabled) that are failed, and the ones a recorded
   # drain stopped (data/fleet-paused.json, modules/ci): running again after an apply, each start limit cleared before its
@@ -553,9 +559,10 @@ switchOver() {
 # Step 4 of spec §5.7.2, polled to deadlines (the kernel restarts; services take a while to come up). Fails, with HEALTH_WHY,
 # when the kernel does not answer /healthz in time, when a check that passed in the baseline still FAILs at the deadline
 # (skips and checks already failing in the baseline don't count), or when the live agent check fails (it fails only on
-# connections granted since the previous config).
+# connections granted since the previous config; its own ERROR lines, naming the connection and its detail, become the
+# reason).
 health() {
-  local base="$1" prev="$2" deadline name regress out
+  local base="$1" prev="$2" deadline name regress out rc=0 err why=""
   local kurl="${AIDENHQ_KERNEL_HEALTH_URL:-http://10.231.0.1:3130/healthz}" every="${AIDENHQ_HEALTH_INTERVAL_S:-10}"
   HEALTH_WHY=""
   deadline=$(( $(date +%s) + ${AIDENHQ_KERNEL_DEADLINE_S:-120} ))
@@ -572,6 +579,11 @@ health() {
         [ -n "$name" ] || continue
         grep -qF -- "  FAIL  $name  " <<< "$out" && regress+="${regress:+, }$name"
       done <<< "$(sed -n 's/^  ok    //p' "$base")"
+      # The apply installs this unit itself: a mismatch after the switch is never excused by a baseline that had one too.
+      if grep -qF -- "  FAIL  host metrics timer runs the applied checkout  " <<< "$out"; then
+        HEALTH_WHY="$(grep -F -- "  FAIL  host metrics timer runs the applied checkout  " <<< "$out" | tail -1 | sed 's/^  FAIL  host metrics timer runs the applied checkout  //')"
+        return 1
+      fi
       [ -n "$regress" ] || break
       [ "$(date +%s)" -lt "$deadline" ] || { HEALTH_WHY="checks that passed before the apply fail now: $regress"; return 1; }
       echo "health: waiting on $regress"
@@ -580,8 +592,18 @@ health() {
   fi
   echo "health: the kernel answers and every check that passed before passes"
   lap health
-  # The live agent check: each connection an agent is granted answers and is signed in (scripts/agent-check.mjs).
-  if [ -n "$prev" ] && ! node scripts/agent-check.mjs live --since "$prev"; then HEALTH_WHY="the live agent check failed on a newly granted connection"; return 1; fi
+  # The live agent check: each connection an agent is granted answers and is signed in (scripts/agent-check.mjs). Its
+  # output goes to the apply log as it printed it, and its ERROR lines are the generation's reason, so the alert says which
+  # connection failed and why.
+  if [ -n "$prev" ]; then
+    out="$(node scripts/agent-check.mjs live --since "$prev" 2>&1)" || rc=$?
+    [ -z "$out" ] || printf '%s\n' "$out"
+    if [ "$rc" -ne 0 ]; then
+      while IFS= read -r err; do [ -z "$err" ] || why+="${why:+; }$err"; done <<< "$(sed -n 's/^  agent-check ERROR: //p' <<< "$out")"
+      HEALTH_WHY="${why:-the live agent check failed (exit $rc)}"
+      return 1
+    fi
+  fi
   lap agent-check
 }
 # The lock is held by the process this one inherited it from (ops/apply-config.sh), which opened data/apply.lock at that

@@ -16,7 +16,9 @@ Thanks for helping. Contributors have read access to this repository; the mainta
 ### Pull requests and commits
 
 - **Every change lands through a pull request**, and is **squash-merged**: one PR becomes one commit on `main`.
-  Nobody pushes to `main` directly, the maintainer included.
+  Nobody pushes to `main` directly, the maintainer included. Auto-merge is on: a maintainer arms a ready PR
+  (`gh pr merge --auto --squash`) and GitHub merges it once `ci-required` is green. A PR with conflicts needs a rebase
+  on `main` first.
 - **The PR title follows [Conventional Commits](https://www.conventionalcommits.org/)** and becomes the squash
   commit's subject: `type(scope): summary`, lower-case type, the scope optional, `!` before the colon for a breaking
   change. Types: `feat`, `fix`, `docs`, `chore`, `test`, `refactor`, `perf`, `ci`, plus `build`, `style` and `revert`.
@@ -67,7 +69,7 @@ No live instance and no paid keys are needed. Use Node 24 and run `npm ci` once 
 - **The reviewer eval.** `node modules/ai-reviewer/scripts/reviewer-eval.mjs` runs the AI reviewer against every planted
   case in `modules/ai-reviewer/test/reviewer-cases/` and must stay at 100%. It needs a paid `OPENROUTER_API_KEY`, so CI
   doesn't run it. If your PR touches the `modules/ai-reviewer` module (its service, its policy in `service/security/` or
-  the cases), `services/runner/src/tiers.mjs` or `kernel/src/loader/authority.ts`, say so in the PR; the maintainer runs it before merging. A reviewer
+  the cases), `services/runner/src/tiers.mjs` or `scripts/compiler/authority.ts`, say so in the PR; the maintainer runs it before merging. A reviewer
   false reject you hit becomes a new planted case.
 
 ## What a good change looks like

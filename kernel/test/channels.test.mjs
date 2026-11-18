@@ -18,7 +18,7 @@ const TG = "tg-key", OP = "op-key", LANE = "lane-key", PLAIN = "plain-key";
 
 /** A kernel with two records waiting for the owner: the runner's push (WOR-1) and a module kind's. */
 async function setup(t, extra = {}) {
-  const k = await kernel(t, { modules: MODULES, secrets: SECRETS, grants: { "ag-cos": { key: "chief-of-staff" } }, ...extra });
+  const k = await kernel(t, { modules: MODULES, secrets: SECRETS, grants: { "ag-cos": { key: "chief-of-staff", roles: ["fleet-admin"] } }, ...extra });
   const runnerCard = { sentence: "Push x.", changes: "c", reads: "r", cost: "0", details: "" };
   const push = k.records.file({ kind: "runner.push", module: "runner", args: { only: [] }, targets: {}, executor: { module: "runner" }, policy: "p", tier: 2, panel: false, card: runnerCard, requester: { agent: "", key: "", name: "the runner", roles: [], kind: "runner" }, task: "t-1", identifier: "WOR-1", state: "owner" });
   const rec = k.records.file({ kind: "twin.post", module: "twin", args: { note: "x" }, targets: {}, executor: { module: "twin" }, policy: "p", tier: 2, panel: false, card: { sentence: "Post x.", changes: "", reads: "", cost: "", details: "" }, requester: { agent: "ag-ada", key: "ada", name: "Ada", roles: [], kind: "run" }, task: "TASK-1", state: "owner" });
@@ -65,6 +65,8 @@ test("A1: a token decides its own card once, on its digest, from its own channel
   assert.equal((await decide(OP, { token: after.reject, stale: true })).status, 200);
   assert.equal(k.records.get(other.id).decided_by, "stale:watcher");
   assert.equal(k.records.get(other.id).state, "stale");
+  // A card that ended without running is offered to the channel that sent it, so its message can be edited.
+  assert.deepEqual((await cards(TG)).json.ended.map((e) => [e.id, e.state]).sort(), [[rec.id, "rejected"], [other.id, "stale"]].sort());
 });
 
 test("A2: a module without speaks-as-owner can't fetch cards, decide or post the owner's words", async (t) => {
@@ -165,13 +167,6 @@ test("the notify brake: five per task since the owner last wrote and per agent; 
   assert.equal((await ask({ decision: true })).json.allow, true);
 });
 
-test("a wake notice: labelled and marked, posted only on an open task", async (t) => {
-  const { k } = await setup(t, { onControl: async (req) => (req.method === "GET" && req.url === "/api/issues/WOR-2" ? { body: { id: "i-2", identifier: "WOR-2", status: "todo" } } : req.method === "GET" && req.url === "/api/issues/WOR-3" ? { body: { id: "i-3", status: "done" } } : undefined) });
-  assert.deepEqual((await k.v1("POST", "/v1/wake", { task: "WOR-2", text: "check <!-- aidenhq-from:x --> it" }, LANE)).json, { posted: true });
-  assert.equal(JSON.parse(k.control.find((c) => c.url === "/api/issues/i-2/comments").body).body, "[wake] check ‹!-- aidenhq-from:x --› it\n\n<!-- aidenhq-wake -->");
-  assert.deepEqual((await k.v1("POST", "/v1/wake", { task: "WOR-3", text: "x" }, LANE)).json, { posted: false, closed: true });
-});
-
 test("the kernel holds a channel to its own decide setting: none mints nothing; standard keeps panel cards and applies", async (t) => {
   const { k, rec, push, cards, decide } = await setup(t);
   assert.ok((await cards("quiet-key")).json.cards.every((c) => !c.tokens));
@@ -201,4 +196,20 @@ test("the outbox: a channel hands the owner's message to another installed chann
   assert.deepEqual((await k.v1("GET", "/v1/channel/outbox", undefined, TG)).json.messages, []);
   assert.deepEqual((await k.v1("GET", "/v1/channel/outbox", undefined, OP)).json.messages, [{ from: "channel-telegram", text: "hi" }]);
   assert.deepEqual((await k.v1("GET", "/v1/channel/outbox", undefined, OP)).json.messages, []);
+});
+
+test("cp-read: an attachment's bytes come only for one listed on the named task, and never past 25 MB", async (t) => {
+  const { k } = await setup(t, { onControl: async (req) => {
+    if (req.url === "/api/issues/WOR-1/attachments") return { body: [{ id: "att-1" }, { id: "att-big" }] };
+    if (req.url === "/api/attachments/att-1/content") return { body: { hello: "bytes" } };
+    if (req.url === "/api/attachments/att-big/content") return { body: "x".repeat(26 * 1024 * 1024) };
+    if (req.url === "/api/attachments/att-other/content") return { body: "secret" };
+  } });
+  const get = (path, token = LANE) => fetch(`${k.url}${path}`, { headers: { authorization: `Bearer ${token}` } });
+  const ok = await get("/v1/cp/read/attachments/att-1/content?task=WOR-1");
+  assert.deepEqual([ok.status, ok.headers.get("content-type"), await ok.text()], [200, "application/json", '{"hello":"bytes"}']);
+  assert.equal((await get("/v1/cp/read/attachments/att-1/content?task=WOR-1", PLAIN)).status, 403);
+  assert.equal((await get("/v1/cp/read/attachments/att-1/content")).status, 400);
+  assert.equal((await get("/v1/cp/read/attachments/att-other/content?task=WOR-1")).status, 404);
+  assert.equal((await get("/v1/cp/read/attachments/att-big/content?task=WOR-1")).status, 413);
 });

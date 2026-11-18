@@ -1,4 +1,12 @@
-/** The few Paperclip REST calls the board makes, as the user (board API key). */
+import { AsyncLocalStorage } from "node:async_hooks";
+
+/**
+ * The Paperclip REST calls the board makes, as the owner, all through the kernel (kernel/src/cp.ts createBoardCp): reads at
+ * /v1/cp/read/<path>, writes at /v1/cp/owner/<path>, with the board's key on the kernel. The board holds no Paperclip key.
+ */
+
+/** The signed-in admin a write is for (app.ts sets it per request); sent to the kernel, which logs it with the write. */
+export const actingAccount = new AsyncLocalStorage<string>();
 
 export interface Label {
   id: string;
@@ -51,6 +59,17 @@ export interface Issue {
   executionBlocker?: { cause: string; runError?: string | null; runId?: string | null; recoveryActionId?: string | null } | null;
 }
 
+/** Paperclip's own approval: the board mirrors an open kernel card as one so its wait is counted (mirror.ts). */
+export interface PaperclipApproval {
+  id: string;
+  type: string;
+  status: string;
+  /** Set to the filing user when the board's key files it: what makes an approval the board's own (mirror.ts). */
+  requestedByUserId?: string | null;
+  requestedByAgentId?: string | null;
+  payload?: { [k: string]: unknown } | null;
+}
+
 /** An agent run in progress (Paperclip's live-runs). */
 export interface LiveRun {
   id: string;
@@ -90,6 +109,8 @@ const BRAKE_CANCEL: ReleaseWhy = {
 };
 /** Paperclip's own disposition repair, cancelled before dispatch because the task already had a disposition. */
 export const REPAIR_SUPPRESSED = "legacy_disposition_repair_suppressed";
+/** What Paperclip calls a run whose adapter reported an incomplete response (Codex: "Incomplete response returned, reason: max_output_tokens"). */
+export const CONFIG_INCOMPLETE = "configuration_incomplete";
 export const REPAIR_SUPPRESSED_WHY: ReleaseWhy = {
   note: "Paperclip suppressed its own disposition repair run before dispatch; it did nothing.",
   evidence: "The run ended with legacy_disposition_repair_suppressed: Paperclip cancels it before the adapter starts, so no action ran.",
@@ -155,22 +176,29 @@ export class PaperclipError extends Error {
 export class Paperclip {
   private cache = new Map<string, { at: number; value: Promise<unknown>; done: boolean }>();
 
+  /** `kernelUrl`: the kernel's backplane; `key`: the board's key on it (gateway_board_key). */
   constructor(
-    private readonly baseUrl: string,
+    private readonly kernelUrl: string,
     readonly companyId: string,
     private readonly key: string,
     private readonly fetchImpl: typeof fetch = fetch,
   ) {}
 
+  /** A Paperclip path through the kernel: reads and the owner's writes, with the admin a write is for. */
+  private call(method: string, path: string, init: { body?: BodyInit; type?: string; timeoutMs?: number } = {}): Promise<Response> {
+    const account = actingAccount.getStore();
+    return this.fetchImpl(new URL(`/v1/cp/${method === "GET" ? "read" : "owner"}${path}`, this.kernelUrl), {
+      method,
+      headers: { authorization: `Bearer ${this.key}`, accept: "application/json", ...(init.type ? { "content-type": init.type } : {}), ...(account && method !== "GET" ? { "x-aidenhq-account": account } : {}) },
+      body: init.body,
+      signal: AbortSignal.timeout(init.timeoutMs ?? 20_000),
+    });
+  }
+
   async request<T>(method: string, path: string, body?: unknown): Promise<T> {
     // A write may change the open tasks: a read that starts after it never shares one already on its way.
     if (method !== "GET") this.cache.delete("open");
-    const res = await this.fetchImpl(new URL(path, this.baseUrl), {
-      method,
-      headers: { authorization: `Bearer ${this.key}`, accept: "application/json", ...(body ? { "content-type": "application/json" } : {}) },
-      body: body ? JSON.stringify(body) : undefined,
-      signal: AbortSignal.timeout(20_000),
-    });
+    const res = await this.call(method, path, body ? { body: JSON.stringify(body), type: "application/json" } : {});
     const text = await res.text();
     if (!res.ok) throw new PaperclipError(`Paperclip ${method} ${path.split("?")[0]} → ${res.status}: ${errorMessage(text)}`, res.status);
     return (text ? JSON.parse(text) : {}) as T;
@@ -193,13 +221,6 @@ export class Paperclip {
     );
     this.cache.set(key, entry);
     return entry.value as Promise<T>;
-  }
-
-  /** The agent a credential (run JWT or agent key) belongs to; the board uses it to know who is calling. */
-  async agentMe(agentKey: string): Promise<Agent> {
-    const res = await this.fetchImpl(new URL("/api/agents/me", this.baseUrl), { headers: { authorization: `Bearer ${agentKey}`, accept: "application/json" }, signal: AbortSignal.timeout(20_000) });
-    if (!res.ok) throw new PaperclipError(`Paperclip GET /api/agents/me → ${res.status}`, res.status);
-    return (await res.json()) as Agent;
   }
 
   me(): Promise<string> {
@@ -270,9 +291,38 @@ export class Paperclip {
     return this.request("POST", `/api/agents/${encodeURIComponent(id)}/pause`, {});
   }
 
+  /** Clears an agent's `error` status (Paperclip sets it when a run fails with a configuration error). */
+  clearAgentError(id: string): Promise<unknown> {
+    return this.request("POST", `/api/agents/${encodeURIComponent(id)}/clear-error`, {});
+  }
+
   resumeAgent(id: string): Promise<unknown> {
     this.cache.clear();
     return this.request("POST", `/api/agents/${encodeURIComponent(id)}/resume`, {});
+  }
+
+  /** The company's approvals in one status (`pending` for the card mirrors). */
+  approvals(status = "pending"): Promise<PaperclipApproval[]> {
+    return this.request<PaperclipApproval[]>("GET", `/api/companies/${this.companyId}/approvals?status=${encodeURIComponent(status)}`);
+  }
+
+  /** An approval linked to a task: the mirror of an open kernel card (mirror.ts). */
+  createApproval(body: { type: string; issueIds: string[]; requestedByAgentId?: string; payload: { [k: string]: unknown } }): Promise<PaperclipApproval> {
+    return this.request<PaperclipApproval>("POST", `/api/companies/${this.companyId}/approvals`, body);
+  }
+
+  /**
+   * Retires a card mirror without waking anyone. Paperclip's reject route wakes the assignee of every linked issue whose
+   * review path it finds lost, so a mirror that is a task's last review path would wake that task as it goes: the mirror
+   * must not be a wake source of its own. Unlinking first leaves nothing for that wake to name, and the reject then
+   * resolves the approval itself, so it stops counting as a pending wait and leaves no orphan in the company's list,
+   * without touching the kernel record it stands for. Either half may find the mirror already gone: that is not an error.
+   */
+  async retireApproval(id: string, task: string, reason: string): Promise<void> {
+    await this.request("DELETE", `/api/issues/${encodeURIComponent(task)}/approvals/${encodeURIComponent(id)}`).catch((err) => {
+      if (!(err instanceof PaperclipError && err.status === 404)) throw err;
+    });
+    await this.request("POST", `/api/approvals/${encodeURIComponent(id)}/reject`, { decisionNote: reason });
   }
 
   cancelRun(runId: string): Promise<unknown> {
@@ -374,9 +424,10 @@ export class Paperclip {
     return this.request<Issue>("GET", `/api/issues/${encodeURIComponent(id)}`);
   }
 
+  /** A task's newest 500 comments (Paperclip's most per page), oldest first: the latest word is always in it. */
   async comments(id: string): Promise<Comment[]> {
-    const list = await this.request<Comment[]>("GET", `/api/issues/${encodeURIComponent(id)}/comments?order=asc&limit=500`);
-    return list.filter((c) => !c.deletedAt);
+    const list = await this.request<Comment[]>("GET", `/api/issues/${encodeURIComponent(id)}/comments?order=desc&limit=500`);
+    return list.filter((c) => !c.deletedAt).sort((a, b) => (a.createdAt ?? "").localeCompare(b.createdAt ?? ""));
   }
 
   /** One page of a task's comments (Paperclip's most: 500): oldest first after the comment `after`, or the newest first. */
@@ -393,9 +444,9 @@ export class Paperclip {
     return this.request<Comment>("POST", `/api/issues/${encodeURIComponent(id)}/comments`, { body });
   }
 
-  /** Wakes an agent with no task attached (a task-scoped wake goes through that task's execution hold). */
-  wakeAgent(agentId: string, reason: string, idempotencyKey: string): Promise<unknown> {
-    return this.request("POST", `/api/agents/${encodeURIComponent(agentId)}/wakeup`, { source: "on_demand", triggerDetail: "manual", reason, idempotencyKey });
+  /** Wakes an agent with no task attached (a task-scoped wake goes through that task's execution hold), or on `issueId`. */
+  wakeAgent(agentId: string, reason: string, idempotencyKey: string, issueId?: string): Promise<unknown> {
+    return this.request("POST", `/api/agents/${encodeURIComponent(agentId)}/wakeup`, { source: "on_demand", triggerDetail: "manual", reason, idempotencyKey, ...(issueId ? { issueId } : {}) });
   }
 
   createIssue(body: Record<string, unknown>): Promise<Issue> {
@@ -409,23 +460,14 @@ export class Paperclip {
   async addAttachment(issueId: string, name: string, type: string, data: Buffer): Promise<Attachment> {
     const form = new FormData();
     form.append("file", new Blob([new Uint8Array(data)], { type }), name);
-    const path = `/api/companies/${this.companyId}/issues/${encodeURIComponent(issueId)}/attachments`;
-    const res = await this.fetchImpl(new URL(path, this.baseUrl), {
-      method: "POST",
-      headers: { authorization: `Bearer ${this.key}`, accept: "application/json" },
-      body: form,
-      signal: AbortSignal.timeout(60_000),
-    });
+    const res = await this.call("POST", `/api/companies/${this.companyId}/issues/${encodeURIComponent(issueId)}/attachments`, { body: form, timeoutMs: 60_000 });
     const text = await res.text();
     if (!res.ok) throw new PaperclipError(`Paperclip POST attachment → ${res.status}: ${errorMessage(text)}`, res.status);
     return JSON.parse(text) as Attachment;
   }
 
   async attachmentContent(id: string): Promise<Buffer> {
-    const res = await this.fetchImpl(new URL(`/api/attachments/${encodeURIComponent(id)}/content`, this.baseUrl), {
-      headers: { authorization: `Bearer ${this.key}` },
-      signal: AbortSignal.timeout(60_000),
-    });
+    const res = await this.call("GET", `/api/attachments/${encodeURIComponent(id)}/content`, { timeoutMs: 60_000 });
     if (!res.ok) throw new PaperclipError(`Paperclip GET attachment → ${res.status}`, res.status);
     return Buffer.from(await res.arrayBuffer());
   }

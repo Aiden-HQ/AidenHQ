@@ -1,7 +1,7 @@
 // End to end (see flow-harness.mjs): one runner, one conversation on the task, several things the owner does in it.
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { flow, git } from "./flow-harness.mjs";
 import { verifyToken } from "../../../kernel/src/gateway/token.ts";
@@ -140,27 +140,6 @@ describe("flow-approvals", () => {
   // End to end (wave 3, item 4): a change that already landed on main by another route gets evidence, not a second card.
   describe("the duplicate-card guard, end to end", () => {
     const { waitFor, partComments, toolRuns, step, turn, githubTip } = t;
-
-    it("a push whose files are already identical on main files no card and says so once on the task", async () => {
-      // The agent's branch first; then the same file lands on main by another route.
-      step("third");
-      await turn("Add the third change.");
-      const other = join(t.dir, "by-hand");
-      git(t.dir, "clone", "-q", join(t.dir, "github/acme/app.git"), other);
-      writeFileSync(join(other, "third.txt"), "third\n");
-      git(other, "add", "third.txt");
-      git(other, "commit", "-qm", "feat: third, landed by hand");
-      git(other, "push", "-q", "origin", "HEAD:main");
-      const cards = t.paperclip.approvals.size;
-      step("none\naidenhq push acme/app feat/third");
-      await turn("Go ahead and push it.");
-      const call = toolRuns().at(-1);
-      assert.equal(call.code, 0, call.out);
-      assert.match(call.out, /Already satisfied on main.*already_applied.*third\.txt/);
-      assert.equal(t.paperclip.approvals.size, cards, "no card filed");
-      assert.throws(() => githubTip("feat/third"), "nothing pushed");
-      await waitFor("the evidence comment", () => partComments().some((c) => /Already satisfied on main.*already_applied/.test(c)));
-    });
 
     it("never errors or asks for a repository along the way", () => t.noErrors());
   });

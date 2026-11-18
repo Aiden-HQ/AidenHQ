@@ -75,6 +75,21 @@ covers them.
 It is idempotent. The Platform Engineer runs it for you after you approve a change.
 
 - **Upgrade the product:** merge to product `main`, bump `product: <sha>` in the instance repo, commit and push, apply.
+- **Release updates** (an instance with `release:` from Aiden-HQ/aidenhq-distro; [design](design/release-updates.md)): apply
+  installs `aidenhq-update.timer` (hourly) while the instance follows a release, and removes it otherwise. `ops/update.sh`
+  takes the apply lock on fd 9 (waiting up to 15 minutes for an apply in progress) and runs `node kernel/src/updates.ts run`:
+  it finishes an install a dead run left (`installing` in `data/updates/state.json`: `ops/apply-config.sh --recover`, then
+  `data/applied-product` says installed or failed), then checks the release tags newer than the one followed (newest that
+  verifies: shas on each official repo's main, no downgrade, the published asset's `tested` stamp from a successful
+  `release.yml` run on the tag's commit) and installs at 02:00-05:00 in `settings.timezone` with `auto_update` on (unset =
+  on) or after Update now (the kernel's `/updates` page): one instance commit (`product:`, `release:`, the `aidenhq`
+  marketplace sha), then `ops/apply-config.sh` on the instance's main with the lock handed over (output in
+  `data/updates/apply.log`). A failed apply (apply's own auto-revert puts the last known good back) gets its commit
+  reverted on main and the release marked failed: the night skips it, Update now retries. The board reads
+  `~/.local/state/aidenhq/board/updates.json`; the kernel tells the owner each event once. By hand:
+  `systemctl --user start aidenhq-update.service`, `journalctl --user -u aidenhq-update`. The installer run again also moves
+  the pin (`node kernel/src/updates.ts pin <release> <distro sha>`, from `ops/setup.sh`, which reverts it if its apply
+  fails) and refuses an older release.
 - **Roll back:** revert the instance commit (or set `product:` to the earlier sha), push, apply again. That rolls back
   code, not module data. `ops/rollback.sh <n> [--plan]` goes back to apply generation `n`
   (`~/.local/state/aidenhq/generations.jsonl`) with the data it needs (above); `--plan` prints the shas and each module
@@ -217,8 +232,9 @@ node's serve config (`data/apps-edge/serve/serve.json`) from the registry and jo
 own network, where the app's port-publishing service answers as `edge-<app>` (an alias only the platform sets; an
 app deployed before it is served after its next deploy). The node joins once with the vault's
 `tailscale_apps_authkey` (a reusable, tagged, pre-authorized key; compile creates the file empty), then keeps its
-identity in `data/apps-edge/state`. Until the key is there it waits, unjoined (`docker compose logs apps-edge`);
-after adding it, `docker compose up -d --force-recreate apps-edge` (the key is read only at start). Set
+identity in `data/apps-edge/state`. `apps-edge` runs only when `config/apps-node` is `tailnet` (the key is in the vault
+and exposure is `tailscale`): otherwise compile takes it out of the stack and the apply removes its container. After adding
+the key, apply again. Set
 `APPS_URL_BASE` in `.env` to its address. The node is the apps' door only in `tailscale` exposure with that key and
 `APPS_URL_BASE` set (compile writes `config/apps-node`: `tailnet` or `none`): only then may an exposed, unshared app take
 token-less callers as anonymous (`AIDENHQ_ANONYMOUS`, set at deploy, so redeploy apps after it changes). Without it every

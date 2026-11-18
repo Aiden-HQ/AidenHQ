@@ -3,7 +3,7 @@
 import type { Assignee } from "./board.js";
 import type { Issue } from "./paperclip.js";
 
-export type CrewState = "needs" | "failed" | "proposed" | "working" | "queued" | "done";
+export type CrewState = "needs" | "failed" | "working" | "queued" | "done";
 
 /** One agent on a task: its state, and the issues it works in (one, or a fan-out's many). */
 export interface CrewMember {
@@ -16,7 +16,7 @@ export interface CrewMember {
 }
 
 /** What needs the user most, first: an agent waiting on them, then one that's stuck, then one to approve. */
-const URGENCY: CrewState[] = ["needs", "failed", "proposed", "working", "queued", "done"];
+const URGENCY: CrewState[] = ["needs", "failed", "working", "queued", "done"];
 export const mostUrgent = (states: CrewState[]): CrewState => URGENCY.find((s) => states.includes(s)) ?? "done";
 
 /** Runner job results that mean the agent got stuck (the runner's `jobs.status`). */
@@ -88,8 +88,6 @@ export function issueState(i: Issue, agent: Assignee, input: CrewInput): CrewSta
   const w = input.working.get(i.identifier);
   if (w) return w.queued ? "queued" : "working";
   const closed = i.status === "done" || i.status === "cancelled";
-  // An Engineer task the Researcher made waits for the user's go-ahead: the runner starts it on approval.
-  if (!closed && i.status === "todo" && agent.kind === "engineer" && i.createdByAgentId && !i.createdByUserId) return "proposed";
   const job = input.jobs.get(i.identifier);
   if (!closed && job && STUCK.has(job)) return "failed";
   // Something new to read is the user's turn, even on a part that's closed.

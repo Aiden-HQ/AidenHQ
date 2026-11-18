@@ -62,7 +62,7 @@ test("a per-module pin compiles from its own commit; official only when that com
   g("add", "."), g("commit", "-qm", "a");
   const onMain = g("rev-parse", "HEAD");
   g("checkout", "-qb", "pr");
-  writeFileSync(join(repo, "a", "agents", "x", "AGENTS.md"), "---\nname: X\n---\nFrom a PR.\n");
+  writeFileSync(join(repo, "a", "agents", "x", "AGENTS.md"), "---\nname: X\ndescription: X does one thing.\n---\nFrom a PR.\n");
   g("commit", "-qam", "pr");
   const offMain = g("rev-parse", "HEAD");
   const fetch = { cacheDir: mkdtempSync(join(tmpdir(), "cache-")) };
@@ -77,11 +77,4 @@ test("a per-module pin compiles from its own commit; official only when that com
   const pr = at(offMain);
   assert.deepEqual([pr.catalog.find((m) => m.name === "a").tier, pr.catalog.find((m) => m.name === "a").pinned], ["declared", offMain]);
   assert.match(pr.paperclip.agents.x.instructions, /trees/);
-});
-
-test("a routine default is what compile would give it without overrides: ${settings.*} substituted", () => {
-  const { paperclip, catalog } = compile(mods, instance());
-  const a = catalog.find((m) => m.name === "a");
-  assert.deepEqual(a.defaults.routines.r.schedules, paperclip.routines.r.schedules);
-  assert.equal(a.defaults.routines.r.schedules[0].timezone, "Europe/London");
 });

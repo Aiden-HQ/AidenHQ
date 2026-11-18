@@ -1,6 +1,8 @@
 # Engineers you talk to
 
-The user talks to an Engineer the way they talk to Claude Code: in their own words, across as many comments as it takes.
+The user talks to an Engineer the way they talk to a coding agent: in their own words, across as many comments as it takes.
+(Since 2026-11-18 every turn runs Codex in the Engineer's agent computer: a comment mid-run waits for the next turn, as
+described below for Codex; the Claude Code and opencode engines are gone.)
 Every comment on a task goes to the Engineer with the whole task in context. There is no classifier standing between
 the user and the agent. The runner's GitHub actions are the Engineer's tools, bounded by code.
 
@@ -104,7 +106,7 @@ message; a timeout or crash says so with the log tail. The Engineer replies in i
 branch and PR footer when something changed. An empty final message ("thanks" needs no answer) posts nothing, and an
 empty task starts no turn until the first comment. Uncommitted changes are left alone and shown in the state table.
 
-Not part of this model: the go-ahead on a parent's sub-tasks, recurring runs, review tasks and the board's crew view. The
+Not part of this model: recurring runs, review tasks and the board's crew view. The
 Researcher agent still gathers its own context rather than reading the thread this way.
 
 ## Cost

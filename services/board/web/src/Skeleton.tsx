@@ -1,4 +1,4 @@
-// Loading placeholders shaped like the content they stand for, built from the same layout classes (.fleet, .app-grid,
+// Loading placeholders shaped like the content they stand for, built from the same layout classes (.fleet,
 // .activity-day, .approval-card), so nothing shifts when the data lands. A subtle sheen, off with reduced motion.
 import { Fragment, type CSSProperties } from "react";
 
@@ -34,7 +34,7 @@ export function FleetRowSkeleton({ i = 0, cells = true }: { i?: number; cells?: 
           </div>
         </div>
         <div className="fleet-status">
-          <Bone className="pill-sk" />
+          <Bone className="tag-sk" />
         </div>
         <div className="fleet-now">{cells && <Bone w={widths[(i + 1) % widths.length]} />}</div>
         <div className="fleet-next">{cells && <Bone w="55%" />}</div>
@@ -67,55 +67,6 @@ export function FleetSkeleton({ groups = [4, 3] }: { groups?: number[] }) {
             <FleetRowSkeleton key={n} i={n++} />
           ))}
         </div>
-      ))}
-    </div>
-  );
-}
-
-/** Cards in the apps / modules grid. */
-export function CardGridSkeleton({ count = 4 }: { count?: number }) {
-  return (
-    <div className="app-grid" role="status" aria-label="Loading" aria-busy>
-      {Array.from({ length: count }, (_, i) => (
-        <article key={i} className="app-card" aria-hidden>
-          <header className="app-card-head">
-            <Bone w={widths[i % widths.length]} h={19} />
-            <Bone className="pill-sk" />
-          </header>
-          <dl className="panel-facts">
-            {["32%", "54%", "46%"].map((w, r) => (
-              <Fragment key={r}>
-                <dt>
-                  <Bone w={56} />
-                </dt>
-                <dd>
-                  <Bone w={w} />
-                </dd>
-              </Fragment>
-            ))}
-          </dl>
-        </article>
-      ))}
-    </div>
-  );
-}
-
-/** Days of the Activity page. */
-export function DaysSkeleton({ days = 2, items = 4 }: { days?: number; items?: number }) {
-  return (
-    <div className="sk-stack" style={{ gap: 18 }} role="status" aria-label="Loading activity" aria-busy>
-      {Array.from({ length: days }, (_, d) => (
-        <section key={d} className="activity-day" aria-hidden>
-          <Bone w={160} h={13} />
-          <ul>
-            {Array.from({ length: items }, (_, i) => (
-              <li key={i}>
-                <Bone w={38} />
-                <Bone w={widths[(d + i) % widths.length]} />
-              </li>
-            ))}
-          </ul>
-        </section>
       ))}
     </div>
   );

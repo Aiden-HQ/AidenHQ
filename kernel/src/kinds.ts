@@ -31,7 +31,7 @@ export const RUNNER_ARGS: Record<string, Schema> = {
   create_repo: obj({ repo: { type: "string", pattern: "^[\\w.-]+\\/[a-z][a-z0-9-]{0,62}$" } }, ["repo"]), // never `.git`: the name is lower-case letters, digits, dashes
 };
 
-// authority: the module changes the apply brings, one line each (kernel/src/loader/authority.ts), shown on the card;
+// authority: the module changes the apply brings, one line each (scripts/compiler/authority.ts), shown on the card;
 // ownerRequired: one of them adds module authority, so after the reviewer only the owner approves it (in the digest, as args).
 const APPLY_ARGS = obj({
   repo: REPO, branch: REF, sha: SHA, files: { type: "array", minItems: 1, maxItems: 200, items: { type: "string", maxLength: 300 } },
@@ -67,7 +67,7 @@ export function raiseCapCard(a: { scope: string; agentId: string; subject: strin
  * fleet's own repos live in: one per enabled code host (`agentsOrgs`: the GitHub agents org, and `local` with codehost-local);
  * `agentsOrg` alone is the GitHub-only shape.
  */
-export type Repos = { product?: string; instance?: string; agentsOrg?: string; agentsOrgs?: string[] };
+export type Repos = { product?: string; instance?: string; modules?: string; agentsOrg?: string; agentsOrgs?: string[] };
 /** The org codehost-local owns: a change request there is `codehost:local/<name>/change/<n>`. */
 export const LOCAL_ORG = "local";
 /**
@@ -117,11 +117,18 @@ export function runnerFacts(kind: string, args: any, repos: Repos): { floor: 0 |
   return { floor, owner: unknown, ownerRequired: action === "apply" && args?.ownerRequired === true, ...(target ? { target } : {}), content: p === undefined ? null : p === null ? "?" : p };
 }
 
+/**
+ * The kernel's roles a module may request (module.yaml roles.requests): each opens one backplane route or, for kernel.apply,
+ * filing that kernel kind. No module declares a kernel.* role or a role named after a write kind (compile refuses both).
+ */
+export const KERNEL_ROLES = ["kernel.apply", "kernel.checks", "kernel.cp-read", "kernel.grader", "kernel.jobs", "kernel.lane", "kernel.notify", "kernel.owner-notice", "kernel.tasks", "kernel.wake", "kernel.work-read"];
+
 /** The kernel's kinds, beside the modules' compiled ones (config/kernel/writes.json). */
 export const KERNEL_KINDS: Record<string, Kind> = {
   // An apply is always read by the reviewer first (floor 1); a push, a PR and a merge by what they touch (runnerFacts).
   // A new repository is Tier 0 in any org the App is installed on (owner, 2026-11-18): where repos live is the code host's, not the kernel's.
   ...Object.fromEntries(Object.entries(RUNNER_ARGS).map(([k, args]) => [`runner.${k}`, { module: "runner", floor: 0, tools: [], args, runner: true } as Kind])),
-  "kernel.apply": { module: "kernel", floor: 1, tools: [], args: APPLY_ARGS, runner: true },
+  // kernel.apply: planned by the kernel (apply-tier.ts) once the switch drops `runner`; its files raise it by the path inventory.
+  "kernel.apply": { module: "kernel", floor: 1, paths: true, tools: [], args: APPLY_ARGS, runner: true },
   "kernel.raise_cap": { module: "kernel", floor: 2, tools: [], args: RAISE_ARGS },
 };

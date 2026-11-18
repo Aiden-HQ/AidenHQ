@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState, type ReactNode } from "react"
 import { SignInRequired, api } from "./api";
 import { duration } from "./FeatureCost";
 import type { FeatureCost, CostLedger, CostRow, CostTop, CostWindow, Costs, LedgerMetrics, LedgerPeriod } from "./types";
+import { Tag } from "./ui";
 
 // The Costs tab: billed spend from the model gateway's ledger (src/cost-ledger.ts), aggregated on the board.
 //  1. Overview: today / 7 / 30 days against the period before, the OpenRouter key's limit, agents nearest their day cap.
@@ -491,6 +492,7 @@ function ModelTable({ d, focus, onOpen }: { d: CostLedger; focus: string | null;
     { key: "hit", label: "Cache hit", value: (r) => cacheHit(r) ?? -1, render: (r) => (cacheHit(r) == null ? "—" : pct(cacheHit(r)!)), title: "Cached input over all input" },
     { key: "ms", label: "Avg latency", cls: "ct-wide", value: (r) => r.ms ?? -1, render: (r) => secs(r.ms), title: "Mean time per successful call (calls that recorded one)" },
     { key: "errors", label: "Errors", value: (r) => r.errors, render: (r) => (r.errors ? <span className="ct-bad">{r.errors}</span> : "0"), title: "Calls that ended in a refusal or an upstream failure" },
+    { key: "interrupted", label: "Interrupted", value: (r) => r.interrupted, render: (r) => compact(r.interrupted), title: "Calls a kernel restart cut off; their spend is what OpenRouter billed for them" },
   ];
   const { head, sorted } = useSort(cols, "usd");
   return (
@@ -981,7 +983,7 @@ function Reconcile({ onSignIn }: { onSignIn: () => void }) {
               <div key={`${r.kind}:${r.name}`} className="ct-row" role="row">
                 <span role="cell" className="ct-name ct-stack">
                   <span className="ct-strong">
-                    {r.name} {r.kind === "system" && <span className="pill">System</span>}
+                    {r.name} {r.kind === "system" && <Tag>System</Tag>}
                   </span>
                   <span className="ct-sub">{r.models.map((m) => short(m.model)).join(", ")}</span>
                 </span>

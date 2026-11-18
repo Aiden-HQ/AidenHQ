@@ -72,7 +72,7 @@ Nothing changes in `services/computer`.
 
 ## Pool and memory
 
-Launcher pool (2026-11-13, with the App Engineer): `AIDENHQ_COMPUTERS_MAX` 7 (the Paperclip computer agents' 5 plus the App Engineer's 2), 6g (2026-11-15: a Vite test suite plus Chrome got a 2g box OOM-killed, and gVisor counts in-box tmpfs and `/dev/shm`, 1g here, against the limit; set per host with `AIDENHQ_COMPUTERS_MEMORY`) and 2 CPUs per Paperclip box, `AIDENHQ_COMPUTERS_JOB_MEMORY` 3g per runner job box, 10-minute idle reap. Limits are ceilings, not reservations: on the 15 GB VM with no swap, 7 boxes at their limits would not all fit, but typical boxes use 0.6-1 GB.
+Launcher pool: `settings.computers_max`, 12 by default (owner, 2026-11-18; compile writes it to `config/computers.json` `max`, which the launcher reads for its pool and the kernel's job admission for its limit, so the two never differ), 6g (2026-11-15: a Vite test suite plus Chrome got a 2g box OOM-killed, and gVisor counts in-box tmpfs and `/dev/shm`, 1g here, against the limit; set per host with `AIDENHQ_COMPUTERS_MEMORY`) and 2 CPUs per Paperclip box, `AIDENHQ_COMPUTERS_JOB_MEMORY` 3g per runner job box, 10-minute idle reap. Limits are ceilings, not reservations: boxes at their limits would not all fit in host memory, but typical boxes use 0.6-1 GB.
 
 - **Sizing rule.** Max boxes must be at least the sum of the box agents' `max_parallel` (today 1 + 2 + 2 = 5).
   Max × the per-box memory limit must fit in RAM minus Paperclip and the services, with no swap.

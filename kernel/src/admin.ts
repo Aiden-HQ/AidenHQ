@@ -19,17 +19,19 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import type { AdminSession, Step } from "./accounts.ts";
 import type { Api } from "./channels.ts";
 import { secretFits } from "./module-secrets.ts";
+import type { State as UpdateState } from "./updates.ts";
 
 type Card = Record<string, any>;
 type Deps = {
   accounts: {
     sessionOf: (req: IncomingMessage) => Promise<AdminSession | null>; step: (req: IncomingMessage, sub: string, body: Record<string, unknown>) => Promise<Step>; secret: string;
     mintUiCode: (who: AdminSession, module: string, origin: string, state: string) => string;
+    mintDoorCode?: (who: AdminSession, origin: string, state: string) => string;
     setupOpen: (token: string) => boolean; claimSetup: (token: string, input: { email: string; name: string; password: string }) => Promise<{ id: string }>;
   };
   /** First-run setup's vault side: the owner email settings fix, the recovery key shown once, and secret writes. */
   firstRun?: { ownerEmail: () => string | undefined; recoveryKey: () => string; fields: () => SetupField[]; has: (secret: string) => boolean; save: (secret: string, value: string) => void; forgetRecoveryKey: () => void };
-  cards: { ownerCards: () => Promise<{ live: Card[]; finished: Card[] }>; decideCard: (id: string, digest: string, decision: "approve" | "reject", by: string, via: string) => Promise<{ identifier: string; sentence: string; state: string }> };
+  cards: { ownerCards: () => Promise<{ live: Card[]; finished: Card[] }>; decideCard: (id: string, digest: string, decision: "approve" | "reject", by: string, via: string, reason?: string) => Promise<{ identifier: string; sentence: string; state: string }> };
   ownerMessage: (b: { text?: unknown; task?: unknown }) => Promise<{ task: { identifier: string } }>;
   /** The control plane as the owner (a confirmed status change). */
   owner: Api;
@@ -44,9 +46,13 @@ type Deps = {
   /** Module UI origins a session may be handed to (/auth/handoff), each with its module: the board's origins. */
   uiOrigins?: () => Record<string, string>;
   /** The model step: OpenRouter's PKCE start and exchange, the 1-token check, and the key the vault holds (for Retry). */
-  model?: { start: (callback: string, state: string) => { url: string; verifier: string }; exchange: (code: string, verifier: string) => Promise<string>; check: (key: string) => Promise<"ok" | "no_credit" | "error">; saved: () => string; ready: () => boolean; checked: (key: string, ok: boolean) => void; verifyAgents?: () => void };
+  model?: { start: (callback: string, state: string) => { url: string; verifier: string }; exchange: (code: string, verifier: string) => Promise<string>; check: (key: string) => Promise<"ok" | "no_credit" | "error">; saved: () => string; /** The install-wide daily cap (settings.spend_day_usd), if set. */ dayCap?: () => number | undefined; ready: () => boolean; checked: (key: string, ok: boolean) => void; verifyAgents?: () => void };
+  /** The app doors' origins as one CSP source (`http://*.localhost:3130`), when there is a door: sign-in ends on a door host. */
+  doorSource?: () => string | undefined;
   /** The board's front door: /recovery-key and the model step send the owner on to its welcome. */
   boardUrl?: () => string | undefined;
+  /** Release updates (updates.ts): what the updater recorded, and Update now (an admin's tap) for the release it shows. */
+  updates?: { view: () => UpdateState; requestNow: (release: string, by: string) => string };
   log?: (msg: string, f?: Record<string, unknown>) => void;
 };
 
@@ -81,6 +87,8 @@ export const ROUTES = [
   { method: "POST", path: "/owner/message", auth: "admin+csrf" },
   { method: "GET", path: "/owner/confirm", auth: "admin" },
   { method: "POST", path: "/owner/confirm", auth: "admin+csrf" },
+  { method: "GET", path: "/updates", auth: "admin" },
+  { method: "POST", path: "/updates", auth: "admin+csrf" },
 ] as const;
 const compiled = ROUTES.map((r) => ({ ...r, re: new RegExp(`^${r.path.replace(":id", "(k-[0-9a-f]{16})").replace(":state", "([\\w-]{22})")}$`) }));
 const STATUSES = ["backlog", "todo", "in_progress", "in_review", "blocked", "done", "cancelled"];
@@ -111,6 +119,20 @@ a.b{display:inline-block;text-decoration:none}button.b,a.b{font:inherit;font-wei
 .pick{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:12px;align-items:start}.pick .card{margin:0}.pick h2{margin:0 0 4px}
 @media(max-width:600px){button.b{min-height:44px}}`;
 
+/** The /updates page: the release this server follows, the one available with what changed, the last install, and Update now. */
+function updatesPage(u: UpdateState, form: (inner: string) => string): string {
+  const when = (t?: string | null) => (t ? new Date(t).toISOString().replace("T", " ").slice(0, 16) + " UTC" : "never");
+  if (!u.current) return `<h1>Updates</h1><p>This server doesn't follow a release, so it never updates itself: its product is pinned by hand (docs/setup.md, Upgrading the product).</p>`;
+  const a = u.available;
+  const last = u.last ? `<div class="card"><b>Last update:</b> ${esc(u.last.release)} ${u.last.outcome === "installed" ? `<span class="ok">installed</span>` : `<span class="err">failed</span>: ${esc(u.last.why ?? "")}`} · ${esc(when(u.last.at))} · by ${esc(u.last.by)}</div>` : "";
+  const avail = a
+    ? `<div class="card"><h2>${esc(a.name)} is available</h2>${a.notes.length ? `<ul>${a.notes.map((n) => `<li>${esc(n)}</li>`).join("")}</ul>` : ""}<p class="muted">Every change since ${esc(a.from.name)}: <a href="${esc(a.compare)}" target="_blank" rel="noopener">${esc(a.compare)}</a></p>
+<p class="muted">Verified against the official release: its commits, its tested stamp and its image digests. It installs through the normal apply, and a failed health check puts this server back on ${esc(a.from.name)}.</p>
+${form(`<input type="hidden" name="release" value="${esc(a.name)}"><button class="b">Update now</button>`)}</div>`
+    : `<p>${u.error ? `<span class="err">${esc(u.error)}</span>` : "Nothing newer is out."}</p>`;
+  return `<h1>Updates</h1><p>This server runs <b>${esc(u.current.name)}</b>. Auto-updates are <b>${u.auto ? "on" : "off"}</b>${u.auto ? `: a newer release installs between 02:00 and 05:00 (${esc(u.timezone ?? "UTC")})` : ": you're told, and install with Update now"}. Change it in the board's Settings (auto_update). Last checked ${esc(when(u.checkedAt))}.</p>${avail}${last}`;
+}
+
 export function createAdmin(d: Deps) {
   const log = d.log ?? (() => {});
   const csrf = (s: AdminSession) => createHmac("sha256", d.accounts.secret).update(`csrf:${s.session.id}`).digest("hex");
@@ -125,19 +147,20 @@ export function createAdmin(d: Deps) {
       // same-origin, not no-referrer: under no-referrer a browser posts these forms with Origin: null, which the check refuses.
       "referrer-policy": "same-origin",
       ...(frame ? {} : { "x-frame-options": "DENY" }),
-      // A form that succeeds redirects to the board's welcome: browsers apply form-action to that redirect too.
-      "content-security-policy": `default-src 'none'; style-src 'unsafe-inline'; form-action 'self'${boardOrigin()}; base-uri 'none'; frame-ancestors ${frame?.length ? frame.join(" ") : "'none'"}`,
+      // A form that succeeds redirects to the board's welcome, or (sign-in from an app door) through /auth/handoff to that
+      // door: browsers apply form-action to the whole redirect chain.
+      "content-security-policy": `default-src 'none'; style-src 'unsafe-inline'; form-action 'self'${boardOrigin()}${d.doorSource?.() ? ` ${d.doorSource()}` : ""}; base-uri 'none'; frame-ancestors ${frame?.length ? frame.join(" ") : "'none'"}`,
       ...extra,
     }).end(html);
   }
   const doc = (title: string, body: string, s?: AdminSession | null, head = "") =>
     `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">${head}<title>${esc(title)} · AidenHQ</title><style>${CSS}</style></head><body>` +
-    (s?.ready ? `<header><b>AidenHQ</b><a href="/approvals">Approvals</a><a href="/owner/message">Message</a><a href="/auth/password">Password</a><form method="post" action="/auth/sign-out"><button>Sign out</button></form></header>` : "") +
+    (s?.ready ? `<header><b>AidenHQ</b><a href="/approvals">Approvals</a><a href="/owner/message">Message</a>${d.updates?.view().current ? `<a href="/updates">Updates</a>` : ""}<a href="/auth/password">Password</a><form method="post" action="/auth/sign-out"><button>Sign out</button></form></header>` : "") +
     `<main>${body}</main></body></html>`;
   const redirect = (res: ServerResponse, to: string, cookies: string[] = []) =>
     void res.writeHead(303, { location: to, "cache-control": "no-store", ...(cookies.length ? { "set-cookie": cookies } : {}) }).end();
   const form = (action: string, inner: string, s?: AdminSession | null) => `<form method="post" action="${esc(action)}">${s ? `<input type="hidden" name="csrf" value="${csrf(s)}">` : ""}${inner}</form>`;
-  const safeNext = (n: string | null) => (n && (/^\/(approvals|owner|setup\/model)[\w/?=&.-]*$/.test(n) || /^\/auth\/handoff\?[\w=&.%:-]*$/.test(n)) ? n : "/approvals");
+  const safeNext = (n: string | null) => (n && (/^\/(approvals|owner|recovery-key|setup\/model)[\w/?=&.-]*$/.test(n) || /^\/auth\/handoff\?[\w=&.%:-]*$/.test(n)) ? n : "/approvals");
 
   async function body(req: IncomingMessage): Promise<URLSearchParams> {
     const chunks: Buffer[] = [];
@@ -184,7 +207,10 @@ export function createAdmin(d: Deps) {
       connect = `<div class="card"><h2>Connect your account</h2><p class="muted">Sign in to OpenRouter (or make an account) and approve; you come straight back here.</p><a class="b" href="${esc(url)}">Connect OpenRouter</a></div>`;
     }
     const field = d.firstRun?.fields().find((f) => f.secret === MODEL_KEY);
-    const paste = `<div class="card"><h2>Use your API key</h2><p class="muted">Paste a key you have, or make one at <a href="https://openrouter.ai/settings/keys" target="_blank" rel="noopener">openrouter.ai/settings/keys</a>.</p>${form("/setup/model", `<input type="hidden" name="action" value="paste"><label>${esc(field?.label ?? "OpenRouter API key")}<input name="${MODEL_KEY}" type="password" autocomplete="off" maxlength="300" placeholder="sk-or-…" required></label><button class="b">Save</button>`, s)}</div>`;
+    // A pasted key keeps whatever limit it has; the install cap (a new install's) stops spend first.
+    const cap = d.model?.dayCap?.();
+    const capLine = cap ? `<p class="muted">This key's own limit applies; AidenHQ also stops at $${cap}/day (change it in Settings).</p>` : "";
+    const paste = `<div class="card"><h2>Use your API key</h2><p class="muted">Paste a key you have, or make one at <a href="https://openrouter.ai/settings/keys" target="_blank" rel="noopener">openrouter.ai/settings/keys</a>.</p>${form("/setup/model", `<input type="hidden" name="action" value="paste"><label>${esc(field?.label ?? "OpenRouter API key")}<input name="${MODEL_KEY}" type="password" autocomplete="off" maxlength="300" placeholder="sk-or-…" required></label><button class="b">Save</button>`, s)}${capLine}</div>`;
     const retry = credit ? `<div class="card"><p>Your OpenRouter account needs credit before agents can run.</p><p><a href="${CREDITS}" target="_blank" rel="noopener">Add credit in OpenRouter</a>, then retry.</p>${form("/setup/model", `<input type="hidden" name="action" value="retry"><button class="b">Retry</button>`, s)}</div>` : "";
     const has = d.model?.ready() && !credit ? `<p class="muted">A working key is already in the vault; saving or connecting replaces it. <a href="${esc(welcome())}">Continue</a></p>` : "";
     return doc("Connect a model", `<h1>Connect a model</h1><p>Your agents think with AI models on OpenRouter. The key goes into the vault, read only by the kernel's model gateway.</p>${msg}${retry}${has}${credit ? "" : `<div class="pick">${paste}${connect}</div>`}`, s);
@@ -210,7 +236,7 @@ export function createAdmin(d: Deps) {
     const head = `<div class="muted">${esc(a.identifier)} · ${esc(a.action ?? a.kind)} · Tier ${esc(a.tier)}${a.panel ? " · panel" : ""} · asked by ${esc(a.requestedBy)}</div><b>${esc(a.sentence)}</b>`;
     if (!full) return `<div class="card">${head}<div><a href="/approvals/${esc(a.id)}">Open</a></div></div>`;
     const rows = [["Changes", a.changes], ["Reads", a.reads], ["Cost", a.cost], ["Why", a.reason], ["AI reviewer", a.review]].filter(([, v]) => v).map(([k, v]) => `<div class="muted">${k}</div><pre>${esc(v)}</pre>`).join("");
-    const decide = (decision: string, label: string, cls: string) => form(`/approvals/${a.id}/decide`, `<input type="hidden" name="digest" value="${esc(a.digest)}"><input type="hidden" name="decision" value="${decision}"><button class="b ${cls}">${label}</button>`, s);
+    const decide = (decision: string, label: string, cls: string) => form(`/approvals/${a.id}/decide`, `<input type="hidden" name="digest" value="${esc(a.digest)}"><input type="hidden" name="decision" value="${decision}">${decision === "reject" ? `<input name="reason" maxlength="500" placeholder="Reason (optional)" aria-label="Reason">` : ""}<button class="b ${cls}">${label}</button>`, s);
     return `<div class="card">${head}${rows}<div class="muted">digest ${esc(String(a.digest).slice(0, 16))}…</div><div style="display:flex;gap:8px;margin-top:8px">${decide("approve", "Approve", "")}${decide("reject", "Reject", "r")}</div></div>`;
   }
 
@@ -321,6 +347,13 @@ export function createAdmin(d: Deps) {
         case "GET /auth/handoff": {
           const to = url.searchParams.get("to") ?? "", state = url.searchParams.get("state") ?? "";
           const module = Object.hasOwn(d.uiOrigins?.() ?? {}, to) ? d.uiOrigins!()[to]! : undefined;
+          // An app door (docs/design/app-doors.md): the gate's own handoff on that app host, which sets its host-only cookie.
+          if (!module && d.accounts.mintDoorCode) {
+            const code = d.accounts.mintDoorCode(s, to, state);
+            const next = url.searchParams.get("next") ?? "/";
+            log("session handed to an app door", { origin: to, by });
+            return redirect(res, `${to}/.auth/handoff?${new URLSearchParams({ code, state, next: next.length <= 2000 ? next : "/" })}`);
+          }
           if (!module) throw new Refusal(400, "that address isn't an installed module's");
           const code = d.accounts.mintUiCode(s, module, to, state);
           log("session handed to a module", { module, origin: to, by });
@@ -365,7 +398,7 @@ export function createAdmin(d: Deps) {
         }
         case "GET /": case "GET /approvals": {
           const { live, finished } = await d.cards.ownerCards();
-          const batch = live.length > 1 ? form("/approvals/batch", `${live.map((a) => `<label><input type="checkbox" name="item" value="${esc(`${a.id}:${a.digest}`)}" style="width:auto"> ${esc(a.identifier)}: ${esc(a.sentence)}</label>`).join("")}<div style="display:flex;gap:8px"><button class="b" name="decision" value="approve">Approve selected</button><button class="b r" name="decision" value="reject">Reject selected</button></div>`, s) : "";
+          const batch = live.length > 1 ? form("/approvals/batch", `${live.map((a) => `<label><input type="checkbox" name="item" value="${esc(`${a.id}:${a.digest}`)}" style="width:auto"> ${esc(a.identifier)}: ${esc(a.sentence)}</label>`).join("")}<div style="display:flex;gap:8px"><button class="b" name="decision" value="approve">Approve selected</button><input name="reason" maxlength="500" placeholder="Reason for reject (optional)" aria-label="Reason"><button class="b r" name="decision" value="reject">Reject selected</button></div>`, s) : "";
           const done = finished.slice(0, 20).map((a) => `<div class="card muted">${esc(a.identifier)} · ${esc(a.state)}${a.outcome ? ` · ${esc(a.outcome)}` : ""}: ${esc(a.sentence)}</div>`).join("");
           return send(res, 200, doc("Approvals", `<h1>Waiting for you (${live.length})</h1>${live.map((a) => cardHtml(a, s, false)).join("") || `<p class="muted">Nothing waits on you.</p>`}${batch ? `<h2>Several at once</h2><div class="card">${batch}</div>` : ""}<h2>Recent</h2>${done}`, s));
         }
@@ -379,7 +412,7 @@ export function createAdmin(d: Deps) {
         case "POST /approvals/:id/decide": {
           const decision = f.get("decision") === "approve" ? "approve" : f.get("decision") === "reject" ? "reject" : undefined;
           if (!decision) throw new Refusal(400, "approve or reject");
-          const r = await d.cards.decideCard(id, f.get("digest") ?? "", decision, by, "web");
+          const r = await d.cards.decideCard(id, f.get("digest") ?? "", decision, by, "web", f.get("reason") ?? "");
           log("web decision", { card: id, decision, by });
           return send(res, 200, doc("Decided", `<p class="ok">${decision === "approve" ? "Approved" : "Rejected"}: ${esc(r.sentence)} (${esc(r.identifier)}, now ${esc(r.state)})</p><a href="/approvals">Back to approvals</a>`, s));
         }
@@ -390,7 +423,7 @@ export function createAdmin(d: Deps) {
           // Each card on its own, against the digest the owner saw: one that changed meanwhile fails alone.
           const lines: string[] = [];
           for (const [cid, digest] of items) {
-            const r = await d.cards.decideCard(cid, digest, decision, by, "web").then((x) => `<p class="ok">${esc(x.identifier)}: ${esc(x.state)}</p>`, (e: Error) => `<p class="err">${esc(cid)}: ${esc(e.message)}</p>`);
+            const r = await d.cards.decideCard(cid, digest, decision, by, "web", f.get("reason") ?? "").then((x) => `<p class="ok">${esc(x.identifier)}: ${esc(x.state)}</p>`, (e: Error) => `<p class="err">${esc(cid)}: ${esc(e.message)}</p>`);
             lines.push(r);
           }
           log("web batch decision", { cards: items.map(([c]) => c), decision, by });
@@ -411,6 +444,19 @@ export function createAdmin(d: Deps) {
           if (r.status >= 300) throw new Refusal(r.status === 404 ? 404 : 502, `the control plane answered ${r.status}`);
           log("owner status change", { task, to, by });
           return send(res, 200, doc("Done", `<p class="ok">${esc(task)} is ${esc(to)}.</p>`, s));
+        }
+        case "GET /updates": {
+          if (!d.updates) throw new Refusal(404, "not found");
+          return send(res, 200, doc("Updates", updatesPage(d.updates.view(), (inner) => form("/updates", inner, s)), s));
+        }
+        case "POST /updates": {
+          if (!d.updates) throw new Refusal(404, "not found");
+          const release = String(f.get("release") ?? "");
+          if (!/^\d{4}\.\d{1,2}(\.\d+){0,2}$/.test(release)) throw new Refusal(400, "which release?");
+          let said: string;
+          try { said = d.updates.requestNow(release, by); } catch (e) { throw new Refusal(409, (e as Error).message); }
+          log("update now", { release, by });
+          return send(res, 200, doc("Updating", `<p class="ok">${esc(said)}</p><a href="/updates">Back to updates</a>`, s));
         }
       }
       throw new Refusal(404, "not found");

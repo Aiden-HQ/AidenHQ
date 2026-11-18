@@ -39,20 +39,16 @@ an agent computer) and checks that agent's grant in `config/grants/grants.json`.
 module and agent definitions; the check lives in `kernel/src/proxy.ts`. Roles gate a few extra capabilities
 (for example the board's fleet tools, or changing any app with an open incident).
 
-**Runner.** A host service that picks up Paperclip tasks labelled `engineer`, runs coding engines (Codex, OpenRouter
-models, Claude Code) in sandboxed per-task workspaces, and exposes a small `aidenhq` CLI to the Engineer
-([design](design/conversational-engineers.md)). Each job runs under bwrap with an allowlist of the host's files (its
-task folder, the toolchains, its engine's state), in its own PID, IPC and network namespaces (pasta).
+**Runner.** A host service that picks up Paperclip tasks labelled `engineer` and runs each turn as a job in the Engineer's
+agent computer (a gVisor box from the computer launcher, with the task's workspace mounted), and exposes a small `aidenhq`
+CLI to the Engineer ([design](design/conversational-engineers.md)). There is one engine, `codex-openrouter`: the Codex CLI
+on OpenRouter models through the box's gateway with the box's run token (ZDR only), a runner-owned Codex home per task with
+the product's skills, effort low to max (max: DeepSeek). Repo code the host runs itself (a fast check outside a job, the
+reviewer eval, local CI) runs under bwrap with an allowlist of the host's files, in its own PID, IPC and network
+namespaces (pasta).
 
-| Engine | Harness | Model access | Effort |
-|---|---|---|---|
-| `codex-openrouter` (primary) | Codex CLI, its own sandbox, a runner-owned Codex home per task with the product's skills | OpenRouter through the model gateway, a per-job token, ZDR only | low to max (max: DeepSeek) |
-| `codex` | Codex CLI, its own sandbox | the host's Codex login | low to xhigh |
-| `claude` | Claude Code under bwrap | a subscription token | low to max |
-| `openrouter` (fallback) | opencode under bwrap | OpenRouter through the model gateway, a per-job token | low to high (model variants) |
-
-Every job gets Primer read-only. Private reads (Grafana, Slack, Glean, ClickHouse, gcloud, other tasks) go only to an
-Engineer whose definition sets `private_reads: true`, on any engine, and such a job has no web search. See [the codex-openrouter design](design/codex-openrouter-engine.md). Pushes, pull requests and merges are checked in code: allowed
+Every job gets Primer read-only. Private reads (Grafana, Slack, Glean, ClickHouse, other tasks) go only to an Engineer
+whose definition sets `private_reads: true`, and such a job has no web search. See [the codex-openrouter design](design/codex-openrouter-engine.md). Pushes, pull requests and merges are checked in code: allowed
 organizations only, branch and leak checks, a lease on rewritten branches, and a merge queue that requires approved,
 green, mergeable PRs. Each write is an approval record tiered by code from verified state (`services/runner/src/tiers.mjs`):
 Tier 0 runs at once, the AI reviewer decides Tier 1, the owner decides Tier 2; the tier is never taken from untrusted
@@ -76,7 +72,7 @@ the gate, with the app's own Access audience and roles, once `settings.edge.prev
 consumers.
 
 **Board.** The owner's daily surface (`services/board`): today's tasks, chats with agents, the Approvals page,
-connections, apps and the fleet. Approvals are board records: the exact request, one tap by a signed-in admin or from
+connections, apps and the fleet. Approvals are kernel records that the board only reads and shows: the exact request, one tap by a signed-in admin or from
 the owner channel, or an exact typed reply. Each is claimed once and the outcome is shown on the card.
 
 **Owner channels.** `channel-telegram` (the Telegram owner bot, always installed) and `channel-slack` (optional: one
@@ -84,7 +80,8 @@ Slack Socket Mode listener) bridge the owner to Aiden and provide `notify_owner`
 `chat-lane` (always installed) is the fast chat lane. Approval cards are decided with per-card, per-channel,
 single-use decision tokens that the kernel mints (bound to the card's digest) at `/v1/channel/cards` and
 `/v1/channel/decide`. Owner messages from a channel go through the kernel's `/v1/channel/owner-message`; only the
-kernel holds the Paperclip board key.
+kernel holds the Paperclip board key. The board reaches Paperclip only through the kernel too: its reads at `/v1/cp/read/*`,
+the owner's writes at `/v1/cp/owner/*`, each on the board's own path list, with the admin the write is for.
 
 **Agent computers (`services/computer`).** Optional per-agent isolated containers for runs, started by a launcher that
 issues each run a token. Off unless an agent definition sets `image:`.
@@ -106,10 +103,12 @@ the Paperclip config and grants table. See [configuration.md](configuration.md).
   Admin actions run only on the owner's own words.
 - **Gates live in code.** Tool grants, push and merge gates, approvals and deploy rules are enforced below the model.
   No agent holds the token that decides an approval.
-- **Approvals are records.** Pushes, PRs, merges, fleet changes and sensitive app deploys are approval records, tiered
+- **Approvals are records.** Pushes, PRs, merges, fleet changes and sensitive app deploys are approval records (kernel records,
+  `kernel/src/records.ts`, `kinds.ts`), tiered
   by code (Tier 2 is the owner's tap); an agent's change to its own configuration lands in the instance repo only through
   one.
 - **Separation of config.** Product code and handbooks live in the product repo; per-deployment choices live in the
   private instance repo; secrets live only in the vault; host paths stay in the host `.env`, never in
   `instance.yaml`, which agents may edit through an approved change.
-- **Nothing is sent as the owner.** Agents post as a labelled bot or leave drafts the owner sends.
+- **Sends as the owner are gated writes.** Agents may send as the owner's own account; each such send is a kernel write
+  record, tiered like any other send. Otherwise they post as a labelled bot or leave drafts.

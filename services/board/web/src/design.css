@@ -1,0 +1,16 @@
+/* #/design (Design.tsx): the catalogue's own layout. The parts come from ui/ui.css. */
+.dsg-themes { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 560px), 1fr)); gap: var(--sp-4); align-items: start; }
+.dsg-theme { background: var(--bg); color: var(--text); border: 1px solid var(--border); border-radius: var(--radius-lg); padding: clamp(14px, 1.4vw, 24px); display: grid; gap: var(--sp-3); min-width: 0; }
+.dsg-theme-name { font-size: var(--text-sm); font-weight: 600; color: var(--muted); }
+.dsg-cat { display: grid; gap: clamp(22px, 1.6vw, 32px); min-width: 0; }
+.dsg-swatches { display: flex; flex-wrap: wrap; gap: 6px 14px; }
+.dsg-swatch { display: inline-flex; align-items: center; gap: 6px; font-size: var(--text-xs); color: var(--muted); }
+.dsg-swatch i { width: 18px; height: 18px; border-radius: var(--radius-sm); border: 1px solid var(--border); }
+.dsg-scale { display: grid; gap: 6px; }
+.dsg-scale-row { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; min-width: 0; }
+.dsg-scale-row code { font-size: var(--text-xs); color: var(--faint); }
+.dsg-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 200px), 1fr)); gap: 8px 16px; }
+.dsg-pair { display: grid; gap: 2px; }
+.dsg-note { font-size: var(--text-xs); color: var(--faint); }
+.dsg-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.dsg .ui-card .ui-head { padding: 2px 0; }

@@ -7,29 +7,29 @@ import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node
 import { basename, dirname, join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
-import { FOR_OTHERS, RUNNER_MARKER, deliveredFrom, finishedStatus, hasMarker, isAgentSubtask, isRuleProposal, isUserPart, ownRequest, runsUnasked, findRepos, mentionedRepos, isClaudeModel, openrouterModels, crewNames, personaFor, parseCommand, pickedEngine, pickerFor, engineKinds, engineLabel, engineOf, modelPrefix, repoAllowed, resolveEngine, stripHidden, useEngines, settledWait } from "./agents.mjs";
+import { FOR_OTHERS, RUNNER_MARKER, agentMade, deliveredFrom, finishedStatus, hasMarker, isAgentSubtask, isUserPart, startingNotes, ownRequest, findRepos, mentionedRepos, openrouterModels, crewNames, generalEngineers, personaFor, parseCommand, pickedEngine, pickerFor, engineKinds, engineLabel, engineOf, modelPrefix, repoAllowed, resolveEngine, stripHidden, useEngines, settledWait } from "./agents.mjs";
 import { REPO_ROOT, githubSlug, loadConfig } from "./config.mjs";
-import { applyWaitingForLock, architectFollowUps, bumpTitle, definitionsOf, ownerMade, productPin, strayFiles, trialEditsText, trialHandbookOnly, trialNoTapBy, untrialedNewAgents } from "./apply.ts";
+import { applyWaitingForLock, ownerMade, trialEditsText, trialNoTapBy } from "./apply.ts";
+import { bumpTitle, definitionsOf, productPin, strayFiles, untrialedNewAgents } from "../../../kernel/src/apply.ts";
 import { applyCardArgs, asApproval, branchCardArgs, cardOf, cardText, planOf } from "./cards.ts";
 import { applyCard, repoKey } from "../../../kernel/src/kinds.ts";
-import { authorityLines, diffAll, forkChanges, grantOverrides, marketplaceChanges, moduleInputs, withGrantOverrides } from "../../../kernel/src/loader/authority.ts";
-import { OFFICIAL, OFFICIAL_URL, forksOf, hostFetch, officialSides, remoteCodeText, withRemote } from "../../../kernel/src/loader/sources.ts";
-import { effective } from "../../../kernel/src/loader/release.ts";
-import { cowRoot, engineState, followJob, kernelJobs, readEngines, removeLayers, gatewayApi, jobcapServers, jobcapsFor, launcher, modelToken, observes, releaseBox, viaGateway } from "./engines.mjs";
+import { authorityLines, diffAll, forkChanges, grantOverrides, marketplaceChanges, moduleInputs, withGrantOverrides } from "../../../scripts/compiler/authority.ts";
+import { OFFICIAL, OFFICIAL_URL, forksOf, hostFetch, officialSides, remoteCodeText, withRemote } from "../../../scripts/compiler/sources.ts";
+import { effective } from "../../../scripts/compiler/release.ts";
+import { engineState, followJob, kernelJobs, readEngines, removeLayers, gatewayApi, launcher, modelToken, observes, releaseBox } from "./engines.mjs";
 import { hiding, jailProblem } from "../../../kernel/src/sandbox.ts";
 import { sandboxConfig } from "../../../kernel/src/sandbox-config.ts";
 import { runAlive } from "../../../kernel/src/jobs.ts";
-import { gcpSession } from "./gcp.ts";
 import { outputs, shareOutputs, syncFiles } from "./files.ts";
 import { ISOLATED_ENV, SAFE_GIT_ARGS, changeBase, defaultBranch, ensureClone, ensureGuardHooks, git, historyRewritten, landOnMain, remoteIsEmpty, replayOnto, patchKey, patchKeyAt, setGitAuth, setUntrusted, treeIs } from "../../../modules/codehost-github/src/git.mjs";
 import { DEFAULT_IDENTITY, READ, WRITE, appClient, appRemoteUrl, ghOptions, identityEnv, inOrg, jobGhToken, mergeOptions, mergePermissions, ownRepo as appOwnRepo, pushPermissions } from "../../../modules/codehost-github/src/github-app.ts";
-import { codexModels, readApproval, resolveModelAlias, resolveOpenRouterModel, withParent } from "./intake.ts";
+import { resolveOpenRouterModel, withParent } from "./intake.ts";
 import { splitAnswered } from "./answered.ts";
-import { ALL_STATUSES, Paperclip, blockedRefusal, origins, unresolvedBlockers } from "./paperclip.ts";
+import { ALL_STATUSES, Paperclip, blockedRefusal, unresolvedBlockers } from "./paperclip.ts";
 import { isTransient, retryTransient, shouldRetryTurn } from "./retry.ts";
 import { branchGuidance, checkBranchName, chooseBranchName, exampleBranches } from "./branch.ts";
 import { cleanMessages, evidenceOf, existingPrUrl, isRepoIn, leakIn, leaksInternal, stripAttribution, withEvidence, writePrDescription } from "./describe.ts";
-import { branchesFooter, slackSources, firstPrompt, followUpPrompt, latestReport, prSummary, prTitle, subtaskSummary, summaryGist, appliedNote, runOutcome, coversHead } from "./prompt.ts";
+import { branchesFooter, firstPrompt, followUpPrompt, latestReport, prSummary, prTitle, subtaskSummary, summaryGist, appliedNote, runOutcome, coversHead } from "./prompt.ts";
 import { staleHead, staleRef } from "./progress.ts";
 import { PRIMER_FILES, primerLink, publishedRef, readDocument } from "./primer.ts";
 import { startRepoHelper } from "./repohelper.ts";
@@ -47,7 +47,7 @@ import { MERGE_REQUESTED, REPLY_MARKER, STILL_RUNNING, fence, onlyMergesLeft, pr
 import { afterNewWord, checkSignature, roundsTrip, twiceTrip } from "../../../modules/engineering/src/breaker.ts";
 import YAML from "yaml";
 import { classify, normalizeApp, sensitiveTraits } from "./tiers.mjs";
-import { CODE_REJECTS, MAX_REJECTS, autonomyCap, codeVerdict, heldInput, meritOwner, priorDecisions, priorPart, laterRejections, rejectedSince, requestKey, requestPatches, requestTargets, routineCap, routineCapped } from "../../../kernel/src/tier.ts";
+import { CODE_REJECTS, MAX_REJECTS, codeVerdict, heldInput, meritOwner, priorDecisions, priorPart, laterRejections, rejectedSince, requestKey, requestPatches, requestTargets } from "../../../kernel/src/tier.ts";
 import { LUNA, openRouterAsk, openRouterKey } from "./models.mjs";
 import { kernelCardDiff, readCardSourceExceptions, readDecisions, requestReview, reviewRequest, unreadSourceExceptions } from "./review-request.mjs";
 import { UNSURE } from "../../../kernel/sdk/src/reviewer.ts";
@@ -55,8 +55,7 @@ import { fileContext } from "../../shared/review-files.mjs";
 import { GRADE_SCHEMA, GRADER_MARKER, escalationFor, gather, grade, gradeNote, template } from "./grade.ts";
 import { createGradeLoop } from "../../../modules/grading/src/loop.mjs";
 import { createResolver } from "../../../kernel/src/net.ts";
-import { ALREADY_APPLIED, guardBranch, localPullRequest } from "./evidence.ts";
-import { jobUsage } from "./usage.ts";
+import { ALREADY_APPLIED, guardBranch, localPullRequest, taskPrRows } from "./evidence.ts";
 import { createEvalGate, officialOf } from "./evalgate.ts";
 import { fastChecks } from "../../../kernel/src/fastcheck.ts";
 import { localCheckRuns } from "../../../modules/codehost-local/src/checks.ts";
@@ -64,6 +63,7 @@ import { afterRejection, graderSpeaks, summaryKind, wakesParent } from "./notice
 import { readBusy } from "./busy.ts";
 import { SETTINGS_LABEL, TypedRefused, allowedPaths, assertOnly, checkTyped, planFiles, typedTaskChanges } from "./typed-change.mjs";
 import { asSha, bumpInstance, pinOf, trainDescription, trainStep } from "./release.mjs";
+import { bumpFiles, commitFiles, extractTree } from "./release-sync.mjs";
 import { normalizeRepo, repoAccess } from "../../../modules/codehost-github/src/repos.ts";
 import { host as githubCodehost } from "../../../modules/codehost-github/src/host.mjs";
 import { LOCAL_ORG, changeUrl, host as localCodehost, parseChangeUrl } from "../../../modules/codehost-local/src/host.mjs";
@@ -608,8 +608,12 @@ async function fileModulesPin(issue, to) {
   const text = await git(r.path, "show", `${tip}:modules-pin.json`);
   const next = text.replace(/("sha"\s*:\s*")[0-9a-f]{40}(")/, `$1${to}$2`);
   if (next === text || JSON.parse(next).sha !== to) throw new UserError("modules-pin.json has no sha to move");
+  // The product copies of the shared tree move with the pin: materialise the modules at `to`, run the sync on a scratch
+  // checkout of the product tip, and commit exactly the files it changes beside modules-pin.json.
+  const modules = await ensureClone(cfg.workDir, normalizeRepo(cfg.modulesRepo), await hostOf(cfg.modulesRepo).source(cfg.modulesRepo));
+  const files = await bumpFiles({ product: r.path, tip, to, pin: next, fetchModules: (sha, dest) => extractTree(modules, sha, dest) });
   const branch = `fleet/modules-pin-${issue.identifier.toLowerCase()}`;
-  await commitFiles(issue, r.path, tip, branch, { "modules-pin.json": next }, `chore(modules): pin the official modules at ${to.slice(0, 12)}\n\nWritten by the runner's release train on ${issue.identifier}; no agent wrote it.`);
+  await commitFiles({ path: r.path, tip, branch, files, index: join(cfg.stateDir, `release-index-${issue.id}`), env: identityEnv(await botIdentity()), message: `chore(modules): pin the official modules at ${to.slice(0, 12)}\n\nWritten by the runner's release train on ${issue.identifier}; no agent wrote it.` });
   return agentPublish({ issue, workspace: state.task(issue.id).workspace, box: false }, "pr", { branches: [{ repo, branch }], title: `chore(modules): pin the official modules at ${to.slice(0, 7)}`, body: `Moves \`modules-pin.json\` to ${cfg.modulesRepo}@${to}: the merges ${issue.identifier} lists. Written by the release train.` });
 }
 
@@ -626,7 +630,7 @@ async function fileInstancePin(issue, to) {
   } catch (err) {
     throw new UserError(`instance.yaml can't be bumped in place: ${err.message}`);
   }
-  await commitFiles(issue, r.path, tip, `fleet/release-${issue.identifier.toLowerCase()}`, { "instance.yaml": text }, `chore: product ${to.slice(0, 8)} + modules ${modules.slice(0, 8)} (${issue.identifier})\n\nWritten by the runner's release train; no agent wrote it.`);
+  await commitFiles({ path: r.path, tip, branch: `fleet/release-${issue.identifier.toLowerCase()}`, files: { "instance.yaml": text }, index: join(cfg.stateDir, `release-index-${issue.id}`), env: identityEnv(await botIdentity()), message: `chore: product ${to.slice(0, 8)} + modules ${modules.slice(0, 8)} (${issue.identifier})\n\nWritten by the runner's release train; no agent wrote it.` });
   // A bump that brings new reviewer code lands only on a passing eval of it: started here, and the bump stays open (filed on
   // a later poll) while it runs, rather than carded to fail.
   const b = await fleetBranch(issue, state.task(issue.id).workspace);
@@ -647,27 +651,6 @@ async function releaseClone(issue, repo) {
   if (!r) throw new Error(`${repo} isn't in ${issue.identifier}'s workspace`);
   await git(r.path, "fetch", "--quiet", "origin");
   return r;
-}
-
-/** A commit on `tip` with exactly `files` (path → text) changed, made with git's plumbing (a private index) and set as `branch`. */
-async function commitFiles(issue, path, tip, branch, files, message) {
-  const env = { ...ISOLATED_ENV, ...identityEnv(await botIdentity()), GIT_INDEX_FILE: join(cfg.stateDir, `release-index-${issue.id}`) };
-  const g = (args, input) =>
-    new Promise((res, rej) => {
-      const p = execFile("git", [...SAFE_GIT_ARGS, ...args], { cwd: path, env, maxBuffer: 8 * 1024 * 1024 }, (err, out) => (err ? rej(err) : res(String(out).trim())));
-      p.stdin.end(input ?? "");
-    });
-  try {
-    await g(["read-tree", tip]);
-    for (const [p, text] of Object.entries(files)) await g(["update-index", "--add", "--cacheinfo", `100644,${await g(["hash-object", "-w", "--stdin"], text)},${p}`]);
-    const sha = await g(["commit-tree", await g(["write-tree"]), "-p", tip, "-F", "-"], message);
-    const changed = (await git(path, "diff", "--no-renames", "--name-only", tip, sha)).split("\n").filter(Boolean).sort();
-    if (JSON.stringify(changed) !== JSON.stringify(Object.keys(files).sort())) throw new Error(`the bump commit changes ${changed.join(", ") || "nothing"}`);
-    await git(path, "branch", "-f", branch, sha);
-    return sha;
-  } finally {
-    rmSync(env.GIT_INDEX_FILE, { force: true });
-  }
 }
 
 // ------------------------------------------------------------------ stale routine runs
@@ -1102,17 +1085,24 @@ async function handleIssue(issue, engineerIds) {
   const comments = userComments.filter((c) => !state.handled(c.id));
   const fresh = comments.filter((c) => known || Date.parse(c.createdAt) >= horizon);
   for (const c of comments.filter((x) => !fresh.includes(x))) state.markHandled(c.id, issue.id);
-  // The agent that delegated this task may follow up on it once it has run (the Agent Architect reviewing the Platform Engineer's
-  // diff): a new request on the same task, so its next commit replaces the card. Never a command, never a go-ahead.
-  const agentNotes = state.get(`history:${issue.id}`) ? all.filter((c) => c.authorType === "agent" && c.authorAgentId && !state.handled(c.id)) : [];
-  const delegator = agentNotes.length ? (issue.createdByAgentId ?? (await pc.issue(issue.id)).createdByAgentId) : undefined;
-  const followUps = agentNotes.length ? architectFollowUps(agentNotes, delegator, readGrants(), { approved: Boolean(state.get(`auto:${issue.id}`)), reopened: issue.status === "todo" }) : [];
-  for (const c of agentNotes.filter((x) => !followUps.includes(x))) state.markHandled(c.id, issue.id); // other agents: ignored
+  // Agents' comments (never the Engineer's own on its task): the asker's and the chief of staff's start a job on an agent's
+  // task, as an agent's words and never a command; any other agent's is answered once with whom to ask, and starts nothing.
+  // Only on a task an Engineer holds or has run: a task merely labelled for the runner waits for the owner's words.
+  const ours = engineerIds.has(issue.assigneeAgentId) || Boolean(state.get(`history:${issue.id}`));
+  const notes = ours ? all.filter((c) => c.authorType === "agent" && c.authorAgentId && c.authorAgentId !== issue.assigneeAgentId && !state.handled(c.id)) : [];
+  for (const c of notes.filter((x) => !known && Date.parse(x.createdAt) < horizon)) state.markHandled(c.id, issue.id);
+  const recent = notes.filter((x) => known || Date.parse(x.createdAt) >= horizon);
+  const asked = recent.length ? await pc.issue(issue.id) : undefined;
+  const followUps = asked ? startingNotes(recent, asked, readGrants()) : [];
+  const others = recent.filter((x) => !followUps.includes(x));
+  for (const c of others) state.markHandled(c.id, issue.id);
+  if (others.length) await redirectNotes(asked);
   if (!fresh.length && followUps.length) {
     for (const c of followUps) state.markHandled(c.id, issue.id);
     const text = followUps.map((c) => stripHidden(c.body).trim()).filter(Boolean).join("\n\n");
-    if (text) await handleRequest(issue, `(From an agent, not ${cfg.selfName}'s own words.)\n\n${text}`, { fromAgent: true });
-    return;
+    if (!text) return;
+    state.set(`ownreq:${issue.id}`, new Date().toISOString()); // a first run from these words: the description joins it
+    return handleRequest(issue, `(From an agent, not ${cfg.selfName}'s own words.)\n\n${text}`);
   }
   if (!fresh.length) {
     // Newly assigned to an Engineer without comments. A task the user wrote themselves is the
@@ -1121,25 +1111,17 @@ async function handleIssue(issue, engineerIds) {
     // every update until it has been taken up, not only the first time.
     if (engineerIds.has(issue.assigneeAgentId) && !userComments.length && !running.has(issue.id) && !state.get(`ownreq:${issue.id}`) && !state.get(`history:${issue.id}`)) {
       const full = await pc.issue(issue.id);
-      // A task an agent delegated from the owner's own chat, or under a task an agent or routine created (an app incident), just
-      // runs: the gate that matters is `apply`, which needs his words. Under his own board tasks, the user's go-ahead stays.
-      const chain = [full];
-      for (let hops = 0; isAgentSubtask(full) && chain.at(-1)?.parentId && hops < 10; hops++) chain.push(await pc.issue(chain.at(-1).parentId).catch(() => null));
-      if (runsUnasked(chain) || isRuleProposal(full, readGrants())) {
-        // Runs without the owner's go-ahead (agent work from a chat or app): `auto:` lets its delegator follow up (not `approved:` alone, which the user's go-ahead also sets).
-        state.set(`approved:${full.id}`, new Date().toISOString());
-        state.set(`auto:${full.id}`, new Date().toISOString());
-      }
+      // A task an agent made just runs, wherever it sits: the gates that matter are the kernel's write tiers on what it
+      // pushes, merges, deploys or applies.
       if (requestFrom(full)) {
         state.set(`ownreq:${issue.id}`, new Date().toISOString());
         return handleRequest(issue, ""); // the description is the request
       }
-      // An agent's sub-task under the owner's own task waits for his go-ahead, and says so once (one log line, one comment).
-      const root = chain.at(-1), why = root ? ` under ${root.identifier}, ${cfg.selfName}'s own task,` : " (its parent tasks couldn't be read)";
-      if (isAgentSubtask(full)) return full.status !== "todo" || state.get(`held:${issue.id}`) ? undefined : (state.set(`held:${issue.id}`, new Date().toISOString()), log("held for the go-ahead", { issue: issue.identifier, root: root?.identifier ?? null }), pc.comment(issue.id, `Waiting for ${cfg.selfName}'s go-ahead: an agent wrote this task${why} so its description is the agent's request, not ${cfg.selfName}'s words. A comment from ${cfg.selfName} on this task starts it.`));
+      // An agent's task with no request goes back to its asker; the greeting is for a person writing the task.
       if (!state.get(`greeted:${issue.id}`)) {
         state.set(`greeted:${issue.id}`, new Date().toISOString());
-        await pc.comment(issue.id, "Ready. What would you like me to do, and in which repository? (Or write it in the task description.)");
+        if (agentMade(full)) await tellAsker(full, "decision", `**${full.identifier} has no request:** "${full.title}" reached an Engineer with an empty description, so nothing has started. Write what to do as a comment on ${full.identifier}, or cancel it.`);
+        else await pc.comment(issue.id, "Ready. What would you like me to do, and in which repository? (Or write it in the task description.)");
       }
     }
     return;
@@ -1160,16 +1142,25 @@ async function handleIssue(issue, engineerIds) {
 }
 
 /**
- * The request in a task's description: the user's own task, or a sub-task the Researcher created
- * that the user has given the go-ahead for. Empty for everything else.
+ * The request in a task's description: the user's own task, or an agent's (agentMade), which stays the agent's words.
+ * Empty for everything else.
  */
 function requestFrom(full) {
-  const own = ownRequest(full);
-  if (own) return own;
-  return (isAgentSubtask(full) || isRuleProposal(full, readGrants())) && state.get(`approved:${full.id}`) ? stripHidden(full.description).trim() : "";
+  return ownRequest(full) || (agentMade(full) ? stripHidden(full.description).trim() : "");
 }
 
-async function handleRequest(issue, latest, { fromAgent = false } = {}) {
+/**
+ * Agents' comments that start nothing get one reply naming whom to ask (never on a closed or blocked task, which a comment
+ * would reopen). Once per batch: a comment is handled before this runs.
+ */
+async function redirectNotes(full) {
+  if (["done", "cancelled", "blocked"].includes(full.status)) return;
+  const asker = agentMade(full) ? (await pc.agents().catch(() => [])).find((a) => a.id === full.createdByAgentId)?.name ?? "the agent that asked for it" : "";
+  const whom = asker ? `${asker} (who asked for it) or the chief of staff` : cfg.selfName;
+  await pc.comment(full.id, `Not read as a request: only ${whom} start${asker ? "" : "s"} work on ${full.identifier}. Ask ${asker ? "them" : cfg.selfName} to pass it on if it should change the work.`).catch(() => {});
+}
+
+async function handleRequest(issue, latest) {
   // A new word from whoever asked (the delegator or the owner) lifts a stop (identical failures, or ROUNDS_AT red rounds on one
   // check), starts the red rounds over (red-check wakes included; identical failures still count across it), and gives the
   // task its reviewer checks before filing again (agentReview).
@@ -1182,9 +1173,7 @@ async function handleRequest(issue, latest, { fromAgent = false } = {}) {
   }
   const full = await pc.issue(issue.id);
   let instructions = latest;
-  // Commenting on a sub-task the Researcher created is the go-ahead for that one; an agent's comment never is.
-  if (latest && !fromAgent && isAgentSubtask(full)) state.set(`approved:${issue.id}`, new Date().toISOString());
-  // First run on a task the user wrote (or approved): its title and description are part of the request.
+  // First run on a task the user or an agent wrote: its title and description are part of the request.
   if (!state.get(`history:${issue.id}`)) {
     const own = requestFrom(full);
     // An agent-written description is shown once, under the Task block, and is the agent's request, never the owner's words.
@@ -1395,10 +1384,9 @@ async function runAutoMerges() {
   const box = JSON.parse(state.get("auto_merges") || "{}");
   for (const [issueId, want] of Object.entries(box)) {
     const busy = running.has(issueId);
-    const off = autonomyNow() === "off";
-    // During the run only Tier 0 starts: a PR tiered higher waits for its end (afterRun), and with autonomy off every PR does.
+    // During the run only Tier 0 starts: a PR tiered higher waits for its end (afterRun).
     const todo = busy ? want.prs.filter((p) => !p.afterRun) : want.prs;
-    if (!todo.length || (busy && off)) continue;
+    if (!todo.length) continue;
     // A card's queue running on the task: requests wait until it ends, rather than mixing the two.
     const q = mergeQueue(issueId);
     if (q?.state === "running" && !q.independent) continue;
@@ -1470,7 +1458,7 @@ async function runAutoMerges() {
         if (rec.state === "used") {
           const started = await startMerges(issue, { prs: zero, strict: true, each: true });
           await reportOutcome(rec.id, started ? { ok: true, text: `Merging ${zero.map((p) => p.url).join(", ")}, each once green on the head shown.` } : { ok: false, text: "The merge didn't start (said on the task)." });
-        } else await pc.comment(issueId, `The merge waits for ${rec.tier === 1 ? "the AI reviewer" : `${cfg.selfName}'s tap`} (${rec.id}).`);
+        } else if (!state.get(`held-noted:${rec.id}`)) await pc.comment(issueId, `The merge waits for ${rec.tier === 1 ? "the AI reviewer" : `${cfg.selfName}'s tap`} (${rec.id}).`);
       }
       if (busy || !rest.length) continue;
       const said = rest.filter(([, t]) => t.reject);
@@ -1670,15 +1658,15 @@ async function noteFailure(issue, target, s, head, what) {
 }
 
 /**
- * A trip's new breaker state saved; one just tripped is logged and told once, as an outcome (notices.ts "parked"): the
- * delegator hears it on the parent, a task without one keeps it on itself. True when the task is stopped.
+ * A trip's new breaker state saved; one just tripped is logged and told once, as an outcome (notices.ts "parked"): whoever
+ * asked hears it (tellAsker); the owner's own task keeps it on itself. True when the task is stopped.
  */
 async function settle(issue, { all, notice }, why) {
   state.set(breakerKey(issue.id), JSON.stringify(all));
   if (!notice) return Boolean(stopped(issue.id));
   log("breaker tripped", { issue: issue.identifier, ...why });
   const full = await pc.issue(issue.id).catch(() => undefined);
-  await (full?.parentId ? tellParent(full, "parked", notice(full.identifier)) : pc.comment(issue.id, notice(issue.identifier))).catch(() => {});
+  if (!(full && (await tellAsker(full, "parked", notice(full.identifier)).catch(() => false)))) await pc.comment(issue.id, notice(issue.identifier)).catch(() => {});
   return true;
 }
 
@@ -1786,7 +1774,7 @@ async function finishMerges(issueId, queue, say, { posted = false } = {}) {
     // A failure is told once per what failed (each PR's head, status and note, and the stop's reason): the same environment
     // stop or red checks on the same head again is no news (WOR-5276 woke 15 times on them). A new head or reason is told.
     const failed = kind === "failed" ? JSON.stringify([queue.reason ?? "", queue.prs.map((p) => [p.url, p.head, p.updatedHead, p.status, p.note ?? ""])]) : "", told = failed && state.get(`merge-failure-told:${issueId}`) === failed;
-    if (!told && (await tellParent(full, kind, appliedNote(queue.identifier, "merge queue", { ok: queue.state === "done", text: say.join("\n\n") })).catch(() => false)) && failed) state.set(`merge-failure-told:${issueId}`, failed);
+    if (!told && (await tellAsker(full, kind, appliedNote(queue.identifier, "merge queue", { ok: queue.state === "done", text: say.join("\n\n") })).catch(() => false)) && failed) state.set(`merge-failure-told:${issueId}`, failed);
   }
   // The tasks that opened these PRs close too, so they don't sit "in review" (shown as waiting for the owner).
   const mergedUrls = queue.prs.filter((p) => p.status === "merged").map((p) => p.url);
@@ -1978,7 +1966,7 @@ const gradingApi = (() => {
 })();
 // The grade loop (modules/grading/src/loop.mjs): this runner holds what the grader reads, so it runs it.
 const { runGrades, graded } = createGradeLoop({
-  api: gradingApi, pc, log, state, gather, grade, escalationFor, gradeNote, template, gradeDeps, tellParent, stripHidden, graderSpeaks,
+  api: gradingApi, pc, log, state, gather, grade, escalationFor, gradeNote, template, gradeDeps, tellParent: tellAsker, stripHidden, graderSpeaks,
   recordsOn: (issue) => recordsOn(issue), dispatch: (job) => dispatch(job), isUserInstruction: (c) => Paperclip.isUserInstruction(c), selfName: cfg.selfName,
   // Through the model gateway with the runner's grader token (kind grader: billed to the task, never capped). AIDENHQ_GRADER_URL: tests' fake.
   graderAsk: (issue) => process.env.AIDENHQ_GRADER_URL
@@ -2001,11 +1989,12 @@ function gradeDeps(issue) {
     // The task's own branches' PRs; a task with none (an agent that handed the code to an Engineer) has those of the tasks
     // its own agent delegated under it instead (created by that agent, not by anyone else filing a child onto it), still
     // from this runner's own rows, never a comment. Cancelled delegations are not its work.
+    // Each PR keeps every branch its own rows recorded (`heads`), so the grader can check the number still names that change.
     taskPrs: async () => {
       let rows = state.branches(issue.id);
       const delegated = (c) => isAgentSubtask(c) && Boolean(issue.assigneeAgentId) && c.createdByAgentId === issue.assigneeAgentId && c.status !== "cancelled";
       if (!rows.length) rows = (await pc.children(issue.id, ALL_STATUSES)).filter(delegated).flatMap((c) => state.branches(c.id));
-      return prQueue.findPrs(rows.map((b) => b.pr_url).filter(Boolean).join("\n"));
+      return taskPrRows(rows);
     },
     // The PRs this task's own runner records tie to it when no branch row does: its merge queue for the task, the merges it was
     // asked to run, and the merge cards it filed on it. The runner's own state and the board's cards, never a comment: a
@@ -2025,6 +2014,8 @@ function gradeDeps(issue) {
     deployHistory: async (name, sha) => (await boardApi.get(`/internal/grades/deploys/${name}/${sha}`)).deploys,
     view: (name, path) => boardApi.post("/internal/grades/view", { name, path }),
     assignee: issue.assigneeAgentId, // whose comments are the task agent's own (wordsEvidence)
+    // The task's creator: whose comments can amend the ask (wordsEvidence), an agent's id for an agent-authored task.
+    delegator: { agentId: issue.createdByAgentId, userId: issue.createdByUserId },
     comments,
     attachments: () => pc.attachments(issue.id),
     content: (id) => pc.attachmentContent(id),
@@ -2044,16 +2035,22 @@ function gradeDeps(issue) {
 }
 
 /**
- * A notice about a sub-task for its parent (notices.ts): an outcome is posted there, which wakes the delegator; progress is
- * not (it is on the sub-task already). Only an open parent hears it (an escalation with none goes to the delegator, askDelegator): Paperclip reopens a done or cancelled task on any
- * user-authored comment (the runner's included), which would wake its agent and send finished work round again (WOR-3582).
- * The asking agent's own chat, handed to the owner while it waited for a tap, is given back first so the outcome wakes it.
- * True when it was posted.
+ * Outcomes someone must decide, each with the fixed words the owner's channel uses for it: with no open parent to hear
+ * them, they still go to whoever asked.
  */
-async function tellParent(issue, kind, text) {
+const NEEDS_ASKER = { parked: "was stopped", escalated: "has a decision waiting", decision: "needs a decision" };
+
+/**
+ * A notice about a task for whoever asked (notices.ts): an outcome is posted on its open parent, which wakes the delegator;
+ * progress is not (it is on the task already). Only an open parent hears it: Paperclip reopens a done or cancelled task on any
+ * user-authored comment (the runner's included), which would wake its agent and send finished work round again (WOR-3582).
+ * With no open parent, an outcome someone must act on goes to the asker itself (askAsker). The asking agent's own chat,
+ * handed to the owner while it waited for a tap, is given back first so the outcome wakes it. True when it was delivered.
+ */
+async function tellAsker(issue, kind, text) {
   if (!wakesParent(kind)) return false;
   const p = issue.parentId ? await pc.issue(issue.parentId).catch(() => undefined) : undefined;
-  if (!p || ["done", "cancelled"].includes(p.status)) return kind === "escalated" && (await askDelegator(issue, text));
+  if (!p || ["done", "cancelled"].includes(p.status)) return Boolean(NEEDS_ASKER[kind]) && (await askAsker(issue, kind, text));
   // Only the asking agent's own chat (its id in the chat's end-anchored marker), and only while it sits with the owner.
   const chatAgent = /<!-- aidenhq-chat-agent:([A-Za-z0-9_-]+) -->\s*$/.exec(p.description ?? "")?.[1];
   if (!p.assigneeAgentId && p.assigneeUserId && issue.createdByAgentId && chatAgent === issue.createdByAgentId && isAgentSubtask(issue))
@@ -2062,12 +2059,20 @@ async function tellParent(issue, kind, text) {
   return true;
 }
 
+/**
+ * An agent's task with no open parent to hear what it needs (a stop, an escalation, a missing request): a note on the task
+ * itself would wake only its assignee, who cannot decide it, and one on a closed parent would reopen it. A live asker gets
+ * a task of its own (askDelegator); an asker that is paused or gone leaves it to the owner, through the owner channel's
+ * notices. False for a task no agent made (the owner's own keeps its note on itself) or when neither could be reached.
+ */
+async function askAsker(issue, kind, text) {
+  if (!agentMade(issue)) return false;
+  return (await askDelegator(issue, text)) || tellOwner(issue, kind, text);
+}
 
 /**
- * An escalated grade with no open parent to hear it (none, or already closed): a note on the task itself would wake only its
- * assignee, who cannot decide it, and one on the closed parent would reopen it. The delegator gets a task of its own, filed
- * assigned and started by one comment (as the design review's is: Paperclip never dispatches an assigned task on arrival).
- * Once per distinct note. False when the delegator is not a live agent: the caller then keeps its note on the task.
+ * The asker is a live agent: a task of its own, filed assigned and started by one comment (as the design review's is:
+ * Paperclip never dispatches an assigned task on arrival). Once per distinct note. False when the asker is not a live agent.
  */
 async function askDelegator(issue, text) {
   const to = issue.createdByAgentId;
@@ -2075,13 +2080,31 @@ async function askDelegator(issue, text) {
   const marker = `escalation:${issue.id}:${createHash("sha256").update(text).digest("hex").slice(0, 16)}`;
   const task = await pc.api("POST", `/api/companies/${pc.company}/issues`, {
     title: `Decision needed: ${issue.identifier}`, status: "todo", priority: "medium", assigneeAgentId: to, assigneeUserId: null, allowDuplicate: true, ...OWN_FOLDER,
-    description: `${text}\n\nDecide on ${issue.identifier} itself (it is not this task): close it to accept the work, or reopen it with what to change. Then close this task.\n\n<!-- source:${marker} -->`,
+    description: `${text}\n\nDecide on ${issue.identifier} itself (it is not this task), as the note above says: your comment there is read as your next word on it. Then close this task.\n\n<!-- source:${marker} -->`,
     idempotencyKey: `pw-${createHash("sha256").update(marker).digest("hex").slice(0, 32)}`,
   });
   if (task.deduplicated) return true;
   state.set(`runner-made:${task.id}`, new Date().toISOString());
-  await pc.comment(task.id, `Start now: ${issue.identifier}'s grade escalated to you and waits for your decision.`).catch(() => {});
-  log("escalation sent to its delegator", { task: issue.identifier, delegator: to, issue: task.identifier });
+  await pc.comment(task.id, `Start now: ${issue.identifier} waits for your decision.`).catch(() => {});
+  log("decision sent to the asker", { task: issue.identifier, asker: to, issue: task.identifier });
+  return true;
+}
+
+/**
+ * The owner's channel (the board's owner notices, which the kernel hands to Telegram or Slack), in fixed words: the
+ * identifier and what it needs, never an agent's title or GitHub's text. The note itself goes on the task, where the owner's
+ * reply carries on. Once per distinct note.
+ */
+async function tellOwner(issue, kind, text) {
+  const key = `owner-told:${issue.id}:${createHash("sha256").update(text).digest("hex").slice(0, 16)}`;
+  if (state.get(key)) return true;
+  if (!boardApi) return false;
+  const line = `🔧 **${issue.identifier} ${NEEDS_ASKER[kind]}**, and the agent that asked for it is paused or gone. What it needs is on ${issue.identifier}: reply there to carry on, or cancel it.`;
+  const sent = await boardApi.post("/internal/owner/line", { text: line }).then(() => true, (err) => (log("owner notice failed", { task: issue.identifier, err: String(err.message ?? err).slice(0, 200) }), false));
+  if (!sent) return false;
+  state.set(key, new Date().toISOString());
+  log("decision sent to the owner", { task: issue.identifier, kind });
+  if (!["done", "cancelled", "blocked"].includes(issue.status)) await pc.comment(issue.id, text).catch(() => {});
   return true;
 }
 
@@ -2118,8 +2141,6 @@ async function dispatchReplies() {
     if (!fresh.length) continue;
     // Wait until the newest comment on this task is older than the debounce window.
     if (Date.now() - Date.parse(fresh.at(-1).createdAt) < debounceMs) continue;
-    // Sub-tasks waiting for a go-ahead on this task: the runner reads the comment first.
-    if (await handleGoAhead(issue, fresh)) continue;
     ready.push(issue.identifier);
     pending.push(...fresh.map((c) => [c.id, issue.id]));
   }
@@ -2127,43 +2148,6 @@ async function dispatchReplies() {
   await pc.runRoutine(r.routine ?? "Process task replies", { tasks: ready.join(", ") });
   for (const [cid, iid] of pending) state.markHandled(cid, iid);
   log("replies dispatched to Researcher", { tasks: ready });
-}
-
-/**
- * If Engineer sub-tasks the Researcher created under this task are waiting, decide whether the
- * user's new comments are the go-ahead. "start" starts them all, "hold" keeps them waiting; anything
- * else (changes, questions) goes to the Researcher as usual. True when the comments were handled here.
- */
-async function handleGoAhead(parent, fresh) {
-  const engineers = await pc.engineerAgents();
-  const waiting = (await pc.children(parent.id)).filter(
-    (c) => engineers.some((a) => a.id === c.assigneeAgentId) && isAgentSubtask(c) && c.status === "todo" && !state.get(`approved:${c.id}`) && !state.get(`history:${c.id}`),
-  );
-  if (!waiting.length) return false;
-  const comment = fresh.map((c) => stripHidden(c.body).trim()).filter(Boolean).join("\n\n");
-  const decision = await readApproval({ cfg, user: cfg.selfName, title: parent.title, waiting, comment }).catch((err) => {
-    log("go-ahead check failed", { issue: parent.identifier, err: String(err.message ?? err).slice(0, 300) });
-    return "other";
-  });
-  log("go-ahead read", { issue: parent.identifier, decision, waiting: waiting.length });
-  if (decision === "other") return false;
-  for (const c of fresh) state.markHandled(c.id, parent.id);
-  if (decision === "hold") {
-    await pc.comment(parent.id, `OK, the ${waiting.length} Engineer task${waiting.length === 1 ? "" : "s"} will wait until you say go.`);
-    return true;
-  }
-  const now = new Date().toISOString();
-  for (const c of waiting) state.set(`approved:${c.id}`, now), state.set(`ownreq:${c.id}`, now);
-  await pc.comment(
-    parent.id,
-    `Starting ${waiting.length} Engineer task${waiting.length === 1 ? "" : "s"}: ${waiting.map((c) => c.identifier).join(", ")}. They run ${cfg.max_concurrent ?? 2} at a time, and each one reports on its own task; reply **pr** there to open its PR.`,
-  );
-  log("sub-tasks approved", { issue: parent.identifier, tasks: waiting.map((c) => c.identifier) });
-  // Read each sub-task's request in the background; dispatch() queues the runs.
-  void (async () => {
-    for (const c of waiting) await handleRequest(c, "").catch((err) => reportError(c, err));
-  })();
-  return true;
 }
 
 /**
@@ -2306,6 +2290,8 @@ async function kernel(method, path, body, { key = cfg.runnerWritesKeyFile, ms = 
 /** A task's records, newest first, as tiering reads them (cards.ts asApproval). */
 const recordsOn = async (issue) => ((await kernel("GET", `/v1/writes?state=recent&task=${encodeURIComponent(issue.id)}&limit=50`)).records ?? []).map(asApproval);
 const kindOf = (action) => (action === "apply" ? "kernel.apply" : `runner.${action}`);
+/** Why the kernel would hold a Tier 0 write on this task for the owner now (autonomy off, a routine's cap), or null. */
+const heldNow = async (issue) => (await kernel("POST", "/v1/writes/held", { task: issue.id })).held;
 
 /**
  * File (or find, when the same request is already open) the record for one exact request, with the runner's plan from its
@@ -2317,18 +2303,26 @@ async function fileApproval(issue, { action, args, diff, ts, carries }) {
   // A local change's merge card carries its diff (docs/design/codehost-local.md §4), as an apply's does.
   const card = action === "apply" ? applyCard(args, diff ?? "") : diff ? { ...cardOf(action, args), details: `${cardOf(action, args).details}\n\n${diff}` } : cardOf(action, args);
   const plan = { ...planOf(...ts), card, ...(action === "apply" ? { targets: { diff: createHash("sha256").update(diff ?? "").digest("hex") } } : {}), ...(carries?.length ? { carries } : {}) };
-  const a = asApproval(await kernel("POST", "/v1/writes", { kind: kindOf(action), task: issue.id, identifier: issue.identifier, args, plan }));
+  const r = await kernel("POST", "/v1/writes", { kind: kindOf(action), task: issue.id, identifier: issue.identifier, args, plan });
+  const a = asApproval(r);
   log("approval filed", { issue: issue.identifier, approval: a.id, action, state: a.state, tier: a.tier, panel: a.panel });
+  if (r.state === "owner" && r.cap) await noteHeld(a);
   return a;
+}
+
+/**
+ * A record the kernel holds for the owner (a cap at filing, or the AI reviewer's yes held when it was claimed): one short
+ * note on its task, once per record, as the runner's (Paperclip never wakes an Engineer on it). The owner's decision does
+ * the rest: an approval runs it and starts the task's next run, a rejection's notice reaches the task.
+ */
+async function noteHeld(a) {
+  const key = `held-noted:${a.id}`;
+  if (state.get(key)) return;
+  state.set(key, new Date().toISOString());
+  await pc.comment(a.issueId, `Waiting on ${cfg.selfName}'s approval: ${a.sentence || a.action}, ${cfg.adminUrl}/approvals/${a.id}`).catch(() => {});
 }
 // ------------------------------------------------------------------ tiered approvals
 
-/**
- * The instance's autonomy (grants table, read fresh: it is the pause switch): off (every write is the owner's card, the
- * reviewer reading Tier 1 first: tiers.mjs autonomyCap), tier0 (Tier 0 runs at once; the reviewer only notes its verdict),
- * full (the reviewer decides Tier 1).
- */
-const autonomyNow = () => (["tier0", "full"].includes(readGrants()?.autonomy) ? readGrants().autonomy : "off");
 /** The guard found the change already satisfied on the target: no card; the evidence goes back to the agent instead. */
 class AlreadyApplied extends Error {}
 /**
@@ -2361,10 +2355,6 @@ function appsRegistry() {
   const instanceDir = process.env.AIDENHQ_INSTANCE_DIR?.replace(/^~(?=\/)/, process.env.HOME ?? "");
   return { all: [...(instanceDir ? read(join(instanceDir, "apps.yaml")) : []), ...modules], modules };
 }
-
-/** A run's issue never changes: run id → the issueId it worked on (null: none). */
-const runIssue = new Map();
-const traceOrigins = (full) => origins(pc, full, runIssue);
 
 /** Each connection's tool tags (read, write, destructive) from the compiled config; {} when it can't be read (grant changes then fail closed). */
 function connectionTags() {
@@ -2408,8 +2398,6 @@ async function commonTierState(issue, action, also = []) {
     taskStatus: full.status,
     records,
     also,
-    // The cap of the routine whose run started this chain (its `autonomy`, in the grants table by Paperclip routine id).
-    routineAutonomy: await traceOrigins(full).then(({ issues, complete }) => routineCap(issues, complete, grants?.routines)),
     connections: connectionTags(),
     ownerStarted: walked && ownerMadeTask(root),
     trialNoTap: trialNoTap(full, grants),
@@ -2619,8 +2607,9 @@ async function dependabotPr(repo, number, pr) {
 
 /** The instance change as tiering sees it: every changed file (and the agent.yaml of each handbook) at `baseRev` and at the change. */
 async function applyTierState(b, bump, baseRev = b.base) {
-  // instance.yaml beside any handbook: whether it is a module agent's fork (overrides.agents.<key>.handbook_fork) is read there.
-  const paths = [...new Set([...b.files, ...definitionsOf(b.files), ...(b.files.some((f) => /^agents\/[^/]+\/AGENTS\.md$/.test(f)) ? ["instance.yaml"] : [])])];
+  // instance.yaml beside any handbook or definition: whether it is a module agent's fork (overrides.agents.<key>.handbook_fork)
+  // and whether quiet start is on (tiers.mjs quietWakes) are read there.
+  const paths = [...new Set([...b.files, ...definitionsOf(b.files), ...(b.files.some((f) => /^agents\/[^/]+\/(AGENTS\.md|agent\.yaml)$/.test(f)) ? ["instance.yaml"] : [])])];
   const at = async (rev) => Object.fromEntries((await Promise.all(paths.map(async (p) => [p, await git(b.r.path, "show", `${rev}:${p}`).catch(() => undefined)]))).filter(([, t]) => t !== undefined));
   const [base, head] = [await at(baseRev), await at(b.sha)];
   return { sha: b.sha, files: b.files, base, head, pin: bump && !bump.error ? { forward: Boolean(bump.forward), back: Boolean(bump.back) } : null, ...(await moduleTierState(base["instance.yaml"], head["instance.yaml"])) };
@@ -2659,11 +2648,14 @@ const authorityOf = (st) => {
   return [authorityLines(diffs), diffs.some((d) => d.changes.some((c) => c.owner))];
 };
 
-/** The tier of a request now: classify() over the common state plus the action's own. Logged. */
+/**
+ * The tier of a request on its merits now: classify() over the common state plus the action's own. Logged. The kernel
+ * applies the caps (the instance's autonomy, a routine's) when the request is filed, so a Tier 0 here may come back a card.
+ */
 async function tierFor(issue, action, own, also = []) {
   const common = await commonTierState(issue, action, also);
   const s = { ...common, ...own };
-  const t = autonomyCap(classify(action, s), autonomyNow());
+  const t = classify(action, s);
   log("tier", { issue: issue.identifier, action, tier: t.tier, rule: t.rule, reject: Boolean(t.reject), panel: Boolean(t.panel), reviewFirst: Boolean(t.reviewFirst) });
   // The reviewer's earlier rejections on this task, attached to a fresh review of the changed request.
   const prior = priorDecisions(common.records, action, also, requestKey(action, s), requestPatches(action, s), common.requestChain);
@@ -2791,19 +2783,19 @@ async function reviewOne(a) {
   let input;
   try {
     if (notRunners(a) && a.action === "raise_cap") {
-      // The model gateway's spend-cap raise (the kernel files it): the owner's on its merits, read by the reviewer first. Its
-      // card is the change; every number on it is the gateway's.
+      // The model gateway's spend-cap raise (the kernel files it): Tier 2 from code, so it goes to the owner at once with no
+      // reviewer call (one the install-wide cap would refuse). Its card is the change; every number on it is the gateway's.
       input = { ...classify("raise_cap", {}), diff: [a.sentence, a.changes, a.cost, a.details].join("\n") };
     } else if (notRunners(a)) {
       // The kernel files them without classify(): earlier decisions on the task count as for any request (the card's digest
-      // is its content), and a routine's cap (tier0 or off) makes them review-first, as classify() does.
+      // is its content). The caps are the record's own (review-first, its cap), applied by the kernel when it was filed.
       const common = await commonTierState(issue, a.action);
       const prior = priorDecisions(common.records, a.action, [], requestKey(a.action, { digest: a.digest }), undefined, common.requestChain, requestTargets(a.action, a.args));
       const veto = priorPart(prior);
       const reviewed = { tier: 1, rule: `${a.action}`, reason: a.reason, previous: [...common.answers, ...prior.findings], relift: prior.relift, panel: a.panel === true, ...kernelCardDiff(a) };
       // Tier 2 on its merits (the owner's veto here, or the kernel's own tier before any autonomy cap): reviewed, then the owner's.
       const merit = veto ?? (a.baseTier === 2 ? { tier: 2, rule: `${a.action}`, reason: a.reason || "the kernel's tier on its merits is 2" } : undefined);
-      input = veto?.reject ? veto : autonomyCap(routineCapped(merit ? meritOwner({ ...reviewed, tier: 2, rule: merit.rule, reason: merit.reason }) : reviewed, common.routineAutonomy), autonomyNow());
+      input = veto?.reject ? veto : merit ? meritOwner({ ...reviewed, tier: 2, rule: merit.rule, reason: merit.reason }) : reviewed;
     } else input = await currentTier(issue, a, { withDiff: true });
   } catch (err) {
     input = { tier: 1, error: String(err instanceof UserError ? err.message : err.message ?? err).slice(0, 300), lasting: err instanceof UserError, stale: err instanceof MovedHead };
@@ -2897,8 +2889,8 @@ async function rejectedFollowUp(issue, a, post) {
   // Counted as tiering counts them (an owner's reply since lifts the rejections before it), so parked here is parked there.
   const { records } = await commonTierState(full, a.action);
   const next = afterRejection({ code: post.code, rejects: priorDecisions(records, a.action, [], undefined, undefined, undefined, requestTargets(a.action, a.args)).rejects, maxRejects: MAX_REJECTS, unsure: UNSURE });
-  if (next.tell === "parked") await tellParent(full, "parked", `**${full.identifier} is parked:** the AI reviewer rejected its ${a.action} ${MAX_REJECTS} times, so the runner stops sending it back (its notes are on ${full.identifier}): ${full.title}. Narrow or rewrite the request and reopen it with that, or cancel it.`);
-  if (next.tell === "decision") await tellParent(full, "decision", `**Two AI reviewers were unsure about ${full.identifier}'s ${a.action}:** ${full.title}. Their notes are on ${full.identifier}; its Engineer is fixing the change. If the request itself is unclear (the brief or its authorisation), say what you meant there.`);
+  if (next.tell === "parked") await tellAsker(full, "parked", `**${full.identifier} is parked:** the AI reviewer rejected its ${a.action} ${MAX_REJECTS} times, so the runner stops sending it back (its notes are on ${full.identifier}): ${full.title}. Narrow or rewrite the request and reopen it with that, or cancel it.`);
+  if (next.tell === "decision") await tellAsker(full, "decision", `**Two AI reviewers were unsure about ${full.identifier}'s ${a.action}:** ${full.title}. Their notes are on ${full.identifier}; its Engineer is fixing the change. If the request itself is unclear (the brief or its authorisation), say what you meant there.`);
   const key = `reject-dispatched:${a.id}`;
   if (!next.dispatch || state.get(key)) return;
   state.set(key, new Date().toISOString());
@@ -3139,7 +3131,7 @@ async function reviewScope(issue, chain, bases) {
 async function cardContext(issue, target, known, chain = "") {
   const bases = known ?? (await cardBases(target));
   // The decisions digest (readDecisions): from the instance repo's default branch, whatever the card's base; unread is none.
-  const decisions = await readDecisions(cfg.apply?.repo, githubDefault, repoRaw).catch((err) => void log("decisions unread", { err: String(err.message ?? err).slice(0, 200) }));
+  const decisions = await readDecisions(cfg.apply?.repo, githubDefault, repoRaw).catch((err) => void (/does not exist in|HTTP 404/.test(String(err.message ?? err)) || log("decisions unread", { err: String(err.message ?? err).slice(0, 200) }))); // no decisions.md is the empty state
   const { scope, siblings } = await reviewScope(issue, chain, bases);
   return { scope, siblings, sources: await cardSources(bases), decisions };
 }
@@ -3227,15 +3219,15 @@ async function rebuild(issue, action, args, ordered, branches, t) {
 
 /**
  * Whether the earlier approvals of these branches still cover the request (rebuild() and rebaseInCode()): every branch has
- * an approval record of the same action (and merge, and text); the reviewer's yes only while autonomy is full and the
- * request is still Tier 1 or lower (`t`: its tier now, undefined fails closed); and no later rejection of these branches,
+ * an approval record of the same action (and merge, and text); the reviewer's yes only while the request is still Tier 1 or
+ * lower (and no cap holds it: the kernel checks that when the replay is filed) (`t`: its tier now, undefined fails closed); and no later rejection of these branches,
  * or of the same patch on another branch. The records, or undefined.
  */
 async function approvalStands(issue, action, args, ordered, branches, t) {
   if (!t || t.reject) return undefined;
   const records = branches.map((b) => approvedRecord(issue.id, b));
   if (records.some((r) => !r || r.action !== action || r.merge !== Boolean(args.merge) || (args.text && r.text !== textHash(args.text)))) return undefined;
-  if (records.some((r) => r.by !== "owner") && !(autonomyNow() === "full" && t.tier <= 1)) return undefined;
+  if (records.some((r) => r.by !== "owner") && t.tier > 1) return undefined;
   // A later no on these branches (or the owner's veto) outranks an earlier yes; another branch's rejection doesn't.
   const cards = await recordsOn(issue);
   const since = records.map((r) => cards.find((c) => c.id === r.approval)?.decidedAt ?? "").sort()[0] ?? "";
@@ -3410,7 +3402,7 @@ function readGrants() {
     return undefined;
   }
 }
-const grantsPath = () => cfg.grants_file ?? join(process.env.AIDENHQ_CONFIG_DIR ?? join(REPO_ROOT, "config"), "grants", "grants.json");
+const grantsPath = () => join(process.env.AIDENHQ_CONFIG_DIR ?? join(REPO_ROOT, "config"), "grants", "grants.json");
 /** The instance commit this host last applied: the latest `instance_sha` setup recorded in revs.jsonl, beside the grants. */
 function deployedInstance() {
   try {
@@ -3438,27 +3430,17 @@ async function runTrialEdits() {
       const b = await fleetBranch(issue, workspace);
       if (b.error) throw new UserError(b.error);
       if (b.sha !== want.sha || b.r.branch !== want.branch) throw new UserError("the branch moved since the edit was shown; the Platform Engineer's next turn shows it again");
-      if (want.tier0) {
-        // Tier 0: recomputed now, and again against the exact main it lands on; anything higher gets a card next turn.
-        if (autonomyNow() === "off") throw new UserError("autonomy was turned off, so it needs a tap");
-        const bump = await productBump(b);
-        const t = await tierFor(issue, "apply", await applyTierState(b, bump));
-        if (t.reject || t.tier !== 0) throw new UserError(`it's no longer Tier 0 (${t.reason}), so it needs a card`);
-        const guard = async (main) => (await tierFor(issue, "apply", await applyTierState(b, bump, main))).tier === 0;
-        // Its record first: an apply is read by the AI reviewer at least (the kernel's floor), so it lands once approved.
-        const rec = await fileApproval(issue, { action: "apply", args: { repo: b.r.repo, branch: b.r.branch, sha: b.sha, files: b.files }, diff: await fleetDiffText(b, bump), ts: [t] });
-        if (rec.state !== "used") { await pc.comment(issueId, waitingFor(rec, issue)); continue; }
-        const out = await landFleet(issue, b.r, b.sha, b.files, `Tier 0: ${t.reason}`, `Tier 0 change (${issue.identifier}): ${t.rule}`, guard);
-        await reportOutcome(rec.id, out);
-        await closeTyped(issue, out);
-        continue;
-      }
-      if (!trialNoTap(await pc.issue(issueId), readGrants()) || !trialHandbookOnly(b.files, (await agentTexts(b)).base)) throw new UserError("it's no longer a handbook-only edit to an agent in trial, so it needs a tap");
-      // Checked again on the exact main it lands on: an agent that graduated meanwhile gets a card.
-      const guard = async (main) => trialHandbookOnly(b.files, await textsAt(b, main));
-      const rec = await fileApproval(issue, { action: "apply", args: { repo: b.r.repo, branch: b.r.branch, sha: b.sha, files: b.files }, diff: await fleetDiffText(b, await productBump(b)), ts: [{ tier: 0, rule: "trial-handbook", reason: "a handbook edit to an agent in trial: no tap needed" }] });
+      // Tier 0: recomputed now, and again against the exact main it lands on; anything higher gets a card next turn.
+      const bump = await productBump(b);
+      const t = await tierFor(issue, "apply", await applyTierState(b, bump));
+      if (t.reject || t.tier !== 0) throw new UserError(`it's no longer Tier 0 (${t.reason}), so it needs a card`);
+      const guard = async (main) => (await tierFor(issue, "apply", await applyTierState(b, bump, main))).tier === 0;
+      // Its record first: the kernel may hold it for the owner (autonomy off, a routine's cap), and then it is a card.
+      const rec = await fileApproval(issue, { action: "apply", args: { repo: b.r.repo, branch: b.r.branch, sha: b.sha, files: b.files }, diff: await fleetDiffText(b, bump), ts: [t] });
       if (rec.state !== "used") { await pc.comment(issueId, waitingFor(rec, issue)); continue; }
-      await reportOutcome(rec.id, await landFleet(issue, b.r, b.sha, b.files, "a handbook edit to an agent in trial: no tap needed", `Handbook edit to an agent in trial (${issue.identifier})`, guard));
+      const out = await landFleet(issue, b.r, b.sha, b.files, `Tier 0: ${t.reason}`, `Tier 0 change (${issue.identifier}): ${t.rule}`, guard);
+      await reportOutcome(rec.id, out);
+      await closeTyped(issue, out);
     } catch (err) {
       await pc.comment(issueId, `**The trial handbook edit didn't land:** ${String(err instanceof UserError ? err.message : err.stderr || err.message || err).trim().slice(0, 1000)}`).catch(() => {});
     }
@@ -3556,7 +3538,12 @@ async function runApprovals() {
   for (const a of records.map(asApproval)) {
     if (running.has(a.issueId)) continue; // after the run in progress
     const claimed = await kernel("POST", `/v1/writes/${a.id}/claim`).then(asApproval, (err) => void log("approval claim failed", { approval: a.id, err: String(err.message ?? err).slice(0, 200) }));
-    if (!claimed) continue;
+    if (!claimed) {
+      // Held for the owner instead (the kernel revalidates the AI reviewer's yes at the claim): the task hears it once.
+      const now = await kernel("GET", `/v1/writes/${a.id}`).catch(() => undefined);
+      if (now?.state === "owner") await noteHeld(asApproval(now));
+      continue;
+    }
     log("approval claimed", { approval: a.id, issue: a.identifier, action: a.action });
     // One card's trouble is that card's outcome: a claimed record never goes without one, and the others still run this tick.
     await runClaimed(claimed).catch(async (err) => {
@@ -3585,10 +3572,7 @@ async function runClaimed(claimed) {
   // reviewer approved it, or not checkable this minute: a fresh card for the reviewers.
   if (claimed.decidedBy?.startsWith("reviewer:")) {
     const issue = await pc.issue(claimed.issueId);
-    const t =
-      autonomyNow() !== "full"
-        ? { tier: 2, reason: "autonomy is no longer full" }
-        : await currentTier(issue, claimed).catch((err) => (err instanceof UserError ? { reject: true, tier: 2, reason: err.message } : { tier: 1, rule: "recheck", reason: `couldn't recheck it (${String(err.message ?? err).slice(0, 200)}), so it is reviewed again` }));
+    const t = await currentTier(issue, claimed).catch((err) => (err instanceof UserError ? { reject: true, tier: 2, reason: err.message } : { tier: 1, rule: "recheck", reason: `couldn't recheck it (${String(err.message ?? err).slice(0, 200)}), so it is reviewed again` }));
     const panelMissing = (t.panel || claimed.panel) && !claimed.decidedBy.includes("+");
     if (t.reject || t.tier > 1 || panelMissing || t.rule === "recheck") {
       const tier = t.reject || t.tier > 1 ? 2 : 1;
@@ -3616,7 +3600,7 @@ async function runClaimed(claimed) {
   const full = await pc.issue(claimed.issueId).catch(() => null);
   if (full && isAgentSubtask(full)) {
     const kind = !outcome.ok ? "failed" : (await graded(full.id)) ? "applied" : "done";
-    await tellParent(full, kind, appliedNote(claimed.identifier, claimed.id, outcome)).catch(() => {});
+    await tellAsker(full, kind, appliedNote(claimed.identifier, claimed.id, outcome)).catch(() => {});
   }
   if (full && outcome.ok && outcome.next) await nextRunAfter(full, claimed, outcome).catch((err) => log("next run after an approval failed", { approval: claimed.id, err: String(err.message ?? err).slice(0, 200) }));
   await flushOutcomes();
@@ -3714,8 +3698,9 @@ async function agentPublish(ctx, command, args) {
       only,
       text,
       check: async (ordered) => {
-        // The repo's own fast check (kernel/src/fastcheck.ts), in the job sandbox, before any card: a failure goes back to the agent.
-        const refused = ctx.box ? void log("fast check skipped: a computer job", { issue: ctx.issue.identifier }) : await fastChecks({ cfg: evalSandbox, log, git }, ordered);
+        // The repo's own fast check (kernel/src/fastcheck.ts), in the job sandbox (a box job's: its box), before any card: a
+        // failure goes back to the agent.
+        const refused = await fastChecks({ cfg: evalSandbox, log, git, ...(ctx.box ? { jail: inBox(ctx.box.container, ctx.workspace) } : {}) }, ordered);
         if (refused) throw new UserError(refused);
         // History rewritten in place (replace refs, grafts, shallow) shows one commit and publishes another: refused before tiering.
         await refuseRewritten(ordered);
@@ -3822,15 +3807,12 @@ async function agentReview(ctx, args) {
         await bindBranches(ordered, branches);
         // With `--body-file`, the description the card would carry, so the check reads the same Evidence section.
         const a = { action: command, args: branchCardArgs(branches, { merge: carriesMerge(command, ordered), text: command === "pr" && args.body ? { title: String(args.title ?? ""), body: String(args.body) } : undefined }) };
-        const mode = autonomyNow();
         const input = await currentTier(ctx.issue, a, { withDiff: true });
         const n = checksUsed(ctx.issue.id);
-        log("review check", { issue: ctx.issue.identifier, action: command, tier: input.reject ? "reject" : input.tier, rule: input.rule, mode, used: n });
+        log("review check", { issue: ctx.issue.identifier, action: command, tier: input.reject ? "reject" : input.tier, rule: input.rule, used: n });
         if (input.reject) throw new Checked(`Code refuses this ${command} before any review (rule \`${input.rule}\`): ${input.reason}. No reviewer was asked, and this check isn't counted.`);
-        if (input.tier === 0) throw new Checked(`Tier 0 (${input.reason}): \`aidenhq ${command}\` runs at once, with no review. This check isn't counted.`);
+        if (input.tier === 0) throw new Checked(`Tier 0 (${input.reason}): \`aidenhq ${command}\` runs at once, with no review (unless autonomy or a routine's cap holds it for ${cfg.selfName}). This check isn't counted.`);
         if (input.tier > 1 && !input.reviewFirst) throw new Checked(`Tier 2 (${input.reason}): ${cfg.selfName} decides the card, not the AI reviewer. File it with \`aidenhq ${command}\`; this check isn't counted.`);
-        // Autonomy off: the card is review-first (the reviewer's reject is final), so the check is worth asking.
-        if (mode === "tier0") throw new Checked(`Autonomy is ${mode}: ${cfg.selfName} decides every card, so there is no AI review to check against. File it with \`aidenhq ${command}\`; this check isn't counted.`);
         if (n >= REVIEW_CHECKS) throw new Checked(`No checks left on this task (${REVIEW_CHECKS} used; the next word from whoever asked gives ${REVIEW_CHECKS} more). File it with \`aidenhq ${command}\`: the card's review decides.`);
         const card = { action: command, ...cardText(command, a.args) };
         // Counted before the call, so a call cut off by a restart still counts.
@@ -3948,19 +3930,17 @@ async function showFleetDiff(issue, workspace) {
   const t = await agentTexts(b);
   const untrialed = untrialedNewAgents(b.files, t.base, t.head);
   if (untrialed.length) return `**Can't be applied:** a new agent starts in trial (\`trial: true\` in agents/${untrialed[0]}/agent.yaml, read-only grants, reporting to architect); its write grants come with a second change after the trial.`;
-  // The tier from the verified instance diff (autonomy off: Tier 0 is a card and the rest review-first, tiers.mjs
-  // autonomyCap). Tier 0 lands after this run like the trial exception.
-  const on = autonomyNow() !== "off";
+  // The tier from the verified instance diff. Tier 0 lands after this run (runTrialEdits), unless the kernel would hold it
+  // for the owner now (autonomy off, a routine's cap): then it is a card like the rest.
   const bump = await productBump(b).catch((e) => ({ error: e.message }));
   if (bump?.error) return `**Can't be applied:** ${bump.error}.`;
   const st = await applyTierState(b, bump);
   const tier = await tierFor(issue, "apply", st);
   if (tier.reject) return `**Can't be applied:** ${tier.reason}.`;
-  // Only on a task the owner or the Agent Architect started: anyone else's handbook edit (or a chain of agent comments) gets a card.
-  if (on ? tier.tier === 0 : trialHandbookOnly(b.files, t.base) && trialNoTap(await pc.issue(issue.id), readGrants())) {
-    // The trial exception: lands after this run, with no card (runTrialEdits). The diff stays here, in Activity.
-    state.set("trial_edits", JSON.stringify({ ...JSON.parse(state.get("trial_edits") || "{}"), [issue.id]: { sha: b.sha, branch: b.r.branch, ...(on ? { tier0: true } : {}) } }));
-    return `**${on ? `Runs at once (Tier 0: ${tier.reason})` : "Handbook edit to an agent in trial"}** (commit \`${b.sha.slice(0, 12)}\`): no tap needed, it lands in a moment.\n\n\`\`\`diff\n${diff.replaceAll("```", "‵‵‵")}\n\`\`\``;
+  if (tier.tier === 0 && !(await heldNow(issue))) {
+    // Lands after this run (runTrialEdits). The diff stays here, in Activity.
+    state.set("trial_edits", JSON.stringify({ ...JSON.parse(state.get("trial_edits") || "{}"), [issue.id]: { sha: b.sha, branch: b.r.branch } }));
+    return `**Runs at once (Tier 0: ${tier.reason})** (commit \`${b.sha.slice(0, 12)}\`): no tap needed, it lands in a moment.\n\n\`\`\`diff\n${diff.replaceAll("```", "‵‵‵")}\n\`\`\``;
   }
   // A review-first card (new module authority, or autonomy off) is filed for the reviewer (Tier 1); its approve goes on to the owner.
   const reviewFirst = Boolean(tier.reviewFirst);
@@ -3982,17 +3962,17 @@ async function agentApply(ctx) {
   return `Nothing to run: when your turn ends, the runner shows ${cfg.selfName} the diff of your committed change as an approval card, and it lands on their tap. End your turn with the change committed, saying in one line what it does.`;
 }
 
-/** `aidenhq engine <claude|codex|codex-openrouter|openrouter> [model]`: this request again, on another engine or model. */
+/** `aidenhq engine openrouter [model]`: this request again, on another OpenRouter model. */
 async function agentEngine(ctx, args) {
   const asked = String(args.engine ?? "").trim().toLowerCase();
-  if (!engineKinds().includes(asked) && asked !== "opencode") throw new UserError(`Name the engine: ${engineKinds().join(", ")}, and optionally a model.`);
-  const kind = resolveEngine({ engine: asked }, cfg).kind; // "openrouter": OpenRouter models, on the primary engine for them
+  if (!engineKinds().includes(asked) && asked !== "openrouter") throw new UserError(`Name the engine: openrouter${engineKinds().length ? ` (or ${engineKinds().join(", ")})` : ""}, and optionally a model.`);
+  const kind = resolveEngine({ engine: asked }, cfg).kind;
   const engineers = await pc.engineerAgents();
   if (!pickerFor({ kind }, engineers)) throw new UserError(`There's no ${kind} Engineer set up.`);
   const raw = String(args.model ?? "").trim();
   let model;
   if (raw) {
-    model = modelPrefix(kind) ? resolveOpenRouterModel(raw, openrouterModels(engineers)) : kind === "claude" ? (isClaudeModel(raw) ? raw.toLowerCase() : undefined) : resolveModelAlias(raw, codexModels());
+    model = modelPrefix(kind) ? resolveOpenRouterModel(raw, openrouterModels(engineers)) : raw;
     if (!model) throw new UserError(`"${raw}" isn't a ${kind} model I know.`);
   }
   ctx.engine = resolveEngine({ engine: kind, model }, cfg);
@@ -4096,12 +4076,14 @@ async function agentMerge(ctx, args) {
   states.forEach((s, i) => s.patch && (bound[i].patch = s.patch)); // the card carries each PR's content key
   const bad = tiers.find((t) => t.reject);
   if (bad) throw new UserError(`Not done: ${bad.reason}.`);
-  const now = bound.filter((_, i) => tiers[i].tier === 0);
-  const card = bound.filter((_, i) => tiers[i].tier !== 0);
+  // Tier 0 merges run from the merge queue, unless the kernel would hold them now: then they go on the card too.
+  const zero = tiers.some((t) => t.tier === 0) && !(await heldNow(ctx.issue));
+  const now = bound.filter((_, i) => zero && tiers[i].tier === 0);
+  const card = bound.filter((p) => !now.includes(p));
   if (now.length) requestAutoMerge(ctx.issue, now);
   const merging = now.length ? `Merging ${now.map((p) => `#${p.number}`).join(", ")} now, each as soon as its named checks are green on its current head; results are posted on this task.` : "";
   if (!card.length) return `${merging} No card is needed. End your turn now: the runner wakes you if a check fails and posts each merge.`;
-  const rest = tiers.filter((t) => t.tier !== 0);
+  const rest = tiers.filter((_, i) => !now.includes(bound[i]));
   const a = await fileApproval(ctx.issue, { action: "merge", args: { prs: card, ...(gap !== undefined ? { gap } : {}) }, ts: rest });
   return `${merging ? `${merging} ` : ""}${waitingFor(a, ctx.issue)} Once approved, ${card.map((p) => `#${p.number}`).join(", ")} merge one at a time${gap !== undefined ? `, ${gap} minutes apart` : ""}, each only at the commit the card shows, with green checks and a green base branch (outside ${cfg.agentsOrg ?? "the agents org"} also approved on GitHub), or the queue stops and says why on the task.`;
 }
@@ -4119,6 +4101,8 @@ async function agentClose(ctx, args) {
   if (local.length) {
     const t = await tierFor(ctx.issue, "close", { prs: local });
     if (t.tier !== 0) throw new UserError(`Not closed: ${t.reason}.`);
+    const held = await heldNow(ctx.issue);
+    if (held) throw new UserError(`Not closed: ${held}. Closing runs only while nothing holds the task's writes for ${cfg.selfName}; ask them to close it.`);
     const lines = [];
     for (const p of local) lines.push(`${p.url}: ${await localHost.close(p.repo, p.number).catch((err) => `not closed (${String(err.message).slice(0, 200)})`)}. Reason: ${reason.slice(0, 300)}`);
     return lines.join("\n");
@@ -4127,9 +4111,10 @@ async function agentClose(ctx, args) {
   const isBot = (a) => a.login === DEPENDABOT && a.type === "Bot";
   const read = await Promise.all(prs.map(async (p) => (sameRepo(p.repo, cfg.productRepo) ? { ...p, dependabot: isBot(await prAuthor(p.repo, p.number).catch(() => ({}))) } : p)));
   const t = await tierFor(ctx.issue, "close", { prs: read });
-  // No card for a close: with autonomy off (the pause switch) it is refused, like any other Tier 0 run.
-  if (t.rule === "autonomy-off") throw new UserError(`Not closed: ${t.reason}. Closing PRs runs only while autonomy is on; ask ${cfg.selfName} to close them.`);
   if (t.tier !== 0) throw new UserError(`Not closed: ${t.reason}. Only PRs in the agents org (${cfg.agentsOrg}) and the product repo's Dependabot PRs can be closed; the instance repo's and the product repo's other PRs are ${cfg.selfName}'s.`);
+  // No card for a close: held by a cap (autonomy off, a routine's), it is refused instead.
+  const held = await heldNow(ctx.issue);
+  if (held) throw new UserError(`Not closed: ${held}. Closing PRs runs only while nothing holds the task's writes for ${cfg.selfName}; ask them to close them.`);
   const lines = await merges.closePrs(prs, reason, mergeGithub);
   return lines.join("\n");
 }
@@ -4311,7 +4296,6 @@ class MovedHead extends UserError {}
  */
 async function startJob({ issue, instructions }) {
   const controller = new AbortController();
-  let gcp;
   running.set(issue.id, { controller, identifier: issue.identifier, startedAt: new Date().toISOString(), request: instructions, agent: issue.assigneeAgentId });
   reportActivity();
   let jobId;
@@ -4350,7 +4334,8 @@ async function startJob({ issue, instructions }) {
     task = await syncPicker(issue, full, task);
     const engine = task.engine ?? resolveEngine({}, cfg);
 
-    const workspace = await prepareWorkspace(issue, state.task(issue.id), { copy: Boolean(engine.box) });
+    // A copy that shares no file with the runner's cache: the job's computer mounts it read-write.
+    const workspace = await prepareWorkspace(issue, state.task(issue.id), { copy: true });
     // The folder a job gets read-write: inside the work dir, no symlink on the way (bwrap would bind its target).
     safeWorkspace(cfg.workDir, workspace);
     // PRs merged or closed since the last run: never keep working on them.
@@ -4361,11 +4346,6 @@ async function startJob({ issue, instructions }) {
     const stale = await staleRef(`${instructions}\n${full.description ?? ""}`, repos.map((r) => r.path));
     if (stale) throw new UserError(`Not started: ${stale}. Fix the brief and send it again.`);
     state.updateTask(issue.id, { engine });
-    // Grafana and Google Cloud reads for an Engineer with private reads: a one-hour gcloud token of the job's own.
-    gcp = observes(engine) && !engine.box
-      ? await gcpSession({ credentialsFile: cfg.gcp.credentialsFile, dir: join(cfg.stateDir, "gcloud", issue.identifier), project: cfg.gcp.projects[0], log: (m, f) => log(m, { issue: issue.identifier, ...f }) })
-      : undefined;
-    if (gcp && gcp.state !== "ok" && gcp.state !== "missing") log("gcp unavailable for the job", { issue: issue.identifier, state: gcp.state, detail: gcp.detail });
 
     // The job's log is the kernel's (its path comes back when the job starts).
     let logPath = "";
@@ -4393,41 +4373,26 @@ async function startJob({ issue, instructions }) {
     // A specialised Engineer (Platform Engineer) brings its own handbook; the others share one persona per engine.
     const assigned = engineers.find((a) => a.id === full.assigneeAgentId);
     const brief = typeof assigned?.metadata?.brief === "string" ? assigned.metadata.brief : "";
-    const build = typeof assigned?.metadata?.build === "string" ? assigned.metadata.build : "";
     const persona = brief ? undefined : personaFor(engine.kind, engineers, assigned);
-    // Billed to the Engineer (a label-only task: the first one on its engine, else on a gateway engine).
-    const agentId = assigned?.id ?? (engineers.find((a) => a.metadata?.box !== true && engineOf(a) === engine.kind) ?? engineers.find((a) => a.metadata?.box !== true && viaGateway(cfg, engineOf(a))))?.id ?? null;
-    // The agent's jobcaps (grants table): its reads of connections, through the gateway with the job token. A box job reaches
-    // its connections through the launcher instead.
-    const jobcaps = engine.box ? [] : jobcapsFor(cfg, engine, readGrants()?.agents?.[agentId]?.jobcaps ?? []);
-    const reading = new Set(jobcapServers(cfg, jobcaps).map((s) => s.name));
-    // Private reads for an Engineer with them, and the Slack messages the task came from.
-    const observe = observes(engine) && !engine.box
-      ? {
-          grafana: reading.has("grafana"),
-          slack: reading.has("slack"),
-          glean: reading.has("glean"),
-          clickhouse: reading.has("clickhouse"),
-          sources: slackSources(`${full.description ?? ""}\n${parent?.description ?? ""}\n${instructions}`),
-          gcp: { state: gcp.state, detail: gcp.detail, projects: cfg.gcp.projects },
-        }
-      : undefined;
+    // Billed to the Engineer (a label-only task: the first general one on its engine, else any general one).
+    const general = generalEngineers(engineers);
+    const agentId = assigned?.id ?? (general.find((a) => engineOf(a) === engine.kind) ?? general.find((a) => engineOf(a)))?.id ?? null;
     // Comments while it works reach an engine that takes them (live_input).
     const channel = {};
     Object.assign(running.get(issue.id), { channel, who: persona?.name });
     // The conversation (all of it for a new session, what's new for a resumed one) and where the work stands.
     const { thread, stand } = await conversation(issue, workspace, { instructions, resumed, persona });
-    // A box job works in /workspace: the prompt names the paths it sees.
-    const seen = engine.box ? { workspace: "/workspace", repos: repos.map((r) => ({ ...r, path: r.path.replace(workspace, "/workspace") })) } : { workspace, repos };
+    // The job works in its computer's /workspace: the prompt names the paths it sees.
+    const seen = { workspace: "/workspace", repos: repos.map((r) => ({ ...r, path: r.path.replace(workspace, "/workspace") })) };
     const prompt = resumed
-      ? followUpPrompt({ user: cfg.selfName, instructions, ...seen, branches, files, primer, crew, observe, thread, stand, brief })
-      : firstPrompt({ user: cfg.selfName, task: full, ...seen, branches, instructions, files, primer, persona, crew, observe, thread, stand, team: crewNames(engineers), brief, build, orgs: cfg.hostOrgs });
+      ? followUpPrompt({ user: cfg.selfName, instructions, ...seen, branches, files, primer, crew, reads: observes(engine), thread, stand, brief })
+      : firstPrompt({ user: cfg.selfName, task: full, ...seen, branches, instructions, files, primer, persona, crew, reads: observes(engine), thread, stand, team: crewNames(engineers), brief, orgs: cfg.hostOrgs });
     const tipsBefore = await branchTips(workspace);
     const identity = await botIdentity();
     const ghToken = await jobGhToken(app, repos.map((r) => r.slug), appFor).catch((err) => (log("no gh token for the job", { issue: issue.identifier, err: String(err.message ?? err).slice(0, 200) }), undefined));
-    // A box job: its box first (the task's last one confirmed gone), bound to this task and to the helper token it will use.
+    // Its box first (the task's last one confirmed gone), bound to this task and to the helper token it will use.
     const helperToken = randomBytes(24).toString("hex");
-    if (engine.box) box = await startBox({ issue, agentId, workspace, helperToken, identity, engine });
+    box = await startBox({ issue, agentId, workspace, helperToken, identity, engine });
     if (stopping) return; // the runner is restarting: the job resumes after it (RESUME_KEY)
     tools = { issue, workspace, instructions, brief: Boolean(brief), kind: engine.kind, reads: observes(engine), who: persona?.name, signal: controller.signal, jobId, box, agentId };
     const helper = repoHelper.register(tools, helperToken);
@@ -4441,7 +4406,7 @@ async function startJob({ issue, instructions }) {
         agent: agentId, task: issue.id, label: issue.identifier, workspace: { module: "engineering", id: basename(workspace) }, prompt,
         ...(sessionId ? { session: sessionId } : {}), engine: { kind: engine.kind, model: engine.model ?? "", effort: engine.effort ?? "" },
         env: { ...helper.env, ...identityEnv(identity), ...(ghToken ? { GH_TOKEN: ghToken, AIDENHQ_GH_AUTH: ghToken } : {}) },
-        ...(gcp ? { cloud: { root: gcp.root, env: gcp.env } } : {}), ...(box ? { box } : {}),
+        box,
       });
     } finally {
       running.get(issue.id).starting = false;
@@ -4456,7 +4421,7 @@ async function startJob({ issue, instructions }) {
     if (started.live_input) channel.send = (text) => jobsApi.input(started.id, text);
     if (stopping) return void (handedOver = true); // the next runner follows it (state.runningJobs): its box and session stay
     const watch = followJob(jobsApi, started.id, { signal: controller.signal, detach: detach.signal, onProgress: progressOf(issue.id), log });
-    launched = { issue, full, workspace, engine, jobId, logPath, tipsBefore, tools, gcp, helper, watch, box, keep: box && keepBox(issue, box, helper) };
+    launched = { issue, full, workspace, engine, jobId, logPath, tipsBefore, tools, helper, watch, box, keep: keepBox(issue, box, helper) };
   } catch (err) {
     if (stopping) return;
     // Paperclip refusing "in progress" on a task blocked meanwhile is no failure: nothing was attempted, so the job is
@@ -4464,6 +4429,10 @@ async function startJob({ issue, instructions }) {
     if (blockedRefusal(err)) {
       if (jobId) state.finishJob(jobId, "cancelled", "blocked");
       return void (state.park({ issueId: issue.id, instructions, retryAfter: new Date(Date.now() + 5_000).toISOString() }), log("job parked: its task is blocked", { issue: issue.identifier }));
+    }
+    if (err instanceof BoxesFull) {
+      if (jobId) state.finishJob(jobId, "cancelled", "no free computer");
+      return void (state.park({ issueId: issue.id, instructions, retryAfter: new Date(Date.now() + 60_000).toISOString() }), log("job parked: every computer is busy", { issue: issue.identifier }));
     }
     if (jobId) state.finishJob(jobId, "failed", String(err).slice(0, 500));
     // A turn that failed before its run started (its workspace couldn't be prepared) is still this task's latest job:
@@ -4481,7 +4450,6 @@ async function startJob({ issue, instructions }) {
     if (!launched && !handedOver) {
       // A box that never got its run (a failed start, a restart): destroyed, never left holding the task.
       if (box) await stopBox(issue, box).catch((err) => log("box release failed", { issue: issue.identifier, err: String(err.message ?? err).slice(0, 300) }));
-      gcp?.done();
       await endTurn(issue, tools);
     }
   }
@@ -4495,6 +4463,10 @@ const progressOf = (issueId) => (p) => (Object.assign(running.get(issueId) ?? {}
 const boxCall = launcher(cfg);
 const boxKey = (issueId) => `box:${issueId}`;
 const helperPort = () => Number(new URL(repoHelper.url()).port);
+/** A command in a box job's box, in the clone at host `path` (its workspace is the box's /workspace), with a time limit there too. */
+const inBox = (container, workspace) => (argv, path) => ["docker", "exec", "-e", "CI", "-e", "AIDENHQ_BASE", "-w", path.replace(workspace, "/workspace"), container, "timeout", "-s", "KILL", "100", ...argv];
+/** Every computer is busy (the launcher's 503): the turn waits for a free one instead of failing. */
+class BoxesFull extends Error {}
 
 /**
  * A box for this turn of a box job: the task's last box released first (confirmed gone: two executions never share a
@@ -4503,7 +4475,8 @@ const helperPort = () => Number(new URL(repoHelper.url()).port);
 async function startBox({ issue, agentId, workspace, helperToken, identity, engine }) {
   const before = state.get(boxKey(issue.id));
   if (before) await stopBox(issue, { container: before });
-  const box = await boxCall("/job", { agentId, issueId: issue.id, identifier: issue.identifier, workspace, engine: engine.kind, state: engineState(cfg, engine.kind, issue.id), helperPort: helperPort(), helperToken, identity: { name: identity.name, email: identity.email } });
+  const box = await boxCall("/job", { agentId, issueId: issue.id, identifier: issue.identifier, workspace, engine: engine.kind, state: engineState(cfg, engine.kind, issue.id, readGrants()?.agents?.[agentId]?.skills ?? []), helperPort: helperPort(), helperToken, identity: { name: identity.name, email: identity.email } })
+    .catch((err) => { throw err.status === 503 ? new BoxesFull(err.message) : err; });
   state.set(boxKey(issue.id), box.container);
   log("box job started", { issue: issue.identifier, container: box.container });
   return { container: box.container, envFile: box.envFile, outDir: box.outDir };
@@ -4546,7 +4519,7 @@ async function endTurn(issue, tools) {
  * The end of an Engineer's turn: its reply, branches and outputs on the task. The same for a run this
  * runner started and for one it adopted after a restart (`full` unknown until now).
  */
-async function finishTurn({ issue, full, workspace, engine, jobId, logPath, tipsBefore, tools, gcp, helper, watch, box, keep }) {
+async function finishTurn({ issue, full, workspace, engine, jobId, logPath, tipsBefore, tools, helper, watch, box, keep }) {
   let result;
   let reporting = false;
   try {
@@ -4566,6 +4539,14 @@ async function finishTurn({ issue, full, workspace, engine, jobId, logPath, tips
     // A box job's process may outlive its `docker exec` client (a cancel, a timeout): the box goes, confirmed, before
     // anything below reads, signs or cleans the workspace. If it can't be confirmed, nothing below runs.
     if (box) await stopBox(issue, box);
+    // A session the engine can't find (one made before its Engineer had a computer: its record names a host path): the turn
+    // runs again at once on a fresh session, with the whole conversation in its prompt. Not a failure, and nothing is posted.
+    if (result.code && tools?.run?.sessionId && /no rollout found for thread id/.test(logTail(logPath, 20))) {
+      state.updateTask(issue.id, { session_id: null });
+      state.finishJob(jobId, "interrupted", "session not found");
+      queue.push({ issue, instructions: tools.instructions ?? "" });
+      return void log("session not found: the turn runs again on a fresh session", { issue: issue.identifier, session: tools.run.sessionId });
+    }
     if (result.sessionId) {
       state.updateTask(issue.id, { session_id: result.sessionId });
       state.set(`session_engine:${issue.id}`, engine.kind);
@@ -4648,9 +4629,6 @@ async function finishTurn({ issue, full, workspace, engine, jobId, logPath, tips
     else await reportError(issue, err);
   } finally {
     if (!result?.detached) {
-      // Gateway engines' jobs are billed by the model gateway; only the other engines' tokens are self-reported (usage events).
-      if (logPath && !viaGateway(cfg, engine.kind)) reportUsage(jobUsage(logPath, engine, result?.usage));
-      gcp?.done();
       await endTurn(issue, tools);
     }
   }
@@ -4811,8 +4789,9 @@ async function handleParentPr(parent, fresh) {
   const asks = fresh.filter((c) => parseCommand(c.body) === "pr");
   if (!asks.length) return false;
   const engineers = await pc.engineerAgents();
-  // Approved sub-tasks the Researcher made, and the parts the user gave Engineers themselves.
-  const kids = (await pc.children(parent.id)).filter((c) => (isAgentSubtask(c) && state.get(`approved:${c.id}`)) || isUserPart(c, engineers));
+  // Only the parts the user gave Engineers themselves: his "pr" publishes with no card, so it never reaches a sub-task an agent
+  // wrote (that one files its own push/PR records, tiered by the kernel, or takes his "pr" on the sub-task itself).
+  const kids = (await pc.children(parent.id)).filter((c) => isUserPart(c, engineers));
   if (!kids.length) return false;
   for (const c of asks) state.markHandled(c.id, parent.id);
   kids.sort((a, b) => a.identifier.localeCompare(b.identifier, undefined, { numeric: true }));
@@ -4846,14 +4825,15 @@ async function handleParentPr(parent, fresh) {
 // retried on the next finish), so this keeps two siblings finishing together from posting it twice.
 const summarizing = new Set();
 /**
- * When the last of a parent's approved Engineer sub-tasks finishes, post one summary on the parent
+ * When the last of a parent's agent-made Engineer sub-tasks finishes, post one summary on the parent
  *: otherwise the parent stays silent after "Starting N tasks" while the results are spread over
  * N tasks. Once per batch: keyed on the newest job among the siblings.
  */
 async function reportToParent(issue) {
   const full = await pc.issue(issue.id);
-  if (!isAgentSubtask(full) || !state.get(`approved:${issue.id}`)) return;
-  const siblings = (await pc.children(full.parentId, ALL_STATUSES)).filter((c) => isAgentSubtask(c) && state.get(`approved:${c.id}`));
+  if (!isAgentSubtask(full)) return;
+  const engineers = await pc.engineerAgents();
+  const siblings = (await pc.children(full.parentId, ALL_STATUSES)).filter((c) => isAgentSubtask(c) && engineers.some((e) => e.id === c.assigneeAgentId));
   const busy = (c) => running.has(c.id) || queue.some((j) => j.issue.id === c.id) || (!state.lastJob(c.id) && ["todo", "in_progress"].includes(c.status));
   if (!siblings.length || siblings.some(busy)) return;
   const newest = Math.max(...siblings.map((c) => state.lastJob(c.id)?.id ?? 0));
@@ -4875,7 +4855,7 @@ async function reportToParent(issue) {
   summarizing.add(full.parentId);
   try {
     // Only when it is the last word (notices.ts summaryKind): with every task graded and nothing asked, the grades say it.
-    await tellParent(full, summaryKind(rows), text);
+    await tellAsker(full, summaryKind(rows), text);
   } finally {
     summarizing.delete(full.parentId);
   }
@@ -4896,12 +4876,7 @@ async function removeWorkspace(issue, workspace) {
   const dirty = await dirtyCheckouts(repos);
   if (dirty.length) return { dirty, kept: 0 };
   for (const r of repos) await keepBranches(r.path, join(cfg.workDir, "repos", r.org, r.name), issue.identifier);
-  removeLayers(workspace); // a job's overlay leaves work dirs only their owner can enter: made writable, then removed
-  try {
-    removeLayers(cowRoot(cfg, workspace)); // its copy-on-write cache layers
-  } catch (err) {
-    log("cache layers not removed", { issue: issue.identifier, err: String(err.message ?? err).slice(0, 200) });
-  }
+  removeLayers(workspace); // read-only files a job left (Go's module cache): made writable, then removed
   state.updateTask(issue.id, { workspace: null });
   return { dirty };
 }
@@ -5405,7 +5380,7 @@ async function mergeLocalApproved(issue, a) {
   const box = JSON.parse(state.get("local_merges") || "{}");
   const prs = a.args.prs.map((p) => ({ repo: p.repo, number: p.number, url: p.url, head: p.head }));
   // A second approved card on the task waits behind the first one's changes.
-  box[issue.id] = { identifier: issue.identifier, since: box[issue.id]?.since ?? Date.now(), prs: [...(box[issue.id]?.prs ?? []), ...prs] };
+  box[issue.id] = { ...box[issue.id], identifier: issue.identifier, since: box[issue.id]?.since ?? Date.now(), prs: [...(box[issue.id]?.prs ?? []), ...prs] };
   state.set("local_merges", JSON.stringify(box));
   lastMergeCheck = 0;
   return { ok: true, text: `Merging ${a.args.prs.map((p) => p.url).join(", ")} one at a time, each once its checks are green on the approved commit. Results are posted on ${issue.identifier}.` };
@@ -5417,7 +5392,7 @@ async function runLocalMerges() {
   const box = JSON.parse(state.get("local_merges") || "{}");
   for (const [issueId, q] of Object.entries(box)) {
     const p = q.prs[0];
-    let done;
+    let done, merged;
     try {
       const required = await localRequired(p);
       const now = await localHost.readChange(p.repo, p.number);
@@ -5448,16 +5423,24 @@ async function runLocalMerges() {
       state.branches(issueId).filter((b) => String(b.pr_url ?? "").toLowerCase() === p.url.toLowerCase()).forEach((b) => state.updateBranch(issueId, b.repo, b.branch, { merged: 1 }));
       log("local change merged", { issue: q.identifier, url: p.url, sha });
       done = `**Merged** ${p.url} as \`${sha.slice(0, 12)}\` on its base branch.`;
+      merged = true;
     } catch (err) {
       done = `**Not merged:** ${err.code ? err.message : `${p.url}: ${String(err.message ?? err).slice(0, 300)}`}`;
       log("local merge refused", { issue: q.identifier, url: p.url, code: err.code ?? "error" });
       q.prs = [p]; // nothing after a refused one merges on this card
     }
     q.prs.shift();
+    q.done = [...(q.done ?? []), { url: p.url, head: p.head, status: merged ? "merged" : "refused", note: done }];
     if (q.prs.length) box[issueId] = { ...q, since: Date.now(), greenAt: undefined, askedAgain: undefined };
     else delete box[issueId];
     state.set("local_merges", JSON.stringify(box));
     await pc.comment(issueId, done).catch(() => {});
+    // The card's last change ended: the task finishes as a GitHub merge queue's does (its status through the finish gate, the
+    // delegator told on the parent, the tasks that opened these changes closed).
+    if (!q.prs.length) {
+      const queue = { identifier: q.identifier, state: q.done.every((x) => x.status === "merged") ? "done" : "failed", prs: q.done };
+      await finishMerges(issueId, queue, q.done.map((x) => x.note), { posted: true }).catch((err) => log("local merges finish failed", { issue: q.identifier, err: String(err.message ?? err).slice(0, 200) }));
+    }
   }
 }
 
@@ -5850,9 +5833,6 @@ function adoptRuns() {
     running.set(issue.id, { controller, jobId: job.id, identifier: issue.identifier, startedAt: job.started_at, request: run.instructions, pid: run.pid, logPath: job.log_path, channel, who: run.who, info: { engine: engineLabel(run.engine), mode: "working", repo: run.repos } });
     log("following a running job again", { issue: issue.identifier, job: run.kernelJob });
     void (async () => {
-      const gcp = observes(run.engine)
-        ? await gcpSession({ credentialsFile: cfg.gcp.credentialsFile, dir: join(cfg.stateDir, "gcloud", issue.identifier), project: cfg.gcp.projects[0], log: (m, f) => log(m, { issue: issue.identifier, ...f }) }).catch(() => undefined)
-        : undefined;
       // A box job: its lease renewed and its helper binding re-registered, the launcher's record checked against ours. A box
       // gone (its lease lapsed while no runner followed it) means a dead run: the job is stopped and the task resumes from its
       // session in a new box, once this one is confirmed gone.
@@ -5875,7 +5855,7 @@ function adoptRuns() {
         }
       }
       const watch = followJob(jobsApi, run.kernelJob, { signal: controller.signal, detach: detach.signal, onProgress: progressOf(issue.id), log });
-      await finishTurn({ issue, workspace: run.workspace, engine: run.engine, jobId: job.id, logPath: job.log_path, tipsBefore: run.tipsBefore, tools, gcp, helper, watch, box: run.box, keep: run.box && keepBox(issue, run.box, helper) });
+      await finishTurn({ issue, workspace: run.workspace, engine: run.engine, jobId: job.id, logPath: job.log_path, tipsBefore: run.tipsBefore, tools, helper, watch, box: run.box, keep: run.box && keepBox(issue, run.box, helper) });
     })();
   }
   if (lost.length) state.set(RESUME_KEY, JSON.stringify([...JSON.parse(state.get(RESUME_KEY) || "[]"), ...lost]));

@@ -15,7 +15,7 @@ import { flow, git } from "./flow-harness.mjs";
 import { State } from "../src/state.ts";
 
 const url = (n) => `https://github.com/acme/app/pull/${n}`;
-/** As the fake agent writes it (test/fakes/claude.mjs): two identical blocks, `allowed` the one saying allow = true. */
+/** As the fake agent writes it (test/fakes/agent.mjs): two identical blocks, `allowed` the one saying allow = true. */
 const policy = (allowed) => [0, 1].map((i) => `# block ${i}\n\nx1\nx2\nx3\nallow = ${i === allowed}\ny1\ny2\ny3\n`).join("\n");
 
 /** A scenario: its own flow and the helpers over it; `trustedBaseUnread`: how often the log may say so (the blip's one). */
@@ -151,7 +151,7 @@ describe("flow-merge-path", { concurrency: true }, () => {
     moveMain();
     const moved = git(t.dir, "--git-dir", join(t.dir, "github/acme/app.git"), "diff-tree", "--no-commit-id", "--name-only", "-r", "main");
     const cards = t.paperclip.approvals.size;
-    const runs = t.claudeRuns().length;
+    const runs = t.agentRuns().length;
     prs[14] = { ...prs[14], mergeable: "CONFLICTING" };
     setPrs();
     await restart(); // the open-PR read runs once a minute: a fresh runner reads it now
@@ -173,7 +173,7 @@ describe("flow-merge-path", { concurrency: true }, () => {
     assert.equal(git(ws, "status", "--porcelain"), "", "nothing reads as reverting main");
     assert.ok(existsSync(join(ws, moved)), "main's new file is there");
     await t.idle(1000);
-    assert.ok(!t.claudeRuns().slice(runs).some((r) => /Rebase the PR's branch/.test(r.prompt)), "no Engineer job");
+    assert.ok(!t.agentRuns().slice(runs).some((r) => /Rebase the PR's branch/.test(r.prompt)), "no Engineer job");
     assert.ok(!t.partComments().some((c) => /Asking for one rebase/.test(c)), "no rebase request");
   });
 

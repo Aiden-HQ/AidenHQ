@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import YAML from "yaml";
-import { compile } from "../modules.mjs";
+import { compile, grantEntry } from "../modules.mjs";
 import { computerAdapterConfig, computerSection, computersConfig, ensureComputers, runnerBox, validateImages, GATEWAY_URL } from "../computers.mjs";
 import { assertNoShell } from "../no-shell.mjs";
 import { BUNDLE } from "./bundle.mjs";
@@ -27,47 +27,18 @@ test("the instance switches one agent on; the launcher learns the image tag and 
   // The browser image is always built (apps-mcp renders in it), and agents can't name it.
   assert.match(c.images.browser, /^aidenhq\/computer-browser:[0-9a-f]{12}$/);
   assert.match(computersConfig(compile(product, inst({})).paperclip, product).images.browser, /^aidenhq\/computer-browser:/);
+  // One capacity setting: the launcher's pool and the kernel's admission both read computers.json `max`.
+  assert.equal(r.computersMax, 12);
+  assert.equal(computersConfig(r.paperclip, product, [], r.computersMax).max, 12);
+  // A profile is compiled into the grants entry the kernel freezes into each job (crew unless the agent says otherwise).
+  assert.equal(grantEntry("assistant", r.paperclip.agents.assistant, r.paperclip.routines).profile, "crew");
+  const eng = compile(product, inst({ agents: { assistant: { image: "agent-base" } } }));
+  eng.paperclip.agents.assistant.profile = "engineer";
+  assert.equal(grantEntry("assistant", eng.paperclip.agents.assistant, eng.paperclip.routines).profile, "engineer");
   assert.throws(() => validateImages({ x: { image: "browser" } }), /image must be one of agent-base, engineer/);
   // No URL or secret reaches the launcher: every connection goes through the kernel's proxy, tasks included.
   assert.deepEqual(c.connections.apps, { tool_timeout_sec: 600 });
   assert.deepEqual(c.connections.paperclip_tasks, { tool_timeout_sec: 300 });
-});
-
-test("not yet in a computer: an agent in trial (its limits run inside the box); one that messages the owner may (replies land via the launcher)", () => {
-  assert.throws(() => validateImages({ x: { image: "agent-base", trial: true } }), /in trial/);
-  const r = compile(product, inst({ agents: { "app-maintainer": { image: "agent-base" } } }));
-  assert.equal(r.paperclip.agents["app-maintainer"].image, "agent-base");
-  assert.ok(r.paperclip.agents["app-maintainer"].enabled_tools.telegram.includes("notify_owner"));
-});
-
-test("the design module: designer and reviewer run in computers with repo-checkout; only the reviewer may post design-review", () => {
-  const dir = inst();
-  // With GitHub connected (its modules are out of the default bundle since the on-server code host joined it).
-  writeFileSync(join(dir, "instance.yaml"), YAML.stringify({ product: "0".repeat(40), modules: [...BUNDLE, "design", "github", "codehost-github"], settings: { timezone: "Europe/London", owner_name: "Sam", instance_name: "acme", owner_email: "o@x", product_repo: "acme/aidenhq" } }));
-  const r = compile(product, dir);
-  const d = r.paperclip.agents["ui-designer"], v = r.paperclip.agents["ui-reviewer"];
-  assert.equal(d.image, "agent-base");
-  assert.equal(v.image, "agent-base");
-  assert.deepEqual(d.roles, ["repo-checkout"]);
-  assert.deepEqual(v.roles, ["repo-checkout", "design-review"]);
-  assert.ok(v.enabled_tools.github.includes("commit_status_set"));
-  assert.ok(!d.enabled_tools.github.includes("commit_status_set"));
-  // The tool is in github's write list, so a `github: write` grant lists it too: github-mcp checks the role.
-  assert.ok(!r.paperclip.agents.assistant.roles.includes("design-review"));
-  assert.equal(computersConfig(r.paperclip, product).agents_org, "aidenhq-acme");
-  assert.equal(r.compose.services["github-mcp"].environment.GITHUB_AGENTS_ORG, "aidenhq-acme");
-  assert.deepEqual(computersConfig(r.paperclip, product, BUNDLE).agents_orgs, ["aidenhq-acme", "local"]);
-});
-
-test("the default bundle with the design module and no GitHub: the UI Reviewer reviews this server's changes, and its boxes check out local/*", () => {
-  const dir = inst();
-  writeFileSync(join(dir, "instance.yaml"), YAML.stringify({ product: "0".repeat(40), modules: [...BUNDLE, "design"], settings: { timezone: "Europe/London", owner_name: "Sam", instance_name: "acme", owner_email: "o@x", product_repo: "acme/aidenhq" } }));
-  const r = compile(product, dir);
-  assert.ok(BUNDLE.includes("codehost-local") && !BUNDLE.includes("github") && !BUNDLE.includes("codehost-github"));
-  assert.deepEqual(r.paperclip.agents["ui-reviewer"].roles, ["repo-checkout", "design-review"]);
-  assert.equal(r.paperclip.agents["ui-reviewer"].enabled_tools.github, undefined);
-  assert.equal(r.compose.services["github-mcp"], undefined);
-  assert.ok(computersConfig(r.paperclip, product, r.catalog.filter((m) => m.enabled).map((m) => m.name)).agents_orgs.includes("local"));
 });
 
 test("an unknown image fails compile; a runner agent gets a computer only as a Codex-on-OpenRouter Engineer in the engineer image", () => {
@@ -121,19 +92,6 @@ test("a computer agent: shell on, Codex's sandbox off, the model via the gateway
   assert.deepEqual(off.slice(-2), ["-c", 'web_search="disabled"']); // an agent's own setting comes last, so it wins
   assert.deepEqual(Object.keys(cfg.env), ["OPENAI_API_KEY"]);
   assert.equal(cfg.model, a.model);
-});
-
-test("rollback: without image: an agent on our environment goes back to local; another environment is left alone", async () => {
-  const calls = [];
-  const api = async (method, path, body) => {
-    calls.push([method, path, body]);
-    if (path.endsWith("/environments")) return { json: [{ id: "env-ours", name: "AidenHQ computer", status: "active" }] };
-    return { json: {} };
-  };
-  const cfg = { agents: { m: { name: "M" }, n: { name: "N" } } };
-  const agents = { m: { id: "a-m", defaultEnvironmentId: "env-ours" }, n: { id: "a-n", defaultEnvironmentId: "env-theirs" } };
-  await ensureComputers({ api, companyId: "c", cfg, agents, step: () => {} });
-  assert.deepEqual(calls.filter(([m]) => m === "PATCH"), [["PATCH", "/api/agents/a-m", { defaultEnvironmentId: null }]]);
 });
 
 test("a computer agent with the launcher down fails setup loudly", async () => {

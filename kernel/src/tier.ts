@@ -3,27 +3,46 @@
 // the owner follows it (`reviewFirst`): null, the reviewer decides; "final", its approve goes on to the owner and its reject
 // is final; "owner", Tier 2 on its merits, every verdict goes on to the owner (code's own refusals aside). Pure.
 // The requesters' own rules (which repo, file or module change is which tier) stay with them: the runner's classify() in
-// services/runner/src/tiers.mjs until 3d. What they share is here: combining parts, the autonomy and routine caps, earlier
-// decisions on a task, and what a review-first record does with the reviewer's verdict.
+// services/runner/src/tiers.mjs proposes a tier for its kinds. The kernel tiers every write with computeTier: floors,
+// raises, the owner's veto, then the caps (the instance's autonomy off, a routine's). What else they share is here:
+// combining parts, earlier decisions on a task, and what a review-first record does with the reviewer's verdict.
 export type Tier = 0 | 1 | 2;
 export type Autonomy = "off" | "tier0" | "full";
 export type ReviewFirst = "final" | "owner";
 export type Raise = { tier: 1 | 2; panel?: boolean; reason?: string; rule?: string };
+/** The cap a write was tiered under, kept on its record: the instance's autonomy off, or a routine's (`routine`: its id; absent when the trace couldn't be read). */
+export type Cap = { by: "autonomy" | "routine"; value: Autonomy; routine?: string };
+/** A task's routine cap, as the kernel traces it (taskRoutineCap). */
+export type RoutineCap = { cap: Autonomy; routine?: string };
 /** One part of a request's tier, as the requesters' rules build it. */
-export type Part = { tier: number; rule?: string; reason?: string; panel?: boolean; reject?: boolean; reviewFirst?: boolean; byMerit?: boolean; baseTier?: number; routineCap?: string; autonomyOff?: boolean; [k: string]: unknown };
+export type Part = { tier: number; rule?: string; reason?: string; panel?: boolean; reject?: boolean; reviewFirst?: boolean; byMerit?: boolean; cap?: Cap | null; [k: string]: unknown };
 /** A model's verdict, or code's in its place. */
 export type Verdict = { decision: "approve" | "reject" | "escalate"; reason: string; model: string; second?: string; code?: string };
 
-export function computeTier({ floor, instanceFloor = 0, raise, checkRaises = [], priorVeto = false, autonomy, routineCap, panel = false }: {
-  floor: Tier; instanceFloor?: Tier; raise?: Raise; checkRaises?: Raise[]; priorVeto?: boolean; autonomy?: Autonomy; routineCap?: Autonomy; panel?: boolean;
-}): { tier: Tier; merit: Tier; panel: boolean; reviewFirst: ReviewFirst | null } {
-  let tier = Math.max(floor, instanceFloor, raise?.tier ?? 0, ...checkRaises.map((r) => r.tier), priorVeto ? 2 : 0) as Tier;
-  const merit = tier;
-  // off (the instance's or a routine's, as routineCapped) lifts a reviewed write to the owner after the reviewer; tier0 leaves
-  // it with the reviewer, whose verdict is only a note then (shadowed). A Tier 0 write stays Tier 0: the direct tools of today
-  // keep running whatever the setting.
-  if (tier === 1 && (autonomy === "off" || (routineCap && routineCap !== "full"))) tier = 2;
-  return { tier, merit, panel: panel || raise?.panel === true || checkRaises.some((r) => r.panel === true), reviewFirst: merit === 2 ? "owner" : tier === 2 ? "final" : null };
+/** What a cap says, for a card's reason and the reviewer's label. */
+export const capText = (c: Cap) => (c.by === "autonomy" ? `autonomy is ${c.value}` : c.routine ? `a routine's run (${c.routine}) started this task and its autonomy is ${c.value}` : "the task's routine trace couldn't be read, so it counts as a routine set to off");
+
+/**
+ * The one tier function every write goes through (writes.ts: module kinds, conn.tool, the runner's kinds). The merit tier
+ * is the highest of the floors, raises and the owner's veto. A Tier 2 merit is reviewed first and the owner's
+ * (`reviewFirst`, "owner" unless the requester says how: "final" for new module authority, null for the owner's tap alone).
+ * Then the caps: the instance's autonomy off, or a routine's tier0 or off (`routine`; an unreadable trace is off). off lifts
+ * Tier 0 to the owner's tap (rule autonomy-off or routine-autonomy) and makes Tier 1 review-first (the reviewer's reject is
+ * final, its approve goes on to the owner); a routine's tier0 does the latter only. The instance's tier0 isn't a cap here:
+ * it shadows the reviewer's verdict at review. `cap`: the cap that changed the tier, for the record.
+ */
+export function computeTier({ floor, instanceFloor = 0, raise, checkRaises = [], priorVeto = false, reviewFirst = "owner", autonomy, routine, panel = false }: {
+  floor: Tier; instanceFloor?: Tier; raise?: Raise; checkRaises?: Raise[]; priorVeto?: boolean; reviewFirst?: ReviewFirst | null; autonomy?: Autonomy; routine?: RoutineCap; panel?: boolean;
+}): { tier: Tier; merit: Tier; panel: boolean; reviewFirst: ReviewFirst | null; cap?: Cap; rule?: string; state: "claimed" | "review" | "owner" } {
+  const merit = Math.max(floor, instanceFloor, raise?.tier ?? 0, ...checkRaises.map((r) => r.tier), priorVeto ? 2 : 0) as Tier;
+  // The caps that hold, the routine's first (its label names it when both do).
+  const caps = [routine && routine.cap !== "full" ? { by: "routine", value: routine.cap, ...(routine.routine ? { routine: routine.routine } : {}) } : undefined, autonomy === "off" ? { by: "autonomy", value: "off" } : undefined].filter(Boolean) as Cap[];
+  const off = caps.find((c) => c.value === "off");
+  const out = { panel: panel || raise?.panel === true || checkRaises.some((r) => r.panel === true) };
+  if (merit === 2) return { ...out, tier: 2, merit, reviewFirst: priorVeto ? "owner" : reviewFirst, state: priorVeto || reviewFirst ? "review" : "owner" };
+  if (merit === 1 && caps[0]) return { ...out, tier: 2, merit, reviewFirst: "final", cap: caps[0], state: "review" };
+  if (merit === 0 && off) return { ...out, tier: 2, merit, reviewFirst: null, cap: off, rule: off.by === "autonomy" ? "autonomy-off" : "routine-autonomy", state: "owner" };
+  return { ...out, tier: merit, merit, reviewFirst: null, state: merit === 0 ? "claimed" : "review" };
 }
 
 export const T = (tier: number, rule: string, reason: string): Part => ({ tier, rule, reason });
@@ -62,51 +81,67 @@ export function afterReview(input: Part, v: Verdict): Verdict {
   const by = `${v.model}${v.second ? ` and ${v.second}` : ""}`;
   if (input.byMerit && v.decision === "reject" && !FINAL_CODES.includes(v.code ?? "")) return { ...v, decision: "escalate", code: "owner_tier", reason: `The AI reviewer rejected (${by}${v.code ? `, ${v.code}` : ""}): ${v.reason} It is Tier 2 on its merits, so the owner decides: ${input.reason}` };
   if (v.decision !== "approve") return v;
-  const [code, why] = input.byMerit ? ["owner_tier", "It is Tier 2 on its merits"] : input.routineCap ? ["routine_autonomy", `A routine's autonomy is ${input.routineCap}`] : input.autonomyOff ? ["autonomy_off", "Autonomy is off"] : ["new_authority", "New module authority"];
+  const [code, why] = input.byMerit ? ["owner_tier", "It is Tier 2 on its merits"] : input.cap?.by === "routine" ? ["routine_autonomy", `A routine's autonomy is ${input.cap.value}`] : input.cap?.by === "autonomy" ? ["autonomy_off", "Autonomy is off"] : ["new_authority", "New module authority"];
   return { ...v, decision: "escalate", code, reason: `The AI reviewer approved (${by}): ${v.reason} ${why}, so the owner decides: ${input.reason}` };
 }
 
 /** How a review-first card is held: "owner" (byMerit: the reviewer may only escalate), "final" (it may escalate or reject). */
 export const reviewFirstOf = (...ts: (Part | undefined)[]): ReviewFirst | undefined => (ts.some((t) => t && !t.reject && t.byMerit) ? "owner" : ts.some((t) => t && !t.reject && t.reviewFirst) ? "final" : undefined);
 
-/**
- * A routine's cap (its `autonomy`): the stricter of it and the instance's wins. tier0 or off: a Tier 1 write is review-first
- * (the reviewer's reject is final, its approve goes on to the owner), as autonomy off does it (autonomyCap); off: a Tier 0
- * write waits for the owner's tap.
- */
-export function routineCapped(t: Part, cap?: string): Part {
-  if (t.reject || !cap || cap === "full") return t;
-  if (t.tier === 0 && cap === "off") return { ...T(2, "routine-autonomy", `a routine's run started this task and that routine's autonomy is ${cap} (was: ${t.reason})`), baseTier: 0 };
-  if (t.tier === 1) return { ...t, tier: 2, reason: `${t.reason} (a routine's run started this task: its autonomy is ${cap})`, reviewFirst: true, routineCap: cap, baseTier: 1 };
-  if (t.reviewFirst) return { ...t, reason: `${t.reason} (a routine's run started this task: its autonomy is ${cap})` };
-  return t;
-}
-
-/**
- * The instance's autonomy off (lean-core decision 5: every install and update is AI-reviewed regardless): the owner decides
- * every write, but what the reviewer reads with autonomy on it still reads first. Tier 1 becomes review-first (a reject is
- * final; an approve goes on to the owner with the verdict); Tier 0 waits for the owner's tap. `baseTier`: the merit tier.
- */
-export function autonomyCap(t: Part, autonomy?: string): Part {
-  if (autonomy !== "off" || t.reject || t.tier === 2) return t;
-  return t.tier === 0 ? { ...T(2, "autonomy-off", `autonomy is off (was: ${t.reason})`), baseTier: 0 } : { ...t, tier: 2, reviewFirst: true, autonomyOff: true, baseTier: 1 };
-}
-
 /** A routine's `autonomy` values, strictest first (the instance setting's names). */
-export const AUTONOMY = ["off", "tier0", "full"];
+export const AUTONOMY: Autonomy[] = ["off", "tier0", "full"];
 /**
  * The cap on a task from the routines its work came from. `origins`: the task and every issue it traces back to, as the
  * control plane returns them: its parents, and through each one's `originRunId` (its record of the run that created it,
  * which no agent sets) the issue that run worked on, and so on. So an unparented task a routine's run created keeps the
  * cap. `complete`: the trace finished; `routines`: the grants table's {<routine id>: autonomy}. The strictest routine found
- * wins. Fails closed: a routine the table doesn't know, or an invalid value, is "off" (setup writes each routine's autonomy
- * into the table before it adds the routine's triggers), and so is a trace too long to finish. None found is no cap.
+ * wins (`routine`: its id). `recorded`: the caps kernel provenance holds for issues on the trace. Fails closed: a routine the table doesn't know, or an invalid value, is "off" (setup writes each
+ * routine's autonomy into the table before it adds the routine's triggers), and so is a trace that didn't finish (no
+ * `routine` then). None found is no cap.
  */
-export function routineCap(origins: ({ originKind?: string; originId?: string } | null | undefined)[], complete: boolean, routines: Record<string, string> | null = {}): string | undefined {
-  const caps = origins.filter((i) => i?.originKind === "routine_execution").map((run) => (AUTONOMY.includes((routines ?? {})[run!.originId!]!) ? routines![run!.originId!]! : "off"));
-  if (!complete) caps.push("off");
-  return caps.length ? AUTONOMY[Math.min(...caps.map((c) => AUTONOMY.indexOf(c)))] : undefined;
+export function routineCap(origins: ({ originKind?: string; originId?: string } | null | undefined)[], complete: boolean, routines: Record<string, string> | null = {}, recorded: RoutineCap[] = []): RoutineCap | undefined {
+  const of = (r: string): Autonomy => (AUTONOMY.includes((routines ?? {})[r] as Autonomy) ? ((routines ?? {})[r] as Autonomy) : "off");
+  const caps: RoutineCap[] = origins.filter((i) => i?.originKind === "routine_execution").map((run) => ({ cap: of(run!.originId!), routine: run!.originId! }));
+  // Kernel provenance (provenance.ts): the cap a creating job carried, and its routine's cap now if that is stricter.
+  for (const r of recorded) caps.push(r, ...(r.routine ? [{ cap: of(r.routine), routine: r.routine }] : []));
+  if (!complete) caps.push({ cap: "off" });
+  return caps.reduce<RoutineCap | undefined>((a, b) => (!a || AUTONOMY.indexOf(b.cap) < AUTONOMY.indexOf(a.cap) ? b : a), undefined);
 }
+
+const ORIGIN_MAX = 24;
+/**
+ * Every issue a task traces back to, for its routine cap (routineCap): its parents, and through each one's
+ * originRunId (Paperclip records the run that created an issue; agents never set it) the issue that run worked on, then
+ * theirs. So a parent the agent picked, or none, can't shed a routine's cap. `runIssue` caches run id → issueId (a run's
+ * issue never changes). Past ORIGIN_MAX issues the trace is incomplete (the cap is then the strictest).
+ */
+export async function origins(pc: Trace, full: any, runIssue: Map<string, string | null> = new Map()): Promise<{ issues: any[]; complete: boolean; recorded: RoutineCap[] }> {
+  const seen = new Map<string, any>();
+  const recorded: RoutineCap[] = [];
+  const queue: any[] = [full];
+  while (queue.length) {
+    const i = queue.shift();
+    if (!i || seen.has(i.id)) continue;
+    if (seen.size >= ORIGIN_MAX) return { issues: [...seen.values()], complete: false, recorded };
+    seen.set(i.id, i);
+    // Every issue on the trace, not only the task: a run's child of a job-created task reaches it through originRunId.
+    const p = pc.provenance(i);
+    if (p) recorded.push(p === "pending" ? { cap: "off" } : p);
+    if (i.parentId) queue.push(await pc.issue(i.parentId));
+    // A routine run task is the root: its originRunId is the routine run (not a heartbeat run) and nothing created it.
+    if (i.originRunId && i.originKind !== "routine_execution") {
+      if (!runIssue.has(i.originRunId)) runIssue.set(i.originRunId, (await pc.run(i.originRunId))?.issueId ?? null);
+      const from = runIssue.get(i.originRunId);
+      if (from && !seen.has(from)) queue.push(await pc.issue(from));
+    }
+  }
+  return { issues: [...seen.values()], complete: true, recorded };
+}
+/** What the routine trace reads: the control plane's issues and runs, and kernel provenance for an issue (provenance.ts trace: its row's cap, "pending" for a marked task with no row yet). */
+export type Trace = { issue(id: string): Promise<any>; run(id: string): Promise<any>; provenance(issue: any): RoutineCap | "pending" | undefined };
+/** A task's routine cap: kernel provenance first, then the control plane; a trace that fails (a read that throws) is incomplete: "off". Never throws. */
+export const taskRoutineCap = (pc: Trace, task: string, routines: Record<string, string> | null = {}, runIssue?: Map<string, string | null>): Promise<RoutineCap | undefined> =>
+  pc.issue(task).then((full) => (full?.id ? origins(pc, full, runIssue) : { issues: [], complete: false, recorded: [] })).then(({ issues, complete, recorded }) => routineCap(issues, complete, routines, recorded), () => routineCap([], false, routines));
 
 // ------------------------------------------------------------------ earlier decisions on a task
 

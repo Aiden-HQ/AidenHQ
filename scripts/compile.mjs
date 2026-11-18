@@ -10,6 +10,7 @@
 //   config/jobcaps.json        → the kernel (job tokens on /c/<connection>/mcp) and the runner: what jobs may read (modules' jobcaps:)
 //   config/kernel/connections.json → the kernel's tool proxy: each connection's endpoint, service key secret, module and tool tags
 //   config/kernel/writes.json  → the kernel's write kinds (modules' `writes:`): floor, card, args schema, executor, routed tools
+//   config/kernel/paths.json   → the kernel's tier function: each path's sensitivity and owning role (paths.yaml, modules' paths:)
 //   config/kernel/checks.json  → the kernel's finish gate: modules' task.finish checks (url, key secret, label, scope)
 //   config/kernel/modules.json → the kernel: modules' kernel roles, privileged entries, own tokens and channels (stamp, settings),
 //                                each enabled module's compose services and its setup secrets
@@ -28,16 +29,17 @@ import { existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } 
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import YAML from "yaml";
-import { compile, composeSecretFiles, ensureMountedSecrets, ensureOptionalSecrets, hostMounts } from "./modules.mjs";
+import { compile, composeSecretFiles, ensureMountedSecrets, ensureOptionalSecrets, hostMounts, hostWorkDir } from "./modules.mjs";
 import { computersConfig } from "./computers.mjs";
+import { pathInventory } from "./paths.mjs";
 import { checkIngress } from "./edge.mjs";
 import { caddyfile, caddyService, publicUrls } from "./front-door.mjs";
 import { ensureIdentityKeys } from "./identity.mjs";
 import { report, staticCheck } from "./agent-check.mjs";
 import { sizesReport } from "./handbook.mjs";
-import { checkDataVersion } from "../kernel/src/loader/data-version.ts";
-import { hostFetch } from "../kernel/src/loader/sources.ts";
-import { readRelease } from "../kernel/src/loader/release.ts";
+import { checkDataVersion } from "./compiler/data-version.ts";
+import { hostFetch } from "./compiler/sources.ts";
+import { readRelease } from "./compiler/release.ts";
 import { computerPulls, useReleaseImages } from "./release-images.mjs";
 
 const repo = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -61,7 +63,7 @@ let revision;
 try { revision = execFileSync("git", ["-C", repo, "rev-parse", "HEAD"], { encoding: "utf8" }).trim(); } catch {}
 
 let out, computers;
-try { out = compile(repo, instanceDir, { revision }); computers = computersConfig(out.paperclip, repo, out.catalog.filter((m) => m.enabled).map((m) => m.name)); } catch (e) { die(e.message); }
+try { out = compile(repo, instanceDir, { revision, door: { publicIp: env("AIDENHQ_PUBLIC_IP"), adminUrl: env("AIDENHQ_ADMIN_URL"), boardUrl: env("BOARD_LAN_URL") } }); computers = computersConfig(out.paperclip, repo, out.catalog.filter((m) => m.enabled).map((m) => m.name), out.computersMax); } catch (e) { die(e.message); }
 if (process.argv.includes("--sizes")) {
   try { console.log(sizesReport(out.paperclip, { repo, instanceDir, engines: out.engines })); } catch (e) { die(e.message); }
   process.exit(0);
@@ -92,6 +94,9 @@ if (secretsDir && !stage) {
   if (missing.length) die(`missing secret files in ${secretsDir}: ${missing.map((m) => `${m.secret} (mounted by ${m.services.join(", ")})`).join("; ")}. Run scripts/bootstrap.sh, or put the secret there.`);
 }
 
+// A module's own vault folder (secrets.state) too: the secrets dir is a FUSE mount, so Docker (root) can't create its bind source.
+if (secretsDir && !stage) for (const d of new Set(out.stateDirs)) mkdirSync(join(secretsDir, d), { recursive: true, mode: 0o700 });
+
 // The grants table's directory exists before compose mounts it (Docker would create a root-owned one setup can't write).
 if (!stage) mkdirSync(join(resolve(repo, env("AIDENHQ_CONFIG_DIR") ?? "config"), "grants"), { recursive: true });
 // Likewise the apps node's state and serve config (compose.yaml apps-edge; apps-mcp writes the serve config), and the
@@ -99,6 +104,8 @@ if (!stage) mkdirSync(join(resolve(repo, env("AIDENHQ_CONFIG_DIR") ?? "config"),
 // not in apply-config.sh: the apply that brings this in still runs the old script, which then runs this compile.
 const dataDir = resolve(repo, env("AIDENHQ_DATA_DIR") ?? "data");
 if (!stage) for (const d of ["apps-edge/state", "apps-edge/serve", "previews", "codehost", ...out.dataDirs]) mkdirSync(join(dataDir, d), { recursive: true });
+// The job workspaces, before compose bind-mounts them into the code host (Docker would make a missing one as root).
+if (!stage) mkdirSync(join(hostWorkDir(repo), "tasks"), { recursive: true });
 // Code never starts on data newer than it (spec §6.4.1): staged, only checked (the apply snapshots the data after this); for
 // real, each data module's marker is set to its data_version before compose starts it.
 try { for (const [m, d] of Object.entries(out.dataModules)) checkDataVersion(m, d.data_version, join(dataDir, "modules", m), !stage); } catch (e) { die(e.message); }
@@ -111,7 +118,7 @@ if (!stage && out.compose.services["security-scanner"]) writeFileSync(join(dataD
 let caddy;
 if (out.exposure === "public") {
   const ip = env("AIDENHQ_PUBLIC_IP"), urls = publicUrls(ip);
-  try { caddy = caddyfile(ip); } catch (e) { die(`exposure public: AIDENHQ_PUBLIC_IP in .env: ${e.message} (sudo ops/setup.sh sets it)`); }
+  try { caddy = caddyfile(ip, undefined, out.edge?.gate?.doors?.base); } catch (e) { die(`exposure public: AIDENHQ_PUBLIC_IP in .env: ${e.message} (sudo ops/setup.sh sets it)`); }
   if (env("BOARD_LAN_URL") !== urls.board || env("AIDENHQ_ADMIN_URL") !== urls.admin) die(`exposure public: .env needs BOARD_LAN_URL=${urls.board} and AIDENHQ_ADMIN_URL=${urls.admin} (sudo ops/setup.sh sets them)`);
   out.compose.services.caddy = caddyService(caddy);
   if (!stage) mkdirSync(join(dataDir, "caddy"), { recursive: true, mode: 0o700 });
@@ -128,6 +135,14 @@ if (Object.keys(images).length) {
   out.compose = useReleaseImages(out.compose, YAML.parse(readFileSync(join(repo, "compose.yaml"), "utf8")), images);
   computers.pull = computerPulls(computers.images, images);
 }
+// The apps' tailnet node is the door only in tailscale mode with its join key in the vault (compose.yaml apps-edge): only
+// there may apps-mcp let token-less callers into an app as anonymous (AIDENHQ_ANONYMOUS; docs/design/app-identity.md).
+// Anywhere else the way in is the host's loopback, so every app requires a signed identity.
+const appsKey = secretsDir && join(secretsDir, "tailscale_apps_authkey");
+const appsNode = out.exposure === "tailscale" && appsKey && existsSync(appsKey) && readFileSync(appsKey, "utf8").trim() !== "";
+// Without that node compose.yaml's apps-edge must not run (it would register a new Tailscale node on every restart): an
+// inactive profile takes it out of the stack, and the apply removes a container left from before.
+if (!appsNode) out.compose.services["apps-edge"] = { profiles: ["off"] };
 const compose = Object.fromEntries(Object.entries(out.compose).filter(([k, v]) => k === "services" || Object.keys(v).length));
 writeFileSync(composeOut, dump(compose));
 writeFileSync(join(cfgOut, "modules.json"), JSON.stringify(out.catalog, null, 2) + "\n");
@@ -137,16 +152,12 @@ writeFileSync(join(cfgOut, "jobcaps.json"), JSON.stringify(out.jobcaps, null, 2)
 mkdirSync(join(cfgOut, "kernel"), { recursive: true });
 writeFileSync(join(cfgOut, "kernel/connections.json"), JSON.stringify(out.connections, null, 2) + "\n");
 writeFileSync(join(cfgOut, "kernel/writes.json"), JSON.stringify(out.writes, null, 2) + "\n");
+try { writeFileSync(join(cfgOut, "kernel/paths.json"), JSON.stringify(pathInventory(repo), null, 2) + "\n"); } catch (e) { die(e.message); }
 // Always written ({} when no module checks): the kernel's finish gate refuses every close when it is missing.
 writeFileSync(join(cfgOut, "kernel/checks.json"), JSON.stringify(out.checks, null, 2) + "\n");
 writeFileSync(join(cfgOut, "kernel/modules.json"), JSON.stringify(out.kernelModules, null, 2) + "\n");
 writeFileSync(join(cfgOut, "engines.json"), JSON.stringify(out.engines, null, 2) + "\n");
 writeFileSync(join(cfgOut, "exposure"), `${out.exposure}\n`);
-// The apps' tailnet node is the door only in tailscale mode with its join key in the vault (compose.yaml apps-edge): only
-// there may apps-mcp let token-less callers into an app as anonymous (AIDENHQ_ANONYMOUS; docs/design/app-identity.md).
-// Anywhere else the way in is the host's loopback, so every app requires a signed identity.
-const appsKey = secretsDir && join(secretsDir, "tailscale_apps_authkey");
-const appsNode = out.exposure === "tailscale" && appsKey && existsSync(appsKey) && readFileSync(appsKey, "utf8").trim() !== "";
 writeFileSync(join(cfgOut, "apps-node"), `${appsNode ? "tailnet" : "none"}\n`);
 if (caddy) writeFileSync(join(cfgOut, "Caddyfile"), caddy);
 else rmSync(join(cfgOut, "Caddyfile"), { force: true });

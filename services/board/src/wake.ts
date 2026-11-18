@@ -27,8 +27,9 @@
 import { takeWake } from "./brake.js";
 import { NOTICE_MARKER } from "./chats.js";
 import { appsApi } from "./fleet.js";
-import { OPEN, REPAIR_SUPPRESSED, REPAIR_SUPPRESSED_WHY, type Agent, type Issue, type LiveRun, type Paperclip, type PastRun, type Routine } from "./paperclip.js";
+import { CONFIG_INCOMPLETE, OPEN, REPAIR_SUPPRESSED, REPAIR_SUPPRESSED_WHY, type Agent, type Issue, type LiveRun, type Paperclip, type PastRun, type Routine } from "./paperclip.js";
 import type { Approval, Records } from "./records.js";
+import { mirrorTick } from "./mirror.js";
 import type { Grading, GradesView } from "./grading.js";
 import type { Store } from "./store.js";
 
@@ -40,7 +41,7 @@ const STATE_KEY = "wake_cursors";
 export const WAKE_MARKER = "<!-- aidenhq-wake -->";
 const OPEN_STATUSES = new Set(OPEN.split(","));
 
-type PaperclipPart = Pick<Paperclip, "routines" | "agents" | "openIssues" | "closedSince" | "liveRuns" | "recentRuns" | "addComment" | "issue" | "wakeAgent" | "releaseCancelledRun">;
+type PaperclipPart = Pick<Paperclip, "routines" | "agents" | "openIssues" | "closedSince" | "liveRuns" | "recentRuns" | "addComment" | "issue" | "wakeAgent" | "releaseCancelledRun" | "updateIssue" | "clearAgentError">;
 export interface PrState {
   repo: string;
   number: number;
@@ -71,6 +72,8 @@ interface State {
   seen?: Record<string, string>;
   /** Last good tick, for the closed sub-tasks window. */
   at?: string;
+  /** Runs cut off at their output limit whose task and agent were already repaired (newest 50). */
+  truncated?: string[];
 }
 
 const PR_REF = /github\.com\/([\w.-]+\/[\w.-]+)\/pull\/(\d+)|codehost:([\w.-]+\/[\w.-]+)\/change\/(\d+)|\b([\w.-]+\/[\w.-]+)#(\d+)\b/g;
@@ -143,7 +146,7 @@ export async function wakeTick(deps: WakeDeps, recent: Recent, now = Date.now())
   const watched = new Set(routines.filter((r: Routine) => r.title.startsWith("Heartbeat: ") && r.status === "active" && r.assigneeAgentId && !paused.has(r.assigneeAgentId)).map((r) => r.assigneeAgentId!));
   const state = readState(store);
   if (!watched.size) {
-    store.setMeta(STATE_KEY, JSON.stringify({ cursors: {}, at: new Date(now).toISOString() }));
+    store.setMeta(STATE_KEY, JSON.stringify({ cursors: {}, at: new Date(now).toISOString(), truncated: state.truncated }));
     return [];
   }
   const open = await pc.openIssues();
@@ -178,6 +181,27 @@ export async function wakeTick(deps: WakeDeps, recent: Recent, now = Date.now())
       () => log.info({ issue: held.identifier, run: r.id }, "released the hold Paperclip's suppressed repair left"),
       (err) => log.warn({ issue: held.identifier, err: String(err) }, "couldn't release the hold Paperclip's suppressed repair left"),
     );
+  }
+  // One long model answer is not a configuration fault: Paperclip files a run cut off at max_output_tokens as
+  // configuration_incomplete, blocks the agent's task and sets the agent to `error`, which silenced the chief of staff's chat
+  // (WOR-7241). The newest run of an agent on its own blocked task, once: the task goes back to todo, the error is cleared and
+  // the agent is woken on it.
+  const truncated = [...(state.truncated ?? [])];
+  for (const r of runs as PastRun[]) {
+    if (r.status !== "failed" || r.errorCode !== CONFIG_INCOMPLETE || !r.error?.includes("max_output_tokens") || !r.issueId || truncated.includes(r.id)) continue;
+    if (runs.some((o) => o.agentId === r.agentId && o.issueId === r.issueId && (o.startedAt ?? "") > (r.startedAt ?? ""))) continue;
+    truncated.push(r.id);
+    try {
+      const task = await pc.issue(r.issueId);
+      if (task.status !== "blocked" || task.assigneeAgentId !== r.agentId) continue;
+      await pc.updateIssue(task.id, { status: "todo" });
+      if (agents.find((a) => a.id === r.agentId)?.status === "error") await pc.clearAgentError(r.agentId);
+      // Paperclip re-blocks a task whose newest run is still the failed one: a fresh run on it replaces that run.
+      await pc.wakeAgent(r.agentId, `${task.identifier} was unblocked after a run was cut off at its output limit; continue it.`, `truncated:${r.id}`, task.id);
+      log.info({ issue: task.identifier, run: r.id }, "unblocked a task whose run was cut off at its output limit");
+    } catch (err) {
+      log.warn({ run: r.id, err: String(err) }, "couldn't repair a run cut off at its output limit");
+    }
   }
   // Busy: a run queued or going. Seen: a run that succeeded after the change (a failed or cancelled one may never have
   // looked, and some cancelled runs never get a finish time).
@@ -265,7 +289,7 @@ export async function wakeTick(deps: WakeDeps, recent: Recent, now = Date.now())
     const [id, src] = [k.slice(0, k.indexOf("|")), k.slice(k.indexOf("|") + 1)];
     if (state.cursors[id]?.[src] !== cursors[id]?.[src]) delete seen[k];
   }
-  store.setMeta(STATE_KEY, JSON.stringify({ cursors, seen, at: new Date(now).toISOString() }));
+  store.setMeta(STATE_KEY, JSON.stringify({ cursors, seen, at: new Date(now).toISOString(), truncated: truncated.slice(-50) }));
   return woke;
 }
 
@@ -288,6 +312,13 @@ export function startWake(pc: Paperclip, store: Store, records: Records, grading
       await wakeTick(deps, recent);
     } catch (err) {
       log.warn({ err: String(err) }, "wake-ups failed");
+    }
+    // An open card is a durable wait for its task (mirror.ts): Paperclip only counts its own approvals, so each open
+    // record is mirrored as one. Bookkeeping only, and a failure here never keeps the wake-up pass from running.
+    try {
+      await mirrorTick({ pc, records, log });
+    } catch (err) {
+      log.warn({ err: String(err) }, "card mirrors not reconciled; retried next tick");
     } finally {
       busy = false;
     }

@@ -51,7 +51,7 @@ export interface Card {
   crew?: CrewMember[];
 }
 
-export type CrewState = "needs" | "failed" | "proposed" | "working" | "queued" | "done";
+export type CrewState = "needs" | "failed" | "working" | "queued" | "done";
 
 export interface CrewMember {
   agent: string;
@@ -203,6 +203,8 @@ export interface Board {
   rollsTomorrow: boolean;
   /** Agent sessions running now. */
   agentsActive: number;
+  /** Today's model spend against the install-wide daily cap (settings.spend_day_usd); null without one. */
+  spend?: { spent: number; cap: number } | null;
   /** Google sign-in per account; null when the board can't ask. */
   google: { accounts: GoogleAccount[]; error?: string } | null;
   /** The modules' sign-ins (board.signins): each one's banner text and state (null when the board can't ask). */
@@ -326,7 +328,7 @@ export interface Update {
 }
 
 /** One module from the compiled catalog, with how it is on (src/modules.ts). */
-/** A marketplace advisory open against an installed module (the kernel's loader/advisories.ts); `summary` is fenced text. */
+/** A marketplace advisory open against an installed module (the kernel's advisories.ts); `summary` is fenced text. */
 export interface Advisory {
   id: string;
   module: string;
@@ -363,6 +365,8 @@ export interface ModuleDetail {
   module: ModuleRow;
   agents: AgentProfile[];
   ongoing: TaskRow[];
+  /** Its routines as compiled: on or off, and the agent whose Settings tab changes them. */
+  routines?: { key: string; title: string; agent: string; on: boolean; scheduled: boolean }[];
   authority: { connections: string[]; writes: { kind: string; tier?: number }[]; secrets: string[]; prompts: { id: string; file: string }[]; readme: string | null };
   neededBy: string[];
   requires: string[];
@@ -410,6 +414,8 @@ export interface LedgerMetrics {
   cached: number;
   output: number;
   errors: number;
+  /** Calls a kernel restart cut off (spend: what OpenRouter billed for them). */
+  interrupted: number;
   /** Mean latency of ok calls that timed themselves. */
   ms: number | null;
 }
@@ -477,15 +483,18 @@ export interface AppRow {
   healthy: boolean;
   state: string;
   sha?: string;
-  deployed_at?: string;
+  /** Epoch ms (apps-mcp's deploy store). */
+  deployed_at?: number;
   deployed_by?: string;
   auto_deploy?: boolean;
-  /** Newest first: which commits were deployed, by whom, and how each ended. */
-  deploys?: { sha: string; at: string; by: string; status: string }[];
+  /** Its source repo. */
+  repo?: string;
+  /** Newest first: which commits were deployed (at: epoch ms), by whom, and how each ended (healthy, failed, build_failed, rolled_back). */
+  deploys?: { sha: string; at: number; by: string; status: string }[];
   owner?: string;
   url?: string;
-  /** Serves a port but has no browser door: no apps' tailnet node, and only the gate signs people in. */
-  unpublished?: boolean;
+  /** Serves a port but its browser door doesn't open (yet): why, in words for the owner (older apps-mcp: true). */
+  unpublished?: string | boolean;
   /** Pinned into the nav under this label (apps.yaml `panel`). */
   panel?: string;
   incident?: { opened_at: string; kind: string; detail: string };
@@ -632,14 +641,6 @@ export interface RunTrace {
   ledger: { rows: { at: string; kind: string | null; model: string; input: number; cached: number; output: number; costUsd: number | null; ms: number | null; status: string | null; runKey: string | null }[]; usd: number | null; capUsd: number | null };
   notes: string[];
 }
-export interface ActivityItem {
-  when: string;
-  agent: string;
-  chat: string;
-  sentence: string;
-  link: string;
-  kind: "done" | "failed";
-}
 export interface NeedsYou {
   count: number;
   /** Open Tier 2 approval cards: the Approvals badge. */
@@ -730,6 +731,17 @@ export interface SettingsData {
   choices: { heartbeatHours: number[]; models: string[] };
   approvals: { pending: number };
   spend: { defaults: Record<string, number>; pendingRaises: number };
+  /** Release updates (services/board/src/settings.ts UpdatesView); null when the instance pins its product by hand. */
+  updates: UpdatesData | null;
+}
+export interface UpdatesData {
+  current: { name: string; product: string } | null;
+  auto: boolean | null;
+  timezone: string | null;
+  checkedAt: string | null;
+  available: { name: string; notes: string[]; compare: string } | null;
+  error: string | null;
+  last: { release: string; outcome: "installed" | "failed"; why?: string; at: string; by: string } | null;
 }
 
 // Lane D: the pin change (lane A's schema, settings-change.ts).

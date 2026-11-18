@@ -22,6 +22,8 @@ export type Identity = {
   writes?: string[];
   /** A job's jobcaps by connection: where its reads go. */
   caps?: Record<string, Jobcap[]>;
+  /** A kernel job's workspace: its task's identifier, from its row (admission). Its writes name this one, whatever their args say. */
+  workspace?: string;
   /** The credential the kernel acts with at /v1/cp/agent/* (the caller's own); never forwarded to a module. */
   credential: string;
 };
@@ -33,8 +35,13 @@ const same = (a: string, b: string) => Boolean(a && b) && a.length === b.length 
 /** The roles an assertion carries: the agent's own, plus kernel.trial for an agent in trial. */
 export const rolesOf = (g: Grant) => [...(g.roles ?? []), ...(g.trial === true ? ["kernel.trial"] : [])];
 
-export function createIdentity({ grants, connections, jobcaps, modules = () => ({}), secret, controlUrl, launcherUrl, runTask, now = Date.now }: {
+/** A kernel-admitted job as its row says (admission.ts): who, on what, and the authority frozen when it was admitted. */
+export type AdmittedJob = { agent: string; task: string; state: string; identifier: string; authority: { tools: Record<string, string[]>; jobcaps: string[]; writes: string[]; roles: string[]; reads?: boolean } };
+
+export function createIdentity({ grants, connections, jobcaps, modules = () => ({}), secret, controlUrl, launcherUrl, runTask, job = () => undefined, now = Date.now }: {
   grants: () => Record<string, Grant>; connections: () => Record<string, Connection>; jobcaps: () => Record<string, Jobcap>;
+  /** A kernel-admitted job by id (its row): a job token's authority is read here, never from the grants table again. */
+  job?: (id: string) => AdmittedJob | undefined;
   /** Modules with kernel roles or a token of their own (config/kernel/modules.json): a module with no connection is known by its token. */
   modules?: () => Record<string, { roles?: string[]; token?: string }>;
   secret: (name: string) => string; controlUrl?: string; launcherUrl?: string;
@@ -42,10 +49,14 @@ export function createIdentity({ grants, connections, jobcaps, modules = () => (
   runTask?: (runId: string) => Promise<string | undefined>; now?: () => number;
 }) {
   const ids = new Map<string, { at: number; id: string; name: string; run?: string; task?: string }>();
-  const agent = (id: string, name: string | undefined, credential: string, extra: { run?: string; task?: string } = {}): Identity => {
+  const agent = (id: string, name: string | undefined, credential: string, extra: { run?: string; task?: string } = {}, box = false): Identity => {
     const g = grants()[id];
     if (!g) throw new NoGrants(`${name || id} has no grants`);
-    return { kind: "run", agent: id, key: String(g.key ?? ""), name: name || String(g.key ?? ""), roles: rolesOf(g), tools: g.tools ?? {}, credential, ...extra };
+    // A computer reaches its connections only through here: its agent's jobcaps (reads its runner jobs hold) come with it. A
+    // private one stays a job token's (observing); a computer's private reads are grants (scripts/computers.mjs privateGrants).
+    const tools: Record<string, string[]> = Object.fromEntries(Object.entries(g.tools ?? {}).map(([c, t]) => [c, [...t]]));
+    if (box) for (const j of g.jobcaps ?? []) { const c = jobcaps()[j]; if (c && !c.private) tools[c.connection] = [...new Set([...(tools[c.connection] ?? []), ...c.tools])]; }
+    return { kind: "run", agent: id, key: String(g.key ?? ""), name: name || String(g.key ?? ""), roles: rolesOf(g), tools, credential, ...extra };
   };
 
   return async function whoami(token: string): Promise<Identity> {
@@ -56,6 +67,16 @@ export function createIdentity({ grants, connections, jobcaps, modules = () => (
     if (same(token, secret("gateway_harness_key"))) return { kind: "run", roles: [], tools: {}, credential: "" };
     if (token.startsWith("ahqj_")) {
       const p = verifyToken(secret("gateway_job_secret"), token, now());
+      if (p?.k === "job") {
+        // A kernel job: exactly what was frozen at its admission, on its own task, while it lives.
+        const j = job(String(p.id));
+        if (!j || j.agent !== p.a || j.task !== p.i || !["admitted", "running"].includes(j.state)) throw new Unknown("this job has ended");
+        const tools: Record<string, string[]> = Object.fromEntries(Object.entries(j.authority.tools).map(([c, t]) => [c, [...t]]));
+        // A private jobcap only for a job that reads private data (web search off): private data never meets the web.
+        for (const id of j.authority.jobcaps) { const c = jobcaps()[id]; if (c && (!c.private || j.authority.reads === true)) tools[c.connection] = [...new Set([...(tools[c.connection] ?? []), ...c.tools])]; }
+        const g = grants()[j.agent];
+        return { kind: "run", agent: j.agent, key: String(g?.key ?? ""), name: String(g?.key ?? ""), roles: [...j.authority.roles], tools, writes: [...j.authority.writes], task: j.task, workspace: j.identifier, credential: "" };
+      }
       if (!p || p.k !== "agent") throw new Unknown("a job's token is invalid or expired");
       const all = jobcaps();
       const tools: Record<string, string[]> = {}, caps: Record<string, Jobcap[]> = {};
@@ -71,7 +92,7 @@ export function createIdentity({ grants, connections, jobcaps, modules = () => (
       const j = (await res.json()) as { agentId?: unknown; runId?: unknown; issueId?: unknown };
       const id = String(j.agentId ?? "");
       if (!id) throw new NoGrants("this computer has no grants");
-      return agent(id, undefined, token, { ...(typeof j.runId === "string" && j.runId ? { run: j.runId } : {}), ...(typeof j.issueId === "string" && j.issueId ? { task: j.issueId } : {}) });
+      return agent(id, undefined, token, { ...(typeof j.runId === "string" && j.runId ? { run: j.runId } : {}), ...(typeof j.issueId === "string" && j.issueId ? { task: j.issueId } : {}) }, true);
     }
     if (!controlUrl) throw new Unknown("the control plane isn't configured");
     const h = sha(token);

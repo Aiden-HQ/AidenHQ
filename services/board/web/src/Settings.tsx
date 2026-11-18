@@ -1,15 +1,16 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { AccountsView } from "./Accounts";
-import { SignInRequired, api, type Session } from "./api";
+import { SignInRequired, admin, api, type Session } from "./api";
 import { PoweredBy } from "./components";
 import { needsAttention, type ConnectionsData } from "./connections";
 import { askForNotifications, notificationsSupported } from "./notify";
 import { ConnectionsPage, RowsSkeleton } from "./SettingsConnections";
 import { parseInput, shown } from "./settings-format";
-import { ChangePreview, ChangeProgress, Changes, Group, IN_FLIGHT, Page, Row, Segmented, StatusPill, Switch, Toasts, useFiled } from "./settings-ui";
-import type { Advisory, FiledChange, ModuleRow, SettingChange, SettingRow, SettingsData } from "./types";
+import { ChangePreview, ChangeProgress, Changes, Group, IN_FLIGHT, Page, Row, Toasts, useFiled } from "./settings-ui";
+import type { Advisory, FiledChange, ModuleRow, SettingChange, SettingRow, SettingsData, UpdatesData } from "./types";
 import { urlSettingProblem } from "../../src/url-setting";
 import "./settings.css";
+import { Banner, Button, LinkButton, Segmented, StatusDot, Switch, Tag } from "./ui";
 
 // Settings: categories in a side nav (a selector at phone width), each a page of grouped rows (#/settings/<category>).
 // Instance settings live in git (instance.yaml): a change made here is filed as the owner's task the runner writes, and lands
@@ -141,15 +142,12 @@ export function SettingsView({ cat, mobile, session, go, onSignIn, can }: Props)
         )}
         <div className="st-pane">
           {error && (
-            <div className="st-banner bad" role="alert">
-              Couldn't load settings: {error}.{" "}
-              <button className="link-btn" onClick={() => (setError(""), void loadSettings(), void loadConns(true))}>
-                Try again
-              </button>
-            </div>
+            <Banner tone="danger" action={<Button size="sm" onClick={() => (setError(""), void loadSettings(), void loadConns(true))}>Try again</Button>}>
+              Couldn't load settings: {error}.
+            </Banner>
           )}
           {data && !data.compiled && current !== "accounts" && (
-            <div className="st-banner">This board can't read the compiled config yet (config/paperclip.yaml): the next apply on the host mounts it.</div>
+            <Banner tone="warn">This board can't read the compiled config yet (config/paperclip.yaml): the next apply on the host mounts it.</Banner>
           )}
           <div className="st-page-in" key={current}>
             <Pane cat={current} data={data} conns={conns} session={session} onSignIn={onSignIn} can={can} checking={checking} check={check} />
@@ -209,14 +207,14 @@ export function SettingItem({ s, title }: { s: SettingRow; title?: string }) {
   const [to, setTo] = useState<unknown>(undefined);
   const drift = s.live !== undefined && s.known && s.value !== null && s.live !== String(s.value);
   const pick = (v: unknown) => (setTo(v), setOpen(true));
-  const status = busy ? <StatusPill tone="busy">Changing</StatusPill> : null;
+  const status = busy ? <StatusDot tone="busy">Changing</StatusDot> : null;
   if (s.switch) {
     const on = (to ?? effective) !== "off";
     return (
       <Row
         title={title ?? label(s.key)}
         sub={s.doc}
-        meta={status ?? (!s.known && s.live === undefined ? <StatusPill tone="off">Unknown</StatusPill> : undefined)}
+        meta={status ?? (!s.known && s.live === undefined ? <StatusDot tone="idle">Unknown</StatusDot> : undefined)}
         action={<Switch on={on} label={`${label(s.key)}: ${on ? "on" : "off"}`} disabled={busy} onChange={(v) => pick(v ? "on" : "off")} />}
         open={open || Boolean(filed)}
         onToggle={(o) => (setOpen(o), !o && setTo(undefined))}
@@ -282,20 +280,20 @@ function SettingEditor({ s, onDone }: { s: SettingRow; onDone: () => void }) {
     <form className="st-editor" onSubmit={(e) => (e.preventDefault(), !problem && !same && setReview(true))}>
       {values.length && !multi ? (
         values.length <= 4 ? (
-          <Segmented value={String(v)} label={label(s.key)} options={values.map((x) => ({ value: String(x), label: String(x) }))} onChange={(x) => (setV(values.find((y) => String(y) === x)), setReview(false))} />
+          <Segmented value={String(v)} label={label(s.key)} options={values.map((x) => [String(x), String(x)] as const)} onChange={(x) => (setV(values.find((y) => String(y) === x)), setReview(false))} />
         ) : (
-          <select className="st-select" value={String(v)} onChange={(e) => (setV(values.find((y) => String(y) === e.target.value)), setReview(false))} aria-label={label(s.key)}>
+          <select className="ui-select" value={String(v)} onChange={(e) => (setV(values.find((y) => String(y) === e.target.value)), setReview(false))} aria-label={label(s.key)}>
             {values.map((x) => (
               <option key={String(x)}>{String(x)}</option>
             ))}
           </select>
         )
       ) : values.length ? (
-        <div className="st-checks" role="group" aria-label={label(s.key)}>
+        <div className="ui-checks" role="group" aria-label={label(s.key)}>
           {values.map((x) => {
             const on = (v as unknown[]).includes(x);
             return (
-              <label key={String(x)} className={`st-check${on ? " on" : ""}`}>
+              <label key={String(x)} className={`ui-check${on ? " on" : ""}`}>
                 <input type="checkbox" checked={on} onChange={() => (setV(on ? (v as unknown[]).filter((y) => y !== x) : [...(v as unknown[]), x]), setReview(false))} />
                 {String(x)}
               </label>
@@ -303,9 +301,9 @@ function SettingEditor({ s, onDone }: { s: SettingRow; onDone: () => void }) {
           })}
         </div>
       ) : (
-        <input className="st-input" value={text} onChange={(e) => (setText(e.target.value), setReview(false))} type={s.type === "url" ? "url" : "text"} spellCheck={false} aria-label={label(s.key)} placeholder={multi ? "comma, separated" : ""} />
+        <input className="ui-input" value={text} onChange={(e) => (setText(e.target.value), setReview(false))} type={s.type === "url" ? "url" : "text"} spellCheck={false} aria-label={label(s.key)} placeholder={multi ? "comma, separated" : ""} />
       )}
-      {problem && !same && <span className="st-field-help bad">{problem.replace(/^./, (c) => c.toUpperCase())}</span>}
+      {problem && !same && <span className="ui-field-error">{problem.replace(/^./, (c) => c.toUpperCase())}</span>}
       {review ? (
         <ChangePreview items={[{ kind: "setting", key: s.key, value: next }]} was={[s.value ?? s.default]} onCancel={() => setReview(false)} onDone={onDone} />
       ) : (
@@ -392,7 +390,7 @@ function NotificationsPage({ rows, conns }: { rows: SettingRow[]; conns: Connect
         <Row
           title="Browser notifications"
           sub={perm === "denied" ? "Blocked: allow notifications for this site in the browser's settings." : "A notification when something needs you, while the board is open."}
-          meta={<StatusPill tone={perm === "granted" ? "ok" : perm === "denied" ? "warn" : "off"}>{perm === "granted" ? "On" : perm === "denied" ? "Blocked" : perm === "unsupported" ? "Not supported" : "Off"}</StatusPill>}
+          meta={<StatusDot tone={perm === "granted" ? "ok" : perm === "denied" ? "needs" : "idle"}>{perm === "granted" ? "On" : perm === "denied" ? "Blocked" : perm === "unsupported" ? "Not supported" : "Off"}</StatusDot>}
           action={
             perm === "default" ? (
               <button className="btn" onClick={() => void askForNotifications().then(setPerm)}>
@@ -404,7 +402,7 @@ function NotificationsPage({ rows, conns }: { rows: SettingRow[]; conns: Connect
       </Group>
       <Group title="Channels" hint={!live?.channels ? "The channel modules didn't say which channels have tokens." : undefined}>
         {channels.map(([k, name, what]) => (
-          <Row key={k} title={name} sub={what} meta={<>{k !== "voice" && <span className="st-chip">{chosen.includes(k) ? "in your channels" : "not in your channels"}</span>}<StatusPill tone={state(k) === "set up" ? "ok" : "off"}>{state(k)}</StatusPill></>} />
+          <Row key={k} title={name} sub={what} meta={<>{k !== "voice" && <Tag>{chosen.includes(k) ? "in your channels" : "not in your channels"}</Tag>}<StatusDot tone={state(k) === "set up" ? "ok" : "idle"}>{state(k)}</StatusDot></>} />
         ))}
       </Group>
       {rows.length > 0 && (
@@ -431,8 +429,12 @@ function InstancePage({ data }: { data: SettingsData }) {
         <Fig n={i.lastChangeAt ? new Date(i.lastChangeAt).toLocaleString(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", hour12: false }) : "unknown"} l="Last applied change" />
         <Fig n={i.node} l={`Board runtime, ${i.boardTimezone}`} />
       </div>
-      <p className="st-note">A newer product is a change to instance.yaml's product: pin; the Platform Engineer files it with its commit log for you to approve.</p>
-      <Group title="Every setting" count={data.settings.length} hint={<input className="st-search small" type="search" placeholder="Filter" value={q} onChange={(e) => setQ(e.target.value)} aria-label="Filter settings" />}>
+      {data.updates ? (
+        <Updates u={data.updates} setting={data.settings.find((s) => s.key === "auto_update")} />
+      ) : (
+        <p className="st-note">A newer product is a change to instance.yaml's product: pin; the Platform Engineer files it with its commit log for you to approve.</p>
+      )}
+      <Group title="Every setting" count={data.settings.length} hint={<input className="ui-input small" type="search" placeholder="Filter" value={q} onChange={(e) => setQ(e.target.value)} aria-label="Filter settings" />}>
         <div className="st-table" role="table">
           <div className="st-tr st-th" role="row">
             <span role="columnheader">Setting</span>
@@ -452,6 +454,45 @@ function InstancePage({ data }: { data: SettingsData }) {
         </div>
       </Group>
     </Page>
+  );
+}
+
+// Release updates (docs/design/release-updates.md): the release this server follows, the one available with what changed, and
+// Update now, which is the kernel's own page (an owner tap happens there, never on the board).
+function Updates({ u, setting }: { u: UpdatesData; setting?: SettingRow }) {
+  const when = (t: string | null) => (t ? new Date(t).toLocaleString(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", hour12: false }) : "never");
+  const a = u.available;
+  return (
+    <Group title="Updates" hint={<span className="muted">Release {u.current?.name}, checked {when(u.checkedAt)}</span>}>
+      {a ? (
+        <Banner action={<LinkButton variant="primary" size="sm" href={`${admin.url}/updates`}>Update now</LinkButton>}>
+          AidenHQ {a.name} is available.{" "}
+          {u.auto ? `It installs tonight between 02:00 and 05:00 (${u.timezone ?? "UTC"}).` : "Auto-updates are off: install it when you're ready."}
+        </Banner>
+      ) : (
+        <p className="st-note">{u.error ? `Update check: ${u.error}` : `This server runs ${u.current?.name}, the newest release.`}</p>
+      )}
+      {a && (
+        <div className="st-note">
+          {a.notes.length > 0 && (
+            <ul>
+              {a.notes.map((n, i) => (
+                <li key={i}>{n}</li>
+              ))}
+            </ul>
+          )}
+          <a href={a.compare} target="_blank" rel="noreferrer">
+            Every change since {u.current?.name}
+          </a>
+        </div>
+      )}
+      {u.last && (
+        <p className="st-note">
+          Last update: {u.last.release} {u.last.outcome === "installed" ? "installed" : `failed (${u.last.why ?? "see the apply log"}); this server went back to the release before it`}, {when(u.last.at)}.
+        </p>
+      )}
+      {setting && <SettingItem s={setting} title="Install updates automatically, at night" />}
+    </Group>
   );
 }
 

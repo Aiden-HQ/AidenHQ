@@ -10,12 +10,14 @@ EnvironmentFile=-%h/.config/aidenhq-checkout.env
 # call. It also listens on the backplane's gateway address (10.231.0.1: the model gateway on 8201, the tool proxy on 3130),
 # which exists once compose is up: the kernel retries those binds itself while loopback serves.
 ExecStartPre=/usr/bin/mountpoint -q %h/.config/aidenhq
-ExecStart=/usr/bin/env node --disable-warning=ExperimentalWarning ${AIDENHQ_DIR}/kernel/src/main.ts
+# kernel/run.sh starts the kernel and, on a stop or restart, has it drain: the model calls in flight finish in the old kernel
+# while the next one takes new calls.
+ExecStart=/bin/sh ${AIDENHQ_DIR}/kernel/run.sh
 Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
 Restart=always
 RestartSec=5
-# A stop or restart signals the kernel only: the jobs it started keep running (their own process groups) and the next kernel
-# adopts them from kernel.db (kernel/src/jobs.ts).
+# A stop or restart signals run.sh only: the draining kernel and the jobs it started keep running (their own process groups),
+# and the next kernel adopts the jobs from kernel.db (kernel/src/jobs.ts).
 KillMode=process
 
 [Install]

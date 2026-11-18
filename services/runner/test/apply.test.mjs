@@ -1,32 +1,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { bumpTitle, definitionsOf, strayFiles, trialHandbookOnly, untrialedNewAgents } from "../src/apply.ts";
+import { definitionsOf, untrialedNewAgents } from "../../../kernel/src/apply.ts";
 
-test("only instance config can be applied", () => {
-  assert.deepEqual(strayFiles(["instance.yaml", "apps.yaml", "agents/chief-of-staff.md", "agents/review-chaser/agent.yaml", "agents/review-chaser/AGENTS.md"]), []);
-  assert.deepEqual(strayFiles(["agents/x/run.sh", "agents/X/agent.yaml", "agents/x/y/AGENTS.md"]), ["agents/x/run.sh", "agents/X/agent.yaml", "agents/x/y/AGENTS.md"]);
-  assert.deepEqual(strayFiles(["instance.yaml", "ops/apply-config.sh", "config/paperclip.example.yaml", "agents/x/evil.md"]), ["ops/apply-config.sh", "config/paperclip.example.yaml", "agents/x/evil.md"]);
-});
-test("a product pin move is described honestly", () => {
-  const a = "a".repeat(40), b = "b".repeat(40);
-  assert.equal(bumpTitle({ to: b }), "Product pinned at `bbbbbbbbb`");
-  assert.equal(bumpTitle({ from: a, to: b, forward: true }), "Product upgrade `aaaaaaaaa` → `bbbbbbbbb`, adding these commits");
-  assert.equal(bumpTitle({ from: a, to: b, forward: false, back: true }), "Product DOWNGRADE (rollback) `aaaaaaaaa` → `bbbbbbbbb`, removing these commits");
-  assert.equal(bumpTitle({ from: a, to: b, forward: false, back: false }), undefined); // diverged: refused
-});
-test("apply-config reads the pin with the same parser (CLI), in every form YAML allows", async () => {
-  const { execFileSync } = await import("node:child_process");
-  const { mkdtempSync, writeFileSync } = await import("node:fs");
-  const { join } = await import("node:path");
-  const { tmpdir } = await import("node:os");
-  const sha = "c".repeat(40);
-  for (const line of [`product: ${sha}`, `product: "${sha}"`, `product: '${sha}'  # pinned`]) {
-    const f = join(mkdtempSync(join(tmpdir(), "pin-")), "instance.yaml");
-    writeFileSync(f, `${line}\nmodules: []\n`);
-    assert.equal(execFileSync("node", [new URL("../src/apply.ts", import.meta.url).pathname, "product-pin", f], { encoding: "utf8" }), sha);
-  }
-});
 test("paused Engineers are not assignment targets", async () => {
   const { Paperclip } = await import("../src/paperclip.ts");
   const pc = Object.create(Paperclip.prototype);
@@ -44,15 +20,6 @@ test("tap 1: a new agent must start in trial", () => {
   assert.deepEqual(untrialedNewAgents([def, book], {}, { [def]: graduated }), ["review-chaser"]);
   assert.deepEqual(untrialedNewAgents([def], { [def]: trialYaml }, { [def]: graduated }), [], "tap 2 changes an existing agent: a card, allowed");
 });
-test("the trial exception: only handbook edits to agents in trial (on main) land without a tap", () => {
-  assert.equal(trialHandbookOnly([book], { [def]: trialYaml }), true);
-  assert.equal(trialHandbookOnly([book], { [def]: graduated }), false, "on its own: every change is a card");
-  assert.equal(trialHandbookOnly([book], {}), false, "a new agent (not on main yet): tap 1");
-  assert.equal(trialHandbookOnly([book, def], { [def]: trialYaml }), false, "its definition changes too: a card");
-  assert.equal(trialHandbookOnly([book, "instance.yaml"], { [def]: trialYaml }), false);
-  assert.equal(trialHandbookOnly(["agents/review-chaser.md"], { [def]: trialYaml }), false);
-  assert.equal(trialHandbookOnly([], {}), false);
-});
 test("the no-tap path is only for tasks the owner or the Architect (by the grants table's role) started", async () => {
   const { trialNoTapBy } = await import("../src/apply.ts");
   const grants = { agents: { arch: { key: "architect", roles: ["architect"] }, cos: { key: "chief-of-staff", roles: ["fleet-admin"] } } };
@@ -63,31 +30,6 @@ test("the no-tap path is only for tasks the owner or the Architect (by the grant
   assert.equal(trialNoTapBy({}, grants), false);
   // A task the runner filed with the board key (a Dependabot PR's) names the owner as creator, but is never theirs.
   assert.equal(trialNoTapBy({ createdByUserId: "u1", createdByAgentId: null }, grants, true), false, "runner-made: a card");
-});
-test("only the Architect's follow-ups on a task it created count as a request (review rounds with the Fleet Engineer)", async () => {
-  const { architectFollowUps } = await import("../src/apply.ts");
-  const grants = { agents: { arch: { roles: ["architect"] }, cos: { roles: ["fleet-admin"] } } };
-  const notes = [{ id: "1", authorAgentId: "arch" }, { id: "2", authorAgentId: "cos" }];
-  assert.deepEqual(architectFollowUps(notes, "arch", grants).map((c) => c.id), ["1"]);
-  assert.deepEqual(architectFollowUps(notes, "cos", grants), [], "Aiden's or the Researcher's comments start nothing");
-  assert.deepEqual(architectFollowUps(notes, "arch", undefined), [], "no grants table: nothing");
-  assert.deepEqual(architectFollowUps(notes, undefined, grants), []);
-  // A task that already runs without the owner's go-ahead (delegated from an agent's chat or app work): its delegator's
-  // follow-ups count whoever it is (e.g. the Roadmap Keeper asking its Engineer for the PR card); others' still don't.
-  assert.deepEqual(architectFollowUps(notes, "cos", grants, { approved: true }).map((c) => c.id), ["2"]);
-  assert.deepEqual(architectFollowUps(notes, undefined, grants, { approved: true }), []);
-  // An agent reopening such a task to todo after its run (Aiden restarting an Engineer task the UI/UX Designer delegated): any agent's comment counts.
-  assert.deepEqual(architectFollowUps(notes, "arch", grants, { approved: true, reopened: true }).map((c) => c.id), ["1", "2"]);
-  assert.deepEqual(architectFollowUps(notes, "arch", grants, { reopened: true }).map((c) => c.id), ["1"], "an owner-approved task: still only its delegator");
-});
-test("trial is read as YAML, like compile", async () => {
-  const { isTrial } = await import("../src/apply.ts");
-  assert.equal(isTrial("trial: true\n"), true);
-  assert.equal(isTrial("trial: yes\n"), false);
-  assert.equal(isTrial("name: x\n# trial: true\n"), false);
-  assert.equal(isTrial("notes: |\n  trial: true\n"), false);
-  assert.equal(isTrial("trial: true\ntrial: false\n"), false, "unparseable: not in trial");
-  assert.equal(isTrial(undefined), false);
 });
 test("landing refuses when the guard fails on the exact main it would merge onto", async () => {
   const { execFileSync } = await import("node:child_process");
@@ -112,7 +54,7 @@ test("landing refuses when the guard fails on the exact main it would merge onto
   g(w, "checkout", "-q", "main");
   writeFileSync(join(w, def), graduated);
   g(w, "commit", "-qam", "graduate"); g(w, "push", "-q", "origin", "main");
-  const stillTrial = async (main) => trialHandbookOnly([book], { [def]: g(w, "show", `${main}:${def}`) });
+  const stillTrial = async (main) => /^trial: true$/m.test(g(w, "show", `${main}:${def}`));
   await assert.rejects(landOnMain(w, "main", shown, "note", { guard: stillTrial }), /no longer/);
   assert.equal(g(w, "show", `origin/main:${book}`), "v1");
 });
@@ -172,7 +114,8 @@ const holdLock = async (dir, ms) => {
 };
 
 test("a land that meets a held apply lock waits it out, then applies", async () => {
-  const { applyIsBusy, applyWaitingForLock } = await import("../src/apply.ts");
+  const { applyWaitingForLock } = await import("../src/apply.ts");
+  const { applyIsBusy } = await import("../../../kernel/src/apply.ts");
   const dir = await checkoutWithLock();
   const holder = await holdLock(dir, 2500);
   assert.equal(await applyIsBusy(dir), true, "the lock is held before the land starts");

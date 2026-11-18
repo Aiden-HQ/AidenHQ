@@ -12,7 +12,7 @@ import { actionOf, type Records } from "./records.ts";
 import type { Writes } from "./writes.ts";
 
 /** config/kernel/modules.json (compile): modules with kernel roles, a privileged entry, a token of their own or a channel. */
-export type ModuleInfo = { roles?: string[]; privileged?: string[]; token?: string; channel?: { stamp?: string; stale?: boolean }; settings?: Record<string, unknown> };
+export type ModuleInfo = { roles?: string[]; privileged?: string[]; token?: string; channel?: { stamp?: string; stale?: boolean; transport?: string; credentials?: boolean }; settings?: Record<string, unknown> };
 export type ModulesFile = { modules?: Record<string, ModuleInfo>; owner?: { name?: string; email?: string; timezone?: string } };
 export type Api = (method: string, path: string, body?: unknown) => Promise<{ status: number; json: any }>;
 type Log = (msg: string, f?: Record<string, unknown>) => void;
@@ -85,9 +85,9 @@ export function createChannels({ db, records, writes, board, owner, modules, res
     return { live: records.list(["owner"], 200).reverse().map(view), finished: records.list(["done", "failed", "unknown"], 50, { reviewed: true }).map(view) };
   };
   /** One decision on a card, bound to the digest the owner saw. Throws 409 when the card was decided, changed or replaced meanwhile. */
-  const decideCard = async (id: string, digest: string, decision: "approve" | "reject", by: string, via: string): Promise<{ identifier: string; sentence: string; state: string }> => {
+  const decideCard = async (id: string, digest: string, decision: "approve" | "reject", by: string, via: string, reason = ""): Promise<{ identifier: string; sentence: string; state: string }> => {
     if (!KERNEL_ID.test(id)) throw fail(404, "not_found", `no card ${id.slice(0, 40)}`);
-    const r = writes.decide(id, { digest, decision, by, via });
+    const r = writes.decide(id, { digest, decision, by, via, reason });
     if (typeof r === "string") throw fail(409, "conflict", r);
     return { identifier: r.identifier ?? r.task, sentence: r.card.sentence, state: r.state };
   };
@@ -200,7 +200,9 @@ export function createChannels({ db, records, writes, board, owner, modules, res
         return { id: a.id, identifier: a.identifier, kind: a.action, tier: a.tier, panel: Boolean(a.panel), digest: a.digest, sentence: a.sentence, changes: a.changes, reads: a.reads, cost: a.cost,
           requestedBy: a.requestedBy, replaced: Boolean(a.replaced), ...(a.reason ? { reason: a.reason } : {}), ...(a.review ? { review: a.review } : {}), ...(tokens ? { tokens } : {}) };
       });
-      return { cards, finished: finished.map((a) => ({ id: a.id, identifier: a.identifier, state: a.state, outcome: a.outcome ?? null, outcomeText: a.outcomeText ?? null, sentence: a.sentence })) };
+      // Owner cards that ended without running (rejected anywhere, replaced or expired): a channel edits the message it sent for them.
+      const ended = records.list(["rejected", "stale", "cancelled"], 50, { reviewed: true }).filter((r) => r.tier === 2).map((r) => ({ id: r.id, identifier: r.identifier ?? r.task, state: r.state }));
+      return { cards, finished: finished.map((a) => ({ id: a.id, identifier: a.identifier, state: a.state, outcome: a.outcome ?? null, outcomeText: a.outcomeText ?? null, sentence: a.sentence })), ended };
     },
 
     ownerCards,
@@ -333,6 +335,7 @@ export const CP_READ_PATHS: RegExp[] = [
   new RegExp(`^/api/companies/${ID}/(agents|labels|issues|live-runs|heartbeat-runs)$`),
   new RegExp(`^/api/issues/${ID}$`),
   new RegExp(`^/api/issues/${ID}/comments$`),
+  new RegExp(`^/api/issues/${ID}/attachments$`),
   new RegExp(`^/api/heartbeat-runs/${ID}/log$`),
   new RegExp(`^/api/agents/${ID}$`),
 ];

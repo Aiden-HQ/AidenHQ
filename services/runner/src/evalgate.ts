@@ -43,8 +43,8 @@ import { existsSync, lstatSync, mkdirSync, readFileSync, rmSync, writeFileSync }
 import { join } from "node:path";
 import { parse as parseYaml } from "yaml";
 import { smallFile } from "../../../modules/codehost-github/src/git.mjs";
-import { hostFetch, officialAt } from "../../../kernel/src/loader/sources.ts";
-import { effective } from "../../../kernel/src/loader/release.ts";
+import { hostFetch, officialAt } from "../../../scripts/compiler/sources.ts";
+import { effective } from "../../../scripts/compiler/release.ts";
 
 /**
  * The AI reviewer's own code (spec §8.2, from 3c): the ai-reviewer module (its service, policy, cases and judge), the
@@ -61,8 +61,8 @@ export const REVIEWER_CODE = [
   /^services\/runner\/src\/(tiers|gate-core)\.(mjs|ts)$/,
   /^modules\/codehost-github\/src\/plan\.mjs$/,
   /^modules\/platform\/src\/check\.mjs$/,
-  /^kernel\/src\/(tier|writes|records|reviews|kinds)\.ts$/,
-  /^kernel\/src\/loader\/authority\.ts$/,
+  /^kernel\/src\/(tier|provenance|writes|records|reviews|kinds|apply|apply-tier)\.ts$/,
+  /^scripts\/compiler\/authority\.ts$/,
 ];
 export const touchesReviewer = (files: string[]) => files.some((f) => REVIEWER_CODE.some((r) => r.test(f)));
 /** The same, for a path in the official modules repo (its modules sit at its root). */
@@ -194,7 +194,7 @@ async function pinAt(git: GateDeps["git"], path: string, rev: string): Promise<M
 }
 
 /**
- * The official modules commit an instance config runs (kernel/src/loader: its `aidenhq` marketplace, through its release,
+ * The official modules commit an instance config runs (scripts/compiler: its `aidenhq` marketplace, through its release,
  * else its product's modules-pin.json, read in the product checkout `productRoot`). `repo` is undefined when they come from
  * anywhere but a GitHub repository's root.
  */

@@ -2,7 +2,7 @@ import type { IncomingMessage } from "node:http";
 import type { AccountSession } from "./kernel-auth.js";
 
 /**
- * Who a board request comes from. Every admin writes as the owner (the board key); the account is
+ * Who a board request comes from. Every admin writes as the owner (through the kernel); the account is
  * recorded on what it writes (`authored`) and on the approvals it decides (`account:<id>`).
  * - `accountId`: the account (Better Auth user id).
  * - `role`: "admin" on the board (users never get a board session).

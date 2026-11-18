@@ -189,6 +189,10 @@ for c in $containers; do
       # key, and not the gate's account map (the kernel writes it).
       ksrc="$(docker inspect "$c" --format '{{range .Mounts}}{{.Source}}{{"\n"}}{{end}}' | grep -E '/kernel(/|$)|/gate(/|$)' | tr '\n' ' ')"
       [ -z "$ksrc" ] && pass "board: mounts nothing of the kernel's data or the gate's (accounts are the kernel's alone)" || fail "board mounts the kernel's or the gate's data: $ksrc"
+      # Paperclip only through the kernel (/v1/cp/read, /v1/cp/owner): no Paperclip key, mounted or in its environment.
+      { docker inspect "$c" --format '{{range .Mounts}}{{.Source}} {{end}}' | grep -q 'paperclip_board_key' \
+        || docker exec "$c" sh -c 'ls /run/secrets; tr "\0" "\n" < /proc/1/environ' 2>/dev/null | grep -qE '^paperclip_board_key$|^BOARD_KEY_FILE=|^PAPERCLIP_URL='; } \
+        && fail "board holds the Paperclip key (it reaches Paperclip only through the kernel)" || pass "board: no Paperclip key (Paperclip only through the kernel)"
       # The Maintainer watcher's github-mcp token (the github module's board_env) opens its one issue read, never /mcp.
       if docker exec "$c" sh -c 'test -s "$MAINTAINER_ISSUES_TOKEN_FILE"' 2>/dev/null; then
         code="$(docker exec "$c" node -e 'const t=require("fs").readFileSync(process.env.MAINTAINER_ISSUES_TOKEN_FILE,"utf8").trim();fetch("http://github-mcp:8086/mcp",{method:"POST",headers:{authorization:"Bearer "+t,"content-type":"application/json",accept:"application/json, text/event-stream"},body:JSON.stringify({jsonrpc:"2.0",id:1,method:"tools/list"}),signal:AbortSignal.timeout(5000)}).then((r)=>console.log(r.status),()=>console.log("unreachable"))' 2>/dev/null)"
@@ -220,6 +224,9 @@ for c in $containers; do
       [ "$code" = "401" ] && pass "board: writes only for a signed-in admin" || fail "board took a write from a bare host process ($code)"
       code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 -H "Host: $bh" http://127.0.0.1:3121/api/board)"
       [ "$code" = "401" ] && pass "board: reads need a session" || fail "board answered a read without a session ($code)"
+      # Sign-ins start at the board's https address (BOARD_LAN_URL) or on loopback, and only for a signed-in admin.
+      code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 -H "Host: $bh" http://127.0.0.1:3121/google/connect)"
+      [ "$code" = "403" ] && pass "board: Connect only for a signed-in admin" || fail "board started a sign-in without a session ($code)"
       # 3129 is the kernel's sign-in listener now (lean 3g): the board never publishes it.
       [ "$(docker inspect "$c" --format '{{json (index .HostConfig.PortBindings "3129/tcp")}}')" = "null" ] \
         && pass "board: 3129 not published (the kernel's sign-in listener)" || fail "board publishes 3129 (a compose.override.yaml port?): the kernel's sign-in listener needs it"
@@ -275,7 +282,7 @@ PROBES
       # visitor's address to the sign-in listener. cloudflared's ingress targets that socket (edge.mjs check).
       # The kernel's backplane listener shares the port number on its own address (checked below): exactly that bind, by the
       # kernel's own process, is not the gate's; every other bind on 3130 is, and must be loopback.
-      kpid="$(systemctl --user show -p MainPID --value aidenhq-kernel 2>/dev/null)"
+      kpid="$(pgrep -n -P "$(systemctl --user show -p MainPID --value aidenhq-kernel 2>/dev/null)" 2>/dev/null)" # the kernel: kernel/run.sh's child
       binds="$(ss -Hltnp 'sport = :3130' 2>/dev/null | awk -v k="pid=${kpid:-none}," '!($4 == "10.231.0.1:3130" && index($0, k)) {print $4}' | sort -u | tr '\n' ' ')"
       [ -n "$binds" ] && ! echo "$binds" | tr ' ' '\n' | grep -v '^$' | grep -qv '^127\.0\.0\.1:3130$' \
         && pass "gate: listens on 127.0.0.1:3130 only" || fail "gate: port 3130 is not loopback-only: ${binds:-not listening}"
@@ -292,7 +299,7 @@ PROBES
   esac
 done
 
-# Module isolation (spec §5.11; compose is generated from each module's `services:`, kernel/src/loader/services.ts): a module's
+# Module isolation (spec §5.11; compose is generated from each module's `services:`, scripts/compiler/services.ts): a module's
 # container is on its module's own networks only, plus a module it joins and the root networks its legacy links name (both
 # labels compile writes from closed lists; a hand edit in compose.override.yaml shows here); it mounts no vault path but its
 # own secrets and its module's own vault dir; and none publishes beyond loopback. Every module container is checked.
@@ -317,17 +324,18 @@ done
 # The connections' old loopback read ports (3123-3127) are gone: the kernel reaches each service at its container address.
 [ "$(ss -ltnH 2>/dev/null | grep -cE '127\.0\.0\.1:312[3-7] ')" = 0 ] && pass "no loopback port 3123-3127 (module services publish nothing)" || fail "a loopback port 3123-3127 is published"
 
-# App identity (docs/design/app-identity.md): a shared app answers nothing without a valid token, and the gate never
+# App identity (docs/design/app-identity.md): a shared app (or a door's app) answers nothing without a valid token, and the gate never
 # passes a client's own X-AidenHQ-Identity on (a request with a forged one and no sign-in is refused).
 if [ -f config/gate.json ]; then
   echo "Shared apps"
   while read -r host port; do
     [ -n "$host" ] || continue
-    code="$(curl -s -o /dev/null -w '%{http_code}' -H 'X-AidenHQ-Identity: forged.token.here' "http://127.0.0.1:$port/")"
+    code="$(curl -s -o /dev/null -w '%{http_code}' -H 'X-AidenHQ-Identity: forged.token.here' "http://127.0.0.1:$port/aidenhq-verify-security")" # never its health path
     [ "$code" = "401" ] || [ "$code" = "403" ] && pass "$host: the app refuses a request without a valid identity ($code)" || fail "$host: the app on 127.0.0.1:$port answered without a valid identity ($code)"
     code="$(curl -s -o /dev/null -w '%{http_code}' -H "Host: $host" -H 'X-AidenHQ-Identity: forged.token.here' http://127.0.0.1:3130/)"
     [ "$code" != "200" ] && pass "$host: the gate refuses a forged identity without sign-in ($code)" || fail "$host: the gate let a forged identity through"
-  done < <(node -e 'const g=JSON.parse(require("fs").readFileSync("config/gate.json","utf8"));for(const[h,s]of Object.entries(g.hosts??{}))console.log(h,s.port)')
+  # App doors (docs/design/app-doors.md) too: each app apps-mcp's doors file serves, at <app>.<base>.
+  done < <(node -e 'const fs=require("fs"),g=JSON.parse(fs.readFileSync("config/gate.json","utf8"));for(const[h,s]of Object.entries(g.hosts??{}))console.log(h,s.port);if(g.doors){let d={};try{d=JSON.parse(fs.readFileSync(process.argv[1],"utf8"))}catch{}for(const[a,p]of Object.entries(d))console.log(`${a}.${g.doors.base}`,p)}' "${AIDENHQ_DATA_DIR:-data}/previews/doors.json")
 fi
 
 # Monitoring (modules/monitoring): its token opens only the board's metrics and alert routes; the board's internal token
@@ -461,14 +469,15 @@ grep -qF "pattern: '^https://[a-z0-9-]+\.grafana\.net/?\$'" modules/grafana/modu
   && grep -qF '      if (!secretFits(field, value)) throw fail(400, "bad_request", `that doesn'"'"'t look like a ${field.label}`);' kernel/src/module-secrets.ts \
   && pass "grafana-mcp and clickhouse-mcp: the upstream address is owner-saved and held to its *.grafana.net / *.clickhouse.cloud pattern (kernel/src/module-secrets.ts)" \
   || fail "grafana-mcp or clickhouse-mcp: the saved upstream address's pattern or its owner-only save changed"
-# Engineer jobs' Google Cloud: the user's own access, read-only by the prompt's rule; jobs get a
-# one-hour access token only, never the sign-in's refresh token.
-grep -q '\*\*Read only:\*\* describe, list, get, read and get-iam-policy commands' services/runner/src/prompt.ts \
-  && ! grep -q 'refresh_token' kernel/src/sandbox.ts kernel/src/jobs.ts \
-  && pass "runner: Google Cloud jobs get a one-hour token and the read-only rule (services/runner/src/gcp.ts, prompt.ts)" || fail "runner: Google Cloud jobs lost the read-only rule, or got the refresh token"
+# One way to run a job: every Engineer job in its agent's computer (kernel/src/jobs.ts refuses any other).
+grep -qF 'if (!b.box) throw new JobError(400, "box-required",' kernel/src/jobs.ts \
+  && grep -qF 'if (agent.metadata?.box !== true) throw new JobError(403, "not-a-box-agent",' kernel/src/jobs.ts \
+  && grep -qF 'if (entry.box !== true) throw new JobError(400, "not-a-box-engine",' kernel/src/jobs.ts \
+  && ! grep -q 'hiding(' kernel/src/jobs.ts \
+  && pass "kernel: every job runs in its agent's computer; none on the host" || fail "kernel: a job can run outside an agent computer again"
 grep -q '^export function layout(cfg' kernel/src/sandbox.ts && ! grep -q '"--dev-bind", "/", "/"' kernel/src/sandbox.ts && grep -q '"--tmpfs", "/tmp", "--tmpfs", home' kernel/src/sandbox.ts \
   && grep -q '"--unshare-pid", "--unshare-ipc",' kernel/src/sandbox.ts && grep -q '"--proc", "/proc"' kernel/src/sandbox.ts \
-  && pass "kernel: jobs see an allowlist of the host's files (bwrap): an empty home, so no gcloud or gh sign-ins" || fail "runner: jobs bind the host's whole filesystem again"
+  && pass "kernel: the host sandbox (fast checks, the reviewer eval) sees an allowlist of the host's files (bwrap): an empty home, so no gcloud or gh sign-ins" || fail "kernel: the host sandbox binds the host's whole filesystem again"
 grep -q 'join(homedir(), ".config/gh")' kernel/src/sandbox-config.ts && grep -q 'const ENV_NAMES = new Set(\["AIDENHQ_REPO_URL", "AIDENHQ_REPO_TOKEN", "GH_TOKEN", "AIDENHQ_GH_AUTH", "GIT_AUTHOR_NAME", "GIT_AUTHOR_EMAIL", "GIT_COMMITTER_NAME", "GIT_COMMITTER_EMAIL"\]);' kernel/src/jobs.ts && grep -q '...(gh ? \["-e", "GH_TOKEN", "-e", "AIDENHQ_GH_AUTH"\] : \[\])' kernel/src/sandbox.ts \
   && grep -q 'permissions: READ, fresh: true' modules/codehost-github/src/github-app.ts && node --input-type=module -e 'import { READ } from "./modules/codehost-github/src/github-app.ts"; process.exit(Object.values(READ).every((v) => v === "read") ? 0 : 1)' \
   && pass "runner: jobs can't read the user's gh sign-in; their gh (host and box) reads with a read-only App token for the task's repos" || fail "runner: the user's gh sign-in isn't hidden from jobs, or their gh token changed (or gained a write permission)"
@@ -499,7 +508,7 @@ if job_probe="$(node --input-type=module -e '
   process.stdout.write(leaks.join(", "));
   process.exit(leaks.length ? 1 : 0);
 ' 2>&1)"; then
-  pass "kernel: a job can't reach Docker, tailscaled or systemd --user, nor read the services' data dir, the user's gh sign-in, the runner's state db, the product checkout or other tasks (live, under the jobs' allowlist)"
+  pass "kernel: the host sandbox can't reach Docker, tailscaled or systemd --user, nor read the services' data dir, the user's gh sign-in, the runner's state db, the product checkout or other tasks (live, under the jobs' allowlist)"
 else
   fail "kernel: jobs reach: ${job_probe:-the probe failed to run}"
 fi
@@ -550,7 +559,7 @@ if net_probe="$(node --input-type=module -e '
   process.stdout.write(out.length ? out.join(", ") : `${blocked.length} host address:port pairs refused`);
   process.exit(out.length ? 1 : 0);
 ' 2>&1)"; then
-  pass "kernel: a job has its own network: the Internet, its helper and MCP ports only; no other host listener ($net_probe)"
+  pass "kernel: the host sandbox has its own network: the Internet, its helper and MCP ports only; no other host listener ($net_probe)"
 else
  fail "kernel: job network: ${net_probe:-the probe failed to run}"
 fi
@@ -583,7 +592,7 @@ fi
 # 401; the paperclip container holds no connection token, internal token or grants table, and calling any module's MCP
 # endpoint directly without the service key gets 401 (from the host, at the container's address: paperclip shares no network
 # with most modules any more, so an unreachable endpoint fails here rather than passing).
-kpid="$(systemctl --user show -p MainPID --value aidenhq-kernel 2>/dev/null)"
+kpid="$(pgrep -n -P "$(systemctl --user show -p MainPID --value aidenhq-kernel 2>/dev/null)" 2>/dev/null)" # the kernel: kernel/run.sh's child
 kbinds="$(ss -Hltnp 2>/dev/null | awk -v k="pid=${kpid:-none}," 'index($0, k) {print $4}' | grep -v ':8201$' | sort -u | tr '\n' ' ')"
 [ "$(echo $kbinds)" = "10.231.0.1:3130 127.0.0.1:3120 127.0.0.1:3129" ] && pass "kernel: the proxy listens on 10.231.0.1:3130, the admin pages on 127.0.0.1:3120 and the gate's sign-in listener on 127.0.0.1:3129 only" || fail "kernel: listens on ${kbinds:-nothing} (want 10.231.0.1:3130, 127.0.0.1:3120 and 127.0.0.1:3129 only, plus 8201)"
 # The sign-in listener (lean 3g, from the board): no page, no admin route; app access only with the gate's secret; a write
@@ -623,14 +632,15 @@ first_conn="$(node -e 'console.log(Object.keys(JSON.parse(require("fs").readFile
 [ -n "$first_conn" ] && [ "$(curl -s -m 10 -o /dev/null -w '%{http_code}' -X POST "http://10.231.0.1:3130/c/$first_conn/mcp" -H 'content-type: application/json' -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}')" = 401 ] \
   && pass "kernel: /c/ without a credential is refused (401)" || fail "kernel: /c/$first_conn answers without a credential"
 # Channels (2f): the owner's cards, decisions and words go through the kernel, to a speaks-as-owner module's own token only;
-# no module mounts the board key, and the old decide keys are gone from the vault.
-chan="$(for p in "GET /v1/channel/cards" "POST /v1/channel/decide" "POST /v1/channel/owner-message" "GET /v1/cp/read/api/companies"; do
+# the board's Paperclip routes (/v1/cp/owner) to the board's kernel key only; no module mounts the board key, and the old
+# decide keys are gone from the vault.
+chan="$(for p in "GET /v1/channel/cards" "POST /v1/channel/decide" "POST /v1/channel/owner-message" "GET /v1/cp/read/api/companies" "POST /v1/cp/owner/api/issues/x/comments"; do
   for tok in "" "$(cat "${AIDENHQ_SECRETS_DIR:-/nonexistent}/board_internal_token" 2>/dev/null)"; do
     data=""; [ "${p%% *}" = POST ] && data="{}"
     c="$(curl -s -m 10 -o /dev/null -w '%{http_code}' -X "${p%% *}" ${tok:+-H "Authorization: Bearer $tok"} -H 'content-type: application/json' ${data:+-d "$data"} "http://10.231.0.1:3130${p#* }" 2>/dev/null || true)"
     [ "$c" = 401 ] || echo "${p} answered $c"
   done; done)"
-[ -z "$chan" ] && pass "kernel: channel routes refuse no credential and the board's internal token (401)" || fail "kernel: $chan"
+[ -z "$chan" ] && pass "kernel: channel and board control-plane routes refuse no credential and the board's internal token (401)" || fail "kernel: $chan"
 ! grep -q 'paperclip_board_key' compose.modules.yaml 2>/dev/null && pass "modules: no module mounts the Paperclip board key" || fail "modules: a module mounts paperclip_board_key (compose.modules.yaml)"
 [ ! -e "${AIDENHQ_SECRETS_DIR:-/nonexistent}/owner_decide_key" ] && [ ! -e "${AIDENHQ_SECRETS_DIR:-/nonexistent}/watcher_decide_key" ] \
   && pass "vault: no owner_decide_key or watcher_decide_key (channels decide by token)" || fail "vault: an old decide key is still there"
@@ -900,7 +910,7 @@ grep -qF '      const moved = await bump(judge, lands, `#${pr.number}`);' "$rgat
 # autonomy cap (autonomy off: after the AI review, #110), an owner-recorded source exception (#101), a spend-cap raise or nothing recognised (the only Tier 2 rules left in tiers.mjs).
 # Every one of them is AI-reviewed before it reaches the owner (owner, 2026-11-16): classify() makes a Tier 2-by-merit
 # request review-first (meritOwner: the reviewer's approve and reject both reach the owner) and a routine's cap on Tier 1
-# review-first (routineCapped: its reject is final), and the board takes no reviewer approve on a review-first card and no
+# review-first (tier.ts computeTier, for every write: its reject is final), and the board takes no reviewer approve on a review-first card and no
 # reviewer reject on one that is the owner's on its merits; the owner's veto files the card for the reviewer first, then
 # the owner. The kernel's records keep their merit tier, and a merit-2 record's reject goes to the owner. The gate's own core is
 # authority-expanding: tiers, review, the reviewer policy and its eval cases, the board's approval routes and
@@ -918,9 +928,9 @@ grep -qF '      const moved = await bump(judge, lands, `#${pr.number}`);' "$rgat
 # core is the runner's gate-core.mjs (the runner passes it to the platform check as facts.gateCore); the modules' half stays
 # in check.mjs, so each repo adds its own gate files and their entries in one PR.
 rreview="modules/ai-reviewer/service/src/review.mjs"
-[ "$(grep -ohE 'T\(2, "[a-z-]+"' "$rtiers" "$rplan" "$rcheck" kernel/src/tier.ts | sort -u | tr '\n' ' ')" = 'T(2, "autonomy-off" T(2, "owner-approval-record" T(2, "owner-veto" T(2, "raise-cap" T(2, "routine-autonomy" T(2, "unknown-repos" T(2, "unrecognised" ' ] \
+[ "$(grep -ohE 'T\(2, "[a-z-]+"' "$rtiers" "$rplan" "$rcheck" kernel/src/tier.ts | sort -u | tr '\n' ' ')" = 'T(2, "owner-approval-record" T(2, "owner-veto" T(2, "raise-cap" T(2, "unknown-repos" T(2, "unrecognised" ' ] \
   && node --input-type=module -e 'const GATE_CORE = [...(await import(process.argv[1])).GATE_CORE, ...(await import(process.argv[2])).GATE_CORE]; const must = ["tiers","gate-core","review-request","siblings","cards","evalgate","apply","state","config","main","engines","files","agents","typed-change","url-setting"].flatMap((n) => [`services/runner/src/${n}.mjs`, `services/runner/src/${n}.ts`]).concat(["merge-gate.mjs","github-app.ts","git.mjs","workspace.ts","plan.mjs","repos.ts"].map((n) => `modules/codehost-github/src/${n}`), ["modules/platform/src/check.mjs", "modules/engineering/src/merge-queue.mjs"]).concat(["app","fleet","kernel-auth","session"].map((n) => `services/board/src/${n}.ts`), ["modules","paperclip-setup","no-shell"].flatMap((n) => [`scripts/${n}.mjs`, `scripts/${n}.ts`]), ["modules/engine-codex/bin/engine", "modules/engine-claude/src/claude.ts", "kernel/sdk/src/engine-io.ts", "kernel/src/sandbox.ts", "kernel/src/netjail.ts", "kernel/src/jobs.ts", "kernel/src/accounts.ts", "kernel/src/auth-rules.ts", "kernel/src/signin.ts", "kernel/src/progress.ts", "kernel/src/proxy.ts", "kernel/src/identity.ts", "kernel/src/assert.ts", "kernel/src/cp.ts", "kernel/src/gateway/lib.ts", "kernel/sdk/src/caller.ts", "modules/glean/connections/glean-mcp/src/aidenhq-sdk/caller.ts", "modules/apps-platform/apps-mcp/src/aidenhq-sdk/caller.ts", "kernel/src/writes.ts", "kernel/src/records.ts", "kernel/src/tier.ts", "kernel/src/kinds.ts", "kernel/sdk/src/executor.ts", "modules/apps-platform/apps-mcp/src/executor.ts", "modules/apps-platform/apps-mcp/src/aidenhq-sdk/executor.ts", "modules/apps-platform/module.yaml", "modules/primer/module.yaml", "modules/primer/connections/primer-mcp/src/publish.ts", "modules/ai-reviewer/service/src/review.mjs", "modules/ai-reviewer/service/security/policy.md", "kernel/src/reviews.ts", "kernel/sdk/src/reviewer.ts", "services/shared/review-files.mjs", "services/runner/src/review-request.mjs", "services/runner/src/siblings.ts", "kernel/src/checks.ts", "modules/grading/module.yaml", "modules/grading/service/src/server.ts", "modules/grading/service/src/grades.ts", "modules/grading/service/src/main.ts", "modules/grading/service/Dockerfile", "modules/grading/src/loop.mjs", "modules/grading/package.json", "ops/grades-move.mjs", "modules/codehost-local/src/host.mjs", "modules/codehost-local/src/checks.ts"]); const miss = must.filter((f) => !GATE_CORE.some((g) => g.test(f))); if (miss.length) { console.error("not gated: " + miss.join(" ")); process.exit(1); }' "$repo/$rcore" "$repo/$rcheck" && grep -qF '  /^scripts\/computers\.(mjs|ts)$/,' "$rcore" \
-  && node --input-type=module -e 'const { touchesReviewer } = await import(process.argv[1]); const must = ["kernel/src/tier.ts", "kernel/src/writes.ts", "kernel/src/records.ts", "kernel/src/reviews.ts", "kernel/src/kinds.ts", "services/runner/src/cards.ts", "services/runner/src/review-request.mjs", "services/runner/src/tiers.mjs", "services/runner/src/gate-core.mjs", "modules/codehost-github/src/plan.mjs", "modules/platform/src/check.mjs"]; const miss = must.filter((f) => !touchesReviewer([f])); if (miss.length) { console.error("not reviewer code: " + miss.join(" ")); process.exit(1); }' "$repo/services/runner/src/evalgate.ts" \
+  && node --input-type=module -e 'const { touchesReviewer } = await import(process.argv[1]); const must = ["kernel/src/tier.ts", "kernel/src/provenance.ts", "kernel/src/writes.ts", "kernel/src/records.ts", "kernel/src/reviews.ts", "kernel/src/kinds.ts", "kernel/src/apply.ts", "services/runner/src/cards.ts", "services/runner/src/review-request.mjs", "services/runner/src/tiers.mjs", "services/runner/src/gate-core.mjs", "modules/codehost-github/src/plan.mjs", "modules/platform/src/check.mjs"]; const miss = must.filter((f) => !touchesReviewer([f])); if (miss.length) { console.error("not reviewer code: " + miss.join(" ")); process.exit(1); }' "$repo/services/runner/src/evalgate.ts" \
   && grep -qF '  /^modules\/ai-reviewer\//,' "$rcheck" && grep -qF '  /^modules\/codehost-github\//,' "$rcheck" && grep -qF '  /^modules\/platform\//,' "$rcheck" \
   && grep -qF '/(^|\/)\.github\//,' "$rcore" && grep -qF 'gateCore: PRODUCT_GATE_CORE' "$rtiers" \
   && grep -qF '.some((g) => g.test(f))) parts.push(PANEL("gate-core"' "$rcheck" \
@@ -930,7 +940,9 @@ rreview="modules/ai-reviewer/service/src/review.mjs"
   && grep -qF '  const second = v.second_review !== false;' "$rreview" \
   && grep -qF '  if (v1.decision !== "approve" || !(panel || flagged)) return v1;' "$rreview" \
   && grep -qF '  if (v2.decision === "approve") return { decision: "approve"' "$rreview" \
-  && grep -qF '  return routineCapped(meritOwner(onMerits(action, s)), s.routineAutonomy);' "$rtiers" \
+  && grep -qF '  return meritOwner(onMerits(action, s));' "$rtiers" \
+  && grep -qF 'if (merit === 1 && caps[0]) return' kernel/src/tier.ts && grep -qF 'if (merit === 0 && off) return' kernel/src/tier.ts \
+  && grep -qF '!(await revalidate(pre)) || !records.claim(id)' kernel/src/writes.ts && grep -qF '!(await revalidate(r)) || !records.claim(id)' kernel/src/writes.ts \
   && grep -qF 'if (f.ownerRequired) { tier = 2; reviewFirst = reviewFirst === "owner" ? "owner" : "final"; }' kernel/src/writes.ts \
   && grep -qF 'const veto = records.vetoed(task, kind, { digest, content: f.content });' kernel/src/writes.ts \
   && grep -qF 'let tier = Math.max(proposed, carried ? 0 : k.floor, carried ? 0 : f.floor) as Tier;' kernel/src/writes.ts \
@@ -940,7 +952,7 @@ rreview="modules/ai-reviewer/service/src/review.mjs"
   && grep -qF 'if (v.decision === "approve" && (r.review_first || r.tier === 2' kernel/src/records.ts \
   && grep -qF 'if (v.decision === "reject" && r.review_first === "owner" && !FINAL_CODES.includes(v.code ?? "")) return' kernel/src/records.ts \
   && grep -qF 'const migration = touchesMigrations(com.diff);' modules/apps-platform/apps-mcp/src/executor.ts && grep -qF 'raise: { tier: 1, panel: migration, rule:' modules/apps-platform/apps-mcp/src/executor.ts \
-  && grep -qF 'return { tier, merit, panel: panel || raise?.panel === true' kernel/src/tier.ts && grep -qF 'if (r.panel && v.decision === "approve" && !v.by.includes("+")) return' kernel/src/records.ts \
+  && grep -qF 'const out = { panel: panel || raise?.panel === true' kernel/src/tier.ts && grep -qF 'if (r.panel && v.decision === "approve" && !v.by.includes("+")) return' kernel/src/records.ts \
   && grep -qF '"HEAD:modules/ci/template/.github"' "$rmain" && grep -qF 'return treeIs(path, sha, ".github", want);' "$rmain" && grep -qF 'return Boolean(want) && got === want;' modules/codehost-github/src/git.mjs \
   && grep -qF 'if (workflow && !(inAgents && b.ciTemplate === true)) parts.push(T(1, "github-dir"' "$rplan" \
   && pass "runner and board: the owner decides only vetoes, panel splits, autonomy caps and spend caps, each after the AI reviewer; the gate's core goes to two reviewers of different families, checked by the runner and the kernel; a CI template copy is Tier 0 only by tree identity with the deployed product ($rtiers, $rreview)" \
@@ -984,34 +996,26 @@ tools="$(grep -oE '^export const TOOLS = \[[^]]*\]' services/runner/src/repohelp
   && awk '/^async function publishToPrimer/,/^}/' "$rmain" | grep -F 'await kernelWrites("POST", "/v1/writes", who, { kind: "primer.publish", args });' >/dev/null \
   && awk '/^async function kernelWrites/,/^}/' "$rmain" | grep -F 'writes: ["primer.publish"] });' >/dev/null \
   && [ "$(awk '/^writes:/{on=1} on && /^    (floor|tools):/' modules/primer/module.yaml | tr -s ' ')" = "$(printf ' floor: 1\n tools: [ primer_create_document, primer_add_version ]')" ] \
-  && grep -qF 'jobcapsFile: join(configDir, "jobcaps.json"),' services/runner/src/config.mjs \
   && ! grep -qE '_mcp_read_token|_mcp_token' services/runner/src/config.mjs services/runner/src/engines.mjs kernel/src/sandbox.ts \
-  && ! grep -qF '"codex", "sandbox"' kernel/src/sandbox.ts \
-  && grep -qF 'url: `${cfg.gatewayUrl}/c/${c.connection}/mcp`' kernel/src/sandbox.ts \
+  && grep -qF 'mcp: [], env: [],' kernel/src/sandbox.ts \
   && grep -qF 'if (j.private && a.private_reads !== true) fail(' scripts/modules.mjs \
-  && grep -qF 'filter((id) => all[id] && (!all[id].private || observes(engine)))' kernel/src/sandbox.ts \
-  && grep -qF 'const search = observes(engine) || servers.some((s) => s.private) ? "disabled" : "live";' kernel/src/sandbox.ts \
+  && grep -qF 'web: !observes(engine),' kernel/src/sandbox.ts \
   && grep -qF '(!c.private || p.o === true)' kernel/src/identity.ts \
+  && grep -qF 'if (c && !c.private) tools[c.connection]' kernel/src/identity.ts \
   && grep -q 'export const observes = (engine?: Engine) => engine?.reads === true;' kernel/src/sandbox.ts \
   && grep -q 'agent.metadata?.privateReads === true ? { reads: true } : {}' kernel/src/jobs.ts \
-  && pass "runner: the Engineer's merges and closes are tiered (tiers.mjs) before anything runs or a card is filed (a merge on this server's repos always on a card), apply only files a card at the turn's end, and every Primer publish is a primer.publish record at floor 1 the AI reviewer decides (no owner-words check); jobs hold no connection URL or token (their jobcaps go through the gateway with the job token), and Slack, Glean, Grafana, ClickHouse and other tasks go only to Engineers whose definition opts in (private_reads), with web search off" || fail "runner: the Engineer's tools or their check changed: $tools"
+  && pass "runner: the Engineer's merges and closes are tiered (tiers.mjs) before anything runs or a card is filed (a merge on this server's repos always on a card), apply only files a card at the turn's end, and every Primer publish is a primer.publish record at floor 1 the AI reviewer decides (no owner-words check); jobs hold no connection URL or token (a computer reaches its connections through the kernel's proxy with its run token: its grants and its non-private jobcaps), and private reads go only to Engineers whose definition opts in (private_reads), with web search off" || fail "runner: the Engineer's tools or their check changed: $tools"
 # engine@1: the runner writes `web: false` into job.json for a job holding private data; every engine module keeps such a job
 # off the web (by behaviour: each module's own builder, as its bin/engine runs it).
 if web_probe="$(node --input-type=module -e '
-  const spec = { contract: "engine@1", prompt: "", mcp: [], env: [], web: false, limits: { timeout_s: 1 }, model: { base_url: "http://127.0.0.1:1/api/v1", token_env: "AIDENHQ_MODEL_TOKEN", id: "m", effort: "" }, sandbox: { kind: "bwrap", writable: [], network: true } };
+  const spec = { contract: "engine@1", prompt: "", mcp: [], env: [], web: false, limits: { timeout_s: 1 }, model: { base_url: "http://127.0.0.1:1/api/v1", token_env: "AIDENHQ_RUN_TOKEN", id: "m", effort: "" }, sandbox: { kind: "box", writable: [], network: true } };
   const bad = [];
   const { codexCommand } = await import("./modules/engine-codex/src/codex.ts");
-  for (const kind of ["bwrap", "box"]) if (!codexCommand({ ...spec, sandbox: { ...spec.sandbox, kind } }, "/job", {}).argv.includes("web_search=\"disabled\"")) bad.push(`codex (${kind})`);
-  const { claudeCommand } = await import("./modules/engine-claude/src/claude.ts");
-  const argv = claudeCommand(spec, {}).argv;
-  if (/Web/.test(argv[argv.indexOf("--tools") + 1])) bad.push("claude");
-  const { opencodeCommand } = await import("./modules/engine-opencode/src/opencode.ts");
-  const p = JSON.parse(opencodeCommand(spec, {}).env.OPENCODE_CONFIG_CONTENT).permission;
-  if (p.webfetch !== "deny" || p.websearch !== "deny") bad.push("opencode");
+  if (!codexCommand(spec, "/job", {}).argv.includes("web_search=\"disabled\"")) bad.push("codex");
   process.stdout.write(bad.join(", "));
   process.exit(bad.length ? 1 : 0);
 ' 2>&1)"; then
-  pass "engines: a job holding private data gets no web search or fetch from any engine (engine@1 web: false; codex, claude, opencode)"
+  pass "engines: a job holding private data gets no web search (engine@1 web: false; codex)"
 else
   fail "engines: private-data jobs reach the web: ${web_probe:-the probe failed to run}"
 fi

@@ -8,41 +8,62 @@
 //   and assertions, the control plane as the calling agent, and the records of every write (writes.ts, kernel.db).
 // - Jobs (jobs.ts, sandbox.ts): engine runs in the sandbox, detached, so a restart (KillMode=process) leaves them running;
 //   this process adopts them at start and stops following them (offsets saved) on SIGTERM, SIGINT or SIGUSR2.
+// - A restart drains (SIGUSR2, sent by kernel/run.sh, the unit's main process, which exits at once so the next kernel starts):
+//   this kernel stops its jobs' watchers, timers and listeners at once (the next one binds them as it starts: a gap of its
+//   start-up, which callers retry), lets the model calls in flight finish (at most DRAIN_MS) and exits.
 // - The admin listener (127.0.0.1:3120, admin.ts): admins' sign-in (accounts.ts, data/kernel/auth/) and the approval pages.
 // - The sign-in listener (127.0.0.1:3129, signin.ts): the gate's half of shared apps' sign-in (Better Auth's steps, handoffs,
 //   app access). The kernel is the only process that opens the accounts file (lean 3g).
+import { execFile } from "node:child_process";
 import http from "node:http";
 import { existsSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { configDir, dataDir, env, repo, secret } from "./env.ts";
-import { createGateway, watched } from "./gateway/lib.ts";
+import { INSTALL_CAP, createGateway, watched } from "./gateway/lib.ts";
 import { createAdmin, type SetupField } from "./admin.ts";
 import { createAuthApi } from "./auth-api.ts";
 import { checkModel, exchange, readiness, startPkce } from "./openrouter-pkce.ts";
 import { agentSetup, composeRecreate, createModuleSecrets, vaultWriter } from "./module-secrets.ts";
-import { readGate } from "./accounts.ts";
+import { doorSource, readGate } from "./accounts.ts";
 import { routineWake, webhookWake, type Manifest } from "./app-access.ts";
 import { createSignin } from "./signin.ts";
 import { createAsserter, loadKey } from "./assert.ts";
-import { createBackplane } from "./backplane.ts";
+import { chiefOfStaff, createBackplane } from "./backplane.ts";
+import { createOutcomes, delegateIds } from "./outcomes.ts";
 import { createBrake } from "./brake.ts";
+import { createNotify } from "./notify.ts";
 import { createChannels, type Api, type ModulesFile } from "./channels.ts";
+import { createLane } from "./lane.ts";
 import { checksFile, createChecks } from "./checks.ts";
-import { createAsCaller, createCp } from "./cp.ts";
+import { createAsCaller, createBoardCp, createCp } from "./cp.ts";
 import { createIdentity, type Connection, type Grant, type Jobcap } from "./identity.ts";
-import { createAdvisories } from "./loader/advisories.ts";
-import { hostFetch } from "./loader/sources.ts";
+import { createAdvisories } from "./advisories.ts";
+import { hostFetch } from "../../scripts/compiler/sources.ts";
 import { createResolver } from "./net.ts";
+import { CODEHOST, createCodehost, type OpsGrant } from "./codehost.ts";
 import { createProxy } from "./proxy.ts";
 import { openRecords } from "./records.ts";
 import { createReviews, type ReviewerSlot } from "./reviews.ts";
 import { mintToken } from "./gateway/token.ts";
 import { createWrites, type Kind } from "./writes.ts";
+import { createApply, hostApply } from "./apply.ts";
+import { hostPlanner } from "./apply-tier.ts";
+import { inventoryOf } from "./paths.ts";
+import { taskRoutineCap } from "./tier.ts";
+import { createProvenance } from "./provenance.ts";
 import { KERNEL_KINDS, LOCAL_ORG, raiseCapCard } from "./kinds.ts";
-import { createJobs, dispatchesFrom } from "./jobs.ts";
-import { jailProblem, overlayProblem } from "./sandbox.ts";
+import { admittedJob, createJobs, dispatchesFrom } from "./jobs.ts";
+import { createAdmission, wakeInbox } from "./admission.ts";
+import { createBoxes, handbookFrom, launcherClient, type Boxes } from "./boxes.ts";
+import { checkJobsFrom } from "./checkbox.ts";
+import { createJobTools } from "./jobtools.ts";
+import { createWakes } from "./wakes.ts";
+import { createModuleTasks } from "./modtasks.ts";
+import { createWork } from "./work.ts";
+import { jailProblem, readEngines } from "./sandbox.ts";
 import { sandboxConfig } from "./sandbox-config.ts";
 import { createCertWatch } from "./front-door.ts";
+import { createUpdates } from "./updates.ts";
 import { BOX_EXEC_WRAP } from "../../services/computer/lib.mjs";
 
 const log = (msg: string, fields: Record<string, unknown> = {}) => console.log(new Date().toISOString(), msg, JSON.stringify(fields));
@@ -52,7 +73,7 @@ const launcherUrl = env("AIDENHQ_LAUNCHER_URL", "http://10.231.0.1:8199"); // na
 const grantsFile = path.join(configDir, "grants", "grants.json");
 const grantsTable = watched(grantsFile, (j) => j as { agents?: Record<string, Grant> } & Record<string, unknown>, {});
 const connections = watched(path.join(configDir, "kernel", "connections.json"), (j) => j as Record<string, Connection>, {});
-// The control plane with the board key (only the kernel holds it): the task a run is on (its run record), and a record's task.
+// The control plane with the owner key (paperclip_board_key: only the kernel holds it; the board reaches it through cp.ts createBoardCp): the task a run is on (its run record), and a record's task.
 const cpApi = (p: string, init: RequestInit = {}) => fetch(new URL(p, controlUrl), { ...init, headers: { authorization: `Bearer ${secret("paperclip_board_key")}`, "content-type": "application/json" }, signal: AbortSignal.timeout(15_000) });
 async function runTask(runId: string): Promise<string | undefined> {
   const res = await cpApi(`/api/heartbeat-runs/${encodeURIComponent(runId)}`);
@@ -61,33 +82,48 @@ async function runTask(runId: string): Promise<string | undefined> {
   return r.issueId ?? r.contextSnapshot?.issueId ?? undefined;
 }
 // Modules with kernel roles, a privileged entry, a token of their own or a channel (compile).
-const modulesFile = watched(path.join(configDir, "kernel", "modules.json"), (j) => j as ModulesFile & { reviewer?: ReviewerSlot; setup?: SetupField[]; services?: Record<string, string[]>; mounts?: Record<string, string[]> }, {});
+const modulesFile = watched(path.join(configDir, "kernel", "modules.json"), (j) => j as ModulesFile & { snapshot?: string; reviewer?: ReviewerSlot; setup?: SetupField[]; services?: Record<string, string[]>; mounts?: Record<string, string[]> }, {});
 const whoami = createIdentity({
   grants: () => grantsTable().agents ?? {}, connections, modules: () => modulesFile().modules ?? {},
   jobcaps: watched(path.join(configDir, "jobcaps.json"), (j) => j as Record<string, Jobcap>, {}), // runner jobs' reads (compile)
   secret, controlUrl, launcherUrl, runTask,
+  job: (id) => admittedJob(records.db, id), // a kernel job's token: its row's frozen authority (admission.ts)
 });
 const asserter = createAsserter(loadKey(path.join(dataDir, "kernel", "caller-key.pem")));
 const resolver = createResolver({ project: env("COMPOSE_PROJECT_NAME", "aidenhq") });
 // A record's task: still open, and the notices on it (written with the board key, as the board's approval notices are).
 const issueOf = async (task: string) => { const r = await cpApi(`/api/issues/${encodeURIComponent(task)}`); return r.ok ? ((await r.json()) as { id: string; identifier?: string; status?: string; parentId?: string | null }) : undefined; };
+const cpJson = async (p: string) => { const r = await cpApi(p); if (!r.ok) throw new Error(`control plane GET ${p} → ${r.status}`); return r.json(); };
+const runIssue = new Map<string, string | null>(); // a run's issue never changes
+const records = openRecords(path.join(dataDir, "kernel", "kernel.db"));
+// Tasks kernel jobs create (provenance.ts): the routine trace reads them first; lost intents are reconciled at start and every minute.
+const provenance = createProvenance({
+  db: records.db, log, cap: (task) => taskRoutineCap(cpTrace, task, grantsTable().routines as Record<string, string> | undefined, runIssue),
+  // The list cuts long descriptions: each hit is read whole.
+  search: async (cid, q) => Promise.all(((await cpJson(`/api/companies/${encodeURIComponent(cid)}/issues?q=${encodeURIComponent(q)}&status=backlog,todo,in_progress,in_review,blocked,done,cancelled&limit=50`)) as { id: string }[]).map((i) => cpJson(`/api/issues/${encodeURIComponent(i.id)}`))),
+  issue: (id) => cpJson(`/api/issues/${encodeURIComponent(id)}`),
+});
+const cpTrace = { issue: (id: string) => cpJson(`/api/issues/${encodeURIComponent(id)}`), run: (id: string) => cpJson(`/api/heartbeat-runs/${encodeURIComponent(id)}`), provenance: provenance.trace };
+setInterval(() => void provenance.reconcile(), 60_000).unref();
+setTimeout(() => void provenance.reconcile(), 1_000).unref();
 const onTask = {
   open: async (task: string) => { const i = await issueOf(task); return Boolean(i) && !["done", "cancelled"].includes(String(i!.status)); },
   parent: async (task: string) => (await issueOf(task))?.parentId ?? undefined,
   notify: async (task: string, body: string) => { const r = await cpApi(`/api/issues/${encodeURIComponent(task)}/comments`, { method: "POST", body: JSON.stringify({ body }) }); if (!r.ok) log("notice failed", { task, status: r.status }); },
+  // The cap of a routine whose run started the task's chain, traced as the runner traces it; a read that fails is "off".
+  routineCap: (task: string) => taskRoutineCap(cpTrace, task, grantsTable().routines as Record<string, string> | undefined, runIssue),
 };
-const records = openRecords(path.join(dataDir, "kernel", "kernel.db"));
 // The modules' kinds (compile) and the kernel's own and the runner's (kinds.ts).
 const moduleKinds = watched(path.join(configDir, "kernel", "writes.json"), (j) => j as Record<string, Kind>, {});
+const pathInventory = watched(path.join(configDir, "kernel", "paths.json"), inventoryOf, undefined);
 const registry = () => ({ ...moduleKinds(), ...KERNEL_KINDS });
 let replay: (r: never) => Promise<{ ok: boolean; text: string }> = async () => ({ ok: false, text: "the proxy isn't up" });
 // The product and instance repositories (owner/name), as setup recorded them in .env: runner kinds touching them get the
 // kernel's own floors and refusals (kinds.ts runnerFacts), whatever the runner's plan says. Either unknown: every runner
 // kind is the owner's after the reviewer (fails closed).
-// The agents org, as the runner reads it: AIDENHQ_GITHUB_AGENTS_ORG, else the instance's github_agents_org or aidenhq-<instance_name>.
-const instanceSettings = (() => { try { return readFileSync(path.join(env("AIDENHQ_INSTANCE_DIR", "").replace(/^~(?=\/)/, process.env.HOME ?? ""), "instance.yaml"), "utf8"); } catch { return ""; } })();
-const setting = (k: string) => new RegExp(`^\\s+${k}:\\s*["']?([\\w.-]+)`, "m").exec(instanceSettings)?.[1];
-const agentsOrg = env("AIDENHQ_GITHUB_AGENTS_ORG") || setting("github_agents_org") || (setting("instance_name") ? `aidenhq-${setting("instance_name")}` : undefined);
+// The agents org: AIDENHQ_GITHUB_AGENTS_ORG, written once by ops/github-app-setup.mjs, never a setting a later change could move.
+// Unset: no agents org (runner kinds are the owner's; @agents codehost grants name nothing).
+const agentsOrg = env("AIDENHQ_GITHUB_AGENTS_ORG") || undefined;
 // With codehost-local enabled (the compiled catalog), its org `local` is an agents org too (docs/design/codehost-local.md §2).
 const localHost = watched(path.join(configDir, "modules.json"), (j) => Array.isArray(j) && j.some((m: { name?: string; enabled?: boolean }) => m?.name === "codehost-local" && m.enabled === true), false);
 const baseRepos = { product: env("AIDENHQ_PRODUCT_REPO") || undefined, instance: env("AIDENHQ_INSTANCE_REPO") || undefined, agentsOrg };
@@ -96,11 +132,18 @@ log(baseRepos.product && baseRepos.instance ? "runner kinds' repositories" : "ru
 // The bound reviewer module (reviewer@1): its model calls go through this gateway on a reviewer token minted per review.
 const reviews = createReviews({ slot: () => modulesFile().reviewer, secret, resolver, log, modelToken: (component) => mintToken(secret("gateway_job_secret"), { kind: "reviewer", component, ttlMs: 3600_000 }) });
 let raiseCap: (r: { scope: string; agentId: string; subject: string; cap: number; spent: number; to: number }) => Promise<string> = async () => { throw new Error("the model gateway isn't up"); };
+// kernel.apply's executor (apply.ts): the code host lands the commit, a transient unit runs the apply; a restart resumes it.
+const applyHost = hostApply({ repo, stateDir: env("AIDENHQ_STATE_DIR", path.join(process.env.HOME ?? "", ".local/state/aidenhq")), resolver, codehost: () => { const e = moduleKinds()["codehost-github.push"]?.executor; return e && { url: e.url, key: secret(e.auth_secret) }; } });
+const applies = createApply({ db: records.db, log, ...applyHost });
+// Its planner (apply-tier.ts): the same code host read, the product checkout, and the compiled grants, connections and apps.
+const applyPlanner = hostPlanner({ repo, instanceRepo: () => repos().instance, configDir, read: applyHost.codehost.read, grants: () => grantsTable().agents ?? {}, connections });
 const writes = createWrites({
-  records, registry, connections, secret, resolver, reviews, onTask, log, replay: (r) => replay(r as never), repos,
+  records, registry, connections, secret, resolver, reviews, onTask, log, replay: (r) => replay(r as never), repos, paths: pathInventory,
   autonomy: () => (["off", "tier0", "full"].includes(grantsTable().autonomy as string) ? grantsTable().autonomy : "off") as never,
   // An approved raise_cap: the gateway's cap for that scope and subject becomes the card's doubled cap.
-  native: { "kernel.raise_cap": async (r) => ({ ok: true, text: await raiseCap(r.args as never) }) },
+  native: { "kernel.raise_cap": async (r) => ({ ok: true, text: await raiseCap(r.args as never) }), "kernel.apply": applies.execute },
+  planners: { "kernel.apply": applyPlanner },
+  resume: ["kernel.apply"],
 });
 const proxy = createProxy({ whoami, connections, asserter, resolver, secret, writes, log });
 replay = proxy.replay as never;
@@ -113,45 +156,82 @@ const asApi = (call: (p: string, init: RequestInit) => Promise<Response>): Api =
 const ownerApi = asApi(cpApi);
 const boardApi = asApi((p, init) => fetch(new URL(p, env("BOARD_INTERNAL_URL", "http://127.0.0.1:3122")), { ...init, headers: { authorization: `Bearer ${secret("board_internal_token")}`, "x-gateway-key": secret("gateway_board_key"), "content-type": "application/json" }, signal: AbortSignal.timeout(20_000) }));
 const channels = createChannels({ db: records.db, records, writes, board: boardApi, owner: ownerApi, modules: modulesFile, resetLinks: () => accounts?.takeResetLinks() ?? [], log });
-// Marketplace advisories (loader/advisories.ts): read at start, then whenever a day has passed or an apply rewrote the catalog.
+// Marketplace advisories (advisories.ts): read at start, then whenever a day has passed or an apply rewrote the catalog.
 const advisories = createAdvisories({ db: records.db, repo, catalog: path.join(configDir, "modules.json"), ownerLine: channels.ownerLine, log, ref: env("AIDENHQ_ADVISORY_REF", "main"), fetch: hostFetch(repo) });
-setInterval(() => void advisories.tick(), 10 * 60_000).unref();
-setTimeout(() => void advisories.tick(), 30_000).unref();
+// Timers a draining kernel stops (the next one runs its own).
+const timers: NodeJS.Timeout[] = [];
+const every = (fn: () => void, ms: number) => timers.push(setInterval(fn, ms).unref());
+const once = (fn: () => void, ms: number) => timers.push(setTimeout(fn, ms).unref());
+every(() => void advisories.tick(), 10 * 60_000);
+once(() => void advisories.tick(), 30_000);
 // The public front door's certificate (exposure public, compiled into config/exposure; the IP is the host's .env): hourly.
 const certWatch = createCertWatch({
   ip: () => { try { return readFileSync(path.join(configDir, "exposure"), "utf8").trim() === "public" ? env("AIDENHQ_PUBLIC_IP") || undefined : undefined; } catch { return undefined; } },
   notify: channels.ownerLine,
 });
-setInterval(() => void certWatch.tick(), 3_600_000).unref();
-setTimeout(() => void certWatch.tick(), 10 * 60_000).unref();
+every(() => void certWatch.tick(), 3_600_000);
+once(() => void certWatch.tick(), 10 * 60_000);
+// Release updates (updates.ts, docs/design/release-updates.md): what ops/update.sh recorded, told to the owner once; Update now
+// starts its unit (outside this process: the install's apply restarts the kernel).
+const updates = createUpdates({
+  db: records.db, dir: path.join(dataDir, "updates"), ownerLine: channels.ownerLine,
+  start: () => void execFile("systemctl", ["--user", "start", "--no-block", "aidenhq-update.service"], (e) => e && log("update unit didn't start", { err: e.message.slice(0, 300) })),
+});
+every(() => updates.tick(), 5 * 60_000);
+once(() => updates.tick(), 60_000);
 const brake = createBrake({ db: records.db, owner: ownerApi });
-// Jobs: the sandbox as configured here. A known no-jail condition is fatal, with the reason in the journal: a job must never
-// share the host's network (every loopback service). Build caches without overlay support are shared.
+const notify = createNotify({ db: records.db, modules: modulesFile, secret, resolver, log });
+// The host sandbox as configured here (jobs run in their agents' computers; repo code the host runs itself, fast checks among
+// it, runs in this sandbox). A known no-jail condition is fatal, with the reason in the journal: repo code must never share the
+// host's network (every loopback service).
 const sandbox = sandboxConfig(env);
 const jailIssue = jailProblem(sandbox);
 if (jailIssue) {
-  log("ERROR: jobs cannot be jailed here", { reason: jailIssue });
+  log("ERROR: the host sandbox cannot be jailed here", { reason: jailIssue });
   process.exit(1);
 }
-if (sandbox.sandbox?.extra_writable_roots?.length) {
-  const overlayIssue = overlayProblem(sandbox);
-  if (overlayIssue) (sandbox.noOverlay = true), log("WARNING: jobs share their build caches read-write (bwrap can't mount overlays; bubblewrap 0.11+ can)", { reason: overlayIssue });
-}
+// A kernel-admitted job's computer (boxes.ts): made below, once the gateway it needs is up; a job that ends releases it.
+let boxes: Boxes | undefined;
 const jobs = createJobs({
-  db: records.db, cfg: sandbox, log, boxWrap: BOX_EXEC_WRAP,
-  // The agents a module dispatches (compile: an agent runs on the engine runner, and this module holds kernel.jobs), by key;
-  // their jobcaps are their own grants.
+  db: records.db, cfg: sandbox, log, boxWrap: BOX_EXEC_WRAP, onEnd: (id) => boxes?.ended(id),
+  // The agents a module dispatches (compile: an agent runs on the engine runner, and this module holds kernel.jobs), by key.
   mayDispatch: dispatchesFrom(() => (modulesFile().modules ?? {}) as never, () => grantsTable().agents ?? {}),
-  jobcaps: (agent) => [grantsTable().agents?.[agent]?.jobcaps ?? []].flat().map(String),
   cp: {
     agent: async (id) => { const r = await cpApi(`/api/agents/${encodeURIComponent(id)}`); return r.ok ? ((await r.json()) as never) : undefined; },
     task: async (id) => { const r = await cpApi(`/api/issues/${encodeURIComponent(id)}`); return r.ok ? ((await r.json()) as never) : undefined; },
   },
 });
 jobs.adopt();
-// A restart: the jobs go on for the next kernel (KillMode=process); this one stops following them, offsets saved.
-for (const sig of ["SIGTERM", "SIGINT", "SIGUSR2"] as const) process.on(sig, () => { log("stopping: jobs left running for the next kernel", { signal: sig, jobs: jobs.running() }); jobs.detach(); process.exit(0); });
+// The wake inbox (wakes.ts): Paperclip events scan their task now; the reconcile poll scans every polled agent's open tasks.
+const mayDispatch = dispatchesFrom(() => (modulesFile().modules ?? {}) as never, () => grantsTable().agents ?? {});
+// Outcomes posted on a job's task as its agent, once (outcomes.ts): the agent's own Paperclip key, setup's paperclip-agents/<id>.
+const outcomes = createOutcomes({ db: records.db, controlUrl, log, agentKey: (id) => secret(`paperclip-agents/${id}`), postKey: () => secret("paperclip_post_key"), delegates: (id) => delegateIds(grantsTable().agents, id), finish: (task, agent) => checks.finish(task, { agent, via: "job_post" }) });
+const wakes = createWakes({
+  db: records.db, owner: ownerApi, post: outcomes.post, log,
+  routineKey: (id) => (grantsTable().routine_keys as Record<string, string> | undefined)?.[id],
+  dispatches: { may: mayDispatch, agents: (module) => Object.keys(grantsTable().agents ?? {}).filter((id) => mayDispatch(module, id)) },
+});
+setInterval(() => void wakes.poll(), (Number(env("AIDENHQ_WAKE_POLL_SECONDS", "")) || 60) * 1000).unref();
+// A stop: the jobs go on for the next kernel (KillMode=process); this one stops following them, offsets saved. A restart
+// (SIGUSR2) drains once the listeners are up (drain, below); before that it stops at once, as a stop does.
+const stop = (signal: string) => { log("stopping: jobs left running for the next kernel", { signal, jobs: jobs.running() }); jobs.detach(); process.exit(0); };
+let drain: () => void = () => stop("SIGUSR2");
+for (const sig of ["SIGTERM", "SIGINT"] as const) process.on(sig, () => stop(sig));
+process.on("SIGUSR2", () => drain());
 // The finish gate (checks.ts): modules' task.finish checks (compile), holds placed as the owner.
+const work = createWork({ db: records.db, records });
+// One live grader token per task, reused while it has time left and dropped when the task's hold resolves. Kind grader (never an
+// agent's identity: whoami and every agent check refuse it) that names the assignee, so the gateway charges its calls to that
+// agent's task and day caps (gateway/lib.ts).
+const graderTokens = new Map<string, { token: string; exp: number }>();
+const graderToken = (task: string, agent: string) => {
+  const live = graderTokens.get(task);
+  if (live && live.exp > Date.now() + 5 * 60_000) return live.token;
+  const ttlMs = 15 * 60_000;
+  const token = mintToken(secret("gateway_job_secret"), { kind: "grader", agentId: agent, issueId: task, component: "Grader", ttlMs });
+  graderTokens.set(task, { token, exp: Date.now() + ttlMs });
+  return token;
+};
 const checks = createChecks({ db: records.db, registry: checksFile(path.join(configDir, "kernel", "checks.json")), owner: ownerApi, secret, resolver, log, agentKey: (id) => grantsTable().agents?.[id]?.key, graded: (id) => grantsTable().agents?.[id]?.graded === true, pending: (task) => records.list(["review", "owner", "approved"], 100, { task }) });
 // First-run setup (/setup): the keys the modules ask for go into the vault view (AIDENHQ_SECRETS_DIR) as new 0600 files renamed into place; the
 // vault's recovery key waits there (ops/setup.sh --unattended moves it out of root's home) until the owner has seen it.
@@ -175,7 +255,29 @@ const moduleSecrets = createModuleSecrets({
   recreate: composeRecreate({ dir: env("AIDENHQ_DIR", repo), composeFile: env("COMPOSE_FILE", "") }),
   log,
 });
-const backplane = createBackplane({ checks, whoami, asserter, grantsFile: grantsTable, log, writes, records, channels, brake, owner: ownerApi, modules: modulesFile, boardKey: () => secret("gateway_board_key"), reviews, runnerKey: () => secret("runner_writes_key"), reviewerKey: () => secret("reviewer_key"), jobs, advisories: advisories.list, accounts: createAuthApi({ accounts: () => accounts, whoami, boardKey: () => secret("gateway_board_key"), recoveryKeyWaiting: () => Boolean(firstRun.recoveryKey()), modelReady: modelState.ready, operatorKey: () => secret("board_operator_key"), secrets: moduleSecrets }), proxy: (req, res, c) => proxy(req, res, c!), cp: createCp({ whoami, asserter, controlUrl, launcherUrl, checks, log }) as never });
+// Admission (admission.ts) and the kernel's own computers for the jobs it admits (boxes.ts): capacity is settings.computers_max,
+// the number the launcher's pool reads too (config/computers.json `max`; missing, nothing is admitted).
+const computers = watched(path.join(configDir, "computers.json"), (j) => j as { max?: unknown; connections?: Record<string, { tool_timeout_sec?: number }> }, {});
+// A job's requests for its task's next turn (`aidenhq reset|engine|cleanup`): boxes does the cleanup, admission the rest.
+const jobTools = createJobTools({ db: records.db, secret: () => secret("gateway_job_secret"), engines: () => Object.entries(readEngines(sandbox)).filter(([, e]) => e.box === true).map(([k]) => k) });
+boxes = createBoxes({
+  db: records.db, cfg: sandbox, jobs, call: launcherClient(launcherUrl, () => secret("launcher_kernel_key")), secret, whoami,
+  connections: () => computers().connections ?? {}, handbook: handbookFrom(configDir), cleanup: jobTools.cleanup, log,
+});
+const admission = createAdmission({
+  db: records.db, grants: () => (grantsTable().agents ?? {}) as never, kinds: registry, capacity: () => Number(computers().max) || 0,
+  spend: (agent, task) => gw.exhausted(agent, task), mayDispatch, wakes: wakeInbox(records.db), nextTurn: jobTools, launch: (job) => boxes!.launch(job), log,
+  provenance, routineCap: (task) => taskRoutineCap(cpTrace, task, grantsTable().routines as Record<string, string> | undefined, runIssue),
+  cp: { task: async (id) => { const r = await cpApi(`/api/issues/${encodeURIComponent(id)}`); return r.ok ? ((await r.json()) as never) : undefined; } },
+});
+admission.recover();
+boxes.start();
+// The GitHub code host's operations, brokered for modules under their own codehost grants (codehost.ts).
+const codehost = createCodehost({ repos: () => ({ instance: baseRepos.instance, product: baseRepos.product, agentsOrg }), grants: () => Object.entries(modulesFile().modules ?? {}).flatMap(([module, d]) => ((d as { codehost?: OpsGrant }).codehost ? [{ ...(d as { codehost: OpsGrant }).codehost, module }] : [])), kind: () => Object.values(moduleKinds()).find((k) => k.module === CODEHOST && k.executor), secret, resolver, workspace: (module, task) => jobs.workspace(module, task) });
+// Check jobs (checkjobs.ts): credential-free boxes of the launcher's, snapshots from the module that provides them.
+const checkJobs = checkJobsFrom({ db: records.db, secret, ask: codehost.ask, call: launcherClient(launcherUrl, () => secret("launcher_kernel_key")), workDir: sandbox.workDir, gatewayUrl: `${sandbox.boxGatewayUrl}/api/v1`, log });
+const lane = createLane({ db: records.db, owner: ownerApi, grantsFile: grantsTable, log, postAsAgent: async (agent, task, job, body) => ({ id: String((await outcomes.post({ id: job, agent, task }, { kind: "lane", body })).comment) }) });
+const backplane = createBackplane({ codehost: codehost.op, checks, checkJobs, lane, whoami, asserter, grantsFile: grantsTable, log, writes, records, channels, brake, notify, owner: ownerApi, ownerRaw: (p) => cpApi(p), modules: modulesFile, boardKey: () => secret("gateway_board_key"), reviews, runnerKey: () => secret("runner_writes_key"), reviewerKey: () => secret("reviewer_key"), jobs, admission, outcomes, wakes, tasks: createModuleTasks({ owner: ownerApi, agents: () => grantsTable().agents ?? {}, log }), work, graderToken, dropGraderToken: (task) => graderTokens.delete(task), eventsKey: () => secret("paperclip_events_key"), jobTools, advisories: advisories.list, accounts: createAuthApi({ accounts: () => accounts, whoami, boardKey: () => secret("gateway_board_key"), recoveryKeyWaiting: () => Boolean(firstRun.recoveryKey()), modelReady: modelState.ready, operatorKey: () => secret("board_operator_key"), secrets: moduleSecrets }), proxy: (req, res, c) => proxy(req, res, c!), cp: createCp({ whoami, asserter, controlUrl, launcherUrl, checks, provenance, log }) as never, boardCp: createBoardCp({ controlUrl, key: () => secret("paperclip_board_key"), log }) as never });
 // The admin listener's accounts (data/kernel/auth/auth.db) and pages. Accounts not moved yet, or a malformed URL setting: the
 // listener refuses while every other part of the kernel serves.
 const urlOf = (v: string) => { try { return v ? new URL(v) : undefined; } catch { log("ignoring a malformed URL setting", { value: v.slice(0, 100) }); return undefined; } };
@@ -215,10 +317,10 @@ if (accounts) {
   // Apps come and go with applies (config/gate.json): a removed app's rows leave the gate's map within a minute; manifests
   // refresh, undelivered request wakes and a failed write retry on the same beat.
   void accounts.syncGate();
-  setInterval(() => void accounts.syncGate(), 60_000).unref();
+  every(() => void accounts.syncGate(), 60_000);
 }
 // The board's origins: its front door (BOARD_LAN_URL) and its loopback addresses (the SSH tunnel, local mode).
-const boardOrigins = env("AIDENHQ_BOARD_ORIGINS", [boardUrl?.origin, "http://127.0.0.1:3121", "http://localhost:3121"].filter(Boolean).join(",")).split(",").map((o) => o.trim()).filter(Boolean);
+const boardOrigins = env("AIDENHQ_BOARD_ORIGINS", [boardUrl?.origin, "http://localhost:3121", "http://127.0.0.1:3121"].filter(Boolean).join(",")).split(",").map((o) => o.trim()).filter(Boolean);
 // The board's origins are the module UI origins a session may be handed to (/auth/handoff).
 const uiOrigins = () => Object.fromEntries(boardOrigins.map((o) => [o, "board"]));
 // The first run's model step (/setup/model): OpenRouter's PKCE and a 1-token check on the gateway's upstream, against the first
@@ -230,14 +332,15 @@ const model = {
   exchange: (code: string, verifier: string) => exchange(code, verifier, fetch, upstream),
   check: (key: string) => checkModel(key, { model: Object.keys(gatewaySettings().models ?? {})[0] ?? "~deepseek/deepseek-flash-latest", upstream }),
   saved: () => secret("openrouter_key"),
+  dayCap: () => { const n = Number((gatewaySettings() as { install_day_usd?: unknown }).install_day_usd); return n > 0 ? n : undefined; },
   verifyAgents: agentSetup({ dir: env("AIDENHQ_DIR", repo), log: path.join(dataDir, "kernel", "agent-setup.log"), warn: (m, o) => log(m, o as never) }),
   ...modelState,
 };
-const admin = accounts && createAdmin({ accounts, firstRun, model, uiOrigins, boardUrl: () => boardOrigins[0], cards: channels, ownerMessage: (b) => channels.ownerMessageAs("web", b, () => Object.entries(grantsTable().agents ?? {}).find(([, g]) => g.key === "chief-of-staff")?.[0]), owner: ownerApi, hosts: () => adminHosts, origins: () => adminOrigins, frameOrigins: () => boardOrigins, log });
+const admin = accounts && createAdmin({ accounts, firstRun, model, uiOrigins, updates, doorSource: () => doorSource(gateInfo()), boardUrl: () => boardOrigins[0], cards: channels, ownerMessage: (b) => channels.ownerMessageAs("web", b, () => chiefOfStaff(grantsTable().agents)), owner: ownerApi, hosts: () => adminHosts, origins: () => adminOrigins, frameOrigins: () => boardOrigins, log });
 
 // Claimed records a restart left without an outcome: their executors say how they went (never replayed). Executors may
 // still be starting at boot, so once, a minute in.
-setTimeout(() => void writes.reconcile().then((u) => u.length && log("records left unknown", { records: u }), (e: Error) => log("reconcile failed", { err: e.message })), 60_000).unref();
+once(() => void writes.reconcile().then((u) => u.length && log("records left unknown", { records: u }), (e: Error) => log("reconcile failed", { err: e.message })), 60_000);
 
 const gw = createGateway({
   dbFile: path.join(dataDir, "kernel", "kernel.db"),
@@ -250,15 +353,29 @@ const gw = createGateway({
   upstream,
   paperclipUrl: controlUrl,
   // The numbers are the gateway's ledger; the task's identifier and the agent's name are looked up here.
+  // The install cap's card (agent INSTALL_CAP, no task) goes on an unassigned task of the owner's own, so no agent wakes.
   fileRaiseCap: async ({ task, ...r }) => {
-    const [issue, agent] = await Promise.all([issueOf(task), cpApi(`/api/agents/${encodeURIComponent(r.agentId)}`).then((x) => (x.ok ? (x.json() as Promise<{ name?: string }>) : {}))]);
-    if (!issue) throw new Error(`no task ${task}`);
+    const install = r.agentId === INSTALL_CAP;
+    const [issue, agent] = await Promise.all([task ? issueOf(task) : installCapTask(r.subject), install ? { name: "AidenHQ" } : cpApi(`/api/agents/${encodeURIComponent(r.agentId)}`).then((x) => (x.ok ? (x.json() as Promise<{ name?: string }>) : {}))]);
+    if (!issue) throw new Error(`no task ${task ?? "for the install cap"}`);
     const args = { ...r, to: Math.round(r.cap * 200) / 100 };
-    writes.fileNative("kernel.raise_cap", { task: issue.id, identifier: issue.identifier, args, card: raiseCapCard(args, String((agent as { name?: string }).name ?? ""), issue.identifier ?? issue.id), reason: `a ${r.scope} spend cap is the owner's to raise`, rule: "raise-cap" });
+    writes.fileNative("kernel.raise_cap", { task: issue.id, identifier: issue.identifier, args, card: raiseCapCard(args, String((agent as { name?: string }).name ?? ""), issue.identifier ?? issue.id), reason: install ? "the install-wide daily spend cap is the owner's to raise" : `a ${r.scope} spend cap is the owner's to raise`, rule: "raise-cap" });
   },
   launcherUrl,
+  jobLive: (id) => ["admitted", "running"].includes(String(admittedJob(records.db, id)?.state)),
   log,
 });
+
+/** A new unassigned task for the install cap's raise card, in the company of the instance's agents. */
+async function installCapTask(day: string) {
+  const someAgent = Object.keys(grantsTable().agents ?? {})[0];
+  const a = someAgent ? await cpApi(`/api/agents/${encodeURIComponent(someAgent)}`) : undefined;
+  const company = a?.ok ? String(((await a.json()) as { companyId?: string }).companyId ?? "") : "";
+  if (!company) throw new Error("no company to file the install cap's card in");
+  const r = await cpApi(`/api/companies/${company}/issues`, { method: "POST", body: JSON.stringify({ title: `Daily spend cap reached (${day})`, description: "AidenHQ reached its daily spend cap (settings.spend_day_usd), so model calls are paused until tomorrow (UTC). Approve the card to double today's cap, or change the setting in Settings.", status: "todo" }) });
+  if (!r.ok) throw new Error(`Paperclip answered ${r.status} creating the install cap's task`);
+  return (await r.json()) as { id: string; identifier?: string };
+}
 
 raiseCap = async (r) => {
   gw.setCap(r.scope, r.agentId, r.subject, r.to);
@@ -266,16 +383,20 @@ raiseCap = async (r) => {
 };
 
 // host:port pairs. Each binds on its own: the backplane address exists only once compose is up, so a failed bind is retried
-// (backoff up to a minute) while the others keep serving.
+// (backoff up to a minute) while the others keep serving (a draining kernel's ports included). One process owns a port at a
+// time: never SO_REUSEPORT, which would let any process of this user take a share of the model calls and their credentials.
+let draining = false;
+const servers: http.Server[] = [];
 function listen(addr: string, ci = false, handler: http.RequestListener = (req, res) => gw.handle(req, res, { ci })) {
   const i = addr.lastIndexOf(":");
   const server = http.createServer(handler);
+  servers.push(server);
   // A model stream can run for many minutes (requestTimeout covers receiving the request, not the answer). The CI listener
   // faces jobs that run untrusted code: a request must arrive within a minute, and few connections at once.
   server.requestTimeout = ci ? 60_000 : 0;
   if (ci) server.maxConnections = 32;
   let wait = 1000;
-  const bind = () => server.listen(Number(addr.slice(i + 1)), addr.slice(0, i));
+  const bind = () => { if (!draining) server.listen(Number(addr.slice(i + 1)), addr.slice(0, i)); };
   server.on("listening", () => { wait = 1000; log("listening", { addr }); });
   server.on("error", (e) => {
     log("listen failed; retrying", { addr, err: e.message, inMs: wait });
@@ -301,12 +422,12 @@ const ciAddr = env("AIDENHQ_GATEWAY_CI_LISTEN", "10.231.4.1:8201");
 let ciBound = false;
 const ciCheck = () => { if (!ciBound && ciAddr && gw.ciEnabled()) { ciBound = true; listen(ciAddr, true); } };
 ciCheck();
-setInterval(ciCheck, 60_000);
+every(ciCheck, 60_000);
 
 // The monitoring module's metrics (lib.ts metricsText): a node-exporter textfile every 30 seconds, written only while the
 // module's directory exists. A file, not a route: nothing new listens, and a stale file shows the gateway is down.
 const textfile = path.join(dataDir, "modules", "monitoring", "textfile");
-setInterval(() => {
+every(() => {
   if (!existsSync(textfile)) return;
   try {
     const tmp = path.join(textfile, ".gateway.prom.tmp");
@@ -315,4 +436,28 @@ setInterval(() => {
   } catch (e) {
     log("metrics write failed", { err: String((e as Error).message).slice(0, 200) });
   }
-}, 30_000).unref();
+}, 30_000);
+
+// A restart (kernel/run.sh): the next kernel is starting. This one stops its jobs' watchers (offsets saved: the next one adopts
+// them), its timers and its listeners, so the next one can bind them; then it serves only the calls it holds (idle connections
+// closed, so callers reconnect to the next one) and exits when its model calls have finished, or at DRAIN_MS (the next kernel
+// settles what is left: lib.ts sweep and true-up).
+const DRAIN_MS = 5 * 60_000;
+drain = () => {
+  if (draining) return;
+  draining = true;
+  const t0 = Date.now();
+  log("draining: the next kernel takes new calls; model calls in flight finish here", { inflight: gw.inflight(), jobs: jobs.running() });
+  jobs.detach();
+  for (const t of timers) clearTimeout(t);
+  for (const s of servers) if (s.listening) s.close();
+  const done = () => {
+    for (const s of servers) s.closeIdleConnections();
+    const t = Date.now() - t0;
+    if (gw.inflight() > 0 && t < DRAIN_MS) return;
+    log("drained: exiting", { inflight: gw.inflight(), ms: t });
+    process.exit(0);
+  };
+  done();
+  setInterval(done, 1000);
+};

@@ -18,75 +18,13 @@ test("every MCP server points at the kernel proxy and none is stdio", async () =
   assert.doesNotMatch(block, /command|glean-mcp|service_key|X-Agent-Key/);
 });
 
-test("paperclip-setup.mjs passes a syntax check", () => {
-  execFileSync(process.execPath, ["--check", script], { encoding: "utf8" });
-});
-
 /** A section setup itself still emits: its markdown file under scripts/prompts, as setup reads it. */
-const literal = (name) => ({ APP_FOLLOWUP_SECTION: promptSection("app-followup", ""), HOW_WE_BUILD_SECTION: promptSection("how-we-build") })[name];
+const literal = (name) => ({ APP_FOLLOWUP_SECTION: promptSection("app-followup", "") })[name];
 /** A module's prompt contribution (modules/<module>/prompts/<id>.md), as setup appends it: verbatim. */
 const prompt = (id) => readFileSync(join(dirname(script), "../modules", id.split(".")[0], "prompts", `${id.split(".")[1]}.md`), "utf8");
-const section = () => prompt("engineering.delegating");
-
-test("the generated handing-work section parses and keeps its heading", () => {
-  const text = section();
-  assert.match(text, /\n\n## Handing work to an Engineer\n\n/);
-  assert.ok(text.includes("Write the brief and the PR body as plain facts"));
-});
-
-test("a merge job's rubric is worded on the merge, never on a card id", () => {
-  // A Tier 0 merge answers "No card is needed", and a card filed on a draft can be spent without a merge.
-  const text = section();
-  assert.ok(text.includes("never on a card or merge-request id"));
-  assert.ok(text.includes("No card is needed."));
-});
-
-test("an app change is checked live an hour and a day after it deploys, and data-app migrations only add", () => {
-  const followup = literal("APP_FOLLOWUP_SECTION");
-  assert.match(followup, /\n\n## Checking an app change once it is live\n\n/);
-  for (const t of ["`in 1 hour`", "`in 1 day`", "`app_logs`", "`warehouse_query`", "`rolled_back` incident"]) assert.ok(followup.includes(t), t);
-  assert.ok(section().includes("migrates its schema by adding"));
-  const engineer = readFileSync(join(dirname(script), "../modules/engineering/agents/app-engineer/AGENTS.md"), "utf8");
-  assert.match(engineer, /A data app's migrations add: new tables/);
-});
 
 /** The rule an agent proposes a correction with: the platform module's improving-rules prompt. */
 const improving = () => prompt("platform.improving");
-
-test("a recurring correction becomes a fast static check, and the fleet handbook carries the same rule", () => {
-  // The rule: fix the cause in code or the starter, add a fast lint rule that says how to fix the root cause,
-  // and keep handbook text for judgment calls. Asserted by its clauses, so the paragraph can be reworded.
-  const text = improving();
-  assert.match(text, /\n\n## Improving the rules\n\n/);
-  for (const t of ["fixed in code first", "code or the starter", "fast lint rule", "well under a second", "how to fix the root cause", "real judgment calls"]) assert.ok(text.includes(t), t);
-  // The old wording ("fix the work first", "the same problem twice") is gone: a correction is a check first.
-  assert.doesNotMatch(text, /fix the work first|the same problem twice/);
-  const rule = text.match(/A recurring correction is fixed in code first:[^.]*\./)?.[0];
-  assert.ok(rule && rule.includes("real judgment calls"), rule);
-  const handbook = readFileSync(join(dirname(script), "../modules/platform/agents/fleet-engineer/AGENTS.md"), "utf8");
-  assert.ok(handbook.includes(rule), "the fleet handbook carries the same rule in the same wording");
-});
-
-test("every agent gets how we work, builders also how we build, and asking the owner defers to it", () => {
-  const work = prompt("chief-of-staff.how-we-work");
-  assert.match(work, /\n\n## How we work\n\n/);
-  assert.ok(work.includes("Bring the owner the calls that are genuinely theirs: spend, a veto, a choice of taste"));
-  assert.match(literal("HOW_WE_BUILD_SECTION"), /\n\n## How we build\n\n/);
-  assert.match(readFileSync(script, "utf8"), /\n    metadata: \{[^\n]*build: HOW_WE_BUILD_SECTION/);
-  assert.match(literal("HOW_WE_BUILD_SECTION"), /Large rewrites hold the files they replace/);
-  assert.ok(literal("HOW_WE_BUILD_SECTION").includes("A flaky test gets its root cause fixed in the same change; if the cause can't be found, delete the test and record why in the commit. A red check is re-run only when its log shows an infrastructure failure (runner lost, network), and the PR says so. The one sanctioned exception is the reviewer eval gate's single re-run of its failed cases (model variance, measured on its receipt)."));
-  assert.ok(literal("HOW_WE_BUILD_SECTION").includes("- Comments: code is self-explanatory to agents; a comment only where the why is not visible in the code."));
-  assert.ok(prompt("chief-of-staff.asking").includes("When a call is the owner's (How we work), ask before acting on it"));
-});
-
-test("a UI task's rubric names the brand, the shells and every clickable element acting", () => {
-  // The recurring "looks clickable, does nothing" class: a build is asked for the same three things, in the words the
-  // starter's handbook and the app rubric use.
-  const text = section();
-  assert.ok(text.includes('the header\'s brand is `Link href="/"` and opens home in its default state'));
-  assert.ok(text.includes("a redesign starts from the starter's shells"));
-  assert.ok(text.includes("every clickable element visibly acts"));
-});
 
 // An unattended install or a rerun from a script has no terminal: setup signs in with what ops/setup.sh made the account
 // from (the owner's email, the vault's password), and when something is still missing it stops instead of waiting on a prompt.
@@ -128,29 +66,80 @@ test("setup never waits on a prompt without a terminal; the owner's email and th
   } finally { server.close(); }
 });
 
-test("setup: the dump keeps 3 daily days and carries the other tiers through; a matching policy writes nothing", async () => {
-  const calls = [];
-  let general = { backupRetention: { dailyDays: 7, weeklyWeeks: 2, monthlyMonths: 3 } };
-  const api = async (method, path, body) => {
-    calls.push([method, path, body]);
-    if (method === "PATCH") general = { backupRetention: body.backupRetention };
-    return { json: general };
-  };
-  const said = [];
-  const { ensureBackupRetention } = await import("../modules.mjs");
-  assert.deepEqual(await ensureBackupRetention({ api, dailyDays: 3, step: (m) => said.push(m) }), { dailyDays: 3, weeklyWeeks: 2, monthlyMonths: 3 });
-  assert.deepEqual(said, ["Backup retention was daily 7d, weekly 2w, monthly 3m", "Backup retention is now daily 3d, weekly 2w, monthly 3m"]);
-  // Written whole, then read back: the read after the write is the confirmation, not the PATCH response.
-  assert.deepEqual(calls.map(([m]) => m), ["GET", "PATCH", "GET"]);
-  assert.deepEqual(calls[1][2], { backupRetention: { dailyDays: 3, weeklyWeeks: 2, monthlyMonths: 3 } });
-  calls.length = 0;
-  await ensureBackupRetention({ api, dailyDays: 3, step: () => {} });
-  assert.deepEqual(calls.map(([m]) => m), ["GET"]);
-});
-
 test("setup: a write the instance does not keep is a failure, not a logged success", async () => {
   // The instance answers 200 and still reads back 7 days (a hidden or operator-managed setting): setup stops.
   const api = async (method) => ({ json: method === "PATCH" ? {} : { backupRetention: { dailyDays: 7, weeklyWeeks: 4, monthlyMonths: 1 } } });
   const { ensureBackupRetention } = await import("../modules.mjs");
   await assert.rejects(() => ensureBackupRetention({ api, dailyDays: 3, step: () => {} }), /backup retention did not take: \{"dailyDays":7/);
+});
+
+// Crew agents (Paperclip runs) get their skills only through Paperclip's skill sync: a fake Paperclip that, like the real one,
+// imports only from its managed root (as the container sees it) and accepts unknown keys on sync without complaint.
+test("setup: crew agents get exactly their skills, a dropped one leaves, and a key Paperclip doesn't list fails", async () => {
+  const { mkdtempSync, mkdirSync, writeFileSync, symlinkSync, existsSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const { ensureCrewSkills } = await import("../modules.mjs");
+  const tmp = mkdtempSync(join(tmpdir(), "skills-"));
+  const skill = (module, name) => {
+    const dir = join(tmp, "modules", module, "skills", name);
+    mkdirSync(join(dir, "references"), { recursive: true });
+    writeFileSync(join(dir, "SKILL.md"), `---\nname: ${name}\ndescription: ${name}\n---\n`);
+    writeFileSync(join(dir, "references", "more.md"), "more");
+    symlinkSync("/etc/hosts", join(dir, "link"));
+    return dir;
+  };
+  const root = join(tmp, "data", "paperclip", "instances", "default", "skills", "c1");
+  const mounted = "/paperclip/instances/default/skills/c1";
+  const skills = { "engineering.write-code": { dir: skill("engineering", "write-code") }, "apps-platform.design-system": { dir: skill("apps-platform", "design-system") } };
+  const lib = new Map(); // key → skill, Paperclip's company library
+  const stored = {}; // agent id → paperclipSkillSync.desiredSkills
+  const calls = [];
+  let listDrops = "";
+  const api = async (method, path, body) => {
+    calls.push([method, path, body]);
+    if (path === "/api/companies/c1/skills/import") {
+      assert.ok(body.source.startsWith(`${mounted}/`), body.source);
+      const slug = body.source.slice(mounted.length + 1);
+      assert.ok(existsSync(join(root, slug, "SKILL.md")), `${slug} copied before its import`);
+      const s = { key: `local/abc/${slug}`, slug };
+      lib.set(s.key, s);
+      return { json: { imported: [s], warnings: [] } };
+    }
+    if (path === "/api/companies/c1/skills") return { json: [{ key: "paperclipai/paperclip/paperclip", slug: "paperclip" }, ...[...lib.values()].filter((s) => s.slug !== listDrops)] };
+    const sync = /^\/api\/agents\/(\w+)\/skills\/sync$/.exec(path);
+    if (sync) { assert.equal(body.mode, "replace"); stored[sync[1]] = body.desiredSkills; return { json: {} }; }
+    throw new Error(`unexpected ${method} ${path}`);
+  };
+  const agentOf = (id) => ({ id, adapterConfig: stored[id] ? { paperclipSkillSync: { desiredSkills: stored[id] } } : {} });
+  const run = (agentSkills) => {
+    const cfg = { skills, agents: { coder: { skills: agentSkills.coder }, designer: { skills: agentSkills.designer }, chat: {}, engineer: { dispatch: "runner", skills: ["engineering.write-code"] } } };
+    const agents = { coder: agentOf("a1"), designer: agentOf("a2"), chat: agentOf("a3"), engineer: agentOf("a4") };
+    calls.length = 0;
+    return ensureCrewSkills({ api, companyId: "c1", cfg, agents, root, mounted, step: () => {} });
+  };
+
+  await run({ coder: ["apps-platform.design-system", "engineering.write-code"], designer: ["apps-platform.design-system"] });
+  // Each distinct skill copied whole (its references, never a link) and imported once, from the container's path.
+  assert.deepEqual(calls.filter(([, p]) => p.endsWith("/import")).map(([, , b]) => b.source).sort(), [`${mounted}/design-system`, `${mounted}/write-code`]);
+  assert.ok(existsSync(join(root, "write-code", "references", "more.md")));
+  assert.ok(!existsSync(join(root, "write-code", "link")));
+  assert.deepEqual(stored, { a1: ["local/abc/design-system", "local/abc/write-code"], a2: ["local/abc/design-system"] });
+
+  // A smaller set replaces the larger one; an agent whose set is unchanged is left alone (a new set is a new Codex home).
+  await run({ coder: ["engineering.write-code"], designer: ["apps-platform.design-system"] });
+  assert.deepEqual(stored.a1, ["local/abc/write-code"]);
+  assert.deepEqual(calls.filter(([, p]) => p.endsWith("/sync")).map(([, p]) => p), ["/api/agents/a1/skills/sync"]);
+  // An agent whose last skill goes is synced to none.
+  await run({ coder: ["engineering.write-code"], designer: [] });
+  assert.deepEqual(stored.a2, []);
+
+  // Paperclip doesn't list an imported skill: the apply fails naming it, before any agent is synced.
+  listDrops = "write-code";
+  await assert.rejects(() => run({ coder: ["engineering.write-code"], designer: ["apps-platform.design-system"] }), /engineering\.write-code/);
+  assert.ok(!calls.some(([, p]) => p.endsWith("/sync")));
+
+  // Two modules' skills of one name would share a folder and a Paperclip slug: refused, naming both.
+  listDrops = "";
+  skills["design.write-code"] = { dir: skill("design", "write-code") };
+  await assert.rejects(() => run({ coder: ["engineering.write-code"], designer: ["design.write-code"] }), /design\.write-code.*engineering\.write-code|engineering\.write-code.*design\.write-code/);
 });

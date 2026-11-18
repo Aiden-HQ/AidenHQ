@@ -1,4 +1,4 @@
-import type { AgentProfile, TaskRow, FeatureCost, Features, Advisory, ActivityItem, Agents, AsideMessage, Lineage, SettledItem, AppRow, Approval, Board, Bucket, Cadence, ChatAgent, ChatDetail, LaneAgent, LaneMessage, ChatRow, CostLedger, CostTop, CostWindow, Costs, IssueView, Models, ModuleDetail, ModuleRow, NeedsYou, RecurringView, RosterAgent, RunTrace, Scorecard, SettingChange, FiledChange, SettingsData, Update } from "./types";
+import type { AgentProfile, TaskRow, FeatureCost, Features, Advisory, Agents, AsideMessage, Lineage, SettledItem, AppRow, Approval, Board, Bucket, Cadence, ChatAgent, ChatDetail, LaneAgent, LaneMessage, ChatRow, CostLedger, CostTop, CostWindow, Costs, IssueView, Models, ModuleDetail, ModuleRow, NeedsYou, RecurringView, RosterAgent, RunTrace, Scorecard, SettingChange, FiledChange, SettingsData, Update } from "./types";
 import type { ConnectionsData } from "./connections";
 import type { BrowseModule, GrantConnection, MarketplaceRow } from "./types";
 
@@ -33,6 +33,15 @@ export class SignInRequired extends Error {
   }
 }
 
+/** A sign-in's page (#/connect/<id>) as GET /api/sign-ins/<id> returns it: `scopes` only when the vendor offers a choice. */
+export interface SignInView {
+  id: string;
+  label: string;
+  connect: string;
+  setup: string | null;
+  scopes: { supported: string[]; recommended: string[] } | null;
+}
+
 /** One module's setup flow as GET /api/setup-flows returns it (services/board/src/setup-flows.ts). */
 /** The first-run wizard (Welcome.tsx): what to show a new owner, from the board. */
 export interface WelcomeState {
@@ -56,8 +65,13 @@ export interface SetupFlowView {
   connect_url?: string;
   needs_name?: string;
   pair_url?: string;
+  console_url?: string;
+  /** The exact redirect its sign-in sends (the steps' {redirect_url}): what a hand-made client must list. */
+  redirect_url?: string;
   present: Record<string, boolean>;
   signedIn: boolean;
+  /** Signed in, and its Reconnect may pick what to grant. */
+  scopes?: boolean;
   paired: boolean;
   done: boolean;
   dismissed: boolean;
@@ -68,6 +82,8 @@ export interface Session {
   account?: { id: string; email: string; name: string; role: "admin" | "user"; owner: boolean } | null;
   /** Google's Connect works from this address (the board's https address). */
   googleConnect?: boolean;
+  /** The modules' sign-ins (board.signins) work from this address: the board's https address, or loopback. */
+  signInConnect?: boolean;
   /** The kernel's admin listener: sign-in, your password, and the approval page every card is decided on. */
   adminUrl?: string | null;
 }
@@ -131,7 +147,6 @@ export const api = {
   laneSend: (key: string, text: string) => call<{ ok: boolean }>("POST", `/api/lane/${encodeURIComponent(key)}/messages`, { text }),
   stopChat: (ref: string) => call<{ stopped: number }>("POST", `/api/chats/${encodeURIComponent(ref)}/stop`, {}),
   notRight: (ref: string, text: string) => call<IssueView>("POST", `/api/issues/${encodeURIComponent(ref)}/not-right`, { text }),
-  activity: (days = 7) => call<{ days: { day: string; items: ActivityItem[] }[] }>("GET", `/api/activity?days=${days}`),
   needsYou: () => call<NeedsYou>("GET", "/api/needs-you"),
   approvals: () => call<{ approvals: Approval[] }>("GET", "/api/approvals"),
   agents: () => call<Agents>("GET", "/api/agents"),
@@ -146,6 +161,7 @@ export const api = {
     return call<{ rows: TaskRow[]; next: number | null }>("GET", `/api/agents/by-key/${encodeURIComponent(key)}/tasks?${p}`);
   },
   scorecard: (id: string) => call<Scorecard>("GET", `/api/agents/${encodeURIComponent(id)}/scorecard`),
+  signIn: (id: string) => call<SignInView>("GET", `/api/sign-ins/${encodeURIComponent(id)}`),
   setupFlows: () => call<{ flows: SetupFlowView[]; board_url: string; named: boolean }>("GET", "/api/setup-flows"),
   setupSecret: (module: string, secret: string, value: string) => call<{ ok: boolean }>("POST", `/api/setup-flows/${module}/secret`, { secret, value }),
   setupDismiss: (module: string) => call<{ ok: boolean }>("POST", `/api/setup-flows/${module}/dismiss`, {}),

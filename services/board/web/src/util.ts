@@ -112,3 +112,20 @@ export function snoozeOptions(today: string): { label: string; date: string }[] 
   ];
   return options.filter((o, i) => options.findIndex((x) => x.date === o.date) === i);
 }
+
+/**
+ * A local install's app door (`http://<app>.localhost:<port>`, docs/design/app-doors.md). Its sign-in lives in Secure
+ * cookies on plain http, which Chrome and Firefox keep on localhost and Safari doesn't.
+ */
+export const isLocalDoor = (url?: string): boolean => !!url && /^http:\/\/[a-z][a-z0-9-]*\.localhost:\d+\/?$/.test(url);
+let secureOnHttp: boolean | undefined;
+/** Does this browser keep a Secure cookie on this plain-http page (the board on loopback)? Checked once, with a throwaway cookie. */
+export function keepsSecureCookies(): boolean {
+  if (secureOnHttp !== undefined) return secureOnHttp;
+  if (typeof document === "undefined" || location.protocol !== "http:") return (secureOnHttp = true);
+  const probe = "aidenhq-secure-probe";
+  document.cookie = `${probe}=1; Path=/; Secure; SameSite=Strict; Max-Age=5`;
+  secureOnHttp = document.cookie.split("; ").includes(`${probe}=1`);
+  document.cookie = `${probe}=; Path=/; Secure; SameSite=Strict; Max-Age=0`;
+  return secureOnHttp;
+}

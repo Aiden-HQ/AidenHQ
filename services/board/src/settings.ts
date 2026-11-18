@@ -95,6 +95,29 @@ export interface Sources {
   boardTimezone: string;
   pendingRaises: number;
   pendingApprovals: number;
+  /** Release updates (ops/update.sh's display copy, updates.json beside the generations): null when this instance has none. */
+  updates?: UpdatesView | null;
+}
+
+/** What the release updater recorded (kernel/src/updates.ts writeState), as the board shows it. Display only. */
+export interface UpdatesView {
+  current: { name: string; product: string } | null;
+  auto: boolean | null;
+  timezone: string | null;
+  checkedAt: string | null;
+  available: { name: string; notes: string[]; compare: string } | null;
+  error: string | null;
+  last: { release: string; outcome: "installed" | "failed"; why?: string; at: string; by: string } | null;
+}
+
+/** The updater's display copy; null when there is none (a hand-pinned instance, or an older deploy). */
+export function readUpdates(file: string): UpdatesView | null {
+  try {
+    const u = JSON.parse(readFileSync(file, "utf8")) as UpdatesView;
+    return u && typeof u === "object" && u.current ? u : null;
+  } catch {
+    return null;
+  }
 }
 
 /** Reads the files Settings needs; each missing file is simply absent (an older deploy). */
@@ -193,6 +216,7 @@ export function settingsView(s: Sources) {
     choices: { heartbeatHours: HEARTBEAT_HOURS, models: [...new Set([...Object.values(c.agents ?? {}).flatMap((a) => [a.model, ...(a.models ?? [])]), ...Object.values(c.routines ?? {}).map((r) => r.model)].filter((m): m is string => Boolean(m)))].sort() },
     approvals: { pending: s.pendingApprovals },
     spend: { defaults: CAPS, pendingRaises: s.pendingRaises },
+    updates: s.updates ?? null,
   };
 }
 
@@ -256,6 +280,8 @@ export interface SignIn {
   configured: boolean;
   since: string;
   detail?: string;
+  /** Connected, and the owner may pick what to grant on a Reconnect. */
+  scopes?: boolean;
 }
 
 /** Every connection the compiled config has, every runner service with setup steps, and each warehouse source. */

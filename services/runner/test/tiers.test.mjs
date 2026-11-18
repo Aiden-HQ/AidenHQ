@@ -5,9 +5,8 @@ import { readFileSync } from "node:fs";
 import YAML from "yaml";
 import { classify, newGrants } from "../src/tiers.mjs";
 import { dependabotCommits } from "../../../modules/platform/src/check.mjs";
-import { afterReview, priorDecisions, priorPart, rejectedSince, requestTargets, routineCap } from "../../../kernel/src/tier.ts";
-import { moduleInputs, withGrantOverrides } from "../../../kernel/src/loader/authority.ts";
-import { origins } from "../src/paperclip.ts";
+import { afterReview, origins, priorDecisions, priorPart, rejectedSince, requestTargets, routineCap } from "../../../kernel/src/tier.ts";
+import { moduleInputs, withGrantOverrides } from "../../../scripts/compiler/authority.ts";
 
 test("a replayed approval: only a later no on its branches (or a merge, or the owner's veto) outranks it", () => {
   const b = { repo: "acme/aidenhq", branch: "fix/a" };
@@ -197,10 +196,10 @@ test("a routine run's unparented task keeps the cap: traced through Paperclip's 
     "t-3": { id: "t-3", parentId: "t-2", originRunId: "hb-2" },
   };
   const runs = { "hb-1": { issueId: "run-1" }, "hb-2": { issueId: "t-2" } };
-  const pc = { issue: async (id) => issues[id], run: async (id) => runs[id] ?? Promise.reject(new Error("404 Heartbeat run not found")) };
+  const pc = { issue: async (id) => issues[id], run: async (id) => runs[id] ?? Promise.reject(new Error("404 Heartbeat run not found")), provenance: () => undefined };
   for (const t of ["t-2", "t-3"]) {
     const { issues: found, complete } = await origins(pc, issues[t]);
-    assert.equal(routineCap(found, complete, { r1: "tier0" }), "tier0", `${t} keeps r1's cap`);
+    assert.deepEqual(routineCap(found, complete, { r1: "tier0" }), { cap: "tier0", routine: "r1" }, `${t} keeps r1's cap`);
   }
   const own = await origins(pc, { id: "o-1", parentId: null });
   assert.equal(routineCap(own.issues, own.complete, { r1: "tier0" }), undefined, "the owner's own task: no cap");
@@ -208,17 +207,14 @@ test("a routine run's unparented task keeps the cap: traced through Paperclip's 
 
 test("a routine's autonomy caps the tasks its run started; changing it is the owner's", () => {
   const run = { originKind: "routine_execution", originId: "r1" };
-  assert.equal(routineCap([{}, run], true, { r1: "tier0" }), "tier0", "a delegation under the run task");
-  assert.equal(routineCap([run], true, {}), "off", "a routine the table doesn't know: fails closed");
-  assert.equal(routineCap([run], true, { r1: "yes" }), "off", "an invalid value: fails closed");
-  assert.equal(routineCap([run], true, { r1: "full" }), "full", "full: no cap");
-  assert.equal(routineCap([{}, {}], true, {}), undefined, "no routine run: no cap");
-  assert.equal(routineCap([{}], false, {}), "off", "a trace too long to finish: strictest");
-  assert.equal(routineCap([{}, run, { originKind: "routine_execution", originId: "r2" }], true, { r1: "full", r2: "tier0" }), "tier0", "the strictest routine found");
-  assert.equal(tierOf(pub("pr", { repo: "acme/bor" }, { routineAutonomy: "tier0" })), 2, "tier0: Tier 1 is the owner's");
-  assert.equal(tierOf(pub("push", {}, { routineAutonomy: "tier0" })), 0, "tier0: Tier 0 still runs");
-  assert.equal(tierOf(pub("push", {}, { routineAutonomy: "off" })), 2, "off: Tier 0 is the owner's too");
-  assert.equal(tierOf(pub("pr", { repo: "acme/bor" }, { routineAutonomy: "full" })), 1, "full: no cap");
+  const capOf = (...a) => routineCap(...a)?.cap;
+  assert.equal(capOf([{}, run], true, { r1: "tier0" }), "tier0", "a delegation under the run task");
+  assert.equal(capOf([run], true, {}), "off", "a routine the table doesn't know: fails closed");
+  assert.equal(capOf([run], true, { r1: "yes" }), "off", "an invalid value: fails closed");
+  assert.equal(capOf([run], true, { r1: "full" }), "full", "full: no cap");
+  assert.equal(capOf([{}, {}], true, {}), undefined, "no routine run: no cap");
+  assert.equal(capOf([{}], false, {}), "off", "a trace too long to finish: strictest");
+  assert.equal(capOf([{}, run, { originKind: "routine_execution", originId: "r2" }], true, { r1: "full", r2: "tier0" }), "tier0", "the strictest routine found");
   const agent = (r) => def({ name: "K", description: "d", model: "m", budget: 5, routines: r });
   const r0 = { scan: { title: "S", schedules: [] } };
   assert.equal(tierOf(apply(["agents/k/agent.yaml"], { "agents/k/agent.yaml": agent(r0) }, { "agents/k/agent.yaml": agent({ scan: { ...r0.scan, autonomy: "full" } }) })), "panel", "an instance routine raising its own cap");
@@ -567,12 +563,14 @@ test("a new marketplace is the owner's after the reviewer; a sha bump without ne
 });
 
 // Releases (spec §6.8, lean-core 5c): a `release:` move counts by what it resolves to (the runner's s.effective: each side
-// with the release's official marketplace), not by the key.
-test("a release move is tiered by the modules it resolves to", () => {
+// with the release's official marketplace), and adding or moving one is the owner's (it enrols unattended updates).
+test("a release move is tiered by the modules it resolves to, and following one is the owner's", () => {
   const rel = (sha) => `product: ${PIN_A}\nrelease: { name: "2026.11", source: { source: github, repo: acme/aidenhq-distro }, sha: ${sha} }\nmodules: []\n`;
   const run = (st) => apply(["instance.yaml"], { "instance.yaml": `product: ${PIN_A}\nmodules: []\n` }, { "instance.yaml": rel("1".repeat(40)) }, { modules: {}, ...st });
   const same = run({});
-  assert.deepEqual([same.tier, Boolean(same.panel), Boolean(same.reviewFirst), same.rule], [1, false, false, "release-pin"], "the same modules: AI review only");
+  assert.deepEqual([same.tier, Boolean(same.reviewFirst), same.rule], [2, true, "release-pin"], "following a release enrols unattended updates: the owner's after the reviewer");
+  const drop = apply(["instance.yaml"], { "instance.yaml": rel("1".repeat(40)) }, { "instance.yaml": `product: ${PIN_A}\nmodules: []\n` }, { modules: {} });
+  assert.deepEqual([drop.tier, drop.rule], [1, "release-pin"], "dropping the release: AI review only");
   const official = (repo) => ({ product: PIN_A, modules: [], marketplaces: [{ name: "aidenhq", source: { source: "github", repo }, sha: "2".repeat(40) }] });
   const moved = run({ effective: { base: { product: PIN_A, modules: [] }, head: official("evil/modules") } });
   assert.deepEqual([moved.tier, moved.reviewFirst], [2, true], "a release whose official marketplace is another repository: the owner's");
@@ -656,4 +654,65 @@ test("the runner creates a repo only in createRepoApproved; cloning a missing on
   // GitHub's App, or this server's code host for local/* (codehost-local): still only on an approved create_repo card.
   assert.ok(fn("createRepoApproved").includes("app.createRepo(slug)") && fn("createRepoApproved").includes("localHost.createRepo(slug)"));
   assert.ok(fn("addRepo").includes("if (await missingRepo(repo.slug)) throw new UserError(missingRepoText(repo.slug));"));
+});
+
+test("apply: spend and quiet start are the owner's to loosen, anyone's to tighten", () => {
+  const f = ["instance.yaml"];
+  const one = (b, h) => apply(f, { "instance.yaml": b }, { "instance.yaml": h });
+  // The owner's after the reviewer (a setting's second reviewer may come with it): Tier 2, review first.
+  const owner = (t) => (t.tier === 2 && t.reviewFirst ? 2 : tierOf(t));
+  const q = { quiet_start: "on", spend_day_usd: 10 };
+  assert.equal(owner(one(inst(q), inst({ ...q, spend_day_usd: 20 }))), 2, "raising the install cap");
+  assert.equal(owner(one(inst(q), inst({ quiet_start: "on" }))), 2, "removing it");
+  assert.equal(owner(one(inst(q), inst({ ...q, quiet_start: "off" }))), 2, "ending quiet start");
+  assert.equal(tierOf(one(inst(q), inst({ ...q, spend_day_usd: 5 }))), "panel", "lowering the cap: a setting like any other");
+  assert.equal(tierOf(one(inst(), inst(q))), "panel", "turning quiet start and the cap on");
+  assert.equal(owner(one(inst({ auto_update: "off" }), inst({ auto_update: "on" }))), 2, "turning release auto-updates back on");
+  assert.equal(owner(one(inst({ auto_update: "off" }), inst())), 2, "unsetting it (unset is on)");
+  assert.equal(tierOf(one(inst(), inst({ auto_update: "off" }))), "panel", "turning them off: a setting like any other");
+  const on = "overrides:\n  routines:\n    daily-brief: { status: active }\n";
+  const beat = "overrides:\n  agents:\n    chief-of-staff: { heartbeat: true }\n";
+  assert.equal(owner(one(inst(q), inst(q, on))), 2, "a schedule turned on under quiet start");
+  assert.equal(owner(one(inst(q), inst(q, beat))), 2, "a heartbeat turned on under quiet start");
+  assert.equal(tierOf(one(inst(q, on), inst(q))), 1, "turning it back off");
+  assert.equal(tierOf(one(inst(), inst({}, on))), 1, "without quiet start: as before");
+  assert.equal(tierOf(one(inst(), inst({}, beat))), 1, "without quiet start: as before");
+});
+
+test("apply: the install cap tightens only to a finite positive number at or under it", () => {
+  const one = (b, h) => apply(["instance.yaml"], { "instance.yaml": inst(b) }, { "instance.yaml": inst(h) });
+  const owner = (t) => (t.tier === 2 && t.reviewFirst ? 2 : tierOf(t));
+  for (const v of ["5", 0, -1, 1e999, null]) assert.equal(owner(one({ spend_day_usd: 10 }, { spend_day_usd: v })), 2, `10 → ${v}`);
+  assert.equal(owner(one({ spend_day_usd: 10 }, { spend_day_usd: 10.5 })), 2, "a raise");
+  assert.equal(owner(one({}, { spend_day_usd: 50 })), "panel", "unset was no cap: any cap tightens it");
+  assert.equal(owner(one({}, { spend_day_usd: "50" })), 2, "a string is no cap");
+});
+
+test("apply: an instance agent's definition that starts work under quiet start is the owner's", () => {
+  const owner = (t) => (t.tier === 2 && t.reviewFirst ? 2 : tierOf(t));
+  const f = "agents/chaser/agent.yaml";
+  const quiet = inst({ quiet_start: "on" });
+  const was = def({ name: "Chaser", connections: { github: "read" }, routines: { sweep: { schedules: [] } } });
+  const run = (h, i = quiet, extra = {}) => owner(apply([f], { [f]: was, "instance.yaml": i }, { [f]: def({ name: "Chaser", connections: { github: "read" }, ...h }), "instance.yaml": i }, extra));
+  const sched = { sweep: { schedules: [{ cron: "0 9 * * *", label: "daily" }] } };
+  assert.equal(run({ heartbeat: true, routines: { sweep: { schedules: [] } } }), 2, "a heartbeat on");
+  assert.equal(run({ routines: sched }), 2, "a routine's schedule: effectively active");
+  assert.equal(run({ routines: sched }, inst({ quiet_start: "on" }, "overrides:\n  routines:\n    chaser-sweep: { status: paused }\n")), 1, "an override keeps it paused");
+  assert.equal(run({ routines: sched }, inst()), 1, "without quiet start: as before");
+  assert.equal(run({ model: "x", routines: { sweep: { schedules: [] } } }), 1, "other tuning: as before");
+});
+
+test("apply: a definition's gates all run: autonomy and quiet start together, and paused to active on the definition itself", () => {
+  const owner = (t) => (t.tier === 2 && t.reviewFirst ? 2 : tierOf(t));
+  const f = "agents/chaser/agent.yaml";
+  const quiet = inst({ quiet_start: "on" });
+  const d = (routines, extra = {}) => def({ name: "Chaser", connections: { github: "read" }, routines, ...extra });
+  const run = (b, h, i = quiet) => apply([f], { [f]: b, "instance.yaml": i }, { [f]: h, "instance.yaml": i });
+  const sched = [{ cron: "0 9 * * *", label: "daily" }];
+  const both = run(d({ sweep: { schedules: [] } }), d({ sweep: { schedules: sched, autonomy: "full" } }));
+  assert.equal(owner(both), 2, "an autonomy change and a wake: the owner's, the panel's review first");
+  assert.ok(both.panel, "with a second reviewer");
+  assert.equal(owner(run(d({ sweep: { schedules: sched, status: "paused" } }), d({ sweep: { schedules: sched, status: "active" } }))), 2, "the definition's own paused to active");
+  assert.equal(owner(run(d({ sweep: { schedules: sched, status: "paused" } }), d({ sweep: { schedules: sched } }))), 2, "dropping its paused status");
+  assert.equal(owner(run(d({ sweep: { schedules: sched } }), d({ sweep: { schedules: sched, status: "paused" } }))), 1, "pausing: as before");
 });

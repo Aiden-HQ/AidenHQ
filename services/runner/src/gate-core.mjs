@@ -12,7 +12,7 @@
 // conversion), so each name matches either extension.
 export const GATE_CORE = [
   // One entry per file, so a renamed or moved gate file shows up as a dead entry (gate-coverage.test.mjs).
-  ...["tiers", "gate-core", "review-request", "siblings", "cards", "evalgate", "apply", "state", "config", "progress", "main", "engines", "files", "agents", "typed-change", "url-setting", "release"].map((n) => new RegExp(`^services\\/runner\\/src\\/${n}\\.(mjs|ts)$`)),
+  ...["tiers", "gate-core", "review-request", "siblings", "cards", "evalgate", "apply", "state", "config", "progress", "main", "engines", "files", "agents", "typed-change", "url-setting", "release", "release-sync"].map((n) => new RegExp(`^services\\/runner\\/src\\/${n}\\.(mjs|ts)$`)),
   // What a job can reach: the computer box rules (computers).
   /^scripts\/computers\.(mjs|ts)$/,
   /^kernel\/sdk\//,
@@ -22,6 +22,8 @@ export const GATE_CORE = [
   // check (scripts/sync-shared.mjs).
   /^kernel\//,
   /(^|\/)aidenhq-sdk\/caller\.ts$/,
+  // The compiler (moved out of the kernel): compose isolation, the grants it writes, the authority diff.
+  /^scripts\/compiler\//,
   /^scripts\/modules\.(mjs|ts)$/,
   /^scripts\/paperclip-setup\.(mjs|ts)$/,
   /^scripts\/no-shell\.(mjs|ts)$/,
@@ -33,6 +35,9 @@ export const GATE_CORE = [
   /^services\/computer\//,
   /^ops\//,
   /^scripts\/verify-security\.sh$/,
+  // The path inventory and its compiler (the kernel's tier function reads what they make: kernel/src/paths.ts).
+  /^paths\.yaml$/,
+  /^scripts\/paths\.(mjs|ts)$/,
   /^scripts\/supply-chain\//,
   /^\.gitleaks\.toml$/,
   // The lean counters and checklists, and the tests that hold this list: loosening either would hide an ungated file.

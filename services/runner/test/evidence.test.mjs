@@ -6,7 +6,7 @@ import { execFileSync } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { guardBranch, localPullRequest, onMain, prEvidence } from "../src/evidence.ts";
+import { guardBranch, onMain } from "../src/evidence.ts";
 import { git } from "../../../modules/codehost-github/src/git.mjs";
 
 test("already on main by ancestry or identical files; a real change is not", async (t) => {
@@ -67,18 +67,5 @@ test("an apply is never guarded: the instance's main can be ahead of what the ho
   const start = main.indexOf("async function showFleetDiff");
   assert.ok(start > 0);
   assert.doesNotMatch(main.slice(start, main.indexOf("\n}\n", start)), /onMain|guardBranch|ALREADY_APPLIED/);
-});
-
-// The grader on an instance with no GitHub: a change request on this server is read as a PR from its refs and receipt.
-test("the grader reads a local change request: still running until its checks are in, then merged with its words and diff", async () => {
-  const c = { number: 3, url: "codehost:local/app/change/3", state: "open", head: "a".repeat(40), base: "b".repeat(40), into: "main", title: "feat: hello", body: "## Evidence\nnpm test: passed" };
-  const prs = [{ repo: "local/app", number: 3, url: c.url }];
-  const deps = (pr) => ({ pr: async () => pr, diff: async () => "+hello", ownRepo: () => true });
-  const running = await prEvidence(prs, "", deps(localPullRequest(c, [{ name: "tests", ok: true, pending: false }], ["tests", "secrets"])));
-  assert.match(running.awaiting, /checks still running on codehost:local\/app\/change\/3/);
-  const merged = { ...c, state: "merged", merged: "c".repeat(40) };
-  const ok = await prEvidence(prs, "", deps(localPullRequest(merged, [{ name: "tests", ok: true, pending: false }, { name: "secrets", ok: true, pending: false }], ["tests", "secrets"], "2026-11-17T20:09:07Z")));
-  assert.ok(ok.facts.some((f) => /change\/3: merged into main, head a{40}, merge commit c{40}; checks: tests green, secrets green/.test(f)), ok.facts.join("\n"));
-  assert.match(ok.data.DIFF, /\+hello/);
 });
 

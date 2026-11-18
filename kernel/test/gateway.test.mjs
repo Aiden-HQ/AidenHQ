@@ -158,6 +158,12 @@ test("gateway: attribution, billed cost, caps, raise_cap once, daily reset, no o
   assert.match(JSON.parse(dayRefused.text).error.message, /^spend cap reached: agent-day \$0\.06 of \$0\.05;/);
   for (const r of [refused, chatRefused, dayRefused]) assert.doesNotMatch(JSON.parse(r.text).error.message, /usage limit|rate[- ]?limit|try again|quota|capacity|429|service unavailable|temporary|spawn|ENOENT|\d{4}-\d{2}-\d{2}|\d+:\d\d/i);
 
+  // A grader token (the grading module's, per held task) names the agent it is billed to: its calls count against that agent's caps.
+  const graded = await call(mintToken("job-secret", { kind: "grader", agentId: "ag3", issueId: "g1", component: "Grader" }, now));
+  assert.match(JSON.parse(graded.text).error.message, /^spend cap reached: agent-day/, "charged to the graded agent's day cap");
+  assert.equal((await call(mintToken("job-secret", { kind: "grader", agentId: "ag2", issueId: "g2", component: "Grader" }, now))).status, 200);
+  assert.equal((await usage()).filter((r) => r.kind === "grader" && r.status === "ok").at(-1).agentId, "ag2");
+
   // System kinds are never capped. The old kill switch is gone: a stale enforce_caps: false still refuses (G10).
   const reviewer = mintToken("job-secret", { kind: "reviewer", issueId: "iss1" }, now);
   cost = 5;
@@ -245,33 +251,43 @@ test("gateway: an agent computer's calls are attributed and capped through the l
   assert.equal(ended.status, 401);
 });
 
-test("gateway: a transient OpenRouter refusal is retried, a 400 is not", async (t) => {
+test("gateway: the install cap counts every call of the day, no-agent ones too, and files one raise for the install", async (t) => {
   const dir = mkdtempSync(join(tmpdir(), "gw-"));
-  const secrets = { openrouter_key: "sk-real", gateway_job_secret: "job-secret" };
+  const secrets = { openrouter_key: "sk-real", gateway_job_secret: "job-secret", gateway_board_key: "gw-board", gateway_source_key: "src-key" };
   const grantsFile = join(dir, "grants.json");
   writeFileSync(grantsFile, JSON.stringify({ agents: { ag1: { key: "aiden" } } }));
   const settingsFile = join(dir, "gateway.json");
-  writeFileSync(settingsFile, JSON.stringify({ models: { flaky: price, bad: price } }));
-  const plan = { flaky: [502, 429, 200], bad: [400, 200] };
-  const hits = { flaky: 0, bad: 0 };
-  const upstream = await serve((req, res) => {
-    let b = ""; req.on("data", (d) => (b += d)); req.on("end", () => {
-      const m = JSON.parse(b).model;
-      const status = plan[m][hits[m]++];
-      if (status !== 200) return json(res, status, { error: { message: "The system is currently experiencing high demand" } });
-      json(res, 200, { id: "gen-ok", model: "m", choices: [], usage: { prompt_tokens: 1, completion_tokens: 1, cost: 0.001 } });
-    });
-  });
-  const retries = [];
-  const gw = createGateway({ dbFile: join(dir, "usage.db"), grantsFile, settingsFile, secret: (n) => secrets[n] ?? "", upstream: upstream.url, retryDelaysMs: [0, 0, 0, 0], log: (m) => m === "upstream retry" && retries.push(m) });
+  writeFileSync(settingsFile, JSON.stringify({ models: { m: price }, install_day_usd: 0.05 }));
+  const upstream = await serve((req, res) => { req.resume(); req.on("end", () => json(res, 200, { id: `gen-${Math.random()}`, model: "m", choices: [], usage: { prompt_tokens: 1, completion_tokens: 1, cost: 0.03 } })); });
+  const filed = [];
+  const now = Date.parse("2026-11-18T10:00:00Z");
+  const gw = createGateway({ dbFile: join(dir, "usage.db"), grantsFile, settingsFile, secret: (n) => secrets[n] ?? "", upstream: upstream.url, fileRaiseCap: async (b) => void filed.push(b), now: () => now });
   const front = await serve((req, res) => gw.handle(req, res));
   t.after(() => { upstream.s.close(); front.s.close(); gw.close(); });
-  const token = mintToken("job-secret", { agentId: "ag1", issueId: "iss1" }, Date.now());
-  const call = (model) => fetch(`${front.url}/api/v1/chat/completions`, { method: "POST", headers: { authorization: `Bearer ${token}` }, body: JSON.stringify({ model, messages: [] }) });
+  const call = async (cred) => {
+    const res = await fetch(`${front.url}/api/v1/chat/completions`, { method: "POST", headers: { authorization: `Bearer ${cred}` }, body: JSON.stringify({ model: "m", max_tokens: 1024, messages: [] }) });
+    return { status: res.status, body: await res.json() };
+  };
+  const spend = async () => (await fetch(`${front.url}/spend`, { method: "POST", headers: { authorization: "Bearer gw-board" } })).json();
+  const reviewer = mintToken("job-secret", { kind: "reviewer" }, now); // a system kind: no agent, never capped per agent
 
-  assert.equal((await call("flaky")).status, 200);
-  assert.equal(hits.flaky, 3);
-  assert.equal(retries.length, 2);
-  assert.equal((await call("bad")).status, 400);
-  assert.equal(hits.bad, 1);
+  // Two calls of different callers (an agent's job, then the uncapped reviewer) spend 0.06 of the install's 0.05.
+  assert.equal((await call(mintToken("job-secret", { agentId: "ag1", issueId: "iss1" }, now))).status, 200);
+  assert.equal((await call(reviewer)).status, 200);
+  assert.deepEqual(await spend(), { day: "2026-11-18", spent: 0.06, cap: 0.05 });
+  // Past it every caller is refused, the reviewer, the source writers and the board's side chat included: one raise, no task.
+  for (const cred of [reviewer, "src-key", "gw-board", mintToken("job-secret", { agentId: "ag1", issueId: "iss1" }, now)]) {
+    const r = await call(cred);
+    assert.equal(r.status, 402);
+    assert.equal(r.body.error.type, "cap_reached");
+    assert.match(r.body.error.message, /^spend cap reached: the install's daily \$0\.06 of \$0\.05; the owner has been asked to raise it$/);
+  }
+  assert.deepEqual(filed, [{ task: null, scope: "day", agentId: "install", subject: "2026-11-18", cap: 0.05, spent: 0.06 }]);
+  // The owner's raise (the approved card): calls go through again, and the header shows the raised cap.
+  gw.setCap("day", "install", "2026-11-18", 0.1);
+  assert.equal((await call(reviewer)).status, 200);
+  assert.equal((await spend()).cap, 0.1);
+  // Unset, no install cap at all.
+  writeFileSync(settingsFile, JSON.stringify({ models: { m: price } }));
+  assert.equal((await spend()).cap, null);
 });

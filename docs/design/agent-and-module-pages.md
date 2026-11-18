@@ -95,22 +95,26 @@ Tabs:
 
 Pause asks what to do with a running task: let it finish, or stop it now.
 
-### Modules (`#/modules[?tab=browse|marketplaces]`), a top-bar tab
+### Modules (`#/modules`), a top-bar tab
 
-- **Installed**: "Chosen by you" and "Core and dependencies" (why each dependency is on). A row shows description,
-  agent and connection counts, marketplace · tier, health (connection sign-in state), update available.
-- **Browse**: search across the instance's marketplaces, filter by kind (agents, connections, channels, apps). A row
-  says what it would add. **Install** opens a card with what it may read and write, what it needs (sign-ins, secrets)
-  and whether the owner's tap will be needed, then **Request install**.
-- **Marketplaces**: each with source, pinned sha, module count, newer-version flag and Update; Add marketplace (a repo
-  URL); Remove.
+- **One page of tiles**: every module as a tile in a grid that adds columns as the screen grows. A segmented control
+  shows **Installed** (what needs you first, then what you chose, then dependencies, the core last), **Available** or
+  **All**, and one search covers both. A tile shows its monogram, name, state as a dot and a word (On, Off, Always on,
+  Needs setup, Security fix, In review / Waiting for you / Applying, Change failed), its description, what it brings
+  (agents, connections, routines, apps, a pin), why it can't be turned off (core, or needed by another), a third-party
+  module's marketplace and tier, and one action. The whole tile opens the module's page.
+- **Turn on** (an available module) opens a card with what it adds, what it needs and whether the owner's tap will be
+  needed, then **Turn on** files the change.
+- **Marketplaces**: a button in the header opens them: each with source, pinned sha, module count, newer-version flag
+  and Update; Add marketplace (a repo URL); Remove. A newer marketplace commit or a security advisory shows as a banner
+  on the Modules page with **Update**.
 
 A module's one action button follows its state everywhere it is listed (Browse, Installed, the module page header):
-**Install** → In review / Waiting for your tap → Applying → **Set up** (only if it has a setup flow that isn't done) →
+**Turn on** → In review / Waiting for you → Applying → **Set up** (only if it has a setup flow that isn't done) →
 Installed (or **Update to X** when one is available). A failed or rejected step shows its reason and **Try again**.
 
 **Install** edits `instance.yaml modules` (adds the name, or `{ name, sha }`); the card is the lean-core install card.
-**On / off is a toggle** (owner: green when on, red when off) on each Installed row and in the module page header; the label next to it reads On or Off. Switching it off ("Turn off") removes it from `modules` through the same review. Its confirm dialog lists what stops (its
+**On / off is a toggle** (owner: green when on, red when off) on each installed tile you chose and in the module page header; the label next to it reads On or Off. Switching it off ("Turn off") removes it from `modules` through the same review. Its confirm dialog lists what stops (its
 agents and routines), what stays (their tasks; its data on disk, so turning it back on resumes) and is refused, with the
 reason, when another installed module requires it. Core modules and dependencies show no toggle. While a change is in review the toggle shows the requested position, dimmed, with its stage beside it; it settles only when the change is live. Deleting a module's
 data for good is a separate, explicit purge, not part of this work.
@@ -118,7 +122,7 @@ data for good is a separate, explicit purge, not part of this work.
 **Setup flows** come from `docs/design/guided-setup.md` (other work): a module's `setup_flow:` block, compiled into the
 catalog; the board opens it at `/setup/<module>`; `GET /api/setup-flows` lists installed modules whose flow isn't done
 (done = the module's real connection status). These pages only trigger it:
-- Browse shows "Needs setup after install: <flow title>" on modules that declare a flow.
+- An available module's tile shows "Then: <flow title>" when it declares a flow.
 - Installed rows and the module page show **Set up** (primary) and a "Needs setup" badge while the flow isn't done;
   afterwards the module page keeps a quiet **Run setup again**.
 - When an install goes live while the owner is still on the Modules page or that module's page, the board opens its
@@ -218,7 +222,7 @@ pause) as a signed-in admin action, logged as an event; no commit.
   `handbook_fork` override, tiered by the same rule as that agent's handbook additions (`role-handbook` when it holds a
   role, else `module-handbook`; both Tier 1). No new tier, no authority-diff change: a handbook grants no authority.
 - **Module and marketplace tiering** is what the code already does: `tiers.mjs moduleAuthorityParts` and
-  `kernel/src/loader/authority.ts` (`classifyModules`, `marketplaceChanges`), from the lean-core spec §5.7 (instance repo,
+  `scripts/compiler/authority.ts` (`classifyModules`, `marketplaceChanges`), from the lean-core spec §5.7 (instance repo,
   `docs/product-history/superpowers/specs/2026-11-16-lean-core-design.md`). Install, turn off and remove are edits of
   `instance.yaml modules`; no new tiering step. The install card's "what it may do" preview is computed by the same
   authority classifier, run on the would-be `instance.yaml` before filing.
@@ -229,9 +233,9 @@ pause) as a signed-in admin action, logged as an event; no commit.
   "Pinned at 2.4 · marketplace at 2.3" with **Follow marketplace** (removes the pin) and **Update** (pins the newest
   allowed version of just that module). The card says when the pinned version differs from the marketplace's, since that
   combination was not tested together. Tiering is the existing module update rule (§5.7: AI review, owner tap for new
-  authority). This is loader and compiler work (`kernel/src/loader/sources.ts`, `scripts/modules.mjs`) and lands with
+  authority). This is loader and compiler work (`scripts/compiler/sources.ts`, `scripts/modules.mjs`) and lands with
   build step 4.
-- **Browse data** is read where compile already reads marketplaces (the loader's sources, `kernel/src/loader/sources.ts`,
+- **Browse data** is read where compile already reads marketplaces (the loader's sources, `scripts/compiler/sources.ts`,
   with its credentials), at each marketplace's pinned sha, plus the newest commit for "newer version" when the source
   allows it. Nothing newer than 7 days is offered (the supply-chain rule).
 - **Grants override** (`overrides.agents.<key>.connections`) merges per connection key over the module's grants and is

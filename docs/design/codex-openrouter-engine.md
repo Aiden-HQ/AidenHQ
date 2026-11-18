@@ -1,6 +1,8 @@
 # The codex-openrouter engine
 
 Status: built 2026-11-13. The primary engine for runner jobs (the Software and Platform Engineers, light: no private reads).
+Since 2026-11-18 it is the only engine, and every job runs in its Engineer's agent computer: the host sandbox, gcloud
+sessions and the opencode, Claude Code and own-sign-in Codex engines below are gone (kernel/src/sandbox.ts buildJob).
 
 ## What it is
 

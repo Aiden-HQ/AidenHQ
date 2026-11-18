@@ -15,9 +15,7 @@ const SystemSchema = z.object({
 });
 
 export interface Config {
-  paperclipUrl: string;
   companyId: string;
-  boardKey: string;
   /** The runner's key (reviewer_key): its routes (grades, usage, jobs). None: they refuse. */
   reviewerKey?: string;
   /** The operator's key (board_operator_key): ops/setup.sh's owner setup link, welcome chat and account resets, nothing else. */
@@ -61,9 +59,7 @@ function keyFile(f: string): string | undefined {
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
   const system = SystemSchema.parse(parseYaml(readFileSync(env.BOARD_SYSTEM_CONFIG ?? "/config/system.yaml", "utf8")));
   return {
-    paperclipUrl: env.PAPERCLIP_URL ?? "http://paperclip:3100",
     companyId: system.paperclip.company_id,
-    boardKey: readFileSync(env.BOARD_KEY_FILE ?? "/run/secrets/paperclip_board_key", "utf8").trim(),
     reviewerKey: keyFile(env.BOARD_REVIEWER_KEY_FILE ?? "/run/secrets/reviewer_key"),
     operatorKey: keyFile(env.BOARD_OPERATOR_KEY_FILE ?? "/run/secrets/board_operator_key"),
     timezone: system.timezone,
@@ -84,7 +80,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
 }
 
 function accountsConfig(env: NodeJS.ProcessEnv): Config["accounts"] {
-  return { adminUrl: (env.AIDENHQ_ADMIN_URL || "http://127.0.0.1:3120").replace(/\/+$/, "") };
+  return { adminUrl: (env.AIDENHQ_ADMIN_URL || "http://localhost:3120").replace(/\/+$/, "") };
 }
 
 function sessionsConfig(env: NodeJS.ProcessEnv): Config["sessions"] {

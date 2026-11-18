@@ -1,0 +1,33 @@
+{
+  "why": "Classes the design system replaced (docs/design/board-ui.md). ESLint flags them in className and stylelint flags a rule that brings one back. Each entry: the class, then what to use.",
+  "classes": {
+    "pill": "StatusDot for a state, Tag for a fact",
+    "pill-needs": "StatusDot tone=\"needs\" or Tag tone=\"needs\"",
+    "pill-working": "StatusDot tone=\"working\"",
+    "pill-failed": "StatusDot tone=\"failed\"",
+    "pill-sk": "the Bone class tag-sk",
+    "st-pill": "StatusDot",
+    "st-dot": "StatusDot",
+    "st-chip": "Tag",
+    "st-switch": "Switch",
+    "st-seg": "Segmented",
+    "st-input": "Input (ui-input)",
+    "st-select": "Select (ui-select)",
+    "st-search": "Input (ui-input)",
+    "st-check": "Checks",
+    "st-checks": "Checks",
+    "agp-tabs": "Tabs",
+    "mods-alert": "Banner",
+    "app-grid": "TileGrid",
+    "app-card": "Tile",
+    "app-card-head": "Tile",
+    "app-note": "Tile foot or Banner",
+    "app-incident": "Banner tone=\"danger\"",
+    "st-banner": "Banner",
+    "st-head": "PageHeader (settings-ui Page)",
+    "st-field": "Field (ui-field)",
+    "st-field-label": "Field (ui-field-label)",
+    "st-field-help": "Field (ui-field-help / ui-field-error)",
+    "st-field-row": "ui-input-row"
+  }
+}

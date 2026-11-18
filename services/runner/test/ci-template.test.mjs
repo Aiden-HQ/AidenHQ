@@ -6,7 +6,7 @@ import { execFileSync } from "node:child_process";
 import { chmodSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { patchKey, patchKeyAt, treeIs } from "../../../modules/codehost-github/src/git.mjs";
+import { patchKey, treeIs } from "../../../modules/codehost-github/src/git.mjs";
 
 const g = (cwd, ...a) => execFileSync("git", ["-c", "user.name=t", "-c", "user.email=t@example.com", ...a], { cwd, encoding: "utf8" }).trim();
 const files = { "workflows/ci.yml": "on: push\njobs: {}\n", "dependabot.yml": "version: 2\n", "supply-chain/pins.mjs": "export {};\n" };
@@ -71,28 +71,5 @@ test("patchKey: the same change renamed and rebased is the same patch; another c
   assert.equal(await patchKey(dir, main2, renamed), await patchKey(dir, base, approved), "each from its own base");
   assert.notEqual(await patchKey(dir, base, different), await patchKey(dir, base, approved));
   await assert.rejects(patchKey(dir, base, "f".repeat(40)), "a commit that isn't there throws (the caller blocks)");
-  rmSync(dir, { recursive: true, force: true });
-});
-
-// A content key only restricts, so it must not collide: modes and binary content count, and it is read only at the exact
-// commit asked for (a PR head that moved gives none).
-test("patchKey sees modes and binary content; patchKeyAt keys only the exact commit", async () => {
-  const dir = repo();
-  const base = g(dir, "rev-parse", "HEAD");
-  const branch = (name, edit) => {
-    g(dir, "checkout", "-q", "-B", name, base);
-    edit();
-    g(dir, "add", "-A");
-    g(dir, "commit", "-qm", name);
-    return g(dir, "rev-parse", "HEAD");
-  };
-  const exec = branch("exec", () => chmodSync(join(dir, "app.js"), 0o755));
-  const plain = branch("plain", () => writeFileSync(join(dir, "app.js"), "1\n// same\n"));
-  const bin1 = branch("bin1", () => writeFileSync(join(dir, "blob.bin"), Buffer.from([0, 1, 2, 3])));
-  const bin2 = branch("bin2", () => writeFileSync(join(dir, "blob.bin"), Buffer.from([0, 1, 2, 4])));
-  assert.notEqual(await patchKey(dir, base, exec), await patchKey(dir, base, plain), "a mode change is content");
-  assert.notEqual(await patchKey(dir, base, bin1), await patchKey(dir, base, bin2), "binary bytes are content");
-  assert.equal(await patchKeyAt(dir, "bin1", bin1, base), await patchKey(dir, base, bin1), "the exact commit");
-  assert.equal(await patchKeyAt(dir, "bin2", bin1, base), undefined, "a ref that isn't that commit (a moved PR head): none");
   rmSync(dir, { recursive: true, force: true });
 });

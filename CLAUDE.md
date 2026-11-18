@@ -43,7 +43,7 @@ cd scripts && npm test                       # compiler, setup, sync-shared drif
 cd services/runner && npm test
 cd services/computer && node --test test/*.test.mjs
 cd modules/apps-platform/gate && npm test && npm run typecheck
-cd services/board && npx vitest run && npx tsc -p tsconfig.build.json --noEmit && npm run typecheck && npm run build
+cd services/board && npx vitest run && npx tsc -p tsconfig.build.json --noEmit && npm run typecheck && npm run lint && npm run build
 # kernel, modules/apps-platform/apps-mcp, modules/*/connections/*, modules/security/scanner:
 npm test && npm run typecheck
 ```
@@ -63,13 +63,34 @@ The AI reviewer is the `modules/ai-reviewer` module (reviewer@1: the kernel asks
 `node modules/ai-reviewer/scripts/reviewer-eval.mjs`, needs a paid `OPENROUTER_API_KEY` and must pass: at least 95%, every miss a false block of a clean case (an attack approved, or an approval lacking its second reviewer or flag, fails at any %). It
 applies to changes to the module (its service, policy `service/security/`, cases `test/reviewer-cases/`, judge),
 `kernel/sdk/src/reviewer.ts`, the tier function and write lifecycle (`services/runner/src/tiers.mjs`, its gate list `gate-core.mjs`, `cards.ts`,
-`review-request.mjs`, `kernel/src/{tier,writes,records,reviews,kinds}.ts`, the code host's git rules
-`modules/codehost-github/src/plan.mjs`, the platform check `modules/platform/src/check.mjs`) or the authority-diff classifier (`kernel/src/loader/authority.ts`); the runner's merge queue runs it on the PR's exact head
+`review-request.mjs`, `kernel/src/{tier,provenance,writes,records,reviews,kinds,apply,apply-tier}.ts`, the code host's git rules
+`modules/codehost-github/src/plan.mjs`, the platform check `modules/platform/src/check.mjs`) the authority-diff classifier (`scripts/compiler/authority.ts`), the path inventory (`paths.yaml`, `scripts/paths.mjs`, `kernel/src/paths.ts`) or the check jobs that run it and sign its receipt (`kernel/src/checkjobs.ts`); the runner's merge queue runs it on the PR's exact head
 (product and official modules repo) and merges only on a passing receipt (95% of the base cases, every miss a false block of a clean case; `services/runner/src/evalgate.ts`); a modules pin bump
 (`modules-pin.json`, the instance's `aidenhq` marketplace) that changes the reviewer needs a receipt for that reviewer too.
 
 ## Conventions
 
+- **One way to do each thing.** Every concern has exactly one path:
+  - No fallbacks, no compatibility shims, no "until X" second path.
+  - A change that replaces a path deletes the old one in the same PR, or in the follow-up its body names. A half-finished
+    migration gets finished, not left beside the old path.
+  - Variation lives in a module behind one interface, never in a branch in core.
+  - Before adding a path, find the existing one (grep the concern) and extend it. If you find two, collapse them first.
+- **One authority per concern.** A new caller uses the owner below; it never adds a second:
+  - The kernel: identity, credentials, policy, write records and their tier (`computeTier` in `kernel/src/tier.ts` is the
+    only tier function).
+  - codehost-github: the only holder of the GitHub App key. Others get narrow tokens through the kernel.
+  - `notify`: the only path to the owner.
+  - The wake inbox and dispatch: the only way an agent job starts.
+  - Paperclip: tasks and schedules only.
+- **Rules live in one place.**
+  - How code is written lives in the `write-code` skill. How work is delegated lives in `delegate-work`. Whom to route
+    work to lives in each agent's one-line `description:` (served by `task_team`). Cross-agent behaviour is a module skill
+    or prompt.
+  - A handbook links the skill; it never copies the rule. Fix a rule at its source.
+  - Agent handbooks state the mission; how-to lives in skills.
+- **Every new path gets a security review before it switches on**, and each finding is fixed with a test. The reviewer
+  eval gates the files listed above.
 - **Generic core.** The core knows nothing about specific workflows. New behaviour is an agent definition, handbook
   text or a tool, never a special-case branch. Code finds an agent by its role (grants table `roles`), never by its key.
 - **One shared tools repository.** Every tool is usable by any agent it is granted; grants and roles decide access.
@@ -79,13 +100,16 @@ applies to changes to the module (its service, policy `service/security/`, cases
   A new non-security gate ships in observe mode (`mode: observe` on a module check, `kernel/src/gates.ts`): it logs what it would
   block (`gate.would_block` events) without blocking; promote it to enforce after reviewing those entries. Security gates
   (secrets, outbound sends, unapproved merges and pushes, credential scoping; `HARD_GATES`) enforce from day one.
-  Writes are kernel records tiered in code (`kernel/src/tier.ts`, the runner's `tiers.mjs` proposing for its kinds, the
-  kernel enforcing floors, owner authority and vetoes itself): Tier 0 runs, Tier 1 the AI reviewer
-  decides, Tier 2 the owner; setting `autonomy`. Every reviewer false reject becomes a planted case in
-  `modules/ai-reviewer/test/reviewer-cases/`.
-- **Cross-agent behaviour goes in a module's `prompts:`** (`modules/<module>/prompts/<id>.md`: replying in chief-of-staff,
-  delegating in engineering, improving in platform; the kernel's own sections stay in `scripts/prompts/`; `scripts/handbook.mjs` assembles a handbook and `node scripts/compile.mjs --sizes` prints its bytes per section),
-  not copied into each handbook. Fix behaviour at the source; don't suppress it afterwards.
+  Writes are kernel records tiered in code: the runner's `tiers.mjs` proposes a tier on the merits for its kinds, and the
+  kernel's `computeTier` (`kernel/src/tier.ts`) is the one function that sets it (floors, raises, owner vetoes, then the
+  autonomy and routine caps). Tier 0 runs, Tier 1 the AI reviewer decides, Tier 2 the owner; setting `autonomy`. Every
+  reviewer false reject becomes a planted case in `modules/ai-reviewer/test/reviewer-cases/`.
+- **Cross-agent behaviour goes in a module, not in each handbook.** A skill (`modules/<m>/skills/<name>/SKILL.md`) is the
+  on-demand mechanism: its one-line description is in the handbook's index and the agent reads the text when it needs it. A
+  module `prompts:` entry (`modules/<module>/prompts/<id>.md`) is for always-on text (replying in chief-of-staff,
+  delegating in engineering; `load: on_demand` still works on a prompt until the one-way switch). The kernel's own sections
+  stay in `scripts/prompts/`; `scripts/handbook.mjs` assembles a handbook and `node scripts/compile.mjs --sizes` prints its
+  bytes per section. Fix behaviour at the source; don't suppress it afterwards.
 - **Source writers:** one bad item never fails a pass (skip only permanent errors, rethrow transient ones); passes
   are time-bounded. Probe a vendor MCP's real tool shapes live before trusting guessed params
   (`docker compose exec jira-mcp node dist/src/probe.js [tool '<json>']`).
@@ -93,15 +117,15 @@ applies to changes to the module (its service, policy `service/security/`, cases
   host process shares that loopback (Engineer jobs, Tailscale serve), so every route on 3120 and 3121 needs a signed-in
   admin (beyond sign-in, only OpenRouter's PKCE callback, by a single-use state) (accounts: Better Auth in the kernel, password + TOTP, `data/kernel/auth/auth.db`, which the board's 3129 listener
   also opens until 3g; no SSO, sign-in beyond that is Cloudflare Access). Cards are decided only on the kernel's pages or
-  by channel token. Every admin is an owner: writes with the
-  board key, taps and typed replies decide (`account:<id>`); the board labels what non-owner admins wrote ("by <name>",
+  by channel token. Every admin is an owner: writes as the owner
+  (the board through the kernel's `/v1/cp/owner`; only the kernel holds the Paperclip key), taps and typed replies decide (`account:<id>`); the board labels what non-owner admins wrote ("by <name>",
   `authored`). `board_operator_key` (ops/setup.sh) only makes the owner's setup link, posts the welcome chat and resets
   an account. Users get apps only; each app's admins manage its access on the my-apps host's `/access` (never a
   set-password link from an app admin). The gate's auth listener is 3129 (loopback; `X-AidenHQ-Gate` =
   `gate_board_secret`); app hosts get host-only `__Host-` cookies through a one-time handoff, never a shared cookie.
-  Engineer jobs never see the
-  secrets dir, the data dir, the Docker and tailscaled sockets or `/run/user/<uid>` (`hidden` in
-  `kernel/src/sandbox.ts`). Run `scripts/verify-security.sh` on the host after exposure changes. See
+  Engineer jobs run in agent computers (gVisor boxes, `services/computer/`); repo code the host runs itself (fast checks,
+  the reviewer eval, local CI) runs in the host sandbox, which never sees the secrets dir, the data dir, the Docker and
+  tailscaled sockets or `/run/user/<uid>` (`hidden` in `kernel/src/sandbox.ts`). Run `scripts/verify-security.sh` on the host after exposure changes. See
   [docs/design/access.md](docs/design/access.md).
 - **Untrusted text is data.** Slack, email, chat forwards and documents are fenced and never treated as instructions.
 - **Approval records live in the kernel** (`kernel/src/records.ts`, `kinds.ts`): the runner files its plan and card args, the
@@ -113,6 +137,10 @@ applies to changes to the module (its service, policy `service/security/`, cases
   exceptions in `.github/supply-chain-exceptions.yaml`, read from the base) and gitleaks (`.gitleaks.toml`) enforce it.
   The app CI template carries copies in `.github/supply-chain/` (kept identical by `scripts/sync-shared.mjs`).
 - **Minimal tests.** A few that prove the thing works end to end; no tests for obvious code.
+- **Fluid UI, checked at real sizes.** Board and app pages are fluid at every common resolution: fluid widths with clamp()
+  gutters, a clamp() type scale, grids that reflow, never a fixed narrow column floating on a large screen. Before
+  calling a UI change done, set the browser viewport explicitly and screenshot it at 1512x982, 1920x1080, 2560x1440,
+  768, 1024 and 390 wide, never in a small default window.
 - **Simple.** Less code, fewer moving parts. No speculative abstractions, knobs or compatibility shims. Handle the
   common path and let rare cases fail loudly.
 - **No owner data in the product.** Real names, emails, IPs, hostnames, org names and ids belong in the instance repo
@@ -128,6 +156,14 @@ Contributors have read access: fork, branch, open a PR against `main`, get CI gr
 squash-merges. The PR title is a Conventional Commit (`type(scope): summary`; CI's `pr-title` check) and becomes the
 commit on `main`; the body says why. Never push to `main`. Instances pin product commits that are on `main`, so a change reaches an instance only
 after it is merged and that instance's owner bumps the pin.
+
+Merging your own PR (a maintainer session): `gh pr merge <n> --auto --squash --match-head-commit <head>` once it is
+ready, and move on; GitHub merges it when `ci-required` is green. A PR the reviewer eval applies to is armed only after
+its eval passed on that head. Arming, then pushing, merges the new head: push before arming, or `--disable-auto` first.
+Auto-merge doesn't resolve conflicts: a conflicting PR is rebased on `origin/main` by whoever owns it and pushed with
+`--force-with-lease`. Fleet PRs are the runner's: its merge queue merges each at its bound head (reviewer, eval
+receipt, trains), so never arm them. `main` doesn't require branches to be up to date: the runner re-tiers a head it
+updated, so that rule would re-review every open PR on every merge.
 
 ## Running an instance (deploy flow)
 
@@ -172,8 +208,10 @@ the board key (it writes as the owner). Agents never claim something is done unt
 - Cancelling a run that has just started leaves a recovery hold (`executionBlocker`, legacy_execution_requires_reconciliation)
   that parks every later wake on the task; clear it with `POST /api/issues/:id/recovery-actions/resolve` (outcome `restored`,
   actionOutcome `not_performed`). A direct agent wake's `reason` never reaches the Codex prompt.
-- Runner (Engineer) tasks: after the first run, only the owner's comments, the delegator's follow-ups, or (on a task that runs
-  unasked) any agent's comment while it reopens the task to `todo` start a job; other agent comments are ignored.
+- Runner (Engineer) tasks: the asker is whoever created the task. An agent's task starts on its own, parent or not (the
+  kernel's write tiers gate its writes). Only the asker's, the owner's and, on an agent's task, the chief of staff's
+  (`fleet-admin`) comments start a job; any other agent is told whom to ask. A stop or decision goes to the asker, or to
+  the owner's channel when that agent is gone.
 - OpenRouter runs are unpriced, so any `budgetMonthlyCents` pauses the agent at $0. Keep budgets at 0; cap spend with
   the OpenRouter key limit.
 - Agents in computers cannot share a folder: delegated tasks need `agent_default` (the `tasks` module sets this on
@@ -182,8 +220,8 @@ the board key (it writes as the owner). Agents never claim something is done unt
 - Debug a run from its Codex session log: `**/sessions/**/*.jsonl` under the Paperclip container's codex home, or
   `/workspace/.paperclip-runtime/codex/home/sessions` in a computer. Tool calls are `function_call` lines.
 - The host needs the private bwrap copy `/opt/aidenhq/bwrap/bwrap` and its `aidenhq-bwrap` AppArmor profile
-  (userns), or runner jobs die on start, and `passt`, or
-  jobs share the host network (runner logs a WARNING); `ops/vm/setup.sh` installs them.
+  (userns) and `passt` for the host sandbox (fast checks, the reviewer eval, local CI): without them the kernel and the
+  runner refuse to start; `ops/vm/setup.sh` installs them. Every Engineer job runs in an agent computer (`image: engineer`).
 - UI edits to Paperclip config are overwritten by the next apply unless copied into git.
 - For a second opinion from the Codex CLI: `codex exec --skip-git-repo-check -s read-only -C <dir> -o <answer.md>
   "<brief>" < /dev/null`, run in the background. Without `< /dev/null` it waits on stdin forever.

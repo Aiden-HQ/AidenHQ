@@ -1,6 +1,6 @@
 // A module's setup secrets from the board (guided setup): a ready admin pastes a value for a secret the module declared with
 // `setup:` (compile: config/kernel/modules.json `setup`), the kernel writes it to the vault under the declared name and
-// recreates that module's own compose services (`services`) and every other service that mounts the secret (`mounts`), so
+// recreates (after answering) that module's own compose services (`services`) and every other service that mounts the secret (`mounts`), so
 // they read it (a file secret is a bind mount of the old file until its container is recreated). The caller names only the module and the
 // secret; never a path or a service. Values are never logged, echoed or put on a command line.
 import { spawn } from "node:child_process";
@@ -61,13 +61,11 @@ export function createModuleSecrets(deps: {
       const services = [...new Set([...own, ...deps.mounts(field.secret)])].sort();
       // Written first, so the last value saved is the one every later recreate reads.
       deps.save(field.secret, value);
-      try {
-        if (services.length) await recreate(services);
-      } catch (e) {
-        deps.log("module secret saved; recreate failed", { module, secret: field.secret, err: String((e as Error).message).slice(0, 300) });
-        throw fail(502, "bad_gateway", `saved, but its services didn't restart: ${String((e as Error).message).slice(0, 300)}`);
+      // The restart follows the answer: it may wait minutes on the apply lock, and the page must not hang on it.
+      if (services.length) {
+        recreate(services).catch((e) => deps.log("module secret saved; recreate failed", { module, secret: field.secret, err: String((e as Error).message).slice(0, 300) }));
       }
-      deps.log("module secret saved", { module, secret: field.secret, restarted: services });
+      deps.log("module secret saved", { module, secret: field.secret, restarting: services });
       return { restarted: services };
     },
     status(module: string): Record<string, boolean> {

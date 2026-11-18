@@ -74,7 +74,7 @@ Line numbers are at product `26a5bd5e` and modules `b2b31f1` (`modules/` is the 
 | `services/runner/src/tiers.mjs:50` | An unknown product repo, instance repo or agents org goes to Tier 2. |
 | `kernel/src/tier.ts:145-172` | Content keys are branch shas and PR heads. Already host-neutral. |
 | `kernel/src/writes.ts:186,271` | Carried `runner.push`/`runner.pr` records; the stale-record text says "GitHub has no branch and no PR". |
-| `kernel/src/loader/bindings.ts:17-20` | `codehost` is neither reserved nor a slot, so a plain `provides: [codehost]` works today. |
+| `scripts/compiler/bindings.ts:17-20` | `codehost` is neither reserved nor a slot, so a plain `provides: [codehost]` works today. |
 | `kernel/src/sandbox-config.ts:34-38` | `hidden` includes the data dir. Bare repos under it are invisible to every job. |
 | `services/board/src/fleet-ops.ts:31,314` | "Open PRs" come from apps-mcp `/internal/open-prs`. |
 | `services/board/src/wake.ts:15,76,280` | PR wake-ups use `github.com/.../pull/n` or `org/repo#n`, read through `/internal/pr-states`. |
@@ -262,8 +262,11 @@ Then:
     A conflict refuses it back to the task.
   - Checks are bound to the head, as on GitHub's non-strict merges.
 - **Head moved after approval:** condition 2 refuses it, and the agent asks again for the new head (`head-moved`).
-- **After the merge:** the runner writes `refs/changes/<n>/merged` and deletes the task branch ref. The apps platform
-  deploys `main` as it does today.
+- **After the merge:** the runner writes `refs/changes/<n>/merged` and deletes the task branch ref. Once the card's last
+  change has merged or been refused, the task finishes as a GitHub merge queue's does (`finishMerges`): its status through
+  the finish gate (a graded task stays in review for its grade), the delegator told on the parent, and the tasks that
+  opened those changes closed. The apps platform deploys `main` of a registered app as it does today; a new app is
+  created and deployed by the DevOps Engineer, whom the delegator hands it to on that outcome.
 
 ### Not carried over locally
 

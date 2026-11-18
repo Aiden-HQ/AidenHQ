@@ -5,17 +5,12 @@ import { createContext, useCallback, useContext, useEffect, useId, useMemo, useS
 import { SignInRequired, api } from "./api";
 import type { ChangeStage, FiledChange, SettingChange } from "./types";
 import { changeLines, whoDecides } from "./settings-format";
+import { PageHeader } from "./ui";
 
 export function Page({ title, sub, children, tools }: { title: string; sub?: ReactNode; children: ReactNode; tools?: ReactNode }) {
   return (
     <main className="st-page">
-      <header className="st-head">
-        <div className="st-head-text">
-          <h1>{title}</h1>
-          {sub && <p>{sub}</p>}
-        </div>
-        {tools && <div className="st-head-tools">{tools}</div>}
-      </header>
+      <PageHeader title={title} sub={sub} actions={tools} />
       {children}
     </main>
   );
@@ -82,33 +77,6 @@ const Chevron = () => (
     <path d="M6 4l4 4-4 4" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
   </svg>
 );
-
-/** A status dot with its word: the dot carries the tone, the word the meaning. */
-export function StatusPill({ tone, children }: { tone: "ok" | "warn" | "bad" | "off" | "info" | "busy"; children: ReactNode }) {
-  return (
-    <span className={`st-pill st-pill-${tone}`}>
-      <span className="st-dot" aria-hidden />
-      {children}
-    </span>
-  );
-}
-
-/** `redOff`: an off switch is red, for a module on/off where off is a decision (green on, red off). */
-export function Switch({ on, onChange, label, disabled, redOff }: { on: boolean; onChange: (on: boolean) => void; label: string; disabled?: boolean; redOff?: boolean }) {
-  return <button className={`st-switch${on ? " on" : redOff ? " off-red" : ""}`} role="switch" aria-checked={on} aria-label={label} disabled={disabled} onClick={() => onChange(!on)} />;
-}
-
-export function Segmented<T extends string | number>({ value, options, onChange, label }: { value: T; options: { value: T; label: string }[]; onChange: (v: T) => void; label: string }) {
-  return (
-    <div className="st-seg" role="radiogroup" aria-label={label}>
-      {options.map((o) => (
-        <button key={String(o.value)} role="radio" aria-checked={o.value === value} className={o.value === value ? "on" : ""} onClick={() => onChange(o.value)}>
-          {o.label}
-        </button>
-      ))}
-    </div>
-  );
-}
 
 // ------------------------------------------------------------------ changes: filed, followed
 

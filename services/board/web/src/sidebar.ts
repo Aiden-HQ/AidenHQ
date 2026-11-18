@@ -2,6 +2,7 @@
 // it can be tested without React.
 import { isTestChat } from "./conversation.js";
 import type { ChatAgent, ChatRow, ChatState } from "./types.js";
+import { isLocalDoor } from "./util.js";
 
 export interface AgentGroup {
   agent: ChatAgent;
@@ -22,11 +23,13 @@ export interface AgentGroup {
 
 export const VISIBLE = 5;
 const newest = (a: ChatRow, b: ChatRow) => (b.preview?.at ?? b.updatedAt).localeCompare(a.preview?.at ?? a.updatedAt);
-export const NEEDS: ChatState[] = ["waiting for you", "waiting for approval", "failed"];
+/** What waits on the owner (the server's chats.ts WAITS_ON_OWNER): a failed run is Fleet Ops' to repair, not his. */
+export const NEEDS: ChatState[] = ["waiting for you", "waiting for approval"];
 
 /** Only states that ask for attention get a chip: an idle or finished chat shows none. */
 export const showsChip = (s: ChatState) => s !== "idle" && s !== "done";
-const WAITING: ChatState[] = ["queued", "in review", "idle"];
+// A failed task waits on its agent (Fleet Ops repairs it), shown with its chip among the rest.
+const WAITING: ChatState[] = ["queued", "in review", "idle", "failed"];
 
 /** What a chat's handed-out work comes to, for its sidebar line: "4 tasks · 1 needs you". */
 export function taskSummary(kids: { state: ChatState }[]): { total: number; needs: number; busy: boolean } {
@@ -86,7 +89,10 @@ export function groupChats(rows: ChatRow[], agents: ChatAgent[]): { front: Agent
 /** A sidebar group's lane agent: groups are keyed by the Paperclip agent id, the lane's own key is its short name (`aria`). */
 export const laneOf = <T extends { id: string }>(lane: T[], agentId: string): T | undefined => lane.find((l) => l.id === agentId);
 
-/** The apps pinned into the nav (apps.yaml `panel`): links to each app's own https URL, never frames (a shared app signs in at the gate). */
-export function panelsOf(apps: { name: string; panel?: string; url?: string }[]): { name: string; label: string; url: string }[] {
-  return apps.flatMap((a) => (a.panel && a.url?.startsWith("https://") ? [{ name: a.name, label: a.panel, url: a.url }] : []));
+/**
+ * The apps pinned into the nav (apps.yaml `panel`): links to each app's own https URL, or its local door when this browser
+ * can open one (`localDoors`, util.ts keepsSecureCookies), never frames (an app signs in at the gate).
+ */
+export function panelsOf(apps: { name: string; panel?: string; url?: string }[], localDoors = false): { name: string; label: string; url: string }[] {
+  return apps.flatMap((a) => (a.panel && a.url && (a.url.startsWith("https://") || (localDoors && isLocalDoor(a.url))) ? [{ name: a.name, label: a.panel, url: a.url }] : []));
 }

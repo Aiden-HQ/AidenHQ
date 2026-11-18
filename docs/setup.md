@@ -121,7 +121,7 @@ both fail; that is expected, and step 3 makes the local mirror.)
 One run sets up the whole machine. It is idempotent: if it stops partway, fix the cause and run it again. It:
 
 1. installs system packages, Docker, Node 24, gVisor, bubblewrap (a private copy with its own AppArmor profile), passt, gocryptfs and
-   Tailscale (`ops/vm/setup.sh`), plus the Codex and opencode CLIs the runner uses;
+   Tailscale (`ops/vm/setup.sh`), plus the Codex CLI the runner's own short model calls use;
 2. joins the tailnet with `TS_AUTHKEY` as `aidenhq-<you>` (unless the VM is already on it, or `BOARD_HOST` is set);
 3. writes `.env` and `config/runner.yaml`, and runs `scripts/bootstrap.sh` (secrets folder, generated tokens, data
    folders);
@@ -130,7 +130,7 @@ One run sets up the whole machine. It is idempotent: if it stops partway, fix th
    commit you checked out, your name, email, timezone and modules), an empty `apps.yaml` and `agents/`. There is no
    separate template: setup writes these files itself;
 5. makes your OpenRouter key: with `OPENROUTER_MANAGEMENT_KEY`, a new key named `aidenhq-<you>` with a monthly limit
-   of `OPENROUTER_LIMIT_USD` (default 50); with `OPENROUTER_KEY`, that key as given;
+   of `OPENROUTER_LIMIT_USD` (default 100); with `OPENROUTER_KEY`, that key as given;
 6. stores the Google OAuth client, the apps node's Tailscale key and a generated Paperclip password;
 7. turns the secrets folder into the encrypted **vault** (`ops/vault/init.sh`);
 8. runs `ops/apply-config.sh`: compiles the modules, starts the stack, creates your Paperclip account and company,
@@ -149,7 +149,7 @@ OWNER_EMAIL=alex@example.com
 TIMEZONE=UTC
 # Or OPENROUTER_KEY=sk-or-v1-... (a key you made yourself) instead of the management key.
 OPENROUTER_MANAGEMENT_KEY=sk-or-v1-...
-OPENROUTER_LIMIT_USD=50
+OPENROUTER_LIMIT_USD=100
 GOOGLE_CLIENT_ID=....apps.googleusercontent.com
 GOOGLE_CLIENT_SECRET=...
 TS_AUTHKEY=tskey-auth-...
@@ -403,8 +403,27 @@ The instance repo pins the product commit (`product: <sha>` in `instance.yaml`).
 and applying. Never `git pull` in `~/aidenhq` first: apply compares the old checkout with the new pin to decide which
 services to restart, and a pull hides the difference.
 
-The easy way: ask Aiden to "upgrade the product to the latest main". The Platform Engineer shows the commits between
-the old and new pin, and you approve.
+**Installed from a release (get.aidenhq.ai)?** Then `instance.yaml` has `release:` and the server updates itself
+([design](design/release-updates.md)): every hour it looks for a newer release on the distro repo, verifies it (pinned
+shas on each repository's main, the release workflow's tested stamp, image digests, never older than what runs), and
+installs it between 02:00 and 05:00 in your timezone through the normal apply. If the health check after it fails, the
+server goes back to the release before and you're told why; that release isn't tried again on its own. This is
+maintenance, so quiet start doesn't hold it.
+
+- **See what's out:** the board's Settings > Instance shows the release you run, the newer one with what changed, and the
+  last update. You also get a message when one is available, installed or failed. Aiden can tell you too.
+- **Update now:** the button there opens the kernel's Updates page; its Update now installs at once.
+- **Turn auto-updates off:** `settings.auto_update: "off"` (the switch on that page, or Settings > Kill switches). You're
+  still told about each release and install it with Update now.
+- **From 2026.11.2:** run the installer again, the same command as the first time (`curl -fsSL https://get.aidenhq.ai | sh`).
+  It verifies the new release, moves the pin and applies; from 2026.11.3 on, updates come by themselves.
+
+Don't ask Aiden to "upgrade to the latest main" on a release install: main isn't a release, and apply refuses a `product:`
+that isn't the release's kernel.
+
+**Pinned by hand** (no `release:`, e.g. an instance tracking main): nothing updates itself. The easy way: ask Aiden to
+"upgrade the product to the latest main". The Platform Engineer shows the commits between the old and new pin, and you
+approve.
 
 By hand:
 
@@ -439,7 +458,7 @@ scripts/bootstrap.sh                 # secrets dir, data dirs
 # AIDENHQ_INSTANCE_DIR=<checkout> in .env
 ops/apply-config.sh                  # instance -> pinned product -> compile -> compose up -> setup
 mkdir -p ~/.config/systemd/user && cp ops/units/aidenhq-{gateway,runner,computers}.service ops/units/prune-runs.* ops/units/prune-docker.* ~/.config/systemd/user/
-systemctl --user enable --now aidenhq-kernel aidenhq-runner aidenhq-computers prune-runs.timer prune-docker.timer
+systemctl --user enable --now aidenhq-kernel aidenhq-runner aidenhq-computers prune-runs.timer prune-docker.service prune-docker.timer
 ```
 
 Copy `config/runner.example.yaml` to `config/runner.yaml` and set `allowed_orgs` (see
@@ -463,12 +482,15 @@ an `ops/setup.sh` host.
 | Slack (read) | Open its setup on the board (`#/setup/slack`): paste the Slack app's Client ID and press Connect. |
 | GitHub (read) | Open its setup on the board (`#/setup/github`) and paste a read-only token. |
 | Primer | Open its setup on the board (`#/setup/primer`): paste its MCP address and press Connect. |
-| gcloud | `scripts/gcloud-auth.sh`. |
 | Glean, Jira, Grafana, ClickHouse | Open the module's setup on the board (`#/setup/<module>`): paste the address (Glean, Grafana, ClickHouse), then press Connect. Jira's site URL stays the `jira_url` setting. Grafana with `grafana_source: local` needs no sign-in. |
 
-Sign-ins started on the board (Google, Glean, Jira, Grafana Cloud, ClickHouse) return to the board's loopback address, so start
-them there: on your laptop run `ssh -N -L 3121:127.0.0.1:3121 -L 3120:127.0.0.1:3120 <you>@<host>`, sign in at
-`http://127.0.0.1:3120`, open `http://127.0.0.1:3121` and press Connect (Settings, Connections).
+Sign-ins started on the board (Google, Glean, Jira, Grafana Cloud, ClickHouse, Slack, Primer, HubSpot) return to the board's
+https address (`BOARD_LAN_URL`, which `ops/setup.sh` sets to the tailnet name or the public front door): open the board there
+and press Connect (Settings, Connections, or the module's setup), one click, signed in as an admin. A vendor that needs a
+client you make by hand (HubSpot) shows its exact redirect URL, with a copy button, on its setup page. Only a board without an
+https address (local exposure with no Tailscale) still signs in on its loopback address: on your laptop run
+`ssh -N -L 3121:127.0.0.1:3121 -L 3120:127.0.0.1:3120 <you>@<host>`, sign in at `http://localhost:3120`, open
+`http://localhost:3121` and press Connect.
 
 ## The apps node's tailnet key
 
@@ -476,8 +498,8 @@ Agent-built apps get their own tailnet node and name (`aidenhq-<user>-apps`), so
 cookies. It needs `TS_APPS_AUTHKEY` (a Tailscale admin makes it): in the Tailscale admin, add a tag (for example
 `tag:aidenhq-apps`, under `tagOwners`; if your policy isn't allow-all, let your devices reach it on the app ports),
 then Settings, Keys, *Generate auth key*: reusable, pre-approved, tagged with it. Without it apps run but aren't
-reachable. To add it later, put the key in the vault as `tailscale_apps_authkey` and run
-`docker compose up -d --force-recreate apps-edge` (it reads the key only at start).
+reachable. To add it later, put the key in the vault as `tailscale_apps_authkey` and apply again (apps-edge runs only
+once the key is there, in `tailscale` exposure).
 
 ## GitHub App for the runner
 

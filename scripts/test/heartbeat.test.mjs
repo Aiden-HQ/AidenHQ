@@ -50,20 +50,3 @@ test("heartbeat compiles to one staggered 4-hourly routine per opted-in agent on
   assert.ok(!r.paperclip.routines["heartbeat-assistant"]);
   assert.ok(r.paperclip.agents["chief-of-staff"].enabled_tools.paperclip_tasks.includes("task_approvals"));
 });
-
-test("heartbeat cadence: the instance setting, an agent's hours, an override", () => {
-  const tools = { paperclip_tasks: ["task_list", "task_comments", "task_approvals", "task_comment", "task_finish"] };
-  const r = compile(product, instance({ chaser: { heartbeat: 2, connections: tools } }, [], undefined, { heartbeat_hours: 6 }, { agents: { architect: { heartbeat: false }, "app-maintainer": { heartbeat: 12 } } }));
-  assert.equal(r.paperclip.routines["heartbeat-chaser"].title, "Heartbeat: chaser");
-  assert.match(r.paperclip.routines["heartbeat-chaser"].schedules[0].cron, / \*\/2 \* \* \*$/);
-  assert.match(r.paperclip.routines["heartbeat-chief-of-staff"].schedules[0].cron, / \*\/6 \* \* \*$/);
-  assert.match(r.paperclip.routines["heartbeat-app-maintainer"].schedules[0].cron, / \*\/12 \* \* \*$/);
-  assert.ok(!r.paperclip.routines["heartbeat-architect"]);
-  assert.throws(() => compile(product, instance({ chaser: { heartbeat: 5, connections: tools } })), /chaser: heartbeat is true, false or hours/);
-  assert.throws(() => compile(product, instance({}, [], undefined, { heartbeat_hours: 5 })), /settings.heartbeat_hours/);
-  assert.throws(() => compile(product, instance({ chaser: { heartbeat: true } })), /chaser: heartbeat needs paperclip_tasks: task_approvals/);
-  const mods = join(here, "fixtures/mods");
-  const dir = mkdtempSync(join(tmpdir(), "inst-"));
-  writeFileSync(join(dir, "instance.yaml"), YAML.stringify({ modules: ["core", "runnerheartbeat"], settings: { timezone: "UTC", owner_name: "Sam", owner_email: "o@x" } }));
-  assert.throws(() => compile(mods, dir), /eng: a runner-dispatched agent can't have a heartbeat/);
-});

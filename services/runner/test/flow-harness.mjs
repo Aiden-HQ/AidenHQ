@@ -1,11 +1,12 @@
 // Shared by the flow-*.test.mjs files (one conversation each, so node runs them side by side): the real runner
-// (src/main.mjs) as a child process, talking to a fake Paperclip, with fake engines (test/fakes: bwrap, codex,
-// claude, gh) and local repositories for GitHub. Its jobs run in the kernel's job half (kernel/test/fixtures/jobs-host.mjs,
-// the real kernel/src/jobs.ts in its own process), which the fake Paperclip's /v1/jobs routes lead to.
+// (src/main.mjs) as a child process, talking to a fake Paperclip, with fakes (test/fakes: codex and the agent behind it, gh)
+// and local repositories for GitHub. Its jobs run in the kernel's job half (kernel/test/fixtures/jobs-host.mjs, the real
+// kernel/src/jobs.ts in its own process), which the fake Paperclip's /v1/jobs routes lead to, each in a box from a fake
+// launcher (jobLauncher) that the stand-in docker runs on the host, with the real engine (engine-codex, codex-openrouter).
 import { before, after } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync, spawn } from "node:child_process";
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { Readable } from "node:stream";
 import { tmpdir } from "node:os";
@@ -26,6 +27,63 @@ import { asApproval } from "../src/cards.ts";
 
 const RUNNER = join(import.meta.dirname, "../src/main.mjs");
 const JOBS_HOST = join(import.meta.dirname, "../../../kernel/test/fixtures/jobs-host.mjs");
+const DOCKER = join(import.meta.dirname, "../../../kernel/test/fixtures/docker.mjs");
+const ROOT = join(import.meta.dirname, "../../..");
+
+/**
+ * The computer launcher's job routes (bearer computers_runner_key = "runner-key"), as the runner sees them, for every job's box:
+ * each box is its env file and a record beside it under `jobsDir` (the stand-in docker, kernel/test/fixtures/docker.mjs, runs
+ * the engine on the host from it), and the launcher's own record in jobs.json, which the kernel checks a job against. The env
+ * file carries what the real one does (the run token, the helper as AIDENHQ_REPO_URL, the commit identity, the Codex home) and
+ * `env` (the fakes' settings, a PATH with the fakes first). `opts`: `failJob` (a 500), `survive` (releases answering
+ * "running"), `die` (the box is gone when the job runs).
+ */
+export function jobLauncher(jobsDir, env = {}) {
+  const calls = [];
+  const opts = { failJob: false, survive: 0, die: false };
+  const goneAt = new Map();
+  let n = 0;
+  const server = createServer(async (req, res) => {
+    let raw = "";
+    for await (const c of req) raw += c;
+    const body = JSON.parse(raw || "{}");
+    const send = (status, json) => res.writeHead(status, { "content-type": "application/json" }).end(JSON.stringify(json));
+    if (req.headers.authorization !== "Bearer runner-key") return send(401, { error: "unauthorized" });
+    calls.push({ route: req.url, body, at: Date.now() });
+    const file = (c) => join(jobsDir, `${c}.box.json`);
+    if (req.url === "/job") {
+      if (opts.failJob) return send(500, { error: "docker run failed: no space left" });
+      mkdirSync(jobsDir, { recursive: true });
+      const container = `aidenhq-computer-t${++n}`;
+      const outDir = join(jobsDir, container);
+      mkdirSync(outDir, { recursive: true });
+      const engineDir = JSON.parse(readFileSync(join(env.AIDENHQ_CONFIG_DIR, "engines.json"), "utf8"))[body.engine]?.dir ?? "";
+      writeFileSync(file(container), JSON.stringify({ workspace: body.workspace, outDir, engineDir, die: opts.die }));
+      const id = body.identity ?? {};
+      const lines = { AIDENHQ_RUN_TOKEN: "ahqc_x", AIDENHQ_REPO_URL: `http://127.0.0.1:${body.helperPort}`, AIDENHQ_REPO_TOKEN: body.helperToken, AIDENHQ_TASK_WORKTREE: "/workspace", CODEX_HOME: body.state, GIT_AUTHOR_NAME: id.name, GIT_AUTHOR_EMAIL: id.email, GIT_COMMITTER_NAME: id.name, GIT_COMMITTER_EMAIL: id.email, GIT_CONFIG_COUNT: "2", GIT_CONFIG_KEY_0: "commit.gpgsign", GIT_CONFIG_VALUE_0: "false", GIT_CONFIG_KEY_1: "tag.gpgsign", GIT_CONFIG_VALUE_1: "false", ...Object.fromEntries(Object.entries(env).filter(([k]) => k === "PATH" || k === "HOME" || k.startsWith("FAKE_"))) };
+      writeFileSync(join(jobsDir, `${container}.env`), Object.entries(lines).filter(([, v]) => v).map(([k, v]) => `${k}=${v}`).join("\n") + "\n");
+      const recs = existsSync(join(jobsDir, "../jobs.json")) ? JSON.parse(readFileSync(join(jobsDir, "../jobs.json"), "utf8")) : [];
+      writeFileSync(join(jobsDir, "../jobs.json"), JSON.stringify([...recs, { container, agentId: body.agentId, issueId: body.issueId, workspace: body.workspace }]));
+      return send(200, { container, envFile: join(jobsDir, `${container}.env`), outDir });
+    }
+    const box = existsSync(file(body.container)) ? JSON.parse(readFileSync(file(body.container), "utf8")) : { gone: true };
+    if (req.url === "/job/renew") return box.gone ? send(404, { error: "box gone" }) : send(200, { container: body.container, issueId: body.issueId, workspace: box.workspace });
+    if (req.url === "/job/release") {
+      if (!box.gone && opts.survive > 0) return opts.survive--, send(200, { state: "running" });
+      if (!box.gone) writeFileSync(file(body.container), JSON.stringify({ ...box, gone: true }));
+      if (!goneAt.has(body.container)) goneAt.set(body.container, Date.now());
+      return send(200, { state: "missing" });
+    }
+    send(404, { error: "no such route" });
+  });
+  return { server, calls, opts, goneAt };
+}
+
+/** The stand-in `docker` in `bin`: the box records under `jobsDir` (a fast check's exec names only the container). */
+export function fakeDocker(bin, jobsDir) {
+  writeFileSync(join(bin, "docker"), `#!/bin/sh\nFAKE_BOXES="${jobsDir}" exec "${process.execPath}" "${DOCKER}" "$@"\n`);
+  chmodSync(join(bin, "docker"), 0o755);
+}
 
 /** The kernel's job half for a flow: its own process (a restart test kills and starts it again), over `db`. */
 export function jobsHost(env, db) {
@@ -103,6 +161,7 @@ export function fakePaperclip({ parent, part, engineers, parentComments = [], pa
   const passed = [];
   const attached = [];
   const unknown = [];
+  const ownerLines = []; // the owner's notices the runner queued on the board (POST /internal/owner/line)
   // The kernel's records for the runner's kinds: the real records, write lifecycle and backplane routes (kernel/src), with
   // the real reviewer module in the reviewer slot. `approvals` and `autos` are views of them as the board once kept them.
   const kdb = openRecords(join(mkdtempSync(join(tmpdir(), "flow-kernel-")), "kernel.db"));
@@ -332,6 +391,7 @@ export function fakePaperclip({ parent, part, engineers, parentComments = [], pa
     // The board's internal API: the runner's activity for the Crew view, and messages passed on.
     if (path.startsWith("/internal/")) {
       if (path.endsWith("/runner/activity")) activity.push(JSON.parse(body));
+      if (path === "/internal/owner/line") ownerLines.push(JSON.parse(body).text);
       if (path.endsWith("/pass")) {
         passed.push({ path, ...JSON.parse(body) });
         return send({ passed: true, to: "Alfred", part: "PEN-3" });
@@ -350,7 +410,7 @@ export function fakePaperclip({ parent, part, engineers, parentComments = [], pa
     assert.equal(typeof out, "object", String(out));
     return view(kdb.get(r.id));
   };
-  return { server, comments, patches, activity, held, passed, attached, unknown, addComment, approvals, records, autos, decide, kdb, kw, notices, issues, grades, gradeLog, graderCalls, graderAnswers, created, filings, runs, wakes, hang, failRead, failComment, refuseComment, refuseStart };
+  return { server, comments, patches, activity, held, passed, attached, unknown, ownerLines, addComment, approvals, records, autos, decide, kdb, kw, notices, issues, grades, gradeLog, graderCalls, graderAnswers, created, filings, runs, wakes, hang, failRead, failComment, refuseComment, refuseStart };
 }
 
 /**
@@ -358,7 +418,7 @@ export function fakePaperclip({ parent, part, engineers, parentComments = [], pa
  * environment; `runnerYaml`: more lines for config/runner.yaml.
  */
 export function flow({ parent: parentOver, part: partOver, alfredPart: alfredOver, siblings = [], grants, grades, partComments: partCommentsOver = [], env = {}, runnerYaml = "", replies = false, step: initialStep, computers = [], moreEngineers = [], onIssueCreated, ownerFallback = false, setup, refuseStart, kernelRepos = {} } = {}) {
-  let dir, runner, runnerEnv, paperclip, jobs, output = "";
+  let dir, runner, runnerEnv, paperclip, jobs, launcher, output = "";
   /** The kernel's job half (a test may stop it and start it again: a kernel restart). */
   const startJobs = () => (jobs = jobsHost(runnerEnv, join(dir, "kernel.db")));
   const startRunner = () => {
@@ -368,7 +428,7 @@ export function flow({ parent: parentOver, part: partOver, alfredPart: alfredOve
   };
   const fakeLog = () => readLog(join(dir, "fake.log"));
   const partComments = () => paperclip.comments.get("part").map((c) => c.body);
-  const claudeRuns = () => fakeLog().filter((e) => e.kind === "claude").map((e) => e.data);
+  const agentRuns = () => fakeLog().filter((e) => e.kind === "agent").map((e) => e.data);
   const toolRuns = () => fakeLog().filter((e) => e.kind === "tool").map((e) => e.data);
   const step = (text) => writeFileSync(join(dir, "claude-step"), text);
   const say = (text) => paperclip.addComment("part", text);
@@ -398,10 +458,11 @@ export function flow({ parent: parentOver, part: partOver, alfredPart: alfredOve
     const config = join(dir, "config");
     const secrets = join(dir, "secrets");
     const bin = join(dir, "bin");
-    for (const d of [home, config, secrets, bin, join(home, ".config/gcloud")]) mkdirSync(d, { recursive: true });
+    for (const d of [home, config, secrets, bin]) mkdirSync(d, { recursive: true });
 
-    // GitHub: bare repositories that git@github.com:<org>/<name>.git resolves to.
-    writeFileSync(join(home, ".gitconfig"), `[user]\n\tname = Test\n\temail = test@example.com\n[init]\n\tdefaultBranch = main\n[protocol "file"]\n\tallow = always\n[url "${join(dir, "github")}/"]\n\tinsteadOf = git@github.com:\n`);
+    // GitHub: bare repositories that git@github.com:<org>/<name>.git resolves to. No auto-maintenance: a real box's git dies
+    // with the box, but here the agent runs on the host and its detached gc would outlive the turn.
+    writeFileSync(join(home, ".gitconfig"), `[user]\n\tname = Test\n\temail = test@example.com\n[gc]\n\tauto = 0\n[maintenance]\n\tauto = false\n[init]\n\tdefaultBranch = main\n[protocol "file"]\n\tallow = always\n[url "${join(dir, "github")}/"]\n\tinsteadOf = git@github.com:\n`);
     for (const slug of ["acme/app", "acme/infra"]) {
       const src = join(dir, "src", slug);
       mkdirSync(src, { recursive: true });
@@ -416,11 +477,14 @@ export function flow({ parent: parentOver, part: partOver, alfredPart: alfredOve
     // nothing of the runner's environment reaches the engine or the bwrap it runs under.
     const fakeEnv = { FAKE_LOG: join(dir, "fake.log"), FAKE_STEP: join(dir, "claude-step"), ...Object.fromEntries(Object.entries(env).filter(([k]) => k.startsWith("FAKE_"))) };
     const exports = Object.entries(fakeEnv).map(([k, v]) => `export ${k}='${v}'\n`).join("");
-    for (const name of ["bwrap", "codex", "claude", "gh"]) {
-      writeFileSync(join(bin, name), name === "bwrap" || name === "codex" ? `#!/bin/sh\n${exports}exec "${join(FAKES, `${name}.sh`)}" "$@"\n` : `#!/bin/sh\n${exports}exec "${process.execPath}" "${join(FAKES, `${name}.mjs`)}" "$@"\n`);
+    for (const name of ["codex", "gh"]) {
+      writeFileSync(join(bin, name), name === "codex" ? `#!/bin/sh\n${exports}exec "${join(FAKES, `${name}.sh`)}" "$@"\n` : `#!/bin/sh\n${exports}exec "${process.execPath}" "${join(FAKES, `${name}.mjs`)}" "$@"\n`);
       chmodSync(join(bin, name), 0o755);
     }
+    // The host sandbox (the reviewer eval's, a fast check outside a job) and every job's box.
     fakeJail(bin, join(dir, "fake.log"));
+    const jobsDir = join(home, ".local/state/aidenhq-computers/jobs");
+    fakeDocker(bin, jobsDir);
 
     writeFileSync(join(config, "system.yaml"), `paperclip:\n  company_id: "${COMPANY}"\nuser:\n  names: ["Dana"]\n`);
     writeFileSync(join(config, "engines.json"), JSON.stringify(registry()));
@@ -435,11 +499,8 @@ state_dir: ${join(dir, "state")}
 max_concurrent: 1
 timeout_minutes: 2
 engines:
-  claude:
-    token_file: ${join(secrets, "claude_oauth_token")}
-    config_dir: ${join(dir, "state/claude")}
-gcp:
-  credentials: ${join(secrets, "gcloud/application_default_credentials.json")}
+  openrouter:
+    model: acme/model-1
 intake:
   codex_args: []
   timeout_seconds: 30
@@ -457,7 +518,7 @@ ${runnerYaml}`,
       writeFileSync(join(config, "grants", "grants.json"), JSON.stringify(grants));
     }
     writeFileSync(join(secrets, "paperclip_board_key"), "board-key\n", { mode: 0o600 });
-    writeFileSync(join(secrets, "claude_oauth_token"), "claude-token\n", { mode: 0o600 });
+    writeFileSync(join(secrets, "computers_runner_key"), "runner-key\n", { mode: 0o600 });
     writeFileSync(join(secrets, "board_internal_token"), "board-token\n", { mode: 0o600 });
     writeFileSync(join(secrets, "gateway_job_secret"), "job-secret\n", { mode: 0o600 });
     // The runner's own board key: the board returns a card's args only to it, as in production.
@@ -468,10 +529,11 @@ ${runnerYaml}`,
 
     // PEN-2713/PEN-2714: the repositories are on the user's task; Ada's part only says go.
     const engineers = [
-      { id: "engineer-claude", name: "Engineer · Claude", status: "idle", adapterType: "claude_local", adapterConfig: {}, metadata: { setupKey: "aidenhq:engineer-claude", runnerEngine: true, persona: { name: "Ada" }, privateReads: true } },
-      { id: "engineer-codex", name: "Engineer · Codex", status: "idle", adapterType: "codex_local", adapterConfig: {}, metadata: { setupKey: "aidenhq:engineer-codex", runnerEngine: true, persona: { name: "Grace" }, privateReads: true } },
-      // Setup marks every engine-run agent (dispatch: runner) runnerEngine: the kernel starts jobs only for those.
-      ...moreEngineers.map((a) => ({ ...a, metadata: { runnerEngine: true, ...a.metadata } })),
+      // Every Engineer runs its jobs in a computer (metadata.box), on Codex through OpenRouter.
+      { id: "engineer-claude", name: "Software Engineer", status: "idle", adapterType: "opencode_local", adapterConfig: { model: "openrouter/acme/model-1" }, metadata: { setupKey: "aidenhq:engineer-openrouter", runnerEngine: true, engine: "codex-openrouter", box: true, persona: { name: "Ada" }, privateReads: true, models: ["openrouter/acme/model-1", "openrouter/acme/model-2"] } },
+      { id: "engineer-codex", name: "Engineer · Grace", status: "idle", adapterType: "opencode_local", adapterConfig: { model: "openrouter/acme/model-2" }, metadata: { setupKey: "aidenhq:engineer-grace", runnerEngine: true, engine: "codex-openrouter", box: true, persona: { name: "Grace" }, privateReads: true } },
+      // Setup marks every engine-run agent (dispatch: runner) runnerEngine, and one with a computer box: the kernel starts jobs only for those.
+      ...moreEngineers.map((a) => ({ ...a, metadata: { runnerEngine: true, box: true, ...a.metadata } })),
     ];
     const parent = { id: "parent", identifier: "PEN-1", title: "Drop Legacy support", status: "todo", assigneeUserId: USER, createdByUserId: USER, createdByAgentId: null, labels: [], description: "Remove Legacy from these repos:\n\n- acme/app\n- acme/infra\n" };
     const part = { id: "part", identifier: "PEN-2", title: "Drop Legacy support", status: "todo", parentId: "parent", assigneeAgentId: "engineer-claude", assigneeUserId: null, createdByUserId: USER, createdByAgentId: null, labels: [], description: "Ada, go ahead and start this on dev please" };
@@ -493,6 +555,9 @@ ${runnerYaml}`,
     const url = `http://127.0.0.1:${paperclip.server.address().port}`;
 
     step(initialStep ?? "commit");
+    // The boxes' env: the fakes first, then the agents' own commands (/opt/aidenhq/bin in a real box).
+    launcher = jobLauncher(jobsDir, { AIDENHQ_CONFIG_DIR: config, PATH: `${bin}:${join(ROOT, "services/runner/bin")}:${dirname(process.execPath)}:/usr/bin:/bin`, HOME: home, ...fakeEnv });
+    await new Promise((r) => launcher.server.listen(0, "127.0.0.1", r));
     runnerEnv = {
         PATH: `${bin}:${dirname(process.execPath)}:/usr/bin:/bin:${process.env.PATH}`,
         HOME: home,
@@ -507,6 +572,8 @@ ${runnerYaml}`,
         FAKE_LOG: join(dir, "fake.log"),
         FAKE_STEP: join(dir, "claude-step"),
         AIDENHQ_GRADER_URL: `${url}/grader`,
+        AIDENHQ_LAUNCHER_URL: `http://127.0.0.1:${launcher.server.address().port}`,
+        AIDENHQ_BOX_RELEASE_RETRY_MS: "50",
         ...env,
     };
     // Fixtures a scenario needs before the first poll: GitHub's PRs (github-prs.json) or the runner's own state rows.
@@ -520,6 +587,7 @@ ${runnerYaml}`,
     runner?.kill("SIGKILL");
     await Promise.all([runnerGone, jobs?.stop()]);
     paperclip?.server.close();
+    launcher?.server.close();
     // A job the runner left going (jobs are detached) may still be writing here: retried, so a failed flow ends instead of
     // throwing here and skipping the file's later after hooks (a server left listening keeps the process alive).
     if (dir) rmSync(dir, { recursive: true, force: true, maxRetries: 10 });
@@ -565,6 +633,9 @@ ${runnerYaml}`,
     get output() {
       return output;
     },
-    startRunner, startJobs, fakeLog, partComments, claudeRuns, toolRuns, step, say, context, waitFor, reviews, starts, turn, githubTip, running, settled, publish, release, idle, noErrors,
+    get launcher() {
+      return launcher;
+    },
+    startRunner, startJobs, fakeLog, partComments, agentRuns, toolRuns, step, say, context, waitFor, reviews, starts, turn, githubTip, running, settled, publish, release, idle, noErrors,
   };
 }

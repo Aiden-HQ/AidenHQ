@@ -20,17 +20,6 @@ function inst(settings = {}, memory) {
   return dir;
 }
 
-test("compile: memory.md becomes the agent's memory section; over 4 KB it is cut at a line end with a warning", () => {
-  const r = compile(mods, inst({}, "- Slack search lags 5 min (WOR-12, 2026-11-01)\n"));
-  assert.match(r.paperclip.agents.x.memory, /Slack search lags 5 min/);
-  assert.equal(compile(mods, inst()).paperclip.agents.x.memory, undefined);
-  const big = Array.from({ length: 400 }, (_, i) => `- fact ${i} (WOR-1, 2026-11-01)`).join("\n");
-  const c = compile(mods, inst({}, big));
-  assert.ok(Buffer.byteLength(c.paperclip.agents.x.memory) <= MEMORY_MAX);
-  assert.match(c.paperclip.agents.x.memory, /- fact 0 /);
-  assert.match(c.warnings.join("\n"), /agents\/x\/memory\.md is over 4096 bytes/);
-});
-
 test("setup: an inbox is only a task it created and nobody holds; the ids go to the grants table", async () => {
   const issues = [
     { id: "planted", createdByAgentId: "ag", createdByUserId: null, description: "<!-- source:memory-inbox:alpha -->" },

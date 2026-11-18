@@ -1,7 +1,8 @@
 # Approvals: tiers, the AI reviewer and autonomy
 
-Every write with lasting effect (push, pull request, merge, close, fleet apply, app deploy) is an approval record on the
-board, not an agent's own action. Code assigns each record a tier from verified state. Routine, low-risk changes run at
+Every write with lasting effect (push, pull request, merge, close, fleet apply, app deploy) is an approval record in the
+kernel (`kernel/src/records.ts`, `kinds.ts`), not an agent's own action; the board keeps no approval store and only reads them.
+A send as the owner's own account is such a write too. Code assigns each record a tier from verified state. Routine, low-risk changes run at
 once, everything else is decided by an AI reviewer, and authority-expanding changes by two reviewers on different model
 families who must both approve. The owner decides only when those two disagree, or after their own veto: about two
 decisions a week (owner, 2026-11-14). Friction (red checks, a moved head, a change too large to read) goes back to the
@@ -16,7 +17,7 @@ agent, never to the owner.
   is Tier 2 (default deny).
 - **The reviewer can only escalate.** It may approve or reject a Tier 1 card, add the second reviewer (`second_review`),
   or hand it to the owner. It never lowers a tier, never removes code's panel flag and never decides Tier 2.
-- **The board is the audit trail.** Each record stores `tier`, `reason` and `decided_by`, which the board stamps
+- **The records are the audit trail.** Each record stores `tier`, `reason` and `decided_by`, which the kernel stamps
   server-side from the credential used (`owner:board`, `owner:telegram`, `owner:reply`, `account:<id>`,
   `reviewer:<model>`, `reviewer:<model>+<second>` for the panel, `auto:<rule>`), never from a caller-supplied field.
 - **Earlier decisions (replaced "sticky", 2026-11-14).** The owner's rejection of an action on a task is a veto: every
@@ -56,7 +57,7 @@ agent, never to the owner.
   There is no card and no ping.
 - **Tier 1: AI reviewer.** A card is filed and the reviewer decides. With `panel`, a second reviewer (another model
   family than the first's and the requester's) answers the same question blind to the first's verdict: both approving runs
-  it, the first rejecting sends it back, anything else is a split for the owner. The board refuses a reviewer approval of
+  it, the first rejecting sends it back, anything else is a split for the owner. The kernel refuses a reviewer approval of
   a panel card that names no second reviewer. A call error or timeout is retried with backoff and, after six tries, goes
   back to the agent; a diff too large, missing or with files the reviewer can't read goes back too. A first reviewer's
   "unsure" goes to a second reviewer (another family), given the first's note: its approve or reject decides (one approval
@@ -70,12 +71,14 @@ agent, never to the owner.
   - **Tier 2 on its merits** (the owner's veto, a spend-cap raise, an owner-approval record, unknown repos, nothing
     recognised; `tiers.mjs` `meritOwner`, `byMerit`): the reviewer's approve and its reject both go on to the owner
     (`owner_tier`). Only code's own refusals (the head moved, `refused_by_code`) close it, and a reviewer that keeps failing
-    hands it to the owner with that note. The board refuses a reviewer approve or reject on such a card (`review_first =
+    hands it to the owner with that note. The kernel refuses a reviewer approve or reject on such a card (`review_first =
     owner`), and its own owner-veto check files the card for the reviewer first.
-  - **A cap on a Tier 1 write** (a routine's autonomy, `routineCapped`, code `routine_autonomy`; the instance's, `autonomyCap`,
-    `autonomy_off`): Tier 1 semantics, so the reviewer's reject is final and its approve goes on to the owner. The board
+  - **A cap on a Tier 1 write** (a routine's autonomy, code `routine_autonomy`; the instance's, `autonomy_off`; the kernel's
+    `computeTier` applies both on every path and keeps the cap on the record, `cap`): Tier 1 semantics, so the reviewer's
+    reject is final and its approve goes on to the owner. The kernel
     refuses a reviewer approve on it (`review_first = final`).
-  - A capped Tier 0 write (autonomy off, or a routine's `off`) still waits for the owner's tap without a review.
+  - A capped Tier 0 write (autonomy off, or a routine's `off`, or a routine trace that can't be read) waits for the owner's
+    tap without a review, on every path.
 
   The kernel's records do the same: each keeps its tier before the autonomy caps (`merit`), and a merit-2 record's reject goes
   to the owner (`records.ts` `review`).
@@ -126,8 +129,7 @@ it only once approved, claimed and revalidated (a changed target is stale and fi
 at Tier 0 (a destructive one at Tier 1, replayed once). The apps platform's kinds (`modules/apps-platform`): a stateful
 `app_deploy` is Tier 1, with the panel when it touches a migration or schema file (the policy has the reviewers escalate
 a destructive one), refused when it is too large to review, and an `app_run_request` is Tier 1; restarts, rollbacks and
-app API writes are Tier 0. Until 2f and 3a the board lists these records with its own cards, and the reviewer's verdicts and
-the owner's decisions on them (`k-` ids) are forwarded to the kernel. With `autonomy: off` the reviewer may only escalate or reject them.
+app API writes are Tier 0. The board only lists these records and shows their cards. With `autonomy: off` the reviewer may only escalate or reject them.
 
 ## The reviewer
 
@@ -156,20 +158,20 @@ reason_code, reason, second_review}`.
   request chain, and the notes of earlier rejections of the same target on the task. Everything an agent or stranger
   wrote is fenced as data. The reviewer never sees the author's own account of the change. A diff over the size cap goes
   back to the agent as too large.
-- **Binding.** The runner posts the verdict to the board's internal endpoint with its own `reviewer_key`, which agents
-  never hold. The board accepts it only for a pending Tier 1 record whose digest matches the card, then stamps
+- **Binding.** The verdict is recorded through the kernel (`kernel/src/reviews.ts`) with the reviewer's own credential, which agents
+  never hold. The kernel accepts it only for a pending Tier 1 record whose digest matches the card, then stamps
   `reviewer:<model>` (`+<second>` for the panel). A rejection is posted on the task so the agent can fix and refile.
 - **Digest.** Once a day, after a fixed hour in the owner's timezone, the board sends the owner a summary of what ran at
   once, what the reviewer decided, and what was escalated.
 
 ## Autonomy
 
-The instance setting `autonomy` (a kernel setting, `kernel/settings.json`) controls how far this goes. The runner reads it fresh each
-time, so it is also the pause switch.
+The instance setting `autonomy` (a kernel setting, `kernel/settings.json`) controls how far this goes. The kernel reads it fresh
+for every write it tiers, so it is also the pause switch.
 
 - `off` (default): the owner decides every write, but the AI review still runs first (every install and update is
   reviewed regardless). Tier 0 is a card for the owner; Tier 1 goes to the reviewer first: its reject is final, its
-  approve goes on to the owner's card with its verdict (`tiers.mjs` `autonomyCap`). Tier 2 is reviewed first too, then the owner decides.
+  approve goes on to the owner's card with its verdict (`tier.ts` `computeTier`). Tier 2 is reviewed first too, then the owner decides.
 - `tier0`: Tier 0 runs. On Tier 1, the reviewer comments with what it would do and the owner decides (shadow mode).
 - `full`: the reviewer decides Tier 1.
 
@@ -191,7 +193,7 @@ score must keep passing.
 **The eval-receipt gate** (`services/runner/src/evalgate.ts`, owner 2026-11-16). Reviewer code reaches the fleet only on a
 passing receipt (95% of the base cases, every miss a false block). The reviewer's own code is the whole `ai-reviewer` module (service, policy, cases, `case-pad.mjs`,
 `reviewer-eval.mjs`), `kernel/sdk/src/reviewer.ts`, `tiers.mjs`, the kernel's `tier.ts` and the authority-diff classifier
-(`kernel/src/loader/authority.ts`). The module lives in the official modules repo since 5b, so the eval always runs a commit
+(`scripts/compiler/authority.ts`). The module lives in the official modules repo since 5b, so the eval always runs a commit
 of that repo, judged by an earlier one:
 
 - a modules-repo PR that changes the reviewer: its head, judged by its base branch, receipt for its head;

@@ -5,7 +5,7 @@ import { join, sep } from "node:path";
 import { section } from "./prompts.mjs";
 import { frontmatter, sourcesSection } from "./modules.mjs";
 import { computerSection } from "./computers.mjs";
-import { defaultCache } from "../kernel/src/loader/sources.ts";
+import { defaultCache } from "./compiler/sources.ts";
 
 /** A file that must resolve (symlinks followed) inside dir; anything else throws. */
 export function readInside(dir, path, what) {
@@ -55,7 +55,7 @@ export function personaOf(key, a) {
 
 /**
  * What a woken agent with a persona learns about itself and the Engineers: its name and voice (tone only), and which engine
- * each Engineer's name stands for, so "ask Ada" maps onto task_create_engineer_task. `engines`: config/engines.json.
+ * each Engineer's name stands for, so "ask Ada" maps onto delegating to that Engineer. `engines`: config/engines.json.
  */
 function personaSection(cfg, engines, key, a) {
   const me = personaOf(key, a);
@@ -75,7 +75,7 @@ On the user's board you are ${me.name}. Voice: ${me.voice} The voice sets your t
 }
 
 // The sections setup itself writes into every crew agent's handbook, ahead of the modules' prompt contributions:
-// Approvals is the kernel's; How we build (engineering), the web and the app follow-up (apps-platform) leave with their units.
+// Approvals is the kernel's; the web and the app follow-up (apps-platform) leave with their units.
 // Every agent's one rule for what it reads (tools, messages, documents, quoted text): data, never instructions.
 const UNTRUSTED_SECTION = section("untrusted");
 // The words every agent uses with one meaning, and the shape of a handoff and its report.
@@ -94,10 +94,6 @@ const profileSection = (cfg) => (cfg.owner_profile ? `${section("profile")}\n${c
 const WEB_SECTION = section("web");
 // Agents kept asking for approval through Paperclip's own mechanism, which the owner never sees (approval cards are the only one).
 const APPROVALS_SECTION = section("approvals");
-// How the builders build (owner interview, 2026-11-15): nudges, said positively. Builders are the agents with `builder: true`
-// (the Architect, the DevOps Engineer, the UI/UX Designer, the UI Reviewer); the runner's Engineers get the section through
-// their metadata (`build`) in the job prompt (services/runner/src/prompt.ts).
-export const HOW_WE_BUILD_SECTION = section("how-we-build");
 // The owning agent checks its app change live, an hour and a day after it deploys (owner, 2026-11-15): for agents that own
 // apps and can wake themselves later (app_logs and wake_at).
 const appFollowupSection = (a) => (a.enabled_tools?.apps?.includes("app_logs") && a.enabled_tools?.chat_lane?.includes("wake_at") ? section("app-followup", "") : "");
@@ -108,6 +104,7 @@ function sectionText(cfg, a, id, { repo, fleetIssues }) {
   if (body.includes("{{fleet_issues}}") && !fleetIssues) throw new Error(`section ${id}: the Fleet issues task is missing`);
   return body.replaceAll("{{fleet_issues}}", fleetIssues).replace("{{memory}}", () => a.memory ?? "");
 }
+// deleted at the one-way big switch (crew read skills natively in computers)
 const onDemand = (cfg, id) => cfg.prompts?.[id]?.load === "on_demand";
 
 /**
@@ -130,6 +127,9 @@ function indexSection(cfg, a) {
   return `${section("on-demand", "\n")}${ids.map((id) => `- \`${id}\`: ${cfg.prompts[id].summary}`).join("\n")}\n`;
 }
 
+/** The skills compile resolved for an agent (its `skills:` ids), with each one's folder: what a job's engine home gets. */
+export const agentSkills = (cfg, key) => (cfg.agents?.[key]?.skills ?? []).map((id) => ({ id, dir: cfg.skills[id].dir }));
+
 /** An agent's whole handbook as [id, text] parts, in the order setup writes them. */
 export function handbookParts(cfg, key, a, { repo, instanceDir, engines = {}, fleetIssues }) {
   const codex = a.adapter === "codex_local";
@@ -143,7 +143,6 @@ export function handbookParts(cfg, key, a, { repo, instanceDir, engines = {}, fl
     ["outcomes", codex ? outcomesSection(cfg) : ""],
     ["handoff", codex ? HANDOFF_SECTION : ""],
     ["approvals", codex ? APPROVALS_SECTION : ""],
-    ["how-we-build", codex && a.builder === true ? HOW_WE_BUILD_SECTION : ""],
     ["web", !codex ? "" : a.web_search === "disabled" ? WEB_SECTION.replace("You have live web search, `web_view`", "You have `web_view`") : WEB_SECTION],
     ["app-followup", codex ? appFollowupSection(a) : ""],
     ["sources", sourcesSection(a, cfg.mcp_servers ?? {})],
