@@ -1728,11 +1728,13 @@ function gradeDeps(issue) {
           ? "its merges are still running"
           : "",
     approvals: () => recordsOn(issue),
-    // The task's own branches' PRs; a task with none (an agent that handed the code to an Engineer) has its delegated
-    // tasks' instead, still from this runner's own rows, never a comment. Cancelled delegations are not its work.
+    // The task's own branches' PRs; a task with none (an agent that handed the code to an Engineer) has those of the tasks
+    // its own agent delegated under it instead (created by that agent, not by anyone else filing a child onto it), still
+    // from this runner's own rows, never a comment. Cancelled delegations are not its work.
     taskPrs: async () => {
       let rows = state.branches(issue.id);
-      if (!rows.length) rows = (await pc.children(issue.id, ALL_STATUSES)).filter((c) => c.status !== "cancelled").flatMap((c) => state.branches(c.id));
+      const delegated = (c) => isAgentSubtask(c) && Boolean(issue.assigneeAgentId) && c.createdByAgentId === issue.assigneeAgentId && c.status !== "cancelled";
+      if (!rows.length) rows = (await pc.children(issue.id, ALL_STATUSES)).filter(delegated).flatMap((c) => state.branches(c.id));
       return prQueue.findPrs(rows.map((b) => b.pr_url).filter(Boolean).join("\n"));
     },
     // The PRs this task's own runner records tie to it when no branch row does: its merge queue for the task, the merges it was
