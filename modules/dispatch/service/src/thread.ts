@@ -3,6 +3,7 @@
 // asker's and the chief of staff's (role fleet-admin in the grants table, never Paperclip metadata) start work as an agent's
 // request; any other agent's comment starts nothing and is told, once, whom to ask.
 import { dataBlock as fence } from "./aidenhq-sdk/fence.ts";
+import { forOthers } from "./aidenhq-sdk/for-others.ts";
 
 /** The kernel's posts for a job (outcomes): its own words on the task, which wake nobody. */
 export const SELF_TAG = /<!-- aidenhq:job=/;
@@ -49,12 +50,12 @@ export const spoke = (comments: Comment[], t: Issue) => comments.some((c) => (c.
 /**
  * Whose words a comment is: "owner" (his own, typed or through his key, never a post of ours), "agent" (an agent's request:
  * the asker's or the chief of staff's, on a task an agent made), "notice" (a module's labelled wake notice, kernel POST
- * /v1/wakes: it wakes the agent, never as the owner's words), "ours" (nothing to act on), or "other" (any other agent: it
+ * /v1/wakes, or a comment a bridge posted for someone else: it wakes the agent, never as the owner's words), "ours" (nothing to act on), or "other" (any other agent: it
  * starts nothing).
  */
 export function speaker(c: Comment, t: Issue, dir: Directory): "owner" | "agent" | "notice" | "ours" | "other" {
   if (ours(c, t)) return "ours";
-  if (c.authorType !== "agent") return String(c.body ?? "").includes(WAKE_NOTICE) ? "notice" : "owner";
+  if (c.authorType !== "agent") return String(c.body ?? "").includes(WAKE_NOTICE) || forOthers(c.body) ? "notice" : "owner";
   return agentMade(t) && (c.authorAgentId === t.createdByAgentId || isChiefOfStaff(dir, c.authorAgentId)) ? "agent" : "other";
 }
 
@@ -96,7 +97,7 @@ export function threadEntries(comments: Comment[], t: Issue, { owner, agents, sk
     else if (c.authorType === "agent") {
       const a = agents.get(c.authorAgentId ?? "");
       out.push({ kind: "agent", who: a?.metadata?.persona?.name || a?.name || "Another agent", at: c.createdAt, body });
-    } else if (raw.includes(WAKE_NOTICE)) out.push({ kind: "notice", who: "Wake notice", at: c.createdAt, body });
+    } else if (raw.includes(WAKE_NOTICE) || forOthers(raw)) out.push({ kind: "notice", who: "Notice", at: c.createdAt, body });
     else if (raw.includes(RUNNER_MARKER)) out.push({ kind: "runner", who: "Runner", at: c.createdAt, body });
     else out.push({ kind: "user", who: owner, at: c.createdAt, body });
   }

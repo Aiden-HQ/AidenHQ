@@ -7,6 +7,7 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { modelTools } from "./models.mjs";
+import { forOthers } from "./aidenhq-sdk/for-others.ts";
 
 const KERNEL = (process.env.AIDENHQ_KERNEL_URL || "http://10.231.0.1:3130").replace(/\/$/, "");
 const fileSecret = (f) => {
@@ -1034,15 +1035,17 @@ const TOOLS = {
       return {
         comments: live.map((c, n) => {
           const runner = /<!-- aidenhq-runner -->/.test(c.body ?? "");
+          // Posted with the owner's key for someone else (a colleague's Slack mention): never the owner's instruction.
+          const relayed = forOthers(c.body);
           const from = /<!-- aidenhq-from:([A-Z][A-Z0-9]*-\d+)/.exec(c.body ?? "")?.[1];
           return {
             id: c.id,
-            author: c.authorType === "user" ? (runner ? "agent" : "user") : c.authorType,
+            author: c.authorType === "user" ? (runner ? "agent" : relayed ? "system" : "user") : c.authorType,
             ...(names[n] ? { who: names[n] } : {}),
             // The author's key (the directory, by Paperclip agent id): names and metadata can be edited, this can't.
             ...(c.authorType === "agent" && dirAgents()[c.authorAgentId]?.key ? { agent_key: dirAgents()[c.authorAgentId].key } : {}),
             ...(from ? { from } : {}),
-            from_aidenhq: runner || c.authorType !== "user",
+            from_aidenhq: runner || relayed || c.authorType !== "user",
             createdAt: c.createdAt,
             body: clip(String(c.body ?? "").replace(/<!--[\s\S]*?-->/g, "").trim(), comment ? 8000 : READ_COMMENT_MAX, "call task_comments with `comment` set to this id for the full text"),
           };

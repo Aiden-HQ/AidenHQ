@@ -4,6 +4,7 @@
 import { createHash } from "node:crypto";
 import { GATE_CHECK, RUNNER_MARKER, findPrs, namedChecks, skippedImageScan, staleHead } from "./compat.ts";
 import { MAX_DIFF } from "../aidenhq-sdk/judge.ts";
+import { forOthers } from "../aidenhq-sdk/for-others.ts";
 import { downscalePng, imageInfo, pngStamp, type ImageInfo } from "./images.ts";
 
 /** Marks the grader's own notes on a task, so they never count as the deliverable's evidence. */
@@ -454,10 +455,12 @@ export async function wordsEvidence(deps: any, rubric: string[] = []): Promise<a
   const comments = all.slice(-NEWEST);
   const own = (c: any) => String(c.body ?? "").includes(RUNNER_MARKER) || (deps.assignee ? c.authorAgentId === deps.assignee : c.authorType === "agent");
   // The delegator is the task's creator: an agent's id for an agent-authored task, else the user's. The runner's own
-  // comments carry its marker and are never the delegator's words, whatever user id it posts under.
+  // comments carry its marker and are never the delegator's words, whatever user id it posts under; nor is a comment posted
+  // for someone else.
   const delegator = (c: any) =>
     Boolean(deps.delegator?.agentId || deps.delegator?.userId) &&
     !String(c.body ?? "").includes(RUNNER_MARKER) &&
+    !forOthers(c.body) &&
     (c.authorAgentId ? c.authorAgentId === deps.delegator.agentId : c.authorType === "user" && c.authorUserId === deps.delegator.userId);
   const who = (c: any) => (delegator(c) ? "the task's delegator" : own(c) ? "the task's agent" : "someone else");
   const picked = pickComments(all, own, rubric.join("\n"), delegator, who);
