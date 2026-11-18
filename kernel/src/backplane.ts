@@ -3,7 +3,7 @@
 //   GET  /healthz              ok
 //   GET  /v1/jwks              the caller-assertion keys
 //   GET  /v1/whoami            (run, job or module token) who the bearer is and its granted tools
-//   GET  /v1/agents            (module token) every agent's key, roles and the fields setup records for it, never its tools
+//   GET  /v1/agents            (module token) every agent's key, roles, profile and the fields setup records for it, never its tools
 //   POST /c/<connection>/mcp   (run or module token) the tool proxy (proxy.ts)
 //   ANY  /v1/cp/agent/<path>   (module token + caller assertion) cp.ts; a status change to done passes the finish gate
 //   POST /v1/finish            (the runner's key) the finish gate for one of the runner's own closes (checks.ts)
@@ -68,7 +68,7 @@ import { CONN_TOOL, type Writes } from "./writes.ts";
 const MAX_ATTACHMENT = 25 * 1024 * 1024;
 type Handler = (req: IncomingMessage, res: ServerResponse, ...a: string[]) => Promise<void>;
 /** Directory fields a module may read; everything else in the grants table (tools, models, caps, images) stays here. */
-const DIRECTORY = ["key", "roles", "trial", "description", "delegate_to", "memory_inbox", "review_log", "graded", "feedback_for"];
+const DIRECTORY = ["key", "roles", "profile", "trial", "description", "delegate_to", "memory_inbox", "review_log", "graded", "feedback_for"];
 
 /** What the listener serves: the router dispatches from this table and scripts/lean/contract-lock.mjs reads it, so the lock can't miss a route. */
 export const ROUTES = [

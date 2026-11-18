@@ -8,7 +8,7 @@ import { kernel, moduleServer } from "./helpers.mjs";
 const conn = (url, module, tools, extra = {}) => ({ url: `${url}/mcp`, auth_secret: `${module}_service_key`, module, returns: "untrusted", tools: { read: [], write: [], destructive: [], ...tools }, ...extra });
 const secrets = { docs_service_key: "docs-key", other_service_key: "other-key" };
 const agents = { "run-jwt-ada": { id: "ag-ada", name: "Ada" }, "agent-key-bo": { id: "ag-bo", name: "Bo" } };
-const grants = { "ag-ada": { key: "ada", roles: ["writer"], tools: { docs: ["doc_read", "doc_write"] } }, "ag-bo": { key: "bo", roles: [], trial: true, tools: { docs: ["doc_read"] } } };
+const grants = { "ag-ada": { key: "ada", roles: ["writer"], profile: "engineer", tools: { docs: ["doc_read", "doc_write"] } }, "ag-bo": { key: "bo", roles: [], trial: true, tools: { docs: ["doc_read"] } } };
 
 test("the proxy: grants, listing, the service key, assertions, fencing", async (t) => {
   let hold;
@@ -106,7 +106,7 @@ test("A5: a module token without services.grants cannot call another connection;
   assert.deepEqual((await r.json()).error, { code: -32602, message: "no-grant" });
   assert.equal(docs.seen.filter((s) => s.method === "tools/call").length, 0);
   const dir = await fetch(`${k.url}/v1/agents`, { headers: { authorization: "Bearer other-key" } }).then((x) => x.json());
-  assert.deepEqual(dir, { agents: { "ag-ada": { key: "ada", roles: ["writer"] }, "ag-bo": { key: "bo", roles: [], trial: true } }, settings: { coach: "off", agents_org: "acme" } });
+  assert.deepEqual(dir, { agents: { "ag-ada": { key: "ada", roles: ["writer"], profile: "engineer" }, "ag-bo": { key: "bo", roles: [], trial: true } }, settings: { coach: "off", agents_org: "acme" } });
   assert.equal((await fetch(`${k.url}/v1/agents`, { headers: { authorization: "Bearer run-jwt-ada" } })).status, 401);
   const me = await fetch(`${k.url}/v1/whoami`, { headers: { authorization: "Bearer run-jwt-ada" } }).then((x) => x.json());
   assert.deepEqual(me, { kind: "run", agent: "ag-ada", roles: ["writer"], tools: { docs: ["doc_read", "doc_write"] } });
