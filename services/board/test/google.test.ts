@@ -64,16 +64,14 @@ describe("reconnect routes", () => {
     expect((await get(`${localBase}/google/connect`, "evil.example")).status).toBe(403);
   });
 
-  it("finishes the sign-in and returns to the board, or explains (escaped) why not", async () => {
+  it("finishes the sign-in and returns to the board, or to its page with why not", async () => {
     const ok = await get(`${localBase}/google/callback?state=s&code=good`, "127.0.0.1:3121");
     expect(ok).toMatchObject({ status: 302, location: "/" });
     const bad = await get(`${localBase}/google/callback?state=s&code=bad`, "127.0.0.1:3121");
-    expect(bad.status).toBe(400);
-    expect(bad.body).toContain("signed in as &#60;b&#62;x@y.z");
-    expect(bad.body).not.toContain("<b>");
+    expect(bad).toMatchObject({ status: 302, location: expect.stringMatching(/^\/#\/connect\/google\?error=/) });
+    expect(new URLSearchParams(bad.location!.split("?")[1]).get("error")).toContain("signed in as <b>x@y.z</b>"); // the page shows it as text
     const denied = await get(`${localBase}/google/callback?state=s&error=access_denied`, "127.0.0.1:3121");
-    expect(denied.status).toBe(400);
-    expect(denied.body).toContain("access_denied");
+    expect(denied).toMatchObject({ status: 302, location: expect.stringContaining("access_denied") });
   });
 
   it("connects a new account from the owner's session at the board's https address", async () => {

@@ -7,7 +7,9 @@ import { McpAuth } from "../src/mcpauth.js";
 import type { Paperclip } from "../src/paperclip.js";
 import { Store } from "../src/store.js";
 
-// The owner picks what a vendor sign-in grants (owner, 2026-11-18): a proxy offering scopes gets a form first.
+// The owner picks what a vendor sign-in grants (owner, 2026-11-18): a proxy offering scopes sends the browser to the board's
+// picker (#/connect/<id>), which reads the offer from the API and comes back with a plain navigation (no form: the CSP
+// allows none, and a form posting to a path that redirects off-site is blocked by form-action).
 const seen: { path: string; body: unknown }[] = [];
 const acme = new McpAuth("Acme", "http://acme", "t", undefined, (async (u: string | URL, init?: RequestInit) => {
   const path = new URL(String(u)).pathname;
@@ -34,14 +36,20 @@ const get = (path: string) =>
     r.end();
   });
 
-it("asks which scopes to grant, the recommended ones ticked, then starts the sign-in with the owner's pick", async () => {
-  const form = await get("/acme/connect");
-  expect(form.status).toBe(200);
-  expect(form.csp).toContain("form-action 'self'");
-  expect(form.body).toContain('value="read:things" checked');
-  expect(form.body).toMatch(/value="write:things">/);
+it("asks which scopes to grant on the board's picker, then starts the sign-in with the owner's pick", async () => {
+  const first = await get("/acme/connect");
+  expect(first).toMatchObject({ status: 302, location: "/#/connect/acme" });
+  expect(first.csp).toContain("form-action 'none'");
+  expect(JSON.parse((await get("/api/sign-ins/acme")).body)).toEqual({ id: "acme", label: "Acme", connect: "/acme/connect", setup: null, scopes: { supported: ["read:things", "write:things"], recommended: ["read:things"] } });
   expect(seen.some((s) => s.path === "/auth/start")).toBe(false);
   const go = await get("/acme/connect?picked=1&scope=read%3Athings&scope=write%3Athings");
   expect(go).toMatchObject({ status: 302, location: "https://auth.example.com/authorize?state=s" });
   expect(seen.at(-1)).toEqual({ path: "/auth/start", body: { redirect_uri: "http://localhost:3121/acme/callback", scopes: ["read:things", "write:things"] } });
+});
+
+it("sends a failed sign-in back to the board's page for it, the reason in the address", async () => {
+  const denied = await get("/acme/callback?state=s&error=access_denied");
+  expect(denied.status).toBe(302);
+  expect(denied.location).toMatch(/^\/#\/connect\/acme\?error=/);
+  expect(new URLSearchParams(denied.location!.split("?")[1]).get("error")).toBe("Couldn't connect Acme: Acme didn't grant access (access_denied)");
 });
