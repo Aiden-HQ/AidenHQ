@@ -21,7 +21,8 @@
 //   GET  /v1/cp/read/<path>    (a channel, or a module with role kernel.cp-read) the control plane's read routes, as the owner
 //   POST /v1/brake/notify      (a channel, or the owner's router) may an agent message the owner about a task again (brake.ts)
 //   POST /v1/channel/exchange  (a module with role kernel.lane) a fast-lane turn written to its agent's chat task (lane.ts)
-//   POST /v1/notify            (the board's or the runner's key) a message for the owner, queued for the owner's router (notify.ts)
+//   POST /v1/notify            (the board's or the runner's key, or a module with role kernel.owner-notice) a message for the owner,
+//                              queued for the owner's router (notify.ts)
 //   GET  /v1/notify/take, POST /v1/notify/send  (the module with role kernel.notify) the queued owner messages, each once; one
 //                              message to a channel's transport
 //   POST /v1/wake              (a module with role kernel.wake) a labelled wake notice on a task, which wakes its agent
@@ -241,7 +242,8 @@ export function createBackplane({ whoami, asserter, proxy, cp, grantsFile, write
           return send(res, 200, resolved);
         }
         case "POST /v1/notify": {
-          if (!isBoard(req) && !isRunner(req)) throw fail(401, "unauthorized", "the board's or the runner's key is required");
+          // A module that tells the owner about its work (role kernel.owner-notice: the dispatch module's dead ends) queues too.
+          if (!isBoard(req) && !isRunner(req) && !(await whoami(bearer(req)).catch(() => undefined))?.roles?.includes("kernel.owner-notice")) throw fail(401, "unauthorized", "the board's or the runner's key, or a module with role kernel.owner-notice, is required");
           if (!notify) throw fail(503, "unavailable", "notify is off");
           notify.queue(notice(await json(req)));
           return send(res, 200, { queued: true });
