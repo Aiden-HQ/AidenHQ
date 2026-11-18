@@ -33,7 +33,7 @@ import { CrewPicker, Drawer } from "./Drawer";
 import { SetupFlow } from "./SetupFlow";
 import { Markdown, setSlackTeams } from "./markdown";
 import { BUCKETS, BUCKET_NAMES, type Board, type Bucket, type Card } from "./types";
-import { dayDate, matches } from "./util";
+import { dayDate, keepsSecureCookies, matches } from "./util";
 import { panelsOf } from "./sidebar";
 
 // Pages off the first screen load as their own chunks (warmed on hover and when the browser is idle: queries.ts).
@@ -586,7 +586,7 @@ export function App() {
   const mergeTargets = BUCKETS.flatMap((b) => items[b]).filter((c) => c.assignee === "me" && !c.recurring);
   const openChat = (identifier: string) => go(`#/c/${identifier}`);
   const tabs = TABS;
-  const panels = panelsOf(useQuery(QUERIES.apps, signInNeeded).data?.apps ?? []);
+  const panels = panelsOf(useQuery(QUERIES.apps, signInNeeded).data?.apps ?? [], keepsSecureCookies());
   const onBoard = view === "board";
   // A chat (or a settings category) open on a phone takes the whole screen (back arrow to the list).
   const chatFull = mobile && ((view === "chat" && route.kind === "chat") || (view === "settings" && route.kind === "settings" && route.cat !== null));

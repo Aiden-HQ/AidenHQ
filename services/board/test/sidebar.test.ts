@@ -43,4 +43,9 @@ describe("panelsOf", () => {
     ];
     expect(panelsOf(apps)).toEqual([{ name: "reading", label: "Reading list", url: "https://reading.example.com" }]);
   });
+  it("pins a local door only where the browser can sign in to it", () => {
+    const apps = [{ name: "notes", panel: "Notes", url: "http://notes.localhost:3130" }];
+    expect(panelsOf(apps)).toEqual([]);
+    expect(panelsOf(apps, true)).toEqual([{ name: "notes", label: "Notes", url: "http://notes.localhost:3130" }]);
+  });
 });
