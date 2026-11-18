@@ -35,7 +35,7 @@ function setup(trees, judge = () => ({ failed: [] })) {
   const snapshot = async (repo, ref, into) => {
     for (const [f, text] of Object.entries(trees[ref] ?? {})) (mkdirSync(dirname(join(into, f)), { recursive: true }), writeFileSync(join(into, f), text));
   };
-  const checks = createChecks({ db: new DatabaseSync(":memory:"), secret: () => "receipt-secret", box, snapshot, modelToken: (head) => mintToken("job-secret", { kind: "check", component: `eval:${head}` }), gatewayUrl: "http://gw", workDir: dir, log: () => {} });
+  const checks = createChecks({ db: new DatabaseSync(":memory:"), secret: () => "receipt-secret", box, snapshot: () => snapshot, modelToken: (head) => mintToken("job-secret", { kind: "check", component: `eval:${head}` }), gatewayUrl: "http://gw", workDir: dir, log: () => {} });
   const done = async (v) => { while (v.state === "running") v = await checks.get("codehost-github", v.id, { after: v.version, waitMs: 1000 }); return v; };
   return { checks, runs, done };
 }
@@ -53,7 +53,7 @@ test("checks: a receipt binds its head, run, judge and policy; the box gets no c
   // Once per head and spec: asking again is the same check.
   assert.equal(checks.start("codehost-github", { repo: "acme/app", head: A, run: "fast", spec: { base: B } }).id, v.id);
   // Exactly the allowlisted env: no GitHub, run or tool token, nothing of the kernel's own.
-  assert.deepEqual(Object.keys(runs[0].env).sort(), ["AIDENHQ_BASE", "CI", "HOME", "npm_config_audit", "npm_config_fund", "npm_config_update_notifier"]);
+  assert.deepEqual(Object.keys(runs[0].env).sort(), ["CI", "HOME", "npm_config_audit", "npm_config_fund", "npm_config_update_notifier"]);
   assert.equal(runs[0].image, "engineer");
 });
 

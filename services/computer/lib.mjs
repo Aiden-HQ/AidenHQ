@@ -224,8 +224,8 @@ export const tokenHash = (token) => createHash("sha256").update(String(token)).d
 
 export class Jobs {
   #by = new Map();
-  add(rec, now = Date.now()) {
-    this.#by.set(rec.container, { ...rec, leaseUntil: now + LEASE_MS });
+  add(rec, now = Date.now(), leaseMs = LEASE_MS) {
+    this.#by.set(rec.container, { ...rec, leaseUntil: now + leaseMs });
     return this.#by.get(rec.container);
   }
   get(container) { return this.#by.get(container); }
@@ -381,6 +381,17 @@ export function reapLapsed(jobs, tokens, now = Date.now()) {
 
 /** The job routes: only computers_runner_key (the runner) and launcher_kernel_key (the kernel) open them, and nothing else. */
 export const JOB_ROUTES = ["/job", "/job/renew", "/job/release"];
+/** The kernel's check boxes (kernel/src/checkbox.ts): only launcher_kernel_key opens it; /job/release ends one. */
+export const CHECK_ROUTES = ["/check"];
+
+/**
+ * A check box's bind mounts: the check's snapshot at /workspace (read-only for the reviewer eval), its out folder, and the
+ * product's own supply-chain checks read-only (the change under test can't edit the copy that judges it). Nothing else: no
+ * engine, no Codex home, no hooks, no `aidenhq` commands.
+ */
+export function checkMounts({ resolvConf, workspace, out, readOnly, supplyChain }) {
+  return [`${resolvConf}:/etc/resolv.conf:ro`, `${workspace}:/workspace${readOnly ? ":ro" : ""}`, `${out}:/aidenhq-out`, `${supplyChain}:/opt/aidenhq/supply-chain:ro`];
+}
 
 /**
  * Whether a control call's bearer opens its route: the runner's and the kernel's keys only the job routes, the board's
@@ -389,6 +400,7 @@ export const JOB_ROUTES = ["/job", "/job/renew", "/job/release"];
 export function controlAllowed(bearer, method, url, { plugin, runner, kernel, progress }) {
   if (method !== "POST" || !bearer) return false;
   if (JOB_ROUTES.includes(url)) return (Boolean(runner) && bearer === runner) || (Boolean(kernel) && bearer === kernel);
+  if (CHECK_ROUTES.includes(url)) return Boolean(kernel) && bearer === kernel;
   if (url === "/progress" && progress && bearer === progress) return true;
   return Boolean(plugin) && bearer === plugin;
 }

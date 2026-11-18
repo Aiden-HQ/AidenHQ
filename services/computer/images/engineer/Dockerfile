@@ -31,6 +31,16 @@ RUN case "$(dpkg --print-architecture)" in \
     && chmod +x /tmp/rustup-init && CARGO_HOME=/opt/rust/cargo /tmp/rustup-init -y --no-modify-path --profile minimal --default-toolchain 1.91.0 && rm /tmp/rustup-init \
     && chmod -R a+rX /opt/rust && /opt/rust/cargo/bin/rustc --version
 ENV PATH=/opt/rust/cargo/bin:$PATH
+# gitleaks 8.30.1 (released 2026-03-21, the version the product's CI runs): a check job's secret scan (kernel/src/checkjobs.ts).
+# Per-arch sha256 from the release's gitleaks_8.30.1_checksums.txt, checksummed before it is unpacked.
+RUN case "$(dpkg --print-architecture)" in \
+      amd64) arch=x64 sum=551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb ;; \
+      arm64) arch=arm64 sum=e4a487ee7ccd7d3a7f7ec08657610aa3606637dab924210b3aee62570fb4b080 ;; \
+    esac \
+    && curl -fsSLo /tmp/gl.tgz "https://github.com/gitleaks/gitleaks/releases/download/v8.30.1/gitleaks_8.30.1_linux_$arch.tar.gz" \
+    && echo "$sum  /tmp/gl.tgz" | sha256sum -c - \
+    && tar -xzf /tmp/gl.tgz -C /usr/local/bin gitleaks && rm /tmp/gl.tgz \
+    && gitleaks version
 # Global npm installs land in /usr/local (the node image's prefix), readable by all.
 # pnpm 10.34.9 (2026-10-25): its vendored tree carries tar 7.5.22 (GHSA-23hp-3jrh-7fpw fixed in 7.5.19), glob 10.5.0,
 # picomatch 4.0.7, brace-expansion 2.1.7, minimatch 9.0.9 and ip-address 10.7.4 (the 14 highs 10.20.0 had).
