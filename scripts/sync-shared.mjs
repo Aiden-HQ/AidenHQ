@@ -42,7 +42,7 @@ export const SHARED = {
     ...(f === "caller.ts" ? ["modules/grading/service/src"] : []),
   ].map((d) => `${d}/aidenhq-sdk/${f}`)])),
   // The executor side of write kinds (executor@1), in each module server that declares an executor.
-  "kernel/sdk/src/executor.ts": ["modules/apps-platform/apps-mcp/src/aidenhq-sdk/executor.ts", "modules/primer/connections/primer-mcp/src/aidenhq-sdk/executor.ts", "modules/channel-slack/connections/slack/src/aidenhq-sdk/executor.ts", "modules/hubspot/connections/hubspot-mcp/src/aidenhq-sdk/executor.ts"],
+  "kernel/sdk/src/executor.ts": ["modules/apps-platform/apps-mcp/src/aidenhq-sdk/executor.ts", "modules/primer/connections/primer-mcp/src/aidenhq-sdk/executor.ts", "modules/channel-slack/connections/slack/src/aidenhq-sdk/executor.ts", "modules/hubspot/connections/hubspot-mcp/src/aidenhq-sdk/executor.ts", "modules/codehost-github/service/src/aidenhq-sdk/executor.ts"],
   // The vendor connections' shared pass-through (owner, 2026-11-18: every connection exposes its vendor's whole MCP server),
   // whose canonical lives in the official modules (vendor-mcp/, not a module), in each vendor connection's src/vendor/.
   ...Object.fromEntries(["proxy.ts", "oauth.ts"].map((f) => [`modules/vendor-mcp/src/vendor/${f}`, ["glean/connections/glean-mcp", "grafana/connections/grafana-mcp", "hubspot/connections/hubspot-mcp", "jira/connections/jira-mcp", "primer/connections/primer-mcp", "slack/connections/slack-mcp"].map((d) => `modules/${d}/src/vendor/${f}`)])),

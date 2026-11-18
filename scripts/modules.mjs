@@ -3,6 +3,7 @@
 // nothing (scripts/compile.mjs writes). See docs/configuration.md.
 import { createHash, randomBytes } from "node:crypto";
 import { cpSync, existsSync, lstatSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
 import { dirname, join, relative, resolve, sep } from "node:path";
 import YAML from "yaml";
 import { validateImages } from "./computers.mjs";
@@ -15,6 +16,7 @@ import { checkout, forkBase, forksOf, hostFetch, marketplaceEntries, marketplace
 import { effective } from "../kernel/src/loader/release.ts";
 import { compilePoints } from "../kernel/src/loader/points.ts";
 import { gateMode } from "../kernel/src/gates.ts";
+import { officialRepo } from "./official-repo.mjs";
 
 const PROFILES = ["trusted", "untrusted", "code-exec"];
 // image: the agent's computer (scripts/computers.mjs); the instance turns it on or off per agent.
@@ -556,7 +558,18 @@ export function linkPairServices(flows, compose, serviceModule, networkModule) {
  * productDir holds modules/<name>/module.yaml; instanceDir holds instance.yaml, agents/<key>.md additions to a module
  * agent's handbook, and agents/<key>/ folders (agent.yaml + AGENTS.md): the instance's own agents.
  */
-export function compile(productDir, instanceDir, { revision, fetch = hostFetch(productDir), door } = {}) {
+/**
+ * The host's work_dir (config/runner.yaml, else the example's; ~ is the user's home): where the kernel keeps the job workspaces
+ * (kernel/src/sandbox-config.ts reads the same file the same way).
+ */
+export function hostWorkDir(productDir, env = process.env) {
+  const dir = resolve(productDir, env.AIDENHQ_CONFIG_DIR ?? "config");
+  const file = existsSync(join(dir, "runner.yaml")) ? join(dir, "runner.yaml") : join(productDir, "config/runner.example.yaml");
+  const p = String((existsSync(file) ? YAML.parse(readFileSync(file, "utf8")) : {})?.work_dir ?? "~/aidenhq-work");
+  return p.startsWith("~/") ? join(homedir(), p.slice(2)) : p;
+}
+
+export function compile(productDir, instanceDir, { revision, fetch = hostFetch(productDir), door, workDir = hostWorkDir(productDir) } = {}) {
   const instFile = join(instanceDir, "instance.yaml");
   if (!existsSync(instFile)) fail(`no instance.yaml in ${instanceDir}: set AIDENHQ_INSTANCE_DIR to your instance checkout (see docs/USAGE.md)`);
   const instance = readYaml(instFile);
@@ -605,6 +618,7 @@ export function compile(productDir, instanceDir, { revision, fetch = hostFetch(p
 
   // Derived (not settable): the orgs the src_github sync covers, github_orgs plus the agents org.
   settings.agents_org = agentsOrg(settings); // the only org github-mcp's commit_status_set may write to
+  settings.modules_repo = officialRepo(instance, productDir) ?? ""; // the official modules repo: the code host treats it as the product
   settings.github_sync_orgs = [...new Set([...[settings.github_orgs ?? []].flat(), agentsOrg(settings)].filter(Boolean))].join(",");
 
   // What the board's Settings shows (services/board/src/settings.ts): every setting an enabled module declares or the instance
@@ -702,7 +716,7 @@ export function compile(productDir, instanceDir, { revision, fetch = hostFetch(p
     }
     // Its compose services, generated from `services:` (no module compose); settings substituted as compose text (no $).
     const raw = all.get(name).def;
-    const gen = generateCompose(name, { ...def, services: substitute(raw.services, settings, true), board_env: substitute(raw.board_env, settings, true) }, { root, local: true, rootServices: Object.keys(base.services ?? {}), rootNetworks: Object.keys(base.networks ?? {}), rootSecrets: Object.keys(base.secrets ?? {}), legacy: legacyOf(name) });
+    const gen = generateCompose(name, { ...def, services: substitute(raw.services, settings, true), board_env: substitute(raw.board_env, settings, true) }, { root, local: true, rootServices: Object.keys(base.services ?? {}), rootNetworks: Object.keys(base.networks ?? {}), rootSecrets: Object.keys(base.secrets ?? {}), legacy: legacyOf(name), workDir });
     for (const [k, s] of Object.entries(gen.services)) {
       if (k in (base.services ?? {})) fail(`module ${name}: its service ${k} has a root service's name`);
       put(compose.services, k, s, "compose service");
@@ -1133,8 +1147,8 @@ export function kernelModuleTable(defs, settings = {}) {
     }
     const e = {
       ...(roles.length ? { roles } : {}), ...(privileged.length ? { privileged } : {}),
-      // A channel's, a job dispatcher's (kernel.jobs), a check job requester's (kernel.checks), or a check's module (its label and its reads): its own generated `<module>_token`.
-      ...((ch != null || roles.includes("kernel.jobs") || roles.includes("kernel.checks") || (def.checks ?? []).length) && (def.generated_secrets ?? []).includes(token) ? { token } : {}),
+      // A channel's, a job dispatcher's (kernel.jobs), a check job requester's (kernel.checks), a check's module (its label and its reads) or an executor's (its outcomes): its own generated `<module>_token`.
+      ...((ch != null || roles.includes("kernel.jobs") || roles.includes("kernel.checks") || (def.checks ?? []).length || def.providers?.executor) && (def.generated_secrets ?? []).includes(token) ? { token } : {}),
       ...(ch != null ? { channel: { ...(ch.stamp ? { stamp: String(ch.stamp) } : {}), ...(ch.stale === true ? { stale: true } : {}), ...(ch.transport ? { transport: String(ch.transport) } : {}) }, settings: Object.fromEntries(Object.keys(def.settings ?? {}).map((k) => [k, settings[k]])) } : {}),
     };
     if (Object.keys(e).length) out[name] = e;

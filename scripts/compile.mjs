@@ -29,7 +29,7 @@ import { existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } 
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import YAML from "yaml";
-import { compile, composeSecretFiles, ensureMountedSecrets, ensureOptionalSecrets, hostMounts } from "./modules.mjs";
+import { compile, composeSecretFiles, ensureMountedSecrets, ensureOptionalSecrets, hostMounts, hostWorkDir } from "./modules.mjs";
 import { computersConfig } from "./computers.mjs";
 import { pathInventory } from "./paths.mjs";
 import { checkIngress } from "./edge.mjs";
@@ -104,6 +104,8 @@ if (!stage) mkdirSync(join(resolve(repo, env("AIDENHQ_CONFIG_DIR") ?? "config"),
 // not in apply-config.sh: the apply that brings this in still runs the old script, which then runs this compile.
 const dataDir = resolve(repo, env("AIDENHQ_DATA_DIR") ?? "data");
 if (!stage) for (const d of ["apps-edge/state", "apps-edge/serve", "previews", "codehost", ...out.dataDirs]) mkdirSync(join(dataDir, d), { recursive: true });
+// The job workspaces, before compose bind-mounts them into the code host (Docker would make a missing one as root).
+if (!stage) mkdirSync(join(hostWorkDir(repo), "tasks"), { recursive: true });
 // Code never starts on data newer than it (spec §6.4.1): staged, only checked (the apply snapshots the data after this); for
 // real, each data module's marker is set to its data_version before compose starts it.
 try { for (const [m, d] of Object.entries(out.dataModules)) checkDataVersion(m, d.data_version, join(dataDir, "modules", m), !stage); } catch (e) { die(e.message); }
