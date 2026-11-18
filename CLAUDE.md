@@ -142,7 +142,9 @@ applies to changes to the module (its service, policy `service/security/`, cases
   calling a UI change done, set the browser viewport explicitly and screenshot it at 1512x982, 1920x1080, 2560x1440,
   768, 1024 and 390 wide, never in a small default window.
 - **Simple.** Less code, fewer moving parts. No speculative abstractions, knobs or compatibility shims. Handle the
-  common path and let rare cases fail loudly.
+  common path and let rare cases fail loudly. Between designs, choose the one simplest to maintain long term (fewer
+  paths, credentials, setup steps and special cases), decide it yourself and state why in one line; ask the owner only
+  what is theirs to decide (money, credentials they must create, security trade-offs, what users see).
 - **No owner data in the product.** Real names, emails, IPs, hostnames, org names and ids belong in the instance repo
   or `CLAUDE.local.md`. Tests use neutral examples (`acme`, `acme-agents`, `example.com`, documentation IP ranges).
 - **Commit per meaningful change**, with a Conventional Commit subject (`fix(runner): …`) and a body that says why.

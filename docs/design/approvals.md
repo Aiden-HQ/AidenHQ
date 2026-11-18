@@ -63,7 +63,12 @@ agent, never to the owner.
   "unsure" goes to a second reviewer (another family), given the first's note: its approve or reject decides (one approval
   on a panel card is a split), and a second "unsure" sends the request back to the agent with both notes, not to the
   owner. The same commits are reviewed again once, after the request chain changed; unsure twice again on that
-  re-review goes to the owner with both rounds' notes.
+  re-review goes to the owner with both rounds' notes. Otherwise a request the reviewer rejected is refused by code before
+  any review when it comes back unchanged on that task (the same commits or patch, the same call's digest), until the
+  owner's own comment on that task, after the rejection, answers it (never a parent's comment, nor an edit of the task's
+  title or description, which the agent can make): the agent changes it or reports back (owner, 2026-11-18: refile only
+  after a fix). Every rejection, answered or not, counts toward the 3-per-target bound, on whatever branch the same
+  content is filed.
 - **Tier 2: owner.** A board card plus a message on the owner channel: a panel split, a reviewer's
   "escalate" (a destructive migration), the owner's own veto, a routine's or the instance's autonomy cap, a spend-cap
   raise, or nothing recognised. The AI reviewer reads every one first (owner, 2026-11-16: every write is reviewed before it

@@ -146,7 +146,8 @@ export const taskRoutineCap = (pc: Trace, task: string, routines: Record<string,
 // ------------------------------------------------------------------ earlier decisions on a task
 
 /** A task's approval record as tiering reads it (the runner's view of a kernel record). */
-export type Prior = { id?: string; action: string; args?: any; state: string; decidedBy?: string | null; decidedAt?: string | null; reviewCode?: string | null; review?: string | null; requestChain?: string; digest?: string };
+/** `answered`: the owner replied on the task after this rejection (answered.ts): it no longer blocks or attaches its note, but still counts toward MAX_REJECTS. */
+export type Prior = { id?: string; action: string; args?: any; state: string; decidedBy?: string | null; decidedAt?: string | null; reviewCode?: string | null; review?: string | null; requestChain?: string; digest?: string; answered?: boolean };
 /** The actions a record carries: a product PR card with `args.merge` is also a merge, so neither dodges the other's no. */
 const carried = (r: Prior) => [r.action, ...(r.action === "pr" && r.args?.merge ? ["merge"] : [])];
 /** A watcher's no on a stale or duplicate card (decided_by `stale:watcher`) judged nothing: neither a veto nor a rejection. */
@@ -172,7 +173,7 @@ export function rejectedSince(records: Prior[], action: string, also: string[] =
  */
 export function laterRejections(records: Prior[], action: string, also: string[] = [], since = ""): Prior[] {
   const want = [action, ...also];
-  return (records ?? []).filter((r) => r.state === "rejected" && !STALE(r) && carried(r).some((x) => want.includes(x)) && !CODE_REJECTS.includes(r.reviewCode ?? "") && String(r.decidedAt ?? "") >= String(since));
+  return (records ?? []).filter((r) => r.state === "rejected" && !r.answered && !STALE(r) && carried(r).some((x) => want.includes(x)) && !CODE_REJECTS.includes(r.reviewCode ?? "") && String(r.decidedAt ?? "") >= String(since));
 }
 
 const keyOf = (list: unknown[]) => (list.length && list.every((x) => typeof x === "string" && /^[0-9a-f]{7,64}$/i.test(x)) ? (list as string[]).map((x) => x.toLowerCase()).sort().join(",") : undefined);
@@ -253,11 +254,11 @@ const decided = (r: Prior) => ["approved", "used", "expired", "rejected"].includ
  *   (a rebased or renamed resubmission on another branch), and never to a target it wasn't raised against, so three spread
  *   across three branches park none of them. At MAX_REJECTS a target is parked; without `targets` (an action that names
  *   neither branch nor PR) the task is the target, as before.
- * - same: one of those rejected exactly this content (requestKey): it stays rejected (its note). Two reviewers' unsure
- *   lifts once, after the request chain changed (`chain`: the current chain's hash). A conn.tool call's content key is its
- *   digest, and a fixed-schema tool's identical refile has the same digest: `same` is never set for it, so an identical
- *   refile is reviewed again. Its retries stay bounded per tool and target (`rejects`), and its earlier notes are in
- *   `findings`.
+ * - same: one of those rejected exactly this content (requestKey, or the same patch keys: an amended, rebased or renamed
+ *   resubmission of the same change; a conn.tool call's or module kind's digest): it stays rejected (its note), refused by
+ *   code before any review (owner, 2026-11-18: refile only after a fix). Two reviewers' unsure lifts once, after the request
+ *   chain changed (`chain`: the current chain's hash). A conn.tool call whose arguments can't change (a close, a label) is
+ *   refused unchanged on this task once rejected: the agent reports back instead.
  * - relift: that lift's earlier note: the re-review's unsure goes to the owner, not back to the agent.
  * - findings: every one of those notes, attached to the next review.
  */
@@ -278,7 +279,10 @@ export function priorDecisions(records: Prior[], action: string, also: string[] 
     // matching both is still one rejection on that branch (the Set).
     const named = new Set(recordTargets(r).map((t) => t.key).filter((k) => targets!.targets.some((x) => x.key === k)));
     const byPatch = new Set<string>((r.args?.only ?? r.args?.prs ?? []).flatMap((x: any) => (typeof x?.patch === "string" ? [...asked].filter(([, p]) => p === x.patch).map(([k]) => k) : [])));
-    for (const k of new Set([...named, ...byPatch])) count.set(k, (count.get(k) ?? 0) + 1);
+    // The same content as this whole request (its commits, or its patch keys) counts on every target it names, so renaming
+    // the branch never resets the bound, even when a patch key couldn't be computed.
+    const byContent = (key !== undefined && recordKey(r) === key) || (typeof patches === "string" && recordPatches(r) === patches) ? targets!.targets.map((t) => t.key) : [];
+    for (const k of new Set([...named, ...byPatch, ...byContent])) count.set(k, (count.get(k) ?? 0) + 1);
   }
   const rejects = targets?.targets.length ? Math.max(0, ...count.values()) : judged.length;
   // Two reviewers unsure (reviewer_unsure) is about the request: the fix is often the brief or an authorisation, so the
@@ -287,23 +291,23 @@ export function priorDecisions(records: Prior[], action: string, also: string[] 
   // gets `relift` (the first round's note), and unsure again there goes to the owner (the reviewer module). Unchanged or unknown
   // chain, or any other rejection of the content, and it stays rejected. It still counts toward MAX_REJECTS (on the branch
   // it was raised against). Content is judged task-wide: this is about what was written, not where it was aimed.
-  const rejectedSame = key ? judged.filter((r) => recordKey(r) === key) : [];
+  const rejectedSame = key || typeof patches === "string" ? judged.filter((r) => !r.answered).filter((r) => (key !== undefined && recordKey(r) === key) || (typeof patches === "string" && recordPatches(r) === patches)) : [];
   const [only] = rejectedSame;
   const lifted = rejectedSame.length === 1 && only!.reviewCode === "reviewer_unsure" && Boolean(only!.requestChain) && Boolean(chain) && only!.requestChain !== chain;
-  const sameOne = lifted || action === "conn.tool" ? undefined : rejectedSame[0];
+  const sameOne = lifted ? undefined : rejectedSame[0];
   // The owner's no on this exact content holds until they approve that same content, whatever else they approved since.
   // Same content: the commits, or the patch keys (a rebased or renamed resubmission). Patch keys that couldn't be computed
   // (null) fail closed: any owner rejection of the action on the task makes it theirs.
   const sameContent = (r: Prior) => (key !== undefined && recordKey(r) === key) || (typeof patches === "string" && recordPatches(r) === patches);
   const ownerNo = mine.some((r) => byOwner(r) && r.state === "rejected" && (patches === null || (sameContent(r) && !mine.some((y) => byOwner(y) && y.state !== "rejected" && sameContent(y) && String(y.decidedAt) > String(r.decidedAt)))));
-  return { ownerVeto: lastOwner?.state === "rejected" || ownerNo, same: sameOne ? sameOne.review || "no note" : undefined, relift: lifted ? only!.review || "no note" : undefined, rejects, findings: judged.map((r) => r.review).filter(Boolean) as string[], ...(targets?.targets.length ? { scope: targets.label } : {}) };
+  return { ownerVeto: lastOwner?.state === "rejected" || ownerNo, same: sameOne ? sameOne.review || "no note" : undefined, relift: lifted ? only!.review || "no note" : undefined, rejects, findings: judged.filter((r) => !r.answered).map((r) => r.review).filter(Boolean) as string[], ...(targets?.targets.length ? { scope: targets.label } : {}) };
 }
 
 /** What earlier decisions do to a request: the owner's veto (their card), a rejected change resent, a retry past the bound. */
 export function priorPart(p: ReturnType<typeof priorDecisions> | undefined): Part | undefined {
   if (!p) return undefined;
   if (p.ownerVeto) return T(2, "owner-veto", "the owner rejected this action on this task, and only their own yes lifts it");
-  if (p.same !== undefined) return REJECT("rejected-content", `the AI reviewer already rejected exactly this change on this task (its note: ${String(p.same).slice(0, 400)}). Fix what it found and ask again with the changed commits`);
+  if (p.same !== undefined) return REJECT("rejected-content", `the AI reviewer already rejected exactly this request on this task, so it isn't reviewed again unchanged (its note: ${String(p.same).slice(0, 400)}). Change what it found and file the changed request, or report back to whoever asked why it can't change`);
   if (p.rejects >= MAX_REJECTS) return REJECT("retries-exhausted", `parked: the AI reviewer rejected this action ${p.rejects} times on ${(p as { scope?: string }).scope ?? "this task"}, so it isn't reviewed again here. A different branch, PR or tool target of the task is reviewed on its own; report what it found to whoever asked for this work`);
   return undefined;
 }
