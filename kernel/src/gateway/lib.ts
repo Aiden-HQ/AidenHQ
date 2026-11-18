@@ -239,7 +239,9 @@ const RETRY_DELAYS_MS = [1000, 3000, 9000, 20000];
  * The gateway: handle(req, res). `secret(name)` reads a secret file (fresh each time, so a rotation needs no restart);
  * `upstream` is OpenRouter's API base; Paperclip and the board's internal API as URLs.
  */
-export function createGateway({ dbFile, legacyDbFile, grantsFile, settingsFile, tools, asCaller, secret, upstream = "https://openrouter.ai/api/v1", paperclipUrl, fileRaiseCap, launcherUrl, githubJwksUrl, log = () => {}, now = Date.now, retryDelaysMs = RETRY_DELAYS_MS }: {
+export function createGateway({ dbFile, legacyDbFile, grantsFile, settingsFile, tools, asCaller, secret, upstream = "https://openrouter.ai/api/v1", paperclipUrl, fileRaiseCap, launcherUrl, githubJwksUrl, jobLive = () => false, log = () => {}, now = Date.now, retryDelaysMs = RETRY_DELAYS_MS }: {
+  /** Whether a kernel job (a job token's id) is still admitted or running: an ended job's token buys nothing. */
+  jobLive?: (id: string) => boolean;
   dbFile: string; legacyDbFile?: string; grantsFile: string; settingsFile: string; tools?: (req: IncomingMessage, res: ServerResponse, connection: string, o: { jobs: boolean }) => Promise<void>;
   /** A module's model call for the agent whose tool call it serves (module token + caller assertion): that caller's own credential. */
   asCaller?: (req: IncomingMessage) => Promise<string | undefined>; secret: (name: string) => string; upstream?: string; paperclipUrl?: string;
@@ -400,6 +402,12 @@ export function createGateway({ dbFile, legacyDbFile, grantsFile, settingsFile, 
       }
       const p = verifyToken(secret("gateway_job_secret"), cred, now());
       if (!p) throw fail(401, "unauthorized", "this run's model credential is invalid or expired");
+      if (p.k === "job") {
+        // A kernel job (boxes.ts): capped as its agent on its task (a chat or routine task by the day), while the job lives.
+        if (!jobLive(String(p.id))) throw fail(401, "unauthorized", "this job has ended");
+        const row = (q.run.get(runKey) as RunRow | undefined) ?? settle(runKey, { agentId: p.a, ...(await runTask(null, p.i)) });
+        return as(row, routeKind, "agent", true);
+      }
       const row = (q.run.get(runKey) as RunRow | undefined) ?? settle(runKey, { agentId: p.a, issueId: p.i });
       const system = p.k !== "agent";
       const component = String(p.c ?? (system ? SYSTEM[p.k] : "Engineer jobs")).slice(0, 80);

@@ -129,7 +129,9 @@ const DDL = `CREATE TABLE IF NOT EXISTS jobs (
   box TEXT, session TEXT, offset INTEGER NOT NULL DEFAULT 0, state TEXT NOT NULL, exit INTEGER, final TEXT NOT NULL DEFAULT '',
   why TEXT NOT NULL DEFAULT '{}', usage TEXT, progress TEXT NOT NULL DEFAULT '{}', ended INTEGER)`;
 
-export function createJobs({ db, cfg, cp, mayDispatch, log, boxWrap }: {
+export function createJobs({ db, cfg, cp, mayDispatch, log, boxWrap, onEnd = () => {} }: {
+  /** A job ended (or was found lost): the kernel releases the box it got for it (boxes.ts). */
+  onEnd?: (id: string) => void;
   db: DatabaseSync; cfg: SandboxConfig; cp: ControlPlane;
   /** Whether this module dispatches this agent's jobs (compile: config/kernel/modules.json `dispatches`, by agent key). */
   mayDispatch: (module: string, agent: string) => boolean;
@@ -139,6 +141,9 @@ export function createJobs({ db, cfg, cp, mayDispatch, log, boxWrap }: {
 }) {
   db.exec(DDL);
   db.exec("CREATE INDEX IF NOT EXISTS jobs_task ON jobs (task, state)");
+  // A kernel-admitted job's columns (admission.ts, boxes.ts), added where they are missing.
+  const cols = new Set((db.prepare("PRAGMA table_info(jobs)").all() as { name: string }[]).map((c) => c.name));
+  for (const [c, t] of [["profile", "TEXT"], ["wake", "TEXT"], ["authority", "TEXT"], ["renewed", "INTEGER"], ["released", "INTEGER"]]) if (!cols.has(c!)) db.exec(`ALTER TABLE jobs ADD COLUMN ${c} ${t}`);
   const watchers = new Map<string, { stop: () => void; send?: (text: string, from: string) => boolean; cancel: () => void }>();
   const versions = new Map<string, number>();
   const waiters = new Map<string, Set<() => void>>();
@@ -240,6 +245,7 @@ export function createJobs({ db, cfg, cp, mayDispatch, log, boxWrap }: {
         .run(state, exit, lastMessage, JSON.stringify({ timedOut, stalled, stopped, cancelled }), offset, session, Date.now(), id);
       log("job finished", { job: id, task: r.task, state, exit });
       bump(id);
+      onEnd(id);
     };
     const tick = () => {
       read();
@@ -279,6 +285,7 @@ export function createJobs({ db, cfg, cp, mayDispatch, log, boxWrap }: {
       }
       db.prepare("UPDATE jobs SET state = 'lost', exit = NULL, ended = ? WHERE id = ?").run(Date.now(), r.id);
       log("job lost while no kernel followed it", { job: r.id, task: r.task });
+      onEnd(r.id);
     }
   }
 
@@ -312,14 +319,24 @@ export function createJobs({ db, cfg, cp, mayDispatch, log, boxWrap }: {
       extra[k] = v;
     }
     const id = `j-${randomBytes(8).toString("hex")}`;
+    const run = spawnRun({ agent: b.agent, task: b.task, engine, worktree, box, prompt: b.prompt, session: b.session, label: b.label ?? b.task, gh: extra.GH_TOKEN });
+    db.prepare("INSERT INTO jobs (id, module, agent, task, engine, pid, log, dir, at, jobcaps, observing, live_input, box, session, state) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'running')")
+      .run(id, module, b.agent, b.task, engine.kind, run.pid, run.log, run.dir, run.at, "[]", observes(engine) ? 1 : 0, entry.live_input ? 1 : 0, JSON.stringify(box), b.session && SESSION.test(b.session) ? b.session : null);
+    log("job started", { job: id, module, agent: b.agent, task: b.task, engine: engine.kind, pid: run.pid, box: box.container });
+    watch(id);
+    return view(row(id)!);
+  }
+
+  /** A job's engine started in its box (detached, under WRAP): its log, its job folder and job.json. */
+  function spawnRun({ agent, task, engine, worktree, box, prompt, session, label, gh }: { agent: string; task: string; engine: Engine; worktree: string; box: Box; prompt: string; session?: string; label: string; gh?: string }) {
     const at = Date.now();
     mkdirSync(cfg.logsDir, { recursive: true });
-    const logPath = join(cfg.logsDir, `${String(b.label ?? b.task).replace(/[^\w.-]/g, "_").slice(0, 60)}-${at}.log`);
+    const logPath = join(cfg.logsDir, `${String(label).replace(/[^\w.-]/g, "_").slice(0, 60)}-${at}.log`);
     const jobDir = join(box.outDir, "job");
     mkdirSync(jobDir, { mode: 0o700 }); // new for every run: nothing of the job's is in it yet
-    const built = buildJob({ cfg, engine, worktree, jobDir, sessionId: b.session, prompt: b.prompt, job: { agentId: b.agent, issueId: b.task, at }, box, gh: Boolean(extra.GH_TOKEN), boxWrap });
+    const built = buildJob({ cfg, engine, worktree, jobDir, sessionId: session, prompt, job: { agentId: agent, issueId: task, at }, box, gh: Boolean(gh), boxWrap });
     const pick = (names: string[]) => Object.fromEntries(names.filter((k) => process.env[k] !== undefined).map((k) => [k, process.env[k]!]));
-    const env: Record<string, string> = { ...pick(BOX_ENV), ...(extra.GH_TOKEN ? { GH_TOKEN: extra.GH_TOKEN, AIDENHQ_GH_AUTH: extra.GH_TOKEN } : {}) };
+    const env: Record<string, string> = { ...pick(BOX_ENV), ...(gh ? { GH_TOKEN: gh, AIDENHQ_GH_AUTH: gh } : {}) };
     appendFileSync(logPath, `# ${new Date(at).toISOString()} ${engine.kind}${engine.model ? ` (${engine.model})` : ""} in box ${box.container} (${worktree})\n`);
     const out = openSync(logPath, "a");
     const child = spawn("/bin/sh", ["-c", WRAP, `${logPath}.exit`, ...built.argv], { cwd: "/", env, detached: true, stdio: ["ignore", out, out] });
@@ -327,9 +344,24 @@ export function createJobs({ db, cfg, cp, mayDispatch, log, boxWrap }: {
     // Only /bin/sh itself failing to start lands here; a missing engine is the shell's exit 127.
     child.on("error", (e: NodeJS.ErrnoException) => { try { writeFileSync(`${logPath}.exit`, "1\n"); appendFileSync(logPath, `# couldn't start /bin/sh: ${e.code ?? e.message}\n`); } catch {} });
     child.unref();
-    db.prepare("INSERT INTO jobs (id, module, agent, task, engine, pid, log, dir, at, jobcaps, observing, live_input, box, session, state) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'running')")
-      .run(id, module, b.agent, b.task, engine.kind, child.pid ?? 0, logPath, jobDir, at, "[]", observes(engine) ? 1 : 0, entry.live_input ? 1 : 0, JSON.stringify(box), b.session && SESSION.test(b.session) ? b.session : null);
-    log("job started", { job: id, module, agent: b.agent, task: b.task, engine: engine.kind, pid: child.pid, box: box.container });
+    return { pid: child.pid ?? 0, log: logPath, dir: jobDir, at };
+  }
+
+  /**
+   * An admitted job (admission.ts) starts in the box the kernel got it (boxes.ts): its engine and authority are the row's,
+   * frozen at admission; the request adds only the prompt and the session to resume.
+   */
+  function runAdmitted(id: string, { box, worktree, prompt, session, label }: { box: Box; worktree: string; prompt: string; session?: string; label: string }) {
+    const r = row(id);
+    if (!r || r.state !== "admitted" || !r.authority) throw new JobError(409, "not-admitted", `job ${id} isn't waiting to start`);
+    const a = JSON.parse(r.authority) as { engine: string; model: string; effort: string };
+    const entry = readEngines(cfg)[a.engine];
+    if (entry?.box !== true) throw new JobError(400, "not-a-box-engine", `the ${a.engine} engine doesn't run in an agent computer`);
+    const engine: Engine = { kind: a.engine, model: a.model, effort: a.effort };
+    const run = spawnRun({ agent: r.agent, task: r.task, engine, worktree, box, prompt, session, label });
+    db.prepare("UPDATE jobs SET pid = ?, log = ?, dir = ?, at = ?, box = ?, session = ?, live_input = ?, state = 'running' WHERE id = ?")
+      .run(run.pid, run.log, run.dir, run.at, JSON.stringify(box), session && SESSION.test(session) ? session : null, entry.live_input ? 1 : 0, id);
+    log("job started", { job: id, module: r.module, agent: r.agent, task: r.task, engine: engine.kind, pid: run.pid, box: box.container });
     watch(id);
     return view(row(id)!);
   }
@@ -356,6 +388,7 @@ export function createJobs({ db, cfg, cp, mayDispatch, log, boxWrap }: {
 
   return {
     start,
+    runAdmitted,
     adopt,
     /** Status; with `after` (a version), waits up to `waitMs` for a change first. */
     async get(module: string, id: string, { after, waitMs = 0 }: { after?: number; waitMs?: number } = {}) {
@@ -390,3 +423,9 @@ export function createJobs({ db, cfg, cp, mayDispatch, log, boxWrap }: {
   };
 }
 export type Jobs = ReturnType<typeof createJobs>;
+
+/** A kernel-admitted job's row as the job token's holders read it (identity.ts, the gateway): undefined for any other job. */
+export function admittedJob(db: DatabaseSync, id: string) {
+  const r = db.prepare("SELECT agent, task, state, authority FROM jobs WHERE id = ? AND authority IS NOT NULL").get(id) as { agent: string; task: string; state: string; authority: string } | undefined;
+  return r && { agent: r.agent, task: r.task, state: r.state, authority: JSON.parse(r.authority) };
+}

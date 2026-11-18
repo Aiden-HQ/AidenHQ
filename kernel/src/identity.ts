@@ -33,8 +33,13 @@ const same = (a: string, b: string) => Boolean(a && b) && a.length === b.length 
 /** The roles an assertion carries: the agent's own, plus kernel.trial for an agent in trial. */
 export const rolesOf = (g: Grant) => [...(g.roles ?? []), ...(g.trial === true ? ["kernel.trial"] : [])];
 
-export function createIdentity({ grants, connections, jobcaps, modules = () => ({}), secret, controlUrl, launcherUrl, runTask, now = Date.now }: {
+/** A kernel-admitted job as its row says (admission.ts): who, on what, and the authority frozen when it was admitted. */
+export type AdmittedJob = { agent: string; task: string; state: string; authority: { tools: Record<string, string[]>; jobcaps: string[]; writes: string[]; roles: string[] } };
+
+export function createIdentity({ grants, connections, jobcaps, modules = () => ({}), secret, controlUrl, launcherUrl, runTask, job = () => undefined, now = Date.now }: {
   grants: () => Record<string, Grant>; connections: () => Record<string, Connection>; jobcaps: () => Record<string, Jobcap>;
+  /** A kernel-admitted job by id (its row): a job token's authority is read here, never from the grants table again. */
+  job?: (id: string) => AdmittedJob | undefined;
   /** Modules with kernel roles or a token of their own (config/kernel/modules.json): a module with no connection is known by its token. */
   modules?: () => Record<string, { roles?: string[]; token?: string }>;
   secret: (name: string) => string; controlUrl?: string; launcherUrl?: string;
@@ -60,6 +65,15 @@ export function createIdentity({ grants, connections, jobcaps, modules = () => (
     if (same(token, secret("gateway_harness_key"))) return { kind: "run", roles: [], tools: {}, credential: "" };
     if (token.startsWith("ahqj_")) {
       const p = verifyToken(secret("gateway_job_secret"), token, now());
+      if (p?.k === "job") {
+        // A kernel job: exactly what was frozen at its admission, on its own task, while it lives.
+        const j = job(String(p.id));
+        if (!j || j.agent !== p.a || j.task !== p.i || !["admitted", "running"].includes(j.state)) throw new Unknown("this job has ended");
+        const tools: Record<string, string[]> = Object.fromEntries(Object.entries(j.authority.tools).map(([c, t]) => [c, [...t]]));
+        for (const id of j.authority.jobcaps) { const c = jobcaps()[id]; if (c && !c.private) tools[c.connection] = [...new Set([...(tools[c.connection] ?? []), ...c.tools])]; }
+        const g = grants()[j.agent];
+        return { kind: "run", agent: j.agent, key: String(g?.key ?? ""), name: String(g?.key ?? ""), roles: [...j.authority.roles], tools, writes: [...j.authority.writes], task: j.task, credential: "" };
+      }
       if (!p || p.k !== "agent") throw new Unknown("a job's token is invalid or expired");
       const all = jobcaps();
       const tools: Record<string, string[]> = {}, caps: Record<string, Jobcap[]> = {};

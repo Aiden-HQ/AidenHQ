@@ -363,16 +363,16 @@ export function reapLapsed(jobs, tokens, now = Date.now()) {
   return names;
 }
 
-/** The runner's control routes: only computers_runner_key opens them, and that key opens nothing else. */
+/** The job routes: only computers_runner_key (the runner) and launcher_kernel_key (the kernel) open them, and nothing else. */
 export const JOB_ROUTES = ["/job", "/job/renew", "/job/release"];
 
 /**
- * Whether a control call's bearer opens its route: the runner's key only the job routes, the board's progress key only
- * /progress, the plugin's key every other route. An empty secret is no key.
+ * Whether a control call's bearer opens its route: the runner's and the kernel's keys only the job routes, the board's
+ * progress key only /progress, the plugin's key every other route. An empty secret is no key.
  */
-export function controlAllowed(bearer, method, url, { plugin, runner, progress }) {
+export function controlAllowed(bearer, method, url, { plugin, runner, kernel, progress }) {
   if (method !== "POST" || !bearer) return false;
-  if (JOB_ROUTES.includes(url)) return Boolean(runner) && bearer === runner;
+  if (JOB_ROUTES.includes(url)) return (Boolean(runner) && bearer === runner) || (Boolean(kernel) && bearer === kernel);
   if (url === "/progress" && progress && bearer === progress) return true;
   return Boolean(plugin) && bearer === plugin;
 }

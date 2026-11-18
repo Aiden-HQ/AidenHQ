@@ -69,8 +69,12 @@ test("only the runner's key opens the job routes, and it opens nothing else", ()
     assert.equal(controlAllowed("plugin-key", "POST", url, keys), false, `plugin key on ${url}`);
     assert.equal(controlAllowed("progress-key", "POST", url, keys), false);
     assert.equal(controlAllowed("runner-key", "POST", url, keys), true);
+    assert.equal(controlAllowed("kernel-key", "POST", url, { ...keys, kernel: "kernel-key" }), true);
   }
-  for (const url of ["/acquire", "/exec", "/release", "/resume", "/inspect", "/progress"]) assert.equal(controlAllowed("runner-key", "POST", url, keys), false, `runner key on ${url}`);
+  for (const url of ["/acquire", "/exec", "/release", "/resume", "/inspect", "/progress"]) {
+    assert.equal(controlAllowed("runner-key", "POST", url, keys), false, `runner key on ${url}`);
+    assert.equal(controlAllowed("kernel-key", "POST", url, { ...keys, kernel: "kernel-key" }), false, `kernel key on ${url}`);
+  }
   assert.equal(controlAllowed("plugin-key", "POST", "/exec", keys), true);
   assert.equal(controlAllowed("progress-key", "POST", "/progress", keys), true);
   assert.equal(controlAllowed("progress-key", "POST", "/exec", keys), false);

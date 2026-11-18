@@ -45,7 +45,7 @@ import { mintToken } from "./gateway/token.ts";
 import { createWrites, type Kind } from "./writes.ts";
 import { taskRoutineCap } from "./tier.ts";
 import { KERNEL_KINDS, LOCAL_ORG, raiseCapCard } from "./kinds.ts";
-import { createJobs, dispatchesFrom } from "./jobs.ts";
+import { admittedJob, createJobs, dispatchesFrom } from "./jobs.ts";
 import { createWakes } from "./wakes.ts";
 import { createWork } from "./work.ts";
 import { jailProblem } from "./sandbox.ts";
@@ -74,6 +74,7 @@ const whoami = createIdentity({
   grants: () => grantsTable().agents ?? {}, connections, modules: () => modulesFile().modules ?? {},
   jobcaps: watched(path.join(configDir, "jobcaps.json"), (j) => j as Record<string, Jobcap>, {}), // runner jobs' reads (compile)
   secret, controlUrl, launcherUrl, runTask,
+  job: (id) => admittedJob(records.db, id), // a kernel job's token: its row's frozen authority (admission.ts)
 });
 const asserter = createAsserter(loadKey(path.join(dataDir, "kernel", "caller-key.pem")));
 const resolver = createResolver({ project: env("COMPOSE_PROJECT_NAME", "aidenhq") });
@@ -299,6 +300,7 @@ const gw = createGateway({
     writes.fileNative("kernel.raise_cap", { task: issue.id, identifier: issue.identifier, args, card: raiseCapCard(args, String((agent as { name?: string }).name ?? ""), issue.identifier ?? issue.id), reason: install ? "the install-wide daily spend cap is the owner's to raise" : `a ${r.scope} spend cap is the owner's to raise`, rule: "raise-cap" });
   },
   launcherUrl,
+  jobLive: (id) => ["admitted", "running"].includes(String(admittedJob(records.db, id)?.state)),
   log,
 });
 
