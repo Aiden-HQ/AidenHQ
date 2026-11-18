@@ -60,6 +60,7 @@ import { createAdmission, wakeInbox } from "./admission.ts";
 import { createBoxes, handbookFrom, launcherClient, type Boxes } from "./boxes.ts";
 import { checkJobsFrom } from "./checkbox.ts";
 import type { Recipes } from "./checkjobs.ts";
+import { localSnapshot } from "../../modules/codehost-local/src/snapshot.ts";
 import { createJobTools } from "./jobtools.ts";
 import { createWakes } from "./wakes.ts";
 import { createWorkspaceSweep } from "./workspaces.ts";
@@ -296,7 +297,7 @@ const moduleSecrets = createModuleSecrets({
 // the number the launcher's pool reads too (config/computers.json `max`; missing, nothing is admitted).
 const computers = watched(path.join(configDir, "computers.json"), (j) => j as { max?: unknown; connections?: Record<string, { tool_timeout_sec?: number }> }, {});
 // A job's requests for its task's next turn (`aidenhq reset|engine|cleanup`): boxes does the cleanup, admission the rest.
-const jobTools = createJobTools({ db: records.db, secret: () => secret("gateway_job_secret"), agentsOrg: () => agentsOrg, engines: () => Object.entries(readEngines(sandbox)).filter(([, e]) => e.box === true).map(([k]) => k) });
+const jobTools = createJobTools({ db: records.db, secret: () => secret("gateway_job_secret"), orgs: () => repos().agentsOrgs, engines: () => Object.entries(readEngines(sandbox)).filter(([, e]) => e.box === true).map(([k]) => k) });
 // Each module's GitHub App grant (its module.yaml `codehost:`), and what its @ names resolve to: the code host broker's, and
 // what an engineer job's dispatcher may clone into its task's workspace.
 const codehostGrants = (): OpsGrant[] => Object.entries(modulesFile().modules ?? {}).flatMap(([module, d]) => ((d as { codehost?: OpsGrant }).codehost ? [{ ...(d as { codehost: OpsGrant }).codehost, module }] : []));
@@ -328,7 +329,9 @@ const admission = createAdmission({
 admission.recover();
 boxes.start();
 // The GitHub code host's operations, brokered for modules under their own codehost grants (codehost.ts).
-const codehost = createCodehost({ repos: codehostRepos, grants: codehostGrants, kind: () => Object.values(moduleKinds()).find((k) => k.module === CODEHOST && k.executor), secret, resolver, workspace: (module, task) => jobs.workspace(module, task) });
+const codehost = createCodehost({ repos: codehostRepos, grants: codehostGrants, kind: () => Object.values(moduleKinds()).find((k) => k.module === CODEHOST && k.executor), secret, resolver, workspace: (module, task) => jobs.workspace(module, task),
+  // codehost-local's snapshot op for `local/…` repos, when that module is enabled.
+  localSnapshot: () => (localHost() ? localSnapshot({ root: path.join(dataDir, "codehost") }) : undefined) });
 // Check jobs (checkjobs.ts): credential-free boxes of the launcher's, snapshots from the module that provides them.
 const checkJobs = checkJobsFrom({ db: records.db, secret, recipes: () => modulesFile().check_jobs ?? {}, ask: codehost.ask, call: launcherClient(launcherUrl, () => secret("launcher_kernel_key")), workDir: sandbox.workDir, gatewayUrl: `${sandbox.boxGatewayUrl}/api/v1`, log });
 const lane = createLane({ once: outcomes.once, owner: ownerApi, grantsFile: grantsTable, log, postAsAgent: async (agent, task, job, body) => ({ id: String((await outcomes.post({ id: job, agent, task }, { kind: "lane", body })).comment) }) });

@@ -13,9 +13,9 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, posix } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
+import type { Answer } from "./codehost.ts";
 import { BOX_WORKSPACE, createChecks, type CheckBox, type Recipes, type Snapshot } from "./checkjobs.ts";
 import { mintToken } from "./gateway/token.ts";
-import type { IncomingMessage } from "node:http";
 
 type Call = (route: string, body: Record<string, unknown>) => Promise<Record<string, unknown>>;
 const KEEP = 64 * 1024; // the output's tail the kernel keeps
@@ -81,7 +81,7 @@ export function snapshots(ask: Ask): (module: string) => Snapshot {
     await untar(res, into);
   };
 }
-type Ask = (module: string, op: string, body: Record<string, unknown>) => Promise<IncomingMessage>;
+type Ask = (module: string, op: string, body: Record<string, unknown>) => Promise<Answer>;
 
 /** The kernel's check jobs (checkjobs.ts) on these: the launcher's check boxes, the snapshot provider, `check` model tokens. */
 export function checkJobsFrom({ db, secret, recipes, ask, call, workDir, gatewayUrl, log, docker }: {
