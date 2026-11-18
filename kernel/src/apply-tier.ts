@@ -1,6 +1,6 @@
 // kernel.apply's planner (spec §4.4 "Land", §5.7): what an instance change is, read from git by the code host, and its tier on
-// its merits. One copy: the runner's tiers.mjs classifies an apply with these rules until the big switch deletes it, and the
-// kernel plans every kernel.apply with them (writes.ts `planners`), whoever files it: a module's release bump, an agent's job.
+// its merits. The kernel plans every kernel.apply with these rules (writes.ts `planners`), whoever files it: the release
+// train, the updater, an agent's job.
 // The plan is the record's args (the commit, its files and the module changes it brings), its card (the diff whole, bound by
 // its hash in the targets), the files for the path inventory, and a raise from the rules below; computeTier adds the floor,
 // the owner's veto and the caps. A change the rules refuse is refused at filing, saying why.

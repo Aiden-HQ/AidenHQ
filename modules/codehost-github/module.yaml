@@ -1,9 +1,8 @@
 name: codehost-github
 description: "GitHub as the code host: task workspaces and the cache clones, repo-narrowed GitHub App tokens minted per write, git with the hardened arguments, push, PR, merge at the reviewed head once green, create_repo, deploy keys, land, and the git rules that tier those writes."
 license: MIT
-# A holder of the GitHub App key (vault github-app/) and the admin PAT, and the owner of all git state. Its code runs in
-# the host runner today (src/: the runner imports it); the write kinds codehost-github.{push,pr,merge,create_repo,deploy_key}
-# go through the kernel's /v1/writes once the runner files its git writes there (lean-core 3b), with service/src/plan.mjs as their
+# The only holder of the GitHub App key (vault github-app/) and the owner of all git state. Its write kinds
+# codehost-github.{push,pr,merge,create_repo,deploy_key} go through the kernel's /v1/writes, with service/src/plan.mjs as their
 # executor@1 plan. Outside the agents org it is PR-only (no merge, no creation, no workflows), except product-repo merges the
 # reviewer or the owner approved.
 privileged: [ git-credential ]
@@ -40,10 +39,9 @@ secrets:
 # kernel plans and tiers like any apply (kernel.apply), on a task for the Platform Engineer's role (kernel.tasks).
 roles:
   requests: [ kernel.tasks, kernel.wake, kernel.checks, kernel.apply ]
-# The service (service/): the executor of the write kinds below, and narrow GitHub operations for other modules. It is built to
-# become the only App-key holder and the only lander (one-way phase 2, Lane T and the switch); until then nothing files its
-# kinds or calls its operations. It mounts the App key (read-only; the runner, apps-mcp and github-mcp keep theirs until Lane
-# T and the switch) and the job workspaces.
+# The service (service/): the executor of the write kinds below, the merge queue, the release train, the PR watch, design
+# reviews and tidying, and narrow GitHub operations other modules get through the kernel (/v1/codehost/:op). It alone mounts
+# the App key (read-only), and the job workspaces.
 services:
   data: true
   run:

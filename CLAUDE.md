@@ -159,7 +159,7 @@ bump of `product:` to a different reviewer needs a receipt for that reviewer too
   what is theirs to decide (money, credentials they must create, security trade-offs, what users see).
 - **No owner data in the product.** Real names, emails, IPs, hostnames, org names and ids belong in the instance repo
   or `CLAUDE.local.md`. Tests use neutral examples (`acme`, `acme-agents`, `example.com`, documentation IP ranges).
-- **Commit per meaningful change**, with a Conventional Commit subject (`fix(runner): …`) and a body that says why.
+- **Commit per meaningful change**, with a Conventional Commit subject (`fix(kernel): …`) and a body that says why.
 - **Licence:** `AGPL-3.0-only`, except the app starter and the design system, which are MIT (their own `LICENSE`) so
   apps carry no AGPL obligations: keep AGPL-only code out of them. Keep the Pennyworth notices in `NOTICE` and
   `LICENSES/`.
