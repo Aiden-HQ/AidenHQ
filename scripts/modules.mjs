@@ -17,6 +17,7 @@ import { checkout, forkBase, forksOf, hostFetch, marketplaceEntries, marketplace
 import { effective } from "./compiler/release.ts";
 import { compilePoints } from "./compiler/points.ts";
 import { gateMode } from "../kernel/src/gates.ts";
+import { KERNEL_KINDS, KERNEL_ROLES } from "../kernel/src/kinds.ts";
 import { officialRepo } from "./official-repo.mjs";
 
 const PROFILES = ["trusted", "untrusted", "code-exec"];
@@ -812,6 +813,12 @@ export function compile(productDir, instanceDir, { revision, fetch = hostFetch(p
   const rolesOf = (m) => ({ declares: [all.get(m)?.def.roles?.declares ?? []].flat().map((d) => String(d?.id ?? d)), requests: [all.get(m)?.def.roles?.requests ?? []].flat().map((r) => String(r).replace(/\?$/, "")) });
   const roleOwner = {};
   for (const name of enabled) for (const r of rolesOf(name).declares) roleOwner[r] = roleOwner[r] ? fail(`role ${r}: declared by ${roleOwner[r]} and ${name}`) : name;
+  // Kernel roles are the kernel's: a module only requests a defined one, and declares none, nor a role named after a write kind
+  // (a role of that name could pass for the grant to file the kind).
+  for (const name of enabled) {
+    for (const r of rolesOf(name).declares) if (r.startsWith("kernel.") || Object.hasOwn(writes, r) || Object.hasOwn(KERNEL_KINDS, r)) fail(`module ${name}: declares role ${r}, which is the kernel's namespace or a write kind's name`);
+    for (const r of rolesOf(name).requests) if (r.startsWith("kernel.") && !KERNEL_ROLES.includes(r)) fail(`module ${name}: requests role ${r}, which the kernel doesn't define (${KERNEL_ROLES.join(", ")})`);
+  }
   const defaultGrants = enabled.flatMap((name) => [all.get(name).def.default_grants ?? []].flat().map((g) => {
     if ((g.tools ?? []).some((t) => !Object.hasOwn(all.get(name).def.connections ?? {}, t.split(".")[0]))) fail(`module ${name}: default_grants name only its own connections' tools (connection.tool)`);
     return { when: g.when ?? {}, unless: g.unless ?? {}, tools: g.tools ?? [] };
