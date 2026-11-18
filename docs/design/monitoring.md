@@ -33,9 +33,10 @@ is itself an alert: `HostMetricsStale` for every textfile but the unit snapshot,
 snapshot (`units.prom`), whose freshness also gates the unit alerts.
 
 cAdvisor gets no Docker socket (only apps-mcp holds one, `scripts/verify-security.sh`), so it labels containers by cgroup
-id; `containers.prom` carries each compose container's and computer box's id, name, project and service, and the Containers
-dashboard and the `cpu` recording rules join on it. cAdvisor's raw cgroup whitelist also covers dockerd and containerd (Docker
-builds) and `/user.slice` (the runner's service cgroup holds the Engineer jobs). The "CPU by source" panel stacks
+id; `containers.prom` carries every container's id, name, project and service (a container without compose labels keeps
+`-` for both) and its running state, and the Containers dashboard and the `cpu` recording rules join on it. cAdvisor's raw
+cgroup whitelist also covers dockerd and containerd (Docker builds) and `/user.slice` (the runner's service cgroup holds
+the Engineer jobs). The "CPU by source" panel stacks
 `aidenhq:cpu_cores:by_source`: Engineer jobs, CI runners, computer boxes, Paperclip, apps, builds/dockerd, and other (the host
 total less the rest, which also holds containers too short-lived for `containers.prom`'s 30 second refresh to name). CPU spikes
 alone are fine; `AppsCpuStarved` fires only when deployed apps are starved (below).

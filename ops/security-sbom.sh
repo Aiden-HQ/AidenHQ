@@ -3,7 +3,10 @@
 # Runs pinned syft in a throwaway container (no network, as this user) over:
 #   host            the VM's root filesystem, read-only: OS packages (kernel, Docker, Node...), not Docker's own storage,
 #                   the homes or this instance's own checkouts (see HOST_EXCLUDES)
-#   image:<ref>     every image a running container uses (the Docker socket, read-only mount)
+#   image:<ref>     every image a running container uses, by the reference it was created with while that still resolves to
+#                   its running image (the Docker socket, read-only mount)
+#   image:sha256:<id> an image whose container's tag has moved since creation: the running image itself, saved from Docker and
+#                   scanned offline, so the scan follows what runs rather than whatever the tag names today
 #   repo:product    this checkout (lockfiles; not data/, node_modules or .git)
 #   repo:instance   the instance checkout
 #   app:<name>      each app's deployed source (data/apps/.platform/<name>/src, what apps-mcp checked out)
@@ -38,7 +41,8 @@ scan() {
   local f err
   f="$(printf '%03d.json' "$n")"
   # syft's image has no writable /tmp for a non-root user: image layers unpack into $work (on disk, not RAM).
-  if err="$(timeout 1800 docker run --rm --network none --user "$user" --group-add "$sock_gid" -e SYFT_CHECK_FOR_APP_UPDATE=false \
+  # `aidenhq.oneoff`: the scan's own container is running for as long as the batch takes, and containers.prom names none.
+  if err="$(timeout 1800 docker run --rm --label aidenhq.oneoff=1 --network none --user "$user" --group-add "$sock_gid" -e SYFT_CHECK_FOR_APP_UPDATE=false \
       -e TMPDIR=/work -e XDG_CACHE_HOME=/work -v "$work:/work" -v "$next:/out" "${mounts[@]}" \
       "$SYFT" scan "$@" --source-name "$target" -o "syft-json=/out/$f" 2>&1 >/dev/null)"; then
     printf '%s\t%s\t\t%s\n' "$target" "$f" "$commit" >> "$next/targets.tsv"
@@ -64,10 +68,33 @@ host_excludes=("${HOST_EXCLUDES[@]}" "./${PWD#/}/**" "./${out#/}/**" '**/node_mo
 host_args=()
 for p in "${host_excludes[@]}"; do host_args+=(--exclude "$p"); done
 scan host "" -v /:/host:ro -- dir:/host "${host_args[@]}"
-# By each container's configured image name: after a rebuild a running container's image is untagged, and syft can't
-# resolve a bare image id (it tries to pull it). The name points at the current build of the same service.
-for img in $(docker ps -q | xargs -r docker inspect -f '{{.Config.Image}}' | sort -u | grep -v '^anchore/syft'); do
-  scan "image:$img" "" -v /var/run/docker.sock:/var/run/docker.sock:ro -- "docker:$img"
+# Each running container's own image, `.Image`: after a rebuild a container's configured tag (`.Config.Image`) names the new
+# build, and once the image is untagged names nothing at all, so a target keyed on it stops covering what runs and the
+# running image is never inventoried. An image a configured tag still resolves to keeps its `image:<ref>` target; any other
+# is named by its own id, which is stable across passes, and syft reads it from a `docker save` archive (a bare id makes syft
+# try to pull it).
+fail() { # <target> <error>: a target that never reached syft is a line with its error, like a failed scan
+  n=$((n + 1))
+  printf '%s\t-\t%s\t\n' "$1" "$(printf '%s' "$2" | tr '\t\n' '  ' | tail -c 300)" >> "$next/targets.tsv"
+}
+declare -A running=() tags=()
+while read -r cid image config; do
+  [ -n "$cid" ] || continue
+  case "$config" in *anchore/syft*) continue ;; esac
+  running[$image]=1
+  if [ "$(docker image inspect -f '{{.Id}}' "$config" 2>/dev/null)" = "$image" ] && { [ -z "${tags[$image]:-}" ] || [[ "$config" < "${tags[$image]}" ]]; }; then
+    tags[$image]="$config"
+  fi
+done <<< "$(docker ps -q | xargs -r docker inspect -f '{{.Id}} {{.Image}} {{.Config.Image}}' 2>/dev/null)"
+for image in $(printf '%s\n' "${!running[@]}" | sort); do
+  if [ -n "${tags[$image]:-}" ]; then
+    scan "image:${tags[$image]}" "" -v /var/run/docker.sock:/var/run/docker.sock:ro -- "docker:${tags[$image]}"
+  elif err="$(docker save -o "$work/image.tar" "$image" 2>&1)"; then
+    # $work is on disk and emptied after each syft run, so the archive is not held for the next target.
+    scan "image:$image" "" -- "docker-archive:/work/image.tar"
+  else
+    fail "image:$image" "docker save: ${err:-failed}"
+  fi
 done
 scan repo:product "$(git -C "$PWD" rev-parse HEAD 2>/dev/null || true)" -v "$PWD:/src:ro" -- dir:/src --exclude './data/**' --exclude './.git/**' --exclude '**/node_modules/**'
 if [ -n "$inst" ]; then scan repo:instance "$(git -C "$inst" rev-parse HEAD 2>/dev/null || true)" -v "$inst:/src:ro" -- dir:/src --exclude './.git/**' --exclude '**/node_modules/**'; fi

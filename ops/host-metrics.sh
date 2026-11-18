@@ -5,8 +5,10 @@
 #                    list-units` and `list-unit-files` read them as the owner's user.
 #   generations.prom the newest apply generation (ops/lib/generations.sh): 1 when it failed its health check (and was
 #                    auto-reverted) or was refused at validation, with its reason and log; the ApplyFailed alert reads it.
-#   containers.prom  every compose container and computer box: running, restart count, health, and its cgroup id, so cAdvisor's per-cgroup
-#                    usage gets a name (cAdvisor has no Docker socket: only apps-mcp holds one).
+#   containers.prom  every container on the host (compose service, computer box or anything else) and its running state,
+#                    restart count, health and cgroup id, so cAdvisor's per-cgroup usage gets a name and a stopped service still
+#                    reads 0 (cAdvisor has no Docker socket: only apps-mcp holds one). A filter narrower than the host drops a
+#                    live container from every join.
 # Run every 30 seconds by the user timer aidenhq-host-metrics (apply-config installs it while the module is on). Nothing is
 # written while the directory is missing (the module is off).
 set -uo pipefail
@@ -61,8 +63,9 @@ write() { # name: atomic, so node-exporter never reads half a file
     done
 } | write units.prom
 
-# Compose containers and agent computer boxes (docker run, no compose labels).
-ids="$({ docker ps -aq --filter label=com.docker.compose.project; docker ps -aq --filter label=aidenhq.computer; } 2>/dev/null | sort -u)"
+# Every container, whatever started it: compose services and computer boxes carry labels, other containers only a name, and a
+# label filter leaves a live container out of containers.prom while cAdvisor still reports its cgroup.
+ids="$(docker ps -aq 2>/dev/null | sort -u)"
 {
   echo "# HELP aidenhq_container_running 1 when the compose container is running."
   echo "# TYPE aidenhq_container_running gauge"
@@ -70,8 +73,13 @@ ids="$({ docker ps -aq --filter label=com.docker.compose.project; docker ps -aq 
   echo "# TYPE aidenhq_container_restarts gauge"
   echo "# HELP aidenhq_container_unhealthy 1 when the container's healthcheck reports unhealthy."
   echo "# TYPE aidenhq_container_unhealthy gauge"
-  [ -n "$ids" ] && docker inspect $ids --format '{{.Id}} {{or (index .Config.Labels "com.docker.compose.project") "-"}} {{or (index .Config.Labels "com.docker.compose.service") "-"}} {{.Name}} {{.State.Running}} {{.RestartCount}} {{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' 2>/dev/null \
-    | clean | while read -r id project service name running restarts health; do
+  [ -n "$ids" ] && docker inspect $ids --format '{{.Id}} {{or (index .Config.Labels "com.docker.compose.project") "-"}} {{or (index .Config.Labels "com.docker.compose.service") "-"}} {{.Name}} {{.State.Running}} {{.RestartCount}} {{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}} {{if index .Config.Labels "aidenhq.computer"}}yes{{else}}no{{end}} {{if index .Config.Labels "aidenhq.oneoff"}}yes{{else}}no{{end}}' 2>/dev/null \
+    | clean | while read -r id project service name running restarts health computer oneoff; do
+      # The security scan's thrown-away container runs for the whole batch and is no part of the fleet; and a finished
+      # one-off has no identity worth a series, while a finished compose service or computer box keeps its 0, which
+      # CoreServiceDown reads.
+      [ "$oneoff" = yes ] && continue
+      [ "$running" = false ] && [ "$project" = - ] && [ "$computer" != yes ] && continue
       l="id=\"/system.slice/docker-$id.scope\",project=\"$project\",service=\"$service\",name=\"${name#/}\""
       echo "aidenhq_container_running{$l} $([ "$running" = true ] && echo 1 || echo 0)"
       echo "aidenhq_container_restarts{$l} $restarts"

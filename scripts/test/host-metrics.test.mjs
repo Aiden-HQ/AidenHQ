@@ -10,8 +10,11 @@ import { fileURLToPath } from "node:url";
 
 const script = join(dirname(fileURLToPath(import.meta.url)), "../../ops/host-metrics.sh");
 
-/** A checkout with a data dir and a fake `systemctl` whose `list-units` prints `units`, `list-unit-files` prints `enabled`. */
-function checkout(units, record, enabled = []) {
+/**
+ * A checkout with a data dir and a fake `systemctl` whose `list-units` prints `units`, `list-unit-files` prints `enabled`,
+ * and a fake `docker` whose `ps -q` prints `containers`' ids and `inspect` prints their compose-name-id-running-restarts-health.
+ */
+function checkout(units, record, enabled = [], containers = []) {
   const dir = mkdtempSync(join(tmpdir(), "host-metrics-"));
   for (const d of ["data/modules/monitoring/textfile", "bin"]) mkdirSync(join(dir, d), { recursive: true });
   writeFileSync(join(dir, "ops-script"), "");
@@ -31,21 +34,47 @@ esac
 exit 0
 `,
   );
-  writeFileSync(join(dir, "bin/docker"), "#!/usr/bin/env bash\nexit 0\n");
+  // `ps` honours `-q`/`-aq` and `--filter label=key[=value]` as Docker does; `inspect` prints the given ids' fields.
+  writeFileSync(join(dir, "bin/docker"), `#!/usr/bin/env bash
+q=0; filters=(); ids=()
+for a in "\${@:2}"; do
+  case "$a" in
+    --filter) want=label ;;
+    --format) want=format ;;
+    -*) case "$a" in *q*) q=1 ;; esac ;;
+    *) case "\${want:-}" in label) filters+=("\${a#label=}"); want= ;; format) want= ;; *) ids+=("$a") ;; esac ;;
+  esac
+done
+awk -v q="$q" -v fs="\${filters[*]}" -v want="\${ids[*]}" 'BEGIN { n = split(fs, f, " ") }
+  { keep = (n == 0); split($8, kv, ",")
+    for (i = 1; i <= n; i++) for (j in kv) if (kv[j] == f[i] || index(kv[j], f[i] "=") == 1) keep = 1
+    if (!keep) next
+    if (want != "" && index(" " want " ", " " $1 " ") == 0) next
+    if (q) print $1; else print $1, $2, $3, $4, $5, $6, $7, $8, $9 }' "$CONTAINERS"
+exit 0
+`);
   for (const f of ["systemctl", "docker"]) chmodSync(join(dir, "bin", f), 0o755);
   writeFileSync(join(dir, "units"), units.join("\n") + "\n");
+  writeFileSync(join(dir, "containers"), containers.map((c) => Object.values(c).join(" ")).join("\n") + (containers.length ? "\n" : ""));
   writeFileSync(join(dir, "enabled"), enabled.map((u) => `${u} enabled`).join("\n") + "\n");
   return dir;
 }
 
-function metrics(dir) {
+function metrics(dir, file = "units.prom") {
   return new Promise((resolve) => {
     execFile("bash", [script], {
       cwd: dir,
-      env: { ...process.env, PATH: `${join(dir, "bin")}:/usr/bin:/bin`, AIDENHQ_DATA_DIR: join(dir, "data"), UNITS: join(dir, "units"), ENABLED: join(dir, "enabled") },
+      env: {
+        ...process.env,
+        PATH: `${join(dir, "bin")}:/usr/bin:/bin`,
+        AIDENHQ_DATA_DIR: join(dir, "data"),
+        UNITS: join(dir, "units"),
+        ENABLED: join(dir, "enabled"),
+        CONTAINERS: join(dir, "containers"),
+      },
     }, (error, stdout, stderr) => {
-      const file = join(dir, "data/modules/monitoring/textfile/units.prom");
-      resolve({ status: error ? error.code : 0, out: `${stdout}${stderr}`, prom: existsSync(file) ? readFileSync(file, "utf8") : "" });
+      const path = join(dir, `data/modules/monitoring/textfile/${file}`);
+      resolve({ status: error ? error.code : 0, out: `${stdout}${stderr}`, prom: existsSync(path) ? readFileSync(path, "utf8") : "" });
     });
   });
 }
@@ -95,4 +124,34 @@ test("a declared unit reads 1, a unit the host has disabled has no declared seri
   assert.equal(value(r.prom, "aidenhq_unit_declared", 'scope="user",unit="docker.service"'), undefined, "only the AidenHQ units are declared");
   assert.equal(value(r.prom, "aidenhq_unit_failed", 'scope="user",unit="aidenhq-ci-runner@1.service"'), 1);
   assert.equal(value(r.prom, "aidenhq_unit_active", 'scope="user",unit="aidenhq-runner.service"'), 1);
+});
+
+// A container as the fake reports it: the fields `docker inspect` fills, its labels as one `key=value,key=value` field, and
+// the two label flags the writer reads (`computer`, `oneoff`).
+const box = (id, project, service, name, { running = "true", restarts = 0, health = "none", computer = false, oneoff = false } = {}) => ({
+  id, project, service, name, running, restarts, health, computer: computer ? "yes" : "no", oneoff: oneoff ? "yes" : "no",
+  labels: [project === "-" ? "" : `com.docker.compose.project=${project}`, service === "-" ? "" : `com.docker.compose.service=${service}`, computer ? "aidenhq.computer=" : "", oneoff ? "aidenhq.oneoff=1" : ""].filter(Boolean).join(",") || "-",
+});
+
+test("a live container with no compose labels and one whose tag has moved are named, and a stopped service still reads 0", async () => {
+  const r = await metrics(checkout(ciUnits, undefined, [], [
+    box("a1b2c3", "aidenhq", "gate", "/aidenhq-gate-1"),
+    // `docker run` with no labels at all, and its image rebuilt under it since: the writing keys on neither.
+    box("d4e5f6", "-", "-", "/n-whisper", { restarts: 2, health: "unhealthy" }),
+    box("f7a8b9", "aidenhq-mod-monitoring", "gateway", "/aidenhq-mod-monitoring-gateway-1"),
+    // The security scan's container, still running: not part of the fleet. A stopped service keeps a 0, which
+    // CoreServiceDown reads; a finished one-off gets no series.
+    box("b0b0", "-", "-", "/gallant_syft", { oneoff: true }),
+    box("c0ffee", "aidenhq", "board", "/aidenhq-board-1", { running: "false" }),
+    box("5ca9", "-", "-", "/sad_syft", { running: "false" }),
+  ]), "containers.prom");
+  assert.equal(r.status, 0, r.out);
+  assert.equal(value(r.prom, "aidenhq_container_running", 'id="/system.slice/docker-a1b2c3.scope",project="aidenhq",service="gate",name="aidenhq-gate-1"'), 1);
+  assert.equal(value(r.prom, "aidenhq_container_running", 'id="/system.slice/docker-d4e5f6.scope",project="-",service="-",name="n-whisper"'), 1);
+  assert.equal(value(r.prom, "aidenhq_container_restarts", 'id="/system.slice/docker-d4e5f6.scope",project="-",service="-",name="n-whisper"'), 2);
+  assert.equal(value(r.prom, "aidenhq_container_unhealthy", 'id="/system.slice/docker-d4e5f6.scope",project="-",service="-",name="n-whisper"'), 1);
+  assert.equal(value(r.prom, "aidenhq_container_running", 'id="/system.slice/docker-f7a8b9.scope",project="aidenhq-mod-monitoring",service="gateway",name="aidenhq-mod-monitoring-gateway-1"'), 1);
+  assert.equal(value(r.prom, "aidenhq_container_running", 'id="/system.slice/docker-c0ffee.scope",project="aidenhq",service="board",name="aidenhq-board-1"'), 0);
+  assert.doesNotMatch(r.prom, /docker-(b0b0|5ca9)\.scope/);
+  assert.equal(r.prom.split("\n").filter((l) => l.startsWith("aidenhq_container_running{")).length, 4);
 });
