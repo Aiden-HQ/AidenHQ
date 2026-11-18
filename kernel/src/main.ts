@@ -158,8 +158,11 @@ const jobs = createJobs({
 });
 jobs.adopt();
 // A stop: the jobs go on for the next kernel (KillMode=process); this one stops following them, offsets saved. A restart
-// (SIGUSR2) drains first (below).
-for (const sig of ["SIGTERM", "SIGINT"] as const) process.on(sig, () => { log("stopping: jobs left running for the next kernel", { signal: sig, jobs: jobs.running() }); jobs.detach(); process.exit(0); });
+// (SIGUSR2) drains once the listeners are up (drain, below); before that it stops at once, as a stop does.
+const stop = (signal: string) => { log("stopping: jobs left running for the next kernel", { signal, jobs: jobs.running() }); jobs.detach(); process.exit(0); };
+let drain: () => void = () => stop("SIGUSR2");
+for (const sig of ["SIGTERM", "SIGINT"] as const) process.on(sig, () => stop(sig));
+process.on("SIGUSR2", () => drain());
 // The finish gate (checks.ts): modules' task.finish checks (compile), holds placed as the owner.
 const checks = createChecks({ db: records.db, registry: checksFile(path.join(configDir, "kernel", "checks.json")), owner: ownerApi, secret, resolver, log, agentKey: (id) => grantsTable().agents?.[id]?.key, graded: (id) => grantsTable().agents?.[id]?.graded === true, pending: (task) => records.list(["review", "owner", "approved"], 100, { task }) });
 // First-run setup (/setup): the keys the modules ask for go into the vault view (AIDENHQ_SECRETS_DIR) as new 0600 files renamed into place; the
@@ -351,7 +354,7 @@ every(() => {
 // when they have finished, or at DRAIN_MS (the next kernel settles what is left: lib.ts sweep and true-up).
 const HANDOFF_MS = 10_000;
 const DRAIN_MS = 5 * 60_000;
-process.on("SIGUSR2", () => {
+drain = () => {
   if (draining) return;
   draining = true;
   const t0 = Date.now();
@@ -368,4 +371,4 @@ process.on("SIGUSR2", () => {
       process.exit(0);
     }
   }, 1000);
-});
+};
