@@ -10,6 +10,12 @@ Read `CLAUDE.md` at the repo root first: it is the source for layout, convention
 - **Generic core.** New behaviour is an agent definition, handbook text or a tool, never a special case for one
   workflow. Cross-agent behaviour is a module's `prompts:`; how a kind of work is done is a module skill
   (`modules/<m>/skills/<name>/SKILL.md`).
+- **One way to do each thing.** One path per concern: no fallbacks or shims, a change that replaces a path deletes the old
+  one, variation lives in a module behind one interface, and a new path extends the existing one (grep the concern first).
+  One authority per concern (kernel for identity, credentials, policy and write tiers; `notify` for the owner; the wake
+  inbox for starting jobs). Rules live in one place: a skill, an agent's `description:` or a module prompt, linked from
+  handbooks, never copied. A new path gets a security review before it switches on. `CLAUDE.md` Conventions is the full
+  source.
 - **Gates in code.** Writes are approval records tiered in `services/runner/src/tiers.mjs`. A change to `tiers.mjs`,
   the `modules/ai-reviewer` module (its policy and `test/reviewer-cases/`) or `scripts/compiler/authority.ts` needs the maintainer's reviewer eval:
   say so in the PR.
