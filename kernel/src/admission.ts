@@ -5,6 +5,7 @@
 // edited later never changes a running job. Everything the job gets comes from the wake's task and agent, never the request.
 import { randomBytes } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
+import { CODEHOST } from "./codehost.ts";
 import { rolesOf } from "./identity.ts";
 import { JobError } from "./jobs.ts";
 import type { JobTools } from "./jobtools.ts";
@@ -64,8 +65,9 @@ export function createAdmission({ db, grants, kinds, capacity, spend, mayDispatc
   /** kernel.db, with the jobs table (jobs.ts) already made. */
   db: DatabaseSync;
   grants: () => Record<string, AgentGrant | undefined>;
-  /** Write kinds (config/kernel/writes.json): a job may request the reviewed ones (floor 1+) whose tools it holds. */
-  kinds: () => Record<string, { floor: number; tools: string[] }>;
+  /** Write kinds (config/kernel/writes.json and the kernel's): a job may request the reviewed ones (floor 1+) whose tools it
+   * holds; an engineer job also the code host's kinds and kernel.apply. */
+  kinds: () => Record<string, { module: string; floor: number; tools: string[] }>;
   /** settings.computers_max (config/computers.json `max`): the launcher's pool, so no job is admitted it can't box. */
   capacity: () => number;
   /** The spend caps a new job of this agent on this task would start over (the gateway's `exhausted`). */
@@ -86,7 +88,10 @@ export function createAdmission({ db, grants, kinds, capacity, spend, mayDispatc
     // A check job runs repo code: no tools, no writes, nothing to reach.
     const tools = profile === "check" ? {} : Object.fromEntries(Object.entries(g.tools ?? {}).map(([c, t]) => [c, [...t]]));
     const holds = (ct: string) => { const [c, t] = ct.split("."); return Boolean(tools[c!]?.includes(t!)); };
-    const writes = Object.entries(kinds()).filter(([, k]) => k.floor >= 1 && k.tools.length > 0 && k.tools.some(holds)).map(([id]) => id).sort();
+    // An Engineer publishes its workspace's commits (push, PR, merge, close, a new repo) and applies instance changes: each
+    // a record its tier decides, filed with the job's own workspace.
+    const engineer = (id: string, k: { module: string }) => profile === "engineer" && (k.module === CODEHOST || id === "kernel.apply");
+    const writes = Object.entries(kinds()).filter(([id, k]) => (k.floor >= 1 && k.tools.length > 0 && k.tools.some(holds)) || engineer(id, k)).map(([id]) => id).sort();
     return {
       profile, image: g.image ?? IMAGE[profile], engine: String(g.engine ?? ""), engines: [...(g.engines ?? [g.engine ?? ""])].filter(Boolean), model: String(routine?.model ?? g.model ?? ""), effort: String(routine?.effort ?? g.effort ?? ""),
       models: [...(g.models ?? [])], skills: (g.skills ?? []).map((k) => ({ ...k })), tools, jobcaps: profile === "check" ? [] : [...(g.jobcaps ?? [])], writes,

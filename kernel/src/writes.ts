@@ -31,7 +31,7 @@ export type Kind = { module: string; floor: Tier; panel?: boolean; paths?: boole
  */
 type Plan = { args: unknown; targets?: { [k: string]: unknown }; facts?: { [k: string]: unknown }; raise?: Raise; review_first?: ReviewFirst; paths?: unknown; card?: { [k: string]: string }; satisfied?: { evidence: string } };
 /** The kernel's own planner for one of its kinds (kernel.apply: apply-tier.ts), in place of an executor's plan. */
-export type Planner = (b: { kind: string; args: unknown; requester: Requester; task: string }) => Promise<Plan>;
+export type Planner = (b: { kind: string; args: unknown; requester: Requester; task: string; workspace?: string }) => Promise<Plan>;
 /**
  * The runner's plan for its own kind (it is that kind's planner until 3d): the tier its classifier gave on the merits,
  * whether and how the record is review-first, and the card text. A proposal only: the kernel raises it by what it derives
@@ -171,15 +171,16 @@ export function createWrites({ records, registry, connections, secret, resolver,
   }
 
   /** Plan, tier, card and file. Tier 0 comes back claimed (the caller executes it); `satisfied` comes back done. */
-  async function file(kind: string, k: Kind, requester: Requester, args: unknown, task: string, evidence?: unknown): Promise<Rec> {
+  async function file(kind: string, k: Kind, requester: Requester, args: unknown, task: string, evidence?: unknown, workspace?: string): Promise<Rec> {
     const executor = { module: k.module, url: k.executor?.url, ...(k.executor?.rev ? { rev: k.executor.rev } : {}) };
     const own = Object.hasOwn(planners, kind) ? planners[kind] : undefined;
-    const plan: Plan = own ? await own({ kind, args, requester, task }) : await call(k, "plan", { kind, args, requester, task, ...(evidence !== undefined ? { evidence } : {}) });
+    const plan: Plan = own ? await own({ kind, args, requester, task, ...(workspace ? { workspace } : {}) }) : await call(k, "plan", { kind, args, requester, task, ...(evidence !== undefined ? { evidence } : {}) });
     if (k.args) validate(k.args, plan.args);
     const targets = plan.targets ?? {};
     // The kernel's planner writes its card whole; a module's kind renders its manifest's templates.
     const card = render(own ? literal(plan.card ?? {}) : k.card ?? {}, { ...(plan.args && typeof plan.args === "object" ? plan.args : {}), ...plan.facts, ...plan.card });
-    const base = { kind, module: k.module, args: plan.args, targets, executor, policy: policy(k), card, requester, task };
+    // A job's record names its workspace (its task's identifier, from the job's row): where the code host reads its commits.
+    const base = { kind, module: k.module, args: plan.args, targets, executor, policy: policy(k), card, requester, task, ...(workspace ? { identifier: workspace } : {}) };
     if (plan.satisfied) {
       const r = records.file({ ...base, tier: 0, panel: false, state: "claimed" });
       records.finish(r.id, true, `Nothing to do: ${String(plan.satisfied.evidence).slice(0, 1000)}`);
@@ -288,7 +289,7 @@ export function createWrites({ records, registry, connections, secret, resolver,
           ? await call(k, "plan", { kind: r.kind, args: r.args, requester: r.requester, task: r.task, revalidate: true }).catch(() => undefined) : undefined;
         if (!again || digestOf({ ...r, args: again.args, targets: again.targets ?? {} }) !== r.digest) {
           records.close(id, "stale", "stale: what it acts on changed since it was approved");
-          const next = k ? await file(r.kind, k, r.requester, r.args, r.task).catch((e: Error) => e) : new Error(`${r.kind} is no longer installed`);
+          const next = k ? await file(r.kind, k, r.requester, r.args, r.task, undefined, r.identifier ?? undefined).catch((e: Error) => e) : new Error(`${r.kind} is no longer installed`);
           const said = next instanceof Error ? "It was not filed again: ask again for its current state." : `Filed again as approval ${next.id}, for its current state.`;
           if (!(next instanceof Error) && next.state === "claimed") await execute(next, k!);
           return void onTask.notify(r.task, `**Stale** (approval ${id}, ${r.kind}): what it acts on changed after it was approved, so it did not run. ${said}\n\n${MARKER}`).catch(() => {});
@@ -358,7 +359,9 @@ export function createWrites({ records, registry, connections, secret, resolver,
       // kind the kernel plans itself (kernel.apply) only by holding the kernel role of that name, which compile allows only as
       // a request of a defined kernel role (KERNEL_ROLES) and the authority diff marks as owner authority.
       const kernelRole = k.module === "kernel" && Object.hasOwn(planners, kind) && (who.roles ?? []).includes(kind);
-      const granted = (who.kind === "module" && (who.module === k.module || kernelRole)) || (who.kind === "job" ? Boolean(who.task && who.writes?.includes(kind)) : k.tools.some((ct) => { const [c, t] = ct.split("."); return who.tools[c!]?.includes(t!); }));
+      // A job (a runner job's token, or a kernel job's, whose identity is a run) by the kinds its token names; a run also by tools.
+      const named = Boolean(who.task && who.writes?.includes(kind));
+      const granted = (who.kind === "module" && (who.module === k.module || kernelRole)) || (who.kind === "job" ? named : named || k.tools.some((ct) => { const [c, t] = ct.split("."); return who.tools[c!]?.includes(t!); }));
       if (!granted) throw fail(403, "no-grant", `no grant on ${kind}`);
       // An agent's record is on the task its run is on (its notices land there, as the owner); only a module names one.
       const t = who.kind === "module" && typeof task === "string" && task ? task : who.task ?? "";
@@ -368,7 +371,7 @@ export function createWrites({ records, registry, connections, secret, resolver,
         if (!who.workspace) throw fail(409, "no_workspace", "this job has no workspace on record");
         if (args && typeof args === "object" && !Array.isArray(args)) args = { ...args, workspace: who.workspace };
       }
-      const r = await file(kind, k, requesterOf(who, t), args, t, evidence);
+      const r = await file(kind, k, requesterOf(who, t), args, t, evidence, who.workspace || undefined);
       if (r.state === "claimed") await execute(r, k);
       return r;
     },

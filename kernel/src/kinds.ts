@@ -2,9 +2,10 @@
 // with the module changes it brings) and kernel.raise_cap (a spend cap doubled), and the host runner's kinds until the code
 // host module takes them (3d): push, pr, merge and create_repo. Each kind's args schema is strict; the runner's own side of
 // the contract is services/runner/src/cards.ts (its card-contract test fails when a field it builds is missing here).
-// The runner plans and executes its kinds and kernel.apply (it is the code host until 3d): it files them with its plan
-// (POST /v1/writes with the runner's key), claims them once approved and reports their outcome. kernel.raise_cap is filed
-// and run by the kernel itself (the model gateway).
+// The runner plans and executes its kinds: it files them with its plan (POST /v1/writes with the runner's key), claims them
+// once approved and reports their outcome. kernel.apply is planned (apply-tier.ts) and executed (apply.ts) by the kernel,
+// filed by a module holding the role or a job whose token names it. kernel.raise_cap is filed and run by the kernel itself
+// (the model gateway).
 import type { Card } from "./records.ts";
 import { requestPatches } from "./tier.ts";
 import type { Kind, Schema } from "./writes.ts";
@@ -129,7 +130,7 @@ export const KERNEL_KINDS: Record<string, Kind> = {
   // An apply is always read by the reviewer first (floor 1); a push, a PR, a merge and a new repo by what they touch (runnerFacts).
   // A new repository grows the agents org: the reviewer and a second one always (tiers.mjs createRepoParts).
   ...Object.fromEntries(Object.entries(RUNNER_ARGS).map(([k, args]) => [`runner.${k}`, { module: "runner", floor: k === "create_repo" ? 1 : 0, ...(k === "create_repo" ? { panel: true } : {}), tools: [], args, runner: true } as Kind])),
-  // kernel.apply: planned by the kernel (apply-tier.ts) once the switch drops `runner`; its files raise it by the path inventory.
-  "kernel.apply": { module: "kernel", floor: 1, paths: true, tools: [], args: APPLY_ARGS, runner: true },
+  // kernel.apply: planned by the kernel (apply-tier.ts); its files raise it by the path inventory.
+  "kernel.apply": { module: "kernel", floor: 1, paths: true, tools: [], args: APPLY_ARGS },
   "kernel.raise_cap": { module: "kernel", floor: 2, tools: [], args: RAISE_ARGS },
 };

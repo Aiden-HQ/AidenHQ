@@ -365,7 +365,7 @@ export const DETAILS_MAX = 80_000;
 
 /**
  * kernel.apply's planner. The requester names the commit (repo, branch, sha); the code host reads it from git (its own copy,
- * or the task's workspace) and everything else comes from that read, the product's git and the compiled config, never from
+ * or a job's task workspace) and everything else comes from that read, the product's git and the compiled config, never from
  * the requester's words.
  */
 export function createApplyPlanner(h: {
@@ -394,14 +394,15 @@ export function createApplyPlanner(h: {
     if (typeof r?.name !== "string" || typeof r?.sha !== "string") return false;
     return (await h.verifyRelease(baseText, r.name, r.sha).catch(() => null)) === headText;
   }
-  return async function plan({ args, requester }: { args: unknown; requester?: Requester }): Promise<ApplyPlan> {
-    const a = (args ?? {}) as { repo?: unknown; branch?: unknown; sha?: unknown; workspace?: unknown };
+  return async function plan({ args, requester, workspace }: { args: unknown; requester?: Requester; workspace?: string }): Promise<ApplyPlan> {
+    const a = (args ?? {}) as { repo?: unknown; branch?: unknown; sha?: unknown };
     if (typeof a.repo !== "string" || typeof a.branch !== "string" || typeof a.sha !== "string") throw new Refused("name the commit to apply: {repo, branch, sha}");
     // The configured instance repo, never the requester's spelling of it: what is read, tiered by path and landed.
     const repo = h.instanceRepo();
     if (!repo || !repoKey(repo)) throw new Refused("the instance repo isn't set here (AIDENHQ_INSTANCE_REPO), so nothing can be applied");
     if (repoKey(a.repo) !== repoKey(repo)) throw new Refused(`an apply lands only on the instance repo (${repo}), not ${a.repo.slice(0, 100)}`);
-    const src: Source = { repo, branch: a.branch, sha: a.sha };
+    // A job's commit is read from its task's workspace (the job's own, never the requester's words); a module's from the code host's copy.
+    const src: Source = { repo, branch: a.branch, sha: a.sha, ...(workspace ? { workspace } : {}) };
     const c = await h.read(src);
     if (!c.files.length) throw new Refused("the commit changes nothing against the instance's main");
     const stray = strayFiles(c.files);

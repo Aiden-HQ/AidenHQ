@@ -23,7 +23,7 @@ function kernel({ modules = { modules: {}, marketplaces: [] }, inventory = { ent
   const h = { reads: 0, lands: [], launches: [], units: {} };
   const planner = createApplyPlanner({
     instanceRepo: () => "acme/aidenhq-instance",
-    read: async (s) => (h.reads++, { files: ["instance.yaml"], texts: { base: { "instance.yaml": texts.base }, head: { "instance.yaml": texts.head } }, diff: `-product: ${OLD}\n+product: ${NEW}\n`, trial: "" }),
+    read: async (s) => (h.reads++, h.read = s, { files: ["instance.yaml"], texts: { base: { "instance.yaml": texts.base }, head: { "instance.yaml": texts.head } }, diff: `-product: ${OLD}\n+product: ${NEW}\n`, trial: "" }),
     product: { onMain: async () => true, isAncestor: async (a, b) => a === OLD && b === NEW, log: async () => "bbbbbbb feat: something (#1)" },
     modules: () => modules, roles: () => ({}), connections: () => ({}), moduleApps: () => [], verifyRelease,
   });
@@ -34,10 +34,9 @@ function kernel({ modules = { modules: {}, marketplaces: [] }, inventory = { ent
     launch: async (u) => { h.launches.push(u); h.units[u] = { loaded: true, active: "active", sub: "exited", result: "success" }; },
     unit: async (u) => h.units[u] ?? { loaded: false, active: "inactive", sub: "dead", result: "" },
   });
-  // As after the switch: kernel.apply is the kernel's own kind, planned and executed here.
-  const { runner: _, ...apply } = KERNEL_KINDS["kernel.apply"];
+  // kernel.apply is the kernel's own kind, planned and executed here.
   const writes = createWrites({
-    records, registry: () => ({ "kernel.apply": apply }), connections: () => ({}), secret: () => "", resolver: {}, paths: () => inventory ?? undefined,
+    records, registry: () => ({ "kernel.apply": KERNEL_KINDS["kernel.apply"] }), connections: () => ({}), secret: () => "", resolver: {}, paths: () => inventory ?? undefined,
     repos: () => ({ product: "acme/aidenhq", instance: "acme/aidenhq-instance" }),
     reviews: { request: async () => ({ decision: reviewer, reason: "read it", model: "~acme/reviewer" }) },
     onTask: { open: async () => true, notify: async () => {} }, replay: async () => ({ ok: false, text: "" }),
@@ -62,14 +61,23 @@ test("a release bump files kernel.apply, planned from the code host's read and t
   const blind = kernel({ inventory: null });
   assert.equal((await blind.writes.request(codehost, { kind: "kernel.apply", args: BUMP, task: "TASK-1" })).rule, "gate-list-unknown");
   // Only a module holding the role files it, and only for a kernel kind the kernel plans: a role named after another
-  // module's kind grants nothing. Until the switch drops `runner`, nobody files kernel.apply through this path.
+  // module's kind grants nothing.
   await assert.rejects(k.writes.request({ ...codehost, roles: ["kernel.tasks"] }, { kind: "kernel.apply", args: BUMP, task: "TASK-1" }), /no grant on kernel.apply/);
   const merge = { module: "codehost-github", floor: 0, tools: [], executor: { url: "http://codehost-github:8100/x", auth_secret: "k" } };
-  const other = createWrites({ records: k.records, registry: () => ({ "codehost-github.merge": merge, "kernel.apply": { ...KERNEL_KINDS["kernel.apply"], runner: undefined } }), connections: () => ({}), secret: () => "", resolver: {}, onTask: { open: async () => true, notify: async () => {} }, replay: async () => ({}) });
+  const other = createWrites({ records: k.records, registry: () => ({ "codehost-github.merge": merge, "kernel.apply": KERNEL_KINDS["kernel.apply"] }), connections: () => ({}), secret: () => "", resolver: {}, onTask: { open: async () => true, notify: async () => {} }, replay: async () => ({}) });
   await assert.rejects(other.request({ kind: "module", module: "acme", roles: ["codehost-github.merge"], tools: {} }, { kind: "codehost-github.merge", args: {}, task: "TASK-1" }), /no grant on codehost-github.merge/);
   await assert.rejects(other.request({ ...codehost, roles: ["kernel.apply"] }, { kind: "kernel.apply", args: BUMP, task: "TASK-1" }), /no write kind kernel.apply/, "no planner: not filed");
-  const before = createWrites({ records: k.records, registry: () => ({ "kernel.apply": KERNEL_KINDS["kernel.apply"] }), connections: () => ({}), secret: () => "", resolver: {}, onTask: { open: async () => true, notify: async () => {} }, replay: async () => ({}), planners: { "kernel.apply": async () => ({}) } });
-  await assert.rejects(before.request(codehost, { kind: "kernel.apply", args: BUMP, task: "TASK-1" }), /no write kind kernel.apply/);
+});
+
+test("a job's kernel.apply is read from, and names, the job's own workspace", async () => {
+  const k = kernel();
+  // A kernel job's identity (identity.ts): a run whose token names kernel.apply, on its task, in its row's workspace.
+  const job = { kind: "run", agent: "agent-1", key: "fleet-engineer", name: "fleet-engineer", roles: [], tools: {}, writes: ["kernel.apply"], task: "TASK-1", workspace: "ACME-7", credential: "" };
+  const r = await k.writes.request(job, { kind: "kernel.apply", args: BUMP, task: "OTHER-9" });
+  assert.equal(r.identifier, "ACME-7");
+  assert.equal(r.task, "TASK-1");
+  assert.equal(k.h.read.workspace, "ACME-7");
+  await assert.rejects(k.writes.request({ ...job, writes: [] }, { kind: "kernel.apply", args: BUMP }), /no grant on kernel.apply/);
 });
 
 test("a bump that brings new module authority waits for the owner after the reviewer, and lands only on the owner's yes", async () => {
