@@ -17,6 +17,8 @@ RUN pnpm --filter @primer/api deploy --prod --legacy /out/api \
  && mkdir -p /out/web && cp -r apps/web/dist /out/web/dist
 
 FROM node:24.22.2-bookworm-slim@sha256:01d566e8d94d8c619591d78652babfccd3c6992a3dffa9ed5ab39e11cf6c70e9
+# Primer runs on node alone: the bundled npm (with published advisories) is deleted.
+RUN rm -rf /usr/local/lib/node_modules/npm
 ENV NODE_ENV=production SERVE_STATIC=1 STATIC_ROOT=/app/web/dist PORT=3000 STORAGE_BACKEND=filesystem STORAGE_ROOT=/data/blobs
 WORKDIR /app
 COPY --from=build --chown=root:root /out/api /app/api
