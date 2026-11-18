@@ -130,6 +130,19 @@ describe("the reviewer-eval gate", { concurrency: 1 }, () => {
     assert.match((await gate("acme/aidenhq", pr(9, head)))?.stop ?? "", /couldn't run 3 times/);
   });
 
+  it("a PR from an old base is judged by the base's tip, and a receipt for an older tip never counts", async () => {
+    const old = sh(prod, "rev-parse", "main");
+    const head = branch(prod, "fix/old-base", { "modules/ai-reviewer/service/src/review.mjs": "// v9\n" }, old);
+    const tip = commit(prod, { "README.md": "moved\n" }, "main moves");
+    assert.ok((await gate("acme/aidenhq", pr(11, head)))?.wait);
+    assert.equal(checks.at(-1).spec.judge_commit, tip, "judged by the tip, not the merge base it chose");
+    finish("pass");
+    assert.equal(await gate("acme/aidenhq", pr(11, head)), undefined);
+    const newer = commit(prod, { "README.md": "moved again\n" }, "main moves again");
+    assert.ok((await gate("acme/aidenhq", pr(11, head)))?.wait, "main moved: the old tip's receipt doesn't count, the eval runs again");
+    assert.equal(checks.at(-1).spec.judge_commit, newer);
+  });
+
   it("anything it can't read stops: the kernel unreachable never passes", async () => {
     const broken = createEvalGate({ productRepo: "acme/aidenhq", dir: join(root, "data2"), kernel: async () => { throw new Error("the kernel's /v1/checks answered 503"); }, fetch: fetchInto, git: async (dir, args) => sh(dir, ...args), defaultBranch: async () => "main" });
     const head = branch(prod, "fix/down", { "modules/ai-reviewer/service/src/review.mjs": "// v8\n" });

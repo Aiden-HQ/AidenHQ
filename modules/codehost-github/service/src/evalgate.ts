@@ -7,7 +7,8 @@
 //
 // What is judged, always a product commit (the reviewer is the product's modules/ai-reviewer and REVIEWER_CODE), by an
 // earlier one:
-// - a product PR that changes the reviewer's code: its head, judged by its merge base, receipt for its head;
+// - a product PR that changes the reviewer's code: its head, judged by its base branch's tip (never a commit the PR picks, such
+//   as an old merge base), receipt for its head and that tip: when the base moves, the receipt no longer holds and it runs again;
 // - the release train's bump of the instance's product pin (`bump`) whose reviewer content differs: the new commit, judged by
 //   the pinned one, receipt for the new commit. A passing receipt for the same reviewer content (REVIEWER_TREE's object ids),
 //   from any head, already covers it.
@@ -126,10 +127,9 @@ export function createEvalGate(d: {
     try {
       const base = await d.fetch(repo, pr.baseRefName);
       if ((await d.fetch(repo, head)).sha !== head) return { wait: `#${pr.number}'s head isn't at \`${head.slice(0, 12)}\` yet` };
-      // Judged by the commit it was made from (its merge base with the base branch): a merge to main meanwhile changes neither
-      // the judge nor the receipt the eval is bound to.
+      // What it changes is read from its merge base; it is judged by the base branch's tip, the reviewer it would land on.
       const from = await d.git(base.dir, ["merge-base", base.sha, head]);
-      return touchesReviewer(await files(base.dir, from, head)) ? await evaluate(repo, head, base.dir, from) : undefined;
+      return touchesReviewer(await files(base.dir, from, head)) ? await evaluate(repo, head, base.dir, base.sha) : undefined;
     } catch (err) {
       return failClosed(err);
     }
