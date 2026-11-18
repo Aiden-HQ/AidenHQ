@@ -183,3 +183,21 @@ test("skill names: distinct ids per module, unknown ids, one name twice for one 
   symlinkSync(elsewhere, join(out, "modules/a/skills"));
   assert.throws(() => compile(out, skillInstance(["a"])), /skill steal: its folder must be inside the module/);
 });
+
+test("a delegator's handbook lists every agent's description; an agent without delegation tools gets no Team list", () => {
+  const dir = instance(["design", "fleet-ops", "engineering"]);
+  const { paperclip: p } = compile(product, dir);
+  const parts = (key) => handbookParts(p, key, p.agents[key], { repo: product, instanceDir: dir, fleetIssues: "WOR-0" }).map(([id, t]) => [id, t]);
+  const team = parts("chief-of-staff").find(([id]) => id === "team")?.[1] ?? "";
+  for (const [key, a] of Object.entries(p.agents)) assert.ok(team.includes(`(${key}`) && team.includes(a.description), key);
+  assert.ok(Object.keys(p.agents).every((k) => p.agents[k].description));
+  const quiet = Object.keys(p.agents).find((k) => p.agents[k].adapter === "codex_local" && p.agents[k].dispatch !== "runner" && !["task_delegate", "task_create"].some((t) => p.agents[k].enabled_tools?.paperclip_tasks?.includes(t)));
+  assert.ok(quiet && !parts(quiet).some(([id]) => id === "team"));
+});
+
+test("a module agent without a description fails compile", () => {
+  const dir = skillProduct({});
+  const file = join(dir, "modules/core/agents/boss/AGENTS.md");
+  writeFileSync(file, readFileSync(file, "utf8").replace(/^description:.*\n/m, ""));
+  assert.throws(() => compile(dir, skillInstance([])), /agent boss has no description: it is how others route work to it/);
+});

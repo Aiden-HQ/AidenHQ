@@ -30,7 +30,7 @@ npx vitest run src/pages/x.test.tsx   # one component test file (seconds, no bui
 node --test test/app.test.mjs     # one server test file
 npm test                          # every test: component tests, then build, serve and check the pages, CSP, health and API
 npm run preview                   # build, then serve the app with its sample data on 4173 (stop with Ctrl-C)
-npm run screens                   # screenshots at 1440 and 390, light and dark, plus the e2e/ flows: one command
+npm run screens                   # screenshots at 1440, 1920, 2560, 768 and 390, light and dark, plus the e2e/ flows: one command
 npx playwright test e2e/flows.spec.ts --project desktop-light   # one browser flow
 ```
 

@@ -19,7 +19,7 @@ function build(connections, agents = {}) {
   writeFileSync(join(product, "modules", "m", "module.yaml"), YAML.stringify({ name: "m", description: "named reads", connections, agents }));
   for (const key of Object.keys(agents)) {
     mkdirSync(join(product, "modules", "m", "agents", key), { recursive: true });
-    writeFileSync(join(product, "modules", "m", "agents", key, "AGENTS.md"), `---\nname: ${key}\ntitle: ${key}\n---\n\n${key} handbook\n`);
+    writeFileSync(join(product, "modules", "m", "agents", key, "AGENTS.md"), `---\nname: ${key}\ntitle: ${key}\ndescription: The ${key} agent.\n---\n\n${key} handbook\n`);
   }
   const instance = mkdtempSync(join(tmpdir(), "named-instance-"));
   writeFileSync(join(instance, "instance.yaml"), YAML.stringify({ product: "0".repeat(40), modules: ["m"], settings }));
