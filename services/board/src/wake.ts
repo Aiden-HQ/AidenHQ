@@ -184,7 +184,8 @@ export async function wakeTick(deps: WakeDeps, recent: Recent, now = Date.now())
   }
   // One long model answer is not a configuration fault: Paperclip files a run cut off at max_output_tokens as
   // configuration_incomplete, blocks the agent's task and sets the agent to `error`, which silenced the chief of staff's chat
-  // (WOR-7241). The newest run of an agent on its own blocked task, once: the task goes back to todo and the error is cleared.
+  // (WOR-7241). The newest run of an agent on its own blocked task, once: the task goes back to todo, the error is cleared and
+  // the agent is woken on it.
   const truncated = [...(state.truncated ?? [])];
   for (const r of runs as PastRun[]) {
     if (r.status !== "failed" || r.errorCode !== CONFIG_INCOMPLETE || !r.error?.includes("max_output_tokens") || !r.issueId || truncated.includes(r.id)) continue;
@@ -195,6 +196,8 @@ export async function wakeTick(deps: WakeDeps, recent: Recent, now = Date.now())
       if (task.status !== "blocked" || task.assigneeAgentId !== r.agentId) continue;
       await pc.updateIssue(task.id, { status: "todo" });
       if (agents.find((a) => a.id === r.agentId)?.status === "error") await pc.clearAgentError(r.agentId);
+      // Paperclip re-blocks a task whose newest run is still the failed one: a fresh run on it replaces that run.
+      await pc.wakeAgent(r.agentId, `${task.identifier} was unblocked after a run was cut off at its output limit; continue it.`, `truncated:${r.id}`, task.id);
       log.info({ issue: task.identifier, run: r.id }, "unblocked a task whose run was cut off at its output limit");
     } catch (err) {
       log.warn({ run: r.id, err: String(err) }, "couldn't repair a run cut off at its output limit");

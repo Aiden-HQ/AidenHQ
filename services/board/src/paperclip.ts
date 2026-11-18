@@ -436,9 +436,9 @@ export class Paperclip {
     return this.request<Comment>("POST", `/api/issues/${encodeURIComponent(id)}/comments`, { body });
   }
 
-  /** Wakes an agent with no task attached (a task-scoped wake goes through that task's execution hold). */
-  wakeAgent(agentId: string, reason: string, idempotencyKey: string): Promise<unknown> {
-    return this.request("POST", `/api/agents/${encodeURIComponent(agentId)}/wakeup`, { source: "on_demand", triggerDetail: "manual", reason, idempotencyKey });
+  /** Wakes an agent with no task attached (a task-scoped wake goes through that task's execution hold), or on `issueId`. */
+  wakeAgent(agentId: string, reason: string, idempotencyKey: string, issueId?: string): Promise<unknown> {
+    return this.request("POST", `/api/agents/${encodeURIComponent(agentId)}/wakeup`, { source: "on_demand", triggerDetail: "manual", reason, idempotencyKey, ...(issueId ? { issueId } : {}) });
   }
 
   createIssue(body: Record<string, unknown>): Promise<Issue> {
