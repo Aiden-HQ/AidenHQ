@@ -139,7 +139,8 @@ async function release(pc: WakeDeps["pc"], task: Issue, release: Release, busy: 
   }
   // One notice per closure, however many ticks it takes: its marker carries the closure's key.
   const body = `Wake-up: ${release.line}\n\n<!-- aidenhq-wake:${release.key} -->${NOTICE_MARKER}${WAKE_MARKER}`;
-  const posted = (await pc.comments(task.id).catch(() => [])).some((c) => c.body?.includes(`aidenhq-wake:${release.key}`));
+  // A failed read is not "not posted": it retries next tick rather than risking a second notice for one closure.
+  const posted = (await pc.comments(task.id)).some((c) => c.body?.includes(`aidenhq-wake:${release.key}`));
   if (!posted) await pc.addComment(task.id, body);
   // The task is todo before the wake, and the key makes a retry the same wake rather than a second run. A queued or live
   // run already takes the release, and the task is looked at again (todo now) once that run ends.
@@ -207,8 +208,11 @@ export async function wakeTick(deps: WakeDeps, recent: Recent, now = Date.now())
   const paused = new Set(agents.filter((a: Agent) => a.status === "paused" || a.status === "terminated").map((a) => a.id));
   const watched = new Set(routines.filter((r: Routine) => r.title.startsWith("Heartbeat: ") && r.status === "active" && r.assigneeAgentId && !paused.has(r.assigneeAgentId)).map((r) => r.assigneeAgentId!));
   const state = readState(store);
+  // Pending releases outlive both the watched set and one tick's task list: a release already moved its task to `todo`, so
+  // only this row finishes its notice and wake, and dropping it would lose them for good.
+  const releases: Record<string, Release> = { ...(state.releases ?? {}) };
   if (!watched.size) {
-    store.setMeta(STATE_KEY, JSON.stringify({ cursors: {}, at: new Date(now).toISOString(), truncated: state.truncated }));
+    store.setMeta(STATE_KEY, JSON.stringify({ cursors: {}, releases, at: new Date(now).toISOString(), truncated: state.truncated }));
     return [];
   }
   const all = await pc.openIssues();
@@ -278,7 +282,6 @@ export async function wakeTick(deps: WakeDeps, recent: Recent, now = Date.now())
   const cursors: Cursors = {};
   const seen: Record<string, string> = {};
   const woke: string[] = [];
-  const releases: Record<string, Release> = { ...(state.releases ?? {}) };
   for (const t of tasks) {
     const agent = t.assigneeAgentId!;
     const was = state.cursors[t.id];
@@ -369,7 +372,7 @@ export async function wakeTick(deps: WakeDeps, recent: Recent, now = Date.now())
     const [id, src] = [k.slice(0, k.indexOf("|")), k.slice(k.indexOf("|") + 1)];
     if (state.cursors[id]?.[src] !== cursors[id]?.[src]) delete seen[k];
   }
-  // A release whose task the list no longer has (done, cancelled, reassigned, or its heartbeat paused) is moot.
+  // A release whose task closed since (done, cancelled) is moot: there is nothing left to wake anyone about.
   const open = new Map(all.map((t) => [t.id, t]));
   for (const [id] of Object.entries(releases)) if (!open.has(id)) delete releases[id];
   store.setMeta(STATE_KEY, JSON.stringify({ cursors, seen, releases, at: new Date(now).toISOString(), truncated: truncated.slice(-50) }));
@@ -377,6 +380,9 @@ export async function wakeTick(deps: WakeDeps, recent: Recent, now = Date.now())
   // later tick has to run even when its task found no signal this time.
   for (const [id, r] of Object.entries(releases)) {
     const task = open.get(id)!;
+    // The agent isn't eligible this tick (its heartbeat paused or gone, or it isn't watched): keep the release and retry
+    // when it is, rather than dropping a closure after its task already left `blocked`.
+    if (!watched.has(r.agent)) continue;
     const busyHere = busy.has(`${r.agent}:${id}`);
     try {
       await release(pc, task, r, busyHere);

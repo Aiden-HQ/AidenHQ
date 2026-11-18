@@ -440,3 +440,52 @@ describe("a blocker read that fails", () => {
     expect(await wakeTick(d, recent, t0 + 10 * MIN)).toEqual([]);
   });
 });
+
+describe("a pending release across ticks", () => {
+  const blocker = (id: string, status: string): Blocker => ({ id, identifier: `WOR-${id}`, status, updatedAt: iso(t0 - 60 * MIN) });
+  /** A task released on t0+2 with a failing wake, so its release is pending and the task is todo. */
+  async function pending() {
+    const f = fake();
+    const store = new Store(":memory:");
+    const recent: Recent = new Map();
+    f.put({ id: "2", assigneeAgentId: "e", status: "in_progress" }, t0 - 60 * MIN);
+    f.put({ id: "1", assigneeAgentId: "a", status: "blocked", blockedBy: [blocker("2", "in_progress")] }, t0 - 60 * MIN);
+    const d = deps(f, store);
+    await wakeTick(d, recent, t0);
+    f.put({ id: "2", status: "done", completedAt: iso(t0 + MIN) }, t0 + MIN);
+    for (const t of f.tasks.values()) for (const b of t.blockedBy ?? []) Object.assign(b, { status: "done", updatedAt: iso(t0 + MIN), completedAt: iso(t0 + MIN) });
+    const wakeAgent = f.pc.wakeAgent;
+    f.pc.wakeAgent = async () => { throw new Error("control plane down"); };
+    expect(await wakeTick(d, recent, t0 + 2 * MIN)).toEqual([]);
+    f.pc.wakeAgent = wakeAgent;
+    expect(f.tasks.get("1")!.status).toBe("todo");
+    expect(store.meta("wake_cursors")).toContain("blockers:1:closed:2:done");
+    return { f, store, recent, d };
+  }
+
+  it("survives a tick with no watched agents and still wakes once", async () => {
+    const { f, store, recent, d } = await pending();
+    // Every heartbeat routine is gone this tick: the early branch must not drop the pending release.
+    const routines = f.pc.routines;
+    f.pc.routines = async () => [];
+    expect(await wakeTick(d, recent, t0 + 4 * MIN)).toEqual([]);
+    expect(store.meta("wake_cursors")).toContain("blockers:1:closed:2:done");
+    f.pc.routines = routines;
+    expect(await wakeTick(d, recent, t0 + 6 * MIN)).toEqual(["1"]);
+    expect(f.comments).toHaveLength(1);
+    expect(f.woken).toEqual(["a:1"]);
+  });
+
+  it("is held while its agent is paused, then finished when it is eligible again", async () => {
+    const { f, recent, d } = await pending();
+    const agents = f.pc.agents;
+    f.pc.agents = async () => [{ id: "a", status: "paused" }, { id: "b", status: "idle" }, { id: "e", status: "idle" }];
+    expect(await wakeTick(d, recent, t0 + 4 * MIN)).toEqual([]);
+    expect(f.comments).toHaveLength(1); // nothing dropped, nothing posted twice
+    f.pc.agents = agents;
+    expect(await wakeTick(d, recent, t0 + 6 * MIN)).toEqual(["1"]);
+    expect(f.comments).toHaveLength(1);
+    expect(f.woken).toEqual(["a:1"]);
+    expect(await wakeTick(d, recent, t0 + 10 * MIN)).toEqual([]);
+  });
+});
