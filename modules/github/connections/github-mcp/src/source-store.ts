@@ -4,8 +4,7 @@
 // log tracked-field changes, a baseline flag for first syncs, per-scope sync state, and one src_meta.ingest_run per pass.
 // No LLM anywhere: ingest is code.
 //
-// Canonical copy: services/shared/source-store.ts. Writers hold a byte-identical copy at src/source-store.ts:
-// edit this one, then run `node scripts/sync-shared.mjs` (scripts/test/shared.test.mjs fails on drift).
+// Writers import it as @aidenhq/sdk/source-store (pg is theirs: a peer dependency).
 import { readFileSync } from "node:fs";
 import pg from "pg";
 

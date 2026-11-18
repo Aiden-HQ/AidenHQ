@@ -401,7 +401,7 @@ git ls-files --cached --others --exclude-standard | grep -E '(^|/)(\.env|system\
 echo "Capabilities (by construction)"
 pass "ops-mcp exposes no delete/replace/arbitrary-write tools (see modules/meetings/connections/ops-mcp/src/mcp/tools.ts)"
 pass "google-workspace-mcp requests only *.readonly scopes and has GET-only client code"
-# Vendor connections pass the vendor's MCP server through whole (owner, 2026-11-18; modules vendor-mcp/src/vendor/proxy.ts):
+# Vendor connections pass the vendor's MCP server through whole (owner, 2026-11-18; kernel/sdk/src/vendor/proxy.ts):
 # the gate is the manifest's tags and the kernel. Every read tag is a reading verb or a reviewed exception (fail closed); the jobs' read endpoint serves only the manifest's read tags that the vendor also marks read-only (READ_TOOLS equals
 # the read tags); and the pins stay (Slack's draft arguments, Jira's site, Grafana's untrustworthy families).
 vendor_tags="$(node --input-type=module -e '
@@ -439,7 +439,7 @@ vendor_tags="$(node --input-type=module -e '
   console.log(bad.length ? `BAD ${bad.join("; ")}` : `ok ${seen.join(" ")}`);
 ' 2>&1)"
 case "$vendor_tags" in ok*) pass "vendor connections (${vendor_tags#ok }): every read tag is a reading verb or a reviewed exception; each read endpoint serves only its read tags";; *) fail "vendor connections: $vendor_tags";; esac
-vp="modules/vendor-mcp/src/vendor/proxy.ts"
+vp="kernel/sdk/src/vendor/proxy.ts"
 grep -qF 'const servesRead = (t: Tool) => reads.has(t.name) && isRead(t);' "$vp" && grep -qF 'if (!tool) throw new Error(`${o.name} doesn'"'"'t offer ${name}`);' "$vp" \
   && grep -qF 'export const DRAFT_ARGS = ["channel_id", "message", "thread_ts"];' modules/slack/connections/slack-mcp/src/slack.ts && grep -qF 'hooks: { args: (name, args) => upstreamArgs(name, args) },' modules/slack/connections/slack-mcp/src/main.ts \
   && grep -qF 'args(_name, { [SITE_ARG]: _caller, ...args }, tool) {' modules/jira/connections/jira-mcp/src/site.ts \

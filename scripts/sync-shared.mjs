@@ -3,10 +3,10 @@
 // byte-identical copy; scripts/test/shared.test.mjs fails when one drifts (the official modules' under modules/ included).
 //   kernel/sdk/src/{caller,fence}.ts the caller assertion check and the fence, in every module server (src/aidenhq-sdk/)
 //   kernel/sdk/src/executor.ts       the executor side of write kinds, in each module server with an executor
-//   modules/vendor-mcp/src/vendor/{proxy,oauth}.ts  the vendor pass-through, in each vendor connection (src/vendor/)
+//   kernel/sdk/src/vendor/{proxy,oauth}.ts  the vendor pass-through, in each vendor connection (src/vendor/)
 //   kernel/sdk/src/reviewer.ts       the reviewer side of reviewer@1, in the reviewer module's service
 //   services/shared/review-files.mjs  the changed files as the reviewer reads them, in the reviewer module's service
-//   services/shared/source-store.ts  the shared-sources writer side, in every source writer
+//   kernel/sdk/src/source-store.ts   the shared-sources writer side, in every source writer
 //   services/shared/reason-codes.ts  reason codes on approvals and refusals, in the board
 //   services/shared/url-setting.ts   the URL setting check, in the board and the runner (the compiler imports the original)
 //   modules/apps-platform/design-system/      the design system, in the app starter and the agent computers
@@ -48,15 +48,15 @@ export function sharedCopies(root = repo) {
   // The executor side of write kinds (executor@1), in each module server that declares an executor.
   "kernel/sdk/src/executor.ts": ["modules/apps-platform/apps-mcp/src/aidenhq-sdk/executor.ts", "modules/primer/connections/primer-mcp/src/aidenhq-sdk/executor.ts", "modules/channel-slack/connections/slack/src/aidenhq-sdk/executor.ts", "modules/hubspot/connections/hubspot-mcp/src/aidenhq-sdk/executor.ts", "modules/codehost-github/service/src/aidenhq-sdk/executor.ts"],
   // The vendor connections' shared pass-through (owner, 2026-11-18: every connection exposes its vendor's whole MCP server),
-  // whose canonical lives in the official modules (vendor-mcp/, not a module), in each vendor connection's src/vendor/.
-  ...Object.fromEntries(["proxy.ts", "oauth.ts"].map((f) => [`modules/vendor-mcp/src/vendor/${f}`, ["glean/connections/glean-mcp", "grafana/connections/grafana-mcp", "hubspot/connections/hubspot-mcp", "jira/connections/jira-mcp", "primer/connections/primer-mcp", "slack/connections/slack-mcp"].map((d) => `modules/${d}/src/vendor/${f}`)])),
+  // in each vendor connection's src/vendor/.
+  ...Object.fromEntries(["proxy.ts", "oauth.ts"].map((f) => [`kernel/sdk/src/vendor/${f}`, ["glean/connections/glean-mcp", "grafana/connections/grafana-mcp", "hubspot/connections/hubspot-mcp", "jira/connections/jira-mcp", "primer/connections/primer-mcp", "slack/connections/slack-mcp"].map((d) => `modules/${d}/src/vendor/${f}`)])),
   // The reviewer side of reviewer@1, in the reviewer module's service (its own Docker build context).
   "kernel/sdk/src/reviewer.ts": ["modules/ai-reviewer/service/src/aidenhq-sdk/reviewer.ts"],
   // The changed files' shaping (the runner imports the canonical copy; the eval and the reviewer's verdicts use this one).
   "services/shared/review-files.mjs": ["modules/ai-reviewer/service/src/review-files.mjs"],
   // The reliability checklist's matcher: the CI template's (MIT), used by its code review and by the AI reviewer.
   "modules/ci/template/.github/review-checklist.mjs": ["modules/ai-reviewer/service/src/review-checklist.mjs"],
-  "services/shared/source-store.ts": [
+  "kernel/sdk/src/source-store.ts": [
     "modules/channel-slack/connections/slack/src/source-store.ts",
     "modules/github/connections/github-mcp/src/source-store.ts",
     "modules/hubspot/connections/hubspot-mcp/src/source-store.ts",

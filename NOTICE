@@ -30,7 +30,7 @@ AidenHQ began as a fork of Pennyworth. Files derived from it, wholly or in part,
   modules/clickhouse/connections/clickhouse-mcp/, modules/grafana/connections/grafana-mcp/,
   modules/glean/connections/glean-mcp/, modules/primer/connections/primer-mcp/,
   modules/slack/connections/slack-mcp/, modules/github/connections/github-mcp/, parts of
-  modules/jira/connections/jira-mcp/, and modules/vendor-mcp/ (the vendor connections' shared proxy)
+  modules/jira/connections/jira-mcp/, and kernel/sdk/src/vendor/ (the vendor connections' shared proxy)
 - scripts/ (paperclip-setup.mjs, healthcheck.sh, bootstrap.sh, verify-security.sh, the
   *-auth.sh scripts, trigger-meeting-scan.sh, dev/mcp-call.mjs)
 - config/*.example.yaml, compose.yaml, .env.example
