@@ -54,16 +54,16 @@ if (!secretsDir) throw new Error("AIDENHQ_SECRETS_DIR is not set (.env)");
 const secret = (n) => { try { return readFileSync(path.join(secretsDir, n), "utf8").trim(); } catch { return ""; } };
 
 const CFG = {
-  control: { host: env("AIDENHQ_LAUNCHER_HOST", "10.231.0.1"), port: Number(env("AIDENHQ_LAUNCHER_PORT", 8199)) },
-  gateway: { host: env("AIDENHQ_GATEWAY_HOST", "10.231.2.1"), port: Number(env("AIDENHQ_GATEWAY_PORT", 8200)) },
-  network: env("AIDENHQ_COMPUTERS_NETWORK", "aidenhq-computers"),
-  prefix: env("AIDENHQ_COMPUTERS_PREFIX", "aidenhq-computer-"),
+  control: { host: "10.231.0.1", port: 8199 },
+  gateway: { host: "10.231.2.1", port: 8200 },
+  network: "aidenhq-computers",
+  prefix: "aidenhq-computer-",
   // 7: the 5 Paperclip computer agents' max_parallel plus the App Engineer's 2 (2026-11-13, a 15 GB host with no swap).
   max: Number(env("AIDENHQ_COMPUTERS_MAX", 7)),
-  idleMs: Number(env("AIDENHQ_COMPUTERS_IDLE_MIN", 10)) * 60_000,
+  idleMs: 10 * 60_000,
   limits: { memory: env("AIDENHQ_COMPUTERS_MEMORY", "6g"), cpus: Number(env("AIDENHQ_COMPUTERS_CPUS", 2)), shm: "1g", pids: 1024 },
   grantsFile: path.join(configDir, "grants", "grants.json"),
-  computersFile: env("AIDENHQ_COMPUTERS_FILE", path.join(configDir, "computers.json")),
+  computersFile: path.join(configDir, "computers.json"),
   composeProject: env("COMPOSE_PROJECT_NAME", "aidenhq"),
   // The runner's work and state dirs (services/runner/src/config.mjs: work_dir and state_dir in config/runner.yaml): its cache
   // clones, and for runner jobs the task folders, the clones' guard hooks and the per-task Codex homes.
@@ -80,9 +80,9 @@ function runnerDir(key, fallback) {
 }
 const GATEWAY_URL = `http://${CFG.gateway.host}:${CFG.gateway.port}`;
 // The model gateway on host loopback (kernel/src/gateway): every box's model call goes on to it.
-const MODEL_GATEWAY_URL = env("AIDENHQ_MODEL_GATEWAY_URL", "http://127.0.0.1:8201");
+const MODEL_GATEWAY_URL = "http://127.0.0.1:8201";
 // The kernel's backplane listener: every box's tool call goes on to its proxy, and it asks /v1/whoami what a run is granted.
-const KERNEL_URL = env("AIDENHQ_KERNEL_URL", "http://10.231.0.1:3130");
+const KERNEL_URL = "http://10.231.0.1:3130";
 const TOKEN = secret("computer_launcher_token");
 const PROGRESS_TOKEN = secret("computer_progress_token");
 // The runner's key: the job routes only. Unset, runner jobs are off (every /job call is refused).
