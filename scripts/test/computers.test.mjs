@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import YAML from "yaml";
-import { compile } from "../modules.mjs";
+import { compile, grantEntry } from "../modules.mjs";
 import { computerAdapterConfig, computerSection, computersConfig, ensureComputers, runnerBox, validateImages, GATEWAY_URL } from "../computers.mjs";
 import { assertNoShell } from "../no-shell.mjs";
 import { BUNDLE } from "./bundle.mjs";
@@ -27,6 +27,11 @@ test("the instance switches one agent on; the launcher learns the image tag and 
   // The browser image is always built (apps-mcp renders in it), and agents can't name it.
   assert.match(c.images.browser, /^aidenhq\/computer-browser:[0-9a-f]{12}$/);
   assert.match(computersConfig(compile(product, inst({})).paperclip, product).images.browser, /^aidenhq\/computer-browser:/);
+  // One capacity setting: the launcher's pool and the kernel's admission both read computers.json `max`.
+  assert.equal(r.computersMax, 12);
+  assert.equal(computersConfig(r.paperclip, product, [], r.computersMax).max, 12);
+  // A profile is compiled into the grants entry the kernel freezes into each job (crew unless the agent says otherwise).
+  assert.equal(grantEntry("assistant", r.paperclip.agents.assistant, r.paperclip.routines).profile, "crew");
   assert.throws(() => validateImages({ x: { image: "browser" } }), /image must be one of agent-base, engineer/);
   // No URL or secret reaches the launcher: every connection goes through the kernel's proxy, tasks included.
   assert.deepEqual(c.connections.apps, { tool_timeout_sec: 600 });

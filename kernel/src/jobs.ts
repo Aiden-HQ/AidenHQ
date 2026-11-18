@@ -293,7 +293,7 @@ export function createJobs({ db, cfg, cp, mayDispatch, log, boxWrap }: {
     const ident = String(task.identifier ?? "");
     if (!ID.test(ident)) throw new JobError(400, "bad-task", `task ${b.task} has no identifier`);
     if (["done", "cancelled"].includes(String(task.status))) throw new JobError(409, "task-closed", `task ${b.task} is ${task.status}`);
-    if (db.prepare("SELECT 1 FROM jobs WHERE task = ? AND state = 'running'").get(b.task)) throw new JobError(409, "job-running", `task ${b.task} already has a job running`);
+    if (db.prepare("SELECT 1 FROM jobs WHERE task = ? AND state IN ('admitted', 'running')").get(b.task)) throw new JobError(409, "job-running", `task ${b.task} already has a job running`);
     const entry = readEngines(cfg)[b.engine.kind];
     if (!entry) throw new JobError(400, "unknown-engine", `no engine module provides "${b.engine.kind}"`);
     if (entry.box !== true) throw new JobError(400, "not-a-box-engine", `the ${b.engine.kind} engine doesn't run in an agent computer`);
