@@ -161,6 +161,13 @@ export function ApprovalCard({ a, open, inline, prefix = "", unfold }: { a: Appr
   );
 }
 
+/**
+ * A tool call that ran at once (Tier 0): a module's or connection's kind (conn.tool, apps-platform.api_write), mostly task
+ * bookkeeping (task_finish, task_comment, task_set_status). Policy let it run, so it's audit, not something to decide; a
+ * failed one is its agent's to retry. Hidden from the history unless asked for; pushes, PRs, merges, applies and deploys stay.
+ */
+const toolCall = (a: Approval) => a.state === "auto" && a.action.includes(".");
+
 type Filter = "pending" | "done" | "failed" | "all";
 const FILTERS: [Filter, string][] = [["pending", "Pending"], ["done", "Done"], ["failed", "Failed"], ["all", "All"]];
 const inFilter = (a: Approval, f: Filter) => f === "all" || (f === "pending" ? forOwner(a) : f === "failed" ? outcomeOf(a).tone === "bad" : !forOwner(a) && outcomeOf(a).tone !== "bad");
@@ -182,6 +189,7 @@ export function ApprovalsView({ open, onSignIn }: { open: (identifier: string) =
   const approvalsQ = useQuery(QUERIES.approvals, onSignIn);
   const needsQ = useQuery(QUERIES.needsYou, onSignIn);
   const [filter, setFilter] = useState<Filter | null>(null);
+  const [showCalls, setShowCalls] = useState(false);
   const load = useCallback(async () => {
     await Promise.all([approvalsQ.reload(), needsQ.reload()]);
   }, [approvalsQ.reload, needsQ.reload]);
@@ -199,11 +207,12 @@ export function ApprovalsView({ open, onSignIn }: { open: (identifier: string) =
   const others = (data?.items ?? []).filter((i) => i.state !== "waiting for approval");
   const waitingCount = pending.length + others.length;
   const f: Filter = filter ?? (waitingCount ? "pending" : "all");
-  const past = groups(all.filter((a) => !forOwner(a)));
+  const calls = all.filter(toolCall).length;
+  const past = groups(all.filter((a) => !forOwner(a) && (showCalls || !toolCall(a))));
   const history = past.filter((g) => inFilter(g[0]!, f));
   const count = (k: Filter) => (k === "pending" ? waitingCount : k === "all" ? waitingCount + past.length : past.filter((g) => inFilter(g[0]!, k)).length);
   return (
-    <main className="page wide">
+    <main className="page wide approvals-page">
       <header className="page-head">
         <div>
           <h1>Approvals</h1>
@@ -252,10 +261,13 @@ export function ApprovalsView({ open, onSignIn }: { open: (identifier: string) =
               <ul className="history">
                 {others.map((i) => (
                   <li key={i.identifier}>
-                    <button className="history-row" onClick={() => open(i.identifier)}>
-                      <StateChip state={i.state} reason={i.reason} />
+                    <button className="history-row" onClick={() => open(i.identifier)} title={`${i.identifier}: ${i.title}`}>
+                      <span className="history-state">
+                        <StateChip state={i.state} reason={i.reason} />
+                      </span>
                       <span className="history-who">{i.agent}</span>
                       <span className="history-what">{i.title}</span>
+                      <span className="history-target">{i.identifier}</span>
                     </button>
                   </li>
                 ))}
@@ -273,6 +285,12 @@ export function ApprovalsView({ open, onSignIn }: { open: (identifier: string) =
               <header className="section-head">
                 <h2>History</h2>
                 <span className="count">{history.length}</span>
+                <span className="spacer" />
+                {calls > 0 && (
+                  <button className={`tag toggle${showCalls ? " on" : ""}`} aria-pressed={showCalls} onClick={() => setShowCalls(!showCalls)} title="Tool calls that ran at once (Tier 0), mostly task bookkeeping">
+                    {showCalls ? "Hide" : "Show"} {calls} Tier 0 tool call{calls === 1 ? "" : "s"}
+                  </button>
+                )}
               </header>
               {history.length ? (
                 <ul className="history">
@@ -281,7 +299,7 @@ export function ApprovalsView({ open, onSignIn }: { open: (identifier: string) =
                   ))}
                 </ul>
               ) : (
-                <p className="empty-state">Nothing here yet.</p>
+                <p className="empty-state">{f === "failed" ? "Nothing failed." : "Nothing here yet."}</p>
               )}
             </section>
           )}
@@ -298,13 +316,15 @@ function HistoryRow({ group, open }: { group: Approval[]; open: (identifier: str
   const o = outcomeOf(a);
   return (
     <li className={shown ? "open" : ""}>
-      <button className="history-row" aria-expanded={shown} onClick={() => setShown(!shown)}>
-        <span className={`run-status run-${o.tone}`}>{o.text}</span>
+      <button className="history-row" aria-expanded={shown} onClick={() => setShown(!shown)} title={`${a.sentence}\n${a.target}`}>
+        <span className="history-state">
+          <span className={`run-status run-${o.tone}`}>{o.text}</span>
+        </span>
         <span className="history-who">{a.requestedBy}</span>
         <span className="history-what">{a.sentence}</span>
         <span className="history-target">{a.target}</span>
         {group.length > 1 && <span className="recent-count" title="Earlier attempts at the same request">{group.length} tries</span>}
-        <span className="time">{ago(a.createdAt)}</span>
+        <span className="time" title={new Date(a.createdAt).toLocaleString()}>{ago(a.createdAt)}</span>
       </button>
       {shown && (
         <ul className="approval-list history-cards">
