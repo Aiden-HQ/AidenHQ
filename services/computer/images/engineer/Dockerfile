@@ -7,22 +7,17 @@ FROM ${BASE}
 RUN apt-get update && apt-get install -y --no-install-recommends \
       build-essential pkg-config libssl-dev python3-pip python3-dev golang-go make gnupg \
     && rm -rf /var/lib/apt/lists/*
-# gh from GitHub's own apt repository, not Debian's: the base is debian:sid-slim (the browser image), whose gh is 2.46.0-4,
-# with no fix for CVE-2026-48501 (the auth layer sent a github.com token to tuf-repo.github.com, fixed upstream in 2.93.0)
-# and a Go stdlib carrying published advisories. 2.104.0 (2026-11-12) is built with go1.27.4. The keyring is read into /tmp
-# first and written only after its primary keys are exactly GitHub's two (the live CLI key and the one that expired
-# 2026-09-05, which the ring still ships): a key added, missing or different is refused.
-# `signed-by` carries the live key's fingerprint, for this repository alone, in the vendor's suite matching sid. The repository keeps only the newest build, so the pin moves.
-RUN mkdir -m 700 -p /tmp/gh-gpg \
-    && curl -fsSLo /tmp/gh-keyring.gpg https://cli.github.com/packages/githubcli-archive-keyring.gpg \
-    && keys="$(GNUPGHOME=/tmp/gh-gpg gpg --batch --show-keys --with-colons /tmp/gh-keyring.gpg \
-      | awk -F: '$1 == "pub" { p = 1; next } p && $1 == "fpr" { print $10; p = 0 }' | sort | paste -sd, -)" \
-    && [ "$keys" = 2C6106201985B60E6C7AC87323F3D4EA75716059,7F38BBB59D064DBCB3D84D725612B36462313325 ] \
-    && install -m 0644 /tmp/gh-keyring.gpg /etc/apt/keyrings/github-cli.gpg \
-    && echo "deb [signed-by=/etc/apt/keyrings/github-cli.gpg,7F38BBB59D064DBCB3D84D725612B36462313325] https://cli.github.com/packages sid main" \
-      > /etc/apt/sources.list.d/github-cli.list \
-    && apt-get update && apt-get install -y --no-install-recommends gh=2.104.0 \
-    && rm -rf /var/lib/apt/lists/* /tmp/gh-keyring.gpg /tmp/gh-gpg \
+# gh 2.104.0 (released 2026-11-12), GitHub's release .deb, not Debian's gh (the base is debian:sid-slim, whose gh is 2.46.0-4,
+# with no fix for CVE-2026-48501: the auth layer sent a github.com token to tuf-repo.github.com, fixed upstream in 2.93.0) and
+# not GitHub's apt repository (it keeps only the newest build, so a pin there breaks). Built with go1.27.4. Per-arch sha256
+# from the release's gh_2.104.0_checksums.txt, checksummed before dpkg installs it.
+RUN case "$(dpkg --print-architecture)" in \
+      amd64) sum=f90d578cbc4c3b067dfc4a1a540cef41faef64eebfb280b548ab32455977a21f ;; \
+      arm64) sum=95b0632a7e1b12761248b7266825b0eab0853cefb84a1e272d905acb6e436f6c ;; \
+    esac \
+    && curl -fsSLo /tmp/gh.deb "https://github.com/cli/cli/releases/download/v2.104.0/gh_2.104.0_linux_$(dpkg --print-architecture).deb" \
+    && echo "$sum  /tmp/gh.deb" | sha256sum -c - \
+    && dpkg -i /tmp/gh.deb && rm /tmp/gh.deb \
     && gh --version
 # rustup-init 1.29.3 (archived 2026-11-03; per-arch sha256 from the .sha256 files beside each binary), checksummed; it installs the pinned toolchain into /opt/rust (readable by all). At run
 # time RUSTUP_HOME stays there; CARGO_HOME is unset, so cargo's registry and builds go under the user's own HOME.
