@@ -179,7 +179,7 @@ once(() => void certWatch.tick(), 10 * 60_000);
 // it as a kernel.apply on a task of its own (the platform engineer's, as the release train's), follows it and tells the owner.
 const moduleTasks = createModuleTasks({ owner: ownerApi, agents: () => grantsTable().agents ?? {}, log });
 const updates = createUpdates({
-  db: records.db, dir: path.join(dataDir, "updates"), board: path.join(env("AIDENHQ_STATE_DIR", path.join(process.env.HOME ?? "", ".local/state/aidenhq")), "board/updates.json"),
+  db: records.db, dir: path.join(dataDir, "updates"), inst: env("AIDENHQ_INSTANCE_DIR", path.join(process.env.HOME ?? "", "aidenhq-instance")), board: path.join(env("AIDENHQ_STATE_DIR", path.join(process.env.HOME ?? "", ".local/state/aidenhq")), "board/updates.json"),
   ownerLine: toOwner("done"), check: runCheck(repo), log,
   file: async (r) => {
     const task = await moduleTasks.file("kernel", { title: `Update AidenHQ to ${r.release}`, role: "platform-engineer", source: `release:${r.release}:${r.sha}`, description: `Installs AidenHQ ${r.release} (from ${r.from}), filed by the release updater as one apply. No agent works on this task; it closes when the apply ends.\n\nWhat changed: ${r.compare}` });

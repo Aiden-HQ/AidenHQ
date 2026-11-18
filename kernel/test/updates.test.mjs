@@ -272,3 +272,11 @@ test("the installer run again moves the pin to its release; the same release is 
   git(h.d.inst, "push", "-q", "origin", "HEAD:main");
   assert.match(pinTo(h.d, "2026.11.3", h.D2, h.K2), /pins its product by hand: left as it is/);
 });
+
+test("before the first check, the page's view reads the followed release from the instance", () => {
+  const w = world();
+  const u = kernelSide(w);
+  assert.equal(u.view().current, undefined);
+  const withInst = createUpdates({ db: new DatabaseSync(":memory:"), dir: w.d.dir, inst: w.d.inst, ownerLine() {}, check: async () => {}, file: async () => ({ record: "", task: "" }), record: () => undefined, close: async () => {} });
+  assert.equal(withInst.view().current.name, "2026.11.2");
+});

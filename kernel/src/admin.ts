@@ -160,7 +160,7 @@ export function createAdmin(d: Deps) {
   const redirect = (res: ServerResponse, to: string, cookies: string[] = []) =>
     void res.writeHead(303, { location: to, "cache-control": "no-store", ...(cookies.length ? { "set-cookie": cookies } : {}) }).end();
   const form = (action: string, inner: string, s?: AdminSession | null) => `<form method="post" action="${esc(action)}">${s ? `<input type="hidden" name="csrf" value="${csrf(s)}">` : ""}${inner}</form>`;
-  const safeNext = (n: string | null) => (n && (/^\/(approvals|owner|recovery-key|setup\/model)[\w/?=&.-]*$/.test(n) || /^\/auth\/handoff\?[\w=&.%:-]*$/.test(n)) ? n : "/approvals");
+  const safeNext = (n: string | null) => (n && (/^\/(approvals|owner|recovery-key|setup\/model)[\w/?=&.-]*$/.test(n) || /^\/auth\/handoff\?[\w=&.%:-]*$/.test(n)) ? n : welcome());
 
   async function body(req: IncomingMessage): Promise<URLSearchParams> {
     const chunks: Buffer[] = [];
@@ -190,10 +190,11 @@ export function createAdmin(d: Deps) {
   const pkce = new Map<string, { verifier: string; account: string; at: number }>();
   // The board's own sign-in handoff (services/board/src/kernel-auth.ts): the owner arrives signed in there, and the board's
   // welcome gate opens #/welcome until setup is finished.
+  // A sign-in with nowhere else to go (it began at the board, or on this page) ends there too, never on the approvals list.
   const welcome = () => (d.boardUrl?.() ? `${d.boardUrl()}/auth/start` : "/approvals");
   // The owner goes on to the model step, or (a model key given at install) straight to the board's welcome, which shows the
   // recovery key and the modules' flows until it is finished.
-  const afterEnrol = (s: AdminSession) => (d.model && s.account.owner ? (d.model.ready() ? welcome() : "/setup/model") : "/approvals");
+  const afterEnrol = (s: AdminSession) => (d.model && s.account.owner ? (d.model.ready() ? welcome() : "/setup/model") : welcome());
   const NOT_CONNECTED = "OpenRouter didn't connect (cancelled, expired or from another page). Try again.";
   const modelPage = (req: IncomingMessage, s: AdminSession, msg = "", credit = false) => {
     const host = String(req.headers.host ?? "").toLowerCase();

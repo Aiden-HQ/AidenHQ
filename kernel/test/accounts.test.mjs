@@ -63,7 +63,7 @@ function browser(url, host = HOST, https = false, extra = {}) {
 }
 
 /** The kernel's admin listener over accounts in `dir`, with two records waiting for the owner: the runner's push and a module's. */
-async function adminOn(t, dir, now) {
+async function adminOn(t, dir, now, boardUrl) {
   const notices = [];
   const accounts = await openAccounts({ dataDir: dir, hosts: [HOST, FRONT], origins: [`https://${FRONT}`], edgeSecret: () => "edge-secret", notify: (l) => notices.push(l), log: silent, ...(now ? { now } : {}) });
   const decided = [];
@@ -74,7 +74,7 @@ async function adminOn(t, dir, now) {
   const deploy = file("acme.deploy", "acme");
   const writes = { decide: (id, b) => (decided.push({ id, ...b }), { task: "t-7", identifier: "WOR-7", card: { sentence: "Deploy." }, state: "approved" }) };
   const channels = createChannels({ db: records.db, records, writes, board: async () => ({ status: 404, json: {} }), owner: async () => ({ status: 200, json: {} }), modules: () => ({}) });
-  const { s, url } = await serve(createAdmin({ accounts, cards: channels, ownerMessage: async () => ({ task: { identifier: "WOR-1" } }), owner: async () => ({ status: 200, json: {} }), hosts: () => [HOST, FRONT], origins: () => [`http://${HOST}`, `https://${FRONT}`], frameOrigins: () => ["https://board.example.com"] }));
+  const { s, url } = await serve(createAdmin({ accounts, ...(boardUrl ? { boardUrl: () => boardUrl } : {}), cards: channels, ownerMessage: async () => ({ task: { identifier: "WOR-1" } }), owner: async () => ({ status: 200, json: {} }), hosts: () => [HOST, FRONT], origins: () => [`http://${HOST}`, `https://${FRONT}`], frameOrigins: () => ["https://board.example.com"] }));
   t.after(() => { s.close(); accounts.close(); });
   return { url, decided, notices, push, deploy };
 }
@@ -110,6 +110,12 @@ test("the account and TOTP sign in; an accounts file without its secret refuses"
   const bare = mkdtempSync(join(tmpdir(), "kernel-auth-"));
   copyFileSync(join(FIXTURE, "auth.db"), join(bare, "auth.db"));
   assert.throws(() => authSecret(join(bare, "auth.db")), /without its auth\.secret/);
+});
+
+test("a sign-in with no other destination ends at the board's handoff, not the approvals list", async (t) => {
+  const { url } = await adminOn(t, kernelData(), undefined, "https://board.example.com");
+  const b = browser(url);
+  assert.equal((await signIn(b)).headers.location, "https://board.example.com/auth/start");
 });
 
 test("a card is decided on the kernel page, stamped with the admin's account; the board's origin and a page without the token can't", async (t) => {
