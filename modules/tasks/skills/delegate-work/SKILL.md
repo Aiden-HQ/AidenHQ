@@ -48,7 +48,7 @@ plus what to publish (`pr`).
   `platform-engineer` role: only its writes there go to the AI reviewer. It publishes its PR and merges it at its head once
   the checks are green, each a card (a second reviewer joins for gate code, a role holder's handbook or a module's grants,
   tools or models). Several product tasks may go to it at once.
-- Every Engineer has the repository, its tests and toolchains, package installs into the workspace, `gh` reads, the
+- Every Engineer has the repository, its tests and toolchains, package installs into the workspace, the
   public Internet and a headless browser: for UI work it runs the app's Playwright setup (`npm run screens`: the
   changed pages at 1440 and 390, light and dark, and the changed flow) and attaches the screenshots (rubric: "screenshots
   of the changed pages attached"). The Engineer also reads the live apps and GitHub through its tools.
