@@ -27,7 +27,8 @@ import { doorSource, readGate } from "./accounts.ts";
 import { routineWake, webhookWake, type Manifest } from "./app-access.ts";
 import { createSignin } from "./signin.ts";
 import { createAsserter, loadKey } from "./assert.ts";
-import { createBackplane } from "./backplane.ts";
+import { chiefOfStaff, createBackplane } from "./backplane.ts";
+import { createOutcomes } from "./outcomes.ts";
 import { createBrake } from "./brake.ts";
 import { createChannels, type Api, type ModulesFile } from "./channels.ts";
 import { checksFile, createChecks } from "./checks.ts";
@@ -161,8 +162,10 @@ const jobs = createJobs({
 jobs.adopt();
 // The wake inbox (wakes.ts): Paperclip events scan their task now; the reconcile poll scans every polled agent's open tasks.
 const mayDispatch = dispatchesFrom(() => (modulesFile().modules ?? {}) as never, () => grantsTable().agents ?? {});
+// Outcomes posted on a job's task as its agent, once (outcomes.ts): the agent's own Paperclip key, setup's paperclip-agents/<id>.
+const outcomes = createOutcomes({ db: records.db, controlUrl, log, agentKey: (id) => secret(`paperclip-agents/${id}`), finish: (task, agent) => checks.finish(task, { agent, via: "job_post" }) });
 const wakes = createWakes({
-  db: records.db, owner: ownerApi, log,
+  db: records.db, owner: ownerApi, post: outcomes.post, log,
   dispatches: { may: mayDispatch, agents: (module) => Object.keys(grantsTable().agents ?? {}).filter((id) => mayDispatch(module, id)) },
 });
 setInterval(() => void wakes.poll(), (Number(env("AIDENHQ_WAKE_POLL_SECONDS", "")) || 60) * 1000).unref();
@@ -209,7 +212,7 @@ const moduleSecrets = createModuleSecrets({
   recreate: composeRecreate({ dir: env("AIDENHQ_DIR", repo), composeFile: env("COMPOSE_FILE", "") }),
   log,
 });
-const backplane = createBackplane({ checks, whoami, asserter, grantsFile: grantsTable, log, writes, records, channels, brake, owner: ownerApi, modules: modulesFile, boardKey: () => secret("gateway_board_key"), reviews, runnerKey: () => secret("runner_writes_key"), reviewerKey: () => secret("reviewer_key"), jobs, wakes, work, graderToken, dropGraderToken: (task) => graderTokens.delete(task), eventsKey: () => secret("paperclip_events_key"), advisories: advisories.list, accounts: createAuthApi({ accounts: () => accounts, whoami, boardKey: () => secret("gateway_board_key"), recoveryKeyWaiting: () => Boolean(firstRun.recoveryKey()), modelReady: modelState.ready, operatorKey: () => secret("board_operator_key"), secrets: moduleSecrets }), proxy: (req, res, c) => proxy(req, res, c!), cp: createCp({ whoami, asserter, controlUrl, launcherUrl, checks, log }) as never });
+const backplane = createBackplane({ checks, whoami, asserter, grantsFile: grantsTable, log, writes, records, channels, brake, owner: ownerApi, modules: modulesFile, boardKey: () => secret("gateway_board_key"), reviews, runnerKey: () => secret("runner_writes_key"), reviewerKey: () => secret("reviewer_key"), jobs, outcomes, wakes, work, graderToken, dropGraderToken: (task) => graderTokens.delete(task), eventsKey: () => secret("paperclip_events_key"), advisories: advisories.list, accounts: createAuthApi({ accounts: () => accounts, whoami, boardKey: () => secret("gateway_board_key"), recoveryKeyWaiting: () => Boolean(firstRun.recoveryKey()), modelReady: modelState.ready, operatorKey: () => secret("board_operator_key"), secrets: moduleSecrets }), proxy: (req, res, c) => proxy(req, res, c!), cp: createCp({ whoami, asserter, controlUrl, launcherUrl, checks, log }) as never });
 // The admin listener's accounts (data/kernel/auth/auth.db) and pages. Accounts not moved yet, or a malformed URL setting: the
 // listener refuses while every other part of the kernel serves.
 const urlOf = (v: string) => { try { return v ? new URL(v) : undefined; } catch { log("ignoring a malformed URL setting", { value: v.slice(0, 100) }); return undefined; } };
@@ -268,7 +271,7 @@ const model = {
   verifyAgents: agentSetup({ dir: env("AIDENHQ_DIR", repo), log: path.join(dataDir, "kernel", "agent-setup.log"), warn: (m, o) => log(m, o as never) }),
   ...modelState,
 };
-const admin = accounts && createAdmin({ accounts, firstRun, model, uiOrigins, doorSource: () => doorSource(gateInfo()), boardUrl: () => boardOrigins[0], cards: channels, ownerMessage: (b) => channels.ownerMessageAs("web", b, () => Object.entries(grantsTable().agents ?? {}).find(([, g]) => g.key === "chief-of-staff")?.[0]), owner: ownerApi, hosts: () => adminHosts, origins: () => adminOrigins, frameOrigins: () => boardOrigins, log });
+const admin = accounts && createAdmin({ accounts, firstRun, model, uiOrigins, doorSource: () => doorSource(gateInfo()), boardUrl: () => boardOrigins[0], cards: channels, ownerMessage: (b) => channels.ownerMessageAs("web", b, () => chiefOfStaff(grantsTable().agents)), owner: ownerApi, hosts: () => adminHosts, origins: () => adminOrigins, frameOrigins: () => boardOrigins, log });
 
 // Claimed records a restart left without an outcome: their executors say how they went (never replayed). Executors may
 // still be starting at boot, so once, a minute in.

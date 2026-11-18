@@ -11,6 +11,7 @@
 import { randomBytes } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
 import type { Api } from "./channels.ts";
+import type { Outcomes } from "./outcomes.ts";
 
 /** A comment the kernel posted for a job (outcomes.ts): it never wakes anyone. */
 export const SELF_TAG = /<!-- aidenhq:job=/;
@@ -34,10 +35,12 @@ type Comment = { id: string; body?: string; authorAgentId?: string | null; creat
 type Log = (msg: string, f?: Record<string, unknown>) => void;
 const ms = (t?: string) => (t ? Date.parse(t) || 0 : 0);
 
-export function createWakes({ db, owner, dispatches, log = () => {}, now = Date.now }: {
+export function createWakes({ db, owner, post, dispatches, log = () => {}, now = Date.now }: {
   db: DatabaseSync;
   /** The control plane as the owner (only reads). */
   owner: Api;
+  /** Writes as the task's agent (outcomes.ts): a coalesced routine task is cancelled by its own agent. */
+  post: Outcomes["post"];
   /** Whether a module dispatches an agent (jobs.ts dispatchesFrom), and the agents it dispatches (ids). */
   dispatches: { may: (module: string, agent: string) => boolean; agents: (module: string) => string[] };
   log?: Log; now?: () => number;
@@ -74,8 +77,7 @@ export function createWakes({ db, owner, dispatches, log = () => {}, now = Date.
     if (def.status !== 200 || !run) { log("wake: routine run not found yet", { task: issue.id, routine: issue.originId }); return false; }
     const earlier = open.find((o) => o.id !== issue.id && o.originKind === "routine_execution" && o.originId === issue.originId && (ms(o.createdAt) < ms(issue.createdAt) || (ms(o.createdAt) === ms(issue.createdAt) && o.id < issue.id)));
     if (def.json?.concurrencyPolicy !== "always_enqueue" && earlier) {
-      const c = await owner("PATCH", `/api/issues/${encodeURIComponent(issue.id)}`, { status: "cancelled" });
-      if (c.status >= 300) throw new Error(`control plane PATCH → ${c.status}`);
+      await post({ id: issue.id, agent, task: issue.id }, { kind: "coalesced", status: "cancelled", body: "Cancelled: an earlier run of this routine is still open, so this one is folded into it." });
       log("wake: routine task coalesced", { task: issue.id, into: earlier.id, routine: issue.originId });
       return true;
     }

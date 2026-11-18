@@ -32,6 +32,8 @@
 //                              work: a task's, or what runs and ended lately; Prometheus text (work.ts)
 //   POST /v1/work/grader-token  (the one module with role kernel.grader) {task} -> a gateway
 //                              token billed to the task's assignee under its caps, for a task its finish check holds; one live token per task
+//   POST /v1/jobs/:job/post    (that job's module) {kind: reply|status|notice, body, status?, blocked_by?}: posted on the job's
+//                              task as its agent, once per kind (outcomes.ts)
 //   GET  /v1/advisories        (the board's key) the marketplace advisories open against installed modules (loader/advisories.ts)
 //   POST /v1/auth/:op, /v1/accounts/:op, /v1/apps/:op, /v1/operator/:op  the accounts' routes (auth-api.ts): module UI
 //                              sessions and account admin (the board), in-app requests (apps-platform), setup links (operator)
@@ -43,6 +45,7 @@ import type { Checks } from "./checks.ts";
 import { CP_READ_PATHS, isChannel, neutral, type Api, type Channels, type ModulesFile } from "./channels.ts";
 import type { Grant, Whoami } from "./identity.ts";
 import type { Jobs } from "./jobs.ts";
+import { JOB_KINDS, type Outcomes } from "./outcomes.ts";
 import { fail } from "./proxy.ts";
 import type { Records, State } from "./records.ts";
 import type { Work } from "./work.ts";
@@ -96,6 +99,7 @@ export const ROUTES = [
   { method: "GET", path: "/v1/work", auth: "module" },
   { method: "GET", path: "/v1/work/metrics", auth: "module" },
   { method: "POST", path: "/v1/work/grader-token", auth: "module" },
+  { method: "POST", path: "/v1/jobs/:job/post", auth: "module" },
   { method: "GET", path: "/v1/advisories", auth: "board" },
   { method: "POST", path: "/v1/auth/:op", auth: "board" },
   { method: "POST", path: "/v1/accounts/:op", auth: "board+session" },
@@ -115,7 +119,7 @@ async function json(req: IncomingMessage, max = 1_000_000): Promise<any> {
   try { return JSON.parse(Buffer.concat(chunks).toString("utf8") || "{}"); } catch { throw fail(400, "bad_request", "the body must be JSON"); }
 }
 
-export function createBackplane({ whoami, asserter, proxy, cp, grantsFile, writes, records, channels, brake, owner, modules = () => ({}), boardKey = () => "", reviews, runnerKey = () => "", reviewerKey = () => "", jobs, wakes, eventsKey = () => "", work, graderToken = () => "", dropGraderToken = () => {}, advisories = () => [], accounts, checks, log = () => {} }: {
+export function createBackplane({ whoami, asserter, proxy, cp, grantsFile, writes, records, channels, brake, owner, modules = () => ({}), boardKey = () => "", reviews, runnerKey = () => "", reviewerKey = () => "", jobs, outcomes, wakes, eventsKey = () => "", work, graderToken = () => "", dropGraderToken = () => {}, advisories = () => [], accounts, checks, log = () => {} }: {
   whoami: Whoami; asserter: Asserter; proxy: Handler; cp: Handler; grantsFile: () => { agents?: Record<string, Grant> } & Record<string, unknown>;
   writes?: Writes; records?: Records; boardKey?: () => string; log?: (msg: string, f?: Record<string, unknown>) => void;
   /** The reviewer slot; the runner's key for its kinds (filing, claim, outcome, reads, a record's review: runner_writes_key)
@@ -125,6 +129,8 @@ export function createBackplane({ whoami, asserter, proxy, cp, grantsFile, write
   channels?: Channels; brake?: Brake; owner?: Api; modules?: () => ModulesFile;
   /** 3e: jobs in the sandbox. */
   jobs?: Jobs;
+  /** F5: a job's outcome posted as its agent. */
+  outcomes?: Outcomes;
   /** The wake inbox (wakes.ts), and the paperclip-events plugin's key. */
   wakes?: Wakes; eventsKey?: () => string;
   /** Reads of the work the kernel owns (work.ts). */
@@ -147,7 +153,7 @@ export function createBackplane({ whoami, asserter, proxy, cp, grantsFile, write
     return w;
   };
   /** The chief of staff's agent id, from the grants table (where owner messages go by default). */
-  const cos = () => Object.entries(grantsFile().agents ?? {}).find(([, g]) => g.key === "chief-of-staff")?.[0];
+  const cos = () => chiefOfStaff(grantsFile().agents);
   const keyIs = (req: IncomingMessage, key: string) => { const a = Buffer.from(bearer(req)), b = Buffer.from(key); return b.length > 0 && a.length === b.length && timingSafeEqual(a, b); };
   const isBoard = (req: IncomingMessage) => keyIs(req, boardKey());
   const isRunner = (req: IncomingMessage) => keyIs(req, runnerKey());
@@ -298,10 +304,18 @@ export function createBackplane({ whoami, asserter, proxy, cp, grantsFile, write
               if (r.sent && typeof b.wake === "string") wakes?.delivered(w.module!, b.wake);
               return send(res, 200, r);
             }
+            case "POST /v1/jobs/:job/post": {
+              if (!outcomes) throw fail(503, "unavailable", "outcomes are off");
+              const job = await jobs.get(w.module!, m[0]!);
+              const b = await json(req);
+              if (!JOB_KINDS.includes(b.kind) || typeof b.body !== "string") throw fail(400, "bad_request", `send {kind: ${JOB_KINDS.join("|")}, body, status?, blocked_by?}`);
+              if (b.blocked_by !== undefined && !(Array.isArray(b.blocked_by) && b.blocked_by.every((x: unknown) => typeof x === "string"))) throw fail(400, "bad_request", "blocked_by is a list of task ids");
+              return send(res, 200, await outcomes.post(job, { kind: b.kind, body: b.body, ...(typeof b.status === "string" ? { status: b.status } : {}), ...(b.blocked_by ? { blockedBy: b.blocked_by } : {}) }));
+            }
           }
         } catch (e) {
           const j = e as { name?: string; status?: number; code?: string; message: string };
-          if (j.name === "JobError") throw fail(j.status!, j.code!, j.message);
+          if (j.name === "JobError" || j.name === "OutcomeError") throw fail(j.status!, j.code!, j.message);
           throw e;
         }
       }
@@ -392,3 +406,6 @@ export function createBackplane({ whoami, asserter, proxy, cp, grantsFile, write
     }
   };
 }
+
+/** The chief of staff: the agent holding the fleet-admin role in the grants table (found by role, never by key). */
+export const chiefOfStaff = (agents: Record<string, Grant> | undefined) => Object.entries(agents ?? {}).find(([, g]) => (g.roles ?? []).includes("fleet-admin"))?.[0];
