@@ -56,7 +56,6 @@
     "edge_board_secret",
     "computer_progress_token",
     "reviewer_key",
-    "runner_writes_key",
     "board_operator_key",
     "gateway_job_secret",
     "gateway_board_key",

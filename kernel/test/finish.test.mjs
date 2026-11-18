@@ -1,5 +1,5 @@
 // The finish gate (checks.ts): a module's task.finish check on every move to done, a module acting for an agent through
-// /v1/cp/agent and the runner's through /v1/finish; holds placed as the owner, released or resolved by the check's module.
+// /v1/cp/agent; holds placed as the owner, released or resolved by the check's module.
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { kernel, moduleServer, readBody, serve } from "./helpers.mjs";
@@ -89,26 +89,15 @@ test("ok passes the agent's own change through as the agent; ok with unlabel dro
   assert.equal(asked.length, n, "only a move to done asks the checks");
 });
 
-test("/v1/finish: the runner's own closes, with its key only", async (t) => {
-  const { k, asked, writes } = await setup(t, () => ({ verdict: "pending", state: "pending", reason: "r", until: "2026-11-17T12:00:00.000Z" }));
-  assert.equal((await k.v1("POST", "/v1/finish", { task: TASK, via: "finish_turn" }, "todo-key")).status, 401);
-  assert.equal((await k.v1("POST", "/v1/finish", { task: TASK, via: "task_finish" }, "the-runners-key")).status, 400);
-  const r = await k.v1("POST", "/v1/finish", { task: TASK, via: "finish_turn" }, "the-runners-key");
-  assert.deepEqual(r.json, { pass: false, state: "pending" });
-  assert.deepEqual(asked.at(-1).body.agent, null);
-  assert.equal(asked.at(-1).body.via, "finish_turn");
-  assert.equal(writes.at(-1).body.status, "in_review");
-});
-
 test("/v1/checks/:task: only the check's module; release drops its label; ok and reopen only resolve a hold it placed", async (t) => {
-  const { k, writes, issue } = await setup(t, () => ({ verdict: "pending", state: "pending", reason: "r", until: "2026-11-17T12:00:00.000Z" }));
+  const { k, writes, issue, finish } = await setup(t, () => ({ verdict: "pending", state: "pending", reason: "r", until: "2026-11-17T12:00:00.000Z" }));
   const resolve = (body, token = "judge-tok") => k.v1("POST", `/v1/checks/${TASK}`, body, token);
   assert.equal((await resolve({ verdict: "release" }, "other-tok")).status, 403);
   assert.equal((await resolve({ verdict: "ok" })).status, 409, "no hold yet");
   Object.assign(issue, { labelIds: ["lbl-x", "lbl-held"] });
   assert.equal((await resolve({ verdict: "release" })).status, 200);
   assert.deepEqual(writes.at(-1), { as: "board-key", body: { labelIds: ["lbl-x"] } });
-  await k.v1("POST", "/v1/finish", { task: TASK, via: "finish_turn" }, "the-runners-key");
+  await finish({ status: "done" });
   assert.equal((await resolve({ verdict: "ok", comment: "Graded: satisfied." })).status, 200);
   assert.deepEqual(writes.at(-1), { as: "board-key", body: { status: "done", comment: "Graded: satisfied." } });
   assert.equal((await resolve({ verdict: "reopen" })).status, 409, "the hold was resolved once");
@@ -132,7 +121,6 @@ test("the finish gate never fails open: a graded assignee's task with no check c
   r = await s.finish({ status: "done" });
   assert.equal(r.status, 503);
   assert.match(r.json.error.message, /the finish gate is unavailable: the finish checks didn't load \(Unexpected end of JSON input\)/);
-  assert.equal((await s.k.v1("POST", "/v1/finish", { task: TASK, via: "finish_turn" }, "the-runners-key")).status, 503);
   assert.deepEqual(s.writes, []);
 });
 

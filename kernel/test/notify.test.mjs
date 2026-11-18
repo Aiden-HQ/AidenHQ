@@ -4,7 +4,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { kernel, readBody, serve } from "./helpers.mjs";
 
-test("queued by the board or the runner, taken once by the router, sent through a channel's transport with its token", async (t) => {
+test("queued by the board or a module, taken once by the router, sent through a channel's transport with its token", async (t) => {
   const seen = [];
   const tg = await serve(async (req, res) => { seen.push({ auth: req.headers.authorization, path: req.url, body: JSON.parse(await readBody(req)) }); res.writeHead(200, { "content-type": "application/json" }).end(seen.length > 1 ? '{"sent":false,"off":true}' : '{"sent":true}'); });
   t.after(() => tg.s.close());
@@ -17,7 +17,7 @@ test("queued by the board or the runner, taken once by the router, sent through 
   } };
   const k = await kernel(t, { modules, secrets: { router_token: "router-key", tg_token: "tg-key", down_token: "down-key", plain_token: "plain-key", dispatch_token: "dispatch-key" } });
   assert.equal((await k.v1("POST", "/v1/notify", { kind: "alert", text: "Fleet Ops is unreachable" })).status, 200);
-  assert.equal((await k.v1("POST", "/v1/notify", { kind: "decision", text: "WOR-2 needs you", task: "WOR-2", dedupe_key: "asker:WOR-2" }, "the-runners-key")).status, 200);
+  assert.equal((await k.v1("POST", "/v1/notify", { kind: "decision", text: "WOR-2 needs you", task: "WOR-2", dedupe_key: "asker:WOR-2" })).status, 200);
   assert.equal((await k.v1("POST", "/v1/notify", { kind: "shout", text: "x" })).status, 400);
   assert.equal((await k.v1("POST", "/v1/notify", { kind: "alert", text: "x" }, "plain-key")).status, 401);
   assert.equal((await k.v1("POST", "/v1/notify", { kind: "decision", text: "WOR-3 was stopped", task: "WOR-3" }, "dispatch-key")).status, 200, "a module with kernel.owner-notice");

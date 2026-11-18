@@ -7,6 +7,7 @@ import pino from "pino";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { createApp } from "../src/app.js";
 import { assignees } from "../src/board.js";
+import { asAgent } from "./caller.js";
 import { mentionedAgents } from "../src/crew.js";
 import type { Agent, Comment, Issue, Paperclip } from "../src/paperclip.js";
 import { Store } from "../src/store.js";
@@ -22,9 +23,9 @@ const agents: Agent[] = [
   { id: "00000000-0000-0000-0000-0000000000d3", name: "Scout", status: "idle", adapterType: "codex_local", metadata: { setupKey: "aidenhq:scout" } },
 ];
 const [ALFRED, ADA, GRACE] = [agents[0]!.id, agents[1]!.id, agents[2]!.id];
-// The Chief of Staff holds fleet-admin in the grants table, which is what an agent can't pass to.
+// The Chief of Staff holds fleet-admin in the grants table, which is what an agent can't pass to; the Researcher may pass on.
 const grantsFile = join(mkdtempSync(join(tmpdir(), "grants-")), "grants.json");
-writeFileSync(grantsFile, JSON.stringify({ agents: { [agents[3]!.id]: { key: "chief-of-staff", roles: ["fleet-admin"], tools: {} } } }));
+writeFileSync(grantsFile, JSON.stringify({ agents: { [agents[3]!.id]: { key: "chief-of-staff", roles: ["fleet-admin"], tools: {} }, [agents[0]!.id]: { key: "assistant", roles: ["board-writer"], tools: { paperclip_tasks: ["task_pass_on"] } } } }));
 process.env.AIDENHQ_GRANTS_FILE = grantsFile;
 
 describe("mentions in a message", () => {
@@ -83,8 +84,7 @@ describe("routing mentions and passed-on messages", () => {
   const TOKEN = "t".repeat(64);
   const common = { paperclip: pc, store, log: pino({ level: "silent" }), staticDir: "/nonexistent", timezone: "UTC" };
   const local = createApp({ ...common, allowedHosts: ["localhost:3120"], session: () => ({ accountId: "owner", role: "admin" as const }) });
-  const RUNNER_KEY = "r".repeat(48);
-  const internal = createApp({ ...common, allowedHosts: ["board:3122"], mode: "internal", internalToken: TOKEN, reviewerKey: RUNNER_KEY });
+  const internal = createApp({ ...common, allowedHosts: ["board:3122"], mode: "internal", internalToken: TOKEN });
   const ports = { local: 0, internal: 0 };
   beforeAll(async () => {
     for (const [k, app] of [["local", local], ["internal", internal]] as const) {
@@ -105,8 +105,8 @@ describe("routing mentions and passed-on messages", () => {
       req.end(JSON.stringify(body));
     });
   const say = (ref: string, text: string) => call(ports.local, `/api/issues/${ref}/comments`, { body: text }, { host: "localhost:3120", "x-aidenhq-board": "1", origin: "http://localhost:3120", "sec-fetch-site": "same-origin" });
-  // The runner's `aidenhq pass` (its key); the Researcher's own credential is the other way in (internal.test.ts).
-  const pass = (ref: string, body: unknown) => call(ports.internal, `/internal/issues/${ref}/pass`, body, { host: "board:3122", authorization: `Bearer ${TOKEN}`, "x-reviewer-key": RUNNER_KEY });
+  // The Researcher's `task_pass_on`, with its own credential.
+  const pass = (ref: string, body: unknown) => call(ports.internal, `/internal/issues/${ref}/pass`, body, { host: "board:3122", authorization: `Bearer ${TOKEN}`, ...asAgent(ALFRED) });
 
   let task: Issue, alfred: Issue, ada: Issue;
   beforeEach(() => {

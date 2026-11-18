@@ -13,7 +13,8 @@ import YAML from "yaml";
 import { compile } from "../modules.mjs";
 import { moduleInputs } from "../compiler/authority.ts";
 import { cacheRepo, forksOf, officialSides, remoteCodeText, withRemote } from "../compiler/sources.ts";
-import { classify } from "../../services/runner/src/tiers.mjs";
+import { applyParts } from "../../kernel/src/apply-tier.ts";
+import { highest, meritOwner } from "../../kernel/src/tier.ts";
 
 const here = fileURLToPath(new URL(".", import.meta.url));
 const git = (dir, ...a) => execFileSync("git", ["-C", dir, "-c", "user.name=t", "-c", "user.email=t@example.com", ...a], { encoding: "utf8" }).trim();
@@ -64,8 +65,8 @@ function instanceDir(doc) {
   mkdirSync(join(dir, "agents"));
   return dir;
 }
-const applyTier = (bi, hi, over) => classify("apply", { agentsOrg: "acme-agents", productRepo: "acme/aidenhq", instanceRepo: "acme-agents/aidenhq-instance", requester: { platform: false }, taskStatus: "in_progress", files: ["instance.yaml"], base: { "instance.yaml": YAML.stringify(bi) }, head: { "instance.yaml": YAML.stringify(hi) }, pin: null, roles: {}, ...over });
-/** The apply's tier as the runner computes it: both instance.yaml sides, the module inputs read at both product pins. */
+const applyTier = (bi, hi, over) => meritOwner(highest(applyParts({ files: ["instance.yaml"], base: { "instance.yaml": YAML.stringify(bi) }, head: { "instance.yaml": YAML.stringify(hi) }, pin: null, roles: {}, ...over })));
+/** The apply's tier as the kernel's apply planner computes it (apply-tier.ts): both instance.yaml sides, the module inputs read at both product pins. */
 function tierOf(r, bi, hi, f, over = {}) {
   const sides = withRemote({ baseInstance: bi, headInstance: hi, ...officialSides(bi, hi, bi.product, hi.product, r.product, f) }, f);
   return applyTier(bi, hi, { modules: moduleInputs({ ...sides, always: [] }), ...over });
@@ -106,7 +107,7 @@ test("entering a fork is Tier 2 and the card shows the patch diff, quoted", () =
   seed(f, r);
   assert.equal(tierOf(r, hi, { ...bi, modules: [forked(r, git(r.fork, "rev-parse", "HEAD"))] }, f).tier, 2);
   const bad = { ...bi, product_fork: { source: "url", url: URL_, sha: r.f, branch: "x;rm -rf" } };
-  assert.throws(() => tierOf(r, bi, bad, f), /branch must be a plain branch name/, "the runner's module read fails closed");
+  assert.throws(() => tierOf(r, bi, bad, f), /branch must be a plain branch name/, "the module read fails closed");
   assert.ok(applyTier(bi, bad, { modules: {} }).reject, "and the classifier refuses it");
 });
 

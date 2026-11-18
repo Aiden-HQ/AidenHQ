@@ -11,13 +11,13 @@ const repoRoot = resolve(import.meta.dirname, "../..");
 const PRIVATE_BWRAP = "/opt/aidenhq/bwrap/bwrap";
 
 /**
- * The sandbox settings: the host's tuning (config/runner.yaml: work_dir, state_dir, timeout/stall/progress minutes, sandbox, the
+ * The sandbox settings: the host's tuning (config/runner.yaml, when the host has one: work_dir, state_dir, timeout/stall/progress minutes, sandbox, the
  * gateway URL a test points elsewhere) and the vault and data dirs. `hidden` is what no job may see even inside an allowed path.
  */
 export function sandboxConfig(env: (k: string) => string | undefined = (k) => process.env[k]): SandboxConfig {
   const configDir = resolve(repoRoot, env("AIDENHQ_CONFIG_DIR") ?? "config");
-  const file = existsSync(join(configDir, "runner.yaml")) ? join(configDir, "runner.yaml") : join(repoRoot, "config/runner.example.yaml");
-  const y = (parseYaml(readFileSync(file, "utf8")) ?? {}) as Record<string, any>;
+  const file = join(configDir, "runner.yaml");
+  const y = ((existsSync(file) ? parseYaml(readFileSync(file, "utf8")) : {}) ?? {}) as Record<string, any>;
   const secrets = expand(env("AIDENHQ_SECRETS_DIR") ?? "~/.config/aidenhq");
   const stateDir = expand(y.state_dir ?? "~/.local/state/aidenhq-runner");
   const credentials = expand(y.gcp?.credentials ?? join(secrets, "gcloud/application_default_credentials.json"));
@@ -29,7 +29,7 @@ export function sandboxConfig(env: (k: string) => string | undefined = (k) => pr
     // Hidden from every job: the user's own cloud sign-in and AidenHQ's (its refresh token can be widened again); the vault
     // (the board key, the internal token, module tokens); ~/.ssh (write deploy keys); the services' data dir (sessions, signing
     // keys, kernel.db); the user's gh sign-in (it acts as the owner); backups (copies of the data dir); the computer launcher's
-    // live run tokens; the runner's state db (every run's helper token); the sockets the host user may drive: Docker (root on
+    // live run tokens; the old runner's state db (helper tokens); the sockets the host user may drive: Docker (root on
     // the host), tailscaled (the operator: serve and funnel) and the user's runtime dir (systemd --user, D-Bus).
     hidden: [
       join(homedir(), ".config/gcloud"), dirname(credentials), secrets, join(homedir(), ".ssh"), dataDir,
@@ -38,7 +38,7 @@ export function sandboxConfig(env: (k: string) => string | undefined = (k) => pr
       "/run/docker.sock", "/run/tailscale/tailscaled.sock", `/run/user/${process.getuid?.() ?? 0}`,
     ],
     sandbox: y.sandbox,
-    binDir: join(repoRoot, "services/runner/bin"),
+    binDir: join(repoRoot, "services/computer/images/engineer/bin"),
     browserDir: "/opt/aidenhq/browser",
     workDir: expand(y.work_dir ?? "~/aidenhq-work"),
     stateDir,

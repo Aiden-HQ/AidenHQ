@@ -50,13 +50,12 @@ async function main() {
   const synced = lines(git("diff", "--name-only")).filter((f) => !before.has(f));
   if (synced.length) console.log(`sync-shared updated ${synced.length} copied file(s): commit them\n  ${synced.join("\n  ")}`);
 
-  // `npm ci` once per package (a suite's own `npm ci` is a no-op below): suites share kernel/ and services/runner/.
+  // `npm ci` once per package (a suite's own `npm ci` is a no-op below): suites share kernel/.
   const installs = new Set(sel.suites.length ? ["scripts"] : []);
   for (const s of sel.suites) {
     const dir = s.name.split("#")[0];
     for (const [, cd] of (s.run ?? "").matchAll(/cd (\S+) && npm ci/g)) installs.add(join(dir, cd));
     if (/^npm ci|\) && npm ci/.test(s.run ?? "")) installs.add(dir);
-    if (s.name === "scripts") installs.add("services/runner");
     if (s.job === "modules") installs.add("kernel"); // module suites read the kernel's code, as CI's modules job installs it
   }
   for (const d of installs) {

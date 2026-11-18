@@ -21,14 +21,14 @@ import { KERNEL_KINDS, KERNEL_ROLES } from "../kernel/src/kinds.ts";
 
 const PROFILES = ["trusted", "untrusted", "code-exec"];
 // image: the agent's computer (scripts/computers.mjs); the instance turns it on or off per agent.
-// caps: the agent's spend caps (grantEntry); not agent-safe (services/runner/src/tiers.mjs), so changing them is the owner's.
+// caps: the agent's spend caps (grantEntry); not agent-safe (kernel/src/apply-tier.ts), so changing them is the owner's.
 // autonomy: a routine's cap on approvals (ROUTINE_AUTONOMY); changing it is always the owner's (tiers.mjs).
 // handbook_fork: a module agent's handbook is the instance's agents/<key>/AGENTS.md (the module blob it was copied from);
 // connections: the agent's grants, per connection over its module's (merged before grants resolve, below).
 const OVERRIDABLE = { agents: ["model", "reasoning_effort", "engine", "timeout_sec", "image", "caps", "graded", "heartbeat", "max_parallel", "handbook_fork", "connections"], routines: ["schedules", "status", "model", "autonomy"] };
 /**
  * A routine's `autonomy`: the cap on approvals for tasks its runs start (the run task and what it delegates), the stricter of
- * it and the instance's `autonomy` (services/runner/src/tiers.mjs). The default `full` adds no cap (owner, 2026-11-13), except
+ * it and the instance's `autonomy` (kernel/src/apply-tier.ts). The default `full` adds no cap (owner, 2026-11-13), except
  * for a webhook routine: something outside fires it, often with untrusted text, so it defaults to tier0. tier0 makes Tier 1
  * the owner's, off Tier 0 too. Direct tools (slack_post, app_api) are governed by grants, not by this.
  */
@@ -373,7 +373,7 @@ function resolveEnabled(all, wanted) {
  * (this server's repos), the GitHub agents org while codehost-github is.
  */
 const codehostOrgs = (enabled, settings) => [...(enabled.includes("codehost-github") && agentsOrg(settings) ? [{ org: agentsOrg(settings), host: "github" }] : []), ...(enabled.includes("codehost-local") ? [{ org: "local", host: "local" }] : [])];
-/** The agents org: github_agents_org, else aidenhq-<instance_name> (services/runner/src/config.mjs agrees). */
+/** The agents org: github_agents_org, else aidenhq-<instance_name>. */
 const agentsOrg = (settings) => settings.github_agents_org || (settings.instance_name ? `aidenhq-${settings.instance_name}` : "");
 
 /**
@@ -551,12 +551,12 @@ export function linkPairServices(flows, compose, serviceModule, networkModule) {
  * agent's handbook, and agents/<key>/ folders (agent.yaml + AGENTS.md): the instance's own agents.
  */
 /**
- * The host's work_dir (config/runner.yaml, else the example's; ~ is the user's home): where the kernel keeps the job workspaces
+ * The host's work_dir (config/runner.yaml, else ~/aidenhq-work; ~ is the user's home): where the kernel keeps the job workspaces
  * (kernel/src/sandbox-config.ts reads the same file the same way).
  */
 export function hostWorkDir(productDir, env = process.env) {
   const dir = resolve(productDir, env.AIDENHQ_CONFIG_DIR ?? "config");
-  const file = existsSync(join(dir, "runner.yaml")) ? join(dir, "runner.yaml") : join(productDir, "config/runner.example.yaml");
+  const file = join(dir, "runner.yaml");
   const p = String((existsSync(file) ? YAML.parse(readFileSync(file, "utf8")) : {})?.work_dir ?? "~/aidenhq-work");
   return p.startsWith("~/") ? join(homedir(), p.slice(2)) : p;
 }

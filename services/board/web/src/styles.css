@@ -379,7 +379,6 @@ kbd {
 .agents { flex: 1; min-height: 0; overflow-y: auto; padding: 16px; display: flex; flex-direction: column; gap: 22px; max-width: 860px; width: 100%; margin: 0 auto; }
 .agents > .spinner { margin: 40px auto; }
 .agents section { display: flex; flex-direction: column; gap: 8px; }
-.agents-note { margin: 0; font-size: var(--text-sm); color: var(--muted); padding: 6px 10px; border: 1px dashed var(--border-strong); border-radius: 8px; }
 .session { background: var(--surface); border: 1px solid var(--border); border-left: 3px solid var(--working); border-radius: var(--radius); box-shadow: var(--shadow); padding: 10px 12px; display: flex; flex-direction: column; gap: 6px; }
 .session.queued { border-left-color: var(--border-strong); }
 .session-head { display: flex; align-items: center; gap: 8px; font-size: var(--text-md); }

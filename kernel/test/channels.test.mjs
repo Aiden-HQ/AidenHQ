@@ -17,11 +17,11 @@ const MODULES = { owner: { name: "Ada", timezone: "UTC" }, modules: {
 const SECRETS = { router_token: "router-key", tg_token: "tg-key", op_token: "op-key", lane_token: "lane-key", plain_token: "plain-key", quiet_token: "quiet-key", std_token: "std-key" };
 const TG = "tg-key", OP = "op-key", LANE = "lane-key", PLAIN = "plain-key";
 
-/** A kernel with two records waiting for the owner: the runner's push (WOR-1) and a module kind's. */
+/** A kernel with two records waiting for the owner: the code host's push (WOR-1) and another module kind's. */
 async function setup(t, extra = {}) {
   const k = await kernel(t, { modules: MODULES, secrets: SECRETS, grants: { "ag-cos": { key: "chief-of-staff", roles: ["fleet-admin"] } }, ...extra });
-  const runnerCard = { sentence: "Push x.", changes: "c", reads: "r", cost: "0", details: "" };
-  const push = k.records.file({ kind: "runner.push", module: "runner", args: { only: [] }, targets: {}, executor: { module: "runner" }, policy: "p", tier: 2, panel: false, card: runnerCard, requester: { agent: "", key: "", name: "the runner", roles: [], kind: "runner" }, task: "t-1", identifier: "WOR-1", state: "owner" });
+  const pushCard = { sentence: "Push x.", changes: "c", reads: "r", cost: "0", details: "" };
+  const push = k.records.file({ kind: "codehost-github.push", module: "codehost-github", args: { only: [] }, targets: {}, executor: { module: "codehost-github" }, policy: "p", tier: 2, panel: false, card: pushCard, requester: { agent: "ag-eng", key: "eng", name: "Eng", roles: [], kind: "job" }, task: "t-1", identifier: "WOR-1", state: "owner" });
   const rec = k.records.file({ kind: "twin.post", module: "twin", args: { note: "x" }, targets: {}, executor: { module: "twin" }, policy: "p", tier: 2, panel: false, card: { sentence: "Post x.", changes: "", reads: "", cost: "", details: "" }, requester: { agent: "ag-ada", key: "ada", name: "Ada", roles: [], kind: "run" }, task: "TASK-1", state: "owner" });
   const cards = (token, q = "") => k.v1("GET", `/v1/channel/cards${q}`, undefined, token);
   const decide = (token, body) => k.v1("POST", "/v1/channel/decide", { sender: "owner", ...body }, token);
@@ -33,7 +33,7 @@ test("A1: a token decides its own card once, on its digest, from its own channel
   const tg = (await cards(TG)).json.cards;
   assert.deepEqual(tg.map((c) => c.id).sort(), [push.id, rec.id].sort());
   assert.deepEqual(tg.find((c) => c.id === push.id).identifier, "WOR-1");
-  assert.deepEqual(tg.find((c) => c.id === push.id).kind, "push");
+  assert.deepEqual(tg.find((c) => c.id === push.id).kind, "codehost-github.push");
   assert.ok(tg.every((c) => c.tokens.approve.length >= 43 && c.tokens.approve !== c.tokens.reject));
   // Issued once: the next poll carries no tokens; tokens are never stored in the clear.
   assert.ok((await cards(TG)).json.cards.every((c) => !c.tokens));
@@ -44,7 +44,8 @@ test("A1: a token decides its own card once, on its digest, from its own channel
   assert.equal((await decide(OP, { token: board.tokens.approve })).status, 403);
   const r = await decide(TG, { token: board.tokens.approve });
   assert.deepEqual([r.status, r.json.state], [200, "approved"]);
-  assert.deepEqual([k.records.get(push.id).state, k.records.get(push.id).decided_by, k.records.get(push.id).via], ["approved", "owner:telegram", "telegram"]);
+  // (Approved, it runs at once: this kernel has no codehost-github executor, so it closes stale; the decision stands.)
+  assert.deepEqual([k.records.get(push.id).decided_by, k.records.get(push.id).via], ["owner:telegram", "telegram"]);
   // Replay, the card's reject token and the other channel's tokens for that card: all burned.
   for (const [who, tok] of [[TG, board.tokens.approve], [TG, board.tokens.reject], [OP, op.find((c) => c.id === push.id).tokens.reject]]) assert.equal((await decide(who, { token: tok })).status, 409);
   // A kernel record: decided on its digest, stamped from the channel (typed reply: owner:reply).
@@ -67,7 +68,7 @@ test("A1: a token decides its own card once, on its digest, from its own channel
   assert.equal(k.records.get(other.id).decided_by, "stale:watcher");
   assert.equal(k.records.get(other.id).state, "stale");
   // A card that ended without running is offered to the channel that sent it, so its message can be edited.
-  assert.deepEqual((await cards(TG)).json.ended.map((e) => [e.id, e.state]).sort(), [[rec.id, "rejected"], [other.id, "stale"]].sort());
+  assert.deepEqual((await cards(TG)).json.ended.map((e) => [e.id, e.state]).sort(), [[push.id, "stale"], [rec.id, "rejected"], [other.id, "stale"]].sort());
 });
 
 test("A2: a module without speaks-as-owner can't fetch cards, decide or post the owner's words", async (t) => {
@@ -173,7 +174,7 @@ test("the notify brake: five per task since the owner last wrote and per agent; 
 test("the kernel holds a channel to its own decide setting: none mints nothing; standard keeps panel cards and applies", async (t) => {
   const { k, rec, push, cards, decide } = await setup(t);
   assert.ok((await cards("quiet-key")).json.cards.every((c) => !c.tokens));
-  // standard: the runner's push card gets tokens; a panel card and an apply don't.
+  // standard: the push card gets tokens; a panel card and an apply don't.
   const panel = k.records.file({ ...k.records.get(rec.id), args: { note: "p" }, panel: true, state: "owner" });
   const apply = k.records.file({ ...k.records.get(push.id), kind: "kernel.apply", module: "kernel", state: "owner" });
   const std = (await cards("std-key")).json.cards;

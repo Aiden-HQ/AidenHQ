@@ -148,7 +148,7 @@ function world() {
   };
   const p1 = commitProduct("1");
   git(root, "clone", "-q", d("p.git"), "prod");
-  for (const x of ["scripts/node_modules", "services/runner/node_modules"]) mkdirSync(d("prod", x), { recursive: true });
+  mkdirSync(d("prod", "scripts/node_modules"), { recursive: true });
   // The instance.
   git(root, "init", "-q", "--bare", "-b", "main", "i.git");
   git(root, "clone", "-q", d("i.git"), "iw");

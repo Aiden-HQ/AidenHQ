@@ -1,4 +1,4 @@
-// The no-shell guard (gate code, services/runner/src/tiers.mjs PRODUCT_GATES): Codex's own sandbox cannot start in the
+// The no-shell guard (gate code, paths.yaml): Codex's own sandbox cannot start in the
 // Paperclip container, so a tool-only agent's boundary is "no shell". Setup (paperclip-setup.mjs) refuses any Codex agent
 // without image: whose final args fail this check.
 

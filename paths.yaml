@@ -7,13 +7,12 @@
 # modules (the official modules repo) or any.
 #
 # The gate's own core and anything that can bypass or widen it (owner, 2026-11-14) is the panel's: the approval path, the
-# state it trusts and the runner's GitHub writes, the job jail, who an agent is and what it may call, the board's approval
+# state it trusts and the code host's GitHub writes, the job jail, who an agent is and what it may call, the board's approval
 # records, decision routes and sign-in, the sandboxes, the kernel, host privileges, the security checks and the product's CI.
 paths:
   - sensitivity: panel
     owner_role: platform-engineer
     patterns:
-      - services/runner/src/{tiers,gate-core,review-request,siblings,cards,evalgate,apply,state,config,progress,main,engines,files,agents,typed-change,url-setting,release,release-sync}.{mjs,ts}
       - scripts/{computers,modules,paperclip-setup,no-shell}.{mjs,ts}
       - kernel/
       - scripts/compiler/
@@ -28,12 +27,30 @@ paths:
       # The lean counters and the tests that hold the gate's lists: loosening either would hide an ungated file.
       - scripts/lean/
       - scripts/test/lean.test.mjs
-      - services/runner/test/gate-coverage.test.mjs
       # This inventory, its compiler and the test that holds it to the gate's lists.
       - paths.yaml
       - scripts/paths.mjs
       - .github/
       - "**/.github/"
+  # The official modules' half of the gate's core (the platform check's list, which only the runner applied): the engines a
+  # job runs, the channels, the AI reviewer, the code hosts (the App's tokens, the merge gate, the git rules, the eval gate),
+  # the platform check, graded done, and the apps platform's and Primer's write kinds and executors.
+  - sensitivity: panel
+    owner_role: platform-engineer
+    patterns:
+      - modules/engine-*/
+      - modules/channel-*/
+      - modules/ai-reviewer/
+      - modules/codehost-github/
+      - modules/codehost-local/
+      - modules/platform/
+      - modules/grading/
+      - "**/aidenhq-sdk/executor.ts"
+      - modules/apps-platform/module.yaml
+      - modules/apps-platform/schemas/
+      - modules/apps-platform/apps-mcp/src/executor.ts
+      - modules/primer/module.yaml
+      - modules/primer/connections/primer-mcp/src/publish.ts
   # The owner-approved source exceptions (review-request.mjs reads them): only the owner's own tap makes a record one, in
   # every repository, so no PR records its own approval.
   - sensitivity: 2

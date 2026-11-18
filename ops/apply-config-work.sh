@@ -109,16 +109,15 @@ main() {
   # Entered through the hand-over of a script that predates generations: the instance had already moved, so the commit that
   # ran before is the newest one pinning `before`.
   if [ -n "${AIDENHQ_APPLY_BEFORE:-}" ] && [ -z "${AIDENHQ_APPLY_INST_BEFORE:-}" ]; then inst_before="$(instancePinning "$before")"; fi
-  # Host-side Node deps (the compiler/setup, the runner and the kernel) follow the product's lockfiles.
-  for d in scripts services/runner kernel; do
+  # Host-side Node deps (the compiler/setup and the kernel) follow the product's lockfiles.
+  for d in scripts kernel; do
     if [ ! -d "$d/node_modules" ] || ! git diff --quiet "$before" "$product" -- "$d/package-lock.json"; then npm ci --prefix "$d" --silent; fi
   done
   lap npm
-  local mods_before mods_after
   materializeModules || { restoreCheckouts; echo "refusing: the official modules could not be fetched" >&2; exit 1; }
 
   # Held at the last known good: a pair that failed its health check is not applied again until main moves, unless the
-  # owner asks from their shell (--retry; the runner never passes it).
+  # owner asks from their shell (--retry; an automated apply never passes it).
   local held
   if [ "$retry" = 0 ] && held="$(genHeld "$product" "$want")"; then
     restoreCheckouts
@@ -270,7 +269,7 @@ applyGeneration() {
   git merge-base --is-ancestor "$pin" origin/main || { rm -f "$file"; echo "refusing: generation $gen's product $pin is not on origin/main" >&2; exit 1; }
   [ "$(kernelRun "$file" "$pin")" = "$product" ] || { rm -f "$file"; echo "refusing: generation $gen's product $product is not what its instance commit runs" >&2; exit 1; }
   rm -f "$file"
-  # Restarts are keyed on what changed since `before`: the failed generation's product, so its kernel and runner come back.
+  # Restarts are keyed on what changed since `before`: the failed generation's product, so its kernel comes back.
   local before="${AIDENHQ_APPLY_BEFORE:-$(git rev-parse HEAD)}"
   local applied="${AIDENHQ_DATA_DIR:-$PWD/data}/applied-product"
   local plan="" mod k at tar
@@ -282,10 +281,9 @@ applyGeneration() {
   done <<< "$plan"
   git -C "$inst" checkout --quiet --detach "$instance"
   git checkout --quiet --detach "$product"
-  for d in scripts services/runner kernel; do
+  for d in scripts kernel; do
     if [ ! -d "$d/node_modules" ] || ! git diff --quiet "$before" "$product" -- "$d/package-lock.json"; then npm ci --prefix "$d" --silent; fi
   done
-  local mods_before mods_after
   materializeModules || { echo "refusing: the official modules of generation $gen could not be fetched" >&2; exit 1; }
   local m; m="$(genAppend "$product" "$instance" pending "" "${AIDENHQ_REVERT_OF:-}" "$gen")"
   local log="$GEN_DIR/apply-$m.log"
@@ -345,21 +343,19 @@ instancePinning() {
 # generation) still has modules-pin.json and fetches them itself into the ignored ./modules (its own materialize.mjs: the
 # instance's `aidenhq` marketplace at its sha, else the pin). The first apply of a product that tracks modules/ over such a
 # tree (modules/.sha marks one) removes everything the checkout doesn't track there, once, so no file of the old fetched tree
-# is left to run. Sets mods_before and mods_after (the caller's locals): the runner restarts when they differ.
+# is left to run.
 materializeModules() {
-  mods_before="$(cat modules/.sha 2>/dev/null || true)"
   if [ -f modules-pin.json ]; then node scripts/modules-repo/materialize.mjs . "$inst/instance.yaml" || return 1; fi
   if [ ! -f modules-pin.json ] && [ -f modules/.sha ]; then
     git clean -ffdxq -- modules && rm -rf modules.next modules.old || return 1
     echo "modules: the fetched tree is gone; the official modules are the product's own modules/"
   fi
-  mods_after="$(cat modules/.sha 2>/dev/null || true)"
 }
 
 # A refusal before the switch: both checkouts back where the running generation has them, with the host's Node deps.
 restoreCheckouts() {
   git checkout --quiet --detach "$before"
-  for d in scripts services/runner kernel; do
+  for d in scripts kernel; do
     git diff --quiet "$before" "$product" -- "$d/package-lock.json" || npm ci --prefix "$d" --silent || true
   done
   if [ -n "${inst_before:-}" ] && [ "$(git -C "$inst" rev-parse HEAD)" != "$inst_before" ]; then git -C "$inst" checkout --quiet --detach "$inst_before"; fi
@@ -473,11 +469,6 @@ switchOver() {
   ops/warehouse-sources.sh # shared sources: roles, schemas, src_meta (skips while the warehouse isn't running)
   lap warehouse
 
-  # The runner's unit (KillMode=process: a restart leaves the agents' runs going). daemon-reload doesn't touch the runner.
-  local unit="$HOME/.config/systemd/user/aidenhq-runner.service"
-  if ! cmp -s ops/units/aidenhq-runner.service "$unit"; then
-    cp ops/units/aidenhq-runner.service "$unit" && systemctl --user daemon-reload && echo "runner unit updated"
-  fi
   # The daily Docker and weekly run-history prunes: setup installed them once, so a changed unit reaches the host here.
   local u
   for u in prune-docker prune-runs; do
@@ -491,20 +482,6 @@ switchOver() {
   if ! cmp -s ops/units/aidenhq-apply-recover.service "$rec"; then
     cp ops/units/aidenhq-apply-recover.service "$rec" && systemctl --user daemon-reload && systemctl --user enable --quiet aidenhq-apply-recover \
       && echo "apply recovery unit installed/updated"
-  fi
-  # The runner is running this script: restart it only after the apply in flight has reported back. SIGUSR2 to its main
-  # process only: it takes no new jobs, leaves the agents' runs going (the new runner adopts them and reports their
-  # turns), exits as soon as nothing is half done (a reply being posted, a publish, this apply) and systemd starts it again.
-  # The runner reads config/modules.json once at start (the code hosts, codehost-local's org): a change to the instance's module
-  # set restarts it too, compared with the copy taken when the last restart was asked for (so an apply that died after the
-  # compile still restarts it on the next run).
-  local runner_mods="${AIDENHQ_DATA_DIR:-$PWD/data}/runner-modules.json"
-  if { [ "$before" != "$product" ] && ! git diff --quiet "$before" "$product" -- services/runner kernel/sdk kernel/src/sandbox.ts kernel/src/jobs.ts ops/units/aidenhq-runner.service; } || [ "${mods_before:-}" != "${mods_after:-}" ] \
-     || { [ -f config/modules.json ] && ! cmp -s config/modules.json "$runner_mods"; }; then
-    if systemd-run --user --quiet --on-active=30 systemctl --user kill --kill-whom=main -s SIGUSR2 aidenhq-runner; then
-      echo "runner code or module set changed: restart once idle, from 30s"
-      [ ! -f config/modules.json ] || cp config/modules.json "$runner_mods"
-    fi
   fi
   # The computer launcher holds live run tokens in memory: restart it only when its code changed (running computers get new tokens next run).
   if [ "$before" != "$product" ] && ! git diff --quiet "$before" "$product" -- services/computer/launcher.mjs services/computer/lib.mjs \

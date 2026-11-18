@@ -114,7 +114,6 @@ export interface Finished {
 export interface Agents {
   sessions: Session[];
   finished: Finished[];
-  runner: { reportedAt: string | null; stale: boolean };
   roster?: RosterAgent[];
 }
 

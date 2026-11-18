@@ -22,7 +22,6 @@ import { startRollover } from "./rollover.js";
 import { startRecurringRuns } from "./recurring-start.js";
 import { startWatch } from "./watch.js";
 import { liveActivity } from "./live-activity.js";
-import type { RunnerReport } from "./activity.js";
 
 const cfg = loadConfig();
 const log = pino({ level: cfg.logLevel, redact: { paths: ["authorization", "*.authorization", "key", "*.key"], censor: "[redacted]" }, base: { svc: "board" } });
@@ -80,17 +79,15 @@ const signIns = cfg.signIns.map(({ url, token, ...s }) => ({ ...s, auth: new Mcp
 // Board sign-in: admins sign in on the kernel's admin listener and the kernel hands this origin its own session (kernel-auth.ts);
 // the board opens no accounts file.
 const accounts = createKernelAuth({ kernel: { url: kernelUrl, token: cfg.gateway.token }, adminUrl: cfg.accounts.adminUrl });
-// The runner's Engineer jobs, as it last reported them (shared by the listeners: it reports to the internal one).
-const activity: { runner?: RunnerReport } = {};
 // Open boards hear what agents change in their chats (watch.ts): one look at Paperclip every 2s while any board listens.
-startWatch({ pc: paperclip, events: store.events, records, log, runner: () => activity.runner, session: liveActivity(cfg.sessions) });
-const common = { grading, adminUrl: cfg.accounts.adminUrl, paperclip, store, log, staticDir: cfg.staticDir, timezone: cfg.timezone, workdays: cfg.workdays, slackTeams: cfg.slackTeams, lan: cfg.lan, activity, sessions: cfg.sessions, google, signIns, setupFlows: cfg.setupFlows, welcomeMarker: join(dirname(cfg.dbPath), "welcome-sent"), accounts, gateway: cfg.gateway, records, work, lane: process.env.AIDENHQ_GRANTS_FILE ? { grantsFile: process.env.AIDENHQ_GRANTS_FILE } : undefined };
+startWatch({ pc: paperclip, events: store.events, records, log, session: liveActivity(cfg.sessions) });
+const common = { grading, adminUrl: cfg.accounts.adminUrl, paperclip, store, log, staticDir: cfg.staticDir, timezone: cfg.timezone, workdays: cfg.workdays, slackTeams: cfg.slackTeams, lan: cfg.lan, sessions: cfg.sessions, google, signIns, setupFlows: cfg.setupFlows, welcomeMarker: join(dirname(cfg.dbPath), "welcome-sent"), accounts, gateway: cfg.gateway, records, work, lane: process.env.AIDENHQ_GRANTS_FILE ? { grantsFile: process.env.AIDENHQ_GRANTS_FILE } : undefined };
 // The board's https address (the front door) and phones on the home network; 3120 is the kernel's admin listener.
 const lan = createApp({ ...common, allowedHosts: cfg.lan.hosts, mode: "lan" });
 lan.listen(cfg.lan.port, "0.0.0.0", () => log.info({ port: cfg.lan.port, hosts: cfg.lan.hosts }, "LAN board listening"));
 
-// The tasks bridge and the runner: bearer token, /internal/ only. Not published beyond loopback.
-const internal = cfg.internal && createApp({ ...common, allowedHosts: cfg.internal.hosts, mode: "internal", internalToken: cfg.internal.token, reviewerKey: cfg.reviewerKey, operatorKey: cfg.operatorKey, gatewayKey: cfg.gateway?.token });
+// The tasks bridge and the kernel: bearer token, /internal/ only. Not published beyond loopback.
+const internal = cfg.internal && createApp({ ...common, allowedHosts: cfg.internal.hosts, mode: "internal", internalToken: cfg.internal.token, operatorKey: cfg.operatorKey, gatewayKey: cfg.gateway?.token });
 if (internal && cfg.internal) internal.listen(cfg.internal.port, "0.0.0.0", () => log.info({ port: cfg.internal!.port }, "internal API listening"));
 
 for (const sig of ["SIGTERM", "SIGINT"] as const) {

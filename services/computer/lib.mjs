@@ -127,7 +127,7 @@ export function execEnv(env, { token, mcp }) {
 export const CODEX_CONFIG_SCRUB = [
   'f="$CODEX_HOME/config.toml"',
   'mkdir -p "$CODEX_HOME"',
-  '[ -n "$HOME" ] && mkdir -p "$HOME"', // a runner job's HOME (in its workspace) is made here, inside the box: the runner never writes there
+  '[ -n "$HOME" ] && mkdir -p "$HOME"', // a job's HOME (in its workspace) is made here, inside the box: the kernel never writes there
   "if [ -f \"$f\" ]; then sed -e '/^# BEGIN PAPERCLIP MANAGED MCP/,/^# END PAPERCLIP MANAGED MCP/d' -e '/^# >>> aidenhq/,/^# <<< aidenhq/d' \"$f\" > \"$f.aidenhq\" && mv \"$f.aidenhq\" \"$f\" || exit 97; fi",
   `[ -n "$${MCP_BLOCK_ENV}" ] && printf '%s' "$${MCP_BLOCK_ENV}" | base64 -d >> "$f"`,
   `unset ${MCP_BLOCK_ENV}`,
@@ -135,7 +135,7 @@ export const CODEX_CONFIG_SCRUB = [
   'exec "$@"',
 ].join("\n");
 
-/** What a runner job's engine runs under in its box (docker exec): the scrub above, then the engine. */
+/** What a job's engine runs under in its box (docker exec): the scrub above, then the engine. */
 export const BOX_EXEC_WRAP = CODEX_CONFIG_SCRUB;
 
 /** [command, args] for docker exec: wrapped in the scrub when the exec carries a CODEX_HOME. */
@@ -187,7 +187,7 @@ export function dockerRunArgs({ name, image, agentId, network, limits, mounts, u
 
 /**
  * Admission: with `max` boxes already up, the least recently used idle one (no exec in flight) is evicted; none idle → wait.
- * A box `held(name)` (a runner job's live lease) is never idle: its `docker exec` comes from the runner, not through here.
+ * A box `held(name)` (a job's live lease) is never idle: its `docker exec` comes from the kernel, not through here.
  * Returns the container to evict, or null when there is room, or "wait".
  */
 export function admit(boxes, max, held = () => false) {
@@ -204,15 +204,15 @@ export function boxOf(boxes, agentId) {
 /** Last lines of the newest Codex session log in a box (sh -c). */
 export const PROGRESS_SCRIPT = 'f=$(ls -t $(find /workspace/.paperclip-runtime/codex/home/sessions -name "rollout-*.jsonl" 2>/dev/null) 2>/dev/null | head -1); [ -n "$f" ] && tail -n 400 "$f"';
 
-/** Boxes idle longer than idleMs; a held one (a runner job's live lease) never is. */
+/** Boxes idle longer than idleMs; a held one (a job's live lease) never is. */
 export const stale = (boxes, idleMs, now = Date.now(), held = () => false) => [...boxes].filter(([n, b]) => !b.busy && !held(n) && now - b.lastUsed > idleMs).map(([n]) => n);
 
-/** A runner job's lease: renewed by the runner while it follows the job. Lapsed (the runner gone this long), the box goes. */
+/** A job's lease: renewed by the kernel while it follows the job. Lapsed (the kernel gone this long), the box goes. */
 export const LEASE_MS = 15 * 60_000;
 
 /**
- * Runner jobs' boxes (POST /job): one record per box, saved like the run tokens so a launcher restart keeps the lease and the
- * helper binding. { container, agentId, issueId, identifier, workspace, codexHome, helperPort, helperToken, leaseUntil }.
+ * Jobs' boxes (POST /job, POST /check): one record per box, saved like the run tokens so a launcher restart keeps the lease.
+ * { container, agentId, issueId, identifier, workspace, codexHome, kernel, tokenHash, roles, leaseUntil }.
  */
 /**
  * Whether a box may use repo-checkout: a kernel job's box by the roles its admission froze (the launcher's job record, never
@@ -242,22 +242,21 @@ export class Jobs {
   containers() { return [...this.#by.keys()]; }
   /** A live lease: admission and idle reaping leave the box alone. */
   leased(container, now = Date.now()) { return (this.#by.get(container)?.leaseUntil ?? 0) > now; }
-  /** The runner still follows the job (after its own restart too): a new lease and the helper binding. Undefined: no such job. */
-  renew(container, { issueId, helperPort, helperToken } = {}, now = Date.now()) {
+  /** The kernel still follows the job (after its own restart too): a new lease. Undefined: no such job. */
+  renew(container, { issueId } = {}, now = Date.now()) {
     const r = this.#by.get(container);
     if (!r || r.issueId !== issueId || r.leaseUntil <= now) return undefined;
-    if (helperPort && helperToken) Object.assign(r, { helperPort, helperToken });
     r.leaseUntil = now + LEASE_MS;
     return r;
   }
-  /** Jobs whose lease ran out: the runner has been gone too long. */
+  /** Jobs whose lease ran out: the kernel has been gone too long. */
   lapsed(now = Date.now()) { return [...this.#by.values()].filter((r) => r.leaseUntil <= now).map((r) => r.container); }
   dump() { return [...this.#by.values()]; }
   load(rows) { for (const r of rows ?? []) if (r?.container && r.issueId) this.#by.set(r.container, r); }
 }
 
 /**
- * A folder the runner asks to mount into a job's box, checked: exactly `<root>/<name>` as given (no `..`, no other path),
+ * A folder the kernel asks to mount into a job's box, checked: exactly `<root>/<name>` as given (no `..`, no other path),
  * an existing directory, and no symlink anywhere below the root (its real path is the root's real path plus `name`).
  * `name` is the task's own (its identifier for the task folder, its id for the Codex home), never the caller's choice.
  */
@@ -273,39 +272,36 @@ export function jobFolder(given, root, name) {
 }
 
 /**
- * A job box's bind mounts. The guard hooks folder is made here, as the launcher's user (the runner's): a missing bind source
- * is created by Docker as root, and the runner then can't write its pre-push hook into it (EACCES on every repo command).
+ * A job box's bind mounts. The guard hooks folder is made here, as the launcher's user: a missing bind source
+ * is created by Docker as root, and a pre-push hook then can't be written into it (EACCES on every repo command).
  */
 export function jobMounts({ resolvConf, workspace, outDir, codexHome, runnerWork, repo, engineDir }) {
   const hooks = path.join(runnerWork, ".guard-hooks");
   mkdirSync(hooks, { recursive: true });
-  return [`${resolvConf}:/etc/resolv.conf:ro`, `${workspace}:/workspace`, `${outDir}:/aidenhq-out`, `${codexHome}:/codex-home`, `${hooks}:/opt/aidenhq/hooks:ro`, `${path.join(repo, "services/runner/bin")}:/opt/aidenhq/bin:ro`, `${path.join(repo, engineDir)}:/opt/aidenhq/engine:ro`];
+  return [`${resolvConf}:/etc/resolv.conf:ro`, `${workspace}:/workspace`, `${outDir}:/aidenhq-out`, `${codexHome}:/codex-home`, `${hooks}:/opt/aidenhq/hooks:ro`, `${path.join(repo, engineDir)}:/opt/aidenhq/engine:ro`];
 }
 
-/** Where a job box's runner bits are: the guard hooks, the `aidenhq` commands, the HOME (outside every clone). */
+/** A job box's HOME (outside every clone). */
 export const JOB_HOME = "/workspace/.aidenhq/home";
-const JOB_PATH = "/opt/aidenhq/bin:/opt/rust/cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin";
+const JOB_PATH = "/opt/rust/cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin";
 
-/** Every name a job box's env file may hold: the run's revocable capabilities and plain settings. Nothing of the runner's own env (the runner adds only the job's read-only gh token, by docker exec -e). */
+/** Every name a job box's env file may hold: the job's revocable capabilities and plain settings. Nothing of the kernel's own env (it adds only the job's read-only gh token, by docker exec -e). */
 export const JOB_ENV_NAMES = [
-  "AIDENHQ_RUN_TOKEN", "AIDENHQ_GATEWAY_URL", "AIDENHQ_REPO_URL", "AIDENHQ_REPO_TOKEN", "AIDENHQ_MCP_B64", "AIDENHQ_TASK_WORKTREE", "HOME", "CODEX_HOME", "PATH",
+  "AIDENHQ_RUN_TOKEN", "AIDENHQ_GATEWAY_URL", "AIDENHQ_MCP_B64", "AIDENHQ_TASK_WORKTREE", "HOME", "CODEX_HOME", "PATH",
   "GIT_AUTHOR_NAME", "GIT_AUTHOR_EMAIL", "GIT_COMMITTER_NAME", "GIT_COMMITTER_EMAIL", "GIT_TERMINAL_PROMPT",
   "GIT_CONFIG_COUNT", "GIT_CONFIG_KEY_0", "GIT_CONFIG_VALUE_0", "GIT_CONFIG_KEY_1", "GIT_CONFIG_VALUE_1", "GIT_CONFIG_KEY_2", "GIT_CONFIG_VALUE_2",
 ];
 
 /**
- * A job box's env file (docker exec --env-file), built here from the allowlist and never from the runner's env: the run token
- * (model key, MCP key and the `aidenhq` commands' key, through the gateway's helper route), the agent's granted connections as
- * Codex config, and the commit identity. Commits stay unsigned (the runner signs after the run); the clones' hooks are the
- * runner's read-only guard hooks.
+ * A job box's env file (docker exec --env-file), built here from the allowlist and never from the kernel's env: the job token
+ * (model key, MCP key and the `aidenhq` commands' key), the agent's granted connections as Codex config, and the commit
+ * identity. Commits stay unsigned; the clones' hooks are the read-only guard hooks.
  */
 export function jobEnvFile({ token, mcp, gatewayUrl, identity = {} }) {
   const clean = (v) => String(v ?? "").replace(/[\r\n]/g, " ").trim();
   const env = {
     AIDENHQ_RUN_TOKEN: token,
     AIDENHQ_GATEWAY_URL: gatewayUrl, // a kernel job's `aidenhq` commands (images/engineer/bin/aidenhq)
-    AIDENHQ_REPO_URL: `${gatewayUrl}/helper`,
-    AIDENHQ_REPO_TOKEN: token,
     AIDENHQ_MCP_B64: Buffer.from(mcp ?? "").toString("base64"),
     HOME: JOB_HOME, AIDENHQ_TASK_WORKTREE: "/workspace", // the task folder, as on the host (its .aidenhq/out/ is attached)
     CODEX_HOME: "/codex-home",
@@ -321,57 +317,6 @@ export function jobEnvFile({ token, mcp, gatewayUrl, identity = {} }) {
   return JOB_ENV_NAMES.filter((k) => env[k]).map((k) => `${k}=${env[k]}`).join("\n") + "\n";
 }
 
-/**
- * POST /helper/<command> on the gateway: a job box's `aidenhq` command, passed to the runner's helper bound to that box's run
- * token (its job record's port and helper token). Only the bearer run token is read from the request; the box never names a
- * port, URL, identity or credential. The body goes on as it is (the runner checks it, and tiers every write). While the runner
- * restarts its port refuses connections: retried for two minutes, with the binding read again (adoption may move it).
- */
-export async function serveHelper(req, res, { tokens, jobs, retryForMs = 120_000, retryEveryMs = 2000 }) {
-  const reply = (status, text) => res.writeHead(status, { "content-type": "text/plain; charset=utf-8" }).end(text);
-  const m = /^\/helper\/([a-z][a-z-]*)$/.exec(req.url ?? "");
-  if (req.method !== "POST" || !m || !HELPER_COMMANDS.includes(m[1])) return reply(404, "not found");
-  const token = String(req.headers.authorization ?? "").replace(/^Bearer\s+/i, "");
-  const binding = () => {
-    const who = tokens.whoami(token);
-    const r = who && jobs.get(who.container);
-    return r && { port: r.helperPort, token: r.helperToken };
-  };
-  if (!binding()) return reply(401, "this task run is over");
-  const chunks = [];
-  let size = 0;
-  for await (const c of req) if ((size += c.length) <= 65_536) chunks.push(c);
-  const body = Buffer.concat(chunks);
-  for (const end = Date.now() + retryForMs; ; ) {
-    const to = binding();
-    if (!to) return reply(401, "this task run is over");
-    try {
-      const out = await postLocal(to.port, `/${m[1]}`, to.token, body);
-      return reply(out.status, out.text);
-    } catch (e) {
-      if (e.code !== "ECONNREFUSED" || Date.now() > end) return reply(502, `the runner didn't answer (${e.message})`);
-      await new Promise((r) => setTimeout(r, retryEveryMs));
-    }
-  }
-}
-
-// The runner's helper commands (services/runner/src/repohelper.ts TOOLS; verify-security.sh checks that list).
-import { TOOLS as HELPER_COMMANDS } from "../runner/src/repohelper.ts";
-
-/** POST to host loopback (http.request: an `aidenhq pr` can take many minutes, past fetch's silent-request limit). */
-function postLocal(port, urlPath, token, body) {
-  return new Promise((resolve, reject) => {
-    const r = http.request({ host: "127.0.0.1", port, path: urlPath, method: "POST", headers: { authorization: `Bearer ${token}`, "content-type": "application/json", "content-length": body.length } }, (up) => {
-      const parts = [];
-      up.on("data", (d) => parts.push(d));
-      up.on("end", () => resolve({ status: up.statusCode ?? 502, text: Buffer.concat(parts).toString("utf8") }));
-      up.on("error", reject);
-    });
-    r.on("error", reject);
-    r.end(body);
-  });
-}
-
 /** Lapsed jobs, their run tokens revoked and records dropped at once; the caller then removes the boxes. */
 export function reapLapsed(jobs, tokens, now = Date.now()) {
   const names = jobs.lapsed(now);
@@ -379,7 +324,7 @@ export function reapLapsed(jobs, tokens, now = Date.now()) {
   return names;
 }
 
-/** The job routes: only computers_runner_key (the runner) and launcher_kernel_key (the kernel) open them, and nothing else. */
+/** The job routes: only launcher_kernel_key (the kernel) opens them, and nothing else. */
 export const JOB_ROUTES = ["/job", "/job/renew", "/job/release"];
 /** The kernel's check boxes (kernel/src/checkbox.ts): only launcher_kernel_key opens it; /job/release ends one. */
 export const CHECK_ROUTES = ["/check"];
@@ -394,13 +339,12 @@ export function checkMounts({ resolvConf, workspace, out, readOnly, supplyChain 
 }
 
 /**
- * Whether a control call's bearer opens its route: the runner's and the kernel's keys only the job routes, the board's
+ * Whether a control call's bearer opens its route: the kernel's key only the job and check routes, the board's
  * progress key only /progress, the plugin's key every other route. An empty secret is no key.
  */
-export function controlAllowed(bearer, method, url, { plugin, runner, kernel, progress }) {
+export function controlAllowed(bearer, method, url, { plugin, kernel, progress }) {
   if (method !== "POST" || !bearer) return false;
-  if (JOB_ROUTES.includes(url)) return (Boolean(runner) && bearer === runner) || (Boolean(kernel) && bearer === kernel);
-  if (CHECK_ROUTES.includes(url)) return Boolean(kernel) && bearer === kernel;
+  if ([...JOB_ROUTES, ...CHECK_ROUTES].includes(url)) return Boolean(kernel) && bearer === kernel;
   if (url === "/progress" && progress && bearer === progress) return true;
   return Boolean(plugin) && bearer === plugin;
 }

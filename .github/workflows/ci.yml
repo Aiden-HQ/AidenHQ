@@ -1,10 +1,10 @@
 # Job budgets (timeout-minutes): a floor set from only a few hosted runs on 2026-11-17. A failed job is never re-run, but a
 # failed suite re-runs its failed tests once in the same job (.github/ci/run-suite.sh; the board's vitest --retry=1).
 # Tests and typechecks for every package, on pull requests and pushes to main. Offline: no secrets are used.
-# A pull request runs the fast suites its change touches; the slow end-to-end ones (areas.json `main: true`: the runner's
-# flows, the SDK twin) run only on pushes to main, so a flake there never holds a PR (the merge queue counts every check).
+# A pull request runs the fast suites its change touches; the slow end-to-end ones (areas.json `main: true`: the SDK
+# twin) run only on pushes to main, so a flake there never holds a PR (the merge queue counts every check).
 # Jobs run on GitHub-hosted runners (this repository is public, so it costs nothing, but the free plan runs ~20 jobs at
-# once). The heavy jobs (packages, runner, board) overflow to our self-hosted runners (modules/ci, labels self-hosted +
+# once). The heavy jobs (packages, board) overflow to our self-hosted runners (modules/ci, labels self-hosted +
 # aidenhq) only when hosted capacity is saturated (checks' `runner` step), the repository variable CI_SELF_HOSTED is
 # 'true' (docs/operations.md) and the run is a push to main or a same-repo pull request. Fork PRs stay hosted, and the
 # runners' job-started hook refuses any job that is not a push or same-repo PR of a repo they serve.
@@ -92,10 +92,6 @@ jobs:
           # scripts/node_modules is read by the scripts suite and the kernel's authority CLI: install it once, here, since two
           # parallel `npm ci` in one directory delete each other's files (ENOTEMPTY, then "Cannot find module yaml").
           grep -qE '^(scripts|kernel|fixtures/twin)[[:space:]]' "$logs/list" && (cd scripts && npm ci)
-          # The scripts suite's forks test runs the runner's tier function (services/runner/src/tiers.mjs), which reads its own
-          # node_modules and, for the apply rules, the kernel's (kernel/src/apply-tier.ts): install them too (no services/runner
-          # package runs in this job; the kernel's own suite, which installs its packages itself, is weighted onto the other shard).
-          grep -qE '^scripts[[:space:]]' "$logs/list" && (cd services/runner && npm ci) && { grep -qE '^kernel[[:space:]]' "$logs/list" || (cd kernel && npm ci); }
           tr '\n' '\0' < "$logs/list" | xargs -0 -r -P 4 -I{} bash -c 'one "$1"' _ {}
           status=0
           while IFS=$'\t' read -r dir cmd; do
@@ -146,76 +142,6 @@ jobs:
             echo "::endgroup::"
           done < <(jq -r '.[] | [.dir, .run] | @tsv' <<< "$ENTRIES")
           exit $status
-
-  # The runner's unit tests, and its end-to-end flows in three shards side by side (each only when selected; the flows only
-  # on a push to main).
-  runner-unit:
-    needs: checks
-    if: contains(fromJSON(needs.checks.outputs.tests).*.name, 'services/runner')
-    runs-on: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository && 'ubuntu-latest' || fromJSON(needs.checks.outputs.runner) }}
-    timeout-minutes: 4
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
-        with:
-          node-version: 24.x
-      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: ~/.npm
-          key: npm-${{ runner.os }}-${{ hashFiles('**/package-lock.json') }}
-          restore-keys: npm-${{ runner.os }}-
-      - name: Git identity (the tests make commits)
-        run: git config --global user.name ci && git config --global user.email ci@example.com
-      - name: Test
-        working-directory: services/runner
-        # The command is the suite's `run` in .github/ci/areas.json (scripts/ci-local.mjs runs the same one).
-        run: ../../.github/ci/run-suite.sh "$(jq -r '.suites[] | select(.name == "services/runner") | .run' ../../.github/ci/areas.json)"
-
-  runner-flows:
-    name: runner-flows (${{ matrix.shard }}/3)
-    needs: checks
-    if: contains(fromJSON(needs.checks.outputs.tests).*.name, 'services/runner#flows')
-    runs-on: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository && 'ubuntu-latest' || fromJSON(needs.checks.outputs.runner) }}
-    timeout-minutes: 5
-    strategy:
-      fail-fast: false
-      matrix:
-        shard: [1, 2, 3]
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
-        with:
-          node-version: 24.x
-      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: ~/.npm
-          key: npm-${{ runner.os }}-${{ hashFiles('**/package-lock.json') }}
-          restore-keys: npm-${{ runner.os }}-
-      - name: Git identity (the tests make commits)
-        run: git config --global user.name ci && git config --global user.email ci@example.com
-      - name: Test
-        working-directory: services/runner
-        env:
-          SHARD: ${{ matrix.shard }}
-          # Seconds each file took on a hosted runner (2026-11-18), for balancing; a file not listed counts 30.
-          WEIGHTS: '{"test/flow-merge-path.test.mjs": 36, "test/flow-local-codehost.test.mjs": 36, "test/flow-autonomy.test.mjs": 31, "test/flow-approvals.test.mjs": 28, "test/flow-running.test.mjs": 14, "test/box.test.mjs": 13, "test/adopt.test.mjs": 11}'
-        run: |
-          # The files test:flows runs, split greedily by weight, heaviest first, into the lightest of the three shards.
-          files=$(node -e '
-            const w = JSON.parse(process.env.WEIGHTS), shard = Number(process.env.SHARD) - 1;
-            const files = require("fs").readdirSync("test").filter((f) => /^(flow-.*|box|adopt)\.test\.mjs$/.test(f)).map((f) => `test/${f}`);
-            const load = [0, 0, 0], out = [[], [], []];
-            for (const f of files.sort((a, b) => (w[b] ?? 30) - (w[a] ?? 30) || a.localeCompare(b))) { const i = load.indexOf(Math.min(...load)); load[i] += w[f] ?? 30; out[i].push(f); }
-            console.log(out[shard].join(" "));')
-          echo "Shard $SHARD: $files"
-          # As many files at once as the job has CPUs (cpus: 4 in modules/ci/compose.yaml; ubuntu-latest has 4 too): node
-          # counts the host's CPUs, not the container's, and runs the whole shard at once, starving every flow's turns.
-          # The kernel's packages too: the flows run the kernel's job half (kernel/test/fixtures/jobs-host.mjs).
-          (cd ../../kernel && npm ci) && npm ci && ../../.github/ci/run-suite.sh "node --disable-warning=ExperimentalWarning --test --test-concurrency=4 $files"
 
   board:
     needs: checks
@@ -472,13 +398,13 @@ jobs:
             --local aidenhq/computer-agent-base=services/computer/images/agent-base/Dockerfile \
             --local aidenhq/computer-browser=services/computer/images/browser/Dockerfile -- $DOCKERFILES
 
-  # The one result a merge waits for: every job above passed (packages, the runner, board and image-scan jobs may
+  # The one result a merge waits for: every job above passed (packages, board and image-scan jobs may
   # be skipped: not a pull request, or the change doesn't touch them). Jobs that
   # need another appear only once it finishes, so without this a PR can look all green for a moment before its tests
-  # exist; the runner treats this check as required once the base branch has it (modules/codehost-github/src/merge-gate.mjs withGate).
+  # exist; the code host treats this check as required once the base branch has it (modules/codehost-github/src/merge-gate.mjs withGate).
   ci-required:
     if: always()
-    needs: [checks, policy, packages, modules, runner-unit, runner-flows, board, image-scan]
+    needs: [checks, policy, packages, modules, board, image-scan]
     runs-on: ubuntu-latest
     timeout-minutes: 2
     steps:
@@ -486,4 +412,4 @@ jobs:
           RESULTS: ${{ toJSON(needs) }}
         run: |
           echo "$RESULTS" | jq -r 'to_entries[] | "\(.key): \(.value.result)"'
-          echo "$RESULTS" | jq -e '(.checks.result == "success") and (.policy.result == "success") and ([.packages, .modules, .["runner-unit"], .["runner-flows"], .board, .["image-scan"]] | all(.result | IN("success", "skipped")))' >/dev/null
+          echo "$RESULTS" | jq -e '(.checks.result == "success") and (.policy.result == "success") and ([.packages, .modules, .board, .["image-scan"]] | all(.result | IN("success", "skipped")))' >/dev/null

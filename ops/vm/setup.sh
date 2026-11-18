@@ -195,7 +195,7 @@ fi
 # Distro updates, after the holds so they never move a pinned package.
 apt-get -y upgrade
 
-# The browser for Engineer jobs (services/runner/bin/aidenhq-browse: screenshots and click-throughs of the app they build):
+# The browser for Engineer jobs (aidenhq-browse: screenshots and click-throughs of the app they build):
 # AidenHQ's one browser, as in the browser image (services/computer/images/browser): agent-browser 0.41.2 and Chrome for
 # Testing 157.0.8103.78 (2026-11-11, critical CVE fixes; supply-chain exception), checksummed, root-owned under /opt; the runner binds it read-only into every job. Move
 # both pins with the image's. Reinstalled only when a pin moves. Chrome for Testing publishes linux64 and linux-arm64

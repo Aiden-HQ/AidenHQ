@@ -6,7 +6,7 @@ import assert from "node:assert/strict";
 import { DatabaseSync } from "node:sqlite";
 import { createGrading } from "../service/src/server.ts";
 
-const KEYS = { check: "c".repeat(32), runner: "r".repeat(32), board: "b".repeat(32) };
+const KEYS = { check: "c".repeat(32), board: "b".repeat(32) };
 const RUBRIC = ["merged into main", "checks green on the head", "the app serves the page"];
 
 /** The module's own server, its kernel a map of tasks. A task is `{id, identifier, status, assigneeAgentId, createdByAgentId}`. */
@@ -21,7 +21,7 @@ async function harness(tasks, t) {
     settings: async () => ({ agents_org: "acme", product_repo: "own/aidenhq" }),
     release: async () => {},
   };
-  const { server, grades } = createGrading({ db: new DatabaseSync(":memory:"), kernel, keys: KEYS });
+  const { server, grades, runner } = createGrading({ db: new DatabaseSync(":memory:"), kernel, keys: KEYS });
   await new Promise((r) => server.listen(0, "127.0.0.1", r));
   t.after(() => server.close());
   const url = `http://127.0.0.1:${server.address().port}`;
@@ -33,8 +33,8 @@ async function harness(tasks, t) {
     grades,
     // The kernel asking the finish check, as it does on every move to done (its body carries the task it read).
     finish: async (ref, body) => (await post("/check/finish", KEYS.check, { task: byRef(ref), ...body })).json,
-    verdict: async (ref, body) => (await post(`/internal/grades/${encodeURIComponent(byRef(ref).identifier)}/verdict`, KEYS.runner, body)).json,
-    resubmit: async (ref, version) => (await post(`/internal/grades/${encodeURIComponent(byRef(ref).identifier)}/resubmit`, KEYS.runner, { version })).json,
+    verdict: async (ref, body) => runner("POST", `/internal/grades/${encodeURIComponent(byRef(ref).identifier)}/verdict`, body),
+    resubmit: async (ref, version) => runner("POST", `/internal/grades/${encodeURIComponent(byRef(ref).identifier)}/resubmit`, { version }),
   };
 }
 

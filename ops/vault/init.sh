@@ -57,9 +57,8 @@ runuser -u "$U" -- gocryptfs -init -q -passfile "$TMP/pass.$U" "$CIPHER" || die 
 [ "$(tr -d '\n' < "$RECOVERY" | wc -c)" = 64 ] || die "recovery key has an unexpected length"
 
 # Swap the plaintext dir for the (empty) mountpoint. gocryptfs refuses a non-empty mountpoint, so a stray write while
-# locked fails loudly; Docker requires the vault and the runner waits for it.
+# locked fails loudly; Docker requires the vault.
 systemctl stop docker.socket docker.service
-user_systemctl stop aidenhq-runner 2>/dev/null || true   # not installed yet on a fresh setup
 as_user mv "$VIEW" "$PLAIN"
 as_user install -d -m 0700 "$VIEW"
 
@@ -80,7 +79,6 @@ if ! diff <(cd "$PLAIN" && find . -type f -print0 | sort -z | xargs -0 sha256sum
 fi
 
 systemctl start docker.service
-user_systemctl start aidenhq-runner 2>/dev/null || true
 echo "vault ready: $(runuser -u "$U" -- find "$VIEW" -type f | wc -l) files encrypted; key: $KEY"
 echo "recovery key written to $RECOVERY (root only). Copy it to your password manager, then: sudo shred -u $RECOVERY"
 echo "plaintext kept at $PLAIN until the reboot and recovery tests pass (ops/vault/README.md)"

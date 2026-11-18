@@ -55,7 +55,7 @@
     "n": 7,
     "workflow": "Tier 0 runs, Tier 1 reviewer, Tier 2 owner, panel",
     "today": [
-      "services/runner/test/flow-autonomy.test.mjs",
+      "kernel/test/writes.test.mjs",
       "modules/ai-reviewer/test/review.test.mjs"
     ],
     "next": "kernel K5/K6 + ai-reviewer"
@@ -64,7 +64,6 @@
     "n": 8,
     "workflow": "Engineer job: prompt, run, comment mid-run, finish",
     "today": [
-      "services/runner/test/flow-running.test.mjs",
       "kernel/test/jobs.test.mjs"
     ],
     "next": "engineering + engine-codex + K7"
@@ -73,7 +72,6 @@
     "n": 9,
     "workflow": "Runner restart adopts jobs",
     "today": [
-      "services/runner/test/adopt.test.mjs",
       "kernel/test/jobs.test.mjs"
     ],
     "next": "K7 adopt test"
@@ -82,7 +80,6 @@
     "n": 10,
     "workflow": "Push / PR to agents org and outside it",
     "today": [
-      "services/runner/test/open-pr.test.mjs",
       "modules/codehost-github/test/pr-base.test.mjs",
       "modules/codehost-github/test/stale.test.mjs"
     ],
@@ -92,7 +89,7 @@
     "n": 11,
     "workflow": "Merge at reviewed head once green, queue, breaker",
     "today": [
-      "services/runner/test/flow-merge-path.test.mjs",
+      "modules/codehost-github/test/merge-queue.test.mjs",
       "modules/codehost-github/test/stale.test.mjs"
     ],
     "next": "codehost-github + engineering"
@@ -101,8 +98,7 @@
     "n": 12,
     "workflow": "create_repo in agents org",
     "today": [
-      "services/runner/test/tiers.test.mjs",
-      "services/runner/test/runner.test.mjs",
+      "modules/codehost-github/test/plan.test.mjs",
       "modules/codehost-github/test/hardening.test.mjs"
     ],
     "next": "codehost-github"
@@ -111,8 +107,8 @@
     "n": 13,
     "workflow": "Fleet apply, Tier 0 instance changes, land",
     "today": [
-      "services/runner/test/apply.test.mjs",
-      "services/runner/test/land.test.mjs",
+      "kernel/test/apply-plan.test.mjs",
+      "modules/codehost-github/test/release-train.test.mjs",
       "scripts/test/apply-atomic.test.mjs"
     ],
     "next": "kernel.apply + codehost-github.land"
@@ -121,7 +117,7 @@
     "n": 14,
     "workflow": "Product PR watch, Dependabot pin-only merges, supply chain",
     "today": [
-      "services/runner/test/tiers.test.mjs",
+      "modules/codehost-github/test/pr-watch.test.mjs",
       "scripts/test/supply-chain.test.mjs",
       "scripts/test/pins.test.mjs"
     ],
@@ -131,7 +127,7 @@
     "n": 15,
     "workflow": "Design-review tasks and status",
     "today": [
-      "services/runner/test/merges.test.mjs"
+      "modules/codehost-github/test/design-review.test.mjs"
     ],
     "next": "design events + check"
   },
@@ -148,7 +144,6 @@
     "n": 17,
     "workflow": "Delegation and outcomes to parents",
     "today": [
-      "services/runner/test/notices.test.mjs",
       "modules/tasks/connections/tasks-mcp/test/parent-wake.test.mjs"
     ],
     "next": "tasks + K6 notices"
@@ -213,8 +208,7 @@
     "n": 24,
     "workflow": "Heartbeats, wake-ups, recurring tasks",
     "today": [
-      "scripts/test/heartbeat.test.mjs",
-      "services/runner/test/runner.test.mjs"
+      "scripts/test/heartbeat.test.mjs"
     ],
     "next": "chief-of-staff"
   },
@@ -250,7 +244,6 @@
     "n": 28,
     "workflow": "Primer publish",
     "today": [
-      "services/runner/test/flow-approvals.test.mjs",
       "modules/primer/connections/primer-mcp/test/publish.test.ts"
     ],
     "next": "primer.publish kind"

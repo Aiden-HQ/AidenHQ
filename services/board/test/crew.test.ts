@@ -17,7 +17,7 @@ const issue = (o: Partial<Issue>): Issue => ({
   createdAt: `2026-10-26T10:00:${String(n).padStart(2, "0")}Z`, updatedAt: "2026-10-26T10:00:00Z", lastActivityAt: "2026-10-26T10:00:00Z", ...o,
 });
 const SEEN = "2026-10-26T11:00:00Z";
-const input = (o: Partial<CrewInput> = {}): CrewInput => ({ assignees: list, seen: () => SEEN, working: new Map(), jobs: new Map(), ...o });
+const input = (o: Partial<CrewInput> = {}): CrewInput => ({ assignees: list, seen: () => SEEN, working: new Map(), ...o });
 
 describe("folding sub-tasks into their card", () => {
   const parent = issue({ assigneeUserId: ME });
@@ -32,7 +32,7 @@ describe("folding sub-tasks into their card", () => {
   });
 
   it("shows one card with its crew, the sub-tasks gone from the columns", () => {
-    const board = buildBoard({ open: [parent, grace, deeper, mine, orphan], closed: [], placements: new Map(), seen: new Map(), installedAt: SEEN, assignees: list, crew: { working: new Map([[grace.identifier, { since: "2026-10-26T11:30:00Z", queued: false }]]), jobs: new Map() } });
+    const board = buildBoard({ open: [parent, grace, deeper, mine, orphan], closed: [], placements: new Map(), seen: new Map(), installedAt: SEEN, assignees: list, crew: { working: new Map([[grace.identifier, { since: "2026-10-26T11:30:00Z", queued: false }]]) } });
     expect(board.buckets.triage.map((c) => c.identifier)).toEqual(expect.arrayContaining([parent.identifier, mine.identifier, orphan.identifier]));
     expect(board.buckets.triage.map((c) => c.identifier)).not.toContain(grace.identifier);
     const card = board.buckets.triage.find((c) => c.id === parent.id)!;

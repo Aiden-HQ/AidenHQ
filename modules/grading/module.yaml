@@ -1,5 +1,5 @@
 name: grading
-description: "Graded done: a delegated task's rubric and grade, the finish check every move to done passes (held for the grader until its rubric is met), and the routes the runner's grader and the board read. Always installed (core requires it)."
+description: "Graded done: a delegated task's rubric and grade, the finish check every move to done passes (held for the grader until its rubric is met), and the routes the board reads. Always installed (core requires it)."
 license: MIT
 # A task.finish check (P5, spec §3.5): the kernel asks POST /check/finish on every move to done (kernel/src/checks.ts); a held
 # task goes to review with the `grading` label, which this module releases (POST /v1/checks/:task) once a verdict is in. The
@@ -36,11 +36,9 @@ services:
         AIDENHQ_KERNEL_URL: http://10.231.0.1:3130
         GRADING_TOKEN_FILE: ${secrets.grading_token}
         GRADING_CHECK_KEY_FILE: ${secrets.grading_check_key}
-        GRADING_RUNNER_KEY_FILE: ${secrets.grading_runner_key}
         GRADING_BOARD_KEY_FILE: ${secrets.grading_board_key}
 generated_secrets:
   - grading_token
   - grading_check_key
-  - grading_runner_key
   - grading_board_key
 data_version: 0 # its data dir's format: bumped by each forward-only migration (docs/configuration.md)

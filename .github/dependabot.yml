@@ -9,7 +9,6 @@ updates:
       - /modules/apps-platform/apps-mcp
       - /services/board
       - /modules/apps-platform/gate
-      - /services/runner
       - /kernel
       - /modules/security/scanner
       - /modules/clickhouse/connections/clickhouse-mcp

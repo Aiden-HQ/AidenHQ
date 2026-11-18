@@ -120,17 +120,16 @@ const moduleKinds = watched(path.join(configDir, "kernel", "writes.json"), (j) =
 const pathInventory = watched(path.join(configDir, "kernel", "paths.json"), inventoryOf, undefined);
 const registry = () => ({ ...moduleKinds(), ...KERNEL_KINDS });
 let replay: (r: never) => Promise<{ ok: boolean; text: string }> = async () => ({ ok: false, text: "the proxy isn't up" });
-// The product and instance repositories (owner/name), as setup recorded them in .env: runner kinds touching them get the
-// kernel's own floors and refusals (kinds.ts runnerFacts), whatever the runner's plan says. Either unknown: every runner
-// kind is the owner's after the reviewer (fails closed).
+// The product and instance repositories (owner/name), as setup recorded them in .env: which repository a `paths: true`
+// kind's files are in (writes.ts).
 // The agents org: AIDENHQ_GITHUB_AGENTS_ORG, written once by ops/github-app-setup.mjs, never a setting a later change could move.
-// Unset: no agents org (runner kinds are the owner's; @agents codehost grants name nothing).
+// Unset: no agents org (@agents codehost grants name nothing).
 const agentsOrg = env("AIDENHQ_GITHUB_AGENTS_ORG") || undefined;
 // With codehost-local enabled (the compiled catalog), its org `local` is an agents org too (docs/design/codehost-local.md §2).
 const localHost = watched(path.join(configDir, "modules.json"), (j) => Array.isArray(j) && j.some((m: { name?: string; enabled?: boolean }) => m?.name === "codehost-local" && m.enabled === true), false);
 const baseRepos = { product: env("AIDENHQ_PRODUCT_REPO") || undefined, instance: env("AIDENHQ_INSTANCE_REPO") || undefined, agentsOrg };
 const repos = () => ({ ...baseRepos, agentsOrgs: [agentsOrg, ...(localHost() ? [LOCAL_ORG] : [])].filter((o): o is string => Boolean(o)) });
-log(baseRepos.product && baseRepos.instance ? "runner kinds' repositories" : "runner kinds: AIDENHQ_PRODUCT_REPO or AIDENHQ_INSTANCE_REPO isn't set, so every runner write is the owner's", repos());
+log(baseRepos.product && baseRepos.instance ? "repositories" : "AIDENHQ_PRODUCT_REPO or AIDENHQ_INSTANCE_REPO isn't set", repos());
 // The bound reviewer module (reviewer@1): its model calls go through this gateway on a reviewer token minted per review.
 const reviews = createReviews({ slot: () => modulesFile().reviewer, secret, resolver, log, modelToken: (component) => mintToken(secret("gateway_job_secret"), { kind: "reviewer", component, ttlMs: 3600_000 }) });
 let raiseCap: (r: { scope: string; agentId: string; subject: string; cap: number; spent: number; to: number }) => Promise<string> = async () => { throw new Error("the model gateway isn't up"); };
@@ -349,7 +348,7 @@ const codehost = createCodehost({ repos: codehostRepos, grants: codehostGrants, 
 // Check jobs (checkjobs.ts): credential-free boxes of the launcher's, snapshots from the module that provides them.
 const checkJobs = checkJobsFrom({ db: records.db, secret, ask: codehost.ask, call: launcherClient(launcherUrl, () => secret("launcher_kernel_key")), workDir: sandbox.workDir, gatewayUrl: `${sandbox.boxGatewayUrl}/api/v1`, log });
 const lane = createLane({ db: records.db, owner: ownerApi, grantsFile: grantsTable, log, postAsAgent: async (agent, task, job, body) => ({ id: String((await outcomes.post({ id: job, agent, task }, { kind: "lane", body })).comment) }) });
-const backplane = createBackplane({ codehost: codehost.op, checks, checkJobs, lane, whoami, asserter, grantsFile: grantsTable, log, writes, records, channels, brake, notify, owner: ownerApi, ownerRaw: (p) => cpApi(p), modules: modulesFile, boardKey: () => secret("gateway_board_key"), reviews, runnerKey: () => secret("runner_writes_key"), reviewerKey: () => secret("reviewer_key"), jobs, admission, outcomes, wakes, tasks: moduleTasks, work, graderToken, dropGraderToken: (task) => graderTokens.delete(task), eventsKey: () => secret("paperclip_events_key"), jobTools, advisories: advisories.list, accounts: createAuthApi({ accounts: () => accounts, whoami, boardKey: () => secret("gateway_board_key"), recoveryKeyWaiting: () => Boolean(firstRun.recoveryKey()), modelReady: modelState.ready, operatorKey: () => secret("board_operator_key"), secrets: moduleSecrets }), proxy: (req, res, c) => proxy(req, res, c!), cp: createCp({ whoami, asserter, controlUrl, launcherUrl, checks, provenance, log }) as never, boardCp: createBoardCp({ controlUrl, key: () => secret("paperclip_board_key"), log }) as never });
+const backplane = createBackplane({ codehost: codehost.op, checks, checkJobs, lane, whoami, asserter, grantsFile: grantsTable, log, writes, records, channels, brake, notify, owner: ownerApi, ownerRaw: (p) => cpApi(p), modules: modulesFile, boardKey: () => secret("gateway_board_key"), reviews, reviewerKey: () => secret("reviewer_key"), jobs, admission, outcomes, wakes, tasks: moduleTasks, work, graderToken, dropGraderToken: (task) => graderTokens.delete(task), eventsKey: () => secret("paperclip_events_key"), jobTools, advisories: advisories.list, accounts: createAuthApi({ accounts: () => accounts, whoami, boardKey: () => secret("gateway_board_key"), recoveryKeyWaiting: () => Boolean(firstRun.recoveryKey()), modelReady: modelState.ready, operatorKey: () => secret("board_operator_key"), secrets: moduleSecrets }), proxy: (req, res, c) => proxy(req, res, c!), cp: createCp({ whoami, asserter, controlUrl, launcherUrl, checks, provenance, log }) as never, boardCp: createBoardCp({ controlUrl, key: () => secret("paperclip_board_key"), log }) as never });
 // The admin listener's accounts (data/kernel/auth/auth.db) and pages. Accounts not moved yet, or a malformed URL setting: the
 // listener refuses while every other part of the kernel serves.
 const urlOf = (v: string) => { try { return v ? new URL(v) : undefined; } catch { log("ignoring a malformed URL setting", { value: v.slice(0, 100) }); return undefined; } };

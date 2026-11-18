@@ -2,7 +2,8 @@
 // One-off: create this instance's GitHub App ("AidenHQ <instance_name>", owned by the agents org, public so other
 // orgs can install it on selected repos) through GitHub's manifest flow, and save its id and private key into the vault
 // (<secrets>/github-app/{app_id,key.pem}, 0600). Run on the VM, open the printed URL on your LAN, approve on GitHub, then
-// install the App on the agents org (link shown at the end) and restart the runner. The key is never printed.
+// install the App on the agents org (link shown at the end) and restart the code host (docker compose restart
+// codehost-github). The key is never printed.
 //   node ops/github-app-setup.mjs [owner-org]     (default: the agents org, aidenhq-<instance_name> or github_agents_org)
 import { randomBytes } from "node:crypto";
 import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
@@ -16,7 +17,7 @@ const dotenv = existsSync(join(root, ".env")) ? Object.fromEntries(readFileSync(
 const env = { ...dotenv, ...process.env };
 const expand = (p) => (p.startsWith("~/") ? join(homedir(), p.slice(2)) : p);
 
-// The agents org, read the way the runner reads it (services/runner/src/config.mjs).
+// The agents org: AIDENHQ_GITHUB_AGENTS_ORG, else the instance's github_agents_org, else aidenhq-<instance_name>.
 const instYaml = env.AIDENHQ_INSTANCE_DIR && join(expand(env.AIDENHQ_INSTANCE_DIR), "instance.yaml");
 const setting = (k) => (instYaml && existsSync(instYaml) ? new RegExp(`^\\s+${k}:\\s*["']?([A-Za-z0-9_.-]+)`, "m").exec(readFileSync(instYaml, "utf8"))?.[1] : undefined);
 const instanceName = setting("instance_name") ?? env.AIDENHQ_INSTANCE_NAME;
@@ -53,7 +54,7 @@ const server = createServer(async (req, res) => {
   const url = new URL(req.url, `http://${host}:${port}`);
   const send = (status, body) => res.writeHead(status, { "content-type": "text/html; charset=utf-8" }).end(page(body));
   if (url.pathname === `/${secret}/` || url.pathname === `/${secret}`) {
-    return send(200, `<h2>Create the AidenHQ runner's GitHub App for <code>${esc(org)}</code></h2>
+    return send(200, `<h2>Create the AidenHQ GitHub App for <code>${esc(org)}</code></h2>
 <p>Permissions: creating repositories, contents, pull requests, workflows, actions (write: the merge queue re-runs a check that failed for infrastructure reasons) and commit statuses (write; statuses carry the design-review check), org self-hosted runners (write, for CI registration), checks (read). Owned by <code>${esc(org)}</code>.</p>
 <form method="post" action="https://github.com/organizations/${encodeURIComponent(org)}/settings/apps/new?state=${state}">
 <input type="hidden" name="manifest" value="${esc(JSON.stringify(manifest))}"><button type="submit">Create on GitHub</button></form>`);
@@ -77,7 +78,7 @@ const server = createServer(async (req, res) => {
     if (!dotenv.AIDENHQ_GITHUB_AGENTS_ORG) appendFileSync(join(root, ".env"), `AIDENHQ_GITHUB_AGENTS_ORG=${org}\n`);
     const install = `https://github.com/apps/${app.slug}/installations/new`;
     console.log(`Saved App ${app.id} (${app.slug}) to ${out}. Now install it: ${install}`);
-    send(200, `<h2>Saved</h2><p>App <code>${esc(app.slug)}</code> (id ${app.id}) is in the vault. Last step: <a href="${esc(install)}">install it on ${esc(org)}</a> (All repositories), then restart the runner. Other orgs (e.g. your company's): an owner there opens the same link and picks the repositories the runner may change.</p>`);
+    send(200, `<h2>Saved</h2><p>App <code>${esc(app.slug)}</code> (id ${app.id}) is in the vault. Last step: <a href="${esc(install)}">install it on ${esc(org)}</a> (All repositories), then restart the code host (<code>docker compose restart codehost-github</code>). Other orgs (e.g. your company's): an owner there opens the same link and picks the repositories the fleet may change.</p>`);
     setTimeout(() => process.exit(0), 2000);
   } catch (err) {
     send(500, `Failed: ${esc(String(err.message))}`);

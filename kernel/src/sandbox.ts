@@ -8,7 +8,6 @@ import { createHash } from "node:crypto";
 import { chmodSync, cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, join, relative, resolve, sep } from "node:path";
-import { mintToken } from "./gateway/token.ts";
 
 const expand = (p: string) => (p.startsWith("~/") ? join(homedir(), p.slice(2)) : p);
 const repoRoot = resolve(import.meta.dirname, "../..");
@@ -253,17 +252,8 @@ function skillCopyFailure(s: Skill, err: unknown) {
 // A session id an engine reported, before it goes on a command line.
 export const SESSION = /^[\w.:-]{1,200}$/;
 
-/** A model credential for the gateway, signed with gateway_job_secret. Never the model key. */
-export function modelToken(cfg: Pick<SandboxConfig, "secretsDir">, claims: Record<string, unknown>, now = Date.now()) {
-  let secret = "";
-  try { secret = readFileSync(join(cfg.secretsDir, "gateway_job_secret"), "utf8").trim(); } catch {}
-  return mintToken(secret, claims as never, now);
-}
-
-/** A job: who and what it is for, its jobcaps and start time (`at`): the same job always gets the same token. */
+/** A job: who and what it is for, its jobcaps and start time (`at`). */
 export interface JobClaims { agentId?: string | null; issueId?: string | null; at?: number; jobcaps?: string[]; observing?: boolean; token?: string }
-/** The job's own credential to the gateway and the tool proxy, valid past its deadline (an adopted run keeps its env). */
-export const jobToken = (cfg: Pick<SandboxConfig, "secretsDir" | "timeout_minutes">, job: JobClaims) => job.token ?? modelToken(cfg, { kind: "agent", agentId: job.agentId ?? null, issueId: job.issueId ?? null, jobcaps: [...(job.jobcaps ?? [])].sort(), observing: job.observing === true, ttlMs: ((cfg.timeout_minutes ?? 60) + 60) * 60_000 }, job.at);
 
 /** A box job's box (the computer launcher made it): its container, the env file of its credentials and its out folder. */
 export interface Box { container: string; envFile: string; outDir: string }
