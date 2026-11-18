@@ -49,7 +49,7 @@ const PATCH = ["title", "description", "priority", "assigneeAgentId", "assigneeU
 const CREATE = ["title", "description", "priority", "status", "assigneeAgentId", "assigneeUserId", "labelIds", "parentId", "idempotencyKey", "allowDuplicate"];
 type Issue = { id: string; identifier?: string; assigneeAgentId?: string | null; createdByAgentId?: string | null; parentId?: string | null; status?: string };
 
-export function createCp({ whoami, asserter, plugin, once, agentKey, grants, controlUrl, checks, provenance, log = () => {} }: {
+export function createCp({ whoami, asserter, plugin, once, agentKey, grants, controlUrl, checks, provenance, appOwners, log = () => {} }: {
   whoami: Whoami; asserter: Asserter; plugin: PluginPost;
   /** The one durable once-only write (once.ts): each write is keyed by its call, and a retry returns the first run's result. */
   once: Once;
@@ -57,9 +57,11 @@ export function createCp({ whoami, asserter, plugin, once, agentKey, grants, con
   agentKey: (agent: string) => string;
   /** The grants table's agents: roles, delegation targets and the tasks it names for each agent. */
   grants: () => Record<string, Grant>;
+  /** The keys of the agents that own an app (apps-mcp's registry), for a `delegate_to` that names app-owners. */
+  appOwners?: () => Promise<string[]>;
   controlUrl: string; checks?: Checks; provenance: Pick<Provenance, "carried" | "intend" | "record">; log?: (msg: string, f?: Record<string, unknown>) => void;
 }) {
-  return async function cp(req: IncomingMessage, res: ServerResponse, path: string, query: string): Promise<void> {
+  async function handle(req: IncomingMessage, res: ServerResponse, path: string, query: string): Promise<void> {
     const mod = await whoami(String(req.headers.authorization ?? "").replace(/^Bearer\s+/i, "").trim()).catch(() => undefined);
     if (mod?.kind !== "module" || !mod.module) throw fail(401, "unauthorized", "a module's own token is required");
     const live = await asserter.inFlight(String(req.headers["x-aidenhq-caller"] ?? ""), mod.module);
@@ -126,7 +128,7 @@ export function createCp({ whoami, asserter, plugin, once, agentKey, grants, con
         throw fail(o.status!, o.code!, o.message);
       }
     };
-    const delegateTo = delegateIds(table, agent);
+    const delegateTo = await delegateIds(table, agent, appOwners);
     /** A user assignee is the owner only (the company's responsible user). */
     const ownerOnly = async (user: unknown) => {
       if (user === undefined || user === null) return;
@@ -217,6 +219,14 @@ export function createCp({ whoami, asserter, plugin, once, agentKey, grants, con
     if (!d) return;
     if (method === "POST") return answer(201, Buffer.from(JSON.stringify({ id: d.comment, issueId: t.id })));
     return issueAnswer(t.id, 200);
+  }
+  // A refusal is logged where it is raised: the module's answer carries it back as a tool error, and the journal shows it too.
+  return async function cp(req: IncomingMessage, res: ServerResponse, path: string, query: string): Promise<void> {
+    try { return await handle(req, res, path, query); } catch (e) {
+      const f = e as { status?: number; message?: string };
+      if (typeof f.status === "number") log("cp refused", { method: req.method, path, status: f.status, message: String(f.message).slice(0, 200) });
+      throw e;
+    }
   };
 }
 
