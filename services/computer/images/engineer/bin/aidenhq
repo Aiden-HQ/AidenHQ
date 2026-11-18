@@ -4,10 +4,11 @@
 // the tool proxy as the job, and a job's requests for its next turn go to /v1/jobtools. Nothing here holds a credential
 // beyond the job token, and nothing is decided here.
 //
-//   aidenhq publish <org/repo> <branch>... [--title <title>] [--body-file <file>]
-//                                                    push each branch and open (or update) its PR: one codehost-github.pr write each
-//   aidenhq merge <PR link>...                       merge each PR at its reviewed head: one codehost-github.merge write each
-//   aidenhq close <PR link>... --reason "<one line>" close superseded or duplicate PRs: one codehost-github.close write each
+//   aidenhq publish <org/repo> <branch>... [--title <title> --body-file <file>]
+//                                                    push each branch at its commit in this workspace's clone and open (or
+//                                                    update) its PR: one codehost-github.pr write each
+//   aidenhq merge <PR link> <head sha>...            merge each PR only at that head: one codehost-github.merge write each
+//   aidenhq close <PR link>...                       close superseded or duplicate PRs: one codehost-github.close write each
 //   aidenhq create-repo <org/name>                   a new app's repository: one codehost-github.create_repo write
 //   aidenhq task <PEN-N>                             read a task (tasks-mcp task_get, when the job's profile grants it)
 //   aidenhq tasks <words>                            search open tasks (tasks-mcp task_search)
@@ -17,11 +18,14 @@
 //   aidenhq cleanup                                  remove the workspace when this turn ends
 //
 // The box's env (the launcher's job env file): AIDENHQ_GATEWAY_URL (the computers' gateway, which passes these calls on to the
-// kernel with the token: /v1/writes, /v1/jobtools, /c/<connection>/mcp) and AIDENHQ_RUN_TOKEN (the job's `ahqj_` token, which
-// names the job: the kernel takes the job, its task and its workspace from it, never from the request).
-import { readFileSync } from "node:fs";
+// kernel with the token: /v1/writes, /v1/jobtools, /c/<connection>/mcp), AIDENHQ_RUN_TOKEN (the job's `ahqj_` token, which
+// names the job: the kernel takes the job, its task and its workspace from it, never from the request) and
+// AIDENHQ_TASK_WORKTREE (the task's workspace folder, whose clones <name> or <org>--<name> the code host pushes from).
+import { execFileSync } from "node:child_process";
+import { existsSync, readFileSync } from "node:fs";
+import { join } from "node:path";
 
-const usage = `usage: aidenhq publish <org/repo> <branch>... [--title <title>] [--body-file <file>] | merge <PR link>... | close <PR link>... --reason "<one line>" | create-repo <org/name> | task <PEN-N> | tasks <words> | advise "<question>" [--file <brief>] | reset | engine <kind> [model] | cleanup`;
+const usage = `usage: aidenhq publish <org/repo> <branch>... [--title <title> --body-file <file>] | merge <PR link> <head sha>... | close <PR link>... | create-repo <org/name> | task <PEN-N> | tasks <words> | advise "<question>" [--file <brief>] | reset | engine <kind> [model] | cleanup`;
 const COMMANDS = ["publish", "merge", "close", "create-repo", "task", "tasks", "advise", "reset", "engine", "cleanup"];
 const [command, ...rest] = process.argv.slice(2);
 const fail = (msg, code = 1) => {
@@ -34,13 +38,13 @@ if (!command || ["help", "-h", "--help"].includes(command) || rest.some((w) => w
   process.exit(0);
 }
 if (!COMMANDS.includes(command)) fail(usage, 2);
-const { AIDENHQ_GATEWAY_URL: gateway, AIDENHQ_RUN_TOKEN: token } = process.env;
-if (!gateway || !token) fail("only available inside a job's computer", 2);
+const { AIDENHQ_GATEWAY_URL: gateway, AIDENHQ_RUN_TOKEN: token, AIDENHQ_TASK_WORKTREE: workspace } = process.env;
+if (!gateway || !token || !workspace) fail("only available inside a job's computer", 2);
 
 const flags = {};
 const words = [];
 for (let i = 0; i < rest.length; i++) {
-  if (["--title", "--body-file", "--reason", "--file"].includes(rest[i])) flags[rest[i].slice(2)] = rest[++i];
+  if (["--title", "--body-file", "--file"].includes(rest[i])) flags[rest[i].slice(2)] = rest[++i];
   else if (rest[i].startsWith("--")) fail(`unknown option ${rest[i]}\n${usage}`, 2);
   else words.push(rest[i]);
 }
@@ -68,6 +72,17 @@ const pr = (link) => {
   if (!m) fail(`\`${link}\` isn't a pull request link (https://github.com/<org>/<repo>/pull/<n>)`, 2);
   return { repo: m[1], number: Number(m[2]) };
 };
+/** A branch's commit in this workspace's clone of org/repo (<name> or <org>--<name>), the one the code host fetches. */
+const commitOf = (repo, branch) => {
+  const [org, name] = repo.split("/");
+  const dir = [name, `${org}--${name}`].map((d) => join(workspace, d)).find((d) => existsSync(join(d, ".git")));
+  if (!dir) fail(`this workspace has no clone of ${repo} (${name} or ${org}--${name})`, 2);
+  try {
+    return execFileSync("git", ["-C", dir, "rev-parse", "--verify", "--quiet", `refs/heads/${branch}^{commit}`], { encoding: "utf8" }).trim();
+  } catch {
+    fail(`${repo} has no branch \`${branch}\` in ${dir}`, 2);
+  }
+};
 /** One tool of tasks-mcp, through the kernel's tool proxy as this job (its frozen tools), as the box's own MCP config calls it. */
 async function tool(name, args) {
   const path = "/c/paperclip_tasks/mcp";
@@ -93,15 +108,21 @@ async function tool(name, args) {
 const lines = [];
 if (command === "publish") {
   if (!words.length || words.length % 2) fail("name branches as <org/repo> <branch> pairs", 2);
-  const body = flags["body-file"] ? readFileSync(flags["body-file"], "utf8") : undefined;
-  for (let i = 0; i < words.length; i += 2) lines.push(`${words[i]} ${words[i + 1]}: ${said(await write("codehost-github.pr", { repo: words[i], branch: words[i + 1], ...(flags.title ? { title: flags.title } : {}), ...(body ? { body } : {}) }))}`);
+  if (Boolean(flags.title) !== Boolean(flags["body-file"])) fail("give the PR's text as both --title and --body-file, or neither", 2);
+  const text = flags.title ? { title: flags.title, body: readFileSync(flags["body-file"], "utf8") } : undefined;
+  for (let i = 0; i < words.length; i += 2) {
+    const [repo, branch] = [words[i], words[i + 1]];
+    lines.push(`${repo} ${branch}: ${said(await write("codehost-github.pr", { only: [{ repo, branch, sha: commitOf(repo, branch) }], ...(text ? { text } : {}) }))}`);
+  }
 } else if (command === "merge") {
-  if (!words.length) fail("name the pull requests to merge, in order", 2);
-  for (const link of words) lines.push(`${link}: ${said(await write("codehost-github.merge", pr(link)))}`);
+  if (!words.length || words.length % 2) fail("name the pull requests to merge as <PR link> <head sha> pairs, in order", 2);
+  for (let i = 0; i < words.length; i += 2) {
+    if (!/^[0-9a-f]{40}$/.test(words[i + 1])) fail(`\`${words[i + 1]}\` isn't a full head sha (40 hex characters)`, 2);
+    lines.push(`${words[i]}: ${said(await write("codehost-github.merge", { prs: [{ ...pr(words[i]), head: words[i + 1] }] }))}`);
+  }
 } else if (command === "close") {
   if (!words.length) fail("name the pull requests to close", 2);
-  if (!flags.reason?.trim()) fail('give a reason: aidenhq close <PR link>... --reason "<one line>"', 2);
-  for (const link of words) lines.push(`${link}: ${said(await write("codehost-github.close", { ...pr(link), reason: flags.reason }))}`);
+  for (const link of words) lines.push(`${link}: ${said(await write("codehost-github.close", { prs: [pr(link)] }))}`);
 } else if (command === "create-repo") {
   if (words.length !== 1) fail("usage: aidenhq create-repo <org/name>", 2);
   lines.push(`${words[0]}: ${said(await write("codehost-github.create_repo", { repo: words[0] }))}`);

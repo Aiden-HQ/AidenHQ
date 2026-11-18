@@ -2,7 +2,9 @@
 // (the kernel takes the job and its workspace from it), task reads go through the tool proxy, next-turn requests through /v1/jobtools.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { execFile } from "node:child_process";
+import { execFile, execFileSync } from "node:child_process";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { createServer } from "node:http";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -29,13 +31,24 @@ test("aidenhq: writes, task reads and next-turn requests go to the kernel with t
   });
   await new Promise((r) => kernel.listen(0, "127.0.0.1", r));
   t.after(() => kernel.close());
-  const env = { PATH: process.env.PATH, AIDENHQ_GATEWAY_URL: `http://127.0.0.1:${kernel.address().port}`, AIDENHQ_RUN_TOKEN: "ahqj_job" };
+  // The task's workspace with a clone of acme/app (as the code host finds it: <name> or <org>--<name>), fix-login committed.
+  const ws = mkdtempSync(join(tmpdir(), "aidenhq-cli-"));
+  t.after(() => rmSync(ws, { recursive: true, force: true }));
+  const git = (...a) => execFileSync("git", ["-C", join(ws, "app"), "-c", "user.name=t", "-c", "user.email=t@example.com", ...a], { encoding: "utf8" }).trim();
+  execFileSync("git", ["init", "-q", "-b", "fix-login", join(ws, "app")]);
+  git("commit", "-q", "--allow-empty", "-m", "fix");
+  const sha = git("rev-parse", "HEAD");
+  writeFileSync(join(ws, "body.md"), "Why.");
+  const env = { PATH: process.env.PATH, AIDENHQ_GATEWAY_URL: `http://127.0.0.1:${kernel.address().port}`, AIDENHQ_RUN_TOKEN: "ahqj_job", AIDENHQ_TASK_WORKTREE: ws };
   const aidenhq = async (...args) => (await run(process.execPath, [CLI, ...args], { env })).stdout;
 
-  assert.match(await aidenhq("publish", "acme/app", "fix-login", "--title", "Fix login"), /acme\/app fix-login: k-\d+: tier 1, review/);
-  assert.deepEqual(seen.at(-1), { path: "/v1/writes", auth: "Bearer ahqj_job", key: undefined, body: { kind: "codehost-github.pr", args: { repo: "acme/app", branch: "fix-login", title: "Fix login" } } });
-  await aidenhq("merge", "https://github.com/acme/app/pull/7");
-  assert.deepEqual(seen.at(-1).body, { kind: "codehost-github.merge", args: { repo: "acme/app", number: 7 } });
+  // The args are the kind's schema's, with no workspace: the kernel names the job's own.
+  assert.match(await aidenhq("publish", "acme/app", "fix-login", "--title", "Fix login", "--body-file", join(ws, "body.md")), /acme\/app fix-login: k-\d+: tier 1, review/);
+  assert.deepEqual(seen.at(-1), { path: "/v1/writes", auth: "Bearer ahqj_job", key: undefined, body: { kind: "codehost-github.pr", args: { only: [{ repo: "acme/app", branch: "fix-login", sha }], text: { title: "Fix login", body: "Why." } } } });
+  await aidenhq("merge", "https://github.com/acme/app/pull/7", sha);
+  assert.deepEqual(seen.at(-1).body, { kind: "codehost-github.merge", args: { prs: [{ repo: "acme/app", number: 7, head: sha }] } });
+  await aidenhq("close", "https://github.com/acme/app/pull/8");
+  assert.deepEqual(seen.at(-1).body, { kind: "codehost-github.close", args: { prs: [{ repo: "acme/app", number: 8 }] } });
   assert.match(await aidenhq("task", "PEN-12"), /task_get \{"issue":"PEN-12"\}/);
   // The tool proxy, as the box's own MCP config calls it: the token as X-Agent-Key.
   assert.deepEqual([seen.at(-1).path, seen.at(-1).key, seen.at(-1).auth], ["/c/paperclip_tasks/mcp", "ahqj_job", undefined]);
