@@ -73,6 +73,8 @@ export function checkChange(ch: Change, compiled: Compiled | null, catalog: Cata
     const current = compiled.settings?.[ch.key];
     if (!def && !current) throw new ChangeRefused(`there is no setting ${ch.key} on this instance`);
     const was = def?.default ?? current?.value;
+    // A list of entries ({ repo, label, ... }) would be flattened by a value the page can send: it is edited in instance.yaml.
+    if ([current?.value, was].flat().some((v) => v !== null && typeof v === "object")) throw new ChangeRefused(`${ch.key} holds entries: change it in instance.yaml`);
     if (was !== undefined && was !== null && kindOf(was) !== kindOf(ch.value)) throw new ChangeRefused(`${ch.key} is a ${kindOf(was)}`);
     const each = [ch.value].flat();
     if (def?.values) {
