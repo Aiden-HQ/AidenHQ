@@ -5396,7 +5396,7 @@ async function mergeLocalApproved(issue, a) {
   const box = JSON.parse(state.get("local_merges") || "{}");
   const prs = a.args.prs.map((p) => ({ repo: p.repo, number: p.number, url: p.url, head: p.head }));
   // A second approved card on the task waits behind the first one's changes.
-  box[issue.id] = { identifier: issue.identifier, since: box[issue.id]?.since ?? Date.now(), prs: [...(box[issue.id]?.prs ?? []), ...prs] };
+  box[issue.id] = { ...box[issue.id], identifier: issue.identifier, since: box[issue.id]?.since ?? Date.now(), prs: [...(box[issue.id]?.prs ?? []), ...prs] };
   state.set("local_merges", JSON.stringify(box));
   lastMergeCheck = 0;
   return { ok: true, text: `Merging ${a.args.prs.map((p) => p.url).join(", ")} one at a time, each once its checks are green on the approved commit. Results are posted on ${issue.identifier}.` };
@@ -5446,15 +5446,16 @@ async function runLocalMerges() {
       q.prs = [p]; // nothing after a refused one merges on this card
     }
     q.prs.shift();
+    q.done = [...(q.done ?? []), { url: p.url, head: p.head, status: merged ? "merged" : "refused", note: done }];
     if (q.prs.length) box[issueId] = { ...q, since: Date.now(), greenAt: undefined, askedAgain: undefined };
     else delete box[issueId];
     state.set("local_merges", JSON.stringify(box));
     await pc.comment(issueId, done).catch(() => {});
-    // The Engineer ended its turn on the merge card: a merged change is where its work goes on (deploying the app), so its
-    // task gets the next run unless it is closed, as after an approved create_repo.
-    if (merged) {
-      const full = await pc.issue(issueId).catch(() => null);
-      if (full) await nextRunAfter(full, { id: p.url, action: "merge" }, { text: done }).catch((err) => log("next run after a merge failed", { url: p.url, err: String(err.message ?? err).slice(0, 200) }));
+    // The card's last change ended: the task finishes as a GitHub merge queue's does (its status through the finish gate, the
+    // delegator told on the parent, the tasks that opened these changes closed).
+    if (!q.prs.length) {
+      const queue = { identifier: q.identifier, state: q.done.every((x) => x.status === "merged") ? "done" : "failed", prs: q.done };
+      await finishMerges(issueId, queue, q.done.map((x) => x.note), { posted: true }).catch((err) => log("local merges finish failed", { issue: q.identifier, err: String(err.message ?? err).slice(0, 200) }));
     }
   }
 }
