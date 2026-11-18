@@ -2423,7 +2423,7 @@ async function commonTierState(issue, action, also = []) {
   };
 }
 
-/** The request chain's hash (what the reviewer was shown as what was asked; the kernel keeps it with an unsure-twice rejection). */
+/** The request chain's hash (what the reviewer was shown as what was asked; the kernel keeps it with every rejection). */
 const chainHash = (chain) => (chain ? createHash("sha256").update(chain).digest("hex").slice(0, 32) : "");
 
 /** One branch as tiering sees it: empty repo, default/deploy branch, and the files it changes against the default branch. */

@@ -70,10 +70,16 @@ test("earlier decisions: owner veto, same content, bounded retries per target", 
   // same commits, however the chain changed since, keeps them rejected.
   assert.equal(priorDecisions(unsure("c1"), "pr", [], SHA("f"), undefined, "c2").relift, "note 1");
   const twice = [...unsure("c1"), rec("rejected", "reviewer:~z-ai/glm-flash-latest", SHA("f"), 2, { reviewCode: "reviewer_unsure", requestChain: "c2" })];
-  assert.equal(pub("pr", { sha: SHA("f"), patch: pk(SHA("f")) }, { records: twice, requestChain: "c3" }).rule, "rejected-content", "no second relift");
+  assert.equal(tierOf(pub("pr", { sha: SHA("f"), patch: pk(SHA("f")) }, { records: twice, requestChain: "c3" })), 0, "a new request again: reviewed (the per-target cap bounds it)");
+  assert.equal(pub("pr", { sha: SHA("f"), patch: pk(SHA("f")) }, { records: twice, requestChain: "c1" }).rule, "rejected-content", "back to a request already judged: still rejected");
   assert.equal(tierOf(pub("pr", { sha: SHA("a"), patch: pk(SHA("a")) }, { records: twice, requestChain: "c3" })), 0, "changed commits: always a fresh review");
   // The same change amended or rebased (new commits, the same patch key) is the same content: still rejected.
   assert.equal(at([rec("rejected", "reviewer:~openai/gpt-luna-latest", SHA("a"), 1)], SHA("b"), { patch: pk(SHA("a")) }).rule, "rejected-content", "an amend of the same patch stays rejected");
+  // WOR-7733: a merge rejected because the owner's approval wasn't in the request; the owner's words land in the chain,
+  // and the same patch is reviewed again. The same request again stays refused.
+  const judgedOn = (requestChain) => [rec("rejected", "reviewer:~openai/gpt-luna-latest", SHA("a"), 1, { reviewCode: "out_of_scope", requestChain })];
+  assert.equal(tierOf(pub("pr", { sha: SHA("a"), patch: pk(SHA("a")) }, { records: judgedOn("before-owner"), requestChain: "with-owner-words" })), 0, "same patch, new owner words in the chain: reviewed again");
+  assert.equal(pub("pr", { sha: SHA("a"), patch: pk(SHA("a")) }, { records: judgedOn("before-owner"), requestChain: "before-owner" }).rule, "rejected-content", "same patch, same chain: refused");
   assert.equal(tierOf(at([rec("rejected", "owner:board", SHA("a"), 1)])), 2, "the owner's no: their card");
   assert.equal(tierOf(at([rec("rejected", "owner:board", SHA("a"), 1), rec("approved", "owner:telegram", SHA("b"), 2)])), 0, "their later yes lifts it");
   // Bound to content: reject X, approve Y, resubmit X: still the owner's (the watcher decides as the owner too).
@@ -136,6 +142,9 @@ test("earlier decisions: owner veto, same content, bounded retries per target", 
   const toolPrior = (records, args, digest) => priorPart(priorDecisions(records, "conn.tool", [], digest, undefined, undefined, requestTargets("conn.tool", args)));
   const once = toolWrite("d1", 1);
   assert.equal(toolPrior([once], label(314), "digest:d1")?.rule, "rejected-content", "an identical call rejected once is refused unchanged");
+  const onChain = { ...once, requestChain: "c1" };
+  assert.equal(priorPart(priorDecisions([onChain], "conn.tool", [], "digest:d1", undefined, "c1"))?.rule, "rejected-content", "the same call, the same request: refused");
+  assert.equal(priorPart(priorDecisions([onChain], "conn.tool", [], "digest:d1", undefined, "c2")), undefined, "the same call, a changed request: reviewed again");
   assert.match(toolPrior([once], label(314), "digest:d1").reason, /report back/, "it tells the agent to change it or report back");
   assert.equal(toolPrior([once], label(314, "y"), "digest:d2"), undefined, "a changed call is reviewed");
   assert.deepEqual(priorDecisions([once], "conn.tool", [], "digest:d2").findings, ["note 1"], "its earlier note is attached to the review");
