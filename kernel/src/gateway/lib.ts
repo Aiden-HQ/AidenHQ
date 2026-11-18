@@ -766,5 +766,8 @@ export function createGateway({ dbFile, legacyDbFile, grantsFile, settingsFile, 
     q.setCap.run(scope, agentId, subject, cap, new Date(now()).toISOString());
     log("cap set", { scope, agent: agentId, subject, cap });
   };
-  return { handle, db, metricsText, setCap, trueUp, inflight: () => live, ciEnabled: () => Boolean(ciConf()), close: () => { clearInterval(pruner); clearInterval(trueUps); db.close(); } };
+  /** The caps a new job of this agent on this task would start over (admission.ts): its task, its day and the install's. */
+  const exhausted = (agentId: string, task: string) =>
+    capScopes({ runKey: "admission", agentId, issueId: task, perpetual: false, capped: true } as unknown as Caller, now()).filter((o) => o.scope !== "run" && o.cap > 0 && o.spent >= o.cap);
+  return { handle, db, metricsText, setCap, exhausted, trueUp, inflight: () => live, ciEnabled: () => Boolean(ciConf()), close: () => { clearInterval(pruner); clearInterval(trueUps); db.close(); } };
 }

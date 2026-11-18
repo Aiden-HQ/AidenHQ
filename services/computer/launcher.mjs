@@ -58,8 +58,6 @@ const CFG = {
   gateway: { host: "10.231.2.1", port: 8200 },
   network: "aidenhq-computers",
   prefix: "aidenhq-computer-",
-  // 7: the 5 Paperclip computer agents' max_parallel plus the App Engineer's 2 (2026-11-13, a 15 GB host with no swap).
-  max: Number(env("AIDENHQ_COMPUTERS_MAX", 7)),
   idleMs: 10 * 60_000,
   limits: { memory: env("AIDENHQ_COMPUTERS_MEMORY", "6g"), cpus: Number(env("AIDENHQ_COMPUTERS_CPUS", 2)), shm: "1g", pids: 1024 },
   grantsFile: path.join(configDir, "grants", "grants.json"),
@@ -104,6 +102,12 @@ const MOUNTS = [
 const log = (...a) => console.log(new Date().toISOString(), ...a);
 const DEBUG = env("AIDENHQ_COMPUTERS_DEBUG") === "1"; // log every exec, with its env keys (never values)
 const readJson = (f) => JSON.parse(readFileSync(f, "utf8"));
+/** The pool's size: settings.computers_max (compile writes it to computers.json; the kernel admits jobs against the same number). */
+const maxBoxes = () => {
+  const n = readJson(CFG.computersFile).max;
+  if (!Number.isInteger(n) || n < 1) throw fail(500, "computers.json has no max (run scripts/compile.mjs)");
+  return n;
+};
 // The boxes' Paperclip credentials, saved like the tokens: an agent's turn is one detached exec that outlives a launcher
 // restart, so /cp must still find the credential the turn started with.
 const creds = new Creds();
@@ -194,10 +198,11 @@ async function mcpFor(token) {
 /** A free slot for a new box: the least recently used idle box goes (never a leased job's); all busy → wait up to 45 s. */
 async function makeRoom() {
   for (let waited = 0; ; waited += 1000) {
-    const evict = admit(boxes, CFG.max, held);
+    const max = maxBoxes();
+    const evict = admit(boxes, max, held);
     if (evict === null) return;
     if (evict !== "wait") return destroy(evict, "evicted (computers full)");
-    if (waited >= 45_000) throw fail(503, `all ${CFG.max} computers are busy; try again shortly`);
+    if (waited >= 45_000) throw fail(503, `all ${max} computers are busy; try again shortly`);
     await new Promise((r) => setTimeout(r, 1000));
   }
 }
@@ -449,7 +454,9 @@ const bearer = (req) => String(req.headers.authorization ?? "").replace(/^Bearer
 const send = (res, status, body) => res.writeHead(status, { "content-type": "application/json" }).end(JSON.stringify(body));
 
 const controlServer = http.createServer((req, res) => {
-  if (req.method === "GET" && req.url === "/health") return send(res, 200, { ok: true, computers: boxes.size, max: CFG.max });
+  if (req.method === "GET" && req.url === "/health") {
+    try { return send(res, 200, { ok: true, computers: boxes.size, max: maxBoxes() }); } catch (e) { return send(res, 500, { ok: false, error: e.message }); }
+  }
   if (req.method === "GET" && req.url === "/whoami") {
     const who = tokens.whoami(bearer(req));
     return who ? send(res, 200, { agentId: who.agentId, runId: who.runId, issueId: who.issueId }) : send(res, 401, { error: "unknown run token" });

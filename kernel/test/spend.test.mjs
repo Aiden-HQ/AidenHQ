@@ -69,6 +69,8 @@ test("caps keep their values: at the day cap refused, a reservation past it refu
   assert.equal(refused.status, 402);
   assert.match(refused.json.error.message, /^spend cap reached: agent-day \$0\.06 of \$0\.05;/);
   assert.equal(r.seen.length, 2);
+  // Admission reads the same caps: no new job for this agent today, on any task.
+  assert.deepEqual(r.gw.exhausted("ag", "WOR-9").map((o) => o.scope), ["day"]);
   // A cap with room for some output, not all: the call is cut to what is left, never past it.
   const s = await rig(t, { dayUsd: 0.005, answer: usage(0.001) });
   assert.equal((await s.call({ model: "flat", max_tokens: 10_000, messages: [] })).status, 200);

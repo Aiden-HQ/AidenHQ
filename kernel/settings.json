@@ -46,6 +46,10 @@
     ],
     "doc": "On (a new install): a module's scheduled routines start paused and its agents' heartbeats off, until the owner turns one on (overrides.routines.<key>.status: active, overrides.agents.<key>.heartbeat). Unset or off: they run as their modules declare. docs/design/quiet-start.md."
   },
+  "computers_max": {
+    "default": 12,
+    "doc": "How many agent computers run at once: the computer launcher's pool and the kernel's job admission both read it (config/computers.json max), so no job is admitted that can't get a computer. Each takes up to AIDENHQ_COMPUTERS_MEMORY (6g) when busy; size it to the host's memory."
+  },
   "spend_day_usd": {
     "doc": "The install-wide spend cap on every model call, USD per UTC day (a new install: 10). Past it, calls are refused and the owner gets one card to raise today's cap. Unset = no install-wide cap (per-agent caps still apply)."
   }
