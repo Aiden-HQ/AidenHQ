@@ -13,7 +13,7 @@ import { acceptedFor, bases, ignored, readAccepted, readExceptions } from "../su
 
 const root = join(import.meta.dirname, "../..");
 const files = [".github/workflows/ci.yml", "modules/ci/template/.github/workflows/ci.yml"];
-const findStep = (file) => parse(readFileSync(join(root, file), "utf8")).jobs["image-changes"].steps.find((s) => s.id === "find").run;
+const findStep = (file) => { const { jobs } = parse(readFileSync(join(root, file), "utf8")); return (jobs["image-changes"] ?? jobs.checks).steps.find((s) => s.id === "find").run; };
 
 test("image-changes (the product's CI and the app template's) selects every changed image, FROM an ARG included", (t) => {
   const dir = mkdtempSync(join(tmpdir(), "image-scan-"));

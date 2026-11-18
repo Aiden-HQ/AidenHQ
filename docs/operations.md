@@ -415,6 +415,23 @@ not the boundary: the org's runner group is. To serve the product org:
 3. On the VM: `systemctl --user enable --now aidenhq-ci-runner@<org>-1 aidenhq-ci-runner@<org>-2` (the org's login as
    in its URL, e.g. `aidenhq-ci-runner@acme-1`). Check: the org's Settings → Actions → Runners lists them idle.
 
+**The public Aiden-HQ repos (AidenHQ, aidenhq-modules, aidenhq-distro).** Their CI runs on GitHub-hosted runners first.
+In the product's ci.yml the first job (`checks`) counts the hosted jobs this repo's other runs hold (queued or running) and
+sends the heavy jobs (packages, runner-unit, runner-flows, board) to `[self-hosted, aidenhq]` only when that count is 12 or
+more (the free plan runs ~20 at once), the repository variable `CI_SELF_HOSTED` is `true`, and the run is a push to main or
+a same-repo PR; any API error keeps them hosted. That routing lives in the PR's own workflow file, so it is no boundary.
+The boundaries are: *Require approval for all outside collaborators* (a fork's workflow runs only after a maintainer
+approves it), the org runner group (only these repos), and the runner's job-started hook (modules/ci/runner/job-started.*,
+baked into the image read-only, run under `env -i`): it fails any job, before checkout, whose repository is not in the
+agents org or the `ci_runner_repos` setting, or whose event is not push, workflow_dispatch, schedule, merge_group or a
+pull_request from the same repository (no fork PRs, no pull_request_target). Residual: the runner starts the hook with
+bash, so a job-level `BASH_ENV` could still run first; the approval requirement covers forks. To enable: the App on the
+Aiden-HQ org with *Self-hosted runners: Read and write*; a runner group there limited to the three repos with *Allow public
+repositories* on; the modules pin at or after the hook; on the VM `systemctl --user enable --now aidenhq-ci-runner@Aiden-HQ-1
+aidenhq-ci-runner@Aiden-HQ-2` (up to 4, or move existing agents-org units); then the repo variable (Settings -> Secrets and
+variables -> Actions -> Variables). Unset it to go back to hosted only. aidenhq-modules and aidenhq-distro can adopt the
+same routing in their ci.yml later.
+
 A push runs about 21 jobs (the test matrix is 18), each in a fresh container that installs Node and its packages: roughly
 10 minutes on two runners. Jobs for one org never take another org's runners.
 
