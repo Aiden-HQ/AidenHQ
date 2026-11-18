@@ -63,7 +63,7 @@ import { localCheckRuns } from "../../../modules/codehost-local/src/checks.ts";
 import { afterRejection, graderSpeaks, summaryKind, wakesParent } from "./notices.ts";
 import { readBusy } from "./busy.ts";
 import { SETTINGS_LABEL, TypedRefused, allowedPaths, assertOnly, checkTyped, planFiles, typedTaskChanges } from "./typed-change.mjs";
-import { bumpInstance, trainDescription, trainStep } from "./release.mjs";
+import { asSha, bumpInstance, pinOf, trainDescription, trainStep } from "./release.mjs";
 import { normalizeRepo, repoAccess } from "../../../modules/codehost-github/src/repos.ts";
 import { host as githubCodehost } from "../../../modules/codehost-github/src/host.mjs";
 import { LOCAL_ORG, changeUrl, host as localCodehost, parseChangeUrl } from "../../../modules/codehost-local/src/host.mjs";
@@ -428,7 +428,7 @@ async function githubText(repo, path, ref) {
 
 /** The tip of `repo`'s default branch, and whether its CI passed there (its gate check, when it has one, after every other check). */
 async function mainTip(repo) {
-  const tip = (await mergeGithub.baseStatus(repo, await githubDefault(repo))).tip ?? undefined;
+  const tip = asSha((await mergeGithub.baseStatus(repo, await githubDefault(repo))).tip);
   const rollup = tip ? (await mergeGithub.commit(repo, tip))?.statusCheckRollup : undefined;
   const named = merges.namedChecks(rollup);
   const gate = merges.hasGate(rollup) ? named.some((c) => c.name === merges.GATE_CHECK && c.ok) : named.length > 0;
@@ -437,13 +437,14 @@ async function mainTip(repo) {
 
 /** The commits from `from` to `to` on `repo` (GitHub's compare, at most the last 100): { repo, sha, subject }. */
 async function commitsBetween(repo, from, to) {
-  if (!from || !to || from === to) return [];
+  if (!asSha(from) || !asSha(to) || from === to) return [];
   const { stdout } = await execFileP(await findRealGh(), ["api", `repos/${repo}/compare/${from}...${to}`, "--jq", '[.commits[] | { sha, subject: (.commit.message | split("\\n")[0]) }]'], await gho(repo, READ, { maxBuffer: 16 * 1024 * 1024 }));
-  return JSON.parse(stdout).slice(-100).map((c) => ({ repo, sha: c.sha, subject: String(c.subject).replace(/[\p{Cc}`<>]/gu, " ").slice(0, 160) }));
+  // Only the PR number of each subject: the task is the reviewer's request chain, and a subject is whoever merged it's words.
+  return JSON.parse(stdout).slice(-100).map((c) => ({ repo, sha: c.sha, subject: /\(#(\d+)\)\s*$/.exec(String(c.subject))?.[0] ?? "" }));
 }
 
 /** The modules commit a product commit pins (its modules-pin.json), or undefined. */
-const modulesPinAt = async (sha) => JSON.parse((await githubText(cfg.productRepo, "modules-pin.json", sha)) ?? "{}").sha;
+const modulesPinAt = async (sha) => pinOf(await githubText(cfg.productRepo, "modules-pin.json", sha));
 
 /**
  * The two targets (release.mjs): what each reads, what its bump task says, and how its bump is written and carded. `read()`
@@ -457,7 +458,7 @@ const RELEASE_TARGETS = {
     what: () => `Moves the product's modules pin (\`modules-pin.json\` in ${cfg.productRepo}) to the newest green commit of ${cfg.modulesRepo}'s main, as one PR that merges on its card.`,
     actions: ["pr", "merge"],
     async read() {
-      const [{ tip, green }, pinned] = await Promise.all([mainTip(cfg.modulesRepo), githubDefault(cfg.productRepo).then((main) => githubText(cfg.productRepo, "modules-pin.json", main)).then((t) => JSON.parse(t ?? "{}").sha)]);
+      const [{ tip, green }, pinned] = await Promise.all([mainTip(cfg.modulesRepo), githubDefault(cfg.productRepo).then((main) => githubText(cfg.productRepo, "modules-pin.json", main)).then(pinOf)]);
       return { tip, green, pinned, carries: (from = pinned) => commitsBetween(cfg.modulesRepo, from, tip) };
     },
     file: (issue, to) => fileModulesPin(issue, to),
@@ -470,7 +471,7 @@ const RELEASE_TARGETS = {
     async read() {
       const text = await githubText(cfg.apply.repo, "instance.yaml", await githubDefault(cfg.apply.repo));
       const [{ tip, green }, pinned] = [await mainTip(cfg.productRepo), productPin(text)];
-      const modules = (YAML.parse(text ?? "") ?? {}).marketplaces?.find((m) => m?.name === OFFICIAL)?.sha;
+      const modules = asSha((YAML.parse(text ?? "") ?? {}).marketplaces?.find((m) => m?.name === OFFICIAL)?.sha);
       const carries = async (from = pinned) => [...(await commitsBetween(cfg.productRepo, from, tip)), ...(cfg.modulesRepo ? await commitsBetween(cfg.modulesRepo, from === pinned ? modules : await modulesPinAt(from), await modulesPinAt(tip)) : [])];
       return { tip, green, pinned, carries };
     },
@@ -530,7 +531,7 @@ async function releaseTarget(target, t) {
   } catch (err) {
     if (!(err instanceof UserError)) throw err; // GitHub or the board on a bad minute: tried again next poll
     // Refused for good (code's tier refuses it, the edit can't be made): said, and the next merge files the next bump.
-    await pc.setStatus(issue.id, "cancelled", `**Not filed:** ${err.message}`).catch(() => {});
+    await pc.setStatus(issue.id, "done", `**Not filed:** ${err.message}`).catch(() => {});
     log("release bump refused", { target, issue: issue.identifier, err: err.message.slice(0, 300) });
     Object.assign(r, { lastTried: read.tip });
     delete r.open;
@@ -562,25 +563,41 @@ async function openRelease(target, t, carries) {
 }
 
 /**
- * Whether a filed bump is over: its task closed (an apply closes it once live), its PR merged (its merge queue done), or its
- * newest card rejected, expired or failed, which cancels the task with the reason (a waiter blocked on it wakes) and leaves
- * the next merge to file the next bump. "retry" when it only waited on the reviewer eval it started (evalGateApply).
+ * Whether a filed bump is over: its task closed (an apply closes it once live), its PR merged (its merge queue done), or
+ * nothing on it in motion any more (no card waiting, approved or running, no merge queue or merge request, no Engineer run):
+ * then the task is finished with a "Not landed" note naming the last card's or queue's reason (finished, not cancelled:
+ * Paperclip wakes a task blocked on it only when it is done), and the next merge files the next bump. "retry" when it
+ * ended only on a conflict with main or on the reviewer eval of reviewer code it brings: the same tip is filed again.
  */
 async function flightOver(target, t, flight) {
   const issue = await pc.issue(flight.issueId).catch(() => undefined);
   if (!issue) return false;
   if (CLOSED.includes(issue.status)) return true;
-  if (target === "modules" && mergeQueue(issue.id)?.state === "done") {
+  const mq = mergeQueue(issue.id);
+  if (target === "modules" && mq?.state === "done") {
     await pc.setStatus(issue.id, "done", "Merged: the product's modules pin is on its main.");
     return true;
   }
-  const [last] = (await recordsOn(issue)).filter((a) => t.actions.includes(a.action));
-  const why = !last ? undefined : last.state === "rejected" ? `the card was rejected (${last.reviewCode ?? "no code"})` : last.state === "expired" ? "the card was cancelled or expired" : last.outcome === "failed" ? "it was approved but failed" : undefined;
-  if (!why) return false;
-  const evalWait = /ask for the apply again once it passes/.test(`${last.outcomeText ?? ""} ${last.review ?? ""} ${last.reason ?? ""}`);
-  await pc.setStatus(issue.id, "cancelled", `**Not landed:** ${why}. ${evalWait ? "It waits on the reviewer eval of the reviewer code it brings: the next bump is filed once its window passes again." : "The next merge to the source files the next bump."}`);
-  log("release bump over", { target, issue: issue.identifier, why, evalWait });
-  return evalWait ? "retry" : true;
+  const records = (await recordsOn(issue)).filter((a) => t.actions.includes(a.action));
+  const moving =
+    records.some((a) => a.state === "pending" || a.state === "approved" || (a.state === "used" && !a.outcome)) ||
+    mq?.state === "running" || Boolean(mq?.held) || Boolean(JSON.parse(state.get("auto_merges") || "{}")[issue.id]) || running.has(issue.id) || queue.some((j) => j.issue.id === issue.id);
+  if (moving || !records.length) return false;
+  const [last] = records;
+  if (target === "instance" && last.outcome === "applied") {
+    await pc.setStatus(issue.id, "done", "Applied: this instance runs the bump.").catch(() => {});
+    return true;
+  }
+  const why =
+    last.state === "rejected" ? `the card was rejected (${last.reviewCode ?? "no code"})`
+    : last.state === "expired" || last.state === "stale" ? "the card was cancelled, replaced or expired"
+    : last.outcome === "failed" ? `it was approved but failed: ${String(last.outcomeText ?? "").split("\n")[0].slice(0, 300)}`
+    : mq?.state === "stopped" ? `its merge stopped: ${String(mq.reason ?? "").split("\n")[0].slice(0, 300)}`
+    : "nothing is moving it any more";
+  const retry = /conflicts with|ask for the apply again once it passes|reviewer eval/.test(why);
+  await pc.setStatus(issue.id, "done", `**Not landed:** ${why}. ${retry ? "The same commits are filed again as the next bump." : "The next merge to the source files the next bump."}`);
+  log("release bump over", { target, issue: issue.identifier, why: why.slice(0, 300), retry });
+  return retry ? "retry" : true;
 }
 
 /** The modules bump: modules-pin.json moved on a branch of the product made from its main, then the product PR card that merges. */
@@ -610,6 +627,13 @@ async function fileInstancePin(issue, to) {
     throw new UserError(`instance.yaml can't be bumped in place: ${err.message}`);
   }
   await commitFiles(issue, r.path, tip, `fleet/release-${issue.identifier.toLowerCase()}`, { "instance.yaml": text }, `chore: product ${to.slice(0, 8)} + modules ${modules.slice(0, 8)} (${issue.identifier})\n\nWritten by the runner's release train; no agent wrote it.`);
+  // A bump that brings new reviewer code lands only on a passing eval of it: started here, and the bump stays open (filed on
+  // a later poll) while it runs, rather than carded to fail.
+  const b = await fleetBranch(issue, state.task(issue.id).workspace);
+  if (b.error) throw new UserError(b.error);
+  await evalGateApply(b.r, b.sha, b.files).catch((err) => {
+    throw /once it passes/.test(String(err.message)) ? new Error(err.message) : err;
+  });
   const said = await showFleetDiff(issue, state.task(issue.id).workspace);
   if (/Couldn't file the approval card|try again/.test(said)) throw new Error(`no card yet: ${said.split("\n")[0].slice(0, 300)}`);
   if (!/^\*\*Fleet change/.test(said)) throw new UserError(said.replace(/\*\*/g, "").split("\n")[0].slice(0, 500) || "no card was filed");
@@ -2425,15 +2449,17 @@ async function branchTierState(r, sha, bound) {
  */
 async function modulesPinDelta(r, base, sha) {
   if (!cfg.modulesRepo || !sameRepo(r.repo, cfg.productRepo ?? "") || !base) return "";
-  const pin = (rev) => git(r.path, "show", `${rev}:modules-pin.json`).then((t) => JSON.parse(t).sha, () => undefined);
+  // The PR's own file: only a full sha is a pin (anything else could be read as a git option below).
+  const pin = (rev) => git(r.path, "show", "--end-of-options", `${rev}:modules-pin.json`).then(pinOf, () => undefined);
   const [from, to] = await Promise.all([pin(base), pin(sha)]);
   if (!from || !to || from === to) return "";
   const head = `### The modules this pin brings (${cfg.modulesRepo} \`${from.slice(0, 12)}\` → \`${to.slice(0, 12)}\`, read by the runner)`;
   try {
     const path = await ensureClone(cfg.workDir, normalizeRepo(cfg.modulesRepo), await hostOf(cfg.modulesRepo).source(cfg.modulesRepo));
     await git(path, "fetch", "--quiet", "origin");
-    const commits = await git(path, "log", "--oneline", "--no-decorate", "-n", "100", `${from}..${to}`);
-    const files = await git(path, "diff", "--stat=160", "--no-renames", from, to);
+    const commits = await git(path, "log", "--oneline", "--no-decorate", "-n", "60", "--end-of-options", `${from}..${to}`);
+    const stat = (await git(path, "diff", "--stat=160", "--no-renames", "--end-of-options", from, to)).split("\n");
+    const files = stat.length > 80 ? [...stat.slice(0, 79), `(${stat.length - 80} more files)`, stat.at(-1)].join("\n") : stat.join("\n");
     return `${head}\n\nCommits:\n${commits || "(none: the pin moves back)"}\n\nFiles:\n${files}\n\n${await pinAuthority(base, from, to)}`;
   } catch (err) {
     return `${head}: couldn't be read (${String(err.message ?? err).split("\n")[0].slice(0, 150)})`;
@@ -2449,7 +2475,7 @@ async function pinAuthority(product, from, to) {
   const doc = (dir && YAML.parse(readFileSync(join(dir, "instance.yaml"), "utf8"))) || {};
   const side = (sha) => YAML.stringify({ ...doc, product, marketplaces: [...(doc.marketplaces ?? []).filter((m) => m?.name !== OFFICIAL), { name: OFFICIAL, source: { source: "github", repo: cfg.modulesRepo }, sha }] });
   const st = await moduleTierState(side(from), side(to));
-  if (st.modulesError) return `Module changes: couldn't be read (${st.modulesError})`;
+  if (st.modulesError || !st.modules) return `Module changes: couldn't be computed (${st.modulesError ?? "no module manifests were read"}): judge the commits and files above without them.`;
   const [lines] = authorityOf(st);
   return `Module changes for the modules this instance runs (the authority diff, computed by code from the module manifests; owner = new authority):\n${lines.join("\n") || "(none)"}`;
 }

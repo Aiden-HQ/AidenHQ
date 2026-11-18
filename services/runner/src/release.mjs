@@ -10,6 +10,17 @@ import YAML from "yaml";
 
 const SHA = /^[0-9a-f]{40}$/;
 
+/** A full commit sha, or undefined: a pin read from a repository's own files goes through this before git or an API path. */
+export const asSha = (x) => (typeof x === "string" && SHA.test(x) ? x : undefined);
+/** The commit a modules-pin.json text pins, or undefined for anything that isn't a full sha (`--output=…` included). */
+export function pinOf(text) {
+  try {
+    return asSha(JSON.parse(String(text ?? ""))?.sha);
+  } catch {
+    return undefined;
+  }
+}
+
 /**
  * One poll of one target, from what the runner read: `tip` (the source's main) and `green` (its CI passed there), `pinned`
  * (what the target pins now), `lastTried` (the tip the last bump carried), `open` ({ since }: the task collecting merges),
@@ -19,6 +30,8 @@ const SHA = /^[0-9a-f]{40}$/;
  */
 export function trainStep({ tip, green, pinned, lastTried, open, flight, now, windowMinutes }) {
   if (!SHA.test(tip ?? "")) return { do: open ? "wait" : "idle", why: "the source's main couldn't be read" };
+  // A target with no plain pin to move (an instance on a `release:`, say) is not this train's.
+  if (!SHA.test(pinned ?? "")) return { do: open ? "wait" : "idle", why: "the target has no pin this train can move" };
   // The tip a bump in flight carries counts as tried: merges after it open the next bump, which files once that one is over.
   const due = tip !== pinned && tip !== (flight?.to ?? lastTried);
   if (!due) return open && !flight ? { do: "close", why: tip === pinned ? "the target already pins it" : "nothing new to carry" } : { do: "idle" };
@@ -62,7 +75,7 @@ export function trainDescription({ target, what, carries, windowMinutes, marker 
     "Carries these merged commits:",
     list,
     "",
-    "Waiting on one of them? Block on this task: it finishes when they are live, or is cancelled with the reason, and a later merge files the next bump.",
+    "Waiting on one of them? Block on this task: it finishes when they are live, or with a \"Not landed\" note and its reason when they aren't; then search for the next bump that lists your commit.",
     "",
     `<!-- source:${marker} -->`,
   ].join("\n");
