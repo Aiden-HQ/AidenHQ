@@ -18,7 +18,7 @@
 // Dated (only pins a change adds or alters, against the base; any lookup error fails): images, actions, npm, PyPI, apt
 // pins, GitHub release downloads, and digest-pinned image strings in code. Each must be 7+ days old or be a security
 // exception in .github/supply-chain-exceptions.yaml read from the base (`ecosystem` docker, github-action, npm, pypi,
-// apt or github-release; `package`, `version`, `advisory`, `reason`).
+// apt or github-release; `package`, `version`, `advisory`, `reason`; and `digest`/`sha` for a pin the registry can't date).
 import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { DAY, parseImage, publishedAt, readExceptions } from "./best-version.mjs";
@@ -216,6 +216,11 @@ export async function checkAges({ pins, basePins = [], exceptions = [], date = d
       if (exceptionFor(p, exceptions)) continue;
       problems.push(`${label} was published ${(age / DAY).toFixed(1)} days ago (${via}, under 7): use an older version (best-version.mjs), or add a security exception`);
     } catch (e) {
+      // A pin whose registry keeps no push record to date it by passes only on a security exception that names it exactly: its
+      // version and its digest or sha (`digest: sha256:…`), so the exception, not the registry, vouches for what is pulled.
+      // Every other failure (a lookup error) stands.
+      const ex = e.undated && exceptionFor(p, exceptions);
+      if (ex && ex.digest === p.digest && ex.sha === p.sha) continue;
       problems.push(`${label}: could not be dated: ${e.message}`);
     }
   }
