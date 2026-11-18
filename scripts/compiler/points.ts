@@ -4,7 +4,7 @@
 // validates and compiles, it never interprets.
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { validate, type Schema } from "../writes.ts";
+import { validate, type Schema } from "../../kernel/src/writes.ts";
 
 type Def = { requires?: unknown; points?: unknown; contributes?: unknown };
 /** By owner module, then point: the contributions, each tagged with its contributing `module`, in module-name order. */

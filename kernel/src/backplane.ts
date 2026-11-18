@@ -53,7 +53,7 @@
 //                              {repo, head, run, judge?, policy?} (checkjobs.ts)
 //   POST /v1/jobtools/:cmd     (a kernel job's own token) reset | engine {engine, model?} | cleanup: what the running job asks of its
 //                              task's next turn (jobtools.ts)
-//   GET  /v1/advisories        (the board's key) the marketplace advisories open against installed modules (loader/advisories.ts)
+//   GET  /v1/advisories        (the board's key) the marketplace advisories open against installed modules (advisories.ts)
 //   POST /v1/auth/:op, /v1/accounts/:op, /v1/apps/:op, /v1/operator/:op  the accounts' routes (auth-api.ts): module UI
 //                              sessions and account admin (the board), in-app requests (apps-platform), setup links (operator)
 import type { IncomingMessage, ServerResponse } from "node:http";

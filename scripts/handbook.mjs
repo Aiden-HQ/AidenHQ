@@ -5,7 +5,7 @@ import { join, sep } from "node:path";
 import { section } from "./prompts.mjs";
 import { frontmatter, sourcesSection } from "./modules.mjs";
 import { computerSection } from "./computers.mjs";
-import { defaultCache } from "../kernel/src/loader/sources.ts";
+import { defaultCache } from "./compiler/sources.ts";
 
 /** A file that must resolve (symlinks followed) inside dir; anything else throws. */
 export function readInside(dir, path, what) {

@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import YAML from "yaml";
 import { buildable, computerPulls, useReleaseImages } from "../release-images.mjs";
-import { resolveRelease } from "../../kernel/src/loader/release.ts";
+import { resolveRelease } from "../compiler/release.ts";
 
 const sha = (c) => `sha256:${c.repeat(64)}`;
 const ref = (n, c) => `ghcr.io/acme/${n}@${sha(c)}`;

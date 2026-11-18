@@ -515,7 +515,7 @@ describe("public PR text", async () => {
   it("lets only the official modules repo name AidenHQ besides our own repos; the rest of its org stays clean", async () => {
     const { isRepoIn } = await import("../src/describe.ts");
     const { githubSlug } = await import("../src/config.mjs");
-    const { OFFICIAL_URL } = await import("../../../kernel/src/loader/sources.ts");
+    const { OFFICIAL_URL } = await import("../../../scripts/compiler/sources.ts");
     const official = [githubSlug(OFFICIAL_URL)];
     const msg = "fix(monitoring): a retired CI runner unit is not reported missing\n\nThe aidenhq-runner unit is listed.";
     assert.equal(leaksInternal(msg), true);

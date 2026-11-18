@@ -229,7 +229,7 @@ if (process.argv[1] && import.meta.url === new URL(`file://${process.argv[1]}`).
   const text = readFileSync(process.argv[3]!, "utf8");
   if (process.argv[2] === "product-pin") process.stdout.write(productPin(text) ?? "");
   else {
-    const { forksOf } = await import("./loader/sources.ts");
+    const { forksOf } = await import("../../scripts/compiler/sources.ts");
     const k = forksOf(YAML.parse(text) ?? {}).find((x) => x.target === "kernel");
     process.stdout.write(k ? `${k.at.url} ${k.at.sha}` : "");
   }

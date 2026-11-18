@@ -6,7 +6,7 @@
 // the owner's card and in the apply log.
 import { ownSecrets } from "./services.ts";
 import { forksOf, marketplacesOf, OFFICIAL, OFFICIAL_URL } from "./sources.ts";
-import { SENSITIVITIES } from "../paths.ts";
+import { SENSITIVITIES } from "../../kernel/src/paths.ts";
 
 type Dict = Record<string, unknown>;
 export type ModuleDef = Dict;

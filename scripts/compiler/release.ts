@@ -2,7 +2,7 @@
 // that sha as releases/<name>.json. The release supplies the kernel sha (`product:` must equal it, so the deploy flow is
 // unchanged), the official marketplace's sha and each default module's sha; a per-module `{ id, sha }` entry overrides one.
 // A release name is display: only its sha resolves.
-//   node kernel/src/loader/release.ts <instance.yaml>     the apply's check: prints the resolved release; exit 2 refused
+//   node scripts/compiler/release.ts <instance.yaml>     the apply's check: prints the resolved release; exit 2 refused
 import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
@@ -90,10 +90,12 @@ export const effective = (instance: Dict, f: Fetch) => withRelease(instance, rea
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
   try {
-    // Imported here only: the runner imports this file without the kernel's dependencies.
-    const { default: YAML } = await import("yaml");
+    // Imported here only, from scripts' dependencies: the runner and the kernel import this file without them (a variable
+    // specifier, so their typechecks don't resolve it).
+    const yaml = "yaml";
+    const { default: YAML } = await import(yaml);
     const instance = (YAML.parse(readFileSync(process.argv[2] ?? "", "utf8")) ?? {}) as Dict;
-    const r = readRelease(instance, hostFetch(resolve(import.meta.dirname, "../../..")));
+    const r = readRelease(instance, hostFetch(resolve(import.meta.dirname, "../..")));
     console.log(r ? `release: ${r.name}, kernel ${r.kernel.slice(0, 12)}, marketplace ${OFFICIAL} at ${r.marketplace.sha.slice(0, 12)}, ${Object.keys(r.modules).length} modules, ${Object.keys(r.images).length} prebuilt images` : "release: none");
   } catch (e) {
     console.error(`release: refused (${String((e as Error).message ?? e).split("\n")[0]})`);

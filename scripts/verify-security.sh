@@ -299,7 +299,7 @@ PROBES
   esac
 done
 
-# Module isolation (spec §5.11; compose is generated from each module's `services:`, kernel/src/loader/services.ts): a module's
+# Module isolation (spec §5.11; compose is generated from each module's `services:`, scripts/compiler/services.ts): a module's
 # container is on its module's own networks only, plus a module it joins and the root networks its legacy links name (both
 # labels compile writes from closed lists; a hand edit in compose.override.yaml shows here); it mounts no vault path but its
 # own secrets and its module's own vault dir; and none publishes beyond loopback. Every module container is checked.

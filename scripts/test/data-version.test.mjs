@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { checkDataVersion } from "../src/loader/data-version.ts";
+import { checkDataVersion } from "../compiler/data-version.ts";
 
 const dir = (marker) => { const d = mkdtempSync(join(tmpdir(), "data-version-")); if (marker !== undefined) writeFileSync(join(d, ".data_version"), `${marker}\n`); return d; };
 const marker = (d) => readFileSync(join(d, ".data_version"), "utf8");

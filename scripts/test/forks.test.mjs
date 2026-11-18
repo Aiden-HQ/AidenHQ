@@ -11,8 +11,8 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import YAML from "yaml";
 import { compile } from "../modules.mjs";
-import { moduleInputs } from "../../kernel/src/loader/authority.ts";
-import { cacheRepo, forksOf, officialSides, remoteCodeText, withRemote } from "../../kernel/src/loader/sources.ts";
+import { moduleInputs } from "../compiler/authority.ts";
+import { cacheRepo, forksOf, officialSides, remoteCodeText, withRemote } from "../compiler/sources.ts";
 import { classify } from "../../services/runner/src/tiers.mjs";
 
 const here = fileURLToPath(new URL(".", import.meta.url));

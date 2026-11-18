@@ -5,8 +5,8 @@ import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { authorityDiff, authorityLines, classifyModules, diffAll, marketplaceChanges, moduleInputs, renamed } from "../src/loader/authority.ts";
-import { OFFICIAL_URL, officialSides } from "../src/loader/sources.ts";
+import { authorityDiff, authorityLines, classifyModules, diffAll, marketplaceChanges, moduleInputs, renamed } from "../compiler/authority.ts";
+import { OFFICIAL_URL, officialSides } from "../compiler/sources.ts";
 
 const IMG = `example.com/acme/tool:1.0@sha256:${"a".repeat(64)}`;
 const base = {
@@ -163,7 +163,7 @@ test("the CLI prints one line per change between two commits", () => {
   g("add", "-A");
   g("commit", "-qm", "b");
   const b = g("rev-parse", "HEAD");
-  const cli = join(import.meta.dirname, "../src/loader/authority-cli.ts");
+  const cli = join(import.meta.dirname, "../compiler/authority-cli.ts");
   const run = (...args) => execFileSync("node", [cli, ...args], { encoding: "utf8", stdio: "pipe", env: { ...process.env, AIDENHQ_PRODUCT_DIR: repo, AIDENHQ_INSTANCE_DIR: "" } });
   assert.deepEqual(run(a, b).trim().split("\n"), ["apply authority: acme-crm: adds write kind publish (owner)", "apply authority: acme-crm: code changes (review)"]);
   assert.equal(run(a, a).trim(), "apply authority: none");
@@ -212,7 +212,7 @@ test("a per-module pin is official only on the official repository's main; one o
   const { mkdtempSync, writeFileSync } = await import("node:fs");
   const { tmpdir } = await import("node:os");
   const { join } = await import("node:path");
-  const { onOfficialMain } = await import("../src/loader/sources.ts");
+  const { onOfficialMain } = await import("../compiler/sources.ts");
   const dir = mkdtempSync(join(tmpdir(), "official-"));
   const g = (...a) => execFileSync("git", ["-C", dir, "-c", "user.name=t", "-c", "user.email=t@example.com", ...a]).toString().trim();
   g("init", "-q", "-b", "main");

@@ -456,9 +456,9 @@ export function kitInJail(cacheDir: string) {
 // The jailed kit itself: `node sources.ts <module dir>`. Exit 0 passed, 3 no jail, else failed.
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
   const root = resolve(process.argv[2] ?? "");
-  const repo = resolve(import.meta.dirname, "../../..");
-  const { sandboxConfig } = await import("../sandbox-config.ts");
-  const { layout } = await import("../sandbox.ts");
+  const repo = resolve(import.meta.dirname, "../..");
+  const { sandboxConfig } = await import("../../kernel/src/sandbox-config.ts");
+  const { layout } = await import("../../kernel/src/sandbox.ts");
   const cfg = sandboxConfig();
   const yaml = join(repo, "kernel/node_modules");
   if (spawnSync(cfg.bwrap, ["--version"]).status !== 0) process.exit(3);

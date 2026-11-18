@@ -31,7 +31,7 @@ export const RUNNER_ARGS: Record<string, Schema> = {
   create_repo: obj({ repo: { type: "string", pattern: "^[\\w.-]+\\/[a-z][a-z0-9-]{0,62}$" } }, ["repo"]), // never `.git`: the name is lower-case letters, digits, dashes
 };
 
-// authority: the module changes the apply brings, one line each (kernel/src/loader/authority.ts), shown on the card;
+// authority: the module changes the apply brings, one line each (scripts/compiler/authority.ts), shown on the card;
 // ownerRequired: one of them adds module authority, so after the reviewer only the owner approves it (in the digest, as args).
 const APPLY_ARGS = obj({
   repo: REPO, branch: REF, sha: SHA, files: { type: "array", minItems: 1, maxItems: 200, items: { type: "string", maxLength: 300 } },

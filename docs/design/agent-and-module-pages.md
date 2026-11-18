@@ -222,7 +222,7 @@ pause) as a signed-in admin action, logged as an event; no commit.
   `handbook_fork` override, tiered by the same rule as that agent's handbook additions (`role-handbook` when it holds a
   role, else `module-handbook`; both Tier 1). No new tier, no authority-diff change: a handbook grants no authority.
 - **Module and marketplace tiering** is what the code already does: `tiers.mjs moduleAuthorityParts` and
-  `kernel/src/loader/authority.ts` (`classifyModules`, `marketplaceChanges`), from the lean-core spec §5.7 (instance repo,
+  `scripts/compiler/authority.ts` (`classifyModules`, `marketplaceChanges`), from the lean-core spec §5.7 (instance repo,
   `docs/product-history/superpowers/specs/2026-11-16-lean-core-design.md`). Install, turn off and remove are edits of
   `instance.yaml modules`; no new tiering step. The install card's "what it may do" preview is computed by the same
   authority classifier, run on the would-be `instance.yaml` before filing.
@@ -233,9 +233,9 @@ pause) as a signed-in admin action, logged as an event; no commit.
   "Pinned at 2.4 · marketplace at 2.3" with **Follow marketplace** (removes the pin) and **Update** (pins the newest
   allowed version of just that module). The card says when the pinned version differs from the marketplace's, since that
   combination was not tested together. Tiering is the existing module update rule (§5.7: AI review, owner tap for new
-  authority). This is loader and compiler work (`kernel/src/loader/sources.ts`, `scripts/modules.mjs`) and lands with
+  authority). This is loader and compiler work (`scripts/compiler/sources.ts`, `scripts/modules.mjs`) and lands with
   build step 4.
-- **Browse data** is read where compile already reads marketplaces (the loader's sources, `kernel/src/loader/sources.ts`,
+- **Browse data** is read where compile already reads marketplaces (the loader's sources, `scripts/compiler/sources.ts`,
   with its credentials), at each marketplace's pinned sha, plus the newest commit for "newer version" when the source
   allows it. Nothing newer than 7 days is offered (the supply-chain rule).
 - **Grants override** (`overrides.agents.<key>.connections`) merges per connection key over the module's grants and is

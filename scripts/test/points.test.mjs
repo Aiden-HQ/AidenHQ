@@ -7,7 +7,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import YAML from "yaml";
 import { compile } from "../modules.mjs";
-import { compilePoints } from "../../kernel/src/loader/points.ts";
+import { compilePoints } from "../compiler/points.ts";
 import { BUNDLE } from "./bundle.mjs";
 
 const repo = join(dirname(fileURLToPath(import.meta.url)), "../..");

@@ -9,8 +9,8 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import YAML from "yaml";
 import { compile } from "../modules.mjs";
-import { classifyModules, diffAll, marketplaceChanges, moduleInputs } from "../../kernel/src/loader/authority.ts";
-import { remoteCodeText, sourceOf, withRemote } from "../../kernel/src/loader/sources.ts";
+import { classifyModules, diffAll, marketplaceChanges, moduleInputs } from "../compiler/authority.ts";
+import { remoteCodeText, sourceOf, withRemote } from "../compiler/sources.ts";
 
 const repo = fileURLToPath(new URL("../..", import.meta.url));
 const mods = join(repo, "scripts/test/fixtures/mods");

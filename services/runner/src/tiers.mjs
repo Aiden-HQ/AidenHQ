@@ -9,7 +9,7 @@
 // and the shared rules (kernel/src/tier.ts: earlier decisions). The tier is a proposal on the merits: the kernel applies the
 // caps (the instance's autonomy, a routine's) when the request is filed (tier.ts computeTier).
 import YAML from "yaml";
-import { classifyModules, diffAll, forkChanges, grantOverrides, marketplaceChanges } from "../../../kernel/src/loader/authority.ts";
+import { classifyModules, diffAll, forkChanges, grantOverrides, marketplaceChanges } from "../../../scripts/compiler/authority.ts";
 import { REJECT, T, highest, meritOwner, priorDecisions, priorPart, requestKey, requestPatches, requestTargets } from "../../../kernel/src/tier.ts";
 import { planParts } from "../../../modules/codehost-github/src/plan.mjs";
 import { COMPOSE, GATE_CORE as MODULES_GATE_CORE, check, imageRepo } from "../../../modules/platform/src/check.mjs";
@@ -143,7 +143,7 @@ function moduleParts(f, baseText, headText, connections = {}) {
         if (added.length || fields.length) why("module-tools", `connection ${c}: ${[...added, ...fields].join(", ")}`);
       }
     } else if (k === "services") {
-      // The generated compose's input (kernel/src/loader/services.ts): image tags or digests only is an image bump.
+      // The generated compose's input (scripts/compiler/services.ts): image tags or digests only is an image bump.
       const noImages = (sv) => ({ ...(sv ?? {}), run: Object.fromEntries(Object.entries(sv?.run ?? {}).map(([n, x]) => [n, { ...(x ?? {}), image: imageRepo(x?.image) }])) });
       if (eq(noImages(b.services), noImages(h.services))) parts.push(T(1, "product-image-bump", `${f}: services image tags or digests only`));
       else why("module-services", "changes its services (env, mounts, networks, links, joins, secrets, a service or another image)");

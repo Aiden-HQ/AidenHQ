@@ -16,6 +16,7 @@ paths:
       - services/runner/src/{tiers,gate-core,review-request,siblings,cards,evalgate,apply,state,config,progress,main,engines,files,agents,typed-change,url-setting,release,release-sync}.{mjs,ts}
       - scripts/{computers,modules,paperclip-setup,no-shell}.{mjs,ts}
       - kernel/
+      - scripts/compiler/
       - services/shared/review-files.{mjs,ts}
       - "**/aidenhq-sdk/caller.ts"
       - services/board/src/{app,fleet,kernel-auth,session}.ts

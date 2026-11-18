@@ -6,7 +6,7 @@ import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { readRelease, resolveRelease, withRelease } from "../src/loader/release.ts";
+import { readRelease, resolveRelease, withRelease } from "../compiler/release.ts";
 
 const [K, M, A, B, C] = ["1", "2", "a", "b", "c"].map((c) => c.repeat(40));
 const market = (sha = M, url = "https://git.example.com/acme/modules.git") => ({ name: "aidenhq", source: { source: "url", url }, sha });

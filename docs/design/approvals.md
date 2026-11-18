@@ -192,7 +192,7 @@ score must keep passing.
 **The eval-receipt gate** (`services/runner/src/evalgate.ts`, owner 2026-11-16). Reviewer code reaches the fleet only on a
 passing receipt (95% of the base cases, every miss a false block). The reviewer's own code is the whole `ai-reviewer` module (service, policy, cases, `case-pad.mjs`,
 `reviewer-eval.mjs`), `kernel/sdk/src/reviewer.ts`, `tiers.mjs`, the kernel's `tier.ts` and the authority-diff classifier
-(`kernel/src/loader/authority.ts`). The module lives in the official modules repo since 5b, so the eval always runs a commit
+(`scripts/compiler/authority.ts`). The module lives in the official modules repo since 5b, so the eval always runs a commit
 of that repo, judged by an earlier one:
 
 - a modules-repo PR that changes the reviewer: its head, judged by its base branch, receipt for its head;

@@ -6,8 +6,8 @@ import { mkdtempSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { createAdvisories, openAdvisories } from "../src/loader/advisories.ts";
-import { checkout } from "../src/loader/sources.ts";
+import { createAdvisories, openAdvisories } from "../src/advisories.ts";
+import { checkout } from "../../scripts/compiler/sources.ts";
 import { createChannels } from "../src/channels.ts";
 
 const env = { ...process.env, GIT_AUTHOR_NAME: "t", GIT_AUTHOR_EMAIL: "t@example.com", GIT_COMMITTER_NAME: "t", GIT_COMMITTER_EMAIL: "t@example.com", GIT_CONFIG_GLOBAL: "/dev/null" };

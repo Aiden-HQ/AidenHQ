@@ -1,7 +1,7 @@
 // Replace as one transaction (spec §5.7.1): virtual capabilities, conflicts, and the refusal of any dangling binding.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { capabilityProblems, conflictProblems, danglingBindings, virtualProviders } from "../src/loader/bindings.ts";
+import { capabilityProblems, conflictProblems, danglingBindings, virtualProviders } from "../compiler/bindings.ts";
 
 const engine = (kind, extra = {}) => ({ provides: ["engine"], providers: { engine: [{ kind, bin: "bin/run" }] }, ...extra });
 const user = { requires: ["engine"], agents: { builder: { engine: "alpha", connections: { crm: "read" }, jobcaps: ["crm-read"], roles: ["acme-crm.editor"] } } };

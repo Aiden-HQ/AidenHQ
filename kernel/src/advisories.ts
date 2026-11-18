@@ -10,11 +10,11 @@ import { execFile } from "node:child_process";
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { join, posix } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
-import { neutral } from "../channels.ts";
-import { validate } from "../writes.ts";
-import { cacheRepo, OFFICIAL, type Fetch } from "./sources.ts";
+import { neutral } from "./channels.ts";
+import { validate } from "./writes.ts";
+import { cacheRepo, OFFICIAL, type Fetch } from "../../scripts/compiler/sources.ts";
 
-const SCHEMA = JSON.parse(readFileSync(new URL("../../schemas/advisories.json", import.meta.url), "utf8"));
+const SCHEMA = JSON.parse(readFileSync(new URL("../schemas/advisories.json", import.meta.url), "utf8"));
 const LOCAL_REF = "refs/aidenhq/advisories";
 const DAY = 86_400_000;
 export type Open = { id: string; module: string; severity: string; fixed: string; summary: string; url: string };

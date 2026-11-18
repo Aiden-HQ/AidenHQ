@@ -1,6 +1,6 @@
 // Puts the official modules at <product>/modules (gitignored since 5b), where the compiler, compose build contexts and
 // the host scripts read them: the instance's `aidenhq` marketplace entry, else modules-pin.json (a new instance, CI). The
-// tree is fetched and extracted by the kernel's sources.ts at its sha (the host's credential helper for the private
+// tree is fetched and extracted by the compiler's sources.ts (scripts/compiler) at its sha (the host's credential helper for the private
 // repository), copied beside the old one and swapped in by rename. Same content at the same path: nothing rebuilds.
 // A file the product checkout tracks under modules/ (tracked.mjs) is put back when the swap deletes it, and also on the
 // early exit: a tracked deletion is a checkout the apply refuses to run over.
@@ -8,7 +8,7 @@
 import { cpSync, existsSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { join, resolve } from "node:path";
-import { checkout, hostFetch, OFFICIAL, sourceOf } from "../../kernel/src/loader/sources.ts";
+import { checkout, hostFetch, OFFICIAL, sourceOf } from "../compiler/sources.ts";
 import { restoreTracked } from "./tracked.mjs";
 
 const [productArg, instanceFile] = process.argv.slice(2);
