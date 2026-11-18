@@ -84,6 +84,12 @@ merges:
   gap_minutes: 15        # between merges, unless the request says otherwise
   timeout_minutes: 90    # a PR whose checks stay pending this long is reported as not merged; later PRs still merge
 
+# The release train: pin bumps written by the runner, each batched over this many minutes from the first merge it carries,
+# then filed as one card for the AI reviewer: the product's modules-pin.json PR (on a merge to the official modules repo)
+# and this instance's product + modules apply (on a merge to the product repo). 0 turns it off.
+release:
+  batch_minutes: 15
+
 # Platform Engineer's `aidenhq apply`: on your word, land the shown commit on main of your instance repo
 # (instance.yaml, apps.yaml, agents/<key>.md only), then run ops/apply-config.sh here. Needs a write deploy key for it.
 apply:
