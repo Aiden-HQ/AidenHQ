@@ -553,9 +553,10 @@ switchOver() {
 # Step 4 of spec §5.7.2, polled to deadlines (the kernel restarts; services take a while to come up). Fails, with HEALTH_WHY,
 # when the kernel does not answer /healthz in time, when a check that passed in the baseline still FAILs at the deadline
 # (skips and checks already failing in the baseline don't count), or when the live agent check fails (it fails only on
-# connections granted since the previous config).
+# connections granted since the previous config; its own ERROR lines, naming the connection and its detail, become the
+# reason).
 health() {
-  local base="$1" prev="$2" deadline name regress out
+  local base="$1" prev="$2" deadline name regress out rc=0 err why=""
   local kurl="${AIDENHQ_KERNEL_HEALTH_URL:-http://10.231.0.1:3130/healthz}" every="${AIDENHQ_HEALTH_INTERVAL_S:-10}"
   HEALTH_WHY=""
   deadline=$(( $(date +%s) + ${AIDENHQ_KERNEL_DEADLINE_S:-120} ))
@@ -580,8 +581,18 @@ health() {
   fi
   echo "health: the kernel answers and every check that passed before passes"
   lap health
-  # The live agent check: each connection an agent is granted answers and is signed in (scripts/agent-check.mjs).
-  if [ -n "$prev" ] && ! node scripts/agent-check.mjs live --since "$prev"; then HEALTH_WHY="the live agent check failed on a newly granted connection"; return 1; fi
+  # The live agent check: each connection an agent is granted answers and is signed in (scripts/agent-check.mjs). Its
+  # output goes to the apply log as it printed it, and its ERROR lines are the generation's reason, so the alert says which
+  # connection failed and why.
+  if [ -n "$prev" ]; then
+    out="$(node scripts/agent-check.mjs live --since "$prev" 2>&1)" || rc=$?
+    [ -z "$out" ] || printf '%s\n' "$out"
+    if [ "$rc" -ne 0 ]; then
+      while IFS= read -r err; do [ -z "$err" ] || why+="${why:+; }$err"; done <<< "$(sed -n 's/^  agent-check ERROR: //p' <<< "$out")"
+      HEALTH_WHY="${why:-the live agent check failed (exit $rc)}"
+      return 1
+    fi
+  fi
   lap agent-check
 }
 # The lock is held by the process this one inherited it from (ops/apply-config.sh), which opened data/apply.lock at that
