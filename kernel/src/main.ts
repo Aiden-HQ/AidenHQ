@@ -59,6 +59,7 @@ import { createBoxes, handbookFrom, launcherClient, type Boxes } from "./boxes.t
 import { checkJobsFrom } from "./checkbox.ts";
 import { createJobTools } from "./jobtools.ts";
 import { createWakes } from "./wakes.ts";
+import { createWorkspaceSweep } from "./workspaces.ts";
 import { createModuleTasks } from "./modtasks.ts";
 import { createWork } from "./work.ts";
 import { jailProblem, readEngines } from "./sandbox.ts";
@@ -227,8 +228,8 @@ const reviewLoop = createReviewLoop({
     return text ? { where: `${repos().instance ?? "the instance repo"} main decisions.md`, text } : undefined;
   },
 });
-/** Starts the kernel's review loop: the switch that deletes the runner's loop calls this, in the same change (one path). */
-export const startReviews = () => { every(() => void reviewLoop.tick(), 30_000); once(() => void reviewLoop.tick(), 5_000); };
+every(() => void reviewLoop.tick(), 30_000);
+once(() => void reviewLoop.tick(), 5_000);
 const brake = createBrake({ db: records.db, owner: ownerApi });
 // The host sandbox as configured here (jobs run in their agents' computers; repo code the host runs itself, fast checks among
 // it, runs in this sandbox). A known no-jail condition is fatal, with the reason in the journal: repo code must never share the
@@ -261,6 +262,10 @@ const wakes = createWakes({
   dispatches: { may: mayDispatch, agents: (module) => Object.keys(grantsTable().agents ?? {}).filter((id) => mayDispatch(module, id)) },
 });
 setInterval(() => void wakes.poll(), (Number(env("AIDENHQ_WAKE_POLL_SECONDS", "")) || 60) * 1000).unref();
+// A closed task's workspace goes after CLOSED_DAYS (workspaces.ts): hourly, and once soon after start.
+const sweepWorkspaces = createWorkspaceSweep({ db: records.db, owner: ownerApi, workDir: sandbox.workDir, log });
+every(() => void sweepWorkspaces().catch((e: Error) => log("workspace sweep failed", { err: e.message })), 3_600_000);
+once(() => void sweepWorkspaces().catch((e: Error) => log("workspace sweep failed", { err: e.message })), 5 * 60_000);
 // A stop: the jobs go on for the next kernel (KillMode=process); this one stops following them, offsets saved. A restart
 // (SIGUSR2) drains once the listeners are up (drain, below); before that it stops at once, as a stop does.
 const stop = (signal: string) => { log("stopping: jobs left running for the next kernel", { signal, jobs: jobs.running() }); jobs.detach(); process.exit(0); };

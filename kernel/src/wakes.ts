@@ -13,6 +13,7 @@ import { createHash, randomBytes } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
 import type { Api } from "./channels.ts";
 import type { Outcomes } from "./outcomes.ts";
+import { closeStaleRoutineRuns } from "./stale-routines.ts";
 
 /** A comment the kernel posted for a job (outcomes.ts): it never wakes anyone. */
 export const SELF_TAG = /<!-- aidenhq:job=/;
@@ -133,6 +134,8 @@ export function createWakes({ db, owner, post, dispatches, routineKey = () => un
           const l = await owner("GET", `/api/companies/${encodeURIComponent(companies.get(agent)!)}/issues?status=${OPEN}&limit=500&assigneeAgentId=${encodeURIComponent(agent)}`);
           if (l.status !== 200 || !Array.isArray(l.json)) throw new Error(`control plane GET issues → ${l.status}`);
           for (const issue of l.json as Issue[]) await scan(issue, { open: l.json }).catch((e: Error) => log("wake scan failed", { task: issue.id, err: e.message }));
+          // Its blocked routine runs a later run of the same routine finished are moot: cancelled as the agent (stale-routines.ts).
+          await closeStaleRoutineRuns({ owner, post, log }, agent, companies.get(agent)!).catch((e: Error) => log("stale routine runs not closed", { agent, err: e.message }));
         } catch (e) {
           log("wake poll failed", { agent, err: (e as Error).message });
         }
