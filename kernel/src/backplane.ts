@@ -53,6 +53,7 @@ import type { Reviews } from "./reviews.ts";
 import type { Wakes } from "./wakes.ts";
 import { CONN_TOOL, type Writes } from "./writes.ts";
 
+const MAX_ATTACHMENT = 25 * 1024 * 1024;
 type Handler = (req: IncomingMessage, res: ServerResponse, ...a: string[]) => Promise<void>;
 /** Directory fields a module may read; everything else in the grants table (tools, models, caps, images) stays here. */
 const DIRECTORY = ["key", "roles", "trial", "delegate_to", "memory_inbox", "review_log", "graded", "feedback_for"];
@@ -119,7 +120,7 @@ async function json(req: IncomingMessage, max = 1_000_000): Promise<any> {
   try { return JSON.parse(Buffer.concat(chunks).toString("utf8") || "{}"); } catch { throw fail(400, "bad_request", "the body must be JSON"); }
 }
 
-export function createBackplane({ whoami, asserter, proxy, cp, grantsFile, writes, records, channels, brake, owner, modules = () => ({}), boardKey = () => "", reviews, runnerKey = () => "", reviewerKey = () => "", jobs, outcomes, wakes, eventsKey = () => "", work, graderToken = () => "", dropGraderToken = () => {}, advisories = () => [], accounts, checks, log = () => {} }: {
+export function createBackplane({ whoami, asserter, proxy, cp, grantsFile, writes, records, channels, brake, owner, modules = () => ({}), boardKey = () => "", reviews, runnerKey = () => "", reviewerKey = () => "", jobs, outcomes, wakes, eventsKey = () => "", work, graderToken = () => "", dropGraderToken = () => {}, advisories = () => [], accounts, checks, ownerRaw, log = () => {} }: {
   whoami: Whoami; asserter: Asserter; proxy: Handler; cp: Handler; grantsFile: () => { agents?: Record<string, Grant> } & Record<string, unknown>;
   writes?: Writes; records?: Records; boardKey?: () => string; log?: (msg: string, f?: Record<string, unknown>) => void;
   /** The reviewer slot; the runner's key for its kinds (filing, claim, outcome, reads, a record's review: runner_writes_key)
@@ -127,6 +128,8 @@ export function createBackplane({ whoami, asserter, proxy, cp, grantsFile, write
   reviews?: Reviews; runnerKey?: () => string; reviewerKey?: () => string;
   /** 2f: channel tokens and owner messages, the notify brake, and the control plane as the owner (reads, wake notices). */
   channels?: Channels; brake?: Brake; owner?: Api; modules?: () => ModulesFile;
+  /** The control plane as the owner, the raw response (an attachment's bytes, which `owner`'s JSON can't carry). */
+  ownerRaw?: (path: string) => Promise<Response>;
   /** 3e: jobs in the sandbox. */
   jobs?: Jobs;
   /** F5: a job's outcome posted as its agent. */
@@ -238,6 +241,21 @@ export function createBackplane({ whoami, asserter, proxy, cp, grantsFile, write
           case "GET /v1/channel/outbox": return send(res, 200, channels.drain(mod));
           case "GET /v1/cp/read/*": {
             if (!isChannel(modules().modules?.[mod]) && !w.roles.includes("kernel.cp-read")) throw fail(403, "forbidden", `${mod} has no read access to the control plane (role kernel.cp-read)`);
+            const att = /^\/attachments\/([A-Za-z0-9_-]{1,100})\/content$/.exec(m[0]!);
+            if (att) {
+              // One attachment's bytes: only one listed on the task named by ?task= (the same listing a module reads), at most 25 MB.
+              const task = new URLSearchParams(q ?? "").get("task") ?? "";
+              if (!task || task.length > 100) throw fail(400, "bad_request", "send ?task=<the task the attachment is on>");
+              if (!ownerRaw) throw fail(503, "unavailable", "the control plane is off");
+              const list = await owner("GET", `/api/issues/${encodeURIComponent(task)}/attachments`);
+              if (list.status !== 200 || !Array.isArray(list.json) || !list.json.some((a: { id?: string }) => a?.id === att[1])) throw fail(404, "not_found", `no attachment ${att[1]} on task ${task.slice(0, 100)}`);
+              const r = await ownerRaw(`/api/attachments/${att[1]}/content`);
+              if (!r.ok) throw fail(r.status === 404 ? 404 : 502, r.status === 404 ? "not_found" : "upstream", `the control plane answered ${r.status}`);
+              if (Number(r.headers.get("content-length") ?? 0) > MAX_ATTACHMENT) throw fail(413, "too_large", `the attachment is over ${MAX_ATTACHMENT} bytes`);
+              const bytes = Buffer.from(await r.arrayBuffer());
+              if (bytes.length > MAX_ATTACHMENT) throw fail(413, "too_large", `the attachment is over ${MAX_ATTACHMENT} bytes`);
+              return void res.writeHead(200, { "content-type": r.headers.get("content-type") ?? "application/octet-stream", "content-length": bytes.length }).end(bytes);
+            }
             if (!CP_READ_PATHS.some((re) => re.test(m[0]!))) throw fail(403, "forbidden", `GET ${m[0]} isn't a read route`);
             const r = await owner("GET", `${m[0]}${query}`);
             return send(res, r.status, r.json);
