@@ -260,31 +260,6 @@ async function partsOf(parentId, exceptId) {
   return Promise.all(kids.map(async (k) => ({ identifier: k.identifier, title: k.title, status: k.status, with: k.assigneeAgentId ? (await nameOf(k.assigneeAgentId)) ?? "an agent" : "the user" })));
 }
 
-/**
- * A delegated task just closed or was handed back (task_handoff): say so on its parent, so the agent that delegated it wakes. Paperclip wakes a parent's agent
- * only once every child is closed, so with other work still open under it nothing woke
- * it. Skipped for the user's tasks (no agent), the caller's own sub-steps and closed parents.
- * Never fails the close it follows: a failed note is returned as `parent_not_told`.
- */
-async function tellParent(issue, handedBack = false) {
-  try {
-    if (!issue.parentId || (!handedBack && !["done", "cancelled"].includes(issue.status))) return undefined;
-    const p = await api("GET", `/api/issues/${issueRef(issue.parentId)}`);
-    if (!p.assigneeAgentId || ["done", "cancelled"].includes(p.status)) return undefined;
-    const me = await api("GET", "/api/agents/me");
-    if (p.assigneeAgentId === me.id) return undefined;
-    const body = `${issue.identifier} (${me.metadata?.persona?.name || me.name}) ${handedBack ? "has handed back to the user" : `is ${issue.status}`}: ${issue.title}. Its result is on ${issue.identifier}.`;
-    // A finish and a status change for the same task (or a retried run) must not post the note twice.
-    const recent = await api("GET", `/api/issues/${issueRef(p.id)}/comments`).catch(() => []);
-    if ((Array.isArray(recent) ? recent : []).some((c) => c.body === body)) return { parent_told: p.identifier };
-    const c = await api("POST", `/api/issues/${issueRef(p.id)}/comments`, { body });
-    await wakeCheck(p.id, c?.id);
-    return { parent_told: p.identifier };
-  } catch (err) {
-    return { parent_not_told: String(err.message ?? err).slice(0, 200) };
-  }
-}
-
 const PRIORITIES = ["critical", "high", "medium", "low"];
 const OPEN_STATUSES = "backlog,todo,in_progress,in_review,blocked";
 
@@ -1179,10 +1154,10 @@ const TOOLS = {
       // ending for Paperclip, unlike in_progress), so the user's next comment there wakes it again.
       if (await isOwnPart(current)) {
         const i = await patchIssue(issue, { status: "todo", comment: body });
-        return { ...brief(i), ...(await tellParent(i, true)) };
+        return brief(i);
       }
       const i = await patchIssue(issue, { assigneeUserId: owner, assigneeAgentId: null, status: "todo", comment: body });
-      return { ...brief(i), ...(await tellParent(i, true)) };
+      return brief(i);
     },
   },
   task_comment: {
@@ -1212,8 +1187,7 @@ const TOOLS = {
       const i = await patchIssue(CURRENT(), { status: "done", comment: leading });
       const held = await heldClose(CURRENT(), i, leading);
       if (held) return held;
-      const parent = current.status !== "done" ? await tellParent(i) : undefined;
-      return { ...brief(i), ...parent };
+      return brief(i);
     },
   },
   task_set_status: {
@@ -1235,11 +1209,9 @@ const TOOLS = {
       if (status !== "blocked" && blocked_by) throw new Error("blocked_by only applies when status is blocked");
       await refuseMemoryInbox(issue);
       // An agent's part of the user's task stays open for the user's replies: closing it is theirs.
-      let was;
       if (status === "done" || status === "cancelled") {
         const current = await api("GET", `/api/issues/${issueRef(issue)}`);
         if (await isOwnPart(current)) throw new Error("this is your part of the user's task: it stays open for their replies. Finish with task_handoff instead; the user closes the task.");
-        was = current.status;
       }
       const body = { status };
       if (status === "blocked") body.blockedByIssueIds = await blockedByIssueIds(issue, blocked_by);
@@ -1247,8 +1219,7 @@ const TOOLS = {
       const i = await patchIssue(issue, body);
       const held = status === "done" ? await heldClose(issue, i, body.comment) : undefined;
       if (held) return held;
-      const parent = was && was !== status ? await tellParent(i) : undefined;
-      return { ...brief(i), ...parent };
+      return brief(i);
     },
   },
 };
