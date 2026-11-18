@@ -390,7 +390,7 @@ else
 fi
 
 echo "Repository"
-if git ls-files -z --cached --others --exclude-standard -- . ':!scripts/verify-security.sh' | xargs -0 grep -lE '(sk-[A-Za-z0-9]{20,}|pcp_[a-f0-9]{20,}|GOCSPX-|refresh_token"\s*:\s*"1//|xox[bp]-[0-9]{6,})' 2>/dev/null | grep -q .; then
+if git ls-files -z --cached --others --exclude-standard -- . ':!scripts/verify-security.sh' | xargs -0 grep -lE '(sk-[A-Za-z0-9]{20,}|pcp_[a-f0-9]{20,}|GOCSPX-[A-Za-z0-9_-]{20,}|refresh_token"\s*:\s*"1//|xox[bp]-[0-9]{6,})' 2>/dev/null | grep -q .; then
   fail "possible secrets in tracked files"
 else
   pass "no secret patterns in tracked files"
@@ -619,14 +619,15 @@ code="$(curl -s -m 10 -o /dev/null -w '%{http_code}' -X POST -H 'Host: 127.0.0.1
 code="$(curl -s -m 10 -o /dev/null -w '%{http_code}' -H 'Host: evil.example:3129' "$ks/.auth/api/get-session")"
 [ "$code" = "403" ] && pass "kernel sign-in listener: refuses unknown Host headers" || fail "kernel sign-in listener: answered an unknown Host ($code)"
 # The handoff to a module UI goes only to an installed module's origin (no open redirect), and only for a signed-in admin.
-code="$(curl -s -m 10 -o /dev/null -w '%{http_code}' -H 'Host: 127.0.0.1:3120' "http://127.0.0.1:3120/auth/handoff?to=https%3A%2F%2Fevil.example&state=0123456789abcdef0123")"
+# GETs name localhost: the admin listener moves a 127.0.0.1 page there (308) before anything else.
+code="$(curl -s -m 10 -o /dev/null -w '%{http_code}' -H 'Host: localhost:3120' "http://127.0.0.1:3120/auth/handoff?to=https%3A%2F%2Fevil.example&state=0123456789abcdef0123")"
 [ "$code" = "303" ] && pass "kernel admin: the handoff sends a signed-out browser to sign in first" || fail "kernel admin: /auth/handoff answered $code without a session"
 # The admin listener (lean-core 3a): every page refuses a frame, a form from another origin and a decision without a session;
 # an unknown Host is refused. A client-named address without the front door's secret is ignored (and X-Forwarded-For,
 # CF-Connecting-IP always): attempts "from six addresses" are one unidentified peer's, which gets two free failures and then
 # a stepped hold (429 at once); believed addresses would each be checked.
 ka="http://127.0.0.1:3120"
-curl -s -m 10 -D - -o /dev/null -H 'Host: 127.0.0.1:3120' "$ka/auth/sign-in" | grep -qi "^content-security-policy:.*frame-ancestors 'none'" \
+curl -s -m 10 -D - -o /dev/null -H 'Host: localhost:3120' "$ka/auth/sign-in" | grep -qi "^content-security-policy:.*frame-ancestors 'none'" \
   && pass "kernel admin: pages refuse frames (frame-ancestors 'none')" || fail "kernel admin: /auth/sign-in can be framed"
 code="$(curl -s -m 10 -o /dev/null -w '%{http_code}' -X POST -H 'Host: 127.0.0.1:3120' -H 'Origin: http://127.0.0.1:3121' "$ka/approvals/batch" -d 'decision=approve')"
 [ "$code" = "403" ] && pass "kernel admin: refuses a form from another origin (the board's)" || fail "kernel admin: took a form from another origin ($code)"
@@ -888,7 +889,8 @@ gate_before_merge() { awk "/^$1/,/^}/" "$rm_" | grep -nE 'await github\.evalGate
   && grep -qF '        if (d.do !== "merge" || gate?.stop || gate?.wait || !method) {' "$rm_" \
   && grep -qF '  keyFile: join(cfg.secretsDir, "openrouter_eval_key"),' "$rmain" && ! grep -qE 'openrouter_key|openRouterKey|openrouterKeyFile' "$rgate" \
   && grep -qF 'const JUDGE = ["ai-reviewer/scripts/reviewer-eval.mjs", "ai-reviewer/test/case-pad.mjs", "ai-reviewer/scripts/pass-rule.mjs"];' "$rgate" \
-  && grep -qF '      writeFileSync(join(tree, f), `${await d.git(path, "show", `${base}:${f}`)}\n`);' "$rgate" \
+  && grep -qF '      writeFileSync(join(tree, f), `${await d.git(path, "show", inTree(base, f))}\n`);' "$rgate" \
+  && grep -qF 'const inTree = (m: ModulesAt, rel: string) => `${m.sha}:${m.path ? `${m.path}/` : ""}${rel}`;' "$rgate" \
   && grep -qF 'const argv = d.jail([process.execPath, "scripts/reviewer-eval.mjs"], { rw: [out], ro: [tree] });' "$rgate" \
   && grep -qF 'r = JSON.parse(smallFile(file, 4 * 1024 * 1024) ?? "");' "$rgate" \
   && grep -qF '  /^modules\/codehost-github\/src\/plan\.mjs$/,' "$rgate" && grep -qF '  /^modules\/platform\/src\/check\.mjs$/,' "$rgate" \
@@ -944,7 +946,7 @@ rreview="modules/ai-reviewer/service/src/review.mjs"
   && grep -qF '/(^|\/)\.github\//,' "$rcore" && grep -qF 'gateCore: PRODUCT_GATE_CORE' "$rtiers" \
   && grep -qF '.some((g) => g.test(f))) parts.push(PANEL("gate-core"' "$rcheck" \
   && grep -qF 'const PANEL = (rule, reason) => ({ tier: 1, rule, reason, panel: true });' "$rcheck" \
-  && grep -qF 'const PANEL = (rule, reason) => ({ tier: 1, rule, reason, panel: true });' "$rtiers" \
+  && grep -qF 'import { PANEL, ' "$rtiers" && grep -qF 'export const PANEL = (rule: string, reason: string): Part => ({ tier: 1, rule, reason, panel: true });' kernel/src/apply-tier.ts \
   && grep -qF 'const rank = (p: Part) => p.tier * 2 + (p.panel ? 1 : 0);' kernel/src/tier.ts \
   && grep -qF '  const second = v.second_review !== false;' "$rreview" \
   && grep -qF '  if (v1.decision !== "approve" || !(panel || flagged)) return v1;' "$rreview" \
@@ -995,7 +997,8 @@ tools="$(grep -oE '^export const TOOLS = \[[^]]*\]' services/runner/src/repohelp
   && ! grep -qE 'POST.*/repos\b|/user/repos' modules/codehost-github/src/repos.ts \
   && [ "$(awk '/^async function agentTasks?\(/,/^}/' services/runner/src/main.mjs | grep -c '^  requireTaskReads(ctx);')" = 2 ] \
   && [ "$(awk '/^async function agentMerge\(/,/^}/' "$rmain" | grep -n 'tierFor(ctx.issue, "merge"' | head -1 | cut -d: -f1)" -lt "$(awk '/^async function agentMerge\(/,/^}/' "$rmain" | grep -n 'await fileApproval(ctx.issue, { action: "merge"' | cut -d: -f1)" ] \
-  && awk '/^async function agentMerge\(/,/^}/' "$rmain" | grep -F 'const now = bound.filter((_, i) => tiers[i].tier === 0);' >/dev/null \
+  && awk '/^async function agentMerge\(/,/^}/' "$rmain" | grep -F 'const zero = tiers.some((t) => t.tier === 0) && !(await heldNow(ctx.issue));' >/dev/null \
+  && awk '/^async function agentMerge\(/,/^}/' "$rmain" | grep -F 'const now = bound.filter((_, i) => zero && tiers[i].tier === 0);' >/dev/null \
   && awk '/^async function agentMerge\(/,/^}/' "$rmain" | grep -F 'if (bad) throw new UserError(' >/dev/null \
   && [ "$(awk '/^async function agentMerge\(/,/^}/' "$rmain" | grep -oE 'return agentMergeLocal\(|tierFor\(ctx\.issue, "merge"' | tr '\n' '|')" = 'return agentMergeLocal(|tierFor(ctx.issue, "merge"|' ] \
   && [ "$(awk '/^async function agentMergeLocal\(/,/^}/' "$rmain" | grep -oE 'await fileLocalMerge\(|requestAutoMerge\(|localHost\.merge\(' | tr '\n' '|')" = 'await fileLocalMerge(|' ] \
