@@ -199,6 +199,10 @@ export function scanFile(path, text) {
 // An apt pin's distro and sources are part of it: the same version from another repository or distro is dated again.
 const key = (p) => JSON.stringify([p.kind, p.name, p.version, p.digest, p.sha, p.release, p.distro, p.sources]);
 const exceptionFor = (p, exceptions) => exceptions.find((e) => e.ecosystem === p.kind && e.package === p.package && e.version === p.version && e.advisory);
+// An owner-approved one (`owner: approved`, no advisory) covers a pin only while today < expires, at most 14 days out, and
+// only the exact pin: its digest or sha when the pin has one (as npm-age.mjs's, for any ecosystem here).
+const ownerApproved = (p, exceptions, now) => exceptions.some((e) => e.ecosystem === p.kind && e.package === p.package && e.version === p.version && e.owner === "approved"
+  && now < Date.parse(e.expires) && Date.parse(e.expires) - now <= 14 * DAY && e.digest === p.digest && e.sha === p.sha);
 
 /** Date each new or changed pin; the problems, one line each. `date(pin)` returns {published, via} or throws. */
 export async function checkAges({ pins, basePins = [], exceptions = [], date = datePin, now = Date.now() }) {
@@ -213,7 +217,7 @@ export async function checkAges({ pins, basePins = [], exceptions = [], date = d
       const { published, via } = await date(p);
       const age = now - Date.parse(published);
       if (age >= 7 * DAY) continue;
-      if (exceptionFor(p, exceptions)) continue;
+      if (exceptionFor(p, exceptions) || ownerApproved(p, exceptions, now)) continue;
       problems.push(`${label} was published ${(age / DAY).toFixed(1)} days ago (${via}, under 7): use an older version (best-version.mjs), or add a security exception`);
     } catch (e) {
       // A pin whose registry keeps no push record to date it by passes only on a security exception that names it exactly: its

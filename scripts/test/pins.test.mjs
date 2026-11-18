@@ -101,6 +101,13 @@ test("pins: unpinned images, actions, installs and apt after a repo fail; new pi
   assert.match((await checkAges({ pins: [img], exceptions: [ex], date: undatable, now }))[0], /could not be dated/, "the version alone doesn't vouch for a digest");
   assert.deepEqual(await checkAges({ pins: [img], exceptions: [{ ...ex, digest: img.digest }], date: undatable, now }), []);
   assert.match((await checkAges({ pins: [img], exceptions: [{ ...ex, digest: img.digest }], date: async () => { throw new Error("503"); }, now }))[0], /could not be dated: 503/, "a lookup error stands");
+  // An owner-approved exception covers a too-new pin only for its exact digest, and only until it expires (14 days at most).
+  const fresh = async () => ({ published: day(2), via: "registry" });
+  const owner = (over) => [{ ecosystem: "docker", package: "postgres", version: "17.12", owner: "approved", digest: img.digest, expires: new Date(now + 3 * 86400000).toISOString().slice(0, 10), ...over }];
+  assert.deepEqual(await checkAges({ pins: [img], exceptions: owner({}), date: fresh, now }), []);
+  for (const over of [{ digest: undefined }, { digest: `sha256:${"e".repeat(64)}` }, { expires: "2020-01-01" }, { expires: new Date(now + 30 * 86400000).toISOString().slice(0, 10) }]) {
+    assert.equal((await checkAges({ pins: [img], exceptions: owner(over), date: fresh, now })).length, 1, JSON.stringify(over));
+  }
 });
 
 test("pins: ops/vm/pins.json with no releases dates its apt for the default release; a changed repo or distro is dated again", async () => {
