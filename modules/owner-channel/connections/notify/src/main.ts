@@ -107,11 +107,12 @@ const http = createServer(async (req, res) => {
 http.listen(Number(process.env.PORT ?? 8089), "0.0.0.0", () => log.info("owner-channel listening"));
 for (const sig of ["SIGTERM", "SIGINT"] as const) process.on(sig, () => http.close(() => process.exit(0)));
 
-// The kernel's, the board's and the runner's messages, routed like an agent's (no caller: no brake, no attention, no mirror).
+// The kernel's, the board's and the runner's messages, routed like an agent's (no caller: no brake, no attention, no mirror);
+// a job's reply the kernel relays goes to the channel the owner wrote from, headed by its agent and task.
 const take = async () => {
   try {
     for (const m of await kernel.take()) {
-      const r = await notify(d, { kind: (KINDS.includes(m.kind) ? m.kind : "alert") as Kind, text: String(m.text ?? ""), ...(m.task ? { task: String(m.task) } : {}), ...(m.dedupe_key ? { dedupe_key: String(m.dedupe_key) } : {}) });
+      const r = await notify(d, { kind: (KINDS.includes(m.kind) ? m.kind : "alert") as Kind, text: String(m.text ?? ""), ...(m.task ? { task: String(m.task) } : {}), ...(m.dedupe_key ? { dedupe_key: String(m.dedupe_key) } : {}), ...(m.reply ? { relay: { via: m.reply.via === "slack" ? ("slack" as const) : ("telegram" as const), agentName: String(m.reply.agent), issueId: String(m.reply.issue) } } : {}) });
       if (!r.sent) log.warn({ kind: m.kind, reason: r.reason }, "an owner message reached nobody");
     }
   } catch (err) {

@@ -5,6 +5,7 @@ import assert from "node:assert/strict";
 import { DatabaseSync } from "node:sqlite";
 import { createOutcomes, createPluginPost, delegateIds, tag } from "../src/outcomes.ts";
 import { createOnce } from "../src/once.ts";
+import { createReplyRelay } from "../src/relay.ts";
 import { chiefOfStaff } from "../src/backplane.ts";
 import { SELF_TAG } from "../src/wakes.ts";
 import { post } from "../../services/paperclip-events/post.js";
@@ -154,4 +155,22 @@ test("one keyed write: the first result is returned ever after, a refusal clears
   await assert.rejects(once("k3", async () => { throw Object.assign(new Error("?"), { code: "unknown" }); }));
   assert.deepEqual(await once("k3", async (retry) => (tries.push(retry), { id: 3 })), { value: { id: 3 }, again: true }, "the retry is told to look");
   assert.deepEqual(tries, [false, false, true]);
+});
+
+test("one reply to the owner: posted once on the task; relayed once to Telegram when they wrote there, never for board words", async (t) => {
+  const pc = await paperclip(t);
+  const run = async (said) => {
+    const queued = [];
+    const owner = async (_m, path) => path.includes("/comments")
+      ? { status: 200, json: [{ body: "Working on it.\n\n<!-- aidenhq:job=j-1 kind=status -->", authorAgentId: AGENT }, { body: said, authorUserId: "u-1" }] }
+      : path.startsWith("/api/agents/") ? { status: 200, json: { name: "Aiden" } } : { status: 200, json: { id: TASK, identifier: "WOR-1", description: "Rolling chat thread for today.", createdByUserId: "u-1" } };
+    const o = kernelOf(pc.url, { relay: createReplyRelay({ owner, queue: (n) => queued.push(n) }) });
+    const job = { ...JOB, id: `j-${said.length.toString(16).padStart(16, "0")}` };
+    await o.post(job, { kind: "reply", body: "The budget is approved." });
+    await o.post(job, { kind: "reply", body: "The budget is approved." });
+    return queued;
+  };
+  assert.deepEqual(await run("[telegram] is the budget approved?"), [{ kind: "done", text: "The budget is approved.", task: "WOR-1", reply: { via: "telegram", agent: "Aiden", issue: TASK } }]);
+  assert.deepEqual(await run("is the budget approved? (typed on the board)"), []);
+  assert.equal(pc.comments.filter((c) => c.body.startsWith("The budget is approved.")).length, 2); // one per run, each once
 });

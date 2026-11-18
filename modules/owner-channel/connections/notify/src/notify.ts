@@ -22,6 +22,8 @@ export interface NotifyArgs {
   questions?: Question[] | undefined; // multiple choice: the board shows a form; channels get them spelled out
   actions?: string[] | undefined; // one-tap answers (a press sends the label as the owner's message)
   dedupe_key?: string | undefined; // one message per key in the window, from any sender
+  /** A job's reply the kernel relays (kernel relay.ts): already on its task, it goes only to the channel the owner wrote from. */
+  relay?: { via: "telegram" | "slack"; agentName: string; issueId: string } | undefined;
 }
 /** What a channel's transport gets: the text as written (each channel renders and escapes it), and who it is from. */
 export type Message = { kind: Kind; text: string; head?: { agent: string; task: string; issue: string }; actions?: string[]; asks?: true };
@@ -104,7 +106,7 @@ export async function notify(d: Deps, a: NotifyArgs, caller?: Caller, now = Date
     // The chat is the calling agent's own, running on it now: only then its name heads the message, the reply lands there and
     // goes where the owner wrote. (The kernel's, the board's and the runner's messages carry the task in their text.)
     const resolved = a.task && caller && d.resolveTask ? await d.resolveTask(a.task).catch(() => undefined) : undefined;
-    const found = resolved?.agentId === caller?.id ? resolved : undefined;
+    const found: Found | undefined = a.relay ? { issueId: a.relay.issueId, agentId: "", agentName: a.relay.agentName, ownerVia: a.relay.via } : resolved?.agentId === caller?.id ? resolved : undefined;
     // Attention: a blocked or over-cap agent sends nothing; a crew agent's routine done/fyi goes to the digest (and its chat).
     const att = caller && d.attention && ["decision", "done", "fyi"].includes(kind) ? attend(d.store, d.attention, { id: caller.id, key: caller.key, roles: caller.roles ?? [] }, kind, { conversing: Boolean(found?.ownerVia), buttons: Boolean(a.actions?.length) }, now) : ({ do: "pass" } as const);
     if (att.do === "block" || att.do === "limit") return { sent: false, reason: att.do === "block" ? "blocked" : "limit", note: att.note };
@@ -119,11 +121,12 @@ export async function notify(d: Deps, a: NotifyArgs, caller?: Caller, now = Date
     let out: "sent" | "down" | "off" | "board" = "board";
     if (!boardOnly) {
       const m: Message = { kind, text: text + spellOut(a.questions), ...(found && a.task ? { head: { agent: found.agentName, task: a.task, issue: found.issueId } } : {}), ...(a.actions?.length ? { actions: a.actions } : {}), ...(a.questions?.length ? { asks: true as const } : {}) };
-      out = await deliver(d, m, order(d.transports, found?.ownerVia));
+      const to = a.relay ? [`channel-${a.relay.via}`] : order(d.transports, found?.ownerVia);
+      out = await deliver(d, m, to);
       // The kernel's, the board's and the runner's messages have no chat to land on: they also wait for a channel to be set
       // up (an account reset link before Telegram is paired).
       if (out === "off" && !caller) out = "down";
-      if (out === "down") d.store.wait({ m, to: order(d.transports, found?.ownerVia), at: now, keep: !caller });
+      if (out === "down") d.store.wait({ m, to, at: now, keep: !caller });
     }
     const ok = out === "sent" || out === "down" || onChat || digested;
     if (ok) d.store.setKv(dedupe, String(now));
