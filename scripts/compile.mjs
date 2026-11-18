@@ -146,7 +146,8 @@ writeFileSync(join(cfgOut, "exposure"), `${out.exposure}\n`);
 // there may apps-mcp let token-less callers into an app as anonymous (AIDENHQ_ANONYMOUS; docs/design/app-identity.md).
 // Anywhere else the way in is the host's loopback, so every app requires a signed identity.
 const appsKey = secretsDir && join(secretsDir, "tailscale_apps_authkey");
-writeFileSync(join(cfgOut, "apps-node"), `${out.exposure === "tailscale" && appsKey && existsSync(appsKey) && statSync(appsKey).size > 0 ? "tailnet" : "none"}\n`);
+const appsNode = out.exposure === "tailscale" && appsKey && existsSync(appsKey) && readFileSync(appsKey, "utf8").trim() !== "";
+writeFileSync(join(cfgOut, "apps-node"), `${appsNode ? "tailnet" : "none"}\n`);
 if (caddy) writeFileSync(join(cfgOut, "Caddyfile"), caddy);
 else rmSync(join(cfgOut, "Caddyfile"), { force: true });
 writeFileSync(join(cfgOut, "module-data.json"), JSON.stringify(out.dataModules, null, 2) + "\n");

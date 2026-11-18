@@ -348,15 +348,17 @@ In public mode:
     only admins get in until roles are set.
 - **Without a domain**, apps build, deploy and run. Agents test them from the jail's browser on loopback. Nothing is
   published.
-  - The board's Apps tab says "add a domain or turn on Tailscale to open apps in a browser" (apps-mcp's status row:
-    `unpublished`, no URL).
-  - An SSH tunnel to an app's loopback port gets 401: the app requires a gate token and no gate runs without
-    `settings.edge`. Opening apps in `local` mode needs a signed browser door first (not built; an owner decision): the
-    gate running without `edge`, on loopback, with the `password` login through the kernel's 3129, and each app on its own
-    host name the tunnel can reach (`<app>.localhost`, since cookies ignore ports), plus a my-apps host for sign-in.
+  - The board's Apps tab says the app opens in a browser through Tailscale's apps node or a shared host (apps-mcp's
+    status row: `unpublished`, no URL). Built; it names only the doors that exist today, not the domain ingress above.
+  - An SSH tunnel to an app's loopback port gets 401 (on a Mac, so does the owner's own browser): the app requires a gate
+    token and no gate runs without `settings.edge`. Opening apps in `local` mode needs a signed browser door first (not
+    built; an owner decision). An unverified sketch: the gate without `edge`, on loopback, with the `password` login
+    through the kernel's 3129, each app on its own host name (`<app>.localhost`, since cookies ignore ports) and a my-apps
+    host for sign-in; whether `__Host-` cookies and the handoff work on plain-http `localhost` names is unchecked.
 - **`AIDENHQ_ANONYMOUS=tailnet` is set only when the app's exposure is the tailnet apps node** (built: compile's
   `config/apps-node`, read by apps-mcp at each deploy and probe). In any other mode every app requires a gate token, and
-  the deploy's identity probe refuses an app that answers a token-less request.
+  the deploy's identity probe refuses an app that answers a token-less request. `verify-security` checking this per app
+  is not built yet.
 - **The gate's client address.** `gate.ts:270` reads `cf-connecting-ip` unconditionally. Under Caddy, a client could
   forge it. Change: the gate takes the client address from a header only when the front door's edge secret accompanies
   it (as the board will). Caddy sets `X-AidenHQ-Client-IP` and the secret, and strips both from the client.

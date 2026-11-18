@@ -45,8 +45,8 @@ export function AppsView({ onSignIn }: { onSignIn: () => void }) {
                   </a>
                 ) : (
                   a.unpublished && (
-                    <span className="muted" title="Apps require a signed-in visitor, and this server has no door that signs one in yet">
-                      Add a domain or turn on Tailscale to open apps in a browser
+                    <span className="muted" title="Apps require a signed-in visitor; on this server no door signs one in for this app">
+                      Opens in a browser through Tailscale's apps node or a shared host
                     </span>
                   )
                 )}
