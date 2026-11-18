@@ -322,8 +322,6 @@ secrets:
   # The user's GitHub token (the github module's setup flow), for github-mcp only.
   github_token:
     file: ${AIDENHQ_SECRETS_DIR}/github_token
-  paperclip_board_key:
-    file: ${AIDENHQ_SECRETS_DIR}/paperclip_board_key
   board_internal_token:
     file: ${AIDENHQ_SECRETS_DIR}/board_internal_token
   apps_service_key:
