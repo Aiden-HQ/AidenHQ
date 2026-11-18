@@ -10,7 +10,10 @@ import { DatabaseSync } from "node:sqlite";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import YAML from "yaml";
-import { Refused, check, compareRelease, createUpdates, pinTo, readState, verify } from "../src/updates.ts";
+import { Refused, check, compareRelease, createUpdates, pinText, pinTo, readState, verify } from "../src/updates.ts";
+import { migrateModules } from "../../scripts/compiler/migrate.ts";
+import { compile } from "../../scripts/modules.mjs";
+import { readdirSync } from "node:fs";
 import { localApply } from "../../modules/codehost-local/src/apply.ts";
 
 // The owner's own git config (signing, hooks) never reaches the fixtures or the updater's commits.
@@ -279,4 +282,22 @@ test("before the first check, the page's view reads the followed release from th
   assert.equal(u.view().current, undefined);
   const withInst = createUpdates({ db: new DatabaseSync(":memory:"), dir: w.d.dir, inst: w.d.inst, ownerLine() {}, check: async () => {}, file: async () => ({ record: "", task: "" }), record: () => undefined, close: async () => {} });
   assert.equal(withInst.view().current.name, "2026.11.2");
+});
+
+test("an old instance listing coach and fleet-ops is rewritten by the pin and then compiles; compile names the fix for the old list", () => {
+  const root = join(import.meta.dirname, "../..");
+  const dir = mkdtempSync(join(tmpdir(), "migrate-"));
+  const oldBundle = ["agent-builder", "ai-reviewer", "apps-platform", "board", "channel-slack", "channel-telegram", "chat-lane", "chief-of-staff", "coach", "codehost-local", "engine-codex", "engineering", "fleet-ops", "google", "grading", "memory", "model-tools", "models-openrouter", "platform", "tasks", "warehouse"];
+  const text = `product: ${"1".repeat(40)}\nmodules: [${oldBundle.join(", ")}, librarian]\nsettings: { owner_name: Sam, owner_email: o@example.com, timezone: UTC, company_name: Acme, product_repo: acme/app, channels: [web], exposure: local }\n`;
+  writeFileSync(join(dir, "instance.yaml"), text);
+  assert.throws(() => compile(root, dir), /coach was replaced by fleet-steward; the updater rewrites this/);
+  const prev = { file: (p) => (p === "modules/marketplace.json" ? JSON.stringify({ bundle: oldBundle }) : undefined), modules: () => [] };
+  const next = { file: (p) => (existsSync(join(root, p)) ? readFileSync(join(root, p), "utf8") : undefined), modules: () => readdirSync(join(root, "modules")).filter((n) => existsSync(join(root, "modules", n, "module.yaml"))) };
+  const moved = pinText(text, { kernel: "2".repeat(40) }, "2026.11.18.2", "3".repeat(40), (l) => migrateModules(l, prev, next));
+  const listed = YAML.parse(moved).modules;
+  for (const n of ["fleet-steward", "dispatch", "owner-channel"]) assert.ok(listed.includes(n), n);
+  for (const n of ["coach", "fleet-ops", "librarian"]) assert.ok(!listed.includes(n), n);
+  assert.equal(listed.filter((n) => n === "fleet-steward").length, 1);
+  writeFileSync(join(dir, "instance.yaml"), moved);
+  compile(root, dir);
 });
