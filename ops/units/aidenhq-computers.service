@@ -7,9 +7,10 @@ After=network-online.target
 Environment=AIDENHQ_DIR=%h/aidenhq
 EnvironmentFile=-%h/.config/aidenhq-checkout.env
 # The secret vault must be mounted (ops/vault), and the computers network up (aidenhq-computer-net, a system unit): its gateway
-# address is where the launcher listens. Restart= retries until both are.
-ExecStartPre=/usr/bin/mountpoint -q %h/.config/aidenhq
-ExecStartPre=/usr/bin/docker network inspect aidenhq-computers
+# address is where the launcher listens. A fresh install enables this unit before the apply makes either, so it waits for them
+# quietly (no start timeout) instead of failing and restarting every 15 s.
+TimeoutStartSec=infinity
+ExecStartPre=/bin/sh -c 'until /usr/bin/mountpoint -q "%h/.config/aidenhq" && /usr/bin/docker network inspect aidenhq-computers >/dev/null 2>&1; do sleep 5; done'
 ExecStart=/usr/bin/env node ${AIDENHQ_DIR}/services/computer/launcher.mjs
 Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
 Restart=on-failure

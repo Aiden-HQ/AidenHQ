@@ -521,8 +521,9 @@ as_user mkdir -p "$H/.config/systemd/user"
 printf 'AIDENHQ_DIR=%s\n' "$REPO" | write_user_file "$H/.config/aidenhq-checkout.env" 644
 as_user cp "$REPO"/ops/units/aidenhq-runner.service "$REPO"/ops/units/aidenhq-computers.service "$REPO"/ops/units/aidenhq-kernel.service "$REPO"/ops/units/prune-runs.service "$REPO"/ops/units/prune-runs.timer "$REPO"/ops/units/prune-docker.service "$REPO"/ops/units/prune-docker.timer "$REPO"/ops/units/aidenhq-apply-recover.service "$H/.config/systemd/user/"
 as_user systemctl --user daemon-reload
-# aidenhq-computers: the agent-computer launcher (services/computer); idle until an agent has an image.
-as_user systemctl --user enable --now aidenhq-computers
+# aidenhq-computers: the agent-computer launcher (services/computer); idle until an agent has an image. It waits for the vault
+# and the computers network without failing, so --no-block: this step must not wait on them.
+as_user systemctl --user enable --now --no-block aidenhq-computers
 phase apply
 say "Apply: compile, start, Paperclip (ops/apply-config.sh)"
 PW="$( [ "$DRY" = 1 ] || read_secret paperclip_owner_password)"
@@ -617,6 +618,7 @@ if [ -z "$BOARD_HOST" ] && [ "$PUBLIC" = 0 ]; then
   echo "  $tunnel"
   [ "$UNATTENDED" = 0 ] || echo "AIDENHQ_SSH_TUNNEL=$tunnel"
 fi
+[ "$UNATTENDED" = 0 ] || echo "AIDENHQ_BOARD_URL=$BOARD_URL"   # an upgrade has no setup link: the installer names the board instead
 if [ "$UNATTENDED" = 1 ]; then phase link; setup_link   # last: its AIDENHQ_SETUP_URL line ends the output
 else
   echo "Done. Send $OWNER_NAME this link ($( [ -n "$BOARD_HOST" ] && echo 'their laptop must be on the tailnet' || { [ "$PUBLIC" = 1 ] && echo 'it opens from anywhere'; } || echo 'through the tunnel' ); one use; a new one: --reset $OWNER_EMAIL):"
