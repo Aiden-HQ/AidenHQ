@@ -75,6 +75,11 @@ export const GATE_CORE = [
   /^modules\/codehost-local\//,
   /^modules\/platform\//,
   /^modules\/engineering\/src\/merge-queue\.mjs$/,
+  // The Engineer holds the platform-engineer role: its manifest (the role's declaration), its handbook and the skills that tell it
+  // how to change the fleet and the product.
+  /^modules\/engineering\/module\.yaml$/,
+  /^modules\/engineering\/agents\/engineer\//,
+  /^modules\/engineering\/skills\/(fleet-change|dependabot|forks)\//,
   // Each module server's copy of the SDK's caller check and executor side (the product's scripts/sync-shared.mjs).
   /(^|\/)aidenhq-sdk\/caller\.ts$/,
   /(^|\/)aidenhq-sdk\/executor\.ts$/,
@@ -104,6 +109,11 @@ export const GATE_DIRS = [
   "modules/codehost-local/",
   "modules/platform/",
   "modules/engineering/src/",
+  "modules/engineering/module.yaml",
+  "modules/engineering/agents/engineer/",
+  "modules/engineering/skills/fleet-change/",
+  "modules/engineering/skills/dependabot/",
+  "modules/engineering/skills/forks/",
   "modules/apps-platform/module.yaml",
   "modules/apps-platform/schemas/",
 ];

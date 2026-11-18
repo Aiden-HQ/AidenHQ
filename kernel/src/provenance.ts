@@ -56,6 +56,13 @@ CREATE TABLE IF NOT EXISTS provenance_ops (origin TEXT PRIMARY KEY, created_by_j
       const frozen = job.routine_cap ? { cap: (AUTONOMY.includes(job.routine_cap as Autonomy) ? job.routine_cap : "off") as Autonomy, ...(job.routine ? { routine: job.routine } : {}) } : undefined;
       return { job: job.id, cap: strictest(frozen, await cap(task)) ?? { cap: "full" } };
     },
+    /** Who filed a task: undefined when no job did (the owner, a routine, a kernel filer), else the filing job's agent ("" if its job is gone). */
+    filedBy(issue: Issue): string | undefined {
+      row(issue);
+      const job = (db.prepare("SELECT created_by_job FROM provenance WHERE task = ?").get(issue.id) as { created_by_job: string | null } | undefined)?.created_by_job;
+      if (!job) return undefined;
+      return (db.prepare("SELECT agent FROM jobs WHERE id = ?").get(job) as { agent: string } | undefined)?.agent ?? "";
+    },
     /** Before the create: the cap under the write's origin id (its tag), so the task never exists without it. */
     intend(origin: string, c: { job: string | null; cap: RoutineCap }) {
       db.prepare("INSERT OR IGNORE INTO provenance_ops (origin, created_by_job, routine, routine_cap, at) VALUES (?, ?, ?, ?, ?)").run(origin, c.job, c.cap.routine ?? null, c.cap.cap, Date.now());
