@@ -403,12 +403,16 @@ async function commitTyped(issue, changes, { compiled }) {
 // ------------------------------------------------------------------ stale routine runs
 
 let lastStaleCheck = 0;
-/** A routine run that ended blocked stays open forever; once a later run of that routine succeeds, it's moot: cancel it. */
+/**
+ * A routine run that ended blocked stays open forever; once a later run of that routine succeeds, it's moot: cancel it. Not
+ * for a routine that enqueues a run per event (always_enqueue): its blocked run waits on its own event's work.
+ */
 async function closeStaleRoutineRuns() {
   const blocked = await pc.routineRuns("blocked");
-  const routines = [...new Set(blocked.filter((b) => b.originKind === "routine_execution" && b.originId).map((b) => b.originId))];
+  const perEvent = new Set((await pc.routines()).filter((r) => r.concurrencyPolicy === "always_enqueue").map((r) => r.id));
+  const routines = [...new Set(blocked.filter((b) => b.originKind === "routine_execution" && b.originId && !perEvent.has(b.originId)).map((b) => b.originId))];
   const done = (await Promise.all(routines.map((id) => pc.routineRuns("done", id, 5)))).flat();
-  for (const { issue, by } of staleRoutineRuns(blocked, done)) {
+  for (const { issue, by } of staleRoutineRuns(blocked, done, perEvent)) {
     await pc.setStatus(issue.id, "cancelled", `Closed: a later run of this routine (${by.identifier}) succeeded.`);
     log("stale routine run cancelled", { issue: issue.identifier, by: by.identifier });
   }

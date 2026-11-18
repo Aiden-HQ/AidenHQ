@@ -1184,4 +1184,9 @@ describe("staleRoutineRuns", () => {
     const done = [run("WOR-1279", "done", "scan", "2026-11-11T09:15:00Z"), run("WOR-1260", "done", "scan", "2026-11-11T09:00:00Z"), run("WOR-50", "done", "brief", "2026-11-08T07:00:00Z")];
     assert.deepEqual(staleRoutineRuns(blocked, done).map((s) => [s.issue.identifier, s.by.identifier]), [["WOR-60", "WOR-1279"]]);
   });
+  it("never cancels a run of a per-event routine (always_enqueue): another event's run finishing says nothing about it", () => {
+    const blocked = [run("WOR-7426", "blocked", "issue", "2026-11-18T03:11:00Z")];
+    const done = [run("WOR-7434", "done", "issue", "2026-11-18T03:16:00Z")];
+    assert.deepEqual(staleRoutineRuns(blocked, done, new Set(["issue"])), []);
+  });
 });
