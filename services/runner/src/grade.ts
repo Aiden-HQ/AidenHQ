@@ -40,6 +40,30 @@ export function template(kind: string, dir: string = join(REPO_ROOT, "modules/gr
   return readFileSync(file, "utf8").split("\n").filter((l) => l.startsWith("- ")).map((l) => l.slice(2).trim());
 }
 
+/** A criterion that offers another completion path ("instead of", "rather than", "if no …", "otherwise"). */
+const ALTERNATIVE = /\b(?:instead of|rather than|if no(?:ne)?\b|otherwise\b)/i;
+/** What such a path leaves to grade: the task's own record of what it found and did. */
+const RECORDED = /\b(?:record|report|name|state|document|explain|note|describe|list|say)\w*/i;
+/** A pull request as a requirement on itself, once the paths taken instead of one are set aside. */
+const ABOUT_PR = /\b(?:pr|pull requests?)\b/i;
+const OPENED_PR = /\b(?:instead of|rather than)\s+(?:open(?:ing)?\s+)?(?:a\s+)?(?:pull request|pr)s?\b/gi;
+
+/**
+ * The rubric criterion that defines the deliverable another way, for a `pr` task that has no PR: one worded to be taken
+ * instead of opening a pull request, and leaving the task's own record to grade ("If no upstream release meets the floors,
+ * the task records that and names the floors rather than patching the image locally"). A criterion that requires a pull
+ * request ("the PR records why, rather than how") is a requirement on it, never a path instead of it. Only the rubric's own
+ * text decides this, never a comment claiming it; a rubric with no such path returns undefined, so the missing-PR wait and
+ * escalation stand. { n, criterion }: the first such criterion, n its 1-based number.
+ */
+export function rubricAlternative(rubric: string[] = []): { n: number; criterion: string } | undefined {
+  const n = rubric.findIndex((c) => {
+    const text = String(c);
+    return ALTERNATIVE.test(text) && RECORDED.test(text) && !ABOUT_PR.test(text.replace(OPENED_PR, ""));
+  });
+  return n < 0 ? undefined : { n: n + 1, criterion: String(rubric[n]) };
+}
+
 /**
  * Author text in its own block, and never able to end it: every run of three or more fence characters in the text is
  * neutralised, in every spelling a prompt here uses (`<<<`/`>>>` and the `‹‹‹`/`›››` the neutralised text itself used to
@@ -70,10 +94,17 @@ export async function gather(deliverable: any, deps: any, rubric: string[] = [])
   if (open.length) return { awaiting: `an approval card is still open (${open.map((a: any) => `${a.id} ${a.action}`).join(", ")})` };
   const kind = deliverable.kind;
   let app = kind === "app" ? await deps.app(deliverable.ref) : null; // the deployed app whose live pages are evidence
-  const ev = kind === "pr" ? await prEvidence(await deps.taskPrs(), deliverable.ref, deps) : kind === "app" ? appEvidence(app, deliverable.ref) : kind === "apply" ? applyEvidence(cards) : null;
+  let ev = kind === "pr" ? await prEvidence(await deps.taskPrs(), deliverable.ref, deps) : kind === "app" ? appEvidence(app, deliverable.ref) : kind === "apply" ? applyEvidence(cards) : null;
   // `missing`: the deliverable doesn't exist at all (no PR, no apply, nothing posted), as opposed to evidence still coming.
-  if (ev?.awaiting) return { awaiting: ev.awaiting, missing: ev.missing };
-  if (kind === "pr" && deps.appOfRepo) {
+  // A pr task's rubric may define its deliverable another way than a pull request: then the task's own words are graded and
+  // the absent PR is not missing. The rubric is read here, before the wait, because nothing else on this path reads it.
+  let alternative: { n: number; criterion: string } | undefined;
+  if (ev?.awaiting) {
+    alternative = kind === "pr" && ev.missing ? rubricAlternative(rubric) : undefined;
+    if (!alternative) return { awaiting: ev.awaiting, missing: ev.missing };
+    ev = null;
+  }
+  if (kind === "pr" && ev && deps.appOfRepo) {
     // A pr on an app's repo: the app's deploy facts too (its rubric may ask for "deployed at the merged commit").
     // Only the PRs graded (by the ref), and only when they sit in exactly one repo.
     const repos = [...new Set(ev.prs.map((p: any) => p.repo.toLowerCase()))];
@@ -106,7 +137,7 @@ export async function gather(deliverable: any, deps: any, rubric: string[] = [])
   let files: any = { facts: [], data: {}, images: [] };
   if (rubric.length && w.files.length && deps.content) {
     // A pr's screenshots are judged against its own heads: a capture stamped at other code is left out (fileEvidence).
-    const heads = kind === "pr" ? ev.prs.map((p: any) => p.shows).filter((h: any) => h?.commits.length) : [];
+    const heads = kind === "pr" && ev ? ev.prs.map((p: any) => p.shows).filter((h: any) => h?.commits.length) : [];
     files = await fileEvidence(w.files, deps.content, { rubric: rubric.join("\n"), comments: w.data.TASK_COMMENTS, heads });
     if (files.awaiting) return { awaiting: files.awaiting };
   }
@@ -125,9 +156,12 @@ export async function gather(deliverable: any, deps: any, rubric: string[] = [])
     Object.assign(ev.data, live.data);
   }
   if (ev) return { version: ev.version, facts: [...ev.facts, ...files.facts, ...other.facts], data: { ...ev.data, ...w.data, ...files.data, ...other.data }, images: files.images };
-  if (!w.version) return { awaiting: "nothing posted on the task yet", missing: true };
+  // A rubric that defines the deliverable another way than a PR: nothing posted is evidence still to come, not a missing
+  // deliverable, so it waits instead of escalating as one.
+  if (!w.version) return { awaiting: "nothing posted on the task yet", ...(alternative ? {} : { missing: true }) };
+  const said = alternative ? [`no pull request was opened, and rubric criterion ${alternative.n} defines the completion path without one: "${alternative.criterion.slice(0, 300)}"`] : [];
   // Files landing on the named task make a new version too.
-  return { version: other.version ? `${w.version}+${other.version}` : w.version, facts: [...w.facts, ...files.facts, ...other.facts], data: { ...w.data, ...files.data, ...other.data }, images: files.images };
+  return { version: other.version ? `${w.version}+${other.version}` : w.version, facts: [...said, ...w.facts, ...files.facts, ...other.facts], data: { ...w.data, ...files.data, ...other.data }, images: files.images };
 }
 
 /**
