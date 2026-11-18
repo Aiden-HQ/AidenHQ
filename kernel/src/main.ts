@@ -9,8 +9,8 @@
 // - Jobs (jobs.ts, sandbox.ts): engine runs in the sandbox, detached, so a restart (KillMode=process) leaves them running;
 //   this process adopts them at start and stops following them (offsets saved) on SIGTERM, SIGINT or SIGUSR2.
 // - A restart drains (SIGUSR2, sent by kernel/run.sh, the unit's main process, which exits at once so the next kernel starts):
-//   this kernel stops its jobs' watchers, timers and listeners (the model gateway's after HANDOFF_MS, sharing its port with the
-//   next one meanwhile: reusePort), lets the model calls in flight finish (at most DRAIN_MS) and exits.
+//   this kernel stops its jobs' watchers, timers and listeners at once (the next one binds them as it starts: a gap of its
+//   start-up, which callers retry), lets the model calls in flight finish (at most DRAIN_MS) and exits.
 // - The admin listener (127.0.0.1:3120, admin.ts): admins' sign-in (accounts.ts, data/kernel/auth/) and the approval pages.
 // - The sign-in listener (127.0.0.1:3129, signin.ts): the gate's half of shared apps' sign-in (Better Auth's steps, handoffs,
 //   app access). The kernel is the only process that opens the accounts file (lean 3g).
@@ -292,21 +292,20 @@ raiseCap = async (r) => {
 };
 
 // host:port pairs. Each binds on its own: the backplane address exists only once compose is up, so a failed bind is retried
-// (backoff up to a minute) while the others keep serving. The model gateway's listeners share their port with a draining
-// kernel (reusePort, Linux), so a restart never leaves model calls without a listener.
+// (backoff up to a minute) while the others keep serving (a draining kernel's ports included). One process owns a port at a
+// time: never SO_REUSEPORT, which would let any process of this user take a share of the model calls and their credentials.
 let draining = false;
-const servers: { server: http.Server; gateway: boolean }[] = [];
-function listen(addr: string, ci = false, handler?: http.RequestListener) {
+const servers: http.Server[] = [];
+function listen(addr: string, ci = false, handler: http.RequestListener = (req, res) => gw.handle(req, res, { ci })) {
   const i = addr.lastIndexOf(":");
-  const gateway = !handler;
-  const server = http.createServer(handler ?? ((req, res) => gw.handle(req, res, { ci })));
-  servers.push({ server, gateway });
+  const server = http.createServer(handler);
+  servers.push(server);
   // A model stream can run for many minutes (requestTimeout covers receiving the request, not the answer). The CI listener
   // faces jobs that run untrusted code: a request must arrive within a minute, and few connections at once.
   server.requestTimeout = ci ? 60_000 : 0;
   if (ci) server.maxConnections = 32;
   let wait = 1000;
-  const bind = () => { if (!draining) server.listen({ port: Number(addr.slice(i + 1)), host: addr.slice(0, i), reusePort: gateway && process.platform === "linux" }); };
+  const bind = () => { if (!draining) server.listen(Number(addr.slice(i + 1)), addr.slice(0, i)); };
   server.on("listening", () => { wait = 1000; log("listening", { addr }); });
   server.on("error", (e) => {
     log("listen failed; retrying", { addr, err: e.message, inMs: wait });
@@ -349,10 +348,9 @@ every(() => {
 }, 30_000);
 
 // A restart (kernel/run.sh): the next kernel is starting. This one stops its jobs' watchers (offsets saved: the next one adopts
-// them), its timers and every listener but the model gateway's, which it keeps for HANDOFF_MS while the next one binds beside
-// it; then it serves only the model calls it holds (idle connections closed, so callers reconnect to the next one) and exits
-// when they have finished, or at DRAIN_MS (the next kernel settles what is left: lib.ts sweep and true-up).
-const HANDOFF_MS = 10_000;
+// them), its timers and its listeners, so the next one can bind them; then it serves only the calls it holds (idle connections
+// closed, so callers reconnect to the next one) and exits when its model calls have finished, or at DRAIN_MS (the next kernel
+// settles what is left: lib.ts sweep and true-up).
 const DRAIN_MS = 5 * 60_000;
 drain = () => {
   if (draining) return;
@@ -361,14 +359,14 @@ drain = () => {
   log("draining: the next kernel takes new calls; model calls in flight finish here", { inflight: gw.inflight(), jobs: jobs.running() });
   jobs.detach();
   for (const t of timers) clearTimeout(t);
-  const close = (all: boolean) => { for (const { server, gateway } of servers) { if (gateway && !all) continue; if (server.listening) server.close(); server.closeIdleConnections(); } };
-  close(false);
-  setInterval(() => {
+  for (const s of servers) if (s.listening) s.close();
+  const done = () => {
+    for (const s of servers) s.closeIdleConnections();
     const t = Date.now() - t0;
-    if (t >= HANDOFF_MS) close(true);
-    if ((t >= HANDOFF_MS && gw.inflight() === 0) || t >= DRAIN_MS) {
-      log("drained: exiting", { inflight: gw.inflight(), ms: t });
-      process.exit(0);
-    }
-  }, 1000);
+    if (gw.inflight() > 0 && t < DRAIN_MS) return;
+    log("drained: exiting", { inflight: gw.inflight(), ms: t });
+    process.exit(0);
+  };
+  done();
+  setInterval(done, 1000);
 };

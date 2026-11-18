@@ -30,6 +30,16 @@ describe("ledger aggregates", () => {
     expect(r.series.map((x) => x.t)).not.toContain("2026-11-12T01");
   });
 
+  it("counts a call a kernel restart cut off as interrupted, at its trued-up cost once that arrives", async () => {
+    const s = new Store(":memory:");
+    const cut = call("2026-11-12T01:00:00.000Z", { key: "gw:cut", agentId: "a1", kind: "agent", status: "unsettled", costUsd: 0.25 });
+    s.addUsage(cut);
+    expect((await ledgerSummary(deps(s), range, NOW)).totals).toMatchObject({ usd: 0, calls: 1, errors: 0, interrupted: 1 });
+    s.addUsage({ ...cut, at: "2026-11-12T01:05:00.000Z", status: "interrupted", costUsd: 0.012 });
+    s.addUsage({ ...cut, at: "2026-11-12T01:06:00.000Z", status: "interrupted", costUsd: 9 }); // settled once: a repeat is ignored
+    expect((await ledgerSummary(deps(s), range, NOW)).totals).toMatchObject({ usd: 0.012, calls: 1, errors: 0, interrupted: 1 });
+  });
+
   it("groups the range by model, kind and agent in SQL, half-open at both ends", async () => {
     const r = await ledgerSummary(deps(fixture()), range, NOW);
     expect(r.totals).toMatchObject({ calls: 6, errors: 1 });

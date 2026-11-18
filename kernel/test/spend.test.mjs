@@ -108,6 +108,8 @@ test("A12: stream cut, restart mid-call, no usage, under-reported cost, unpriced
   await r.call({ model: "flat", messages: ["cut"] }).catch(() => {});
   assert.equal((await r.call({ model: "flat", messages: ["none"] })).status, 200);
   assert.deepEqual(r.rows().map((x) => [x.status, x.cost_usd]), [["upstream_aborted", 0.01], ["ok", 0.01]]);
+  // The cut stream's generation id was kept from its first event (the true-up's handle).
+  assert.equal(r.gw.db.prepare("SELECT gen FROM calls ORDER BY rowid LIMIT 1").get().gen, "gen-1");
   // Under-reported: settled at tokens × declared price.
   assert.equal((await r.call({ model: "priced", messages: [] })).status, 200);
   assert.equal(r.rows().at(-1).cost_usd, 0.002);

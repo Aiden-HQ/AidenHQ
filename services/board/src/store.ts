@@ -237,6 +237,8 @@ export class Store {
     if (!usageColumns.includes("agent_id")) this.db.exec("ALTER TABLE usage ADD COLUMN agent_id TEXT");
     // Run attribution (wave 1): which run, task, config revision and caller kind each call was for, and how it went.
     for (const [c, type] of [["run_key", "TEXT"], ["run_id", "TEXT"], ["issue_id", "TEXT"], ["rev", "TEXT"], ["kind", "TEXT"], ["ms", "INTEGER"], ["status", "TEXT"], ["subject", "TEXT"]]) if (!usageColumns.includes(c!)) this.db.exec(`ALTER TABLE usage ADD COLUMN ${c} ${type}`);
+    // An unsettled call's amount is the gateway's fail-closed hold, not spend (addUsage).
+    this.db.exec("UPDATE usage SET cost_usd = NULL WHERE status = 'unsettled' AND cost_usd IS NOT NULL");
     this.db.exec("CREATE INDEX IF NOT EXISTS usage_run ON usage (run_key); CREATE INDEX IF NOT EXISTS usage_issue ON usage (issue_id); CREATE INDEX IF NOT EXISTS usage_at_cost ON usage (at, cost_usd)");
     if (!this.meta("installed_at")) this.setMeta("installed_at", new Date().toISOString());
   }
@@ -327,7 +329,7 @@ export class Store {
   /** Failed calls (a status other than ok) in [from, to) by agent and status: what they billed and how many. Most spend, then most calls, first. */
   failedCalls(from: string, to: string): { agentId: string | null; status: string; calls: number; usd: number }[] {
     return this.db
-      .prepare("SELECT agent_id AS agentId, status, COUNT(*) AS calls, COALESCE(SUM(cost_usd), 0) AS usd FROM usage WHERE at >= ? AND at < ? AND status IS NOT NULL AND status <> 'ok' GROUP BY 1, 2 ORDER BY usd DESC, calls DESC")
+      .prepare("SELECT agent_id AS agentId, status, COUNT(*) AS calls, COALESCE(SUM(cost_usd), 0) AS usd FROM usage WHERE at >= ? AND at < ? AND status IS NOT NULL AND status NOT IN ('ok', 'unsettled', 'interrupted') GROUP BY 1, 2 ORDER BY usd DESC, calls DESC")
       .all(from, to) as unknown as { agentId: string | null; status: string; calls: number; usd: number }[];
   }
 

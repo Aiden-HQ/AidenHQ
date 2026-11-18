@@ -278,7 +278,7 @@ PROBES
       # visitor's address to the sign-in listener. cloudflared's ingress targets that socket (edge.mjs check).
       # The kernel's backplane listener shares the port number on its own address (checked below): exactly that bind, by the
       # kernel's own process, is not the gate's; every other bind on 3130 is, and must be loopback.
-      kpid="$(pgrep -n -P "$(systemctl --user show -p MainPID --value aidenhq-kernel 2>/dev/null)" node 2>/dev/null)" # the kernel: kernel/run.sh's child
+      kpid="$(pgrep -n -P "$(systemctl --user show -p MainPID --value aidenhq-kernel 2>/dev/null)" 2>/dev/null)" # the kernel: kernel/run.sh's child
       binds="$(ss -Hltnp 'sport = :3130' 2>/dev/null | awk -v k="pid=${kpid:-none}," '!($4 == "10.231.0.1:3130" && index($0, k)) {print $4}' | sort -u | tr '\n' ' ')"
       [ -n "$binds" ] && ! echo "$binds" | tr ' ' '\n' | grep -v '^$' | grep -qv '^127\.0\.0\.1:3130$' \
         && pass "gate: listens on 127.0.0.1:3130 only" || fail "gate: port 3130 is not loopback-only: ${binds:-not listening}"
@@ -588,7 +588,7 @@ fi
 # 401; the paperclip container holds no connection token, internal token or grants table, and calling any module's MCP
 # endpoint directly without the service key gets 401 (from the host, at the container's address: paperclip shares no network
 # with most modules any more, so an unreachable endpoint fails here rather than passing).
-kpid="$(pgrep -n -P "$(systemctl --user show -p MainPID --value aidenhq-kernel 2>/dev/null)" node 2>/dev/null)" # the kernel: kernel/run.sh's child
+kpid="$(pgrep -n -P "$(systemctl --user show -p MainPID --value aidenhq-kernel 2>/dev/null)" 2>/dev/null)" # the kernel: kernel/run.sh's child
 kbinds="$(ss -Hltnp 2>/dev/null | awk -v k="pid=${kpid:-none}," 'index($0, k) {print $4}' | grep -v ':8201$' | sort -u | tr '\n' ' ')"
 [ "$(echo $kbinds)" = "10.231.0.1:3130 127.0.0.1:3120 127.0.0.1:3129" ] && pass "kernel: the proxy listens on 10.231.0.1:3130, the admin pages on 127.0.0.1:3120 and the gate's sign-in listener on 127.0.0.1:3129 only" || fail "kernel: listens on ${kbinds:-nothing} (want 10.231.0.1:3130, 127.0.0.1:3120 and 127.0.0.1:3129 only, plus 8201)"
 # The sign-in listener (lean 3g, from the board): no page, no admin route; app access only with the gate's secret; a write
