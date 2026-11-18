@@ -52,7 +52,9 @@ if (!stage) fs.appendFileSync(process.env.CALLS, "compile\\n");
   "scripts/host-serve.mjs": "",
   "scripts/agent-check.mjs": "",
   "scripts/paperclip-setup.mjs": `import fs from "node:fs"; fs.appendFileSync(process.env.CALLS, "setup\\n");\n`,
-  "kernel/src/apply.ts": `import { readFileSync } from "node:fs";
+  // The real one imports the kernel's packages: only an installed kernel/node_modules (npm's fake below) lets it run.
+  "kernel/src/apply.ts": `import "kernel-dep";
+import { readFileSync } from "node:fs";
 if (process.argv[2] === "product-pin") process.stdout.write(/^product:\\s*([0-9a-f]{40})\\s*$/m.exec(readFileSync(process.argv[3], "utf8"))?.[1] ?? "");
 if (process.argv[2] === "product-fork") process.stdout.write(/^product_fork: (\\S+ [0-9a-f]{40})$/m.exec(readFileSync(process.argv[3], "utf8"))?.[1] ?? "");
 `,
@@ -106,7 +108,14 @@ process.exit(spawnSync(cmd, rest.map(map), { stdio: "inherit", env: { ...process
   systemctl: `#!/usr/bin/env bash\nprintf 'systemctl %s\\n' "$*" >> "$CALLS"\ncase "$*" in *is-enabled*) exit 1 ;; esac\nexit 0\n`,
   "systemd-run": `#!/usr/bin/env bash\nprintf 'systemd-run %s\\n' "$*" >> "$CALLS"\n`,
   curl: `#!/usr/bin/env bash\n[ -f "$CTRL/kernel-down" ] && exit 7\necho ok\n`,
-  npm: `#!/usr/bin/env bash\nprintf 'npm %s\\n' "$*" >> "$CALLS"\n`,
+  // npm ci --prefix <dir> installs the one package the fake kernel/src/apply.ts imports.
+  npm: `#!/usr/bin/env bash
+printf 'npm %s\\n' "$*" >> "$CALLS"
+while [ $# -gt 0 ]; do
+  if [ "$1" = --prefix ]; then mkdir -p "$2/node_modules/kernel-dep"; echo '{"name":"kernel-dep","main":"index.js"}' > "$2/node_modules/kernel-dep/package.json"; : > "$2/node_modules/kernel-dep/index.js"; fi
+  shift
+done
+`,
 };
 
 /** A host: product and instance repos with bare origins, the product at P1 and the instance at I1 (pinning P1). */
@@ -189,6 +198,16 @@ test("a first apply seeds the running pair as the last known good, validates, sw
   const board = YAML.parse(readFileSync(join(repo, "compose.yaml"), "utf8")).services.board.volumes.find((v) => String(v).endsWith(":/generations:ro"));
   assert.ok(board, "the board mounts the generations mirror");
   assert.match(board, /\/board:\/generations:ro$/, `the mirror's directory, not the file: ${board}`);
+});
+
+// A fresh host has no kernel/node_modules: the pin is read with the kernel's own parser, so its deps are installed first.
+test("a fresh host with no kernel/node_modules installs the kernel's deps before it reads the pin", async () => {
+  const w = world();
+  assert.ok(!existsSync(w.d("prod/kernel/node_modules")));
+  const r = await w.run();
+  assert.equal(r.status, 0, r.out);
+  assert.equal(w.calls().split("\n").filter((l) => l.startsWith("npm ci --prefix kernel")).length, 1, w.calls());
+  assert.equal(w.gens().at(-1).health, "good");
 });
 
 // Lean-core 5e: the kernel the instance runs is its own fork (product_fork:) when that descends from the pin; else refused.
