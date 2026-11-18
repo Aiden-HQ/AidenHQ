@@ -66,12 +66,26 @@ export function bumpInstance(text, { product, modules, official = "aidenhq" }) {
   return out;
 }
 
-/** The task's description: what the bump carries, one commit per line (full shas, so a waiter finds it by its merge commit). */
-export function trainDescription({ target, what, carries, windowMinutes, marker }) {
+/**
+ * The task's description: what the bump carries, one commit per line (full shas, so a waiter finds it by its merge commit),
+ * and the module authority its pinned manifests add (`authority`: { modules: { from, to }, lines }, read by code from the
+ * manifests at both pins). The reviewer reads this description as the request chain, so the bump says it asks for exactly
+ * those changes; with no lines the section is left out and the description reads as it did before.
+ */
+export function trainDescription({ target, what, carries, authority, windowMinutes, marker }) {
   const list = carries.length ? carries.map((c) => `- ${c.repo} \`${c.sha}\` ${c.subject}`).join("\n") : "- (nothing yet)";
+  const lines = authority?.lines ?? [];
+  const section = lines.length
+    ? [
+        `The official modules move from \`${authority.modules.from.slice(0, 12)}\` to \`${authority.modules.to.slice(0, 12)}\`. For the modules it resolves to, that adds the authority below (computed by code from the module manifests at both pins; owner = new authority), and this bump requests exactly these changes:`,
+        ...lines.map((l) => `- ${l}`),
+        "",
+      ]
+    : [];
   return [
     `${what} Written by the runner's release train, batched over ${windowMinutes} minutes from the first merge it carries, then filed as one card for the AI reviewer. No agent works on this task; it closes when the bump is live${target === "instance" ? " (the apply succeeded)" : " (its PR merged)"}.`,
     "",
+    ...section,
     "Carries these merged commits:",
     list,
     "",
