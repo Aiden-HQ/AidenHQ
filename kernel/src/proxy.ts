@@ -142,8 +142,9 @@ export function createProxy({ whoami, connections, asserter, resolver, secret, w
     const conn = Object.hasOwn(connections(), connection) ? connections()[connection] : undefined;
     if (!conn && !jobs) throw fail(404, "not_found", `no connection ${connection}`);
     let who: Identity;
+    const callerToken = String(req.headers.authorization ?? "").replace(/^Bearer\s+/i, "").trim();
     try {
-      who = await whoami(String(req.headers.authorization ?? "").replace(/^Bearer\s+/i, "").trim());
+      who = await whoami(callerToken);
     } catch (e) {
       log("proxy", { connection, outcome: (e as { code?: string }).code ?? "denied_unknown_caller", ms: Date.now() - t0 });
       throw fail(e instanceof NoGrants ? 403 : 401, "unauthorized", (e as Error).message);
@@ -225,7 +226,7 @@ export function createProxy({ whoami, connections, asserter, resolver, secret, w
       const signed = asserter.signCaller({ agent: who.agent ?? "", key: who.key ?? "", name: who.name ?? "", roles: who.roles, ...(who.task ? { task: who.task } : {}), ...(who.run ? { run: who.run } : {}), tool: `${connection}.${tool}`, aud: conn!.module, kind: who.kind });
       jti = signed.jti;
       headers["x-aidenhq-caller"] = signed.jwt;
-      asserter.begin(jti, { credential: who.credential, aud: conn!.module, kind: who.kind, ...(who.run ? { run: who.run } : {}) }, target.timeout + 30);
+      asserter.begin(jti, { credential: who.credential, ...(who.kind === "run" ? { bearer: callerToken } : {}), aud: conn!.module, kind: who.kind, ...(who.run ? { run: who.run } : {}) }, target.timeout + 30);
     }
     const to = await resolver.resolve(target.url).catch((e: Error) => { done(false, e.message); throw fail(502, "bad_upstream", e.message); });
     headers.host = new URL(target.url).host;

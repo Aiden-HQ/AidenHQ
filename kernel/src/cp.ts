@@ -286,8 +286,8 @@ export function createAsCaller({ whoami, connections, asserter, log = () => {} }
     if (mod?.kind !== "module" || !mod.module) throw fail(401, "unauthorized", "a caller assertion needs a module's own token");
     if (!Object.values(connections()).some((c) => c.module === mod.module && c.model_as_caller === true)) throw fail(403, "forbidden", `${mod.module} doesn't make model calls for its callers`);
     const live = await asserter.inFlight(jwt, mod.module);
-    if (!live?.flight.credential) throw fail(401, "unauthorized", "the caller assertion isn't for a call in flight to this module");
+    if (!live?.flight.bearer) throw fail(401, "unauthorized", "the caller assertion isn't for a kernel job's call in flight to this module");
     log("model as caller", { module: mod.module, agent: live.caller.key, tool: live.caller.tool });
-    return live.flight.credential;
+    return live.flight.bearer;
   };
 }
