@@ -89,17 +89,21 @@ function closePart(p, s) {
 /** A new repository's name: lowercase words joined by hyphens, as an app's name (never `.github` or a path). */
 const NEW_REPO_NAME = /^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/;
 /**
- * create_repo: { repo }. A new private repository in the agents org, asked for only by `aidenhq create-repo` (naming, adding or
- * detecting a missing repo never creates one). It grows the org (owner, 2026-11-14): authority-expanding, so the panel
- * decides it against the request chain. Anywhere else, or a name that isn't one, code refuses it.
+ * create_repo: { repo }. A new private repository, asked for only by `aidenhq create-repo` (naming, adding or detecting a
+ * missing repo never creates one). Tier 0 in any org the App is installed on (owner, 2026-11-18): where repos live is not
+ * decided here (the runner's allowed_orgs, passed in, and the App's installation bound it). Code still refuses the product or instance
+ * repo's own name and a name that isn't a plain lowercase one.
  */
 function createRepoPart(s) {
   const repo = String(s.repo ?? "");
   const name = repo.split("/")[1] ?? "";
-  if (!inAgentsOrg(repo, s)) return REJECT("outside-create-repo", `${repo} is outside the agents org: repositories are created only in ${agentsOrgs(s).join(" or ")}`);
+  // The orgs the owner lists (the runner's allowed_orgs, passed in as `allowedOrgs`; the App is public, so an installation alone
+  // proves nothing). Without it, only the agents orgs: a plan never says Tier 0 for an org nobody allowed.
+  const allowed = [s.allowedOrgs ?? agentsOrgs(s)].flat().filter(Boolean);
+  if (!allowed.some((o) => same(orgOf(repo), o))) return REJECT("outside-create-repo", `${repo} is outside the orgs this instance works in (${allowed.join(", ")}): list its org in allowed_orgs`);
   if (same(repo, s.productRepo) || same(repo, s.instanceRepo)) return REJECT("core-repo-create", `${repo} is the product or instance repo`);
   if (name.length > 63 || !NEW_REPO_NAME.test(name)) return REJECT("new-repo-name", `\`${name}\` isn't a new repository's name: lowercase letters, digits and single hyphens, starting with a letter, 63 at most`);
-  return PANEL("agents-org-create-repo", `creating ${repo} adds a repository to the agents org`);
+  return T(0, "create-repo", `creating ${repo} is a new private repository: it changes no code, settings or access elsewhere`);
 }
 
 /**

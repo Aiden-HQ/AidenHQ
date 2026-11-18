@@ -10,7 +10,7 @@ privileged: [ git-credential ]
 # The code host role (docs/design/codehost-local.md §2): it hosts every org codehost-local doesn't own (src/host.mjs).
 provides: [ codehost ]
 settings:
-  # The agents org (where an approved create_repo card creates repos): aidenhq-<instance_name> unless this names another.
+  # The agents org (where create_repo creates repos by default; any org the App is installed on and the runner's allowed_orgs lists works too): aidenhq-<instance_name> unless this names another.
   github_agents_org:
   # GitHub orgs/users (besides the agents org) whose repos the apps platform may build trusted apps from.
   github_orgs:
