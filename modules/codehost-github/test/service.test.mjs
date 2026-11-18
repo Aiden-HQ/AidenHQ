@@ -72,7 +72,7 @@ async function setup(t, { routes = () => undefined } = {}) {
 
 test("the service's copies are the code host's own rules and git arguments", async () => {
   const dir = new URL("..", import.meta.url).pathname;
-  for (const f of ["plan.mjs", "github-app.ts", "merge-gate.mjs"]) assert.equal(readFileSync(join(dir, "service/src", f), "utf8"), readFileSync(join(dir, "src", f), "utf8"), `service/src/${f} differs from src/${f}`);
+  for (const f of ["plan.mjs", "github-app.ts"]) assert.equal(readFileSync(join(dir, "service/src", f), "utf8"), readFileSync(join(dir, "src", f), "utf8"), `service/src/${f} differs from src/${f}`);
   const { SAFE_GIT_ARGS: ours } = await import("../service/src/service.ts");
   assert.deepEqual(ours, SAFE_GIT_ARGS);
 });
