@@ -251,7 +251,7 @@ test("gateway: an agent computer's calls are attributed and capped through the l
   assert.equal(ended.status, 401);
 });
 
-test("gateway: the install cap counts every call of the day, no-agent ones too, and files one raise for the install", async (t) => {
+test("gateway: the install cap counts every call of the day, no-agent ones too, and files one raise for the install; the spend summary", async (t) => {
   const dir = mkdtempSync(join(tmpdir(), "gw-"));
   const secrets = { openrouter_key: "sk-real", gateway_job_secret: "job-secret", gateway_board_key: "gw-board", gateway_source_key: "src-key" };
   const grantsFile = join(dir, "grants.json");
