@@ -93,7 +93,7 @@ test("--unattended: no config file, settings from the environment, the SSH-tunne
   const out = run({ OWNER_EMAIL: "alice@example.com", MAX_CONCURRENT: "8", TIMEOUT_MINUTES: "120", CI_RUNNERS: "2", OPENROUTER_KEY: "sk-SECRET" }, "--no-tailscale");
   for (const want of [
     "env AIDENHQ_EXPOSURE=local AIDENHQ_NO_TAILSCALE=1 AIDENHQ_USER=alice AIDENHQ_CHECKOUT=", // the machine without Tailscale
-    ".env: BOARD_LAN_URL=http://127.0.0.1:3121",
+    ".env: BOARD_LAN_URL=http://localhost:3121",
     "config/runner.yaml: max_concurrent: 8",
     "config/runner.yaml: timeout_minutes: 120",
     "CI runners: aidenhq-ci-runner@1..2",
