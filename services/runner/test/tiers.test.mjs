@@ -657,3 +657,23 @@ test("the runner creates a repo only in createRepoApproved; cloning a missing on
   assert.ok(fn("createRepoApproved").includes("app.createRepo(slug)") && fn("createRepoApproved").includes("localHost.createRepo(slug)"));
   assert.ok(fn("addRepo").includes("if (await missingRepo(repo.slug)) throw new UserError(missingRepoText(repo.slug));"));
 });
+
+test("apply: spend and quiet start are the owner's to loosen, anyone's to tighten", () => {
+  const f = ["instance.yaml"];
+  const one = (b, h) => apply(f, { "instance.yaml": b }, { "instance.yaml": h });
+  // The owner's after the reviewer (a setting's second reviewer may come with it): Tier 2, review first.
+  const owner = (t) => (t.tier === 2 && t.reviewFirst ? 2 : tierOf(t));
+  const q = { quiet_start: "on", spend_day_usd: 10 };
+  assert.equal(owner(one(inst(q), inst({ ...q, spend_day_usd: 20 }))), 2, "raising the install cap");
+  assert.equal(owner(one(inst(q), inst({ quiet_start: "on" }))), 2, "removing it");
+  assert.equal(owner(one(inst(q), inst({ ...q, quiet_start: "off" }))), 2, "ending quiet start");
+  assert.equal(tierOf(one(inst(q), inst({ ...q, spend_day_usd: 5 }))), "panel", "lowering the cap: a setting like any other");
+  assert.equal(tierOf(one(inst(), inst(q))), "panel", "turning quiet start and the cap on");
+  const on = "overrides:\n  routines:\n    daily-brief: { status: active }\n";
+  const beat = "overrides:\n  agents:\n    chief-of-staff: { heartbeat: true }\n";
+  assert.equal(owner(one(inst(q), inst(q, on))), 2, "a schedule turned on under quiet start");
+  assert.equal(owner(one(inst(q), inst(q, beat))), 2, "a heartbeat turned on under quiet start");
+  assert.equal(tierOf(one(inst(q, on), inst(q))), 1, "turning it back off");
+  assert.equal(tierOf(one(inst(), inst({}, on))), 1, "without quiet start: as before");
+  assert.equal(tierOf(one(inst(), inst({}, beat))), 1, "without quiet start: as before");
+});

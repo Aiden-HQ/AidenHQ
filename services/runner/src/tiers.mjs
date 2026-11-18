@@ -300,6 +300,10 @@ function instanceParts(s) {
       // Every setting is the panel's. (Slack channels agents post to are no special case since 2f: a post to a channel off
       // slack_post_channels is itself a Tier 2 channel-slack.post record.)
       for (const sk of changedKeys(base.settings, head.settings)) parts.push(PANEL("settings", `changes the setting ${sk}`));
+      // Spend is the owner's authority (docs/design/quiet-start.md): raising or removing the install cap, or ending quiet start.
+      const [was, now] = [base.settings?.spend_day_usd, head.settings?.spend_day_usd];
+      if (was != null && (now == null || !(Number(now) <= Number(was)))) parts.push(OWNER_AFTER_REVIEW("spend-cap", `raises or removes the install's daily spend cap (${was} → ${now ?? "none"}): the owner's authority`));
+      if (base.settings?.quiet_start === "on" && head.settings?.quiet_start !== "on") parts.push(OWNER_AFTER_REVIEW("quiet-start", "turns quiet start off, so every module schedule and heartbeat starts: the owner's authority"));
     } else if (k === "overrides") {
       for (const kind of changedKeys(base.overrides, head.overrides)) {
         const safe = OVERRIDE_SAFE[kind];
@@ -311,6 +315,10 @@ function instanceParts(s) {
           if (!fields.length) continue;
           if (kind === "agents" && fields.includes("caps")) parts.push(OWNER_AFTER_REVIEW("agent-caps", `overrides agents ${name}: spend caps are the owner's authority`));
           if (kind === "agents" && fields.includes("caps") && fields.length === 1) continue;
+          // Under quiet start, what the owner hasn't turned on stays off until they tap: a routine to active, a heartbeat on.
+          const [b, h] = [base.overrides?.[kind]?.[name] ?? {}, head.overrides?.[kind]?.[name] ?? {}];
+          if (head.settings?.quiet_start === "on" && (kind === "routines" ? fields.includes("status") && h.status === "active" && b.status !== "active" : kind === "agents" && fields.includes("heartbeat") && h.heartbeat != null && h.heartbeat !== false))
+            parts.push(OWNER_AFTER_REVIEW("quiet-start", `overrides ${kind} ${name}: turns on scheduled work under quiet start, the owner's authority`));
           parts.push(safe && fields.every((x) => safe.has(x)) ? T(1, kind === "agents" ? "model-change" : "routine-schedule", `${kind} ${name}: ${fields.join(", ")}`) : PANEL("overrides", `overrides ${kind} ${name}: ${fields.join(", ")}`));
         }
       }
