@@ -22,6 +22,12 @@
     "app-card": "Tile",
     "app-card-head": "Tile",
     "app-note": "Tile foot or Banner",
-    "app-incident": "Banner tone=\"danger\""
+    "app-incident": "Banner tone=\"danger\"",
+    "st-banner": "Banner",
+    "st-head": "PageHeader (settings-ui Page)",
+    "st-field": "Field (ui-field)",
+    "st-field-label": "Field (ui-field-label)",
+    "st-field-help": "Field (ui-field-help / ui-field-error)",
+    "st-field-row": "ui-input-row"
   }
 }

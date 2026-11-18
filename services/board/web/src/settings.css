@@ -1,20 +1,21 @@
-/* Settings (Settings.tsx, settings-ui.tsx): its own file, so the shared styles.css stays untouched by its layout.
-   Built on the app's tokens (styles.css :root); motion is quick and answers an action (open, toggle, file), never decor. */
+/* Settings (Settings.tsx, settings-ui.tsx) and the grouped rows other pages borrow (agent and module settings, grants).
+   On the design system's tokens and parts (ui/); motion is quick and answers an action (open, toggle, file), never decor.
+   Fluid: the pane uses the full width, rows go two to a line on a wide screen, connections are tiles. */
 .st-shell {
   --st-dur: 200ms;
   --st-ease: cubic-bezier(0.2, 0.7, 0.2, 1);
-  --st-radius: 12px;
+  --st-radius: var(--radius);
   --st-rail: 3px;
   position: relative; flex: 1; min-height: 0; display: flex; background: var(--bg);
 }
 .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
 
 /* ------------------------------------------------------------ nav: grouped, sticky; a selector at phone width */
-.st-nav { width: 236px; flex: none; overflow-y: auto; padding: 20px 12px 32px; border-right: 1px solid var(--border); background: var(--col); }
-.st-nav-title { padding: 0 10px 14px; font-size: var(--text-xl); font-weight: 700; letter-spacing: -0.015em; }
+.st-nav { width: clamp(212px, 14vw, 264px); flex: none; overflow-y: auto; padding: var(--page-top) 12px 32px; border-right: 1px solid var(--border); background: var(--col); }
+.st-nav-title { padding: 0 10px 14px; font-size: var(--text-xl); font-weight: 650; letter-spacing: -0.015em; }
 .st-nav-group + .st-nav-group { margin-top: 14px; }
 .st-nav-group-name { padding: 0 10px 4px; font-size: var(--text-xs); color: var(--faint); }
-.st-nav-item { position: relative; display: flex; align-items: center; gap: 8px; padding: 6px 10px; border-radius: 7px; color: var(--muted); text-decoration: none; font-size: var(--text-md); transition: background-color var(--st-dur) var(--st-ease), color var(--st-dur) var(--st-ease); }
+.st-nav-item { position: relative; display: flex; align-items: center; gap: 8px; padding: 6px 10px; border-radius: var(--radius-md); color: var(--muted); text-decoration: none; font-size: var(--text-md); transition: background-color var(--st-dur) var(--st-ease), color var(--st-dur) var(--st-ease); }
 .st-nav-item:hover { background: var(--hover); color: var(--text); }
 .st-nav-item.on { background: var(--surface); color: var(--text); font-weight: 600; box-shadow: var(--shadow); }
 .st-nav-item.on::before { content: ""; position: absolute; left: 0; top: 7px; bottom: 7px; width: var(--st-rail); border-radius: 0 3px 3px 0; background: var(--accent); }
@@ -29,18 +30,13 @@
 /* ------------------------------------------------------------ the pane and its page */
 .st-pane { flex: 1; min-width: 0; min-height: 0; overflow-y: auto; }
 .st-shell.phone .st-pane { overflow: visible; }
-.st-page { max-width: 1060px; padding: 28px clamp(16px, 3vw, 44px) 64px; display: grid; gap: 20px; align-content: start; }
+.st-page { padding: var(--page-top) var(--gutter) 64px; display: grid; gap: var(--stack); align-content: start; min-width: 0; }
 .st-shell.phone .st-page { padding: 16px 16px 48px; gap: 16px; }
 .st-page-in { animation: st-in var(--st-dur) var(--st-ease); }
 @keyframes st-in { from { opacity: 0; transform: translateY(4px); } }
-.st-head { display: flex; align-items: flex-end; gap: 16px; flex-wrap: wrap; }
-.st-head-text { flex: 1; min-width: min(100%, 320px); }
-.st-head h1 { margin: 0; font-size: var(--text-2xl); font-weight: 700; letter-spacing: -0.02em; }
-.st-head p { margin: 4px 0 0; color: var(--muted); font-size: var(--text-md); max-width: 68ch; }
-.st-head-tools { display: flex; gap: 8px; align-items: center; }
-.st-banner { margin: 16px clamp(16px, 3vw, 44px) 0; padding: 9px 14px; border-radius: 9px; font-size: var(--text-base); background: color-mix(in srgb, var(--warn) 14%, var(--surface)); color: var(--warn-text); }
-.st-banner.bad { background: color-mix(in srgb, var(--urgent) 10%, var(--surface)); color: var(--bad-text); }
-.st-note { margin: -6px 0 0; font-size: var(--text-base); color: var(--muted); }
+.st-pane > .ui-banner { margin: var(--page-top) var(--gutter) 0; }
+.st-pane > .powered-by { margin: 0 var(--gutter) 24px; }
+.st-note { margin: calc(var(--stack) / -2) 0 0; font-size: var(--text-base); color: var(--muted); }
 .st-empty { margin: 0; padding: 18px 16px; color: var(--muted); font-size: var(--text-base); }
 .st-link { font-size: var(--text-sm); }
 .st-link.muted { color: var(--faint); }
@@ -48,15 +44,18 @@
 /* ------------------------------------------------------------ groups of rows */
 .st-group { display: grid; gap: 8px; }
 .st-group-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 0 2px; }
-.st-group-head h2 { margin: 0; font-size: var(--text-base); font-weight: 650; }
-.st-count { font-size: var(--text-xs); color: var(--faint); font-variant-numeric: tabular-nums; }
+.st-group-head h2 { margin: 0; font-size: var(--text-lg); font-weight: 600; letter-spacing: -0.005em; }
+.st-count { font-size: var(--text-base); color: var(--muted); font-variant-numeric: tabular-nums; }
 .st-group-hint { font-size: var(--text-sm); color: var(--faint); margin-left: auto; }
 .st-group-head h2 + .st-count + .st-group-hint, .st-group-head h2 + .st-group-hint { margin-left: 6px; }
 .st-rows { background: var(--surface); border: 1px solid var(--border); border-radius: var(--st-radius); overflow: hidden; box-shadow: var(--shadow); }
 .st-group-needs .st-rows { border-color: color-mix(in srgb, var(--warn) 45%, var(--border)); }
 
-.st-row { position: relative; }
-.st-row + .st-row { border-top: 1px solid var(--border); }
+/* Rows go two to a line once each can be 600px wide: hairlines on each row's right and bottom, the outer ones clipped. */
+.st-rows { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 600px), 1fr)); align-items: start; }
+.st-rows > * { box-shadow: 1px 0 0 var(--border), 0 1px 0 var(--border); }
+.st-row { position: relative; align-self: stretch; }
+.st-rows > .fleet-empty { margin: 0; padding: 14px 16px; }
 .st-tone-signed_out::before, .st-tone-error::before { content: ""; position: absolute; left: 0; top: 0; bottom: 0; width: var(--st-rail); background: var(--warn); }
 .st-tone-error::before { background: var(--urgent); }
 .st-row-main { display: flex; align-items: center; min-width: 0; }
@@ -96,15 +95,9 @@ button.st-row-hit:hover { background: var(--hover); }
 .st-account { flex: 1; min-width: 0; overflow-wrap: anywhere; }
 
 /* ------------------------------------------------------------ controls */
-.st-field input, .st-money input { padding: 7px 10px; border-radius: 8px; border: 1px solid var(--border-strong); background: var(--surface); font-size: var(--text-md); outline: none; min-width: 0; transition: border-color var(--st-dur) var(--st-ease), box-shadow var(--st-dur) var(--st-ease); }
-.st-field input:focus, .st-money input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
-.st-field input[aria-invalid="true"] { border-color: var(--urgent); }
-.st-field { display: grid; gap: 5px; min-width: 0; }
-.st-field-label { font-size: var(--text-sm); font-weight: 600; color: var(--muted); }
-.st-field-row { display: flex; gap: 8px; min-width: 0; }
-.st-field-row input { flex: 1; }
-.st-field-help { font-size: var(--text-sm); color: var(--faint); }
-.st-field-help.bad, .st-error { color: var(--bad-text); }
+.st-money input { padding: 7px 10px; border-radius: 8px; border: 1px solid var(--border-strong); background: var(--surface); font-size: var(--text-md); outline: none; min-width: 0; transition: border-color var(--st-dur) var(--st-ease), box-shadow var(--st-dur) var(--st-ease); }
+.st-money input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+.st-error { color: var(--bad-text); }
 .st-error { margin: 0; font-size: var(--text-base); }
 .st-editor { display: grid; gap: 10px; justify-items: start; }
 .st-change-actions { display: flex; gap: 8px; }
@@ -112,7 +105,10 @@ button.st-row-hit:hover { background: var(--hover); }
 /* ------------------------------------------------------------ connection URLs */
 .st-urls { display: grid; gap: 12px; }
 .st-url-form { display: grid; gap: 10px; justify-items: start; }
-.st-url-form .st-field { width: 100%; max-width: 640px; }
+.st-url-form .ui-field { width: 100%; }
+.st-conn { display: grid; gap: 16px; }
+.st-conn-state { margin: 0; display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; font-size: var(--text-md); }
+.st-conn-state > span:last-child { color: var(--muted); }
 .st-url-view { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; font-size: var(--text-base); }
 .st-url-label { color: var(--muted); }
 .st-url-value { overflow-wrap: anywhere; }
@@ -177,7 +173,7 @@ button.st-row-hit:hover { background: var(--hover); }
 .st-td-value { overflow-wrap: anywhere; }
 
 /* Accounts and access keeps its own component (Accounts.tsx): fit its page into the pane. */
-.st-embedded > .page.wide { max-width: 1060px; margin: 0; padding: 28px clamp(16px, 3vw, 44px) 64px; gap: 20px; }
+.st-embedded > .page.wide { max-width: none; margin: 0; padding: var(--page-top) var(--gutter) 64px; gap: var(--stack); }
 .st-shell.phone .st-embedded > .page.wide { padding: 16px 16px 48px; }
 .st-embedded .page-head h1 { font-size: var(--text-2xl); letter-spacing: -0.02em; }
 .st-embedded .accounts-section h2 { font-size: var(--text-base); font-weight: 650; text-transform: none; letter-spacing: 0; color: var(--text); }
@@ -200,8 +196,6 @@ button.st-row-hit:hover { background: var(--hover); }
   .st-group-hint { margin-left: 0; width: 100%; }
   .st-toasts { left: 16px; right: 16px; }
   .st-toast { max-width: none; }
-  .st-field-row { flex-wrap: wrap; }
-  .st-field-row .btn { width: 100%; justify-content: center; }
 }
 
 @media (prefers-reduced-motion: reduce) {

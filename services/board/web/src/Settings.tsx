@@ -10,7 +10,7 @@ import { ChangePreview, ChangeProgress, Changes, Group, IN_FLIGHT, Page, Row, To
 import type { Advisory, FiledChange, ModuleRow, SettingChange, SettingRow, SettingsData } from "./types";
 import { urlSettingProblem } from "../../src/url-setting";
 import "./settings.css";
-import { Segmented, StatusDot, Switch, Tag } from "./ui";
+import { Banner, Button, Segmented, StatusDot, Switch, Tag } from "./ui";
 
 // Settings: categories in a side nav (a selector at phone width), each a page of grouped rows (#/settings/<category>).
 // Instance settings live in git (instance.yaml): a change made here is filed as the owner's task the runner writes, and lands
@@ -142,15 +142,12 @@ export function SettingsView({ cat, mobile, session, go, onSignIn, can }: Props)
         )}
         <div className="st-pane">
           {error && (
-            <div className="st-banner bad" role="alert">
-              Couldn't load settings: {error}.{" "}
-              <button className="link-btn" onClick={() => (setError(""), void loadSettings(), void loadConns(true))}>
-                Try again
-              </button>
-            </div>
+            <Banner tone="danger" action={<Button size="sm" onClick={() => (setError(""), void loadSettings(), void loadConns(true))}>Try again</Button>}>
+              Couldn't load settings: {error}.
+            </Banner>
           )}
           {data && !data.compiled && current !== "accounts" && (
-            <div className="st-banner">This board can't read the compiled config yet (config/paperclip.yaml): the next apply on the host mounts it.</div>
+            <Banner tone="warn">This board can't read the compiled config yet (config/paperclip.yaml): the next apply on the host mounts it.</Banner>
           )}
           <div className="st-page-in" key={current}>
             <Pane cat={current} data={data} conns={conns} session={session} onSignIn={onSignIn} can={can} checking={checking} check={check} />
@@ -306,7 +303,7 @@ function SettingEditor({ s, onDone }: { s: SettingRow; onDone: () => void }) {
       ) : (
         <input className="ui-input" value={text} onChange={(e) => (setText(e.target.value), setReview(false))} type={s.type === "url" ? "url" : "text"} spellCheck={false} aria-label={label(s.key)} placeholder={multi ? "comma, separated" : ""} />
       )}
-      {problem && !same && <span className="st-field-help bad">{problem.replace(/^./, (c) => c.toUpperCase())}</span>}
+      {problem && !same && <span className="ui-field-error">{problem.replace(/^./, (c) => c.toUpperCase())}</span>}
       {review ? (
         <ChangePreview items={[{ kind: "setting", key: s.key, value: next }]} was={[s.value ?? s.default]} onCancel={() => setReview(false)} onDone={onDone} />
       ) : (

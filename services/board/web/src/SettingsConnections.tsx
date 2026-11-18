@@ -1,11 +1,11 @@
-// Settings > Connections: what needs setting up first (with its URL input in the row), then what is connected, then what is
-// built in. A saved URL is a change like any other (settings-ui ChangePreview): the row follows it to live, then offers
-// the sign-in.
+// Settings > Connections: tiles, what needs you first (with Set up, Connect or Reconnect on the tile), then what is
+// connected, then what is built in; a tile opens its dialog (URL fields, grants, health, Google accounts). A saved URL is
+// a change like any other (settings-ui ChangePreview): the tile follows it to live, then offers the sign-in.
 import { useState } from "react";
 import { STATUS_LABEL, connectionStatus, displayName, sourceStatus, type ConnectionRow, type ConnectionsData, type Status, type UrlSetting, type Verdict } from "./connections";
 import { ChangePreview, ChangeProgress, Group, IN_FLIGHT, Page, Row, useFiled } from "./settings-ui";
 import { urlSettingProblem } from "../../src/url-setting";
-import { StatusDot, Tag, type StatusTone } from "./ui";
+import { Button, Dialog, LinkButton, Section, StatusDot, Tile, TileGrid, type StatusTone } from "./ui";
 
 type Can = { signIn: boolean; google: boolean };
 const TONE: Record<Status, StatusTone> = { connected: "ok", signed_out: "needs", error: "failed", not_configured: "idle", unknown: "idle", builtin: "info" };
@@ -18,37 +18,26 @@ export function ConnectionsPage({ conns, can, refresh, onRefresh }: { conns: Con
   const needs = rows.filter((x) => NEEDS.includes(x.v.status));
   const ok = rows.filter((x) => x.v.status === "connected");
   const built = rows.filter((x) => x.v.status === "builtin");
+  const tiles = (list: typeof rows) => (
+    <TileGrid>
+      {list.map(({ r, v }) => (
+        <ConnectionTile key={r.name} r={r} v={v} can={can} />
+      ))}
+    </TileGrid>
+  );
   return (
     <Page
       title="Connections"
-      sub={`${ok.length} connected${needs.length ? `, ${needs.length} need${needs.length === 1 ? "s" : ""} setting up` : ""}. Each system is connected once, and agents get only the tools they're granted.`}
+      sub={`${ok.length} connected${needs.length ? `, ${needs.length} need${needs.length === 1 ? "s" : ""} you` : ""}. Each system is connected once, and agents get only the tools they're granted.`}
       tools={
-        <button className="btn" onClick={onRefresh} disabled={refresh}>
+        <Button onClick={onRefresh} disabled={refresh}>
           {refresh ? "Checking…" : "Check again"}
-        </button>
+        </Button>
       }
     >
-      {needs.length > 0 && (
-        <Group title="Needs setup" count={needs.length} tone="needs">
-          {needs.map(({ r, v }) => (
-            <ConnectionItem key={r.name} r={r} v={v} can={can} />
-          ))}
-        </Group>
-      )}
-      {ok.length > 0 && (
-        <Group title="Connected" count={ok.length}>
-          {ok.map(({ r, v }) => (
-            <ConnectionItem key={r.name} r={r} v={v} can={can} />
-          ))}
-        </Group>
-      )}
-      {built.length > 0 && (
-        <Group title="Built in" count={built.length} hint="Part of every agent run; nothing to set up.">
-          {built.map(({ r, v }) => (
-            <ConnectionItem key={r.name} r={r} v={v} can={can} />
-          ))}
-        </Group>
-      )}
+      {needs.length > 0 && <Section title="Needs you" count={needs.length}>{tiles(needs)}</Section>}
+      {ok.length > 0 && <Section title="Connected" count={ok.length}>{tiles(ok)}</Section>}
+      {built.length > 0 && <Section title="Built in" count={built.length} hint="Part of every agent run; nothing to set up.">{tiles(built)}</Section>}
       <Group title="Warehouse sources" count={conns.sources.length} hint="What each source last brought into the shared warehouse.">
         {conns.sourcesError ? (
           <p className="st-empty">The apps platform didn't answer, so source state is unknown.</p>
@@ -65,43 +54,54 @@ export function ConnectionsPage({ conns, can, refresh, onRefresh }: { conns: Con
   );
 }
 
-function ConnectionItem({ r, v, can }: { r: ConnectionRow; v: Verdict; can: Can }) {
+/** One connection: a tile with its state and its one action (Connect, Reconnect, Set up); everything else in its dialog. */
+function ConnectionTile({ r, v, can }: { r: ConnectionRow; v: Verdict; can: Can }) {
   const urls = r.urls ?? [];
   const filed = useFiled((c) => c.kind === "setting" && urls.some((u) => u.key === c.key));
+  const changing = Boolean(filed && IN_FLIGHT.includes(filed.stage));
   const setup = v.status === "not_configured" && urls.length > 0;
-  const [open, setOpen] = useState(setup || Boolean(filed && IN_FLIGHT.includes(filed.stage)));
-  const pill = filed && IN_FLIGHT.includes(filed.stage) ? <StatusDot tone="busy">Changing</StatusDot> : <StatusDot tone={TONE[v.status]}>{STATUS_LABEL[v.status]}</StatusDot>;
+  const [open, setOpen] = useState(false);
   const connect = v.action ? (
-    <a className={`btn${v.status === "signed_out" ? " primary" : ""}`} href={v.action.href}>
+    <LinkButton variant={v.status === "signed_out" ? "primary" : undefined} size="sm" href={v.action.href}>
       {v.action.label}
-    </a>
+    </LinkButton>
   ) : null;
+  const status = changing ? <StatusDot tone="busy">Changing</StatusDot> : <StatusDot tone={TONE[v.status]}>{STATUS_LABEL[v.status]}</StatusDot>;
+  const who = r.kind === "service" ? "Engineer jobs" : v.status === "builtin" ? null : r.grants.length ? `${r.grants.length} agent${r.grants.length === 1 ? "" : "s"}` : "No agents yet";
   return (
-    <Row
-      tone={v.status}
-      title={displayName(r.name)}
-      sub={v.reason}
-      meta={
-        <>
-          {r.kind === "connection" && v.status !== "builtin" && <Tag>{r.grants.length ? `${r.grants.length} agent${r.grants.length === 1 ? "" : "s"}` : "no agents"}</Tag>}
-          {r.kind === "service" && <Tag>Engineer jobs</Tag>}
-          {pill}
-        </>
-      }
-      action={connect ?? (v.hint && v.status === "signed_out" ? <span className="st-hint">{v.hint}</span> : undefined)}
-      open={open}
-      onToggle={setOpen}
-      details={
-        <>
+    <>
+      <Tile
+        onOpen={() => setOpen(true)}
+        name={r.name}
+        title={displayName(r.name)}
+        tone={v.status === "error" ? "failed" : v.status === "signed_out" || setup ? "needs" : undefined}
+        status={status}
+        facts={
+          <>
+            {who && <span>{who}</span>}
+            {r.kind === "connection" && v.status !== "builtin" && <span>{r.tools.read} read, {r.tools.write} write tools</span>}
+          </>
+        }
+        foot={r.module || "core"}
+        action={connect ?? (setup && !changing ? <Button size="sm" variant="primary" onClick={() => setOpen(true)}>Set up</Button> : undefined)}
+      >
+        {v.reason}
+      </Tile>
+      <Dialog open={open} onClose={() => setOpen(false)} title={displayName(r.name)} wide actions={connect}>
+        <div className="st-conn">
+          <p className="st-conn-state">
+            {status} <span>{v.reason}</span>
+          </p>
           {filed && <ChangeProgress f={filed} after={filed.stage === "applied" && connect && <p className="st-next">Next: {connect} to sign in.</p>} />}
-          {urls.length > 0 && !(filed && IN_FLIGHT.includes(filed.stage)) && <UrlFields urls={urls} primaryOnly={setup} />}
+          {urls.length > 0 && !changing && <UrlFields urls={urls} primaryOnly={setup} />}
           {setup && !connect && v.hint && <p className="st-hint">After the change is live: {v.hint}</p>}
+          {!connect && v.hint && v.status === "signed_out" && <p className="st-hint">{v.hint}</p>}
           {!urls.length && r.setup && v.status === "not_configured" && <p className="st-hint">{r.setup}</p>}
           <Facts r={r} />
           {r.google && <GoogleAccounts g={r.google} can={can.google} />}
-        </>
-      }
-    />
+        </div>
+      </Dialog>
+    </>
   );
 }
 
@@ -145,10 +145,11 @@ function UrlField({ u, startEditing }: { u: UrlSetting; startEditing: boolean })
         if (!problem) setReview(true);
       }}
     >
-      <label className="st-field">
-        <span className="st-field-label">{label}</span>
-        <span className="st-field-row">
+      <label className="ui-field">
+        <span className="ui-field-label">{label}</span>
+        <span className="ui-input-row">
           <input
+            className="ui-input"
             type="url"
             inputMode="url"
             spellCheck={false}
@@ -162,12 +163,12 @@ function UrlField({ u, startEditing }: { u: UrlSetting; startEditing: boolean })
             disabled={review}
           />
           {!review && (
-            <button className="btn primary" type="submit">
-              Save URL
-            </button>
+            <Button variant="primary" type="submit">
+              Review change
+            </Button>
           )}
         </span>
-        <span id={`${u.key}-help`} className={`st-field-help${touched && problem ? " bad" : ""}`}>
+        <span id={`${u.key}-help`} className={touched && problem ? "ui-field-error" : "ui-field-help"}>
           {touched && problem ? problem.replace(/^./, (c) => c.toUpperCase()) : (u.doc ?? "")}
           {!(touched && problem) && u.host && <> Must be {u.host.startsWith("*.") ? `a ${u.host.slice(2)} address` : u.host}.</>}
         </span>

@@ -33,7 +33,7 @@ function Field({ title, value, def, filed, children }: { title: string; value: R
           {filed && (
             <ChangeProgress
               f={filed}
-              after={busy ? <p className="st-field-help">A filed change can't be cancelled from here yet: decline its card in Approvals to stop it.</p> : undefined}
+              after={busy ? <p className="ui-field-help">A filed change can't be cancelled from here yet: decline its card in Approvals to stop it.</p> : undefined}
             />
           )}
           {!busy &&
@@ -62,8 +62,8 @@ function Edit({ label, current, item, input, options, list }: { label: string; c
   const listId = `dl-${label.replace(/\W/g, "")}`;
   return (
     <div className="st-change">
-      <label className="st-field">
-        <span className="st-field-label">{label}</span>
+      <label className="ui-field">
+        <span className="ui-field-label">{label}</span>
         {options ? (
           <select className="ui-select" value={v} onChange={(e) => (setV(e.target.value), setReview(false))}>
             {options.map((o) => (
@@ -74,7 +74,7 @@ function Edit({ label, current, item, input, options, list }: { label: string; c
           </select>
         ) : (
           <>
-            <input list={list ? listId : undefined} value={v} onChange={(e) => (setV(e.target.value), setReview(false))} spellCheck={false} />
+            <input className="ui-input" list={list ? listId : undefined} value={v} onChange={(e) => (setV(e.target.value), setReview(false))} spellCheck={false} />
             {list && (
               <datalist id={listId}>
                 {list.map((m) => (
@@ -180,26 +180,26 @@ function RoutineField({ r, models }: { r: Routine; models: string[] }) {
       }
       details={
         <>
-          {filed && <ChangeProgress f={filed} after={busy ? <p className="st-field-help">A filed change can't be cancelled from here yet: decline its card in Approvals to stop it.</p> : undefined} />}
+          {filed && <ChangeProgress f={filed} after={busy ? <p className="ui-field-help">A filed change can't be cancelled from here yet: decline its card in Approvals to stop it.</p> : undefined} />}
           {!busy && (
             <div className="st-change">
               {sched.map((s, i) => (
-                <div key={i} className="st-field">
-                  <span className="st-field-label">Schedule{sched.length > 1 ? ` ${i + 1}` : ""}</span>
-                  <input value={s.cron} aria-label={`${r.title}: cron`} onChange={(e) => (setSched(sched.map((x, j) => (j === i ? { ...x, cron: e.target.value } : x))), setReview(false))} spellCheck={false} />
-                  <input value={s.timezone} aria-label={`${r.title}: timezone`} placeholder="timezone" onChange={(e) => (setSched(sched.map((x, j) => (j === i ? { ...x, timezone: e.target.value } : x))), setReview(false))} spellCheck={false} />
+                <div key={i} className="ui-field">
+                  <span className="ui-field-label">Schedule{sched.length > 1 ? ` ${i + 1}` : ""}</span>
+                  <input className="ui-input" value={s.cron} aria-label={`${r.title}: cron`} onChange={(e) => (setSched(sched.map((x, j) => (j === i ? { ...x, cron: e.target.value } : x))), setReview(false))} spellCheck={false} />
+                  <input className="ui-input" value={s.timezone} aria-label={`${r.title}: timezone`} placeholder="timezone" onChange={(e) => (setSched(sched.map((x, j) => (j === i ? { ...x, timezone: e.target.value } : x))), setReview(false))} spellCheck={false} />
                 </div>
               ))}
-              <label className="st-field">
-                <span className="st-field-label">Status</span>
+              <label className="ui-field">
+                <span className="ui-field-label">Status</span>
                 <select className="ui-select" value={status} onChange={(e) => (setStatus(e.target.value as "active" | "paused"), setReview(false))}>
                   <option value="active">active</option>
                   <option value="paused">paused</option>
                 </select>
               </label>
-              <label className="st-field">
-                <span className="st-field-label">Model</span>
-                <input list={listId} value={model} placeholder="the agent's" onChange={(e) => (setModel(e.target.value), setReview(false))} spellCheck={false} />
+              <label className="ui-field">
+                <span className="ui-field-label">Model</span>
+                <input className="ui-input" list={listId} value={model} placeholder="the agent's" onChange={(e) => (setModel(e.target.value), setReview(false))} spellCheck={false} />
                 <datalist id={listId}>
                   {models.map((m) => (
                     <option key={m} value={m} />
@@ -259,13 +259,13 @@ function CapsField({ a, defaults }: { a: AgentSettings; defaults: Record<string,
       }
       details={
         <>
-          {filed && <ChangeProgress f={filed} after={busy ? <p className="st-field-help">A filed change can't be cancelled from here yet: decline its card in Approvals to stop it.</p> : undefined} />}
+          {filed && <ChangeProgress f={filed} after={busy ? <p className="ui-field-help">A filed change can't be cancelled from here yet: decline its card in Approvals to stop it.</p> : undefined} />}
           {!busy && (
             <>
               <form className="st-caps-form" onSubmit={(e) => (e.preventDefault(), Object.keys(changed).length && !bad && setReview("edit"))}>
                 {CAP_KEYS.map((k) => (
-                  <label key={k} className="st-field">
-                    <span className="st-field-label">Per {CAP_NAMES[k].replace(/^an? /, "")}</span>
+                  <label key={k} className="ui-field">
+                    <span className="ui-field-label">Per {CAP_NAMES[k].replace(/^an? /, "")}</span>
                     <span className="st-money">
                       $<input inputMode="decimal" value={v[k]} onChange={(e) => (setV({ ...v, [k]: e.target.value }), setReview(null))} aria-label={`Cap per ${CAP_NAMES[k]}`} />
                     </span>
@@ -284,7 +284,7 @@ function CapsField({ a, defaults }: { a: AgentSettings; defaults: Record<string,
                   </>
                 )}
               </form>
-              {bad && <span className="st-field-help bad">Each cap is above $0 and at most $1000.</span>}
+              {bad && <span className="ui-field-error">Each cap is above $0 and at most $1000.</span>}
               {review === "edit" && <ChangePreview items={[{ kind: "caps", agent: a.key, value: changed }]} was={[Object.fromEntries(Object.keys(changed).map((k) => [k, caps[k]]))]} onCancel={() => setReview(null)} onDone={() => setReview(null)} />}
               {review === "reset" && <ChangePreview items={[{ kind: "caps", agent: a.key, value: back }]} was={[Object.fromEntries(Object.keys(back).map((k) => [k, caps[k]]))]} onCancel={() => setReview(null)} onDone={() => setReview(null)} />}
             </>
