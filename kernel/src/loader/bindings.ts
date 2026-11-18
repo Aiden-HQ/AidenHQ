@@ -65,7 +65,8 @@ export function danglingBindings(enabled: Record<string, ModuleDef>, instance: I
   const kinds = new Set(Object.entries(enabled).flatMap(([n, d]) => Object.keys(map(d.writes)).map((k) => (k.includes(".") ? k : `${n}.${k}`))));
   const providers = virtualProviders(enabled);
   const add = (binding: string, owner: string, missing: string) => out.push({ binding, owner, missing });
-  // A role needs the module that declares it (roles.declares); kernel.* are the kernel's.
+  // A role needs the module that declares it (roles.declares); kernel.* are the kernel's. `id?` (an agent's role or a request) is
+  // optional: held only while its module is enabled.
   const role = (r: string) => r.startsWith("kernel.") || roles.has(r);
 
   const agents: [string, Dict][] = [...Object.values(enabled).flatMap((d) => Object.entries(map(d.agents))), ...Object.entries(instance.agents ?? {})].map(([k, a]) => [k, map(a)]);
@@ -73,10 +74,10 @@ export function danglingBindings(enabled: Record<string, ModuleDef>, instance: I
     if (a.engine != null && !engines.has(String(a.engine))) add("agent engine", `agent ${key}`, `engine ${a.engine}`);
     for (const c of Object.keys(map(a.connections))) if (!c.endsWith("?") && !connections.has(c)) add("agent connections", `agent ${key}`, `connection ${c}`);
     for (const j of strs(a.jobcaps)) if (!j.endsWith("?") && !jobcaps.has(j)) add("agent jobcaps", `agent ${key}`, `jobcap ${j}`);
-    for (const r of strs(a.roles)) if (!role(r)) add("agent roles", `agent ${key}`, `role ${r}`);
+    for (const r of strs(a.roles)) if (!r.endsWith("?") && !role(r)) add("agent roles", `agent ${key}`, `role ${r}`);
   }
   for (const [name, def] of Object.entries(enabled)) {
-    for (const r of strs(map(def.roles).requests)) if (!role(r)) add("roles.requests", `module ${name}`, `role ${r}`);
+    for (const r of strs(map(def.roles).requests)) if (!r.endsWith("?") && !role(r)) add("roles.requests", `module ${name}`, `role ${r}`);
     const services = map(def.services);
     for (const c of Object.keys(map(services.grants))) if (!connections.has(c)) add("services.grants", `module ${name}`, `connection ${c}`);
     for (const svc of Object.values(map(services.run))) for (const j of strs(map(svc).join)) if (!(j in enabled)) add("services.run.join", `module ${name}`, `module ${j}`);
