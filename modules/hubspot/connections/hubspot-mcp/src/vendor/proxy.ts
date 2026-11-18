@@ -13,7 +13,7 @@
 // kind's executor). Not signed in: it still starts, lists the tools it saw last as stand-ins, and every call says how to
 // connect (never a crash loop, never a silently empty tool list).
 //
-// Canonical copy: vendor-mcp/src/vendor/proxy.ts in aidenhq-modules. Each vendor connection holds a byte-identical copy at
+// Canonical copy: vendor-mcp/src/vendor/proxy.ts in the product's modules/. Each vendor connection holds a byte-identical copy at
 // src/vendor/proxy.ts (the product's scripts/sync-shared.mjs copies them and its tests fail on drift).
 import { timingSafeEqual } from "node:crypto";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";

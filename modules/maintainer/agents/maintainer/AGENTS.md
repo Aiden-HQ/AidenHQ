@@ -92,11 +92,10 @@ maintain, write), so trust is the tool's verdict, never your own reading of who 
 Name the issue as `owner/name#number` everywhere (tasks, comments, searches): issue numbers repeat across repos.
 
 1. Read the issue and its label events. Confirm the newest label event is trusted; if it is not, log it and stop.
-2. Settle the commit first: for `product-pin`, the live product sha from `fleet_generation_status` and the modules sha in
-   that commit's `modules-pin.json`; for any other repo, its default branch head. Then find the code path at that commit,
-   or reproduce the symptom on this instance. In your computer, clone the repo and check out that sha (for `product-pin`,
-   the official modules repo at its pinned sha too, since much of the product's code lives there: code hosts,
-   connections, the apps platform, grading, the reviewer), then `rg` for the code path, `git log -S'<string>'` and
+2. Settle the commit first: for `product-pin`, the live product sha from `fleet_generation_status` (its `modules/` holds
+   the official modules: code hosts, connections, the apps platform, grading, the reviewer); for any other repo, its
+   default branch head. Then find the code path at that commit, or reproduce the symptom on this instance. In your
+   computer, clone the repo and check out that sha, then `rg` for the code path, `git log -S'<string>'` and
    `git log --grep=<keywords>` for an existing fix, and `git merge-base --is-ancestor <fix> <sha>` to show whether the live
    commit carries it. Without a computer, or for a private repo, read the files with `github_app_repo_tree` and
    `github_app_repo_file` at that sha. Either way, follow the call, check the log line the report quotes, search recent
@@ -107,16 +106,14 @@ Name the issue as `owner/name#number` everywhere (tasks, comments, searches): is
    The brief names the repo, the symptom, the sha, the `path:line`, the repro and the exact change wanted, and asks for a
    PR on that repo; its PR deliverable is the task's own PR (no ref), which grading accepts on any repo. Do not write the
    patch yourself.
-5. The fix is its PR, merged. On the AidenHQ product and official modules repos, and in the agents org, the PR merges on
+5. The fix is its PR, merged. On the AidenHQ product repo (the official modules are its `modules/`), and in the agents org, the PR merges on
    its approved card. On any other repo, the PR goes through that repo's own review and its maintainers merge it; read
    its state with `github_issue_read` on each wake until it is merged or closed.
 6. After the merge, follow the repo's `after_merge`:
    - `done`: close the issue `completed`, with a `note` naming the PR and the merge commit.
    - `product-pin`: the runner's release train carries the merge live. Within a minute of the merge it opens a task
      titled "Pin bump: …" that lists the merge commit, and files that bump's card once its batch window has passed (the
-     AI reviewer decides it). Find it with `task_search` on the merge commit's full sha and block on it. A fix in the
-     official modules repo rides two bumps: the product's modules pin first ("Pin bump: the product's official modules"),
-     then this instance's ("Pin bump: this instance's product and modules"). When the bump you wait on finishes, read
+     AI reviewer decides it). Find it with `task_search` on the merge commit's full sha and block on it. When the bump you wait on finishes, read
      `fleet_generation_status`: once the live generation carries the commit and is `good`, close the issue `completed`,
      with a `note` naming the PR, the merge commit and the generation; until then (it rode the modules pin, or the bump
      finished with a "Not landed" note), search again and block on the bump that lists it now. When none lists it, say
@@ -153,7 +150,7 @@ whether the report carries a sha, steps and a log line. Credible: add the repo's
 path. Not credible: one comment saying precisely what is missing, leave it unlabelled and open. Already fixed: close it
 `completed` with a `note` citing the fix (its PR, its merge commit, and for `product-pin` the pin that carries it).
 Before any verdict, search that repo's history at its live commit (in your computer's clone when you have one) and its
-merged PRs (and, for `product-pin`, the official modules repo) for the symptom's code path. A duplicate of another
+merged PRs for the symptom's code path. A duplicate of another
 issue: close it `not_planned` with a `note` linking that issue.
 
 Work through the unlabelled issues; the only limit is the day's budget. When it is close, report what you could not reach

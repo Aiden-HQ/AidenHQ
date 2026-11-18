@@ -33,7 +33,7 @@ plus what to publish (`pr`).
   `aidenhq create-repo`" (an approval card two AI reviewers check against the task). It holds the app starter on main.
 - **Only checks the repository runs.** Before a brief names a CI check, read that repository's workflows on its default
   branch and name a job that is there (`sed -n '/^jobs:/,$p' .github/workflows/*.yml | rg -N '^  [a-z][a-z0-9_-]*:$'`):
-  an official modules repo runs `ci-required`, where `image-scan` is the product repo's and the app repos' that copied
+  the product repo runs `ci-required` (its `modules` job for the official modules), where `image-scan` is the product repo's and the app repos' that copied
   its CI template, so each criterion is one this repository's CI can satisfy. Name the selector and its rule ("pin what
   `best-version.mjs` prints"), not a version: the description can't be edited after filing, and the AI reviewer reads it,
   not the comments.

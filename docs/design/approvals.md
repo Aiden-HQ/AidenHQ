@@ -211,8 +211,8 @@ in the official modules repo from 5b), so the eval runs a product commit's `modu
 
 - **When it runs.** Every merge site of the queue asks the gate right before GitHub's merge. On a head it hasn't seen, the
   runner fetches the head and the PR's base branch into its cache clone and reads the changed files itself. If no reviewer
-  code changed, the merge goes ahead. Anything it can't read (a pin, a modules commit, a modules repo other than the
-  official one) stops it.
+  code changed, the merge goes ahead. Anything it can't read (a commit, a head that drops `modules/`, a modules source
+  other than the product) stops it.
 - **How it runs.** Otherwise the runner builds a scratch tree and runs the judge there, detached and in the job jail. Its
   only secret is the eval's own key (secrets `openrouter_eval_key`), never the fleet's. A missing key stops the merge.
 - **The receipt.** The runner writes it itself: head, base, policy hash, score, failures, re-run and cost. The merge goes on
