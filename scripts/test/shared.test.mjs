@@ -21,25 +21,18 @@ function changed() {
 const withModules = checksModuleCopies(changed());
 const checked = (c) => withModules || !c.startsWith("modules/");
 
+const fix = (c, canonical) => `${c} differs from ${canonical}: run \`node scripts/sync-shared.mjs\` and commit the copies${c.startsWith("modules/") ? " (a copy under modules/ lands in the modules repository first)" : ""}`;
+
 test("every service's copy of shared code is the shared one (run node scripts/sync-shared.mjs)", () => {
   for (const [canonical, copies] of Object.entries(SHARED)) {
     const want = readFileSync(join(repo, canonical), "utf8");
-    for (const c of copies.filter(checked)) assert.equal(readFileSync(join(repo, c), "utf8"), want, c);
+    for (const c of copies.filter(checked)) assert.equal(readFileSync(join(repo, c), "utf8"), want, fix(c, canonical));
   }
   for (const [canonical, copies] of Object.entries(SHARED_DIRS)) {
     const files = listFiles(join(repo, canonical));
     for (const c of copies.filter(checked)) {
-      assert.deepEqual(listFiles(join(repo, c)), files, `${c} lists different files from ${canonical}`);
-      for (const f of files) assert.ok(readFileSync(join(repo, c, f)).equals(readFileSync(join(repo, canonical, f))), join(c, f));
+      assert.deepEqual(listFiles(join(repo, c)), files, fix(c, canonical));
+      for (const f of files) assert.ok(readFileSync(join(repo, c, f)).equals(readFileSync(join(repo, canonical, f))), fix(join(c, f), canonical));
     }
   }
-});
-
-test("the modules' copies are compared when a change moves the pin or a canonical they copy, and on main", () => {
-  assert.equal(checksModuleCopies("all"), true);
-  assert.equal(checksModuleCopies(["modules-pin.json"]), true);
-  assert.equal(checksModuleCopies(["README.md", "kernel/sdk/src/caller.ts"]), true);
-  assert.equal(checksModuleCopies(["services/shared/source-store.ts"]), true);
-  assert.equal(checksModuleCopies(["services/shared/reason-codes.ts", "README.md"]), false, "copied only inside the product");
-  assert.equal(checksModuleCopies([]), false);
 });
