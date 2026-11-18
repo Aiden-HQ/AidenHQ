@@ -265,7 +265,6 @@ for c in $containers; do
           done <<'PROBES'
 GET /internal/approvals?issue=X-1
 POST /internal/issues/X-1/schedule {"clear":true}
-GET /internal/successor/X-1
 PROBES
           [ -z "$opened" ] && pass "board: the internal token alone claims, reports, reads and changes nothing" || fail "board: the internal token alone was not refused by caller:$opened"
         fi
@@ -307,6 +306,8 @@ done
 # own secrets and its module's own vault dir; and none publishes beyond loopback. Every module container is checked.
 echo "Module isolation"
 mods=0
+# The one declared vault mount beyond a module's own: privileged git-credential's read-only github-app dir (the App key's holder).
+app_mods="$(node -e 'const m=JSON.parse(require("fs").readFileSync("config/kernel/modules.json","utf8")).modules??{};console.log(Object.keys(m).filter((k)=>(m[k].privileged??[]).includes("git-credential")).join(" "))' 2>/dev/null)"
 for c in $containers; do
   m="$(docker inspect "$c" --format '{{index .Config.Labels "aidenhq.module"}}')"
   [ -n "$m" ] || continue
@@ -318,7 +319,9 @@ for c in $containers; do
   nets="$(docker inspect "$c" --format '{{range $k, $v := .NetworkSettings.Networks}}{{$k}} {{end}}')"
   bad="$(echo "$nets" | tr ' ' '\n' | grep -v '^$' | grep -vE "$allowed" | tr '\n' ' ')"
   [ -z "$bad" ] && pass "$c ($m): on its own networks only ($nets)" || fail "$c ($m) is on another module's or a root network: $bad"
-  vault="$(docker inspect "$c" --format '{{range .Mounts}}{{.Source}}|{{.Destination}};{{end}}' | tr ';' '\n' | grep "^${AIDENHQ_SECRETS_DIR:-/nonexistent}" | grep -v '|/run/secrets/' | grep -v "^${AIDENHQ_SECRETS_DIR:-/nonexistent}/modules/$m|" | tr '\n' ' ')"
+  app_dir="/nonexistent"
+  case " $app_mods " in *" $m "*) app_dir="${AIDENHQ_SECRETS_DIR:-/nonexistent}/github-app" ;; esac
+  vault="$(docker inspect "$c" --format '{{range .Mounts}}{{.Source}}|{{.Destination}};{{end}}' | tr ';' '\n' | grep "^${AIDENHQ_SECRETS_DIR:-/nonexistent}" | grep -v '|/run/secrets/' | grep -v "^${AIDENHQ_SECRETS_DIR:-/nonexistent}/modules/$m|" | grep -vxF "$app_dir|/github-app" | tr '\n' ' ')"
   [ -z "$vault" ] && pass "$c ($m): no vault path but its secrets and its own vault dir" || fail "$c ($m) mounts another vault path: $vault"
   ! docker inspect "$c" --format '{{json .HostConfig.PortBindings}}' | grep -qE '"HostIp":"(0\.0\.0\.0)?"' && pass "$c ($m): published on loopback only, if at all" || fail "$c ($m) publishes beyond loopback"
 done
@@ -607,7 +610,8 @@ if [ -n "$pc" ]; then
   if direct="$(P="$project" node --input-type=module -e '
     import { readFileSync } from "node:fs";
     import { createResolver } from "./kernel/src/net.ts";
-    const conns = JSON.parse(readFileSync("config/kernel/connections.json", "utf8"));
+    // Only connections that serve MCP: a transport-only module (telegram) declares none of the tools.
+    const conns = Object.fromEntries(Object.entries(JSON.parse(readFileSync("config/kernel/connections.json", "utf8"))).filter(([, c]) => Object.values(c.tools).some((t) => t.length)));
     const services = createResolver({ project: process.env.P });
     const open = [];
     for (const [name, c] of Object.entries(conns)) {

@@ -111,15 +111,6 @@ It is idempotent. The Platform Engineer runs it for you after you approve a chan
   (or failing for 15 minutes; apps-mcp's `/internal/sources`). It fires the "Fleet Ops: check" webhook once per incident
   and once on recovery (state in the board's store, meta `fleet_ops_detector`); the Steward reads it from `fleet_status`
   → `detector` and logs on the "Fleet issues" task (`log ·` lines).
-- Task rollover (always on, `services/board/src/rollover.ts`): every 10 minutes the board measures each open agent task's
-  history; past ~600K characters (comments plus ~400 each for Paperclip's envelope), or once a run on it fails over the
-  model's input limit, it moves the task to a successor (`… (continued from WOR-n)`: same agent, labels and parent, a link
-  to the old task, the owner's unanswered messages re-posted, open sub-tasks moved) and closes the old one with no agent.
-  Only the owner's own tasks move (made with the board key, by no agent, no source marker), so the successor keeps their
-  origin. Writes to the old task follow the board's record (meta `task_rollover`), never description text: the board's own
-  routes directly, the bridge (Telegram replies, its daily chat) through `GET /internal/successor/:id` (decide key only).
-  Not moved while a run or a card is on it, nor graded, Engineer or agent-made tasks; the detector names such a task
-  in its "runs failed" flag.
 
 - The Maintainer (`services/board/src/maintainer.ts`): every `maintainer_poll_minutes` (default 5; the board reads
   `MAINTAINER_POLL_MINUTES`) the board asks
