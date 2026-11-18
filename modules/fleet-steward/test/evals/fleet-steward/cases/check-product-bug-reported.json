@@ -6,7 +6,6 @@
  "expect": [
   {
    "tool": "task_create",
-   "text": "maintainer",
    "title_re": "[Ss]chedul|[Rr]outine|[Cc]ron|[Ff]ire"
   }
  ],
