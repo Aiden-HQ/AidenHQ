@@ -737,7 +737,7 @@ rgate="modules/codehost-github/service/src/evalgate.ts"
 # PR that changes it is judged by its base branch's tip; nothing reads a separate official modules repo or its pin.
 git -C "$repo" cat-file -e "HEAD:modules/ai-reviewer/scripts/reviewer-eval.mjs" 2>/dev/null \
   && ! grep -qE 'modules-pin|modulesRepo' "$rgate" \
-  && grep -qF 'const REVIEWER_TREE = ["modules/ai-reviewer", "modules/codehost-github/service/src/plan.mjs", "modules/platform/src/check.mjs"];' "$rgate" \
+  && grep -qF 'const REVIEWER_TREE = ["modules/ai-reviewer", "modules/codehost-github/service/src/plan.mjs", "modules/platform/src/check.mjs", "modules/codehost-github/checks", "modules/platform/checks", "modules/codehost-github/module.yaml", "modules/platform/module.yaml"];' "$rgate" \
   && pass "codehost: the reviewer-eval gate judges the product's own modules/ai-reviewer, by the base branch's tip ($rgate)" \
   || fail "codehost: the reviewer-eval gate takes the official modules from elsewhere ($rgate)"
 # A release bump of the instance's product pin to a commit whose reviewer content (REVIEWER_TREE by object id) differs lands

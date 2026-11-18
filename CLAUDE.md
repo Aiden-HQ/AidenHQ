@@ -66,7 +66,7 @@ The AI reviewer is the `modules/ai-reviewer` module (reviewer@1: the kernel asks
 applies to changes to the module (its service, policy `service/security/`, cases `test/reviewer-cases/`, judge),
 `kernel/sdk/src/reviewer.ts`, `services/shared/review-files.{mjs,ts}`, the tier function and write lifecycle (`kernel/src/{tier,provenance,writes,records,reviews,review-loop,kinds,apply,apply-tier}.ts`,
 the code host's git rules and merge gate `modules/codehost-github/service/src/{plan.mjs,merges.ts,merge-gate.mjs,evalgate.ts}`,
-the platform check `modules/platform/src/check.mjs`, the check recipes `modules/{codehost-github,platform}/checks/`), the authority-diff classifier (`scripts/compiler/authority.ts`), the path inventory (`paths.yaml`, `scripts/paths.mjs`, `kernel/src/paths.ts`) or the check jobs that run it and sign its receipt (`kernel/src/checkjobs.ts`); the code host's merge queue runs it on the PR's exact head
+the platform check `modules/platform/src/check.mjs`, the check recipes `modules/{codehost-github,platform}/checks/`, their manifests `modules/{codehost-github,platform}/module.yaml`, `scripts/modules.mjs`, `kernel/src/checkbox.ts`), the authority-diff classifier (`scripts/compiler/authority.ts`), the path inventory (`paths.yaml`, `scripts/paths.mjs`, `kernel/src/paths.ts`) or the check jobs that run it and sign its receipt (`kernel/src/checkjobs.ts`); the code host's merge queue runs it on the PR's exact head
 and merges only on a passing receipt (95% of the base cases, every miss a false block of a clean case; `modules/codehost-github/service/src/evalgate.ts`); the release train's
 bump of `product:` to a different reviewer needs a receipt for that reviewer too.
 

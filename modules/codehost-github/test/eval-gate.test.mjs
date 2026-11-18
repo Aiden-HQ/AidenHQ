@@ -150,6 +150,12 @@ describe("the reviewer-eval gate", { concurrency: 1 }, () => {
   });
 });
 
+// The check recipes and what wires them to a receipt are reviewer code: a change to one needs an eval receipt.
+it("check recipes, their manifests and wiring are reviewer code", () => {
+  const paths = ["modules/codehost-github/checks/tests.sh", "modules/platform/checks/contract.sh", "modules/codehost-github/module.yaml", "modules/platform/module.yaml", "scripts/modules.mjs", "kernel/src/checkbox.ts", "kernel/src/checkjobs.ts"];
+  assert.deepEqual(paths.filter((p) => !touchesReviewer([p])), []);
+});
+
 // The reviewer's checklist tells it a change to these paths is the eval's to judge: true only while each is REVIEWER_CODE.
 it("every path the eval-receipt checklist item names is reviewer code", () => {
   const item = checklist.items.find((i) => i.check.includes("100% receipt"));
