@@ -41,7 +41,7 @@ roles:
 # The service (service/): the executor of the write kinds below, and narrow GitHub operations for other modules. It is built to
 # become the only App-key holder and the only lander (one-way phase 2, Lane T and the switch); until then nothing files its
 # kinds or calls its operations. It mounts the App key (read-only; the runner, apps-mcp and github-mcp keep theirs until Lane
-# T and the switch), the job workspaces and its own points file.
+# T and the switch) and the job workspaces.
 services:
   data: true
   run:
@@ -53,7 +53,6 @@ services:
       data: ["cache:/cache"]
       github_app: /github-app
       workspaces: /tasks
-      points: /config/points.json
       env:
         AIDENHQ_KERNEL_URL: http://10.231.0.1:3130
         CODEHOST_KEY_FILE: ${secrets.codehost_github_token}
@@ -62,7 +61,6 @@ services:
         LANDS_PLATFORM_REPOS: "${settings.lands_platform_repos}"
         GITHUB_APP_DIR: /github-app
         TASKS_DIR: /tasks
-        OPS_GRANTS_FILE: /config/points.json
         PRODUCT_REPO: "${AIDENHQ_PRODUCT_REPO:-}"
         INSTANCE_REPO: "${AIDENHQ_INSTANCE_REPO:-}"
         MODULES_REPO: "${settings.modules_repo}"
@@ -72,27 +70,18 @@ providers:
   executor:
     url: http://codehost-github:8100/aidenhq/v1/executor
     auth: codehost_github_token
-  # The kernel's check jobs take a repo's tree at a commit from here (POST /ops/snapshot), asked with the token of the module
-  # that asked for the check: that module's snapshot grant decides what it may check.
-  snapshot:
-    url: http://codehost-github:8100/ops/snapshot
 writes:
   push: { args: schemas/push.json, floor: 0 }
   pr: { args: schemas/pr.json, floor: 0 }
   merge: { args: schemas/merge.json, floor: 0 }
   close: { args: schemas/close.json, floor: 0 }
   create_repo: { args: schemas/create_repo.json, floor: 0 }
-# Other modules' GitHub access without the key: a module contributes { token: { repos, perms }, snapshot: { repos },
-# clone: { repos } } here (requires: [codehost-github]; repos are owner/name, owner/* or */*, anything the App covers) and calls
-# POST /ops/token {repo, perms} (a token narrowed to that repo and those permissions, ≤1h; repo owner/* asks for an org-wide
-# one, which only a grant on owner/* or */* allows; it answers {token, expires_at, app: {slug}}), /ops/snapshot {repo, ref} (a tar.gz with no .git and no credentials) or /ops/clone
-# {repo, ref, into} (a credential-free clone in task `into`'s workspace, when the kernel's POST /v1/jobs/workspace says the
-# caller dispatches that task's agent) with its own module token.
-points:
-  ops: { schema: schemas/ops.json }
-# Its own checks (the merge queue's reviewer eval: kernel.checks) read the repos it lands, through its own snapshot op.
-contributes:
-  codehost-github.ops:
-    - snapshot: { repos: [ "*/*" ] }
+# Other modules' GitHub access without the key: a module declares `codehost: { token: { repos, perms }, snapshot: { repos },
+# clone: { repos } }` in its own module.yaml (owner authority) and asks the kernel's POST /v1/codehost/:op with its own token.
+# The kernel checks that grant and calls /ops/token, /ops/snapshot or /ops/clone here with this module's key: only the kernel
+# calls them (kernel/src/codehost.ts).
+# Its own checks (the merge queue's reviewer eval: kernel.checks) read the repos it lands, through the kernel's broker.
+codehost:
+  snapshot: { repos: [ "*/*" ] }
 generated_secrets:
   - codehost_github_token

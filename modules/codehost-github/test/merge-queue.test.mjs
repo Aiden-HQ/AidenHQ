@@ -67,7 +67,7 @@ async function setup(t, { prs, cacheDir = mkdtempSync(join(tmpdir(), "codehost-m
   const app = { token: async (org, o) => JSON.stringify(o.permissions ?? {}), createRepo: async () => "created" };
   const handle = createService({
     key: "ch-key", kernelUrl: kernel.url, cacheDir, app, gh: github.gh, agentsOrg: "acme-agents", remoteUrl,
-    productRepo: "acme/aidenhq", modulesRepo: "acme/aidenhq-modules", landsPlatformRepos, grants: () => [], now: () => new Date(clock.t),
+    productRepo: "acme/aidenhq", modulesRepo: "acme/aidenhq-modules", landsPlatformRepos, now: () => new Date(clock.t),
   });
   const svc = await listen((req, res) => void handle(req, res));
   t.after(() => { kernel.s.close(); svc.s.close(); });
