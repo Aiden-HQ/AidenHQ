@@ -100,8 +100,13 @@ export class Paperclip {
     return this.issues({ originKind: "routine_execution", status, limit: String(limit), originId: routineId || undefined });
   }
 
+  /** The company's routines (id, title, concurrencyPolicy, ...). */
+  async routines(): Promise<any[]> {
+    return (await this.api("GET", `/api/companies/${this.company}/routines`)) ?? [];
+  }
+
   async runRoutine(title: string, variables?: any) {
-    const routine = (await this.api("GET", `/api/companies/${this.company}/routines`)).find((r: any) => r.title === title);
+    const routine = (await this.routines()).find((r: any) => r.title === title);
     if (!routine) throw new Error(`routine "${title}" not found (run scripts/paperclip-setup.mjs)`);
     return this.api("POST", `/api/routines/${routine.id}/run`, { source: "api", variables });
   }

@@ -50,10 +50,6 @@ export class Board {
   }
 }
 
-/**
- * Routine run tasks that ended blocked (e.g. configuration_incomplete) and were overtaken: a later run of the same routine
- * finished done. → [{ issue, by }] (by: the newest such run). Filters here too: a list may hold more than was asked for.
- */
 /** A routine run task, as far as staleRoutineRuns reads it. */
 interface RoutineIssue {
   originKind?: string;
@@ -62,9 +58,15 @@ interface RoutineIssue {
   createdAt: string;
 }
 
-export function staleRoutineRuns<I extends RoutineIssue>(blocked: I[], done: I[]): { issue: I; by: I }[] {
+/**
+ * Routine run tasks that ended blocked (e.g. configuration_incomplete) and were overtaken: a later run of the same routine
+ * finished done. → [{ issue, by }] (by: the newest such run). Filters here too: a list may hold more than was asked for.
+ * A routine in `perEvent` (concurrency always_enqueue: each run is its own event, such as one labelled issue) is never
+ * overtaken: another event's run finishing says nothing about this one's work.
+ */
+export function staleRoutineRuns<I extends RoutineIssue>(blocked: I[], done: I[], perEvent: Set<string> = new Set()): { issue: I; by: I }[] {
   const run = (i: I | undefined, status: string) => i?.originKind === "routine_execution" && i.status === status && i.originId;
-  return blocked.filter((b) => run(b, "blocked")).flatMap((b) => {
+  return blocked.filter((b) => run(b, "blocked") && !perEvent.has(b.originId!)).flatMap((b) => {
     const by = done.filter((d) => run(d, "done") && d.originId === b.originId && d.createdAt > b.createdAt).sort((x, y) => y.createdAt.localeCompare(x.createdAt))[0];
     return by ? [{ issue: b, by }] : [];
   });
