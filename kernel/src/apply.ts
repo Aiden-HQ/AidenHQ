@@ -18,6 +18,8 @@ import { join } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
 import YAML from "yaml";
 import { marketplacesOf, OFFICIAL } from "../../scripts/compiler/sources.ts";
+import { localApply } from "../../modules/codehost-local/src/apply.ts";
+import { LOCAL_ORG } from "./kinds.ts";
 import type { Resolver } from "./net.ts";
 import type { Rec } from "./records.ts";
 
@@ -221,10 +223,21 @@ const run = (cmd: string, args: string[], opts: { cwd?: string } = {}) =>
   new Promise<string>((resolve, reject) => execFile(cmd, args, { ...opts, maxBuffer: 8 * 1024 * 1024, timeout: 60_000 }, (err, out, errOut) => (err ? reject(new Error(`${cmd} ${args[0]}: ${String(errOut || err.message).trim().slice(0, 500)}`)) : resolve(String(out)))));
 
 /**
- * This host's side of an apply: systemd for the unit, the generations file, the lock, and the code host's executor service for
- * the commit (its own key, the one the kernel calls its executor with).
+ * This host's side of an apply: systemd for the unit, the generations file, the lock, and the code host that owns the instance
+ * repo's org for the commit: codehost-local's land for `local/…` (the bare repo on this host), else the codehost-github
+ * service (its own key, the one the kernel calls its executor with). One interface; the provider is the only variation.
  */
-export function hostApply({ repo, stateDir, resolver, codehost }: { repo: string; stateDir: string; resolver: Resolver; codehost: () => { url: string; key: string } | undefined }): ApplyHost {
+export function hostApply({ repo, stateDir, resolver, codehost, local }: {
+  repo: string; stateDir: string; resolver: Resolver; codehost: () => { url: string; key: string } | undefined;
+  /** codehost-local, when enabled: the instance repo's bare git dir on this host and its slug. */
+  local: () => { bare: string; repo: string } | undefined;
+}): ApplyHost {
+  const provider = (s: Source): ApplyHost["codehost"] => {
+    if (String(s.repo).split("/")[0]!.toLowerCase() !== LOCAL_ORG) return { read: (x) => call<Read>("read", x), land: (x) => call<{ landed: string }>("land", x as Source) };
+    const l = local();
+    if (!l) throw new Error(`${s.repo} is on this server, but codehost-local isn't enabled here`);
+    return localApply({ bare: l.bare, instanceRepo: l.repo });
+  };
   async function call<T>(op: "read" | "land", body: Source): Promise<T> {
     const c = codehost();
     if (!c?.key) throw new Error("the code host (codehost-github) isn't installed here, so nothing can land on the instance repo");
@@ -248,7 +261,7 @@ export function hostApply({ repo, stateDir, resolver, codehost }: { repo: string
   }
   const genFile = join(stateDir, "generations.jsonl");
   return {
-    codehost: { read: (s) => call<Read>("read", s), land: (s) => call<{ landed: string }>("land", s as Source) },
+    codehost: { read: (s) => provider(s).read(s), land: (s) => provider(s).land(s) },
     // RemainAfterExit: the finished unit stays loaded, so its result can be read and its name can't start a second apply.
     launch: async (u, sha) => void (await run("systemd-run", ["--user", `--unit=${u}`, "-p", "RemainAfterExit=yes", `--working-directory=${repo}`, `--setenv=PATH=${process.env.PATH ?? "/usr/bin:/bin"}`, `--setenv=HOME=${process.env.HOME ?? ""}`, "--", "bash", join(repo, "ops/apply-config.sh"), sha])),
     async unit(u) {

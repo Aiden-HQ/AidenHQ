@@ -1,6 +1,6 @@
 # Release updates: installs from a release update themselves
 
-Status: built (2026-11-18), first shipped in release 2026.11.3.
+Status: built (2026-11-18), first shipped in release 2026.11.3; through `kernel.apply` since the big switch (P2).
 
 ## Intent
 
@@ -15,58 +15,47 @@ charge: auto-updates on by default, off in Settings, and "Update now" for the im
 
 - **A routine (an agent checks and files a card).** Routines are paused by quiet start, and an update must never rest on an
   agent's say-so. Rejected.
-- **The kernel installs from its own timer.** The install's apply restarts the kernel, so the installer can't be a kernel
-  child, and network fetches would sit in the process that holds the model key. Rejected; the kernel keeps the owner-facing
-  half only.
-- **Re-running the installer from a timer.** It runs as root and redoes host setup each night. Too much. It stays the manual
-  path (below).
-- **Chosen: a user unit on a timer (`aidenhq-update.timer`, hourly) running `ops/update.sh`**, which checks, verifies and
-  installs through the normal apply. The kernel reads what it recorded, tells the owner and serves Update now.
+- **A user unit on a timer that commits, pushes and applies by itself** (built first, 2026-11-18). It was a second way to
+  change the pin and run apply, beside `kernel.apply`: its own landing, lock hand-over, revert pusher and crash recovery.
+  Replaced (simplification P2).
+- **Chosen: the kernel finds and files; `kernel.apply` does the rest.** The check is a child process the kernel runs (its git
+  and network work stays off the kernel's loop); the kernel files what it prepared as a `kernel.apply`, which is tiered,
+  landed and applied as every instance change is.
 
 ## The design
 
-- **Who updates.** Only an instance whose `instance.yaml` has `release:` sourced from `github: Aiden-HQ/aidenhq-distro`.
-  Apply installs the timer while that holds and removes it otherwise, so an instance that pins `product:` by hand (the
-  maintainer's, tracking main) has no updater at all.
+- **Who updates.** Only an instance whose `instance.yaml` has `release:` sourced from `github: Aiden-HQ/aidenhq-distro`. An
+  instance that pins `product:` by hand (the maintainer's, tracking main) follows the release train instead.
 - **The setting.** `settings.auto_update` (kernel setting, `on`/`off`, unset = on). New release installs get `on` written by
-  `ops/setup.sh`; 2026.11.2 installs have it unset, which is on. It shows on the board's Settings > Instance (Updates) and
-  as a switch; changing it is an ordinary settings change.
-- **One run** (`ops/update.sh` → `node kernel/src/updates.ts run`, hourly and on Update now) holds the host's apply lock
-  on fd 9 for its whole length, waiting for an apply in progress as a land does (up to 15 minutes; still busy, an Update
-  now request is kept for the next run). It finishes what a dead run left, checks, and installs when it should.
+  `ops/setup.sh`. Turning it back on is the owner's tap (`auto-update` in `kernel/src/apply-tier.ts`).
+- **The check** (`node kernel/src/updates.ts check`, run by the kernel hourly and at once on Update now) lists the distro
+  repo's release tags (`git ls-remote` over https) newer than the release followed and takes the newest that passes
+  verification (below): a refused one is told to the owner once and the next older is tried; a network error waits for the
+  next check, with no message. The result goes to `data/updates/state.json` and a display copy at
+  `~/.local/state/aidenhq/board/updates.json` (the board's read-only mount).
 - **Release names** are the cut date, `2026.11.18`; a second cut that day is `2026.11.18.1` (the distro's nightly). They
   compare part by part as numbers: `2026.11.18` < `2026.11.18.1` < `2026.11.19`.
-- **The check** lists the distro repo's release tags (`git ls-remote` over https) newer than the release followed and
-  takes the newest that passes verification (below): a refused one is told to the owner once and the next older is tried;
-  a network error stops the check until the next run, with no message. The result goes to `data/updates/state.json` and
-  a display copy at `~/.local/state/aidenhq/board/updates.json` (the board's read-only mount): the release followed, the
-  one available with its `notes` (an optional list in the release file) and a compare link.
-- **When it installs.** The owner asked (Update now), or auto-updates are on and it is 02:00-05:00 in `settings.timezone`
-  and this release never failed here. This is maintenance, not scheduled agent work, so **quiet start does not hold it**.
-- **The install:** verify again; make sure the kernel commit is on the product checkout's `origin/main` (an installer
-  checkout's origin is GitHub, which has it; a local mirror gets it pushed, fast-forward only); one instance commit moving
-  `product:` and `release.{name,sha}` (dropping an obsolete `aidenhq` marketplace entry), as an upgrade by hand does, recorded in the state as
-  `installing` before it is pushed; then `ops/apply-config.sh` on the instance's main, handed the held lock
-  (`ops/lib/apply-lock.sh`). Main, not the commit alone: a commit another writer pushed after it is applied with it rather
-  than refused. Apply's output goes to a file, so nothing it leaves running holds the updater. Never a `git pull`.
-- **Rollback.** Apply already treats a failed post-switch health check as a failed generation and re-applies the last known
-  good one (the previous release) with its data snapshot. The updater then reverts its commit on the instance's main, so
-  git and the pin say what runs, records the release as failed (the night never retries it; Update now does) and tells the
-  owner why, in the apply's own words.
-- **A run that dies mid-install** (a reboot, an OOM kill) leaves `installing`. The next run first lets apply finish its own
-  dead generation (`--recover`), then reads what the host applied in full (`data/applied-product`): the new kernel is
-  installed; anything else is a failed install, its pin commit reverted and the release marked failed, so no later
-  instance commit can bring it back at any hour. A pin commit that never reached main changed nothing.
-- **Telling the owner.** Each event (available, installed, failed, refused, an Update now that couldn't start) is a line in the state file; the kernel
-  (`createUpdates`) sends each once through the owner channels' line (kernel.db `update_notices`). Aiden can read the same
-  state through `fleet_generation_status` (`release`), when the agent holds that tool.
+- **When it is filed.** The owner asked (Update now), or auto-updates are on, it is 02:00-05:00 in `settings.timezone` and
+  this release never failed here. Maintenance, not agent work: quiet start does not hold it.
+- **Preparing it:** the kernel commit is put on the product checkout's `origin/main`, where the planner reads the product move
+  (GitHub has it; a local mirror gets a fast-forward push); one commit moving `product:` and `release.{name,sha}` (dropping an
+  obsolete `aidenhq` marketplace entry) on the instance repo's branch `release/<name>`, built on its main.
+- **Filing it:** the kernel files a task of its own for the platform engineer (no agent works on it) and a `kernel.apply` of
+  that commit on it, as the release train files a product bump. The planner tiers it like any apply: a `release:` move along
+  the same source while auto-updates are on is the AI reviewer's (`release-pin`, Tier 1: the owner's standing authority),
+  otherwise the owner's after the reviewer; new module authority the release brings is the owner's either way. The code host
+  that owns the instance repo lands it (codehost-local's land for `local/…`, the bare repo on this host; codehost-github's
+  otherwise) and the kernel's apply executor runs `ops/apply-config.sh` once.
+- **The outcome.** The kernel follows the record: done is installed; anything else (a rejected card, a failed apply) is
+  failed, with its reason, and the night never files that release again (Update now does, while it is still newer). A failed
+  apply leaves its pin landed, as any apply does: apply's own health check has put the host back on the last good generation.
+- **Telling the owner.** Each event (available, installed, failed, refused, an Update now that couldn't start) is a line in
+  the state file; the kernel sends each once through the owner channels' line (kernel.db `update_notices`).
 - **Update now.** The board's Settings > Instance links to the kernel's `/updates` page (admin listener, signed-in admin,
-  CSRF), which shows the release and what changed; its button writes `now.json` and starts the unit. The board never
-  decides it: one-click owner actions live on the kernel's pages.
-- **Upgrading from 2026.11.2 by hand.** Run the installer again (`curl -fsSL https://get.aidenhq.ai | sh`). It verifies the
-  new release as on day one (baked digest, pinned shas, tree checks), refuses an older release than the instance runs, and
-  the new kernel's `ops/setup.sh` moves the pin (`node kernel/src/updates.ts pin`, the same commit) before its apply; if
-  that apply fails, setup reverts the pin commit before it stops. From 2026.11.3 on, the updater takes over.
+  CSRF): its button files the release now.
+- **Upgrading by hand.** Run the installer again (`curl -fsSL https://get.aidenhq.ai | sh`). It verifies the new release as
+  on day one, refuses an older release, and the new kernel's `ops/setup.sh` moves the pin (`node kernel/src/updates.ts pin`)
+  before its apply. That is setup's bootstrap and the recovery when the updater itself is broken, not a runtime path.
 
 ## Security model
 
@@ -88,10 +77,9 @@ Hard gates, from day one (no observe mode):
   `workflow_dispatch` on the tag ref (the distro's nightly dispatches it, since a tag pushed with `GITHUB_TOKEN` starts no
   workflow), never a run on a branch (GitHub's API). A run still in progress is checked again next time. A tag pushed without
   the release workflow passing, or a hand-edited asset, is refused and the owner told once.
-- **Authority.** Auto-updates on is the owner's standing authority; Update now is an admin's tap on the kernel's page. No
-  agent can start an install: the unit is started by the timer or the kernel's admin page, and the request file lives in
-  the data dir, which no job sees (`kernel/src/sandbox-config.ts` hides it). Turning `auto_update` from off to on through the fleet should
-  be the owner's tap (see the tiers note below).
+- **Authority.** Auto-updates on is the owner's standing authority, so a release move along the same source is the AI
+  reviewer's; with it off, every release is the owner's tap. Update now is an admin's tap on the kernel's page. No agent can
+  file a release: the kernel files it, from its own check.
 
 What a compromised distro repo could do: with push access to `main` and the release workflow, an attacker can publish a
 release that passes every check above. The kernel and module commits must still be on the official repositories' `main`
@@ -105,20 +93,14 @@ installer bakes in, e.g. minisign over the release file and its image digests), 
 kernel instead of pulling them; either would cut the trust to the key holder or to the source repos. They are the next
 step if the distro repo gains more maintainers.
 
-**An update accepts new module authority without a card.** A product bump through the fleet goes through the authority
-diff (`tiers.mjs`), and new write authority is the owner's tap. A release update doesn't: the owner's standing
-`auto_update: on` is that tap, for exactly the releases the maintainer cut and tested. The release notes should say when a
-release adds authority. If that's not acceptable, `auto_update: off` leaves every release to Update now.
-
-**Tiers note.** Enrolling an instance in unattended updates through the fleet is the owner's tap after the reviewer
-(`services/runner/src/tiers.mjs`, its own eval-gated PR): adding or moving `release:`, and `auto_update` from off back to on
-or unset. Dropping the release pin and turning auto-updates off stay ordinary changes.
+**New module authority.** A release is planned like any product move: the authority diff it brings is the owner's tap,
+whatever `auto_update` says.
 
 ## Left out
 
 - Channels other than stable releases (betas), pinning to a release line, or delaying a release: no knob beyond on/off.
 - Host-level setup a release might need (new packages, units outside apply): an update runs apply only. A release that needs
   `ops/setup.sh` again says so in its notes, and the owner reruns the installer.
-- Retrying a failed release on its own: an apply that failed (a registry blip included) waits for Update now. A check or
-  install that stops before anything moved is retried at the next run.
+- Retrying a failed release on its own: it waits for Update now. A check that stops before anything was filed is retried at
+  the next run.
 - Updating instances that pin product by hand: they follow main through the Platform Engineer, as before.

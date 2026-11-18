@@ -186,9 +186,16 @@ function instanceParts(s: any) {
   // Module authority: what the modules hand out moves with the pins and lists, and with an agent's grants override
   // (overrides.agents.<key>.connections, folded into its module's def, so the authority diff judges it like a module grant).
   if (["product", "modules", "marketplaces", "release", "product_fork"].some((k) => keys.includes(k)) || !eq(grantOverrides(base), grantOverrides(head))) parts.push(...moduleAuthorityParts(s, base, head));
-  // Following a release enrols the instance in unattended updates (docs/design/release-updates.md): adding or moving the pin is
-  // the owner's, whatever it resolves to; dropping it leaves the module parts above to judge.
-  if (keys.includes("release") && head.release != null) parts.push(OWNER_AFTER_REVIEW("release-pin", "adds or moves the release this instance follows, and a release install updates itself: the owner's authority"));
+  // Following a release is the owner's (docs/design/release-updates.md): adding the pin, changing where releases come from, or
+  // moving it while auto-updates are off. Auto-updates on (both sides; unset is on) is the owner's standing authority to move
+  // along the same source, so that move is the reviewer's (the module parts above still raise new authority to the owner).
+  // Dropping the pin leaves the module parts above to judge.
+  const auto = (i: any) => i.settings?.auto_update !== "off";
+  if (keys.includes("release") && head.release != null) {
+    parts.push(base.release != null && eq(base.release?.source, head.release?.source) && auto(base) && auto(head)
+      ? T(1, "release-pin", "moves the release this instance follows along its source while auto-updates are on: the owner's standing authority")
+      : OWNER_AFTER_REVIEW("release-pin", "adds the release this instance follows, changes its source, or moves it while auto-updates are off: the owner's authority"));
+  }
   else if (keys.includes("release") && !parts.length) parts.push(T(1, "release-pin", "the release pin is removed; what it resolved to is unchanged"));
   for (const k of keys) {
     if (k === "modules" || k === "marketplaces" || k === "release" || k === "product_fork") continue; // the module parts above (a release by what it resolves to)

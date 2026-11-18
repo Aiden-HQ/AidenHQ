@@ -570,6 +570,12 @@ test("a release move is tiered by the modules it resolves to, and following one 
   const run = (st) => apply(["instance.yaml"], { "instance.yaml": `product: ${PIN_A}\nmodules: []\n` }, { "instance.yaml": rel("1".repeat(40)) }, { modules: {}, ...st });
   const same = run({});
   assert.deepEqual([same.tier, Boolean(same.reviewFirst), same.rule], [2, true, "release-pin"], "following a release enrols unattended updates: the owner's after the reviewer");
+  // Moving it along the same source: the reviewer's while auto-updates are on (unset is on), the owner's while off.
+  const move = (b, h) => apply(["instance.yaml"], { "instance.yaml": b }, { "instance.yaml": h }, { modules: {} });
+  assert.deepEqual([move(rel("1".repeat(40)), rel("2".repeat(40))).tier, move(rel("1".repeat(40)), rel("2".repeat(40))).rule], [1, "release-pin"], "auto-updates on: the release moves on the reviewer's yes");
+  const off = (t) => `${t}settings: { auto_update: "off" }\n`;
+  assert.equal(move(off(rel("1".repeat(40))), off(rel("2".repeat(40)))).tier, 2, "auto-updates off: the owner's");
+  assert.equal(move(rel("1".repeat(40)), rel("2".repeat(40)).replace("acme/aidenhq-distro", "evil/aidenhq-distro")).tier, 2, "another release source: the owner's");
   const drop = apply(["instance.yaml"], { "instance.yaml": rel("1".repeat(40)) }, { "instance.yaml": `product: ${PIN_A}\nmodules: []\n` }, { modules: {} });
   assert.deepEqual([drop.tier, drop.rule], [1, "release-pin"], "dropping the release: AI review only");
   const official = (repo) => ({ product: PIN_A, modules: [], marketplaces: [{ name: "aidenhq", source: { source: "github", repo }, sha: "2".repeat(40) }] });

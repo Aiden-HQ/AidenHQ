@@ -1,7 +1,7 @@
 // Release updates (docs/design/release-updates.md), end to end on local repositories standing in for GitHub: the distro, kernel
-// and modules repos under <base>/Aiden-HQ/, an instance repo with a bare origin, a product checkout. The published asset and
-// the workflow run are a fake download; the apply is a fake that records the commit it was given (apply's own health check
-// and auto-revert are scripts/test/apply-atomic.test.mjs).
+// and modules repos under <base>/Aiden-HQ/, an instance repo with a bare origin (codehost-local's, as setup makes it), a product
+// checkout. The published asset and the workflow run are a fake download; the kernel's record is a fake whose state the test
+// sets (the planner and the apply executor have their own tests).
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
@@ -10,7 +10,8 @@ import { DatabaseSync } from "node:sqlite";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import YAML from "yaml";
-import { Refused, check, compareRelease, createUpdates, pinTo, readState, run, verify } from "../src/updates.ts";
+import { Refused, check, compareRelease, createUpdates, pinTo, readState, verify } from "../src/updates.ts";
+import { localApply } from "../../modules/codehost-local/src/apply.ts";
 
 // The owner's own git config (signing, hooks) never reaches the fixtures or the updater's commits.
 process.env.GIT_CONFIG_GLOBAL = "/dev/null";
@@ -78,35 +79,38 @@ settings:
   git(root, "clone", "-q", join(root, "inst.git"), "inst");
   // The product checkout: its origin is the official kernel repo, as install.sh clones it.
   git(root, "clone", "-q", join(base, "Aiden-HQ", "AidenHQ.git"), "product");
-  const applied = [];
   const published = {};
   for (const [n, f] of Object.entries(files)) published[n] = { ...f, tested: { ci_run: `https://github.com/Aiden-HQ/aidenhq-distro/actions/runs/${n === "2026.11.3" ? 22 : 11}`, suites: ["kernel-only", "swap"] } };
   const runs = { 11: { path: ".github/workflows/release.yml", head_sha: D1, head_branch: "2026.11.2", event: "push", status: "completed", conclusion: "success" }, 22: { path: ".github/workflows/release.yml", head_sha: D2, head_branch: "2026.11.3", event: "push", status: "completed", conclusion: "success" } };
   const d = {
-    base, fetch: { cacheDir: join(root, "cache") }, inst: join(root, "inst"), product: join(root, "product"), dir: join(root, "state", "updates"), board: join(root, "state", "board", "updates.json"), applied: join(root, "applied-product"),
+    base, fetch: { cacheDir: join(root, "cache") }, inst: join(root, "inst"), product: join(root, "product"), dir: join(root, "state", "updates"), board: join(root, "state", "board", "updates.json"),
     download: async (u) => {
       const a = /releases\/download\/([\d.]+)\//.exec(u), r = /actions\/runs\/(\d+)$/.exec(u);
       if (a) return published[a[1]];
       if (r) return runs[r[1]];
       throw new Error(`unexpected ${u}`);
     },
-    applyCode: 0,
-    // A fake apply: records its arguments and the instance main it would apply; good writes the pinned product as applied.
-    apply(args) {
-      git(this.inst, "fetch", "-q", "origin");
-      applied.push([...args, git(this.inst, "rev-parse", "origin/main")]);
-      if (args[0] === "--recover") return { code: 0, out: "" };
-      if (this.applyCode !== 0) return { code: 1, out: "generation 3 failed: checks that passed before failed\napply alert: generation 3 failed (checks that passed before the switch fail now: kernel) and was reverted to generation 2; this host stays there until the instance's main moves; log x" };
-      writeFileSync(this.applied, YAML.parse(git(this.inst, "show", "origin/main:instance.yaml")).product);
-      return { code: 0, out: "generation 3 is good" };
-    },
   };
   const pinned = () => { git(d.inst, "fetch", "-q", "origin"); return YAML.parse(git(d.inst, "show", "origin/main:instance.yaml")); };
-  return { root, d, K1, K2, M1, M2, D1, D2, applied, published, runs, pinned, distro, files };
+  return { root, d, K1, K2, M1, M2, D1, D2, published, runs, pinned, distro, files };
 }
 
 
-const ask = (w, release, by = "account:a1") => { mkdirSync(w.d.dir, { recursive: true }); writeFileSync(join(w.d.dir, "now.json"), JSON.stringify({ release, by })); };
+
+/** The kernel's side over a world: the check runs in-process at `now`; filing and records are fakes the test reads and sets. */
+function kernelSide(w, { lines = [], filed = [], now = DAY } = {}) {
+  w.records = {};
+  let n = 0, due = false;
+  const u = createUpdates({
+    db: new DatabaseSync(":memory:"), dir: w.d.dir, board: w.d.board, ownerLine: (t) => lines.push(t),
+    check: async (asked) => void (await check({ ...w.d, now: () => now }, asked)),
+    file: async (r) => { const record = `rec-${++n}`; filed.push({ ...r, record }); w.records[record] = { state: "review" }; return { record, task: `task-${n}` }; },
+    record: (id) => w.records[id], close: async () => {},
+    // A pass checks only when an hour has gone by (or Update now): the test moves the clock on with checkNow().
+    now: () => (due ? (due = false, Date.now() + 10 * 3_600_000 * ++n) : Date.now()),
+  });
+  return Object.assign(u, { checkNow: () => { due = true; } });
+}
 
 test("nightly names sort by date, and a day's second cut between that day and the next", () => {
   const names = ["2026.11.19", "2026.11.18.1", "2026.11", "2026.11.18", "2026.12.1", "2026.11.2", "2026.11.18.2"];
@@ -115,20 +119,20 @@ test("nightly names sort by date, and a day's second cut between that day and th
 
 test("a newer release is found and verified; by day nothing installs, and the owner is told once", async () => {
   const w = world();
-  const { state: s, install } = await check({ ...w.d, now: () => DAY });
+  const s = await check({ ...w.d, now: () => DAY });
   assert.equal(s.current.name, "2026.11.2");
   assert.equal(s.available.name, "2026.11.3");
   assert.equal(s.available.kernel, w.K2);
   assert.deepEqual(s.available.notes, ["Updates install themselves"]);
-  assert.equal(install, null, "by day: no install");
+  assert.equal(s.ready, undefined, "by day: nothing is prepared");
   const shown = JSON.parse(readFileSync(w.d.board, "utf8"));
   assert.equal(shown.available.name, "2026.11.3");
   assert.equal(shown.available.kernel, undefined, "the board's copy carries what it shows only");
   const lines = [];
-  const u = createUpdates({ db: new DatabaseSync(":memory:"), dir: w.d.dir, ownerLine: (t) => lines.push(t), start: () => {} });
-  u.tick(); await check({ ...w.d, now: () => DAY }); u.tick();
+  const u = kernelSide(w, { lines });
+  await u.tick(); await u.tick();
   assert.equal(lines.length, 1);
-  assert.match(lines[0], /2026\.11\.3 is available\. It installs tonight between 2:00 and 5:00 \(Asia\/Dubai\)/);
+  assert.match(lines[0], /2026\.11\.3 is available\. It is filed for install tonight between 2:00 and 5:00 \(Asia\/Dubai\)/);
 });
 
 test("verification refuses a mismatched sha, a stamp from another or a failed run, a kernel off main, a module off history and a downgrade", async () => {
@@ -167,111 +171,84 @@ test("verification refuses a mismatched sha, a stamp from another or a failed ru
   git(side.distro.src, "tag", "2026.11.4", D4);
   side.distro.push();
   await assert.rejects(verify(side.d, git(side.d.inst, "show", "HEAD:instance.yaml"), "2026.11.4", D4), /kernel [0-9a-f]{12} isn't on Aiden-HQ\/AidenHQ's main/);
-  const { state: s, install } = await check({ ...side.d, now: () => NIGHT });
+  const s = await check({ ...side.d, now: () => NIGHT });
   assert.equal(s.available.name, "2026.11.3");
   assert.ok(s.events.some((e) => e.id === "refused:2026.11.4"));
-  assert.deepEqual(install, { release: "2026.11.3", by: "auto-update" });
+  assert.deepEqual([s.ready.release, s.ready.by], ["2026.11.3", "auto-update"]);
 });
 
 test("a network error is retried, never reported as a refused release", async () => {
   const w = world();
   w.d.download = async () => { throw new Error("api.github.com answered 503"); };
-  const { state: s, install } = await check({ ...w.d, now: () => NIGHT });
+  const s = await check({ ...w.d, now: () => NIGHT });
   assert.equal(s.available, null);
   assert.match(s.error, /503/);
   assert.ok(!s.events?.some((e) => e.id.startsWith("refused:")));
-  assert.equal(install, null);
+  assert.equal(s.ready, undefined);
 });
 
-test("auto-updates off: at night the release is only offered, never installed", async () => {
+test("auto-updates off: at night the release is only offered, never prepared", async () => {
   const w = world({ auto: "off" });
-  const s = await run({ ...w.d, now: () => NIGHT });
+  const s = await check({ ...w.d, now: () => NIGHT });
   assert.equal(s.auto, false);
   assert.equal(s.available.name, "2026.11.3");
-  assert.match(s.events.at(-1).text, /Auto-updates are off: install it from Settings > Instance \(Update now\)/);
-  assert.deepEqual(w.applied, []);
+  assert.match(s.events.at(-1).text, /Auto-updates are off: file it from Settings > Instance \(Update now\)/);
+  assert.equal(s.ready, undefined);
 });
 
-test("Update now installs: one pin commit (product, release, the obsolete marketplace entry dropped), then the instance's main is applied", async () => {
-  const w = world({ auto: "off" });
-  await run({ ...w.d, now: () => DAY });
-  let started = 0;
-  const u = createUpdates({ db: new DatabaseSync(":memory:"), dir: w.d.dir, ownerLine: () => {}, start: () => started++ });
-  assert.throws(() => u.requestNow("2026.11.9", "account:a1"), /isn't the one available/);
-  assert.match(u.requestNow("2026.11.3", "account:a1"), /Installing 2026\.11\.3 now/);
-  assert.equal(started, 1);
-  const s = await run({ ...w.d, now: () => DAY });
-  assert.equal(s.last.outcome, "installed");
-  assert.equal(s.last.by, "account:a1");
-  assert.equal(s.current.name, "2026.11.3");
-  assert.equal(s.installing, undefined);
-  assert.equal(existsSync(join(w.d.dir, "now.json")), false, "the request is spent");
-  const p = w.pinned();
+test("the night files the release as one kernel.apply, which codehost-local lands; its outcome is told once", async () => {
+  const w = world();
+  // A local product mirror (origin a path), as setup makes: the verified kernel goes onto its main, where the planner reads it.
+  const mirror = join(w.root, "mirror.git");
+  git(w.root, "clone", "-q", "--bare", join(w.root, "gh", "src", "AidenHQ"), mirror);
+  git(join(w.root, "gh", "src", "AidenHQ"), "push", "-q", mirror, `${w.K1}:refs/heads/main`, "--force");
+  git(w.d.product, "remote", "set-url", "origin", mirror);
+  const lines = [], filed = [];
+  const u = kernelSide(w, { lines, filed, now: NIGHT });
+  await u.tick();
+  assert.equal(git(mirror, "rev-parse", "main"), w.K2);
+  assert.equal(filed.length, 1);
+  const r = filed[0];
+  assert.deepEqual([r.release, r.branch, r.by], ["2026.11.3", "release/2026.11.3", "auto-update"]);
+  assert.equal(w.pinned().product, w.K1, "the instance's main is untouched until the record lands it");
+  // The code host's side of that record, on the same bare repo: what the planner reads, then the land.
+  const host = localApply({ bare: join(w.root, "inst.git"), instanceRepo: "local/aidenhq-instance" });
+  const read = await host.read({ repo: "local/aidenhq-instance", branch: r.branch, sha: r.sha });
+  assert.deepEqual(read.files, ["instance.yaml"]);
+  const p = YAML.parse(read.texts.head["instance.yaml"]);
   assert.equal(p.product, w.K2);
   assert.deepEqual(p.release, { name: "2026.11.3", source: { source: "github", repo: "Aiden-HQ/aidenhq-distro" }, sha: w.D2 });
-  assert.equal(p.marketplaces, undefined, "the `aidenhq` marketplace entry (its only one) is gone, and the key with it");
-  assert.equal(p.settings.auto_update, "off", "the rest of instance.yaml is kept");
-  assert.match(git(w.d.inst, "show", "origin/main:instance.yaml"), /^# acme's AidenHQ\./, "comments kept");
-  assert.deepEqual(w.applied, [[git(w.d.inst, "rev-parse", "origin/main")]], "apply is given the instance's main, not a commit");
-  assert.match(s.events.at(-1).text, /updated to 2026\.11\.3 \(from 2026\.11\.2\)\. What changed: Updates install themselves/);
-  // A local product mirror (origin a path) gets the verified kernel pushed onto its main, where apply looks for it.
-  const n = world();
-  const mirror = join(n.root, "mirror.git");
-  git(n.root, "clone", "-q", "--bare", join(n.root, "gh", "src", "AidenHQ"), mirror);
-  git(join(n.root, "gh", "src", "AidenHQ"), "push", "-q", mirror, `${n.K1}:refs/heads/main`, "--force");
-  git(n.d.product, "remote", "set-url", "origin", mirror);
-  assert.equal((await run({ ...n.d, now: () => NIGHT })).last.outcome, "installed", "the night alone starts it with auto on");
-  assert.equal(git(mirror, "rev-parse", "main"), n.K2);
-});
-
-test("an Update now that can't go ahead is told to the owner, and a request is kept until a run takes it", async () => {
-  const w = world();
-  await run({ ...w.d, now: () => DAY });
-  ask(w, "2026.11.9");
-  assert.match((await run({ ...w.d, now: () => DAY })).events.at(-1).text, /Update now didn't start: 2026\.11\.9 isn't the release available any more/);
-  // Stopped at install, before anything moved (here the product checkout's origin isn't official): said, not silent.
-  git(w.d.product, "remote", "set-url", "origin", "https://example.com/acme/fork.git");
-  ask(w, "2026.11.3");
-  const s = await run({ ...w.d, now: () => DAY });
-  assert.ok(s.events.some((e) => e.id === "refused:2026.11.3" && /checks at install \(the product checkout's origin is/.test(e.text)));
-  assert.equal(w.pinned().product, w.K1, "nothing moved");
-  assert.deepEqual(w.applied, []);
-});
-
-test("a failed health check: the pin is reverted, the owner told, and the night doesn't try that release again", async () => {
-  const w = world();
-  w.d.applyCode = 1;
-  const s = await run({ ...w.d, now: () => NIGHT });
-  assert.equal(s.last.outcome, "failed");
-  assert.match(s.last.why, /generation 3 failed \(checks that passed before the switch fail now: kernel\) and was reverted to generation 2/);
-  assert.equal(w.pinned().product, w.K1, "instance main pins the release that runs again");
-  assert.equal(w.pinned().release.name, "2026.11.2");
-  assert.match(git(w.d.inst, "log", "-1", "--format=%s", "origin/main"), /update: back to 2026\.11\.2 \(2026\.11\.3 failed to install\)/);
-  assert.match(s.events.at(-1).text, /2026\.11\.3 didn't install: .*This server is back on 2026\.11\.2\. It won't retry on its own/);
-  w.applied.length = 0;
-  const again = await run({ ...w.d, now: () => NIGHT });
-  assert.equal(again.available.name, "2026.11.3", "still offered");
-  assert.deepEqual(w.applied, [], "but the night doesn't install it");
-  ask(w, "2026.11.3");
-  w.d.applyCode = 0;
-  assert.equal((await run({ ...w.d, now: () => DAY })).last.outcome, "installed", "Update now does");
-});
-
-test("a run that died after its pin commit: the next run finishes it as failed, reverts the pin, and the night skips it", async () => {
-  const w = world();
-  writeFileSync(w.d.applied, w.K1);
-  // The run dies in its apply: the pin is on main, `installing` is recorded, nothing settled.
-  await assert.rejects(run({ ...w.d, now: () => NIGHT, apply: () => { throw new Error("killed"); } }), /killed/);
-  assert.equal(readState(w.d.dir).installing.release, "2026.11.3");
+  assert.equal(p.marketplaces, undefined, "the obsolete `aidenhq` marketplace entry (its only one) is gone, and the key with it");
+  assert.match(read.texts.head["instance.yaml"], /^# acme's AidenHQ\./, "comments kept");
+  await assert.rejects(host.land({ repo: "local/aidenhq-instance", branch: r.branch, sha: r.sha, official: { from: { repo: "a/b", sha: w.M1 }, to: null } }), /official modules' marketplace pin/);
+  assert.equal((await host.land({ repo: "local/aidenhq-instance", branch: r.branch, sha: r.sha, official: { from: null, to: null } })).landed, r.sha);
   assert.equal(w.pinned().product, w.K2);
-  // The next run: apply finishes the dead generation (--recover), the host runs 2026.11.2, so the update failed.
-  const s = await run({ ...w.d, now: () => NIGHT });
-  assert.equal(w.applied[0][0], "--recover");
-  assert.equal(s.installing, undefined);
-  assert.equal(s.last.outcome, "failed");
-  assert.match(s.last.why, /stopped before it finished/);
-  assert.equal(w.pinned().product, w.K1, "the pin is back on what runs");
-  assert.equal(w.applied.length, 1, "and the night doesn't try it again");
+  // Still in flight: nothing more is filed; done: installed, told once.
+  await u.tick();
+  assert.equal(filed.length, 1);
+  w.records[r.record] = { state: "done" };
+  await u.tick(); await u.tick();
+  const s = readState(w.d.dir);
+  assert.deepEqual([s.last.outcome, s.current.name, s.flight], ["installed", "2026.11.3", undefined]);
+  assert.equal(lines.filter((l) => /updated to 2026\.11\.3 \(from 2026\.11\.2\)\. What changed: Updates install themselves/.test(l)).length, 1);
+});
+
+test("a failed record: the owner is told why, the night doesn't file it again, Update now does", async () => {
+  const w = world();
+  const lines = [], filed = [];
+  const u = kernelSide(w, { lines, filed, now: NIGHT });
+  await u.tick();
+  w.records[filed[0].record] = { state: "failed", outcome: { text: "**Landed, but the apply failed** (exit-code)\nlog" } };
+  await u.tick();
+  assert.equal(readState(w.d.dir).last.outcome, "failed");
+  assert.ok(lines.some((l) => /2026\.11\.3 didn't install: \*\*Landed, but the apply failed\*\* \(exit-code\)\. The night won't file it again/.test(l)));
+  u.checkNow();
+  await u.tick();
+  assert.equal(filed.length, 1, "the night skips it");
+  assert.throws(() => u.requestNow("2026.11.9", "account:a1"), /isn't the one available/);
+  assert.match(u.requestNow("2026.11.3", "account:a1"), /Filing 2026\.11\.3 now/);
+  await u.tick();
+  assert.deepEqual([filed.length, filed[1].by], [2, "account:a1"], "Update now files it");
 });
 
 test("the installer run again moves the pin to its release; the same release is a repair, an older one is refused", () => {
