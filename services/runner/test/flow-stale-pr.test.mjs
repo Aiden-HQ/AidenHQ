@@ -20,12 +20,16 @@ const scenario = (name, body, { env = {}, grants = { autonomy: "off", agents: {}
     });
     const setPrs = (prs) => writeFileSync(join(t.dir, "github-prs.json"), JSON.stringify(prs));
     const busy = () => (t.paperclip.activity.at(-1)?.running ?? []).some((r) => r.mode !== "merging PRs");
-    /** A fresh runner (state kept): a poll runs its own checks at once. */
-    const restart = async () => {
+    /**
+     * A fresh runner (state kept): a poll runs its own checks at once. `meanwhile` changes the fakes while no runner is up, so
+     * the old runner never acts on the change (a post it lands just before its exit would be said again by the new one).
+     */
+    const restart = async (meanwhile = () => {}) => {
       await t.waitFor("no run going", () => !busy());
       const exited = new Promise((r) => t.runner.once("exit", r));
       t.runner.kill("SIGTERM");
       await exited;
+      meanwhile();
       t.startRunner();
     };
     /** The task's stored PR number on one of its branches. */
@@ -149,7 +153,7 @@ scenario("a merge request", ({ t, setPrs, stored, stale, merged, mergeCards }) =
   it("a transient read failure is not reported stale, and the PR is still merged on the next try", async () => {
     stored("feat/ours", url(30));
     setPrs({ 30: { branch: "feat/ours", files: ["x.txt"], checks: "SUCCESS" } });
-    writeFileSync(join(t.dir, "pr-read-failures.json"), JSON.stringify({ n: 1 }));
+    writeFileSync(join(t.dir, "pr-read-failures.json"), JSON.stringify({ n: 1, number: 30 }));
     const before = mergeCards().length;
     t.step("none\naidenhq merge https://github.com/acme/app/pull/30");
     await t.turn("Merge it.");
@@ -201,8 +205,7 @@ scenario("the automatic merges, with the notice refused", ({ t, setPrs, restart,
     assert.equal(stale(28).length, 0, "the board refused it: nothing is recorded as sent");
     assert.equal(merged().length, 0, "and nothing is merged");
     assert.equal(JSON.parse(stateValue("auto_merges") ?? "{}")?.part?.prs?.length, 1, "still queued for the next pass");
-    t.paperclip.refuseComment.set("part", { text: "is stale", status: 422, times: 0 });
-    await restart();
+    await restart(() => t.paperclip.refuseComment.set("part", { text: "is stale", status: 422, times: 0 }));
     await t.waitFor("the stale line", () => stale(28).length === 1);
     await t.idle(800);
     assert.equal(stale(28).length, 1, "once");
@@ -220,7 +223,7 @@ scenario("the automatic merges, with a GitHub blip", ({ t, setPrs, restart, stor
     stored("feat/ours", url(29));
     askMerge(29, url(29));
     setPrs({ 29: { branch: "feat/ours", files: ["x.txt"], checks: "SUCCESS" } });
-    writeFileSync(join(t.dir, "pr-read-failures.json"), JSON.stringify({ n: 1 }));
+    writeFileSync(join(t.dir, "pr-read-failures.json"), JSON.stringify({ n: 1, number: 29 }));
     await restart();
     await t.waitFor("the merge card", () => mergeCards().length === 1);
     assert.equal(JSON.parse(readFileSync(join(t.dir, "pr-read-failures.json"), "utf8")).n, 0, "the blip was hit, then retried");
@@ -323,8 +326,7 @@ scenario("the finished-PR check", ({ t, setPrs, stored, restart, row, stale, onG
     await t.idle(1200);
     assert.equal(stale(35).length, 0, "the board refused it: nothing is recorded as sent");
     assert.equal(row("feat/later").merged, 0, "not read as merged");
-    t.paperclip.refuseComment.set("part", { text: "is stale", status: 422, times: 0 });
-    await restart();
+    await restart(() => t.paperclip.refuseComment.set("part", { text: "is stale", status: 422, times: 0 }));
     await t.waitFor("the stale line", () => stale(35).length === 1);
     await t.idle(800);
     assert.equal(stale(35).length, 1, "once the board takes it");
@@ -334,7 +336,7 @@ scenario("the finished-PR check", ({ t, setPrs, stored, restart, row, stale, onG
     onGithub("feat/landed-later");
     stored("feat/landed-later", url(32));
     setPrs({ 32: { branch: "feat/landed-later", files: ["x.txt"], checks: "SUCCESS", merged: true } });
-    writeFileSync(join(t.dir, "pr-view-failures.json"), JSON.stringify({ n: 1 }));
+    writeFileSync(join(t.dir, "pr-view-failures.json"), JSON.stringify({ n: 1, number: 32 }));
     t.step("none");
     await t.turn("Look again.");
     await t.idle(1200);
@@ -356,7 +358,7 @@ scenario("a published PR's merge after its card", ({ t, setPrs, stored, stale, m
     await t.turn("Ship it.");
     assert.equal(t.toolRuns().at(-1).code, 0, t.toolRuns().at(-1).out);
     // The card's merge reads the PR next, and that read fails once as a blip does before it is retried.
-    writeFileSync(join(t.dir, "pr-read-failures.json"), JSON.stringify({ n: 1 }));
+    writeFileSync(join(t.dir, "pr-read-failures.json"), JSON.stringify({ n: 1, number: 23 }));
     const card = t.paperclip.decide("pr", "approved");
     await t.waitFor("the card's outcome", () => Boolean(t.paperclip.approvals.get(card.id)?.outcome));
     const outcome = t.paperclip.approvals.get(card.id).outcome;
