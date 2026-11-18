@@ -23,20 +23,21 @@ function fake({ task, comments = [], directory = {}, tasks = {}, paused = [] }) 
     directory: async () => directory,
     start: async (req) => {
       if (k.busy) return (k.busy--, { busy: true });
-      const job = { id: `j${++k.n}`, task: task.id, agent: task.assigneeAgentId, state: "running", exit: null, final: "", session: null, timedOut: false };
+      const job = { id: `j${++k.n}`, task: task.id, agent: task.assigneeAgentId, state: "running", exit: null, final: "", session: null, timedOut: false, at: k.n, ended: null, acked: false };
       k.jobs.set(job.id, job);
       k.started.push({ ...req, job: job.id });
       return { job };
     },
-    job: async (id) => k.jobs.get(id),
-    jobsOn: async (wake) => k.started.filter((x) => x.wake === wake).map((x) => k.jobs.get(x.job)),
+    open: async () => [...k.jobs.values()].filter((j) => !j.acked),
+    jobsOf: async (t) => [...k.jobs.values()].filter((j) => j.task === t).sort((a, b) => b.at - a.at),
+    ack: async (id) => void (k.jobs.get(id).acked = true),
     input: async (job, b) => (k.inputs.push({ job, ...b }), { sent: k.takes }),
     post: async (job, b) => void k.posts.push({ job, ...b }),
     note: async (wake, body) => void k.notes.push({ wake, body }),
   };
   k.db = new DatabaseSync(":memory:");
   k.dispatch = createDispatch({ kernel: k.kernel, db: k.db, owner: "Dana" });
-  k.end = (id, final, session = "s-1") => Object.assign(k.jobs.get(id), { state: "done", exit: 0, final, session });
+  k.end = (id, final, session = "s-1") => Object.assign(k.jobs.get(id), { state: "done", exit: 0, final, session, ended: Date.now() });
   return k;
 }
 const wake = (key, cause, extra = {}) => ({ key, task: "t1", agent: "eng", cause, at: Date.now(), ...extra });
@@ -142,8 +143,7 @@ test("the last sub-task's run ends: one summary for the parent; a run whose task
   const sib = { id: "t2", identifier: "WOR-12", title: "B", description: "Do B", status: "done", assigneeAgentId: "eng", createdByAgentId: "asker", parentId: "p1", companyId: "c1" };
   const task = { id: "t1", identifier: "WOR-11", title: "A", description: "Do A", status: "todo", assigneeAgentId: "eng", createdByAgentId: "asker", parentId: "p1", companyId: "c1" };
   const k = fake({ task, tasks: { p1: parent, t2: sib }, directory: { eng: { key: "eng" } } });
-  k.db.exec("CREATE TABLE IF NOT EXISTS ended (job TEXT PRIMARY KEY, task TEXT NOT NULL, state TEXT NOT NULL)");
-  k.db.prepare("INSERT INTO ended VALUES ('j0', 't2', 'done')").run(); // the sibling's run ended earlier
+  k.jobs.set("j0", { id: "j0", task: "t2", agent: "eng", state: "done", at: 0, ended: 1, acked: true }); // the sibling's run ended earlier
   k.inbox.push(wake("issue:t1:1", "assigned"));
   await k.dispatch.tick();
   k.end("j1", "Done A.");
@@ -206,14 +206,14 @@ test("a routine run's task starts as a scheduled run, whichever routine it names
   assert.match(k.started[0].prompt, /## A scheduled run \(not Dana's words\)/);
 });
 
-test("a start whose answer was lost (a crash after admission) is found by its wake: one job, one reply", async () => {
+test("a start whose answer was lost (a crash after admission) is followed from the kernel's open list: one job, one reply", async () => {
   const k = fake({ task: { id: "t1", identifier: "WOR-1", title: "Fix the login", description: "It 500s.", status: "todo", assigneeAgentId: "eng", createdByUserId: "u1" } });
   const start = k.kernel.start;
   k.kernel.start = async (req) => { await start(req); throw new Error("socket hang up"); }; // admitted, but the answer never came
   k.inbox.push(wake("issue:t1:1", "assigned"));
   await k.dispatch.tick();
   k.kernel.start = start;
-  // A new dispatcher process on the same data: the bound wake never comes back to claim, so only the lookup finds its job.
+  // A new dispatcher process on the same data: the bound wake never comes back to claim, so only the kernel's open list finds its job.
   k.dispatch = createDispatch({ kernel: k.kernel, db: k.db, owner: "Dana" });
   await k.dispatch.tick();
   k.end("j1", "Fixed.");

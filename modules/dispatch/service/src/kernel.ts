@@ -6,7 +6,7 @@ import type { Agent, Comment, Directory, Issue } from "./thread.ts";
 /** An inbox row the module claimed (kernel wakes.ts); `live_job`: a comment for that running job. */
 export interface Wake { key: string; task: string; agent: string; cause: string; at: number; live_job?: string }
 /** A job as the kernel shows it (jobs.ts JobView, the fields dispatch reads). */
-export interface JobView { id: string; task: string; agent: string; state: string; exit: number | null; final: string; session: string | null; timedOut: boolean; progress?: { steps?: Step[] } }
+export interface JobView { id: string; task: string; agent: string; state: string; exit: number | null; final: string; session: string | null; timedOut: boolean; at: number; ended: number | null; acked: boolean; progress?: { steps?: Step[] } }
 
 export interface Kernel {
   claim(limit: number): Promise<Wake[]>;
@@ -17,9 +17,12 @@ export interface Kernel {
   directory(): Promise<Directory>;
   /** Admission (F3): one job for the claimed wake (`full_prompt`: what runs when no session is resumed), or busy (429: the wake stays claimed and comes back). */
   start(req: { wake: string; prompt: string; full_prompt?: string }): Promise<{ job: JobView } | { busy: true }>;
-  job(id: string): Promise<JobView>;
-  /** This module's job admitted on a wake, if any: a start whose answer was lost (a crash, a timeout) is found here. */
-  jobsOn(wake: string): Promise<JobView[]>;
+  /** This module's jobs the kernel keeps open for it: live, or ended and not yet acknowledged. */
+  open(): Promise<JobView[]>;
+  /** This module's jobs on a task, newest first. */
+  jobsOf(task: string): Promise<JobView[]>;
+  /** An ended job is dealt with (its outcome posted, whoever asked told): it leaves the open list. */
+  ack(job: string): Promise<void>;
   /** A comment into a running job; the wake is delivered only when `sent`. */
   input(job: string, b: { text: string; from: string; wake: string }): Promise<{ sent: boolean }>;
   /** A job's outcome on its task, posted by the kernel as the agent, once per (job, kind) (F5). */
@@ -60,8 +63,9 @@ export function createKernel(url: string, token: string, fetcher: typeof fetch =
     agent: (id) => call("GET", `/v1/cp/read/api/agents/${e(id)}`).catch((err: KernelError) => (err.status === 404 ? undefined : Promise.reject(err))),
     directory: async () => (await call("GET", "/v1/agents")).agents ?? {},
     start: (req) => call("POST", "/v1/jobs", req).then((job) => ({ job }), (err: KernelError) => (err.status === 429 ? { busy: true as const } : Promise.reject(err))),
-    job: (id) => call("GET", `/v1/jobs/${e(id)}`),
-    jobsOn: async (wake) => (await call("GET", `/v1/jobs?wake=${e(wake)}`)).jobs ?? [],
+    open: async () => (await call("GET", "/v1/jobs?open=1")).jobs ?? [],
+    jobsOf: async (task) => (await call("GET", `/v1/jobs?task=${e(task)}`)).jobs ?? [],
+    ack: async (job) => void (await call("POST", `/v1/jobs/${e(job)}/ack`, {})),
     input: (job, b) => call("POST", `/v1/jobs/${e(job)}/input`, b),
     post: async (job, b) => void (await call("POST", `/v1/jobs/${e(job)}/post`, b)),
     stop: async (job) => void (await call("DELETE", `/v1/jobs/${e(job)}`)),
