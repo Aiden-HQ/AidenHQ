@@ -1553,6 +1553,10 @@ const evalGate = createEvalGate({
 /** GitHub for the merge queue, with your gh login: fixed GraphQL reads, and the writes in merges.WRITES only. */
 const mergeGithub = {
   evalGate,
+  /** Whether PR `number`'s head `head` carries the change whose content key the card bound (`patch`): unread is no. */
+  async samePatch(repo, number, patch, head) {
+    return Boolean(patch) && (await trustedPatch(repo, head, { pr: number })) === patch;
+  },
   async pr(repo, number) {
     const [owner, name] = repo.split("/");
     const { stdout } = await execFileP(await findRealGh(), ["api", "graphql", "-f", `query=${merges.PR_QUERY}`, "-f", `owner=${owner}`, "-f", `repo=${name}`, "-F", `number=${number}`, "-f", `pullRef=refs/pull/${number}/head`], await gho(repo, READ, { maxBuffer: 16 * 1024 * 1024 }));
@@ -1981,7 +1985,7 @@ async function liveState(issue, workspace, { wait = false } = {}) {
     }),
   );
   const queue = mergeQueue(issue.id);
-  const text = stateSection({ rows, prs, merges: queue ? merges.summary(queue, queue.state === "running" ? "Running." : queue.state === "stopped" ? `Stopped: ${queue.reason}.` : "Done.") : "" });
+  const text = stateSection({ rows, prs, merges: queue ? merges.summary(queue, queue.state === "running" ? "Running." : queue.state === "stopped" ? `Stopped: ${queue.reason}.` : queue.state === "handed" ? "Asked for again on a new head." : "Done.") : "" });
   if (!wait) return text;
   const requested = JSON.parse(state.get("auto_merges") || "{}")[issue.id]?.prs ?? [];
   const queued = queue?.state === "running" ? queue.prs.filter((p) => p.status === "pending") : [];
@@ -3193,7 +3197,8 @@ async function mergeAfterPublish(issue, a, out) {
       (stored.delivered ? stale : unsaid).push(`${b.repo} \`${b.branch}\``);
       continue;
     }
-    prs.push({ ...pr, head: b.sha, noReview: true });
+    // The card's content key rides along: an update the queue makes itself is re-asked in code only while the change is this one.
+    prs.push({ ...pr, head: b.sha, noReview: true, ...(b.patch ? { patch: b.patch } : {}) });
   }
   const started = prs.length ? Boolean(await startMerges(issue, { prs, strict: true, during: true })) : false;
   const said = [prs.length ? (started ? `Merging ${prs.map((p) => p.url).join(", ")} once green on the approved commit.` : "The merge didn't start (said on the task).") : "", missing.length ? `Not merged (no open PR): ${missing.join(", ")}.` : "", stale.length ? `Not merged (the stored PR number is stale, said above): ${stale.join(", ")}.` : "", unsaid.length ? `Not merged (the stored PR number is stale, but the task couldn't be told just now): ${unsaid.join(", ")}. Nothing was merged; the task is told on the next check.` : "", unread.length ? `Not merged (GitHub couldn't be read just now, so the PR couldn't be confirmed): ${unread.join(", ")}. Ask for the merge again.` : ""].filter(Boolean).join(" ");
