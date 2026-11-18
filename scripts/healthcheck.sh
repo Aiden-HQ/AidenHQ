@@ -158,7 +158,7 @@ fi
 ch_health="$(curl -s -m 10 "$(svc clickhouse-mcp 8088)/healthz" 2>/dev/null)"
 if echo "$ch_health" | grep -q '"ok":true'; then
   chtoken="$(cat "${AIDENHQ_SECRETS_DIR:-/nonexistent}/clickhouse_mcp_token" 2>/dev/null)"
-  check "clickhouse (read tools)" sh -c "curl -fsS -m 30 -X POST '$(svc clickhouse-mcp 8088)/mcp' -H 'Authorization: Bearer $chtoken' -H 'content-type: application/json' -H 'accept: application/json, text/event-stream' -d '{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/list\"}' | grep -q run_select_query"
+  check "clickhouse (read tools)" sh -c "curl -fsS -m 30 -X POST '$(svc clickhouse-mcp 8088)/mcp/read' -H 'Authorization: Bearer $chtoken' -H 'content-type: application/json' -H 'accept: application/json, text/event-stream' -d '{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/list\"}' | grep -q run_select_query"
 elif echo "$ch_health" | grep -q '"ok":false' && ! echo "$ch_health" | grep -q "not set"; then
   # Set up but not signed in, or ClickHouse stopped accepting the sign-in.
   check "clickhouse sign-in" sh -c "echo '$(echo "$ch_health" | cut -c1-140)' | grep -o '\"detail\":\"[^\"]*' | cut -d'\"' -f4 | grep . || echo 'clickhouse-mcp unreachable'; exit 1"

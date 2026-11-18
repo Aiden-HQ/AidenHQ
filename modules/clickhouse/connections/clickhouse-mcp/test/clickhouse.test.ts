@@ -1,32 +1,21 @@
-import { existsSync, mkdtempSync, readFileSync, statSync } from "node:fs";
+import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { allowedTools, checkCall, checkQuery, isAllowed, MAX_TIMEOUT_SECONDS, normalize, QueryRefused, READ_TOOLS, truncateResult } from "../src/policy.js";
-import { SignIn, SignInError } from "../src/signin.js";
-import { TokenStore } from "../src/tokens.js";
+import { checkCall, checkQuery, isRead, MAX_TIMEOUT_SECONDS, NEVER, normalize, QueryRefused, SCOPES, truncateResult } from "../src/policy.js";
+import { oauth } from "../src/vendor/oauth.js";
 
-const tool = (name: string) => ({ name, inputSchema: { type: "object" as const }, annotations: { readOnlyHint: false, openWorldHint: true } });
+const tool = (name: string, readOnlyHint: boolean) => ({ name, inputSchema: { type: "object" as const }, annotations: { readOnlyHint } });
 const tmp = () => mkdtempSync(join(tmpdir(), "clickhouse-mcp-"));
 
 describe("clickhouse-mcp policy", () => {
-  // Tools ClickHouse Cloud's hosted server offers (2026-11-07) that aren't for jobs, and writes it might add.
-  const others = [
-    "get_organization_cost", "get_organization_details", "get_service_backup_configuration", "list_service_backups", "get_service_backup_details",
-    "list_clickpipes", "get_clickpipe", "run_postgres_select_query", "list_postgres_slow_query_patterns", "get_postgres_metrics",
-    "create_service", "update_service", "delete_service", "start_service", "stop_service", "scale_service", "reset_password", "run_query", "insert_rows",
-  ];
-
-  it("exposes only the read tools, annotated read-only and closed-world", () => {
-    const out = allowedTools([...READ_TOOLS, ...others].map(tool), new Set(READ_TOOLS));
-    expect(out.map((t) => t.name)).toEqual(READ_TOOLS);
-    for (const t of out) expect(t.annotations).toMatchObject({ readOnlyHint: true, openWorldHint: false, destructiveHint: false });
-  });
-
-  it("never allows writes, costs, backups or ClickPipes, even if allowlisted", () => {
-    const allow = new Set([...READ_TOOLS, ...others]);
-    for (const n of others.filter((n) => !["get_organization_details", "run_query"].includes(n))) expect(isAllowed(n, allow), n).toBe(false);
-    for (const n of READ_TOOLS) expect(isAllowed(n, allow), n).toBe(true);
+  it("never reaches writes, costs, backups or ClickPipes, and reads the schema and SELECTs ClickHouse doesn't mark", () => {
+    for (const n of ["get_organization_cost", "list_service_backups", "get_clickpipe", "create_service", "delete_service", "scale_service", "reset_password", "insert_rows"]) expect(NEVER.test(n), n).toBe(true);
+    for (const n of ["get_organizations", "get_services_list", "get_service_details", "list_databases", "list_tables", "run_select_query"]) expect(NEVER.test(n), n).toBe(false);
+    // Probed 2026-11-18: ClickHouse marks these three readOnlyHint false.
+    for (const n of ["list_databases", "list_tables", "run_select_query"]) expect(isRead(tool(n, false)), n).toBe(true);
+    expect(isRead(tool("run_query", false))).toBe(false);
+    expect(isRead(tool("get_services_list", true))).toBe(true);
   });
 });
 
@@ -101,57 +90,22 @@ describe("query check", () => {
 });
 
 describe("sign-in", () => {
-  // Shaped like mcp.clickhouse.cloud on 2026-11-07.
+  // Shaped like mcp.clickhouse.cloud on 2026-11-07: it offers more scopes than AidenHQ asks for.
   const MCP = "https://mcp.clickhouse.cloud/mcp";
-  function fakeClickHouse(opts: { register?: boolean } = {}) {
-    const calls: { url: string; body?: string }[] = [];
-    const fetchImpl = (async (url: string, init?: { body?: unknown }) => {
-      calls.push({ url, body: init?.body === undefined ? undefined : String(init.body) });
-      if (url === MCP) return new Response("", { status: 401, headers: { "www-authenticate": 'Bearer realm="OAuth", resource_metadata="https://mcp.clickhouse.cloud/.well-known/oauth-protected-resource/mcp"' } });
-      if (url === "https://mcp.clickhouse.cloud/.well-known/oauth-protected-resource/mcp")
-        return Response.json({ resource: MCP, authorization_servers: ["https://mcp.clickhouse.cloud"], scopes_supported: ["mcp:access", "openid", "profile", "email"] });
-      if (url === "https://mcp.clickhouse.cloud/.well-known/oauth-authorization-server")
-        return Response.json({
-          issuer: "https://mcp.clickhouse.cloud",
-          authorization_endpoint: "https://mcp.clickhouse.cloud/authorize",
-          token_endpoint: "https://mcp.clickhouse.cloud/token",
-          scopes_supported: ["mcp:access", "clickstack:access", "openid", "profile", "email"],
-          ...(opts.register === false ? {} : { registration_endpoint: "https://mcp.clickhouse.cloud/register" }),
-        });
-      if (url === "https://mcp.clickhouse.cloud/register") return Response.json({ client_id: "pw-client", token_endpoint_auth_method: "none" });
-      if (url === "https://mcp.clickhouse.cloud/token") return Response.json({ access_token: "at", refresh_token: "rt", expires_in: 3600, scope: "mcp:access" });
-      return new Response("not found", { status: 404 });
-    }) as unknown as typeof fetch;
-    return { calls, fetchImpl };
-  }
+  const fetchImpl = (async (url: string) => {
+    if (url === MCP) return new Response("", { status: 401, headers: { "www-authenticate": 'Bearer realm="OAuth", resource_metadata="https://mcp.clickhouse.cloud/.well-known/oauth-protected-resource/mcp"' } });
+    if (url === "https://mcp.clickhouse.cloud/.well-known/oauth-protected-resource/mcp")
+      return Response.json({ resource: MCP, authorization_servers: ["https://mcp.clickhouse.cloud"], scopes_supported: ["mcp:access", "openid", "profile", "email"] });
+    if (url === "https://mcp.clickhouse.cloud/.well-known/oauth-authorization-server")
+      return Response.json({ issuer: "https://mcp.clickhouse.cloud", authorization_endpoint: "https://mcp.clickhouse.cloud/authorize", token_endpoint: "https://mcp.clickhouse.cloud/token", registration_endpoint: "https://mcp.clickhouse.cloud/register", scopes_supported: ["mcp:access", "clickstack:access", "openid", "profile", "email"] });
+    if (url === "https://mcp.clickhouse.cloud/register") return Response.json({ client_id: "pw-client", token_endpoint_auth_method: "none" });
+    return new Response("not found", { status: 404 });
+  }) as unknown as typeof fetch;
 
-  it("finds the sign-in server, asks for mcp:access only, and stores the token", async () => {
-    const dir = tmp();
-    const { calls, fetchImpl } = fakeClickHouse();
-    const tokens = new TokenStore(join(dir, "token.json"));
-    const signIn = new SignIn(MCP, join(dir, "client.json"), tokens, fetchImpl);
-    const { url } = await signIn.start("http://127.0.0.1:3120/clickhouse/callback");
-    const u = new URL(url);
-    expect(u.origin + u.pathname).toBe("https://mcp.clickhouse.cloud/authorize");
-    expect(Object.fromEntries(u.searchParams)).toMatchObject({ client_id: "pw-client", redirect_uri: "http://127.0.0.1:3120/clickhouse/callback", code_challenge_method: "S256", resource: MCP, scope: "mcp:access" });
-    expect(statSync(join(dir, "client.json")).mode & 0o777).toBe(0o600);
-
-    await signIn.finish(u.searchParams.get("state")!, "the-code");
-    const token = calls.find((c) => c.url.endsWith("/token"))!;
-    expect(Object.fromEntries(new URLSearchParams(token.body))).toMatchObject({ grant_type: "authorization_code", code: "the-code", client_id: "pw-client", resource: MCP });
-    expect(JSON.parse(readFileSync(join(dir, "token.json"), "utf8"))).toMatchObject({ access_token: "at", refresh_token: "rt", client_id: "pw-client", token_endpoint: "https://mcp.clickhouse.cloud/token", resource: MCP });
-    expect(tokens.status().state).toBe("ok");
-    await expect(signIn.finish(u.searchParams.get("state")!, "again")).rejects.toThrow(SignInError);
-  });
-
-  it("refuses non-loopback redirects and servers without registration", async () => {
-    const dir = tmp();
-    const signIn = new SignIn(MCP, join(dir, "client.json"), new TokenStore(join(dir, "token.json")), fakeClickHouse({ register: false }).fetchImpl);
-    await expect(signIn.start("https://evil.example/cb")).rejects.toThrow(/loopback/);
-    await expect(signIn.start("http://127.0.0.1:3120/clickhouse/callback")).rejects.toThrow(/registration/);
-    // The board's own https address passes the redirect check (then fails on registration here).
-    const onBoard = new SignIn(MCP, join(dir, "client.json"), new TokenStore(join(dir, "token.json")), fakeClickHouse({ register: false }).fetchImpl, "https://board.example.ts.net");
-    await expect(onBoard.start("https://board.example.ts.net/clickhouse/callback")).rejects.toThrow(/registration/);
-    expect(existsSync(join(dir, "client.json"))).toBe(false);
+  it("offers and asks for mcp:access only", async () => {
+    const auth = oauth({ name: "ClickHouse", mcpUrl: MCP, stateDir: tmp(), scopes: { supported: SCOPES }, fetchImpl });
+    expect(await auth.signIn!.scopes()).toEqual({ supported: ["mcp:access"], recommended: ["mcp:access"] });
+    const u = new URL((await auth.signIn!.start("http://127.0.0.1:3120/clickhouse/callback")).url);
+    expect(u.searchParams.get("scope")).toBe("mcp:access");
   });
 });

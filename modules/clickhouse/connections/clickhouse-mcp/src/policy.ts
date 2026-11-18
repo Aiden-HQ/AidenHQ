@@ -4,25 +4,17 @@ import type { Tool } from "@modelcontextprotocol/sdk/types.js";
 export const SCOPES = ["mcp:access"];
 
 /**
- * ClickHouse Cloud tools that only read: the organization's services, their databases and tables,
- * and SELECT queries (checked again by checkQuery). Everything else is hidden and refused: costs,
- * backups, ClickPipes, Managed Postgres, and anything the hosted server adds that changes things.
+ * Never listed or called, whatever the module tags (defense in depth: the kernel already reaches only tagged tools): anything
+ * that changes things, and costs, backups and ClickPipes.
  */
-export const READ_TOOLS = ["get_organizations", "get_services_list", "get_service_details", "list_databases", "list_tables", "run_select_query"];
+export const NEVER = /(creat|add_|update|delete|remove|manage|exec|write|edit|patch|send|post|start|stop|restart|scale|reset|rotate|grant|revoke|insert|alter|drop|backup|clickpipe|cost)/i;
 
-// Defense in depth: even if an operator adds one of these to the allowlist, it is never exposed.
-const NEVER = /(creat|add_|update|delete|remove|manage|exec|write|edit|patch|send|post|start|stop|restart|scale|reset|rotate|grant|revoke|insert|alter|drop|backup|clickpipe|cost)/i;
-
-/** Allowlisted upstream tools, annotated read-only and closed-world so Codex runs them unattended. */
-export function allowedTools(upstream: Tool[], allowlist: Set<string>): Tool[] {
-  return upstream
-    .filter((t) => isAllowed(t.name, allowlist))
-    .map((t) => ({ ...t, annotations: { ...(t.annotations ?? {}), readOnlyHint: true, destructiveHint: false, openWorldHint: false } }));
-}
-
-export function isAllowed(name: string, allowlist: Set<string>): boolean {
-  return allowlist.has(name) && !NEVER.test(name);
-}
+/**
+ * Reads ClickHouse Cloud doesn't mark read-only (probed 2026-11-18): schema listings, and SELECT queries, which checkCall
+ * holds to one read statement. Every other tool counts as a read only when ClickHouse marks it so.
+ */
+const UNMARKED_READS = new Set(["list_databases", "list_tables", "run_select_query"]);
+export const isRead = (t: Tool) => t.annotations?.readOnlyHint === true || UNMARKED_READS.has(t.name);
 
 /** The longest a query may run (seconds), whatever the caller asks: production is shared. */
 export const MAX_TIMEOUT_SECONDS = 120;
