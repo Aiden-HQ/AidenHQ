@@ -47,7 +47,7 @@ workspaces, and owns every git write: pushes, pull requests and merges. It check
 happens. See [design/conversational-engineers.md](design/conversational-engineers.md).
 
 **Approvals and tiers.** Every write that matters (push, PR, merge, fleet change, app deploy) is an *approval record*
-on the board: the exact request, decided once, outcome on the card. Code assigns the tier from verified state, never
+(a kernel record, `kernel/src/records.ts`; the board only reads and shows it): the exact request, decided once, outcome on the card. Code assigns the tier from verified state, never
 from text an agent wrote ([`services/runner/src/tiers.mjs`](../services/runner/src/tiers.mjs)):
 - **Tier 0** runs at once (for example a green merge in the agents org on a branch the runner pushed).
 - **Tier 1** is decided by an AI reviewer model with a written policy.
@@ -75,4 +75,4 @@ gets one when its definition sets `image:`.
 
 **Trust model.** Inbound is private (LAN or Tailscale; board accounts with TOTP; Cloudflare Access for shared apps).
 Outbound is open by design. Untrusted text (Slack, email, documents, forwards) is data, never instructions. Gates live
-in code below the model, and nothing is ever sent as the owner's own account.
+in code below the model; a send as the owner's own account is a write like any other, tiered and gated in the kernel.
