@@ -3,12 +3,9 @@ description: "Graded done: a delegated task's rubric and grade, the finish check
 license: MIT
 # A task.finish check (P5, spec §3.5): the kernel asks POST /check/finish on every move to done (kernel/src/checks.ts); a held
 # task goes to review with the `grading` label, which this module releases (POST /v1/checks/:task) once a verdict is in. The
-# grade loop itself (src/loop.mjs) runs in the host runner, which holds what the grader reads (job state, GitHub through the
-# App); it reaches this service at its container address with grading_runner_key. It reads tasks and the kill switch from
-# the kernel with its own token (kernel.cp-read) and never writes to the control plane itself.
-# The same loop also exists in the service (service/src/kernel-loop.ts, W7): it reads the kernel's jobs (kernel.work-read), asks it for a
-# grader token (kernel.grader), moves a graded task through the finish check and tells parents by wake notice (kernel.wake). Unstarted
-# until the switch deletes the runner's loop.
+# grade loop runs in the service (service/src/kernel-loop.ts, W7): it reads tasks (kernel.cp-read) and the kernel's jobs
+# (kernel.work-read), asks it for a grader token (kernel.grader), moves a graded task through the finish check and tells
+# parents by wake notice (kernel.wake). It never writes to the control plane itself.
 roles:
   requests: [ kernel.cp-read, kernel.work-read, kernel.grader, kernel.wake ]
 checks:

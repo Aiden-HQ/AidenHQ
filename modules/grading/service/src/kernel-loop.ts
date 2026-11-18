@@ -1,6 +1,5 @@
 // The grade loop on the kernel's jobs (phase 2 W7): loop.mjs wired to this module's own rows and to the kernel as the one source of a
-// task's jobs, comments, agents and verdict moves. Built here, started at the switch (main.ts `startGradeLoop`), when the runner's
-// copy of the loop is deleted: until then only the runner grades. Evidence the module cannot read yet (a PR's facts, an app's
+// task's jobs, comments, agents and verdict moves, run once a minute by main.ts. Evidence the module cannot read yet (a PR's facts, an app's
 // status) throws "not available", so its row stays and is retried, never passed or judged on a guess; those sources arrive with
 // the codehost service.
 import type { DatabaseSync } from "node:sqlite";
