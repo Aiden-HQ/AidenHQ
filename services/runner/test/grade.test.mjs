@@ -906,8 +906,17 @@ test("a stored PR number that now names another change waits on the task's own r
   const byHead = await gather({ kind: "pr", ref: "" }, deps({ taskPrs: async () => [], taskMerged: async () => bound, pr: async () => pr({ state: "MERGED", head: "a".repeat(40), headRef: "lean/host-installer-handover", merge: "b".repeat(40) }), diff: unread }));
   assert.match(byHead.version, new RegExp(`^acme/app#7@${"b".repeat(40)}\\+`), "the record's head commit matches, so the change is this task's");
   const moved = await gather({ kind: "pr", ref: "" }, deps({ taskPrs: async () => [], taskMerged: async () => bound, pr: async () => pr({ state: "MERGED", head: "c".repeat(40), headRef: "lean/host-installer-handover" }), diff: unread }));
-  assert.match(moved.awaiting, new RegExp(`its head is \`${"c".repeat(12)}\`, not the task's \`${"a".repeat(12)}\``));
+  assert.match(moved.awaiting, new RegExp(`its head is \`${"c".repeat(12)}\`, not the task's commit \`${"a".repeat(12)}\``));
   assert.match(moved.awaiting, new RegExp(`the runner's record has its merge commit ${"b".repeat(40)}`));
+
+  // A matching branch name does not excuse a record's commit that disagrees: every identifier must agree.
+  const both = [{ repo: "acme/app", number: 7, headRef: "lean/host-installer-handover", headOid: "a".repeat(40), sha: "b".repeat(40) }];
+  const mismatched = await gather({ kind: "pr", ref: "" }, deps({ taskPrs: async () => [], taskMerged: async () => both, pr: async () => pr({ state: "MERGED", head: "c".repeat(40), headRef: "lean/host-installer-handover", merge: "b".repeat(40) }), diff: unread }));
+  assert.match(mismatched.awaiting, new RegExp(`its head is \`${"c".repeat(12)}\`, not the task's commit \`${"a".repeat(12)}\``), "the branch matched, the commit did not");
+  assert.equal(mismatched.version, undefined);
+  const otherMerge = await gather({ kind: "pr", ref: "" }, deps({ taskPrs: async () => [], taskMerged: async () => both, pr: async () => pr({ state: "MERGED", head: "a".repeat(40), headRef: "lean/host-installer-handover", merge: "f".repeat(40) }), diff: unread }));
+  assert.match(otherMerge.awaiting, /it did not merge at the task's merge commit `b{12}`/, "the head matched, the merge commit did not");
+  assert.equal(otherMerge.version, undefined);
 
   // A record that keeps only its merge commit: a merged PR at that commit is the task's; anything else is said stale.
   const atMerge = [{ repo: "acme/app", number: 7, sha: "b".repeat(40) }];

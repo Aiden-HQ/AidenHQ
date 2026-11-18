@@ -83,24 +83,18 @@ type Identity = { state: "ok" } | { state: "stale"; why: string } | { state: "un
 
 /**
  * How a stored PR's number reads against GitHub: this task's change, another change now under that number, or neither provably.
- * The record's own identifiers decide, strongest first: the branch the task recorded (`head`, by staleHead), the head commit it
- * bound (`headOid`), or the merge commit it merged at (`merge`). A record that keeps none of them proves nothing, and nothing
- * proven is never graded as this task's work: `unknown` fails closed.
+ * Every identifier the record keeps must agree, and one that disagrees is enough to refuse: the branch the task recorded
+ * (`head`, by staleHead), the head commit it bound (`headOid`), and the merge commit it merged at (`merge`). A record that keeps
+ * none of them proves nothing, and nothing proven is never graded as this task's work: `unknown` fails closed.
  */
 function identityOf(p: { head?: string; headOid?: string; merge?: string }, pr: any): Identity {
-  if (p.head) {
-    const why = staleHead(p.head, pr.headRefName);
-    return why ? { state: "stale", why } : { state: "ok" };
-  }
-  if (p.headOid) {
-    const head = String(pr.headRefOid ?? "");
-    return head === p.headOid ? { state: "ok" } : { state: "stale", why: `its head is \`${head.slice(0, 12) || "(none)"}\`, not the task's \`${p.headOid.slice(0, 12)}\`` };
-  }
-  if (p.merge) {
-    if (String(pr.state) !== "MERGED" || pr.mergeCommit?.oid !== p.merge) return { state: "stale", why: `it did not merge at the task's merge commit \`${p.merge.slice(0, 12)}\`` };
-    return { state: "ok" };
-  }
-  return { state: "unknown" };
+  const why = [
+    p.head ? staleHead(p.head, pr.headRefName) : undefined,
+    p.headOid && String(pr.headRefOid ?? "") !== p.headOid ? `its head is \`${String(pr.headRefOid ?? "").slice(0, 12) || "(none)"}\`, not the task's commit \`${p.headOid.slice(0, 12)}\`` : undefined,
+    p.merge && (String(pr.state) !== "MERGED" || pr.mergeCommit?.oid !== p.merge) ? `it did not merge at the task's merge commit \`${p.merge.slice(0, 12)}\`` : undefined,
+  ].filter(Boolean);
+  if (why.length) return { state: "stale", why: why.join(", and ") };
+  return p.head || p.headOid || p.merge ? { state: "ok" } : { state: "unknown" };
 }
 
 /** What a record that keeps no branch, head commit or merge commit says: the number is not read as this task's change. */
