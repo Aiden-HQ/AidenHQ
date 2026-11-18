@@ -454,7 +454,9 @@ const bearer = (req) => String(req.headers.authorization ?? "").replace(/^Bearer
 const send = (res, status, body) => res.writeHead(status, { "content-type": "application/json" }).end(JSON.stringify(body));
 
 const controlServer = http.createServer((req, res) => {
-  if (req.method === "GET" && req.url === "/health") return send(res, 200, { ok: true, computers: boxes.size, max: maxBoxes() });
+  if (req.method === "GET" && req.url === "/health") {
+    try { return send(res, 200, { ok: true, computers: boxes.size, max: maxBoxes() }); } catch (e) { return send(res, 500, { ok: false, error: e.message }); }
+  }
   if (req.method === "GET" && req.url === "/whoami") {
     const who = tokens.whoami(bearer(req));
     return who ? send(res, 200, { agentId: who.agentId, runId: who.runId, issueId: who.issueId }) : send(res, 401, { error: "unknown run token" });
