@@ -144,9 +144,11 @@ test("clone writes only a new folder in the task workspace the kernel resolved, 
   assert.equal((await clone("TASK-3")).status, 400);
   assert.equal((await clone("TASK-1")).status, 409); // TASK-1/widget is there already
   mkdirSync(join(root, "tasks", "TASK-4"));
-  const ok = await clone("TASK-4");
+  // HEAD: the default branch by its name (as the kernel asks for an Engineer's clones).
+  const ok = await call("/ops/clone", { module: "apps-platform", repo: "acme-agents/widget", ref: "HEAD", into: "TASK-4" });
   assert.equal(ok.status, 200, JSON.stringify(ok.json));
   const dir = join(root, "tasks", "TASK-4", "widget");
+  assert.match(sh(dir, "rev-parse", "--verify", "refs/remotes/origin/main"), /^[0-9a-f]{40}$/);
   assert.equal(readFileSync(join(dir, "README.md"), "utf8"), "widget\n");
   assert.equal(sh(dir, "remote", "get-url", "origin"), "https://github.com/acme-agents/widget.git");
   assert.doesNotMatch(readFileSync(join(dir, ".git", "config"), "utf8"), /tok|credential|extraheader/i);
@@ -174,17 +176,16 @@ test("kernel.apply's land: the instance commit is read and landed on main once, 
   const NONE = { official: { from: null, to: null } };
   assert.equal((await call("/aidenhq/v1/apply/land", { ...src, ...NONE }, "apps-key")).status, 401);
   assert.equal((await call("/aidenhq/v1/apply/read", { ...src, repo: "acme-agents/widget" })).status, 403, "the instance repo only");
-  const read = await call("/aidenhq/v1/apply/read", src);
-  assert.deepEqual([read.json.files.sort(), read.json.texts], [["agents/chaser/agent.yaml", "instance.yaml"], { base: { "instance.yaml": "product: x\n" }, head: { "agents/chaser/agent.yaml": "trial: true\n", "instance.yaml": "product: y\n" } }]);
-  assert.match(read.json.diff, /\+product: y/);
-  // After the review the workspace makes the same sha resolve to other content (a replace ref to another commit): the code host
-  // reads its own fsck-checked copy, never the live workspace, so the re-read is exactly what was reviewed.
+  // The workspace makes the same sha resolve to other content (a replace ref to another commit): the code host reads the commit
+  // through its own fsck-checked copy with replace objects off, never the live workspace, so the read is the commit itself.
   sh(ws, "checkout", "--quiet", "-b", "evil", "main");
   writeFileSync(join(ws, "instance.yaml"), "product: z\n");
   sh(ws, "commit", "--quiet", "-am", "evil");
   sh(ws, "replace", sha, sh(ws, "rev-parse", "HEAD"));
   sh(ws, "checkout", "--quiet", "fleet/edit");
-  assert.deepEqual((await call("/aidenhq/v1/apply/read", src)).json, read.json, "the re-read is the reviewed content");
+  const read = await call("/aidenhq/v1/apply/read", src);
+  assert.deepEqual([read.json.files.sort(), read.json.texts], [["agents/chaser/agent.yaml", "instance.yaml"], { base: { "instance.yaml": "product: x\n" }, head: { "agents/chaser/agent.yaml": "trial: true\n", "instance.yaml": "product: y\n" } }]);
+  assert.match(read.json.diff, /\+product: y/);
   // The kernel names the official modules' pin on both sides, or nothing lands; a marketplace pin that appears or moves is
   // refused before anything is pushed (the official modules come with the product pin).
   assert.equal((await call("/aidenhq/v1/apply/land", src)).status, 400, "no pin named: refused");

@@ -33,7 +33,7 @@ function setup({ capacity = 12, spend = () => [], launch = async () => {}, grant
   const adm = createAdmission({
     provenance, routineCap: async (task) => caps[task], nextTurn: createJobTools({ db, secret: () => "s", engines: () => [] }),
     db, grants: () => grants, capacity: () => capacity, spend,
-    kinds: () => ({ "tasks.create_task": { floor: 1, tools: ["tasks.create"] }, "slack.post": { floor: 1, tools: ["slack.post"] }, "tasks.now": { floor: 0, tools: ["tasks.create"] } }),
+    kinds: () => ({ "tasks.create_task": { module: "tasks", floor: 1, tools: ["tasks.create"] }, "slack.post": { module: "slack", floor: 1, tools: ["slack.post"] }, "tasks.now": { module: "tasks", floor: 0, tools: ["tasks.create"] }, "codehost-github.pr": { module: "codehost-github", floor: 0, tools: [] }, "kernel.apply": { module: "kernel", floor: 1, tools: [] } }),
     mayDispatch: (module, agent) => module === "acme-dispatch" && agent !== "agent-3",
     cp: { task: async (id) => (tasks[id] ? { id, identifier: id.toUpperCase(), assigneeAgentId: tasks[id], status: "todo", description: descriptions[id] ?? "" } : undefined) },
     wakes: wakeInbox(db),
@@ -69,11 +69,14 @@ test("the job's authority is frozen at admission: later grant edits neither wide
   assert.deepEqual(adm.authority(job.id).writes, ["tasks.create_task"]);
 });
 
-test("profiles: an engineer gets the engineer image and its jobcaps; a check job gets no tools and no writes", async () => {
+test("profiles: an engineer gets the engineer image, its jobcaps and the code host's writes (none in trial); a check job gets no tools and no writes", async () => {
   const { adm, grants, wake } = setup();
   const eng = await adm.admit("acme-dispatch", req(wake("w1", "task-3", "agent-2")));
   assert.equal(eng.authority.image, "engineer");
   assert.deepEqual(eng.authority.jobcaps, ["gh-read"]);
+  assert.deepEqual(eng.authority.writes, ["codehost-github.pr", "kernel.apply"]);
+  grants["agent-2"].trial = true;
+  assert.deepEqual((await adm.admit("acme-dispatch", req(wake("w3", "task-4", "agent-2")))).authority.writes, []);
   grants["agent-1"].profile = "check";
   const chk = await adm.admit("acme-dispatch", req(wake("w2", "task-1", "agent-1")));
   assert.deepEqual([chk.authority.tools, chk.authority.writes, chk.authority.jobcaps], [{}, [], []]);

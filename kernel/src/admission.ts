@@ -90,7 +90,8 @@ export function createAdmission({ db, grants, kinds, capacity, spend, mayDispatc
     const holds = (ct: string) => { const [c, t] = ct.split("."); return Boolean(tools[c!]?.includes(t!)); };
     // An Engineer publishes its workspace's commits (push, PR, merge, close, a new repo) and applies instance changes: each
     // a record its tier decides, filed with the job's own workspace.
-    const engineer = (id: string, k: { module: string }) => profile === "engineer" && (k.module === CODEHOST || id === "kernel.apply");
+    // Not an agent in trial: its writes come with the change that graduates it.
+    const engineer = (id: string, k: { module: string }) => profile === "engineer" && g.trial !== true && (k.module === CODEHOST || id === "kernel.apply");
     const writes = Object.entries(kinds()).filter(([id, k]) => (k.floor >= 1 && k.tools.length > 0 && k.tools.some(holds)) || engineer(id, k)).map(([id]) => id).sort();
     return {
       profile, image: g.image ?? IMAGE[profile], engine: String(g.engine ?? ""), engines: [...(g.engines ?? [g.engine ?? ""])].filter(Boolean), model: String(routine?.model ?? g.model ?? ""), effort: String(routine?.effort ?? g.effort ?? ""),

@@ -197,8 +197,9 @@ export function createService(o: Options) {
   const notePushed = (sha: string) => writeFileSync(pushed, JSON.stringify([...pushedHeads().slice(-4999), sha]));
 
   /** The verified state plan.mjs tiers a request on (its `s`): read from the workspace, the cache and GitHub, never the args. */
-  async function stateFor(kind: string, a: any) {
-    const base = { agentsOrg: o.agentsOrg, instanceRepo: o.instanceRepo, productRepo: o.productRepo, requester: { platform: false }, also: [] as string[] };
+  async function stateFor(kind: string, a: any, requester?: { roles?: string[] }) {
+    // The Platform Engineer's line: a requester holding the platform-engineer role (the kernel's record of who asked, never the args).
+    const base = { agentsOrg: o.agentsOrg, instanceRepo: o.instanceRepo, productRepo: o.productRepo, requester: { platform: (requester?.roles ?? []).includes("platform-engineer") }, also: [] as string[] };
     if (kind.endsWith(".create_repo")) return { ...base, repo: slugOf(a.repo).slug };
     if (kind.endsWith(".merge") || kind.endsWith(".close")) {
       const prs = [];
@@ -230,7 +231,7 @@ export function createService(o: Options) {
 
   const executor: Executor = {
     async plan(req: PlanRequest) {
-      return planRules({ kind: req.kind, args: req.args }, await stateFor(req.kind, req.args ?? {}));
+      return planRules({ kind: req.kind, args: req.args }, await stateFor(req.kind, req.args ?? {}, req.requester));
     },
     async execute(rec) {
       const a = rec.args ?? {};

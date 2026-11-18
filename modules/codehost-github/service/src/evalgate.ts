@@ -7,7 +7,7 @@
 //
 // What is judged, always a product commit (the reviewer is the product's modules/ai-reviewer and REVIEWER_CODE), by an
 // earlier one:
-// - a product PR that changes the reviewer's code: its head, judged by its base branch, receipt for its head;
+// - a product PR that changes the reviewer's code: its head, judged by its merge base, receipt for its head;
 // - the release train's bump of the instance's product pin (`bump`) whose reviewer content differs: the new commit, judged by
 //   the pinned one, receipt for the new commit. A passing receipt for the same reviewer content (REVIEWER_TREE's object ids),
 //   from any head, already covers it.
@@ -62,10 +62,8 @@ export function createEvalGate(d: {
   const save = () => { writeFileSync(`${file}.tmp`, JSON.stringify(s)); renameSync(`${file}.tmp`, file); };
 
   const reviewerAt = async (dir: string, sha: string) => createHash("sha256").update(await d.git(dir, ["ls-tree", sha, "--", ...REVIEWER_TREE])).digest("hex").slice(0, 32);
-  async function files(dir: string, base: string, head: string): Promise<string[]> {
-    const mb = await d.git(dir, ["merge-base", base, head]);
-    return (await d.git(dir, ["diff", "--no-ext-diff", "--no-textconv", "--name-only", "--no-renames", "-z", mb, head])).split("\0").filter(Boolean);
-  }
+  const files = async (dir: string, from: string, head: string): Promise<string[]> =>
+    (await d.git(dir, ["diff", "--no-ext-diff", "--no-textconv", "--name-only", "--no-renames", "-z", from, head])).split("\0").filter(Boolean);
 
   /** The verdict of the eval of product commit `head`, judged by `judge`: its kernel receipt decides. */
   async function evaluate(repo: string, head: string, dir: string, judge: string): Promise<Gate> {
@@ -130,7 +128,10 @@ export function createEvalGate(d: {
     try {
       const base = await d.fetch(repo, pr.baseRefName);
       if ((await d.fetch(repo, head)).sha !== head) return { wait: `#${pr.number}'s head isn't at \`${head.slice(0, 12)}\` yet` };
-      return touchesReviewer(await files(base.dir, base.sha, head)) ? await evaluate(repo, head, base.dir, base.sha) : undefined;
+      // Judged by the commit it was made from (its merge base with the base branch): a merge to main meanwhile changes neither
+      // the judge nor the receipt the eval is bound to.
+      const from = await d.git(base.dir, ["merge-base", base.sha, head]);
+      return touchesReviewer(await files(base.dir, from, head)) ? await evaluate(repo, head, base.dir, from) : undefined;
     } catch (err) {
       return failClosed(err);
     }
