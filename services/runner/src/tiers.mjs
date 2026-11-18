@@ -25,7 +25,7 @@ const same = (a, b) => String(a ?? "").toLowerCase() === String(b ?? "").toLower
 
 /**
  * The tier of one request. `s` is the verified state:
- * - every action: { agentsOrg, agentsOrgs (one per enabled code host: the GitHub agents org, local), productRepo, instanceRepo, requester: { platform }, records (the task's approval records,
+ * - every action: { agentsOrg, agentsOrgs (one per enabled code host: the GitHub agents org, local), productRepo, modulesRepo (the official modules repo: its PR card may merge, plan.mjs), instanceRepo, requester: { platform }, records (the task's approval records,
  *   from the board: earlier decisions, see priorDecisions), also (the actions the request also carries), routineAutonomy }
  * - routineAutonomy: the cap of the routine whose run the task chain started from (routineCap); absent when none
  * - connections: each connection's tool tags from the compiled config ({ name: { tools: { read, write, destructive } } })

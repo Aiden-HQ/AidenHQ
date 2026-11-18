@@ -101,10 +101,10 @@ const gho = async (slug, perms, extra) => ghOptions(await appFor(slug), slug, pe
 const sameRepo = (a, b) => Boolean(repoKey(a)) && repoKey(a) === repoKey(b);
 /** The repositories that are one product: the product repo and the official modules repo (what the reviewer reads as in scope together). */
 const productRepos = () => [cfg.productRepo, cfg.modulesRepo].filter(Boolean);
-const ownRepo = (slug) => appOwnRepo(slug, cfg.agentsOrg, cfg.productRepo);
+const ownRepo = (slug) => appOwnRepo(slug, cfg.agentsOrg, productRepos());
 /** Where our tooling's names may appear in commits and PR text: our own repos and the official modules repo (the kernel pins the `aidenhq` marketplace to OFFICIAL_URL; any other is the owner's). Never a whole org. Permissions stay on ownRepo. */
 const ourText = (slug) => ownRepo(slug) || isRepoIn(slug, [githubSlug(OFFICIAL_URL)]);
-const ghoMerge = async (slug, extra, perms = WRITE) => mergeOptions(await appFor(slug), slug, { agentsOrg: cfg.agentsOrg, productRepo: cfg.productRepo }, perms, extra);
+const ghoMerge = async (slug, extra, perms = WRITE) => mergeOptions(await appFor(slug), slug, { agentsOrg: cfg.agentsOrg, productRepo: productRepos() }, perms, extra);
 /** A re-run's token: only this (the App needs Actions: write; without it the re-run is refused and the check's failure stands). */
 const RERUN = { actions: "write" };
 /** The design review's pending status needs Commit statuses: write (the App's merge token has them read-only). */
@@ -1555,10 +1555,10 @@ const mergeGithub = {
     return JSON.parse(stdout).data?.repository?.object;
   },
   async merge(repo, number, { sha, method }) {
-    return (await githubWrite(repo, `repos/${repo}/pulls/${number}/merge`, { merge_method: method, sha }, "PUT", mergePermissions(repo, cfg.productRepo))).sha;
+    return (await githubWrite(repo, `repos/${repo}/pulls/${number}/merge`, { merge_method: method, sha }, "PUT", mergePermissions(repo, productRepos()))).sha;
   },
   async updateBranch(repo, number, head) {
-    await githubWrite(repo, `repos/${repo}/pulls/${number}/update-branch`, { expected_head_sha: head }, "PUT", mergePermissions(repo, cfg.productRepo));
+    await githubWrite(repo, `repos/${repo}/pulls/${number}/update-branch`, { expected_head_sha: head }, "PUT", mergePermissions(repo, productRepos()));
   },
   /** The base branch's files changed since `oid`, and its tip (siblings.ts): paged or unread is `files: undefined`. */
   async prBaseFiles(repo, base, oid) {
@@ -1591,7 +1591,7 @@ const mergeGithub = {
     });
   },
   // A merged head's branch deleted, and a merge train's branches (merge-gate.mjs branchWrites).
-  ...merges.branchWrites((repo, path, fields, method) => githubWrite(repo, path, fields, method, mergePermissions(repo, cfg.productRepo))),
+  ...merges.branchWrites((repo, path, fields, method) => githubWrite(repo, path, fields, method, mergePermissions(repo, productRepos()))),
   async comment(repo, number, body) {
     await githubWrite(repo, `repos/${repo}/issues/${number}/comments`, { body }, "POST");
   },
@@ -1654,7 +1654,7 @@ const mergeGithub = {
 };
 
 async function githubWrite(repo, path, fields, method = "PUT", perms = WRITE) {
-  if (!merges.allowedWrite(method, path, cfg.agentsOrg, cfg.productRepo)) throw new Error(`refused GitHub write ${method} ${path}`);
+  if (!merges.allowedWrite(method, path, cfg.agentsOrg, productRepos())) throw new Error(`refused GitHub write ${method} ${path}`);
   const args = ["api", "-X", method, path];
   for (const [k, v] of Object.entries(fields)) args.push("-f", `${k}=${v}`);
   const { stdout } = await execFileP(await findRealGh(), args, await ghoMerge(repo, undefined, perms));
@@ -2106,6 +2106,7 @@ async function commonTierState(issue, action, also = []) {
     agentsOrg: cfg.agentsOrg,
     agentsOrgs: cfg.agentsOrgs,
     productRepo: cfg.productRepo,
+    modulesRepo: cfg.modulesRepo,
     instanceRepo: cfg.apply?.repo,
     // The Platform Engineer, a task the Agent Architect made, or the owner's own task (ruling: the owner may always ask).
     // Only these write to the product repo below Tier 2; an Engineer's product push stays the owner's.
@@ -3160,7 +3161,7 @@ async function mergeAfterPublish(issue, a, out) {
   const unsaid = [];
   const unread = [];
   for (const b of a.args.only) {
-    const row = sameRepo(b.repo, cfg.productRepo) ? state.branches(issue.id).find((x) => sameRepo(x.repo, b.repo) && x.branch === b.branch) : undefined;
+    const row = productRepos().some((p) => sameRepo(b.repo, p)) ? state.branches(issue.id).find((x) => sameRepo(x.repo, b.repo) && x.branch === b.branch) : undefined;
     const pr = row?.pr_url && !row.merged ? prQueue.findPrs(row.pr_url)[0] : undefined;
     if (!pr) {
       missing.push(`${b.repo} \`${b.branch}\``);
@@ -3355,8 +3356,8 @@ async function bindBranches(ordered, branches) {
   }
 }
 
-/** A PR on the product repo is one card for push, PR and merge (owner, 2026-11-13). */
-const carriesMerge = (command, ordered) => command === "pr" && Boolean(cfg.productRepo) && ordered.every((r) => sameRepo(r.repo, cfg.productRepo));
+/** A PR on the product repo is one card for push, PR and merge (owner, 2026-11-13); on the official modules repo too (owner, 2026-11-18). */
+const carriesMerge = (command, ordered) => command === "pr" && Boolean(cfg.productRepo) && ordered.every((r) => productRepos().some((p) => sameRepo(r.repo, p)));
 
 /** The exact commit each branch is at now, as a card names it. */
 const branchHeads = (ordered) => Promise.all(ordered.map(async (r) => ({ repo: r.repo, branch: r.branch, sha: await git(r.path, "rev-parse", "--verify", `refs/heads/${r.branch}^{commit}`) })));
