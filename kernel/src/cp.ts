@@ -23,7 +23,8 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import type { Asserter } from "./assert.ts";
 import type { Checks } from "./checks.ts";
 import type { Connection, Grant, Whoami } from "./identity.ts";
-import { delegateIds, type PluginPost } from "./outcomes.ts";
+import type { Once } from "./once.ts";
+import { delegateIds, OutcomeError, type PluginPost } from "./outcomes.ts";
 import type { Provenance } from "./provenance.ts";
 import { fail } from "./proxy.ts";
 
@@ -48,16 +49,16 @@ const PATCH = ["title", "description", "priority", "assigneeAgentId", "assigneeU
 const CREATE = ["title", "description", "priority", "status", "assigneeAgentId", "assigneeUserId", "labelIds", "parentId", "idempotencyKey", "allowDuplicate"];
 type Issue = { id: string; identifier?: string; assigneeAgentId?: string | null; createdByAgentId?: string | null; parentId?: string | null; status?: string };
 
-export function createCp({ whoami, asserter, plugin, agentKey, grants, controlUrl, checks, provenance, log = () => {} }: {
+export function createCp({ whoami, asserter, plugin, once, agentKey, grants, controlUrl, checks, provenance, log = () => {} }: {
   whoami: Whoami; asserter: Asserter; plugin: PluginPost;
+  /** The one durable once-only write (once.ts): each write is keyed by its call, and a retry returns the first run's result. */
+  once: Once;
   /** An agent's own Paperclip key (secrets paperclip-agents/<id>), or "". */
   agentKey: (agent: string) => string;
   /** The grants table's agents: roles, delegation targets and the tasks it names for each agent. */
   grants: () => Record<string, Grant>;
   controlUrl: string; checks?: Checks; provenance: Pick<Provenance, "carried" | "intend" | "record">; log?: (msg: string, f?: Record<string, unknown>) => void;
 }) {
-  // Writes whose answer was lost (a 5xx): the next try of the same write asks the plugin to look for it first.
-  const unknown = new Set<string>();
   return async function cp(req: IncomingMessage, res: ServerResponse, path: string, query: string): Promise<void> {
     const mod = await whoami(String(req.headers.authorization ?? "").replace(/^Bearer\s+/i, "").trim()).catch(() => undefined);
     if (mod?.kind !== "module" || !mod.module) throw fail(401, "unauthorized", "a module's own token is required");
@@ -117,12 +118,11 @@ export function createCp({ whoami, asserter, plugin, agentKey, grants, controlUr
     };
     // The write's once-only key: this call's write itself, so a module's retry of it within the call is the same op.
     const op = createHash("sha256").update(`${c.call}\n${method}\n${path}\n${JSON.stringify(b)}`).digest("base64url").slice(0, 32);
-    /** The plugin's call (outcomes.ts), its errors as this route's: an unknown outcome is looked for on the retry. */
+    /** The plugin's call (outcomes.ts), its errors as this route's: an unknown outcome is looked for on the retry (once.ts). */
     const viaPlugin = async <T>(f: () => Promise<T>): Promise<T> => {
       try { return await f(); } catch (e) {
         const o = e as { name?: string; status?: number; code?: string; message: string };
         if (o.name !== "OutcomeError") throw e;
-        if (o.code === "unknown") unknown.add(op);
         throw fail(o.status!, o.code!, o.message);
       }
     };
@@ -136,15 +136,20 @@ export function createCp({ whoami, asserter, plugin, agentKey, grants, controlUr
       if (!owner || user !== owner) throw fail(403, "forbidden", "a task goes to an agent or to the owner, no other user");
     };
     const send = async (params: Record<string, unknown>) => {
-      const r = await viaPlugin(() => plugin.post(agent, { ...params, ...(unknown.has(op) ? { again: true } : {}) }));
-      if (r.status >= 500 || !r.data) { unknown.add(op); throw fail(502, "unknown", `the post action answered ${r.status}; retry the same write`); }
-      unknown.delete(op);
-      if (r.status >= 300) throw fail(502, "bad_upstream", `the post action answered ${r.status}`);
-      if (r.data.refused) {
-        if (r.data.details) return void answer(409, Buffer.from(JSON.stringify({ error: r.data.refused, details: r.data.details })));
-        throw fail(409, "refused", r.data.refused);
-      }
-      return r.data as { comment: string | null; child: string | null; found: boolean; status: string | null };
+      type Data = { comment: string | null; child: string | null; found: boolean; status: string | null };
+      const refused = { r: undefined as { refused: string; details?: unknown } | undefined };
+      const d = await viaPlugin(async () => ((r) => ({ ...r.value, found: r.value.found || r.again }))(await once(`cp:${op}`, async (retry): Promise<Data> => {
+        const r = await plugin.post(agent, { ...params, ...(retry ? { again: true } : {}) });
+        if (r.status >= 500 || !r.data) throw new OutcomeError(502, "unknown", `the post action answered ${r.status}; retry the same write`);
+        if (r.status >= 300) throw new OutcomeError(502, "bad_upstream", `the post action answered ${r.status}`);
+        if (r.data.refused) { refused.r = r.data; throw new OutcomeError(409, "refused", r.data.refused); }
+        return r.data;
+      }))).catch((e) => {
+        if (!refused.r) throw e;
+        if (refused.r.details) return void answer(409, Buffer.from(JSON.stringify({ error: refused.r.refused, details: refused.r.details })));
+        throw e;
+      });
+      return d;
     };
     const issueAnswer = async (id: string, status: number, extra: Record<string, unknown> = {}) => {
       const r = await read(`/api/issues/${encodeURIComponent(id)}`);

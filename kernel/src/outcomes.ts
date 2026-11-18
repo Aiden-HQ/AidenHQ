@@ -5,11 +5,11 @@
 // wakes nobody. Each call is signed with the kernel's paperclip_post_key (services/paperclip-events/sign.js: an HMAC over the
 // company, the agent and every param, with a timestamp; the key never travels), so no agent key alone can call it; it takes a `done` only with `gated` (this kernel's finish gate passed), and a child's assignee only from the caller
 // or its `delegate_to`. Every comment carries the job's tag (wakes.ts SELF_TAG), so the wake inbox never wakes on it either.
-// Once: `posted(job, kind)` is written before the call (pending) and completed after; a retry that finds it pending asks the
-// plugin to look for the tagged write first, so a call whose answer was lost (a crash after Paperclip's 201, a 502, a
-// timeout) never posts twice.
+// Once: through `once` (once.ts), keyed by the job's tag: a call whose answer was lost (a crash after Paperclip's 201, a 502, a
+// timeout) stays pending, and the retry asks the plugin to look for the tagged write first, so it never posts twice.
 import type { DatabaseSync } from "node:sqlite";
 import type { Finish } from "./checks.ts";
+import { createOnce } from "./once.ts";
 import type { Provenance } from "./provenance.ts";
 import { signature } from "../../services/paperclip-events/sign.js";
 
@@ -83,39 +83,37 @@ export function createOutcomes({ db, plugin, delegates, finish, provenance, log 
   provenance: Pick<Provenance, "carried" | "intend" | "record">;
   log?: (msg: string, f?: Record<string, unknown>) => void;
 }) {
-  db.exec("CREATE TABLE IF NOT EXISTS posted (job TEXT NOT NULL, kind TEXT NOT NULL, comment TEXT, status TEXT, at INTEGER NOT NULL, PRIMARY KEY (job, kind))");
+  const once = createOnce(db);
+  // Outcomes posted before the one table (job, kind) carry over.
+  if (db.prepare("SELECT 1 FROM sqlite_master WHERE name = 'posted'").get()) db.exec(`INSERT OR IGNORE INTO pc_writes (key, result, at) SELECT '<!-- aidenhq:job=' || job || ' kind=' || kind || ' -->', CASE WHEN comment IS NULL THEN NULL ELSE json_object('comment', comment, 'status', status) END, at FROM posted; DROP TABLE posted`);
 
   /** Post `req` on `job.task` as `job.agent`, once per (job, kind). */
   async function post(job: { id: string; agent: string; task: string }, req: PostRequest): Promise<Outcome> {
     if (!UUID.test(job.agent)) throw new OutcomeError(400, "bad-agent", "an agent is its Paperclip id");
     if (typeof req.body !== "string" || !req.body.trim()) throw new OutcomeError(400, "bad-request", "send {kind, body}");
-    const done = db.prepare("SELECT comment, status FROM posted WHERE job = ? AND kind = ?").get(job.id, req.kind) as { comment: string | null; status: string | null } | undefined;
-    if (done?.comment) return { comment: done.comment, status: done.status, again: true };
     await plugin.company(job.agent);
-    let status = req.status;
-    let gate: Finish | undefined;
-    if (status === "done") {
-      gate = await finish(job.task, job.agent);
-      if (!gate.pass) status = undefined;
-    }
-    const origin = tag(job.id, req.kind).slice(5, -4);
-    if (req.child) provenance.intend(origin, await provenance.carried({ job: job.id, agent: job.agent, task: job.task }));
-    if (!done) db.prepare("INSERT INTO posted (job, kind, at) VALUES (?, ?, ?)").run(job.id, req.kind, Date.now());
-    const params = { issueId: job.task, tag: tag(job.id, req.kind), body: req.body, ...(done ? { again: true } : {}), ...(status ? { status } : {}), ...(status === "blocked" ? { blockedBy: req.blockedBy ?? [] } : {}), ...(status === "done" ? { gated: true } : {}), ...(req.child ? { child: req.child, delegateTo: delegates(job.agent) } : {}) };
-    const r = await plugin.post(job.agent, params);
-    // A 5xx (502: the plugin is down, or it threw) leaves the row pending: whether it wrote is unknown, and the retry looks.
-    if (r.status >= 500) throw new OutcomeError(502, "unknown", `the post action answered ${r.status}`);
-    const data = r.data;
-    if (r.status >= 300 || !data || data.refused) {
-      db.prepare("DELETE FROM posted WHERE job = ? AND kind = ? AND comment IS NULL").run(job.id, req.kind);
-      throw new OutcomeError(r.status >= 300 ? 502 : 422, "refused", data?.refused ?? `the post action answered ${r.status}`);
-    }
-    if (req.child && data.child) provenance.record(data.child, origin);
-    db.prepare("UPDATE posted SET comment = ?, status = ? WHERE job = ? AND kind = ?").run(data.comment, data.status ?? null, job.id, req.kind);
-    log("outcome posted", { job: job.id, kind: req.kind, task: job.task, status: data.status ?? null, ...(gate && !gate.pass ? { finish: "held" in gate ? "held" : "reopened" } : {}) });
-    return { comment: data.comment, status: data.status ?? null, ...(done ? { again: true } : {}), ...(gate ? { finish: gate } : {}) };
+    const { value, again } = await once(tag(job.id, req.kind), async (retry): Promise<Outcome> => {
+      let status = req.status;
+      let gate: Finish | undefined;
+      if (status === "done") {
+        gate = await finish(job.task, job.agent);
+        if (!gate.pass) status = undefined;
+      }
+      const origin = tag(job.id, req.kind).slice(5, -4);
+      if (req.child) provenance.intend(origin, await provenance.carried({ job: job.id, agent: job.agent, task: job.task }));
+      const params = { issueId: job.task, tag: tag(job.id, req.kind), body: req.body, ...(retry ? { again: true } : {}), ...(status ? { status } : {}), ...(status === "blocked" ? { blockedBy: req.blockedBy ?? [] } : {}), ...(status === "done" ? { gated: true } : {}), ...(req.child ? { child: req.child, delegateTo: delegates(job.agent) } : {}) };
+      const r = await plugin.post(job.agent, params);
+      // A 5xx (502: the plugin is down, or it threw) leaves the key pending: whether it wrote is unknown, and the retry looks.
+      if (r.status >= 500) throw new OutcomeError(502, "unknown", `the post action answered ${r.status}`);
+      const data = r.data;
+      if (r.status >= 300 || !data || data.refused) throw new OutcomeError(r.status >= 300 ? 502 : 422, "refused", data?.refused ?? `the post action answered ${r.status}`);
+      if (req.child && data.child) provenance.record(data.child, origin);
+      log("outcome posted", { job: job.id, kind: req.kind, task: job.task, status: data.status ?? null, ...(gate && !gate.pass ? { finish: "held" in gate ? "held" : "reopened" } : {}) });
+      return { comment: data.comment, status: data.status ?? null, ...(gate ? { finish: gate } : {}) };
+    });
+    return again ? { ...value, again: true } : value;
   }
-  return { post };
+  return { post, once };
 }
 export type Outcomes = ReturnType<typeof createOutcomes>;
 

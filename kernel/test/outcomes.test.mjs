@@ -4,6 +4,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { DatabaseSync } from "node:sqlite";
 import { createOutcomes, createPluginPost, delegateIds, tag } from "../src/outcomes.ts";
+import { createOnce } from "../src/once.ts";
 import { chiefOfStaff } from "../src/backplane.ts";
 import { SELF_TAG } from "../src/wakes.ts";
 import { post } from "../../services/paperclip-events/post.js";
@@ -141,4 +142,16 @@ test("a signed post verifies after Paperclip adds the request's companyId to its
   // ...and renderEnvironment: null (the route's `body.renderEnvironment ?? null`).
   assert.equal(verify("k", "co-1", "ag-1", { ...p, sig, companyId: "co-1", renderEnvironment: null }), true);
   assert.equal(verify("k", "co-2", "ag-1", { ...p, sig, companyId: "co-2" }), false);
+});
+
+test("one keyed write: the first result is returned ever after, a refusal clears the key, an unknown outcome retries with a look", async () => {
+  const once = createOnce(new DatabaseSync(":memory:"));
+  const tries = [];
+  assert.deepEqual(await once("k1", async (retry) => (tries.push(retry), { id: 1 })), { value: { id: 1 }, again: false });
+  assert.deepEqual(await once("k1", async () => assert.fail("not run again")), { value: { id: 1 }, again: true });
+  await assert.rejects(once("k2", async () => { throw Object.assign(new Error("no"), { code: "refused" }); }));
+  assert.equal((await once("k2", async (retry) => (tries.push(retry), { id: 2 }))).again, false, "refused: nothing was written");
+  await assert.rejects(once("k3", async () => { throw Object.assign(new Error("?"), { code: "unknown" }); }));
+  assert.deepEqual(await once("k3", async (retry) => (tries.push(retry), { id: 3 })), { value: { id: 3 }, again: true }, "the retry is told to look");
+  assert.deepEqual(tries, [false, false, true]);
 });
