@@ -1,0 +1,105 @@
+name: grafana
+description: Grafana for the runner's Engineer jobs (loopback MCP).
+requires:
+  - board # its sign-in banner
+# Its sign-in on the board (the board's point, modules/board/schemas/signins.json).
+contributes:
+  board.signins:
+    - { id: grafana, label: Grafana, status_url: "http://grafana-mcp:8087/auth/status", connect_url: /grafana/connect, callback: /grafana/callback,
+        missing: "The Engineers can't read logs and metrics until it is.", stopped: "The Engineers can't read logs and metrics." }
+  board.setup_flows:
+    - order: 140
+      title: Logs and metrics (Grafana Cloud)
+      why: Engineers can read your Grafana Cloud logs, metrics and dashboards to find what broke.
+      effort: about 3 minutes, needs your Grafana Cloud login
+      secrets: [grafana_url]
+      signin: grafana
+      steps: |
+        1. Open [Grafana Cloud](https://grafana.com/auth/sign-in) and sign in. Your stack's address looks like `https://acme.grafana.net`: it is in your browser's address bar once you open the stack.
+        2. Paste that address below.
+        3. Press **Connect Grafana**, sign in in the tab that opens and allow access.
+
+        Using the monitoring module's own Grafana on this server instead? Skip this: that one needs no sign-in.
+settings:
+  # Superseded by the grafana_url secret the setup flow saves; a value here is read only while that secret is empty.
+  grafana_url:
+    default: ""
+    type: url
+    host: "*.grafana.net"
+  # Grafana's hosted MCP server, which signs in and reads the stack above.
+  grafana_mcp_url:
+    default: https://mcp.grafana.com/mcp
+    type: url
+    host: mcp.grafana.com
+  # "cloud": the Grafana Cloud stack above, signed in on the board. "local": the monitoring module's Grafana on this host
+  # (modules/monitoring; put a Viewer service account token in the vault's grafana_service_account_token), no sign-in.
+  grafana_source:
+    default: cloud
+    values: [cloud, local]
+# Agents granted `grafana: read` (e.g. Fleet Ops, in the instance's agent overrides) query metrics and dashboards.
+connections:
+  grafana:
+    setup: "Cloud: open its setup on the board (#/setup/grafana), paste your stack's address and press Connect. Local: enable the monitoring module, set grafana_source: local and put a Viewer service account token in the vault (docs/design/monitoring.md)."
+    guide: "Metrics and dashboards: the host's disk, memory and containers, and the fleet's queue, spend and approvals (Prometheus through Grafana). `query_prometheus` for a PromQL query, `list_prometheus_metric_names` to find series, `search_dashboards` and `get_dashboard_panel_queries` for the panels' queries."
+    url: http://grafana-mcp:8087/mcp
+    auth: grafana_service_key
+    # Every tool the monitoring module's mcp-grafana lists (probed 2026-11-18; it runs --disable-write with a Viewer token).
+    # Reads added since the first twelve are `named`: only a grant naming them reaches them. A tool only Grafana Cloud lists
+    # is untagged, so the kernel refuses it until a module change tags it.
+    tools:
+      read: [ query_prometheus, query_prometheus_histogram, list_prometheus_metric_names, list_prometheus_label_names, list_prometheus_label_values, list_prometheus_metric_metadata, list_datasources, search_dashboards, get_dashboard_summary, get_dashboard_panel_queries, get_dashboard_by_uid, alerting_rules_read,
+              alerting_silences_read, analyze_loki_labels, check_datasources_health, diff_tempo_traces, generate_deeplink, get_alert_group, get_annotation_tags, get_annotations, get_assertions, get_current_oncall_users, get_dashboard_property, get_datasource, get_doc, get_incident, get_oncall_shift, get_panel_image, get_plugin, get_snapshot, get_tempo_trace, get_tempo_traceql_docs, list_alert_groups, list_dashboard_versions, list_incident_custom_fields, list_incidents, list_loki_label_names, list_loki_label_values, list_oncall_schedules, list_oncall_teams, list_oncall_users, list_provisioning_repositories, list_pyroscope_label_names, list_pyroscope_label_values, list_pyroscope_profile_types, list_snapshots, list_tempo_attribute_names, list_tempo_attribute_values, query_loki_logs, query_loki_patterns, query_loki_stats, query_pyroscope, query_tempo_metrics, render_grafana_app, search_docs, search_folders, search_plugin_information, search_tempo_traces, suggest_loki_alloy_label_config, user_info, validate_provisioning_file ]
+      named: [ alerting_silences_read, analyze_loki_labels, check_datasources_health, diff_tempo_traces, generate_deeplink, get_alert_group, get_annotation_tags, get_annotations, get_assertions, get_current_oncall_users, get_dashboard_property, get_datasource, get_doc, get_incident, get_oncall_shift, get_panel_image, get_plugin, get_snapshot, get_tempo_trace, get_tempo_traceql_docs, list_alert_groups, list_dashboard_versions, list_incident_custom_fields, list_incidents, list_loki_label_names, list_loki_label_values, list_oncall_schedules, list_oncall_teams, list_oncall_users, list_provisioning_repositories, list_pyroscope_label_names, list_pyroscope_label_values, list_pyroscope_profile_types, list_snapshots, list_tempo_attribute_names, list_tempo_attribute_values, query_loki_logs, query_loki_patterns, query_loki_stats, query_pyroscope, query_tempo_metrics, render_grafana_app, search_docs, search_folders, search_plugin_information, search_tempo_traces, suggest_loki_alloy_label_config, user_info, validate_provisioning_file ]
+      write: []
+      # Listed read-only by mcp-grafana under --disable-write, but they can change things (routing; an API request of any
+      # method): destructive, by what they can do, not the vendor's hint.
+      destructive: [ alerting_manage_routing, grafana_api_request ]
+# Runner jobs of an Engineer with private reads, through the model gateway with their own token (scripts/modules.mjs jobcapEntries):
+# Grafana's read tools, served on grafana-mcp's read endpoint, which lists only what the upstream marks read-only.
+jobcaps:
+  - id: grafana-read
+    connection: grafana
+    private: true
+    read_url: "http://grafana-mcp:8087/mcp/read"
+    read_secret: grafana_mcp_token
+    tools: [ query_loki_logs, query_loki_stats, query_loki_patterns, list_loki_label_names, list_loki_label_values, analyze_loki_labels, query_prometheus, query_prometheus_histogram, list_prometheus_label_names, list_prometheus_label_values, list_prometheus_metric_metadata, list_prometheus_metric_names, search_tempo_traces, get_tempo_trace, diff_tempo_traces, list_tempo_attribute_names, list_tempo_attribute_values, query_tempo_metrics, get_tempo_traceql_docs, query_pyroscope, list_pyroscope_label_names, list_pyroscope_label_values, list_pyroscope_profile_types, query_cloudwatch, list_cloudwatch_namespaces, list_cloudwatch_metrics, list_cloudwatch_dimensions, list_cloudwatch_dimension_values, query_elasticsearch, query_graphite, query_graphite_density, list_graphite_metrics, list_graphite_tags, query_influxdb, query_quickwit, list_datasources, get_datasource, check_datasources_health, get_query_examples, search_dashboards, search_folders, get_dashboard_by_uid, get_dashboard_summary, get_dashboard_property, get_dashboard_panel_queries, list_dashboard_versions, run_panel_query, get_panel_image, alerting_rules_read, alerting_silences_read, list_alert_groups, get_alert_group, list_incidents, get_incident, get_annotations, get_annotation_tags, search_docs, get_doc ]
+# How to set it up: the board's setup flow (#/setup/grafana).
+setup: "Open its setup on the board (#/setup/grafana), paste your Grafana Cloud stack's address and press Connect. Used by the runner's Engineer jobs."
+secrets:
+  state: true # its own vault dir, read-write at /state: the registered client and the token pair, refreshed here
+  provided:
+    # Your Grafana Cloud stack, e.g. https://acme.grafana.net, saved by the setup flow; empty: Grafana Cloud is off. The pattern
+    # is the host rule the grafana_url setting had (*.grafana.net).
+    - name: grafana_url
+      setup:
+        label: Grafana Cloud address
+        pattern: '^https://[a-z0-9-]+\.grafana\.net/?$'
+        help: "For example https://acme.grafana.net"
+optional_secrets:
+  - grafana_url
+services:
+  run:
+    grafana-mcp:
+      build: ./connections/grafana-mcp
+      tmp: 16m
+      port: 8087
+      egress: true
+      links: [board] # the board's sign-in endpoints
+      state: /state
+      env:
+        GRAFANA_URL_FILE: ${secrets.grafana_url}
+        GRAFANA_URL: "${settings.grafana_url}"
+        GRAFANA_MCP_URL: "${settings.grafana_mcp_url}"
+        GRAFANA_SOURCE: "${settings.grafana_source}" # local: the monitoring module's mcp-grafana, which joins this module's network
+        GRAFANA_STATE_DIR: /state
+        # The board's https address: its Connect returns there (besides loopback).
+        BOARD_URL: "${BOARD_LAN_URL:-}"
+        # Jobs reach /mcp/read with grafana_mcp_token (through the kernel); the kernel presents the service key on /mcp for agents.
+        MCP_READ_TOKEN_FILE: ${secrets.grafana_mcp_token}
+        # The read endpoint serves only these: the connection's read tags (CI checks they match).
+        READ_TOOLS: "query_prometheus,query_prometheus_histogram,list_prometheus_metric_names,list_prometheus_label_names,list_prometheus_label_values,list_prometheus_metric_metadata,list_datasources,search_dashboards,get_dashboard_summary,get_dashboard_panel_queries,get_dashboard_by_uid,alerting_rules_read,alerting_silences_read,analyze_loki_labels,check_datasources_health,diff_tempo_traces,generate_deeplink,get_alert_group,get_annotation_tags,get_annotations,get_assertions,get_current_oncall_users,get_dashboard_property,get_datasource,get_doc,get_incident,get_oncall_shift,get_panel_image,get_plugin,get_snapshot,get_tempo_trace,get_tempo_traceql_docs,list_alert_groups,list_dashboard_versions,list_incident_custom_fields,list_incidents,list_loki_label_names,list_loki_label_values,list_oncall_schedules,list_oncall_teams,list_oncall_users,list_provisioning_repositories,list_pyroscope_label_names,list_pyroscope_label_values,list_pyroscope_profile_types,list_snapshots,list_tempo_attribute_names,list_tempo_attribute_values,query_loki_logs,query_loki_patterns,query_loki_stats,query_pyroscope,query_tempo_metrics,render_grafana_app,search_docs,search_folders,search_plugin_information,search_tempo_traces,suggest_loki_alloy_label_config,user_info,validate_provisioning_file"
+        MCP_SERVICE_TOKEN_FILE: ${secrets.grafana_service_key}
+        # The board's sign-in endpoints: state, and starting or finishing a sign-in.
+        GRAFANA_AUTH_TOKEN_FILE: ${secrets.grafana_auth_token}
+generated_secrets:
+  - grafana_service_key

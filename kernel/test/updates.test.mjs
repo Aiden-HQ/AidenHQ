@@ -34,21 +34,23 @@ function repo(base, name, commits) {
   return { src, shas, push: () => git(src, "push", "-q", join(base, "Aiden-HQ", `${name}.git`), "--mirror", "--force") };
 }
 
+// A release file. `market` given: one from before 2026-11-18, which also named the official modules repo's sha and each
+// module's; without it, today's: the kernel sha alone names the official modules (its own modules/).
 const release = (name, kernel, market, over = {}) => ({
-  name: "AidenHQ", release: name, kernel, kernel_repo: "Aiden-HQ/AidenHQ",
-  marketplace: { name: "aidenhq", source: { source: "github", repo: "Aiden-HQ/aidenhq-modules" }, sha: market },
-  modules: { board: market }, tested: { ci_run: "", suites: ["kernel-only"] },
+  release: name, kernel, kernel_repo: "Aiden-HQ/AidenHQ",
+  ...(market ? { name: "AidenHQ", marketplace: { name: "aidenhq", source: { source: "github", repo: "Aiden-HQ/aidenhq-modules" }, sha: market }, modules: { board: market } } : {}),
+  tested: { ci_run: "", suites: ["kernel-only"] },
   images: { board: `ghcr.io/aiden-hq/board@sha256:${"a".repeat(64)}` }, notes: ["Updates install themselves"], ...over,
 });
 
-/** The world: 2026.11.2 running (kernel K1, modules M1), 2026.11.3 tagged on the distro's main (K2, M2). */
+/** The world: 2026.11.2 running (kernel K1, modules M1: from before the official modules were the kernel's own), 2026.11.3 tagged on the distro's main (K2, one sha). */
 function world({ auto = "on", next = {} } = {}) {
   const root = mkdtempSync(join(tmpdir(), "updates-"));
   const base = join(root, "gh");
   const kernel = repo(base, "AidenHQ", [{ "a.txt": "1" }, { "a.txt": "2" }]);
   const modules = repo(base, "aidenhq-modules", [{ "m.txt": "1" }, { "m.txt": "2" }]);
   const [K1, K2] = kernel.shas, [M1, M2] = modules.shas;
-  const files = { "2026.11.2": release("2026.11.2", K1, M1), "2026.11.3": release("2026.11.3", K2, M2, typeof next === "function" ? next({ K1, K2, M1, M2 }) : next) };
+  const files = { "2026.11.2": release("2026.11.2", K1, M1), "2026.11.3": release("2026.11.3", K2, undefined, typeof next === "function" ? next({ K1, K2, M1, M2 }) : next) };
   const distro = repo(base, "aidenhq-distro", [{ "releases/2026.11.2.json": JSON.stringify(files["2026.11.2"]) }, { "releases/2026.11.3.json": JSON.stringify(files["2026.11.3"]) }]);
   const [D1, D2] = distro.shas;
   git(distro.src, "tag", "2026.11.2", D1);
@@ -147,8 +149,9 @@ test("verification refuses a mismatched sha, a stamp from another or a failed ru
   w.runs[22] = { ...w.runs[22], status: "completed", conclusion: "failure" };
   await assert.rejects(verify(w.d, text, "2026.11.3", w.D2), /successful release run/);
   await assert.rejects(verify(w.d, text, "2026.11.1", w.D1), /isn't newer than 2026\.11\.2: downgrades are refused/);
-  const off = world({ next: ({ K1 }) => ({ modules: { board: K1 } }) });
-  await assert.rejects(verify(off.d, git(off.d.inst, "show", "HEAD:instance.yaml"), "2026.11.3", off.D2), /module board at [0-9a-f]{12} isn't on the marketplace's history/);
+  // A file that still names an official marketplace or module shas: not read (the kernel's own modules/ are the official ones).
+  const old = world({ next: ({ K1 }) => ({ marketplace: { name: "aidenhq", source: { source: "github", repo: "evil/modules" }, sha: K1 }, modules: { board: K1 } }) });
+  assert.equal((await verify(old.d, git(old.d.inst, "show", "HEAD:instance.yaml"), "2026.11.3", old.D2)).name, "2026.11.3");
   // A newest tag whose kernel is off main (a side branch GitHub would serve too) is refused and said once; the valid older
   // release under it is still offered.
   const side = world();
@@ -189,7 +192,7 @@ test("auto-updates off: at night the release is only offered, never installed", 
   assert.deepEqual(w.applied, []);
 });
 
-test("Update now installs: one pin commit (product, release, marketplace), then the instance's main is applied", async () => {
+test("Update now installs: one pin commit (product, release, the obsolete marketplace entry dropped), then the instance's main is applied", async () => {
   const w = world({ auto: "off" });
   await run({ ...w.d, now: () => DAY });
   let started = 0;
@@ -206,7 +209,7 @@ test("Update now installs: one pin commit (product, release, marketplace), then 
   const p = w.pinned();
   assert.equal(p.product, w.K2);
   assert.deepEqual(p.release, { name: "2026.11.3", source: { source: "github", repo: "Aiden-HQ/aidenhq-distro" }, sha: w.D2 });
-  assert.equal(p.marketplaces[0].sha, w.M2);
+  assert.equal(p.marketplaces, undefined, "the `aidenhq` marketplace entry (its only one) is gone, and the key with it");
   assert.equal(p.settings.auto_update, "off", "the rest of instance.yaml is kept");
   assert.match(git(w.d.inst, "show", "origin/main:instance.yaml"), /^# acme's AidenHQ\./, "comments kept");
   assert.deepEqual(w.applied, [[git(w.d.inst, "rev-parse", "origin/main")]], "apply is given the instance's main, not a commit");
@@ -274,11 +277,18 @@ test("a run that died after its pin commit: the next run finishes it as failed, 
 test("the installer run again moves the pin to its release; the same release is a repair, an older one is refused", () => {
   const w = world();
   assert.throws(() => pinTo(w.d, "2026.11.1", w.D1, w.K1), (e) => e instanceof Refused && /runs 2026\.11\.2, newer than 2026\.11\.1: downgrades are refused/.test(e.message));
+  // A repair of an instance from before 2026-11-18: only its obsolete `aidenhq` marketplace entry goes, in a commit of its own.
+  assert.match(pinTo(w.d, "2026.11.2", w.D1, w.K1), /^already on 2026\.11\.2; instance\.yaml now pins it without the obsolete aidenhq marketplace entry$/);
+  assert.deepEqual([w.pinned().product, w.pinned().marketplaces], [w.K1, undefined]);
   assert.equal(pinTo(w.d, "2026.11.2", w.D1, w.K1), "already on 2026.11.2");
   assert.throws(() => pinTo(w.d, "2026.11.3", w.D2, w.K1), /kernel is [0-9a-f]{12}, but this checkout is at/);
   assert.match(pinTo(w.d, "2026.11.3", w.D2, w.K2), /now pins 2026\.11\.3 \(from 2026\.11\.2\)/);
   const p = w.pinned();
-  assert.deepEqual([p.product, p.release.name, p.release.sha, p.marketplaces[0].sha], [w.K2, "2026.11.3", w.D2, w.M2]);
+  assert.deepEqual([p.product, p.release.name, p.release.sha, p.marketplaces], [w.K2, "2026.11.3", w.D2, undefined]);
+  // The upgrade from an instance that still has the entry drops it in the same pin commit.
+  const u = world();
+  assert.match(pinTo(u.d, "2026.11.3", u.D2, u.K2), /now pins 2026\.11\.3/);
+  assert.equal(u.pinned().marketplaces, undefined);
   const h = world();
   writeFileSync(join(h.d.inst, "instance.yaml"), `product: ${h.K1}\n`);
   git(h.d.inst, "commit", "-qam", "by hand");

@@ -1,0 +1,196 @@
+{
+  "name": "aidenhq",
+  "owner": {
+    "name": "AidenHQ"
+  },
+  "description": "Official AidenHQ modules",
+  "plugins": [
+    {
+      "name": "agent-builder",
+      "source": "./agent-builder"
+    },
+    {
+      "name": "ai-reviewer",
+      "source": "./ai-reviewer"
+    },
+    {
+      "name": "apps-platform",
+      "source": "./apps-platform"
+    },
+    {
+      "name": "board",
+      "source": "./board"
+    },
+    {
+      "name": "channel-operator",
+      "source": "./channel-operator"
+    },
+    {
+      "name": "channel-slack",
+      "source": "./channel-slack"
+    },
+    {
+      "name": "channel-telegram",
+      "source": "./channel-telegram"
+    },
+    {
+      "name": "chat-lane",
+      "source": "./chat-lane"
+    },
+    {
+      "name": "chief-of-staff",
+      "source": "./chief-of-staff"
+    },
+    {
+      "name": "ci",
+      "source": "./ci"
+    },
+    {
+      "name": "clickhouse",
+      "source": "./clickhouse"
+    },
+    {
+      "name": "coach",
+      "source": "./coach"
+    },
+    {
+      "name": "codehost-github",
+      "source": "./codehost-github"
+    },
+    {
+      "name": "codehost-local",
+      "source": "./codehost-local"
+    },
+    {
+      "name": "design",
+      "source": "./design"
+    },
+    {
+      "name": "dispatch",
+      "source": "./dispatch"
+    },
+    {
+      "name": "engine-codex",
+      "source": "./engine-codex"
+    },
+    {
+      "name": "engineering",
+      "source": "./engineering"
+    },
+    {
+      "name": "fleet-ops",
+      "source": "./fleet-ops"
+    },
+    {
+      "name": "github",
+      "source": "./github"
+    },
+    {
+      "name": "glean",
+      "source": "./glean"
+    },
+    {
+      "name": "google",
+      "source": "./google"
+    },
+    {
+      "name": "grading",
+      "source": "./grading"
+    },
+    {
+      "name": "grafana",
+      "source": "./grafana"
+    },
+    {
+      "name": "hubspot",
+      "source": "./hubspot"
+    },
+    {
+      "name": "jira",
+      "source": "./jira"
+    },
+    {
+      "name": "librarian",
+      "source": "./librarian"
+    },
+    {
+      "name": "maintainer",
+      "source": "./maintainer"
+    },
+    {
+      "name": "meetings",
+      "source": "./meetings"
+    },
+    {
+      "name": "memory",
+      "source": "./memory"
+    },
+    {
+      "name": "model-tools",
+      "source": "./model-tools"
+    },
+    {
+      "name": "models-openrouter",
+      "source": "./models-openrouter"
+    },
+    {
+      "name": "monitoring",
+      "source": "./monitoring"
+    },
+    {
+      "name": "open-loops",
+      "source": "./open-loops"
+    },
+    {
+      "name": "platform",
+      "source": "./platform"
+    },
+    {
+      "name": "primer",
+      "source": "./primer"
+    },
+    {
+      "name": "security",
+      "source": "./security"
+    },
+    {
+      "name": "slack",
+      "source": "./slack"
+    },
+    {
+      "name": "tasks",
+      "source": "./tasks"
+    },
+    {
+      "name": "voice",
+      "source": "./voice"
+    },
+    {
+      "name": "warehouse",
+      "source": "./warehouse"
+    }
+  ],
+  "bundle": [
+    "agent-builder",
+    "ai-reviewer",
+    "apps-platform",
+    "board",
+    "channel-slack",
+    "channel-telegram",
+    "chat-lane",
+    "chief-of-staff",
+    "coach",
+    "codehost-local",
+    "engine-codex",
+    "engineering",
+    "fleet-ops",
+    "google",
+    "grading",
+    "memory",
+    "model-tools",
+    "models-openrouter",
+    "platform",
+    "tasks",
+    "warehouse"
+  ]
+}

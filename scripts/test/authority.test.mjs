@@ -213,3 +213,20 @@ test("a GitHub App grant (codehost:) is the owner's to give or widen; dropping i
   assert.deepEqual(lines(with_({ codehost: grant }), with_({ codehost: { token: { ...grant.token, perms: { issues: "write" } } } })), ["acme-crm: changes its GitHub App grant (codehost: tokens, snapshots or clones) (owner)"]);
   assert.deepEqual(lines(with_({ codehost: grant }), base), ["acme-crm: drops its GitHub App grant (review)"]);
 });
+
+test("a code host's service mounts, a channel's transport and credentials, and kernel roles each say what they grant", () => {
+  const svc = { ...base.services.run["crm-mcp"], github_app: "/github-app", workspaces: "/tasks", points: "/config/points.json" };
+  const head = with_({ services: { run: { "crm-mcp": svc } }, roles: { requests: ["kernel.apply"] } });
+  assert.deepEqual(authorityLines([authorityDiff("acme-crm", base, head, false)]), [
+    "acme-crm: requests role kernel.apply (files instance applies) (owner)",
+    "acme-crm: service crm-mcp: mounts the GitHub App key (read-only) (owner)",
+    "acme-crm: service crm-mcp: job workspaces read-write (owner)",
+    "acme-crm: service crm-mcp: reads its points file (review)",
+  ]);
+  const ch = (channel) => with_({ providers: { channel } });
+  assert.deepEqual(authorityLines([authorityDiff("acme-crm", ch({}), ch({ transport: "http://crm-mcp:8080/send", credentials: true }), false)]), [
+    "acme-crm: changes provider channel (review)",
+    "acme-crm: channel: the kernel sends the owner's messages and its token to http://crm-mcp:8080/send (owner)",
+    "acme-crm: channel: gets the owner's credentials (account reset links) (owner)",
+  ]);
+});

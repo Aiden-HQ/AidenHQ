@@ -52,29 +52,9 @@ test("a grants override replaces that connection's grant (optional key too) befo
   assert.throws(() => compile(mods, instance({ agents: { x: { connections: { aconn: ["a_nope"] } } } })), /aconn has no tool a_nope/);
 });
 
-test("a per-module pin compiles from its own commit; official only when that commit is on the official main", async () => {
-  const { execFileSync } = await import("node:child_process");
-  const { cpSync } = await import("node:fs");
-  const repo = mkdtempSync(join(tmpdir(), "official-"));
-  const g = (...a) => execFileSync("git", ["-C", repo, "-c", "user.name=t", "-c", "user.email=t@example.com", ...a]).toString().trim();
-  g("init", "-q", "-b", "main");
-  cpSync(join(mods, "modules", "a"), join(repo, "a"), { recursive: true });
-  g("add", "."), g("commit", "-qm", "a");
-  const onMain = g("rev-parse", "HEAD");
-  g("checkout", "-qb", "pr");
-  writeFileSync(join(repo, "a", "agents", "x", "AGENTS.md"), "---\nname: X\ndescription: X does one thing.\n---\nFrom a PR.\n");
-  g("commit", "-qam", "pr");
-  const offMain = g("rev-parse", "HEAD");
-  const fetch = { cacheDir: mkdtempSync(join(tmpdir(), "cache-")) };
-  const at = (sha) => {
-    const dir = instance();
-    const i = YAML.parse(readFileSync(join(dir, "instance.yaml"), "utf8"));
-    writeFileSync(join(dir, "instance.yaml"), YAML.stringify({ ...i, modules: ["core", { id: "a", sha }], marketplaces: [{ name: "aidenhq", source: { source: "url", url: repo }, sha: onMain }] }));
-    return compile(mods, dir, { fetch });
-  };
-  const official = at(onMain).catalog.find((m) => m.name === "a");
-  assert.deepEqual([official.tier, official.pinned], ["official", onMain]);
-  const pr = at(offMain);
-  assert.deepEqual([pr.catalog.find((m) => m.name === "a").tier, pr.catalog.find((m) => m.name === "a").pinned], ["declared", offMain]);
-  assert.match(pr.paperclip.agents.x.instructions, /trees/);
+test("a per-module pin of an official module is refused: the product pin moves the official modules", () => {
+  const dir = instance();
+  const i = YAML.parse(readFileSync(join(dir, "instance.yaml"), "utf8"));
+  writeFileSync(join(dir, "instance.yaml"), YAML.stringify({ ...i, modules: ["core", { id: "a", sha: "1".repeat(40) }] }));
+  assert.throws(() => compile(mods, dir), /official module is part of the product: pin the product/);
 });

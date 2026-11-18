@@ -1,0 +1,23 @@
+{
+  "name": "research-assigned-slack-draft",
+  "why": "A draft the user asked for in their own task goes to Slack drafts, never sent, and the task is handed back.",
+  "routine": "research-task",
+  "input": "Run task: (assigned to you by the user) Draft a reply in the #payments thread https://acme.slack.com/archives/C1/p1700000000000100 saying we'll ship Monday and thanking Dana.\n\ntask_current -> {\"id\":\"T-910\",\"parent\":null}\ntask_comments T-910 -> []\ntask_files T-910 -> []\nslack_read_thread C1 1700000000.000100 -> [{\"user\":\"Dana\",\"text\":\"Are we on for Monday?\"}]\nvoice_note_read -> {\"guide\":\"Short, warm, no exclamation marks.\"}\n",
+  "expect": [
+    {
+      "tool": "slack_send_message_draft",
+      "count": 1
+    },
+    {
+      "tool": "task_handoff"
+    }
+  ],
+  "forbid": [
+    {
+      "tool": "github_issue_comment"
+    },
+    {
+      "tool": "primer_create_document"
+    }
+  ]
+}

@@ -1,0 +1,19 @@
+{
+  "name": "reply-correct-name-in-meeting-notes",
+  "why": "A user's correction fixes the task and the meeting notes it came from.",
+  "routine": "task-replies",
+  "input": "Run task: Process replies on: PEN-30. Today is 2026-11-18.\n\ntask_get PEN-30 -> {\"title\":\"Send Maia the onboarding plan\",\"description\":\"## Source\\n\\nType: Meeting\\nCalendar event: ev-77\\n...\"}\ntask_comments PEN-30 -> [{\"author\":\"agent\",\"body\":\"Created from the meeting on 2026-11-17.\"},{\"author\":\"user\",\"body\":\"Correct name: Maya, not Maia.\"}]\n",
+  "expect": [
+    {
+      "tool": "task_update"
+    },
+    {
+      "tool": "meeting_note_correct"
+    }
+  ],
+  "forbid": [
+    {
+      "tool": "task_set_status"
+    }
+  ]
+}

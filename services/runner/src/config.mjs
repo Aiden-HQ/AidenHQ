@@ -4,7 +4,6 @@ import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parse as parseYaml } from "yaml";
-import { officialRepo } from "../../../scripts/official-repo.mjs";
 
 export const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
 
@@ -104,8 +103,6 @@ export function loadConfig() {
     // The product repo (owner/name): AIDENHQ_PRODUCT_REPO (setup records it; the kernel reads only that), else this
     // checkout's origin. Tiering treats it apart.
     productRepo: env.AIDENHQ_PRODUCT_REPO || productRepoOf(REPO_ROOT),
-    // The official modules repository: part of the product (the reviewer's scope, the grader's repos).
-    modulesRepo: officialRepo(instance, REPO_ROOT),
     /** GitHub token that adds deploy keys (modules/codehost-github/src/repos.ts); optional, never in an agent's sandbox. */
     githubAdminTokenFile: join(secrets, "github_admin_token"),
     repoAccessScript: join(REPO_ROOT, "ops/vm/add-deploy-key.sh"),

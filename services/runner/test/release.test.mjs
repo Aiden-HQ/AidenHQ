@@ -2,7 +2,7 @@
 // a tip tried once, and instance.yaml edited in exactly its two pins.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { bumpInstance, pinOf, trainStep } from "../src/release.mjs";
+import { bumpInstance, pinOf, trainDescription, trainStep } from "../src/release.mjs";
 
 const A = "a".repeat(40), B = "b".repeat(40), C = "c".repeat(40);
 const now = "2026-11-18T10:20:00Z";
@@ -42,8 +42,33 @@ test("bumpInstance moves only the product pin and the official marketplace's sha
   assert.throws(() => bumpInstance("release: x\n", { product: B, modules: C }), /product: <sha>/);
 });
 
+test("bumpInstance to a product that holds the official modules drops the obsolete `aidenhq` entry in the same commit", () => {
+  const text = (...markets) => ["# the instance", `product: ${A}`, "marketplaces:", ...markets, "modules: [core]", ""].join("\n");
+  const official = `  - { name: aidenhq, source: { source: github, repo: acme/modules }, sha: ${A} } # pinned`;
+  const other = `  - { name: other, source: { source: github, repo: acme/other }, sha: ${A} }`;
+  assert.equal(bumpInstance(text(official, other), { product: B }), text(other).replace(`product: ${A}`, `product: ${B}`));
+  assert.equal(bumpInstance(text(official), { product: B }), `# the instance\nproduct: ${B}\nmodules: [core]\n`, "its only entry: the key goes too");
+  assert.equal(bumpInstance(`product: ${A}\nmodules: [core]\n`, { product: B }), `product: ${B}\nmodules: [core]\n`);
+});
+
 test("a modules pin is only a full sha: anything else (a git option, say) is no pin", () => {
   assert.equal(pinOf(`{ "repo": "acme/modules", "sha": "${A}" }`), A);
   for (const bad of ["--output=/home/x/.bashrc", "HEAD", A.slice(0, 12), `${A} --stat`, 7]) assert.equal(pinOf(JSON.stringify({ sha: bad })), undefined, String(bad));
   assert.equal(pinOf("not json"), undefined);
+});
+
+test("the description names the authority the pinned manifests add, and leaves the section out when there is none", () => {
+  const carries = [{ repo: "acme/modules", sha: A, subject: "(#7)" }];
+  const lines = ["codehost: service codehost: unrecognised field github_app (owner)", "codehost: service codehost: adds workspace notes (owner)"];
+  const describe = (authority) => trainDescription({ target: "instance", what: "Moves the pins.", carries, authority, windowMinutes: 15, marker: "m" });
+  const withLines = describe({ modules: { from: A, to: B }, lines });
+  assert.ok(withLines.includes(`from \`${A.slice(0, 12)}\` to \`${B.slice(0, 12)}\``), "names the modules commits the fields arrive from");
+  assert.match(withLines, /this bump requests exactly these changes/);
+  for (const line of lines) assert.ok(withLines.includes(`- ${line}`), line);
+  assert.ok(withLines.includes(`- acme/modules \`${A}\` (#7)`), "the carried commits still list");
+  for (const authority of [undefined, { modules: { from: A, to: B }, lines: [] }]) {
+    const without = describe(authority);
+    assert.ok(!/requests exactly these changes|adds the authority below/.test(without));
+    assert.equal(without, describe(undefined), "reads as it did before");
+  }
 });

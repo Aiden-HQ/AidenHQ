@@ -42,36 +42,62 @@ export function trainStep({ tip, green, pinned, lastTried, open, flight, now, wi
 }
 
 /**
- * instance.yaml with its `product:` pin and its official marketplace's sha moved, every other byte kept. Throws when either
- * line isn't there in the plain form (a `release:` instance, say), or when anything but those two values would change.
+ * instance.yaml with its `product:` pin moved, every other byte kept but the official marketplace: for a product from before the
+ * official modules were its own (`modules` given) its sha moves with it; for one that holds them (no `modules`) its obsolete
+ * entry goes (a one-line flow entry), and `marketplaces:` with it when that was its only one. Throws when a line isn't there
+ * in the plain form (a `release:` instance, say), or when anything else would change.
  */
 export function bumpInstance(text, { product, modules, official = "aidenhq" }) {
-  if (!SHA.test(product) || !SHA.test(modules)) throw new Error("a pin is a full commit sha");
-  const lines = String(text).split("\n");
+  if (!SHA.test(product) || (modules !== undefined && !SHA.test(modules))) throw new Error("a pin is a full commit sha");
+  let lines = String(text).split("\n");
+  const hitsOf = (re) => lines.flatMap((l, i) => (re.test(l) ? [i] : []));
   const at = (re, what) => {
-    const hits = lines.flatMap((l, i) => (re.test(l) ? [i] : []));
+    const hits = hitsOf(re);
     if (hits.length !== 1) throw new Error(`instance.yaml has ${hits.length} ${what} lines, not one`);
     return hits[0];
   };
   const p = at(/^product:[ \t]*["']?[0-9a-f]{40}["']?[ \t]*(#.*)?$/, "`product: <sha>`");
   lines[p] = lines[p].replace(/[0-9a-f]{40}/, product);
-  const m = at(new RegExp(`^\\s*-\\s*\\{.*\\bname:\\s*${official}\\b.*\\bsha:\\s*[0-9a-f]{40}.*\\}\\s*(#.*)?$`), `\`${official}\` marketplace`);
-  lines[m] = lines[m].replace(/\bsha:(\s*)[0-9a-f]{40}/, `sha:$1${modules}`);
-  const out = lines.join("\n");
-  const [before, after] = [YAML.parse(String(text)), YAML.parse(out)];
+  const entry = new RegExp(`^\\s*-\\s*\\{.*\\bname:\\s*${official}\\b.*\\bsha:\\s*[0-9a-f]{40}.*\\}\\s*(#.*)?$`);
   const market = (doc) => (doc.marketplaces ?? []).find((x) => x?.name === official);
-  if (after.product !== product || market(after)?.sha !== modules) throw new Error("the pins didn't move as written");
-  const rest = (doc) => JSON.stringify({ ...doc, product: undefined, marketplaces: (doc.marketplaces ?? []).map((x) => (x?.name === official ? { ...x, sha: undefined } : x)) });
-  if (rest(before) !== rest(after)) throw new Error("the edit changed more than the two pins");
+  const [before] = [YAML.parse(String(text))];
+  if (modules !== undefined) {
+    const m = at(entry, `\`${official}\` marketplace`);
+    lines[m] = lines[m].replace(/\bsha:(\s*)[0-9a-f]{40}/, `sha:$1${modules}`);
+  } else if (market(before ?? {})) {
+    const m = at(entry, `\`${official}\` marketplace`);
+    lines.splice(m, 1);
+    if (!(before.marketplaces ?? []).some((x) => x?.name !== official)) lines = lines.filter((l) => !/^marketplaces:[ \t]*(#.*)?$/.test(l));
+  }
+  const out = lines.join("\n");
+  const after = YAML.parse(out);
+  if (after.product !== product || (modules !== undefined ? market(after)?.sha !== modules : market(after ?? {}))) throw new Error("the pins didn't move as written");
+  const others = (doc) => (doc.marketplaces ?? []).filter((x) => x?.name !== official);
+  const rest = ({ product: _p, marketplaces: _m, ...doc }) => JSON.stringify({ ...doc, marketplaces: modules !== undefined ? (_m ?? []).map((x) => (x?.name === official ? { ...x, sha: undefined } : x)) : others({ marketplaces: _m }) });
+  if (rest(before) !== rest(after)) throw new Error("the edit changed more than the pins");
   return out;
 }
 
-/** The task's description: what the bump carries, one commit per line (full shas, so a waiter finds it by its merge commit). */
-export function trainDescription({ target, what, carries, windowMinutes, marker }) {
+/**
+ * The task's description: what the bump carries, one commit per line (full shas, so a waiter finds it by its merge commit),
+ * and the module authority its pinned manifests add (`authority`: { modules: { from, to }, lines }, read by code from the
+ * manifests at both pins). The reviewer reads this description as the request chain, so the bump says it asks for exactly
+ * those changes; with no lines the section is left out and the description reads as it did before.
+ */
+export function trainDescription({ target, what, carries, authority, windowMinutes, marker }) {
   const list = carries.length ? carries.map((c) => `- ${c.repo} \`${c.sha}\` ${c.subject}`).join("\n") : "- (nothing yet)";
+  const lines = authority?.lines ?? [];
+  const section = lines.length
+    ? [
+        `The official modules move from \`${authority.modules.from.slice(0, 12)}\` to \`${authority.modules.to.slice(0, 12)}\`. For the modules it resolves to, that adds the authority below (computed by code from the module manifests at both pins; owner = new authority), and this bump requests exactly these changes:`,
+        ...lines.map((l) => `- ${l}`),
+        "",
+      ]
+    : [];
   return [
     `${what} Written by the runner's release train, batched over ${windowMinutes} minutes from the first merge it carries, then filed as one card for the AI reviewer. No agent works on this task; it closes when the bump is live${target === "instance" ? " (the apply succeeded)" : " (its PR merged)"}.`,
     "",
+    ...section,
     "Carries these merged commits:",
     list,
     "",

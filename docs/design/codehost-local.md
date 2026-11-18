@@ -1,5 +1,7 @@
 # On-server code host (`codehost-local`)
 
+> Superseded layout (2026-11-18): the official modules are tracked in this repo's `modules/` again; the pin and materialize steps below describe the two-repo layout this design was written against.
+
 A fresh install with no GitHub builds, reviews, merges and deploys agent-made apps, with every repo kept on the server.
 This note gives the recon (where GitHub is assumed today) and the spec a builder plans from. It expands Part 4b of the
 guided-setup design. The owner approves it before any build.

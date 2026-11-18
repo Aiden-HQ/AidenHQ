@@ -1,0 +1,5 @@
+name: memory
+description: "Agent memory: the facts each agent noted (memory_note) and the Librarian curated into the instance's agents/<key>/memory.md, compiled into its handbook and its fast chat lane."
+prompts:
+  # {{memory}}: the agent's curated memory.md (compile reads it; at most 4 KB). Its fast chat lane gets it too.
+  - { id: memory, file: prompts/memory.md, order: last, when: { fields: { memory: true } }, lane: true }

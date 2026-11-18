@@ -130,6 +130,8 @@ export function parseImage(ref) {
 // that, so a fresh image could claim to be old). Docker Hub: each tag's push time and digest. ghcr.io: the GitHub
 // Packages API's version created_at (needs GITHUB_TOKEN with read access to packages). Any other registry, or no
 // record: fail closed.
+/** The registry keeps no push record to date the pin by (nothing failed to resolve): a security exception may cover it. */
+const undated = (msg) => Object.assign(new Error(msg), { undated: true });
 const UNDATED = "can't establish its publish time from the registry; pin an image whose push time is known, or add a supply-chain exception";
 const glob = (pat) => new RegExp(`^${pat.replace(/[.+?^${}()|[\]\\]/g, "\\$&").replace(/\*/g, ".*")}$`);
 
@@ -151,16 +153,16 @@ async function ghcrVersions(repo) {
   const pkg = encodeURIComponent(rest.join("/"));
   let vs;
   for (const kind of ["orgs", "users"]) {
-    try { vs = await getJson(`https://api.github.com/${kind}/${owner}/packages/container/${pkg}/versions?per_page=100`); break; } catch (e) { if (e.status !== 404) throw new Error(`ghcr.io/${repo}: ${UNDATED} (${e.message})`); }
+    try { vs = await getJson(`https://api.github.com/${kind}/${owner}/packages/container/${pkg}/versions?per_page=100`); break; } catch (e) { if (e.status !== 404) throw undated(`ghcr.io/${repo}: ${UNDATED} (${e.message})`); }
   }
-  if (!vs) throw new Error(`ghcr.io/${repo}: ${UNDATED}`);
+  if (!vs) throw undated(`ghcr.io/${repo}: ${UNDATED}`);
   return vs.flatMap((v) => (v.metadata?.container?.tags || []).map((t) => ({ version: t, published: v.created_at, digest: v.name, via: "GitHub Packages publish time" })));
 }
 
 async function imageVersions(host, repo, filter) {
   if (host === "docker.io") return hubTags(repo, filter);
   if (host === "ghcr.io") return ghcrVersions(repo);
-  throw new Error(`${host}/${repo}: ${UNDATED}`);
+  throw undated(`${host}/${repo}: ${UNDATED}`);
 }
 
 async function dockerVersions(name) {
@@ -333,7 +335,7 @@ export async function publishedAt(kind, name, { version, digest, sha, source } =
     }
     // The tag has moved on: another tag (or for ghcr, the package version) that still holds this digest.
     const hit = (await imageVersions(host, repo, "")).filter((t) => t.digest === digest).sort((a, b) => Date.parse(a.published) - Date.parse(b.published)).at(-1);
-    if (!hit) throw new Error(`${name}@${digest}: ${UNDATED}`);
+    if (!hit) throw undated(`${name}@${digest}: ${UNDATED}`);
     return { published: hit.published, via: `${hit.via} (as ${hit.version})` };
   }
   if (kind === "apt" || kind === "apt-gvisor") {

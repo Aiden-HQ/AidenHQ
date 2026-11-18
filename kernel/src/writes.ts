@@ -81,7 +81,7 @@ export function render(t: Partial<Card>, values: { [k: string]: unknown }, detai
 const literal = (c: Partial<Card>) => Object.fromEntries(Object.keys(c).filter((k) => k !== "reason").map((k) => [k, `{{${k}}}`])) as Partial<Card>;
 
 /** Text a module wrote, inside a fence it can't close, for a notice posted on a task. */
-const fenced = (text: string) => { const f = "`".repeat(Math.max(3, ...[...text.matchAll(/`+/g)].map((m) => m[0].length + 1))); return `${f}\n${text}\n${f}`; };
+export const fenced = (text: string) => { const f = "`".repeat(Math.max(3, ...[...text.matchAll(/`+/g)].map((m) => m[0].length + 1))); return `${f}\n${text}\n${f}`; };
 export const MARKER = "<!-- aidenhq-approval -->";
 const hash = (s: string) => createHash("sha256").update(s).digest("hex");
 const UNSURE = "reviewer_unsure";
@@ -377,15 +377,15 @@ export function createWrites({ records, registry, connections, secret, resolver,
       if (!k?.runner) throw fail(404, "unknown_kind", `no runner kind ${b.kind}`);
       return fileRunner(b.kind, k, b);
     },
-    /** kernel.raise_cap, filed by the kernel itself (the model gateway): Tier 2 on its merits, the reviewer first. */
+    /** kernel.raise_cap, filed by the kernel itself (the model gateway): the owner's tap alone, with no reviewer call (the cap it raises would refuse one). */
     fileNative(kind: string, b: { task: string; identifier?: string; args: unknown; card: Card; reason: string; rule: string }): Rec {
       const k = kindOf_(kind)!;
       if (k.args) validate(k.args, b.args);
       const base = { kind, module: k.module, args: b.args, targets: {}, executor: { module: k.module }, policy: policy(k), card: { ...b.card, reason: b.reason }, requester: { agent: "", key: "", name: "the kernel", roles: [], kind: "kernel" }, task: b.task };
       const open = records.open(b.task, kind, digestOf(base))[0];
       if (open) return open;
-      const t = computeTier({ floor: k.floor });
-      return records.file({ ...base, tier: t.tier, merit: t.merit, panel: false, review_first: t.reviewFirst, rule: b.rule, identifier: b.identifier ?? null, target: b.card.target ?? null, state: "review" });
+      const t = computeTier({ floor: k.floor, reviewFirst: null });
+      return records.file({ ...base, tier: t.tier, merit: t.merit, panel: false, review_first: t.reviewFirst, rule: b.rule, identifier: b.identifier ?? null, target: b.card.target ?? null, state: t.state });
     },
     /** The proxy's record for a conn.tool call. Tier 0 comes back claimed: the proxy forwards it and reports with `outcome`. */
     async fileTool(who: Identity, connection: string, tool: string, args: unknown, task: string): Promise<Rec> {

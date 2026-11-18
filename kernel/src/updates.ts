@@ -2,14 +2,16 @@
 // distro repo) moves to the next release itself: at night in the owner's timezone while settings.auto_update is on (unset
 // = on), or when the owner presses Update now (the kernel's /updates page). An instance that pins product by hand has no
 // `release:` and is never touched.
-// - The source is fixed: the official distro, kernel and modules repositories on GitHub, over https. Nothing in a release
+// - The source is fixed: the official distro and kernel repositories on GitHub, over https (the official modules are the
+//   kernel commit's own modules/ since 2026-11-18). Nothing in a release
 //   file or instance.yaml can point the updater elsewhere.
 // - Before anything moves, a release is verified: its tag's commit is on the distro's main; its file names the official
-//   kernel and marketplace and only ghcr.io/aiden-hq images, and resolves (release.ts) against the instance it would pin;
-//   the kernel and marketplace shas are on their repositories' main and descend from what runs now (no downgrade, and the
+//   kernel and only ghcr.io/aiden-hq images, and resolves (release.ts) against the instance it would pin;
+//   the kernel sha is on its repository's main and descends from what runs now (no downgrade, and the
 //   name must be newer); the published asset is the same file with the release workflow's `tested` stamp, and that stamp
 //   names a release.yml run on the tag's commit.
-// - An install is one instance commit (product:, release: and the aidenhq marketplace sha, as an upgrade by hand is), then
+// - An install is one instance commit (product: and release:, dropping an obsolete `aidenhq` marketplace entry, as an upgrade
+//   by hand is), then
 //   ops/apply-config.sh at that commit, under the host's apply lock (ops/update.sh holds it on fd 9 from before the commit
 //   until the apply ends). Apply's own health check reverts the host to the last known good; the updater then reverts the
 //   commit, so git history and the pin say what runs, and records the release as failed: the night never retries it, only
@@ -33,7 +35,6 @@ import { OFFICIAL, repoAt, type Fetch, type Where } from "../../scripts/compiler
 type Dict = Record<string, unknown>;
 export const DISTRO = "Aiden-HQ/aidenhq-distro";
 export const KERNEL = "Aiden-HQ/AidenHQ";
-export const MODULES = "Aiden-HQ/aidenhq-modules";
 const GITHUB = "https://github.com";
 const NAME = /^\d{4}\.\d{1,2}(\.\d+){0,2}$/;
 const SHA = /^[0-9a-f]{40}$/;
@@ -89,7 +90,7 @@ export type Deps = {
 };
 
 export type Candidate = {
-  name: string; sha: string; kernel: string; marketplace: string; notes: string[]; compare: string; images: number;
+  name: string; sha: string; kernel: string; notes: string[]; compare: string; images: number;
   from: { name: string; product: string };
 };
 type Last = { release: string; outcome: "installed" | "failed"; why?: string; at: string; by: string };
@@ -145,7 +146,11 @@ export function newerTags(d: Pick<Deps, "base">, than: string): { name: string; 
   return [...tags.keys()].filter((n) => compareRelease(n, than) > 0).sort(compareRelease).reverse().map((name) => ({ name, sha: tags.get(name)! }));
 }
 
-/** instance.yaml's text moved to a release: product:, release: and the aidenhq marketplace's sha, comments kept. */
+/**
+ * instance.yaml's text moved to a release: product: and release:, comments kept. The `aidenhq` marketplace entry an instance
+ * from before 2026-11-18 carries is dropped (the official modules are the kernel's own modules/), and `marketplaces:` with it
+ * when that was its only entry.
+ */
 export function pinText(text: string, file: Dict, name: string, sha: string): string {
   const doc = YAML.parseDocument(text);
   const quoted = (s: string) => Object.assign(new Scalar(s), { type: Scalar.QUOTE_DOUBLE });
@@ -153,8 +158,16 @@ export function pinText(text: string, file: Dict, name: string, sha: string): st
   if (!doc.has("release")) doc.set("release", doc.createNode({ name, source: { source: "github", repo: DISTRO }, sha }, { flow: true }));
   doc.setIn(["release", "name"], quoted(name));
   doc.setIn(["release", "sha"], sha);
+  return dropOfficial(doc);
+}
+
+/** The document without an `aidenhq` marketplace entry (nor an emptied `marketplaces:`), as text. */
+function dropOfficial(doc: YAML.Document): string {
   const ms = doc.get("marketplaces") as YAML.YAMLSeq | undefined;
-  for (const m of ms?.items ?? []) if (YAML.isMap(m) && m.get("name") === OFFICIAL) m.set("sha", (file.marketplace as Dict).sha);
+  if (YAML.isSeq(ms)) {
+    ms.items = ms.items.filter((m) => !(YAML.isMap(m) && m.get("name") === OFFICIAL));
+    if (!ms.items.length) doc.delete("marketplaces");
+  }
   return doc.toString({ lineWidth: 0 });
 }
 
@@ -171,24 +184,18 @@ export async function verify(d: Pick<Deps, "base" | "fetch" | "download">, text:
   const distro = onMain(d, at(d, DISTRO, sha), `${name}'s commit`);
   let file: Dict;
   try { file = JSON.parse(execFileSync("git", ["--git-dir", distro, "show", `${sha}:releases/${name}.json`], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] })) as Dict; } catch { throw new Refused(`${name} has no readable releases/${name}.json at ${sha.slice(0, 12)}`); }
-  // The fixed sources: a release file can't point the kernel, the modules or the images anywhere else.
+  // The fixed sources: a release file can't point the kernel or the images anywhere else (a `marketplace` or `modules` key, from
+  // a release before 2026-11-18, is not read).
   if (file.release !== name) throw new Refused(`releases/${name}.json says it is ${plain(file.release, 40)}`);
   if ((file.kernel_repo ?? KERNEL) !== KERNEL) throw new Refused(`${name} names the kernel ${plain(file.kernel_repo, 100)}, not ${KERNEL}`);
-  const m = isMap(file.marketplace) ? file.marketplace : {};
-  if (!isMap(m.source) || m.source.source !== "github" || m.source.repo !== MODULES) throw new Refused(`${name}'s marketplace isn't ${MODULES}`);
   const images = isMap(file.images) ? Object.values(file.images) : [];
   if (images.some((i) => typeof i !== "string" || !i.startsWith("ghcr.io/aiden-hq/"))) throw new Refused(`${name} names an image outside ghcr.io/aiden-hq`);
-  // What the instance would pin, resolved as the apply will (shapes, shas, product: = kernel, the marketplace agreeing).
+  // What the instance would pin, resolved as the apply will (shapes, shas, product: = kernel).
   const next = pinText(text, file, name, sha);
   try { resolveRelease(file, (YAML.parse(next) ?? {}) as Dict); } catch (e) { throw new Refused((e as Error).message); }
-  const kernel = String(file.kernel), market = String(m.sha);
+  const kernel = String(file.kernel);
   const product = String(instance.product ?? "");
   if (!isAncestor(onMain(d, at(d, KERNEL, kernel), `${name}'s kernel`), product, kernel)) throw new Refused(`${name}'s kernel ${kernel.slice(0, 12)} doesn't descend from the running product ${product.slice(0, 12)}`);
-  const own = (Array.isArray(instance.marketplaces) ? instance.marketplaces : []).find((x) => isMap(x) && x.name === OFFICIAL) as Dict | undefined;
-  const mr = onMain(d, at(d, MODULES, market), `${name}'s marketplace`);
-  if (own && typeof own.sha === "string" && !isAncestor(mr, own.sha, market)) throw new Refused(`${name}'s marketplace ${market.slice(0, 12)} doesn't descend from the running ${own.sha.slice(0, 12)}`);
-  // As install.sh checks: every module's own sha is on the marketplace's history at the release's sha.
-  for (const [mod, ms] of Object.entries(isMap(file.modules) ? file.modules : {})) if (!isAncestor(mr, String(ms), market)) throw new Refused(`${name}'s module ${plain(mod, 60)} at ${String(ms).slice(0, 12)} isn't on the marketplace's history at ${market.slice(0, 12)}`);
   // The release workflow's stamp: the published asset is this file with `tested` written, from a release.yml run on this commit.
   const asset = await d.download(`${GITHUB}/${DISTRO}/releases/download/${name}/${name}.json`);
   const bare = (f: unknown) => { const { tested: _t, todo: _d, ...rest } = isMap(f) ? f : {}; return rest; };
@@ -203,7 +210,7 @@ export async function verify(d: Pick<Deps, "base" | "fetch" | "download">, text:
   const onTag = isMap(r) && (r.event === "push" || (r.event === "workflow_dispatch" && r.head_branch === name));
   if (!isMap(r) || r.path !== ".github/workflows/release.yml" || r.head_sha !== sha || !onTag || r.conclusion !== "success") throw new Refused(`${name}'s tested stamp doesn't name a successful release run on its commit`);
   const notes = (Array.isArray(file.notes) ? file.notes : typeof file.notes === "string" ? [file.notes] : []).slice(0, 20).map((n) => plain(n)).filter(Boolean);
-  return { name, sha, kernel, marketplace: market, notes, compare: `${GITHUB}/${KERNEL}/compare/${product.slice(0, 12)}...${kernel.slice(0, 12)}`, images: images.length, from: { name: cur.name, product }, text: next };
+  return { name, sha, kernel, notes, compare: `${GITHUB}/${KERNEL}/compare/${product.slice(0, 12)}...${kernel.slice(0, 12)}`, images: images.length, from: { name: cur.name, product }, text: next };
 }
 
 // ------------------------------------------------------------------------------------------------ state
@@ -355,7 +362,7 @@ export async function install(d: Deps, next: { release: string; by: string }): P
   onInstanceMain(d.inst, (clone) => {
     if (readFileSync(join(clone, "instance.yaml"), "utf8") !== text) throw new Error("instance.yaml moved while the update was checked; it waits for the next run");
     writeFileSync(join(clone, "instance.yaml"), c.text);
-    commit(clone, `update: AidenHQ ${c.name}\n\nFrom ${c.from.name}: product ${c.kernel}, release ${c.name} at distro ${c.sha}, ${OFFICIAL} marketplace ${c.marketplace}.\nBy ${next.by}. What changed: ${c.compare}`);
+    commit(clone, `update: AidenHQ ${c.name}\n\nFrom ${c.from.name}: product ${c.kernel}, release ${c.name} at distro ${c.sha}.\nBy ${next.by}. What changed: ${c.compare}`);
   }, (sha) => { s.installing = { release: c.name, kernel: c.kernel, from: c.from.name, commit: sha, by: next.by, notes: c.notes, compare: c.compare }; writeState(d, s); });
   // The instance's main, not the pin commit alone: another writer's commit landed after it is applied with it, never refused.
   const r = d.apply([]);
@@ -404,7 +411,13 @@ export function pinTo(d: Pick<Deps, "base" | "fetch" | "inst">, name: string, sh
   const cur = followed(instance);
   if (!cur) return "this instance pins its product by hand: left as it is";
   if (compareRelease(name, cur.name) < 0) throw new Refused(`this server runs ${cur.name}, newer than ${name}: downgrades are refused`);
-  if (compareRelease(name, cur.name) === 0) return `already on ${name}`;
+  if (compareRelease(name, cur.name) === 0) {
+    // A repair of an instance from before 2026-11-18: its obsolete `aidenhq` marketplace entry goes, alone in its commit.
+    if (!(Array.isArray(instance.marketplaces) ? instance.marketplaces : []).some((m) => isMap(m) && m.name === OFFICIAL)) return `already on ${name}`;
+    const dropped = dropOfficial(YAML.parseDocument(text));
+    onInstanceMain(d.inst, (clone) => { writeFileSync(join(clone, "instance.yaml"), dropped); commit(clone, `update: AidenHQ ${name}: the official modules are the product's own (the installer)`); });
+    return `already on ${name}; instance.yaml now pins it without the obsolete ${OFFICIAL} marketplace entry`;
+  }
   const distro = repoAt(at(d, DISTRO, sha), d.fetch);
   const file = JSON.parse(execFileSync("git", ["--git-dir", distro, "show", `${sha}:releases/${name}.json`], { encoding: "utf8" })) as Dict;
   if (file.kernel !== product) throw new Refused(`${name}'s kernel is ${String(file.kernel).slice(0, 12)}, but this checkout is at ${product.slice(0, 12)}`);

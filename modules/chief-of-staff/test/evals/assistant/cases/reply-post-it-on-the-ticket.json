@@ -1,0 +1,21 @@
+{
+  "name": "reply-post-it-on-the-ticket",
+  "why": "'Post it' after a draft posts that draft once on the issue the task links.",
+  "routine": "task-replies",
+  "input": "Run task: Process replies on: PEN-52. Today is 2026-11-18.\n\ntask_get PEN-52 -> {\"title\":\"Update on acme/api#12\",\"description\":\"Write an update for https://github.com/acme/api/issues/12\"}\ntask_comments PEN-52 -> [{\"author\":\"agent\",\"body\":\"Draft update:\\n\\nRetries now back off exponentially; the fix ships Monday.\\n\\nSources: ...\"},{\"author\":\"user\",\"body\":\"Looks good, post it.\"}]\ngithub_issue_read acme/api#12 -> {\"state\":\"open\",\"title\":\"Retry storm on timeouts\",\"comments\":[]}\n",
+  "expect": [
+    {
+      "tool": "github_issue_comment",
+      "count": 1
+    }
+  ],
+  "forbid": [
+    {
+      "tool": "github_issue_comment",
+      "text": "Sources:"
+    },
+    {
+      "tool": "primer_create_document"
+    }
+  ]
+}

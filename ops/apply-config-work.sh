@@ -338,23 +338,29 @@ instancePinning() {
   rm -f "$tmp"
 }
 
-# A refusal before the switch: both checkouts back where the running generation has them, with the host's Node deps.
-# The official modules, their own repository since 5b (modules-pin.json): the instance's `aidenhq` marketplace at its sha
-# (else the pin), put at ./modules. A product that still tracks modules/ has them from its checkout. Sets mods_before and
-# mods_after (the caller's locals): the runner restarts when they differ.
+# The official modules are the product's own modules/ (2026-11-18). A product from before that (a rollback to an older
+# generation) still has modules-pin.json and fetches them itself into the ignored ./modules (its own materialize.mjs: the
+# instance's `aidenhq` marketplace at its sha, else the pin). The first apply of a product that tracks modules/ over such a
+# tree (modules/.sha marks one) removes everything the checkout doesn't track there, once, so no file of the old fetched tree
+# is left to run. Sets mods_before and mods_after (the caller's locals): the runner restarts when they differ.
 materializeModules() {
   mods_before="$(cat modules/.sha 2>/dev/null || true)"
   if [ -f modules-pin.json ]; then node scripts/modules-repo/materialize.mjs . "$inst/instance.yaml" || return 1; fi
+  if [ ! -f modules-pin.json ] && [ -f modules/.sha ]; then
+    git clean -ffdxq -- modules && rm -rf modules.next modules.old || return 1
+    echo "modules: the fetched tree is gone; the official modules are the product's own modules/"
+  fi
   mods_after="$(cat modules/.sha 2>/dev/null || true)"
 }
 
+# A refusal before the switch: both checkouts back where the running generation has them, with the host's Node deps.
 restoreCheckouts() {
   git checkout --quiet --detach "$before"
   for d in scripts services/runner kernel; do
     git diff --quiet "$before" "$product" -- "$d/package-lock.json" || npm ci --prefix "$d" --silent || true
   done
   if [ -n "${inst_before:-}" ] && [ "$(git -C "$inst" rev-parse HEAD)" != "$inst_before" ]; then git -C "$inst" checkout --quiet --detach "$inst_before"; fi
-  # The official modules of the restored pair (a product that still tracks modules/ has them from the checkout).
+  # The official modules of the restored pair, when it is from before they were the product's own (materializeModules).
   if [ -f modules-pin.json ]; then node scripts/modules-repo/materialize.mjs . "$inst/instance.yaml" || true; fi
 }
 

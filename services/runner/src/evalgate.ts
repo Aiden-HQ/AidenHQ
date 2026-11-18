@@ -1,14 +1,15 @@
 // The eval-receipt gate (owner, 2026-11-16): a change that brings the AI reviewer's own code to the fleet lands only with a
-// passing receipt (owner, 2026-11-17: at least 95% of the base cases, every miss a false block) of the reviewer eval (ai-reviewer/scripts/reviewer-eval.mjs in the official modules repo) for it. The AI
-// reviewer lives in the official modules repo (modules-pin.json, instance.yaml's `aidenhq` marketplace) since 5b, so the eval
-// always runs a commit of that repo, judged by an earlier one:
-// - a modules-repo PR that changes the reviewer: its head, judged by its base branch, receipt for its head;
-// - a product PR that changes the product's reviewer code (REVIEWER_CODE): the modules commit its merge would pin, judged by
-//   the base branch's pin, receipt for the product head;
-// - a modules pin bump (a product PR moving modules-pin.json, an instance apply moving the `aidenhq` marketplace or the
-//   product it runs) whose reviewer content differs: the new modules commit, judged by the old one. A passing receipt for the same
-//   reviewer content (REVIEWER_TREE's tree ids: the module, plan.mjs, check.mjs) already covers it, so the squash merge of a
-//   modules PR that passed needs no second eval; else it runs once, receipt for that modules commit.
+// passing receipt (owner, 2026-11-17: at least 95% of the base cases, every miss a false block) of the reviewer eval
+// (modules/ai-reviewer/scripts/reviewer-eval.mjs) for it. The AI reviewer is the product's own modules/ai-reviewer again since
+// 2026-11-18 (it lived in the official modules repo from 5b until then), so the eval runs a product commit's modules/ tree,
+// judged by an earlier one:
+// - a product PR that changes the reviewer's code (REVIEWER_CODE): its head, judged by its base branch, receipt for its head;
+// - an instance apply that moves the product it runs (or, before 2026-11-18, its `aidenhq` marketplace) to different reviewer
+//   content: the new commit, judged by the old one. A passing receipt for the same reviewer content (REVIEWER_TREE's tree
+//   ids: the module, plan.mjs, check.mjs, the same ids in either repository) already covers it, so the squash merge of a PR
+//   that passed needs no second eval; else it runs once, receipt for that commit. Across the move itself (the modules repo on
+//   one side, the product on the other) only such a receipt covers it.
+// - a PR of the old modules repo, or a product PR from before the move that moves modules-pin.json: as before the move.
 // The merge queue asks before every merge; the apply asks before it lands. The runner runs the eval itself, once per head,
 // in a scratch tree, in the job jail, with the eval's own key (never the fleet's), and writes the receipt itself. Anything it
 // can't read stops (fails closed).
@@ -61,16 +62,16 @@ export const REVIEWER_CODE = [
   /^services\/runner\/src\/(tiers|gate-core)\.(mjs|ts)$/,
   /^modules\/codehost-github\/src\/plan\.mjs$/,
   /^modules\/platform\/src\/check\.mjs$/,
-  /^kernel\/src\/(tier|provenance|writes|records|reviews|kinds|apply|apply-tier)\.ts$/,
+  /^kernel\/src\/(tier|provenance|writes|records|reviews|review-loop|kinds|apply|apply-tier)\.ts$/,
   /^scripts\/compiler\/authority\.ts$/,
 ];
 export const touchesReviewer = (files: string[]) => files.some((f) => REVIEWER_CODE.some((r) => r.test(f)));
-/** The same, for a path in the official modules repo (its modules sit at its root). */
+/** The same, for a path in the old official modules repo (its modules sit at its root). */
 export const touchesModulesReviewer = (files: string[]) => touchesReviewer(files.map((f) => `modules/${f}`));
-/** The reviewer's code in a modules commit, by git object id: the same ids are the same reviewer, whatever commit holds them. */
+/** The reviewer's code in a modules tree, by git object id: the same ids are the same reviewer, whatever commit holds them. */
 const REVIEWER_TREE = ["ai-reviewer", "codehost-github/src/plan.mjs", "platform/src/check.mjs"];
 
-// Paths in the official modules repo.
+// Paths in a modules tree (the product's modules/, or the old modules repo's root).
 const MODULE = "ai-reviewer";
 const CASES = `${MODULE}/test/reviewer-cases`;
 const JUDGE = ["ai-reviewer/scripts/reviewer-eval.mjs", "ai-reviewer/test/case-pad.mjs", "ai-reviewer/scripts/pass-rule.mjs"];
@@ -163,7 +164,7 @@ export function noLinks(root: string, rel: string) {
 
 export type GateDeps = {
   productRepo: string | undefined;
-  /** The official modules repo (owner/name), where the AI reviewer lives. */
+  /** The old official modules repo (owner/name), where the AI reviewer lived until 2026-11-18: read only for commits from then. */
   modulesRepo: string | undefined;
   workDir: string;
   /** The eval's own OpenRouter key file (secrets dir `openrouter_eval_key`): never the fleet's key. */
@@ -179,30 +180,38 @@ export type GateDeps = {
 };
 type Pr = { number: number; headRefOid: string; headRefName: string; baseRefName: string; baseRef?: { target?: { oid?: string } } };
 export type Gate = undefined | { wait: string } | { stop: string };
-/** A commit of a modules repository. */
-export type ModulesAt = { repo: string | undefined; sha: string };
+/** A commit holding the official modules: the product's (`path: "modules"`), or the old modules repo's (`path: ""`). */
+export type ModulesAt = { repo: string | undefined; sha: string; path: string };
+/** `rel` in that commit's modules tree, as git names it. */
+const inTree = (m: ModulesAt, rel: string) => `${m.sha}:${m.path ? `${m.path}/` : ""}${rel}`;
 
 const sameSlug = (a?: string, b?: string) => String(a ?? "").toLowerCase() === String(b ?? "").toLowerCase();
 const SHA = /^[0-9a-f]{40}$/;
 const slugOf = (url: string) => /^https:\/\/github\.com\/([\w.-]+\/[\w.-]+?)(?:\.git)?$/.exec(url)?.[1];
 
-/** The modules pin (modules-pin.json) of a product commit, as git has it. Throws when it isn't there or isn't a pin. */
-async function pinAt(git: GateDeps["git"], path: string, rev: string): Promise<ModulesAt> {
+/**
+ * The official modules a product commit holds: its own modules/ (from 2026-11-18), else its pin (modules-pin.json). Throws when
+ * it has neither.
+ */
+async function modulesOf(git: GateDeps["git"], path: string, rev: string, productRepo: string): Promise<ModulesAt> {
+  if (await git(path, "cat-file", "-e", `${rev}:modules/marketplace.json`).then(() => true, () => false)) return { repo: productRepo, sha: rev, path: "modules" };
   const p = JSON.parse(await git(path, "show", `${rev}:modules-pin.json`));
   if (!SHA.test(String(p?.sha ?? ""))) throw new Error(`${rev.slice(0, 12)}'s modules-pin.json names no commit`);
-  return { repo: String(p.repo ?? ""), sha: p.sha };
+  return { repo: String(p.repo ?? ""), sha: p.sha, path: "" };
 }
 
 /**
- * The official modules commit an instance config runs (scripts/compiler: its `aidenhq` marketplace, through its release,
- * else its product's modules-pin.json, read in the product checkout `productRoot`). `repo` is undefined when they come from
- * anywhere but a GitHub repository's root.
+ * The official modules an instance config runs (scripts/compiler/sources.ts officialAt, read in the product checkout
+ * `productRoot`, whose repository is `productRepo`): its product's own modules/, or before 2026-11-18 its `aidenhq`
+ * marketplace (through its release) or its product's modules-pin.json. `repo` is undefined when they come from anywhere but
+ * the product or a GitHub repository's root.
  */
-export function officialOf(instanceText: string, productRoot: string): ModulesAt {
+export function officialOf(instanceText: string, productRoot: string, productRepo: string | undefined): ModulesAt {
   const f = { ...hostFetch(productRoot), parse: (t: string) => parseYaml(t) };
   const instance = effective((parseYaml(instanceText) ?? {}) as Record<string, unknown>, f);
   const w = officialAt(instance, String(instance.product ?? ""), productRoot, f);
-  return { repo: w.path ? undefined : slugOf(w.url), sha: w.sha };
+  if (w.url === productRoot) return { repo: w.path === "modules" ? productRepo : undefined, sha: w.sha, path: "modules" };
+  return { repo: w.path ? undefined : slugOf(w.url), sha: w.sha, path: "" };
 }
 
 /**
@@ -217,37 +226,40 @@ export function createEvalGate(d: GateDeps) {
   const read = (k: string): any => JSON.parse(d.state.get(k) || "null");
   const save = (k: string, v: object) => d.state.set(k, JSON.stringify(v));
 
-  /** The modules repo's cache clone, holding these commits (fetched by sha when it doesn't yet). */
-  async function modulesClone(...shas: string[]): Promise<string> {
-    if (!d.modulesRepo) throw new Error("the official modules repo isn't known here");
-    const path = await d.clone(d.modulesRepo);
+  /** The cache clone of `repo` (the product, or the old modules repo), holding these commits (fetched by sha when it doesn't yet). */
+  async function cloneOf(repo: string | undefined, ...shas: string[]): Promise<string> {
+    if (!repo) throw new Error("the repository holding the official modules isn't known here");
+    const path = await d.clone(repo);
     for (const sha of shas) {
-      if (!SHA.test(sha)) throw new Error(`\`${String(sha).slice(0, 40)}\` isn't a modules commit`);
+      if (!SHA.test(sha)) throw new Error(`\`${String(sha).slice(0, 40)}\` isn't a commit`);
       const has = () => d.git(path, "cat-file", "-e", `${sha}^{commit}`).then(() => true, () => false);
       if (!(await has())) await d.git(path, "fetch", "--quiet", "origin", sha).catch(() => {});
-      if (!(await has())) throw new Error(`${d.modulesRepo} has no commit ${sha.slice(0, 12)}`);
+      if (!(await has())) throw new Error(`${repo} has no commit ${sha.slice(0, 12)}`);
     }
     return path;
   }
-  /** A pin names only what the modules repo merged: a commit on its default branch (an unmerged head skipped its review). */
-  async function merged(path: string, sha: string): Promise<Gate> {
+  /** A pin names only what its repository merged: a commit on its default branch (an unmerged head skipped its review). */
+  async function merged(path: string, m: ModulesAt): Promise<Gate> {
     await d.git(path, "fetch", "--quiet", "origin");
-    const ok = await d.git(path, "merge-base", "--is-ancestor", sha, "refs/remotes/origin/HEAD").then(() => true, () => false);
-    return ok ? undefined : { stop: `it pins modules commit \`${sha.slice(0, 12)}\`, which isn't on ${d.modulesRepo}'s default branch: pins name merged commits only` };
+    const ok = await d.git(path, "merge-base", "--is-ancestor", m.sha, "refs/remotes/origin/HEAD").then(() => true, () => false);
+    return ok ? undefined : { stop: `it pins modules commit \`${m.sha.slice(0, 12)}\`, which isn't on ${m.repo}'s default branch: pins name merged commits only` };
   }
   /** One hash of the reviewer's object ids at a modules commit. */
-  const reviewerAt = async (path: string, sha: string) => createHash("sha256").update(await d.git(path, "ls-tree", sha, "--", ...REVIEWER_TREE)).digest("hex").slice(0, 32);
+  const reviewerAt = async (path: string, m: ModulesAt) => createHash("sha256").update(await d.git(path, "ls-tree", m.path ? `${m.sha}:${m.path}` : m.sha, "--", ...REVIEWER_TREE)).digest("hex").slice(0, 32);
   const passed = (reviewer: string) => Boolean(d.state.get(`eval-reviewer:${reviewer}`));
-  /** A modules side must come from the official modules repo: anything else is the owner's to merge. */
-  const official = (m: ModulesAt, what: string) => (d.modulesRepo && sameSlug(m.repo, d.modulesRepo) ? undefined : { stop: `${what} takes the official modules from \`${m.repo ?? "somewhere else"}\`, not \`${d.modulesRepo ?? "(unknown)"}\`, so the reviewer-eval gate can't vouch for the AI reviewer it brings` });
+  /** A modules side must be the product's modules/ or the old official modules repo: anything else is the owner's to merge. */
+  const official = (m: ModulesAt, what: string) => {
+    const want = m.path === "modules" ? d.productRepo : d.modulesRepo;
+    return want && sameSlug(m.repo, want) ? undefined : { stop: `${what} takes the official modules from \`${m.repo ?? "somewhere else"}\`, not \`${d.productRepo ?? "(unknown)"}\`'s modules/, so the reviewer-eval gate can't vouch for the AI reviewer it brings` };
+  };
 
   async function files(path: string, base: string, head: string): Promise<string[]> {
     const mb = await d.git(path, "merge-base", base, head);
     return (await d.git(path, "diff", "--name-only", "--no-renames", mb, head)).split("\n").filter(Boolean);
   }
-  const casesAt = async (path: string, rev: string) => {
-    const names = (await d.git(path, "ls-tree", "--name-only", `${rev}:${CASES}`).catch(() => "")).split("\n").filter((n) => /^[\w.-]+\.json$/.test(n));
-    return new Map(await Promise.all(names.map(async (n) => [n, await d.git(path, "show", `${rev}:${CASES}/${n}`)] as [string, string])));
+  const casesAt = async (path: string, m: ModulesAt) => {
+    const names = (await d.git(path, "ls-tree", "--name-only", inTree(m, CASES)).catch(() => "")).split("\n").filter((n) => /^[\w.-]+\.json$/.test(n));
+    return new Map(await Promise.all(names.map(async (n) => [n, await d.git(path, "show", inTree(m, `${CASES}/${n}`))] as [string, string])));
   };
 
   /** One run of the judge over the named cases, detached so a runner restart never cuts it off: its exit lands in a file. */
@@ -271,27 +283,27 @@ export function createEvalGate(d: GateDeps) {
     d.log("reviewer eval started", { head: run.head, run: run.runs, cases: names.length });
   }
 
-  /** The scratch tree: modules commit `head`, with the judging commit's (`base`) judge laid over it. */
-  async function prepare(path: string, key: string, head: string, base: string): Promise<{ dir: string; cases: string[]; approves: string[]; added: string[]; policy: string }> {
+  /** The scratch tree: the modules tree of `head`, with the judging one's (`base`, in the same repository) judge laid over it. */
+  async function prepare(path: string, key: string, head: ModulesAt, base: ModulesAt): Promise<{ dir: string; cases: string[]; approves: string[]; added: string[]; policy: string }> {
     const dir = join(d.workDir, "evals", createHash("sha256").update(key).digest("hex").slice(0, 24));
     rmSync(dir, { recursive: true, force: true });
     const tree = join(dir, "tree");
     mkdirSync(tree, { recursive: true });
-    await d.git(path, "archive", "--format=tar", "-o", join(dir, "head.tar"), head);
+    await d.git(path, "archive", "--format=tar", "-o", join(dir, "head.tar"), head.path ? `${head.sha}:${head.path}` : head.sha);
     await new Promise<void>((ok, no) => spawn("tar", ["-xf", join(dir, "head.tar"), "-C", tree], { stdio: "ignore" }).on("exit", (c) => (c === 0 ? ok() : no(new Error(`tar exited ${c}`)))));
     rmSync(join(dir, "head.tar"));
     for (const f of JUDGE) {
       // The pass rule may not exist at a base that predates it: that base's judge doesn't use it (the runner applies the rule itself).
-      if (f.endsWith("pass-rule.mjs") && !(await d.git(path, "cat-file", "-e", `${base}:${f}`).then(() => true, () => false))) continue;
+      if (f.endsWith("pass-rule.mjs") && !(await d.git(path, "cat-file", "-e", inTree(base, f)).then(() => true, () => false))) continue;
       noLinks(tree, f);
-      writeFileSync(join(tree, f), `${await d.git(path, "show", `${base}:${f}`)}\n`);
+      writeFileSync(join(tree, f), `${await d.git(path, "show", inTree(base, f))}\n`);
     }
     const [baseCases, headCases] = [await casesAt(path, base), await casesAt(path, head)];
     const cases = judgedCases(baseCases, headCases);
     mkdirSync(join(dir, "cases"));
     for (const [n, text] of cases) writeFileSync(join(dir, "cases", n), text);
     // The policy as git has it at the head (its tree id), never as the extracted folder says.
-    const policy = (await d.git(path, "rev-parse", `${head}:${MODULE}/service/security`).catch(() => "none")).slice(0, 12);
+    const policy = (await d.git(path, "rev-parse", inTree(head, `${MODULE}/service/security`)).catch(() => "none")).slice(0, 12);
     return { dir, cases: [...cases.keys()], approves: approveCases(cases), added: addedCases(baseCases, headCases), policy };
   }
 
@@ -337,39 +349,43 @@ export function createEvalGate(d: GateDeps) {
     return done.ok ? undefined : { stop: receiptText(done) };
   }
 
-  /** Starts the eval of modules commit `modules`, judged by `judge`, its receipt for `head` at `key`. Recorded before it starts: a restart never buys a key a second full run. */
-  async function begin(key: string, head: string, path: string, modules: string, judge: string, apiKey: string): Promise<Gate> {
+  /** Starts the eval of modules tree `modules`, judged by `judge` (the same repository), its receipt for `head` at `key`. Recorded before it starts: a restart never buys a key a second full run. */
+  async function begin(key: string, head: string, path: string, modules: ModulesAt, judge: ModulesAt, apiKey: string): Promise<Gate> {
     if (!apiKey) return { stop: `it brings the AI reviewer's own code, which lands only on a passing reviewer-eval receipt, and the eval's key (${d.keyFile}) is missing` };
     const prepared = await prepare(path, key, modules, judge);
-    const run: Run = { key, head, base: judge, modules, reviewer: await reviewerAt(path, modules), policy: prepared.policy, dir: prepared.dir, cases: prepared.cases, approves: prepared.approves, added: prepared.added, runs: 1, costUsd: 0, started: new Date().toISOString() };
+    const run: Run = { key, head, base: judge.sha, modules: modules.sha, reviewer: await reviewerAt(path, modules), policy: prepared.policy, dir: prepared.dir, cases: prepared.cases, approves: prepared.approves, added: prepared.added, runs: 1, costUsd: 0, started: new Date().toISOString() };
     save(key, { run });
     start(run, prepared.cases, apiKey);
-    return { wait: `the reviewer eval started on \`${head.slice(0, 12)}\` (it brings the AI reviewer's own code, modules \`${modules.slice(0, 12)}\`: it lands only on a passing receipt)` };
+    return { wait: `the reviewer eval started on \`${head.slice(0, 12)}\` (it brings the AI reviewer's own code, modules \`${modules.sha.slice(0, 12)}\`: it lands only on a passing receipt)` };
   }
 
   const failClosed = (err: unknown): Gate => ({ stop: `the reviewer-eval gate couldn't read it (${String((err as Error).message ?? err).split("\n")[0]!.slice(0, 200)})` });
   const apiKeyNow = () => (existsSync(d.keyFile) ? readFileSync(d.keyFile, "utf8").trim() : "");
 
   /**
-   * A modules pin moving from `from` to `to` (a product PR's modules-pin.json, an instance apply): undefined when the AI reviewer's
-   * content is the same, or a passing receipt covers the new content (any head that held it); else its own eval, receipt for `to`
-   * in its own namespace. Nothing else on file for `to` (a PR's skip there) counts.
+   * The official modules moving from `from` to `to` (an instance apply; before 2026-11-18 a product PR's modules-pin.json):
+   * undefined when the AI reviewer's content is the same, or a passing receipt covers the new content (any head that held it);
+   * else its own eval, receipt for `to` in its own namespace. Nothing else on file for `to` (a PR's skip there) counts. Across
+   * the move into the product (two repositories) only the same content or such a receipt covers it.
    */
   async function bump(from: ModulesAt, to: ModulesAt, what = "the change"): Promise<Gate> {
-    if (sameSlug(from.repo, to.repo) && from.sha === to.sha) return undefined;
+    if (sameSlug(from.repo, to.repo) && from.path === to.path && from.sha === to.sha) return undefined;
     const notOfficial = official(from, what) ?? official(to, what);
     if (notOfficial) return notOfficial;
     const apiKey = apiKeyNow();
     try {
-      const path = await modulesClone(from.sha, to.sha);
-      const reviewer = await reviewerAt(path, to.sha);
-      if (reviewer === (await reviewerAt(path, from.sha))) return undefined;
-      const unmerged = await merged(path, to.sha);
+      const one = sameSlug(from.repo, to.repo);
+      const path = await cloneOf(to.repo, ...(one ? [from.sha] : []), to.sha);
+      const fromPath = one ? path : await cloneOf(from.repo, from.sha);
+      const reviewer = await reviewerAt(path, to);
+      if (reviewer === (await reviewerAt(fromPath, from))) return undefined;
+      const unmerged = await merged(path, to);
       if (unmerged) return unmerged;
       if (passed(reviewer)) return undefined;
+      if (!one || from.path !== to.path) return { stop: `${what} moves the official modules into the product (\`${from.sha.slice(0, 12)}\` of ${from.repo} to \`${to.sha.slice(0, 12)}\`) with AI reviewer content no passing receipt covers: land that reviewer change as a product PR first (its eval runs there), or the owner applies it by hand` };
       const key = `eval-bump:${to.sha}`;
       const had = onFile(key, apiKey);
-      return had === "none" ? await begin(key, to.sha, path, to.sha, from.sha, apiKey) : had;
+      return had === "none" ? await begin(key, to.sha, path, to, from, apiKey) : had;
     } catch (err) {
       return failClosed(err);
     }
@@ -401,22 +417,35 @@ export function createEvalGate(d: GateDeps) {
       const skip = `eval-skip:${repo.toLowerCase()}:${base}:${head}`;
       const changed = await files(path, base, head);
       if (!product) {
-        // A modules PR: its head, judged by its base branch.
+        // A PR of the old modules repo: its head, judged by its base branch.
         if (!touchesModulesReviewer(changed)) return (d.state.set(skip, "1"), undefined);
-        return await begin(key, head, await modulesClone(base, head), head, base, apiKey);
+        const at = (sha: string): ModulesAt => ({ repo, sha, path: "" });
+        return await begin(key, head, await cloneOf(repo, base, head), at(head), at(base), apiKey);
       }
-      // A product PR: what its merge would pin (the head's pin when the PR moves it, else the base's), judged by the base's pin.
-      if (!changed.includes("modules-pin.json") && !touchesReviewer(changed)) return (d.state.set(skip, "1"), undefined);
-      const judge = await pinAt(d.git, path, base);
-      const lands = changed.includes("modules-pin.json") ? await pinAt(d.git, path, head) : judge;
+      // Where the official modules come from (modules/marketplace.json, modules-pin.json) is always read in full, never skipped.
+      const sourcing = changed.some((f) => f === "modules-pin.json" || f === "modules/marketplace.json");
+      if (!sourcing && !touchesReviewer(changed)) return (d.state.set(skip, "1"), undefined);
+      const judge = await modulesOf(d.git, path, base, repo);
+      const lands = await modulesOf(d.git, path, head, repo).catch(() => undefined);
+      // One way only: a PR that takes the official modules back out of the product is refused.
+      if (judge.path === "modules" && lands?.path !== "modules") return { stop: `#${pr.number} takes the official modules out of the product (its base holds them in modules/, its head doesn't): refused` };
+      if (!lands) throw new Error(`#${pr.number}'s head holds no official modules`);
+      if (judge.path === "modules") {
+        // A product PR (2026-11-18 on): its head's modules/, judged by its base's.
+        return await begin(key, head, path, lands, judge, apiKey);
+      }
+      if (lands.path === "modules") return { stop: `#${pr.number} brings the official modules into the product, which the reviewer-eval gate can't judge against its base's pin: the owner merges it by hand` };
+      // A product PR from before 2026-11-18: what its merge would pin (the head's pin when the PR moves it, else the base's),
+      // judged by the base's pin.
+      const pinned = changed.includes("modules-pin.json") ? lands : judge;
       if (touchesReviewer(changed)) {
-        const notOfficial = official(judge, `#${pr.number}'s base`) ?? official(lands, `#${pr.number}`);
+        const notOfficial = official(judge, `#${pr.number}'s base`) ?? official(pinned, `#${pr.number}`);
         if (notOfficial) return notOfficial;
-        const mpath = await modulesClone(judge.sha, lands.sha);
-        const unmerged = lands.sha === judge.sha ? undefined : await merged(mpath, lands.sha);
-        return unmerged ?? (await begin(key, head, mpath, lands.sha, judge.sha, apiKey));
+        const mpath = await cloneOf(judge.repo, judge.sha, pinned.sha);
+        const unmerged = pinned.sha === judge.sha ? undefined : await merged(mpath, pinned);
+        return unmerged ?? (await begin(key, head, mpath, pinned, judge, apiKey));
       }
-      const moved = await bump(judge, lands, `#${pr.number}`);
+      const moved = await bump(judge, pinned, `#${pr.number}`);
       if (!moved) d.state.set(skip, "1");
       return moved;
     } catch (err) {

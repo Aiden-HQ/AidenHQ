@@ -1,14 +1,17 @@
 #!/usr/bin/env node
-// A git credential helper for the host's own checkouts of repos in the agents org (e.g. the instance repo that
-// ops/apply-config.sh pulls): a read-only GitHub App token for that one repo, minted from the vault's App key.
-// Set per checkout, never globally:  git config credential.useHttpPath true
+// A git credential helper for the host's checkout of the instance repo (the one ops/apply-config.sh pulls): a token for that
+// one repo with exactly {contents: read}, minted from the vault's App key. Among services and modules only codehost-github
+// holds the App key; the host's apply may mint this read-only instance-repo token, nothing else (instance pushes are
+// codehost writes). Set per checkout, never globally:  git config credential.useHttpPath true
 //   git config credential.helper '!node ~/aidenhq/ops/git-credential-app.mjs'
-// Answers only `get` for https://github.com/<org>/<repo>; anything else gets nothing (git falls back or fails).
+// Answers only `get` for https://github.com/$AIDENHQ_INSTANCE_REPO (the environment, else the product's .env); any other
+// repo or host gets nothing.
 // Self-contained (node built-ins only): the apply fetches with it before the official modules are put at ./modules.
 import { createSign } from "node:crypto";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 
 if (process.argv[2] !== "get") process.exit(0);
 const input = Object.fromEntries(
@@ -18,7 +21,9 @@ const input = Object.fromEntries(
     .map((l) => [l.slice(0, l.indexOf("=")), l.slice(l.indexOf("=") + 1)]),
 );
 const m = /^([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+?)(?:\.git)?$/.exec(input.path ?? "");
-if (input.protocol !== "https" || input.host !== "github.com" || !m) process.exit(0);
+const envFile = join(dirname(fileURLToPath(import.meta.url)), "..", ".env");
+const instance = process.env.AIDENHQ_INSTANCE_REPO || (existsSync(envFile) ? /^\s*AIDENHQ_INSTANCE_REPO\s*=\s*["']?([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)["']?\s*$/m.exec(readFileSync(envFile, "utf8"))?.[1] : undefined);
+if (input.protocol !== "https" || input.host !== "github.com" || !m || !instance || `${m[1]}/${m[2]}`.toLowerCase() !== instance.toLowerCase()) process.exit(0);
 const dir = join(process.env.AIDENHQ_SECRETS_DIR ?? join(homedir(), ".config/aidenhq"), "github-app");
 const appId = readFileSync(join(dir, "app_id"), "utf8").trim();
 const key = readFileSync(join(dir, "key.pem"), "utf8");

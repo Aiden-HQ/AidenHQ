@@ -433,10 +433,6 @@ AUTO_UPDATE=""
 [ -z "$RELEASE_LINE" ] || AUTO_UPDATE='  auto_update: "on"'
 if [ ! -d "$INST/.git" ]; then
   say "Instance repo $INST (origin: $REMOTE)"
-  # The official modules (their own repository since 5b) at the product's pin, put at ./modules; the instance's default
-  # `aidenhq` marketplace entry names the same commit.
-  as_user node "$REPO/scripts/modules-repo/materialize.mjs" "$REPO"
-  market="{ name: aidenhq, source: { source: github, repo: $(sed -n 's/.*"repo": *"\([^"]*\)".*/\1/p' "$REPO/modules-pin.json") }, sha: $(sed -n 's/.*"sha": *"\([0-9a-f]*\)".*/\1/p' "$REPO/modules-pin.json") }"
   # The default bundle (modules/marketplace.json `bundle`), then the modules asked for: the instance lists every module it runs.
   mods="$(awk '/"bundle"/{f=1} f{print} f&&/]/{exit}' "$REPO/modules/marketplace.json" | tr -d ' \n' | sed 's/.*\[//; s/\].*//')"
   for m in $(printf '%s' "$MODULES" | tr ',' ' '); do case ",$mods," in *",\"$m\","*) ;; *) mods="$mods,\"$m\"" ;; esac; done
@@ -447,8 +443,6 @@ if [ ! -d "$INST/.git" ]; then
 # $OWNER_NAME's AidenHQ. Changed through the Platform Engineer and your approval; see docs/USAGE.md.
 product: $PRODUCT
 $RELEASE_LINE
-marketplaces:
-  - $market
 modules: [$mods]
 settings:
   owner_name: $(json "$OWNER_NAME")

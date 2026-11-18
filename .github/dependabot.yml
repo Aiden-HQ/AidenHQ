@@ -25,6 +25,8 @@ updates:
       - /modules/slack/connections/slack-mcp
       - /modules/meetings/connections/ops-mcp
       - /modules/apps-platform/starter
+      - /modules/hubspot/connections/hubspot-mcp
+      - /modules/vendor-mcp
     schedule: { interval: weekly }
     cooldown: { default-days: 7 }
     open-pull-requests-limit: 5

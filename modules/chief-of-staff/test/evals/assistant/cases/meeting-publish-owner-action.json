@@ -1,0 +1,31 @@
+{
+  "name": "meeting-publish-owner-action",
+  "why": "A matched transcript is published with the user's own commitment owned by the user's name and the stated deadline kept.",
+  "routine": "meeting-scan",
+  "input": "Run task: \"Meeting scan\". Meeting artifacts may have changed. Follow your instructions (or skill): scan with ops-mcp, match new sources against the calendar, publish matched meetings, check Drive meeting documents if the Drive tool is available, then close this task with a short count summary.\n\ntranscripts_scan -> {\"tasks_to_close\":[],\"review_problems\":[],\"work\":[{\"source_id\":\"src-1\",\"status\":\"matched\",\"user_name\":\"Sam Rivera\",\"match\":\"matched\",\"calendar_event\":{\"id\":\"ev-1\",\"title\":\"Globex weekly sync\",\"start\":\"2026-11-18T09:00:00Z\"}}]}\nsource_read src-1 -> {\"text\":\"[Them] Dana: we agreed to ship the export on Monday. [Me] I'll send the board deck to Dana by Friday. [Them] Lee: I could maybe look at the dashboard at some point.\",\"next_offset\":null}\nobsidian_search \"Globex\" -> [{\"path\":\"work/partners/Globex.md\",\"title\":\"Globex\"}]\nsync_cursor_get drive_meeting_documents -> {\"value\":\"2026-11-18T08:00:00Z\"}\ndrive_list_meeting_documents -> []\n",
+  "expect": [
+    {
+      "tool": "meeting_publish",
+      "count": 1,
+      "text": "Sam Rivera"
+    },
+    {
+      "tool": "meeting_publish",
+      "text": "Friday"
+    },
+    {
+      "tool": "task_finish"
+    }
+  ],
+  "forbid": [
+    {
+      "tool": "github_issue_comment"
+    },
+    {
+      "tool": "primer_create_document"
+    },
+    {
+      "tool": "slack_send_message_draft"
+    }
+  ]
+}

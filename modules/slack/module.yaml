@@ -1,0 +1,80 @@
+name: slack
+description: "Slack as the owner, through Slack's MCP server passed through whole: search, read, drafts, and reviewed sends. The live listener and notify_owner are in owner-channel."
+requires:
+  - board # its sign-in and setup flow
+# Its sign-in on the board (the board's point, modules/board/schemas/signins.json), and its setup flow.
+contributes:
+  board.signins:
+    - { id: slack, label: Slack, status_url: "http://slack-mcp:8082/auth/status", connect_url: /slack/connect, callback: /slack/callback,
+        missing: "The agents can't read Slack until it is.", stopped: "The agents can't read Slack." }
+  board.setup_flows:
+    - order: 115
+      title: Read Slack as you
+      why: Agents can search and read the Slack messages you can see, save drafts for you, and (if you grant it) post as you, reviewed first.
+      effort: about 10 minutes, needs permission to add a Slack app
+      secrets: [slack_client_id]
+      signin: slack
+      steps: |
+        1. [Create a Slack app](https://api.slack.com/apps?new_app=1) from scratch, in your workspace. A workspace admin may need to approve it.
+        2. Under **OAuth & Permissions**, add `{redirect_url}` as a **Redirect URL**, and save.
+        3. Under **OAuth & Permissions**, add the **User Token Scopes** you may want to grant. To read: `search:read.public`, `search:read.private`, `search:read.im`, `search:read.mpim`, `search:read.users`, `search:read.files`, `search:read`, `channels:history`, `channels:read`, `groups:history`, `groups:read`, `im:history`, `im:read`, `mpim:history`, `mpim:read`, `users:read`, `users:read.email`, `users.profile:read`, `usergroups:read`, `emoji:read`, `files:read`, `canvases:read`, `lists:read`, `reactions:read`. To let agents act as you (each action is reviewed first): `chat:write`, `reactions:write`, `channels:write`, `groups:write`, `im:write`, `mpim:write`, `files:write`, `canvases:write`, `lists:write`. Under **Advanced token security**, turn on **Token Rotation**.
+        4. Under **Basic Information**, copy the **Client ID** and paste it below.
+        5. Press **Connect Slack** and allow access.
+
+        On Connect you pick which of those permissions to grant: the reads are pre-selected. Agents act as you, so they see only what you can see, and anything they post, react to or change in Slack is reviewed before it runs.
+connections:
+  slack:
+    setup: "Open its setup on the board (#/setup/slack): create the Slack app, paste its Client ID and press Connect."
+    guide: "Slack directly: a full thread or channel history, exact messages and their timestamps, the newest messages Glean hasn't indexed yet. Search Glean first to find where to look."
+    url: http://slack-mcp:8082/mcp
+    auth: slack_service_key
+    # Every tool Slack's server lists (probed 2026-11-18). Reads added since the first eight are `named`: only a grant naming
+    # them reaches them. The draft tool is the one plain write. Everything else acts in Slack as the owner (posting,
+    # scheduling, reacting, opening conversations, canvases, lists, file uploads): `destructive`, so only a grant naming one
+    # reaches it and every call is a record the AI reviewer decides first. Slack refuses whatever the sign-in's scopes lack.
+    tools:
+      read: [ slack_search_public, slack_search_public_and_private, slack_search_channels, slack_search_users, slack_read_channel, slack_read_thread, slack_read_user_profile, slack_list_user_channels,
+              slack_read_canvas, slack_list_channel_members, slack_read_file, slack_read_list, slack_search_emojis, slack_get_reactions ]
+      named: [ slack_read_canvas, slack_list_channel_members, slack_read_file, slack_read_list, slack_search_emojis, slack_get_reactions ]
+      write: [ slack_send_message_draft ]
+      destructive: [ slack_send_message, slack_schedule_message, slack_add_reaction, slack_create_conversation, slack_create_list, slack_update_list, slack_add_list_record, slack_update_list_record, slack_create_canvas, slack_update_canvas, slack_get_file_upload_url, slack_complete_file_upload ]
+# Runner jobs of an Engineer with private reads, through the model gateway with their own token (scripts/modules.mjs jobcapEntries).
+jobcaps:
+  - { id: slack-read, connection: slack, tools: read, private: true, read_url: "http://slack-mcp:8082/mcp/read", read_secret: slack_mcp_read_token }
+secrets:
+  state: true # its own vault dir, read-write at /state: Slack rotates refresh tokens, so the newest pair is kept
+  provided:
+    # The Slack app's client id (public), saved by the setup flow; empty: Slack is off.
+    - name: slack_client_id
+      setup:
+        label: Slack app Client ID
+        pattern: '^[0-9]{6,20}\.[0-9]{6,20}$'
+        help: "From the app's Basic Information page: two numbers with a dot between them."
+optional_secrets:
+  - slack_client_id
+services:
+  run:
+    slack-mcp:
+      build: ./connections/slack-mcp
+      tmp: 16m
+      port: 8082
+      egress: true
+      links: [board] # the board's connection health check
+      state: /state
+      env:
+        SLACK_CLIENT_ID_FILE: ${secrets.slack_client_id}
+        SLACK_CLIENT_ID: "${SLACK_CLIENT_ID:-}"
+        # The board's https address: its Connect returns there (besides loopback).
+        BOARD_URL: "${BOARD_LAN_URL:-}"
+        # The board's sign-in endpoints: state, and starting or finishing a sign-in.
+        SLACK_AUTH_TOKEN_FILE: ${secrets.slack_auth_token}
+        MCP_TOKEN_FILE: ${secrets.slack_service_key}
+        MCP_READ_TOKEN_FILE: ${secrets.slack_mcp_read_token}
+        # The read endpoint serves only these: the connection's read tags (CI checks they match).
+        READ_TOOLS: "slack_search_public,slack_search_public_and_private,slack_search_channels,slack_search_users,slack_read_channel,slack_read_thread,slack_read_user_profile,slack_list_user_channels,slack_read_canvas,slack_list_channel_members,slack_read_file,slack_read_list,slack_search_emojis,slack_get_reactions"
+# The board's Connect/Reconnect for Slack: its sign-in token, only while this module is on.
+board_env:
+  SLACK_AUTH_TOKEN_FILE: ${secrets.slack_auth_token}
+generated_secrets:
+  - slack_service_key
+  - slack_auth_token

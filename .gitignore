@@ -50,7 +50,3 @@ CLAUDE.local.md
 config.next/
 compose.modules.next.yaml
 
-# The official modules: their own repository since 5b, put here by scripts/modules-repo/materialize.mjs
-/modules/
-/modules.next/
-/modules.old/

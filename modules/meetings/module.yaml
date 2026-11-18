@@ -1,0 +1,66 @@
+name: meetings
+description: "Meeting memory: transcripts and the Obsidian vault (ops-mcp), published by the Researcher's meeting scan."
+roles:
+  declares:
+    - { id: ops-key, description: "The agent ops-mcp acts as in Paperclip (the Researcher, which runs the meeting scan)." }
+requires:
+  - google
+  - warehouse
+# Its schema and the views agents read with source_new (the warehouse's point, modules/warehouse/schemas/sources.json).
+contributes:
+  warehouse.sources:
+    - schema: src_meetings
+      about: "src_meetings.meetings / notes (full meeting notes) / changes"
+      views:
+        - { name: meetings, time: ingested_at, tsv: true }
+        - { name: changes, time: observed_at }
+routines:
+  meeting-scan:
+    title: Meeting scan
+    agent: assistant
+    description: |
+      Meeting artifacts may have changed. Follow your meeting-notes skill: scan with ops-mcp,
+      match new sources against the calendar, publish matched meetings, check Drive
+      meeting documents if the Drive tool is available, then close this task with a
+      short count summary.
+    concurrency: coalesce_if_active
+    webhook: true # fired by the transcript watcher
+    schedules:
+      # Backstop for missed file events, review decisions and Drive documents.
+      - { cron: "*/15 8-20 * * 1-5", timezone: "${settings.timezone}", label: "work hours" }
+connections:
+  ops_mcp:
+    setup: "Set VAULT_DIR (and KNOWLEDGE_BASES for reference docs) in the host's .env, then run `ops/apply-config.sh`. Check with `scripts/healthcheck.sh`."
+    guide: "The owner's notes vault: meeting notes, voice notes and reference documents."
+    url: http://ops-mcp:8080/mcp
+    auth: ops_service_key
+    tools:
+      read: [ source_read, sync_cursor_get, obsidian_search, obsidian_read, obsidian_read_document_map, voice_note_read, knowledge_list, knowledge_index, knowledge_search, knowledge_read ]
+      write: [ transcripts_scan, source_register_drive_document, meeting_match, meeting_resolve, meeting_publish, meeting_note_correct, source_mark_failed, sync_cursor_set, voice_note_add ]
+labels:
+  - { name: meeting-action, color: "#2563eb" }
+secrets:
+  provided: [paperclip_ops_key] # the agent ops-mcp acts as in Paperclip (setup writes it)
+services:
+  data: true
+  run:
+    ops-mcp:
+      build: ./connections/ops-mcp
+      tmp: 16m
+      # No egress: ops-mcp only talks to Paperclip (and the kernel) on the backplane and the warehouse on sources.
+      links: [backplane, sources]
+      data: ["ops-mcp:/data/ops-mcp"]
+      secrets: [paperclip_ops_key]
+      env:
+        OPS_MCP_CONFIG: /config/system.yaml
+        OPS_MCP_TOKEN_FILE: ${secrets.ops_service_key}
+        # Shared sources (src_meetings): its warehouse login.
+        WAREHOUSE_PASSWORD_FILE: ${secrets.warehouse_src_meetings_password}
+      # scripts/compile.mjs adds the host's folders from its .env: config/system.yaml, TRANSCRIPTS_DIR (writable: ops-mcp
+      # renames recorder-named transcripts and deletes their audio once published), VAULT_DIR's VAULT_FOLDERS and
+      # KNOWLEDGE_BASES (validated; only the listed folders).
+# src_meetings' warehouse login (ops/warehouse-sources.sh gives the role this password); compile creates it when missing.
+generated_secrets:
+  - ops_service_key
+  - warehouse_src_meetings_password
+data_version: 0 # its data dir's format: bumped by each forward-only migration (docs/configuration.md)
