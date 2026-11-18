@@ -619,14 +619,15 @@ code="$(curl -s -m 10 -o /dev/null -w '%{http_code}' -X POST -H 'Host: 127.0.0.1
 code="$(curl -s -m 10 -o /dev/null -w '%{http_code}' -H 'Host: evil.example:3129' "$ks/.auth/api/get-session")"
 [ "$code" = "403" ] && pass "kernel sign-in listener: refuses unknown Host headers" || fail "kernel sign-in listener: answered an unknown Host ($code)"
 # The handoff to a module UI goes only to an installed module's origin (no open redirect), and only for a signed-in admin.
-code="$(curl -s -m 10 -o /dev/null -w '%{http_code}' -H 'Host: 127.0.0.1:3120' "http://127.0.0.1:3120/auth/handoff?to=https%3A%2F%2Fevil.example&state=0123456789abcdef0123")"
+# GETs name localhost: the admin listener moves a 127.0.0.1 page there (308) before anything else.
+code="$(curl -s -m 10 -o /dev/null -w '%{http_code}' -H 'Host: localhost:3120' "http://127.0.0.1:3120/auth/handoff?to=https%3A%2F%2Fevil.example&state=0123456789abcdef0123")"
 [ "$code" = "303" ] && pass "kernel admin: the handoff sends a signed-out browser to sign in first" || fail "kernel admin: /auth/handoff answered $code without a session"
 # The admin listener (lean-core 3a): every page refuses a frame, a form from another origin and a decision without a session;
 # an unknown Host is refused. A client-named address without the front door's secret is ignored (and X-Forwarded-For,
 # CF-Connecting-IP always): attempts "from six addresses" are one unidentified peer's, which gets two free failures and then
 # a stepped hold (429 at once); believed addresses would each be checked.
 ka="http://127.0.0.1:3120"
-curl -s -m 10 -D - -o /dev/null -H 'Host: 127.0.0.1:3120' "$ka/auth/sign-in" | grep -qi "^content-security-policy:.*frame-ancestors 'none'" \
+curl -s -m 10 -D - -o /dev/null -H 'Host: localhost:3120' "$ka/auth/sign-in" | grep -qi "^content-security-policy:.*frame-ancestors 'none'" \
   && pass "kernel admin: pages refuse frames (frame-ancestors 'none')" || fail "kernel admin: /auth/sign-in can be framed"
 code="$(curl -s -m 10 -o /dev/null -w '%{http_code}' -X POST -H 'Host: 127.0.0.1:3120' -H 'Origin: http://127.0.0.1:3121' "$ka/approvals/batch" -d 'decision=approve')"
 [ "$code" = "403" ] && pass "kernel admin: refuses a form from another origin (the board's)" || fail "kernel admin: took a form from another origin ($code)"
