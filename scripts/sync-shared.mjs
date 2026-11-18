@@ -21,7 +21,13 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 export const repo = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-export const SHARED = {
+
+/**
+ * The canonicals and their copies under `root` (a product checkout). The whole-tree entries depend on which modules are
+ * materialised there, so it is computed per root: the product's own, or a scratch checkout at a new modules pin.
+ */
+export function sharedCopies(root = repo) {
+  const files = {
   // Every module server checks the kernel's caller assertion (and fences what it must) with the SDK (lean-core 2a).
   ...Object.fromEntries(["caller.ts", "fence.ts"].map((f) => [`kernel/sdk/src/${f}`, [
     "modules/apps-platform/apps-mcp/src",
@@ -80,7 +86,7 @@ export const SHARED = {
   ),
   // The theme presets (one file each): an app imports the one it picks; the starter's catalog imports them all.
   ...Object.fromEntries(
-    readdirSync(join(repo, "modules/apps-platform/design-system/presets")).map((f) => [
+    readdirSync(join(root, "modules/apps-platform/design-system/presets")).map((f) => [
       `modules/apps-platform/design-system/presets/${f}`,
       [`modules/apps-platform/starter/src/styles/presets/${f}`, `services/computer/images/agent-base/design-system/presets/${f}`],
     ]),
@@ -90,17 +96,21 @@ export const SHARED = {
   ...Object.fromEntries(
     ["types.ts", "engine-io.ts", "progress.ts"].map((f) => [
       `kernel/sdk/src/${f}`,
-      readdirSync(join(repo, "modules"), { withFileTypes: true }).filter((d) => d.isDirectory() && existsSync(join(repo, "modules", d.name, "sdk"))).map((d) => `modules/${d.name}/sdk/${f}`),
+      readdirSync(join(root, "modules"), { withFileTypes: true }).filter((d) => d.isDirectory() && existsSync(join(root, "modules", d.name, "sdk"))).map((d) => `modules/${d.name}/sdk/${f}`),
     ]),
   ),
-};
+  };
 
-// Whole folders, copied after the files above (so a folder's copy carries what was synced into it). Each copy is replaced
-// every time; node_modules and dist are never copied.
-export const SHARED_DIRS = {
-  // The app starter, so the UI/UX Designer, the UI Reviewer and Engineers in agent computers scaffold from /opt/aidenhq/app-starter.
-  "modules/apps-platform/starter": ["services/computer/images/agent-base/app-starter"],
-};
+  // Whole folders, copied after the files above (so a folder's copy carries what was synced into it). Each copy is replaced
+  // every time; node_modules and dist are never copied.
+  const dirs = {
+    // The app starter, so the UI/UX Designer, the UI Reviewer and Engineers in agent computers scaffold from /opt/aidenhq/app-starter.
+    "modules/apps-platform/starter": ["services/computer/images/agent-base/app-starter"],
+  };
+  return { files, dirs };
+}
+
+export const { files: SHARED, dirs: SHARED_DIRS } = sharedCopies(repo);
 const SKIP = new Set(["node_modules", "dist"]);
 
 /**
@@ -122,18 +132,24 @@ export function listFiles(dir, sub = "") {
     .sort();
 }
 
-if (process.argv[1] === fileURLToPath(import.meta.url)) {
+/** Copy every canonical to its places under `root`; returns how many files were written. */
+export function syncShared(root = repo, copies = sharedCopies(root)) {
   let n = 0;
-  for (const [canonical, copies] of Object.entries(SHARED))
-    for (const c of copies) (mkdirSync(dirname(join(repo, c)), { recursive: true }), copyFileSync(join(repo, canonical), join(repo, c)), n++);
-  for (const [canonical, copies] of Object.entries(SHARED_DIRS))
-    for (const c of copies) {
-      rmSync(join(repo, c), { recursive: true, force: true });
-      for (const f of listFiles(join(repo, canonical))) {
-        mkdirSync(dirname(join(repo, c, f)), { recursive: true });
-        copyFileSync(join(repo, canonical, f), join(repo, c, f));
+  for (const [canonical, places] of Object.entries(copies.files))
+    for (const c of places) (mkdirSync(dirname(join(root, c)), { recursive: true }), copyFileSync(join(root, canonical), join(root, c)), n++);
+  for (const [canonical, places] of Object.entries(copies.dirs))
+    for (const c of places) {
+      rmSync(join(root, c), { recursive: true, force: true });
+      for (const f of listFiles(join(root, canonical))) {
+        mkdirSync(dirname(join(root, c, f)), { recursive: true });
+        copyFileSync(join(root, canonical, f), join(root, c, f));
         n++;
       }
     }
+  return n;
+}
+
+if (process.argv[1] === fileURLToPath(import.meta.url)) {
+  const n = syncShared();
   console.log(`copied ${Object.keys(SHARED).length} shared files and ${Object.keys(SHARED_DIRS).length} folders to ${n} places`);
 }
