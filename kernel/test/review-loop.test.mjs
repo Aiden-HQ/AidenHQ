@@ -81,6 +81,16 @@ test("a Tier 1 record is reviewed by the module and then executed; a reviewer's 
 test("a panel record gets two reviewers; a first reviewer's panel mark sends it back as a panel", async (t) => {
   const mod = await reviewer(t);
   const k = await side(t, db(), mod);
+  // Filed as a panel (a panel kind): asked as one, and one reviewer's yes doesn't decide it.
+  const p = fileRecord(k.records, { panel: true, args: { note: "panel" } });
+  let first = k.loop.tick();
+  await until(() => mod.seen.length === 1);
+  assert.equal(mod.seen[0].request.panel, true);
+  k.reviews.verdict(mod.seen[0].id, mod.seen[0].token, OK);
+  await first;
+  assert.equal(k.records.get(p.id).state, "review");
+  k.records.close(p.id, "cancelled", "done with it");
+  mod.seen.length = 0;
   const r = fileRecord(k.records);
   // The first reviewer approves but calls it authority-expanding: the record is marked, and one reviewer's yes doesn't decide it.
   let sweep = k.loop.tick();

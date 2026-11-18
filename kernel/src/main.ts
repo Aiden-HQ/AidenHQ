@@ -191,12 +191,13 @@ const reviewLoop = createReviewLoop({
   task: {
     issue: (id) => cpJson(`/api/issues/${encodeURIComponent(id)}`),
     comments: async (id) => ((await cpJson(`/api/issues/${encodeURIComponent(id)}/comments?order=asc&limit=500`)) as { deletedAt?: string | null }[]).filter((c) => !c.deletedAt),
-    me: async () => (ownerUser ??= String(((await cpJson("/api/cli-auth/me")) as { userId?: string }).userId ?? "")),
+    me: async () => (ownerUser ||= String(((await cpJson("/api/cli-auth/me")) as { userId?: string }).userId ?? "")),
     notify: onTask.notify,
   },
   decisions: async () => {
     await gitIn(instanceDir, ["fetch", "-q", "origin", "main"]);
-    const text = (await gitIn(instanceDir, ["show", "origin/main:decisions.md"]).catch(() => "")).trim();
+    // No decisions.md on main is the empty state, not an unread one.
+    const text = (await gitIn(instanceDir, ["show", "origin/main:decisions.md"]).catch((e: Error) => { if (/exists on disk, but not in|does not exist in/.test(e.message)) return ""; throw e; })).trim();
     return text ? { where: `${repos().instance ?? "the instance repo"} main decisions.md`, text } : undefined;
   },
 });

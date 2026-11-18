@@ -73,12 +73,13 @@ export function cardDiff(action: string, details: string): string {
 }
 
 /** One record's tier input and what the reviewer reads, from the record, the task's other records and the task itself. */
-export async function reviewInput(r: Rec, { records, task, decisions, product }: { records: Records; task: TaskApi; decisions: () => Promise<{ where: string; text: string } | undefined>; product: string[] }) {
+export async function reviewInput(r: Rec, { records, task, decisions, product }: { records: Records; task: TaskApi; decisions?: { where: string; text: string }; product: string[] }) {
   const action = actionOf(r.kind);
   const issue = await task.issue(r.task);
-  const [comments, owner, chain] = await Promise.all([task.comments(r.task), task.me(), requestChain(issue, task.issue)]);
+  // Comments and the owner's id unread: no reply lifts anything (the runner's reading too).
+  const [comments, owner, chain] = await Promise.all([task.comments(r.task).catch(() => []), task.me().catch(() => ""), requestChain(issue, task.issue)]);
   const chainHash = chain ? createHash("sha256").update(chain).digest("hex").slice(0, 32) : "";
-  const split = answered(records.list(ALL, 500, { task: r.task }).filter((x) => x.id !== r.id).map(asPrior), comments, owner);
+  const split = answered(records.list(ALL, 500, { task: r.task, reviewed: true }).filter((x) => x.id !== r.id).map(asPrior), comments, owner);
   const args = r.args && typeof r.args === "object" ? (r.args as Record<string, unknown>) : {};
   const prior = priorDecisions(split.records, action, [], requestKey(action, { ...args, digest: r.digest }), undefined, chainHash, requestTargets(action, r.args));
   const veto = priorPart(prior);
@@ -91,7 +92,7 @@ export async function reviewInput(r: Rec, { records, task, decisions, product }:
     diff: cardDiff(action, r.card.details),
     chain,
     siblings: "",
-    decisions: await decisions().catch(() => undefined),
+    decisions,
     requesterModel: "",
     panel: Boolean(input.panel || r.panel),
     previous: (input.previous as string[] | undefined) ?? [],
@@ -103,7 +104,7 @@ export async function reviewInput(r: Rec, { records, task, decisions, product }:
 
 export function createReviewLoop({ records, writes, task, decisions, product, log = () => {} }: {
   records: Records; writes: Writes; task: TaskApi;
-  /** The instance's decisions digest, from the instance repo's main (never a card's branch); none is no block. */
+  /** The instance's decisions digest, from the instance repo's main (never a card's branch); none is no block. Read once a sweep. */
   decisions: () => Promise<{ where: string; text: string } | undefined>;
   /** The repositories that are one product for scope. */
   product: () => string[];
@@ -111,10 +112,10 @@ export function createReviewLoop({ records, writes, task, decisions, product, lo
 }) {
   const inFlight = new Set<string>();
 
-  async function reviewOne(r: Rec): Promise<void> {
+  async function reviewOne(r: Rec, digest: { where: string; text: string } | undefined): Promise<void> {
     let input: ReviewInput, request: Record<string, unknown>;
     try {
-      ({ input, request } = await reviewInput(r, { records, task, decisions, product: product() }));
+      ({ input, request } = await reviewInput(r, { records, task, decisions: digest, product: product() }));
     } catch (e) {
       // The task couldn't be read: no verdict, tried again (REVIEW_TRIES) as a failed review is.
       [input, request] = [{ tier: 1, error: String((e as Error).message ?? e).slice(0, 300) }, {}];
@@ -141,10 +142,12 @@ export function createReviewLoop({ records, writes, task, decisions, product, lo
     tick(): Promise<void> {
       const now = Date.now();
       const due = records.list(["review"], 200).filter((r) => !inFlight.has(r.id) && !((writes.retryAt(r.id) ?? 0) > now));
+      if (!due.length) return Promise.resolve();
+      for (const r of due) inFlight.add(r.id);
+      const digest = decisions().catch((e: Error) => void log("decisions unread", { err: String(e.message ?? e).slice(0, 200) }));
       return Promise.all(due.map(async (r) => {
-        inFlight.add(r.id);
         try {
-          await reviewOne(r);
+          await reviewOne(r, (await digest) ?? undefined);
         } catch (e) {
           log("review failed", { record: r.id, err: String((e as Error).message ?? e).slice(0, 300) });
         } finally {

@@ -144,7 +144,7 @@ test("the kernel's review loop sends the reviewer what the runner's review of a 
   const r = records.file({ ...base, args: { app: "notes", sha: "2" }, card: card(2), state: "review" });
   const decisions = { where: "acme/aidenhq-instance main decisions.md", text: "We don't build X." };
   const issue = { id: "TASK-1", title: "Ship notes", description: "Deploy the notes app.<!-- hidden -->", createdByUserId: "u-owner" };
-  const kernel = (await reviewInput(r, { records, task: { issue: async () => issue, comments: async () => [], me: async () => "u-owner" }, decisions: async () => decisions, product: ["acme/aidenhq"] })).request;
+  const kernel = (await reviewInput(r, { records, task: { issue: async () => issue, comments: async () => [], me: async () => "u-owner" }, decisions, product: ["acme/aidenhq"] })).request;
   // The runner's reviewOne for a kernel record (main.mjs: notRunners), with nothing on the task but the records.
   const a = asApproval(r);
   const prior = priorDecisions([asApproval(records.get(old.id))], a.action, [], requestKey(a.action, { digest: a.digest }), undefined, undefined, requestTargets(a.action, a.args));
