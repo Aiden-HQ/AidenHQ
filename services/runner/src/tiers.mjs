@@ -332,6 +332,8 @@ function instanceParts(s) {
       const tighter = typeof now === "number" && Number.isFinite(now) && now > 0 && now <= Number(was);
       if (!eq(base.settings?.spend_day_usd, now) && !tighter) parts.push(OWNER_AFTER_REVIEW("spend-cap", `raises or removes the install's daily spend cap (${base.settings?.spend_day_usd ?? "none"} → ${now == null ? "none" : JSON.stringify(now).slice(0, 40)}): the owner's authority`));
       if (base.settings?.quiet_start === "on" && head.settings?.quiet_start !== "on") parts.push(OWNER_AFTER_REVIEW("quiet-start", "turns quiet start off, so every module schedule and heartbeat starts: the owner's authority"));
+      // Release updates (docs/design/release-updates.md): auto-updates on is the owner's standing authority to install releases.
+      if (base.settings?.auto_update === "off" && head.settings?.auto_update !== "off") parts.push(OWNER_AFTER_REVIEW("auto-update", "turns release auto-updates back on, so each new release installs itself at night: the owner's authority"));
     } else if (k === "overrides") {
       for (const kind of changedKeys(base.overrides, head.overrides)) {
         const safe = OVERRIDE_SAFE[kind];

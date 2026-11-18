@@ -665,6 +665,9 @@ test("apply: spend and quiet start are the owner's to loosen, anyone's to tighte
   assert.equal(owner(one(inst(q), inst({ ...q, quiet_start: "off" }))), 2, "ending quiet start");
   assert.equal(tierOf(one(inst(q), inst({ ...q, spend_day_usd: 5 }))), "panel", "lowering the cap: a setting like any other");
   assert.equal(tierOf(one(inst(), inst(q))), "panel", "turning quiet start and the cap on");
+  assert.equal(owner(one(inst({ auto_update: "off" }), inst({ auto_update: "on" }))), 2, "turning release auto-updates back on");
+  assert.equal(owner(one(inst({ auto_update: "off" }), inst())), 2, "unsetting it (unset is on)");
+  assert.equal(tierOf(one(inst(), inst({ auto_update: "off" }))), "panel", "turning them off: a setting like any other");
   const on = "overrides:\n  routines:\n    daily-brief: { status: active }\n";
   const beat = "overrides:\n  agents:\n    chief-of-staff: { heartbeat: true }\n";
   assert.equal(owner(one(inst(q), inst(q, on))), 2, "a schedule turned on under quiet start");
