@@ -39,6 +39,15 @@ test("pending evidence waits; a merged PR is bound to its merge commit", async (
   assert.match(many.version, /^prs:[0-9a-f]{16}$/);
 });
 
+// A repo ref is the delegator's guess: a task whose PRs all landed in another repo (a fix briefed against the product that
+// belongs in the modules repo) is graded on them, saying so, never escalated as "no pull request yet".
+test("a repo ref with none of the task's PRs grades the PRs it has, and says where they are", async () => {
+  const merged = await gather({ kind: "pr", ref: "acme/product" }, deps({ pr: async () => pr({ state: "MERGED" }) }));
+  assert.match(merged.facts[0], /the deliverable names acme\/product, where this task opened no pull request; its pull requests are in acme\/app/);
+  assert.match(merged.version, /^acme\/app#7@/);
+  assert.match((await gather({ kind: "pr", ref: "acme/product" }, deps({ taskPrs: async () => [] }))).awaiting, /no pull request/);
+});
+
 // A pr task's rubric may define its deliverable another way than a pull request: then the task's own words are its evidence,
 // and the PR it was never asked to open is not "missing". A rubric that requires the PR keeps today's wait and escalation.
 test("a rubric that defines another completion path is graded without a PR; one that requires a PR still waits and escalates", async () => {
