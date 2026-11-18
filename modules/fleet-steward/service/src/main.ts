@@ -9,7 +9,7 @@ import { kernelClient } from "./aidenhq-sdk/kernel-client.ts";
 import { kernelJwks, verifyCaller } from "./aidenhq-sdk/caller.ts";
 import { alertIncidents, firing, parseAlerts, receiveAlerts } from "./alerts.ts";
 import { coachReads } from "./coach.ts";
-import { checks, detectorState, QUIET_MS, staleFollowups, tick, type Kv } from "./detector.ts";
+import { checks, detectorState, QUIET_MS, snoozeFollowup, staleFollowups, tick, type Kv } from "./detector.ts";
 import { createMcp, fleetTools } from "./mcp.ts";
 import { isModule } from "./module-caller.ts";
 import { createStewardServer } from "./server.ts";
@@ -83,7 +83,8 @@ const mcp = createMcp(fleetTools({
   due: (agent) => coach.due(agent),
   evidence: (caller, key) => coach.evidence(caller, key),
   generations: () => kernel.call("GET", "/v1/work?generations=1"),
-  followups: () => staleFollowups({ kernel }),
+  followups: () => staleFollowups({ kernel, kv }),
+  snooze: (task, days) => snoozeFollowup(kv, task, days),
 }));
 const jwks = kernelJwks(`${kernelUrl}/v1/jwks`);
 

@@ -25,6 +25,8 @@ export function createWork({ db, records, generationsFile = "" }: { db: Database
   const job = (r: Record<string, any>) => ({ id: r.id, agent: r.agent, task: r.task, engine: r.engine, state: r.state, started_at: iso(r.at), ended_at: iso(r.ended), session: r.session ?? null });
   /** A rejection the retry bound counts (tier.ts priorDecisions): the AI reviewer's judgment, not code's refusal (a moved head, too large). */
   const judged = (r: { state: string; decided_by?: string | null; review_code?: string | null }) => r.state === "rejected" && /^reviewer:/.test(r.decided_by ?? "") && !CODE_REJECTS.includes(r.review_code ?? "");
+  /** Where a record was aimed; a record whose args can't be read names none (one malformed record never fails the read). */
+  const targetsOf = (r: { kind: string; args?: unknown }): string[] => { try { return (requestTargets(actionOf(r.kind), r.args)?.targets ?? []).map((t) => t.key); } catch { return []; } };
   return {
     task(task: string) {
       const jobs = rows("SELECT * FROM jobs WHERE task = ? ORDER BY at DESC LIMIT 20", task).map(job);
@@ -41,7 +43,7 @@ export function createWork({ db, records, generationsFile = "" }: { db: Database
       }) };
     },
     since(from: string, to = new Date().toISOString()) {
-      const recs = records.since(from).map((r) => ({ id: r.id, kind: r.kind, state: r.state, tier: r.tier, panel: r.panel, requester: r.requester?.key || r.requester?.module || null, task: r.task, identifier: r.identifier ?? null, decided_by: r.decided_by ?? null, outcome_ok: r.outcome?.ok ?? null, judged: judged(r), targets: (requestTargets(actionOf(r.kind), r.args)?.targets ?? []).map((t) => t.key), outcome_text: r.outcome?.text ?? null, created_at: r.created_at, decided_at: r.decided_at ?? null }));
+      const recs = records.since(from).map((r) => ({ id: r.id, kind: r.kind, state: r.state, tier: r.tier, panel: r.panel, requester: r.requester?.key || r.requester?.module || null, task: r.task, identifier: r.identifier ?? null, decided_by: r.decided_by ?? null, outcome_ok: r.outcome?.ok ?? null, judged: judged(r), targets: targetsOf(r), outcome_text: r.outcome?.text ?? null, created_at: r.created_at, decided_at: r.decided_at ?? null }));
       const usage = rows("SELECT agent_id AS agent, day, COALESCE(SUM(cost_usd), 0) AS cost_usd, COUNT(*) AS calls, COUNT(cost_usd) AS priced FROM calls WHERE at >= ? AND at < ? GROUP BY agent_id, day", from, to);
       return { records: recs, usage };
     },

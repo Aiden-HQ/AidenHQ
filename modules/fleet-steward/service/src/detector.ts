@@ -141,9 +141,8 @@ const STALE_FOLLOWUP_MS = 3 * DAY_MS;
 const SILENT_MS = 15 * MIN; // an owner message on a chat task with no reply
 const SILENT_LOOKBACK_MS = 6 * HOUR_MS; // older than this, the owner has long since seen the silence
 
-/** Tasks that are test data or perpetual by design (bake-off, TEST, chats, routine executions): never a loop, never stale. */
-export const exempt = (i: Pick<IssueRow, "identifier" | "title" | "labels" | "originKind">): boolean =>
-  /^BAKA?-/i.test(i.identifier ?? "") || /^\W*(TEST|BAK)\b/i.test(i.title ?? "") || (i.labels ?? []).some((l) => l?.name === "chat") || i.originKind === "routine_execution";
+/** Tasks outside monitoring, by what no agent can set: the bake-off project's identifier prefix and a routine's own run. A title or label is agent-set text and never exempts. */
+export const exempt = (i: Pick<IssueRow, "identifier" | "originKind">): boolean => /^BAKA?-/i.test(i.identifier ?? "") || i.originKind === "routine_execution";
 
 /** How a finished job ended, as a category: a timeout, or its state (failed, stalled, stopped) with a non-zero exit. */
 const category = (j: JobRow) => (j.timed_out || j.state === "timeout" ? "timeout" : j.state === "failed" && j.exit ? `failed-exit-${j.exit}` : j.state);
@@ -194,12 +193,12 @@ const ownerWords = (c: CommentRow) => c.authorType === "user" && !c.deletedAt &&
 
 /**
  * Owner-assigned todos nobody has touched in 3 days, ranked (priority, then age), for the morning brief. A task the owner
- * snoozed (the board parks it in Backlog; a `<!-- followup-snooze:DATE -->` note from a brief reply) is not listed until then.
+ * snoozed (the board parks it in Backlog, or the steward's own record from fleet_followup_snooze) is not listed until then.
  */
-export function rankFollowups(issues: (IssueRow & { snoozedUntil?: string })[], t: number, top = 10) {
+export function rankFollowups(issues: IssueRow[], t: number, top = 10, snoozed: Record<string, string> = {}) {
   const weight: Record<string, number> = { critical: 4, urgent: 4, high: 3, medium: 2, low: 1 };
   return issues
-    .filter((i) => i.status === "todo" && i.assigneeUserId && !i.assigneeAgentId && !exempt(i) && age(i.updatedAt, t) >= STALE_FOLLOWUP_MS && !(i.snoozedUntil && Date.parse(i.snoozedUntil) > t))
+    .filter((i) => i.status === "todo" && i.assigneeUserId && !i.assigneeAgentId && !exempt(i) && age(i.updatedAt, t) >= STALE_FOLLOWUP_MS && !(Date.parse(snoozed[i.identifier ?? i.id] ?? "") > t))
     .sort((a, b) => (weight[b.priority ?? ""] ?? 0) - (weight[a.priority ?? ""] ?? 0) || Date.parse(a.updatedAt) - Date.parse(b.updatedAt))
     .slice(0, top)
     .map((i) => ({ task: i.identifier ?? i.id, title: String(i.title ?? "").slice(0, 120), priority: i.priority ?? "medium", idle_days: Math.floor(age(i.updatedAt, t) / DAY_MS), options: ["snooze 7d", "close", "delegate"] }));
@@ -211,16 +210,22 @@ export function checks(d: { kernel: KernelClient; apps: <T>(path: string) => Pro
   let appsOkAt = now(); // apps-mcp's last answer: a restart (an apply) is not an outage
   const companies = async () => (await d.kernel.read("/api/companies")) as Company[];
   const agents = async () => (await Promise.all((await companies()).map(async (c) => (await d.kernel.read(`/api/companies/${c.id}/agents`)) as AgentRow[]))).flat().filter((a) => a.status !== "terminated");
-  const issueCache = new Map<string, Promise<IssueRow | undefined>>();
-  const issueOf = (id: string) => (issueCache.get(id) ?? issueCache.set(id, (d.kernel.read(`/api/issues/${encodeURIComponent(id)}`) as Promise<IssueRow>).catch(() => undefined)).get(id)!);
-  /** A task's id as the owner reads it, or undefined when it is exempt (bake-off, TEST, chat, routine run) or unreadable. */
-  const live = async (id: string) => { const i = await issueOf(id); return i && !exempt(i) ? i.identifier ?? id : undefined; };
+  /** A task's id as the owner reads it (the raw id when it can't be read: a failed lookup never hides an incident), or undefined when it is exempt. Lookups last one check run; a failure is not kept. */
+  const lookup = () => {
+    const seen = new Map<string, IssueRow>();
+    return async (id: string) => {
+      let i = seen.get(id);
+      if (!i) { i = (await (d.kernel.read(`/api/issues/${encodeURIComponent(id)}`) as Promise<IssueRow>).catch(() => undefined)) ?? undefined; if (i) seen.set(id, i); }
+      return i && exempt(i) ? undefined : i?.identifier ?? id;
+    };
+  };
   const jobsOf = async (agent: string) => ((await d.kernel.call("GET", `/v1/work?agent=${encodeURIComponent(agent)}`)).jobs ?? []) as JobRow[];
   return {
     // Stuck, failing and silent runs, from the kernel's job ledger.
     async run() {
       const t = now();
       const out: Incident[] = [];
+      const live = lookup();
       for (const a of await agents()) {
         const mine = await jobsOf(a.id);
         const timeout = Number(a.adapterConfig?.timeoutSec) * 1000;
@@ -268,6 +273,7 @@ export function checks(d: { kernel: KernelClient; apps: <T>(path: string) => Pro
       const t = now();
       const r = (await d.kernel.call("GET", `/v1/work?since=${encodeURIComponent(new Date(t - REJECT_LOOP.windowMs).toISOString())}`)) as { records?: WorkRecord[] };
       const out: Incident[] = [];
+      const live = lookup();
       for (const l of rejectLoops(r.records ?? [], t)) {
         const task = await live(l.task);
         if (task) out.push({ key: `${l.task}:${slug(l.target)}`, reason: `task ${task}: the AI reviewer rejected ${slug(l.target)} ${l.n} times in 6 hours (parked at ${REJECT_LOOP.n})` });
@@ -324,16 +330,24 @@ export function checks(d: { kernel: KernelClient; apps: <T>(path: string) => Pro
   };
 }
 
+const SNOOZES = "followup_snoozes";
+const MAX_SNOOZE_DAYS = 30;
+/** The owner's snoozes (task identifier -> ISO date) in the steward's own record. */
+const snoozesOf = (kv: Pick<Kv, "get">): Record<string, string> => { try { return JSON.parse(kv.get(SNOOZES) ?? "{}"); } catch { return {}; } };
+/** Snooze a follow-up (the chief of staff's tool, on the owner's reply): at most 30 days. */
+export function snoozeFollowup(kv: Kv, task: string, days: number, now = Date.now()) {
+  const id = String(task).trim().slice(0, 40);
+  if (!/^[A-Za-z0-9_-]+$/.test(id)) throw new Error("task must be a task identifier");
+  const until = new Date(now + Math.min(MAX_SNOOZE_DAYS, Math.max(1, Math.floor(Number(days) || 7))) * DAY_MS).toISOString();
+  const s = Object.fromEntries(Object.entries(snoozesOf(kv)).filter(([, v]) => Date.parse(v) > now));
+  kv.set(SNOOZES, JSON.stringify({ ...s, [id]: until }));
+  return { task: id, snoozed_until: until };
+}
+
 /** The owner's stale follow-ups, ranked, for the morning brief (`fleet_stale_followups`); a snoozed one waits out its date. */
-export async function staleFollowups(d: { kernel: KernelClient; now?: () => number }) {
+export async function staleFollowups(d: { kernel: KernelClient; kv: Pick<Kv, "get">; now?: () => number }) {
   const t = (d.now ?? (() => Date.now()))();
   const companies = (await d.kernel.read("/api/companies")) as Company[];
   const todo = (await Promise.all(companies.map(async (c) => (await d.kernel.read(`/api/companies/${c.id}/issues?status=todo&limit=200&excludeRoutineExecutions=true`)) as IssueRow[]))).flat();
-  const stale = rankFollowups(todo, t, 30).map((r) => todo.find((i) => (i.identifier ?? i.id) === r.task)!);
-  const snoozes = await Promise.all(stale.map(async (i) => {
-    const comments = ((await d.kernel.read(`/api/issues/${i.id}/comments?order=desc&limit=20`).catch(() => [])) as CommentRow[]) ?? [];
-    const until = comments.flatMap((c) => [...String(c.body ?? "").matchAll(/<!-- followup-snooze:(\d{4}-\d\d-\d\d) -->/g)].map((m) => m[1]!)).sort().at(-1);
-    return { ...i, snoozedUntil: until };
-  }));
-  return { followups: rankFollowups(snoozes, t) };
+  return { followups: rankFollowups(todo, t, 10, snoozesOf(d.kv)) };
 }

@@ -36,7 +36,7 @@ agents:
       # The host's live series (disk, memory, containers), read at brief time rather than copied from a note: reads only.
       grafana?: read
       # The live product pin and the last applies, and the owner's stale todos for the brief (the fleet-steward module's connection, when it is on).
-      fleet_steward?: [ fleet_generation_status, fleet_stale_followups ]
+      fleet_steward?: [ fleet_generation_status, fleet_stale_followups, fleet_followup_snooze ]
       paperclip_tasks: [ task_current, task_get, task_comments, task_search, task_list, task_approvals, task_create, task_update, task_comment, task_handoff, task_set_status, task_finish, task_team, task_delegate, fleet_status, fleet_costs, fleet_control, fleet_catalog, task_relay_owner_words, app_request_from_owner ]
     # Woken every heartbeat_hours to check the work it waits on (modules/chief-of-staff/heartbeat.md); events wake it sooner (board wake.ts).
     heartbeat: true

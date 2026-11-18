@@ -4,7 +4,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { alertIncidents, parseAlerts, receiveAlerts } from "../service/src/alerts.ts";
 import { coachReads, dueList, LIMITS, packEvidence, parseReviews } from "../service/src/coach.ts";
-import { checks, detectorState, qualityFindings, staleFollowups, tick } from "../service/src/detector.ts";
+import { checks, detectorState, qualityFindings, snoozeFollowup, staleFollowups, tick } from "../service/src/detector.ts";
 import { createMcp, fleetTools } from "../service/src/mcp.ts";
 
 const NOW = Date.parse("2026-11-20T12:00:00Z");
@@ -119,10 +119,10 @@ const task = (id, o = {}) => ({ id, identifier: `WOR-${id.toUpperCase()}`, title
 const detect = (w, now = NOW) => checks({ kernel: w, apps: async (p) => (p === "/internal/open-prs" ? { prs: w.prs } : []), alerts: async () => [], openKeys: () => [], now: () => now });
 const minsAgo = (m) => new Date(NOW - m * 60_000).toISOString();
 
-test("three judged rejections of one branch in 6h is a loop; code's refusals, other branches, TEST tasks and chats are not", async () => {
+test("three judged rejections of one branch in 6h is a loop; code's refusals, other branches and the bake-off project are not; an agent-set title or label exempts nothing", async () => {
   const rej = (task, target, at, judged = true) => ({ task, identifier: null, judged, targets: [target], decided_at: at });
   const w = world({
-    tasks: { t1: task("t1"), t2: task("t2"), t3: task("t3", { title: "TEST: bake" }), t4: task("t4", { labels: [{ name: "chat" }] }) },
+    tasks: { t1: task("t1"), t2: task("t2"), t3: task("t3", { identifier: "BAK-3" }), t4: task("t4", { title: "TEST: loop", labels: [{ name: "chat" }] }) },
     records: [
       ...[1, 2, 3].map((h) => rej("t1", "acme/app|feat-a", ago(h))), // a loop
       ...[1, 2].map((h) => rej("t2", "acme/app|feat-a", ago(h))), rej("t2", "acme/app|feat-b", ago(1)), rej("t2", "acme/app|feat-a", ago(1), false), // 2 + 1 + stale_head: none reaches 3
@@ -131,8 +131,19 @@ test("three judged rejections of one branch in 6h is a loop; code's refusals, ot
     ],
   });
   const found = await detect(w).loop();
-  assert.deepEqual(found.map((i) => i.key), ["t1:acme-app-feat-a"]);
+  assert.deepEqual(found.map((i) => i.key), ["t1:acme-app-feat-a", "t4:acme-app-x"]);
   assert.match(found[0].reason, /WOR-T1: the AI reviewer rejected acme-app-feat-a 3 times/);
+});
+
+test("a failed task lookup still raises the incident with the raw id, and is not remembered: the next run reads it again", async () => {
+  const records = [1, 2, 3].map((h) => ({ task: "t9", identifier: null, judged: true, targets: ["acme/app|b"], decided_at: ago(h) }));
+  let down = true;
+  const w = { read: async () => { if (down) throw new Error("control plane down"); return task("t9", { identifier: "BAK-9" }); }, call: async () => ({ records }) };
+  const c = detect(w);
+  assert.deepEqual((await c.loop()).map((i) => i.key), ["t9:acme-app-b"]);
+  assert.match((await c.loop())[0].reason, /task t9:/);
+  down = false;
+  assert.deepEqual(await c.loop(), [], "the same checks object, a later run: read afresh, now exempt as bake-off");
 });
 
 test("the run check flags three same-category failures on one task in half an hour, not three failures spread over tasks or days", async () => {
@@ -145,10 +156,10 @@ test("the run check flags three same-category failures on one task in half an ho
   assert.ok(found.includes("a1:repeat:wor-t1") && !found.some((k) => k.includes("t2")), found.join());
 });
 
-test("a task in review with no job, card or open PR for 6h is unclosed; an open PR or card, a live job, grading and TEST tasks are not", async () => {
+test("a task in review with no job, card or open PR for 6h is unclosed; an open PR or card, a live job, grading and bake-off tasks are not", async () => {
   const review = (id, h, o = {}) => task(id, { status: "in_review", updatedAt: ago(h), ...o });
   const w = world({
-    tasks: { a: review("a", 8), b: review("b", 8), c: review("c", 8), d: review("d", 8), e: review("e", 2), f: review("f", 8, { title: "TEST x" }), g: review("g", 8, { labels: [{ name: "grading" }] }) },
+    tasks: { a: review("a", 8), b: review("b", 8), c: review("c", 8), d: review("d", 8), e: review("e", 2), f: review("f", 8, { identifier: "BAK-8" }), g: review("g", 8, { labels: [{ name: "grading" }] }) },
     inReview: ["a", "b", "c", "d", "e", "f", "g"],
     work: {
       b: { busy: false, records: [{ state: "review", args: null }] },
@@ -179,14 +190,17 @@ test("an owner message on a chat task unanswered for 15 minutes is a critical in
   assert.deepEqual(found.map((i) => [i.key, i.critical]), [["c1", true]]);
 });
 
-test("stale owner follow-ups are ranked for the brief; snoozed, agent-owned, fresh and exempt tasks are left out", async () => {
+test("stale owner follow-ups are ranked for the brief; a snooze lives in the steward's record only; agent-owned, fresh and bake-off tasks are left out", async () => {
   const stale = (id, d, o = {}) => task(id, { assigneeUserId: "owner", updatedAt: ago(24 * d), priority: "medium", ...o });
   const w = world({
     todo: ["a", "b", "c", "d", "e", "f"],
-    tasks: { a: stale("a", 9), b: stale("b", 4, { priority: "high" }), c: stale("c", 20, { assigneeAgentId: "x" }), d: stale("d", 2), e: stale("e", 30, { title: "TEST y" }), f: stale("f", 15) },
-    comments: { f: [{ authorType: "agent", body: "Snoozed.\n<!-- followup-snooze:2026-11-25 -->", createdAt: ago(1) }] },
+    tasks: { a: stale("a", 9), b: stale("b", 4, { priority: "high" }), c: stale("c", 20, { assigneeAgentId: "x" }), d: stale("d", 2), e: stale("e", 30, { identifier: "BAK-5" }), f: stale("f", 15) },
   });
-  const r = await staleFollowups({ kernel: w, now: () => NOW });
+  const kv = kvOf();
+  // A comment marker snoozes nothing; only the steward's own record does, capped at 30 days.
+  assert.deepEqual((await staleFollowups({ kernel: w, kv, now: () => NOW })).followups.map((x) => x.task), ["WOR-B", "WOR-A", "WOR-F"]);
+  assert.equal(snoozeFollowup(kv, "WOR-F", 400, NOW).snoozed_until, new Date(NOW + 30 * 86_400_000).toISOString());
+  const r = await staleFollowups({ kernel: w, kv, now: () => NOW });
   assert.deepEqual(r.followups.map((x) => [x.task, x.idle_days]), [["WOR-B", 4], ["WOR-A", 9]]);
 });
 
@@ -222,13 +236,14 @@ test("an alert's label text is fenced in its incident, its closing marker neutra
 });
 
 test("the connection's tools check the caller's signed roles", async () => {
-  const mcp = createMcp(fleetTools({ detector: () => ({ open: [] }), due: async () => ({ due: [] }), evidence: async () => ({}), generations: async () => ({ pin: "abc" }), followups: async () => ({ followups: [] }) }));
+  const mcp = createMcp(fleetTools({ detector: () => ({ open: [] }), due: async () => ({ due: [] }), evidence: async () => ({}), generations: async () => ({ pin: "abc" }), followups: async () => ({ followups: [] }), snooze: (t, d) => ({ task: t, days: d }) }));
   const call = (name, roles) => mcp({ id: 1, method: "tools/call", params: { name, arguments: {} } }, async () => ({ agent: "a", key: "k", name: "k", roles, tool: name, call: "c", kind: "run" }));
   assert.match((await call("coach_due", ["fleet-read"])).result.content[0].text, /Refused: coach_due is for an agent with the fleet-audit role/);
   assert.deepEqual(JSON.parse((await call("coach_due", ["fleet-audit"])).result.content[0].text), { due: [] });
   assert.deepEqual(JSON.parse((await call("fleet_detector", ["fleet-read"])).result.content[0].text), { open: [] });
   assert.equal(JSON.parse((await call("fleet_generation_status", [])).result.content[0].text).pin, "abc");
   assert.deepEqual(JSON.parse((await call("fleet_stale_followups", [])).result.content[0].text), { followups: [] });
+  assert.match((await call("fleet_followup_snooze", ["fleet-read"])).result.content[0].text, /Refused/);
   const forged = await mcp({ id: 2, method: "tools/call", params: { name: "fleet_detector" } }, async () => { throw new Error("no caller assertion"); });
   assert.match(forged.result.content[0].text, /Refused: no caller assertion/);
 });
