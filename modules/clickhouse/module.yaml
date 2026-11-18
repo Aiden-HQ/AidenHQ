@@ -7,39 +7,15 @@ contributes:
   board.signins:
     - { id: clickhouse, label: ClickHouse, status_url: "http://clickhouse-mcp:8088/auth/status", connect_url: /clickhouse/connect, callback: /clickhouse/callback,
         missing: "The Engineers can't query it until it is.", stopped: "The Engineers can't query it." }
-  board.setup_flows:
-    - order: 150
-      title: ClickHouse Cloud
-      why: Engineers can run read-only queries on your ClickHouse Cloud data.
-      effort: about 3 minutes, needs your ClickHouse Cloud login
-      secrets: [clickhouse_mcp_url]
-      signin: clickhouse
-      steps: |
-        1. Open [ClickHouse Cloud](https://console.clickhouse.cloud) and sign in.
-        2. Paste the remote MCP address below: `https://mcp.clickhouse.cloud/mcp`. If your organization has not enabled the remote MCP server, an organization admin turns it on in the service's **Connect** menu.
-        3. Press **Connect ClickHouse**, sign in in the tab that opens and allow access.
-
-        Engineers can only read: queries run read-only.
 settings:
-  # Superseded by the clickhouse_mcp_url secret the setup flow saves; a value here is read only while that secret is empty.
+  # ClickHouse Cloud's hosted MCP server: the same for every organization. Override only for a non-standard host.
   clickhouse_mcp_url:
-    default: ""
+    default: https://mcp.clickhouse.cloud/mcp
     type: url
     host: "*.clickhouse.cloud"
-# How to set it up: the board's setup flow (#/setup/clickhouse).
-setup: "Open its setup on the board (#/setup/clickhouse), paste ClickHouse Cloud's MCP address and press Connect. Used by the runner's Engineer jobs."
+setup: "Press Connect on the board (Settings, Connections) and allow access. Used by the runner's Engineer jobs."
 secrets:
   state: true # its own vault dir, read-write at /state: the registered client and the token pair, refreshed here
-  provided:
-    # ClickHouse Cloud's hosted MCP server, e.g. https://mcp.clickhouse.cloud/mcp, saved by the setup flow; empty: ClickHouse is
-    # off. The pattern is the host rule the clickhouse_mcp_url setting had (*.clickhouse.cloud).
-    - name: clickhouse_mcp_url
-      setup:
-        label: ClickHouse MCP address
-        pattern: '^https://([a-z0-9-]+\.)+clickhouse\.cloud(/[A-Za-z0-9._/-]*)?$'
-        help: "Usually https://mcp.clickhouse.cloud/mcp"
-optional_secrets:
-  - clickhouse_mcp_url
 services:
   run:
     clickhouse-mcp:
@@ -50,7 +26,6 @@ services:
       links: [board] # the board's sign-in endpoints
       state: /state
       env:
-        CLICKHOUSE_MCP_URL_FILE: ${secrets.clickhouse_mcp_url}
         CLICKHOUSE_MCP_URL: "${settings.clickhouse_mcp_url}"
         CLICKHOUSE_STATE_DIR: /state
         # The board's https address: its Connect returns there (besides loopback).

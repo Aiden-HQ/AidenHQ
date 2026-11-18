@@ -38,6 +38,7 @@ import { MergeSchema, mergedDescription } from "./merge.js";
 import { fleetGenerationStatus, updatesFile } from "./generations.js";
 import { McpAuthFailed, type McpAuth } from "./mcpauth.js";
 import { setupFlowRoutes, type SetupFlowPoint } from "./setup-flows.js";
+import type { SetupField } from "./config.js";
 import { welcomeRoutes } from "./welcome.js";
 import { GoogleAuthFailed, loopbackPort, type GoogleAuth } from "./google.js";
 import { OPEN, Paperclip, PaperclipError, actingAccount, type Agent, type Comment, type Issue, type Label, type LiveRun } from "./paperclip.js";
@@ -50,7 +51,7 @@ import { BUCKETS, isBucket, localDate, type Store } from "./store.js";
 import { AsideSchema, askGateway, asideMessages, holdsActive, lineageStatus, lineageTotal, modelOf, settleable, stillSettled, type LineageRow } from "./lineage.js";
 
 /** One module sign-in (board.signins), with its proxy client. */
-export interface SignIn { id: string; label: string; connect: string; callback: string; missing: string; stopped: string; auth: McpAuth }
+export interface SignIn { id: string; label: string; connect: string; callback: string; missing: string; stopped: string; fields: SetupField[]; auth: McpAuth }
 
 export interface AppOptions {
   /** Paperclip through the kernel, as the owner: every read and every write (all admins write as the owner, 2026-11-12). */
@@ -1192,36 +1193,35 @@ export function createApp(opts: AppOptions): Server {
     }
     const [google, states, sources] = await Promise.all([
       opts.google?.status(),
-      signInStates(),
+      signInStates(fresh),
       appsApi<{ sources?: { source: string; last_ok: string | null; failing: boolean }[] }>("/internal/sources", undefined, { auth: true, timeoutMs: 5000 }).then(
         (r) => r.sources ?? [],
         () => null,
       ),
     ]);
-    // A connected sign-in's Reconnect reads "Change access" where the proxy offers a choice of scopes.
-    const signIns = Object.fromEntries(
-      await Promise.all(states.map(async (s) => [s.id, s.status?.state === "ok" ? { ...s.status, scopes: ((await s.auth.scopes())?.supported.length ?? 0) > 1 } : s.status] as const)),
-    );
+    // Its Connect: the picker first where the proxy offers a choice of scopes, and the per-install values first while it has none.
+    const signIns = Object.fromEntries(states.map((s) => [s.id, s.status && { ...s.status, offer: s.offer, ...(!s.status.configured && s.fields.length ? { fields: s.fields } : {}) }] as const));
     return connectionsView({ compiled, catalog, probes: probed.probes, signIns, google, sources, staleSources: new Set(staleSources(sources ?? [], Date.now()).map((s) => s.key)) });
   }
 
-  /** Each module sign-in's state (McpAuth caches it for a minute); undefined where the proxy can't be asked. */
-  const signInStates = () => Promise.all((opts.signIns ?? []).map(async (x) => ({ ...x, status: await x.auth.status() })));
+  /**
+   * Each module sign-in's state (McpAuth caches it for a minute; `fresh` asks again), undefined where the proxy can't be asked,
+   * and whether its Connect offers a choice of scopes.
+   */
+  const signInStates = (fresh = false) => Promise.all((opts.signIns ?? []).map(async (x) => ({ ...x, status: await x.auth.status(fresh ? 0 : undefined), offer: await x.auth.offers() })));
 
   const routes: { method: string; path: RegExp; maxBody?: number; handle: (m: RegExpMatchArray, body: unknown, url: URL, req: IncomingMessage) => Promise<unknown> }[] = [
-    // A sign-in's page (#/connect/<id>): its name, Connect path, the setup flow it belongs to, and the scopes on offer.
+    // A sign-in's Connect dialog: its name and Connect path, whether it is set up (asked afresh: the dialog waits on it after a
+    // save), the values it asks for first, and the scopes on offer.
     {
       method: "GET",
       path: /^\/api\/sign-ins\/([a-z0-9-]{1,63})$/,
       handle: async (m) => {
         const id = m[1]!;
-        const flow = (f: { signin?: string; connect_url?: string }) => (id === "google" ? f.connect_url === "/google/connect" : f.signin === id);
-        const setup = opts.setupFlows?.flows.find(flow)?.module ?? null;
-        if (id === "google" && opts.google) return { id, label: "Google", connect: "/google/connect", setup, scopes: null };
         const s = (opts.signIns ?? []).find((x) => x.id === id);
         if (!s) throw new HttpError(404, "no such sign-in");
-        const offer = await s.auth.scopes();
-        return { id, label: s.label, connect: s.connect, setup, scopes: offer && offer.supported.length > 1 ? offer : null };
+        const [status, offer] = await Promise.all([s.auth.status(0), s.auth.scopes()]);
+        return { id, label: s.label, connect: s.connect, configured: Boolean(status?.configured), fields: s.fields, scopes: offer && offer.supported.length > 1 ? offer : null };
       },
     },
     {
@@ -1260,7 +1260,7 @@ export function createApp(opts: AppOptions): Server {
         // When Tomorrow next rolls into Today: the next calendar day, except before days off.
         const today = localDate(opts.timezone);
         const rollsOn = nextWorkday(today, opts.workdays ?? WORKWEEK);
-        return { ...board, assignees: ctx.assignees, labels: ctx.labels, prefix: ctx.prefix, timezone: opts.timezone, slackTeams: opts.slackTeams ?? {}, rollsOn, rollsTomorrow: rollsOn === addDays(today, 1), buckets: board.buckets, agentsActive: busy.active, spend, google: google ?? null, signIns: signIns.map(({ id, label, missing, stopped, status }) => ({ id, label, missing, stopped, status: status ?? null })) };
+        return { ...board, assignees: ctx.assignees, labels: ctx.labels, prefix: ctx.prefix, timezone: opts.timezone, slackTeams: opts.slackTeams ?? {}, rollsOn, rollsTomorrow: rollsOn === addDays(today, 1), buckets: board.buckets, agentsActive: busy.active, spend, google: google ?? null, signIns: signIns.map(({ id, label, missing, stopped, status, offer }) => ({ id, label, missing, stopped, status: status ?? null, offer })) };
       },
     },
     { method: "GET", path: /^\/api\/issues\/([^/]+)$/, handle: async (m) => issueView(decodeURIComponent(m[1]!)) },
@@ -1890,6 +1890,18 @@ export function createApp(opts: AppOptions): Server {
           },
         })
       : []),
+    // A sign-in's per-install value (board.signins `secrets`), from its Connect dialog: the kernel checks it against the
+    // declared pattern, writes it to the vault and recreates the proxy, which then reads it (the dialog waits for that).
+    {
+      method: "POST",
+      path: /^\/api\/sign-ins\/([a-z0-9-]{1,63})\/secret$/,
+      handle: async (m, body, who) => {
+        const s = (opts.signIns ?? []).find((x) => x.id === m[1]);
+        const { secret, value } = parse(z.object({ secret: z.string().max(64), value: z.string().min(1).max(1000) }).strict(), body);
+        if (!s?.fields.some((f) => f.secret === secret)) throw new HttpError(400, "not one of this sign-in's values");
+        return opts.accounts!.call("save_secret", who, { module: s.id, secret, value });
+      },
+    },
     // App admins (docs/design/access.md, Per-app roles): every shared app, its admins and default; name or remove one.
     ...(opts.setupFlows?.flows.length && opts.accounts
       ? setupFlowRoutes({
@@ -1898,7 +1910,7 @@ export function createApp(opts: AppOptions): Server {
           store,
           // "none": the connection needs no sign-in (Grafana with grafana_source: local), so its flow is done.
           signedIn: async (id) => ["ok", "none"].includes((await signInStates()).find((x) => x.id === id)?.status?.state ?? ""),
-          scopeChoice: async (id) => ((await (opts.signIns ?? []).find((x) => x.id === id)?.auth.scopes())?.supported.length ?? 0) > 1,
+          scopeChoice: async (id) => Boolean(await (opts.signIns ?? []).find((x) => x.id === id)?.auth.offers()),
           connected: connectionSignedIn,
           boardUrl: signInOrigin,
           redirectUrl: (signin, host) => {
@@ -2015,6 +2027,7 @@ export function createApp(opts: AppOptions): Server {
         if (!code) throw new GoogleAuthFailed(`Google didn't grant access (${url.searchParams.get("error") ?? "no code"})`);
         const { email } = await opts.google.finish(state, code);
         log.info({ account: email }, "Google account connected");
+        store.events.emit("connections");
         res.writeHead(302, { ...SECURITY_HEADERS, location: "/", "cache-control": "no-store" }).end();
         return;
       }
@@ -2032,8 +2045,10 @@ export function createApp(opts: AppOptions): Server {
    * owner's hand-made client lists it: the setup flow shows it). A vendor may permit only the bare /callback shape.
    */
   const signInFor = (path: string) => (opts.signIns ?? []).find((s) => s.connect === path || s.callback === path);
-  /** The setup flow (board.setup_flows) whose sign-in this is: Connect starts there while its secrets are missing, and returns there. */
+  /** The setup flow (board.setup_flows) whose sign-in this is: Connect starts there while its secrets are missing. */
   const flowOf = (s: SignIn) => opts.setupFlows?.flows.find((f) => f.signin === s.id);
+  /** The connection's dialog on Settings, Connections: its Connect asks for values, offers scopes, or says what failed. */
+  const dialogOf = (id: string, error?: string) => `/#/settings/connections?connect=${id}${error ? `&error=${encodeURIComponent(error)}` : ""}`;
   /**
    * Whether a Connect must open the flow first: it asks for secrets the vault hasn't got and the sign-in has never worked (a
    * Reconnect of an expired sign-in goes on: an upgraded instance can work with its values outside the vault).
@@ -2056,11 +2071,11 @@ export function createApp(opts: AppOptions): Server {
         return;
       }
       if (url.pathname === connect) {
-        // The owner picks what to grant (owner, 2026-11-18): when the vendor offers a choice of scopes, the board's picker
-        // (#/connect/<id>) comes first with the recommended ones ticked, and comes back here with `picked` and its scopes.
+        // The board's Connect asks for the sign-in's own values and offers its scopes before it comes here (owner, 2026-11-18);
+        // a Connect from elsewhere (an old link) gets that dialog first: values missing, or a choice of scopes not yet made.
         const picked = url.searchParams.has("picked");
-        if (!picked && ((await auth.scopes())?.supported.length ?? 0) > 1) {
-          res.writeHead(302, { ...SECURITY_HEADERS, location: `/#/connect/${s.id}`, "cache-control": "no-store" }).end();
+        if ((s.fields.length && !(await auth.status(0))?.configured) || (!picked && (await auth.offers()))) {
+          res.writeHead(302, { ...SECURITY_HEADERS, location: dialogOf(s.id), "cache-control": "no-store" }).end();
           return;
         }
         const { url: signIn } = await auth.start(`${origin}${callback}`, picked ? url.searchParams.getAll("scope") : undefined);
@@ -2074,8 +2089,9 @@ export function createApp(opts: AppOptions): Server {
         if (!code) throw new McpAuthFailed(`${name} didn't grant access (${url.searchParams.get("error") ?? "no code"})`);
         await auth.finish(state, code);
         log.info(`${name} connected`);
-        const f = flowOf(s);
-        res.writeHead(302, { ...SECURITY_HEADERS, location: f ? `/#/setup/${f.module}` : "/", "cache-control": "no-store" }).end();
+        // The tab that pressed Connect turns Connected now (events.ts); this one, opened for the sign-in, closes itself or shows it.
+        store.events.emit("connections");
+        res.writeHead(302, { ...SECURITY_HEADERS, location: `/#/settings/connections?connected=${s.id}`, "cache-control": "no-store" }).end();
         return;
       }
     } catch (err) {
@@ -2203,10 +2219,10 @@ async function readJson(req: IncomingMessage, max = 256_000): Promise<unknown> {
   }
 }
 
-/** A failed sign-in: back to the board's page for it (#/connect/<id>), which shows why and the way on (kept short: it rides in a header). */
+/** A failed sign-in: back to its Connect dialog on Settings, Connections, which shows why and Try again (kept short: it rides in a header). */
 function signInFailed(res: ServerResponse, id: string, message: string) {
   const why = message.length > 400 ? `${message.slice(0, 399)}…` : message;
-  res.writeHead(302, { ...SECURITY_HEADERS, location: `/#/connect/${id}?error=${encodeURIComponent(why)}`, "cache-control": "no-store" }).end();
+  res.writeHead(302, { ...SECURITY_HEADERS, location: `/#/settings/connections?connect=${id}&error=${encodeURIComponent(why)}`, "cache-control": "no-store" }).end();
 }
 
 function send(res: ServerResponse, status: number, body: string | Buffer, type: string, cache = "no-store") {

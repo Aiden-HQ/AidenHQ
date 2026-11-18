@@ -13,7 +13,7 @@ import { createVendorProxy } from "./vendor/proxy.js";
 const log = pino({ level: process.env.LOG_LEVEL ?? "info", base: { svc: "primer-mcp" }, redact: ["authorization", "*.authorization", "token", "*.token", "code"] });
 const readToken = (file: string | undefined) => (file && existsSync(file) ? readFileSync(file, "utf8").trim() || undefined : undefined);
 const stateDir = process.env.PRIMER_STATE_DIR ?? "/state";
-// The URL the setup flow saved, else the old primer_mcp_url setting's env value (an upgraded instance keeps working).
+// The URL Connect saved, else the old primer_mcp_url setting's env value (an upgraded instance keeps working).
 const url = readToken(process.env.PRIMER_MCP_URL_FILE) || process.env.PRIMER_MCP_URL;
 const serviceKey = readToken(process.env.MCP_TOKEN_FILE);
 const jwks = kernelJwks();

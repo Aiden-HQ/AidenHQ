@@ -18,9 +18,8 @@ import { ClickHouseAuthError, TokenStore } from "./tokens.js";
 
 const log = pino({ level: process.env.LOG_LEVEL ?? "info", base: { svc: "clickhouse-mcp" }, redact: ["authorization", "*.authorization", "token", "*.token", "code"] });
 const readToken = (env: string | undefined) => (env && existsSync(env) ? readFileSync(env, "utf8").trim() : undefined);
-// The URL the setup flow saved, else the old clickhouse_mcp_url setting's env value (an upgraded instance keeps working).
-const upstreamUrl = readToken(process.env.CLICKHOUSE_MCP_URL_FILE) || process.env.CLICKHOUSE_MCP_URL;
-const UPSTREAM = upstreamUrl ? new URL(upstreamUrl) : undefined;
+// ClickHouse Cloud's hosted MCP server (the clickhouse_mcp_url setting, https://mcp.clickhouse.cloud/mcp by default).
+const UPSTREAM = process.env.CLICKHOUSE_MCP_URL ? new URL(process.env.CLICKHOUSE_MCP_URL) : undefined;
 const port = Number(process.env.PORT ?? 8088);
 const stateDir = process.env.CLICKHOUSE_STATE_DIR ?? "/state";
 const tokens = new TokenStore(`${stateDir}/token.json`);

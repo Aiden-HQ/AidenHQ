@@ -95,6 +95,10 @@ that moves `product:` to a different reviewer needs a receipt for that reviewer 
 - **Generic core.** The core knows nothing about specific workflows. New behaviour is an agent definition, handbook
   text or a tool, never a special-case branch. Code finds an agent by its role (grants table `roles`), never by its key.
 - **One shared tools repository.** Every tool is usable by any agent it is granted; grants and roles decide access.
+- **A connection connects in one click.** One Connect wherever it is listed (a `board.signins` entry), and the vendor's
+  sign-in does the rest. A fixed or discoverable value is a module default; only a genuinely per-install value is asked
+  for, as one inline field on that Connect (the sign-in's `secrets`). A setup flow is only for what the owner must make
+  elsewhere first (an OAuth client, an app, a token, a bot) or a channel to pair.
 - **Judgment in agents, gates in code.** Matching, routing, writes and approvals are enforced below the model. Gate
   only real risk (writes, spend, auth and security boundaries, the sandbox, untrusted text); set a default at its
   source, never re-enforce it downstream.

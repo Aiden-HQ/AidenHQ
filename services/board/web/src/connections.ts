@@ -15,8 +15,10 @@ export interface SignIn {
   configured: boolean;
   since: string;
   detail?: string;
-  /** Connected, and the owner may pick what to grant on a Reconnect. */
-  scopes?: boolean;
+  /** Connect offers a choice of scopes: the picker comes first, and a Reconnect reads "Change access". */
+  offer?: boolean;
+  /** Not set up yet: the per-install values Connect asks for first. */
+  fields?: { secret: string; label: string; pattern: string; help?: string }[];
 }
 export interface GoogleState {
   accounts: { email: string; primary: boolean; state: string; since: string; detail?: string }[];
@@ -33,16 +35,6 @@ export interface ConnectionRow {
   probe: Probe | null;
   signIn: SignIn | null;
   google?: GoogleState | null;
-  /** Its module's URL settings, which the page can change (src/settings.ts UrlSetting). */
-  urls?: UrlSetting[];
-}
-export interface UrlSetting {
-  key: string;
-  value: string;
-  set: boolean;
-  default?: string;
-  host?: string;
-  doc?: string;
 }
 export interface SourceRow {
   name: string;
@@ -58,7 +50,7 @@ export interface ConnectionsData {
 }
 
 export type Status = "connected" | "not_configured" | "signed_out" | "error" | "unknown" | "builtin";
-export const STATUS_LABEL: Record<Status, string> = { connected: "Connected", not_configured: "Not set up", signed_out: "Signed out", error: "Error", unknown: "Unknown", builtin: "Built in" };
+export const STATUS_LABEL: Record<Status, string> = { connected: "Connected", not_configured: "Not connected", signed_out: "Signed out", error: "Error", unknown: "Unknown", builtin: "Built in" };
 
 export interface Verdict {
   status: Status;
@@ -98,11 +90,12 @@ export function connectionStatus(row: ConnectionRow, canConnect: { signIn: boole
     if (expired.length) return { status: "signed_out", reason: `${expired.map((a) => a.email).join(", ")} stopped working (since ${day(expired[0]!.since)}).`, ...connect("Reconnect", `/google/connect?account=${encodeURIComponent(expired[0]!.email)}`, canConnect.google) };
   }
 
-  // A sign-in through an MCP proxy (Glean, Jira, Grafana, ClickHouse): set up at all, then signed in. State "none": this
-  // connection signs in to nothing (Grafana with grafana_source: local), so only its health counts.
+  // A sign-in through an MCP proxy (Glean, Jira, Grafana, ClickHouse): its Connect asks for any per-install value first (its
+  // `fields`); one without fields that isn't set up has a setup flow to make its client first. State "none": this connection
+  // signs in to nothing (Grafana with grafana_source: local), so only its health counts.
   const s = row.signIn;
-  if (s && !s.configured) return { status: "not_configured", reason: row.urls?.length ? "Add its URL to set it up." : (s.detail ?? "Its URL isn't set yet.") };
-  if (s?.state === "missing") return { status: "signed_out", reason: "Set up, but not signed in yet.", ...connect("Connect", `/${row.name}/connect`, canConnect.signIn) };
+  if (s && !s.configured) return s.fields?.length ? { status: "not_configured", reason: "Not connected yet.", ...connect("Connect", `/${row.name}/connect`, canConnect.signIn) } : { status: "not_configured", reason: s.detail ?? "Not set up yet." };
+  if (s?.state === "missing") return { status: "signed_out", reason: "Not connected yet.", ...connect("Connect", `/${row.name}/connect`, canConnect.signIn) };
   if (s?.state === "expired") return { status: "signed_out", reason: `Sign-in stopped working (since ${day(s.since)}).`, ...connect("Reconnect", `/${row.name}/connect`, canConnect.signIn) };
 
   const p = row.probe;
@@ -112,7 +105,7 @@ export function connectionStatus(row: ConnectionRow, canConnect: { signIn: boole
   }
   if (p.ok) return { status: "connected", reason: p.detail ? `Answering; it notes: ${p.detail}` : "Answering its health check." };
   const detail = p.detail ?? (p.status ? `health check answered HTTP ${p.status}` : "health check failed");
-  if (/not set|not configured|no token|missing/i.test(detail) && !/sign/i.test(detail)) return { status: "not_configured", reason: row.urls?.some((u) => !u.value) && /URL/.test(detail) ? "Add its URL to set it up." : detail };
+  if (/not set|not configured|no token|missing/i.test(detail) && !/sign/i.test(detail)) return { status: "not_configured", reason: detail };
   if (p.state === "missing" || p.state === "expired" || /sign.?in|unauthori[sz]ed|expired|401/i.test(detail)) return { status: "signed_out", reason: detail };
   return { status: "error", reason: detail.replace(/^unreachable: /, "Unreachable: ") };
 }

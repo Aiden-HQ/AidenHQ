@@ -28,6 +28,11 @@ ships no compose file: compile generates its services from `services:`. There is
 | `board_env` | Environment (and its `${secrets.x}`) added to the root board service, until the board is a module. |
 | `privileged` | Entries of the closed list (spec §5.6); `host-metrics` allows `host_mounts` (read-only `/`, `/sys`, `/proc`). |
 | `optional_secrets` | Secret files created empty when missing (an empty value means "not configured"). |
+
+A connection connects with one Connect click from wherever the board lists it (a `board.signins` entry; the vendor's sign-in
+does the rest). A fixed or discoverable value is a module default; only a genuinely per-install value is asked for, as one
+field on that Connect (the sign-in's `secrets`, each a provided secret with `setup:`). `board.setup_flows` is only for what
+the owner must make elsewhere first (an OAuth client, an app, a token, a bot) or a channel to pair.
 | `generated_secrets` | Secret files compile creates randomly when missing. |
 
 Any string may use `${settings.<name>}`, replaced with the instance's value (or the default).
@@ -297,10 +302,10 @@ Copy `.env.example` to `.env`. It holds host paths and endpoints, never agent-ed
 - Meetings: `TRANSCRIPTS_DIR`, `VAULT_DIR`, `VAULT_FOLDERS`, `KNOWLEDGE_BASES`.
 - Connection endpoints: `GITHUB_COMMENT_ORGS` (and the legacy `SLACK_CLIENT_ID`). Leave one empty to skip that connection. The other
   connection's URL is an instance setting (`jira_url`): set it on the board (Settings, Connections), which files the change
-  as an apply card (docs/design/settings-changes.md). Primer's, Glean's, Grafana's and ClickHouse's addresses (and Slack's
-  client id) are setup values saved from the module's setup flow (`#/setup/<module>`) into the vault, with no apply; an old
-  `primer_mcp_url`, `glean_mcp_url`, `grafana_url`, `clickhouse_mcp_url` setting or `SLACK_CLIENT_ID` is read only while that
-  value is empty.
+  as an apply card (docs/design/settings-changes.md). Primer's, Glean's and Grafana's addresses are asked for on their Connect
+  (a sign-in's `secrets`, saved into the vault with no apply), and Slack's client id on its setup flow (`#/setup/slack`); an
+  old `primer_mcp_url`, `glean_mcp_url`, `grafana_url` setting or `SLACK_CLIENT_ID` is read only while that value is empty.
+  ClickHouse's address is fixed (`clickhouse_mcp_url`, ClickHouse Cloud's by default): its Connect asks for nothing.
 - Board: `BOARD_ALLOWED_HOSTS`, and the second listener's (3121: behind the front door, `tailscale serve` today;
   signed-in admins only) `BOARD_LAN_BIND`, `BOARD_LAN_PORT`, `BOARD_LAN_HOSTS`, `BOARD_LAN_URL`. It stays on loopback:
   it trusts `X-Forwarded-Proto` from whoever reaches it. Only a LAN-only VM in `local` exposure with

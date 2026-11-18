@@ -1,18 +1,28 @@
-// Settings > Connections: tiles, what needs you first (with Set up, Connect or Reconnect on the tile), then what is
-// connected, then what is built in; a tile opens its dialog (URL fields, grants, health, Google accounts). A saved URL is
-// a change like any other (settings-ui ChangePreview): the tile follows it to live, then offers the sign-in.
-import { useState } from "react";
-import { STATUS_LABEL, connectionStatus, displayName, sourceStatus, type ConnectionRow, type ConnectionsData, type Status, type UrlSetting, type Verdict } from "./connections";
-import { ChangePreview, ChangeProgress, Group, IN_FLIGHT, Page, Row, useFiled } from "./settings-ui";
-import { urlSettingProblem } from "../../src/url-setting";
-import { Button, Dialog, LinkButton, Section, StatusDot, Tile, TileGrid, type StatusTone } from "./ui";
+// Settings > Connections: tiles, what needs you first (with Connect, Reconnect or Set up on the tile), then what is connected,
+// then what is built in; a tile opens its dialog (state, grants, health, Google accounts). Connect is one click (Connect.tsx).
+import { useEffect, useState } from "react";
+import { ConnectButton, ConnectDialog } from "./Connect";
+import { STATUS_LABEL, connectionStatus, displayName, sourceStatus, type ConnectionRow, type ConnectionsData, type Status, type Verdict } from "./connections";
+import { Group, Page, Row } from "./settings-ui";
+import { SetupButton } from "./SetupButton";
+import { Banner, Button, Dialog, LinkButton, Section, StatusDot, Tile, TileGrid, type StatusTone } from "./ui";
 
 type Can = { signIn: boolean; google: boolean };
 const TONE: Record<Status, StatusTone> = { connected: "ok", signed_out: "needs", error: "failed", not_configured: "idle", unknown: "idle", builtin: "info" };
 const NEEDS: Status[] = ["error", "signed_out", "not_configured", "unknown"];
 const when = (iso?: string | null) => (iso ? new Date(iso).toLocaleString(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", hour12: false }) : "never");
 
+/** The hash's query: `connect=<id>[&error=…]` opens that connection's Connect (an old link, or a sign-in that failed); `connected=<id>`: this tab was opened for a sign-in that just landed. */
+const asked = () => new URLSearchParams(location.hash.split("?")[1] ?? "");
+
 export function ConnectionsPage({ conns, can, refresh, onRefresh }: { conns: ConnectionsData | null; can: Can; refresh: boolean; onRefresh: () => void }) {
+  const [q, setQ] = useState(asked);
+  const done = q.get("connected");
+  // The tab the board opened for the sign-in closes itself; the one that pressed Connect has turned Connected meanwhile.
+  useEffect(() => {
+    if (done) window.close();
+  }, [done]);
+  const clear = () => (history.replaceState(null, "", "#/settings/connections"), setQ(new URLSearchParams()));
   if (!conns) return <Page title="Connections" sub="Loading…"><RowsSkeleton /></Page>;
   const rows = conns.connections.map((r) => ({ r, v: connectionStatus(r, can) })).sort((a, b) => NEEDS.indexOf(a.v.status) - NEEDS.indexOf(b.v.status) || displayName(a.r.name).localeCompare(displayName(b.r.name)));
   const needs = rows.filter((x) => NEEDS.includes(x.v.status));
@@ -21,7 +31,7 @@ export function ConnectionsPage({ conns, can, refresh, onRefresh }: { conns: Con
   const tiles = (list: typeof rows) => (
     <TileGrid>
       {list.map(({ r, v }) => (
-        <ConnectionTile key={r.name} r={r} v={v} can={can} />
+        <ConnectionTile key={r.name} r={r} v={v} can={can} connect={q.get("connect") === r.name ? { error: q.get("error") } : undefined} onAsked={clear} />
       ))}
     </TileGrid>
   );
@@ -35,6 +45,11 @@ export function ConnectionsPage({ conns, can, refresh, onRefresh }: { conns: Con
         </Button>
       }
     >
+      {done && (
+        <Banner>
+          {displayName(done)} is connected. You can close this tab.
+        </Banner>
+      )}
       {needs.length > 0 && <Section title="Needs you" count={needs.length}>{tiles(needs)}</Section>}
       {ok.length > 0 && <Section title="Connected" count={ok.length}>{tiles(ok)}</Section>}
       {built.length > 0 && <Section title="Built in" count={built.length} hint="Part of every agent run; nothing to set up.">{tiles(built)}</Section>}
@@ -55,25 +70,26 @@ export function ConnectionsPage({ conns, can, refresh, onRefresh }: { conns: Con
 }
 
 /** One connection: a tile with its state and its one action (Connect, Reconnect, Set up); everything else in its dialog. */
-function ConnectionTile({ r, v, can }: { r: ConnectionRow; v: Verdict; can: Can }) {
-  const urls = r.urls ?? [];
-  const filed = useFiled((c) => c.kind === "setting" && urls.some((u) => u.key === c.key));
-  const changing = Boolean(filed && IN_FLIGHT.includes(filed.stage));
-  const setup = v.status === "not_configured" && urls.length > 0;
+function ConnectionTile({ r, v, can, connect: asked, onAsked }: { r: ConnectionRow; v: Verdict; can: Can; connect?: { error: string | null }; onAsked: () => void }) {
   const [open, setOpen] = useState(false);
+  const c = { id: r.name, label: displayName(r.name), signIn: r.signIn };
+  // A module sign-in connects in one click (Connect.tsx); Google's own Connect is a link; one that needs its client made first
+  // (a setup flow) says Set up.
   const connect = v.action ? (
-    <LinkButton variant={v.status === "signed_out" ? "primary" : undefined} size="sm" href={v.action.href}>
-      {v.action.label}
-    </LinkButton>
+    r.signIn ? (
+      <ConnectButton c={c} variant={v.status === "error" ? undefined : "primary"} size="sm" word={v.action.label} />
+    ) : (
+      <LinkButton variant={v.status === "signed_out" ? "primary" : undefined} size="sm" href={v.action.href}>
+        {v.action.label}
+      </LinkButton>
+    )
+  ) : v.status === "not_configured" ? (
+    <SetupButton module={r.module} primary size="sm" />
   ) : null;
   // A connected sign-in can run again: to grant more (the scope picker) or to switch accounts.
-  const again =
-    r.signIn?.state === "ok" && can.signIn ? (
-      <LinkButton size="sm" href={`/${r.name}/connect`}>
-        {r.signIn.scopes ? "Change access" : "Reconnect"}
-      </LinkButton>
-    ) : null;
-  const status = changing ? <StatusDot tone="busy">Changing</StatusDot> : <StatusDot tone={TONE[v.status]}>{STATUS_LABEL[v.status]}</StatusDot>;
+  const again = (r.signIn?.state === "ok" || r.signIn?.state === "expired") && can.signIn ? <ConnectButton c={c} size="sm" /> : null;
+  // Never signed in reads "Not connected"; "Signed out" is a sign-in that stopped working.
+  const status = <StatusDot tone={TONE[v.status]}>{r.signIn?.state === "missing" ? STATUS_LABEL.not_configured : STATUS_LABEL[v.status]}</StatusDot>;
   const who = r.kind === "service" ? "Engineer jobs" : v.status === "builtin" ? null : r.grants.length ? `${r.grants.length} agent${r.grants.length === 1 ? "" : "s"}` : "No agents yet";
   return (
     <>
@@ -81,7 +97,7 @@ function ConnectionTile({ r, v, can }: { r: ConnectionRow; v: Verdict; can: Can 
         onOpen={() => setOpen(true)}
         name={r.name}
         title={displayName(r.name)}
-        tone={v.status === "error" ? "failed" : v.status === "signed_out" || setup ? "needs" : undefined}
+        tone={v.status === "error" ? "failed" : v.status === "signed_out" || v.status === "not_configured" ? "needs" : undefined}
         status={status}
         facts={
           <>
@@ -90,103 +106,23 @@ function ConnectionTile({ r, v, can }: { r: ConnectionRow; v: Verdict; can: Can 
           </>
         }
         foot={r.module || "core"}
-        action={connect ?? (setup && !changing ? <Button size="sm" variant="primary" onClick={() => setOpen(true)}>Set up</Button> : undefined)}
+        action={connect ?? undefined}
       >
         {v.reason}
       </Tile>
+      {asked && <ConnectDialog c={c} error={asked.error} onClose={onAsked} />}
       <Dialog open={open} onClose={() => setOpen(false)} title={displayName(r.name)} wide actions={connect ?? again}>
         <div className="st-conn">
           <p className="st-conn-state">
             {status} <span>{v.reason}</span>
           </p>
-          {filed && <ChangeProgress f={filed} after={filed.stage === "applied" && connect && <p className="st-next">Next: {connect} to sign in.</p>} />}
-          {urls.length > 0 && !changing && <UrlFields urls={urls} primaryOnly={setup} />}
-          {setup && !connect && v.hint && <p className="st-hint">After the change is live: {v.hint}</p>}
-          {!connect && v.hint && v.status === "signed_out" && <p className="st-hint">{v.hint}</p>}
-          {!urls.length && r.setup && v.status === "not_configured" && <p className="st-hint">{r.setup}</p>}
+          {v.hint && <p className="st-hint">{v.hint}</p>}
+          {!connect && r.setup && v.status === "not_configured" && <p className="st-hint">{r.setup}</p>}
           <Facts r={r} />
           {r.google && <GoogleAccounts g={r.google} can={can.google} />}
         </div>
       </Dialog>
     </>
-  );
-}
-
-/** The URL settings of a connection: each a field; a not-set-up connection shows only the one(s) without a default. */
-function UrlFields({ urls, primaryOnly }: { urls: UrlSetting[]; primaryOnly: boolean }) {
-  const shown = primaryOnly ? urls.filter((u) => !u.default) : urls;
-  return (
-    <div className="st-urls">
-      {(shown.length ? shown : urls).map((u) => (
-        <UrlField key={u.key} u={u} startEditing={primaryOnly && !u.value} />
-      ))}
-    </div>
-  );
-}
-
-const example = (doc?: string) => /e\.g\. (https:\/\/\S+?)[.,;]?(\s|$)/.exec(doc ?? "")?.[1];
-
-function UrlField({ u, startEditing }: { u: UrlSetting; startEditing: boolean }) {
-  const [editing, setEditing] = useState(startEditing);
-  const [text, setText] = useState(u.value);
-  const [touched, setTouched] = useState(false);
-  const [review, setReview] = useState(false);
-  const problem = text.trim() ? urlSettingProblem(text.trim(), u.host) : "Enter the URL.";
-  const label = u.key.replace(/_/g, " ").replace(/\burl\b/, "URL").replace(/\bmcp\b/, "MCP").replace(/^./, (c) => c.toUpperCase());
-  if (!editing)
-    return (
-      <div className="st-url-view">
-        <span className="st-url-label">{label}</span>
-        <code className="st-url-value">{u.value || u.default || "not set"}</code>
-        <button className="link-btn" onClick={() => (setEditing(true), setText(u.value))}>
-          Change
-        </button>
-      </div>
-    );
-  return (
-    <form
-      className="st-url-form"
-      onSubmit={(e) => {
-        e.preventDefault();
-        setTouched(true);
-        if (!problem) setReview(true);
-      }}
-    >
-      <label className="ui-field">
-        <span className="ui-field-label">{label}</span>
-        <span className="ui-input-row">
-          <input
-            className="ui-input"
-            type="url"
-            inputMode="url"
-            spellCheck={false}
-            autoComplete="off"
-            value={text}
-            placeholder={example(u.doc) ?? "https://"}
-            onChange={(e) => (setText(e.target.value), setReview(false))}
-            onBlur={() => setTouched(true)}
-            aria-invalid={touched && Boolean(problem)}
-            aria-describedby={`${u.key}-help`}
-            disabled={review}
-          />
-          {!review && (
-            <Button variant="primary" type="submit">
-              Review change
-            </Button>
-          )}
-        </span>
-        <span id={`${u.key}-help`} className={touched && problem ? "ui-field-error" : "ui-field-help"}>
-          {touched && problem ? problem.replace(/^./, (c) => c.toUpperCase()) : (u.doc ?? "")}
-          {!(touched && problem) && u.host && <> Must be {u.host.startsWith("*.") ? `a ${u.host.slice(2)} address` : u.host}.</>}
-        </span>
-      </label>
-      {review && <ChangePreview items={[{ kind: "setting", key: u.key, value: text.trim() }]} was={[u.value || null]} onCancel={() => setReview(false)} onDone={() => (setReview(false), setEditing(false))} note="You approve it on the card; on approval the host restarts only this connection." />}
-      {!startEditing && !review && (
-        <button type="button" className="link-btn" onClick={() => setEditing(false)}>
-          Cancel
-        </button>
-      )}
-    </form>
   );
 }
 
