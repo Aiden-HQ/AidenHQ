@@ -142,6 +142,8 @@ export function openRecords(file: string, now = () => new Date()) {
     },
     shownState,
     /** The open records of this content on this task (a repeated request returns its own, never a second card). */
+    /** The same request that is running or already ran (done or failed) since `since`: a repeat of it is not a new write. */
+    ran: (task: string, kind: string, digest: string, since: string): Rec[] => rows(db.prepare("SELECT * FROM records WHERE task = ? AND kind = ? AND digest = ? AND state IN ('claimed','done','failed') AND created_at > ? ORDER BY created_at DESC").all(task, kind, digest, since)),
     open: (task: string, kind: string, digest: string): Rec[] => rows(db.prepare("SELECT * FROM records WHERE task = ? AND kind = ? AND digest = ? AND state IN ('review','owner','approved') AND created_at > ?").all(task, kind, digest, cutoff())),
     /** Records of these modules' kinds in these states (a reconcile before the modules are removed). */
     ofModules(modules: string[], states: State[]): Rec[] {
