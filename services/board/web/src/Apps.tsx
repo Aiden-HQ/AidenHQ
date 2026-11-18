@@ -1,6 +1,7 @@
 import { useEffect } from "react";
 import { QUERIES, useQuery } from "./queries";
 import { CardGridSkeleton, Updating } from "./Skeleton";
+import type { AppRow } from "./types";
 import { agoLabel } from "./util";
 
 const mb = (n: number) => `${Math.round(n / 1048576)} MB`;
@@ -35,59 +36,65 @@ export function AppsView({ onSignIn }: { onSignIn: () => void }) {
       ) : (
         <div className="app-grid">
           {data.apps.map((a) => (
-            <article key={a.name} className={`app-card${a.healthy ? "" : " sick"}`}>
-              <header className="app-card-head">
-                <h3>{a.name}</h3>
-                <span className={`pill ${a.healthy ? "pill-working" : "pill-failed"}`}>{a.healthy ? "Healthy" : a.state}</span>
-                {a.url ? (
-                  <a className="btn" href={a.url} target="_blank" rel="noreferrer noopener">
-                    Open
-                  </a>
-                ) : (
-                  a.unpublished && (
-                    <span className="muted" title="Apps require a signed-in visitor; on this server no door signs one in for this app">
-                      Opens in a browser through Tailscale's apps node or a shared host
-                    </span>
-                  )
-                )}
-              </header>
-              <dl className="panel-facts">
-                {a.owner && (
-                  <>
-                    <dt>Owner</dt>
-                    <dd>{a.owner}</dd>
-                  </>
-                )}
-                {a.sha && (
-                  <>
-                    <dt>Version</dt>
-                    <dd className="mono">
-                      {a.sha.slice(0, 8)}
-                      {a.deployed_at && <span className="muted"> · deployed {agoLabel(a.deployed_at)}</span>}
-                    </dd>
-                  </>
-                )}
-                {a.stats && (
-                  <>
-                    <dt>Load</dt>
-                    <dd>
-                      {a.stats.cpu_pct.toFixed(0)}% CPU · {mb(a.stats.mem_bytes)} of {mb(a.stats.mem_limit_bytes)}
-                      <div className="meter" aria-hidden>
-                        <i style={{ width: `${Math.min(100, (100 * a.stats.mem_bytes) / (a.stats.mem_limit_bytes || 1))}%` }} />
-                      </div>
-                    </dd>
-                  </>
-                )}
-              </dl>
-              {a.incident && (
-                <p className="app-incident">
-                  <b>Incident ({a.incident.kind})</b>, opened {agoLabel(a.incident.opened_at)}: {a.incident.detail}
-                </p>
-              )}
-            </article>
+            <AppCard key={a.name} a={a} />
           ))}
         </div>
       )}
     </main>
+  );
+}
+
+/** One app: its name and health on top, the facts below; a note (never in the header) when it has no browser door. */
+export function AppCard({ a }: { a: AppRow }) {
+  return (
+    <article className={`app-card${a.healthy ? "" : " sick"}`}>
+      <header className="app-card-head">
+        <h3>{a.name}</h3>
+        <span className={`pill ${a.healthy ? "pill-working" : "pill-failed"}`}>{a.healthy ? "Healthy" : a.state}</span>
+        {a.url && (
+          <a className="btn" href={a.url} target="_blank" rel="noreferrer noopener">
+            Open
+          </a>
+        )}
+      </header>
+      {!a.url && a.unpublished && (
+        <p className="app-note muted" title="Apps require a signed-in visitor; on this server no door signs one in for this app">
+          Opens in a browser through Tailscale's apps node or a shared host
+        </p>
+      )}
+      <dl className="panel-facts">
+        {a.owner && (
+          <>
+            <dt>Owner</dt>
+            <dd>{a.owner}</dd>
+          </>
+        )}
+        {a.sha && (
+          <>
+            <dt>Version</dt>
+            <dd className="mono">
+              {a.sha.slice(0, 8)}
+              {a.deployed_at && <span className="muted"> · deployed {agoLabel(a.deployed_at)}</span>}
+            </dd>
+          </>
+        )}
+        {a.stats && (
+          <>
+            <dt>Load</dt>
+            <dd>
+              {a.stats.cpu_pct.toFixed(0)}% CPU · {mb(a.stats.mem_bytes)} of {mb(a.stats.mem_limit_bytes)}
+              <div className="meter" aria-hidden>
+                <i style={{ width: `${Math.min(100, (100 * a.stats.mem_bytes) / (a.stats.mem_limit_bytes || 1))}%` }} />
+              </div>
+            </dd>
+          </>
+        )}
+      </dl>
+      {a.incident && (
+        <p className="app-incident">
+          <b>Incident ({a.incident.kind})</b>, opened {agoLabel(a.incident.opened_at)}: {a.incident.detail}
+        </p>
+      )}
+    </article>
   );
 }
