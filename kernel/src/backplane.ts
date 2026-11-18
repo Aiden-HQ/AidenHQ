@@ -258,7 +258,7 @@ export function createBackplane({ whoami, asserter, proxy, cp, grantsFile, write
           case "POST /v1/writes": {
             if (isRunner(req)) {
               const b = await json(req, 8_000_000);
-              const r = writes.fileRunner({ kind: String(b.kind ?? ""), task: String(b.task ?? ""), ...(typeof b.identifier === "string" ? { identifier: b.identifier.slice(0, 40) } : {}), args: b.args, plan: b.plan ?? {} });
+              const r = await writes.fileRunner({ kind: String(b.kind ?? ""), task: String(b.task ?? ""), ...(typeof b.identifier === "string" ? { identifier: b.identifier.slice(0, 40) } : {}), args: b.args, plan: b.plan ?? {} });
               return send(res, 200, r);
             }
             const w = await whoami(bearer(req)).catch((e: Error) => { throw fail(401, "unauthorized", e.message); });

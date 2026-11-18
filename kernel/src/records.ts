@@ -10,7 +10,7 @@ import { createHash, randomBytes } from "node:crypto";
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { FINAL_CODES, type ReviewFirst } from "./tier.ts";
+import { FINAL_CODES, type Cap, type ReviewFirst } from "./tier.ts";
 
 export type State = "review" | "owner" | "approved" | "claimed" | "done" | "failed" | "rejected" | "stale" | "cancelled" | "unknown";
 export type Requester = { agent: string; key: string; name: string; roles: string[]; kind: string; task?: string; run?: string; module?: string };
@@ -38,8 +38,10 @@ export type Rec = {
   target?: string | null;
   /** The content key the owner's veto binds to ("?" unknown: fails closed against any veto); null when the kind has none. */
   content?: string | null;
+  /** The cap that raised its tier when it was filed (tier.ts computeTier): the instance's autonomy or a routine's. */
+  cap?: Cap | null;
 };
-const JSON_COLS = ["args", "targets", "executor", "card", "requester", "outcome"] as const;
+const JSON_COLS = ["args", "targets", "executor", "card", "requester", "outcome", "cap"] as const;
 const OPEN: State[] = ["review", "owner", "approved"];
 /** Open records past this are expired: decided within a week or not at all. */
 export const TTL_MS = 7 * 86_400_000;
@@ -74,7 +76,7 @@ export function openRecords(file: string, now = () => new Date()) {
     CREATE TABLE IF NOT EXISTS events (id TEXT PRIMARY KEY, type TEXT NOT NULL, at TEXT NOT NULL, data TEXT NOT NULL);`);
   // Columns added since 2d, each additive (older code ignores them, so a rollback keeps working).
   const have = new Set((db.prepare("PRAGMA table_info(records)").all() as { name: string }[]).map((c) => c.name));
-  for (const [c, t] of [["merit", "INTEGER"], ["review_first", "TEXT"], ["rule", "TEXT"], ["review_code", "TEXT"], ["decided_at", "TEXT"], ["owner_reason", "TEXT"], ["identifier", "TEXT"], ["replaced", "INTEGER NOT NULL DEFAULT 0"], ["chain", "TEXT"], ["target", "TEXT"], ["content", "TEXT"]] as const) if (!have.has(c)) db.exec(`ALTER TABLE records ADD COLUMN ${c} ${t}`);
+  for (const [c, t] of [["merit", "INTEGER"], ["review_first", "TEXT"], ["rule", "TEXT"], ["review_code", "TEXT"], ["decided_at", "TEXT"], ["owner_reason", "TEXT"], ["identifier", "TEXT"], ["replaced", "INTEGER NOT NULL DEFAULT 0"], ["chain", "TEXT"], ["target", "TEXT"], ["content", "TEXT"], ["cap", "TEXT"]] as const) if (!have.has(c)) db.exec(`ALTER TABLE records ADD COLUMN ${c} ${t}`);
   const iso = () => now().toISOString();
   const cutoff = () => new Date(now().getTime() - TTL_MS).toISOString();
   const row = (r: any): Rec | undefined => {
@@ -107,9 +109,9 @@ export function openRecords(file: string, now = () => new Date()) {
       try {
         // A changed request on the same task, kind and target replaces the open one (the requester's own target key).
         const replaced = r.target ? db.prepare("UPDATE records SET state = 'cancelled', updated_at = ?, outcome = ? WHERE task = ? AND kind = ? AND target = ? AND digest != ? AND state IN ('review','owner','approved')").run(at, JSON.stringify({ ok: false, text: "replaced by a newer request" }), r.task, r.kind, r.target, digest).changes : 0;
-        db.prepare("INSERT INTO records (id, kind, module, args, targets, executor, policy, digest, tier, merit, panel, card, requester, task, state, created_at, updated_at, review_first, rule, identifier, replaced, target, content, chain) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+        db.prepare("INSERT INTO records (id, kind, module, args, targets, executor, policy, digest, tier, merit, panel, card, requester, task, state, created_at, updated_at, review_first, rule, identifier, replaced, target, content, chain, cap) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
           .run(id, r.kind, r.module, JSON.stringify(r.args ?? null), JSON.stringify(r.targets), JSON.stringify(r.executor), r.policy, digest, r.tier, r.merit ?? r.tier, r.panel ? 1 : 0, JSON.stringify(r.card), JSON.stringify(r.requester), r.task, r.state, at, at,
-            r.review_first ?? null, r.rule ?? null, r.identifier ?? null, replaced ? 1 : 0, r.target ?? null, r.content ?? null, r.chain ?? null);
+            r.review_first ?? null, r.rule ?? null, r.identifier ?? null, replaced ? 1 : 0, r.target ?? null, r.content ?? null, r.chain ?? null, r.cap ? JSON.stringify(r.cap) : null);
         db.exec("COMMIT");
       } catch (e) {
         db.exec("ROLLBACK");

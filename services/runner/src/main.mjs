@@ -9,7 +9,7 @@ import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { FOR_OTHERS, RUNNER_MARKER, deliveredFrom, finishedStatus, hasMarker, isAgentSubtask, isRuleProposal, isUserPart, ownRequest, findRepos, mentionedRepos, openrouterModels, crewNames, generalEngineers, personaFor, parseCommand, pickedEngine, pickerFor, engineKinds, engineLabel, engineOf, modelPrefix, repoAllowed, resolveEngine, stripHidden, useEngines, settledWait } from "./agents.mjs";
 import { REPO_ROOT, githubSlug, loadConfig } from "./config.mjs";
-import { applyWaitingForLock, architectFollowUps, bumpTitle, definitionsOf, ownerMade, productPin, strayFiles, trialEditsText, trialHandbookOnly, trialNoTapBy, untrialedNewAgents } from "./apply.ts";
+import { applyWaitingForLock, architectFollowUps, bumpTitle, definitionsOf, ownerMade, productPin, strayFiles, trialEditsText, trialNoTapBy, untrialedNewAgents } from "./apply.ts";
 import { applyCardArgs, asApproval, branchCardArgs, cardOf, cardText, planOf } from "./cards.ts";
 import { applyCard, repoKey } from "../../../kernel/src/kinds.ts";
 import { authorityLines, diffAll, forkChanges, grantOverrides, marketplaceChanges, moduleInputs, withGrantOverrides } from "../../../kernel/src/loader/authority.ts";
@@ -24,7 +24,7 @@ import { ISOLATED_ENV, SAFE_GIT_ARGS, changeBase, defaultBranch, ensureClone, en
 import { DEFAULT_IDENTITY, READ, WRITE, appClient, appRemoteUrl, ghOptions, identityEnv, inOrg, jobGhToken, mergeOptions, mergePermissions, ownRepo as appOwnRepo, pushPermissions } from "../../../modules/codehost-github/src/github-app.ts";
 import { resolveOpenRouterModel, withParent } from "./intake.ts";
 import { splitAnswered } from "./answered.ts";
-import { ALL_STATUSES, Paperclip, blockedRefusal, origins, unresolvedBlockers } from "./paperclip.ts";
+import { ALL_STATUSES, Paperclip, blockedRefusal, unresolvedBlockers } from "./paperclip.ts";
 import { isTransient, retryTransient, shouldRetryTurn } from "./retry.ts";
 import { branchGuidance, checkBranchName, chooseBranchName, exampleBranches } from "./branch.ts";
 import { cleanMessages, evidenceOf, existingPrUrl, isRepoIn, leakIn, leaksInternal, stripAttribution, withEvidence, writePrDescription } from "./describe.ts";
@@ -46,7 +46,7 @@ import { MERGE_REQUESTED, REPLY_MARKER, STILL_RUNNING, fence, onlyMergesLeft, pr
 import { afterNewWord, checkSignature, roundsTrip, twiceTrip } from "../../../modules/engineering/src/breaker.ts";
 import YAML from "yaml";
 import { classify, normalizeApp, sensitiveTraits } from "./tiers.mjs";
-import { CODE_REJECTS, MAX_REJECTS, autonomyCap, codeVerdict, heldInput, meritOwner, priorDecisions, priorPart, laterRejections, rejectedSince, requestKey, requestPatches, requestTargets, routineCap, routineCapped } from "../../../kernel/src/tier.ts";
+import { CODE_REJECTS, MAX_REJECTS, codeVerdict, heldInput, meritOwner, priorDecisions, priorPart, laterRejections, rejectedSince, requestKey, requestPatches, requestTargets } from "../../../kernel/src/tier.ts";
 import { LUNA, openRouterAsk, openRouterKey } from "./models.mjs";
 import { kernelCardDiff, readCardSourceExceptions, readDecisions, requestReview, reviewRequest, unreadSourceExceptions } from "./review-request.mjs";
 import { UNSURE } from "../../../kernel/sdk/src/reviewer.ts";
@@ -1382,10 +1382,9 @@ async function runAutoMerges() {
   const box = JSON.parse(state.get("auto_merges") || "{}");
   for (const [issueId, want] of Object.entries(box)) {
     const busy = running.has(issueId);
-    const off = autonomyNow() === "off";
-    // During the run only Tier 0 starts: a PR tiered higher waits for its end (afterRun), and with autonomy off every PR does.
+    // During the run only Tier 0 starts: a PR tiered higher waits for its end (afterRun).
     const todo = busy ? want.prs.filter((p) => !p.afterRun) : want.prs;
-    if (!todo.length || (busy && off)) continue;
+    if (!todo.length) continue;
     // A card's queue running on the task: requests wait until it ends, rather than mixing the two.
     const q = mergeQueue(issueId);
     if (q?.state === "running" && !q.independent) continue;
@@ -2274,12 +2273,6 @@ async function fileApproval(issue, { action, args, diff, ts, carries }) {
 }
 // ------------------------------------------------------------------ tiered approvals
 
-/**
- * The instance's autonomy (grants table, read fresh: it is the pause switch): off (every write is the owner's card, the
- * reviewer reading Tier 1 first: tiers.mjs autonomyCap), tier0 (Tier 0 runs at once; the reviewer only notes its verdict),
- * full (the reviewer decides Tier 1).
- */
-const autonomyNow = () => (["tier0", "full"].includes(readGrants()?.autonomy) ? readGrants().autonomy : "off");
 /** The guard found the change already satisfied on the target: no card; the evidence goes back to the agent instead. */
 class AlreadyApplied extends Error {}
 /**
@@ -2312,10 +2305,6 @@ function appsRegistry() {
   const instanceDir = process.env.AIDENHQ_INSTANCE_DIR?.replace(/^~(?=\/)/, process.env.HOME ?? "");
   return { all: [...(instanceDir ? read(join(instanceDir, "apps.yaml")) : []), ...modules], modules };
 }
-
-/** A run's issue never changes: run id → the issueId it worked on (null: none). */
-const runIssue = new Map();
-const traceOrigins = (full) => origins(pc, full, runIssue);
 
 /** Each connection's tool tags (read, write, destructive) from the compiled config; {} when it can't be read (grant changes then fail closed). */
 function connectionTags() {
@@ -2359,8 +2348,6 @@ async function commonTierState(issue, action, also = []) {
     taskStatus: full.status,
     records,
     also,
-    // The cap of the routine whose run started this chain (its `autonomy`, in the grants table by Paperclip routine id).
-    routineAutonomy: await traceOrigins(full).then(({ issues, complete }) => routineCap(issues, complete, grants?.routines)),
     connections: connectionTags(),
     ownerStarted: walked && ownerMadeTask(root),
     trialNoTap: trialNoTap(full, grants),
@@ -2611,11 +2598,14 @@ const authorityOf = (st) => {
   return [authorityLines(diffs), diffs.some((d) => d.changes.some((c) => c.owner))];
 };
 
-/** The tier of a request now: classify() over the common state plus the action's own. Logged. */
+/**
+ * The tier of a request on its merits now: classify() over the common state plus the action's own. Logged. The kernel
+ * applies the caps (the instance's autonomy, a routine's) when the request is filed, so a Tier 0 here may come back a card.
+ */
 async function tierFor(issue, action, own, also = []) {
   const common = await commonTierState(issue, action, also);
   const s = { ...common, ...own };
-  const t = autonomyCap(classify(action, s), autonomyNow());
+  const t = classify(action, s);
   log("tier", { issue: issue.identifier, action, tier: t.tier, rule: t.rule, reject: Boolean(t.reject), panel: Boolean(t.panel), reviewFirst: Boolean(t.reviewFirst) });
   // The reviewer's earlier rejections on this task, attached to a fresh review of the changed request.
   const prior = priorDecisions(common.records, action, also, requestKey(action, s), requestPatches(action, s), common.requestChain);
@@ -2748,14 +2738,14 @@ async function reviewOne(a) {
       input = { ...classify("raise_cap", {}), diff: [a.sentence, a.changes, a.cost, a.details].join("\n") };
     } else if (notRunners(a)) {
       // The kernel files them without classify(): earlier decisions on the task count as for any request (the card's digest
-      // is its content), and a routine's cap (tier0 or off) makes them review-first, as classify() does.
+      // is its content). The caps are the record's own (review-first, its cap), applied by the kernel when it was filed.
       const common = await commonTierState(issue, a.action);
       const prior = priorDecisions(common.records, a.action, [], requestKey(a.action, { digest: a.digest }), undefined, common.requestChain, requestTargets(a.action, a.args));
       const veto = priorPart(prior);
       const reviewed = { tier: 1, rule: `${a.action}`, reason: a.reason, previous: [...common.answers, ...prior.findings], relift: prior.relift, panel: a.panel === true, ...kernelCardDiff(a) };
       // Tier 2 on its merits (the owner's veto here, or the kernel's own tier before any autonomy cap): reviewed, then the owner's.
       const merit = veto ?? (a.baseTier === 2 ? { tier: 2, rule: `${a.action}`, reason: a.reason || "the kernel's tier on its merits is 2" } : undefined);
-      input = veto?.reject ? veto : autonomyCap(routineCapped(merit ? meritOwner({ ...reviewed, tier: 2, rule: merit.rule, reason: merit.reason }) : reviewed, common.routineAutonomy), autonomyNow());
+      input = veto?.reject ? veto : merit ? meritOwner({ ...reviewed, tier: 2, rule: merit.rule, reason: merit.reason }) : reviewed;
     } else input = await currentTier(issue, a, { withDiff: true });
   } catch (err) {
     input = { tier: 1, error: String(err instanceof UserError ? err.message : err.message ?? err).slice(0, 300), lasting: err instanceof UserError, stale: err instanceof MovedHead };
@@ -3179,15 +3169,15 @@ async function rebuild(issue, action, args, ordered, branches, t) {
 
 /**
  * Whether the earlier approvals of these branches still cover the request (rebuild() and rebaseInCode()): every branch has
- * an approval record of the same action (and merge, and text); the reviewer's yes only while autonomy is full and the
- * request is still Tier 1 or lower (`t`: its tier now, undefined fails closed); and no later rejection of these branches,
+ * an approval record of the same action (and merge, and text); the reviewer's yes only while the request is still Tier 1 or
+ * lower (and no cap holds it: the kernel checks that when the replay is filed) (`t`: its tier now, undefined fails closed); and no later rejection of these branches,
  * or of the same patch on another branch. The records, or undefined.
  */
 async function approvalStands(issue, action, args, ordered, branches, t) {
   if (!t || t.reject) return undefined;
   const records = branches.map((b) => approvedRecord(issue.id, b));
   if (records.some((r) => !r || r.action !== action || r.merge !== Boolean(args.merge) || (args.text && r.text !== textHash(args.text)))) return undefined;
-  if (records.some((r) => r.by !== "owner") && !(autonomyNow() === "full" && t.tier <= 1)) return undefined;
+  if (records.some((r) => r.by !== "owner") && t.tier > 1) return undefined;
   // A later no on these branches (or the owner's veto) outranks an earlier yes; another branch's rejection doesn't.
   const cards = await recordsOn(issue);
   const since = records.map((r) => cards.find((c) => c.id === r.approval)?.decidedAt ?? "").sort()[0] ?? "";
@@ -3390,27 +3380,17 @@ async function runTrialEdits() {
       const b = await fleetBranch(issue, workspace);
       if (b.error) throw new UserError(b.error);
       if (b.sha !== want.sha || b.r.branch !== want.branch) throw new UserError("the branch moved since the edit was shown; the Platform Engineer's next turn shows it again");
-      if (want.tier0) {
-        // Tier 0: recomputed now, and again against the exact main it lands on; anything higher gets a card next turn.
-        if (autonomyNow() === "off") throw new UserError("autonomy was turned off, so it needs a tap");
-        const bump = await productBump(b);
-        const t = await tierFor(issue, "apply", await applyTierState(b, bump));
-        if (t.reject || t.tier !== 0) throw new UserError(`it's no longer Tier 0 (${t.reason}), so it needs a card`);
-        const guard = async (main) => (await tierFor(issue, "apply", await applyTierState(b, bump, main))).tier === 0;
-        // Its record first: an apply is read by the AI reviewer at least (the kernel's floor), so it lands once approved.
-        const rec = await fileApproval(issue, { action: "apply", args: { repo: b.r.repo, branch: b.r.branch, sha: b.sha, files: b.files }, diff: await fleetDiffText(b, bump), ts: [t] });
-        if (rec.state !== "used") { await pc.comment(issueId, waitingFor(rec, issue)); continue; }
-        const out = await landFleet(issue, b.r, b.sha, b.files, `Tier 0: ${t.reason}`, `Tier 0 change (${issue.identifier}): ${t.rule}`, guard);
-        await reportOutcome(rec.id, out);
-        await closeTyped(issue, out);
-        continue;
-      }
-      if (!trialNoTap(await pc.issue(issueId), readGrants()) || !trialHandbookOnly(b.files, (await agentTexts(b)).base)) throw new UserError("it's no longer a handbook-only edit to an agent in trial, so it needs a tap");
-      // Checked again on the exact main it lands on: an agent that graduated meanwhile gets a card.
-      const guard = async (main) => trialHandbookOnly(b.files, await textsAt(b, main));
-      const rec = await fileApproval(issue, { action: "apply", args: { repo: b.r.repo, branch: b.r.branch, sha: b.sha, files: b.files }, diff: await fleetDiffText(b, await productBump(b)), ts: [{ tier: 0, rule: "trial-handbook", reason: "a handbook edit to an agent in trial: no tap needed" }] });
+      // Tier 0: recomputed now, and again against the exact main it lands on; anything higher gets a card next turn.
+      const bump = await productBump(b);
+      const t = await tierFor(issue, "apply", await applyTierState(b, bump));
+      if (t.reject || t.tier !== 0) throw new UserError(`it's no longer Tier 0 (${t.reason}), so it needs a card`);
+      const guard = async (main) => (await tierFor(issue, "apply", await applyTierState(b, bump, main))).tier === 0;
+      // Its record first: the kernel may hold it for the owner (autonomy off, a routine's cap), and then it is a card.
+      const rec = await fileApproval(issue, { action: "apply", args: { repo: b.r.repo, branch: b.r.branch, sha: b.sha, files: b.files }, diff: await fleetDiffText(b, bump), ts: [t] });
       if (rec.state !== "used") { await pc.comment(issueId, waitingFor(rec, issue)); continue; }
-      await reportOutcome(rec.id, await landFleet(issue, b.r, b.sha, b.files, "a handbook edit to an agent in trial: no tap needed", `Handbook edit to an agent in trial (${issue.identifier})`, guard));
+      const out = await landFleet(issue, b.r, b.sha, b.files, `Tier 0: ${t.reason}`, `Tier 0 change (${issue.identifier}): ${t.rule}`, guard);
+      await reportOutcome(rec.id, out);
+      await closeTyped(issue, out);
     } catch (err) {
       await pc.comment(issueId, `**The trial handbook edit didn't land:** ${String(err instanceof UserError ? err.message : err.stderr || err.message || err).trim().slice(0, 1000)}`).catch(() => {});
     }
@@ -3537,10 +3517,7 @@ async function runClaimed(claimed) {
   // reviewer approved it, or not checkable this minute: a fresh card for the reviewers.
   if (claimed.decidedBy?.startsWith("reviewer:")) {
     const issue = await pc.issue(claimed.issueId);
-    const t =
-      autonomyNow() !== "full"
-        ? { tier: 2, reason: "autonomy is no longer full" }
-        : await currentTier(issue, claimed).catch((err) => (err instanceof UserError ? { reject: true, tier: 2, reason: err.message } : { tier: 1, rule: "recheck", reason: `couldn't recheck it (${String(err.message ?? err).slice(0, 200)}), so it is reviewed again` }));
+    const t = await currentTier(issue, claimed).catch((err) => (err instanceof UserError ? { reject: true, tier: 2, reason: err.message } : { tier: 1, rule: "recheck", reason: `couldn't recheck it (${String(err.message ?? err).slice(0, 200)}), so it is reviewed again` }));
     const panelMissing = (t.panel || claimed.panel) && !claimed.decidedBy.includes("+");
     if (t.reject || t.tier > 1 || panelMissing || t.rule === "recheck") {
       const tier = t.reject || t.tier > 1 ? 2 : 1;
@@ -3775,15 +3752,12 @@ async function agentReview(ctx, args) {
         await bindBranches(ordered, branches);
         // With `--body-file`, the description the card would carry, so the check reads the same Evidence section.
         const a = { action: command, args: branchCardArgs(branches, { merge: carriesMerge(command, ordered), text: command === "pr" && args.body ? { title: String(args.title ?? ""), body: String(args.body) } : undefined }) };
-        const mode = autonomyNow();
         const input = await currentTier(ctx.issue, a, { withDiff: true });
         const n = checksUsed(ctx.issue.id);
-        log("review check", { issue: ctx.issue.identifier, action: command, tier: input.reject ? "reject" : input.tier, rule: input.rule, mode, used: n });
+        log("review check", { issue: ctx.issue.identifier, action: command, tier: input.reject ? "reject" : input.tier, rule: input.rule, used: n });
         if (input.reject) throw new Checked(`Code refuses this ${command} before any review (rule \`${input.rule}\`): ${input.reason}. No reviewer was asked, and this check isn't counted.`);
-        if (input.tier === 0) throw new Checked(`Tier 0 (${input.reason}): \`aidenhq ${command}\` runs at once, with no review. This check isn't counted.`);
+        if (input.tier === 0) throw new Checked(`Tier 0 (${input.reason}): \`aidenhq ${command}\` runs at once, with no review (unless autonomy or a routine's cap holds it for ${cfg.selfName}). This check isn't counted.`);
         if (input.tier > 1 && !input.reviewFirst) throw new Checked(`Tier 2 (${input.reason}): ${cfg.selfName} decides the card, not the AI reviewer. File it with \`aidenhq ${command}\`; this check isn't counted.`);
-        // Autonomy off: the card is review-first (the reviewer's reject is final), so the check is worth asking.
-        if (mode === "tier0") throw new Checked(`Autonomy is ${mode}: ${cfg.selfName} decides every card, so there is no AI review to check against. File it with \`aidenhq ${command}\`; this check isn't counted.`);
         if (n >= REVIEW_CHECKS) throw new Checked(`No checks left on this task (${REVIEW_CHECKS} used; the next word from whoever asked gives ${REVIEW_CHECKS} more). File it with \`aidenhq ${command}\`: the card's review decides.`);
         const card = { action: command, ...cardText(command, a.args) };
         // Counted before the call, so a call cut off by a restart still counts.
@@ -3901,19 +3875,17 @@ async function showFleetDiff(issue, workspace) {
   const t = await agentTexts(b);
   const untrialed = untrialedNewAgents(b.files, t.base, t.head);
   if (untrialed.length) return `**Can't be applied:** a new agent starts in trial (\`trial: true\` in agents/${untrialed[0]}/agent.yaml, read-only grants, reporting to architect); its write grants come with a second change after the trial.`;
-  // The tier from the verified instance diff (autonomy off: Tier 0 is a card and the rest review-first, tiers.mjs
-  // autonomyCap). Tier 0 lands after this run like the trial exception.
-  const on = autonomyNow() !== "off";
+  // The tier from the verified instance diff. Tier 0 lands after this run (runTrialEdits files it: the kernel may hold it
+  // for the owner instead).
   const bump = await productBump(b).catch((e) => ({ error: e.message }));
   if (bump?.error) return `**Can't be applied:** ${bump.error}.`;
   const st = await applyTierState(b, bump);
   const tier = await tierFor(issue, "apply", st);
   if (tier.reject) return `**Can't be applied:** ${tier.reason}.`;
-  // Only on a task the owner or the Agent Architect started: anyone else's handbook edit (or a chain of agent comments) gets a card.
-  if (on ? tier.tier === 0 : trialHandbookOnly(b.files, t.base) && trialNoTap(await pc.issue(issue.id), readGrants())) {
-    // The trial exception: lands after this run, with no card (runTrialEdits). The diff stays here, in Activity.
-    state.set("trial_edits", JSON.stringify({ ...JSON.parse(state.get("trial_edits") || "{}"), [issue.id]: { sha: b.sha, branch: b.r.branch, ...(on ? { tier0: true } : {}) } }));
-    return `**${on ? `Runs at once (Tier 0: ${tier.reason})` : "Handbook edit to an agent in trial"}** (commit \`${b.sha.slice(0, 12)}\`): no tap needed, it lands in a moment.\n\n\`\`\`diff\n${diff.replaceAll("```", "‵‵‵")}\n\`\`\``;
+  if (tier.tier === 0) {
+    // Lands after this run (runTrialEdits). The diff stays here, in Activity.
+    state.set("trial_edits", JSON.stringify({ ...JSON.parse(state.get("trial_edits") || "{}"), [issue.id]: { sha: b.sha, branch: b.r.branch } }));
+    return `**Runs at once (Tier 0: ${tier.reason})** (commit \`${b.sha.slice(0, 12)}\`): no tap needed, it lands in a moment.\n\n\`\`\`diff\n${diff.replaceAll("```", "‵‵‵")}\n\`\`\``;
   }
   // A review-first card (new module authority, or autonomy off) is filed for the reviewer (Tier 1); its approve goes on to the owner.
   const reviewFirst = Boolean(tier.reviewFirst);
