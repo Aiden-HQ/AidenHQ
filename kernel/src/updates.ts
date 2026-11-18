@@ -20,7 +20,7 @@
 //   node kernel/src/updates.ts install   (ops/update.sh, apply lock held on fd 9) install `next`
 //   node kernel/src/updates.ts pin <name> <distro sha>   (ops/setup.sh, the installer run again) move the pin to that release
 import { execFileSync, spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { closeSync, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -28,7 +28,7 @@ import { isDeepStrictEqual } from "node:util";
 import type { DatabaseSync } from "node:sqlite";
 import YAML, { Scalar } from "yaml";
 import { resolveRelease } from "./loader/release.ts";
-import { OFFICIAL, onOfficialMain, repoAt, type Fetch, type Where } from "./loader/sources.ts";
+import { OFFICIAL, repoAt, type Fetch, type Where } from "./loader/sources.ts";
 
 type Dict = Record<string, unknown>;
 export const DISTRO = "Aiden-HQ/aidenhq-distro";
@@ -78,11 +78,13 @@ export type Deps = {
   /** The instance checkout (AIDENHQ_INSTANCE_DIR) and the product checkout. */
   inst: string;
   product: string;
-  /** The updater's own state (state.json, next, now.json) and the board's display copy (updates.json), when there is one. */
+  /** The updater's own state (state.json, now.json) and the board's display copy (updates.json), when there is one. */
   dir: string;
   board?: string;
-  /** ops/apply-config.sh at an instance commit, the apply lock already held. */
-  apply: (instanceSha: string) => { code: number; out: string };
+  /** apply's record of the product this host last applied in full (data/applied-product). */
+  applied: string;
+  /** ops/apply-config.sh (args: none for the instance's main, or --recover), the apply lock already held. */
+  apply: (args: string[]) => { code: number; out: string };
   now?: () => Date;
 };
 
@@ -100,6 +102,8 @@ export type State = {
   error?: string;
   last?: Last;
   failed?: string[];
+  /** An install in flight, written before its pin commit is pushed: a run that finds it finishes what a dead one left (reconcile). */
+  installing?: { release: string; kernel: string; from: string; commit: string; by: string; notes: string[]; compare: string };
   /** What the kernel tells the owner, each once (by id); the newest 20. */
   events?: { id: string; text: string }[];
 };
@@ -110,19 +114,35 @@ const git = (cwd: string, args: string[], input?: string) =>
   execFileSync("git", ["-c", "protocol.allow=never", "-c", "protocol.https.allow=always", "-c", "protocol.file.allow=always", "-c", "credential.helper=", ...args], {
     cwd, encoding: "utf8", input, timeout: 120_000, stdio: ["pipe", "pipe", "pipe"], env: { ...process.env, GIT_TERMINAL_PROMPT: "0", GIT_DIR: undefined, GIT_WORK_TREE: undefined },
   });
-const isAncestor = (repo: string, a: string, b: string) => spawnSync("git", ["--git-dir", repo, "merge-base", "--is-ancestor", a, b]).status === 0;
+/** Whether commit a is an ancestor of b in repo: false when it isn't (or a isn't there at all); any other git failure throws. */
+function isAncestor(repo: string, a: string, b: string): boolean {
+  if (spawnSync("git", ["--git-dir", repo, "cat-file", "-e", `${a}^{commit}`]).status !== 0) return false;
+  const r = spawnSync("git", ["--git-dir", repo, "merge-base", "--is-ancestor", a, b], { encoding: "utf8" });
+  if (r.status === 0 || r.status === 1) return r.status === 0;
+  throw new Error(`git merge-base: ${String(r.stderr).trim().slice(0, 200)}`);
+}
+/**
+ * The cache repository holding `w.sha`, with the repository's main fetched, and whether the sha is on it. A sha the repository
+ * doesn't have is a refusal; a fetch that fails (the network, GitHub) throws a plain error, retried at the next run.
+ */
+function onMain(d: Pick<Deps, "fetch">, w: Where, what: string): string {
+  let repo: string;
+  try { repo = repoAt(w, d.fetch); } catch (e) { if (/has no commit/.test(String((e as Error).message))) throw new Refused(`${what} ${w.sha.slice(0, 12)} isn't in ${w.url}`); throw e; }
+  git(tmpdir(), ["--git-dir", repo, "fetch", "-q", "--no-tags", "--no-recurse-submodules", "--", w.url, "+refs/heads/main:refs/remotes/official/main"]);
+  if (!isAncestor(repo, w.sha, "refs/remotes/official/main")) throw new Refused(`${what} ${w.sha.slice(0, 12)} isn't on ${w.url.replace(/^.*\/([^/]+\/[^/]+?)(\.git)?$/, "$1")}'s main`);
+  return repo;
+}
 /** Plain text from a release file or an apply's output: one line, no control or format characters, never an HTML comment, bounded. */
 const plain = (v: unknown, n = 300) => String(v ?? "").replace(/[\p{Cc}\p{Cf}]+/gu, " ").replace(/<!/g, "‹!").replace(/-->/g, "--›").trim().slice(0, n);
 
-/** The newest release tag on the distro repo, with the commit it names. */
-export function latestTag(d: Pick<Deps, "base">): { name: string; sha: string } | null {
+/** The distro repo's release tags newer than `than`, newest first, each with the commit it names. */
+export function newerTags(d: Pick<Deps, "base">, than: string): { name: string; sha: string }[] {
   const tags = new Map<string, string>();
   for (const line of git(tmpdir(), ["ls-remote", "--tags", "--", url(d, DISTRO)]).split("\n")) {
     const m = /^([0-9a-f]{40})\trefs\/tags\/([^\s^]+)(\^\{\})?$/.exec(line);
     if (m && NAME.test(m[2]!) && (m[3] || !tags.has(m[2]!))) tags.set(m[2]!, m[1]!);
   }
-  const name = [...tags.keys()].sort(compareRelease).at(-1);
-  return name ? { name, sha: tags.get(name)! } : null;
+  return [...tags.keys()].filter((n) => compareRelease(n, than) > 0).sort(compareRelease).reverse().map((name) => ({ name, sha: tags.get(name)! }));
 }
 
 /** instance.yaml's text moved to a release: product:, release: and the aidenhq marketplace's sha, comments kept. */
@@ -148,8 +168,7 @@ export async function verify(d: Pick<Deps, "base" | "fetch" | "download">, text:
   if (!cur) throw new Refused("this instance doesn't follow a release from the official distro repo");
   if (!NAME.test(name) || !SHA.test(sha)) throw new Refused(`${plain(name, 40)} isn't a release name with a commit`);
   if (compareRelease(name, cur.name) <= 0) throw new Refused(`${name} isn't newer than ${cur.name}: downgrades are refused`);
-  const distro = repoAt(at(d, DISTRO, sha), d.fetch);
-  if (!onOfficialMain(at(d, DISTRO, sha), d.fetch)) throw new Refused(`${name}'s commit ${sha.slice(0, 12)} isn't on the distro repo's main`);
+  const distro = onMain(d, at(d, DISTRO, sha), `${name}'s commit`);
   let file: Dict;
   try { file = JSON.parse(execFileSync("git", ["--git-dir", distro, "show", `${sha}:releases/${name}.json`], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] })) as Dict; } catch { throw new Refused(`${name} has no readable releases/${name}.json at ${sha.slice(0, 12)}`); }
   // The fixed sources: a release file can't point the kernel, the modules or the images anywhere else.
@@ -164,13 +183,9 @@ export async function verify(d: Pick<Deps, "base" | "fetch" | "download">, text:
   try { resolveRelease(file, (YAML.parse(next) ?? {}) as Dict); } catch (e) { throw new Refused((e as Error).message); }
   const kernel = String(file.kernel), market = String(m.sha);
   const product = String(instance.product ?? "");
-  const kw = at(d, KERNEL, kernel);
-  if (!onOfficialMain(kw, d.fetch)) throw new Refused(`${name}'s kernel ${kernel.slice(0, 12)} isn't on ${KERNEL}'s main`);
-  if (!isAncestor(repoAt(kw, d.fetch), product, kernel)) throw new Refused(`${name}'s kernel ${kernel.slice(0, 12)} doesn't descend from the running product ${product.slice(0, 12)}`);
+  if (!isAncestor(onMain(d, at(d, KERNEL, kernel), `${name}'s kernel`), product, kernel)) throw new Refused(`${name}'s kernel ${kernel.slice(0, 12)} doesn't descend from the running product ${product.slice(0, 12)}`);
   const own = (Array.isArray(instance.marketplaces) ? instance.marketplaces : []).find((x) => isMap(x) && x.name === OFFICIAL) as Dict | undefined;
-  const mw = at(d, MODULES, market);
-  if (!onOfficialMain(mw, d.fetch)) throw new Refused(`${name}'s marketplace ${market.slice(0, 12)} isn't on ${MODULES}'s main`);
-  const mr = repoAt(mw, d.fetch);
+  const mr = onMain(d, at(d, MODULES, market), `${name}'s marketplace`);
   if (own && typeof own.sha === "string" && !isAncestor(mr, own.sha, market)) throw new Refused(`${name}'s marketplace ${market.slice(0, 12)} doesn't descend from the running ${own.sha.slice(0, 12)}`);
   // As install.sh checks: every module's own sha is on the marketplace's history at the release's sha.
   for (const [mod, ms] of Object.entries(isMap(file.modules) ? file.modules : {})) if (!isAncestor(mr, String(ms), market)) throw new Refused(`${name}'s module ${plain(mod, 60)} at ${String(ms).slice(0, 12)} isn't on the marketplace's history at ${market.slice(0, 12)}`);
@@ -182,7 +197,7 @@ export async function verify(d: Pick<Deps, "base" | "fetch" | "download">, text:
   const run = /^https:\/\/github\.com\/Aiden-HQ\/aidenhq-distro\/actions\/runs\/(\d{1,20})$/.exec(String(tested.ci_run ?? ""));
   if (!run || !Array.isArray(tested.suites) || !tested.suites.length) throw new Refused(`${name} has no tested stamp from the release workflow`);
   const r = await d.download(`https://api.github.com/repos/${DISTRO}/actions/runs/${run[1]}`);
-  if (!isMap(r) || r.path !== ".github/workflows/release.yml" || r.head_sha !== sha || r.event !== "push") throw new Refused(`${name}'s tested stamp doesn't name a release run on its commit`);
+  if (!isMap(r) || r.path !== ".github/workflows/release.yml" || r.head_sha !== sha || r.event !== "push" || r.conclusion !== "success") throw new Refused(`${name}'s tested stamp doesn't name a successful release run on its commit`);
   const notes = (Array.isArray(file.notes) ? file.notes : typeof file.notes === "string" ? [file.notes] : []).slice(0, 20).map((n) => plain(n)).filter(Boolean);
   return { name, sha, kernel, marketplace: market, notes, compare: `${GITHUB}/${KERNEL}/compare/${product.slice(0, 12)}...${kernel.slice(0, 12)}`, images: images.length, from: { name: cur.name, product }, text: next };
 }
@@ -205,18 +220,16 @@ function instanceText(inst: string) {
   return git(inst, ["show", "origin/main:instance.yaml"]);
 }
 
+type Asked = { release?: string; by?: string } | null;
+
 /**
- * The hourly check (and the start of Update now): finds the newest release, verifies it, records it, and writes `next` when it
- * should install now: the owner asked for it (now.json), or auto-updates are on, it is night and it never failed here.
+ * The check: the newest release newer than the one followed that passes every check (a refused one is said once and the next
+ * older is tried; a network error stops the check, retried at the next run). Records it, and says whether it installs now:
+ * the owner asked for it (Update now), or auto-updates are on, it is night and it never failed here.
  */
-export async function check(d: Deps): Promise<State> {
+export async function check(d: Deps, asked: Asked = null): Promise<{ state: State; install: { release: string; by: string } | null }> {
   const now = (d.now ?? (() => new Date()))();
   const s = readState(d.dir);
-  mkdirSync(d.dir, { recursive: true });
-  rmSync(join(d.dir, "next"), { force: true });
-  let asked: { release?: string; by?: string } | null = null;
-  const nowFile = join(d.dir, "now.json");
-  if (existsSync(nowFile)) { try { asked = JSON.parse(readFileSync(nowFile, "utf8")); } catch { asked = null; } rmSync(nowFile, { force: true }); }
   const text = instanceText(d.inst);
   const instance = (YAML.parse(text) ?? {}) as Dict;
   const cur = followed(instance);
@@ -225,45 +238,45 @@ export async function check(d: Deps): Promise<State> {
   s.auto = autoOn(instance);
   s.timezone = String((isMap(instance.settings) && instance.settings.timezone) || "UTC");
   delete s.error;
-  if (!cur) { s.available = null; writeState(d, s); return s; }
-  let tag: { name: string; sha: string } | null = null;
-  try {
-    tag = latestTag(d);
-    if (!tag || compareRelease(tag.name, cur.name) <= 0) s.available = null;
-    else {
-      const { text: _t, ...c } = await verify(d, text, tag.name, tag.sha);
-      if (s.available?.name !== c.name) event(s, `available:${c.name}`, s.auto
-        ? `AidenHQ ${c.name} is available. It installs tonight between ${NIGHT.from}:00 and ${NIGHT.to}:00 (${s.timezone}); to install it now or see what changed, open Settings > Instance.`
-        : `AidenHQ ${c.name} is available. Auto-updates are off: install it from Settings > Instance (Update now), where what changed is listed.`);
-      s.available = c;
-    }
-  } catch (e) {
-    s.available = null;
-    if (!(e instanceof Refused)) s.error = plain((e as Error).message);
-    else {
-      const name = tag?.name ?? "?";
-      s.error = `${name} was refused: ${plain(e.message)}`;
-      event(s, `refused:${name}`, `AidenHQ ${name} was published but failed this server's checks (${plain(e.message, 200)}), so it won't be installed. Nothing changed here.`);
-    }
+  s.available = null;
+  if (cur) {
+    try {
+      for (const tag of newerTags(d, cur.name)) {
+        try {
+          const { text: _t, ...c } = await verify(d, text, tag.name, tag.sha);
+          if (!(s.events ?? []).some((e) => e.id === `available:${c.name}`)) event(s, `available:${c.name}`, s.auto
+            ? `AidenHQ ${c.name} is available. It installs tonight between ${NIGHT.from}:00 and ${NIGHT.to}:00 (${s.timezone}); to install it now or see what changed, open Settings > Instance.`
+            : `AidenHQ ${c.name} is available. Auto-updates are off: install it from Settings > Instance (Update now), where what changed is listed.`);
+          s.available = c;
+          break;
+        } catch (e) {
+          if (!(e instanceof Refused)) throw e;
+          s.error = `${tag.name} was refused: ${plain(e.message)}`;
+          event(s, `refused:${tag.name}`, `AidenHQ ${tag.name} was published but failed this server's checks (${plain(e.message, 200)}), so it won't be installed. Nothing changed here.`);
+        }
+      }
+    } catch (e) { s.error = plain((e as Error).message); }
   }
-  const install = s.available && ((asked?.release === s.available.name) || (s.auto && atNight(now, s.timezone) && !(s.failed ?? []).includes(s.available.name)));
-  // An Update now that can't go ahead is said, not dropped.
-  if (asked && asked.release !== s.available?.name) event(s, `now:${now.toISOString()}`, `Update now didn't start: ${s.error ?? `${plain(asked.release, 40)} isn't the release available any more`}. Nothing changed.`);
-  if (install) writeFileSync(join(d.dir, "next"), `${JSON.stringify({ release: s.available!.name, by: asked?.release === s.available!.name ? String(asked.by ?? "owner").slice(0, 100) : "auto-update" })}\n`);
+  const a = s.available;
+  const install = a && asked?.release === a.name ? { release: a.name, by: String(asked.by ?? "owner").slice(0, 100) }
+    : a && s.auto && atNight(now, s.timezone) && !(s.failed ?? []).includes(a.name) ? { release: a.name, by: "auto-update" } : null;
+  if (asked && !install) event(s, `now:${now.toISOString()}`, `Update now didn't start: ${s.error ?? `${plain(asked.release, 40)} isn't the release available any more`}. Nothing changed.`);
   writeState(d, s);
-  return s;
+  return { state: s, install };
 }
 
-/** Text changes to the instance's main, made in a temporary clone and pushed (never in the checkout apply moves). */
-function onInstanceMain(inst: string, change: (clone: string) => void): string {
+/** Text changes to the instance's main, made in a temporary clone; `committed` runs before the push. Returns the commit. */
+function onInstanceMain(inst: string, change: (clone: string) => void, committed: (sha: string) => void = () => {}): string {
   const origin = git(inst, ["remote", "get-url", "origin"]).trim();
   const tmp = mkdtempSync(join(tmpdir(), "aidenhq-update-"));
   try {
     git(tmp, ["clone", "-q", "--", origin, "c"]);
     const c = join(tmp, "c");
     change(c);
+    const sha = git(c, ["rev-parse", "HEAD"]).trim();
+    committed(sha);
     git(c, ["push", "-q", "origin", "HEAD:main"]);
-    return git(c, ["rev-parse", "HEAD"]).trim();
+    return sha;
   } finally { rmSync(tmp, { recursive: true, force: true }); }
 }
 const commit = (c: string, msg: string) => git(c, ["-c", "user.name=AidenHQ updates", "-c", "user.email=updates@aidenhq.invalid", "commit", "-q", "-m", msg, "--", "instance.yaml"]);
@@ -277,51 +290,103 @@ function landKernel(d: Pick<Deps, "base" | "fetch" | "product">, kernel: string)
   git(d.product, ["--git-dir", repoAt(at(d, KERNEL, kernel), d.fetch), "push", "-q", "--", origin, `${kernel}:refs/heads/main`]);
 }
 
-/** Moves the instance's pin to a verified release: one commit, pushed to the instance's main. Returns its sha. */
-function pinCommit(d: Pick<Deps, "inst">, c: Candidate & { text: string }, base: string, by: string) {
-  return onInstanceMain(d.inst, (clone) => {
-    if (readFileSync(join(clone, "instance.yaml"), "utf8") !== base) throw new Error("instance.yaml moved while the update was checked; it waits for the next run");
-    writeFileSync(join(clone, "instance.yaml"), c.text);
-    commit(clone, `update: AidenHQ ${c.name}\n\nFrom ${c.from.name}: product ${c.kernel}, release ${c.name} at distro ${c.sha}, ${OFFICIAL} marketplace ${c.marketplace}.\nBy ${by}. What changed: ${c.compare}`);
-  });
-}
-
 /** The apply's own words for why it failed: its alert, else its refusal, else the exit code. */
 const why = (out: string, code: number) => plain([...out.matchAll(/^(?:apply alert|refusing): (.*)$/gm)].at(-1)?.[1] ?? `the apply exited ${code}`, 400);
 
-/** Installs `next` (the apply lock held by ops/update.sh): verified again, the kernel landed, the pin committed, applied. */
-export async function install(d: Deps): Promise<State> {
-  const now = (d.now ?? (() => new Date()))();
-  const nextFile = join(d.dir, "next");
-  const next = JSON.parse(readFileSync(nextFile, "utf8")) as { release: string; by: string };
-  rmSync(nextFile, { force: true });
-  const s = readState(d.dir);
-  const tag = latestTag(d);
-  if (!tag || tag.name !== next.release) throw new Error(`${next.release} is no longer the newest release; the next check picks again`);
-  const text = instanceText(d.inst);
-  const c = await verify(d, text, tag.name, tag.sha);
-  landKernel(d, c.kernel);
-  const sha = pinCommit(d, c, text, next.by);
-  const r = d.apply(sha);
-  const { text: _t, ...cand } = c;
-  if (r.code === 0) {
-    s.last = { release: c.name, outcome: "installed", at: now.toISOString(), by: next.by };
-    s.current = { name: c.name, product: c.kernel };
+/**
+ * How an install ended, recorded once: installed, or failed, with its pin commit reverted on the instance's main (when it is
+ * there), so git and the pin say what runs. The night never tries a failed release again; Update now does.
+ */
+function settle(d: Deps, s: State, ok: boolean, reason: string, now: Date) {
+  const i = s.installing!;
+  delete s.installing;
+  if (ok) {
+    s.last = { release: i.release, outcome: "installed", at: now.toISOString(), by: i.by };
+    s.current = { name: i.release, product: i.kernel };
     s.available = null;
-    s.failed = (s.failed ?? []).filter((n) => n !== c.name);
-    event(s, `installed:${c.name}`, `AidenHQ is updated to ${c.name} (from ${c.from.name}).${c.notes.length ? ` What changed: ${c.notes.slice(0, 5).join("; ")}.` : ""} Every change: ${c.compare}`);
+    s.failed = (s.failed ?? []).filter((n) => n !== i.release);
+    event(s, `installed:${i.release}`, `AidenHQ is updated to ${i.release} (from ${i.from}).${i.notes.length ? ` What changed: ${i.notes.slice(0, 5).join("; ")}.` : ""} Every change: ${i.compare}`);
   } else {
-    // The apply has put the host back on its last known good (or refused before switching anything); the pin follows.
     let reverted = true;
-    try { onInstanceMain(d.inst, (clone) => { git(clone, ["revert", "--no-commit", sha]); commit(clone, `update: back to ${c.from.name} (${c.name} failed to install)\n\nReverts ${sha}.`); }); } catch { reverted = false; }
-    const reason = why(r.out, r.code);
-    s.last = { release: c.name, outcome: "failed", why: reason, at: now.toISOString(), by: next.by };
-    s.available = cand;
-    s.failed = [...new Set([...(s.failed ?? []), c.name])];
-    event(s, `failed:${c.name}:${now.toISOString()}`, `AidenHQ ${c.name} didn't install: ${reason}. This server is back on ${c.from.name}${reverted ? "" : " (its instance.yaml still pins " + c.name + ": revert the last instance commit)"}. It won't retry on its own; Update now in Settings > Instance tries again.`);
+    try {
+      git(d.inst, ["fetch", "-q", "origin", "main"]);
+      if (isAncestor(join(d.inst, ".git"), i.commit, "origin/main")) onInstanceMain(d.inst, (clone) => { git(clone, ["revert", "--no-commit", i.commit]); commit(clone, `update: back to ${i.from} (${i.release} failed to install)\n\nReverts ${i.commit}.`); });
+    } catch { reverted = false; }
+    s.last = { release: i.release, outcome: "failed", why: reason, at: now.toISOString(), by: i.by };
+    s.failed = [...new Set([...(s.failed ?? []), i.release])];
+    event(s, `failed:${i.release}:${now.toISOString()}`, `AidenHQ ${i.release} didn't install: ${reason}. This server is back on ${i.from}${reverted ? "" : ` (its instance.yaml still pins ${i.release}: revert the last instance commit)`}. It won't retry on its own; Update now in Settings > Instance tries again.`);
   }
   writeState(d, s);
+}
+
+/**
+ * An install a dead run left (`installing` in the state): apply finishes its own dead generation first (--recover), then
+ * what the host applied in full says how it ended. A pin commit that never reached main changed nothing.
+ */
+export function reconcile(d: Deps) {
+  const s = readState(d.dir);
+  const i = s.installing;
+  if (!i) return;
+  git(d.inst, ["fetch", "-q", "origin", "main"]);
+  if (!isAncestor(join(d.inst, ".git"), i.commit, "origin/main")) { delete s.installing; writeState(d, s); return; }
+  d.apply(["--recover"]);
+  let ran = "";
+  try { ran = readFileSync(d.applied, "utf8").trim(); } catch {}
+  settle(d, s, ran === i.kernel, "the update stopped before it finished (the server restarted or the updater was killed)", (d.now ?? (() => new Date()))());
+}
+
+/**
+ * Installs a release the check chose (the apply lock held by ops/update.sh): verified again, the kernel landed, `installing`
+ * recorded, the pin committed and pushed, the instance's main applied. Throws only before anything moved.
+ */
+export async function install(d: Deps, next: { release: string; by: string }): Promise<State> {
+  const now = (d.now ?? (() => new Date()))();
+  const s = readState(d.dir);
+  const text = instanceText(d.inst);
+  const cur = followed((YAML.parse(text) ?? {}) as Dict);
+  const tag = cur ? newerTags(d, cur.name).find((t) => t.name === next.release) : undefined;
+  if (!tag) throw new Error(`${next.release} is no longer a release newer than this server's`);
+  const c = await verify(d, text, tag.name, tag.sha);
+  landKernel(d, c.kernel);
+  onInstanceMain(d.inst, (clone) => {
+    if (readFileSync(join(clone, "instance.yaml"), "utf8") !== text) throw new Error("instance.yaml moved while the update was checked; it waits for the next run");
+    writeFileSync(join(clone, "instance.yaml"), c.text);
+    commit(clone, `update: AidenHQ ${c.name}\n\nFrom ${c.from.name}: product ${c.kernel}, release ${c.name} at distro ${c.sha}, ${OFFICIAL} marketplace ${c.marketplace}.\nBy ${next.by}. What changed: ${c.compare}`);
+  }, (sha) => { s.installing = { release: c.name, kernel: c.kernel, from: c.from.name, commit: sha, by: next.by, notes: c.notes, compare: c.compare }; writeState(d, s); });
+  // The instance's main, not the pin commit alone: another writer's commit landed after it is applied with it, never refused.
+  const r = d.apply([]);
+  settle(d, s, r.code === 0, why(r.out, r.code), now);
   return s;
+}
+
+/**
+ * One run of the updater (ops/update.sh, the apply lock held): finish what a dead run left, check, install what the check
+ * chose. An owner's Update now (now.json) is kept until its outcome is recorded, and every outcome reaches the owner once.
+ */
+export async function run(d: Deps): Promise<State> {
+  const nowFile = join(d.dir, "now.json");
+  mkdirSync(d.dir, { recursive: true });
+  let asked: Asked = null;
+  try { asked = JSON.parse(readFileSync(nowFile, "utf8")); } catch {}
+  const seen = existsSync(nowFile) ? statSync(nowFile).mtimeMs : 0;
+  try {
+    reconcile(d);
+    const { install: next } = await check(d, asked);
+    if (next) {
+      try { await install(d, next); } catch (e) {
+        const s = readState(d.dir);
+        if (s.installing) throw e; // past the push: the next run reconciles it
+        if (e instanceof Refused) event(s, `refused:${next.release}`, `AidenHQ ${next.release} failed this server's checks at install (${plain(e.message, 200)}), so it won't be installed. Nothing changed here.`);
+        else if (next.by !== "auto-update") event(s, `now:${new Date().toISOString()}`, `Update now didn't start: ${plain((e as Error).message, 200)}. Nothing changed; try again in a while.`);
+        s.error = plain((e as Error).message);
+        writeState(d, s);
+      }
+    }
+  } finally {
+    // A request that arrived during this run is kept for the next one.
+    if (asked && existsSync(nowFile) && statSync(nowFile).mtimeMs === seen) rmSync(nowFile, { force: true });
+  }
+  return readState(d.dir);
 }
 
 /**
@@ -387,34 +452,37 @@ async function download(u: string): Promise<unknown> {
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
   const product = join(import.meta.dirname, "../..");
+  const data = resolve(product, process.env.AIDENHQ_DATA_DIR ?? "data");
   const state = process.env.AIDENHQ_STATE_DIR ?? join(homedir(), ".local/state/aidenhq");
   const d: Deps = {
     base: GITHUB, download, fetch: { cacheDir: process.env.AIDENHQ_SOURCES_DIR ?? join(homedir(), ".cache/aidenhq/sources") },
     inst: process.env.AIDENHQ_INSTANCE_DIR ?? join(homedir(), "aidenhq-instance"), product,
     // The data dir is hidden from every job (kernel/src/sandbox-config.ts): nothing an agent runs can write a request here.
-    dir: resolve(product, process.env.AIDENHQ_DATA_DIR ?? "data", "updates"), board: join(state, "board/updates.json"),
-    // The lock ops/update.sh holds on fd 9 goes to the apply as its hand-over (ops/lib/apply-lock.sh checks it).
-    apply: (sha) => {
+    dir: join(data, "updates"), board: join(state, "board/updates.json"), applied: join(data, "applied-product"),
+    // The lock ops/update.sh holds on fd 9 goes to the apply as its hand-over (ops/lib/apply-lock.sh checks it). Its output goes
+    // to a file, not a pipe: a process the apply leaves running can't keep this waiting.
+    apply: (args) => {
+      const log = join(data, "updates", "apply.log");
+      mkdirSync(join(data, "updates"), { recursive: true });
+      const fd = openSync(log, "w");
       const locked = process.env.AIDENHQ_APPLY_LOCKED === "9";
-      const r = spawnSync("bash", ["ops/apply-config.sh", sha], { cwd: product, encoding: "utf8", maxBuffer: 64 << 20, stdio: ["ignore", "pipe", "pipe", ...(locked ? ["ignore", "ignore", "ignore", "ignore", "ignore", "ignore", 9] as const : [])] });
-      const out = `${r.stdout ?? ""}${r.stderr ?? ""}`;
+      const r = spawnSync("bash", ["ops/apply-config.sh", ...args], { cwd: product, stdio: ["ignore", fd, fd, ...(locked ? ["ignore", "ignore", "ignore", "ignore", "ignore", "ignore", 9] as const : [])] });
+      closeSync(fd);
+      const out = readFileSync(log, "utf8");
       process.stdout.write(out);
       return { code: r.status ?? 1, out };
     },
   };
   const [cmd, a, b] = process.argv.slice(2);
   try {
-    if (cmd === "check") {
-      const s = await check(d);
-      console.log(s.available ? `release ${s.available.name} available (running ${s.current?.name})${existsSync(join(d.dir, "next")) ? ": installing now" : ""}` : s.error ? `update check: ${s.error}` : `release: ${s.current?.name ?? "none followed"}, nothing newer`);
-    } else if (cmd === "install") {
-      const s = await install(d);
-      console.log(`update ${s.last?.release}: ${s.last?.outcome}${s.last?.why ? ` (${s.last.why})` : ""}`);
-      process.exitCode = s.last?.outcome === "installed" ? 0 : 1;
+    if (cmd === "run") {
+      const s = await run(d);
+      console.log(s.last ? `update ${s.last.release}: ${s.last.outcome}${s.last.why ? ` (${s.last.why})` : ""}` : "");
+      console.log(s.available ? `release ${s.available.name} available (running ${s.current?.name})` : s.error ? `update check: ${s.error}` : `release: ${s.current?.name ?? "none followed"}, nothing newer`);
     } else if (cmd === "pin" && a && b) {
       console.log(pinTo(d, a, b, git(product, ["rev-parse", "HEAD"]).trim()));
     } else {
-      console.error("usage: node kernel/src/updates.ts check | install | pin <release> <distro sha>");
+      console.error("usage: node kernel/src/updates.ts run | pin <release> <distro sha>");
       process.exitCode = 2;
     }
   } catch (e) {

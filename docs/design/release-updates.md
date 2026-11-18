@@ -31,23 +31,31 @@ charge: auto-updates on by default, off in Settings, and "Update now" for the im
 - **The setting.** `settings.auto_update` (kernel setting, `on`/`off`, unset = on). New release installs get `on` written by
   `ops/setup.sh`; 2026.11.2 installs have it unset, which is on. It shows on the board's Settings > Instance (Updates) and
   as a switch; changing it is an ordinary settings change.
-- **The check** (`node kernel/src/updates.ts check`, hourly): lists the distro repo's release tags (`git ls-remote` over
-  https), takes the newest, and if it is newer than the release followed, verifies it (below). The result goes to
-  `data/updates/state.json` and a display copy at `~/.local/state/aidenhq/board/updates.json` (the board's read-only mount):
-  the release followed, the one available with its `notes` (an optional list in the release file) and a compare link.
+- **One run** (`ops/update.sh` → `node kernel/src/updates.ts run`, hourly and on Update now) holds the host's apply lock
+  on fd 9 for its whole length, waiting for an apply in progress as a land does (up to 15 minutes; still busy, an Update
+  now request is kept for the next run). It finishes what a dead run left, checks, and installs when it should.
+- **The check** lists the distro repo's release tags (`git ls-remote` over https) newer than the release followed and
+  takes the newest that passes verification (below): a refused one is told to the owner once and the next older is tried;
+  a network error stops the check until the next run, with no message. The result goes to `data/updates/state.json` and
+  a display copy at `~/.local/state/aidenhq/board/updates.json` (the board's read-only mount): the release followed, the
+  one available with its `notes` (an optional list in the release file) and a compare link.
 - **When it installs.** The owner asked (Update now), or auto-updates are on and it is 02:00-05:00 in `settings.timezone`
   and this release never failed here. This is maintenance, not scheduled agent work, so **quiet start does not hold it**.
-- **The install** (`ops/update.sh` takes the host's apply lock on fd 9, then `node kernel/src/updates.ts install`):
-  verify again; make sure the kernel commit is on the product checkout's `origin/main` (an installer checkout's origin is
-  GitHub, which has it; a local mirror gets it pushed, fast-forward only); one instance commit moving `product:`,
-  `release.{name,sha}` and the `aidenhq` marketplace sha, as an upgrade by hand does; then `ops/apply-config.sh <that
-  commit>`, handed the held lock (`ops/lib/apply-lock.sh`), so no other apply slips in between the commit and the apply.
-  Never a `git pull`: apply diffs the running product against the new one to decide restarts.
+- **The install:** verify again; make sure the kernel commit is on the product checkout's `origin/main` (an installer
+  checkout's origin is GitHub, which has it; a local mirror gets it pushed, fast-forward only); one instance commit moving
+  `product:`, `release.{name,sha}` and the `aidenhq` marketplace sha, as an upgrade by hand does, recorded in the state as
+  `installing` before it is pushed; then `ops/apply-config.sh` on the instance's main, handed the held lock
+  (`ops/lib/apply-lock.sh`). Main, not the commit alone: a commit another writer pushed after it is applied with it rather
+  than refused. Apply's output goes to a file, so nothing it leaves running holds the updater. Never a `git pull`.
 - **Rollback.** Apply already treats a failed post-switch health check as a failed generation and re-applies the last known
   good one (the previous release) with its data snapshot. The updater then reverts its commit on the instance's main, so
   git and the pin say what runs, records the release as failed (the night never retries it; Update now does) and tells the
   owner why, in the apply's own words.
-- **Telling the owner.** Each event (available, installed, failed, refused) is a line in the state file; the kernel
+- **A run that dies mid-install** (a reboot, an OOM kill) leaves `installing`. The next run first lets apply finish its own
+  dead generation (`--recover`), then reads what the host applied in full (`data/applied-product`): the new kernel is
+  installed; anything else is a failed install, its pin commit reverted and the release marked failed, so no later
+  instance commit can bring it back at any hour. A pin commit that never reached main changed nothing.
+- **Telling the owner.** Each event (available, installed, failed, refused, an Update now that couldn't start) is a line in the state file; the kernel
   (`createUpdates`) sends each once through the owner channels' line (kernel.db `update_notices`). Aiden can read the same
   state through `fleet_generation_status` (`release`), when the agent holds that tool.
 - **Update now.** The board's Settings > Instance links to the kernel's `/updates` page (admin listener, signed-in admin,
@@ -55,8 +63,8 @@ charge: auto-updates on by default, off in Settings, and "Update now" for the im
   decides it: one-click owner actions live on the kernel's pages.
 - **Upgrading from 2026.11.2 by hand.** Run the installer again (`curl -fsSL https://get.aidenhq.ai | sh`). It verifies the
   new release as on day one (baked digest, pinned shas, tree checks), refuses an older release than the instance runs, and
-  the new kernel's `ops/setup.sh` moves the pin (`node kernel/src/updates.ts pin`, the same commit) before its apply. From
-  2026.11.3 on, the updater takes over.
+  the new kernel's `ops/setup.sh` moves the pin (`node kernel/src/updates.ts pin`, the same commit) before its apply; if
+  that apply fails, setup reverts the pin commit before it stops. From 2026.11.3 on, the updater takes over.
 
 ## Security model
 
@@ -73,7 +81,7 @@ Hard gates, from day one (no observe mode):
 - **No downgrade.** The release name must be newer than the one followed, and the kernel and marketplace commits must
   descend from the running ones. The installer's rerun refuses an older release too.
 - **The tested stamp.** The published asset `<release>.json` must equal the file at the tag except for `tested`, and its
-  `tested.ci_run` must be a `release.yml` run, on a push, of exactly the tag's commit (GitHub's API). A tag pushed without
+  `tested.ci_run` must be a successful `release.yml` run, on a push, of exactly the tag's commit (GitHub's API). A tag pushed without
   the release workflow passing, or a hand-edited asset, is refused and the owner told once.
 - **Authority.** Auto-updates on is the owner's standing authority; Update now is an admin's tap on the kernel's page. No
   agent can start an install: the unit is started by the timer or the kernel's admin page, and the request file lives in
@@ -97,14 +105,15 @@ diff (`tiers.mjs`), and new write authority is the owner's tap. A release update
 `auto_update: on` is that tap, for exactly the releases the maintainer cut and tested. The release notes should say when a
 release adds authority. If that's not acceptable, `auto_update: off` leaves every release to Update now.
 
-**Tiers note.** Today a `settings` change is the AI panel's (`services/runner/src/tiers.mjs`), so under `autonomy: full` a
-fleet change turning `auto_update` back on would be decided without the owner. Making off → on `OWNER_AFTER_REVIEW` (as
-quiet start's off is) is a tier rule, so eval-gated: it lands as its own PR with the reviewer eval.
+**Tiers note.** Enrolling an instance in unattended updates through the fleet is the owner's tap after the reviewer
+(`services/runner/src/tiers.mjs`, its own eval-gated PR): adding or moving `release:`, and `auto_update` from off back to on
+or unset. Dropping the release pin and turning auto-updates off stay ordinary changes.
 
 ## Left out
 
 - Channels other than stable releases (betas), pinning to a release line, or delaying a release: no knob beyond on/off.
 - Host-level setup a release might need (new packages, units outside apply): an update runs apply only. A release that needs
   `ops/setup.sh` again says so in its notes, and the owner reruns the installer.
-- Retrying a failed release on its own: a transient failure (a registry blip) waits for Update now.
+- Retrying a failed release on its own: an apply that failed (a registry blip included) waits for Update now. A check or
+  install that stops before anything moved is retried at the next run.
 - Updating instances that pin product by hand: they follow main through the Platform Engineer, as before.

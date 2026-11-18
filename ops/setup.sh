@@ -427,6 +427,7 @@ if [ -n "${AIDENHQ_RELEASE:-}${AIDENHQ_RELEASE_REPO:-}${AIDENHQ_RELEASE_SHA:-}" 
     || die "AIDENHQ_RELEASE, AIDENHQ_RELEASE_REPO and AIDENHQ_RELEASE_SHA must all be set: a YYYY.MM name, <owner>/<repo> and a 40-character sha"
   RELEASE_LINE="release: { name: \"$AIDENHQ_RELEASE\", source: { source: github, repo: $AIDENHQ_RELEASE_REPO }, sha: $AIDENHQ_RELEASE_SHA }"
 fi
+PIN_COMMIT=""   # the pin commit an upgrade by the installer made (below): reverted when its apply fails
 # A release install updates itself (docs/design/release-updates.md): a newer release installs at night; "off" only tells you.
 AUTO_UPDATE=""
 [ -z "$RELEASE_LINE" ] || AUTO_UPDATE='  auto_update: "on"'
@@ -475,7 +476,9 @@ EOF
 elif [ -n "$RELEASE_LINE" ] && [ "$DRY" = 0 ]; then
   # The installer run again on this server (an upgrade by hand): the instance's pin moves to the release it verified when that
   # is newer (one commit, as the updater makes it); the same release is a repair, an older one is refused.
-  as_user node "$REPO/kernel/src/updates.ts" pin "$AIDENHQ_RELEASE" "$AIDENHQ_RELEASE_SHA" || die "the instance's pin could not move to $AIDENHQ_RELEASE (above)"
+  pinned="$(as_user node "$REPO/kernel/src/updates.ts" pin "$AIDENHQ_RELEASE" "$AIDENHQ_RELEASE_SHA")" || die "the instance's pin could not move to $AIDENHQ_RELEASE (above)"
+  say "$pinned"
+  case "$pinned" in *"now pins"*) PIN_COMMIT="$(ugit -C "$REMOTE" rev-parse main)" ;; esac
 fi
 
 # ---------------------------------------------------------------- 6. logins AidenHQ holds for this person
@@ -531,7 +534,14 @@ say "Apply: compile, start, Paperclip (ops/apply-config.sh)"
 PW="$( [ "$DRY" = 1 ] || read_secret paperclip_owner_password)"
 # --retry: setup is the owner's own command, and its contract is "fix the cause and run it again", so a generation an
 # earlier run of it left failed is applied again rather than held (ops/apply-config-work.sh).
-as_user AIDENHQ_PROGRESS_BASE="$(progress_slice SETUP_PHASES apply)" PAPERCLIP_EMAIL="$OWNER_EMAIL" PAPERCLIP_PASSWORD="$PW" PAPERCLIP_NAME="$OWNER_NAME" bash "$REPO/ops/apply-config.sh" --retry
+# An upgrade whose apply fails is back on the release before it (apply's own revert); its pin commit is reverted too, so the
+# instance's main says what runs and no later commit applies the failed release again.
+if ! as_user AIDENHQ_PROGRESS_BASE="$(progress_slice SETUP_PHASES apply)" PAPERCLIP_EMAIL="$OWNER_EMAIL" PAPERCLIP_PASSWORD="$PW" PAPERCLIP_NAME="$OWNER_NAME" bash "$REPO/ops/apply-config.sh" --retry; then
+  [ -z "$PIN_COMMIT" ] || as_user sh -c 'set -e; t="$(mktemp -d)"; git clone -q "$1" "$t/c"; cd "$t/c"; git revert --no-commit "$2"
+    git -c user.name="AidenHQ updates" -c user.email=updates@aidenhq.invalid commit -q -m "update: back from $3 (its apply failed)"; git push -q origin HEAD:main; rm -rf "$t"' _ "$REMOTE" "$PIN_COMMIT" "$AIDENHQ_RELEASE" \
+    || echo "!!! the instance still pins $AIDENHQ_RELEASE: revert its last commit ($PIN_COMMIT) in $INST"
+  die "the apply failed (above)${PIN_COMMIT:+; the pin of the instance is back on the release before $AIDENHQ_RELEASE}"
+fi
 if [ "$DRY" = 1 ]; then echo "  + .env: WORK_COMPANY_ID=<from config/system.yaml>, PAPERCLIP_DISABLE_SIGN_UP=true; docker compose up -d"
 else
   company="$(sed -n 's/^ *company_id: *"\{0,1\}\([0-9a-f-]\{36\}\)"\{0,1\}.*/\1/p' "$REPO/config/system.yaml" | head -1)"
