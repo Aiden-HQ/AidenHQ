@@ -1,21 +1,31 @@
 // A module's page (#/modules/<name>/<tab>): what it is, its agents and work, what it may do, its contents, settings and changes.
-import { useEffect, useState } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import { AgentAvatar } from "./AgentAvatar";
 import { SignInRequired, api } from "./api";
 import { STATUS_LABEL, connectionStatus, displayName, type ConnectionRow } from "./connections";
-import { useModuleToggle, useSetupNeeded } from "./ModuleParts";
+import { LockIcon, ModuleFacts, ModuleStatus, TurnOnCard, lockedWhy, moduleState, publisher, useModuleToggle, useSetupNeeded } from "./ModuleParts";
 import { SettingItem } from "./Settings";
-import { ChangePreview, ChangesScope, Group, StatusPill, useChanges } from "./settings-ui";
+import { ChangePreview, ChangeProgress, ChangesScope, Group, useChanges } from "./settings-ui";
 import { SetupButton } from "./SetupButton";
 import { SkeletonLines } from "./Skeleton";
-import type { ModuleDetail, ModuleRow, SettingChange, SettingRow, TaskRow } from "./types";
+import type { Advisory, BrowseModule, ModuleDetail, ModuleRow, SettingChange, SettingRow, TaskRow } from "./types";
+import { EmptyState } from "./ui/EmptyState";
+import { ListRow, ListRows } from "./ui/ListRow";
+import { PageHeader } from "./ui/PageHeader";
+import { Section } from "./ui/Section";
+import { Segmented } from "./ui/Segmented";
+import { StatusDot } from "./ui/StatusDot";
+import { Monogram } from "./ui/Tile";
+import { hueClass } from "./ui/hue";
+import "./ui/ui.css";
 import { ago } from "./util";
 import "./settings.css";
+import "./modules.css";
 
 export type ModuleTab = "overview" | "contents" | "settings" | "changes";
-const TABS: [ModuleTab, string][] = [["overview", "Overview"], ["contents", "Contents"], ["settings", "Settings"], ["changes", "Changes"]];
+const TABS = [["overview", "Overview"], ["contents", "Contents"], ["settings", "Settings"], ["changes", "Changes"]] as const;
 
-const tone = (state: string) => (state === "failed" ? "failed" : state === "working" || state === "queued" ? "working" : state.startsWith("waiting") ? "needs" : "");
+const sentence = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
 
 export function ModulePage(props: { name: string; tab: ModuleTab; go: (hash: string) => void; onSignIn: () => void }) {
   return (
@@ -27,46 +37,93 @@ export function ModulePage(props: { name: string; tab: ModuleTab; go: (hash: str
 
 function ModuleBody({ name, tab, go, onSignIn }: { name: string; tab: ModuleTab; go: (hash: string) => void; onSignIn: () => void }) {
   const [d, setD] = useState<ModuleDetail | null>(null);
+  const [advisory, setAdvisory] = useState<Advisory | undefined>();
   const [error, setError] = useState("");
   const needsSetup = useSetupNeeded();
   useEffect(() => {
     api.module(name).then(setD, (e) => (e instanceof SignInRequired ? onSignIn() : setError((e as Error).message)));
+    api.modules().then((r) => setAdvisory(r.advisories?.find((a) => a.module === name)), () => {});
   }, [name, onSignIn]);
   if (!d)
     return (
-      <main className="page wide">
-        {error ? <p className="empty">{/no such module/.test(error) ? <>No module called {name}. <a href="#/modules">Back to Modules</a></> : `Couldn't load: ${error}`}</p> : <SkeletonLines lines={6} />}
+      <main className="mods">
+        {error ? (
+          /no such module/.test(error) ? (
+            <EmptyState action={<a className="btn" href="#/modules">Back to Modules</a>}>
+              <strong>No module called {name}.</strong> It may have been removed from its marketplace, or the link has a typo.
+            </EmptyState>
+          ) : (
+            <EmptyState action={<button className="btn" onClick={() => location.reload()}>Try again</button>}>
+              <strong>Couldn't load this module.</strong> {error}
+            </EmptyState>
+          )
+        ) : (
+          <SkeletonLines lines={6} />
+        )}
       </main>
     );
-  return <Loaded d={d} tab={tab} go={go} onSignIn={onSignIn} setup={needsSetup.has(name)} />;
+  return <Loaded d={d} tab={tab} go={go} onSignIn={onSignIn} setup={needsSetup.has(name)} advisory={advisory} />;
 }
 
-function Loaded({ d, tab, go, onSignIn, setup }: { d: ModuleDetail; tab: ModuleTab; go: (hash: string) => void; onSignIn: () => void; setup: boolean }) {
+function Loaded({ d, tab, go, onSignIn, setup, advisory }: { d: ModuleDetail; tab: ModuleTab; go: (hash: string) => void; onSignIn: () => void; setup: boolean; advisory?: Advisory }) {
   const m = d.module;
   const t = useModuleToggle(m);
-  const line = [m.revision, m.marketplace, m.tier].filter(Boolean).join(" · ");
+  const [asking, setAsking] = useState(false);
+  const [info, setInfo] = useState<BrowseModule | undefined>();
+  useEffect(() => {
+    if (m.state === "off") api.browse(m.name, "").then((r) => setInfo(r.modules.find((b) => b.name === m.name)), () => {});
+  }, [m.name, m.state]);
+  const s = moduleState(m, { filed: t.filed, setup, advisory });
+  const locked = lockedWhy(m);
   return (
-    <main className="page wide agent-page">
-      <nav className="ap-crumb"><a href="#/modules">Modules</a> / {m.name}</nav>
-      <header className="page-head ap-head">
-        <div>
-          <h1>{m.name} {t.meta}{setup && <StatusPill tone="warn">Needs setup</StatusPill>}</h1>
-          <p className="page-sub">{line}</p>
-          <p className="page-sub">{m.description}</p>
-        </div>
-        <span className="spacer" />
-        {setup && <SetupButton module={m.name} primary />}
-        {!setup && <SetupButton module={m.name} />}
-        {t.switchEl && <><span className="muted">{t.isOn ? "On" : "Off"}</span>{t.switchEl}</>}
-      </header>
+    <main className={`mods ${hueClass(m.name)}`}>
+      <PageHeader
+        crumb={<><a href="#/modules">Modules</a> / {m.name}</>}
+        face={<Monogram name={m.name} size={44} />}
+        title={m.name}
+        status={
+          <>
+            <ModuleStatus s={s} />
+            <span className="mod-meta">
+              <span>{publisher(m)}{m.revision ? `, revision ${m.revision}` : ""}</span>
+              <ModuleFacts m={m} />
+            </span>
+          </>
+        }
+        sub={m.description}
+        actions={
+          <>
+            <SetupButton module={m.name} primary={setup} />
+            {m.state === "off" && !t.busy && <button className="btn primary" onClick={() => setAsking(true)}>Turn on</button>}
+            {m.state !== "off" && t.switchEl && (
+              <span className="mod-switch">
+                {t.isOn ? "On" : "Off"}
+                {t.switchEl}
+              </span>
+            )}
+            {locked && (
+              <span className="mod-switch" title="Can't be turned off">
+                <LockIcon />
+                {locked}
+              </span>
+            )}
+          </>
+        }
+      />
       {t.dialog}
-      {t.progress}
-      {t.preview}
+      {asking && <TurnOnCard m={m} info={info} onClose={() => setAsking(false)} />}
+      {t.filed && <div className="mod-change"><ChangeProgress f={t.filed} /></div>}
+      {advisory && (
+        <div className={`mods-alert${advisory.severity === "high" || advisory.severity === "critical" ? " bad" : ""}`} role="alert">
+          <span className="mods-alert-text">
+            <strong>Security advisory {advisory.id}</strong> ({advisory.severity}): {advisory.summary.replace(/^`|`$/g, "")} The fix is an ordinary update to a newer pin: {m.pinned ? "follow the marketplace (below) or pin a newer commit" : "update its marketplace (Modules, then Marketplaces)"}.
+          </span>
+          {advisory.url && <a className="btn" href={advisory.url} target="_blank" rel="noreferrer noopener">Details</a>}
+        </div>
+      )}
       <Pin m={m} />
-      <div className="st-seg" role="tablist">
-        {TABS.map(([k, label]) => (
-          <button key={k} role="tab" aria-selected={tab === k} className={tab === k ? "on" : ""} onClick={() => go(`#/modules/${m.name}${k === "overview" ? "" : `/${k}`}`)}>{label}</button>
-        ))}
+      <div>
+        <Segmented<ModuleTab> label="Section" value={tab} options={TABS} onChange={(k) => go(`#/modules/${m.name}${k === "overview" ? "" : `/${k}`}`)} />
       </div>
       {tab === "overview" && <Overview d={d} />}
       {tab === "contents" && <Contents d={d} onSignIn={onSignIn} />}
@@ -82,45 +139,55 @@ function Pin({ m }: { m: ModuleRow }) {
   if (!m.pinned) return null;
   const change: SettingChange = { kind: "pin", name: m.name, sha: null };
   return (
-    <div className="st-banner">
-      Pinned at {m.pinned}: this module stays there when its marketplace moves.{" "}
+    <div className="mods-alert info">
+      <span className="mods-alert-text">Pinned at {m.pinned}: this module stays there when its marketplace moves.</span>
       {!open && <button className="btn" onClick={() => setOpen(true)}>Follow marketplace</button>}
-      {open && <ChangePreview items={[change]} was={[m.pinned]} onCancel={() => setOpen(false)} onDone={() => setOpen(false)} note="Removes the pin: the module follows its marketplace again." />}
+      {open && <div className="mods-alert-full"><ChangePreview items={[change]} was={[m.pinned]} onCancel={() => setOpen(false)} onDone={() => setOpen(false)} note="Removes the pin: the module follows its marketplace again." /></div>}
     </div>
   );
 }
 
 function Tasks({ rows }: { rows: TaskRow[] }) {
-  if (!rows.length) return <p className="fleet-empty">Nothing running.</p>;
+  if (!rows.length) return <p className="mod-none">Nothing running right now.</p>;
   return (
-    <div className="st-rows">
+    <ListRows>
       {rows.map((r) => (
-        <a key={r.identifier} className="ap-row" href={`#/t/${r.identifier}`}>
-          <span className={`pill${tone(r.state) ? ` pill-${tone(r.state)}` : ""}`}>{r.state}</span>
-          <span className="ap-id">{r.identifier}</span>
-          <span className="ap-title">{r.title}</span>
-          {r.from && <span className="ap-from">from {r.from}</span>}
-          <span className="time">{ago(r.updatedAt)}</span>
-        </a>
+        <ListRow key={r.identifier} href={`#/t/${r.identifier}`} state={r.state} title={r.title} id={r.identifier} from={r.from ?? null} time={ago(r.updatedAt)} />
+      ))}
+    </ListRows>
+  );
+}
+
+const modLinks = (names: string[]) => (names.length ? <span className="mod-tags">{names.map((n) => <a key={n} className="mod-tag" href={`#/modules/${n}`}>{n}</a>)}</span> : <span className="mod-none">nothing</span>);
+const tags = (names: string[], none = "none") => (names.length ? <span className="mod-tags">{names.map((n) => <span key={n} className="mod-tag">{n}</span>)}</span> : <span className="mod-none">{none}</span>);
+
+function Agents({ d }: { d: ModuleDetail }) {
+  if (!d.agents.length) return <p className="mod-none">This module brings no agents of its own.</p>;
+  return (
+    <div className="mod-rows">
+      {d.agents.map((a) => (
+        <ModRow key={a.key} href={`#/agents/${a.key}`} lead={<AgentAvatar name={a.name} portrait={a.avatar} size={24} />} title={a.name} meta={<>{a.title && <span>{a.title}</span>}{a.status && <span>{sentence(a.status)}</span>}</>} />
       ))}
     </div>
   );
 }
 
-const modLinks = (names: string[]) => (names.length ? names.map((n, i) => <span key={n}>{i > 0 && ", "}<a href={`#/modules/${n}`}>{n}</a></span>) : <span className="muted">nothing</span>);
-
-function Agents({ d }: { d: ModuleDetail }) {
-  if (!d.agents.length) return <p className="fleet-empty">No agents.</p>;
+/** A plain row of a module's list: a link with a lead, a title and quiet details on the right. */
+function ModRow({ href, lead, title, meta, hint }: { href: string; lead?: ReactNode; title: string; meta?: ReactNode; hint?: string }) {
   return (
-    <div className="st-rows">
-      {d.agents.map((a) => (
-        <a key={a.key} className="ap-row" href={`#/agents/${a.key}`}>
-          <AgentAvatar name={a.name} portrait={a.avatar} size={24} />
-          <span className="ap-title">{a.name}</span>
-          <span className="ap-from">{[a.title, a.status].filter(Boolean).join(" · ")}</span>
-        </a>
-      ))}
-    </div>
+    <a className="mod-row" href={href} title={hint}>
+      {lead}
+      <span className="mod-row-title">{title}</span>
+      {meta && <span className="mod-row-meta">{meta}</span>}
+    </a>
+  );
+}
+
+function Card({ title, children }: { title: string; children: ReactNode }) {
+  return (
+    <Section title={title}>
+      <div className="mod-card">{children}</div>
+    </Section>
   );
 }
 
@@ -128,36 +195,37 @@ function Overview({ d }: { d: ModuleDetail }) {
   const m = d.module;
   const { connections, writes, secrets } = d.authority;
   return (
-    <>
-      <section><h4>Agents</h4><Agents d={d} /></section>
-      {d.agents.length > 0 && <section><h4>Ongoing work</h4><Tasks rows={d.ongoing} /></section>}
-      <section>
-        <h4>What it may do</h4>
-        <dl className="st-facts compact">
-          <dt>Connections</dt>
-          <dd>{connections.length ? connections.join(", ") : <span className="muted">none</span>}</dd>
-          <dt>Writes</dt>
-          <dd>{writes.length ? writes.map((w) => `${w.kind}${w.tier != null ? ` (tier ${w.tier})` : ""}`).join(", ") : <span className="muted">none</span>}</dd>
-          <dt>Secrets</dt>
-          <dd>{secrets.length ? secrets.join(", ") : <span className="muted">none</span>}</dd>
-        </dl>
-      </section>
-      <section>
-        <h4>Needs and needed by</h4>
-        <dl className="st-facts compact">
-          <dt>Needs</dt>
-          <dd>{modLinks(d.requires)}</dd>
-          <dt>Needed by</dt>
-          <dd>{modLinks(d.neededBy)}</dd>
-        </dl>
-      </section>
-      <section>
-        <h4>If you turn it off</h4>
-        <p>
-          {m.state === "core" ? "It is always on." : d.neededBy.length ? `It can't be turned off while ${d.neededBy.join(", ")} need${d.neededBy.length === 1 ? "s" : ""} it.` : `${m.agents.length ? `Its agents stop (${m.agents.join(", ")})` : "No agents stop"}${m.routines.length ? ` and its routines (${m.routines.join(", ")})` : ""}. Their tasks and the module's data on disk are kept; turning it back on resumes.`}
-        </p>
-      </section>
-    </>
+    <div className="mod-body">
+      <div className="mod-main">
+        <Section title="Agents" count={d.agents.length || undefined}><Agents d={d} /></Section>
+        {d.agents.length > 0 && <Section title="Ongoing work" count={d.ongoing.length || undefined}><Tasks rows={d.ongoing} /></Section>}
+      </div>
+      <div className="mod-side">
+        <Card title="What it may do">
+          <dl className="mod-facts">
+            <dt>Connections</dt>
+            <dd>{tags(connections)}</dd>
+            <dt>Writes</dt>
+            <dd>{tags(writes.map((w) => `${w.kind}${w.tier != null ? `, tier ${w.tier}` : ""}`))}</dd>
+            <dt>Secrets</dt>
+            <dd>{tags(secrets)}</dd>
+          </dl>
+        </Card>
+        <Card title="Needs and needed by">
+          <dl className="mod-facts">
+            <dt>Needs</dt>
+            <dd>{modLinks(d.requires)}</dd>
+            <dt>Needed by</dt>
+            <dd>{modLinks(d.neededBy)}</dd>
+          </dl>
+        </Card>
+        <Card title="If you turn it off">
+          <p>
+            {m.state === "core" ? "It is part of the core and always on." : d.neededBy.length ? `It can't be turned off while ${d.neededBy.join(", ")} need${d.neededBy.length === 1 ? "s" : ""} it.` : `${m.agents.length ? `Its agents stop (${m.agents.join(", ")})` : "No agents stop"}${m.routines.length ? ` and so do its routines (${m.routines.join(", ")})` : ""}. Their tasks and the module's data on disk are kept; turning it back on resumes.`}
+          </p>
+        </Card>
+      </div>
+    </div>
   );
 }
 
@@ -168,45 +236,44 @@ function Contents({ d, onSignIn }: { d: ModuleDetail; onSignIn: () => void }) {
     api.connections().then((r) => setConns(r.connections.filter((c) => c.module === m.name)), (e) => e instanceof SignInRequired && onSignIn());
   }, [m.name, onSignIn]);
   return (
-    <>
-      <section><h4>Agents</h4><Agents d={d} /></section>
-      <section>
-        <h4>Connections</h4>
-        {!m.connections.length ? <p className="fleet-empty">None.</p> : (
-          <div className="st-rows">
-            {m.connections.map((c) => {
-              const row = conns?.find((r) => r.name === c);
-              const v = row ? connectionStatus(row, { signIn: false, google: false }) : null;
-              return (
-                <a key={c} className="ap-row" href="#/settings/connections">
-                  <span className="ap-title">{displayName(c)}</span>
-                  {v && <span className="ap-from">{STATUS_LABEL[v.status]}</span>}
-                </a>
-              );
-            })}
-          </div>
+    <div className="mod-body">
+      <div className="mod-main">
+        <Section title="Agents" count={d.agents.length || undefined}><Agents d={d} /></Section>
+        <Section title="Connections" count={m.connections.length || undefined}>
+          {!m.connections.length ? <p className="mod-none">No connections.</p> : (
+            <div className="mod-rows">
+              {m.connections.map((c) => {
+                const row = conns?.find((r) => r.name === c);
+                const v = row ? connectionStatus(row, { signIn: false, google: false }) : null;
+                return <ModRow key={c} href="#/settings/connections" title={displayName(c)} meta={v && <span>{STATUS_LABEL[v.status]}</span>} />;
+              })}
+            </div>
+          )}
+        </Section>
+        <Section title="Routines" count={m.routines.length || undefined}><Routines d={d} /></Section>
+        {d.authority.readme && <Section title="README"><div className="mod-card"><pre className="mod-readme">{d.authority.readme}</pre></div></Section>}
+      </div>
+      <div className="mod-side">
+        <Card title="Apps">{tags(m.apps, "No apps.")}</Card>
+        <Card title="Handbook sections">{tags(d.authority.prompts.map((p) => p.id), "None.")}</Card>
+        {m.source && (
+          <Card title="Source">
+            <span className="mod-source">{m.source.url}<br />{m.source.path}</span>
+          </Card>
         )}
-      </section>
-      <section><h4>Handbook sections</h4>{d.authority.prompts.length ? <p>{d.authority.prompts.map((p) => p.id).join(", ")}</p> : <p className="fleet-empty">None.</p>}</section>
-      {d.authority.readme && <section><h4>README</h4><pre className="muted" style={{ whiteSpace: "pre-wrap" }}>{d.authority.readme}</pre></section>}
-      <section><h4>Routines</h4><Routines d={d} /></section>
-      <section><h4>Apps</h4>{m.apps.length ? <p>{m.apps.join(", ")}</p> : <p className="fleet-empty">None.</p>}</section>
-      {m.source && <p className="muted">Source: {m.source.url} · {m.source.path}</p>}
-    </>
+      </div>
+    </div>
   );
 }
 
 /** Each routine on or off; its agent's Settings tab turns it on or off (the routine editor there). */
 function Routines({ d }: { d: ModuleDetail }) {
   const rows = d.routines ?? [];
-  if (!rows.length) return d.module.routines.length ? <p>{d.module.routines.join(", ")}</p> : <p className="fleet-empty">None.</p>;
+  if (!rows.length) return d.module.routines.length ? tags(d.module.routines) : <p className="mod-none">No routines.</p>;
   return (
-    <div className="st-rows">
+    <div className="mod-rows">
       {rows.map((r) => (
-        <a key={r.key} className="ap-row" href={`#/agents/${r.agent}/settings`} title={r.on ? "Change or pause it on its agent's Settings" : "Turn it on from its agent's Settings"}>
-          <span className="ap-title">{r.title}</span>
-          <span className="ap-from">{r.on ? (r.scheduled ? "On" : "On, when something starts it") : "Off"}</span>
-        </a>
+        <ModRow key={r.key} href={`#/agents/${r.agent}/settings`} hint={r.on ? "Change or pause it on its agent's Settings" : "Turn it on from its agent's Settings"} title={r.title} meta={<StatusDot tone={r.on ? "working" : "done"}>{r.on ? (r.scheduled ? "On" : "On, when something starts it") : "Off"}</StatusDot>} />
       ))}
     </div>
   );
@@ -218,25 +285,23 @@ function ModuleSettings({ m, onSignIn }: { m: ModuleRow; onSignIn: () => void })
     api.settings().then((r) => setRows(r.settings.filter((s) => s.module === m.name)), (e) => e instanceof SignInRequired && onSignIn());
   }, [m.name, onSignIn]);
   if (!rows) return <SkeletonLines lines={3} />;
-  if (!rows.length) return <p className="fleet-empty">{m.name} has no settings.</p>;
+  if (!rows.length) return <EmptyState><strong>Nothing to set.</strong> {m.name} works as it is; it has no settings of its own.</EmptyState>;
   return <Group title="Settings" count={rows.length}>{rows.map((s) => <SettingItem key={s.key} s={s} />)}</Group>;
 }
+
+/** A change's stage in the words a task row uses (ui/StatusDot taskStatus). */
+const CHANGE_STATE: Record<string, string> = { working: "in review", waiting: "waiting for approval", applying: "working", applied: "done" };
 
 function ModuleChanges({ m }: { m: ModuleRow }) {
   const { changes } = useChanges();
   const keys = Object.keys(m.settings);
   const mine = changes.filter((f) => f.items.some((c) => ((c.kind === "module" || (c.kind as string) === "pin") && (c as { name: string }).name === m.name) || (c.kind === "setting" && keys.includes(c.key))));
-  if (!mine.length) return <p className="fleet-empty">No changes to {m.name} yet.</p>;
+  if (!mine.length) return <EmptyState><strong>No changes yet.</strong> Turning {m.name} on or off, or changing one of its settings, shows up here with where it stands.</EmptyState>;
   return (
-    <div className="st-rows">
+    <ListRows>
       {mine.map((f) => (
-        <a key={f.identifier} className="ap-row" href={`#/c/${f.identifier}`}>
-          <span className={`pill${f.stage === "failed" || f.stage === "rejected" ? " pill-failed" : f.stage === "applied" ? "" : " pill-working"}`}>{f.stage}</span>
-          <span className="ap-id">{f.identifier}</span>
-          <span className="ap-title">{f.title}</span>
-          <span className="time">{ago(f.createdAt)}</span>
-        </a>
+        <ListRow key={f.identifier} href={`#/c/${f.identifier}`} state={CHANGE_STATE[f.stage] ?? f.stage} title={f.title} id={f.identifier} time={ago(f.createdAt)} />
       ))}
-    </div>
+    </ListRows>
   );
 }

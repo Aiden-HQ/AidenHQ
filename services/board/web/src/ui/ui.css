@@ -102,3 +102,27 @@
   .ui-head-row { flex-wrap: wrap; }
   .ui-head-actions { width: 100%; }
 }
+
+/* Tiles (Tile.tsx): a grid that adds columns as the screen grows; each tile one link, its action raised above it. */
+.ui-tiles { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 300px), 1fr)); gap: 12px; }
+.ui-mono { flex: none; display: inline-grid; place-items: center; border-radius: 8px; background: var(--tone-bg); color: var(--tone-fg); font-weight: 700; letter-spacing: -0.01em; line-height: 1; }
+.ui-tile { position: relative; display: flex; flex-direction: column; gap: 8px; min-width: 0; padding: 14px 14px 12px; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); box-shadow: var(--shadow); transition: border-color var(--fast) var(--ease), box-shadow var(--fast) var(--ease); }
+.ui-tile:hover { border-color: color-mix(in srgb, var(--hue, var(--accent)) 40%, var(--border)); box-shadow: var(--shadow), 0 4px 14px rgba(29, 28, 26, 0.06); }
+.ui-tile:has(.ui-tile-title a:focus-visible) { outline: 2px solid var(--accent); outline-offset: 2px; }
+.ui-tile-needs { border-color: color-mix(in srgb, var(--warn) 45%, var(--border)); }
+.ui-tile-failed { border-color: color-mix(in srgb, var(--urgent) 40%, var(--border)); }
+.ui-tile-head { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.ui-tile-head .ui-status { font-size: 12.5px; font-weight: 550; }
+.ui-tile-title { flex: 1; min-width: 0; margin: 0; font-size: 14.5px; font-weight: 650; letter-spacing: -0.01em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ui-tile-title a { color: inherit; text-decoration: none; outline: none; }
+.ui-tile-title a::after { content: ""; position: absolute; inset: 0; border-radius: inherit; }
+.ui-tile-desc { margin: 0; font-size: 13px; line-height: 1.45; color: var(--muted); display: -webkit-box; -webkit-line-clamp: 2; line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; min-height: calc(2 * 1.45em); }
+.ui-tile-facts { display: flex; flex-wrap: wrap; gap: 4px 14px; font-size: 12.5px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.ui-tile-facts > span { display: inline-flex; align-items: center; gap: 5px; white-space: nowrap; }
+.ui-tile-facts svg { color: var(--faint); flex: none; }
+.ui-tile-foot { margin-top: auto; padding-top: 10px; border-top: 1px solid var(--border); display: flex; align-items: center; gap: 10px; min-height: 40px; }
+.ui-tile-foot-text { flex: 1; min-width: 0; font-size: 12px; color: var(--faint); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ui-tile-action { position: relative; z-index: 1; flex: none; display: flex; align-items: center; gap: 8px; }
+.ui-tile-action .btn { padding: 4px 11px; font-size: 12.5px; text-decoration: none; }
+@media (max-width: 560px) { .ui-tile-desc { min-height: 0; } }
+@media (prefers-reduced-motion: reduce) { .ui-tile { transition: none; } }
