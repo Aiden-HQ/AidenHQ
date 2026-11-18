@@ -7,6 +7,8 @@
 // for a new merge at its new head. Missing evidence (no checks, a truncated page of checks, the base's aggregate gate
 // check not yet on the head) never counts as passing.
 
+import { DESIGN_REVIEW_CHECK, GATE_CHECK, contextStatus, namedChecks, skippedImageScan } from "./aidenhq-sdk/checks.ts";
+
 export const PR_QUERY = `query($owner: String!, $repo: String!, $number: Int!, $pullRef: String!) {
   repository(owner: $owner, name: $repo) {
     defaultBranchRef { name }
@@ -30,8 +32,7 @@ export const EVAL_WAIT_MINUTES = 180;
 const FAILING = new Set(["FAILURE", "ERROR", "CANCELLED", "TIMED_OUT", "ACTION_REQUIRED", "STARTUP_FAILURE"]);
 
 /** The UI Reviewer's design review: advisory in the named checks, required on a UI PR in the agents org (owner, 2026-11-13). */
-export const DESIGN_REVIEW = { name: "design-review", minutes: 120 };
-const advisory = (n) => (n.name ?? n.context) === DESIGN_REVIEW.name;
+export const DESIGN_REVIEW = { name: DESIGN_REVIEW_CHECK, minutes: 120 };
 
 /**
  * Files that change what people see: styles, markup and component files, the usual UI folders, the vendored design system,
@@ -53,9 +54,9 @@ export function prTouchesUi(pr) {
 
 /** The design-review check on a rollup: "success", "failure", "pending" or "missing". */
 function designReview(rollup) {
-  const n = (rollup?.contexts?.nodes ?? []).find(advisory);
+  const n = (rollup?.contexts?.nodes ?? []).find((n) => (n.name ?? n.context) === DESIGN_REVIEW_CHECK);
   if (!n) return "missing";
-  const v = n.__typename === "CheckRun" ? (n.status === "COMPLETED" ? n.conclusion : "PENDING") : n.state;
+  const v = contextStatus(n);
   return v === "SUCCESS" ? "success" : FAILING.has(v) ? "failure" : "pending";
 }
 
@@ -76,22 +77,10 @@ export function supersededDesignReview(marker, pr) {
 /** Whether a PR's head waits on the UI Reviewer: it changes UI files, isn't a draft, and has no design-review verdict yet. */
 export const awaitsDesignReview = (pr) => Boolean(pr) && !pr.isDraft && prTouchesUi(pr) && ["missing", "pending"].includes(designReview(pr.commits?.nodes?.[0]?.commit?.statusCheckRollup));
 
-/** The named checks in a rollup, the design review left out: { name, ok, pending }. */
-export function namedChecks(rollup) {
-  const pass = new Set(["SUCCESS", "NEUTRAL", "SKIPPED"]);
-  return (rollup?.contexts?.nodes ?? [])
-    .filter((n) => !advisory(n) && (n.name ?? n.context))
-    .map((n) => {
-      const status = n.__typename === "CheckRun" ? (n.status === "COMPLETED" ? n.conclusion : "PENDING") : n.state;
-      return { name: n.name ?? n.context, ok: pass.has(status), pending: ["PENDING", "EXPECTED", "QUEUED", null, undefined].includes(status) };
-    });
-}
-
 /**
  * The aggregate gate check a repository's CI may end with (the product's ci.yml `ci-required`): it appears only once the jobs it
  * covers finish, so a head can look all green before it. When the base branch's rollup has it, a head without it is pending.
  */
-export const GATE_CHECK = "ci-required";
 const hasGate = (rollup) => (rollup?.contexts?.nodes ?? []).some((n) => (n.name ?? n.context) === GATE_CHECK);
 export function withGate(data) {
   const pr = data?.repository?.pullRequest;
@@ -100,14 +89,6 @@ export function withGate(data) {
   if (!head || !hasGate(pr?.baseRef?.target?.statusCheckRollup) || hasGate(head)) return data;
   head.contexts = { ...(head.contexts ?? {}), nodes: [...(head.contexts?.nodes ?? []), { __typename: "CheckRun", name: GATE_CHECK, status: "QUEUED", conclusion: null }] };
   return data;
-}
-
-const IMAGE_FILE = /(^|\/)(Dockerfile|Containerfile)[^/]*$|\.dockerfile$/i;
-/** `image-scan` skipped on a PR that changes an image definition (or whose files can't all be read): nothing was scanned. */
-function skippedImageScan(pr) {
-  const nodes = pr.commits?.nodes?.[0]?.commit?.statusCheckRollup?.contexts?.nodes ?? [];
-  if (!nodes.some((n) => n.name === "image-scan" && n.status === "COMPLETED" && n.conclusion === "SKIPPED")) return false;
-  return !pr.files || pr.files.pageInfo?.hasNextPage || (pr.files.nodes ?? []).some((f) => IMAGE_FILE.test(f.path ?? ""));
 }
 
 /** The merge method: squash, then merge commit, then rebase, as the repository allows. */

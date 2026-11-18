@@ -1,5 +1,5 @@
 // Small helpers the grader reads from other homes, copied while the grader is the only reader that has no codehost service to ask:
-// the task-text and PR-text helpers (agents.mjs, engineering's merge-queue.mjs, codehost-github's merge-gate.mjs, progress.ts). Each is a verbatim copy with types added; the runner's copies go
+// the task-text and PR-text helpers (agents.mjs, engineering's merge-queue.mjs, progress.ts). Each is a verbatim copy with types added; the runner's copies go
 // at the switch, and these become the one way then.
 /** Remove HTML comments: hidden text never counts as the user's words. */
 export const stripHidden = (s: unknown) => String(s ?? "").replace(/<!--[\s\S]*?-->/g, "");
@@ -44,32 +44,6 @@ export const stripRubric = (s: unknown) => {
 
 /** Marks a comment as the runner's own. */
 export const RUNNER_MARKER = "<!-- aidenhq-runner -->";
-
-const ADVISORY = new Set(["design-review"]);
-const advisory = (n: any) => ADVISORY.has(n.name ?? n.context);
-
-const IMAGE_FILE = /(^|\/)(Dockerfile|Containerfile)[^/]*$|\.dockerfile$/i;
-
-/**
- * The `image-scan` check skipped on a PR that changes an image definition: nothing was scanned, so it isn't green (CI
- * decides what to scan; this keeps a PR from passing by dodging it). Files unread or past the first page count as changed.
- */
-export function skippedImageScan(pr: any) {
-  const nodes = pr.commits?.nodes?.[0]?.commit?.statusCheckRollup?.contexts?.nodes ?? [];
-  if (!nodes.some((n: any) => n.name === "image-scan" && n.status === "COMPLETED" && n.conclusion === "SKIPPED")) return false;
-  return !pr.files || pr.files.pageInfo?.hasNextPage || (pr.files.nodes ?? []).some((f: any) => IMAGE_FILE.test(f.path ?? ""));
-}
-
-export function namedChecks(rollup: any) {
-  const pass = new Set(["SUCCESS", "NEUTRAL", "SKIPPED"]);
-  return (rollup?.contexts?.nodes ?? [])
-    .filter((n: any) => !advisory(n))
-    .map((n: any) => ({ name: n.name ?? n.context, status: n.__typename === "CheckRun" ? (n.status === "COMPLETED" ? n.conclusion : "PENDING") : n.state }))
-    .filter((c: any) => c.name)
-    .map((c: any) => ({ name: c.name, status: c.status, ok: pass.has(c.status), pending: ["PENDING", "EXPECTED", null, undefined].includes(c.status), ...(c.status === "SKIPPED" ? { skipped: true } : {}) }));
-}
-
-export const GATE_CHECK = "ci-required";
 
 export function findPrs(text: unknown) {
   const out: { repo: string; number: number; url: string }[] = [];
