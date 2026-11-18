@@ -7,8 +7,7 @@
 // Repo code never runs here. Every git command carries SAFE_GIT_ARGS and no global or system config but the service's own
 // (no hooks, no filters, no fsmonitor); a job's commits come in by a fetch from its workspace's .git into this service's
 // bare cache clone, which is never checked out; the App token lives only in the env of the one git or GitHub call that
-// needs it. Until `lands_platform_repos` (the big switch), it lands nothing outside the agents org: the product and modules
-// repos are refused in plan, in execute and again at the merge. An approved merge runs as a queue (merges.ts) whose outcome
+// needs it. An approved merge runs as a queue (merges.ts) whose outcome
 // comes once its PRs merged at their approved heads, or it stopped.
 //
 // The instance's land for kernel.apply (the kernel's executor, with this service's executor key): POST /aidenhq/v1/apply/read
@@ -30,6 +29,7 @@ import { createMerges } from "./merges.ts";
 import { createReleaseTrain } from "./train.ts";
 import { plan as planRules } from "./plan.mjs";
 import { notePrTask } from "./pr-watch.ts";
+import { createDesignReviews, startDesignReviewSweep } from "./design-review.ts";
 import { noteKept } from "./tidy.ts";
 
 const run = promisify(execFile);
@@ -44,9 +44,11 @@ export type Options = {
   /** The App (src/github-app.ts appClient); undefined without the key: every GitHub action fails, saying so. */
   app?: App; gh: Gh; remoteUrl?: (slug: string) => string;
   agentsOrg: string; instanceRepo?: string; productRepo?: string; modulesRepo?: string;
-  landsPlatformRepos: boolean; log?: (msg: string, f?: Record<string, unknown>) => void;
+  log?: (msg: string, f?: Record<string, unknown>) => void;
   /** The release train's batch window, minutes (the instance's release_window_minutes). */
   releaseWindowMinutes?: number;
+  /** The owner's name, as the design reviewer's task names who approved a merge that doesn't wait for it. */
+  selfName?: string;
   /** Tests: the merge loop's clock and its poll interval. */
   now?: () => Date; mergeEveryMs?: number;
 };
@@ -165,13 +167,6 @@ export function createService(o: Options) {
     return { s, dir };
   }
 
-  // Until the big switch, nothing lands outside the agents org (the product and modules repos included).
-  function platformGuard(repos: string[]) {
-    if (o.landsPlatformRepos) return;
-    const out = repos.find((r) => !same(String(r).split("/")[0], o.agentsOrg) || same(r, o.productRepo) || same(r, o.modulesRepo));
-    if (out) throw Object.assign(fail(422, `codehost-github doesn't land in ${out} yet (lands_platform_repos is off until the switch)`), { rule: "platform-repos-off" });
-  }
-  const reposOf = (kind: string, a: any): string[] => (kind.endsWith(".merge") || kind.endsWith(".close") ? (a.prs ?? []).map((p: any) => p.repo) : kind.endsWith(".create_repo") ? [a.repo] : (a.only ?? []).map((b: any) => b.repo));
 
   // GitHub's checks on a commit as plan.mjs reads them: { ok, pending, skipped } each (names never leave this function).
   // Every page is read; if GitHub reports more than could be read, one check stays pending: missing evidence never passes.
@@ -235,12 +230,10 @@ export function createService(o: Options) {
 
   const executor: Executor = {
     async plan(req: PlanRequest) {
-      platformGuard(reposOf(req.kind, req.args ?? {}));
       return planRules({ kind: req.kind, args: req.args }, await stateFor(req.kind, req.args ?? {}));
     },
     async execute(rec) {
       const a = rec.args ?? {};
-      platformGuard(reposOf(rec.kind, a));
       const action = rec.kind.replace(/^codehost-github\./, "");
       const done: string[] = [];
       if (action === "push" || action === "pr") {
@@ -257,6 +250,8 @@ export function createService(o: Options) {
             const pr = open[0] ? await api("PATCH", `/repos/${s.slug}/pulls/${open[0].number}`, token, text) : await api("POST", `/repos/${s.slug}/pulls`, token, { ...text, head: b.branch, base: (await api("GET", `/repos/${s.slug}`, token)).default_branch });
             done.push(pr.html_url ?? `${s.slug}#${pr.number}`);
             if (pr.html_url) notePrTask(o.cacheDir, pr.html_url, { task: a.workspace, branch: b.branch }); // the PR watch wakes the task that opened it
+            // An agents-org PR that changes UI files gets its design review at this head (one that changes none files nothing).
+            if (same(s.org, o.agentsOrg) && pr.number) void designReviews?.fileDesignReview({ repo: s.slug, number: Number(pr.number), head: b.sha }).catch((e: Error) => log("design review task failed", { pr: pr.html_url, err: String(e.message ?? e).slice(0, 300) }));
           } else done.push(`${s.slug} ${b.branch} at ${b.sha.slice(0, 12)}`);
         }
         return { ok: true, text: `${action === "pr" ? "PRs" : "Pushed"}: ${done.join(", ")}` };
@@ -294,9 +289,13 @@ export function createService(o: Options) {
     git: (dir, args) => git(dir, args),
     defaultBranch: async (repo) => String((await api("GET", `/repos/${slugOf(repo).slug}`, await tokenFor(slugOf(repo), READ))).default_branch ?? "main"),
   });
+  // The design reviewer's tasks (design-review.ts): for an agents-org PR's UI head when it opens, and for each head the merge
+  // queue waits on for its verdict.
+  const designReviews = o.app ? createDesignReviews({ kernelUrl: o.kernelUrl, key: o.key, cacheDir: o.cacheDir, selfName: o.selfName || "the owner", app: o.app, gh: o.gh, log }) : undefined;
   const merges = createMerges({
+    designReview: async (ask) => designReviews?.fileDesignReview(ask),
     dir: join(o.cacheDir, "merges"), gh: o.gh, agentsOrg: o.agentsOrg, productRepo: o.productRepo, modulesRepo: o.modulesRepo,
-    landsPlatformRepos: o.landsPlatformRepos, report, log, now: o.now, everyMs: o.mergeEveryMs,
+    report, log, now: o.now, everyMs: o.mergeEveryMs,
     token: (repo, perms) => tokenFor(slugOf(repo), perms),
     evalGate: (repo, pr) => evalGate(repo, pr),
   });
@@ -565,10 +564,12 @@ export function createService(o: Options) {
       else res.end();
     }
   }, {
-    /** The merge loop (merges.ts), started at the switch with the runner's copy deleted (an approved merge queues until then); one poll of it. */
+    /** The merge loop (merges.ts). */
     startMerges: () => merges.start(),
-    /** The release train (train.ts), started at the switch with the runner's copy deleted; one poll of it. */
+    /** The release train (train.ts): only with the product and instance repos set. */
     startReleases: () => train?.start(),
+    /** The superseded design reviews' sweep (design-review.ts): only with the App. */
+    startDesignReviews: () => designReviews && startDesignReviewSweep(designReviews, { log }),
     stepReleases: () => train?.step(),
     stepMerges: () => merges.step(),
   });

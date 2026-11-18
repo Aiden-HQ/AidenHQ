@@ -29,8 +29,9 @@ export function createMerges(d: {
   token(repo: string, perms: Record<string, string>): Promise<string>;
   gh: Gh;
   agentsOrg: string; productRepo?: string; modulesRepo?: string;
-  landsPlatformRepos: boolean;
   evalGate: EvalGate;
+  /** Files the design reviewer's task for a PR head the queue waits on for its verdict (design-review.ts). */
+  designReview?: (ask: { repo: string; number: number; head: string; again?: boolean }) => Promise<unknown>;
   /** Delivers a record's outcome to the kernel (POST /v1/writes/:id/outcome). */
   report(id: string, o: Outcome): Promise<void>;
   log?: (msg: string, f?: Record<string, unknown>) => void;

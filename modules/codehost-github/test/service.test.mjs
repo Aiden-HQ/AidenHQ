@@ -1,6 +1,6 @@
 // codehost-github's service end to end against a fake GitHub (a bare repo and an in-process API) and a fake kernel: a job's
 // branch lands from a hostile workspace without any of its hooks, filters or fsmonitor running; an ops token outside the
-// caller's grant is refused; a product-repo merge is refused while lands_platform_repos is off.
+// caller's grant is refused.
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
@@ -58,7 +58,7 @@ async function setup(t, { routes = () => undefined } = {}) {
   const handle = createService({
     key: "ch-key", kernelUrl: kernel.url, cacheDir: join(root, "cache"), tasksDir: join(root, "tasks"), app, gh,
     remoteUrl: (slug) => join(root, "github", `${slug}.git`), agentsOrg: "acme-agents", instanceRepo: "acme-agents/aidenhq-instance",
-    productRepo: "acme/aidenhq", landsPlatformRepos: false
+    productRepo: "acme/aidenhq",
   });
   const svc = await listen((req, res) => void handle(req, res));
   t.after(() => { kernel.s.close(); svc.s.close(); });
@@ -105,18 +105,6 @@ test("ops answer the kernel only (it checks each module's grant); a token is nar
   assert.deepEqual(minted.at(-1), { org: "acme", permissions: { organization_self_hosted_runners: "write" }, fresh: true });
   assert.equal(org.json.app.slug, "acme-app");
   assert.ok(Date.parse(org.json.expires_at) > Date.now() + 50 * 60_000);
-});
-
-test("a product-repo merge is refused while lands_platform_repos is off, in plan and in execute", async (t) => {
-  const { call, outcomes } = await setup(t);
-  const args = { prs: [{ repo: "acme/aidenhq", number: 7, head: "a".repeat(40) }] };
-  const plan = await call("/aidenhq/v1/executor/plan", { kind: "codehost-github.merge", args, requester: { kind: "job", roles: [] }, task: "t1" });
-  assert.equal(plan.status, 422);
-  assert.match(plan.json.error, /lands_platform_repos/);
-  await call("/aidenhq/v1/executor/execute", { id: "k-00000000000000ff", kind: "codehost-github.merge", args, digest: "d", idempotency_key: "i" });
-  for (let i = 0; i < 300 && !outcomes.length; i++) await new Promise((r) => setTimeout(r, 10));
-  assert.equal(outcomes[0]?.ok, false);
-  assert.match(outcomes[0].text, /lands_platform_repos/);
 });
 
 const pushArgs = (sha) => ({ workspace: "TASK-1", only: [{ repo: "acme-agents/widget", branch: "feature", sha }] });

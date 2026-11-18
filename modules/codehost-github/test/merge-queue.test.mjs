@@ -49,7 +49,7 @@ function fakeGitHub(prs) {
   return { gh, writes, merges: () => writes.filter((w) => w.method === "PUT" && w.path.endsWith("/merge")) };
 }
 
-async function setup(t, { prs, cacheDir = mkdtempSync(join(tmpdir(), "codehost-merges-")), landsPlatformRepos = false, clock = { t: Date.now() }, checks, remoteUrl = (slug) => join(cacheDir, "no-such-remote", slug) }) {
+async function setup(t, { prs, cacheDir = mkdtempSync(join(tmpdir(), "codehost-merges-")), clock = { t: Date.now() }, checks, remoteUrl = (slug) => join(cacheDir, "no-such-remote", slug) }) {
   const outcomes = [];
   const kernel = await listen(async (req, res) => {
     let body = "";
@@ -65,7 +65,7 @@ async function setup(t, { prs, cacheDir = mkdtempSync(join(tmpdir(), "codehost-m
   const app = { token: async (org, o) => JSON.stringify(o.permissions ?? {}), createRepo: async () => "created" };
   const handle = createService({
     key: "ch-key", kernelUrl: kernel.url, cacheDir, app, gh: github.gh, agentsOrg: "acme-agents", remoteUrl,
-    productRepo: "acme/aidenhq", landsPlatformRepos, now: () => new Date(clock.t),
+    productRepo: "acme/aidenhq", now: () => new Date(clock.t),
   });
   const svc = await listen((req, res) => void handle(req, res));
   t.after(() => { kernel.s.close(); svc.s.close(); });
@@ -199,7 +199,7 @@ test("a product PR merges only on a verified eval receipt for its bound head; a 
   };
   const clock = { t: Date.now() };
   const prs = { "acme/aidenhq": { head, checks: "SUCCESS" }, "other/lib": { head: HEAD, checks: "SUCCESS" } };
-  const { handle, github, outcomes, merge, settle } = await setup(t, { prs, landsPlatformRepos: true, clock, checks, remoteUrl: (slug) => join(root, slug) });
+  const { handle, github, outcomes, merge, settle } = await setup(t, { prs, clock, checks, remoteUrl: (slug) => join(root, slug) });
 
   await merge("k-00000000000000b1", [{ repo: "acme/aidenhq", number: 5, head }]);
   await handle.stepMerges();

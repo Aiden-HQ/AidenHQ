@@ -4,8 +4,7 @@
 // branch, or is red while behind a green one, wakes the task that opened it (POST /v1/wake, role kernel.wake), at most once per
 // head of main and half hour. Task text is fixed here: a PR's title, body, commits and check output never reach a task.
 //
-// Built here, started at the switch (`startPrWatch`), when the runner's copy is deleted: nothing calls it before.
-// Not ported from the runner: the environment path (red checks that never started are re-run once at the same head and
+// Started by main.ts. Not ported from the runner: the environment path (red checks that never started are re-run once at the same head and
 // reported, never a rebase), closing the PR of a cancelled task, rebaseInCode, and the parked-branch refusal (MAX_REJECTS).
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
