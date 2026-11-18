@@ -78,6 +78,7 @@ const literal = (c: Partial<Card>) => Object.fromEntries(Object.keys(c).filter((
 const fenced = (text: string) => { const f = "`".repeat(Math.max(3, ...[...text.matchAll(/`+/g)].map((m) => m[0].length + 1))); return `${f}\n${text}\n${f}`; };
 export const MARKER = "<!-- aidenhq-approval -->";
 const hash = (s: string) => createHash("sha256").update(s).digest("hex");
+const UNSURE = "reviewer_unsure";
 const MODEL = /^~?[\w.-]+\/[\w.:-]+$/;
 
 export function createWrites({ records, registry, connections, secret, resolver, reviews, autonomy = () => "full", repos = () => ({}), paths = () => undefined, onTask, replay, native = {}, resume = [], log = () => {} }: {
@@ -447,8 +448,7 @@ export function createWrites({ records, registry, connections, secret, resolver,
         const post = shadowed(v, autonomy());
         if (!MODEL.test(post.model) && post.model !== "kernel/code") return { record: r, refused: "the verdict names no model" };
         if (post.second !== undefined && (!MODEL.test(post.second) || post.second === post.model)) return { record: r, refused: "the second reviewer must be another model" };
-        // The request the reviewer judged, kept with every rejection: the same content comes back only with another request (tier.ts).
-        const chain = post.decision === "reject" && typeof b.request?.chain === "string" && b.request.chain ? hash(b.request.chain).slice(0, 32) : undefined;
+        const chain = post.decision === "reject" && post.code === UNSURE && typeof b.request?.chain === "string" && b.request.chain ? hash(b.request.chain).slice(0, 32) : undefined;
         const by = `reviewer:${post.model}${post.decision === "approve" && post.second ? `+${post.second}` : ""}`;
         const out = records.review(id, r.digest, { decision: post.decision, by, note: post.reason, code: post.code, chain });
         if (typeof out === "string") return { record: records.get(id)!, posted: post, refused: out };

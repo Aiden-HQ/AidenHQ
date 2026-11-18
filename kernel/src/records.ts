@@ -32,7 +32,7 @@ export type Rec = {
   identifier?: string | null;
   /** It replaced an open request on the same task, kind and target: a typed reply can't approve it, only a tap. */
   replaced?: boolean;
-  /** The hash of the request chain the reviewer read (a rejected request is reviewed again only once it changes: tier.ts). */
+  /** The hash of the request chain the reviewer read (an unsure-twice rejection lifts once it changes). */
   chain?: string | null;
   /** Requests on the same task and kind with the same target replace each other while open (the requester's key). */
   target?: string | null;

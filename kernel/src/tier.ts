@@ -255,8 +255,9 @@ const decided = (r: Prior) => ["approved", "used", "expired", "rejected"].includ
  *   neither branch nor PR) the task is the target, as before.
  * - same: one of those rejected exactly this content (requestKey, or the same patch keys: an amended, rebased or renamed
  *   resubmission of the same change; a conn.tool call's or module kind's digest): it stays rejected (its note), refused by
- *   code before any review while the request chain is also the one it was judged against (owner, 2026-11-18: refile only
- *   after a fix; `chain`: the current chain's hash). A changed chain (the owner's words landing, say) is reviewed again.
+ *   code before any review (owner, 2026-11-18: refile only after a fix). Two reviewers' unsure lifts once, after the request
+ *   chain changed (`chain`: the current chain's hash). A conn.tool call whose arguments can't change (a close, a label) is
+ *   refused unchanged on this task once rejected: the agent reports back instead.
  * - relift: that lift's earlier note: the re-review's unsure goes to the owner, not back to the agent.
  * - findings: every one of those notes, attached to the next review.
  */
@@ -277,20 +278,22 @@ export function priorDecisions(records: Prior[], action: string, also: string[] 
     // matching both is still one rejection on that branch (the Set).
     const named = new Set(recordTargets(r).map((t) => t.key).filter((k) => targets!.targets.some((x) => x.key === k)));
     const byPatch = new Set<string>((r.args?.only ?? r.args?.prs ?? []).flatMap((x: any) => (typeof x?.patch === "string" ? [...asked].filter(([, p]) => p === x.patch).map(([k]) => k) : [])));
-    for (const k of new Set([...named, ...byPatch])) count.set(k, (count.get(k) ?? 0) + 1);
+    // The same content as this whole request (its commits, or its patch keys) counts on every target it names, so renaming
+    // the branch never resets the bound, even when a patch key couldn't be computed.
+    const byContent = (key !== undefined && recordKey(r) === key) || (typeof patches === "string" && recordPatches(r) === patches) ? targets!.targets.map((t) => t.key) : [];
+    for (const k of new Set([...named, ...byPatch, ...byContent])) count.set(k, (count.get(k) ?? 0) + 1);
   }
   const rejects = targets?.targets.length ? Math.max(0, ...count.values()) : judged.length;
-  // Refile only after a fix (owner, 2026-11-18): the same content stays rejected only while the request is unchanged too.
-  // The fix is often on the request side (the owner's words, an authorisation, a sharper brief), so the same commits or
-  // call come back for review once the request chain differs from the one each rejection of them was judged against
-  // (`chain`, its hash now; `requestChain`, its hash then). Either hash unknown counts as unchanged. The chain is
-  // agent-editable, so every such round still counts toward MAX_REJECTS on its target. A first unsure lifted that way
-  // carries its note (`relift`): unsure again there goes to the owner (the reviewer module). Content is judged task-wide.
+  // Two reviewers unsure (reviewer_unsure) is about the request: the fix is often the brief or an authorisation, so the
+  // same commits may come back once, after the request chain changed (`chain`, its hash now; `requestChain`, its hash
+  // when they were unsure). The chain is agent-editable, so that relift happens at most once per content: the re-review
+  // gets `relift` (the first round's note), and unsure again there goes to the owner (the reviewer module). Unchanged or unknown
+  // chain, or any other rejection of the content, and it stays rejected. It still counts toward MAX_REJECTS (on the branch
+  // it was raised against). Content is judged task-wide: this is about what was written, not where it was aimed.
   const rejectedSame = key || typeof patches === "string" ? judged.filter((r) => (key !== undefined && recordKey(r) === key) || (typeof patches === "string" && recordPatches(r) === patches)) : [];
-  const sameRequest = (r: Prior) => !chain || !r.requestChain || r.requestChain === chain;
   const [only] = rejectedSame;
-  const lifted = rejectedSame.length === 1 && only!.reviewCode === "reviewer_unsure" && !sameRequest(only!);
-  const sameOne = rejectedSame.find(sameRequest);
+  const lifted = rejectedSame.length === 1 && only!.reviewCode === "reviewer_unsure" && Boolean(only!.requestChain) && Boolean(chain) && only!.requestChain !== chain;
+  const sameOne = lifted ? undefined : rejectedSame[0];
   // The owner's no on this exact content holds until they approve that same content, whatever else they approved since.
   // Same content: the commits, or the patch keys (a rebased or renamed resubmission). Patch keys that couldn't be computed
   // (null) fail closed: any owner rejection of the action on the task makes it theirs.
@@ -303,7 +306,7 @@ export function priorDecisions(records: Prior[], action: string, also: string[] 
 export function priorPart(p: ReturnType<typeof priorDecisions> | undefined): Part | undefined {
   if (!p) return undefined;
   if (p.ownerVeto) return T(2, "owner-veto", "the owner rejected this action on this task, and only their own yes lifts it");
-  if (p.same !== undefined) return REJECT("rejected-content", `the AI reviewer already rejected exactly this request on this task, against the same request, so it isn't reviewed again unchanged (its note: ${String(p.same).slice(0, 400)}). Change what it found, or get what it needs into the request, and file again; or report back to whoever asked why it can't change`);
+  if (p.same !== undefined) return REJECT("rejected-content", `the AI reviewer already rejected exactly this request on this task, so it isn't reviewed again unchanged (its note: ${String(p.same).slice(0, 400)}). Change what it found and file the changed request, or report back to whoever asked why it can't change`);
   if (p.rejects >= MAX_REJECTS) return REJECT("retries-exhausted", `parked: the AI reviewer rejected this action ${p.rejects} times on ${(p as { scope?: string }).scope ?? "this task"}, so it isn't reviewed again here. A different branch, PR or tool target of the task is reviewed on its own; report what it found to whoever asked for this work`);
   return undefined;
 }

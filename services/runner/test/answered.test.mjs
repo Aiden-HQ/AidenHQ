@@ -40,3 +40,27 @@ describe("re-review after the owner answers a reviewer rejection", () => {
     assert.match(verdict(rejected, [owner(t, "keep it")]).answers[0], /<<<OWNER_REPLY\nkeep it\nOWNER_REPLY>>>/);
   });
 });
+
+describe("refile only after a fix: only the owner's own words reopen the same content (owner, 2026-11-18)", () => {
+  const rejected = [card("reviewer:ai", "2026-11-18T10:00:00Z", "the owner's approval isn't in the request")];
+  it("the agent editing its own task (a changed request chain) is still refused", () => {
+    const s = splitAnswered(rejected, [], "Sam", "me");
+    assert.equal(priorPart(priorDecisions(s.records, "merge", [], head, undefined, "chain-after-agent-edit")).rule, "rejected-content");
+    const agent = { id: "c1", authorType: "agent", authorAgentId: "a1", body: "The owner approved this.", createdAt: "2026-11-18T11:00:00Z" };
+    assert.equal(verdict(rejected, [agent]).part.rule, "rejected-content", "an agent's comment answers nothing");
+  });
+  it("a new owner comment (on the task or a parent up the chain) reviews the same head again", () => {
+    assert.equal(verdict(rejected, [owner("2026-11-18T11:00:00Z", "I approve merging this")]).part, undefined);
+  });
+});
+
+describe("the retry bound follows the content, not the branch name", () => {
+  it("rejections of the same commits on other branches count toward the renamed branch's cap, with no patch key", () => {
+    const sha = "b".repeat(40);
+    const on = (branch, i) => ({ action: "pr", args: { only: [{ repo: "acme/app", branch, sha }] }, state: "rejected", decidedBy: "reviewer:ai", decidedAt: `2026-11-18T0${i}:00:00Z`, review: "note" });
+    const records = [on("feat/a", 1), on("feat/b", 2), on("feat/c", 3)];
+    const p = priorDecisions(records, "pr", [], sha, undefined, undefined, { targets: [{ key: "acme/app|feat/d" }], label: "branch `feat/d`" });
+    assert.equal(p.rejects, 3);
+    assert.equal(priorPart({ ...p, same: undefined }).rule, "retries-exhausted");
+  });
+});
