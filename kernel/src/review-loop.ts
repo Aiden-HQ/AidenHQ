@@ -15,6 +15,7 @@ import type { Rec, Records, State } from "./records.ts";
 import { CODE_REJECTS, MAX_REJECTS, meritOwner, priorDecisions, priorPart, requestKey, requestTargets, type Prior, type ReviewInput } from "./tier.ts";
 import { MARKER, fenced, type Writes } from "./writes.ts";
 import { UNSURE } from "../sdk/src/reviewer.ts";
+import { dataBlock as fence } from "../sdk/src/fence.ts";
 
 /** A Paperclip task and comment, as far as the review reads them. */
 export type Issue = { id: string; title?: string; description?: string | null; parentId?: string | null; createdByAgentId?: string | null; createdByUserId?: string | null; status?: string };
@@ -48,7 +49,6 @@ export async function requestChain(task: Issue, issue: (id: string) => Promise<I
   return text ? `${own}\n\nThis change is one repository of a larger request (its rules for PR titles and bodies apply):\n\n${parent!.title}\n\n${text}` : own;
 }
 
-const fence = (label: string, text: unknown, max: number) => `<<<${label}\n${String(text ?? "").replace(/<<<|>>>/g, "‹‹‹").slice(0, max)}\n${label}>>>`;
 /**
  * The owner's reply on the task itself after the AI reviewer rejected something is new context: those rejections stop
  * refusing the same content and the next review reads the reply (fenced) with their notes. Only the owner's own typed words

@@ -339,7 +339,7 @@ describe("prompt injection", () => {
     const scan = (await env.app.meetings.scan()) as { work: { source_id: string }[] };
     const read = env.app.meetings.readSource(scan.work[0]!.source_id) as { notice: string; content: string };
     expect(read.notice).toMatch(/UNTRUSTED/);
-    expect(read.content).toContain("<<<SOURCE_START");
+    expect(read.content).toContain("<untrusted-data source=\"transcript:");
 
     // Model output echoing injected text cannot forge markers or headings.
     await env.app.meetings.match({ source_id: scan.work[0]!.source_id, calendar_status: "ok", events: [OMS_PRIVY], hints: { title_guesses: ["Nimbus"], people: [] } });

@@ -8,6 +8,8 @@
 // ADVISOR_MODEL is the one place it is set. Fan-out takes at most 25 items of 8,000 characters, 8 at a time.
 // Granted while the model-tools module is on (advisor_ask: the tasks module's default grant).
 
+import { dataBlock as fence } from "./aidenhq-sdk/fence.ts";
+
 export const ADVISOR_MODEL = "~openai/gpt-sol-latest";
 export const FLASH = "~deepseek/deepseek-flash-latest";
 export const ADVISOR_CALLS = 5;
@@ -28,7 +30,6 @@ const ADVISOR_TIMEOUT = 240_000;
 const FANOUT_BUDGET = 240_000;
 const FANOUT_ITEM_TIMEOUT = 90_000;
 
-const fence = (label, text) => `<<<${label}\n${String(text ?? "").replace(/<<<|>>>/g, "‹‹‹")}\n${label}>>>`;
 
 /**
  * The tools, for Object.assign(TOOLS, …). `gatewayUrl` is the gateway's base; `headers()` the credential headers for one call

@@ -7,8 +7,9 @@ import type { DatabaseSync } from "node:sqlite";
 import { KernelError, type Kernel, type Wake } from "./kernel.ts";
 import { buildPrompt, outcome, type Words } from "./prompt.ts";
 import { createAsker } from "./asker.ts";
+import { dataBlock as fence } from "./aidenhq-sdk/fence.ts";
 import { progressTracker } from "./progress.ts";
-import { agentMade, fence, freshWords, moduleMade, ownRequest, redirectNote, speaker, spoke, stripHidden, threadEntries, threadSection, type Agent, type Directory, type Issue } from "./thread.ts";
+import { agentMade, freshWords, moduleMade, ownRequest, redirectNote, speaker, spoke, stripHidden, threadEntries, threadSection, type Agent, type Directory, type Issue } from "./thread.ts";
 
 // What this module keeps is conversation state: per task, the newest comment its last job saw; comments a run took as live input;
 // tasks greeted; per parent, the batch of sub-task runs already summarized. The jobs themselves, their ends and their
