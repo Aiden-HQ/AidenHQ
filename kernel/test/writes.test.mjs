@@ -299,14 +299,11 @@ test("a raise_cap card, the install cap's included, goes straight to the owner: 
   const k = await kernel(t, { reviewer: async () => ({ decision: "approve", reason: "fine", model: "~acme/model-a" }) });
   const card = { target: "AidenHQ day cap", sentence: "Double it.", changes: "c", reads: "Nothing new.", cost: "Up to $10.00 more.", details: "d" };
   const args = (agentId) => ({ scope: "day", agentId, subject: "2026-11-18", cap: 10, spent: 10.2, to: 20 });
-  // What the runner sends for every raise_cap (tiers.mjs classify("raise_cap")): Tier 2, the owner's.
-  const review = (id) => k.v1("POST", `/v1/writes/${id}/review`, { input: { tier: 2, rule: "raise-cap", reason: "raising a spend cap is the owner's", model: "~acme/model-a" }, request: { card: {} } }, "the-runners-key");
-  const install = k.writes.fileNative("kernel.raise_cap", { task: "TASK-9", args: args("install"), card, reason: "the install cap", rule: "raise-cap" });
-  assert.equal((await review(install.id)).json.record.state, "owner");
+  for (const [task, who] of [["TASK-9", "install"], ["TASK-8", "ag-ada"]]) {
+    const r = k.writes.fileNative("kernel.raise_cap", { task, args: args(who), card, reason: "a cap", rule: "raise-cap" });
+    assert.deepEqual([r.state, r.tier, r.review_first], ["owner", 2, null]);
+  }
   assert.equal(k.reviewed.length, 0, "no model call: the cap it raises would refuse one");
-  const agent = k.writes.fileNative("kernel.raise_cap", { task: "TASK-8", args: args("ag-ada"), card, reason: "a day cap", rule: "raise-cap" });
-  assert.equal((await review(agent.id)).json.record.state, "owner", "an agent's raise: the same");
-  assert.equal(k.reviewed.length, 0);
 });
 
 test("the owner's reason for a rejection reaches the requester's task, fenced and neutralised", async (t) => {

@@ -44,6 +44,7 @@ import { CODEHOST, createCodehost, type OpsGrant } from "./codehost.ts";
 import { createProxy } from "./proxy.ts";
 import { openRecords } from "./records.ts";
 import { createReviews, type ReviewerSlot } from "./reviews.ts";
+import { createReviewLoop } from "./review-loop.ts";
 import { mintToken } from "./gateway/token.ts";
 import { createWrites, type Kind } from "./writes.ts";
 import { createApply, hostApply } from "./apply.ts";
@@ -179,6 +180,29 @@ const updates = createUpdates({
 });
 every(() => updates.tick(), 5 * 60_000);
 once(() => updates.tick(), 60_000);
+// The kernel's review of every record waiting for the AI reviewer (review-loop.ts). The instance's decisions digest is read
+// from its checkout's origin/main (fetched first, as updates.ts reads instance.yaml), never a branch under review.
+const instanceDir = env("AIDENHQ_INSTANCE_DIR", path.join(process.env.HOME ?? "", "aidenhq-instance"));
+const gitIn = (dir: string, args: string[]) => new Promise<string>((ok, no) => execFile("git", ["-C", dir, ...args], { timeout: 60_000, maxBuffer: 4 * 1024 * 1024 }, (e, out) => (e ? no(e) : ok(String(out)))));
+let ownerUser: string | undefined;
+const reviewLoop = createReviewLoop({
+  records, writes, log,
+  product: () => (repos().product ? [repos().product!] : []),
+  task: {
+    issue: (id) => cpJson(`/api/issues/${encodeURIComponent(id)}`),
+    comments: async (id) => ((await cpJson(`/api/issues/${encodeURIComponent(id)}/comments?order=asc&limit=500`)) as { deletedAt?: string | null }[]).filter((c) => !c.deletedAt),
+    me: async () => (ownerUser ||= String(((await cpJson("/api/cli-auth/me")) as { userId?: string }).userId ?? "")),
+    notify: onTask.notify,
+  },
+  decisions: async () => {
+    await gitIn(instanceDir, ["fetch", "-q", "origin", "main"]);
+    // No decisions.md on main is the empty state, not an unread one.
+    const text = (await gitIn(instanceDir, ["show", "origin/main:decisions.md"]).catch((e: Error) => { if (/exists on disk, but not in|does not exist in/.test(e.message)) return ""; throw e; })).trim();
+    return text ? { where: `${repos().instance ?? "the instance repo"} main decisions.md`, text } : undefined;
+  },
+});
+/** Starts the kernel's review loop: the switch that deletes the runner's loop calls this, in the same change (one path). */
+export const startReviews = () => { every(() => void reviewLoop.tick(), 30_000); once(() => void reviewLoop.tick(), 5_000); };
 const brake = createBrake({ db: records.db, owner: ownerApi });
 const notify = createNotify({ db: records.db, modules: modulesFile, secret, resolver, log });
 // The host sandbox as configured here (jobs run in their agents' computers; repo code the host runs itself, fast checks among
