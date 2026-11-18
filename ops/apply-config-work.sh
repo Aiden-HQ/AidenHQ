@@ -124,9 +124,12 @@ main() {
     echo "refusing: product ${product:0:12} with instance ${want:0:12} failed its health check as generation $held and was reverted; this host stays on the last known good until the instance's main moves (a fix or a revert), or run ops/apply-config.sh --retry from the owner's shell" >&2
     exit 1
   fi
-  # The first apply with generations: the pair running now is the last known good to come back to.
+  # The first apply with generations: the pair running now is the last known good to come back to. A first install has
+  # nothing running (no applied-product yet): seeding it would make a failed install re-apply the same pair.
   if [ -z "$(genLkg)" ]; then
-    if [ -n "$inst_before" ] && git -C "$inst" cat-file -e "$inst_before^{commit}" 2>/dev/null; then
+    if [ ! -f "$applied" ]; then
+      echo "generation: nothing applied on this host yet: this apply can't auto-revert"
+    elif [ -n "$inst_before" ] && git -C "$inst" cat-file -e "$inst_before^{commit}" 2>/dev/null; then
       echo "generation $(genAppend "$before" "$inst_before" good "running when generations started") seeded: product ${before:0:12}, instance ${inst_before:0:12}"
     else
       echo "generation: no known-good pair to seed (no instance commit pins product ${before:0:12}): this apply can't auto-revert"

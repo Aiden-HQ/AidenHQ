@@ -68,7 +68,7 @@ echo "  ok    paperclip http (127.0.0.1:3100)"
 [ -f "$CTRL/mismatch" ] && echo "  FAIL  host metrics timer runs the applied checkout  the unit runs /old/ops/host-metrics.sh, not $PWD/ops/host-metrics.sh"
 echo "  skip  ops-mcp (meetings module not installed)"
 # What is applied decides (data/applied-product), as on a host the running services do, never the checkout alone.
-if [ -f "$CTRL/break" ] && git cat-file -e "$(cat data/applied-product 2>/dev/null)":BAD_HEALTH 2>/dev/null; then
+if [ -f "$CTRL/break" ] && git cat-file -e "$(cat data/applied-product 2>/dev/null || echo none)":BAD_HEALTH 2>/dev/null; then
   echo "  FAIL  kernel (10.231.0.1:3130)  down"
   # Arms the auto-revert's switch to fail after this health check: between the failed generation's switch and its revert.
   [ -f "$CTRL/arm-badrevert" ] && touch "$CTRL/badrevert"
@@ -149,6 +149,9 @@ function world() {
   const p1 = commitProduct("1");
   git(root, "clone", "-q", d("p.git"), "prod");
   mkdirSync(d("prod", "scripts/node_modules"), { recursive: true });
+  // A host that has applied P1 before (a first install has no applied-product: see the fresh-install test).
+  mkdirSync(d("prod", "data"), { recursive: true });
+  writeFileSync(d("prod", "data/applied-product"), `${p1}\n`);
   // The instance.
   git(root, "init", "-q", "--bare", "-b", "main", "i.git");
   git(root, "clone", "-q", d("i.git"), "iw");
@@ -260,6 +263,19 @@ test("a staged compile failure leaves the running config byte-identical, both ch
   const after = w.calls().slice(callsBefore.length);
   assert.doesNotMatch(after, /^(compile|recreate|setup)$|systemctl --user (restart|kill)|up -d/m, after);
   assert.equal(w.gens().at(-1).health, "refused");
+});
+
+test("a first install's failed health check isn't re-applied as its own last known good", async () => {
+  const w = world();
+  rmSync(w.d("prod/data/applied-product"));
+  writeFileSync(w.d("ctrl/break"), "");
+  const p2 = w.commitProduct("2", { BAD_HEALTH: "" });
+  w.commitInstance(p2);
+  const r = await w.run();
+  assert.equal(r.status, 1, r.out);
+  assert.match(r.out, /nothing applied on this host yet: this apply can't auto-revert/);
+  assert.doesNotMatch(r.out, /auto-revert: re-applying/);
+  assert.deepEqual(w.gens().map((x) => [x.n, x.health]), [[1, "failed"]]);
 });
 
 test("A14: a post-apply health failure reverts to the LKG and marks the generation failed; the pair is held until --retry", async () => {
