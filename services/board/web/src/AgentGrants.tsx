@@ -1,8 +1,9 @@
 // What an agent may touch, per connection: its tools by class, the ones it holds, and Reset to the module's default.
 import { useEffect, useState } from "react";
 import { SignInRequired, api } from "./api";
-import { ChangeProgress, Group, Row, StatusPill, useChanges, useFiled } from "./settings-ui";
+import { ChangeProgress, Group, Row, useChanges, useFiled } from "./settings-ui";
 import type { GrantConnection, SettingChange } from "./types";
+import { Tag } from "./ui";
 
 export function AgentGrants({ agentKey, onSignIn }: { agentKey: string; onSignIn: () => void }) {
   const [conns, setConns] = useState<GrantConnection[] | null>(null);
@@ -50,7 +51,7 @@ function ConnectionGrant({ agentKey, c }: { agentKey: string; c: GrantConnection
     <Row
       title={c.id}
       sub={c.module ? `from ${c.module}` : undefined}
-      meta={<StatusPill tone="info">{held.length} of {c.tools.length} tools</StatusPill>}
+      meta={<Tag tone="accent">{held.length} of {c.tools.length} tools</Tag>}
       details={
         <>
           <ul className="br-tools">
@@ -59,7 +60,7 @@ function ConnectionGrant({ agentKey, c }: { agentKey: string; c: GrantConnection
                 <label>
                   <input type="checkbox" checked={picked.has(t.name)} onChange={(e) => setPicked((p) => new Set(e.target.checked ? [...p, t.name] : [...p].filter((n) => n !== t.name)))} /> {t.name}
                 </label>
-                <span className={`st-chip${t.class === "read" ? "" : " warn"}`}>{t.class}</span>
+                <Tag tone={t.class === "read" ? "neutral" : "needs"}>{t.class}</Tag>
                 {t.default && <span className="muted"> module default</span>}
               </li>
             ))}

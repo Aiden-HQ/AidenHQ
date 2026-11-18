@@ -8,6 +8,7 @@ import { QUERIES, agentOpenQuery, agentProfileQuery, scorecardQuery, useQuery } 
 import { Bone, FleetSkeleton, SkeletonLines, Updating } from "./Skeleton";
 import type { Assignee, Finished, RosterAgent, Session, TaskRef } from "./types";
 import { ago, agoLabel, elapsed } from "./util";
+import { StatusDot, Tag, type StatusTone } from "./ui";
 
 const STATUS: Record<string, { text: string; tone: "ok" | "bad" | "meh" }> = {
   succeeded: { text: "Done", tone: "ok" },
@@ -222,13 +223,13 @@ export function CrewView({ crew, onSignIn }: { crew: Assignee[]; onSignIn: () =>
   );
 }
 
-/** Where the agent stands, in one short pill: working, needs you (paused, error), queued or idle. */
-function standing(a: RosterAgent, on: Session[], queued: Session[], now: number): { text: string; tone: string } {
+/** Where the agent stands, in a status dot and a word: working, needs you (paused, error), queued or idle. */
+function standing(a: RosterAgent, on: Session[], queued: Session[], now: number): { text: string; tone: StatusTone } {
   if (on.length) return { text: on[0]!.startedAt ? `Working ${elapsed(on[0]!.startedAt, now)}` : "Working", tone: "working" };
   if (a.status === "paused") return { text: "Paused", tone: "needs" };
   if (a.status === "error") return { text: "Error", tone: "failed" };
-  if (queued.length) return { text: "Queued", tone: "" };
-  return { text: "Idle", tone: "" };
+  if (queued.length) return { text: "Queued", tone: "idle" };
+  return { text: "Idle", tone: "idle" };
 }
 
 const when = (iso: string) => {
@@ -267,13 +268,13 @@ function AgentRow({ a, assignee, sessions, finished, runsLoaded, now, open, togg
           <div className="fleet-name">
             <h3>
               <span className="fleet-name-text">{a.name}</span>
-              {a.trial && <span className="pill pill-needs">Trial</span>}
+              {a.trial && <Tag tone="needs">Trial</Tag>}
             </h3>
             {a.key === FRONT ? <p>Your chief of staff</p> : a.title && <p title={a.title}>{a.title}</p>}
           </div>
         </div>
         <div className="fleet-status" role="cell">
-          {runsLoaded || st.tone ? <span className={`pill${st.tone ? ` pill-${st.tone}` : ""}`}>{st.text}</span> : <Bone className="pill-sk" />}
+          {runsLoaded || st.tone ? <StatusDot tone={st.tone}>{st.text}</StatusDot> : <Bone className="tag-sk" />}
         </div>
         <div className={`fleet-now${on.length || queued.length || !runsLoaded ? "" : " is-empty"}`} role="cell">
           <span className="fleet-label">Now</span>

@@ -1,9 +1,9 @@
-// Items as tiles in a grid that adds columns as the screen grows. A tile is one link (the whole tile opens `href`) with
-// its action raised above it, so a button inside stays its own target. Its monogram takes the item's tone (avatar.ts).
+// Items as tiles in a grid that adds columns as the screen grows. A tile is one target (the whole tile opens `href`, or
+// calls `onOpen` for a dialog) with its action raised above it, so a button inside stays its own target. Its monogram takes the item's tone (avatar.ts).
 import { initials, tone } from "../avatar";
 import { hueClass } from "./hue";
 
-/** A rounded square with the item's initials on its tone (styles.css .tone-0…7, 7:1 in both themes); "chief-of-staff" → "CS". */
+/** A rounded square with the item's initials on its tone (ui/tokens.css .tone-0…7, 7:1 in both themes); "chief-of-staff" → "CS". */
 export function Monogram({ name, size = 32 }: { name: string; size?: number }) {
   return (
     <span className={`ui-mono tone-${tone(name)}`} style={{ width: size, height: size, fontSize: Math.round(size * 0.38) }} aria-hidden>
@@ -16,13 +16,13 @@ export function TileGrid({ children }: { children: React.ReactNode }) {
   return <div className="ui-tiles">{children}</div>;
 }
 
-export function Tile({ href, name, title, status, children, facts, foot, action, tone: t }: { href: string; name: string; title: string; status?: React.ReactNode; children?: React.ReactNode; facts?: React.ReactNode; foot?: React.ReactNode; action?: React.ReactNode; tone?: "needs" | "failed" }) {
+export function Tile({ href, onOpen, name, title, status, children, facts, foot, action, tone: t, face }: { href?: string; onOpen?: () => void; face?: React.ReactNode; name: string; title: string; status?: React.ReactNode; children?: React.ReactNode; facts?: React.ReactNode; foot?: React.ReactNode; action?: React.ReactNode; tone?: "needs" | "failed" }) {
   return (
     <article className={`ui-tile ${hueClass(name)}${t ? ` ui-tile-${t}` : ""}`}>
       <div className="ui-tile-head">
-        <Monogram name={name} />
+        {face ?? <Monogram name={name} />}
         <h3 className="ui-tile-title">
-          <a href={href}>{title}</a>
+          {href ? <a href={href}>{title}</a> : <button type="button" onClick={onOpen}>{title}</button>}
         </h3>
         {status}
       </div>

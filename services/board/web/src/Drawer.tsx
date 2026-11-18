@@ -7,6 +7,7 @@ import { Markdown } from "./markdown";
 import { SkeletonLines } from "./Skeleton";
 import { BUCKETS, BUCKET_NAMES, WEEKDAYS, type Assignee, type Board, type Bucket, type Cadence, type CommentView, type CrewState, type IssueView, type Label, type Models, type Update, type Weekday } from "./types";
 import { MAX_FILE, PRIORITIES, PRIORITY_NAMES, ago, dayDate, elapsed, fileSize, runTime, handleOf, shortName, todayIn, when } from "./util";
+import { StatusDot, type StatusTone } from "./ui";
 
 interface Props {
   refId: string;
@@ -361,7 +362,7 @@ function Overview({ issue, board, editable, update, reload, toast, pick, onAdd, 
                   <CrewAvatar member={m} assignee={a} size={28} />
                   <span className="crew-row-text">
                     <span>
-                      <b>{shortName(a)}</b> <span className={`pill pill-${m.state}`}>{STATE_PILLS[m.state]}{m.issues.length > 1 ? ` · ${m.finished ?? 0}/${m.issues.length}` : ""}</span>
+                      <b>{shortName(a)}</b> <StatusDot tone={CREW_TONE[m.state]}>{STATE_PILLS[m.state]}{m.issues.length > 1 ? ` · ${m.finished ?? 0}/${m.issues.length}` : ""}</StatusDot>
                     </span>
                     {m.said && <span className="crew-said">{m.said.text}</span>}
                   </span>
@@ -392,6 +393,7 @@ function Overview({ issue, board, editable, update, reload, toast, pick, onAdd, 
 }
 
 const STATE_PILLS: Record<CrewState, string> = { needs: "needs you", failed: "stuck", working: "working", queued: "queued", done: "done" };
+const CREW_TONE: Record<CrewState, StatusTone> = { needs: "needs", failed: "failed", working: "working", queued: "idle", done: "done" };
 const ENGINE_NAMES: Record<string, string> = { codex: "Codex", claude: "Claude Code", openrouter: "OpenRouter" };
 
 /** One agent's part of the task: who they are, where they stand, and a direct chat with them. */
@@ -455,7 +457,7 @@ function AgentPane({ task, member, focus, board, reload, onChanged, toast, moved
           <CrewAvatar member={{ state, since: member.since }} assignee={agent} size={44} />
           <div>
             <div className="agent-name">
-              {name} <span className={`pill pill-${state}`}>{STATE_PILLS[state]}</span>
+              {name} <StatusDot tone={CREW_TONE[state]}>{STATE_PILLS[state]}</StatusDot>
             </div>
             <div className="muted small">{agent?.kind === "assistant" ? "Researcher · research and drafts" : agent?.kind === "agent" ? "Agent" : `Engineer · ${ENGINE_NAMES[agent?.engine ?? ""] ?? agent?.name}`}</div>
             {agent?.persona?.voice && <div className="agent-voice">{agent.persona.voice}</div>}
@@ -470,7 +472,7 @@ function AgentPane({ task, member, focus, board, reload, onChanged, toast, moved
             </div>
             {member.issues.map((i) => (
               <button key={i.id} className={`fan-row${i.identifier === selected ? " on" : ""}`} onClick={() => setSelected(i.identifier)}>
-                <span className={`pill pill-${i.state}`}>{STATE_PILLS[i.state]}</span>
+                <StatusDot tone={CREW_TONE[i.state]}>{STATE_PILLS[i.state]}</StatusDot>
                 <span className="fan-title">{i.title}</span>
                 <span className="ident">{i.identifier}</span>
               </button>

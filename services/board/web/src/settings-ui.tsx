@@ -83,33 +83,6 @@ const Chevron = () => (
   </svg>
 );
 
-/** A status dot with its word: the dot carries the tone, the word the meaning. */
-export function StatusPill({ tone, children }: { tone: "ok" | "warn" | "bad" | "off" | "info" | "busy"; children: ReactNode }) {
-  return (
-    <span className={`st-pill st-pill-${tone}`}>
-      <span className="st-dot" aria-hidden />
-      {children}
-    </span>
-  );
-}
-
-/** `redOff`: an off switch is red, for a module on/off where off is a decision (green on, red off). */
-export function Switch({ on, onChange, label, disabled, redOff }: { on: boolean; onChange: (on: boolean) => void; label: string; disabled?: boolean; redOff?: boolean }) {
-  return <button className={`st-switch${on ? " on" : redOff ? " off-red" : ""}`} role="switch" aria-checked={on} aria-label={label} disabled={disabled} onClick={() => onChange(!on)} />;
-}
-
-export function Segmented<T extends string | number>({ value, options, onChange, label }: { value: T; options: { value: T; label: string }[]; onChange: (v: T) => void; label: string }) {
-  return (
-    <div className="st-seg" role="radiogroup" aria-label={label}>
-      {options.map((o) => (
-        <button key={String(o.value)} role="radio" aria-checked={o.value === value} className={o.value === value ? "on" : ""} onClick={() => onChange(o.value)}>
-          {o.label}
-        </button>
-      ))}
-    </div>
-  );
-}
-
 // ------------------------------------------------------------------ changes: filed, followed
 
 interface ChangesCtx {

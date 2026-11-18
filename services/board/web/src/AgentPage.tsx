@@ -20,8 +20,8 @@ import { Segmented } from "./ui/Segmented";
 import { StatBlock } from "./ui/StatBlock";
 import { StatusDot } from "./ui/StatusDot";
 import "./settings.css";
-import "./ui/ui.css";
 import "./agent-page.css";
+import { Tabs } from "./ui";
 
 export type AgentTab = "overview" | "chats" | "handbook" | "settings";
 const TABS: [AgentTab, string][] = [["overview", "Overview"], ["chats", "Chats"], ["handbook", "Handbook"], ["settings", "Settings"]];
@@ -95,11 +95,7 @@ export function AgentPage({ agentKey, tab, go, onSignIn }: { agentKey: string; t
       />
       {note && <p className="agp-note" role="status">{note}</p>}
       {pausing && <PauseDialog name={profile.name} onCancel={() => setPausing(false)} onPause={pause} />}
-      <nav className="agp-tabs" role="tablist" aria-label={`${profile.name} sections`}>
-        {TABS.map(([t, name]) => (
-          <button key={t} role="tab" aria-selected={tab === t} onClick={() => go(`#/agents/${agentKey}${t === "overview" ? "" : `/${t}`}`)}>{name}</button>
-        ))}
-      </nav>
+      <Tabs label={`${profile.name} sections`} tabs={TABS} value={tab} href={(t) => `#/agents/${agentKey}${t === "overview" ? "" : `/${t}`}`} />
       {tab === "overview" && (
         <div className="agp-grid">
           <div className="agp-main">

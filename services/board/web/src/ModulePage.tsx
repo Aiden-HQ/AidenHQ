@@ -13,11 +13,10 @@ import { EmptyState } from "./ui/EmptyState";
 import { ListRow, ListRows } from "./ui/ListRow";
 import { PageHeader } from "./ui/PageHeader";
 import { Section } from "./ui/Section";
-import { Segmented } from "./ui/Segmented";
+import { Tabs } from "./ui";
 import { StatusDot } from "./ui/StatusDot";
 import { Monogram } from "./ui/Tile";
 import { hueClass } from "./ui/hue";
-import "./ui/ui.css";
 import { ago } from "./util";
 import "./settings.css";
 import "./modules.css";
@@ -114,8 +113,8 @@ function Loaded({ d, tab, go, onSignIn, setup, advisory }: { d: ModuleDetail; ta
       {asking && <TurnOnCard m={m} info={info} onClose={() => setAsking(false)} />}
       {t.filed && <div className="mod-change"><ChangeProgress f={t.filed} /></div>}
       {advisory && (
-        <div className={`mods-alert${advisory.severity === "high" || advisory.severity === "critical" ? " bad" : ""}`} role="alert">
-          <span className="mods-alert-text">
+        <div className={`ui-banner ${advisory.severity === "high" || advisory.severity === "critical" ? "ui-banner-danger" : "ui-banner-warn"}`} role="alert">
+          <span className="ui-banner-text">
             <strong>Security advisory {advisory.id}</strong> ({advisory.severity}): {advisory.summary.replace(/^`|`$/g, "")} The fix is an ordinary update to a newer pin: {m.pinned ? "follow the marketplace (below) or pin a newer commit" : "update its marketplace (Modules, then Marketplaces)"}.
           </span>
           {advisory.url && <a className="btn" href={advisory.url} target="_blank" rel="noreferrer noopener">Details</a>}
@@ -123,7 +122,7 @@ function Loaded({ d, tab, go, onSignIn, setup, advisory }: { d: ModuleDetail; ta
       )}
       <Pin m={m} />
       <div>
-        <Segmented<ModuleTab> label="Section" value={tab} options={TABS} onChange={(k) => go(`#/modules/${m.name}${k === "overview" ? "" : `/${k}`}`)} />
+        <Tabs<ModuleTab> label="Section" value={tab} tabs={TABS} href={(k) => `#/modules/${m.name}${k === "overview" ? "" : `/${k}`}`} />
       </div>
       {tab === "overview" && <Overview d={d} />}
       {tab === "contents" && <Contents d={d} onSignIn={onSignIn} />}
@@ -139,10 +138,10 @@ function Pin({ m }: { m: ModuleRow }) {
   if (!m.pinned) return null;
   const change: SettingChange = { kind: "pin", name: m.name, sha: null };
   return (
-    <div className="mods-alert info">
-      <span className="mods-alert-text">Pinned at {m.pinned}: this module stays there when its marketplace moves.</span>
+    <div className="ui-banner">
+      <span className="ui-banner-text">Pinned at {m.pinned}: this module stays there when its marketplace moves.</span>
       {!open && <button className="btn" onClick={() => setOpen(true)}>Follow marketplace</button>}
-      {open && <div className="mods-alert-full"><ChangePreview items={[change]} was={[m.pinned]} onCancel={() => setOpen(false)} onDone={() => setOpen(false)} note="Removes the pin: the module follows its marketplace again." /></div>}
+      {open && <div className="mods-banner-full"><ChangePreview items={[change]} was={[m.pinned]} onCancel={() => setOpen(false)} onDone={() => setOpen(false)} note="Removes the pin: the module follows its marketplace again." /></div>}
     </div>
   );
 }

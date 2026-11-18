@@ -3,6 +3,7 @@ import { useCallback, useEffect, useState, type FormEvent, type ReactNode } from
 import { SignInRequired, accountsApi, api, type Account, type AppAdmins, type AuthSession, type Session } from "./api";
 import { SkeletonLines } from "./Skeleton";
 import { agoLabel } from "./util";
+import { StatusDot, Tag, type StatusTone } from "./ui";
 
 function Screen({ title, sub, children }: { title: string; sub?: ReactNode; children: ReactNode }) {
   return (
@@ -56,11 +57,11 @@ const browserOf = (ua: string | null) => {
   return os ? `${b} on ${os}` : b;
 };
 
-function statusOf(a: Account): { label: string; pill: string } {
-  if (a.disabled) return { label: "Disabled", pill: "" };
-  if (a.lockedUntil) return { label: `Sign-ins paused until ${new Date(a.lockedUntil).toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" })}`, pill: "pill-needs" };
-  if (a.role === "admin" && !a.twoFactorEnabled) return { label: "No authenticator yet", pill: "" };
-  return { label: "Active", pill: "pill-working" };
+function statusOf(a: Account): { label: string; tone: StatusTone } {
+  if (a.disabled) return { label: "Disabled", tone: "idle" };
+  if (a.lockedUntil) return { label: `Sign-ins paused until ${new Date(a.lockedUntil).toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" })}`, tone: "needs" };
+  if (a.role === "admin" && !a.twoFactorEnabled) return { label: "No authenticator yet", tone: "idle" };
+  return { label: "Active", tone: "ok" };
 }
 
 /** People with accounts (admins: the board; users: shared apps only), and this account's signed-in browsers. */
@@ -172,8 +173,8 @@ export function AccountsView({ session, onSignIn }: { session: Session; onSignIn
                     <b>{a.name || a.email}</b>
                     <span className="muted small">{a.email}</span>
                   </div>
-                  <span className="pill">{a.owner ? "Owner" : a.role === "admin" ? "Admin" : "User"}</span>
-                  <span className={`pill ${st.pill}`}>{st.label}</span>
+                  <Tag>{a.owner ? "Owner" : a.role === "admin" ? "Admin" : "User"}</Tag>
+                  <StatusDot tone={st.tone}>{st.label}</StatusDot>
                   <span className="spacer" />
                   {!a.owner && (
                     <div className="account-actions">
@@ -212,7 +213,7 @@ export function AccountsView({ session, onSignIn }: { session: Session; onSignIn
                   </span>
                 </div>
                 {a.admins.map((e) => (
-                  <span key={e} className="pill">
+                  <span key={e} className="ui-tag">
                     {e}{" "}
                     <button className="link-btn" title="Remove as admin" onClick={act(() => accountsApi.setAppAdmin(a.app, e, false))}>
                       ×

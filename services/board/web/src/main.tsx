@@ -3,6 +3,9 @@ import { createRoot } from "react-dom/client";
 import { App } from "./App";
 import { WelcomeGate } from "./Welcome";
 import { preloadBoot } from "./queries";
+// Tokens, then the components, then the older page styles (which may refine a component in place).
+import "./ui/tokens.css";
+import "./ui/ui.css";
 import "./styles.css";
 
 // A tab still running the build from before a deploy can't load that build's page chunks any more: reload into the new one

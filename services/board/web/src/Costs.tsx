@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState, type ReactNode } from "react"
 import { SignInRequired, api } from "./api";
 import { duration } from "./FeatureCost";
 import type { FeatureCost, CostLedger, CostRow, CostTop, CostWindow, Costs, LedgerMetrics, LedgerPeriod } from "./types";
+import { Tag } from "./ui";
 
 // The Costs tab: billed spend from the model gateway's ledger (src/cost-ledger.ts), aggregated on the board.
 //  1. Overview: today / 7 / 30 days against the period before, the OpenRouter key's limit, agents nearest their day cap.
@@ -981,7 +982,7 @@ function Reconcile({ onSignIn }: { onSignIn: () => void }) {
               <div key={`${r.kind}:${r.name}`} className="ct-row" role="row">
                 <span role="cell" className="ct-name ct-stack">
                   <span className="ct-strong">
-                    {r.name} {r.kind === "system" && <span className="pill">System</span>}
+                    {r.name} {r.kind === "system" && <Tag>System</Tag>}
                   </span>
                   <span className="ct-sub">{r.models.map((m) => short(m.model)).join(", ")}</span>
                 </span>

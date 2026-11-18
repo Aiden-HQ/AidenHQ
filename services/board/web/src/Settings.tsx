@@ -6,10 +6,11 @@ import { needsAttention, type ConnectionsData } from "./connections";
 import { askForNotifications, notificationsSupported } from "./notify";
 import { ConnectionsPage, RowsSkeleton } from "./SettingsConnections";
 import { parseInput, shown } from "./settings-format";
-import { ChangePreview, ChangeProgress, Changes, Group, IN_FLIGHT, Page, Row, Segmented, StatusPill, Switch, Toasts, useFiled } from "./settings-ui";
+import { ChangePreview, ChangeProgress, Changes, Group, IN_FLIGHT, Page, Row, Toasts, useFiled } from "./settings-ui";
 import type { Advisory, FiledChange, ModuleRow, SettingChange, SettingRow, SettingsData } from "./types";
 import { urlSettingProblem } from "../../src/url-setting";
 import "./settings.css";
+import { Segmented, StatusDot, Switch, Tag } from "./ui";
 
 // Settings: categories in a side nav (a selector at phone width), each a page of grouped rows (#/settings/<category>).
 // Instance settings live in git (instance.yaml): a change made here is filed as the owner's task the runner writes, and lands
@@ -209,14 +210,14 @@ export function SettingItem({ s, title }: { s: SettingRow; title?: string }) {
   const [to, setTo] = useState<unknown>(undefined);
   const drift = s.live !== undefined && s.known && s.value !== null && s.live !== String(s.value);
   const pick = (v: unknown) => (setTo(v), setOpen(true));
-  const status = busy ? <StatusPill tone="busy">Changing</StatusPill> : null;
+  const status = busy ? <StatusDot tone="busy">Changing</StatusDot> : null;
   if (s.switch) {
     const on = (to ?? effective) !== "off";
     return (
       <Row
         title={title ?? label(s.key)}
         sub={s.doc}
-        meta={status ?? (!s.known && s.live === undefined ? <StatusPill tone="off">Unknown</StatusPill> : undefined)}
+        meta={status ?? (!s.known && s.live === undefined ? <StatusDot tone="idle">Unknown</StatusDot> : undefined)}
         action={<Switch on={on} label={`${label(s.key)}: ${on ? "on" : "off"}`} disabled={busy} onChange={(v) => pick(v ? "on" : "off")} />}
         open={open || Boolean(filed)}
         onToggle={(o) => (setOpen(o), !o && setTo(undefined))}
@@ -282,20 +283,20 @@ function SettingEditor({ s, onDone }: { s: SettingRow; onDone: () => void }) {
     <form className="st-editor" onSubmit={(e) => (e.preventDefault(), !problem && !same && setReview(true))}>
       {values.length && !multi ? (
         values.length <= 4 ? (
-          <Segmented value={String(v)} label={label(s.key)} options={values.map((x) => ({ value: String(x), label: String(x) }))} onChange={(x) => (setV(values.find((y) => String(y) === x)), setReview(false))} />
+          <Segmented value={String(v)} label={label(s.key)} options={values.map((x) => [String(x), String(x)] as const)} onChange={(x) => (setV(values.find((y) => String(y) === x)), setReview(false))} />
         ) : (
-          <select className="st-select" value={String(v)} onChange={(e) => (setV(values.find((y) => String(y) === e.target.value)), setReview(false))} aria-label={label(s.key)}>
+          <select className="ui-select" value={String(v)} onChange={(e) => (setV(values.find((y) => String(y) === e.target.value)), setReview(false))} aria-label={label(s.key)}>
             {values.map((x) => (
               <option key={String(x)}>{String(x)}</option>
             ))}
           </select>
         )
       ) : values.length ? (
-        <div className="st-checks" role="group" aria-label={label(s.key)}>
+        <div className="ui-checks" role="group" aria-label={label(s.key)}>
           {values.map((x) => {
             const on = (v as unknown[]).includes(x);
             return (
-              <label key={String(x)} className={`st-check${on ? " on" : ""}`}>
+              <label key={String(x)} className={`ui-check${on ? " on" : ""}`}>
                 <input type="checkbox" checked={on} onChange={() => (setV(on ? (v as unknown[]).filter((y) => y !== x) : [...(v as unknown[]), x]), setReview(false))} />
                 {String(x)}
               </label>
@@ -303,7 +304,7 @@ function SettingEditor({ s, onDone }: { s: SettingRow; onDone: () => void }) {
           })}
         </div>
       ) : (
-        <input className="st-input" value={text} onChange={(e) => (setText(e.target.value), setReview(false))} type={s.type === "url" ? "url" : "text"} spellCheck={false} aria-label={label(s.key)} placeholder={multi ? "comma, separated" : ""} />
+        <input className="ui-input" value={text} onChange={(e) => (setText(e.target.value), setReview(false))} type={s.type === "url" ? "url" : "text"} spellCheck={false} aria-label={label(s.key)} placeholder={multi ? "comma, separated" : ""} />
       )}
       {problem && !same && <span className="st-field-help bad">{problem.replace(/^./, (c) => c.toUpperCase())}</span>}
       {review ? (
@@ -392,7 +393,7 @@ function NotificationsPage({ rows, conns }: { rows: SettingRow[]; conns: Connect
         <Row
           title="Browser notifications"
           sub={perm === "denied" ? "Blocked: allow notifications for this site in the browser's settings." : "A notification when something needs you, while the board is open."}
-          meta={<StatusPill tone={perm === "granted" ? "ok" : perm === "denied" ? "warn" : "off"}>{perm === "granted" ? "On" : perm === "denied" ? "Blocked" : perm === "unsupported" ? "Not supported" : "Off"}</StatusPill>}
+          meta={<StatusDot tone={perm === "granted" ? "ok" : perm === "denied" ? "needs" : "idle"}>{perm === "granted" ? "On" : perm === "denied" ? "Blocked" : perm === "unsupported" ? "Not supported" : "Off"}</StatusDot>}
           action={
             perm === "default" ? (
               <button className="btn" onClick={() => void askForNotifications().then(setPerm)}>
@@ -404,7 +405,7 @@ function NotificationsPage({ rows, conns }: { rows: SettingRow[]; conns: Connect
       </Group>
       <Group title="Channels" hint={!live?.channels ? "The channel modules didn't say which channels have tokens." : undefined}>
         {channels.map(([k, name, what]) => (
-          <Row key={k} title={name} sub={what} meta={<>{k !== "voice" && <span className="st-chip">{chosen.includes(k) ? "in your channels" : "not in your channels"}</span>}<StatusPill tone={state(k) === "set up" ? "ok" : "off"}>{state(k)}</StatusPill></>} />
+          <Row key={k} title={name} sub={what} meta={<>{k !== "voice" && <Tag>{chosen.includes(k) ? "in your channels" : "not in your channels"}</Tag>}<StatusDot tone={state(k) === "set up" ? "ok" : "idle"}>{state(k)}</StatusDot></>} />
         ))}
       </Group>
       {rows.length > 0 && (
@@ -432,7 +433,7 @@ function InstancePage({ data }: { data: SettingsData }) {
         <Fig n={i.node} l={`Board runtime, ${i.boardTimezone}`} />
       </div>
       <p className="st-note">A newer product is a change to instance.yaml's product: pin; the Platform Engineer files it with its commit log for you to approve.</p>
-      <Group title="Every setting" count={data.settings.length} hint={<input className="st-search small" type="search" placeholder="Filter" value={q} onChange={(e) => setQ(e.target.value)} aria-label="Filter settings" />}>
+      <Group title="Every setting" count={data.settings.length} hint={<input className="ui-input small" type="search" placeholder="Filter" value={q} onChange={(e) => setQ(e.target.value)} aria-label="Filter settings" />}>
         <div className="st-table" role="table">
           <div className="st-tr st-th" role="row">
             <span role="columnheader">Setting</span>

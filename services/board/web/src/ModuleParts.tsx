@@ -2,9 +2,9 @@
 // module's state in one word, its facts, and which modules need setup.
 import { useEffect, useState, type ReactNode } from "react";
 import { flows } from "./SetupButton";
-import { ChangePreview, IN_FLIGHT, Switch, useChanges, useFiled } from "./settings-ui";
+import { ChangePreview, IN_FLIGHT, useChanges, useFiled } from "./settings-ui";
 import type { Advisory, BrowseModule, FiledChange, ModuleRow } from "./types";
-import { StatusDot, type StatusTone } from "./ui/StatusDot";
+import { StatusDot, Switch, type StatusTone } from "./ui";
 
 /** Installed modules whose setup flow isn't done (GET /api/setup-flows; absent or failing: none). */
 export function useSetupNeeded(): Set<string> {
@@ -41,7 +41,7 @@ export function useModuleToggle(m: Toggled) {
   const isOn = m.state !== "off";
   const fixed = m.state === "core" || m.state === "dependency";
   const busy = Boolean(filed && IN_FLIGHT.includes(filed.stage));
-  const switchEl = fixed ? null : <Switch on={want ?? isOn} label={`${m.name}: ${isOn ? "on" : "off"}`} redOff disabled={busy} onChange={(v) => (v ? setWant(true) : !isOn ? setWant(null) : setConfirmOff(true))} />;
+  const switchEl = fixed ? null : <Switch on={want ?? isOn} label={`${m.name}: ${isOn ? "on" : "off"}`} danger disabled={busy} onChange={(v) => (v ? setWant(true) : !isOn ? setWant(null) : setConfirmOff(true))} />;
   const dialog = confirmOff ? (
     <Dialog label={`Turn off ${m.name}?`} onClose={() => setConfirmOff(false)}>
       <h2>Turn off {m.name}?</h2>

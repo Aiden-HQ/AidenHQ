@@ -7,6 +7,7 @@ import { ChangeProgress, ChangesScope, useChanges, useFiled } from "./settings-u
 import { SkeletonLines } from "./Skeleton";
 import type { SettingChange } from "./types";
 import { ago } from "./util";
+import { Segmented } from "./ui";
 
 export interface HandbookData {
   kind: "module" | "instance";
@@ -238,8 +239,8 @@ export function AgentHandbook({ agentKey, onSignIn }: { agentKey: string; onSign
   if (!data) return <SkeletonLines lines={5} />;
   return (
     <ChangesScope onSignIn={onSignIn}>
-      <div className="st-seg" role="tablist" style={{ marginTop: 14 }}>
-        {SUBS.map(([id, label]) => <button key={id} role="tab" aria-selected={sub === id} className={sub === id ? "on" : ""} onClick={() => setSub(id)}>{label}</button>)}
+      <div className="hb-subs">
+        <Segmented label="Handbook" options={SUBS} value={sub} onChange={setSub} />
       </div>
       {sub === "edit" && <Edit agentKey={agentKey} data={data} />}
       {sub === "reads" && <Reads data={data} />}

@@ -44,11 +44,12 @@ const ModulesView = lazy(() => VIEW_CHUNKS.modules().then((m) => ({ default: m.M
 const AgentPage = lazy(() => VIEW_CHUNKS.agentPage().then((m) => ({ default: m.AgentPage })));
 const ModulePage = lazy(() => VIEW_CHUNKS.modulePage().then((m) => ({ default: m.ModulePage })));
 const RunPage = lazy(() => VIEW_CHUNKS.run().then((m) => ({ default: m.RunPage })));
+const DesignView = lazy(() => VIEW_CHUNKS.design().then((m) => ({ default: m.DesignView })));
 /** A page's place while its code arrives (rarely seen: it is warmed early). No spinner: the page paints in a moment. */
 const PageLoading = () => <main className="page wide" aria-busy="true" />;
 
 type Items = Record<Bucket, Card[]>;
-type Route = { kind: "board" } | { kind: "chat"; ref: string | null } | { kind: "view"; view: View } | { kind: "settings"; cat: Category | null } | { kind: "agent"; key: string; tab: AgentTab } | { kind: "module"; name: string; tab: ModuleTab } | { kind: "task"; ref: string; focus?: string } | { kind: "run"; id: string } | { kind: "brief" } | { kind: "help" } | { kind: "setup"; module: string };
+type Route = { kind: "board" } | { kind: "chat"; ref: string | null } | { kind: "view"; view: View } | { kind: "settings"; cat: Category | null } | { kind: "agent"; key: string; tab: AgentTab } | { kind: "module"; name: string; tab: ModuleTab } | { kind: "task"; ref: string; focus?: string } | { kind: "run"; id: string } | { kind: "brief" } | { kind: "help" } | { kind: "design" } | { kind: "setup"; module: string };
 
 const HINTS: Record<Bucket, string> = {
   triage: "New tasks land here",
@@ -123,6 +124,7 @@ function parseRoute(): Route {
   if (setup) return { kind: "setup", module: setup[1]! };
   if (h === "brief") return { kind: "brief" };
   if (h === "help") return { kind: "help" };
+  if (h === "design") return { kind: "design" };
   return { kind: "board" };
 }
 const go = (hash: string) => {
@@ -140,7 +142,8 @@ function useMedia(query: string) {
   return on;
 }
 
-type View = "chat" | "agents" | "modules" | "approvals" | "board" | "apps" | "costs" | "settings";
+// "design" (#/design, the design system's catalogue) has no tab of its own.
+type View = "chat" | "agents" | "modules" | "approvals" | "board" | "apps" | "costs" | "settings" | "design";
 const VIEWS: View[] = ["chat", "agents", "modules", "approvals", "board", "apps", "costs", "settings"];
 // Daily work in the bar; configuration (connections, accounts, instance settings) is behind the Settings gear.
 const TABS: [View, string][] = [["chat", "Chat"], ["approvals", "Approvals"], ["agents", "Agents"], ["modules", "Modules"], ["apps", "Apps"], ["board", "Tasks"], ["costs", "Costs"]];
@@ -279,6 +282,7 @@ export function App() {
       if (r.kind === "agent") setView("agents");
       if (r.kind === "module") setView("modules");
       if (r.kind === "settings") setView("settings");
+      if (r.kind === "design") setView("design");
     };
     hash();
     window.addEventListener("hashchange", hash);
@@ -706,6 +710,7 @@ export function App() {
       {view === "modules" && route.kind !== "module" && <Suspense fallback={<PageLoading />}><ModulesView onSignIn={signInNeeded} /></Suspense>}
       {view === "modules" && route.kind === "module" && <Suspense fallback={<PageLoading />}><ModulePage key={route.name} name={route.name} tab={route.tab} go={go} onSignIn={signInNeeded} /></Suspense>}
       {view === "apps" && <Suspense fallback={<PageLoading />}><AppsView onSignIn={signInNeeded} /></Suspense>}
+      {view === "design" && <Suspense fallback={<PageLoading />}><DesignView /></Suspense>}
       {view === "costs" && <Suspense fallback={<PageLoading />}><CostsView onSignIn={signInNeeded} /></Suspense>}
       {view === "agents" && route.kind === "agent" && <Suspense fallback={<PageLoading />}><AgentPage key={route.key} agentKey={route.key} tab={route.tab} go={go} onSignIn={signInNeeded} /></Suspense>}
       {view === "agents" && route.kind !== "agent" && <Suspense fallback={<PageLoading />}><CrewView crew={board.assignees} onSignIn={signInNeeded} /></Suspense>}

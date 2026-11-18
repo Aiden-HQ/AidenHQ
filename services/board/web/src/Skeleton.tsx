@@ -34,7 +34,7 @@ export function FleetRowSkeleton({ i = 0, cells = true }: { i?: number; cells?: 
           </div>
         </div>
         <div className="fleet-status">
-          <Bone className="pill-sk" />
+          <Bone className="tag-sk" />
         </div>
         <div className="fleet-now">{cells && <Bone w={widths[(i + 1) % widths.length]} />}</div>
         <div className="fleet-next">{cells && <Bone w="55%" />}</div>
@@ -80,7 +80,7 @@ export function CardGridSkeleton({ count = 4 }: { count?: number }) {
         <article key={i} className="app-card" aria-hidden>
           <header className="app-card-head">
             <Bone w={widths[i % widths.length]} h={19} />
-            <Bone className="pill-sk" />
+            <Bone className="tag-sk" />
           </header>
           <dl className="panel-facts">
             {["32%", "54%", "46%"].map((w, r) => (

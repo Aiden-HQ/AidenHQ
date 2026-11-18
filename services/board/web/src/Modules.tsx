@@ -13,7 +13,6 @@ import { PageHeader } from "./ui/PageHeader";
 import { Section } from "./ui/Section";
 import { Segmented } from "./ui/Segmented";
 import { Tile, TileGrid } from "./ui/Tile";
-import "./ui/ui.css";
 import "./settings.css";
 import "./modules.css";
 
@@ -112,8 +111,8 @@ function ModulesList({ onSignIn, onMarkets }: { onSignIn: () => void; onMarkets:
     <>
       {header}
       {advisories.map((a) => (
-        <div key={a.id} className={`mods-alert${a.severity === "high" || a.severity === "critical" ? " bad" : ""}`} role="alert">
-          <span className="mods-alert-text">
+        <div key={a.id} className={`ui-banner ${a.severity === "high" || a.severity === "critical" ? "ui-banner-danger" : "ui-banner-warn"}`} role="alert">
+          <span className="ui-banner-text">
             <strong>Security advisory for {a.module}</strong> ({a.severity}): {a.summary.replace(/^`|`$/g, "")} The fix is an ordinary update to a newer pin.
           </span>
           {a.url && (
@@ -127,8 +126,8 @@ function ModulesList({ onSignIn, onMarkets }: { onSignIn: () => void; onMarkets:
         </div>
       ))}
       {newer.length > 0 && advisories.length === 0 && (
-        <div className="mods-alert info">
-          <span className="mods-alert-text">A newer version of {newer.map((m) => m.name).join(", ")} is available.</span>
+        <div className="ui-banner">
+          <span className="ui-banner-text">A newer version of {newer.map((m) => m.name).join(", ")} is available.</span>
           <button className="btn" onClick={onMarkets}>
             Review update
           </button>
