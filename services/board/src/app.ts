@@ -2006,7 +2006,18 @@ export function createApp(opts: AppOptions): Server {
     const host = String(req.headers.host).toLowerCase();
     try {
       if (url.pathname === connect) {
-        const { url: signIn } = await auth.start(`http://${host}${callback}`);
+        // The owner picks what to grant (owner, 2026-11-18): when the vendor offers a choice of scopes, a short form comes
+        // first with the recommended ones ticked, and comes back here with `picked` and the ticked scopes.
+        const picked = url.searchParams.has("picked");
+        if (!picked) {
+          const offer = await auth.scopes();
+          if (offer && offer.supported.length > 1) {
+            res.writeHead(200, { ...SECURITY_HEADERS, "content-security-policy": SECURITY_HEADERS["content-security-policy"]!.replace("form-action 'none'", "form-action 'self'"), "content-type": "text/html; charset=utf-8", "cache-control": "no-store" });
+            res.end(scopePage(name, connect, offer));
+            return;
+          }
+        }
+        const { url: signIn } = await auth.start(`http://${host}${callback}`, picked ? url.searchParams.getAll("scope") : undefined);
         log.info(`${name} sign-in started`);
         res.writeHead(302, { ...SECURITY_HEADERS, location: signIn, "cache-control": "no-store" }).end();
         return;
@@ -2147,9 +2158,16 @@ async function readJson(req: IncomingMessage, max = 256_000): Promise<unknown> {
 }
 
 /** A bare page for the sign-in outcome (the CSP allows no inline style or script). */
+const esc = (text: string) => text.replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
+
+/** What to grant a vendor's sign-in: each scope it offers, the recommended ones ticked; the form goes back to `connect`. */
+export function scopePage(name: string, connect: string, offer: { supported: string[]; recommended: string[] }): string {
+  const boxes = offer.supported.map((s) => `<p><label><input type="checkbox" name="scope" value="${esc(s)}"${offer.recommended.includes(s) ? " checked" : ""}> ${esc(s)}</label></p>`).join("");
+  return `<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>AidenHQ</title><h1>Connect ${esc(name)}</h1><p>Pick what agents may do as you in ${esc(name)}. The ticked ones are what they need to read; anything they write is reviewed before it runs.</p><form method="get" action="${esc(connect)}"><input type="hidden" name="picked" value="1">${boxes}<p><button type="submit">Continue to ${esc(name)}</button></p></form><p><a href="/">Back to the board</a></p>`;
+}
+
 function page(text: string): string {
-  const esc = text.replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
-  return `<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>AidenHQ</title><p>${esc}</p><p><a href="/">Back to the board</a></p>`;
+  return `<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>AidenHQ</title><p>${esc(text)}</p><p><a href="/">Back to the board</a></p>`;
 }
 
 function send(res: ServerResponse, status: number, body: string | Buffer, type: string, cache = "no-store") {

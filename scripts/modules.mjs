@@ -102,6 +102,8 @@ export const LEGACY_LINKS = {
   meetings: { until: "4c", to: ["backplane", "sources"] },
   google: { until: "3g", to: ["board", "sources"] },
   jira: { until: "3g", to: ["board", "sources"] },
+  // A new sign-in module reaches the board and the warehouse the same way until 3g removes the lists (owner-approved, 2026-11-17).
+  hubspot: { until: "3g", to: ["board", "sources"] },
   glean: { until: "3g", to: ["board"] },
   grafana: { until: "3g", to: ["board"] },
   clickhouse: { until: "3g", to: ["board"] },
