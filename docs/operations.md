@@ -296,9 +296,13 @@ exact email match only).
 `src_security` writer (grype, no LLM). The inventory is made on the host, because it needs the Docker socket and the root
 filesystem, which the scanner never gets: `ops/security-sbom.sh` (user timer `aidenhq-security-sbom.timer`, daily 03:30)
 runs pinned syft over the host packages, every running image, the product and instance checkouts and each app's deployed
-source, into `data/modules/security/sbom/current/`; `targets.tsv` records the checkout's git HEAD for `repo:product` and
-`repo:instance`, and the scanner copies it to each target's `src_meta.ingest_run` row. The scanner matches a new batch
-within the hour (or daily anyway) and fires Security Watch's webhook when anything changed. On demand:
+source, into `data/modules/security/sbom/current/`. The host target scans `/` without the homes (`./home/**`,
+`./root/**`), procfs, the container stores and this instance's own checkouts: a clone, task worktree or tool cache there
+belongs to another project's dependency tree, and no apt upgrade or `ops/vm/pins.json` clears it, so it would be permanent
+noise beside the packages the operator can fix; `/usr`, `/opt`, `/etc` and `/var/lib/dpkg` stay in it. `targets.tsv`
+records the checkout's git HEAD for `repo:product` and `repo:instance`, and the scanner copies it to each target's
+`src_meta.ingest_run` row. The scanner matches a new batch within the hour (or daily anyway) and fires Security
+Watch's webhook when anything changed. On demand:
 `ops/security-sbom.sh`, then `docker compose exec security-scanner node dist/src/main.js once`.
 
 To enable, before adding `security` to the instance's modules:

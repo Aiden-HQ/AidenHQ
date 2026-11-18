@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # The security module's inventory (modules/security): daily from aidenhq-security-sbom.timer (a user timer), or by hand.
 # Runs pinned syft in a throwaway container (no network, as this user) over:
-#   host            the VM's root filesystem, read-only: OS packages (kernel, Docker, Node...), not Docker's own storage
+#   host            the VM's root filesystem, read-only: OS packages (kernel, Docker, Node...), not Docker's own storage,
+#                   the homes or this instance's own checkouts (see HOST_EXCLUDES)
 #   image:<ref>     every image a running container uses (the Docker socket, read-only mount)
 #   repo:product    this checkout (lockfiles; not data/, node_modules or .git)
 #   repo:instance   the instance checkout
@@ -48,10 +49,21 @@ scan() {
 }
 
 inst="${AIDENHQ_INSTANCE_DIR:-}"
-scan host "" -v /:/host:ro -- dir:/host \
-  --exclude './proc/**' --exclude './sys/**' --exclude './dev/**' --exclude './run/**' --exclude './tmp/**' \
-  --exclude './var/lib/docker/**' --exclude './var/lib/containerd/**' --exclude "./${PWD#/}/**" --exclude "./${out#/}/**" \
-  ${inst:+--exclude "./${inst#/}/**"} --exclude './home/*/.cache/**' --exclude '**/node_modules/**'
+# What the host target leaves out. The scan root is /, and syft resolves a directory scan's patterns against it: a
+# pattern is relative (`./home/**`), never `/home/**`. The homes hold checkouts, task worktrees and tool caches, whose
+# lockfiles and binaries belong to other projects' dependency trees rather than to this host, and no apt upgrade or
+# ops/vm/pins.json clears one: the host target is what the operator remediates. /usr, /opt, /etc and /var/lib/dpkg stay
+# in it. A checkout that should be watched later gets its own target, not a place back in here.
+HOST_EXCLUDES=(
+  './home/**' './root/**'
+  './proc/**' './sys/**' './dev/**' './run/**' './tmp/**'
+  './var/lib/docker/**' './var/lib/containerd/**'
+)
+host_excludes=("${HOST_EXCLUDES[@]}" "./${PWD#/}/**" "./${out#/}/**" '**/node_modules/**')
+[ -n "$inst" ] && host_excludes+=("./${inst#/}/**")
+host_args=()
+for p in "${host_excludes[@]}"; do host_args+=(--exclude "$p"); done
+scan host "" -v /:/host:ro -- dir:/host "${host_args[@]}"
 # By each container's configured image name: after a rebuild a running container's image is untagged, and syft can't
 # resolve a bare image id (it tries to pull it). The name points at the current build of the same service.
 for img in $(docker ps -q | xargs -r docker inspect -f '{{.Config.Image}}' | sort -u | grep -v '^anchore/syft'); do
