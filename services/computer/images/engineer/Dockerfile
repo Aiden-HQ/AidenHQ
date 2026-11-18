@@ -35,3 +35,6 @@ ENV PATH=/opt/rust/cargo/bin:$PATH
 # pnpm 10.34.9 (2026-10-25): its vendored tree carries tar 7.5.22 (GHSA-23hp-3jrh-7fpw fixed in 7.5.19), glob 10.5.0,
 # picomatch 4.0.7, brace-expansion 2.1.7, minimatch 9.0.9 and ip-address 10.7.4 (the 14 highs 10.20.0 had).
 RUN npm i -g pnpm@10.34.9 typescript@5.9.3 && npm cache clean --force
+# The `aidenhq` commands of a kernel job (bin/aidenhq: calls to the kernel with the job's own token). A runner job's box puts
+# the runner's own commands (/opt/aidenhq/bin) first on its PATH.
+COPY --chmod=755 bin/aidenhq /usr/local/bin/aidenhq

@@ -21,6 +21,7 @@
 //                             (aidenhq-kernel) with that token as the bearer: the kernel checks the grants and holds the keys
 //   POST /repo {repo, sha}    the box's `repo-checkout`: a snapshot (no .git, no credentials) of an agents-org repo at a commit,
 //                             from the runner's cache clone, into /workspace/repos/<name>; agents with the repo-checkout role
+//   POST /v1/writes, /v1/jobtools/<cmd>  a kernel job box's `aidenhq` commands (bearer = its job token), on to the kernel as it
 //   POST /helper/<command>  a runner job box's `aidenhq` command (bearer = its run token), to the runner's helper bound to that job
 //
 // Jobs (bearer = secret computers_runner_key for the runner, launcher_kernel_key for the kernel; neither opens anything else and
@@ -537,6 +538,16 @@ const gatewayServer = http.createServer(async (req, res) => {
         (out) => res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify(out)),
         (e) => deny(e.status ?? 500, e.message),
       );
+    }
+    if (req.method === "POST" && /^\/v1\/(writes|jobtools\/[a-z]+)$/.test(req.url ?? "")) {
+      // A kernel job's `aidenhq` commands (images/engineer/bin/aidenhq): its writes and next-turn requests, to the kernel as itself.
+      const token = bearer(req);
+      if (!jobs.byKernelToken(token)) return deny(401, "not a kernel job's computer");
+      const k = new URL(req.url, KERNEL_URL);
+      const headers = { authorization: `Bearer ${token}`, "content-type": "application/json", ...(req.headers["content-length"] ? { "content-length": req.headers["content-length"] } : {}) };
+      const up = http.request({ host: k.hostname, port: Number(k.port || 80), path: k.pathname, method: "POST", headers }, (ur) => { res.writeHead(ur.statusCode ?? 502, { "content-type": ur.headers["content-type"] ?? "application/json" }); ur.pipe(res); });
+      up.on("error", (e) => { if (!res.headersSent) deny(502, e.message); else res.destroy(); });
+      return void req.pipe(up);
     }
     const m = /^\/c\/([a-z0-9_]+)\/mcp$/.exec(req.url.split("?")[0]);
     if (!m) return deny(403, "refused");
