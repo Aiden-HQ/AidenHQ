@@ -90,21 +90,15 @@ export function appsToken(): string {
   }
 }
 
-/** apps-mcp's internal API on the compose network (the board's Apps tab and the deploy gate). */
-export async function appsApi<T>(path: string, body?: unknown, { auth = body !== undefined, timeoutMs = 600_000 } = {}): Promise<T> {
-  const headers: Record<string, string> = { "content-type": "application/json" };
+/** apps-mcp's internal API on the compose network (reads only): `auth` sends the internal token, which the guarded reads need. */
+export async function appsApi<T>(path: string, { auth = false, timeoutMs = 20_000 } = {}): Promise<T> {
+  const headers: Record<string, string> = {};
   if (auth) {
-    // Writes (and the commit lookup) carry the internal token; never call without it.
     const token = appsToken();
     if (!token) throw new Refused("refused: the apps internal token is not configured (APPS_INTERNAL_TOKEN_FILE)");
     headers.authorization = `Bearer ${token}`;
   }
-  const res = await fetch(`${APPS_URL}${path}`, {
-    method: body === undefined ? "GET" : "POST",
-    headers,
-    body: body === undefined ? undefined : JSON.stringify(body),
-    signal: AbortSignal.timeout(body === undefined ? 20_000 : timeoutMs), // a deploy builds and waits for health
-  }).catch(() => undefined);
+  const res = await fetch(`${APPS_URL}${path}`, { headers, signal: AbortSignal.timeout(timeoutMs) }).catch(() => undefined);
   if (!res) throw new Refused("apps-mcp is not reachable");
   const text = await res.text();
   if (!res.ok) throw new Refused(`apps-mcp: ${text.slice(0, 300)}`);

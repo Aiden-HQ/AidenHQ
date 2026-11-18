@@ -22,7 +22,7 @@ import { githubApi, startPreviews } from "./previews.js";
 import { inAgentsOrg } from "./git.js";
 import { isLocal, localChanges, localRepos, localRoot, withLocal } from "./codehost.js";
 import { previewApp, previewName } from "./previews.js";
-import { bearerIs, internalAccess } from "./readers.js";
+import { appsReader, bearerIs } from "./readers.js";
 
 const log = pino({ level: process.env.LOG_LEVEL ?? "info", base: { svc: "apps-mcp" }, redact: ["authorization", "*.authorization", "token", "*.token"] });
 const need = (n: string): string => process.env[n] || (() => { throw new Error(`${n} is required`); })();
@@ -107,8 +107,8 @@ const readBody = async (req: IncomingMessage): Promise<any> => {
   return chunks.length ? JSON.parse(Buffer.concat(chunks).toString("utf8")) : undefined;
 };
 const internalAuthorized = (req: IncomingMessage): boolean => bearerIs(req, internalToken);
-// The grader's reads (deploys, view): the internal token, or a module holding apps.read (readers.ts).
-const access = internalAccess(kernelUrl, internalToken);
+// The grader's reads (deploys, view): a module holding apps.read (readers.ts).
+const reader = appsReader(kernelUrl);
 
 // Nothing is published to the host: only containers on the compose network reach this port. /internal/* is the board's and
 // watcher's API, and the grader's reads (a module holding apps.read); the one write (a stateful deploy, already approved in
@@ -188,11 +188,11 @@ const http = createServer(async (req, res) => {
       const name = url.searchParams.get("name") ?? "";
       return send(res, 200, await p.commit(p.find(name), url.searchParams.get("sha") ?? "").catch((err: Error) => ({ error: err.message })));
     }
-    // Every deploy of one exact commit, over the app's whole deploy table (the board's grader): a commit the bounded status
+    // Every deploy of one exact commit, over the app's whole deploy table (the grading module): a commit the bounded status
     // list has moved past is still provable here, and a commit with no row really was never deployed.
     const deployHistory = /^\/internal\/deploys\/([a-z0-9-]{1,63})\/([0-9a-f]{40})$/.exec(url.pathname);
     if (deployHistory && req.method === "GET") {
-      const refused = await access(req, "read");
+      const refused = await reader(req);
       if (refused) return send(res, refused, { error: refused === 403 ? `role apps.read is required` : "unauthorized" });
       const a = p.find(deployHistory[1]!);
       return send(res, 200, { deploys: p.store.deploysOf(a.name, deployHistory[2]!).map(({ sha, at, by, status }) => ({ sha, at, by, status })) });
@@ -206,15 +206,15 @@ const http = createServer(async (req, res) => {
       if (!sha) return send(res, 200, { sha: null, roles: [] });
       return send(res, 200, { sha, ...parseManifest(await show(p.cfg.git, a, sha, posix.join(a.path, MANIFEST_FILE))) });
     }
-    // The grader's live view of one page of a deployed app (the runner, through the board): view.ts graderView.
+    // The grader's live view of one page of a deployed app (the grading module): view.ts graderView.
     if (url.pathname === "/internal/view" && req.method === "POST") {
-      const refused = await access(req, "read");
+      const refused = await reader(req);
       if (refused) return send(res, refused, { error: refused === 403 ? `role apps.read is required` : "unauthorized" });
       const b = await readBody(req);
       return send(res, 200, await graderView(p.find(String(b?.name ?? "")), { path: b?.path, width: b?.width }, { resolve: p.resolveApi, render: p.render, sign: p.sign, running: p.store.running, audit: p.auditView }));
     }
     if (url.pathname === "/internal/deploy" && req.method === "POST") {
-      if (await access(req, "write")) return send(res, 401, { error: "unauthorized" });
+      if (!internalAuthorized(req)) return send(res, 401, { error: "unauthorized" });
       const b = await readBody(req);
       if (!b?.name || !b.by || !b.approved_comment_id) return send(res, 400, { error: "name, by and approved_comment_id are required" });
       return send(res, 200, await p.engine.deploy(p.find(b.name), { sha: b.sha, by: `${b.by} (approved in ${b.approved_comment_id})`, allowStateful: true }));

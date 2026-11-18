@@ -277,7 +277,7 @@ export function checks(pc: Paperclip, store: Pick<Store, "meta" | "setMeta" | "r
     },
     // Apps' quality checks: findings for the app's owner (Fleet Ops routes them), separate from the `app` availability group.
     async quality() {
-      const r = await appsApi<{ apps?: QualityRow[] }>("/internal/quality", undefined, { auth: true });
+      const r = await appsApi<{ apps?: QualityRow[] }>("/internal/quality", { auth: true });
       if (!r.apps) return undefined;
       return qualityFindings(r.apps, Object.keys(detectorState(store).open));
     },
@@ -287,7 +287,7 @@ export function checks(pc: Paperclip, store: Pick<Store, "meta" | "setMeta" | "r
     },
     async source() {
       const t = now();
-      const r = await appsApi<{ sources?: SourceRow[] }>("/internal/sources", undefined, { auth: true });
+      const r = await appsApi<{ sources?: SourceRow[] }>("/internal/sources", { auth: true });
       if (!r.sources) return undefined; // the warehouse isn't set up
       // Which source and since when only: the agent reads the error itself with warehouse_query.
       return staleSources(r.sources, t);
@@ -297,7 +297,7 @@ export function checks(pc: Paperclip, store: Pick<Store, "meta" | "setMeta" | "r
       return alertIncidents(store);
     },
     async pr() {
-      const r = await appsApi<{ prs?: PrRow[] }>("/internal/open-prs", undefined, { auth: true });
+      const r = await appsApi<{ prs?: PrRow[] }>("/internal/open-prs", { auth: true });
       if (!r.prs) return undefined; // no warehouse or no agents org
       return stalePrs(r.prs, now());
     },
