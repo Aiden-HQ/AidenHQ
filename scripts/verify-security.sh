@@ -169,6 +169,8 @@ for c in $containers; do
       [ "$(curl -s -m 10 -o /dev/null -w '%{http_code}' http://127.0.0.1:3131/api/search)" = "401" ] \
         && pass "grafana: no anonymous access" || fail "grafana answers without sign-in"
       ;;
+    # The App key invariant: among services and modules only codehost-github holds it (Lane T; the runner, apps-mcp and
+    # github-mcp until they move); the host's apply mints only a read-only instance-repo token (ops/git-credential-app.mjs).
     *github-mcp*)
       [ "$(docker inspect "$c" --format '{{json .HostConfig.PortBindings}}')" = "{}" ] && pass "github-mcp: no published ports" || fail "github-mcp publishes ports"
       ! echo "$mounts" | tr ';' '\n' | grep -v '/run/secrets' | grep -v '|/secrets/github-app|' | grep -q . \
