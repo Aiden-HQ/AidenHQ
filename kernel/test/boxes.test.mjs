@@ -62,6 +62,7 @@ async function host(t) {
   boxes = make();
   const wakes = new Map();
   const admission = createAdmission({
+    provenance: { pending: () => false }, routineCap: async () => undefined,
     db, grants: () => grants, kinds: () => ({}), capacity: () => 12, spend: () => [], mayDispatch: () => true, log: () => {},
     cp: { task: async (id) => ({ id, identifier: id === "task-1" ? "PEN-1" : "PEN-2", assigneeAgentId: "agent-1", status: "todo" }) },
     wakes: { claimed: (_m, k) => wakes.get(k), bind: () => {}, unclaim: () => {} },
@@ -79,6 +80,7 @@ test("admit → box → run: the kernel's key, the job token as the box's creden
   const acquire = h.calls.find((c) => c.route === "/job");
   assert.equal(acquire.auth, "Bearer kernel-key");
   assert.equal(acquire.body.image, "agent-base");
+  assert.deepEqual(acquire.body.roles, ["notes"]); // the launcher's record: what /repo checks for this box
   assert.equal(acquire.body.workspace, join(h.cfg.workDir, "tasks", "PEN-1"));
   assert.match(acquire.body.token, /^ahqj_/);
   // The box's MCP config names exactly the frozen tools; a grant added after admission doesn't reach it.

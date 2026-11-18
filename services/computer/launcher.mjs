@@ -41,7 +41,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, writeFile
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { answerSlowly, archiveArgs, forwardModel, PROGRESS_SCRIPT, CP_SCRIPT, UNTAR_SCRIPT, WRITE_RUN_TOKEN_SCRIPT, CLEAR_RUN_TOKEN_SCRIPT, boxOf, checkoutRequest, EXEC_ID, EXEC_ROOT, EXEC_MISSING, EXEC_PREP_SCRIPT, EXEC_RUN_SCRIPT, EXEC_WAIT_SCRIPT, Tokens, Creds, Jobs, tokenHash, JOB_HOME, JOB_ROUTES, admit, controlAllowed, jobEnvFile, jobFolder, jobMounts, reapLapsed, serveHelper, builtImage, dockerRunArgs, oomMessage, execEnv, mcpBlock, runCredential, stale, wrapExec, routineArgs } from "./lib.mjs";
+import { answerSlowly, archiveArgs, forwardModel, PROGRESS_SCRIPT, CP_SCRIPT, UNTAR_SCRIPT, WRITE_RUN_TOKEN_SCRIPT, CLEAR_RUN_TOKEN_SCRIPT, boxOf, checkoutRequest, EXEC_ID, EXEC_ROOT, EXEC_MISSING, EXEC_PREP_SCRIPT, EXEC_RUN_SCRIPT, EXEC_WAIT_SCRIPT, Tokens, Creds, Jobs, mayCheckout, tokenHash, JOB_HOME, JOB_ROUTES, admit, controlAllowed, jobEnvFile, jobFolder, jobMounts, reapLapsed, serveHelper, builtImage, dockerRunArgs, oomMessage, execEnv, mcpBlock, runCredential, stale, wrapExec, routineArgs } from "./lib.mjs";
 
 const repo = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
 const dotenv = {};
@@ -345,11 +345,12 @@ const IDENTIFIER = /^[A-Z][A-Z0-9]*-\d+$/;
 
 /** The runner's job routes (computers_runner_key only). */
 const runnerControl = {
-  async "/job"({ agentId, issueId, identifier, workspace, engine, state, helperPort, helperToken, identity, image: imageName, token: kernelToken, mcp: kernelMcp }, { kernel = false } = {}) {
+  async "/job"({ agentId, issueId, identifier, workspace, engine, state, helperPort, helperToken, identity, image: imageName, token: kernelToken, mcp: kernelMcp, roles }, { kernel = false } = {}) {
     if (typeof agentId !== "string" || !agentId || typeof issueId !== "string" || !issueId) throw fail(400, "agentId and issueId required");
     if (typeof identifier !== "string" || !IDENTIFIER.test(identifier)) throw fail(400, "identifier must be the task's, e.g. PEN-7");
     if (kernel) {
       if (typeof kernelToken !== "string" || !kernelToken.startsWith("ahqj_") || /\s/.test(kernelToken) || typeof kernelMcp !== "string") throw fail(400, "the kernel sends the job's token and its MCP config");
+      if (!Array.isArray(roles) || roles.some((r) => typeof r !== "string")) throw fail(400, "the kernel sends the job's frozen roles");
     } else if (!Number.isInteger(helperPort) || helperPort < 1 || helperPort > 65535 || !HELPER_TOKEN.test(String(helperToken))) throw fail(400, "helperPort and helperToken required");
     // The job's engine (engine@1): a kind the compiled registry says runs in a box, its module mounted read-only.
     const entry = (() => { try { return readJson(path.join(configDir, "engines.json"))[engine]; } catch { return undefined; } })();
@@ -367,7 +368,7 @@ const runnerControl = {
     await makeRoom();
     const name = newName();
     boxes.set(name, { agentId, lastUsed: Date.now(), busy: 1 }); // reserve the slot while starting
-    jobs.add({ container: name, agentId, issueId, identifier, workspace, codexHome, ...(kernel ? { kernel: true, tokenHash: tokenHash(kernelToken) } : { helperPort, helperToken }) }); saveJobs();
+    jobs.add({ container: name, agentId, issueId, identifier, workspace, codexHome, ...(kernel ? { kernel: true, tokenHash: tokenHash(kernelToken), roles } : { helperPort, helperToken }) }); saveJobs();
     // A kernel job's only credential is the kernel's job token; a runner job gets a run token bound to its task.
     const token = kernel ? kernelToken : tokens.issue(name, agentId);
     if (!kernel) {
@@ -434,8 +435,7 @@ async function cp(req, raw) {
  * calling box (its own run token names it). Read-only on the cache: a commit it doesn't have yet is refused, never fetched.
  */
 async function checkout(who, raw) {
-  const grant = readJson(CFG.grantsFile).agents?.[who.agentId];
-  if (!grant?.roles?.includes("repo-checkout")) throw fail(403, "repo-checkout needs the repo-checkout role");
+  if (!mayCheckout(who, readJson(CFG.grantsFile))) throw fail(403, "repo-checkout needs the repo-checkout role");
   let p;
   try { p = JSON.parse(raw || "{}"); } catch { throw fail(400, "bad json"); }
   let { cache, sha, dest } = checkoutRequest(p, { agentsOrg: readJson(CFG.computersFile).agents_org, agentsOrgs: readJson(CFG.computersFile).agents_orgs, cacheRoot: CFG.runnerRepos });

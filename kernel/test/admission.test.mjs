@@ -6,6 +6,7 @@ import { DatabaseSync } from "node:sqlite";
 import { createJobs } from "../src/jobs.ts";
 import { createAdmission, wakeInbox } from "../src/admission.ts";
 import { createWakes } from "../src/wakes.ts";
+import { createProvenance } from "../src/provenance.ts";
 
 function setup({ capacity = 12, spend = () => [], launch = async () => {}, grants: g } = {}) {
   const db = new DatabaseSync(":memory:");
@@ -25,16 +26,20 @@ function setup({ capacity = 12, spend = () => [], launch = async () => {}, grant
   const wakes = { get: (key) => db.prepare("SELECT * FROM wakes WHERE key = ?").get(key) };
   const tasks = { "task-1": "agent-1", "task-2": "agent-1", "task-3": "agent-2", "task-4": "agent-2", "task-5": "agent-2", "task-6": "agent-3" };
   const launched = [];
+  // Kernel provenance (provenance.ts) over the same db; a task's description and its traced routine cap, per task.
+  const provenance = createProvenance({ db, cap: async () => undefined, search: async () => [], log: () => {} });
+  const descriptions = {}, caps = {};
   const adm = createAdmission({
+    provenance, routineCap: async (task) => caps[task],
     db, grants: () => grants, capacity: () => capacity, spend,
     kinds: () => ({ "tasks.create_task": { floor: 1, tools: ["tasks.create"] }, "slack.post": { floor: 1, tools: ["slack.post"] }, "tasks.now": { floor: 0, tools: ["tasks.create"] } }),
     mayDispatch: (module, agent) => module === "acme-dispatch" && agent !== "agent-3",
-    cp: { task: async (id) => (tasks[id] ? { id, identifier: id.toUpperCase(), assigneeAgentId: tasks[id], status: "todo" } : undefined) },
+    cp: { task: async (id) => (tasks[id] ? { id, identifier: id.toUpperCase(), assigneeAgentId: tasks[id], status: "todo", description: descriptions[id] ?? "" } : undefined) },
     wakes: wakeInbox(db),
     launch: async (job) => { launched.push(job); await launch(job); },
     log: () => {},
   });
-  return { db, adm, jobs, grants, wake, wakes, inbox, launched };
+  return { db, adm, jobs, grants, wake, wakes, inbox, launched, descriptions, caps };
 }
 
 const req = (wake) => ({ wake, prompt: "do the thing" });
@@ -114,7 +119,7 @@ test("a job admitted but never started when the kernel stopped is deferred at th
   await new Promise((r) => setTimeout(r, 20));
   assert.equal(db.prepare("SELECT state FROM jobs").get().state, "admitted");
   assert.ok(wakes.get("w1").job);
-  const next = createAdmission({ db, grants: () => grants, capacity: () => 12, spend: () => [], kinds: () => ({}), mayDispatch: () => true, cp: {}, wakes: wakeInbox(db), launch: async () => {}, log: () => {} });
+  const next = createAdmission({ db, grants: () => grants, capacity: () => 12, spend: () => [], kinds: () => ({}), mayDispatch: () => true, cp: {}, wakes: wakeInbox(db), provenance: { pending: () => false }, routineCap: async () => undefined, launch: async () => {}, log: () => {} });
   next.recover();
   assert.equal(db.prepare("SELECT COUNT(*) AS n FROM jobs").get().n, 0);
   assert.equal(wakes.get("w1").job, null);
@@ -126,4 +131,24 @@ test("a dispatcher that lost the admission's answer finds its job by the wake; a
   assert.deepEqual(jobs.byWake("acme-dispatch", "w1").map((j) => [j.id, j.task, j.agent]), [[job.id, "task-1", "agent-1"]]);
   assert.deepEqual(jobs.byWake("acme-other", "w1"), []);
   assert.deepEqual(jobs.byWake("acme-dispatch", "w2"), []);
+});
+
+test("a task a job created whose provenance isn't settled yet → 409, no job; once settled it is admitted", async () => {
+  const { adm, wake, db, descriptions } = setup();
+  descriptions["task-1"] = `Do it\n\n<!-- ahqintent${"a".repeat(32)} -->`;
+  await assert.rejects(adm.admit("acme-dispatch", req(wake("w1", "task-1", "agent-1"))), (e) => e.status === 409 && e.code === "provenance-pending");
+  assert.equal(db.prepare("SELECT COUNT(*) AS n FROM jobs").get().n, 0);
+  db.prepare("INSERT INTO provenance (task, created_by_job, routine, routine_cap, at) VALUES ('task-1', 'j-parent', 'digest', 'off', 1)").run();
+  assert.equal((await adm.admit("acme-dispatch", req("w1"))).state, "admitted");
+});
+
+test("the routine cap is frozen on the job row at admission; a later change to the trace doesn't move it", async () => {
+  const { adm, wake, db, caps } = setup();
+  caps["task-1"] = { cap: "off", routine: "routine-1" };
+  const job = await adm.admit("acme-dispatch", req(wake("w1", "task-1", "agent-1")));
+  caps["task-1"] = { cap: "full" };
+  assert.deepEqual({ ...db.prepare("SELECT routine, routine_cap FROM jobs WHERE id = ?").get(job.id) }, { routine: "routine-1", routine_cap: "off" });
+  // A task with no routine root: no cap frozen.
+  const free = await adm.admit("acme-dispatch", req(wake("w2", "task-3", "agent-2")));
+  assert.deepEqual({ ...db.prepare("SELECT routine, routine_cap FROM jobs WHERE id = ?").get(free.id) }, { routine: null, routine_cap: null });
 });

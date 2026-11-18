@@ -57,7 +57,7 @@ export function createBoxes({ db, cfg, jobs, call, secret, whoami, connections, 
     const mcp = mcpBlock((await whoami(token)).tools, connections(), cfg.boxGatewayUrl);
     // The task's last box goes first (the launcher keeps one per task); while it is still going, the job waits a tick.
     for (const r of db.prepare("SELECT id FROM jobs WHERE task = ? AND authority IS NOT NULL AND box IS NOT NULL AND released IS NULL AND state NOT IN ('admitted', 'running')").all(job.task) as { id: string }[]) await release(r.id);
-    const box = (await call("/job", { agentId: job.agent, issueId: job.task, identifier: job.identifier, workspace, engine: a.engine, state, image: a.image, token, mcp }).catch((e: { status?: number }) => {
+    const box = (await call("/job", { agentId: job.agent, issueId: job.task, identifier: job.identifier, workspace, engine: a.engine, state, image: a.image, token, mcp, roles: a.roles }).catch((e: { status?: number }) => {
       throw e.status === 409 ? Object.assign(e, { status: 503 }) : e;
     })) as unknown as Box;
     db.prepare("UPDATE jobs SET box = ?, renewed = ? WHERE id = ?").run(JSON.stringify(box), now(), job.id);

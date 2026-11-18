@@ -7,6 +7,7 @@ import { randomBytes } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
 import { rolesOf } from "./identity.ts";
 import { JobError } from "./jobs.ts";
+import type { RoutineCap } from "./tier.ts";
 import type { Skill } from "./sandbox.ts";
 
 export const PROFILES = ["crew", "engineer", "check"] as const;
@@ -50,7 +51,11 @@ export type Admitted = { id: string; module: string; agent: string; task: string
 const LIVE = "state IN ('admitted', 'running')";
 const ID = /^[\w.:-]{1,200}$/;
 
-export function createAdmission({ db, grants, kinds, capacity, spend, mayDispatch, cp, wakes, launch, log }: {
+export function createAdmission({ db, grants, kinds, capacity, spend, mayDispatch, cp, wakes, provenance, routineCap, launch, log }: {
+  /** Kernel provenance (provenance.ts): a task carrying a creation intent with no row yet is not admitted until reconciled. */
+  provenance: { pending(issue: { id: string; description?: string | null }): boolean };
+  /** The task's routine cap as the kernel traces it now (tier.ts taskRoutineCap): frozen on the job row at admission. */
+  routineCap: (task: string) => Promise<RoutineCap | undefined>;
   /** kernel.db, with the jobs table (jobs.ts) already made. */
   db: DatabaseSync;
   grants: () => Record<string, AgentGrant | undefined>;
@@ -61,7 +66,7 @@ export function createAdmission({ db, grants, kinds, capacity, spend, mayDispatc
   /** The spend caps a new job of this agent on this task would start over (the gateway's `exhausted`). */
   spend: (agent: string, task: string) => { scope: string }[];
   mayDispatch: (module: string, agent: string) => boolean;
-  cp: { task(id: string): Promise<{ id: string; identifier?: string; assigneeAgentId?: string | null; status?: string } | undefined> };
+  cp: { task(id: string): Promise<{ id: string; identifier?: string; assigneeAgentId?: string | null; status?: string; description?: string | null } | undefined> };
   wakes: Wakes;
   /** Gets the job its computer and starts it (boxes.ts); a 503 means the computers are full: the job waits for the next tick. */
   launch: (job: Admitted) => Promise<void>;
@@ -97,6 +102,8 @@ export function createAdmission({ db, grants, kinds, capacity, spend, mayDispatc
     const identifier = String(t.identifier ?? "");
     if (!/^[\w.-]{1,100}$/.test(identifier)) throw new JobError(400, "bad-task", `task ${task} has no identifier`);
 
+    // The routine cap is traced now and frozen on the row: never recomputed from mutable parents later, never the dispatcher's.
+    const cap = await routineCap(task);
     // From here to COMMIT nothing awaits: two admits never interleave.
     const id = `j-${randomBytes(8).toString("hex")}`;
     let job: Admitted;
@@ -105,6 +112,8 @@ export function createAdmission({ db, grants, kinds, capacity, spend, mayDispatc
       const w = wakes.claimed(module, b.wake);
       if (!w || w.task !== task || w.agent !== agent) throw new JobError(409, "wake-not-claimed", `wake ${b.wake} isn't one this module claimed`);
       if (db.prepare(`SELECT 1 FROM jobs WHERE task = ? AND ${LIVE}`).get(task)) throw new JobError(409, "job-running", `task ${task} already has a job`);
+      // A task a job created whose provenance row isn't written yet: its routine cap is unknown, so nothing runs on it.
+      if (provenance.pending({ id: task, description: t.description ?? null })) throw new JobError(409, "provenance-pending", `task ${task}'s provenance isn't settled yet`);
       const g = grants()[agent];
       if (!g) throw new JobError(403, "no-grants", `agent ${agent} has no grants`);
       const live = (db.prepare(`SELECT COUNT(*) AS n FROM jobs WHERE ${LIVE}`).get() as { n: number }).n;
@@ -114,8 +123,8 @@ export function createAdmission({ db, grants, kinds, capacity, spend, mayDispatc
       const over = spend(agent, task);
       if (over.length) throw new JobError(429, "over-cap", `the ${over.map((o) => o.scope).join(", ")} spend cap is used up`);
       const authority = freeze(g, w.cause);
-      db.prepare("INSERT INTO jobs (id, module, agent, task, engine, pid, log, dir, at, jobcaps, observing, live_input, state, profile, wake, authority) VALUES (?, ?, ?, ?, ?, 0, '', '', ?, ?, 0, 0, 'admitted', ?, ?, ?)")
-        .run(id, module, agent, task, authority.engine, Date.now(), JSON.stringify(authority.jobcaps), authority.profile, b.wake, JSON.stringify(authority));
+      db.prepare("INSERT INTO jobs (id, module, agent, task, engine, pid, log, dir, at, jobcaps, observing, live_input, state, profile, wake, authority, routine, routine_cap) VALUES (?, ?, ?, ?, ?, 0, '', '', ?, ?, 0, 0, 'admitted', ?, ?, ?, ?, ?)")
+        .run(id, module, agent, task, authority.engine, Date.now(), JSON.stringify(authority.jobcaps), authority.profile, b.wake, JSON.stringify(authority), cap?.routine ?? null, cap?.cap ?? null);
       wakes.bind(b.wake, id);
       db.exec("COMMIT");
       job = { id, module, agent, task, identifier, profile: authority.profile, authority, prompt: b.prompt, ...(b.session ? { session: b.session } : {}), wake: b.wake };
