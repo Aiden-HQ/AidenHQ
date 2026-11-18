@@ -1,33 +1,21 @@
 name: primer
 description: "Primer: read, and publish documents when asked."
 requires:
-  - board # its sign-in and setup flow
-# Its sign-in on the board (the board's point, modules/board/schemas/signins.json), and its setup flow.
+  - board # its sign-in
+# Its sign-in on the board (the board's point, modules/board/schemas/signins.json).
 contributes:
   board.signins:
     - { id: primer, label: Primer, status_url: "http://primer-mcp:8084/auth/status", connect_url: /primer/connect, callback: /primer/callback,
-        missing: "The agents can't read or publish documents until it is.", stopped: "The agents can't read or publish documents." }
-  board.setup_flows:
-    - order: 125
-      title: Primer documents
-      why: Agents can read your Primer documents, and publish when you approve.
-      effort: about 3 minutes, needs your Primer login
-      secrets: [primer_mcp_url]
-      signin: primer
-      steps: |
-        1. Ask your Primer admin for your organization's MCP address, or find it in Primer's settings. It looks like `https://primer.example.com/mcp`.
-        2. Paste it below.
-        3. Press **Connect Primer**, sign in with your company login in the tab that opens and press **Allow**.
-
-        Agents read as you. Publishing a document always waits for your approval.
+        missing: "The agents can't read or publish documents until it is.", stopped: "The agents can't read or publish documents.",
+        secrets: [primer_mcp_url] }
 settings:
-  # Superseded by the primer_mcp_url secret the setup flow saves; a value here is read only while that secret is empty.
+  # Superseded by the primer_mcp_url secret Connect asks for; a value here is read only while that secret is empty.
   primer_mcp_url:
     default: ""
     type: url
 connections:
   primer:
-    setup: "Open its setup on the board (#/setup/primer): paste your Primer MCP address and press Connect."
+    setup: "Press Connect on the board (Settings, Connections), give your Primer MCP address and allow access."
     guide: "Primer documents (design docs and write-ups) with their versions and comments."
     url: http://primer-mcp:8084/mcp
     auth: primer_service_key
@@ -46,12 +34,12 @@ jobcaps:
 secrets:
   state: true # its own vault dir, read-write at /state: the registered client and the token pair; Primer rotates the refresh token on every refresh
   provided:
-    # Your organization's Primer MCP endpoint, saved by the setup flow; empty: Primer is off.
+    # Your organization's Primer MCP endpoint, asked for on Connect; empty: Primer is off.
     - name: primer_mcp_url
       setup:
         label: Primer MCP address
         pattern: '^https://[a-z0-9.-]+(:[0-9]{2,5})?/[A-Za-z0-9._/-]*$'
-        help: "For example https://primer.example.com/mcp"
+        help: "From your Primer admin or Primer's settings, for example https://primer.example.com/mcp"
 optional_secrets:
   - primer_mcp_url
 services:
@@ -67,7 +55,7 @@ services:
         PRIMER_MCP_URL_FILE: ${secrets.primer_mcp_url}
         PRIMER_MCP_URL: "${settings.primer_mcp_url}"
         PRIMER_STATE_DIR: /state
-        # The board's https address: its Connect returns there (besides loopback).
+        # The board's https address: Connect's one-click link returns there (the default is loopback).
         BOARD_URL: "${BOARD_LAN_URL:-}"
         # The board's sign-in endpoints: state, and starting or finishing a sign-in.
         PRIMER_AUTH_TOKEN_FILE: ${secrets.primer_auth_token}

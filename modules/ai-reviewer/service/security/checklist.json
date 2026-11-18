@@ -9,7 +9,7 @@
     },
     {
       "id": "reviewer-cases-kept",
-      "trigger": { "paths": ["modules/ai-reviewer/**", "ai-reviewer/**", "services/runner/src/tiers.*", "services/runner/src/review-request.*", "services/runner/src/siblings.*", "services/runner/src/cards.*", "services/shared/review-files.*", "kernel/sdk/src/reviewer.ts", "kernel/src/tier.ts", "kernel/src/writes.ts", "kernel/src/records.ts", "kernel/src/reviews.ts", "kernel/src/kinds.ts", "kernel/src/loader/authority.ts", "modules/codehost-github/src/plan.mjs", "codehost-github/src/plan.mjs", "modules/platform/src/check.mjs", "platform/src/check.mjs"] },
+      "trigger": { "paths": ["modules/ai-reviewer/**", "ai-reviewer/**", "services/runner/src/tiers.*", "services/runner/src/review-request.*", "services/runner/src/siblings.*", "services/runner/src/cards.*", "services/shared/review-files.*", "kernel/sdk/src/reviewer.ts", "kernel/src/tier.ts", "kernel/src/writes.ts", "kernel/src/records.ts", "kernel/src/reviews.ts", "kernel/src/kinds.ts", "scripts/compiler/authority.ts", "modules/codehost-github/src/plan.mjs", "codehost-github/src/plan.mjs", "modules/platform/src/check.mjs", "platform/src/check.mjs"] },
       "check": "Code merges a change to the reviewer's or the tiers' code only with a 100% receipt of the paid reviewer eval for its exact head (services/runner/src/evalgate.ts), so the eval's result is not your question. What you check: every planted case under modules/ai-reviewer/test/reviewer-cases/ is kept, with its expect, expect_code, expect_second and expect_flag as they were; the diff adds cases or leaves them alone.",
       "why": "CLAUDE.md: the reviewer eval must stay at 100%; every false reject becomes a planted case."
     },
@@ -70,7 +70,7 @@
     },
     {
       "id": "module-contract-docs",
-      "trigger": { "paths": ["kernel/src/loader/authority.ts", "kernel/src/loader/points.ts", "scripts/modules.mjs", "scripts/modules.ts", "kernel/contract.lock.json", "kernel/schemas/**", "kernel/sdk/src/**"] },
+      "trigger": { "paths": ["scripts/compiler/authority.ts", "scripts/compiler/points.ts", "scripts/modules.mjs", "scripts/modules.ts", "kernel/contract.lock.json", "kernel/schemas/**", "kernel/sdk/src/**"] },
       "check": "A change to the module contract (a module.yaml key the loader or the compiler reads, a point, kernel/contract.lock.json, or a kernel API that modules call through the SDK) updates docs/modules.md in the same diff to describe it. A change that leaves the contract as it was (an internal fix, a refactor that keeps every key and call) holds.",
       "why": "Owner, 2026-11-17: module authors build from docs/modules.md, so a contract change it doesn't describe breaks the next module written from it."
     }

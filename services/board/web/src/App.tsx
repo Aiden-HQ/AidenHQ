@@ -31,7 +31,6 @@ import { askForNotifications, notificationsSupported, watchNeedsYou } from "./no
 import { CardView, GearIcon, GoogleBanner, PlusIcon, PoweredBy, SignInBanners, SortableCard, memberIssue } from "./components";
 import { CrewPicker, Drawer } from "./Drawer";
 import { SetupFlow } from "./SetupFlow";
-import { ConnectPage } from "./ConnectPage";
 import { Markdown, setSlackTeams } from "./markdown";
 import { BUCKETS, BUCKET_NAMES, type Board, type Bucket, type Card } from "./types";
 import { dayDate, keepsSecureCookies, matches } from "./util";
@@ -50,7 +49,7 @@ const DesignView = lazy(() => VIEW_CHUNKS.design().then((m) => ({ default: m.Des
 const PageLoading = () => <main className="page wide" aria-busy="true" />;
 
 type Items = Record<Bucket, Card[]>;
-type Route = { kind: "board" } | { kind: "chat"; ref: string | null } | { kind: "view"; view: View } | { kind: "settings"; cat: Category | null } | { kind: "agent"; key: string; tab: AgentTab } | { kind: "module"; name: string; tab: ModuleTab } | { kind: "task"; ref: string; focus?: string } | { kind: "run"; id: string } | { kind: "brief" } | { kind: "help" } | { kind: "design" } | { kind: "app"; name: string } | { kind: "setup"; module: string } | { kind: "connect"; id: string; error: string | null };
+type Route = { kind: "board" } | { kind: "chat"; ref: string | null } | { kind: "view"; view: View } | { kind: "settings"; cat: Category | null } | { kind: "agent"; key: string; tab: AgentTab } | { kind: "module"; name: string; tab: ModuleTab } | { kind: "task"; ref: string; focus?: string } | { kind: "run"; id: string } | { kind: "brief" } | { kind: "help" } | { kind: "design" } | { kind: "app"; name: string } | { kind: "setup"; module: string };
 
 const HINTS: Record<Bucket, string> = {
   triage: "New tasks land here",
@@ -94,9 +93,12 @@ class MouseOrPenSensor extends PointerSensor {
 }
 
 function parseRoute(): Route {
-  // #/connect/<id> picks a sign-in's access; ?error=… is a failed sign-in coming back (read raw: the message is encoded).
+  // An old #/connect/<id>[?error=…] link: that connection's Connect, on Settings > Connections (read raw: the message is encoded).
   const connect = /^#\/?connect\/([a-z0-9-]{1,63})(?:\?([\s\S]*))?$/.exec(location.hash);
-  if (connect) return { kind: "connect", id: connect[1]!, error: new URLSearchParams(connect[2] ?? "").get("error") };
+  if (connect) {
+    history.replaceState(null, "", `#/settings/connections?connect=${connect[1]}${connect[2] ? `&${connect[2]}` : ""}`);
+    return { kind: "settings", cat: "connections" };
+  }
   const h = decodeURIComponent(location.hash.replace(/^#\/?/, ""));
   // #/t/PEN-12 opens a task; #/t/PEN-12/PEN-15 opens it on the agent working in PEN-15.
   if (h.startsWith("t/")) {
@@ -117,7 +119,7 @@ function parseRoute(): Route {
   if (mod) return { kind: "module", name: mod[1]!, tab: (mod[2] as ModuleTab | undefined) ?? "overview" };
   // #/settings/<category> opens Settings there; the old tabs (#/connections, #/accounts) are categories now.
   if (h === "settings" || h.startsWith("settings/")) {
-    const cat = h.slice("settings/".length);
+    const cat = h.slice("settings/".length).split("?")[0]!;
     return { kind: "settings", cat: isCategory(cat) ? cat : null };
   }
   if (h === "connections" || h === "accounts") return { kind: "settings", cat: h };
@@ -263,6 +265,8 @@ export function App() {
     setItems((i) => i ?? cached.buckets);
   }, [session]);
 
+  // A sign-in finished (in the tab Connect opened): its banner goes at once.
+  useEffect(() => subscribe(["connections"], () => void refresh()), [refresh]);
   useEffect(() => {
     if (view !== "board" || Date.now() - boardAt.current < 10_000) return;
     boardAt.current = Date.now();
@@ -715,8 +719,8 @@ export function App() {
       {view === "chat" && <ChatWorkspace selected={route.kind === "chat" ? route.ref : null} composing={route.kind === "chat" && !route.ref} mobile={mobile} crew={board.assignees} prefix={board.prefix} go={go} onSignIn={signInNeeded} toast={toast} />}
       {view === "approvals" && <ApprovalsView open={openChat} onSignIn={signInNeeded} />}
       {view === "settings" && <SettingsView cat={route.kind === "settings" ? route.cat : null} mobile={mobile} session={session} go={go} onSignIn={signInNeeded} can={{ signIn: signInConnect, google: googleConnect }} />}
-      {view === "modules" && route.kind !== "module" && <Suspense fallback={<PageLoading />}><ModulesView onSignIn={signInNeeded} /></Suspense>}
-      {view === "modules" && route.kind === "module" && <Suspense fallback={<PageLoading />}><ModulePage key={route.name} name={route.name} tab={route.tab} go={go} onSignIn={signInNeeded} /></Suspense>}
+      {view === "modules" && route.kind !== "module" && <Suspense fallback={<PageLoading />}><ModulesView onSignIn={signInNeeded} can={{ signIn: signInConnect, google: googleConnect }} /></Suspense>}
+      {view === "modules" && route.kind === "module" && <Suspense fallback={<PageLoading />}><ModulePage key={route.name} name={route.name} tab={route.tab} go={go} onSignIn={signInNeeded} can={{ signIn: signInConnect, google: googleConnect }} /></Suspense>}
       {view === "apps" && <Suspense fallback={<PageLoading />}><AppsView key={route.kind === "app" ? route.name : ""} app={route.kind === "app" ? route.name : undefined} onSignIn={signInNeeded} /></Suspense>}
       {view === "design" && <Suspense fallback={<PageLoading />}><DesignView /></Suspense>}
       {view === "costs" && <Suspense fallback={<PageLoading />}><CostsView onSignIn={signInNeeded} /></Suspense>}
@@ -813,7 +817,6 @@ export function App() {
       )}
       {route.kind === "run" && <Suspense fallback={null}><RunPage key={route.id} id={route.id} onClose={() => (history.length > 1 ? history.back() : go("#/"))} onSignIn={signInNeeded} /></Suspense>}
       {route.kind === "help" && <Help />}
-      {route.kind === "connect" && <ConnectPage key={`${route.id}:${route.error ?? ""}`} id={route.id} error={route.error} onSignIn={signInNeeded} />}
       {route.kind === "setup" && <SetupFlow key={route.module} module={route.module} onDone={() => go("#/")} onSignIn={signInNeeded} />}
       {creating && (
         <NewTask

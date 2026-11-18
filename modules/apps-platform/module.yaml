@@ -61,6 +61,13 @@ writes:
     floor: 0
     tools: [ app_api ]
     card: { sentence: "Call {{method}} {{path}} on app {{name}}'s agent API.", changes: "Whatever that path does in {{name}}, as agent {{caller}}.", reads: "The app's answer.", cost: "No model cost.", details: "{{details}}" }
+# The App tokens apps-mcp asks the kernel for (POST /v1/codehost/token, owner authority; only codehost-github holds the App's
+# key): reads of the agents org's private app repos, the registry push to the instance repo (apps.yaml) and the preview
+# comments on app PRs. @agents and @instance resolve from the kernel's own configuration.
+codehost:
+  token:
+    repos: ["@agents/*", "@instance"]
+    perms: { contents: write, pull_requests: write }
 generated_secrets:
   # The kernel's key to apps-mcp's /mcp and its executor (agents' calls arrive only through the kernel's proxy).
   - apps_service_key

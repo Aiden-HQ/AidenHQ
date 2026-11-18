@@ -1,7 +1,8 @@
 // Untrusted text (a tool result, a forwarded message, a document) as data: one marked block an agent reads as information,
 // never as instructions. The closing marker inside the text is neutralised, so the text can't end the block early.
 //
-// Canonical copy: kernel/sdk/src/fence.ts. Consumers hold byte-identical copies (scripts/sync-shared.mjs).
+// First-party modules hold byte-identical copies (scripts/sync-shared.mjs: edit this one and run it); third-party modules import
+// @aidenhq/sdk/fence.
 export const FENCE_OPEN = "<untrusted-data";
 export const FENCE_CLOSE = "</untrusted-data>";
 

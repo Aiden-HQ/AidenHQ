@@ -37,6 +37,8 @@
 .st-pane > .ui-banner { margin: var(--page-top) var(--gutter) 0; }
 .st-pane > .powered-by { margin: 0 var(--gutter) 24px; }
 .st-note { margin: calc(var(--stack) / -2) 0 0; font-size: var(--text-base); color: var(--muted); }
+/* Inside a card, a note is a row: the page-level pull-up above would clip it under the card's top edge. */
+.st-rows > .st-note { margin: 0; padding: 14px 16px; }
 .st-empty { margin: 0; padding: 18px 16px; color: var(--muted); font-size: var(--text-base); }
 .st-link { font-size: var(--text-sm); }
 .st-link.muted { color: var(--faint); }

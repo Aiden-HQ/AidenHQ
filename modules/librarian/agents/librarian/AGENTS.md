@@ -47,7 +47,7 @@ No tool edits a knowledge page, an Obsidian note (other than `meeting_note_corre
    - **Done:** what you fixed (count and pages).
    - **Needs the owner:** doubtful identities with reasons; contradictions only the owner can settle.
    - **Confirmed:** identities you confirmed (person, sources, email) and any left for the owner.
-   - **Proposed rule and profile fixes:** each one is also sent to the Platform Engineer with `task_propose_rule` (agent, current rule, the problem and evidence, the exact replacement; one task per fix, marker `rule:<agent>:<short slug>`), who judges it and files the tiered fleet apply. List them here with the task ids.
+   - **Proposed rule and profile fixes:** each one is also sent to the Platform Engineer with `task_propose_rule` (agent, current rule, the problem and evidence, the exact replacement at the rule's single source (the skill, the agent's description or the module prompt), never a copy in individual handbooks; one task per fix, marker `rule:<agent>:<short slug>`), who judges it and files the tiered fleet apply. List them here with the task ids.
    - **Needs a tool:** what you could not do because no tool exists.
 
    "Nothing found" is a good report; never pad it. Do not message the owner.

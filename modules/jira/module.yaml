@@ -9,18 +9,6 @@ contributes:
   board.signins:
     - { id: jira, label: Jira, status_url: "http://jira-mcp:8091/auth/status", connect_url: /jira/connect, callback: /jira/callback,
         missing: "The agents can't read it until it is.", stopped: "The agents can't read it." }
-  board.setup_flows:
-    - order: 120
-      title: Jira and Confluence
-      why: Agents can look up issues, their history and Confluence pages as you.
-      effort: about 1 minute, needs your Atlassian login
-      signin: jira
-      steps: |
-        1. Press **Connect Jira** below. Atlassian opens in a new tab.
-        2. Sign in with the Atlassian account you use for your company's Jira, then press **Accept**.
-        3. Come back here: the status turns green.
-
-        Agents read as you, so they see only what you can see. On Connect you pick the permissions to grant; the ones pre-selected only read and search.
   warehouse.sources:
     - schema: src_jira
       about: "src_jira.issues / sprints / confluence_pages (Confluence page metadata + a cheap summary: a pointer, never evidence; read the page live) / changes / users"
@@ -49,18 +37,21 @@ settings:
     default: 365
 connections:
   jira:
-    setup: "Set your Atlassian site's URL on the board (Settings, Connections) and approve the change, then press Connect on the board (its https address)."
+    setup: "Set your Atlassian site's URL (the jira_url setting, on the module's Settings tab) and approve the change, then press Connect on the board."
     guide: "Jira and Confluence directly: exact issue fields, change history (when a status or date changed), comments, versions and JQL queries. Use it for precise dates and history; use Glean to find the issue or page first."
     url: http://jira-mcp:8091/mcp
     auth: jira_service_key
-    # Every tool Atlassian's server lists for the read scopes (probed 2026-11-18). Reads added since the first thirteen are
-    # `named`: only a grant naming them reaches them. Atlassian lists its write tools only to a sign-in granted write scopes
-    # (the owner picks scopes on Connect); they stay untagged, so the kernel refuses them until a module change tags them.
+    # Every tool Atlassian's server lists (probed 2026-11-18: 64 for the read scopes, 120 once the owner granted write:jira and
+    # write:confluence). Reads added since the first thirteen are `named`: only a grant naming them reaches them. Every write
+    # tool is `destructive`: a plain `write` tool runs at Tier 0 unreviewed (kernel/src/writes.ts), and Jira/Confluence edits
+    # can change visibility (issue security level, moving or copying pages) or publish data across spaces, so each needs an
+    # explicit grant naming it and every call goes to the AI reviewer first (Tier 1).
     tools:
       read: [ searchJiraIssuesUsingJql, getJiraIssue, listJiraIssueChangelogs, listJiraIssueComments, listJiraProjects, getJiraProjectVersions, getJiraProjectVersionRelatedWork, listJiraBoards, getJiraBoardConfig, listJiraBoardSprints, lookupJiraAccountId, searchConfluence, getConfluenceContent,
               atlassianUserInfo, diffConfluenceContentVersions, downloadConfluenceAttachment, downloadJiraIssueAttachment, exportConfluenceContent, getAccessibleAtlassianResources, getConfluenceApproval, getConfluenceAttachment, getConfluenceComment, getConfluenceContentAnalytics, getConfluenceContentAncestors, getConfluenceContentDescendants, getConfluenceContentPermissions, getConfluenceContentRestrictionState, getConfluenceContentStatus, getConfluenceContentSuggestions, getConfluenceContentVersion, getConfluenceMauiApp, getConfluencePersonalSpace, getConfluencePublicLinkStatus, getConfluenceReactions, getConfluenceSpace, getConfluenceSpaceInstructions, getConfluenceTask, getConfluenceTemplate, getContentFormatGuide, getJiraBoardIssueData, getJiraBoardSprintData, getJiraCurrentUser, getJiraEntityProperty, getJiraIssueTypeMetaWithFields, getJiraUser, listConfluenceAttachments, listConfluenceComments, listConfluenceContent, listConfluenceContentVersions, listConfluenceSpaces, listConfluenceTasks, listConfluenceTemplates, listJiraDashboards, listJiraFilters, listJiraIssueAssignableUsers, listJiraIssueLinkTypes, listJiraIssueRemoteIssueLinks, listJiraIssueTransitions, listJiraIssueWorklogs, listJiraProjectComponents, listJiraProjectIssueTypesMetadata, listJiraStatuses, resolveConfluenceContentMacros, showConfluenceEditor ]
       named: [ atlassianUserInfo, diffConfluenceContentVersions, downloadConfluenceAttachment, downloadJiraIssueAttachment, exportConfluenceContent, getAccessibleAtlassianResources, getConfluenceApproval, getConfluenceAttachment, getConfluenceComment, getConfluenceContentAnalytics, getConfluenceContentAncestors, getConfluenceContentDescendants, getConfluenceContentPermissions, getConfluenceContentRestrictionState, getConfluenceContentStatus, getConfluenceContentSuggestions, getConfluenceContentVersion, getConfluenceMauiApp, getConfluencePersonalSpace, getConfluencePublicLinkStatus, getConfluenceReactions, getConfluenceSpace, getConfluenceSpaceInstructions, getConfluenceTask, getConfluenceTemplate, getContentFormatGuide, getJiraBoardIssueData, getJiraBoardSprintData, getJiraCurrentUser, getJiraEntityProperty, getJiraIssueTypeMetaWithFields, getJiraUser, listConfluenceAttachments, listConfluenceComments, listConfluenceContent, listConfluenceContentVersions, listConfluenceSpaces, listConfluenceTasks, listConfluenceTemplates, listJiraDashboards, listJiraFilters, listJiraIssueAssignableUsers, listJiraIssueLinkTypes, listJiraIssueRemoteIssueLinks, listJiraIssueTransitions, listJiraIssueWorklogs, listJiraProjectComponents, listJiraProjectIssueTypesMetadata, listJiraStatuses, resolveConfluenceContentMacros, showConfluenceEditor ]
       write: []
+      destructive: [ addOrEditJiraIssueComment, addOrEditJiraIssueWorklog, createJiraIssue, editJiraIssue, transitionJiraIssue, createJiraIssueLink, createJiraIssueRemoteIssueLink, uploadAttachmentToJiraIssue, watchJiraIssue, createConfluenceComment, updateConfluenceComment, updateConfluenceCommentResolution, createConfluenceContent, updateConfluenceContent, copyConfluenceContent, moveConfluenceContent, convertConfluenceContentMode, setConfluenceContentStatus, addConfluenceContentSuggestions, addLabelsToConfluenceContent, addConfluenceReaction, createConfluenceAttachment, completeConfluenceTask, reopenConfluenceTask, createConfluenceInfographicForPage, editConfluenceInfographicForPage, starConfluenceContent, unstarConfluenceContent, starConfluenceSpace, unstarConfluenceSpace, watchConfluenceContent, unwatchConfluenceContent, watchConfluenceLabel, unwatchConfluenceLabel, watchConfluenceSpace, unwatchConfluenceSpace, addConfluenceContentPermissions, removeConfluenceContentPermissions, replaceConfluenceContentPermissions, setConfluenceContentRestrictionState, enableConfluencePublicLink, disableConfluencePublicLink, archiveConfluenceContent, unarchiveConfluenceContent, restoreConfluenceContentVersion, createConfluenceSpace, setConfluenceSpaceInstructions, createConfluenceMauiApp, editConfluenceMauiApp, manageConfluenceApproval, createJiraBoard, manageJiraSprint, manageJiraProjectVersion, manageJiraProjectVersionRelatedWork, convertJiraIssueHierarchy, editJiraEntityProperty ]
 secrets:
   state: true # its own vault dir, read-write at /state: the registered client and the token pair, refreshed here
 services:
@@ -75,7 +66,7 @@ services:
         JIRA_URL: "${settings.jira_url}"
         ATLASSIAN_MCP_URL: "${settings.atlassian_mcp_url}"
         JIRA_STATE_DIR: /state
-        # The board's https address: its Connect returns there (besides loopback).
+        # The board's https address: Connect's one-click link returns there (the default is loopback).
         BOARD_URL: "${BOARD_LAN_URL:-}"
         HISTORY_PROJECTS: "${settings.history_projects}"
         HISTORY_DAYS: "${settings.history_days}"

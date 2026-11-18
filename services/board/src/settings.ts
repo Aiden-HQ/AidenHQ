@@ -95,7 +95,7 @@ export interface Sources {
   boardTimezone: string;
   pendingRaises: number;
   pendingApprovals: number;
-  /** Release updates (ops/update.sh's display copy, updates.json beside the generations): null when this instance has none. */
+  /** Release updates (kernel/src/updates.ts's display copy, updates.json beside the generations): null when this instance has none. */
   updates?: UpdatesView | null;
 }
 
@@ -261,18 +261,6 @@ export interface ConnectionRow {
   probe: Probe | null;
   signIn: SignIn | null;
   google?: { accounts: { email: string; primary: boolean; state: string; since: string; detail?: string }[]; error?: string } | null;
-  /** Its module's URL settings (`type: url`), which the board can change: the first without a default is the one to set. */
-  urls: UrlSetting[];
-}
-
-export interface UrlSetting {
-  key: string;
-  value: string;
-  /** instance.yaml sets it. */
-  set: boolean;
-  default?: string;
-  host?: string;
-  doc?: string;
 }
 
 export interface SignIn {
@@ -280,8 +268,10 @@ export interface SignIn {
   configured: boolean;
   since: string;
   detail?: string;
-  /** Connected, and the owner may pick what to grant on a Reconnect. */
-  scopes?: boolean;
+  /** Connect offers a choice of scopes (the picker comes first; a Reconnect reads "Change access"). */
+  offer?: boolean;
+  /** Not configured yet: the per-install values Connect asks for first (board.signins `secrets`). */
+  fields?: { secret: string; label: string; pattern: string; help?: string }[];
 }
 
 /** Every connection the compiled config has, every runner service with setup steps, and each warehouse source. */
@@ -296,13 +286,6 @@ export function connectionsView(input: {
 }) {
   const c = input.compiled ?? {};
   const moduleOf = new Map(input.catalog.flatMap((m) => (m.connections ?? []).map((n) => [n, m.name] as const)));
-  const urls = (module: string): UrlSetting[] =>
-    Object.entries(input.catalog.find((m) => m.name === module)?.settings ?? {})
-      .filter(([, d]) => d.type === "url")
-      .map(([key, d]) => {
-        const e = c.settings?.[key];
-        return { key, value: typeof e?.value === "string" ? e.value : "", set: e?.set ?? false, ...(typeof d.default === "string" ? { default: d.default } : {}), ...(d.host ? { host: d.host } : {}), ...(d.doc ? { doc: d.doc } : {}) };
-      });
   const rows: ConnectionRow[] = Object.entries(c.mcp_servers ?? {}).map(([name, m]) => {
     const write = new Set([...(m.tools?.write ?? []), ...(m.tools?.destructive ?? [])]);
     const grants = Object.entries(c.agents ?? {})
@@ -322,13 +305,11 @@ export function connectionsView(input: {
       probe: m.url ? (input.probes[name] ?? null) : null,
       signIn: input.signIns[name] ?? null,
       ...(name === "google_workspace" ? { google: input.google ?? null } : {}),
-      // A connection that signs in to nothing has no sign-in URLs to set (Grafana's cloud stack while it reads the local one).
-      urls: input.signIns[name]?.state === "none" ? [] : urls(moduleOf.get(name) ?? ""),
     };
   });
   // Modules that serve the runner rather than an agent connection (Grafana, ClickHouse): their sign-in, if the board has one.
   for (const m of input.catalog.filter((x) => x.enabled && x.setup && !(x.connections ?? []).length))
-    rows.push({ name: m.name, module: m.name, kind: "service", transport: "runner", tools: { read: 0, write: 0 }, grants: [], setup: m.setup ?? null, probe: null, signIn: input.signIns[m.name] ?? null, urls: input.signIns[m.name]?.state === "none" ? [] : urls(m.name) });
+    rows.push({ name: m.name, module: m.name, kind: "service", transport: "runner", tools: { read: 0, write: 0 }, grants: [], setup: m.setup ?? null, probe: null, signIn: input.signIns[m.name] ?? null });
   const sources = (input.sources ?? []).map((x) => ({ name: `src_${x.source}`, lastOk: x.last_ok, failing: x.failing, stale: input.staleSources.has(x.source) }));
   return { compiled: Boolean(input.compiled), connections: rows, sources, sourcesError: input.sources === null };
 }

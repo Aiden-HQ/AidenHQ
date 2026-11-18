@@ -52,6 +52,8 @@ for c in $containers; do
   # own socket mount). Matched by its compose service, never by name; any other container with it fails.
   if [ "$service" = "apps-mcp" ]; then
     pass "$c: Docker socket allowed (apps-mcp builds and runs the apps)"
+    # Its App tokens come from the kernel's /v1/codehost/token: codehost-github alone holds the App key.
+    echo "$mounts" | grep -q 'github-app' && fail "$c (apps-mcp) mounts the GitHub App key" || pass "$c: apps-mcp has no GitHub App key"
   else
     echo "$mounts" | grep -q 'docker.sock' && fail "$c mounts the Docker socket" || pass "$c: no Docker socket"
   fi
@@ -128,7 +130,7 @@ for c in $containers; do
       [ "$(curl -s -o /dev/null -w '%{http_code}' -X POST "http://$(cip "$c"):8087/mcp")" = "401" ] \
         && pass "grafana-mcp: its endpoint requires the token" || fail "grafana-mcp: its endpoint answers without the token"
       # Exactly: its secrets, read-only (the board's sign-in token, the jobs' read token, the kernel's service key, and the
-      # Grafana Cloud address the board's setup flow saves: aidenhq-modules ad67a18, #54), and its own token directory, the only
+      # Grafana Cloud address the board's Connect saves: aidenhq-modules ad67a18, #54), and its own token directory, the only
       # writable mount. grafana_url is an optional secret (compile creates it empty), so the mount is there on every instance;
       # only the owner saves it, and the kernel holds it to the module's anchored *.grafana.net pattern (checked below), the
       # host rule the grafana_url setting had, so it can't point the sign-in elsewhere. No grants table: the kernel checks agents' grants.
@@ -140,11 +142,10 @@ for c in $containers; do
       [ "$(docker inspect "$c" --format '{{json .HostConfig.PortBindings}}')" = "{}" ] && pass "clickhouse-mcp: no published ports" || fail "clickhouse-mcp publishes ports"
       [ "$(curl -s -o /dev/null -w '%{http_code}' -X POST "http://$(cip "$c"):8088/mcp")" = "401" ] \
         && pass "clickhouse-mcp: its endpoint requires the token" || fail "clickhouse-mcp: its endpoint answers without the token"
-      # Exactly: its secrets, read-only (the board's sign-in token, the jobs' read token, and the MCP address the board's setup
-      # flow saves: aidenhq-modules a86ccb5, #55), and its own token directory, the only writable mount. clickhouse_mcp_url is
-      # an optional secret (created empty), owner-saved and held to the module's anchored *.clickhouse.cloud pattern (checked
-      # below), the setting's old host rule. No grants table: it serves only the runner's jobs, not a Paperclip connection.
-      [ "$(echo "$mounts" | tr ';' '\n' | grep . | cut -d'|' -f2- | LC_ALL=C sort | tr '\n' ' ')" = '/run/secrets/clickhouse_auth_token|false /run/secrets/clickhouse_mcp_token|false /run/secrets/clickhouse_mcp_url|false /state|true ' ] \
+      # Exactly: its secrets, read-only (the board's sign-in token, the jobs' read token and the kernel's service key), and its own
+      # token directory, the only writable mount. Its MCP address is the clickhouse_mcp_url setting (ClickHouse Cloud's fixed one
+      # by default), held to *.clickhouse.cloud by compile (checked below). No grants table: the kernel checks agents' grants.
+      [ "$(echo "$mounts" | tr ';' '\n' | grep . | cut -d'|' -f2- | LC_ALL=C sort | tr '\n' ' ')" = '/run/secrets/clickhouse_auth_token|false /run/secrets/clickhouse_mcp_token|false /run/secrets/clickhouse_service_key|false /state|true ' ] \
         && pass "clickhouse-mcp: only its secrets (read-only) and its own token directory mounted" || fail "clickhouse-mcp has unexpected mounts: $mounts"
       ;;
     *mcp-grafana*|*prometheus*|*alertmanager*|*cadvisor*)
@@ -173,8 +174,9 @@ for c in $containers; do
     # github-mcp until they move); the host's apply mints only a read-only instance-repo token (ops/git-credential-app.mjs).
     *github-mcp*)
       [ "$(docker inspect "$c" --format '{{json .HostConfig.PortBindings}}')" = "{}" ] && pass "github-mcp: no published ports" || fail "github-mcp publishes ports"
-      ! echo "$mounts" | tr ';' '\n' | grep -v '/run/secrets' | grep -v '|/secrets/github-app|' | grep -q . \
-        && pass "github-mcp: only its secrets and the GitHub App key mounted" || fail "github-mcp has unexpected mounts: $mounts"
+      # Only its own secrets, and never the GitHub App key (codehost-github alone holds it; github-mcp asks the kernel's route).
+      ! echo "$mounts" | tr ';' '\n' | grep -v '/run/secrets' | grep -q . && ! echo "$mounts" | grep -q 'github-app\|github_app' \
+        && pass "github-mcp: only its own secrets mounted, never the GitHub App key" || fail "github-mcp has unexpected mounts: $mounts"
       ;;
     *apps-edge*)
       # The apps' tailnet node: its own way out plus the exposed apps' own networks (apps-mcp joins it), nothing else.
@@ -388,7 +390,7 @@ else
 fi
 
 echo "Repository"
-if git ls-files -z --cached --others --exclude-standard -- . ':!scripts/verify-security.sh' | xargs -0 grep -lE '(sk-[A-Za-z0-9]{20,}|pcp_[a-f0-9]{20,}|GOCSPX-|refresh_token"\s*:\s*"1//|xox[bp]-[0-9]{6,})' 2>/dev/null | grep -q .; then
+if git ls-files -z --cached --others --exclude-standard -- . ':!scripts/verify-security.sh' | xargs -0 grep -lE '(sk-[A-Za-z0-9]{20,}|pcp_[a-f0-9]{20,}|GOCSPX-[A-Za-z0-9_-]{20,}|refresh_token"\s*:\s*"1//|xox[bp]-[0-9]{6,})' 2>/dev/null | grep -q .; then
   fail "possible secrets in tracked files"
 else
   pass "no secret patterns in tracked files"
@@ -399,15 +401,19 @@ git ls-files --cached --others --exclude-standard | grep -E '(^|/)(\.env|system\
 echo "Capabilities (by construction)"
 pass "ops-mcp exposes no delete/replace/arbitrary-write tools (see modules/meetings/connections/ops-mcp/src/mcp/tools.ts)"
 pass "google-workspace-mcp requests only *.readonly scopes and has GET-only client code"
-# Vendor connections pass the vendor's MCP server through whole (owner, 2026-11-18; modules vendor-mcp/src/vendor/proxy.ts):
+# Vendor connections pass the vendor's MCP server through whole (owner, 2026-11-18; kernel/sdk/src/vendor/proxy.ts):
 # the gate is the manifest's tags and the kernel. Every read tag is a reading verb or a reviewed exception (fail closed); the jobs' read endpoint serves only the manifest's read tags that the vendor also marks read-only (READ_TOOLS equals
 # the read tags); and the pins stay (Slack's draft arguments, Jira's site, Grafana's untrustworthy families).
 vendor_tags="$(node --input-type=module -e '
-  import { existsSync, readFileSync } from "node:fs";
+  import { existsSync, readdirSync, readFileSync } from "node:fs";
   import YAML from "./scripts/node_modules/yaml/dist/index.js";
   const bad = [], seen = [];
+  // A service runs the vendor proxy when any of its sources imports it (its synced copy or the SDK): every file is read.
+  const PROXY = /"[^"]*vendor\/proxy(\.[jt]s)?"/;
+  const runsProxy = (dir) => existsSync(`${dir}/src`) && readdirSync(`${dir}/src`, { recursive: true }).some((f) => /\.(ts|mjs|js)$/.test(f) && f !== "vendor/proxy.ts" && PROXY.test(readFileSync(`${dir}/src/${f}`, "utf8")));
   // Reviewed read tags whose first word is not a reading verb (read-only upstream, checked 2026-11-18). Add one only after reading the tool.
   const EXCEPTIONS = {
+    clickhouse: ["run_select_query"],
     glean: ["employee_search", "meeting_lookup", "code_search", "chat", "user_activity", "memory_schema"],
     grafana: ["alerting_rules_read", "alerting_silences_read", "generate_deeplink", "render_grafana_app", "suggest_loki_alloy_label_config", "user_info", "validate_provisioning_file"],
     hubspot: ["tool_guidance"],
@@ -416,9 +422,9 @@ vendor_tags="$(node --input-type=module -e '
   for (const { name } of JSON.parse(readFileSync("modules/marketplace.json", "utf8")).plugins) {
     const def = YAML.parse(readFileSync(`modules/${name}/module.yaml`, "utf8"));
     for (const [svc, s] of Object.entries(def.services?.run ?? {})) {
-      if (!existsSync(`modules/${name}/${s.build ?? "-"}/src/vendor/proxy.ts`)) continue;
+      if (!runsProxy(`modules/${name}/${s.build ?? "-"}`)) continue;
       const [k, c] = Object.entries(def.connections ?? {}).find(([, c]) => new URL(c.url).hostname === svc) ?? [];
-      if (!c) { bad.push(`${name}/${svc} has src/vendor/proxy.ts but no connection points at it`); continue; }
+      if (!c) { bad.push(`${name}/${svc} runs the vendor proxy but no connection points at it`); continue; }
       seen.push(k);
       // Fail closed: a read tag passes only when its first word (vendor prefix stripped) is a reading verb, or the tool is in
       // the reviewed exception list for its module. Anything else is refused, whatever else its name says.
@@ -433,11 +439,11 @@ vendor_tags="$(node --input-type=module -e '
       if (s.env?.MCP_READ_TOKEN_FILE && s.env?.READ_TOOLS !== c.tools.read.join(",")) bad.push(`${k}: READ_TOOLS is not its read tags`);
     }
   }
-  for (const k of ["glean", "grafana", "jira", "primer", "slack", "hubspot"]) if (!seen.includes(k)) bad.push(`vendor connection ${k} was not checked`);
+  for (const k of ["clickhouse", "glean", "grafana", "jira", "primer", "slack", "hubspot"]) if (!seen.includes(k)) bad.push(`vendor connection ${k} was not checked`);
   console.log(bad.length ? `BAD ${bad.join("; ")}` : `ok ${seen.join(" ")}`);
 ' 2>&1)"
 case "$vendor_tags" in ok*) pass "vendor connections (${vendor_tags#ok }): every read tag is a reading verb or a reviewed exception; each read endpoint serves only its read tags";; *) fail "vendor connections: $vendor_tags";; esac
-vp="modules/vendor-mcp/src/vendor/proxy.ts"
+vp="kernel/sdk/src/vendor/proxy.ts"
 grep -qF 'const servesRead = (t: Tool) => reads.has(t.name) && isRead(t);' "$vp" && grep -qF 'if (!tool) throw new Error(`${o.name} doesn'"'"'t offer ${name}`);' "$vp" \
   && grep -qF 'export const DRAFT_ARGS = ["channel_id", "message", "thread_ts"];' modules/slack/connections/slack-mcp/src/slack.ts && grep -qF 'hooks: { args: (name, args) => upstreamArgs(name, args) },' modules/slack/connections/slack-mcp/src/main.ts \
   && grep -qF 'args(_name, { [SITE_ARG]: _caller, ...args }, tool) {' modules/jira/connections/jira-mcp/src/site.ts \
@@ -453,23 +459,27 @@ for a in config/paperclip.yaml; do   # generated by scripts/compile.mjs
   bad_drafters="$(echo "$drafters" | tr ' ' '\n' | grep . | grep -Ev '^(assistant|open-loops):$' | tr '\n' ' ')"
   [ -z "$bad_drafters" ] && pass "$a: only the Researcher and Follow-up Tracker can save Slack drafts (now: ${drafters:-none})" || fail "$a: Slack drafts allowed for: $drafters"
 done
-# ClickHouse: the token carries the user's own access, so the tool list and the query check are the boundary.
-ch_tools="$(sed -n 's/^export const READ_TOOLS = \[\(.*\)\];/\1/p' modules/clickhouse/connections/clickhouse-mcp/src/policy.ts | tr -d '" ' | tr ',' '\n')"
+# ClickHouse: the token carries the owner's own access, which can write, so the tags, the deny rule and the query check are the boundary.
+ch_tools="$(sed -n 's/^      read: \[ \(.*\) \]$/\1/p' modules/clickhouse/module.yaml | tr -d ' ' | tr ',' '\n')"
 bad_ch="$(echo "$ch_tools" | grep -Ev '^(get_organizations|get_services_list|get_service_details|list_databases|list_tables|run_select_query)$' || true)"
-[ -n "$ch_tools" ] && [ -z "$bad_ch" ] && pass "clickhouse-mcp exposes only service, schema and SELECT tools (modules/clickhouse/connections/clickhouse-mcp/src/policy.ts)" || fail "clickhouse-mcp: unexpected tools allowed: $bad_ch"
+[ -n "$ch_tools" ] && [ -z "$bad_ch" ] && pass "clickhouse exposes only service, schema and SELECT tools (modules/clickhouse/module.yaml)" || fail "clickhouse: unexpected tools tagged: $bad_ch"
 [ "$(sed -n 's/^export const SCOPES = \[\(.*\)\];/\1/p' modules/clickhouse/connections/clickhouse-mcp/src/policy.ts | tr -d '" ')" = "mcp:access" ] \
-  && grep -q 'args = checkCall(name' modules/clickhouse/connections/clickhouse-mcp/src/main.ts \
+  && grep -qF 'scopes: { supported: SCOPES }' modules/clickhouse/connections/clickhouse-mcp/src/main.ts \
+  && grep -qF 'return checkCall(name, args);' modules/clickhouse/connections/clickhouse-mcp/src/main.ts \
+  && grep -qF 'deny: NEVER,' modules/clickhouse/connections/clickhouse-mcp/src/main.ts \
   && grep -qE 'const EXTERNAL = .*url.*s3.*remote.*file.*executable' modules/clickhouse/connections/clickhouse-mcp/src/policy.ts \
   && pass "clickhouse-mcp asks for mcp:access only and checks every query (one read statement, no external table functions, no SETTINGS)" || fail "clickhouse-mcp: scopes or query check changed"
-# The upstream addresses the setup flows save (aidenhq-modules #54, #55) decide where each sign-in and its tokens go: only the
-# owner saves a module's setup secret (kernel/src/auth-api.ts), and the kernel refuses a value that doesn't match the module's
-# anchored pattern (kernel/src/module-secrets.ts secretFits), here the *.grafana.net and *.clickhouse.cloud host rules.
+# The upstream addresses decide where each sign-in and its tokens go. Grafana's is the one Connect asks for (aidenhq-modules
+# #54): only the owner saves a module's setup secret (kernel/src/auth-api.ts), and the kernel refuses a value that doesn't match
+# the module's anchored pattern (kernel/src/module-secrets.ts secretFits), here *.grafana.net. ClickHouse's is a setting with
+# ClickHouse Cloud's fixed address as its default, which compile holds to *.clickhouse.cloud (its host rule).
 grep -qF "pattern: '^https://[a-z0-9-]+\.grafana\.net/?\$'" modules/grafana/module.yaml \
-  && grep -qF "pattern: '^https://([a-z0-9-]+\.)+clickhouse\.cloud(/[A-Za-z0-9._/-]*)?\$'" modules/clickhouse/module.yaml \
+  && grep -qF 'host: "*.clickhouse.cloud"' modules/clickhouse/module.yaml \
+  && grep -qF 'default: https://mcp.clickhouse.cloud/mcp' modules/clickhouse/module.yaml \
   && grep -qF 'if (!by.owner) throw fail(403, "forbidden", "only the owner");' kernel/src/auth-api.ts \
   && grep -qF 'export const secretFits = (f: SetupField, value: string) => value.length > 0 && value.length <= 300 && new RegExp(f.pattern).test(value);' kernel/src/module-secrets.ts \
   && grep -qF '      if (!secretFits(field, value)) throw fail(400, "bad_request", `that doesn'"'"'t look like a ${field.label}`);' kernel/src/module-secrets.ts \
-  && pass "grafana-mcp and clickhouse-mcp: the upstream address is owner-saved and held to its *.grafana.net / *.clickhouse.cloud pattern (kernel/src/module-secrets.ts)" \
+  && pass "grafana-mcp and clickhouse-mcp: the upstream address is held to *.grafana.net (owner-saved, kernel/src/module-secrets.ts) / *.clickhouse.cloud (a setting's host rule)" \
   || fail "grafana-mcp or clickhouse-mcp: the saved upstream address's pattern or its owner-only save changed"
 # One way to run a job: every Engineer job in its agent's computer (kernel/src/jobs.ts refuses any other).
 grep -qF 'if (!b.box) throw new JobError(400, "box-required",' kernel/src/jobs.ts \
@@ -609,14 +619,15 @@ code="$(curl -s -m 10 -o /dev/null -w '%{http_code}' -X POST -H 'Host: 127.0.0.1
 code="$(curl -s -m 10 -o /dev/null -w '%{http_code}' -H 'Host: evil.example:3129' "$ks/.auth/api/get-session")"
 [ "$code" = "403" ] && pass "kernel sign-in listener: refuses unknown Host headers" || fail "kernel sign-in listener: answered an unknown Host ($code)"
 # The handoff to a module UI goes only to an installed module's origin (no open redirect), and only for a signed-in admin.
-code="$(curl -s -m 10 -o /dev/null -w '%{http_code}' -H 'Host: 127.0.0.1:3120' "http://127.0.0.1:3120/auth/handoff?to=https%3A%2F%2Fevil.example&state=0123456789abcdef0123")"
+# GETs name localhost: the admin listener moves a 127.0.0.1 page there (308) before anything else.
+code="$(curl -s -m 10 -o /dev/null -w '%{http_code}' -H 'Host: localhost:3120' "http://127.0.0.1:3120/auth/handoff?to=https%3A%2F%2Fevil.example&state=0123456789abcdef0123")"
 [ "$code" = "303" ] && pass "kernel admin: the handoff sends a signed-out browser to sign in first" || fail "kernel admin: /auth/handoff answered $code without a session"
 # The admin listener (lean-core 3a): every page refuses a frame, a form from another origin and a decision without a session;
 # an unknown Host is refused. A client-named address without the front door's secret is ignored (and X-Forwarded-For,
 # CF-Connecting-IP always): attempts "from six addresses" are one unidentified peer's, which gets two free failures and then
 # a stepped hold (429 at once); believed addresses would each be checked.
 ka="http://127.0.0.1:3120"
-curl -s -m 10 -D - -o /dev/null -H 'Host: 127.0.0.1:3120' "$ka/auth/sign-in" | grep -qi "^content-security-policy:.*frame-ancestors 'none'" \
+curl -s -m 10 -D - -o /dev/null -H 'Host: localhost:3120' "$ka/auth/sign-in" | grep -qi "^content-security-policy:.*frame-ancestors 'none'" \
   && pass "kernel admin: pages refuse frames (frame-ancestors 'none')" || fail "kernel admin: /auth/sign-in can be framed"
 code="$(curl -s -m 10 -o /dev/null -w '%{http_code}' -X POST -H 'Host: 127.0.0.1:3120' -H 'Origin: http://127.0.0.1:3121' "$ka/approvals/batch" -d 'decision=approve')"
 [ "$code" = "403" ] && pass "kernel admin: refuses a form from another origin (the board's)" || fail "kernel admin: took a form from another origin ($code)"
@@ -878,7 +889,8 @@ gate_before_merge() { awk "/^$1/,/^}/" "$rm_" | grep -nE 'await github\.evalGate
   && grep -qF '        if (d.do !== "merge" || gate?.stop || gate?.wait || !method) {' "$rm_" \
   && grep -qF '  keyFile: join(cfg.secretsDir, "openrouter_eval_key"),' "$rmain" && ! grep -qE 'openrouter_key|openRouterKey|openrouterKeyFile' "$rgate" \
   && grep -qF 'const JUDGE = ["ai-reviewer/scripts/reviewer-eval.mjs", "ai-reviewer/test/case-pad.mjs", "ai-reviewer/scripts/pass-rule.mjs"];' "$rgate" \
-  && grep -qF '      writeFileSync(join(tree, f), `${await d.git(path, "show", `${base}:${f}`)}\n`);' "$rgate" \
+  && grep -qF '      writeFileSync(join(tree, f), `${await d.git(path, "show", inTree(base, f))}\n`);' "$rgate" \
+  && grep -qF 'const inTree = (m: ModulesAt, rel: string) => `${m.sha}:${m.path ? `${m.path}/` : ""}${rel}`;' "$rgate" \
   && grep -qF 'const argv = d.jail([process.execPath, "scripts/reviewer-eval.mjs"], { rw: [out], ro: [tree] });' "$rgate" \
   && grep -qF 'r = JSON.parse(smallFile(file, 4 * 1024 * 1024) ?? "");' "$rgate" \
   && grep -qF '  /^modules\/codehost-github\/src\/plan\.mjs$/,' "$rgate" && grep -qF '  /^modules\/platform\/src\/check\.mjs$/,' "$rgate" \
@@ -934,7 +946,7 @@ rreview="modules/ai-reviewer/service/src/review.mjs"
   && grep -qF '/(^|\/)\.github\//,' "$rcore" && grep -qF 'gateCore: PRODUCT_GATE_CORE' "$rtiers" \
   && grep -qF '.some((g) => g.test(f))) parts.push(PANEL("gate-core"' "$rcheck" \
   && grep -qF 'const PANEL = (rule, reason) => ({ tier: 1, rule, reason, panel: true });' "$rcheck" \
-  && grep -qF 'const PANEL = (rule, reason) => ({ tier: 1, rule, reason, panel: true });' "$rtiers" \
+  && grep -qF 'import { PANEL, ' "$rtiers" && grep -qF 'export const PANEL = (rule: string, reason: string): Part => ({ tier: 1, rule, reason, panel: true });' kernel/src/apply-tier.ts \
   && grep -qF 'const rank = (p: Part) => p.tier * 2 + (p.panel ? 1 : 0);' kernel/src/tier.ts \
   && grep -qF '  const second = v.second_review !== false;' "$rreview" \
   && grep -qF '  if (v1.decision !== "approve" || !(panel || flagged)) return v1;' "$rreview" \
@@ -985,7 +997,8 @@ tools="$(grep -oE '^export const TOOLS = \[[^]]*\]' services/runner/src/repohelp
   && ! grep -qE 'POST.*/repos\b|/user/repos' modules/codehost-github/src/repos.ts \
   && [ "$(awk '/^async function agentTasks?\(/,/^}/' services/runner/src/main.mjs | grep -c '^  requireTaskReads(ctx);')" = 2 ] \
   && [ "$(awk '/^async function agentMerge\(/,/^}/' "$rmain" | grep -n 'tierFor(ctx.issue, "merge"' | head -1 | cut -d: -f1)" -lt "$(awk '/^async function agentMerge\(/,/^}/' "$rmain" | grep -n 'await fileApproval(ctx.issue, { action: "merge"' | cut -d: -f1)" ] \
-  && awk '/^async function agentMerge\(/,/^}/' "$rmain" | grep -F 'const now = bound.filter((_, i) => tiers[i].tier === 0);' >/dev/null \
+  && awk '/^async function agentMerge\(/,/^}/' "$rmain" | grep -F 'const zero = tiers.some((t) => t.tier === 0) && !(await heldNow(ctx.issue));' >/dev/null \
+  && awk '/^async function agentMerge\(/,/^}/' "$rmain" | grep -F 'const now = bound.filter((_, i) => zero && tiers[i].tier === 0);' >/dev/null \
   && awk '/^async function agentMerge\(/,/^}/' "$rmain" | grep -F 'if (bad) throw new UserError(' >/dev/null \
   && [ "$(awk '/^async function agentMerge\(/,/^}/' "$rmain" | grep -oE 'return agentMergeLocal\(|tierFor\(ctx\.issue, "merge"' | tr '\n' '|')" = 'return agentMergeLocal(|tierFor(ctx.issue, "merge"|' ] \
   && [ "$(awk '/^async function agentMergeLocal\(/,/^}/' "$rmain" | grep -oE 'await fileLocalMerge\(|requestAutoMerge\(|localHost\.merge\(' | tr '\n' '|')" = 'await fileLocalMerge(|' ] \

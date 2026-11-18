@@ -13,7 +13,10 @@ import { DatabaseSync } from "node:sqlite";
 import { FINAL_CODES, type Cap, type ReviewFirst } from "./tier.ts";
 
 export type State = "review" | "owner" | "approved" | "claimed" | "done" | "failed" | "rejected" | "stale" | "cancelled" | "unknown";
-export type Requester = { agent: string; key: string; name: string; roles: string[]; kind: string; task?: string; run?: string; module?: string };
+/** `model`: a kernel job's model (its frozen authority), so the AI reviewer is never of the requester's family. */
+export type Requester = { agent: string; key: string; name: string; roles: string[]; kind: string; task?: string; run?: string; module?: string; model?: string };
+/** The release updater's requester (writes.fileUpdater): kind `kernel`, which no token yields (identity.ts: run, job, module). */
+export const UPDATER: Requester = { agent: "", key: "", name: "the release updater", roles: [], kind: "kernel" };
 /** `target`: what it acts on, in a line. */
 export type Card = { sentence: string; changes: string; reads: string; cost: string; details: string; reason?: string; target?: string };
 export type Rec = {

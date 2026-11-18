@@ -202,10 +202,12 @@ test("trial_writes: an agent that names none keeps today's behaviour, and a gran
   assert.deepEqual(partial.paperclip.agents.x.trial_withheld, ["chat_lane.wake_at"]);
   assert.throws(() => compile(product, withAgents({ x: { yaml: { trial_writes: undefined, connections: { slack: "read", chat_lane: ["chat_send", "wake_at"] } } } }, ["slack"])), /x: an agent in trial may not have chat_lane write tools \(chat_send, wake_at\); they come with tap 2/);
 });
-test("crew agents hold what the in-box `aidenhq task|tasks` call; advise's advisor_ask stays the tasks module's own default; an engineer without private_reads or a check agent reads no task text", () => {
-  const cli = (yaml) => (compile(product, withAgents({ x: { yaml } }, ["slack"])).paperclip.agents.x.enabled_tools.paperclip_tasks ?? []).filter((t) => ["task_get", "task_search", "advisor_ask"].includes(t)).sort();
-  assert.deepEqual(cli({ connections: { slack: "read" } }), ["advisor_ask", "task_get", "task_search"]);
-  // An agent with its own computer: the module's default grant gives it no advisor_ask, and compile doesn't either.
-  assert.deepEqual(cli({ connections: { slack: "read" }, image: "agent-base", trial: undefined, reports_to: "chief-of-staff" }), ["task_get", "task_search"]);
-  for (const profile of ["engineer", "check"]) assert.deepEqual(cli({ connections: {}, profile }).filter((t) => t !== "advisor_ask"), [], profile);
+test("the in-box `aidenhq task|tasks` reads are the tasks module's default grant: crew yes; trial, check, and an Engineer without private_reads no", () => {
+  const reads = (yaml) => (compile(product, withAgents({ x: { yaml } }, ["slack"])).paperclip.agents.x.enabled_tools.paperclip_tasks ?? []).filter((t) => ["task_get", "task_search"].includes(t)).sort();
+  const graduated = { connections: { slack: "read" }, trial: undefined, reports_to: "chief-of-staff" };
+  assert.deepEqual(reads(graduated), ["task_get", "task_search"]);
+  assert.deepEqual(reads({ ...graduated, image: "agent-base" }), ["task_get", "task_search"]);
+  assert.deepEqual(reads({ connections: { slack: "read" } }), [], "a trial agent");
+  assert.deepEqual(reads({ ...graduated, profile: "check" }), [], "a check agent");
+  assert.deepEqual(reads({ ...graduated, profile: "engineer" }), [], "an Engineer without private_reads");
 });

@@ -6,29 +6,17 @@ requires:
 contributes:
   board.signins:
     - { id: glean, label: Glean, status_url: "http://glean-mcp:8085/auth/status", connect_url: /glean/connect, callback: /callback,
-        missing: "The Researcher can't search company knowledge until it is.", stopped: "The Researcher's company search is paused." }
-  board.setup_flows:
-    - order: 110
-      title: Company search (Glean)
-      why: Agents can search your company's documents, chats, tickets and people as you.
-      effort: about 3 minutes, needs your company's Glean address
-      secrets: [glean_mcp_url]
-      signin: glean
-      steps: |
-        1. Open Glean in your browser and sign in. Your company's Glean address looks like `https://acme-be.glean.com`.
-        2. Paste your Glean MCP address below. It is that address followed by `/mcp/default`, for example `https://acme-be.glean.com/mcp/default`. If your Glean admin has switched MCP off, ask them to open Glean's admin settings and use the **MCP Configurator** (the "Custom" host) to turn it on.
-        3. Press **Connect Glean**, sign in to Glean in the tab that opens, and allow access.
-
-        Agents search as you, so they see only what you can see.
+        missing: "The Researcher can't search company knowledge until it is.", stopped: "The Researcher's company search is paused.",
+        secrets: [glean_mcp_url] }
 settings:
-  # Superseded by the glean_mcp_url secret the setup flow saves; a value here is read only while that secret is empty.
+  # Superseded by the glean_mcp_url secret Connect asks for; a value here is read only while that secret is empty.
   glean_mcp_url:
     default: ""
     type: url
     host: "*.glean.com"
 connections:
   glean:
-    setup: "Open its setup on the board (#/setup/glean): paste your Glean MCP address and press Connect."
+    setup: "Press Connect on the board (Settings, Connections), give your Glean MCP address and allow access."
     guide: "Start here for anything about the company. One search covers Slack, Google Drive, Confluence, Jira, GitHub, meeting transcripts and people, ranked by relevance and permissions. `search` finds documents and threads (then `read_document` for the full text), `chat` gives a summarized, cited answer across all of them, `employee_search` finds who owns or works on something, `meeting_lookup` finds meetings and their notes, `code_search` finds code. Go to the single-system tools only for what Glean can't give (exact Jira history, a full Slack thread, a live PR state)."
     url: http://glean-mcp:8085/mcp
     auth: glean_service_key
@@ -46,13 +34,13 @@ jobcaps:
 secrets:
   state: true # its own vault dir, read-write at /state: the registered client and the token pair, refreshed here
   provided:
-    # Your Glean MCP server URL (Glean's MCP Configurator, e.g. https://acme-be.glean.com/mcp/default), saved by the setup flow;
+    # Your Glean MCP server URL (Glean's MCP Configurator, e.g. https://acme-be.glean.com/mcp/default), asked for on Connect;
     # empty: Glean is off. The pattern is the host rule the glean_mcp_url setting had (*.glean.com).
     - name: glean_mcp_url
       setup:
         label: Glean MCP address
         pattern: '^https://[a-z0-9-]+(\.[a-z0-9-]+)*\.glean\.com/mcp(/[A-Za-z0-9_-]+)?/?$'
-        help: "For example https://acme-be.glean.com/mcp/default"
+        help: "Your Glean address followed by /mcp/default, for example https://acme-be.glean.com/mcp/default. If it is off, a Glean admin turns MCP on in its MCP Configurator."
 optional_secrets:
   - glean_mcp_url
 services:
@@ -68,7 +56,7 @@ services:
         GLEAN_MCP_URL_FILE: ${secrets.glean_mcp_url}
         GLEAN_MCP_URL: "${settings.glean_mcp_url}"
         GLEAN_STATE_DIR: /state
-        # The board's https address: its Connect returns there (besides loopback).
+        # The board's https address: Connect's one-click link returns there (the default is loopback).
         BOARD_URL: "${BOARD_LAN_URL:-}"
         MCP_TOKEN_FILE: ${secrets.glean_service_key}
         MCP_READ_TOKEN_FILE: ${secrets.glean_mcp_read_token}

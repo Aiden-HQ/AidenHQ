@@ -49,7 +49,7 @@ npm test && npm run typecheck
 ```
 
 The board's Docker build is stricter than vitest: always run `tsc -p tsconfig.build.json` for board changes. After
-editing `kernel/sdk/src/caller.ts` or `fence.ts`, `services/shared/source-store.ts`, `modules/apps-platform/design-system/` or the app starter (`modules/apps-platform/starter/`), run `node scripts/sync-shared.mjs` (a
+editing `kernel/sdk/src/caller.ts` or `fence.ts`, `kernel/sdk/src/source-store.ts` or `vendor/`, `modules/apps-platform/design-system/` or the app starter (`modules/apps-platform/starter/`), run `node scripts/sync-shared.mjs` (a
 test fails on drift, the copies under `modules/` included). The official modules are this repo's `modules/` (MIT by folder:
 `modules/LICENSE`, `NOTICE`, `LICENSES/`), so a change across the kernel and a module is one PR. CI (`.github/workflows/ci.yml`)
 runs the suites a PR touches (map: `.github/ci/areas.json`, read from the base: each module package is a suite of its own
@@ -95,6 +95,12 @@ that moves `product:` to a different reviewer needs a receipt for that reviewer 
 - **Generic core.** The core knows nothing about specific workflows. New behaviour is an agent definition, handbook
   text or a tool, never a special-case branch. Code finds an agent by its role (grants table `roles`), never by its key.
 - **One shared tools repository.** Every tool is usable by any agent it is granted; grants and roles decide access.
+- **A connection connects in one click.** One Connect wherever it is listed (a `board.signins` entry), and the vendor's
+  sign-in does the rest. It returns to loopback (`http://localhost:3121/<callback>`, RFC 8252: no company domain allowlist
+  applies) and the owner pastes that page's address into the same Connect; one click back to the board's https address is
+  the secondary link, and the only path for a vendor that takes https redirects alone (`https_only`, Slack). A fixed or discoverable value is a module default; only a genuinely per-install value is asked
+  for, as one inline field on that Connect (the sign-in's `secrets`). A setup flow is only for what the owner must make
+  elsewhere first (an OAuth client, an app, a token, a bot) or a channel to pair.
 - **Judgment in agents, gates in code.** Matching, routing, writes and approvals are enforced below the model. Gate
   only real risk (writes, spend, auth and security boundaries, the sandbox, untrusted text); set a default at its
   source, never re-enforce it downstream.
@@ -105,6 +111,9 @@ that moves `product:` to a different reviewer needs a receipt for that reviewer 
   kernel's `computeTier` (`kernel/src/tier.ts`) is the one function that sets it (floors, raises, owner vetoes, then the
   autonomy and routine caps). Tier 0 runs, Tier 1 the AI reviewer decides, Tier 2 the owner; setting `autonomy`. Every
   reviewer false reject becomes a planted case in `modules/ai-reviewer/test/reviewer-cases/`.
+  **Auto-update installs without the owner.** With `auto_update` on, the updater installs each verified release (its
+  own filing, tag on the distro's main, newer than the current one, tested stamp) with no owner approval; turning
+  auto-update on is the owner's decision to accept that risk. Any other release move stays the owner's.
 - **Cross-agent behaviour goes in a module, not in each handbook.** A skill (`modules/<m>/skills/<name>/SKILL.md`) is the
   on-demand mechanism: its one-line description is in the handbook's index and the agent reads the text when it needs it. A
   module `prompts:` entry (`modules/<module>/prompts/<id>.md`) is for always-on text (replying in chief-of-staff,

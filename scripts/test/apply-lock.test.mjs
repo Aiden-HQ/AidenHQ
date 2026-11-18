@@ -20,7 +20,8 @@ const genLib = join(here, "../../ops/lib/generations.sh");
 /** A checkout with the apply's scripts, a data dir, and a fake docker that records its calls. */
 function checkout() {
   const dir = mkdtempSync(join(tmpdir(), "apply-lock-"));
-  for (const d of ["ops/lib", "data", "bin"]) mkdirSync(join(dir, d), { recursive: true });
+  // kernel/node_modules: the kernel's deps are installed (the apply installs them on a fresh host, apply-atomic.test.mjs).
+  for (const d of ["ops/lib", "data", "bin", "kernel/node_modules"]) mkdirSync(join(dir, d), { recursive: true });
   copyFileSync(entry, join(dir, "ops/apply-config.sh"));
   copyFileSync(work, join(dir, "ops/apply-config-work.sh"));
   copyFileSync(lockLib, join(dir, "ops/lib/apply-lock.sh"));

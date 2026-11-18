@@ -1,5 +1,5 @@
 {
-  "title": "board.setup_flows: a module's guided setup, rendered by the board at #/setup/<module> (one flow per module). Compile adds `module`, `fields` (each secret's label, pattern and help, from its `setup:`) and, with a pair_url, `pair_token` (the name of the generated secret <module>_pair_token the board sends as bearer) and a network between the board and that service.",
+  "title": "board.setup_flows: a module's guided setup, rendered by the board at #/setup/<module> (one flow per module), only where the owner must make something elsewhere first (an OAuth client, an app, a token, a bot) or pair a channel. A plain sign-in is a board.signins entry: one Connect, its per-install values inline. Compile adds `module`, `fields` (each secret's label, pattern and help, from its `setup:`) and, with a pair_url, `pair_token` (the name of the generated secret <module>_pair_token the board sends as bearer) and a network between the board and that service.",
   "type": "object",
   "additionalProperties": false,
   "required": ["order", "title", "why", "effort", "steps"],

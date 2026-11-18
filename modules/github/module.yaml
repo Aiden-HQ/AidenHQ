@@ -49,7 +49,7 @@ settings:
     default: []
 connections:
   github:
-    setup: "Run `gh auth login`, then `scripts/github-auth.sh` on the host. Repo writes go through the runner's GitHub App (`node ops/github-app-setup.mjs`)."
+    setup: "Run `gh auth login`, then `scripts/github-auth.sh` on the host. The App's reads and writes go through codehost-github (`node ops/github-app-setup.mjs` sets the App up)."
     guide: "GitHub issues and pull requests directly: live state, reviews, checks. Organization Projects (v2) boards (roadmaps, status, iterations): `github_project_read`. Use Glean's `code_search` for code."
     url: http://github-mcp:8086/mcp
     auth: github_service_key
@@ -74,6 +74,15 @@ connections:
       destructive: [ github_issue_comment, github_issue_create, github_issue_update, github_pr_review, github_rerun_failed, github_app_issue, github_app_issue_comment, github_app_issue_label, github_app_issue_state ]
     # Granted only while the upstream setting allows issues.
     upstream: [ github_app_issue, github_app_issue_status ]
+# The App tokens github-mcp asks the kernel for (POST /v1/codehost/token, owner authority): read-only on any repo or org the
+# App covers (issues, pull requests, checks, Actions, contents for the Maintainer's file reads, org Projects boards and search),
+# plus the two writes it makes as the App: issues (product bugs on settings.product_repo, the Maintainer's comments, labels and
+# states on settings.maintainer_repos) and commit statuses (the design-review check, in the agents org only). github-mcp
+# checks those targets itself; a grant can't name settings, so it covers whatever the App does.
+codehost:
+  token:
+    repos: ["*/*"]
+    perms: { contents: read, metadata: read, issues: write, pull_requests: read, checks: read, statuses: write, actions: read, organization_projects: read }
 # The token github-mcp reads on every call (the root compose's github_token file), asked for by the setup flow above.
 secrets:
   provided:
@@ -109,8 +118,9 @@ services:
         # Shared sources (src_github): the orgs it syncs (github_orgs plus the agents org) and its warehouse login.
         GITHUB_SYNC_ORGS: "${settings.github_sync_orgs}"
         WAREHOUSE_PASSWORD_FILE: ${secrets.warehouse_src_github_password}
-        # The instance's GitHub App (app_id + key.pem, read-only), for repo reads and org Projects boards.
-        GITHUB_APP_DIR: ${secrets.github_app}
+        # The GitHub App's tokens (repo reads, org Projects boards, the sync, its writes): the kernel's /v1/codehost/token, asked
+        # for with MCP_TOKEN_FILE's token.
+        AIDENHQ_KERNEL_URL: http://10.231.0.1:3130
 # The board reads the Maintainer's labelled issues (services/board/src/maintainer.ts) with a token of its own, narrower than
 # github_service_key: github-mcp takes it on that one read-only route and nowhere else. It is this module's (a module mounts
 # only its own secrets), and the board's watcher stays off until the maintainer module also supplies the routine's webhook.

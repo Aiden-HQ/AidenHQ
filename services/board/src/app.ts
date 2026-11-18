@@ -36,8 +36,9 @@ import { ledgerRange, ledgerSummary, ledgerTop } from "./cost-ledger.js";
 import { descendants, featureCost, recentFeatures } from "./feature-cost.js";
 import { MergeSchema, mergedDescription } from "./merge.js";
 import { fleetGenerationStatus, updatesFile } from "./generations.js";
-import { McpAuthFailed, type McpAuth } from "./mcpauth.js";
+import { McpAuthFailed, SIGNIN_LOOPBACK, pastedCallback, type McpAuth } from "./mcpauth.js";
 import { setupFlowRoutes, type SetupFlowPoint } from "./setup-flows.js";
+import type { SetupField } from "./config.js";
 import { welcomeRoutes } from "./welcome.js";
 import { GoogleAuthFailed, loopbackPort, type GoogleAuth } from "./google.js";
 import { OPEN, Paperclip, PaperclipError, actingAccount, type Agent, type Comment, type Issue, type Label, type LiveRun } from "./paperclip.js";
@@ -50,7 +51,7 @@ import { BUCKETS, isBucket, localDate, type Store } from "./store.js";
 import { AsideSchema, askGateway, asideMessages, holdsActive, lineageStatus, lineageTotal, modelOf, settleable, stillSettled, type LineageRow } from "./lineage.js";
 
 /** One module sign-in (board.signins), with its proxy client. */
-export interface SignIn { id: string; label: string; connect: string; callback: string; missing: string; stopped: string; auth: McpAuth }
+export interface SignIn { id: string; label: string; connect: string; callback: string; httpsOnly?: boolean; missing: string; stopped: string; fields: SetupField[]; auth: McpAuth }
 
 export interface AppOptions {
   /** Paperclip through the kernel, as the owner: every read and every write (all admins write as the owner, 2026-11-12). */
@@ -1163,6 +1164,8 @@ export function createApp(opts: AppOptions): Server {
     if (loopbackPort(h)) return `http://${h}`;
     return httpsBoard && h.replace(/:\d+$/, "") === httpsBoard.hostname ? httpsBoard.origin : undefined;
   };
+  /** Where a sign-in started at `host` returns: loopback (pasted back) unless the vendor takes only https (`https_only`). */
+  const redirectOrigin = (s: SignIn, host: string, oneClick = false) => (s.httpsOnly || oneClick ? vendorOrigin(host) : SIGNIN_LOOPBACK);
 
   // ------------------------------------------------------------------ Settings (settings.ts)
 
@@ -1192,36 +1195,70 @@ export function createApp(opts: AppOptions): Server {
     }
     const [google, states, sources] = await Promise.all([
       opts.google?.status(),
-      signInStates(),
+      signInStates(fresh),
       appsApi<{ sources?: { source: string; last_ok: string | null; failing: boolean }[] }>("/internal/sources", undefined, { auth: true, timeoutMs: 5000 }).then(
         (r) => r.sources ?? [],
         () => null,
       ),
     ]);
-    // A connected sign-in's Reconnect reads "Change access" where the proxy offers a choice of scopes.
-    const signIns = Object.fromEntries(
-      await Promise.all(states.map(async (s) => [s.id, s.status?.state === "ok" ? { ...s.status, scopes: ((await s.auth.scopes())?.supported.length ?? 0) > 1 } : s.status] as const)),
-    );
+    // Its Connect: the picker first where the proxy offers a choice of scopes, and the per-install values first while it has none.
+    const signIns = Object.fromEntries(states.map((s) => [s.id, s.status && { ...s.status, offer: s.offer, ...(!s.status.configured && s.fields.length ? { fields: s.fields } : {}) }] as const));
     return connectionsView({ compiled, catalog, probes: probed.probes, signIns, google, sources, staleSources: new Set(staleSources(sources ?? [], Date.now()).map((s) => s.key)) });
   }
 
-  /** Each module sign-in's state (McpAuth caches it for a minute); undefined where the proxy can't be asked. */
-  const signInStates = () => Promise.all((opts.signIns ?? []).map(async (x) => ({ ...x, status: await x.auth.status() })));
+  /**
+   * Each module sign-in's state (McpAuth caches it for a minute; `fresh` asks again), undefined where the proxy can't be asked,
+   * and whether its Connect offers a choice of scopes.
+   */
+  const signInStates = (fresh = false) => Promise.all((opts.signIns ?? []).map(async (x) => ({ ...x, status: await x.auth.status(fresh ? 0 : undefined), offer: await x.auth.offers() })));
 
   const routes: { method: string; path: RegExp; maxBody?: number; handle: (m: RegExpMatchArray, body: unknown, url: URL, req: IncomingMessage) => Promise<unknown> }[] = [
-    // A sign-in's page (#/connect/<id>): its name, Connect path, the setup flow it belongs to, and the scopes on offer.
+    // A sign-in's Connect dialog: its name and Connect path, whether it is set up (asked afresh: the dialog waits on it after a
+    // save), the values it asks for first, and the scopes on offer.
     {
       method: "GET",
       path: /^\/api\/sign-ins\/([a-z0-9-]{1,63})$/,
       handle: async (m) => {
         const id = m[1]!;
-        const flow = (f: { signin?: string; connect_url?: string }) => (id === "google" ? f.connect_url === "/google/connect" : f.signin === id);
-        const setup = opts.setupFlows?.flows.find(flow)?.module ?? null;
-        if (id === "google" && opts.google) return { id, label: "Google", connect: "/google/connect", setup, scopes: null };
         const s = (opts.signIns ?? []).find((x) => x.id === id);
         if (!s) throw new HttpError(404, "no such sign-in");
-        const offer = await s.auth.scopes();
-        return { id, label: s.label, connect: s.connect, setup, scopes: offer && offer.supported.length > 1 ? offer : null };
+        const [status, offer] = await Promise.all([s.auth.status(0), s.auth.scopes()]);
+        // Signed in: the picker opens on what the token grants now, not on the recommended set.
+        const granted = status?.state === "ok" && offer ? (status.scope ?? "").split(/[\s,]+/).filter((x) => x && x !== "offline_access" && offer.supported.includes(x)) : [];
+        return {
+          id,
+          label: s.label,
+          connect: s.connect,
+          configured: Boolean(status?.configured),
+          fields: s.fields,
+          scopes: offer && offer.supported.length > 1 ? { ...offer, ...(granted.length ? { granted } : {}) } : null,
+          state: status?.state ?? "unknown",
+          // The address the default sign-in ends on (pasted back below), and the domain one click returns to instead.
+          redirect: s.httpsOnly ? null : `${SIGNIN_LOOPBACK}${s.callback}`,
+          oneClick: s.httpsOnly ? null : (httpsBoard?.hostname ?? null),
+        };
+      },
+    },
+    // Finishing a loopback sign-in: the address its tab ended on, pasted on Connect. Checked to be exactly that redirect; the
+    // proxy then exchanges the code as the callback would (its state is single-use, the PKCE verifier never left it).
+    {
+      method: "POST",
+      path: /^\/api\/sign-ins\/([a-z0-9-]{1,63})\/finish$/,
+      handle: async (m, body) => {
+        const s = (opts.signIns ?? []).find((x) => x.id === m[1] && !x.httpsOnly);
+        if (!s) throw new HttpError(404, "no such sign-in");
+        const { url: pasted } = parse(z.object({ url: z.string().max(8000) }).strict(), body);
+        try {
+          const back = pastedCallback(pasted, `${SIGNIN_LOOPBACK}${s.callback}`);
+          if (!back.code) throw new McpAuthFailed(`${s.label} didn't grant access (${back.error})`);
+          await s.auth.finish(back.state, back.code);
+        } catch (err) {
+          log.warn({ err: String((err as Error).message ?? err).slice(0, 500) }, `${s.label} sign-in failed`);
+          throw err instanceof McpAuthFailed ? new HttpError(400, `Couldn't connect ${s.label}: ${err.message}`) : new HttpError(502, `Couldn't connect ${s.label}: ${s.label.toLowerCase()}-mcp isn't answering`);
+        }
+        log.info(`${s.label} connected`);
+        store.events.emit("connections");
+        return { ok: true };
       },
     },
     {
@@ -1260,7 +1297,7 @@ export function createApp(opts: AppOptions): Server {
         // When Tomorrow next rolls into Today: the next calendar day, except before days off.
         const today = localDate(opts.timezone);
         const rollsOn = nextWorkday(today, opts.workdays ?? WORKWEEK);
-        return { ...board, assignees: ctx.assignees, labels: ctx.labels, prefix: ctx.prefix, timezone: opts.timezone, slackTeams: opts.slackTeams ?? {}, rollsOn, rollsTomorrow: rollsOn === addDays(today, 1), buckets: board.buckets, agentsActive: busy.active, spend, google: google ?? null, signIns: signIns.map(({ id, label, missing, stopped, status }) => ({ id, label, missing, stopped, status: status ?? null })) };
+        return { ...board, assignees: ctx.assignees, labels: ctx.labels, prefix: ctx.prefix, timezone: opts.timezone, slackTeams: opts.slackTeams ?? {}, rollsOn, rollsTomorrow: rollsOn === addDays(today, 1), buckets: board.buckets, agentsActive: busy.active, spend, google: google ?? null, signIns: signIns.map(({ id, label, missing, stopped, status, offer }) => ({ id, label, missing, stopped, status: status ?? null, offer })) };
       },
     },
     { method: "GET", path: /^\/api\/issues\/([^/]+)$/, handle: async (m) => issueView(decodeURIComponent(m[1]!)) },
@@ -1890,6 +1927,20 @@ export function createApp(opts: AppOptions): Server {
           },
         })
       : []),
+    // A sign-in's per-install value (board.signins `secrets`), from its Connect dialog: the kernel checks it against the
+    // declared pattern, writes it to the vault and recreates the proxy, which then reads it (the dialog waits for that).
+    {
+      method: "POST",
+      path: /^\/api\/sign-ins\/([a-z0-9-]{1,63})\/secret$/,
+      handle: async (m, body, who) => {
+        // A ready admin, as for the setup flows' saves; the kernel then lets only the owner write.
+        if (!who.ready || who.account.role !== "admin") throw new HttpError(403, "totp");
+        const s = (opts.signIns ?? []).find((x) => x.id === m[1]);
+        const { secret, value } = parse(z.object({ secret: z.string().max(64), value: z.string().min(1).max(1000) }).strict(), body);
+        if (!s?.fields.some((f) => f.secret === secret)) throw new HttpError(400, "not one of this sign-in's values");
+        return opts.accounts!.call("save_secret", who, { module: s.id, secret, value });
+      },
+    },
     // App admins (docs/design/access.md, Per-app roles): every shared app, its admins and default; name or remove one.
     ...(opts.setupFlows?.flows.length && opts.accounts
       ? setupFlowRoutes({
@@ -1898,12 +1949,12 @@ export function createApp(opts: AppOptions): Server {
           store,
           // "none": the connection needs no sign-in (Grafana with grafana_source: local), so its flow is done.
           signedIn: async (id) => ["ok", "none"].includes((await signInStates()).find((x) => x.id === id)?.status?.state ?? ""),
-          scopeChoice: async (id) => ((await (opts.signIns ?? []).find((x) => x.id === id)?.auth.scopes())?.supported.length ?? 0) > 1,
+          scopeChoice: async (id) => Boolean(await (opts.signIns ?? []).find((x) => x.id === id)?.auth.offers()),
           connected: connectionSignedIn,
           boardUrl: signInOrigin,
           redirectUrl: (signin, host) => {
             const s = (opts.signIns ?? []).find((x) => x.id === signin);
-            return s && `${vendorOrigin(host) ?? httpsBoard?.origin ?? "http://localhost:3121"}${s.callback}`;
+            return s && `${redirectOrigin(s, host) ?? httpsBoard?.origin ?? SIGNIN_LOOPBACK}${s.callback}`;
           },
         })
       : []),
@@ -1931,7 +1982,7 @@ export function createApp(opts: AppOptions): Server {
     const who = await accounts.sessionOf(req);
     if (path === "/api/session" && req.method === "GET") {
       const account = who ? { id: who.account.id, email: who.account.email, name: who.account.name, role: who.account.role, owner: who.account.owner } : null;
-      send(res, 200, JSON.stringify({ mode, account, googleConnect: googleViaBoard, signInConnect: !!vendorOrigin(String(req.headers.host ?? "")), adminUrl: opts.adminUrl ?? null }), "application/json");
+      send(res, 200, JSON.stringify({ mode, account, googleConnect: googleViaBoard, signInConnect: true, adminUrl: opts.adminUrl ?? null }), "application/json");
       return true;
     }
     if (!who) throw new HttpError(401, "sign in");
@@ -2015,6 +2066,7 @@ export function createApp(opts: AppOptions): Server {
         if (!code) throw new GoogleAuthFailed(`Google didn't grant access (${url.searchParams.get("error") ?? "no code"})`);
         const { email } = await opts.google.finish(state, code);
         log.info({ account: email }, "Google account connected");
+        store.events.emit("connections");
         res.writeHead(302, { ...SECURITY_HEADERS, location: "/", "cache-control": "no-store" }).end();
         return;
       }
@@ -2027,13 +2079,17 @@ export function createApp(opts: AppOptions): Server {
 
   /**
    * A module's sign-in (board.signins): /<id>/connect sends the browser to the service's sign-in, which sends it back to
-   * the callback, and the proxy keeps the token. At the board's https address (one click, no tunnel) or on a loopback
-   * address (a tunnel); the redirect is that origin plus the callback, and the proxy registers its client for it (or the
-   * owner's hand-made client lists it: the setup flow shows it). A vendor may permit only the bare /callback shape.
+   * the callback, and the proxy keeps the token. By default the redirect is loopback (SIGNIN_LOOPBACK plus the callback): the
+   * owner pastes the address that tab ends on into Connect (POST /api/sign-ins/<id>/finish), or a tunnel lands it here.
+   * `?oneclick=1` (and an `https_only` vendor) return to the board's https address instead, which a company may first have
+   * to allow. The proxy registers its client for the redirect it is given (or the owner's hand-made client lists it: the
+   * setup flow shows it). A vendor may permit only the bare /callback shape.
    */
   const signInFor = (path: string) => (opts.signIns ?? []).find((s) => s.connect === path || s.callback === path);
-  /** The setup flow (board.setup_flows) whose sign-in this is: Connect starts there while its secrets are missing, and returns there. */
+  /** The setup flow (board.setup_flows) whose sign-in this is: Connect starts there while its secrets are missing. */
   const flowOf = (s: SignIn) => opts.setupFlows?.flows.find((f) => f.signin === s.id);
+  /** The connection's dialog on Settings, Connections: its Connect asks for values, offers scopes, or says what failed. */
+  const dialogOf = (id: string, error?: string) => `/#/settings/connections?connect=${id}${error ? `&error=${encodeURIComponent(error)}` : ""}`;
   /**
    * Whether a Connect must open the flow first: it asks for secrets the vault hasn't got and the sign-in has never worked (a
    * Reconnect of an expired sign-in goes on: an upgraded instance can work with its values outside the vault).
@@ -2048,19 +2104,21 @@ export function createApp(opts: AppOptions): Server {
 
   async function handleSignIn(req: IncomingMessage, res: ServerResponse, url: URL, s: SignIn) {
     const { label: name, connect, callback, auth } = s;
-    const origin = vendorOrigin(String(req.headers.host ?? ""));
-    if (!origin) throw new HttpError(403, httpsBoard ? `sign in to ${name} from ${httpsBoard.origin}` : `sign in to ${name} from ${TUNNEL}`);
+    // A callback lands only where a redirect can: the loopback board (a tunnel) or its https name.
+    const host = String(req.headers.host ?? "");
+    const origin = url.pathname === connect ? redirectOrigin(s, host, url.searchParams.has("oneclick")) : vendorOrigin(host);
+    if (!origin) return signInFailed(res, s.id, `Couldn't connect ${name}: ${httpsBoard ? `sign in from ${httpsBoard.origin}` : `sign in from ${TUNNEL}`}`);
     try {
       if (url.pathname === connect && (await needsSetup(req, s))) {
         res.writeHead(302, { ...SECURITY_HEADERS, location: `/#/setup/${flowOf(s)!.module}`, "cache-control": "no-store" }).end();
         return;
       }
       if (url.pathname === connect) {
-        // The owner picks what to grant (owner, 2026-11-18): when the vendor offers a choice of scopes, the board's picker
-        // (#/connect/<id>) comes first with the recommended ones ticked, and comes back here with `picked` and its scopes.
+        // The board's Connect asks for the sign-in's own values and offers its scopes before it comes here (owner, 2026-11-18);
+        // a Connect from elsewhere (an old link) gets that dialog first: values missing, or a choice of scopes not yet made.
         const picked = url.searchParams.has("picked");
-        if (!picked && ((await auth.scopes())?.supported.length ?? 0) > 1) {
-          res.writeHead(302, { ...SECURITY_HEADERS, location: `/#/connect/${s.id}`, "cache-control": "no-store" }).end();
+        if ((s.fields.length && !(await auth.status(0))?.configured) || (!picked && (await auth.offers()))) {
+          res.writeHead(302, { ...SECURITY_HEADERS, location: dialogOf(s.id), "cache-control": "no-store" }).end();
           return;
         }
         const { url: signIn } = await auth.start(`${origin}${callback}`, picked ? url.searchParams.getAll("scope") : undefined);
@@ -2074,8 +2132,9 @@ export function createApp(opts: AppOptions): Server {
         if (!code) throw new McpAuthFailed(`${name} didn't grant access (${url.searchParams.get("error") ?? "no code"})`);
         await auth.finish(state, code);
         log.info(`${name} connected`);
-        const f = flowOf(s);
-        res.writeHead(302, { ...SECURITY_HEADERS, location: f ? `/#/setup/${f.module}` : "/", "cache-control": "no-store" }).end();
+        // The tab that pressed Connect turns Connected now (events.ts); this one, opened for the sign-in, closes itself or shows it.
+        store.events.emit("connections");
+        res.writeHead(302, { ...SECURITY_HEADERS, location: `/#/settings/connections?connected=${s.id}`, "cache-control": "no-store" }).end();
         return;
       }
     } catch (err) {
@@ -2136,6 +2195,13 @@ export function createApp(opts: AppOptions): Server {
     if (rejected) {
       log.warn({ method: req.method, path: url.pathname, reason: rejected }, "request rejected");
       return send(res, 403, JSON.stringify({ error: rejected }), "application/json");
+    }
+    // Local mode (the kernel's sign-in is on localhost): a page opened at 127.0.0.1 moves to localhost first. Sign-in
+    // crosses to the kernel's localhost origin and back, and a 127.0.0.1 board bookmarked before that dead-ends there.
+    const host = String(req.headers.host ?? "").toLowerCase(), local = host.replace(/^127\.0\.0\.1/, "localhost");
+    if (opts.mode === "lan" && (req.method === "GET" || req.method === "HEAD") && req.headers["sec-fetch-mode"] === "navigate" && local !== host && opts.allowedHosts.includes(local) && opts.adminUrl && new URL(opts.adminUrl).hostname === "localhost") {
+      res.writeHead(308, { location: `http://${local}${req.url ?? "/"}`, "cache-control": "no-store" }).end();
+      return;
     }
     try {
       if (url.pathname.startsWith("/api/")) await handleApi(req, res, url);
@@ -2203,10 +2269,10 @@ async function readJson(req: IncomingMessage, max = 256_000): Promise<unknown> {
   }
 }
 
-/** A failed sign-in: back to the board's page for it (#/connect/<id>), which shows why and the way on (kept short: it rides in a header). */
+/** A failed sign-in: back to its Connect dialog on Settings, Connections, which shows why and Try again (kept short: it rides in a header). */
 function signInFailed(res: ServerResponse, id: string, message: string) {
   const why = message.length > 400 ? `${message.slice(0, 399)}…` : message;
-  res.writeHead(302, { ...SECURITY_HEADERS, location: `/#/connect/${id}?error=${encodeURIComponent(why)}`, "cache-control": "no-store" }).end();
+  res.writeHead(302, { ...SECURITY_HEADERS, location: `/#/settings/connections?connect=${id}&error=${encodeURIComponent(why)}`, "cache-control": "no-store" }).end();
 }
 
 function send(res: ServerResponse, status: number, body: string | Buffer, type: string, cache = "no-store") {

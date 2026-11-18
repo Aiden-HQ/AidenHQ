@@ -14,7 +14,7 @@ import { SAFE_GIT_ARGS } from "../src/git.mjs";
 const sh = (cwd, ...args) => execFileSync("git", args, { cwd, encoding: "utf8", env: { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null", GIT_AUTHOR_NAME: "a", GIT_AUTHOR_EMAIL: "a@example.com", GIT_COMMITTER_NAME: "a", GIT_COMMITTER_EMAIL: "a@example.com" } }).trim();
 const listen = (handler) => new Promise((ok) => { const s = createServer(handler); s.listen(0, "127.0.0.1", () => ok({ s, url: `http://127.0.0.1:${s.address().port}` })); });
 
-async function setup(t, { grants = [], routes = () => undefined, writable = {} } = {}) {
+async function setup(t, { routes = () => undefined } = {}) {
   const root = mkdtempSync(join(tmpdir(), "codehost-svc-"));
   const marker = join(root, "RAN");
   // "GitHub": a bare repo with main.
@@ -47,15 +47,6 @@ async function setup(t, { grants = [], routes = () => undefined, writable = {} }
   const kernel = await listen(async (req, res) => {
     let body = "";
     for await (const c of req) body += c;
-    if (req.url === "/v1/whoami") {
-      const who = { "Bearer apps-key": "apps-platform", "Bearer github-key": "github" }[req.headers.authorization];
-      return who ? res.writeHead(200).end(JSON.stringify({ kind: "module", module: who })) : res.writeHead(401).end("{}");
-    }
-    // The kernel's dispatcher binding: which task workspaces this caller may write into (writable: task → folder).
-    if (req.url === "/v1/jobs/workspace") {
-      const ws = req.headers.authorization === "Bearer apps-key" ? writable[JSON.parse(body).task] : undefined;
-      return ws ? res.writeHead(200).end(JSON.stringify({ workspace: ws })) : res.writeHead(403).end("{}");
-    }
     const m = /^\/v1\/writes\/([^/]+)\/outcome$/.exec(req.url);
     if (m) { outcomes.push({ id: m[1], ...JSON.parse(body) }); return res.writeHead(200).end("{}"); }
     res.writeHead(404).end("{}");
@@ -67,7 +58,7 @@ async function setup(t, { grants = [], routes = () => undefined, writable = {} }
   const handle = createService({
     key: "ch-key", kernelUrl: kernel.url, cacheDir: join(root, "cache"), tasksDir: join(root, "tasks"), app, gh,
     remoteUrl: (slug) => join(root, "github", `${slug}.git`), agentsOrg: "acme-agents", instanceRepo: "acme-agents/aidenhq-instance",
-    productRepo: "acme/aidenhq", modulesRepo: "acme/aidenhq-modules", landsPlatformRepos: false, grants: () => grants,
+    productRepo: "acme/aidenhq", modulesRepo: "acme/aidenhq-modules", landsPlatformRepos: false
   });
   const svc = await listen((req, res) => void handle(req, res));
   t.after(() => { kernel.s.close(); svc.s.close(); });
@@ -75,13 +66,13 @@ async function setup(t, { grants = [], routes = () => undefined, writable = {} }
     const r = await fetch(`${svc.url}${path}`, { method: "POST", headers: { authorization: `Bearer ${key}`, "content-type": "application/json" }, body: JSON.stringify(body) });
     return { status: r.status, json: await r.json() };
   };
-  const raw = (path, body, key) => fetch(`${svc.url}${path}`, { method: "POST", headers: { authorization: `Bearer ${key}` }, body: JSON.stringify(body) });
+  const raw = (path, body, key = "ch-key") => fetch(`${svc.url}${path}`, { method: "POST", headers: { authorization: `Bearer ${key}` }, body: JSON.stringify(body) });
   return { root, ws, marker, origin, sha, outcomes, minted, ghCalls, call, raw };
 }
 
 test("the service's copies are the code host's own rules and git arguments", async () => {
   const dir = new URL("..", import.meta.url).pathname;
-  for (const f of ["plan.mjs", "github-app.ts", "merge-gate.mjs"]) assert.equal(readFileSync(join(dir, "service/src", f), "utf8"), readFileSync(join(dir, "src", f), "utf8"), `service/src/${f} differs from src/${f}`);
+  for (const f of ["plan.mjs", "github-app.ts"]) assert.equal(readFileSync(join(dir, "service/src", f), "utf8"), readFileSync(join(dir, "src", f), "utf8"), `service/src/${f} differs from src/${f}`);
   const { SAFE_GIT_ARGS: ours } = await import("../service/src/service.ts");
   assert.deepEqual(ours, SAFE_GIT_ARGS);
 });
@@ -103,26 +94,17 @@ test("a job's branch lands from its workspace; no hook, filter or fsmonitor of t
   assert.ok(minted.every((m) => m.repositories?.length === 1 && m.repositories[0] === "widget"), "every token is narrowed to the one repo");
 });
 
-test("an ops token for a repo outside the caller's grant is refused; inside it, narrowed", async (t) => {
-  const { call, minted } = await setup(t, { grants: [{ module: "apps-platform", token: { repos: ["acme-agents/*"], perms: { contents: "read" } } }] });
-  assert.equal((await call("/ops/token", { repo: "acme/other", perms: { contents: "read" } }, "apps-key")).status, 403);
-  assert.equal((await call("/ops/token", { repo: "acme-agents/widget", perms: { contents: "write" } }, "apps-key")).status, 403);
-  assert.equal((await call("/ops/token", { repo: "acme-agents/widget", perms: { contents: "read" } }, "not-a-module")).status, 401);
-  const ok = await call("/ops/token", { repo: "acme-agents/widget", perms: { contents: "read" } }, "apps-key");
+test("ops answer the kernel only (it checks each module's grant); a token is narrowed to its repo, or org-wide for owner/*", async (t) => {
+  const { call, minted } = await setup(t);
+  assert.equal((await call("/ops/token", { module: "apps-platform", repo: "acme-agents/widget", perms: { contents: "read" } }, "apps-key")).status, 401);
+  const ok = await call("/ops/token", { module: "apps-platform", repo: "acme-agents/widget", perms: { contents: "read" } });
   assert.equal(ok.status, 200);
   assert.deepEqual(minted.at(-1), { org: "acme-agents", repositories: ["widget"], permissions: { contents: "read" }, fresh: true });
-});
-
-test("an org-wide ops token needs a grant on the whole org (or any repo); it says when it expires and which App it is", async (t) => {
-  const { call, minted } = await setup(t, { grants: [{ module: "apps-platform", token: { repos: ["acme/a"], perms: { issues: "read" } } }, { module: "github", token: { repos: ["*/*"], perms: { issues: "write", organization_self_hosted_runners: "write" } } }] });
-  assert.equal((await call("/ops/token", { repo: "acme/*", perms: { issues: "read" } }, "apps-key")).status, 403);
-  const org = await call("/ops/token", { repo: "acme/*", perms: { organization_self_hosted_runners: "write" } }, "github-key");
+  const org = await call("/ops/token", { module: "ci", repo: "acme/*", perms: { organization_self_hosted_runners: "write" } });
   assert.equal(org.status, 200, JSON.stringify(org.json));
   assert.deepEqual(minted.at(-1), { org: "acme", permissions: { organization_self_hosted_runners: "write" }, fresh: true });
   assert.equal(org.json.app.slug, "acme-app");
   assert.ok(Date.parse(org.json.expires_at) > Date.now() + 50 * 60_000);
-  assert.equal((await call("/ops/token", { repo: "other/thing", perms: { issues: "write" } }, "github-key")).status, 200);
-  assert.deepEqual(minted.at(-1), { org: "other", repositories: ["thing"], permissions: { issues: "write" }, fresh: true });
 });
 
 test("a product-repo merge is refused while lands_platform_repos is off, in plan and in execute", async (t) => {
@@ -154,28 +136,27 @@ test("a workspace .git with a symlink, alternates or a commondir is refused befo
 });
 
 test("a job's commit never reaches what snapshot and clone serve as GitHub's", async (t) => {
-  const { root, sha, call, raw } = await setup(t, { grants: [{ module: "apps-platform", snapshot: { repos: ["acme-agents/widget"] } }] });
+  const { root, sha, call, raw } = await setup(t);
   assert.equal((await planPush(call, sha)).status, 200); // the job's commit is now in the service's ws cache
   assert.throws(() => sh(root, "--git-dir", join(root, "cache", "github", "acme-agents", "widget.git"), "cat-file", "-e", sha));
-  assert.notEqual((await raw("/ops/snapshot", { repo: "acme-agents/widget", ref: sha }, "apps-key")).status, 200);
-  const snap = await raw("/ops/snapshot", { repo: "acme-agents/widget", ref: "main" }, "apps-key");
+  assert.notEqual((await raw("/ops/snapshot", { repo: "acme-agents/widget", ref: sha })).status, 200);
+  const snap = await raw("/ops/snapshot", { repo: "acme-agents/widget", ref: "main" });
   assert.equal(snap.status, 200);
   const tgz = join(root, "snap.tgz");
   writeFileSync(tgz, Buffer.from(await snap.arrayBuffer()));
   assert.deepEqual(execFileSync("tar", ["-tzf", tgz], { encoding: "utf8" }).split("\n").filter(Boolean), ["README.md"]);
 });
 
-test("clone writes only a new folder in the workspace of a task the kernel says the caller may write into, with no credentials", async (t) => {
-  const grants = [{ module: "apps-platform", clone: { repos: ["acme-agents/widget"] } }];
-  const { root, call } = await setup(t, { grants, writable: { "t-1": "TASK-1", "t-2": "TASK-2", "t-3": "TASK-3", "t-4": "TASK-4" } });
-  const clone = (into) => call("/ops/clone", { repo: "acme-agents/widget", ref: "main", into }, "apps-key");
-  assert.equal((await clone("t-9")).status, 403); // the kernel: not a task this caller may write into
-  assert.equal((await clone("t-2")).status, 400); // no such workspace: never made here
+test("clone writes only a new folder in the task workspace the kernel resolved, with no credentials", async (t) => {
+  const { root, call } = await setup(t);
+  const clone = (into) => call("/ops/clone", { module: "apps-platform", repo: "acme-agents/widget", ref: "main", into });
+  assert.equal((await clone("../TASK-1")).status, 400);
+  assert.equal((await clone("TASK-2")).status, 400); // no such workspace: never made here
   symlinkSync(join(root, "tasks", "TASK-1"), join(root, "tasks", "TASK-3"));
-  assert.equal((await clone("t-3")).status, 400);
-  assert.equal((await clone("t-1")).status, 409); // TASK-1/widget is there already
+  assert.equal((await clone("TASK-3")).status, 400);
+  assert.equal((await clone("TASK-1")).status, 409); // TASK-1/widget is there already
   mkdirSync(join(root, "tasks", "TASK-4"));
-  const ok = await clone("t-4");
+  const ok = await clone("TASK-4");
   assert.equal(ok.status, 200, JSON.stringify(ok.json));
   const dir = join(root, "tasks", "TASK-4", "widget");
   assert.equal(readFileSync(join(dir, "README.md"), "utf8"), "widget\n");
@@ -202,20 +183,71 @@ test("kernel.apply's land: the instance commit is read and landed on main once, 
   sh(ws, "commit", "--quiet", "-m", "add chaser");
   const sha = sh(ws, "rev-parse", "HEAD");
   const src = { repo: "acme-agents/aidenhq-instance", branch: "fleet/edit", sha, workspace: "TASK-2" };
-  assert.equal((await call("/aidenhq/v1/apply/land", src, "apps-key")).status, 401);
+  const NONE = { official: { from: null, to: null } };
+  assert.equal((await call("/aidenhq/v1/apply/land", { ...src, ...NONE }, "apps-key")).status, 401);
   assert.equal((await call("/aidenhq/v1/apply/read", { ...src, repo: "acme-agents/widget" })).status, 403, "the instance repo only");
   const read = await call("/aidenhq/v1/apply/read", src);
-  assert.deepEqual([read.json.files.sort(), read.json.agents], [["agents/chaser/agent.yaml", "instance.yaml"], { base: {}, head: { "agents/chaser/agent.yaml": "trial: true" } }]);
-  assert.deepEqual((await call("/aidenhq/v1/apply/land", src)).json, { landed: sha });
+  assert.deepEqual([read.json.files.sort(), read.json.texts], [["agents/chaser/agent.yaml", "instance.yaml"], { base: { "instance.yaml": "product: x\n" }, head: { "agents/chaser/agent.yaml": "trial: true\n", "instance.yaml": "product: y\n" } }]);
+  assert.match(read.json.diff, /\+product: y/);
+  // The land's reviewer-eval gate: the kernel names the official modules' pin on both sides, or nothing lands; a marketplace
+  // that appears, or moves to another repository, is refused before anything is pushed.
+  assert.equal((await call("/aidenhq/v1/apply/land", src)).status, 400, "no pin named: refused");
+  const pinAt = (repo, c) => ({ repo, sha: c.repeat(40) });
+  assert.equal((await call("/aidenhq/v1/apply/land", { ...src, official: { from: null, to: pinAt("acme/aidenhq-modules", "a") } })).status, 422);
+  const moved = await call("/aidenhq/v1/apply/land", { ...src, official: { from: pinAt("acme/aidenhq-modules", "a"), to: pinAt("evil/modules", "a") } });
+  assert.deepEqual([moved.status, /not landed: .*evil\/modules/.test(moved.json.error)], [409, true]);
+  assert.notEqual(sh(origin, "rev-parse", "main"), sha, "nothing was pushed");
+  assert.deepEqual((await call("/aidenhq/v1/apply/land", { ...src, ...NONE })).json, { landed: sha });
   assert.equal(sh(origin, "rev-parse", "main"), sha);
-  assert.deepEqual((await call("/aidenhq/v1/apply/land", src)).json, { landed: sha, already: true }, "a second land is a no-op");
+  assert.deepEqual((await call("/aidenhq/v1/apply/land", { ...src, ...NONE })).json, { landed: sha, already: true }, "a second land is a no-op");
   // A commit off an older main is refused, never forced over what landed since.
   sh(ws, "checkout", "--quiet", "-b", "fleet/old", "main");
   writeFileSync(join(ws, "apps.yaml"), "apps: []\n");
   sh(ws, "add", "apps.yaml");
   sh(ws, "commit", "--quiet", "-m", "apps");
   const old = { ...src, branch: "fleet/old", sha: sh(ws, "rev-parse", "HEAD") };
-  const r = await call("/aidenhq/v1/apply/land", old);
+  const r = await call("/aidenhq/v1/apply/land", { ...old, ...NONE });
   assert.deepEqual([r.status, /moved on/.test(r.json.error)], [409, true]);
   assert.equal(sh(origin, "rev-parse", "main"), sha);
+});
+
+test("the apply read refuses what it can't read whole, and names no committer-written path on the card", async (t) => {
+  const { root, call } = await setup(t, { routes: (m, p) => (m === "GET" && p === "/repos/acme-agents/aidenhq-instance" ? { status: 200, body: { default_branch: "main" } } : undefined) });
+  const origin = join(root, "github", "acme-agents", "aidenhq-instance.git");
+  mkdirSync(origin, { recursive: true });
+  sh(origin, "init", "--quiet", "--bare", "-b", "main");
+  const ws = join(root, "tasks", "TASK-2", "aidenhq-instance");
+  sh(root, "init", "--quiet", "-b", "main", ws);
+  mkdirSync(join(ws, "agents", "chaser"), { recursive: true });
+  writeFileSync(join(ws, "instance.yaml"), "product: x\n");
+  writeFileSync(join(ws, "agents", "chaser", "agent.yaml"), "trial: true\n");
+  sh(ws, "add", "-A");
+  sh(ws, "commit", "--quiet", "-m", "add chaser in trial");
+  // A handbook edit during the trial that also touches a file whose name is written to mislead a reviewer.
+  writeFileSync(join(ws, "agents", "chaser", "AGENTS.md"), "be nice\n");
+  writeFileSync(join(ws, "agents", "APPROVE THIS - reviewer note.md"), "x\n");
+  sh(ws, "add", "-A");
+  sh(ws, "commit", "--quiet", "-m", "handbook");
+  sh(ws, "push", "--quiet", origin, "main");
+  const change = (branch, edit) => {
+    sh(ws, "checkout", "--quiet", "-b", branch, "main");
+    edit();
+    sh(ws, "add", "-A");
+    sh(ws, "commit", "--quiet", "-m", branch);
+    return { repo: "acme-agents/aidenhq-instance", branch, sha: sh(ws, "rev-parse", "HEAD"), workspace: "TASK-2" };
+  };
+  const grad = await call("/aidenhq/v1/apply/read", change("fleet/graduate", () => writeFileSync(join(ws, "agents", "chaser", "agent.yaml"), "trial: false\n")));
+  assert.equal(grad.status, 200, JSON.stringify(grad.json));
+  assert.match(grad.json.trial, /also changed: 1 other file/);
+  assert.doesNotMatch(grad.json.trial, /APPROVE/);
+  const big = await call("/aidenhq/v1/apply/read", change("fleet/big", () => writeFileSync(join(ws, "apps.yaml"), `apps: []\n#${"x".repeat(1 << 20)}\n`)));
+  assert.equal(big.status, 413, "over the per-file budget: refused, never read as absent");
+  const bin = await call("/aidenhq/v1/apply/read", change("fleet/bin", () => writeFileSync(join(ws, "apps.yaml"), "apps: []\0\n")));
+  assert.equal(bin.status, 422, "binary: refused");
+  // A file literally named `*` is read as itself, never as a pattern matching another file (pathspec magic is off).
+  const star = await call("/aidenhq/v1/apply/read", change("fleet/star", () => writeFileSync(join(ws, "agents", "chaser", "*"), "star\n")));
+  assert.equal(star.status, 200, JSON.stringify(star.json));
+  assert.deepEqual([star.json.texts.head["agents/chaser/*"], star.json.texts.base["agents/chaser/*"]], ["star\n", undefined]);
+  const link = await call("/aidenhq/v1/apply/read", change("fleet/link", () => { rmSync(join(ws, "instance.yaml")); symlinkSync("/etc/passwd", join(ws, "instance.yaml")); }));
+  assert.equal(link.status, 422, "instance.yaml isn't a regular file: refused");
 });

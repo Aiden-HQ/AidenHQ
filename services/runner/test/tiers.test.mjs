@@ -405,14 +405,12 @@ test("close", () => {
   assert.equal(tierOf(close({ repo: "acme/bor" }, P)), "reject", "outside the agents org");
 });
 
-test("create_repo: the panel in the agents org, a plain lowercase name; refused anywhere else", () => {
-  const create = (repo) => classify("create_repo", { ...base, repo });
-  assert.equal(tierOf(create("acme-agents/expense-tracker")), "panel", "a new app's repo grows the org: authority-expanding");
-  for (const repo of ["acme/expense-tracker", "acme-agents/.github", "acme-agents/Apps", "acme-agents/x--y", base.instanceRepo, `acme-agents/${"a".repeat(64)}`]) assert.equal(tierOf(create(repo)), "reject", repo);
-  // A reviewer's no on one name holds for that name (requestKey), not for another.
-  const no = { action: "create_repo", args: { repo: "acme-agents/zzz-fake" }, state: "rejected", decidedBy: "reviewer:x", decidedAt: "2026-11-14T02:00:00Z" };
-  assert.equal(classify("create_repo", { ...base, repo: "acme-agents/zzz-fake", records: [no] }).rule, "rejected-content");
-  assert.equal(tierOf(classify("create_repo", { ...base, repo: "acme-agents/expense-tracker", records: [no] })), "panel");
+test("create_repo: Tier 0 in an org the owner allows, a plain lowercase name; refused anywhere else", () => {
+  const create = (repo, over = {}) => classify("create_repo", { ...base, repo, ...over });
+  assert.equal(tierOf(create("acme-agents/expense-tracker")), 0, "a new private repository changes no code, settings or access elsewhere (owner, 2026-11-18)");
+  assert.equal(tierOf(create("acme/expense-tracker")), "reject", "an org nobody allowed (no allowed_orgs: the agents orgs only)");
+  assert.equal(tierOf(create("acme/expense-tracker", { allowedOrgs: ["acme", "acme-agents"] })), 0, "an org in allowed_orgs");
+  for (const repo of ["acme-agents/.github", "acme-agents/Apps", "acme-agents/x--y", base.instanceRepo, `acme-agents/${"a".repeat(64)}`]) assert.equal(tierOf(create(repo)), "reject", repo);
 });
 
 test("merge in the agents org", () => {
@@ -572,6 +570,9 @@ test("a release move is tiered by the modules it resolves to, and following one 
   const run = (st) => apply(["instance.yaml"], { "instance.yaml": `product: ${PIN_A}\nmodules: []\n` }, { "instance.yaml": rel("1".repeat(40)) }, { modules: {}, ...st });
   const same = run({});
   assert.deepEqual([same.tier, Boolean(same.reviewFirst), same.rule], [2, true, "release-pin"], "following a release enrols unattended updates: the owner's after the reviewer");
+  // A move filed through the runner is never the release updater's verified one (kernel/test/apply-plan.test.mjs): the owner's.
+  const move = (b, h) => apply(["instance.yaml"], { "instance.yaml": b }, { "instance.yaml": h }, { modules: {} });
+  assert.deepEqual([move(rel("1".repeat(40)), rel("2".repeat(40))).tier, move(rel("1".repeat(40)), rel("2".repeat(40))).rule], [2, "release-pin"], "auto-updates on, but not the updater's verified move");
   const drop = apply(["instance.yaml"], { "instance.yaml": rel("1".repeat(40)) }, { "instance.yaml": `product: ${PIN_A}\nmodules: []\n` }, { modules: {} });
   assert.deepEqual([drop.tier, drop.rule], [1, "release-pin"], "dropping the release: AI review only");
   const official = (repo) => ({ product: PIN_A, modules: [], marketplaces: [{ name: "aidenhq", source: { source: "github", repo }, sha: "2".repeat(40) }] });

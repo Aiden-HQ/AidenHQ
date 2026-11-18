@@ -9,9 +9,9 @@ import type { IncomingMessage, ServerResponse } from "node:http";
  * The names a board view listens for. approvals: a card was filed, decided, claimed or finished (also the needs-you badge);
  * chat: a chat changed (a message, its state, its run, or the work handed out from it; `issue` is the chat's id); tasks: a
  * task changed or its run started or ended (`issue` is its id); progress: a run on that task (or one handed out from that
- * chat) said more, for its live words; grades: a grade changed state; fleet: a Fleet Ops tick.
+ * chat) said more, for its live words; grades: a grade changed state; fleet: a Fleet Ops tick; connections: a sign-in finished.
  */
-export type EventName = "approvals" | "chat" | "progress" | "grades" | "fleet" | "tasks";
+export type EventName = "approvals" | "chat" | "progress" | "grades" | "fleet" | "tasks" | "connections";
 
 const HEARTBEAT_MS = 25_000;
 

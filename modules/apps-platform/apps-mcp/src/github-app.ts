@@ -1,7 +1,6 @@
-// Read access to private agents-org repos through the instance's GitHub App. A minimal copy of
-// modules/codehost-github/src/github-app.ts (separate package): per repo, a short-lived installation token narrowed to that one
-// repo and {contents: read}, handed to that one git child through a credential helper reading an env var.
-import { createSign } from "node:crypto";
+// Access to private agents-org repos through the instance's GitHub App, without its key: per repo, a short-lived token from
+// the kernel (codehost-github mints it), narrowed to that one repo and {contents: read} (write for the registry push), handed
+// to that one git child through a credential helper reading an env var.
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { parse } from "yaml";
@@ -23,44 +22,36 @@ export function readOrgs(instanceDir: string): string[] {
   return Array.isArray(v) ? v.map(String) : [];
 }
 
-const b64url = (v: unknown) => Buffer.from(typeof v === "string" ? v : JSON.stringify(v)).toString("base64url");
-
-/** RS256 App JWT: issued 60s in the past (clock drift), valid 10 minutes from then. */
-function appJwt(appId: string, key: string, now = Date.now()): string {
-  const iat = Math.floor(now / 1000) - 60;
-  const body = `${b64url({ alg: "RS256", typ: "JWT" })}.${b64url({ iat, exp: iat + 600, iss: appId })}`;
-  return `${body}.${createSign("RSA-SHA256").update(body).sign(key, "base64url")}`;
-}
-
 /** `more`: permissions beyond contents (previews.ts reads and comments on pull requests: pull_requests write). */
 export type RepoToken = (slug: string, perm?: "read" | "write", more?: Record<string, "read" | "write">) => Promise<string>;
 
-/** Mints tokens for single repos (contents: read, or write for the registry push; the App must hold contents: write), reused until 5 minutes before expiry. Undefined when the App's files are absent. */
-export function appTokens(dir: string, fetch = globalThis.fetch): RepoToken | undefined {
-  if (!existsSync(join(dir, "app_id")) || !existsSync(join(dir, "key.pem"))) return undefined;
-  const appId = readFileSync(join(dir, "app_id"), "utf8").trim();
-  const key = readFileSync(join(dir, "key.pem"), "utf8");
+/** Whether this instance runs the GitHub code host (codehost-github in config/modules.json): the App's tokens come from it. */
+export function githubHost(repoDir: string): boolean {
+  try {
+    return (JSON.parse(readFileSync(`${repoDir}/config/modules.json`, "utf8")) as { name?: string; enabled?: boolean }[]).some((m) => m?.name === "codehost-github" && m.enabled === true);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Tokens for single repos (contents: read, or write for the registry push), from the kernel's POST /v1/codehost/token under this
+ * module's `codehost:` grant (only codehost-github holds the App's key), reused until 5 minutes before they expire.
+ */
+export function appTokens(kernelUrl: string, key: string, fetch = globalThis.fetch): RepoToken {
   const cache = new Map<string, { token: string; expires: number }>();
-  const api = async (method: string, path: string, body?: unknown) => {
-    const r = await fetch(`https://api.github.com${path}`, {
-      method,
-      headers: { authorization: `Bearer ${appJwt(appId, key)}`, accept: "application/vnd.github+json", "x-github-api-version": "2022-11-28", ...(body ? { "content-type": "application/json" } : {}) },
-      ...(body ? { body: JSON.stringify(body) } : {}),
-      signal: AbortSignal.timeout(20_000),
-    });
-    return { status: r.status, body: (await r.json().catch(() => ({}))) as any };
-  };
   return async (slug, perm = "read", more = {}) => {
     const ck = `${slug.toLowerCase()}:${perm}:${JSON.stringify(more)}`;
     const hit = cache.get(ck);
     if (hit && hit.expires - Date.now() > 5 * 60_000) return hit.token;
-    const [owner, name] = slug.split("/");
-    const inst = await api("GET", `/repos/${owner}/${name}/installation`);
-    if (inst.status !== 200) throw new Error(`the GitHub App can't see ${slug} (GitHub said ${inst.status} ${inst.body?.message ?? ""})`.trim());
-    const r = await api("POST", `/app/installations/${inst.body.id}/access_tokens`, { repositories: [name], permissions: { ...more, contents: perm } });
-    if (r.status !== 201) throw new Error(`couldn't get a GitHub App token for ${slug} (GitHub said ${r.status} ${r.body?.message ?? ""})`.trim());
-    cache.set(ck, { token: r.body.token, expires: Date.parse(r.body.expires_at) });
-    return r.body.token as string;
+    const r = await fetch(`${kernelUrl}/v1/codehost/token`, {
+      method: "POST", headers: { authorization: `Bearer ${key}`, "content-type": "application/json" },
+      body: JSON.stringify({ repo: slug, perms: { ...more, contents: perm } }), signal: AbortSignal.timeout(30_000),
+    });
+    const b = (await r.json().catch(() => ({}))) as any;
+    if (r.status !== 200) throw new Error(`couldn't get a GitHub App token for ${slug} (the kernel said ${r.status} ${b?.error?.message ?? b?.error ?? ""})`.trim());
+    cache.set(ck, { token: String(b.token), expires: Date.parse(b.expires_at) });
+    return String(b.token);
   };
 }
 

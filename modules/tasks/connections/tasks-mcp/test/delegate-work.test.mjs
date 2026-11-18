@@ -19,7 +19,7 @@ test("a brief asks for every change, and no invariance claim beside one", () => 
 });
 
 test("a brief names only checks the target repository runs, and leaves the version to its own script", () => {
-  assert.ok(skill.includes("an official modules repo runs `ci-required`, where `image-scan` is the product repo's"));
+  assert.ok(skill.includes("the product repo runs `ci-required` (its `modules` job for the official modules), where `image-scan` is the product repo's"));
   assert.ok(skill.includes("each criterion is one this repository's CI can satisfy"));
   assert.ok(skill.includes('Name the selector and its rule ("pin what `best-version.mjs` prints"), not a version'));
   assert.ok(skill.includes('the rubric says "`image-scan` green on the PR\'s head"'));

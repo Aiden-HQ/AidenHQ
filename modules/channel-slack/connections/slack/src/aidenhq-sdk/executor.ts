@@ -5,8 +5,8 @@
 //   POST <path>/status   { id, idempotency_key } → { state: running | done | failed | unknown, text? }
 // The kernel calls execute only for an approved, claimed and revalidated record; plan never changes anything.
 //
-// Canonical copy: kernel/sdk/src/executor.ts. Each consumer holds a byte-identical copy at src/aidenhq-sdk/executor.ts:
-// edit this one, then run `node scripts/sync-shared.mjs`.
+// First-party modules hold byte-identical copies (scripts/sync-shared.mjs: edit this one and run it); third-party modules import
+// @aidenhq/sdk/executor.
 import { timingSafeEqual } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
 

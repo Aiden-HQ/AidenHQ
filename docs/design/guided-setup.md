@@ -204,7 +204,16 @@ The board renders every flow with one component: instructions, then paste fields
   offered by Aiden at the end.
 - **Meet Aiden now** is on every wizard screen. The wizard is optional; the tour runs whenever they leave it.
 
-**Every module that needs one gets a flow in this work.** The candidates, from the modules repo's credentials and
+**A plain sign-in is not a flow (owner, 2026-11-18).** A connection connects with one Connect from wherever it is listed
+(Settings, Connections; its module's page; its banner): the vendor's sign-in opens in a new tab, ends on a loopback address
+that doesn't load (`http://localhost:3121/...`: no company domain allowlist applies), and the owner pastes that address into
+the same dialog; the tile turns Connected when it lands. One click back to the board's https address is the dialog's
+secondary link (owner, 2026-11-18), and the only path for an `https_only` vendor (Slack). Fixed or discoverable values are module defaults (ClickHouse's MCP address); only a genuinely per-install
+value (a company's own Glean, Grafana or Primer address) is asked for, as a field in Connect's dialog (the sign-in's
+`secrets`), next to the scope picker where the vendor offers scopes. Flows remain only where the owner must make something
+elsewhere first (Google's OAuth client, the Slack app, HubSpot's MCP connector, a GitHub token, a bot) or pair a channel.
+
+**Every module that needs one gets a flow in this work** (since narrowed by the rule above). The candidates, from the modules repo's credentials and
 `connections.<x>.setup` texts:
 - **Channels:** `channel-telegram`, `channel-slack`.
 - **Connections:** `google` (the guided own-client flow), `slack` (read, signed in as the owner), `github`, `glean`,

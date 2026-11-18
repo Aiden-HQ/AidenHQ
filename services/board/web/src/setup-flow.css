@@ -43,7 +43,7 @@
 .setup-foot { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 12px; padding-top: 16px; border-top: 1px solid var(--border); }
 .setup-foot > .btn:only-child { margin-left: auto; }
 
-/* A sign-in's access picker (ConnectPage.tsx): one row per product, its access as toggles; ones that change things in amber. */
+/* A sign-in's access picker (Connect.tsx): one row per product, its access as toggles; ones that change things in amber. */
 .connect-card { gap: 0; padding: 0; }
 .connect-head { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px; padding: 12px 16px 12px 20px; border-bottom: 1px solid var(--border); }
 .connect-head h2 { margin: 0; font-size: var(--text-lg); font-weight: 600; letter-spacing: -0.01em; }
@@ -66,3 +66,13 @@
 .connect-row .ui-check code { font-family: var(--mono); font-size: var(--text-sm); }
 .connect-row .ui-check.connect-change.on { border-color: var(--warn); background: color-mix(in srgb, var(--warn) 14%, var(--surface)); color: var(--warn-text); }
 .connect-row .ui-check.connect-change input { accent-color: var(--warn); }
+.connect-sum { margin: 0; padding: 10px 20px; border-top: 1px solid var(--border); font-size: var(--text-sm); color: var(--muted); }
+/* In Connect's dialog (Connect.tsx): one product a line, the list scrolling inside the dialog. */
+.ui-dialog .connect-card { overflow: hidden; }
+.ui-dialog .connect-rows { grid-template-columns: 1fr; max-height: min(52dvh, 520px); overflow-y: auto; }
+.ui-dialog .connect-row:nth-child(even) { border-left: 0; }
+.ui-dialog .connect-row:nth-child(2) { border-top: 1px solid var(--border); }
+/* A loopback sign-in's last step (Connect.tsx): what to do, the pasted address, and one click as the other way. */
+.connect-steps { margin: 0 0 12px; padding-left: 20px; display: grid; gap: 6px; line-height: 1.45; }
+.connect-alt { margin: 4px 0 0; font-size: var(--text-sm); color: var(--muted); display: flex; flex-wrap: wrap; align-items: center; gap: 4px; }
+.ui-field-help { overflow-wrap: anywhere; }

@@ -17,6 +17,12 @@ RUN npm install -g npm@11.21.2
 
 FROM ghcr.io/actions/actions-runner:2.338.2@sha256:6d0b2d80d80f143f77dcb676e50920100bbb547e39e883454d57f45ab8c31300
 USER root
+# iproute2: the product's kernel runs `ip` (kernel/src/sandbox.ts hostIPv4, hostRoutes), which its unit tests reach (the base
+# image has none). Noble's versions, with the three libraries it adds (apt-get install -s, 2026-11-18); apt keeps only the
+# current version, so a bump of any of them is a deliberate edit here.
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends iproute2=6.1.0-1ubuntu6.4 libbpf1=1:1.3.0-2build2 libmnl0=1.0.5-2build1 libxtables12=1.8.10-3ubuntu2 \
+ && rm -rf /var/lib/apt/lists/*
 RUN rm -rf /home/runner/externals/node20 /home/runner/externals/node20_alpine \
       /home/runner/externals/node24/lib/node_modules /home/runner/externals/node24/bin/npm \
       /home/runner/externals/node24/bin/npx /home/runner/externals/node24/bin/corepack \

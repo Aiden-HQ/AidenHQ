@@ -13,8 +13,8 @@
 // kind's executor). Not signed in: it still starts, lists the tools it saw last as stand-ins, and every call says how to
 // connect (never a crash loop, never a silently empty tool list).
 //
-// Canonical copy: vendor-mcp/src/vendor/proxy.ts in the product's modules/. Each vendor connection holds a byte-identical copy at
-// src/vendor/proxy.ts (the product's scripts/sync-shared.mjs copies them and its tests fail on drift).
+// First-party modules hold byte-identical copies (scripts/sync-shared.mjs: edit this one and run it); third-party modules import
+// @aidenhq/sdk/vendor/proxy (the MCP SDK, zod and pino are theirs: peer dependencies).
 import { timingSafeEqual } from "node:crypto";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { createServer, type IncomingMessage, type Server as HttpServer, type ServerResponse } from "node:http";
@@ -41,6 +41,8 @@ export interface Hooks {
   args?(name: string, args: Record<string, unknown>, tool: Tool): Record<string, unknown>;
   /** Tools never listed or called (a real security rule; most connections have none). */
   deny?: RegExp;
+  /** A tool's answer as it goes back (ClickHouse: cut to a size). */
+  result?(result: CallToolResult): CallToolResult;
   /** Whether the upstream says a tool only reads. Default: it marks it readOnlyHint. */
   isRead?(tool: Tool): boolean;
   /** A problem that makes the connection unusable though signed in (Jira: the site isn't reachable). */
@@ -50,7 +52,7 @@ export interface Hooks {
 export interface ProxyOptions {
   /** The vendor's name in messages ("Glean"). */
   name: string;
-  /** Unset: not configured yet (the setup flow saves the address). */
+  /** Unset: not configured yet (Connect on the board, or its setup flow, saves the value it needs). */
   upstream: URL | undefined;
   auth: Auth;
   log: Logger;
@@ -66,6 +68,8 @@ export interface ProxyOptions {
   caller(req: IncomingMessage): Promise<unknown>;
   /** The MCP server's instructions to agents. */
   instructions: string;
+  /** How long one tool call may take (ClickHouse's queries run up to two minutes); default: the MCP SDK's 60 seconds. */
+  callTimeoutMs?: number;
   /** Remembers the tool list here (tools.json), for stand-ins while not connected. */
   stateDir?: string;
   hooks?: Hooks;
@@ -97,7 +101,7 @@ export function createVendorProxy(o: ProxyOptions): VendorProxy {
   const cacheFile = o.stateDir ? join(o.stateDir, "tools.json") : undefined;
   let upstream: { client: Client; tools: Tool[]; at: number } | undefined;
 
-  const notConnected = () => (!o.upstream ? `${o.name} isn't set up: open its setup on the board.` : auth.status().state === "expired" ? `${o.name}'s sign-in stopped working: the owner reconnects it on the board.` : `${o.name} isn't connected: the owner signs in from the board.`);
+  const notConnected = () => (!o.upstream ? `${o.name} isn't connected yet: the owner presses Connect on the board (Settings, Connections).` : auth.status().state === "expired" ? `${o.name}'s sign-in stopped working: the owner reconnects it on the board.` : `${o.name} isn't connected: the owner signs in from the board.`);
 
   async function connect(): Promise<NonNullable<typeof upstream>> {
     if (!o.upstream) throw new AuthError(notConnected());
@@ -165,7 +169,8 @@ export function createVendorProxy(o: ProxyOptions): VendorProxy {
       // Only what the upstream lists: its schema is what the hooks pin arguments against.
       if (!tool) throw new Error(`${o.name} doesn't offer ${name}`);
       const sent = hooks.args ? hooks.args(name, args, tool) : args;
-      return (await u.client.callTool({ name, arguments: sent })) as CallToolResult;
+      const result = (await u.client.callTool({ name, arguments: sent }, undefined, o.callTimeoutMs ? { timeout: o.callTimeoutMs } : undefined)) as CallToolResult;
+      return hooks.result ? hooks.result(result) : result;
     });
   }
 

@@ -127,10 +127,10 @@ function updatesPage(u: UpdateState, form: (inner: string) => string): string {
   const last = u.last ? `<div class="card"><b>Last update:</b> ${esc(u.last.release)} ${u.last.outcome === "installed" ? `<span class="ok">installed</span>` : `<span class="err">failed</span>: ${esc(u.last.why ?? "")}`} · ${esc(when(u.last.at))} · by ${esc(u.last.by)}</div>` : "";
   const avail = a
     ? `<div class="card"><h2>${esc(a.name)} is available</h2>${a.notes.length ? `<ul>${a.notes.map((n) => `<li>${esc(n)}</li>`).join("")}</ul>` : ""}<p class="muted">Every change since ${esc(a.from.name)}: <a href="${esc(a.compare)}" target="_blank" rel="noopener">${esc(a.compare)}</a></p>
-<p class="muted">Verified against the official release: its commits, its tested stamp and its image digests. It installs through the normal apply, and a failed health check puts this server back on ${esc(a.from.name)}.</p>
+<p class="muted">Verified against the official release: its commits, its tested stamp and its image digests. Update now files it as an apply, like any change to this server: the AI reviewer checks it while auto-updates are on, else it waits for your approval; a failed health check puts this server back on ${esc(a.from.name)}.</p>
 ${form(`<input type="hidden" name="release" value="${esc(a.name)}"><button class="b">Update now</button>`)}</div>`
     : `<p>${u.error ? `<span class="err">${esc(u.error)}</span>` : "Nothing newer is out."}</p>`;
-  return `<h1>Updates</h1><p>This server runs <b>${esc(u.current.name)}</b>. Auto-updates are <b>${u.auto ? "on" : "off"}</b>${u.auto ? `: a newer release installs between 02:00 and 05:00 (${esc(u.timezone ?? "UTC")})` : ": you're told, and install with Update now"}. Change it in the board's Settings (auto_update). Last checked ${esc(when(u.checkedAt))}.</p>${avail}${last}`;
+  return `<h1>Updates</h1><p>This server runs <b>${esc(u.current.name)}</b>. Auto-updates are <b>${u.auto ? "on" : "off"}</b>${u.auto ? `: a newer release is filed between 02:00 and 05:00 (${esc(u.timezone ?? "UTC")}) and installs on the AI reviewer's yes` : ": you're told, and Update now files it for your approval"}. Change it in the board's Settings (auto_update). Last checked ${esc(when(u.checkedAt))}.</p>${avail}${last}`;
 }
 
 export function createAdmin(d: Deps) {
@@ -188,7 +188,9 @@ export function createAdmin(d: Deps) {
   // The model step. Connect needs a callback OpenRouter takes: https, or localhost on any port; elsewhere the paste field leads.
   // Pending Connects, by their state: the verifier and the owner who started it.
   const pkce = new Map<string, { verifier: string; account: string; at: number }>();
-  const welcome = () => (d.boardUrl?.() ? `${d.boardUrl()}/#/welcome` : "/approvals");
+  // The board's own sign-in handoff (services/board/src/kernel-auth.ts): the owner arrives signed in there, and the board's
+  // welcome gate opens #/welcome until setup is finished.
+  const welcome = () => (d.boardUrl?.() ? `${d.boardUrl()}/auth/start` : "/approvals");
   // The owner goes on to the model step, or (a model key given at install) straight to the board's welcome, which shows the
   // recovery key and the modules' flows until it is finished.
   const afterEnrol = (s: AdminSession) => (d.model && s.account.owner ? (d.model.ready() ? welcome() : "/setup/model") : "/approvals");
@@ -256,6 +258,10 @@ export function createAdmin(d: Deps) {
     try {
       if (url.pathname === "/healthz") return void res.writeHead(200, { "content-type": "text/plain" }).end("ok");
       if (!d.hosts().includes(host)) throw new Refusal(421, "unknown host");
+      // A page a browser opens at 127.0.0.1 moves to localhost (the sign-in's own origin); the cookie hop across the two dead-ends
+      // otherwise. Only a browser navigation moves: health checks and probes on 127.0.0.1 get their answer.
+      const local = host.replace(/^127\.0\.0\.1/, "localhost");
+      if ((req.method === "GET" || req.method === "HEAD") && req.headers["sec-fetch-mode"] === "navigate" && local !== host && d.hosts().includes(local)) return void res.writeHead(308, { location: `http://${local}${req.url ?? "/"}`, "cache-control": "no-store" }).end();
       const hit = compiled.find((r) => r.method === req.method && r.re.test(url.pathname));
       if (!hit) throw new Refusal(404, "not found");
       const id = hit.re.exec(url.pathname)![1] ?? "";

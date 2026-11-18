@@ -58,7 +58,7 @@ test("recovery key shows to an admin and is gone after saved", async () => {
   assert.ok(existsSync(file));
   const done = await admin("POST", "/recovery-key", jar, `csrf=${csrf}&choice=saved`);
   assert.equal(done.status, 303);
-  assert.equal(done.location, `${BOARD}/#/welcome`);
+  assert.equal(done.location, `${BOARD}/auth/start`);
   assert.equal(existsSync(file), false);
   assert.match((await admin("GET", "/recovery-key", jar)).body, /No recovery key is waiting/);
 });

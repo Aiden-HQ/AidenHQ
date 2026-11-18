@@ -7,7 +7,7 @@ import pino from "pino";
 import { kernelJwks, verifyCaller } from "./aidenhq-sdk/caller.js";
 import { startLoops } from "./loops.js";
 import { startPeople } from "./people.js";
-import { appTokens, readAgentsOrg, readOrgs } from "./github-app.js";
+import { appTokens, githubHost, readAgentsOrg, readOrgs } from "./github-app.js";
 import { buildServer, type Board, type Caller } from "./mcp.js";
 import { appsExecutor } from "./executor.js";
 import { serveExecutor } from "./aidenhq-sdk/executor.js";
@@ -37,10 +37,10 @@ if (!internalToken) throw new Error("APPS_INTERNAL_TOKEN(_FILE) is required");
 const serviceKey = file("APPS_SERVICE_KEY");
 if (!serviceKey) throw new Error("APPS_SERVICE_KEY(_FILE) is required");
 const tokenFile = process.env.GITHUB_TOKEN_FILE;
-// The agents org is always allowed; its private repos are read with the instance's GitHub App when its key is mounted.
+// The agents org is always allowed; its private repos are read with the instance's GitHub App when codehost-github runs.
 const agentsOrg = readAgentsOrg(instanceDir);
 const orgs = readOrgs(instanceDir);
-const appToken = appTokens(process.env.GITHUB_APP_DIR ?? "/secrets/github-app");
+const appToken = githubHost(repoDir) ? appTokens((process.env.AIDENHQ_KERNEL_URL ?? "http://10.231.0.1:3130").replace(/\/$/, ""), serviceKey) : undefined;
 // This server's repos (codehost-local), read-only at /codehost when the instance enables it: `local/*` apps build from them.
 const codehost = localRoot(repoDir);
 

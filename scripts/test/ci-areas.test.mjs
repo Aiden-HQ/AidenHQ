@@ -21,7 +21,7 @@ test("a runner change selects the runner's jobs, not the board's alone", () => {
 });
 
 test("an unknown path, CI itself or the map selects everything", () => {
-  for (const f of ["ops/apply-config.sh", "compose.yaml", ".github/ci/areas.json", ".github/workflows/ci.yml", "services/shared/source-store.ts"]) {
+  for (const f of ["ops/apply-config.sh", "compose.yaml", ".github/ci/areas.json", ".github/workflows/ci.yml", "services/shared/reason-codes.ts"]) {
     assert.deepEqual(suitesFor(map, ["docs/x.md", f]).names, every, f);
   }
   assert.deepEqual(suitesFor(map, ["SETUP.md", "docs/setup.md"]).names, ["scripts"], "Markdown the tests read counts");

@@ -23,7 +23,7 @@ describe("Glean sign-in routes", () => {
     return json({}, 404);
   }) as typeof fetch);
   const store = new Store(":memory:");
-  const base = { paperclip: {} as Paperclip, store, log: pino({ level: "silent" }), staticDir: "/nonexistent", timezone: "UTC", signIns: [{ id: "glean", label: "Glean", connect: "/glean/connect", callback: "/callback", missing: "m", stopped: "s", auth: glean }], session: () => ({ accountId: "owner", role: "admin" as const }) };
+  const base = { paperclip: {} as Paperclip, store, log: pino({ level: "silent" }), staticDir: "/nonexistent", timezone: "UTC", signIns: [{ id: "glean", label: "Glean", connect: "/glean/connect", callback: "/callback", missing: "m", stopped: "s", fields: [], auth: glean }], session: () => ({ accountId: "owner", role: "admin" as const }) };
   const local = createApp({ ...base, allowedHosts: ["localhost:3121", "127.0.0.1:3121", "board.example.ts.net"], mode: "lan" });
   const lan = createApp({ ...base, allowedHosts: ["aidenhq.local"], mode: "lan", lan: { url: "http://aidenhq.local" } });
   // A board with an https address (tailscale serve or Caddy in front of 3121): Connect works there, one click.
@@ -60,26 +60,28 @@ describe("Glean sign-in routes", () => {
     expect(seen.at(-1)).toEqual({ path: "/auth/start", body: { redirect_uri: "http://localhost:3121/callback" } });
   });
 
-  it("connects from the board's https address and finishes there; plain http off loopback stays refused", async () => {
-    const r = await get(`${httpsBase}/glean/connect`, "board.example.ts.net");
-    expect(r.status).toBe(302);
-    expect(seen.at(-1)).toEqual({ path: "/auth/start", body: { redirect_uri: "https://board.example.ts.net/callback" } });
-    expect(await get(`${httpsBase}/callback?state=s&code=good`, "board.example.ts.net")).toMatchObject({ status: 302, location: "/" });
-    const refused = await get(`${httpsBase}/glean/connect`, "aidenhq.local");
-    expect(refused.status).toBe(403);
-    expect(refused.body).toContain("https://board.example.ts.net");
-  });
-
-  it("refuses away from the laptop's loopback address without an https board", async () => {
-    expect((await get(`${localBase}/glean/connect`, "board.example.ts.net")).status).toBe(403);
-    expect((await get(`${lanBase}/glean/connect`, "aidenhq.local")).status).toBe(403);
+  it("returns to loopback by default from any of the board's names (the owner pastes it back)", async () => {
+    expect((await get(`${httpsBase}/glean/connect`, "board.example.ts.net")).status).toBe(302);
+    expect(seen.at(-1)).toEqual({ path: "/auth/start", body: { redirect_uri: "http://localhost:3121/callback" } });
+    expect((await get(`${lanBase}/glean/connect`, "aidenhq.local")).status).toBe(302);
+    expect(seen.at(-1)).toEqual({ path: "/auth/start", body: { redirect_uri: "http://localhost:3121/callback" } });
     expect((await get(`${localBase}/glean/connect`, "evil.example")).status).toBe(403);
   });
 
+  it("connects in one click from the board's https address and finishes there; plain http off loopback can't", async () => {
+    const r = await get(`${httpsBase}/glean/connect?oneclick=1`, "board.example.ts.net");
+    expect(r.status).toBe(302);
+    expect(seen.at(-1)).toEqual({ path: "/auth/start", body: { redirect_uri: "https://board.example.ts.net/callback" } });
+    expect(await get(`${httpsBase}/callback?state=s&code=good`, "board.example.ts.net")).toMatchObject({ status: 302, location: "/#/settings/connections?connected=glean" });
+    const refused = await get(`${httpsBase}/glean/connect?oneclick=1`, "aidenhq.local");
+    expect(refused.status).toBe(302);
+    expect(decodeURIComponent(refused.location!)).toContain("sign in from https://board.example.ts.net");
+  });
+
   it("finishes the sign-in and returns to the board, or to its page with why not", async () => {
-    expect(await get(`${localBase}/callback?state=s&code=good`, "127.0.0.1:3121")).toMatchObject({ status: 302, location: "/" });
+    expect(await get(`${localBase}/callback?state=s&code=good`, "127.0.0.1:3121")).toMatchObject({ status: 302, location: "/#/settings/connections?connected=glean" });
     const bad = await get(`${localBase}/callback?state=s&code=bad`, "127.0.0.1:3121");
-    expect(bad).toMatchObject({ status: 302, location: expect.stringMatching(/^\/#\/connect\/glean\?error=/) });
+    expect(bad).toMatchObject({ status: 302, location: expect.stringMatching(/^\/#\/settings\/connections\?connect=glean&error=/) });
     expect(decodeURIComponent(bad.location!)).toContain("invalid_grant");
     const denied = await get(`${localBase}/callback?state=s&error=access_denied`, "127.0.0.1:3121");
     expect(denied).toMatchObject({ status: 302, location: expect.stringContaining("access_denied") });
@@ -97,7 +99,7 @@ describe("Grafana sign-in routes", () => {
     return json({}, 404);
   }) as typeof fetch);
   // No Glean: its bare /callback must not reach Grafana.
-  const app = createApp({ paperclip: {} as Paperclip, store: new Store(":memory:"), log: pino({ level: "silent" }), staticDir: "/nonexistent", timezone: "UTC", signIns: [{ id: "grafana", label: "Grafana", connect: "/grafana/connect", callback: "/grafana/callback", missing: "m", stopped: "s", auth: grafana }], session: () => ({ accountId: "owner", role: "admin" as const }), allowedHosts: ["localhost:3121", "127.0.0.1:3121"], mode: "lan" });
+  const app = createApp({ paperclip: {} as Paperclip, store: new Store(":memory:"), log: pino({ level: "silent" }), staticDir: "/nonexistent", timezone: "UTC", signIns: [{ id: "grafana", label: "Grafana", connect: "/grafana/connect", callback: "/grafana/callback", missing: "m", stopped: "s", fields: [], auth: grafana }], session: () => ({ accountId: "owner", role: "admin" as const }), allowedHosts: ["localhost:3121", "127.0.0.1:3121"], mode: "lan" });
   let base = "";
   beforeAll(async () => {
     await new Promise<void>((r) => app.listen(0, "127.0.0.1", r));
@@ -121,10 +123,10 @@ describe("Grafana sign-in routes", () => {
     const r = await get("/grafana/connect");
     expect(r).toMatchObject({ status: 302, location: expect.stringMatching(/^https:\/\/mcp\.grafana\.com\//) });
     expect(seen.at(-1)).toEqual({ path: "/auth/start", body: { redirect_uri: "http://localhost:3121/grafana/callback" } });
-    expect(await get("/grafana/callback?state=s&code=good")).toMatchObject({ status: 302, location: "/" });
+    expect(await get("/grafana/callback?state=s&code=good")).toMatchObject({ status: 302, location: "/#/settings/connections?connected=grafana" });
     expect(seen.at(-1)).toEqual({ path: "/auth/finish", body: { state: "s", code: "good" } });
     const bad = await get("/grafana/callback?state=s&code=bad");
-    expect(bad).toMatchObject({ status: 302, location: expect.stringMatching(/^\/#\/connect\/grafana\?error=/) });
+    expect(bad).toMatchObject({ status: 302, location: expect.stringMatching(/^\/#\/settings\/connections\?connect=grafana&error=/) });
     expect(decodeURIComponent(bad.location!)).toContain("connect Grafana: Grafana refused the sign-in");
   });
 
@@ -143,7 +145,7 @@ describe("board.signins from the compiled point", () => {
   it("takes a mounted one with its proxy's base URL, and leaves one without a token off", () => {
     writeFileSync(join(dir, "glean_auth_token"), "tok\n");
     const jira = { ...glean, id: "jira", module: "jira", label: "Jira", status_url: "http://jira-mcp:8091/auth/status", connect_url: "/jira/connect", callback: "/jira/callback" };
-    expect(signInPoints(point([glean, jira]), dir)).toEqual([{ id: "glean", label: "Glean", connect: "/glean/connect", callback: "/callback", missing: "m", stopped: "s", url: "http://glean-mcp:8085", token: "tok" }]);
+    expect(signInPoints(point([glean, jira]), dir)).toEqual([{ id: "glean", label: "Glean", connect: "/glean/connect", callback: "/callback", httpsOnly: false, missing: "m", stopped: "s", fields: [], url: "http://glean-mcp:8085", token: "tok" }]);
   });
   it("refuses another module's paths, Google's, or a second bare /callback", () => {
     expect(() => signInPoints(point([{ ...glean, callback: "/google/callback" }]), dir)).toThrow(/its paths/);

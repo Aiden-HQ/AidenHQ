@@ -79,7 +79,7 @@ export async function kernel(t, { agents = {}, boxes = {}, grants = {}, settings
   const writes = createWrites({ records, registry: () => ({ ...moduleKinds(), ...KERNEL_KINDS }), connections: connectionsTable, secret, resolver: createResolver(), log: logf, replay: (r) => replay(r), reviews, native, repos: () => repos, paths: () => paths,
     autonomy: () => grantsTable().autonomy ?? "full", onTask: { open: async (task) => !closed.includes(task), notify: async (task, text) => void notices.push({ task, text }), parent: async (task) => parents[task],
       routineCap: (task) => taskRoutineCap(cpTrace, task, grantsTable().routines) } });
-  const proxy = createProxy({ whoami, connections: connectionsTable, asserter, resolver: createResolver(), secret, writes, log: logf });
+  const proxy = createProxy({ whoami, connections: connectionsTable, asserter, resolver: createResolver(), secret, writes, agentKey: (id) => secret(`paperclip-agents/${id}`), log: logf });
   replay = proxy.replay;
   // The control plane as the owner (board key) and the board's internal listener (a fake: `board(method, path, body)`).
   const owner = async (method, path, body) => { const r = await fetch(new URL(path, cpServer.url), { method, headers: { authorization: "Bearer board-key", "content-type": "application/json" }, ...(body !== undefined ? { body: JSON.stringify(body) } : {}) }); return { status: r.status, json: await r.json().catch(() => ({})) }; };

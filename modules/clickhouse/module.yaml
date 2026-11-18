@@ -1,5 +1,5 @@
 name: clickhouse
-description: ClickHouse for the runner's Engineer jobs (loopback MCP).
+description: "ClickHouse Cloud's MCP server, passed through as the owner: its services, schemas and read-only SELECT queries."
 requires:
   - board # its sign-in banner
 # Its sign-in on the board (the board's point, modules/board/schemas/signins.json).
@@ -7,39 +7,27 @@ contributes:
   board.signins:
     - { id: clickhouse, label: ClickHouse, status_url: "http://clickhouse-mcp:8088/auth/status", connect_url: /clickhouse/connect, callback: /clickhouse/callback,
         missing: "The Engineers can't query it until it is.", stopped: "The Engineers can't query it." }
-  board.setup_flows:
-    - order: 150
-      title: ClickHouse Cloud
-      why: Engineers can run read-only queries on your ClickHouse Cloud data.
-      effort: about 3 minutes, needs your ClickHouse Cloud login
-      secrets: [clickhouse_mcp_url]
-      signin: clickhouse
-      steps: |
-        1. Open [ClickHouse Cloud](https://console.clickhouse.cloud) and sign in.
-        2. Paste the remote MCP address below: `https://mcp.clickhouse.cloud/mcp`. If your organization has not enabled the remote MCP server, an organization admin turns it on in the service's **Connect** menu.
-        3. Press **Connect ClickHouse**, sign in in the tab that opens and allow access.
-
-        Engineers can only read: queries run read-only.
 settings:
-  # Superseded by the clickhouse_mcp_url secret the setup flow saves; a value here is read only while that secret is empty.
+  # ClickHouse Cloud's hosted MCP server: the same for every organization. Override only for a non-standard host.
   clickhouse_mcp_url:
-    default: ""
+    default: https://mcp.clickhouse.cloud/mcp
     type: url
     host: "*.clickhouse.cloud"
-# How to set it up: the board's setup flow (#/setup/clickhouse).
-setup: "Open its setup on the board (#/setup/clickhouse), paste ClickHouse Cloud's MCP address and press Connect. Used by the runner's Engineer jobs."
+setup: "Press Connect on the board (Settings, Connections) and allow access. Used by the runner's Engineer jobs."
 secrets:
   state: true # its own vault dir, read-write at /state: the registered client and the token pair, refreshed here
-  provided:
-    # ClickHouse Cloud's hosted MCP server, e.g. https://mcp.clickhouse.cloud/mcp, saved by the setup flow; empty: ClickHouse is
-    # off. The pattern is the host rule the clickhouse_mcp_url setting had (*.clickhouse.cloud).
-    - name: clickhouse_mcp_url
-      setup:
-        label: ClickHouse MCP address
-        pattern: '^https://([a-z0-9-]+\.)+clickhouse\.cloud(/[A-Za-z0-9._/-]*)?$'
-        help: "Usually https://mcp.clickhouse.cloud/mcp"
-optional_secrets:
-  - clickhouse_mcp_url
+# Agents granted `clickhouse: read` query it too (none by default).
+connections:
+  clickhouse:
+    setup: "Press Connect on the board (Settings, Connections) and allow access."
+    guide: "ClickHouse Cloud: `get_services_list` and `get_service_details` find a service, `list_databases` and `list_tables` its schema, `run_select_query` runs one read-only SELECT (no external table functions, no SETTINGS; up to two minutes). Aggregate or LIMIT: long answers are cut."
+    url: http://clickhouse-mcp:8088/mcp
+    auth: clickhouse_service_key
+    # The reads jobs had before the vendor pass-through. ClickHouse's other tools (probed 2026-11-18) are costs, backups,
+    # ClickPipes and Managed Postgres: untagged, so the kernel refuses them until a module change tags them.
+    tools:
+      read: [ get_organizations, get_services_list, get_service_details, list_databases, list_tables, run_select_query ]
+      write: []
 services:
   run:
     clickhouse-mcp:
@@ -50,21 +38,26 @@ services:
       links: [board] # the board's sign-in endpoints
       state: /state
       env:
-        CLICKHOUSE_MCP_URL_FILE: ${secrets.clickhouse_mcp_url}
         CLICKHOUSE_MCP_URL: "${settings.clickhouse_mcp_url}"
         CLICKHOUSE_STATE_DIR: /state
-        # The board's https address: its Connect returns there (besides loopback).
+        # The board's https address: Connect's one-click link returns there (the default is loopback).
         BOARD_URL: "${BOARD_LAN_URL:-}"
-        MCP_TOKEN_FILE: ${secrets.clickhouse_mcp_token}
+        # Jobs reach /mcp/read with clickhouse_mcp_token (through the kernel); the kernel presents the service key on /mcp for agents.
+        MCP_READ_TOKEN_FILE: ${secrets.clickhouse_mcp_token}
+        # The read endpoint serves only these: the connection's read tags (CI checks they match).
+        READ_TOOLS: "get_organizations,get_services_list,get_service_details,list_databases,list_tables,run_select_query"
+        MCP_SERVICE_TOKEN_FILE: ${secrets.clickhouse_service_key}
         # The board's sign-in endpoints: state, and starting or finishing a sign-in.
         CLICKHOUSE_AUTH_TOKEN_FILE: ${secrets.clickhouse_auth_token}
+generated_secrets:
+  - clickhouse_service_key
 # Runner jobs of an Engineer with private reads, through the model gateway with their own token (scripts/modules.mjs jobcapEntries).
 # Queries run up to two minutes (clickhouse-mcp caps them), past Codex's 60-second tool timeout.
 jobcaps:
   - id: clickhouse-read
     connection: clickhouse
     private: true
-    read_url: "http://clickhouse-mcp:8088/mcp"
+    read_url: "http://clickhouse-mcp:8088/mcp/read"
     read_secret: clickhouse_mcp_token
     tool_timeout_s: 180
-    tools: [ get_organizations, get_services_list, get_service_details, list_databases, list_tables, run_select_query ]
+    tools: read

@@ -9,6 +9,7 @@ import { Store } from "../src/store.js";
 const agents = [
   { id: "cos", name: "Aiden", status: "idle", adapterType: "codex_local", metadata: { setupKey: "aidenhq:chief-of-staff", module: "core", department: { id: "leadership", name: "Leadership", order: 0 } } },
   { id: "keeper", name: "Roadmap Keeper", status: "idle", adapterType: "codex_local", metadata: { setupKey: "aidenhq:roadmap-keeper", module: "instance" } },
+  { id: "gone", name: "Slack Scout", status: "terminated", adapterType: "codex_local", metadata: { setupKey: "aidenhq:slack-scout", module: "core" } },
 ];
 const pc = {
   agents: async () => agents,

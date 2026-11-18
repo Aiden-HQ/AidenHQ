@@ -3,6 +3,7 @@ import { CSS } from "@dnd-kit/utilities";
 import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { AgentAvatar } from "./AgentAvatar";
+import { ConnectButton } from "./Connect";
 import { SIGN_IN_HINT } from "./connections";
 import { api } from "./api";
 import { BUCKETS, BUCKET_NAMES, type Assignee, type Board, type Bucket, type Card, type CrewMember, type CrewState, type PlanItem, type SignInStatus, type Working } from "./types";
@@ -495,7 +496,7 @@ export function GoogleBanner({ google, canReconnect }: { google: Board["google"]
 /**
  * A banner when AidenHQ isn't signed in to a service behind an MCP proxy yet (a module's board.signins), or it stopped accepting the sign-in, with Connect / Reconnect where it works (the board's https address, or loopback).
  */
-function SignInBanner({ name, path, status, canConnect, missing, stopped }: { name: string; path: string; status: SignInStatus | null; canConnect: boolean; missing: string; stopped: string }) {
+function SignInBanner({ name, path, status, offer, canConnect, missing, stopped }: { name: string; path: string; status: SignInStatus | null; offer?: boolean; canConnect: boolean; missing: string; stopped: string }) {
   if (!status?.configured || (status.state !== "missing" && status.state !== "expired")) return null;
   const since = new Date(status.since);
   return (
@@ -512,9 +513,7 @@ function SignInBanner({ name, path, status, canConnect, missing, stopped }: { na
           )}
         </span>
         {canConnect ? (
-          <a className="btn" href={`/${path}/connect`}>
-            {status.state === "missing" ? "Connect" : "Reconnect"}
-          </a>
+          <ConnectButton c={{ id: path, label: name, signIn: { state: status.state, offer } }} />
         ) : (
           <span className="alert-hint">{SIGN_IN_HINT}</span>
         )}
@@ -527,7 +526,7 @@ export function SignInBanners({ board, canConnect }: { board: Board; canConnect:
   return (
     <>
       {(board.signIns ?? []).map((s) => (
-        <SignInBanner key={s.id} name={s.label} path={s.id} status={s.status} canConnect={canConnect} missing={s.missing} stopped={s.stopped} />
+        <SignInBanner key={s.id} name={s.label} path={s.id} status={s.status} offer={s.offer} canConnect={canConnect} missing={s.missing} stopped={s.stopped} />
       ))}
     </>
   );

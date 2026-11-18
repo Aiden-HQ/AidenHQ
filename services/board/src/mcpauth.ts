@@ -7,6 +7,8 @@ export interface McpAuthStatus {
   configured: boolean;
   since: string;
   detail?: string;
+  /** The scopes the stored token holds, space separated (the proxy adds it when signed in). */
+  scope?: string;
 }
 
 /**
@@ -17,6 +19,7 @@ export interface McpAuthStatus {
  */
 export class McpAuth {
   private cached: { at: number; status: McpAuthStatus } | undefined;
+  private offered: { at: number; scopes: { supported: string[]; recommended: string[] } | undefined } | undefined;
 
   constructor(
     /** The service's name in logs and messages ("Glean"); its proxy is `<name>-mcp` in lower case. */
@@ -57,7 +60,17 @@ export class McpAuth {
    * asks for none, or predates the choice).
    */
   async scopes(): Promise<{ supported: string[]; recommended: string[] } | undefined> {
-    return this.call<{ supported: string[]; recommended: string[] }>("GET", "/auth/scopes").catch(() => undefined);
+    // The offer is the proxy's own config: kept ten minutes once it answers (every Connections and board load reads it). A
+    // proxy without its address yet answers nothing, so that is asked again each time.
+    if (this.offered && Date.now() - this.offered.at < 600_000) return this.offered.scopes;
+    const scopes = await this.call<{ supported: string[]; recommended: string[] }>("GET", "/auth/scopes").catch(() => undefined);
+    if (scopes) this.offered = { at: Date.now(), scopes };
+    return scopes;
+  }
+
+  /** Whether Connect offers a choice of scopes: its button opens the picker first, and a Reconnect reads "Change access". */
+  async offers(): Promise<boolean> {
+    return ((await this.scopes())?.supported.length ?? 0) > 1;
   }
 
   /** The vendor's sign-in URL, asking for `scopes` (the owner's pick; unset: the proxy's recommended ones). */
@@ -72,3 +85,28 @@ export class McpAuth {
 }
 
 export class McpAuthFailed extends Error {}
+
+/**
+ * Where a module sign-in returns by default (RFC 8252 loopback): the board's port on the owner's own machine. Vendors don't hold
+ * a loopback redirect to a company's domain allowlist (Atlassian blocked the board's https name until an admin allowed it), so a
+ * sign-in needs no admin. Without a tunnel the page doesn't load and the owner pastes its address on Connect; through the
+ * documented tunnel (localhost:3121) it lands on the board's callback itself. Fixed, so a hand-made client (HubSpot) registers it
+ * once; `localhost`, since HubSpot refuses IP addresses.
+ */
+export const SIGNIN_LOOPBACK = "http://localhost:3121";
+
+/**
+ * The state and code (or the vendor's error) from the address a loopback sign-in ended on, pasted by the owner: exactly the
+ * sign-in's redirect (`expected`), on 127.0.0.1 or localhost. Anything else is refused without echoing it (it may hold a code).
+ */
+export function pastedCallback(pasted: string, expected: string): { state: string; code?: string; error?: string } {
+  const want = new URL(expected);
+  const u = URL.canParse(pasted.trim()) ? new URL(pasted.trim()) : undefined;
+  const ok =
+    u?.protocol === "http:" && ["localhost", "127.0.0.1"].includes(u.hostname) && u.port === want.port && u.pathname === want.pathname && !u.username && !u.password;
+  const state = u?.searchParams.get("state") ?? "";
+  const code = u?.searchParams.get("code") ?? "";
+  const error = u?.searchParams.get("error") ?? "";
+  if (!ok || !state || (!code && !error)) throw new McpAuthFailed(`that isn't the address the sign-in ended on: copy the whole address of the tab that couldn't load (it starts with ${expected})`);
+  return { state, ...(code ? { code } : { error: error.slice(0, 100) }) };
+}

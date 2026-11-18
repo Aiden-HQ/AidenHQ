@@ -98,6 +98,37 @@ test("A4: an assertion opens /v1/cp/agent/* only while its call is in flight, an
   assert.equal((await cp("", "docs-key")).status, 401);
 });
 
+test("an approved write replays as its requester: the control plane sees the agent's own key and run, for that call only", async (t) => {
+  // A run's JWT names its run (identity.ts); setup keeps each agent's own key at paperclip-agents/<id>.
+  const jwt = `eyJhbGciOiJIUzI1NiJ9.${Buffer.from(JSON.stringify({ run_id: "run-7" })).toString("base64url")}.sig`;
+  let k, assertion, inside;
+  const cp = (key) => fetch(`${k.url}/v1/cp/agent/api/issues/TASK-1/comments`, { method: "POST", headers: { authorization: `Bearer ${key}`, "x-aidenhq-caller": assertion, "content-type": "application/json" }, body: "{}" });
+  const docs = await moduleServer(t, { key: "docs-key", tools: ["doc_write"], answer: async (_msg, req) => {
+    assertion = req.headers["x-aidenhq-caller"];
+    const r = await cp("docs-key");
+    inside = { status: r.status, as: (await r.json()).as };
+    return { content: [{ type: "text", text: "ok" }] };
+  } });
+  const runs = [];
+  k = await kernel(t, { onControl: (req) => void (req.url === "/api/issues/TASK-1/comments" && runs.push(req.headers["x-paperclip-run-id"])), agents: { ...agents, [jwt]: { id: "ag-ada", name: "Ada" } }, grants, settings: { autonomy: "off" }, secrets: { ...secrets, "paperclip-agents/ag-ada": "ada-own-key" },
+    connections: { docs: conn(docs.url, "docs", { write: ["doc_write"] }) } });
+  // Autonomy off: the write is the owner's card; nothing reaches the module yet.
+  const filed = JSON.parse((await (await k.call("docs", jwt, { method: "tools/call", params: { name: "doc_write", arguments: { note: "hi" } } })).json()).result.content[0].text.split("\n")[0]);
+  const rec = k.records.get(filed.approval);
+  assert.deepEqual([rec.state, rec.tier, rec.requester.run], ["owner", 2, "run-7"]);
+  assert.equal(docs.seen.filter((m) => m.method === "tools/call").length, 0);
+  k.writes.decide(rec.id, { digest: rec.digest, decision: "approve", by: "owner:chat", via: "chat" });
+  await new Promise((r) => { const i = setInterval(() => { if (k.records.get(rec.id).state === "done") { clearInterval(i); r(); } }, 20); });
+  // Inside the replay the module acted as Ada: her own key, on her run; the module never saw the key.
+  assert.deepEqual(inside, { status: 200, as: "ada-own-key" });
+  const at = k.control.find((c) => c.url === "/api/issues/TASK-1/comments");
+  assert.equal(at.auth, "ada-own-key");
+  assert.deepEqual(runs, ["run-7"]);
+  assert.ok(docs.seen.every((m) => !JSON.stringify(m).includes("ada-own-key")));
+  // Once the replay ended, its assertion opens nothing.
+  assert.equal((await cp("docs-key")).status, 401);
+});
+
 test("A5: a module token without services.grants cannot call another connection; the directory never shows tools", async (t) => {
   const docs = await moduleServer(t, { key: "docs-key", tools: ["doc_read"] });
   const other = await moduleServer(t, { key: "other-key", tools: ["x"] });

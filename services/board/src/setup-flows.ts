@@ -53,7 +53,7 @@ export interface SetupFlowDeps {
   store: Store;
   /** The sign-in state of a flow's `signin` id: true when connected. */
   signedIn: (id: string) => Promise<boolean>;
-  /** Whether the sign-in `id` offers a choice of scopes: its Reconnect reads "Change access". */
+  /** Whether the sign-in `id` offers a choice of scopes: its Connect opens the picker, and its Reconnect reads "Change access". */
   scopeChoice: (id: string) => Promise<boolean>;
   /** A connect path's connection: true when signed in, undefined when the board serves no such path. */
   connected: (path: string) => Promise<boolean | undefined>;
@@ -109,7 +109,7 @@ export function setupFlowRoutes(d: SetupFlowDeps): SetupRoute[] {
             const connected = connect_url ? await d.connected(connect_url) : undefined;
             const signedIn = f.signin ? await d.signedIn(f.signin) : connect_url ? connected === true : true;
             const paired = await pairedOf(full);
-            const scopes = f.signin && signedIn ? await d.scopeChoice(f.signin) : false;
+            const scopes = f.signin ? await d.scopeChoice(f.signin) : false;
             // A connection's real state decides when it has one (an upgraded instance keeps values outside the vault and works);
             // only a flow with no sign-in, connect path or pairing is done by its secrets.
             const done = f.signin || connect_url || f.pair_url ? signedIn && paired : (f.secrets ?? []).every((s) => present[s]);

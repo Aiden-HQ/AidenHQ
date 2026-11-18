@@ -24,7 +24,7 @@ test("every write mints its own token, narrowed to the one repo and the permissi
   assert.equal(a.cwd, "/w");
 });
 
-test("outside the agents org and the product repo: PR-only (no App merge, no workflows, no creation, no other writes)", () => {
+test("outside the agents org and the product repo: PR-only (no App merge, no workflows, no other writes through gh; creation is Tier 0 in plan.mjs)", () => {
   assert.equal(ownRepo("other/lib", ORG, PRODUCT), false, "merges there take the host's login, behind that repo's review");
   assert.equal(ownRepo(`${ORG}/app`, ORG, PRODUCT) && ownRepo(PRODUCT, ORG, PRODUCT), true);
   assert.deepEqual(pushPermissions(true, "other/lib", ORG, PRODUCT), { contents: "write" }, "no Workflows: write outside");
@@ -32,7 +32,6 @@ test("outside the agents org and the product repo: PR-only (no App merge, no wor
   assert.equal(mergePermissions(PRODUCT, PRODUCT).workflows, "write", "the product repo's approved merges only");
   for (const [method, path] of [["DELETE", "repos/other/lib/git/refs/heads/x"], ["PATCH", "repos/other/lib/pulls/1"], ["POST", "repos/other/lib/issues/1/comments"], ["POST", "orgs/other/repos"], ["PUT", "repos/other/lib/contents/.github/workflows/ci.yml"]])
     assert.equal(allowedWrite(method, path, ORG, PRODUCT), false, `${method} ${path}`);
-  assert.throws(() => plan({ kind: "codehost-github.create_repo", args: {} }, { agentsOrg: ORG, productRepo: PRODUCT, instanceRepo: `${ORG}/aidenhq-instance`, repo: "other/new" }), /outside the agents org/);
   assert.throws(() => plan({ kind: "codehost-github.push", args: {} }, { agentsOrg: ORG, productRepo: PRODUCT, instanceRepo: `${ORG}/aidenhq-instance`, branches: [{ repo: "other/lib", branch: "main", defaultBranch: "main", sha: "a".repeat(40), files: ["a"] }] }), /outside the agents org/);
 });
 

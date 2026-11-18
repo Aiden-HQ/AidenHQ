@@ -327,7 +327,8 @@ Slack has two parts, both served by one Slack app.
 
 ### Others (optional)
 
-GitHub reads, Glean, Jira, Grafana and ClickHouse: open the module's setup on the board (`#/setup/<module>`). Primer: see
+Glean, Jira, Grafana, ClickHouse and Primer: press Connect on the board (Settings, Connections). GitHub reads: open its setup
+(`#/setup/github`). Primer: see
 [the reference below](#connecting-accounts) and [docs/USAGE.md](USAGE.md#connect-jira). Each one is a
 module you add to `modules:`, plus a sign-in.
 
@@ -366,9 +367,8 @@ New agents come from the **Agent Architect**. Open the board's Agents tab and pr
    design in plain words: what it does, what it can read, what it may change later, its schedule. Press
    **Build it**.
 2. The Platform Engineer writes the change. **Tap 1** creates the agent **in trial**: it can only read and report.
-   With the default `autonomy: off` this is an approval card on the board's Approvals page (and in Telegram), after the
-   AI reviewer has read it when it is Tier 1. Other
-   `autonomy` settings let some changes apply without you: see [docs/design/approvals.md](design/approvals.md).
+   A new install's `autonomy: full` lets the AI reviewer decide it when it is Tier 1; with `autonomy: off` it is an
+   approval card on the board's Approvals page (and in Telegram): see [docs/design/approvals.md](design/approvals.md).
 3. The Architect reviews its work during the trial and fixes its handbook. After it passes your examples and two
    clean batches of real work, the Architect proposes graduation.
 4. **Tap 2** lets the agent act on its own: it gets its write grants and reports to Aiden. This is always your card.
@@ -481,14 +481,21 @@ an `ops/setup.sh` host.
 | Google (Calendar, Drive, Gmail) | On an `ops/setup.sh` host: Connect Google on the board. By hand: `scripts/google-auth.sh <client.json>` with a Desktop-app OAuth client, once per account (`--email`, `--primary`). |
 | Slack (read) | Open its setup on the board (`#/setup/slack`): paste the Slack app's Client ID and press Connect. |
 | GitHub (read) | Open its setup on the board (`#/setup/github`) and paste a read-only token. |
-| Primer | Open its setup on the board (`#/setup/primer`): paste its MCP address and press Connect. |
-| Glean, Jira, Grafana, ClickHouse | Open the module's setup on the board (`#/setup/<module>`): paste the address (Glean, Grafana, ClickHouse), then press Connect. Jira's site URL stays the `jira_url` setting. Grafana with `grafana_source: local` needs no sign-in. |
+| Glean, Jira, Grafana, ClickHouse, Primer | Press Connect on the board (Settings, Connections, or the module's page). Glean, Grafana and Primer ask for their own address in the same dialog; Jira and ClickHouse ask for nothing. Jira's site URL stays the `jira_url` setting. Grafana with `grafana_source: local` needs no sign-in. |
 
-Sign-ins started on the board (Google, Glean, Jira, Grafana Cloud, ClickHouse, Slack, Primer, HubSpot) return to the board's
-https address (`BOARD_LAN_URL`, which `ops/setup.sh` sets to the tailnet name or the public front door): open the board there
-and press Connect (Settings, Connections, or the module's setup), one click, signed in as an admin. A vendor that needs a
-client you make by hand (HubSpot) shows its exact redirect URL, with a copy button, on its setup page. Only a board without an
-https address (local exposure with no Tailscale) still signs in on its loopback address: on your laptop run
+Sign-ins started on the board (Glean, Jira, Grafana Cloud, ClickHouse, Primer, HubSpot) return to a loopback address,
+`http://localhost:3121/<id>/callback` (RFC 8252). Press Connect (Settings, Connections, or the module's page), signed in as an
+admin, from wherever you reach the board, and approve in the tab that opens. Your browser then shows a page that can't load:
+copy its full address, paste it into the Connect dialog and press **Finish**. A loopback redirect isn't subject to a company's
+domain allowlist, so no admin has to allow the board's name (Atlassian blocks an unlisted domain). The address holds a
+one-time code that is good for about ten minutes and only with this sign-in. Through the tunnel below the page loads and the
+sign-in finishes by itself.
+
+The dialog's **Use one-click sign-in** link returns to the board's https address (`BOARD_LAN_URL`, which `ops/setup.sh` sets
+to the tailnet name or the public front door) instead: one click, where your company allows that domain. Slack takes only https
+redirects, so it always signs in that way; Google is the board's own sign-in and returns to the https address too. A vendor
+that needs a client you make by hand (HubSpot, Slack) shows its exact redirect URL, with a copy button, on its setup page. A
+board without an https address (local exposure with no Tailscale) signs Google and Slack in through a tunnel: on your laptop run
 `ssh -N -L 3121:127.0.0.1:3121 -L 3120:127.0.0.1:3120 <you>@<host>`, sign in at `http://localhost:3120`, open
 `http://localhost:3121` and press Connect.
 

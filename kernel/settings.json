@@ -25,7 +25,7 @@
       "tier0",
       "full"
     ],
-    "doc": "Tiered approvals: \"off\" = every write is the owner's card, the AI reviewer reading Tier 1 first (its reject is final; also the pause switch); \"tier0\" = Tier 0 runs at once and the AI reviewer only comments on Tier 1; \"full\" = the reviewer decides Tier 1. Full only after reviewer-eval scores 100%."
+    "doc": "Tiered approvals: \"off\" = every write is the owner's card, the AI reviewer reading Tier 1 first (its reject is final; also the pause switch); \"tier0\" = Tier 0 runs at once and the AI reviewer only comments on Tier 1; \"full\" = the reviewer decides Tier 1. A new install starts at full (ops/setup.sh writes it)."
   },
   "backup_repository": {
     "doc": "Off-host backup (ops/backup-offsite.sh): a restic repository, e.g. sftp://u12345@u12345.your-storagebox.de:23/aidenhq. Set, apply installs a nightly timer (03:00 UTC); its password is the vault's restic_password. Unset = no off-host backup."

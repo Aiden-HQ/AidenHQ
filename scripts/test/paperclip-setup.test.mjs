@@ -143,3 +143,25 @@ test("setup: crew agents get exactly their skills, a dropped one leaves, and a k
   skills["design.write-code"] = { dir: skill("design", "write-code") };
   await assert.rejects(() => run({ coder: ["engineering.write-code"], designer: ["design.write-code"] }), /design\.write-code.*engineering\.write-code|engineering\.write-code.*design\.write-code/);
 });
+
+test("setup: an agent no longer configured is terminated and its routine archived, never paused", async () => {
+  const { retireUnconfigured } = await import("../retire-agents.mjs");
+  const agents = [
+    { id: "a1", name: "Aiden", status: "idle", metadata: { setupKey: "aidenhq:chief-of-staff" } },
+    { id: "a2", name: "Slack Scout", status: "idle", metadata: { setupKey: "aidenhq:slack-scout" } },
+    { id: "a3", name: "Old", status: "terminated", metadata: { setupKey: "aidenhq:old" } },
+    { id: "a4", name: "By hand", status: "idle", metadata: {} },
+  ];
+  const routines = [
+    { id: "r1", title: "Daily brief", status: "active", assigneeAgentId: "a1" },
+    { id: "r2", title: "Scout Slack", status: "active", assigneeAgentId: "a2" },
+  ];
+  const calls = [];
+  const api = async (method, path, body) => {
+    calls.push([method, path, body]);
+    return { json: path.endsWith("/agents") ? agents : path.endsWith("/routines") ? routines : {} };
+  };
+  const cfg = { agents: { "chief-of-staff": {} }, routines: { brief: { title: "Daily brief" } } };
+  await retireUnconfigured({ api, companyId: "c1", cfg, step: () => {} });
+  assert.deepEqual(calls.filter(([m]) => m !== "GET"), [["PATCH", "/api/routines/r2", { status: "archived" }], ["POST", "/api/agents/a2/terminate", {}]]);
+});

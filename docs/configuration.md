@@ -28,6 +28,15 @@ ships no compose file: compile generates its services from `services:`. There is
 | `board_env` | Environment (and its `${secrets.x}`) added to the root board service, until the board is a module. |
 | `privileged` | Entries of the closed list (spec §5.6); `host-metrics` allows `host_mounts` (read-only `/`, `/sys`, `/proc`). |
 | `optional_secrets` | Secret files created empty when missing (an empty value means "not configured"). |
+
+A connection connects with one Connect click from wherever the board lists it (a `board.signins` entry; the vendor's sign-in
+does the rest). The sign-in returns to loopback, `http://localhost:3121` plus the entry's `callback` (fixed, so a hand-made
+client registers it once): that page doesn't load, and the owner pastes its address into the same Connect, which finishes it.
+Vendors don't hold a loopback redirect to a company's domain allowlist, so no admin has to allow the board's name. One click
+back to the board's https address stays as a link on Connect; `https_only: true` on the entry makes it the only path (Slack
+takes https redirects alone). A fixed or discoverable value is a module default; only a genuinely per-install value is asked for, as one
+field on that Connect (the sign-in's `secrets`, each a provided secret with `setup:`). `board.setup_flows` is only for what
+the owner must make elsewhere first (an OAuth client, an app, a token, a bot) or a channel to pair.
 | `generated_secrets` | Secret files compile creates randomly when missing. |
 
 Any string may use `${settings.<name>}`, replaced with the instance's value (or the default).
@@ -224,7 +233,7 @@ Set under `settings:` in `instance.yaml`. The board's Settings page (gear in the
 | `instance_name` | core | no | | Short name of this AidenHQ; the agents org is `aidenhq-<instance_name>`. |
 | `github_agents_org` | core | no | derived | The GitHub org where the runner works and, by default, creates repositories (`create-repo` is Tier 0 in any org the App is installed on and `allowed_orgs` lists); overrides the derived name. |
 | `github_orgs` | core | no | `[]` | GitHub orgs or users, besides the agents org, whose repos apps may be deployed from. |
-| `autonomy` | core | no | `off` | Tiered approvals: `off` = every write is the owner's card, the AI reviewer reading Tier 1 first (its reject is final; also the pause switch); `tier0` = Tier 0 runs at once, the AI reviewer only notes its verdict on Tier 1; `full` = the reviewer decides Tier 1. Move to `full` only after `modules/ai-reviewer/scripts/reviewer-eval.mjs` prints 100%. Changing it is itself a Tier 2 apply. |
+| `autonomy` | core | no | `off` (`ops/setup.sh` writes `full` for a new install) | Tiered approvals: `off` = every write is the owner's card, the AI reviewer reading Tier 1 first (its reject is final; also the pause switch); `tier0` = Tier 0 runs at once, the AI reviewer only notes its verdict on Tier 1; `full` = the reviewer decides Tier 1. A new install starts at `full` (owner, 2026-11-18); the reviewer's exit test (`modules/ai-reviewer/scripts/reviewer-eval.mjs`) gates every change to the reviewer. Changing it is itself a Tier 2 apply. |
 | `quiet_start` | core | no | | `on` (`ops/setup.sh` writes it for a new install): every module routine with `schedules:` compiles paused and every module agent's heartbeat off, until `overrides.routines.<key>.status: active` or `overrides.agents.<key>.heartbeat` turns one on (Aiden offers them; the agent's Settings tab has the switch). Webhook and runner-started routines and instance agents are untouched. Unset or `off`: as the modules declare. [design/quiet-start.md](design/quiet-start.md) |
 | `spend_day_usd` | core | no | | The install-wide cap on every model call (agents, jobs, the AI reviewer, grader, source writers, side chat, CI), USD per UTC day; `ops/setup.sh` writes 10. Past it the gateway refuses calls (402) and files one `raise_cap` card for today; the board's header shows today's spend against it. Unset: no install-wide cap. |
 | `heartbeat_hours` | core | no | `4` | Hours between each `heartbeat: true` agent's "Heartbeat: <key>" routine run (1, 2, 3, 4, 6, 8, 12 or 24; DeepSeek Flash at low effort). An agent's `heartbeat: <hours>` or `overrides.agents.<key>.heartbeat` sets its own; `false` turns it off for that agent. |
@@ -296,17 +305,17 @@ Copy `.env.example` to `.env`. It holds host paths and endpoints, never agent-ed
   `https://<APPS_TS_HOSTNAME>.<tailnet>.ts.net`), `APPS_TS_HOSTNAME` (the apps' own tailnet node, default `aidenhq-apps`).
 - Meetings: `TRANSCRIPTS_DIR`, `VAULT_DIR`, `VAULT_FOLDERS`, `KNOWLEDGE_BASES`.
 - Connection endpoints: `GITHUB_COMMENT_ORGS` (and the legacy `SLACK_CLIENT_ID`). Leave one empty to skip that connection. The other
-  connection's URL is an instance setting (`jira_url`): set it on the board (Settings, Connections), which files the change
-  as an apply card (docs/design/settings-changes.md). Primer's, Glean's, Grafana's and ClickHouse's addresses (and Slack's
-  client id) are setup values saved from the module's setup flow (`#/setup/<module>`) into the vault, with no apply; an old
-  `primer_mcp_url`, `glean_mcp_url`, `grafana_url`, `clickhouse_mcp_url` setting or `SLACK_CLIENT_ID` is read only while that
-  value is empty.
+  connection's URL is an instance setting (`jira_url`): set it on the board (the jira module's Settings tab), which files the change
+  as an apply card (docs/design/settings-changes.md). Primer's, Glean's and Grafana's addresses are asked for on their Connect
+  (a sign-in's `secrets`, saved into the vault with no apply), and Slack's client id on its setup flow (`#/setup/slack`); an
+  old `primer_mcp_url`, `glean_mcp_url`, `grafana_url` setting or `SLACK_CLIENT_ID` is read only while that value is empty.
+  ClickHouse's address is fixed (`clickhouse_mcp_url`, ClickHouse Cloud's by default): its Connect asks for nothing.
 - Board: `BOARD_ALLOWED_HOSTS`, and the second listener's (3121: behind the front door, `tailscale serve` today;
   signed-in admins only) `BOARD_LAN_BIND`, `BOARD_LAN_PORT`, `BOARD_LAN_HOSTS`, `BOARD_LAN_URL`. It stays on loopback:
   it trusts `X-Forwarded-Proto` from whoever reaches it. Only a LAN-only VM in `local` exposure with
   `AIDENHQ_PUBLIC_IF=none` may publish it on the LAN; `scripts/verify-security.sh` fails it anywhere else. An https
-  `BOARD_LAN_URL` is where every vendor sign-in (board.signins) connects and returns, from a request that reached the board by
-  that name; a module contributing board.signins may pass it to its service (`${BOARD_LAN_URL:-}`) as its allowed redirect.
+  `BOARD_LAN_URL` is where a one-click vendor sign-in (board.signins: Connect's secondary link, and every `https_only` one)
+  returns, from a request that reached the board by that name; the default returns to `http://localhost:3121` and is pasted back; a module contributing board.signins may pass it to its service (`${BOARD_LAN_URL:-}`) as its allowed redirect.
 - Host firewall: `AIDENHQ_PUBLIC_IF`, read by `ops/vm/setup.sh` with `settings.exposure` (default: the default-route interface; see
   [operations/migrate-host.md](operations/migrate-host.md#2-the-new-host-what-reaches-it-from-the-internet)).
 - `PAPERCLIP_DISABLE_SIGN_UP`, `OWNER_SLACK_USER_ID`, `TELEGRAM_TASK_URL`, `COMPOSE_FILE`.

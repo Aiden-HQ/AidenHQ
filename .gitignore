@@ -36,6 +36,7 @@ config/exposure
 config/apps-node
 config/Caddyfile
 config/kernel/
+config/handbooks/
 config/points/
 
 # Personal, untracked notes for coding agents

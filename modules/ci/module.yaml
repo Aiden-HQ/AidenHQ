@@ -48,10 +48,18 @@ services:
           chmod 0444 /opt/aidenhq/allowed
           unset AIDENHQ_AGENTS_ORG AIDENHQ_CI_REPOS AIDENHQ_ORG_RUNNER_GROUP
           exec ./run.sh
-      tmp: 2g # a tmpfs /tmp: tests that open many scratch files (SQLite) are far faster than on the container's overlay disk
+      # No `tmp:` tmpfs: Docker mounts it noexec, and the product's tests write executable fakes (gh, codex, bwrap wrappers)
+      # into /tmp and run them (every runner-unit failed on a self-hosted runner: the wrappers exited 126/127, `ip` EACCES).
       cpus: 4
       memory: 8g
       pids: 2048
+# The runner registration token's source (ops/ci-runner.sh → ops/ci-runner-token.mjs on the host): an org-wide App token
+# narrowed to organization_self_hosted_runners, from the kernel's POST /v1/codehost/token with this module's own ci_token
+# (owner authority; only codehost-github holds the App's key). Any org the App serves runners for.
+codehost:
+  token:
+    repos: ["*/*"]
+    perms: { organization_self_hosted_runners: write }
 settings:
   # Repositories outside the agents org whose jobs the runners take (space-separated owner/name), from a push to the
   # default branch or a same-repo PR only (runner/job-started.mjs). The App and that org's runner group
@@ -74,3 +82,6 @@ settings:
     default: 5
   ci_review_day_usd:
     default: 20
+# The host's runner registration (ops/ci-runner-token.mjs) asks the kernel with it.
+generated_secrets:
+  - ci_token

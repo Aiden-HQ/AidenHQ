@@ -55,7 +55,7 @@ Every finding is written the same way, in the task you file and in your notes:
 - **Observed claim:** what the agent said or did (quote one line; link the task, run or app page).
 - **Source evidence:** what the source shows (task id, run link, `warehouse_query` result in a sentence, app page).
 - **Discrepancy:** the difference, in one sentence.
-- **Proposed fix:** the cheapest durable one (below), as exact text or an exact change.
+- **Proposed fix:** the cheapest durable one (below), as exact text or an exact change at the rule's single source (the skill, the agent's description or the module prompt), never a copy in individual handbooks.
 - **Verification condition:** what someone can check later to see it held ("the next 3 roadmap reports cite a source row for every ETA"; "check `eta_has_source` passes").
 
 ## The cheapest durable fix
