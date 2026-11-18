@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // kernel/sdk's prepack: Node won't strip types under node_modules, so `npm pack` ships JavaScript. Writes kernel/sdk/dist/
-// (src/ and bin/ with their types stripped and `.ts` imports renamed `.js`). No npm publish yet (A9): the third-party twin
-// installs the local tarball (fixtures/twin).
+// (src/ and bin/ with their types stripped and `.ts` imports renamed `.js`). The third-party twin
+// installs the local tarball (fixtures/twin). Published by .github/workflows/sdk-publish.yml on an `sdk-v*` tag.
 import { mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { stripTypeScriptTypes } from "node:module";
 import { join } from "node:path";

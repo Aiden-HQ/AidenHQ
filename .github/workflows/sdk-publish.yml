@@ -1,0 +1,33 @@
+name: sdk-publish
+# Tag `sdk-vX.Y.Z` publishes @aidenhq/sdk X.Y.Z (version from the tag) by npm trusted publishing (GitHub OIDC, no token).
+# npmjs.com trusts this exact workflow filename. PRs that touch kernel/sdk dry-run the same steps.
+on:
+  push:
+    tags: ["sdk-v*"]
+  pull_request:
+    paths: ["kernel/sdk/**", "scripts/sdk-pack.mjs", ".github/workflows/sdk-publish.yml"]
+permissions:
+  id-token: write
+  contents: read
+jobs:
+  publish:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24.x
+      # Trusted publishing needs npm 11.5.1 or later; Node 24 bundles it.
+      - name: npm supports trusted publishing
+        run: node -e 'const [a,b,c]=process.argv[1].split(".").map(Number); if (a<11||(a===11&&(b<5||(b===5&&c<1)))) { console.error("npm "+process.argv[1]+" is older than 11.5.1"); process.exit(1) }' "$(npm --version)"
+      - name: Version from the tag
+        if: github.ref_type == 'tag'
+        working-directory: kernel/sdk
+        run: npm version "${GITHUB_REF_NAME#sdk-v}" --no-git-tag-version
+      - name: Publish (dry run on PRs)
+        working-directory: kernel/sdk
+        env:
+          DRY: ${{ github.ref_type == 'tag' && ' ' || '--dry-run' }}
+        run: npm publish --provenance --access public $DRY
