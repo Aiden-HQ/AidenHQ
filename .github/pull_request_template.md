@@ -22,7 +22,7 @@
 
 - [ ] Tests and typecheck pass for every package touched (for the board, also `npx tsc -p tsconfig.build.json --noEmit`)
 - [ ] Touches gate files (`kernel/`, `modules/ai-reviewer/`, `modules/codehost-github/`, `modules/apps-platform/gate/`, `ops/`, `scripts/paperclip-setup.mjs`)? Say which.
-- [ ] Touches the AI reviewer (`modules/ai-reviewer/`: its policy or `reviewer-cases/`), the tier function or the authority classifier? The maintainer must run `reviewer-eval.mjs` before merging.
+- [ ] Touches a path in `REVIEWER_CODE` (`modules/codehost-github/service/src/evalgate.ts`)? The maintainer must run `reviewer-eval.mjs` before merging.
 - [ ] Ran `node scripts/sync-shared.mjs` if `services/shared/` changed
 - [ ] Owner data scrubbed: no names, emails, Slack/Telegram ids, hostnames, IPs, org names, tokens or secrets in the diff, tests, logs or this description
 - [ ] I have read [CLA.md](../CLA.md) and agree to it for this and my future contributions (and, if my employer has rights in this work, I have its permission)
