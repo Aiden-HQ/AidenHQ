@@ -19,8 +19,11 @@
 //                              channel's token) cards with decision tokens, a token spent, the owner's words, notices (channels.ts)
 //   POST /v1/channel/outbox, GET /v1/channel/outbox  (a channel) a message for the owner handed to another channel; drained by it
 //   GET  /v1/cp/read/<path>    (a channel, or a module with role kernel.cp-read) the control plane's read routes, as the owner
-//   POST /v1/brake/notify      (a channel) may an agent message the owner about a task again (brake.ts)
+//   POST /v1/brake/notify      (a channel, or the owner's router) may an agent message the owner about a task again (brake.ts)
 //   POST /v1/channel/exchange  (a module with role kernel.lane) a fast-lane turn written to its agent's chat task (lane.ts)
+//   POST /v1/notify            (the board's or the runner's key) a message for the owner, queued for the owner's router (notify.ts)
+//   GET  /v1/notify/take, POST /v1/notify/send  (the module with role kernel.notify) the queued owner messages, each once; one
+//                              message to a channel's transport
 //   POST /v1/wake              (a module with role kernel.wake) a labelled wake notice on a task, which wakes its agent
 //   POST /v1/wakes/events      (the paperclip-events plugin's key) a Paperclip event's ids: its task is scanned (wakes.ts)
 //   POST /v1/wakes             (a module with role kernel.wake) a scheduled wake {task, agent?, at?, cause?, id?}
@@ -50,6 +53,7 @@ import type { Grant, Whoami } from "./identity.ts";
 import type { Jobs } from "./jobs.ts";
 import type { Admission } from "./admission.ts";
 import { JOB_KINDS, type Outcomes } from "./outcomes.ts";
+import { notice, type Notify } from "./notify.ts";
 import { fail } from "./proxy.ts";
 import type { Records, State } from "./records.ts";
 import type { Work } from "./work.ts";
@@ -91,6 +95,9 @@ export const ROUTES = [
   { method: "POST", path: "/v1/channel/exchange", auth: "module" },
   { method: "GET", path: "/v1/cp/read/*", auth: "module" },
   { method: "POST", path: "/v1/brake/notify", auth: "module" },
+  { method: "POST", path: "/v1/notify", auth: "board|runner" },
+  { method: "GET", path: "/v1/notify/take", auth: "module" },
+  { method: "POST", path: "/v1/notify/send", auth: "module" },
   { method: "POST", path: "/v1/wake", auth: "module" },
   { method: "POST", path: "/v1/wakes/events", auth: "events-key" },
   { method: "POST", path: "/v1/wakes", auth: "module" },
@@ -125,7 +132,7 @@ async function json(req: IncomingMessage, max = 1_000_000): Promise<any> {
   try { return JSON.parse(Buffer.concat(chunks).toString("utf8") || "{}"); } catch { throw fail(400, "bad_request", "the body must be JSON"); }
 }
 
-export function createBackplane({ whoami, asserter, proxy, cp, grantsFile, writes, records, channels, brake, owner, modules = () => ({}), boardKey = () => "", reviews, runnerKey = () => "", reviewerKey = () => "", jobs, admission, outcomes, wakes, eventsKey = () => "", work, graderToken = () => "", dropGraderToken = () => {}, advisories = () => [], accounts, checks, ownerRaw, lane, log = () => {} }: {
+export function createBackplane({ whoami, asserter, proxy, cp, grantsFile, writes, records, channels, brake, notify, owner, modules = () => ({}), boardKey = () => "", reviews, runnerKey = () => "", reviewerKey = () => "", jobs, admission, outcomes, wakes, eventsKey = () => "", work, graderToken = () => "", dropGraderToken = () => {}, advisories = () => [], accounts, checks, ownerRaw, lane, log = () => {} }: {
   whoami: Whoami; asserter: Asserter; proxy: Handler; cp: Handler; grantsFile: () => { agents?: Record<string, Grant> } & Record<string, unknown>;
   writes?: Writes; records?: Records; boardKey?: () => string; log?: (msg: string, f?: Record<string, unknown>) => void;
   /** The reviewer slot; the runner's key for its kinds (filing, claim, outcome, reads, a record's review: runner_writes_key)
@@ -137,6 +144,8 @@ export function createBackplane({ whoami, asserter, proxy, cp, grantsFile, write
   ownerRaw?: (path: string) => Promise<Response>;
   /** The fast chat lane's exchanges onto its agents' chat tasks (lane.ts). */
   lane?: Lane;
+  /** 3.2: the owner's messages, queued for the owner-channel module and handed to channels' transports. */
+  notify?: Notify;
   /** 3e: jobs in the sandbox. */
   jobs?: Jobs;
   /** Admission (admission.ts): a job on a wake the module claimed, its authority frozen, its computer the kernel's (boxes.ts). */
@@ -212,6 +221,17 @@ export function createBackplane({ whoami, asserter, proxy, cp, grantsFile, write
           dropGraderToken(m[0]!);
           return send(res, 200, resolved);
         }
+        case "POST /v1/notify": {
+          if (!isBoard(req) && !isRunner(req)) throw fail(401, "unauthorized", "the board's or the runner's key is required");
+          if (!notify) throw fail(503, "unavailable", "notify is off");
+          notify.queue(notice(await json(req)));
+          return send(res, 200, { queued: true });
+        }
+        case "GET /v1/notify/take": case "POST /v1/notify/send": {
+          const w = await moduleOf(req);
+          if (!notify) throw fail(503, "unavailable", "notify is off");
+          return send(res, 200, hit!.method === "GET" ? notify.take(w.roles) : await notify.send(w.roles, await json(req)));
+        }
         case "GET /v1/advisories": if (!isBoard(req)) throw fail(401, "unauthorized", "the board's key is required"); return send(res, 200, { advisories: advisories() });
       }
       if (hit && hit.path.startsWith("/v1/wakes")) {
@@ -275,7 +295,7 @@ export function createBackplane({ whoami, asserter, proxy, cp, grantsFile, write
             return send(res, r.status, r.json);
           }
           case "POST /v1/brake/notify": {
-            if (!isChannel(modules().modules?.[mod])) throw fail(403, "forbidden", "only a channel asks the notify brake");
+            if (!isChannel(modules().modules?.[mod]) && !w.roles.includes("kernel.notify")) throw fail(403, "forbidden", "only a channel or the owner's router asks the notify brake");
             return send(res, 200, await brake(await json(req)));
           }
           case "POST /v1/wake": {

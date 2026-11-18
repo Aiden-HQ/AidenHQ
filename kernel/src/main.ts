@@ -30,6 +30,7 @@ import { createAsserter, loadKey } from "./assert.ts";
 import { chiefOfStaff, createBackplane } from "./backplane.ts";
 import { createOutcomes } from "./outcomes.ts";
 import { createBrake } from "./brake.ts";
+import { createNotify } from "./notify.ts";
 import { createChannels, type Api, type ModulesFile } from "./channels.ts";
 import { createLane } from "./lane.ts";
 import { checksFile, createChecks } from "./checks.ts";
@@ -145,6 +146,7 @@ const certWatch = createCertWatch({
 every(() => void certWatch.tick(), 3_600_000);
 once(() => void certWatch.tick(), 10 * 60_000);
 const brake = createBrake({ db: records.db, owner: ownerApi });
+const notify = createNotify({ db: records.db, modules: modulesFile, secret, resolver });
 // The host sandbox as configured here (jobs run in their agents' computers; repo code the host runs itself, fast checks among
 // it, runs in this sandbox). A known no-jail condition is fatal, with the reason in the journal: repo code must never share the
 // host's network (every loopback service).
@@ -233,7 +235,7 @@ const admission = createAdmission({
 admission.recover();
 boxes.start();
 const lane = createLane({ db: records.db, owner: ownerApi, grantsFile: grantsTable, log, postAsAgent: async (agent, task, job, body) => ({ id: String((await outcomes.post({ id: job, agent, task }, { kind: "lane", body })).comment) }) });
-const backplane = createBackplane({ checks, lane, whoami, asserter, grantsFile: grantsTable, log, writes, records, channels, brake, owner: ownerApi, ownerRaw: (p) => cpApi(p), modules: modulesFile, boardKey: () => secret("gateway_board_key"), reviews, runnerKey: () => secret("runner_writes_key"), reviewerKey: () => secret("reviewer_key"), jobs, admission, outcomes, wakes, work, graderToken, dropGraderToken: (task) => graderTokens.delete(task), eventsKey: () => secret("paperclip_events_key"), advisories: advisories.list, accounts: createAuthApi({ accounts: () => accounts, whoami, boardKey: () => secret("gateway_board_key"), recoveryKeyWaiting: () => Boolean(firstRun.recoveryKey()), modelReady: modelState.ready, operatorKey: () => secret("board_operator_key"), secrets: moduleSecrets }), proxy: (req, res, c) => proxy(req, res, c!), cp: createCp({ whoami, asserter, controlUrl, launcherUrl, checks, log }) as never });
+const backplane = createBackplane({ checks, lane, whoami, asserter, grantsFile: grantsTable, log, writes, records, channels, brake, notify, owner: ownerApi, ownerRaw: (p) => cpApi(p), modules: modulesFile, boardKey: () => secret("gateway_board_key"), reviews, runnerKey: () => secret("runner_writes_key"), reviewerKey: () => secret("reviewer_key"), jobs, admission, outcomes, wakes, work, graderToken, dropGraderToken: (task) => graderTokens.delete(task), eventsKey: () => secret("paperclip_events_key"), advisories: advisories.list, accounts: createAuthApi({ accounts: () => accounts, whoami, boardKey: () => secret("gateway_board_key"), recoveryKeyWaiting: () => Boolean(firstRun.recoveryKey()), modelReady: modelState.ready, operatorKey: () => secret("board_operator_key"), secrets: moduleSecrets }), proxy: (req, res, c) => proxy(req, res, c!), cp: createCp({ whoami, asserter, controlUrl, launcherUrl, checks, log }) as never });
 // The admin listener's accounts (data/kernel/auth/auth.db) and pages. Accounts not moved yet, or a malformed URL setting: the
 // listener refuses while every other part of the kernel serves.
 const urlOf = (v: string) => { try { return v ? new URL(v) : undefined; } catch { log("ignoring a malformed URL setting", { value: v.slice(0, 100) }); return undefined; } };

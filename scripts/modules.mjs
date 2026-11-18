@@ -1087,7 +1087,8 @@ export function compile(productDir, instanceDir, { revision, fetch = hostFetch(p
  * config/kernel/modules.json's `modules`: what the kernel knows of a module beyond its connections (spec §2.4, §3.3.4, §5.6):
  * the kernel.* roles it requests, its privileged entries, a channel's or a job dispatcher's own token (a generated secret named
  * `<module>_token`, dashes as underscores) and, for a channel (`providers.channel`, which needs privileged speaks-as-owner),
- * the stamp its decisions carry, whether it may close stale cards, and its own settings (a host CLI channel reads them here).
+ * the stamp its decisions carry, whether it may close stale cards, its transport (where owner messages are sent) and its own
+ * settings (a host CLI channel reads them here).
  */
 /**
  * Modules' setup fields (spec §6.10): a module's provided secrets with `setup: { label, pattern, help?, required? }`, which
@@ -1120,8 +1121,11 @@ export function kernelModuleTable(defs, settings = {}) {
     const token = `${name.replace(/-/g, "_")}_token`;
     const ch = def.providers?.channel;
     if (ch != null) {
-      if (typeof ch !== "object" || Array.isArray(ch)) fail(`module ${name}: providers.channel is a map ({} or {stamp, stale})`);
-      for (const k of Object.keys(ch)) if (!["stamp", "stale"].includes(k)) fail(`module ${name}: providers.channel.${k} is not allowed (stamp, stale)`);
+      if (typeof ch !== "object" || Array.isArray(ch)) fail(`module ${name}: providers.channel is a map ({} or {stamp, stale, transport})`);
+      for (const k of Object.keys(ch)) if (!["stamp", "stale", "transport"].includes(k)) fail(`module ${name}: providers.channel.${k} is not allowed (stamp, stale, transport)`);
+      // transport: where the owner's router (role kernel.notify) has the kernel send this channel's owner messages, with its own token.
+      if (ch.transport != null && !/^https?:\/\/[\w.-]+:\d+\/[\w/.-]*$/.test(String(ch.transport))) fail(`module ${name}: providers.channel.transport must be http://<service>:<port>/<path>`);
+      if (ch.transport != null && !(def.generated_secrets ?? []).includes(token)) fail(`module ${name}: a channel transport needs the module's own token (generated_secrets: [${token}])`);
       if (!privileged.includes("speaks-as-owner")) fail(`module ${name}: a channel (providers.channel) needs privileged: [speaks-as-owner]`);
       if (ch.stamp != null && !/^[a-z]{1,16}$/.test(String(ch.stamp))) fail(`module ${name}: providers.channel.stamp is one lowercase word`);
       if (ch.stale != null && typeof ch.stale !== "boolean") fail(`module ${name}: providers.channel.stale is true or false`);
@@ -1130,7 +1134,7 @@ export function kernelModuleTable(defs, settings = {}) {
       ...(roles.length ? { roles } : {}), ...(privileged.length ? { privileged } : {}),
       // A channel's, a job dispatcher's (kernel.jobs), or a check's module (its label and its reads): its own generated `<module>_token`.
       ...((ch != null || roles.includes("kernel.jobs") || (def.checks ?? []).length) && (def.generated_secrets ?? []).includes(token) ? { token } : {}),
-      ...(ch != null ? { channel: { ...(ch.stamp ? { stamp: String(ch.stamp) } : {}), ...(ch.stale === true ? { stale: true } : {}) }, settings: Object.fromEntries(Object.keys(def.settings ?? {}).map((k) => [k, settings[k]])) } : {}),
+      ...(ch != null ? { channel: { ...(ch.stamp ? { stamp: String(ch.stamp) } : {}), ...(ch.stale === true ? { stale: true } : {}), ...(ch.transport ? { transport: String(ch.transport) } : {}) }, settings: Object.fromEntries(Object.keys(def.settings ?? {}).map((k) => [k, settings[k]])) } : {}),
     };
     if (Object.keys(e).length) out[name] = e;
   }

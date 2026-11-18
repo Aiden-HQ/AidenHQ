@@ -12,7 +12,7 @@ import { actionOf, type Records } from "./records.ts";
 import type { Writes } from "./writes.ts";
 
 /** config/kernel/modules.json (compile): modules with kernel roles, a privileged entry, a token of their own or a channel. */
-export type ModuleInfo = { roles?: string[]; privileged?: string[]; token?: string; channel?: { stamp?: string; stale?: boolean }; settings?: Record<string, unknown> };
+export type ModuleInfo = { roles?: string[]; privileged?: string[]; token?: string; channel?: { stamp?: string; stale?: boolean; transport?: string }; settings?: Record<string, unknown> };
 export type ModulesFile = { modules?: Record<string, ModuleInfo>; owner?: { name?: string; email?: string; timezone?: string } };
 export type Api = (method: string, path: string, body?: unknown) => Promise<{ status: number; json: any }>;
 type Log = (msg: string, f?: Record<string, unknown>) => void;
