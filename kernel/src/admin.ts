@@ -256,9 +256,10 @@ export function createAdmin(d: Deps) {
     try {
       if (url.pathname === "/healthz") return void res.writeHead(200, { "content-type": "text/plain" }).end("ok");
       if (!d.hosts().includes(host)) throw new Refusal(421, "unknown host");
-      // A page opened at 127.0.0.1 moves to localhost (the sign-in's own origin); the cookie hop across the two dead-ends otherwise.
+      // A page a browser opens at 127.0.0.1 moves to localhost (the sign-in's own origin); the cookie hop across the two dead-ends
+      // otherwise. Only a browser navigation moves: health checks and probes on 127.0.0.1 get their answer.
       const local = host.replace(/^127\.0\.0\.1/, "localhost");
-      if ((req.method === "GET" || req.method === "HEAD") && local !== host && d.hosts().includes(local)) return void res.writeHead(308, { location: `http://${local}${req.url ?? "/"}`, "cache-control": "no-store" }).end();
+      if ((req.method === "GET" || req.method === "HEAD") && req.headers["sec-fetch-mode"] === "navigate" && local !== host && d.hosts().includes(local)) return void res.writeHead(308, { location: `http://${local}${req.url ?? "/"}`, "cache-control": "no-store" }).end();
       const hit = compiled.find((r) => r.method === req.method && r.re.test(url.pathname));
       if (!hit) throw new Refusal(404, "not found");
       const id = hit.re.exec(url.pathname)![1] ?? "";
