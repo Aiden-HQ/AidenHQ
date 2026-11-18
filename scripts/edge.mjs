@@ -53,7 +53,7 @@ const fail = (m) => { throw new Error(m); };
 const emails = (l, where) => (Array.isArray(l ?? []) ? l ?? [] : fail(`${where} must be a list`)).map((e) => (typeof e === "string" && e.includes("@") ? e.trim().toLowerCase() : fail(`${where}: ${e} is not an email`)));
 
 /**
- * edgeConfig(settings, instanceApps, moduleApps, { publicIp, adminUrl }) → { gate, cloudflared, compose }, or a door's
+ * edgeConfig(settings, instanceApps, moduleApps, { publicIp, adminUrl, boardUrl }) → { gate, cloudflared, compose }, or a door's
  * { gate, cloudflared: null, compose } without `edge` on exposure local or public, or null.
  * `share` lives only in the instance apps.yaml; a module app may not declare it.
  */
@@ -195,9 +195,11 @@ const gateService = (extra) => ({
  * The door without `edge` (docs/design/app-doors.md), or null: `local` serves <app>.localhost:<GATE_PORT> over http, `public`
  * <app>.<ip-with-dashes>.sslip.io through Caddy. Sign-in is the admin listener's (`adminUrl`), never the gate's.
  */
-function doorConfig(exposure, { publicIp, adminUrl } = {}) {
+function doorConfig(exposure, { publicIp, adminUrl, boardUrl } = {}) {
   let doors, origin;
-  if (exposure === "local") {
+  // A local door is the viewer's own loopback: only where the board is too (not a LAN VM's board on a LAN address).
+  const loopback = !boardUrl || /^http:\/\/(127\.0\.0\.1|localhost)(:\d+)?\/?$/.test(boardUrl);
+  if (exposure === "local" && loopback) {
     doors = { base: "localhost", file: DOORS_FILE, signin: adminUrl || "http://127.0.0.1:3120" };
     origin = { scheme: "http", port: GATE_PORT };
   } else if (exposure === "public" && publicIp) doors = { base: sslipBase(publicIp), file: DOORS_FILE, signin: adminUrl || `https://${publicIp}:8446` };

@@ -46,6 +46,9 @@ test("app doors: the gate per exposure, and Caddy's on-demand site for the sslip
   const pub = door("public");
   assert.deepEqual([pub.gate.doors.base, pub.gate.doors.signin, pub.gate.origin], ["203-0-113-7.sslip.io", "https://203.0.113.7:8446", undefined]);
   for (const e of ["tailscale", "cloudflare"]) assert.equal(door(e), null);
+  // a LAN VM's board (local, on a LAN address): <app>.localhost would be the viewer's own machine, so no door
+  assert.equal(edgeConfig({ exposure: "local" }, [], [], { boardUrl: "http://192.168.1.20:3121" }), null);
+  assert.ok(edgeConfig({ exposure: "local" }, [], [], { boardUrl: "http://127.0.0.1:3121" }));
   // settings.edge keeps its own door: no doors block
   assert.equal(edgeConfig({ exposure: "local", edge: { team_domain: "acme.cloudflareaccess.com", tunnel_id: "00000000-0000-0000-0000-000000000000", my_apps: { host: "apps.example.com", aud: "a" } }, owner_email: "o@example.com" }, [], []).gate.doors, undefined);
 
