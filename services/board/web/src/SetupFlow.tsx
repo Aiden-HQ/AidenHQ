@@ -70,9 +70,13 @@ function FlowBody({ flow, board, reload, onDone, onSignIn }: { flow: SetupFlowVi
     setSaving(true);
     setError("");
     try {
-      for (const f of filled) await api.setupSecret(flow.module, f.secret, values[f.secret]!.trim());
-      setValues({});
+      // All at once, so one slow or failed save never keeps the others from being sent.
+      const results = await Promise.allSettled(filled.map((f) => api.setupSecret(flow.module, f.secret, values[f.secret]!.trim())));
+      const failed = results.find((r) => r.status === "rejected");
+      const kept = Object.fromEntries(filled.filter((_, i) => results[i]!.status === "rejected").map((f) => [f.secret, values[f.secret]!]));
+      setValues(kept);
       await reload();
+      if (failed) fail((failed as PromiseRejectedResult).reason);
     } catch (e) {
       fail(e);
     } finally {

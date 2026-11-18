@@ -95,12 +95,18 @@ test("save_secret is the owner's: another admin gets 403, a session that isn't r
   assert.equal((await post("setup_status", { module: "channel-telegram" }, "admin")).status, 200, "any ready admin sees which are set");
 });
 
-test("a failed recreate answers 502 with compose's last line, the secret kept", async (t) => {
+test("a save answers once the value is written, while the recreate is still waiting on the apply lock", async () => {
+  const v = vault(() => new Promise(() => {}));
+  const r = await v.secrets.save("channel-telegram", "telegram_bot_token", TOKEN);
+  assert.deepEqual(r, { restarted: ["telegram"] });
+  assert.equal(readFileSync(join(v.dir, "telegram_bot_token"), "utf8"), TOKEN);
+});
+
+test("a failed recreate is logged, the secret kept, the save still answered", async () => {
   const v = vault(async () => { throw new Error("service \"telegram\" failed to start"); });
-  const post = await api(t, v);
-  const r = await post("save_secret", { module: "channel-telegram", secret: "telegram_bot_token", value: TOKEN });
-  assert.equal(r.status, 502);
-  assert.match(r.json.error.message, /failed to start/);
+  await v.secrets.save("channel-telegram", "telegram_bot_token", TOKEN);
+  await new Promise((r) => setImmediate(r));
+  assert.match(v.lines.join("\n"), /recreate failed.*failed to start/);
   assert.equal(readFileSync(join(v.dir, "telegram_bot_token"), "utf8"), TOKEN);
 });
 
@@ -117,7 +123,7 @@ test("setup_status reports booleans only", async (t) => {
 
 // Real flock(1) (util-linux, as on the host); macOS has none, so CI judges this one.
 const hasFlock = spawnSync("flock", ["-V"]).status === 0;
-test("save_secret waits for the apply lock", { skip: !hasFlock && "needs flock(1)" }, async (t) => {
+test("save_secret answers at once; the recreate waits for the apply lock", { skip: !hasFlock && "needs flock(1)" }, async (t) => {
   const dir = mkdtempSync(join(tmpdir(), "checkout-"));
   mkdirSync(join(dir, "data"));
   const marker = join(dir, "recreated");
@@ -139,11 +145,14 @@ test("save_secret waits for the apply lock", { skip: !hasFlock && "needs flock(1
   ]);
   assert.equal(a.status, 200, a.body);
   assert.equal(b.status, 200, b.body);
-  assert.ok(Date.now() - started >= 500, "the recreate waited for the apply's lock");
+  assert.ok(Date.now() - started < 500, "the saves didn't wait for the apply's lock");
+  assert.ok(!existsSync(marker), "the recreate hasn't run while the apply holds the lock");
   // Both were saved while the apply held the lock: one recreate after it, reading the last value saved.
   assert.equal(readFileSync(join(v.dir, "telegram_bot_token"), "utf8"), second);
+  const lines = async (n) => { for (let i = 0; i < 200; i++) { const l = existsSync(marker) ? readFileSync(marker, "utf8").trim().split("\n").length : 0; if (l >= n) return l; await new Promise((r) => setTimeout(r, 50)); } return 0; };
+  assert.equal(await lines(1), 1);
   assert.equal(readFileSync(marker, "utf8"), "compose.yaml:compose.modules.yaml compose up -d --force-recreate --no-deps telegram\n");
   // Once that recreate has run, the next save gets its own.
   assert.equal((await post("save_secret", { module: "channel-telegram", secret: "telegram_bot_token", value: TOKEN })).status, 200);
-  assert.equal(readFileSync(marker, "utf8").trim().split("\n").length, 2);
+  assert.equal(await lines(2), 2);
 });
