@@ -23,11 +23,14 @@
 //                             from the runner's cache clone, into /workspace/repos/<name>; agents with the repo-checkout role
 //   POST /helper/<command>  a runner job box's `aidenhq` command (bearer = its run token), to the runner's helper bound to that job
 //
-// Runner jobs (the runner calls these; bearer = secret computers_runner_key, which opens nothing else and which the plugin's
-// key can't open). A job's process runs in the box through the runner's own `docker exec`; the runner keeps workspace and git.
+// Jobs (bearer = secret computers_runner_key for the runner, launcher_kernel_key for the kernel; neither opens anything else and
+// the plugin's key opens neither). A job's process runs in the box through the caller's own `docker exec`.
 //   POST /job {agentId, issueId, identifier, helperPort, helperToken, identity}   a box for one turn of a runner job: image
 //                             from the grants table, the task folder and Codex home the launcher derives, a lease, a run token
 //                             bound to the task → {container, envFile}
+//   POST /job {agentId, issueId, identifier, workspace, engine, state, image, token, mcp}   the kernel's (boxes.ts): the image
+//                             its admission froze, its job token (ahqj_) as the box's only credential and the job's Codex MCP
+//                             config; no run token of the launcher's, no helper
 //   POST /job/renew {container, issueId, helperPort, helperToken}   the runner still follows it (also on adoption): a new lease
 //   POST /job/release {container}   destroy and revoke; idempotent → {state} ("missing" once the box is gone)
 //
@@ -37,7 +40,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, writeFile
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { answerSlowly, archiveArgs, forwardModel, PROGRESS_SCRIPT, CP_SCRIPT, UNTAR_SCRIPT, WRITE_RUN_TOKEN_SCRIPT, CLEAR_RUN_TOKEN_SCRIPT, boxOf, checkoutRequest, EXEC_ID, EXEC_ROOT, EXEC_MISSING, EXEC_PREP_SCRIPT, EXEC_RUN_SCRIPT, EXEC_WAIT_SCRIPT, Tokens, Creds, Jobs, JOB_HOME, JOB_ROUTES, admit, controlAllowed, jobEnvFile, jobFolder, jobMounts, reapLapsed, serveHelper, builtImage, dockerRunArgs, oomMessage, execEnv, mcpBlock, runCredential, stale, wrapExec, routineArgs } from "./lib.mjs";
+import { answerSlowly, archiveArgs, forwardModel, PROGRESS_SCRIPT, CP_SCRIPT, UNTAR_SCRIPT, WRITE_RUN_TOKEN_SCRIPT, CLEAR_RUN_TOKEN_SCRIPT, boxOf, checkoutRequest, EXEC_ID, EXEC_ROOT, EXEC_MISSING, EXEC_PREP_SCRIPT, EXEC_RUN_SCRIPT, EXEC_WAIT_SCRIPT, Tokens, Creds, Jobs, tokenHash, JOB_HOME, JOB_ROUTES, admit, controlAllowed, jobEnvFile, jobFolder, jobMounts, reapLapsed, serveHelper, builtImage, dockerRunArgs, oomMessage, execEnv, mcpBlock, runCredential, stale, wrapExec, routineArgs } from "./lib.mjs";
 
 const repo = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
 const dotenv = {};
@@ -83,8 +86,9 @@ const MODEL_GATEWAY_URL = "http://127.0.0.1:8201";
 const KERNEL_URL = "http://10.231.0.1:3130";
 const TOKEN = secret("computer_launcher_token");
 const PROGRESS_TOKEN = secret("computer_progress_token");
-// The runner's key: the job routes only. Unset, runner jobs are off (every /job call is refused).
+// The runner's key and the kernel's: the job routes only. Unset, that caller's jobs are off (its /job calls are refused).
 const RUNNER_KEY = secret("computers_runner_key");
+const KERNEL_KEY = secret("launcher_kernel_key");
 if (!TOKEN) throw new Error("the secret computer_launcher_token is missing (scripts/compile.mjs creates it)");
 
 // Docker's embedded DNS (127.0.0.11) relies on iptables inside the netns, which gVisor's netstack never sees.
@@ -180,6 +184,12 @@ async function clearRunToken(container) {
   await docker(["exec", container, "sh", "-c", CLEAR_RUN_TOKEN_SCRIPT]);
 }
 
+/** A kernel job's image, by the name its admission froze: one compile tagged (computers.json). */
+async function imageNamed(name) {
+  const tag = typeof name === "string" ? readJson(CFG.computersFile).images?.[name] : undefined;
+  if (!tag) throw fail(400, `no computer image ${name} (computers.json)`);
+  return builtImage(tag, docker, log);
+}
 /** The image this agent's computer runs: the grants table setup writes (agent id → image) and compile's tags. Never the caller. */
 async function imageFor(agentId) {
   const g = readJson(CFG.grantsFile).agents?.[agentId];
@@ -334,18 +344,21 @@ const IDENTIFIER = /^[A-Z][A-Z0-9]*-\d+$/;
 
 /** The runner's job routes (computers_runner_key only). */
 const runnerControl = {
-  async "/job"({ agentId, issueId, identifier, workspace, engine, state, helperPort, helperToken, identity }) {
+  async "/job"({ agentId, issueId, identifier, workspace, engine, state, helperPort, helperToken, identity, image: imageName, token: kernelToken, mcp: kernelMcp }, { kernel = false } = {}) {
     if (typeof agentId !== "string" || !agentId || typeof issueId !== "string" || !issueId) throw fail(400, "agentId and issueId required");
     if (typeof identifier !== "string" || !IDENTIFIER.test(identifier)) throw fail(400, "identifier must be the task's, e.g. PEN-7");
-    if (!Number.isInteger(helperPort) || helperPort < 1 || helperPort > 65535 || !HELPER_TOKEN.test(String(helperToken))) throw fail(400, "helperPort and helperToken required");
+    if (kernel) {
+      if (typeof kernelToken !== "string" || !kernelToken.startsWith("ahqj_") || /\s/.test(kernelToken) || typeof kernelMcp !== "string") throw fail(400, "the kernel sends the job's token and its MCP config");
+    } else if (!Number.isInteger(helperPort) || helperPort < 1 || helperPort > 65535 || !HELPER_TOKEN.test(String(helperToken))) throw fail(400, "helperPort and helperToken required");
     // The job's engine (engine@1): a kind the compiled registry says runs in a box, its module mounted read-only.
     const entry = (() => { try { return readJson(path.join(configDir, "engines.json"))[engine]; } catch { return undefined; } })();
     if (typeof engine !== "string" || entry?.box !== true || !/^modules\/[a-z0-9-]+$/.test(entry.dir ?? "")) throw fail(400, `engine ${engine} doesn't run in a box (config/engines.json)`);
-    const image = await imageFor(agentId);
+    const image = kernel ? await imageNamed(imageName) : await imageFor(agentId);
     // Exactly this task's folder and its engine's state folder, real directories with no symlink below the runner's dirs:
-    // never the cache clones, another task's folder or anything a path trick reaches.
+    // never the cache clones, another task's folder or anything a path trick reaches. A kernel job's state is its agent's
+    // on this task (kernel/src/sandbox.ts engineState), so two agents never share one.
     jobFolder(workspace, path.join(CFG.runnerWork, "tasks"), identifier);
-    jobFolder(state, path.join(CFG.runnerState, engine), issueId.replace(/[^\w.-]/g, "_"));
+    jobFolder(state, path.join(CFG.runnerState, engine), (kernel ? `${agentId}/${issueId}` : issueId).replace(/[^\w.-]/g, "_"));
     const codexHome = state;
     // Two executions never share a workspace: the task's last box must be gone first (the runner releases it).
     const before = jobs.byIssue(issueId);
@@ -353,10 +366,13 @@ const runnerControl = {
     await makeRoom();
     const name = newName();
     boxes.set(name, { agentId, lastUsed: Date.now(), busy: 1 }); // reserve the slot while starting
-    jobs.add({ container: name, agentId, issueId, identifier, workspace, codexHome, helperPort, helperToken }); saveJobs();
-    const token = tokens.issue(name, agentId);
-    tokens.bind(name, { issueId }); // the model gateway bills and caps the job by its task
-    saveTokens();
+    jobs.add({ container: name, agentId, issueId, identifier, workspace, codexHome, ...(kernel ? { kernel: true, tokenHash: tokenHash(kernelToken) } : { helperPort, helperToken }) }); saveJobs();
+    // A kernel job's only credential is the kernel's job token; a runner job gets a run token bound to its task.
+    const token = kernel ? kernelToken : tokens.issue(name, agentId);
+    if (!kernel) {
+      tokens.bind(name, { issueId }); // the model gateway bills and caps the job by its task
+      saveTokens();
+    }
     const envFile = path.join(jobEnvDir, `${name}.env`);
     // The job's last message lands here, outside the workspace: a folder of the launcher's, mounted at /aidenhq-out.
     const outDir = path.join(jobEnvDir, name);
@@ -366,7 +382,7 @@ const runnerControl = {
       // aidenhq-browse uses the image's own agent-browser and Chrome (the browser image every computer builds on).
       const r = await docker(dockerRunArgs({ name, image, agentId, network: CFG.network, limits: { ...CFG.limits, memory: CFG.jobMemory }, mounts, user: JOB_USER, labels: [`aidenhq.job=${issueId}`], home: JOB_HOME }));
       if (r.exitCode !== 0) throw fail(500, `docker run failed: ${r.stderr.trim()}`);
-      writeFileSync(envFile, jobEnvFile({ token, mcp: await mcpFor(token), gatewayUrl: GATEWAY_URL, identity }), { mode: 0o600 });
+      writeFileSync(envFile, jobEnvFile({ token, mcp: kernel ? kernelMcp : await mcpFor(token), gatewayUrl: GATEWAY_URL, identity }), { mode: 0o600 });
     } catch (e) {
       await destroy(name, "job box failed to start");
       throw e;
@@ -374,8 +390,9 @@ const runnerControl = {
     boxes.get(name).busy = 0;
     return { container: name, envFile, outDir };
   },
-  async "/job/renew"({ container, issueId, helperPort, helperToken }) {
+  async "/job/renew"({ container, issueId, helperPort, helperToken }, { kernel = false } = {}) {
     if (!ours(container)) throw fail(400, "not a computer");
+    if (jobs.has(container) && Boolean(jobs.get(container).kernel) !== kernel) throw fail(403, `not your job's box: ${container}`);
     if (helperPort != null && (!Number.isInteger(helperPort) || !HELPER_TOKEN.test(String(helperToken)))) throw fail(400, "bad helper binding");
     if ((await jobState(container)) === "missing") {
       if (jobs.has(container)) await destroy(container, "gone before its renewal");
@@ -386,10 +403,11 @@ const runnerControl = {
     saveJobs();
     return { container, issueId: r.issueId, identifier: r.identifier, workspace: r.workspace, leaseUntil: r.leaseUntil };
   },
-  async "/job/release"({ container }) {
+  async "/job/release"({ container }, { kernel = false } = {}) {
     if (!ours(container)) throw fail(400, "not a computer");
-    if (!jobs.has(container) && boxes.has(container)) throw fail(403, `not a runner job's box: ${container}`);
-    if (jobs.has(container) || (await jobState(container)) !== "missing") await destroy(container, "released (runner job)");
+    if (!jobs.has(container) && boxes.has(container)) throw fail(403, `not a job's box: ${container}`);
+    if (jobs.has(container) && Boolean(jobs.get(container).kernel) !== kernel) throw fail(403, `not your job's box: ${container}`);
+    if (jobs.has(container) || (await jobState(container)) !== "missing") await destroy(container, kernel ? "released (kernel job)" : "released (runner job)");
     return { state: await jobState(container) };
   },
 };
@@ -466,7 +484,8 @@ const controlServer = http.createServer((req, res) => {
   req.on("end", async () => {
     if (req.method === "POST" && req.url === "/cp") return cp(req, body).then((r) => send(res, r.status, r.body));
     // The board's progress key opens /progress only, the runner's key the job routes only; the rest needs the plugin's key.
-    if (!controlAllowed(bearer(req), req.method, req.url, { plugin: TOKEN, runner: RUNNER_KEY, progress: PROGRESS_TOKEN })) return send(res, 401, { error: "unauthorized" });
+    if (!controlAllowed(bearer(req), req.method, req.url, { plugin: TOKEN, runner: RUNNER_KEY, kernel: KERNEL_KEY, progress: PROGRESS_TOKEN })) return send(res, 401, { error: "unauthorized" });
+    const byKernel = Boolean(KERNEL_KEY) && bearer(req) === KERNEL_KEY;
     const fn = JOB_ROUTES.includes(req.url) ? runnerControl[req.url] : req.method === "POST" && Object.hasOwn(control, req.url.slice(1)) ? control[req.url.slice(1)] : null;
     if (!fn) return send(res, 404, { error: "no such route" });
     const t0 = Date.now();
@@ -481,7 +500,7 @@ const controlServer = http.createServer((req, res) => {
     }
     try {
       const p = JSON.parse(body || "{}");
-      const out = await fn(p);
+      const out = await fn(p, { kernel: byKernel });
       if (req.url === "/progress" ? DEBUG : req.url !== "/exec" || out.exitCode !== 0 || DEBUG) log(req.url, p.container ?? p.agentId ?? "", p.command ? `${p.command} ${(p.args ?? []).join(" ").slice(0, 60)}` : "", `${Date.now() - t0}ms`, out.exitCode ?? out.state ?? out.container ?? "");
       send(res, 200, out);
     } catch (e) {
@@ -493,6 +512,9 @@ const controlServer = http.createServer((req, res) => {
 
 // ------------------------------------------------------------------ gateway (boxes only)
 
+/** The live box a box-side credential is: a run token of ours, or a kernel job's token for the box made for it. */
+const liveBox = (token) => tokens.whoami(token) ?? jobs.byKernelToken(token);
+
 const gatewayServer = http.createServer(async (req, res) => {
   const deny = (status, msg) => { log("gateway", req.method, req.url, status, msg); res.writeHead(status, { "content-type": "text/plain" }).end(`gateway: ${msg}`); };
   try {
@@ -501,13 +523,13 @@ const gatewayServer = http.createServer(async (req, res) => {
     if (req.method === "POST" && req.url === "/api/v1/responses") {
       // The model: the box's "API key" is its run token; the model gateway, not a box or the launcher, holds the real key.
       const token = bearer(req);
-      const who = tokens.whoami(token);
+      const who = liveBox(token);
       if (!who) return deny(401, "not a live computer");
       boxes.get(who.container) && (boxes.get(who.container).lastUsed = Date.now());
       return await forwardModel(req, res, `${MODEL_GATEWAY_URL}/api/v1/responses`, token);
     }
     if (req.method === "POST" && req.url === "/repo") {
-      const who = tokens.whoami(String(req.headers["x-agent-key"] ?? ""));
+      const who = liveBox(String(req.headers["x-agent-key"] ?? ""));
       if (!who) return deny(401, "not a live computer");
       const chunks = [];
       for await (const c of req) chunks.push(c);
@@ -520,7 +542,7 @@ const gatewayServer = http.createServer(async (req, res) => {
     if (!m) return deny(403, "refused");
     if (!readJson(CFG.computersFile).connections?.[m[1]]) return deny(404, `no connection ${m[1]}`);
     const token = String(req.headers["x-agent-key"] ?? "");
-    if (!tokens.whoami(token)) return deny(401, "not a live computer");
+    if (!liveBox(token)) return deny(401, "not a live computer");
     // The kernel's proxy decides: the run token is the caller (it asks /whoami here); only MCP transport headers go on.
     const k = new URL(`/c/${m[1]}/mcp`, KERNEL_URL);
     const headers = { authorization: `Bearer ${token}` };

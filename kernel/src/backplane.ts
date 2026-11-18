@@ -28,7 +28,8 @@
 //   POST /v1/reviews           (the runner's reviewer key) a check before filing: one review by the bound reviewer module → its verdict
 //   POST /v1/reviews/:review   (that review's token, once) the reviewer module's verdict
 //   POST /v1/jobs, GET/DELETE /v1/jobs/:job, POST /v1/jobs/:job/input  (a module with role kernel.jobs) start a job in the
-//                              sandbox, its status (?after=<version>&wait=<ms> waits for a change), stop it, a comment into it (jobs.ts; `wake`: the claimed comment wake it delivers)
+//                              sandbox, its status (?after=<version>&wait=<ms> waits for a change), stop it, a comment into it (jobs.ts; `wake`: the claimed comment wake it delivers);
+//                              POST /v1/jobs {wake, prompt, session?}: a job on a wake it claimed, admitted (admission.ts)
 //   GET  /v1/work[?task=], GET /v1/work/metrics  (a module with role kernel.work-read) the jobs and records of the kernel's
 //                              work: a task's, or what runs and ended lately; Prometheus text (work.ts)
 //   POST /v1/work/grader-token  (the one module with role kernel.grader) {task} -> a gateway
@@ -47,6 +48,7 @@ import type { Lane } from "./lane.ts";
 import { CP_READ_PATHS, isChannel, neutral, type Api, type Channels, type ModulesFile } from "./channels.ts";
 import type { Grant, Whoami } from "./identity.ts";
 import type { Jobs } from "./jobs.ts";
+import type { Admission } from "./admission.ts";
 import { JOB_KINDS, type Outcomes } from "./outcomes.ts";
 import { fail } from "./proxy.ts";
 import type { Records, State } from "./records.ts";
@@ -123,7 +125,7 @@ async function json(req: IncomingMessage, max = 1_000_000): Promise<any> {
   try { return JSON.parse(Buffer.concat(chunks).toString("utf8") || "{}"); } catch { throw fail(400, "bad_request", "the body must be JSON"); }
 }
 
-export function createBackplane({ whoami, asserter, proxy, cp, grantsFile, writes, records, channels, brake, owner, modules = () => ({}), boardKey = () => "", reviews, runnerKey = () => "", reviewerKey = () => "", jobs, outcomes, wakes, eventsKey = () => "", work, graderToken = () => "", dropGraderToken = () => {}, advisories = () => [], accounts, checks, ownerRaw, lane, log = () => {} }: {
+export function createBackplane({ whoami, asserter, proxy, cp, grantsFile, writes, records, channels, brake, owner, modules = () => ({}), boardKey = () => "", reviews, runnerKey = () => "", reviewerKey = () => "", jobs, admission, outcomes, wakes, eventsKey = () => "", work, graderToken = () => "", dropGraderToken = () => {}, advisories = () => [], accounts, checks, ownerRaw, lane, log = () => {} }: {
   whoami: Whoami; asserter: Asserter; proxy: Handler; cp: Handler; grantsFile: () => { agents?: Record<string, Grant> } & Record<string, unknown>;
   writes?: Writes; records?: Records; boardKey?: () => string; log?: (msg: string, f?: Record<string, unknown>) => void;
   /** The reviewer slot; the runner's key for its kinds (filing, claim, outcome, reads, a record's review: runner_writes_key)
@@ -137,6 +139,8 @@ export function createBackplane({ whoami, asserter, proxy, cp, grantsFile, write
   lane?: Lane;
   /** 3e: jobs in the sandbox. */
   jobs?: Jobs;
+  /** Admission (admission.ts): a job on a wake the module claimed, its authority frozen, its computer the kernel's (boxes.ts). */
+  admission?: Admission;
   /** F5: a job's outcome posted as its agent. */
   outcomes?: Outcomes;
   /** The wake inbox (wakes.ts), and the paperclip-events plugin's key. */
@@ -318,7 +322,11 @@ export function createBackplane({ whoami, asserter, proxy, cp, grantsFile, write
         if (!jobs) throw fail(503, "unavailable", "jobs are off");
         try {
           switch (`${hit.method} ${hit.path}`) {
-            case "POST /v1/jobs": return send(res, 200, await jobs.start(w.module!, await json(req, 4_000_000)));
+            case "POST /v1/jobs": {
+              // {wake, prompt, session?}: admitted by the kernel; the runner's box-carrying request stays until C1b.
+              const b = await json(req, 4_000_000);
+              return send(res, 200, admission && typeof (b as { wake?: unknown })?.wake === "string" ? await admission.admit(w.module!, b as never) : await jobs.start(w.module!, b as never));
+            }
             case "GET /v1/jobs/:job": {
               const p = new URLSearchParams(q ?? "");
               return send(res, 200, await jobs.get(w.module!, m[0]!, { ...(p.has("after") ? { after: Number(p.get("after")) } : {}), waitMs: Number(p.get("wait") ?? 0) || 0 }));

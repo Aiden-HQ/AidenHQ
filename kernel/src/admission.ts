@@ -5,6 +5,7 @@
 // edited later never changes a running job. Everything the job gets comes from the wake's task and agent, never the request.
 import { randomBytes } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
+import { rolesOf } from "./identity.ts";
 import { JobError } from "./jobs.ts";
 import type { Skill } from "./sandbox.ts";
 
@@ -15,13 +16,17 @@ const IMAGE: Record<Profile, string> = { crew: "agent-base", engineer: "engineer
 
 /** A grants-table entry (config/grants/grants.json `agents`, compiled by scripts/modules.mjs grantEntry). */
 export type AgentGrant = {
-  key?: string; profile?: Profile; image?: string; engine?: string; model?: string; effort?: string; models?: string[]; skills?: Skill[];
+  key?: string; roles?: string[]; trial?: boolean; private_reads?: boolean; web_search?: string; profile?: Profile; image?: string; engine?: string; model?: string; effort?: string; models?: string[]; skills?: Skill[];
   tools?: Record<string, string[]>; jobcaps?: string[]; max_parallel?: number; routines?: Record<string, { model?: string; effort?: string }>;
 };
 /** What a job may do, frozen at admission: the job token and the tool proxy read this, never the grants table again. */
 export type Authority = {
   profile: Profile; image: string; engine: string; model: string; effort: string; models: string[]; skills: Skill[];
-  tools: Record<string, string[]>; jobcaps: string[]; writes: string[];
+  tools: Record<string, string[]>; jobcaps: string[]; writes: string[]; roles: string[];
+  /** The agent reads private data (private_reads): its jobs get no web search, and only they its private jobcaps. */
+  reads: boolean;
+  /** Web search: off for an agent that reads private data or whose definition turns it off (web_search: disabled). */
+  web: boolean;
 };
 /** A wake in the inbox (wakes.ts): the task and agent it is for and why (`routine:<key>` names the routine whose run it is). */
 export type Wake = { task: string; agent: string; cause: string };
@@ -62,8 +67,6 @@ export function createAdmission({ db, grants, kinds, capacity, spend, mayDispatc
   launch: (job: Admitted) => Promise<void>;
   log: (msg: string, fields?: Record<string, unknown>) => void;
 }) {
-  const cols = new Set((db.prepare("PRAGMA table_info(jobs)").all() as { name: string }[]).map((c) => c.name));
-  for (const c of ["profile", "wake", "authority"]) if (!cols.has(c)) db.exec(`ALTER TABLE jobs ADD COLUMN ${c} TEXT`);
 
   function freeze(g: AgentGrant, cause: string): Authority {
     const profile: Profile = g.profile ?? "crew";
@@ -77,6 +80,8 @@ export function createAdmission({ db, grants, kinds, capacity, spend, mayDispatc
     return {
       profile, image: g.image ?? IMAGE[profile], engine: String(g.engine ?? ""), model: String(routine?.model ?? g.model ?? ""), effort: String(routine?.effort ?? g.effort ?? ""),
       models: [...(g.models ?? [])], skills: (g.skills ?? []).map((k) => ({ ...k })), tools, jobcaps: profile === "check" ? [] : [...(g.jobcaps ?? [])], writes,
+      roles: profile === "check" ? [] : rolesOf(g), reads: g.private_reads === true,
+      web: g.private_reads !== true && g.web_search !== "disabled",
     };
   }
 

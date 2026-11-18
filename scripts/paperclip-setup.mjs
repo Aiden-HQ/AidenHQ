@@ -431,6 +431,9 @@ async function ensureAgents(companyId, fleetIssues) {
     const cur = (await api("GET", `/api/agents/${p.agent.id}/instructions-bundle/file?path=AGENTS.md`, undefined, { allow: [404] })).json;
     if (cur.content !== instructions) await api("PUT", `/api/agents/${p.agent.id}/instructions-bundle/file`, { path: "AGENTS.md", content: instructions, baseRevisionId: cur.revision?.id ?? null });
     writeSections(p.agent.id, sections);
+    // The kernel's copy: a kernel job's engine home gets it as its instructions file (kernel/src/boxes.ts).
+    mkdirSync(join(configDir, "handbooks"), { recursive: true });
+    writeFileSync(join(configDir, "handbooks", `${p.agent.id}.md`), instructions);
     step(`Updated agent ${a.name}`);
     const agent = (await api("GET", `/api/agents/${p.agent.id}`)).json;
     if (agent.adapterType !== body.adapterType) fail(`agent ${a.name}: Paperclip has adapter ${agent.adapterType} after setup, expected ${body.adapterType} on the legacy runner`);
