@@ -55,7 +55,8 @@ export function createCodehost({ grants, repos, kind, secret, resolver, workspac
   /** The workspace folder of task `task`, if `module` dispatches its agent (jobs.ts workspace); throws otherwise. */
   workspace: (module: string, task: unknown) => Promise<{ workspace: string }>;
 }) {
-  return async function op(module: string, op: string, b: Record<string, unknown>, res: ServerResponse): Promise<void> {
+  /** Checks `module`'s grant and asks the code host: its answer as it came (JSON, or a snapshot's tarball). */
+  async function ask(module: string, op: string, b: Record<string, unknown>): Promise<http.IncomingMessage> {
     if (!["token", "snapshot", "clone"].includes(op)) throw fail(404, `no codehost operation ${op}`);
     const k = kind();
     if (!k?.executor) throw fail(404, "no GitHub code host here (codehost-github isn't enabled)");
@@ -89,16 +90,20 @@ export function createCodehost({ grants, repos, kind, secret, resolver, workspac
     const url = new URL(`/ops/${op}`, k.executor.url).toString();
     const to = await resolver.resolve(url);
     const data = Buffer.from(JSON.stringify(out));
-    // The answer goes back as it came: JSON, or a snapshot's tarball.
-    await new Promise<void>((ok, reject) => {
-      const req = http.request({ host: to.host, port: to.port, path: to.path, method: "POST", timeout: 120_000, headers: { host: new URL(url).host, authorization: `Bearer ${key}`, "content-type": "application/json", "content-length": data.length } }, (r) => {
-        res.writeHead(r.statusCode ?? 502, { "content-type": String(r.headers["content-type"] ?? "application/json") });
-        r.pipe(res);
-        r.on("end", ok).on("error", reject);
-      });
+    return new Promise<http.IncomingMessage>((ok, reject) => {
+      const req = http.request({ host: to.host, port: to.port, path: to.path, method: "POST", timeout: 10 * 60_000, headers: { host: new URL(url).host, authorization: `Bearer ${key}`, "content-type": "application/json", "content-length": data.length } }, ok);
       req.on("timeout", () => req.destroy(fail(504, `${CODEHOST} didn't answer`)));
       req.on("error", (e) => { resolver.forget(url); reject((e as { status?: number }).status ? e : fail(502, `${CODEHOST} is unreachable (${e.message})`)); });
       req.end(data);
     });
+  }
+  return {
+    ask,
+    /** POST /v1/codehost/:op: the answer goes back as it came. */
+    async op(module: string, op: string, b: Record<string, unknown>, res: ServerResponse): Promise<void> {
+      const r = await ask(module, op, b);
+      res.writeHead(r.statusCode ?? 502, { "content-type": String(r.headers["content-type"] ?? "application/json") });
+      await new Promise<void>((ok, reject) => { r.pipe(res); r.on("end", ok).on("error", reject); });
+    },
   };
 }
