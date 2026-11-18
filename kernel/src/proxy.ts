@@ -194,6 +194,7 @@ export function createProxy({ whoami, connections, asserter, resolver, secret, w
               return reply(pendingText(r));
             }
             rec = await writes!.fileTool(who, connection, tool, params?.arguments ?? {}, who.task ?? "");
+            if (rec.outcome) return reply(own(rec.outcome.text), !rec.outcome.ok);
             if (rec.state !== "claimed") return reply(pendingText(rec));
           } catch (e) {
             const err = e as Error & { status?: number };

@@ -207,6 +207,59 @@ test("a Tier 0 conn.tool call leaves a completed record whose outcome is the MCP
   assert.equal(k.records.list(["done", "review", "claimed"]).length, 2);
 });
 
+test("two identical conn.tool calls in one run file one record and reach the module once", async (t) => {
+  const { k, tool, moduleCalls } = await twin(t);
+  assert.match(await text(await tool("note_write", { text: "x" })), /note_write done/);
+  // The first call has already run: the repeat returns that record and its outcome, never a second call.
+  assert.match(await text(await tool("note_write", { text: "x" })), /note_write done/);
+  const done = k.records.list(["done"]);
+  assert.equal(done.length, 1);
+  assert.equal(done[0].kind, "conn.tool");
+  assert.match(done[0].outcome.text, /note_write done/);
+  assert.deepEqual(moduleCalls(), ["note_write"]);
+  // A different call is its own record.
+  assert.match(await text(await tool("note_write", { text: "y" })), /note_write done/);
+  assert.equal(k.records.list(["done"]).length, 2);
+  assert.deepEqual(moduleCalls(), ["note_write", "note_write"]);
+});
+
+test("a repeat of a conn.tool call that already ran returns its record, not a second execution", async (t) => {
+  const { k, tool, moduleCalls } = await twin(t);
+  await tool("note_write", { text: "same" });
+  const [first] = k.records.list(["done"]);
+  assert.equal(first.state, "done");
+  assert.equal(first.outcome.ok, true);
+  const again = await tool("note_write", { text: "same" });
+  assert.match(await text(again), /note_write done/);
+  assert.deepEqual(k.records.list(["done"]).map((r) => r.id), [first.id]);
+  assert.deepEqual(moduleCalls(), ["note_write"]);
+});
+
+test("two identical destructive conn.tool calls in one run file one Tier 1 card, replayed once", async (t) => {
+  const { k, tool, pending, review, moduleCalls } = await twin(t);
+  const p = await pending(await tool("note_drop", { id: 7 }));
+  assert.equal(p.tier, 1);
+  // While the first card is open the repeat is that record, never a second card.
+  assert.equal((await pending(await tool("note_drop", { id: 7 }))).approval, p.approval);
+  assert.equal(k.records.list(["review"]).length, 1);
+  assert.deepEqual(moduleCalls(), []);
+  await review(p.approval, { decision: "approve", reason: "ok", model: "~acme/model-a" });
+  await until(() => k.records.get(p.approval).state === "done");
+  assert.deepEqual(moduleCalls(), ["note_drop"]);
+});
+
+test("a rejected conn.tool card is still fileable again", async (t) => {
+  const { k, tool, pending, review } = await twin(t);
+  const p = await pending(await tool("note_drop", { id: 5 }));
+  const rec = k.records.get(p.approval);
+  await review(p.approval, { decision: "escalate", reason: "owner's", model: "~acme/model-a" });
+  k.writes.decide(p.approval, { digest: rec.digest, decision: "reject", by: "owner:chat", via: "chat" });
+  const again = await pending(await tool("note_drop", { id: 5 }));
+  assert.notEqual(again.approval, p.approval);
+  assert.equal(again.tier, 2);
+  assert.equal(k.records.get(p.approval).state, "rejected");
+});
+
 test("satisfied posts its evidence and files no card", async (t) => {
   const { k, fx, tool } = await twin(t, { satisfied: "the note is already there" });
   assert.match(await text(await tool("post_note", { note: "hi" })), /Nothing to do: the note is already there/);

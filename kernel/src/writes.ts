@@ -38,6 +38,8 @@ export type RunnerPlan = {
   carries?: string[];
 };
 export const CONN_TOOL = "conn.tool";
+/** A conn.tool call that already ran within 10 minutes of its record's created_at is that record, never a second call. */
+const CONN_TOOL_REUSE_MS = 10 * 60_000;
 const fail = (status: number, type: string, message: string) => Object.assign(new Error(message), { status, type });
 
 /** The kind's strict args schema: a small subset of JSON Schema, enough for tool arguments and the kernel's kinds. Throws with the first problem. */
@@ -374,7 +376,18 @@ export function createWrites({ records, registry, connections, secret, resolver,
       if (t.tier > 0 && !task) throw fail(400, "no_task", `${connection}.${tool} needs approval: pass your current task`);
       const shown = JSON.stringify(args ?? {}).slice(0, 4000);
       const card = { sentence: `Call ${connection}.${tool}.`, changes: `Whatever ${connection}.${tool} changes, with these arguments.`, reads: "Nothing new.", cost: "No model cost.", details: `tool: ${connection}.${tool}\narguments (written by the requesting agent): ${shown}` };
-      return records.file({ kind: CONN_TOOL, module: c.module, args: { connection, tool, arguments: args ?? {} }, targets: {}, executor: { module: c.module }, policy: "", card: t.rule ? { ...card, reason: capText(t.cap!) } : card, requester: requesterOf(who, task), task, tier: t.tier, merit: t.merit, panel: false, review_first: t.reviewFirst, rule: t.rule ?? null, cap: t.cap ?? null, state: t.state });
+      const base = { kind: CONN_TOOL, module: c.module, args: { connection, tool, arguments: args ?? {} }, targets: {}, executor: { module: c.module }, policy: "", card: t.rule ? { ...card, reason: capText(t.cap!) } : card, requester: requesterOf(who, task), task };
+      const by = (q: Requester) => `${q.kind}|${q.agent}|${q.key}|${q.module ?? ""}|${q.run ?? ""}`;
+      const digest = digestOf(base);
+      // The same call from the same run is one record: an open one returns as it is, and one that already ran returns with its
+      // outcome instead of running the module again while it is at most 10 minutes old (from its created_at). A different tier,
+      // requester, task or arguments still files its own; a rejected or otherwise closed earlier record is not reused.
+      const same = (r: Rec) => by(r.requester) === by(base.requester) && r.tier === t.tier;
+      const open = records.open(task, CONN_TOOL, digest).find(same);
+      if (open) return open;
+      const ran = records.recent(task, CONN_TOOL, digest, new Date(Date.now() - CONN_TOOL_REUSE_MS).toISOString()).find((r) => same(r) && (r.state === "done" || r.state === "failed"));
+      if (ran) return ran;
+      return records.file({ ...base, tier: t.tier, merit: t.merit, panel: false, review_first: t.reviewFirst, rule: t.rule ?? null, cap: t.cap ?? null, state: t.state });
     },
     outcome: outcomeOf,
     /** Resolves once the record has an outcome, or with it as it is after `ms`. */
