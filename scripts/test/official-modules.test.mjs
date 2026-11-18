@@ -1,6 +1,6 @@
 // The official modules (modules/) compile with the product's compiler on two fixture instances, the default bundle and
 // every module, with each required setting given a placeholder so only manifest errors remain; and a vendor connection's
-// read endpoint gets exactly its connection's `read` tags (modules/vendor-mcp/src/vendor/proxy.ts serves only those).
+// read endpoint gets exactly its connection's `read` tags (kernel/sdk/src/vendor/proxy.ts serves only those).
 import assert from "node:assert/strict";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";

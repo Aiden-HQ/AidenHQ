@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // The 7-day rule for npm (wave 3 item 17): every package-lock.json entry a change adds or alters, transitive ones
-// included, must have been published at least 7 days ago, unless it is an owner-approved security fix, or an owner-approved expiring exception, listed in
+// included, must have been published at least 7 days ago (our own @aidenhq scope excepted), unless it is an owner-approved security fix, or an owner-approved expiring exception, listed in
 // .github/supply-chain-exceptions.yaml, read from the base ref. Unchanged entries are never checked. Any lookup error fails: never pass on error.
 // No dependencies (a byte-identical copy runs in app repos' CI, from the app CI template); everything else is pins.mjs's.
 // Usage: node scripts/supply-chain/npm-age.mjs <base-ref> <head-ref>   (GITHUB_TOKEN for the advisory lookups)
@@ -125,6 +125,8 @@ export async function check({ changes, exceptions = [], getJson, now = Date.now(
       if (!ok) problems.push(`${bad}: not checkable, add a reviewed source exception (package, source, integrity)`);
       continue;
     }
+    // Our own scope: published from main by the product's trusted-publishing workflow, used the same day.
+    if (name.startsWith("@aidenhq/")) continue;
     try {
       if (!packuments.has(name)) packuments.set(name, await getJson(`https://registry.npmjs.org/${name.replace("/", "%2f")}`));
       const published = packuments.get(name).time?.[version];

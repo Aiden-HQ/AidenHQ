@@ -142,10 +142,10 @@ for c in $containers; do
       [ "$(docker inspect "$c" --format '{{json .HostConfig.PortBindings}}')" = "{}" ] && pass "clickhouse-mcp: no published ports" || fail "clickhouse-mcp publishes ports"
       [ "$(curl -s -o /dev/null -w '%{http_code}' -X POST "http://$(cip "$c"):8088/mcp")" = "401" ] \
         && pass "clickhouse-mcp: its endpoint requires the token" || fail "clickhouse-mcp: its endpoint answers without the token"
-      # Exactly: its secrets, read-only (the board's sign-in token and the jobs' read token), and its own token directory, the
-      # only writable mount. Its MCP address is the clickhouse_mcp_url setting (ClickHouse Cloud's fixed one by default), held to
-      # *.clickhouse.cloud by compile (checked below). No grants table: it serves only the runner's jobs, not a Paperclip connection.
-      [ "$(echo "$mounts" | tr ';' '\n' | grep . | cut -d'|' -f2- | LC_ALL=C sort | tr '\n' ' ')" = '/run/secrets/clickhouse_auth_token|false /run/secrets/clickhouse_mcp_token|false /state|true ' ] \
+      # Exactly: its secrets, read-only (the board's sign-in token, the jobs' read token and the kernel's service key), and its own
+      # token directory, the only writable mount. Its MCP address is the clickhouse_mcp_url setting (ClickHouse Cloud's fixed one
+      # by default), held to *.clickhouse.cloud by compile (checked below). No grants table: the kernel checks agents' grants.
+      [ "$(echo "$mounts" | tr ';' '\n' | grep . | cut -d'|' -f2- | LC_ALL=C sort | tr '\n' ' ')" = '/run/secrets/clickhouse_auth_token|false /run/secrets/clickhouse_mcp_token|false /run/secrets/clickhouse_service_key|false /state|true ' ] \
         && pass "clickhouse-mcp: only its secrets (read-only) and its own token directory mounted" || fail "clickhouse-mcp has unexpected mounts: $mounts"
       ;;
     *mcp-grafana*|*prometheus*|*alertmanager*|*cadvisor*)
@@ -401,15 +401,19 @@ git ls-files --cached --others --exclude-standard | grep -E '(^|/)(\.env|system\
 echo "Capabilities (by construction)"
 pass "ops-mcp exposes no delete/replace/arbitrary-write tools (see modules/meetings/connections/ops-mcp/src/mcp/tools.ts)"
 pass "google-workspace-mcp requests only *.readonly scopes and has GET-only client code"
-# Vendor connections pass the vendor's MCP server through whole (owner, 2026-11-18; modules vendor-mcp/src/vendor/proxy.ts):
+# Vendor connections pass the vendor's MCP server through whole (owner, 2026-11-18; kernel/sdk/src/vendor/proxy.ts):
 # the gate is the manifest's tags and the kernel. Every read tag is a reading verb or a reviewed exception (fail closed); the jobs' read endpoint serves only the manifest's read tags that the vendor also marks read-only (READ_TOOLS equals
 # the read tags); and the pins stay (Slack's draft arguments, Jira's site, Grafana's untrustworthy families).
 vendor_tags="$(node --input-type=module -e '
-  import { existsSync, readFileSync } from "node:fs";
+  import { existsSync, readdirSync, readFileSync } from "node:fs";
   import YAML from "./scripts/node_modules/yaml/dist/index.js";
   const bad = [], seen = [];
+  // A service runs the vendor proxy when any of its sources imports it (its synced copy or the SDK): every file is read.
+  const PROXY = /"[^"]*vendor\/proxy(\.[jt]s)?"/;
+  const runsProxy = (dir) => existsSync(`${dir}/src`) && readdirSync(`${dir}/src`, { recursive: true }).some((f) => /\.(ts|mjs|js)$/.test(f) && f !== "vendor/proxy.ts" && PROXY.test(readFileSync(`${dir}/src/${f}`, "utf8")));
   // Reviewed read tags whose first word is not a reading verb (read-only upstream, checked 2026-11-18). Add one only after reading the tool.
   const EXCEPTIONS = {
+    clickhouse: ["run_select_query"],
     glean: ["employee_search", "meeting_lookup", "code_search", "chat", "user_activity", "memory_schema"],
     grafana: ["alerting_rules_read", "alerting_silences_read", "generate_deeplink", "render_grafana_app", "suggest_loki_alloy_label_config", "user_info", "validate_provisioning_file"],
     hubspot: ["tool_guidance"],
@@ -418,9 +422,9 @@ vendor_tags="$(node --input-type=module -e '
   for (const { name } of JSON.parse(readFileSync("modules/marketplace.json", "utf8")).plugins) {
     const def = YAML.parse(readFileSync(`modules/${name}/module.yaml`, "utf8"));
     for (const [svc, s] of Object.entries(def.services?.run ?? {})) {
-      if (!existsSync(`modules/${name}/${s.build ?? "-"}/src/vendor/proxy.ts`)) continue;
+      if (!runsProxy(`modules/${name}/${s.build ?? "-"}`)) continue;
       const [k, c] = Object.entries(def.connections ?? {}).find(([, c]) => new URL(c.url).hostname === svc) ?? [];
-      if (!c) { bad.push(`${name}/${svc} has src/vendor/proxy.ts but no connection points at it`); continue; }
+      if (!c) { bad.push(`${name}/${svc} runs the vendor proxy but no connection points at it`); continue; }
       seen.push(k);
       // Fail closed: a read tag passes only when its first word (vendor prefix stripped) is a reading verb, or the tool is in
       // the reviewed exception list for its module. Anything else is refused, whatever else its name says.
@@ -435,11 +439,11 @@ vendor_tags="$(node --input-type=module -e '
       if (s.env?.MCP_READ_TOKEN_FILE && s.env?.READ_TOOLS !== c.tools.read.join(",")) bad.push(`${k}: READ_TOOLS is not its read tags`);
     }
   }
-  for (const k of ["glean", "grafana", "jira", "primer", "slack", "hubspot"]) if (!seen.includes(k)) bad.push(`vendor connection ${k} was not checked`);
+  for (const k of ["clickhouse", "glean", "grafana", "jira", "primer", "slack", "hubspot"]) if (!seen.includes(k)) bad.push(`vendor connection ${k} was not checked`);
   console.log(bad.length ? `BAD ${bad.join("; ")}` : `ok ${seen.join(" ")}`);
 ' 2>&1)"
 case "$vendor_tags" in ok*) pass "vendor connections (${vendor_tags#ok }): every read tag is a reading verb or a reviewed exception; each read endpoint serves only its read tags";; *) fail "vendor connections: $vendor_tags";; esac
-vp="modules/vendor-mcp/src/vendor/proxy.ts"
+vp="kernel/sdk/src/vendor/proxy.ts"
 grep -qF 'const servesRead = (t: Tool) => reads.has(t.name) && isRead(t);' "$vp" && grep -qF 'if (!tool) throw new Error(`${o.name} doesn'"'"'t offer ${name}`);' "$vp" \
   && grep -qF 'export const DRAFT_ARGS = ["channel_id", "message", "thread_ts"];' modules/slack/connections/slack-mcp/src/slack.ts && grep -qF 'hooks: { args: (name, args) => upstreamArgs(name, args) },' modules/slack/connections/slack-mcp/src/main.ts \
   && grep -qF 'args(_name, { [SITE_ARG]: _caller, ...args }, tool) {' modules/jira/connections/jira-mcp/src/site.ts \
@@ -455,12 +459,14 @@ for a in config/paperclip.yaml; do   # generated by scripts/compile.mjs
   bad_drafters="$(echo "$drafters" | tr ' ' '\n' | grep . | grep -Ev '^(assistant|open-loops):$' | tr '\n' ' ')"
   [ -z "$bad_drafters" ] && pass "$a: only the Researcher and Follow-up Tracker can save Slack drafts (now: ${drafters:-none})" || fail "$a: Slack drafts allowed for: $drafters"
 done
-# ClickHouse: the token carries the user's own access, so the tool list and the query check are the boundary.
-ch_tools="$(sed -n 's/^export const READ_TOOLS = \[\(.*\)\];/\1/p' modules/clickhouse/connections/clickhouse-mcp/src/policy.ts | tr -d '" ' | tr ',' '\n')"
+# ClickHouse: the token carries the owner's own access, which can write, so the tags, the deny rule and the query check are the boundary.
+ch_tools="$(sed -n 's/^      read: \[ \(.*\) \]$/\1/p' modules/clickhouse/module.yaml | tr -d ' ' | tr ',' '\n')"
 bad_ch="$(echo "$ch_tools" | grep -Ev '^(get_organizations|get_services_list|get_service_details|list_databases|list_tables|run_select_query)$' || true)"
-[ -n "$ch_tools" ] && [ -z "$bad_ch" ] && pass "clickhouse-mcp exposes only service, schema and SELECT tools (modules/clickhouse/connections/clickhouse-mcp/src/policy.ts)" || fail "clickhouse-mcp: unexpected tools allowed: $bad_ch"
+[ -n "$ch_tools" ] && [ -z "$bad_ch" ] && pass "clickhouse exposes only service, schema and SELECT tools (modules/clickhouse/module.yaml)" || fail "clickhouse: unexpected tools tagged: $bad_ch"
 [ "$(sed -n 's/^export const SCOPES = \[\(.*\)\];/\1/p' modules/clickhouse/connections/clickhouse-mcp/src/policy.ts | tr -d '" ')" = "mcp:access" ] \
-  && grep -q 'args = checkCall(name' modules/clickhouse/connections/clickhouse-mcp/src/main.ts \
+  && grep -qF 'scopes: { supported: SCOPES }' modules/clickhouse/connections/clickhouse-mcp/src/main.ts \
+  && grep -qF 'return checkCall(name, args);' modules/clickhouse/connections/clickhouse-mcp/src/main.ts \
+  && grep -qF 'deny: NEVER,' modules/clickhouse/connections/clickhouse-mcp/src/main.ts \
   && grep -qE 'const EXTERNAL = .*url.*s3.*remote.*file.*executable' modules/clickhouse/connections/clickhouse-mcp/src/policy.ts \
   && pass "clickhouse-mcp asks for mcp:access only and checks every query (one read statement, no external table functions, no SETTINGS)" || fail "clickhouse-mcp: scopes or query check changed"
 # The upstream addresses decide where each sign-in and its tokens go. Grafana's is the one Connect asks for (aidenhq-modules

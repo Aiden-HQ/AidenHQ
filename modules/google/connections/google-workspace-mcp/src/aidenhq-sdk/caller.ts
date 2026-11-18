@@ -1,8 +1,8 @@
 // Who a proxied tool call is for: the kernel's signed caller assertion (X-AidenHQ-Caller, an EdDSA JWT, 60 s), checked
 // against the kernel's keys (GET /v1/jwks). A module trusts nothing else about the caller: not a header, not an argument.
 //
-// Canonical copy: kernel/sdk/src/caller.ts. Each consumer holds a byte-identical copy at src/aidenhq-sdk/caller.ts:
-// edit this one, then run `node scripts/sync-shared.mjs` (scripts/test/shared.test.mjs fails on drift).
+// First-party modules hold byte-identical copies (scripts/sync-shared.mjs: edit this one and run it); third-party modules import
+// @aidenhq/sdk/caller.
 import { createPublicKey, verify, type JsonWebKey } from "node:crypto";
 import type { IncomingMessage } from "node:http";
 

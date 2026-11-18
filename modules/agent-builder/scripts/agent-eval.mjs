@@ -12,7 +12,7 @@
 import { execFileSync } from "node:child_process";
 import { readdirSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { openRouterAsk } from "../../ai-reviewer/service/src/review.mjs";
+import { RETRY_DELAYS_MS, openRouterAsk } from "../../../kernel/sdk/src/judge.ts";
 
 const key = process.env.OPENROUTER_API_KEY?.trim();
 if (!key) {
@@ -61,7 +61,7 @@ function check(c, calls) {
   return why;
 }
 
-const ask = openRouterAsk(key, { schema: SCHEMA });
+const ask = openRouterAsk(key, { schema: SCHEMA, retryDelaysMs: RETRY_DELAYS_MS });
 let costUsd = 0;
 async function run(side, c) {
   try {

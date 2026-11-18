@@ -20,17 +20,11 @@ import { join } from "node:path";
 import { MAX_FILES } from "./review-files.mjs";
 import { checklistText, matchChecklist } from "./review-checklist.mjs";
 
-// GPT Luna at medium, then DeepSeek Flash at high (the owner's pick, 2026-11-13; the reviewer eval scores it). The second
-// reviewer: GLM Flash at high (the owner's checker model), else whichever family is left.
-export const LUNA = "~openai/gpt-luna-latest";
-export const DEEPSEEK = "~deepseek/deepseek-flash-latest";
-export const GLM = "~z-ai/glm-flash-latest";
-/** Each reviewer and grader model's reasoning effort. */
-export const EFFORT = { [LUNA]: "medium", [DEEPSEEK]: "high", [GLM]: "high" };
-/** Output cap, reasoning included: room for high-effort reasoning; Luna allows 128,000. */
-export const MAX_TOKENS = 100_000;
-/** Larger diffs aren't reviewed: the card goes to the owner ("too large to review"). */
-export const MAX_DIFF = 150_000;
+import { LUNA, MAX_DIFF, RETRY_DELAYS_MS, judgeModels, openRouterAsk as judgeAsk, secondModels } from "./aidenhq-sdk/judge.ts";
+
+// The models, the cross-family choice and the model call are the judges' shared library (aidenhq-sdk/judge.ts); the policy,
+// the prompt, the schema and the verdict rules are the reviewer's own.
+export { DEEPSEEK, GLM, LUNA, MAX_DIFF } from "./aidenhq-sdk/judge.ts";
 /** A delegated chain (the task and its parent's request) is long text: whole up to this, never cut mid-sentence by a tighter cap. */
 const MAX_CHAIN = 24_000;
 /** The merged-sibling block (siblings.mjs builds it within this budget); it is a short table, never the diff's context. */
@@ -219,27 +213,6 @@ export function sourcesInDiff(records, diff, anywhere = false) {
 const recordLine = (r, inDiff, elsewhere = false) =>
   `${r.repo ? `base: ${r.repo} ${r.base ?? ""}; ` : ""}${["ecosystem", "package", "from", "to", "version", "approved_by", "reference", "reason"].filter((k) => r[k]).map((k) => `${k}: ${String(r[k]).replace(/\s+/g, " ").slice(0, 300)}`).join("; ")}${inDiff ? " [the diff adds this source]" : elsewhere ? " [the diff adds this source only in a part for another repository or base: this record does not cover that change]" : ""}`;
 
-/**
- * The models to ask, in order: GPT Luna, then DeepSeek Flash if Luna refuses, minus the requester's own model family (a
- * DeepSeek requester, most of the fleet, gets Luna only; an OpenAI requester gets DeepSeek only; never its own family, not
- * even as the fallback). The requester never picks.
- */
-const FAMILIES = [
-  [LUNA, /openai|gpt/i],
-  [DEEPSEEK, /deepseek/i],
-];
-export const reviewerModels = (requesterModel = "") => FAMILIES.filter(([, re]) => !re.test(String(requesterModel))).map(([m]) => m);
-/**
- * The second reviewer's models, in order: never the requester's family nor the first reviewer's (GPT Sol, the advisor, is
- * OpenAI like Luna, so it can't be the second opinion on Luna's verdict).
- */
-const SECOND = [
-  [GLM, /z-ai|glm/i],
-  [DEEPSEEK, /deepseek/i],
-  [LUNA, /openai|gpt/i],
-];
-export const secondModels = (requesterModel = "", first = "") => SECOND.filter(([, re]) => !re.test(String(requesterModel)) && !re.test(String(first))).map(([m]) => m);
-
 const fence = (name, text, max, middle = false) => {
   let body = String(text ?? "").replace(/<<<|>>>/g, "‹‹‹");
   // middle: past the cap keep the start and the end and say so, so the reviewer can tell code clipped it (a long delegated chain).
@@ -375,52 +348,11 @@ function verdictOf(raw, shown = "", checks = []) {
   return { decision: v.decision, code, reason, second, findings };
 }
 
-const RETRY_STATUS = new Set([429, 500, 502, 503, 504, 524]);
-const RETRY_DELAYS_MS = [1000, 3000, 9000, 20000];
-
 /**
- * fetch that retries a transient OpenRouter failure (429/5xx "high demand", a reset or timeout) with jittered backoff,
- * honouring Retry-After (capped at 20s); a 4xx validation or auth error is returned at once. Only for callers that reach
- * OpenRouter directly (reviewer-eval): through the model gateway pass `retryDelaysMs: []`, the gateway retries.
+ * The judge call with the reviewer's strict JSON schema. Retries a transient OpenRouter failure by default (reviewer-eval
+ * reaches OpenRouter directly); through the model gateway, which retries, the service passes `retryDelaysMs: []` (server.mjs).
  */
-async function fetchRetrying(fetchFn, delays, url, init, timeoutMs) {
-  for (let n = 0; ; n++) {
-    let res, err;
-    try { res = await fetchFn(url, { ...init, signal: AbortSignal.timeout(timeoutMs) }); } catch (e) { err = e; }
-    if (!(err ? true : RETRY_STATUS.has(res.status)) || n >= delays.length) { if (err) throw err; return res; }
-    const after = Number(res?.headers?.get("retry-after"));
-    const wait = Math.min(after > 0 ? after * 1000 : delays[n] * (0.75 + Math.random() / 2), 20_000);
-    console.error(`openrouter retry ${n + 1}/${delays.length} (${res?.status ?? String(err.message).slice(0, 80)}) in ${Math.round(wait)}ms`);
-    await res?.body?.cancel().catch(() => {});
-    await new Promise((r) => setTimeout(r, wait));
-  }
-}
-
-/**
- * OpenRouter chat completions with the reviewer's strict JSON schema, ZDR providers only, no tools. Resolves { content, refusal, usage }.
- * The service passes the model gateway's url and the review's reviewer token (server.mjs); reviewer-eval calls OpenRouter with the key.
- */
-export function openRouterAsk(key, { timeoutMs = 600_000, fetchFn = fetch, schema = REVIEW_SCHEMA, url = "https://openrouter.ai/api/v1/chat/completions", retryDelaysMs = RETRY_DELAYS_MS } = {}) {
-  return async (model, { system, user }) => {
-    const res = await fetchRetrying(fetchFn, retryDelaysMs, url, {
-      method: "POST",
-      headers: { authorization: `Bearer ${key}`, "content-type": "application/json" },
-      body: JSON.stringify({
-        model,
-        messages: [{ role: "system", content: system }, { role: "user", content: user }],
-        response_format: { type: "json_schema", json_schema: { name: "verdict", strict: true, schema } },
-        provider: { zdr: true },
-        reasoning: { effort: EFFORT[model] ?? "high" },
-        max_tokens: MAX_TOKENS,
-        temperature: 0,
-      }),
-    }, timeoutMs);
-    if (!res.ok) throw new Error(`OpenRouter ${res.status}: ${(await res.text().catch(() => "")).slice(0, 200)}`);
-    const json = await res.json();
-    const msg = json?.choices?.[0]?.message ?? {};
-    return { content: msg.content ?? "", refusal: msg.refusal ?? null, usage: json?.usage };
-  };
-}
+export const openRouterAsk = (key, { schema = REVIEW_SCHEMA, retryDelaysMs = RETRY_DELAYS_MS, ...o } = {}) => judgeAsk(key, { schema, retryDelaysMs, ...o });
 
 /**
  * One reviewer's verdict from the first of `models` that gives a usable one (a refusal, an empty answer or one that fails
@@ -459,7 +391,7 @@ async function askFirst(models, prompt, ask, checks = []) {
  * needs the second: it goes back to the agent. `previous`: earlier rejections' notes on this task, shown as data.
  */
 export async function review({ card, diff, files = { text: "", leftOut: [], oversized: [] }, chain = "", requesterModel = "", policy = readPolicy(), checklist = readChecklist(), ask, panel = false, previous = [], onPanel = async () => {}, relift, siblings = "", sources, evidence, decisions }) {
-  const models = reviewerModels(requesterModel);
+  const models = judgeModels(requesterModel);
   const byCode = (decision, reason, code) => ({ decision, code, reason, model: models[0] ?? LUNA });
   if (!models.length) return byCode("escalate", "no reviewer model independent of the requester's", "no_independent_model");
   if (!String(diff ?? "").trim()) return byCode("reject", "no change to review (the diff is missing): ask again once the change is there", "no_diff");

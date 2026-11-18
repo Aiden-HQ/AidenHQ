@@ -1,6 +1,6 @@
 // Pause and Resume from an agent's page (web/src/AgentPage.tsx): immediate, not a settings change. The board pauses the
-// agent in Paperclip as a signed-in admin; "stop it now" also cancels its live runs. setup resumes only agents it paused
-// itself (metadata.pausedBy "setup"), so an owner's pause survives every apply.
+// agent in Paperclip as a signed-in admin; "stop it now" also cancels its live runs. setup never resumes an agent, so an
+// owner's pause survives every apply.
 import { z } from "zod";
 import type { Agent, Issue, LiveRun } from "./paperclip.js";
 

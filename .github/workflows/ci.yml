@@ -139,6 +139,8 @@ jobs:
           (cd kernel && npm ci --silent) && (cd scripts && npm ci --silent)
           status=0
           while IFS=$'\t' read -r dir run; do
+            # The map is read from the base, so a PR that deletes a suite's folder still lists it: nothing is left to test.
+            [ -d "$dir" ] || { echo "gone: $dir"; continue; }
             echo "::group::$dir"
             (cd "$dir" && bash "$GITHUB_WORKSPACE/.github/ci/run-suite.sh" "$run") && echo "ok: $dir" || { echo "::error::$dir failed"; status=1; }
             echo "::endgroup::"

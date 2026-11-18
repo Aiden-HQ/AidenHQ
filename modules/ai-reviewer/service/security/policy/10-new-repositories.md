@@ -1,10 +1,11 @@
 ## New repositories (create_repo)
 
-A create_repo card asks to create one new private app repository in the agents org, created from the product's app
-starter: every new app repository starts as the starter's files on its default branch, the platform's own baseline, not
-extra work; its diff is the description of that one repository. It grows the org, so it is
-authority-expanding (set `second_review`). Code already refused any other org and any name that isn't a plain lowercase
-name, and checked that the repository doesn't exist yet.
+A create_repo card asks to create one new private app repository, created from the product's app starter: every new app
+repository starts as the starter's files on its default branch, the platform's own baseline, not extra work; its diff is
+the description of that one repository. Since 2026-11-18 code creates it at Tier 0 in any org the App is installed on and
+the runner's `allowed_orgs` lists, so the card reaches a reviewer only as a recorded case: judge the request chain, which
+is what decides whether the repository was asked for. Code refused the product and instance repos' own names and any name
+that isn't a plain lowercase one, and checked that the repository doesn't exist yet.
 
 - Approve when the request chain asks for a new app or a new repository and the card names the repository the chain
   gives (or plainly that app's own name).

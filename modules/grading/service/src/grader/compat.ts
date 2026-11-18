@@ -1,50 +1,6 @@
 // Small helpers the grader reads from other homes, copied while the grader is the only reader that has no codehost service to ask:
-// the model families and OpenRouter call (the runner's models.mjs), the task-text and PR-text helpers (agents.mjs, engineering's
-// merge-queue.mjs, codehost-github's merge-gate.mjs, progress.ts). Each is a verbatim copy with types added; the runner's copies go
+// the task-text and PR-text helpers (agents.mjs, engineering's merge-queue.mjs, codehost-github's merge-gate.mjs, progress.ts). Each is a verbatim copy with types added; the runner's copies go
 // at the switch, and these become the one way then.
-// GPT Luna at medium, then DeepSeek Flash at high (the owner's pick, 2026-11-13). GLM Flash at high is the owner's checker model.
-export const LUNA = "~openai/gpt-luna-latest";
-export const DEEPSEEK = "~deepseek/deepseek-flash-latest";
-export const GLM = "~z-ai/glm-flash-latest";
-/** Each model's reasoning effort. */
-export const EFFORT: Record<string, string> = { [LUNA]: "medium", [DEEPSEEK]: "high", [GLM]: "high" };
-/** Output cap, reasoning included: room for high-effort reasoning; Luna allows 128,000. */
-export const MAX_TOKENS = 100_000;
-/** The largest diff a model reads (the grader's DIFF block); the AI reviewer sends a larger one back as too large. */
-export const MAX_DIFF = 150_000;
-
-/** The models to ask, in order: GPT Luna, then DeepSeek Flash, minus the author's own family (never its own, not even as the fallback). */
-const FAMILIES: [string, RegExp][] = [
-  [LUNA, /openai|gpt/i],
-  [DEEPSEEK, /deepseek/i],
-];
-export const familyModels = (authorModel = "") => FAMILIES.filter(([, re]) => !re.test(String(authorModel))).map(([m]) => m);
-
-/** OpenRouter chat completions with a strict JSON schema, ZDR providers only, no tools. Resolves { content, refusal, usage }. */
-export function openRouterAsk(key: string, { timeoutMs = 600_000, fetchFn = fetch, schema, url = "https://openrouter.ai/api/v1/chat/completions" }: { timeoutMs?: number; fetchFn?: typeof fetch; schema: unknown; url?: string }) {
-  return async (model: string, { system, user }: { system: string; user: string }) => {
-    const res = await fetchFn(url, {
-      method: "POST",
-      headers: { authorization: `Bearer ${key}`, "content-type": "application/json" },
-      body: JSON.stringify({
-        model,
-        messages: [{ role: "system", content: system }, { role: "user", content: user }],
-        response_format: { type: "json_schema", json_schema: { name: "verdict", strict: true, schema } },
-        provider: { zdr: true },
-        reasoning: { effort: EFFORT[model] ?? "high" },
-        max_tokens: MAX_TOKENS,
-        temperature: 0,
-      }),
-      signal: AbortSignal.timeout(timeoutMs),
-    });
-    if (!res.ok) throw new Error(`OpenRouter ${res.status}: ${(await res.text().catch(() => "")).slice(0, 200)}`);
-    const json = await res.json();
-    const msg = json?.choices?.[0]?.message ?? {};
-    return { content: msg.content ?? "", refusal: msg.refusal ?? null, usage: json?.usage };
-  };
-}
-
-
 /** Remove HTML comments: hidden text never counts as the user's words. */
 export const stripHidden = (s: unknown) => String(s ?? "").replace(/<!--[\s\S]*?-->/g, "");
 

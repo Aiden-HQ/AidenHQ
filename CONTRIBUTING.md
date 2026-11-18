@@ -64,7 +64,7 @@ No live instance and no paid keys are needed. Use Node 24 and run `npm ci` once 
 
 - **The board's build check.** `npx tsc -p tsconfig.build.json --noEmit` is stricter than vitest and matches the
   Docker build. Run it for every board change.
-- **Shared code.** After editing `kernel/sdk/src/caller.ts`, `kernel/sdk/src/fence.ts` or `services/shared/source-store.ts`, run
+- **Shared code.** After editing `kernel/sdk/src/caller.ts`, `kernel/sdk/src/fence.ts`, `kernel/sdk/src/source-store.ts` or `kernel/sdk/src/vendor/`, run
   `node scripts/sync-shared.mjs`; the `scripts` tests fail if the copies drift.
 - **The reviewer eval.** `node modules/ai-reviewer/scripts/reviewer-eval.mjs` runs the AI reviewer against every planted
   case in `modules/ai-reviewer/test/reviewer-cases/` and must stay at 100%. It needs a paid `OPENROUTER_API_KEY`, so CI

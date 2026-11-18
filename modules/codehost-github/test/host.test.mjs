@@ -15,4 +15,16 @@ describe("codehost-github host", () => {
     assert.deepEqual(calls[0], ["acme/tool", false, "api", "repos/acme/tool", "--jq", ".default_branch"]);
     await assert.rejects(host({ gh: async () => "bad name\n" }).defaultBranch("acme/tool"), /no default branch/);
   });
+
+  it("creates a repository only in an org the instance's allowlist names, and fails closed without one", async () => {
+    const makes = [];
+    const appFor = async (slug) => (slug.startsWith("acme-agents/") || slug.startsWith("other-org/") ? { repoExists: async () => false, createRepo: async (s) => (makes.push(s), "created") } : undefined);
+    const alone = host({ appFor });
+    await assert.rejects(alone.createRepo("acme-agents/new-app"), /outside the allowed orgs/, "no allowlist: nothing is created, though an installation covers it");
+    await assert.rejects(host({ appFor, allowedOrgs: [] }).createRepo("acme-agents/new-app"), /outside the allowed orgs/, "an empty allowlist creates nothing");
+    await assert.rejects(host({ appFor, allowedOrgs: ["acme-agents"] }).createRepo("other-org/new-app"), /outside the allowed orgs/, "another installed org the owner didn't list");
+    assert.deepEqual(makes, [], "nothing reached the App");
+    assert.equal(await host({ appFor, allowedOrgs: ["Acme-Agents"] }).createRepo("acme-agents/new-app"), "created", "the org, case-insensitively");
+    assert.deepEqual(makes, ["acme-agents/new-app"]);
+  });
 });

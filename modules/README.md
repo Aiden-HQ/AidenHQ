@@ -8,7 +8,7 @@ in [aidenhq-modules](https://github.com/Aiden-HQ/aidenhq-modules), which takes n
 
 ## Layout
 
-`marketplace.json` lists every module. Each top-level folder is one module (except `vendor-mcp`, shared code) with a `module.yaml`, plus (as needed)
+`marketplace.json` lists every module. Each top-level folder is one module with a `module.yaml`, plus (as needed)
 `agents/<key>/AGENTS.md` handbooks, `connections/<name>/` MCP servers, `apps/` and a compose file.
 
 | Folder | What it is |
@@ -23,7 +23,6 @@ in [aidenhq-modules](https://github.com/Aiden-HQ/aidenhq-modules), which takes n
 | `models-openrouter`, `model-tools` | Allowed OpenRouter models and prices; advisor and fan-out tools. |
 | `google`, `slack`, `glean`, `jira`, `primer`, `meetings`, `memory`, `open-loops` | Source connections and the agents built on them. |
 | `clickhouse`, `grafana`, `monitoring`, `warehouse` | Data and observability. |
-| `vendor-mcp` (not a module) | The shared pass-through proxy for vendor MCP servers (`src/vendor/`). Each vendor connection holds a byte-identical copy at its own `src/vendor/`; edit this one and copy it (`scripts/sync-shared.mjs`). |
 
 ## Connections
 

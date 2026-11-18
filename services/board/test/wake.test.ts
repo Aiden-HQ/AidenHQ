@@ -8,7 +8,8 @@ const t0 = Date.parse("2026-11-13T12:00:00Z");
 const iso = (ms: number) => new Date(ms).toISOString();
 const MIN = 60_000;
 
-type T = { id: string; identifier: string; title: string; status: string; assigneeAgentId: string | null; parentId?: string | null; description?: string | null; updatedAt: string; completedAt?: string | null; cancelledAt?: string | null };
+type Blocker = { id: string; identifier?: string; status: string; updatedAt: string; completedAt?: string | null; cancelledAt?: string | null };
+type T = { id: string; identifier: string; title: string; status: string; assigneeAgentId: string | null; parentId?: string | null; description?: string | null; updatedAt: string; completedAt?: string | null; cancelledAt?: string | null; blockedBy?: Blocker[] };
 
 /** A Paperclip with two heartbeat agents (Aiden "a", the Architect "b") and one Engineer ("e"), tasks and runs set by the test. */
 function fake() {
@@ -25,7 +26,8 @@ function fake() {
       { id: "r2", title: "Heartbeat: architect", status: "active", assigneeAgentId: "b" },
     ],
     agents: async () => [{ id: "a", status: cleared.length ? "idle" : "error" }, { id: "b", status: "idle" }, { id: "e", status: "idle" }],
-    openIssues: async () => [...tasks.values()].filter((t) => !["done", "cancelled"].includes(t.status)),
+    // A list row leaves a task's blockers out, as Paperclip's does: only the single-issue read carries them.
+    openIssues: async () => [...tasks.values()].filter((t) => !["done", "cancelled"].includes(t.status)).map((t) => ({ ...t, blockedBy: undefined })),
     closedSince: async (since: string) => [...tasks.values()].filter((t) => ["done", "cancelled"].includes(t.status) && t.updatedAt >= since),
     liveRuns: async () => runs.filter((r) => !r.finishedAt),
     recentRuns: async () => runs,
@@ -33,9 +35,15 @@ function fake() {
       comments.push({ issue, body });
       return { id: `c${comments.length}` };
     },
+    comments: async (issue: string) => comments.filter((c) => c.issue === issue).map((c, i) => ({ id: `c${i + 1}`, body: c.body, authorAgentId: null, createdAt: iso(t0) })),
     issue: async (id: string) => ({ ...tasks.get(id), executionBlocker: holds.get(id) ?? null }),
     wakeAgent: async (agent: string, _why: string, _key: string, issue?: string) => void woken.push(`${agent}:${issue}`),
-    updateIssue: async (id: string, b: { status: string }) => void Object.assign(tasks.get(id)!, b),
+    updateIssue: async (id: string, b: { status?: string; blockedByIssueIds?: string[] }) => {
+      const t = tasks.get(id)!;
+      if (b.blockedByIssueIds) t.blockedBy = (t.blockedBy ?? []).filter((x) => b.blockedByIssueIds!.includes(x.id));
+      Object.assign(t, { status: b.status ?? t.status });
+      return t;
+    },
     clearAgentError: async (id: string) => void cleared.push(id),
     releaseCancelledRun: async (issue: { id: string }, runId: string) => {
       if (holds.get(issue.id)?.runId === runId) holds.delete(issue.id);
@@ -283,5 +291,201 @@ describe("event wake-ups", () => {
     f.tasks.get("1")!.status = "blocked"; // blocked again by the same run: not repaired a second time
     await wakeTick(deps(f, store), new Map(), t0 + 3 * MIN);
     expect(f.tasks.get("1")!.status).toBe("blocked");
+  });
+});
+
+describe("first-class blockers", () => {
+  const blocker = (id: string, status: string, at = t0 - 60 * MIN): Blocker => ({ id, identifier: `WOR-${id}`, status, updatedAt: iso(at) });
+  /** A heartbeat task 1 blocked on `ids`; a blocker task per id, all `todo` and assigned to the Engineer. */
+  function setup(blockers: Blocker[]) {
+    const f = fake();
+    const store = new Store(":memory:");
+    const recent: Recent = new Map();
+    for (const b of blockers) f.put({ id: b.id, assigneeAgentId: "e", status: b.status, ...(b.completedAt ? { completedAt: b.completedAt } : {}) }, t0 - 60 * MIN);
+    f.put({ id: "1", assigneeAgentId: "a", status: "blocked", blockedBy: blockers }, t0 - 60 * MIN);
+    return { f, store, recent, d: deps(f, store) };
+  }
+  /** A blocker reaching a terminal status: its own row, and the snapshot its dependents' `blockedBy` reads give. */
+  const close = (f: ReturnType<typeof fake>, id: string, status: "done" | "cancelled", at: number) => {
+    f.put({ id, status, completedAt: status === "done" ? iso(at) : null, cancelledAt: status === "cancelled" ? iso(at) : null }, at);
+    for (const t of f.tasks.values()) for (const b of t.blockedBy ?? []) if (b.id === id) Object.assign(b, { status, updatedAt: iso(at), completedAt: status === "done" ? iso(at) : null, cancelledAt: status === "cancelled" ? iso(at) : null });
+  };
+
+  it("wakes a blocked dependent exactly once when its blocker is done, and it is no longer blocked", async () => {
+    const { f, recent, d } = setup([blocker("2", "in_progress")]);
+    expect(await wakeTick(d, recent, t0)).toEqual([]); // the baseline: an open blocker is not news
+    close(f, "2", "done", t0 + MIN);
+    // An immediate release, not the reconciler's 3-minute grace: nothing else would ever wake this task.
+    expect(await wakeTick(d, recent, t0 + 2 * MIN)).toEqual(["1"]);
+    expect(f.tasks.get("1")!.status).toBe("todo");
+    expect(f.comments).toHaveLength(1);
+    expect(f.comments[0]!.issue).toBe("1");
+    expect(f.comments[0]!.body).toContain("WOR-2 closed (done).");
+    expect(f.woken).toEqual(["a:1"]);
+    for (const at of [8, 20, 40]) expect(await wakeTick(d, recent, t0 + at * MIN)).toEqual([]); // never twice
+    expect(f.comments).toHaveLength(1);
+    expect(f.woken).toHaveLength(1);
+  });
+
+  it("a blocker moving in_progress → in_review → blocked wakes the dependent never", async () => {
+    const { f, recent, d } = setup([blocker("2", "todo")]);
+    await wakeTick(d, recent, t0);
+    for (const [status, at] of [["in_progress", 1], ["in_review", 3], ["blocked", 6]] as const) {
+      f.put({ id: "2", status }, t0 + at * MIN);
+      for (const later of [at + 1, at + 4]) expect(await wakeTick(d, recent, t0 + later * MIN)).toEqual([]);
+    }
+    expect(f.tasks.get("1")!.status).toBe("blocked");
+    expect(f.comments).toHaveLength(0);
+    expect(f.woken).toHaveLength(0);
+  });
+
+  it("a blocker reaching cancelled behaves like done", async () => {
+    const { f, recent, d } = setup([blocker("2", "in_progress")]);
+    await wakeTick(d, recent, t0);
+    close(f, "2", "cancelled", t0 + MIN);
+    expect(await wakeTick(d, recent, t0 + 6 * MIN)).toEqual(["1"]);
+    expect(f.tasks.get("1")!.status).toBe("todo");
+    expect(f.comments[0]!.body).toContain("WOR-2 closed (cancelled).");
+    expect(await wakeTick(d, recent, t0 + 20 * MIN)).toEqual([]);
+  });
+
+  it("two blockers closing in the same tick produce one wake; the second one later still is one more", async () => {
+    const { f, recent, d } = setup([blocker("2", "in_progress"), blocker("3", "in_progress")]);
+    await wakeTick(d, recent, t0);
+    close(f, "2", "done", t0 + MIN);
+    close(f, "3", "done", t0 + MIN);
+    expect(await wakeTick(d, recent, t0 + 6 * MIN)).toEqual(["1"]);
+    expect(f.comments).toHaveLength(1);
+    expect(f.woken).toEqual(["a:1"]);
+    expect(f.tasks.get("1")!.status).toBe("todo");
+
+    // One blocker left open: closing both separately is still one wake, on the last closure.
+    const g = setup([blocker("2", "in_progress"), blocker("3", "in_progress")]);
+    await wakeTick(g.d, g.recent, t0);
+    close(g.f, "2", "done", t0 + MIN);
+    expect(await wakeTick(g.d, g.recent, t0 + 6 * MIN)).toEqual([]); // one open blocker left: nothing to say
+    close(g.f, "3", "done", t0 + 8 * MIN);
+    expect(await wakeTick(g.d, g.recent, t0 + 14 * MIN)).toEqual(["1"]);
+    expect(g.f.comments).toHaveLength(1);
+    expect(g.f.woken).toEqual(["a:1"]);
+  });
+
+  it("the same closure does not wake the dependent twice, across a restart and a later reopen-and-reclose", async () => {
+    const { f, store, recent, d } = setup([blocker("2", "in_progress")]);
+    await wakeTick(d, recent, t0);
+    close(f, "2", "done", t0 + MIN);
+    expect(await wakeTick(d, recent, t0 + 6 * MIN)).toEqual(["1"]);
+    // A new process reads the same cursors: the acknowledged closure is no news again.
+    expect(await wakeTick(d, new Map(), t0 + 30 * MIN)).toEqual([]);
+    expect(f.comments).toHaveLength(1);
+    expect(store.meta("wake_cursors")).not.toContain("blockers");
+  });
+});
+
+describe("a release that fails part-way", () => {
+  const blocker = (id: string, status: string): Blocker => ({ id, identifier: `WOR-${id}`, status, updatedAt: iso(t0 - 60 * MIN) });
+  it("finishes on a later tick without a second wake or a second notice", async () => {
+    const f = fake();
+    const store = new Store(":memory:");
+    const recent: Recent = new Map();
+    f.put({ id: "2", assigneeAgentId: "e", status: "in_progress" }, t0 - 60 * MIN);
+    f.put({ id: "1", assigneeAgentId: "a", status: "blocked", blockedBy: [blocker("2", "in_progress")] }, t0 - 60 * MIN);
+    const d = deps(f, store);
+    await wakeTick(d, recent, t0);
+    // The blocker closes, but the direct wake fails: the task is todo and the notice is on it.
+    f.put({ id: "2", status: "done", completedAt: iso(t0 + MIN) }, t0 + MIN);
+    for (const t of f.tasks.values()) for (const b of t.blockedBy ?? []) Object.assign(b, { status: "done", updatedAt: iso(t0 + MIN), completedAt: iso(t0 + MIN) });
+    const wakeAgent = f.pc.wakeAgent;
+    f.pc.wakeAgent = async () => { throw new Error("control plane down"); };
+    expect(await wakeTick(d, recent, t0 + 2 * MIN)).toEqual([]);
+    expect(f.tasks.get("1")!.status).toBe("todo"); // it is actionable already
+    expect(f.comments).toHaveLength(1); // the notice landed before the wake failed
+
+    // The next tick completes the release: one wake, no second notice.
+    f.pc.wakeAgent = wakeAgent;
+    expect(await wakeTick(d, recent, t0 + 4 * MIN)).toEqual(["1"]);
+    expect(f.comments).toHaveLength(1);
+    expect(f.woken).toEqual(["a:1"]);
+    expect(await wakeTick(d, recent, t0 + 10 * MIN)).toEqual([]); // and once only
+    expect(f.woken).toHaveLength(1);
+  });
+});
+
+describe("a blocker read that fails", () => {
+  const blocker = (id: string, status: string): Blocker => ({ id, identifier: `WOR-${id}`, status, updatedAt: iso(t0 - 60 * MIN) });
+  it("keeps the last cursor, so a closure during the outage is still news", async () => {
+    const f = fake();
+    const store = new Store(":memory:");
+    const recent: Recent = new Map();
+    f.put({ id: "2", assigneeAgentId: "e", status: "in_progress" }, t0 - 60 * MIN);
+    f.put({ id: "1", assigneeAgentId: "a", status: "blocked", blockedBy: [blocker("2", "in_progress")] }, t0 - 60 * MIN);
+    const d = deps(f, store);
+    await wakeTick(d, recent, t0); // the baseline: open, acknowledged
+
+    // The control plane is down while the blocker closes: the signal is missing this tick, not "open" again.
+    const issue = f.pc.issue;
+    f.pc.issue = async () => { throw new Error("control plane down"); };
+    f.put({ id: "2", status: "done", completedAt: iso(t0 + MIN) }, t0 + MIN);
+    for (const t of f.tasks.values()) for (const b of t.blockedBy ?? []) Object.assign(b, { status: "done", updatedAt: iso(t0 + MIN), completedAt: iso(t0 + MIN) });
+    expect(await wakeTick(d, recent, t0 + 2 * MIN)).toEqual([]);
+    expect(f.tasks.get("1")!.status).toBe("blocked");
+
+    // The read answers again: the closure is compared with the last good value, so it is news, not a new baseline.
+    f.pc.issue = issue;
+    expect(await wakeTick(d, recent, t0 + 4 * MIN)).toEqual(["1"]);
+    expect(f.tasks.get("1")!.status).toBe("todo");
+    expect(f.comments).toHaveLength(1);
+    expect(f.comments[0]!.body).toContain("WOR-2 closed (done).");
+    expect(f.woken).toEqual(["a:1"]);
+    expect(await wakeTick(d, recent, t0 + 10 * MIN)).toEqual([]);
+  });
+});
+
+describe("a pending release across ticks", () => {
+  const blocker = (id: string, status: string): Blocker => ({ id, identifier: `WOR-${id}`, status, updatedAt: iso(t0 - 60 * MIN) });
+  /** A task released on t0+2 with a failing wake, so its release is pending and the task is todo. */
+  async function pending() {
+    const f = fake();
+    const store = new Store(":memory:");
+    const recent: Recent = new Map();
+    f.put({ id: "2", assigneeAgentId: "e", status: "in_progress" }, t0 - 60 * MIN);
+    f.put({ id: "1", assigneeAgentId: "a", status: "blocked", blockedBy: [blocker("2", "in_progress")] }, t0 - 60 * MIN);
+    const d = deps(f, store);
+    await wakeTick(d, recent, t0);
+    f.put({ id: "2", status: "done", completedAt: iso(t0 + MIN) }, t0 + MIN);
+    for (const t of f.tasks.values()) for (const b of t.blockedBy ?? []) Object.assign(b, { status: "done", updatedAt: iso(t0 + MIN), completedAt: iso(t0 + MIN) });
+    const wakeAgent = f.pc.wakeAgent;
+    f.pc.wakeAgent = async () => { throw new Error("control plane down"); };
+    expect(await wakeTick(d, recent, t0 + 2 * MIN)).toEqual([]);
+    f.pc.wakeAgent = wakeAgent;
+    expect(f.tasks.get("1")!.status).toBe("todo");
+    expect(store.meta("wake_cursors")).toContain("blockers:1:closed:2:done");
+    return { f, store, recent, d };
+  }
+
+  it("survives a tick with no watched agents and still wakes once", async () => {
+    const { f, store, recent, d } = await pending();
+    // Every heartbeat routine is gone this tick: the early branch must not drop the pending release.
+    const routines = f.pc.routines;
+    f.pc.routines = async () => [];
+    expect(await wakeTick(d, recent, t0 + 4 * MIN)).toEqual([]);
+    expect(store.meta("wake_cursors")).toContain("blockers:1:closed:2:done");
+    f.pc.routines = routines;
+    expect(await wakeTick(d, recent, t0 + 6 * MIN)).toEqual(["1"]);
+    expect(f.comments).toHaveLength(1);
+    expect(f.woken).toEqual(["a:1"]);
+  });
+
+  it("is held while its agent is paused, then finished when it is eligible again", async () => {
+    const { f, recent, d } = await pending();
+    const agents = f.pc.agents;
+    f.pc.agents = async () => [{ id: "a", status: "paused" }, { id: "b", status: "idle" }, { id: "e", status: "idle" }];
+    expect(await wakeTick(d, recent, t0 + 4 * MIN)).toEqual([]);
+    expect(f.comments).toHaveLength(1); // nothing dropped, nothing posted twice
+    f.pc.agents = agents;
+    expect(await wakeTick(d, recent, t0 + 6 * MIN)).toEqual(["1"]);
+    expect(f.comments).toHaveLength(1);
+    expect(f.woken).toEqual(["a:1"]);
+    expect(await wakeTick(d, recent, t0 + 10 * MIN)).toEqual([]);
   });
 });

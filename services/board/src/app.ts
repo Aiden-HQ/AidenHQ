@@ -1223,13 +1223,15 @@ export function createApp(opts: AppOptions): Server {
         const s = (opts.signIns ?? []).find((x) => x.id === id);
         if (!s) throw new HttpError(404, "no such sign-in");
         const [status, offer] = await Promise.all([s.auth.status(0), s.auth.scopes()]);
+        // Signed in: the picker opens on what the token grants now, not on the recommended set.
+        const granted = status?.state === "ok" && offer ? (status.scope ?? "").split(/[\s,]+/).filter((x) => x && x !== "offline_access" && offer.supported.includes(x)) : [];
         return {
           id,
           label: s.label,
           connect: s.connect,
           configured: Boolean(status?.configured),
           fields: s.fields,
-          scopes: offer && offer.supported.length > 1 ? offer : null,
+          scopes: offer && offer.supported.length > 1 ? { ...offer, ...(granted.length ? { granted } : {}) } : null,
           state: status?.state ?? "unknown",
           // The address the default sign-in ends on (pasted back below), and the domain one click returns to instead.
           redirect: s.httpsOnly ? null : `${SIGNIN_LOOPBACK}${s.callback}`,

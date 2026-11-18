@@ -18,7 +18,7 @@ import { dirname, join, resolve } from "node:path";
 import { createInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
 import { codexMcpBlock, ensureBackupRetention, ensureChatTasks, ensureCrewSkills, ensureFleetIssues, ensureMemoryInboxes, ensureReviewLogs, grantEntry, HEALTH_PROBES, healthProbeAgent, mapLimit, routineAutonomyDefault } from "./modules.mjs";
-import { routineStatus } from "./setup-paused.mjs";
+import { retireUnconfigured } from "./retire-agents.mjs";
 import { checkLauncher, computerAdapterConfig, ensureComputers, runnerBox } from "./computers.mjs";
 import { ensureAgentKeys, ensureEventsPlugin } from "./paperclip-events.mjs";
 import { assertNoShell } from "./no-shell.mjs";
@@ -394,15 +394,13 @@ async function ensureAgents(companyId, fleetIssues) {
     const adapterConfig = body.adapterType === "opencode_local" ? { ...body.adapterConfig, env: {} } : body.adapterConfig;
     await api("PATCH", `/api/agents/${agent.id}`, { name: body.name, title: body.title, runner: "legacy", adapterConfig, runtimeConfig: body.runtimeConfig, metadata: body.metadata, budgetMonthlyCents: body.budgetMonthlyCents });
   };
-  // An agent that is new, still verifying or paused by setup is handled whole, each on its own (side by side, so the whole
+  // An agent that is new or still verifying is handled whole, each on its own (side by side, so the whole
   // wait is about one agent's, not the sum): created or verified on the probe's unscoped config, scoped as soon as its probe ends,
-  // and only then resumed. An unverified agent can't run (Paperclip keeps it paused), so scoping it right after its own probe
+  // and only then left to run. An unverified agent can't run (Paperclip keeps it paused), so scoping it right after its own probe
   // means no agent ever runs unscoped. One that isn't verified keeps its scoped config and is checked again by the next run.
   // Rare after the first apply.
   await mapLimit(plans, 8, async (p) => {
     const { a, body, unscoped, instructions } = p;
-    // Configured again (a module re-enabled): resume what setup paused. An agent the owner paused by hand has no pausedBy.
-    const resume = p.agent?.status === "paused" && p.agent.metadata?.pausedBy === "setup";
     if (!p.agent) {
       p.agent = (await api("POST", `/api/companies/${companyId}/agents`, { ...body, adapterConfig: unscoped, runner: "legacy", instructionsBundle: { entryFile: "AGENTS.md", files: { "AGENTS.md": instructions } } })).json;
       step(`Created agent ${a.name}${modelKey ? "" : " (verified once a model key is set)"}`);
@@ -412,13 +410,9 @@ async function ensureAgents(companyId, fleetIssues) {
       // Checked as a new agent is: on the probe's config, outside any computer (ensureComputers below sets its environment again).
       await api("PATCH", `/api/agents/${p.agent.id}`, { adapterConfig: unscoped, ...(p.agent.defaultEnvironmentId ? { defaultEnvironmentId: null } : {}) });
       if (await verified(p.agent.id, a.name)) step(`Verified agent ${a.name}`);
-    } else if (!resume) return;
+    } else return;
     await scope(p);
     p.scoped = true;
-    if (resume) {
-      await api("POST", `/api/agents/${p.agent.id}/resume`, {});
-      step(`Resumed ${a.name} (configured again)`);
-    }
   });
   // Every other agent already runs scoped: its new config replaces the old in one PATCH, so these run a few side by side
   // (three round trips per agent otherwise add up), with the handbook sync and the read-back.
@@ -439,38 +433,6 @@ async function ensureAgents(companyId, fleetIssues) {
   });
   return Object.fromEntries(plans.map((p, i) => [p.key, updated[i]]));
 }
-
-/**
- * Setup-owned agents (setupKey aidenhq:<key>) that are no longer configured (pruned, or their module disabled) are
- * paused and marked pausedBy "setup", so ensureAgents resumes them if they come back. Their routines, and any other
- * routine of a setup-owned agent that is no longer configured, are paused too. Nothing is deleted.
- */
-async function reconcileOwned(companyId) {
-  const keys = new Set(Object.keys(cfg.agents ?? {}).map((k) => `aidenhq:${k}`));
-  const titles = new Set(Object.values(cfg.routines ?? {}).map((r) => r.title));
-  const { json: all } = await api("GET", `/api/companies/${companyId}/agents`);
-  const owned = all.filter((x) => String(x.metadata?.setupKey ?? "").startsWith("aidenhq:") && x.status !== "terminated");
-  for (const x of owned.filter((x) => !keys.has(x.metadata.setupKey))) {
-    if (x.status !== "paused") {
-      await api("POST", `/api/agents/${x.id}/pause`, {});
-      await api("PATCH", `/api/agents/${x.id}`, { metadata: { ...x.metadata, pausedBy: "setup" } });
-      step(`Paused ${x.name} (no longer configured)`);
-    }
-  }
-  const ownedIds = new Set(owned.map((x) => x.id));
-  const { json: routines } = await api("GET", `/api/companies/${companyId}/routines`);
-  const mine = setupPaused();
-  for (const r of routines.filter((r) => ownedIds.has(r.assigneeAgentId) && !titles.has(r.title) && r.status !== "archived")) {
-    if (r.status === "paused") continue;
-    await api("PATCH", `/api/routines/${r.id}`, { status: "paused" });
-    mine.add(r.id);
-    step(`Paused routine ${r.title} (no longer configured)`);
-  }
-  writeSecret(`setup_paused_routines${companySuffix}`, JSON.stringify([...mine]));
-}
-
-/** Ids of the routines setup itself paused (ensureRoutines resumes them if they return; the owner's and the detector's pauses aren't here). */
-const setupPaused = () => new Set(JSON.parse(readSecret(`setup_paused_routines${companySuffix}`) || "[]"));
 
 /** reports_to: <agent key> sets Paperclip's reportsTo once every agent exists. */
 async function ensureReportingLines(agents) {
@@ -575,7 +537,6 @@ function updateSystemYaml(companyId) {
  */
 async function ensureRoutines(companyId, agents) {
   const { json: routines } = await api("GET", `/api/companies/${companyId}/routines`);
-  const mine = setupPaused();
   // One routine's calls (update, read, triggers) are independent of the next one's: a few side by side.
   await mapLimit(Object.entries(cfg.routines ?? {}), 4, async ([key, r]) => {
     const agent = agents[r.agent];
@@ -585,8 +546,8 @@ async function ensureRoutines(companyId, agents) {
       description: r.description,
       assigneeAgentId: agent.id,
       priority: "medium",
-      // A paused routine stays paused across applies (the detector's auto-pause, the owner's pause) unless the config sets a status; one setup paused itself comes back active.
-      status: routineStatus(r.status, routines.find((x) => x.title === r.title), routines.find((x) => x.title === r.title)?.id, mine),
+      // A paused routine stays paused across applies (the detector's auto-pause, the owner's pause) unless the config sets a status; an archived one that returns comes back active.
+      status: r.status ?? (routines.find((x) => x.title === r.title)?.status === "paused" ? "paused" : "active"),
       concurrencyPolicy: r.concurrency ?? "coalesce_if_active",
       // Placeholders like {{tasks}} are filled by whoever starts the run (API); give them a default.
       variables: [...new Set([...(r.description ?? "").matchAll(/\{\{\s*([A-Za-z][A-Za-z0-9_]*)\s*\}\}/g)].map((m) => m[1]))]
@@ -648,7 +609,6 @@ async function ensureRoutines(companyId, agents) {
       }
     }
   });
-  writeSecret(`setup_paused_routines${companySuffix}`, JSON.stringify([...mine]));
 }
 
 /**
@@ -860,7 +820,7 @@ ensureCodexConfig();
 writeCatalog();
 lap("keys");
 await ensureRoutines(company.id, agents); // writes each routine's autonomy into the grants table before its triggers
-await reconcileOwned(company.id);
+await retireUnconfigured({ api, companyId: company.id, cfg, step });
 lap("routines");
 
 const codexAuth = execFileSafe(["compose", "exec", "-T", "-u", "node", "paperclip", "test", "-s", "/paperclip/.codex/auth.json"]);

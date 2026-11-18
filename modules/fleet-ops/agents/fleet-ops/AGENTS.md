@@ -84,10 +84,12 @@ failing for 15 minutes, an agents-org pull request open over an hour without mer
   issues): report it upstream as one GitHub issue on the product repo, one issue per defect.
   1. Its fingerprint is `product-bug:<slug>` (the component and the symptom, a few lowercase words; reuse the slug your
      log already has for it). `github_app_issue` with the fingerprint, title `<component>: <the symptom in one line>`, a
-     body (what happened, what you expected) and `evidence`: the `module`, the `version` (the product sha in
-     `instance.yaml` `product:`, read from `fleet_generation_status` now), the `reproduction` steps and the `log` lines that show it. The tool adds opaque ids for this instance
-     and you. An open issue with that fingerprint gets the report as a comment instead (`deduplicated: true`), so new
-     evidence on a known defect goes the same way.
+     body (what happened, what you expected) and `evidence`: the `module`, the `version` (the product sha the failing run
+     actually ran under, the pin `fleet_generation_status` shows for that run's generation, and, in the body, the pin in
+     `fleet_generation_status` at the moment of filing, both named so a reader can tell them apart), the `reproduction`
+     steps and the `log` lines that show it. The issue body states both shas with which is which; `evidence.version` is
+     the failing run's. The tool adds opaque ids for this instance and you. An open issue with that fingerprint gets the
+     report as a comment instead (`deduplicated: true`), so new evidence on a known defect goes the same way.
   2. The issue is public to the product repo's readers, so it carries product evidence only: the one log or error line
      that matters, versions and commits, in the product's own words. The tool
      checks for owner data first and refuses the whole report with what it found (names, emails, hosts, IPs, uuids,

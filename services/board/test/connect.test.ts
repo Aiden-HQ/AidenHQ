@@ -10,13 +10,14 @@ import { Store } from "../src/store.js";
 // One Connect per connection (owner, 2026-11-18): a sign-in with nothing to ask goes straight to the vendor (no setup page); one
 // whose vendor offers scopes, or that needs a per-install value, opens its Connect dialog on Settings > Connections first, which
 // reads the offer from the API and comes back with a plain navigation (no form: the CSP allows none).
+let signedIn = false;
 const seen: { path: string; body: unknown }[] = [];
 let finished = false;
 const proxy = (offer: boolean, configured = true) =>
   new McpAuth("Acme", "http://acme", "t", undefined, (async (u: string | URL, init?: RequestInit) => {
     const path = new URL(String(u)).pathname;
     seen.push({ path, body: init?.body ? JSON.parse(String(init.body)) : undefined });
-    if (path === "/auth/status") return Response.json({ state: finished ? "ok" : "missing", configured, since: "2026-11-18T00:00:00Z" });
+    if (path === "/auth/status") return Response.json({ state: signedIn || finished ? "ok" : "missing", configured, since: "2026-11-18T00:00:00Z", ...(signedIn ? { scope: "read:things write:things offline_access" } : {}) });
     if (path === "/auth/finish") {
       const { state } = JSON.parse(String(init!.body)) as { state: string };
       if (state !== "s") return Response.json({ error: "this sign-in link expired or was already used; start again from the board" }, { status: 400 });
@@ -92,6 +93,13 @@ it("sends a failed sign-in back to its Connect dialog, the reason in the address
   expect(denied.status).toBe(302);
   expect(denied.location).toMatch(/^\/#\/settings\/connections\?connect=acme&error=/);
   expect(new URLSearchParams(denied.location!.split("?")[1]).get("error")).toBe("Couldn't connect Acme: Acme didn't grant access (access_denied)");
+});
+
+it("offers the scopes a signed-in connection already grants, so the picker opens on them", async () => {
+  signedIn = true;
+  const view = JSON.parse((await get("/api/sign-ins/acme")).body);
+  signedIn = false;
+  expect(view.scopes).toEqual({ supported: ["read:things", "write:things"], recommended: ["read:things"], granted: ["read:things", "write:things"] });
 });
 
 // Loopback + paste (owner, 2026-11-18): a sign-in returns to http://localhost:3121 by default, which a company's domain allowlist

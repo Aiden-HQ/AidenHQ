@@ -9,6 +9,9 @@
  * PRs, a grade sending it back to its assignee) is the sub-task's own, and its outcome follows.
  *   - each sub-task delegated to someone else: its status (done or cancelled, or reopened from one; intermediate
  *     updates such as in progress or in review are not news);
+ *   - the task's own first-class blockers (blockedBy): only every one of them being done or cancelled is news (a
+ *     blocker picked up, reviewed or blocked again is not), and the task then leaves `blocked` for `todo` and its
+ *     assignee is woken directly (a comment on a blocked task has been seen to wake nobody);
  *   - approval cards on the task itself: rejected, or applied/failed (approved-not-yet-applied is not an event: the
  *     runner's outcome follows);
  *   - each sub-task's grade: satisfied or escalated;
@@ -27,7 +30,7 @@
 import { takeWake } from "./brake.js";
 import { NOTICE_MARKER } from "./chats.js";
 import { appsApi } from "./fleet.js";
-import { CONFIG_INCOMPLETE, OPEN, REPAIR_SUPPRESSED, REPAIR_SUPPRESSED_WHY, type Agent, type Issue, type LiveRun, type Paperclip, type PastRun, type Routine } from "./paperclip.js";
+import { CONFIG_INCOMPLETE, OPEN, PaperclipError, REPAIR_SUPPRESSED, REPAIR_SUPPRESSED_WHY, type Agent, type Issue, type LiveRun, type Paperclip, type PastRun, type Routine } from "./paperclip.js";
 import type { Approval, Records } from "./records.js";
 import { mirrorTick } from "./mirror.js";
 import type { Grading, GradesView } from "./grading.js";
@@ -41,7 +44,7 @@ const STATE_KEY = "wake_cursors";
 export const WAKE_MARKER = "<!-- aidenhq-wake -->";
 const OPEN_STATUSES = new Set(OPEN.split(","));
 
-type PaperclipPart = Pick<Paperclip, "routines" | "agents" | "openIssues" | "closedSince" | "liveRuns" | "recentRuns" | "addComment" | "issue" | "wakeAgent" | "releaseCancelledRun" | "updateIssue" | "clearAgentError">;
+type PaperclipPart = Pick<Paperclip, "routines" | "agents" | "openIssues" | "closedSince" | "liveRuns" | "recentRuns" | "comments" | "addComment" | "issue" | "wakeAgent" | "releaseCancelledRun" | "updateIssue" | "clearAgentError">;
 export interface PrState {
   repo: string;
   number: number;
@@ -70,10 +73,19 @@ interface State {
   cursors: Cursors;
   /** `<task>|<source>` → when a change with no time of its own (a card's outcome) was first seen. */
   seen?: Record<string, string>;
+  /** Releases that started but haven't finished: the task is `todo`, but its notice or wake still has to land. */
+  releases?: Record<string, Release>;
   /** Last good tick, for the closed sub-tasks window. */
   at?: string;
   /** Runs cut off at their output limit whose task and agent were already repaired (newest 50). */
   truncated?: string[];
+}
+
+/** A dependent whose blockers all closed: one closure, one notice, one direct wake, retried until both land. */
+interface Release {
+  agent: string;
+  line: string;
+  key: string;
 }
 
 const PR_REF = /github\.com\/([\w.-]+\/[\w.-]+)\/pull\/(\d+)|codehost:([\w.-]+\/[\w.-]+)\/change\/(\d+)|\b([\w.-]+\/[\w.-]+)#(\d+)\b/g;
@@ -85,6 +97,55 @@ function prRefs(text: string | null | undefined): string[] {
 const latest = (...xs: (string | null | undefined)[]) => xs.filter(Boolean).sort().at(-1) ?? undefined;
 /** A sub-task's status as an event: only a terminal state is news (picking a task up, reviewing it or blocking it is not). */
 const childState = (status: string) => (status === "done" || status === "cancelled" ? status : "open");
+const closed = (status: string) => status === "done" || status === "cancelled";
+
+/**
+ * The task's own dependency as one signal: `open` while any first-class blocker is unresolved, its blockers once all
+ * closed. One signal (not one per blocker) so several closing in the same tick are one notice and one wake.
+ */
+function blockerSignal(task: Issue): Signal | undefined {
+  const blockers = task.blockedBy ?? [];
+  // Only a blocked task waits on its blockers: once released it is the assignee's ordinary task, not one waiting again.
+  if (task.status !== "blocked" || !blockers.length) return undefined;
+  const done = blockers.every((b) => closed(b.status));
+  const names = blockers.map((b) => b.identifier ?? b.id).join(", ");
+  const states = blockers.map((b) => b.status).join(", ");
+  return {
+    value: done ? `closed:${blockers.map((b) => `${b.id}:${b.status}`).sort().join(",")}` : "open",
+    at: latest(...blockers.map((b) => latest(b.completedAt, b.cancelledAt, b.updatedAt))),
+    line: (was) => `${names} ${was === "open" ? `closed (${states})` : `reopened (${states})`}.`,
+  };
+}
+
+/**
+ * A task whose blockers all closed leaves `blocked` for `todo`, gets one notice naming what closed, and its assignee is
+ * woken on it. Paperclip refuses a blocked task's status write while any blocker is unresolved and counts a cancelled
+ * one as unresolved, so closed relations are cleared first; a 409 is retried once with them all cleared. A comment on a
+ * blocked task has been seen to wake nobody, so the wake is direct (`wakeAgent`), and its key makes it once per closure.
+ */
+async function release(pc: WakeDeps["pc"], task: Issue, release: Release, busy: boolean): Promise<void> {
+  const blockers = task.blockedBy ?? [];
+  // A cancelled blocker still refuses the status write, so those relations go first; the 409 fallback clears the rest.
+  const keep = blockers.filter((b) => b.status !== "cancelled").map((b) => b.id);
+  if (keep.length !== blockers.length) await pc.updateIssue(task.id, { blockedByIssueIds: keep });
+  if (task.status === "blocked") {
+    try {
+      await pc.updateIssue(task.id, { status: "todo" });
+    } catch (err) {
+      if (!(err instanceof PaperclipError) || err.status !== 409) throw err;
+      await pc.updateIssue(task.id, { blockedByIssueIds: [] });
+      await pc.updateIssue(task.id, { status: "todo" });
+    }
+  }
+  // One notice per closure, however many ticks it takes: its marker carries the closure's key.
+  const body = `Wake-up: ${release.line}\n\n<!-- aidenhq-wake:${release.key} -->${NOTICE_MARKER}${WAKE_MARKER}`;
+  // A failed read is not "not posted": it retries next tick rather than risking a second notice for one closure.
+  const posted = (await pc.comments(task.id)).some((c) => c.body?.includes(`aidenhq-wake:${release.key}`));
+  if (!posted) await pc.addComment(task.id, body);
+  // The task is todo before the wake, and the key makes a retry the same wake rather than a second run. A queued or live
+  // run already takes the release, and the task is looked at again (todo now) once that run ends.
+  if (!busy) await pc.wakeAgent(release.agent, `${task.identifier} is unblocked: ${release.line} Continue it.`, release.key, task.id);
+}
 
 /** The PRs a task names: its description and its merge cards. */
 function prsOf(x: Issue, cards: Approval[]): string[] {
@@ -112,6 +173,8 @@ function signals(task: Issue, kids: Issue[], cards: Approval[], grades: GradesVi
       out.set(`graded:${k.id}`, { value: gs, at: g.updatedAt, line: () => `${k.identifier}'s grade: ${gs}.` });
     }
   }
+  const blockers = blockerSignal(task);
+  if (blockers) out.set("blockers", blockers);
   for (const a of cards) {
     // Approved and not yet applied is not news: the runner's outcome follows. An outcome carries no time of its own.
     const terminal = a.outcome != null || a.state === "rejected" || a.state === "stale";
@@ -145,17 +208,20 @@ export async function wakeTick(deps: WakeDeps, recent: Recent, now = Date.now())
   const paused = new Set(agents.filter((a: Agent) => a.status === "paused" || a.status === "terminated").map((a) => a.id));
   const watched = new Set(routines.filter((r: Routine) => r.title.startsWith("Heartbeat: ") && r.status === "active" && r.assigneeAgentId && !paused.has(r.assigneeAgentId)).map((r) => r.assigneeAgentId!));
   const state = readState(store);
+  // Pending releases outlive both the watched set and one tick's task list: a release already moved its task to `todo`, so
+  // only this row finishes its notice and wake, and dropping it would lose them for good.
+  const releases: Record<string, Release> = { ...(state.releases ?? {}) };
   if (!watched.size) {
-    store.setMeta(STATE_KEY, JSON.stringify({ cursors: {}, at: new Date(now).toISOString(), truncated: state.truncated }));
+    store.setMeta(STATE_KEY, JSON.stringify({ cursors: {}, releases, at: new Date(now).toISOString(), truncated: state.truncated }));
     return [];
   }
-  const open = await pc.openIssues();
+  const all = await pc.openIssues();
   // Sub-tasks closed since the last good tick (with a margin), at most a day back.
   const since = new Date(Math.max(Date.parse(state.at ?? "") || 0, now - 24 * 60 * MIN) - 10 * MIN).toISOString();
   const closed = await pc.closedSince(since);
   const kidsOf = new Map<string, Issue[]>();
-  for (const i of [...open, ...closed]) if (i.parentId) kidsOf.set(i.parentId, [...(kidsOf.get(i.parentId) ?? []).filter((k) => k.id !== i.id), i]);
-  const tasks = open.filter((t) => t.assigneeAgentId && watched.has(t.assigneeAgentId) && OPEN_STATUSES.has(t.status) && !t.title.startsWith("Heartbeat: "));
+  for (const i of [...all, ...closed]) if (i.parentId) kidsOf.set(i.parentId, [...(kidsOf.get(i.parentId) ?? []).filter((k) => k.id !== i.id), i]);
+  const tasks = all.filter((t) => t.assigneeAgentId && watched.has(t.assigneeAgentId) && OPEN_STATUSES.has(t.status) && !t.title.startsWith("Heartbeat: "));
   const ownKids = (t: Issue) => (kidsOf.get(t.id) ?? []).filter((k) => k.assigneeAgentId !== t.assigneeAgentId);
 
   // The grading module unreachable: no graded: signals this pass (a state is never invented; their cursors stay).
@@ -220,7 +286,11 @@ export async function wakeTick(deps: WakeDeps, recent: Recent, now = Date.now())
     const agent = t.assigneeAgentId!;
     const was = state.cursors[t.id];
     const kids = ownKids(t);
-    const sig = signals(t, kids, cardsOf.get(t.id) ?? [], grades ?? {}, prs);
+    // A list row may leave a blocked task's blockers out: read them, as the runner does (no blockers shown is not the
+    // same as none). A failed read is not an answer, so the last good read's cursor stays (below) and the next tick
+    // reads again: a blocker closing during the outage must not become the next read's baseline.
+    const full = t.status === "blocked" ? await pc.issue(t.id).catch(() => undefined) : t;
+    const sig = signals(full ? { ...t, blockedBy: full.blockedBy } : t, kids, cardsOf.get(t.id) ?? [], grades ?? {}, prs);
     const next: Record<string, string> = {};
     // A source's first sighting is its baseline; a source that went away (a pruned card, an old closed sub-task) is dropped.
     const changed: [string, Signal][] = [];
@@ -235,6 +305,8 @@ export async function wakeTick(deps: WakeDeps, recent: Recent, now = Date.now())
     if (!found) for (const [k, v] of Object.entries(was ?? {})) if (k.startsWith("pr:")) next[k] ??= v;
     // The grading module didn't answer: its graded: signals keep their cursors (a merge meanwhile is still news next tick).
     if (!grades) for (const [k, v] of Object.entries(was ?? {})) if (k.startsWith("graded:")) next[k] ??= v;
+    // The task's own read didn't answer: its blockers keep their cursor, so a closure during the outage is still news.
+    if (!full) for (const [k, v] of Object.entries(was ?? {})) if (k === "blockers") next[k] ??= v;
     // A grade signals() stopped presenting (its row settled, or its sub-task closed) keeps its cursor for the same reason a
     // closed sub-task does: the task reopened, graded again and escalated is still news. A sub-task that has dropped out of
     // the closed window is known closed by its own cursor, so its grade's cursor is kept too.
@@ -246,6 +318,17 @@ export async function wakeTick(deps: WakeDeps, recent: Recent, now = Date.now())
     // A closed sub-task leaves the closed list after a while: its cursor stays, so reopening it later is still news.
     for (const [k, v] of Object.entries(was ?? {})) if (k.startsWith("child:") && (v === "done" || v === "cancelled")) next[k] ??= v;
     cursors[t.id] = next;
+    const unlocked = sig.get("blockers");
+    if (unlocked?.value.startsWith("closed:") && was?.blockers !== unlocked.value) {
+      // The task's last blocker closed (or it is first seen blocked with every blocker already closed): it comes out of
+      // `blocked`, and its assignee is woken, since no other path looks at a blocked task's blockers. Not held to the
+      // hourly or daily limits: one release per closure, and its other release is a person's.
+      next.blockers = unlocked.value;
+      cursors[t.id] = next;
+      // Recorded before the writes: a release that fails part-way is finished next tick from this row, not lost.
+      releases[t.id] = { agent, line: unlocked.line(was?.blockers ?? "open"), key: `blockers:${t.id}:${unlocked.value}` };
+      continue;
+    }
     if (!was || !changed.length) continue;
     const key = `${agent}:${t.id}`;
     for (const [k] of changed) seen[`${t.id}|${k}`] = state.seen?.[`${t.id}|${k}`] ?? new Date(now).toISOString();
@@ -289,7 +372,30 @@ export async function wakeTick(deps: WakeDeps, recent: Recent, now = Date.now())
     const [id, src] = [k.slice(0, k.indexOf("|")), k.slice(k.indexOf("|") + 1)];
     if (state.cursors[id]?.[src] !== cursors[id]?.[src]) delete seen[k];
   }
-  store.setMeta(STATE_KEY, JSON.stringify({ cursors, seen, at: new Date(now).toISOString(), truncated: truncated.slice(-50) }));
+  // A release whose task closed since (done, cancelled) is moot: there is nothing left to wake anyone about.
+  const open = new Map(all.map((t) => [t.id, t]));
+  for (const [id] of Object.entries(releases)) if (!open.has(id)) delete releases[id];
+  store.setMeta(STATE_KEY, JSON.stringify({ cursors, seen, releases, at: new Date(now).toISOString(), truncated: truncated.slice(-50) }));
+  // Releases last: each is in `todo` now, so this loop's own list would no longer carry it, and a release retried on a
+  // later tick has to run even when its task found no signal this time.
+  for (const [id, r] of Object.entries(releases)) {
+    const task = open.get(id)!;
+    // The agent isn't eligible this tick (its heartbeat paused or gone, or it isn't watched): keep the release and retry
+    // when it is, rather than dropping a closure after its task already left `blocked`.
+    if (!watched.has(r.agent)) continue;
+    const busyHere = busy.has(`${r.agent}:${id}`);
+    try {
+      await release(pc, task, r, busyHere);
+    } catch (err) {
+      log.warn({ issue: task.identifier, agent: r.agent, err: String(err) }, "couldn't release a task whose blockers closed; retried next tick");
+      continue;
+    }
+    delete releases[id];
+    store.events.emit("chat", id);
+    if (!busyHere) woke.push(id);
+    log.info({ issue: task.identifier, agent: r.agent, blockers: r.key }, "wake-up posted: blockers closed, task released");
+  }
+  store.setMeta(STATE_KEY, JSON.stringify({ cursors, seen, releases, at: new Date(now).toISOString(), truncated: truncated.slice(-50) }));
   return woke;
 }
 

@@ -41,7 +41,7 @@ export interface SignInView {
   /** Its per-install values are in place (asked afresh: the dialog waits on it after a save). */
   configured: boolean;
   fields: { secret: string; label: string; pattern: string; help?: string }[];
-  scopes: { supported: string[]; recommended: string[] } | null;
+  scopes: { supported: string[]; recommended: string[]; granted?: string[] } | null;
   state: string;
   /** The loopback address the sign-in ends on, whose full address (with its code) the owner pastes back; null: one click only. */
   redirect: string | null;

@@ -23,6 +23,8 @@ test("only changed entries are checked; a 3-day-old bump fails, a 10-day-old one
   assert.equal(bad.length, 1);
   assert.match(bad[0], /tiny-dep@1\.0\.1 .*3\.0 days/);
   assert.deepEqual(changedEntries(null, lock({ "old-dep": "2.0.0" })), [{ name: "old-dep", version: "2.0.0", resolved: "https://registry.npmjs.org/old-dep/-/old-dep-2.0.0.tgz", integrity: "sha512-x" }]);
+  // Our own scope is used the same day it is published (no registry lookup).
+  assert.deepEqual(await run({ "tiny-dep": "1.0.0", "old-dep": "2.0.0", "@aidenhq/sdk": "9.9.9" }), []);
 });
 
 test("a security exception needs an advisory that patches that version; lookup errors fail", async () => {
