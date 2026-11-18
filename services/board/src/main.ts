@@ -25,11 +25,14 @@ import type { RunnerReport } from "./activity.js";
 const cfg = loadConfig();
 const log = pino({ level: cfg.logLevel, redact: { paths: ["authorization", "*.authorization", "key", "*.key"], censor: "[redacted]" }, base: { svc: "board" } });
 const store = new Store(cfg.dbPath);
-const paperclip = new Paperclip(cfg.paperclipUrl, cfg.companyId, cfg.boardKey);
 // The grading module owns the grade rows (modules/grading); the board reads them over HTTP.
 const grading = createGrading();
+const kernelUrl = (process.env.AIDENHQ_KERNEL_URL ?? "http://10.231.0.1:3130").replace(/\/+$/, "");
+if (!cfg.gateway) throw new Error("the board needs gateway_board_key: its key on the kernel's backplane (Paperclip, sign-in, records)");
+// Paperclip, as the owner, only through the kernel (it alone holds the owner key).
+const paperclip = new Paperclip(kernelUrl, cfg.companyId, cfg.gateway.token);
 // The kernel keeps every approval record; the board reads them with the gateway_board_key.
-const records = kernelRecords(cfg.gateway && { url: (process.env.AIDENHQ_KERNEL_URL ?? "http://10.231.0.1:3130").replace(/\/+$/, ""), token: cfg.gateway.token }, log);
+const records = kernelRecords({ url: kernelUrl, token: cfg.gateway.token }, log);
 
 /** Every minute: Tomorrow → Today at the start of a workday, then any scheduled moves that are due, on top. */
 function rollover() {
@@ -68,8 +71,6 @@ const google = cfg.google && new GoogleAuth(cfg.google.url, cfg.google.token, lo
 const signIns = cfg.signIns.map(({ url, token, ...s }) => ({ ...s, auth: new McpAuth(s.label, url, token, log) }));
 // Board sign-in: admins sign in on the kernel's admin listener and the kernel hands this origin its own session (kernel-auth.ts);
 // the board opens no accounts file.
-const kernelUrl = (process.env.AIDENHQ_KERNEL_URL ?? "http://10.231.0.1:3130").replace(/\/+$/, "");
-if (!cfg.gateway) throw new Error("the board needs gateway_board_key: its key on the kernel's backplane (sign-in, records)");
 const accounts = createKernelAuth({ kernel: { url: kernelUrl, token: cfg.gateway.token }, adminUrl: cfg.accounts.adminUrl });
 // The runner's Engineer jobs, as it last reported them (shared by the listeners: it reports to the internal one).
 const activity: { runner?: RunnerReport } = {};

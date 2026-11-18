@@ -63,7 +63,7 @@ gen_secret computer_launcher_token  # the computer plugin (in paperclip) → the
 gen_secret computer_progress_token  # the board → the launcher's /progress only (live view)
 gen_secret computers_runner_key     # the runner → the launcher's job routes only (/job, /job/renew, /job/release)
 placeholder paperclip_ops_key ""
-placeholder paperclip_board_key ""   # written by scripts/paperclip-setup.mjs (the board restarts to read it)
+placeholder paperclip_board_key ""   # written by scripts/paperclip-setup.mjs; held by the kernel alone (the board goes through it)
 mkdir -p "$AIDENHQ_SECRETS_DIR/modules/google" && chmod 0700 "$AIDENHQ_SECRETS_DIR/modules" "$AIDENHQ_SECRETS_DIR/modules/google"
 placeholder modules/google/google_oauth.json "{}"   # the google module's own vault dir (read-write at its /state)
 placeholder github_token ""      # the user's GitHub token: the github module's setup flow

@@ -1,7 +1,8 @@
-// Every admin is an owner (owner decision 2026-11-12): any signed-in admin writes with the board key, in the owner's chats
-// too (their decisions are taken on the kernel's approval page, stamped there). The board records which account wrote what and shows "by <name>"
-// on what an admin other than the owner wrote or decided. Real Paperclip client over a fake fetch; the kernel's accounts routes
-// stood in for (kernel.ts): each admin holds a board session the kernel handed off.
+// Every admin is an owner (owner decision 2026-11-12): any signed-in admin writes as the owner through the kernel, in the
+// owner's chats too (their decisions are taken on the kernel's approval page, stamped there). The board records which account
+// wrote what and shows "by <name>" on what an admin other than the owner wrote or decided, and tells the kernel the account
+// with each write. Real Paperclip client over a fake fetch standing for the kernel's /v1/cp routes; the kernel's accounts
+// routes stood in for (kernel.ts): each admin holds a board session the kernel handed off.
 import { request } from "node:http";
 import type { AddressInfo } from "node:net";
 import pino from "pino";
@@ -14,7 +15,7 @@ import { card, fakeRecords } from "./fake-records.js";
 import { BOARD_KEY, fakeKernel, type FakeAccount } from "./kernel.js";
 
 const CO = "00000000-0000-4000-8000-000000000001";
-const KEY = "owner-board-key";
+const KEY = "the-boards-kernel-key";
 const chatLabel = { id: "33333333-3333-3333-3333-333333333333", name: "chat", color: "#0ea5e9" };
 const base = { status: "todo", priority: "medium", assigneeAdapterOverrides: null, createdAt: "2026-11-12T08:00:00.000Z", updatedAt: "2026-11-12T08:00:00.000Z", description: "Ship the pricing page." };
 const issue = (n: number, extra: Record<string, unknown>) => ({ ...base, id: `00000000-0000-4000-8000-${String(n).padStart(12, "0")}`, identifier: `WOR-${n}`, title: `Task ${n}`, ...extra });
@@ -24,21 +25,25 @@ const issues = [
 ];
 const agents = [{ id: "aiden", name: "Aiden", status: "idle", adapterType: "codex_local", metadata: { setupKey: "aidenhq:chief-of-staff" } }];
 
-/** Every write Paperclip got, with the credential it came with; comments are kept per task. */
-const writes: { key: string; method: string; path: string; body: any }[] = [];
+/** Every write the kernel got, with the credential and the admin it came with; comments are kept per task. */
+const writes: { key: string; account?: string; method: string; path: string; body: any }[] = [];
 const comments = new Map<string, any[]>();
 let made = 0;
 const fakeFetch = (async (url: URL, init: RequestInit = {}) => {
   const method = init.method ?? "GET";
-  const path = url.pathname;
-  const key = String((init.headers as Record<string, string>).authorization).replace(/^Bearer /, "");
+  const headers = init.headers as Record<string, string>;
+  // Reads at /v1/cp/read/<path>, writes at /v1/cp/owner/<path> (kernel/src/cp.ts createBoardCp).
+  const lane = /^\/v1\/cp\/(read|owner)(\/.*)$/.exec(url.pathname);
+  if (!lane || (lane[1] === "read") !== (method === "GET")) return new Response("{}", { status: 403 });
+  const path = lane[2]!;
+  const key = String(headers.authorization).replace(/^Bearer /, "");
   const json = (x: unknown) => new Response(JSON.stringify(x), { status: 200 });
   const find = (ref: string) => issues.find((i) => i.id === ref || i.identifier === ref);
   if (key !== KEY) return new Response("{}", { status: 401 });
   const commentsOf = /^\/api\/issues\/([^/]+)\/comments$/.exec(path);
   if (method !== "GET") {
     const body = init.body ? JSON.parse(String(init.body)) : {};
-    writes.push({ key, method, path, body });
+    writes.push({ key, account: headers["x-aidenhq-account"], method, path, body });
     if (commentsOf) {
       const c = { id: `comment-${++made}`, body: body.body, authorType: "user", authorUserId: "me", createdAt: new Date().toISOString() };
       comments.set(commentsOf[1]!, [...(comments.get(commentsOf[1]!) ?? []), c]);
@@ -92,7 +97,7 @@ describe("every admin writes as the owner, with their name on it", () => {
       });
   }
 
-  it("another admin's comment goes in with the board key, in the owner's chat too, labelled with their name", async () => {
+  it("another admin's comment goes in as the owner through the kernel, in the owner's chat too, labelled with their name", async () => {
     const owner = { id: "u-owner", email: "owner@example.com", name: "Owner", role: "admin" as const, owner: true };
     const me = admin(owner);
     const ann = admin({ id: "u-ann", email: "ann@example.com", name: "Ann", role: "admin", owner: false });
@@ -100,7 +105,7 @@ describe("every admin writes as the owner, with their name on it", () => {
 
     expect((await me("POST", "/api/issues/WOR-1/comments", { body: "Looks good" })).status).toBe(200);
     expect((await ann("POST", "/api/issues/WOR-1/comments", { body: "Ship it Friday" })).status).toBe(200);
-    expect(writes.at(-1)).toMatchObject({ key: KEY, body: { body: "Ship it Friday" } });
+    expect(writes.at(-1)).toMatchObject({ key: KEY, account: annId, body: { body: "Ship it Friday" } });
     expect(store.authoredBy(`comment-${made}`)).toBe(annId);
     const view = (await me("GET", "/api/issues/WOR-1")).json;
     expect(view.comments.map((c: { body: string; by?: string }) => [c.body, c.by])).toEqual([["Looks good", undefined], ["Ship it Friday", "Ann"]]);
@@ -111,7 +116,7 @@ describe("every admin writes as the owner, with their name on it", () => {
     expect(chat.messages.find((m: { text: string }) => m.text === "Check the pricing page")).toMatchObject({ kind: "owner", by: "Ann" });
     // And her edits go through like the owner's.
     expect((await ann("PATCH", "/api/issues/WOR-1", { title: "Pricing page" })).status).toBe(200);
-    expect(writes.at(-1)).toMatchObject({ key: KEY, method: "PATCH", body: { title: "Pricing page" } });
+    expect(writes.at(-1)).toMatchObject({ key: KEY, account: annId, method: "PATCH", body: { title: "Pricing page" } });
 
     // A typed "approve WOR-1" is only a message now: cards are decided on the kernel's approval page, which stamps the admin
     // (account:<id>). The board names who decided; the owner's own decisions carry no label.

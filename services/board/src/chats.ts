@@ -210,7 +210,7 @@ export function conversation(issue: { id: string; description: string | null; cr
   };
   for (const c of comments) {
     // Board and runner markers count only on comments they wrote (an agent could paste one to fake a notice).
-    // The board and runner post as the owner (board key) or as no user; another user's comment is never a system message.
+    // The board (through the kernel) and runner post as the owner or as no user; another user's comment is never a system message.
     const system = c.authorType !== "agent" && (!c.authorUserId || c.authorUserId === me);
     if (system && (has(c.body, APPROVAL_MARKER) || has(c.body, NOTICE_MARKER))) out.push({ kind: "notice", id: c.id, text: strip(c.body), at: c.createdAt });
     // In an engineer's chat the runner's report is that engineer's reply (the runner works for it).

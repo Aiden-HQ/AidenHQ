@@ -93,6 +93,65 @@ export function createCp({ whoami, asserter, controlUrl, launcherUrl, checks, pr
   };
 }
 
+/** The control plane's routes the board reads as the owner (GET /v1/cp/read/<path> with the board's key). */
+export const BOARD_READ_PATHS: RegExp[] = [
+  /^\/api\/cli-auth\/me$/,
+  new RegExp(`^/api/companies/${ID}$`),
+  new RegExp(`^/api/companies/${ID}/(agents|labels|issues|live-runs|heartbeat-runs|routines|approvals)$`),
+  new RegExp(`^/api/companies/${ID}/adapters/${ID}/models$`),
+  new RegExp(`^/api/companies/${ID}/costs/(by-agent|by-agent-model)$`),
+  new RegExp(`^/api/heartbeat-runs/${ID}(/log)?$`),
+  new RegExp(`^/api/issues/${ID}(/comments|/attachments)?$`),
+  new RegExp(`^/api/attachments/${ID}/content$`),
+  new RegExp(`^/api/agents/${ID}/instructions-bundle/file$`),
+];
+/** The owner's writes the board makes (ANY /v1/cp/owner/<path> with the board's key), by method. */
+export const BOARD_WRITE_PATHS: [string, RegExp][] = [
+  ["POST", new RegExp(`^/api/companies/${ID}/(labels|approvals|issues)$`)],
+  ["POST", new RegExp(`^/api/companies/${ID}/issues/${ID}/attachments$`)],
+  ["POST", new RegExp(`^/api/agents/${ID}/(pause|resume|clear-error|wakeup)$`)],
+  ["PATCH", new RegExp(`^/api/issues/${ID}$`)],
+  ["POST", new RegExp(`^/api/issues/${ID}/(comments|recovery-actions/resolve)$`)],
+  ["DELETE", new RegExp(`^/api/issues/${ID}/approvals/${ID}$`)],
+  ["POST", new RegExp(`^/api/approvals/${ID}/reject$`)],
+  ["POST", new RegExp(`^/api/heartbeat-runs/${ID}/cancel$`)],
+  ["PATCH", new RegExp(`^/api/routines/${ID}$`)],
+  ["POST", new RegExp(`^/api/routines/${ID}/run$`)],
+];
+// An attachment the board uploads (10 MB, multipart) fits; nothing else comes near.
+const BOARD_MAX_BODY = 16 * 1024 * 1024;
+
+/**
+ * The board's only way to the control plane: GET /v1/cp/read/<path> (reads) and ANY /v1/cp/owner/<path> (the owner's
+ * writes), both with the board's key on the kernel (the backplane checks it). Only the kernel holds the control plane's
+ * owner key (paperclip_board_key); the board holds none. Each path must be on the board's list for its method. Bodies and
+ * answers pass as they are (an attachment upload is multipart, its content bytes). `X-AidenHQ-Account` names the signed-in
+ * admin a write is for (none: the board's own timers and notices); it is logged with the write.
+ */
+export function createBoardCp({ controlUrl, key, log = () => {} }: { controlUrl: string; key: () => string; log?: (msg: string, f?: Record<string, unknown>) => void }) {
+  return async function boardCp(req: IncomingMessage, res: ServerResponse, lane: string, path: string, query: string): Promise<void> {
+    const method = String(req.method);
+    const allowed = lane === "read" ? method === "GET" && BOARD_READ_PATHS.some((re) => re.test(path)) : BOARD_WRITE_PATHS.some(([m, re]) => m === method && re.test(path));
+    if (!allowed) throw fail(403, "forbidden", `${method} ${path} isn't one of the board's ${lane === "read" ? "read" : "owner"} routes`);
+    const account = String(req.headers["x-aidenhq-account"] ?? "");
+    if (account && !/^[A-Za-z0-9_-]{1,100}$/.test(account)) throw fail(400, "bad_request", "X-AidenHQ-Account isn't an account id");
+    const chunks: Buffer[] = [];
+    let n = 0;
+    for await (const c of req) { n += c.length; if (n > BOARD_MAX_BODY) throw fail(413, "too_large", "too large"); chunks.push(c); }
+    const body = method === "GET" ? undefined : Buffer.concat(chunks);
+    const type = req.headers["content-type"];
+    const r = await fetch(new URL(`${path}${query}`, controlUrl), {
+      method, signal: AbortSignal.timeout(60_000),
+      headers: { authorization: `Bearer ${key()}`, accept: String(req.headers.accept ?? "application/json"), ...(body?.length && type ? { "content-type": String(type) } : {}) },
+      ...(body?.length ? { body } : {}),
+    });
+    const out = Buffer.from(await r.arrayBuffer());
+    if (out.length > MAX) throw fail(502, "too_large", "the control plane's answer is too large");
+    if (lane === "owner") log("cp owner", { method, path, status: r.status, ...(account ? { account } : {}) });
+    res.writeHead(r.status, { "content-type": r.headers.get("content-type") ?? "application/json", "content-length": out.length }).end(out);
+  };
+}
+
 /**
  * A module's model call for the caller it serves (an advisor or fan-out tool), billed to that caller's run: only
  * for a module whose connection declares model_as_caller, and only while that caller's tool call is in flight. Returns the

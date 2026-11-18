@@ -139,7 +139,8 @@ administration, apps-mcp's in-app requests, `ops/setup.sh`'s setup link and rese
   one line says they are held back). Every new admin session tells the owner the time and address, never capped.
 - **Every route needs an admin session**, reads and file downloads included, on the admin listener and the board's.
   The internal listener uses bearer tokens.
-- **Every admin is an owner.** Any ready admin writes to Paperclip with the board key, so agents act on their words,
+- **Every admin is an owner.** Any ready admin writes to Paperclip as the owner (through the kernel's `/v1/cp/owner`; the board
+  holds no Paperclip key), so agents act on their words,
   and their decisions on the kernel's pages decide approvals. Decisions are stamped `account:<id>` from the session, never from
   the client. The board records which account wrote what (`authored`) and shows "by <name>" for non-owner admins.
 - Exactly one account is the owner (`settings.owner_email`). The board cannot demote, disable or reset the owner; only

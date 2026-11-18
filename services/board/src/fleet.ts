@@ -1,4 +1,4 @@
-/** Fleet tools for the Chief of Staff (read status and costs; run/pause/resume with the owner's own words). The board holds the board key; agents never do. */
+/** Fleet tools for the Chief of Staff (read status and costs; run/pause/resume with the owner's own words). The board writes as the owner through the kernel; agents never do. */
 import { readFileSync } from "node:fs";
 import { z } from "zod";
 import type { IncomingMessage } from "node:http";

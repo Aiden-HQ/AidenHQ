@@ -93,8 +93,8 @@ applies to changes to the module (its service, policy `service/security/`, cases
   host process shares that loopback (Engineer jobs, Tailscale serve), so every route on 3120 and 3121 needs a signed-in
   admin (beyond sign-in, only OpenRouter's PKCE callback, by a single-use state) (accounts: Better Auth in the kernel, password + TOTP, `data/kernel/auth/auth.db`, which the board's 3129 listener
   also opens until 3g; no SSO, sign-in beyond that is Cloudflare Access). Cards are decided only on the kernel's pages or
-  by channel token. Every admin is an owner: writes with the
-  board key, taps and typed replies decide (`account:<id>`); the board labels what non-owner admins wrote ("by <name>",
+  by channel token. Every admin is an owner: writes as the owner
+  (the board through the kernel's `/v1/cp/owner`; only the kernel holds the Paperclip key), taps and typed replies decide (`account:<id>`); the board labels what non-owner admins wrote ("by <name>",
   `authored`). `board_operator_key` (ops/setup.sh) only makes the owner's setup link, posts the welcome chat and resets
   an account. Users get apps only; each app's admins manage its access on the my-apps host's `/access` (never a
   set-password link from an app admin). The gate's auth listener is 3129 (loopback; `X-AidenHQ-Gate` =

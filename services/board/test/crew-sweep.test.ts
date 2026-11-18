@@ -43,7 +43,7 @@ function fake(issues: Issue[]) {
   const json = (x: unknown, status = 200) => new Response(JSON.stringify(x), { status });
   const fetchImpl = (async (url: URL, init: RequestInit = {}) => {
     const method = init.method ?? "GET";
-    const path = url.pathname;
+    const path = url.pathname.replace(/^\/v1\/cp\/(read|owner)/, ""); // the kernel's routes to Paperclip
     if (path === "/api/cli-auth/me") return json({ userId: ME });
     if (path === `/api/companies/${CO}`) return json({ issuePrefix: "WOR" });
     if (path === `/api/companies/${CO}/agents`) return json(agents);

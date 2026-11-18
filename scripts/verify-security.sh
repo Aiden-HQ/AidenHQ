@@ -189,6 +189,10 @@ for c in $containers; do
       # key, and not the gate's account map (the kernel writes it).
       ksrc="$(docker inspect "$c" --format '{{range .Mounts}}{{.Source}}{{"\n"}}{{end}}' | grep -E '/kernel(/|$)|/gate(/|$)' | tr '\n' ' ')"
       [ -z "$ksrc" ] && pass "board: mounts nothing of the kernel's data or the gate's (accounts are the kernel's alone)" || fail "board mounts the kernel's or the gate's data: $ksrc"
+      # Paperclip only through the kernel (/v1/cp/read, /v1/cp/owner): no Paperclip key, mounted or in its environment.
+      { docker inspect "$c" --format '{{range .Mounts}}{{.Source}} {{end}}' | grep -q 'paperclip_board_key' \
+        || docker exec "$c" sh -c 'ls /run/secrets; tr "\0" "\n" < /proc/1/environ' 2>/dev/null | grep -qE '^paperclip_board_key$|^BOARD_KEY_FILE=|^PAPERCLIP_URL='; } \
+        && fail "board holds the Paperclip key (it reaches Paperclip only through the kernel)" || pass "board: no Paperclip key (Paperclip only through the kernel)"
       # The Maintainer watcher's github-mcp token (the github module's board_env) opens its one issue read, never /mcp.
       if docker exec "$c" sh -c 'test -s "$MAINTAINER_ISSUES_TOKEN_FILE"' 2>/dev/null; then
         code="$(docker exec "$c" node -e 'const t=require("fs").readFileSync(process.env.MAINTAINER_ISSUES_TOKEN_FILE,"utf8").trim();fetch("http://github-mcp:8086/mcp",{method:"POST",headers:{authorization:"Bearer "+t,"content-type":"application/json",accept:"application/json, text/event-stream"},body:JSON.stringify({jsonrpc:"2.0",id:1,method:"tools/list"}),signal:AbortSignal.timeout(5000)}).then((r)=>console.log(r.status),()=>console.log("unreachable"))' 2>/dev/null)"
@@ -628,14 +632,15 @@ first_conn="$(node -e 'console.log(Object.keys(JSON.parse(require("fs").readFile
 [ -n "$first_conn" ] && [ "$(curl -s -m 10 -o /dev/null -w '%{http_code}' -X POST "http://10.231.0.1:3130/c/$first_conn/mcp" -H 'content-type: application/json' -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}')" = 401 ] \
   && pass "kernel: /c/ without a credential is refused (401)" || fail "kernel: /c/$first_conn answers without a credential"
 # Channels (2f): the owner's cards, decisions and words go through the kernel, to a speaks-as-owner module's own token only;
-# no module mounts the board key, and the old decide keys are gone from the vault.
-chan="$(for p in "GET /v1/channel/cards" "POST /v1/channel/decide" "POST /v1/channel/owner-message" "GET /v1/cp/read/api/companies"; do
+# the board's Paperclip routes (/v1/cp/owner) to the board's kernel key only; no module mounts the board key, and the old
+# decide keys are gone from the vault.
+chan="$(for p in "GET /v1/channel/cards" "POST /v1/channel/decide" "POST /v1/channel/owner-message" "GET /v1/cp/read/api/companies" "POST /v1/cp/owner/api/issues/x/comments"; do
   for tok in "" "$(cat "${AIDENHQ_SECRETS_DIR:-/nonexistent}/board_internal_token" 2>/dev/null)"; do
     data=""; [ "${p%% *}" = POST ] && data="{}"
     c="$(curl -s -m 10 -o /dev/null -w '%{http_code}' -X "${p%% *}" ${tok:+-H "Authorization: Bearer $tok"} -H 'content-type: application/json' ${data:+-d "$data"} "http://10.231.0.1:3130${p#* }" 2>/dev/null || true)"
     [ "$c" = 401 ] || echo "${p} answered $c"
   done; done)"
-[ -z "$chan" ] && pass "kernel: channel routes refuse no credential and the board's internal token (401)" || fail "kernel: $chan"
+[ -z "$chan" ] && pass "kernel: channel and board control-plane routes refuse no credential and the board's internal token (401)" || fail "kernel: $chan"
 ! grep -q 'paperclip_board_key' compose.modules.yaml 2>/dev/null && pass "modules: no module mounts the Paperclip board key" || fail "modules: a module mounts paperclip_board_key (compose.modules.yaml)"
 [ ! -e "${AIDENHQ_SECRETS_DIR:-/nonexistent}/owner_decide_key" ] && [ ! -e "${AIDENHQ_SECRETS_DIR:-/nonexistent}/watcher_decide_key" ] \
   && pass "vault: no owner_decide_key or watcher_decide_key (channels decide by token)" || fail "vault: an old decide key is still there"
