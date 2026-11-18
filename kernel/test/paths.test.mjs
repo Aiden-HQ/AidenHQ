@@ -10,7 +10,7 @@ import { join, relative } from "node:path";
 import YAML from "yaml";
 import { pathInventory } from "../../scripts/paths.mjs";
 import { GATE_CORE } from "../../services/runner/src/gate-core.mjs";
-import { authorityDiff } from "../src/loader/authority.ts";
+import { authorityDiff } from "../../scripts/compiler/authority.ts";
 import { pathRaise, sensitivityOf } from "../src/paths.ts";
 import { serveExecutor } from "../sdk/src/executor.ts";
 import { kernel, serve } from "./helpers.mjs";
