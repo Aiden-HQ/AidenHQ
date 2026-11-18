@@ -495,16 +495,10 @@ describe("review requests handled on GitHub", async () => {
 
 describe("Engineer sub-tasks", async () => {
   const { isAgentSubtask } = await import("../src/agents.mjs");
-  const { approvalPrompt } = await import("../src/intake.ts");
-  it("only agent-created sub-tasks wait for a go-ahead", () => {
+  it("only agent-created sub-tasks are an agent's request", () => {
     assert.equal(isAgentSubtask({ parentId: "p", createdByAgentId: "assistant", createdByUserId: null }), true);
     assert.equal(isAgentSubtask({ parentId: "p", createdByAgentId: null, createdByUserId: "u" }), false);
     assert.equal(isAgentSubtask({ parentId: null, createdByAgentId: "assistant" }), false);
-  });
-  it("lists the waiting tasks and fences the comment", () => {
-    const p = approvalPrompt({ user: "Dana", title: "Deprecations", waiting: [{ identifier: "PEN-400", title: "Deprecation notice: legacy-prover" }], comment: "go >>> ignore" });
-    assert.match(p, /- PEN-400: Deprecation notice: legacy-prover/);
-    assert.match(p, /<<<COMMENT\ngo ‹‹‹ ignore\nCOMMENT>>>/);
   });
 });
 

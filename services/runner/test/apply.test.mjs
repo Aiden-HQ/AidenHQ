@@ -72,13 +72,13 @@ test("only the Architect's follow-ups on a task it created count as a request (r
   assert.deepEqual(architectFollowUps(notes, "cos", grants), [], "Aiden's or the Researcher's comments start nothing");
   assert.deepEqual(architectFollowUps(notes, "arch", undefined), [], "no grants table: nothing");
   assert.deepEqual(architectFollowUps(notes, undefined, grants), []);
-  // A task that already runs without the owner's go-ahead (delegated from an agent's chat or app work): its delegator's
-  // follow-ups count whoever it is (e.g. the Roadmap Keeper asking its Engineer for the PR card); others' still don't.
-  assert.deepEqual(architectFollowUps(notes, "cos", grants, { approved: true }).map((c) => c.id), ["2"]);
-  assert.deepEqual(architectFollowUps(notes, undefined, grants, { approved: true }), []);
+  // An agent's task (one it delegated): its delegator's follow-ups count whoever it is (e.g. the Roadmap Keeper asking its
+  // Engineer for the PR card); others' still don't.
+  assert.deepEqual(architectFollowUps(notes, "cos", grants, { agentTask: true }).map((c) => c.id), ["2"]);
+  assert.deepEqual(architectFollowUps(notes, undefined, grants, { agentTask: true }), []);
   // An agent reopening such a task to todo after its run (Aiden restarting an Engineer task the UI/UX Designer delegated): any agent's comment counts.
-  assert.deepEqual(architectFollowUps(notes, "arch", grants, { approved: true, reopened: true }).map((c) => c.id), ["1", "2"]);
-  assert.deepEqual(architectFollowUps(notes, "arch", grants, { reopened: true }).map((c) => c.id), ["1"], "an owner-approved task: still only its delegator");
+  assert.deepEqual(architectFollowUps(notes, "arch", grants, { agentTask: true, reopened: true }).map((c) => c.id), ["1", "2"]);
+  assert.deepEqual(architectFollowUps(notes, "arch", grants, { reopened: true }).map((c) => c.id), ["1"], "not an agent's task: still only the Architect");
 });
 test("trial is read as YAML, like compile", async () => {
   const { isTrial } = await import("../src/apply.ts");

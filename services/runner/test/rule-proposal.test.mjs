@@ -1,5 +1,5 @@
-// Which tasks an agent filed straight to the Platform Engineer run without the owner's go-ahead (isRuleProposal decides; the
-// runner's handleIssue only acts on its answer, as it does for runsUnasked). Three checks, none typeable in free text: the
+// Which top-level tasks an agent filed straight to the Platform Engineer run as the agent's request (isRuleProposal decides;
+// the runner's handleIssue only acts on its answer, as it does for a delegated sub-task). Three checks, none typeable in free text: the
 // marker is the tool's own last line, the assignee is the Platform Engineer, the creator's grants let it file tasks.
 import { test } from "node:test";
 import assert from "node:assert/strict";

@@ -154,7 +154,7 @@ outcomes:
 
 Every tool call to a connection is checked against `config/grants/grants.json`, keyed by the caller's Paperclip agent
 id: the tools it may use per connection and its roles. Roles gate a few capabilities and may be granted only by the
-modules the registry allows: `fleet-admin` (the board's fleet tools), `board-writer`, `engineer-dispatch`,
+modules the registry allows: `fleet-admin` (the board's fleet tools), `board-writer`,
 `app-incidents`, `security-verdict` (security-watch records finding verdicts), `ops-key`, `architect`, `fleet-read` (fleet-ops and core: the board's fleet status only) and `fleet-audit` (core: any agent's evidence packet and its own review log, the Agent Coach's `coach_due`, `coach_evidence`, `coach_record`). Instance agents get none. A module agent may set `delegate_to: [<agent key>, <key>?, app-owners]`: the tasks bridge then
 refuses its `task_create` and `task_delegate` to anyone else (`key?` only when that agent is on; `app-owners`: any agent that
 owns an app); the Agent Coach has one. After editing `kernel/src/proxy.ts`,
@@ -329,4 +329,4 @@ owner-tier change) and `engines.default: opencode` in runner.yaml. Effort is
 `reasoning_effort:` (low, medium, high, xhigh, max; `max` is DeepSeek's top effort on OpenRouter, which Codex passes
 through as is; `openrouter` takes low, medium, high as opencode's model variant).
 Design: [codex-openrouter engine](design/codex-openrouter-engine.md). Other example files in `config/` (`routing`, `busy-cases`,
-`intake-cases`, `system`) configure the runner's evals and ops-mcp.
+`system`) configure the runner's evals and ops-mcp.

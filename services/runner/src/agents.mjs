@@ -234,14 +234,14 @@ export function ownRequest(issue) {
   return stripHidden(text).trim();
 }
 
-/** A part of the user's task they gave an Engineer themselves: their own request, no go-ahead needed. */
+/** A part of the user's task they gave an Engineer themselves: their own request. */
 export function isUserPart(issue, engineers) {
   return Boolean(issue?.parentId && issue.createdByUserId && !issue.createdByAgentId && engineers.some((e) => e.id === issue.assigneeAgentId));
 }
 
 /**
- * A sub-task an agent (the Researcher) created for an Engineer under one of the user's tasks. Its
- * description is agent-written, so it waits for the user's go-ahead before it is the request.
+ * A sub-task an agent created (delegated). Its description is the agent's request, never the owner's words; it runs as
+ * asked, and the kernel's write tiers gate what it pushes, merges, deploys or applies.
  */
 export function isAgentSubtask(issue) {
   return Boolean(issue?.parentId && issue.createdByAgentId && !issue.createdByUserId);
@@ -269,22 +269,10 @@ export function finishedStatus(issue, queue, openPrUrls = []) {
 }
 
 /**
- * Whether an agent's Engineer sub-task runs without the owner's go-ahead: one delegated from a chat, or under a task an
- * agent or routine created (an app incident). A routine's run is its own root even when started by hand (the run's task
- * then carries the owner as creator): its request is the routine's prompt, from config. `chain`: the sub-task, then each
- * parent up to the root (null: one that couldn't be read).
- */
-export function runsUnasked(chain) {
-  const [full] = chain;
-  const root = chain.at(-1);
-  if (!isAgentSubtask(full) || chain.length < 2 || chain.includes(null) || root.parentId) return false;
-  return Boolean(root.labels?.some((l) => l.name === "chat") || !root.createdByUserId || root.originKind === "routine_execution");
-}
-
-/**
  * A rule or access proposal, Coach finding, product bug or Dependabot sweep an agent filed straight to the Platform Engineer
  * (`task_create`, marker `rule:` / `coach:` / `product-bug:` / `dependabot:`; the
- * Librarian's `task_propose_rule` wraps it as `delegate:<parent>:rule:...`). It runs without the owner's go-ahead: its only
+ * Librarian's `task_propose_rule` wraps it as `delegate:<parent>:rule:...`). It runs as the agent's request, as a delegated
+ * sub-task does: its only
  * output is a fleet apply card, which the AI reviewer or the owner still decides (the runner pushes and merges nothing without
  * one). Three checks, none of them typeable in free text: the marker is the tool's own last line (the tools strip `<!--` from
  * what agents write, so it can't appear mid-description), the assignee is the Platform Engineer, and the creator is an agent

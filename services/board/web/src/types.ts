@@ -51,7 +51,7 @@ export interface Card {
   crew?: CrewMember[];
 }
 
-export type CrewState = "needs" | "failed" | "proposed" | "working" | "queued" | "done";
+export type CrewState = "needs" | "failed" | "working" | "queued" | "done";
 
 export interface CrewMember {
   agent: string;
