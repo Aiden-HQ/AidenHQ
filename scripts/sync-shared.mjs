@@ -67,7 +67,7 @@ export const SHARED = {
   // App identity (docs/design/app-identity.md): the middleware every app copies, from the app template.
   "services/shared/aidenhq-identity.mjs": ["modules/apps-platform/starter/aidenhq-identity.mjs"],
   // The supply-chain checks, version picker and image scan, for app repos (the app CI template is copied into each as it is).
-  "scripts/supply-chain/best-version.mjs": ["modules/ci/template/.github/supply-chain/best-version.mjs"],
+  "scripts/supply-chain/best-version.mjs": ["modules/ci/template/.github/supply-chain/best-version.mjs", "modules/engineering/skills/supply-chain/best-version.mjs"],
   "scripts/supply-chain/pins.mjs": ["modules/ci/template/.github/supply-chain/pins.mjs"],
   "scripts/supply-chain/npm-age.mjs": ["modules/ci/template/.github/supply-chain/npm-age.mjs"],
   "scripts/supply-chain/image-scan.mjs": ["modules/ci/template/.github/supply-chain/image-scan.mjs"],

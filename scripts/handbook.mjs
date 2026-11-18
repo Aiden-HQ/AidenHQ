@@ -94,10 +94,6 @@ const profileSection = (cfg) => (cfg.owner_profile ? `${section("profile")}\n${c
 const WEB_SECTION = section("web");
 // Agents kept asking for approval through Paperclip's own mechanism, which the owner never sees (approval cards are the only one).
 const APPROVALS_SECTION = section("approvals");
-// How the builders build (owner interview, 2026-11-15): nudges, said positively. Builders are the agents with `builder: true`
-// (the Architect, the DevOps Engineer, the UI/UX Designer, the UI Reviewer); the runner's Engineers get the section through
-// their metadata (`build`) in the job prompt (services/runner/src/prompt.ts).
-export const HOW_WE_BUILD_SECTION = section("how-we-build");
 // The owning agent checks its app change live, an hour and a day after it deploys (owner, 2026-11-15): for agents that own
 // apps and can wake themselves later (app_logs and wake_at).
 const appFollowupSection = (a) => (a.enabled_tools?.apps?.includes("app_logs") && a.enabled_tools?.chat_lane?.includes("wake_at") ? section("app-followup", "") : "");
@@ -108,6 +104,7 @@ function sectionText(cfg, a, id, { repo, fleetIssues }) {
   if (body.includes("{{fleet_issues}}") && !fleetIssues) throw new Error(`section ${id}: the Fleet issues task is missing`);
   return body.replaceAll("{{fleet_issues}}", fleetIssues).replace("{{memory}}", () => a.memory ?? "");
 }
+// deleted at the one-way big switch (crew read skills natively in computers)
 const onDemand = (cfg, id) => cfg.prompts?.[id]?.load === "on_demand";
 
 /**
@@ -146,7 +143,6 @@ export function handbookParts(cfg, key, a, { repo, instanceDir, engines = {}, fl
     ["outcomes", codex ? outcomesSection(cfg) : ""],
     ["handoff", codex ? HANDOFF_SECTION : ""],
     ["approvals", codex ? APPROVALS_SECTION : ""],
-    ["how-we-build", codex && a.builder === true ? HOW_WE_BUILD_SECTION : ""],
     ["web", !codex ? "" : a.web_search === "disabled" ? WEB_SECTION.replace("You have live web search, `web_view`", "You have `web_view`") : WEB_SECTION],
     ["app-followup", codex ? appFollowupSection(a) : ""],
     ["sources", sourcesSection(a, cfg.mcp_servers ?? {})],

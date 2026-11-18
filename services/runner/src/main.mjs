@@ -4388,7 +4388,6 @@ async function startJob({ issue, instructions }) {
     // A specialised Engineer (Platform Engineer) brings its own handbook; the others share one persona per engine.
     const assigned = engineers.find((a) => a.id === full.assigneeAgentId);
     const brief = typeof assigned?.metadata?.brief === "string" ? assigned.metadata.brief : "";
-    const build = typeof assigned?.metadata?.build === "string" ? assigned.metadata.build : "";
     const persona = brief ? undefined : personaFor(engine.kind, engineers, assigned);
     // Billed to the Engineer (a label-only task: the first general one on its engine, else any general one).
     const general = generalEngineers(engineers);
@@ -4402,7 +4401,7 @@ async function startJob({ issue, instructions }) {
     const seen = { workspace: "/workspace", repos: repos.map((r) => ({ ...r, path: r.path.replace(workspace, "/workspace") })) };
     const prompt = resumed
       ? followUpPrompt({ user: cfg.selfName, instructions, ...seen, branches, files, primer, crew, reads: observes(engine), thread, stand, brief })
-      : firstPrompt({ user: cfg.selfName, task: full, ...seen, branches, instructions, files, primer, persona, crew, reads: observes(engine), thread, stand, team: crewNames(engineers), brief, build, orgs: cfg.hostOrgs });
+      : firstPrompt({ user: cfg.selfName, task: full, ...seen, branches, instructions, files, primer, persona, crew, reads: observes(engine), thread, stand, team: crewNames(engineers), brief, orgs: cfg.hostOrgs });
     const tipsBefore = await branchTips(workspace);
     const identity = await botIdentity();
     const ghToken = await jobGhToken(app, repos.map((r) => r.slug), appFor).catch((err) => (log("no gh token for the job", { issue: issue.identifier, err: String(err.message ?? err).slice(0, 200) }), undefined));
