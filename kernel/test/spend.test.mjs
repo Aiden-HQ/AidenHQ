@@ -166,7 +166,8 @@ test("restart: a live kernel's reservations are left to it; a dead one's close a
 test("ledger move: the old usage.db's rows land once in kernel.db, repeatably, and its spend still counts against the caps", async (t) => {
   const dir = mkdtempSync(join(tmpdir(), "spend-move-"));
   const legacy = join(dir, "usage.db");
-  const old = openLedger(legacy).db; // the old gateway's file, as it wrote it
+  const old = openLedger(legacy).db; // the old gateway's file, as it wrote it: without the columns added since
+  old.exec("ALTER TABLE calls DROP COLUMN owner; ALTER TABLE calls DROP COLUMN gen");
   const add = old.prepare("INSERT INTO calls (key, at, day, run_key, agent_id, issue_id, task_subject, kind, component, model, cost_usd, status) VALUES (?, ?, '2026-11-16', ?, 'ag', 'WOR-9', 'WOR-9', 'agent', 'agent', 'm', ?, 'ok')");
   for (let i = 0; i < 50; i++) add.run(`gen-${i}`, `2026-11-16T0${i % 10}:00:00Z`, `run-${i}`, 0.001);
   // A table whose columns are in another order than today's (one grown by ALTER TABLE): moved by name.
