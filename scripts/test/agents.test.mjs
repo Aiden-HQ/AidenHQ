@@ -261,13 +261,6 @@ test("chat: an instance agent's fast chat lane: defaults, and only its own grant
   assert.throws(() => compile(product, withAgents({ "review-chaser": { yaml: { chat: { stream: true } } } }, ["github", "slack"])), /chat: unknown field stream/);
 });
 
-test("builder: true reaches the compiled config (setup adds How we build from it), on module and instance agents", () => {
-  const r = compile(product, withAgents({ "review-chaser": { yaml: { builder: true } } }, ["github", "design"]));
-  const builders = Object.entries(r.paperclip.agents).filter(([, a]) => a.builder === true).map(([k]) => k);
-  assert.deepEqual(builders.sort(), ["app-maintainer", "architect", "review-chaser", "ui-designer", "ui-reviewer"]);
-  assert.throws(() => compile(product, withAgents({ x: { yaml: { builder: "yes" } } })), /x: builder is true, false or absent/);
-});
-
 test("the models the runner and the model tools name in code are priced (the gateway refuses an unpriced one)", () => {
   const priced = YAML.parse(readFileSync(join(product, "modules/models-openrouter/module.yaml"), "utf8")).models.map((m) => m.id);
   const named = ["modules/ai-reviewer/service/src/review.mjs", "services/runner/src/models.mjs", "services/runner/src/intake.ts", "modules/tasks/connections/tasks-mcp/src/models.mjs"]

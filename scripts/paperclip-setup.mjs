@@ -22,7 +22,7 @@ import { routineStatus } from "./setup-paused.mjs";
 import { checkLauncher, computerAdapterConfig, ensureComputers, runnerBox } from "./computers.mjs";
 import { ensureAgentKeys, ensureEventsPlugin } from "./paperclip-events.mjs";
 import { assertNoShell } from "./no-shell.mjs";
-import { agentSkills, handbookParts, HOW_WE_BUILD_SECTION, laneHandbook, onDemandSections, personaOf, readInstructions as readHandbook } from "./handbook.mjs";
+import { agentSkills, handbookParts, laneHandbook, onDemandSections, personaOf, readInstructions as readHandbook } from "./handbook.mjs";
 import { recoverStalePid } from "./paperclip-recover.mjs";
 import { awaitVerified, probeConfig } from "./agent-probe.mjs";
 import { officialRepo } from "./official-repo.mjs";
@@ -243,9 +243,8 @@ function runnerAgentBody(key, a, existing) {
     adapterConfig,
     runtimeConfig: { heartbeat: { enabled: false, intervalSec: 0, wakeOnDemand: false, maxConcurrentRuns: 1 } },
     // `brief: true`: the handbook is the runner's prompt for jobs assigned to this agent (a specialised Engineer).
-    // `build`: How we build, the one shared text; the runner's job prompt carries it for every Engineer.
     // maxParallel: the runner's cap on this agent's parallel jobs (`max_parallel`); without it only the host's max_concurrent.
-    metadata: { setupKey: `aidenhq:${key}`, module: a.module, isolation: a.isolation, runnerEngine: true, ...(a.engine ? { engine: a.engine } : {}), ...(runnerBox(a) ? { box: true } : {}), ...(a.private_reads === true ? { privateReads: true } : {}), ...(a.max_parallel ? { maxParallel: a.max_parallel } : {}), ...(models.length ? { models } : {}), ...(a.brief ? { brief: readInstructions(a).trim() } : {}), build: HOW_WE_BUILD_SECTION, ...persona(key, a) },
+    metadata: { setupKey: `aidenhq:${key}`, module: a.module, isolation: a.isolation, runnerEngine: true, ...(a.engine ? { engine: a.engine } : {}), ...(runnerBox(a) ? { box: true } : {}), ...(a.private_reads === true ? { privateReads: true } : {}), ...(a.max_parallel ? { maxParallel: a.max_parallel } : {}), ...(models.length ? { models } : {}), ...(a.brief ? { brief: readInstructions(a).trim() } : {}), ...persona(key, a) },
   };
 }
 
