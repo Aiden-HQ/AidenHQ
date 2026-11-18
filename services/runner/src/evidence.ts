@@ -57,25 +57,54 @@ function checkState(pr: any, c: any, gate: string): string {
 /**
  * The PRs the task's own runner records tie to it, for a merge its branch rows no longer name: the queue it ran for this task,
  * the merges it was asked to run, and the merge cards it filed on it (deps.taskMerged). dedupe: one row per PR. A record that
- * also holds the PR's branch (`headRef`) or its merge commit (`sha`) carries it: the grader checks the branch before it reads
- * the number, and cites the commit when the number has moved on.
+ * also holds the PR's branch (`headRef`), the head it was bound to (`headOid`, or a 40-hex `head` on a merge card) or its merge
+ * commit (`sha`) carries it: what identifies the change travels with the number.
  */
 export function taskMergePrs(rows: any[] | undefined) {
-  const out: { repo: string; number: number; url: string; head?: string; merge?: string }[] = [];
+  const out: { repo: string; number: number; url: string; head?: string; headOid?: string; merge?: string }[] = [];
   for (const r of rows ?? []) {
     const p = r?.url ? findPrs(String(r.url))[0] : r?.repo && r?.number ? { repo: String(r.repo), number: Number(r.number), url: `https://github.com/${r.repo}/pull/${r.number}` } : undefined;
     if (!p) continue;
     const head = typeof r.headRef === "string" && r.headRef ? r.headRef : undefined;
+    const headOid = [r.headOid, r.head].find((x: unknown) => typeof x === "string" && /^[0-9a-f]{40}$/.test(x)) as string | undefined;
     const merge = typeof r.sha === "string" && /^[0-9a-f]{40}$/.test(r.sha) ? r.sha : undefined;
     const seen = out.find((x) => x.repo.toLowerCase() === p.repo.toLowerCase() && x.number === p.number);
-    if (!seen) out.push({ ...p, ...(head ? { head } : {}), ...(merge ? { merge } : {}) });
+    if (!seen) out.push({ ...p, ...(head ? { head } : {}), ...(headOid ? { headOid } : {}), ...(merge ? { merge } : {}) });
     else {
-      seen.head ??= head;
-      seen.merge ??= merge;
+      if (head) seen.head ??= head;
+      if (headOid) seen.headOid ??= headOid;
+      if (merge) seen.merge ??= merge;
     }
   }
   return out;
 }
+
+type Identity = { state: "ok" } | { state: "stale"; why: string } | { state: "unknown" };
+
+/**
+ * How a stored PR's number reads against GitHub: this task's change, another change now under that number, or neither provably.
+ * The record's own identifiers decide, strongest first: the branch the task recorded (`head`, by staleHead), the head commit it
+ * bound (`headOid`), or the merge commit it merged at (`merge`). A record that keeps none of them proves nothing, and nothing
+ * proven is never graded as this task's work: `unknown` fails closed.
+ */
+function identityOf(p: { head?: string; headOid?: string; merge?: string }, pr: any): Identity {
+  if (p.head) {
+    const why = staleHead(p.head, pr.headRefName);
+    return why ? { state: "stale", why } : { state: "ok" };
+  }
+  if (p.headOid) {
+    const head = String(pr.headRefOid ?? "");
+    return head === p.headOid ? { state: "ok" } : { state: "stale", why: `its head is \`${head.slice(0, 12) || "(none)"}\`, not the task's \`${p.headOid.slice(0, 12)}\`` };
+  }
+  if (p.merge) {
+    if (String(pr.state) !== "MERGED" || pr.mergeCommit?.oid !== p.merge) return { state: "stale", why: `it did not merge at the task's merge commit \`${p.merge.slice(0, 12)}\`` };
+    return { state: "ok" };
+  }
+  return { state: "unknown" };
+}
+
+/** What a record that keeps no branch, head commit or merge commit says: the number is not read as this task's change. */
+const unverifiable = (url: string) => `${url} is named by the runner's own record for this task, which keeps no branch, head commit or merge commit to tell the change by, so it is not read as this task's change`;
 
 /**
  * The merge commit the task's own records hold for one of its PRs, for when the row that named the PR has none: a stale number's
@@ -83,8 +112,8 @@ export function taskMergePrs(rows: any[] | undefined) {
  */
 async function recordedMerge(p: { repo: string; number: number; merge?: string }, deps: any): Promise<string | undefined> {
   if (p.merge || !deps.taskMerged) return p.merge;
-  const rows = await deps.taskMerged().catch(() => []);
-  return taskMergePrs(rows).find((x) => x.repo.toLowerCase() === p.repo.toLowerCase() && x.number === p.number && x.merge)?.merge;
+  const rows = taskMergePrs(await deps.taskMerged().catch(() => []));
+  return rows.find((x) => x.repo.toLowerCase() === p.repo.toLowerCase() && x.number === p.number && x.merge)?.merge;
 }
 
 /**
@@ -108,17 +137,20 @@ export async function presentNow(deliverable: any, deps: any) {
         facts.push(`${p.url} could not be read just now`);
         continue;
       }
-      // The stored number names this task's change only while GitHub's head is its recorded branch (staleHead). When it names
-      // another change, that change's state is not this task's: the fact is the merge commit the task's own record holds.
-      // Nothing of that change is this task's, so it is not "present": the escalation says what the record does hold instead.
-      const why = p.head ? staleHead(p.head, pr.headRefName) : undefined;
-      if (why) {
+      // The stored number is this task's change only while the record's own identifier says so (identityOf). When it names
+      // another change, or proves nothing, that change's state is not this task's: the fact is the merge commit the task's own
+      // record holds, and it is never "present", so the row escalates with what the record does hold instead.
+      const who = identityOf(p, pr);
+      if (who.state !== "ok") {
         const sha = await recordedMerge(p, deps);
-        facts.push(
-          sha
-            ? `${p.url} now names a different change (${why}); the runner's own record has this task's merge commit ${sha}`
-            : `${p.url} now names a different change (${why}), and the runner's own record holds no merge commit for this task`,
-        );
+        if (who.state === "unknown" && !sha) facts.push(unverifiable(p.url));
+        else if (who.state === "unknown") facts.push(`${p.url} can't be checked against this task (its record keeps no branch or head commit); the runner's own record has this task's merge commit ${sha}`);
+        else
+          facts.push(
+            sha
+              ? `${p.url} now names a different change (${who.why}); the runner's own record has this task's merge commit ${sha}`
+              : `${p.url} now names a different change (${who.why}), and the runner's own record holds no merge commit for this task`,
+          );
         continue;
       }
       if (pr.state !== "MERGED") {
@@ -198,15 +230,16 @@ export async function prEvidence(prs: any[], ref: string, deps: any): Promise<an
   for (const p of prs.slice(0, 5)) {
     const pr = (await deps.pr(p.repo, p.number))?.repository?.pullRequest;
     if (!pr) return { awaiting: `${p.url} can't be read yet` };
-    // The stored number is this task's change only while GitHub's head is the branch its record names: a re-created repository
-    // restarts numbering, and the number can then name an unrelated change. That change's diff and description are not this
-    // task's, so nothing of it is read or graded; the wait says so, and names the merge commit the task's own record holds.
-    if (p.head) {
-      const why = staleHead(p.head, pr.headRefName);
-      if (why) {
-        const sha = await recordedMerge(p, deps);
-        return { awaiting: `${p.url} now names a different change (${why}), so this task's change cannot be read by its stored number${sha ? `; the runner's record has its merge commit ${sha}` : ""}` };
-      }
+    // The stored number is this task's change only while the record's own identifier says so (identityOf): a re-created
+    // repository restarts numbering, and the number can then name an unrelated change. That change's diff and description are
+    // not this task's, so nothing of it is read or graded; the wait says so, and names the merge commit the record holds.
+    // A record that proves nothing is not graded either: the wait says the number can't be checked, rather than trusting it.
+    const who = identityOf(p, pr);
+    if (who.state !== "ok") {
+      const sha = await recordedMerge(p, deps);
+      if (who.state === "unknown" && !sha) return { awaiting: unverifiable(p.url) };
+      if (who.state === "unknown") return { awaiting: `${p.url} can't be checked against this task (its record keeps no branch or head commit to tell the change by), so it is not read as this task's change; the runner's own record has this task's merge commit ${sha}` };
+      return { awaiting: `${p.url} now names a different change (${who.why}), so this task's change cannot be read by its stored number${sha ? `; the runner's record has its merge commit ${sha}` : ""}` };
     }
     const checks = namedChecks(pr.commits?.nodes?.[0]?.commit?.statusCheckRollup);
     const gate = gateOn(pr, checks);
@@ -230,7 +263,7 @@ export async function prEvidence(prs: any[], ref: string, deps: any): Promise<an
     const own = history.findLast((c: any) => c.parents?.totalCount === 1);
     const shows = { commits: [pr.headRefOid, merged ? pr.mergeCommit?.oid : "", own?.oid].filter(Boolean), trees: [history.find((c: any) => c.oid === pr.headRefOid)?.tree?.oid, own?.tree?.oid].filter(Boolean) };
     prs_.push({ repo: p.repo, number: p.number, merge: merged ? (pr.mergeCommit?.oid ?? "") : "", mergedAt: pr.mergedAt ?? "", shows });
-    facts.push(`${p.url}: ${pr.state.toLowerCase()}${merged ? ` into ${pr.baseRefName}` : ` (base ${pr.baseRefName})`}, head ${pr.headRefOid}${merged && pr.mergeCommit?.oid ? `, merge commit ${pr.mergeCommit.oid}` : ""}; checks: ${checks.length ? checks.map((c: any) => `${c.name} ${checkState(pr, c, gate)}`).join(", ") : "none"}${byRecord ? `; named by the runner's own record for this task${p.head ? "" : ", which records no branch to check its head against"}` : ""}`);
+    facts.push(`${p.url}: ${pr.state.toLowerCase()}${merged ? ` into ${pr.baseRefName}` : ` (base ${pr.baseRefName})`}, head ${pr.headRefOid}${merged && pr.mergeCommit?.oid ? `, merge commit ${pr.mergeCommit.oid}` : ""}; checks: ${checks.length ? checks.map((c: any) => `${c.name} ${checkState(pr, c, gate)}`).join(", ") : "none"}${byRecord ? "; named by the runner's own record for this task" : ""}`);
     // The author's own words: code labels them and says whether they were cut; the text itself goes fenced, as data.
     const kept = text.slice(0, Math.max(0, left - head.length)).trim();
     left -= head.length + kept.length + 2;

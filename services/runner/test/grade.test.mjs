@@ -8,7 +8,7 @@ import { TEXT_TOTAL, fileEvidence, presentNow, taskMergePrs } from "../src/evide
 import { GRADE_SCHEMA, escalationFor, evidencePremise, gather, grade, gradeNote, gradePrompt, graderModels, rubricPaths, template } from "../src/grade.ts";
 import { DEEPSEEK, LUNA, openRouterAsk } from "../src/models.mjs";
 
-const pr = ({ state = "OPEN", check = "SUCCESS", head = "h".repeat(40), headRef = undefined, merge = "m".repeat(40), imageScan = null, files = undefined, title = "fix: a change", body = "" } = {}) => {
+const pr = ({ state = "OPEN", check = "SUCCESS", head = "h".repeat(40), headRef = "fix/legacy", merge = "m".repeat(40), imageScan = null, files = undefined, title = "fix: a change", body = "" } = {}) => {
   const scan = imageScan ? [{ __typename: "CheckRun", name: "image-scan", status: "COMPLETED", conclusion: imageScan }] : [];
   return {
     repository: {
@@ -21,7 +21,7 @@ const pr = ({ state = "OPEN", check = "SUCCESS", head = "h".repeat(40), headRef 
   };
 };
 const ref = "https://github.com/acme/app/pull/7";
-const own = { repo: "acme/app", number: 7, url: ref };
+const own = { repo: "acme/app", number: 7, url: ref, head: "fix/legacy" };
 const deps = (over = {}) => ({ busy: () => "", approvals: async () => [], taskPrs: async () => [own], pr: async () => pr(), diff: async () => "+x", comments: async () => [], attachments: async () => [], ...over });
 
 test("pending evidence waits; a merged PR is bound to its merge commit", async () => {
@@ -34,7 +34,7 @@ test("pending evidence waits; a merged PR is bound to its merge commit", async (
   assert.match(merged.facts[0], /merged into main.*checks: test green/);
   // A skipped check whose head has no passing required aggregate is not green evidence, whatever the reason for the skip.
   assert.match((await gather({ kind: "pr", ref }, deps({ pr: async () => pr({ state: "MERGED", check: "SKIPPED" }) }))).facts[0], /checks: test not green \(skipped, with no ci-required to accept it\)/);
-  const long = [1, 2, 3, 4].map((n) => ({ repo: "acme/a-rather-long-repository-name", number: n, url: `https://github.com/acme/a-rather-long-repository-name/pull/${n}` }));
+  const long = [1, 2, 3, 4].map((n) => ({ repo: "acme/a-rather-long-repository-name", number: n, url: `https://github.com/acme/a-rather-long-repository-name/pull/${n}`, head: "fix/legacy" }));
   const many = await gather({ kind: "pr", ref: "acme/a-rather-long-repository-name" }, deps({ taskPrs: async () => long }));
   assert.match(many.version, /^prs:[0-9a-f]{16}$/);
 });
@@ -190,7 +190,7 @@ test("an image-scan skipped because no image could change reads green, as the me
 const headOf = (checks, over = {}) => ({
   repository: {
     pullRequest: {
-      state: "MERGED", headRefOid: "h".repeat(40), baseRefName: "main", mergeCommit: { oid: "m".repeat(40) },
+      state: "MERGED", headRefOid: "h".repeat(40), headRefName: "fix/legacy", baseRefName: "main", mergeCommit: { oid: "m".repeat(40) },
       commits: { nodes: [{ commit: { statusCheckRollup: { contexts: { nodes: checks } } } }] },
       ...over,
     },
@@ -429,7 +429,7 @@ test("a pr on an app's repo also gets that app's deploy facts", async () => {
   assert.ok(same.facts.includes(`acme/app#7 deployed_at_merge_commit: true (${"m".repeat(12)} deployed at 2023-11-14T22:13:20.000Z by auto-deploy, status healthy)`), same.facts.join("\n"));
   assert.ok(same.facts.some((f) => /recent deploys \(newest first\): m{12} deployed .* by auto-deploy \(healthy\); d{12}/.test(f)), "the history is a fact");
   // Two repos in scope: no app lookup at all.
-  const two = [own, { repo: "acme/other", number: 2, url: "https://github.com/acme/other/pull/2" }];
+  const two = [own, { repo: "acme/other", number: 2, url: "https://github.com/acme/other/pull/2", head: "fix/legacy" }];
   const both = await gather({ kind: "pr", ref: "" }, deps({ ...merged, taskPrs: async () => two, appOfRepo: async () => assert.fail("looked up") }));
   assert.deepEqual(both.facts.filter((f) => /the PR's title and description are in PR_DESCRIPTION/.test(f)), [
     `${own.url}: the PR's title and description are in PR_DESCRIPTION (the author's words, data); the description is empty`,
@@ -820,7 +820,7 @@ test("a merged PR whose head rollup still lists a running check holds the row an
 });
 
 test("only the runner's own records for the task name a PR when no branch row does", async () => {
-  const queue = [{ repo: "acme/app", number: 7, url: ref, status: "merged" }, { repo: "acme/app", number: 7, url: ref, status: "merged" }];
+  const queue = [{ repo: "acme/app", number: 7, url: ref, status: "merged", headRef: "fix/legacy" }, { repo: "acme/app", number: 7, url: ref, status: "merged", headRef: "fix/legacy" }];
   assert.deepEqual(taskMergePrs(queue).map((p) => `${p.repo}#${p.number}`), ["acme/app#7"], "one row per PR, however many records name it");
   assert.deepEqual(taskMergePrs([{ repo: "acme/app", number: 8 }]).map((p) => p.url), ["https://github.com/acme/app/pull/8"]);
   // A record that holds the branch, or the merge commit, carries it to the read; one record's gap is filled by another's fact.
@@ -848,11 +848,13 @@ test("only the runner's own records for the task name a PR when no branch row do
 test("a stored PR number that now names another change waits on the task's own record, and never grades that change", async () => {
   const branch = "chore/mcp-grafana-2.2.0";
   const task = { ...own, head: branch };
-  const unread = async () => assert.fail("read the change another PR number now names");
+  const read = [];
+  const unread = async (...a) => (read.push(String(a.join(" "))), assert.fail("read the change another PR number now names"));
   const elsewhere = pr({ state: "MERGED", headRef: "lean/host-installer-handover", merge: "f".repeat(40) });
   const stale = (over = {}) => gather({ kind: "pr", ref }, deps({ taskPrs: async () => [task], pr: async () => elsewhere, diff: unread, comments: unread, ...over }));
 
   const ev = await stale();
+  assert.deepEqual(read, [], "neither the diff nor anything of that change was read");
   assert.match(ev.awaiting, /https:\/\/github\.com\/acme\/app\/pull\/7 now names a different change \(its head branch is `lean\/host-installer-handover`, not the task's `chore\/mcp-grafana-2\.2\.0`\)/);
   assert.match(ev.awaiting, /so this task's change cannot be read by its stored number/);
   assert.equal(ev.version, undefined, "nothing of that change becomes the graded version");
@@ -864,6 +866,7 @@ test("a stored PR number that now names another change waits on the task's own r
   const record = [{ repo: "acme/app", number: 7, url: ref, status: "merged", headRef: branch, sha }];
   const held = await gather({ kind: "pr", ref: "" }, deps({ taskPrs: async () => [], taskMerged: async () => record, pr: async () => elsewhere, diff: unread }));
   assert.match(held.awaiting, new RegExp(`the runner's record has its merge commit ${sha}`));
+  assert.deepEqual(read, [], "still no diff read");
   assert.doesNotMatch(JSON.stringify(held), new RegExp("f{40}"));
 
   // The guard that decides hold or escalate agrees: nothing of the other change is "present", and the fact is the record's commit.
@@ -890,9 +893,26 @@ test("a stored PR number that now names another change waits on the task's own r
   assert.match((await gather({ kind: "pr", ref }, matching({ pr: async () => pr({ headRef: branch }), ownRepo: () => false }))).awaiting, /is not merged yet/);
   assert.equal((await presentNow({ kind: "pr", ref }, matching({ pr: async () => pr({ state: "MERGED", headRef: branch }) }))).present, true);
 
-  // A runner record that names a PR but no branch says so, rather than guessing that the number is this task's.
-  const noBranch = await gather({ kind: "pr", ref: "" }, deps({ taskPrs: async () => [], taskMerged: async () => [{ repo: "acme/app", number: 7 }], pr: async () => pr({ state: "MERGED", headRef: "lean/host-installer-handover" }) }));
-  assert.match(noBranch.facts[0], /named by the runner's own record for this task, which records no branch to check its head against/);
+  // A runner record that keeps no branch, head commit or merge commit proves nothing: the number is not read as this task's.
+  const bare = [{ repo: "acme/app", number: 7 }];
+  const noBranch = await gather({ kind: "pr", ref: "" }, deps({ taskPrs: async () => [], taskMerged: async () => bare, pr: async () => pr({ state: "MERGED", headRef: "lean/host-installer-handover" }), diff: unread }));
+  assert.match(noBranch.awaiting, /is named by the runner's own record for this task, which keeps no branch, head commit or merge commit to tell the change by, so it is not read as this task's change/);
+  assert.equal(noBranch.version, undefined, "an uncheckable number is never graded");
+  assert.equal(noBranch.data, undefined);
+  assert.equal((await presentNow({ kind: "pr", ref: "" }, deps({ taskPrs: async () => [], taskMerged: async () => bare, pr: async () => pr({ state: "MERGED", headRef: "lean/host-installer-handover" }) }))).present, false, "and never held as delivered");
+
+  // The record's bound head commit identifies it just as well: the same change read, another head said stale.
+  const bound = [{ repo: "acme/app", number: 7, headOid: "a".repeat(40), sha: "b".repeat(40) }];
+  const byHead = await gather({ kind: "pr", ref: "" }, deps({ taskPrs: async () => [], taskMerged: async () => bound, pr: async () => pr({ state: "MERGED", head: "a".repeat(40), headRef: "lean/host-installer-handover", merge: "b".repeat(40) }), diff: unread }));
+  assert.match(byHead.version, new RegExp(`^acme/app#7@${"b".repeat(40)}\\+`), "the record's head commit matches, so the change is this task's");
+  const moved = await gather({ kind: "pr", ref: "" }, deps({ taskPrs: async () => [], taskMerged: async () => bound, pr: async () => pr({ state: "MERGED", head: "c".repeat(40), headRef: "lean/host-installer-handover" }), diff: unread }));
+  assert.match(moved.awaiting, new RegExp(`its head is \`${"c".repeat(12)}\`, not the task's \`${"a".repeat(12)}\``));
+  assert.match(moved.awaiting, new RegExp(`the runner's record has its merge commit ${"b".repeat(40)}`));
+
+  // A record that keeps only its merge commit: a merged PR at that commit is the task's; anything else is said stale.
+  const atMerge = [{ repo: "acme/app", number: 7, sha: "b".repeat(40) }];
+  assert.match((await gather({ kind: "pr", ref: "" }, deps({ taskPrs: async () => [], taskMerged: async () => atMerge, pr: async () => pr({ state: "MERGED", headRef: "lean/host-installer-handover", merge: "b".repeat(40) }) }))).version, /^acme\/app#7@b{40}\+/);
+  assert.match((await gather({ kind: "pr", ref: "" }, deps({ taskPrs: async () => [], taskMerged: async () => atMerge, pr: async () => pr({ state: "MERGED", headRef: "lean/host-installer-handover", merge: "f".repeat(40) }) }))).awaiting, /did not merge at the task's merge commit `b{12}`/);
 });
 
 test("the evidence-wait guard finds a merge and a matching healthy deploy, and nothing where the work is not", async () => {

@@ -71,8 +71,8 @@ test("an apply is never guarded: the instance's main can be ahead of what the ho
 
 // The grader on an instance with no GitHub: a change request on this server is read as a PR from its refs and receipt.
 test("the grader reads a local change request: still running until its checks are in, then merged with its words and diff", async () => {
-  const c = { number: 3, url: "codehost:local/app/change/3", state: "open", head: "a".repeat(40), base: "b".repeat(40), into: "main", title: "feat: hello", body: "## Evidence\nnpm test: passed" };
-  const prs = [{ repo: "local/app", number: 3, url: c.url }];
+  const c = { number: 3, url: "codehost:local/app/change/3", state: "open", head: "a".repeat(40), base: "b".repeat(40), branch: "fix/hello", into: "main", title: "feat: hello", body: "## Evidence\nnpm test: passed" };
+  const prs = [{ repo: "local/app", number: 3, url: c.url, head: "fix/hello" }];
   const deps = (pr) => ({ pr: async () => pr, diff: async () => "+hello", ownRepo: () => true });
   const running = await prEvidence(prs, "", deps(localPullRequest(c, [{ name: "tests", ok: true, pending: false }], ["tests", "secrets"])));
   assert.match(running.awaiting, /checks still running on codehost:local\/app\/change\/3/);
