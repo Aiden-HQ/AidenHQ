@@ -196,11 +196,6 @@ export function grantEntry(key, a, routines = {}) {
     max_parallel: a.max_parallel ?? 1, ...(a.private_reads === true ? { private_reads: true } : {}), ...(a.web_search ? { web_search: a.web_search } : {}), ...(own.length ? { routines: Object.fromEntries(own.map(([k, r]) => [k, { ...(r.model ? { model: r.model.replace(/^openrouter\//, "") } : {}), ...(r.reasoning_effort ? { effort: r.reasoning_effort } : {}) }])) } : {}),
   };
 }
-/**
- * paperclip_tasks tools the in-box `aidenhq task|tasks` call as the job (services/computer/images/engineer/bin/aidenhq).
- * `aidenhq advise` calls advisor_ask, which the tasks module's own default grant decides.
- */
-const JOB_CLI_TOOLS = ["task_get", "task_search"];
 /** An agent's profile (kernel/src/admission.ts PROFILES): which tools, writes and computer its kernel jobs get. */
 const JOB_PROFILES = ["crew", "engineer", "check"];
 
@@ -847,15 +842,10 @@ export function compile(productDir, instanceDir, { revision, fetch = hostFetch(p
     }
     // Default grants (a module's `default_grants:`, on its own connections, by the same tests as prompts): e.g. notify_owner
     // for every crew agent out of trial and untrusted modules, advisor_ask and memory_note while model-tools and memory are on.
-    for (const g of defaultGrants) if (promptApplies(g, { ...a, enabled_tools: tools }, enabled)) for (const t of g.tools) {
+    // An agent without `profile:` is crew (as its grant entry says).
+    for (const g of defaultGrants) if (promptApplies(g, { ...a, profile: a.profile ?? "crew", enabled_tools: tools }, enabled)) for (const t of g.tools) {
       const [c, tool] = t.split(".");
       if (!tools[c]?.includes(tool)) tools[c] = [...(tools[c] ?? []), tool];
-    }
-    // The in-box CLI's `aidenhq task|tasks` call these as the job, so crew and engineer agents hold them (a check job holds no
-    // tools). They read private data, so an Engineer (runner or engineer profile) holds them only with private_reads (computers.mjs).
-    const engineer = a.dispatch === "runner" || a.profile === "engineer";
-    if ((a.profile ?? "crew") !== "check" && (!engineer || a.private_reads === true) && paperclip.mcp_servers.paperclip_tasks) {
-      tools.paperclip_tasks = [...new Set([...(tools.paperclip_tasks ?? []), ...JOB_CLI_TOOLS])];
     }
     const memory = memoryOf(instanceDir, key, warnings);
     if (memory) a.memory = memory;
@@ -928,7 +918,7 @@ export function compile(productDir, instanceDir, { revision, fetch = hostFetch(p
   // (before the heartbeats, which quiet start leaves off unless the instance turned one on).
   if (settings.quiet_start === "on") for (const r of Object.values(paperclip.routines)) if (r.schedules?.length && paperclip.agents[r.agent]?.module !== "instance") r.status = "paused";
   heartbeatRoutines(paperclip, settings, instance.overrides?.agents ?? {}, routineTitles); // before the overrides, which may change their schedules
-  appFeedbackRoutines(paperclip, instanceAppDefs, routineTitles);
+  appFeedbackRoutines(paperclip, instanceAppDefs, routineTitles, new Set(defaultGrants.flatMap((g) => g.tools)));
   for (const [key, r] of Object.entries(paperclip.routines)) if (!paperclip.agents[r.agent]) fail(`routine ${key}: agent ${r.agent} is not enabled`);
 
   // Instance overrides: a fixed set of fields, on things that exist.
@@ -1356,12 +1346,12 @@ function heartbeatRoutines(paperclip, settings, agentOverrides, routineTitles) {
  * code fixes to an Engineer, through every gate), no other app's API, and apps-mcp keeps it to the apps that name it.
  */
 const FEEDBACK_TOOLS = { apps: ["app_api", "app_view"], paperclip_tasks: ["task_current", "task_get", "task_comments", "task_list", "task_comment", "task_finish", "task_set_status", "task_delegate", "memory_note", "handbook_section"] };
-function appFeedbackRoutines(paperclip, appDefs, routineTitles) {
+function appFeedbackRoutines(paperclip, appDefs, routineTitles, defaulted) {
   for (const a of appDefs) {
     if (!a?.share?.host || !a.feedback_to) continue;
     const agent = paperclip.agents[a.feedback_to] ?? fail(`app ${a.name}: feedback_to names ${a.feedback_to}, which is not an enabled agent`);
-    // Agents get notify_owner and the in-box CLI's tools by default; the feedback agent holds only FEEDBACK_TOOLS, so drop them.
-    for (const [c, list] of Object.entries(agent.enabled_tools)) agent.enabled_tools[c] = list.filter((t) => FEEDBACK_TOOLS[c]?.includes(t) || !(c === "paperclip_tasks" && (t === "advisor_ask" || JOB_CLI_TOOLS.includes(t))) && !(c === "telegram" && t === "notify_owner"));
+    // The modules' default grants (`defaulted`) come to every agent they apply to; the feedback agent holds only FEEDBACK_TOOLS, so drop them.
+    for (const [c, list] of Object.entries(agent.enabled_tools)) agent.enabled_tools[c] = list.filter((t) => FEEDBACK_TOOLS[c]?.includes(t) || !defaulted.has(`${c}.${t}`));
     for (const c of Object.keys(agent.enabled_tools)) if (!agent.enabled_tools[c].length) delete agent.enabled_tools[c];
     const extra = Object.entries(agent.enabled_tools).flatMap(([c, list]) => list.filter((t) => !FEEDBACK_TOOLS[c]?.includes(t)).map((t) => `${c}.${t}`));
     if (extra.length) fail(`app ${a.name}: its feedback agent ${a.feedback_to} may hold only ${Object.entries(FEEDBACK_TOOLS).map(([c, l]) => `${c}: ${l.join(", ")}`).join("; ")}, not ${extra.join(", ")}`);
