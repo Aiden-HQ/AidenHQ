@@ -1034,7 +1034,7 @@ export function createApp(opts: AppOptions): Server {
     const [google, states, sources] = await Promise.all([
       opts.google?.status(),
       signInStates(fresh),
-      appsApi<{ sources?: { source: string; last_ok: string | null; failing: boolean }[] }>("/internal/sources", undefined, { auth: true, timeoutMs: 5000 }).then(
+      appsApi<{ sources?: { source: string; last_ok: string | null; failing: boolean }[] }>("/internal/sources", { auth: true, timeoutMs: 5000 }).then(
         (r) => r.sources ?? [],
         () => null,
       ),

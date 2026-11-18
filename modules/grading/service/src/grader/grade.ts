@@ -90,8 +90,8 @@ const fence = (name: string, text: unknown, max: number) => {
  * GitHub (pr(repo, n): merges.PR_QUERY's data; diff(repo, n)), the board (approvals(): the task's cards; app(name): apps-mcp
  * status) and Paperclip (comments(), attachments(), content(id): a file's bytes; assignee: the task's agent id; delegator: the task's creator { agentId, userId }, whose comments can amend the ask; identifier: the task's; otherTask(ident): another task's file list, otherTaskEvidence); taskPrs() are the PRs the runner opened for the task (the only PRs read); ownRepo(slug): the runner or the owner
  * merges there; busy() says why
- * the task is still moving (a run, a merge queue or an auto-merge), if it is. With a `rubric` and deps.view(name, path) (the
- * board's /internal/grades/view), a deployed app's live pages are captured too (liveEvidence); without one (the resubmit
+ * the task is still moving (a run, a merge queue or an auto-merge), if it is. With a `rubric` and deps.view(name, path) (apps-mcp's
+ * /internal/view), a deployed app's live pages are captured too (liveEvidence); without one (the resubmit
  * check, which only needs the version) nothing is rendered.
  */
 export async function gather(deliverable: any, deps: any, rubric: string[] = []): Promise<any> {
