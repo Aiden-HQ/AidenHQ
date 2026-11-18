@@ -45,7 +45,6 @@ import { accountSession, type BoardSession, type SessionOf } from "./session.js"
 import { laneAgents, laneMessages, laneSend, type LaneOptions } from "./lane.js";
 import { latest, successorOf } from "./rollover.js";
 import { NOTICE_MARKER, asksOwner, chatAgent, chatAgentMarker, chatState, conversation, lastWord, needsYou, openAsk, pickAgent, shownState, type Message } from "./chats.js";
-import { activityDays } from "./days.js";
 import { addDays, nextWorkday, type Weekday } from "./recurrence.js";
 import { BUCKETS, isBucket, localDate, type Store } from "./store.js";
 import { AsideSchema, askGateway, asideMessages, holdsActive, lineageStatus, lineageTotal, modelOf, settleable, stillSettled, type LineageRow } from "./lineage.js";
@@ -1372,24 +1371,6 @@ export function createApp(opts: AppOptions): Server {
           store.unsettle(all.find((i) => i.identifier === c.identifier)!.id);
         }
         return { chats: [...chats, ...handedOut], agents };
-      },
-    },
-    {
-      // Activity: what each agent did, by the owner's local day (finished tasks and failed runs).
-      method: "GET",
-      path: /^\/api\/activity$/,
-      handle: async (_m, _b, url) => {
-        const days = Math.min(30, Math.max(1, Number(url.searchParams.get("days") ?? 7) || 7));
-        const ctx = await context();
-        const since = new Date(Date.now() - days * 86_400_000).toISOString();
-        const [closed, runs] = await Promise.all([pc.closedSince(since), pc.recentRuns(200)]);
-        const failed = runs.filter((r) => (r.status === "failed" || r.status === "timed_out") && r.finishedAt && r.finishedAt >= since);
-        const titles = new Map<string, { identifier: string; title: string }>();
-        for (const id of new Set(failed.map((r) => r.issueId).filter((x): x is string => !!x && !closed.some((c) => c.id === x)))) {
-          const i = await pc.issueSummary(id).catch(() => undefined);
-          if (i) titles.set(id, { identifier: i.identifier, title: i.title });
-        }
-        return { days: activityDays(closed.filter((i) => !i.originKind), failed, ctx.agents, opts.timezone, titles) };
       },
     },
     {

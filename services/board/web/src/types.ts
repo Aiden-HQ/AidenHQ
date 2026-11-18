@@ -636,14 +636,6 @@ export interface RunTrace {
   ledger: { rows: { at: string; kind: string | null; model: string; input: number; cached: number; output: number; costUsd: number | null; ms: number | null; status: string | null; runKey: string | null }[]; usd: number | null; capUsd: number | null };
   notes: string[];
 }
-export interface ActivityItem {
-  when: string;
-  agent: string;
-  chat: string;
-  sentence: string;
-  link: string;
-  kind: "done" | "failed";
-}
 export interface NeedsYou {
   count: number;
   /** Open Tier 2 approval cards: the Approvals badge. */

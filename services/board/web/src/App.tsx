@@ -37,7 +37,6 @@ import { dayDate, keepsSecureCookies, matches } from "./util";
 import { panelsOf } from "./sidebar";
 
 // Pages off the first screen load as their own chunks (warmed on hover and when the browser is idle: queries.ts).
-const ActivityView = lazy(() => VIEW_CHUNKS.activity().then((m) => ({ default: m.ActivityView })));
 const AppsView = lazy(() => VIEW_CHUNKS.apps().then((m) => ({ default: m.AppsView })));
 const CostsView = lazy(() => VIEW_CHUNKS.costs().then((m) => ({ default: m.CostsView })));
 const CrewView = lazy(() => VIEW_CHUNKS.agents().then((m) => ({ default: m.CrewView })));
@@ -117,7 +116,7 @@ function parseRoute(): Route {
     return { kind: "settings", cat: isCategory(cat) ? cat : null };
   }
   if (h === "connections" || h === "accounts") return { kind: "settings", cat: h };
-  // #/approvals, #/activity, ...: deep links to a tab.
+  // #/approvals, #/costs, ...: deep links to a tab.
   // A tab link may carry the tab's own state after "?" (#/costs?range=7d).
   if ((VIEWS as string[]).includes(h.split("?")[0]!)) return { kind: "view", view: h.split("?")[0] as View };
   const setup = /^setup\/([a-z0-9-]{1,63})$/.exec(h);
@@ -141,10 +140,10 @@ function useMedia(query: string) {
   return on;
 }
 
-type View = "chat" | "agents" | "modules" | "approvals" | "activity" | "board" | "apps" | "costs" | "settings";
-const VIEWS: View[] = ["chat", "agents", "modules", "approvals", "activity", "board", "apps", "costs", "settings"];
+type View = "chat" | "agents" | "modules" | "approvals" | "board" | "apps" | "costs" | "settings";
+const VIEWS: View[] = ["chat", "agents", "modules", "approvals", "board", "apps", "costs", "settings"];
 // Daily work in the bar; configuration (connections, accounts, instance settings) is behind the Settings gear.
-const TABS: [View, string][] = [["chat", "Chat"], ["approvals", "Approvals"], ["agents", "Agents"], ["modules", "Modules"], ["apps", "Apps"], ["board", "Tasks"], ["activity", "Activity"], ["costs", "Costs"]];
+const TABS: [View, string][] = [["chat", "Chat"], ["approvals", "Approvals"], ["agents", "Agents"], ["modules", "Modules"], ["apps", "Apps"], ["board", "Tasks"], ["costs", "Costs"]];
 const VIEW_KEY = "aidenhq.view";
 const savedView = (): View => {
   try {
@@ -703,7 +702,6 @@ export function App() {
 
       {view === "chat" && <ChatWorkspace selected={route.kind === "chat" ? route.ref : null} composing={route.kind === "chat" && !route.ref} mobile={mobile} crew={board.assignees} prefix={board.prefix} go={go} onSignIn={signInNeeded} toast={toast} />}
       {view === "approvals" && <ApprovalsView open={openChat} onSignIn={signInNeeded} />}
-      {view === "activity" && <Suspense fallback={<PageLoading />}><ActivityView onSignIn={signInNeeded} /></Suspense>}
       {view === "settings" && <SettingsView cat={route.kind === "settings" ? route.cat : null} mobile={mobile} session={session} go={go} onSignIn={signInNeeded} can={{ signIn: signInConnect, google: googleConnect }} />}
       {view === "modules" && route.kind !== "module" && <Suspense fallback={<PageLoading />}><ModulesView onSignIn={signInNeeded} /></Suspense>}
       {view === "modules" && route.kind === "module" && <Suspense fallback={<PageLoading />}><ModulePage key={route.name} name={route.name} tab={route.tab} go={go} onSignIn={signInNeeded} /></Suspense>}

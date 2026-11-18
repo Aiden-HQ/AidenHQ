@@ -17,7 +17,6 @@ export const QUERIES = {
   agents: q("agents", api.agents),
   apps: q("apps", api.apps),
   modules: q("modules", api.modules),
-  activity: q("activity.7", () => api.activity(7)),
   // What the owner decides on is never read back from the device: memory only, refetched on every visit.
   approvals: q("approvals", api.approvals, false),
   needsYou: q("needs-you", api.needsYou, false),
@@ -47,13 +46,11 @@ const VIEW_QUERIES: Record<string, Query<unknown>[]> = {
   agents: [QUERIES.roster, QUERIES.agents],
   apps: [QUERIES.apps],
   modules: [QUERIES.modules],
-  activity: [QUERIES.activity],
   approvals: [QUERIES.approvals, QUERIES.needsYou],
 };
 
 /** Pages split off the first download (App.tsx loads them lazily); a hover, or an idle moment after boot, fetches them. */
 export const VIEW_CHUNKS = {
-  activity: () => import("./Activity"),
   apps: () => import("./Apps"),
   costs: () => import("./Costs"),
   agents: () => import("./Agents"),
