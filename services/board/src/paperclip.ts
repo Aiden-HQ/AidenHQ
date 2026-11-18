@@ -51,6 +51,17 @@ export interface Issue {
   executionBlocker?: { cause: string; runError?: string | null; runId?: string | null; recoveryActionId?: string | null } | null;
 }
 
+/** Paperclip's own approval: the board mirrors an open kernel card as one so its wait is counted (mirror.ts). */
+export interface PaperclipApproval {
+  id: string;
+  type: string;
+  status: string;
+  /** Set to the filing user when the board's key files it: what makes an approval the board's own (mirror.ts). */
+  requestedByUserId?: string | null;
+  requestedByAgentId?: string | null;
+  payload?: { [k: string]: unknown } | null;
+}
+
 /** An agent run in progress (Paperclip's live-runs). */
 export interface LiveRun {
   id: string;
@@ -273,6 +284,30 @@ export class Paperclip {
   resumeAgent(id: string): Promise<unknown> {
     this.cache.clear();
     return this.request("POST", `/api/agents/${encodeURIComponent(id)}/resume`, {});
+  }
+
+  /** The company's approvals in one status (`pending` for the card mirrors). */
+  approvals(status = "pending"): Promise<PaperclipApproval[]> {
+    return this.request<PaperclipApproval[]>("GET", `/api/companies/${this.companyId}/approvals?status=${encodeURIComponent(status)}`);
+  }
+
+  /** An approval linked to a task: the mirror of an open kernel card (mirror.ts). */
+  createApproval(body: { type: string; issueIds: string[]; requestedByAgentId?: string; payload: { [k: string]: unknown } }): Promise<PaperclipApproval> {
+    return this.request<PaperclipApproval>("POST", `/api/companies/${this.companyId}/approvals`, body);
+  }
+
+  /**
+   * Retires a card mirror without waking anyone. Paperclip's reject route wakes the assignee of every linked issue whose
+   * review path it finds lost, so a mirror that is a task's last review path would wake that task as it goes: the mirror
+   * must not be a wake source of its own. Unlinking first leaves nothing for that wake to name, and the reject then
+   * resolves the approval itself, so it stops counting as a pending wait and leaves no orphan in the company's list,
+   * without touching the kernel record it stands for. Either half may find the mirror already gone: that is not an error.
+   */
+  async retireApproval(id: string, task: string, reason: string): Promise<void> {
+    await this.request("DELETE", `/api/issues/${encodeURIComponent(task)}/approvals/${encodeURIComponent(id)}`).catch((err) => {
+      if (!(err instanceof PaperclipError && err.status === 404)) throw err;
+    });
+    await this.request("POST", `/api/approvals/${encodeURIComponent(id)}/reject`, { decisionNote: reason });
   }
 
   cancelRun(runId: string): Promise<unknown> {
