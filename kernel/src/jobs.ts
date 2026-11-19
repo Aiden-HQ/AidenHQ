@@ -10,6 +10,8 @@ import { appendFileSync, closeSync, lstatSync, mkdirSync, openSync, readFileSync
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
 import { appendLine, lines, readFrom } from "../sdk/src/engine-io.ts";
+import { factWriter, iso } from "./factlog.ts";
+import type { Facts } from "./facts.ts";
 import { SESSION, buildJob, observes, readEngines, type Box, type Engine, type SandboxConfig } from "./sandbox.ts";
 
 /** What the control plane says about a task. */
@@ -127,7 +129,11 @@ const DDL = `CREATE TABLE IF NOT EXISTS jobs (
   box TEXT, session TEXT, offset INTEGER NOT NULL DEFAULT 0, state TEXT NOT NULL, exit INTEGER, final TEXT NOT NULL DEFAULT '',
   why TEXT NOT NULL DEFAULT '{}', usage TEXT, progress TEXT NOT NULL DEFAULT '{}', ended INTEGER)`;
 
-export function createJobs({ db, cfg, cp, mayDispatch, log, boxWrap, onEnd = () => {} }: {
+export function createJobs({ db, cfg, cp, mayDispatch, log, boxWrap, onEnd = () => {}, facts, agentKey = (id) => id }: {
+  /** Flow's fact log (facts.ts): job.started and job.ended. */
+  facts?: Facts;
+  /** An agent's key (grants), for the facts' actor. */
+  agentKey?: (agent: string) => string;
   /** A job ended (or was found lost): the kernel releases the box it got for it (boxes.ts). */
   onEnd?: (id: string) => void;
   db: DatabaseSync; cfg: SandboxConfig; cp: ControlPlane;
@@ -156,6 +162,30 @@ export function createJobs({ db, cfg, cp, mayDispatch, log, boxWrap, onEnd = () 
     versions.set(id, (versions.get(id) ?? 0) + 1);
     for (const w of waiters.get(id) ?? []) w();
     waiters.delete(id);
+  };
+  const fact = factWriter(facts, log);
+  /**
+   * job.started / job.ended. An ended job carries what the gateway billed for it (its calls' run id is the job id: gateway/lib.ts
+   * identify) and whether it acted: it filed a record, commented (outcomes.ts, cp.ts record who) or changed its task's status.
+   */
+  const jobFact = (r: Record<string, any>, type: "job.started" | "job.ended", data: Record<string, unknown> = {}) => {
+    if (!facts) return;
+    const at = Date.now();
+    let extra: Record<string, unknown> = {};
+    if (type === "job.ended") {
+      const live = "status NOT IN ('cap_reached', 'reserved')";
+      const sum = (() => { try { return db.prepare(`SELECT COALESCE(SUM(cost_usd), 0) AS cost_usd, COALESCE(SUM(input), 0) AS input, COALESCE(SUM(cached), 0) AS cached, COALESCE(SUM(output), 0) AS output FROM calls WHERE run_id = ? AND ${live}`).get(r.id) as Record<string, number>; } catch { return { cost_usd: 0, input: 0, cached: 0, output: 0 }; } })();
+      const model = (() => { try { return (db.prepare(`SELECT model FROM calls WHERE run_id = ? AND ${live} GROUP BY model ORDER BY COUNT(*) DESC LIMIT 1`).get(r.id) as { model: string } | undefined)?.model ?? ""; } catch { return ""; } })();
+      const since = iso(r.at);
+      const acted = (() => {
+        try {
+          return Boolean(db.prepare("SELECT 1 FROM facts WHERE task = ? AND at >= ? AND ((type = 'task.commented' AND json_extract(data, '$.job') = ?) OR (type = 'task.status_changed' AND actor = ?)) LIMIT 1").get(r.task, since, r.id, `agent:${agentKey(r.agent)}`)
+            || db.prepare("SELECT 1 FROM records WHERE task = ? AND created_at >= ? LIMIT 1").get(r.task, since));
+        } catch { return false; }
+      })();
+      extra = { ...sum, model, acted };
+    }
+    fact({ type, subject: `job:${r.id}`, version: type === "job.started" ? "started" : "ended", at: iso(at), actor: `agent:${agentKey(r.agent)}`, task: r.task, data: { ...data, ...extra } });
   };
   const row = (id: string) => db.prepare("SELECT * FROM jobs WHERE id = ?").get(id) as Record<string, any> | undefined;
   const view = (r: Record<string, any>): JobView => {
@@ -242,6 +272,7 @@ export function createJobs({ db, cfg, cp, mayDispatch, log, boxWrap, onEnd = () 
       db.prepare("UPDATE jobs SET state = ?, exit = ?, final = ?, why = ?, offset = ?, session = ?, ended = ? WHERE id = ?")
         .run(state, exit, lastMessage, JSON.stringify({ timedOut, cancelled, ...(stoppedBy ? { by: stoppedBy } : {}) }), offset, session, Date.now(), id);
       log("job finished", { job: id, task: r.task, state, exit });
+      jobFact(r, "job.ended", { state, exit, why: state === "done" ? "" : state === "cancelled" ? `stopped${stoppedBy ? ` by ${stoppedBy}` : ""}` : state === "timeout" ? `ran past ${cfg.timeout_minutes} minutes` : clip(lastMessage, 200) });
       bump(id);
       onEnd(id);
     };
@@ -281,6 +312,7 @@ export function createJobs({ db, cfg, cp, mayDispatch, log, boxWrap, onEnd = () 
       }
       db.prepare("UPDATE jobs SET state = 'lost', exit = NULL, ended = ? WHERE id = ?").run(Date.now(), r.id);
       log("job lost while no kernel followed it", { job: r.id, task: r.task });
+      jobFact(r, "job.ended", { state: "lost", exit: null, why: "no kernel followed it" });
       onEnd(r.id);
     }
   }
@@ -312,6 +344,7 @@ export function createJobs({ db, cfg, cp, mayDispatch, log, boxWrap, onEnd = () 
     child.unref();
     db.prepare("UPDATE jobs SET pid = ?, log = ?, dir = ?, at = ?, box = ?, session = ?, observing = ?, live_input = ?, state = 'running' WHERE id = ?")
       .run(child.pid ?? 0, logPath, jobDir, at, JSON.stringify(box), session && SESSION.test(session) ? session : null, observes(engine) ? 1 : 0, entry.live_input ? 1 : 0, id);
+    jobFact(r, "job.started");
     log("job started", { job: id, module: r.module, agent: r.agent, task: r.task, engine: engine.kind, pid: child.pid, box: box.container });
     watch(id);
     return view(row(id)!);

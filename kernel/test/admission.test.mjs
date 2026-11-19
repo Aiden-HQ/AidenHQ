@@ -4,6 +4,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { DatabaseSync } from "node:sqlite";
 import { createJobs } from "../src/jobs.ts";
+import { openFacts } from "../src/facts.ts";
 import { createAdmission, wakeInbox } from "../src/admission.ts";
 import { createWakes } from "../src/wakes.ts";
 import { createProvenance, ORIGIN } from "../src/provenance.ts";
@@ -11,6 +12,7 @@ import { createJobTools } from "../src/jobtools.ts";
 
 function setup({ capacity = 12, spend = () => [], launch = async () => {}, grants: g } = {}) {
   const db = new DatabaseSync(":memory:");
+  const facts = openFacts(db);
   const jobs = createJobs({ db, cfg: {}, cp: {}, mayDispatch: () => false, log: () => {}, boxWrap: "" });
   const grants = g ?? {
     "agent-1": { key: "acme-crew", tools: { slack: ["search"], tasks: ["create"] }, models: ["acme/m1", "acme/m2"], model: "acme/m1", effort: "high", skills: [{ id: "engineering.write-code", dir: "/x" }], routines: { digest: { model: "acme/m2", effort: "low" } } },
@@ -34,7 +36,7 @@ function setup({ capacity = 12, spend = () => [], launch = async () => {}, grant
   const origins = {}, caps = {};
   const adm = createAdmission({
     provenance, routineCap: async (task) => caps[task], nextTurn: createJobTools({ db, secret: () => "s", engines: () => [] }),
-    db, grants: () => grants, capacity: () => capacity, spend,
+    db, facts, grants: () => grants, capacity: () => capacity, spend: (...a) => spend(...a),
     kinds: () => ({ "tasks.create_task": { module: "tasks", floor: 1, tools: ["tasks.create"] }, "slack.post": { module: "slack", floor: 1, tools: ["slack.post"] }, "tasks.now": { module: "tasks", floor: 0, tools: ["tasks.create"] }, "codehost-github.pr": { module: "codehost-github", floor: 0, tools: [] }, "kernel.apply": { module: "kernel", floor: 1, tools: [] } }),
     mayDispatch: (module, agent) => module === "acme-dispatch" && agent !== "agent-3",
     cp: { task: async (id) => (tasks[id] ? { id, identifier: id.toUpperCase(), assigneeAgentId: tasks[id], status: "todo", ...origins[id] } : undefined) },
@@ -42,7 +44,7 @@ function setup({ capacity = 12, spend = () => [], launch = async () => {}, grant
     launch: async (job) => { launched.push(job); await launch(job); },
     log: () => {},
   });
-  return { db, adm, jobs, grants, wake, wakes, inbox, launched, origins, provenance, caps };
+  return { db, facts, adm, jobs, grants, wake, wakes, inbox, launched, origins, provenance, caps };
 }
 
 const req = (wake) => ({ wake, prompt: "do the thing" });
@@ -164,4 +166,21 @@ test("a team record never runs; its member's job holds the record's roles", asyn
   await assert.rejects(adm.admit("acme-dispatch", req(wake("w1", "task-7", "agent-4"))), (e) => e.code === "team-record");
   const job = await adm.admit("acme-dispatch", req(wake("w2", "task-3", "agent-2")));
   assert.deepEqual(job.authority.roles, ["platform-engineer"]); // a task no agent filed: platform authority applies
+});
+
+test("an admitted job is queued from its wake's time and binds the wake; a refusal is held once per wake and reason", async () => {
+  let over = [];
+  const { adm, wake, facts, db } = setup({ capacity: 1, spend: () => over });
+  const first = await adm.admit("acme-dispatch", req(wake("w1", "task-1", "agent-1")));
+  const queued = facts.forTask("task-1").filter((f) => f.type.startsWith("job.queued") || f.type === "wake.bound");
+  assert.deepEqual(queued.map((f) => [f.type, f.subject]), [["job.queued", `job:${first.id}`], ["wake.bound", "wake:w1"]]);
+  assert.deepEqual(queued[0].data, { wake: "w1", wake_at: new Date(1).toISOString(), agent: "acme-crew" });
+  assert.equal(queued[0].actor, "agent:acme-crew");
+  // The same wake refused twice is one fact; a new reason is another.
+  const w2 = wake("w2", "task-3", "agent-2");
+  for (let i = 0; i < 2; i++) assert.equal(await adm.admit("acme-dispatch", req(w2)).catch((e) => e.code), "busy");
+  over = [{ scope: "task" }];
+  db.prepare("UPDATE jobs SET state = 'done'").run();
+  assert.equal(await adm.admit("acme-dispatch", req(w2)).catch((e) => e.code), "over-cap");
+  assert.deepEqual(facts.forTask("task-3").filter((f) => f.type === "job.held").map((f) => f.data.reason), ["capacity", "spend_cap"]);
 });
