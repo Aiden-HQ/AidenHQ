@@ -8,12 +8,14 @@ replaces: [ fleet-ops, coach, librarian ] # the updater lists this module for an
 roles:
   # kernel.cp-read, kernel.work-read: the control plane's tasks and agents and the kernel's jobs, records and cost, read for the detector and
   # the Coach; kernel.tasks: the check task for the Steward; kernel.owner-notice: the owner's one line for a critical alert or a lost Steward;
-  # apps.read: apps-mcp's status, quality, sources and open PRs.
-  requests: [ kernel.cp-read, kernel.work-read, kernel.tasks, kernel.owner-notice, apps.read ]
+  # apps.read: apps-mcp's status, quality, sources and open PRs; kernel.routing: the routing learning loop's reads and its typed
+  # routing changes, each a reviewed kernel.apply filed as the calling agent (routing-tuner role only).
+  requests: [ kernel.cp-read, kernel.work-read, kernel.tasks, kernel.owner-notice, kernel.routing, apps.read ]
   declares:
     - { id: fleet-read, description: "The board's fleet status and the detector's incidents only (never fleet_control or relaying the owner's words)." }
     - { id: fleet-audit, description: "Read any agent's evidence (the fleet_steward connection's coach_* reads) and keep a review log (tasks bridge coach_record)." }
     - { id: librarian, description: "Read every handbook, decide proposed identity links, hand rule proposals to the Engineer (tasks bridge, apps-mcp)." }
+    - { id: routing-tuner, description: "Read team routing decisions and their outcomes, and propose one change a day to members' repos or routing weights as a reviewed experiment (routing_*)." }
 settings:
   # Minutes between the detector's checks (lower while developing). The detector files a check task for the Steward only when a
   # threshold trips or recovers, at most once per 30 minutes unless an app or apps-mcp is down or a critical alert fires
@@ -45,12 +47,13 @@ agents:
                          fleet_status, fleet_catalog, fanout_map,
                          coach_record, handbook_list, handbook_read, task_propose_rule ]
       # The detector's open and recovered incidents (fleet-read), the Coach's reads (fleet-audit) and the apply generations.
-      fleet_steward: [ fleet_detector, coach_due, coach_evidence, fleet_generation_status ]
+      # routing_* through routing-tuner: the routing learning loop.
+      fleet_steward: [ fleet_detector, coach_due, coach_evidence, fleet_generation_status, routing_evidence, routing_replay, routing_tune, routing_judge ]
     # It reads untrusted content broadly: the tasks module lets it assign work only to these. Fixes are theirs, under tiers:
     # the Engineer (rules, product and instance changes), an app's owner (app-owners; the
     # DevOps Engineer for an app with none), the Agent Architect (an agent's definition), the Maintainer (product bugs upstream).
     delegate_to: [ engineer, app-maintainer?, app-owners, architect?, maintainer? ]
-    roles: [ fleet-read, fleet-audit, librarian ]
+    roles: [ fleet-read, fleet-audit, librarian, routing-tuner ]
 # Routine titles stay as they were: setup matches routines by title. The check task itself is filed by the service (kernel.tasks).
 routines:
   fleet-ops-digest:
@@ -108,6 +111,18 @@ routines:
     concurrency: coalesce_if_active
     schedules:
       - { cron: "30 6 * * *", timezone: "${settings.timezone}", label: "daily" }
+  routing-review:
+    title: "Routing: daily review"
+    agent: fleet-steward
+    description: |
+      Today is {{date}}. Follow your routing-review skill: settle the open experiment with `routing_judge`, review
+      yesterday's team routing decisions with `routing_evidence`, and file at most one routing change. Then close this
+      task with one line.
+    concurrency: skip_if_active
+    # Its routing changes are AI-approved under the instance's full autonomy (owner, 2026-11-19); autonomy off still holds them.
+    autonomy: full
+    schedules:
+      - { cron: "15 0 * * *", timezone: "UTC", label: "after each UTC day" }
   librarian-weekly:
     title: Librarian weekly lint
     agent: fleet-steward
@@ -128,12 +143,13 @@ connections:
     auth: fleet_steward_service_key
     returns: untrusted
     tools:
-      read: [ fleet_detector, coach_due, coach_evidence, fleet_generation_status, fleet_stale_followups ]
+      read: [ fleet_detector, coach_due, coach_evidence, fleet_generation_status, fleet_stale_followups, routing_evidence, routing_replay ]
       # fleet_generation_status: the apply generations; fleet_stale_followups: the owner's stale todos for the daily brief. Tagged named,
       # so the read shorthand keeps them to the agents that name them (the Fleet Steward, the Maintainer and the chief of staff).
-      named: [ fleet_generation_status, fleet_stale_followups ]
+      named: [ fleet_generation_status, fleet_stale_followups, routing_evidence, routing_replay ]
       # fleet_followup_snooze: the owner's snooze of a brief line, a note in the steward's own record (role fleet-admin).
-      write: [ fleet_followup_snooze ]
+      # routing_tune, routing_judge: a routing change or its rollback, each filed as a reviewed kernel.apply (role routing-tuner).
+      write: [ fleet_followup_snooze, routing_tune, routing_judge ]
 services:
   data: true
   run:

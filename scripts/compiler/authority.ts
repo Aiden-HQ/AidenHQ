@@ -52,6 +52,7 @@ const KERNEL_ROLE_GRANTS: Record<string, string> = {
   "kernel.lane": "writes fast-lane turns to an agent's chat",
   "kernel.notify": "takes and sends the owner's messages",
   "kernel.owner-notice": "messages the owner",
+  "kernel.routing": "files team routing changes (members' repos, routing weights) as reviewed applies, for its routing-tuner agents",
   "kernel.tasks": "files and closes tasks",
   "kernel.wake": "schedules wakes",
   "kernel.work-read": "reads the kernel's jobs and records",

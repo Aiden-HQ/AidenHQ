@@ -281,14 +281,17 @@ test("an alert's label text is fenced in its incident, its closing marker neutra
 });
 
 test("the connection's tools check the caller's signed roles", async () => {
-  const mcp = createMcp(fleetTools({ detector: () => ({ open: [] }), due: async () => ({ due: [] }), evidence: async () => ({}), generations: async () => ({ pin: "abc" }), followups: async () => ({ followups: [] }), snooze: (t, d) => ({ task: t, days: d }) }));
-  const call = (name, roles) => mcp({ id: 1, method: "tools/call", params: { name, arguments: {} } }, async () => ({ agent: "a", key: "k", name: "k", roles, tool: name, call: "c", kind: "run" }));
+  const mcp = createMcp(fleetTools({ detector: () => ({ open: [] }), due: async () => ({ due: [] }), evidence: async () => ({}), generations: async () => ({ pin: "abc" }), followups: async () => ({ followups: [] }), snooze: (t, d) => ({ task: t, days: d }), routing: async (op, _a, assertion) => ({ op, assertion }) }));
+  const call = (name, roles) => mcp({ id: 1, method: "tools/call", params: { name, arguments: {} } }, async () => ({ agent: "a", key: "k", name: "k", roles, tool: name, call: "c", kind: "run", assertion: "jwt" }));
   assert.match((await call("coach_due", ["fleet-read"])).result.content[0].text, /Refused: coach_due is for an agent with the fleet-audit role/);
   assert.deepEqual(JSON.parse((await call("coach_due", ["fleet-audit"])).result.content[0].text), { due: [] });
   assert.deepEqual(JSON.parse((await call("fleet_detector", ["fleet-read"])).result.content[0].text), { open: [] });
   assert.equal(JSON.parse((await call("fleet_generation_status", [])).result.content[0].text).pin, "abc");
   assert.deepEqual(JSON.parse((await call("fleet_stale_followups", [])).result.content[0].text), { followups: [] });
   assert.match((await call("fleet_followup_snooze", ["fleet-read"])).result.content[0].text, /Refused/);
+  // The routing tools go to the kernel with the caller's own assertion, for routing-tuner only.
+  assert.match((await call("routing_tune", ["fleet-audit"])).result.content[0].text, /Refused: routing_tune is for an agent with the routing-tuner role/);
+  assert.deepEqual(JSON.parse((await call("routing_judge", ["routing-tuner"])).result.content[0].text), { op: "judge", assertion: "jwt" });
   const forged = await mcp({ id: 2, method: "tools/call", params: { name: "fleet_detector" } }, async () => { throw new Error("no caller assertion"); });
   assert.match(forged.result.content[0].text, /Refused: no caller assertion/);
 });

@@ -11,8 +11,8 @@ export interface Deps {
   isMonitoring: (authorization: string) => Promise<boolean>;
   receiveAlerts: (body: unknown) => Promise<unknown>;
   metrics: () => string;
-  mcp: (msg: any, caller: () => Promise<Caller>) => Promise<object | undefined>;
-  caller: (req: IncomingMessage) => Promise<Caller>;
+  mcp: (msg: any, caller: () => Promise<Caller & { assertion?: string }>) => Promise<object | undefined>;
+  caller: (req: IncomingMessage) => Promise<Caller & { assertion?: string }>;
 }
 
 const same = (a: string, b: string) => Boolean(a && b) && a.length === b.length && timingSafeEqual(Buffer.from(a), Buffer.from(b));

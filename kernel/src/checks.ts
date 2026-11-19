@@ -115,6 +115,9 @@ export function createChecks({ db, registry, owner, secret, resolver, agentKey =
    * `cross`: an agent closing a task that isn't its job's own (its delegator's acceptance of an escalated grade): refused
    * before anything moves unless a check answers `accepts`, so no other cross-task close passes.
    */
+  /** A finish check's verdict on a task (a grader's reopen, say): an outcome the routing learning loop trusts (routing-tune.ts), never its words. */
+  const verdictEvent = (task: string, check: string, verdict: string) => db.prepare("INSERT INTO events (id, type, at, data) VALUES (?, ?, ?, ?)").run(`e-${randomBytes(8).toString("hex")}`, "finish.verdict", new Date().toISOString(), JSON.stringify({ task, check, verdict }));
+
   async function finish(ref: string, caller: { agent?: string; tool?: string; via: string; cross?: boolean }): Promise<Finish> {
     const refuseCross = () => fail(403, "forbidden", `only this job's own task is finished here; ${ref} is finished by its assignee, or accepted by its delegator once grading has escalated it`);
     const all = finishing();
@@ -156,6 +159,7 @@ export function createChecks({ db, registry, owner, secret, resolver, agentKey =
       const reason = String(reopen.v.reason ?? "").slice(0, 2000);
       for (const x of verdicts) await unlabel(i, x.c);
       await patch(i, { status: "todo", ...(reason ? { comment: `[${reopen.id}] ${reason}` } : {}) });
+      verdictEvent(i.id, reopen.id, "reopen");
       log("finish reopened", { task: i.identifier, check: reopen.id });
       return { pass: false, reopened: true, reason };
     }
@@ -194,6 +198,7 @@ export function createChecks({ db, registry, owner, secret, resolver, agentKey =
     db.prepare("DELETE FROM check_holds WHERE task = ? AND check_id = ?").run(i.id, id);
     const comment = typeof b.comment === "string" && b.comment ? { comment: b.comment.slice(0, 60_000) } : {};
     if (to) await patch(await issue(i.id), { status: to, ...comment });
+    if (to) verdictEvent(i.id, id, String(b.verdict));
     log("finish check resolved", { task: i.identifier, check: id, verdict: b.verdict });
     return { ok: true };
   }

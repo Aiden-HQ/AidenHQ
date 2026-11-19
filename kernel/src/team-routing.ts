@@ -12,6 +12,10 @@ const KEY = /^[a-z][a-z0-9-]{0,39}$/;
 const NAME = /^\p{L}[\p{L} .'-]{0,29}$/u;
 /** A repo pattern: `owner/name`, where either part may be `*` (any). */
 const PATTERN = /^([\w.-]+|\*)\/([\w.-]+|\*)$/;
+const REPOS_MAX = 20;
+/** Weight bounds (the learning loop moves weights within them): each 0 to 10, and load at least 1, so load always counts. */
+export const WEIGHT_MAX = 10;
+export const LOAD_MIN = 1;
 /** Continuity counts a member's done tasks in the task's repo over this window. */
 export const CONTINUITY_MS = 7 * 86_400_000;
 
@@ -22,7 +26,7 @@ function memberProblems(where: string, m: unknown, named: boolean): string[] {
   const out: string[] = [];
   for (const f of Object.keys(m)) if (!(MEMBER_FIELDS as readonly string[]).includes(f) || (!named && f === "name")) out.push(`${where}: unknown field ${f}`);
   if (named && (typeof m.name !== "string" || !NAME.test(m.name))) out.push(`${where}.name: a short name (letters, spaces, . ' -; at most 30)`);
-  if (m.repos != null && (!Array.isArray(m.repos) || m.repos.some((r) => typeof r !== "string" || !PATTERN.test(r)))) out.push(`${where}.repos: a list of owner/name patterns (either part may be *)`);
+  if (m.repos != null && (!Array.isArray(m.repos) || m.repos.length > REPOS_MAX || m.repos.some((r) => typeof r !== "string" || !PATTERN.test(r)))) out.push(`${where}.repos: a list of at most ${REPOS_MAX} owner/name patterns (either part may be *)`);
   if (m.model != null && (typeof m.model !== "string" || !m.model.trim())) out.push(`${where}.model: a model id`);
   if (m.reasoning_effort != null && (typeof m.reasoning_effort !== "string" || !/^[a-z]{1,20}$/.test(m.reasoning_effort))) out.push(`${where}.reasoning_effort: an effort level`);
   if (m.max_parallel != null && !(Number.isInteger(m.max_parallel) && (m.max_parallel as number) >= 1 && (m.max_parallel as number) <= 10)) out.push(`${where}.max_parallel: 1 to 10`);
@@ -47,8 +51,8 @@ export function teamProblems(name: string, t: unknown): string[] {
   if (t.caps != null && (!isMap(t.caps) || Object.keys(t.caps).some((k) => k !== "day_usd") || !(typeof t.caps.day_usd === "number" && t.caps.day_usd > 0 && t.caps.day_usd <= 1000))) out.push(`${at}.caps: { day_usd } (USD, above 0, at most 1000): the whole team's day cap`);
   if (t.routing != null) {
     const w = isMap(t.routing) ? t.routing.weights : undefined;
-    if (!isMap(t.routing) || Object.keys(t.routing).some((k) => k !== "weights") || !isMap(w) || Object.entries(w).some(([k, v]) => !(k in DEFAULT_WEIGHTS) || typeof v !== "number" || !Number.isFinite(v) || v < 0 || v > 100))
-      out.push(`${at}.routing: { weights: { repo, continuity, load } } (each 0 to 100)`);
+    if (!isMap(t.routing) || Object.keys(t.routing).some((k) => k !== "weights") || !isMap(w) || Object.entries(w).some(([k, v]) => !Object.hasOwn(DEFAULT_WEIGHTS, k) || typeof v !== "number" || !Number.isFinite(v) || v < (k === "load" ? LOAD_MIN : 0) || v > WEIGHT_MAX))
+      out.push(`${at}.routing: { weights: { repo, continuity, load } } (each 0 to ${WEIGHT_MAX}; load at least ${LOAD_MIN})`);
   }
   return out;
 }
