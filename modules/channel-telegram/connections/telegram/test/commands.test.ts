@@ -19,7 +19,7 @@ describe("quick commands", () => {
     { identifier: "WOR-12", title: "Reply to <Sam>", status: "in_review" },
   ];
   const api = async (_m: string, path: string): Promise<any> => {
-    if (path.includes("/agents")) return [{ name: "Aiden", status: "running" }, { name: "Grace", status: "paused" }, { name: "Ada", status: "error" }];
+    if (path.includes("/agents")) return [{ name: "Aiden", status: "running" }, { name: "Grace", status: "idle", lifecycleHolds: ["manual"] }, { name: "Devops", status: "paused" }, { name: "Ada", status: "error" }];
     if (path.includes("status=in_review")) return issues;
     if (path.includes("/issues")) return [...issues, { identifier: "WOR-1", title: "x", status: "todo" }];
     return [];
@@ -32,7 +32,7 @@ describe("quick commands", () => {
   });
   it("/status counts agents and open tasks and names agents in error", async () => {
     const r = await quickCommand("/status", api, "co");
-    expect(r?.text).toMatch(/1 running/);
+    expect(r?.text).toMatch(/1 running, 0 idle, 1 paused/);
     expect(r?.text).toMatch(/Ada/);
     expect(r?.text).toMatch(/3 open tasks/);
   });

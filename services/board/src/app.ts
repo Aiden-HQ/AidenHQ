@@ -1,6 +1,7 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { timingSafeEqual } from "node:crypto";
 import { readFileSync } from "node:fs";
+import { agentPaused } from "./aidenhq-sdk/agent-paused.js";
 import { forOthers } from "./aidenhq-sdk/for-others.js";
 import { readFile, stat } from "node:fs/promises";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
@@ -1276,7 +1277,7 @@ export function createApp(opts: AppOptions): Server {
             )
           : [];
         const agents = ctx.agents
-          .filter((a) => a.status !== "paused" && a.status !== "terminated")
+          .filter((a) => !agentPaused(a))
           .map((a) => ({ key: a.id, name: a.name, front: a.metadata?.setupKey === "aidenhq:chief-of-staff" }));
         // A settled chat whose handed-out work runs or waits on the owner is active again.
         for (const c of chats) {
@@ -1321,7 +1322,7 @@ export function createApp(opts: AppOptions): Server {
         const input = parse(z.object({ text: z.string().trim().min(1).max(8000), agent: z.string().max(200).optional() }).strict(), body);
         const crew = ctx.agents;
         const named = input.agent ? crew.find((a) => a.id === input.agent || a.metadata?.setupKey === `aidenhq:${input.agent}` || a.name.toLowerCase() === input.agent!.toLowerCase()) : undefined;
-        const { agent, note } = named && named.status !== "paused" ? { agent: named, note: undefined } : pickAgent(input.text, crew);
+        const { agent, note } = named && !agentPaused(named) ? { agent: named, note: undefined } : pickAgent(input.text, crew);
         // A fast-lane agent answers in the lane, not in a task: the board opens its lane chat (`lane:<key>`).
         const lane = (await laneAgents(pc, opts.lane)).find((l) => l.id === agent.id);
         if (lane) {

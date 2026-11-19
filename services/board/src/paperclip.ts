@@ -21,6 +21,8 @@ export interface Agent {
   /** The agent's one-line routing description (setup writes it from the agent definition). */
   title?: string | null;
   status: string;
+  /** Paperclip's lifecycle holds (manual, setup, budget, company archived): what makes an agent paused (aidenhq-sdk/agent-paused.ts). */
+  lifecycleHolds?: string[];
   /** The agent it reports to (the org chart). */
   reportsTo?: string | null;
   metadata?: { setupKey?: string; module?: unknown; trial?: unknown; model?: unknown; models?: unknown; avatar?: unknown; runnerEngine?: unknown; engine?: unknown; profile?: unknown; department?: unknown; team?: unknown; memberOf?: unknown; maxParallel?: unknown } | null;

@@ -4,8 +4,8 @@ import { openStore } from "../src/store.js";
 import { chatAgentMarker, chatAgentOf, routeOwnerMessage } from "../src/threads.js";
 
 afterEach(() => vi.unstubAllGlobals());
-const ag = (id: string, name: string, key: string, status = "idle") => ({ id, name, status, metadata: { setupKey: `aidenhq:${key}` } });
-const agents = [ag("c", "Aiden", "chief-of-staff"), ag("s", "Researcher", "assistant"), ag("p", "Slack Scout", "slack-scout", "paused")];
+const ag = (id: string, name: string, key: string, status = "idle", lifecycleHolds: string[] = []) => ({ id, name, status, lifecycleHolds, metadata: { setupKey: `aidenhq:${key}` } });
+const agents = [ag("c", "Aiden", "chief-of-staff"), ag("s", "Researcher", "assistant"), ag("p", "Slack Scout", "slack-scout", "idle", ["manual"]), ag("d", "Devops", "devops", "paused")];
 
 describe("routeOwnerMessage", () => {
   const store = openStore(":memory:");
@@ -17,6 +17,7 @@ describe("routeOwnerMessage", () => {
   it("an unknown or paused @name goes to Aiden with a note", () => {
     expect(routeOwnerMessage("@nobody hi", undefined, store, agents)).toEqual({ kind: "new", agentId: "c", note: "(No agent called @nobody; sent to Aiden.)" });
     expect(routeOwnerMessage("@slack scout look", undefined, store, agents)).toMatchObject({ kind: "new", agentId: "c" });
+    expect(routeOwnerMessage("@devops look", undefined, store, agents)).toEqual({ kind: "new", agentId: "d" }); // Paperclip's status alone never pauses
   });
 });
 

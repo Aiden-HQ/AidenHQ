@@ -1,5 +1,6 @@
 // What the agents are doing: the kernel's jobs.
 import { z } from "zod";
+import { agentPaused } from "./aidenhq-sdk/agent-paused.js";
 import type { Step } from "./codex-activity.js";
 import type { KernelActivity, LiveRun, PastRun } from "./runs.js";
 import { type Agent, type Issue, type Routine } from "./paperclip.js";
@@ -145,7 +146,7 @@ function agentState(a: Agent, act: KernelActivity): Pick<RosterAgent, "state" | 
   const queued = act.queued.find((q) => q.agent === a.id)?.n ?? 0;
   const failing = act.failing.find((f) => f.agent === a.id);
   const workingSince = running.map((r) => r.started_at).filter((t): t is string => Boolean(t)).sort()[0] ?? null;
-  const state = a.status === "paused" ? "paused" : running.length ? "working" : failing ? "failing" : queued ? "queued" : "idle";
+  const state = agentPaused(a) ? "paused" : running.length ? "working" : failing ? "failing" : queued ? "queued" : "idle";
   return { state, ...(failing && state === "failing" ? { stateNote: failing.error } : {}), running: running.length, queued, workingSince };
 }
 

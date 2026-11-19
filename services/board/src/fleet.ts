@@ -2,6 +2,7 @@
 import { readFileSync } from "node:fs";
 import { z } from "zod";
 import type { IncomingMessage } from "node:http";
+import { agentPaused } from "./aidenhq-sdk/agent-paused.js";
 import { kernelJwks, verifyCaller } from "./aidenhq-sdk/caller.js";
 import { grantsTable, type Grant } from "./grants.js";
 import { OPEN, type Agent, type Issue, type Paperclip, type Routine } from "./paperclip.js";
@@ -171,7 +172,7 @@ export async function fleetStatus(pc: Paperclip, records: Pick<Records, "list">,
   return {
     runs: liveRunsOf(act).map((r) => ({ agent: who.get(r.agentId) ?? r.agentId, status: r.status, startedAt: r.startedAt, ageMinutes: r.startedAt ? minutesSince(r.startedAt) : null })),
     approvals: cards.map((a) => ({ id: a.id, task: a.identifier, action: a.action, target: a.target, tier: a.tier, state: a.state, requestedBy: a.requestedBy, ageMinutes: minutesSince(a.createdAt) })),
-    agents: agents.filter((a) => a.status !== "terminated").map((a) => ({ name: a.name, paused: a.status === "paused", lastRunAt: last.get(a.id)?.at ?? null, lastRunStatus: last.get(a.id)?.status ?? null, openTasks: open.filter((i) => i.assigneeAgentId === a.id).length })),
+    agents: agents.filter((a) => a.status !== "terminated").map((a) => ({ name: a.name, paused: agentPaused(a), lastRunAt: last.get(a.id)?.at ?? null, lastRunStatus: last.get(a.id)?.status ?? null, openTasks: open.filter((i) => i.assigneeAgentId === a.id).length })),
     routines: routines.filter((r) => r.status !== "archived").map((r) => ({ title: r.title, status: r.status, nextRunAt: (r.triggers ?? []).filter((t) => t.enabled).map((t) => t.nextRunAt).filter(Boolean).sort()[0] ?? null, lastRunAt: newest([r.lastTriggeredAt, ...(r.triggers ?? []).map((t) => t.lastFiredAt)]) })),
     stuck: open.filter((i) => ["in_progress", "blocked"].includes(i.status) && i.assigneeAgentId && Date.now() - Date.parse(i.updatedAt) > DAY).map((i) => ({ identifier: i.identifier, title: i.title, status: i.status, assignee: who.get(i.assigneeAgentId!) ?? "an agent", updatedAt: i.updatedAt })),
   };

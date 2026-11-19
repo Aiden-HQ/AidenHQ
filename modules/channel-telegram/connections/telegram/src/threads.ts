@@ -1,12 +1,14 @@
 // Which chat an owner message belongs to: a reply to an agent's message continues that chat; a leading
 // @name starts a new chat with that agent (an unknown or paused name goes to Aiden, with a note); anything else goes
 // to Aiden's daily chat.
+import { agentPaused } from "./aidenhq-sdk/agent-paused.js";
 import type { Store } from "./store.js";
 
 export interface AgentLite {
   id: string;
   name: string;
   status: string;
+  lifecycleHolds?: string[];
   metadata?: { setupKey?: unknown } | null;
 }
 export type OwnerRoute = { kind: "reply"; issueId: string } | { kind: "new"; agentId: string; note?: string } | { kind: "aiden" };
@@ -21,7 +23,7 @@ export function routeOwnerMessage(text: string, replyTo: { chatId: string; messa
   const said = norm(m[1]!);
   const aiden = agents.find((a) => a.metadata?.setupKey === "aidenhq:chief-of-staff") ?? agents[0];
   const hit = agents
-    .filter((a) => a.status !== "paused" && a.status !== "terminated")
+    .filter((a) => !agentPaused(a))
     .flatMap((a) => [norm(a.name), norm(String(a.metadata?.setupKey ?? "").replace(/^aidenhq:/, ""))].filter(Boolean).map((n) => ({ a, n })))
     .filter(({ n }) => said === n || said.startsWith(`${n} `))
     .sort((x, y) => y.n.length - x.n.length)[0];

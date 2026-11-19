@@ -31,11 +31,12 @@ describe("a task in review", () => {
 });
 
 describe("pickAgent", () => {
-  const ag = (id: string, name: string, key: string, status = "idle"): Agent => ({ id, name, status, metadata: { engine: "codex", setupKey: `aidenhq:${key}` } });
-  const agents = [ag("c", "Aiden", "chief-of-staff"), ag("i", "Inbox Agent", "inbox-agent"), ag("s", "Researcher", "assistant"), ag("p", "Slack Scout", "slack-scout", "paused")];
+  const ag = (id: string, name: string, key: string, status = "idle", lifecycleHolds: string[] = []): Agent => ({ id, name, status, lifecycleHolds, metadata: { engine: "codex", setupKey: `aidenhq:${key}` } });
+  const agents = [ag("c", "Aiden", "chief-of-staff"), ag("i", "Inbox Agent", "inbox-agent"), ag("s", "Researcher", "assistant"), ag("p", "Slack Scout", "slack-scout", "idle", ["manual"]), ag("d", "Devops", "devops", "paused")];
   it("an unknown or paused name goes to Aiden with a note", () => {
     expect(pickAgent("@nobody hi", agents)).toMatchObject({ agent: { id: "c" }, note: "(No agent called @nobody; sent to Aiden.)" });
     expect(pickAgent("@slack scout look", agents).agent.id).toBe("c");
+    expect(pickAgent("@devops look", agents).agent.id).toBe("d"); // Paperclip's status alone never pauses
   });
 });
 
