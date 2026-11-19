@@ -8,7 +8,7 @@ import { SetupButton } from "./SetupButton";
 import { Banner, Button, Dialog, LinkButton, Section, StatusDot, Tile, TileGrid, type StatusTone } from "./ui";
 
 type Can = { signIn: boolean; google: boolean };
-const TONE: Record<Status, StatusTone> = { connected: "ok", signed_out: "needs", error: "failed", not_configured: "idle", unknown: "idle", builtin: "info" };
+const TONE: Record<Status, StatusTone> = { connected: "ok", not_connected: "idle", signed_out: "needs", error: "failed", not_configured: "idle", unknown: "idle", builtin: "info" };
 const NEEDS: Status[] = ["error", "signed_out", "not_configured", "unknown"];
 const when = (iso?: string | null) => (iso ? new Date(iso).toLocaleString(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", hour12: false }) : "never");
 
@@ -27,6 +27,7 @@ export function ConnectionsPage({ conns, can, refresh, onRefresh }: { conns: Con
   const rows = conns.connections.map((r) => ({ r, v: connectionStatus(r, can) })).sort((a, b) => NEEDS.indexOf(a.v.status) - NEEDS.indexOf(b.v.status) || displayName(a.r.name).localeCompare(displayName(b.r.name)));
   const needs = rows.filter((x) => NEEDS.includes(x.v.status));
   const ok = rows.filter((x) => x.v.status === "connected");
+  const idle = rows.filter((x) => x.v.status === "not_connected");
   const built = rows.filter((x) => x.v.status === "builtin");
   const tiles = (list: typeof rows) => (
     <TileGrid>
@@ -53,6 +54,7 @@ export function ConnectionsPage({ conns, can, refresh, onRefresh }: { conns: Con
         </Banner>
       )}
       {needs.length > 0 && <Section title="Needs you" count={needs.length}>{tiles(needs)}</Section>}
+      {idle.length > 0 && <Section title="Not connected yet" count={idle.length} hint="Optional: connect one when you want agents to use it.">{tiles(idle)}</Section>}
       {ok.length > 0 && <Section title="Connected" count={ok.length}>{tiles(ok)}</Section>}
       {built.length > 0 && <Section title="Built in" count={built.length} hint="Part of every agent run; nothing to set up.">{tiles(built)}</Section>}
       <Group title="Warehouse sources" count={conns.sources.length} hint="What each source last brought into the shared warehouse.">
@@ -90,8 +92,8 @@ function ConnectionTile({ r, v, can, connect: asked, onAsked }: { r: ConnectionR
   ) : null;
   // A connected sign-in can run again: to grant more (the scope picker) or to switch accounts.
   const again = (r.signIn?.state === "ok" || r.signIn?.state === "expired") && can.signIn ? <ConnectButton c={c} size="sm" /> : null;
-  // Never signed in reads "Not connected"; "Signed out" is a sign-in that stopped working.
-  const status = r.signIn?.state === "missing" && v.status !== "error" ? <StatusDot tone="needs">{STATUS_LABEL.not_configured}</StatusDot> : <StatusDot tone={TONE[v.status]}>{STATUS_LABEL[v.status]}</StatusDot>;
+  // Never signed in reads "Not connected yet", calm; "Signed out" is a sign-in that stopped working.
+  const status = <StatusDot tone={TONE[v.status]}>{STATUS_LABEL[v.status]}</StatusDot>;
   const who = r.kind === "service" ? "Engineer jobs" : v.status === "builtin" ? null : r.grants.length ? `${r.grants.length} agent${r.grants.length === 1 ? "" : "s"}` : "No agents yet";
   return (
     <>

@@ -145,10 +145,11 @@ export function generateCompose(name: string, def: Dict, ctx: { root: string; lo
     if (!isMap(raw)) fail(at("") + " must be a map");
     const s = raw as Dict;
     for (const f of Object.keys(s)) if (!SERVICE_FIELDS.includes(f)) fail(`${at(f)} is not allowed`);
-    // `when: { <setting>: <value> }`: the service runs only while every named setting has that value (primer_mode: self-host).
+    // `when: { <setting>: <value> }`: the service runs only while every named setting has that value (primer_mode: self-host);
+    // `true` means any non-empty value (jira_url: no container, no image, until the owner gives the site).
     if (s.when != null) {
-      if (!isMap(s.when) || !Object.keys(s.when).length || Object.values(s.when).some((v) => typeof v !== "string")) fail(`${at("when")} maps settings to the values the service runs with`);
-      if (!Object.entries(s.when as Dict).every(([k, v]) => String(ctx.settings?.[k] ?? "") === v)) continue;
+      if (!isMap(s.when) || !Object.keys(s.when).length || Object.values(s.when).some((v) => typeof v !== "string" && v !== true)) fail(`${at("when")} maps settings to the values the service runs with (or true: set)`);
+      if (!Object.entries(s.when as Dict).every(([k, v]) => (v === true ? String(ctx.settings?.[k] ?? "") !== "" : String(ctx.settings?.[k] ?? "") === v))) continue;
     }
     const key = svc.startsWith(`${name}-`) ? svc : `${name}-${svc}`;
     const o: Dict = {};

@@ -17,7 +17,7 @@ const tmp = mkdtempSync(join(tmpdir(), "official-modules-"));
 after(() => rmSync(tmp, { recursive: true, force: true }));
 
 test("the default bundle and every official module compile", () => {
-  const settings = { timezone: "Europe/London", owner_name: "Sam", owner_email: "me@example.com" };
+  const settings = { timezone: "Europe/London", owner_name: "Sam", owner_email: "me@example.com", product_repo: "acme/aidenhq" };
   for (const def of Object.values(defs)) {
     for (const [k, d] of Object.entries(def.settings ?? {})) {
       if (d?.required && !(k in settings)) settings[k] = d.values ? (d.type === "list" ? [d.values[0]] : d.values[0]) : d.type === "url" ? `https://${(d.host ?? "example.com").replace("*", "acme")}` : "example";
@@ -40,4 +40,32 @@ test("a vendor connection's read endpoint gets exactly its connection's read tag
       assert.equal(env.READ_TOOLS, (conn?.[1].tools.read ?? []).join(","), `${n}: ${svc}'s READ_TOOLS must be its connection's read tags`);
     }
   }
+});
+
+test("a fresh install of the default bundle compiles with no optional connection set, and starts no container for one it can't use", () => {
+  const dir = join(tmp, "fresh");
+  mkdirSync(join(dir, "agents"), { recursive: true });
+  writeFileSync(join(dir, "instance.yaml"), YAML.stringify({ product: "0".repeat(40), modules: market.bundle, settings: { timezone: "Europe/London", owner_name: "Sam", owner_email: "me@example.com", product_repo: "acme/aidenhq", quiet_start: "on", spend_day_usd: 10 } }));
+  const { compose, paperclip } = compile(product, dir);
+  for (const k of ["meeting-scan", "security-scan", "security-weekly", "red-team-new", "red-team-weekly"]) assert.equal(paperclip.routines[k].status, "paused", `${k} waits for the owner (quiet start)`);
+  for (const k of ["ui-designer", "ui-reviewer"]) assert.equal(paperclip.agents[k].heartbeat, false, `${k} has no heartbeat until the owner sets one`);
+  assert.equal(compose.services["jira-mcp"], undefined, "jira-mcp waits for the owner's site");
+  assert.ok(compose.services["glean-mcp"] && compose.services["primer-mcp"], "the idle connection servers are there");
+});
+
+test("an install made before the bundle grew gets the new members, unless the owner removed them", () => {
+  const settings = { timezone: "Europe/London", owner_name: "Sam", owner_email: "me@example.com", product_repo: "acme/aidenhq" };
+  const old = market.bundle.filter((n) => !market.bundle_added.includes(n));
+  const run = (label, extra) => {
+    const dir = join(tmp, label);
+    mkdirSync(join(dir, "agents"), { recursive: true });
+    writeFileSync(join(dir, "instance.yaml"), YAML.stringify({ product: "0".repeat(40), modules: old, settings, ...extra }));
+    return compile(product, dir).compose.services;
+  };
+  const upgraded = run("upgraded", {});
+  assert.ok(upgraded["glean-mcp"] && upgraded["slack-mcp"] && upgraded["security-scanner"], "the new members arrive");
+  const kept = run("removed", { modules_removed: ["slack", "glean"] });
+  assert.equal(kept["slack-mcp"], undefined);
+  assert.equal(kept["glean-mcp"], undefined);
+  assert.ok(kept["security-scanner"]);
 });

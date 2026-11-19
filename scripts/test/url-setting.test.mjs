@@ -8,6 +8,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import YAML from "yaml";
 import { compile } from "../modules.mjs";
+import { BUNDLE } from "./bundle.mjs";
 import { urlSettingProblem } from "../../services/shared/url-setting.ts";
 
 const repo = join(dirname(fileURLToPath(import.meta.url)), "../..");
@@ -34,7 +35,7 @@ test("a URL setting: https, a public host, the declared host, no credentials", (
 
 function instance(settings) {
   const dir = mkdtempSync(join(tmpdir(), "inst-"));
-  writeFileSync(join(dir, "instance.yaml"), YAML.stringify({ product: "0".repeat(40), modules: ["glean"], settings: { timezone: "Europe/London", owner_name: "Sam", owner_slack_user_id: "U1", owner_email: "o@example.com", ...settings } }));
+  writeFileSync(join(dir, "instance.yaml"), YAML.stringify({ product: "0".repeat(40), modules: BUNDLE, settings: { timezone: "Europe/London", owner_name: "Sam", owner_slack_user_id: "U1", owner_email: "o@example.com", product_repo: "acme/aidenhq", ...settings } }));
   mkdirSync(join(dir, "agents"));
   return dir;
 }

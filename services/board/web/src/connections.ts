@@ -49,8 +49,8 @@ export interface ConnectionsData {
   sourcesError: boolean;
 }
 
-export type Status = "connected" | "not_configured" | "signed_out" | "error" | "unknown" | "builtin";
-export const STATUS_LABEL: Record<Status, string> = { connected: "Connected", not_configured: "Not connected", signed_out: "Signed out", error: "Error", unknown: "Unknown", builtin: "Built in" };
+export type Status = "connected" | "not_connected" | "not_configured" | "signed_out" | "error" | "unknown" | "builtin";
+export const STATUS_LABEL: Record<Status, string> = { connected: "Connected", not_connected: "Not connected yet", not_configured: "Not connected", signed_out: "Signed out", error: "Error", unknown: "Unknown", builtin: "Built in" };
 
 export interface Verdict {
   status: Status;
@@ -94,8 +94,8 @@ export function connectionStatus(row: ConnectionRow, canConnect: { signIn: boole
   // `fields`); one without fields that isn't set up has a setup flow to make its client first. State "none": this connection
   // signs in to nothing (Grafana with grafana_source: local), so only its health counts.
   const s = row.signIn;
-  if (s && !s.configured) return s.fields?.length ? { status: "not_configured", reason: "Not connected yet.", ...connect("Connect", `/${row.name}/connect`, canConnect.signIn) } : { status: "not_configured", reason: s.detail ?? "Not set up yet." };
-  if (s?.state === "missing") return { status: "signed_out", reason: "Not connected yet.", ...connect("Connect", `/${row.name}/connect`, canConnect.signIn) };
+  if (s && !s.configured) return s.fields?.length ? { status: "not_connected", reason: "Not connected yet.", ...connect("Connect", `/${row.name}/connect`, canConnect.signIn) } : { status: "not_configured", reason: s.detail ?? "Not set up yet." };
+  if (s?.state === "missing") return { status: "not_connected", reason: "Not connected yet.", ...connect("Connect", `/${row.name}/connect`, canConnect.signIn) };
   if (s?.state === "expired") return { status: "signed_out", reason: `Sign-in stopped working (since ${day(s.since)})${s.detail ? `: ${s.detail}` : "."}`, ...connect("Reconnect", `/${row.name}/connect`, canConnect.signIn) };
 
   const p = row.probe;

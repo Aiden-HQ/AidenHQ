@@ -546,7 +546,11 @@ export function compile(productDir, instanceDir, { revision, fetch = hostFetch(p
   const all = discover(productDir, instance, fetch);
   const problems = capabilityProblems(Object.fromEntries([...all].map(([n, m]) => [n, m.def])));
   if (problems.length) fail(problems.join("; "));
-  const chosen = current(instance.modules ?? [], Object.fromEntries([...all].map(([n, m]) => [n, m.def])));
+  // Modules added to the default bundle after an install was made reach it here, in memory (an apply never writes the instance):
+  // marketplace.json `bundle_added`, minus any the owner removed (instance.yaml `modules_removed`, kept in git).
+  const removed = new Set((instance.modules_removed ?? []).map(String));
+  const added = (JSON.parse(readFileSync(join(productDir, "modules", "marketplace.json"), "utf8")).bundle_added ?? []).filter((n) => !removed.has(n) && all.has(n));
+  const chosen = current([...(instance.modules ?? []), ...added], Object.fromEntries([...all].map(([n, m]) => [n, m.def])));
   const enabled = resolveEnabled(all, chosen);
   const enabledDefs = Object.fromEntries(enabled.map((n) => [n, all.get(n).def]));
   const conflicts = conflictProblems(enabledDefs);
