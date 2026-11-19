@@ -185,6 +185,22 @@ test("the Fleet Steward's grants: reads, plus exactly its predecessors' writes; 
   assert.deepEqual(a.delegate_to, ["engineer", "app-maintainer", "app-owners", "architect", "maintainer"]);
   assert.ok(r.paperclip.agents.maintainer.enabled_tools.github.includes("github_app_issue"), "the Maintainer files product bugs");
 });
+test("the security module's agents may hand a fix task to the Fleet Steward, and only to it", () => {
+  // Security Watch and the Red Teamer file their fixes as tasks for the Fleet Steward, which routes them to the owner's
+  // engineer (#815). Without the list `delegateIds` falls back to their reports and the Engineers, so the task_create with
+  // `assignee: fleet-steward` is refused and the task lands on the owner's board. `fleet-steward?` resolves only when the
+  // module is on, so an instance running security without it still compiles with an empty list.
+  const dir = mkdtempSync(join(tmpdir(), "inst-"));
+  mkdirSync(join(dir, "agents"));
+  writeFileSync(join(dir, "instance.yaml"), YAML.stringify({ product: "0".repeat(40), modules: [...BUNDLE, "warehouse", "security"], settings: owner }));
+  const r = compile(product, dir);
+  for (const key of ["security-watch", "red-teamer"]) assert.deepEqual(r.paperclip.agents[key].delegate_to, ["fleet-steward"], key);
+  const without = mkdtempSync(join(tmpdir(), "inst-"));
+  mkdirSync(join(without, "agents"));
+  writeFileSync(join(without, "instance.yaml"), YAML.stringify({ product: "0".repeat(40), modules: BUNDLE.filter((n) => n !== "fleet-steward"), settings: owner }));
+  const s = compile(product, without);
+  for (const key of ["security-watch", "red-teamer"]) assert.deepEqual(s.paperclip.agents[key].delegate_to, [], `${key} without the Fleet Steward`);
+});
 test("the in-box `aidenhq task|tasks` reads are the tasks module's default grant: crew yes; trial, check, and an Engineer without private_reads no", () => {
   const reads = (yaml) => (compile(product, withAgents({ x: { yaml } }, ["slack"])).paperclip.agents.x.enabled_tools.paperclip_tasks ?? []).filter((t) => ["task_get", "task_search"].includes(t)).sort();
   const graduated = { connections: { slack: "read" }, trial: undefined, reports_to: "chief-of-staff" };
