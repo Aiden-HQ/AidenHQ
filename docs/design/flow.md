@@ -172,7 +172,7 @@ Another owner's module gets onto the waterfall and the bottleneck chart by decla
 
 - The **work item** is the root of a task tree: follow `task.created.parent` up to a task with no parent. A GitHub issue
   links to the task the maintainer filed for it (`issue.triaged`), so the item's clock starts at the issue's creation.
-  An owner request starts at its chat or task creation.
+  An owner request starts at its chat or task creation. The kernel reads the issue itself on every event and poll; the plugin forwards only ids (plus the actor if its payload carries one, Task 4 checks).
 - Item lead time runs from the root's start to the last `deploy.applied` that shipped any of its PRs (or to the root
   task's completion when nothing deploys).
 - **Fan-in** is stored once and linked: one `pr.merged` names its PR; one `deploy.applied` names its product sha. A PR is
@@ -202,9 +202,8 @@ only, so a view change never needs re-instrumenting.
 
 **DORA.** Deploy frequency: distinct `deploy.applied` with healthy status per day. Lead time for changes: first commit
 of a PR (from GitHub) to its `pr.deployed`. Change failure rate: deploys followed by a revert PR of something they
-shipped, a rollback generation (`revert_of`) or failed health, or an incident task linked to it. Incident tasks are new: Fleet
-Steward files the tasks for monitoring alerts already and starts labelling them `incident`, with the generation or PR it
-suspects; over all deploys. Time to restore: incident task created to
+shipped, a rollback generation (`revert_of`) or failed health, or an incident (a Fleet Steward detector incident task) linked to it by the existing revert and incident linker
+(`quality.ts`, moved to the SDK); over all deploys. Time to restore: incident task created to
 the deploy that fixes it, or failed generation to the next healthy one.
 
 **Churn.** A code-host pass over each repo's default branch (incremental from a stored cursor) walks merged PRs in
@@ -244,12 +243,15 @@ git author. It is named "rewritten", not "defect": rewrites include planned refa
 - **Agents.** A read tool over `/v1/flow` for the agents granted it (Fleet Steward, Aiden). Fleet Steward's weekly
   scorecard reads Flow and opens a task when a stage's p75 or wait share regresses past a threshold, or an item is
   `orphaned` (this subsumes the planned stuck watcher's detection). That check ships in observe mode first.
-- **Replaced:** the Fleet Steward scorecard's own timing (`scorecard.ts`) and the board's `fleet-stats` read Flow; their
-  duplicate computations are deleted. `/v1/work` keeps jobs and records for the run page; `/v1/work/metrics` stays.
+- **Overlap:** the Fleet Steward scorecard and the board's `fleet-stats` count things (tasks done, records, cost) and stay.
+  The detector's stuck-work rule reads Flow's idle list instead of computing its own. The revert and incident linker in
+  the board's `quality.ts` moves to the SDK and is shared by the board and Flow's DORA. `/v1/work` keeps jobs and records
+  for the run page; `/v1/work/metrics` stays.
 
 ### 7. Backfill (owner)
 
-A one-off command (`node scripts/flow-backfill.mjs`, run on the host) writes `source: backfill` facts from:
+Two parts write `source: backfill` facts: the kernel backfills its own history once at start (`facts.backfillLocal()`),
+and the code host backfills GitHub when the owner presses the Flow page's backfill button. Sources:
 
 - GitHub, per repo the instance manages: issue created, labelled, PR opened, check runs, reviews, merged (timelines via
   the code host's App token), and churn over the full history.
@@ -315,10 +317,12 @@ Each phase proves itself on the live instance before the next.
 - Typed facts with stages derived from declarations, not a stage taxonomy.
 - Tool-call records excluded. Cost captured on `job.ended`.
 - Churn window 30 days, mature cohorts only, generated paths excluded.
-- Incident = a task labelled `incident`; DORA failure includes reverts, rollbacks and failed health.
 - Retention 400 days.
 - `facts` replaces `events` in `kernel.db`; reads use a read-only connection.
 - Task fact ids come from Paperclip's own versions; changes a poll missed show as `unknown`.
 - Module facts: actor `module:<name>` unless linked to a job; PR facts get their task from the PR record.
-- Incident tasks get an `incident` label from Fleet Steward (new).
+- Incidents are the detector's incident tasks, linked by the existing `quality.ts` linker; no new label.
+- Only tier ≥ 1 records become facts (tier 0 ran at once): keeps approval waits on outbound sends, drops ~7,400 instant tool calls.
+- Wakes are facts too (opened, bound, dropped), so queue time starts at the wake and no-action wakes are countable.
+- Stages pair on the same subject; a stage may take its start from a data field.
 - Only `records.ts` among the reviewer-eval files changes (phase 1, its own PR).
