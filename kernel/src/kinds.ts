@@ -12,7 +12,8 @@ const REF: Schema = { type: "string", minLength: 1, maxLength: 200, pattern: "^[
 const obj = (properties: Record<string, Schema>, required: string[]): Schema => ({ type: "object", additionalProperties: false, required, properties });
 
 // authority: the module changes the apply brings, one line each (scripts/compiler/authority.ts), shown on the card;
-// ownerRequired: one of them adds module authority, so after the reviewer only the owner approves it (in the digest, as args).
+// ownerRequired: one of them is the owner's under every autonomy (new authority from a module that isn't official, or new
+// spend), so after the reviewer only the owner approves it (in the digest, as args).
 const APPLY_ARGS = obj({
   repo: REPO, branch: REF, sha: SHA, files: { type: "array", minItems: 1, maxItems: 200, items: { type: "string", maxLength: 300 } },
   authority: { type: "array", minItems: 1, maxItems: 200, items: { type: "string", maxLength: 300, pattern: "^[^\\p{Cc}\\p{Cf}]+$" } }, ownerRequired: { type: "boolean" },

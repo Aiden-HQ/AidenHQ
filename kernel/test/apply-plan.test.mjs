@@ -10,6 +10,7 @@ import { createApply } from "../src/apply.ts";
 import { createApplyPlanner } from "../src/apply-tier.ts";
 import { KERNEL_KINDS } from "../src/kinds.ts";
 import { SETTINGS, UPDATER, openRecords } from "../src/records.ts";
+import { computeTier } from "../src/tier.ts";
 import { createWrites } from "../src/writes.ts";
 
 const [OLD, NEW, COMMIT] = ["a".repeat(40), "b".repeat(40), "c".repeat(40)];
@@ -57,9 +58,9 @@ test("a release bump files kernel.apply, planned from the code host's read and t
   assert.match(r.card.details, /Product upgrade aaaaaaaaa → bbbbbbbbb, adding these commits:\nbbbbbbb feat: something/);
   assert.equal(k.h.lands.length, 0, "nothing lands before the reviewer");
   // The path inventory is a term of the same tier: an owner's path in any repository, or no inventory at all, is the owner's.
-  const owned = kernel({ inventory: { entries: [{ repo: "any", pattern: "instance.yaml", sensitivity: 2, source: "paths.yaml" }] } });
-  const o = await owned.writes.request(codehost, { kind: "kernel.apply", args: BUMP, task: "TASK-1" });
-  assert.deepEqual([o.tier, o.rule], [2, "owner-path"]);
+  const owned = (autonomy) => kernel({ autonomy, inventory: { entries: [{ repo: "any", pattern: "instance.yaml", sensitivity: 2, source: "paths.yaml" }] } }).writes.request(codehost, { kind: "kernel.apply", args: BUMP, task: "TASK-1" });
+  assert.deepEqual([(await owned("off")).tier, (await owned("off")).rule], [2, "owner-path"]);
+  assert.deepEqual([(await owned("full")).tier, (await owned("full")).panel], [1, true], "under full autonomy: the panel's");
   const blind = kernel({ inventory: null });
   assert.equal((await blind.writes.request(codehost, { kind: "kernel.apply", args: BUMP, task: "TASK-1" })).rule, "gate-list-unknown");
   // Only a module holding the role files it, and only for a kernel kind the kernel plans: a role named after another
@@ -102,6 +103,26 @@ test("a bump that brings new module authority waits for the owner after the revi
   assert.equal((await no.writes.review(n.id, { input: { tier: 2, rule: "module-authority", reason: "new authority", reviewFirst: true }, request: {} })).record.state, "rejected");
 });
 
+test("under full autonomy the owner approves only loosening autonomy, raising spend, a non-official module's new authority and what they vetoed", async () => {
+  const role = (official) => ({ modules: { acme: { base: { name: "acme" }, head: { name: "acme", roles: { requests: ["kernel.work-read"] } }, codeChanged: false, ...(official ? { official: true } : {}) } }, marketplaces: [] });
+  const tierOf = async (o) => { const r = await kernel(o).writes.request(codehost, { kind: "kernel.apply", args: BUMP, task: "TASK-1" }); return [r.tier, r.panel, r.args.ownerRequired ?? false]; };
+  const settings = (b, h) => ({ base: `${yaml(OLD)}settings: ${b}\n`, head: `${yaml(NEW)}settings: ${h}\n` });
+  // An official module's new role (shipped in the product's modules/, reviewed at merge): the panel's.
+  assert.deepEqual(await tierOf({ modules: role(true) }), [1, true, false]);
+  // The same role under autonomy off: the owner's after the reviewer, as before.
+  assert.deepEqual(await tierOf({ modules: role(true), autonomy: "off" }), [2, false, false]);
+  // A module that isn't official asking for it: the owner's at any autonomy.
+  assert.deepEqual(await tierOf({ modules: role(false) }), [2, false, true]);
+  // Loosening autonomy, raising the install's spend cap: the owner's; with an official role in the same change too.
+  assert.deepEqual((await tierOf({ texts: settings("{ autonomy: tier0 }", "{ autonomy: full }") }))[0], 2);
+  assert.deepEqual((await tierOf({ texts: settings("{ spend_day_usd: 10 }", "{ spend_day_usd: 20 }") }))[0], 2);
+  assert.deepEqual((await tierOf({ modules: role(true), texts: settings("{ spend_day_usd: 10 }", "{ spend_day_usd: 20 }") }))[0], 2);
+  // Any other setting, ending quiet start: the panel's.
+  assert.deepEqual(await tierOf({ texts: settings("{ quiet_start: on }", "{ quiet_start: off }") }), [1, true, false]);
+  // The owner's earlier no on the task holds at full autonomy.
+  assert.deepEqual([computeTier({ floor: 1, raise: { tier: 2, rule: "release-pin" }, priorVeto: true, autonomy: "full" }).tier, computeTier({ floor: 1, raise: { tier: 2, rule: "release-pin" }, autonomy: "full" }).tier], [2, 1]);
+});
+
 test("no apply runs twice: the same bump filed again is the same record, and runs and restarts launch it once", async () => {
   const k = kernel();
   const r = await k.writes.request(codehost, { kind: "kernel.apply", args: BUMP, task: "TASK-1" });
@@ -135,7 +156,7 @@ test("a change the rules refuse is refused at filing, saying why", async () => {
 
 // Release updates (docs/design/release-updates.md): only the kernel's updater, moving to exactly the pin its own verification
 // of that release writes, while auto-updates are on, is the reviewer's; any other release move is the owner's.
-test("a release move is the reviewer's only as the updater's verified move under auto-updates; any other is the owner's", async () => {
+test("a release move is the reviewer's only as the updater's verified move under auto-updates; any other is the owner's below full autonomy", async () => {
   const rel = (product, name, sha, auto = "on") => `product: ${product}\nrelease: { name: "${name}", source: { source: github, repo: Aiden-HQ/aidenhq-distro }, sha: ${sha} }\nmodules: [core]\nsettings: { auto_update: "${auto}" }\n`;
   const [D2, D3] = ["d2".repeat(20), "d3".repeat(20)];
   const texts = { base: rel(OLD, "2026.11.2", D2), head: rel(NEW, "2026.11.3", D3) };
@@ -147,15 +168,17 @@ test("a release move is the reviewer's only as the updater's verified move under
   assert.deepEqual(asked.at(-1), ["2026.11.3", D3], "verified by the planner, at the head's release and sha");
   // Anyone else filing the same move (an agent's job, a module): the owner's, and never verified for them.
   asked.length = 0;
-  assert.deepEqual(await tierOf(kernel({ texts, verifyRelease: verified }), "module"), [2, "release-pin"]);
+  assert.deepEqual(await tierOf(kernel({ texts, verifyRelease: verified, autonomy: "tier0" }), "module"), [2, "release-pin"]);
   assert.equal(asked.length, 0);
+  // Under full autonomy the same move is the panel's: a release move is not the owner's own authority.
+  assert.deepEqual(await tierOf(kernel({ texts, verifyRelease: verified }), "module"), [1, "release-pin"]);
   // A release the updater's checks refuse (older than the base, its sha off the distro's main, no tested stamp): the owner's.
-  assert.deepEqual(await tierOf(kernel({ texts, verifyRelease: async () => null }), "updater"), [2, "release-pin"]);
+  assert.deepEqual(await tierOf(kernel({ texts, verifyRelease: async () => null, autonomy: "tier0" }), "updater"), [2, "release-pin"]);
   // The verified release, but the head isn't exactly its pin (anything else edited along with it): the owner's.
-  assert.deepEqual(await tierOf(kernel({ texts: { ...texts, head: `${texts.head}# more\n` }, verifyRelease: verified }), "updater"), [2, "release-pin"]);
+  assert.deepEqual(await tierOf(kernel({ texts: { ...texts, head: `${texts.head}# more\n` }, verifyRelease: verified, autonomy: "tier0" }), "updater"), [2, "release-pin"]);
   // Auto-updates off: every release move is the owner's.
   const off = { base: rel(OLD, "2026.11.2", D2, "off"), head: rel(NEW, "2026.11.3", D3, "off") };
-  assert.deepEqual(await tierOf(kernel({ texts: off, verifyRelease: async () => off.head }), "updater"), [2, "release-pin"]);
+  assert.deepEqual(await tierOf(kernel({ texts: off, verifyRelease: async () => off.head, autonomy: "tier0" }), "updater"), [2, "release-pin"]);
   assert.equal(UPDATER.kind, "kernel", "a kind no token yields (identity.ts: run, job, module)");
   // The autonomy cap limits agents' writes: under `off` the updater's verified move stays the reviewer's (the owner's standing
   // authority, auto_update), while anyone else's same move is the owner's as before.

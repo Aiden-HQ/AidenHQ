@@ -219,7 +219,9 @@ export function officialSides(baseInstance: Dict, headInstance: Dict, from: stri
       defs[k.target] = (f.parse(readFileSync(join(root, "module.yaml"), "utf8")) ?? {}) as Dict;
       forks[k.target] = { at: fw, origin: `fork ${fw.url} at ${fw.sha.slice(0, 12)} (tier declared)` };
     }
-    return { w, run, trees, defs, forks };
+    // Official: read from the product's own modules/ at this commit (no kernel fork), not pinned or forked on its own.
+    const official = w.url === product && w.path === "modules" ? Object.keys(trees).filter((m) => !forks[m]) : [];
+    return { w, run, trees, defs, forks, official };
   };
   const [b, h] = [side(baseInstance, from), side(headInstance, to)];
   const forked = new Set([...Object.keys(b.forks), ...Object.keys(h.forks)]);
@@ -229,7 +231,7 @@ export function officialSides(baseInstance: Dict, headInstance: Dict, from: stri
   const where = (s: typeof b, m: string): Where => s.forks[m]?.at ?? { ...s.w, path: posix.join(s.w.path, m) };
   for (const m of forked) if (b.trees[m] && h.trees[m]) changed.push(...changedFiles(where(b, m), where(h, m), f).map((p) => `modules/${m}/${p}`));
   const origins = (s: typeof b) => Object.fromEntries(Object.entries(s.forks).map(([m, x]) => [m, x.origin]));
-  return { baseDefs: b.defs, headDefs: h.defs, changed, origins: { base: origins(b), head: origins(h) } };
+  return { baseDefs: b.defs, headDefs: h.defs, changed, origins: { base: origins(b), head: origins(h) }, official: { base: b.official, head: h.official } };
 }
 
 /** Git on a cache repo, bounded in time; the credential helper and local paths only for a repository the owner named. */

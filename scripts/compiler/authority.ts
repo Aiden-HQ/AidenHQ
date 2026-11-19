@@ -1,6 +1,8 @@
 // The authority diff (spec §5.7): what a module change hands out that it did not before, read from its manifest and its
 // code diff, never from its own description. Every module change goes to the AI reviewer first; a change marked `owner`
-// (new authority) then goes to the owner too, with the reviewer's verdict on the card. Pure: callers read the manifests.
+// (new authority) then goes to the owner too, with the reviewer's verdict on the card. Under full autonomy only the
+// `ownerOnly` ones do (tier.ts computeTier): new authority from a module that isn't official, and new spend from any.
+// Pure: callers read the manifests.
 //
 // Lines are built from code-chosen words and ids cleaned to [\w.:@/-], never from manifest prose, because they are shown on
 // the owner's card and in the apply log.
@@ -10,10 +12,15 @@ import { SENSITIVITIES } from "../../kernel/src/paths.ts";
 
 type Dict = Record<string, unknown>;
 export type ModuleDef = Dict;
-export type Change = { what: string; owner: boolean };
+/** `ownerOnly`: the owner's under every autonomy (new authority from a module that isn't official, or new spend). */
+export type Change = { what: string; owner: boolean; ownerOnly?: true };
 export type ModuleDiff = { module: string; changes: Change[]; code: boolean };
-/** `origin`: where a third-party module comes from on each side (marketplace, sha, computed tier), for the card. */
-export type ModuleInput = { base?: ModuleDef; head?: ModuleDef; codeChanged: boolean; textChanged?: boolean; replacing?: { name: string; def: ModuleDef }; origin?: { base?: string; head?: string }; conns?: Dict };
+/**
+ * `origin`: where a third-party module comes from on each side (marketplace, sha, computed tier), for the card. `official`:
+ * it is read from the product's own modules/ at the pinned commit (sources.ts officialSides), so CI, the AI reviewer and
+ * its eval passed it at merge; absent is not official.
+ */
+export type ModuleInput = { base?: ModuleDef; head?: ModuleDef; codeChanged: boolean; textChanged?: boolean; replacing?: { name: string; def: ModuleDef }; origin?: { base?: string; head?: string }; conns?: Dict; official?: boolean };
 
 const isMap = (v: unknown): v is Dict => !!v && typeof v === "object" && !Array.isArray(v);
 const map = (v: unknown): Dict => (isMap(v) ? v : {});
@@ -126,9 +133,10 @@ export function renamed(def: ModuleDef, from: string, to: string): ModuleDef {
  * What `head` hands out that `base` did not. `base` undefined: an install (diffed against nothing); `head` undefined: a
  * remove. `replacing`: B replaces A in this change, so B is diffed against A's def renamed into B's namespace.
  */
-export function authorityDiff(name: string, base: ModuleDef | undefined, head: ModuleDef | undefined, codeChanged: boolean, replacing?: { name: string; def: ModuleDef }, origin: { base?: string; head?: string } = {}, conns: Dict = {}): ModuleDiff {
+export function authorityDiff(name: string, base: ModuleDef | undefined, head: ModuleDef | undefined, codeChanged: boolean, replacing?: { name: string; def: ModuleDef }, origin: { base?: string; head?: string } = {}, conns: Dict = {}, official = false): ModuleDiff {
   const changes: Change[] = [];
-  const owner = (what: string) => changes.push({ what, owner: true });
+  const owner = (what: string) => changes.push({ what, owner: true, ...(official ? {} : { ownerOnly: true as const }) });
+  const spend = (what: string) => changes.push({ what, owner: true, ownerOnly: true });
   const review = (what: string) => changes.push({ what, owner: false });
   if (replacing && head) {
     base = renamed(replacing.def, replacing.name, name);
@@ -244,7 +252,7 @@ export function authorityDiff(name: string, base: ModuleDef | undefined, head: M
   const share = (x: Dict) => list(map(x.workspaces).share_with).concat(list(map(map(x.services).workspaces).share_with));
   for (const m of added(share(b), share(head))) owner(`shares its workspace with ${id(m)}`);
   const usd = (x: Dict) => Number(map(map(x.services).models).day_usd ?? 0);
-  if (usd(head) > usd(b)) owner(`model spend up to ${id(usd(head))} USD a day`);
+  if (usd(head) > usd(b)) spend(`model spend up to ${id(usd(head))} USD a day`);
   for (const k of keys(hs).filter((k) => !["run", "data", "grants", "workspaces", "models"].includes(k) && !eq(bs[k], hs[k]))) owner(`services: unrecognised key ${id(k)}`);
 
   if (!eq(b.board_env, head.board_env)) owner("changes the board's environment (board_env)");
@@ -312,7 +320,7 @@ export function authorityDiff(name: string, base: ModuleDef | undefined, head: M
     if (now.private_reads === true && was.private_reads !== true) review(`${at}: reads private data (its jobs get no web search)`);
     else if (now.private_reads !== true && was.private_reads === true) review(`${at}: stops reading private data`);
     const caps = (x: Dict) => Number(map(x.caps).day_usd ?? 0);
-    if (caps(now) > caps(was)) owner(`${at}: day_usd up to ${id(caps(now))}`);
+    if (caps(now) > caps(was)) spend(`${at}: day_usd up to ${id(caps(now))}`);
     for (const f of keys(was, now).filter((f) => !eq(was[f], now[f]) && !AGENT_PLAIN.has(f) && !["connections", "roles", "isolation", "caps", "profile", "private_reads"].includes(f))) owner(`${at}: unrecognised field ${id(f)}`);
   }
   // Routines: a routine's autonomy (its cap on approvals) is the owner's, as everywhere.
@@ -325,15 +333,20 @@ export function authorityDiff(name: string, base: ModuleDef | undefined, head: M
   return { module: name, changes, code: codeChanged };
 }
 
-export type Classified = { tier: 1 | 2; panel: boolean; rule: "module-authority" | "module-config"; reason: string; reviewFirst: boolean };
+export type Classified = { tier: 1 | 2; panel: boolean; rule: "module-authority" | "module-config"; reason: string; reviewFirst: boolean; ownerOnly?: true };
 
-/** The tier of a set of module changes: AI review always, first; the owner after it when any change is new authority. */
+/**
+ * The tier of a set of module changes: AI review always, first; the owner after it when any change is new authority
+ * (`ownerOnly` when one of those is the owner's under every autonomy; those lines come first in the reason).
+ */
 export function classifyModules(diffs: ModuleDiff[]): Classified {
-  const owners = diffs.flatMap((d) => d.changes.filter((c) => c.owner).map((c) => `${d.module}: ${c.what}`));
+  const lines = (only: boolean) => diffs.flatMap((d) => d.changes.filter((c) => c.owner && Boolean(c.ownerOnly) === only).map((c) => `${d.module}: ${c.what}`));
+  const owners = [...lines(true), ...lines(false)];
+  const ownerOnly = diffs.some((d) => d.changes.some((c) => c.ownerOnly));
   const panel = diffs.some((d) => d.code);
   const all = owners.length ? owners : diffs.map((d) => `${d.module}: ${d.changes.map((c) => c.what).join(", ")}`);
   const reason = `${owners.length ? "new module authority" : "module changes without new authority"}: ${all.slice(0, 8).join("; ")}${all.length > 8 ? `; and ${all.length - 8} more` : ""}`;
-  return owners.length ? { tier: 2, panel, rule: "module-authority", reason, reviewFirst: true } : { tier: 1, panel, rule: "module-config", reason, reviewFirst: false };
+  return owners.length ? { tier: 2, panel, rule: "module-authority", reason, reviewFirst: true, ...(ownerOnly ? { ownerOnly: true as const } : {}) } : { tier: 1, panel, rule: "module-config", reason, reviewFirst: false };
 }
 
 /** One line per change, as the apply log and the card show it: `<module>: <change> (owner|review)`. */
@@ -373,7 +386,7 @@ export function enabledModules(instance: Dict, defs: Record<string, ModuleDef>, 
  * enabled on and whether code (anything but module.yaml and Markdown) changed. `replacing` is set only when this very change
  * removes A from the instance's list and adds B, and B `replaces` A (spec §5.7.1); otherwise B is diffed against nothing.
  */
-export function moduleInputs(a: { baseInstance: Dict; headInstance: Dict; baseDefs: Record<string, ModuleDef>; headDefs: Record<string, ModuleDef>; changed: string[]; always?: string[]; origins?: { base: Record<string, string>; head: Record<string, string> } }): Record<string, ModuleInput> {
+export function moduleInputs(a: { baseInstance: Dict; headInstance: Dict; baseDefs: Record<string, ModuleDef>; headDefs: Record<string, ModuleDef>; changed: string[]; always?: string[]; origins?: { base: Record<string, string>; head: Record<string, string> }; official?: { base: string[]; head: string[] } }): Record<string, ModuleInput> {
   const before = new Set(enabledModules(a.baseInstance, a.baseDefs, a.always));
   const after = new Set(enabledModules(a.headInstance, a.headDefs, a.always));
   const files = (m: string) => a.changed.filter((f) => f.startsWith(`modules/${m}/`));
@@ -390,6 +403,8 @@ export function moduleInputs(a: { baseInstance: Dict; headInstance: Dict; baseDe
     const head = after.has(m) ? a.headDefs[m] : undefined;
     if (!fs.length && before.has(m) === after.has(m) && eq(base, head) && a.origins?.base[m] === a.origins?.head[m]) continue;
     const input: ModuleInput = { base, head, codeChanged: Boolean(head) && fs.some((f) => f !== `modules/${m}/module.yaml` && !f.endsWith(".md")), textChanged: fs.length > 0, conns };
+    // Official on the side it comes from now (base for a removal).
+    if ((head ? a.official?.head : a.official?.base)?.includes(m)) input.official = true;
     const origin = { base: base && a.origins?.base[m], head: head && a.origins?.head[m] };
     if (origin.base || origin.head) input.origin = origin;
     if (!base && head) {
@@ -404,7 +419,7 @@ export function moduleInputs(a: { baseInstance: Dict; headInstance: Dict; baseDe
 }
 
 /** The authority diff of every module input. */
-export const diffAll = (inputs: Record<string, ModuleInput>) => Object.entries(inputs).map(([m, i]) => authorityDiff(m, i.base, i.head, i.codeChanged, i.replacing, i.origin, i.conns));
+export const diffAll = (inputs: Record<string, ModuleInput>) => Object.entries(inputs).map(([m, i]) => authorityDiff(m, i.base, i.head, i.codeChanged, i.replacing, i.origin, i.conns, i.official === true));
 
 /**
  * Module defs as an instance runs them: each agent's `overrides.agents.<key>.connections` merged per connection over its
@@ -448,12 +463,12 @@ export function marketplaceChanges(base: Dict, head: Dict): ModuleDiff[] {
   const changes: Change[] = [];
   const at = (w: { url: string; path: string; sha: string }) => `${id(w.url)}${w.path ? `:${id(w.path)}` : ""} at ${w.sha.slice(0, 12)}`;
   const [ob, oh] = [b!.get(OFFICIAL), h!.get(OFFICIAL)];
-  if (oh && (oh.url !== OFFICIAL_URL || oh.path) && (ob?.url !== oh.url || ob?.path !== oh.path)) changes.push({ what: `moves marketplace ${OFFICIAL} to ${at(oh)}`, owner: true });
+  if (oh && (oh.url !== OFFICIAL_URL || oh.path) && (ob?.url !== oh.url || ob?.path !== oh.path)) changes.push({ what: `moves marketplace ${OFFICIAL} to ${at(oh)}`, owner: true, ownerOnly: true });
   [b!, h!].forEach((m) => m.delete(OFFICIAL));
   for (const [n, w] of h!) {
     const was = b!.get(n);
-    if (!was) changes.push({ what: `adds marketplace ${id(n)} (${at(w)})`, owner: true });
-    else if (was.url !== w.url || was.path !== w.path) changes.push({ what: `moves marketplace ${id(n)} to ${at(w)}`, owner: true });
+    if (!was) changes.push({ what: `adds marketplace ${id(n)} (${at(w)})`, owner: true, ownerOnly: true });
+    else if (was.url !== w.url || was.path !== w.path) changes.push({ what: `moves marketplace ${id(n)} to ${at(w)}`, owner: true, ownerOnly: true });
     else if (was.sha !== w.sha) changes.push({ what: `marketplace ${id(n)} moves to ${w.sha.slice(0, 12)}`, owner: false });
   }
   for (const n of b!.keys()) if (!h!.has(n)) changes.push({ what: `removes marketplace ${id(n)}`, owner: false });
@@ -469,7 +484,7 @@ export function marketplaceChanges(base: Dict, head: Dict): ModuleDiff[] {
 export function forkChanges(base: Dict, head: Dict): ModuleDiff[] {
   const [b, h] = [forksOf(base), forksOf(head)];
   const out: ModuleDiff[] = [];
-  const add = (module: string, what: string, owner: boolean) => out.push({ module, changes: [{ what, owner }], code: false });
+  const add = (module: string, what: string, owner: boolean) => out.push({ module, changes: [{ what, owner, ...(owner ? { ownerOnly: true as const } : {}) }], code: false });
   const at = (k: (typeof h)[number]) => `${id(k.at.url)} at ${k.at.sha.slice(0, 12)}`;
   for (const k of h) {
     const was = b.find((x) => x.target === k.target);

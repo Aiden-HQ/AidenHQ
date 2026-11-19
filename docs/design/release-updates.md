@@ -102,7 +102,8 @@ Hard gates, from day one (no observe mode):
   workflow), never a run on a branch (GitHub's API). A run still in progress is checked again next time. A tag pushed without
   the release workflow passing, or a hand-edited asset, is refused and the owner told once.
 - **Authority.** Auto-updates on is the owner's standing authority, so the updater's verified move is the AI reviewer's;
-  any other release move, and every release with it off, is the owner's tap. Update now is an admin's tap on the kernel's page. No agent can
+  any other release move, and every release with it off, is the owner's tap below full autonomy, the AI panel's at full
+  (docs/design/approvals.md, Autonomy). Update now is an admin's tap on the kernel's page. No agent can
   file a release: the kernel files it, from its own check.
 
 What a compromised distro repo could do: with push access to `main` and the release workflow, an attacker can publish a
@@ -118,7 +119,7 @@ kernel instead of pulling them; either would cut the trust to the key holder or 
 step if the distro repo gains more maintainers.
 
 **New module authority.** A release is planned like any product move: the authority diff it brings is the owner's tap,
-whatever `auto_update` says.
+whatever `auto_update` says; under full autonomy only its new spend and a non-official module's new authority are.
 
 ## Left out
 

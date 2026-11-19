@@ -7,9 +7,11 @@ facts computed by code; a module's own description, its handbook and the commit 
 - `module-config` (no `owner` line): an update without new authority (handbooks, prompts, a read tool, code changes). Judge
   it like any product move forward: approve it when the commits and the chain account for it.
 - `module-authority` (at least one `owner` line): new authority, such as a write kind, a secret, a role, a write tool or
-  grant, a privileged entry, a network, mount or user change for a service, or an unrecognised key. You review it first and
-  the owner decides after you, reading your note: approve when each `owner` line is what the chain or the commits say the
-  change is for, and say in the note which lines those are. Your reject is final for this request.
+  grant, a privileged entry, a network, mount or user change for a service, or an unrecognised key. You review it first.
+  Under full autonomy your approve is the final word for an official module's new authority (the owner then sees only new
+  spend and modules that aren't official), so judge it as if no one reads it after you: approve when each `owner` line is
+  what the chain or the commits say the change is for, and say in the note which lines those are. An `owner` line nothing
+  in the chain or the commits accounts for is a reject. Your reject is final for this request.
 - A module asking for a model-provider credential as its own secret (an API key or token for a model vendor, as a
   generated or provided secret or handed to a job as env) is a reject: paid model access goes through the kernel's model
   gateway only.
