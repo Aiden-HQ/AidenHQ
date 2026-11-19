@@ -1,7 +1,8 @@
 import { createHash, randomBytes } from "node:crypto";
 import { writeFileSync } from "node:fs";
-import { type CredentialsFile, readCredentials } from "./accounts.js";
+import { type CredentialsFile, pastedClient, readCredentials } from "./accounts.js";
 import { SCOPES } from "./google.js";
+import { explainApi, explainGoogle } from "./google-errors.js";
 
 /**
  * Connect a Google account, or reconnect one whose sign-in expired, started from the board. The same
@@ -23,6 +24,16 @@ export class Reconnect {
 
   private creds(): CredentialsFile {
     return readCredentials(this.credsPath);
+  }
+
+  /**
+   * Where Google can send this client back: a Desktop app (new setups) only to a loopback address, so the board uses its
+   * loopback address and the person pastes the redirected address back when the board is elsewhere; a Web app (an instance
+   * set up with the company's Web client, which has `client_type: "web"` in its credentials file, or only that file's client)
+   * to the board's own https address.
+   */
+  clientType(): "desktop" | "web" {
+    return this.creds().client_type ?? (pastedClient() ? "desktop" : readCredentials(this.credsPath, true).client_id ? "web" : "desktop");
   }
 
   /** Google's consent URL: for `account`, which must already be connected, or (none given) for a new account. */
@@ -56,16 +67,18 @@ export class Reconnect {
    * Exchanges Google's code and stores the new refresh token: for the account the flow was started for, or a new
    * account (the first one connected becomes the primary: Calendar and meeting documents).
    */
-  async finish(state: string, code: string): Promise<{ email: string }> {
+  async finish(state: string, code: string, error?: string): Promise<{ email: string }> {
     const p = this.pending.get(state);
     this.pending.delete(state);
+    // Google sent the browser back with an error (the person refused, or the project doesn't allow them): say why in words.
+    if (error) throw new ReconnectError(explainGoogle(error));
     if (!p || p.expires < Date.now()) throw new ReconnectError("this sign-in link expired or was already used; start again from the board");
     const creds = this.creds();
     const body = new URLSearchParams({ code, client_id: creds.client_id!, code_verifier: p.verifier, grant_type: "authorization_code", redirect_uri: p.redirectUri });
     if (creds.client_secret) body.set("client_secret", creds.client_secret);
     const res = await this.fetchImpl("https://oauth2.googleapis.com/token", { method: "POST", body, signal: AbortSignal.timeout(15_000) });
-    const tokens = (await res.json()) as { refresh_token?: string; access_token?: string; scope?: string; error?: string };
-    if (!res.ok || !tokens.refresh_token || !tokens.access_token) throw new ReconnectError(`Google refused the sign-in: ${tokens.error ?? res.status}`);
+    const tokens = (await res.json()) as { refresh_token?: string; access_token?: string; scope?: string; error?: string; error_description?: string };
+    if (!res.ok || !tokens.refresh_token || !tokens.access_token) throw new ReconnectError(explainGoogle(tokens.error ?? String(res.status), tokens.error_description));
     const granted = (tokens.scope ?? "").split(" ").filter(Boolean);
     const extra = granted.filter((s) => !SCOPES.includes(s) && !["openid", "email", "profile"].includes(s));
     if (extra.length) throw new ReconnectError(`unexpected scopes granted (${extra.join(", ")}); nothing saved`);
@@ -83,8 +96,8 @@ export class Reconnect {
 
   private async emailFor(accessToken: string): Promise<string> {
     const r = await this.fetchImpl("https://gmail.googleapis.com/gmail/v1/users/me/profile", { headers: { authorization: `Bearer ${accessToken}` }, signal: AbortSignal.timeout(15_000) });
-    const j = (await r.json()) as { emailAddress?: string };
-    if (!j.emailAddress) throw new ReconnectError("couldn't tell which account signed in");
+    const j = (await r.json()) as { emailAddress?: string; error?: { message?: string } };
+    if (!j.emailAddress) throw new ReconnectError(j.error ? explainApi(r.status, j) : "couldn't tell which account signed in");
     return j.emailAddress;
   }
 }

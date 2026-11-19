@@ -19,12 +19,12 @@ contributes:
       secrets: [ telegram_notify_bot_token ]
       pair_url: http://channel-telegram-telegram:8089/pair
       steps: |
-        1. In Telegram, open [BotFather](https://t.me/BotFather) (Telegram's official helper for making bots) and tap **Start**.
+        1. In Telegram, open [BotFather](https://t.me/BotFather) (Telegram's official helper for making bots; the link opens it in the app) and tap **Start**.
         2. Send `/newbot`.
         3. Choose a name for your bot, for example *My Aiden*.
         4. Choose a username. It must end in "bot", for example `my_aiden_bot`.
         5. BotFather replies with a token: a long line of numbers, a colon and letters. Copy it, paste it below and press **Save**.
-        6. Tap the link that appears next, on the phone where you use Telegram, and press **Start**. That chat is now yours with Aiden.
+        6. Scan the QR code that appears next with your phone's camera (or tap the link on the phone) and press **Start**. That chat is now yours with Aiden.
 providers:
   channel:
     transport: http://telegram:8089/transport/send
