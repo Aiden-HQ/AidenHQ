@@ -399,6 +399,20 @@ test("a wake the kernel refuses is dropped; a transient failure keeps it; a job 
   assert.deepEqual(acked, ["j1"], "the unpostable outcome is acknowledged once");
 });
 
+test("an outcome the kernel can't post yet is retried less often each time, not every tick", async () => {
+  let t = 0;
+  const k = fake({ task: { id: "t1", identifier: "WOR-1", title: "Fix", status: "todo", assigneeAgentId: "eng", createdByUserId: "u1" } });
+  k.dispatch = createDispatch({ kernel: k.kernel, db: new DatabaseSync(":memory:"), owner: "Dana", now: () => t });
+  k.jobs.set("j1", { id: "j1", task: "t1", agent: "eng", state: "done", exit: 0, final: "Done.", session: null, timedOut: false, at: 1, ended: 1, acked: false });
+  let tries = 0;
+  k.kernel.post = async () => { tries++; throw new KernelError(502, "the post action answered 502"); };
+  for (t = 0; t < 60_000; t += 5_000) await k.dispatch.tick();
+  assert.equal(tries, 3, "at 0, 15 s and 45 s, not every 5 s tick");
+  k.kernel.post = async () => {};
+  for (; t <= 120_000; t += 5_000) await k.dispatch.tick();
+  assert.equal(k.jobs.get("j1").acked, true, "it lands once the post goes through");
+});
+
 // Nothing dropped, lost or left idle (the 2026-11-20 review): each case below once lost a request.
 test("a task that already ran is picked back up when its blocker closes", async () => {
   const k = fake({ task: { id: "t1", identifier: "WOR-1", title: "Ship it", description: "Ship the page.", status: "todo", assigneeAgentId: "eng", createdByUserId: "u1" } });

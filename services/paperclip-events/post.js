@@ -34,6 +34,8 @@ const PRIORITIES = ["critical", "high", "medium", "low"];
 const TAG = /^<!-- aidenhq:(?:job=[A-Za-z0-9_-]{1,64} kind=[a-z_]{1,32}|op=[A-Za-z0-9_-]{1,64}) -->$/;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const MAX = 100_000;
+/** Paperclip's refusals of a task's blockers (services/issues.js: a cycle, itself, another company, unresolved ones). */
+const BLOCKER_REFUSAL = /^(Blocking relations cannot contain cycles|Issue cannot be blocked by itself|Blocked-by issues must belong to the same company|Issue is blocked by unresolved blockers)/;
 const text = (s, max) => String(s).replace(/<!--\s*aidenhq:/gi, "<!-- (quoted) aidenhq:").slice(0, max);
 const ids = (v) => Array.isArray(v) && v.every((x) => typeof x === "string" && UUID.test(x));
 const obj = (v) => v && typeof v === "object" && !Array.isArray(v);
@@ -116,8 +118,9 @@ export async function post(ctx, params, context, postKey, now = Date.now()) {
     try {
       out.status = (await ctx.issues.update(p.issueId, change, companyId, as)).status;
     } catch (e) {
-      // Paperclip's own refusal (a status its blockers don't allow): the caller's to resolve, never "unknown".
-      if (e?.details?.unresolvedBlockerIssueIds) return { refused: String(e.message ?? "unresolved blockers"), details: e.details };
+      // Paperclip's own refusal of the blockers (a cycle, unresolved ones): the caller's to resolve, never "unknown". Only the
+      // message crosses from the host (its status and details stay there), and a retry would get the same answer forever.
+      if (BLOCKER_REFUSAL.test(String(e?.message ?? ""))) return { refused: String(e.message) };
       throw e;
     }
   }
