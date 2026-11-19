@@ -70,6 +70,14 @@ test("an open owner record makes the gap's reason owner; idle now with nothing p
   assert.deepEqual(flow.idleNow().items, [{ task: "t1", identifier: "WOR-8567", since: `${D}10:37:27.000Z`, reason: "orphaned", holder: "engineer-b" }]);
 });
 
+test("a comment wake the kernel settled into a job that started after it isn't pending: idle afterwards is orphaned", () => {
+  const { add, flow } = setup();
+  wor8567(add);
+  // A comment at 10:34:30 while j2 was being admitted: j2 reads it, and the kernel settles the wake with no wake.bound.
+  add("wake.opened", "wake:w9", "10:34:30", { cause: "comment", author: "account:o1" });
+  assert.deepEqual(flow.idleNow().items, [{ task: "t1", identifier: "WOR-8567", since: `${D}10:37:27.000Z`, reason: "orphaned", holder: "engineer-b" }]);
+});
+
 test("an open stage is work, not idle: grading after the job leaves no gap and no wait", () => {
   const { add, flow } = setup();
   wor8567(add);
