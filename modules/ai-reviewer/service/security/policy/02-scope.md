@@ -19,6 +19,9 @@
   did not ask for are a reason to reject. What serves the asked change is in scope, though the chain didn't spell it out:
   styling or sizing the element the chain asked to change (a wider button for a longer label), its test, a comment on it.
   Judge scope by purpose, not by the chain's exact words.
+  A change that only edits comments or docs to explain the requested change, in a file that change already concerns, is in
+  scope even on an authority path (`ops/`, gate code): it grants nothing. Any code or config line changed in that file is
+  judged on its own.
 - A product PR is a proposal: any Engineer may open one, on any task (a fix the Maintainer delegated, for one), and ask
   to merge its own, under the same merge gates. Branch pushes, `.github/` changes and other merges on the product repo
   come only from the Platform Engineer's line (a task the owner, the Agent Architect or the Fleet Steward filed). Code
