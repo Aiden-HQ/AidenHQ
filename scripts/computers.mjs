@@ -49,8 +49,8 @@ export function imageTags(productDir, names) {
  * looking at apps and the web, and GitHub reads (as every Engineer has).
  */
 const PUBLIC_APPS = new Set(["app_list", "app_status", "app_view", "app_check", "web_view"]);
-/** The tasks bridge's one tool that neither reads a task's text nor writes on anyone's: its own task's file, which it holds. */
-const PUBLIC_TASKS = new Set(["task_file_upload"]);
+/** The tasks bridge's tools that read no other task's text and write only on the job's own task: its file, and its finish. */
+const PUBLIC_TASKS = new Set(["task_file_upload", "task_finish"]);
 export const privateGrants = (tools = {}) =>
   Object.entries(tools).flatMap(([conn, list]) =>
     conn === "github" ? [] : conn === "apps" ? list.filter((t) => !PUBLIC_APPS.has(t)).map((t) => `apps.${t}`) : conn === "paperclip_tasks" ? list.filter((t) => !PUBLIC_TASKS.has(t)).map((t) => `${conn}.${t}`) : list.map((t) => `${conn}.${t}`),
