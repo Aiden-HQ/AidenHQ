@@ -22,7 +22,7 @@ describe("primer.publish executor", () => {
     expect(plan.args).toEqual({ title: "Report", content: "# Report\n", format: "markdown", path: ".aidenhq/primer.md", by: { agent: "a1", task: "T-1" } });
     // The kernel validates the planned args against the kind's schema (additionalProperties false): every field must be in it.
     const schema = JSON.parse(readFileSync(new URL("../../../schemas/publish.json", import.meta.url), "utf8"));
-    for (const k of Object.keys(plan.args)) expect(Object.keys(schema.properties)).toContain(k);
+    for (const k of Object.keys(plan.args as object)) expect(Object.keys(schema.properties)).toContain(k);
     expect(plan.targets?.artifact_sha256).toMatch(/^[0-9a-f]{64}$/);
     expect(plan.card?.what).toBe('the new document "Report"');
     expect(calls).toEqual([]);
