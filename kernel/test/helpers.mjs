@@ -25,6 +25,7 @@ import { openRecords } from "../src/records.ts";
 import { createWrites } from "../src/writes.ts";
 import { KERNEL_KINDS } from "../src/kinds.ts";
 import { taskRoutineCap } from "../src/tier.ts";
+import { scopeOf } from "../src/task-scope.ts";
 import { createProvenance } from "../src/provenance.ts";
 import { createPluginPost } from "../src/outcomes.ts";
 
@@ -45,7 +46,7 @@ export const readBody = (req) => new Promise((r) => { let b = ""; req.on("data",
  * agents: { alias: {id, name, task?} }: each alias stands for a running kernel job of that agent on its task (TASK-1 by default; its authority frozen from
  * its grants); `call`, `v1` and `token(alias)` turn the alias into the job's real token. grants: the grants table's agents; connections(urls): config/kernel/connections.json from the fake servers' URLs.
  */
-export async function kernel(t, { agents = {}, grants = {}, settings = {}, connections, jobcaps = {}, secrets = {}, onControl, writes: kinds = {}, closed = [], modules = {}, board = async () => ({ status: 404, json: {} }), reviewer, native = {}, parents = {}, repos = {}, jobs: jobsApi, admission, outcomes, checks: checkTable, checkJobs, localChanges, paths, job, routing } = {}) {
+export async function kernel(t, { agents = {}, grants = {}, settings = {}, connections, jobcaps = {}, secrets = {}, onControl, writes: kinds = {}, closed = [], modules = {}, board = async () => ({ status: 404, json: {} }), reviewer, native = {}, parents = {}, issues = {}, repos = {}, jobs: jobsApi, admission, outcomes, checks: checkTable, checkJobs, localChanges, paths, job, routing } = {}) {
   const dir = mkdtempSync(join(tmpdir(), "kernel-"));
   const control = [];
   const cpServer = await serve(async (req, res) => {
@@ -53,6 +54,9 @@ export async function kernel(t, { agents = {}, grants = {}, settings = {}, conne
     const body = await readBody(req);
     control.push({ method: req.method, url: req.url, auth, body });
     if (onControl) { const out = await onControl(req, body, auth); if (out) return res.writeHead(out.status ?? 200, { "content-type": "application/json" }).end(JSON.stringify(out.body)); }
+    // Tasks the tests declare (issues[id], read as the kernel reads one for a conn.tool call's named task).
+    const asked = /^\/api\/issues\/([^/?]+)/.exec(req.url ?? "");
+    if (asked && issues[decodeURIComponent(asked[1])]) return res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify(issues[decodeURIComponent(asked[1])]));
     // The kernel's own read of a task (its routine cap): the task, with no origin.
     if (auth === "board-key" && req.method === "GET" && /^\/api\/issues\/[^/]+$/.test(req.url)) return res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ id: decodeURIComponent(req.url.split("/")[3]) }));
     res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ ok: true, url: req.url, as: auth }));
@@ -95,6 +99,7 @@ export async function kernel(t, { agents = {}, grants = {}, settings = {}, conne
   const cpTrace = { issue: (id) => cpJson(`/api/issues/${encodeURIComponent(id)}`), provenance: provenance.trace };
   const writes = createWrites({ records, registry: () => ({ ...moduleKinds(), ...KERNEL_KINDS }), connections: connectionsTable, secret, resolver: createResolver(), log: logf, replay: (r) => replay(r), reviews, native, repos: () => repos, paths: () => paths,
     autonomy: () => grantsTable().autonomy ?? "full", onTask: { open: async (task) => !closed.includes(task), notify: async (task, text) => void notices.push({ task, text }), parent: async (task) => parents[task],
+      scope: async (task, agent) => { const i = issues[task]; if (!i) return undefined; const read = async (ref) => issues[ref]; return { id: i.id ?? task, identifier: i.identifier, scope: await scopeOf(i, agent, read) }; },
       routineCap: (task) => taskRoutineCap(cpTrace, task, grantsTable().routines) } });
   const proxy = createProxy({ whoami, connections: connectionsTable, asserter, resolver: createResolver(), secret, writes, log: logf });
   replay = proxy.replay;
