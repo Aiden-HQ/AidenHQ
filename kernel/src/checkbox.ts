@@ -34,12 +34,26 @@ export function dockerRun(args: string[], timeoutMs: number): Promise<{ exit: nu
   });
 }
 
-export function checkBoxes({ call, docker = dockerRun }: { call: Call; docker?: typeof dockerRun }): CheckBox {
+/** How long a check waits for a free computer (the launcher answers 503 when every one is busy) before it can't run. */
+const BUSY_WAIT_MS = 60 * 60_000;
+const BUSY_RETRY_MS = 30_000;
+
+export function checkBoxes({ call, docker = dockerRun, sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms)) }: { call: Call; docker?: typeof dockerRun; sleep?: (ms: number) => Promise<void> }): CheckBox {
   return {
     async run({ check, image, workspace, out, cwd, argv, env, timeoutMs, readOnly }) {
       // The eval's model token is its only credential: the launcher's gateway passes calls on for this box's token alone.
       const token = env.OPENROUTER_API_KEY || undefined;
-      const { container } = (await call("/check", { check, image, workspace, out, readOnly: readOnly === true, timeoutMs, ...(token ? { token } : {}) })) as { container: string };
+      // Every computer busy (agent jobs hold them) is a wait, not a check that can't run: a merge gate gives up after a few of those.
+      let box: { container: string } | undefined;
+      for (let waited = 0; !box; waited += BUSY_RETRY_MS) {
+        try {
+          box = (await call("/check", { check, image, workspace, out, readOnly: readOnly === true, timeoutMs, ...(token ? { token } : {}) })) as { container: string };
+        } catch (e) {
+          if ((e as { status?: number }).status !== 503 || waited >= BUSY_WAIT_MS) throw e;
+          await sleep(BUSY_RETRY_MS);
+        }
+      }
+      const { container } = box;
       const dir = mkdtempSync(join(tmpdir(), "aidenhq-check-"));
       try {
         const file = join(dir, "env");

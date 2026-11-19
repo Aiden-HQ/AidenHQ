@@ -9,7 +9,7 @@ import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { checkJobsFrom } from "../src/checkbox.ts";
+import { checkBoxes, checkJobsFrom } from "../src/checkbox.ts";
 import { createCodehost } from "../src/codehost.ts";
 import { kernel, readBody, recipes, serve } from "./helpers.mjs";
 
@@ -109,4 +109,21 @@ test("check jobs: a fixture's fast check runs in a credential-free box; its rece
   while (v.state === "running") v = (await k.v1("GET", `/v1/checks/${v.id}?after=${v.version}&wait=5000`, undefined, "codehost-token")).json;
   assert.deepEqual([v.state, v.receipt], ["error", null]);
   assert.equal(v.error, `the snapshot of acme/app is of ${fx.good.slice(0, 12)}, not ${fx.bad.slice(0, 12)}`);
+});
+
+test("check box: every computer busy is a wait for a free one, not a check that can't run; another refusal is", async () => {
+  let asks = 0, slept = 0;
+  const busy = () => Object.assign(new Error("the computer launcher answered 503 on /check: all 12 computers are busy"), { status: 503 });
+  const call = async (route) => {
+    if (route !== "/check") return {};
+    if (++asks < 3) throw busy();
+    return { container: "box-1" };
+  };
+  const box = checkBoxes({ call, docker: async () => ({ exit: 0, out: "ok", timedOut: false }), sleep: async () => void slept++ });
+  const run = { check: "c-0000000000000000", image: "engineer", workspace: "/w", out: "/o", cwd: ".", argv: ["true"], env: {}, timeoutMs: 1000 };
+  assert.deepEqual(await box.run(run), { exit: 0, out: "ok", timedOut: false });
+  assert.equal(asks, 3);
+  assert.equal(slept, 2);
+  const refused = checkBoxes({ call: async () => { throw Object.assign(new Error("no image"), { status: 400 }); }, sleep: async () => assert.fail("a 400 isn't waited on") });
+  await assert.rejects(refused.run(run), /no image/);
 });

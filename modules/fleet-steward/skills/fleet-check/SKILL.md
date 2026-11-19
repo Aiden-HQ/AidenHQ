@@ -77,7 +77,10 @@ request open over an hour without merging) or something recovered.
 - **A stale PR** (`pr:<repo>#<n>`): find the task that opened it (`task_search`). If that task is still open, nudge its
   agent once: merge it if the checks are green, fix it if red, or close it as superseded (its Engineer closes it with
   `aidenhq close <PR link> --reason "<one line>"`). If the task is done, `task_create` to the app's owner (else the
-  Engineer): "merge, fix or close <PR> with one line why". Log `pr · <repo>#<n>`; never the same nudge twice.
+  Engineer): "merge, fix or close <PR> with one line why". `aidenhq close` reaches only the agents org (`aidenhq-alpha`) and
+  the product repo's Dependabot PRs: a PR outside that scope (e.g. in `Aiden-HQ/aidenhq-modules`) is the owner's, so file no
+  close task — state it once in the owner digest with the PR link, why it is superseded and the one-line close reason to
+  use, and log `pr · <repo>#<n> · outside-close-scope · owner`. Never the same nudge twice.
 - **Health flags** (`run:<agent>:stuck|failing|silent|repeat:<task>`, `grade:<task>`, `grade:<task>:unclosed`; a flag open a day is the owner's too):
   - `run:<agent>:stuck` or `:failing`: the kernel's job ledger shows a job running far past its timeout, or the agent's last
     three jobs all failed. Read the failed jobs' tasks and comments, route the fix like a failing agent, log it.
