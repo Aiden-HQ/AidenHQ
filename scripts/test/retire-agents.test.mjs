@@ -119,9 +119,10 @@ test("a retired agent without a department, or a department without an id, is ha
   }
 });
 
-test("a failing patch on one task still moves the others and terminates the agent", async () => {
+test("a failing patch on one task still moves the others and terminates the agent, naming the task it left", async () => {
   const board = fakeBoard({ agents: [retired, engineer], issues: [issue("issue-1"), issue("issue-2"), issue("issue-3")], failPatch: new Set(["issue-2"]) });
-  await run(board);
+  const steps = [];
+  await retireUnconfigured({ api: board.api, companyId, cfg: cfgFor({ engineer: { name: "Engineer", department } }), step: (m) => steps.push(m) });
 
   const patched = board.calls.filter((c) => c.method === "PATCH").map((c) => c.path);
   assert.deepEqual(patched, ["/api/issues/issue-1", "/api/issues/issue-2", "/api/issues/issue-3"]);
@@ -130,6 +131,7 @@ test("a failing patch on one task still moves the others and terminates the agen
   assert.equal(board.rows.find((i) => i.id === "issue-2").assigneeAgentId, retired.id);
   assert.ok(!board.calls.some((c) => c.path === "/api/issues/issue-2/comments"), "no comment on a task that did not move");
   assert.ok(board.calls.some((c) => c.path === `/api/agents/${retired.id}/terminate`));
+  assert.ok(steps.some((m) => /Left 1 open task of Engineer \(OpenRouter\) .*ISSUE-2/.test(m)), "the stranded task is named in the run's output");
 });
 
 test("an unreadable owner id still takes the tasks off the dead key, unassigned", async () => {

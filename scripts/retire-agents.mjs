@@ -33,8 +33,13 @@ const OPEN = "backlog,todo,in_progress,in_review,blocked";
 /**
  * An agent's open issues cannot stay assigned to it once it is terminated: nothing resolves that key, so no wake or dispatch
  * reaches them again. Before the terminate, each open issue goes to the one remaining agent in the same department, or, when
- * that department has none or several, back to the owner unassigned. Every move is commented on, and a failure on one issue
- * or comment is reported and skipped so the rest still move and the agent is still retired.
+ * that department has none or several, back to the owner unassigned. Every move is commented on.
+ *
+ * A failure to move or comment on one issue is reported, with the issue's identifier, and skipped: the remaining issues
+ * still move and the agent is still terminated. That is deliberate, and the one case where a task can be left on the dead
+ * key: a board that rejects some patches must not keep an unconfigured agent alive run after run, which would leave every
+ * one of its tasks on a key that is only still resolvable by accident. The operator sees each stranded identifier in the
+ * warning and can reassign it by hand. The list itself is different — see the return value.
  *
  * Returns whether the agent may be terminated: the list is retried, and false when it still can't be read, because
  * terminating then would strand every task on the dead key, which is the defect this exists to prevent.
@@ -65,13 +70,16 @@ async function handOverIssues({ api, companyId, agent, agents, cfg, step }) {
   const note = successor ? `${agent.name} was retired; this task was handed to ${successor.name}.`
     : ownerId ? `${agent.name} was retired; this task was unassigned and returned to the owner.`
     : `${agent.name} was retired; this task was left unassigned.`;
-  let moved = 0;
+  const moved = [];
+  const stranded = [];
   for (const issue of issues) {
+    const label = issue.identifier ?? issue.id;
     try {
       await api("PATCH", `/api/issues/${issue.id}`, patch);
-      moved++;
+      moved.push(label);
     } catch (e) {
-      console.warn(`! couldn't move ${issue.identifier ?? issue.id} from ${agent.name}; leaving it: ${e.message}`);
+      stranded.push(label);
+      console.warn(`! couldn't move ${label} from ${agent.name}; leaving it on the dead key: ${e.message}`);
       continue;
     }
     try {
@@ -81,7 +89,12 @@ async function handOverIssues({ api, companyId, agent, agents, cfg, step }) {
     }
   }
   const to = successor ? successor.name : ownerId ? "the owner" : "nobody (unassigned)";
-  step(`Handed ${moved} of ${issues.length} open task${issues.length === 1 ? "" : "s"} of ${agent.name} to ${to} (no longer configured)`);
+  step(`Handed ${moved.length} of ${issues.length} open task${issues.length === 1 ? "" : "s"} of ${agent.name} to ${to} (no longer configured)`);
+  if (stranded.length) {
+    // Reported, not fatal: the terminate still happens, as the handover is best-effort per issue. These identifiers are the
+    // tasks an operator still has to pick up.
+    step(`Left ${stranded.length} open task${stranded.length === 1 ? "" : "s"} of ${agent.name} on its key after a failed move: ${stranded.join(", ")}`);
+  }
   return true;
 }
 
