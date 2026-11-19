@@ -25,7 +25,7 @@ const ENGINEER = (user: string) => `## Your computer
 
 - Everything is in your working directory, the task's workspace: each repository the task names is a full clone there (\`<name>\`), on its default branch. Only modify files inside it.
 - It has the workspace, its toolchains, package installs into the workspace and the public Internet. It has no Docker, no system installs (apt, sudo) and no access to this instance's host, its live apps or their logs: if the work needs one, say so in your reply. Tools: git, gh (read-only), \`aidenhq-browse\` (a headless browser: \`aidenhq-browse --help\`).
-- Commit what you mean to keep, on a branch of its own (never the default branch): uncommitted changes stay in the workspace, uncommitted.
+- Commit what you mean to keep, on a branch of its own named \`agent/<this task's ID>/<topic>\` (never the default branch): uncommitted changes stay in the workspace, uncommitted.
 - ${user} sees your latest message and your task list while you work: for work with several steps, keep a short task list and mark items as you go.
 
 ## Publishing (the \`aidenhq\` commands)
