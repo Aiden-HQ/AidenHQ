@@ -6,6 +6,10 @@
 // and the Steward's status write on another agent's task is refused, so the nudge turned into a second task for the same
 // PR — whose branch exists only in the workspace of the task that pushed it. Two runs died on that (a default-branch
 // clone cannot fetch the branch). The second lint keeps the reachable path in the section that nudge lives in.
+// The Maintainer's `github_app_issue` card reads the delegating task's text as the request chain and refuses a write it
+// does not ask for: the product-bug step told the Steward to create the task with the evidence but never to ask for the
+// issue to be filed, so every report was refused and the bug went unfiled (or cost a second task whose own brief was
+// the report). The third lint keeps the explicit filing ask in that step.
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync, readdirSync } from "node:fs";
@@ -58,6 +62,19 @@ function stalePrNudgeProblems(text) {
       return missing.length ? [{ section: flat.slice(0, 60), missing }] : [];
     });
 }
+
+/** The filing ask the Maintainer task's description must open with: the card's reviewer reads it as the request chain. */
+const FILING_ASK = /^>? ?File one GitHub issue on the product repository/m;
+
+/** Every fleet skill whose product-bug step omits the explicit filing ask. */
+function filingAskProblems(text) {
+  return sections(text)
+    .filter((section) => /A product bug/.test(section) && /task_create/.test(section) && /maintainer/.test(section))
+    .filter((section) => !section.split("\n").some((line) => FILING_ASK.test(line)))
+    .map((section) => section.split("\n").find((line) => line.trim())?.replace(/^\W+\s*/, "").slice(0, 60) ?? "section");
+}
+
+const filingAskMessage = (file, section) => `${file}: the product-bug step "${section}" must tell the Steward to open the Maintainer task with an explicit 'File one GitHub issue on the product repository' ask — the filing card is refused without it.`;
 
 const nudgeMessage = (file, p) => `${file}: the section "${p.section}" nudges an open task's agent without ${p.missing.join(" and ")}: state that work reaches an Engineer only through a status write on its own task (handed to the chief of staff or its assignee when the board refuses), and that a second task is never filed for the same PR because the branch exists only in the task that pushed it`;
 
@@ -117,4 +134,27 @@ test("the lint bites: the old nudge, with no reachable path, fails with the fix;
   assert.deepEqual(stalePrNudgeProblems(replacement), []);
   // A section that does not nudge an open task is out of scope.
   assert.deepEqual(stalePrNudgeProblems("- **A stale PR**: if the task is done, `task_create` to the app's owner.\n"), []);
+});
+
+test("a fleet skill's product-bug step must ask for the issue to be filed", () => {
+  const problems = filingAskProblems(fleetCheck).map((s) => filingAskMessage("fleet-check/SKILL.md", s));
+  assert.deepEqual(problems, []);
+});
+
+test("the filing-ask lint bites: the step without the ask fails with the fix", () => {
+  const old = "- **A product bug**: the Maintainer reports it as one GitHub issue.\n  1. Its fingerprint is `product-bug:<slug>`.\n  2. `task_create` with `assignee: maintainer`, marker `product-bug:<slug>`, and a description holding the fingerprint, what happened and the evidence.\n  3. Log it.\n";
+  const problems = filingAskProblems(old);
+  assert.equal(problems.length, 1);
+  assert.match(filingAskMessage("old", problems[0]), /must tell the Steward to open the Maintainer task with an explicit 'File one GitHub issue on the product repository' ask — the filing card is refused without it/);
+  const replacement = old.replace("  3. Log it.", "> File one GitHub issue on the product repository `Aiden-HQ/AidenHQ`: nothing else is asked for.\n  3. Log it.");
+  assert.deepEqual(filingAskProblems(replacement), []);
+  // An ask for some other repository or action does not count.
+  assert.equal(filingAskProblems(old.replace("  3. Log it.", "File one GitHub issue elsewhere.\n  3. Log it.")).length, 1);
+  // A step that does not hand a product bug to the Maintainer is out of scope.
+  assert.deepEqual(filingAskProblems("- **A product bug**: routed to the owner, no task.\n"), []);
+  // Every fleet skill with a product-bug step is checked, not only this one.
+  const every = readdirSync(skills, { withFileTypes: true })
+    .filter((d) => d.isDirectory())
+    .flatMap((d) => filingAskProblems(readFileSync(new URL(`${d.name}/SKILL.md`, skills), "utf8")).map((s) => filingAskMessage(`${d.name}/SKILL.md`, s)));
+  assert.deepEqual(every, []);
 });

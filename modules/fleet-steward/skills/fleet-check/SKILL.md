@@ -57,13 +57,24 @@ request open over an hour without merging) or something recovered.
   1. Its fingerprint is `product-bug:<slug>` (the component and the symptom, a few lowercase words; reuse the slug your
      log already has for it).
   2. `task_create` with `assignee: maintainer`, marker `product-bug:<slug>`, `dedupe_closed: true`, title
-     `<component>: <the symptom in one line>`, and a description holding the fingerprint, what happened, what you
-     expected, and the evidence: the `module`, the `version` (the bare product sha the failing run actually ran under:
-     the pin `fleet_generation_status` shows for that run's generation), the pin at the moment of filing (named apart from
-     the first), the `reproduction` steps and the one log or error line that shows it. The issue is public: product evidence only,
-     in the product's own words; a name, email, host, IP, uuid, account or chat id becomes a neutral word (`<host>`).
+     `<component>: <the symptom in one line>`, and a description that opens with the filing ask quoted below this step,
+     then what happened, what you expected, and the evidence: the `module`, the `version` (the bare product sha the failing
+     run actually ran under: the pin `fleet_generation_status` shows for that run's generation), the pin at the moment of
+     filing (named apart from the first), the `reproduction` steps and the one log or error line that shows it. The ask
+     comes first in the description, not in a comment added after the fact: the `github_app_issue` card's reviewer reads
+     the delegating task's text as the request chain and refuses a write it does not ask for. The issue is public: product
+     evidence only, in the product's own words; a name, email, host, IP, uuid, account or chat id becomes a neutral word
+     (`<host>`).
+
   3. Log `log · <time> · product-bug · <slug> · <task id>`. Without the Maintainer (not in `fleet_catalog`), log the same
      line with `not reported` and list it in the digest for the owner to report.
+
+  The description's first section is exactly this, with the real fingerprint filled in and what happened, what you
+  expected and the evidence following it:
+
+> ## Ask
+> File one GitHub issue on the product repository `Aiden-HQ/AidenHQ` with `github_app_issue`: fingerprint `product-bug:<slug>`, the title and body below, and the evidence fields given. Nothing else is asked for; do not fix it in this task.
+
 - **An app incident:** the DevOps Engineer owns it. Don't diagnose or restart it yourself. If the incident is still open
   after its run finished, or the app keeps flapping, comment once on the DevOps Engineer's incident task (or on Fleet
   issues if there is none) and log it.
