@@ -283,19 +283,21 @@ export function createBackplane({ facts, whoami, asserter, proxy, cp, boardCp, g
             if (!f || !text(f.type, 80) || !text(f.subject, 300) || !text(f.version, 300) || typeof f.at !== "string" || !FACT_AT.test(f.at) || Number.isNaN(Date.parse(f.at))) throw fail(400, "bad_request", "each fact is {type, subject, version, at (ISO), task?, data?}");
             if (!Object.hasOwn(declared, f.type)) throw fail(403, "forbidden", `${w.module} did not declare fact ${f.type} (module.yaml facts:)`);
           }
-          // The actor is the kernel's call, never the body's: the agent whose job (data.job) or PR (its code host record's requester) it is, else the module.
-          const agentOf = (id: unknown) => { try { const a = (records.db.prepare("SELECT agent FROM jobs WHERE id = ?").get(String(id)) as { agent: string } | undefined)?.agent; const key = a && (grantsFile().agents ?? {})[a]?.key; return key ? `agent:${key}` : undefined; } catch { return undefined; } };
+          // The actor is the kernel's call, never the body's: the agent whose job (data.job) or PR (its code host record's requester) it
+          // is, only when that job or record is the calling module's own; else the module itself.
+          const agentOf = (id: unknown) => { try { const a = (records.db.prepare("SELECT agent FROM jobs WHERE id = ? AND module = ?").get(String(id), w.module!) as { agent: string } | undefined)?.agent; const key = a && (grantsFile().agents ?? {})[a]?.key; return key ? `agent:${key}` : undefined; } catch { return undefined; } };
           const prAgent = (subject: string, task: unknown) => {
             const repo = /^pr:([^#]+)#/.exec(subject)?.[1];
             if (!repo || typeof task !== "string") return undefined;
-            const r = records.list(["approved", "claimed", "done", "failed"], 50, { task }).find((x) => /^codehost-[a-z0-9-]+\.pr$/.test(x.kind) && ((x.args as { only?: { repo?: string }[] } | null)?.only ?? []).some((o) => o.repo === repo));
+            const r = records.list(["approved", "claimed", "done", "failed"], 50, { task }).find((x) => x.module === w.module && /^codehost-[a-z0-9-]+\.pr$/.test(x.kind) && ((x.args as { only?: { repo?: string }[] } | null)?.only ?? []).some((o) => o.repo === repo));
             return r?.requester.key ? `agent:${r.requester.key}` : undefined;
           };
           let recorded = 0;
           for (const f of b.facts) {
             const data = f.data && typeof f.data === "object" && !Array.isArray(f.data) ? f.data : {};
             const actor = (data.job != null ? agentOf(data.job) : undefined) ?? (f.subject.startsWith("pr:") ? prAgent(f.subject, f.task) : undefined) ?? `module:${w.module}`;
-            if (facts.record({ type: f.type, subject: f.subject, version: f.version, at: f.at, actor, ...(typeof f.task === "string" && f.task ? { task: f.task.slice(0, 100) } : {}), source: f.source === "backfill" ? "backfill" : "live", data })) recorded++;
+            // The module's name is part of the version (so of the id): two modules declaring one type can never pre-empt each other's facts.
+            if (facts.record({ type: f.type, subject: f.subject, version: `${w.module}/${f.version}`, at: f.at, actor, ...(typeof f.task === "string" && f.task ? { task: f.task.slice(0, 100) } : {}), source: f.source === "backfill" ? "backfill" : "live", data })) recorded++;
           }
           return send(res, 200, { recorded });
         }

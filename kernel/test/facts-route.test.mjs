@@ -8,8 +8,8 @@ import { serve } from "./helpers.mjs";
 
 test("a module records its declared facts: undeclared is 403, the actor comes from the job, a repeat records once", async (t) => {
   const records = openRecords(":memory:");
-  records.db.exec("CREATE TABLE jobs (id TEXT PRIMARY KEY, agent TEXT)");
-  records.db.prepare("INSERT INTO jobs VALUES ('j-1', 'a-eng')").run();
+  records.db.exec("CREATE TABLE jobs (id TEXT PRIMARY KEY, agent TEXT, module TEXT)");
+  records.db.prepare("INSERT INTO jobs VALUES ('j-1', 'a-eng', 'host'), ('j-2', 'a-eng', 'dispatch')").run();
   const facts = openFacts(records.db);
   const who = { host: { kind: "module", module: "host", roles: ["kernel.facts"] }, other: { kind: "module", module: "other", roles: [] } };
   const modules = () => ({ modules: { host: { facts: { "pr.opened": {} } } } });
@@ -27,4 +27,8 @@ test("a module records its declared facts: undeclared is 403, the actor comes fr
   assert.equal(facts.forTask("t1")[0].actor, "agent:engineer");
   assert.deepEqual(await (await post("host", [f({ version: "def" })])).json(), { recorded: 1 });
   assert.equal(facts.forTask("t1")[1].actor, "module:host");
+  // Another module's job never credits its agent; the module's name is in the id, so it can't pre-empt another module's fact.
+  assert.deepEqual(await (await post("host", [f({ version: "ghi", data: { job: "j-2" } })])).json(), { recorded: 1 });
+  assert.equal(facts.forTask("t1")[2].actor, "module:host");
+  assert.equal(facts.forTask("t1")[0].id, "pr.opened:pr:acme/app#1:host/abc");
 });
