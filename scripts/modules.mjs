@@ -1368,7 +1368,9 @@ export function checkEntries(name, def) {
  * `check_jobs`, by run name): the command (argv, run in the workspace or in the spec's `cwd_from` folder), its time limit, how a
  * result is titled, the spec's fields (each a kind of CHECK_KINDS), the files of its `dir` (laid in the box at
  * /aidenhq-out/recipe, small text files) and, by field, what the kernel enforces: `declares` (a package.json script the base
- * keeps) and `judged` (the reviewer eval's layout of judge files and cases, whose spec is exactly the judging commits').
+ * keeps), `judged` (the reviewer eval's layout of judge files and cases, whose spec is exactly the judging commits'), `model`
+ * ({ max_usd }: a model token of the check's own, capped at its spec's `budget_usd` up to max_usd) and `result` (true: the
+ * recipe writes a JSON result the receipt binds).
  */
 const JUDGED_SPEC = ["repo", "judge_commit", "subject_commit", "cases_from", "policy_hash"];
 export function checkJobs(name, def, root) {
@@ -1376,7 +1378,7 @@ export function checkJobs(name, def, root) {
   for (const [run, r] of Object.entries(def.check_jobs ?? {})) {
     const where = `module ${name}: check_jobs.${run}`;
     if (!/^[a-z][a-z0-9_-]{0,30}$/.test(run)) fail(`${where}: the name is lowercase letters, digits, - and _`);
-    const extra = Object.keys(r ?? {}).filter((f) => !["dir", "argv", "timeout_min", "title", "spec", "declares", "cwd_from", "judged"].includes(f));
+    const extra = Object.keys(r ?? {}).filter((f) => !["dir", "argv", "timeout_min", "title", "spec", "declares", "cwd_from", "judged", "model", "result"].includes(f));
     if (extra.length) fail(`${where}: unknown field ${extra.join(", ")}`);
     if (!Array.isArray(r.argv) || !r.argv.length || r.argv.some((a) => typeof a !== "string" || !a)) fail(`${where}: argv is the command, a list of strings`);
     if (!Number.isInteger(r.timeout_min) || r.timeout_min < 1 || r.timeout_min > 120) fail(`${where}: timeout_min is whole minutes, 1 to 120`);
@@ -1385,6 +1387,9 @@ export function checkJobs(name, def, root) {
     if (!spec || typeof spec !== "object" || Object.entries(spec).some(([k, v]) => !/^[a-z_]{1,30}$/.test(k) || !(v in CHECK_KINDS))) fail(`${where}: spec maps field names to ${Object.keys(CHECK_KINDS).join(", ")}`);
     if (r.declares != null && (typeof r.declares !== "string" || spec.base !== "sha")) fail(`${where}: declares names a package.json script and needs spec.base (sha)`);
     if (r.cwd_from != null && spec[r.cwd_from] !== "dir") fail(`${where}: cwd_from names a spec field of kind dir`);
+    if (r.model != null && (typeof r.model !== "object" || Object.keys(r.model).join() !== "max_usd" || !(r.model.max_usd > 0 && r.model.max_usd <= 100) || spec.budget_usd !== "usd")) fail(`${where}: model is { max_usd: 0-100 } and needs spec.budget_usd (usd)`);
+    if (r.result != null && r.result !== true) fail(`${where}: result is true or absent`);
+    if ((r.model != null || r.result != null) && r.judged != null) fail(`${where}: a judged run takes neither model nor result`);
     let judged;
     if (r.judged != null) {
       const j = r.judged;
@@ -1403,7 +1408,7 @@ export function checkJobs(name, def, root) {
         files[f.name] = readFileSync(join(dir, f.name), "utf8");
       }
     }
-    out[run] = { module: name, argv: r.argv, timeout_min: r.timeout_min, title: r.title, spec, files, ...(r.declares ? { declares: r.declares } : {}), ...(r.cwd_from ? { cwd_from: r.cwd_from } : {}), ...(judged ? { judged } : {}) };
+    out[run] = { module: name, argv: r.argv, timeout_min: r.timeout_min, title: r.title, spec, files, ...(r.declares ? { declares: r.declares } : {}), ...(r.cwd_from ? { cwd_from: r.cwd_from } : {}), ...(judged ? { judged } : {}), ...(r.model ? { model: { max_usd: r.model.max_usd } } : {}), ...(r.result ? { result: true } : {}) };
   }
   return out;
 }
