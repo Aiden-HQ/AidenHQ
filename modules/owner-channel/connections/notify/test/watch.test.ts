@@ -4,7 +4,7 @@ import { tick, type Job } from "../src/watch.js";
 
 const NOW = Date.parse("2026-11-09T08:00:00Z");
 const at = (min: number) => new Date(NOW + min * 60_000).toISOString();
-const job = (state: string, min: number): Job => ({ agent: "A", task: "I", state, ended_at: at(min) });
+const job = (state: string, min: number, error?: string): Job => ({ agent: "A", task: "I", state, ended_at: at(min), error });
 const api = async (p: string): Promise<any> => (p.startsWith("/api/agents/") ? { name: "Fleet Engineer" } : { identifier: "WOR-9" });
 
 describe("watch", () => {
@@ -26,5 +26,18 @@ describe("watch", () => {
     const notify = vi.fn(async () => true);
     await tick({ work: async () => ({ recent: [job("failed", -1), job("failed", -2), job("done", -3)] }), api, notify, store: openStore(":memory:"), now: NOW });
     expect(notify).not.toHaveBeenCalled();
+  });
+
+  it("one failure from a known cause alerts once an hour per cause, named", async () => {
+    const store = openStore(":memory:");
+    const notify = vi.fn(async (_text: string, _kind: "alert" | "done") => true);
+    const work = async () => ({ recent: [job("failed", -1, "OpenRouter 402: insufficient credits"), job("failed", -2, "401 invalid api key"), job("failed", -3, "boom")] });
+    await tick({ work, api, notify, store, now: NOW });
+    await tick({ work, api, notify, store, now: NOW + 5 * 60_000 });
+    expect(notify.mock.calls.map((c) => c[0])).toEqual([
+      "⚠️ Agents are failing: out of OpenRouter credits (402) (1 failed jobs, e.g. Fleet Engineer/WOR-9)",
+      "⚠️ Agents are failing: API key rejected (401) (1 failed jobs, e.g. Fleet Engineer/WOR-9)",
+      "⚠️ Agents are failing: 3 failed jobs in 15 minutes, e.g. Fleet Engineer/WOR-9",
+    ]);
   });
 });
