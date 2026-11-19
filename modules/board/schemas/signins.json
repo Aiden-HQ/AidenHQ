@@ -12,6 +12,6 @@
     "https_only": { "type": "boolean", "description": "the vendor takes only https redirects (Slack): Connect returns to the board's https address, never the default loopback address the owner pastes back" },
     "missing": { "type": "string", "minLength": 1, "maxLength": 200, "description": "the banner's second sentence before the first sign-in" },
     "stopped": { "type": "string", "minLength": 1, "maxLength": 200, "description": "the banner's second sentence once the sign-in stopped working" },
-    "secrets": { "type": "array", "maxItems": 4, "items": { "type": "string", "pattern": "^[a-z][a-z0-9_]{1,63}$" }, "description": "per-install values Connect asks for first, inline (each a secret of this module with `setup:`; compile adds their `fields`): only what can't be a default, such as a company's own address" }
+    "secrets": { "type": "array", "maxItems": 4, "items": { "oneOf": [{ "type": "string", "pattern": "^[a-z][a-z0-9_]{1,63}$" }, { "type": "object", "additionalProperties": false, "required": ["secret", "when"], "properties": { "secret": { "type": "string", "pattern": "^[a-z][a-z0-9_]{1,63}$" }, "when": { "type": "object", "minProperties": 1, "description": "setting: value; asked for only while the module's settings hold" } } }] }, "description": "per-install values Connect asks for first, inline (each a secret of this module with `setup:`; compile adds their `fields`): only what can't be a default, such as a company's own address. An entry may carry `when: { <setting>: <value> }`: asked for only in that mode" }
   }
 }

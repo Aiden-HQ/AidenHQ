@@ -96,7 +96,7 @@ export function connectionStatus(row: ConnectionRow, canConnect: { signIn: boole
   const s = row.signIn;
   if (s && !s.configured) return s.fields?.length ? { status: "not_configured", reason: "Not connected yet.", ...connect("Connect", `/${row.name}/connect`, canConnect.signIn) } : { status: "not_configured", reason: s.detail ?? "Not set up yet." };
   if (s?.state === "missing") return { status: "signed_out", reason: "Not connected yet.", ...connect("Connect", `/${row.name}/connect`, canConnect.signIn) };
-  if (s?.state === "expired") return { status: "signed_out", reason: `Sign-in stopped working (since ${day(s.since)}).`, ...connect("Reconnect", `/${row.name}/connect`, canConnect.signIn) };
+  if (s?.state === "expired") return { status: "signed_out", reason: `Sign-in stopped working (since ${day(s.since)})${s.detail ? `: ${s.detail}` : "."}`, ...connect("Reconnect", `/${row.name}/connect`, canConnect.signIn) };
 
   const p = row.probe;
   if (!p) {

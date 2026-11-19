@@ -145,6 +145,9 @@ bump of `product:` to a different reviewer needs a receipt for that reviewer too
   release date of any pin you bump. Dependabot (cooldown 7), `scripts/supply-chain/npm-age.mjs` and `pins.mjs` (CI,
   exceptions in `.github/supply-chain-exceptions.yaml`, read from the base) and gitleaks (`.gitleaks.toml`) enforce it.
   The app CI template carries copies in `.github/supply-chain/` (kept identical by `scripts/sync-shared.mjs`).
+- **Modules with modes.** A setting that changes how a module connects (connect or self-host, cloud or local) changes every
+  surface it gives the owner: its board sign-in and Connect, status, setup help and secrets. Each mode gets one end-to-end test
+  of the owner's setup from a fresh install to connected.
 - **Minimal tests.** A few that prove the thing works end to end; no tests for obvious code.
 - **Fluid UI, checked at real sizes.** Board and app pages are fluid at every common resolution: fluid widths with clamp()
   gutters, a clamp() type scale, grids that reflow, never a fixed narrow column floating on a large screen. Before

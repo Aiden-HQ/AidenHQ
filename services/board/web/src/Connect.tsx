@@ -119,7 +119,7 @@ export function ConnectDialog({ c, error, started, onClose }: { c: Connectable; 
   useEvents(["connections"], () => {
     if (phase === "paste" && view && view.state !== "ok") void api.signIn(c.id).then((v) => v.state === "ok" && onClose(), () => {});
   });
-  const fields = view && !view.configured ? view.fields : [];
+  const fields = view?.asks ? view.fields : [];
   /** The owner's pick of scopes, for the Connect path. */
   const picked = () => {
     const q = new URLSearchParams();
@@ -164,11 +164,14 @@ export function ConnectDialog({ c, error, started, onClose }: { c: Connectable; 
         let ready = false;
         for (let i = 0; i < 60 && !ready; i++) {
           await sleep(2000);
-          ready = await api.signIn(c.id).then((v) => v.configured, () => false);
+          ready = await api.signIn(c.id).then((v) => !v.asks || Boolean(v.detail), () => false);
         }
         if (!ready) throw new Error(`Saved. ${view.label} is still restarting: press Connect again in a minute.`);
-        // Its scopes are on offer only once it knows its address: the picker comes now, and Connect again.
         const fresh = await api.signIn(c.id);
+        // A pasted token that Primer accepts is the whole sign-in; one it refused says why, and stays to be pasted again.
+        if (fresh.asks) throw new Error(fresh.detail ?? "That value didn't work.");
+        if (fresh.state === "ok") return (w?.close(), onClose());
+        // Its scopes are on offer only once it knows its address: the picker comes now, and Connect again.
         if (fresh.scopes && !on) {
           w?.close();
           setView(fresh);
@@ -255,8 +258,7 @@ export function ConnectDialog({ c, error, started, onClose }: { c: Connectable; 
             <span className="ui-field-label">{f.label}</span>
             <input
               className="ui-input"
-              type="url"
-              inputMode="url"
+              type={f.pattern.startsWith("^https") ? "url" : "text"}
               spellCheck={false}
               autoComplete="off"
               autoFocus

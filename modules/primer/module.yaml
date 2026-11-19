@@ -7,7 +7,8 @@ contributes:
   board.signins:
     - { id: primer, label: Primer, status_url: "http://primer-mcp:8084/auth/status", connect_url: /primer/connect, callback: /primer/callback,
         missing: "The agents can't read or publish documents until it is.", stopped: "The agents can't read or publish documents.",
-        secrets: [primer_mcp_url] }
+        # Connect asks for the address of the hosted Primer (connect) or the service token of this module's own (self-host).
+        secrets: [ { secret: primer_mcp_url, when: { primer_mode: connect } }, { secret: primer_service_token, when: { primer_mode: self-host } } ] }
 settings:
   # connect: a hosted Primer (its MCP address from Connect), signed in as the owner. self-host: this module runs Primer
   # (primer-server, built from source at the commit its Dockerfile pins, and its own Postgres, primer-db) behind the gate at
@@ -60,7 +61,7 @@ secrets:
       setup:
         label: Primer service token
         pattern: '^primer_pat_[A-Za-z0-9_-]{16,}$'
-        help: "Self-hosted Primer only: sign in to Primer, open Settings, Tokens, and create a token (leave Limit to specific permissions unchecked)."
+        help: "Open https://${settings.primer_host}, sign in, go to Settings, API tokens, and create a token. Leave \"Limit this token to specific permissions\" unchecked, then paste it here."
 optional_secrets:
   - primer_mcp_url
   - primer_service_token

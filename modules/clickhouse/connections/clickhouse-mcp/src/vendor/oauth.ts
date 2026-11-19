@@ -16,6 +16,8 @@ export interface AuthStatus {
   detail?: string;
   /** The scopes the vendor granted at the last sign-in. */
   scope?: string;
+  /** Signs in by a pasted value (a service token), never a browser sign-in: the board's Connect asks for it while not ok. */
+  paste?: boolean;
 }
 
 export class AuthError extends Error {}
@@ -33,6 +35,8 @@ export interface Auth {
   headers(): Promise<Record<string, string>>;
   refresh(): Promise<void>;
   status(): AuthStatus;
+  /** Verifies the sign-in with the vendor before its status is read (a token's cheap authenticated read, kept briefly). */
+  check?(): Promise<void>;
   mark(state: "ok" | "expired", detail?: string): void;
   signedIn(): boolean;
   signIn?: SignInFlow;

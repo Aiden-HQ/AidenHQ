@@ -4,8 +4,7 @@
 // they read it (a file secret is a bind mount of the old file until its container is recreated). The caller names only the module and the
 // secret; never a path or a service. Values are never logged, echoed or put on a command line.
 import { spawn } from "node:child_process";
-import { randomBytes } from "node:crypto";
-import { existsSync, renameSync, writeFileSync } from "node:fs";
+import { existsSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import type { SetupField } from "./admin.ts";
 import { fail } from "./proxy.ts";
@@ -13,12 +12,11 @@ import { fail } from "./proxy.ts";
 /** A value the owner gave for a declared field: trimmed, 300 characters at most, matching its anchored pattern. */
 export const secretFits = (f: SetupField, value: string) => value.length > 0 && value.length <= 300 && new RegExp(f.pattern).test(value);
 
-/** Writes a secret into the vault view `dir` as a new 0600 file renamed into place (/setup and save_secret). */
-export const vaultWriter = (dir: string) => (name: string, value: string) => {
-  const f = path.join(dir, name), tmp = `${f}.${randomBytes(6).toString("hex")}.tmp`;
-  writeFileSync(tmp, value, { mode: 0o600, flag: "wx" });
-  renameSync(tmp, f);
-};
+/**
+ * Writes a secret into the vault view `dir` in place (/setup and save_secret): the same file truncated and written, 0600 when
+ * new. Never a rename: a container that bind-mounts the file keeps the old one until it restarts, but sees an in-place write.
+ */
+export const vaultWriter = (dir: string) => (name: string, value: string) => writeFileSync(path.join(dir, name), value, { mode: 0o600 });
 
 export type ModuleSecrets = ReturnType<typeof createModuleSecrets>;
 

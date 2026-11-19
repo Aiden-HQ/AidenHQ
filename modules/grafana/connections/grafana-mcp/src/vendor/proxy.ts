@@ -233,7 +233,10 @@ export function createVendorProxy(o: ProxyOptions): VendorProxy {
   /** The board's sign-in endpoints: state, the scopes on offer, and starting or finishing a sign-in (never a token). */
   async function handleAuth(req: IncomingMessage, res: ServerResponse, path: string): Promise<void> {
     if (!bearer(req, o.authKey)) return sendJson(res, 401, { error: "unauthorized" });
-    if (path === "/auth/status" && req.method === "GET") return sendJson(res, 200, { configured: Boolean(o.upstream), ...auth.status() });
+    if (path === "/auth/status" && req.method === "GET") {
+      await auth.check?.().catch(() => {});
+      return sendJson(res, 200, { configured: Boolean(o.upstream), ...auth.status() });
+    }
     const flow = auth.signIn;
     if (!flow) return sendJson(res, 400, { error: `${o.name} needs no sign-in` });
     if (!o.upstream) return sendJson(res, 400, { error: notConnected() });

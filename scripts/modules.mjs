@@ -463,14 +463,20 @@ function put(target, key, value, kind) {
  * and board.signins; a sign-in's own `secrets` (asked for on its Connect) get their fields the same way. A flow with `pair_url`
  * gets the module's generated `<module>_pair_token` (its secret's name in the flow, never its value): mounted on the board (`board_env`), and the module's service reads it as `${secrets.<module>_pair_token}`.
  */
-export function setupFlows(defs, compiled) {
+export function setupFlows(defs, compiled, settings = {}) {
   // Each paste field's label, pattern and help, from the secret's `setup:` (the board shows and checks them; the kernel checks again).
+  // A sign-in's secret may be `{ secret, when: { <setting>: <value> } }`: asked for only in that mode (the board's Connect
+  // follows the module's settings). A help text may name a setting as ${settings.<name>}.
   const fieldsOf = (module, secrets, where) => {
     const declared = [defs[module].secrets?.provided ?? []].flat().filter((p) => p?.setup != null);
-    return (secrets ?? []).map((s) => {
+    const holds = (when) => Object.entries(when ?? {}).every(([k, v]) => String(settings[k]) === String(v));
+    return (secrets ?? []).flatMap((e) => {
+      const s = typeof e === "string" ? e : e.secret;
+      if (typeof e !== "string" && !holds(e.when)) return [];
       const p = declared.find((x) => x.name === s);
       if (!p) fail(`${where} names a secret without setup: ${s} (give it \`setup:\` under secrets.provided)`);
-      return { secret: s, label: p.setup.label, pattern: p.setup.pattern, ...(p.setup.help ? { help: p.setup.help } : {}) };
+      const help = p.setup.help?.replace(/\$\{settings\.([a-z_]+)\}/g, (_, k) => settings[k] ?? "");
+      return [{ secret: s, label: p.setup.label, pattern: p.setup.pattern, ...(help ? { help } : {}) }];
     });
   };
   // A sign-in's per-install values, asked for inline on its Connect.
@@ -547,7 +553,6 @@ export function compile(productDir, instanceDir, { revision, fetch = hostFetch(p
   if (conflicts.length) fail(conflicts.join("; "));
   // Module-owned points (spec §3.6): config/points/<owner>.json, one file for every module that defines any ({} when off).
   const compiled = compilePoints(enabledDefs, Object.fromEntries(enabled.map((n) => [n, all.get(n).root])));
-  setupFlows(enabledDefs, compiled);
   const points = Object.fromEntries([...all.values()].filter((m) => m.def.points).map((m) => [m.name, compiled[m.name] ?? {}]));
   const warnings = [];
 
@@ -556,6 +561,7 @@ export function compile(productDir, instanceDir, { revision, fetch = hostFetch(p
   const settings = {};
   for (const [, defs] of declaredSettings) for (const [k, d] of Object.entries(defs)) if (d && "default" in d) settings[k] = d.default;
   Object.assign(settings, instance.settings ?? {});
+  setupFlows(enabledDefs, compiled, settings);
   for (const [name, defs] of declaredSettings) {
     for (const [k, d] of Object.entries(defs)) {
       if (d?.required && settings[k] == null) fail(`setting ${k} is required by ${name}`);

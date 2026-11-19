@@ -9,7 +9,12 @@ export interface McpAuthStatus {
   detail?: string;
   /** The scopes the stored token holds, space separated (the proxy adds it when signed in). */
   scope?: string;
+  /** Signs in by a pasted value (a service token), never a browser sign-in: Connect asks for it until the state is ok. */
+  paste?: boolean;
 }
+
+/** Whether Connect must ask for the sign-in's own values: its address isn't set, or its pasted value isn't working yet. */
+export const asksValues = (s: McpAuthStatus | undefined) => !s?.configured || Boolean(s.paste && s.state !== "ok");
 
 /**
  * Sign-in state from an MCP proxy that signs in with OAuth (glean-mcp, grafana-mcp; clickhouse-mcp), and
