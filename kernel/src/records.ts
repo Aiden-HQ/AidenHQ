@@ -216,7 +216,7 @@ export function openRecords(file: string, now = () => new Date()) {
       const note = v.note.slice(0, 2000);
       const to: State = v.decision === "approve" ? "approved" : v.decision === "escalate" ? "owner" : v.code === "stale_head" ? "stale" : "rejected";
       const ok = moved(() => move(id, ["review"], to, { review: note, review_code: v.code ?? null, ...(to === "owner" ? { tier: 2 } : { decided_by: v.by, via: "review", decided_at: iso() }), ...(v.chain ? { chain: v.chain } : {}) }, true),
-        () => fact(id, "record.decided", `reviewer:${to}`, "module:ai-reviewer", () => ({ decision: to, decider: "reviewer", via: "review" })));
+        () => fact(id, "record.decided", `reviewer:${to}`, "module:ai-reviewer", () => ({ decision: to, decider: "reviewer", via: "review", ...(v.code ? { code: v.code } : {}) })));
       if (!ok) return "it changed meanwhile";
       return get(id)!;
     },
