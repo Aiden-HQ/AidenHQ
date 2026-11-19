@@ -5,7 +5,8 @@
 //   idleNow()             tasks idle now, oldest first
 // A stage pairs a `to` fact with the latest open `from` fact of the same subject; a `to` that fails the stage's `where`
 // leaves it open, and an occurrence still open at the end after such a `to` is dropped (the record went the other way).
-// A task is idle while it is open and no job of its own is queued (from its wake) or running. The reason, in order: the
+// A task is idle while a task fact shows it open, no job of its own is queued (from its wake) or running, and no stage of it
+// is open other than a wait the reasons below name (a stage starting at record.filed or work.waiting). The reason, in order: the
 // latest unexpired `work.waiting`, an open record (owner, else reviewer), a blocker not done, an open child task, a future
 // scheduled wake; then, for the gap still open now with no wake pending, `orphaned`; otherwise `unknown`, never a guess.
 // Reasons are evaluated at every fact inside a gap, so a gap splits where its cause changes. Durations are seconds, ratios 0..1.
@@ -14,7 +15,7 @@ import type { FactRow } from "./facts.ts";
 import type { Stage } from "./flow-stages.ts";
 import { link, type Change, type Text } from "../sdk/src/quality.ts";
 
-export type Occurrence = { name: string; label: string; module: string; start: string; end: string | null; actor: string; task: string; subject: string };
+export type Occurrence = { name: string; label: string; module: string; from: string; start: string; end: string | null; actor: string; task: string; subject: string };
 export type Idle = { task: string; start: string; end: string | null; reason: string; blocked_on?: string; holder: string };
 export type Waterfall = { task: string; root: string; facts: FactRow[]; stages: Occurrence[]; idle: Idle[] };
 export type By = "stage" | "agent" | "module" | "repo" | "model";
@@ -41,7 +42,7 @@ export function pair(facts: FactRow[], stages: Stage[]): Occurrence[] {
   for (const s of stages) {
     const matches = (f: FactRow) => Object.entries(s.where ?? {}).every(([k, v]) => String(f.data[k]) === v);
     const occ = (from: FactRow, to?: FactRow): Occurrence => ({
-      name: s.name, label: s.label, module: s.module, start: (s.start && str(from.data[s.start])) || from.at, end: to?.at ?? null,
+      name: s.name, label: s.label, module: s.module, from: s.from, start: (s.start && str(from.data[s.start])) || from.at, end: to?.at ?? null,
       actor: to && to.actor !== "unknown" ? to.actor : from.actor, task: from.task ?? to?.task ?? "", subject: from.subject,
     });
     const open = new Map<string, { f: FactRow; stale: boolean }[]>();
@@ -98,7 +99,7 @@ function reasonAt(x: Index, task: string, t: number, now: boolean): { reason: st
     const rf = subjectUpTo(s);
     const escalated = (f: FactRow) => f.type === "record.decided" && /^(escalate|owner)$/.test(String(f.data.decision));
     if (rf.some((f) => (f.type === "record.decided" && !escalated(f)) || f.type === "record.landed" || f.type === "record.failed")) continue;
-    const owner = rf.some((f) => f.type === "record.held" || escalated(f) || (f.type === "record.filed" && Number(f.data.tier) >= 2));
+    const owner = rf.some((f) => f.type === "record.held" || escalated(f) || (f.type === "record.filed" && (f.data.state ? f.data.state === "owner" : Number(f.data.tier) >= 2)));
     record = owner ? "owner" : record ?? "reviewer";
   }
   if (record) return { reason: record };
@@ -115,11 +116,14 @@ function reasonAt(x: Index, task: string, t: number, now: boolean): { reason: st
   return { reason: now && !wakes.length ? "orphaned" : "unknown" };
 }
 
-/** A task's idle periods up to `now`. */
-function idleOf(x: Index, task: string, now: number): Idle[] {
+/** Stages whose open interval is a wait the idle reasons name, not work going on. */
+const WAITS = new Set(["record.filed", "work.waiting"]);
+
+/** A task's idle periods up to `now`; `occs`: the stage occurrences (any task's). None when no task fact says it was open. */
+function idleOf(x: Index, task: string, now: number, occs: Occurrence[]): Idle[] {
   const fs = x.byTask.get(task) ?? [];
-  if (!fs.length) return [];
   const own = fs.filter((f) => f.subject === `task:${task}`);
+  if (!own.some((f) => f.type === "task.created" || f.type === "task.status_changed")) return [];
   // open intervals, from creation (else its first fact) through status changes
   const open: [number, number][] = [];
   let from: number | null = ms((own.find((f) => f.type === "task.created") ?? fs[0]!).at);
@@ -136,7 +140,8 @@ function idleOf(x: Index, task: string, now: number): Idle[] {
     if (f.type === "job.ended") j[1] = ms(f.at);
     jobs.set(f.subject, j);
   }
-  const busy = [...jobs.values()].filter(([s]) => s < Infinity).sort((a, b) => a[0] - b[0]);
+  const busy = [...[...jobs.values()].filter(([s]) => s < Infinity),
+    ...occs.filter((o) => o.task === task && !WAITS.has(o.from)).map((o): [number, number] => [ms(o.start), o.end ? ms(o.end) : now])].sort((a, b) => a[0] - b[0]);
   const gaps: [number, number][] = [];
   for (const [s, e] of open) {
     let cur = s;
@@ -192,9 +197,9 @@ export function createFlow({ db, file, stages, now = () => new Date(), incident 
   if (!db) conn.exec("PRAGMA busy_timeout = 5000");
   const row = (r: any): FactRow => ({ ...r, data: JSON.parse(r.data) });
   const all = (sql: string, ...args: (string | number)[]) => (conn.prepare(sql).all(...args) as any[]).map(row);
-  const chunked = (sql: (marks: string) => string, ids: string[]) => {
+  const chunked = (sql: (marks: string) => string, ids: string[], ...after: string[]) => {
     const out: FactRow[] = [];
-    for (let i = 0; i < ids.length; i += 400) { const c = ids.slice(i, i + 400); out.push(...all(sql(c.map(() => "?").join(",")), ...c)); }
+    for (let i = 0; i < ids.length; i += 400) { const c = ids.slice(i, i + 400); out.push(...all(sql(c.map(() => "?").join(",")), ...c, ...after)); }
     return out;
   };
   const parentOf = (task: string) => str(all("SELECT * FROM facts WHERE type = 'task.created' AND subject = ? ORDER BY seq DESC LIMIT 1", `task:${task}`)[0]?.data.parent);
@@ -216,11 +221,21 @@ export function createFlow({ db, file, stages, now = () => new Date(), incident 
   function waterfall(task: string, tasks: string[]): Waterfall {
     const { facts, ctx } = load(tasks);
     const t = now().getTime();
-    return { task, root: rootOf(task), facts, stages: pair(facts, stages()), idle: tasks.flatMap((id) => idleOf(ctx, id, t)).sort((a, b) => a.start.localeCompare(b.start)) };
+    const occs = pair(facts, stages());
+    return { task, root: rootOf(task), facts, stages: occs, idle: tasks.flatMap((id) => idleOf(ctx, id, t, occs)).sort((a, b) => a.start.localeCompare(b.start)) };
   }
 
-  /** Facts from `from` to `to` (plus wakes known by then for later), bounded. */
-  const window = (from: number, to: number) => all(`SELECT * FROM facts WHERE (at >= ? AND at < ?) OR (type = 'wake.opened' AND at >= ? AND seen_at < ?) ORDER BY at, seq LIMIT ${ROWS}`, iso(from), iso(to), iso(to), iso(to));
+  /**
+   * Facts from `from` to `to` (plus wakes known by then for later), the newest ROWS of them (`truncated` when more), and the
+   * `task:` facts of every task they touch whatever their age (whether it is open).
+   */
+  const window = (from: number, to: number) => {
+    const rows = all(`SELECT * FROM facts WHERE (at >= ? AND at < ?) OR (type = 'wake.opened' AND at >= ? AND seen_at < ?) ORDER BY at DESC, seq DESC LIMIT ${ROWS + 1}`, iso(from), iso(to), iso(to), iso(to));
+    const truncated = rows.length > ROWS, kept = new Map(rows.slice(0, ROWS).map((r) => [r.seq, r]));
+    const tasks = [...new Set([...kept.values()].map(taskOf).filter((t): t is string => Boolean(t)))];
+    for (const r of chunked((m) => `SELECT * FROM facts WHERE subject IN (${m}) AND at < ?`, tasks.map((t) => `task:${t}`), iso(to))) kept.set(r.seq, r);
+    return { rows: [...kept.values()].sort(byTime), truncated };
+  };
 
   return {
     task: (id: string) => waterfall(id, [id]),
@@ -233,12 +248,13 @@ export function createFlow({ db, file, stages, now = () => new Date(), incident 
 
     summary({ since, to, by = "stage", scope }: { since: string; to?: string; by?: By; scope?: string }) {
       const t0 = ms(since), t1 = to ? ms(to) : now().getTime(), days = Math.max((t1 - t0) / DAY, 1 / 24);
-      const rows = window(t0 - 30 * DAY, t1);
+      // 90 days back, so a stage that began before `since` still pairs
+      const { rows, truncated } = window(t0 - 90 * DAY, t1);
       const x = index(rows);
       const inWin = (f: { at: string } | FactRow) => ms(f.at) >= t0 && ms(f.at) < t1;
       const idle = new Map<string, Idle[]>();
-      const idleFor = (task: string) => idle.get(task) ?? (idle.set(task, idleOf(x, task, t1)), idle.get(task)!);
       const occs = pair(rows, stages());
+      const idleFor = (task: string) => idle.get(task) ?? (idle.set(task, idleOf(x, task, t1, occs)), idle.get(task)!);
       const jobEnd = new Map(rows.filter((f) => f.type === "job.ended").map((f) => [f.subject, f]));
       const keyOf = (o: Occurrence): string | undefined => {
         if (by === "stage") return undefined;
@@ -354,21 +370,21 @@ export function createFlow({ db, file, stages, now = () => new Date(), incident 
         cost_per_outcome: ratio(cost(ended), done.size),
         wasted_cost: cost(ended.filter((f) => f.data.acted === false || (f.task && lastStatus(f.task) === "cancelled"))),
       };
-      return { since: iso(t0), to: iso(t1), by, scope: scope ?? "all", stages: stageRows, dora, churn, fleet };
+      return { since: iso(t0), to: iso(t1), by, scope: scope ?? "all", truncated, stages: stageRows, dora, churn, fleet };
     },
 
     /** Tasks idle now (facts of the last 90 days), oldest first. */
     idleNow() {
-      const t = now().getTime(), x = index(window(t - 90 * DAY, t + 1));
+      const t = now().getTime(), { rows, truncated } = window(t - 90 * DAY, t + 1), x = index(rows), occs = pair(rows, stages());
       const items: { task: string; identifier: string | null; since: string; reason: string; holder: string }[] = [];
       for (const task of x.byTask.keys()) {
-        const gaps = idleOf(x, task, t), last = gaps.at(-1);
+        const gaps = idleOf(x, task, t, occs), last = gaps.at(-1);
         if (!last || last.end !== null) continue;
         let since = last.start;
         for (let i = gaps.length - 2; i >= 0 && gaps[i]!.end === since; i--) since = gaps[i]!.start;
         items.push({ task, identifier: x.ident.get(task) ?? null, since, reason: last.reason, holder: last.holder });
       }
-      return { items: items.sort((a, b) => a.since.localeCompare(b.since)) };
+      return { items: items.sort((a, b) => a.since.localeCompare(b.since)), truncated };
     },
   };
 }

@@ -1,10 +1,14 @@
 // Flow's views (flow.ts): a task's waterfall with its stages, actors and idle reasons, items, the summary and idle now.
 import { test } from "node:test";
+import http from "node:http";
 import assert from "node:assert/strict";
 import { DatabaseSync } from "node:sqlite";
 import { openFacts } from "../src/facts.ts";
 import { createFlow } from "../src/flow.ts";
 import { KERNEL_STAGES } from "../src/flow-stages.ts";
+import { createBackplane } from "../src/backplane.ts";
+
+const GRADE = { name: "grade", label: "Grading", from: "grade.requested", to: "grade.verdict", module: "grading" };
 
 const D = "2026-11-19T";
 /** A fact store and its flow; each fact is seen when it happened (seen_at = at). */
@@ -13,7 +17,7 @@ function setup(now = `${D}23:00:00.000Z`) {
   let clock = now;
   const facts = openFacts(db, () => new Date(clock));
   const add = (type, subject, at, data = {}, over = {}) => { clock = at.length < 13 ? `${D}${at}.000Z` : at; facts.record({ type, subject, version: `${type}@${clock}`, at: clock, actor: "unknown", task: "t1", data, ...over }); };
-  return { add, flow: createFlow({ db, stages: () => KERNEL_STAGES, now: () => new Date(now) }) };
+  return { add, flow: createFlow({ db, stages: () => [...KERNEL_STAGES, GRADE], now: () => new Date(now) }) };
 }
 
 /** WOR-8567 (2026-11-19): assigned, a 29 s queue, the first job, a handoff, a second job, then idle until a comment woke it. */
@@ -66,6 +70,19 @@ test("an open owner record makes the gap's reason owner; idle now with nothing p
   assert.deepEqual(flow.idleNow().items, [{ task: "t1", identifier: "WOR-8567", since: `${D}10:37:27.000Z`, reason: "orphaned", holder: "engineer-b" }]);
 });
 
+test("an open stage is work, not idle: grading after the job leaves no gap and no wait", () => {
+  const { add, flow } = setup();
+  wor8567(add);
+  add("grade.requested", "grade:t1:1", "10:37:27");
+  add("grade.verdict", "grade:t1:1", "10:47:27", { pass: true, attempt: 1 }, { actor: "module:grading" });
+  add("task.status_changed", "task:t1", "10:47:27", { from: "in_review", to: "done" });
+  const w = flow.task("t1");
+  assert.deepEqual(w.idle.map((i) => i.start.slice(11, 19)), ["10:33:56"]);
+  const grade = flow.summary({ since: `${D}00:00:00.000Z` }).stages.find((r) => r.name === "grade");
+  assert.deepEqual([grade.n, grade.samples, grade.waits], [1, [600], {}]);
+  assert.deepEqual(flow.idleNow().items, [], "a done task is not idle");
+});
+
 test("two overlapping records on one task pair by subject", () => {
   const { add, flow } = setup();
   add("record.filed", "record:k1", "10:00:00", { tier: 1 });
@@ -81,7 +98,7 @@ test("empty log gives an empty waterfall, summary and idle list", () => {
   assert.deepEqual(flow.task("t1"), { task: "t1", root: "t1", facts: [], stages: [], idle: [] });
   const s = flow.summary({ since: `${D}00:00:00.000Z` });
   assert.deepEqual([s.stages, s.dora, s.churn, s.fleet.completions, s.fleet.first_pass_grade], [[], null, null, 0, null]);
-  assert.deepEqual(flow.idleNow(), { items: [] });
+  assert.deepEqual(flow.idleNow(), { items: [], truncated: false });
 });
 
 test("item walks to the root and includes its descendants", () => {
@@ -109,6 +126,19 @@ test("summary: p50/p75 per stage, fewer than 5 gives samples, DORA from deploys 
   const review = s.stages.find((r) => r.name === "review");
   assert.deepEqual([review.n, review.samples, review.work_p50], [1, [120], undefined]);
   assert.equal(s.dora, null);
+  assert.deepEqual(flow.idleNow().items, [], "tasks no task fact shows open are never idle");
+
+  add("task.created", "task:t7", "09:00:00", {}, { task: "t7" });
+  add("job.started", "job:j7", "09:00:00", {}, { task: "t7", actor: "agent:engineer-a" });
+  add("job.ended", "job:j7", "09:10:00", { cost_usd: 2, acted: true }, { task: "t7", actor: "agent:engineer-a" });
+  add("grade.requested", "grade:t7:1", "09:10:00", {}, { task: "t7" });
+  add("grade.verdict", "grade:t7:1", "09:20:00", { pass: false, attempt: 1 }, { task: "t7" });
+  add("task.status_changed", "task:t7", "09:30:00", { to: "done" }, { task: "t7" });
+  const f = flow.summary({ since: `${D}00:00:00.000Z`, to: `${D}23:00:00.000Z` }).fleet;
+  assert.deepEqual([f.completions, f.first_pass_grade, f.cost_per_outcome, f.first_pass_review], [1, 0, 8, 1]);
+  const byAgent = flow.summary({ since: `${D}00:00:00.000Z`, to: `${D}23:00:00.000Z`, by: "agent", scope: "kernel" }).stages;
+  assert.deepEqual(byAgent.filter((r) => r.name === "working").map((r) => [r.key, r.n]), [["agent:engineer-a", 1], ["unknown", 6]]);
+  assert.equal(byAgent.some((r) => r.name === "grade"), false, "scope keeps one module's stages");
 
   add("pr.opened", "pr:acme/app#3", "08:00:00", { repo: "acme/app", number: 3 });
   add("pr.merged", "pr:acme/app#3", "09:00:00", { sha: "abc1234def" });
@@ -120,4 +150,21 @@ test("summary: p50/p75 per stage, fewer than 5 gives samples, DORA from deploys 
   assert.equal(d.failure_rate, 0.5);
   assert.equal(d.lead_p50, 5400);
   assert.ok(Math.abs(d.deploys_per_day - 2 / (23 / 24)) < 1e-9);
+});
+
+test("GET /v1/flow: the board's key or a module with kernel.flow-read", async (t) => {
+  const { add, flow } = setup();
+  wor8567(add);
+  const whoami = async (token) => (token === "none" ? Promise.reject(new Error("no")) : { kind: "module", module: "fleet-steward", roles: token === "reader" ? ["kernel.flow-read"] : [], tools: [] });
+  const handle = createBackplane({ whoami, asserter: { jwks: {} }, proxy: async () => {}, cp: async () => {}, grantsFile: () => ({}), flow, boardKey: () => "board-key" });
+  const server = http.createServer(handle).listen(0);
+  t.after(() => server.close());
+  const get = (path, token) => fetch(`http://127.0.0.1:${server.address().port}${path}`, { headers: { authorization: `Bearer ${token}` } });
+  assert.equal((await get("/v1/flow?task=t1", "none")).status, 401);
+  assert.equal((await get("/v1/flow?task=t1", "other")).status, 403);
+  assert.equal((await (await get("/v1/flow?task=t1", "reader")).json()).stages.length, 4);
+  assert.equal((await (await get("/v1/flow?idle=1", "board-key")).json()).items[0].identifier, "WOR-8567");
+  assert.equal((await get("/v1/flow?since=2026-11-19&by=colour", "board-key")).status, 400);
+  assert.equal((await get("/v1/flow?since=yesterday", "board-key")).status, 400);
+  assert.ok(Array.isArray((await (await get("/v1/flow?since=2026-11-19T00:00:00Z&by=model", "reader")).json()).stages));
 });
