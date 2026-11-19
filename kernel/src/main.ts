@@ -60,6 +60,7 @@ import { createRouting } from "./routing-tune.ts";
 import { hostPlanner } from "./apply-tier.ts";
 import { inventoryOf } from "./paths.ts";
 import { taskRoutineCap } from "./tier.ts";
+import { scopeOf } from "./task-scope.ts";
 import { createProvenance } from "./provenance.ts";
 import { KERNEL_KINDS, LOCAL_ORG, raiseCapCard } from "./kinds.ts";
 import { admittedJob, createJobs, dispatchesFrom } from "./jobs.ts";
@@ -105,7 +106,7 @@ const whoami = createIdentity({
 const asserter = createAsserter(loadKey(path.join(dataDir, "kernel", "caller-key.pem")));
 const resolver = createResolver({ project: env("COMPOSE_PROJECT_NAME", "aidenhq") });
 // A record's task: still open, and the notices on it (written with the board key, as the board's approval notices are).
-const issueOf = async (task: string) => { const r = await cpApi(`/api/issues/${encodeURIComponent(task)}`); return r.ok ? ((await r.json()) as { id: string; identifier?: string; status?: string; parentId?: string | null }) : undefined; };
+const issueOf = async (task: string) => { const r = await cpApi(`/api/issues/${encodeURIComponent(task)}`); return r.ok ? ((await r.json()) as { id: string; identifier?: string; status?: string; assigneeAgentId?: string | null; createdByAgentId?: string | null; parentId?: string | null }) : undefined; };
 const cpJson = async (p: string) => { const r = await cpApi(p); if (!r.ok) throw new Error(`control plane GET ${p} → ${r.status}`); return r.json(); };
 const records = openRecords(path.join(dataDir, "kernel", "kernel.db"));
 // Flow's fact log (facts.ts) on the same file, so a kernel change and its fact commit together.
@@ -124,6 +125,12 @@ const cpTrace = { issue: (id: string) => cpJson(`/api/issues/${encodeURIComponen
 const onTask = {
   open: async (task: string) => { const i = await issueOf(task); return Boolean(i) && !["done", "cancelled"].includes(String(i!.status)); },
   parent: async (task: string) => (await issueOf(task))?.parentId ?? undefined,
+  // A task a conn.tool call names: read whole, and why its agent may write there (the same rule cp.ts applies to a write).
+  scope: async (task: string, agent: string) => {
+    const i = await issueOf(task);
+    if (!i) return undefined;
+    return { id: i.id, identifier: i.identifier, scope: await scopeOf(i, agent, issueOf) };
+  },
   notify: async (task: string, body: string) => { const r = await cpApi(`/api/issues/${encodeURIComponent(task)}/comments`, { method: "POST", body: JSON.stringify({ body }) }); if (!r.ok) log("notice failed", { task, status: r.status }); },
   // The cap of a routine whose run started the task's chain, traced as the runner traces it; a read that fails is "off".
   routineCap: (task: string) => taskRoutineCap(cpTrace, task, grantsTable().routines as Record<string, string> | undefined),
