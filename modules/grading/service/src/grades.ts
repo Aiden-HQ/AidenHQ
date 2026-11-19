@@ -92,13 +92,14 @@ export function parseFiling(b: unknown): { issue: string; rubric: string[]; deli
   return { issue: str(b.issue, 100, "issue", 1), rubric, deliverable: { kind: oneOf(d.kind, KINDS, "deliverable.kind"), ref: d.ref === undefined ? "" : str(d.ref, 500, "deliverable.ref") } };
 }
 const OUTCOMES = ["awaiting_evidence", "satisfied", "needs_revision", "cannot_judge", "grading_failed", "error"] as const;
-export type VerdictInput = { version: string; outcome: (typeof OUTCOMES)[number]; model: string; criteria: Verdict["criteria"] };
+export type VerdictInput = { version: string; outcome: (typeof OUTCOMES)[number]; model: string; criteria: Verdict["criteria"]; reason?: string };
 /** The runner's outcome of one grading pass: still waiting on evidence, or the grader's verdict on `version` (grading_failed: the grader failed and is retried; error: evidence that never came or every model refused). */
 export function parseVerdict(b: unknown): VerdictInput {
   if (!isMap(b)) return bad("send {version, outcome}");
-  only(b, ["version", "outcome", "model", "criteria"], "");
+  only(b, ["version", "outcome", "model", "criteria", "reason"], "");
   const criteria = b.criteria === undefined ? [] : Array.isArray(b.criteria) && b.criteria.length <= 8 ? b.criteria : bad("criteria: at most 8");
   return {
+    reason: typeof b.reason === "string" ? b.reason.slice(0, 300) : undefined,
     version: str(b.version, 200, "version"), outcome: oneOf(b.outcome, OUTCOMES, "outcome"), model: b.model === undefined ? "" : str(b.model, 100, "model"),
     criteria: criteria.map((c, i) => { const m = isMap(c) ? c : bad(`criteria.${i}`); only(m, ["id", "met", "evidence"], `criteria.${i}.`); return { id: str(m.id, 20, `criteria.${i}.id`), met: oneOf(m.met, ["yes", "no", "unknown"] as const, `criteria.${i}.met`), evidence: str(m.evidence, 1000, `criteria.${i}.evidence`) }; }),
   };
@@ -136,8 +137,15 @@ export class Grades {
     if (!columns.includes("delegators")) db.exec("ALTER TABLE grades ADD COLUMN delegators TEXT");
     if (!columns.includes("closed_reason")) db.exec("ALTER TABLE grades ADD COLUMN closed_reason TEXT");
     // An escalated task finished again: graded again only once the runner finds a new deliverable version (resubmit).
+    // Why the grader's latest pass on a task failed (the Fleet Steward reads it to tell one component down from many tasks failing).
+    db.exec("CREATE TABLE IF NOT EXISTS grade_failures (issue_id TEXT PRIMARY KEY, at TEXT NOT NULL, reason TEXT NOT NULL)");
     db.exec("CREATE TABLE IF NOT EXISTS grade_resubmits (issue_id TEXT PRIMARY KEY, at TEXT NOT NULL)");
   }
+
+  /** A failed grader pass's reason, kept until a later pass on the task gets any other outcome. */
+  noteFailure(issueId: string, reason: string, at = new Date().toISOString()) { this.db.prepare("INSERT OR REPLACE INTO grade_failures (issue_id, at, reason) VALUES (?, ?, ?)").run(issueId, at, reason.slice(0, 300)); }
+  clearFailure(issueId: string) { this.db.prepare("DELETE FROM grade_failures WHERE issue_id = ?").run(issueId); }
+  failuresSince(at: string): { task: string; at: string; reason: string }[] { return this.db.prepare("SELECT issue_id AS task, at, reason FROM grade_failures WHERE at >= ? ORDER BY at DESC LIMIT 200").all(at) as { task: string; at: string; reason: string }[]; }
 
   get(issueId: string): Grade | undefined {
     const r = this.db.prepare("SELECT * FROM grades WHERE issue_id = ?").get(issueId) as Row | undefined;

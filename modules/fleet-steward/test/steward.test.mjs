@@ -176,20 +176,19 @@ test("a task in review with no job, card or open PR for 6h is unclosed; an open 
 });
 
 test("the same failure on 3 tasks in 30 minutes is one component incident and one owner notice, and the per-task incidents it explains are not raised; other errors stay separate; it recovers", async () => {
-  const note = (reason, m = 5) => [{ authorType: "agent", createdAt: minsAgo(m), body: `**Grading failed; retrying.** (${reason}). No rubric verdict yet: the grader runs again shortly.\n\n<!-- aidenhq:grader -->` }];
+  const fail = (id, reason, m = 5) => ({ task: id, at: minsAgo(m), reason });
   const g = (id) => task(id, { status: "in_review", labels: [{ name: "grading" }], updatedAt: minsAgo(5) });
   const e404 = (n) => `the grader failed (OpenRouter 404: no such route for model gpt-luna-${n})`;
   const w = world({
     tasks: { a: g("a"), b: g("b"), c: g("c"), d: g("d"), e: g("e"), f: g("f") },
-    grading: ["a", "b", "c", "d", "e", "f"],
-    comments: { a: note(e404(1)), b: note(e404(2)), c: note(e404(3)), d: note("the grader failed (OpenRouter 429: rate limited)"), e: note("the grader failed (timeout)"), f: note(e404(4), 90) },
     jobs: { a1: [1, 2, 3, 4, 5].map((n) => ({ id: `j${n}`, agent: "a1", task: n < 4 ? "a" : "z", state: "failed", exit: 1, started_at: minsAgo(n + 1), ended_at: minsAgo(n) })) },
     finals: { j1: "The job failed: engine exited 1", j2: "The job failed: engine exited 1", j3: "The job failed: engine exited 1" },
   });
+  const failures = [fail("a", e404(1)), fail("b", e404(2)), fail("c", e404(3)), fail("d", "the grader failed (OpenRouter 429: rate limited)"), fail("e", "the grader failed (timeout)"), fail("f", e404(4), 90)];
   w.read = ((read) => async (p) => (p === "/api/issues/z" ? task("z") : read(p)))(w.read);
   const sent = [];
   const kv = kvOf();
-  const all = checks({ kernel: w, apps: async () => [], alerts: async () => [], openKeys: () => Object.keys(detectorState(kv).open), notify: async (text, key) => void sent.push([text, key]), now: () => NOW });
+  const all = checks({ kernel: w, apps: async () => [], alerts: async () => [], openKeys: () => Object.keys(detectorState(kv).open), notify: async (text, key) => void sent.push([text, key]), gradeFailures: async () => failures, now: () => NOW });
   const filed = [];
   await tick(kv, { component: all.component, grade: all.grade, run: all.run }, async (b) => (filed.push(b.incidents), true), async () => {}, new Date(NOW), 0);
   const open = Object.keys(detectorState(kv).open);
@@ -201,7 +200,7 @@ test("the same failure on 3 tasks in 30 minutes is one component incident and on
   await tick(kv, { component: all.component }, async () => true, async () => {}, new Date(NOW), 0);
   assert.equal(sent.length, 1, "told once while it stays open");
   // The notes age out of the window: recovered.
-  const later = checks({ kernel: w, apps: async () => [], alerts: async () => [], openKeys: () => Object.keys(detectorState(kv).open), notify: async () => {}, now: () => NOW + 40 * 60_000 });
+  const later = checks({ kernel: w, apps: async () => [], alerts: async () => [], openKeys: () => Object.keys(detectorState(kv).open), notify: async () => {}, gradeFailures: async () => failures, now: () => NOW + 40 * 60_000 });
   await tick(kv, { component: later.component }, async () => true, async () => {}, new Date(NOW + 40 * 60_000), 0);
   assert.deepEqual(Object.keys(detectorState(kv).open).filter((k) => k.startsWith("component:")), []);
   assert.equal(detectorState(kv).recovered.length, 1);

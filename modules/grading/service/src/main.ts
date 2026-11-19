@@ -28,7 +28,7 @@ const kernel: Kernel = {
 
 const db = new DatabaseSync(process.env.GRADES_DB ?? "/data/grades.sqlite");
 db.exec("PRAGMA journal_mode = WAL");
-const { server, tick, runner, grades } = createGrading({ db, kernel, keys: { check: file("GRADING_CHECK_KEY_FILE"), board: file("GRADING_BOARD_KEY_FILE") }, log });
+const { server, tick, runner, grades } = createGrading({ db, kernel, keys: { check: file("GRADING_CHECK_KEY_FILE"), board: file("GRADING_BOARD_KEY_FILE") }, kernelUrl, log });
 const port = Number(process.env.PORT ?? 8096);
 server.listen(port, () => log("listening", { port }));
 setInterval(() => void tick(), 5 * 60_000).unref();

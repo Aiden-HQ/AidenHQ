@@ -176,10 +176,6 @@ const SHARED_FAIL = { n: 3, windowMs: 30 * MIN, lookups: 30 }; // the same failu
 export const normalizeError = (e: string): string =>
   e.toLowerCase().replace(/[0-9a-f]{8}-[0-9a-f-]{27}|\b[0-9a-f]{7,}\b|[a-z]{2,5}-\d+|\d+/g, (m) => (/^[1-5]\d\d$/.test(m) ? m : "#")).replace(/\s+/g, " ").trim().slice(0, 160);
 
-/** The cause in the grader's own failure note on a task (grade.ts gradeNote): a retry note or an escalation note, else undefined. */
-export const graderReason = (body: string): string | undefined =>
-  /Grading failed; retrying\.\*\* \((.*)\)\. No rubric verdict yet/s.exec(body)?.[1] ?? /Grading failed; escalated[^(]*\(last: (.*)\) and no rubric criterion/s.exec(body)?.[1];
-
 /** Failures (one per task: its id and the name the owner reads) grouped by component and normalized error. */
 export function groupFailures(hits: { component: string; error: string; id: string; name: string }[]) {
   const by = new Map<string, { component: string; error: string; tasks: Map<string, string> }>();
@@ -229,7 +225,7 @@ export function rankFollowups(issues: IssueRow[], t: number, top = 10, snoozed: 
 }
 
 /** The owner's alert list, as checks. `apps` reads apps-mcp (a module holding apps.read); `alerts` is Alertmanager's list. */
-export function checks(d: { kernel: KernelClient; apps: <T>(path: string) => Promise<T>; alerts: () => Promise<Incident[]>; openKeys: () => string[]; notify?: (text: string, key: string) => Promise<void>; now?: () => number }): Record<string, Check> {
+export function checks(d: { kernel: KernelClient; apps: <T>(path: string) => Promise<T>; alerts: () => Promise<Incident[]>; openKeys: () => string[]; notify?: (text: string, key: string) => Promise<void>; gradeFailures: () => Promise<{ task: string; at: string; reason: string }[]>; now?: () => number }): Record<string, Check> {
   const now = d.now ?? (() => Date.now());
   let appsOkAt = now(); // apps-mcp's last answer: a restart (an apply) is not an outage
   const companies = async () => (await d.kernel.read("/api/companies")) as Company[];
@@ -254,22 +250,17 @@ export function checks(d: { kernel: KernelClient; apps: <T>(path: string) => Pro
   const suppressed = (task: string, key: string) => explained.has(task) && !d.openKeys().includes(key);
   return {
     // The same failure on several tasks is one component down (the grader, the job runner), whatever the per-task checks below see.
-    // Runs first: it fills `explained` for them. The grader's cause is read from its failure note on the task, a job's from its ledger line.
+    // Runs first: it fills `explained` for them. The grader's cause is read from the grading service's record, a job's from its ledger line (both written by code, never by an agent).
     async component() {
       const t = now();
       jobCache = new Map();
       explained = new Set();
       const hits: { component: string; error: string; id: string; name: string }[] = [];
-      for (const c of await companies()) {
-        const label = ((await d.kernel.read(`/api/companies/${c.id}/labels`)) as { id: string; name: string }[]).find((l) => l.name === "grading");
-        if (!label) continue;
-        const held = ((await d.kernel.read(`/api/companies/${c.id}/issues?labelId=${label.id}&status=in_review&limit=100&excludeRoutineExecutions=true`)) as IssueRow[]).filter((i) => !exempt(i) && age(i.updatedAt, t) < 2 * HOUR_MS).slice(0, SHARED_FAIL.lookups);
-        for (const i of held) {
-          const notes = ((await d.kernel.read(`/api/issues/${i.id}/comments?order=desc&limit=20`).catch(() => [])) as CommentRow[]).filter((x) => !x.deletedAt && /<!-- aidenhq:grader -->/.test(String(x.body)));
-          // The newest grader note decides: a later verdict ends the failure.
-          const reason = notes[0] && age(notes[0].createdAt, t) < SHARED_FAIL.windowMs ? graderReason(String(notes[0].body)) : undefined;
-          if (reason) hits.push({ component: "grader", error: reason, id: i.id, name: i.identifier ?? i.id });
-        }
+      // The grader's failed passes, from the grading service's own record (never a task comment, which anyone can write).
+      const graderRead = await d.gradeFailures().catch(() => undefined);
+      for (const f of (graderRead ?? []).filter((f) => age(f.at, t) < SHARED_FAIL.windowMs)) {
+        const name = await lookup()(f.task);
+        if (name) hits.push({ component: "grader", error: f.reason, id: f.task, name });
       }
       let looked = 0;
       for (const a of await agents()) {
@@ -282,7 +273,8 @@ export function checks(d: { kernel: KernelClient; apps: <T>(path: string) => Pro
         }
       }
       const open = d.openKeys();
-      const out: Incident[] = [];
+      // The grading service couldn't be asked: its open incidents stay open.
+      const out: Incident[] = graderRead ? [] : open.filter((k) => k.startsWith("component:grader:")).map((k) => ({ key: k.slice("component:".length), reason: "" }));
       for (const g of groupFailures(hits)) {
         const key = `${g.component.replace(/\W+/g, "-")}:${createHash("sha256").update(g.error).digest("hex").slice(0, 8)}`;
         const isOpen = open.includes(`component:${key}`);
