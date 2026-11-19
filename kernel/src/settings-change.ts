@@ -13,7 +13,7 @@ import YAML from "yaml";
 import { urlSettingProblem } from "../../services/shared/url-setting.ts";
 import type { Write } from "./apply.ts";
 
-export class Refused extends Error {}
+export class Refused extends Error { status = 422; }
 const refuse = (msg: string): never => {
   throw new Refused(msg);
 };

@@ -81,7 +81,6 @@ import { notice, type Notify } from "./notify.ts";
 import type { JobTools } from "./jobtools.ts";
 import { hostOf } from "./codehost.ts";
 import { fail } from "./proxy.ts";
-import { Refused as SettingsRefused } from "./settings-change.ts";
 import type { Records, State } from "./records.ts";
 import type { Work } from "./work.ts";
 import type { Reviews } from "./reviews.ts";
@@ -343,7 +342,7 @@ export function createBackplane({ whoami, asserter, proxy, cp, boardCp, grantsFi
           if (!settingsChange) throw fail(503, "unavailable", "settings changes are off");
           const b = await json(req, 2_000_000);
           // The owner reads why: a refusal of the change itself, or the code host's or the planner's answer.
-          try { return send(res, 200, await settingsChange(b.task, b.changes)); } catch (e) { throw fail(e instanceof SettingsRefused ? 422 : ((e as { status?: number }).status ?? 502), "refused", String((e as Error).message).slice(0, 1000)); }
+          try { return send(res, 200, await settingsChange(b.task, b.changes)); } catch (e) { throw fail((e as { status?: number }).status ?? 502, "refused", String((e as Error).message).slice(0, 1000)); }
         }
       }
       if (hit?.path.startsWith("/v1/tasks")) {
