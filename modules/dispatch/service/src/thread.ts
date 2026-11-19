@@ -60,8 +60,9 @@ export function speaker(c: Comment, t: Issue, dir: Directory): "owner" | "agent"
  * The comments that start this job (oldest first): those after the newest comment the task's last job saw (`seen`; "": none), else
  * after our last word, leaving out what went into a run as live input (`delivered`). A comment a run didn't take stays.
  */
-export function freshWords(comments: Comment[], t: Issue, dir: Directory, { seen, delivered }: { seen?: string; delivered: Set<string> }) {
-  const live = comments.filter((c) => !c.deletedAt);
+export function freshWords(comments: Comment[], t: Issue, dir: Directory, { seen, delivered, start }: { seen?: string; delivered: Set<string>; start?: string }) {
+  const all = comments.filter((c) => !c.deletedAt);
+  const live = start && all.some((c) => c.id === start) ? all.slice(all.findIndex((c) => c.id === start)) : all;
   const from = seen === "" ? -1 : seen && live.some((c) => c.id === seen) ? live.findIndex((c) => c.id === seen) : live.findLastIndex((c) => ours(c, t));
   return live.slice(from + 1).flatMap((c) => {
     const who = speaker(c, t, dir);
