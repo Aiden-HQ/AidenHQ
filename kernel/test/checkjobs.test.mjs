@@ -3,9 +3,9 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import http from "node:http";
-import { mkdirSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { createChecks } from "../src/checkjobs.ts";
 import { createGateway } from "../src/gateway/lib.ts";
@@ -57,6 +57,10 @@ test("checks: a receipt binds its head, run, judge and policy; the box gets no c
   // Exactly the allowlisted env: no GitHub, run or tool token, nothing of the kernel's own.
   assert.deepEqual(Object.keys(runs[0].env).sort(), ["CI", "HOME", "npm_config_audit", "npm_config_fund", "npm_config_update_notifier"]);
   assert.equal(runs[0].image, "engineer");
+  // The box's folders are its attempt's, in the shape the launcher's /check takes: checks/c-<16 hex>/{ws,out}.
+  assert.match(runs[0].check, /^c-[0-9a-f]{16}$/);
+  assert.equal(basename(dirname(runs[0].workspace)), runs[0].check);
+  assert.equal(basename(dirname(dirname(runs[0].workspace))), "checks");
 });
 
 test("checks: whether a fast check is due is the base's to say, and a check that didn't run is no evidence", async () => {
@@ -164,4 +168,59 @@ test("checks: each end of a check is a check.ended fact, a re-run's too", async 
   db.prepare("UPDATE checks SET state = 'error', at = at - 1 WHERE id = ?").run(v.id);
   await done(checks.start("codehost-github", { repo: "acme/app", head: A, run: "fast", spec: { base: B } }));
   assert.equal(facts().length, 2);
+});
+
+const evalSpec = { repo: "acme/aidenhq", judge_commit: J, subject_commit: J, cases_from: J, policy_hash: "abc1234" };
+const evalTree = () => {
+  const t = { "modules/ai-reviewer/scripts/reviewer-eval.mjs": "JUDGE", "modules/ai-reviewer/test/case-pad.mjs": "pad", "modules/ai-reviewer/service/src/aidenhq-sdk/pass-rule.ts": "rule" };
+  for (let i = 0; i < 3; i++) t[`${CASES}/c${i}.json`] = JSON.stringify({ expect: "approve" });
+  return { [J]: t };
+};
+
+test("checks: an eval that writes no result is an error with the box's output, never a fail receipt", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "checks-"));
+  const logs = [];
+  let runs = 0;
+  const box = { async run() { runs++; return { exit: 1, out: "Error: Cannot find module 'yaml'", timedOut: false }; } };
+  const snapshot = async (repo, ref, into) => { for (const [f, text] of Object.entries(evalTree()[ref] ?? {})) (mkdirSync(dirname(join(into, f)), { recursive: true }), writeFileSync(join(into, f), text)); };
+  const checks = createChecks({ db: new DatabaseSync(":memory:"), secret: () => "s", recipes, box, snapshot: () => snapshot, modelToken: () => "t", gatewayUrl: "http://gw", workDir: dir, log: (m, f) => logs.push({ m, ...f }) });
+  let v = checks.start("codehost-github", { repo: "acme/product", head: A, run: "eval", spec: evalSpec });
+  while (v.state === "running") v = await checks.get("codehost-github", v.id, { after: v.version, waitMs: 1000 });
+  assert.deepEqual([v.state, v.receipt], ["error", null]);
+  assert.match(v.error, /wrote no usable result/);
+  assert.match(logs.find((l) => l.m.startsWith("WARNING")).err, /Cannot find module 'yaml'/);
+  // No receipt: asking again runs it again.
+  checks.start("codehost-github", { repo: "acme/product", head: A, run: "eval", spec: evalSpec });
+  assert.equal(runs, 1);
+  await new Promise((r) => setTimeout(r, 50));
+  assert.equal(runs, 2);
+});
+
+test("checks: a restart's re-run never shares the draining kernel's folder, and the old run's late end doesn't overwrite it", async () => {
+  // Two kernels on one db and work dir, as during a drained restart: the old one's box is still running when the new one starts.
+  const dir = mkdtempSync(join(tmpdir(), "checks-"));
+  const db = new DatabaseSync(join(dir, "kernel.db"));
+  const pkg = JSON.stringify({ scripts: { "aidenhq:fast-check": "eslint ." } });
+  const snapshot = async (repo, ref, into) => writeFileSync(join(into, "package.json"), pkg);
+  let t = 1000;
+  const now = () => t++;
+  let release;
+  const held = new Promise((r) => (release = r));
+  const seen = [];
+  const kernel = (run) => createChecks({ db, secret: () => "s", recipes, box: { run }, snapshot: () => snapshot, modelToken: () => "t", gatewayUrl: "http://gw", workDir: dir, log: () => {}, now });
+  const oldK = kernel(async (o) => { seen.push(o.workspace); await held; return { exit: 1, out: "old", timedOut: false }; });
+  const ask = { repo: "acme/app", head: A, run: "fast", spec: { base: B } };
+  const first = oldK.start("codehost-github", ask);
+  while (seen.length === 0) await new Promise((r) => setTimeout(r, 5));
+  const newK = kernel(async (o) => { seen.push(o.workspace); assert.ok(existsSync(seen[0]), "the old run's folder is untouched"); return { exit: 0, out: "", timedOut: false }; });
+  assert.equal(newK.find("codehost-github", ask).state, "lost");
+  let v = newK.start("codehost-github", ask);
+  assert.equal(v.id, first.id);
+  while (v.state === "running") v = await newK.get("codehost-github", v.id, { after: v.version, waitMs: 1000 });
+  assert.equal(v.receipt.verdict, "pass");
+  release();
+  await new Promise((r) => setTimeout(r, 50));
+  assert.notEqual(seen[0], seen[1]);
+  const after = await newK.get("codehost-github", v.id);
+  assert.deepEqual([after.state, after.receipt.verdict, after.receipt.at], ["done", "pass", v.receipt.at]);
 });

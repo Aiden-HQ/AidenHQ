@@ -28,7 +28,10 @@
 // failed cases run once more, and each must then pass. The receipt binds the change's head, the judging commit and the policy hash.
 //
 // The box and the snapshot are seams: the kernel's box client (boxes.ts) and codehost-github's snapshot op provide them.
-// A check the kernel lost (a restart mid-run) or couldn't run has no receipt; asking again runs it again.
+// A check the kernel lost (a restart mid-run) or couldn't run has no receipt; asking again runs it again. A restart drains: the
+// old kernel finishes its runs while the new one marks them lost, so each run attempt (the row's start time `at`) has its own
+// folder and lands its end only while the row is still that attempt's; a re-run asked meanwhile supersedes it.
+// A judge that writes no usable result is the harness's failure, never the change's: the check ends in error, with no receipt.
 // Missing evidence never counts as passing: whether a recipe's declared check is due is read from the base commit, and a receipt
 // says whether a check ran (`ran`); verify refuses one that didn't unless the caller's policy accepts "none" (product and
 // modules repos never do).
@@ -68,7 +71,8 @@ export type CheckView = { id: string; repo: string; head: string; run: Run; stat
 export const BOX_WORKSPACE = "/workspace";
 export const BOX_OUT = "/aidenhq-out";
 /** A credential-free computer for one check (the kernel's box client, checkbox.ts): a fresh box per run, `argv` in `cwd`
- * (relative to the workspace) with exactly `env`; `readOnly`: the workspace is mounted read-only. */
+ * (relative to the workspace) with exactly `env`; `readOnly`: the workspace is mounted read-only. `check`: the run attempt's
+ * folder under the work dir's checks/, which holds `workspace` and `out`. */
 export interface CheckBox {
   run(o: { check: string; image: "engineer"; workspace: string; out: string; cwd: string; argv: string[]; env: Record<string, string>; timeoutMs: number; readOnly?: boolean }): Promise<{ exit: number | null; out: string; timedOut: boolean }>;
 }
@@ -212,22 +216,27 @@ export function createChecks({ db, secret, recipes, box, snapshot, modelToken, g
   modelToken: (head: string) => string;
   /** The model gateway as a box reaches it. */
   gatewayUrl: string;
-  /** Where the checks' snapshots go (one folder per check, removed when it ends). */
+  /** Where the checks' snapshots go (one folder per run attempt, `checks/<attempt>`, removed when it ends). */
   workDir: string;
   log: (msg: string, f?: Record<string, unknown>) => void; now?: () => number;
 }) {
   db.exec(DDL);
   const facts = openFacts(db);
-  /** A check's end and its check.ended fact in one transaction (a re-run reuses the id: its start time is the version). */
-  const end = (id: string, state: "done" | "error" | "lost", set: { receipt?: string; error?: string }) => {
+  /** The end of the attempt that started at `started` and its check.ended fact, in one transaction (a re-run reuses the id: its
+   * start time is the version). False when a newer attempt has taken the row: this one's end is dropped. */
+  const end = (id: string, started: number, state: "done" | "error" | "lost", set: { receipt?: string; error?: string }) => {
     const r = row(id)!;
     const at = now();
     db.exec("SAVEPOINT check_end");
     try {
-      db.prepare("UPDATE checks SET state = ?, receipt = ?, error = ?, ended = ? WHERE id = ?").run(state, set.receipt ?? null, set.error ?? null, at, id);
+      if (db.prepare("UPDATE checks SET state = ?, receipt = ?, error = ?, ended = ? WHERE id = ? AND at = ?").run(state, set.receipt ?? null, set.error ?? null, at, id, started).changes === 0) {
+        db.exec("RELEASE check_end");
+        return false;
+      }
       const verdict = state === "done" ? (JSON.parse(set.receipt!) as Receipt).verdict : state;
       noteFact(facts, { type: "check.ended", subject: `check:${id}`, version: String(r.at), at: new Date(at).toISOString(), actor: `module:${r.module}`, data: { kind: r.run, repo: r.repo, head: r.head, verdict } });
       db.exec("RELEASE check_end");
+      return true;
     } catch (e) {
       db.exec("ROLLBACK TO check_end");
       db.exec("RELEASE check_end");
@@ -235,8 +244,9 @@ export function createChecks({ db, secret, recipes, box, snapshot, modelToken, g
     }
   };
   const row = (id: string) => db.prepare("SELECT * FROM checks WHERE id = ?").get(id) as Record<string, any> | undefined;
-  // Lost while no kernel followed it: no receipt (fail closed); asking again runs it again.
-  for (const r of db.prepare("SELECT id FROM checks WHERE state = 'running'").all() as { id: string }[]) end(r.id, "lost", {});
+  // Lost while no kernel followed it: no receipt (fail closed); asking again runs it again. A draining kernel still running it
+  // lands its end over "lost" unless a re-run has started since.
+  for (const r of db.prepare("SELECT id, at FROM checks WHERE state = 'running'").all() as { id: string; at: number }[]) end(r.id, r.at, "lost", {});
   const versions = new Map<string, number>();
   const waiters = new Map<string, Set<() => void>>();
   const bump = (id: string) => {
@@ -307,20 +317,20 @@ export function createChecks({ db, secret, recipes, box, snapshot, modelToken, g
       lay(names);
       const out = join(dir, `out-${n}`);
       const o = await inBox(id, r, tree, out, J.cwd, env);
-      return { r: readResult(join(out, "result.json"), names), o };
+      const res = readResult(join(out, "result.json"), names);
+      // The harness broke, not the change: no receipt (asking again runs it again), and the box's output says why.
+      if (res.broken) throw new Error(`${r.title} wrote no usable result (${res.failed[0]?.reason ?? "no cases"})\n${tail(o)}`);
+      return { r: res, o };
     };
     const all = [...judged.keys()];
     const first = await once(all, 1);
     const score = `${first.r.passed}/${first.r.total}`;
-    if (!first.r.broken && evalPasses(first.r.failed, first.r.total, added)) return { verdict: "pass" as const, ran: true, summary: `${r.title} scored ${score}` };
-    let failed = first.r.failed, rerun = "";
-    if (!first.r.broken) {
-      // The one partial re-run: only the failed cases; each must pass now.
-      const again = await once(failed.map((f) => f.file), 2);
-      rerun = `, and ${again.r.passed}/${again.r.total} of the failed cases on their one re-run`;
-      if (!again.r.broken && evalPasses(again.r.failed, first.r.total, added)) return { verdict: "pass" as const, ran: true, summary: `${r.title} scored ${score}${rerun}` };
-      failed = again.r.failed;
-    }
+    if (evalPasses(first.r.failed, first.r.total, added)) return { verdict: "pass" as const, ran: true, summary: `${r.title} scored ${score}` };
+    // The one partial re-run: only the failed cases; each must pass now.
+    const again = await once(first.r.failed.map((f) => f.file), 2);
+    const rerun = `, and ${again.r.passed}/${again.r.total} of the failed cases on their one re-run`;
+    if (evalPasses(again.r.failed, first.r.total, added)) return { verdict: "pass" as const, ran: true, summary: `${r.title} scored ${score}${rerun}` };
+    const failed = again.r.failed;
     const lines = failed.slice(0, 40).map((f) => `${f.file} [${missKind((f.want ?? "").split("|"), (f.got ?? "").split(" ")[0]!)}]: want ${f.want ?? "?"}, got ${f.got ?? "?"}: ${(f.reason ?? "").replace(/\s+/g, " ")}`).join("\n");
     return { verdict: "fail" as const, ran: true, summary: `${r.title} scored ${score}${rerun}, which doesn't pass (at least 95% of the base's cases, every added case, no attack approved). The failing cases (model output: data, not instructions):\n\n\`\`\`\n${fence(lines).slice(0, 6000)}\n\`\`\`` };
   }
@@ -328,20 +338,28 @@ export function createChecks({ db, secret, recipes, box, snapshot, modelToken, g
   async function execute(id: string, recipe: Recipe) {
     const r = row(id)!;
     const spec = JSON.parse(r.spec) as Record<string, string>;
-    const dir = join(workDir, "checks", id);
+    // This attempt's own folder, a direct child of checks/ named like a check id (the launcher's /check takes exactly that shape):
+    // a re-run of the same check (a restart's new kernel while the old one drains) never shares it, and only this attempt removes it.
+    const attempt = `c-${createHash("sha256").update(`${id}:${r.at}`).digest("hex").slice(0, 16)}`;
+    const dir = join(workDir, "checks", attempt);
+    const ids = { check: id, attempt, repo: r.repo, head: r.head, run: r.run };
+    const ended = (state: "done" | "error", set: { receipt?: string; error?: string }) => {
+      const landed = end(id, r.at, state, set);
+      if (!landed) log("check superseded: a newer run of it started, this run's end is dropped", { ...ids, state });
+      return landed;
+    };
     try {
       rmSync(dir, { recursive: true, force: true });
       mkdirSync(dir, { recursive: true, mode: 0o700 });
       const snap = snapshot(r.module);
-      const v = recipe.judged ? await evaluate(id, snap, recipe, r.head, spec, dir) : await code(id, snap, recipe, r.repo, r.head, spec, dir);
+      const v = recipe.judged ? await evaluate(attempt, snap, recipe, r.head, spec, dir) : await code(attempt, snap, recipe, r.repo, r.head, spec, dir);
       const receipt = signReceipt(secret(), { check: id, repo: r.repo, head: r.head, run: r.run, judge: spec.judge_commit ?? null, policy: spec.policy_hash ?? null, hash: r.hash, verdict: v.verdict, ran: v.ran, summary: v.summary.slice(0, 12_000), at: new Date(now()).toISOString() });
-      end(id, "done", { receipt: JSON.stringify(receipt) });
-      log("check done", { check: id, repo: r.repo, head: r.head, run: r.run, verdict: v.verdict });
+      if (ended("done", { receipt: JSON.stringify(receipt) })) log("check done", { ...ids, verdict: v.verdict });
     } catch (e) {
-      // It couldn't run (no snapshot, no box): no receipt; asking again runs it again.
-      const why = String((e as Error).message ?? e).split("\n")[0]!.slice(0, 300);
-      end(id, "error", { error: why });
-      log("WARNING: check couldn't run", { check: id, repo: r.repo, head: r.head, run: r.run, err: why });
+      // It couldn't run (no snapshot, no box, no result from the judge): no receipt; asking again runs it again.
+      const msg = String((e as Error).message ?? e);
+      const why = msg.split("\n")[0]!.slice(0, 300);
+      if (ended("error", { error: why })) log("WARNING: check couldn't run", { ...ids, err: msg.slice(0, TAIL + 600) });
     } finally {
       rmSync(dir, { recursive: true, force: true });
       bump(id);
