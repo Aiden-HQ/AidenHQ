@@ -1,0 +1,111 @@
+# Code Review: an agent that reviews pull requests
+
+Status: design (2026-11-19).
+
+## Why
+
+A Polygon colleague wants to point an agent at a repo's open PRs, have it triage them, and run a dedicated review on the
+high-value ones. Today AidenHQ reviews code only in CI (the `code-review` job, which a repo must carry and which skips
+fork PRs); the AI reviewer is a write-authority gate, not a code reviewer. The owner's direction: model it on Anthropic's
+hosted Claude Code Review (not the CI action), configurable per repo or per PR, the default cheap, a deep review with a
+chosen engine, model, effort and repo context for production PRs, all set up by telling Aiden.
+
+## What we take from hosted Claude Code Review (docs, 2026-11)
+
+- Per-repo triggers: once after open, after every push, or manual; `@claude review [always|stop]` on any PR; drafts and
+  fork PRs skipped unless someone with write access asks.
+- Several finder agents in parallel, then a **verification pass** that re-checks each finding against the code, then
+  dedupe and rank: the main false-positive control.
+- Prose config only: `REVIEW.md` (root and per folder) and `CLAUDE.md`, read from the **base branch**, never the PR.
+- Levels Quick / Standard / Deep; severities 🔴 Important, 🟡 Nit, 🟣 Pre-existing; a neutral check run; a
+  machine-readable severity line; incremental re-review; threads auto-resolve when fixed; replies read next time.
+- Spend cap with a skip comment; analytics: reviews per day, cost per repo, findings by severity, auto-resolved rate.
+- Peers add: a risk label and summary (Bugbot, CodeRabbit), learning from dismissals, adaptive depth (Copilot).
+
+## Goals, non-goals
+
+- Goals: watch repos or review one PR on request; outside PRs safe; one updating review per PR head; any engine, model,
+  effort and repo context per level; setup by asking Aiden; cost visible and capped.
+- Non-goals: approving or blocking merges (the review is advice; a repo may gate on the severity line in its own CI),
+  pushing fixes, replacing CI's code-review job (it stays for repos that carry it).
+- Anti-goals: an outside PR's text steering the reviewer; a reviewer box that holds credentials; noise (nits, lint CI
+  already catches, re-reviewing unchanged diffs).
+
+## Design
+
+### Config (module settings, per repo; Aiden edits them through the normal config write)
+
+```yaml
+code_review:
+  levels:                                   # defaults shipped; add your own
+    quick:    { finders: 1, verify: false, model: "~deepseek/deepseek-flash-latest", effort: low }
+    standard: { finders: 2, verify: true,  model: "~deepseek/deepseek-flash-latest", effort: high }
+    deep:     { finders: 4, verify: true,  model: "~openai/gpt-sol-latest", effort: high, second: "~anthropic/claude-latest" }
+  repos:
+    - repo: acme/payments
+      on_open: standard                      # default
+      on_push: quick                         # default; incremental
+      drafts: false
+      forks: manual                          # write-access commenter must ask
+      month_usd: 50
+      ignore: ["**/generated/**", "*.lock"]
+      max_nits: 5
+```
+
+`engine` per level defaults to Codex (any OpenRouter model); further engines (Claude Code, others) plug in as the same
+box recipe later. Repo context is the repo's own `REVIEW.md` (root and per folder) plus `AGENTS.md`/`CLAUDE.md`, read
+from the base commit.
+
+### Triggers
+
+A watcher (the Maintainer's watcher generalised to PRs: repo list, per-author and per-repo daily caps) files one review
+per PR head per the repo's trigger. On any watched PR, a write-access commenter may say `@aiden review` (once, standard),
+`@aiden review deep`, `@aiden review always`, `@aiden review stop`, or `@aiden review focus: <text>`. Asking Aiden
+"review <PR URL> deep" does the same for any PR the instance can read.
+
+### The review run (credential-free)
+
+One check-job recipe per PR head, in the existing sandbox box (no credentials, no tools beyond read-only repo reads, a
+capped model token): N finders in parallel on the diff with the repo context, then (if `verify`) a verifier that keeps a
+finding only with a `file:line` it confirmed, then dedupe and rank. It returns findings JSON (severity, path, line,
+title, why, evidence) and a signed receipt. Incremental runs diff since the last reviewed head and say how many findings
+were withheld. PR title, body, comments and code are fenced as data throughout.
+
+### Posting
+
+Code, never the model, turns findings into one GitHub review per head: inline comments with severity markers and a
+collapsed "why flagged", a summary, a neutral check run, and the severity line
+`<!-- aidenhq-review: {"important":n,"nit":n,"pre_existing":n} -->`. Threads whose finding is gone on the next run are
+resolved; replies are read by the next run.
+
+Identity (per instance): the instance's own GitHub App bot where installed with PR write; otherwise the instance owner's
+own GitHub sign-in (connections-simple.md), each post a Tier 1 write the AI reviewer approves. Never another person's
+account.
+
+### The Reviewer Manager (one agent)
+
+Judgment only: triages new PRs (summary and a risk label: trivial, normal, high-risk), escalates a high-risk PR to Deep,
+answers `@aiden` replies, and configures `code_review` when the owner asks Aiden ("watch acme/payments, deep for
+anything under src/billing"). It sees findings and metadata, never runs the review itself.
+
+### Cost and learning
+
+Every run's spend is a flow fact; the Flow page gains a Review tab: reviews per day, cost per repo and per PR, findings
+by severity, auto-resolved rate. Over `month_usd` a run is skipped with a comment saying why. A finding the author
+dismisses with a reason becomes a planted case for the review eval.
+
+## New installs
+
+The module is off until a repo is added. "Ask Aiden to watch a repo" is the only step; GitHub sign-in (basic, from
+connections-simple.md) is enough to read and post.
+
+## Build lanes (after approval)
+
+1. Watcher + triggers + `@aiden` commands (generalise the Maintainer watcher; PR head tracking).
+2. Review recipe (finders, verifier, dedupe; lift CI's code-review tools and rules; levels; incremental).
+3. Posting (review, inline comments, check, severity line, thread resolve; App or owner identity) and the write kind.
+4. Reviewer Manager agent, config tool for Aiden, Flow Review tab, eval cases.
+
+## Left to the builder
+
+The finder and verifier prompts, the exact JSON schema, App permission bump (`pull_requests: write`, `checks: write`).
