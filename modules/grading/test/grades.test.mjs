@@ -278,13 +278,20 @@ describe("graded done", () => {
 
 describe("prRefAllowed", () => {
   it("the product repo and the agents org are allowed; another org's repo is refused", () => {
-    const t = { agents_org: "acme-agents", product_repo: "acme/aidenhq" };
+    const t = { agentsOrgs: ["acme-agents"], product: "acme/aidenhq", orgs: ["partner"], maintained: ["other/tool"] };
     assert.equal(prRefAllowed("acme-agents/widget#12", t), true);
     assert.equal(prRefAllowed("https://github.com/acme/aidenhq/pull/3", t), true);
     assert.equal(prRefAllowed("acme/billing-service", t), false);
   });
+  it("a repo in github_orgs or maintainer_repos is allowed; an unknown repo is refused", () => {
+    const t = { agentsOrgs: ["acme-agents"], product: "acme/aidenhq", orgs: ["partner"], maintained: ["other/tool"] };
+    assert.equal(prRefAllowed("partner/site#4", t), true);
+    assert.equal(prRefAllowed("https://github.com/other/tool/pull/9", t), true);
+    assert.equal(prRefAllowed("other/else#1", t), false);
+    assert.equal(prRefAllowed("stranger/x#1", t), false);
+  });
   it("this server's local org is allowed, as a repo or a change request", () => {
-    const t = { agents_org: "acme-agents", product_repo: "acme/aidenhq" };
+    const t = { agentsOrgs: ["acme-agents"], product: "acme/aidenhq", orgs: ["partner"], maintained: ["other/tool"] };
     assert.equal(prRefAllowed("codehost:local/expense-tracker", t), true);
     assert.equal(prRefAllowed("codehost:local/expense-tracker/change/5", t), true);
     assert.equal(prRefAllowed("local/expense-tracker", t), false); // bare: it would read as a GitHub owner/name

@@ -22,7 +22,7 @@ async function appsCall(method: string, path: string, body?: unknown) {
 }
 const kernel: Kernel = {
   issue: (ref) => kernelCall("GET", `/v1/cp/read/api/issues/${encodeURIComponent(ref)}`),
-  settings: async () => (await kernelCall("GET", "/v1/agents")).settings ?? {},
+  repos: async () => (await kernelCall("GET", "/v1/agents")).repos ?? {},
   release: async (task) => void (await kernelCall("POST", `/v1/checks/${encodeURIComponent(task)}`, { verdict: "release" })),
 };
 

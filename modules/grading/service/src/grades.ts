@@ -108,8 +108,10 @@ export function parseVerdict(b: unknown): VerdictInput {
   };
 }
 
-/** Whether a PR deliverable's ref may be filed: none (the task's own PRs), or a repo or PR in the agents org or the local org (`codehost:local/<repo>[/change/<n>]`) or the product repo. Unknown repos refuse, as tiering does. */
-export function prRefAllowed(ref: string, t: { agents_org?: string; product_repo?: string }): boolean {
+/** The kernel's known repos (its codehostRepos, GET /v1/agents): the product repo, the agents orgs, github_orgs and maintainer_repos. */
+export type KnownRepos = { product?: string; agentsOrgs?: string[]; orgs?: string[]; maintained?: string[] };
+/** Whether a PR deliverable's ref may be filed: none (the task's own PRs), or a repo or PR the instance reaches (`KnownRepos`) or the local org (`codehost:local/<repo>[/change/<n>]`). Unknown repos refuse, as tiering does. */
+export function prRefAllowed(ref: string, t: KnownRepos): boolean {
   if (!ref) return true;
   // The org `local` is this server's own (codehost-local): a repo or change request there is as much the fleet's as the agents org's.
   // Only in its explicit, canonical form (the stored ref is this exact string); a bare `local/x` would read as a GitHub owner/name.
@@ -117,7 +119,8 @@ export function prRefAllowed(ref: string, t: { agents_org?: string; product_repo
   const m = /^(?:https:\/\/github\.com\/)?([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+?)(?:\.git)?(?:\/pull\/\d+|#\d+)?\/?$/.exec(ref.trim());
   if (!m) return false;
   const [org, repo] = [m[1]!.toLowerCase(), `${m[1]}/${m[2]}`.toLowerCase()];
-  return Boolean((t.agents_org && org === t.agents_org.toLowerCase()) || (t.product_repo && repo === t.product_repo.toLowerCase()));
+  const lower = (l?: string[]) => (l ?? []).map((x) => x.toLowerCase());
+  return [...lower(t.agentsOrgs), ...lower(t.orgs)].includes(org) || [...lower(t.maintained), ...lower(t.product ? [t.product] : [])].includes(repo);
 }
 
 const fromRow =(r: Row): Grade => ({ issueId: r.issue_id, rubric: JSON.parse(r.rubric), deliverable: JSON.parse(r.deliverable), attempts: r.attempts, state: r.state as GradeState, verdicts: JSON.parse(r.verdicts), failures: r.failures ?? 0, failedAt: r.failed_at ?? null, delegators: r.delegators ? JSON.parse(r.delegators) : null, closedReason: r.closed_reason ?? null, createdAt: r.created_at, updatedAt: r.updated_at });

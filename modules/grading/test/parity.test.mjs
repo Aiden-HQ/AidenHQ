@@ -34,14 +34,14 @@ test("grading parity: the golden script through the kernel's finish gate and the
     if (method === "PATCH" && m) { const i = byRef(decodeURIComponent(m[1])); patches.push({ task: i.identifier, patch: body }); Object.assign(i, body); return { status: 200, json: i }; }
     return { status: 404, json: {} };
   };
-  let settings = { agents_org: script.grants.agents_org, product_repo: script.grants.product_repo };
+  let repos = { agentsOrgs: [script.grants.agents_org], product: script.grants.product_repo };
 
   // The module's service, its kernel being the gate below (its reads as the owner, its label released through resolve()).
   let checks;
   const { publicKey, privateKey } = generateKeyPairSync("ed25519");
   const kernel = {
     issue: async (ref) => { const r = await owner("GET", `/api/issues/${encodeURIComponent(ref)}`); if (r.status !== 200) throw new Error(`no task ${ref}`); return r.json; },
-    settings: async () => settings,
+    repos: async () => repos,
     release: async (task) => void (await checks.resolve("grading", task, { verdict: "release" })),
   };
   const { server, grades, runner } = createGrading({ db: new DatabaseSync(":memory:"), kernel, keys: KEYS, jwks: { keys: [{ ...publicKey.export({ format: "jwk" }), kid: "k1" }] } });

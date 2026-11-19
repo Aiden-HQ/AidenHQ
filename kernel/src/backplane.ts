@@ -185,7 +185,7 @@ function workRead(work: Work, p: URLSearchParams) {
   return task ? work.task(task.slice(0, 100)) : work.activity();
 }
 
-export function createBackplane({ whoami, asserter, proxy, cp, boardCp, grantsFile, writes, records, channels, brake, notify, owner, modules = () => ({}), boardKey = () => "", reviews, reviewerKey = () => "", jobs, codehost, admission, outcomes, wakes, tasks, eventsKey = () => "", work, graderToken = () => "", dropGraderToken = () => {}, advisories = () => [], accounts, checks, checkJobs, jobTools, localBundle, ownerRaw, lane, healthProbe, healthKey = () => "", connectionHealth, settingsChange, log = () => {} }: {
+export function createBackplane({ whoami, asserter, proxy, cp, boardCp, grantsFile, writes, records, channels, brake, notify, owner, modules = () => ({}), boardKey = () => "", reviews, reviewerKey = () => "", jobs, codehost, admission, outcomes, wakes, tasks, eventsKey = () => "", work, repos = () => ({}), graderToken = () => "", dropGraderToken = () => {}, advisories = () => [], accounts, checks, checkJobs, jobTools, localBundle, ownerRaw, lane, healthProbe, healthKey = () => "", connectionHealth, settingsChange, log = () => {} }: {
   whoami: Whoami; asserter: Asserter; proxy: Handler; cp: Handler; boardCp?: Handler; grantsFile: () => { agents?: Record<string, Grant> } & Record<string, unknown>;
   writes?: Writes; records?: Records; boardKey?: () => string; log?: (msg: string, f?: Record<string, unknown>) => void;
   /** The reviewer slot, and the key a direct review request asks with (reviewer_key, which the board holds). */
@@ -212,6 +212,8 @@ export function createBackplane({ whoami, asserter, proxy, cp, boardCp, grantsFi
   tasks?: ModuleTasks;
   /** Reads of the work the kernel owns (work.ts). */
   work?: Work;
+  /** The repos the instance reaches (codehostRepos in main.ts): GET /v1/agents hands them to modules. */
+  repos?: () => Record<string, unknown>;
   /** A grader-kind gateway token for a task (the kernel is the only minter). */
   graderToken?: (task: string, agent: string) => string;
   /** Forget a task's cached grader token (its hold resolved or was released). */
@@ -268,8 +270,8 @@ export function createBackplane({ whoami, asserter, proxy, cp, boardCp, grantsFi
           if (w?.kind !== "module") throw fail(401, "unauthorized", "a module's own token is required");
           const t = grantsFile();
           const agents = Object.fromEntries(Object.entries(t.agents ?? {}).map(([id, g]) => [id, Object.fromEntries(DIRECTORY.filter((k) => g[k] !== undefined).map((k) => [k, g[k]]))]));
-          // The instance's settings setup writes beside the agents (kill switches, the repos): every top-level string.
-          return send(res, 200, { agents, settings: Object.fromEntries(Object.entries(t).filter(([, v]) => typeof v === "string")) });
+          // The repos the instance reaches (the agents orgs, product, github_orgs, maintainer_repos): what a deliverable may name.
+          return send(res, 200, { agents, repos: repos() });
         }
         case "POST /c/:connection/mcp": case "DELETE /c/:connection/mcp": return await proxy(req, res, m[0]!);
         case "ANY /v1/cp/agent/*": return await cp(req, res, m[0]!, query);

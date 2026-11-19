@@ -10,13 +10,13 @@ import http from "node:http";
 import { timingSafeEqual } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
 import { kernelJwks, verifyCaller, type JWKS } from "./aidenhq-sdk/caller.ts";
-import { ESCALATION_WAIT_MS, GRADE_CHECK_MS, Grades, Invalid, backfillEscalatedDelegators, completionGate, parseFiling, parseVerdict, prRefAllowed, settleClosedGrades, type CompletionPath } from "./grades.ts";
+import { ESCALATION_WAIT_MS, GRADE_CHECK_MS, Grades, Invalid, backfillEscalatedDelegators, completionGate, parseFiling, parseVerdict, prRefAllowed, settleClosedGrades, type KnownRepos, type CompletionPath } from "./grades.ts";
 
 type Issue = { id: string; identifier?: string; status: string; assigneeAgentId?: string | null; createdByAgentId?: string | null; parentId?: string | null };
 /** The kernel as this module: its control-plane reads, its directory's settings, and its label released on a task. */
 export type Kernel = {
   issue: (ref: string) => Promise<Issue>;
-  settings: () => Promise<{ agents_org?: string; product_repo?: string }>;
+  repos: () => Promise<KnownRepos>;
   release: (task: string) => Promise<void>;
 };
 class HttpError extends Error { status: number; constructor(status: number, message: string) { super(message); this.status = status; } }
@@ -81,7 +81,7 @@ export function createGrading({ db, kernel, keys, kernelUrl = "", jwks = kernelJ
 
   /** The grader reads only the task's own PRs; a ref naming another org's repo is refused. */
   async function refAllowed(d: { kind: string; ref: string }) {
-    if (d.kind === "pr" && !prRefAllowed(d.ref, await kernel.settings())) throw new HttpError(400, "deliverable.ref: a repo or PR in the agents org, a codehost:local repo or change, or the product repo, or empty for the task's own PRs");
+    if (d.kind === "pr" && !prRefAllowed(d.ref, await kernel.repos())) throw new HttpError(400, "deliverable.ref: a repo or PR the instance reaches (the agents org, github_orgs, maintainer_repos or the product repo) or a codehost:local repo or change, or empty for the task's own PRs");
   }
 
   async function file(req: http.IncomingMessage, body: unknown) {
