@@ -340,7 +340,7 @@ const jobTools = createJobTools({ db: records.db, secret: () => secret("gateway_
 // Each module's GitHub App grant (its module.yaml `codehost:`), and what its @ names resolve to: the code host broker's, and
 // what an engineer job's dispatcher may clone into its task's workspace.
 const codehostGrants = (): OpsGrant[] => Object.entries(modulesFile().modules ?? {}).flatMap(([module, d]) => ((d as { codehost?: OpsGrant }).codehost ? [{ ...(d as { codehost: OpsGrant }).codehost, module }] : []));
-const codehostRepos = () => ({ instance: baseRepos.instance, product: baseRepos.product, agentsOrgs: repos().agentsOrgs });
+const codehostRepos = () => ({ instance: baseRepos.instance, product: baseRepos.product, agentsOrgs: repos().agentsOrgs, ...modulesFile().repos });
 boxes = createBoxes({
   db: records.db, cfg: sandbox, jobs, call: launcherClient(launcherUrl, () => secret("launcher_kernel_key")), secret, whoami,
   connections: () => computers().connections ?? {}, handbook: handbookFrom(configDir), cleanup: jobTools.cleanup, log,

@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "title": "A module's GitHub App grant (module.yaml codehost:), taken literally: what it may ask the kernel's POST /v1/codehost/:op for. repos: owner/name, owner/* (every repo of owner, and org-wide tokens there), */* (anything the App covers), or @instance, @product, @agents/<name|*>, which the kernel resolves from its own configuration.",
+  "title": "A module's GitHub App grant (module.yaml codehost:), taken literally: what it may ask the kernel's POST /v1/codehost/:op for. repos: owner/name, owner/* (every repo of owner, and org-wide tokens there), */* (anything the App covers), or @instance, @product, @orgs (every repo of the instance's github_orgs), @maintained (its maintainer_repos), @agents/<name|*>, which the kernel resolves from its own configuration.",
   "type": "object",
   "additionalProperties": false,
   "properties": {
@@ -17,7 +17,7 @@
           "minItems": 1,
           "items": {
             "type": "string",
-            "pattern": "^(@instance|@product|@agents/([\\w.-]+|\\*)|[\\w.-]+/([\\w.-]+|\\*)|\\*/\\*)$"
+            "pattern": "^(@instance|@product|@orgs|@maintained|@agents/([\\w.-]+|\\*)|[\\w.-]+/([\\w.-]+|\\*)|\\*/\\*)$"
           }
         },
         "perms": {
@@ -94,7 +94,7 @@
           "minItems": 1,
           "items": {
             "type": "string",
-            "pattern": "^(@instance|@product|@agents/([\\w.-]+|\\*)|[\\w.-]+/([\\w.-]+|\\*)|\\*/\\*)$"
+            "pattern": "^(@instance|@product|@orgs|@maintained|@agents/([\\w.-]+|\\*)|[\\w.-]+/([\\w.-]+|\\*)|\\*/\\*)$"
           }
         }
       }
@@ -111,7 +111,7 @@
           "minItems": 1,
           "items": {
             "type": "string",
-            "pattern": "^(@instance|@product|@agents/([\\w.-]+|\\*)|[\\w.-]+/([\\w.-]+|\\*)|\\*/\\*)$"
+            "pattern": "^(@instance|@product|@orgs|@maintained|@agents/([\\w.-]+|\\*)|[\\w.-]+/([\\w.-]+|\\*)|\\*/\\*)$"
           }
         }
       }

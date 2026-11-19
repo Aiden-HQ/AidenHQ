@@ -90,6 +90,14 @@ test("@agents follows the kernel's AIDENHQ_GITHUB_AGENTS_ORG only: a changed set
   assert.equal(covers("local/app", ["@agents/*"], { agentsOrgs: ["acme-agents", "local"] }), true); // one per code host
 });
 
+test("@orgs and @maintained cover the instance's github_orgs and maintainer_repos, nothing else", async () => {
+  const { covers } = await import("../src/codehost.ts");
+  const grant = ["@agents/*", "@orgs", "@maintained"], r = { agentsOrgs: ["acme-agents"], orgs: ["partner"], maintained: ["other/tool"] };
+  for (const repo of ["acme-agents/a", "partner/x", "other/tool"]) assert.equal(covers(repo, grant, r), true, repo);
+  for (const repo of ["other/else", "stranger/x"]) assert.equal(covers(repo, grant, r), false, repo);
+  assert.equal(covers("partner/x", grant, {}), false); // the kernel lists none: they name nothing
+});
+
 test("without codehost-github there is no GitHub code host: 404", async (t) => {
   const { call } = await setup(t, { enabled: false });
   const r = await call("github", "token", { repo: "acme/x", perms: { issues: "write" } });

@@ -14,7 +14,7 @@ import type { Writes } from "./writes.ts";
 
 /** config/kernel/modules.json (compile): modules with kernel roles, a privileged entry, a token of their own or a channel. */
 export type ModuleInfo = { roles?: string[]; privileged?: string[]; token?: string; channel?: { stamp?: string; stale?: boolean; transport?: string; credentials?: boolean }; settings?: Record<string, unknown> };
-export type ModulesFile = { modules?: Record<string, ModuleInfo>; owner?: { name?: string; email?: string; timezone?: string }; commit_domain?: string };
+export type ModulesFile = { modules?: Record<string, ModuleInfo>; owner?: { name?: string; email?: string; timezone?: string }; commit_domain?: string; repos?: { orgs?: string[]; maintained?: string[] } };
 export type Api = (method: string, path: string, body?: unknown) => Promise<{ status: number; json: any }>;
 type Log = (msg: string, f?: Record<string, unknown>) => void;
 type OwnerWords = { text?: unknown; voice?: unknown; forward?: unknown; task?: unknown; agent?: unknown; note?: unknown };
