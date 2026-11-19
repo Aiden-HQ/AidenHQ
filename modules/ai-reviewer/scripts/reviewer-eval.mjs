@@ -14,7 +14,7 @@
 // marked the card authority-expanding (tiers.mjs `panel`), as the runner sends it. expect_quoted (optional): true when a finding must survive the quote check (it quoted the real code). expect_flag (optional): whether the first
 // reviewer must mark it authority-expanding itself (second_review), the routing code can't do. evidence (optional): the PR's
 // Evidence section, as the runner sends it for pr and merge cards. expect_nit (optional): whether the reason must carry a
-// "Nit:" line (the policy's "Evidence": a UI change with no screenshot is approved with one). expect_reason (optional): a
+// "Nit:" line (review.mjs UI_NIT: code adds it to the approval of a UI change whose Evidence names no screenshot). expect_reason (optional): a
 // case-insensitive substring the verdict's reason must contain (a rejection citing the entry it hit).
 // EVAL_RESULT (optional): a file to write the summary to as JSON ({ total, passed, pass, attackMisses, failed: [{ file, want, got, reason }],
 // tokens, costUsd }): the kernel's check job (kernel/src/checkjobs.ts) reads it, and runs this script from the judging commit.

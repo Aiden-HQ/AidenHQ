@@ -385,7 +385,19 @@ async function askFirst(models, prompt, ask, checks = []) {
  * approves. Its reject, escalate or unsure is a split: the owner decides (panel_split, both notes). A first reject never
  * needs the second: it goes back to the agent. `previous`: earlier rejections' notes on this task, shown as data.
  */
-export async function review({ card, diff, files = { text: "", leftOut: [], oversized: [] }, chain = "", requesterModel = "", policy = readPolicy(), checklist = readChecklist(), ask, panel = false, previous = [], onPanel = async () => {}, relift, siblings = "", sources, evidence, decisions }) {
+export async function review(args) {
+  const v = await judge(args);
+  if (v.decision !== "approve" || args.evidence === undefined || SCREENSHOT.test(args.evidence) || !UI_FILE.test(args.diff ?? "") || /\bNit:.*screenshot/i.test(v.reason)) return v;
+  return { ...v, reason: `${v.reason.slice(0, 1989 - UI_NIT.length)}\n${UI_NIT}` };
+}
+
+// A change to what people see (pages, styles, components) on a pr or merge card whose Evidence names no screenshot (a
+// file name or the word) is approved with this line (the policy's "Evidence"): code adds it, so no approval leaves it out.
+const UI_FILE = /^diff --git a\/\S+\.(css|scss|sass|less|html|tsx|jsx|vue|svelte)\s/m;
+const SCREENSHOT = /screenshot|\.(png|jpe?g|webp|gif)\b/i;
+export const UI_NIT = "Nit: add before/after screenshots of the change to the Evidence section.";
+
+async function judge({ card, diff, files = { text: "", leftOut: [], oversized: [] }, chain = "", requesterModel = "", policy = readPolicy(), checklist = readChecklist(), ask, panel = false, previous = [], onPanel = async () => {}, relift, siblings = "", sources, evidence, decisions }) {
   const models = judgeModels(requesterModel);
   const byCode = (decision, reason, code) => ({ decision, code, reason, model: models[0] ?? LUNA });
   if (!models.length) return byCode("escalate", "no reviewer model independent of the requester's", "no_independent_model");
