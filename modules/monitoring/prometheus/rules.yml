@@ -114,21 +114,12 @@ groups:
           summary: "CI runner unit {{ $labels.unit }} stopped reporting (it was in units.prom within the last day)"
   - name: fleet
     rules:
-      - alert: RunnerQueueStuck
-        expr: |
-          aidenhq_runner_queue_depth > 0
-          and increase(aidenhq_runner_job_duration_seconds_count[30m]) == 0
-          and aidenhq_runner_running_jobs == 0
-        for: 15m
-        labels: { severity: warning }
-        annotations:
-          summary: "{{ $value }} Engineer job(s) queued with none running and none finished in 30 minutes"
-      - alert: RunnerJobOverlong
-        expr: aidenhq_runner_oldest_job_seconds > 3 * 3600
+      - alert: JobOverlong
+        expr: aidenhq_kernel_jobs_oldest_seconds > 3 * 3600
         for: 10m
         labels: { severity: warning }
         annotations:
-          summary: "an Engineer job has run over 3 hours"
+          summary: "a kernel-owned job has run over 3 hours"
       - alert: GatewaySpendNearCap
         expr: aidenhq_gateway_agent_day_spend_usd / aidenhq_gateway_agent_day_cap_usd > 0.8
         labels: { severity: warning }

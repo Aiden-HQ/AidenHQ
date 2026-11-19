@@ -57,8 +57,8 @@ Images (pinned by digest; `scripts/supply-chain/best-version.mjs`, release dates
 - Gateway: `aidenhq_gateway_spend_usd_today{agent,kind}`, `aidenhq_gateway_agent_day_spend_usd{agent}` and
   `_agent_day_cap_usd{agent}`, `aidenhq_gateway_cap_refusals_today{agent,kind}`, `aidenhq_gateway_ci_spend_usd_today`,
   `aidenhq_gateway_ci_day_cap_usd`, `aidenhq_gateway_inflight`. Labels are agent keys.
-- Runner: `aidenhq_runner_queue_depth`, `_running_jobs`, `_oldest_job_seconds`, `_job_duration_seconds` (histogram, since
-  the runner started), `_merge_queues{state}`, `_merge_prs_waiting`.
+- Kernel jobs (relayed by the Fleet Steward's `/metrics`, role kernel.work-read): `aidenhq_kernel_jobs_running`, `_oldest_seconds`,
+  `_duration_seconds` (histogram over every job on record). There is no queue-depth metric for the wake inbox.
 - Host: `aidenhq_unit_active|failed{scope,unit}`, `aidenhq_unit_declared{scope="user",unit}` (the enabled set an apply keeps
   running, so `CiRunnerUnitMissing` ignores a retired unit), `aidenhq_fleet_draining`, `aidenhq_container_running|restarts|unhealthy{id,project,service,name}`.
   A planned drain records the units it stopped in `data/fleet-paused.json`, and `aidenhq_unit_failed` stays 0 for them while
@@ -76,7 +76,7 @@ Rules are `modules/monitoring/prometheus/rules.yml`: `DiskSpaceLow` (over 80%, o
 `CoreServiceDown` (an aidenhq container, the runner or gateway unit, or the board or gateway not answering, for 5 minutes,
 **critical**), `HostMetricsExporterStale` (`units.prom` absent or not written for 3 minutes: unit state is unknown, not a
 stopped fleet), `UnitFailed`, `CiRunnersDown`, `CiRunnerUnitMissing` (a runner unit in `units.prom` within the last day and
-gone now, named by unit), `RunnerQueueStuck`, `RunnerJobOverlong`, `GatewaySpendNearCap`,
+gone now, named by unit), `JobOverlong`, `GatewaySpendNearCap`,
 `CiReviewSpendNearCap`, `AppsCpuStarved` (an `app-*` container's own CPU pressure over 20% while the host's is over 15%; the
 alert names the app's project, and host pressure alone never fires it). The rules' test is
 `modules/monitoring/prometheus/rules.test.yml`: a host-only spike fires nothing, an `app-*` match carries its project, and
