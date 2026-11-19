@@ -111,7 +111,7 @@ export function createWakes({ db, owner, post, dispatches, routineKey = () => un
     const changed = ms(issue.updatedAt) || now();
     // A task a kernel job created without a Paperclip parent: the creating job's task (provenance.ts) is its parent.
     const parentByJob = (id: string) => { try { return (q("SELECT j.task FROM provenance p JOIN jobs j ON j.id = p.created_by_job WHERE p.task = ?").get(id) as { task: string } | undefined)?.task ?? null; } catch { return null; } };
-    if (!prev) fact({ ...base, type: "task.created", version: "created", at: iso(ms(issue.createdAt) || changed), data: { parent: issue.parentId ?? parentByJob(issue.id), origin: issue.originKind ?? null, source_marker: issue.originId ?? null } });
+    if (!prev) fact({ ...base, type: "task.created", version: "created", at: iso(ms(issue.createdAt) || changed), data: { parent: issue.parentId ?? parentByJob(issue.id), identifier: issue.identifier ?? null, origin: issue.originKind ?? null, source_marker: issue.originId ?? null } });
     const status = String(issue.status ?? "");
     if (status && (prev?.status ?? null) !== status) fact({ ...base, type: "task.status_changed", version: String(issue.statusVersion ?? issue.updatedAt ?? changed), at: iso(changed), data: { from: prev?.status ?? null, to: status } });
     const to = issue.assigneeAgentId ?? null;
