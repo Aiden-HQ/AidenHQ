@@ -120,7 +120,8 @@ test("connected: a new app's repository is created through the App in the agents
 });
 
 test("a PR's card carries the branch's diff for the reviewer (#744): every kind renders its plan's facts", async (t) => {
-  const { sha, call } = await setup(t);
+  let pulls = {};
+  const { sha, ws, origin, call } = await setup(t, { routes: (method, path) => (path in pulls ? { status: 200, body: pulls[path] } : /\/commits\/\w+\/(check-runs|status)/.test(path) ? { status: 200, body: { total_count: 1, check_runs: [{ status: "completed", conclusion: "success" }], statuses: [] } } : undefined) });
   const args = { workspace: "TASK-1", only: [{ repo: "acme-agents/widget", branch: "feature", sha }] };
   const plan = await call("/aidenhq/v1/executor/plan", { kind: "codehost-github.pr", args, requester: { kind: "job", roles: [] }, task: "t1" });
   assert.equal(plan.status, 200, JSON.stringify(plan.json));
@@ -131,6 +132,14 @@ test("a PR's card carries the branch's diff for the reviewer (#744): every kind 
   const card = render(template, { ...args, ...plan.json.facts });
   assert.equal(card.target, "acme-agents/widget `feature`");
   assert.match(card.details, /^\+export const x = 1;$/m);
+
+  // Its merge's card carries the PR's diff at its head, read from GitHub.
+  sh(origin, "fetch", "--quiet", ws, `${sha}:refs/heads/feature`);
+  const main = sh(origin, "rev-parse", "main");
+  pulls = { "/repos/acme-agents/widget/pulls/1": { number: 1, head: { sha }, base: { sha: main }, changed_files: 2, user: { login: "acme-app[bot]" } }, "/repos/acme-agents/widget/pulls/1/files?per_page=100": [{ filename: "app.js" }, { filename: ".gitattributes" }] };
+  const merge = await call("/aidenhq/v1/executor/plan", { kind: "codehost-github.merge", args: { prs: [{ repo: "acme-agents/widget", number: 1, head: sha }] }, requester: { kind: "job", roles: [] }, task: "t1" });
+  assert.equal(merge.status, 200, JSON.stringify(merge.json));
+  assert.match(merge.json.facts.diff, /^\+export const x = 1;$/m);
 });
 
 test("a job's branch lands from its workspace; no hook, filter or fsmonitor of the workspace runs", async (t) => {
