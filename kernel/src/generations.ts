@@ -77,19 +77,8 @@ export function createDeploys({ db, file, repo, days = 30 }: { db: DatabaseSync;
   if (!slug) return n;
   const since = new Date(Date.now() - days * 864e5).toISOString();
   const merged = new Map<string, { subject: string; sha: string; at: string }>();
-  for (const f of db.prepare("SELECT subject, at, json_extract(data, '$.sha') AS sha FROM facts WHERE type = 'pr.merged' AND at > ? AND lower(subject) LIKE ?").all(since, `pr:${slug}#%`) as { subject: string; at: string; sha: string | null }[]) {
+  for (const f of db.prepare("SELECT subject, at, json_extract(data, '$.sha') AS sha FROM facts WHERE type = 'pr.merged' AND version GLOB 'codehost-*/*' AND at > ? AND lower(subject) LIKE ?").all(since, `pr:${slug}#%`) as { subject: string; at: string; sha: string | null }[]) {
     if (f.sha) merged.set(f.subject.toLowerCase(), { subject: f.subject, sha: f.sha, at: f.at });
-  }
-  // until codehost pr.merged facts: a merge record's outcome names what it merged on its first line (codehost-github merges.ts).
-  if (tables(db).has("records")) {
-    for (const r of db.prepare(`SELECT outcome, updated_at FROM records WHERE state = 'done' AND updated_at > ? AND outcome LIKE '{"ok":true,"text":"merged-prs: %'`).all(since) as { outcome: string; updated_at: string }[]) {
-      let list: { repo?: unknown; number?: unknown; sha?: unknown }[] = [];
-      try { list = JSON.parse(String(JSON.parse(r.outcome).text).split("\n")[0]!.slice("merged-prs: ".length)); } catch { continue; }
-      for (const p of Array.isArray(list) ? list : []) {
-        const subject = `pr:${String(p.repo)}#${Number(p.number)}`;
-        if (String(p.repo).toLowerCase() === slug && typeof p.sha === "string" && !merged.has(subject.toLowerCase())) merged.set(subject.toLowerCase(), { subject, sha: p.sha, at: r.updated_at });
-      }
-    }
   }
   const deployed = new Set((db.prepare("SELECT lower(subject) AS s FROM facts WHERE type = 'pr.deployed'").all() as { s: string }[]).map((r) => r.s));
   const good = gens.filter((g) => g.health === "good" && g.product).sort((a, b) => a.n! - b.n!);
@@ -101,4 +90,3 @@ export function createDeploys({ db, file, repo, days = 30 }: { db: DatabaseSync;
   return n;
   };
 }
-const tables = (db: DatabaseSync) => new Set((db.prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all() as { name: string }[]).map((t) => t.name));

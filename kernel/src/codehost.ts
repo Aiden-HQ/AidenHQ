@@ -157,8 +157,9 @@ export function createCodehost({ grants, repos, kind, secret, resolver, workspac
 
 /**
  * codehost-local's Flow facts (modules/codehost-local/src/host.ts `fact`): recorded straight into the kernel's fact store as
- * `module:codehost-local`, the same pr.* and code.* facts codehost-github emits through POST /v1/facts. A fact never fails the write it describes.
+ * `module:codehost-local` with the module in the version as POST /v1/facts stamps it (generations.ts trusts only code hosts' pr.merged),
+ * the same pr.* and code.* facts codehost-github emits there. A fact never fails the write it describes.
  */
 export const localFacts = (facts: Facts) => (f: { type: string; subject: string; version: string; at: string; task?: string | null; data?: Record<string, unknown> }) => {
-  try { facts.record({ ...f, task: f.task ?? undefined, actor: "module:codehost-local" }); } catch { /* a fact write never blocks the action */ }
+  try { facts.record({ ...f, version: `codehost-local/${f.version}`, task: f.task ?? undefined, actor: "module:codehost-local" }); } catch { /* a fact write never blocks the action */ }
 };
