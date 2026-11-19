@@ -317,17 +317,16 @@ once(() => void (localHost() ? localMerge() : Promise.resolve({ filed: [], resta
 // A kernel-admitted job's computer (boxes.ts): made below, once the gateway it needs is up; a job that ends releases it.
 let boxes: Boxes | undefined;
 const agentKey = (id: string) => String(grantsTable().agents?.[id]?.key ?? id);
+// The agents a module dispatches (compile: an agent runs on the engine runner, and this module holds kernel.jobs), by key.
+const mayDispatch = dispatchesFrom(() => (modulesFile().modules ?? {}) as never, () => grantsTable().agents ?? {});
 const jobs = createJobs({
-  db: records.db, cfg: sandbox, log, facts, agentKey, boxWrap: BOX_EXEC_WRAP, onEnd: (id) => boxes?.ended(id),
-  // The agents a module dispatches (compile: an agent runs on the engine runner, and this module holds kernel.jobs), by key.
-  mayDispatch: dispatchesFrom(() => (modulesFile().modules ?? {}) as never, () => grantsTable().agents ?? {}),
+  db: records.db, cfg: sandbox, log, facts, agentKey, boxWrap: BOX_EXEC_WRAP, onEnd: (id) => boxes?.ended(id), mayDispatch,
   cp: {
     task: async (id) => { const r = await cpApi(`/api/issues/${encodeURIComponent(id)}`); return r.ok ? ((await r.json()) as never) : undefined; },
   },
 });
 jobs.adopt();
 // The wake inbox (wakes.ts): Paperclip events scan their task now; the reconcile poll scans every polled agent's open tasks.
-const mayDispatch = dispatchesFrom(() => (modulesFile().modules ?? {}) as never, () => grantsTable().agents ?? {});
 // Outcomes posted on a job's task as its agent, once (outcomes.ts): the agent's own Paperclip key, setup's paperclip-agents/<id>.
 const plugin = createPluginPost({ controlUrl, agentKey: (id) => secret(`paperclip-agents/${id}`), postKey: () => secret("paperclip_post_key") });
 const outcomes = createOutcomes({ db: records.db, facts, agentKey, plugin, provenance, log, relay: createReplyRelay({ owner: ownerApi, queue: notify.queue, log }), delegates: (id) => delegateIds(grantsTable().agents, id, appOwners), finish: (task, agent) => checks.finish(task, { agent, via: "job_post" }), chatTask: (id) => { const t = grantsTable().agents?.[id]?.chat_task; return typeof t === "string" ? t : undefined; } });

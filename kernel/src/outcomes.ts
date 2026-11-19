@@ -94,8 +94,6 @@ export function createOutcomes({ db, plugin, delegates, finish, provenance, rela
 }) {
   const once = createOnce(db);
   const fact = factWriter(facts, log);
-  // Outcomes posted before the one table (job, kind) carry over.
-  if (db.prepare("SELECT 1 FROM sqlite_master WHERE name = 'posted'").get()) db.exec(`INSERT OR IGNORE INTO pc_writes (key, result, at) SELECT '<!-- aidenhq:job=' || job || ' kind=' || kind || ' -->', CASE WHEN comment IS NULL THEN NULL ELSE json_object('comment', comment, 'status', status) END, at FROM posted; DROP TABLE posted`);
 
   /** Post `req` on `job.task` as `job.agent`, once per (job, kind). */
   async function post(job: { id: string; agent: string; task: string }, req: PostRequest): Promise<Outcome> {
