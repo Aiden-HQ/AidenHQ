@@ -55,7 +55,7 @@ describe("rendering model text", () => {
 /** A fake GitHub for one pull request: records writes, keeps the ack comment and threads. */
 function world(opts: { threads?: unknown[]; headSha?: string } = {}) {
   const calls: { method: string; path: string; auth: string; body?: any }[] = [];
-  const state = { ack: undefined as { id: number; body: string } | undefined, threads: opts.threads ?? [], reviews: [] as { body: string; user: { login: string }; html_url: string }[] };
+  const state = { ack: undefined as { id: number; body: string } | undefined, threads: opts.threads ?? [], reviews: [] as { body: string; user: { login: string }; html_url: string; commit_id?: string }[] };
   const impl = (async (input: URL | string, init?: RequestInit) => {
     const url = new URL(String(input));
     const method = init?.method ?? "GET";
@@ -72,7 +72,7 @@ function world(opts: { threads?: unknown[]; headSha?: string } = {}) {
     if (method === "GET" && url.pathname.endsWith("/pulls/12")) return ok({ state: "open", head: { sha: opts.headSha ?? HEAD }, base: { sha: BASE } });
     if (method === "GET" && url.pathname.endsWith("/pulls/12/files")) return ok([{ filename: "src/pay.ts", patch: PATCH }]);
     if (method === "GET" && url.pathname.endsWith("/pulls/12/reviews")) return ok(state.reviews);
-    if (method === "POST" && url.pathname.endsWith("/pulls/12/reviews")) { const r = { body: body.body, user: { login }, html_url: "https://github.com/acme/payments/pull/12#pullrequestreview-1" }; state.reviews.push(r); return ok(r); }
+    if (method === "POST" && url.pathname.endsWith("/pulls/12/reviews")) { const r = { body: body.body, commit_id: body.commit_id, user: { login }, html_url: "https://github.com/acme/payments/pull/12#pullrequestreview-1" }; state.reviews.push(r); return ok(r); }
     if (method === "GET" && url.pathname.endsWith("/issues/12/comments")) return ok(state.ack ? [{ ...state.ack, html_url: "https://github.com/acme/payments/pull/12#issuecomment-7", user: { login } }] : []);
     if (method === "POST" && url.pathname.endsWith("/issues/12/comments")) { state.ack = { id: 7, body: body.body }; return ok({ html_url: "https://github.com/acme/payments/pull/12#issuecomment-7" }, 201); }
     if (method === "PATCH" && url.pathname.endsWith("/issues/comments/7")) { state.ack = { id: 7, body: body.body }; return ok({}); }
