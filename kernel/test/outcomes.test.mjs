@@ -257,3 +257,12 @@ test("delegate_to naming a team's key covers its record and each member; a membe
   const agents = { cos: { key: "cos", delegate_to: ["engineer"] }, t: { key: "engineer", team: { name: "engineering", members: ["kai"] } }, k: { key: "kai", member_of: "engineer" }, o: { key: "other" } };
   assert.deepEqual(await delegateIds(agents, "cos"), ["t", "k"]);
 });
+
+test("the plugin's route answering 404 (it is being reinstalled) is a 502 the job's outcome retries, never a final 4xx", async (t) => {
+  const { s, url } = await serve((req, res) => {
+    const out = (status, json) => res.writeHead(status, { "content-type": "application/json" }).end(JSON.stringify(json));
+    return req.url === "/api/agents/me" ? out(200, { id: AGENT, companyId: "c-1" }) : out(404, {});
+  });
+  t.after(() => s.close());
+  await assert.rejects(kernelOf(url).post(JOB, { kind: "reply", body: "Done." }), (e) => e.name === "OutcomeError" && e.status === 502);
+});

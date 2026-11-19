@@ -51,6 +51,7 @@ import { backfillLocal, openFacts } from "./facts.ts";
 import { createDeploys } from "./generations.ts";
 import { createFlow } from "./flow.ts";
 import { createIdle } from "./idle.ts";
+import { pidAlive, recordKernel } from "./previous.ts";
 import { createReviews, type ReviewerSlot } from "./reviews.ts";
 import { createReviewLoop } from "./review-loop.ts";
 import { mintToken } from "./gateway/token.ts";
@@ -210,11 +211,8 @@ const once = (fn: () => void, ms: number) => timers.push(setTimeout(fn, ms).unre
 const DRAIN_MS = 5 * 60_000;
 let draining = false;
 const started = Date.now();
-records.db.exec("CREATE TABLE IF NOT EXISTS kernel_pid (one INTEGER PRIMARY KEY CHECK (one = 1), pid INTEGER NOT NULL)");
-const previousPid = (records.db.prepare("SELECT pid FROM kernel_pid").get() as { pid: number } | undefined)?.pid;
-records.db.prepare("INSERT INTO kernel_pid (one, pid) VALUES (1, ?) ON CONFLICT DO UPDATE SET pid = excluded.pid").run(process.pid);
-const pidAlive = (pid: number) => { try { process.kill(pid, 0); return true; } catch (e) { return (e as NodeJS.ErrnoException).code === "EPERM"; } };
-const previousGone = () => !previousPid || previousPid === process.pid || !pidAlive(previousPid) || Date.now() - started > DRAIN_MS + 30_000;
+const previousPids = recordKernel(records.db, process.pid);
+const previousGone = () => previousPids.every((pid) => !pidAlive(pid)) || Date.now() - started > DRAIN_MS + 30_000;
 /** Runs `fn` once the previous kernel has exited (checked every 5 s); at once when there is none. */
 const afterPrevious = (fn: () => void) => {
   if (previousGone()) return fn();
@@ -378,7 +376,12 @@ every(() => {
 }, (Number(env("AIDENHQ_WAKE_POLL_SECONDS", "")) || 60) * 1000);
 // No idle agent-held task (idle.ts): agents' own waits (POST /v1/wait), and the idle sweep every 5 minutes.
 const idle = createIdle({ facts, flow, wakes, owner: ownerApi, team: (id) => Boolean(grantsTable().agents?.[id]?.team), log });
-setInterval(() => void idle.sweep().catch((e: Error) => log("idle sweep failed", { err: e.message })), 5 * 60_000).unref();
+let sweeping = false;
+every(() => {
+  if (sweeping) return;
+  sweeping = true;
+  void idle.sweep().catch((e: Error) => log("idle sweep failed", { err: e.message })).finally(() => { sweeping = false; });
+}, 5 * 60_000);
 // A closed task's workspace goes after CLOSED_DAYS (workspaces.ts): hourly, and once soon after start.
 const sweepWorkspaces = createWorkspaceSweep({ db: records.db, owner: ownerApi, workDir: sandbox.workDir, log });
 const sweepDisk = () => { void sweepWorkspaces().catch((e: Error) => log("workspace sweep failed", { err: e.message })); try { pruneSkillRuntimes({ companiesDir: path.join(dataDir, "paperclip/instances/default/companies"), log }); } catch (e) { log("skill runtime prune failed", { err: (e as Error).message }); } };

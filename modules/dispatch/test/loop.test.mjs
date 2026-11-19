@@ -398,6 +398,8 @@ test("a wake the kernel refuses is dropped; a transient failure keeps it; a job 
   k.kernel.ack = async (job) => void acked.push(job);
   await k.dispatch.tick();
   assert.deepEqual(acked, ["j1"], "the unpostable outcome is acknowledged once");
+  assert.deepEqual(k.notified.map((n) => [n.task, n.dedupe_key]), [["t1", "outcome-dropped:j1"]], "and the owner is told once");
+  assert.match(k.notified[0].text, /reply for WOR-1 was dropped/);
 });
 
 test("an outcome the kernel can't post yet is retried less often each time, not every tick", async () => {
