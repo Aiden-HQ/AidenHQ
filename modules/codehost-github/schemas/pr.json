@@ -4,7 +4,8 @@
   "additionalProperties": false,
   "required": [
     "workspace",
-    "only"
+    "only",
+    "text"
   ],
   "properties": {
     "workspace": {
@@ -52,7 +53,8 @@
       "properties": {
         "title": {
           "type": "string",
-          "maxLength": 300
+          "maxLength": 300,
+          "pattern": "^(feat|fix|docs|chore|test|refactor|perf|ci|build|style|revert)(\\([a-z0-9][a-z0-9._/-]*\\))?!?: \\S"
         },
         "body": {
           "type": "string",
