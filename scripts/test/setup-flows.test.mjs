@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import YAML from "yaml";
-import { compile } from "../modules.mjs";
+import { compile, organisations } from "../modules.mjs";
 import { BUNDLE } from "./bundle.mjs";
 
 const mods = join(dirname(fileURLToPath(import.meta.url)), "fixtures/mods");
@@ -73,4 +73,25 @@ test("Primer's setup flow asks the mode first", () => {
   assert.equal(flow.choose.setting, "primer_mode");
   assert.deepEqual(flow.choose.options.map((o) => o.value), ["connect", "self-host"]);
   assert.deepEqual(flow.choose.options[1].inputs.map((i) => i.setting), ["primer_host", "primer_host_aud"]);
+});
+
+test("an advanced flow rides on its module's basic one, with its own secrets and pairing", () => {
+  const out = compile(mods, inst(["flowadv"]));
+  const [flow] = out.points.board.setup_flows;
+  assert.equal(out.points.board.setup_flows.length, 1);
+  assert.equal(flow.title, "Chat");
+  assert.deepEqual(flow.advanced.capabilities, ["a bot people can DM"]);
+  assert.deepEqual(flow.advanced.fields.map((f) => f.secret), ["flowadv_bot_token"]);
+  assert.equal(flow.advanced.pair_token, "flowadv_pair_token");
+  assert.ok(out.compose.services.board.networks.includes("mod-flowadv-board"));
+});
+
+test("organisations: listed clients reach the board for enabled modules, and only public client values are accepted", () => {
+  assert.deepEqual(compile(mods, inst(["flowok"])).points.board.organisations, [{ id: "acme", name: "Acme", domains: ["acme.example.com"], clients: [{ module: "flowok", secret: "flowok_client_id", value: "1234.5678" }] }]);
+  assert.equal(compile(mods, inst(["flowadv"])).points.board.organisations, undefined);
+  const defs = { m: { secrets: { provided: [{ name: "m_client_id", setup: { label: "Id", pattern: "^[0-9]+$", public_client: true } }, { name: "m_bot_token", setup: { label: "Bot", pattern: "^.+$" } }] } } };
+  const org = (clients) => [{ id: "acme", name: "Acme", domains: ["acme.example.com"], clients }];
+  assert.throws(() => organisations(org({ m_bot_token: "xoxb" }), defs, defs), /not a module secret marked public_client/);
+  assert.throws(() => organisations(org({ m_client_id: "abc" }), defs, defs), /doesn't fit its pattern/);
+  assert.deepEqual(organisations(org({ m_client_id: "42" }), defs, {}), []);
 });
