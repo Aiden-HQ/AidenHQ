@@ -125,7 +125,7 @@ export function createFlow(d: FlowDeps) {
   type Status = { state: "idle" | "running" | "paused" | "done" | "failed"; repo?: string; emitted: number; message?: string };
   const progressFile = join(d.cacheDir, "backfill.json");
   let status: Status = readJson(progressFile, { state: "idle", emitted: 0 }).status ?? { state: "idle", emitted: 0 };
-  if (status.state === "running") status = { ...status, state: "paused", message: "the service restarted: press the button to go on" };
+  if (status.state === "running") status = { ...status, state: "paused", message: "the service restarted: it goes on at the next pass" };
   let buffer: FactIn[] = [];
   async function backfillFlush() {
     while (buffer.length) {
@@ -197,7 +197,7 @@ export function createFlow(d: FlowDeps) {
         for (const repo of await d.repos!()) await backfillRepo(repo, progress);
         status = { ...status, state: "done", repo: undefined, message: undefined };
       } catch (e) {
-        status = e instanceof Paused ? { ...status, state: "paused", message: `${e.message}: press the button again later to go on` } : { ...status, state: "failed", message: String((e as Error).message).slice(0, 300) };
+        status = e instanceof Paused ? { ...status, state: "paused", message: `${e.message}: it goes on at a later pass` } : { ...status, state: "failed", message: String((e as Error).message).slice(0, 300) };
         d.log("backfill stopped", { ...status });
       } finally {
         writeFileSync(progressFile, JSON.stringify({ done: status.state === "done" ? {} : progress, status }));
