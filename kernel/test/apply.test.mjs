@@ -199,3 +199,24 @@ test("a generation writes deploy.applied and pr.deployed for the merges it conta
   const rows = records.db.prepare("SELECT type, subject, data FROM facts WHERE type IN ('deploy.applied', 'pr.deployed') ORDER BY seq").all().map((f) => [f.type, f.subject, JSON.parse(f.data).generation]);
   assert.deepEqual(rows, [["deploy.applied", "deploy:1", 1], ["pr.deployed", "pr:acme/product#1", 1], ["deploy.applied", "deploy:2", 2], ["pr.deployed", "pr:acme/product#2", 2]]);
 });
+
+test("a merge fact that arrives after a look is deployed at the next one, with no new generation", () => {
+  const dir = mkdtempSync(join(tmpdir(), "deploys-late-"));
+  const repo = join(dir, "product");
+  const git = (...a) => execFileSync("git", ["-C", repo, ...a], { encoding: "utf8" }).trim();
+  execFileSync("git", ["init", "-q", repo]);
+  git("remote", "add", "origin", "https://github.com/acme/product.git");
+  const commit = (m) => (git("-c", "user.name=t", "-c", "user.email=t@example.com", "commit", "-q", "--allow-empty", "-m", m), git("rev-parse", "HEAD"));
+  const c1 = commit("PR 1"), c2 = commit("PR 2");
+  const records = openRecords(join(dir, "kernel.db"));
+  const facts = openFacts(records.db);
+  const merge = (n, c) => facts.record({ type: "pr.merged", subject: `pr:acme/product#${n}`, version: `codehost-github/${c}`, at: "2026-11-18T09:00:00Z", actor: "module:codehost-github", source: "backfill", data: { sha: c, head: c } });
+  const file = join(dir, "generations.jsonl");
+  writeFileSync(file, JSON.stringify({ n: 1, at: new Date().toISOString(), product: c2, instance: "f".repeat(40), health: "good" }) + "\n");
+  const recordDeploys = createDeploys({ db: records.db, file, repo });
+  merge(1, c1);
+  assert.equal(recordDeploys(), 2, "deploy.applied and the first PR");
+  merge(2, c2); // a backfill still running: it lands after the look, and no generation follows
+  assert.equal(recordDeploys(), 1);
+  assert.equal(recordDeploys(), 0);
+});
