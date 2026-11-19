@@ -10,7 +10,7 @@ export interface Deps {
   /** Whether the bearer is the monitoring module's own token. */
   isMonitoring: (authorization: string) => Promise<boolean>;
   receiveAlerts: (body: unknown) => Promise<unknown>;
-  metrics: () => string;
+  metrics: () => Promise<string>;
   mcp: (msg: any, caller: () => Promise<Caller & { assertion?: string }>) => Promise<object | undefined>;
   caller: (req: IncomingMessage) => Promise<Caller & { assertion?: string }>;
 }
@@ -32,7 +32,7 @@ export function createStewardServer(d: Deps) {
       if (path === "/healthz") return send(res, 200, { ok: true });
       if ((path === "/alerts" && req.method === "POST") || (path === "/metrics" && req.method === "GET")) {
         if (!(await d.isMonitoring(auth))) return void res.writeHead(401).end();
-        if (path === "/metrics") return send(res, 200, d.metrics(), "text/plain; version=0.0.4; charset=utf-8");
+        if (path === "/metrics") return send(res, 200, await d.metrics(), "text/plain; version=0.0.4; charset=utf-8");
         return send(res, 200, await d.receiveAlerts(await read(req)));
       }
       if (path === "/mcp" && req.method === "POST") {
