@@ -25,6 +25,9 @@ settings:
   # creates repos there at Tier 0 (the App must be installed on the org, else it fails loudly; a stranger's install of the public App changes nothing).
   github_orgs:
     default: []
+  # The owner's own GitHub logins: Flow marks their PRs and issues author_kind "owner" (the App's bot is "agent", anyone else "outside").
+  owner_github_logins:
+    default: []
 # The owner's GitHub bot account (spec §6.9, decision 25): a fine-grained token that forks our repos and files issues and pull
 # requests upstream from that fork, nothing more. Asked for on the first-run page (/setup); empty = nothing goes upstream.
 secrets:
@@ -46,10 +49,13 @@ secrets:
 roles:
   requests: [ kernel.tasks, kernel.wake, kernel.checks, kernel.apply, kernel.work-read, kernel.facts ]
 # Flow (docs/design/flow.md): the facts this module emits through the kernel (service/src/flow.ts), each carrying the task that opened
-# the PR (pr-tasks.json). CI is one interval per head (subject pr:<repo>#<n>@<head>); a merge-queue wait and its end are
+# the PR (pr-tasks.json). pr.opened and issue.opened carry the author (author_kind: agent, owner or outside); pr.pushed is a head
+# change after opening (version = the head); pr.closed is a close without a merge. CI is one interval per head (subject pr:<repo>#<n>@<head>); a merge-queue wait and its end are
 # work.waiting and work.resumed with the reason. `code.*` come from the churn pass and the owner's backfill (service/src/churn.ts).
 facts:
   pr.opened: { subject: pr }
+  pr.pushed: { subject: pr }
+  pr.closed: { subject: pr }
   pr.checks_started: { subject: pr }
   pr.checks_completed: { subject: pr }
   pr.merged: { subject: pr }
@@ -63,6 +69,23 @@ facts:
 stages:
   - { name: ci, label: CI, from: pr.checks_started, to: pr.checks_completed }
   - { name: merge_queue, label: Merge queue, from: work.waiting, to: work.resumed }
+# The PR's journey (docs/design/flow-insights.md §2): from its issue to its deploy. Each phase starts at the first of its facts; every
+# further one is a round. The review phase is the AI reviewer's look at a pr or push filing, merge review at the merge filing (the
+# kinds are the record kinds `where` matches; the runner.* ones are the records filed before the kernel ran every agent).
+journeys:
+  - name: pr
+    label: Pull requests
+    subject: pr
+    phases:
+      - { name: triage, label: Triage, from: [ issue.opened ] }
+      - { name: pickup, label: Pickup, from: [ issue.labeled, task.created ] }
+      - { name: coding, label: Coding, from: [ job.started ] }
+      - { name: review, label: AI review, from: [ record.filed ], where: { kind: [ codehost-github.pr, codehost-github.push, runner.pr, runner.push ] } }
+      - { name: open, label: PR open, from: [ pr.opened ] }
+      - { name: ci, label: CI, from: [ pr.checks_started, pr.pushed ] }
+      - { name: merge, label: Merge review, from: [ record.filed ], where: { kind: [ codehost-github.merge, runner.merge ] } }
+      - { name: deploy, label: Deploy, from: [ pr.merged ] }
+    end: [ pr.deployed, pr.closed ]
 # The code host's check job recipes (kernel/src/checkjobs.ts), whose signed receipts it verifies before it lands: a repo's fast
 # check and its tests (secret scan, supply chain, lint, tests, build), run in a credential-free box from checks/. The kernel
 # reads whether a fast check is due from the base (`declares`), never from the change.
@@ -108,6 +131,7 @@ services:
         INSTANCE_REPO: "${AIDENHQ_INSTANCE_REPO:-}"
         OWNER_NAME: "${settings.owner_name}"
         CHURN_EXCLUDE: "${settings.churn_exclude}" # comma-separated globs
+        OWNER_GITHUB_LOGINS: "${settings.owner_github_logins}" # comma-separated logins
 # The kernel calls the kinds' plan, execute and status here with the module's own token (executor@1); plan is service/src/plan.mjs's
 # rules on the state the service reads itself (the workspace, its cache clone, GitHub), never the args.
 providers:

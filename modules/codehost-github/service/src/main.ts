@@ -4,6 +4,7 @@
 //   TASKS_DIR               the job workspaces (work/tasks); absent: push, pr and clone fail, saying so
 //   CACHE_DIR               the bare cache clones (its data dir)
 //   AGENTS_ORG, INSTANCE_REPO, PRODUCT_REPO
+//   OWNER_GITHUB_LOGINS     the owner's GitHub logins, comma-separated (Flow's author_kind "owner")
 //   OWNER_NAME              who the design reviewer's task says approved a merge that doesn't wait for it
 // Its loops start here: the merge queue, the release train, the product repo's PR watch, the design reviews' sweep and the
 // reviewed refs' tidying.
@@ -36,6 +37,7 @@ const handle = createService({
   key, kernelUrl: env.AIDENHQ_KERNEL_URL ?? "http://10.231.0.1:3130", cacheDir: env.CACHE_DIR ?? "/cache", tasksDir: env.TASKS_DIR || undefined,
   app, gh, agentsOrg, allowedOrgs: (env.ALLOWED_ORGS ?? "").split(",").filter(Boolean), instanceRepo: env.INSTANCE_REPO || undefined,
   productRepo: env.PRODUCT_REPO || undefined, selfName: env.OWNER_NAME || undefined,
+  ownerLogins: (env.OWNER_GITHUB_LOGINS ?? "").split(",").map((l) => l.trim()).filter(Boolean),
   churnExclude: (env.CHURN_EXCLUDE ?? "").split(",").map((g) => g.trim()).filter(Boolean),
   log,
 });
