@@ -33,7 +33,9 @@ compiler's is the last gate.
    an agent's spend caps, or `{ module, name, on }` (each tiered by the apply planner, step 5). The board checks it against
    the compiled config and the module catalog (the setting exists, the value is one of its `values`, a URL passes the
    check, the agent exists, the effort is a known level, the heartbeat is one of the compiler's hours and the agent is
-   not runner-dispatched).
+   not runner-dispatched). On a team (docs/configuration.md, Teams) the kernel writes the same typed change where it lives:
+   the team record's fields to `teams.<t>.defaults`, a member's to `teams.<t>.members.<key>`, the record's `day_usd` to
+   `teams.<t>.caps` (compile refuses `overrides.agents` on either).
 2. The board files it as the owner's own task (label `settings-change`, no assignee, so no agent wakes), keeps the typed
    change in its own store by task id (for the page) and hands it to the kernel: `POST /v1/settings/change` with the
    board's key, `{ task, changes }`. Nothing reads the change from the task's text. If the kernel refuses it, the board

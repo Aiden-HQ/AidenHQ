@@ -341,7 +341,7 @@ test("a codehost grant is taken literally: settings are refused, the kernel's @ 
   assert.deepEqual(kernelModuleTable({ m: { codehost: { token: { repos: ["@instance", "@agents/*"], perms: { contents: "write" } } } } }).m.codehost.token.repos, ["@instance", "@agents/*"]);
 });
 test("teams: any module agent becomes a team record over named members (template, then defaults, then member)", () => {
-  const teams = { research: { template: "chief-of-staff.assistant", defaults: { max_parallel: 2, handbook: "Cite every source." }, caps: { day_usd: 40 }, routing: { weights: { repo: 2 } },
+  const teams = { research: { template: "chief-of-staff.assistant", defaults: { max_parallel: 2, reasoning_effort: "high", handbook: "Cite every source." }, caps: { day_usd: 40 }, routing: { weights: { repo: 2 } },
     members: { kai: { name: "Kai", repos: ["acme/*"] }, mina: { name: "Mina", max_parallel: 1, model: "~deepseek/deepseek-flash-latest" } } } };
   const r = compile(product, pinst([], owner, { teams })).paperclip;
   const tpl = r.agents.assistant, kai = r.agents.kai, mina = r.agents.mina;
@@ -349,6 +349,7 @@ test("teams: any module agent becomes a team record over named members (template
   assert.equal(grantEntry("assistant", tpl, r.routines).caps.day_usd, 40); // the team's day cap, on its record
   assert.deepEqual([kai.name, kai.member_of, kai.repos, kai.max_parallel, kai.handbook_line, kai.module], ["Kai", "assistant", ["acme/*"], 2, "Cite every source.", "chief-of-staff"]);
   assert.deepEqual([mina.max_parallel, mina.model, mina.description], [1, "~deepseek/deepseek-flash-latest", tpl.description]);
+  assert.equal(kai.reasoning_effort, "high"); // the board's typed change on the team record lands in teams.<t>.defaults
   assert.deepEqual(kai.enabled_tools, tpl.enabled_tools); // the template's grants, resolved for each member
   assert.deepEqual(grantEntry("kai", kai, r.routines).member_of, "assistant");
   const bad = (t, extra = {}) => () => compile(product, pinst([], owner, { teams: { research: { ...teams.research, ...t } }, ...extra }));

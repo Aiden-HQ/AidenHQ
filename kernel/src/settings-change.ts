@@ -67,17 +67,20 @@ export function checkTyped(ch: unknown, { compiled, catalog }: Sources): void {
     }
     case "agent": {
       only(c, ["kind", "agent", "field", "value"]);
-      agentOf(c.agent);
-      const okFor = ({ model: (v: unknown) => typeof v === "string" && MODEL.test(v), reasoning_effort: (v: unknown) => typeof v === "string" && /^[a-z]{1,20}$/.test(v), heartbeat: (v: unknown) => v === false || (Number.isInteger(v) && (v as number) >= 1 && (v as number) <= 24) } as Record<string, (v: unknown) => boolean>);
+      const a = agentOf(c.agent);
+      const okFor = ({ model: (v: unknown) => typeof v === "string" && MODEL.test(v), reasoning_effort: (v: unknown) => typeof v === "string" && /^[a-z]{1,20}$/.test(v), heartbeat: (v: unknown) => v === false || (Number.isInteger(v) && (v as number) >= 1 && (v as number) <= 24), max_parallel: (v: unknown) => Number.isInteger(v) && (v as number) >= 1 && (v as number) <= 10 } as Record<string, (v: unknown) => boolean>);
       const ok = Object.hasOwn(okFor, c.field) ? okFor[c.field] : undefined;
       if (!ok) refuse(`${c.field} isn't an agent field the board may change`);
+      if (c.field === "heartbeat" && (a.team || a.member_of)) refuse(`${c.agent} is on a team: a team's agents have no heartbeat of their own`);
       if (!ok!(c.value)) refuse(`${c.agent}.${c.field} can't be ${JSON.stringify(c.value)}`);
       return;
     }
     case "caps": {
       only(c, ["kind", "agent", "value"]);
-      agentOf(c.agent);
+      const a = agentOf(c.agent);
+      if (a.member_of) refuse(`${c.agent} is a team member: it has no cap of its own (the team's day cap covers it)`);
       const v = c.value;
+      if (a.team && isMap(v) && Object.keys(v).some((k) => k !== "day_usd")) refuse("a team has one cap: day_usd, over all its members' spend");
       if (!isMap(v) || !Object.keys(v).length || Object.entries(v).some(([k, x]) => !["run_usd", "task_usd", "day_usd"].includes(k) || typeof x !== "number" || !(x > 0) || x > 1000)) refuse("caps are run_usd, task_usd, day_usd: USD above 0, at most 1000");
       return;
     }
@@ -151,6 +154,8 @@ export function checkTyped(ch: unknown, { compiled, catalog }: Sources): void {
 export const blobSha = (t: string) => createHash("sha1").update(`blob ${Buffer.byteLength(t)}\0`).update(t).digest("hex");
 
 type IsInstance = (key: string) => boolean;
+/** An agent on a team: the team's name and whether it is the record (else a member). */
+type TeamOf = (key: string) => { team: string; record: boolean } | undefined;
 /** Kind → the instance repo files it may write (and nothing else). */
 const PATHS: Record<string, (ch: Change, isInstance: IsInstance) => string[]> = {
   setting: () => ["instance.yaml"],
@@ -178,7 +183,7 @@ const entryName = (item: unknown) => entryId(item).split("@")[0];
  * module set (modules/marketplace.json), whose members a turn-off also lists in `modules_removed` so an upgrade never
  * adds them back.
  */
-export function planFiles(changes: Change[], { read, isInstance, moduleHandbook, bundle }: { read: (p: string) => string | undefined; isInstance: IsInstance; moduleHandbook: (key: string) => string | undefined; bundle: string[] }): Map<string, string | null> {
+export function planFiles(changes: Change[], { read, isInstance, teamOf, moduleHandbook, bundle }: { read: (p: string) => string | undefined; isInstance: IsInstance; teamOf: TeamOf; moduleHandbook: (key: string) => string | undefined; bundle: string[] }): Map<string, string | null> {
   const out = new Map<string, string | null>();
   const current = (p: string) => (out.has(p) ? (out.get(p) ?? undefined) : read(p));
   const docText = current("instance.yaml") ?? refuse("the instance repo has no instance.yaml");
@@ -201,6 +206,13 @@ export function planFiles(changes: Change[], { read, isInstance, moduleHandbook,
     return YAML.isSeq(n) ? n : refuse(`instance.yaml ${key}: must be a list`);
   };
   const dropEmpty = (key: string) => { const n = doc.get(key, true); if (YAML.isSeq(n) && !n.items.length) doc.delete(key); };
+  // Where an agent's own fields live: a team record's agent-level settings are its team's `defaults` (every member takes
+  // them), a member's are its entry under the team, and any other agent's are its override (compile refuses overrides
+  // on a team record).
+  const fieldsOf = (key: string) => {
+    const t = teamOf(key);
+    return t ? (t.record ? ["teams", t.team, "defaults"] : ["teams", t.team, "members", key]) : ["overrides", "agents", key];
+  };
   const forkOf = (key: string) => doc.getIn(["overrides", "agents", key, "handbook_fork"]);
   for (const ch of changes) {
     switch (ch.kind) {
@@ -208,11 +220,13 @@ export function planFiles(changes: Change[], { read, isInstance, moduleHandbook,
         set(["settings", ch.key], ch.value);
         break;
       case "agent":
-        set(["overrides", "agents", ch.agent, ch.field], ch.value);
+        set([...fieldsOf(ch.agent), ch.field], ch.value);
         break;
-      case "caps":
-        for (const [k, v] of Object.entries(ch.value)) set(["overrides", "agents", ch.agent, "caps", k], v);
+      case "caps": {
+        const t = teamOf(ch.agent);
+        for (const [k, v] of Object.entries(ch.value)) set(t ? ["teams", t.team, "caps", k] : ["overrides", "agents", ch.agent, "caps", k], v);
         break;
+      }
       case "routine":
         set(["overrides", "routines", ch.routine, ch.field], ch.value);
         break;
@@ -336,7 +350,11 @@ export function createSettingsChanges(d: SettingsDeps) {
       try { return readFileSync(a?.handbook_fork ? join(d.product, "modules", a.module, "agents", key, "AGENTS.md") : String(a?.instructions), "utf8"); } catch { return undefined; }
     };
     const bundle: string[] = JSON.parse(readFileSync(join(d.product, "modules", "marketplace.json"), "utf8")).bundle ?? [];
-    const files = planFiles(typed, { read: (p) => texts.get(p), isInstance, moduleHandbook, bundle });
+    const teamOf: TeamOf = (key) => {
+      const a = has(src.compiled.agents, key) ? src.compiled.agents[key] : undefined;
+      return a?.team ? { team: a.team.name, record: true } : a?.member_of ? { team: src.compiled.agents[a.member_of]?.team?.name, record: false } : undefined;
+    };
+    const files = planFiles(typed, { read: (p) => texts.get(p), isInstance, teamOf, moduleHandbook, bundle });
     const stray = [...files.keys()].filter((f) => !allowed.includes(f));
     if (stray.length) refuse(`it would change ${stray.join(", ")}, which these changes may not touch`);
     if (!files.size) refuse("it changes nothing: the instance is already like this");

@@ -9,7 +9,9 @@ import type { AgentSettings, FiledChange, SettingChange, SettingsData } from "./
 import { StatusDot } from "./ui";
 
 type Routine = AgentSettings["routines"][number];
-const CAP_KEYS = ["run_usd", "task_usd", "day_usd"] as const;
+const ALL_CAP_KEYS = ["run_usd", "task_usd", "day_usd"] as const;
+/** A team has one cap: its day cap, over all its members' spend (teams.<t>.caps). */
+const TEAM_CAP_KEYS = ["day_usd"] as const;
 const CAP_NAMES = { run_usd: "a run", task_usd: "a task", day_usd: "an agent-day" };
 const usd = (n: number) => `$${n.toFixed(n % 1 ? 2 : 0)}`;
 const hours = (v: unknown) => (v === true ? "the fleet's heartbeat" : typeof v === "number" ? `every ${v} hour${v === 1 ? "" : "s"}` : "off");
@@ -98,7 +100,7 @@ function Edit({ label, current, item, input, options, list }: { label: string; c
 
 export function AgentDetails({ a, data }: { a: AgentSettings; data: SettingsData }) {
   const d = a.defaults ?? {};
-  const agentField = (f: "model" | "reasoning_effort" | "heartbeat") => (c: SettingChange) => c.kind === "agent" && c.agent === a.key && c.field === f;
+  const agentField = (f: "model" | "reasoning_effort" | "heartbeat" | "max_parallel") => (c: SettingChange) => c.kind === "agent" && c.agent === a.key && c.field === f;
   const dflt = (f: "model" | "reasoning_effort" | "heartbeat", now: unknown, text: (v: unknown) => ReactNode) =>
     f in d && d[f] !== undefined && JSON.stringify(d[f] ?? null) !== JSON.stringify(now ?? null) && d[f] !== null
       ? { text: text(d[f]), reset: { item: { kind: "agent" as const, agent: a.key, field: f, value: d[f] as string | number | boolean }, was: now } }
@@ -106,10 +108,13 @@ export function AgentDetails({ a, data }: { a: AgentSettings; data: SettingsData
   const fModel = useFiled(agentField("model"));
   const fEffort = useFiled(agentField("reasoning_effort"));
   const fBeat = useFiled(agentField("heartbeat"));
+  const fParallel = useFiled(agentField("max_parallel"));
   const hb = a.heartbeatHours ? String(a.heartbeatHours) : "off";
   const routines = a.routines.filter((r) => !r.key.startsWith("heartbeat-"));
   return (
     <div className="st-agent-settings">
+      {a.team && <p className="fleet-empty">The {a.team} team: model, effort and parallel jobs here are every member's default; a member's own setting wins.</p>}
+      {a.memberOf && <p className="fleet-empty">A team member: these settings are this member's own. The team's defaults and day cap are on the team's page.</p>}
       <Group title="How it thinks">
         <Field title="Model" value={<code>{a.model ? modelShort(a.model) : "the runner's"}</code>} def={dflt("model", a.model, (v) => <code>{modelShort(String(v))}</code>)} filed={fModel}>
           {() => <Edit label="Model" current={a.model} item={(v) => ({ kind: "agent", agent: a.key, field: "model", value: v })} list={data.choices.models} />}
@@ -133,13 +138,18 @@ export function AgentDetails({ a, data }: { a: AgentSettings; data: SettingsData
             )}
           </Field>
         )}
+        {a.maxParallel !== undefined && (
+          <Field title="Parallel jobs" value={a.maxParallel} filed={fParallel}>
+            {() => <Edit label="Parallel jobs" current={String(a.maxParallel)} item={(v) => ({ kind: "agent", agent: a.key, field: "max_parallel", value: Number(v) })} options={Array.from({ length: 10 }, (_, i) => ({ value: String(i + 1), label: String(i + 1) }))} />}
+          </Field>
+        )}
         {routines.map((r) => (
           <RoutineField key={r.key} r={r} models={data.choices.models} />
         ))}
         {!routines.length && !a.canHeartbeat && !a.heartbeatHours && <p className="fleet-empty">No heartbeat or routines: it runs when asked.</p>}
       </Group>
       <Group title="Limits" hint="USD. The gateway refuses a call that would pass a cap and files a Raise card.">
-        <CapsField a={a} defaults={data.spend.defaults} />
+        {a.memberOf ? <p className="fleet-empty">No cap of its own: its spend counts against the team's day cap.</p> : <CapsField a={a} defaults={data.spend.defaults} />}
       </Group>
       <Recent a={a} />
     </div>
@@ -238,10 +248,11 @@ function ResetRoutine({ r, field, value }: { r: Routine; field: "schedules" | "s
 }
 
 function CapsField({ a, defaults }: { a: AgentSettings; defaults: Record<string, number> }) {
+  const CAP_KEYS: readonly (typeof ALL_CAP_KEYS)[number][] = a.team ? TEAM_CAP_KEYS : ALL_CAP_KEYS;
   const filed = useFiled((c) => c.kind === "caps" && c.agent === a.key);
   const busy = Boolean(filed && IN_FLIGHT.includes(filed.stage));
   const caps = a.caps;
-  const own = CAP_KEYS.some((k) => caps[k] !== defaults[k]);
+  const own = !a.team && CAP_KEYS.some((k) => caps[k] !== defaults[k]);
   const [v, setV] = useState<Record<string, string>>(Object.fromEntries(CAP_KEYS.map((k) => [k, String(caps[k] ?? defaults[k] ?? "")])));
   const [review, setReview] = useState<"edit" | "reset" | null>(null);
   const changed = Object.fromEntries(CAP_KEYS.filter((k) => Number(v[k]) !== caps[k]).map((k) => [k, Number(v[k])]));
@@ -249,12 +260,12 @@ function CapsField({ a, defaults }: { a: AgentSettings; defaults: Record<string,
   const back = Object.fromEntries(CAP_KEYS.filter((k) => caps[k] !== defaults[k] && defaults[k] !== undefined).map((k) => [k, defaults[k]!]));
   return (
     <Row
-      title="Spend caps"
+      title={a.team ? "Team day cap" : "Spend caps"}
       meta={
         <>
           {busy && <StatusDot tone="busy">Changing</StatusDot>}
           <span className={`st-caps${own ? " own" : ""}`}>{CAP_KEYS.map((k) => usd(caps[k] ?? 0)).join(" / ")}</span>
-          <span className="muted"> · per run / task / agent-day{own ? `, fleet default ${CAP_KEYS.map((k) => usd(defaults[k] ?? 0)).join(" / ")}` : ""}</span>
+          <span className="muted"> · {a.team ? "the whole team's day" : "per run / task / agent-day"}{own ? `, fleet default ${CAP_KEYS.map((k) => usd(defaults[k] ?? 0)).join(" / ")}` : ""}</span>
         </>
       }
       details={

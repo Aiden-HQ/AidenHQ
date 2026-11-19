@@ -19,7 +19,7 @@ writeFileSync(
   join(dir, "paperclip.yaml"),
   stringify({
     settings: { glean_mcp_url: { value: "", set: false }, grading: { value: "on", set: false }, maintainer_repos: { value: [{ repo: "acme/product", after_merge: "product-pin" }], set: true } },
-    agents: { "chief-of-staff": { name: "Aiden", module: "chief-of-staff", engine: "codex-openrouter", model: "openrouter/a" }, "fleet-engineer": { name: "Platform Engineer", engine: "codex-openrouter", profile: "engineer" }, helper: { name: "Helper", module: "instance" } },
+    agents: { "chief-of-staff": { name: "Aiden", module: "chief-of-staff", engine: "codex-openrouter", model: "openrouter/a" }, "fleet-engineer": { name: "Platform Engineer", engine: "codex-openrouter", profile: "engineer" }, helper: { name: "Helper", module: "instance" }, "team-eng": { name: "Engineer", profile: "engineer", team: { name: "engineering", members: ["kai"] } }, kai: { name: "Kai", profile: "engineer", member_of: "team-eng" } },
     mcp_servers: { crm: { tools: { read: ["crm_find"], write: ["crm_update"] } } },
     routines: { digest: { title: "Digest" } },
   }),
@@ -85,6 +85,10 @@ describe("POST /api/settings/change", () => {
       { kind: "routine", routine: "nope", field: "status", value: "paused" },
       { kind: "pin", name: "glean", sha: "main" },
       { kind: "marketplace", op: "add", name: "acme", sha: "a".repeat(40) },
+      // A team has one cap (its day cap), a member none, and neither a heartbeat.
+      { kind: "caps", agent: "team-eng", value: { run_usd: 5 } },
+      { kind: "caps", agent: "kai", value: { day_usd: 5 } },
+      { kind: "agent", agent: "kai", field: "heartbeat", value: 4 },
     ]) expect((await post({ changes: [ch] })).status, JSON.stringify(ch)).toBe(400);
     expect(created).toHaveLength(0);
   });

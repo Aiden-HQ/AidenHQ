@@ -1,4 +1,4 @@
-import { useEffect, useState, type MouseEvent, type ReactNode } from "react";
+import { useEffect, useState, type CSSProperties, type MouseEvent, type ReactNode } from "react";
 import { AgentAvatar } from "./AgentAvatar";
 import { SignInRequired, api } from "./api";
 import { Plan, PlusIcon } from "./components";
@@ -55,6 +55,38 @@ function byDepartment(agents: RosterAgent[]): { dept: Department; members: Roste
   for (const g of groups.values()) g.members.sort((x, y) => front(x) - front(y));
   return [...groups.values()].sort((x, y) => x.dept.order - y.dept.order || x.dept.name.localeCompare(y.dept.name));
 }
+
+/**
+ * The org as indented rows: a team's members sit under its record, everyone else under whom they report to (reportsTo); an
+ * agent whose parent isn't in this list is a root. The list's order is kept among siblings.
+ */
+function orgTree(agents: RosterAgent[]): { a: RosterAgent; depth: number }[] {
+  const byKey = new Map(agents.flatMap((a) => (a.key ? [[a.key, a] as const] : [])));
+  const byId = new Map(agents.map((a) => [a.id, a]));
+  const parentOf = (a: RosterAgent) => {
+    const p = (a.memberOf && byKey.get(a.memberOf)) || (a.reportsTo ? byId.get(a.reportsTo) : undefined);
+    return p && p !== a ? p : undefined;
+  };
+  const kids = new Map<string, RosterAgent[]>();
+  for (const a of agents) {
+    const p = parentOf(a);
+    if (p) kids.set(p.id, [...(kids.get(p.id) ?? []), a]);
+  }
+  const out: { a: RosterAgent; depth: number }[] = [];
+  const seen = new Set<string>();
+  const walk = (a: RosterAgent, depth: number) => {
+    if (seen.has(a.id)) return;
+    seen.add(a.id);
+    out.push({ a, depth });
+    for (const k of kids.get(a.id) ?? []) walk(k, depth + 1);
+  };
+  for (const a of agents) if (!parentOf(a)) walk(a, 0);
+  for (const a of agents) walk(a, 0); // a reporting cycle: still listed
+  return out;
+}
+
+/** A team's load as the owner reads concurrency: jobs running of its members' parallel slots, and what waits. */
+type TeamLoad = { running: number; queued: number; capacity: number; size: number; model: string | null };
 
 /** Recent runs folded to one row per task (or per scan, by its title): how many, the latest outcome, when. */
 function fold(runs: Finished[]) {
@@ -136,19 +168,39 @@ export function CrewView({ crew, onSignIn }: { crew: Assignee[]; onSignIn: () =>
       if (!n.delete(id)) n.add(id);
       return n;
     });
-  const row = (a: RosterAgent) => (
+  // A team record never runs: its row carries its members' runs, and the load against their parallel slots.
+  const membersOf = (a: RosterAgent) => (a.team && a.key ? roster.filter((m) => m.memberOf === a.key) : []);
+  const teamModel = (ms: RosterAgent[]) => {
+    const n = new Map<string, number>();
+    for (const m of ms) if (m.model) n.set(m.model, (n.get(m.model) ?? 0) + 1);
+    return [...n].sort((x, y) => y[1] - x[1])[0]?.[0] ?? null;
+  };
+  const row = ({ a, depth }: { a: RosterAgent; depth: number }) => {
+    const ms = membersOf(a);
+    const ids = new Set([a.id, ...ms.map((m) => m.id)]);
+    const mine = sessions.filter((s) => s.agentId && ids.has(s.agentId));
+    const parentTeam = a.memberOf ? roster.find((r) => r.key === a.memberOf) : undefined;
+    const team: TeamLoad | undefined = a.team
+      ? { running: mine.filter((s) => s.state === "working").length, queued: mine.filter((s) => s.state === "queued").length, capacity: ms.reduce((n, m) => n + (m.maxParallel ?? 1), 0), size: ms.length, model: teamModel(ms) }
+      : undefined;
+    const pm = parentTeam ? teamModel(roster.filter((m) => m.memberOf === parentTeam.key)) : null;
+    return (
     <AgentRow
       key={a.id}
       a={a}
+      depth={depth}
+      team={team}
+      ownModel={a.memberOf && a.model && a.model !== pm ? a.model : null}
       assignee={crew.find((c) => c.key === a.id) ?? { key: a.id, kind: "agent", name: a.name, ...(a.avatar ? { avatar: a.avatar } : {}) }}
-      sessions={sessions.filter((s) => s.agentId === a.id)}
-      finished={finishedRuns.filter((f) => f.agentId === a.id)}
+      sessions={mine}
+      finished={finishedRuns.filter((f) => f.agentId && ids.has(f.agentId))}
       runsLoaded={!!data}
       now={now}
       open={open.has(a.id)}
       toggle={() => toggle(a.id)}
     />
-  );
+    );
+  };
   // Platform agents ship with AidenHQ (any module); "Your agents" are the instance's own (agents/<key>/ in its repo).
   const platform = roster.filter((a) => a.system !== false);
   const mine = roster.filter((a) => a.system === false);
@@ -171,10 +223,10 @@ export function CrewView({ crew, onSignIn }: { crew: Assignee[]; onSignIn: () =>
                   <h3>{dept.name}</h3>
                   {dept.description && <span className="hint">{dept.description}</span>}
                 </div>
-                {members.map(row)}
+                {orgTree(members).map(row)}
               </div>
             ))
-          : agents.map(row)}
+          : orgTree(agents).map(row)}
       </div>
     </section>
   );
@@ -219,7 +271,8 @@ export function CrewView({ crew, onSignIn }: { crew: Assignee[]; onSignIn: () =>
 }
 
 /** Where the agent stands, in a status dot and a word: working, needs you (paused, error), queued or idle. */
-function standing(a: RosterAgent, on: Session[], queued: Session[], now: number): { text: string; tone: StatusTone } {
+function standing(a: RosterAgent, on: Session[], queued: Session[], now: number, team?: TeamLoad): { text: string; tone: StatusTone } {
+  if (team) return { text: `${team.running}/${team.capacity} running`, tone: team.running ? "working" : "idle" };
   if (on.length) return { text: on[0]!.startedAt ? `Working ${elapsed(on[0]!.startedAt, now)}` : "Working", tone: "working" };
   if (a.status === "paused") return { text: "Paused", tone: "needs" };
   if (a.status === "error") return { text: "Error", tone: "failed" };
@@ -241,10 +294,10 @@ const fromRow = (e: MouseEvent, f: () => void) => {
   if (!(e.target as HTMLElement).closest("a, button")) f();
 };
 
-function AgentRow({ a, assignee, sessions, finished, runsLoaded, now, open, toggle }: { a: RosterAgent; assignee: Assignee; sessions: Session[]; finished: Finished[]; runsLoaded: boolean; now: number; open: boolean; toggle: () => void }) {
+function AgentRow({ a, depth, team, ownModel, assignee, sessions, finished, runsLoaded, now, open, toggle }: { a: RosterAgent; depth: number; team?: TeamLoad; ownModel: string | null; assignee: Assignee; sessions: Session[]; finished: Finished[]; runsLoaded: boolean; now: number; open: boolean; toggle: () => void }) {
   const on = sessions.filter((s) => s.state === "working");
   const queued = sessions.filter((s) => s.state === "queued");
-  const st = standing(a, on, queued, now);
+  const st = standing(a, on, queued, now, team);
   const recent = fold(finished);
   const next = nextRun(a);
   const last = recent[0];
@@ -254,7 +307,7 @@ function AgentRow({ a, assignee, sessions, finished, runsLoaded, now, open, togg
   const detail = `agent-detail-${a.id}`;
   const flag = st.tone === "needs" || st.tone === "failed" ? " flag" : lastSt?.tone === "bad" ? " flag-bad" : "";
   return (
-    <div role="row" className={`fleet-row${on.length ? " busy" : ""}${open ? " open" : ""}${flag}`}>
+    <div role="row" aria-level={depth + 1} style={depth ? ({ "--depth": depth } as CSSProperties) : undefined} className={`fleet-row${on.length ? " busy" : ""}${open ? " open" : ""}${flag}${team ? " team" : ""}${depth ? " nested" : ""}`}>
       <div className="fleet-main" onClick={(e) => fromRow(e, toggle)}>
         <div className="fleet-who" role="cell">
           <span className="crew-portrait">
@@ -265,7 +318,16 @@ function AgentRow({ a, assignee, sessions, finished, runsLoaded, now, open, togg
               <span className="fleet-name-text">{a.name}</span>
               {a.trial && <Tag tone="needs">Trial</Tag>}
             </h3>
-            {a.key === FRONT ? <p>Your chief of staff</p> : a.title && <p title={a.title}>{a.title}</p>}
+            {team ? (
+              <p>
+                Team of {team.size}
+                {team.model ? ` · ${team.model}` : ""}
+              </p>
+            ) : a.key === FRONT ? (
+              <p>Your chief of staff</p>
+            ) : (
+              (a.title || ownModel) && <p title={a.title ?? undefined}>{[ownModel, a.title].filter(Boolean).join(" · ")}</p>
+            )}
           </div>
         </div>
         <div className="fleet-status" role="cell">
@@ -279,6 +341,7 @@ function AgentRow({ a, assignee, sessions, finished, runsLoaded, now, open, togg
             <span className="fleet-line">
               <Tasks tasks={on[0]!.tasks} fallback={on[0]!.run} inline />
               {on.length > 1 && <span className="fleet-more">+{on.length - 1} more</span>}
+              {queued.length > 0 && <span className="fleet-more">{queued.length} queued</span>}
             </span>
           ) : queued.length ? (
             <span className="fleet-line muted">{queued.length} queued</span>
@@ -388,7 +451,7 @@ function AgentRow({ a, assignee, sessions, finished, runsLoaded, now, open, togg
               <p className="fleet-empty">Nothing right now.</p>
             )}
           </section>
-          <Scorecard id={a.id} />
+          {!team && <Scorecard id={a.id} />}
         </div>
       )}
     </div>

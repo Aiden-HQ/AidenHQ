@@ -6,7 +6,7 @@
 export type Weights = { repo: number; continuity: number; load: number };
 export const DEFAULT_WEIGHTS: Weights = { repo: 3, continuity: 1, load: 1 };
 /** Fields a member, or the team's `defaults`, may set over its template. */
-export const MEMBER_FIELDS = ["name", "repos", "model", "max_parallel", "handbook"] as const;
+export const MEMBER_FIELDS = ["name", "repos", "model", "reasoning_effort", "max_parallel", "handbook"] as const;
 const TEAM_FIELDS = ["template", "members", "defaults", "caps", "routing"];
 const KEY = /^[a-z][a-z0-9-]{0,39}$/;
 const NAME = /^\p{L}[\p{L} .'-]{0,29}$/u;
@@ -24,6 +24,7 @@ function memberProblems(where: string, m: unknown, named: boolean): string[] {
   if (named && (typeof m.name !== "string" || !NAME.test(m.name))) out.push(`${where}.name: a short name (letters, spaces, . ' -; at most 30)`);
   if (m.repos != null && (!Array.isArray(m.repos) || m.repos.some((r) => typeof r !== "string" || !PATTERN.test(r)))) out.push(`${where}.repos: a list of owner/name patterns (either part may be *)`);
   if (m.model != null && (typeof m.model !== "string" || !m.model.trim())) out.push(`${where}.model: a model id`);
+  if (m.reasoning_effort != null && (typeof m.reasoning_effort !== "string" || !/^[a-z]{1,20}$/.test(m.reasoning_effort))) out.push(`${where}.reasoning_effort: an effort level`);
   if (m.max_parallel != null && !(Number.isInteger(m.max_parallel) && (m.max_parallel as number) >= 1 && (m.max_parallel as number) <= 10)) out.push(`${where}.max_parallel: 1 to 10`);
   if (m.handbook != null && (typeof m.handbook !== "string" || !m.handbook.trim() || m.handbook.length > 300 || /[\r\n]/.test(m.handbook))) out.push(`${where}.handbook: one line, at most 300 characters`);
   return out;
