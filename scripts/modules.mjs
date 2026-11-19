@@ -1003,10 +1003,9 @@ export function compile(productDir, instanceDir, { revision, bundleState, oldBun
     for (const k of a.delegate_to) if (k !== "app-owners" && !k.endsWith("?") && !paperclip.agents[k]) fail(`${key}: delegate_to names ${k}, which is not an enabled agent (write "${k}?" if optional)`);
     a.delegate_to = a.delegate_to.map((k) => k.replace(/\?$/, "")).filter((k) => k === "app-owners" || paperclip.agents[k]);
   }
-  // Quiet start (docs/design/quiet-start.md): a module's scheduled routines start paused until an override turns one on (or the module's own setting
-  // gives it a status: primer_digest)
+  // Quiet start (docs/design/quiet-start.md): a module's scheduled routines start paused until an override turns one on
   // (before the heartbeats, which quiet start leaves off unless the instance turned one on).
-  if (settings.quiet_start === "on") for (const r of Object.values(paperclip.routines)) if (r.schedules?.length && paperclip.agents[r.agent]?.module !== "instance") r.status ??= "paused";
+  if (settings.quiet_start === "on") for (const r of Object.values(paperclip.routines)) if (r.schedules?.length && paperclip.agents[r.agent]?.module !== "instance") r.status = "paused";
   heartbeatRoutines(paperclip, settings, instance.overrides?.agents ?? {}, routineTitles); // before the overrides, which may change their schedules
   appFeedbackRoutines(paperclip, instanceAppDefs, routineTitles, new Set(defaultGrants.flatMap((g) => g.tools)));
   for (const [key, r] of Object.entries(paperclip.routines)) if (!paperclip.agents[r.agent]) fail(`routine ${key}: agent ${r.agent} is not enabled`);

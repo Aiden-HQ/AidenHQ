@@ -30,8 +30,7 @@ Compile (`scripts/modules.mjs`), for module agents only (an instance agent's sch
 - **Heartbeats are off.** An agent's `heartbeat:` counts only when `overrides.agents.<key>.heartbeat` sets it. The
   compiled agent says `heartbeat: false`, so the board shows it off and offers the module's value as its default.
 
-A module's own setting may give its routine a status (the Primer digest's `primer_digest: active`); that is the owner's
-choice, so quiet start leaves it. A module enabled later follows the same rule: its schedules arrive paused. The owner turns one on with the existing
+A module enabled later follows the same rule: its schedules arrive paused. The owner turns one on with the existing
 typed change (`overrides.routines.<key>.status: active`; a heartbeat is `overrides.agents.<key>.heartbeat`). While quiet
 start is on, either is the owner's tap after the AI reviewer (`kernel/src/apply-tier.ts`), so the fleet can't undo
 quiet start by itself; so is turning `quiet_start` off, which brings every module schedule back at once. Under full

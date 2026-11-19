@@ -53,19 +53,11 @@ test("a fresh install of the default bundle compiles with no optional connection
   assert.ok(compose.services["glean-mcp"] && compose.services["primer-mcp"], "the idle connection servers are there");
 });
 
-test("the Primer digest is quiet until the owner sets primer_digest: active, even under quiet start, and the Researcher can read it", () => {
-  const settings = { timezone: "Europe/London", owner_name: "Sam", owner_email: "me@example.com", product_repo: "acme/aidenhq", quiet_start: "on" };
-  const run = (label, extra) => {
-    const dir = join(tmp, label);
-    mkdirSync(join(dir, "agents"), { recursive: true });
-    writeFileSync(join(dir, "instance.yaml"), YAML.stringify({ product: "0".repeat(40), modules: market.bundle, settings: { ...settings, ...extra } }));
-    return compile(product, dir).paperclip;
-  };
-  assert.equal(run("digest-off", {}).routines["primer-digest"].status, "paused");
-  assert.equal(run("digest-off-loud", { quiet_start: "off" }).routines["primer-digest"].status, "paused");
-  const on = run("digest-on", { primer_digest: "active" });
-  assert.equal(on.routines["primer-digest"].status, "active");
-  assert.equal(on.routines["meeting-scan"].status, "paused", "quiet start still holds the others");
+test("the Primer digest waits for the owner under quiet start, and the Researcher can read it", () => {
+  const dir = join(tmp, "digest");
+  mkdirSync(join(dir, "agents"), { recursive: true });
+  writeFileSync(join(dir, "instance.yaml"), YAML.stringify({ product: "0".repeat(40), modules: market.bundle, settings: { timezone: "Europe/London", owner_name: "Sam", owner_email: "me@example.com", product_repo: "acme/aidenhq", quiet_start: "on" } }));
+  assert.equal(compile(product, dir).paperclip.routines["primer-digest"].status, "paused");
   assert.ok(defs.primer.connections.primer.tools.read.includes("primer_get_digest") && defs["chief-of-staff"].agents.assistant.connections["primer?"].includes("primer_get_digest"), "tagged, and granted to the Researcher");
 });
 
