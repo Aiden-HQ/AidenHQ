@@ -4,7 +4,7 @@ import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "re
 import { createPortal } from "react-dom";
 import { AgentAvatar } from "./AgentAvatar";
 import { ConnectButton } from "./Connect";
-import { SIGN_IN_HINT } from "./connections";
+import { GOOGLE_WEB_HINT } from "./connections";
 import { api } from "./api";
 import { BUCKETS, BUCKET_NAMES, type Assignee, type Board, type Bucket, type Card, type CrewMember, type CrewState, type PlanItem, type SignInStatus, type Working } from "./types";
 import { SOURCE_NAMES, STATUS_BADGE, addDays, agentShort, ago, dayDate, elapsed, matches, shortDate, shortName, snoozeOptions, todayIn } from "./util";
@@ -453,8 +453,8 @@ export const GearIcon = () => (
 
 /**
  * Google accounts whose sign-in Google refused: what's paused, and a way back (Google not connected at all is no alert: it is
- * an optional connection, offered in Settings > Connections like the others). Reconnecting
- * works only on the laptop's loopback address, where Google can send the sign-in back.
+ * an optional connection, offered in Settings > Connections like the others). A Desktop client reconnects from any address
+ * (the address is pasted back); a Web client only from the board's https address.
  */
 export function GoogleBanner({ google, canReconnect }: { google: Board["google"]; canReconnect: boolean }) {
   if (!google) return null;
@@ -469,12 +469,14 @@ export function GoogleBanner({ google, canReconnect }: { google: Board["google"]
             {new Date(a.since).toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit", hour12: false })}.{" "}
             {a.primary ? "Meeting notes, calendar, email and Drive from it are paused." : "Email and Drive from it are paused."}
           </span>
-          {canReconnect ? (
+          {canReconnect || google.client_type === "desktop" ? (
             <a className="btn" href={`/google/connect?account=${encodeURIComponent(a.email)}`}>
               Reconnect
             </a>
           ) : (
-            <span className="alert-hint">{SIGN_IN_HINT}</span>
+            <span className="alert-hint">
+              {GOOGLE_WEB_HINT} <a href="#/settings/connections">Open Connections</a>
+            </span>
           )}
         </div>
       ))}
@@ -496,11 +498,7 @@ function SignInBanner({ name, path, status, offer, mode, canConnect, stopped }: 
           {name} sign-in stopped working on {since.toLocaleDateString(undefined, { weekday: "long" })} at{" "}
           {since.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit", hour12: false })}. {stopped}
         </span>
-        {canConnect ? (
-          <ConnectButton c={{ id: path, label: name, signIn: { state: status.state, offer, mode } }} />
-        ) : (
-          <span className="alert-hint">{SIGN_IN_HINT}</span>
-        )}
+        {canConnect && <ConnectButton c={{ id: path, label: name, signIn: { state: status.state, offer, mode } }} />}
       </div>
     </div>
   );
