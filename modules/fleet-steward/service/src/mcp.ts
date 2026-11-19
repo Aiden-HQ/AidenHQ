@@ -81,9 +81,15 @@ export const fleetTools = (d: {
   },
   {
     name: "flow_report",
-    description: "Read-only: where time goes in the fleet's work (docs/design/flow.md). With `task`, that task's waterfall: its stages, actors and idle gaps with reasons. Otherwise the summary since `since` (an ISO date, default 7 days ago), by stage (default), agent, module, repo or model: per stage the count, median and p75 of work and wait, wait split by reason, plus DORA and fleet figures. Stages with fewer than 5 items carry raw samples, not percentiles.",
+    description: "Read-only: where time goes in the fleet's work (docs/design/flow.md). With `task`, that task's waterfall: its stages, actors and idle gaps with reasons (not its raw facts). Otherwise the summary since `since` (an ISO date, default 7 days ago), by stage (default), agent, module, repo or model: per stage the count, median and p75 of work and wait, wait split by reason, plus DORA and fleet figures. Stages with fewer than 5 items carry raw samples, not percentiles.",
     inputSchema: { type: "object", properties: { since: { type: "string" }, by: { type: "string", enum: ["stage", "agent", "module", "repo", "model"] }, task: { type: "string" } }, additionalProperties: false },
-    run: async (a) => d.flow({ since: a.since === undefined ? undefined : String(a.since), by: a.by === undefined ? undefined : String(a.by), task: a.task === undefined ? undefined : String(a.task) }),
+    // A waterfall's raw facts carry agent text (a job's why, a failed write's text, branch names): stages, idle and summary only.
+    run: async (a) => {
+      const r = await d.flow({ since: a.since === undefined ? undefined : String(a.since), by: a.by === undefined ? undefined : String(a.by), task: a.task === undefined ? undefined : String(a.task) });
+      if (!r || typeof r !== "object") return r;
+      const { facts: _facts, ...rest } = r as Record<string, unknown>;
+      return rest;
+    },
   },
   {
     name: "fleet_followup_snooze",
