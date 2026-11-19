@@ -1,5 +1,5 @@
 // Simple connections through the board (docs/design/connections-simple.md): an organisation's public client values written
-// from the compiled catalog only, a device sign-in bound to the admin session that started it, and a module's advanced flow.
+// from the compiled catalog only, a device sign-in bound to the admin account that started it, and a module's advanced flow.
 import { request } from "node:http";
 import type { AddressInfo } from "node:net";
 import pino from "pino";
@@ -79,7 +79,7 @@ describe("simple connections", () => {
     expect((await owner("GET", "/api/organisations")).json.chosen).toBe("acme");
   });
 
-  it("a device sign-in's code is the starting session's: others can't read, follow, cancel or restart it", async () => {
+  it("a device sign-in's code is the starting account's: other accounts can't read, follow, cancel or restart it", async () => {
     expect(await owner("GET", "/chat/connect")).toMatchObject({ status: 302, location: "/#/settings/connections?connect=chat" });
     expect((await user("POST", "/api/sign-ins/chat/device")).status).toBe(403);
     expect((await owner("POST", "/api/sign-ins/chat/device")).json).toEqual({ user_code: "ABCD-1234", verification_uri: "https://vendor.example.com/device", expires_in: 900, interval: 5 });
@@ -94,6 +94,19 @@ describe("simple connections", () => {
     device = { state: "ok" };
     expect((await owner("GET", "/api/sign-ins/chat/device")).json).toEqual({ state: "ok" });
     expect((await owner("GET", "/api/sign-ins/chat")).json).toMatchObject({ mode: "device", redirect: null });
+  });
+
+  it("the same admin in another browser follows its own code, and a new start there replaces it", async () => {
+    device = { state: "pending" };
+    deviceCalls.length = 0;
+    const ownerElsewhere = as({ id: "u-1", email: "sam@acme.example.com", name: "Sam", role: "admin", owner: true });
+    expect((await owner("POST", "/api/sign-ins/chat/device")).status).toBe(200);
+    expect((await ownerElsewhere("GET", "/api/sign-ins/chat/device")).json).toEqual({ state: "pending" });
+    expect((await ownerElsewhere("POST", "/api/sign-ins/chat/device")).status).toBe(200);
+    expect(deviceCalls).toEqual(["start", "cancel", "start"]);
+    expect((await second("POST", "/api/sign-ins/chat/device")).status).toBe(409);
+    expect((await ownerElsewhere("POST", "/api/sign-ins/chat/device/cancel")).json).toEqual({ ok: true });
+    device = { state: "ok" };
   });
 
   it("basic is done once signed in; the advanced flow takes its own secrets and is done once they exist and it is paired", async () => {

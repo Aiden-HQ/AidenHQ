@@ -44,7 +44,8 @@ export async function fakeKernel(): Promise<{
       }
       case "/v1/auth/session": {
         const a = sessions.get(body.token);
-        return a ? send(200, { account: a, session: { id: `s-${a.id}`, expiresAt: new Date(Date.now() + 3_600_000).toISOString() } }) : send(401, { error: { message: "no session" } });
+        // Each token is its own session (one per browser), as the kernel's are.
+        return a ? send(200, { account: a, session: { id: `s-${String(body.token).slice(-8)}`, expiresAt: new Date(Date.now() + 3_600_000).toISOString() } }) : send(401, { error: { message: "no session" } });
       }
       case "/v1/accounts/save_secret":
       case "/v1/accounts/setup_status": {
