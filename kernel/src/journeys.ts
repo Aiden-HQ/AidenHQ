@@ -149,6 +149,7 @@ export type Dora = { deploys_per_day: number | null; lead_time_s: number | null;
 
 /** Monday-started UTC weeks and UTC days overlapping [t0, t1). */
 function buckets(t0: number, t1: number) {
+  t0 = Math.max(t0, t1 - 400 * DAY); // at most 400 days of buckets, whatever window is asked
   const day0 = Math.floor(t0 / DAY) * DAY, dow = (new Date(day0).getUTCDay() + 6) % 7;
   const weeks: number[] = [], days: number[] = [];
   for (let w = day0 - dow * DAY; w < t1; w += 7 * DAY) weeks.push(w);
@@ -244,11 +245,11 @@ export function insights(j: Journey, built: Built[], { t0, t1, now, previous, do
   const openNow = built.filter((b) => b.item.state === "open");
   return {
     phases: phases.map(({ idle: _idle, ...x }) => x),
-    scatter: [...endedIn].sort((a, b) => b.ended! - a.ended!).slice(0, 1000).map((b) => ({ subject: b.item.subject, end: b.item.end!, total_s: b.item.total_s, author_kind: b.item.author_kind })),
+    scatter: [...endedIn].sort((a, b) => b.ended! - a.ended!).slice(0, 1000).map((b) => ({ subject: b.item.subject, url: b.item.url, task: b.item.task, end: b.item.end!, total_s: b.item.total_s, author_kind: b.item.author_kind })),
     rounds,
     rejections: [...rejected].map(([reason, n]) => ({ reason, n })).sort((a, b) => b.n - a.n),
     first_pass: weeks.map((w) => { const bs = endedIn.filter((b) => weekOf(b.ended!) === w); return { week: ymd(w), rate: bs.length ? bs.filter((b) => b.item.blocks.every((k) => k.rounds === 1)).length / bs.length : null, n: bs.length }; }),
-    aging: openNow.map((b) => ({ subject: b.item.subject, title: b.item.title, phase: b.item.blocks.at(-1)!.phase, age_s: sec(now - ms(b.item.start)), idle_reason: idleNow(b) })).sort((a, b) => b.age_s - a.age_s).slice(0, 200),
+    aging: openNow.map((b) => ({ subject: b.item.subject, url: b.item.url, task: b.item.task, author_kind: b.item.author_kind, title: b.item.title, phase: b.item.blocks.at(-1)!.phase, age_s: sec(now - ms(b.item.start)), idle_reason: idleNow(b) })).sort((a, b) => b.age_s - a.age_s).slice(0, 200),
     cfd: days.map((d) => {
       const t = Math.min(d + DAY, t1) - 1, counts: Record<string, number> = {};
       for (const b of built) {

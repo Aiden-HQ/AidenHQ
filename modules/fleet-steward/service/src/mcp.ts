@@ -92,14 +92,18 @@ export const fleetTools = (d: {
         const { facts: _facts, ...rest } = r as Record<string, unknown>;
         return rest;
       }
+      // A title written by someone outside the instance (an outside contributor's PR or issue) is untrusted text: left out.
+      const trusted = (x: { title?: string | null; author_kind?: string | null }) => (x.author_kind === "agent" || x.author_kind === "owner" ? x.title ?? null : null);
       const since = a.since === undefined ? {} : { since: String(a.since) };
       const summary = await d.flow({ ...since, ...(a.by === undefined ? {} : { by: String(a.by) }) });
       const j = ((await d.flow({ journeys: "1" }))?.journeys ?? [])[0];
       if (!j) return summary;
       const top = async (sort: string) => ((await d.flow({ journey: j.name, sort, limit: "5", ...since }))?.items ?? []).map((i: any) => ({
-        subject: i.subject, url: i.url, title: i.title, author_kind: i.author_kind, identifier: i.identifier, state: i.state, total_s: i.total_s,
+        subject: i.subject, url: i.url, title: trusted(i), author_kind: i.author_kind, identifier: i.identifier, state: i.state, total_s: i.total_s,
         blocks: i.blocks.map((b: any) => ({ phase: b.phase, seconds: Math.round((Date.parse(b.end) - Date.parse(b.start)) / 1000), rounds: b.rounds, idle_s: b.idle_s })),
       }));
+      const ins = (summary as { insights?: { aging?: any[] } | null })?.insights;
+      if (ins?.aging) ins.aging = ins.aging.map((x: any) => ({ ...x, title: trusted(x) }));
       return { ...summary, journey: { name: j.name, label: j.label, phases: j.phases.map((p: any) => p.name), slowest: await top("slowest"), most_rounds: await top("rounds") } };
     },
   },

@@ -121,7 +121,7 @@ export function fixtureInsights(items = fixtureItems(), now = Date.parse("2026-1
   const openItems = items.filter((x) => !x.end);
   return {
     phases,
-    scatter: items.filter((x) => x.end).map((x) => ({ subject: x.subject, end: x.end!, total_s: x.total_s, author_kind: x.author_kind })),
+    scatter: items.filter((x) => x.end).map((x) => ({ subject: x.subject, url: x.url, task: x.task, end: x.end!, total_s: x.total_s, author_kind: x.author_kind })),
     rounds,
     rejections: [
       { reason: "missing_tests", n: 41 }, { reason: "scope_creep", n: 27 }, { reason: "unpinned_dependency", n: 18 },
@@ -129,9 +129,9 @@ export function fixtureInsights(items = fixtureItems(), now = Date.parse("2026-1
     ],
     first_pass: weeks.map((week) => ({ week, rate: 0.42 + r() * 0.3, n: 8 + Math.floor(r() * 20) })),
     aging: [
-      ...openItems.map((x) => ({ subject: x.subject, title: x.title, phase: x.blocks.at(-1)!.phase, age_s: (now - Date.parse(x.start)) / 1000, idle_reason: "reviewer" })),
+      ...openItems.map((x) => ({ subject: x.subject, url: x.url, task: x.task, author_kind: x.author_kind, title: x.title, phase: x.blocks.at(-1)!.phase, age_s: (now - Date.parse(x.start)) / 1000, idle_reason: "reviewer" })),
       ...Array.from({ length: 14 }, (_, i) => ({
-        subject: `pr:acme/acme-agents#${400 + i}`, title: TITLES[(i * 5) % TITLES.length]!, phase: PHASES[[3, 3, 4, 5, 6, 6, 3, 2, 6, 7, 3, 5, 6, 1][i]!]!.name,
+        subject: `pr:acme/acme-agents#${400 + i}`, url: null, task: null, author_kind: "agent", title: TITLES[(i * 5) % TITLES.length]!, phase: PHASES[[3, 3, 4, 5, 6, 6, 3, 2, 6, 7, 3, 5, 6, 1][i]!]!.name,
         age_s: 300 + r() * r() * 4 * 86_400, idle_reason: [null, "owner", "reviewer", "capacity"][i % 4]!,
       })),
     ],

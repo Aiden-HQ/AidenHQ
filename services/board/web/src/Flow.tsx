@@ -113,8 +113,8 @@ export function FlowView({ onSignIn }: { onSignIn: () => void }) {
   const decl = journeys.find((j) => j.name === journey) ?? (list ? { name: list.journey, label: list.label, phases: list.phases } : null);
   const phases = decl?.phases ?? ins?.phases ?? [];
   const color = useMemo(() => phaseColors(phases), [phases]);
-  const openSubject = useCallback((subject: string) => {
-    const x = known.current.get(subject);
+  const openSubject = useCallback((subject: string, p?: { url: string | null; task: string | null }) => {
+    const x = known.current.get(subject) ?? p;
     if (x?.url) window.open(x.url, "_blank", "noopener");
     else if (x?.task) setItem(x.task);
   }, []);
@@ -171,7 +171,7 @@ interface Ctx {
   color: (phase: string) => string;
   phases: { name: string; label: string }[];
   days: number;
-  openSubject: (subject: string) => void;
+  openSubject: (subject: string, p?: { url: string | null; task: string | null }) => void;
   openTask: (task: string) => void;
 }
 
@@ -599,7 +599,7 @@ function Stages({ c }: { c: Ctx }) {
             y: s.total_s,
             color: s.author_kind ? AUTHOR_COLOR[s.author_kind] ?? "var(--faint)" : "var(--faint)",
             label: `${s.subject.replace(/^pr:/, "")}: ${dur(s.total_s)}, ended ${day(s.end)}`,
-            onClick: () => c.openSubject(s.subject),
+            onClick: () => c.openSubject(s.subject, s),
             tip: () => <TipBody head={s.subject.replace(/^pr:/, "")} rows={[["Total", dur(s.total_s)], ["Ended", day(s.end)], ["Author", s.author_kind ?? "unknown"]]} />,
           }))}
         />
@@ -693,7 +693,7 @@ function Queue({ c }: { c: Ctx }) {
                 y: a.age_s,
                 color: c.color(a.phase),
                 label: `${a.title ?? a.subject}: ${dur(a.age_s)} in ${a.phase}${a.idle_reason ? `, waiting on ${words(a.idle_reason)}` : ""}`,
-                onClick: () => c.openSubject(a.subject),
+                onClick: () => c.openSubject(a.subject, a),
                 tip: () => (
                   <TipBody
                     head={a.title ?? a.subject.replace(/^pr:/, "")}

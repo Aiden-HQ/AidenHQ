@@ -43,12 +43,12 @@ export type AuthorKind = "agent" | "owner" | "outside";
 
 export interface Insights {
   phases: { name: string; label: string; n: number; p50: number | null; p85: number | null; p95: number | null; idle_s: number; rounds_mean: number; weekly: { week: string; p50: number | null; n: number }[] }[];
-  scatter: { subject: string; end: string; total_s: number; author_kind: string | null }[];
+  scatter: { subject: string; url: string | null; task: string | null; end: string; total_s: number; author_kind: string | null }[];
   /** Per phase: how many items took each number of rounds. */
   rounds: Record<string, Record<string, number>>;
   rejections: { reason: string; n: number }[];
   first_pass: { week: string; rate: number | null; n: number }[];
-  aging: { subject: string; title: string | null; phase: string; age_s: number; idle_reason: string | null }[];
+  aging: { subject: string; url: string | null; task: string | null; author_kind: string | null; title: string | null; phase: string; age_s: number; idle_reason: string | null }[];
   cfd: { day: string; counts: Record<string, number> }[];
   funnel: { step: string; n: number }[];
   cost: { per_merged: { week: string; usd: number | null }[]; by_agent: { key: string; usd: number; merged: number }[]; by_model: { key: string; usd: number; merged: number }[]; unmerged_usd: number };
