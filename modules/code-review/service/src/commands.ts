@@ -9,8 +9,8 @@ export type Command =
   | { cmd: "focus"; text: string }
   | { cmd: "unknown"; word: string };
 
-/** Markers our own posts carry (the summary's severity line, the acknowledgement): a comment with one is never a command. */
-export const OWN_MARKERS = ["<!-- aidenhq-review", "<!-- aidenhq-ack"];
+/** Our own posts' markers (aidenhq-review, -review-run, -review-ack, -finding): a comment or review with one is never a command. */
+export const OWN_MARKERS = ["<!-- aidenhq-"];
 export const FOCUS_MAX = 300;
 const LINE = /^\s*@aiden\s+review\b(.*)$/i;
 

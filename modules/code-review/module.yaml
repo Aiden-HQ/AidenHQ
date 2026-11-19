@@ -9,7 +9,10 @@ license: MIT
 requires:
   - github # PR reads (github-mcp) and the poster
 roles:
-  requests: [ kernel.checks, kernel.facts ]
+  # kernel.tasks: one task per reviewed PR for the Reviewer Manager (role reviewer-manager), where its posts' approvals land.
+  requests: [ kernel.checks, kernel.facts, kernel.tasks ]
+  declares:
+    - { id: reviewer-manager, description: "Holds each reviewed PR's task (fixed text: repo and number), where code review's posts are approved; the Reviewer Manager agent." }
 # A review run's snapshot of repo@head (and its base), read under this grant: any repo the GitHub App covers.
 codehost:
   snapshot: { repos: [ "*/*" ] }
@@ -37,6 +40,25 @@ settings:
       month_usd: 200
   # Seconds between the service's looks at the watched repos.
   code_review_poll_seconds: { default: 60 }
+# Posting: this service files a record per post and per acknowledgement and executes it (executor@1) through github-mcp's
+# /internal/review routes (the github module's poster: App where installed with PR write, else the owner's sign-in). A post is
+# Tier 1 (the AI reviewer reads the whole rendered review first); a notice is Tier 0 (fixed words: phase and reason only). Plan
+# refuses a record this service didn't file for one of its runs.
+providers:
+  executor:
+    url: http://code-review:8098/aidenhq/v1/executor
+    auth: code_review_service_key
+writes:
+  post:
+    args: schemas/post.json
+    floor: 1
+    tools: []
+    card: { target: "{{target}}", sentence: "{{sentence}}", changes: "{{changes}}", details: "{{details}}" }
+  notice:
+    args: schemas/notice.json
+    floor: 0
+    tools: []
+    card: { target: "{{target}}", sentence: "{{sentence}}", changes: "{{changes}}", details: "{{details}}" }
 # The board's Reviews page reads the service's API with its own key, until the board is a module.
 board_env:
   CODE_REVIEW_URL: http://code-review:8098
@@ -57,8 +79,10 @@ services:
         CODE_REVIEW_POLL_SECONDS: "${settings.code_review_poll_seconds}"
         CODE_REVIEW_TOKEN_FILE: ${secrets.code_review_token}
         CODE_REVIEW_API_TOKEN_FILE: ${secrets.code_review_api_token}
+        CODE_REVIEW_SERVICE_KEY_FILE: ${secrets.code_review_service_key}
         AIDENHQ_KERNEL_URL: http://10.231.0.1:3130
 generated_secrets:
   - code_review_token
   - code_review_api_token
+  - code_review_service_key
 data_version: 0 # its data dir's format: bumped by each forward-only migration (docs/configuration.md)

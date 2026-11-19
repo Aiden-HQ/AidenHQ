@@ -384,6 +384,8 @@ export function createEngine(d: EngineDeps) {
 
   return {
     tick,
+    /** A run's repo, PR and head: what a post of it must name (the executor's plan checks it). */
+    binding(id: string) { const r = runRow(id); return r ? { repo: r.repo, number: r.number, head: r.head } : undefined; },
     /** A one-off review of any PR the instance can read; posted like any other. */
     async oneoff(b: { pr_url?: unknown; reviewer?: unknown; focus?: unknown; full?: unknown }) {
       const p = await readPr(b.pr_url);
