@@ -49,3 +49,17 @@ test("a sign-in is one Connect: ClickHouse asks nothing, Glean asks only its own
   assert.equal(compose.services["clickhouse-mcp"].environment.CLICKHOUSE_MCP_URL, "https://mcp.clickhouse.cloud/mcp");
   assert.deepEqual(signIn("glean").fields.map((f) => f.secret), ["glean_mcp_url"]);
 });
+
+test("Primer's Connect follows primer_mode: the hosted address in connect, the service token in self-host", () => {
+  const product = join(dirname(fileURLToPath(import.meta.url)), "../..");
+  const fields = (settings) => {
+    const dir = mkdtempSync(join(tmpdir(), "inst-"));
+    writeFileSync(join(dir, "instance.yaml"), YAML.stringify({ product: "0".repeat(40), modules: [...BUNDLE, "primer"], settings: { timezone: "Europe/London", owner_name: "Sam", owner_email: "o@x", product_repo: "acme/aidenhq", ...settings } }));
+    mkdirSync(join(dir, "agents"));
+    return compile(product, dir).points.board.signins.find((s) => s.id === "primer").fields;
+  };
+  assert.deepEqual(fields({}).map((f) => f.secret), ["primer_mcp_url"]);
+  const [token] = fields({ primer_mode: "self-host", primer_host: "primer.example.com", primer_host_aud: "service:primer", app_login: "header-jwt", edge: { identity: { header: "x-front-identity", issuer: "https://auth.example.com", jwks_url: "https://auth.example.com/jwks.json", auth_method: "sso" }, front: { address: "100.101.102.103", port: 8445 }, my_apps: { host: "apps.example.com", aud: "service:apps" } } });
+  assert.equal(token.secret, "primer_service_token");
+  assert.match(token.help, /Open https:\/\/primer\.example\.com, sign in/);
+});

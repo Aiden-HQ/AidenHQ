@@ -40,6 +40,10 @@ export interface SignInView {
   connect: string;
   /** Its per-install values are in place (asked afresh: the dialog waits on it after a save). */
   configured: boolean;
+  /** It needs the owner's values (its address, or a token that isn't working yet): `fields` are what to ask. */
+  asks: boolean;
+  /** Why it stopped working, when the service said. */
+  detail?: string;
   fields: { secret: string; label: string; pattern: string; help?: string }[];
   scopes: { supported: string[]; recommended: string[]; granted?: string[] } | null;
   state: string;

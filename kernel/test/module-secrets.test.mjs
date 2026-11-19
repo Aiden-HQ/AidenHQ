@@ -54,6 +54,10 @@ test("save_secret writes a declared secret and recreates its module's services",
   assert.equal(statSync(f).mode & 0o777, 0o600);
   assert.deepEqual(v.calls, [["telegram"]]);
   assert.ok(!v.lines.join("\n").includes(TOKEN), "the value is never logged");
+  // A second save writes the same file in place: a container bind-mounting it sees the new value without a restart.
+  const ino = statSync(f).ino;
+  assert.equal((await post("save_secret", { module: "channel-telegram", secret: "telegram_bot_token", value: "987654321:" + "B".repeat(35) })).status, 200);
+  assert.equal(statSync(f).ino, ino);
 });
 
 test("save_secret refuses an undeclared secret, another module's secret, a pattern mismatch and an off module", async (t) => {

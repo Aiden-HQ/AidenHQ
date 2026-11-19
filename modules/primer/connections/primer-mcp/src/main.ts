@@ -23,7 +23,7 @@ const stateDir = process.env.PRIMER_STATE_DIR ?? "/state";
 const selfHost = process.env.PRIMER_MODE === "self-host";
 const local = process.env.PRIMER_LOCAL_URL ?? "http://primer-server:3000";
 const url = selfHost ? `${local}/mcp` : readToken(process.env.PRIMER_MCP_URL_FILE) || process.env.PRIMER_MCP_URL;
-const auth = selfHost ? tokenAuth(fileToken(process.env.PRIMER_SERVICE_TOKEN_FILE)) : oauth({ name: "Primer", mcpUrl: url ?? "", stateDir });
+const auth = selfHost ? tokenAuth(fileToken(process.env.PRIMER_SERVICE_TOKEN_FILE), local) : oauth({ name: "Primer", mcpUrl: url ?? "", stateDir });
 const serviceKey = readToken(process.env.MCP_TOKEN_FILE);
 const jwks = kernelJwks();
 

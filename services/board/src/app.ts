@@ -34,7 +34,7 @@ import { UsageSchema, keyUsage, prices, spendSummary } from "./costs.js";
 import { ledgerRange, ledgerSummary, ledgerTop } from "./cost-ledger.js";
 import { descendants, featureCost, recentFeatures } from "./feature-cost.js";
 import { MergeSchema, mergedDescription } from "./merge.js";
-import { McpAuthFailed, SIGNIN_LOOPBACK, pastedCallback, type McpAuth } from "./mcpauth.js";
+import { McpAuthFailed, SIGNIN_LOOPBACK, asksValues, pastedCallback, type McpAuth } from "./mcpauth.js";
 import { setupFlowRoutes, type SetupFlowPoint } from "./setup-flows.js";
 import type { SetupField } from "./config.js";
 import { welcomeRoutes } from "./welcome.js";
@@ -1030,7 +1030,7 @@ export function createApp(opts: AppOptions): Server {
       ),
     ]);
     // Its Connect: the picker first where the proxy offers a choice of scopes, and the per-install values first while it has none.
-    const signIns = Object.fromEntries(states.map((s) => [s.id, s.status && { ...s.status, offer: s.offer, ...(!s.status.configured && s.fields.length ? { fields: s.fields } : {}) }] as const));
+    const signIns = Object.fromEntries(states.map((s) => [s.id, s.status && { ...s.status, offer: s.offer, ...(asksValues(s.status) && s.fields.length ? { fields: s.fields } : {}) }] as const));
     return connectionsView({ compiled, catalog, probes: probed.probes, signIns, google, sources });
   }
 
@@ -1058,6 +1058,8 @@ export function createApp(opts: AppOptions): Server {
           label: s.label,
           connect: s.connect,
           configured: Boolean(status?.configured),
+          asks: asksValues(status),
+          detail: status?.detail,
           fields: s.fields,
           scopes: offer && offer.supported.length > 1 ? { ...offer, ...(granted.length ? { granted } : {}) } : null,
           state: status?.state ?? "unknown",
@@ -1932,7 +1934,7 @@ export function createApp(opts: AppOptions): Server {
         // The board's Connect asks for the sign-in's own values and offers its scopes before it comes here (owner, 2026-11-18);
         // a Connect from elsewhere (an old link) gets that dialog first: values missing, or a choice of scopes not yet made.
         const picked = url.searchParams.has("picked");
-        if ((s.fields.length && !(await auth.status(0))?.configured) || (!picked && (await auth.offers()))) {
+        if ((s.fields.length && asksValues(await auth.status(0))) || (!picked && (await auth.offers()))) {
           res.writeHead(302, { ...SECURITY_HEADERS, location: dialogOf(s.id), "cache-control": "no-store" }).end();
           return;
         }
