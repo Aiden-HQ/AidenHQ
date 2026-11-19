@@ -179,3 +179,8 @@ test("one reply to the owner: posted once on the task; relayed once to Telegram 
   assert.deepEqual(await run("is the budget approved? (typed on the board)"), []);
   assert.equal(pc.comments.filter((c) => c.body.startsWith("The budget is approved.")).length, 2); // one per run, each once
 });
+
+test("delegate_to naming a team's key covers its record and each member; a member alone is reached through its team", async () => {
+  const agents = { cos: { key: "cos", delegate_to: ["engineer"] }, t: { key: "engineer", team: { name: "engineering", members: ["kai"] } }, k: { key: "kai", member_of: "engineer" }, o: { key: "other" } };
+  assert.deepEqual(await delegateIds(agents, "cos"), ["t", "k"]);
+});
