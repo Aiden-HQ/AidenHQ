@@ -154,3 +154,14 @@ describe("board.signins from the compiled point", () => {
     expect(() => signInPoints(point([{ ...glean, module: "acme" }]), dir)).toThrow(/its own name/);
   });
 });
+
+it("a proxy restart keeps the last sign-in state rather than reading as signed out", async () => {
+  let up = true;
+  const auth = new McpAuth("GitHub", "http://github", "t", undefined, (async () => {
+    if (!up) throw new TypeError("fetch failed");
+    return json({ state: "ok", configured: true });
+  }) as unknown as typeof fetch);
+  expect((await auth.status(0))?.state).toBe("ok");
+  up = false;
+  expect((await auth.status(0))?.state).toBe("ok");
+});
