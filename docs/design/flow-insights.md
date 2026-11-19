@@ -93,8 +93,13 @@ Tabs: **Overview · PRs · Stages · Rework · Queue · Cost**, one period contr
 - **PRs (owner spec):** one row per PR. Left: `#<n>` linking to the PR, title on hover. Middle: one bar split into
   phase blocks, each its own colour with a legend above; hover a block → phase name, its duration, rounds (↻3) and
   idle share. Idle inside a block is hatched. Right: total end to end. PRs show only the phases they have. Filter chips
-  Agent / Owner / Outside (all on); sort Newest merged (default) / Slowest / Most rounds. Bars share one time scale per
-  page (log toggle for long tails). A row opens the item's waterfall (flow.md).
+  Agent / Owner / Outside (all on); sort Newest merged (default) / Slowest / Most rounds. Every bar is the full width:
+  each block is its share of that PR's own total time (owner, 2026-11-19; no shared time scale, no log toggle), with a
+  few pixels' minimum so short blocks stay hoverable; the total on the right carries the absolute time. A row opens the
+  item's waterfall (flow.md). A view toggle Bars | Table (Bars default, kept in the URL hash): the table has one row per
+  PR, columns PR # (title on hover), author kind, one per journey phase (duration, ↻n when rounds > 1, tinted by a
+  per-column heat scale so slow cells stand out, "—" when absent) and Total; every header sorts; sticky header and first
+  column, scrolling sideways on narrow screens. Both views share the filters and the row click.
 - **Overview:** DORA five tiles with sparkline and change vs previous period; the top three bottlenecks in words (the
   phase with the most total idle, the highest rounds, the slowest p85); throughput per day.
 - **Stages:** weekly stacked phase breakdown; p50/p85/p95 per phase; cycle-time scatter with percentile lines (a dot

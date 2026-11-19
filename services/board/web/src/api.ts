@@ -1,4 +1,4 @@
-import type { FlowSummary, IdleItem, Waterfall } from "../../src/flow";
+import type { AuthorKind, FlowSummary, IdleItem, JourneyInfo, JourneyList, JourneySort, Waterfall } from "../../src/flow";
 import type { AgentProfile, TaskRow, FeatureCost, Features, Advisory, Agents, AsideMessage, Lineage, SettledItem, AppRow, Approval, Board, Bucket, Cadence, ChatAgent, ChatDetail, LaneAgent, LaneMessage, ChatRow, CostLedger, CostTop, IssueView, Models, ModuleDetail, ModuleRow, NeedsYou, RecurringView, RosterAgent, RunTrace, Scorecard, SettingChange, FiledChange, SettingsData, Update } from "./types";
 import type { ConnectionsData } from "./connections";
 import type { BrowseModule, GrantConnection, MarketplaceRow } from "./types";
@@ -206,6 +206,9 @@ export const api = {
   features: () => call<Features>("GET", "/api/costs/features"),
   flow: (days: number, scope: string) => call<{ summary: FlowSummary | null; idle: IdleItem[] }>("GET", `/api/flow?days=${days}&scope=${encodeURIComponent(scope)}`),
   flowItem: (id: string) => call<Waterfall>("GET", `/api/flow/item?id=${encodeURIComponent(id)}`),
+  flowJourneys: () => call<{ journeys: JourneyInfo[] }>("GET", "/api/flow/journeys"),
+  flowJourney: (name: string, days: number, author: AuthorKind[], sort: JourneySort) =>
+    call<JourneyList | null>("GET", `/api/flow/journey?name=${encodeURIComponent(name)}&days=${days}&author=${author.join(",")}&sort=${sort}`),
   costTop: (q: URLSearchParams) => call<CostTop>("GET", `/api/costs/top?${q}`),
   run: (id: string) => call<RunTrace>("GET", `/api/runs/${encodeURIComponent(id)}`),
   issue: (ref: string) => call<IssueView>("GET", `/api/issues/${encodeURIComponent(ref)}`),

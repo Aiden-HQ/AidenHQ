@@ -127,6 +127,8 @@ function parseRoute(): Route {
   // #/approvals, #/costs, ...: deep links to a tab.
   // A tab link may carry the tab's own state after "?" (#/costs?range=7d).
   if ((VIEWS as string[]).includes(h.split("?")[0]!)) return { kind: "view", view: h.split("?")[0] as View };
+  // #/flow/<tab> opens a Flow tab (Flow.tsx reads the tab itself).
+  if (/^flow\/[a-z]+(\?.*)?$/.test(h)) return { kind: "view", view: "flow" };
   const setup = /^setup\/([a-z0-9-]{1,63})$/.exec(h);
   if (setup) return { kind: "setup", module: setup[1]! };
   if (h === "brief") return { kind: "brief" };
