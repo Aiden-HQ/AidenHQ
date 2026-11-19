@@ -82,7 +82,7 @@ function FlowBody({ flow, board, reload, onDone, onSignIn }: { flow: SetupFlowVi
       Skip this step
     </button>
   );
-  const head = <PageHeader title={flow.title} sub={flow.why} status={<Effort effort={flow.effort} admin={flow.admin} />} />;
+  const head = <PageHeader title={flow.title} sub={flow.why} status={viaOrg ? <Effort effort="about a minute" /> : <Effort effort={flow.effort} admin={flow.admin} />} />;
 
   // A setup that needs a named address, on a board reached by its IP: only why, and the way back.
   if (flow.needs_name && !board.named) {
