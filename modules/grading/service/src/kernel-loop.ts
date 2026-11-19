@@ -7,7 +7,7 @@ import type { DatabaseSync } from "node:sqlite";
 import { createGradeLoop } from "./loop.mjs";
 import { forOthers } from "./aidenhq-sdk/for-others.ts";
 import { GRADE_SCHEMA, escalationFor, gather, grade, gradeNote, template } from "./grader/grade.ts";
-import { findPrs, stripHidden } from "./grader/compat.ts";
+import { findPrs, stripHidden } from "./grader/text.ts";
 import { openRouterAsk } from "./aidenhq-sdk/judge.ts";
 import { taskPrRows } from "./grader/evidence.ts";
 import { createGithub } from "./github.ts";
@@ -120,7 +120,7 @@ export function createKernelGradeLoop({ db, runner, due, kernel, kernelBytes, ap
     pc, log, state, gather, grade, escalationFor, gradeNote, template, gradeDeps, tellParent, recordsOn,
     graderAsk,
     stripHidden, graderSpeaks: (s?: string) => ["open", "pending", "awaiting_evidence", "needs_revision", "grading_failed"].includes(String(s)),
-    isUserInstruction: (c: Json) => c.authorType === "user" && !String(c.body ?? "").includes("<!-- aidenhq-runner -->") && !forOthers(c.body),
+    isUserInstruction: (c: Json) => c.authorType === "user" && !forOthers(c.body),
   });
   return loop;
 }

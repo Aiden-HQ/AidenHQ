@@ -8,7 +8,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { GRADER_MARKER, appEvidence, applyEvidence, deploysOf, fileEvidence, namedTasks, otherTaskEvidence, predatesDeploys, presentNow, prEvidence, stamp, wordsEvidence } from "./evidence.ts";
-import { stripRubric } from "./compat.ts";
+import { stripRubric } from "./text.ts";
 import { MAX_DIFF, judgeModels } from "../aidenhq-sdk/judge.ts";
 import { dataBlock as fence } from "../aidenhq-sdk/fence.ts";
 

@@ -1,6 +1,4 @@
-// Small helpers the grader reads from other homes, copied while the grader is the only reader that has no codehost service to ask:
-// the task-text and PR-text helpers (agents.mjs, progress.ts). Each is a verbatim copy with types added; the runner's copies go
-// at the switch, and these become the one way then.
+// Small helpers the grader reads: task-text and PR-text helpers.
 /** Remove HTML comments: hidden text never counts as the user's words. */
 export const stripHidden = (s: unknown) => String(s ?? "").replace(/<!--[\s\S]*?-->/g, "");
 
@@ -41,9 +39,6 @@ export const stripRubric = (s: unknown) => {
   }
   return removed ? kept.join("\n").replace(/\n{3,}/g, "\n\n").trim() : text;
 };
-
-/** Marks a comment as the runner's own. */
-export const RUNNER_MARKER = "<!-- aidenhq-runner -->";
 
 export function findPrs(text: unknown) {
   const out: { repo: string; number: number; url: string }[] = [];

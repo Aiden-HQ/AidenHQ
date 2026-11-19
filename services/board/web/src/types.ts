@@ -231,7 +231,7 @@ export interface GoogleAccount {
 export interface CommentView {
   id: string;
   body: string;
-  author: { kind: "me" | "runner" | "agent" | "user"; name: string };
+  author: { kind: "me" | "board" | "agent" | "user"; name: string };
   /** The admin (not the owner) who wrote it. */
   by?: string;
   createdAt: string;

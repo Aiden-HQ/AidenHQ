@@ -7,10 +7,6 @@ import { forOthers } from "./aidenhq-sdk/for-others.ts";
 
 /** The kernel's posts for a job (outcomes): its own words on the task, which wake nobody. */
 export const SELF_TAG = /<!-- aidenhq:job=/;
-/** The old executor's posts (the runner, with the owner's key): never the owner's words. */
-export const RUNNER_MARKER = "<!-- aidenhq-runner -->";
-/** The runner's posts of an Engineer's own replies. */
-const REPLY_MARKER = "<!-- aidenhq-reply -->";
 /** A module's wake notice, posted by the kernel with the owner's client: a module's words, never the owner's. */
 const WAKE_NOTICE = "<!-- aidenhq-wake -->";
 
@@ -43,10 +39,10 @@ export function ownRequest(t: Issue) {
   return stripHidden(text).trim();
 }
 
-/** Ours: the job's own posts, the old executor's, and the assignee's own comments. */
-export const ours = (c: Comment, t: Issue) => SELF_TAG.test(c.body ?? "") || String(c.body ?? "").includes(RUNNER_MARKER) || (c.authorType === "agent" && c.authorAgentId === t.assigneeAgentId);
-/** The assignee has spoken on the task (or the old executor for it): not its first job here. */
-export const spoke = (comments: Comment[], t: Issue) => comments.some((c) => (c.authorType === "agent" && c.authorAgentId === t.assigneeAgentId) || String(c.body ?? "").includes(RUNNER_MARKER));
+/** Ours: the job's own posts and the assignee's own comments. */
+export const ours = (c: Comment, t: Issue) => SELF_TAG.test(c.body ?? "") || (c.authorType === "agent" && c.authorAgentId === t.assigneeAgentId);
+/** The assignee has spoken on the task: not its first job here. */
+export const spoke = (comments: Comment[], t: Issue) => comments.some((c) => (c.authorType === "agent" && c.authorAgentId === t.assigneeAgentId));
 
 /**
  * Whose words a comment is: "owner" (his own, typed or through his key, never a post of ours), "agent" (an agent's request:
@@ -82,7 +78,7 @@ export function redirectNote(t: Issue, owner: string, agents: Map<string, Agent>
 }
 
 /** One conversation entry for the prompt. */
-interface Entry { kind: "user" | "you" | "runner" | "agent" | "notice"; who: string; at?: string; body: string }
+interface Entry { kind: "user" | "you" | "agent" | "notice"; who: string; at?: string; body: string }
 
 /** The comments as entries, oldest first, leaving out `skip` (this run's instructions, which come separately). */
 export function threadEntries(comments: Comment[], t: Issue, { owner, agents, skip }: { owner: string; agents: Map<string, Agent>; skip: Set<string> }): Entry[] {
@@ -91,13 +87,12 @@ export function threadEntries(comments: Comment[], t: Issue, { owner, agents, sk
     const raw = String(c.body ?? "");
     const body = stripHidden(raw).trim();
     if (!body || c.deletedAt || skip.has(c.id)) continue;
-    const mine = SELF_TAG.test(raw) || raw.includes(REPLY_MARKER) || (c.authorType === "agent" && c.authorAgentId === t.assigneeAgentId);
+    const mine = SELF_TAG.test(raw) || (c.authorType === "agent" && c.authorAgentId === t.assigneeAgentId);
     if (mine) out.push({ kind: "you", who: "You", at: c.createdAt, body });
     else if (c.authorType === "agent") {
       const a = agents.get(c.authorAgentId ?? "");
       out.push({ kind: "agent", who: a?.metadata?.persona?.name || a?.name || "Another agent", at: c.createdAt, body });
     } else if (raw.includes(WAKE_NOTICE) || forOthers(raw)) out.push({ kind: "notice", who: "Notice", at: c.createdAt, body });
-    else if (raw.includes(RUNNER_MARKER)) out.push({ kind: "runner", who: "Runner", at: c.createdAt, body });
     else out.push({ kind: "user", who: owner, at: c.createdAt, body });
   }
   return out;

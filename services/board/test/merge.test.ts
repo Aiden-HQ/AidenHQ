@@ -113,8 +113,8 @@ describe("merging a task into another", () => {
     expect(alfred.status).toBe("cancelled");
     expect(dup.status).toBe("cancelled");
     expect(store.schedules().has(dup.id)).toBe(false);
-    // The note on the duplicate carries the runner's marker, so it never reaches the Assistant.
-    expect(comments.get(dup.id)?.map((c) => c.body)).toEqual([`Merged into ${target.identifier}.\n\n<!-- aidenhq-runner -->`]);
+    // The note on the duplicate is the board's own (the notice marker), never the owner's words.
+    expect(comments.get(dup.id)?.map((c) => c.body)).toEqual([`Merged into ${target.identifier}.\n\n<!-- aidenhq-notice -->`]);
   });
 
 

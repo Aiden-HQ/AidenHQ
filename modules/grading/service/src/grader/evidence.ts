@@ -2,7 +2,7 @@
 // the duplicate-card guard (item 4). Facts here were checked by code and are trusted; anything an agent wrote is returned
 // as data for the caller to fence. Nothing here closes a task or decides a card: it only reports what is true.
 import { createHash } from "node:crypto";
-import { RUNNER_MARKER, findPrs, staleHead } from "./compat.ts";
+import { findPrs, staleHead } from "./text.ts";
 import { GATE_CHECK, namedChecks, skippedImageScan } from "../aidenhq-sdk/checks.ts";
 import { MAX_DIFF } from "../aidenhq-sdk/judge.ts";
 import { forOthers } from "../aidenhq-sdk/for-others.ts";
@@ -454,13 +454,11 @@ export function pickComments(all: any[], own: (c: any) => boolean, rubric = "", 
 export async function wordsEvidence(deps: any, rubric: string[] = []): Promise<any> {
   const all = (await deps.comments()).filter((c: any) => !String(c.body ?? "").includes(GRADER_MARKER));
   const comments = all.slice(-NEWEST);
-  const own = (c: any) => String(c.body ?? "").includes(RUNNER_MARKER) || (deps.assignee ? c.authorAgentId === deps.assignee : c.authorType === "agent");
-  // The delegator is the task's creator: an agent's id for an agent-authored task, else the user's. The runner's own
-  // comments carry its marker and are never the delegator's words, whatever user id it posts under; nor is a comment posted
-  // for someone else.
+  const own = (c: any) => (deps.assignee ? c.authorAgentId === deps.assignee : c.authorType === "agent");
+  // The delegator is the task's creator: an agent's id for an agent-authored task, else the user's. A comment posted
+  // for someone else is never the delegator's words.
   const delegator = (c: any) =>
     Boolean(deps.delegator?.agentId || deps.delegator?.userId) &&
-    !String(c.body ?? "").includes(RUNNER_MARKER) &&
     !forOthers(c.body) &&
     (c.authorAgentId ? c.authorAgentId === deps.delegator.agentId : c.authorType === "user" && c.authorUserId === deps.delegator.userId);
   const who = (c: any) => (delegator(c) ? "the task's delegator" : own(c) ? "the task's agent" : "someone else");
