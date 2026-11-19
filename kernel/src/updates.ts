@@ -27,7 +27,7 @@
 //   node kernel/src/updates.ts verify <name> <distro sha> < base instance.yaml   (the apply planner) the verified pin, as JSON
 //   node kernel/src/updates.ts pin <name> <distro sha>  (ops/setup.sh, the installer run again) move the pin to that release
 import { execFile, execFileSync, spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { closeSync, mkdirSync, mkdtempSync, openSync, readFileSync, renameSync, rmSync, statSync, writeFileSync, writeSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -251,6 +251,28 @@ export function writeState(d: Pick<Deps, "dir" | "board">, s: State) {
   // The board's copy: what it shows, nothing it could act on.
   if (d.board) put(d.board, { current: s.current ?? null, auto: s.auto ?? null, timezone: s.timezone ?? null, checkedAt: s.checkedAt ?? null, available: s.available ? { name: s.available.name, notes: s.available.notes, compare: s.available.compare } : null, error: s.error ?? null, last: s.last ?? null });
 }
+/**
+ * `fn` holding the state's lock (`state.lock` beside it, made exclusively, holding the holder's pid): every read-modify-write
+ * of state.json runs under it, so the host's candidate check, Update now and the kernel's hourly check and pass never drop
+ * each other's changes. A lock whose process is gone is taken over; a live one is waited for (up to `wait`).
+ */
+export async function locked<T>(dir: string, fn: () => Promise<T>, wait = 30 * 60_000): Promise<T> {
+  mkdirSync(dir, { recursive: true });
+  const f = join(dir, "state.lock");
+  for (const until = Date.now() + wait; ;) {
+    try { const fd = openSync(f, "wx"); writeSync(fd, `${process.pid}\n`); closeSync(fd); break; } catch (e) { if ((e as NodeJS.ErrnoException).code !== "EEXIST") throw e; }
+    let pid = 0, at = Date.now();
+    try { pid = Number(readFileSync(f, "utf8").trim()) || 0; at = statSync(f).mtimeMs; } catch { continue; } // released meanwhile
+    // No pid yet: a holder between making the file and writing it, unless that was long ago (it died there).
+    let alive = pid > 0 || Date.now() - at < 10_000;
+    try { if (pid > 0) process.kill(pid, 0); } catch (e) { alive = (e as NodeJS.ErrnoException).code === "EPERM"; }
+    if (!alive) { rmSync(f, { force: true }); continue; }
+    if (Date.now() > until) throw new Error(`the updater's state is locked by process ${pid}`);
+    await new Promise((ok) => setTimeout(ok, 250));
+  }
+  try { return await fn(); } finally { rmSync(f, { force: true }); }
+}
+
 const event = (s: State, id: string, text: string) => { s.events = [...(s.events ?? []).filter((e) => e.id !== id), { id, text }].slice(-20); };
 
 /** instance.yaml on the instance's main, as text (fetched first). */
@@ -267,7 +289,10 @@ export type Asked = { release: string; by: string } | null;
  * goes now: the owner asked for it (Update now), or auto-updates are on, it is night and it never failed here. Nothing is
  * prepared while another release is ready or filed.
  */
-export async function check(d: Deps, asked: Asked = null, candidate = ""): Promise<State> {
+export function check(d: Deps, asked: Asked = null, candidate = ""): Promise<State> {
+  return locked(d.dir, () => checkLocked(d, asked, candidate));
+}
+async function checkLocked(d: Deps, asked: Asked, candidate: string): Promise<State> {
   const now = (d.now ?? (() => new Date()))();
   const s = readState(d.dir);
   const text = instanceText(d.inst);
@@ -442,32 +467,34 @@ export function createUpdates({ db, dir, board, inst, ownerLine, check, file, re
   }
 
   async function pass() {
-    let s = readState(dir);
-    if (s.flight) await follow(s);
+    await locked(dir, async () => { const s = readState(dir); if (s.flight) await follow(s); });
     const ask = asked;
     if (ask || now() - checked >= HOUR) {
       asked = null;
       checked = now();
       await check(ask).catch((e: Error) => log("update check failed", { err: e.message.slice(0, 300) }));
     }
-    s = readState(dir);
-    if (s.ready && !s.flight) {
-      const r = s.ready;
-      try {
-        s.flight = { ...r, ...(await file(r)) };
-        delete s.ready;
-        log("release filed", { release: r.release, record: s.flight.record });
-      } catch (e) {
-        // Said once either way. Refused (the planner's rules, the grant): dropped, and the night doesn't prepare it again; anything
-        // else (no agent for its task yet, the network) is filed again next pass.
-        const status = (e as { status?: number }).status;
-        const refused = status === 403 || status === 404 || status === 422;
-        event(s, `notfiled:${r.release}`, `AidenHQ ${r.release} couldn't be filed${refused ? "" : " yet"}: ${plain((e as Error).message, 300)}. Nothing changed.`);
-        if (refused) { delete s.ready; s.failed = [...new Set([...(s.failed ?? []), r.release])]; }
-        log("release not filed", { release: r.release, err: (e as Error).message.slice(0, 300) });
+    // The check (a child process) takes the lock itself; filing is the state's next read-modify-write.
+    await locked(dir, async () => {
+      const s = readState(dir);
+      if (s.ready && !s.flight) {
+        const r = s.ready;
+        try {
+          s.flight = { ...r, ...(await file(r)) };
+          delete s.ready;
+          log("release filed", { release: r.release, record: s.flight.record });
+        } catch (e) {
+          // Said once either way. Refused (the planner's rules, the grant): dropped, and the night doesn't prepare it again; anything
+          // else (no agent for its task yet, the network) is filed again next pass.
+          const status = (e as { status?: number }).status;
+          const refused = status === 403 || status === 404 || status === 422;
+          event(s, `notfiled:${r.release}`, `AidenHQ ${r.release} couldn't be filed${refused ? "" : " yet"}: ${plain((e as Error).message, 300)}. Nothing changed.`);
+          if (refused) { delete s.ready; s.failed = [...new Set([...(s.failed ?? []), r.release])]; }
+          log("release not filed", { release: r.release, err: (e as Error).message.slice(0, 300) });
+        }
+        writeState(d, s);
       }
-      writeState(d, s);
-    }
+    });
     for (const e of readState(dir).events ?? []) {
       if (db.prepare("INSERT OR IGNORE INTO update_notices (id, at) VALUES (?, ?)").run(e.id, new Date(now()).toISOString()).changes === 1) ownerLine(e.text);
     }

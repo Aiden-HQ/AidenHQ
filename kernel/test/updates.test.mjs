@@ -226,6 +226,21 @@ test("only graduated releases install: a pre-release is never offered or said, a
   await assert.rejects(verify(n.d, text, "2026.11.3", n.D2), (e) => !(e instanceof Refused) && /403/.test(e.message));
 });
 
+test("writers of the state take its lock: a concurrent hourly check keeps the candidate run's mark, and a dead holder's lock is taken over", async () => {
+  const w = world();
+  w.pre.add("2026.11.3");
+  // A lock left by a process that is gone (pid 2^22 + 1 is above Linux's and macOS's pid ranges) doesn't hold anyone up.
+  mkdirSync(w.d.dir, { recursive: true });
+  writeFileSync(join(w.d.dir, "state.lock"), "4194305\n");
+  await Promise.all([
+    check({ ...w.d, now: () => DAY }, { release: "2026.11.3", by: "graduate" }, "2026.11.3"),
+    check({ ...w.d, now: () => DAY }),
+  ]);
+  const s = readState(w.d.dir);
+  assert.deepEqual([s.ready?.release, s.ready?.candidate], ["2026.11.3", w.D2], "the second writer read the first one's state");
+  assert.ok(!existsSync(join(w.d.dir, "state.lock")), "released");
+});
+
 test("auto-updates off: at night the release is only offered, never prepared", async () => {
   const w = world({ auto: "off" });
   const s = await check({ ...w.d, now: () => NIGHT });
