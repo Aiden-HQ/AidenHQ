@@ -196,13 +196,15 @@ export function createService(o: Options) {
   const pushedHeads = (): string[] => (existsSync(pushed) ? JSON.parse(readFileSync(pushed, "utf8")) : []);
   const notePushed = (sha: string) => writeFileSync(pushed, JSON.stringify([...pushedHeads().slice(-4999), sha]));
   // Who asked to publish each commit (the kernel's task and whether it was the Platform Engineer's line), noted once its push
-  // or PR has planned (execute carries no requester), and never reassigned: another task re-publishing a head doesn't take it.
-  // A product merge's head is a requester's own only when it noted it (plan.mjs productMergePart).
+  // or PR has planned (execute carries no requester, and a plan comes before its push), and never reassigned: another task
+  // re-publishing a head, noted or already pushed without a note, doesn't take it. A product merge's head is a requester's
+  // own only when it noted it (plan.mjs productMergePart).
   const pushedByFile = join(o.cacheDir, "pushed-by.json");
   const pushedBy = (): Record<string, { task: string; platform: boolean }> => (existsSync(pushedByFile) ? JSON.parse(readFileSync(pushedByFile, "utf8")) : {});
   const notePushedBy = (shas: string[], who: { task: string; platform: boolean }) => {
     const all = pushedBy();
-    const fresh = shas.filter((sha) => !all[sha]);
+    const pushedAlready = pushedHeads();
+    const fresh = shas.filter((sha) => !all[sha] && !pushedAlready.includes(sha));
     if (fresh.length) writeFileSync(pushedByFile, JSON.stringify(Object.fromEntries([...Object.entries(all).slice(-(5000 - fresh.length)), ...fresh.map((sha) => [sha, who])])));
   };
   const isPlatform = (requester?: { roles?: string[] }) => (requester?.roles ?? []).includes("platform-engineer");
