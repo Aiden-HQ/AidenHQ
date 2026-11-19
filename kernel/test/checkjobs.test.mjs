@@ -36,9 +36,10 @@ function setup(trees, judge = () => ({ failed: [] })) {
   const snapshot = async (repo, ref, into) => {
     for (const [f, text] of Object.entries(trees[ref] ?? {})) (mkdirSync(dirname(join(into, f)), { recursive: true }), writeFileSync(join(into, f), text));
   };
-  const checks = createChecks({ db: new DatabaseSync(":memory:"), secret: () => "receipt-secret", recipes, box, snapshot: () => snapshot, modelToken: (head) => mintToken("job-secret", { kind: "check", component: `eval:${head}` }), gatewayUrl: "http://gw", workDir: dir, log: () => {} });
+  const db = new DatabaseSync(":memory:");
+  const checks = createChecks({ db, secret: () => "receipt-secret", recipes, box, snapshot: () => snapshot, modelToken: (head) => mintToken("job-secret", { kind: "check", component: `eval:${head}` }), gatewayUrl: "http://gw", workDir: dir, log: () => {} });
   const done = async (v) => { while (v.state === "running") v = await checks.get("codehost-github", v.id, { after: v.version, waitMs: 1000 }); return v; };
-  return { checks, runs, done };
+  return { checks, runs, done, db };
 }
 
 test("checks: a receipt binds its head, run, judge and policy; the box gets no credential", async () => {
@@ -137,4 +138,15 @@ test("checks: the eval's model calls stop at the eval day cap", async (t) => {
   const r = await call();
   assert.equal(r.status, 402);
   assert.equal((await r.json()).error.type, "cap_reached");
+});
+
+test("checks: each end of a check is a check.ended fact, a re-run's too", async () => {
+  const pkg = JSON.stringify({ scripts: { "aidenhq:fast-check": "eslint ." } });
+  const { checks, done, db } = setup({ [A]: { "package.json": pkg }, [B]: { "package.json": pkg } });
+  const v = await done(checks.start("codehost-github", { repo: "acme/app", head: A, run: "fast", spec: { base: B } }));
+  const facts = () => db.prepare("SELECT subject, actor, data FROM facts WHERE type = 'check.ended'").all().map((f) => ({ ...f, data: JSON.parse(f.data) }));
+  assert.deepEqual(facts(), [{ subject: `check:${v.id}`, actor: "module:codehost-github", data: { kind: "fast", repo: "acme/app", head: A, verdict: "pass" } }]);
+  db.prepare("UPDATE checks SET state = 'error', at = at - 1 WHERE id = ?").run(v.id);
+  await done(checks.start("codehost-github", { repo: "acme/app", head: A, run: "fast", spec: { base: B } }));
+  assert.equal(facts().length, 2);
 });

@@ -1,7 +1,10 @@
 // The host's apply generations (`ops/lib/generations.sh`: `generations.jsonl`, one line per apply, newest last), for the Maintainer's
 // and the Fleet Steward's `fleet_generation_status`: the current product pin and the last generations, so a fix that rolled back is
 // visible without the host. Read-only, and never a guess: a missing or unreadable file is an explicit error, not an empty list.
-import { readFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { existsSync, readFileSync } from "node:fs";
+import type { DatabaseSync } from "node:sqlite";
+import { openFacts } from "./facts.ts";
 
 export const GENERATIONS_KEPT = 20;
 
@@ -33,3 +36,69 @@ export function fleetGenerations(file: string): { pin: string | null; generation
   }
   return { pin: rows.slice().reverse().map(one).find((g) => g.health !== "refused")?.product ?? null, generations: rows.slice(-GENERATIONS_KEPT).reverse().map(one) };
 }
+
+/** The product checkout's GitHub repo (owner/name, lowercase) from its origin, or undefined. */
+function productRepo(repo: string): string | undefined {
+  try {
+    const url = execFileSync("git", ["-C", repo, "remote", "get-url", "origin"], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim();
+    return /github\.com[:/]([\w.-]+\/[\w.-]+?)(?:\.git)?$/.exec(url)?.[1]?.toLowerCase();
+  } catch {
+    return undefined;
+  }
+}
+/** Whether commit `a` is in `b` in the product checkout (any failure, an unknown commit included, is no). */
+const contains = (repo: string, a: string, b: string) => {
+  try { execFileSync("git", ["-C", repo, "merge-base", "--is-ancestor", a, b], { stdio: "ignore" }); return true; } catch { return false; }
+};
+
+/**
+ * Flow's deploy facts from the host's generations (Task 5): `deploy.applied` for each generation that switched something
+ * (good or failed; pending is unsettled, refused switched nothing), and `pr.deployed` for each merged product PR, once, at the
+ * first good generation whose product commit contains its merge commit. The file is the shell's, so the kernel calls this at
+ * start and then on a timer; every fact's id is deterministic, so a re-run records nothing new. The PRs are looked at only
+ * when a good generation newer than the last look exists (git runs on the kernel's thread). Each call returns how many facts
+ * it recorded.
+ */
+export function createDeploys({ db, file, repo, days = 30 }: { db: DatabaseSync; file: string; repo: string; days?: number }): () => number {
+  const facts = openFacts(db);
+  let looked = -1;
+  return () => {
+  if (!existsSync(file)) return 0;
+  const gens = readFileSync(file, "utf8").split("\n").filter((l) => l.trim()).flatMap((l) => { try { return [one(JSON.parse(l))]; } catch { return []; } }).filter((g) => g.n !== null && g.at);
+  let n = 0;
+  for (const g of gens) {
+    if (g.health !== "good" && g.health !== "failed") continue;
+    if (facts.record({ type: "deploy.applied", subject: `deploy:${g.n}`, version: g.health, at: g.at!, actor: "kernel", source: "poll", data: { generation: g.n, product: g.product, health: g.health, revert_of: g.revert_of } })) n++;
+  }
+  const newest = Math.max(-1, ...gens.filter((g) => g.health === "good").map((g) => g.n!));
+  if (newest <= looked) return n;
+  looked = newest;
+  const slug = productRepo(repo);
+  if (!slug) return n;
+  const since = new Date(Date.now() - days * 864e5).toISOString();
+  const merged = new Map<string, { subject: string; sha: string; at: string }>();
+  for (const f of db.prepare("SELECT subject, at, json_extract(data, '$.sha') AS sha FROM facts WHERE type = 'pr.merged' AND at > ? AND lower(subject) LIKE ?").all(since, `pr:${slug}#%`) as { subject: string; at: string; sha: string | null }[]) {
+    if (f.sha) merged.set(f.subject.toLowerCase(), { subject: f.subject, sha: f.sha, at: f.at });
+  }
+  // until codehost pr.merged facts: a merge record's outcome names what it merged on its first line (codehost-github merges.ts).
+  if (tables(db).has("records")) {
+    for (const r of db.prepare(`SELECT outcome, updated_at FROM records WHERE state = 'done' AND updated_at > ? AND outcome LIKE '{"ok":true,"text":"merged-prs: %'`).all(since) as { outcome: string; updated_at: string }[]) {
+      let list: { repo?: unknown; number?: unknown; sha?: unknown }[] = [];
+      try { list = JSON.parse(String(JSON.parse(r.outcome).text).split("\n")[0]!.slice("merged-prs: ".length)); } catch { continue; }
+      for (const p of Array.isArray(list) ? list : []) {
+        const subject = `pr:${String(p.repo)}#${Number(p.number)}`;
+        if (String(p.repo).toLowerCase() === slug && typeof p.sha === "string" && !merged.has(subject.toLowerCase())) merged.set(subject.toLowerCase(), { subject, sha: p.sha, at: r.updated_at });
+      }
+    }
+  }
+  const deployed = new Set((db.prepare("SELECT lower(subject) AS s FROM facts WHERE type = 'pr.deployed'").all() as { s: string }[]).map((r) => r.s));
+  const good = gens.filter((g) => g.health === "good" && g.product).sort((a, b) => a.n! - b.n!);
+  for (const [key, m] of merged) {
+    if (deployed.has(key)) continue;
+    const g = good.find((x) => x.at! >= m.at && contains(repo, m.sha, x.product!));
+    if (g && facts.record({ type: "pr.deployed", subject: m.subject, version: "deployed", at: g.at!, actor: "kernel", source: "poll", data: { pr: m.subject.slice(3), generation: g.n } })) n++;
+  }
+  return n;
+  };
+}
+const tables = (db: DatabaseSync) => new Set((db.prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all() as { name: string }[]).map((t) => t.name));

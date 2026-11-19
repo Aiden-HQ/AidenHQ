@@ -13,11 +13,16 @@ import { highest } from "../src/tier.ts";
 import { KERNEL_KINDS } from "../src/kinds.ts";
 import { openRecords } from "../src/records.ts";
 import { createRouting } from "../src/routing-tune.ts";
+import { openFacts } from "../src/facts.ts";
 import { checkoutMain } from "../src/settings-change.ts";
 import { createWakes } from "../src/wakes.ts";
 import { createWrites } from "../src/writes.ts";
 import { localApply } from "../../modules/codehost-local/src/apply.ts";
 import { kernel, moduleServer } from "./helpers.mjs";
+
+/** A grader's reopen of a task, as the finish gate records it (checks.ts). */
+let verdicts = 0;
+const verdict = (db, task) => openFacts(db).record({ type: "finish.verdict", subject: `task:${task}`, version: `e-${++verdicts}`, task, at: new Date().toISOString(), actor: "kernel", data: { check: "grading.grade", verdict: "reopen" } });
 
 process.env.GIT_CONFIG_GLOBAL = "/dev/null";
 process.env.GIT_CONFIG_NOSYSTEM = "1";
@@ -110,7 +115,7 @@ function world({ autonomy = "full", reviewer = "approve" } = {}) {
     git(o, "push", "-q", "origin", "main");
   };
   // A task routed since the change applied, done after a grader's reopen: enough for a reopen_rate revert.
-  const reopened = () => { const t = decide({ at: Date.now() }); db.prepare("INSERT INTO events (id, type, at, data) VALUES (?, 'finish.verdict', ?, ?)").run(`e-${t}`, new Date().toISOString(), JSON.stringify({ task: t, check: "grading.grade", verdict: "reopen" })); };
+  const reopened = () => { const t = decide({ at: Date.now() }); verdict(db, t); };
   return { bare, db, records, writes, routing, decide, yamlAt, land, reviewed, issues, grants: g, ownerEdit, reopened };
 }
 const REVERT = { metric: "blocked_rate", min_sample: 1, threshold: 0.5, deadline_days: 3 };
@@ -220,7 +225,7 @@ test("a revert the criterion calls restores only the experiment's own values sti
   assert.equal((await w.routing.judge(STEWARD, "t-steward")).measured.sample, 0, "no decision since it applied: still measuring");
   // A task routed since: done, after the grader's finish check had reopened it once (a verdict the kernel recorded).
   const since = w.decide({ at: Date.now() });
-  w.db.prepare("INSERT INTO events (id, type, at, data) VALUES ('e-1', 'finish.verdict', ?, ?)").run(new Date().toISOString(), JSON.stringify({ task: since, check: "grading.grade", verdict: "reopen" }));
+  verdict(w.db, since);
   await settle();
   const j = await w.routing.judge(STEWARD, "t-steward");
   const rb = w.records.get(j.rollback.record);

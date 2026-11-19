@@ -8,6 +8,14 @@ import { verifyCaller } from "../sdk/src/caller.ts";
 import { reviewInput } from "../src/review-loop.ts";
 import { CONN_TOOL_ARGS_MAX } from "../src/writes.ts";
 import { kernel, moduleServer, readBody, serve } from "./helpers.mjs";
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
+import { openRecords } from "../src/records.ts";
+import { openFacts } from "../src/facts.ts";
+import { createChecks } from "../src/checks.ts";
+import { createRouting } from "../src/routing-tune.ts";
 
 // A run's JWT (its run id names the task, TASK-1, through the fake control plane).
 const jwt = (run, who) => `eyJhbGciOiJub25lIn0.${Buffer.from(JSON.stringify({ run_id: run, who })).toString("base64url")}.sig`;
@@ -392,4 +400,69 @@ test("a kernel job's write names its own workspace, whatever its args say", asyn
   assert.deepEqual([plans[0].workspace, k.records.get(filed.json.id).args.workspace], ["PEN-7", "PEN-7"]);
   // Its record carries the job's model, so its reviewer is never of that family (review-loop.ts requesterModel).
   assert.equal(k.records.get(filed.json.id).requester.model, "~z-ai/glm-flash-latest");
+});
+
+// Flow facts (facts.ts) of records: written in the move's transaction, only when the move wins, only for tier 1 and 2.
+const filing = (over = {}) => ({ kind: "twin.post_note", module: "twin", args: { n: 1 }, targets: {}, executor: { module: "twin" }, policy: "p", tier: 1, panel: false,
+  card: { sentence: "s", changes: "", reads: "", cost: "", details: "" }, requester: { agent: "ag-ada", key: "ada", name: "Ada", roles: [], kind: "run" }, task: "t1", state: "review", ...over });
+const dbFile = () => join(mkdtempSync(join(tmpdir(), "flow-")), "kernel.db");
+
+test("records write facts in the same transaction", () => {
+  const records = openRecords(dbFile());
+  const facts = openFacts(records.db);
+  const r = records.file(filing());
+  assert.equal(typeof records.review(r.id, r.digest, { decision: "approve", by: "reviewer:m", note: "ok" }), "object");
+  assert.equal(typeof records.review(r.id, r.digest, { decision: "approve", by: "reviewer:m", note: "again" }), "string", "the lost move");
+  assert.ok(records.hold(r.id, { by: "autonomy", value: "low" }, "a stricter cap"));
+  assert.equal(typeof records.decide(r.id, r.digest, "approve", "account:a1", "web"), "object");
+  assert.ok(records.claim(r.id));
+  assert.ok(!records.claim(r.id), "claimed once");
+  assert.ok(records.finish(r.id, true, "done"));
+  const rows = facts.forTask("t1");
+  assert.deepEqual(rows.map((f) => [f.type, f.version, f.actor]), [
+    ["record.filed", "filed", "agent:ada"], ["record.decided", "reviewer:approved", "module:ai-reviewer"], ["record.held", "held", "kernel"],
+    ["record.decided", "owner:approved", "account:a1"], ["record.claimed", "claimed", "kernel"], ["record.landed", "done", "kernel"]]);
+  assert.ok(rows.every((f) => f.subject === `record:${r.id}`));
+  assert.deepEqual(rows[0].data, { kind: "twin.post_note", tier: 1, panel: false, requester: "ada" });
+  const zero = records.file(filing({ tier: 0, state: "approved", task: "t0" }));
+  records.claim(zero.id);
+  records.finish(zero.id, true, "ran");
+  assert.deepEqual(facts.forTask("t0"), [], "a tier-0 record writes none");
+});
+
+test("migrates and drops events", () => {
+  const file = dbFile();
+  const old = new DatabaseSync(file);
+  old.exec("CREATE TABLE events (id TEXT PRIMARY KEY, type TEXT NOT NULL, at TEXT NOT NULL, data TEXT NOT NULL)");
+  old.close();
+  const records = openRecords(file);
+  const one = records.file(filing()), zero = records.file(filing({ tier: 0, state: "approved", task: "t0" }));
+  records.db.exec("DELETE FROM facts");
+  records.db.exec("CREATE TABLE events (id TEXT PRIMARY KEY, type TEXT NOT NULL, at TEXT NOT NULL, data TEXT NOT NULL)");
+  const ev = records.db.prepare("INSERT INTO events (id, type, at, data) VALUES (?, ?, ?, ?)");
+  const at = "2026-11-18T10:00:00.000Z";
+  ev.run("e-1", "approval.filed", at, JSON.stringify({ record: one.id, kind: one.kind, tier: 1, panel: false, requester: "ada", task: "t1" }));
+  ev.run("e-2", "approval.decided", at, JSON.stringify({ record: one.id, decision: "approve", by: "account:a1", via: "web" }));
+  ev.run("e-3", "approval.held", at, JSON.stringify({ record: one.id, why: "cap" }));
+  ev.run("e-4", "write.outcome", at, JSON.stringify({ record: one.id, kind: one.kind, ok: false, text: "no" }));
+  ev.run("e-5", "approval.filed", at, JSON.stringify({ record: zero.id, kind: zero.kind, tier: 0, panel: false, requester: "ada", task: "t0" }));
+  ev.run("e-6", "gate.would_block", at, JSON.stringify({ gate: "judge.finish", task: "WOR-1", verdict: "deny", reason: "r", via: "task_finish" }));
+  ev.run("e-7", "finish.verdict", at, JSON.stringify({ task: "t1", check: "grading.grade", verdict: "reopen" }));
+  const facts = openFacts(records.db);
+  const all = facts.since(0);
+  assert.deepEqual(all.map((f) => [f.type, f.version, f.source]).sort(), [
+    ["finish.verdict", "e-7", "backfill"], ["gate.would_block", "e-6", "backfill"], ["record.decided", "e-2", "backfill"],
+    ["record.failed", "e-4", "backfill"], ["record.filed", "e-1", "backfill"], ["record.held", "e-3", "backfill"]]);
+  assert.deepEqual(all.find((f) => f.type === "record.decided").data, { decision: "approved", decider: "owner", via: "web" });
+  assert.equal(records.db.prepare("SELECT name FROM sqlite_master WHERE name = 'events'").get(), undefined);
+});
+
+test("records and checks open one db and file", async () => {
+  const records = openRecords(dbFile());
+  const facts = openFacts(records.db);
+  createChecks({ db: records.db, registry: () => ({}), owner: async () => ({ status: 200, json: {} }), secret: () => "", resolver: {} });
+  createRouting({ db: records.db, records, grants: () => ({}) });
+  const r = records.file(filing());
+  assert.equal(facts.forTask("t1")[0].subject, `record:${r.id}`);
+  assert.equal(records.db.prepare("SELECT name FROM sqlite_master WHERE name = 'events'").get(), undefined);
 });
