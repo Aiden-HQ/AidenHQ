@@ -282,7 +282,7 @@ const BOARD_MAX_BODY = 16 * 1024 * 1024;
  * answers pass as they are (an attachment upload is multipart, its content bytes). `X-AidenHQ-Account` names the signed-in
  * admin a write is for (none: the board's own timers and notices); it is logged with the write.
  */
-export function createBoardCp({ controlUrl, key, log = () => {} }: { controlUrl: string; key: () => string; log?: (msg: string, f?: Record<string, unknown>) => void }) {
+export function createBoardCp({ controlUrl, key, fetch = globalThis.fetch, log = () => {} }: { controlUrl: string; key: () => string; fetch?: typeof globalThis.fetch; log?: (msg: string, f?: Record<string, unknown>) => void }) {
   return async function boardCp(req: IncomingMessage, res: ServerResponse, lane: string, path: string, query: string): Promise<void> {
     const method = String(req.method);
     const allowed = lane === "read" ? method === "GET" && BOARD_READ_PATHS.some((re) => re.test(path)) : BOARD_WRITE_PATHS.some(([m, re]) => m === method && re.test(path));
