@@ -31,28 +31,35 @@ contributes:
   board.setup_flows:
     - order: 130
       title: GitHub
-      why: Agents read your issues, pull requests, reviews, checks and code. With your own GitHub App they also push, open pull requests and merge.
+      why: Agents read your issues, pull requests, reviews, checks and code, as you.
       effort: about a minute, needs your GitHub login
       signin: github
+      steps: |
+        1. Press **Connect GitHub**. A short code appears.
+        2. Open [github.com/login/device](https://github.com/login/device), sign in, and type the code.
+        3. Allow **AidenHQ**. An organization may ask an owner to approve it first.
+
+        Agents read with your account: they see what you can see. Anything they post as you (a comment, a review) is reviewed first; they never push or merge with your account.
+    # The owner's own GitHub App (the code host): created on the kernel's admin page (admin_page), which writes the key into the
+    # vault and github_app_id, the flow's completion.
+    - mode: advanced
+      order: 131
+      title: GitHub App
+      why: Agents push branches, open pull requests and merge in your agents' organization, as your App's bot.
+      effort: about 3 minutes, needs an organization you own
       capabilities:
-        - Agents push branches and open pull requests as the App's bot, each one reviewed first
-        - Merges at the reviewed head once checks are green (the merge queue)
-        - New repositories for apps and agents in your agents org
+        - Push branches and open pull requests as the App's bot, each one reviewed first
+        - Merge at the reviewed head once checks are green (the merge queue)
+        - New repositories for apps and agents in your agents' organization
         - Self-hosted CI runners, the design-review check and the Maintainer's issue triage
-      steps:
-        - text: |
-            1. Press **Connect GitHub**. A short code appears.
-            2. Open [github.com/login/device](https://github.com/login/device), sign in, and type the code.
-            3. Allow **AidenHQ**. An organization may ask an owner to approve it first.
+      secrets: [github_app_id]
+      admin_page: /setup/github-app
+      steps: |
+        1. Make (or pick) a GitHub organization for your agents' repositories, for example `acme-agents`. You must own it.
+        2. Press **Create the GitHub App**, name the organization and approve the App on GitHub. Its key goes straight into your vault.
+        3. Install the App on that organization (**All repositories**), using the link shown when it is created.
 
-            Agents read with your account: they see what you can see. Anything they post as you (a comment, a review) is reviewed first; pushes and merges need your own GitHub App below.
-        - mode: advanced
-          text: |
-            1. Make (or pick) a GitHub organization for your agents' repositories, for example `acme-agents`.
-            2. Press **Create the GitHub App** below and approve it on GitHub. The App's key goes straight into your vault.
-            3. Install the App on that organization (**All repositories**), using the link shown when it is created.
-
-            The fleet then pushes, opens pull requests and merges in that organization. Other organizations (your company's) can install the same App on the repositories the fleet may change; there it only opens pull requests.
+        The code host starts at the next apply. Other organizations (your company's) can install the same App on the repositories the fleet may change; there it only opens pull requests.
   warehouse.sources:
     - schema: src_github
       about: "src_github.issues / projects / project_items / changes / users"
@@ -234,6 +241,13 @@ secrets:
   state: true # its own vault dir, read-write at github-mcp's /state: the sign-in's token
   provided:
     - name: github_token
+    # The GitHub App's id: written with its key when the App is created (kernel/src/github-app.ts), so it marks the advanced
+    # part done. The key itself is only in the vault's github-app/ (the code host's mount).
+    - name: github_app_id
+      setup:
+        label: GitHub App ID
+        pattern: '^[0-9]{1,12}$'
+        help: "Filled in when you create the App above. Paste one only for an App whose key you put in the vault's github-app/ yourself."
     - name: github_bot_token
       setup:
         label: GitHub bot token

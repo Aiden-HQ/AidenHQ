@@ -7,7 +7,7 @@ import { chmodSync, existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Logger } from "pino";
 import type { OwnerToken } from "./github.js";
-import { oauth, type Auth, type OAuthOptions } from "./vendor/oauth.js";
+import { oauth, type Auth } from "./vendor/oauth.js";
 import { createVendorProxy, type VendorProxy } from "./vendor/proxy.js";
 
 /** The official server's git writes (branches, files, pushes, merges, repositories, forks): never listed, never called. */
@@ -27,19 +27,18 @@ export function signIn({ clientId, mcpUrl, stateDir, oldTokenFile, fetchImpl }: 
     writeFileSync(tokenPath, JSON.stringify({ access_token: old }, null, 2), { mode: 0o600 });
     chmodSync(tokenPath, 0o600);
   }
-  // The device flow is the shared helper's (connections contract §4); GitHub's endpoints are fixed, its tokens don't expire.
-  const options = {
+  // The device flow is the shared helper's; GitHub's endpoints are fixed, and its OAuth App tokens don't expire.
+  return oauth({
     name: "GitHub",
     mcpUrl,
     stateDir,
     client: () => (clientId ? { id: clientId } : undefined),
     endpoints: { authorize: "https://github.com/login/oauth/authorize", token: "https://github.com/login/oauth/access_token" },
     scopes: { supported: SCOPES, recommended: SCOPES },
-    resource: false as const,
+    resource: false,
     device: { endpoint: "https://github.com/login/device/code", client_id: clientId, scopes: SCOPES },
     ...(fetchImpl ? { fetchImpl } : {}),
-  };
-  return oauth(options as OAuthOptions);
+  });
 }
 
 /** The sign-in as AidenHQ's tools use it: the bearer, or a throw while not signed in. */
