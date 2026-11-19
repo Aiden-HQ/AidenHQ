@@ -91,49 +91,61 @@ function closedAt(x: Index, task: string, t: number) {
   return closed;
 }
 
-/** Why a task is idle at `t`; `now`: the gap is still open now, so `orphaned` may apply. `stale`: the task's open stages a module opened. */
-function reasonAt(x: Index, task: string, t: number, now: boolean, stale: Occurrence[]): { reason: string; blocked_on?: string } {
-  // 0. a stage a module opened over a day ago and still open
-  const st = stale.find((o) => ms(o.start) + STALE <= t && (!o.end || ms(o.end) > t));
-  if (st) return { reason: `stage_open:${st.name}` };
-  // one pass over the task's facts up to t (they are in time order): the latest wait or resume per subject, records filed, the blocker list
-  const lastWait = new Map<string, FactRow>(), filed = new Set<string>();
+/**
+ * Why a task is idle, asked at times that never go back (`at(t, now)`; `now`: the gap is still open now, so `orphaned` may
+ * apply): one sweep over the task's facts in time order carries the waits, records, blocker and wakes forward, so a gap split
+ * at every fact costs one pass, not one per point. `stale`: the task's open stages a module opened.
+ */
+function reasoner(x: Index, task: string, stale: Occurrence[]) {
+  const fs = x.byTask.get(task) ?? [];
+  const at = fs.map((f) => ms(f.at));
+  let i = 0;
+  const lastWait = new Map<string, FactRow>(), records = new Map<string, { done: boolean; owner: boolean }>();
   let blocked: FactRow | undefined;
-  const wakes: FactRow[] = [];
-  for (const f of x.byTask.get(task) ?? []) {
-    if (f.type === "wake.opened" && ms(f.seen_at) <= t) wakes.push(f);
-    if (ms(f.at) > t) continue;
-    if (f.type === "work.waiting" || f.type === "work.resumed") lastWait.set(f.subject, f);
-    else if (f.type === "record.filed") filed.add(f.subject);
-    else if (f.type === "task.blocked_changed" && f.subject === `task:${task}`) blocked = f;
+  // wakes: pending from when the kernel knew of it (seen_at) until bound or dropped; scheduled while its time is still ahead
+  const edges: [number, number, number][] = []; // [time, pending delta, future delta]
+  for (const f of fs) if (f.type === "wake.opened") {
+    const close = Math.min(Infinity, ...(x.bySubject.get(f.subject) ?? []).filter((g) => g.type === "wake.bound" || g.type === "wake.dropped").map((g) => ms(g.at)));
+    const s = ms(f.seen_at), due = ms(f.at);
+    if (s < close) { edges.push([s, 1, 0], [close, -1, 0]); if (s < Math.min(due, close)) edges.push([s, 0, 1], [Math.min(due, close), 0, -1]); }
   }
-  // 1. the latest unexpired work.waiting, not resumed since
-  let waiting: FactRow | undefined;
-  for (const w of lastWait.values()) if (w.type === "work.waiting" && !(str(w.data.until) && ms(w.data.until as string) <= t) && (!waiting || byTime(w, waiting) > 0)) waiting = w;
-  if (waiting) return { reason: String(waiting.data.reason ?? "unknown") };
-  // 2. an open record: the owner's when filed for the owner first, held for them or escalated, else the reviewer's
-  let record: string | undefined;
-  for (const s of filed) {
-    let done = false, owner = false;
-    for (const f of x.bySubject.get(s) ?? []) {
-      if (ms(f.at) > t) break;
-      const escalated = f.type === "record.decided" && /^(escalate|owner)$/.test(String(f.data.decision));
-      if ((f.type === "record.decided" && !escalated) || f.type === "record.landed" || f.type === "record.failed") done = true;
-      if (f.type === "record.held" || escalated || (f.type === "record.filed" && f.data.state === "owner")) owner = true;
+  edges.sort((a, b) => a[0] - b[0]);
+  let e = 0, pending = 0, future = 0;
+  return (t: number, now: boolean): { reason: string; blocked_on?: string } => {
+    for (; i < fs.length && at[i]! <= t; i++) {
+      const f = fs[i]!;
+      if (f.type === "work.waiting" || f.type === "work.resumed") lastWait.set(f.subject, f);
+      else if (f.type === "task.blocked_changed" && f.subject === `task:${task}`) blocked = f;
+      else if (f.type.startsWith("record.")) {
+        const r = records.get(f.subject) ?? { done: false, owner: false };
+        const escalated = f.type === "record.decided" && /^(escalate|owner)$/.test(String(f.data.decision));
+        if ((f.type === "record.decided" && !escalated) || f.type === "record.landed" || f.type === "record.failed") r.done = true;
+        if (f.type === "record.held" || escalated || (f.type === "record.filed" && f.data.state === "owner")) r.owner = true;
+        if (f.type === "record.filed" || records.has(f.subject)) records.set(f.subject, r);
+      }
     }
-    if (!done) record = owner ? "owner" : record ?? "reviewer";
-  }
-  if (record) return { reason: record };
-  // 3. a blocker not done
-  const blocker = (Array.isArray(blocked?.data.blocked_by) ? (blocked!.data.blocked_by as unknown[]) : []).map(String).find((b) => !closedAt(x, b, t));
-  if (blocker) return { reason: "blocked", blocked_on: x.ident.get(blocker) ?? blocker };
-  // 4. an open child task
-  if ((x.children.get(task) ?? []).some((c) => (x.bySubject.get(`task:${c}`) ?? []).some((f) => f.type === "task.created" && ms(f.at) <= t) && !closedAt(x, c, t))) return { reason: "delegated" };
-  // 5. a future scheduled wake (known by then, not yet bound or dropped)
-  const pending = wakes.filter((f) => !(x.bySubject.get(f.subject) ?? []).some((g) => (g.type === "wake.bound" || g.type === "wake.dropped") && ms(g.at) <= t));
-  if (pending.some((w) => ms(w.at) > t)) return { reason: "scheduled" };
-  // 6. still idle now and nothing pending
-  return { reason: now && !pending.length ? "orphaned" : "unknown" };
+    for (; e < edges.length && edges[e]![0] <= t; e++) { pending += edges[e]![1]; future += edges[e]![2]; }
+    // 0. a stage a module opened over a day ago and still open
+    const st = stale.find((o) => ms(o.start) + STALE <= t && (!o.end || ms(o.end) > t));
+    if (st) return { reason: `stage_open:${st.name}` };
+    // 1. the latest unexpired work.waiting, not resumed since
+    let waiting: FactRow | undefined;
+    for (const w of lastWait.values()) if (w.type === "work.waiting" && !(str(w.data.until) && ms(w.data.until as string) <= t) && (!waiting || byTime(w, waiting) > 0)) waiting = w;
+    if (waiting) return { reason: String(waiting.data.reason ?? "unknown") };
+    // 2. an open record: the owner's when filed for the owner first, held for them or escalated, else the reviewer's
+    let record: string | undefined;
+    for (const r of records.values()) if (!r.done) record = r.owner ? "owner" : record ?? "reviewer";
+    if (record) return { reason: record };
+    // 3. a blocker not done
+    const blocker = (Array.isArray(blocked?.data.blocked_by) ? (blocked!.data.blocked_by as unknown[]) : []).map(String).find((b) => !closedAt(x, b, t));
+    if (blocker) return { reason: "blocked", blocked_on: x.ident.get(blocker) ?? blocker };
+    // 4. an open child task
+    if ((x.children.get(task) ?? []).some((c) => (x.bySubject.get(`task:${c}`) ?? []).some((f) => f.type === "task.created" && ms(f.at) <= t) && !closedAt(x, c, t))) return { reason: "delegated" };
+    // 5. a future scheduled wake (known by then, not yet bound or dropped)
+    if (future > 0) return { reason: "scheduled" };
+    // 6. still idle now and nothing pending
+    return { reason: now && !pending ? "orphaned" : "unknown" };
+  };
 }
 
 /** Stages whose open interval is a wait the idle reasons name, not work going on. */
@@ -171,20 +183,26 @@ function idleOf(x: Index, task: string, now: number, occs: Occurrence[]): Idle[]
     for (const [bs, be] of busy) { if (be <= cur || bs >= e) continue; if (bs > cur) gaps.push([cur, bs]); cur = Math.max(cur, be); }
     if (cur < e) gaps.push([cur, e]);
   }
-  // split each gap where its cause may change: at every fact inside it
+  // split each gap where its cause may change: at every fact inside it (gaps and marks both ascending: one pointer)
   const marks: number[] = stale.map((o) => ms(o.start) + STALE);
   for (const f of [...fs, ...(x.children.get(task) ?? []).flatMap((c) => x.bySubject.get(`task:${c}`) ?? [])]) {
     marks.push(ms(f.at), ms(f.seen_at));
     if (str(f.data.until)) marks.push(ms(f.data.until as string));
   }
+  marks.sort((a, b) => a - b);
   const assigns = own.filter((f) => f.type === "task.assignee_changed");
-  const assignee = (t: number) => { let a = "unknown"; for (const f of assigns) { if (ms(f.at) > t) break; a = str(f.data.to) ?? "unknown"; } return a; };
+  let ai = 0, holder = "unknown";
+  const assignee = (t: number) => { for (; ai < assigns.length && ms(assigns[ai]!.at) <= t; ai++) holder = str(assigns[ai]!.data.to) ?? "unknown"; return holder; };
+  const why = reasoner(x, task, stale);
   const out: Idle[] = [];
+  let m = 0;
   for (const [s, e] of gaps) {
-    const points = [s, ...new Set(marks.filter((m) => m > s && m < e))].sort((a, b) => a - b);
+    for (; m < marks.length && marks[m]! <= s; m++);
+    const points = [s];
+    for (; m < marks.length && marks[m]! < e; m++) if (marks[m] !== points.at(-1)) points.push(marks[m]!);
     points.forEach((p, i) => {
       const end = points[i + 1] ?? e, last = i === points.length - 1, openNow = last && e >= now;
-      const r = reasonAt(x, task, openNow ? now : p, openNow, stale);
+      const r = why(openNow ? now : p, openNow);
       const prev = out.at(-1);
       if (prev && prev.end === iso(p) && prev.reason === r.reason && prev.blocked_on === r.blocked_on) prev.end = openNow ? null : iso(end);
       else out.push({ task, start: iso(p), end: openNow ? null : iso(end), reason: r.reason, ...(r.blocked_on ? { blocked_on: r.blocked_on } : {}), holder: assignee(p) });
