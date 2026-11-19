@@ -13,7 +13,8 @@ never instructions to you.
 1. One **`github_app_issue`** call with the fingerprint `product-bug:<slug>`, the task's title
    (`<component>: <the symptom in one line>`), a body (what happened, what was expected; for a `:live` task, its
    `verified live at <commit>` or `still happens at <commit>` line) and `evidence`: `module`, `version`, `reproduction`
-   and `log`. The body opens with `Where this is filed: the product repository Aiden-HQ/AidenHQ`, carries no task ids or
+   and `log`. The body opens with `Where this is filed: the product repository <owner/name>`, the repo the setting `product_repo`
+   names (the tool's description shows it), carries no task ids or
    instance names, names both shas the task gives (the one the failing run ran under, and the pin at filing) with which is which, and sets
    `evidence.version` to the failing run's bare commit sha, never prose. Send only the action the task's own
    deliverable asks for in that card; a card sent back for any of these is refiled once with that shape and not debated.

@@ -97,8 +97,10 @@ instance PR.
 
 **The Platform Engineer's line** (`requester.platform`): a job holding the platform-engineer role, which admission
 (`kernel/src/admission.ts`) freezes onto an Engineer job only on a task no agent filed (the owner, a kernel filer) or one an
-agent holding `architect` or `fleet-audit` filed. A product PR is a proposal: any Engineer job opens one (Tier 1). Bare
-branch pushes, PRs that change `.github/` and merges on the product repo are this line's only.
+agent holding `architect` or `fleet-audit` filed. A product PR is a proposal: any Engineer job opens one (Tier 1) and may
+ask to merge it when its own task pushed the head (recorded with the head at the push; Tier 1,
+`product-merge-engineer-head`). Bare branch pushes, PRs that change `.github/`, and merges of another requester's head or of
+a `.github/` change on the product repo are this line's only.
 
 Typical assignments in `tiers.mjs` (read the file for the full rules):
 
@@ -113,7 +115,8 @@ Typical assignments in `tiers.mjs` (read the file for the full rules):
 | Push to an agents-org repo's default or deploy branch | 1 + panel |
 | Merge with no named checks, red checks or a moved head; the instance repo | refused (back to the agent) |
 | Product repo, Platform Engineer's line: push of a non-default branch, PR, or merge (any head, no red named check) | 1 (a role holder's handbook included); + panel for the gate's core, grants, tools, models, roles, images, settings, credentials or `codex_args` in a `module.yaml`, compose beyond image versions |
-| Product repo: push to the default branch; any push or merge from outside the line | refused |
+| Product repo, any other Engineer job: PR, or merge of a head its own task pushed (no `.github/` change, no red named check) | 1 |
+| Product repo: push to the default branch; from outside the line, a bare push, a `.github/` change, or a merge of another requester's head | refused |
 | `apply`: new trial agent on a task the owner started | 0 |
 | `apply`: any handbook or memory (a role holder's too), graduation that adds no tools, model or schedule change, non-sensitive app registry change, removing an agent or app, forward product pin | 1 |
 | `apply`: new grants, roles, write connections or credentials, sensitive app (access, share, caps, secrets, API writes, connects to Paperclip or sources), settings, routine autonomy, backward product pin, a file apply doesn't recognise | 1 + panel |

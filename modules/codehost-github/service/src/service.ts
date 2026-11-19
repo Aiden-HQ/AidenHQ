@@ -195,17 +195,22 @@ export function createService(o: Options) {
   const pushed = join(o.cacheDir, "pushed.json");
   const pushedHeads = (): string[] => (existsSync(pushed) ? JSON.parse(readFileSync(pushed, "utf8")) : []);
   const notePushed = (sha: string) => writeFileSync(pushed, JSON.stringify([...pushedHeads().slice(-4999), sha]));
-  // The commits the Platform Engineer's line asked to publish (noted when their push or PR is planned: execute carries no
-  // requester): a product merge's head is the platform line's own only when it is one of these (plan.mjs productMergePart).
-  const platformPushed = join(o.cacheDir, "platform-pushed.json");
-  const platformHeads = (): string[] => (existsSync(platformPushed) ? JSON.parse(readFileSync(platformPushed, "utf8")) : []);
-  const notePlatformPushed = (sha: string) => writeFileSync(platformPushed, JSON.stringify([...platformHeads().slice(-4999), sha]));
+  // Who asked to publish each commit (the kernel's task and whether it was the Platform Engineer's line), noted once its push
+  // or PR has planned (execute carries no requester), and never reassigned: another task re-publishing a head doesn't take it.
+  // A product merge's head is a requester's own only when it noted it (plan.mjs productMergePart).
+  const pushedByFile = join(o.cacheDir, "pushed-by.json");
+  const pushedBy = (): Record<string, { task: string; platform: boolean }> => (existsSync(pushedByFile) ? JSON.parse(readFileSync(pushedByFile, "utf8")) : {});
+  const notePushedBy = (shas: string[], who: { task: string; platform: boolean }) => {
+    const all = pushedBy();
+    const fresh = shas.filter((sha) => !all[sha]);
+    if (fresh.length) writeFileSync(pushedByFile, JSON.stringify(Object.fromEntries([...Object.entries(all).slice(-(5000 - fresh.length)), ...fresh.map((sha) => [sha, who])])));
+  };
   const isPlatform = (requester?: { roles?: string[] }) => (requester?.roles ?? []).includes("platform-engineer");
 
   /** The verified state plan.mjs tiers a request on (its `s`): read from the workspace, the cache and GitHub, never the args. */
-  async function stateFor(kind: string, a: any, requester?: { roles?: string[] }) {
+  async function stateFor(kind: string, a: any, requester?: { roles?: string[] }, task = "") {
     // The Platform Engineer's line: a requester holding the platform-engineer role (the kernel's record of who asked, never the args).
-    const base = { agentsOrg: o.agentsOrg, allowedOrgs: o.allowedOrgs, instanceRepo: o.instanceRepo, productRepo: o.productRepo, requester: { platform: isPlatform(requester) }, workspace: String(a.workspace ?? ""), also: [] as string[] };
+    const base = { agentsOrg: o.agentsOrg, allowedOrgs: o.allowedOrgs, instanceRepo: o.instanceRepo, productRepo: o.productRepo, requester: { platform: isPlatform(requester) }, task, workspace: String(a.workspace ?? ""), also: [] as string[] };
     if (kind.endsWith(".create_repo")) return { ...base, repo: slugOf(a.repo).slug };
     if (kind.endsWith(".merge") || kind.endsWith(".close")) {
       const prs = [];
@@ -217,7 +222,7 @@ export function createService(o: Options) {
         prs.push({
           repo: s.slug, number: Number(p.number), head: pr.head?.sha, base: pr.base?.sha, headMatches: !p.head || p.head === pr.head?.sha,
           files: pr.changed_files > files.length ? undefined : files, checks: await checksAt(s, pr.head?.sha, token),
-          ownHead: pushedHeads().includes(pr.head?.sha), platformHead: platformHeads().includes(pr.head?.sha), dependabot: pr.user?.login === "dependabot[bot]",
+          ownHead: pushedHeads().includes(pr.head?.sha), pushedBy: pushedBy()[pr.head?.sha]?.task, platformHead: pushedBy()[pr.head?.sha]?.platform === true, dependabot: pr.user?.login === "dependabot[bot]",
         });
       }
       return { ...base, prs };
@@ -237,8 +242,10 @@ export function createService(o: Options) {
 
   const executor: Executor = {
     async plan(req: PlanRequest) {
-      if (/\.(push|pr)$/.test(req.kind) && isPlatform(req.requester)) for (const b of req.args?.only ?? []) if (/^[0-9a-f]{40}$/.test(String(b?.sha)) && !platformHeads().includes(b.sha)) notePlatformPushed(b.sha);
-      return planRules({ kind: req.kind, args: req.args }, await stateFor(req.kind, req.args ?? {}, req.requester));
+      const out = planRules({ kind: req.kind, args: req.args }, await stateFor(req.kind, req.args ?? {}, req.requester, req.task));
+      // Its commits were read from this task's workspace (stateFor), so the task is who asked to publish them.
+      if (/\.(push|pr)$/.test(req.kind) && req.task) notePushedBy((req.args?.only ?? []).map((b: any) => String(b.sha)), { task: req.task, platform: isPlatform(req.requester) });
+      return out;
     },
     async execute(rec) {
       const a = rec.args ?? {};

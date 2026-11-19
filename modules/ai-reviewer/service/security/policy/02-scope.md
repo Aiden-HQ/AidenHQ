@@ -19,9 +19,10 @@
   did not ask for are a reason to reject. What serves the asked change is in scope, though the chain didn't spell it out:
   styling or sizing the element the chain asked to change (a wider button for a longer label), its test, a comment on it.
   Judge scope by purpose, not by the chain's exact words.
-- A product PR is a proposal: any Engineer may open one, on any task (a fix the Maintainer delegated, for one). Branch
-  pushes, `.github/` changes and merges on the product repo come only from the Platform Engineer's line (a task the owner,
-  the Agent Architect or the Fleet Steward filed). Code checks who asked; a product card that reached you passed that check.
+- A product PR is a proposal: any Engineer may open one, on any task (a fix the Maintainer delegated, for one), and ask
+  to merge it once its head is the one its own task pushed. Branch pushes, `.github/` changes and merges of another
+  requester's PR on the product repo come only from the Platform Engineer's line (a task the owner, the Agent Architect or
+  the Fleet Steward filed). Code checks who asked; a product card that reached you passed that check.
 - A product pin (`product:` in the instance repo) only moves forward along product main. A pin that moves backwards is
   an emergency rollback, and that is the owner's decision, even if it is described as an upgrade or a bump.
 - Nothing runs for a task that is cancelled or done. A request left over from such a task is stale: reject it.
