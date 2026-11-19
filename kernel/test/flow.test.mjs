@@ -17,7 +17,7 @@ function setup(now = `${D}23:00:00.000Z`) {
   let clock = now;
   const facts = openFacts(db, () => new Date(clock));
   const add = (type, subject, at, data = {}, over = {}) => { clock = at.length < 13 ? `${D}${at}.000Z` : at; facts.record({ type, subject, version: `${type}@${clock}`, at: clock, actor: "unknown", task: "t1", data, ...over }); };
-  return { add, flow: createFlow({ db, stages: () => [...KERNEL_STAGES, GRADE], now: () => new Date(now) }) };
+  return { add, flow: createFlow({ db, stages: () => [...KERNEL_STAGES, GRADE], now: () => new Date(now), cacheMs: 0 }) };
 }
 
 /** WOR-8567 (2026-11-19): assigned, a 29 s queue, the first job, a handoff, a second job, then idle until a comment woke it. */
@@ -83,6 +83,28 @@ test("an open stage is work, not idle: grading after the job leaves no gap and n
   assert.deepEqual(flow.idleNow().items, [], "a done task is not idle");
 });
 
+test("a stage a module opened is work for a day, then its task is idle as stage_open", () => {
+  const { add, flow } = setup(`2026-11-21T12:00:00.000Z`);
+  add("task.created", "task:t1", "08:00:00", { identifier: "WOR-1" });
+  add("grade.requested", "grade:t1:1", "09:00:00", {}, { version: "grading/1" });
+  const idle = flow.task("t1").idle;
+  assert.deepEqual(idle.map((i) => [i.start, i.end, i.reason]), [[`${D}08:00:00.000Z`, `${D}09:00:00.000Z`, "unknown"], ["2026-11-20T09:00:00.000Z", null, "stage_open:grade"]]);
+});
+
+test("a waterfall reads at most 5,000 facts, the newest; a summary is reused for a minute", () => {
+  const { add, flow } = setup();
+  for (let i = 0; i < 5001; i++) add("task.commented", "task:t1", `2026-11-19T10:00:00.${String(i % 1000).padStart(3, "0")}Z`, {}, { version: String(i) });
+  const w = flow.task("t1");
+  assert.deepEqual([w.truncated, w.facts.length], [true, 5000]);
+  const db = new DatabaseSync(":memory:");
+  const facts = openFacts(db);
+  const cached = createFlow({ db, stages: () => KERNEL_STAGES });
+  const q = { since: `${D}00:00:00.000Z`, to: `${D}23:00:00.000Z` };
+  const first = cached.summary(q);
+  facts.record({ type: "task.created", subject: "task:t9", version: "1", at: `${D}10:00:00.000Z`, actor: "unknown", task: "t9" });
+  assert.equal(cached.summary({ ...q, to: `${D}23:00:30.000Z` }), first);
+});
+
 test("two overlapping records on one task pair by subject", () => {
   const { add, flow } = setup();
   add("record.filed", "record:k1", "10:00:00", { tier: 1 });
@@ -95,7 +117,7 @@ test("two overlapping records on one task pair by subject", () => {
 
 test("empty log gives an empty waterfall, summary and idle list", () => {
   const { flow } = setup();
-  assert.deepEqual(flow.task("t1"), { task: "t1", root: "t1", facts: [], stages: [], idle: [] });
+  assert.deepEqual(flow.task("t1"), { task: "t1", root: "t1", facts: [], stages: [], idle: [], truncated: false });
   const s = flow.summary({ since: `${D}00:00:00.000Z` });
   assert.deepEqual([s.stages, s.dora, s.churn, s.fleet.completions, s.fleet.first_pass_grade], [[], null, null, 0, null]);
   assert.deepEqual(flow.idleNow(), { items: [], truncated: false });
@@ -157,7 +179,8 @@ test("GET /v1/flow: the board's key or a module with kernel.flow-read", async (t
   wor8567(add);
   const whoami = async (token) => (token === "none" ? Promise.reject(new Error("no")) : { kind: "module", module: "fleet-steward", roles: token === "reader" ? ["kernel.flow-read"] : [], tools: [] });
   const handle = createBackplane({ whoami, asserter: { jwks: {} }, proxy: async () => {}, cp: async () => {}, grantsFile: () => ({}), flow, boardKey: () => "board-key" });
-  const server = http.createServer(handle).listen(0);
+  const server = http.createServer(handle);
+  await new Promise((r) => server.listen(0, r));
   t.after(() => server.close());
   const get = (path, token) => fetch(`http://127.0.0.1:${server.address().port}${path}`, { headers: { authorization: `Bearer ${token}` } });
   assert.equal((await get("/v1/flow?task=t1", "none")).status, 401);
