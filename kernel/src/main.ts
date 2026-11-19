@@ -45,6 +45,7 @@ import { createConnectionHealth, createHealthProbe } from "./health.ts";
 import { createProxy } from "./proxy.ts";
 import { SETTINGS, UPDATER, openRecords } from "./records.ts";
 import { openFacts } from "./facts.ts";
+import { recordDeploys } from "./generations.ts";
 import { createReviews, type ReviewerSlot } from "./reviews.ts";
 import { createReviewLoop } from "./review-loop.ts";
 import { mintToken } from "./gateway/token.ts";
@@ -313,6 +314,10 @@ for (const sig of ["SIGTERM", "SIGINT"] as const) process.on(sig, () => stop(sig
 process.on("SIGUSR2", () => drain());
 // The finish gate (checks.ts): modules' task.finish checks (compile), holds placed as the owner.
 const work = createWork({ db: records.db, records, generationsFile: path.join(env("AIDENHQ_STATE_DIR", path.join(process.env.HOME ?? "", ".local/state/aidenhq")), "generations.jsonl") });
+// Flow: the host's deploys as they settle (generations.ts).
+const syncDeploys = () => { try { recordDeploys({ db: records.db, file: path.join(env("AIDENHQ_STATE_DIR", path.join(process.env.HOME ?? "", ".local/state/aidenhq")), "generations.jsonl"), repo }); } catch (e) { log("WARNING: deploy facts failed", { err: String((e as Error).message) }); } };
+syncDeploys();
+every(syncDeploys, 60_000);
 // One live grader token per task, reused while it has time left and dropped when the task's hold resolves. Kind grader (never an
 // agent's identity: whoami and every agent check refuse it) that names the assignee, so the gateway charges its calls to that
 // agent's task and day caps (gateway/lib.ts).

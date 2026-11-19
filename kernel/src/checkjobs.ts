@@ -37,6 +37,7 @@ import { closeSync, constants, existsSync, fstatSync, lstatSync, mkdirSync, open
 import { dirname, join } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
 import { missKind, passes } from "../sdk/src/pass-rule.ts";
+import { noteFact, openFacts } from "./facts.ts";
 
 /** A recipe's name (`fast`, `tests`, `eval`, `contract`, …): whatever the installed modules declare. */
 export type Run = string;
@@ -216,8 +217,26 @@ export function createChecks({ db, secret, recipes, box, snapshot, modelToken, g
   log: (msg: string, f?: Record<string, unknown>) => void; now?: () => number;
 }) {
   db.exec(DDL);
+  const facts = openFacts(db);
+  /** A check's end and its check.ended fact in one transaction (a re-run reuses the id: its start time is the version). */
+  const end = (id: string, state: "done" | "error" | "lost", set: { receipt?: string; error?: string }) => {
+    const r = row(id)!;
+    const at = now();
+    db.exec("SAVEPOINT check_end");
+    try {
+      db.prepare("UPDATE checks SET state = ?, receipt = ?, error = ?, ended = ? WHERE id = ?").run(state, set.receipt ?? null, set.error ?? null, at, id);
+      const verdict = state === "done" ? (JSON.parse(set.receipt!) as Receipt).verdict : state;
+      noteFact(facts, { type: "check.ended", subject: `check:${id}`, version: String(r.at), at: new Date(at).toISOString(), actor: `module:${r.module}`, data: { kind: r.run, repo: r.repo, head: r.head, verdict } });
+      db.exec("RELEASE check_end");
+    } catch (e) {
+      db.exec("ROLLBACK TO check_end");
+      db.exec("RELEASE check_end");
+      throw e;
+    }
+  };
+  const row = (id: string) => db.prepare("SELECT * FROM checks WHERE id = ?").get(id) as Record<string, any> | undefined;
   // Lost while no kernel followed it: no receipt (fail closed); asking again runs it again.
-  db.prepare("UPDATE checks SET state = 'lost', ended = ? WHERE state = 'running'").run(now());
+  for (const r of db.prepare("SELECT id FROM checks WHERE state = 'running'").all() as { id: string }[]) end(r.id, "lost", {});
   const versions = new Map<string, number>();
   const waiters = new Map<string, Set<() => void>>();
   const bump = (id: string) => {
@@ -225,7 +244,6 @@ export function createChecks({ db, secret, recipes, box, snapshot, modelToken, g
     for (const w of waiters.get(id) ?? []) w();
     waiters.delete(id);
   };
-  const row = (id: string) => db.prepare("SELECT * FROM checks WHERE id = ?").get(id) as Record<string, any> | undefined;
   const view = (r: Record<string, any>): CheckView => ({ id: r.id, repo: r.repo, head: r.head, run: r.run, state: r.state, receipt: r.receipt ? JSON.parse(r.receipt) : null, error: r.error ?? null, version: versions.get(r.id) ?? 0 });
 
   /** One run in a fresh box: its exit and its output's tail. `base`: the base tree, moved into the out folder (the recipe's history). */
@@ -317,12 +335,12 @@ export function createChecks({ db, secret, recipes, box, snapshot, modelToken, g
       const snap = snapshot(r.module);
       const v = recipe.judged ? await evaluate(id, snap, recipe, r.head, spec, dir) : await code(id, snap, recipe, r.repo, r.head, spec, dir);
       const receipt = signReceipt(secret(), { check: id, repo: r.repo, head: r.head, run: r.run, judge: spec.judge_commit ?? null, policy: spec.policy_hash ?? null, hash: r.hash, verdict: v.verdict, ran: v.ran, summary: v.summary.slice(0, 12_000), at: new Date(now()).toISOString() });
-      db.prepare("UPDATE checks SET state = 'done', receipt = ?, ended = ? WHERE id = ?").run(JSON.stringify(receipt), now(), id);
+      end(id, "done", { receipt: JSON.stringify(receipt) });
       log("check done", { check: id, repo: r.repo, head: r.head, run: r.run, verdict: v.verdict });
     } catch (e) {
       // It couldn't run (no snapshot, no box): no receipt; asking again runs it again.
       const why = String((e as Error).message ?? e).split("\n")[0]!.slice(0, 300);
-      db.prepare("UPDATE checks SET state = 'error', error = ?, ended = ? WHERE id = ?").run(why, now(), id);
+      end(id, "error", { error: why });
       log("WARNING: check couldn't run", { check: id, repo: r.repo, head: r.head, run: r.run, err: why });
     } finally {
       rmSync(dir, { recursive: true, force: true });
