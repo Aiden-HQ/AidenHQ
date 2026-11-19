@@ -27,7 +27,7 @@ test("a module-filed task with a rubric is graded: an open issue reopens it, a c
     if (path === "/v1/cp/read/api/issues/t1") return issue;
     if (path === "/v1/cp/read/api/issues/t1/comments") return [{ id: "c1", authorType: "agent", authorAgentId: "mnt", body: "acme/app#7 verified; fix handed on.", createdAt: "2026-11-19T09:00:00Z" }];
     if (path === "/v1/cp/read/api/issues/t1/attachments") return [];
-    if (path === "/v1/cp/read/api/companies/co/agents") return [{ id: "mnt", name: "Maintainer" }];
+    if (path === "/v1/cp/read/api/agents/mnt") return { id: "mnt", name: "Maintainer" };
     if (path.startsWith("/v1/cp/read/api/companies/co/issues")) return [];
     if (path === "/v1/work?task=t1") return { busy: false, jobs: [], records: [] };
     if (path === "/v1/work/grader-token") return { token: "tok" };
