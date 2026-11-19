@@ -44,6 +44,7 @@ import { CODEHOST, covers, createCodehost, type OpsGrant } from "./codehost.ts";
 import { createConnectionHealth, createHealthProbe } from "./health.ts";
 import { createProxy } from "./proxy.ts";
 import { SETTINGS, UPDATER, openRecords } from "./records.ts";
+import { openFacts } from "./facts.ts";
 import { createReviews, type ReviewerSlot } from "./reviews.ts";
 import { createReviewLoop } from "./review-loop.ts";
 import { mintToken } from "./gateway/token.ts";
@@ -99,6 +100,8 @@ const resolver = createResolver({ project: env("COMPOSE_PROJECT_NAME", "aidenhq"
 const issueOf = async (task: string) => { const r = await cpApi(`/api/issues/${encodeURIComponent(task)}`); return r.ok ? ((await r.json()) as { id: string; identifier?: string; status?: string; parentId?: string | null }) : undefined; };
 const cpJson = async (p: string) => { const r = await cpApi(p); if (!r.ok) throw new Error(`control plane GET ${p} → ${r.status}`); return r.json(); };
 const records = openRecords(path.join(dataDir, "kernel", "kernel.db"));
+// Flow's fact log (facts.ts) on the same file, so a kernel change and its fact commit together.
+const facts = openFacts(records.db);
 // Tasks kernel jobs create (provenance.ts): the routine trace reads them first.
 const provenance = createProvenance({ db: records.db, cap: (task) => taskRoutineCap(cpTrace, task, grantsTable().routines as Record<string, string> | undefined) });
 const cpTrace = { issue: (id: string) => cpJson(`/api/issues/${encodeURIComponent(id)}`), provenance: provenance.trace };
