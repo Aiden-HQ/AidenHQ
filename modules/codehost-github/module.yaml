@@ -39,8 +39,9 @@ secrets:
 # verifies before a product PR that changes the reviewer merges.
 # The release train (service/src/train.ts, W3) files the instance's pin bump as a kernel.apply, which the
 # kernel plans and tiers like any apply (kernel.apply), on a task for the Platform Engineer's role (kernel.tasks).
+# It reads that task's records (kernel.work-read) to adopt a bump whose own state was lost and follow it to its end.
 roles:
-  requests: [ kernel.tasks, kernel.wake, kernel.checks, kernel.apply ]
+  requests: [ kernel.tasks, kernel.wake, kernel.checks, kernel.apply, kernel.work-read ]
 # The code host's check job recipes (kernel/src/checkjobs.ts), whose signed receipts it verifies before it lands: a repo's fast
 # check and its tests (secret scan, supply chain, lint, tests, build), run in a credential-free box from checks/. The kernel
 # reads whether a fast check is due from the base (`declares`), never from the change.
