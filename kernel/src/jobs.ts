@@ -146,13 +146,11 @@ export function createJobs({ db, cfg, cp, mayDispatch, log, boxWrap, onEnd = () 
   db.exec(DDL);
   db.exec(REFUSALS_DDL);
   const refusal = (id: string) => (db.prepare("SELECT why FROM job_refusals WHERE job = ?").get(id) as { why: string } | undefined)?.why;
-  // What admission records (wake, profile, the job that started it) and the routine cap it froze (provenance.ts reads it).
-  const have = new Set((db.prepare("PRAGMA table_info(jobs)").all() as { name: string }[]).map((c) => c.name));
-  for (const c of ["wake", "profile", "parent_job", "routine", "routine_cap"]) if (!have.has(c)) db.exec(`ALTER TABLE jobs ADD COLUMN ${c} TEXT`);
-  db.exec("CREATE INDEX IF NOT EXISTS jobs_task ON jobs (task, state)");
-  // A kernel-admitted job's columns (admission.ts, boxes.ts), added where they are missing.
+  // A kernel-admitted job's columns, added where they are missing: what admission records (the wake, the profile, the job that
+  // started it, its frozen authority and routine cap: provenance.ts reads it), and boxes.ts's lease and release.
   const cols = new Set((db.prepare("PRAGMA table_info(jobs)").all() as { name: string }[]).map((c) => c.name));
-  for (const [c, t] of [["profile", "TEXT"], ["wake", "TEXT"], ["authority", "TEXT"], ["renewed", "INTEGER"], ["released", "INTEGER"], ["identifier", "TEXT"]]) if (!cols.has(c!)) db.exec(`ALTER TABLE jobs ADD COLUMN ${c} ${t}`);
+  for (const [c, t] of [["wake", "TEXT"], ["profile", "TEXT"], ["parent_job", "TEXT"], ["routine", "TEXT"], ["routine_cap", "TEXT"], ["authority", "TEXT"], ["renewed", "INTEGER"], ["released", "INTEGER"], ["identifier", "TEXT"]]) if (!cols.has(c!)) db.exec(`ALTER TABLE jobs ADD COLUMN ${c} ${t}`);
+  db.exec("CREATE INDEX IF NOT EXISTS jobs_task ON jobs (task, state)");
   // `acked`: the dispatcher's completion acknowledgement. Runs that ended before the column existed were dealt with by the old ledger.
   if (!cols.has("acked")) db.exec("ALTER TABLE jobs ADD COLUMN acked INTEGER; UPDATE jobs SET acked = COALESCE(ended, at) WHERE state NOT IN ('admitted', 'running')");
   const watchers = new Map<string, { stop: () => void; send?: (text: string, from: string) => boolean; cancel: (by?: string) => void }>();

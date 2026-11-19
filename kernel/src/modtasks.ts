@@ -17,9 +17,9 @@ import { agentPaused } from "../sdk/src/agent-paused.ts";
 export const MODULE_TASK = (module: string) => `<!-- aidenhq-module:${module} -->`;
 const SOURCE = /^[\w.:/@#-]{1,200}$/;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-/** The only source family a module lists, and the one the release train's sweep owns (a runner-era bump too: an ms stamp). */
+/** The only source family a module lists, and the one the release train's sweep owns: a release's commit. */
 export const RELEASE_SOURCE = "release:instance:";
-const RELEASE_MARK = /<!--\s*source:(release:instance:(?:[0-9a-f]{40}|\d+))\s*-->/;
+const RELEASE_MARK = /<!--\s*source:(release:instance:[0-9a-f]{40})\s*-->/;
 /** Any source marker, whatever its family (modtasks.ts `file()` writes one; a task may carry text like anyone's). */
 const SOURCE_TAG = /<!--\s*source:(\S+)\s*-->/g;
 /** Every module marker on a description (`file()` writes one; a task's text may hold more, from anyone). */
