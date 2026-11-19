@@ -327,6 +327,16 @@ test("a replace with a claimed record reconciles it before A stops: its executor
   assert.equal(k.records.get(done).outcome.text, "it went through");
 });
 
+test("a claimed record of a replaced module is carried to its successor's kind, and the successor's outcome settles it", async (t) => {
+  const k = await kernel(t, { secrets, connections: {}, writes: {} });
+  const r = k.records.file({ kind: "old.post", module: "old", args: {}, targets: {}, executor: { module: "old", url: "http://old/x" }, policy: "", card: { sentence: "", changes: "", reads: "", cost: "", details: "" }, requester: { agent: "", key: "", name: "", roles: [], kind: "run" }, task: "TASK-1", tier: 1, panel: false, state: "claimed" });
+  assert.equal(k.records.carry(r.id, "new.post", "new"), true);
+  const c = k.records.get(r.id);
+  assert.deepEqual([c.kind, c.module, c.executor.module, c.state], ["new.post", "new", "new", "claimed"]);
+  k.writes.outcome(r.id, true, "merged");
+  assert.equal(k.records.get(r.id).state, "done");
+});
+
 test("another requester's identical request is its own record, and a stricter refile never cancels an approved one", async (t) => {
   const { k, tool, pending } = await twin(t);
   const a = await pending(await tool("post_note", { note: "same" }));

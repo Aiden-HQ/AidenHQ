@@ -182,6 +182,11 @@ export function openRecords(file: string, now = () => new Date()) {
     /** The same request that is running or already ran (done or failed) since `since`: a repeat of it is not a new write. */
     ran: (task: string, kind: string, digest: string, since: string): Rec[] => rows(db.prepare("SELECT * FROM records WHERE task = ? AND kind = ? AND digest = ? AND state IN ('claimed','done','failed') AND created_at > ? ORDER BY created_at DESC").all(task, kind, digest, since)),
     open: (task: string, kind: string, digest: string): Rec[] => rows(db.prepare("SELECT * FROM records WHERE task = ? AND kind = ? AND digest = ? AND state IN ('review','owner','approved') AND created_at > ?").all(task, kind, digest, cutoff())),
+    /** A claimed record of a module its successor absorbed (`replaces`) moves to the successor's kind, so the successor reports its outcome. */
+    carry(id: string, kind: string, module: string): boolean {
+      const r = get(id);
+      return !!r && db.prepare("UPDATE records SET kind = ?, module = ?, executor = ? WHERE id = ? AND state = 'claimed'").run(kind, module, JSON.stringify({ ...r.executor, module }), id).changes === 1;
+    },
     /** Records of these modules' kinds in these states (a reconcile before the modules are removed). */
     ofModules(modules: string[], states: State[]): Rec[] {
       if (!modules.length) return [];
