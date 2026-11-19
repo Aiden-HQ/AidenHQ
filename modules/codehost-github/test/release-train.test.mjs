@@ -228,23 +228,22 @@ test("a stranded bump whose apply failed is swept and settled, with no flight st
   assert.deepEqual(f.k.lists, ["release:instance:"], "the listing is the train's own source family");
   assert.deepEqual(f.k.closed.map((c) => [c.task, c.status]), [[task, "done"]]);
   assert.match(f.k.closed[0].body, /\*\*Not landed:\*\* it was approved but failed: the service codehost-github isn't running\. The next merge to the product files the next bump\.$/);
-  assert.equal(f.k.closed[0].uncarded, undefined, "a carded bump closes through the normal guard, never the no-card path");
   assert.deepEqual([f.k.tasks.length, f.k.writes.length], [0, 0], "idle: the sweep files nothing");
 });
 
-test("a stranded bump with no apply card at all is settled once it is past the batch window, not before", async () => {
+test("a stranded bump with no apply card at all is left open, before and past the batch window", async () => {
   const f = idle(fakes());
-  // The runner's stamp is 18:06:29.923Z; the control plane's createdAt a moment after it, as its Date.now()-then-POST produces.
+  // Filed but never carded (the gap between filing the task and filing the apply, or a process that died in it). Its card may
+  // still be on its way, so no amount of age proves it never will be: the sweep settles only a bump with a card.
   const clock = { t: new Date("2026-11-18T18:10:00Z") };
-  stranded(f, { source: "release:instance:1795025189923", state: null, createdAt: "2026-11-18T18:06:30.500Z" });
+  const task = stranded(f, { source: "release:instance:1795025189923", state: null, createdAt: "2026-11-18T18:06:30.500Z" });
   const t = train(mkdtempSync(join(tmpdir(), "train-")), f, clock);
   await t.step();
   assert.deepEqual(f.k.closed, [], "inside the window a filing may still be on its way");
   clock.t = new Date("2026-11-18T18:30:00Z");
   await t.step();
-  assert.deepEqual(f.k.closed.map((c) => [c.task, c.status]), [["t-release:instance:1795025189923", "done"]]);
-  assert.match(f.k.closed[0].body, /\*\*Not landed:\*\* no apply card was ever filed\. The next merge to the product files the next bump\.$/);
-  assert.equal(f.k.closed[0].uncarded, true, "the record-less bump is settled by the sweep's own path, not the ownership guard");
+  assert.equal(task, "t-release:instance:1795025189923");
+  assert.deepEqual(f.k.closed, [], "past the window with no card, it is still left open for its card to arrive");
 });
 
 test("a bump whose card is still moving is left alone", async () => {

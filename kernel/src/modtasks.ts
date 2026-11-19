@@ -6,7 +6,8 @@
 // owner's) and keyed by the module's `source` (`<!-- source:<source> -->`, Paperclip idempotency key pw-<sha256>): filing the
 // same source twice is one task. Its assignment wakes the agent (wakes.ts): no comment is needed to start it. The module
 // closes its own tasks (POST /v1/tasks/:task/close) when their work is moot, and lists them by source (GET /v1/tasks?source=)
-// so a sweep with no id in hand finds the ones it filed.
+// so a sweep with no id in hand finds the ones it filed. Both read the module marker generically: a task is this module's
+// only when it carries this module's marker and no other module's, whatever source or prose its description also holds.
 import { createHash } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
 import { neutral, type Api } from "./channels.ts";
@@ -21,16 +22,20 @@ export const RELEASE_SOURCE = "release:instance:";
 const RELEASE_MARK = /<!--\s*source:(release:instance:(?:[0-9a-f]{40}|\d+))\s*-->/;
 /** Any source marker, whatever its family (modtasks.ts `file()` writes one; a task may carry text like anyone's). */
 const SOURCE_TAG = /<!--\s*source:(\S+)\s*-->/g;
-/** The runner-era stamp alone (a millisecond count, never the train's 40-hex sha): the only card-less bump a close may settle. */
-const RUNNER_MARK = /<!--\s*source:release:instance:(\d+)\s*-->/;
-/** The runner stopped filing pin bumps when the big switch landed (#646, 03ecfcda at 2026-11-18T22:23:32+04:00). A task the
- * control plane says was created after it cannot be a runner-era bump, whatever its description claims: that boundary is what
- * keeps this card-less path to the legacy family instead of trusting a marker anyone can type. */
-const RUNNER_RETIRED = Date.parse("2026-11-18T18:23:32Z");
-/** A runner bump's marker is `Date.now()` taken just before its POST: the control plane's own createdAt lands a moment after it. */
-const RUNNER_WINDOW_MS = 60_000;
-/** The code host files these; the family is never opened up to another module. */
+/** Every module marker on a description (`file()` writes one; a task's text may hold more, from anyone). */
+const MODULE_MARK = /<!--\s*aidenhq-module:([\w-]+)\s*-->/g;
+/** The code host owns the release train's source family; no other module lists or sweeps it. */
 const RELEASE_MODULE = "codehost-github";
+
+/**
+ * Whether the task is this module's, generically: it carries this module's marker and no other module's. A task with a second
+ * module's marker is that other module's too, so neither module may close it as its own (a marker anyone can type, so the
+ * control plane's `createdByAgentId` is checked beside it).
+ */
+function ownTask(module: string, description: string) {
+  const marks = [...description.matchAll(MODULE_MARK)].map((m) => m[1]);
+  return marks.length > 0 && marks.every((m) => m === module);
+}
 
 /**
  * The release family's marker is the task's only source marker: a task that also carries another family's (`<!-- source:x -->`)
@@ -47,16 +52,12 @@ export class TaskError extends Error {
   constructor(status: number, message: string) { super(message); this.status = status; }
 }
 
-export function createModuleTasks({ db, owner, agents, rubric, applies = () => [], ownerUser = async () => undefined, log = () => {} }: {
+export function createModuleTasks({ db, owner, agents, rubric, log = () => {} }: {
   /** The kernel's database: which tasks were filed graded, by which module (the finish check holds one with no grade row). */
   db: DatabaseSync;
   owner: Api;
   /** The grants table's agents, by Paperclip id. */
   agents: () => Record<string, { roles?: string[] } | undefined>;
-  /** The kernel.apply records filed on a task (newest first), with the module that filed each. */
-  applies?: (task: string) => { module: string }[];
-  /** The owner's own control-plane user (`/api/cli-auth/me`): the only creator a card-less runner bump may have. */
-  ownerUser?: () => Promise<string | undefined>;
   /** Files the grading rubric of a task the module filed (checks.ts rubric), as that module. */
   rubric?: (task: { id: string; identifier?: string }, module: string, b: { rubric: string[]; deliverable: unknown }) => Promise<void>;
   log?: (msg: string, f?: Record<string, unknown>) => void;
@@ -66,16 +67,12 @@ export function createModuleTasks({ db, owner, agents, rubric, applies = () => [
    * Close a task this module filed (its marker, and no agent made it): done or cancelled, with one line why. The line carries
    * the kernel's tag (wakes.ts SELF_TAG), so it wakes nobody and is never read as the owner's words.
    */
-  async function close(module: string, id: string, b: { status?: unknown; body?: unknown; uncarded?: unknown }) {
+  async function close(module: string, id: string, b: { status?: unknown; body?: unknown }) {
     const body = typeof b.body === "string" ? neutral(b.body).trim().slice(0, 2000) : "";
     if (!UUID.test(id) || !["done", "cancelled"].includes(String(b.status)) || !body) throw new TaskError(400, "send {status: done|cancelled, body}");
     const r = await owner("GET", `/api/issues/${encodeURIComponent(id)}`);
     if (r.status !== 200) throw new TaskError(404, `no task ${id}`);
-    // `uncarded` is its own, narrower path for the one card-less task the sweep settles (the runner's ms stamp); the ownership
-    // guard itself never admits a task with no kernel.apply, so a record-less bump can never pass it by vacuous truth.
-    const own = String(r.json.description ?? "").includes(MODULE_TASK(module));
-    const ok = !r.json.createdByAgentId && (own || releaseBump(module, r.json) || (b.uncarded === true && (await runnerBumpUncarded(module, r.json))));
-    if (!ok) throw new TaskError(403, `${r.json.identifier ?? id} isn't a task ${module} filed`);
+    if (r.json.createdByAgentId || !ownTask(module, String(r.json.description ?? ""))) throw new TaskError(403, `${r.json.identifier ?? id} isn't a task ${module} filed`);
     if (["done", "cancelled"].includes(r.json.status)) return { status: String(r.json.status), already: true };
     const u = await owner("PATCH", `/api/issues/${encodeURIComponent(id)}`, { status: b.status, comment: `${body}\n\n<!-- aidenhq:job=${module.replace(/[^\w-]/g, "")} kind=status -->` });
     if (u.status >= 300) throw new TaskError(502, `the control plane answered ${u.status}`);
@@ -84,47 +81,10 @@ export function createModuleTasks({ db, owner, agents, rubric, applies = () => [
   }
 
   /**
-   * A stranded release-train bump: the sweep-era and runner-era tasks carry the train's source marker, never its module marker.
-   * It is the code host's only when that is the task's only source marker, no other module's marker is on it, and at least one
-   * kernel.apply exists on it, every one filed by the code host: a bare id, another family's source or record, or another
-   * module's marker refuses, and an empty list never passes by default.
-   */
-  function releaseBump(module: string, task: { id: string; description?: unknown }) {
-    const description = String(task.description ?? "");
-    if (module !== RELEASE_MODULE || !releaseOnly(description) || /<!--\s*aidenhq-module:/.test(description)) return false;
-    const records = applies(task.id);
-    return records.length > 0 && records.every((c) => c.module === RELEASE_MODULE);
-  }
-
-  /**
-   * The one bump that legitimately has no card: the runner filed it straight through the control plane with its millisecond
-   * stamp (`release:instance:<ms>`) and never carded it. The sweep settles exactly that task, once it is past the batch window,
-   * with "no apply card was ever filed".
-   *
-   * The marker alone proves nothing (anyone can type it), so this rests on the control plane's own record of the task: it was
-   * filed by the owner's own control-plane user (read from `/api/cli-auth/me`, never the task's text) and by no agent, created
-   * before the runner retired, and its createdAt follows its marker's stamp by under a minute — the order the runner's own
-   * `Date.now()` then POST produces, which a description edited after the fact cannot hold. A task created since the switch, or
-   * one an agent or another user created, is never the runner's, and a 40-hex (train-era) task is closed by the rule above.
-   * Never an empty `every()`.
-   */
-  async function runnerBumpUncarded(module: string, task: { id: string; description?: unknown; createdAt?: unknown; createdByUserId?: unknown; createdByAgentId?: unknown }) {
-    const description = String(task.description ?? "");
-    if (module !== RELEASE_MODULE || !releaseOnly(description) || !RUNNER_MARK.test(description) || /<!--\s*aidenhq-module:/.test(description)) return false;
-    if (applies(task.id).length > 0) return false;
-    const me = await ownerUser();
-    if (!me || task.createdByUserId !== me || task.createdByAgentId) return false;
-    const stamp = Number(RUNNER_MARK.exec(description)![1]);
-    const created = Date.parse(String(task.createdAt ?? ""));
-    if (!Number.isFinite(stamp) || !Number.isFinite(created)) return false;
-    return created < RUNNER_RETIRED && created >= stamp && created - stamp <= RUNNER_WINDOW_MS;
-  }
-
-  /**
    * The open tasks of this module's own source family, for a sweep that has no id in hand (the release train's stranded bumps).
-   * The control plane's listing matches the source text; each row's marker is read again here, so a task that merely mentions
-   * the family in prose — or carries another family's source marker too — is never returned. Only `release:instance:` is
-   * listable: no module reads another's tasks this way.
+   * The control plane's listing matches the source text; each row's markers are read again here, so a task that merely mentions
+   * the family in prose, carries another family's source marker, or carries another module's marker is never returned. Only
+   * `release:instance:` is listable: no module reads another's tasks this way.
    */
   async function list(module: string, source: string) {
     if (module !== RELEASE_MODULE || source !== RELEASE_SOURCE) throw new TaskError(400, `source: ${RELEASE_SOURCE}`);
@@ -137,7 +97,7 @@ export function createModuleTasks({ db, owner, agents, rubric, applies = () => [
       if (r.status !== 200 || !Array.isArray(r.json)) throw new TaskError(502, `the control plane answered ${r.status} for a company's issues`);
       for (const i of r.json as { id?: unknown; identifier?: unknown; status?: unknown; createdAt?: unknown; description?: unknown }[]) {
         const description = String(i.description ?? "");
-        const found = releaseOnly(description) ? RELEASE_MARK.exec(description)?.[1] : undefined;
+        const found = ownTask(module, description) && releaseOnly(description) ? RELEASE_MARK.exec(description)?.[1] : undefined;
         if (!found) continue;
         tasks.push({ id: String(i.id ?? ""), identifier: String(i.identifier ?? ""), status: String(i.status ?? ""), createdAt: String(i.createdAt ?? ""), source: found });
       }

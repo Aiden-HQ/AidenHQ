@@ -34,8 +34,9 @@ train's stamp) and the runner-era `release:instance:<ms stamp>`. Only open tasks
 
 **Refuses** with 400 any other `source:` family and any other caller. A row whose description carries a marker of
 another family, or merely mentions the family in prose, is never returned: the kernel matches the marker again on
-every row rather than trusting the control plane's text search. This is the only way a module can enumerate tasks
-by source; there is no route for another module's family.
+every row rather than trusting the control plane's text search. A row that carries another module's
+`<!-- aidenhq-module:… -->` marker is not the caller's either, so it is never returned (see the close rule below).
+This is the only way a module can enumerate tasks by source; there is no route for another module's family.
 
 ## `POST /v1/tasks/:task/close` — close a task the module filed
 
@@ -45,32 +46,11 @@ Grant: `kernel.tasks`.
 { "status": "done", "body": "**Not landed:** it was approved but failed: <reason>." }
 ```
 
-The default rule: the task's description carries `<!-- aidenhq-module:<module> -->` and the task has no
-`createdByAgentId`. Every other task is refused with 403, whatever its source.
+The rule, for every module: the task's description carries this module's `<!-- aidenhq-module:<module> -->` marker
+and **no other** module's marker, and the task has no `createdByAgentId`. Every other task is refused with 403,
+whatever its source and whatever card it holds.
 
-**Release bumps are the one widening.** A task carrying `<!-- source:release:instance:… -->` (either stamp) may be
-closed by `codehost-github` with no module marker, only when:
-
-- it has at least one `kernel.apply` record on it — a task with no record never qualifies;
-- **every** record on it was filed by `module === "codehost-github"` (a record is matched by its module name, never
-  by a bare id, and one foreign or mixed record refuses the close). The kernel reads all of them, never a capped
-  page, so an older foreign record can't be hidden behind newer ones;
-- the release marker is its **only** source marker: a task that also carries another family's `<!-- source:… -->` is never
-  listed or closed by the train, however many of the records on it are the code host's;
-- no other module's marker is in its description, and it has no `createdByAgentId`.
-
-The family is the whole widening: a task outside `release:instance:` keeps the marker rule above.
-
-**The one card-less bump.** The runner that preceded the release train filed its bump with its millisecond stamp and
-never carded it. The sweep settles that task with the same close route and `"uncarded": true` in the body. The flag
-admits only a `release:instance:<ms stamp>` task whose marker is its only source marker, with no module marker and no
-`kernel.apply` record at all.
-
-Because a description can say anything, the marker is not the proof: the kernel also requires the control plane's own
-record of the task — its `createdByUserId` is the owner's own control-plane user (read by the kernel from
-`/api/cli-auth/me`, never from the task) with no `createdByAgentId`, and its `createdAt` is before the runner retired
-with the big switch (2026-11-18T18:23:32Z) and no more than a minute after the stamp its marker names, the order the
-runner's `Date.now()`-then-POST produces. A task created after the switch, one another user or an agent created, or one
-whose stamp and creation are out of step, is refused however its text reads; a 40-hex train-era task with no card, or
-any task with a record, is refused too. It is a separate body field on purpose: the ownership rule
-above never admits a record-less task by way of an empty match.
+A task with a second module's marker is refused even when it also carries this module's: neither module may close it
+as its own, so a task that more than one module has touched is settled by a person. There is no release-specific
+widening — a task without a module marker is refused, and a task with no `kernel.apply` record is admitted only by the
+marker rule above.
