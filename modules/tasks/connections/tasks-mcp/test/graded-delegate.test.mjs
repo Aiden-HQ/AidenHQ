@@ -19,8 +19,8 @@ async function call(name, args, { finish, gradingDown = false, assignee = "cos",
       if (url === "/grades") return (seen.filed.push({ ...json, as }), send({ created: true, state: "open" }));
       if (url === "/api/agents/me") return send({ id: "cos", name: "Aiden" });
       if (url.endsWith("/agents")) return send([
-        { id: "eng", name: "Engineer", metadata: { setupKey: "aidenhq:engineer-openrouter", persona: { name: "Linus" }, runnerEngine: true }, status: "idle" },
-        { id: "ops", name: "Fleet Ops", metadata: { setupKey: "aidenhq:fleet-ops", persona: { name: "Fleet Ops" } }, status: "idle" },
+        { id: "eng", name: "Kai", metadata: { setupKey: "aidenhq:engineer-openrouter", runnerEngine: true }, status: "idle" },
+        { id: "ops", name: "Fleet Ops", metadata: { setupKey: "aidenhq:fleet-ops" }, status: "idle" },
       ]);
       if (req.method === "POST" && url.endsWith("/issues")) return (seen.created.push(json), send({ id: "new", identifier: "WOR-9", title: "t", status: "todo" }));
       if (req.method === "POST" && url.endsWith("/comments")) return (seen.comments.push(json.body), send({ id: "c1" }));
@@ -37,7 +37,7 @@ async function call(name, args, { finish, gradingDown = false, assignee = "cos",
   return { r, text: r.result?.content?.[0]?.text ?? "", ...seen };
 }
 
-const ask = { agent: "Linus", title: "Fix the total", description: "Show VAT on the totals page of acme/app." };
+const ask = { agent: "Kai", title: "Fix the total", description: "Show VAT on the totals page of acme/app." };
 const rubric = ["merged into main", "checks green on the merged head", "the totals page shows the VAT line"];
 
 test("a graded assignee needs a deliverable; the rubric goes to the board as the caller, a copy in the description", async () => {
@@ -123,7 +123,7 @@ test("a finish check that fails refuses the close: an error, and no comment", as
 });
 
 test("task_create handing work to a graded agent is graded as a delegation is", async () => {
-  const create = { title: "Fix the total", description: "Show VAT on the totals page of acme/app.", marker: "fix:vat", assignee: "Linus" };
+  const create = { title: "Fix the total", description: "Show VAT on the totals page of acme/app.", marker: "fix:vat", assignee: "Kai" };
   const missing = await call("task_create", create);
   assert.equal(missing.r.result?.isError, true);
   assert.match(missing.text, /graded: name the deliverable/);
@@ -158,7 +158,7 @@ test("a fix brief with a park fallback is refused as a pr deliverable, and accep
     "No published release satisfies the floors: do not rebuild the image locally, record the floors instead.",
     "If no upstream release carries the fix yet, record the floors and park the task.",
   ]) {
-    const pr = await call("task_delegate", { agent: "Linus", title: "Security fix: node-exporter", description, deliverable: { kind: "pr", ref: "Aiden-HQ/AidenHQ" } });
+    const pr = await call("task_delegate", { agent: "Kai", title: "Security fix: node-exporter", description, deliverable: { kind: "pr", ref: "Aiden-HQ/AidenHQ" } });
     assert.equal(pr.r.result?.isError, true, description);
     assert.match(pr.text, /has a fallback branch/);
     assert.match(pr.text, /kind: "report"/);
@@ -167,7 +167,7 @@ test("a fix brief with a park fallback is refused as a pr deliverable, and accep
   }
 
   // task_create with an assignee is the shape Security Watch files, and is refused the same way.
-  const created = await call("task_create", { title: "Security fix: node-exporter", description: parked, marker: "security:target:image:node-exporter", assignee: "Linus", deliverable: { kind: "pr", ref: "Aiden-HQ/AidenHQ" } });
+  const created = await call("task_create", { title: "Security fix: node-exporter", description: parked, marker: "security:target:image:node-exporter", assignee: "Kai", deliverable: { kind: "pr", ref: "Aiden-HQ/AidenHQ" } });
   assert.equal(created.r.result?.isError, true);
   assert.match(created.text, /has a fallback branch/);
   assert.equal(created.created.length, 0);
@@ -179,12 +179,12 @@ test("a fix brief with a park fallback is refused as a pr deliverable, and accep
   assert.equal(toOps.created.length, 0);
 
   // An app task is graded on a deploy, which a parked brief never makes either.
-  const app = await call("task_create", { title: "Security fix: roadmap-keeper", description: parked, marker: "security:target:app:roadmap-keeper", assignee: "Linus", deliverable: { kind: "app", ref: "roadmap-keeper" } });
+  const app = await call("task_create", { title: "Security fix: roadmap-keeper", description: parked, marker: "security:target:app:roadmap-keeper", assignee: "Kai", deliverable: { kind: "app", ref: "roadmap-keeper" } });
   assert.equal(app.r.result?.isError, true);
   assert.match(app.text, /has a fallback branch/);
   assert.equal(app.created.length, 0);
 
-  const report = await call("task_create", { title: "Security fix: node-exporter", description: parked, marker: "security:target:image:node-exporter", assignee: "Linus", deliverable: { kind: "report" } });
+  const report = await call("task_create", { title: "Security fix: node-exporter", description: parked, marker: "security:target:image:node-exporter", assignee: "Kai", deliverable: { kind: "report" } });
   assert.equal(report.r.result?.isError, undefined, report.text);
   assert.equal(report.filed.length, 0);
   assert.doesNotMatch(report.created[0].description, /Graded before done/);
@@ -196,7 +196,7 @@ test("a brief with no fallback branch keeps its pr deliverable and rubric", asyn
     ["Bump x/net", "No newer tag has Go >= 1.26.11, so we bump x/net in the Dockerfile rather than waiting."],
     ["Bump the pin", "The earlier task parked because no release met the floors; v1.13.0 now does, so bump the pin."],
   ]) {
-    const ok = await call("task_create", { title, description, marker: "security:target:repo:product", assignee: "Linus", deliverable: { kind: "pr", ref: "Aiden-HQ/AidenHQ" } });
+    const ok = await call("task_create", { title, description, marker: "security:target:repo:product", assignee: "Kai", deliverable: { kind: "pr", ref: "Aiden-HQ/AidenHQ" } });
     assert.equal(ok.r.result?.isError, undefined, ok.text);
     assert.match(ok.created[0].description, /Graded before done \(pr: Aiden-HQ\/AidenHQ\): the standard pr criteria\./);
   }

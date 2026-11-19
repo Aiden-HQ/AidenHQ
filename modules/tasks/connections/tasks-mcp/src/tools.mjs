@@ -161,11 +161,11 @@ const brief = (i) => ({
   updatedAt: i.updatedAt,
 });
 
-// The agents by name (their persona's), so the user can refer to "Ada" or "Alfred" and a task's
+// The agents by name so the user can refer to "Kai" or "Mina" and a task's
 // comments say whose they are. Empty when Paperclip won't list them: names are only a help.
 async function nameOf(agentId) {
   if (!agentId || !COMPANY()) return undefined;
-  const names = await memo("names", async () => new Map((await api("GET", `/api/companies/${encodeURIComponent(COMPANY())}/agents`).catch(() => [])).map((a) => [a.id, a.metadata?.persona?.name || a.name])));
+  const names = await memo("names", async () => new Map((await api("GET", `/api/companies/${encodeURIComponent(COMPANY())}/agents`).catch(() => [])).map((a) => [a.id, a.name])));
   return names.get(agentId);
 }
 
@@ -496,7 +496,7 @@ function gradeFor(target, rubric, deliverable, description) {
   // Read-only work (a report, a question) ships nothing to check: its answer is the deliverable, and the delegator reads it.
   if (kind === "none" || kind === "report") return undefined;
   if (!kind) {
-    if (gradedAgent(target.id)) throw new Error(`${target.metadata?.persona?.name || target.name}'s work is graded: name the deliverable ({kind: pr | app | apply | file | report, ref}, or kind none when nothing ships, e.g. a question) and, ideally, a rubric (see "Graded work" in your instructions)`);
+    if (gradedAgent(target.id)) throw new Error(`${target.name}'s work is graded: name the deliverable ({kind: pr | app | apply | file | report, ref}, or kind none when nothing ships, e.g. a question) and, ideally, a rubric (see "Graded work" in your instructions)`);
     if (list.length) throw new Error("a rubric needs its deliverable ({kind, ref})");
     return undefined;
   }
@@ -550,7 +550,7 @@ async function assignTask(me, target, { title, description, parent, marker, prio
   const p = pid ? await api("GET", `/api/issues/${issueRef(pid)}`) : undefined;
   // The parent must be the current task or one assigned to the caller, so a delegation can't be attached to someone else's task.
   if (p && p.id !== CURRENT() && p.assigneeAgentId !== me.id) throw new Error("parent must be your current task or a task assigned to you");
-  const origin = `${verb} ${me.metadata?.persona?.name || me.name} (agent)${p ? ` from ${p.identifier}` : ""}. This is an agent request, not the owner's words.`;
+  const origin = `${verb} ${me.name} (agent)${p ? ` from ${p.identifier}` : ""}. This is an agent request, not the owner's words.`;
   let src = "";
   refuseReservedMarker(marker);
   if (marker) {
@@ -570,16 +570,16 @@ async function assignTask(me, target, { title, description, parent, marker, prio
     allowDuplicate: true,
     ...(src ? { idempotencyKey: idempotencyKey(src) } : {}),
   };
-  const open = p ? await openSiblings(p.id, target.id) : [];
+  const open = p ? await openSiblings(p.id, target) : [];
   const same = open.find((o) => similar(o.title, body.title) >= SAME_TITLE || similar(o.description, body.description) >= SAME_BRIEF);
   if (same)
     throw new Error(
-      `Refused: ${same.identifier} ("${String(same.title).slice(0, 120)}", ${same.status}) is already ${target.metadata?.persona?.name || target.name}'s open task for this brief under ${p.identifier}. To change it, comment on ${same.identifier} with what changed (task_comment wakes them). To replace it, cancel ${same.identifier} first (task_set_status cancelled, with why), then delegate again.`,
+      `Refused: ${same.identifier} ("${String(same.title).slice(0, 120)}", ${same.status}) is already ${(await nameOf(same.assigneeAgentId)) ?? target.name}'s open task for this brief under ${p.identifier}. To change it, comment on ${same.identifier} with what changed (task_comment wakes them). To replace it, cancel ${same.identifier} first (task_set_status cancelled, with why), then delegate again.`,
     );
   const i = await api("POST", `/api/companies/${encodeURIComponent(COMPANY())}/issues`, body);
   const graded = await fileGrade(i.id, grade);
-  const also = open.length ? { open_tasks: `${target.metadata?.persona?.name || target.name} still has ${open.map((o) => `${o.identifier} ("${String(o.title).slice(0, 80)}", ${o.status})`).join(", ")} open under ${p.identifier}: if this task replaces one, cancel it.` } : {};
-  return { identifier: i.identifier, created: true, assignee: target.metadata?.persona?.name || target.name, ...graded, ...also };
+  const also = open.length ? { open_tasks: `${target.name} still has ${open.map((o) => `${o.identifier} ("${String(o.title).slice(0, 80)}", ${o.status})`).join(", ")} open under ${p.identifier}: if this task replaces one, cancel it.` } : {};
+  return { identifier: i.identifier, created: true, assignee: target.name, ...graded, ...also };
 }
 
 // A delegation that repeats one still open (a refile while the first runs) is refused, pointing at the open task. Measured on
@@ -595,11 +595,22 @@ export function similar(a, b) {
   for (const w of x) if (y.has(w)) both++;
   return both / Math.max(1, x.size + y.size - both);
 }
-/** The agent's open tasks under one parent. */
-async function openSiblings(parentId, agentId) {
-  const q = new URLSearchParams({ parentId, assigneeAgentId: agentId, status: OPEN_STATUSES, limit: "50" });
-  const kids = await api("GET", `/api/companies/${encodeURIComponent(COMPANY())}/issues?${q}`);
-  return (Array.isArray(kids) ? kids : []).filter((k) => k.parentId === parentId && k.assigneeAgentId === agentId);
+/** The agent's open tasks under one parent; for a team record, those of any of its members too (the kernel hands a task for the team to one member). */
+async function openSiblings(parentId, target) {
+  const ids = [target.id];
+  const members = target.metadata?.team?.members;
+  if (Array.isArray(members) && members.length) {
+    const keys = new Set(members.map((m) => m.key));
+    const all = await api("GET", `/api/companies/${encodeURIComponent(COMPANY())}/agents`);
+    ids.push(...all.filter((a) => keys.has(keyOf(a))).map((a) => a.id));
+  }
+  const open = [];
+  for (const agentId of ids) {
+    const q = new URLSearchParams({ parentId, assigneeAgentId: agentId, status: OPEN_STATUSES, limit: "50" });
+    const kids = await api("GET", `/api/companies/${encodeURIComponent(COMPANY())}/issues?${q}`);
+    open.push(...(Array.isArray(kids) ? kids : []).filter((k) => k.parentId === parentId && k.assigneeAgentId === agentId));
+  }
+  return open;
 }
 const keyOf = (a) => (a.metadata?.setupKey ?? "").replace(/^aidenhq:/, "") || a.name;
 // An Engineer (setup marks it runnerEngine in its metadata): code work goes to it with a brief.
@@ -750,7 +761,7 @@ const TOOLS = {
         // The task says which agent asked (an agent request, not the owner's words), as task_delegate does.
         const want = String(assignee).trim().toLowerCase();
         const all = await api("GET", `/api/companies/${encodeURIComponent(COMPANY())}/agents`);
-        const hits = all.filter((a) => a.status !== "terminated" && [keyOf(a), a.name, a.metadata?.persona?.name].some((n) => String(n ?? "").toLowerCase() === want));
+        const hits = all.filter((a) => a.status !== "terminated" && [keyOf(a), a.name].some((n) => String(n ?? "").toLowerCase() === want));
         if (hits.length !== 1) throw new Error(hits.length ? `"${assignee}" is ambiguous: use the key from fleet_catalog` : `"${assignee}" is not an agent here (see fleet_catalog)`);
         [target] = hits;
         // Assigning work to another agent is a delegation: never from an agent on trial.
@@ -759,7 +770,7 @@ const TOOLS = {
         if (isRunner(target)) warning = briefWarning(description);
         assigneeAgent = target.id;
         const me = await api("GET", "/api/agents/me");
-        origin = `Filed by ${me.metadata?.persona?.name || me.name} (agent). This is an agent request, not the owner's words.\n\n`;
+        origin = `Filed by ${me.name} (agent). This is an agent request, not the owner's words.\n\n`;
       }
       const markers = [m, ...(related_markers ?? []).map((r) => String(r).trim())];
       if (markers.some((k) => !/^[A-Za-z0-9:._\/-]{3,200}$/.test(k))) throw new Error("invalid related marker");
@@ -800,8 +811,8 @@ const TOOLS = {
       if (!COMPANY()) throw new Error("no company for this agent");
       const { reports } = await reportsOf();
       // The routing contract: the agent's compiled `description:` and roles, from the directory setup writes.
-      const row = (a) => ({ key: keyOf(a), name: a.metadata?.persona?.name || a.name, title: a.title, description: dirAgents()[a.id]?.description ?? a.title, roles: dirAgents()[a.id]?.roles ?? [] });
-      return { reports: reports.filter((a) => !isRunner(a)).map(row), engineers: reports.filter(isRunner).map((a) => ({ key: keyOf(a), name: a.metadata?.persona?.name || a.name, title: a.title, engine: engineOf(a) })) };
+      const row = (a) => ({ key: keyOf(a), name: a.name, title: a.title, description: dirAgents()[a.id]?.description ?? a.title, roles: dirAgents()[a.id]?.roles ?? [] });
+      return { reports: reports.filter((a) => !isRunner(a)).map(row), engineers: reports.filter(isRunner).map((a) => ({ key: keyOf(a), name: a.name, title: a.title, engine: engineOf(a) })) };
     },
   },
   task_delegate: {
@@ -830,7 +841,7 @@ const TOOLS = {
       const me = await api("GET", "/api/agents/me");
       const all = await api("GET", `/api/companies/${encodeURIComponent(COMPANY())}/agents`);
       const want = String(agent ?? "").trim().toLowerCase();
-      const hits = all.filter((a) => a.status !== "terminated" && a.id !== me.id && [keyOf(a), a.name, a.metadata?.persona?.name].some((n) => String(n ?? "").toLowerCase() === want));
+      const hits = all.filter((a) => a.status !== "terminated" && a.id !== me.id && [keyOf(a), a.name].some((n) => String(n ?? "").toLowerCase() === want));
       if (hits.length !== 1) throw new Error(hits.length ? `"${agent}" is ambiguous: use the key from task_team` : `"${agent}" is not an agent here (see task_team, fleet_catalog)`);
       const warning = isRunner(hits[0]) && briefWarning(description);
       return { ...(await assignTask(me, hits[0], { title, description, parent, marker, priority, rubric, deliverable }, "Delegated by")), ...(warning ? { warning } : {}) };
@@ -843,7 +854,7 @@ const TOOLS = {
     run: async () => {
       await requireRole("librarian", "list handbooks");
       const all = await api("GET", `/api/companies/${encodeURIComponent(COMPANY())}/agents`);
-      return all.filter((a) => a.status !== "terminated").map((a) => ({ key: keyOf(a), name: a.metadata?.persona?.name || a.name, title: a.title }));
+      return all.filter((a) => a.status !== "terminated").map((a) => ({ key: keyOf(a), name: a.name, title: a.title }));
     },
   },
   handbook_read: {
@@ -1101,13 +1112,13 @@ const TOOLS = {
   },
   task_pass_on: {
     description:
-      "Researcher only: pass one of the user's comments on to another agent on the same task (Ada, Grace, Linus…), when what they ask is that agent's to do: an Engineer's own report or code, a Primer document an Engineer wrote, work in a repository. The board delivers the user's comment word for word to that agent's part of the task (adding them to it if needed), with this conversation as context; you choose which comment and for whom, never the words. Once per comment and agent. Say in one line that you passed it on, and don't do their part yourself.",
+      "Researcher only: pass one of the user's comments on to another agent on the same task (Kai, Noor, Mina…), when what they ask is that agent's to do: an Engineer's own report or code, a Primer document an Engineer wrote, work in a repository. The board delivers the user's comment word for word to that agent's part of the task (adding them to it if needed), with this conversation as context; you choose which comment and for whom, never the words. Once per comment and agent. Say in one line that you passed it on, and don't do their part yourself.",
     inputSchema: {
       type: "object",
       properties: {
         issue: { type: "string", description: "the task the user's comment is on: the user's task or your part of it, e.g. PEN-12" },
         comment: { type: "string", description: "the comment's id, from task_comments; it must be the user's own" },
-        to: { type: "string", description: "the agent's name, e.g. Ada" },
+        to: { type: "string", description: "the agent's name, e.g. Kai" },
       },
       required: ["issue", "comment", "to"],
       additionalProperties: false,
@@ -1116,7 +1127,7 @@ const TOOLS = {
     run: async ({ issue, comment, to }) => {
       await requireAssistant();
       const me = await api("GET", "/api/agents/me");
-      return boardApi(`/internal/issues/${issueRef(issue)}/pass`, { comment: String(comment), to: String(to), by: me.metadata?.persona?.name || me.name });
+      return boardApi(`/internal/issues/${issueRef(issue)}/pass`, { comment: String(comment), to: String(to), by: me.name });
     },
   },
   task_handoff: {

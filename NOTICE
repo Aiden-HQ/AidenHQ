@@ -24,8 +24,7 @@ Copyright (c) 2026 Taylan Pince, used under the MIT License (see LICENSES/pennyw
 AidenHQ began as a fork of Pennyworth. Files derived from it, wholly or in part, include:
 - what was ported from its runner: modules/codehost-github/ (the merge queue and git rules), modules/dispatch/,
   modules/grading/service/src/loop.mjs and services/computer/images/engineer/bin/
-- services/board/ (the board server and web UI, including web/public/icon.png and the
-  crew portraits ada.svg, alfred.svg, grace.svg and linus.svg, which are Pennyworth's own)
+- services/board/ (the board server and web UI, including web/public/icon.png, which is Pennyworth's own)
 - services/paperclip-tasks-mcp/
 - modules/meetings/connections/ops-mcp/, modules/google/connections/google-workspace-mcp/,
   modules/clickhouse/connections/clickhouse-mcp/, modules/grafana/connections/grafana-mcp/,

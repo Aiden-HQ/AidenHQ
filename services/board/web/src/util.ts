@@ -42,8 +42,8 @@ export function shortName(a: Assignee | undefined): string {
   return a.name.replace(/^Engineer · /, "");
 }
 
-/** What an agent is @-mentioned by: its name without spaces (the server matches it, and the persona name), else its persona name. */
-export const handleOf = (a: Assignee) => (/^[A-Za-z][\w-]*$/.test(a.name.replace(/\s+/g, "")) ? a.name.replace(/\s+/g, "") : (a.persona?.name ?? a.name.replace(/\s+/g, "")));
+/** What an agent is @-mentioned by: its name without spaces (the server matches it). */
+export const handleOf = (a: Assignee) => a.name.replace(/\s+/g, "");
 
 export const STATUS_BADGE: Record<string, { text: string; tone: string } | undefined> = {
   // Only the status: whether an agent is running right now is the live badge (card.working).

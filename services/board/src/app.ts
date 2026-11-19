@@ -806,7 +806,7 @@ export function createApp(opts: AppOptions): Server {
     const kind = (i: Issue) => ctx.assignees.find((a) => a.kind !== "me" && a.key === i.assigneeAgentId)?.kind;
     const engineers = kids.filter((k) => kind(k) === "engineer" && k.status !== "cancelled");
     if (engineers.length) {
-      const names = engineers.map((k) => ctx.assignees.find((a) => a.key === k.assigneeAgentId)).map((a) => a?.persona?.name ?? a?.name ?? "an Engineer");
+      const names = engineers.map((k) => ctx.assignees.find((a) => a.key === k.assigneeAgentId)).map((a) => a?.name ?? "an Engineer");
       throw new HttpError(409, `${source.identifier} has ${[...new Set(names)].join(" and ")}'s work on it, which can't move: merge ${target.identifier} into it instead, or dismiss the Engineer first`);
     }
     // Lists truncate descriptions; these come from single reads, so they're whole.
@@ -899,7 +899,7 @@ export function createApp(opts: AppOptions): Server {
             throw err;
           }
           log.info({ chat: source.chat.identifier, task: dest.identifier }, "chat message relayed");
-          return { relayed: true, task: dest.identifier, to: agent.persona?.name ?? agent.name, comment_id: posted.id };
+          return { relayed: true, task: dest.identifier, to: agent.name, comment_id: posted.id };
         }),
     },
     {
@@ -971,20 +971,20 @@ export function createApp(opts: AppOptions): Server {
         const named = ctx.assignees.find((a) => a.kind !== "me" && a.key === to);
         const byName = withHandle(ctx.assignees, to);
         const agent = named ?? (byName.length === 1 ? byName[0] : undefined);
-        if (!agent) throw new HttpError(400, `${byName.length > 1 ? "more than one agent answers to" : "no agent is called"} ${to}: ${ctx.assignees.flatMap((a) => (a.kind === "me" ? [] : [a.persona?.name ?? a.name])).join(", ")}`);
+        if (!agent) throw new HttpError(400, `${byName.length > 1 ? "more than one agent answers to" : "no agent is called"} ${to}: ${ctx.assignees.flatMap((a) => (a.kind === "me" ? [] : [a.name])).join(", ")}`);
         // An agent may pass only to the Researcher, an Engineer, or an agent already on this task; never the Chief of Staff.
         const chief = holdsRole(agent.key, "fleet-admin");
         const onTask = (await pc.children(task.id)).some((k) => k.assigneeAgentId === agent.key);
-        if (chief || (agent.kind === "agent" && !onTask)) throw new HttpError(403, `${agent.persona?.name ?? agent.name} can't be passed to from here`);
-        if (agent.key === issue.assigneeAgentId) throw new HttpError(400, `this is ${agent.persona?.name ?? agent.name}'s own chat`);
+        if (chief || (agent.kind === "agent" && !onTask)) throw new HttpError(403, `${agent.name} can't be passed to from here`);
+        if (agent.key === issue.assigneeAgentId) throw new HttpError(400, `this is ${agent.name}'s own chat`);
         const key = `passed:${c.id}:${agent.key}`;
-        if (store.meta(key)) return { passed: false, reason: `already passed on to ${agent.persona?.name ?? agent.name}` };
+        if (store.meta(key)) return { passed: false, reason: `already passed on to ${agent.name}` };
         // A message already delivered here keeps pointing at the chat it was written in.
         const origin = deliveredFrom(c.body) ?? { identifier: issue.identifier, commentId: c.id };
         const sender = by ? withHandle(ctx.assignees, by)[0] : undefined;
-        const part = await deliver(ctx, task, agent, displayText(c.body).replace(/\n\n_(Written in|Passed on by) [^\n]*_$/, ""), { ...origin, note: `Passed on by ${(sender?.persona?.name ?? sender?.name) ?? "an agent"} from ${issue.identifier}.` });
+        const part = await deliver(ctx, task, agent, displayText(c.body).replace(/\n\n_(Written in|Passed on by) [^\n]*_$/, ""), { ...origin, note: `Passed on by ${sender?.name ?? "an agent"} from ${issue.identifier}.` });
         store.setMeta(key, new Date().toISOString());
-        return { passed: true, to: agent.persona?.name ?? agent.name, part: part.identifier };
+        return { passed: true, to: agent.name, part: part.identifier };
       },
     },
     {
@@ -1555,7 +1555,7 @@ export function createApp(opts: AppOptions): Server {
           const agentId = chatAgent(issue);
           await pc.updateIssue(issue.id, { status: "todo", ...(agentId && !issue.assigneeAgentId ? { assigneeAgentId: agentId, assigneeUserId: null } : {}) });
         }
-        const where = issue.id === task?.id ? "the team chat" : `${ctx.assignees.find((a) => a.key === issue.assigneeAgentId)?.persona?.name ?? "another agent"}'s chat`;
+        const where = issue.id === task?.id ? "the team chat" : `${ctx.assignees.find((a) => a.key === issue.assigneeAgentId)?.name ?? "another agent"}'s chat`;
         const parts = [];
         for (const a of others) parts.push(await deliver(ctx, task!, a, text, { identifier: issue.identifier, commentId: posted?.id, note: `Written in ${where} on ${issue.identifier}.` }));
         // A message that left this chat for another agent's: the board opens that one.
@@ -1592,7 +1592,7 @@ export function createApp(opts: AppOptions): Server {
         const fromAgent = ctx.assignees.find((a) => a.key === part.assigneeAgentId);
         const agent = ctx.assignees.find((a) => a.key === to && a.kind !== "me");
         if (!agent || !fromAgent || agent.key === fromAgent.key) throw new HttpError(400, "pick another agent");
-        await addToCrew(ctx, issue, agent, handOverText(displayText(part.description), fromAgent.persona?.name ?? fromAgent.name), {});
+        await addToCrew(ctx, issue, agent, handOverText(displayText(part.description), fromAgent.name), {});
         // A status change wakes nobody: a comment here would read as an instruction to the runner.
         await pc.updateIssue(part.id, { status: "cancelled" });
         log.info({ issue: issue.identifier, from: part.identifier, to: agent.name }, "handed over");

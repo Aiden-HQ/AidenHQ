@@ -236,6 +236,9 @@ function instanceParts(s: any) {
           parts.push(safe && fields.every((x) => safe.has(x)) ? T(1, kind === "agents" ? "model-change" : "routine-schedule", `${kind} ${name}: ${fields.join(", ")}`) : PANEL("overrides", `overrides ${kind} ${name}: ${fields.join(", ")}`));
         }
       }
+    } else if (k === "teams") {
+      // A team's day cap is a spend cap: the owner's authority. Members, repos, weights and the rest: the panel's.
+      for (const t of changedKeys(base.teams, head.teams)) parts.push(!eq(base.teams?.[t]?.caps, head.teams?.[t]?.caps) ? OWNER_AFTER_REVIEW("team-caps", `teams ${t}: its day cap is the owner's authority`) : PANEL("teams", `changes team ${t}`));
     } else parts.push(PANEL("instance-key", `changes ${k} in instance.yaml`));
   }
   return parts;

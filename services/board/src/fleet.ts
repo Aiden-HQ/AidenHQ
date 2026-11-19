@@ -14,7 +14,6 @@ const DAY = 864e5;
 const QUOTE_MAX_AGE_MS = 2 * 3600_000;
 /** Whether the agent holds the role, by the grants table setup writes (never metadata, which agents edit). */
 export const holdsRole = (id: string, role: string) => (grantsTable(process.env.AIDENHQ_GRANTS_FILE)()[id]?.roles ?? []).includes(role);
-const personaOf = (a: Agent) => (a.metadata?.persona as { name?: string } | undefined)?.name || a.name;
 const keyOf = (a: Agent) => (a.metadata?.setupKey ?? "").replace(/^aidenhq:/, "");
 
 export const ControlSchema = z.object({ action: z.enum(["run_routine", "pause_agent", "resume_agent", "pause_routine", "resume_routine"]), target: z.string().trim().min(4).max(200), quote: z.string().max(2000), task: z.string().max(64) }).strict();
@@ -167,7 +166,7 @@ export async function fleetStatus(pc: Paperclip, records: Pick<Records, "list">)
     const t = r.startedAt ?? r.createdAt;
     if (t > (last.get(r.agentId)?.t ?? "")) last.set(r.agentId, { t, s: r.status });
   }
-  const who = new Map(agents.map((a) => [a.id, personaOf(a)]));
+  const who = new Map(agents.map((a) => [a.id, a.name]));
   const newest = (xs: (string | null | undefined)[]) => xs.filter((x): x is string => Boolean(x)).sort().at(-1) ?? null;
   const minutesSince = (t: string) => Math.round((Date.now() - Date.parse(t)) / 60_000);
   // Pending cards, and approved ones not yet applied (an applier that hasn't claimed or finished them).
@@ -175,7 +174,7 @@ export async function fleetStatus(pc: Paperclip, records: Pick<Records, "list">)
   return {
     runs: runs.filter((r) => ["running", "queued"].includes(r.status)).map((r) => ({ agent: who.get(r.agentId) ?? r.agentId, status: r.status, startedAt: r.startedAt ?? r.createdAt, ageMinutes: minutesSince(r.startedAt ?? r.createdAt) })),
     approvals: cards.map((a) => ({ id: a.id, task: a.identifier, action: a.action, target: a.target, tier: a.tier, state: a.state, requestedBy: a.requestedBy, ageMinutes: minutesSince(a.createdAt) })),
-    agents: agents.filter((a) => a.status !== "terminated").map((a) => ({ name: personaOf(a), status: a.status, lastRunAt: last.get(a.id)?.t ?? null, lastRunStatus: last.get(a.id)?.s ?? null, openTasks: open.filter((i) => i.assigneeAgentId === a.id).length })),
+    agents: agents.filter((a) => a.status !== "terminated").map((a) => ({ name: a.name, status: a.status, lastRunAt: last.get(a.id)?.t ?? null, lastRunStatus: last.get(a.id)?.s ?? null, openTasks: open.filter((i) => i.assigneeAgentId === a.id).length })),
     routines: routines.filter((r) => r.status !== "archived").map((r) => ({ title: r.title, status: r.status, nextRunAt: (r.triggers ?? []).filter((t) => t.enabled).map((t) => t.nextRunAt).filter(Boolean).sort()[0] ?? null, lastRunAt: newest([r.lastTriggeredAt, ...(r.triggers ?? []).map((t) => t.lastFiredAt)]) })),
     stuck: open.filter((i) => ["in_progress", "blocked"].includes(i.status) && i.assigneeAgentId && Date.now() - Date.parse(i.updatedAt) > DAY).map((i) => ({ identifier: i.identifier, title: i.title, status: i.status, assignee: who.get(i.assigneeAgentId!) ?? "an agent", updatedAt: i.updatedAt })),
   };
@@ -254,11 +253,11 @@ async function control(pc: Paperclip, caller: Agent, a: z.infer<typeof ControlSc
   let done: string;
   if (a.action.endsWith("_agent")) {
     const agents = (await pc.request<Agent[]>("GET", `${co}/agents`)).filter((x) => x.status !== "terminated");
-    const t = pick(agents, a.target, "agent", (x) => [x.name, personaOf(x), keyOf(x)]);
+    const t = pick(agents, a.target, "agent", (x) => [x.name, keyOf(x)]);
     if (a.action === "pause_agent" && (t.id === caller.id || holdsRole(t.id, "fleet-admin"))) throw new Refused("refused: the Chief of Staff can't pause itself");
     const verb = a.action.split("_")[0]!;
     await pc.request("POST", `/api/agents/${t.id}/${verb}`, {});
-    done = `${verb}d agent ${personaOf(t)}`;
+    done = `${verb}d agent ${t.name}`;
   } else {
     const t = pick((await pc.request<Routine[]>("GET", `${co}/routines`)).filter((x) => x.status !== "archived"), a.target, "routine", (x) => [x.title]);
     if (a.action === "run_routine") await pc.request("POST", `/api/routines/${t.id}/run`, { source: "manual" });

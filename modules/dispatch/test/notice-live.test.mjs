@@ -15,7 +15,7 @@ test("a wake notice during a live run is passed to that run as a notice; no seco
     task: async () => task,
     children: async () => [],
     comments: async () => comments,
-    agent: async (id) => ({ id, name: "Ada" }),
+    agent: async (id) => ({ id, name: "Kai" }),
     directory: async () => ({}),
     start: async (req) => { const job = { id: `j${jobs.size + 1}`, task: "t1", agent: "eng", state: "running", at: jobs.size + 1, acked: false }; jobs.set(job.id, job); started.push(req); return { job }; },
     open: async () => [...jobs.values()].filter((j) => !j.acked),

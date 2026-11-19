@@ -432,7 +432,7 @@ function AgentPane({ task, member, focus, board, reload, onChanged, toast, moved
   const sub = member.issues.find((i) => i.identifier === selected);
   const state = sub?.state ?? member.state;
   const fan = member.issues.length > 1;
-  // "Hand to Ada": the careful one, unless it's Ada who got stuck.
+  // "Hand to" the careful one, unless it is the one that got stuck.
   const engineers = board.assignees.filter((a) => a.kind === "engineer" && a.key !== member.agent);
   const next = engineers.find((a) => a.engine === "claude") ?? engineers[0];
 
@@ -460,7 +460,6 @@ function AgentPane({ task, member, focus, board, reload, onChanged, toast, moved
               {name} <StatusDot tone={CREW_TONE[state]}>{STATE_PILLS[state]}</StatusDot>
             </div>
             <div className="muted small">{agent?.kind === "assistant" ? "Researcher · research and drafts" : agent?.kind === "agent" ? "Agent" : `Engineer · ${ENGINE_NAMES[agent?.engine ?? ""] ?? agent?.name}`}</div>
-            {agent?.persona?.voice && <div className="agent-voice">{agent.persona.voice}</div>}
           </div>
         </div>
         {fan && (

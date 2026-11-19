@@ -54,8 +54,10 @@ export type Clones = {
 };
 const MAX_CLONES = 5;
 
-export function createBoxes({ db, cfg, jobs, call, secret, whoami, connections, handbook, cleanup, clones, log, now = Date.now }: {
+export function createBoxes({ db, cfg, jobs, call, secret, whoami, connections, handbook, cleanup, clones, identity, log, now = Date.now }: {
   db: DatabaseSync; cfg: SandboxConfig; jobs: Pick<Jobs, "runAdmitted">; call: Call; secret: (name: string) => string; whoami: Whoami;
+  /** Who the agent's commits are authored as: its name and its own address (never the owner's). */
+  identity: (agent: string) => { name: string; email: string };
   /** An engineer job's workspace: the repositories its task names, cloned before the box starts. */
   clones: Clones;
   /** Whether a job asked for its workspace to go when it ends (jobtools.ts). */
@@ -90,7 +92,7 @@ export function createBoxes({ db, cfg, jobs, call, secret, whoami, connections, 
     const session = job.fresh ? undefined : lastSession(job.agent, job.task, a.engine);
     const base = session ? job.prompt : job.fullPrompt ?? job.prompt;
     const prompt = notes.length ? `(Kernel note: ${notes.join(" ")})\n\n${base}` : base;
-    const box = (await call("/job", { agentId: job.agent, issueId: job.task, identifier: job.identifier, workspace, engine: a.engine, state, image: a.image, token, mcp, roles: a.roles }).catch((e: { status?: number }) => {
+    const box = (await call("/job", { agentId: job.agent, issueId: job.task, identifier: job.identifier, workspace, engine: a.engine, state, image: a.image, token, mcp, roles: a.roles, identity: identity(job.agent) }).catch((e: { status?: number }) => {
       throw e.status === 409 ? Object.assign(e, { status: 503 }) : e;
     })) as unknown as Box;
     // The row's box names its workspace too, for a cleanup at release.

@@ -73,7 +73,7 @@ async function host(t) {
       mkdirSync(join(cfg.workDir, "tasks", "PEN-3", repo.split("/")[1]), { recursive: true });
     },
   };
-  const make = (now) => createBoxes({ db, cfg, jobs, cleanup: jobTools.cleanup, clones, call: launcherClient(url, () => secret("launcher_kernel_key")), secret, whoami, connections: () => ({ slack: {}, tasks: {} }), handbook: (a) => (existsSync(join(dir, "config/handbooks", `${a}.md`)) ? readFileSync(join(dir, "config/handbooks", `${a}.md`), "utf8") : undefined), log: () => {}, ...(now ? { now } : {}) });
+  const make = (now) => createBoxes({ db, cfg, jobs, cleanup: jobTools.cleanup, clones, call: launcherClient(url, () => secret("launcher_kernel_key")), secret, whoami, connections: () => ({ slack: {}, tasks: {} }), identity: (a) => ({ name: "Kai", email: `${grants[a].key}@acme.aidenhq.ai` }), handbook: (a) => (existsSync(join(dir, "config/handbooks", `${a}.md`)) ? readFileSync(join(dir, "config/handbooks", `${a}.md`), "utf8") : undefined), log: () => {}, ...(now ? { now } : {}) });
   boxes = make();
   const wakes = new Map();
   const admission = createAdmission({
@@ -96,6 +96,7 @@ test("admit → box → run: the kernel's key, the job token as the box's creden
   assert.equal(acquire.auth, "Bearer kernel-key");
   assert.equal(acquire.body.image, "agent-base");
   assert.deepEqual(acquire.body.roles, ["notes"]); // the launcher's record: what /repo checks for this box
+  assert.deepEqual(acquire.body.identity, { name: "Kai", email: "acme-crew@acme.aidenhq.ai" }); // commits as the agent, never the owner
   assert.equal(acquire.body.workspace, join(h.cfg.workDir, "tasks", "PEN-1"));
   assert.match(acquire.body.token, /^ahqj_/);
   // The box's MCP config names exactly the frozen tools; a grant added after admission doesn't reach it.

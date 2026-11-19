@@ -18,10 +18,10 @@ import { dirname, join, resolve } from "node:path";
 import { createInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
 import { ensureBackupRetention, ensureChatTasks, ensureFleetIssues, ensureMemoryInboxes, ensureReviewLogs, grantEntry, mapLimit, routineAutonomyDefault } from "./modules.mjs";
-import { retireUnconfigured } from "./retire-agents.mjs";
+import { busyRemovedMembers, retireUnconfigured } from "./retire-agents.mjs";
 import { writeRecord } from "./record-agent.mjs";
 import { ensureAgentKeys, ensureEventsPlugin } from "./paperclip-events.mjs";
-import { agentSkills, handbookParts, laneHandbook, personaOf, readInstructions as readHandbook } from "./handbook.mjs";
+import { agentSkills, handbookParts, laneHandbook, readInstructions as readHandbook } from "./handbook.mjs";
 import { recoverStalePid } from "./paperclip-recover.mjs";
 
 const repo = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -231,18 +231,20 @@ function agentBody(key, a) {
     metadata: {
       setupKey: `aidenhq:${key}`, module: a.module, isolation: a.isolation, profile: a.profile, engine: a.engine, ...(a.model ? { model: a.model } : {}), ...(a.trial ? { trial: true } : {}),
       ...(engineer ? { runnerEngine: true, ...(a.image ? { box: true } : {}), ...(a.private_reads === true ? { privateReads: true } : {}), ...(a.max_parallel ? { maxParallel: a.max_parallel } : {}), ...(models.length ? { models } : {}), ...(a.brief ? { brief: readInstructions(a).trim() } : {}) } : {}),
-      ...persona(key, a),
+      ...display(key, a),
     },
   };
 }
 
-const persona = (key, a) => {
-  const p = personaOf(key, a);
-  // avatar: a portrait without a persona (name and voice), from the handbook's frontmatter.
+const display = (key, a) => {
+  // avatar: a portrait bundled with the board, from the handbook's frontmatter.
   if (a.avatar !== undefined && !/^[a-z0-9-]{1,40}$/.test(a.avatar)) fail(`agent ${key}: avatar must be an avatar name (a-z, 0-9, -)`);
   // department: where the board's Agents page lists it, resolved from the registry by compile (scripts/modules.mjs).
   if (a.department !== undefined && (typeof a.department?.id !== "string" || typeof a.department.name !== "string" || !Number.isInteger(a.department.order))) fail(`agent ${key}: department must be compiled (id, name, order): run scripts/compile.mjs`);
-  return { ...(p ? { persona: p } : {}), ...(a.avatar ? { avatar: a.avatar } : {}), ...(a.department ? { department: a.department } : {}) };
+  // A team (compile's teams): the team record lists its members ({key, name}); a member names its team record's key. The
+  // board's Agents page draws the org from these.
+  const team = a.team ? { team: { name: a.team.name, members: a.team.members.map((k) => ({ key: k, name: cfg.agents[k].name })) } } : {};
+  return { ...(a.avatar ? { avatar: a.avatar } : {}), ...(a.department ? { department: a.department } : {}), ...team, ...(a.member_of ? { memberOf: a.member_of, ...(a.repos?.length ? { repos: a.repos } : {}) } : {}) };
 };
 
 // Paperclip secrets only Paperclip-run agents used: deleted once no agent refers to them (after ensureAgents).
@@ -269,7 +271,7 @@ async function ensureAgents(companyId, fleetIssues) {
       instructions = handbookParts(cfg, key, a, { repo, instanceDir, fleetIssues }).map(([, t]) => t).join("");
       lane = laneHandbook(cfg, a, { repo, instanceDir, fleetIssues });
     } catch (e) { fail(e.message); }
-    const agent = agents.find((x) => x.metadata?.setupKey === `aidenhq:${key}` && x.status !== "terminated") ?? agents.find((x) => x.name === a.name && x.status !== "terminated");
+    const agent = agents.find((x) => x.metadata?.setupKey === `aidenhq:${key}` && x.status !== "terminated") ?? (a.member_of ? undefined : agents.find((x) => x.name === a.name && x.status !== "terminated"));
     const body = agentBody(key, a);
     revInputs[key] = instructions; // the rev's text (revOf)
     // The lane gets the agent's own handbook, the untrusted-text rule and the prompts marked for it (memory), not the shared
@@ -462,10 +464,11 @@ function writeCatalog() {
     title: a.title ?? "",
     description: a.description,
     reports_to: a.reports_to ?? null,
-    roles: a.roles ?? [],
+    roles: a.member_of ? [] : a.roles ?? [],
     mcp_servers: a.mcp_servers ?? [],
     tools: a.enabled_tools ?? {},
     routines: Object.values(cfg.routines ?? {}).filter((r) => r.agent === key).map((r) => r.title),
+    ...(a.team ? { team: a.team.members } : {}), ...(a.member_of ? { member_of: a.member_of } : {}),
   }));
   const mcp = Object.fromEntries(Object.keys(cfg.mcp_servers ?? {}).map((n) => [n, agentsOut.filter((a) => a.mcp_servers.includes(n)).map((a) => a.key)]));
   // The tasks module's fleet_catalog reads it (its data dir's catalog folder, mounted read-only).
@@ -541,7 +544,8 @@ function writeGrants(agents, memoryInboxes = {}, reviewLogs = {}, chatTasks = {}
   if (!isWork) return;
   // autonomy: the board and the runner read the tiered-approvals switch here, fresh on every use.
   // agents_org, product_repo: the repos a graded PR deliverable may name (the board refuses others; the runner agrees).
-  const table = { autonomy: cfg.autonomy ?? "off", agents_org: cfg.github_agents_org ?? "", product_repo: productRepo(), agents: Object.fromEntries(Object.entries(agents).map(([key, a]) => [a.id, { key, roles: cfg.agents[key].roles ?? [], tools: cfg.agents[key].enabled_tools ?? {}, ...grantEntry(key, cfg.agents[key], cfg.routines), rev: revOf(key), description: cfg.agents[key].description, ...(cfg.agents[key].trial ? { trial: true } : {}), ...(cfg.agents[key].delegate_to ? { delegate_to: cfg.agents[key].delegate_to } : {}), ...(cfg.agents[key].image ? { image: cfg.agents[key].image } : {}) }])) };
+  // A member's roles are its team record's, given at admission: the record alone holds them, so role lookups find the team.
+  const table = { autonomy: cfg.autonomy ?? "off", agents_org: cfg.github_agents_org ?? "", product_repo: productRepo(), agents: Object.fromEntries(Object.entries(agents).map(([key, a]) => [a.id, { key, roles: cfg.agents[key].member_of ? [] : cfg.agents[key].roles ?? [], tools: cfg.agents[key].enabled_tools ?? {}, ...grantEntry(key, cfg.agents[key], cfg.routines), rev: revOf(key), description: cfg.agents[key].description, ...(cfg.agents[key].trial ? { trial: true } : {}), ...(cfg.agents[key].delegate_to ? { delegate_to: cfg.agents[key].delegate_to } : {}), ...(cfg.agents[key].image ? { image: cfg.agents[key].image } : {}) }])) };
   // The shared "Fleet issues" log task (ensureFleetIssues, its identifier): any agent may comment there (kernel cp.ts).
   if (fleetIssues) table.fleet_issues = fleetIssues;
   table.routines = { ...routineAutonomy };
@@ -586,6 +590,9 @@ await ensureBoardKey(health);
 await ensureBackupRetention({ api, dailyDays: 3, step });
 const company = await ensureCompany();
 await ensureLabels(company.id);
+// A team member removed from instance.yaml while it still has open tasks: nothing is changed until they are drained or handed off.
+const busy = await busyRemovedMembers({ api, companyId: company.id, cfg });
+if (busy.length) fail(`team members removed while they still have open tasks: ${busy.map((m) => `${m.name} (${m.tasks.join(", ")})`).join("; ")}. Finish or hand off their tasks first, or keep them in teams: until then.`);
 lap("login");
 // Heartbeat runs note missed wake-ups on one "Fleet issues" task; its identifier goes into their handbook section.
 const fleetIssues = Object.values(cfg.agents ?? {}).some((a) => a.heartbeat != null && a.heartbeat !== false) ? await ensureFleetIssues({ api, companyId: company.id, step }) : "";
@@ -595,7 +602,7 @@ const memoryInboxes = await ensureMemoryInboxes({ api, companyId: company.id, st
 await dropOldSecrets(company.id);
 await ensureReportingLines(agents);
 // The Agent Coach's review log (one task per fleet-audit agent), found again by its setup marker, never by search at run time.
-const reviewLogs = await ensureReviewLogs({ api, companyId: company.id, step, keys: Object.entries(cfg.agents ?? {}).filter(([, x]) => x.roles?.includes("fleet-audit")).map(([k]) => k) });
+const reviewLogs = await ensureReviewLogs({ api, companyId: company.id, step, keys: Object.entries(cfg.agents ?? {}).filter(([, x]) => !x.member_of && x.roles?.includes("fleet-audit")).map(([k]) => k) });
 // The fast chat lane's conversation: one chat task per agent with a `chat:` block (kernel/src/lane.ts writes each turn there).
 const chatTasks = isWork ? await ensureChatTasks({ api, companyId: company.id, step, ownerName: cfg.owner_name, agents: Object.fromEntries(Object.entries(cfg.agents ?? {}).filter(([k, x]) => x.chat && agents[k]).map(([k, x]) => [k, x.name])) }) : {};
 writeGrants(agents, memoryInboxes, reviewLogs, chatTasks);
@@ -603,7 +610,7 @@ lap("tasks");
 await ensureEventsPlugin({ api, step, version: JSON.parse(readFileSync(join(repo, "services/paperclip-events/package.json"), "utf8")).version }).catch((e) => fail(e.message));
 lap("plugins");
 // ops-mcp acts in Paperclip as the agent with the ops-key role.
-const opsAgents = Object.keys(cfg.agents ?? {}).filter((k) => cfg.agents[k].roles?.includes("ops-key"));
+const opsAgents = Object.keys(cfg.agents ?? {}).filter((k) => !cfg.agents[k].member_of && cfg.agents[k].roles?.includes("ops-key"));
 if (opsAgents.length > 1) fail(`only one agent may hold the ops-key role (${opsAgents.join(", ")})`);
 const opsAgent = opsAgents.length ? agents[opsAgents[0]] : undefined;
 const keyChanged = opsAgent ? await ensureOpsKey(opsAgent) : false;

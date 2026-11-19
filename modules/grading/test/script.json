@@ -13,7 +13,7 @@
   "agents": [
     { "id": "eng", "name": "Engineer", "companyId": "co" },
     { "id": "cos", "name": "Aiden", "companyId": "co" },
-    { "id": "ra", "name": "Alfred", "companyId": "co" },
+    { "id": "ra", "name": "Mina", "companyId": "co" },
     { "id": "other", "name": "Someone", "companyId": "co" }
   ],
   "issues": {

@@ -154,3 +154,14 @@ test("platform authority belongs to the task: the platform-engineer role is on a
   assert.deepEqual(await roles("w4", "task-8"), ["platform-engineer"]); // the Architect filed it
   assert.deepEqual(await roles("w5", "task-9"), ["platform-engineer"]); // no agent did (the owner, a kernel filer)
 });
+
+test("a team record never runs; its member's job holds the record's roles", async () => {
+  const grants = {
+    "agent-4": { key: "engineer", profile: "engineer", roles: ["platform-engineer"], tools: {}, team: { name: "engineering", members: ["kai"] } },
+    "agent-2": { key: "kai", profile: "engineer", tools: {}, member_of: "engineer" },
+  };
+  const { adm, wake, db } = setup({ grants });
+  await assert.rejects(adm.admit("acme-dispatch", req(wake("w1", "task-7", "agent-4"))), (e) => e.code === "team-record");
+  const job = await adm.admit("acme-dispatch", req(wake("w2", "task-3", "agent-2")));
+  assert.deepEqual(job.authority.roles, ["platform-engineer"]); // a task no agent filed: platform authority applies
+});

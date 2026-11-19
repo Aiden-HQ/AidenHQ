@@ -8,12 +8,11 @@ import type { Agent, Attachment, Comment, Issue, Paperclip } from "../src/paperc
 import { Store } from "../src/store.js";
 
 const ME = "user-1";
-const persona = (name: string) => ({ persona: { name, voice: "", avatar: name.toLowerCase() } });
 const agents: Agent[] = [
-  { id: "00000000-0000-0000-0000-00000000000a", name: "Researcher", status: "idle", metadata: { engine: "codex", setupKey: "aidenhq:assistant", ...persona("Alfred") } },
-  { id: "00000000-0000-0000-0000-0000000000c1", name: "Engineer · Claude", status: "idle", metadata: { engine: "claude", setupKey: "aidenhq:engineer-claude", ...persona("Ada") } },
+  { id: "00000000-0000-0000-0000-00000000000a", name: "Mina", status: "idle", metadata: { engine: "codex", setupKey: "aidenhq:assistant" } },
+  { id: "00000000-0000-0000-0000-0000000000c1", name: "Kai", status: "idle", metadata: { engine: "claude", setupKey: "aidenhq:engineer-claude" } },
 ];
-const [ALFRED, ADA] = [agents[0]!.id, agents[1]!.id];
+const [MINA, KAI] = [agents[0]!.id, agents[1]!.id];
 
 describe("the merged description", () => {
   const source = { identifier: "PEN-9", title: "Ping Peter", description: "Ask Peter about the roadmap.\n\n<!-- source:slack:pin:C1:1700000000.1 -->" };
@@ -99,8 +98,8 @@ describe("merging a task into another", () => {
   it("moves the text, files and the user's sub-tasks, closes the crew, and cancels the duplicate", async () => {
     files.push({ id: uuid(), issueId: dup.id, originalFilename: "notes.pdf", contentType: "application/pdf", byteSize: 3, createdAt: "" });
     const sub = make({ parentId: dup.id, assigneeUserId: ME });
-    const alfred = make({ parentId: dup.id, assigneeAgentId: ALFRED });
-    issues.push(sub, alfred);
+    const mina = make({ parentId: dup.id, assigneeAgentId: MINA });
+    issues.push(sub, mina);
     store.schedule(dup.id, "2099-01-01", "today");
 
     const res = await merge(dup.identifier, target.identifier.toLowerCase());
@@ -110,7 +109,7 @@ describe("merging a task into another", () => {
     expect(target.description).toContain("<!-- merged-source:slack:pin:C1:1700000000.1 -->");
     expect(files.filter((f) => f.issueId === target.id).map((f) => f.originalFilename)).toEqual(["notes.pdf"]);
     expect(sub.parentId).toBe(target.id);
-    expect(alfred.status).toBe("cancelled");
+    expect(mina.status).toBe("cancelled");
     expect(dup.status).toBe("cancelled");
     expect(store.schedules().has(dup.id)).toBe(false);
     // The note on the duplicate is the board's own (the notice marker), never the owner's words.
@@ -119,10 +118,10 @@ describe("merging a task into another", () => {
 
 
   it("refuses a task with an Engineer's work on it, saying why", async () => {
-    issues.push(make({ parentId: dup.id, assigneeAgentId: ADA, status: "done" }));
+    issues.push(make({ parentId: dup.id, assigneeAgentId: KAI, status: "done" }));
     const res = await merge(dup.identifier, target.identifier);
     expect(res.status).toBe(409);
-    expect(res.json.error).toContain("Ada's work");
+    expect(res.json.error).toContain("Kai's work");
     expect(dup.status).toBe("todo");
     expect(target.description).not.toContain("Merged from");
   });

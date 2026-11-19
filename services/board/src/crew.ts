@@ -142,15 +142,15 @@ export function handOverText(instructions: string, from: string): string {
   return `${instructions.trim()}\n\n${from} worked on this first and got stuck; their notes are on the task.`;
 }
 
-/** What an agent is @-mentioned by: its persona name, or its plain name without spaces. */
-const handlesOf = (a: Assignee) => [a.persona?.name, a.name.replace(/\s+/g, "")].flatMap((h) => (h ? [h.toLowerCase()] : []));
+/** What an agent is @-mentioned by: its name without spaces. */
+const handlesOf = (a: Assignee) => [a.name.replace(/\s+/g, "").toLowerCase()];
 
 /** The agents a name refers to; callers act only on exactly one. */
 export const withHandle = (assignees: Assignee[], name: string) => assignees.filter((x) => x.kind !== "me" && handlesOf(x).includes(name.toLowerCase()));
 
 /**
- * The crew members a message @-mentions by name ("@Ada", "@alfred"), in the order written. Agents
- * answer to their persona name or plain name; an address or a handle that only starts with a name doesn't count.
+ * The crew members a message @-mentions by name ("@Kai", "@mina"), in the order written. Agents
+ * answer to their name; an address or a handle that only starts with a name doesn't count.
  */
 export function mentionedAgents(text: string, assignees: Assignee[]): Assignee[] {
   const out: Assignee[] = [];

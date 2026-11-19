@@ -18,8 +18,8 @@ const closedPort = async () => { const x = await serve(() => {}); await new Prom
 const MODELS = { models: { flat: { in: 0, cached_in: 0, out: 1, peak: 1, max_output: 10_000 }, priced: { in: 1, cached_in: 0.1, out: 2, peak: 1, max_output: 10_000 } } };
 
 /** A gateway on `dir`'s kernel.db with one job agent `ag` (day cap `dayUsd`), and an upstream `answer(body, res)`. Every secret is "js". */
-async function rig(t, { dayUsd = 30, answer, dir = mkdtempSync(join(tmpdir(), "spend-")), legacy } = {}) {
-  writeFileSync(join(dir, "grants.json"), JSON.stringify({ agents: { ag: { key: "eng", caps: { run_usd: 30, task_usd: 30, day_usd: dayUsd } } } }));
+async function rig(t, { dayUsd = 30, answer, dir = mkdtempSync(join(tmpdir(), "spend-")), legacy, agents } = {}) {
+  writeFileSync(join(dir, "grants.json"), JSON.stringify({ agents: agents ?? { ag: { key: "eng", caps: { run_usd: 30, task_usd: 30, day_usd: dayUsd } } } }));
   writeFileSync(join(dir, "gateway.json"), JSON.stringify(MODELS));
   const seen = [];
   const upstream = await serve((req, res) => {
@@ -75,6 +75,17 @@ test("caps keep their values: at the day cap refused, a reservation past it refu
   const s = await rig(t, { dayUsd: 0.005, answer: usage(0.001) });
   assert.equal((await s.call({ model: "flat", max_tokens: 10_000, messages: [] })).status, 200);
   assert.equal(s.seen[0].max_tokens, 5000);
+});
+
+test("a team's day cap counts every member's spend: one member may use all of it, and then no member starts", async (t) => {
+  const r = await rig(t, { answer: usage(0.06), agents: {
+    tr: { key: "eng", team: { name: "engineering", members: ["kai", "mina"] }, caps: { day_usd: 0.05 } },
+    ag: { key: "kai", member_of: "eng", caps: { run_usd: 30, task_usd: 30, day_usd: 1000 } },
+    ag2: { key: "mina", member_of: "eng", caps: { run_usd: 30, task_usd: 30, day_usd: 1000 } },
+  } });
+  assert.equal((await r.call({ model: "flat", messages: [] })).status, 200); // kai spends $0.06 of the team's $0.05
+  assert.match((await r.call({ model: "flat", messages: [] })).json.error.message, /^spend cap reached: agent-day \$0\.06 of \$0\.05;/);
+  assert.deepEqual(r.gw.exhausted("ag2", "WOR-9").map((o) => o.scope), ["day"]); // mina never spent, but the team's day is used up
 });
 
 test("a definite upstream refusal before any output is released at $0; a cut stream is not", async (t) => {

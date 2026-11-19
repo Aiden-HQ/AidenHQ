@@ -24,6 +24,8 @@ const IMAGE: Record<Profile, string> = { crew: "agent-base", engineer: "engineer
 export type AgentGrant = {
   key?: string; roles?: string[]; trial?: boolean; private_reads?: boolean; web_search?: string; profile?: Profile; image?: string; engine?: string; engines?: string[]; model?: string; effort?: string; models?: string[]; skills?: Skill[];
   tools?: Record<string, string[]>; jobcaps?: string[]; max_parallel?: number; routines?: Record<string, { model?: string; effort?: string }>;
+  /** A team record (compile's teams): it never runs; its members do. A member names its team record's key. */
+  team?: { name: string; members: string[] }; member_of?: string;
 };
 /** What a job may do, frozen at admission: the job token and the tool proxy read this, never the grants table again. */
 export type Authority = {
@@ -134,8 +136,12 @@ export function createAdmission({ db, grants, kinds, capacity, spend, mayDispatc
       if (db.prepare(`SELECT 1 FROM jobs WHERE task = ? AND ${LIVE}`).get(task)) throw new JobError(409, "job-running", `task ${task} already has a job`);
       // A task the plugin made with no provenance behind it: its routine cap is unknown, so nothing runs on it.
       if (!provenance.settled(t)) throw new JobError(409, "provenance-unsettled", `task ${task} was made through the kernel's plugin with no provenance; it doesn't run`);
-      const g = grants()[agent];
-      if (!g) throw new JobError(403, "no-grants", `agent ${agent} has no grants`);
+      const own = grants()[agent];
+      if (!own) throw new JobError(403, "no-grants", `agent ${agent} has no grants`);
+      if (own.team) throw new JobError(409, "team-record", `agent ${agent} is team ${own.team.name}'s record: the kernel routes its tasks to a member, and it never runs`);
+      // A member holds its team record's roles (the record alone holds them for filing); the platform filter below still applies.
+      const record = own.member_of ? Object.values(grants()).find((x) => x?.key === own.member_of && x?.team) : undefined;
+      const g: AgentGrant = record ? { ...own, roles: [...new Set([...(own.roles ?? []), ...(record.roles ?? [])])] } : own;
       const live = (db.prepare(`SELECT COUNT(*) AS n FROM jobs WHERE ${LIVE}`).get() as { n: number }).n;
       if (live >= capacity()) throw new JobError(429, "busy", `all ${capacity()} computers are taken; try again shortly`);
       const mine = (db.prepare(`SELECT COUNT(*) AS n FROM jobs WHERE agent = ? AND ${LIVE}`).get(agent) as { n: number }).n;

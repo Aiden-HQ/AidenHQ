@@ -31,6 +31,21 @@ export async function retireUnconfigured({ api, companyId, cfg, step }) {
 const OPEN = "backlog,todo,in_progress,in_review,blocked";
 
 /**
+ * Team members (metadata.memberOf) no longer configured that still hold open tasks, each with their identifiers. A member is
+ * retired only once drained or handed off: setup refuses to go on while any is listed (its peers are many, so no one successor).
+ */
+export async function busyRemovedMembers({ api, companyId, cfg }) {
+  const { json: all } = await api("GET", `/api/companies/${companyId}/agents`);
+  const gone = all.filter((x) => x.metadata?.memberOf && x.status !== "terminated" && !Object.hasOwn(cfg.agents ?? {}, String(x.metadata.setupKey ?? "").replace(/^aidenhq:/, "")));
+  const out = [];
+  for (const x of gone) {
+    const open = await listWithRetry(api, companyId, x.id);
+    if (open.length) out.push({ name: x.name, tasks: open.map((i) => i.identifier ?? i.id) });
+  }
+  return out;
+}
+
+/**
  * An agent's open issues cannot stay assigned to it once it is terminated: nothing resolves that key, so no wake or dispatch
  * reaches them again. Before the terminate, each open issue goes to the one remaining agent in the same department, or, when
  * that department has none or several, back to the owner unassigned. Every move is commented on.

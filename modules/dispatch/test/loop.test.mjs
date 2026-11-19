@@ -19,7 +19,7 @@ function fake({ task, comments = [], directory = {}, tasks = {}, paused = [] }) 
     fileTask: async (b) => { if (paused.includes(b.agent)) throw new KernelError(409, "paused"); k.filed.push(b); },
     notify: async (b) => void k.notified.push(b),
     comments: async () => comments,
-    agent: async (id) => ({ id, name: { cos: "Aiden", asker: "Researcher", coach: "Coach", eng: "Ada" }[id] ?? id }),
+    agent: async (id) => ({ id, name: { cos: "Aiden", asker: "Researcher", coach: "Coach", eng: "Kai" }[id] ?? id }),
     directory: async () => directory,
     start: async (req) => {
       if (k.busy) return (k.busy--, { busy: true });

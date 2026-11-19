@@ -5,7 +5,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { bridge } from "./helpers.mjs";
 
-const engineer = { id: "eng", name: "Engineer", metadata: { setupKey: "aidenhq:engineer-openrouter", persona: { name: "Linus" }, runnerEngine: true }, status: "idle" };
+const engineer = { id: "eng", name: "Kai", metadata: { setupKey: "aidenhq:engineer-openrouter", runnerEngine: true }, status: "idle" };
 const handler = (req, res) => {
   let body = "";
   req.on("data", (d) => (body += d));
@@ -22,7 +22,7 @@ const handler = (req, res) => {
 };
 const agents = { cos: { key: "chief-of-staff", roles: [] }, eng: { key: "engineer-openrouter", roles: [], graded: true }, lib: { key: "librarian", roles: [] } };
 const call = (name, args) => bridge({ handler, agents, agent: "cos", task: "cur" }).call(name, args);
-const delegate = (description) => call("task_delegate", { agent: "Linus", title: "Narrow the token", description, deliverable: { kind: "pr", ref: "acme/app" } });
+const delegate = (description) => call("task_delegate", { agent: "Kai", title: "Narrow the token", description, deliverable: { kind: "pr", ref: "acme/app" } });
 const WARN = /name every change in the change section, and leave out claims that another part of the tree is untouched/;
 
 const settle = "Narrow the role-lookup token to metadata: read.";

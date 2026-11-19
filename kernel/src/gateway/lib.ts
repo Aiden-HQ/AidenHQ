@@ -57,7 +57,7 @@ export type Caller = Brand<{
 type GatewayError = Error & { status?: number; type?: string; extra?: Record<string, unknown> };
 type Caps = { run_usd: number; task_usd: number; day_usd: number };
 /** config/grants/grants.json `agents`, by Paperclip id (setup writes it). */
-type Grants = Record<string, { rev?: string; key?: string; caps?: Partial<Caps> }>;
+type Grants = Record<string, { rev?: string; key?: string; caps?: Partial<Caps>; member_of?: string; team?: unknown }>;
 /** config/gateway.json `ci` (compile writes it from the ci module's settings). */
 type CiConf = { orgs?: unknown; models?: unknown; review?: unknown; repo_day_usd?: unknown; day_usd?: unknown };
 /** A run key's settled identity (the runs table), or the same fields resolved for one call. */
@@ -405,9 +405,21 @@ export function createGateway({ dbFile, legacyDbFile, grantsFile, settingsFile, 
     throw fail(401, "unauthorized", "not a credential this gateway knows");
   }
 
+  /**
+   * Whose day cap an agent spends against, and every agent spending it: a team member's is its team record's (teams.<t>.caps),
+   * shared by all the team's members; anyone else's is its own. The router reads the same (wakes.ts, via exhausted).
+   */
+  const dayHolder = (agentId: string): { holder: string; spenders: string[] } => {
+    const team = grants()[agentId]?.member_of;
+    if (!team) return { holder: agentId, spenders: [agentId] };
+    const all = Object.entries(grants());
+    return { holder: all.find(([, g]) => g.key === team && g.team)?.[0] ?? agentId, spenders: all.filter(([, g]) => g.member_of === team).map(([id]) => id) };
+  };
+  const daySpent = (agentId: string, today: string) => dayHolder(agentId).spenders.reduce((s, id) => s + (q.spentDay.get(id, today) as Sum).s, 0);
   const capOf = (who: { agentId: string | null }, scope: string, subject: string): number => {
-    const own = ({ ...DEFAULT_CAPS, ...((who.agentId && grants()[who.agentId]?.caps) || {}) } as Record<string, number>)[`${scope}_usd`]!; // scope: run, task or day
-    return (q.cap.get(scope, who.agentId ?? "", subject) as { cap: number } | undefined)?.cap ?? own;
+    const holder = scope === "day" && who.agentId ? dayHolder(who.agentId).holder : who.agentId;
+    const own = ({ ...DEFAULT_CAPS, ...((holder && grants()[holder]?.caps) || {}) } as Record<string, number>)[`${scope}_usd`]!; // scope: run, task or day
+    return (q.cap.get(scope, holder ?? "", subject) as { cap: number } | undefined)?.cap ?? own;
   };
   const taskSubject = (who: { issueId: string | null; perpetual: boolean }, t: number) => (who.issueId ? (who.perpetual ? `${who.issueId}:${day(t)}` : who.issueId) : null);
 
@@ -435,7 +447,7 @@ export function createGateway({ dbFile, legacyDbFile, grantsFile, settingsFile, 
     const subject = taskSubject(who, t);
     const scopes: [string, string, number][] = [["run", who.runKey, (q.spentRun.get(who.runKey) as Sum).s]];
     if (who.agentId && subject) scopes.push(["task", subject, (q.spentTask.get(who.agentId, subject) as Sum).s]);
-    if (who.agentId) scopes.push(["day", today, (q.spentDay.get(who.agentId, today) as Sum).s]);
+    if (who.agentId) scopes.push(["day", today, daySpent(who.agentId, today)]);
     return [...scopes.map(([scope, subj, spent]) => ({ scope, subject: subj, cap: capOf(who, scope, subj), spent })), ...installScope(today)];
   }
 
@@ -517,7 +529,7 @@ export function createGateway({ dbFile, legacyDbFile, grantsFile, settingsFile, 
   async function fileRaise(who: Caller, over: Over): Promise<boolean> {
     // A run cap is on the credential's hash: the next run has a new one, so a raised run cap would never be used.
     if (!fileRaiseCap || (!over.install && (over.scope === "run" || !who.agentId || !who.issueId))) return false;
-    const agentId = over.install ? INSTALL_CAP : who.agentId!;
+    const agentId = over.install ? INSTALL_CAP : over.scope === "day" ? dayHolder(who.agentId!).holder : who.agentId!;
     const args = [over.scope, agentId, over.subject, over.cap];
     if (!q.file.run(...args, new Date(now()).toISOString()).changes) return true;
     try {
@@ -710,7 +722,7 @@ export function createGateway({ dbFile, legacyDbFile, grantsFile, settingsFile, 
         boardKeyed(req);
         const today = day(now()), [inst] = installScope(today), usd = (n: number) => Math.round(n * 1e4) / 1e4;
         const ids = new Set([...Object.keys(grants()), ...(q.spenders.all(today) as { agent_id: string }[]).map((r) => r.agent_id)]);
-        const agents = [...ids].map((agent_id) => ({ agent_id, spent: usd((q.spentDay.get(agent_id, today) as Sum).s), cap: capOf({ agentId: agent_id }, "day", today) }));
+        const agents = [...ids].map((agent_id) => ({ agent_id, spent: usd(daySpent(agent_id, today)), cap: capOf({ agentId: agent_id }, "day", today) }));
         return send(res, 200, { day: today, install: { spent: usd((q.spentAll.get(today) as Sum).s), cap: inst?.cap ?? null }, agents: agents.sort((a, b) => b.spent / b.cap - a.spent / a.cap) });
       }
       if (req.method === "POST" && path === "/internal/caps") {

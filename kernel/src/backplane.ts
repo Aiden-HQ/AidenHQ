@@ -84,7 +84,7 @@ import { fail } from "./proxy.ts";
 import type { Records, State } from "./records.ts";
 import type { Work } from "./work.ts";
 import type { Reviews } from "./reviews.ts";
-import type { Wakes } from "./wakes.ts";
+import { wakeNotice, type Wakes } from "./wakes.ts";
 import type { ModuleTasks } from "./modtasks.ts";
 import { CONN_TOOL, type Writes } from "./writes.ts";
 
@@ -368,12 +368,10 @@ export function createBackplane({ whoami, asserter, proxy, cp, boardCp, grantsFi
             if (!owner) throw fail(503, "unavailable", "the control plane is off");
             const task = typeof b.task === "string" ? b.task.slice(0, 100) : "", text = neutral(b.text).trim().slice(0, 2000);
             if (!task || !text) throw fail(400, "bad_request", "send {task, text}");
-            const issue = await owner("GET", `/api/issues/${encodeURIComponent(task)}`);
-            if (issue.status !== 200) throw fail(404, "not_found", `no task ${task}`);
-            if (["done", "cancelled"].includes(issue.json.status)) return send(res, 200, { posted: false, closed: true });
-            const c = await owner("POST", `/api/issues/${encodeURIComponent(issue.json.id)}/comments`, { body: `[wake] ${text}\n\n<!-- aidenhq-wake -->` });
-            if (c.status >= 300) throw fail(502, "upstream", `the control plane answered ${c.status}`);
-            log("wake notice", { module: w.module, task: issue.json.identifier });
+            const r = await wakeNotice(owner, task, text).catch((e: Error) => { throw fail(502, "upstream", e.message); });
+            if (r === "missing") throw fail(404, "not_found", `no task ${task}`);
+            if (r === "closed") return send(res, 200, { posted: false, closed: true });
+            log("wake notice", { module: w.module, task });
             return send(res, 200, { posted: true });
           }
           if (!wakes) throw fail(503, "unavailable", "the wake inbox is off");
