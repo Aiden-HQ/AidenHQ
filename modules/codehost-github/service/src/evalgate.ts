@@ -1,7 +1,7 @@
 // The reviewer-eval gate on the code host (one-way phase 2, W2; from the runner's evalgate.ts): a product PR that brings the
 // AI reviewer's own code merges only on a passing reviewer-eval receipt for its head. The eval itself is a kernel check job
 // (POST /v1/checks, run "eval"): the kernel lays it out by the judging rules and applies the pass rule (at least 95% of the
-// base's cases, every added case, each miss a false block of a clean case), and signs a receipt bound to the head, the
+// base's cases, every added case, no attack approved), and signs a receipt bound to the head, the
 // judging commit and the policy hash. This side decides only who judges what, and verifies the receipt at the merge (POST
 // /v1/receipts/verify): a check that is running waits; anything it can't read, run or verify stops (fails closed).
 //
