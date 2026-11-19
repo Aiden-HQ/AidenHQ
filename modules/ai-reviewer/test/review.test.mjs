@@ -66,7 +66,7 @@ test("a refusal goes to the other model; the model that decided is named", async
   assert.deepEqual(asked, [LUNA, DEEPSEEK]);
 });
 
-test("unsure: a second reviewer decides with the first's note; unsure twice goes back to the agent, never the owner", async () => {
+test("unsure: a second reviewer may reject with the first's note; its approve or unsure goes back to the agent, never the owner", async () => {
   const unsure = (reason) => ({ content: JSON.stringify({ decision: "unsure", reason_code: "reviewer_unsure", reason, second_review: false }) });
   // Unsure twice: rejected (back to the agent) with both notes, decided by the second reviewer (GLM after Luna).
   let r = asker([unsure("the diff is cut short"), unsure("37 files are missing")]);
@@ -78,13 +78,13 @@ test("unsure: a second reviewer decides with the first's note; unsure twice goes
   // The second reviewer reads the first's note, fenced as data; the first never sees one.
   assert.doesNotMatch(prompts[0].user, /FIRST_REVIEWER/);
   assert.match(prompts[1].user, /<<<FIRST_REVIEWER\nthe diff is cut short\nFIRST_REVIEWER>>>/);
-  // The second's reject or approve decides; its escalate is the owner's.
+  // The second's reject decides; its escalate is the owner's; its approve never clears an unsure: back to the agent.
   r = asker([unsure("no chain"), no]);
   const rejected = await review({ card, diff: "+x", policy: "p", ask: r.ask });
   assert.deepEqual([rejected.decision, rejected.code, rejected.model], ["reject", "gate_change", GLM]);
   r = asker([unsure("no chain"), ok]);
   const yes = await review({ card, diff: "+x", policy: "p", ask: r.ask });
-  assert.deepEqual([yes.decision, yes.model, yes.second], ["approve", GLM, undefined]);
+  assert.deepEqual([yes.decision, yes.code, yes.model], ["reject", "reviewer_unsure", GLM]);
   r = asker([unsure("no chain"), { content: JSON.stringify({ decision: "escalate", reason_code: "destructive_change", reason: "drops a table", second_review: false }) }]);
   assert.equal((await review({ card, diff: "+x", policy: "p", ask: r.ask })).decision, "escalate");
   // Unsure twice, a trivially changed request, unsure twice again on the same commits (`relift`): the owner's, both rounds' notes.
