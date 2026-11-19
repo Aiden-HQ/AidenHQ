@@ -1,6 +1,6 @@
 # Guided setup: a light install, a wizard, then Aiden
 
-Status: design (2026-11-17), not built.
+Status: design (2026-11-17), not built. The default module set ("the bundle" below) is the kernel's `modules/marketplace.json` `bundle`; a release pins one kernel sha plus image digests and lists no modules.
 
 ## Why
 

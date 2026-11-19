@@ -81,7 +81,7 @@ under `modules/` (the agents, connections, apps, engines and channels; MIT by fo
 names a kernel and the modules it was tested with. Third-party modules load from their own repositories (`marketplaces:`
 in `instance.yaml`). Releases and the installer live in
 [aidenhq-distro](https://github.com/Aiden-HQ/aidenhq-distro): its `releases/<release>.json` manifests pin one product sha
-and the prebuilt image digests. (The official modules lived in
+and the prebuilt image digests; the default module set is the `bundle` in this repo's `modules/marketplace.json`. (The official modules lived in
 [aidenhq-modules](https://github.com/Aiden-HQ/aidenhq-modules) from 2026-11-16 to 2026-11-18; it takes no new changes.)
 
 Your configuration lives in a separate private **instance repo**: `instance.yaml` (pinned `product:` commit, `modules`,
