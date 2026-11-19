@@ -215,6 +215,9 @@ function reach(v: unknown, path: string[], at = "", dup = { found: false }): { v
  * before `before`) none had before. A list holding one key twice is the owner's too.
  */
 export function ownerRaises(key: string, rules: OwnerRule[], dflt: unknown, base: unknown, head: unknown): string[] {
+  // A value of another shape than its default (a string where a list is meant) is one the rules can't read: the owner's.
+  const shape = (v: unknown) => (Array.isArray(v) ? "list" : isDict(v) ? "map" : typeof v);
+  if (head != null && dflt != null && shape(head) !== shape(dflt)) return [`${key}: a ${shape(head)} where its default is a ${shape(dflt)}`];
   const [b, h] = [merged(dflt, base), merged(dflt, head)];
   const out: string[] = [];
   for (const r of rules) {

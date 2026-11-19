@@ -27,10 +27,11 @@ function world(settings = {}) {
       open: async () => [...prs.values()],
       get: async (_r, n) => prs.get(n),
       comments: async (_r, since) => ({ comments: comments.filter((c) => c.created_at > since), cursor: new Date(t).toISOString() }),
-      permission: async (_r, login) => { if (perms.down) { perms.down = false; throw new Error("GitHub 502"); } return perms[login] ?? "none"; },
+      permission: async (_r, login) => { if (perms.down) { perms.down = false; throw new Error("GitHub 502"); } if (perms.refuse) { perms.refuse = false; throw Object.assign(new Error("github-mcp permission: 400"), { status: 400 }); } return perms[login] ?? "none"; },
       // The merge base is sha("m"); a head is "ahead" of an earlier one unless the test force-pushed past it.
       compare: async (_r, base, head) => ({ merge_base: sha("m"), status: rewritten.has(base) ? "diverged" : "ahead", head }),
       repos: async () => [],
+      postable: async (repo) => ({ identity: repo.startsWith("acme/") ? "owner" : null, org: repo.split("/")[0] }),
     },
     runner: {
       start: async (s) => { started.push(s); return { check: `c-${started.length}` }; },
@@ -210,4 +211,22 @@ test("incremental runs recheck the last posted findings from the merge base; a f
   w.prs.delete(4); await w.tick();
   assert.deepEqual(w.closed.map((c) => c.slice(0, 2)), [[REPO, 4]]);
   assert.equal(w.engine.recent().find((p) => p.number === 3).title, "Fix the ledger");
+});
+
+test("a one-off only where a review can post; a refused read passes the comment over, a transient one is asked again", async () => {
+  const w = world();
+  w.prs.set(9, { repo: "othercorp/api", number: 9, head: sha("9"), base: sha("b"), base_ref: "main", draft: false, fork: false, author: "bob", open: true, url: "" });
+  await assert.rejects(w.engine.oneoff({ pr_url: "https://github.com/othercorp/api/pull/9" }), (e) => e.extra.owner_must_allow_orgs[0] === "othercorp");
+  w.pr(5, sha("5")); await w.tick(); w.later(1000);
+  w.perms.refuse = true;
+  w.say(5, "alice", "@aiden review");
+  await w.tick();
+  assert.equal(w.started.length, 0); // refused (a 400): passed over, not retried
+  w.later(1000); await w.tick();
+  assert.equal(w.started.length, 0);
+  w.later(1000); w.perms.down = true;
+  w.say(5, "alice", "@aiden review deep");
+  await w.tick(); // a 502: asked again next tick
+  w.later(1000); await w.tick();
+  assert.deepEqual(w.started.map((s) => s.reviewer), ["deep"]);
 });

@@ -210,3 +210,11 @@ test("the in-box `aidenhq task|tasks` reads are the tasks module's default grant
   assert.deepEqual(reads({ ...graduated, profile: "check" }), [], "a check agent");
   assert.deepEqual(reads({ ...graduated, profile: "engineer" }), [], "an Engineer without private_reads");
 });
+
+test("a setting is the shape of its default: a string where a list is meant fails the compile", () => {
+  const dir = withAgents({}, ["github"]);
+  writeFileSync(join(dir, "instance.yaml"), YAML.stringify({ product: "0".repeat(40), modules: [...BUNDLE, "github"], settings: { ...owner, github_comment_orgs: "acme,evil" } }));
+  assert.throws(() => compile(product, dir), /settings\.github_comment_orgs: a list, like its default \(got a string\)/);
+  writeFileSync(join(dir, "instance.yaml"), YAML.stringify({ product: "0".repeat(40), modules: [...BUNDLE, "github"], settings: { ...owner, github_comment_orgs: ["acme"] } }));
+  assert.equal(compile(product, dir).paperclip ? "ok" : "", "ok");
+});

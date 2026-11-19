@@ -45,13 +45,15 @@ const api = (r: Ref) => `/repos/${r.owner}/${r.repo}`;
 
 export class ReviewPoster {
   private ownerLogin: string | undefined;
-  constructor(private readonly gh: GitHub, private readonly owner: OwnerToken, private readonly app: Pick<Projects, "reviewToken"> | undefined) {}
+  /** `orgs`: the comment orgs (settings.github_comment_orgs), the only owners the owner's sign-in posts in, as for every other write. */
+  constructor(private readonly gh: GitHub, private readonly owner: OwnerToken, private readonly app: Pick<Projects, "reviewToken"> | undefined, private readonly orgs: Set<string>) {}
 
   /** The identity to post as: `auto` is the App where installed with the permissions, else the owner; `app` refuses without the App. */
   async identity(owner: string, repo: string, want: IdentityWant): Promise<Who> {
     const app = want === "owner" ? undefined : await this.app?.reviewToken(owner, repo);
     if (app) return { kind: "app", token: app.token, login: app.login, why: `the GitHub App is installed on ${owner}/${repo} with pull request and status write` };
     if (want === "app") throw new GitHubRefused(`the GitHub App isn't installed on ${owner}/${repo} with pull request and commit status write`);
+    if (!this.orgs.has(owner.toLowerCase())) throw new GitHubRefused(`the owner's sign-in posts only in ${[...this.orgs].join(", ") || "no organizations"}, and the GitHub App isn't installed on ${owner}/${repo}: the owner allows ${owner} on the board's Reviews page`);
     if (!this.owner.signedIn()) throw new GitHubAuthError("GitHub isn't connected (Connect GitHub on the board)");
     this.ownerLogin ??= (await this.gh.whoami()).login;
     return { kind: "owner", token: await this.owner.get(), login: this.ownerLogin, why: want === "owner" ? "the owner's sign-in was asked for" : `the GitHub App isn't installed on ${owner}/${repo} with pull request and status write, so the owner's sign-in posts` };

@@ -128,7 +128,9 @@ export function configTools(d: {
       roles: ["reviewer-manager"],
       description: "Review one pull request now, posted to it like a watched repo's review: { pr_url, reviewer? (default standard), focus?, full? (the whole PR, not only what changed since the last review) }. Any PR the instance's GitHub sign-in can read; a repo outside the GitHub orgs reviews may post in as the owner is refused with what to do.",
       inputSchema: { type: "object", properties: { pr_url: { type: "string" }, reviewer: { type: "string" }, focus: { type: "string" }, full: { type: "boolean" } }, required: ["pr_url"], additionalProperties: false },
-      run: async (a) => d.oneoff({ pr_url: a.pr_url, ...(a.reviewer ? { reviewer: a.reviewer } : {}), ...(a.focus ? { focus: a.focus } : {}), ...(a.full ? { full: true } : {}) }),
+      // The service refuses a PR its review couldn't post on (no App there, and an org the owner hasn't allowed): named back.
+      run: async (a) => d.oneoff({ pr_url: a.pr_url, ...(a.reviewer ? { reviewer: a.reviewer } : {}), ...(a.focus ? { focus: a.focus } : {}), ...(a.full ? { full: true } : {}) })
+        .catch((e: Error & { extra?: { owner_must_allow_orgs?: string[] } }) => { if (e.extra?.owner_must_allow_orgs) return { refused: e.message, owner_must_allow_orgs: e.extra.owner_must_allow_orgs }; throw e; }),
     },
     {
       name: "code_review_runs",
@@ -152,7 +154,7 @@ export function configTools(d: {
       name: "code_review_configure",
       roles: ["reviewer-manager"],
       description:
-        "Change code review's setting in one reviewed settings change on your task (the kernel writes instance.yaml; the AI reviewer approves it; it applies within minutes). watch: repos to watch or change (defaults: standard on open, quick on push, deep on high risk, drafts off, forks when asked, $50 a month); unwatch: repos to stop watching; reviewers: { name: profile } to add or replace, { name: null } to remove; month_usd: the cap across repos. A repo in an org reviews can't yet post in as the owner is named back (owner_must_allow_orgs): tell the owner to allow it on the board's Reviews page. Raising spend, reviewing forks or drafts automatically, a repo in a new org, or a reviewer's model, finders or run_usd is the owner's to approve. Refused whole when the result wouldn't validate.",
+        "Change code review's setting in one reviewed settings change on your task (the kernel writes instance.yaml; the AI reviewer approves it; it applies within minutes). watch: repos to watch or change (defaults: standard on open, quick on push, deep on high risk, drafts off, forks when asked, $50 a month); unwatch: repos to stop watching; reviewers: { name: profile } to add or replace, { name: null } to remove; month_usd: the cap across repos. A repo in an org reviews can't yet post in as the owner is named back (owner_must_allow_orgs): tell the owner to allow it on the board's Reviews page. Raising spend, reviewing forks or drafts automatically, a repo in a new org, a reviewer's model, finders, run_usd, focus or context, or a repo's ignore globs is the owner's to approve. Refused whole when the result wouldn't validate.",
       inputSchema: {
         type: "object",
         properties: {

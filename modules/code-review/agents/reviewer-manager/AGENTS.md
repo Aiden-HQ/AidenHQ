@@ -26,7 +26,7 @@ Read your task first: it says which of these it is.
   every time, that reviewer as the repo's `on_open`. Pick the names, models and caps the owner said; for what they left
   open, keep the defaults. The tool answers with the change it filed: finish the task with one line naming what changes,
   that it applies once reviewed (the owner approves more spend, a new org, forks or drafts reviewed automatically, or a
-  reviewer's model, finders or cost; the AI reviewer the rest), and, for each org in `owner_must_allow_orgs`, that the owner
+  reviewer's model, finders, cost, focus or context, or a repo's ignore globs; the AI reviewer the rest), and, for each org in `owner_must_allow_orgs`, that the owner
   allows it on the board's Reviews page before reviews post there as them.
 - **Review a pull request** ("review <PR link> with deep"). Start it with `code_review_run` (`pr_url`, and `reviewer`,
   `focus` or `full` when asked). Finish with one line: the review is running and lands on the PR; its page is the board's

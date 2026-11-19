@@ -47,7 +47,8 @@ settings:
     type: object
     writers: [ reviewer-manager ]
     # What the Reviewer Manager's change may not do without the owner (Tier 2; it reads strangers' review threads): more spend,
-    # outside PRs or drafts reviewed by themselves, a repo in an org not watched before, a reviewer's model, size or run cost.
+    # outside PRs or drafts reviewed by themselves, a repo in an org not watched before, a reviewer's model, size, run cost, focus or
+    # context, or a repo's ignore globs (what would quietly weaken reviews).
     owner:
       - { path: month_usd, raise: true }
       - { path: "repos.*.month_usd", raise: true, default: 50 }
@@ -58,6 +59,9 @@ settings:
       - { path: "reviewers.*.verifier", change: true }
       - { path: "reviewers.*.finders", change: true }
       - { path: "reviewers.*.run_usd", change: true }
+      - { path: "reviewers.*.focus", change: true }
+      - { path: "reviewers.*.context", change: true }
+      - { path: "repos.*.ignore", change: true, default: [] }
     default:
       reviewers:
         quick: { engine: codex, model: "~deepseek/deepseek-flash-latest", effort: low, finders: 1, verify: false, run_usd: 0.5 }

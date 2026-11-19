@@ -85,12 +85,13 @@ const thread = (id: string, finding: string | null, author: string, resolved = f
 const owner = { get: async () => "gho_owner", signedIn: () => true };
 const appCovering = { reviewToken: async () => ({ token: "app_tok", login: "aidenhq-acme[bot]" }) };
 const noApp = { reviewToken: async () => undefined };
+const ORGS = new Set(["acme"]);
 const postArgs = (r: Review, extra: object = {}) => ({ repo: r.repo, pr: r.pr, head: r.head, review: r, identity: "auto", run: "run-1", resolve: [], ...extra });
 
 describe("posting", () => {
   it("posts one comment review with inline comments on changed lines, the status and one acknowledgement edited in place", async () => {
     const w = world();
-    const poster = new ReviewPoster(new GitHub(owner, new Set(), w.impl), owner, appCovering);
+    const poster = new ReviewPoster(new GitHub(owner, new Set(), w.impl), owner, appCovering, ORGS);
     const r = review([finding("f_on_line1", "src/pay.ts", 2), finding("f_off_line", "src/pay.ts", 90, { severity: "pre_existing" })]);
     const out = JSON.parse((await poster.execute("post", postArgs(r))).text);
     expect(out).toMatchObject({ identity: "app", inline: 1, listed: 1 });
@@ -110,15 +111,19 @@ describe("posting", () => {
 
   it("posts as the owner where the App isn't installed, and refuses when the App was asked for", async () => {
     const w = world();
-    const poster = new ReviewPoster(new GitHub(owner, new Set(), w.impl), owner, noApp);
+    const poster = new ReviewPoster(new GitHub(owner, new Set(), w.impl), owner, noApp, ORGS);
     const out = JSON.parse((await poster.execute("post", postArgs(review([])))).text);
     expect(out.identity).toBe("owner");
     await expect(poster.execute("post", postArgs(review([]), { identity: "app" }))).rejects.toBeInstanceOf(GitHubRefused);
+    // Outside the comment orgs the owner's sign-in posts nothing (post, notice, statuses alike: identity() is their one door).
+    const outside = new ReviewPoster(new GitHub(owner, new Set(), w.impl), owner, noApp, new Set(["othercorp"]));
+    await expect(outside.identity("acme", "payments", "auto")).rejects.toThrow(/posts only in othercorp/);
+    await expect(outside.execute("post", postArgs(review([])))).rejects.toBeInstanceOf(GitHubRefused);
   });
 
   it("refuses a review that names another repo, pull request or head than the caller's target", async () => {
     const w = world();
-    const poster = new ReviewPoster(new GitHub(owner, new Set(), w.impl), owner, appCovering);
+    const poster = new ReviewPoster(new GitHub(owner, new Set(), w.impl), owner, appCovering, ORGS);
     for (const wrong of [{ repo: "acme/other" }, { pr: 13 }, { head: "d".repeat(40) }]) {
       expect(() => poster.preview("post", postArgs(review([]), wrong))).toThrow(/not acme|not /);
       await expect(poster.execute("post", postArgs(review([]), wrong))).rejects.toBeInstanceOf(GitHubRefused);
@@ -128,17 +133,17 @@ describe("posting", () => {
 
   it("refuses a review of a head that moved, and never repeats a finding it already commented", async () => {
     const moved = world({ headSha: "c".repeat(40) });
-    await expect(new ReviewPoster(new GitHub(owner, new Set(), moved.impl), owner, appCovering).execute("post", postArgs(review([])))).rejects.toThrow(/head moved/);
+    await expect(new ReviewPoster(new GitHub(owner, new Set(), moved.impl), owner, appCovering, ORGS).execute("post", postArgs(review([])))).rejects.toThrow(/head moved/);
     expect(moved.calls.some((c) => c.method === "POST")).toBe(false);
 
     const w = world({ threads: [thread("T1", "f_on_line1", "aidenhq-acme")] });
-    const out = JSON.parse((await new ReviewPoster(new GitHub(owner, new Set(), w.impl), owner, appCovering).execute("post", postArgs(review([finding("f_on_line1", "src/pay.ts", 2)])))).text);
+    const out = JSON.parse((await new ReviewPoster(new GitHub(owner, new Set(), w.impl), owner, appCovering, ORGS).execute("post", postArgs(review([finding("f_on_line1", "src/pay.ts", 2)])))).text);
     expect(out).toMatchObject({ inline: 0, earlier: 1 });
   });
 
   it("resolves only Aiden's own open threads for findings no longer reported", async () => {
     const w = world({ threads: [thread("T_ours", "f_fixed_1", "aidenhq-acme"), thread("T_person", null, "alice"), thread("T_forged", "f_forged_1", "alice")] });
-    const poster = new ReviewPoster(new GitHub(owner, new Set(), w.impl), owner, appCovering);
+    const poster = new ReviewPoster(new GitHub(owner, new Set(), w.impl), owner, appCovering, ORGS);
     const out = JSON.parse((await poster.execute("post", postArgs(review([]), { resolve: ["f_fixed_1", "f_forged_1"] }))).text);
     expect(out.resolved).toBe(1);
     const resolves = w.calls.filter((c) => c.path === "/graphql" && String(c.body.query).includes("resolveReviewThread"));
@@ -150,7 +155,7 @@ describe("posting", () => {
 
   it("a notice is the acknowledgement and an advisory status, from fixed words", async () => {
     const w = world();
-    const poster = new ReviewPoster(new GitHub(owner, new Set(), w.impl), owner, noApp);
+    const poster = new ReviewPoster(new GitHub(owner, new Set(), w.impl), owner, noApp, ORGS);
     const n = { repo: "acme/payments", pr: 12, head: HEAD, phase: "skipped", reason: "budget_repo" };
     expect(poster.preview("notice", n).facts.details).toMatch(/monthly review budget/);
     await poster.execute("notice", n);
@@ -159,7 +164,7 @@ describe("posting", () => {
   });
 
   it("previews exactly the text it posts and binds the record to the head", () => {
-    const poster = new ReviewPoster(new GitHub(owner, new Set(), world().impl), owner, noApp);
+    const poster = new ReviewPoster(new GitHub(owner, new Set(), world().impl), owner, noApp, ORGS);
     const p = poster.preview("post", postArgs(review([finding("f_on_line1", "src/pay.ts", 2)])));
     expect(p.facts.details).toContain("<!-- aidenhq-finding: f_on_line1 -->");
     expect(p.targets).toEqual({ "acme/payments#12": { repo: "acme/payments", ref: "pull/12", commit: HEAD, base_sha: BASE } });

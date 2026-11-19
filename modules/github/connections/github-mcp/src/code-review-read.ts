@@ -54,7 +54,14 @@ function shape(repo: string, p: GhPr): PullRequest {
 }
 
 export class CodeReviewReader {
-  constructor(private readonly github: GitHub) {}
+  /** `identity`: who a review on owner/repo would post as (review-post.ts identity, auto), or null when nobody may. */
+  constructor(private readonly github: GitHub, private readonly identity: (owner: string, repo: string) => Promise<"app" | "owner" | null> = async () => null) {}
+
+  /** Whether a review may post on the repo, and as whom: the App where installed, else the owner's sign-in in the comment orgs. */
+  async postable(repo: string): Promise<{ identity: "app" | "owner" | null; org: string }> {
+    const [owner, name] = repo.toLowerCase().split("/");
+    return { identity: await this.identity(owner!, name!), org: owner! };
+  }
 
   async open(repo: string): Promise<PullRequest[]> {
     const out: PullRequest[] = [];
@@ -130,7 +137,13 @@ export async function codeReviewRoute(reader: CodeReviewReader, op: string, q: U
     if (op === "pr") return { status: 200, body: { pr: await reader.get(repo, numberArg(q.get("number"))) } };
     if (op === "comments") return { status: 200, body: await reader.comments(repo, sinceArg(q.get("since"))) };
     if (op === "compare") return { status: 200, body: await reader.compare(repo, shaArg(q.get("base")), shaArg(q.get("head"))) };
-    if (op === "permission") return { status: 200, body: { permission: await reader.permission(repo, loginArg(q.get("login"))) } };
+    if (op === "postable") return { status: 200, body: await reader.postable(repo) };
+    // A login that isn't one (a bot's, an empty or deleted user's) has no permission: an answer, never an error to retry.
+    if (op === "permission") {
+      let login: string;
+      try { login = loginArg(q.get("login")); } catch { return { status: 200, body: { permission: "none" } }; }
+      return { status: 200, body: { permission: await reader.permission(repo, login) } };
+    }
     return { status: 404, body: { error: "no such operation" } };
   } catch (err) {
     const detail = (err as Error).message.slice(0, 300);

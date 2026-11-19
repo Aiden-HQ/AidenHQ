@@ -248,6 +248,9 @@ export function frontmatter(text) {
   return m ? { meta: YAML.parse(m[1]) ?? {}, body: text.slice(m[0].length) } : { meta: {}, body: text };
 }
 
+/** A value's shape: list, map, or its JSON type. */
+const shapeOf = (v) => (Array.isArray(v) ? "list" : v && typeof v === "object" ? "map" : typeof v);
+
 /** settings.<key>.owner: what an agent's change to the setting may not do without the owner (kernel/src/apply-tier.ts ownerRaises). */
 function ownerRules(file, key, rules) {
   const ok = (r) => r && typeof r === "object" && /^[\w*-]+(\.[\w*-]+)*$/.test(String(r.path)) && Object.keys(r).every((f) => ["path", "raise", "change", "to", "new", "before", "default"].includes(f)) && ["raise", "change", "to", "new"].filter((f) => f in r).length === 1 && (r.raise ?? r.change ?? r.new ?? true) === true;
@@ -652,6 +655,9 @@ export function compile(productDir, instanceDir, { revision, bundleState, oldBun
   for (const [name, defs] of declaredSettings) {
     for (const [k, d] of Object.entries(defs)) {
       if (d?.required && settings[k] == null) fail(`setting ${k} is required by ${name}`);
+      // A value is the shape of its default (a list stays a list, a map a map, a number a number): a consumer that splits a
+      // string where it expects a list, or a tiering rule that compares lists, can't be handed another shape.
+      if (d && "default" in d && d.default != null && settings[k] != null && shapeOf(settings[k]) !== shapeOf(d.default)) fail(`settings.${k}: a ${shapeOf(d.default)}, like its default (got a ${shapeOf(settings[k])})`);
       // `values`: the allowed values (a list setting must hold at least one, each allowed).
       if (d?.values && settings[k] != null) {
         const v = [settings[k]].flat();

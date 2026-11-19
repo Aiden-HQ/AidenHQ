@@ -51,6 +51,12 @@ test("the shipped modules declare these rules: an agent's new comment org, or a 
     base: { "instance.yaml": YAML.stringify({ settings: { [k]: b } }) }, head: { "instance.yaml": YAML.stringify({ settings: { [k]: h } }) } })).tier;
   assert.equal(t("github_comment_orgs", ["acme"], ["acme", "othercorp"]), 2);
   assert.equal(t("github_comment_orgs", ["acme"], ["acme", "othercorp"], false), 1);
+  // Another shape than the default's (a string the consumer would split into orgs) is the owner's.
+  assert.equal(t("github_comment_orgs", ["acme"], "acme,evil"), 2);
+  // Weakening a review quietly: a reviewer's focus or context, a repo's ignore globs.
+  assert.equal(t("code_review", { repos: [{ repo: "acme/api" }] }, { repos: [{ repo: "acme/api", ignore: ["**"] }] }), 2);
+  assert.equal(t("code_review", {}, { reviewers: { deep: { ...shipped.code_review.default.reviewers.deep, focus: "only typos" } } }), 2);
+  assert.equal(t("code_review", {}, { reviewers: { deep: { ...shipped.code_review.default.reviewers.deep, context: ["docs/x.md"] } } }), 2);
   assert.equal(t("code_review", { repos: [{ repo: "acme/api" }] }, { repos: [{ repo: "acme/api" }, { repo: "acme/web", month_usd: 500 }] }), 2);
   assert.equal(t("code_review", { repos: [{ repo: "acme/api" }] }, { repos: [{ repo: "acme/api" }, { repo: "acme/web" }] }), 1);
   assert.equal(t("code_review", {}, { reviewers: { deep: { ...shipped.code_review.default.reviewers.deep, finders: 6 } } }), 2);

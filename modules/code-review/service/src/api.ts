@@ -61,7 +61,7 @@ export function handler(engine: Engine, token: () => string) {
       if (route === "GET /github/prs") return send(res, 200, { prs: engine.recent() });
       return send(res, 404, { error: "not_found", detail: route.slice(0, 100) });
     } catch (e) {
-      if (e instanceof RequestError) return send(res, 400, { error: "bad_request", detail: e.message });
+      if (e instanceof RequestError) return send(res, 400, { error: "bad_request", detail: e.message, ...e.extra });
       return send(res, 500, { error: "internal", detail: String((e as Error).message).slice(0, 200) });
     }
   };

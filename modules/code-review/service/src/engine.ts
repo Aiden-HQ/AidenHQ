@@ -62,7 +62,13 @@ export type EngineDeps = {
   db: DatabaseSync; config: () => Config; source: PrSource; runner: ReviewRunner; poster: Poster;
   emit?: (f: FactIn) => void; log?: Log; now?: () => number;
 };
-export class RequestError extends Error { status = 400; }
+export class RequestError extends Error {
+  status = 400;
+  extra: Record<string, unknown>;
+  constructor(message: string, extra: Record<string, unknown> = {}) { super(message); this.extra = extra; }
+}
+/** A read GitHub answered with a refusal (a 4xx bar 408 and 429): retrying won't change it. */
+const permanent = (e: unknown) => { const s = (e as { status?: number }).status; return typeof s === "number" && s >= 400 && s < 500 && s !== 408 && s !== 429; };
 
 const month = (ms: number) => new Date(ms).toISOString().slice(0, 7);
 
@@ -395,8 +401,9 @@ export function createEngine(d: EngineDeps) {
       try {
         await command(cfg, c);
       } catch (e) {
-        log("review command not handled; the next tick tries again", { repo: cfg.repo, pr: c.number, err: String((e as Error).message).slice(0, 200) });
-        return;
+        // A refusal (a 4xx) is final: the comment is seen and passed over. Anything else is tried again next tick.
+        if (!permanent(e)) return void log("review command not handled; the next tick tries again", { repo: cfg.repo, pr: c.number, err: String((e as Error).message).slice(0, 200) });
+        log("review command refused by GitHub; passed over", { repo: cfg.repo, pr: c.number, err: String((e as Error).message).slice(0, 200) });
       }
       run("INSERT OR IGNORE INTO seen (repo, comment) VALUES (?, ?)", cfg.repo, c.id);
     }
@@ -436,6 +443,9 @@ export function createEngine(d: EngineDeps) {
     let p: PullRequest;
     try { p = await d.source.get(m[1]!.toLowerCase(), Number(m[2])); } catch (e) { throw new RequestError(`that PR can't be read: ${String((e as Error).message).slice(0, 200)}`); }
     if (!p.open) throw new RequestError("that PR is closed");
+    // Only where a review can post: the App installed there, or the owner's sign-in in the comment orgs (the owner allows an org).
+    const can = await d.source.postable(p.repo).catch((e) => { throw new RequestError(`can't tell who would post on ${p.repo}: ${String((e as Error).message).slice(0, 200)}`); });
+    if (!can.identity) throw new RequestError(`reviews can't post on ${p.repo}: the GitHub App isn't installed there and ${can.org} isn't among the orgs the owner allows reviews to post in as them (the board's Reviews page)`, { owner_must_allow_orgs: [can.org] });
     upsertPr(p);
     return p;
   }

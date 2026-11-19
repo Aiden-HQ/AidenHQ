@@ -73,9 +73,9 @@ const mcpUrl = process.env.GITHUB_MCP_URL || "https://api.githubcopilot.com/mcp/
 const auth = signIn({ clientId: (process.env.GITHUB_OAUTH_CLIENT_ID ?? "").trim(), mcpUrl, stateDir, oldTokenFile: process.env.GITHUB_TOKEN_FILE });
 const github = new GitHub(ownerToken(auth), commentOrgs, fetch, projects);
 // Code review's posting (review-post.ts): the code-review module's executor reaches it through /internal/review below.
-const poster = new ReviewPoster(github, ownerToken(auth), projects);
+const poster = new ReviewPoster(github, ownerToken(auth), projects, commentOrgs);
 // Code review's watcher reads (code-review-read.ts), through /internal/code-review below.
-const crReader = new CodeReviewReader(github);
+const crReader = new CodeReviewReader(github, (owner, repo) => poster.identity(owner, repo, "auto").then((w) => w.kind, () => null));
 // GitHub's own MCP server (connection github_official) and the board's sign-in endpoints, on their own port.
 const authKeyFile = process.env.GITHUB_AUTH_TOKEN_FILE;
 const official = officialProxy({

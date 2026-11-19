@@ -34,6 +34,12 @@ it("only the code-review module may call; PRs, PR comments and permission come b
 
   const perm = await codeReviewRoute(reader, "permission", new URLSearchParams({ repo: "Acme/App", login: "ghost" }));
   expect(perm).toEqual({ status: 200, body: { permission: "none" } });
+  // A login that isn't a GitHub login (a bot's "x[bot]", an empty one) has no permission: an answer, not a 400 to retry.
+  for (const login of ["dependabot[bot]", ""]) expect(await codeReviewRoute(reader, "permission", new URLSearchParams({ repo: "Acme/App", login }))).toEqual({ status: 200, body: { permission: "none" } });
+  // Whether a review may post there, and as whom (the poster's own rule).
+  const gated = new CodeReviewReader(reader["github"], async (owner) => (owner === "acme" ? "owner" : null));
+  expect((await codeReviewRoute(gated, "postable", new URLSearchParams({ repo: "Acme/App" }))).body).toEqual({ identity: "owner", org: "acme" });
+  expect((await codeReviewRoute(gated, "postable", new URLSearchParams({ repo: "other/x" }))).body).toEqual({ identity: null, org: "other" });
   expect((await codeReviewRoute(reader, "compare", new URLSearchParams({ repo: "Acme/App", base: "a".repeat(40), head: "b".repeat(40) }))).body).toEqual({ merge_base: "a".repeat(40), status: "ahead" });
   expect((await codeReviewRoute(reader, "repos", new URLSearchParams({ q: "app" }))).body).toEqual({ repos: [{ repo: "Acme/App", private: true, url: "https://github.com/Acme/App" }] });
   expect((await codeReviewRoute(reader, "pr", new URLSearchParams({ repo: "Acme/App", number: "x" }))).status).toBe(400);

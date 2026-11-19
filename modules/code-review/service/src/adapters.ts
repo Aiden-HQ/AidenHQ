@@ -21,7 +21,8 @@ export function githubSource(base: string, token: () => string, fetcher: typeof 
   const get = async (path: string, q: Record<string, string | number>) => {
     const qs = new URLSearchParams(Object.entries(q).map(([k, v]) => [k, String(v)]));
     const r = await fetcher(`${base.replace(/\/+$/, "")}/internal/code-review/${path}?${qs}`, { headers: { authorization: `Bearer ${token()}` }, signal: AbortSignal.timeout(30_000) });
-    if (!r.ok) throw new Error(`github-mcp ${path}: ${r.status} ${(await r.text()).slice(0, 200)}`);
+    // The status rides on the error: a 4xx (bar 408 and 429) is an answer, never retried; anything else is transient.
+    if (!r.ok) throw Object.assign(new Error(`github-mcp ${path}: ${r.status} ${(await r.text()).slice(0, 200)}`), { status: r.status });
     return r.json();
   };
   return {
@@ -30,6 +31,7 @@ export function githubSource(base: string, token: () => string, fetcher: typeof 
     comments: async (repo, since) => (await get("comments", { repo, since })) as { comments: PrComment[]; cursor: string },
     permission: async (repo, login) => ((await get("permission", { repo, login })) as { permission: Permission }).permission,
     compare: async (repo, base, head) => (await get("compare", { repo, base, head })) as { merge_base: string; status: "ahead" },
+    postable: async (repo) => (await get("postable", { repo })) as { identity: "app" | "owner" | null; org: string },
     repos: async (q) => ((await get("repos", { q })) as { repos: { repo: string; private: boolean; url?: string }[] }).repos,
   };
 }
