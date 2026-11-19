@@ -27,7 +27,8 @@
 //                              {reason, until?, on?, task?}: the calling job's own task waits
 //                              (idle.ts): a work.waiting fact and a wake at `until`
 //   POST /v1/wakes             (a module with role kernel.wake) a scheduled wake {task, agent?, at?, cause?, id?}; with
-//                              {task, text}: a labelled wake notice on the task now, which wakes its agent (no scheduled row)
+//                              {task, text}: a labelled wake notice on the task now, which wakes its agent (no scheduled row); with
+//                              to: "asker", on the task's open parent instead when it has one
 //   POST /v1/wakes/claim, POST /v1/wakes/:key/drop  (a module with role kernel.jobs) claim inbox rows; give one up
 //   POST /v1/routines/cancel   (a module with role kernel.jobs) {task, why: coalesced|stale, body}: an open or blocked routine run of an
 //                              agent it dispatches, cancelled as that agent (wakes.ts)
@@ -555,6 +556,11 @@ export function createBackplane({ idle, facts, whoami, asserter, proxy, cp, boar
             if (!owner) throw fail(503, "unavailable", "the control plane is off");
             const task = typeof b.task === "string" ? b.task.slice(0, 100) : "", text = neutral(b.text).trim().slice(0, 2000);
             if (!task || !text) throw fail(400, "bad_request", "send {task, text}");
+            // `to: "asker"`: whoever asked for the task hears it, its open parent (asker.tell's open-parent path), else the task itself.
+            if (b.to === "asker") {
+              const parent = await owner("GET", `/api/issues/${encodeURIComponent(task)}`).then((i) => (i.status === 200 ? i.json?.parentId : undefined), () => undefined);
+              if (parent && (await wakeNotice(owner, String(parent), text).catch(() => "missing")) === "posted") return log("wake notice", { module: w.module, task: parent }), send(res, 200, { posted: true, to: "parent" });
+            }
             const r = await wakeNotice(owner, task, text).catch((e: Error) => { throw fail(502, "upstream", e.message); });
             if (r === "missing") throw fail(404, "not_found", `no task ${task}`);
             if (r === "closed") return send(res, 200, { posted: false, closed: true });

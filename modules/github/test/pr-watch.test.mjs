@@ -115,6 +115,7 @@ async function rig(t, { taskStatus = "in_progress", behind = 0, steps = [{ name:
     if (path.startsWith("/repos/acme/app/compare/")) return { status: 200, body: { behind_by: behind } };
     if (path.startsWith("/repos/acme/app/actions/jobs/")) return { status: 200, body: { steps } };
     if (path.endsWith("/update-branch")) return { status: update, body: {} };
+    if (path.startsWith("/repos/acme/app/check-runs/")) return { status: 200, body: { output: { title: "1 test failed", summary: "expected 2, got `3`" } } };
     if (method === "PATCH" && closeFails-- > 0) return { status: 502, body: {} };
     return { status: 200, body: {} };
   };
@@ -219,4 +220,30 @@ test("a Dependabot PR beyond a full page of open PRs keeps its task until GitHub
   state10 = "closed";
   await watch.tick();
   assert.deepEqual(closes, ["/v1/tasks/t-10/close"]);
+});
+
+test("the CI breaker: a check red again on a new head, or a third red round, tells the asker once and stops the red wakes; green resets it", async (t) => {
+  const c = await rig(t);
+  const red = (head, name = "test") => c.agentPr(6, { headRefOid: head, commits: { nodes: [{ commit: { statusCheckRollup: redChecks({ name }) } }] } });
+  c.set([red("h1")]);
+  await c.watch.tick();
+  assert.equal(c.woke.length, 1, "the first red round wakes the task");
+  c.set([red("h2")]);
+  await c.watch.tick();
+  assert.equal(c.woke.length, 2);
+  assert.deepEqual([c.woke[1].task, c.woke[1].to], ["ACME-6", "asker"], "the same check red on a second head: the asker is told");
+  assert.match(c.woke[1].text, /CI breaker on ACME-6.*`test` failed again/);
+  assert.match(c.woke[1].text, /```text\ntest\n\n1 test failed\nexpected 2, got '3'\n```/, "the failure is fenced as data");
+  c.set([red("h3")]);
+  await c.watch.tick();
+  await c.watch.tick();
+  assert.equal(c.woke.length, 2, "told once; the task isn't woken for red checks any more");
+  // A green head resets it: three red rounds of different checks trip it again on the third.
+  c.set([c.agentPr(6, { headRefOid: "h4" })]);
+  await c.watch.tick();
+  assert.match(c.woke.at(-1).text, /checks are green at `h4`/);
+  const n = c.woke.length;
+  for (const [head, name] of [["h5", "a"], ["h6", "b"], ["h7", "c"]]) { c.set([red(head, name)]); await c.watch.tick(); }
+  assert.deepEqual(c.woke.slice(n).map((w) => w.to ?? "task"), ["task", "task", "asker"]);
+  assert.match(c.woke.at(-1).text, /3 rounds of red checks/);
 });
