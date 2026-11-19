@@ -355,9 +355,10 @@ export function checks(d: { kernel: KernelClient; apps: <T>(path: string) => Pro
       const items = ((await d.kernel.call("GET", "/v1/flow?idle=1")).items ?? []) as { task: string; identifier: string | null; since: string; reason: string }[];
       for (const i of items.filter((x) => x.reason === "orphaned" && age(x.since, t) > IDLE_MS && !exempt({ identifier: x.identifier, originKind: null }) && !suppressed(x.task, `stuck:${x.task}`))) {
         const task = await read(i.task);
-        // Parked in backlog, or owned by nobody: not someone's stuck work (the inbox, review-log and issues tasks are idle by design).
+        // Parked in backlog, owned by nobody, or owned by the owner (a person, not an agent's work): not someone's stuck work
+        // (the inbox, review-log and issues tasks are idle by design; owner-assigned todos are the stale follow-up check's).
         // A task that can't be read stays flagged: a failed lookup never hides an incident.
-        if (task && (task.status === "backlog" || (!task.assigneeAgentId && !task.assigneeUserId))) continue;
+        if (task && (task.status === "backlog" || !task.assigneeAgentId)) continue;
         out.push({ key: i.task, reason: `task ${i.identifier ?? i.task} idle for ${mins(age(i.since, t))} with nothing running, filed or waiting on it (${slug(i.reason)})` });
       }
       return out;
