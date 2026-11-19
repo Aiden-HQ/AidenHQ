@@ -28,6 +28,11 @@ export interface SourceRecords { where: string; records: Record<string, unknown>
 export interface ReviewRequest {
   card: ReviewCard; diff: string; files?: Files; chain?: string; siblings?: string; sources?: SourceRecords;
   requesterModel?: string; panel?: boolean; previous?: string[]; relift?: string;
+  /**
+   * The task grader's latest verdict that sent the work back, rendered by the kernel from the grading store: each rubric
+   * criterion's number and met, and the rubric's own text for an unmet one. Absent: no such verdict or no grading module.
+   */
+  grader_note?: string;
   /** A PR's Evidence section (the author's account of how it verified the change): sent for pr and merge cards only. */
   evidence?: string;
   /** `decisions`: the instance's decisions.md, read by the requester from the instance repo's default branch. */
@@ -39,7 +44,7 @@ export interface Verdict { decision: "approve" | "reject" | "escalate"; code?: s
 /** The model's "I can't tell" (a second reviewer decides; both unsure, the request goes back to the agent). */
 export const UNSURE = "reviewer_unsure";
 /** The request fields a reviewer reads; anything else in a request (a policy, a model) is dropped. */
-export const REQUEST_FIELDS = ["card", "diff", "files", "chain", "siblings", "sources", "decisions", "requesterModel", "panel", "previous", "relift", "evidence"] as const;
+export const REQUEST_FIELDS = ["card", "diff", "files", "chain", "siblings", "sources", "decisions", "requesterModel", "panel", "previous", "relift", "evidence", "grader_note"] as const;
 
 /** The module's reviewer: one request in, one verdict out. `onPanel` records that the change needs a second reviewer. */
 export type Review = (req: ReviewRequest, ctx: { modelToken: string; onPanel: () => Promise<void> }) => Promise<Verdict>;

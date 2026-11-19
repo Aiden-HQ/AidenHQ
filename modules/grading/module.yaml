@@ -22,6 +22,7 @@ checks:
     at: task.finish
     post: http://grading:8096/check/finish
     rubric: http://grading:8096/check/rubric # a task a module files with {deliverable, rubric} (POST /v1/tasks) is graded from its filing
+    grade: http://grading:8096/check/grade # the latest verdict that sent the task's work back: the AI reviewer reads it (kernel/src/review-loop.ts)
     auth: grading_check_key
     label: grading
 # PR and issue evidence: a read token for the instance's known repositories (agents org, product, github_orgs, maintainer_repos) from the kernel's broker (POST /v1/codehost/token, with this module's

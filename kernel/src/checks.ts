@@ -19,8 +19,9 @@ import type { Resolver } from "./net.ts";
 import { gateMode } from "./gates.ts";
 import { fail } from "./proxy.ts";
 import { noteFact, openFacts } from "./facts.ts";
+import { parseGraderNote, type GraderNote } from "./grader-note.ts";
 
-export type Check = { module: string; at: string; url: string; rubric?: string; auth_secret: string; agents?: string[]; label?: string; mode?: "observe" };
+export type Check = { module: string; at: string; url: string; rubric?: string; grade?: string; auth_secret: string; agents?: string[]; label?: string; mode?: "observe" };
 type Verdict = { verdict: "ok" | "hold" | "pending" | "reopen" | "deny"; reason?: string; until?: string; state?: string; status?: number; unlabel?: boolean; accepts?: boolean };
 export type Finish = { pass: true } | { pass: false; held: true; state: string; reason: string } | { pass: false; reopened: true; reason: string };
 type Issue = { id: string; identifier?: string; companyId?: string; status?: string; assigneeAgentId?: string | null; assigneeUserId?: string | null; createdByAgentId?: string | null; parentId?: string | null; labelIds?: string[]; labels?: { id: string }[]; executionPolicy?: Record<string, unknown> | null };
@@ -247,6 +248,16 @@ export function createChecks({ db, registry, owner, secret, resolver, agentKey =
     if (!takers.length) throw fail(409, "conflict", "no check takes a rubric, so this task can't be graded");
     for (const [id, c] of takers) await ask(id, c, { task, module, ...b }, c.rubric);
   }
-  return { finish, resolve, held, rubric };
+  /**
+   * The latest verdict that sent a task's work back, for the AI reviewer (review-loop.ts): asked of the enforcing finish check
+   * that keeps one (`grade:`), with its own key, and checked here. None keeps one: undefined, and the reviewer reads no note.
+   */
+  async function grade(task: string): Promise<GraderNote | undefined> {
+    const keeper = finishing().find(([, c]) => c.grade && c.mode !== "observe");
+    if (!keeper) return undefined;
+    const v = (await ask(keeper[0], keeper[1], { task: { id: task } }, keeper[1].grade)) as Verdict & { grade?: unknown };
+    return parseGraderNote(v.grade);
+  }
+  return { finish, resolve, held, rubric, grade };
 }
 export type Checks = ReturnType<typeof createChecks>;
