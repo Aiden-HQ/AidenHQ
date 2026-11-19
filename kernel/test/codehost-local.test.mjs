@@ -12,6 +12,7 @@ import { fileURLToPath } from "node:url";
 import YAML from "yaml";
 import { checkJobs as compileCheckJobs } from "../../scripts/modules.mjs";
 import { localHost, LOCAL_KINDS } from "../../modules/codehost-local/src/host.ts";
+import { localMergePass } from "../src/localmerge.ts";
 import { createChecks } from "../src/checkjobs.ts";
 import { openRecords } from "../src/records.ts";
 import { createWrites } from "../src/writes.ts";
@@ -124,4 +125,153 @@ test("local-only: create a repo, publish a change request, merge it at its head 
 
   // Repos on two code hosts in one write are refused before anything is filed.
   await assert.rejects(writes.request(job, { kind: "codehost.close", args: { prs: [{ repo: "local/hello", number: 1 }, { repo: "acme/app", number: 2 }] } }), /more than one code host/);
+});
+
+test("a green change asks for its merge itself, as the task's agent: Tier 1 local-merge, and the host merges on the reviewer's yes", async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "codehost-local-auto-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const tasks = join(dir, "tasks");
+  for (const d of [join(tasks, "TASK-1"), join(dir, "scratch"), join(dir, "checks")]) mkdirSync(d, { recursive: true });
+  const checkJobs = createChecks({
+    db: new DatabaseSync(":memory:"), secret: () => "receipt-secret", recipes: () => compileCheckJobs("codehost-local", YAML.parse(readFileSync(join(root, "module.yaml"), "utf8")), root),
+    box: { run: async () => ({ exit: 0, out: "ok", timedOut: false }) }, snapshot: () => async () => {}, modelToken: () => "", gatewayUrl: "", workDir: join(dir, "checks"), log: () => {},
+  });
+  const localChecks = new Map();
+  const host = localHost({
+    root: join(dir, "codehost"), tasksDir: tasks, scratchDir: join(dir, "scratch"), waitMs: 5_000,
+    checks: async (repo, head, base, retry) => {
+      const key = `${repo} ${head} ${base}`, had = localChecks.get(key);
+      const v = had && !retry ? await checkJobs.get("codehost-local", had) : checkJobs.start("codehost-local", { repo, head, run: "change", spec: { base } });
+      localChecks.set(key, v.id);
+      return [{ ok: v.state === "done" && checkJobs.verify(v.receipt, { repo, head, run: "change" }).ok, pending: v.state === "running", missing: v.state === "error", summary: v.receipt?.summary ?? v.error ?? v.state }];
+    },
+  });
+  const records = openRecords(join(dir, "kernel.db"));
+  const writes = createWrites({
+    records, registry: () => LOCAL_KINDS, connections: () => ({}), secret: () => "", resolver: {}, replay: async () => ({}),
+    executors: () => ({ "codehost-local": host.executor }), onTask: { open: async () => true, notify: async () => {} },
+  });
+  const job = { kind: "run", agent: "agent-1", key: "engineer", name: "engineer", roles: [], tools: {}, writes: Object.keys(LOCAL_KINDS), task: "TASK-1", workspace: "TASK-1", credential: "" };
+  await host.executor.execute({ kind: "codehost-local.create_repo", args: { repo: "local/app" } });
+  const served = await host.bundle("local/app");
+  const ws = join(tasks, "TASK-1", "app");
+  git(dir, "clone", "--quiet", served.file, ws);
+  served.done();
+  git(ws, "switch", "--quiet", "-c", "greet");
+  writeFileSync(join(ws, "hello.txt"), "hi\n");
+  git(ws, "add", "."); git(ws, "commit", "--quiet", "-m", "Say hi");
+  const head = git(ws, "rev-parse", "HEAD");
+  mkdirSync(join(tasks, "TASK-1", ".aidenhq", "bundles"), { recursive: true });
+  git(ws, "bundle", "create", "--quiet", join(tasks, "TASK-1", ".aidenhq", "bundles", `${head}.bundle`), "refs/heads/greet");
+  const pr = await writes.wait((await writes.request(job, { kind: "codehost.pr", args: { only: [{ repo: "local/app", branch: "greet", sha: head }], text: { title: "Say hi", body: "Why." } } })).id, 15_000);
+  assert.equal(pr.state, "done", pr.outcome?.text);
+  const change = (await host.open())[0];
+  assert.equal(change.url, "codehost:local/app/change/1");
+
+  // The pass: no Engineer asked. It files the merge as the task's agent, Tier 1 local-merge, and the AI reviewer's yes lands it.
+  const out = await localMergePass({
+    open: () => host.open(), task: async () => ({ status: "in_progress", assigneeAgentId: "agent-1" }),
+    grant: () => ({ key: "engineer" }), prior: () => [],
+    file: (b) => writes.fileLocalMerge(b), restart: async (x) => { throw new Error(`nothing to restart: ${x.url}`); },
+  });
+  assert.deepEqual(out.filed.map((f) => [f.change, f.tier, f.state]), [["codehost:local/app/change/1", 1, "review"]]);
+  const rec = records.get(out.filed[0].record);
+  assert.deepEqual([rec.kind, rec.rule, rec.requester.agent, rec.task, rec.args.prs[0].head], ["codehost-local.merge", "local-merge", "agent-1", "TASK-1", head]);
+  assert.match(rec.card.details, /\+hi/);
+  records.review(rec.id, rec.digest, { decision: "approve", by: "reviewer:test", note: "what was asked" });
+  await writes.run(rec.id);
+  const done = await writes.wait(rec.id, 15_000);
+  assert.equal(done.state, "done", done.outcome?.text);
+  assert.equal(git(dir, "--git-dir", host.bare("local/app"), "show", "main:hello.txt"), "hi");
+  // It is no longer open, so a second pass files nothing more.
+  assert.deepEqual(await host.open(), []);
+  const again = await localMergePass({
+    open: () => host.open(), task: async () => ({ status: "in_progress", assigneeAgentId: "agent-1" }),
+    grant: () => ({ key: "engineer" }), prior: () => records.list(["review", "owner", "approved", "claimed", "done", "failed", "stale", "rejected"], 500, { task: "TASK-1", kinds: ["codehost-local.merge"] }),
+    file: (b) => writes.fileLocalMerge(b), restart: async () => { throw new Error("nothing to restart"); },
+  });
+  assert.deepEqual([again.filed, again.restarted], [[], []]);
+});
+
+test("a local merge's refusals, through the real host: a moved head, a check missing or not green on that head, and a base that conflicts", async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "codehost-local-refuse-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const tasks = join(dir, "tasks");
+  for (const d of [join(tasks, "TASK-1"), join(dir, "scratch")]) mkdirSync(d, { recursive: true });
+  // The checks seam names what is green, by head and base: the merge's refusals are the host's, never a box's.
+  const green = new Set();
+  const host = localHost({
+    root: join(dir, "codehost"), tasksDir: tasks, scratchDir: join(dir, "scratch"), waitMs: 300,
+    checks: async (repo, head, base) => [{ ok: green.has(`${head}|${base}`), pending: false, summary: "a receipt" }],
+  });
+  await host.executor.execute({ kind: "codehost-local.create_repo", args: { repo: "local/app" } });
+  const records = openRecords(join(dir, "kernel.db"));
+  const writes = createWrites({
+    records, registry: () => LOCAL_KINDS, connections: () => ({}), secret: () => "", resolver: {}, replay: async () => ({}),
+    executors: () => ({ "codehost-local": host.executor }), onTask: { open: async () => true, notify: async () => {} },
+  });
+  const job = { kind: "run", agent: "agent-1", key: "engineer", name: "engineer", roles: [], tools: {}, writes: Object.keys(LOCAL_KINDS), task: "TASK-1", workspace: "TASK-1", credential: "" };
+  const ws = join(tasks, "TASK-1", "app");
+  const served = await host.bundle("local/app");
+  git(dir, "clone", "--quiet", served.file, ws); served.done();
+  git(ws, "switch", "--quiet", "-c", "feat");
+  writeFileSync(join(ws, "a.txt"), "one\n"); git(ws, "add", "."); git(ws, "commit", "--quiet", "-m", "a");
+  const first = git(ws, "rev-parse", "HEAD");
+  const push = async (sha) => {
+    mkdirSync(join(tasks, "TASK-1", ".aidenhq", "bundles"), { recursive: true });
+    git(ws, "bundle", "create", "--quiet", join(tasks, "TASK-1", ".aidenhq", "bundles", `${sha}.bundle`), "refs/heads/feat");
+    await writes.wait((await writes.request(job, { kind: "codehost.pr", args: { only: [{ repo: "local/app", branch: "feat", sha }], text: { title: "a", body: "b" } } })).id, 15_000);
+  };
+  await push(first);
+  const merge = (sha) => writes.request(job, { kind: "codehost.merge", args: { prs: [{ repo: "local/app", number: 1, head: sha }] } });
+  const mainOf = () => git(dir, "--git-dir", host.bare("local/app"), "rev-parse", "main");
+
+  // A missing check for this head and base: nothing lands.
+  const before = mainOf();
+  await assert.rejects(merge(first), /named check\(s\) failed on the head|moved since it was asked for/);
+
+  // A head that moved: the merge is bound to the head asked for.
+  writeFileSync(join(ws, "a.txt"), "two\n"); git(ws, "commit", "--quiet", "-am", "a again");
+  const second = git(ws, "rev-parse", "HEAD");
+  await push(second);
+  await assert.rejects(merge(first), /moved since it was asked for/);
+  // Not green on the new head either: nothing lands.
+  await assert.rejects(merge(second), /named check\(s\) failed on the head/);
+  assert.equal(mainOf(), before);
+  // Green on the head and its current base: it lands.
+  const base = (await host.open())[0].base;
+  green.add(`${second}|${base}`);
+  const asked = await merge(second);
+  assert.equal(asked.state, "review");
+  records.review(asked.id, asked.digest, { decision: "approve", by: "reviewer:test", note: "what was asked" });
+  await writes.run(asked.id);
+  const out = await writes.wait(asked.id, 15_000);
+  assert.equal(out.state, "done", out.outcome?.text);
+  assert.notEqual(mainOf(), before);
+
+  // A base that conflicts with the change: refused, and main stays as it is. A branch off the original base edits the same
+  // file another change lands on main first; theirs can't land, so it is refused and nothing moves.
+  const original = git(ws, "rev-parse", `${second}~1`);
+  git(ws, "switch", "--quiet", "-C", "feat-two", original);
+  writeFileSync(join(ws, "a.txt"), "mine\n"); git(ws, "commit", "--quiet", "-am", "conflicting work");
+  const conflict = git(ws, "rev-parse", "HEAD");
+  const bundleOf = (sha, branch) => {
+    mkdirSync(join(tasks, "TASK-1", ".aidenhq", "bundles"), { recursive: true });
+    git(ws, "bundle", "create", "--quiet", join(tasks, "TASK-1", ".aidenhq", "bundles", `${sha}.bundle`), `refs/heads/${branch}`);
+  };
+  bundleOf(conflict, "feat-two");
+  await writes.wait((await writes.request(job, { kind: "codehost.pr", args: { only: [{ repo: "local/app", branch: "feat-two", sha: conflict }], text: { title: "two", body: "b" } } })).id, 15_000);
+  const open = (await host.open()).find((c) => c.head === conflict);
+  green.add(`${conflict}|${open.base}`);
+  const stays = mainOf();
+  const conflictMerge = (sha, n) => writes.request(job, { kind: "codehost.merge", args: { prs: [{ repo: "local/app", number: n, head: sha }] } });
+  // The conflict is code's at execute (a plan-time refusal would be the head or the checks): the record fails, and nothing lands.
+  const refused = await conflictMerge(conflict, open.number);
+  assert.equal(refused.state, "review", "Tier 1 first: the reviewer reads it, and only an approval reaches the merge");
+  records.review(refused.id, refused.digest, { decision: "approve", by: "reviewer:test", note: "approved, and the merge then refuses" });
+  await writes.run(refused.id);
+  const failed = await writes.wait(refused.id, 15_000);
+  assert.equal(failed.state, "failed");
+  assert.match(String(failed.outcome?.text), /conflicts with main as it is now/);
+  assert.equal(mainOf(), stays, "a conflicting change never lands");
 });

@@ -13,7 +13,7 @@ const agents = { "run-jwt-ada": { id: ADA, name: "Ada", task: TASK } };
 const grants = { [ADA]: { key: "ada", roles: [], tools: { todo: ["task_finish"] } } };
 
 /** A kernel with a task connection, one finish check answering `verdict(body)`, and a control plane holding one task. */
-async function setup(t, verdict, { agentsScope, checks, graded = false, keyless = false } = {}) {
+async function setup(t, verdict, { agentsScope, checks, graded = false, keyless = false, localChanges } = {}) {
   const asked = [];
   const check = await serve(async (req, res) => {
     const body = JSON.parse((await readBody(req)) || "{}");
@@ -36,6 +36,7 @@ async function setup(t, verdict, { agentsScope, checks, graded = false, keyless 
     connections: { todo: conn(todo.url, "todo", { write: ["task_finish"] }) },
     modules: { modules: { judge: { roles: ["kernel.cp-read"], token: "judge_token" }, other: { roles: ["kernel.cp-read"], token: "other_token" } } },
     checks: checks ?? ({ "judge.finish": { module: "judge", at: "task.finish", url: `${check.url}/check/finish`, auth_secret: "judge_check_key", label: "held", ...(agentsScope ? { agents: agentsScope } : {}) } }),
+    ...(localChanges ? { localChanges } : {}),
     onControl: async (req, body, auth) => {
       if (req.method === "GET" && (req.url === `/api/issues/${TASK}` || req.url === "/api/issues/WOR-1")) return { body: issue };
       if (req.method === "GET" && (req.url === `/api/issues/${DELEGATED}`)) return { body: delegated };
@@ -200,3 +201,55 @@ test("a delegated task closes from its delegator only when a check accepts (an e
   answer = { verdict: "ok", unlabel: true, accepts: true };
   assert.equal((await finish({ status: "done" }, DELEGATED)).status, 200);
 });
+test("the reported ordering: a task whose own local change is open cannot reach done, green-but-unmerged most of all; a merged or closed change lets it", async (t) => {
+  // The reported sequence (AidenHQ#709): the task was marked done at once, the merge was never asked for, and the merge card
+  // approved later was dropped as "the task is closed". The finish gate refuses first, whatever the checks say.
+  let open = [{ url: "codehost:local/hello/change/1", checks: [{ ok: true, pending: false }] }];
+  const s = await setup(t, () => ({ verdict: "ok" }), { localChanges: async ({ id, identifier }) => (id === TASK || identifier === "WOR-1" ? open : []) });
+  let r = await s.finish({ status: "done", comment: "Done." });
+  assert.equal(r.status, 409);
+  assert.match(r.json.error.message, /WOR-1's change request codehost:local\/hello\/change\/1 is still open \(every named check is green, but the merge hasn't landed\)/);
+  assert.match(r.json.error.message, /A task closes after its change merges/);
+  assert.deepEqual(s.writes, [], "nothing moved: no in_review, no done");
+  assert.equal(s.issue.status, "in_progress");
+  // A change whose checks are still running (or red) holds it just the same, saying what is true of it now.
+  open = [{ url: "codehost:local/hello/change/1", checks: [{ ok: false, pending: true }] }];
+  r = await s.finish({ status: "done" });
+  assert.equal(r.status, 409);
+  assert.match(r.json.error.message, /its checks are still running/);
+  open = [{ url: "codehost:local/hello/change/1", checks: [{ ok: false, pending: false }] }];
+  assert.match((await s.finish({ status: "done" })).json.error.message, /its checks aren't all green/);
+  // Another task's change holds nothing (the seam names only this task's); once the merge lands (or the change is closed) the
+  // same finish passes, and only then does Ada's own gated write reach the control plane.
+  open = [];
+  assert.equal((await s.finish({ status: "done" })).status, 200);
+  assert.deepEqual(s.writes, [{ as: "ada-key", body: { status: "done", gated: true } }]);
+});
+
+test("the finish gate never fails open: a change store the kernel can't read keeps the task as it is", async (t) => {
+  const s = await setup(t, () => ({ verdict: "ok" }), { localChanges: async () => { throw new Error("the data dir isn't readable"); } });
+  const r = await s.finish({ status: "done" });
+  assert.equal(r.status, 503);
+  assert.match(r.json.error.message, /couldn't read WOR-1's change requests on this server \(the data dir isn't readable\)/);
+  assert.deepEqual(s.writes, []);
+});
+
+test("a module's ok on its hold is the same gate: it can't move a task to done while its local change is open, and it keeps the hold", async (t) => {
+  // The hold is placed while nothing is open; the task's change opens while it is held. A module's ok moves it to done as the
+  // owner and comes through the same hold, so a green-but-unmerged change stops it there too.
+  let open = [];
+  const s = await setup(t, () => ({ verdict: "hold", state: "held", reason: "the grader checks this task" }), { localChanges: async () => open });
+  await s.finish({ status: "done" });
+  assert.equal(s.issue.status, "in_review", "held by the check");
+  open = [{ url: "codehost:local/hello/change/1", checks: [{ ok: true, pending: false }] }];
+  const res = await s.k.v1("POST", `/v1/checks/${TASK}`, { verdict: "ok", comment: "graded" }, "judge-tok");
+  assert.equal(res.status, 409);
+  assert.match(String(res.json.error.message), /still open/);
+  assert.equal(s.issue.status, "in_review", "the hold is kept, and nothing moved to done");
+  // The change lands (it is no longer open): the same ok moves it on.
+  open = [];
+  const again = await s.k.v1("POST", `/v1/checks/${TASK}`, { verdict: "ok", comment: "graded" }, "judge-tok");
+  assert.equal(again.status, 200);
+  assert.equal(s.issue.status, "done");
+});
+
