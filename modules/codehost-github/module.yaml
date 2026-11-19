@@ -69,6 +69,7 @@ stages:
 # The PR's journey (docs/design/flow-insights.md §2): from its issue to its deploy. Each phase starts at the first of its facts; every
 # further one is a round. The review phase is the AI reviewer's look at a pr or push filing, merge review at the merge filing (the
 # kinds are the record kinds `where` matches; the runner.* ones are the records filed before the kernel ran every agent).
+# One declaration, identical in every code host (the compiler checks): a phase a host never records is simply absent.
 journeys:
   - name: pr
     label: Pull requests
@@ -77,10 +78,10 @@ journeys:
       - { name: triage, label: Triage, from: [ issue.opened ] }
       - { name: pickup, label: Pickup, from: [ issue.labeled, task.created ] }
       - { name: coding, label: Coding, from: [ job.started ] }
-      - { name: review, label: AI review, from: [ record.filed ], where: { kind: [ codehost-github.pr, codehost-github.push, runner.pr, runner.push ] } }
+      - { name: review, label: AI review, from: [ record.filed ], where: { kind: [ codehost-github.pr, codehost-github.push, codehost-local.pr, codehost-local.push, runner.pr, runner.push ] } }
       - { name: open, label: PR open, from: [ pr.opened ] }
       - { name: ci, label: CI, from: [ pr.checks_started, pr.pushed ] }
-      - { name: merge, label: Merge review, from: [ record.filed ], where: { kind: [ codehost-github.merge, runner.merge ] } }
+      - { name: merge, label: Merge review, from: [ record.filed ], where: { kind: [ codehost-github.merge, codehost-local.merge, runner.merge ] } }
       - { name: deploy, label: Deploy, from: [ pr.merged ] }
     end: [ pr.deployed, pr.closed ]
 # The code host's check job recipes (kernel/src/checkjobs.ts), whose signed receipts it verifies before it lands: a repo's fast
