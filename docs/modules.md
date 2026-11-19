@@ -55,13 +55,16 @@ closed by `codehost-github` with no module marker, only when:
 - **every** record on it was filed by `module === "codehost-github"` (a record is matched by its module name, never
   by a bare id, and one foreign or mixed record refuses the close). The kernel reads all of them, never a capped
   page, so an older foreign record can't be hidden behind newer ones;
+- the release marker is its **only** source marker: a task that also carries another family's `<!-- source:… -->` is never
+  listed or closed by the train, however many of the records on it are the code host's;
 - no other module's marker is in its description, and it has no `createdByAgentId`.
 
 The family is the whole widening: a task outside `release:instance:` keeps the marker rule above.
 
 **The one card-less bump.** The runner that preceded the release train filed its bump with its millisecond stamp and
 never carded it. The sweep settles that task with the same close route and `"uncarded": true` in the body. The flag
-admits only a `release:instance:<ms stamp>` task with no module marker and no `kernel.apply` record at all.
+admits only a `release:instance:<ms stamp>` task whose marker is its only source marker, with no module marker and no
+`kernel.apply` record at all.
 
 Because a description can say anything, the marker is not the proof: the kernel also requires the control plane's own
 record of the task — its `createdByUserId` is the owner's own control-plane user (read by the kernel from

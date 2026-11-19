@@ -193,11 +193,23 @@ test("the code host closes its own stranded release bump, and no other module's 
   agentMade.createdByAgentId = "a-cos";
   assert.equal((await close("codehost", agentMade.id)).status, 403, "never a task an agent created");
 
+  // A second source family on the same description makes it not the train's: neither a carded nor a card-less close, and the
+  // listing skips it even though the control plane's search matched its release marker.
+  const twoFamilies = seed("release:instance:1795025189925", 17);
+  twoFamilies.description = `Moves the pin.\n\n<!-- source:release:instance:1795025189925 -->\n<!-- source:dependabot:acme/app/9 -->`;
+  card(twoFamilies.id, "codehost-github");
+  assert.equal((await close("codehost", twoFamilies.id)).status, 403, "a task with another family's source marker is never the train's");
+  const twoFamiliesUncarded = seed("release:instance:1795022489869", 18);
+  twoFamiliesUncarded.description = `Moves the pin.\n\n<!-- source:release:instance:1795022489869 -->\n<!-- source:review:head:abc -->`;
+  assert.equal((await close("codehost", twoFamiliesUncarded.id, { uncarded: true })).status, 403, "nor is a card-less one with another family's marker");
+  assert.deepEqual([twoFamilies.status, twoFamiliesUncarded.status], ["in_review", "in_review"], "a refused close changes nothing");
+
   // The listing: only the train's own family, only what is still open, and only tasks that really carry the marker.
   const prose = seed("dependabot:acme/app/8", 7);
   prose.description = "mentions release:instance: in prose only";
   const found = await (await list("codehost", "release:instance:")).json();
   assert.deepEqual(found.tasks.map((i) => i.identifier).sort(), [foreign.identifier, mixed.identifier, agentMade.identifier, shaNoCard.identifier, otherUncarded.identifier, forged.identifier, skew.identifier, noCreated.identifier, otherUser.identifier, noUser.identifier, unreadBump.identifier].sort(), "the carded bumps were closed above, so they are no longer open");
+  assert.ok(!found.tasks.some((i) => i.id === twoFamilies.id || i.id === twoFamiliesUncarded.id), "a task with a second source family is never listed");
   assert.ok(!found.tasks.some((i) => i.id === other.id || i.id === prose.id || i.id === bump.id || i.id === carded.id || i.id === sha.id), "another family, prose, or a closed task is never listed");
   assert.equal((await list("codehost", "dependabot:")).status, 400, "no other family is listable");
   assert.equal((await list("github", "release:instance:")).status, 400, "nor by another module");

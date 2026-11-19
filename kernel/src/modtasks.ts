@@ -19,6 +19,8 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 /** The only source family a module lists, and the one the release train's sweep owns (a runner-era bump too: an ms stamp). */
 export const RELEASE_SOURCE = "release:instance:";
 const RELEASE_MARK = /<!--\s*source:(release:instance:(?:[0-9a-f]{40}|\d+))\s*-->/;
+/** Any source marker, whatever its family (modtasks.ts `file()` writes one; a task may carry text like anyone's). */
+const SOURCE_TAG = /<!--\s*source:(\S+)\s*-->/g;
 /** The runner-era stamp alone (a millisecond count, never the train's 40-hex sha): the only card-less bump a close may settle. */
 const RUNNER_MARK = /<!--\s*source:release:instance:(\d+)\s*-->/;
 /** The runner stopped filing pin bumps when the big switch landed (#646, 03ecfcda at 2026-11-18T22:23:32+04:00). A task the
@@ -29,6 +31,15 @@ const RUNNER_RETIRED = Date.parse("2026-11-18T18:23:32Z");
 const RUNNER_WINDOW_MS = 60_000;
 /** The code host files these; the family is never opened up to another module. */
 const RELEASE_MODULE = "codehost-github";
+
+/**
+ * The release family's marker is the task's only source marker: a task that also carries another family's (`<!-- source:x -->`)
+ * is one the train doesn't own, whatever else its text says, and is neither listed nor closed by it.
+ */
+function releaseOnly(description: string) {
+  const marks = [...description.matchAll(SOURCE_TAG)].map((m) => m[1]);
+  return marks.length === 1 && RELEASE_MARK.test(description);
+}
 
 export class TaskError extends Error {
   name = "TaskError";
@@ -74,12 +85,13 @@ export function createModuleTasks({ db, owner, agents, rubric, applies = () => [
 
   /**
    * A stranded release-train bump: the sweep-era and runner-era tasks carry the train's source marker, never its module marker.
-   * It is the code host's only when no other module's marker is on it and at least one kernel.apply exists on it, every one
-   * filed by the code host: a bare id or another module's record refuses, and an empty list never passes by default.
+   * It is the code host's only when that is the task's only source marker, no other module's marker is on it, and at least one
+   * kernel.apply exists on it, every one filed by the code host: a bare id, another family's source or record, or another
+   * module's marker refuses, and an empty list never passes by default.
    */
   function releaseBump(module: string, task: { id: string; description?: unknown }) {
     const description = String(task.description ?? "");
-    if (module !== RELEASE_MODULE || !RELEASE_MARK.test(description) || /<!--\s*aidenhq-module:/.test(description)) return false;
+    if (module !== RELEASE_MODULE || !releaseOnly(description) || /<!--\s*aidenhq-module:/.test(description)) return false;
     const records = applies(task.id);
     return records.length > 0 && records.every((c) => c.module === RELEASE_MODULE);
   }
@@ -98,7 +110,7 @@ export function createModuleTasks({ db, owner, agents, rubric, applies = () => [
    */
   async function runnerBumpUncarded(module: string, task: { id: string; description?: unknown; createdAt?: unknown; createdByUserId?: unknown; createdByAgentId?: unknown }) {
     const description = String(task.description ?? "");
-    if (module !== RELEASE_MODULE || !RUNNER_MARK.test(description) || /<!--\s*aidenhq-module:/.test(description)) return false;
+    if (module !== RELEASE_MODULE || !releaseOnly(description) || !RUNNER_MARK.test(description) || /<!--\s*aidenhq-module:/.test(description)) return false;
     if (applies(task.id).length > 0) return false;
     const me = await ownerUser();
     if (!me || task.createdByUserId !== me || task.createdByAgentId) return false;
@@ -111,7 +123,8 @@ export function createModuleTasks({ db, owner, agents, rubric, applies = () => [
   /**
    * The open tasks of this module's own source family, for a sweep that has no id in hand (the release train's stranded bumps).
    * The control plane's listing matches the source text; each row's marker is read again here, so a task that merely mentions
-   * the family in prose is never returned. Only `release:instance:` is listable: no module reads another's tasks this way.
+   * the family in prose — or carries another family's source marker too — is never returned. Only `release:instance:` is
+   * listable: no module reads another's tasks this way.
    */
   async function list(module: string, source: string) {
     if (module !== RELEASE_MODULE || source !== RELEASE_SOURCE) throw new TaskError(400, `source: ${RELEASE_SOURCE}`);
@@ -123,7 +136,8 @@ export function createModuleTasks({ db, owner, agents, rubric, applies = () => [
       const r = await owner("GET", `/api/companies/${encodeURIComponent(String(c.id ?? ""))}/issues?${q}`);
       if (r.status !== 200 || !Array.isArray(r.json)) throw new TaskError(502, `the control plane answered ${r.status} for a company's issues`);
       for (const i of r.json as { id?: unknown; identifier?: unknown; status?: unknown; createdAt?: unknown; description?: unknown }[]) {
-        const found = RELEASE_MARK.exec(String(i.description ?? ""))?.[1];
+        const description = String(i.description ?? "");
+        const found = releaseOnly(description) ? RELEASE_MARK.exec(description)?.[1] : undefined;
         if (!found) continue;
         tasks.push({ id: String(i.id ?? ""), identifier: String(i.identifier ?? ""), status: String(i.status ?? ""), createdAt: String(i.createdAt ?? ""), source: found });
       }
