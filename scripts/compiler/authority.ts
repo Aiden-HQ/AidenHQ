@@ -32,9 +32,9 @@ export const id = (v: unknown) => String(v).replace(/[^\w.:@/~-]/g, "_").slice(0
 const added = (b: unknown, h: unknown) => list(h).map((x) => (isMap(x) ? x.name ?? x.id : x)).filter((x) => !list(b).map((y) => (isMap(y) ? y.name ?? y.id : y)).includes(x));
 
 /** Top-level keys that never hand out authority by themselves (their contents are checked where they can). */
-const PLAIN = new Set(["facts", "stages", "name", "version", "description", "license", "publisher", "homepage", "kernel", "requires", "provides", "conflicts", "replaces", "data_version", "labels", "company", "departments", "setup", "settings", "apps", "events", "checks", "points", "contributes", "prompts", "skills", "models", "jobcaps"]);
+const PLAIN = new Set(["stages", "name", "version", "description", "license", "publisher", "homepage", "kernel", "requires", "provides", "conflicts", "replaces", "data_version", "labels", "company", "departments", "setup", "settings", "apps", "events", "checks", "points", "contributes", "prompts", "skills", "models", "jobcaps"]);
 /** Checked below, field by field. */
-const CHECKED = new Set(["writes", "privileged", "secrets", "generated_secrets", "optional_secrets", "roles", "default_grants", "connections", "services", "agents", "providers", "isolation", "routines", "board_env", "workspaces", "paths", "codehost", "check_jobs"]);
+const CHECKED = new Set(["facts", "writes", "privileged", "secrets", "generated_secrets", "optional_secrets", "roles", "default_grants", "connections", "services", "agents", "providers", "isolation", "routines", "board_env", "workspaces", "paths", "codehost", "check_jobs"]);
 /** Every top-level module.yaml key the kernel knows: any other is a compile error (module.yaml is strict, spec §3.1). */
 export const MANIFEST_KEYS = new Set([...PLAIN, ...CHECKED]);
 /** Agent fields that hand out nothing (model and engine choice, scheduling, presentation, the module text it reads: skills, like
@@ -200,6 +200,10 @@ export function authorityDiff(name: string, base: ModuleDef | undefined, head: M
   const [br, hr] = [map(b.roles), map(head.roles)];
   for (const r of added(br.declares, hr.declares)) owner(`declares role ${id(r)}`);
   for (const r of added(br.requests, hr.requests)) owner(`requests role ${id(r)}${KERNEL_ROLE_GRANTS[String(r)] ? ` (${KERNEL_ROLE_GRANTS[String(r)]})` : ""}`);
+  // Each fact type it may record (POST /v1/facts) is a claim on the shared log Flow's views and deploy checks read: the reviewer's.
+  const [bf, hf] = [map(b.facts), map(head.facts)];
+  for (const t of keys(hf).filter((t) => !(t in bf))) review(`declares fact ${id(t)}`);
+  if (keys(hf).every((t) => t in bf) && !eq(bf, hf)) review("changes its fact declarations");
   // A default grant hands its tools to every agent its tests match: any change to them is the owner's.
   if (!eq(b.default_grants ?? [], head.default_grants ?? [])) owner("changes its default grants (tools every matching agent gets)");
 
