@@ -6,8 +6,7 @@
 // textconv. TypeScript navigation (definition, references, diagnostics) comes from a pinned typescript-language-server
 // when REVIEW_LSP names it (the workflow installs it): no dependencies of the PR are installed, nothing is fetched (type
 // acquisition off) and no tsserver plugin can load (refused when the PR tracks any node_modules/). Node 22+.
-//   node review-tools.mjs <checkout> <base sha> [<excluded.json>]
-// excluded.json (the code review module's): a JSON list of paths the review leaves out; no tool shows or reads them.
+//   node review-tools.mjs <checkout> <base sha>
 import { execFileSync, spawn } from "node:child_process";
 import { readFileSync, realpathSync, statSync } from "node:fs";
 import { createInterface } from "node:readline";
@@ -17,8 +16,8 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 const MAX = 100_000; // characters a tool answer may carry (about 25k tokens); the rest is cut with a note
 const cut = (s) => (s.length > MAX ? `${s.slice(0, MAX)}\n[cut at ${MAX} characters: ask for a narrower range]` : s);
 
-/** The tools, bound to one checkout and the PR's base commit (and paths left out of the review). Each returns text; a bad argument throws. */
-export function tools(root, base, exclude = []) {
+/** The tools, bound to one checkout and the PR's base commit. Each returns text; a bad argument throws. */
+export function tools(root, base) {
   root = realpathSync(root);
   if (!/^[0-9a-f]{40}$/.test(base)) throw new Error("base must be a full commit sha");
   // A path inside the checkout, never under .git, symlinks resolved (a link out of the tree is refused).
@@ -27,11 +26,8 @@ export function tools(root, base, exclude = []) {
     const real = realpathSync(abs);
     const rel = relative(root, real);
     if (rel.startsWith("..") || isAbsolute(rel) || rel.split("/").includes(".git")) throw new Error(`${p} is outside the repository`);
-    if (left.has(rel)) throw new Error(`${p} is left out of this review`);
     return rel || ".";
   };
-  const left = new Set(exclude.map(String));
-  const not = exclude.map((p) => `:(exclude,literal)${p}`);
   // No system or global git config (a home-directory .gitconfig could name a pager, fsmonitor or diff program): only the
   // checkout's own .git/config, which actions/checkout wrote and the PR can't change.
   const env = { PATH: process.env.PATH, HOME: "/nonexistent", GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null", GIT_TERMINAL_PROMPT: "0", GIT_OPTIONAL_LOCKS: "0" };
@@ -41,7 +37,7 @@ export function tools(root, base, exclude = []) {
     diff: {
       description: `The PR's changes: git diff from its base (${base.slice(0, 12)}, the merge base) to the checked-out head, for the whole tree or one path. stat: true lists changed files with line counts instead.`,
       schema: { path: str, stat: { type: "boolean" } },
-      run: ({ path, stat }) => git("diff", "--no-ext-diff", "--no-textconv", "--no-color", ...(stat ? ["--stat=200"] : []), `${base}...HEAD`, "--", inside(path), ...not),
+      run: ({ path, stat }) => git("diff", "--no-ext-diff", "--no-textconv", "--no-color", ...(stat ? ["--stat=200"] : []), `${base}...HEAD`, "--", inside(path)),
     },
     log: {
       description: "The PR's commits since its base, with their messages.",
@@ -72,21 +68,20 @@ export function tools(root, base, exclude = []) {
       required: ["sha"],
       run: ({ sha, path }) => {
         if (!/^[0-9a-f]{7,40}$/.test(String(sha))) throw new Error("sha: a commit sha (7-40 hex characters)");
-        if (path && left.has(String(path).replace(/^\/+/, ""))) throw new Error(`${path} is left out of this review`);
-        return path ? git("show", `${sha}:${String(path).replace(/^\/+/, "")}`) : git("show", "--no-ext-diff", "--no-textconv", "--no-color", "--stat", "--patch", sha, "--", ".", ...not);
+        return path ? git("show", `${sha}:${String(path).replace(/^\/+/, "")}`) : git("show", "--no-ext-diff", "--no-textconv", "--no-color", "--stat", "--patch", sha);
       },
     },
     list_files: {
       description: "The tracked files under a directory of the PR's head (the whole repository by default).",
       schema: { path: str },
-      run: ({ path }) => git("ls-files", "--", inside(path), ...not),
+      run: ({ path }) => git("ls-files", "--", inside(path)),
     },
     search: {
       description: "Lines matching a regular expression (extended, case-sensitive unless ignore_case) in the PR's head, with line numbers; optionally under one path.",
       schema: { pattern: str, path: str, ignore_case: { type: "boolean" } },
       required: ["pattern"],
       run: ({ pattern, path, ignore_case }) => {
-        try { return git("grep", "-n", "-I", "-E", "--no-color", ...(ignore_case ? ["-i"] : []), "-e", String(pattern), "--", inside(path), ...not); }
+        try { return git("grep", "-n", "-I", "-E", "--no-color", ...(ignore_case ? ["-i"] : []), "-e", String(pattern), "--", inside(path)); }
         catch (e) { if (e.status === 1) return "no matches"; throw e; }
       },
     },
@@ -190,4 +185,4 @@ export function serve(t, input = process.stdin, output = process.stdout) {
   });
 }
 
-if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href) serve(tools(process.argv[2], process.argv[3], process.argv[4] ? JSON.parse(readFileSync(process.argv[4], "utf8")) : []));
+if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href) serve(tools(process.argv[2], process.argv[3]));

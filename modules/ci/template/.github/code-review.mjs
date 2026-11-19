@@ -93,7 +93,7 @@ export function brief({ rules, critical, agents, title, body, addressed, lockfil
 }
 
 /** The codex config for one review: the model through the gateway (or OpenRouter), no shell, the repo tools only. */
-export function config({ model, effort, url, root, base, instructions, lsp, exclude }) {
+export function config({ model, effort, url, root, base, instructions, lsp }) {
   const q = (s) => JSON.stringify(String(s)); // a TOML basic string is a JSON string
   return `model = ${q(model)}
 model_provider = "review"
@@ -126,7 +126,7 @@ persistence = "none"
 
 [mcp_servers.repo]
 command = ${q(process.execPath)}
-args = [${[join(HERE, "review-tools.mjs"), root, base, ...(exclude ? [exclude] : [])].map(q).join(", ")}]
+args = [${[join(HERE, "review-tools.mjs"), root, base].map(q).join(", ")}]
 ${lsp ? `env = { REVIEW_LSP = ${q(lsp)} }\n` : ""}`;
 }
 

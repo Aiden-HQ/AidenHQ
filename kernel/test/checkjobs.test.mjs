@@ -245,3 +245,24 @@ test("checks: the compiler takes a model recipe only with a budget field and a b
   assert.throws(() => compileCheckJobs("code-review", def({ model: { max_usd: 500 } }), root), /max_usd/);
   assert.throws(() => compileCheckJobs("code-review", def({ result: "yes" }), root), /result/);
 });
+
+test("checks: a result recipe's one retry spends what its budget has left; none after a timeout or a second failure", async () => {
+  const review = { module: "code-review", argv: ["node", "r.mjs"], timeout_min: 30, title: "the review", spec: { base: "sha", budget_usd: "usd" }, files: {}, model: { max_usd: 2 }, result: true };
+  let box = { exit: 1, timedOut: false };
+  const { checks, runs, done } = setup({ [A]: {}, [B]: {} }, undefined, { "code-review": review }, () => ({ ...box, out: "" }));
+  const ask = (budget) => done(checks.start("github", { repo: "acme/app", head: A, run: "code-review", spec: { base: B, budget_usd: budget } }));
+  const first = await ask("0.05");
+  // A crash: one retry, its token capped at what the first attempt left; the billed spend is both attempts'.
+  const second = await ask("0.05");
+  assert.equal(second.id, first.id);
+  assert.equal(verifyToken("job-secret", runs[1].env.OPENROUTER_API_KEY).u, 0.0377);
+  assert.equal(second.billed_usd, 0.0246);
+  // A second failure: no third run.
+  assert.equal((await ask("0.05")).version, second.version);
+  assert.equal(runs.length, 2);
+  // A timeout: no retry at all.
+  box = { exit: null, timedOut: true };
+  await ask("0.06");
+  await ask("0.06");
+  assert.equal(runs.length, 3);
+});
