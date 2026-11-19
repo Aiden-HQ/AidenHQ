@@ -331,6 +331,24 @@ export function createApp(opts: AppOptions): Server {
     return ctx.labels.find((l) => l.name === name) ?? (await pc.createLabel(name, color));
   }
 
+  /** A typed settings change (docs/design/settings-changes.md): checked, then filed as the owner's own task, kept here by task id. */
+  async function fileSettingsChange(changes: Change[]) {
+    const { compiled, catalog } = readSources(settingsFiles());
+    try {
+      for (const ch of changes) checkChange(ch, compiled, catalog);
+    } catch (e) {
+      if (e instanceof ChangeRefused) throw new HttpError(400, e.message);
+      throw e;
+    }
+    const ctx = await context();
+    const label = await labelNamed(ctx, SETTINGS_LABEL, "#7048e8");
+    const { title, description } = taskFor(changes, compiled);
+    const issue = await pc.createIssue({ title, description, status: "todo", priority: "medium", labelIds: [label.id] });
+    store.setMeta(`settings-change:${issue.id}`, JSON.stringify(changes));
+    log.info({ issue: issue.identifier, changes: changes.map((c) => c.kind) }, "settings change filed");
+    return { identifier: issue.identifier };
+  }
+
   // Agent activity (Paperclip runs).
   /** The task a run is attached to, and the user's tasks it works on. */
   async function runContext(issueId: string | null, prefix: string): Promise<RunContext> {
@@ -1449,23 +1467,7 @@ export function createApp(opts: AppOptions): Server {
       // again, writes exactly its files and files the apply card on the task.
       method: "POST",
       path: /^\/api\/settings\/change$/,
-      handle: async (_m, body) => {
-        const { changes } = parse(ChangesSchema, body);
-        const { compiled, catalog } = readSources(settingsFiles());
-        try {
-          for (const ch of changes) checkChange(ch, compiled, catalog);
-        } catch (e) {
-          if (e instanceof ChangeRefused) throw new HttpError(400, e.message);
-          throw e;
-        }
-        const ctx = await context();
-        const label = await labelNamed(ctx, SETTINGS_LABEL, "#7048e8");
-        const { title, description } = taskFor(changes, compiled);
-        const issue = await pc.createIssue({ title, description, status: "todo", priority: "medium", labelIds: [label.id] });
-        store.setMeta(`settings-change:${issue.id}`, JSON.stringify(changes));
-        log.info({ issue: issue.identifier, changes: changes.map((c) => c.kind) }, "settings change filed");
-        return { identifier: issue.identifier };
-      },
+      handle: async (_m, body) => fileSettingsChange(parse(ChangesSchema, body).changes),
     },
     {
       // The settings changes filed in the last two weeks, and where each stands (task, then its apply card).
@@ -1763,6 +1765,8 @@ export function createApp(opts: AppOptions): Server {
           ...opts.setupFlows,
           accounts: opts.accounts,
           store,
+          settings: () => readSources(settingsFiles()).compiled?.settings,
+          file: fileSettingsChange,
           // "none": the connection needs no sign-in (Grafana with grafana_source: local), so its flow is done.
           signedIn: async (id) => ["ok", "none"].includes((await signInStates()).find((x) => x.id === id)?.status?.state ?? ""),
           scopeChoice: async (id) => Boolean(await (opts.signIns ?? []).find((x) => x.id === id)?.auth.offers()),
@@ -1912,10 +1916,13 @@ export function createApp(opts: AppOptions): Server {
    */
   async function needsSetup(req: IncomingMessage, s: SignIn): Promise<boolean> {
     const f = flowOf(s);
-    const who = f?.secrets?.length && opts.accounts ? await opts.accounts.sessionOf(req) : null;
+    const who = (f?.secrets?.length || f?.choose) && opts.accounts ? await opts.accounts.sessionOf(req) : null;
     if (!f || !who) return false;
-    const { secrets } = await opts.accounts!.call<{ secrets: Record<string, boolean> }>("setup_status", who, { module: f.module });
-    return f.secrets!.some((x) => !secrets[x]) && (await s.auth.status())?.state === "missing";
+    // A module with modes asks its choice first (setup-flows.ts); until it is made and live, Connect opens the flow.
+    const chosen = store.meta(`setup_choice:${f.module}`);
+    const unchosen = Boolean(f.choose) && (chosen == null || String(readSources(settingsFiles()).compiled?.settings?.[f.choose!.setting]?.value) !== chosen);
+    const { secrets } = f.secrets?.length ? await opts.accounts!.call<{ secrets: Record<string, boolean> }>("setup_status", who, { module: f.module }) : { secrets: {} as Record<string, boolean> };
+    return (unchosen || (f.secrets ?? []).some((x) => !secrets[x])) && (await s.auth.status())?.state === "missing";
   }
 
   async function handleSignIn(req: IncomingMessage, res: ServerResponse, url: URL, s: SignIn) {

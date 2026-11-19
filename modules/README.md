@@ -31,7 +31,9 @@ vendor's sign-in does the rest (it ends on `http://localhost:3121/<callback>`, w
 `https_only: true` for a vendor that refuses loopback redirects). Make every fixed or discoverable value (a vendor's MCP address) a module default. Ask only
 for a genuinely per-install value (a company's own address), as one field on that Connect: list its secret (with `setup:`)
 under the sign-in's `secrets`. Add a `board.setup_flows` entry only when the owner must make something elsewhere first (an
-OAuth client, an app, a token, a bot) or pair a channel.
+OAuth client, an app, a token, a bot), pair a channel, or ask a mode first: a flow's `choose` (a setting with `values`, one
+option each, with the extra settings an option needs) is the owner's pick of that mode, filed as a settings change, and the flow's
+Connect opens once it is live (Primer: connect or self-host).
 
 ## Test locally
 

@@ -86,6 +86,15 @@ export interface SetupFlowView {
   paired: boolean;
   done: boolean;
   dismissed: boolean;
+  /** A module with modes (board.setup_flows `choose`): what is live, what the owner picked, and the options. */
+  choose?: SetupChoice;
+}
+
+export interface SetupChoice {
+  setting: string;
+  value: string | null;
+  chosen: string | null;
+  options: { value: string; label: string; detail: string; unavailable?: string; inputs?: { setting: string; label: string; help?: string; pattern: string; value: string }[] }[];
 }
 
 export interface Session {
@@ -177,6 +186,7 @@ export const api = {
   signInSecret: (id: string, secret: string, value: string) => call<{ ok: boolean }>("POST", `/api/sign-ins/${encodeURIComponent(id)}/secret`, { secret, value }),
   setupFlows: () => call<{ flows: SetupFlowView[]; board_url: string; named: boolean }>("GET", "/api/setup-flows"),
   setupSecret: (module: string, secret: string, value: string) => call<{ ok: boolean }>("POST", `/api/setup-flows/${module}/secret`, { secret, value }),
+  setupChoose: (module: string, value: string, inputs: Record<string, string>) => call<{ ok: boolean; identifier?: string }>("POST", `/api/setup-flows/${module}/choose`, { value, inputs }),
   setupDismiss: (module: string) => call<{ ok: boolean }>("POST", `/api/setup-flows/${module}/dismiss`, {}),
   setupPair: (module: string) => call<{ code: string; link?: string; minted_at: number }>("POST", `/api/setup-flows/${module}/pair`, {}),
   setupPaired: (module: string) => call<{ paired: boolean; paired_at?: string | number }>("GET", `/api/setup-flows/${module}/pair`),

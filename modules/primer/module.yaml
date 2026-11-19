@@ -9,6 +9,30 @@ contributes:
         missing: "The agents can't read or publish documents until it is.", stopped: "The agents can't read or publish documents.",
         # Connect asks for the address of the hosted Primer (connect) or the service token of this module's own (self-host).
         secrets: [ { secret: primer_mcp_url, when: { primer_mode: connect } }, { secret: primer_service_token, when: { primer_mode: self-host } } ] }
+  # The first step of setting Primer up: which Primer (primer_mode). Then its Connect asks for that mode's value.
+  board.setup_flows:
+    - order: 125
+      title: Primer
+      why: Agents publish design docs and write-ups to Primer and read the comments people leave on them.
+      effort: about 3 minutes; running your own also needs one apply
+      steps: |
+        Primer keeps documents with their versions and comments. Choose where this install's Primer lives; Connect comes next.
+      signin: primer
+      choose:
+        setting: primer_mode
+        options:
+          - value: connect
+            label: Connect your organization's Primer
+            detail: Paste its MCP address, then sign in. Agents act as you in your Primer.
+          - value: self-host
+            label: Run your own Primer on this server
+            detail: This server runs Primer and its database, and people sign in at an address you choose. It needs one apply from you to start, then you paste a token from Primer.
+            requires:
+              setting: edge
+              otherwise: "Running your own Primer needs a public address for it, which comes with sharing apps through your own domain. Ask Aiden to set that up first, or connect your organization's Primer."
+            inputs:
+              - { setting: primer_host, label: Public address for Primer, help: "A name on your own domain, for example primer.example.com", pattern: '^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$' }
+              - { setting: primer_host_aud, label: Sign-in audience for that address, help: "From the access application that covers it.", pattern: '^[A-Za-z0-9:._-]{1,200}$', when: { app_login: [access, header-jwt] } }
 settings:
   # connect: a hosted Primer (its MCP address from Connect), signed in as the owner. self-host: this module runs Primer
   # (primer-server, built from source at the commit its Dockerfile pins, and its own Postgres, primer-db) behind the gate at

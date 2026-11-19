@@ -2,11 +2,12 @@
 // the board's address and the sign-in's exact redirect, each copyable) and the vendor's console link, one paste field per
 // secret, then the sign-in's Connect button or a pairing code, as numbered stages. Nothing here knows which module it is.
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
-import { SignInRequired, api, type SetupFlowView } from "./api";
+import { SignInRequired, api, type SetupChoice, type SetupFlowView } from "./api";
 import { ConnectButton } from "./Connect";
 import { useEvents } from "./events";
 import { Markdown } from "./markdown";
-import { Page } from "./settings-ui";
+import { ChangeProgress, Page } from "./settings-ui";
+import type { FiledChange } from "./types";
 import { PageHeader } from "./ui/PageHeader";
 import "./settings.css";
 import "./setup-flow.css";
@@ -63,7 +64,9 @@ function FlowBody({ flow, board, reload, onDone, onSignIn }: { flow: SetupFlowVi
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
   const fields = flow.fields ?? [];
-  const secretsDone = flow.done || fields.every((f) => flow.present[f.secret]);
+  // A module with modes: its Connect waits for the pick to be live (the setting holds it).
+  const picked = !flow.choose || flow.done || (flow.choose.chosen != null && flow.choose.chosen === flow.choose.value);
+  const secretsDone = (flow.done || fields.every((f) => flow.present[f.secret])) && picked;
   const filled = fields.filter((f) => values[f.secret]?.trim());
   const bad = new Set(filled.filter((f) => !valid(f.pattern, values[f.secret]!.trim())).map((f) => f.secret));
   const fail = (e: unknown) => (e instanceof SignInRequired ? onSignIn() : setError((e as Error).message));
@@ -120,6 +123,11 @@ function FlowBody({ flow, board, reload, onDone, onSignIn }: { flow: SetupFlowVi
           )}
         </Step>
         <div className="setup-side">
+          {flow.choose && (
+            <Step n={n++} title="Choose" state={picked ? "done" : "open"}>
+              <Choose flow={flow} choose={flow.choose} picked={picked} reload={reload} fail={fail} />
+            </Step>
+          )}
           {fields.length > 0 && (
             <Step n={n++} title="Paste the details" state={secretsDone ? "done" : "open"}>
               {fields.map((f) => (
@@ -161,7 +169,7 @@ function FlowBody({ flow, board, reload, onDone, onSignIn }: { flow: SetupFlowVi
                   <a className="btn primary" href={connect}>Connect {flow.title}</a>
                 )
               ) : (
-                <p className="setup-hint">Save the details above first; then connect here and allow access.</p>
+                <p className="setup-hint">{picked ? "Save the details above first; then connect here and allow access." : "Choose above first; then connect here and allow access."}</p>
               )}
             </Step>
           )}
@@ -188,6 +196,96 @@ function FlowBody({ flow, board, reload, onDone, onSignIn }: { flow: SetupFlowVi
         )}
       </footer>
     </main>
+  );
+}
+
+/**
+ * A module's mode choice (board.setup_flows `choose`): the options, with the inputs the picked one needs. Picking files a
+ * settings change when it differs from what is live; this follows it (waiting for the owner's apply card, then the apply)
+ * and goes quiet once the setting holds the pick, when Connect opens.
+ */
+function Choose({ flow, choose, picked, reload, fail }: { flow: SetupFlowView; choose: SetupChoice; picked: boolean; reload: () => Promise<void>; fail: (e: unknown) => void }) {
+  const [value, setValue] = useState(choose.chosen ?? choose.value ?? choose.options[0]!.value);
+  const [inputs, setInputs] = useState<Record<string, string>>({});
+  const [editing, setEditing] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [filed, setFiled] = useState<FiledChange | undefined>();
+  const waiting = choose.chosen != null && choose.chosen !== choose.value;
+  const option = choose.options.find((o) => o.value === value) ?? choose.options[0]!;
+  // While the picked mode is not live, follow its change (the newest one that touches the setting) and the live config.
+  useEffect(() => {
+    if (!waiting) return;
+    const look = () => {
+      void api.settingsChanges().then((r) => setFiled(r.changes.find((c) => c.items.some((i) => i.kind === "setting" && i.key === choose.setting))), () => {});
+      void reload();
+    };
+    look();
+    const t = setInterval(() => document.visibilityState === "visible" && look(), 4000);
+    return () => clearInterval(t);
+  }, [waiting, choose.setting, reload]);
+  const ready = (option.inputs ?? []).every((i) => !i.pattern || valid(i.pattern, (inputs[i.setting] ?? i.value).trim()));
+  const go = async () => {
+    setBusy(true);
+    try {
+      await api.setupChoose(flow.module, value, Object.fromEntries((option.inputs ?? []).map((i) => [i.setting, (inputs[i.setting] ?? i.value).trim()])));
+      setEditing(false);
+      await reload();
+    } catch (e) {
+      fail(e);
+    } finally {
+      setBusy(false);
+    }
+  };
+  if (picked && !editing) {
+    const was = choose.options.find((o) => o.value === choose.value);
+    return (
+      <div className="setup-actions setup-paired">
+        <p className="setup-ok-line">{was?.label ?? choose.value}</p>
+        <button className="btn" onClick={() => setEditing(true)}>Change</button>
+      </div>
+    );
+  }
+  if (waiting && !editing) {
+    const stopped = filed && (filed.stage === "failed" || filed.stage === "rejected" || filed.stage === "closed");
+    return (
+      <>
+        <p className="setup-hint">{choose.options.find((o) => o.value === choose.chosen)?.label}: this takes one apply. Approve it in Approvals, the host then starts what it needs, and this page continues when it is up.</p>
+        {filed && <ChangeProgress f={filed} />}
+        {stopped && <button className="btn" onClick={() => setEditing(true)}>Choose again</button>}
+      </>
+    );
+  }
+  return (
+    <>
+      <div className="setup-options" role="radiogroup">
+        {choose.options.map((o) => (
+          <label key={o.value} className={`setup-option${o.value === value ? " on" : ""}${o.unavailable ? " off" : ""}`}>
+            <input type="radio" name={`${flow.module}-choice`} checked={o.value === value} disabled={Boolean(o.unavailable)} onChange={() => setValue(o.value)} />
+            <span>
+              <strong>{o.label}</strong>
+              <small>{o.unavailable ?? o.detail}</small>
+            </span>
+          </label>
+        ))}
+      </div>
+      {(option.inputs ?? []).map((i) => (
+        <label key={i.setting} className="setup-field">
+          <span>{i.label}</span>
+          <input type="text" autoComplete="off" spellCheck={false} aria-invalid={!valid(i.pattern, (inputs[i.setting] ?? i.value).trim())} value={inputs[i.setting] ?? i.value} onChange={(e) => setInputs({ ...inputs, [i.setting]: e.target.value })} />
+          {i.help && <small className="setup-help">{i.help}</small>}
+        </label>
+      ))}
+      <div className="setup-actions">
+        <button className="btn primary" disabled={busy || !ready || Boolean(option.unavailable)} onClick={() => void go()}>
+          {busy ? "Saving…" : "Continue"}
+        </button>
+        {editing && (
+          <button className="btn" onClick={() => setEditing(false)}>
+            Cancel
+          </button>
+        )}
+      </div>
+    </>
   );
 }
 
