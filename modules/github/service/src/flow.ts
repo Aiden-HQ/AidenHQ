@@ -39,7 +39,7 @@ export const prSubject = (repo: string, n: number | string) => `pr:${repo.toLowe
 const issueSubject = (repo: string, n: number) => `issue:${repo.toLowerCase()}#${n}`;
 const readJson = (f: string, empty: Json): Json => { try { return existsSync(f) ? JSON.parse(readFileSync(f, "utf8")) : empty; } catch { return empty; } };
 /** The wait reason (module.yaml `work.waiting` reasons) of a merge queue's wait key (merge-gate.mjs `why`, or merges.ts's own). */
-export const waitReason = (key: string): string => (key === "eval" ? "eval" : key === "retry" || key === "error" ? "retry" : /design review/i.test(key) ? "design_review" : "checks");
+export const waitReason = (key: string): string => (key === "eval" ? "eval" : key === "retry" || key === "error" || key === "put" ? "retry" : /design review/i.test(key) ? "design_review" : "checks");
 /** A reverting PR's target, from its title and body (GitHub's and git's own revert texts): { of_pr?, of_sha? } or undefined. */
 export function revertOf(repo: string, title: string, body: string): { of_pr?: string; of_sha?: string } | undefined {
   if (!/^Revert\b/i.test(title)) return undefined;
