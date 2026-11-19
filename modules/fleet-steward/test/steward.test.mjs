@@ -171,7 +171,7 @@ test("the run check flags three same-category failures on one task in half an ho
 });
 
 test("an orphaned item over 2h trips the stuck rule; a slower stage only logs in observe mode", async () => {
-  const idle = [{ task: "a", identifier: "WOR-A", since: minsAgo(180), reason: "no_job" }, { task: "b", identifier: "WOR-B", since: minsAgo(30), reason: "no_job" }, { task: "c", identifier: "BAK-3", since: minsAgo(300), reason: "no_job" }];
+  const idle = [{ task: "a", identifier: "WOR-A", since: minsAgo(180), reason: "orphaned" }, { task: "b", identifier: "WOR-B", since: minsAgo(30), reason: "orphaned" }, { task: "c", identifier: "BAK-3", since: minsAgo(300), reason: "orphaned" }, { task: "d", identifier: "WOR-D", since: minsAgo(300), reason: "owner" }];
   const stage = (p) => ({ name: "review", n: 12, work_p75: p, wait_p75: 0, work_p50: p / 2, waits: {} });
   const logged = [];
   const lastWeek = encodeURIComponent(new Date(NOW - 7 * 86_400_000).toISOString());

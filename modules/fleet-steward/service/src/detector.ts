@@ -334,8 +334,8 @@ export function checks(d: { kernel: KernelClient; apps: <T>(path: string) => Pro
     async stuck() {
       const t = now();
       const out: Incident[] = [];
-      const items = ((await d.kernel.call("GET", "/v1/flow?idle=1")).items ?? []) as { task: string; identifier?: string; since: string; reason: string }[];
-      for (const i of items.filter((x) => age(x.since, t) > IDLE_MS && !exempt({ identifier: x.identifier, originKind: null }) && !suppressed(x.task, `stuck:${x.task}`))) out.push({ key: i.task, reason: `task ${i.identifier ?? i.task} idle for ${mins(age(i.since, t))} with nothing running, filed or waiting on it (${slug(i.reason)})` });
+      const items = ((await d.kernel.call("GET", "/v1/flow?idle=1")).items ?? []) as { task: string; identifier: string | null; since: string; reason: string }[];
+      for (const i of items.filter((x) => x.reason === "orphaned" && age(x.since, t) > IDLE_MS && !exempt({ identifier: x.identifier, originKind: null }) && !suppressed(x.task, `stuck:${x.task}`))) out.push({ key: i.task, reason: `task ${i.identifier ?? i.task} idle for ${mins(age(i.since, t))} with nothing running, filed or waiting on it (${slug(i.reason)})` });
       return out;
     },
     // Observe mode (docs/design/flow.md): a stage that got slower week over week is logged as what it would file; nothing is filed until promoted.
