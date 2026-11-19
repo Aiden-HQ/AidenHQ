@@ -104,10 +104,7 @@ function Wizard({ state, onFinished }: { state: WelcomeState & { orgs: boolean }
       {screen.kind === "org" && (
         <div className="setup-overlay">
           <Page title="Where do you work?" sub="Your organisation may already run the apps these connections sign in with.">
-            <OrganisationPicker onApplied={next} />
-            <div className="setup-actions">
-              <button className="btn" onClick={next}>Continue</button>
-            </div>
+            <OrganisationPicker onContinue={next} />
           </Page>
         </div>
       )}

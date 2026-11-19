@@ -9,8 +9,12 @@ import "./setup-flow.css";
 
 const list = (xs: string[]) => (xs.length < 2 ? xs.join("") : `${xs.slice(0, -1).join(", ")} and ${xs.at(-1)}`);
 
-export function OrganisationPicker({ onApplied, compact }: { onApplied?: () => void; compact?: boolean }) {
-  const [data, setData] = useState<Organisations | null>(null);
+/**
+ * `onContinue` (the wizard): one primary Continue that applies the picked organisation, or moves on with None, and always shows
+ * the choice. Otherwise (Settings) a chosen organisation collapses to a line with Change.
+ */
+export function OrganisationPicker({ onApplied, onContinue, compact }: { onApplied?: () => void; onContinue?: () => void; compact?: boolean }) {
+  const [data, setData] = useState<Organisations | null | undefined>(undefined);
   const [pick, setPick] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [problem, setProblem] = useState("");
@@ -18,10 +22,17 @@ export function OrganisationPicker({ onApplied, compact }: { onApplied?: () => v
   useEffect(() => {
     api.organisations().then((d) => (setData(d), setPick(d.chosen ?? d.suggested)), () => setData(null));
   }, []);
-  if (!data?.organisations.length) return null;
+  if (data === undefined) return null;
+  if (!data?.organisations.length) {
+    return onContinue ? (
+      <div className="setup-actions">
+        <Button variant="primary" onClick={onContinue}>Continue</Button>
+      </div>
+    ) : null;
+  }
   const chosen = data.organisations.find((o) => o.id === data.chosen);
   const apply = async () => {
-    if (!pick) return;
+    if (!pick || pick === data.chosen) return onContinue?.();
     setBusy(true);
     setProblem("");
     try {
@@ -32,6 +43,7 @@ export function OrganisationPicker({ onApplied, compact }: { onApplied?: () => v
         setData({ ...data, chosen: pick });
         setEditing(false);
         onApplied?.();
+        onContinue?.();
       }
     } catch (e) {
       setProblem(e instanceof SignInRequired ? "Your session ended. Sign in again to continue." : /only the owner/.test((e as Error).message) ? "Only the owner can choose the organisation." : (e as Error).message);
@@ -40,7 +52,7 @@ export function OrganisationPicker({ onApplied, compact }: { onApplied?: () => v
     }
   };
 
-  if (chosen && !editing) {
+  if (chosen && !editing && !onContinue) {
     return (
       <section className={`setup-card org${compact ? " org-compact" : ""}`} aria-label="Your organisation">
         <div className="org-chosen">
@@ -85,10 +97,16 @@ export function OrganisationPicker({ onApplied, compact }: { onApplied?: () => v
         </label>
       </div>
       <div className="setup-actions">
-        {pick && (
-          <Button variant="primary" disabled={busy || pick === data.chosen} onClick={() => void apply()}>
-            {busy ? "Saving…" : `Use ${data.organisations.find((o) => o.id === pick)!.name}`}
+        {onContinue ? (
+          <Button variant="primary" disabled={busy} onClick={() => void apply()}>
+            {busy ? "Saving…" : "Continue"}
           </Button>
+        ) : (
+          pick && (
+            <Button variant="primary" disabled={busy || pick === data.chosen} onClick={() => void apply()}>
+              {busy ? "Saving…" : `Use ${data.organisations.find((o) => o.id === pick)!.name}`}
+            </Button>
+          )
         )}
         {editing && <Button onClick={() => setEditing(false)}>Cancel</Button>}
       </div>

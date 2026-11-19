@@ -67,6 +67,16 @@ function FlowBody({ flow, board, reload, onDone, onSignIn }: { flow: SetupFlowVi
   const picked = !flow.choose || flow.done || (flow.choose.chosen != null && flow.choose.chosen === flow.choose.value);
   const secretsDone = (flow.done || fields.every((f) => flow.present[f.secret])) && picked;
   const fail = (e: unknown) => (e instanceof SignInRequired ? onSignIn() : setError((e as Error).message));
+  // The organisation the owner chose fills this module's client: its app-making steps are done, unless the owner wants their own.
+  const [org, setOrg] = useState<string | null>(null);
+  const [ownApp, setOwnApp] = useState(false);
+  useEffect(() => {
+    api.organisations().then((o) => {
+      const c = o.organisations.find((x) => x.id === o.chosen);
+      setOrg(c?.connections.includes(flow.module) ? c.name : null);
+    }, () => setOrg(null));
+  }, [flow.module]);
+  const viaOrg = org !== null && !ownApp && fields.length > 0 && secretsDone;
   const later = (
     <button className="btn" onClick={() => api.setupDismiss(flow.module).then(onDone, fail)}>
       Skip this step
@@ -93,21 +103,30 @@ function FlowBody({ flow, board, reload, onDone, onSignIn }: { flow: SetupFlowVi
     <main className="st-page setup-page">
       {head}
       <div className="setup-grid">
-        <Step n={n++} title="Instructions" state="open">
-          <Steps text={flow.steps.split("{board_url}").join(board.url).split("{redirect_url}").join(flow.redirect_url ?? "")} />
-          {flow.console_url && (
-            <a className="btn" href={flow.console_url} target="_blank" rel="noreferrer">
-              Open {flow.title} ↗
-            </a>
-          )}
-        </Step>
+        {viaOrg ? (
+          <Step n={n++} title={`Using ${org}'s app`} state="done">
+            <p className="setup-hint">{org} runs this app for you, so there is nothing to make. Connect with your {org} account.</p>
+            <button className="link-btn setup-own-app" onClick={() => setOwnApp(true)}>
+              Use my own app instead
+            </button>
+          </Step>
+        ) : (
+          <Step n={n++} title="Instructions" state="open">
+            <Steps text={flow.steps.split("{board_url}").join(board.url).split("{redirect_url}").join(flow.redirect_url ?? "")} />
+            {flow.console_url && (
+              <a className="btn" href={flow.console_url} target="_blank" rel="noreferrer">
+                Open {flow.title} ↗
+              </a>
+            )}
+          </Step>
+        )}
         <div className="setup-side">
           {flow.choose && (
             <Step n={n++} title="Choose" state={picked ? "done" : "open"}>
               <Choose flow={flow} choose={flow.choose} picked={picked} reload={reload} fail={fail} />
             </Step>
           )}
-          {fields.length > 0 && (
+          {fields.length > 0 && !viaOrg && (
             <Step n={n++} title="Paste the details" state={secretsDone ? "done" : "open"}>
               <SecretFields module={flow.module} fields={fields} present={flow.present} done={secretsDone} elsewhere={flow.done} reload={reload} fail={fail} />
             </Step>
