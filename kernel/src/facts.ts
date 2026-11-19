@@ -78,7 +78,7 @@ export function decider(by: string): { decider: "reviewer" | "owner" | "code"; a
 function migrateEvents(db: DatabaseSync) {
   const have = tables(db);
   if (!have.has("events")) return;
-  const tierOf = have.has("records") ? db.prepare("SELECT tier, task FROM records WHERE id = ?") : undefined;
+  const tierOf = have.has("records") ? db.prepare("SELECT tier, task, review_first FROM records WHERE id = ?") : undefined;
   const insert = db.prepare("INSERT OR IGNORE INTO facts (id, type, subject, version, task, at, seen_at, actor, source, data) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'backfill', ?)");
   const put = (type: string, subject: string, version: string, task: string | null, at: string, actor: string, data: unknown) =>
     insert.run(`${type}:${subject}:${version}`, type, subject, version, task, at, new Date().toISOString(), actor, JSON.stringify(data));
@@ -89,10 +89,10 @@ function migrateEvents(db: DatabaseSync) {
       try { d = JSON.parse(e.data); } catch { continue; }
       if (e.type === "gate.would_block") { put("gate.would_block", `task:${d.task}`, e.id, null, e.at, "kernel", d); continue; }
       if (e.type === "finish.verdict") { put("finish.verdict", `task:${d.task}`, e.id, String(d.task), e.at, "kernel", { check: d.check, verdict: d.verdict }); continue; }
-      const rec = tierOf?.get(String(d.record)) as { tier: number; task: string } | undefined;
+      const rec = tierOf?.get(String(d.record)) as { tier: number; task: string; review_first: string | null } | undefined;
       if (!rec || rec.tier < 1) continue;
       const subject = `record:${d.record}`;
-      if (e.type === "approval.filed") put("record.filed", subject, e.id, rec.task, e.at, "unknown", { kind: d.kind, tier: d.tier, panel: d.panel, requester: d.requester });
+      if (e.type === "approval.filed") put("record.filed", subject, e.id, rec.task, e.at, "unknown", { kind: d.kind, tier: d.tier, panel: d.panel, requester: d.requester, state: firstState(rec) });
       else if (e.type === "approval.decided") {
         const who = decider(String(d.by ?? ""));
         const decision = d.decision === "approve" ? "approved" : d.decision === "reject" ? "rejected" : d.decision;
@@ -115,6 +115,9 @@ function migrateEvents(db: DatabaseSync) {
  * type and subject exists yet, so a re-run, or history the live writers or the migration already covered, records nothing.
  * Times nothing kept (a claim, a drop) are left out, never guessed. Returns how many facts it recorded.
  */
+/** A record's state when filed (tier.ts): the owner's first only at Tier 2 with no review first, else the reviewer's. */
+const firstState = (r: { tier: number; review_first: string | null }) => (r.tier >= 2 && !r.review_first ? "owner" : "review");
+
 export function backfillLocal(db: DatabaseSync, facts: Facts, { agentKey = () => undefined }: { agentKey?: (id: string) => string | undefined } = {}): number {
   const have = tables(db);
   const exists = db.prepare("SELECT 1 FROM facts WHERE type = ? AND subject = ? LIMIT 1");
@@ -128,10 +131,10 @@ export function backfillLocal(db: DatabaseSync, facts: Facts, { agentKey = () =>
     return key ? `agent:${key}` : "unknown";
   };
   if (have.has("records")) {
-    for (const r of db.prepare("SELECT id, kind, task, tier, panel, requester, state, decided_by, decided_at, outcome, created_at, updated_at FROM records WHERE tier > 0").all() as any[]) {
+    for (const r of db.prepare("SELECT id, kind, task, tier, panel, requester, state, review_first, decided_by, decided_at, outcome, created_at, updated_at FROM records WHERE tier > 0").all() as any[]) {
       const subject = `record:${r.id}`;
       const q = JSON.parse(r.requester ?? "{}");
-      fill({ type: "record.filed", subject, version: "filed", task: r.task, at: r.created_at, actor: q.key ? `agent:${q.key}` : q.module ? `module:${q.module}` : "kernel", data: { kind: r.kind, tier: r.tier, panel: r.panel === 1, requester: q.key || q.module || "" } });
+      fill({ type: "record.filed", subject, version: "filed", task: r.task, at: r.created_at, actor: q.key ? `agent:${q.key}` : q.module ? `module:${q.module}` : "kernel", data: { kind: r.kind, tier: r.tier, panel: r.panel === 1, requester: q.key || q.module || "", state: firstState(r) } });
       if (r.decided_at && r.decided_by) {
         const who = decider(r.decided_by);
         const decision = ["rejected", "stale"].includes(r.state) ? r.state : "approved";

@@ -93,13 +93,13 @@ function reasonAt(x: Index, task: string, t: number, now: boolean): { reason: st
   const waiting = upTo.filter((w) => w.type === "work.waiting" && !(str(w.data.until) && ms(w.data.until as string) <= t)
     && !subjectUpTo(w.subject).some((r) => (r.type === "work.resumed" || r.type === "work.waiting") && r.seq !== w.seq && byTime(r, w) > 0));
   if (waiting.length) return { reason: String(waiting.at(-1)!.data.reason ?? "unknown") };
-  // 2. an open record: the owner's when it was held for them or escalated (or filed at tier 2), else the reviewer's
+  // 2. an open record: the owner's when filed for the owner first, held for them or escalated, else the reviewer's
   let record: string | undefined;
   for (const s of new Set(upTo.filter((f) => f.type === "record.filed").map((f) => f.subject))) {
     const rf = subjectUpTo(s);
     const escalated = (f: FactRow) => f.type === "record.decided" && /^(escalate|owner)$/.test(String(f.data.decision));
     if (rf.some((f) => (f.type === "record.decided" && !escalated(f)) || f.type === "record.landed" || f.type === "record.failed")) continue;
-    const owner = rf.some((f) => f.type === "record.held" || escalated(f) || (f.type === "record.filed" && (f.data.state ? f.data.state === "owner" : Number(f.data.tier) >= 2)));
+    const owner = rf.some((f) => f.type === "record.held" || escalated(f) || (f.type === "record.filed" && f.data.state === "owner"));
     record = owner ? "owner" : record ?? "reviewer";
   }
   if (record) return { reason: record };

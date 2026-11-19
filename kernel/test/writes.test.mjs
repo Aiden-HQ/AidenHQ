@@ -423,7 +423,7 @@ test("records write facts in the same transaction", () => {
     ["record.filed", "filed", "agent:ada"], ["record.decided", "reviewer:approved", "module:ai-reviewer"], ["record.held", "held", "kernel"],
     ["record.decided", "owner:approved", "account:a1"], ["record.claimed", "claimed", "kernel"], ["record.landed", "done", "kernel"]]);
   assert.ok(rows.every((f) => f.subject === `record:${r.id}`));
-  assert.deepEqual(rows[0].data, { kind: "twin.post_note", tier: 1, panel: false, requester: "ada" });
+  assert.deepEqual(rows[0].data, { kind: "twin.post_note", tier: 1, panel: false, requester: "ada", state: "review" });
   const zero = records.file(filing({ tier: 0, state: "approved", task: "t0" }));
   records.claim(zero.id);
   records.finish(zero.id, true, "ran");

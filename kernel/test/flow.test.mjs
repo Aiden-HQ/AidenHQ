@@ -60,7 +60,7 @@ test("waterfall has queued 29s, two working stages with their agents, and the id
 test("an open owner record makes the gap's reason owner; idle now with nothing pending is orphaned", () => {
   const { add, flow } = setup();
   wor8567(add);
-  add("record.filed", "record:k1", "10:37:00", { kind: "merge", tier: 2 });
+  add("record.filed", "record:k1", "10:37:00", { kind: "merge", tier: 2, state: "owner" });
   let w = flow.task("t1");
   assert.deepEqual(w.idle.at(-1), { task: "t1", start: `${D}10:37:27.000Z`, end: null, reason: "owner", holder: "engineer-b" });
   add("record.decided", "record:k1", "11:00:00", { decision: "approve", decider: "owner" }, { actor: "account:o1" });
