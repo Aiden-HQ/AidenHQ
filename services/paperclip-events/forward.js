@@ -5,7 +5,7 @@ export const EVENTS = ["issue.created", "issue.updated", "issue.comment.created"
 export function wakeEvent(e) {
   if (!EVENTS.includes(e?.eventType) || e.entityType !== "issue" || typeof e.entityId !== "string") return undefined;
   const p = e.payload ?? {};
-  return { type: e.eventType, issueId: e.entityId, ...(typeof p.commentId === "string" ? { commentId: p.commentId } : {}), ...(typeof p.updatedAt === "string" ? { updatedAt: p.updatedAt } : {}), reopened: p.reopened === true };
+  return { type: e.eventType, issueId: e.entityId, ...(typeof p.commentId === "string" ? { commentId: p.commentId } : {}), ...(typeof p.updatedAt === "string" ? { updatedAt: p.updatedAt } : {}), reopened: p.reopened === true, ...(typeof e.actorType === "string" ? { actorType: e.actorType } : {}), ...(typeof e.actorId === "string" ? { actorId: e.actorId } : {}) };
 }
 
 export async function forward(e, { url, key, fetch = globalThis.fetch }) {

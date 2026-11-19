@@ -11,6 +11,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { createJobs } from "../src/jobs.ts";
+import { openFacts } from "../src/facts.ts";
 import { admitAndRun } from "./fixtures/admitted.mjs";
 
 const HOST = join(import.meta.dirname, "fixtures/jobs-host.mjs");
@@ -72,12 +73,13 @@ function sandbox() {
 }
 const inProcess = (cfg, cp = {}, mayDispatch = (module, agent) => module === "acme-dispatch" && agent === "agent-1") => {
   const db = new DatabaseSync(":memory:");
+  const facts = openFacts(db);
   const jobs = createJobs({
-    db, cfg, boxWrap: 'exec "$@"', log: () => {}, mayDispatch,
+    db, cfg, boxWrap: 'exec "$@"', log: () => {}, mayDispatch, facts, agentKey: () => "acme-crew",
     cp: { task: async (id) => ({ id, identifier: id === "task-2" ? "PEN-2" : "PEN-1", assigneeAgentId: "agent-1", status: "todo" }), ...cp },
   });
   /** An admitted job of `kind` for task-1, started in a box made for it. */
-  return Object.assign(jobs, { run: (sb, kind = "echo") => admitAndRun(db, jobs, sb.cfg, sb.box(kind), kind) });
+  return Object.assign(jobs, { db, facts, run: (sb, kind = "echo") => admitAndRun(db, jobs, sb.cfg, sb.box(kind), kind) });
 };
 const finished = (jobs, id) => until(`job ${id} to end`, async () => { const v = await jobs.get("acme-dispatch", id); return v.state !== "running" && v; });
 
@@ -303,4 +305,27 @@ test("the owner stops a running job from the board; a module or agent token cann
   assert.deepEqual([v.state, v.cancelled, v.stoppedBy], ["cancelled", true, "acct-1"]);
   assert.deepEqual(posts, [[s.id, "task-1", "notice", "**Stopped by the owner.** Say **continue** to pick up where it stopped."]]);
   assert.deepEqual((await stop("the-boards-key")).json, { stopped: [] }, "nothing running is left to stop");
+});
+
+test("a job's facts: started, then ended with what the gateway billed for it and whether it acted; a lost job ends as lost", async () => {
+  const sb = sandbox();
+  const jobs = inProcess(sb.cfg);
+  jobs.db.exec("CREATE TABLE calls (key TEXT PRIMARY KEY, run_id TEXT, model TEXT, input INTEGER, cached INTEGER, output INTEGER, cost_usd REAL, status TEXT)");
+  const j = jobs.run(sb);
+  const add = jobs.db.prepare("INSERT INTO calls VALUES (?, ?, ?, ?, ?, ?, ?, ?)");
+  add.run("k1", j.id, "acme/m1", 100, 40, 10, 0.25, "ok");
+  add.run("k2", j.id, "acme/m1", 50, 0, 5, 0.5, "ok");
+  add.run("k3", j.id, "acme/m1", 0, 0, 0, 9, "cap_reached");
+  jobs.facts.record({ type: "task.commented", subject: "task:task-1", version: "c1", at: new Date().toISOString(), actor: "agent:acme-crew", task: "task-1", data: { kind: "reply", job: j.id } });
+  await finished(jobs, j.id);
+  const [started, ended] = ["job.started", "job.ended"].map((t) => jobs.facts.forTask("task-1").find((f) => f.type === t));
+  assert.equal(started.subject, `job:${j.id}`);
+  assert.equal(started.actor, "agent:acme-crew");
+  assert.deepEqual(ended.data, { state: "done", exit: 0, why: "", cost_usd: 0.75, input: 150, cached: 40, output: 15, model: "acme/m1", acted: true });
+  // A run that died while no kernel followed it.
+  jobs.db.prepare("INSERT INTO jobs (id, module, agent, task, engine, pid, log, dir, at, jobcaps, observing, live_input, state) VALUES ('j-gone', 'acme-dispatch', 'agent-1', 'task-2', 'echo', 999999, '/nope', '/nope', ?, '[]', 0, 0, 'running')").run(Date.now());
+  jobs.adopt();
+  const lost = jobs.facts.forTask("task-2").find((f) => f.type === "job.ended");
+  assert.equal(lost.data.state, "lost");
+  assert.equal(lost.data.acted, false);
 });
