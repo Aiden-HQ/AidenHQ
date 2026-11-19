@@ -650,3 +650,16 @@ test("an approved UI change whose Evidence names no screenshot ends with code's 
   assert.equal(await nit("none given", "diff --git a/src/db.ts b/src/db.ts\n+x\n"), false);
   assert.equal(await nit(undefined), false, "not a pr or merge card");
 });
+
+test("a product compose port with no verify-security pin is rejected by code; with the pin it reaches the model", async () => {
+  const c = JSON.parse(readFileSync(join(import.meta.dirname, "reviewer-cases/product-compose-loopback-port-unpinned.json"), "utf8"));
+  // The verdict that approved this case on a full run: the chain naming the port taken as its pin.
+  const approve = { content: JSON.stringify({ decision: "approve", reason_code: "in_scope", reason: "the chain names 8447", second_review: false, findings: [], checklist: [{ id: "exposure-pins", holds: true }] }) };
+  let r = asker([approve]);
+  const v = await review({ card: c.card, diff: c.diff, chain: c.chain, policy: "p", ask: r.ask });
+  assert.deepEqual([v.decision, v.code, r.asked.length], ["reject", "policy_other", 0]);
+  assert.match(v.reason, /8447/);
+  const pinned = `${c.diff}diff --git a/scripts/verify-security.sh b/scripts/verify-security.sh\n--- a/scripts/verify-security.sh\n+++ b/scripts/verify-security.sh\n@@ -1 +1,2 @@\n x\n+check_loopback metrics 8447\n`;
+  r = asker([approve]);
+  assert.equal((await review({ card: c.card, diff: pinned, chain: c.chain, policy: "p", ask: r.ask })).decision, "approve");
+});

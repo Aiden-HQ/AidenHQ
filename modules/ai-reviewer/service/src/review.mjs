@@ -313,6 +313,40 @@ export function productScoped(checks, card, diff) {
   return outside ? checks.filter((c) => c.scope !== "product") : checks;
 }
 
+/**
+ * The host ports a product change publishes in a compose file (an added entry under `ports:`, short syntax, e.g.
+ * "127.0.0.1:8447:8447" or "${BIND:-127.0.0.1}:${PORT:-3121}:3121") that no line it adds to scripts/verify-security.sh
+ * names. verify-security's pins must name every published port (#195, #200 failed on the live host after an apply), so
+ * code checks this itself: a model once took the request chain naming the port as the pin.
+ */
+export function unpinnedPorts(diff) {
+  const published = [];
+  const pinned = [];
+  for (const part of String(diff ?? "").split(/^(?=diff --git )/m)) {
+    const path = /^\+\+\+ b\/(\S+)/m.exec(part)?.[1] ?? "";
+    const body = part.split("\n");
+    const start = body.findIndex((l) => l.startsWith("@@"));
+    if (start < 0) continue;
+    if (path === "scripts/verify-security.sh") pinned.push(...body.slice(start).filter((l) => l.startsWith("+")));
+    if (!/(^|\/)compose[^/]*\.ya?ml$/.test(path)) continue;
+    let ports; // the indent of the `ports:` key whose list the lines are in
+    for (const l of body.slice(start)) {
+      if (l.startsWith("@@")) (ports = undefined);
+      if (!/^[ +]/.test(l)) continue;
+      const text = l.slice(1);
+      const indent = text.search(/\S/);
+      if (indent < 0 || text.trimStart().startsWith("#")) continue;
+      if (ports !== undefined && indent <= ports) ports = undefined;
+      if (/^\s*ports:\s*$/.test(text)) ports = indent;
+      else if (ports !== undefined && l.startsWith("+")) {
+        const host = /^\s*-\s*["']?(?:.*:)?(\d+|\$\{\w+:-(\d+)\}):\d+(?:\/(?:tcp|udp))?["']?\s*$/.exec(text);
+        if (host) published.push(host[2] ?? host[1]);
+      }
+    }
+  }
+  return [...new Set(published)].filter((p) => !pinned.some((l) => new RegExp(`(^|\\D)${p}(\\D|$)`).test(l)));
+}
+
 /** Whether a model's answer is a usable verdict; anything else (a refusal, nothing, prose, a bad schema) counts as refused. */
 function verdictOf(raw, shown = "", checks = []) {
   if (!raw || raw.refusal || !String(raw.content ?? "").trim()) return undefined;
@@ -417,6 +451,8 @@ async function judge({ card, diff, files = { text: "", leftOut: [], oversized: [
   }
   // The checklist items this diff triggers: matched by code, read from the service's own copy (the deployed product).
   const checks = productScoped(matchChecklist(checklist, original), card, original);
+  const unpinned = checks.some((c) => c.id === "exposure-pins") ? unpinnedPorts(original) : [];
+  if (unpinned.length) return byCode("reject", `exposure-pins fails: the change publishes host port ${unpinned.join(", ")} in a compose file, and its scripts/verify-security.sh names no pin for it. Add the port to verify-security's pins in this same change and file it again.`, "policy_other");
   const prompt = reviewPrompt({ policy, card, diff, files: files.text ?? "", chain, panel, previous, siblings, sources, checks, evidence, decisions });
   // A verdict on a change whose plain text did not all fit the budget says so: those files were judged on the diff.
   const fromDiff = files.oversized?.length ? ` Judged from the DIFF, not in full: ${files.oversized.join(", ")} did not fit the ${MAX_FILES}-character budget for changed files.` : "";
