@@ -5,16 +5,18 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { generateKeyPairSync } from "node:crypto";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { appClient } from "../service/src/github-app.ts";
 import { createService } from "../service/src/service.ts";
 import { render } from "../../../kernel/src/writes.ts";
 
 const sh = (cwd, ...args) => execFileSync("git", args, { cwd, encoding: "utf8", env: { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null", GIT_AUTHOR_NAME: "a", GIT_AUTHOR_EMAIL: "a@example.com", GIT_COMMITTER_NAME: "a", GIT_COMMITTER_EMAIL: "a@example.com" } }).trim();
 const listen = (handler) => new Promise((ok) => { const s = createServer(handler); s.listen(0, "127.0.0.1", () => ok({ s, url: `http://127.0.0.1:${s.address().port}` })); });
 
-async function setup(t, { routes = () => undefined } = {}) {
+async function setup(t, { routes = () => undefined, app: appOverride } = {}) {
   const root = mkdtempSync(join(tmpdir(), "codehost-svc-"));
   const marker = join(root, "RAN");
   // "GitHub": a bare repo with main.
@@ -53,11 +55,11 @@ async function setup(t, { routes = () => undefined } = {}) {
   });
   const minted = [];
   const created = [];
-  const app = { token: async (org, o) => (minted.push({ org, ...o }), "tok"), createRepo: async (slug) => (created.push(slug), "created"), identity: async () => ({ name: "acme-app[bot]", email: "1+acme-app[bot]@users.noreply.github.com" }) };
+  const app = { token: async (org, o) => (minted.push({ org, ...o }), "tok"), createRepo: async (slug) => (created.push(slug), "created"), appInfo: async () => ({ id: 1, slug: "acme-app" }), identity: async () => ({ name: "acme-app[bot]", email: "1+acme-app[bot]@users.noreply.github.com" }) };
   const ghCalls = [];
   const gh = async (method, path, token, body) => (ghCalls.push({ method, path, body }), routes(method, path) ?? (method === "GET" && path === "/repos/acme-agents/widget" ? { status: 200, body: { default_branch: "main" } } : { status: 404, body: { message: "fake GitHub: no route" } }));
   const handle = createService({
-    key: "ch-key", kernelUrl: kernel.url, cacheDir: join(root, "cache"), tasksDir: join(root, "tasks"), app, gh,
+    key: "ch-key", kernelUrl: kernel.url, cacheDir: join(root, "cache"), tasksDir: join(root, "tasks"), app: appOverride ?? app, gh,
     remoteUrl: (slug) => join(root, "github", `${slug}.git`), agentsOrg: "acme-agents", instanceRepo: "acme-agents/aidenhq-instance",
     productRepo: "acme/aidenhq", allowedOrgs: ["acme-agents", "partner"],
   });
@@ -215,6 +217,46 @@ test("ops answer the kernel only (it checks each module's grant); a token is nar
   assert.deepEqual(minted.at(-1), { org: "acme", permissions: { organization_self_hosted_runners: "write" }, fresh: true });
   assert.equal(org.json.app.slug, "acme-app");
   assert.ok(Date.parse(org.json.expires_at) > Date.now() + 50 * 60_000);
+});
+
+test("a token is answered even when GitHub refuses the bot user, and when even GET /app fails: the minted token is never lost", async (t) => {
+  // The incident: the bot-user read answered 403 and /ops/token turned a token it had already minted into a 500.
+  const { privateKey } = generateKeyPairSync("rsa", { modulusLength: 2048, privateKeyEncoding: { type: "pkcs8", format: "pem" }, publicKeyEncoding: { type: "spki", format: "pem" } });
+  const github = async (botStatus, { appDown = false } = {}) => {
+    const mints = [];
+    const reads = [];
+    const fetch = async (url, init) => {
+      const path = String(url).replace("https://api.github.com", "");
+      const body = init.body ? JSON.parse(init.body) : undefined;
+      reads.push(path);
+      const res = (status, json) => ({ status, json: async () => json });
+      if (path === "/app") return appDown ? res(502, { message: "bad gateway" }) : res(200, { id: 1, slug: "acme-app" });
+      if (path.startsWith("/app/installations?")) return res(200, [{ id: 42, account: { login: "acme-agents" } }]);
+      if (path === "/app/installations/42/access_tokens") return res(201, { token: `ghs_${mints.push(body)}`, expires_at: new Date(Date.now() + 3600_000).toISOString() });
+      if (path === "/user" || path.startsWith("/users/")) return res(botStatus, { message: "refused" });
+      return res(404, {});
+    };
+    return { app: appClient({ appId: 1, key: privateKey, fetch }), mints, reads };
+  };
+  for (const botStatus of [403, 500]) {
+    const { app, mints, reads } = await github(botStatus);
+    const { call } = await setup(t, { app });
+    const ok = await call("/ops/token", { module: "github", repo: "acme-agents/widget", perms: { metadata: "read" } });
+    assert.equal(ok.status, 200, JSON.stringify(ok.json));
+    assert.match(ok.json.token, /^ghs_/, "the minted token is the answer");
+    assert.equal(ok.json.app.slug, "acme-app");
+    assert.equal(mints.length, 1, "the token is minted once");
+    assert.equal(reads.filter((p) => p === "/user" || p.startsWith("/users/")).length, 0, "the slug comes from GET /app, not the bot user");
+  }
+  // Even GET /app failing doesn't fail a token already minted: its slug is optional to every caller.
+  const { app, mints, reads } = await github(403, { appDown: true });
+  const down = await setup(t, { app });
+  const still = await down.call("/ops/token", { module: "github", repo: "acme-agents/widget", perms: { metadata: "read" } });
+  assert.equal(still.status, 200, JSON.stringify(still.json));
+  assert.match(still.json.token, /^ghs_/);
+  assert.equal(still.json.app.slug, null);
+  assert.equal(mints.length, 1);
+  assert.ok(reads.includes("/app"));
 });
 
 const pushArgs = (sha) => ({ workspace: "TASK-1", only: [{ repo: "acme-agents/widget", branch: "feature", sha }] });

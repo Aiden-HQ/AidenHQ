@@ -44,7 +44,7 @@ const run = promisify(execFile);
 export const SAFE_GIT_ARGS = ["-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=", "-c", "protocol.ext.allow=never", "-c", "safe.bareRepository=explicit"];
 
 type Gh = (method: string, path: string, token: string, body?: unknown) => Promise<{ status: number; body: any; remaining?: number }>;
-type App = { token(org: string, o: { repositories?: string[]; permissions?: Record<string, string>; fresh?: boolean }): Promise<string>; createRepo(slug: string): Promise<"exists" | "created">; identity(): Promise<{ name: string }> };
+type App = { token(org: string, o: { repositories?: string[]; permissions?: Record<string, string>; fresh?: boolean }): Promise<string>; createRepo(slug: string): Promise<"exists" | "created">; appInfo(): Promise<{ id: number; slug: string }>; identity(): Promise<{ name: string }> };
 export type Options = {
   key: string; kernelUrl: string; cacheDir: string; tasksDir?: string;
   /** The App (github-app.ts appClient); undefined without the key: every GitHub action fails, saying so. */
@@ -591,7 +591,8 @@ export function createService(o: Options) {
       if (!Object.keys(perms).length || Object.values(perms).some((l) => !LEVEL[l])) throw fail(400, "name the permissions (read or write)");
       const token = await app().token(s.org, { ...(org ? {} : { repositories: [s.name] }), permissions: perms, fresh: true });
       // A fresh installation token lasts an hour; the App's slug tells its own events (performed_via_github_app) from others'.
-      const slug = (await app().identity()).name.replace(/\[bot\]$/, "");
+      // A read that fails doesn't fail the token we already hold: callers treat a missing slug as optional.
+      const slug = await app().appInfo().then((i) => i.slug, () => null);
       return send(res, 200, { token, repo: s.slug, perms, expires_at: new Date(Date.now() + 55 * 60_000).toISOString(), app: { slug } });
     }
     const s = slugOf(b.repo);
