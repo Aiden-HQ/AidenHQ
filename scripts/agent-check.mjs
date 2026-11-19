@@ -13,6 +13,9 @@
 //   - each connection an agent is granted answers its /healthz (which also reports sign-in: 503 until signed in), from the host.
 //   A failing connection is an error (exit 1) where it is newly granted since --since (a new agent: all of its
 //   connections); a warning where it was granted before, so one vendor being down doesn't fail every apply.
+//   A connection nobody has set up yet is a note, never an error, even where newly granted (an upgrade adds the default
+//   bundle's connections to an owner who connected none of them): its /healthz answers `state: "missing"`, or its service
+//   isn't in the compiled compose at all (a `when:` setting not given yet: no container until it is).
 //
 //   node scripts/agent-check.mjs [--config config/paperclip.yaml]              the compile checks on a compiled config
 //   node scripts/agent-check.mjs live [--config ...] [--since <old paperclip.yaml>]
@@ -88,40 +91,65 @@ export function newGrants(cfg, prev) {
 }
 
 /**
- * The live check's verdict, given each HTTP connection's health ({ name → { ok, detail } }): errors for connections that
- * fail where they are newly granted (`fresh`, from newGrants), warnings for the rest, and for those that are up but report
- * "not connected" / "not signed in" (a sign-in the owner hasn't made yet).
+ * The live check's verdict, given each HTTP connection's health ({ name → { ok, state, detail, idle } }): errors for
+ * connections that fail where they are newly granted (`fresh`, from newGrants), warnings for the rest, and notes for those
+ * nobody has set up yet (`state: "missing"`, the connection's own answer, or `idle`: its service isn't compiled in), which
+ * the owner connects on the board when they want them.
  */
 export function liveVerdict(cfg, health, fresh) {
   const errors = [];
   const warnings = [];
+  const notes = [];
   for (const [name, h] of Object.entries(health)) {
     if (h.ok) continue;
-    // Up but not signed in yet (the owner connects it on the board once its module runs): a warning, even where newly granted.
-    const waiting = !h.detail?.startsWith("unreachable") && /\bnot (connected|signed in)\b/i.test(`${h.state ?? ""} ${h.detail ?? ""}`);
     const users = Object.entries(cfg.agents ?? {}).filter(([, a]) => (a.mcp_servers ?? []).includes(name)).map(([k]) => k);
-    const hard = waiting ? [] : users.filter((k) => fresh.get(k)?.has(name));
+    if (h.idle || h.state === "missing") {
+      notes.push(`connection ${name} isn't set up yet (${h.detail}); granted to ${users.join(", ")}`);
+      continue;
+    }
+    const hard = users.filter((k) => fresh.get(k)?.has(name));
     const msg = `connection ${name} isn't healthy or signed in (${h.detail}); granted to ${users.join(", ")}`;
     (hard.length ? errors : warnings).push(hard.length ? `${msg}: newly granted to ${hard.join(", ")}` : msg);
   }
-  return { errors, warnings };
+  return { errors, warnings, notes };
+}
+
+/**
+ * The service names the compiled compose files define (their keys and the names modules' services declare): a connection
+ * whose host isn't one of them has no container by design. Undefined when there is no compiled compose to read.
+ */
+export function definedServices(repo) {
+  const files = ["compose.yaml", "compose.modules.yaml"].map((f) => resolve(repo, f));
+  if (!files.every(existsSync)) return undefined;
+  const names = new Set();
+  for (const f of files) {
+    for (const [k, s] of Object.entries(YAML.parse(readFileSync(f, "utf8"), { logLevel: "error" })?.services ?? {})) {
+      names.add(k);
+      if (s?.labels?.["aidenhq.service"]) names.add(s.labels["aidenhq.service"]);
+    }
+  }
+  return names;
 }
 
 /**
  * Each granted HTTP connection's /healthz, asked from the host at the service's container address, as the kernel reaches it
  * (kernel/src/net.ts): module services share no network with Paperclip any more.
  */
-export function connectionHealth(cfg, repo) {
+export function connectionHealth(cfg, repo, defined = definedServices(repo)) {
   const used = new Set(Object.values(cfg.agents ?? {}).flatMap((a) => a.mcp_servers ?? []));
-  const targets = Object.fromEntries(Object.entries(cfg.mcp_servers ?? {}).filter(([n, c]) => used.has(n) && c.url).map(([n, c]) => [n, new URL("/healthz", c.url).href]));
-  if (!Object.keys(targets).length) return {};
+  const all = Object.entries(cfg.mcp_servers ?? {}).filter(([n, c]) => used.has(n) && c.url);
+  const idle = defined ? all.filter(([, c]) => !defined.has(new URL(c.url).hostname)) : [];
+  const out = Object.fromEntries(idle.map(([n, c]) => [n, { ok: false, idle: true, detail: `no ${new URL(c.url).hostname} container until it is set up` }]));
+  const targets = Object.fromEntries(all.filter(([n]) => !(n in out)).map(([n, c]) => [n, new URL("/healthz", c.url).href]));
+  if (!Object.keys(targets).length) return out;
   const probe = `import { createResolver } from "./kernel/src/net.ts";const s=createResolver({project:process.env.COMPOSE_PROJECT_NAME||"aidenhq"});const t=JSON.parse(process.argv[1]);Promise.all(Object.entries(t).map(([n,u])=>s.resolve(u).then((a)=>fetch("http://"+a.host+":"+a.port+a.path,{signal:AbortSignal.timeout(8000)})).then(async r=>{const b=await r.text();let j={};try{j=JSON.parse(b)}catch{}return [n,{ok:r.ok&&j.ok!==false,state:j.state,detail:r.ok&&j.ok!==false?"ok":String(j.detail??j.state??r.status).slice(0,160)}]}).catch(e=>[n,{ok:false,detail:"unreachable: "+e.message}]))).then(x=>console.log(JSON.stringify(Object.fromEntries(x))))`;
-  const out = execFileSync(process.execPath, ["--disable-warning=ExperimentalWarning", "--input-type=module", "-e", probe, JSON.stringify(targets)], { cwd: repo, encoding: "utf8", timeout: 60_000 });
-  return JSON.parse(out.trim().split("\n").at(-1));
+  const probed = execFileSync(process.execPath, ["--disable-warning=ExperimentalWarning", "--input-type=module", "-e", probe, JSON.stringify(targets)], { cwd: repo, encoding: "utf8", timeout: 60_000 });
+  return { ...out, ...JSON.parse(probed.trim().split("\n").at(-1)) };
 }
 
 /** Prints the result; returns the exit code. */
-export function report(label, { errors, warnings }) {
+export function report(label, { errors, warnings, notes = [] }) {
+  for (const n of notes) console.log(`  ${label} note: ${n}`);
   for (const w of warnings) console.log(`  ${label} warning: ${w}`);
   for (const e of errors) console.error(`  ${label} ERROR: ${e}`);
   return errors.length ? 1 : 0;
@@ -145,7 +173,8 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
     const added = [...fresh].filter(([, s]) => s.size).map(([k, s]) => `${k}: ${[...s].join(", ")}`);
     process.exit(report("agent-check", { errors: added.length ? [`couldn't ask the connections (${String(e.message ?? e).split("\n")[0]}), newly granted: ${added.join("; ")}`] : [], warnings: added.length ? [] : [`couldn't ask the connections (${String(e.message ?? e).split("\n")[0]})`] }));
   }
-  const code = report("agent-check", liveVerdict(cfg, health, fresh));
-  console.log(`agent-check live: ${Object.values(health).filter((h) => h.ok).length}/${Object.keys(health).length} connections healthy${code ? "; FAILED for newly granted connections (see above)" : ""}`);
+  const verdict = liveVerdict(cfg, health, fresh);
+  const code = report("agent-check", verdict);
+  console.log(`agent-check live: ${Object.values(health).filter((h) => h.ok).length}/${Object.keys(health).length} connections healthy${verdict.notes.length ? `, ${verdict.notes.length} not set up yet` : ""}${code ? "; FAILED for newly granted connections (see above)" : ""}`);
   process.exit(code);
 }

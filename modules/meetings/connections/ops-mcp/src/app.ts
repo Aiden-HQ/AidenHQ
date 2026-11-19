@@ -55,7 +55,7 @@ export function createApp(cfg: Config, log: Logger, overrides: { db?: Db; paperc
   return { cfg, db, vault, knowledge: new KnowledgeBases(cfg.knowledge), meetings, voice: new VoiceGuide(cfg, vault, log, overrides.now), paperclip, log };
 }
 
-export async function healthChecks(app: App): Promise<{ ok: boolean; checks: Record<string, { ok: boolean; detail?: string }> }> {
+export async function healthChecks(app: App): Promise<{ ok: boolean; state?: "missing"; detail?: string; checks: Record<string, { ok: boolean; detail?: string }> }> {
   const checks: Record<string, { ok: boolean; detail?: string }> = {};
   try {
     app.db.exec("CREATE TABLE IF NOT EXISTS _health (ts TEXT); DELETE FROM _health; INSERT INTO _health VALUES (datetime('now'));");
@@ -91,5 +91,9 @@ export async function healthChecks(app: App): Promise<{ ok: boolean; checks: Rec
     checks.paperclip_api = { ok: false, detail: "not configured" };
   }
   const required = ["sqlite_writable", "transcripts_readable", "vault_available", "vault_writable"];
-  return { ok: required.every((k) => checks[k]?.ok), checks };
+  const ok = required.every((k) => checks[k]?.ok);
+  // No vault mounted at all (VAULT_FOLDERS empty in the host's .env) while the rest works: not set up yet (state "missing"),
+  // which the apply's live agent check notes rather than fails. A mounted vault that is unwritable stays a failure.
+  const unset = !ok && !checks.vault_available.ok && checks.sqlite_writable.ok && checks.transcripts_readable.ok;
+  return { ok, ...(unset ? { state: "missing" as const, detail: "vault not configured (set VAULT_DIR and VAULT_FOLDERS in .env)" } : {}), checks };
 }
