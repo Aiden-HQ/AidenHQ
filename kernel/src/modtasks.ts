@@ -7,12 +7,11 @@
 // same source twice is one task. Its assignment wakes the agent (wakes.ts): no comment is needed to start it. The module
 // closes its own tasks (POST /v1/tasks/:task/close) when their work is moot.
 import { createHash } from "node:crypto";
+import type { DatabaseSync } from "node:sqlite";
 import { neutral, type Api } from "./channels.ts";
 
 /** The marker of a task a module filed (dispatch thread.ts reads it). */
 export const MODULE_TASK = (module: string) => `<!-- aidenhq-module:${module} -->`;
-/** Set at creation on a task filed with a rubric: the finish check holds it until its grade row exists (checks.ts). */
-export const GRADED_TASK = "<!-- aidenhq-graded -->";
 const SOURCE = /^[\w.:/@#-]{1,200}$/;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -26,7 +25,9 @@ export class TaskError extends Error {
   constructor(status: number, message: string) { super(message); this.status = status; }
 }
 
-export function createModuleTasks({ owner, agents, rubric, log = () => {} }: {
+export function createModuleTasks({ db, owner, agents, rubric, log = () => {} }: {
+  /** The kernel's database: which tasks were filed graded, by which module (the finish check holds one with no grade row). */
+  db: DatabaseSync;
   owner: Api;
   /** The grants table's agents, by Paperclip id. */
   agents: () => Record<string, { roles?: string[] } | undefined>;
@@ -34,6 +35,7 @@ export function createModuleTasks({ owner, agents, rubric, log = () => {} }: {
   rubric?: (task: { id: string; identifier?: string }, module: string, b: { rubric: string[]; deliverable: unknown }) => Promise<void>;
   log?: (msg: string, f?: Record<string, unknown>) => void;
 }) {
+  db.exec("CREATE TABLE IF NOT EXISTS graded_tasks (task TEXT PRIMARY KEY, module TEXT NOT NULL)");
   /**
    * Close a task this module filed (its marker, and no agent made it): done or cancelled, with one line why. The line carries
    * the kernel's tag (wakes.ts SELF_TAG), so it wakes nobody and is never read as the owner's words.
@@ -69,14 +71,19 @@ export function createModuleTasks({ owner, agents, rubric, log = () => {} }: {
     if (a.status !== 200 || !a.json?.companyId) throw new TaskError(502, `the control plane answered ${a.status} for the agent`);
     if (agentPaused(a.json)) throw new TaskError(409, `${role || "the"} agent ${agent} is paused`);
     const r = await owner("POST", `/api/companies/${encodeURIComponent(String(a.json.companyId))}/issues`, {
-      title, description: `${description}\n\n<!-- source:${b.source} -->\n${MODULE_TASK(module)}${graded ? `\n${GRADED_TASK}` : ""}`, status: "todo", priority: "medium",
+      title, description: `${description}\n\n<!-- source:${b.source} -->\n${MODULE_TASK(module)}`, status: "todo", priority: "medium",
       assigneeAgentId: agent, assigneeUserId: null, allowDuplicate: true, ...(b.parent ? { parentId: b.parent } : {}),
       // A graded task's key names its module, so another module's source can never hit it (and its rubric is never attached to it).
       idempotencyKey: `pw-${createHash("sha256").update(graded ? `${module}\0${b.source}` : b.source).digest("hex").slice(0, 32)}`,
     });
     if (r.status >= 300 || !r.json?.id) throw new TaskError(502, `the control plane answered ${r.status}`);
-    // A task this filing didn't create (a dedup hit) takes a rubric only when it is this module's own, graded from its creation.
-    if (graded && r.json.deduplicated && (r.json.createdByAgentId || !String(r.json.description ?? "").includes(MODULE_TASK(module)) || !String(r.json.description ?? "").includes(GRADED_TASK))) throw new TaskError(409, `${r.json.identifier ?? "that task"} isn't a graded task ${module} filed`);
+    // Graded status is the kernel's own row, never the task's editable text. A dedup hit takes a rubric only on a task this
+    // module filed graded.
+    if (graded) {
+      const had = (db.prepare("SELECT module FROM graded_tasks WHERE task = ?").get(String(r.json.id)) as { module: string } | undefined)?.module;
+      if (r.json.deduplicated ? had !== module : false) throw new TaskError(409, `${r.json.identifier ?? "that task"} isn't a graded task ${module} filed`);
+      db.prepare("INSERT OR IGNORE INTO graded_tasks (task, module) VALUES (?, ?)").run(String(r.json.id), module);
+    }
     if (graded) await rubric!({ id: String(r.json.id), identifier: String(r.json.identifier ?? "") }, module, { rubric: b.rubric as string[], deliverable: b.deliverable }).catch((e: { name?: string; status?: number; message: string }) => { throw new TaskError(e.status ?? 502, `the task is filed but not graded (${e.message}): file it again`); });
     log("module task filed", { module, task: r.json.identifier, agent, source: b.source, deduplicated: Boolean(r.json.deduplicated) });
     return { id: String(r.json.id), identifier: String(r.json.identifier ?? ""), agent, deduplicated: Boolean(r.json.deduplicated) };

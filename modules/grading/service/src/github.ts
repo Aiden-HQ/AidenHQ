@@ -24,7 +24,7 @@ const ISSUE_QUERY = `query($owner: String!, $repo: String!, $number: Int!) {
   repository(owner: $owner, name: $repo) {
     issue(number: $number) {
       number url state stateReason closedAt labels(first: 20) { nodes { name } }
-      closedEvents: timelineItems(itemTypes: [CLOSED_EVENT], last: 1) { nodes { ... on ClosedEvent { actor { login } } } }
+      closedEvents: timelineItems(itemTypes: [CLOSED_EVENT], last: 1) { nodes { ... on ClosedEvent { actor { __typename login } } } }
       comments(last: 10) { nodes { author { login } authorAssociation createdAt body } }
     }
   }

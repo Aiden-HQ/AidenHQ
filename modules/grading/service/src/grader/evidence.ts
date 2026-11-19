@@ -397,8 +397,10 @@ export async function issueEvidence(ref: string, deps: any): Promise<any> {
   const closer = i.closedEvents?.nodes?.[0]?.actor?.login;
   const closing = i.state === "CLOSED" ? comments.findLast((c) => c.author?.login === closer && Date.parse(c.createdAt) <= Date.parse(i.closedAt) + 120_000) : undefined;
   // Anyone with close rights can close an issue: a close counts only by the instance's App or by an owner, member or collaborator.
-  const bare = (l: unknown) => String(l ?? "").replace(/\[bot\]$/i, "").toLowerCase();
-  const trusted = Boolean(closer) && ((Boolean(read.appSlug) && bare(closer) === bare(read.appSlug)) || ["OWNER", "MEMBER", "COLLABORATOR"].includes(closing?.authorAssociation));
+  // The App is a Bot actor (a user account is never one, whatever it is named) whose login is exactly its slug, which GraphQL
+  // gives without the `[bot]` REST adds.
+  const actor = i.closedEvents?.nodes?.[0]?.actor;
+  const trusted = Boolean(closer) && ((Boolean(read.appSlug) && actor?.__typename === "Bot" && [read.appSlug, `${read.appSlug}[bot]`].includes(closer)) || ["OWNER", "MEMBER", "COLLABORATOR"].includes(closing?.authorAssociation));
   const facts = [`${ref}: ${i.state === "CLOSED" ? `closed${i.stateReason ? ` as ${String(i.stateReason).toLowerCase()}` : ""} at ${i.closedAt}${closer ? ` by ${closer}` : ""}` : "open"}; labels: ${(i.labels?.nodes ?? []).map((l: any) => l.name).join(", ") || "none"}`];
   const merges: string[] = [];
   if (i.state === "CLOSED" && !trusted) facts.push(`the close does not count: ${closer ?? "its closer"} is not the instance's App, and no comment shows them as an owner, member or collaborator, so the issue is treated as not resolved`);

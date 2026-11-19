@@ -1,6 +1,7 @@
 // Tasks modules file for agents (modtasks.ts): by role, once per source, marked as the module's, only with kernel.tasks.
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { DatabaseSync } from "node:sqlite";
 import { createModuleTasks } from "../src/modtasks.ts";
 import { createBackplane } from "../src/backplane.ts";
 import { serve } from "./helpers.mjs";
@@ -28,8 +29,9 @@ test("a module's task goes to the agent holding the role, once per source, marke
     }
     return { status: 404, json: {} };
   };
+  const db = new DatabaseSync(":memory:");
   const rubrics = [];
-  const tasks = createModuleTasks({ owner, agents: () => ({ "a-cos": { roles: ["fleet-admin"] }, [PE]: { roles: ["platform-engineer"] } }), rubric: async (task, module, b) => void rubrics.push({ id: task.identifier, module, ...b }) });
+  const tasks = createModuleTasks({ db, owner, agents: () => ({ "a-cos": { roles: ["fleet-admin"] }, [PE]: { roles: ["platform-engineer"] } }), rubric: async (task, module, b) => void rubrics.push({ id: task.identifier, module, ...b }) });
   const who = { codehost: { kind: "module", module: "codehost-github", roles: ["kernel.tasks"] }, other: { kind: "module", module: "other", roles: [] } };
   const bp = createBackplane({ whoami: async (k) => who[k] ?? Promise.reject(new Error("no")), asserter: { jwks: {} }, proxy: async () => {}, cp: async () => {}, grantsFile: () => ({}), tasks });
   const { s, url } = await serve(bp);
@@ -62,11 +64,10 @@ test("a module's task goes to the agent holding the role, once per source, marke
   assert.equal((await file("codehost", { ...graded, rubric: undefined })).status, 400, "a deliverable without its rubric is refused");
   assert.equal((await file("codehost", graded)).status, 200);
   assert.deepEqual(rubrics.map((r) => [r.module, r.deliverable.kind, r.rubric.length]), [["codehost-github", "issue", 3]]);
-  // The graded task carries its marker from creation (the finish check holds it until its row exists); a dedup hit on a task
-  // that isn't this module's own graded one takes no rubric.
+  // Graded status is the kernel's own row, not the task's text: a dedup hit on a task this module didn't file graded takes no rubric.
   const gradedTask = [...made.values()].find((i) => i.description.includes("source:graded:1"));
-  assert.match(gradedTask.description, /<!-- aidenhq-graded -->$/);
-  gradedTask.description = gradedTask.description.replace("<!-- aidenhq-graded -->", "");
+  assert.equal(db.prepare("SELECT module FROM graded_tasks WHERE task = ?").get(gradedTask.id).module, "codehost-github");
+  db.prepare("DELETE FROM graded_tasks WHERE task = ?").run(gradedTask.id);
   assert.equal((await file("codehost", graded)).status, 409, "a rubric is never attached to a task that wasn't filed graded");
   assert.equal(rubrics.length, 1);
   // It closes its own task, tagged so the line wakes nobody; another module can't.

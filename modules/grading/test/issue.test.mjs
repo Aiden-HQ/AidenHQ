@@ -66,7 +66,7 @@ test("a module-filed task with a rubric is graded: an open issue reopens it, a c
   await loop.runGrades();
   assert.deepEqual(calls, ["reopen"], "an open issue sends the task back");
 
-  gh = { ...gh, state: "CLOSED", stateReason: "COMPLETED", closedAt: "2026-11-19T10:05:00Z", closedEvents: { nodes: [{ actor: { login: "aidenhq-app" } }] },
+  gh = { ...gh, state: "CLOSED", stateReason: "COMPLETED", closedAt: "2026-11-19T10:05:00Z", closedEvents: { nodes: [{ actor: { __typename: "Bot", login: "aidenhq-app" } }] },
     comments: { nodes: [{ author: { login: "aidenhq-app" }, authorAssociation: "NONE", createdAt: "2026-11-19T10:04:50Z", body: "Fixed by https://github.com/acme/app/pull/9 (merged)." }] } };
   issue.status = "in_review";
   Date.now = realNow;
@@ -82,17 +82,18 @@ test("a module-filed task with a rubric is graded: an open issue reopens it, a c
 
 test("issue evidence counts a close only by the App or an owner, member or collaborator, and a fix PR only in the issue's repo", async () => {
   const { issueEvidence } = await import("../service/src/grader/evidence.ts");
-  const issue = (closer, association, body) => ({ repository: { issue: { state: "CLOSED", stateReason: "COMPLETED", closedAt: "2026-11-19T10:05:00Z", labels: { nodes: [] }, closedEvents: { nodes: [{ actor: { login: closer } }] },
+  const issue = (closer, association, body, bot = false) => ({ repository: { issue: { state: "CLOSED", stateReason: "COMPLETED", closedAt: "2026-11-19T10:05:00Z", labels: { nodes: [] }, closedEvents: { nodes: [{ actor: { __typename: bot ? "Bot" : "User", login: closer } }] },
     comments: { nodes: [{ author: { login: closer }, authorAssociation: association, createdAt: "2026-11-19T10:04:50Z", body }] } } }, appSlug: "aidenhq-app" });
   const read = [];
   const pr = async (repo, n) => (read.push(`${repo}#${n}`), { repository: { pullRequest: { state: "MERGED", mergeCommit: { oid: "b".repeat(40) } } } });
-  const ev = async (closer, assoc, body) => issueEvidence("acme/app#7", { issue: async () => issue(closer, assoc, body), pr });
+  const ev = async (closer, assoc, body, bot) => issueEvidence("acme/app#7", { issue: async () => issue(closer, assoc, body, bot), pr });
   const fake = await ev("stranger", "NONE", "Fixed by acme/app#9");
   assert.match(fake.facts.join("\n"), /the close does not count/);
   assert.deepEqual(read, [], "an untrusted close's PR is never read");
-  assert.match((await ev("aidenhq-app[bot]", "NONE", "Fixed by acme/app#9")).facts.join("\n"), /pull\/9: merged/);
+  assert.match((await ev("aidenhq-app", "NONE", "Fixed by acme/app#9")).facts.join("\n"), /the close does not count/, "a user named like the App's slug is not the App");
+  assert.match((await ev("aidenhq-app", "NONE", "Fixed by acme/app#9", true)).facts.join("\n"), /pull\/9: merged/);
   assert.match((await ev("maintainer", "MEMBER", "Fixed by acme/app#9")).facts.join("\n"), /pull\/9: merged/);
-  const other = await ev("aidenhq-app", "NONE", "Fixed by evil/repo#1");
+  const other = await ev("aidenhq-app", "NONE", "Fixed by evil/repo#1", true);
   assert.match(other.facts.join("\n"), /not in acme\/app/);
   assert.deepEqual(read, ["acme/app#9", "acme/app#9"]);
 });
