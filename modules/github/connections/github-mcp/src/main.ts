@@ -18,6 +18,7 @@ import { kernelJwks, verifyCaller, type Caller } from "./aidenhq-sdk/caller.js";
 import { GitHub, GitHubAuthError, GitHubRefused, parseRef } from "./github.js";
 import { describeRepos, Maintainer, parseRepos } from "./maintainer.js";
 import { isModule } from "./module-caller.js";
+import { officialProxy, ownerToken, signIn } from "./official.js";
 
 const log = pino({ level: process.env.LOG_LEVEL ?? "info", base: { svc: "github-mcp" }, redact: ["authorization", "*.authorization", "token", "*.token"] });
 const port = Number(process.env.PORT ?? 8086);
@@ -64,7 +65,17 @@ const maintainer = new Maintainer(projects, maintainedRepos, OWNER_TERMS);
 const REPOS = describeRepos(maintainer.list());
 // Reads of a repo the App installation covers use its read-only token (the agents org's repos aren't visible to the
 // user's own token); everything else, and every write, keeps the user's token.
-const github = new GitHub(process.env.GITHUB_TOKEN_FILE ?? "/run/secrets/github_token", commentOrgs, fetch, projects);
+const stateDir = process.env.GITHUB_STATE_DIR ?? "/state";
+const mcpUrl = process.env.GITHUB_MCP_URL || "https://api.githubcopilot.com/mcp/";
+const auth = signIn({ clientId: (process.env.GITHUB_OAUTH_CLIENT_ID ?? "").trim(), mcpUrl, stateDir, oldTokenFile: process.env.GITHUB_TOKEN_FILE });
+const github = new GitHub(ownerToken(auth), commentOrgs, fetch, projects);
+// GitHub's own MCP server (connection github_official) and the board's sign-in endpoints, on their own port.
+const authKeyFile = process.env.GITHUB_AUTH_TOKEN_FILE;
+const official = officialProxy({
+  auth, mcpUrl, log, stateDir, serviceKey: inboundToken,
+  authKey: authKeyFile && existsSync(authKeyFile) ? readFileSync(authKeyFile, "utf8").trim() || undefined : undefined,
+  caller: (req) => verifyCaller(req, jwks, process.env.AIDENHQ_MODULE ?? "github"),
+});
 
 // src_github (shared sources): issues, PRs and every Projects board of the configured orgs into the warehouse, with the App
 // token. Off until the warehouse password (WAREHOUSE_PASSWORD_FILE) is there.
@@ -444,7 +455,7 @@ const http = createServer(async (req, res) => {
   if (url.pathname === "/healthz") {
     // No token: not set up yet (state "missing"), which the apply's live agent check notes rather than fails.
     const ok = github.available();
-    res.writeHead(ok ? 200 : 503, { "content-type": "application/json" }).end(JSON.stringify({ ok, ...(ok ? {} : { state: "missing", detail: "no GitHub token (run scripts/github-auth.sh)" }) }));
+    res.writeHead(ok ? 200 : 503, { "content-type": "application/json" }).end(JSON.stringify({ ok, ...(ok ? {} : { state: "missing", detail: "GitHub isn't connected (Connect GitHub on the board)" }) }));
     return;
   }
   // The Maintainer's watcher: each maintained repo's open labelled issues updated since its cursor (`cursors`, JSON
@@ -505,4 +516,5 @@ const http = createServer(async (req, res) => {
 });
 
 http.listen(port, "0.0.0.0", () => log.info({ port, comment_orgs: [...commentOrgs] }, "github-mcp listening"));
-for (const sig of ["SIGTERM", "SIGINT"] as const) process.on(sig, () => http.close(() => process.exit(0)));
+official.listen(8087, "0.0.0.0", () => log.info({ port: 8087 }, "GitHub's MCP server and the sign-in listening"));
+for (const sig of ["SIGTERM", "SIGINT"] as const) process.on(sig, () => { official.close(); http.close(() => process.exit(0)); });
