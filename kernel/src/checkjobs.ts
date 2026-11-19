@@ -11,9 +11,9 @@
 //
 // A check job has no task, no Paperclip identity, no tools and no GitHub credential. Its workspace is a snapshot of
 // `repo@head` (the code host's `snapshot` op: no .git, no credentials, asked as the module that asked for the check); its box
-// is the `engineer` image, a fresh one per run. Its env is exactly checkEnv's: only a judged run (the reviewer eval) gets a model
-// credential, a `check` token the gateway caps by the eval day cap (eval_day_usd) and that the tool proxy and the writes route
-// refuse. The recipe's files are laid in the out folder (`/aidenhq-out/recipe`) and its argv runs in the workspace.
+// is the `engineer` image, a fresh one per run. Its env is exactly checkEnv's: only a judged run (the reviewer eval) or a model
+// recipe (below) gets a model credential, a `check` token the gateway caps (the eval day cap, eval_day_usd, or the recipe's own
+// per-check cap) and that the tool proxy and the writes route refuse. The recipe's files are laid in the out folder (`/aidenhq-out/recipe`) and its argv runs in the workspace.
 //
 // A recipe with a `base` in its spec runs on the change itself: the box makes its own two-commit history from the base and head
 // snapshots (the recipe's script does it from /aidenhq-out/base), so `git diff $AIDENHQ_BASE HEAD` is exactly the change. A

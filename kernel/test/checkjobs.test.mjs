@@ -12,6 +12,7 @@ import { createGateway } from "../src/gateway/lib.ts";
 import { mintToken, verifyToken } from "../src/gateway/token.ts";
 import { createIdentity } from "../src/identity.ts";
 import { recipes } from "./helpers.mjs";
+import { checkJobs as compileCheckJobs } from "../../scripts/modules.mjs";
 
 const A = "a".repeat(40), B = "b".repeat(40), J = "1".repeat(40), S = "2".repeat(40);
 const CASES = "modules/ai-reviewer/test/reviewer-cases";
@@ -223,4 +224,16 @@ test("checks: a model recipe's token stops at its own cap, apart from the eval d
   assert.equal((await call(two)).status, 200);
   assert.equal(gw.spentBy(one), 0.06);
   assert.throws(() => mintToken("job-secret", { kind: "reviewer", capUsd: 1 }), /only a check token/);
+});
+
+test("checks: the compiler takes a model recipe only with a budget field and a bounded max", () => {
+  const root = mkdtempSync(join(tmpdir(), "mod-"));
+  mkdirSync(join(root, "recipe"));
+  writeFileSync(join(root, "recipe", "review.mjs"), "x");
+  const def = (r) => ({ check_jobs: { "code-review": { dir: "recipe", argv: ["node", "/aidenhq-out/recipe/review.mjs"], timeout_min: 45, title: "the code review", spec: { base: "sha", budget_usd: "usd", profile: "json" }, model: { max_usd: 20 }, result: true, ...r } } });
+  const r = compileCheckJobs("code-review", def({}), root)["code-review"];
+  assert.deepEqual([r.model, r.result, Object.keys(r.files)], [{ max_usd: 20 }, true, ["review.mjs"]]);
+  assert.throws(() => compileCheckJobs("code-review", def({ spec: { base: "sha" } }), root), /budget_usd/);
+  assert.throws(() => compileCheckJobs("code-review", def({ model: { max_usd: 500 } }), root), /max_usd/);
+  assert.throws(() => compileCheckJobs("code-review", def({ result: "yes" }), root), /result/);
 });
