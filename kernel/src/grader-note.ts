@@ -26,7 +26,7 @@ const oneLine = (s: string) => s.replace(/\s+/g, " ").replace(/%/g, "%25").repla
 /** One line per criterion, after the graded version: unmet ones with the rubric's own text. */
 export function graderBlock(n: GraderNote): string {
   const at = /^\d{4}-\d\d-\d\dT[\d:.]+Z$/.test(n.at) ? `, ${n.at}` : "";
-  const head = `Graded version ${encodeName(n.version.slice(0, 200), "branch")} (rejected versions so far: ${n.attempt}${at}):`;
+  const head = `Graded version ${encodeName(n.version, "branch").slice(0, 200)} (rejected versions so far: ${n.attempt}${at}):`;
   const line = (c: GraderNote["criteria"][number]) =>
     c.met === "yes" ? `- criterion ${c.id}: met at that version` : `- criterion ${c.id}: ${c.met === "no" ? "not met" : "not shown met"}: ${oneLine(c.rubric ?? "(text not read)")}`;
   return [head, ...n.criteria.map(line)].join("\n");

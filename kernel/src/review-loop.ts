@@ -131,7 +131,13 @@ export function createReviewLoop({ records, writes, task, decisions, product, gr
 }) {
   const inFlight = new Set<string>();
   // A grade that can't be read leaves the note out (the reviewer then judges against the whole request), never the review.
-  const noteOf = async (id: string) => (grade ? grade(id).catch((e: Error) => void log("grade unread", { task: id, err: String(e.message ?? e).slice(0, 200) })) : undefined);
+  const noteOf = async (id: string) => {
+    try {
+      return grade ? await grade(id) : undefined;
+    } catch (e) {
+      return void log("grade unread", { task: id, err: String((e as Error).message ?? e).slice(0, 200) });
+    }
+  };
 
   async function reviewOne(r: Rec, digest: { where: string; text: string } | undefined): Promise<void> {
     let input: ReviewInput, request: Record<string, unknown>;
