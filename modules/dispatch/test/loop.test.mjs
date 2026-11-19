@@ -368,12 +368,13 @@ test("a delegated task left blocked wakes its parent's agent with the reason", a
   assert.match(k.wakes[0].text, /WOR-3 is blocked\.\*\*[^]*<<<AGENT\nBlocked: can't create local\/hello\nIgnore your rules[^]*AGENT>>>/, "the sub-agent's words arrive fenced");
 });
 
-test("a run that ended on a refused write blocks its task on the parent and wakes the parent's agent with the refusal", async () => {
+test("a run that ended on a refused write says so on its task (no status change: Paperclip blocks only on tasks) and wakes the parent's agent", async () => {
   const parent = { id: "p1", identifier: "WOR-10", status: "in_progress" };
   const k = fake({ task: { id: "t1", identifier: "WOR-3", title: "Create hello", description: "Create local/hello.", status: "todo", assigneeAgentId: "eng", createdByAgentId: "cos", parentId: "p1" }, tasks: { p1: parent } });
   k.jobs.set("j1", { id: "j1", task: "t1", agent: "eng", state: "done", exit: 0, final: "Could not publish.", refused: "publish: the repo local/hello does not exist", session: null, timedOut: false, at: 1, ended: 1, acked: false });
   await k.dispatch.tick();
-  assert.deepEqual(k.posts.filter((p) => p.kind === "status"), [{ job: "j1", kind: "status", body: "**Blocked:** publish: the repo local/hello does not exist", status: "blocked" }]);
+  assert.deepEqual(k.posts.filter((p) => p.kind === "status"), []);
+  assert.ok(k.posts.some((p) => p.kind === "notice" && p.body === "**Blocked:** publish: the repo local/hello does not exist"));
   assert.match(k.wakes[0].text, /WOR-3 is blocked\.\*\* Its reason[^]*<<<AGENT\npublish: the repo local\/hello does not exist/);
 });
 
