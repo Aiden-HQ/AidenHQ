@@ -37,13 +37,25 @@ containers="$(docker ps --filter "label=com.docker.compose.project=$project" --f
 [ -n "$containers" ] || { echo "no running containers for project $project"; exit 1; }
 
 echo "Containers: $(echo $containers)"
-# Each service's networks as the compiled files declare them (compose.yaml + compose.modules.yaml; never the host's override,
-# which would bless its own additions): "service net net ...". Only network names leave node (the config holds resolved values).
-declared_nets="$(docker compose -f compose.yaml -f compose.modules.yaml config --format json 2>/dev/null | node -e '
+# The compiled stack (compose.yaml + compose.modules.yaml; never the host's override, which would bless its own additions),
+# read once: each service's networks as they declare them ("service net net ...") and the names the stack contains. A name is
+# a service's compose key or the name a module's service declares (its aidenhq.service label, which the connection URL uses;
+# e.g. meetings compiles key meetings-ops-mcp with label ops-mcp). Only names leave node (the config holds resolved values).
+compiled="$(docker compose -f compose.yaml -f compose.modules.yaml config --format json 2>/dev/null | node -e '
   let s = ""; process.stdin.on("data", (d) => (s += d)).on("end", () => {
     const c = JSON.parse(s || "{}");
-    for (const [name, svc] of Object.entries(c.services ?? {})) console.log(name, ...Object.keys(svc.networks ?? {}).map((k) => c.networks?.[k]?.name ?? k));
+    const names = new Set();
+    for (const [name, svc] of Object.entries(c.services ?? {})) {
+      console.log("@nets", name, ...Object.keys(svc.networks ?? {}).map((k) => c.networks?.[k]?.name ?? k));
+      names.add(name);
+      if (svc.labels?.["aidenhq.service"]) names.add(svc.labels["aidenhq.service"]);
+    }
+    console.log("@services", [...names].join(" "));
   });' 2>/dev/null)"
+declared_nets="$(printf '%s\n' "$compiled" | sed -n 's/^@nets //p')"
+# A connection whose host is in none of these has no container in this install (a module's service runs only while its
+# `when:` holds), so the probe below skips it rather than reporting it unreachable.
+compiled_services="$(printf '%s\n' "$compiled" | sed -n 's/^@services //p')"
 for c in $containers; do
   # One read per container: a one-job CI runner can exit between reads, and a container gone mid-check is not a finding.
   info="$(docker inspect "$c" --format '{{.HostConfig.Privileged}}
@@ -640,23 +652,28 @@ if [ -n "$pc" ]; then
     pass "paperclip: no internal, connection or service token in its environment or secrets"
   fi
   docker inspect "$pc" --format '{{range .Mounts}}{{.Destination}} {{end}}' | grep -q 'grants' && fail "paperclip: the grants table is mounted" || pass "paperclip: no grants table mounted"
-  if direct="$(P="$project" node --input-type=module -e '
+  if direct="$(P="$project" S="$compiled_services" node --input-type=module -e '
     import { readFileSync } from "node:fs";
     import { createResolver } from "./kernel/src/net.ts";
     // Only connections that serve MCP: a transport-only module (telegram) declares none of the tools.
     const conns = Object.fromEntries(Object.entries(JSON.parse(readFileSync("config/kernel/connections.json", "utf8"))).filter(([, c]) => Object.values(c.tools).some((t) => t.length)));
+    // A connection whose host is not a compiled service has no container in this install: skip it instead of calling it
+    // unreachable. An unreadable compose set (empty) probes every connection, as before.
+    const compiled = new Set((process.env.S ?? "").split(/\s+/).filter(Boolean));
     const services = createResolver({ project: process.env.P });
-    const open = [];
+    const open = [], skipped = [];
     for (const [name, c] of Object.entries(conns)) {
+      const host = new URL(c.url).hostname;
+      if (compiled.size && !compiled.has(host)) { skipped.push(name); continue; }
       const t = await services.resolve(c.url).catch((e) => ({ err: e.message }));
       const r = t.err ? undefined : await fetch(`http://${t.host}:${t.port}${t.path}`, { method: "POST", headers: { "content-type": "application/json", accept: "application/json, text/event-stream" }, body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list" }), signal: AbortSignal.timeout(10000) }).catch(() => undefined);
       if (!r) open.push(`${name} unreachable${t.err ? ` (${t.err})` : ""}`);
       else if (r.status !== 401) open.push(`${name} ${r.status}`);
     }
-    process.stdout.write(open.join(", "));
+    process.stdout.write((open.length ? open : skipped).join(", "));
     process.exit(open.length ? 1 : 0);
   ' 2>&1)"; then
-    pass "kernel: every module's MCP endpoint refuses a direct call without its service key (401)"
+    pass "kernel: every module's MCP endpoint refuses a direct call without its service key (401)${direct:+; not in this install: $direct}"
   else
     fail "kernel: a module's MCP endpoint answers without its service key: $direct"
   fi

@@ -28,3 +28,26 @@ test("verify-security's code checks pass on this checkout", () => {
   assert.deepEqual(out.filter((l) => l.startsWith("FAIL")), [], r.stderr.slice(-2000));
   assert.ok(out.filter((l) => l.startsWith("ok")).length >= 8);
 });
+
+// The live probe can't run here (no docker): it needs the compiled compose files and the running stack. What can be checked
+// is that it learns which services the compiled stack contains, and skips a connection whose host is none of them before
+// it tries to resolve it.
+test("verify-security's connection probe skips a host the compiled stack does not contain", () => {
+  const text = lines.join("\n");
+  const derive = text.match(/compiled="\$\(docker compose -f compose\.yaml -f compose\.modules\.yaml config --format json 2>\/dev\/null \| node -e '([\s\S]*?)' 2>\/dev\/null\)"/);
+  assert.ok(derive, "the compiled service set is derived from compose.yaml and compose.modules.yaml");
+  const compose = JSON.stringify({ services: {
+    "meetings-ops-mcp": { labels: { "aidenhq.service": "ops-mcp" } },
+    gate: { labels: {} },
+  } });
+  const r = spawnSync("node", ["-e", derive[1]], { encoding: "utf8", input: compose });
+  assert.equal(r.status, 0, r.stderr.slice(-1000));
+  const out = r.stdout.trim().split("\n");
+  assert.deepEqual(out.find((l) => l.startsWith("@services ")).split(" ").slice(1).sort(), ["gate", "meetings-ops-mcp", "ops-mcp"]);
+  assert.equal(out.find((l) => l.startsWith("@nets ")), "@nets meetings-ops-mcp");
+
+  const probe = text.slice(text.indexOf('P="$project" S="$compiled_services" node'));
+  const skip = probe.indexOf("!compiled.has(host)");
+  const resolve = probe.indexOf("services.resolve(c.url)");
+  assert.ok(skip >= 0 && resolve > skip, "a connection outside the compiled stack is skipped before it is resolved");
+});
