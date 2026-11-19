@@ -4,6 +4,7 @@
 import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import type { DatabaseSync } from "node:sqlite";
+import { hostOf } from "./codehost.ts";
 import { openFacts } from "./facts.ts";
 
 export const GENERATIONS_KEPT = 20;
@@ -46,9 +47,13 @@ function productRepo(repo: string): string | undefined {
     return undefined;
   }
 }
+const SHA = /^[0-9a-f]{40}$/;
+/** The most merges one look checks with git (the rest wait for the next look). */
+const CHECKS = 200;
 /** Whether commit `a` is in `b` in the product checkout (any failure, an unknown commit included, is no). */
 const contains = (repo: string, a: string, b: string) => {
-  try { execFileSync("git", ["-C", repo, "merge-base", "--is-ancestor", a, b], { stdio: "ignore" }); return true; } catch { return false; }
+  if (!SHA.test(a) || !SHA.test(b)) return false;
+  try { execFileSync("git", ["-C", repo, "merge-base", "--is-ancestor", "--end-of-options", a, b], { stdio: "ignore" }); return true; } catch { return false; }
 };
 
 /**
@@ -72,21 +77,22 @@ export function createDeploys({ db, file, repo, days = 30 }: { db: DatabaseSync;
   }
   const newest = Math.max(-1, ...gens.filter((g) => g.health === "good").map((g) => g.n!));
   if (newest <= looked) return n;
-  looked = newest;
   const slug = productRepo(repo);
-  if (!slug) return n;
+  if (!slug) return (looked = newest), n;
   const since = new Date(Date.now() - days * 864e5).toISOString();
-  const merged = new Map<string, { subject: string; sha: string; at: string }>();
-  for (const f of db.prepare("SELECT subject, at, json_extract(data, '$.sha') AS sha FROM facts WHERE type = 'pr.merged' AND version GLOB 'codehost-*/*' AND at > ? AND lower(subject) LIKE ?").all(since, `pr:${slug}#%`) as { subject: string; at: string; sha: string | null }[]) {
-    if (f.sha) merged.set(f.subject.toLowerCase(), { subject: f.subject, sha: f.sha, at: f.at });
-  }
+  // Only the product repo's own code host may say a PR merged (its name is in the version, POST /v1/facts and localFacts):
+  // any module may declare pr.merged, and none other can claim a deploy.
+  const host = `${hostOf(slug)}/`;
   const deployed = new Set((db.prepare("SELECT lower(subject) AS s FROM facts WHERE type = 'pr.deployed'").all() as { s: string }[]).map((r) => r.s));
-  const good = gens.filter((g) => g.health === "good" && g.product).sort((a, b) => a.n! - b.n!);
-  for (const [key, m] of merged) {
-    if (deployed.has(key)) continue;
-    const g = good.find((x) => x.at! >= m.at && contains(repo, m.sha, x.product!));
+  const merged = (db.prepare("SELECT subject, at, json_extract(data, '$.sha') AS sha FROM facts WHERE type = 'pr.merged' AND substr(version, 1, ?) = ? AND at > ? AND lower(subject) LIKE ? ORDER BY at DESC")
+    .all(host.length, host, since, `pr:${slug}#%`) as { subject: string; at: string; sha: unknown }[])
+    .filter((m) => typeof m.sha === "string" && SHA.test(m.sha) && !deployed.has(m.subject.toLowerCase()));
+  const good = gens.filter((g) => g.health === "good" && g.product && SHA.test(g.product)).sort((a, b) => a.n! - b.n!);
+  for (const m of merged.slice(0, CHECKS)) {
+    const g = good.find((x) => x.at! >= m.at && contains(repo, m.sha as string, x.product!));
     if (g && facts.record({ type: "pr.deployed", subject: m.subject, version: "deployed", at: g.at!, actor: "kernel", source: "poll", data: { pr: m.subject.slice(3), generation: g.n } })) n++;
   }
+  if (merged.length <= CHECKS) looked = newest;
   return n;
   };
 }

@@ -183,9 +183,11 @@ test("a generation writes deploy.applied and pr.deployed for the merges it conta
   const facts = openFacts(records.db);
   facts.record({ type: "pr.merged", subject: "pr:acme/product#1", version: `codehost-github/${c1}`, at: "2026-11-18T09:00:00.000Z", actor: "github:bot", data: { sha: c1, head: c1 } });
   facts.record({ type: "pr.merged", subject: "pr:acme/other#9", version: `codehost-github/${c1}`, at: "2026-11-18T09:00:00.000Z", actor: "github:bot", data: { sha: c1, head: c1 } });
-  facts.record({ type: "pr.merged", subject: "pr:acme/product#2", version: `codehost-local/${c2}`, at: "2026-11-18T09:00:00.000Z", actor: "module:codehost-local", data: { sha: c2, head: c2 } });
-  // Only a code host's pr.merged counts: another module declaring the type can't claim a deploy.
+  facts.record({ type: "pr.merged", subject: "pr:acme/product#2", version: `codehost-github/${c2}`, at: "2026-11-18T09:00:00.000Z", actor: "module:codehost-github", data: { sha: c2, head: c2 } });
+  // Only the repo's own code host's pr.merged counts: another module declaring the type, or another host, can't claim a deploy.
   facts.record({ type: "pr.merged", subject: "pr:acme/product#3", version: `acme-crm/${c2}`, at: "2026-11-18T09:00:00.000Z", actor: "module:acme-crm", data: { sha: c2, head: c2 } });
+  facts.record({ type: "pr.merged", subject: "pr:acme/product#4", version: `codehost-local/${c2}`, at: "2026-11-18T09:00:00.000Z", actor: "module:codehost-local", data: { sha: c2, head: c2 } });
+  facts.record({ type: "pr.merged", subject: "pr:acme/product#5", version: "codehost-github/x", at: "2026-11-18T09:00:00.000Z", actor: "module:codehost-github", data: { sha: "--output=/tmp/x", head: c2 } });
   const file = join(dir, "generations.jsonl");
   const gen = (n, product, health) => ({ n, at: new Date(Date.now() + n * 1000).toISOString(), product, instance: "f".repeat(40), health });
   writeFileSync(file, [gen(1, c1, "good"), gen(2, c2, "pending")].map((g) => JSON.stringify(g) + "\n").join(""));
