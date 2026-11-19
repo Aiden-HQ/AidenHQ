@@ -23,7 +23,8 @@
 //   GET  /v1/notify/take, POST /v1/notify/send  (the module with role kernel.notify) the queued owner messages, each once; one
 //                              message to a channel's transport
 //   POST /v1/wakes/events      (the paperclip-events plugin's key) a Paperclip event's ids: its task is scanned (wakes.ts)
-//   POST /v1/wait              (module token + caller assertion) {reason, until?, on?, task?}: the calling job's own task waits
+//   POST /v1/wait              (a module with role kernel.wake, serving a job's task_wait, task_handoff or notify call in flight)
+//                              {reason, until?, on?, task?}: the calling job's own task waits
 //                              (idle.ts): a work.waiting fact and a wake at `until`
 //   POST /v1/wakes             (a module with role kernel.wake) a scheduled wake {task, agent?, at?, cause?, id?}; with
 //                              {task, text}: a labelled wake notice on the task now, which wakes its agent (no scheduled row)
@@ -105,6 +106,8 @@ type Handler = (req: IncomingMessage, res: ServerResponse, ...a: string[]) => Pr
 /** Directory fields a module may read; everything else in the grants table (tools, models, caps, images) stays here. */
 const DIRECTORY = ["key", "roles", "profile", "trial", "description", "delegate_to", "memory_inbox", "review_log", "graded", "feedback_for"];
 
+/** The tool calls that record a wait on their job's task (POST /v1/wait, idle.ts). */
+const WAIT_TOOLS = ["task_wait", "task_handoff", "notify"];
 /** What a task shows when the owner stops its run: the kernel's own words, the dispatcher posts nothing else for it. */
 const STOPPED_NOTE = "**Stopped by the owner.** Say **continue** to pick up where it stopped.";
 /** What the listener serves: the router dispatches from this table and scripts/lean/contract-lock.mjs reads it, so the lock can't miss a route. */
@@ -321,13 +324,16 @@ export function createBackplane({ idle, facts, whoami, asserter, proxy, cp, boar
         case "GET /healthz": return void res.writeHead(200, { "content-type": "text/plain" }).end("ok");
         case "GET /v1/jwks": return send(res, 200, asserter.jwks);
         case "POST /v1/wait": {
-          // A module serving a kernel job's tool call in flight (task_wait): the wait is on that job's own task, never the body's.
+          // A module with role kernel.wake serving a kernel job's task_wait, task_handoff or notify call in flight: the job is
+          // read from its own token (never the assertion's or the body's say-so), and the wait is on that job's own task.
           const w = await moduleOf(req);
+          if (!w.roles.includes("kernel.wake")) throw fail(403, "forbidden", `${w.module} may not record waits (role kernel.wake)`);
           if (!idle) throw fail(503, "unavailable", "waits are off");
           const live = await asserter.inFlight(String(req.headers["x-aidenhq-caller"] ?? ""), w.module!);
-          const c = live?.caller;
-          if (!c || c.kind !== "run" || !c.agent || !c.task) throw fail(401, "unauthorized", "only a kernel job's tool call in flight records a wait on its task");
-          return send(res, 200, await idle.wait({ agent: c.agent, key: c.key, task: c.task }, await json(req)));
+          const job = live?.flight.bearer ? await whoami(live.flight.bearer).catch(() => undefined) : undefined;
+          if (!live || job?.kind !== "run" || !job.task || !job.agent || job.agent !== live.caller.agent) throw fail(401, "unauthorized", "only a kernel job's tool call in flight records a wait on its task");
+          if (!WAIT_TOOLS.includes(String(live.caller.tool ?? "").split(".").pop()!)) throw fail(403, "forbidden", `a wait is recorded by ${WAIT_TOOLS.join(", ")} only`);
+          return send(res, 200, await idle.wait({ agent: job.agent, key: job.key ?? "", task: job.task }, await json(req)));
         }
         case "POST /v1/facts": {
           const w = await moduleOf(req);

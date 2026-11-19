@@ -21,6 +21,8 @@ export const IDLE_AFTER_MS = 15 * 60_000;
 export const IDLE_CAP = 3;
 const DAY = 864e5;
 const MAX_WAIT = 7 * DAY;
+/** The shortest wait: a wait is never a way to wake again at once (an idle task is woken after 15 minutes anyway). */
+const MIN_WAIT = 15 * 60_000;
 const SWEPT = new Set(["todo", "in_progress"]);
 
 export function createIdle({ facts, flow, wakes, owner, team = () => false, now = Date.now, log = () => {} }: {
@@ -44,7 +46,7 @@ export function createIdle({ facts, flow, wakes, owner, team = () => false, now 
       let until: number;
       if (b.until !== undefined) {
         until = typeof b.until === "string" ? Date.parse(b.until) : NaN;
-        if (!Number.isFinite(until) || until <= t) throw fail(400, "bad_request", "until is an ISO time in the future");
+        if (!Number.isFinite(until) || until < t + MIN_WAIT) throw fail(400, "bad_request", "until is an ISO time at least 15 minutes ahead");
         if (until > t + MAX_WAIT) throw fail(400, "bad_request", "until is at most 7 days ahead: wait again then if it still waits");
       } else if (on) until = t + DAY;
       else throw fail(400, "bad_request", "send until (an ISO time, at most 7 days ahead) or on (the event it waits for)");
