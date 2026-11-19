@@ -41,3 +41,19 @@ test("an agent's spend raise, wider reach or reviewer change is the owner's; oth
   assert.equal(orgs(["acme", "othercorp"]).tier, 2);
   assert.equal(orgs([]).tier, 1);
 });
+
+test("the shipped modules declare these rules: an agent's new comment org, or a new repo at $500 a month, is the owner's", async () => {
+  const { readFileSync } = await import("node:fs");
+  const { checkTyped } = await import("../src/settings-change.ts");
+  const decl = (m, k) => YAML.parse(readFileSync(new URL(`../../modules/${m}/module.yaml`, import.meta.url), "utf8")).settings[k];
+  const shipped = { code_review: decl("code-review", "code_review"), github_comment_orgs: decl("github", "github_comment_orgs") };
+  const t = (k, b, h, byAgent = true) => highest(applyParts({ files: ["instance.yaml"], byAgent, settingDefs: shipped,
+    base: { "instance.yaml": YAML.stringify({ settings: { [k]: b } }) }, head: { "instance.yaml": YAML.stringify({ settings: { [k]: h } }) } })).tier;
+  assert.equal(t("github_comment_orgs", ["acme"], ["acme", "othercorp"]), 2);
+  assert.equal(t("github_comment_orgs", ["acme"], ["acme", "othercorp"], false), 1);
+  assert.equal(t("code_review", { repos: [{ repo: "acme/api" }] }, { repos: [{ repo: "acme/api" }, { repo: "acme/web", month_usd: 500 }] }), 2);
+  assert.equal(t("code_review", { repos: [{ repo: "acme/api" }] }, { repos: [{ repo: "acme/api" }, { repo: "acme/web" }] }), 1);
+  assert.equal(t("code_review", {}, { reviewers: { deep: { ...shipped.code_review.default.reviewers.deep, finders: 6 } } }), 2);
+  // The owner's board still sets the list as a typed change.
+  checkTyped({ kind: "setting", key: "github_comment_orgs", value: ["acme", "othercorp"] }, { compiled: { settings: {}, agents: {} }, catalog: [{ name: "github", enabled: true, settings: { github_comment_orgs: { default: [] } } }] });
+});

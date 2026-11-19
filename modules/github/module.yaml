@@ -110,6 +110,8 @@ settings:
   # The GitHub orgs owner-identity writes (comments, reviews) may reach; github-mcp refuses a write anywhere else.
   github_comment_orgs:
     default: []
+    # An org added by an agent's change is the owner's to approve (it widens where writes as the owner may land).
+    owner: [ { path: "*", new: true } ]
 connections:
   github:
     setup: "Open its setup on the board (#/setup/github) and press Connect GitHub. The App's reads and writes need the GitHub App (the same page's advanced part)."

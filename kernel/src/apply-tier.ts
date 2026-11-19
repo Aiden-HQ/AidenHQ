@@ -560,8 +560,10 @@ export function createApplyPlanner(h: {
     if (notes && (c.files.length !== 1 || c.files[0] !== "instance.yaml" || changedKeys(parse(baseI), parse(headI)).some((k) => k !== "teams"))) throw new Refused("a routing change moves only instance.yaml's teams");
     // The kind's floor is 1 (every apply is read by the reviewer), so the rules' Tier 0 trial exceptions (ownerStarted,
     // trialNoTap) never lower anything here.
+    // An agent's settings change meets its module's owner rules: only the owner's settings change and the kernel's own (kind
+    // kernel) are exempt; no requester counts as an agent (fail closed).
     const releaseVerified = !eq(parse(baseI)?.release, parse(headI)?.release) && (await updaterMove(requester, baseI, headI));
-    const t = meritOwner(highest(applyParts({ files: c.files, base: c.texts.base, head: c.texts.head, pin: bump ? { forward: bump.forward, back: bump.back } : null, routingTune: Boolean(notes), roles: h.roles(), connections: h.connections(), moduleApps: h.moduleApps(), settingDefs: h.settingDefs?.() ?? {}, byAgent: !!requester && requester.kind !== "kernel", ownerStarted: false, trialNoTap: false, releaseVerified, ...st })));
+    const t = meritOwner(highest(applyParts({ files: c.files, base: c.texts.base, head: c.texts.head, pin: bump ? { forward: bump.forward, back: bump.back } : null, routingTune: Boolean(notes), roles: h.roles(), connections: h.connections(), moduleApps: h.moduleApps(), settingDefs: h.settingDefs?.() ?? {}, byAgent: requester?.kind !== "kernel", ownerStarted: false, trialNoTap: false, releaseVerified, ...st })));
     if (t.reject) throw new Refused(String(t.reason));
     const details = [notes, c.diff, bump && `${bump.title.replaceAll("`", "")}:\n${bump.log}`, st.remote, c.trial].filter(Boolean).join("\n\n");
     if (details.length > DETAILS_MAX) throw new Refused(`the change is too large to review (${details.length} characters with the commits and code it brings): split it into smaller ones`);
