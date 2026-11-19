@@ -1112,6 +1112,7 @@ export function compile(productDir, instanceDir, { revision, bundleState, oldBun
   const kernelEntry = { name: "kernel", description: "The kernel: the settings every instance has.", enabled: true, chosen: false, requires: [], agents: [], routines: [], connections: [], apps: [], ...(revision ? { revision } : {}), settings: Object.fromEntries(Object.entries(KERNEL_SETTINGS).map(([k, d]) => [k, { ...("default" in d ? { default: d.default } : {}), ...(d.values ? { values: d.values } : {}), ...(d.required ? { required: true } : {}), ...(d.doc ? { doc: d.doc } : {}) }])) };
   const catalog = [kernelEntry, ...[...all.values()].map(({ name, root, def, marketplace, tier, sha, source, pinned }) => ({
     name, description: def.description ?? "", enabled: enabled.includes(name), chosen: chosen.includes(name), requires: def.requires ?? [],
+    ...(def.replaces ? { replaces: [def.replaces].flat().map(String) } : {}),
     agents: Object.keys(def.agents ?? {}), routines: Object.keys(def.routines ?? {}), connections: Object.keys(def.connections ?? {}),
     apps: (def.apps ?? []).map((a) => a.name), ...(sha ? { revision: sha } : revision ? { revision } : {}),
     // Where it comes from and its computed tier (spec §6.5): Settings > Modules and the advisories read them.
