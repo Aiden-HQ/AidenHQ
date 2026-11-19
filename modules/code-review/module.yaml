@@ -1,0 +1,64 @@
+name: code-review
+description: "Code Review: reviews pull requests on the repos you list, or one PR on request. Named reviewers (engine, model, effort, finders, verification, context) run in a credential-free box; findings are posted as one GitHub review per head, each post a write the AI reviewer approves. Idle until a repo is added: nothing runs or spends by itself."
+license: MIT
+# Design: docs/design/code-review.md. The state service (service/) watches the listed repos' PRs and comments through github-mcp's
+# internal read (as this module, never /mcp), decides which head gets which reviewer (triggers, `@aiden review …` from someone with
+# write access now, debounce, supersede, daily caps, month caps reserved before a run starts), runs each review as the kernel's
+# check job `code-review` (kernel.checks: no credentials in the box, a model token capped at the run's reservation), hands the
+# finished review to the github module's poster (a kernel write record) and records each run as flow facts on its PR.
+requires:
+  - github # PR reads (github-mcp) and the poster
+roles:
+  requests: [ kernel.checks, kernel.facts ]
+# A review run's snapshot of repo@head (and its base), read under this grant: any repo the GitHub App covers.
+codehost:
+  snapshot: { repos: [ "*/*" ] }
+# Flow (docs/design/flow.md): one started and one ended fact per review run (version: the run id) on its PR.
+facts:
+  review.started: { subject: pr }
+  review.ended: { subject: pr }
+stages:
+  - { name: review, label: Code review, from: review.started, to: review.ended }
+settings:
+  # Reviewers are named profiles (any number): engine (codex; claude-code and codegenie when their recipes land), model, effort
+  # (low|medium|high|xhigh|max), finders (1-8), verify, and optionally verifier (a model), context (repo paths), focus, label, and
+  # run_usd (what one run may spend: its reservation and its model token's cap; default $0.50 a finder + $0.50 to verify). A
+  # default set to null is switched off. repos: [{ repo: owner/name, on_open: standard, on_push: quick, on_risk: deep (each a
+  # reviewer or "off"), drafts: false, forks: manual|auto, month_usd: 50, ignore: [globs], max_nits: 5, per_author_day: 10,
+  # per_repo_day: 60 }]. month_usd: the instance-wide cap across repos. Read by the service (service/src/config.ts).
+  code_review:
+    default:
+      reviewers:
+        quick: { engine: codex, model: "~deepseek/deepseek-flash-latest", effort: low, finders: 1, verify: false }
+        standard: { engine: codex, model: "~deepseek/deepseek-flash-latest", effort: high, finders: 2, verify: true }
+        deep: { engine: codex, model: "~openai/gpt-sol-latest", effort: high, finders: 4, verify: true, verifier: "~anthropic/claude-latest" }
+        triage: { engine: codex, model: "~deepseek/deepseek-flash-latest", effort: low, finders: 1, verify: false, focus: triage }
+      repos: []
+      month_usd: 200
+  # Seconds between the service's looks at the watched repos.
+  code_review_poll_seconds: { default: 60 }
+# The board's Reviews page reads the service's API with its own key, until the board is a module.
+board_env:
+  CODE_REVIEW_URL: http://code-review:8098
+  CODE_REVIEW_API_TOKEN_FILE: ${secrets.code_review_api_token}
+services:
+  data: true
+  run:
+    code-review:
+      build: ./service
+      tmp: 16m
+      port: 8098
+      egress: true # the kernel's listener is a host address
+      join: [github] # github-mcp's internal PR read
+      data: ["reviews:/data"]
+      env:
+        CODE_REVIEW_DB: /data/code-review.sqlite
+        CODE_REVIEW_SETTINGS: "${settings.code_review}"
+        CODE_REVIEW_POLL_SECONDS: "${settings.code_review_poll_seconds}"
+        CODE_REVIEW_TOKEN_FILE: ${secrets.code_review_token}
+        CODE_REVIEW_API_TOKEN_FILE: ${secrets.code_review_api_token}
+        AIDENHQ_KERNEL_URL: http://10.231.0.1:3130
+generated_secrets:
+  - code_review_token
+  - code_review_api_token
+data_version: 0 # its data dir's format: bumped by each forward-only migration (docs/configuration.md)

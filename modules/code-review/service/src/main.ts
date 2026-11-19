@@ -1,0 +1,44 @@
+// The code-review state service: its sqlite state (CODE_REVIEW_DB), the engine's tick every CODE_REVIEW_POLL_SECONDS, flow facts
+// and the HTTP API on :8098. Idle until settings.code_review lists a repo or someone asks for a one-off: nothing is read or spent.
+// Its module token (code_review_token) is asked for fresh, so the token the kernel writes after start is picked up.
+import { readFileSync } from "node:fs";
+import { createServer } from "node:http";
+import { DatabaseSync } from "node:sqlite";
+import { factEmitter, kernelClient } from "./aidenhq-sdk/kernel-client.ts";
+import { githubSource, kernelPoster, kernelRunner } from "./adapters.ts";
+import { handler } from "./api.ts";
+import { readConfig } from "./config.ts";
+import { createEngine } from "./engine.ts";
+
+const env = process.env;
+const file = (p: string | undefined) => { try { return p ? readFileSync(p, "utf8").trim() : ""; } catch { return ""; } };
+const token = () => file(env.CODE_REVIEW_TOKEN_FILE);
+const log = (msg: string, f?: Record<string, unknown>) => console.log(new Date().toISOString(), msg, JSON.stringify(f ?? {}));
+const kernelUrl = env.AIDENHQ_KERNEL_URL ?? "http://10.231.0.1:3130";
+// One client per call, so a token written after start is used at once.
+const kernel = new Proxy({} as ReturnType<typeof kernelClient>, { get: (_, k) => (kernelClient(kernelUrl, token()) as Record<string | symbol, unknown>)[k] });
+
+const config = readConfig(env.CODE_REVIEW_SETTINGS);
+for (const e of config.errors) log("WARNING: settings.code_review", { error: e });
+const facts = factEmitter(kernel, log);
+const engine = createEngine({
+  db: new DatabaseSync(env.CODE_REVIEW_DB ?? "/data/code-review.sqlite"),
+  config: () => config,
+  source: githubSource(env.CODE_REVIEW_GITHUB_URL ?? "http://github-mcp:8086", token),
+  runner: kernelRunner(kernel),
+  poster: kernelPoster(kernel),
+  emit: (f) => facts.emit(f),
+  log,
+});
+
+let busy = false;
+const tick = async () => {
+  if (busy || !token()) return;
+  busy = true;
+  try { await engine.tick(); } catch (e) { log("WARNING: tick failed", { err: String((e as Error).message).slice(0, 300) }); } finally { busy = false; }
+};
+setInterval(tick, Math.max(15, Number(env.CODE_REVIEW_POLL_SECONDS) || 60) * 1000);
+setTimeout(tick, 5_000);
+
+createServer(handler(engine, () => file(env.CODE_REVIEW_API_TOKEN_FILE))).listen(8098, "0.0.0.0", () => log("code-review listening", { port: 8098, repos: config.repos.length }));
+for (const sig of ["SIGTERM", "SIGINT"] as const) process.on(sig, () => void facts.flush().finally(() => process.exit(0)));
