@@ -65,3 +65,19 @@ describe("conversation", () => {
 
 
 });
+
+describe("conversation: for-others comments", () => {
+  const FOR = "<!-- aidenhq-for-others -->";
+  const chat = { id: "f", description: `hi\n\n${chatAgentMarker("a1")}`, createdAt: at(0), createdByUserId: "me" };
+
+  it("the owner's own @mention shows as the owner's message", () => {
+    const msgs = conversation(chat, [owner(`@Ada please post this\n\n${FOR}`, 1)], "me", name);
+    expect(msgs.at(-1)).toMatchObject({ kind: "owner", text: "@Ada please post this" });
+  });
+
+  it("a colleague's relayed mention stays 'Someone else'", () => {
+    const relay = owner(`[slack C1 thread 1.2 · user U1] A colleague @mentioned the bot here\n\n${FOR}`, 1);
+    const msgs = conversation(chat, [relay], "me", name);
+    expect(msgs.at(-1)).toMatchObject({ kind: "notes", notes: [{ by: "Someone else" }] });
+  });
+});
