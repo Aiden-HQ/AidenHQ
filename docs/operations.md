@@ -38,6 +38,14 @@ never a running one, before deciding what moved, so a retry never trips on "name
 `created` at the end is started. It prints one line per service saying what became of it: `recreated`, `kept`, or
 `leftover cleaned`.
 
+A generation that fails its health check is reverted once: the last known good's product comes back, and the instance
+keeps everything except the failed move (`revertInstance` in `ops/apply-config-work.sh`). When the product moved, the
+instance stays at the failed generation's commit with the last known good's `product:`, `product_fork:` and `release:` put
+back; otherwise the instance commit that generation applied is reverted. So an app apps-mcp registered, a setting or a
+handbook edit committed since the last known good stays. The revert is a local, detached commit on the instance checkout,
+anchored by `refs/aidenhq/revert-of-<n>`. Apply never pushes the instance, so its `main` is unchanged, and the
+`apply alert:` line says what was undone.
+
 An apply that dies mid-run (killed, its shell gone) leaves its generation `pending`, or `failed` before the auto-revert
 ran. It is finished like a failed health check (the snapshot put back, the last known good re-applied) by whichever comes
 first: the dying shell's own exit trap, the next apply (before it does anything else; it holds the lock, so nothing else is

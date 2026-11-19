@@ -10,7 +10,8 @@
 #     the modules it removes (kernel/src/reconcile.ts); snapshot the data
 #     dirs of the modules it touches, their containers stopped (spec §6.4.1); switch (compile, recreate the compose
 #     services that moved, rerun the Paperclip setup); check health; on a failed check, put the snapshot back, re-apply the
-#     last known good generation once (--generation) and alert. A failed pair is held off until main moves (or --retry).
+#     last known good generation's product once (--generation) with only the failed move undone on the instance
+#     (revertInstance) and alert. A failed pair is held off until main moves (or --retry).
 #     An apply that died before its generation settled (killed, or its shell gone) is finished the same way: when its shell
 #     exits, at the start of the next apply, or at boot (--recover, aidenhq-apply-recover.service).
 # Run it through the entry point (which also checks out the product first, so a product that changed this file takes
@@ -209,13 +210,18 @@ retireUnits() {
   fi
 }
 
-# Generation n failed (marked so already): its whole snapshot put back, then the last known good re-applied by a child in
-# --generation mode (it never reverts). Data first, so the older code never starts on data it doesn't know. Returns 1.
+# Generation n failed (marked so already): its whole snapshot put back, then the last known good's product re-applied by a
+# child in --generation mode (it never reverts), on the instance revertInstance makes. Data first, so the older code never
+# starts on data it doesn't know. Returns 1.
 revertTo() {
-  local n="$1" why="$2" log="$3" lkg snap t base rrc=0
+  local n="$1" why="$2" log="$3" lkg snap t base rrc=0 target what
   lkg="$(genLkg)"
   if [ -z "$lkg" ]; then
     echo "apply alert: generation $n failed ($why) and there is no last known good to revert to; log $log"
+    return 1
+  fi
+  if ! read -r target what <<< "$(revertInstance "$n" "$lkg")" || [ -z "$target" ]; then
+    echo "apply alert: generation $n failed ($why) and its instance commit $(genGet "$n" instance | cut -c1-12) does not revert cleanly: nothing was reverted; run ops/rollback.sh $lkg from the owner's shell; log $log"
     return 1
   fi
   snap="$(genGet "$n" snapshot)"
@@ -224,15 +230,51 @@ revertTo() {
     if genRestore "$(basename "$t" .tar)" "$t"; then echo "auto-revert: $(basename "$t" .tar)'s data is back to $(genGet "$n" snapshot_at)"
     else echo "apply alert: putting $(basename "$t" .tar)'s data back from $t failed; log $log"; fi
   done
-  echo "auto-revert: re-applying generation $lkg (product $(genGet "$lkg" product | cut -c1-12), instance $(genGet "$lkg" instance | cut -c1-12))"
+  echo "auto-revert: re-applying generation $lkg (product $(genGet "$lkg" product | cut -c1-12)) on instance ${target:0:12}: $what"
   base="$GEN_DIR/apply-$n.baseline"; [ -f "$base" ] || base=""
-  AIDENHQ_APPLY_BEFORE="$(genGet "$n" product)" AIDENHQ_REVERT_OF="$n" AIDENHQ_HEALTH_BASELINE="$base" bash ops/apply-config-work.sh --generation "$lkg" || rrc=$?
+  AIDENHQ_APPLY_BEFORE="$(genGet "$n" product)" AIDENHQ_REVERT_OF="$n" AIDENHQ_REVERT_INSTANCE="$target" AIDENHQ_HEALTH_BASELINE="$base" bash ops/apply-config-work.sh --generation "$lkg" || rrc=$?
   if [ "$rrc" -eq 0 ]; then
-    echo "apply alert: generation $n failed ($why) and was reverted to generation $lkg; this host stays there until the instance's main moves; log $log"
+    echo "apply alert: generation $n failed ($why) and was reverted to generation $lkg ($what; the instance's main is unchanged); this host stays there until the instance's main moves; log $log"
   else
-    echo "apply alert: generation $n failed ($why) and the revert to generation $lkg failed too: restore from the drill checkpoint; log $log"
+    echo "apply alert: generation $n failed ($why) and the revert to generation $lkg failed too ($what): restore from the drill checkpoint; log $log"
   fi
   return 1
+}
+
+# The instance the auto-revert of generation <n> runs on, as "<sha> <what it did>": only the failed move is undone, never
+# anything else on the instance (an app apps-mcp registered after the last known good stays). Re-applying the last known
+# good's own instance commit would drop every such commit. Worked out from the recorded shas alone, so a dead auto-revert
+# computes it again the same way:
+#   the instance did not move past the last known good's  that instance, as it is;
+#   the product moved                                     generation n's instance with the last known good's pins
+#                                                         (product:, product_fork:, release:) put back;
+#   else                                                  generation n's instance commit (the one its apply landed) reverted.
+# A new commit is local and detached, anchored by refs/aidenhq/revert-of-<n>: apply never pushes the instance (its main is
+# fast-forward only), so the instance's main stays as it is and the alert says what was undone.
+revertInstance() {
+  local n="$1" lkg="$2" i="$AIDENHQ_INSTANCE_DIR" head good m=() id=(-c user.name=aidenhq-apply -c user.email=apply@aidenhq.invalid)
+  head="$(genGet "$n" instance)" && good="$(genGet "$lkg" instance)" || return 1
+  if git -C "$i" merge-base --is-ancestor "$head" "$good"; then echo "$good the instance did not move"; return 0; fi
+  git -C "$i" checkout --quiet --detach "$head" || return 1
+  if [ "$(genGet "$n" product)" != "$(genGet "$lkg" product)" ]; then
+    # Top-level blocks of instance.yaml (a key line with the indented, blank and comment lines after it): the pin blocks are
+    # swapped for the last known good's, where the first one stood.
+    # shellcheck disable=SC2016 # the program is JavaScript, in single quotes on purpose
+    git -C "$i" show "$good:instance.yaml" | node -e '
+const fs = require("node:fs");
+const blocks = (t) => t.replace(/\n$/, "").split("\n").reduce((b, l) => ((/^[^\s#]/.test(l) || !b.length ? b.push([l]) : b.at(-1).push(l)), b), []);
+const pin = (b) => /^(product|product_fork|release):/.test(b[0]);
+const cur = blocks(fs.readFileSync(process.argv[1], "utf8")), rest = cur.filter((b) => !pin(b));
+rest.splice(Math.max(0, cur.findIndex(pin)), 0, ...blocks(fs.readFileSync(0, "utf8")).filter(pin));
+fs.writeFileSync(process.argv[1], rest.flat().join("\n") + "\n");' "$i/instance.yaml" || return 1
+    git -C "$i" "${id[@]}" commit --quiet -m "Revert generation $n's product move: generation $lkg's pins (local to this host)" -- instance.yaml || return 1
+    echo "$(git -C "$i" rev-parse HEAD) the product is back to generation $lkg's and the rest of the instance is kept at ${head:0:12}"
+  else
+    git -C "$i" rev-parse -q --verify "$head^2" >/dev/null && m=(-m 1)
+    git -C "$i" "${id[@]}" revert --no-edit "${m[@]}" "$head" >&2 || { git -C "$i" revert --abort >&2 || true; return 1; }
+    echo "$(git -C "$i" rev-parse HEAD) instance commit ${head:0:12} is reverted and the rest of the instance is kept"
+  fi
+  git -C "$i" update-ref "refs/aidenhq/revert-of-$n" HEAD
 }
 
 # An apply that died (killed, or its shell gone mid-step) leaves its generation pending, or marked failed before its
@@ -275,13 +317,17 @@ logTo() {
 # --generation <n>: re-apply a recorded generation (the auto-revert, ops/rollback.sh). Product and instance are checked out
 # detached at its shas (the instance's origin/main is not moved), both must be on their origin/main, and the tree is applied
 # in place with today's steps: no staging and no authority diff, since it may predate both. Never hands over, never reverts.
+# The auto-revert passes its own instance (AIDENHQ_REVERT_INSTANCE, from revertInstance): a local commit on the failed
+# generation's instance, which is what must be on origin/main then (and for a rollback to such a revert's generation).
 # A rollback (not the auto-revert, which has put its snapshot back already) first restores each module whose data is newer
 # than generation n declared, from the earliest snapshot after n, and refuses when that snapshot was pruned (spec §6.4.1).
 applyGeneration() {
-  local product instance
-  product="$(genGet "$gen" product)"; instance="$(genGet "$gen" instance)"
+  local product instance of onmain
+  product="$(genGet "$gen" product)"; instance="${AIDENHQ_REVERT_INSTANCE:-$(genGet "$gen" instance)}"
   [[ "$product" =~ ^[0-9a-f]{40}$ ]] && [[ "$instance" =~ ^[0-9a-f]{40}$ ]] || { echo "refusing: no generation $gen with full shas" >&2; exit 1; }
-  git -C "$inst" merge-base --is-ancestor "$instance" origin/main || { echo "refusing: generation $gen's instance $instance is not on the instance's origin/main" >&2; exit 1; }
+  onmain="$instance"; of="${AIDENHQ_REVERT_OF:-$(genGet "$gen" revert_of)}"
+  if [ -n "$of" ] && git -C "$inst" merge-base --is-ancestor "$(genGet "$of" instance)" "$instance"; then onmain="$(genGet "$of" instance)"; fi
+  git -C "$inst" merge-base --is-ancestor "$onmain" origin/main || { echo "refusing: generation $gen's instance $instance is not on the instance's origin/main" >&2; exit 1; }
   # Its product is what its instance commit runs: that commit's pin on origin/main, or the pin's fork (product_fork:).
   local file pin; file="$(mktemp)"; git -C "$inst" show "$instance:instance.yaml" > "$file"
   pin="$(node kernel/src/apply.ts product-pin "$file")"
