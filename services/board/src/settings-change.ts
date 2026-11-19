@@ -20,7 +20,7 @@ const TEXT = (max: number) => z.string().max(max).regex(/^[^\x00-\x08\x0b\x0c\x0
 const SCHEDULE = z.object({ cron: z.string().regex(/^[0-9*/,\- ]{9,100}$/), timezone: z.string().regex(/^[A-Za-z_]+(\/[A-Za-z0-9_+\-]+){0,2}$|^UTC$/).optional(), label: z.string().max(60).regex(/^[^\x00-\x1f\x7f$]*$/).optional() }).strict();
 export const ChangeSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("setting"), key: KEY, value: z.union([SCALAR, z.array(z.union([z.string().max(200), z.number().finite()])).max(50)]) }).strict(),
-  z.object({ kind: z.literal("agent"), agent: AGENT, field: z.enum(["model", "reasoning_effort", "heartbeat"]), value: SCALAR }).strict(),
+  z.object({ kind: z.literal("agent"), agent: AGENT, field: z.enum(["model", "reasoning_effort", "heartbeat", "max_parallel"]), value: SCALAR }).strict(),
   // An agent's own spend caps (overrides.agents.<key>.caps; the owner's, Tier 2), USD.
   z.object({ kind: z.literal("caps"), agent: AGENT, value: z.object({ run_usd: CAP, task_usd: CAP, day_usd: CAP }).partial().strict() }).strict(),
   // A module on or off (instance.yaml modules:; the owner's, Tier 2). On for a module of a configured marketplace installs it.
@@ -136,6 +136,8 @@ export function checkChange(ch: Change, compiled: Compiled | null, catalog: Cata
   }
   if (ch.kind === "caps") {
     if (!Object.keys(ch.value).length) throw new ChangeRefused("name at least one cap");
+    if (a.member_of) throw new ChangeRefused(`${a.name ?? ch.agent} is a team member: it has no cap of its own (the team's day cap covers it)`);
+    if (a.team && Object.keys(ch.value).some((k) => k !== "day_usd")) throw new ChangeRefused("a team has one cap: day_usd, over all its members' spend");
     return ch;
   }
   if (ch.field === "model") {
@@ -143,7 +145,10 @@ export function checkChange(ch: Change, compiled: Compiled | null, catalog: Cata
   } else if (ch.field === "reasoning_effort") {
     const efforts = EFFORTS[compiledEngine(a) ?? "codex"] ?? [];
     if (!efforts.includes(String(ch.value))) throw new ChangeRefused(efforts.length ? `effort is one of ${efforts.join(", ")}` : `${a.name ?? ch.agent} has no effort setting`);
+  } else if (ch.field === "max_parallel") {
+    if (!Number.isInteger(ch.value) || (ch.value as number) < 1 || (ch.value as number) > 10) throw new ChangeRefused("parallel jobs are 1 to 10");
   } else {
+    if (a.team || a.member_of) throw new ChangeRefused(`${a.name ?? ch.agent} is on a team: a team's agents have no heartbeat of their own`);
     if (ch.value !== false && !HEARTBEAT_HOURS.includes(Number(ch.value))) throw new ChangeRefused(`a heartbeat is off or every ${HEARTBEAT_HOURS.join(", ")} hours`);
     if (ch.value !== false && a.profile === "engineer") throw new ChangeRefused("an Engineer has no heartbeat (it works on the tasks it is given)");
     if (ch.value !== false && !HEARTBEAT_TOOLS.every((t) => a.enabled_tools?.paperclip_tasks?.includes(t))) throw new ChangeRefused(`${a.name ?? ch.agent} lacks the task tools a heartbeat needs (${HEARTBEAT_TOOLS.join(", ")})`);
@@ -164,7 +169,7 @@ export function describe(ch: Change, compiled: Compiled | null): string {
   if (ch.kind === "unfork") return `${name} back on its module's handbook`;
   if (ch.kind === "grants") return `${name}'s ${ch.connection} tools → ${ch.tools === null ? "the module's" : ch.tools.join(", ") || "none"}`;
   if (ch.kind === "caps") return `${name}'s caps → ${Object.entries(ch.value).map(([k, v]) => `${k.replace("_usd", "")} $${v}`).join(", ")}`;
-  const field = { model: "model", reasoning_effort: "effort", heartbeat: "heartbeat" }[ch.field];
+  const field = { model: "model", reasoning_effort: "effort", heartbeat: "heartbeat", max_parallel: "parallel jobs" }[ch.field];
   const v = ch.field === "heartbeat" ? (ch.value === false ? "off" : `every ${ch.value}h`) : String(ch.value);
   return `${name}'s ${field} → ${v}`;
 }

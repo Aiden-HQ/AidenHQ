@@ -59,6 +59,11 @@ interface CompiledAgent {
   models?: string[];
   reasoning_effort?: string;
   heartbeat?: boolean | number | null;
+  max_parallel?: number;
+  /** A team record (compile's teams): its team's name and member keys. */
+  team?: { name: string; members: string[] };
+  /** A team member: its team record's key. */
+  member_of?: string;
   trial?: boolean;
   image?: string;
   /** crew, engineer or check (compile sets it for every agent). */
@@ -195,10 +200,14 @@ export function settingsView(s: Sources) {
       effort: a.reasoning_effort ?? "",
       heartbeatHours: a.heartbeat === true ? hours : typeof a.heartbeat === "number" ? a.heartbeat : null,
       /** Whether a heartbeat may be turned on (compile refuses one for an Engineer, or one without the tools). */
-      canHeartbeat: a.profile !== "engineer" && HEARTBEAT_TOOLS.every((t) => a.enabled_tools?.paperclip_tasks?.includes(t)),
+      canHeartbeat: a.profile !== "engineer" && !a.team && !a.member_of && HEARTBEAT_TOOLS.every((t) => a.enabled_tools?.paperclip_tasks?.includes(t)),
       // Only an engine that takes an effort shows the setting; an engine without efforts, none.
       efforts: EFFORTS[compiledEngine(a) ?? "codex"] ?? [],
       department: a.department ?? { id: "general", name: "General", order: 1_000 },
+      ...(a.profile === "engineer" ? { maxParallel: a.max_parallel ?? 1 } : {}),
+      // A team record's agent-level settings are its team's defaults, a member's its own entry; a member has no cap of its own.
+      ...(a.team ? { team: a.team.name } : {}),
+      ...(a.member_of ? { memberOf: a.member_of } : {}),
       routines,
       trial: Boolean(a.trial ?? g?.trial),
       graded: Boolean(g?.graded),

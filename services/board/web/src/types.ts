@@ -153,6 +153,10 @@ export interface RosterAgent {
   key?: string;
   avatar?: string;
   model: string | null;
+  reportsTo: string | null;
+  team?: { name: string; members: { key: string; name: string }[] };
+  memberOf?: string;
+  maxParallel?: number;
   status: string;
   trial: boolean;
   schedules: { title: string; paused: boolean; nextRunAt: string | null }[];
@@ -610,7 +614,7 @@ export type Question = { question: string; options: string[]; multi?: boolean };
 /** A change the Settings pages file (services/board/src/settings-change.ts): it becomes an apply card, never applied here. */
 export type SettingChange =
   | { kind: "setting"; key: string; value: unknown }
-  | { kind: "agent"; agent: string; field: "model" | "reasoning_effort" | "heartbeat"; value: string | number | boolean }
+  | { kind: "agent"; agent: string; field: "model" | "reasoning_effort" | "heartbeat" | "max_parallel"; value: string | number | boolean }
   | { kind: "caps"; agent: string; value: Partial<Record<"run_usd" | "task_usd" | "day_usd", number>> }
   | { kind: "module"; name: string; on: boolean }
   | { kind: "routine"; routine: string; field: "schedules"; value: { cron: string; timezone?: string; label?: string }[] }
@@ -662,6 +666,12 @@ export interface AgentSettings {
   models: string[];
   effort: string;
   heartbeatHours: number | null;
+  /** An Engineer's parallel jobs. */
+  maxParallel?: number;
+  /** A team record: its team's name. */
+  team?: string;
+  /** A team member: its team record's key. */
+  memberOf?: string;
   routines: { key: string; title: string; schedules: { cron: string; timezone: string; label: string }[]; model?: string; status?: string; webhook?: boolean; /** The module's own value where the instance overrides it. */ defaults?: Record<string, unknown> }[];
   trial: boolean;
   graded: boolean;

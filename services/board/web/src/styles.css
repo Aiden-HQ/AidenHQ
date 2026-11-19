@@ -910,6 +910,11 @@ button.live-toggle:focus-visible { outline: 2px solid var(--accent); border-radi
 .fleet-main:hover, .fleet-row.open > .fleet-main { background: var(--hover); }
 .fleet-main > * { min-width: 0; }
 .fleet-who { display: flex; align-items: center; gap: 12px; }
+/* The org: a team's members and each agent's reports sit indented under their parent, on a 1px guide. */
+.fleet-row.nested .fleet-who { padding-left: calc(var(--depth) * 28px); }
+.fleet-row.nested > .fleet-main::before { content: ""; position: absolute; left: calc(20px + (var(--depth) - 1) * 28px + 17px); top: 0; bottom: 0; width: 1px; background: var(--border); }
+.fleet-row.team > .fleet-main { background: color-mix(in srgb, var(--hover) 55%, transparent); }
+.fleet-row.team > .fleet-main:hover, .fleet-row.team.open > .fleet-main { background: var(--hover); }
 .fleet-who .avatar, .fleet-who .avatar.portrait { width: 36px; height: 36px; font-size: var(--text-lg); }
 .fleet-row.busy .crew-portrait::before { inset: -3px; border-color: var(--working); border-right-color: transparent; animation: spin 1.4s linear infinite; }
 @media (prefers-reduced-motion: reduce) { .fleet-row.busy .crew-portrait::before { animation: none; border-right-color: var(--working); } }
@@ -949,6 +954,8 @@ button.live-toggle:focus-visible { outline: 2px solid var(--accent); border-radi
   .fleet-main { grid-template-columns: 36px repeat(3, minmax(0, 1fr)) 112px 28px; grid-template-areas: "who who who who status toggle" ". now next last last last"; row-gap: 8px; column-gap: 12px; padding: 12px 12px 12px 16px; }
   .fleet-status { justify-self: end; }
   .fleet-who { grid-area: who; }
+  .fleet-row.nested .fleet-who { padding-left: calc(var(--depth) * 20px); }
+  .fleet-row.nested > .fleet-main::before { display: none; }
   .fleet-status { grid-area: status; }
   .fleet-toggle { grid-area: toggle; }
   .fleet-now { grid-area: now; }

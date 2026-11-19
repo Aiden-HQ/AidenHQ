@@ -174,6 +174,9 @@ the assignment keeps it; otherwise the best score of repo match, continuity (tas
 days) and load, ties to the least loaded and then the key, even when that member is busy. A decision record goes on the task.
 With no eligible member (all paused, or the team's day cap used up) the task is blocked and whoever delegated it is told. A
 member with open tasks can't be removed: drain or hand them off first. Every agent commits as `<key>@<instance_name>.aidenhq.ai`.
+The board's Agents page draws the team as a parent row (running of its members' parallel slots) over its members, and its
+Settings tab edits the team in place: the record's model, effort and `max_parallel` write `teams.<name>.defaults`, a member's
+write `teams.<name>.members.<key>`, and the day cap `teams.<name>.caps` (the owner's authority).
 
 ## Compile and apply
 

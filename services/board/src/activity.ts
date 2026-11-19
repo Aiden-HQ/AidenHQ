@@ -74,6 +74,14 @@ export interface RosterAgent {
   /** Its definition's `department:`, resolved from the one registry. */
   department: Department;
   model: string | null;
+  /** Who it reports to (an agent id): the Agents page's reporting tree. */
+  reportsTo: string | null;
+  /** A team record (compile's teams): its members, in order. The record never runs. */
+  team?: { name: string; members: { key: string; name: string }[] };
+  /** A team member: its team record's key. */
+  memberOf?: string;
+  /** Its parallel jobs (an Engineer's `max_parallel`), the team's capacity. */
+  maxParallel?: number;
   /** Paperclip's status: active, idle, running, paused, error… */
   status: string;
   trial: boolean;
@@ -115,6 +123,18 @@ function identity(a: Pick<Agent, "metadata">): { key?: string; avatar?: string }
   return { ...(key ? { key } : {}), ...(avatar ? { avatar } : {}) };
 }
 
+/** The org metadata setup writes for a team (metadata.team on the record, metadata.memberOf on a member). */
+function teamOf(a: Pick<Agent, "metadata">): Pick<RosterAgent, "team" | "memberOf" | "maxParallel"> {
+  const m = a.metadata ?? {};
+  const t = m.team as { name?: unknown; members?: unknown } | undefined;
+  const members = Array.isArray(t?.members) ? t.members.filter((x): x is { key: string; name: string } => typeof x?.key === "string" && typeof x.name === "string") : [];
+  return {
+    ...(typeof t?.name === "string" && members.length ? { team: { name: t.name, members } } : {}),
+    ...(typeof m.memberOf === "string" ? { memberOf: m.memberOf } : {}),
+    ...(typeof m.maxParallel === "number" ? { maxParallel: m.maxParallel } : {}),
+  };
+}
+
 /** The live agents (terminated ones never show) with their schedules and newest run. */
 export function roster(agents: Agent[], routines: Routine[], last: Map<string, { at: string; status: string }>): RosterAgent[] {
   return agents
@@ -127,6 +147,8 @@ export function roster(agents: Agent[], routines: Routine[], last: Map<string, {
       system: Boolean(a.metadata?.module) && a.metadata?.module !== "instance",
       department: departmentOf(a),
       model: shortModel(a),
+      reportsTo: a.reportsTo ?? null,
+      ...teamOf(a),
       status: a.status,
       trial: a.metadata?.trial === true,
       schedules: routines
