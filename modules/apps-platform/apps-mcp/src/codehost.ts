@@ -1,6 +1,6 @@
 // Repos on this server (codehost-local, product docs/design/codehost-local.md §6): the org `local`'s bare repos, mounted
 // read-only at /codehost. apps-mcp only reads them: an app's branch for its deploys, and its change requests (refs
-// refs/changes/<n>/{head,base,meta,merged,closed}, written by the runner alone) for previews and the board's PR reads.
+// refs/changes/<n>/{head,base,meta,merged,closed}, written by the kernel alone: codehost-local/src/host.ts) for previews and the board's PR reads.
 import { execFile } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { promisify } from "node:util";

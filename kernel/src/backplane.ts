@@ -38,7 +38,7 @@
 //                              a job on a wake it claimed, admitted (admission.ts: the only way a job starts), its status
 //                              (?after=<version>&wait=<ms> waits for a change), stop it, a comment into it (jobs.ts; `wake`: the claimed comment wake it delivers);
 //                              GET /v1/jobs?open=1 | ?task=<id>: its own jobs not yet acknowledged, or a task's; POST /v1/jobs/:job/ack: an ended job is dealt with
-//   POST /v1/codehost/:op      (a module's own token) token | snapshot | clone on the GitHub code host, under the module's
+//   POST /v1/codehost/:op      (a module's own token) token | snapshot | clone on the code host that owns the repo, under the module's
 //                              codehost grant (codehost.ts)
 //   POST /v1/jobs/workspace    (a module with role kernel.jobs) {task}: the workspace folder it may write into (a task of an agent it dispatches)
 //   GET  /v1/work[?task=|?job=|?agent=|?since=], GET /v1/work/metrics  (a module with role kernel.work-read) the jobs and records
@@ -76,7 +76,7 @@ import type { Admission } from "./admission.ts";
 import { JOB_KINDS, type Outcomes } from "./outcomes.ts";
 import { notice, type Notify } from "./notify.ts";
 import type { JobTools } from "./jobtools.ts";
-import { CODEHOST } from "./codehost.ts";
+import { hostOf } from "./codehost.ts";
 import { fail } from "./proxy.ts";
 import type { Records, State } from "./records.ts";
 import type { Work } from "./work.ts";
@@ -295,7 +295,7 @@ export function createBackplane({ whoami, asserter, proxy, cp, boardCp, grantsFi
             if (j.name === "JobToolError") throw fail(j.status!, j.code!, j.message);
             throw e;
           }
-          return await codehost(CODEHOST, "snapshot", snap, res);
+          return await codehost(hostOf(snap.repo), "snapshot", snap, res);
         }
         case "POST /v1/jobtools/:cmd": {
           if (!jobTools) throw fail(503, "unavailable", "job tools are off");

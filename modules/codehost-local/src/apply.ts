@@ -4,31 +4,30 @@
 //            on both sides (each changed file, the agent.yaml of each agent it touches, instance.yaml; absent where the file
 //            isn't), the diff, and the graduation card's trial edits. From git only, never from the requester.
 //   land(s)  the commit on main, as a compare-and-swap on main's ref (a commit main already has is a no-op), once.
-// The commit must already be in the bare repo (a branch pushed there: the release updater's, a change request's): nothing is
-// fetched from elsewhere. Repo code never runs: every command carries SAFE_GIT_ARGS, literal pathspecs and no global config.
+// The commit is in the bare repo (the release updater's branch), or comes in from the asking job's workspace (`ingest`, git.ts). Repo code never runs: every command carries SAFE_GIT_ARGS, literal pathspecs and no global config.
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
+import { ENV, SAFE_GIT_ARGS, fail } from "./git.ts";
 
 const run = promisify(execFile);
-const SAFE_GIT_ARGS = ["-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=", "-c", "protocol.ext.allow=never", "-c", "safe.bareRepository=explicit"];
-const ENV = { PATH: process.env.PATH ?? "/usr/bin:/bin", HOME: "/nonexistent", GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1", GIT_TERMINAL_PROMPT: "0", GIT_NO_REPLACE_OBJECTS: "1", GIT_GRAFT_FILE: "/dev/null", GIT_SHALLOW_FILE: "/dev/null", GIT_ATTR_NOSYSTEM: "1", GIT_LITERAL_PATHSPECS: "1" };
 const MAX_TEXT = 1 << 20, MAX_TOTAL = 8 << 20, MAX_FILES = 200;
 const SHA = /^[0-9a-f]{40}$/;
 const AGENT = /^agents\/([a-z0-9][a-z0-9-]*)\/(agent\.yaml|AGENTS\.md|memory\.md)$/;
 
 type Source = { repo: string; branch: string; sha: string; workspace?: string };
 type Pin = { repo: string; sha: string } | null;
-const fail = (status: number, message: string) => Object.assign(new Error(message), { status });
 
-/** `bare`: the instance repo's bare git dir on this host; `instanceRepo`: its slug (local/<name>). */
-export function localApply({ bare, instanceRepo }: { bare: string; instanceRepo: string }) {
+/** `bare`: the instance repo's bare git dir on this host; `instanceRepo`: its slug (local/<name>); `ingest`: a job's branch from its workspace. */
+export function localApply({ bare, instanceRepo, ingest }: { bare: string; instanceRepo: string; ingest?: (s: Source & { workspace: string }) => Promise<unknown> }) {
   const git = async (args: string[], maxBuffer = 64 * 1024 * 1024) => (await run("git", [...SAFE_GIT_ARGS, "--git-dir", bare, ...args], { env: ENV, maxBuffer })).stdout;
   const g = async (args: string[]) => (await git(args)).trim();
 
   async function commit(s: Source) {
     if (String(s.repo).toLowerCase() !== instanceRepo.toLowerCase()) throw fail(403, `an apply lands only on the instance repo (${instanceRepo}), not ${s.repo}`);
     if (!SHA.test(String(s.sha))) throw fail(400, "sha is a full commit sha");
-    if (!(await g(["cat-file", "-e", `${s.sha}^{commit}`]).then(() => true, () => false))) throw fail(404, `${s.sha.slice(0, 12)} isn't in ${instanceRepo}: push its branch there first`);
+    const has = () => g(["cat-file", "-e", `${s.sha}^{commit}`]).then(() => true, () => false);
+    if (!(await has()) && s.workspace && ingest) await ingest({ ...s, workspace: s.workspace });
+    if (!(await has())) throw fail(404, `${s.sha.slice(0, 12)} isn't in ${instanceRepo}: push its branch there first`);
     const main = await g(["rev-parse", "--verify", "refs/heads/main^{commit}"]);
     const base = await g(["merge-base", s.sha, main]).catch(() => "");
     if (!base) throw fail(409, `${s.sha.slice(0, 12)} shares no history with the instance's main`);

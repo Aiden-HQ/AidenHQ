@@ -5,7 +5,7 @@
 // edited later never changes a running job. Everything the job gets comes from the wake's task and agent, never the request.
 import { randomBytes } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
-import { CODEHOST } from "./codehost.ts";
+import { CODEHOSTS } from "./codehost.ts";
 import { rolesOf } from "./identity.ts";
 import { JobError } from "./jobs.ts";
 import type { JobTools } from "./jobtools.ts";
@@ -100,7 +100,7 @@ export function createAdmission({ db, grants, kinds, capacity, spend, mayDispatc
     // An Engineer publishes its workspace's commits (push, PR, merge, close, a new repo) and applies instance changes: each
     // a record its tier decides, filed with the job's own workspace.
     // Not an agent in trial: its writes come with the change that graduates it.
-    const engineer = (id: string, k: { module: string }) => profile === "engineer" && g.trial !== true && (k.module === CODEHOST || id === "kernel.apply");
+    const engineer = (id: string, k: { module: string }) => profile === "engineer" && g.trial !== true && (CODEHOSTS.includes(k.module) || id === "kernel.apply");
     const writes = Object.entries(kinds()).filter(([id, k]) => (k.floor >= 1 && k.tools.length > 0 && k.tools.some(holds)) || engineer(id, k)).map(([id]) => id).sort();
     return {
       profile, image: g.image ?? IMAGE[profile], engine: String(g.engine ?? ""), engines: [...(g.engines ?? [g.engine ?? ""])].filter(Boolean), model: String(routine?.model ?? g.model ?? ""), effort: String(routine?.effort ?? g.effort ?? ""),

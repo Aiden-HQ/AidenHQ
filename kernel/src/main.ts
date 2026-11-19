@@ -15,7 +15,7 @@
 //   app access). The kernel is the only process that opens the accounts file (lean 3g).
 import { execFile } from "node:child_process";
 import http from "node:http";
-import { existsSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { configDir, dataDir, env, repo, secret } from "./env.ts";
 import { INSTALL_CAP, createGateway, watched } from "./gateway/lib.ts";
@@ -48,6 +48,7 @@ import { createReviews, type ReviewerSlot } from "./reviews.ts";
 import { createReviewLoop } from "./review-loop.ts";
 import { mintToken } from "./gateway/token.ts";
 import { createWrites, type Kind } from "./writes.ts";
+import type { Executor } from "../sdk/src/executor.ts";
 import { createApply, hostApply } from "./apply.ts";
 import { hostPlanner } from "./apply-tier.ts";
 import { inventoryOf } from "./paths.ts";
@@ -60,6 +61,8 @@ import { createBoxes, handbookFrom, launcherClient, type Boxes } from "./boxes.t
 import { checkJobsFrom } from "./checkbox.ts";
 import type { Recipes } from "./checkjobs.ts";
 import { localSnapshot } from "../../modules/codehost-local/src/snapshot.ts";
+import { LOCAL_KINDS, localHost as codehostLocal } from "../../modules/codehost-local/src/host.ts";
+import { ingest } from "../../modules/codehost-local/src/git.ts";
 import { createJobTools } from "./jobtools.ts";
 import { createWakes } from "./wakes.ts";
 import { createWorkspaceSweep } from "./workspaces.ts";
@@ -107,7 +110,8 @@ const onTask = {
 // The modules' kinds (compile) and the kernel's own and the runner's (kinds.ts).
 const moduleKinds = watched(path.join(configDir, "kernel", "writes.json"), (j) => j as Record<string, Kind>, {});
 const pathInventory = watched(path.join(configDir, "kernel", "paths.json"), inventoryOf, undefined);
-const registry = () => ({ ...moduleKinds(), ...KERNEL_KINDS });
+// codehost-local's kinds while it is enabled: it has no service, so the kernel runs its executor (localCode below).
+const registry = (): Record<string, Kind> => ({ ...moduleKinds(), ...(localHost() ? LOCAL_KINDS : {}), ...KERNEL_KINDS });
 let replay: (r: never) => Promise<{ ok: boolean; text: string }> = async () => ({ ok: false, text: "the proxy isn't up" });
 // The product and instance repositories (owner/name), as setup recorded them in .env: which repository a `paths: true`
 // kind's files are in (writes.ts).
@@ -125,7 +129,7 @@ let raiseCap: (r: { scope: string; agentId: string; subject: string; cap: number
 // kernel.apply's executor (apply.ts): the code host lands the commit, a transient unit runs the apply; a restart resumes it.
 const applyHost = hostApply({ repo, stateDir: env("AIDENHQ_STATE_DIR", path.join(process.env.HOME ?? "", ".local/state/aidenhq")), resolver, codehost: () => { const e = moduleKinds()["codehost-github.push"]?.executor; return e && { url: e.url, key: secret(e.auth_secret) }; },
   // codehost-local's instance repo: the bare repo setup made on this host (AIDENHQ_INSTANCE_REMOTE).
-  local: () => { const bare = env("AIDENHQ_INSTANCE_REMOTE"), inst = repos().instance; return localHost() && inst && bare?.startsWith("/") ? { bare, repo: inst } : undefined; } });
+  local: () => (localHost() && repos().instance?.toLowerCase().startsWith(`${LOCAL_ORG}/`) ? { bare: localCode.bare(repos().instance!), repo: repos().instance!, ingest: (s) => ingest(tasksDir, localScratch, localCode.bare(s.repo), s.workspace, s) } : undefined) });
 const applies = createApply({ db: records.db, log, ...applyHost });
 // Its planner (apply-tier.ts): the same code host read, the product checkout, and the compiled grants, connections and apps.
 const applyPlanner = hostPlanner({ repo, instanceRepo: () => repos().instance, configDir, read: applyHost.codehost.read, grants: () => grantsTable().agents ?? {}, connections, verifyRelease: runVerify(repo) });
@@ -135,6 +139,7 @@ const writes = createWrites({
   // An approved raise_cap: the gateway's cap for that scope and subject becomes the card's doubled cap.
   native: { "kernel.raise_cap": async (r) => ({ ok: true, text: await raiseCap(r.args as never) }), "kernel.apply": applies.execute },
   planners: { "kernel.apply": applyPlanner },
+  executors: (): Record<string, Executor> => (localHost() ? { "codehost-local": localCode.executor } : {}),
   resume: ["kernel.apply"],
 });
 const proxy = createProxy({ whoami, connections, asserter, resolver, secret, writes, log });
@@ -222,6 +227,20 @@ once(() => void reviewLoop.tick(), 5_000);
 const brake = createBrake({ db: records.db, owner: ownerApi });
 // The job settings as configured here (jobs run in their agents' computers; no repo code runs on the host).
 const sandbox = sandboxConfig(env);
+// codehost-local (docs/design/codehost-local.md), run here: the org `local`'s bare repos under <data dir>/codehost, setup's
+// instance repo where setup made it (AIDENHQ_INSTANCE_REMOTE), job commits from their workspaces, and a change's checks as
+// the `change` check job, whose receipt the kernel signed and verifies.
+const tasksDir = path.join(sandbox.workDir, "tasks"), localScratch = path.join(sandbox.workDir, "codehost-scratch");
+mkdirSync(localScratch, { recursive: true });
+const instanceRemote = env("AIDENHQ_INSTANCE_REMOTE", "");
+const localCode = codehostLocal({
+  root: path.join(dataDir, "codehost"), tasksDir, scratchDir: localScratch, instanceRepo: baseRepos.instance, productRepo: baseRepos.product,
+  sources: baseRepos.instance && instanceRemote.startsWith("/") ? { [baseRepos.instance]: instanceRemote } : {},
+  checks: async (repo, head, base) => {
+    const v = checkJobs.start("codehost-local", { repo, head, run: "change", spec: { base } });
+    return [{ ok: v.state === "done" && checkJobs.verify(v.receipt, { repo, head, run: "change" }).ok, pending: v.state === "running" }];
+  },
+});
 // A kernel-admitted job's computer (boxes.ts): made below, once the gateway it needs is up; a job that ends releases it.
 let boxes: Boxes | undefined;
 const jobs = createJobs({
@@ -299,7 +318,7 @@ const jobTools = createJobTools({ db: records.db, secret: () => secret("gateway_
 // Each module's GitHub App grant (its module.yaml `codehost:`), and what its @ names resolve to: the code host broker's, and
 // what an engineer job's dispatcher may clone into its task's workspace.
 const codehostGrants = (): OpsGrant[] => Object.entries(modulesFile().modules ?? {}).flatMap(([module, d]) => ((d as { codehost?: OpsGrant }).codehost ? [{ ...(d as { codehost: OpsGrant }).codehost, module }] : []));
-const codehostRepos = () => ({ instance: baseRepos.instance, product: baseRepos.product, agentsOrg });
+const codehostRepos = () => ({ instance: baseRepos.instance, product: baseRepos.product, agentsOrgs: repos().agentsOrgs });
 boxes = createBoxes({
   db: records.db, cfg: sandbox, jobs, call: launcherClient(launcherUrl, () => secret("launcher_kernel_key")), secret, whoami,
   connections: () => computers().connections ?? {}, handbook: handbookFrom(configDir), cleanup: jobTools.cleanup, log,
@@ -328,8 +347,8 @@ admission.recover();
 boxes.start();
 // The GitHub code host's operations, brokered for modules under their own codehost grants (codehost.ts).
 const codehost = createCodehost({ repos: codehostRepos, grants: codehostGrants, kind: () => Object.values(moduleKinds()).find((k) => k.module === CODEHOST && k.executor), secret, resolver, workspace: (module, task) => jobs.workspace(module, task),
-  // codehost-local's snapshot op for `local/…` repos, when that module is enabled.
-  localSnapshot: () => (localHost() ? localSnapshot({ root: path.join(dataDir, "codehost") }) : undefined) });
+  // codehost-local's snapshot and clone for `local/…` repos, when that module is enabled.
+  local: () => (localHost() ? { snapshot: localSnapshot({ bare: localCode.bare }), clone: localCode.clone } : undefined) });
 // Check jobs (checkjobs.ts): credential-free boxes of the launcher's, snapshots from the module that provides them.
 const checkJobs = checkJobsFrom({ db: records.db, secret, recipes: () => modulesFile().check_jobs ?? {}, ask: codehost.ask, call: launcherClient(launcherUrl, () => secret("launcher_kernel_key")), workDir: sandbox.workDir, gatewayUrl: `${sandbox.boxGatewayUrl}/api/v1`, log });
 const lane = createLane({ once: outcomes.once, owner: ownerApi, grantsFile: grantsTable, log, postAsAgent: async (agent, task, job, body) => ({ id: String((await outcomes.post({ id: job, agent, task }, { kind: "lane", body })).comment) }) });

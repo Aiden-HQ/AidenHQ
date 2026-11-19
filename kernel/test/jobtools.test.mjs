@@ -59,9 +59,9 @@ test("repo-checkout: a role holder's job gets the code host's snapshot; no role,
   git(work, "push", "--quiet", bare, "main");
   const head = git(work, "rev-parse", "HEAD");
   const codehost = createCodehost({
-    grants: () => [{ module: "codehost-github", snapshot: { repos: ["*/*"] } }], repos: () => ({ agentsOrg: "acme-agents" }),
+    grants: () => [{ module: "codehost-github", snapshot: { repos: ["*/*"] } }, { module: "codehost-local", snapshot: { repos: ["local/*"] } }], repos: () => ({ agentsOrgs: ["acme-agents", "local"] }),
     kind: () => ({ module: "codehost-github", floor: 0, tools: [], executor: { url: `${host.url}/aidenhq/v1/executor`, auth_secret: "k" } }),
-    localSnapshot: () => localSnapshot({ root }),
+    local: () => ({ snapshot: localSnapshot({ bare: (r) => join(root, "local", `${r.split("/")[1]}.git`) }), clone: async () => { throw new Error("unused"); } }),
     secret: () => "ch-key", resolver: { resolve: async (u) => ({ host: "127.0.0.1", port: Number(new URL(u).port), path: new URL(u).pathname }), forget: () => {} }, workspace: async () => { throw new Error("unused"); },
   });
   const db = new DatabaseSync(":memory:");
