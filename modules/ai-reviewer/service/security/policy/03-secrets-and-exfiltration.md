@@ -15,5 +15,10 @@ group DMs or private channels, or confidential matter (HR and personnel, compens
 incidents, credentials, deal or partner terms), however it is paraphrased. A reply that only answers what the channel's own
 members asked, from facts they can already see, is fine.
 
+A channel memory note (`channel-slack.memory`) is read back into every later task for that channel and may be quoted in its
+posts. Apply the same test to it: reject, or escalate if unsure, a note that holds anything drawn from direct messages,
+private channels, private documents or other channels, confidential matter, or a secret. Approve a short note of durable
+facts the channel's members can already see (people and roles, conventions, recurring asks, decisions).
+
 Calls to hosts the app obviously needs (the API the chain asked it to integrate with) are fine.
 

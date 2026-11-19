@@ -8,6 +8,7 @@ import { randomBytes } from "node:crypto";
 import type { Executor } from "./aidenhq-sdk/executor.js";
 import { fence } from "./aidenhq-sdk/fence.js";
 import { permalink } from "./map.js";
+import { clearMemory, memoryOf, noteTask } from "./memory.js";
 import type { Store } from "./store.js";
 
 export const CHANNEL = /^[CG][A-Z0-9]{6,}$/;
@@ -61,6 +62,8 @@ export function binder(store: Store, opts: { ownerId: string; agents: Agents; mo
     },
     async execute(rec) {
       const a = await check(rec.args, { kind: "module", module }, true);
+      // A channel's memory belongs to its binding: an unbind or a hand-over to another agent clears it.
+      if (a.op === "unassign" || bindings(store).get(a.channel)?.agent !== a.agent) clearMemory(store, a.channel);
       if (a.op === "assign") store.setKv(`bind:${a.channel}`, JSON.stringify({ agent: a.agent, by: a.by, at: Date.now() } satisfies Binding));
       else store.delKv(`bind:${a.channel}`);
       return { ok: true, text: a.op === "assign" ? `${a.channel} is bound to ${a.agent}.` : `${a.channel} is unbound.` };
@@ -106,7 +109,7 @@ type Ev = { type?: string; subtype?: string; bot_id?: string; app_id?: string; u
  * fences the text). Mentions only; bots and apps (so an agent never wakes itself or another agent), edits and joins are
  * ignored. A channel over its mention rate gets a reaction and no task. True when the event was this module's to handle.
  */
-export async function mention(ev: Ev | undefined, { store, thread, react, now = Date.now() }: { store: Store; thread: (b: Record<string, string>) => Promise<unknown>; react: (channel: string, ts: string, name: string) => Promise<void>; now?: number }): Promise<boolean> {
+export async function mention(ev: Ev | undefined, { store, thread, react, now = Date.now() }: { store: Store; thread: (b: Record<string, string>) => Promise<any>; react: (channel: string, ts: string, name: string) => Promise<void>; now?: number }): Promise<boolean> {
   if (ev?.type !== "app_mention" || ev.subtype || ev.bot_id || ev.app_id || !ev.channel || !ev.ts || !ev.text?.trim() || !USER.test(ev.user ?? "")) return false;
   const bound = bindings(store).get(ev.channel);
   if (!bound) return false;
@@ -119,7 +122,8 @@ export async function mention(ev: Ev | undefined, { store, thread, react, now = 
   }
   recent.set(ev.channel, [...window, now]);
   const threadTs = ev.thread_ts ?? ev.ts;
-  await thread({ agent: bound.agent, thread: `${ev.channel}:${threadTs}`, from: ev.user!, text: ev.text.trim(), link: permalink(ev.channel, ev.ts) });
+  const t = await thread({ agent: bound.agent, thread: `${ev.channel}:${threadTs}`, from: ev.user!, text: ev.text.trim(), link: permalink(ev.channel, ev.ts) });
+  noteTask(store, t?.task, `${ev.channel}:${threadTs}`); // which tasks are this channel's threads: channel_memory is allowed from those only
   store.setKv(`bind_seen:${ev.channel}:${ev.ts}`, "1");
   await react(ev.channel, ev.ts, "eyes").catch(() => undefined);
   return true;
@@ -134,5 +138,6 @@ export async function channelContext(store: Store, botToken: string, callerKey: 
   const r = (await (await fetch(`https://slack.com/api/${method}?${q}`, { headers: { authorization: `Bearer ${botToken}` } })).json()) as { ok?: boolean; error?: string; messages?: { user?: string; bot_id?: string; ts?: string; text?: string }[] };
   if (!r.ok) throw new Error(`Slack refused: ${r.error ?? "unknown"} (the bot must be a member of the channel)`);
   const messages = [...(r.messages ?? [])].sort((x, y) => Number(x.ts) - Number(y.ts)).map((m) => ({ ts: m.ts, from: m.user ?? m.bot_id ?? "", text: fence(m.text ?? "", `slack:${a.channel}:${m.user ?? "bot"}`) }));
-  return { channel: a.channel, ...(a.thread_ts ? { thread_ts: a.thread_ts } : {}), messages };
+  const mem = memoryOf(store, a.channel);
+  return { channel: a.channel, ...(a.thread_ts ? { thread_ts: a.thread_ts } : {}), messages, memory: { revision: mem.revision, updated_at: mem.updated_at, from: mem.provenance, note: fence(mem.note, `slack-channel-memory:${a.channel}`) } };
 }

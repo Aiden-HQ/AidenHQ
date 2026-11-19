@@ -10,6 +10,7 @@ import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/
 import pino from "pino";
 import { binder, mention, slashCommand } from "./bind.js";
 import { buildServer } from "./mcp.js";
+import { memoryWriter } from "./memory.js";
 import { poster } from "./post.js";
 import { startSocket } from "./socket.js";
 import { createPairing, handlePairingDm } from "./pair.js";
@@ -56,7 +57,9 @@ const ignored = new Set((process.env.IGNORE_CHANNELS ?? "").split(",").map((s) =
 const post = poster(store, { botToken: cfg.botToken, allowed: new Set((process.env.SLACK_POST_CHANNELS ?? "").split(",").map((s) => s.trim()).filter(Boolean)) });
 // channel-slack.bind (bind.ts) shares the executor: the kind says which one.
 const bind = binder(store, { get ownerId() { return cfg.ownerId; }, agents: async () => (await kernelGet("/v1/agents")).agents ?? {} });
-const executor = serveExecutor({ plan: (r) => (r.kind.endsWith(".bind") ? bind : post).plan(r), execute: (r) => (r.kind.endsWith(".bind") ? bind : post).execute(r) }, { key: inboundToken, kernelUrl, log: (msg, f) => log.warn(f ?? {}, msg) });
+const memory = memoryWriter(store);
+const by = (kind: string) => (kind.endsWith(".bind") ? bind : kind.endsWith(".memory") ? memory : post);
+const executor = serveExecutor({ plan: (r) => by(r.kind).plan(r), execute: (r) => by(r.kind).execute(r) }, { key: inboundToken, kernelUrl, log: (msg, f) => log.warn(f ?? {}, msg) });
 
 // One triage run per minute at most, with every event that arrived in it: the first event after a quiet minute fires at
 // once, and the rest wait for the minute to end (one run per Slack event was 67 runs a day, 50 of them finding nothing;
