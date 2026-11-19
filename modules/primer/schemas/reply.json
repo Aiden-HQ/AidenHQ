@@ -1,0 +1,8 @@
+{
+  "type": "object", "additionalProperties": false, "required": ["document_id", "thread_id"],
+  "properties": {
+    "document_id": { "type": "string", "pattern": "^[A-Za-z0-9-]{8,64}$" },
+    "thread_id": { "type": "string", "minLength": 1, "maxLength": 200 },
+    "body": { "type": "string", "minLength": 1, "maxLength": 10000 }
+  }
+}

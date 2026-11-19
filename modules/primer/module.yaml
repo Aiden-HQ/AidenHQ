@@ -25,7 +25,8 @@ connections:
     tools:
       read: [ primer_whoami, primer_resolve_url, primer_get_document, primer_get_version_content, primer_list_versions, primer_get_comments, primer_get_document_comments, primer_list_documents, primer_find_document, primer_get_all_comments, primer_get_events ]
       named: [ primer_get_all_comments, primer_get_events ]
-      write: [ primer_create_document, primer_add_version ]
+      # primer_reply_to_thread and primer_resolve_thread are on Primer's server once it has them (self-hosted build).
+      write: [ primer_create_document, primer_add_version, primer_reply_to_thread, primer_resolve_thread ]
       destructive: [ primer_send_events ]
 # Runner jobs read Primer through the model gateway with their own token (scripts/modules.mjs jobcapEntries); read_url and
 # read_secret are today's loopback read endpoint and its token, which only the gateway holds.
@@ -71,6 +72,8 @@ providers:
 # Every publish is a kernel record: an agent's primer_create_document or primer_add_version call, and an Engineer's
 # document the runner files after its run (`aidenhq primer`). The AI reviewer reads the whole document and the request
 # chain before anything is published; the args carry the content, so what is published is exactly what was reviewed.
+# A new version of a document the agent itself published on this task stays with the AI reviewer (Tier 1); a version of any
+# other document is the owner's (Tier 2). primer.reply is a thread reply or resolve, tiered the same way.
 writes:
   publish:
     args: schemas/publish.json
@@ -82,6 +85,16 @@ writes:
       reads: "Nothing new: the document below ({{format}}, {{size}} characters, sha256 {{short}}){{from}}."
       cost: "No model cost."
       details: "{{content}}"
+  reply:
+    args: schemas/reply.json
+    floor: 1
+    tools: [ primer_reply_to_thread, primer_resolve_thread ]
+    card:
+      sentence: "Primer: {{what}}."
+      changes: "{{changes}}"
+      reads: "Nothing new."
+      cost: "No model cost."
+      details: "{{body}}"
 # The board's Connect/Reconnect for Primer: its sign-in token, only while this module is on.
 board_env:
   PRIMER_AUTH_TOKEN_FILE: ${secrets.primer_auth_token}

@@ -65,7 +65,7 @@ for the turn. Being a shell command, it works the same in all three engines.
 | `apply` | Fleet configuration change (the runner files the approval card) | approval card |
 | `repo <org/name>` | Clone another repository into the workspace | allowed orgs; public repos read-only |
 | `engine <claude\|codex\|openrouter> [model]` | Run this request again on another engine or model | none needed |
-| `primer [link]` | Publish the task's document to the organization's document host | the user's word |
+| `primer [link]` | Publish the task's document to the organization's document host | tiering (a new version of its own document: the AI reviewer; another: the owner) |
 | `pass <name>` | Pass the user's latest message to another agent on the task | none needed |
 | `reset`, `cleanup` | Start the next turn fresh; remove the workspace when the run ends | none needed |
 | `task`, `tasks` | Read the user's other tasks | read-only |

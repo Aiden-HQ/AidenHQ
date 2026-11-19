@@ -2,13 +2,16 @@
 // agent's primer_create_document or primer_add_version call, or an Engineer's document the runner files after its run) and
 // calls execute only once the AI reviewer (and, at Tier 2, the owner) approved it. The args carry the whole document, so the
 // digest covers it: what is published is exactly what was reviewed. `path` is only a label for the card.
-// A new version overwrites what readers see on an existing document, so it is the owner's (Tier 2) unless the runner vouches
-// that the task's own publish made that document or the owner's own comment asked for that link to be updated (`own`, taken
-// only from a job token, which only the runner mints); an agent's word for it never counts.
+// A new version overwrites what readers see on an existing document, so it is the owner's (Tier 2) unless this agent, on this
+// task, published that document (owners.ts: written when its create succeeded, from the kernel's requester identity) or the
+// runner vouches that the owner's own comment asked for that link to be updated (`own`, taken only from a job token, which
+// only the runner mints). An agent's word for it never counts. `by` (task, agent) is set here from the requester, never read
+// from the request. Revising its own document is Tier 1: the AI reviewer decides.
 import { createHash } from "node:crypto";
 import type { Executor } from "./aidenhq-sdk/executor.js";
+import { fileOwners, type Owner, type Owners } from "./owners.js";
 
-export type Publish = { title?: string; content: string; format: "markdown" | "html"; description?: string; documentId?: string; versionNote?: string; path?: string; own?: true };
+export type Publish = { title?: string; content: string; format: "markdown" | "html"; description?: string; documentId?: string; versionNote?: string; path?: string; own?: true; by?: Owner };
 type Call = (tool: string, args: Record<string, unknown>) => Promise<{ text: string; isError?: boolean }>;
 
 const str = (v: unknown) => (typeof v === "string" && v.trim() ? v : undefined);
@@ -34,16 +37,23 @@ export function documentRef(text: string): { url?: string; documentId?: string }
   return { url, documentId };
 }
 
-export function publisher(call: Call): Executor {
+/** The requester's identity as the kernel names it: the agent and its task (a module or an empty one has none). */
+const byOf = (r: { agent?: string }, task: string): Owner | undefined => (r.agent && task ? { agent: r.agent, task } : undefined);
+
+export function publisher(call: Call, owners: Owners = fileOwners()): Executor {
   return {
     async plan(req) {
       const args = normalise(req.args, req.requester?.kind === "job");
+      const by = byOf(req.requester ?? {}, req.task);
+      if (by) args.by = by;
+      const owner = args.documentId ? owners.get(args.documentId) : undefined;
+      if (owner && by && owner.agent === by.agent && owner.task === by.task) args.own = true;
       const sha = createHash("sha256").update(args.content).digest("hex");
       return {
         args,
         targets: { artifact_sha256: sha, ...(args.documentId ? { document: args.documentId } : {}) },
         facts: { size: args.content.length, short: sha.slice(0, 12) },
-        ...(args.documentId && !args.own ? { raise: { tier: 2 as const, rule: "primer-version-not-own", reason: `a new version of document ${args.documentId}, which this task didn't publish and the owner's own words didn't ask to update` } } : {}),
+        ...(args.documentId && !args.own ? { raise: { tier: 2 as const, rule: "primer-version-not-own", reason: `a new version of document ${args.documentId}, which this agent didn't publish on this task and the owner's own words didn't ask to update` } } : {}),
         card: {
           what: args.documentId ? `a new version of Primer document ${args.documentId}` : `the new document "${args.title}"`,
           changes: args.documentId
@@ -55,14 +65,21 @@ export function publisher(call: Call): Executor {
     },
     async execute(rec) {
       const a = normalise(rec.args, true);
+      const by: Owner | undefined = rec.args?.by?.agent && rec.args.by.task ? { agent: String(rec.args.by.agent), task: String(rec.args.by.task) } : undefined;
       if (a.documentId) {
-        const r = await call("primer_add_version", { documentId: a.documentId, content: a.content, format: a.format, ...(a.versionNote ? { versionNote: a.versionNote } : {}) });
+        // A call that threw may have landed: read the versions back instead of publishing again.
+        const r = await call("primer_add_version", { documentId: a.documentId, content: a.content, format: a.format, ...(a.versionNote ? { versionNote: a.versionNote } : {}) }).catch(async (e: Error) => {
+          const seen = a.versionNote && (await call("primer_list_versions", { documentId: a.documentId! }).catch(() => undefined))?.text.includes(a.versionNote);
+          return seen ? { text: "", isError: false } : { text: `outcome unknown (${e.message}): check the document's versions on Primer before publishing again`, isError: true };
+        });
         return r.isError ? { ok: false, text: r.text.slice(0, 2000) } : { ok: true, text: `New version on Primer (document ${a.documentId}).` };
       }
-      const r = await call("primer_create_document", { title: a.title, content: a.content, format: a.format, ...(a.description ? { description: a.description } : {}) });
+      const r = await call("primer_create_document", { title: a.title, content: a.content, format: a.format, ...(a.description ? { description: a.description } : {}) })
+        .catch((e: Error) => ({ text: `outcome unknown (${e.message}): look for the document on Primer before publishing again`, isError: true }));
       if (r.isError) return { ok: false, text: r.text.slice(0, 2000) };
       let ref = documentRef(r.text);
       if (!ref.documentId && ref.url) ref = { ...ref, ...documentRef((await call("primer_resolve_url", { url: ref.url })).text) };
+      if (ref.documentId && by) owners.set(ref.documentId, by);
       return { ok: true, text: `Published on Primer: ${ref.url ?? "(no link in Primer's answer)"}${ref.documentId ? ` (document ${ref.documentId})` : ""}` };
     },
   };

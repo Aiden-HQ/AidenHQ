@@ -7,6 +7,7 @@ import pino from "pino";
 import { kernelJwks, verifyCaller } from "./aidenhq-sdk/caller.js";
 import { serveExecutor } from "./aidenhq-sdk/executor.js";
 import { publisher } from "./publish.js";
+import { replier } from "./reply.js";
 import { oauth } from "./vendor/oauth.js";
 import { createVendorProxy } from "./vendor/proxy.js";
 
@@ -21,14 +22,20 @@ const jwks = kernelJwks();
 // Primer's server marks no tool read-only: its reads are the ones that only fetch, by name.
 const PRIMER_READ = /^primer_(whoami|resolve_url|get_|list_|find_)/;
 
-// primer.publish's executor (executor@1): the kernel calls it with the service key; execute only for an approved record.
+// primer.publish's and primer.reply's executor (executor@1): the kernel calls it with the service key; execute only for an approved record.
+const send = async (name: string, args: Record<string, unknown>) => {
+  const res = await http.call(name, args);
+  log.info({ tool: name, error: Boolean(res.isError) }, "Primer write");
+  return { text: (res.content as { text?: string }[]).map((c) => c.text ?? "").join("\n"), isError: Boolean(res.isError) };
+};
+const publish = publisher(send);
+const reply = replier(send);
 const executor = serviceKey
   ? serveExecutor(
-      publisher(async (name, args) => {
-        const res = await http.call(name, args);
-        log.info({ tool: name, error: Boolean(res.isError) }, "Primer publish");
-        return { text: (res.content as { text?: string }[]).map((c) => c.text ?? "").join("\n"), isError: Boolean(res.isError) };
-      }),
+      {
+        plan: (r) => (r.kind === "primer.reply" ? reply : publish).plan(r),
+        execute: (r) => (r.kind === "primer.reply" ? reply : publish).execute(r),
+      },
       { key: serviceKey, log: (msg, f) => log.warn(f ?? {}, msg) },
     )
   : undefined;
