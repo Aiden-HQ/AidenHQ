@@ -116,7 +116,8 @@ test("a head that moved after approval is never merged; one queue per repo merge
   await handle.stepMerges();
   await settle();
   assert.equal(github.merges().length, 2, "the second record finds #1 merged at its bound head: nothing merged twice");
-  assert.deepEqual(outcomes.map((o) => [o.id, o.ok]).sort(), [["k-00000000000000a4", true], ["k-00000000000000a5", true]]);
+  // Each outcome is posted by the executor and by the queue's own durable delivery: the kernel takes the first and answers 409 to the repeat.
+  assert.deepEqual([...new Set(outcomes.map((o) => `${o.id}:${o.ok}`))].sort(), ["k-00000000000000a4:true", "k-00000000000000a5:true"]);
 });
 
 test("missing evidence never counts as passing: no checks, a truncated page of checks, the base's gate check not yet on the head", async (t) => {
