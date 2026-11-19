@@ -55,8 +55,11 @@ test("local-only: create a repo, publish a change request, merge it at its head 
   assert.deepEqual([made.kind, made.tier, made.state, made.outcome?.text], ["codehost-local.create_repo", 0, "done", "local/hello: created"]);
 
   // The kernel clones it into the job's workspace; the job commits on a branch there.
-  await host.clone("local/hello", "HEAD", "TASK-1");
+  // What `aidenhq clone` does in the box: clone from the bundle the kernel serves.
+  const served = await host.bundle("local/hello");
   const ws = join(tasks, "TASK-1", "hello");
+  git(dir, "clone", "--quiet", served.file, ws);
+  served.done();
   git(ws, "switch", "--quiet", "-c", "greet");
   writeFileSync(join(ws, "hello.txt"), "hi\n");
   git(ws, "add", "."); git(ws, "commit", "--quiet", "-m", "Say hi");

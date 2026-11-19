@@ -114,9 +114,10 @@ test("with both code hosts, each repo goes to its own: local/… to this server'
   assert.equal(local.length, 1);
 });
 
-// A local install's instance repo (setup's bare repo at AIDENHQ_INSTANCE_REMOTE, outside <data dir>/codehost) is cloned into an
-// Engineer's workspace through the same broker op and grant as a GitHub install's: credential-free, detached at main.
-test("a local/ repo's clone comes from codehost-local, the instance repo from where setup made it", async (t) => {
+// A local install's instance repo (setup's bare repo at AIDENHQ_INSTANCE_REMOTE, outside <data dir>/codehost): the kernel serves
+// its branches as a bundle, and the box clones it itself (`aidenhq clone`); host git never writes the workspace, so the
+// broker's clone op only says how.
+test("the instance repo of a local install is cloned in the box from the kernel's bundle, from where setup made it", async (t) => {
   const { execFileSync } = await import("node:child_process");
   const { mkdtempSync, mkdirSync, existsSync, rmSync } = await import("node:fs");
   const { tmpdir } = await import("node:os");
@@ -126,25 +127,22 @@ test("a local/ repo's clone comes from codehost-local, the instance repo from wh
   const dir = mkdtempSync(join(tmpdir(), "local-clone-"));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   const git = (cwd, ...a) => execFileSync("git", ["-c", "user.name=t", "-c", "user.email=t@example.com", ...a], { cwd, encoding: "utf8" }).trim();
-  const remote = join(dir, "aidenhq-instance.git"), seed = join(dir, "seed"), tasks = join(dir, "tasks");
-  for (const d of [seed, join(tasks, "TASK-1"), join(dir, "scratch")]) mkdirSync(d, { recursive: true });
+  const remote = join(dir, "aidenhq-instance.git"), seed = join(dir, "seed"), box = join(dir, "box");
+  for (const d of [seed, box, join(dir, "scratch")]) mkdirSync(d, { recursive: true });
   git(dir, "init", "--quiet", "--bare", "-b", "main", remote);
-  git(seed, "init", "--quiet", "-b", "main"); git(seed, "commit", "--quiet", "--allow-empty", "-m", "instance"); git(seed, "push", "--quiet", remote, "main");
-  const host = localHost({ root: join(dir, "codehost"), sources: { "local/aidenhq-instance": remote }, tasksDir: tasks, scratchDir: join(dir, "scratch"), checks: async () => [] });
+  git(seed, "init", "--quiet", "-b", "main"); git(seed, "commit", "--quiet", "--allow-empty", "-m", "one"); git(seed, "commit", "--quiet", "--allow-empty", "-m", "two"); git(seed, "push", "--quiet", remote, "main");
+  const host = localHost({ root: join(dir, "codehost"), sources: { "local/aidenhq-instance": remote }, tasksDir: join(dir, "tasks"), scratchDir: join(dir, "scratch"), checks: async () => [] });
+  const served = await host.bundle("local/aidenhq-instance");
+  git(box, "clone", "--quiet", served.file, "aidenhq-instance");
+  served.done();
+  assert.equal(existsSync(served.file), false, "the scratch bundle is gone once sent");
+  const got = join(box, "aidenhq-instance");
+  assert.equal(git(got, "rev-parse", "HEAD"), git(seed, "rev-parse", "HEAD"));
+  assert.equal(git(got, "rev-list", "--count", "HEAD"), "2", "with its history, so a branch made on it lands back");
   const op = createCodehost({
     grants: () => [{ module: "dispatch", clone: { repos: ["@agents/*", "@instance"] } }], repos: () => ({ instance: "local/aidenhq-instance", agentsOrgs: ["local"] }),
-    kind: () => undefined, secret: () => "", resolver: {}, workspace: async (module, task) => ({ workspace: task === "t-1" ? "TASK-1" : "TASK-2" }),
-    local: () => ({ snapshot: localSnapshot({ bare: host.bare }), clone: host.clone }),
+    kind: () => undefined, secret: () => "", resolver: {}, workspace: async () => ({ workspace: "TASK-1" }), local: () => ({ snapshot: localSnapshot({ bare: host.bare }) }),
   });
-  const r = await op.ask("dispatch", "clone", { repo: "local/aidenhq-instance", ref: "HEAD", into: "t-1" });
-  let body = "";
-  for await (const c of r) body += c;
-  assert.equal(r.statusCode, 200);
-  const got = join(tasks, "TASK-1", "aidenhq-instance");
-  assert.deepEqual(JSON.parse(body), { path: "TASK-1/aidenhq-instance", commit: git(seed, "rev-parse", "HEAD") });
-  assert.equal(git(got, "rev-parse", "HEAD"), git(seed, "rev-parse", "HEAD"));
-  assert.equal(git(got, "remote", "get-url", "origin"), "aidenhq://local/aidenhq-instance"); // no transport: the workspace pushes nothing
-  assert.equal(existsSync(join(tasks, "TASK-1", "aidenhq-instance", ".git", "hooks", "pre-commit")), false);
-  await assert.rejects(op.ask("dispatch", "clone", { repo: "local/aidenhq-instance", ref: "HEAD", into: "t-1" }), (e) => e.status === 409); // already there
-  await assert.rejects(op.ask("dispatch", "token", { repo: "local/aidenhq-instance", perms: { contents: "read" } }), (e) => e.status === 403 || e.status === 404);
+  await assert.rejects(op.ask("dispatch", "clone", { repo: "local/aidenhq-instance", ref: "HEAD", into: "t-1" }), (e) => e.status === 422 && /aidenhq clone local\/aidenhq-instance/.test(e.message));
+  await assert.rejects(op.ask("nobody", "clone", { repo: "local/aidenhq-instance", ref: "HEAD", into: "t-1" }), (e) => e.status === 403);
 });

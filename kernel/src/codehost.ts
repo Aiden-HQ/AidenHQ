@@ -7,13 +7,14 @@
 //   token    {repo: owner/name | owner/*, perms} → {token, repo, perms, expires_at, app}; owner/* is an org-wide token
 //   snapshot {repo, ref} → a tar.gz with no .git and no credentials
 //   clone    {repo, ref, into: task} → a credential-free clone in the workspace of a task whose agent the caller dispatches
-// A `local/…` repo (the org codehost-local owns) is served by codehost-local (in process: its snapshot and clone) under the same
-// grants and the same answer; a token for it, and every op without codehost-github for other orgs, is 404.
+// A `local/…` repo (the org codehost-local owns) is served by codehost-local (in process: its snapshot) under the same grants
+// and the same answer. It has no token, and no clone (host git never writes a workspace: a box clones a local repo itself,
+// `aidenhq clone`); every op without codehost-github for other orgs is 404.
 //
 // Which host owns a repo is hostOf's, the one routing rule: codehost-local the org `local`, codehost-github every other. A
 // write names an action on repos (`codehost.<action>`) and routeKind turns it into that host's kind.
 import http from "node:http";
-import { Readable } from "node:stream";
+import type { Readable } from "node:stream";
 import type { ServerResponse } from "node:http";
 import { LOCAL_ORG } from "./kinds.ts";
 import type { Resolver } from "./net.ts";
@@ -72,7 +73,7 @@ export function covers(slug: string, repos: string[] = [], r: KernelRepos = {}):
 }
 
 /** codehost-local's ops, in process (modules/codehost-local/src). */
-export type LocalOps = { snapshot(repo: string, ref: string): Promise<Answer>; clone(repo: string, ref: string, ident: string): Promise<{ path: string; commit: string }> };
+export type LocalOps = { snapshot(repo: string, ref: string): Promise<Answer> };
 
 export function createCodehost({ grants, repos, kind, secret, resolver, workspace, local = () => undefined }: {
   grants: () => OpsGrant[];
@@ -100,13 +101,12 @@ export function createCodehost({ grants, repos, kind, secret, resolver, workspac
     if (!covers(repo, grant?.repos, repos())) throw fail(403, `${module} has no ${op} grant on ${repo}`);
     if (onLocal) {
       const ref = String(b.ref ?? "");
+      if (op === "clone") throw fail(422, `a repository on this server is cloned in your computer: run \`aidenhq clone ${repo}\``);
       if (op === "token") throw fail(404, "codehost-local has no token operation");
       if (!REF.test(ref)) throw fail(400, `${ref.slice(0, 100)} is not a branch or a commit`);
       const l = local();
       if (!l) throw fail(404, "codehost-local isn't enabled here");
-      if (op === "snapshot") return l.snapshot(repo, ref);
-      const done = await l.clone(repo, ref, (await workspace(module, b.into)).workspace);
-      return Object.assign(Readable.from([Buffer.from(JSON.stringify(done))]), { statusCode: 200, headers: { "content-type": "application/json" } });
+      return l.snapshot(repo, ref);
     }
     const k2 = k!;
     let out: Record<string, unknown>;

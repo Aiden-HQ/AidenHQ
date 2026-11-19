@@ -1,7 +1,8 @@
 // The on-server code host (docs/design/codehost-local.md): the org `local`'s repos are bare repos on this host, written only
 // by the kernel, which runs this module in process (it has no service). It is the executor of the codehost-local write kinds
 // (executor@1's shape, kernel/sdk/src/executor.ts): the kernel files, tiers and revalidates their records as any module's, and
-// plan.mjs's git rules tier them, as they tier codehost-github's. It also clones a repo into a job's workspace.
+// plan.mjs's git rules tier them, as they tier codehost-github's. Host git never runs in, or writes, a workspace: a box
+// clones a repo from a bundle the kernel serves (`aidenhq clone`), and a job's commits come back as a bundle (git.ts ingest).
 //
 // A change request is git refs in its bare repo, never a database (apps-mcp's codehost.ts reads them for previews):
 //   refs/changes/<n>/head    its head                      refs/changes/<n>/merged  the squash commit, once merged
@@ -9,14 +10,13 @@
 //   refs/changes/<n>/meta    { title, body, branch, base (the branch it merges into), task, opened_at, draft }
 // Its URL is codehost:local/<name>/change/<n>. A job's commits come in as a bundle its box wrote (git.ts ingest). A merge needs the change's checks green on its exact head: the `change` check
 // job (check_jobs in module.yaml, run in a credential-free box from a snapshot) with a receipt the kernel signed.
-import { cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, realpathSync, rmSync } from "node:fs";
-import { join, sep } from "node:path";
+import { existsSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { join } from "node:path";
 import { plan as planRules } from "../../codehost-github/service/src/plan.mjs";
 import { IDENTITY, bareOf, fail, git, ingest } from "./git.ts";
 
 export const LOCAL_ORG = "local";
 const ZERO = "0".repeat(40);
-const SHA = /^[0-9a-f]{40}$/;
 const IDENT = /^[A-Za-z][A-Za-z0-9]*-\d+$/;
 const MAX_DIFF = 80_000;
 /** A change request's URL. */
@@ -157,7 +157,7 @@ export function localHost({ root, sources = {}, tasksDir, scratchDir, instanceRe
       branches.push({ repo: b.repo, branch: b.branch, sha: b.sha, base: mb || undefined, files, defaultBranch: def, empty: !main });
     }
     const names = branches.map((b) => `${b.repo} \`${b.branch}\``).join(", ");
-    return { state: { ...base(requester), branches }, target: names, sentence: `${action === "pr" ? "Publish and open a change request for" : "Push"} ${names}.`, diff };
+    return { state: { ...base(requester), workspace: a.workspace, branches }, target: names, sentence: `${action === "pr" ? "Publish and open a change request for" : "Push"} ${names}.`, diff };
   }
 
   /** Waits until the change's checks are all green (""), or one is red or they don't finish in time (why, with its summary). */
@@ -177,10 +177,9 @@ export function localHost({ root, sources = {}, tasksDir, scratchDir, instanceRe
       const s = await stateFor(action, req.args ?? {}, req.requester);
       // plan.mjs's rules, as codehost-github's: the bare action, so it reads the same parts.
       const p = planRules({ kind: action, args: req.args }, s.state);
-      // A reviewer reads the whole diff or nothing: one too large for the card is refused, never cut.
-      const big = s.diff.length > MAX_DIFF;
-      if (big && p.raise) throw fail(413, `the diff is over ${MAX_DIFF} characters, too large for the reviewer to read: split it into smaller changes`);
-      return { ...p, facts: { target: s.target, sentence: s.sentence, diff: big ? `(the diff is over ${MAX_DIFF} characters)` : s.diff } };
+      // A reviewer reads the whole diff or nothing (its tier can still rise after this plan): one too large is refused, never cut.
+      if (s.diff.length > MAX_DIFF) throw fail(413, `the diff is over ${MAX_DIFF} characters, too large for a reviewer to read whole: split it into smaller changes`);
+      return { ...p, facts: { target: s.target, sentence: s.sentence, diff: s.diff } };
     },
     async execute(rec: { kind: string; args: any }) {
       const a = rec.args ?? {}, action = rec.kind.replace(/^codehost-local\./, "");
@@ -241,35 +240,14 @@ export function localHost({ root, sources = {}, tasksDir, scratchDir, instanceRe
     bare,
     parse,
     /**
-     * `repo` at `ref` (HEAD: its default branch) cloned into the task workspace `ident` as <ident>/<name>, credential-free and
-     * detached at the commit, with origin/<branch> to diff against; an existing folder is a 409. Its { path, commit }. The clone
-     * is made in the kernel's scratch and copied in: nothing the workspace holds is ever read by git here.
+     * `repo`'s branches as a git bundle in the kernel's scratch, for a job's box to clone itself (`aidenhq clone`): the kernel
+     * only serves the bytes, and never writes a workspace. Call `done` once it is sent.
      */
-    async clone(repo: string, ref: string, ident: string) {
+    async bundle(repo: string) {
       if (!exists(repo)) throw fail(404, `${repo} isn't on this server`);
-      if (!IDENT.test(ident)) throw fail(400, `${ident} is not a task's workspace folder`);
-      const tasks = realpathSync(tasksDir), ws = join(tasks, ident);
-      const st = lstatSync(ws, { throwIfNoEntry: false });
-      if (!st || st.isSymbolicLink() || !st.isDirectory() || realpathSync(ws) !== ws || !ws.startsWith(tasks + sep)) throw fail(400, `${ident} isn't a task's workspace folder`);
-      const name = repo.split("/")[1]!, target = join(ws, name);
-      const branch = ref === "HEAD" ? await defaultBranch(repo) : ref;
-      const commit = SHA.test(branch) ? branch : await rev(repo, `refs/heads/${branch}`);
-      if (!commit || !(await rev(repo, commit))) throw fail(404, `${ref.slice(0, 100)} isn't a commit of ${repo}`);
-      // Built in the kernel's own scratch (host git never runs in a workspace), then copied in as plain files.
-      const tmp = mkdtempSync(join(scratchDir, "clone-")), built = join(tmp, name);
-      try {
-        await git(["init", "--quiet", built]);
-        // origin names the repo but no transport git has: the workspace pushes nothing (the kernel publishes it).
-        await git(["-C", built, "remote", "add", "origin", `aidenhq://${repo}`]);
-        await git(["-C", built, "fetch", "--quiet", "--no-tags", bare(repo), `+${SHA.test(branch) ? commit : `refs/heads/${branch}`}:refs/remotes/origin/${SHA.test(branch) ? "fetched" : branch}`]);
-        await git(["-C", built, "-c", "core.attributesFile=/dev/null", "checkout", "--quiet", "--detach", commit]);
-        try { mkdirSync(target); } catch (e) { throw fail((e as { code?: string }).code === "EEXIST" ? 409 : 400, `${ident}/${name} can't be made (${(e as Error).message})`); }
-        if (realpathSync(target) !== target) throw fail(400, `${ident}/${name} resolves elsewhere`);
-        for (const e of readdirSync(built)) cpSync(join(built, e), join(target, e), { recursive: true, verbatimSymlinks: true, force: false, errorOnExist: true });
-      } finally {
-        rmSync(tmp, { recursive: true, force: true });
-      }
-      return { path: `${ident}/${name}`, commit };
+      const tmp = mkdtempSync(join(scratchDir, "bundle-")), file = join(tmp, "repo.bundle");
+      try { await g(repo, ["bundle", "create", "--quiet", file, "HEAD", "--branches"]); } catch (e) { rmSync(tmp, { recursive: true, force: true }); throw e; }
+      return { file, done: () => rmSync(tmp, { recursive: true, force: true }) };
     },
   };
 }

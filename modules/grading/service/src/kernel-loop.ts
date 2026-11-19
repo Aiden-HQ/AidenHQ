@@ -18,6 +18,8 @@ type Json = any;
 export type KernelCall = (method: string, path: string, body?: unknown) => Promise<Json>;
 type Runner = (method: string, path: string, body: unknown) => Promise<Json>;
 
+/** The code host modules (the kernel's list, kernel/src/codehost.ts CODEHOSTS; this service is its own build context). */
+const CODEHOSTS = ["codehost-github", "codehost-local"];
 const notAvailable = (what: string) => async () => { throw new Error(`${what} is not available to the grading module yet`); };
 const q = (o: Record<string, string>) => `?${new URLSearchParams(o)}`;
 
@@ -80,8 +82,8 @@ export function createKernelGradeLoop({ db, runner, due, kernel, kernelBytes, ap
   // The task's PRs, from the code host's records on it (a task that handed its code to an Engineer has those of the tasks its agent
   // delegated under it): each `pr` write's outcome lists its PR links in the order of its branches, which is how a number is tied
   // to the branch it was opened for (identityOf); a `merge` write's bound heads and numbers are what the merge records add.
-  // Any code host's (codehost-github, codehost-local): the same actions under each host's module name.
-  const ofKind = (r: Json, kind: string) => /^codehost-[a-z]+\./.test(String(r.kind)) && String(r.kind).split(".")[1] === kind;
+  // Any code host's: the same actions under each host's module name.
+  const ofKind = (r: Json, kind: string) => CODEHOSTS.some((h) => r.kind === `${h}.${kind}`);
   const records = async (issue: Json, kind: string, states: string[]) => {
     const mine = ((await work(issue.id)).records ?? []).filter((r: Json) => ofKind(r, kind) && states.includes(r.state));
     if (!mine.length && issue.assigneeAgentId)

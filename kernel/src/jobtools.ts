@@ -84,6 +84,17 @@ export function createJobTools({ db, secret, engines, orgs = () => [], now = Dat
       if (sha && !/^[0-9a-f]{40}$/.test(sha)) throw new JobToolError(400, "bad-sha", "give the full 40-character commit SHA (e.g. the PR's head), or none for the default branch");
       return { repo: `${m[1]}/${m[2]!.replace(/\.git$/, "")}`, ref: sha || "HEAD" };
     },
+    /**
+     * A job's `aidenhq clone`: a repository on this server (the org `local`) for an engineer job to clone in its own box, from
+     * the bundle the kernel serves. GitHub's repos come into the workspace at admission instead (boxes.ts).
+     */
+    clone(token: string, b: { repo?: unknown }): { repo: string } {
+      const r = db.prepare("SELECT authority FROM jobs WHERE id = ?").get(jobOf(token)) as { authority: string | null } | undefined;
+      if ((r?.authority ? JSON.parse(r.authority).profile : undefined) !== "engineer") throw new JobToolError(403, "no-role", "aidenhq clone is an Engineer's");
+      const m = /^local\/([\w.-]+)$/i.exec(String(b?.repo ?? "").trim());
+      if (!m || /^\.+$/.test(m[1]!) || m[1]!.endsWith(".git")) throw new JobToolError(400, "bad-repo", "give a repository on this server as local/<name>");
+      return { repo: `local/${m[1]}` };
+    },
     /** What the task's last ended job asked of its next turn, if anything (read in the admission transaction). */
     pending(task: string): NextTurn | undefined {
       const r = db.prepare(`SELECT t.job, t.fresh, t.engine, t.cleanup FROM jobtools t JOIN jobs j ON j.id = t.job
