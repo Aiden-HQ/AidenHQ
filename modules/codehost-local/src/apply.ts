@@ -129,7 +129,7 @@ export function localApply({ bare, instanceRepo, ingest }: { bare: string; insta
         await ix(["read-tree", head]);
         for (const p of paths) {
           const text = w.files[p];
-          if (text === null) await ix(["update-index", "--force-remove", "--", p]);
+          if (text === null) await ix(["update-index", "--index-info"], `0 0000000000000000000000000000000000000000\t${p}\n`);
           else await ix(["update-index", "--add", "--cacheinfo", `100644,${await ix(["hash-object", "-w", "--stdin"], text)},${p}`]);
         }
         const sha = await ix(["commit-tree", await ix(["write-tree"]), "-p", head], String(w.message ?? "settings").slice(0, 2000));

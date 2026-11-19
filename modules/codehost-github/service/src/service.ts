@@ -529,7 +529,7 @@ export function createService(o: Options) {
       });
       await g(["read-tree", head]);
       for (const [path, text] of Object.entries(edits)) {
-        if (text === null) await g(["update-index", "--force-remove", "--", path]);
+        if (text === null) await g(["update-index", "--index-info"], `0 0000000000000000000000000000000000000000\t${path}\n`);
         else await g(["update-index", "--add", "--cacheinfo", `100644,${await g(["hash-object", "-w", "--stdin"], text)},${path}`]);
       }
       const sha = await g(["commit-tree", await g(["write-tree"]), "-p", head], message);

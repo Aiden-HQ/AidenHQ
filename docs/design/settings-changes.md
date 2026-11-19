@@ -30,7 +30,7 @@ compiler's is the last gate.
 1. The owner (a signed-in admin) presses Save or Change on a Settings page. `POST /api/settings/change` (`requireAdmin`)
    takes a typed change: `{ setting, value }` for a declared, non-secret setting, `{ agent, field, value }` for the
    override fields tiers already treat as safe (`model`, `reasoning_effort`, `heartbeat`), `{ caps, agent, value }` for
-   an agent's spend caps, or `{ module, name, on }` (the last two are Tier 2 like settings). The board checks it against
+   an agent's spend caps, or `{ module, name, on }` (each tiered by the apply planner, step 5). The board checks it against
    the compiled config and the module catalog (the setting exists, the value is one of its `values`, a URL passes the
    check, the agent exists, the effort is a known level, the heartbeat is one of the compiler's hours and the agent is
    not runner-dispatched).
