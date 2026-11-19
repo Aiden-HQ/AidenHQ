@@ -19,6 +19,7 @@
 //   modules/apps-platform/starter/      the app starter, in the agent computers (a whole folder: SHARED_DIRS)
 //   kernel/sdk/src/{types,engine-io,progress}.ts  the SDK's engine side, in every module with an sdk/ folder
 //   modules/github/checks/{tests,history}.sh  a change's tests, in codehost-local's `change` check job
+//   modules/ci/template/.github/{code-review,review-tools,review-checklist}.mjs  the review core, in the code review recipe
 //   node scripts/sync-shared.mjs
 import { copyFileSync, existsSync, mkdirSync, readdirSync, rmSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
@@ -79,7 +80,10 @@ export function sharedCopies(root = repo) {
   // The changed files' shaping (the eval and the reviewer's verdicts use this copy).
   "services/shared/review-files.mjs": ["modules/ai-reviewer/service/src/review-files.mjs"],
   // The reliability checklist's matcher: the CI template's (MIT), used by its code review and by the AI reviewer.
-  "modules/ci/template/.github/review-checklist.mjs": ["modules/ai-reviewer/service/src/review-checklist.mjs"],
+  "modules/ci/template/.github/review-checklist.mjs": ["modules/ai-reviewer/service/src/review-checklist.mjs", "modules/code-review/recipe/review-checklist.mjs"],
+  // The review core (the CI reviewer's codex runner, its brief and parse, and its read-only repo tools): CI's code-review job
+  // and the code review module's recipe run the same code (canonical in the CI template, MIT, copied as is into app repos).
+  ...Object.fromEntries(["code-review.mjs", "review-tools.mjs"].map((f) => [`modules/ci/template/.github/${f}`, [`modules/code-review/recipe/${f}`]])),
   "kernel/sdk/src/source-store.ts": [
     "modules/slack/connections/slack-live/src/source-store.ts",
     "modules/github/connections/github-mcp/src/source-store.ts",
