@@ -212,7 +212,7 @@ function instanceParts(s: any) {
     if (k === "product") parts.push(s.pin?.forward ? T(1, "pin-forward", "the product pin moves forward along product main") : s.pin?.back ? PANEL("pin-backwards", "the product pin moves backwards (a rollback)") : REJECT("pin-unknown", "the product pin moves, and not along product main"));
     else if (k === "settings") {
       // Every setting is the panel's. (Slack channels agents post to are no special case since 2f: a post to a channel off
-      // slack_post_channels is itself a Tier 2 channel-slack.post record.)
+      // slack_post_channels is itself a Tier 2 slack.post record.)
       for (const sk of changedKeys(base.settings, head.settings)) parts.push(PANEL("settings", `changes the setting ${sk}`));
       // Spend is the owner's authority under every autonomy: raising or removing the install cap. Only a finite positive number
       // at or under the old cap tightens it; unset was no cap at all (the gateway's default). Ending quiet start and turning

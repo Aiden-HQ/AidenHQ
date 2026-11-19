@@ -7,7 +7,7 @@
 //   /mcp/read  the kernel's calls for runner jobs (the read key): only tools the module's manifest tags read (`reads`, the
 //              READ_TOOLS its module.yaml sets from those tags) that the upstream also marks read-only (or the connection's
 //              read rule says are reads), so the jobs' token never reaches a write;
-//   /auth/*    the board's sign-in (state, the scopes the owner may pick, start, finish), with the board's own key;
+//   /auth/*    the board's sign-in (state, the scopes the owner may pick, start, finish, or a device code), with the board's own key;
 //   /healthz   whether it is connected.
 // A connection adds only its real logic as hooks (a pinned argument, a site id, a deny rule) and its own routes (a write
 // kind's executor). Not signed in: it still starts, lists the tools it saw last as stand-ins, and every call says how to
@@ -241,6 +241,19 @@ export function createVendorProxy(o: ProxyOptions): VendorProxy {
     if (!flow) return sendJson(res, 400, { error: `${o.name} needs no sign-in` });
     if (!o.upstream) return sendJson(res, 400, { error: notConnected() });
     try {
+      // A device sign-in: start (the code for the board to show), its state while this service polls, cancel.
+      if (path === "/auth/device" || path === "/auth/device/cancel") {
+        const d = auth.device;
+        if (!d) return sendJson(res, 404, { error: `${o.name} signs in by redirect` });
+        if (req.method === "GET" && path === "/auth/device") return sendJson(res, 200, d.state());
+        if (req.method !== "POST") return sendJson(res, 405, { error: "method not allowed" });
+        if (path === "/auth/device/cancel") return (d.cancel(), sendJson(res, 200, { ok: true }));
+        const started = await d.start(() => {
+          log.info({ scope: auth.status().scope }, `signed in to ${o.name}`);
+          void reset(false).catch((err) => log.warn({ err: String(err).slice(0, 300) }, "connecting after sign-in failed"));
+        });
+        return sendJson(res, 200, started);
+      }
       if (path === "/auth/scopes" && req.method === "GET") return sendJson(res, 200, await flow.scopes());
       if (req.method !== "POST") return sendJson(res, 405, { error: "method not allowed" });
       if (path === "/auth/start") {

@@ -4,7 +4,7 @@ requires:
   - slack
   - google
 settings:
-  # Learned from the paired Slack channel (channel-slack's slack_owner). Only an instance that set it by hand keeps using it, as the
+  # Learned from the paired Slack channel (slack's slack_owner). Only an instance that set it by hand keeps using it, as the
   # fallback while nothing is paired.
   owner_slack_user_id:
     default: ""
@@ -25,7 +25,7 @@ agents:
       apps: [ app_view ]
       # Reads only.
       slack: read
-      # The live Slack events it triages, the owner's Slack user id and the Slack DM page for an urgent one (channel-slack, when installed).
+      # The live Slack events it triages, the owner's Slack user id and the Slack DM page for an urgent one (slack, when installed).
       slack_live?: [ slack_pending_events, slack_owner ]
       google_workspace: [ gmail_search, gmail_read_thread ]
       owner_channel: [ notify ]

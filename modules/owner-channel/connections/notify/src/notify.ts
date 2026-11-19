@@ -73,9 +73,12 @@ export function spellOut(questions: Question[] = []): string {
 // Some agents fill `text` with the word "placeholder" (the real message in `questions`): it never reaches the owner.
 const stripPlaceholder = (text: string) => text.replace(/^\s*placeholder\b[\s:.\-–—]*/i, "").trim();
 
+/** The channel module a chat's `via` names. */
+const transportOf = { telegram: "channel-telegram", slack: "slack" } as const;
+
 /** The channels to try: the one the owner last wrote from in this chat first, then the owner's order. */
 const order = (transports: string[], via: Found["ownerVia"]) => {
-  const first = via && via !== "board" ? `channel-${via}` : undefined;
+  const first = via && via !== "board" ? transportOf[via] : undefined;
   return first && transports.includes(first) ? [first, ...transports.filter((t) => t !== first)] : transports;
 };
 
@@ -121,7 +124,7 @@ export async function notify(d: Deps, a: NotifyArgs, caller?: Caller, now = Date
     let out: "sent" | "down" | "off" | "board" = "board";
     if (!boardOnly) {
       const m: Message = { kind, text: text + spellOut(a.questions), ...(found && a.task ? { head: { agent: found.agentName, task: a.task, issue: found.issueId } } : {}), ...(a.actions?.length ? { actions: a.actions } : {}), ...(a.questions?.length ? { asks: true as const } : {}) };
-      const to = a.relay ? [`channel-${a.relay.via}`] : order(d.transports, found?.ownerVia);
+      const to = a.relay ? [transportOf[a.relay.via]] : order(d.transports, found?.ownerVia);
       out = await deliver(d, m, to);
       // The kernel's, the board's and the runner's messages have no chat to land on: they also wait for a channel to be set
       // up (an account reset link before Telegram is paired).

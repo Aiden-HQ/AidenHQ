@@ -25,7 +25,7 @@ const SOURCE_TAG = /<!--\s*source:(\S+)\s*-->/g;
 /** Every module marker on a description (`file()` writes one; a task's text may hold more, from anyone). */
 const MODULE_MARK = /<!--\s*aidenhq-module:([\w-]+)\s*-->/g;
 /** The code host owns the release train's source family; no other module lists or sweeps it. */
-const RELEASE_MODULE = "codehost-github";
+const RELEASE_MODULE = "github";
 
 /**
  * Whether the task is this module's, generically: it carries this module's marker and no other module's. A task with a second

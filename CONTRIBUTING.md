@@ -67,7 +67,7 @@ No live instance and no paid keys are needed. Use Node 24 and run `npm ci` once 
   `node scripts/sync-shared.mjs`; the `scripts` tests fail if the copies drift.
 - **The reviewer eval.** `node modules/ai-reviewer/scripts/reviewer-eval.mjs` runs the AI reviewer against every planted
   case in `modules/ai-reviewer/test/reviewer-cases/` and must stay at 100%. It needs a paid `OPENROUTER_API_KEY`, so CI
-  doesn't run it. If your PR touches a path in `REVIEWER_CODE` (`modules/codehost-github/service/src/evalgate.ts`), say so in the PR; the maintainer runs it before merging. A reviewer
+  doesn't run it. If your PR touches a path in `REVIEWER_CODE` (`modules/github/service/src/evalgate.ts`), say so in the PR; the maintainer runs it before merging. A reviewer
   false reject you hit becomes a new planted case.
 
 ## What a good change looks like

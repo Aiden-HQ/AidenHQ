@@ -284,7 +284,7 @@ test("a start whose answer was lost (a crash after admission) is followed from t
 });
 
 test("a task a module filed starts from its fixed text, as a module's request, never the owner's", async () => {
-  const k = fake({ task: { id: "t1", identifier: "WOR-7", title: "Dependabot PR acme/app#7", description: "Handle this one PR.\n\n<!-- source:dependabot:acme/app/7 -->\n<!-- aidenhq-module:codehost-github -->", status: "todo", assigneeAgentId: "eng", createdByUserId: "u1" } });
+  const k = fake({ task: { id: "t1", identifier: "WOR-7", title: "Dependabot PR acme/app#7", description: "Handle this one PR.\n\n<!-- source:dependabot:acme/app/7 -->\n<!-- aidenhq-module:github -->", status: "todo", assigneeAgentId: "eng", createdByUserId: "u1" } });
   k.inbox.push(wake("issue:t1:1", "assigned"));
   await k.dispatch.tick();
   assert.equal(k.started.length, 1);

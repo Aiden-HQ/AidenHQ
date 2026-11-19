@@ -68,10 +68,10 @@ test("check jobs: a fixture's fast check runs in a credential-free box; its rece
     return { exit: r.status, out: `${r.stdout}${r.stderr}`, timedOut: false };
   };
   const secrets = { codehost_github_token: "codehost-token", receipt_secret: "receipt-secret", launcher_kernel_key: "kernel-key", gateway_job_secret: "job-secret" };
-  const modules = { modules: { "codehost-github": { roles: ["kernel.checks"], token: "codehost_github_token", codehost: { snapshot: { repos: ["acme/*"] } } } } };
+  const modules = { modules: { "github": { roles: ["kernel.checks"], token: "codehost_github_token", codehost: { snapshot: { repos: ["acme/*"] } } } } };
   const broker = createCodehost({
     grants: () => Object.entries(modules.modules).map(([module, d]) => ({ ...d.codehost, module })), repos: () => ({}),
-    kind: () => ({ module: "codehost-github", floor: 0, tools: [], executor: { url: `${codehost.url}/aidenhq/v1/executor`, auth_secret: "codehost_github_token" } }),
+    kind: () => ({ module: "github", floor: 0, tools: [], executor: { url: `${codehost.url}/aidenhq/v1/executor`, auth_secret: "codehost_github_token" } }),
     secret: (n) => secrets[n] ?? "", resolver: { resolve: async (u) => { const x = new URL(u); return { host: x.hostname, port: Number(x.port), path: x.pathname }; }, forget: () => {} },
     workspace: async () => { throw new Error("no clones here"); },
   });

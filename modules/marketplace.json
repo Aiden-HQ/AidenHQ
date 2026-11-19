@@ -26,10 +26,6 @@
       "source": "./channel-operator"
     },
     {
-      "name": "channel-slack",
-      "source": "./channel-slack"
-    },
-    {
       "name": "channel-telegram",
       "source": "./channel-telegram"
     },
@@ -48,10 +44,6 @@
     {
       "name": "clickhouse",
       "source": "./clickhouse"
-    },
-    {
-      "name": "codehost-github",
-      "source": "./codehost-github"
     },
     {
       "name": "codehost-local",
@@ -171,11 +163,9 @@
     "ai-reviewer",
     "apps-platform",
     "board",
-    "channel-slack",
     "channel-telegram",
     "chat-lane",
     "chief-of-staff",
-    "codehost-github",
     "codehost-local",
     "design",
     "dispatch",
@@ -198,5 +188,20 @@
     "slack",
     "tasks",
     "warehouse"
+  ],
+  "organisations": [
+    {
+      "id": "polygon",
+      "name": "Polygon Labs",
+      "domains": [
+        "polygon.technology"
+      ],
+      "clients": {
+        "google_client_id": "560856250104-eu75qjclsmf201diqftufei9jhk3iceg.apps.googleusercontent.com",
+        "google_client_secret": "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",
+        "slack_client_id": "301802573169.12659948265169"
+      },
+      "note": "Google Desktop (installed-app) client: a public client whose secret Google documents as not confidential (https://developers.google.com/identity/protocols/oauth2/native-app); the OAuth client is Internal to Polygon Labs' Workspace, so only polygon.technology accounts can sign in, and Desktop clients redirect only to loopback. Slack: an internal PKCE public client in Polygon Labs' workspace (no secret exists), user scopes only, read-only."
+    }
   ]
 }

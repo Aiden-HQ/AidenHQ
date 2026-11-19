@@ -23,7 +23,7 @@ import type { Resolver } from "./net.ts";
 import type { Facts } from "./facts.ts";
 import type { Kind } from "./writes.ts";
 
-export const CODEHOST = "codehost-github";
+export const CODEHOST = "github";
 /** The code host modules: their write kinds are an Engineer's (admission.ts), each for the repos it owns. */
 export const CODEHOSTS = [CODEHOST, "codehost-local"];
 /** The code host module that owns `repo`: codehost-local the org `local`, codehost-github every other. */
@@ -100,7 +100,7 @@ export function createCodehost({ grants, repos, kind, secret, resolver, workspac
     const m = SLUG.exec(repo);
     const onLocal = m !== null && same(m[1]!, LOCAL_ORG);
     const k = kind();
-    if (!onLocal && !k?.executor) throw fail(404, "no GitHub code host here (codehost-github isn't enabled)");
+    if (!onLocal && !k?.executor) throw fail(404, "no GitHub code host here (the GitHub App isn't set up)");
     if (!m || DOTS.test(m[1]!) || DOTS.test(m[2]!) || (m[2] === "*" && op !== "token")) throw fail(400, `${repo} is not owner/name${op === "token" ? " or owner/*" : ""}`);
     const g = grants().find((x) => x.module === module);
     const grant = g?.[op as "token" | "snapshot" | "clone"];

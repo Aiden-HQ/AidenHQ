@@ -6,10 +6,10 @@ import { check } from "../src/check.mjs";
 
 // The product's half of the gate's core, as the runner passes it (its gate-core.mjs): a sample, as RegExp sources.
 const facts = { productRepo: "acme/aidenhq", roles: {}, gateCore: ["^services\\/runner\\/src\\/tiers\\.(mjs|ts)$", "^scripts\\/supply-chain\\/", "(^|\\/)\\.github\\/"] };
-const push = (files, repo = "acme/aidenhq", extra = {}) => check({ kind: "codehost-github.push", args: { repo, branch: "fix/a", files, ...extra }, facts });
+const push = (files, repo = "acme/aidenhq", extra = {}) => check({ kind: "github.push", args: { repo, branch: "fix/a", files, ...extra }, facts });
 
 test("product files: gate core to the panel, a compose file by content, an unreadable one denied, ordinary code ok", () => {
-  assert.deepEqual(push(["modules/codehost-github/service/src/plan.mjs"]), { verdict: "raise", tier: 1, panel: true, rule: "gate-core", reason: "it changes the gate's own core (modules/codehost-github/service/src/plan.mjs)" });
+  assert.deepEqual(push(["modules/github/service/src/plan.mjs"]), { verdict: "raise", tier: 1, panel: true, rule: "gate-core", reason: "it changes the gate's own core (modules/github/service/src/plan.mjs)" });
   assert.equal(push(["services/board/src/tasks.ts"]).verdict, "ok");
   assert.equal(push(["compose.yaml"]).verdict, "deny");
   const doc = (tag, extra = {}) => ({ services: { a: { image: `example.com/acme/a:${tag}`, ...extra } } });
@@ -20,10 +20,10 @@ test("product files: gate core to the panel, a compose file by content, an unrea
   assert.equal(push(["compose.yaml"], "acme/aidenhq", { texts: { "compose.yaml": { base: "x", head: "y" } } }).panel, true);
   // The product's half decides product paths; without it a product change is refused, never judged on this half alone.
   assert.equal(push(["services/runner/src/tiers.mjs"]).rule, "gate-core");
-  const bare = check({ kind: "codehost-github.push", args: { repo: "acme/aidenhq", branch: "fix/a", files: ["services/board/src/tasks.ts"] }, facts: { productRepo: "acme/aidenhq", roles: {} } });
+  const bare = check({ kind: "github.push", args: { repo: "acme/aidenhq", branch: "fix/a", files: ["services/board/src/tasks.ts"] }, facts: { productRepo: "acme/aidenhq", roles: {} } });
   assert.deepEqual([bare.verdict, bare.rule], ["deny", "gate-list-unknown"]);
   // Another repo's files are the code host's to judge.
-  assert.equal(push(["modules/codehost-github/service/src/plan.mjs"], "acme-agents/app").verdict, "ok");
+  assert.equal(push(["modules/github/service/src/plan.mjs"], "acme-agents/app").verdict, "ok");
 });
 
 test("the owner-approval records are the owner's in any repo", () => {
@@ -39,7 +39,7 @@ test("the owner-approval records are the owner's in any repo", () => {
 test("a verified Dependabot pin bump on the product is the reviewer's alone; anything else keeps the file rules", () => {
   const lock = (v) => JSON.stringify({ lockfileVersion: 3, packages: { "": { dependencies: { yaml: v } }, "node_modules/yaml": { version: v, resolved: `https://registry.npmjs.org/yaml/-/yaml-${v}.tgz`, integrity: "sha512-x" } } });
   const f = "scripts/supply-chain/package-lock.json";
-  const pr = (over = {}) => check({ kind: "codehost-github.merge", args: { repo: "acme/aidenhq", number: 9, dependabot: true, headMatches: true, files: [f], texts: { [f]: { base: lock("2.9.0"), head: lock("2.9.1") } }, checks: [{ name: "supply-chain", ok: true }, { name: "tests", ok: true }], ...over }, facts });
+  const pr = (over = {}) => check({ kind: "github.merge", args: { repo: "acme/aidenhq", number: 9, dependabot: true, headMatches: true, files: [f], texts: { [f]: { base: lock("2.9.0"), head: lock("2.9.1") } }, checks: [{ name: "supply-chain", ok: true }, { name: "tests", ok: true }], ...over }, facts });
   assert.deepEqual([pr().verdict, pr().tier, pr().rule, pr().panel], ["raise", 1, "product-dependabot-merge", undefined]);
   // Without the supply-chain check, or a major jump: the gate's core rule (the lockfile is under scripts/supply-chain/).
   assert.equal(pr({ checks: [{ name: "tests", ok: true }] }).rule, "gate-core");

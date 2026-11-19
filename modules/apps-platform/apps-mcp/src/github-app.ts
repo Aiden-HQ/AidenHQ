@@ -1,5 +1,5 @@
 // Access to private agents-org repos through the instance's GitHub App, without its key: per repo, a short-lived token from
-// the kernel (codehost-github mints it), narrowed to that one repo and {contents: read} (write for the registry push), handed
+// the kernel (the github module's code host mints it), narrowed to that one repo and {contents: read} (write for the registry push), handed
 // to that one git child through a credential helper reading an env var.
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -28,18 +28,17 @@ export type RepoToken = ((slug: string, perm?: "read" | "write", more?: Record<s
   botLogin?: string;
 };
 
-/** Whether this instance runs the GitHub code host (codehost-github in config/modules.json): the App's tokens come from it. */
-export function githubHost(repoDir: string): boolean {
-  try {
-    return (JSON.parse(readFileSync(`${repoDir}/config/modules.json`, "utf8")) as { name?: string; enabled?: boolean }[]).some((m) => m?.name === "codehost-github" && m.enabled === true);
-  } catch {
-    return false;
-  }
+/**
+ * Whether this instance runs the GitHub code host (the github module's App part): the host recorded its agents org
+ * (AIDENHQ_GITHUB_AGENTS_ORG, written when the GitHub App is created), the one fact every GitHub part follows.
+ */
+export function githubHost(env: NodeJS.ProcessEnv = process.env): boolean {
+  return Boolean(env.AIDENHQ_GITHUB_AGENTS_ORG?.trim());
 }
 
 /**
  * Tokens for single repos (contents: read, or write for the registry push), from the kernel's POST /v1/codehost/token under this
- * module's `codehost:` grant (only codehost-github holds the App's key), reused until 5 minutes before they expire.
+ * module's `codehost:` grant (only the github module's code host holds the App's key), reused until 5 minutes before they expire.
  */
 export function appTokens(kernelUrl: string, key: string, fetch = globalThis.fetch): RepoToken {
   const cache = new Map<string, { token: string; expires: number }>();
@@ -63,7 +62,7 @@ export function appTokens(kernelUrl: string, key: string, fetch = globalThis.fet
 /**
  * git args + env for a command that carries the token in env AIDENHQ_GIT_TOKEN (never argv, URL or .git/config): config a
  * planted repo could use to run code or reroute traffic is overridden, every other credential helper cleared, and this one
- * answers only `get` for protocol=https and host=github.com (as modules/codehost-github/service/src/github-app.ts).
+ * answers only `get` for protocol=https and host=github.com (as modules/github/service/src/github-app.ts).
  */
 export const CREDENTIAL_ARGS = [
   "-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=", "-c", "core.sshCommand=", "-c", "http.proxy=",

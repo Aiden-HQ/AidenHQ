@@ -16,7 +16,7 @@ import { createWrites } from "../src/writes.ts";
 const [OLD, NEW, COMMIT] = ["a".repeat(40), "b".repeat(40), "c".repeat(40)];
 const yaml = (product) => `product: ${product}\nmodules: [core]\n`;
 const BUMP = { repo: "acme/aidenhq-instance", branch: "fleet/release-acme-7", sha: COMMIT };
-const codehost = { kind: "module", module: "codehost-github", roles: ["kernel.tasks", "kernel.apply"], tools: {} };
+const codehost = { kind: "module", module: "github", roles: ["kernel.tasks", "kernel.apply"], tools: {} };
 const NEW_AUTHORITY = { modules: { acme: { base: { name: "acme" }, head: { name: "acme", privileged: ["git-credential"] }, codeChanged: false } }, marketplaces: [] };
 
 /** One kernel: records, the planner over a fake code host and product git, the executor over a fake host that counts. */
@@ -66,9 +66,9 @@ test("a release bump files kernel.apply, planned from the code host's read and t
   // Only a module holding the role files it, and only for a kernel kind the kernel plans: a role named after another
   // module's kind grants nothing.
   await assert.rejects(k.writes.request({ ...codehost, roles: ["kernel.tasks"] }, { kind: "kernel.apply", args: BUMP, task: "TASK-1" }), /no grant on kernel.apply/);
-  const merge = { module: "codehost-github", floor: 0, tools: [], executor: { url: "http://codehost-github:8100/x", auth_secret: "k" } };
-  const other = createWrites({ records: k.records, registry: () => ({ "codehost-github.merge": merge, "kernel.apply": KERNEL_KINDS["kernel.apply"] }), connections: () => ({}), secret: () => "", resolver: {}, onTask: { open: async () => true, notify: async () => {} }, replay: async () => ({}) });
-  await assert.rejects(other.request({ kind: "module", module: "acme", roles: ["codehost-github.merge"], tools: {} }, { kind: "codehost-github.merge", args: {}, task: "TASK-1" }), /no grant on codehost-github.merge/);
+  const merge = { module: "github", floor: 0, tools: [], executor: { url: "http://codehost-github:8100/x", auth_secret: "k" } };
+  const other = createWrites({ records: k.records, registry: () => ({ "github.merge": merge, "kernel.apply": KERNEL_KINDS["kernel.apply"] }), connections: () => ({}), secret: () => "", resolver: {}, onTask: { open: async () => true, notify: async () => {} }, replay: async () => ({}) });
+  await assert.rejects(other.request({ kind: "module", module: "acme", roles: ["github.merge"], tools: {} }, { kind: "github.merge", args: {}, task: "TASK-1" }), /no grant on github.merge/);
   await assert.rejects(other.request({ ...codehost, roles: ["kernel.apply"] }, { kind: "kernel.apply", args: BUMP, task: "TASK-1" }), /no write kind kernel.apply/, "no planner: not filed");
 });
 

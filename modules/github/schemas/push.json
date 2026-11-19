@@ -1,0 +1,45 @@
+{
+  "title": "github.push: these branches of the task's workspace (task identifier), each at exactly this commit.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "workspace",
+    "only"
+  ],
+  "properties": {
+    "workspace": {
+      "type": "string",
+      "pattern": "^[A-Za-z][A-Za-z0-9]*-[0-9]+$"
+    },
+    "only": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 30,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "repo",
+          "branch",
+          "sha"
+        ],
+        "properties": {
+          "repo": {
+            "type": "string",
+            "pattern": "^[\\w.-]+/[\\w.-]+$"
+          },
+          "branch": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200,
+            "pattern": "^[\\w./-]+$"
+          },
+          "sha": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{40}$"
+          }
+        }
+      }
+    }
+  }
+}

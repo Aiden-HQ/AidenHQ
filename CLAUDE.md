@@ -26,7 +26,7 @@ never in this file.
 - `services/`: `board` (owner UI and approvals), `computer` (the launcher of agent computers: every job runs in one),
   `paperclip-events` (the Paperclip plugin: task events to the kernel, and the `post` action for every write an agent makes),
   `shared` (code synced into services). Jobs come from `modules/dispatch` (wakes into kernel jobs for every agent);
-  `modules/codehost-github` runs git writes, merges, releases, PR watch, design reviews and tidy.
+  `modules/github` runs git writes, merges, releases, PR watch, design reviews and tidy.
   `modules/apps-platform/` holds `apps-mcp`, `gate` (shared-app door), the app starter and the design system.
 - `scripts/`: compiler (`compile.mjs`, `modules.mjs`), Paperclip setup (`paperclip-setup.mjs`), account auth,
   health, backup and restore.
@@ -63,8 +63,8 @@ the reviewer eval's case loader).
 
 The AI reviewer is the `modules/ai-reviewer` module (reviewer@1: the kernel asks it for each record's review). Its exit test,
 `node modules/ai-reviewer/scripts/reviewer-eval.mjs`, needs a paid `OPENROUTER_API_KEY` and must pass: at least 95%, no attack approved (each miss is named by its kind: attack approved, false block, or other, a right decision with a wrong detail; only an approved attack fails outright). It
-applies to every path the eval gate's `REVIEWER_CODE` and `REVIEWER_TREE` list (`modules/codehost-github/service/src/evalgate.ts`: the single list, edit it there and nowhere else); the code host's merge queue runs it on the PR's exact head
-and merges only on a passing receipt (at least 95% of the base cases, no attack approved; `modules/codehost-github/service/src/evalgate.ts`); the release train's
+applies to every path the eval gate's `REVIEWER_CODE` and `REVIEWER_TREE` list (`modules/github/service/src/evalgate.ts`: the single list, edit it there and nowhere else); the code host's merge queue runs it on the PR's exact head
+and merges only on a passing receipt (at least 95% of the base cases, no attack approved; `modules/github/service/src/evalgate.ts`); the release train's
 bump of `product:` to a different reviewer needs a receipt for that reviewer too.
 
 ## Conventions
@@ -78,7 +78,7 @@ bump of `product:` to a different reviewer needs a receipt for that reviewer too
 - **One authority per concern.** A new caller uses the owner below; it never adds a second:
   - The kernel: identity, credentials, policy, write records and their tier (`computeTier` in `kernel/src/tier.ts` is the
     only tier function).
-  - codehost-github: the only holder of the GitHub App key. Others get narrow tokens through the kernel.
+  - github (its code host part, service/): the only holder of the GitHub App key. Others get narrow tokens through the kernel.
   - `notify`: the only path to the owner.
   - The wake inbox and dispatch: the only way an agent job starts.
   - Paperclip: tasks and schedules only.
@@ -100,7 +100,7 @@ bump of `product:` to a different reviewer needs a receipt for that reviewer too
 - **A connection connects in one click.** One Connect wherever it is listed (a `board.signins` entry), and the vendor's
   sign-in does the rest. It returns to loopback (`http://localhost:3121/<callback>`, RFC 8252: no company domain allowlist
   applies) and the owner pastes that page's address into the same Connect; one click back to the board's https address is
-  the secondary link, and the only path for a vendor that takes https redirects alone (`https_only`, Slack). A fixed or discoverable value is a module default; only a genuinely per-install value is asked
+  the secondary link, and the only path for a vendor that takes https redirects alone (`https_only`). A fixed or discoverable value is a module default; only a genuinely per-install value is asked
   for, as one inline field on that Connect (the sign-in's `secrets`). A setup flow is only for what the owner must make
   elsewhere first (an OAuth client, an app, a token, a bot) or a channel to pair.
 - **Judgment in agents, gates in code.** Matching, routing, writes and approvals are enforced below the model. Gate
@@ -129,7 +129,7 @@ bump of `product:` to a different reviewer needs a receipt for that reviewer too
   (`docker compose exec jira-mcp node dist/src/probe.js [tool '<json>']`).
 - **Inbound:** the kernel's admin listener (3120: sign-in, approval pages) and the board (3121) are loopback-only but every
   host process shares that loopback (Tailscale serve), so every route on 3120 and 3121 needs a signed-in
-  admin (beyond sign-in, only OpenRouter's PKCE callback, by a single-use state) (accounts: Better Auth in the kernel, password + TOTP, `data/kernel/auth/auth.db`, which the board's 3129 listener
+  admin (beyond sign-in, only OpenRouter's PKCE callback and GitHub's App manifest return, each by a single-use state an admin's page made) (accounts: Better Auth in the kernel, password + TOTP, `data/kernel/auth/auth.db`, which the board's 3129 listener
   also opens until 3g; no SSO, sign-in beyond that is Cloudflare Access). Cards are decided only on the kernel's pages or
   by channel token. Every admin is an owner: writes as the owner
   (the board through the kernel's `/v1/cp/owner`; only the kernel holds the Paperclip key), taps and typed replies decide (`account:<id>`); the board labels what non-owner admins wrote ("by <name>",
@@ -198,7 +198,7 @@ updated, so that rule would re-review every open PR on every merge.
 
 Restarts never interrupt agents: the kernel runs jobs detached (`KillMode=process`, `kernel/src/jobs.ts`) and the next
 kernel adopts them from its job rows in `kernel.db` (pid, events offset); `ops/apply-config.sh` restarts the kernel when its
-code changed. Dispatch, codehost-github and the other modules are containers apply recreates when their image changes. See
+code changed. Dispatch, the github code host and the other modules are containers apply recreates when their image changes. See
 [docs/operations.md](docs/operations.md).
 
 Operating an instance: improve the system, don't babysit the agents. When an agent's work goes wrong, fix the source
@@ -210,8 +210,8 @@ the board key (it writes as the owner). Agents never claim something is done unt
 
 ## GitHub App and data apps
 
-- The instance's GitHub App (key in the vault at `github-app/{app_id,key.pem}`, made by `ops/github-app-setup.mjs`)
-  gives repo-narrowed tokens. Among services and modules only codehost-github holds the App key; any other caller (apps-mcp
+- The instance's GitHub App (key in the vault at `github-app/{app_id,key.pem}`, made from the board's GitHub setup page, the kernel's `/setup/github-app`)
+  gives repo-narrowed tokens. Among services and modules only the github module's code host holds the App key; any other caller (apps-mcp
   reading private agents-org app repos and pushing the registry, the kernel cloning an Engineer's repos, checks) gets a
   token, snapshot or clone through the kernel's `POST /v1/codehost/:op`, under a literal `codehost:` grant in its
   `module.yaml`. The host's apply may mint a read-only instance-repo token: the instance checkout pulls with

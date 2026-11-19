@@ -56,13 +56,13 @@ test("opening the log normalises times to UTC and PR names to lowercase, merging
   const db = new DatabaseSync(":memory:");
   const facts = openFacts(db);
   // The backfill's and the live writer's spelling of one PR's merge: the earlier stays.
-  facts.record(fact({ type: "pr.merged", subject: "pr:Acme/App#7", version: "codehost-github/abc", at: "2026-11-19T10:00:05Z", data: { pr: "Acme/App#7", sha: "abc" } }));
-  facts.record(fact({ type: "pr.merged", subject: "pr:acme/app#7", version: "codehost-github/abc", at: "2026-11-19T10:00:09Z", data: { pr: "acme/app#7" } }));
-  facts.record(fact({ type: "pr.opened", subject: "pr:Acme/App#8", version: "codehost-github/def", at: "2026-11-19T14:00:00+04:00", data: { repo: "Acme/App", head: "Def" } }));
-  facts.record(fact({ type: "issue.opened", subject: "issue:Acme/App#3", version: "codehost-github/1", data: {} }));
+  facts.record(fact({ type: "pr.merged", subject: "pr:Acme/App#7", version: "github/abc", at: "2026-11-19T10:00:05Z", data: { pr: "Acme/App#7", sha: "abc" } }));
+  facts.record(fact({ type: "pr.merged", subject: "pr:acme/app#7", version: "github/abc", at: "2026-11-19T10:00:09Z", data: { pr: "acme/app#7" } }));
+  facts.record(fact({ type: "pr.opened", subject: "pr:Acme/App#8", version: "github/def", at: "2026-11-19T14:00:00+04:00", data: { repo: "Acme/App", head: "Def" } }));
+  facts.record(fact({ type: "issue.opened", subject: "issue:Acme/App#3", version: "github/1", data: {} }));
   const again = openFacts(db);
   const rows = db.prepare("SELECT id, subject, at, data FROM facts WHERE type != 'job.started' ORDER BY seq").all().map((r) => ({ ...r, data: JSON.parse(r.data) }));
-  assert.deepEqual(rows.map((r) => r.id), ["pr.merged:pr:acme/app#7:codehost-github/abc", "pr.opened:pr:acme/app#8:codehost-github/def", "issue.opened:issue:acme/app#3:codehost-github/1"]);
+  assert.deepEqual(rows.map((r) => r.id), ["pr.merged:pr:acme/app#7:github/abc", "pr.opened:pr:acme/app#8:github/def", "issue.opened:issue:acme/app#3:github/1"]);
   assert.deepEqual([rows[0].at, rows[0].data], ["2026-11-19T10:00:05Z", { pr: "acme/app#7", sha: "abc" }], "the earliest row stays");
   assert.deepEqual([rows[1].at, rows[1].data], ["2026-11-19T10:00:00.000Z", { repo: "acme/app", head: "Def" }], "UTC; only pr and repo are lowercased");
   assert.equal(db.prepare("SELECT count(*) AS n FROM facts").get().n, 3);

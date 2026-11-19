@@ -22,6 +22,7 @@ import { INSTALL_CAP, createGateway, watched } from "./gateway/lib.ts";
 import { createAdmin, type SetupField } from "./admin.ts";
 import { createAuthApi } from "./auth-api.ts";
 import { checkModel, exchange, readiness, startPkce } from "./openrouter-pkce.ts";
+import { convert as convertGithubApp, saveApp as saveGithubApp, seedAppId } from "./github-app.ts";
 import { composeRecreate, createModuleSecrets, vaultWriter } from "./module-secrets.ts";
 import { doorSource, readGate } from "./accounts.ts";
 import { routineWake, webhookWake, type Manifest } from "./app-access.ts";
@@ -136,7 +137,7 @@ const registry = (): Record<string, Kind> => ({ ...moduleKinds(), ...(localHost(
 let replay: (r: never) => Promise<{ ok: boolean; text: string }> = async () => ({ ok: false, text: "the proxy isn't up" });
 // The product and instance repositories (owner/name), as setup recorded them in .env: which repository a `paths: true`
 // kind's files are in (writes.ts).
-// The agents org: AIDENHQ_GITHUB_AGENTS_ORG, written once by ops/github-app-setup.mjs, never a setting a later change could move.
+// The agents org: AIDENHQ_GITHUB_AGENTS_ORG, written once when the GitHub App is created (github-app.ts), never a setting a later change could move.
 // Unset: no agents org (@agents codehost grants name nothing).
 const agentsOrg = env("AIDENHQ_GITHUB_AGENTS_ORG") || undefined;
 // With codehost-local enabled (the compiled catalog), its org `local` is an agents org too (docs/design/codehost-local.md §2).
@@ -148,7 +149,7 @@ log(baseRepos.product && baseRepos.instance ? "repositories" : "AIDENHQ_PRODUCT_
 const reviews = createReviews({ slot: () => modulesFile().reviewer, secret, resolver, log, modelToken: (component) => mintToken(secret("gateway_job_secret"), { kind: "reviewer", component, ttlMs: 3600_000 }) });
 let raiseCap: (r: { scope: string; agentId: string; subject: string; cap: number; spent: number; to: number }) => Promise<string> = async () => { throw new Error("the model gateway isn't up"); };
 // kernel.apply's executor (apply.ts): the code host lands the commit, a transient unit runs the apply; a restart resumes it.
-const applyHost = hostApply({ repo, stateDir: env("AIDENHQ_STATE_DIR", path.join(process.env.HOME ?? "", ".local/state/aidenhq")), resolver, codehost: () => { const e = moduleKinds()["codehost-github.push"]?.executor; return e && { url: e.url, key: secret(e.auth_secret) }; },
+const applyHost = hostApply({ repo, stateDir: env("AIDENHQ_STATE_DIR", path.join(process.env.HOME ?? "", ".local/state/aidenhq")), resolver, codehost: () => { const e = moduleKinds()["github.push"]?.executor; return e && { url: e.url, key: secret(e.auth_secret) }; },
   // codehost-local's instance repo: the bare repo setup made on this host (AIDENHQ_INSTANCE_REMOTE).
   local: () => (localHost() && repos().instance?.toLowerCase().startsWith(`${LOCAL_ORG}/`) ? { bare: localCode.bare(repos().instance!), repo: repos().instance!, ingest: (s) => ingest(tasksDir, localScratch, localCode.bare(s.repo), s.workspace, s) } : undefined) });
 const applies = createApply({ db: records.db, log, ...applyHost });
@@ -498,7 +499,18 @@ const model = {
   dayCap: () => { const n = Number((gatewaySettings() as { install_day_usd?: unknown }).install_day_usd); return n > 0 ? n : undefined; },
   ...modelState,
 };
-const admin = accounts && createAdmin({ accounts, firstRun, model, uiOrigins, updates, doorSource: () => doorSource(gateInfo()), boardUrl: () => boardOrigins[0], cards: channels, ownerMessage: (b) => channels.ownerMessageAs("web", b, () => chiefOfStaff(grantsTable().agents)), owner: ownerApi, hosts: () => adminHosts, origins: () => adminOrigins, frameOrigins: () => boardOrigins, log });
+// The github module's App (github-app.ts), made from the admin pages: its key goes into the vault, the agents org into .env.
+const instanceName = () => /^([a-z0-9-]+)\.aidenhq\.ai$/.exec(String(modulesFile().commit_domain ?? ""))?.[1];
+seedAppId(secretsDir);
+const githubApp = Object.hasOwn(modulesFile().modules ?? {}, "github") ? {
+  defaultOrg: () => agentsOrg ?? (instanceName() ? `aidenhq-${instanceName()}` : ""),
+  agentsOrg: () => agentsOrg,
+  name: () => `AidenHQ ${instanceName() ?? "fleet"}`,
+  ready: () => existsSync(path.join(secretsDir, "github-app", "key.pem")),
+  convert: (code: string, org: string) => convertGithubApp(code, org),
+  save: (app: Parameters<typeof saveGithubApp>[0]) => saveGithubApp(app, { secretsDir, envFile: path.join(repo, ".env") }),
+} : undefined;
+const admin = accounts && createAdmin({ accounts, firstRun, model, githubApp, uiOrigins, updates, doorSource: () => doorSource(gateInfo()), boardUrl: () => boardOrigins[0], cards: channels, ownerMessage: (b) => channels.ownerMessageAs("web", b, () => chiefOfStaff(grantsTable().agents)), owner: ownerApi, hosts: () => adminHosts, origins: () => adminOrigins, frameOrigins: () => boardOrigins, log });
 
 // Claimed records a restart left without an outcome: their executors say how they went (never replayed). Executors may
 // still be starting at boot, so once, a minute in.

@@ -118,6 +118,8 @@ services:
       APPS_URL_BASE: "${APPS_URL_BASE:-}"
       APPS_EDGE_DIR: /edge
       GITHUB_TOKEN_FILE: /run/secrets/github_token
+      # Set once the GitHub App is created: its private repos are read with App tokens from the kernel.
+      AIDENHQ_GITHUB_AGENTS_ORG: "${AIDENHQ_GITHUB_AGENTS_ORG:-}"
       APPS_INTERNAL_TOKEN_FILE: /run/secrets/apps_internal_token
       PAPERCLIP_URL: http://paperclip:3100
       # Agents' calls arrive only through the kernel's proxy (its service key); the caller is the kernel's signed assertion

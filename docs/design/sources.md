@@ -19,7 +19,7 @@ and shared `src_meta` tables are set up by `modules/warehouse/apps/warehouse/sou
 
 | Schema | Writer | Covers |
 |---|---|---|
-| `src_slack` | channel-slack | Every Socket Mode event the owner's token receives, before any filtering: bot posts, thread replies, edits (a new revision; old text goes to the change log), deletes (tombstones). A 15-minute gap sync (`conversations.history`, plus replies for active threads) covers disconnects; a weekly full re-read of the last week tombstones what Slack no longer returns. |
+| `src_slack` | slack | Every Socket Mode event the owner's token receives, before any filtering: bot posts, thread replies, edits (a new revision; old text goes to the change log), deletes (tombstones). A 15-minute gap sync (`conversations.history`, plus replies for active threads) covers disconnects; a weekly full re-read of the last week tombstones what Slack no longer returns. |
 | `src_github` | github-mcp | Issues and PRs in the configured orgs, and every Projects v2 board found in them (items and field values), using the GitHub App token. Every 15 minutes. |
 | `src_jira` | jira-mcp | Issues, sprints and boards for the configured site, and Confluence pages (metadata and a search excerpt). Runs inside jira-mcp so there is one OAuth token pair and one refresh. |
 | `src_docs` | google-workspace-mcp | Drive file metadata for the primary account (30-day baseline, then every change). A separate pass stores a short summary of Docs and Slides. |

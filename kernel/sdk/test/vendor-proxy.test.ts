@@ -186,3 +186,68 @@ describe("sign-in", () => {
     expect(auth.status().state).toBe("unknown");
   });
 });
+
+describe("device sign-in", () => {
+  const endpoints = { authorize: "https://auth.example.com/authorize", token: "https://auth.example.com/token" };
+  const device = { endpoint: "https://auth.example.com/device/code", client_id: "Iv1.acme", scopes: ["repo", "read:org"] };
+  const tick = () => new Promise((r) => setTimeout(r, 5));
+
+  it("polls until the token lands, through pending and slow_down, and keeps the device code to itself", async () => {
+    const dir = tmp();
+    const answers = [{ error: "authorization_pending" }, { error: "slow_down" }, { access_token: "gho_x", token_type: "bearer", scope: "repo,read:org" }];
+    const bodies: string[] = [];
+    const fetchImpl = (async (url: string, init: RequestInit) => {
+      bodies.push(`${url} ${String(init.body)} ${(init.headers as Record<string, string>).accept}`);
+      return url === device.endpoint ? Response.json({ device_code: "dc-secret", user_code: "ABCD-1234", verification_uri: "https://auth.example.com/device", expires_in: 900, interval: 5 }) : Response.json(answers.shift());
+    }) as unknown as typeof fetch;
+    const waits: number[] = [];
+    let signedIn = false;
+    const auth = oauth({ name: "Acme", mcpUrl: "https://mcp.example.com/mcp", stateDir: dir, endpoints, device, fetchImpl, wait: async (ms) => void waits.push(ms) });
+    const started = await auth.device!.start(() => (signedIn = true));
+    expect(started).toEqual({ user_code: "ABCD-1234", verification_uri: "https://auth.example.com/device", expires_in: 900, interval: 5 });
+    expect(JSON.stringify(started)).not.toContain("dc-secret");
+    for (let i = 0; i < 20 && !signedIn; i++) await tick();
+    expect(auth.device!.state()).toEqual({ state: "ok" });
+    expect(waits).toEqual([5000, 5000, 10000]);
+    expect(bodies[0]).toContain("scope=repo+read%3Aorg");
+    expect(bodies.every((b) => b.endsWith("application/json"))).toBe(true);
+    expect(await auth.headers()).toEqual({ authorization: "Bearer gho_x" });
+    expect(auth.status().state).toBe("ok");
+  });
+
+  it("stops on cancel, says when the code expired or access was denied, and refuses without a client ID", async () => {
+    const run = async (answer: Record<string, unknown>, cancel = false) => {
+      let release!: () => void;
+      const gate = new Promise<void>((r) => (release = r));
+      const fetchImpl = (async (url: string) => (url === device.endpoint ? Response.json({ device_code: "dc", user_code: "U", verification_uri: "https://auth.example.com/device" }) : Response.json(answer))) as unknown as typeof fetch;
+      const auth = oauth({ name: "Acme", mcpUrl: "https://mcp.example.com/mcp", stateDir: tmp(), endpoints, device, fetchImpl, wait: () => gate });
+      await auth.device!.start();
+      if (cancel) auth.device!.cancel();
+      release();
+      for (let i = 0; i < 10; i++) await tick();
+      return auth.device!.state().state;
+    };
+    expect(await run({ access_token: "t" }, true)).toBe("cancelled");
+    expect(await run({ error: "expired_token" })).toBe("expired");
+    expect(await run({ error: "access_denied" })).toBe("denied");
+    const off = oauth({ name: "Acme", mcpUrl: "https://mcp.example.com/mcp", stateDir: tmp(), endpoints, device: { ...device, client_id: "" } });
+    await expect(off.device!.start()).rejects.toThrow(/isn't configured yet/);
+    expect(off.status().detail).toMatch(/no client ID/);
+  });
+
+  it("serves start, state and cancel on the proxy's /auth/device, with the board's key only", async () => {
+    const dir = tmp();
+    const fetchImpl = (async (url: string) => (url === device.endpoint ? Response.json({ device_code: "dc-secret", user_code: "ABCD-1234", verification_uri: "https://auth.example.com/device", expires_in: 900, interval: 5 }) : Response.json({ error: "authorization_pending" }))) as unknown as typeof fetch;
+    const auth = oauth({ name: "Acme", mcpUrl: "https://mcp.example.com/mcp", stateDir: dir, endpoints, device, fetchImpl, wait: () => new Promise(() => {}) });
+    const p = createVendorProxy({ name: "Acme", upstream: new URL("https://mcp.example.com/mcp"), auth, log, serviceKey: "svc", authKey: "board", caller: async () => {}, instructions: "", stateDir: dir });
+    const url = await listen(p);
+    const call = (method: string, path: string, key = "board") => fetch(`${url}${path}`, { method, headers: { authorization: `Bearer ${key}` } }).then(async (r) => ({ status: r.status, body: (await r.json()) as any }));
+    expect((await call("POST", "/auth/device", "svc")).status).toBe(401);
+    const started = await call("POST", "/auth/device");
+    expect(started.body).toEqual({ user_code: "ABCD-1234", verification_uri: "https://auth.example.com/device", expires_in: 900, interval: 5 });
+    expect((await call("GET", "/auth/device")).body).toEqual({ state: "pending" });
+    expect((await call("POST", "/auth/device/cancel")).body).toEqual({ ok: true });
+    expect((await call("GET", "/auth/device")).body).toEqual({ state: "cancelled" });
+    p.close();
+  });
+});

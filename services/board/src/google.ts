@@ -14,7 +14,7 @@ export interface GoogleAccountStatus {
  * Google token.
  */
 export class GoogleAuth {
-  private cached: { at: number; accounts: GoogleAccountStatus[]; error?: string } | undefined;
+  private cached: { at: number; accounts: GoogleAccountStatus[]; error?: string; client_type?: GoogleClientType } | undefined;
 
   constructor(
     private readonly baseUrl: string,
@@ -36,11 +36,11 @@ export class GoogleAuth {
   }
 
   /** Sign-in state per account, at most a minute old. Undefined when the sidecar can't be asked. */
-  async status(maxAgeMs = 60_000): Promise<{ accounts: GoogleAccountStatus[]; error?: string } | undefined> {
+  async status(maxAgeMs = 60_000): Promise<{ accounts: GoogleAccountStatus[]; error?: string; client_type?: GoogleClientType } | undefined> {
     if (!this.cached || Date.now() - this.cached.at >= maxAgeMs) {
       try {
-        const s = await this.call<{ accounts: GoogleAccountStatus[]; error?: string }>("GET", "/auth/status");
-        this.cached = { at: Date.now(), accounts: s.accounts ?? [], ...(s.error ? { error: s.error } : {}) };
+        const s = await this.call<{ accounts: GoogleAccountStatus[]; error?: string; client_type?: GoogleClientType }>("GET", "/auth/status");
+        this.cached = { at: Date.now(), accounts: s.accounts ?? [], ...(s.error ? { error: s.error } : {}), ...(s.client_type ? { client_type: s.client_type } : {}) };
       } catch (err) {
         this.log?.warn({ err: String((err as Error).message).slice(0, 300) }, "Google sign-in state unavailable");
         this.cached = undefined;
@@ -56,14 +56,18 @@ export class GoogleAuth {
     return this.call<{ url: string }>("POST", "/auth/start", { ...(account ? { account } : {}), redirect_uri: redirectUri });
   }
 
-  async finish(state: string, code: string) {
-    const r = await this.call<{ email: string }>("POST", "/auth/finish", { state, code });
+  /** Exchanges Google's code; with Google's `error` instead, the service says why in words. */
+  async finish(state: string, code: string | undefined, error?: string) {
+    const r = await this.call<{ email: string }>("POST", "/auth/finish", { state, ...(code ? { code } : {}), ...(error ? { error } : {}) });
     this.cached = undefined;
     return r;
   }
 }
 
 export class GoogleAuthFailed extends Error {}
+
+/** A Desktop client (new setups) returns only to loopback, so its sign-in is pasted back; a Web client to the board's https address. */
+export type GoogleClientType = "desktop" | "web";
 
 /** Re-consent needs a loopback address: Google sends a Desktop-app sign-in back only to one. */
 export function loopbackPort(host: string | undefined): number | undefined {

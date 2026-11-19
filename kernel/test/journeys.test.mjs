@@ -9,15 +9,15 @@ import { KERNEL_STAGES } from "../src/flow-stages.ts";
 import { createBackplane } from "../src/backplane.ts";
 
 const PR = {
-  name: "pr", label: "Pull requests", subject: "pr", module: "codehost-github", end: ["pr.deployed", "pr.closed"],
+  name: "pr", label: "Pull requests", subject: "pr", module: "github", end: ["pr.deployed", "pr.closed"],
   phases: [
     { name: "triage", label: "Triage", from: ["issue.opened"] },
     { name: "pickup", label: "Pickup", from: ["issue.labeled", "task.created"] },
     { name: "coding", label: "Coding", from: ["job.started"] },
-    { name: "review", label: "AI review", from: ["record.filed"], where: { kind: ["codehost-github.pr", "codehost-github.push"] } },
+    { name: "review", label: "AI review", from: ["record.filed"], where: { kind: ["github.pr", "github.push"] } },
     { name: "open", label: "PR open", from: ["pr.opened"] },
     { name: "ci", label: "CI", from: ["pr.checks_started", "pr.pushed"] },
-    { name: "merge", label: "Merge review", from: ["record.filed"], where: { kind: ["codehost-github.merge"] } },
+    { name: "merge", label: "Merge review", from: ["record.filed"], where: { kind: ["github.merge"] } },
     { name: "deploy", label: "Deploy", from: ["pr.merged"] },
   ],
 };
@@ -45,7 +45,7 @@ function agentPr(add) {
   // each rejection sends the Engineer back: a rework job, then the refile
   for (const [i, h] of [[1, "08"], [2, "09"], [3, "10"]]) {
     if (i > 1) { add("job.started", `job:j${i}`, `${h}:00:00`, {}, agent); add("job.ended", `job:j${i}`, `${h}:20:00`, { cost_usd: 0.5, model: "m1" }, agent); }
-    add("record.filed", `record:r${i}`, `${h}:30:00`, { kind: "codehost-github.pr", state: "review" }, agent);
+    add("record.filed", `record:r${i}`, `${h}:30:00`, { kind: "github.pr", state: "review" }, agent);
     add("record.decided", `record:r${i}`, `${h}:40:00`, i < 3 ? { decision: "rejected", decider: "reviewer", code: "scope" } : { decision: "approved", decider: "reviewer" }, t);
   }
   add("pr.opened", "pr:acme/widgets#12", "10:45:00", { repo: "Acme/Widgets", number: 12 }, t); // the backfill's first version, re-sent below
@@ -55,7 +55,7 @@ function agentPr(add) {
   add("pr.pushed", "pr:acme/widgets#12", "11:00:00", { head: "h2", before: "h1" }, t);
   add("pr.checks_started", "pr:acme/widgets#12@h2", "11:00:05", { head: "h2" }, t);
   add("pr.checks_completed", "pr:acme/widgets#12@h2", "11:05:00", { head: "h2", conclusion: "success" }, t);
-  add("record.filed", "record:m1", "11:10:00", { kind: "codehost-github.merge", state: "review", pr: "acme/widgets#12" }, agent);
+  add("record.filed", "record:m1", "11:10:00", { kind: "github.merge", state: "review", pr: "acme/widgets#12" }, agent);
   add("record.decided", "record:m1", "11:30:00", { decision: "approved", decider: "reviewer" }, t);
   add("pr.merged", "pr:acme/widgets#12", "11:31:00", { sha: "abcdef1" }, t);
   add("deploy.applied", "deploy:5", "11:45:00", { generation: 5, health: "good" });
@@ -77,8 +77,8 @@ test("an agent PR's journey: every phase once, three review rounds, two CI round
   agentPr(add); ownerAndOpen(add);
   // a PR whose review round no fact links to it: the task's done pr write names it in its outcome
   db.exec("CREATE TABLE records (task TEXT, kind TEXT, args TEXT, outcome TEXT, state TEXT, created_at TEXT)");
-  db.prepare("INSERT INTO records VALUES ('t2', 'codehost-github.pr', '{}', ?, 'done', ?)").run(JSON.stringify({ ok: true, text: "opened https://github.com/acme/widgets/pull/15" }), `${D}13:30:00.000Z`);
-  add("record.filed", "record:r9", "13:30:00", { kind: "codehost-github.pr", state: "review" }, { task: "t2" });
+  db.prepare("INSERT INTO records VALUES ('t2', 'github.pr', '{}', ?, 'done', ?)").run(JSON.stringify({ ok: true, text: "opened https://github.com/acme/widgets/pull/15" }), `${D}13:30:00.000Z`);
+  add("record.filed", "record:r9", "13:30:00", { kind: "github.pr", state: "review" }, { task: "t2" });
   add("pr.opened", "pr:acme/widgets#15", "14:00:00", { repo: "acme/widgets", number: 15, author_kind: "agent" });
   assert.deepEqual(flow.journey({ name: "pr", since: DAY }).items.find((i) => i.number === 15).blocks.map((b) => [b.phase, b.rounds]), [["review", 1], ["open", 1]]);
   const list = flow.journey({ name: "pr", since: DAY });

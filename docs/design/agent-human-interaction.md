@@ -98,7 +98,7 @@ Any new wake-suppression gate ships in observe mode. The `fleet-check` skill is 
 card reminders today).
 
 ## 3. Channel memory
-A short bounded note per bound Slack channel, stored beside the binding in channel-slack's store, with revision and
+A short bounded note per bound Slack channel, stored beside the binding in the slack module's live listener store, with revision and
 provenance; returned (fenced as data) by `slack_channel_context`; not mixed into the agent's global memory.
 One write operation (replace the whole note, stale updates rejected), used by every edit path. v1: the agent
 proposes a change in the thread and it lands when the owner confirms (authenticated Slack user id); "@bot what do

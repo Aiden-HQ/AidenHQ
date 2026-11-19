@@ -1,0 +1,39 @@
+{
+  "title": "github.merge: squash-merge these PRs, each only at this head and once its checks are green.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "prs"
+  ],
+  "properties": {
+    "prs": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 30,
+      "items": {
+        "title": "a PR at its approved head",
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "repo",
+          "number",
+          "head"
+        ],
+        "properties": {
+          "repo": {
+            "type": "string",
+            "pattern": "^[\\w.-]+/[\\w.-]+$"
+          },
+          "number": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "head": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{40}$"
+          }
+        }
+      }
+    }
+  }
+}

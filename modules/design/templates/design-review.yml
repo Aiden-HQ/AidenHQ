@@ -33,7 +33,7 @@ jobs:
           SHA: ${{ github.event.pull_request.head.sha }}
           PR: ${{ github.event.pull_request.number }}
         run: |
-          # Only a PR whose own diff touches UI files waits (the code host's rule, modules/codehost-github/service/src/merge-gate.mjs isUiFile): the
+          # Only a PR whose own diff touches UI files waits (the code host's rule, modules/github/service/src/merge-gate.mjs isUiFile): the
           # `paths` filter above can match a stale branch's history, and a CI-only PR must never wait for a design review.
           files=$(curl -fsS -H "Authorization: Bearer $TOKEN" "$API/pulls/$PR/files?per_page=100" | jq -r '.[].filename' || echo "unreadable")
           if [ "$files" != unreadable ] && [ "$(printf '%s\n' "$files" | wc -l)" -lt 100 ] && ! printf '%s\n' "$files" | grep -qiE '\.(css|scss|sass|less|html?|tsx|jsx|vue|svelte|astro|hbs|handlebars|ejs|njk|pug|erb|liquid|mustache)$|(^|/)(web|public|templates|views|static|pages|components|layouts|design-system)/|(^|/)([^/]*[-_.])?(render|styles?|layouts?|views?|pages?|templates?)\.(m?[jt]s|cjs)$'; then

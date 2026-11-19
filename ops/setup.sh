@@ -571,7 +571,7 @@ if [ "$ci_n" -gt 0 ]; then
     as_user cp "$REPO/ops/units/aidenhq-ci-runner@.service" "$H/.config/systemd/user/"
     as_user systemctl --user daemon-reload
     for i in $(seq "$ci_n"); do as_user systemctl --user enable --now "aidenhq-ci-runner@$i"; done
-  else say "CI runners: $ci_n once the GitHub App (ops/github-app-setup.mjs) and the ci module are set up; then run setup again"; fi
+  else say "CI runners: $ci_n once the GitHub App (GitHub setup on the board, its advanced part) and the ci module are set up; then run setup again"; fi
 fi
 
 # Public: the certificate is the proof that 443 is reachable from the Internet (behind NAT, a cloud security group or a

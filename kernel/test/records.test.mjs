@@ -16,12 +16,12 @@ test("a task's records: the capped page hides an old one, and limit null reads t
   const file = (module, n) => records.file({ kind: "kernel.apply", module, args: { n }, targets: {}, executor: { module }, policy: "p", tier: 0, panel: false, card, requester: { agent: "", key: "k", name: "n", roles: [], kind: "kernel" }, task: "t-1", state: "done" });
   const states = ["review", "owner", "approved", "claimed", "done", "failed", "rejected", "stale", "cancelled", "unknown"];
   // The oldest record is another module's: a page of 50 never reaches it.
-  file("github", 0);
-  for (let n = 1; n <= 60; n++) file("codehost-github", n);
+  file("jira", 0);
+  for (let n = 1; n <= 60; n++) file("github", n);
   const all = records.list(states, null, { task: "t-1", kinds: ["kernel.apply"] });
   assert.equal(all.length, 61, "limit null reads every record of the task");
-  assert.deepEqual(new Set(all.map((r) => r.module)), new Set(["github", "codehost-github"]), "the old foreign record is among them");
+  assert.deepEqual(new Set(all.map((r) => r.module)), new Set(["jira", "github"]), "the old foreign record is among them");
   const page = records.list(states, 50, { task: "t-1", kinds: ["kernel.apply"] });
   assert.equal(page.length, 50);
-  assert.ok(page.every((r) => r.module === "codehost-github"), "the capped page is what would have hidden it");
+  assert.ok(page.every((r) => r.module === "github"), "the capped page is what would have hidden it");
 });

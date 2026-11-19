@@ -20,7 +20,7 @@ export type KernelCall = (method: string, path: string, body?: unknown) => Promi
 type Runner = (method: string, path: string, body: unknown) => Promise<Json>;
 
 /** The code host modules (the kernel's list, kernel/src/codehost.ts CODEHOSTS; this service is its own build context). */
-const CODEHOSTS = ["codehost-github", "codehost-local"];
+const CODEHOSTS = ["github", "codehost-local"];
 const notAvailable = (what: string) => async () => { throw new Error(`${what} is not available to the grading module yet`); };
 const q = (o: Record<string, string>) => `?${new URLSearchParams(o)}`;
 

@@ -254,7 +254,7 @@ export function hostApply({ repo, stateDir, resolver, codehost, local }: {
   };
   async function call<T>(op: "read" | "land" | "write", body: Source | Write): Promise<T> {
     const c = codehost();
-    if (!c?.key) throw new Error("the code host (codehost-github) isn't installed here, so nothing can land on the instance repo");
+    if (!c?.key) throw new Error("the GitHub code host (the github module) isn't installed here, so nothing can land on the instance repo");
     const url = `${new URL(c.url).origin}/aidenhq/v1/apply/${op}`;
     const to = await resolver.resolve(url);
     const data = Buffer.from(JSON.stringify(body));
