@@ -40,6 +40,9 @@ paths:
     patterns:
       - modules/engine-*/
       - modules/channel-*/
+      # Slack's channel part (was channel-slack): its manifest and its listener.
+      - modules/slack/module.yaml
+      - modules/slack/connections/slack-live/
       - modules/ai-reviewer/
       - modules/github/
       - modules/codehost-local/
