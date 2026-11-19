@@ -217,9 +217,10 @@ only, so a view change never needs re-instrumenting.
 `pr.opened` to its `pr.deployed`. Change failure rate: deploys followed by a revert PR of something they
 shipped, a rollback generation (`revert_of`) or failed health, or an incident linked to it by the existing revert and
 incident linker (`quality.ts`, moved to the SDK); over all deploys. An incident is the Fleet Steward detector's check
-task: `task.created` carries a module-filed task's module (`origin: module:fleet-steward`) and source (`fleet-check:…`),
-read from the kernel's own task markers only when no agent made the task. Time to restore: incident task created to
-the deploy that fixes it, or failed generation to the next healthy one.
+task for something newly tripped: `task.created` carries a module-filed task's module (`origin: module:fleet-steward`) and source (`fleet-incident:…`),
+read from the kernel's own task markers only when no agent made the task. Its fixed text names no PR or commit, so an
+incident counts towards the failure rate only when the linker finds one; it always counts for time to restore. Time to
+restore: incident task created to the deploy of a PR from it or a task under it, or failed generation to the next healthy one.
 
 **Bounds.** The views run on the kernel's thread: a waterfall reads at most 5,000 facts and a summary or idle read at
 most 50,000 (newest first, `truncated: true` when cut); a summary is reused for 60 s per minute-rounded window.

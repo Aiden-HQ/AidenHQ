@@ -174,6 +174,19 @@ test("summary: p50/p75 per stage, fewer than 5 gives samples, DORA from deploys 
   assert.ok(Math.abs(d.deploys_per_day - 2 / (23 / 24)) < 1e-9);
 });
 
+test("DORA: an incident task restores at the deploy of a PR from a task under it", () => {
+  const db = new DatabaseSync(":memory:");
+  const facts = openFacts(db);
+  const add = (type, subject, at, data = {}, task = null) => facts.record({ type, subject, version: "1", at: `${D}${at}.000Z`, actor: "unknown", task, data });
+  const flow = createFlow({ db, stages: () => KERNEL_STAGES, now: () => new Date(`${D}23:00:00.000Z`), cacheMs: 0, incident: (f) => f.data.origin === "module:fleet-steward" });
+  add("task.created", "task:i1", "10:00:00", { origin: "module:fleet-steward", source_marker: "fleet-incident:x" }, "i1");
+  add("task.created", "task:fix", "10:05:00", { parent: "i1" }, "fix");
+  add("pr.merged", "pr:acme/app#9", "10:30:00", { sha: "a".repeat(40) }, "fix");
+  add("deploy.applied", "deploy:1", "10:40:00", { generation: 1, health: "good" });
+  add("pr.deployed", "pr:acme/app#9", "10:40:00", { pr: "acme/app#9", generation: 1 }, "fix");
+  assert.equal(flow.summary({ since: `${D}00:00:00.000Z`, to: `${D}23:00:00.000Z` }).dora.restore_p50, 40 * 60);
+});
+
 test("GET /v1/flow: the board's key or a module with kernel.flow-read", async (t) => {
   const { add, flow } = setup();
   wor8567(add);

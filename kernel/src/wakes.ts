@@ -139,7 +139,9 @@ export function createWakes({ db, owner, post, dispatches, routineKey = () => un
   /** One task's wakes: new comments past its cursor, and a move to todo (or a first sight of an unstarted todo task). */
   async function scan(issue: Issue, { reopened = false, source = "live", actor = "unknown" }: { reopened?: boolean; source?: "live" | "poll"; actor?: string } = {}) {
     const seen = q("SELECT agent, status, comment, blocked, polled FROM wake_tasks WHERE task = ?").get(issue.id) as { agent: string | null; status: string | null; comment: string | null; blocked: string | null; polled: number } | undefined;
-    // The task's facts first: a task nobody polls (unassigned, or an agent no dispatcher claims) is recorded too.
+    // The task's facts first: a task nobody polls (unassigned, or an agent no dispatcher claims) is recorded too. A list row may
+    // lack the description its first fact reads (a module's markers): read the task once then.
+    if (!seen && issue.description === undefined) { const r = await owner("GET", `/api/issues/${encodeURIComponent(issue.id)}`); if (r.status === 200) issue = r.json as Issue; }
     taskFacts(issue, seen, source, actor);
     const agent = issue.assigneeAgentId;
     const joined = agent ? polled().get(agent) : undefined;

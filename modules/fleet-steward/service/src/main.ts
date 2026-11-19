@@ -51,11 +51,12 @@ const gradeFailures = async () => {
 };
 const notify = async (text: string, key = createHash("sha256").update(text).digest("hex").slice(0, 16)) => void (await kernel.call("POST", "/v1/notify", { kind: "alert", text, dedupe_key: `steward:${key}` }));
 
-/** The check task: fixed text, never an incident's own words (the Steward reads those with fleet_detector, fenced). */
+/** The check task: fixed text, never an incident's own words (the Steward reads those with fleet_detector, fenced). Its source
+ * says whether something new tripped (fleet-incident:, Flow's DORA incidents) or only recovered (fleet-check:). */
 async function fileCheck(body: { incidents: { key: string; critical?: boolean }[]; recovered: { key: string }[] }, at = new Date()): Promise<boolean> {
   const critical = body.incidents.filter((i) => i.critical).length;
   const description = `The fleet detector tripped or recovered: ${body.incidents.length} new incident${body.incidents.length === 1 ? "" : "s"}${critical ? ` (${critical} critical)` : ""} and ${body.recovered.length} recovered. Follow your fleet-check skill: \`fleet_detector\` lists what is open and what recovered. Close this task with one line.`;
-  await kernel.call("POST", "/v1/tasks", { title: "Fleet Ops: check", description, role: "fleet-audit", source: `fleet-check:${at.toISOString()}` });
+  await kernel.call("POST", "/v1/tasks", { title: "Fleet Ops: check", description, role: "fleet-audit", source: `${body.incidents.length ? "fleet-incident" : "fleet-check"}:${at.toISOString()}` });
   return true;
 }
 
