@@ -87,6 +87,46 @@ export class McpAuth {
     await this.call<{ ok: true }>("POST", "/auth/finish", { state, code });
     this.cached = undefined;
   }
+
+  /** A device sign-in (signins `mode: device`): the code to show; the proxy then waits for the token itself. */
+  deviceStart() {
+    return this.call<DeviceCode>("POST", "/auth/device");
+  }
+
+  async deviceState(): Promise<DeviceState> {
+    const s = await this.call<DeviceState>("GET", "/auth/device");
+    if (s.state === "ok") this.cached = undefined;
+    return s;
+  }
+
+  async deviceCancel(): Promise<void> {
+    await this.call<{ ok: true }>("POST", "/auth/device/cancel");
+  }
+}
+
+export interface DeviceCode { user_code: string; verification_uri: string; verification_uri_complete?: string; expires_in: number; interval: number }
+export interface DeviceState { state: "idle" | "pending" | "ok" | "expired" | "denied" | "cancelled" | "failed"; detail?: string }
+
+/** OAuth's error codes (RFC 6749 §4.1.2.1, and the vendors' own common ones) in words: what happened, and what to do. */
+const OAUTH_WORDS: Record<string, string> = {
+  access_denied: "access was declined on the sign-in page; press Connect and choose Allow",
+  invalid_client: "the vendor doesn't know this client ID; check it was copied whole, or choose your organisation again",
+  unauthorized_client: "this app isn't allowed to sign in this way; check the app's OAuth settings",
+  invalid_scope: "the app doesn't offer a permission that was asked for; add it to the app, or pick fewer",
+  redirect_uri_mismatch: "the app doesn't list this board's redirect address; add it exactly as setup shows it",
+  invalid_request: "the vendor refused the request",
+  admin_policy_enforced: "your organisation's admin must approve this app first",
+  org_internal: "this app is internal to another organisation; sign in with an account there, or use your own app",
+  invalid_team_for_non_distributed_app: "this Slack app belongs to another workspace; sign in to its own workspace, or use your own app",
+  server_error: "the vendor had a problem; try again in a minute",
+  temporarily_unavailable: "the vendor is busy; try again in a minute",
+};
+
+/** A vendor's error on a sign-in's return, in words, with its own description after (plain text, capped). */
+export function vendorWords(error: string, description?: string | null): string {
+  const code = error.slice(0, 100);
+  const said = description?.replace(/\s+/g, " ").trim().slice(0, 200);
+  return `${OAUTH_WORDS[code] ?? `the vendor said ${code}`}${said ? ` (${said})` : ""}`;
 }
 
 export class McpAuthFailed extends Error {}
@@ -104,7 +144,7 @@ export const SIGNIN_LOOPBACK = "http://localhost:3121";
  * The state and code (or the vendor's error) from the address a loopback sign-in ended on, pasted by the owner: exactly the
  * sign-in's redirect (`expected`), on 127.0.0.1 or localhost. Anything else is refused without echoing it (it may hold a code).
  */
-export function pastedCallback(pasted: string, expected: string): { state: string; code?: string; error?: string } {
+export function pastedCallback(pasted: string, expected: string): { state: string; code?: string; error?: string; description?: string } {
   const want = new URL(expected);
   const u = URL.canParse(pasted.trim()) ? new URL(pasted.trim()) : undefined;
   const ok =
@@ -113,5 +153,6 @@ export function pastedCallback(pasted: string, expected: string): { state: strin
   const code = u?.searchParams.get("code") ?? "";
   const error = u?.searchParams.get("error") ?? "";
   if (!ok || !state || (!code && !error)) throw new McpAuthFailed(`that isn't the address the sign-in ended on: copy the whole address of the tab that couldn't load (it starts with ${expected})`);
-  return { state, ...(code ? { code } : { error: error.slice(0, 100) }) };
+  const description = u?.searchParams.get("error_description") ?? "";
+  return { state, ...(code ? { code } : { error: error.slice(0, 100), ...(description ? { description: description.slice(0, 200) } : {}) }) };
 }

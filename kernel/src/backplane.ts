@@ -85,7 +85,7 @@ import { JOB_KINDS, type Outcomes } from "./outcomes.ts";
 import { notice, type Notify } from "./notify.ts";
 import type { JobTools } from "./jobtools.ts";
 import type { Routing } from "./routing-tune.ts";
-import { hostOf } from "./codehost.ts";
+import { CODEHOSTS, hostOf } from "./codehost.ts";
 import { fail } from "./proxy.ts";
 import type { Records, State } from "./records.ts";
 import type { Work } from "./work.ts";
@@ -333,7 +333,7 @@ export function createBackplane({ facts, whoami, asserter, proxy, cp, boardCp, g
           const prAgent = (subject: string, task: unknown) => {
             const repo = /^pr:([^#]+)#/.exec(subject)?.[1];
             if (!repo || typeof task !== "string") return undefined;
-            const r = records.list(["approved", "claimed", "done", "failed"], 50, { task }).find((x) => x.module === w.module && /^codehost-[a-z0-9-]+\.pr$/.test(x.kind) && ((x.args as { only?: { repo?: string }[] } | null)?.only ?? []).some((o) => o.repo === repo));
+            const r = records.list(["approved", "claimed", "done", "failed"], 50, { task }).find((x) => x.module === w.module && CODEHOSTS.includes(w.module!) && x.kind === `${w.module}.pr` && ((x.args as { only?: { repo?: string }[] } | null)?.only ?? []).some((o) => o.repo === repo));
             return r?.requester.key ? `agent:${r.requester.key}` : undefined;
           };
           let recorded = 0;
@@ -540,6 +540,8 @@ export function createBackplane({ facts, whoami, asserter, proxy, cp, boardCp, g
       if (hit && /^\/v1\/(channel|cp\/read|brake)/.test(hit.path)) {
         const w = await moduleOf(req);
         const mod = w.module!;
+        // A channel's authority is its own token's: a module's other services hold connection keys, which never speak as the owner.
+        if (isChannel(modules().modules?.[mod]) && !w.own) throw fail(403, "forbidden", `${mod} speaks as the owner only with its own token, not a connection's key`);
         if (!channels || !brake || !owner) throw fail(503, "unavailable", "channels are off");
         switch (`${hit.method} ${hit.path}`) {
           case "GET /v1/channel/cards": return send(res, 200, await channels.cards(mod, new URLSearchParams(q ?? "").get("resync") === "1"));
@@ -727,7 +729,7 @@ export function createBackplane({ facts, whoami, asserter, proxy, cp, boardCp, g
           }
           case "POST /v1/writes/:id/outcome": {
             const r = record(id);
-            if (await whoami(bearer(req)).then((w) => w.kind !== "module" || r.kind === CONN_TOOL || w.module !== r.executor.module, () => true)) throw fail(403, "forbidden", "only the kind's executor reports its outcome");
+            if (await whoami(bearer(req)).then((w) => w.kind !== "module" || r.kind === CONN_TOOL || w.module !== r.executor.module || (w.connection !== undefined && (!r.executor.url || new URL(r.executor.url).hostname !== w.connection)), () => true)) throw fail(403, "forbidden", "only the kind's executor reports its outcome");
             const b = await json(req);
             if (!writes.outcome(id, b.ok === true, String(b.text ?? "").slice(0, 200_000))) throw fail(409, "conflict", `this record is ${record(id).state}`);
             return send(res, 200, { ok: true });

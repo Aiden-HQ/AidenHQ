@@ -5,6 +5,8 @@ secrets:
   provided:
     - name: flowok_bot_token
       setup: { label: Bot token, pattern: '^[0-9]+$', help: Digits only. }
+    - name: flowok_client_id
+      setup: { label: Client ID, pattern: '^[0-9]+\.[0-9]+$', public_client: true }
 contributes:
   board.setup_flows:
     - { order: 10, title: Phone, why: Aiden on your phone., effort: about 2 minutes, steps: "1. Paste the token.", secrets: [flowok_bot_token], pair_url: "http://flowok-bot:8090/pair" }

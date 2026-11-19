@@ -20,7 +20,7 @@ async function setup(t, { enabled = true, localSnapshot } = {}) {
   const op = createCodehost({
     grants: () => [{ module: "github", token: { repos: ["*/*"], perms: { issues: "write", contents: "read" } } }, { module: "apps-platform", token: { repos: ["acme-agents/x"], perms: { contents: "read" } }, clone: { repos: ["acme-agents/*"] } }, { module: "registry", token: { repos: ["@instance", "@product"], perms: { contents: "write" } }, snapshot: { repos: ["@agents/*"] } }, { module: "reviewer", snapshot: { repos: ["local/*", "acme-agents/*"] } }],
     repos: () => ({ instance: "acme-agents/aidenhq-instance", agentsOrgs: ["acme-agents"] }),
-    kind: () => (enabled ? { module: "codehost-github", floor: 0, tools: [], executor: { url: `${url}/aidenhq/v1/executor`, auth_secret: "codehost_github_token" } } : undefined),
+    kind: () => (enabled ? { module: "github", floor: 0, tools: [], executor: { url: `${url}/aidenhq/v1/executor`, auth_secret: "codehost_github_token" } } : undefined),
     secret: (n) => (n === "codehost_github_token" ? "ch-key" : ""),
     resolver: { resolve: async (u) => ({ host: "127.0.0.1", port: Number(new URL(u).port), path: new URL(u).pathname }), forget: () => {} },
     ...(localSnapshot ? { local: () => ({ snapshot: localSnapshot }) } : {}),

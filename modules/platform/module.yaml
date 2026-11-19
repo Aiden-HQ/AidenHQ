@@ -8,7 +8,7 @@ license: MIT
 checks:
   - id: product-gate
     at: write.filed
-    kinds: [ codehost-github.push, codehost-github.pr, codehost-github.merge ]
+    kinds: [ github.push, github.pr, github.merge ]
 # A module's contract kit as a check job (kernel/src/checkjobs.ts, P8): run in a credential-free box on a snapshot of the module's
 # source, `path` the module's folder in it. It runs only where the asking module's code host grant can snapshot the repository;
 # any other source can't be checked, and its modules stay `declared` (scripts/compiler/sources.ts) until it can.

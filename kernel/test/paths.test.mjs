@@ -23,7 +23,7 @@ const modules = readdirSync(join(ROOT, "modules"), { recursive: true, withFileTy
 
 test("a privileged module's folder is at least the reviewer's, in the modules repo and at the product's modules/", () => {
   const privileged = readdirSync(join(ROOT, "modules")).filter((m) => existsSync(join(ROOT, "modules", m, "module.yaml")) && [YAML.parse(readFileSync(join(ROOT, "modules", m, "module.yaml"), "utf8")).privileged ?? []].flat().length);
-  assert.ok(privileged.includes("codehost-github"), privileged.join(", "));
+  assert.ok(privileged.includes("github"), privileged.join(", "));
   for (const f of modules.filter((x) => privileged.includes(x.split("/")[1]))) {
     assert.notEqual(sensitivityOf(inv, "product", f).sensitivity, 0, f);
     assert.notEqual(sensitivityOf(inv, "modules", f.replace(/^modules\//, "")).sensitivity, 0, f);

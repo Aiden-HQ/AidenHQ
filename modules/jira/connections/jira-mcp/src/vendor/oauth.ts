@@ -30,6 +30,28 @@ export interface SignInFlow {
   finish(state: string, code: string): Promise<void>;
 }
 
+/** A device sign-in (RFC 8628) as the board shows it: the code to type on the vendor's page, and how it is going. */
+export interface DeviceStart {
+  user_code: string;
+  verification_uri: string;
+  verification_uri_complete?: string;
+  expires_in: number;
+  interval: number;
+}
+export interface DeviceState {
+  state: "idle" | "pending" | "ok" | "expired" | "denied" | "cancelled" | "failed";
+  detail?: string;
+}
+/**
+ * A sign-in for a server without a browser (GitHub, like `gh`): start asks the vendor for a code, and this service polls for the
+ * token itself until it lands, the code expires or the board cancels. One at a time: a new start cancels the one before.
+ */
+export interface DeviceFlow {
+  start(onSignedIn?: () => void): Promise<DeviceStart>;
+  state(): DeviceState;
+  cancel(): void;
+}
+
 /** What the proxy needs from a sign-in: the headers for an upstream request, a refresh after a refusal, and its state. */
 export interface Auth {
   headers(): Promise<Record<string, string>>;
@@ -40,6 +62,7 @@ export interface Auth {
   mark(state: "ok" | "expired", detail?: string): void;
   signedIn(): boolean;
   signIn?: SignInFlow;
+  device?: DeviceFlow;
 }
 
 /** A connection that signs in to nothing (a local server), with fixed headers. */
@@ -71,7 +94,14 @@ export interface OAuthOptions {
   resource?: false;
   /** A vendor's token answer in the standard shape (Slack nests the user token under authed_user). */
   tokenAnswer?: (json: Record<string, unknown>) => Record<string, unknown>;
+  /**
+   * Sign in by device code (RFC 8628) instead of a redirect: `endpoint` is the vendor's device authorization endpoint, the token
+   * endpoint is `endpoints.token` (else discovered). An empty `client_id` is a sign-in not configured yet.
+   */
+  device?: { endpoint: string; client_id: string; scopes?: string[] };
   fetchImpl?: typeof fetch;
+  /** How a device sign-in waits between polls (tests: no wait). */
+  wait?: (ms: number) => Promise<void>;
 }
 
 /** token.json: the pair plus the client it belongs to. Extra fields a vendor answered (Slack's user_id) are kept. */
@@ -118,8 +148,9 @@ export function oauth(o: OAuthOptions): Auth {
   let refreshing: Promise<StoredToken> | undefined;
   let status: AuthStatus = { state: "unknown", since: new Date().toISOString() };
 
+  // JSON asked for explicitly: GitHub's OAuth endpoints answer form-encoded otherwise.
   const json = async (url: string, init?: RequestInit) => {
-    const res = await fetchImpl(url, { ...init, signal: AbortSignal.timeout(15_000) });
+    const res = await fetchImpl(url, { ...init, headers: { accept: "application/json", ...(init?.headers as Record<string, string> | undefined) }, signal: AbortSignal.timeout(15_000) });
     return { ok: res.ok, status: res.status, body: (await res.json().catch(() => ({}))) as Record<string, unknown> };
   };
 
@@ -172,7 +203,7 @@ export function oauth(o: OAuthOptions): Auth {
     const secret = t.client_secret ?? o.client?.()?.secret;
     if (secret) body.set("client_secret", secret);
     if (t.resource) body.set("resource", t.resource);
-    const res = await fetchImpl(endpoint, { method: "POST", body, signal: AbortSignal.timeout(15_000) });
+    const res = await fetchImpl(endpoint, { method: "POST", body, headers: { accept: "application/json" }, signal: AbortSignal.timeout(15_000) });
     const answer = (await res.json().catch(() => ({}))) as Record<string, unknown>;
     let next;
     try {
@@ -317,6 +348,61 @@ export function oauth(o: OAuthOptions): Auth {
     },
   };
 
+  // The device sign-in: one run at a time; its device_code never leaves this service.
+  const wait = o.wait ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
+  let run: { id: number; state: DeviceState } | undefined;
+  let runs = 0;
+  const vendorWords = (b: Record<string, unknown>) => String(b.error_description ?? b.error ?? "").slice(0, 200);
+  const device: DeviceFlow | undefined = o.device && {
+    async start(onSignedIn) {
+      const d = o.device!;
+      if (!d.client_id) throw new SignInError(`${o.name}'s sign-in isn't configured yet: it has no client ID`);
+      const tokenUrl = o.endpoints?.token ?? (await discover()).token;
+      const body = new URLSearchParams({ client_id: d.client_id, ...(d.scopes?.length ? { scope: d.scopes.join(o.scopes?.separator ?? " ") } : {}) });
+      const r = await json(d.endpoint, { method: "POST", body });
+      const b = r.body;
+      const uri = b.verification_uri ?? b.verification_url;
+      if (!r.ok || typeof b.device_code !== "string" || typeof b.user_code !== "string" || typeof uri !== "string") throw new SignInError(`${o.name} refused to start the sign-in: ${vendorWords(b) || `it answered ${r.status}`}`);
+      const expiresIn = Number(b.expires_in) > 0 ? Number(b.expires_in) : 900;
+      const deviceCode = b.device_code;
+      const me = { id: ++runs, state: { state: "pending" } as DeviceState };
+      run = me;
+      const expires = Date.now() + expiresIn * 1000;
+      let interval = Number(b.interval) > 0 ? Number(b.interval) : 5;
+      const end = (state: DeviceState) => { if (run === me) run.state = state; };
+      void (async () => {
+        while (run === me && me.state.state === "pending") {
+          await wait(interval * 1000);
+          if (run !== me || me.state.state !== "pending") return;
+          if (Date.now() >= expires) return end({ state: "expired", detail: "the code expired before it was entered" });
+          const p = await json(tokenUrl, { method: "POST", body: new URLSearchParams({ grant_type: "urn:ietf:params:oauth:grant-type:device_code", device_code: deviceCode, client_id: d.client_id }) }).catch(() => undefined);
+          if (!p || p.status >= 500) continue; // the vendor's hiccup: ask again
+          const err = typeof p.body.error === "string" ? p.body.error : "";
+          if (err === "authorization_pending") continue;
+          if (err === "slow_down") { interval += 5; continue; }
+          if (err === "expired_token") return end({ state: "expired", detail: "the code expired before it was entered" });
+          if (err === "access_denied") return end({ state: "denied", detail: `access was denied on ${o.name}'s page` });
+          try {
+            if (err || !p.ok) throw new AuthError(vendorWords(p.body) || `${o.name} answered ${p.status}`);
+            const parsed = parse(p.body);
+            if (run !== me || me.state.state !== "pending") return; // cancelled while the answer was on its way: nothing saved
+            save({ ...parsed, client_id: d.client_id, token_endpoint: tokenUrl });
+            mark("ok");
+            end({ state: "ok" });
+            onSignedIn?.();
+          } catch (e) {
+            return end({ state: "failed", detail: `${o.name} refused the sign-in: ${String((e as Error).message).slice(0, 200)}` });
+          }
+        }
+      })();
+      return { user_code: b.user_code, verification_uri: uri, ...(typeof b.verification_uri_complete === "string" ? { verification_uri_complete: b.verification_uri_complete } : {}), expires_in: expiresIn, interval };
+    },
+    state: () => run?.state ?? { state: "idle" },
+    cancel() {
+      if (run?.state.state === "pending") run.state = { state: "cancelled" };
+    },
+  };
+
   return {
     async headers() {
       const t = load();
@@ -327,12 +413,13 @@ export function oauth(o: OAuthOptions): Auth {
       await refresh();
     },
     status() {
-      if (!existsSync(tokenPath)) return { state: "missing", since: status.since };
+      if (!existsSync(tokenPath)) return { state: "missing", since: status.since, ...(o.device && !o.device.client_id ? { detail: `${o.name}'s sign-in isn't configured yet: it has no client ID` } : {}) };
       const scope = (() => { try { return load().scope; } catch { return undefined; } })();
       return { ...status, ...(scope ? { scope } : {}) };
     },
     mark,
     signedIn: () => existsSync(tokenPath),
     signIn,
+    ...(device ? { device } : {}),
   };
 }

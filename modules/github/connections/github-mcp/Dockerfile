@@ -16,8 +16,8 @@ WORKDIR /app
 COPY --from=build /app/node_modules ./node_modules
 COPY --from=build /app/dist ./dist
 COPY package.json ./
-# The GitHub token comes in as a secret file; nothing is written to disk.
+# The sign-in token lives in the vault dir mounted at /state (official.ts); nothing else is written to disk.
 USER 1000:1000
-EXPOSE 8086
+EXPOSE 8086 8087
 HEALTHCHECK --interval=30s --timeout=5s --retries=3 CMD ["node", "-e", "fetch('http://127.0.0.1:8086/healthz').then(r=>process.exit(r.status<600?0:1)).catch(()=>process.exit(1))"]
 CMD ["node", "dist/src/main.js"]

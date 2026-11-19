@@ -1,3 +1,5 @@
+import { explainGoogle } from "./google-errors.js";
+
 /** Read-only scopes requested at consent time. Nothing here can modify Google data. */
 export const SCOPES = [
   "https://www.googleapis.com/auth/calendar.events.readonly",
@@ -54,8 +56,9 @@ export class GoogleClient {
       throw err;
     }
     if (!res.ok || !json.access_token) {
-      const detail = `token refresh failed: ${json.error ?? res.status} ${json.error_description ?? ""}`.trim();
-      this.record(json.error && DEAD_GRANT.has(json.error) ? "expired" : "error", detail);
+      const dead = json.error && DEAD_GRANT.has(json.error);
+      const detail = `token refresh failed: ${json.error ?? res.status} ${json.error_description ?? ""}`.trim() + (dead ? `. ${explainGoogle(json.error)}` : "");
+      this.record(dead ? "expired" : "error", detail);
       throw new GoogleAuthError(detail);
     }
     this.record("ok");
@@ -65,7 +68,7 @@ export class GoogleClient {
 
   private record(state: AuthStatus["state"], detail?: string) {
     const now = new Date().toISOString();
-    this.auth = { state, since: state === this.auth.state ? this.auth.since : now, checkedAt: now, ...(detail ? { detail: detail.slice(0, 300) } : {}) };
+    this.auth = { state, since: state === this.auth.state ? this.auth.since : now, checkedAt: now, ...(detail ? { detail: detail.slice(0, 700) } : {}) };
   }
 
   authStatus(): AuthStatus {

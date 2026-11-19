@@ -410,7 +410,9 @@ else
 fi
 
 echo "Repository"
-if git ls-files -z --cached --others --exclude-standard -- . ':!scripts/verify-security.sh' | xargs -0 grep -lE '(sk-[A-Za-z0-9]{20,}|pcp_[a-f0-9]{20,}|GOCSPX-[A-Za-z0-9_-]{20,}|refresh_token"\s*:\s*"1//|xox[bp]-[0-9]{6,})' 2>/dev/null | grep -q .; then
+# The one public value allowed through (.gitleaks.toml says why): an organisation's Google Desktop client secret in the catalog.
+if git ls-files -z --cached --others --exclude-standard -- . ':!scripts/verify-security.sh' | xargs -0 grep -hoE '(sk-[A-Za-z0-9]{20,}|pcp_[a-f0-9]{20,}|GOCSPX-[A-Za-z0-9_-]{20,}|refresh_token"\s*:\s*"1//|xox[bp]-[0-9]{6,})' 2>/dev/null \
+  | grep -vxF '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' | grep -q .; then
   fail "possible secrets in tracked files"
 else
   pass "no secret patterns in tracked files"
@@ -744,8 +746,8 @@ gh_mutations="$(sed -n '/^export const GRAPHQL/,/^} as const;/p' modules/github/
 # Tier 0. Closes (plan.mjs): agents org Tier 0; on the product repo only Dependabot's PRs, for a platform requester; never the
 # instance repo. Repos on this server (codehost-local) join the agents orgs only when that module is enabled (kernel main.ts);
 # its host refuses a moved head and checks that aren't green itself.
-rm_="modules/codehost-github/service/src/merge-gate.mjs"; rq="modules/codehost-github/service/src/merges.ts"
-rplan="modules/codehost-github/service/src/plan.mjs"; rcheck="modules/platform/src/check.mjs"; rdr="modules/codehost-github/service/src/design-review.ts"
+rm_="modules/github/service/src/merge-gate.mjs"; rq="modules/github/service/src/merges.ts"
+rplan="modules/github/service/src/plan.mjs"; rcheck="modules/platform/src/check.mjs"; rdr="modules/github/service/src/design-review.ts"
 [ "$(grep -c 'd\.gh(' "$rq")" = 2 ] && grep -qF 'const r = await d.gh("POST", "/graphql", await d.token(repo, READ), { query: PR_QUERY,' "$rq" \
   && grep -qF 'const r = await d.gh("PUT", `/repos/${repo}/pulls/${number}/merge`, await d.token(repo, mergePermissions(repo, platform)), { merge_method: method, sha });' "$rq" \
   && grep -qF 'p.sha = await mergePut(p.repo, p.number, p.head, method);' "$rq" \
@@ -757,9 +759,9 @@ rplan="modules/codehost-github/service/src/plan.mjs"; rcheck="modules/platform/s
   && grep -qF 'if (!named.length) return { do: "wait"' "$rm_" \
   && [ "$(grep -c 'o\.gh("POST"' "$rdr")" = 2 ] && grep -qF 'o.gh("POST", `/repos/${ask.repo}/statuses/${ask.head}`' "$rdr" && grep -qF '{ state: "pending", context: DESIGN_REVIEW.name,' "$rdr" \
   && grep -qF 'if (!inAgentsOrg(p.repo, s)) return [REJECT("outside-merge"' "$rplan" \
-  && grep -qF 'export const mergePermissions = (slug: string | undefined, productRepo: ProductRepos) => (isProduct(slug, productRepo) ? { ...WRITE, workflows: "write" } : WRITE);' modules/codehost-github/service/src/github-app.ts \
-  && grep -qF 'export const ownRepo = (slug: string | undefined, agentsOrg: string | undefined, productRepo: ProductRepos) => inOrg(agentsOrg, slug) || isProduct(slug, productRepo);' modules/codehost-github/service/src/github-app.ts \
-  && grep -qF 'const isProduct = (slug: string | undefined, product: ProductRepos) => [product ?? []].flat().some((p) => sameSlug(slug, p));' modules/codehost-github/service/src/github-app.ts \
+  && grep -qF 'export const mergePermissions = (slug: string | undefined, productRepo: ProductRepos) => (isProduct(slug, productRepo) ? { ...WRITE, workflows: "write" } : WRITE);' modules/github/service/src/github-app.ts \
+  && grep -qF 'export const ownRepo = (slug: string | undefined, agentsOrg: string | undefined, productRepo: ProductRepos) => inOrg(agentsOrg, slug) || isProduct(slug, productRepo);' modules/github/service/src/github-app.ts \
+  && grep -qF 'const isProduct = (slug: string | undefined, product: ProductRepos) => [product ?? []].flat().some((p) => sameSlug(slug, p));' modules/github/service/src/github-app.ts \
   && grep -qF 'if (same(p.repo, s.productRepo)) return [productMergePart(p, ref, s)];' "$rplan" \
   && [ "$(awk '/^function productMergePart/,/^}/' "$rplan" | grep -oE 'T\([0-9]' | sort -u | tr '\n' ' ')" = "T(1 " ] \
   && grep -qF 'if (same(p.repo, s.instanceRepo)) return [REJECT("core-repo-merge"' "$rplan" \
@@ -777,7 +779,7 @@ rplan="modules/codehost-github/service/src/plan.mjs"; rcheck="modules/platform/s
 # the job jail (kernel/src/sandbox.ts hiding over the kernel's own sandboxConfig: Engineer jobs' layout and hidden paths, its
 # own network, required at startup; never unconfined), the tree read-only, one writable folder whose result is read as a small
 # regular file, and the kernel signs the receipt (check jobs).
-rgate="modules/codehost-github/service/src/evalgate.ts"
+rgate="modules/github/service/src/evalgate.ts"
 [ "$(grep -c 'await d\.evalGate(' "$rq")" = 1 ] && [ "$(grep -c 'await mergePut(' "$rq")" = 1 ] \
   && [ "$(awk '/^  async function poll\(/,/^  }$/' "$rq" | grep -nE 'await d\.evalGate\(|await mergePut\(' | cut -d: -f2- | sed 's/^ *//' | cut -c1-24 | tr '\n' '|')" = 'const gate = await d.eva|p.sha = await mergePut(p|' ] \
   && grep -qF 'if (gate && "stop" in gate) return fail(gate.stop);' "$rq" && grep -qF 'if (gate) return wait("eval", gate.wait, EVAL_WAIT_MINUTES);' "$rq" \
@@ -787,13 +789,13 @@ rgate="modules/codehost-github/service/src/evalgate.ts"
 # PR that changes it is judged by its base branch's tip; nothing reads a separate official modules repo or its pin.
 git -C "$repo" cat-file -e "HEAD:modules/ai-reviewer/scripts/reviewer-eval.mjs" 2>/dev/null \
   && ! grep -qE 'modules-pin|modulesRepo' "$rgate" \
-  && grep -qF 'const REVIEWER_TREE = ["modules/ai-reviewer", "modules/codehost-github/service/src/plan.mjs", "modules/platform/src/check.mjs", "modules/codehost-github/checks", "modules/platform/checks", "modules/codehost-github/module.yaml", "modules/platform/module.yaml"];' "$rgate" \
+  && grep -qF 'const REVIEWER_TREE = ["modules/ai-reviewer", "modules/github/service/src/plan.mjs", "modules/platform/src/check.mjs", "modules/github/checks", "modules/platform/checks", "modules/github/module.yaml", "modules/platform/module.yaml"];' "$rgate" \
   && pass "codehost: the reviewer-eval gate judges the product's own modules/ai-reviewer, by the base branch's tip ($rgate)" \
   || fail "codehost: the reviewer-eval gate takes the official modules from elsewhere ($rgate)"
 # A release bump of the instance's product pin to a commit whose reviewer content (REVIEWER_TREE by object id) differs lands
 # only on a passing receipt for that reviewer, judged by the pinned commit; adding or moving an `aidenhq` marketplace pin is refused.
 grep -qE 'async function bump\(' "$rgate" \
-  && grep -qF 'if (off.to !== null && JSON.stringify(off.from) !== JSON.stringify(off.to)) throw fail(422' modules/codehost-github/service/src/service.ts \
+  && grep -qF 'if (off.to !== null && JSON.stringify(off.from) !== JSON.stringify(off.to)) throw fail(422' modules/github/service/src/service.ts \
   && pass "codehost: a product pin move to a changed AI reviewer lands only on a passing eval receipt for it; no marketplace pin moves ($rgate)" \
   || fail "codehost: a pin move can bring a changed AI reviewer with no eval receipt ($rgate)"
 # Who decides a write (owner, 2026-11-14): the owner only for their own veto, a split panel, a routine's or the instance's
@@ -819,9 +821,9 @@ grep -qE 'async function bump\(' "$rgate" \
 # core is the path inventory (paths.yaml, panel); the platform check (check.mjs) keeps the modules' list too.
 rreview="modules/ai-reviewer/service/src/review.mjs"
 [ "$(grep -ohE 'T\(2, "[a-z-]+"' "$rplan" "$rcheck" kernel/src/tier.ts | sort -u | tr '\n' ' ')" = 'T(2, "owner-approval-record" T(2, "owner-veto" T(2, "unrecognised" ' ] \
-  && node --input-type=module -e 'const { pathInventory } = await import(process.argv[1]); const { sensitivityOf } = await import(process.argv[2]); const inv = pathInventory(process.argv[3]); const must = ["merge-gate.mjs","merges.ts","evalgate.ts","plan.mjs","train.ts","release.mjs"].map((n) => `modules/codehost-github/service/src/${n}`).concat(["modules/platform/src/check.mjs", "modules/glean/connections/glean-mcp/src/aidenhq-sdk/caller.ts", "modules/engine-claude/src/claude.ts", "modules/apps-platform/apps-mcp/src/aidenhq-sdk/executor.ts", "modules/ai-reviewer/service/security/policy.md", "modules/grading/service/src/main.ts", "modules/grading/service/Dockerfile", "modules/grading/package.json", "ops/grades-move.mjs", "kernel/src/auth-rules.ts", "kernel/src/signin.ts", "kernel/src/progress.ts", "kernel/src/assert.ts", "kernel/src/cp.ts"], ["app","fleet","kernel-auth","session"].map((n) => `services/board/src/${n}.ts`), ["modules","paperclip-setup","computers"].map((n) => `scripts/${n}.mjs`), ["modules/engine-codex/bin/engine", "kernel/sdk/src/engine-io.ts", "kernel/src/sandbox.ts", "kernel/src/jobs.ts", "kernel/src/boxes.ts", "kernel/src/admission.ts", "kernel/src/accounts.ts", "kernel/src/proxy.ts", "kernel/src/identity.ts", "kernel/src/gateway/lib.ts", "kernel/sdk/src/caller.ts", "modules/apps-platform/apps-mcp/src/aidenhq-sdk/caller.ts", "kernel/src/writes.ts", "kernel/src/records.ts", "kernel/src/tier.ts", "kernel/src/kinds.ts", "kernel/src/review-loop.ts", "kernel/src/apply-tier.ts", "kernel/src/checkjobs.ts", "kernel/sdk/src/executor.ts", "modules/apps-platform/apps-mcp/src/executor.ts", "modules/apps-platform/module.yaml", "modules/primer/module.yaml", "modules/primer/connections/primer-mcp/src/publish.ts", "modules/ai-reviewer/service/src/review.mjs", "kernel/sdk/src/reviewer.ts", "services/shared/review-files.mjs", "kernel/src/checks.ts", "modules/grading/module.yaml", "modules/grading/service/src/server.ts", "modules/grading/service/src/grades.ts", "paths.yaml", "scripts/paths.mjs", "scripts/verify-security.sh"]); const miss = must.filter((f) => !["panel", 2].includes(sensitivityOf(inv, "product", f).sensitivity)); if (miss.length) { console.error("not the panel'"'"'s: " + miss.join(" ")); process.exit(1); }' "$repo/scripts/paths.mjs" "$repo/kernel/src/paths.ts" "$repo" \
-  && node --input-type=module -e 'const { touchesReviewer } = await import(process.argv[1]); const must = ["kernel/src/tier.ts", "kernel/src/provenance.ts", "kernel/src/writes.ts", "kernel/src/records.ts", "kernel/src/reviews.ts", "kernel/src/kinds.ts", "kernel/src/apply.ts", "modules/codehost-github/service/src/plan.mjs", "modules/platform/src/check.mjs"]; const miss = must.filter((f) => !touchesReviewer([f])); if (miss.length) { console.error("not reviewer code: " + miss.join(" ")); process.exit(1); }' "$repo/$rgate" \
-  && grep -qF '  /^modules\/ai-reviewer\//,' "$rcheck" && grep -qF '  /^modules\/codehost-github\//,' "$rcheck" && grep -qF '  /^modules\/platform\//,' "$rcheck" \
+  && node --input-type=module -e 'const { pathInventory } = await import(process.argv[1]); const { sensitivityOf } = await import(process.argv[2]); const inv = pathInventory(process.argv[3]); const must = ["merge-gate.mjs","merges.ts","evalgate.ts","plan.mjs","train.ts","release.mjs"].map((n) => `modules/github/service/src/${n}`).concat(["modules/github/connections/github-mcp/src/official.ts", "modules/platform/src/check.mjs", "modules/glean/connections/glean-mcp/src/aidenhq-sdk/caller.ts", "modules/engine-claude/src/claude.ts", "modules/apps-platform/apps-mcp/src/aidenhq-sdk/executor.ts", "modules/ai-reviewer/service/security/policy.md", "modules/grading/service/src/main.ts", "modules/grading/service/Dockerfile", "modules/grading/package.json", "ops/grades-move.mjs", "kernel/src/auth-rules.ts", "kernel/src/signin.ts", "kernel/src/progress.ts", "kernel/src/assert.ts", "kernel/src/cp.ts"], ["app","fleet","kernel-auth","session"].map((n) => `services/board/src/${n}.ts`), ["modules","paperclip-setup","computers"].map((n) => `scripts/${n}.mjs`), ["modules/engine-codex/bin/engine", "kernel/sdk/src/engine-io.ts", "kernel/src/sandbox.ts", "kernel/src/jobs.ts", "kernel/src/boxes.ts", "kernel/src/admission.ts", "kernel/src/accounts.ts", "kernel/src/proxy.ts", "kernel/src/identity.ts", "kernel/src/gateway/lib.ts", "kernel/sdk/src/caller.ts", "modules/apps-platform/apps-mcp/src/aidenhq-sdk/caller.ts", "kernel/src/writes.ts", "kernel/src/records.ts", "kernel/src/tier.ts", "kernel/src/kinds.ts", "kernel/src/review-loop.ts", "kernel/src/apply-tier.ts", "kernel/src/checkjobs.ts", "kernel/sdk/src/executor.ts", "modules/apps-platform/apps-mcp/src/executor.ts", "modules/apps-platform/module.yaml", "modules/primer/module.yaml", "modules/primer/connections/primer-mcp/src/publish.ts", "modules/ai-reviewer/service/src/review.mjs", "kernel/sdk/src/reviewer.ts", "services/shared/review-files.mjs", "kernel/src/checks.ts", "modules/grading/module.yaml", "modules/grading/service/src/server.ts", "modules/grading/service/src/grades.ts", "paths.yaml", "scripts/paths.mjs", "scripts/verify-security.sh"]); const miss = must.filter((f) => !["panel", 2].includes(sensitivityOf(inv, "product", f).sensitivity)); if (miss.length) { console.error("not the panel'"'"'s: " + miss.join(" ")); process.exit(1); }' "$repo/scripts/paths.mjs" "$repo/kernel/src/paths.ts" "$repo" \
+  && node --input-type=module -e 'const { touchesReviewer } = await import(process.argv[1]); const must = ["kernel/src/tier.ts", "kernel/src/provenance.ts", "kernel/src/writes.ts", "kernel/src/records.ts", "kernel/src/reviews.ts", "kernel/src/kinds.ts", "kernel/src/apply.ts", "modules/github/service/src/plan.mjs", "modules/platform/src/check.mjs"]; const miss = must.filter((f) => !touchesReviewer([f])); if (miss.length) { console.error("not reviewer code: " + miss.join(" ")); process.exit(1); }' "$repo/$rgate" \
+  && grep -qF '  /^modules\/ai-reviewer\//,' "$rcheck" && grep -qF '  /^modules\/github\//,' "$rcheck" && grep -qF '  /^modules\/platform\//,' "$rcheck" \
   && grep -qF '.some((g) => g.test(f))) parts.push(PANEL("gate-core"' "$rcheck" \
   && grep -qF 'const PANEL = (rule, reason) => ({ tier: 1, rule, reason, panel: true });' "$rcheck" \
   && grep -qF 'const rank = (p: Part) => p.tier * 4 + (p.ownerOnly ? 2 : 0) + (p.panel ? 1 : 0);' kernel/src/tier.ts \

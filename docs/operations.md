@@ -260,7 +260,7 @@ without the owner reaches Telegram once a day from 21:00.
   green the reviewer is asked once more, and then the merge is parked with a note on the task. In either queue a red check whose Actions job never judged the commit
   (cancelled, timed out, failed to start, or `code-review`'s own "failed"/"incomplete" comment on that head) is re-run
   once per check and head before the merge fails; a second failure, or any real failure beside it, is final. The re-run
-  needs the GitHub App's Actions: write permission (`ops/github-app-setup.mjs`); without it the failure stands as before.
+  needs the GitHub App's Actions: write permission (created from the board's GitHub setup); without it the failure stands as before.
   A red check whose job ran **no step** and carries a failure annotation (GitHub refused to start it: billing, a spending
   limit, no runner) is the environment's, not the commit's: it is classified apart from a failed check, never sent to the
   Engineer to fix or rebase, and the head is never moved for it. It is re-run once at the same head; if it never starts
@@ -284,7 +284,7 @@ cd ~/aidenhq && OPENROUTER_API_KEY="$(cat ~/.config/aidenhq/openrouter_eval_key)
 
 Slack, GitHub, Jira, meeting notes and Drive documents are ingested once into the warehouse (`src_slack`, `src_github`,
 `src_jira`, `src_meetings`, `src_docs`; design: [design/sources.md](design/sources.md)). The writers
-are channel-slack, github-mcp, jira-mcp, ops-mcp (meeting notes in full, from the vault) and google-workspace-mcp (the
+are slack (its live listener), github-mcp, jira-mcp, ops-mcp (meeting notes in full, from the vault) and google-workspace-mcp (the
 primary account's Drive: metadata + a cheap summary + link); agents read with apps-mcp's `warehouse_query`,
 `source_new` and `source_ack`. apps-mcp also proposes cross-source identity links hourly (`src_meta.people_identities`,
 exact email match only).
@@ -299,7 +299,7 @@ exact email match only).
 - The DevOps Engineer checks `src_meta.ingest_run` on each heartbeat and posts a source stale for over an hour to the
   "Fleet issues" task (its handbook, "Shared sources").
 - Slack's gap sync needs the owner's user token of the Slack live app in `slack_live_user_token` (scopes in
-  `modules/channel-slack/module.yaml`); without it src_slack gets live events only.
+  `modules/slack/module.yaml`); without it src_slack gets live events only.
 - Each pass writes `src_meta.ingest_run` (source, scope, rows, error). src_docs has two scopes: `drive` (code) and
   `summaries` (OpenRouter, the root `openrouter_key`; model `DOCS_SUMMARY_MODEL`, default `~deepseek/deepseek-flash-latest`,
   ZDR). Without the key it stores metadata only.

@@ -58,12 +58,16 @@ describe("the client pasted on the board", () => {
 });
 
 describe("the guided flow", () => {
-  it("bare-IP board shows the name requirement, and the redirect URI is the board's own", () => {
+  it("makes a Desktop client (no redirect to register), and says Internal vs External and the 7-day limit before it starts", () => {
     const yaml = readFileSync(join(import.meta.dirname, "../../../module.yaml"), "utf8");
     const steps = /steps: \|\n((?: {8}.*\n|\n)+)/.exec(yaml)?.[1] ?? "";
     expect(yaml).toMatch(/needs_name: "Google only accepts a named address/);
-    expect(steps).toContain("`{board_url}/google/callback`");
-    expect(steps.length).toBeLessThan(1500);
+    expect(steps).toMatch(/Desktop app/);
+    expect(steps).not.toContain("google/callback");
+    expect(steps).toMatch(/Internal.*External/s);
+    expect(steps).toMatch(/7 days/);
+    expect(steps.length).toBeLessThan(4000); // the schema's limit
+    expect(yaml).toMatch(/google_client_id[\s\S]*?public_client: true/);
     expect(steps).toContain("https://console.cloud.google.com/projectcreate");
   });
 });

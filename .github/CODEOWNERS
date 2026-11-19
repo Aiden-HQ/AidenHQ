@@ -1,6 +1,6 @@
 # The maintainer reviews every change; gate files are listed so branch protection can require that review.
 *                                  @Aiden-HQ/maintainers
-/modules/codehost-github/            @Aiden-HQ/maintainers
+/modules/github/            @Aiden-HQ/maintainers
 /kernel/                           @Aiden-HQ/maintainers
 /modules/apps-platform/gate/                    @Aiden-HQ/maintainers
 /ops/                              @Aiden-HQ/maintainers

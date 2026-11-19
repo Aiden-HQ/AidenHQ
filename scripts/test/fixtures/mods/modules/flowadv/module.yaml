@@ -1,0 +1,14 @@
+name: flowadv
+description: a sign-in as its basic setup, and your own app (a bot that pairs) as its advanced one
+requires: [board]
+secrets:
+  provided:
+    - name: flowadv_bot_token
+      setup: { label: Bot token, pattern: '^[0-9]+$' }
+contributes:
+  board.setup_flows:
+    - { order: 20, title: Chat, why: Read your chats., effort: about a minute, steps: "1. Sign in." }
+    - { mode: advanced, order: 21, title: Chat bot, why: A bot people can message., effort: about 2 minutes, steps: "1. Make a bot.", capabilities: [a bot people can DM], secrets: [flowadv_bot_token], pair_url: "http://flowadv-bot:8090/pair" }
+services:
+  run:
+    bot: { image: "example/bot@sha256:0000000000000000000000000000000000000000000000000000000000000000", port: 8090 }

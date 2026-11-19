@@ -15,7 +15,7 @@ const dotenv = existsSync(join(root, ".env")) ? Object.fromEntries(readFileSync(
 const env = { ...dotenv, ...process.env };
 const expand = (p) => (p.startsWith("~/") ? join(homedir(), p.slice(2)) : p);
 
-// The agents org, read the way ops/github-app-setup.mjs and the runner read it.
+// The agents org, read the way the kernel reads it.
 const instYaml = env.AIDENHQ_INSTANCE_DIR && join(expand(env.AIDENHQ_INSTANCE_DIR), "instance.yaml");
 const setting = (k) => (instYaml && existsSync(instYaml) ? new RegExp(`^\\s+${k}:\\s*["']?([A-Za-z0-9_.-]+)`, "m").exec(readFileSync(instYaml, "utf8"))?.[1] : undefined);
 const name = setting("instance_name") ?? env.AIDENHQ_INSTANCE_NAME;

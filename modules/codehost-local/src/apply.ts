@@ -123,6 +123,7 @@ export function localApply({ bare, instanceRepo, ingest }: { bare: string; insta
         let out = "", err = "";
         p.stdout.on("data", (d) => (out += d)); p.stderr.on("data", (d) => (err += d));
         p.on("close", (code) => (code === 0 ? ok(out.trim()) : no(new Error(`git ${args[0]}: ${err.trim().slice(0, 300)}`))));
+        p.stdin.on("error", () => {}); // git may exit before reading its input (EPIPE): its exit code is the answer
         p.stdin.end(input);
       });
       try {

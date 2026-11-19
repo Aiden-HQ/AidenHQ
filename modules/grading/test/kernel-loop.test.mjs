@@ -84,7 +84,7 @@ test("a graded PR task's PR is read through the broker's token and graded; a PR 
     if (path === "/v1/cp/read/api/issues/t2/comments") return [];
     if (path === "/v1/cp/read/api/issues/t2/attachments") return [];
     if (path === "/v1/cp/read/api/companies/co/agents") return [{ id: "eng", name: "Dana" }];
-    if (path === "/v1/work?task=t2") return { busy: false, jobs: [{ id: "j-2", state: "done", engine: "codex", ended_at: new Date(Date.now() - 60_000).toISOString() }], records: [{ id: "r1", kind: "codehost-github.pr", state: "done", ok: true, args: { workspace: "WOR-2", only: [{ repo: "acme-agents/app", branch: "fix-it", sha: "a".repeat(40) }] }, outcome_text: "PRs: https://github.com/acme-agents/app/pull/7" }] };
+    if (path === "/v1/work?task=t2") return { busy: false, jobs: [{ id: "j-2", state: "done", engine: "codex", ended_at: new Date(Date.now() - 60_000).toISOString() }], records: [{ id: "r1", kind: "github.pr", state: "done", ok: true, args: { workspace: "WOR-2", only: [{ repo: "acme-agents/app", branch: "fix-it", sha: "a".repeat(40) }] }, outcome_text: "PRs: https://github.com/acme-agents/app/pull/7" }] };
     if (path === "/v1/work/grader-token") return { token: "tok" };
     if (path === "/v1/checks/t2") return calls.resolve.push(body), {};
     throw new Error(`unexpected ${method} ${path}`);

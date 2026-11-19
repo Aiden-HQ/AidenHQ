@@ -4,10 +4,8 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { GitHub, GitHubRefused, GRAPHQL, guard, parseRef } from "../src/github.js";
 
-function tokenFile(content = "gho_test"): string {
-  const f = join(mkdtempSync(join(tmpdir(), "github-mcp-")), "token");
-  writeFileSync(f, content);
-  return f;
+function tokenFile(content = "gho_test") {
+  return { get: async () => content, signedIn: () => true };
 }
 
 /** A fake GitHub that records every request and answers from `routes` (pathname → body). */

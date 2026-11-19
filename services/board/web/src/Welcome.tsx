@@ -2,6 +2,7 @@
 // summary that ends in Aiden's welcome chat. It wraps the app (main.tsx), so every board route sits behind the model gate.
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { SignInRequired, admin, api, type SetupFlowView, type WelcomeState } from "./api";
+import { OrganisationPicker } from "./Organisation";
 import { Page } from "./settings-ui";
 import { SetupFlow } from "./SetupFlow";
 import "./settings.css";
@@ -13,7 +14,7 @@ const go = (hash: string) => {
 };
 
 export function WelcomeGate({ children }: { children: ReactNode }) {
-  const [state, setState] = useState<WelcomeState | null>(null);
+  const [state, setState] = useState<(WelcomeState & { orgs: boolean }) | null>(null);
   const [hash, setHash] = useState(location.hash);
   useEffect(() => {
     const on = () => setHash(location.hash);
@@ -24,8 +25,10 @@ export function WelcomeGate({ children }: { children: ReactNode }) {
     // Signed out, or a kernel that doesn't answer: the app shows its own sign-in or error.
     api
       .session()
-      .then((s) => (s.account ? api.welcome() : null))
-      .then((w) => {
+      // Whether the catalog lists organisations: the wizard then asks for yours first.
+      .then((s) => (s.account ? Promise.all([api.welcome(), api.organisations().then((o) => o.organisations.length > 0, () => false)]) : null))
+      .then((r) => {
+        const w = r && { ...r[0], orgs: r[1] };
         setState(w);
         if (w && w.modelReady && !w.finished && location.hash !== "#/welcome") go("#/welcome");
       })
@@ -53,10 +56,11 @@ const STEP = "aidenhq.welcome.step";
 const read = () => { try { return sessionStorage.getItem(STEP); } catch { return null; } };
 const write = (v: string) => { try { sessionStorage.setItem(STEP, v); } catch { /* the wizard still works without it */ } };
 
-type Screen = { kind: "key" } | { kind: "flow"; module: string } | { kind: "summary" };
+type Screen = { kind: "key" } | { kind: "org" } | { kind: "flow"; module: string } | { kind: "summary" };
 
-function Wizard({ state, onFinished }: { state: WelcomeState; onFinished: () => void }) {
-  const screens: Screen[] = [...(state.recoveryKeyWaiting ? [{ kind: "key" as const }] : []), ...state.wizard.map((module) => ({ kind: "flow" as const, module })), { kind: "summary" as const }];
+function Wizard({ state, onFinished }: { state: WelcomeState & { orgs: boolean }; onFinished: () => void }) {
+  // Your organisation first, when the catalog lists any: choosing one fills the client IDs the flows after it would ask for.
+  const screens: Screen[] = [...(state.recoveryKeyWaiting ? [{ kind: "key" as const }] : []), ...(state.orgs ? [{ kind: "org" as const }] : []), ...state.wizard.map((module) => ({ kind: "flow" as const, module })), { kind: "summary" as const }];
   // The screen survives a reload (and the round trip to the kernel's own pages): kept by identity, since the screens vary.
   const id = (sc: Screen) => (sc.kind === "flow" ? sc.module : sc.kind);
   const [at, setAt] = useState(() => Math.max(0, screens.findIndex((sc) => id(sc) === read())));
@@ -94,6 +98,13 @@ function Wizard({ state, onFinished }: { state: WelcomeState; onFinished: () => 
               <a className="btn primary" href={`${admin.url}/recovery-key`}>Show my recovery key</a>
               <button className="btn" onClick={next}>Skip for now</button>
             </section>
+          </Page>
+        </div>
+      )}
+      {screen.kind === "org" && (
+        <div className="setup-overlay">
+          <Page title="Where do you work?" sub="Your organisation may already run the apps these connections sign in with.">
+            <OrganisationPicker onContinue={next} />
           </Page>
         </div>
       )}

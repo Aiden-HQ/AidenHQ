@@ -5,26 +5,38 @@ requires:
   - board # its guided setup
 # Its schema and the views agents read with source_new (the warehouse's point, modules/warehouse/schemas/sources.json).
 contributes:
-  # Your own Google client, pasted on the board (#/setup/google). Connect Google is the board's own route (/google/connect), not
-  # a board.signins entry, so the flow names it as `connect_url`; the board shows its button and marks the flow done once an
-  # account is connected. Google refuses a bare-IP redirect URI, so on one the flow shows `needs_name` instead.
+  # Your own Google client (a Desktop app), pasted on the board (#/setup/google). Connect Google is the board's own route
+  # (/google/connect), not a board.signins entry, so the flow names it as `connect_url`; the board shows its button and marks
+  # the flow done once an account is connected. A Desktop client takes a loopback redirect only: Connect runs on the board's
+  # loopback address, or the person pastes the redirected address back. Google refuses a bare-IP redirect, so on a bare-IP
+  # address the flow shows `needs_name`. An organisation that runs an Internal client lists it in the catalog instead
+  # (modules/marketplace.json organisations): its client ID and secret fill the two fields, and these steps are skipped.
   board.setup_flows:
     - order: 40
       wizard: false
       title: Google
       why: "Aiden reads your calendar, Drive and Gmail (read-only) to brief you and follow up."
-      effort: "about 10 minutes, in the Google Cloud console"
+      effort: "about 5 minutes, in the Google Cloud console"
       secrets: [google_client_id, google_client_secret]
+      console_url: https://console.cloud.google.com/auth/clients/create
       connect_url: /google/connect
-      needs_name: "Google only accepts a named address (like aiden.example.com) for its sign-in, and this board is reached by its IP address. Ask Aiden to help you set up Tailscale or a domain for the board, then open this page from that address."
+      needs_name: "Google only accepts a named address (like aiden.example.com) or this computer's own address (127.0.0.1) for its sign-in, and this board is reached by its IP address. Open the board through an SSH tunnel to this computer's 127.0.0.1, or ask Aiden to set up Tailscale or a domain for the board."
       steps: |
-        1. [Create a project](https://console.cloud.google.com/projectcreate) (any name, for example "AidenHQ").
+        **Before you start: which kind of Google account?**
+        - **Google Workspace (a company address): choose Internal.** Only people in your organisation can sign in, Google needs no review and sign-ins never expire. Your Workspace admin may need to allow it.
+        - **Personal Gmail: choose External.** The app stays in *Testing*: only the test users you add can sign in, and **Google ends each sign-in after 7 days**, so you would reconnect weekly. Press **Publish app** on the Audience page to move it to *In production* and stop that. Google then shows an "unverified app" warning, which you accept once (Advanced, Go to app); you do not need to submit it for verification for your own use.
+
+        1. [Create a project](https://console.cloud.google.com/projectcreate) (any name, for example `AidenHQ`).
         2. Turn on three APIs, pressing Enable on each: [Calendar](https://console.cloud.google.com/apis/library/calendar-json.googleapis.com), [Drive](https://console.cloud.google.com/apis/library/drive.googleapis.com), [Gmail](https://console.cloud.google.com/apis/library/gmail.googleapis.com).
-        3. Open the [OAuth consent screen](https://console.cloud.google.com/apis/credentials/consent). On Google Workspace choose **Internal**, otherwise **External** and add yourself as a test user. Fill in a name and your email, then save.
-        4. Open [Credentials](https://console.cloud.google.com/apis/credentials), press **Create credentials**, **OAuth client ID**, and choose **Web application**.
-        5. Under **Authorized redirect URIs** add exactly `{board_url}/google/callback`.
-        6. Create it, then paste the **Client ID** and **Client secret** below and save.
-        7. Press **Connect** below and approve read-only access.
+        3. Open [Google Auth Platform](https://console.cloud.google.com/auth/overview) and press **Get started**. App name `AidenHQ`, your email as support email. Audience: **Internal** or **External** (above). Your email again as contact, accept the policy, **Create**.
+        4. On [Data access](https://console.cloud.google.com/auth/scopes) press **Add or remove scopes**, paste these three (one per line) into *Manually add scopes*, **Add to table**, **Update**, **Save**:
+        `https://www.googleapis.com/auth/calendar.events.readonly`
+        `https://www.googleapis.com/auth/drive.readonly`
+        `https://www.googleapis.com/auth/gmail.readonly`
+        5. External only: on [Audience](https://console.cloud.google.com/auth/audience) add your own address under **Test users**, then press **Publish app** to avoid the 7-day expiry.
+        6. Open [Clients](https://console.cloud.google.com/auth/clients/create) and create a client of type **Desktop app** (not Web application; it needs no redirect address).
+        7. Copy the **Client ID** and **Client secret** it shows, paste them below and save.
+        8. Press **Connect** and approve read-only access. If the browser then shows a page that does not load, that is expected: copy its address and paste it back on the board.
   warehouse.sources:
     - schema: src_docs
       about: "src_docs.docs (Drive metadata + a cheap summary: a pointer, never evidence; read the doc live before acting) / changes"
@@ -33,7 +45,7 @@ contributes:
         - { name: changes, time: observed_at, project: scope }
 connections:
   google_workspace:
-    setup: "Follow the steps at #/setup/google on the board, then press Connect Google (from the board's https address; otherwise from http://127.0.0.1:3121). By hand: `scripts/google-auth.sh <client.json>` once per account (`--email`, `--primary`)."
+    setup: "Follow the steps at #/setup/google on the board (a Desktop-app client), then press Connect Google (from the board's loopback address, http://127.0.0.1:3121, or paste the redirected address back). By hand: `scripts/google-auth.sh <client.json>` once per account (`--email`, `--primary`)."
     guide: "Google Drive, Docs, Calendar and Gmail directly: a document's full current text, events, threads. Glean finds Drive documents faster; read them here when you need the exact current text."
     url: http://google-workspace-mcp:8081/mcp
     auth: google_service_key
@@ -49,11 +61,13 @@ secrets:
     - name: google_client_id
       setup:
         label: Google client ID
+        public_client: true # a client ID is public: an organisation may list its Internal client's (modules/marketplace.json organisations)
         pattern: '^[0-9]+-[a-z0-9]+\.apps\.googleusercontent\.com$'
         help: "Ends in .apps.googleusercontent.com."
     - name: google_client_secret
       setup:
         label: Google client secret
+        public_client: true # a Desktop client's secret is not confidential (Google's definition), so the catalog may carry it
         pattern: '^GOCSPX-[A-Za-z0-9_-]{20,60}$'
         help: "Starts with GOCSPX-."
   # Its own vault dir, read-write at /state: google_oauth.json, which a reconnect from the board (or google-auth.sh on the

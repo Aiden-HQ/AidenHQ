@@ -31,7 +31,7 @@ import { createPluginPost } from "../src/outcomes.ts";
 /** The check job recipes of the product's own modules, compiled as the kernel's modules.json carries them. */
 export function recipes() {
   const out = {};
-  for (const m of ["codehost-github", "ai-reviewer", "platform"]) {
+  for (const m of ["github", "ai-reviewer", "platform"]) {
     const root = join(dirname(fileURLToPath(import.meta.url)), `../../modules/${m}`);
     Object.assign(out, compileCheckJobs(m, YAML.parse(readFileSync(join(root, "module.yaml"), "utf8")), root));
   }

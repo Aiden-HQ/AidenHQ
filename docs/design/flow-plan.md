@@ -189,7 +189,7 @@ derived in SQL by `kernel/src/flow.ts`, served by `GET /v1/flow`. The board, Fle
 ### Task 9: Code host facts
 
 **Files:**
-- Modify: `modules/codehost-github/module.yaml` (declare), `modules/codehost-github/service/src/{service.ts,pr-watch.ts,merges.ts}`, `kernel/src/codehost.ts` (codehost-local, in process: write facts directly through `Facts`)
+- Modify: `modules/github/module.yaml` (declare), `modules/github/service/src/{service.ts,pr-watch.ts,merges.ts}`, `kernel/src/codehost.ts` (codehost-local, in process: write facts directly through `Facts`)
 - Test: the code host's existing merges/pr-watch tests (extend)
 
 **Interfaces:**
@@ -258,7 +258,7 @@ derived in SQL by `kernel/src/flow.ts`, served by `GET /v1/flow`. The board, Fle
 
 **Files:**
 - Create: `kernel/sdk/src/churn.ts` (pure: ordered diffs in, per-PR survival out), then sync-shared
-- Modify: `modules/codehost-github/service/src/` (a pass inside the existing poll, cursor in its data dir), `kernel/src/codehost.ts` (codehost-local), both module.yaml (declare `code.added {pr, lines}`, `code.rewritten {pr, by_pr, lines, days}`)
+- Modify: `modules/github/service/src/` (a pass inside the existing poll, cursor in its data dir), `kernel/src/codehost.ts` (codehost-local), both module.yaml (declare `code.added {pr, lines}`, `code.rewritten {pr, by_pr, lines, days}`)
 - Test: `kernel/test/churn.test.mjs`
 
 **Interfaces:** `export function churn(prs: { pr: string; mergedAt: string; diff: string }[], opts: { windowDays: number; exclude: string[] }): { added: Record<string, number>; rewritten: { pr: string; by_pr: string; lines: number; days: number }[] }`. Lines tracked by identity across hunks and renames; a line counts once; excluded paths from the code host setting `churn_exclude` (default `["**/package-lock.json", "**/dist/**", "**/vendor/**", "**/*.min.*"]`).
@@ -268,7 +268,7 @@ derived in SQL by `kernel/src/flow.ts`, served by `GET /v1/flow`. The board, Fle
 ### Task 15: Backfill
 
 **Files:**
-- Modify: `kernel/src/facts.ts` (`backfillLocal(): number` over `records`, `jobs` (no `job.queued`: unknown), `wakes`, `provenance`, `generations.jsonl`), `modules/codehost-github/service/src/` (endpoint the board's button calls: issues, labels, PRs, checks, merges per managed repo via the App token, plus churn over full history, emitted with `source: "backfill"`)
+- Modify: `kernel/src/facts.ts` (`backfillLocal(): number` over `records`, `jobs` (no `job.queued`: unknown), `wakes`, `provenance`, `generations.jsonl`), `modules/github/service/src/` (endpoint the board's button calls: issues, labels, PRs, checks, merges per managed repo via the App token, plus churn over full history, emitted with `source: "backfill"`)
 - Test: `kernel/test/facts.test.mjs` (`backfillLocal twice records once`)
 
 - [ ] **Steps:** failing test, implement, tests, commit `feat(flow): backfill from history`.

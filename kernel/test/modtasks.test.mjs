@@ -34,7 +34,7 @@ test("a module's task goes to the agent holding the role, once per source, marke
   const db = new DatabaseSync(":memory:");
   const rubrics = [];
   const tasks = createModuleTasks({ db, owner, agents: () => ({ "a-cos": { roles: ["fleet-admin"] }, [PE]: { roles: ["platform-engineer"] } }), rubric: async (task, module, b) => void rubrics.push({ id: task.identifier, module, ...b }) });
-  const who = { codehost: { kind: "module", module: "codehost-github", roles: ["kernel.tasks"] }, other: { kind: "module", module: "other", roles: [] } };
+  const who = { codehost: { kind: "module", module: "github", roles: ["kernel.tasks"] }, other: { kind: "module", module: "other", roles: [] } };
   const bp = createBackplane({ whoami: async (k) => who[k] ?? Promise.reject(new Error("no")), asserter: { jwks: {} }, proxy: async () => {}, cp: async () => {}, grantsFile: () => ({}), tasks });
   const { s, url } = await serve(bp);
   t.after(() => s.close());
@@ -57,7 +57,7 @@ test("a module's task goes to the agent holding the role, once per source, marke
   const issue = [...made.values()][0];
   assert.equal(issue.assigneeAgentId, PE);
   assert.equal(issue.status, "todo");
-  assert.match(issue.description, /<!-- source:dependabot:acme\/app\/7 -->\n<!-- aidenhq-module:codehost-github -->$/);
+  assert.match(issue.description, /<!-- source:dependabot:acme\/app\/7 -->\n<!-- aidenhq-module:github -->$/);
   assert.doesNotMatch(issue.description, /<!-- source:forged -->/, "the module's text can't add a marker");
   // A rubric asks the kernel to file it with grading, as the module holding kernel.tasks; a module without the role gets nothing filed.
   const graded = { ...req, source: "graded:1", deliverable: { kind: "issue", ref: "acme/app#7" }, rubric: ["closed", "cites a merged PR", "says why"] };
@@ -65,21 +65,21 @@ test("a module's task goes to the agent holding the role, once per source, marke
   assert.deepEqual(rubrics, [], "a forged rubric from a module without kernel.tasks is refused before anything is filed");
   assert.equal((await file("codehost", { ...graded, rubric: undefined })).status, 400, "a deliverable without its rubric is refused");
   assert.equal((await file("codehost", graded)).status, 200);
-  assert.deepEqual(rubrics.map((r) => [r.module, r.deliverable.kind, r.rubric.length]), [["codehost-github", "issue", 3]]);
+  assert.deepEqual(rubrics.map((r) => [r.module, r.deliverable.kind, r.rubric.length]), [["github", "issue", 3]]);
   // Graded status is the kernel's own row, not the task's text: a dedup hit on a task this module didn't file graded takes no rubric.
   const gradedTask = [...made.values()].find((i) => i.description.includes("source:graded:1"));
-  assert.equal(db.prepare("SELECT module FROM graded_tasks WHERE task = ?").get(gradedTask.id).module, "codehost-github");
+  assert.equal(db.prepare("SELECT module FROM graded_tasks WHERE task = ?").get(gradedTask.id).module, "github");
   db.prepare("DELETE FROM graded_tasks WHERE task = ?").run(gradedTask.id);
   assert.equal((await file("codehost", graded)).status, 409, "a rubric is never attached to a task that wasn't filed graded");
   assert.equal(rubrics.length, 1);
   // It closes its own task, tagged so the line wakes nobody; another module can't.
   const close = (key, b) => fetch(`${url}/v1/tasks/${issue.id}/close`, { method: "POST", headers: { authorization: `Bearer ${key}` }, body: JSON.stringify(b) });
-  const otherTasks = { ...who.other, roles: ["kernel.tasks"], module: "github" };
-  who.github = otherTasks;
-  assert.equal((await close("github", { status: "done", body: "merged" })).status, 403);
+  const otherTasks = { ...who.other, roles: ["kernel.tasks"], module: "jira" };
+  who.jira = otherTasks;
+  assert.equal((await close("jira", { status: "done", body: "merged" })).status, 403);
   assert.equal((await close("codehost", { status: "done", body: "acme/app#7 is merged or closed: nothing left to do." })).status, 200);
   assert.equal(issue.status, "done");
-  assert.match(issue.closing, /<!-- aidenhq:job=codehost-github kind=status -->$/);
+  assert.match(issue.closing, /<!-- aidenhq:job=github kind=status -->$/);
 });
 
 /**
@@ -108,8 +108,8 @@ test("the code host closes and lists only the tasks carrying its own marker and 
   };
   const tasks = createModuleTasks({ db: new DatabaseSync(":memory:"), owner, agents: () => ({ [PE]: { roles: ["platform-engineer"] } }) });
   const who = {
-    codehost: { kind: "module", module: "codehost-github", roles: ["kernel.tasks"] },
-    github: { kind: "module", module: "github", roles: ["kernel.tasks"] },
+    codehost: { kind: "module", module: "github", roles: ["kernel.tasks"] },
+    jira: { kind: "module", module: "jira", roles: ["kernel.tasks"] },
   };
   const bp = createBackplane({ whoami: async (k) => who[k] ?? Promise.reject(new Error("no")), asserter: { jwks: {} }, proxy: async () => {}, cp: async () => {}, grantsFile: () => ({}), tasks });
   const { s, url } = await serve(bp);
@@ -126,10 +126,10 @@ test("the code host closes and lists only the tasks carrying its own marker and 
   };
 
   // Its own task: the source marker and its module marker, no other module's.
-  const own = seed(`release:instance:${"d".repeat(40)}`, 1, "codehost-github");
+  const own = seed(`release:instance:${"d".repeat(40)}`, 1, "github");
   assert.equal((await close("codehost", own.id)).status, 200, "its own bump closes");
   assert.equal(own.status, "done");
-  assert.match(own.closing, /<!-- aidenhq:job=codehost-github kind=status -->$/);
+  assert.match(own.closing, /<!-- aidenhq:job=github kind=status -->$/);
 
   // The runner-era filing has no module marker: the generic guard refuses it, and it is not listed either.
   const legacy = seed("release:instance:1795022489866", 2);
@@ -137,23 +137,23 @@ test("the code host closes and lists only the tasks carrying its own marker and 
   assert.equal(legacy.status, "in_review", "a refused close changes nothing");
 
   // Another module's marker alone: not the code host's.
-  const foreign = seed("release:instance:1795025189924", 3, "github");
+  const foreign = seed("release:instance:1795025189924", 3, "jira");
   assert.equal((await close("codehost", foreign.id)).status, 403, "never a task another module marked");
 
   // The reviewer's point: the release source marker plus the code host's marker plus a second module's is neither listed nor
   // closed, by either module.
-  const shared = seed("release:instance:1795025189925", 4, "codehost-github", "github");
+  const shared = seed("release:instance:1795025189925", 4, "github", "jira");
   assert.equal((await close("codehost", shared.id)).status, 403, "a second module's marker refuses the close, even with this module's");
-  assert.equal((await close("github", shared.id)).status, 403, "and it is never the other module's either");
+  assert.equal((await close("jira", shared.id)).status, 403, "and it is never the other module's either");
   assert.equal(shared.status, "in_review", "a refused close changes nothing");
 
   // A second source family keeps the train's listing to its own family: it is not returned even with this module's marker.
-  const twoFamilies = seed("release:instance:1795022489926", 5, "codehost-github");
+  const twoFamilies = seed("release:instance:1795022489926", 5, "github");
   twoFamilies.description = `${twoFamilies.description}\n<!-- source:dependabot:acme/app/9 -->`;
-  const prose = seed("dependabot:acme/app/8", 6, "codehost-github");
+  const prose = seed("dependabot:acme/app/8", 6, "github");
   prose.description = "mentions release:instance: in prose only";
   // And one plain open bump the train filed itself: the only row the listing returns.
-  const listed = seed("release:instance:1795022489927", 7, "codehost-github");
+  const listed = seed("release:instance:1795022489927", 7, "github");
 
   const found = await (await list("codehost", "release:instance:")).json();
   assert.deepEqual(found.tasks.map((i) => i.identifier), [listed.identifier], "only the open bump carrying this module's marker alone");
@@ -162,5 +162,5 @@ test("the code host closes and lists only the tasks carrying its own marker and 
   assert.ok(!found.tasks.some((i) => i.id === twoFamilies.id), "nor is one with a second source family");
   assert.ok(!found.tasks.some((i) => i.id === prose.id || i.id === own.id), "prose only, or a closed task, is never listed");
   assert.equal((await list("codehost", "dependabot:")).status, 400, "no other family is listable");
-  assert.equal((await list("github", "release:instance:")).status, 400, "nor by another module");
+  assert.equal((await list("jira", "release:instance:")).status, 400, "nor by another module");
 });

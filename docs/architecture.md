@@ -12,7 +12,7 @@ and the computer launcher are systemd user units on the host itself.
                                │                       │               shared connections (Google, Slack, Glean,
                                │                       │               Jira, GitHub, Primer, tasks, apps)
                                │                       ▼
-                               │               codehost-github ── push/merge gates
+                               │               github (code host) ── push/merge gates
                                └────────────── apps-mcp ── sandboxed apps (warehouse, ...)
 ```
 
@@ -73,7 +73,7 @@ consumers.
 connections, apps and the fleet. Approvals are kernel records that the board only reads and shows: the exact request, one tap by a signed-in admin or from
 the owner channel, or an exact typed reply. Each is claimed once and the outcome is shown on the card.
 
-**Owner channels.** `channel-telegram` (the Telegram owner bot, always installed) and `channel-slack` (optional: one
+**Owner channels.** `channel-telegram` (the Telegram owner bot, always installed) and `slack` (its advanced part: one
 Slack Socket Mode listener) bridge the owner to Aiden. `owner-channel`'s `notify` is the one way a message reaches the owner:
 agents call it, and the kernel, the board and the runner queue theirs at the kernel (`/v1/notify`) for it; it routes each
 message once (dedupe, mutes, digest, retry) to the chat on the board and to a channel's transport (`/v1/notify/send`).

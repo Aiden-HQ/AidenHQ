@@ -7,7 +7,6 @@
 // assignees, a review on a pull request, and re-running failed CI jobs. Never call fetch with the
 // token anywhere else, and never add a route or a GraphQL document without checking what it does.
 // Reads of repositories the instance's GitHub App covers use its repo-narrowed read-only token instead.
-import { readFileSync } from "node:fs";
 
 const API = "https://api.github.com";
 const NAME = "[A-Za-z0-9_.-]{1,100}";
@@ -173,32 +172,29 @@ function searchScope(query: string): string | undefined {
   return query.match(/(?:^|\s)(?:org|user):([A-Za-z0-9_.-]{1,100})(?=\s|$)/i)?.[1];
 }
 
+/** The owner's GitHub token: the board's sign-in (official.ts). */
+export interface OwnerToken {
+  /** The bearer; throws when there is no sign-in. */
+  get(): Promise<string>;
+  signedIn(): boolean;
+}
+
 export class GitHub {
   constructor(
-    private readonly tokenFile: string,
+    private readonly owner: OwnerToken,
     private readonly commentOrgs: Set<string>,
     private readonly fetchImpl: Fetch = fetch,
     private readonly app?: AppTokenSource,
   ) {}
 
-  /** Read on every request, so `scripts/github-auth.sh` takes effect without a restart. */
-  private token(): string {
-    let t = "";
-    try {
-      t = readFileSync(this.tokenFile, "utf8").trim();
-    } catch {
-      // handled below
-    }
-    if (!t) throw new GitHubAuthError("no GitHub token (run scripts/github-auth.sh)");
+  private async token(): Promise<string> {
+    const t = await this.owner.get().catch(() => "");
+    if (!t) throw new GitHubAuthError("GitHub isn't connected (Connect GitHub on the board)");
     return t;
   }
 
   available(): boolean {
-    try {
-      return Boolean(this.token());
-    } catch {
-      return false;
-    }
+    return this.owner.signedIn();
   }
 
   async request<T>(method: Method, path: string, opts: { query?: Record<string, string | number>; body?: unknown; text?: boolean } = {}): Promise<T> {
@@ -217,7 +213,7 @@ export class GitHub {
       method,
       redirect: opts.text ? "manual" : "error",
       headers: {
-        authorization: `Bearer ${appToken ?? this.token()}`,
+        authorization: `Bearer ${appToken ?? (await this.token())}`,
         accept: "application/vnd.github+json",
         "x-github-api-version": "2022-11-28",
         "user-agent": "aidenhq-github-mcp",
@@ -226,7 +222,7 @@ export class GitHub {
       body: opts.body ? JSON.stringify(opts.body) : undefined,
       signal: AbortSignal.timeout(30_000),
     });
-    if (res.status === 401) throw new GitHubAuthError("GitHub rejected the token (run scripts/github-auth.sh)");
+    if (res.status === 401) throw new GitHubAuthError("GitHub rejected the token (Reconnect GitHub on the board)");
     // A job's log answers with a redirect to a pre-signed download: followed once, without the token.
     if (opts.text) {
       const to = res.headers.get("location");

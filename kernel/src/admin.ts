@@ -1,7 +1,7 @@
 // K4 kernel pages on the admin listener (127.0.0.1:3120; spec §2.3, §2.5; lean 3a): sign-in, the approval list and card
 // pages, decide and batch decide, the owner's confirmation page and the owner message frame. Server-rendered, no script.
-// - Every request names an allowed Host (DNS rebinding); every route but /healthz, sign-in and OpenRouter's callback needs a
-//   ready admin's session (TOTP enrolled), stamped `account:<id>` from the session, never from the request.
+// - Every request names an allowed Host (DNS rebinding); every route but /healthz, sign-in, OpenRouter's callback and GitHub's
+//   App manifest return (each by a single-use state an admin's page made) needs a ready admin's session (TOTP enrolled), stamped `account:<id>` from the session, never from the request.
 // - Every POST carries this listener's own Origin, exactly (cookies ignore ports, so the board's origin on the same host is
 //   refused here), and, signed in, a token bound to the session that only a page from this origin carries (A6).
 // - Every page sends frame-ancestors 'none', except /owner/message, which the board's origins may frame: it only sends what
@@ -18,6 +18,7 @@ import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type { AdminSession, Step } from "./accounts.ts";
 import type { Api } from "./channels.ts";
+import { ORG, manifest, type MadeApp } from "./github-app.ts";
 import { secretFits } from "./module-secrets.ts";
 import type { State as UpdateState } from "./updates.ts";
 
@@ -51,6 +52,8 @@ type Deps = {
   doorSource?: () => string | undefined;
   /** The board's front door: /recovery-key and the model step send the owner on to its welcome. */
   boardUrl?: () => string | undefined;
+  /** The github module's App (github-app.ts): made from the manifest flow, saved into the vault by the kernel alone. */
+  githubApp?: { defaultOrg: () => string; /** The host's recorded agents org: an App is only ever made for it once set. */ agentsOrg: () => string | undefined; name: () => string; ready: () => boolean; convert: (code: string, org: string) => Promise<MadeApp>; save: (app: MadeApp) => void };
   /** Release updates (updates.ts): what the updater recorded, and Update now (an admin's tap) for the release it shows. */
   updates?: { view: () => UpdateState; requestNow: (release: string, by: string) => string };
   log?: (msg: string, f?: Record<string, unknown>) => void;
@@ -76,6 +79,9 @@ export const ROUTES = [
   { method: "GET", path: "/setup/model", auth: "admin" },
   { method: "POST", path: "/setup/model", auth: "admin+csrf" },
   { method: "GET", path: "/setup/openrouter/:state", auth: "pkce-state" },
+  { method: "GET", path: "/setup/github-app", auth: "admin" },
+  { method: "POST", path: "/setup/github-app", auth: "admin+csrf" },
+  { method: "GET", path: "/setup/github-app/:state", auth: "manifest-state" },
   { method: "GET", path: "/recovery-key", auth: "admin" },
   { method: "POST", path: "/recovery-key", auth: "admin+csrf" },
   { method: "GET", path: "/", auth: "admin" },
@@ -188,6 +194,8 @@ export function createAdmin(d: Deps) {
   // The model step. Connect needs a callback OpenRouter takes: https, or localhost on any port; elsewhere the paste field leads.
   // Pending Connects, by their state: the verifier and the owner who started it.
   const pkce = new Map<string, { verifier: string; account: string; at: number }>();
+  // Pending GitHub App manifests, by their state: the org it is for and the admin who started it.
+  const appPending = new Map<string, { org: string; account: string; at: number; replace: boolean; code?: string }>();
   // The board's own sign-in handoff (services/board/src/kernel-auth.ts): the owner arrives signed in there, and the board's
   // welcome gate opens #/welcome until setup is finished.
   // A sign-in with nowhere else to go (it began at the board, or on this page) ends there too, never on the approvals list.
@@ -342,6 +350,17 @@ export function createAdmin(d: Deps) {
           const to = `/setup/model${outcome ? `?connect=${outcome}` : ""}`;
           return send(res, 200, doc("Connecting", `<p>Back from OpenRouter. <a href="${to}">Continue</a></p>`, null, `<meta http-equiv="refresh" content="0;url=${to}">`));
         }
+        case "GET /setup/github-app/:state": {
+          // GitHub's return from the App manifest flow is a cross-site navigation, so no session cookie: it only keeps GitHub's
+          // code on the pending entry the owner's page made (single-use, 10 minutes) and moves on same-site, where the owner's
+          // session comes back and must be the one that started it (/setup/github-app?finish=).
+          if (!d.githubApp) throw new Refusal(404, "not found");
+          const p = appPending.get(id), code = url.searchParams.get("code") ?? "";
+          if (p && !p.code && code && url.searchParams.get("state") === id && Date.now() - p.at <= 600_000) p.code = code;
+          else appPending.delete(id);
+          const to = `/setup/github-app?finish=${encodeURIComponent(id)}`;
+          return send(res, 200, doc("GitHub App", `<p>Back from GitHub. <a href="${to}">Continue</a></p>`, null, `<meta http-equiv="refresh" content="0;url=${to}">`));
+        }
       }
       // Everything below: a ready admin.
       const s = await admin(req);
@@ -363,6 +382,49 @@ export function createAdmin(d: Deps) {
           const code = d.accounts.mintUiCode(s, module, to, state);
           log("session handed to a module", { module, origin: to, by });
           return redirect(res, `${to}/auth/handoff?${new URLSearchParams({ code, state })}`);
+        }
+        case "GET /setup/github-app": case "POST /setup/github-app": {
+          // The instance's GitHub App: the owner's alone (not another admin's), for the recorded agents org once there is one,
+          // and replacing an App only when the owner says so.
+          const gh = d.githubApp;
+          if (!gh) throw new Refusal(404, "not found");
+          if (!s.account.owner) throw new Refusal(403, "only the owner sets up the instance's GitHub App");
+          const fixed = gh.agentsOrg();
+          const page = (body: string, status = 200, extra: Record<string, string> = {}) => send(res, status, doc("GitHub App", body, s), undefined, extra);
+          const ask = (m = "", org = gh.defaultOrg()) => page(`<h1>Create the GitHub App</h1><p>Your own GitHub App lets agents push branches, open pull requests and merge them as its bot, each one reviewed first. It is owned by a GitHub organization for your agents' repositories (make one first if you have none).</p>${m}${form("/setup/github-app", `<label>The organization<input name="org" maxlength="39" required value="${esc(fixed ?? org)}"${fixed ? " readonly" : ""}></label>${gh.ready() ? `<p class="muted">An App is already set up. A new one replaces its key: the old App stops working here.</p><label><input type="checkbox" name="replace" value="1" required> Replace the App</label>` : ""}<button class="b">Continue</button>`, s)}`, m ? 400 : 200);
+          const finish = url.searchParams.get("finish");
+          if (req.method === "GET" && finish) {
+            const p = appPending.get(finish);
+            appPending.delete(finish);
+            if (!p?.code || p.account !== s.account.id || Date.now() - p.at > 600_000) return ask(err("That GitHub App link expired, was already used or was started by someone else. Start again."));
+            try {
+              const app = await gh.convert(p.code, p.org);
+              gh.save(app);
+              log("github app created", { app: app.id, slug: app.slug, org: app.owner, by, replaced: p.replace });
+              const install = `https://github.com/apps/${encodeURIComponent(app.slug)}/installations/new`;
+              return page(`<h1>GitHub App created</h1><p>The App <code>${esc(app.slug)}</code> is in your vault. Last step: <a class="b" href="${esc(install)}">Install it on ${esc(app.owner)}</a> and pick <b>All repositories</b>.</p><p class="muted">The code host starts at the next apply, and new repositories then go to ${esc(app.owner)}. Other organizations (your company's) install the same App on the repositories the fleet may change; there it only opens pull requests.</p>`);
+            } catch (e) {
+              log("github app not created", { err: (e as Error).message.slice(0, 200) });
+              return ask(err(`Not created: ${(e as Error).message}`));
+            }
+          }
+          if (req.method === "GET") return ask();
+          const org = (f.get("org") ?? "").trim();
+          if (!ORG.test(org)) return ask(err("That isn't a GitHub organization name."), org);
+          if (fixed && org.toLowerCase() !== fixed.toLowerCase()) return ask(err(`This AidenHQ's agents organization is ${fixed}: its App is made there.`));
+          const replace = f.get("replace") === "1";
+          if (gh.ready() && !replace) return ask(err("An App is already set up: tick Replace the App to make a new one."), org);
+          const host = String(req.headers.host ?? "").toLowerCase();
+          const origin = d.origins().find((o) => new URL(o).host === host || new URL(o).hostname === host);
+          if (!origin) throw new Refusal(400, "this page's address isn't one of the kernel's");
+          for (const [k, v] of appPending) if (Date.now() - v.at > 600_000) appPending.delete(k);
+          const state = randomBytes(16).toString("base64url");
+          appPending.set(state, { org, account: s.account.id, at: Date.now(), replace });
+          const m = manifest(org, gh.name(), `${origin}/setup/github-app/${state}`);
+          return page(`<h1>Create the GitHub App for ${esc(org)}</h1><p>GitHub shows the App and its permissions: creating repositories, contents, pull requests, workflows, Actions (re-running a check that failed for infrastructure reasons), commit statuses, the organization's self-hosted runners, and checks (read). Approve it there; you come straight back here.</p><form method="post" action="https://github.com/organizations/${encodeURIComponent(org)}/settings/apps/new?state=${state}"><input type="hidden" name="manifest" value="${esc(JSON.stringify(m))}"><button class="b">Create on GitHub</button></form>`, 200, {
+            // This one form posts the manifest to GitHub.
+            "content-security-policy": "default-src 'none'; style-src 'unsafe-inline'; form-action 'self' https://github.com; base-uri 'none'; frame-ancestors 'none'",
+          });
         }
         case "GET /setup/model": case "POST /setup/model": {
           if (!d.model || !d.firstRun) throw new Refusal(404, "not found");

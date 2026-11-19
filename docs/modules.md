@@ -30,7 +30,7 @@ GET /v1/tasks?source=release:instance:
 
 **Accepts** a module token and only the `release:instance:` family: `release:instance:<40-hex sha>` (the release
 train's stamp) and the runner-era `release:instance:<ms stamp>`. Only open tasks are returned, and only to
-`codehost-github`, the module that owns the release train. The answer is `{ tasks: [{ id, identifier, status, createdAt, source }] }`.
+`github`, the module that owns the release train (its code host part). The answer is `{ tasks: [{ id, identifier, status, createdAt, source }] }`.
 
 **Refuses** with 400 any other `source:` family and any other caller. A row whose description carries a marker of
 another family, or merely mentions the family in prose, is never returned: the kernel matches the marker again on

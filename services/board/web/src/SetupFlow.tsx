@@ -1,8 +1,9 @@
 // A module's guided setup at #/setup/<module>, rendered from its board.setup_flows declaration: why and effort, the steps (with
 // the board's address and the sign-in's exact redirect, each copyable) and the vendor's console link, one paste field per
 // secret, then the sign-in's Connect button or a pairing code, as numbered stages. Nothing here knows which module it is.
-import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
-import { SignInRequired, api, type SetupChoice, type SetupFlowView } from "./api";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import qrcode from "qrcode-generator";
+import { SignInRequired, admin, api, type AdvancedFlowView, type SetupChoice, type SetupFlowView } from "./api";
 import { ConnectButton } from "./Connect";
 import { useEvents } from "./events";
 import { Markdown } from "./markdown";
@@ -60,40 +61,28 @@ function valid(pattern: string, value: string): boolean {
 }
 
 function FlowBody({ flow, board, reload, onDone, onSignIn }: { flow: SetupFlowView; board: Board; reload: () => Promise<void>; onDone: () => void; onSignIn: () => void }) {
-  const [values, setValues] = useState<Record<string, string>>({});
-  const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
   const fields = flow.fields ?? [];
   // A module with modes: its Connect waits for the pick to be live (the setting holds it).
   const picked = !flow.choose || flow.done || (flow.choose.chosen != null && flow.choose.chosen === flow.choose.value);
   const secretsDone = (flow.done || fields.every((f) => flow.present[f.secret])) && picked;
-  const filled = fields.filter((f) => values[f.secret]?.trim());
-  const bad = new Set(filled.filter((f) => !valid(f.pattern, values[f.secret]!.trim())).map((f) => f.secret));
   const fail = (e: unknown) => (e instanceof SignInRequired ? onSignIn() : setError((e as Error).message));
+  // The organisation the owner chose fills this module's client: its app-making steps are done, unless the owner wants their own.
+  const [org, setOrg] = useState<string | null>(null);
+  const [ownApp, setOwnApp] = useState(false);
+  useEffect(() => {
+    api.organisations().then((o) => {
+      const c = o.organisations.find((x) => x.id === o.chosen);
+      setOrg(c?.connections.includes(flow.module) ? c.name : null);
+    }, () => setOrg(null));
+  }, [flow.module]);
+  const viaOrg = org !== null && !ownApp && fields.length > 0 && secretsDone;
   const later = (
     <button className="btn" onClick={() => api.setupDismiss(flow.module).then(onDone, fail)}>
       Skip this step
     </button>
   );
-  const head = <PageHeader title={flow.title} sub={flow.why} status={<span className="setup-effort">{flow.effort}</span>} />;
-
-  const save = async () => {
-    setSaving(true);
-    setError("");
-    try {
-      // All at once, so one slow or failed save never keeps the others from being sent.
-      const results = await Promise.allSettled(filled.map((f) => api.setupSecret(flow.module, f.secret, values[f.secret]!.trim())));
-      const failed = results.find((r) => r.status === "rejected");
-      const kept = Object.fromEntries(filled.filter((_, i) => results[i]!.status === "rejected").map((f) => [f.secret, values[f.secret]!]));
-      setValues(kept);
-      await reload();
-      if (failed) fail((failed as PromiseRejectedResult).reason);
-    } catch (e) {
-      fail(e);
-    } finally {
-      setSaving(false);
-    }
-  };
+  const head = <PageHeader title={flow.title} sub={flow.why} status={viaOrg ? <Effort effort="about a minute" /> : <Effort effort={flow.effort} admin={flow.admin} />} />;
 
   // A setup that needs a named address, on a board reached by its IP: only why, and the way back.
   if (flow.needs_name && !board.named) {
@@ -114,45 +103,32 @@ function FlowBody({ flow, board, reload, onDone, onSignIn }: { flow: SetupFlowVi
     <main className="st-page setup-page">
       {head}
       <div className="setup-grid">
-        <Step n={n++} title="Instructions" state="open">
-          <Steps text={flow.steps.split("{board_url}").join(board.url).split("{redirect_url}").join(flow.redirect_url ?? "")} />
-          {flow.console_url && (
-            <a className="btn" href={flow.console_url} target="_blank" rel="noreferrer">
-              Open {flow.title} ↗
-            </a>
-          )}
-        </Step>
+        {viaOrg ? (
+          <Step n={n++} title={`Using ${org}'s app`} state="done">
+            <p className="setup-hint">{org} runs this app for you, so there is nothing to make. Connect with your {org} account.</p>
+            <button className="link-btn setup-own-app" onClick={() => setOwnApp(true)}>
+              Use my own app instead
+            </button>
+          </Step>
+        ) : (
+          <Step n={n++} title="Instructions" state="open">
+            <Steps text={flow.steps.split("{board_url}").join(board.url).split("{redirect_url}").join(flow.redirect_url ?? "")} />
+            {flow.console_url && (
+              <a className="btn" href={flow.console_url} target="_blank" rel="noreferrer">
+                Open {flow.title} ↗
+              </a>
+            )}
+          </Step>
+        )}
         <div className="setup-side">
           {flow.choose && (
             <Step n={n++} title="Choose" state={picked ? "done" : "open"}>
               <Choose flow={flow} choose={flow.choose} picked={picked} reload={reload} fail={fail} />
             </Step>
           )}
-          {fields.length > 0 && (
+          {fields.length > 0 && !viaOrg && (
             <Step n={n++} title="Paste the details" state={secretsDone ? "done" : "open"}>
-              {fields.map((f) => (
-                <label key={f.secret} className="setup-field">
-                  <span>
-                    {f.label}
-                    {flow.present[f.secret] && <em className="setup-ok">saved</em>}
-                  </span>
-                  <input
-                    type="password"
-                    autoComplete="off"
-                    spellCheck={false}
-                    aria-invalid={bad.has(f.secret)}
-                    placeholder={flow.present[f.secret] ? "Paste to replace" : flow.done ? "Set elsewhere; paste to change" : "Paste here"}
-                    value={values[f.secret] ?? ""}
-                    onChange={(e) => setValues({ ...values, [f.secret]: e.target.value })}
-                  />
-                  {bad.has(f.secret) ? <small className="setup-bad">That doesn't look right.{f.help ? ` ${f.help}` : ""}</small> : f.help && <small className="setup-help">{f.help}</small>}
-                </label>
-              ))}
-              <div className="setup-actions">
-                <button className={`btn${secretsDone ? "" : " primary"}`} disabled={saving || !filled.length || bad.size > 0} onClick={save}>
-                  {saving ? "Saving…" : "Save"}
-                </button>
-              </div>
+              <SecretFields module={flow.module} fields={fields} present={flow.present} done={secretsDone} elsewhere={flow.done} reload={reload} fail={fail} />
             </Step>
           )}
           {connect && (
@@ -160,11 +136,11 @@ function FlowBody({ flow, board, reload, onDone, onSignIn }: { flow: SetupFlowVi
               {flow.signedIn ? (
                 <div className="setup-actions setup-paired">
                   <p className="setup-ok-line">Connected.</p>
-                  {flow.signin && <ConnectButton c={{ id: flow.signin, label: flow.title, signIn: { state: "ok", offer: flow.scopes } }} />}
+                  {flow.signin && <ConnectButton c={{ id: flow.signin, label: flow.title, signIn: { state: "ok", offer: flow.scopes, mode: flow.signin_mode } }} />}
                 </div>
               ) : secretsDone ? (
                 flow.signin ? (
-                  <ConnectButton c={{ id: flow.signin, label: flow.title, signIn: { state: "missing", offer: flow.scopes } }} variant="primary" />
+                  <ConnectButton c={{ id: flow.signin, label: flow.title, signIn: { state: "missing", offer: flow.scopes, mode: flow.signin_mode } }} variant="primary" />
                 ) : (
                   <a className="btn primary" href={connect}>Connect {flow.title}</a>
                 )
@@ -185,6 +161,7 @@ function FlowBody({ flow, board, reload, onDone, onSignIn }: { flow: SetupFlowVi
           )}
         </div>
       </div>
+      {flow.advanced && <Advanced flow={flow} advanced={flow.advanced} board={board} reload={reload} fail={fail} />}
       <footer className="setup-foot">
         <span className={flow.done ? "setup-ok-line" : "setup-hint"}>{flow.done ? `${flow.title} is set up.` : "You can finish this later from Settings."}</span>
         {flow.done ? (
@@ -386,8 +363,160 @@ function Pairing({ flow, reload, fail }: { flow: SetupFlowView; reload: () => Pr
   return (
     <>
       <div className="setup-code">{pair.code}</div>
-      {pair.link && <a className="btn primary" href={pair.link} target="_blank" rel="noreferrer">Open</a>}
+      {pair.link && (
+        <div className="setup-pair-link">
+          <QrCode text={pair.link} label="Scan to open the pairing link on your phone" />
+          <div>
+            <p className="setup-hint">Scan it with your phone's camera, or open it here.</p>
+            <a className="btn primary" href={pair.link} target="_blank" rel="noreferrer">Open</a>
+          </div>
+        </div>
+      )}
       <p className="setup-hint">Waiting for you to send the code. It works once, for 15 minutes.</p>
     </>
+  );
+}
+
+/** The flow's honest labels: how long it takes, and who else may need to approve. */
+function Effort({ effort, admin }: { effort: string; admin?: string }) {
+  return (
+    <span className="setup-labels">
+      <span className="setup-effort">{effort}</span>
+      {admin && <span className="setup-admin">{admin}</span>}
+    </span>
+  );
+}
+
+/** Paste fields for a flow's secrets (each checked against its pattern here; the kernel checks again on save). */
+function SecretFields({ module, fields, present, done, elsewhere, reload, fail }: { module: string; fields: NonNullable<SetupFlowView["fields"]>; present: Record<string, boolean>; done: boolean; elsewhere?: boolean; reload: () => Promise<void>; fail: (e: unknown) => void }) {
+  const [values, setValues] = useState<Record<string, string>>({});
+  const [saving, setSaving] = useState(false);
+  const filled = fields.filter((f) => values[f.secret]?.trim());
+  const bad = new Set(filled.filter((f) => !valid(f.pattern, values[f.secret]!.trim())).map((f) => f.secret));
+  const save = async () => {
+    setSaving(true);
+    try {
+      // All at once, so one slow or failed save never keeps the others from being sent.
+      const results = await Promise.allSettled(filled.map((f) => api.setupSecret(module, f.secret, values[f.secret]!.trim())));
+      const failed = results.find((r) => r.status === "rejected");
+      setValues(Object.fromEntries(filled.filter((_, i) => results[i]!.status === "rejected").map((f) => [f.secret, values[f.secret]!])));
+      await reload();
+      if (failed) fail((failed as PromiseRejectedResult).reason);
+    } catch (e) {
+      fail(e);
+    } finally {
+      setSaving(false);
+    }
+  };
+  return (
+    <>
+      {fields.map((f) => (
+        <label key={f.secret} className="setup-field">
+          <span>
+            {f.label}
+            {present[f.secret] && <em className="setup-ok">saved</em>}
+          </span>
+          <input
+            type="password"
+            autoComplete="off"
+            spellCheck={false}
+            aria-invalid={bad.has(f.secret)}
+            placeholder={present[f.secret] ? "Paste to replace" : elsewhere ? "Set elsewhere; paste to change" : "Paste here"}
+            value={values[f.secret] ?? ""}
+            onChange={(e) => setValues({ ...values, [f.secret]: e.target.value })}
+          />
+          {bad.has(f.secret) ? <small className="setup-bad">That doesn't look right.{f.help ? ` ${f.help}` : ""}</small> : f.help && <small className="setup-help">{f.help}</small>}
+        </label>
+      ))}
+      <div className="setup-actions">
+        <button className={`btn${done ? "" : " primary"}`} disabled={saving || !filled.length || bad.size > 0} onClick={save}>
+          {saving ? "Saving…" : "Save"}
+        </button>
+      </div>
+    </>
+  );
+}
+
+/**
+ * A module's advanced flow (`mode: advanced`): what the person's own app unlocks, then its steps, secrets and pairing, folded
+ * until opened. Its parts start once its secrets exist; the basic sign-in above keeps working either way.
+ */
+function Advanced({ flow, advanced: a, board, reload, fail }: { flow: SetupFlowView; advanced: AdvancedFlowView; board: Board; reload: () => Promise<void>; fail: (e: unknown) => void }) {
+  const [open, setOpen] = useState(a.done || (a.secrets ?? []).some((x) => flow.present[x]));
+  const fields = a.fields ?? [];
+  const saved = fields.every((f) => flow.present[f.secret]);
+  let n = 1;
+  return (
+    <section className={`setup-adv${open ? " open" : ""}`} aria-label={a.title}>
+      <header className="setup-adv-head">
+        <div className="setup-adv-intro">
+          <h2>Unlock more with your own app</h2>
+          <p>{a.why}</p>
+          <Effort effort={a.effort} admin={a.admin} />
+        </div>
+        <ul className="setup-caps">
+          {a.capabilities.map((c) => (
+            <li key={c}>
+              <svg width="14" height="14" viewBox="0 0 16 16" aria-hidden><path d="M3.5 8.5l3 3 6-7" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" /></svg>
+              {c}
+            </li>
+          ))}
+        </ul>
+        <div className="setup-adv-act">
+          {a.done ? <p className="setup-ok-line">Your app is set up.</p> : null}
+          <button className="btn" aria-expanded={open} onClick={() => setOpen(!open)}>
+            {open ? "Hide the steps" : a.done ? "Show the steps" : `Set up ${a.title}`}
+          </button>
+        </div>
+      </header>
+      {open && (
+        <div className="setup-grid">
+          <Step n={n++} title="Instructions" state="open">
+            <Steps text={a.steps.split("{board_url}").join(board.url).split("{redirect_url}").join(flow.redirect_url ?? "")} />
+            {a.console_url && (
+              <a className="btn" href={a.console_url} target="_blank" rel="noreferrer">
+                Open {a.title} ↗
+              </a>
+            )}
+            {a.admin_page && (
+              <a className="btn primary" href={`${admin.url}${a.admin_page}`}>
+                Create the {a.title}
+              </a>
+            )}
+          </Step>
+          <div className="setup-side">
+            {fields.length > 0 && (
+              <Step n={n++} title="Paste the details" state={saved ? "done" : "open"}>
+                <SecretFields module={flow.module} fields={fields} present={flow.present} done={saved} reload={reload} fail={fail} />
+              </Step>
+            )}
+            {a.pair_url && (
+              <Step n={n++} title="Pair" state={flow.paired ? "done" : saved ? "open" : "wait"}>
+                {saved ? <Pairing flow={flow} reload={reload} fail={fail} /> : <p className="setup-hint">Save the details above first.</p>}
+              </Step>
+            )}
+          </div>
+        </div>
+      )}
+    </section>
+  );
+}
+
+/** A link as a QR code (a phone's camera opens it), drawn as one SVG path from the encoder's modules. */
+function QrCode({ text, label }: { text: string; label: string }) {
+  const { size, d } = useMemo(() => {
+    const qr = qrcode(0, "M");
+    qr.addData(text);
+    qr.make();
+    const count = qr.getModuleCount();
+    let path = "";
+    for (let r = 0; r < count; r++) for (let c = 0; c < count; c++) if (qr.isDark(r, c)) path += `M${c + 4} ${r + 4}h1v1h-1z`;
+    return { size: count + 8, d: path };
+  }, [text]);
+  return (
+    <svg className="setup-qr" viewBox={`0 0 ${size} ${size}`} role="img" aria-label={label} shapeRendering="crispEdges">
+      <rect width={size} height={size} fill="#fff" />
+      <path d={d} fill="#000" />
+    </svg>
   );
 }

@@ -37,7 +37,7 @@ function setup({ capacity = 12, spend = () => [], launch = async () => {}, grant
   const adm = createAdmission({
     provenance, routineCap: async (task) => caps[task], nextTurn: createJobTools({ db, secret: () => "s", engines: () => [] }),
     db, facts, grants: () => grants, capacity: () => capacity, spend: (...a) => spend(...a),
-    kinds: () => ({ "tasks.create_task": { module: "tasks", floor: 1, tools: ["tasks.create"] }, "slack.post": { module: "slack", floor: 1, tools: ["slack.post"] }, "tasks.now": { module: "tasks", floor: 0, tools: ["tasks.create"] }, "codehost-github.pr": { module: "codehost-github", floor: 0, tools: [] }, "kernel.apply": { module: "kernel", floor: 1, tools: [] } }),
+    kinds: () => ({ "tasks.create_task": { module: "tasks", floor: 1, tools: ["tasks.create"] }, "slack.post": { module: "slack", floor: 1, tools: ["slack.post"] }, "tasks.now": { module: "tasks", floor: 0, tools: ["tasks.create"] }, "github.pr": { module: "github", floor: 0, tools: [] }, "kernel.apply": { module: "kernel", floor: 1, tools: [] } }),
     mayDispatch: (module, agent) => module === "acme-dispatch" && agent !== "agent-3",
     cp: { task: async (id) => (tasks[id] ? { id, identifier: id.toUpperCase(), assigneeAgentId: tasks[id], status: "todo", ...origins[id] } : undefined) },
     wakes: wakeInbox(db),
@@ -78,7 +78,7 @@ test("profiles: an engineer gets the engineer image, its jobcaps and the code ho
   const eng = await adm.admit("acme-dispatch", req(wake("w1", "task-3", "agent-2")));
   assert.equal(eng.authority.image, "engineer");
   assert.deepEqual(eng.authority.jobcaps, ["gh-read"]);
-  assert.deepEqual(eng.authority.writes, ["codehost-github.pr", "kernel.apply"]);
+  assert.deepEqual(eng.authority.writes, ["github.pr", "kernel.apply"]);
   grants["agent-2"].trial = true;
   assert.deepEqual((await adm.admit("acme-dispatch", req(wake("w3", "task-4", "agent-2")))).authority.writes, []);
   grants["agent-1"].profile = "check";
