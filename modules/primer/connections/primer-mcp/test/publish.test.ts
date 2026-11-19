@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { publisher } from "../src/publish.js";
 import { replier } from "../src/reply.js";
@@ -19,6 +20,9 @@ describe("primer.publish executor", () => {
     // The runner's request (path is a label) and an agent's primer_create_document call plan the same way.
     const plan = await ex.plan({ kind: "primer.publish", args: { title: "Report", content: "# Report\n", format: "markdown", path: ".aidenhq/primer.md", junk: 1 }, requester, task: "T-1" });
     expect(plan.args).toEqual({ title: "Report", content: "# Report\n", format: "markdown", path: ".aidenhq/primer.md", by: { agent: "a1", task: "T-1" } });
+    // The kernel validates the planned args against the kind's schema (additionalProperties false): every field must be in it.
+    const schema = JSON.parse(readFileSync(new URL("../../../schemas/publish.json", import.meta.url), "utf8"));
+    for (const k of Object.keys(plan.args as object)) expect(Object.keys(schema.properties)).toContain(k);
     expect(plan.targets?.artifact_sha256).toMatch(/^[0-9a-f]{64}$/);
     expect(plan.card?.what).toBe('the new document "Report"');
     expect(calls).toEqual([]);

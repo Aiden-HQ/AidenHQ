@@ -23,7 +23,7 @@
     {"name": "modules/channel-telegram/connections/telegram", "job": "modules", "run": "npm ci --ignore-scripts && npm test && npm run typecheck", "paths": ["modules/channel-telegram/connections/telegram"]},
     {"name": "modules/owner-channel/connections/notify", "job": "modules", "run": "npm ci --ignore-scripts && npm test && npm run typecheck", "paths": ["modules/owner-channel/connections/notify"]},
     {"name": "modules/chat-lane/connections/lane", "job": "modules", "run": "npm ci --ignore-scripts && npm test && npm run typecheck", "paths": ["modules/chat-lane/connections/lane"]},
-    {"name": "modules/primer/connections/primer-mcp", "job": "modules", "run": "npm ci && npm test && npm run typecheck", "paths": ["modules/primer/connections/primer-mcp"]},
+    {"name": "modules/primer/connections/primer-mcp", "job": "modules", "run": "npm ci && npm test && npm run typecheck", "paths": ["modules/primer/connections/primer-mcp", "modules/primer/schemas"]},
     {"name": "modules/slack/connections/slack-mcp", "job": "modules", "run": "npm ci && npm test && npm run typecheck", "paths": ["modules/slack/connections/slack-mcp"]},
     {"name": "modules/tasks/connections/tasks-mcp", "job": "modules", "run": "npm ci && npm test", "paths": ["modules/tasks/connections/tasks-mcp", "modules/tasks/skills"]},
     {"name": "modules/channel-operator", "job": "modules", "run": "node --test test/*.test.mjs", "paths": ["modules/channel-operator"]},
