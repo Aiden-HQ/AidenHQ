@@ -11,7 +11,8 @@
 #     /aiden command, DMs to the bot (im:history, im:read) and opening the owner's DM with it (im:write: conversations.open
 #     in slack-live main.ts), a bound channel's history for its agent (channels:history, groups:history, read by
 #     slack_channel_context), and the channel membership events channel binding uses (channels:read, groups:read: Slack
-#     requires them for member_joined_channel and channel_left).
+#     requires them for member_joined_channel and channel_left; mpim:read too, which Slack marks required by the event
+#     subscriptions).
 #   - advanced, events: the bot's mentions, DMs and channel membership; the person's own messages, live, for src_slack and triage.
 # Token rotation stays off: the bot token (xoxb-) the listener holds is not refreshed.
 # NOT in a manifest (Slack has no key for it): turn on MCP access by hand, once per app: api.slack.com/apps -> your app ->
@@ -84,6 +85,7 @@ advanced:
         - groups:history
         - channels:read
         - groups:read
+        - mpim:read
   settings:
     socket_mode_enabled: true
     interactivity:
