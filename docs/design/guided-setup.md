@@ -263,8 +263,7 @@ The flow is done when paired.
    - One line says "a workspace admin may need to approve it".
    - Paste two tokens (app-level `xapp-` and bot `xoxb-`), then Save.
    - Pair by DMing the bot the one-time code. The owner's Slack id comes from that DM, not typed and not guessed.
-   - New work: these secrets get `setup:` fields, and `OWNER_SLACK_USER_ID` and `OWNER_COMMAND_CHANNEL` stop being
-     required `.env` values (the command channel becomes the paired DM by default).
+   - Pairing is the only way to set the owner; the paired DM is the command channel.
    - Reading Slack history (the separate `slack` module, which signs in as the owner) is not this step. Aiden offers it
      later.
 

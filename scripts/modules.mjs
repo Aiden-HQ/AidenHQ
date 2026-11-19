@@ -117,7 +117,7 @@ export const LEGACY_SECRETS = {
 /** Host variables (the host's .env, never instance.yaml: they decide whose words count and where links point). Closed. */
 export const LEGACY_HOST_ENV = {
   "channel-telegram": ["TELEGRAM_OWNER_CHAT_ID", "TELEGRAM_TASK_URL"],
-  "channel-slack": ["OWNER_SLACK_USER_ID", "SLACK_LIVE_IGNORE_CHANNELS", "OWNER_COMMAND_CHANNEL"],
+  "channel-slack": ["SLACK_LIVE_IGNORE_CHANNELS"],
   "chat-lane": ["AIDENHQ_GATEWAY_URL", "TELEGRAM_OWNER_CHAT_ID"],
   google: ["BOARD_LAN_URL", "GOOGLE_CALENDAR_ID", "AIDENHQ_GATEWAY_URL"],
   jira: ["AIDENHQ_GATEWAY_URL"],

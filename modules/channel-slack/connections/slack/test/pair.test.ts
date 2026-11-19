@@ -55,22 +55,12 @@ it("a used or expired code pairs nobody, and only 5 wrong codes a minute are tri
   expect(pairing.owner()).toEqual({ user: "U5", channel: "D5" });
 });
 
-it("re-pairing notifies the old DM, and an env owner is seeded once", async () => {
+it("re-pairing from another account notifies the old DM", async () => {
   const { pairing, said, dm } = setup();
-  expect(pairing.seed("U0", "D0")).toBe(true);
-  expect(pairing.seed("U9", "D9")).toBe(false);
+  await dm(pairing.mint(), {}, "U0", "D0");
   await dm(pairing.mint());
+  expect(pairing.owner()).toEqual({ user: "U1", channel: "D1" });
   expect(said).toContainEqual(["D0", "This Slack account is no longer paired with AidenHQ."]);
-  expect(pairing.seed("U8", "D8")).toBe(false);
-});
-
-it("an owner seeded without a channel gets one, once, and only for that owner", () => {
-  const { pairing } = setup();
-  pairing.seed("U0", "");
-  expect(pairing.setChannel("U9", "D9")).toBe(false);
-  expect(pairing.setChannel("U0", "D0")).toBe(true);
-  expect(pairing.setChannel("U0", "D1")).toBe(false);
-  expect(pairing.owner()).toEqual({ user: "U0", channel: "D0" });
 });
 
 it("minting a code retires the earlier unused ones", async () => {

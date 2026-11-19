@@ -66,7 +66,7 @@ mkdir -p "$AIDENHQ_SECRETS_DIR/modules/google" && chmod 0700 "$AIDENHQ_SECRETS_D
 placeholder modules/google/google_oauth.json "{}"   # the google module's own vault dir (read-write at its /state)
 placeholder github_token ""      # the user's GitHub token: the github module's setup flow
 placeholder slack_live_app_token ""             # xapp- Socket Mode token
-placeholder slack_live_bot_token ""             # xoxb- bot token, posts DMs to OWNER_SLACK_USER_ID
+placeholder slack_live_bot_token ""             # xoxb- bot token, posts DMs to the paired owner
 placeholder telegram_notify_bot_token ""       # BotFather token; the owner's Telegram chat with Aiden, and a channel for notify
 placeholder slack_live_triage_webhook_url ""    # the slack-triage routine's webhook; empty = no poke
 placeholder slack_live_triage_webhook_secret ""
