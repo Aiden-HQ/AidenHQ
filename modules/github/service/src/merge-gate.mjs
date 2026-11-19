@@ -146,9 +146,11 @@ export function decide(data, head, { uiReview }) {
     case "UNSTABLE": { // only an advisory context isn't green: every named one is, above
       // A red default branch takes no merges on top, except a PR that already holds its tip: its own green checks prove the tree
       // after the merge, so the fix for a red base can land.
-      const base = baseCi(pr.baseRef?.target?.statusCheckRollup);
-      if (base === "pending") return { do: "wait", why: `CI is running on \`${def}\`` };
-      if (base === "red" && pr.baseRef?.compare?.behindBy !== 0) return { do: "wait", why: `\`${def}\` is red: merged once it is green again` };
+      // A base that never ran CI (an app repo whose CI runs on PRs only) has nothing to judge: green. The tip is in the reason, so
+      // each new tip's CI gets its own wait.
+      const base = baseCi(pr.baseRef?.target?.statusCheckRollup), tip = String(pr.baseRef?.target?.oid ?? "").slice(0, 12);
+      if (base === "pending") return { do: "wait", why: `CI is running on \`${def}\` at \`${tip}\`` };
+      if (base === "red" && pr.baseRef?.compare?.behindBy !== 0) return { do: "wait", why: `\`${def}\` is red at \`${tip}\`: merged once it is green again` };
       return { do: "merge" };
     }
     case "DIRTY":

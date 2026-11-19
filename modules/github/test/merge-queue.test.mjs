@@ -53,11 +53,14 @@ function fakeGitHub(prs) {
 
 async function setup(t, { prs, cacheDir = mkdtempSync(join(tmpdir(), "codehost-merges-")), clock = { t: Date.now() }, checks, remoteUrl = (slug) => join(cacheDir, "no-such-remote", slug) }) {
   const outcomes = [];
+  const taken = new Set();
   const kernel = await listen(async (req, res) => {
     let body = "";
     for await (const c of req) body += c;
     const m = /^\/v1\/writes\/([^/]+)\/outcome$/.exec(req.url);
-    if (m) { outcomes.push({ id: m[1], ...JSON.parse(body) }); return res.writeHead(200).end("{}"); }
+    // The kernel takes a record's first outcome and answers 409 to a repeat (the executor and the queue both post it).
+    if (m && taken.has(m[1])) return res.writeHead(409).end("{}");
+    if (m) { taken.add(m[1]); outcomes.push({ id: m[1], ...JSON.parse(body) }); return res.writeHead(200).end("{}"); }
     const reply = checks?.(req.method, req.url, body ? JSON.parse(body) : undefined);
     if (reply) return res.writeHead(200).end(JSON.stringify(reply));
     res.writeHead(404).end("{}");
@@ -118,8 +121,7 @@ test("a head that moved after approval is never merged; one queue per repo merge
   await handle.stepMerges();
   await settle();
   assert.equal(github.merges().length, 2, "the second record finds #1 merged at its bound head: nothing merged twice");
-  // Each outcome is posted by the executor and by the queue's own durable delivery: the kernel takes the first and answers 409 to the repeat.
-  assert.deepEqual([...new Set(outcomes.map((o) => `${o.id}:${o.ok}`))].sort(), ["k-00000000000000a4:true", "k-00000000000000a5:true"]);
+  assert.deepEqual(outcomes.map((o) => [o.id, o.ok]).sort(), [["k-00000000000000a4", true], ["k-00000000000000a5", true]]);
 });
 
 test("missing evidence never counts as passing: no checks, a truncated page of checks, the base's gate check not yet on the head", async (t) => {
@@ -322,11 +324,12 @@ test("a red default branch takes no merge on top, except the PR that already hol
   const data = (base, behindBy) => ({ repository: { defaultBranchRef: { name: "main" }, pullRequest: {
     number: 1, state: "OPEN", isDraft: false, baseRefName: "main", headRefOid: HEAD, mergeStateStatus: "CLEAN", latestOpinionatedReviews: { nodes: [] },
     files: { pageInfo: { hasNextPage: false }, nodes: [{ path: "lib/x.mjs" }] }, commits: { nodes: [{ commit: { statusCheckRollup: rollup("SUCCESS") } }] },
-    baseRef: { compare: { behindBy }, target: { statusCheckRollup: base } },
+    baseRef: { compare: { behindBy }, target: { oid: "b".repeat(40), statusCheckRollup: base } },
   } } });
-  assert.deepEqual(decide(data(rollup("FAILURE"), 2), HEAD, { uiReview: false }), { do: "wait", why: "`main` is red: merged once it is green again" });
+  assert.deepEqual(decide(data(rollup("FAILURE"), 2), HEAD, { uiReview: false }), { do: "wait", why: "`main` is red at `bbbbbbbbbbbb`: merged once it is green again" });
   assert.deepEqual(decide(data(rollup("FAILURE"), 0), HEAD, { uiReview: false }), { do: "merge" }, "the fix for a red base lands");
   assert.equal(decide(data(rollup("PENDING"), 2), HEAD, { uiReview: false }).do, "wait");
   assert.deepEqual(decide(data(rollup("CANCELLED", { names: ["build", "ci-required"] }), 2), HEAD, { uiReview: false }), { do: "merge" }, "a cancelled run never judged the base");
   assert.deepEqual(decide(data(rollup("SUCCESS"), 2), HEAD, { uiReview: false }), { do: "merge" });
+  assert.deepEqual(decide(data(rollup("SUCCESS", { names: [] }), 2), HEAD, { uiReview: false }), { do: "merge" }, "a base whose CI runs on PRs only");
 });

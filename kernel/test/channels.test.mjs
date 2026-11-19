@@ -223,3 +223,20 @@ test("cp-read: an attachment's bytes come only for one listed on the named task,
   assert.equal((await get("/v1/cp/read/attachments/att-other/content?task=WOR-1")).status, 404);
   assert.equal((await get("/v1/cp/read/attachments/att-big/content?task=WOR-1")).status, 413);
 });
+
+test("a wake notice to the asker goes on the task's open parent, its fenced data intact; with no open parent, on the task", async (t) => {
+  const issues = { "WOR-2": { id: "i-2", identifier: "WOR-2", status: "in_progress", parentId: "i-1" }, "i-1": { id: "i-1", identifier: "WOR-1", status: "in_progress" }, "WOR-3": { id: "i-3", identifier: "WOR-3", status: "in_progress", parentId: "i-9" }, "i-9": { id: "i-9", status: "done" } };
+  const { k } = await setup(t, { onControl: async (req) => {
+    const m = /^\/api\/issues\/([^/?]+)$/.exec(req.url);
+    if (req.method === "GET" && m) return issues[m[1]] ? { body: issues[m[1]] } : { status: 404, body: {} };
+    if (req.method === "POST" && /comments$/.test(req.url)) return { body: { id: "c-1" } };
+    return undefined;
+  } });
+  const text = "**CI breaker on WOR-2:** stopped.\n```text\ntest\n\nexpected 2\n```";
+  assert.deepEqual((await k.v1("POST", "/v1/wakes", { task: "WOR-2", text, to: "asker" }, LANE)).json, { posted: true, to: "parent" });
+  const posted = k.control.filter((c) => c.method === "POST" && c.url.endsWith("/comments"));
+  assert.equal(posted.at(-1).url, "/api/issues/i-1/comments");
+  assert.match(JSON.parse(posted.at(-1).body).body, /```text\ntest\n\nexpected 2\n```/);
+  assert.deepEqual((await k.v1("POST", "/v1/wakes", { task: "WOR-3", text, to: "asker" }, LANE)).json, { posted: true }, "a closed parent hears nothing");
+  assert.equal(k.control.filter((c) => c.method === "POST" && c.url.endsWith("/comments")).at(-1).url, "/api/issues/i-3/comments");
+});

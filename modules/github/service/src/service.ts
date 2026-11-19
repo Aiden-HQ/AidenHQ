@@ -70,7 +70,7 @@ const IDENT = /^[A-Za-z][A-Za-z0-9]*-\d+$/;
 const BRANCH = /^(?!-)(?!.*\.\.)[\w./-]{1,200}$/;
 const same = (a?: string, b?: string) => Boolean(a && b) && a!.toLowerCase() === b!.toLowerCase();
 const fail = (status: number, message: string) => Object.assign(new Error(message), { status });
-/** Our tooling, task numbers and local paths: what reviewers of a repo outside ours mustn't read in a PR or a commit. */
+/** Our tooling and local paths: what reviewers of a repo outside ours mustn't read in a PR or a commit. */
 const INTERNAL = /aidenhq|paperclip|\/home\/|~\/|\bworktree\b|\bopencode\b|\bopenrouter\b|claude code|\bcodex\b/i;
 /** The first internal name in text, for telling the agent what to reword. */
 export const leakIn = (text: unknown) => String(text ?? "").match(INTERNAL)?.[0];
@@ -232,7 +232,7 @@ export function createService(o: Options) {
     const base = { agentsOrg: o.agentsOrg, allowedOrgs: o.allowedOrgs, instanceRepo: o.instanceRepo, productRepo: o.productRepo, requester: { platform: isPlatform(requester) }, task, workspace: String(a.workspace ?? ""), also: [] as string[] };
     if (kind.endsWith(".create_repo")) {
       const repo = slugOf(a.repo).slug;
-      return { state: { ...base, repo }, facts: { target: repo, sentence: `Create the repository ${repo} on GitHub.`, diff: "" } };
+      return { state: { ...base, repo }, facts: { target: repo, sentence: `Create the repository ${repo} on GitHub${inOrg(o.agentsOrg, repo) ? ", with the app starter on main" : ""}.`, diff: "" } };
     }
     if (kind.endsWith(".merge") || kind.endsWith(".close")) {
       const merge = kind.endsWith(".merge");
@@ -276,7 +276,7 @@ export function createService(o: Options) {
       if (!ownRepo(s.slug, o.agentsOrg, o.productRepo)) {
         const messages = (await git(dir, ["log", "--format=%B%x1e", mb ? `${mb}..${b.sha}` : b.sha])).split("\x1e");
         const leak = kind.endsWith(".pr") ? leakIn(`${a.text?.title ?? ""}\n${a.text?.body ?? ""}`) : undefined;
-        if (leak) throw fail(422, `Not done: the PR title or description mentions "${leak}". ${s.slug}'s reviewers mustn't see internal names, tools, task numbers or local paths; reword it and ask again.`);
+        if (leak) throw fail(422, `Not done: the PR title or description mentions "${leak}". ${s.slug}'s reviewers mustn't see internal names, tools or local paths; reword it and ask again.`);
         const msg = messages.find((m) => leakIn(m));
         if (msg) throw fail(422, `Not done: a commit message on ${b.branch} mentions "${leakIn(msg)}" ("${msg.trim().split("\n")[0]!.slice(0, 80)}"). ${s.slug}'s reviewers mustn't see internal names; reword the commit and ask again.`);
       }

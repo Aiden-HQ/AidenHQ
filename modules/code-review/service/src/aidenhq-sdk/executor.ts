@@ -24,8 +24,10 @@ export interface Executor {
 }
 
 /** A handler for `<path>/*`: answers and returns true, or returns false for any other path. */
-export function serveExecutor(ex: Executor, { key, kernelUrl = process.env.AIDENHQ_KERNEL_URL ?? "http://10.231.0.1:3130", path = "/aidenhq/v1/executor", log = () => {} }: {
+export function serveExecutor(ex: Executor, { key, kernelUrl = process.env.AIDENHQ_KERNEL_URL ?? "http://10.231.0.1:3130", path = "/aidenhq/v1/executor", log = () => {}, retryMs = 2000 }: {
   key: string; kernelUrl?: string; path?: string; log?: (msg: string, f?: Record<string, unknown>) => void;
+  /** The first wait before an undelivered outcome is posted again; it doubles, to a minute at most. */
+  retryMs?: number;
 }) {
   const runs = new Map<string, { state: "running" | "done" | "failed"; text?: string }>();
   const send = (res: ServerResponse, status: number, body: unknown) => void res.writeHead(status, { "content-type": "application/json" }).end(JSON.stringify(body));
@@ -43,7 +45,7 @@ export function serveExecutor(ex: Executor, { key, kernelUrl = process.env.AIDEN
       if (r && (r.ok || r.status === 409)) return;
       if (r && r.status >= 400 && r.status < 500 && ![401, 408, 429].includes(r.status)) return log("executor outcome refused", { id, status: r.status });
       if (i === 4) log("executor outcome not delivered yet: still trying", { id, status: r?.status });
-      await new Promise((ok) => setTimeout(ok, Math.min(2000 * 2 ** i, 60_000)));
+      await new Promise((ok) => setTimeout(ok, Math.min(retryMs * 2 ** i, 60_000)));
     }
   }
   return async function handle(req: IncomingMessage, res: ServerResponse): Promise<boolean> {
