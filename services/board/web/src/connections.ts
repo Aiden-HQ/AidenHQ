@@ -66,10 +66,10 @@ export interface Verdict {
 }
 
 /**
- * Where a Connect works when this address can't: the board's https address, or (a board without one) its loopback address
- * through a tunnel (docs/setup.md, Connecting accounts). Shown wherever a Connect button can't be offered.
+ * Why a Google Reconnect isn't offered here: the instance's Google client is a Web client, which Google sends back only to
+ * the board's https address. A Desktop client (an organisation's, or one made in the Google setup) signs in from anywhere.
  */
-export const SIGN_IN_HINT = "To sign in, open the board at its https address and press Connect. A board without one: run ssh -N -L 3121:127.0.0.1:3121 -L 3120:127.0.0.1:3120 <you>@<host> on your laptop, then open http://127.0.0.1:3121.";
+export const GOOGLE_WEB_HINT = "This Google client can only sign in from the board's https address. Switch to a Desktop client (pick your organisation, or Google's setup in Settings → Connections) and Reconnect works from here.";
 
 /** What a built-in connection is for, in the owner's words (it runs inside each agent run: nothing to check). */
 const BUILT_IN: Record<string, string> = { paperclip_tasks: "How agents read and update their tasks, delegate, and ask for approvals." };
@@ -84,7 +84,7 @@ const day = (iso: string) => new Date(iso).toLocaleString(undefined, { weekday: 
  * loopback address; the board says which, per sign-in kind).
  */
 export function connectionStatus(row: ConnectionRow, canConnect: { signIn: boolean; google: boolean }): Verdict {
-  const connect = (label: string, href: string, can: boolean): Pick<Verdict, "action" | "hint"> => (can ? { action: { label, href } } : { hint: SIGN_IN_HINT });
+  const connect = (label: string, href: string, can: boolean): Pick<Verdict, "action" | "hint"> => (can ? { action: { label, href } } : { hint: GOOGLE_WEB_HINT });
 
   // Google: each account's own sign-in comes first; the service's health after.
   if (row.google) {

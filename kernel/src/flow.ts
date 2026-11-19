@@ -104,11 +104,15 @@ function reasoner(x: Index, task: string, stale: Occurrence[]) {
   let i = 0;
   const lastWait = new Map<string, FactRow>(), records = new Map<string, { done: boolean; owner: boolean }>();
   let blocked: FactRow | undefined;
-  // wakes: pending from when the kernel knew of it (seen_at) until bound or dropped; scheduled while its time is still ahead
+  // wakes: pending from when the kernel knew of it (seen_at) until bound or dropped, or until a job on the task is queued after it
+  // (the kernel settles a comment that arrived before a job started as done, with no fact: that job reads it); scheduled while
+  // its time is still ahead
   const edges: [number, number, number][] = []; // [time, pending delta, future delta]
+  const queued = fs.filter((g) => g.type === "job.queued").map((g) => ms(g.at));
   for (const f of fs) if (f.type === "wake.opened") {
-    const close = Math.min(Infinity, ...(x.bySubject.get(f.subject) ?? []).filter((g) => g.type === "wake.bound" || g.type === "wake.dropped").map((g) => ms(g.at)));
-    const s = ms(f.seen_at), due = ms(f.at);
+    const due = ms(f.at);
+    const close = Math.min(Infinity, ...(x.bySubject.get(f.subject) ?? []).filter((g) => g.type === "wake.bound" || g.type === "wake.dropped").map((g) => ms(g.at)), ...queued.filter((q) => q >= due));
+    const s = ms(f.seen_at);
     if (s < close) { edges.push([s, 1, 0], [close, -1, 0]); if (s < Math.min(due, close)) edges.push([s, 0, 1], [Math.min(due, close), 0, -1]); }
   }
   edges.sort((a, b) => a[0] - b[0]);
