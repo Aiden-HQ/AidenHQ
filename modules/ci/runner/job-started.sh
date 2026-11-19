@@ -5,4 +5,4 @@
 # job-started.mjs, run under `env -i` with only the three GITHUB_* values it needs, so a workflow's `env:` (NODE_OPTIONS,
 # an allow list) can't reach it. The allow list is /opt/aidenhq/allowed, written by the entrypoint before the runner starts.
 exec env -i GITHUB_REPOSITORY="${GITHUB_REPOSITORY:-}" GITHUB_EVENT_NAME="${GITHUB_EVENT_NAME:-}" GITHUB_EVENT_PATH="${GITHUB_EVENT_PATH:-}" \
-  /opt/hostedtoolcache/node/24.22.2/x64/bin/node /opt/aidenhq/job-started.mjs
+  /opt/hostedtoolcache/node/24.22.3/x64/bin/node /opt/aidenhq/job-started.mjs
