@@ -238,13 +238,16 @@ export interface CommentView {
   createdAt: string;
 }
 
+/** A for-others comment that isn't the owner's own @mention: the channel bridge's relay of a colleague opens with its "[slack " header. */
+export const relayed = (body: string) => forOthers(body) && displayText(body).startsWith("[slack ");
+
 export function commentView(c: Comment, me: string, agents: Agent[]): CommentView {
   const author: CommentView["author"] =
     c.authorType === "agent"
       ? { kind: "agent", name: agents.find((a) => a.id === c.authorAgentId)?.name ?? "Agent" }
       : hasMarker(c.body, NOTICE_MARKER)
         ? { kind: "board", name: "Board" }
-        : forOthers(c.body) || (c.authorUserId && c.authorUserId !== me)
+        : relayed(c.body) || (c.authorUserId && c.authorUserId !== me)
           ? { kind: "user", name: "Someone else" }
           : { kind: "me", name: "You" };
   return { id: c.id, body: displayText(c.body), author, createdAt: c.createdAt };

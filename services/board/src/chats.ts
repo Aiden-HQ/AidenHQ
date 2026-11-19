@@ -1,7 +1,7 @@
 // Chats: a chat is a Paperclip task labelled `chat`; a message is a comment. Pure helpers: the state a
 // person sees on each chat, and which agent a new message goes to.
 import { forOthers } from "./aidenhq-sdk/for-others.js";
-import { NOTICE_MARKER, displayText as strip, hasMarker as has } from "./board.js";
+import { NOTICE_MARKER, relayed, displayText as strip, hasMarker as has } from "./board.js";
 import type { Agent, Comment, Issue, LiveRun, PastRun } from "./paperclip.js";
 
 /** A label that reads like an approval ("approve WOR-184"): agents may not offer one; only a card or the owner's own words decide. */
@@ -208,7 +208,7 @@ export function conversation(issue: { id: string; description: string | null; cr
     // The board (through the kernel) and runner post as the owner or as no user; another user's comment is never a system message.
     const system = c.authorType !== "agent" && (!c.authorUserId || c.authorUserId === me);
     if (system && (has(c.body, APPROVAL_MARKER) || has(c.body, NOTICE_MARKER))) out.push({ kind: "notice", id: c.id, text: strip(c.body), at: c.createdAt });
-    else if (system && forOthers(c.body)) note(c, "Someone else");
+    else if (system && relayed(c.body)) note(c, "Someone else");
     else if (c.authorType === "agent") {
       const name = agentName(c.authorAgentId);
       if (tagged && !isReply(c.body)) note(c, name);
