@@ -19,9 +19,10 @@ contributes:
         - { name: confluence_pages, time: ingested_at, project: space, tsv: true }
         - { name: changes, time: observed_at, project: scope }
 settings:
-  # The Atlassian site every call is pinned to (its cloudId is looked up from the signed-in account's sites).
+  # The Atlassian site every call is pinned to (its cloudId is looked up from the signed-in account's sites). Empty: jira-mcp
+  # isn't started (no container, no image) until the owner sets it.
   jira_url:
-    required: true  # e.g. https://your-company.atlassian.net
+    default: ""  # e.g. https://your-company.atlassian.net
     type: url
     host: "*.atlassian.net"
   # Atlassian's remote MCP server; v2 with ?tools=all lists every tool flat, so per-tool grants hold (no discover/execute*).
@@ -57,6 +58,7 @@ secrets:
 services:
   run:
     jira-mcp:
+      when: { jira_url: true }
       build: ./connections/jira-mcp
       tmp: 16m
       egress: true

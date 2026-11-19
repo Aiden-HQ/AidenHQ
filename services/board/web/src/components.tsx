@@ -483,23 +483,18 @@ export function GoogleBanner({ google, canReconnect }: { google: Board["google"]
 }
 
 /**
- * A banner when AidenHQ isn't signed in to a service behind an MCP proxy yet (a module's board.signins), or it stopped accepting the sign-in, with Connect / Reconnect where it works (the board's https address, or loopback).
+ * A banner when a service behind an MCP proxy (a module's board.signins) stopped accepting the sign-in, with Reconnect where it works (the board's https address, or loopback).
  */
-function SignInBanner({ name, path, status, offer, canConnect, missing, stopped }: { name: string; path: string; status: SignInStatus | null; offer?: boolean; canConnect: boolean; missing: string; stopped: string }) {
-  if (!status?.configured || (status.state !== "missing" && status.state !== "expired")) return null;
+function SignInBanner({ name, path, status, offer, canConnect, stopped }: { name: string; path: string; status: SignInStatus | null; offer?: boolean; canConnect: boolean; stopped: string }) {
+  // Only a sign-in that worked and stopped alarms; one never connected is calm, in Settings > Connections.
+  if (!status?.configured || status.state !== "expired") return null;
   const since = new Date(status.since);
   return (
     <div className="alert" role="alert">
       <div className="alert-row">
         <span>
-          {status.state === "missing" ? (
-            <>{name} isn't connected yet. {missing}</>
-          ) : (
-            <>
-              {name} sign-in stopped working on {since.toLocaleDateString(undefined, { weekday: "long" })} at{" "}
-              {since.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit", hour12: false })}. {stopped}
-            </>
-          )}
+          {name} sign-in stopped working on {since.toLocaleDateString(undefined, { weekday: "long" })} at{" "}
+          {since.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit", hour12: false })}. {stopped}
         </span>
         {canConnect ? (
           <ConnectButton c={{ id: path, label: name, signIn: { state: status.state, offer } }} />
@@ -515,7 +510,7 @@ export function SignInBanners({ board, canConnect }: { board: Board; canConnect:
   return (
     <>
       {(board.signIns ?? []).map((s) => (
-        <SignInBanner key={s.id} name={s.label} path={s.id} status={s.status} offer={s.offer} canConnect={canConnect} missing={s.missing} stopped={s.stopped} />
+        <SignInBanner key={s.id} name={s.label} path={s.id} status={s.status} offer={s.offer} canConnect={canConnect} stopped={s.stopped} />
       ))}
     </>
   );

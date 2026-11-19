@@ -552,14 +552,31 @@ export function hostDirs(productDir, env = process.env) {
   return { work_dir: expand(String(y.work_dir ?? "~/aidenhq-work")), state_dir: expand(String(y.state_dir ?? "~/.local/state/aidenhq-runner")) };
 }
 
-export function compile(productDir, instanceDir, { revision, fetch = hostFetch(productDir), door, workDir = hostDirs(productDir).work_dir } = {}) {
+export function compile(productDir, instanceDir, { revision, bundleState, oldBundle, fetch = hostFetch(productDir), door, workDir = hostDirs(productDir).work_dir } = {}) {
   const instFile = join(instanceDir, "instance.yaml");
   if (!existsSync(instFile)) fail(`no instance.yaml in ${instanceDir}: set AIDENHQ_INSTANCE_DIR to your instance checkout (see docs/USAGE.md)`);
   const instance = readYaml(instFile);
   const all = discover(productDir, instance, fetch);
   const problems = capabilityProblems(Object.fromEntries([...all].map(([n, m]) => [n, m.def])));
   if (problems.length) fail(problems.join("; "));
-  const chosen = current(instance.modules ?? [], Object.fromEntries([...all].map(([n, m]) => [n, m.def])));
+  // Members the default bundle gained since this host last compiled reach the instance here, in memory (an apply never writes
+  // the instance). `bundleState` ({ seen, adopted }, kept on the host by compile.mjs) remembers the bundle last compiled and
+  // what was added from it, so an added module stays on at every later apply; with none yet, `oldBundle` (the previous
+  // product's) says what is new. The owner's removals (instance.yaml `modules_removed`, in git) are never added, and a module
+  // whose required settings the instance lacks stays out, warned, rather than failing the compile.
+  const bundle = JSON.parse(readFileSync(join(productDir, "modules", "marketplace.json"), "utf8")).bundle ?? [];
+  const known = Object.fromEntries([...all].map(([n, m]) => [n, m.def]));
+  const listed = new Set(current(instance.modules ?? [], known));
+  const removed = new Set((instance.modules_removed ?? []).map(String));
+  const seen = bundleState?.seen ?? oldBundle ?? bundle;
+  const adopted = new Set([...(bundleState?.adopted ?? []), ...bundle.filter((n) => !seen.includes(n) && !listed.has(n))].filter((n) => all.has(n)));
+  const unset = (n) => resolveEnabled(all, [n]).flatMap((m) => Object.entries(all.get(m).def.settings ?? {}).filter(([k, d]) => d?.required && !("default" in d) && instance.settings?.[k] == null).map(([k]) => k));
+  const added = [...adopted].filter((n) => !removed.has(n) && !listed.has(n)).filter((n) => {
+    const missing = unset(n);
+    if (missing.length) console.warn(`module ${n} is not enabled yet: set ${missing.join(", ")} first`);
+    return !missing.length;
+  });
+  const chosen = current([...(instance.modules ?? []), ...added], known);
   const enabled = resolveEnabled(all, chosen);
   const enabledDefs = Object.fromEntries(enabled.map((n) => [n, all.get(n).def]));
   const conflicts = conflictProblems(enabledDefs);
@@ -1089,7 +1106,7 @@ export function compile(productDir, instanceDir, { revision, fetch = hostFetch(p
   const graders = Object.entries(kernelModules.modules).filter(([, m]) => (m.roles ?? []).includes("kernel.grader")).map(([n]) => n);
   if (graders.length > 1) fail(`modules ${graders.join(", ")} all request kernel.grader: one grading module at a time`);
   for (const n of graders) if (!(enabledDefs[n]?.checks ?? []).some((c) => c.at === "task.finish")) fail(`module ${n}: kernel.grader needs a finish check (checks: at: task.finish)`);
-  return { paperclip, computersMax: settings.computers_max, apps: { apps }, points, compose, catalog, warnings, optionalSecrets, askedSecrets: setup.map((f) => f.secret), generatedSecrets, dataDirs, stateDirs, dataModules, gateway, jobcaps, engines, connections, writes, checks, kernelModules, exposure: settings.exposure, edge: edge && { gate: edge.gate, cloudflared: edge.cloudflared } };
+  return { bundleState: { seen: bundle, adopted: [...adopted] }, paperclip, computersMax: settings.computers_max, apps: { apps }, points, compose, catalog, warnings, optionalSecrets, askedSecrets: setup.map((f) => f.secret), generatedSecrets, dataDirs, stateDirs, dataModules, gateway, jobcaps, engines, connections, writes, checks, kernelModules, exposure: settings.exposure, edge: edge && { gate: edge.gate, cloudflared: edge.cloudflared } };
 }
 
 /**

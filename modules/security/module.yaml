@@ -27,7 +27,7 @@ agents:
     timeout_sec: 1800
     connections:
       # src_security (findings) through the warehouse tools; web reads (web search is on for every agent).
-      apps: [ app_list, app_status, web_view, warehouse_query, source_new, source_ack, finding_verdict ]
+      apps: [ app_list, app_status, app_view, web_view, warehouse_query, source_new, source_ack, finding_verdict ]
       owner_channel: [ notify ]
       paperclip_tasks: [ task_current, task_get, task_comments, task_search, task_list, task_create, task_comment, task_set_status, task_finish, fleet_catalog ]
     roles: [ security-verdict ]

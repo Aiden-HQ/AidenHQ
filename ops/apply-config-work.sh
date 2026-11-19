@@ -93,6 +93,8 @@ main() {
   local applied="${AIDENHQ_DATA_DIR:-$PWD/data}/applied-product"
   local before; before="${AIDENHQ_APPLY_BEFORE:-$(cat "$applied" 2>/dev/null || git rev-parse HEAD)}"
   git cat-file -e "$before^{commit}" 2>/dev/null || before="$(git rev-parse HEAD)"
+  # The previous product's default bundle: compile adds what the new one gained (scripts/compile.mjs, once per host).
+  export AIDENHQ_OLD_BUNDLE; AIDENHQ_OLD_BUNDLE="$(git show "$before:modules/marketplace.json" 2>/dev/null | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{try{console.log(JSON.stringify(JSON.parse(s).bundle))}catch{}})' || true)"
   git checkout --quiet --detach "$product"
   lap product
   # bash runs the script it started with: if the new product changes the apply's scripts, hand over to the new ones once
