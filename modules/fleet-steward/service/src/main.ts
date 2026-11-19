@@ -61,7 +61,7 @@ async function fileCheck(body: { incidents: { key: string; critical?: boolean }[
 }
 
 const coach = coachReads({ kernel, kv, apps });
-const all = checks({ kernel, apps, alerts: () => alertIncidents(kv, notify), openKeys: () => Object.keys(detectorState(kv).open), notify, gradeFailures, log });
+const all = checks({ kernel, kv, pause: async (routine) => void (await kernel.call("POST", "/v1/routines/pause", { routine })), apps, alerts: () => alertIncidents(kv, notify), openKeys: () => Object.keys(detectorState(kv).open), notify, gradeFailures, log });
 let busy = false;
 const run = async () => {
   if (busy) return;

@@ -124,8 +124,13 @@ It is idempotent. The Engineer runs it for you after you approve a change.
   `data/modules/fleet-steward/state.json`; the Steward reads it with `fleet_detector` (the proxy fences the answer, an alert's
   label text carries a second fence) and logs on the "Fleet issues" task (`log ·` lines). The same service serves the Coach's
   `coach_due` and `coach_evidence` and `fleet_generation_status` (the kernel's `/v1/work?generations=1`), and `/metrics`
-  (`aidenhq_steward_incidents_open`, `aidenhq_steward_alerts_firing`). A routine that keeps failing is dispatch's to schedule;
-  the Steward asks the Chief of Staff to pause one.
+  (`aidenhq_steward_incidents_open`, `aidenhq_steward_alerts_firing`). A routine whose last three kernel jobs all
+  hard-failed (`failed` or `timeout`, counted from the jobs' `routine` in `GET /v1/work?agent=`) is paused by the detector itself
+  (`POST /v1/routines/pause`, role `kernel.routines`, pause only; setup keeps a paused routine paused across applies) and the
+  owner is told once (notify kind alert, dedupe key `routine-paused:<id>`; Aiden resumes it, and a resume starts a fresh
+  count). Nothing is paused while the failures are fleet-wide (no agent finishing a job, or a 401 or 402 in a recent failure);
+  the routine stays flagged. The `missed` group raises an active routine whose next schedule fire (`nextRunAt`, read with
+  kernel.cp-read) is over 15 minutes overdue: Paperclip's scheduler has stopped.
 
 - The Maintainer (the maintainer module's `maintainer-watcher` service, `modules/maintainer/service/src/watcher.ts`): every
   `maintainer_poll_minutes` (default 5; it reads `MAINTAINER_POLL_MINUTES`) the watcher asks

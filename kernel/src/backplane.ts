@@ -32,6 +32,7 @@
 //   POST /v1/wakes/claim, POST /v1/wakes/:key/drop  (a module with role kernel.jobs) claim inbox rows; give one up
 //   POST /v1/routines/cancel   (a module with role kernel.jobs) {task, why: coalesced|stale, body}: an open or blocked routine run of an
 //                              agent it dispatches, cancelled as that agent (wakes.ts)
+//   POST /v1/routines/pause   (a module with role kernel.routines) {routine}: that routine paused, as the owner (never resumed here)
 //   POST /v1/wakes/:key/note   (the module that claimed it) {body}: a note on its task as its agent, once (no job answers it)
 //   POST /v1/tasks             (a module with role kernel.tasks) {title, description, role | agent, source, parent?}: a task of the module's
 //                              fixed text for the agent holding `role` (or `agent`, by id), once per source (modtasks.ts); GET /v1/tasks?source=
@@ -146,6 +147,7 @@ export const ROUTES = [
   { method: "POST", path: "/v1/wakes/:key/drop", auth: "module" },
   { method: "POST", path: "/v1/wakes/:key/note", auth: "module" },
   { method: "POST", path: "/v1/routines/cancel", auth: "module" },
+  { method: "POST", path: "/v1/routines/pause", auth: "module" },
   { method: "POST", path: "/v1/tasks", auth: "module" },
   { method: "POST", path: "/v1/tasks/:task/close", auth: "module" },
   { method: "GET", path: "/v1/tasks", auth: "module" },
@@ -540,6 +542,17 @@ export function createBackplane({ idle, facts, whoami, asserter, proxy, cp, boar
         const b = await json(req);
         const r = await (hit.path === "/v1/tasks" ? tasks.file(w.module!, b) : tasks.close(w.module!, decodeURIComponent(m[0]!), b)).catch((e: { name?: string; status?: number; message: string }) => { throw e.name === "TaskError" ? fail(e.status!, "bad_request", e.message) : e; });
         return send(res, 200, r);
+      }
+      if (hit?.path === "/v1/routines/pause") {
+        const w = await moduleOf(req);
+        if (!w.roles.includes("kernel.routines")) throw fail(403, "forbidden", `${w.module} may not pause routines (role kernel.routines)`);
+        if (!owner) throw fail(503, "unavailable", "the control plane is off");
+        const b = await json(req);
+        if (!/^[A-Za-z0-9_-]{1,100}$/.test(String(b.routine))) throw fail(400, "bad_request", "send {routine: the routine's id}");
+        const r = await owner("PATCH", `/api/routines/${b.routine}`, { status: "paused" });
+        if (r.status !== 200) throw fail(502, "upstream", `the control plane answered ${r.status}`);
+        log("routine paused", { module: w.module, routine: b.routine });
+        return send(res, 200, { paused: true });
       }
       if (hit && (hit.path.startsWith("/v1/wakes") || hit.path === "/v1/routines/cancel")) {
         if (hit.path === "/v1/wakes/events") {

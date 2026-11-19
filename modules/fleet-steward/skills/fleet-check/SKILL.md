@@ -96,14 +96,17 @@ request open over an hour without merging) or something recovered.
   Dependabot PRs: a PR outside that scope (e.g. in `Aiden-HQ/aidenhq-modules`) is the owner's, so file no close task —
   state it once in the owner digest with the PR link, why it is superseded and the one-line close reason to use, and log
   `pr · <repo>#<n> · outside-close-scope · owner`. Never the same nudge twice.
-- **Health flags** (`run:<agent>:stuck|failing|silent|repeat:<task>`, `grade:<task>`, `grade:<task>:unclosed`; a flag open a day is the owner's too):
+- **Health flags** (`run:<agent>:stuck|failing|silent|repeat:<task>`, `grade:<task>`, `grade:<task>:unclosed`, `routine:<id>`, `missed:<id>:<schedule>`; a flag open a day is the owner's too):
   - `run:<agent>:stuck` or `:failing`: the kernel's job ledger shows a job running far past its timeout, or the agent's last
     three jobs all failed. Read the failed jobs' tasks and comments, route the fix like a failing agent, log it.
   - `run:<agent>:silent`: jobs that finished with no steps and no output. If the agent clearly isn't doing its job, treat it
     as a repeated mistake.
   - `grade:<task>`: a task held in grading over a day. Nudge nobody; list it in the digest.
-  - A routine that fails again and again is dispatch's to schedule and clean up: when a run's failures name one, ask the
-    Chief of Staff (`task_delegate`) to pause it until it is fixed.
+  - `routine:<id>`: the detector has already paused a routine whose last three runs failed and told the owner; the flag stays
+    open until it is resumed. Find why its runs fail (the failed jobs' tasks and comments) and route the fix like a failing
+    agent; Aiden resumes the routine once it is fixed. Never pause or resume one yourself.
+  - `missed:<id>:<schedule>`: a routine's next fire is over 15 minutes overdue and no run started, so Paperclip's scheduler is
+    not firing. When several are open at once, say so in one line in the digest and ask the owner to check Paperclip.
 - **A reviewer-rejection loop** (`loop:<task>:<branch>`): the AI reviewer rejected the same branch three times in six hours,
   and the kernel has parked it. Read the task's cards and the reviewer's notes (`task_approvals`, `task_comments`). Post one
   summary on the task: the rejection codes, what the reviewer asks, and whether that contradicts the task or a test. Wake the

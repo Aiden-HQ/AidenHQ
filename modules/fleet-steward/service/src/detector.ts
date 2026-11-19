@@ -43,6 +43,9 @@ type QualityRow = { name: string; state: "none" | "ok" | "unknown"; checks?: { n
 /** An app-supplied name reduced to a short slug (a-z, 0-9, - and _). */
 const slug = (v: unknown) => String(v ?? "").toLowerCase().replace(/[^a-z0-9_-]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 40) || "unnamed";
 
+/** A routine's title for a line the owner reads: its own words, minus anything but letters, digits and light punctuation, at most 60. */
+const plain = (v: unknown) => String(v ?? "").replace(/[^\w .:-]+/g, " ").trim().slice(0, 60);
+
 export function qualityFindings(apps: QualityRow[], openKeys: string[]): Incident[] {
   const out: Incident[] = [];
   for (const a of apps) {
@@ -62,6 +65,33 @@ export function qualityFindings(apps: QualityRow[], openKeys: string[]): Inciden
 const SILENT_RUNS = 3; // finished jobs with no steps and no final words, in a day
 const STUCK_DEFAULT_MS = 180 * MIN; // a run with no known timeout, running this long
 const FAILS = 3; // an agent's last finished runs, all failed
+
+const MISSED_GRACE_MS = 15 * MIN;
+const HARD_FAIL = new Set(["failed", "timeout"]);
+
+/** Active routines whose next fire (by Paperclip's cron) is overdue past the grace: the fire never happened. A coalesced or skipped fire still advances it. */
+export function missedFires(routines: RoutineRow[], t: number): Incident[] {
+  const out: Incident[] = [];
+  for (const r of routines.filter((x) => x.status === "active")) {
+    const late = (r.triggers ?? []).filter((x) => x.kind === "schedule" && x.enabled !== false && x.nextRunAt && age(x.nextRunAt, t) > MISSED_GRACE_MS);
+    for (const x of late) out.push({ key: `${r.id}:${slug(x.label ?? "schedule")}`, reason: `routine ${plain(r.title)} (${slug(x.label ?? "schedule")}): fire due ${mins(age(x.nextRunAt, t))} ago, no run started` });
+  }
+  return out;
+}
+
+/** The routines (by id) whose newest FAILS finished jobs all hard-failed; `since[id]` is when the detector last paused it, so a resume counts only newer jobs. */
+export function failingRoutines(jobs: JobRow[], since: Record<string, string> = {}): { routine: string; failures: number }[] {
+  const by = new Map<string, JobRow[]>();
+  for (const j of jobs) if (j.routine && j.ended_at && !["running", "admitted", "cancelled", "lost"].includes(j.state) && !(since[j.routine] && j.ended_at <= since[j.routine]!)) by.set(j.routine, [...(by.get(j.routine) ?? []), j]);
+  const out: { routine: string; failures: number }[] = [];
+  for (const [routine, list] of by) {
+    const mine = list.sort((a, b) => b.ended_at!.localeCompare(a.ended_at!));
+    let n = 0;
+    while (n < mine.length && HARD_FAIL.has(mine[n]!.state)) n++;
+    if (n >= FAILS) out.push({ routine, failures: n });
+  }
+  return out;
+}
 
 /** `critical`: an outage or a critical alert, which wakes Fleet Ops at once; the rest wait for the next quiet-gap fire. */
 export interface Incident { key: string; reason: string; critical?: boolean }
@@ -130,7 +160,8 @@ export async function tick(kv: Kv, checks: Record<string, Check>, file: (body: {
 
 interface Company { id: string }
 interface AgentRow { id: string; name: string; status: string; adapterConfig?: { timeoutSec?: number } }
-interface JobRow { id: string; agent: string; task?: string; state: string; started_at: string | null; ended_at: string | null; exit?: number | null; timed_out?: boolean; steps?: number; has_final?: boolean }
+interface JobRow { id: string; agent: string; task?: string; routine?: string | null; state: string; started_at: string | null; ended_at: string | null; exit?: number | null; timed_out?: boolean; steps?: number; has_final?: boolean }
+interface RoutineRow { id: string; title: string; status: string; triggers?: { kind?: string; enabled?: boolean; label?: string | null; nextRunAt?: string | null }[] }
 interface IssueRow { id: string; identifier?: string; title?: string; status: string; priority?: string; updatedAt: string; assigneeUserId?: string | null; assigneeAgentId?: string | null; originKind?: string | null; labels?: ({ name?: string } | null)[] }
 interface CommentRow { authorType?: string; body?: string; createdAt: string; deletedAt?: string | null }
 interface WorkRecord { task: string | null; identifier: string | null; judged?: boolean; targets?: string[]; decided_at: string | null }
@@ -233,8 +264,8 @@ export function slowerStages(now: FlowStage[], before: FlowStage[]): string[] {
   }).map((s) => s.name);
 }
 
-/** The owner's alert list, as checks. `apps` reads apps-mcp (a module holding apps.read); `alerts` is Alertmanager's list. */
-export function checks(d: { kernel: KernelClient; apps: <T>(path: string) => Promise<T>; alerts: () => Promise<Incident[]>; openKeys: () => string[]; notify?: (text: string, key: string) => Promise<void>; gradeFailures: () => Promise<{ task: string; at: string; reason: string }[]>; now?: () => number; log?: (msg: string, f?: Record<string, unknown>) => void }): Record<string, Check> {
+/** The owner's alert list, as checks. `pause` pauses a routine (kernel role kernel.routines). `apps` reads apps-mcp (a module holding apps.read); `alerts` is Alertmanager's list. */
+export function checks(d: { kernel: KernelClient; kv: Kv; pause: (routine: string) => Promise<void>; apps: <T>(path: string) => Promise<T>; alerts: () => Promise<Incident[]>; openKeys: () => string[]; notify?: (text: string, key: string) => Promise<void>; gradeFailures: () => Promise<{ task: string; at: string; reason: string }[]>; now?: () => number; log?: (msg: string, f?: Record<string, unknown>) => void }): Record<string, Check> {
   const now = d.now ?? (() => Date.now());
   let appsOkAt = now(); // apps-mcp's last answer: a restart (an apply) is not an outage
   const companies = async () => (await d.kernel.read("/api/companies")) as Company[];
@@ -256,6 +287,7 @@ export function checks(d: { kernel: KernelClient; apps: <T>(path: string) => Pro
       return i && exempt(i) ? undefined : i?.identifier ?? id;
     };
   };
+  const routines = async () => (await Promise.all((await companies()).map(async (c) => (await d.kernel.read(`/api/companies/${c.id}/routines`)) as RoutineRow[]))).flat();
   let jobCache = new Map<string, JobRow[]>(); // one check run's job reads, shared by `component` and `run`
   const jobsOf = async (agent: string) => {
     let jobs = jobCache.get(agent);
@@ -326,6 +358,46 @@ export function checks(d: { kernel: KernelClient; apps: <T>(path: string) => Pro
         if (silent >= SILENT_RUNS) out.push({ key: `${a.id}:silent`, reason: `agent ${a.name}: ${silent} runs in 24h ended with no steps and no output` });
       }
       return out;
+    },
+    // A routine whose last 3 jobs all hard-failed is paused (the owner is told; Aiden resumes it once it's fixed). Not while the
+    // failures are fleet-wide: a credits (402) or key (401) refusal, or no agent finishing a job at all, is not the routine's fault.
+    async routine() {
+      const t = now();
+      const rows = await routines();
+      const jobs = (await Promise.all((await agents()).map((a) => jobsOf(a.id)))).flat();
+      const recent = jobs.filter((j) => !["running", "admitted", "cancelled"].includes(j.state) && age(j.ended_at, t) < 60 * MIN);
+      const failed = recent.filter((j) => HARD_FAIL.has(j.state));
+      let fleetWide = failed.length > 0 && !recent.some((j) => j.state === "done") && new Set(failed.map((j) => j.agent)).size >= 2;
+      for (const j of failed.sort((a, b) => b.ended_at!.localeCompare(a.ended_at!)).slice(0, 5)) {
+        if (fleetWide) break;
+        const final = ((await d.kernel.call("GET", `/v1/work?job=${encodeURIComponent(j.id)}`).catch(() => undefined)) as { final?: string | null } | undefined)?.final ?? "";
+        fleetWide = /\b(401|402)\b|insufficient credits|invalid api key/i.test(final);
+      }
+      const since: Record<string, string> = JSON.parse(d.kv.get("routine_paused_at") ?? "{}");
+      const out: Incident[] = [];
+      for (const { routine, failures } of failingRoutines(jobs, since)) {
+        const row = rows.find((r) => r.id === routine);
+        if (!row || row.status === "archived") continue;
+        // Paused by hand: its old failures must not re-pause it on resume.
+        if (row.status === "paused" && !since[routine]) { since[routine] = new Date(t).toISOString(); d.kv.set("routine_paused_at", JSON.stringify(since)); continue; }
+        if (row.status === "active" && !fleetWide) {
+          await d.pause(routine);
+          since[routine] = new Date(t).toISOString();
+          d.kv.set("routine_paused_at", JSON.stringify(since));
+          await d.notify?.(`Routine paused: ${plain(row.title)} failed ${failures} runs in a row. Ask Aiden to resume it once it's fixed.`, `routine-paused:${routine}`).catch(() => {});
+        }
+        out.push({ key: routine, reason: `routine ${plain(row.title)}: its last ${failures} runs failed${row.status === "paused" ? " (paused until the owner resumes it)" : ""}` });
+      }
+      // Paused by this detector and still paused: the flag stays open until the owner resumes it (a resume clears it).
+      for (const id of Object.keys(since)) {
+        const row = rows.find((r) => r.id === id);
+        if (row?.status === "paused" && !out.some((i) => i.key === id)) out.push({ key: id, reason: `routine ${plain(row.title)}: paused after repeated failures, until the owner resumes it` });
+      }
+      return out;
+    },
+    // An active routine whose next cron fire is overdue by 15 minutes and no run started: Paperclip's scheduler has stopped.
+    async missed() {
+      return missedFires(await routines(), now());
     },
     // Queued wakes while no job starts: the owner hears at once, with no agent job needed to file or read anything.
     async dispatch() {
