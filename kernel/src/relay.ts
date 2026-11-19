@@ -33,7 +33,9 @@ export function createReplyRelay({ owner, queue, log = () => {} }: {
   return async (job: { agent: string; task: string }, body: string): Promise<void> => {
     const t = encodeURIComponent(job.task);
     const [issue, comments, agent] = await Promise.all([owner("GET", `/api/issues/${t}`), owner("GET", `/api/issues/${t}/comments?order=desc&limit=50`), owner("GET", `/api/agents/${encodeURIComponent(job.agent)}`)]);
-    if (issue.status !== 200) throw new Error(`reading task ${job.task}: ${issue.status}`);
+    // A task that is gone has no one to relay to; any other failed read throws with its status (outcomes.ts retries a 5xx).
+    if (issue.status === 404) return;
+    for (const [what, r] of [["task", issue], ["comments", comments]] as const) if (r.status !== 200) throw Object.assign(new Error(`reading task ${job.task}'s ${what}: ${r.status}`), { status: r.status });
     const via = ownerVia(issue.json ?? {}, Array.isArray(comments.json) ? comments.json : []);
     if (!via) return;
     const name = String(agent.json?.name ?? "") || "Your agent";

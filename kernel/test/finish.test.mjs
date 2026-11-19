@@ -26,6 +26,7 @@ async function setup(t, verdict, { agentsScope, checks, graded = false, keyless 
   const issue = { id: TASK, identifier: "WOR-1", companyId: "co", status: "in_progress", assigneeAgentId: ADA, assigneeUserId: null, createdByAgentId: "ag-cos", parentId: null, labelIds: ["lbl-x"], executionPolicy: { mode: "normal" } };
   const delegated = { id: DELEGATED, identifier: "WOR-2", companyId: "co", status: "in_review", assigneeAgentId: "ag-bo", assigneeUserId: null, createdByAgentId: ADA, parentId: null, labelIds: [] };
   const writes = [];
+  const ctl = { failPatch: 0 }; // PATCHes the control plane answers 502 to
   let k;
   const todo = await moduleServer(t, { key: "todo-key", tools: ["task_finish"], answer: async (msg, req) => {
     const r = await fetch(`${k.url}/v1/cp/agent/api/issues/${msg.params.arguments.task}`, { method: "PATCH", headers: { authorization: "Bearer todo-key", "x-aidenhq-caller": req.headers["x-aidenhq-caller"], "content-type": "application/json" }, body: JSON.stringify(msg.params.arguments.body) });
@@ -41,6 +42,7 @@ async function setup(t, verdict, { agentsScope, checks, graded = false, keyless 
       if (req.method === "GET" && (req.url === `/api/issues/${TASK}` || req.url === "/api/issues/WOR-1")) return { body: issue };
       if (req.method === "GET" && (req.url === `/api/issues/${DELEGATED}`)) return { body: delegated };
       if (req.method === "GET" && req.url === "/api/companies/co/labels") return { body: [{ id: "lbl-x", name: "x" }, { id: "lbl-held", name: "held" }] };
+      if (req.method === "PATCH" && ctl.failPatch) { ctl.failPatch--; return { status: 502, body: {} }; }
       if (req.method === "PATCH") { const b = JSON.parse(body); writes.push({ as: auth, body: b }); Object.assign(issue, b); return { body: issue }; }
       if (req.url === "/api/agents/me" && auth === "ada-key") return { body: { id: ADA, companyId: "co" } };
       // The agent's own close goes through the plugin's post action (cp.ts): recorded as Ada's write.
@@ -48,7 +50,7 @@ async function setup(t, verdict, { agentsScope, checks, graded = false, keyless 
     },
   });
   const finish = async (body, task = TASK) => JSON.parse((await (await k.call("todo", "run-jwt-ada", { method: "tools/call", params: { name: "task_finish", arguments: { task, body } } })).json()).result.content[0].text);
-  return { k, asked, writes, issue, finish };
+  return { k, asked, writes, issue, finish, ctl };
 }
 
 test("a holding check: the move to done isn't forwarded; the owner holds the task in review with the check's label and a scheduled check", async (t) => {
@@ -116,8 +118,20 @@ test("/v1/checks/:task: only the check's module; release drops its label; ok and
   assert.deepEqual(writes.at(-1), { as: "board-key", body: { labelIds: ["lbl-x"] } });
   await finish({ status: "done" });
   assert.equal((await resolve({ verdict: "ok", comment: "Graded: satisfied." })).status, 200);
-  assert.deepEqual(writes.at(-1), { as: "board-key", body: { status: "done", comment: "Graded: satisfied." } });
+  // One move: the status, the label off and the comment together.
+  assert.deepEqual(writes.at(-1), { as: "board-key", body: { status: "done", labelIds: ["lbl-x"], comment: "Graded: satisfied." } });
   assert.equal((await resolve({ verdict: "reopen" })).status, 409, "the hold was resolved once");
+});
+
+test("a resolve the control plane fails keeps the hold, so the module's retry moves the task", async (t) => {
+  const { k, issue, finish, ctl } = await setup(t, () => ({ verdict: "pending", state: "pending", reason: "r", until: "2026-11-17T12:00:00.000Z" }));
+  const resolve = (body) => k.v1("POST", `/v1/checks/${TASK}`, body, "judge-tok");
+  await finish({ status: "done" });
+  ctl.failPatch = 1;
+  assert.equal((await resolve({ verdict: "ok" })).status, 502);
+  assert.equal(issue.status, "in_review");
+  assert.equal((await resolve({ verdict: "ok" })).status, 200);
+  assert.equal(issue.status, "done");
 });
 
 test("the finish gate never fails open: a graded assignee's task with no check covering it, or a checks file that won't load, refuses the close", async (t) => {

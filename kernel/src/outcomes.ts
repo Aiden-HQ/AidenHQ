@@ -63,6 +63,8 @@ export function createPluginPost({ controlUrl, agentKey, postKey, timeoutMs = 30
   }
   return {
     company,
+    /** The agent's company is read again (its key changed). */
+    forget: (agent: string) => void companies.delete(agent),
     /** `params` (no ts, no sig) signed and posted as `agent`: the plugin's status and data (`refused`, or what it wrote). */
     async post(agent: string, params: Record<string, unknown>): Promise<{ status: number; data: any }> {
       const companyId = await company(agent);
@@ -116,14 +118,29 @@ export function createOutcomes({ db, plugin, delegates, finish, provenance, rela
       // A 5xx (502: the plugin is down, or it threw) leaves the key pending: whether it wrote is unknown, and the retry looks.
       if (r.status >= 500) throw new OutcomeError(502, "unknown", `the post action answered ${r.status}`);
       const data = r.data;
-      if (r.status >= 300 || !data || data.refused) throw new OutcomeError(r.status >= 300 ? 502 : 422, "refused", data?.refused ?? `the post action answered ${r.status}`);
+      // A 4xx is final and keeps its status (dispatch's permanent(): acknowledged, never retried forever). A 401 or 403 is a
+      // key Paperclip no longer takes: the agent's company is checked again with the key the vault holds next time.
+      if (r.status === 401 || r.status === 403) plugin.forget(job.agent);
+      if (r.status >= 300 || !data || data.refused) throw new OutcomeError(r.status >= 400 && r.status !== 429 ? r.status : r.status >= 300 ? 502 : 422, "refused", data?.refused ?? `the post action answered ${r.status}`);
       if (req.child && data.child) provenance.record(data.child, origin);
       log("outcome posted", { job: job.id, kind: req.kind, task: job.task, status: data.status ?? null, ...(gate && !gate.pass ? { finish: "held" in gate ? "held" : "reopened" } : {}) });
       if (data.comment) fact({ type: "task.commented", subject: `task:${job.task}`, version: String(data.comment), at: iso(Date.now()), actor: `agent:${agentKey(job.agent)}`, task: job.task, data: { kind: req.kind, job: job.id } });
-      // Once, with the post: a reply also goes to the channel the owner wrote from.
-      if (req.kind === "reply" && relay) await relay(job, req.body).catch((e: Error) => log("reply relay failed", { job: job.id, task: job.task, err: e.message }));
       return { comment: data.comment, status: data.status ?? null, ...(gate ? { finish: gate } : {}) };
     });
+    // A reply also goes to the channel the owner wrote from: its own once, after the post. A read that fails now fails this call
+    // (a 502), so the dispatcher's retry, which gets the post back as it was, relays it then; a 4xx is final.
+    if (req.kind === "reply" && relay) {
+      await once(`${tag(job.id, req.kind)}:relay`, async () => {
+        try {
+          await relay(job, req.body);
+        } catch (e) {
+          const status = (e as { status?: number }).status ?? 502;
+          if (status >= 400 && status < 500 && status !== 429) return void log("reply relay given up", { job: job.id, task: job.task, err: (e as Error).message });
+          throw new OutcomeError(502, "relay-pending", `the reply is posted; relaying it to the owner's channel failed (${(e as Error).message.slice(0, 200)}): try again`);
+        }
+        return true;
+      });
+    }
     return again ? { ...value, again: true } : value;
   }
   return { post, once };

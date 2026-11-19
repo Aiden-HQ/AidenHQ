@@ -110,14 +110,21 @@ for (const sig of ["SIGTERM", "SIGINT"] as const) process.on(sig, () => http.clo
 
 // The kernel's, the board's and the runner's messages, routed like an agent's (no caller: no brake, no attention, no mirror);
 // a job's reply the kernel relays goes to the channel the owner wrote from, headed by its agent and task.
+// Each routed message is acknowledged (one no channel took is in notify()'s own retry store by then); one this router never
+// acknowledges (it crashed, its answer was lost, notify() failed inside) the kernel hands over again.
 const take = async () => {
+  const done: number[] = [];
   try {
     for (const m of await kernel.take()) {
       const r = await notify(d, { kind: (KINDS.includes(m.kind) ? m.kind : "alert") as Kind, text: String(m.text ?? ""), ...(m.task ? { task: String(m.task) } : {}), ...(m.dedupe_key ? { dedupe_key: String(m.dedupe_key) } : {}), ...(m.reply ? { relay: { via: m.reply.via === "slack" ? ("slack" as const) : ("telegram" as const), agentName: String(m.reply.agent), issueId: String(m.reply.issue) } } : {}) });
       if (!r.sent) log.warn({ kind: m.kind, reason: r.reason }, "an owner message reached nobody");
+      // notify() threw inside (its bare "error"): not routed, so the kernel hands it over again.
+      if (Number.isInteger(m.id) && !(r.reason === "error" && !r.note)) done.push(m.id);
     }
   } catch (err) {
     log.warn({ err: String(err) }, "taking the kernel's owner messages failed");
+  } finally {
+    await kernel.ack(done).catch((err) => log.warn({ err: String(err) }, "acknowledging the kernel's owner messages failed"));
   }
 };
 setInterval(() => void take(), 10_000).unref();

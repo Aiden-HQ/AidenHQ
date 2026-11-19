@@ -53,6 +53,7 @@ import { createFlow } from "./flow.ts";
 import { createIdle } from "./idle.ts";
 import { createReviews, type ReviewerSlot } from "./reviews.ts";
 import { createReviewLoop } from "./review-loop.ts";
+import { createNotices, type NoticeOpts } from "./notices.ts";
 import { mintToken } from "./gateway/token.ts";
 import { createWrites, type Kind } from "./writes.ts";
 import type { Executor } from "../sdk/src/executor.ts";
@@ -126,6 +127,9 @@ const flow = createFlow({ file: path.join(dataDir, "kernel", "kernel.db"), stage
 // Tasks kernel jobs create (provenance.ts): the routine trace reads them first.
 const provenance = createProvenance({ db: records.db, cap: (task) => taskRoutineCap(cpTrace, task, grantsTable().routines as Record<string, string> | undefined) });
 const cpTrace = { issue: (id: string) => cpJson(`/api/issues/${encodeURIComponent(id)}`), provenance: provenance.trace };
+// A write's notices on its task (notices.ts): durable, sent every few seconds and as soon as one is queued.
+const notices = createNotices({ db: records.db, api: (m, p, b) => ownerApi(m, p, b), alert: (text) => notify.queue({ kind: "alert", text }), log });
+const sendNotices = () => void notices.send().catch((e: Error) => log("task notices failed", { err: String(e.message ?? e).slice(0, 300) }));
 const onTask = {
   open: async (task: string) => { const i = await issueOf(task); return Boolean(i) && !["done", "cancelled"].includes(String(i!.status)); },
   parent: async (task: string) => (await issueOf(task))?.parentId ?? undefined,
@@ -135,7 +139,8 @@ const onTask = {
     if (!i) return undefined;
     return { id: i.id, identifier: i.identifier, scope: await scopeOf(i, agent, issueOf, logTasks(grantsTable() as never)) };
   },
-  notify: async (task: string, body: string) => { const r = await cpApi(`/api/issues/${encodeURIComponent(task)}/comments`, { method: "POST", body: JSON.stringify({ body }) }); if (!r.ok) log("notice failed", { task, status: r.status }); },
+  // Queued in kernel.db and sent from there (notices.ts): the notice is what wakes the agent waiting on the write.
+  notify: async (task: string, body: string, o?: NoticeOpts) => { notices.queue(task, body, o); setImmediate(sendNotices); },
   // The cap of a routine whose run started the task's chain, traced as the runner traces it; a read that fails is "off".
   routineCap: (task: string) => taskRoutineCap(cpTrace, task, grantsTable().routines as Record<string, string> | undefined),
 };
@@ -202,6 +207,7 @@ const advisories = createAdvisories({ db: records.db, repo, catalog: path.join(c
 const timers: NodeJS.Timeout[] = [];
 const every = (fn: () => void, ms: number) => timers.push(setInterval(fn, ms).unref());
 const once = (fn: () => void, ms: number) => timers.push(setTimeout(fn, ms).unref());
+every(sendNotices, 5_000);
 // Who owns a row across a restart. A restart drains the old kernel beside this one for at most DRAIN_MS (below): the old one
 // starts no job and no write after its drain begins, but finishes the launches and executions it had in flight. So a row this
 // process didn't make (a job still `admitted`, a write still `claimed`) is the previous kernel's until that process has exited

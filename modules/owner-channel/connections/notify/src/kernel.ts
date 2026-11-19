@@ -7,8 +7,10 @@ export function kernelClient(url: string, token: string, f: typeof fetch = fetch
   const { call, raw, read } = baseClient(url, token, { timeoutMs: 40_000, fetcher: f });
   return {
     read,
-    /** The owner messages the kernel, the board and the runner queued, each handed over once. */
+    /** The owner messages the kernel, the board and the runner queued: each comes back until it is acknowledged (`id`). */
     take: async (): Promise<any[]> => ((await call("GET", "/v1/notify/take")).messages ?? []) as any[],
+    /** The taken messages this router has routed: the kernel drops them. */
+    ack: async (ids: number[]): Promise<void> => { if (ids.length) await call("POST", "/v1/notify/ack", { ids }); },
     /** One message to one channel's transport; a channel that isn't installed is off. */
     send: async (to: string, message: Message): Promise<{ sent: boolean; off?: boolean }> => {
       const r = await raw("POST", "/v1/notify/send", { to, message });

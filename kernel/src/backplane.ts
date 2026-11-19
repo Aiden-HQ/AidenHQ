@@ -20,7 +20,7 @@
 //   POST /v1/channel/exchange  (a module with role kernel.lane) a fast-lane turn written to its agent's chat task (lane.ts)
 //   POST /v1/notify            (the board's key, or a module with role kernel.owner-notice) a message for the owner,
 //                              queued for the owner's router (notify.ts)
-//   GET  /v1/notify/take, POST /v1/notify/send  (the module with role kernel.notify) the queued owner messages, each once; one
+//   GET  /v1/notify/take, POST /v1/notify/ack, POST /v1/notify/send  (the module with role kernel.notify) the queued owner messages, each until acknowledged; one
 //                              message to a channel's transport
 //   POST /v1/wakes/events      (the paperclip-events plugin's key) a Paperclip event's ids: its task is scanned (wakes.ts)
 //   POST /v1/wait              (a module with role kernel.wake, serving a job's task_wait, task_handoff or notify call in flight)
@@ -138,6 +138,7 @@ export const ROUTES = [
   { method: "POST", path: "/v1/brake/notify", auth: "module" },
   { method: "POST", path: "/v1/notify", auth: "board" },
   { method: "GET", path: "/v1/notify/take", auth: "module" },
+  { method: "POST", path: "/v1/notify/ack", auth: "module" },
   { method: "POST", path: "/v1/notify/send", auth: "module" },
   { method: "POST", path: "/v1/facts", auth: "module" },
   { method: "POST", path: "/v1/wait", auth: "module+assertion" },
@@ -422,9 +423,10 @@ export function createBackplane({ idle, facts, whoami, asserter, proxy, cp, boar
           notify.queue(notice(await json(req)));
           return send(res, 200, { queued: true });
         }
-        case "GET /v1/notify/take": case "POST /v1/notify/send": {
+        case "GET /v1/notify/take": case "POST /v1/notify/send": case "POST /v1/notify/ack": {
           const w = await moduleOf(req);
           if (!notify) throw fail(503, "unavailable", "notify is off");
+          if (hit!.path === "/v1/notify/ack") return send(res, 200, notify.ack(w.roles, await json(req)));
           return send(res, 200, hit!.method === "GET" ? notify.take(w.roles) : await notify.send(w.roles, await json(req)));
         }
         case "POST /v1/health/probe": {
