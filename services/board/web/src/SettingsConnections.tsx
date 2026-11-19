@@ -92,8 +92,9 @@ function ConnectionTile({ r, v, can, connect: asked, onAsked }: { r: ConnectionR
   ) : v.status === "not_configured" ? (
     <SetupButton module={r.module} primary size="sm" />
   ) : null;
-  // A connected sign-in can run again: to grant more (the scope picker) or to switch accounts.
-  const again = (r.signIn?.state === "ok" || r.signIn?.state === "expired") && can.signIn ? <ConnectButton c={c} size="sm" /> : null;
+  // A sign-in that holds a token (ok, expired, or not checked yet: unknown) can run again: to grant more (the scope picker),
+  // switch accounts, or move to an organisation's app.
+  const again = r.signIn?.configured && r.signIn.state !== "missing" && r.signIn.state !== "none" && can.signIn ? <ConnectButton c={c} size="sm" /> : null;
   // Never signed in reads "Not connected yet", calm; "Signed out" is a sign-in that stopped working.
   const status = <StatusDot tone={TONE[v.status]}>{STATUS_LABEL[v.status]}</StatusDot>;
   const who = r.kind === "service" ? "Engineer jobs" : v.status === "builtin" ? null : r.grants.length ? `${r.grants.length} agent${r.grants.length === 1 ? "" : "s"}` : "No agents yet";
@@ -112,7 +113,7 @@ function ConnectionTile({ r, v, can, connect: asked, onAsked }: { r: ConnectionR
           </>
         }
         foot={r.module || "core"}
-        action={connect ?? undefined}
+        action={connect ?? again ?? undefined}
       >
         {v.reason}
       </Tile>
