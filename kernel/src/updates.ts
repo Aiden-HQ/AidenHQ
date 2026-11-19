@@ -5,6 +5,11 @@
 // runs it, as for any other apply. An instance that pins product by hand has no `release:` and is never touched.
 // - The source is fixed: the official distro and kernel repositories on GitHub, over https (the official modules are the
 //   kernel commit's own modules/ since 2026-11-18). Nothing in a release file or instance.yaml can point the updater elsewhere.
+// - Only graduated releases install: published and not a pre-release (GitHub's Releases API). The distro publishes each cut as a
+//   pre-release and graduates it once a test instance upgraded to it and passed its checks (distro graduate.yml). The one
+//   exception is that test instance: AIDENHQ_UPDATE_CANDIDATE=<release> on the CLI check (`check <release> <by>`, run by the
+//   host's own shell, never by the kernel, which strips it) prepares exactly that pre-release, marked in the state file, and the
+//   planner's `verify` accepts it only while the state names that release and commit. Every other check stays.
 // - Before anything is filed, a release is verified: its tag's commit is on the distro's main; its file names the official
 //   kernel and only ghcr.io/aiden-hq images, and resolves (release.ts) against the instance it would pin; the kernel sha is on
 //   its repository's main and descends from what runs now (no downgrade, and the name must be newer); the published asset is
@@ -18,10 +23,11 @@
 //   failed (a failed apply leaves the pin landed, as any apply does: apply's own health check put the host back on the last
 //   good generation). The night never files a failed release again. Each event is told to the owner once.
 //   node kernel/src/updates.ts check [<release> <by>]   (the kernel) find, verify and prepare; with a release: Update now
+//     (AIDENHQ_UPDATE_CANDIDATE=<release> on the host's own run: that pre-release, for graduation's test instance)
 //   node kernel/src/updates.ts verify <name> <distro sha> < base instance.yaml   (the apply planner) the verified pin, as JSON
 //   node kernel/src/updates.ts pin <name> <distro sha>  (ops/setup.sh, the installer run again) move the pin to that release
 import { execFile, execFileSync, spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { closeSync, mkdirSync, mkdtempSync, openSync, readFileSync, renameSync, rmSync, statSync, writeFileSync, writeSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -44,6 +50,9 @@ const isMap = (v: unknown): v is Dict => !!v && typeof v === "object" && !Array.
 
 /** A release that failed verification: never installed, and the owner is told once. Anything else (network) is retried. */
 export class Refused extends Error {}
+
+/** The host's candidate exception (graduation's test instance): read only by the CLI's check, from the shell that runs it. */
+export const CANDIDATE_ENV = "AIDENHQ_UPDATE_CANDIDATE";
 
 /** Release names in order: 2026.11 < 2026.11.2 < 2026.11.18 (a nightly) < 2026.11.18.1 (its day's second cut) < 2026.11.19. */
 export function compareRelease(a: string, b: string): number {
@@ -91,8 +100,8 @@ export type Candidate = {
   name: string; sha: string; kernel: string; notes: string[]; compare: string; images: number;
   from: { name: string; product: string };
 };
-/** A release prepared for filing: its pin commit on the instance repo's branch. */
-export type Ready = { release: string; kernel: string; from: string; branch: string; sha: string; by: string; notes: string[]; compare: string };
+/** A release prepared for filing: its pin commit on the instance repo's branch; `candidate`: the distro commit of a pre-release the host asked for. */
+export type Ready = { release: string; kernel: string; from: string; branch: string; sha: string; by: string; notes: string[]; compare: string; candidate?: string };
 type Last = { release: string; outcome: "installed" | "failed"; why?: string; at: string; by: string };
 export type State = {
   current?: { name: string; product: string } | null;
@@ -148,6 +157,20 @@ export function newerTags(d: Pick<Deps, "base">, than: string): { name: string; 
   return [...tags.keys()].filter((n) => compareRelease(n, than) > 0).sort(compareRelease).reverse().map((name) => ({ name, sha: tags.get(name)! }));
 }
 
+/** The distro's graduated releases: published and not pre-releases, every page of GitHub's Releases API. A failed call throws a plain error (retried). */
+export async function stableReleases(d: Pick<Deps, "download">): Promise<Set<string>> {
+  const out = new Set<string>();
+  for (let page = 1; ; page++) {
+    const rows = await d.download(`https://api.github.com/repos/${DISTRO}/releases?per_page=100&page=${page}`);
+    if (!Array.isArray(rows)) throw new Error(`the releases API's page ${page} isn't a list`);
+    for (const r of rows) if (isMap(r) && r.draft === false && r.prerelease === false && typeof r.tag_name === "string") out.add(r.tag_name);
+    if (rows.length < 100) return out;
+  }
+}
+
+/** The state's own mark that the host asked for pre-release `name` at distro commit `sha` (ready or filed): the planner's exception. */
+export const candidateMarked = (s: State, name: string, sha: string) => [s.ready, s.flight].some((r) => r?.release === name && r.candidate === sha);
+
 /**
  * instance.yaml's text moved to a release: product: and release:, comments kept. The `aidenhq` marketplace entry an instance
  * from before 2026-11-18 carries is dropped (the official modules are the kernel's own modules/), and `marketplaces:` with it
@@ -176,13 +199,18 @@ function dropOfficial(doc: YAML.Document): string {
 /**
  * The release `name` at distro commit `sha`, checked as an update of `instance` (its instance.yaml `text`): every check
  * before anything moves. Throws Refused when the release fails one; any other error is the network's, retried next time.
+ * `candidate`: the host asked for this pre-release (graduation's test instance); it waives only the graduated check.
  */
-export async function verify(d: Pick<Deps, "base" | "fetch" | "download">, text: string, name: string, sha: string): Promise<Candidate & { text: string }> {
+export async function verify(d: Pick<Deps, "base" | "fetch" | "download">, text: string, name: string, sha: string, candidate = false): Promise<Candidate & { text: string }> {
   const instance = (YAML.parse(text) ?? {}) as Dict;
   const cur = followed(text);
   if (!cur) throw new Refused("this instance doesn't follow a release from the official distro repo");
   if (!NAME.test(name) || !SHA.test(sha)) throw new Refused(`${plain(name, 40)} isn't a release name with a commit`);
   if (compareRelease(name, cur.name) <= 0) throw new Refused(`${name} isn't newer than ${cur.name}: downgrades are refused`);
+  // Graduated: published and not a pre-release (a missing release is the API's 404, a plain error: retried).
+  const rel = await d.download(`https://api.github.com/repos/${DISTRO}/releases/tags/${name}`);
+  if (!isMap(rel) || rel.tag_name !== name || rel.draft !== false) throw new Refused(`${name} isn't a published release`);
+  if (rel.prerelease !== false && !candidate) throw new Refused(`${name} is a pre-release: it hasn't graduated yet`);
   const distro = onMain(d, at(d, DISTRO, sha), `${name}'s commit`);
   let file: Dict;
   try { file = JSON.parse(execFileSync("git", ["--git-dir", distro, "show", `${sha}:releases/${name}.json`], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] })) as Dict; } catch { throw new Refused(`${name} has no readable releases/${name}.json at ${sha.slice(0, 12)}`); }
@@ -225,6 +253,28 @@ export function writeState(d: Pick<Deps, "dir" | "board">, s: State) {
   // The board's copy: what it shows, nothing it could act on.
   if (d.board) put(d.board, { current: s.current ?? null, auto: s.auto ?? null, timezone: s.timezone ?? null, checkedAt: s.checkedAt ?? null, available: s.available ? { name: s.available.name, notes: s.available.notes, compare: s.available.compare } : null, error: s.error ?? null, last: s.last ?? null });
 }
+/**
+ * `fn` holding the state's lock (`state.lock` beside it, made exclusively, holding the holder's pid): every read-modify-write
+ * of state.json runs under it, so the host's candidate check, Update now and the kernel's hourly check and pass never drop
+ * each other's changes. A lock whose process is gone is taken over; a live one is waited for (up to `wait`).
+ */
+export async function locked<T>(dir: string, fn: () => Promise<T>, wait = 30 * 60_000): Promise<T> {
+  mkdirSync(dir, { recursive: true });
+  const f = join(dir, "state.lock");
+  for (const until = Date.now() + wait; ;) {
+    try { const fd = openSync(f, "wx"); writeSync(fd, `${process.pid}\n`); closeSync(fd); break; } catch (e) { if ((e as NodeJS.ErrnoException).code !== "EEXIST") throw e; }
+    let pid = 0, at = Date.now();
+    try { pid = Number(readFileSync(f, "utf8").trim()) || 0; at = statSync(f).mtimeMs; } catch { continue; } // released meanwhile
+    // No pid yet: a holder between making the file and writing it, unless that was long ago (it died there).
+    let alive = pid > 0 || Date.now() - at < 10_000;
+    try { if (pid > 0) process.kill(pid, 0); } catch (e) { alive = (e as NodeJS.ErrnoException).code === "EPERM"; }
+    if (!alive) { rmSync(f, { force: true }); continue; }
+    if (Date.now() > until) throw new Error(`the updater's state is locked by process ${pid}`);
+    await new Promise((ok) => setTimeout(ok, 250));
+  }
+  try { return await fn(); } finally { rmSync(f, { force: true }); }
+}
+
 const event = (s: State, id: string, text: string) => { s.events = [...(s.events ?? []).filter((e) => e.id !== id), { id, text }].slice(-20); };
 
 /** instance.yaml on the instance's main, as text (fetched first). */
@@ -241,7 +291,10 @@ export type Asked = { release: string; by: string } | null;
  * goes now: the owner asked for it (Update now), or auto-updates are on, it is night and it never failed here. Nothing is
  * prepared while another release is ready or filed.
  */
-export async function check(d: Deps, asked: Asked = null): Promise<State> {
+export function check(d: Deps, asked: Asked = null, candidate = ""): Promise<State> {
+  return locked(d.dir, () => checkLocked(d, asked, candidate));
+}
+async function checkLocked(d: Deps, asked: Asked, candidate: string): Promise<State> {
   const now = (d.now ?? (() => new Date()))();
   const s = readState(d.dir);
   const text = instanceText(d.inst);
@@ -256,9 +309,15 @@ export async function check(d: Deps, asked: Asked = null): Promise<State> {
   let next = "";
   if (cur) {
     try {
-      for (const tag of newerTags(d, cur.name)) {
+      // Graduated releases only, never said to the owner: a pre-release is a cut still being tested (or one that failed it).
+      // The host's candidate run looks at that one tag alone. The Releases API is read only when a tag is newer.
+      const newer = newerTags(d, cur.name);
+      const stable = candidate || !newer.length ? null : await stableReleases(d);
+      const tags = newer.filter((t) => (candidate ? t.name === candidate : !!stable?.has(t.name)));
+      if (candidate && !tags.length) s.error = `${plain(candidate, 40)} isn't a release tag newer than ${cur.name}`;
+      for (const tag of tags) {
         try {
-          const { text: pinned, ...c } = await verify(d, text, tag.name, tag.sha);
+          const { text: pinned, ...c } = await verify(d, text, tag.name, tag.sha, !!candidate);
           if (!(s.events ?? []).some((e) => e.id === `available:${c.name}`)) event(s, `available:${c.name}`, s.auto
             ? `AidenHQ ${c.name} is available. It is filed for install tonight between ${NIGHT.from}:00 and ${NIGHT.to}:00 (${s.timezone}), for the AI reviewer; to file it now or see what changed, open Settings > Instance.`
             : `AidenHQ ${c.name} is available. Auto-updates are off: file it from Settings > Instance (Update now), where what changed is listed; it installs on your approval.`);
@@ -280,7 +339,7 @@ export async function check(d: Deps, asked: Asked = null): Promise<State> {
   if (asked && !by) event(s, `now:${now.toISOString()}`, `Update now didn't start: ${busy ? `${busy.release} is already being installed` : s.error ?? `${plain(asked.release, 40)} isn't the release available any more`}. Nothing changed.`);
   if (a && by) {
     try {
-      s.ready = prepare(d, a, text, next, by);
+      s.ready = { ...prepare(d, a, text, next, by), ...(candidate ? { candidate: a.sha } : {}) };
     } catch (e) {
       s.error = plain((e as Error).message);
       if (e instanceof Refused) event(s, `refused:${a.name}`, `AidenHQ ${a.name} failed this server's checks when it was prepared (${plain(e.message, 200)}), so it won't be installed. Nothing changed here.`);
@@ -410,32 +469,34 @@ export function createUpdates({ db, dir, board, inst, ownerLine, check, file, re
   }
 
   async function pass() {
-    let s = readState(dir);
-    if (s.flight) await follow(s);
+    await locked(dir, async () => { const s = readState(dir); if (s.flight) await follow(s); });
     const ask = asked;
     if (ask || now() - checked >= HOUR) {
       asked = null;
       checked = now();
       await check(ask).catch((e: Error) => log("update check failed", { err: e.message.slice(0, 300) }));
     }
-    s = readState(dir);
-    if (s.ready && !s.flight) {
-      const r = s.ready;
-      try {
-        s.flight = { ...r, ...(await file(r)) };
-        delete s.ready;
-        log("release filed", { release: r.release, record: s.flight.record });
-      } catch (e) {
-        // Said once either way. Refused (the planner's rules, the grant): dropped, and the night doesn't prepare it again; anything
-        // else (no agent for its task yet, the network) is filed again next pass.
-        const status = (e as { status?: number }).status;
-        const refused = status === 403 || status === 404 || status === 422;
-        event(s, `notfiled:${r.release}`, `AidenHQ ${r.release} couldn't be filed${refused ? "" : " yet"}: ${plain((e as Error).message, 300)}. Nothing changed.`);
-        if (refused) { delete s.ready; s.failed = [...new Set([...(s.failed ?? []), r.release])]; }
-        log("release not filed", { release: r.release, err: (e as Error).message.slice(0, 300) });
+    // The check (a child process) takes the lock itself; filing is the state's next read-modify-write.
+    await locked(dir, async () => {
+      const s = readState(dir);
+      if (s.ready && !s.flight) {
+        const r = s.ready;
+        try {
+          s.flight = { ...r, ...(await file(r)) };
+          delete s.ready;
+          log("release filed", { release: r.release, record: s.flight.record });
+        } catch (e) {
+          // Said once either way. Refused (the planner's rules, the grant): dropped, and the night doesn't prepare it again; anything
+          // else (no agent for its task yet, the network) is filed again next pass.
+          const status = (e as { status?: number }).status;
+          const refused = status === 403 || status === 404 || status === 422;
+          event(s, `notfiled:${r.release}`, `AidenHQ ${r.release} couldn't be filed${refused ? "" : " yet"}: ${plain((e as Error).message, 300)}. Nothing changed.`);
+          if (refused) { delete s.ready; s.failed = [...new Set([...(s.failed ?? []), r.release])]; }
+          log("release not filed", { release: r.release, err: (e as Error).message.slice(0, 300) });
+        }
+        writeState(d, s);
       }
-      writeState(d, s);
-    }
+    });
     for (const e of readState(dir).events ?? []) {
       if (db.prepare("INSERT OR IGNORE INTO update_notices (id, at) VALUES (?, ?)").run(e.id, new Date(now()).toISOString()).changes === 1) ownerLine(e.text);
     }
@@ -488,11 +549,15 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
   const [cmd, a, b] = process.argv.slice(2);
   try {
     if (cmd === "check") {
-      const s = await check(d, a && b ? { release: a, by: b } : null);
+      // The candidate exception asks for its release by name, so a check can't take a pre-release it wasn't sent for.
+      const candidate = process.env[CANDIDATE_ENV] ?? "";
+      if (candidate && candidate !== a) throw new Error(`${CANDIDATE_ENV} names ${plain(candidate, 40)}: run check ${plain(candidate, 40)} <by>`);
+      const s = await check(d, a && b ? { release: a, by: b } : null, candidate);
       console.log(s.ready ? `release ${s.ready.release} prepared at ${s.ready.sha} (${s.ready.branch})` : s.available ? `release ${s.available.name} available (running ${s.current?.name})` : s.error ? `update check: ${s.error}` : `release: ${s.current?.name ?? "none followed"}, nothing newer`);
     } else if (cmd === "verify" && a && b) {
-      // The planner's check of a release move (apply-tier.ts): the instance.yaml this base moves to, every check passed.
-      process.stdout.write(JSON.stringify({ text: (await verify(d, readFileSync(0, "utf8"), a, b)).text }));
+      // The planner's check of a release move (apply-tier.ts): the instance.yaml this base moves to, every check passed. A
+      // pre-release passes only as the candidate the host's check prepared (its mark in the state file, never the environment).
+      process.stdout.write(JSON.stringify({ text: (await verify(d, readFileSync(0, "utf8"), a, b, candidateMarked(readState(d.dir), a, b))).text }));
     } else if (cmd === "pin" && a && b) {
       console.log(pinTo(d, a, b, git(product, ["rev-parse", "HEAD"]).trim()));
     } else {
@@ -505,9 +570,9 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
   }
 }
 
-/** The kernel's check: this file's CLI as a child process, so the git and network work never blocks the kernel. */
+/** The kernel's check: this file's CLI as a child process, so the git and network work never blocks the kernel. Never a candidate run. */
 export function runCheck(product: string) {
-  return (asked: Asked) => new Promise<void>((ok, no) => execFile(process.execPath, ["--disable-warning=ExperimentalWarning", join(product, "kernel/src/updates.ts"), "check", ...(asked ? [asked.release, asked.by] : [])], { cwd: product, timeout: 15 * 60_000, maxBuffer: 4 * 1024 * 1024 }, (e, _out, err) => (e && (e as { code?: unknown }).code !== 3 ? no(new Error(String(err || e.message).trim().slice(0, 500))) : ok())));
+  return (asked: Asked) => new Promise<void>((ok, no) => execFile(process.execPath, ["--disable-warning=ExperimentalWarning", join(product, "kernel/src/updates.ts"), "check", ...(asked ? [asked.release, asked.by] : [])], { cwd: product, env: { ...process.env, [CANDIDATE_ENV]: undefined }, timeout: 15 * 60_000, maxBuffer: 4 * 1024 * 1024 }, (e, _out, err) => (e && (e as { code?: unknown }).code !== 3 ? no(new Error(String(err || e.message).trim().slice(0, 500))) : ok())));
 }
 
 /** The planner's verification of a release move: the instance.yaml `verify` writes for this base, or null when it refuses or fails. */
