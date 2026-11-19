@@ -233,6 +233,53 @@ export async function syncRegistry(env: GitEnv, dir: string, url: string): Promi
   await git(env, ["reset", "-q", "--hard", "FETCH_HEAD"], dir);
 }
 
+export interface BootRegistryOptions {
+  attempts?: number;
+  baseDelayMs?: number;
+  sleep?: (ms: number) => Promise<void>;
+}
+
+/**
+ * What a failed sync can say about itself without the registry's repo or org: the kernel's status when the failure came
+ * from a token mint, else the git error's code. The raw messages name both, and the log never does.
+ */
+const failureReason = (err: unknown): string => {
+  const status = /the kernel said (\d{3})/.exec(String((err as Error)?.message ?? err))?.[1];
+  const code = (err as { code?: unknown })?.code;
+  if (status) return `the kernel said ${status}`;
+  return typeof code === "string" || typeof code === "number" ? `git exit ${code}` : "no further detail";
+};
+
+/**
+ * The boot's registry sync: `syncRegistry` retried up to `attempts` times with exponential backoff (`baseDelayMs` doubling,
+ * capped), so one transient failure (a token mint answering 500) cannot restart-loop the container before it listens.
+ * After the bound the outcome depends on whether there is a registry to serve: with `${dir}/apps.yaml` on disk from an
+ * earlier run, boot resolves and the reconcile loop retries in the background; with no registry yet there is nothing to
+ * serve, so the last error is thrown and the process still fails closed. The warning per attempt names the attempt and
+ * `failureReason` only: never the error's message, which names the registry's repo and org.
+ */
+export async function bootRegistry(env: GitEnv, dir: string, url: string, opts: BootRegistryOptions = {}): Promise<void> {
+  const attempts = Math.max(1, Math.floor(opts.attempts ?? 5));
+  const baseDelayMs = opts.baseDelayMs ?? 1_000;
+  const sleep = opts.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
+  let last: unknown;
+  for (let attempt = 1; attempt <= attempts; attempt++) {
+    try {
+      await syncRegistry(env, dir, url);
+      return;
+    } catch (err) {
+      last = err;
+      console.warn(`registry sync attempt ${attempt}/${attempts} failed (${failureReason(err)})`);
+      if (attempt < attempts) await sleep(Math.min(baseDelayMs * 2 ** (attempt - 1), 30_000));
+    }
+  }
+  if (existsSync(`${dir}/apps.yaml`)) {
+    console.warn(`registry sync failed after ${attempts} attempts; serving the registry already on disk until the reconcile loop syncs it`);
+    return;
+  }
+  throw last;
+}
+
 /** Commits one file of the registry clone and pushes it to main (registryCmd); the clone was synced just before the edit. */
 export async function commitPush(env: GitEnv, repoDir: string, file: string, message: string, pushUrl: string): Promise<void> {
   await git(env, ["add", file], repoDir);
