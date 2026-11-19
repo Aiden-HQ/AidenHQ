@@ -9,8 +9,9 @@ const PE = "11111111-1111-4111-8111-111111111111";
 
 test("a module's task goes to the agent holding the role, once per source, marked as the module's", async (t) => {
   const made = new Map();
+  const pe = { id: PE, companyId: "c-1", status: "idle", lifecycleHolds: [] };
   const owner = async (method, path, body) => {
-    if (method === "GET" && path === `/api/agents/${PE}`) return { status: 200, json: { id: PE, companyId: "c-1", status: "idle" } };
+    if (method === "GET" && path === `/api/agents/${PE}`) return { status: 200, json: pe };
     const m = /^\/api\/issues\/([^/]+)$/.exec(path);
     if (m) {
       const issue = [...made.values()].find((i) => i.id === m[1]);
@@ -41,6 +42,13 @@ test("a module's task goes to the agent holding the role, once per source, marke
   assert.deepEqual([a.identifier, a.agent, a.deduplicated, b.identifier, b.deduplicated], ["ACME-1", PE, false, "ACME-1", true]);
   assert.equal((await file("codehost", { ...req, role: undefined, agent: PE, source: "escalation:x" })).status, 200, "or an agent by id");
   assert.equal((await file("codehost", { ...req, role: undefined, agent: "a-gone", source: "escalation:y" })).status, 409);
+  // Paused is the owner's hold, not Paperclip's runtime status: refused while held, admitted once resumed even though
+  // Paperclip still reports "paused" (its pausing waits on a stop proof).
+  Object.assign(pe, { status: "paused", lifecycleHolds: ["manual"] });
+  assert.equal((await file("codehost", { ...req, source: "paused:x" })).status, 409);
+  pe.lifecycleHolds = [];
+  assert.equal((await file("codehost", { ...req, source: "paused:x" })).status, 200);
+  pe.status = "idle";
   const issue = [...made.values()][0];
   assert.equal(issue.assigneeAgentId, PE);
   assert.equal(issue.status, "todo");
