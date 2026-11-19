@@ -25,7 +25,12 @@ function fake({ task, comments = [], directory = {}, tasks = {}, paused = [] }) 
       k.filed.push(card);
       return { id: card.id };
     },
-    commentTask: async (task, body) => void k.commented.push({ task, body }),
+    // A closed card takes no comment (the kernel answers already): its caller notes the reason on the task instead.
+    commentTask: async (task, body) => {
+      if (!k.filed.find((f) => f.id === task)?.open) return false;
+      k.commented.push({ task, body });
+      return true;
+    },
     notify: async (b) => void k.notified.push(b),
     comments: async (_t, after) => (after === undefined ? comments.slice(-200) : comments.slice(after ? comments.findIndex((c) => c.id === after) + 1 : 0)),
     schedule: async (b) => void k.scheduled.push(b),
@@ -405,6 +410,8 @@ test("a blocked task that ends two runs on the same open blocker files one decis
   assert.equal(k.filed.length, 1, "the unchanged blocker set re-uses the episode's card");
   assert.match(k.filed[0].source, /^escalation:t1:[0-9a-f]{16}$/);
   assert.match(k.filed[0].description, /Waiting on WOR-9 for the repo\./, "the card keeps the first reason");
+  assert.deepEqual(k.commented.map((c) => c.task), ["card-1"], "the later reason goes on the open card, not a second one");
+  assert.match(k.commented[0].body, /Nothing changed: WOR-9 is still open\./, "the card carries the newest reason");
   const episode = k.db.prepare("SELECT episode FROM escalated WHERE task = ?").get("t1").episode;
   assert.equal(episode, "blocked:b1", "keyed on the blocker, never on the run");
 });
@@ -425,8 +432,9 @@ test("a blocked episode already escalated files nothing after its card is closed
   }
   assert.equal(k.filed.length, 1, "the decided episode files no second card");
   assert.equal(k.filed[0].open, false, "the closed card was not reopened");
-  assert.deepEqual(k.commented.map((c) => c.task), ["card-1", "card-1"], "each later reason goes on the one card");
-  assert.match(k.commented[1].body, /Nothing changed: still waiting on WOR-9\./, "the newest reason");
+  assert.equal(k.commented.length, 0, "a closed card takes no comment");
+  assert.equal(k.posts.filter((p) => p.kind === "notice").length, 2, "each later reason is noted on the task its delegator reads");
+  assert.match(k.posts.filter((p) => p.kind === "notice")[1].body, /Nothing changed: still waiting on WOR-9\./, "the newest reason");
   // A changed blocker set is a new episode: it files one card of its own.
   task.blockedBy = [{ id: "b1", status: "todo" }, { id: "b2", status: "in_progress" }];
   k.jobs.set("j4", { id: "j4", task: "t1", agent: "eng", state: "done", exit: 0, final: "Now also waiting on WOR-11.", session: null, timedOut: false, at: 4, ended: 4, acked: false });
