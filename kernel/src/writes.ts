@@ -589,9 +589,13 @@ export function createWrites({ records, registry, connections, secret, resolver,
       for (const r of claimed) {
         if (!modules && resume.includes(r.kind) && native[r.kind]) { void execute(r, undefined); continue; }
         const k = registry()[r.kind];
-        const s = r.kind === CONN_TOOL || !k?.executor || inProcess(k) ? undefined : await call(k, "status", { id: r.id, idempotency_key: r.id }).catch(() => undefined);
+        // An executor whose status can't be read now (still starting after the restart): asked again on the next reconcile, for
+        // an hour after this kernel started, then unknown.
+        let unread = false;
+        const s = r.kind === CONN_TOOL || !k?.executor || inProcess(k) ? undefined : await call(k, "status", { id: r.id, idempotency_key: r.id }).catch((e) => { unread = transient(e); return undefined; });
         if (s?.state === "done" || s?.state === "failed") outcomeOf(r.id, s.state === "done", String(s.text ?? s.state));
         else if (s?.state === "running" && !modules) continue;
+        else if (unread && before && Date.now() - Date.parse(before) < 3_600_000) continue;
         else if (records.close(r.id, "unknown", "unknown: it was claimed and its outcome never came back; it is not run again")) unresolved.push(`${r.id} ${r.kind} unknown`);
       }
       for (const r of modules ? records.ofModules(modules, ["review", "owner", "approved"]) : []) records.close(r.id, "cancelled", "cancelled: its module was removed");

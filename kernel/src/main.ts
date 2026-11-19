@@ -67,7 +67,7 @@ import { taskRoutineCap } from "./tier.ts";
 import { logTasks, scopeOf } from "./task-scope.ts";
 import { createProvenance } from "./provenance.ts";
 import { KERNEL_KINDS, LOCAL_ORG, raiseCapCard } from "./kinds.ts";
-import { admittedJob, createJobs, dispatchesFrom } from "./jobs.ts";
+import { JobError, admittedJob, createJobs, dispatchesFrom } from "./jobs.ts";
 import { createAdmission, wakeInbox } from "./admission.ts";
 import { createBoxes, handbookFrom, launcherClient, type Boxes } from "./boxes.ts";
 import { checkJobsFrom } from "./checkbox.ts";
@@ -131,7 +131,13 @@ const cpTrace = { issue: (id: string) => cpJson(`/api/issues/${encodeURIComponen
 const notices = createNotices({ db: records.db, api: (m, p, b) => ownerApi(m, p, b), alert: (text) => notify.queue({ kind: "alert", text }), log });
 const sendNotices = () => void notices.send().catch((e: Error) => log("task notices failed", { err: String(e.message ?? e).slice(0, 300) }));
 const onTask = {
-  open: async (task: string) => { const i = await issueOf(task); return Boolean(i) && !["done", "cancelled"].includes(String(i!.status)); },
+  // A task gone (404) is closed; any other failed read throws with its status, so a blip never reads as "closed".
+  open: async (task: string) => {
+    const r = await cpApi(`/api/issues/${encodeURIComponent(task)}`);
+    if (r.status === 404) return false;
+    if (!r.ok) throw Object.assign(new Error(`control plane GET task ${task} → ${r.status}`), { status: r.status });
+    return !["done", "cancelled"].includes(String(((await r.json()) as { status?: string }).status));
+  },
   // A task a conn.tool call names: read whole, and why its agent may write there (the same rule cp.ts applies to a write).
   scope: async (task: string, agent: string) => {
     const i = await issueOf(task);
@@ -484,7 +490,13 @@ const admission = createAdmission({
   db: records.db, facts, grants: () => (grantsTable().agents ?? {}) as never, kinds: registry, capacity: () => Number(computers().max) || 0,
   spend: (agent, task) => gw.exhausted(agent, task), mayDispatch, wakes: wakeInbox(records.db), nextTurn: jobTools, launch: (job) => boxes!.launch(job), log,
   provenance, routineCap: (task) => taskRoutineCap(cpTrace, task, grantsTable().routines as Record<string, string> | undefined),
-  cp: { task: async (id) => { const r = await cpApi(`/api/issues/${encodeURIComponent(id)}`); return r.ok ? ((await r.json()) as never) : undefined; } },
+  // A task gone is none (a refusal dispatch drops); a read that fails otherwise is a 503, so the wake comes back.
+  cp: { task: async (id) => {
+    const r = await cpApi(`/api/issues/${encodeURIComponent(id)}`);
+    if (r.status === 404) return undefined;
+    if (!r.ok) throw new JobError(503, "task-unreadable", `task ${id} couldn't be read now (${r.status}); try again shortly`);
+    return (await r.json()) as never;
+  } },
 });
 afterPrevious(() => admission.recover());
 const stopTending = boxes.start();
@@ -577,7 +589,10 @@ const admin = accounts && createAdmin({ accounts, firstRun, model, githubApp, ui
 // Claimed records a restart left without an outcome: their executors say how they went (never replayed). Executors may
 // still be starting at boot, so once, a minute in.
 // Run once the previous kernel has exited (afterPrevious: it finishes what it was executing), and only on records it claimed.
-afterPrevious(() => void writes.reconcile(undefined, new Date(started).toISOString()).then((u) => u.length && log("records left unknown", { records: u }), (e: Error) => log("reconcile failed", { err: e.message })));
+// Once the previous kernel has exited and a minute in (executors may still be starting at boot), then every 10 minutes while
+// an executor's status couldn't be read (writes.ts reconcile: an hour, then unknown).
+const reconcile = () => void writes.reconcile(undefined, new Date(started).toISOString()).then((u) => u.length && log("records left unknown", { records: u }), (e: Error) => log("reconcile failed", { err: e.message }));
+afterPrevious(() => { once(reconcile, 60_000); every(reconcile, 10 * 60_000); });
 // Approved records not yet run (a restart between the decision and the claim, a check that failed transiently): every minute.
 every(() => writes.retryApproved(), 60_000);
 once(() => writes.retryApproved(), 60_000);
