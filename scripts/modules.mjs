@@ -1151,8 +1151,51 @@ export function setupSecrets(defs, generated) {
 }
 
 const CODEHOST_SCHEMA = JSON.parse(readFileSync(new URL("../kernel/schemas/codehost.json", import.meta.url), "utf8"));
+/** The fact types the kernel itself records (docs/design/flow.md): a module may name them in a stage, never declare them. */
+export const KERNEL_FACT_TYPES = ["record.filed", "record.decided", "record.held", "record.claimed", "record.landed", "record.failed", "gate.would_block",
+  "job.queued", "job.held", "job.started", "job.ended", "task.created", "task.status_changed", "task.assignee_changed", "task.blocked_changed", "task.commented",
+  "wake.opened", "wake.bound", "wake.dropped", "check.ended", "deploy.applied", "pr.deployed"];
+const FACT_TYPE = /^[a-z][a-z0-9_]*\.[a-z][a-z0-9_]*$/;
+/**
+ * A module's flow declarations: `facts:` (type -> {subject?, reasons?}) the module may POST to /v1/facts (role kernel.facts), and
+ * `stages:` ([{name, label, from, to, start?, where?}]) the flow reads from them and the kernel's facts. Compiled into modules.json.
+ */
+function flowDecls(name, def, declared) {
+  const at = `module ${name}`;
+  let facts, stages;
+  if (def.facts != null) {
+    if (typeof def.facts !== "object" || Array.isArray(def.facts)) fail(`${at}: facts is a map of type: {subject, reasons}`);
+    if (!(def.roles?.requests ?? []).includes("kernel.facts")) fail(`${at}: facts: needs roles.requests kernel.facts`);
+    facts = {};
+    for (const [t, f] of Object.entries(def.facts)) {
+      if (!FACT_TYPE.test(t)) fail(`${at}: fact ${t} is <namespace>.<name> (lowercase)`);
+      if (KERNEL_FACT_TYPES.includes(t)) fail(`${at}: fact ${t} is the kernel's own`);
+      for (const k of Object.keys(f ?? {})) if (!["subject", "reasons"].includes(k)) fail(`${at}: fact ${t}: ${k} is not allowed (subject, reasons)`);
+      if (f?.subject != null && typeof f.subject !== "string") fail(`${at}: fact ${t}: subject is a text`);
+      if (f?.reasons != null && !(Array.isArray(f.reasons) && f.reasons.every((r) => typeof r === "string"))) fail(`${at}: fact ${t}: reasons is a list`);
+      facts[t] = { ...(f?.subject ? { subject: f.subject } : {}), ...(f?.reasons ? { reasons: f.reasons } : {}) };
+    }
+  }
+  if (def.stages != null) {
+    if (!Array.isArray(def.stages)) fail(`${at}: stages must be a list`);
+    stages = def.stages.map((s) => {
+      const w = `${at}: stage ${s?.name}`;
+      if (!s || typeof s !== "object" || !/^[a-z][a-z0-9_]{0,40}$/.test(String(s.name))) fail(`${at}: each stage has a name (a-z, 0-9, _)`);
+      for (const k of Object.keys(s)) if (!["name", "label", "from", "to", "start", "where"].includes(k)) fail(`${w}: ${k} is not allowed`);
+      if (typeof s.label !== "string" || !s.label) fail(`${w}: label is a short text`);
+      for (const k of ["from", "to"]) if (!declared.has(s[k])) fail(`${at}: stage ${s.name} names undeclared fact ${s[k]}`);
+      if (s.start != null && typeof s.start !== "string") fail(`${w}: start is a data field name`);
+      if (s.where != null && (typeof s.where !== "object" || Array.isArray(s.where) || Object.values(s.where).some((v) => typeof v !== "string"))) fail(`${w}: where maps data fields to text`);
+      return { name: s.name, label: s.label, from: s.from, to: s.to, ...(s.start ? { start: s.start } : {}), ...(s.where ? { where: s.where } : {}) };
+    });
+  }
+  return { facts, stages };
+}
+
 export function kernelModuleTable(defs, settings = {}) {
   const out = {};
+  const declared = new Set(KERNEL_FACT_TYPES);
+  for (const [name, def] of Object.entries(defs)) for (const t of Object.keys(def.facts ?? {})) declared.add(t);
   // A module's own token holds the roles it requests that the kernel or an enabled module defines (apps-platform's apps.read).
   const moduleRoles = new Set(Object.values(defs).flatMap((d) => [d.roles?.declares ?? []].flat().map((r) => String(r?.id ?? r))));
   for (const [name, def] of Object.entries(defs)) {
@@ -1181,8 +1224,9 @@ export function kernelModuleTable(defs, settings = {}) {
       if (JSON.stringify(codehost).includes("${")) fail(`module ${name}: codehost: names no settings (use @instance, @product or @agents/…)`);
       try { validate(CODEHOST_SCHEMA, codehost, "codehost"); } catch (err) { fail(`module ${name}: ${err.message}`); }
     }
+    const { facts, stages } = flowDecls(name, def, declared);
     const e = {
-      ...(roles.length ? { roles } : {}), ...(privileged.length ? { privileged } : {}), ...(codehost != null ? { codehost } : {}),
+      ...(roles.length ? { roles } : {}), ...(facts ? { facts } : {}), ...(stages ? { stages } : {}), ...(privileged.length ? { privileged } : {}), ...(codehost != null ? { codehost } : {}),
       // A module that generates its own `<module>_token` is known to the kernel by it (whoami): its roles are the kernel.* ones it requests, none otherwise.
       ...((def.generated_secrets ?? []).includes(token) ? { token } : {}),
       ...(ch != null ? { channel: { ...(ch.stamp ? { stamp: String(ch.stamp) } : {}), ...(ch.stale === true ? { stale: true } : {}), ...(ch.transport ? { transport: String(ch.transport) } : {}), ...(ch.credentials === true ? { credentials: true } : {}) }, settings: Object.fromEntries(Object.keys(def.settings ?? {}).map((k) => [k, settings[k]])) } : {}),
