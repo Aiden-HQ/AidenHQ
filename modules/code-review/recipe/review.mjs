@@ -246,10 +246,15 @@ export async function review({ spec, ws, out, run = runEngine }) {
   const list = baseTree && plain(baseTree, ".github/code-review-checklist.json") ? readSmall(join(baseTree, ".github/code-review-checklist.json"), 200_000) : undefined;
   try { if (list) checks = checklistText(matchChecklist(JSON.parse(list).items, diff)); } catch {}
   const triage = profile.focus === "triage";
-  const instructions = brief({ guides, checks, focus: cap(spec.focus, 2000), profileFocus: triage ? "" : cap(profile.focus, 300), excluded, incremental: !full, addressed: atReviewer(diff) });
+  // Text addressed to a reviewer is looked for in the whole change, left-out files included (they can't hide it).
+  const whole = h.git(["diff", "--no-ext-diff", "--no-textconv", "--no-color", "--text", h.from, "HEAD"]);
+  const addressed = atReviewer(whole);
+  const instructions = brief({ guides, checks, focus: cap(spec.focus, 2000), profileFocus: triage ? "" : cap(profile.focus, 300), excluded, incremental: !full, addressed });
+  const exclude = excluded.map((e) => e.path);
   const scratch = mkdtempSync(join(out, "home", "review-"));
   const minutes = Number(process.env.REVIEW_MINUTES || 20);
   const result = {
+    addressed,
     version: 1, repo: spec.repo, pr: Number(spec.pr), base: spec.base, head: spec.head, reviewer: cap(profile.name ?? profile.label ?? "reviewer", 60),
     incremental_from: full ? null : spec.incremental_from, full,
     coverage: { reviewed, excluded: excluded.map((e) => e.path), incomplete: null },
@@ -260,14 +265,15 @@ export async function review({ spec, ws, out, run = runEngine }) {
   if (!reviewed.length) {
     result.coverage.incomplete = excluded.length ? "every changed file was left out" : null;
     if (triage) result.triage = { summary: "No reviewable changes.", risk: "trivial" };
-    return result;
+    return bound(result);
   }
 
   // The finders, in parallel, each with its own lens.
   const n = triage ? 1 : profile.finders;
-  const answers = await Promise.all(Array.from({ length: n }, (_, i) => run(profile.engine, { prompt: finderPrompt(n === 1 ? LENSES.join("; ") : LENSES[i % LENSES.length], triage), instructions, model: profile.model, effort: profile.effort, root: ws, base: h.from, minutes, scratch })
+  const answers = await Promise.all(Array.from({ length: n }, (_, i) => run(profile.engine, { prompt: finderPrompt(n === 1 ? LENSES.join("; ") : LENSES[i % LENSES.length], triage), instructions, model: profile.model, effort: profile.effort, root: ws, base: h.from, minutes, scratch, exclude })
     .catch((e) => ({ message: "", read: false, cause: String(e.message).slice(0, 200) }))));
-  const good = answers.map((a) => (a.read ? answer(a.message) : undefined));
+  // A finder's answer counts only with its findings list (no list is no answer, never a clean one).
+  const good = answers.map((a) => { const j = a.read ? answer(a.message) : undefined; return j && Array.isArray(j.findings) ? j : undefined; });
   const failed = answers.filter((a, i) => !good[i]);
   if (failed.length === n) throw new Error(`no finder finished: ${failed[0].cause ?? (failed[0].read ? "an answer that isn't the JSON asked for" : "it never read the diff")}`);
   if (failed.length) gaps.push(`${failed.length} of ${n} finders didn't finish (${failed[0].cause ?? "no usable answer"})`);
@@ -282,11 +288,12 @@ export async function review({ spec, ws, out, run = runEngine }) {
 
   // The verifier keeps a finding only where it confirmed it at file:line; it may lower a severity, never raise one.
   if (profile.verify && candidates.length) {
-    const v = await run(profile.engine, { prompt: verifierPrompt(candidates), instructions, model: profile.verifier ?? profile.model, effort: profile.effort, root: ws, base: h.from, minutes, scratch })
+    const v = await run(profile.engine, { prompt: verifierPrompt(candidates), instructions, model: profile.verifier ?? profile.model, effort: profile.effort, root: ws, base: h.from, minutes, scratch, exclude })
       .catch((e) => ({ message: "", read: false, cause: String(e.message).slice(0, 200) }));
     const j = answer(v.message);
     // What it looked at: each file a call named; a whole-diff read covers every reviewed file.
-    const looked = new Set((v.calls ?? []).filter((c) => c.path).map((c) => c.path.replace(/^\.\//, "")));
+    const rel = (p) => (p.startsWith(`${root}/`) ? p.slice(root.length + 1) : p).replace(/^\.\//, "");
+    const looked = new Set((v.calls ?? []).filter((c) => c.path).map((c) => rel(c.path)));
     if ((v.calls ?? []).some((c) => c.tool === "diff" && !c.path)) for (const p of reviewed) looked.add(p);
     if (!j || !Array.isArray(j.confirmed) || !(v.calls ?? []).some((c) => ["read_file", "diff", "blame", "search"].includes(c.tool))) {
       for (const f of candidates) result.withheld[f.severity]++;
@@ -312,6 +319,14 @@ export async function review({ spec, ws, out, run = runEngine }) {
   for (const k of Object.keys(withheld)) result.withheld[k] += withheld[k];
   for (const f of kept.slice(100)) result.withheld[f.severity]++;
   result.coverage.incomplete = gaps.length ? gaps.join("; ") : null;
+  return bound(result);
+}
+
+/** The result within what the kernel takes (RESULT_MAX, 256 KB): long lists cut, then the lowest-ranked findings withheld. */
+export function bound(result, max = 200_000) {
+  const cov = result.coverage;
+  for (const k of ["reviewed", "excluded"]) if (cov[k].length > 500) { cov.incomplete = [cov.incomplete, `${cov[k].length - 500} more ${k} files not listed`].filter(Boolean).join("; "); cov[k] = cov[k].slice(0, 500); }
+  while (result.findings.length && Buffer.byteLength(JSON.stringify(result)) > max) result.withheld[result.findings.pop().severity]++;
   return result;
 }
 

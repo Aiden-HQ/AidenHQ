@@ -34,7 +34,7 @@
 // modules repos never do).
 //
 // Every recipe's box gets its spec, with the repo and head, at /aidenhq-out/spec.json (data, never argv or env), and each spec
-// field of kind sha other than the head (and not a value an earlier field already named) as that commit's tree at
+// field of kind sha (not a value an earlier field already named) as that commit's tree at
 // /aidenhq-out/<field>: the recipe makes its own history from them (`base` as before; a review's `incremental_from`).
 // A recipe with `model: { max_usd }` (a code review) gets a model credential of its own: a `check` token for this check alone
 // (component `<run>:<check id>`), capped at the spec's `budget_usd` (never above the recipe's max_usd) on its own run key, that
@@ -308,7 +308,7 @@ export function createChecks({ db, secret, recipes, box, snapshot, modelToken, s
     mkdirSync(ws);
     await snapshot(repo, head, ws);
     // Each other commit the spec names, once: its tree for the recipe's history.
-    const trees: Record<string, string> = {}, seen = new Set([head]);
+    const trees: Record<string, string> = {}, seen = new Set<string>();
     for (const [field, kind] of Object.entries(r.spec)) {
       if (kind !== "sha" || seen.has(spec[field]!)) continue;
       seen.add(spec[field]!);
@@ -318,7 +318,7 @@ export function createChecks({ db, secret, recipes, box, snapshot, modelToken, s
       trees[field] = into;
     }
     if (r.declares) {
-      const [base, now] = [declares(spec.base === head ? ws : was, r.declares), declares(ws, r.declares)];
+      const [base, now] = [declares(was, r.declares), declares(ws, r.declares)];
       const no = (summary: string) => ({ verdict: "fail" as const, ran: false, summary });
       if (base === "unreadable") return no(`the base's package.json can't be read, so whether ${r.title} is due can't be told`);
       if (now === "unreadable") return no(`the change's package.json can't be read (it must be a small regular JSON file)`);
@@ -429,7 +429,8 @@ export function createChecks({ db, secret, recipes, box, snapshot, modelToken, s
       if (recipe.model && !(Number(spec.budget_usd) > 0)) throw new CheckError(400, "bad-spec", `a ${run} check's spec.budget_usd is more than 0`);
       const hash = specHash(spec, recipe);
       const had = db.prepare("SELECT * FROM checks WHERE module = ? AND repo = ? AND head = ? AND run = ? AND hash = ?").get(module, repo.toLowerCase(), head, run, hash) as Record<string, any> | undefined;
-      if (had && ["running", "done"].includes(had.state)) return view(had);
+      // A result recipe that ended without its result (a provider error, a timeout, its budget) runs again when asked again.
+      if (had && (had.state === "running" || (had.state === "done" && !(recipe.result && !had.result)))) return view(had);
       const id = had?.id ?? `c-${randomBytes(8).toString("hex")}`;
       if (had) db.prepare("UPDATE checks SET state = 'running', receipt = NULL, error = NULL, result = NULL, cost_usd = NULL, at = ?, ended = NULL WHERE id = ?").run(now(), id);
       else db.prepare("INSERT INTO checks (id, module, repo, head, run, hash, spec, state, at) VALUES (?, ?, ?, ?, ?, ?, ?, 'running', ?)").run(id, module, repo.toLowerCase(), head, run, hash, JSON.stringify(spec), now());

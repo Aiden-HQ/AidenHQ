@@ -199,6 +199,14 @@ test("checks: a model recipe gets its own capped token, its spec and commits as 
   const none = await done(checks.start("github", { repo: "acme/app", head: A, run: "code-review", spec: { ...spec, incremental_from: B } }));
   assert.equal(runs[1].seen.from, false);
   assert.deepEqual([none.receipt.verdict, none.result], ["fail", null]);
+  // One that ended without its result runs again when asked again (a done one with its result never does).
+  answer = { version: 1, findings: [] };
+  const retried = await done(checks.start("github", { repo: "acme/app", head: A, run: "code-review", spec: { ...spec, incremental_from: B } }));
+  assert.deepEqual([retried.id, retried.receipt.verdict, runs.length], [none.id, "pass", 3]);
+  assert.equal(checks.start("github", { repo: "acme/app", head: A, run: "code-review", spec: { ...spec, incremental_from: B } }).state, "done");
+  // A base that is the head itself is still laid out (the fast and tests recipes' history needs it).
+  const self = await done(checks.start("github", { repo: "acme/app", head: B, run: "code-review", spec: { ...spec, incremental_from: B, base: B } }));
+  assert.equal(runs.at(-1).seen.base, "base", self.receipt.summary);
   answer = { pad: "x".repeat(300 * 1024) };
   assert.equal((await done(checks.start("github", { repo: "acme/app", head: A, run: "code-review", spec: { ...spec, pr: "8" } }))).receipt.verdict, "fail");
   assert.throws(() => checks.start("github", { repo: "acme/app", head: A, run: "code-review", spec: { ...spec, budget_usd: "0" } }), /budget_usd/);

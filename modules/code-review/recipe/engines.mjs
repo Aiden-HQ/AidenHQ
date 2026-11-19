@@ -30,14 +30,17 @@ export function profileProblem(p) {
  * start. Returns { message, read, cause }: the final message, whether it read the diff (a review that never looked is none),
  * and why there's no message.
  */
-export async function runEngine(engine, { prompt, instructions, model, effort, root, base, minutes, scratch }) {
+export async function runEngine(engine, { prompt, instructions, model, effort, root, base, minutes, scratch, exclude = [] }) {
   if (engine !== "codex") throw new Error(`the ${engine} engine isn't built yet: use codex`);
   const tmp = mkdtempSync(join(scratch, "codex-"));
   const home = join(tmp, "home"), cwd = join(tmp, "cwd"); // cwd: empty, not a repository, so codex loads nothing of the repo
   mkdirSync(home);
   mkdirSync(cwd);
   const url = String(process.env.OPENROUTER_BASE_URL || "").replace(/\/$/, "");
-  writeFileSync(join(home, "config.toml"), config({ model: String(model).replace(/^openrouter\//, ""), effort, url, root, base, instructions }));
+  // The files the review leaves out: the repo tools refuse to show or read them.
+  const left = join(tmp, "excluded.json");
+  writeFileSync(left, JSON.stringify(exclude));
+  writeFileSync(join(home, "config.toml"), config({ model: String(model).replace(/^openrouter\//, ""), effort, url, root, base, instructions, exclude: left }));
   const r = await runCodex({ prompt, home, cwd, out: join(tmp, "answer.txt"), key: process.env.OPENROUTER_API_KEY, minutes });
   const calls = r.events.filter((e) => e?.type === "item.completed" && e.item?.type === "mcp_tool_call" && e.item.status === "completed" && !e.item.error && !e.item.result?.isError)
     .map((e) => ({ tool: e.item.tool, path: typeof e.item.arguments?.path === "string" ? e.item.arguments.path : undefined }));

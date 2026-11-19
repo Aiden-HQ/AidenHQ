@@ -37,6 +37,7 @@
     {"name": "modules/codehost-local", "job": "modules", "run": "npm test", "paths": ["modules/codehost-local", "kernel/src", "kernel/sdk/src", "modules/github"]},
     {"name": "modules/platform", "job": "modules", "run": "npm test", "paths": ["modules/platform", "modules"]},
     {"name": "modules/grading", "job": "modules", "run": "npm test", "paths": ["modules/grading", "kernel/src", "ops/grades-move.mjs"]},
-    {"name": "modules/dispatch", "job": "modules", "run": "npm test", "paths": ["modules/dispatch"]}
+    {"name": "modules/dispatch", "job": "modules", "run": "npm test", "paths": ["modules/dispatch"]},
+    {"name": "modules/code-review", "job": "modules", "run": "node --test test/*.test.mjs", "paths": ["modules/code-review", "modules/ci/template/.github"]}
   ]
 }
