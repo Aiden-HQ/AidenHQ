@@ -11,6 +11,7 @@ import { findPrs, stripHidden } from "./grader/text.ts";
 import { openRouterAsk } from "./aidenhq-sdk/judge.ts";
 import { taskPrRows } from "./grader/evidence.ts";
 import { createGithub } from "./github.ts";
+import type { FactIn } from "./aidenhq-sdk/kernel-client.ts";
 import { appsEvidence, type AppsCall } from "./apps-evidence.ts";
 
 type Json = any;
@@ -38,9 +39,10 @@ export function verifiedMerges(r: Json): { repo: string; number: number; head: s
     .map((p: Json) => ({ repo: p.repo, number: p.number, head: p.head, sha: p.sha }));
 }
 
-export function createKernelGradeLoop({ db, runner, due, kernel, kernelBytes, apps, gatewayUrl, github = createGithub({ kernel }), log }: {
+export function createKernelGradeLoop({ db, runner, due, kernel, kernelBytes, apps, gatewayUrl, github = createGithub({ kernel }), log, emit }: {
   db: DatabaseSync; runner: Runner; due: () => Json; kernel: KernelCall; /** apps-mcp's grader reads (apps-evidence.ts); a fake in tests. */ apps: AppsCall; /** A kernel GET's raw bytes (the attachment read). */ kernelBytes: (path: string) => Promise<Buffer>; gatewayUrl: string;
   /** A PR's facts and diff (github.ts); a fake in tests. */ github?: ReturnType<typeof createGithub>; log: (msg: string, f?: Record<string, unknown>) => void;
+  /** Flow facts (FactEmitter.emit); none in tests that don't read them. */ emit?: (f: FactIn) => void;
 }) {
   db.exec("CREATE TABLE IF NOT EXISTS loop_state (k TEXT PRIMARY KEY, v TEXT NOT NULL)");
   const state = {
@@ -124,7 +126,7 @@ export function createKernelGradeLoop({ db, runner, due, kernel, kernelBytes, ap
   const loop = createGradeLoop({
     api: { get: async (path: string) => (path === "/internal/grades" ? due() : runner("GET", path, undefined)), post: (path: string, body: unknown) => runner("POST", path, body) },
     pc, log, state, gather, grade, escalationFor, gradeNote, template, gradeDeps, tellParent, recordsOn,
-    graderAsk,
+    graderAsk, emit,
     stripHidden, graderSpeaks: (s?: string) => ["open", "pending", "awaiting_evidence", "needs_revision", "grading_failed"].includes(String(s)),
     isUserInstruction: (c: Json) => c.authorType === "user" && !forOthers(c.body),
   });

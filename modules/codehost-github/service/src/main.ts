@@ -29,13 +29,14 @@ const gh = async (method: string, path: string, token: string, body?: unknown) =
     headers: { authorization: `Bearer ${token}`, accept: "application/vnd.github+json", "x-github-api-version": "2022-11-28", ...(body ? { "content-type": "application/json" } : {}) },
     ...(body ? { body: JSON.stringify(body) } : {}),
   });
-  return { status: r.status, body: await r.json().catch(() => ({})) };
+  return { status: r.status, body: await r.json().catch(() => ({})), remaining: Number(r.headers.get("x-ratelimit-remaining") ?? NaN) };
 };
 
 const handle = createService({
   key, kernelUrl: env.AIDENHQ_KERNEL_URL ?? "http://10.231.0.1:3130", cacheDir: env.CACHE_DIR ?? "/cache", tasksDir: env.TASKS_DIR || undefined,
   app, gh, agentsOrg, allowedOrgs: (env.ALLOWED_ORGS ?? "").split(",").filter(Boolean), instanceRepo: env.INSTANCE_REPO || undefined,
   productRepo: env.PRODUCT_REPO || undefined, selfName: env.OWNER_NAME || undefined,
+  churnExclude: (env.CHURN_EXCLUDE ?? "").split(",").map((g) => g.trim()).filter(Boolean),
   log,
 });
 log("starting", { app: Boolean(app), tasks: Boolean(env.TASKS_DIR), agentsOrg });
@@ -43,9 +44,10 @@ const cacheDir = env.CACHE_DIR ?? "/cache";
 handle.startMerges();
 handle.startReleases();
 handle.startDesignReviews();
+handle.startFlow();
 startTidy({ cacheDir, log });
 // The product repo's PRs (Dependabot's tasks, an agent's PR that conflicts): only with the App and the product repo set.
-if (app && env.PRODUCT_REPO) startPrWatch({ repo: env.PRODUCT_REPO, kernelUrl: env.AIDENHQ_KERNEL_URL ?? "http://10.231.0.1:3130", key, cacheDir, app, gh, log });
+if (app && env.PRODUCT_REPO) startPrWatch({ repo: env.PRODUCT_REPO, kernelUrl: env.AIDENHQ_KERNEL_URL ?? "http://10.231.0.1:3130", key, cacheDir, app, gh, log, flow: handle.flow });
 const server = createServer((req, res) => void handle(req, res));
 server.listen(Number(env.PORT ?? 8100), "0.0.0.0");
 for (const sig of ["SIGTERM", "SIGINT"] as const) process.on(sig, () => server.close(() => process.exit(0)));

@@ -55,6 +55,7 @@ const VIEW_QUERIES: Record<string, Query<unknown>[]> = {
 export const VIEW_CHUNKS = {
   apps: () => import("./Apps"),
   costs: () => import("./Costs"),
+  flow: () => import("./Flow"),
   agents: () => import("./Agents"),
   modules: () => import("./Modules"),
   agentPage: () => import("./AgentPage"),

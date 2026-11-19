@@ -1,5 +1,5 @@
 // Gate modes. A new gate that isn't a hard gate ships in observe mode. While it observes, a refusal becomes a
-// `gate.would_block` event (kernel.db's events table, with a log line) and the action goes ahead. Once its would-block
+// `gate.would_block` fact (kernel.db's flow facts, facts.ts, with a log line) and the action goes ahead. Once its would-block
 // entries have been reviewed and the false ones fixed, it is promoted to enforce. A gate with no mode enforces.
 // Hard gates enforce from day one and refuse observe: secrets, outbound sends, merges and pushes without approval,
 // credential scoping.

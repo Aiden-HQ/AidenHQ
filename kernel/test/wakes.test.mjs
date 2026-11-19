@@ -3,6 +3,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { DatabaseSync } from "node:sqlite";
 import { createWakes } from "../src/wakes.ts";
+import { openFacts } from "../src/facts.ts";
 import { createBackplane } from "../src/backplane.ts";
 import { forward, wakeEvent } from "../../services/paperclip-events/forward.js";
 
@@ -42,9 +43,10 @@ function world() {
   // Writes as the agent (outcomes.ts): recorded, and the status applied.
   const posts = [];
   const post = async (job, req) => { posts.push({ ...job, ...req }); if (req.status) issues[job.task].status = req.status; return { comment: `c-${posts.length}`, status: req.status ?? null }; };
-  const wakes = createWakes({ db, owner, post, now: () => clock, routineKey: (id) => ({ rt: "digest" })[id], dispatches: { may: (mod, a) => mod === "dispatch" && a === AGENT, agents: (mod) => (mod === "dispatch" ? [AGENT] : []) } });
+  const facts = openFacts(db);
+  const wakes = createWakes({ db, facts, owner, post, now: () => clock, routineKey: (id) => ({ rt: "digest" })[id], dispatches: { may: (mod, a) => mod === "dispatch" && a === AGENT, agents: (mod) => (mod === "dispatch" ? [AGENT] : []) } });
   const w = {
-    db, wakes, issues, posts,
+    db, wakes, issues, posts, facts,
     tick: (ms = 1000) => (clock += ms),
     issue: (id, f = {}) => (issues[id] = { id, status: "todo", assigneeAgentId: AGENT, updatedAt: iso(clock), statusVersion: 1, ...issues[id], ...f }),
     comment: (task, id, f = {}) => { (comments[task] ??= []).push({ id, body: "hi", authorAgentId: null, createdAt: iso(clock), ...f }); issues[task].updatedAt = iso(clock); },
@@ -158,4 +160,56 @@ test("a dispatcher cancels only an open or blocked routine run of an agent it di
   for (const [module, task] of [["dispatch", "plain"], ["dispatch", "r2"], ["other", "r1"]]) assert.equal((await w.wakes.cancelRoutineRun(module, { task, why: "stale", body })).status, 409, `${module} ${task}`);
   await w.wakes.cancelRoutineRun("dispatch", { task: "r1", why: "coalesced", body });
   assert.deepEqual(w.posts.map((p) => [p.agent, p.task, p.kind, p.status]), [[AGENT, "r1", "coalesced", "cancelled"]]);
+});
+
+test("task facts: one change seen by the event and the poll is one fact; an unassigned task's change is recorded; a reassignment says from and to", async () => {
+  const w = world();
+  w.issue("t1", { status: "todo" });
+  await w.wakes.event({ issueId: "t1", actorType: "agent", actorId: AGENT });
+  await w.wakes.poll();
+  w.tick();
+  Object.assign(w.issues.t1, { status: "in_progress", statusVersion: 2, updatedAt: iso(Date.now()) });
+  await w.wakes.event({ issueId: "t1", actorType: "agent", actorId: AGENT });
+  await w.wakes.poll();
+  const of = (task, type) => w.facts.forTask(task).filter((f) => f.type === type);
+  assert.deepEqual(of("t1", "task.status_changed").map((f) => [f.data.from, f.data.to, f.actor, f.source]), [[null, "todo", `agent:${AGENT}`, "live"], ["todo", "in_progress", `agent:${AGENT}`, "live"]]);
+  assert.equal(of("t1", "task.created").length, 1);
+  // A module's task carries its module and source; an agent's copy of the markers carries nothing.
+  w.issue("m1", { description: "Check.\n\n<!-- source:fleet-check:2026-11-19T10:00:00.000Z -->\n<!-- aidenhq-module:fleet-steward -->", identifier: "WOR-9" });
+  w.issue("m2", { description: "<!-- source:fleet-check:x -->\n<!-- aidenhq-module:fleet-steward -->", createdByAgentId: AGENT });
+  await w.wakes.poll();
+  assert.deepEqual(["m1", "m2"].map((t) => of(t, "task.created").map((f) => [f.data.identifier, f.data.origin, f.data.source_marker])[0]),
+    [["WOR-9", "module:fleet-steward", "fleet-check:2026-11-19T10:00:00.000Z"], [null, null, null]]);
+  // An unassigned task is seen by its events only, and still recorded.
+  w.issue("t2", { assigneeAgentId: null, status: "backlog" });
+  await w.wakes.event({ issueId: "t2" });
+  w.tick();
+  Object.assign(w.issues.t2, { status: "todo", statusVersion: 2, updatedAt: iso(Date.now()) });
+  await w.wakes.event({ issueId: "t2" });
+  assert.deepEqual(of("t2", "task.status_changed").map((f) => f.data.to), ["backlog", "todo"]);
+  assert.equal(of("t2", "task.assignee_changed").length, 0);
+  // Reassignment, to an agent nobody polls.
+  w.tick();
+  Object.assign(w.issues.t1, { assigneeAgentId: OTHER, updatedAt: iso(Date.now()) });
+  await w.wakes.event({ issueId: "t1" });
+  assert.deepEqual(of("t1", "task.assignee_changed").map((f) => [f.data.from, f.data.to]), [[null, AGENT], [AGENT, OTHER]]);
+  // Blockers.
+  w.tick();
+  Object.assign(w.issues.t1, { blockedBy: [{ id: "b2", status: "todo" }, { id: "b1", status: "todo" }], updatedAt: iso(Date.now()) });
+  await w.wakes.event({ issueId: "t1" });
+  await w.wakes.event({ issueId: "t1" });
+  assert.deepEqual(of("t1", "task.blocked_changed").map((f) => f.data.blocked_by), [["b1", "b2"]]);
+});
+
+test("a wake's facts: opened with its author, and dropped with why", async () => {
+  const w = world();
+  w.issue("t1", { status: "in_progress" });
+  await w.wakes.poll();
+  w.tick();
+  w.comment("t1", "c1", { authorUserId: "u-1" });
+  await w.wakes.event({ issueId: "t1" });
+  const [claimed] = w.wakes.claim("dispatch");
+  assert.equal(w.wakes.drop("dispatch", claimed.key, "nothing to do").dropped, true);
+  const facts = w.facts.forTask("t1").filter((f) => f.type.startsWith("wake."));
+  assert.deepEqual(facts.map((f) => [f.type, f.subject, f.data]), [["wake.opened", "wake:comment:c1", { cause: "comment", author: "account:u-1" }], ["wake.dropped", "wake:comment:c1", { why: "nothing to do" }]]);
 });

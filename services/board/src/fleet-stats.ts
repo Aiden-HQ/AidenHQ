@@ -6,7 +6,7 @@ import type { Grade, Grading } from "./grading.js";
 import type { Issue, Paperclip } from "./paperclip.js";
 import type { PastRun } from "./runs.js";
 import type { Store } from "./store.js";
-import { oneLine, report, type Row } from "./quality.js";
+import { oneLine, report, type Row } from "./aidenhq-sdk/quality.js";
 
 const DAY = 864e5;
 const day = (t: number) => new Date(t).toISOString().slice(0, 10);

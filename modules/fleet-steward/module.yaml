@@ -9,8 +9,9 @@ roles:
   # kernel.cp-read, kernel.work-read: the control plane's tasks and agents and the kernel's jobs, records and cost, read for the detector and
   # the Coach; kernel.tasks: the check task for the Steward; kernel.owner-notice: the owner's one line for a critical alert or a lost Steward;
   # apps.read: apps-mcp's status, quality, sources and open PRs; kernel.routing: the routing learning loop's reads and its typed
-  # routing changes, each a reviewed kernel.apply filed as the calling agent (routing-tuner role only).
-  requests: [ kernel.cp-read, kernel.work-read, kernel.tasks, kernel.owner-notice, kernel.routing, apps.read ]
+  # routing changes, each a reviewed kernel.apply filed as the calling agent (routing-tuner role only); kernel.flow-read: Flow's idle work
+  # for the detector's stuck rule and its week-over-week stage check, and the flow_report tool.
+  requests: [ kernel.cp-read, kernel.work-read, kernel.tasks, kernel.owner-notice, kernel.routing, kernel.flow-read, apps.read ]
   declares:
     - { id: fleet-read, description: "The board's fleet status and the detector's incidents only (never fleet_control or relaying the owner's words)." }
     - { id: fleet-audit, description: "Read any agent's evidence (the fleet_steward connection's coach_* reads) and keep a review log (tasks bridge coach_record)." }
@@ -143,10 +144,10 @@ connections:
     auth: fleet_steward_service_key
     returns: untrusted
     tools:
-      read: [ fleet_detector, coach_due, coach_evidence, fleet_generation_status, fleet_stale_followups, routing_evidence, routing_replay ]
+      read: [ fleet_detector, coach_due, coach_evidence, fleet_generation_status, fleet_stale_followups, flow_report, routing_evidence, routing_replay ]
       # fleet_generation_status: the apply generations; fleet_stale_followups: the owner's stale todos for the daily brief. Tagged named,
       # so the read shorthand keeps them to the agents that name them (the Fleet Steward, the Maintainer and the chief of staff).
-      named: [ fleet_generation_status, fleet_stale_followups, routing_evidence, routing_replay ]
+      named: [ fleet_generation_status, fleet_stale_followups, flow_report, routing_evidence, routing_replay ]
       # fleet_followup_snooze: the owner's snooze of a brief line, a note in the steward's own record (role fleet-admin).
       # routing_tune, routing_judge: a routing change or its rollback, each filed as a reviewed kernel.apply (role routing-tuner).
       write: [ fleet_followup_snooze, routing_tune, routing_judge ]

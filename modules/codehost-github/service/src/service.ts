@@ -27,6 +27,7 @@ import { serveExecutor, type Executor, type PlanRequest } from "./aidenhq-sdk/ex
 import { CREDENTIAL_ARGS } from "./github-app.ts";
 import { createEvalGate } from "./evalgate.ts";
 import { createMerges } from "./merges.ts";
+import { createFlow } from "./flow.ts";
 import { createReleaseTrain } from "./train.ts";
 import { LOCAL_ORG, plan as planRules } from "./plan.mjs";
 import { notePrTask } from "./pr-watch.ts";
@@ -38,7 +39,7 @@ const run = promisify(execFile);
 /** The hardened git arguments: hooks, fsmonitor and ext:: transports off whatever a workspace's config says. */
 export const SAFE_GIT_ARGS = ["-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=", "-c", "protocol.ext.allow=never", "-c", "safe.bareRepository=explicit"];
 
-type Gh = (method: string, path: string, token: string, body?: unknown) => Promise<{ status: number; body: any }>;
+type Gh = (method: string, path: string, token: string, body?: unknown) => Promise<{ status: number; body: any; remaining?: number }>;
 type App = { token(org: string, o: { repositories?: string[]; permissions?: Record<string, string>; fresh?: boolean }): Promise<string>; createRepo(slug: string): Promise<"exists" | "created">; identity(): Promise<{ name: string }> };
 export type Options = {
   key: string; kernelUrl: string; cacheDir: string; tasksDir?: string;
@@ -52,6 +53,8 @@ export type Options = {
   selfName?: string;
   /** Tests: the merge loop's clock and its poll interval. */
   now?: () => Date; mergeEveryMs?: number;
+  /** The churn pass ignores these globs (the churn_exclude setting). */
+  churnExclude?: string[];
 };
 
 const READ = { contents: "read", metadata: "read" };
@@ -294,6 +297,11 @@ export function createService(o: Options) {
             const pr = open[0] ? await api("PATCH", `/repos/${s.slug}/pulls/${open[0].number}`, token, text) : await api("POST", `/repos/${s.slug}/pulls`, token, { ...text, head: b.branch, base: (await api("GET", `/repos/${s.slug}`, token)).default_branch });
             done.push(pr.html_url ?? `${s.slug}#${pr.number}`);
             if (pr.html_url) notePrTask(o.cacheDir, pr.html_url, { task: a.workspace, branch: b.branch }); // the PR watch wakes the task that opened it
+            if (pr.number) {
+              // Flow: the PR opened when this write created it, and CI starts on every head it publishes.
+              if (!open[0]) flow.opened(s.slug, Number(pr.number), b.sha, b.branch, pr.created_at, a.workspace);
+              flow.checksStarted(s.slug, Number(pr.number), b.sha, undefined, a.workspace);
+            }
             // An agents-org PR that changes UI files gets its design review at this head (one that changes none files nothing).
             if (same(s.org, o.agentsOrg) && pr.number) void designReviews?.fileDesignReview({ repo: s.slug, number: Number(pr.number), head: b.sha }).catch((e: Error) => log("design review task failed", { pr: pr.html_url, err: String(e.message ?? e).slice(0, 300) }));
           } else done.push(`${s.slug} ${b.branch} at ${b.sha.slice(0, 12)}`);
@@ -336,7 +344,34 @@ export function createService(o: Options) {
   // The design reviewer's tasks (design-review.ts): for an agents-org PR's UI head when it opens, and for each head the merge
   // queue waits on for its verdict.
   const designReviews = o.app ? createDesignReviews({ kernelUrl: o.kernelUrl, key: o.key, cacheDir: o.cacheDir, selfName: o.selfName || "the owner", app: o.app, gh: o.gh, log }) : undefined;
+  // The managed repos: the agents org's (the App's installation), the product repo and the instance repo.
+  async function managedRepos(): Promise<string[]> {
+    const out = new Set([o.productRepo, o.instanceRepo].filter(Boolean).map((r) => r!.toLowerCase()));
+    if (o.app && o.agentsOrg) {
+      const token = await o.app.token(o.agentsOrg, { permissions: { metadata: "read" } });
+      for (let page = 1; ; page++) {
+        const r = await api("GET", `/installation/repositories?per_page=100&page=${page}`, token);
+        for (const x of r.repositories ?? []) if (!x.archived && !x.fork) out.add(String(x.full_name).toLowerCase());
+        if ((r.repositories ?? []).length < 100) break;
+      }
+    }
+    return [...out];
+  }
+  const flow = createFlow({
+    kernelUrl: o.kernelUrl, key: o.key, cacheDir: o.cacheDir, log, exclude: o.churnExclude, now: o.now,
+    repos: o.app ? managedRepos : undefined,
+    token: (repo, perms) => tokenFor(slugOf(repo), perms),
+    gh: o.gh,
+    fetchDefault: async (repo) => {
+      const s = slugOf(repo);
+      const def = String((await api("GET", `/repos/${s.slug}`, await tokenFor(s, READ))).default_branch ?? "main");
+      const { dir, sha } = await fetchRemote(s, def);
+      return { dir, sha };
+    },
+    git: (dir, args) => git(dir, args),
+  });
   const merges = createMerges({
+    flow,
     designReview: async (ask) => designReviews?.fileDesignReview(ask),
     dir: join(o.cacheDir, "merges"), gh: o.gh, agentsOrg: o.agentsOrg, productRepo: o.productRepo,
     report, log, now: o.now, everyMs: o.mergeEveryMs,
@@ -642,6 +677,10 @@ export function createService(o: Options) {
     startReleases: () => train?.start(),
     /** The superseded design reviews' sweep (design-review.ts): only with the App. */
     startDesignReviews: () => designReviews && startDesignReviewSweep(designReviews, { log }),
+    /** Flow: the churn loop (flow.ts), and the fact queue sent now (tests, shutdown). */
+    startFlow: () => flow.startChurn(),
+    flushFacts: () => flow.flush(),
+    flow,
     stepReleases: () => train?.step(),
     stepMerges: () => merges.step(),
   });

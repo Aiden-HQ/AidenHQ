@@ -25,6 +25,7 @@ import { ControlSchema, CostsSchema, RelaySchema, Refused, holdsRole, appsApi, a
 import { metricsText } from "./monitoring.js";
 import { kernelRecords, type Approval, type Records } from "./records.js";
 import { gatherFacts, scorecard, statusSummary } from "./fleet-stats.js";
+import type { Flow } from "./flow.js";
 import { moduleAuthority, moduleStates } from "./modules.js";
 import { CommitUnreadable, agentGrants, browseModules, createResolver, marketplacesOf } from "./marketplace.js";
 import { connectionsView, readSources, readUpdates, settingsView, type Probe } from "./settings.js";
@@ -104,6 +105,8 @@ export interface AppOptions {
   records?: Records;
   /** The kernel's jobs (runs.ts kernelWork): the run pages and a task's run links. Without it, there are none. */
   work?: Work;
+  /** The kernel's flow reads (flow.ts): the Flow page. Without it, the page is empty. */
+  flow?: Flow;
   /**
    * The operator's key (secret board_operator_key, x-operator-key), for ops/setup.sh only, on "internal": the owner's setup
    * link, the welcome chat and an account reset. Nothing else.
@@ -1366,6 +1369,32 @@ export function createApp(opts: AppOptions): Server {
         const agentId = issue.assigneeAgentId ? undefined : chatAgent(issue);
         await pc.updateIssue(issue.id, { status: "todo", labelIds, ...(agentId ? { assigneeAgentId: agentId, assigneeUserId: null } : {}) });
         return issueView(issue.id);
+      },
+    },
+    // The Flow page (flow.ts): the period's bottlenecks, DORA and idle items in one read; one item's waterfall; the code host's history import.
+    {
+      method: "GET",
+      path: /^\/api\/flow$/,
+      handle: async (_m, _b, url) => {
+        const days = [7, 30, 90].includes(Number(url.searchParams.get("days"))) ? Number(url.searchParams.get("days")) : 7;
+        const scope = url.searchParams.get("scope") ?? "all";
+        if (!/^[a-z0-9-]{1,63}$/.test(scope)) throw new HttpError(400, "bad scope");
+        const now = Date.now();
+        const flow = opts.flow;
+        if (!flow) return { summary: null, idle: [] };
+        const [summary, idle] = await Promise.all([flow.summary({ since: new Date(now - days * 864e5).toISOString(), to: new Date(now).toISOString(), scope }), flow.idle()]);
+        return { summary, idle };
+      },
+    },
+    {
+      method: "GET",
+      path: /^\/api\/flow\/item$/,
+      handle: async (_m, _b, url) => {
+        const id = url.searchParams.get("id") ?? "";
+        if (!/^[\w:.#@/-]{1,200}$/.test(id)) throw new HttpError(400, "bad item");
+        const item = await opts.flow?.item(id);
+        if (!item) throw new HttpError(404, "Flow has no such item");
+        return item;
       },
     },
     // The Costs tab's ledger views (cost-ledger.ts): aggregates over ?from&to&bucket, and one agent's or model's top runs and tasks.

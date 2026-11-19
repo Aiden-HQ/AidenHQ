@@ -13,6 +13,8 @@
 import { createHash, randomBytes } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
 import type { Api } from "./channels.ts";
+import { factWriter, iso } from "./factlog.ts";
+import type { Facts } from "./facts.ts";
 import type { Outcomes } from "./outcomes.ts";
 import { mentionedRepos } from "./boxes.ts";
 import { agentPaused } from "../sdk/src/agent-paused.ts";
@@ -52,12 +54,14 @@ export async function wakeNotice(owner: Api, task: string, text: string): Promis
 }
 
 export interface Wake { key: string; task: string; agent: string; cause: string; at: number; state: string; claimed_by: string | null; job: string | null; until: number | null }
-type Issue = { id: string; identifier?: string; title?: string; description?: string | null; parentId?: string | null; status?: string; assigneeAgentId?: string | null; updatedAt?: string; createdAt?: string; statusVersion?: number; blockedBy?: { id: string; identifier?: string | null; status: string }[]; originKind?: string | null; originId?: string | null; companyId?: string };
-type Comment = { id: string; body?: string; authorAgentId?: string | null; createdAt?: string; deletedAt?: string | null };
+type Issue = { id: string; identifier?: string; title?: string; description?: string | null; parentId?: string | null; status?: string; assigneeAgentId?: string | null; updatedAt?: string; createdAt?: string; statusVersion?: number; blockedBy?: { id: string; identifier?: string | null; status: string }[]; originKind?: string | null; originId?: string | null; companyId?: string; createdByAgentId?: string | null };
+type Comment = { id: string; body?: string; authorAgentId?: string | null; authorUserId?: string | null; createdAt?: string; deletedAt?: string | null };
 type Log = (msg: string, f?: Record<string, unknown>) => void;
 const ms = (t?: string) => (t ? Date.parse(t) || 0 : 0);
 
-export function createWakes({ db, owner, post, dispatches, routineKey = () => undefined, grants = () => ({}), knownRepo = () => false, teamDayUsedUp = () => false, tellBlocked = async () => {}, log = () => {}, now = Date.now }: {
+export function createWakes({ db, owner, post, dispatches, routineKey = () => undefined, grants = () => ({}), knownRepo = () => false, teamDayUsedUp = () => false, tellBlocked = async () => {}, facts, log = () => {}, now = Date.now }: {
+  /** Flow's fact log (facts.ts): task changes the scan sees, and each wake's opening, binding and dropping. */
+  facts?: Facts;
   db: DatabaseSync;
   /** The control plane as the owner (only reads). */
   owner: Api;
@@ -79,11 +83,45 @@ export function createWakes({ db, owner, post, dispatches, routineKey = () => un
 }) {
   db.exec(DDL);
   if (!(db.prepare("PRAGMA table_info(team_routes)").all() as { name: string }[]).some((c) => c.name === "snapshot")) db.exec("ALTER TABLE team_routes ADD COLUMN snapshot TEXT");
+  // What the scan last saw of a task (wake_tasks): `blocked` its blocker ids, and `polled` whether the wake logic has run on it
+  // (a row made only to diff the task's facts, for a task nobody polls, is not a first sight's cursor).
+  const have = new Set((db.prepare("PRAGMA table_info(wake_tasks)").all() as { name: string }[]).map((c) => c.name));
+  if (!have.has("blocked")) db.exec("ALTER TABLE wake_tasks ADD COLUMN blocked TEXT");
+  if (!have.has("polled")) db.exec("ALTER TABLE wake_tasks ADD COLUMN polled INTEGER NOT NULL DEFAULT 1");
   const q = (sql: string) => db.prepare(sql);
-  const insert = (key: string, task: string, agent: string, cause: string, at: number, until: number | null = null) => {
+  const fact = factWriter(facts, log);
+  const keyOf = (agent: string | null | undefined) => (agent ? grants()[agent]?.key ?? agent : null);
+  const insert = (key: string, task: string, agent: string, cause: string, at: number, until: number | null = null, author = "unknown") => {
     const r = q("INSERT OR IGNORE INTO wakes (key, task, agent, cause, at, until) VALUES (?, ?, ?, ?, ?, ?)").run(key, task, agent, cause, at, until);
-    if (r.changes) log("wake", { key, task, cause });
+    if (r.changes) {
+      log("wake", { key, task, cause });
+      fact({ type: "wake.opened", subject: `wake:${key}`, version: "opened", at: iso(at), actor: author, task, data: { cause, author } });
+    }
   };
+  const dropped = (w: { key: string; task: string }, why: string) => fact({ type: "wake.dropped", subject: `wake:${w.key}`, version: "dropped", at: iso(now()), actor: "kernel", task: w.task, data: { why: why.slice(0, 200) } });
+  const blockedKey = (i: Issue) => (i.blockedBy ? i.blockedBy.map((b) => b.id).sort().join(",") : null);
+
+  /**
+   * What changed on a task since the scan last saw it, as facts (spec: flow §1). Their versions come from Paperclip, so the event
+   * path and the poll that see one change record it once. A task seen first is recorded as created, with the status and assignee
+   * it has (from nothing). `actor`: who Paperclip says did it, else unknown.
+   */
+  function taskFacts(issue: Issue, prev: { agent: string | null; status: string | null; blocked: string | null } | undefined, source: "live" | "poll", actor: string) {
+    const base = { subject: `task:${issue.id}`, task: issue.id, actor, source };
+    const changed = ms(issue.updatedAt) || now();
+    // A task a kernel job created without a Paperclip parent: the creating job's task (provenance.ts) is its parent.
+    const parentByJob = (id: string) => { try { return (q("SELECT j.task FROM provenance p JOIN jobs j ON j.id = p.created_by_job WHERE p.task = ?").get(id) as { task: string } | undefined)?.task ?? null; } catch { return null; } };
+    // A task a module filed (modtasks.ts: its marker and source, no agent made it) has the module as origin and its source as marker.
+    const module = issue.createdByAgentId ? undefined : /<!-- aidenhq-module:([\w-]+) -->/.exec(issue.description ?? "")?.[1];
+    const marker = module ? /<!-- source:(\S{1,200}) -->/.exec(issue.description ?? "")?.[1] : undefined;
+    if (!prev) fact({ ...base, type: "task.created", version: "created", at: iso(ms(issue.createdAt) || changed), data: { parent: issue.parentId ?? parentByJob(issue.id), identifier: issue.identifier ?? null, origin: issue.originKind ?? (module ? `module:${module}` : null), source_marker: issue.originId ?? marker ?? null } });
+    const status = String(issue.status ?? "");
+    if (status && (prev?.status ?? null) !== status) fact({ ...base, type: "task.status_changed", version: String(issue.statusVersion ?? issue.updatedAt ?? changed), at: iso(changed), data: { from: prev?.status ?? null, to: status } });
+    const to = issue.assigneeAgentId ?? null;
+    if ((prev?.agent ?? null) !== to) fact({ ...base, type: "task.assignee_changed", version: String(issue.updatedAt ?? changed), at: iso(changed), data: { from: keyOf(prev?.agent), to: keyOf(to) } });
+    const blocked = blockedKey(issue);
+    if (blocked !== null && blocked !== (prev?.blocked ?? "")) fact({ ...base, type: "task.blocked_changed", version: `${blocked}@${issue.updatedAt ?? changed}`, at: iso(changed), data: { blocked_by: blocked ? blocked.split(",") : [] } });
+  }
   /** The polled agents, each with when its dispatcher joined. */
   const polled = () => {
     const out = new Map<string, number>();
@@ -99,13 +137,21 @@ export function createWakes({ db, owner, post, dispatches, routineKey = () => un
   const lastJob = (task: string) => q("SELECT id, at FROM jobs WHERE task = ? ORDER BY at DESC LIMIT 1").get(task) as { id: string; at: number } | undefined;
 
   /** One task's wakes: new comments past its cursor, and a move to todo (or a first sight of an unstarted todo task). */
-  async function scan(issue: Issue, { reopened = false } = {}) {
+  async function scan(issue: Issue, { reopened = false, source = "live", actor = "unknown" }: { reopened?: boolean; source?: "live" | "poll"; actor?: string } = {}) {
+    const seen = q("SELECT agent, status, comment, blocked, polled FROM wake_tasks WHERE task = ?").get(issue.id) as { agent: string | null; status: string | null; comment: string | null; blocked: string | null; polled: number } | undefined;
+    // The task's facts first: a task nobody polls (unassigned, or an agent no dispatcher claims) is recorded too. A list row may
+    // lack the description its first fact reads (a module's markers): read the task once then.
+    if (!seen && issue.description === undefined) { const r = await owner("GET", `/api/issues/${encodeURIComponent(issue.id)}`); if (r.status === 200) issue = r.json as Issue; }
+    taskFacts(issue, seen, source, actor);
     const agent = issue.assigneeAgentId;
     const joined = agent ? polled().get(agent) : undefined;
-    if (!agent || joined === undefined) return;
-    if (grants()[agent]?.team) return route(issue, agent);
+    if (!agent || joined === undefined || grants()[agent]?.team) {
+      q("INSERT INTO wake_tasks (task, agent, status, blocked, polled) VALUES (?, ?, ?, ?, 0) ON CONFLICT(task) DO UPDATE SET agent = excluded.agent, status = excluded.status, blocked = COALESCE(excluded.blocked, blocked)").run(issue.id, agent ?? null, String(issue.status ?? ""), blockedKey(issue));
+      if (agent && joined !== undefined) return route(issue, agent);
+      return;
+    }
     if (grants()[agent]?.member_of) named(issue, agent);
-    const prev = q("SELECT agent, status, comment FROM wake_tasks WHERE task = ?").get(issue.id) as { agent: string; status: string; comment: string | null } | undefined;
+    const prev = seen?.polled ? { agent: seen.agent, status: seen.status, comment: seen.comment } : undefined;
     const path = `/api/issues/${encodeURIComponent(issue.id)}/comments?${prev?.comment ? `order=asc&limit=500&after=${encodeURIComponent(prev.comment)}` : "order=desc&limit=500"}`;
     const r = await owner("GET", path);
     if (r.status !== 200 || !Array.isArray(r.json)) throw new Error(`control plane GET comments → ${r.status}`);
@@ -114,21 +160,21 @@ export function createWakes({ db, owner, post, dispatches, routineKey = () => un
     const boundary = prev ? 0 : Math.max(since(agent, joined), ...all.filter((c) => c.authorAgentId === agent || SELF_TAG.test(c.body ?? "")).map((c) => ms(c.createdAt)));
     for (const c of all) {
       if (c.deletedAt || ms(c.createdAt) <= boundary || c.authorAgentId === agent || SELF_TAG.test(c.body ?? "")) continue;
-      insert(`comment:${c.id}`, issue.id, agent, "comment", ms(c.createdAt) || now());
+      insert(`comment:${c.id}`, issue.id, agent, "comment", ms(c.createdAt) || now(), null, c.authorAgentId ? `agent:${keyOf(c.authorAgentId)}` : c.authorUserId ? `account:${c.authorUserId}` : "unknown");
     }
     const status = String(issue.status ?? "");
     const moved = prev ? prev.status !== status || prev.agent !== agent : !lastJob(issue.id);
     if (status === "todo" && (reopened || moved) && !liveJob(issue.id)) {
       const at = ms(issue.updatedAt) || now();
-      if (reopened) insert(`reopen:${issue.id}:${issue.statusVersion ?? issue.updatedAt}`, issue.id, agent, "reopen", at);
+      if (reopened) insert(`reopen:${issue.id}:${issue.statusVersion ?? issue.updatedAt}`, issue.id, agent, "reopen", at, null, actor);
       else if (!prev && issue.originKind === "routine_execution") {
         const key = routineKey(String(issue.originId ?? ""));
-        insert(`routine-run:${issue.id}`, issue.id, agent, key ? `routine:${key}` : "routine", at);
+        insert(`routine-run:${issue.id}`, issue.id, agent, key ? `routine:${key}` : "routine", at, null, actor);
       }
-      else insert(`issue:${issue.id}:${issue.updatedAt}`, issue.id, agent, prev?.agent === agent ? "status" : "assigned", at);
+      else insert(`issue:${issue.id}:${issue.updatedAt}`, issue.id, agent, prev?.agent === agent ? "status" : "assigned", at, null, actor);
     }
     const newest = prev?.comment && !all.length ? prev.comment : all.at(-1)?.id ?? null;
-    q("INSERT INTO wake_tasks (task, agent, status, comment) VALUES (?, ?, ?, ?) ON CONFLICT(task) DO UPDATE SET agent = excluded.agent, status = excluded.status, comment = excluded.comment").run(issue.id, agent, status, newest);
+    q("INSERT INTO wake_tasks (task, agent, status, comment, blocked, polled) VALUES (?, ?, ?, ?, ?, 1) ON CONFLICT(task) DO UPDATE SET agent = excluded.agent, status = excluded.status, comment = excluded.comment, blocked = COALESCE(excluded.blocked, blocked), polled = 1").run(issue.id, agent, status, newest, blockedKey(issue));
   }
 
   /**
@@ -154,7 +200,7 @@ export function createWakes({ db, owner, post, dispatches, routineKey = () => un
     let res = await patch(move);
     if (res.status === 409) { ok(await patch({ blockedByIssueIds: [] })); res = await patch(move); }
     ok(res);
-    insert(`unblocked:${task.id}:${closure}`, task.id, agent, "unblocked", now());
+    insert(`unblocked:${task.id}:${closure}`, task.id, agent, "unblocked", now(), null, "kernel");
   }
 
   // ---- Team routing (team-routing.ts picks; this gathers, records and places) ----
@@ -265,7 +311,7 @@ export function createWakes({ db, owner, post, dispatches, routineKey = () => un
           }
           const l = await owner("GET", `/api/companies/${encodeURIComponent(companies.get(agent)!)}/issues?status=${OPEN}&limit=500&assigneeAgentId=${encodeURIComponent(agent)}`);
           if (l.status !== 200 || !Array.isArray(l.json)) throw new Error(`control plane GET issues → ${l.status}`);
-          for (const issue of l.json as Issue[]) await scan(issue).catch((e: Error) => log("wake scan failed", { task: issue.id, err: e.message }));
+          for (const issue of l.json as Issue[]) await scan(issue, { source: "poll" }).catch((e: Error) => log("wake scan failed", { task: issue.id, err: e.message }));
           const b = await owner("GET", `/api/companies/${encodeURIComponent(companies.get(agent)!)}/issues?status=blocked&limit=200&assigneeAgentId=${encodeURIComponent(agent)}`);
           if (b.status !== 200 || !Array.isArray(b.json)) throw new Error(`control plane GET blocked issues → ${b.status}`);
           for (const issue of b.json as Issue[]) await unblock(issue, agent).catch((e: Error) => log("wake unblock failed", { task: issue.id, err: e.message }));
@@ -275,11 +321,14 @@ export function createWakes({ db, owner, post, dispatches, routineKey = () => un
       }
     },
     /** A Paperclip event (ids only, untrusted): scan the task it names, as the poll would. */
-    async event(b: { issueId?: unknown; reopened?: unknown }) {
+    async event(b: { issueId?: unknown; reopened?: unknown; actorType?: unknown; actorId?: unknown }) {
       if (typeof b.issueId !== "string" || !/^[\w-]{1,100}$/.test(b.issueId)) return { scanned: false };
       const r = await owner("GET", `/api/issues/${encodeURIComponent(b.issueId)}`);
       if (r.status !== 200) return { scanned: false };
-      await scan(r.json as Issue, { reopened: b.reopened === true });
+      // Who Paperclip says did it (the event's actor), as a fact's actor.
+      const id = typeof b.actorId === "string" && /^[\w-]{1,100}$/.test(b.actorId) ? b.actorId : "";
+      const actor = id && b.actorType === "agent" ? `agent:${keyOf(id)}` : id && b.actorType === "user" ? `account:${id}` : "unknown";
+      await scan(r.json as Issue, { reopened: b.reopened === true, actor });
       return { scanned: true };
     },
     /** A module's scheduled wake (role kernel.wake) for the task's assignee, due at `at`. */
@@ -293,7 +342,7 @@ export function createWakes({ db, owner, post, dispatches, routineKey = () => un
       if (r.status !== 200 || !issue.assigneeAgentId) return { error: `no assigned task ${task}` };
       if (b.agent !== undefined && b.agent !== issue.assigneeAgentId) return { error: "the agent isn't the task's assignee" };
       const key = `wake_at:${module}.${id}`;
-      insert(key, issue.id, issue.assigneeAgentId, typeof b.cause === "string" ? `scheduled: ${b.cause.slice(0, 200)}` : "scheduled", at, at);
+      insert(key, issue.id, issue.assigneeAgentId, typeof b.cause === "string" ? `scheduled: ${b.cause.slice(0, 200)}` : "scheduled", at, at, `module:${module}`);
       return { key };
     },
     /**
@@ -307,7 +356,7 @@ export function createWakes({ db, owner, post, dispatches, routineKey = () => un
       try {
         q("INSERT OR IGNORE INTO wake_dispatchers (module, since) VALUES (?, ?)").run(module, t);
         const rows = (q("SELECT * FROM wakes WHERE ((state = 'open' AND (until IS NULL OR until <= ?)) OR (state = 'claimed' AND job IS NULL AND claimed_by = ? AND until <= ?)) ORDER BY at, key").all(t, module, t) as unknown as Wake[]).filter((w) => dispatches.may(module, w.agent));
-        const set = (w: Wake, state: string, why: string) => { q("UPDATE wakes SET state = ?, until = NULL WHERE key = ?").run(state, w.key); log(`wake ${state}`, { key: w.key, why }); };
+        const set = (w: Wake, state: string, why: string) => { q("UPDATE wakes SET state = ?, until = NULL WHERE key = ?").run(state, w.key); log(`wake ${state}`, { key: w.key, why }); if (state === "dropped") dropped(w, why); };
         const take = q("UPDATE wakes SET state = 'claimed', claimed_by = ?, until = ? WHERE key = ?");
         const out: (Wake & { live_job?: string })[] = [];
         const started = new Set<string>();
@@ -341,7 +390,10 @@ export function createWakes({ db, owner, post, dispatches, routineKey = () => un
     /** The claimer gives a row up for good. */
     drop(module: string, key: string, why: string) {
       const r = q("UPDATE wakes SET state = 'dropped', until = NULL WHERE key = ? AND state = 'claimed' AND claimed_by = ? AND job IS NULL").run(key, module);
-      if (r.changes) log("wake dropped", { key, module, why: why.slice(0, 200) });
+      if (r.changes) {
+        log("wake dropped", { key, module, why: why.slice(0, 200) });
+        dropped({ key, task: (q("SELECT task FROM wakes WHERE key = ?").get(key) as { task: string }).task }, why);
+      }
       return { dropped: r.changes > 0 };
     },
     /**

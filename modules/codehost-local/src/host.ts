@@ -10,9 +10,11 @@
 //   refs/changes/<n>/meta    { title, body, branch, base (the branch it merges into), task, opened_at, draft }
 // Its URL is codehost:local/<name>/change/<n>. A job's commits come in as a bundle its box wrote (git.ts ingest). A merge needs the change's checks green on its exact head: the `change` check
 // job (check_jobs in module.yaml, run in a credential-free box from a snapshot) with a receipt the kernel signed.
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { planParts, plan as planRules } from "../../codehost-github/service/src/plan.mjs";
+import { DEFAULT_CHURN_EXCLUDE, churnFromGit } from "../../../kernel/sdk/src/churn.ts";
+import type { FactIn } from "../../../kernel/sdk/src/kernel-client.ts";
 import { IDENTITY, bareOf, fail, git, ingest } from "./git.ts";
 
 export const LOCAL_ORG = "local";
@@ -41,12 +43,14 @@ export const LOCAL_KINDS = Object.fromEntries(Object.entries({
 /** `retry`: run again a check that couldn't run (a new request); otherwise the one asked for before, as it stands. `summary`: its receipt's. */
 export type ChangeChecks = (repo: string, head: string, base: string, retry?: boolean) => Promise<{ ok: boolean; pending: boolean; missing?: boolean; summary?: string }[]>;
 
-export function localHost({ root, sources = {}, tasksDir, scratchDir, instanceRepo, productRepo, checks, waitMs = 30 * 60_000 }: {
+export function localHost({ root, sources = {}, tasksDir, scratchDir, instanceRepo, productRepo, checks, fact = () => {}, waitMs = 30 * 60_000 }: {
   /** <data dir>/codehost: the org folders. */ root: string;
   /** Repos kept elsewhere (setup's instance repo): slug → bare git dir. */ sources?: Record<string, string>;
   /** The job workspaces (<work dir>/tasks): commits come in from there and clones go there. */ tasksDir: string;
   scratchDir: string; instanceRepo?: string; productRepo?: string;
   checks: ChangeChecks;
+  /** Flow facts (kernel/src/codehost.ts localFacts): the same pr.* facts codehost-github emits, written by the kernel itself. */
+  fact?: (f: FactIn) => void;
   /** How long an approved merge waits for its checks to finish. */ waitMs?: number;
 }) {
   const bare = (repo: string) => bareOf(root, sources, repo);
@@ -128,6 +132,21 @@ export function localHost({ root, sources = {}, tasksDir, scratchDir, instanceRe
       await g(repo, ["update-ref", "-d", `refs/heads/${c.meta.branch}`, head]).catch(() => {});
       return sha;
     });
+  }
+
+  const subject = (repo: string, n: number) => `pr:${repo.toLowerCase()}#${n}`;
+  /** Churn of the repo's merged changes (the squash commits' `(change N)`), a cursor per repo in <root>/churn.json (kernel/sdk/src/churn.ts).
+   * It runs on the kernel's thread, so the first pass reads only the last 500 commits. */
+  async function churnLocal(repo: string) {
+    const file = join(root, "churn.json");
+    const cursors = existsSync(file) ? JSON.parse(readFileSync(file, "utf8")) : {};
+    const key = repo.toLowerCase(), def = await defaultBranch(repo);
+    const out = await churnFromGit((args) => g(repo, args), { rev: `refs/heads/${def}`, cursor: cursors[key], first: 500, windowDays: 30, exclude: DEFAULT_CHURN_EXCLUDE, prOf: (m) => { const n = /\(change (\d+)\)\s*$/.exec(m.split("\n")[0]!)?.[1]; return n ? `${key}#${n}` : undefined; } });
+    const num = (pr: string) => Number(pr.slice(pr.lastIndexOf("#") + 1));
+    const task = async (n: number) => ((await meta(repo, n)).task as string | undefined) ?? null;
+    for (const [pr, lines] of Object.entries(out.added)) if (lines && out.fresh(out.mergedAt.get(pr)!)) fact({ type: "code.added", subject: subject(repo, num(pr)), version: "1", at: out.mergedAt.get(pr)!, task: await task(num(pr)), data: { pr, lines } });
+    for (const r of out.rewritten) if (out.fresh(out.mergedAt.get(r.by_pr)!)) fact({ type: "code.rewritten", subject: subject(repo, num(r.pr)), version: r.by_pr, at: out.mergedAt.get(r.by_pr)!, task: await task(num(r.pr)), data: r });
+    if (out.last) writeFileSync(file, JSON.stringify({ ...cursors, [key]: out.last }));
   }
 
   const parse = (url: string) => /^codehost:(local\/[\w.-]+)\/change\/(\d+)$/.exec(url);
@@ -216,6 +235,9 @@ export function localHost({ root, sources = {}, tasksDir, scratchDir, instanceRe
           if (action === "pr") {
             const url = await openChange(b.repo, b.branch, b.sha, a.text, a.workspace);
             done.push(url);
+            const n = Number(url.slice(url.lastIndexOf("/") + 1)), at = new Date().toISOString();
+            fact({ type: "pr.opened", subject: subject(b.repo, n), version: "1", at, task: a.workspace, data: { repo: b.repo, number: n, head: b.sha, branch: b.branch } });
+            fact({ type: "pr.checks_started", subject: `${subject(b.repo, n)}@${b.sha}`, version: `${b.sha}:1`, at, task: a.workspace, data: { head: b.sha } });
             // Its checks start now, so the merge rarely waits.
             const main = await rev(b.repo, `refs/heads/${await defaultBranch(b.repo)}`);
             if (main) void checks(b.repo, b.sha, await g(b.repo, ["merge-base", main, b.sha]), true).catch(() => {});
@@ -227,9 +249,16 @@ export function localHost({ root, sources = {}, tasksDir, scratchDir, instanceRe
         const merged: { repo: string; number: number; head: string; sha: string }[] = [];
         for (const p of a.prs) {
           const c = await readChange(p.repo, Number(p.number));
+          const t0 = Date.now(), task = (c.meta.task as string | undefined) ?? null;
           const why = await green(p.repo, p.head, c.base);
+          const at = new Date().toISOString();
+          // A wait on the checks, and CI's end on this head (the same facts as codehost-github's merge queue).
+          if (Date.now() - t0 > 2000) { const since = new Date(t0).toISOString(); fact({ type: "work.waiting", subject: subject(p.repo, c.n), version: since, at: since, task, data: { reason: "checks" } }); fact({ type: "work.resumed", subject: subject(p.repo, c.n), version: since, at, task, data: { reason: "checks" } }); }
+          fact({ type: "pr.checks_completed", subject: `${subject(p.repo, c.n)}@${p.head}`, version: `${p.head}:1`, at, task, data: { head: p.head, conclusion: why ? "failure" : "success", failed: why ? ["checks"] : [] } });
           if (why) return { ok: false, text: `${changeUrl(p.repo, c.n)}: nothing merged${done.length ? ` after ${done.join(", ")}` : ""}; its checks on ${String(p.head).slice(0, 12)} ${why}` };
           const sha = await land(p.repo, c.n, p.head);
+          fact({ type: "pr.merged", subject: subject(p.repo, c.n), version: p.head, at: new Date().toISOString(), task: (c.meta.task as string | undefined) ?? null, data: { sha, head: p.head } });
+          void churnLocal(p.repo).catch(() => {}); // churn never delays or fails a merge
           merged.push({ repo: p.repo, number: c.n, head: p.head, sha });
           done.push(`${changeUrl(p.repo, c.n)} as ${sha.slice(0, 12)}`);
         }

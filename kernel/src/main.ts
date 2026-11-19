@@ -32,6 +32,7 @@ import { createOutcomes, createPluginPost, delegateIds } from "./outcomes.ts";
 import { createBrake } from "./brake.ts";
 import { createNotify } from "./notify.ts";
 import { createReplyRelay } from "./relay.ts";
+import { KERNEL_STAGES, type Stage } from "./flow-stages.ts";
 import { createChannels, type Api, type ModulesFile } from "./channels.ts";
 import { createLane } from "./lane.ts";
 import { checksFile, createChecks } from "./checks.ts";
@@ -40,10 +41,13 @@ import { createIdentity, type Connection, type Grant, type Jobcap } from "./iden
 import { createAdvisories } from "./advisories.ts";
 import { hostFetch } from "../../scripts/compiler/sources.ts";
 import { createResolver } from "./net.ts";
-import { CODEHOST, covers, createCodehost, type OpsGrant } from "./codehost.ts";
+import { CODEHOST, covers, createCodehost, localFacts, type OpsGrant } from "./codehost.ts";
 import { createConnectionHealth, createHealthProbe } from "./health.ts";
 import { createProxy } from "./proxy.ts";
 import { SETTINGS, UPDATER, openRecords } from "./records.ts";
+import { backfillLocal, openFacts } from "./facts.ts";
+import { createDeploys } from "./generations.ts";
+import { createFlow } from "./flow.ts";
 import { createReviews, type ReviewerSlot } from "./reviews.ts";
 import { createReviewLoop } from "./review-loop.ts";
 import { mintToken } from "./gateway/token.ts";
@@ -100,6 +104,15 @@ const resolver = createResolver({ project: env("COMPOSE_PROJECT_NAME", "aidenhq"
 const issueOf = async (task: string) => { const r = await cpApi(`/api/issues/${encodeURIComponent(task)}`); return r.ok ? ((await r.json()) as { id: string; identifier?: string; status?: string; parentId?: string | null }) : undefined; };
 const cpJson = async (p: string) => { const r = await cpApi(p); if (!r.ok) throw new Error(`control plane GET ${p} → ${r.status}`); return r.json(); };
 const records = openRecords(path.join(dataDir, "kernel", "kernel.db"));
+// Flow's fact log (facts.ts) on the same file, so a kernel change and its fact commit together.
+const facts = openFacts(records.db);
+// Facts are kept 400 days (docs/design/flow.md §8).
+setInterval(() => { try { facts.prune(); } catch (e) { log("facts prune failed", { error: String((e as Error).message) }); } }, 864e5).unref();
+// Flow's stages: the kernel's plus every module's declared ones (module.yaml `stages:`), read from the watched modules file.
+const stages = (): Stage[] => [...KERNEL_STAGES, ...Object.entries(modulesFile().modules ?? {}).flatMap(([module, m]) => (m.stages ?? []).map((s) => ({ ...s, module })))];
+// Flow's views (GET /v1/flow) read the log on their own read-only connection: a long read never blocks the approval path.
+// DORA's incidents: the Fleet Steward detector's tasks for something newly tripped (fleet-steward main.ts fileCheck, fleet-incident:<at>).
+const flow = createFlow({ file: path.join(dataDir, "kernel", "kernel.db"), stages, incident: (f) => f.data.origin === "module:fleet-steward" && String(f.data.source_marker ?? "").startsWith("fleet-incident:") });
 // Tasks kernel jobs create (provenance.ts): the routine trace reads them first.
 const provenance = createProvenance({ db: records.db, cap: (task) => taskRoutineCap(cpTrace, task, grantsTable().routines as Record<string, string> | undefined) });
 const cpTrace = { issue: (id: string) => cpJson(`/api/issues/${encodeURIComponent(id)}`), provenance: provenance.trace };
@@ -253,6 +266,7 @@ const tasksDir = path.join(sandbox.workDir, "tasks"), localScratch = path.join(s
 mkdirSync(localScratch, { recursive: true });
 const instanceRemote = env("AIDENHQ_INSTANCE_REMOTE", "");
 const localCode = codehostLocal({
+  fact: localFacts(facts),
   root: path.join(dataDir, "codehost"), tasksDir, scratchDir: localScratch, instanceRepo: baseRepos.instance, productRepo: baseRepos.product,
   sources: baseRepos.instance && instanceRemote.startsWith("/") ? { [baseRepos.instance]: instanceRemote } : {},
   // `retry` asks for a run (idempotent: the one already running or done); otherwise this only reads the one already asked for,
@@ -282,8 +296,9 @@ every(() => void (localHost() ? localMerge() : Promise.resolve({ filed: [], rest
 once(() => void (localHost() ? localMerge() : Promise.resolve({ filed: [], restarted: [], skipped: [] })).catch(() => {}), 90_000);
 // A kernel-admitted job's computer (boxes.ts): made below, once the gateway it needs is up; a job that ends releases it.
 let boxes: Boxes | undefined;
+const agentKey = (id: string) => String(grantsTable().agents?.[id]?.key ?? id);
 const jobs = createJobs({
-  db: records.db, cfg: sandbox, log, boxWrap: BOX_EXEC_WRAP, onEnd: (id) => boxes?.ended(id),
+  db: records.db, cfg: sandbox, log, facts, agentKey, boxWrap: BOX_EXEC_WRAP, onEnd: (id) => boxes?.ended(id),
   // The agents a module dispatches (compile: an agent runs on the engine runner, and this module holds kernel.jobs), by key.
   mayDispatch: dispatchesFrom(() => (modulesFile().modules ?? {}) as never, () => grantsTable().agents ?? {}),
   cp: {
@@ -295,11 +310,11 @@ jobs.adopt();
 const mayDispatch = dispatchesFrom(() => (modulesFile().modules ?? {}) as never, () => grantsTable().agents ?? {});
 // Outcomes posted on a job's task as its agent, once (outcomes.ts): the agent's own Paperclip key, setup's paperclip-agents/<id>.
 const plugin = createPluginPost({ controlUrl, agentKey: (id) => secret(`paperclip-agents/${id}`), postKey: () => secret("paperclip_post_key") });
-const outcomes = createOutcomes({ db: records.db, plugin, provenance, log, relay: createReplyRelay({ owner: ownerApi, queue: notify.queue, log }), delegates: (id) => delegateIds(grantsTable().agents, id, appOwners), finish: (task, agent) => checks.finish(task, { agent, via: "job_post" }) });
+const outcomes = createOutcomes({ db: records.db, facts, agentKey, plugin, provenance, log, relay: createReplyRelay({ owner: ownerApi, queue: notify.queue, log }), delegates: (id) => delegateIds(grantsTable().agents, id, appOwners), finish: (task, agent) => checks.finish(task, { agent, via: "job_post" }) });
 const KNOWN_REPOS = ["@agents/*", "@product", "@instance", "@orgs", "@maintained"];
 const localRepoExists = (repo: string) => { try { return existsSync(path.join(localCode.bare(repo), "HEAD")); } catch { return false; } };
 const wakes = createWakes({
-  db: records.db, owner: ownerApi, post: outcomes.post, log,
+  db: records.db, facts, owner: ownerApi, post: outcomes.post, log,
   routineKey: (id) => (grantsTable().routine_keys as Record<string, string> | undefined)?.[id],
   dispatches: { may: mayDispatch, agents: (module) => Object.keys(grantsTable().agents ?? {}).filter((id) => mayDispatch(module, id)) },
   // Teams (team-routing.ts): a task on a team record goes to a member; the team's day cap is the gateway's own day scope.
@@ -327,6 +342,12 @@ for (const sig of ["SIGTERM", "SIGINT"] as const) process.on(sig, () => stop(sig
 process.on("SIGUSR2", () => drain());
 // The finish gate (checks.ts): modules' task.finish checks (compile), holds placed as the owner.
 const work = createWork({ db: records.db, records, generationsFile: path.join(env("AIDENHQ_STATE_DIR", path.join(process.env.HOME ?? "", ".local/state/aidenhq")), "generations.jsonl") });
+// Flow: what the kernel kept before the fact log, once (idempotent), and the host's deploys as they settle (generations.ts).
+try { log("flow backfill", { recorded: backfillLocal(records.db, facts, { agentKey: (id) => grantsTable().agents?.[id]?.key }) }); } catch (e) { log("WARNING: flow backfill failed", { err: String((e as Error).message) }); }
+const deploys = createDeploys({ db: records.db, file: path.join(env("AIDENHQ_STATE_DIR", path.join(process.env.HOME ?? "", ".local/state/aidenhq")), "generations.jsonl"), repo });
+const syncDeploys = () => { try { deploys(); } catch (e) { log("WARNING: deploy facts failed", { err: String((e as Error).message) }); } };
+syncDeploys();
+every(syncDeploys, 60_000);
 // One live grader token per task, reused while it has time left and dropped when the task's hold resolves. Kind grader (never an
 // agent's identity: whoami and every agent check refuse it) that names the assignee, so the gateway charges its calls to that
 // agent's task and day caps (gateway/lib.ts).
@@ -394,7 +415,7 @@ boxes = createBoxes({
   },
 });
 const admission = createAdmission({
-  db: records.db, grants: () => (grantsTable().agents ?? {}) as never, kinds: registry, capacity: () => Number(computers().max) || 0,
+  db: records.db, facts, grants: () => (grantsTable().agents ?? {}) as never, kinds: registry, capacity: () => Number(computers().max) || 0,
   spend: (agent, task) => gw.exhausted(agent, task), mayDispatch, wakes: wakeInbox(records.db), nextTurn: jobTools, launch: (job) => boxes!.launch(job), log,
   provenance, routineCap: (task) => taskRoutineCap(cpTrace, task, grantsTable().routines as Record<string, string> | undefined),
   cp: { task: async (id) => { const r = await cpApi(`/api/issues/${encodeURIComponent(id)}`); return r.ok ? ((await r.json()) as never) : undefined; } },
@@ -408,7 +429,7 @@ const codehost = createCodehost({ repos: codehostRepos, grants: codehostGrants, 
 // Check jobs (checkjobs.ts): credential-free boxes of the launcher's, snapshots from the module that provides them.
 const checkJobs = checkJobsFrom({ db: records.db, secret, recipes: () => modulesFile().check_jobs ?? {}, ask: codehost.ask, call: launcherClient(launcherUrl, () => secret("launcher_kernel_key")), workDir: sandbox.workDir, gatewayUrl: `${sandbox.boxGatewayUrl}/api/v1`, log });
 const lane = createLane({ once: outcomes.once, owner: ownerApi, grantsFile: grantsTable, log, postAsAgent: async (agent, task, job, body) => ({ id: String((await outcomes.post({ id: job, agent, task }, { kind: "lane", body })).comment) }) });
-const backplane = createBackplane({ repos: codehostRepos, healthProbe, settingsChange, routing, connectionHealth: createConnectionHealth({ connections, resolver }), healthKey: () => secret("health_probe_key"), codehost: codehost.op, checks, checkJobs, lane, whoami, asserter, grantsFile: grantsTable, log, writes, records, channels, brake, notify, owner: ownerApi, ownerRaw: (p) => cpApi(p), modules: modulesFile, boardKey: () => secret("gateway_board_key"), reviews, reviewerKey: () => secret("reviewer_key"), jobs, admission, outcomes, wakes, tasks: moduleTasks, work, graderToken, dropGraderToken: (task) => graderTokens.delete(task), eventsKey: () => secret("paperclip_events_key"), jobTools, localBundle: (repo: string) => (localHost() ? localCode.bundle(repo) : Promise.reject(Object.assign(new Error("codehost-local isn't enabled here"), { status: 404 }))), advisories: advisories.list, accounts: createAuthApi({ accounts: () => accounts, whoami, boardKey: () => secret("gateway_board_key"), recoveryKeyWaiting: () => Boolean(firstRun.recoveryKey()), modelReady: modelState.ready, operatorKey: () => secret("board_operator_key"), secrets: moduleSecrets }), proxy: (req, res, c) => proxy(req, res, c!), cp: createCp({ appOwners: () => appOwners(), asserter, whoami, plugin, once: outcomes.once, agentKey: (id) => secret(`paperclip-agents/${id}`), grants: () => grantsTable().agents ?? {}, fleetIssues: () => String(grantsTable().fleet_issues ?? ""), controlUrl, checks, provenance, log }) as never, boardCp: createBoardCp({ controlUrl, key: () => secret("paperclip_board_key"), log }) as never });
+const backplane = createBackplane({ facts, repos: codehostRepos, healthProbe, settingsChange, routing, connectionHealth: createConnectionHealth({ connections, resolver }), healthKey: () => secret("health_probe_key"), codehost: codehost.op, checks, checkJobs, lane, whoami, asserter, grantsFile: grantsTable, log, writes, records, channels, brake, notify, owner: ownerApi, ownerRaw: (p) => cpApi(p), modules: modulesFile, boardKey: () => secret("gateway_board_key"), reviews, reviewerKey: () => secret("reviewer_key"), jobs, admission, outcomes, wakes, tasks: moduleTasks, work, flow, graderToken, dropGraderToken: (task) => graderTokens.delete(task), eventsKey: () => secret("paperclip_events_key"), jobTools, localBundle: (repo: string) => (localHost() ? localCode.bundle(repo) : Promise.reject(Object.assign(new Error("codehost-local isn't enabled here"), { status: 404 }))), advisories: advisories.list, accounts: createAuthApi({ accounts: () => accounts, whoami, boardKey: () => secret("gateway_board_key"), recoveryKeyWaiting: () => Boolean(firstRun.recoveryKey()), modelReady: modelState.ready, operatorKey: () => secret("board_operator_key"), secrets: moduleSecrets }), proxy: (req, res, c) => proxy(req, res, c!), cp: createCp({ appOwners: () => appOwners(), asserter, whoami, plugin, once: outcomes.once, agentKey: (id) => secret(`paperclip-agents/${id}`), grants: () => grantsTable().agents ?? {}, fleetIssues: () => String(grantsTable().fleet_issues ?? ""), controlUrl, checks, provenance, log }) as never, boardCp: createBoardCp({ controlUrl, key: () => secret("paperclip_board_key"), log }) as never });
 // The admin listener's accounts (data/kernel/auth/auth.db) and pages. Accounts not moved yet, or a malformed URL setting: the
 // listener refuses while every other part of the kernel serves.
 const urlOf = (v: string) => { try { return v ? new URL(v) : undefined; } catch { log("ignoring a malformed URL setting", { value: v.slice(0, 100) }); return undefined; } };
