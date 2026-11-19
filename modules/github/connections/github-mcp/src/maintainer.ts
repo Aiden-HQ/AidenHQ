@@ -26,6 +26,18 @@ const FILE_CAP = 256 * 1024;
 // next look, so a burst of reports is spread out rather than started at once.
 const TRIAGE_BATCH = 10;
 
+// A close's note must cite a PR in a form the grader's parser reads (owner/name#number or its full /pull/ URL): a bare
+// "PR #12" reads as no citation at all, so the issue looks closed without one. Matched case-insensitively, over the
+// note's whole text, including "PR#12" and "the PR #12"; an "owner/name#12" or a /pull/12 URL never trips it.
+const BARE_PR = /(?<![\w./:=-])PR\s*#\s*\d+\b/i;
+
+/** Why a close's `note` is refused, or undefined when it cites what it must. */
+export function noteProblem(note: string, state: "open" | "closed", reason?: "completed" | "not_planned"): string | undefined {
+  if (state !== "closed") return undefined;
+  if (BARE_PR.test(note)) return "cite the PR as owner/name#number or its full /pull/ URL; a bare 'PR #N' is not read as a citation";
+  return undefined;
+}
+
 export interface MaintainedRepo {
   repo: string;
   owner: string;
@@ -344,11 +356,16 @@ export class Maintainer {
 
   /**
    * Close as completed or not_planned, or reopen, refusing an untrusted label. A `note` is posted as a comment first,
-   * through `comment` (so the owner-data scrub applies), and the state changes only once it is posted.
+   * through `comment` (so the owner-data scrub applies), and the state changes only once it is posted. A note citing a PR
+   * only as a bare "PR #N" is refused before anything is written: the grader's citation parser doesn't read it.
    */
   async state(repo: string | undefined, number: number, state: "open" | "closed", reason?: "completed" | "not_planned", note?: string) {
     const r = this.target(repo);
     if (note !== undefined && state === "open") throw new GitHubRefused("a note is posted only when closing");
+    if (note !== undefined) {
+      const bad = noteProblem(note, state, reason);
+      if (bad) throw new GitHubRefused(bad);
+    }
     if (note !== undefined) await this.comment(r.repo, number, note);
     else await this.assertTrusted(r, number);
     const body = state === "closed" ? { state, state_reason: reason ?? "completed" } : { state };
