@@ -39,6 +39,7 @@ import { panelsOf } from "./sidebar";
 // Pages off the first screen load as their own chunks (warmed on hover and when the browser is idle: queries.ts).
 const AppsView = lazy(() => VIEW_CHUNKS.apps().then((m) => ({ default: m.AppsView })));
 const CostsView = lazy(() => VIEW_CHUNKS.costs().then((m) => ({ default: m.CostsView })));
+const FlowView = lazy(() => VIEW_CHUNKS.flow().then((m) => ({ default: m.FlowView })));
 const CrewView = lazy(() => VIEW_CHUNKS.agents().then((m) => ({ default: m.CrewView })));
 const ModulesView = lazy(() => VIEW_CHUNKS.modules().then((m) => ({ default: m.ModulesView })));
 const AgentPage = lazy(() => VIEW_CHUNKS.agentPage().then((m) => ({ default: m.AgentPage })));
@@ -152,10 +153,10 @@ function useMedia(query: string) {
 }
 
 // "design" (#/design, the design system's catalogue) has no tab of its own.
-type View = "chat" | "agents" | "modules" | "approvals" | "board" | "apps" | "costs" | "settings" | "design";
-const VIEWS: View[] = ["chat", "agents", "modules", "approvals", "board", "apps", "costs", "settings"];
+type View = "chat" | "agents" | "modules" | "approvals" | "board" | "apps" | "costs" | "flow" | "settings" | "design";
+const VIEWS: View[] = ["chat", "agents", "modules", "approvals", "board", "apps", "costs", "flow", "settings"];
 // Daily work in the bar; configuration (connections, accounts, instance settings) is behind the Settings gear.
-const TABS: [View, string][] = [["chat", "Chat"], ["approvals", "Approvals"], ["agents", "Agents"], ["modules", "Modules"], ["apps", "Apps"], ["board", "Tasks"], ["costs", "Costs"]];
+const TABS: [View, string][] = [["chat", "Chat"], ["approvals", "Approvals"], ["agents", "Agents"], ["modules", "Modules"], ["apps", "Apps"], ["board", "Tasks"], ["costs", "Costs"], ["flow", "Flow"]];
 const VIEW_KEY = "aidenhq.view";
 const savedView = (): View => {
   try {
@@ -723,6 +724,7 @@ export function App() {
       {view === "modules" && route.kind === "module" && <Suspense fallback={<PageLoading />}><ModulePage key={route.name} name={route.name} tab={route.tab} go={go} onSignIn={signInNeeded} can={{ signIn: signInConnect, google: googleConnect }} /></Suspense>}
       {view === "apps" && <Suspense fallback={<PageLoading />}><AppsView key={route.kind === "app" ? route.name : ""} app={route.kind === "app" ? route.name : undefined} onSignIn={signInNeeded} /></Suspense>}
       {view === "design" && <Suspense fallback={<PageLoading />}><DesignView /></Suspense>}
+      {view === "flow" && <Suspense fallback={<PageLoading />}><FlowView onSignIn={signInNeeded} /></Suspense>}
       {view === "costs" && <Suspense fallback={<PageLoading />}><CostsView onSignIn={signInNeeded} /></Suspense>}
       {view === "agents" && route.kind === "agent" && <Suspense fallback={<PageLoading />}><AgentPage key={route.key} agentKey={route.key} tab={route.tab} go={go} onSignIn={signInNeeded} /></Suspense>}
       {view === "agents" && route.kind !== "agent" && <Suspense fallback={<PageLoading />}><CrewView crew={board.assignees} onSignIn={signInNeeded} /></Suspense>}
