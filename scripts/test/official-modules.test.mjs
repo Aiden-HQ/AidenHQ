@@ -53,19 +53,24 @@ test("a fresh install of the default bundle compiles with no optional connection
   assert.ok(compose.services["glean-mcp"] && compose.services["primer-mcp"], "the idle connection servers are there");
 });
 
-test("an install made before the bundle grew gets the new members, unless the owner removed them", () => {
+test("an install made before the bundle grew gets the new members once its host sees the old bundle, and keeps them; a removal sticks", () => {
   const settings = { timezone: "Europe/London", owner_name: "Sam", owner_email: "me@example.com", product_repo: "acme/aidenhq" };
-  const old = market.bundle.filter((n) => !market.bundle_added.includes(n));
-  const run = (label, extra) => {
+  const newer = ["design", "glean", "jira", "meetings", "primer", "security", "slack"];
+  const oldBundle = market.bundle.filter((n) => !newer.includes(n));
+  const run = (label, extra, opts) => {
     const dir = join(tmp, label);
     mkdirSync(join(dir, "agents"), { recursive: true });
-    writeFileSync(join(dir, "instance.yaml"), YAML.stringify({ product: "0".repeat(40), modules: old, settings, ...extra }));
-    return compile(product, dir).compose.services;
+    writeFileSync(join(dir, "instance.yaml"), YAML.stringify({ product: "0".repeat(40), modules: oldBundle, settings, ...extra }));
+    return compile(product, dir, opts);
   };
-  const upgraded = run("upgraded", {});
-  assert.ok(upgraded["glean-mcp"] && upgraded["slack-mcp"] && upgraded["security-scanner"], "the new members arrive");
-  const kept = run("removed", { modules_removed: ["slack", "glean"] });
-  assert.equal(kept["slack-mcp"], undefined);
-  assert.equal(kept["glean-mcp"], undefined);
-  assert.ok(kept["security-scanner"]);
+  const first = run("upgraded", {}, { oldBundle });
+  assert.ok(first.compose.services["glean-mcp"] && first.compose.services["slack-mcp"] && first.compose.services["security-scanner"], "the new members arrive");
+  // The next apply has no old bundle to diff; the host's record keeps them.
+  const later = run("upgraded", {}, { bundleState: first.bundleState });
+  assert.ok(later.compose.services["glean-mcp"], "still on at the next apply");
+  const kept = run("removed", { modules_removed: ["slack", "glean"] }, { oldBundle });
+  assert.equal(kept.compose.services["slack-mcp"], undefined);
+  assert.equal(kept.compose.services["glean-mcp"], undefined);
+  assert.ok(kept.compose.services["security-scanner"]);
+  assert.equal(run("first", {}, {}).compose.services["glean-mcp"], undefined, "with no old bundle and no record, nothing extra");
 });

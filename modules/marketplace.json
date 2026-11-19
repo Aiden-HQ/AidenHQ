@@ -196,14 +196,5 @@
     "slack",
     "tasks",
     "warehouse"
-  ],
-  "bundle_added": [
-    "design",
-    "glean",
-    "jira",
-    "meetings",
-    "primer",
-    "security",
-    "slack"
   ]
 }
