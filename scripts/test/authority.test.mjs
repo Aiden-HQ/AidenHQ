@@ -134,7 +134,7 @@ test("a removed module is the reviewer's, unless it carried enforcement", () => 
 test("B replacing A with equal authority has an empty diff; B adding a secret is owner:true", () => {
   const a = { name: "chan-a", generated_secrets: ["chan_a_service_key"], connections: { "chan-a": { url: "http://a:1/mcp", auth: "chan_a_service_key", tools: { read: ["r"], write: ["post"] } } }, writes: { "chan-a.post": { floor: 1 } } };
   const b = { name: "chan-b", replaces: ["chan-a"], generated_secrets: ["chan_b_service_key"], connections: { "chan-b": { url: "http://b:1/mcp", auth: "chan_b_service_key", tools: { read: ["r"], write: ["post"] } } }, writes: { "chan-b.post": { floor: 1 } } };
-  const inputs = moduleInputs({ baseInstance: { modules: ["chan-a"] }, headInstance: { modules: ["chan-b"] }, baseDefs: { "chan-a": a, "chan-b": b }, headDefs: { "chan-a": a, "chan-b": b }, changed: [] });
+  const inputs = moduleInputs({ baseInstance: { modules: ["chan-a"] }, headInstance: { modules: ["chan-b"] }, baseDefs: { "chan-a": a, "chan-b": b }, headDefs: { "chan-a": a, "chan-b": b }, changed: [], official: { base: ["chan-a", "chan-b"], head: ["chan-a", "chan-b"] } });
   assert.deepEqual(Object.keys(inputs), ["chan-b"]);
   const same = diffAll(inputs);
   assert.equal(classifyModules(same).tier, 1);
@@ -148,22 +148,32 @@ test("B replacing A with equal authority has an empty diff; B adding a secret is
 });
 
 test("a module folded into one that already ran: moved authority is no line, only what is new (distro#70)", () => {
-  // The product drops chan-a; chan-b, already running, now carries chan-a's write kind, privileged entry, executor and
-  // secret under their old names. instance.yaml still lists chan-a (current() reads it as chan-b): no rewrite.
+  // The product drops chan-a; chan-b, already running, now carries chan-a's write kind, privileged entry, executor, secret and
+  // App grant in its own namespace. instance.yaml still lists chan-a (current() reads it as chan-b): no rewrite.
   const a = { name: "chan-a", privileged: ["speaks-as-owner"], providers: { executor: { url: "http://a:1/x" } }, generated_secrets: ["chan_a_key"], writes: { "chan-a.post": { floor: 1 } }, codehost: { repos: "all" } };
   const b0 = { name: "chan-b", connections: { "chan-b": { url: "http://b:1/mcp", tools: { read: ["r"] } } } };
-  const b1 = { ...b0, replaces: ["chan-a"], privileged: ["speaks-as-owner"], providers: { executor: { url: "http://a:1/x" } }, generated_secrets: ["chan_a_key"], writes: { "chan-b.post": { floor: 1 } }, codehost: { repos: "all" } };
-  const diff = (head) => diffAll(moduleInputs({ baseInstance: { modules: ["chan-a", "chan-b"] }, headInstance: { modules: ["chan-a", "chan-b"] }, baseDefs: { "chan-a": a, "chan-b": b0 }, headDefs: { "chan-b": head }, changed: [] }));
+  const b1 = { ...b0, replaces: ["chan-a"], privileged: ["speaks-as-owner"], providers: { executor: { url: "http://a:1/x" } }, generated_secrets: ["chan_b_key"], writes: { "chan-b.post": { floor: 1 } }, codehost: { repos: "all" } };
+  const both = ["chan-a", "chan-b", "chan-c"];
+  const diff = (head, { official = { base: both, head: both }, headDefs = { "chan-b": head } } = {}) => diffAll(moduleInputs({ baseInstance: { modules: ["chan-a", "chan-b"] }, headInstance: { modules: ["chan-a", "chan-b", "chan-c"] }, baseDefs: { "chan-a": a, "chan-b": b0 }, headDefs, changed: [], official }));
+  const owners = (ds, m = "chan-b") => ds.find((d) => d.module === m).changes.filter((c) => c.owner).map((c) => c.what);
   const moved = diff(b1);
   assert.deepEqual(moved.map((d) => d.module), ["chan-b"]);
-  assert.deepEqual(moved[0].changes.filter((c) => c.owner), []);
+  assert.deepEqual(owners(moved), []);
   assert.ok(moved[0].changes.some((c) => c.what === "replaces chan-a"));
-  const more = diff({ ...b1, generated_secrets: ["chan_a_key", "chan_b_extra"], privileged: ["speaks-as-owner", "git-credential"] });
-  assert.deepEqual(more[0].changes.filter((c) => c.owner).map((c) => c.what), ["adds privileged git-credential", "adds secret chan_b_extra"]);
-  // Two modules replacing chan-a: neither is its successor, so chan-a is removed on its own and chan-b's gains are new.
-  const two = diffAll(moduleInputs({ baseInstance: { modules: ["chan-a", "chan-b"] }, headInstance: { modules: ["chan-b", "chan-c"] }, baseDefs: { "chan-a": a, "chan-b": b0 }, headDefs: { "chan-b": b1, "chan-c": { name: "chan-c", replaces: ["chan-a"] } }, changed: [] }));
-  assert.ok(two.find((d) => d.module === "chan-a").changes.some((c) => c.owner && /removed/.test(c.what)));
-  assert.ok(two.find((d) => d.module === "chan-b").changes.some((c) => c.owner && c.what === "adds privileged speaks-as-owner"));
+  // Only the real delta: a new privileged entry and secret.
+  assert.deepEqual(owners(diff({ ...b1, generated_secrets: ["chan_b_key", "chan_b_extra"], privileged: ["speaks-as-owner", "git-credential"] })), ["adds privileged git-credential", "adds secret chan_b_extra"]);
+  // A's names are not carried as named: chan_a_key kept under its old name is new to chan-b.
+  assert.deepEqual(owners(diff({ ...b1, generated_secrets: ["chan_a_key"] })), ["adds secret chan_a_key"]);
+  // An entry both had is had only as one of them whole: a mix of the two is the owner's.
+  const a2 = { ...a, connections: { "chan-a": { url: "http://a:1/mcp", tools: { write: ["post"] } } } };
+  const conflict = diffAll(moduleInputs({ baseInstance: { modules: ["chan-a", "chan-b"] }, headInstance: { modules: ["chan-b"] }, baseDefs: { "chan-a": a2, "chan-b": b0 }, headDefs: { "chan-b": { ...b1, connections: { "chan-b": { url: "http://b:1/mcp", tools: { read: ["r"], write: ["post"] } } } } }, changed: [], official: { base: both, head: both } }));
+  assert.ok(owners(conflict).includes("connections chan-b: chan-b and chan-a both had it, and it is neither one now"));
+  // Not official on both sides, or two heirs: no successor. The claim is the owner's and chan-a is removed on its own.
+  for (const ds of [diff(b1, { official: { base: ["chan-a"], head: [] } }), diff(b1, { headDefs: { "chan-b": b1, "chan-c": { name: "chan-c", replaces: ["chan-a"] } } })]) {
+    assert.ok(owners(ds).includes("replaces chan-a, but is not its one official successor: nothing it had carries over"));
+    assert.ok(owners(ds).includes("adds privileged speaks-as-owner"));
+    assert.ok(owners(ds, "chan-a").some((w) => /removed/.test(w)));
+  }
 });
 
 test("5b: the tree id at the new sha equals the recorded one → empty diff; the official repository is no owner line", () => {
