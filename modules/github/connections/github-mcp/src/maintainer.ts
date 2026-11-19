@@ -440,7 +440,7 @@ export class Maintainer {
       if (pageIssues.length < 100) break;
     }
     if (page > PAGE_CAP) throw new GitHubRefused(`${owner}/${name} has more than ${PAGE_CAP * 100} open ${r.label} issues; refusing to read only part of them`);
-    const issues: { number: number; trusted: boolean; labeled_at: string; actor: string | null }[] = [];
+    const issues: { number: number; trusted: boolean; labeled_at: string; actor: string | null; created_at?: string; labels: string[] }[] = [];
     const skipped: { number: number; reason: string }[] = [];
     const seen = new Set<number>();
     // Progress is recorded per issue only once its label events were read: a failed read stays behind the cursor, so the
@@ -464,7 +464,7 @@ export class Maintainer {
           skipped.push({ number: i.number, reason: `${r.label} label added by ${latest.actor ?? latest.app_slug ?? "an unknown actor"}, not the App or a trusted collaborator` });
           continue;
         }
-        issues.push({ number: i.number, trusted: true, labeled_at: latest.created_at, actor: latest.actor ?? latest.app_slug ?? null });
+        issues.push({ number: i.number, trusted: true, labeled_at: latest.created_at, actor: latest.actor ?? latest.app_slug ?? null, created_at: i.created_at, labels: labelNames(i) });
       } catch (err) {
         failed.push(Date.parse(i.updated_at));
         skipped.push({ number: i.number, reason: `could not read its label events: ${(err as Error).message.slice(0, 120)}` });
