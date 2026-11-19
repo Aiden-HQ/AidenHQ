@@ -27,6 +27,7 @@ exceptions:
   - { image: ghcr.io/actions/actions-runner, path: /home/runner/externals/node20/**, when: "RUN rm -rf /home/runner/externals/node20", reason: "Node 20 (end of life) and its npm: deleted" }
   - { image: ghcr.io/actions/actions-runner, path: /home/runner/externals/node20_alpine/**, when: "RUN rm -rf /home/runner/externals/node20_alpine", reason: "Node 20 for Alpine: deleted" }
   - { image: ghcr.io/actions/actions-runner, path: /home/runner/externals/node24/lib/node_modules/**, when: "RUN rm -rf /home/runner/externals/node24/lib/node_modules", reason: "node24's bundled npm: deleted (actions run node directly)" }
+  - { image: ghcr.io/actions/actions-runner, path: /home/runner/externals/node24/bin/node, when: "RUN rm -rf /home/runner/externals/node24/bin/node", reason: "node 24.22.1 (high CVEs, fixed in 24.22.3): deleted, then replaced by the digest-pinned node 24.22.3 binary" }
   - { image: ghcr.io/actions/actions-runner, path: /usr/bin/containerd, when: "RUN rm -rf /usr/bin/containerd", reason: "the runner gets no Docker: deleted" }
   - { image: ghcr.io/actions/actions-runner, path: /usr/bin/ctr, when: "RUN rm -rf /usr/bin/ctr", reason: "the runner gets no Docker: deleted" }
   - { image: ghcr.io/actions/actions-runner, path: /usr/bin/dockerd, when: "RUN rm -rf /usr/bin/dockerd", reason: "the runner gets no Docker: deleted" }
