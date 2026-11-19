@@ -264,6 +264,29 @@ Deterministic ids make a re-run harmless. Gaps before Flow show as `unknown`, ne
 Facts are small (~100 a task); a year at the current pace is well under 1 GB. Keep 400 days, pruned with the kernel's
 existing sweep. `job.ended` carries the job's cost, so cost per outcome survives the gateway's 40-day `calls` pruning.
 
+## New installs and other owners
+
+Flow is on in every install, because it uses no model and costs nothing to run. What a new owner sees:
+
+- **Day one.** The log starts empty, and the Flow page explains that it fills in as work happens. It shows the first
+  item's waterfall as soon as one task has run. Backfill is not run automatically. Its command is offered on the empty
+  page only when the install has a code host with history, and it runs only when the owner starts it.
+- **Only the modules they run.** Stages, wait reasons and tiles come from the installed modules' declarations. Without
+  `codehost-github` there are no PR, CI or merge-queue stages. `codehost-local` emits the same `pr.*` and churn facts for
+  the repos it hosts, so a GitHub-free install still gets them. Without any deploys, the DORA tiles are hidden instead of
+  showing zeros. The default bundle alone (tasks, jobs, records, grading, Fleet Steward) still gives a useful page:
+  queued, working, grade, review, owner and idle.
+- **Small numbers.** A stage with fewer than 5 items shows its count and raw durations, not a median and p75, which would
+  mislead at that size.
+- **Quiet start.** Flow schedules nothing of its own. The churn pass runs inside the code host's existing pass. Fleet
+  Steward's regression check runs only when Fleet Steward's schedule is on, and in observe mode first.
+- **No owner specifics.** Day buckets use the instance timezone setting. Stage and reason labels come from module
+  declarations. Nothing names this instance's repos, agents or people.
+- **More than one person.** Actors are accounts and agent keys, so a second admin's taps and waits show as theirs (with
+  the owner wait stage labelled per account). This keeps the later team version open without building for it now.
+- **Another owner's own modules.** They join by declaring `facts:` and `stages:` and calling `emit`, as in section 3.
+  The compiler rejects a stage that names an undeclared fact, so a typo fails at apply, not silently on the page.
+
 ## Phases
 
 Each phase proves itself on the live instance before the next.
