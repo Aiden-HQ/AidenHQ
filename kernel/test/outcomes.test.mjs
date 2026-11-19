@@ -162,7 +162,7 @@ test("a listed post is the kernel's word: the grants table must name that task f
   await assert.rejects(o.post({ id: "j-00000000000000a3", agent: AGENT, task: SPARE }, { kind: "lane", body: "x" }), { status: 422, message: /isn't assigned/ });
 });
 
-test("a turn whose reply post is refused still leaves its error note on the chat task, newest, so the scan doesn't run the ask again", async (t) => {
+test("a turn whose reply post is refused still leaves its error note on the chat task, newest; the ask stays retryable", async (t) => {
   const CHAT = "66666666-6666-4666-8666-666666666666";
   const pc = await paperclip(t, { issues: { [CHAT]: { id: CHAT, status: "backlog", createdByUserId: "u-1", companyId: "c-1" } } });
   // The owner wrote on the chat task first (what the lane posted as the owner).
@@ -173,7 +173,7 @@ test("a turn whose reply post is refused still leaves its error note on the chat
   await assert.rejects(o.post({ id: "lane-tg-2", agent: AGENT, task: CHAT }, { kind: "lane", body: "Yes, at 3." }), { status: 422, message: /isn't assigned/ });
   // The turn's catch branch sends its note through the same path: without the scope it is refused the same way, so nothing
   // is ever written and the owner's message stays the newest line for the scan to run again.
-  const note = "Sorry, that didn't work (the model call failed). Try again in a moment.";
+  const note = "Sorry, that didn't work (model call failed (500)). Retrying in a minute.";
   await assert.rejects(o.post({ id: "lane-tg-2", agent: AGENT, task: CHAT }, { kind: "lane", body: note }), { status: 422, message: /isn't assigned/ });
   assert.equal(pc.comments.filter((c) => c.issueId === CHAT).length, 1, "the owner's message is still the only line");
   // With the fix the same note lands.
@@ -181,9 +181,10 @@ test("a turn whose reply post is refused still leaves its error note on the chat
   const chat = pc.comments.filter((c) => c.issueId === CHAT);
   assert.equal(chat.length, 2);
   assert.equal(chat[0].authorUserId, "u-1", "the owner's message is still the first line");
-  // Newest is a lane-tagged comment by the agent: the lane reads it as its own, so the ask has a reply.
+  // Newest is a lane-tagged comment by the agent: the lane reads it as its own, so the scan doesn't spin on the same message;
+  // the retry is the lane's owed continuation (modules/chat-lane lane.test.ts), not another pass of the scan.
   assert.equal(chat[1].authorAgentId, AGENT);
-  assert.ok(chat[1].body.startsWith("Sorry, that didn't work (the model call failed). Try again in a moment.\n\n<!-- aidenhq:job=lane-"));
+  assert.ok(chat[1].body.startsWith("Sorry, that didn't work (model call failed (500)). Retrying in a minute.\n\n<!-- aidenhq:job=lane-"));
   assert.ok(chat[1].body.endsWith("kind=lane -->"), "the lane reads it as the agent's line, not the owner's");
   assert.ok(!chat[1].body.includes("kind=owner -->"));
 });

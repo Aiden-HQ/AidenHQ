@@ -178,6 +178,36 @@ describe("fast chat lane", () => {
     expect(store.due("continue", clock + 3600_000)).toEqual([]);
   });
 
+  it("a failed turn says so without counting as the answer: the ask stays owed and is retried, and only success settles it", async () => {
+    let mode: "ok" | "down" = "down";
+    const gw = await serve((req, res) => {
+      let b = "";
+      req.on("data", (x) => (b += x)).on("end", () => {
+        if (mode === "down") return void res.writeHead(500).end("boom");
+        sse(res, [{ choices: [{ delta: { content: "Here is the memo." } }] }]);
+      });
+    });
+    let clock = Date.UTC(2026, 10, 15, 9, 0);
+    const store = openLaneStore(":memory:");
+    const m = memChat(() => clock);
+    const lane = makeLane({ store, chat: m.chat, agents: () => ({ aria: agent }), gatewayUrl: gw, laneSecret: "s", timezone: "UTC", ownerName: "Sam", log: quiet, tools: { defs: async () => [], call: async () => "" }, telegram: async () => {}, now: () => clock });
+    m.owner("write me a memo");
+    await lane.poke("aria");
+    // The note lands (so the owner is never left in silence), and says the ask is still coming.
+    expect(m.texts().at(-1)).toMatch(/^Sorry, that didn't work \(model call failed \(500\)[^)]*\). Retrying in a minute\.$/);
+    expect(store.due("continue", clock + 60_000).map((c) => c.ask)).toEqual(["write me a memo"]);
+    // The note is the agent's own line, so the scan doesn't immediately re-run it; the owed retry does, a minute later.
+    const before = m.texts().length;
+    await lane.poke("aria");
+    expect(m.texts().length).toBe(before);
+    clock += 61_000;
+    mode = "ok";
+    await lane.tick();
+    await until(() => !lane.busy("aria"));
+    expect(m.texts().slice(before)).toEqual(["Here is the memo."]);
+    expect(store.due("continue", clock + 60_000)).toEqual([]);
+  });
+
   it("a reply that can't be posted pauses the agent's turns, so no model call spins", async () => {
     let n = 0;
     const gw = await serve((_req, res) => { n++; sse(res, [{ choices: [{ delta: { content: "Here." } }] }]); });
