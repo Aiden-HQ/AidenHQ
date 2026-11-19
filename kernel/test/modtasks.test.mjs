@@ -28,7 +28,8 @@ test("a module's task goes to the agent holding the role, once per source, marke
     }
     return { status: 404, json: {} };
   };
-  const tasks = createModuleTasks({ owner, agents: () => ({ "a-cos": { roles: ["fleet-admin"] }, [PE]: { roles: ["platform-engineer"] } }) });
+  const rubrics = [];
+  const tasks = createModuleTasks({ owner, agents: () => ({ "a-cos": { roles: ["fleet-admin"] }, [PE]: { roles: ["platform-engineer"] } }), rubric: async (task, module, b) => void rubrics.push({ id: task.identifier, module, ...b }) });
   const who = { codehost: { kind: "module", module: "codehost-github", roles: ["kernel.tasks"] }, other: { kind: "module", module: "other", roles: [] } };
   const bp = createBackplane({ whoami: async (k) => who[k] ?? Promise.reject(new Error("no")), asserter: { jwks: {} }, proxy: async () => {}, cp: async () => {}, grantsFile: () => ({}), tasks });
   const { s, url } = await serve(bp);
@@ -54,6 +55,13 @@ test("a module's task goes to the agent holding the role, once per source, marke
   assert.equal(issue.status, "todo");
   assert.match(issue.description, /<!-- source:dependabot:acme\/app\/7 -->\n<!-- aidenhq-module:codehost-github -->$/);
   assert.doesNotMatch(issue.description, /<!-- source:forged -->/, "the module's text can't add a marker");
+  // A rubric asks the kernel to file it with grading, as the module holding kernel.tasks; a module without the role gets nothing filed.
+  const graded = { ...req, source: "graded:1", deliverable: { kind: "issue", ref: "acme/app#7" }, rubric: ["closed", "cites a merged PR", "says why"] };
+  assert.equal((await file("other", graded)).status, 403);
+  assert.deepEqual(rubrics, [], "a forged rubric from a module without kernel.tasks is refused before anything is filed");
+  assert.equal((await file("codehost", { ...graded, rubric: undefined })).status, 400, "a deliverable without its rubric is refused");
+  assert.equal((await file("codehost", graded)).status, 200);
+  assert.deepEqual(rubrics.map((r) => [r.module, r.deliverable.kind, r.rubric.length]), [["codehost-github", "issue", 3]]);
   // It closes its own task, tagged so the line wakes nobody; another module can't.
   const close = (key, b) => fetch(`${url}/v1/tasks/${issue.id}/close`, { method: "POST", headers: { authorization: `Bearer ${key}` }, body: JSON.stringify(b) });
   const otherTasks = { ...who.other, roles: ["kernel.tasks"], module: "github" };

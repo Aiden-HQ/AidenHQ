@@ -202,24 +202,32 @@ export function maintainerIssues(env: NodeJS.ProcessEnv = process.env): Issues |
  * `maintainer`, keyed by its source so the same issue is never two tasks. The text is fixed and names only the repo and the
  * number: an issue's title and body are a stranger's words, read by the Maintainer itself and never copied into a task.
  * Undefined until the module's token file has its content: the watcher is then off, rather than failing every tick.
+ * `graded`: the task's deliverable and rubric, which the kernel files with the grader: its finish waits for them.
  */
-function fileTask(env: NodeJS.ProcessEnv, title: string, description: string, source: string): Promise<boolean> {
+function fileTask(env: NodeJS.ProcessEnv, title: string, description: string, source: string, graded?: { deliverable: unknown; rubric: string[] }): Promise<boolean> {
   const url = `${(env.AIDENHQ_KERNEL_URL ?? "http://10.231.0.1:3130").replace(/\/+$/, "")}/v1/tasks`;
   return fetch(url, {
     method: "POST", signal: AbortSignal.timeout(15_000),
     headers: { authorization: `Bearer ${token(env)}`, "content-type": "application/json" },
-    body: JSON.stringify({ title, description, role: "maintainer", source }),
+    body: JSON.stringify({ title, description, role: "maintainer", source, ...graded }),
   }).then((r) => r.ok);
 }
 const token = (env: NodeJS.ProcessEnv) => {
   try { return env.MAINTAINER_TOKEN_FILE ? readFileSync(env.MAINTAINER_TOKEN_FILE, "utf8").trim() : ""; } catch { return ""; }
 };
 
+/** The labelled-issue task's done condition, once, as "Done conditions" in the handbook says it: the grader's three criteria. */
+const ISSUE_DONE = [
+  "The issue is resolved on GitHub: closed, or parked by the repo's owner or a member in a comment on it.",
+  "Its resolution is shown there: closed as completed with a merged fixing PR cited (for product-pin, the generation), or as not planned or a duplicate with the reason, or the owner's parking word.",
+  "The task's comment names the issue as owner/name#number with its URL, the resolution and the close's citation.",
+];
+
 /** A labelled issue's task: the labelled-issue run of the Maintainer's instructions. */
 export function maintainerWake(env: NodeJS.ProcessEnv = process.env): Fire | undefined {
   return token(env) ? (repo, issue) => fileTask(env, `Maintainer: ${repo}#${issue.number} is labelled for a fix`, `${repo}#${issue.number}
 
-This issue was labelled for a fix by a trusted actor. Validate it and see it through, as "Each run — a labelled issue" in your instructions says. This run is asked to write on that issue with the App tools, each write its own tool call (a close and its note are one call): comment the verdict with its evidence, change its label, close it (completed once its fix is merged and the repo's after_merge is done, with a note citing the PR, the merge commit and, for product-pin, the generation; not_planned with a note on what disproves it) or reopen it after a rollback. It also briefs the engineer on a real fix and waits on what the repo's after_merge asks for, and stays open, blocked on those tasks, until the issue is resolved as "Done conditions" in your instructions says: a verdict or a delegated fix is progress, the issue closed with its citation is done.`, `maintainer-issue:${repo}#${issue.number}`) : undefined;
+This issue was labelled for a fix by a trusted actor. Validate it and see it through, as "Each run — a labelled issue" in your instructions says. This run is asked to write on that issue with the App tools, each write its own tool call (a close and its note are one call): comment the verdict with its evidence, change its label, close it (completed once its fix is merged and the repo's after_merge is done, with a note citing the PR, the merge commit and, for product-pin, the generation; not_planned with a note on what disproves it) or reopen it after a rollback. It also briefs the engineer on a real fix and waits on what the repo's after_merge asks for, and stays open, blocked on those tasks, until the issue is resolved as "Done conditions" in your instructions says: a verdict or a delegated fix is progress, the issue closed with its citation is done.`, `maintainer-issue:${repo}#${issue.number}`, { deliverable: { kind: "issue", ref: `${repo}#${issue.number}` }, rubric: ISSUE_DONE }) : undefined;
 }
 
 /** A new unlabelled issue's triage task. Undefined with external triage off, or until the token file is filled. */

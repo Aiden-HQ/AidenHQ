@@ -24,10 +24,12 @@ export class TaskError extends Error {
   constructor(status: number, message: string) { super(message); this.status = status; }
 }
 
-export function createModuleTasks({ owner, agents, log = () => {} }: {
+export function createModuleTasks({ owner, agents, rubric, log = () => {} }: {
   owner: Api;
   /** The grants table's agents, by Paperclip id. */
   agents: () => Record<string, { roles?: string[] } | undefined>;
+  /** Files the grading rubric of a task the module filed (checks.ts rubric), as that module. */
+  rubric?: (task: { id: string; identifier?: string }, module: string, b: { rubric: string[]; deliverable: unknown }) => Promise<void>;
   log?: (msg: string, f?: Record<string, unknown>) => void;
 }) {
   /**
@@ -47,11 +49,14 @@ export function createModuleTasks({ owner, agents, log = () => {} }: {
     return { status: String(b.status), already: false };
   }
 
-  async function file(module: string, b: { title?: unknown; description?: unknown; role?: unknown; agent?: unknown; source?: unknown; parent?: unknown }) {
+  async function file(module: string, b: { title?: unknown; description?: unknown; role?: unknown; agent?: unknown; source?: unknown; parent?: unknown; deliverable?: unknown; rubric?: unknown }) {
     const title = typeof b.title === "string" ? neutral(b.title).trim().slice(0, 200) : "";
     const description = typeof b.description === "string" ? neutral(b.description).trim().slice(0, 20_000) : "";
     const by = typeof b.role === "string" ? "role" : typeof b.agent === "string" ? "agent" : "";
-    if (!title || !description || !by || (b.role !== undefined && b.agent !== undefined) || typeof b.source !== "string" || !SOURCE.test(b.source)) throw new TaskError(400, "send {title, description, role | agent, source, parent?}");
+    if (!title || !description || !by || (b.role !== undefined && b.agent !== undefined) || typeof b.source !== "string" || !SOURCE.test(b.source)) throw new TaskError(400, "send {title, description, role | agent, source, parent?, deliverable?, rubric?}");
+    // A rubric is graded against its deliverable: both or neither (grading checks their contents).
+    const graded = b.deliverable !== undefined || b.rubric !== undefined;
+    if (graded && !(b.deliverable && typeof b.deliverable === "object" && Array.isArray(b.rubric) && b.rubric.every((c) => typeof c === "string"))) throw new TaskError(400, "deliverable {kind, ref} and rubric [criteria] go together");
     if (b.parent !== undefined && (typeof b.parent !== "string" || !UUID.test(b.parent))) throw new TaskError(400, "parent is a task id");
     const role = String(b.role ?? "");
     // The first agent holding the role, in the grants table's order (setup writes it in the compiled order): one per role. Or
@@ -67,6 +72,7 @@ export function createModuleTasks({ owner, agents, log = () => {} }: {
       idempotencyKey: `pw-${createHash("sha256").update(b.source).digest("hex").slice(0, 32)}`,
     });
     if (r.status >= 300 || !r.json?.id) throw new TaskError(502, `the control plane answered ${r.status}`);
+    if (graded) await rubric!({ id: String(r.json.id), identifier: String(r.json.identifier ?? "") }, module, { rubric: b.rubric as string[], deliverable: b.deliverable }).catch((e: { name?: string; status?: number; message: string }) => { throw new TaskError(e.status ?? 502, `the task is filed but not graded (${e.message}): file it again`); });
     log("module task filed", { module, task: r.json.identifier, agent, source: b.source, deduplicated: Boolean(r.json.deduplicated) });
     return { id: String(r.json.id), identifier: String(r.json.identifier ?? ""), agent, deduplicated: Boolean(r.json.deduplicated) };
   }
