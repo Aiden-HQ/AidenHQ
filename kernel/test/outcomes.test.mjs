@@ -3,7 +3,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { DatabaseSync } from "node:sqlite";
-import { createOutcomes, createPluginPost, delegateIds, tag } from "../src/outcomes.ts";
+import { createOutcomes, createPluginPost, delegateIds, lanePoster, tag } from "../src/outcomes.ts";
+import { createLane } from "../src/lane.ts";
 import { createOnce } from "../src/once.ts";
 import { createReplyRelay } from "../src/relay.ts";
 import { chiefOfStaff } from "../src/backplane.ts";
@@ -19,10 +20,10 @@ const SECRET = "post-secret"; // paperclip_post_key: the kernel and the plugin a
 /** Params as the kernel signs them, for `agentId` in company c-1. */
 const signed = (params, agentId = AGENT) => { const p = { ts: Date.now(), ...params }; return { ...p, sig: signature(SECRET, "c-1", agentId, p) }; };
 
-const host = () => pluginHost({ [TASK]: { id: TASK, status: "in_progress", assigneeAgentId: AGENT, companyId: "c-1" } });
+const host = (extra = {}) => pluginHost({ [TASK]: { id: TASK, status: "in_progress", assigneeAgentId: AGENT, companyId: "c-1" }, ...extra });
 
-async function paperclip(t, { lose = 0 } = {}) {
-  const h = host();
+async function paperclip(t, { lose = 0, issues = {} } = {}) {
+  const h = host(issues);
   let losing = lose;
   const sent = [];
   const { s, url } = await serve(async (req, res) => {
@@ -48,7 +49,7 @@ async function paperclip(t, { lose = 0 } = {}) {
 }
 
 const provenance = { carried: async () => ({ job: null, cap: { cap: "off" } }), intend: () => {}, record: () => {} };
-const kernelOf = (url, extra = {}) => createOutcomes({ db: new DatabaseSync(":memory:"), plugin: createPluginPost({ controlUrl: url, agentKey: (id) => (id === AGENT ? "agent-key" : ""), postKey: () => SECRET }), provenance, delegates: (id) => (id === AGENT ? [OTHER] : []), finish: async () => ({ pass: true }), ...extra });
+const kernelOf = (url, extra = {}) => createOutcomes({ db: new DatabaseSync(":memory:"), plugin: createPluginPost({ controlUrl: url, agentKey: (id) => (id === AGENT ? "agent-key" : ""), postKey: () => SECRET }), provenance, delegates: (id) => (id === AGENT ? [OTHER] : []), finish: async () => ({ pass: true }), chatTask: () => undefined, ...extra });
 const JOB = { id: "j-0123456789abcdef", agent: AGENT, task: TASK };
 
 test("posted twice is one comment, the agent's own, tagged so it wakes nobody", async (t) => {
@@ -122,6 +123,70 @@ test("done needs the kernel's finish gate: refused without gated; the kernel sen
   assert.equal(pc.issues[TASK].status, "in_progress");
   const r = await kernelOf(pc.url).post(JOB, { kind: "status", body: "Finished.", status: "done" });
   assert.equal(r.status, "done");
+});
+
+test("a lane reply lands on the agent's unassigned chat task, and only because the grants table names it", async (t) => {
+  const CHAT = "66666666-6666-4666-8666-666666666666";
+  // setup's chat task: created by the board, unassigned, in backlog.
+  const pc = await paperclip(t, { issues: { [CHAT]: { id: CHAT, status: "backlog", createdByUserId: "u-1", companyId: "c-1" } } });
+  const grants = { agents: { [AGENT]: { key: "agent", chat_task: CHAT } } };
+  const o = kernelOf(pc.url, { chatTask: (id) => grants.agents[id]?.chat_task });
+  // main.ts's lane wiring: the kernel resolves the scope from the grants table, never from the module.
+  const lane = createLane({ once: createOnce(new DatabaseSync(":memory:")), grantsFile: () => grants, owner: async () => ({ status: 200, json: { id: "owner-comment" } }), postAsAgent: lanePoster(o) });
+  assert.deepEqual((await lane.exchange("chat-lane", { agent: AGENT, turn: "tg-1", owner_text: "are you free?", reply: "Yes, at 3." })).agent, pc.comments[0].id);
+  assert.equal(pc.comments.length, 1);
+  assert.equal(pc.comments[0].issueId, CHAT);
+  assert.equal(pc.comments[0].authorAgentId, AGENT);
+  assert.equal(pc.comments[0].body, `Yes, at 3.\n\n${tag("lane-tg-1", "lane")}`);
+  assert.equal(pc.issues[CHAT].assigneeAgentId, undefined, "the chat task stays unassigned");
+  assert.equal(pc.issues[CHAT].status, "backlog");
+  // Without the scope, the same post on the same unassigned task is refused by the plugin.
+  await assert.rejects(o.post({ id: "j-00000000000000ff", agent: AGENT, task: CHAT }, { kind: "lane", body: "Yes, at 3." }), { status: 422, message: /isn't assigned to this agent/ });
+  assert.equal(pc.comments.length, 1);
+});
+
+test("a listed post is the kernel's word: the grants table must name that task for the agent, or the post never reaches the plugin", async (t) => {
+  const CHAT = "66666666-6666-4666-8666-666666666666", SPARE = "77777777-7777-4777-8777-777777777777";
+  const pc = await paperclip(t, { issues: { [CHAT]: { id: CHAT, status: "backlog", createdByUserId: "u-1", companyId: "c-1" }, [SPARE]: { id: SPARE, status: "backlog", createdByUserId: "u-1", companyId: "c-1" } } });
+  const grants = { agents: { [AGENT]: { key: "agent", chat_task: CHAT } } };
+  const o = kernelOf(pc.url, { chatTask: (id) => grants.agents[id]?.chat_task });
+  // `listed` on a task the table doesn't name for the agent: refused by the kernel, nothing signed, nothing written.
+  await assert.rejects(o.post({ id: "j-00000000000000a1", agent: AGENT, task: SPARE }, { kind: "lane", body: "x", scope: "listed" }), { status: 403, code: "not-listed" });
+  assert.equal(pc.seen().length, 0, "the plugin was never called");
+  // `listed` on the agent's chat task: the one case the kernel names, and it lands.
+  await o.post({ id: "j-00000000000000a2", agent: AGENT, task: CHAT }, { kind: "lane", body: "Yes, at 3.", scope: "listed" });
+  assert.equal(pc.comments.length, 1);
+  assert.equal(pc.comments[0].issueId, CHAT);
+  assert.equal(pc.comments[0].authorAgentId, AGENT);
+  // A post with no scope is untouched by the authority: `own` still applies for any task.
+  await assert.rejects(o.post({ id: "j-00000000000000a3", agent: AGENT, task: SPARE }, { kind: "lane", body: "x" }), { status: 422, message: /isn't assigned/ });
+});
+
+test("a turn whose reply post is refused still leaves its error note on the chat task, newest; the ask stays retryable", async (t) => {
+  const CHAT = "66666666-6666-4666-8666-666666666666";
+  const pc = await paperclip(t, { issues: { [CHAT]: { id: CHAT, status: "backlog", createdByUserId: "u-1", companyId: "c-1" } } });
+  // The owner wrote on the chat task first (what the lane posted as the owner).
+  pc.comments.push({ id: "owner-1", issueId: CHAT, body: `[board] are you free?\n\n${tag("lane-tg-2", "owner")}`, authorUserId: "u-1" });
+  const grants = { agents: { [AGENT]: { key: "agent", chat_task: CHAT } } };
+  const o = kernelOf(pc.url, { chatTask: (id) => grants.agents[id]?.chat_task });
+  // The reply post as it was before the fix: no scope, so the plugin refuses it and nothing is written.
+  await assert.rejects(o.post({ id: "lane-tg-2", agent: AGENT, task: CHAT }, { kind: "lane", body: "Yes, at 3." }), { status: 422, message: /isn't assigned/ });
+  // The turn's catch branch sends its note through the same path: without the scope it is refused the same way, so nothing
+  // is ever written and the owner's message stays the newest line for the scan to run again.
+  const note = "Sorry, that didn't work (model call failed (500)). Retrying in a minute.";
+  await assert.rejects(o.post({ id: "lane-tg-2", agent: AGENT, task: CHAT }, { kind: "lane", body: note }), { status: 422, message: /isn't assigned/ });
+  assert.equal(pc.comments.filter((c) => c.issueId === CHAT).length, 1, "the owner's message is still the only line");
+  // With the fix the same note lands.
+  await lanePoster(o)(AGENT, CHAT, "lane-tg-2", note);
+  const chat = pc.comments.filter((c) => c.issueId === CHAT);
+  assert.equal(chat.length, 2);
+  assert.equal(chat[0].authorUserId, "u-1", "the owner's message is still the first line");
+  // Newest is a lane-tagged comment by the agent: the lane reads it as its own, so the scan doesn't spin on the same message;
+  // the retry is the lane's owed continuation (modules/chat-lane lane.test.ts), not another pass of the scan.
+  assert.equal(chat[1].authorAgentId, AGENT);
+  assert.ok(chat[1].body.startsWith("Sorry, that didn't work (model call failed (500)). Retrying in a minute.\n\n<!-- aidenhq:job=lane-"));
+  assert.ok(chat[1].body.endsWith("kind=lane -->"), "the lane reads it as the agent's line, not the owner's");
+  assert.ok(!chat[1].body.includes("kind=owner -->"));
 });
 
 test("a child goes only to the agent itself or one in its delegate_to", async (t) => {

@@ -29,7 +29,7 @@ import { routineWake, webhookWake, type Manifest } from "./app-access.ts";
 import { createSignin } from "./signin.ts";
 import { createAsserter, loadKey } from "./assert.ts";
 import { chiefOfStaff, createBackplane } from "./backplane.ts";
-import { createOutcomes, createPluginPost, delegateIds } from "./outcomes.ts";
+import { createOutcomes, createPluginPost, delegateIds, lanePoster } from "./outcomes.ts";
 import { createBrake } from "./brake.ts";
 import { createNotify } from "./notify.ts";
 import { createReplyRelay } from "./relay.ts";
@@ -204,7 +204,7 @@ every(() => {
 once(() => void certWatch.tick(), 10 * 60_000);
 // Release updates (updates.ts, docs/design/release-updates.md): the check (a child process) prepares a release; the kernel files
 // it as a kernel.apply on a task of its own (the platform engineer's, as the release train's), follows it and tells the owner.
-const moduleTasks = createModuleTasks({ db: records.db, owner: ownerApi, agents: () => grantsTable().agents ?? {}, rubric: (task, module, b) => checks.rubric(task, module, b), applies: (task) => records.list(["review", "owner", "approved", "claimed", "done", "failed", "rejected", "stale", "cancelled", "unknown"], null, { task, kinds: ["kernel.apply"] }), ownerUser: async () => (ownerUser ||= String(((await cpJson("/api/cli-auth/me")) as { userId?: string }).userId ?? "")), log });
+const moduleTasks = createModuleTasks({ db: records.db, owner: ownerApi, agents: () => grantsTable().agents ?? {}, rubric: (task, module, b) => checks.rubric(task, module, b), log });
 const updates = createUpdates({
   db: records.db, dir: path.join(dataDir, "updates"), inst: env("AIDENHQ_INSTANCE_DIR", path.join(process.env.HOME ?? "", "aidenhq-instance")), board: path.join(env("AIDENHQ_STATE_DIR", path.join(process.env.HOME ?? "", ".local/state/aidenhq")), "board/updates.json"),
   ownerLine: toOwner("done"), check: runCheck(repo), log,
@@ -316,7 +316,7 @@ jobs.adopt();
 const mayDispatch = dispatchesFrom(() => (modulesFile().modules ?? {}) as never, () => grantsTable().agents ?? {});
 // Outcomes posted on a job's task as its agent, once (outcomes.ts): the agent's own Paperclip key, setup's paperclip-agents/<id>.
 const plugin = createPluginPost({ controlUrl, agentKey: (id) => secret(`paperclip-agents/${id}`), postKey: () => secret("paperclip_post_key") });
-const outcomes = createOutcomes({ db: records.db, facts, agentKey, plugin, provenance, log, relay: createReplyRelay({ owner: ownerApi, queue: notify.queue, log }), delegates: (id) => delegateIds(grantsTable().agents, id, appOwners), finish: (task, agent) => checks.finish(task, { agent, via: "job_post" }) });
+const outcomes = createOutcomes({ db: records.db, facts, agentKey, plugin, provenance, log, relay: createReplyRelay({ owner: ownerApi, queue: notify.queue, log }), delegates: (id) => delegateIds(grantsTable().agents, id, appOwners), finish: (task, agent) => checks.finish(task, { agent, via: "job_post" }), chatTask: (id) => { const t = grantsTable().agents?.[id]?.chat_task; return typeof t === "string" ? t : undefined; } });
 const KNOWN_REPOS = ["@agents/*", "@product", "@instance", "@orgs", "@maintained"];
 const localRepoExists = (repo: string) => { try { return existsSync(path.join(localCode.bare(repo), "HEAD")); } catch { return false; } };
 const wakes = createWakes({
@@ -434,7 +434,7 @@ const codehost = createCodehost({ repos: codehostRepos, grants: codehostGrants, 
   local: () => (localHost() ? { snapshot: localSnapshot({ bare: localCode.bare }) } : undefined) });
 // Check jobs (checkjobs.ts): credential-free boxes of the launcher's, snapshots from the module that provides them.
 const checkJobs = checkJobsFrom({ db: records.db, secret, recipes: () => modulesFile().check_jobs ?? {}, ask: codehost.ask, call: launcherClient(launcherUrl, () => secret("launcher_kernel_key")), workDir: sandbox.workDir, gatewayUrl: `${sandbox.boxGatewayUrl}/api/v1`, log });
-const lane = createLane({ once: outcomes.once, owner: ownerApi, grantsFile: grantsTable, log, postAsAgent: async (agent, task, job, body) => ({ id: String((await outcomes.post({ id: job, agent, task }, { kind: "lane", body })).comment) }) });
+const lane = createLane({ once: outcomes.once, owner: ownerApi, grantsFile: grantsTable, log, postAsAgent: lanePoster(outcomes) });
 const backplane = createBackplane({ facts, repos: codehostRepos, healthProbe, settingsChange, routing, connectionHealth: createConnectionHealth({ connections, resolver }), healthKey: () => secret("health_probe_key"), codehost: codehost.op, checks, checkJobs, lane, whoami, asserter, grantsFile: grantsTable, log, writes, records, channels, brake, notify, owner: ownerApi, ownerRaw: (p) => cpApi(p), modules: modulesFile, boardKey: () => secret("gateway_board_key"), reviews, reviewerKey: () => secret("reviewer_key"), jobs, admission, outcomes, wakes, tasks: moduleTasks, work, flow, graderToken, dropGraderToken: (task) => graderTokens.delete(task), eventsKey: () => secret("paperclip_events_key"), jobTools, localBundle: (repo: string) => (localHost() ? localCode.bundle(repo) : Promise.reject(Object.assign(new Error("codehost-local isn't enabled here"), { status: 404 }))), advisories: advisories.list, accounts: createAuthApi({ accounts: () => accounts, whoami, boardKey: () => secret("gateway_board_key"), recoveryKeyWaiting: () => Boolean(firstRun.recoveryKey()), modelReady: modelState.ready, operatorKey: () => secret("board_operator_key"), secrets: moduleSecrets }), proxy: (req, res, c) => proxy(req, res, c!), cp: createCp({ appOwners: () => appOwners(), asserter, whoami, plugin, once: outcomes.once, agentKey: (id) => secret(`paperclip-agents/${id}`), grants: () => grantsTable().agents ?? {}, fleetIssues: () => String(grantsTable().fleet_issues ?? ""), controlUrl, checks, provenance, log }) as never, boardCp: createBoardCp({ controlUrl, key: () => secret("paperclip_board_key"), fetch: ownerFetch, log }) as never });
 // The admin listener's accounts (data/kernel/auth/auth.db) and pages. Accounts not moved yet, or a malformed URL setting: the
 // listener refuses while every other part of the kernel serves.

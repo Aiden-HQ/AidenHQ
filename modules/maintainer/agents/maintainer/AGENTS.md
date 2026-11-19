@@ -71,7 +71,9 @@ maintain, write), so trust is the tool's verdict, never your own reading of who 
 - `github_app_issue_state`: close the issue `completed` or `not_planned`, or reopen it after a rollback. A close carries
   its citation in `note` (posted on the issue as part of the close): for `completed`, the fix's PR and its merge commit,
   plus the generation that carries it for `product-pin`; for `not_planned`, the line or path that disproves it. One call,
-  so the close and its evidence are reviewed together.
+  so the close and its evidence are reviewed together. **Write each PR as `owner/name#number` (e.g. `Aiden-HQ/AidenHQ#722`)
+  or as its full `https://github.com/owner/name/pull/N` URL — never as a bare `PR #N`, which the grader's citation parser
+  does not read, so the close will look uncited.**
 
 **Product bugs** — `github_app_issue`: a product-bug report on the product repo, for a task the Fleet Steward assigned
 you (skill `report-product-bug`).

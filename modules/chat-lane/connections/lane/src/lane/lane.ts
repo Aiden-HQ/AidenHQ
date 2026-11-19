@@ -213,8 +213,12 @@ export function makeLane(d: LaneDeps) {
       if (c) return await failed(agent, c, msg.slice(0, 160));
       if (!first) d.store.firstSent(turnId, now());
       first = true;
-      await send(agent, `t${turnId}`, `Sorry, that didn't work (${msg.slice(0, 160)}). Try again in a moment.`, telegram);
-      d.log.warn({ agent: agent.key, err: msg }, "lane turn failed");
+      // A failed turn says so (the owner is never left in silence) but is not the answer: the ask stays owed and the lane
+      // retries it after the pause, and only a turn that produces the answer settles it. A wake is not owed again.
+      const owed = wake === undefined && !d.store.owesContinue(agent.key);
+      await send(agent, `t${turnId}`, `Sorry, that didn't work (${msg.slice(0, 160)}). ${owed ? "Retrying in a minute." : "Try again in a moment."}`, telegram);
+      if (owed) d.store.owe(agent.key, "continue", ask, now() + RETRY_MS, now());
+      d.log.warn({ agent: agent.key, err: msg, owed }, "lane turn failed");
     } finally {
       clearTimeout(limit);
     }
