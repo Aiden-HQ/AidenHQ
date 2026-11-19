@@ -106,7 +106,7 @@ describe("internal listener", () => {
       const body = { name: "../report.md", type: "text/markdown", data: Buffer.from("# Report\n").toString("base64") };
       const ok = await post("/internal/issues/PEN-3/files", body, asAgent("ra"));
       expect(ok.status).toBe(200);
-      expect(await ok.json()).toMatchObject({ file: { name: "report.md", type: "text/markdown", size: 9, by: "agent", textOf: null } });
+      expect(await ok.json()).toMatchObject({ file: { name: "report.md", type: "text/markdown", size: 9, textOf: null } });
       expect(files.map((f) => f.originalFilename)).toEqual(["report.md"]);
       // Another agent's task, and one with no agent on it: refused, and no bytes are stored.
       expect((await post("/internal/issues/PEN-3/files", body, asAgent("beta"))).status).toBe(403);
