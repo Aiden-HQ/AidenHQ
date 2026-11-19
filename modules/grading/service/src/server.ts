@@ -23,8 +23,8 @@ class HttpError extends Error { status: number; constructor(status: number, mess
 const FILERS = ["task_delegate", "task_propose_rule", "task_create"];
 const NOTE = "The grader checks this task against its rubric.";
 
-export function createGrading({ db, kernel, keys, jwks = kernelJwks(), log = () => {} }: {
-  db: DatabaseSync; kernel: Kernel; keys: { check: string; board: string }; jwks?: JWKS | (() => Promise<JWKS>);
+export function createGrading({ db, kernel, keys, kernelUrl = "", jwks = kernelJwks(), log = () => {} }: {
+  db: DatabaseSync; kernel: Kernel; keys: { check: string; board: string }; kernelUrl?: string; jwks?: JWKS | (() => Promise<JWKS>);
   log?: (msg: string, f?: Record<string, unknown>) => void;
 }) {
   const grades = new Grades(db);
@@ -116,6 +116,8 @@ export function createGrading({ db, kernel, keys, jwks = kernelJwks(), log = () 
     // task (satisfied, needs_revision, grading_failed and its escalation). Only another escalation, the delegator's to decide,
     // takes the label off here. The verdict stands if the kernel can't (it restarts on applies).
     if (g.state === "escalated" && v.outcome !== "grading_failed") await kernel.release(issue.id).catch((err: Error) => log("grading label not released", { task: issue.identifier, err: String(err.message).slice(0, 200) }));
+    if (v.outcome === "grading_failed" && v.reason) grades.noteFailure(issue.id, v.reason);
+    else if (v.outcome !== "awaiting_evidence") grades.clearFailure(issue.id);
     log("grade recorded", { task: issue.identifier, outcome: v.outcome, version: v.version.slice(0, 60), state: g.state, attempts: g.attempts, failures: g.failures });
     return g;
   }
@@ -157,6 +159,12 @@ export function createGrading({ db, kernel, keys, jwks = kernelJwks(), log = () 
       const method = String(req.method);
       if (method === "POST" && path === "/check/finish") return (keyed(req, keys.check), send(200, await finish((body ?? {}) as never)));
       if (method === "POST" && path === "/grades") return send(200, await file(req, body));
+      // The Fleet Steward's read (its own module token, vouched for by the kernel): which grader passes failed lately, and why.
+      if (method === "GET" && path === "/steward/grade-failures") {
+        const who = await fetch(`${kernelUrl}/v1/whoami`, { headers: { authorization: String(req.headers.authorization ?? "") }, signal: AbortSignal.timeout(5_000) }).then((r) => (r.ok ? r.json() : {}), () => ({})) as { kind?: string; module?: string };
+        if (who.kind !== "module" || who.module !== "fleet-steward") throw new HttpError(403, "forbidden");
+        return send(200, { failures: grades.failuresSince(new Date(Date.now() - 2 * 3_600_000).toISOString()) });
+      }
       if (path.startsWith("/board/")) return (keyed(req, keys.board), send(200, await board(method, path, body)));
       send(404, { error: "no such route" });
     } catch (err) {

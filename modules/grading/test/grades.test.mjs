@@ -293,3 +293,15 @@ describe("prRefAllowed", () => {
     assert.equal(prRefAllowed("codehost:local/a/b/change/5", t), false);
   });
 });
+
+describe("failed grader passes", () => {
+  it("keeps the latest failure's reason per task until another outcome clears it, and lists only recent ones", () => {
+    const { grades } = new Store();
+    grades.noteFailure("t1", "the grader failed (OpenRouter 404)", "2026-11-20T12:00:00Z");
+    grades.noteFailure("t1", "the grader failed (timeout)", "2026-11-20T12:05:00Z");
+    grades.noteFailure("t2", "old", "2026-11-20T09:00:00Z");
+    expect(grades.failuresSince("2026-11-20T11:00:00Z").map((x) => ({ ...x }))).toEqual([{ task: "t1", at: "2026-11-20T12:05:00Z", reason: "the grader failed (timeout)" }]);
+    grades.clearFailure("t1");
+    expect(grades.failuresSince("2026-11-20T11:00:00Z")).toEqual([]);
+  });
+});

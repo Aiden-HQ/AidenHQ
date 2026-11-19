@@ -3,6 +3,7 @@ description: "Fleet Steward: watches the fleet (stuck or failing runs, sources a
 # One agent for fleet upkeep (roster merge 5.3: Fleet Ops, the Agent Coach and the Knowledge Librarian), one skill per
 # routine. It reads every agent's evidence, so it holds no public write: product bugs go to the Maintainer, which files
 # them upstream (owner, 2026-11-18: no single agent both reads every agent's private data and writes public GitHub issues).
+requires: [ grading ] # the detector reads the grader's failed passes
 replaces: [ fleet-ops, coach, librarian ] # the updater lists this module for an instance that ran any of them (kernel/src/updates.ts)
 roles:
   # kernel.cp-read, kernel.work-read: the control plane's tasks and agents and the kernel's jobs, records and cost, read for the detector and
@@ -142,10 +143,12 @@ services:
       port: 8097
       egress: true # the kernel's listener is a host address
       links: [ apps-mcp ] # apps-mcp's reads (role apps.read), until 4c moves it into apps-platform
+      join: [ grading ] # the grader's failed passes (grading answers only this module's token)
       data: ["steward:/data"]
       env:
         FLEET_STEWARD_STATE_FILE: /data/state.json
         AIDENHQ_KERNEL_URL: http://10.231.0.1:3130
+        GRADING_URL: http://grading:8096
         FLEET_STEWARD_TOKEN_FILE: ${secrets.fleet_steward_token}
         FLEET_STEWARD_SERVICE_KEY_FILE: ${secrets.fleet_steward_service_key}
         FLEET_OPS_INTERVAL_MINUTES: "${settings.fleet_ops_interval_minutes}"
