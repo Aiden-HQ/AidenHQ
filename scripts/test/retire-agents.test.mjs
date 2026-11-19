@@ -8,9 +8,11 @@ const companyId = "co-1";
 const ownerId = "user-owner";
 
 /** A fake board API over a company's agents and issues; every call is recorded in order. */
-function fakeBoard({ agents, issues = [], failPatch = new Set(), failMe = false }) {
+function fakeBoard({ agents, issues = [], failPatch = new Set(), failMe = false, failList = {} }) {
   const calls = [];
   const rows = issues.map((i) => ({ ...i }));
+  // How many listings fail, per agent id (Infinity: never succeeds).
+  const failures = new Map(Object.entries(failList));
   const api = async (method, path, body) => {
     calls.push({ method, path, body });
     const url = new URL(path, "http://board");
@@ -21,6 +23,12 @@ function fakeBoard({ agents, issues = [], failPatch = new Set(), failMe = false 
       return { json: { userId: ownerId } };
     }
     if (method === "GET" && url.pathname === `/api/companies/${companyId}/issues`) {
+      const assigneeForFailure = url.searchParams.get("assigneeAgentId");
+      const left = failures.get(assigneeForFailure) ?? 0;
+      if (left > 0) {
+        failures.set(assigneeForFailure, left - 1);
+        throw new Error(`GET ${path} → 503`);
+      }
       const status = (url.searchParams.get("status") ?? "").split(",");
       const assignee = url.searchParams.get("assigneeAgentId");
       const offset = Number(url.searchParams.get("offset") ?? 0);
@@ -130,5 +138,29 @@ test("an unreadable owner id still takes the tasks off the dead key, unassigned"
 
   const patch = board.calls.find((c) => c.method === "PATCH" && c.path === "/api/issues/issue-1");
   assert.deepEqual(patch.body, { assigneeAgentId: null, assigneeUserId: null, status: "todo" });
+  assert.ok(board.calls.some((c) => c.path === `/api/agents/${retired.id}/terminate`));
+});
+
+test("an agent whose open tasks can't be listed is left in place, while the agents whose tasks can be listed are still retired", async () => {
+  const other = { ...retired, id: "agent-other", name: "Engineer (App)", metadata: { setupKey: "aidenhq:app-engineer", department: { id: "engineering", name: "Engineering", order: 1 } } };
+  const board = fakeBoard({
+    agents: [retired, other, engineer],
+    issues: [issue("issue-1"), issue("issue-2", "todo", other.id)],
+    failList: { [retired.id]: Infinity },
+  });
+  await run(board);
+
+  const terminated = board.calls.filter((c) => c.method === "POST" && c.path.endsWith("/terminate")).map((c) => c.path);
+  assert.deepEqual(terminated, [`/api/agents/${other.id}/terminate`], "the stranded agent is not terminated; the other still is");
+  assert.deepEqual(board.calls.filter((c) => c.method === "PATCH" && c.path.startsWith("/api/issues/")).map((c) => c.path), ["/api/issues/issue-2"]);
+  assert.equal(board.calls.filter((c) => c.method === "GET" && c.path.includes(`assigneeAgentId=${retired.id}`)).length, 3, "the listing is retried");
+});
+
+test("a listing that fails once is retried, and the agent is retired normally", async () => {
+  const board = fakeBoard({ agents: [retired, engineer], issues: [issue("issue-1")], failList: { [retired.id]: 1 } });
+  await run(board);
+
+  assert.equal(board.calls.filter((c) => c.method === "GET" && c.path.includes("/issues?")).length, 2);
+  assert.deepEqual(board.calls.find((c) => c.method === "PATCH" && c.path === "/api/issues/issue-1").body, { assigneeAgentId: engineer.id, assigneeUserId: null });
   assert.ok(board.calls.some((c) => c.path === `/api/agents/${retired.id}/terminate`));
 });
