@@ -28,7 +28,7 @@ export class OutcomeError extends Error {
   constructor(status: number, code: string, message: string) { super(message); this.status = status; this.code = code; }
 }
 export interface Outcome { comment: string | null; status: string | null; again?: boolean; finish?: Finish }
-export interface PostRequest { kind: string; body: string; status?: string; blockedBy?: string[]; child?: { title: string; description?: string; assigneeAgentId?: string } }
+export interface PostRequest { kind: string; body: string; status?: string; blockedBy?: string[]; child?: { title: string; description?: string; assigneeAgentId?: string }; scope?: "listed" }
 
 /**
  * One signed call to the plugin's `post` action as `agent`, with the agent's own Paperclip key (secrets paperclip-agents/<id>,
@@ -109,7 +109,7 @@ export function createOutcomes({ db, plugin, delegates, finish, provenance, rela
       }
       const origin = tag(job.id, req.kind).slice(5, -4);
       if (req.child) provenance.intend(origin, await provenance.carried({ job: job.id, agent: job.agent, task: job.task }));
-      const params = { issueId: job.task, tag: tag(job.id, req.kind), body: req.body, ...(retry ? { again: true } : {}), ...(status ? { status } : {}), ...(status === "blocked" ? { blockedBy: req.blockedBy ?? [] } : {}), ...(status === "done" ? { gated: true } : {}), ...(req.child ? { child: req.child, delegateTo: await delegates(job.agent) } : {}) };
+      const params = { issueId: job.task, tag: tag(job.id, req.kind), body: req.body, ...(req.scope ? { scope: req.scope } : {}), ...(retry ? { again: true } : {}), ...(status ? { status } : {}), ...(status === "blocked" ? { blockedBy: req.blockedBy ?? [] } : {}), ...(status === "done" ? { gated: true } : {}), ...(req.child ? { child: req.child, delegateTo: await delegates(job.agent) } : {}) };
       const r = await plugin.post(job.agent, params);
       // A 5xx (502: the plugin is down, or it threw) leaves the key pending: whether it wrote is unknown, and the retry looks.
       if (r.status >= 500) throw new OutcomeError(502, "unknown", `the post action answered ${r.status}`);
@@ -127,6 +127,18 @@ export function createOutcomes({ db, plugin, delegates, finish, provenance, rela
   return { post, once };
 }
 export type Outcomes = ReturnType<typeof createOutcomes>;
+
+/**
+ * The fast lane's post (main.ts): a reply on the agent's own chat task as a `lane` outcome. That task is created by the board,
+ * unassigned and in backlog, so `own` can never pass for it; the post says `listed` (a task the grants table names for the
+ * agent) only when the table names this task as the agent's `chat_task`. The module names no task and no scope: the kernel
+ * resolves both.
+ */
+export function lanePoster(outcomes: Outcomes, grants: () => { agents?: Record<string, Record<string, unknown>> }) {
+  return async (agent: string, task: string, job: string, body: string): Promise<{ id: string }> => ({
+    id: String((await outcomes.post({ id: job, agent, task }, { kind: "lane", body, ...(grants().agents?.[agent]?.chat_task === task ? { scope: "listed" as const } : {}) })).comment),
+  });
+}
 
 type Delegator = { key?: string; roles?: string[]; profile?: string; reports_to?: string; delegate_to?: unknown; member_of?: string };
 /**
