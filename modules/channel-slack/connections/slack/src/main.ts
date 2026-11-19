@@ -50,6 +50,17 @@ const pairing = createPairing(store.db);
 if (pairing.seed(env("OWNER_SLACK_USER_ID"), process.env.OWNER_COMMAND_CHANNEL ?? "")) log.info("owner seeded from env");
 const pairToken = env("PAIR_TOKEN");
 const cfg: SlackConfig = { botToken: env("SLACK_BOT_TOKEN"), ownerId: pairing.owner()?.user ?? "" };
+// An owner seeded without a command channel: their DM with the bot is it (else their DMs to the bot go to triage, not to Aiden).
+const unchanneled = pairing.owner();
+if (unchanneled && !unchanneled.channel && cfg.botToken) {
+  void fetch("https://slack.com/api/conversations.open", { method: "POST", headers: { authorization: `Bearer ${cfg.botToken}`, "content-type": "application/json; charset=utf-8" }, body: JSON.stringify({ users: unchanneled.user }), signal: AbortSignal.timeout(15_000) })
+    .then((r) => r.json() as Promise<{ ok: boolean; error?: string; channel?: { id?: string } }>)
+    .then((r) => {
+      if (!r.ok || !r.channel?.id) throw new Error(r.error ?? "no channel");
+      if (pairing.setChannel(unchanneled.user, r.channel.id)) log.info({ channel: r.channel.id }, "owner command channel set to their DM with the bot");
+    })
+    .catch((err: unknown) => log.error({ err: String(err) }, "couldn't open the owner's DM with the bot; their DMs to it won't reach Aiden"));
+}
 // The kernel's bearer on /transport/send: this module's own token.
 const channelToken = env("CHANNEL_TOKEN");
 const ignored = new Set((process.env.IGNORE_CHANNELS ?? "").split(",").map((s) => s.trim()).filter(Boolean));
