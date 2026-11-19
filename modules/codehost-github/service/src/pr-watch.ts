@@ -2,7 +2,8 @@
 // finished becomes one task for the agent holding the platform-engineer role (kernel POST /v1/tasks, role kernel.tasks), closed
 // again once the PR is merged or closed; an agent's own PR (one this service opened: notePrTask) that conflicts with the default
 // branch, or is red while behind a green one, wakes the task that opened it (POST /v1/wakes with text, role kernel.wake), at most once per
-// head of main and half hour. Task text is fixed here: a PR's title, body, commits and check output never reach a task.
+// head of main and half hour; an agent's own PR whose named checks are all green on a mergeable head wakes that task once per head, to merge
+// it (engineers end a job on running checks, "I'll merge once green", and nothing else would bring them back). Task text is fixed here: a PR's title, body, commits and check output never reach a task.
 //
 // Started by main.ts. Not ported from the runner: the environment path (red checks that never started are re-run once at the same head and
 // reported, never a rebase), closing the PR of a cancelled task, rebaseInCode, and the parked-branch refusal (MAX_REJECTS).
@@ -79,6 +80,7 @@ export function startPrWatch(o: PrWatchOptions) {
     const state = readJson(stateFile, {});
     state.dependabot ??= {}; // PR url -> its task's id
     state.asked ??= {};      // PR url -> when its task was last woken
+    state.greened ??= {};    // PR url -> the head whose green checks woke its task
     state.pinged ??= {};     // `<pr url>:<main oid>` -> when
     const save = () => writeFileSync(stateFile, JSON.stringify(state));
 
@@ -144,6 +146,13 @@ export function startPrWatch(o: PrWatchOptions) {
       }
       // Only an agent's own PR, by the task that opened it: a reused PR number (a recreated repository) belongs to nobody here.
       if (isDependabot(pr) || pr.isCrossRepository !== false || !opener || opener.branch !== pr.headRefName) continue;
+      if (pr.mergeable === "MERGEABLE" && !pr.isDraft && named.length && named.every((c) => c.ok) && state.greened[url] !== pr.headRefOid) {
+        state.greened[url] = pr.headRefOid;
+        save();
+        await kernel("POST", "/v1/wakes", { task: opener.task, text: `${pr.url}'s checks are green at \`${pr.headRefOid}\`. If this PR is your task's change, merge it with \`aidenhq merge ${pr.url} ${pr.headRefOid}\`; if it is superseded, close it with \`aidenhq close ${pr.url}\`. Nothing else.` });
+        log("merge requested", { pr: pr.url, task: opener.task, head: pr.headRefOid });
+        continue;
+      }
       const why = rebaseReason(pr, main.rollup);
       if (!why) continue;
       const key = `${url}:${main.oid}`;
