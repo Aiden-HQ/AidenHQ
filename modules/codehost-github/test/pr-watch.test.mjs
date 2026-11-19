@@ -65,3 +65,33 @@ test("a Dependabot PR becomes one task once its checks finish and closes with it
   await watch.tick();
   assert.equal(wakes().length, 1, "once per head of main and half hour");
 });
+
+test("an agent's green mergeable PR wakes its task to merge once per head", async (t) => {
+  let open = [];
+  const wakes = [];
+  const kernel = await listen(async (req, res) => {
+    let body = "";
+    for await (const c of req) body += c;
+    if (req.url === "/v1/wakes") wakes.push(JSON.parse(body));
+    res.writeHead(200).end("{}");
+  });
+  t.after(() => kernel.s.close());
+  const gh = async (m, path) => path === "/graphql"
+    ? { status: 200, body: { data: { repository: { defaultBranchRef: { name: "main", target: { oid: "m1", statusCheckRollup: checks("SUCCESS") } }, pullRequests: { nodes: open } } } } }
+    : { status: 404, body: {} };
+  const cacheDir = mkdtempSync(join(tmpdir(), "pr-watch-"));
+  const watch = startPrWatch({ repo: "acme/app", kernelUrl: kernel.url, key: "k", cacheDir, app: { token: async () => "tok" }, gh });
+  t.after(() => watch.stop());
+  notePrTask(cacheDir, "https://github.com/acme/app/pull/5", { task: "ACME-5", branch: "b5" });
+  const agent = { author: { __typename: "Bot", login: "aidenhq" } };
+
+  open = [pr(5, { ...agent, checks: "PENDING" })];
+  await watch.tick();
+  assert.equal(wakes.length, 0, "not while checks run");
+  open = [pr(5, agent)];
+  await watch.tick();
+  await watch.tick();
+  assert.equal(wakes.length, 1, "once per head");
+  assert.equal(wakes[0].task, "ACME-5");
+  assert.match(wakes[0].text, /aidenhq merge https:\/\/github.com\/acme\/app\/pull\/5 h5/);
+});
