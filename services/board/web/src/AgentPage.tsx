@@ -48,13 +48,15 @@ export function AgentPage({ agentKey, tab, go, onSignIn }: { agentKey: string; t
   const needs = open.data?.needs ?? [];
   const ongoing = open.data?.ongoing ?? [];
   const working = ongoing.find((r) => r.state === "working");
-  const paused = profile.status === "paused";
+  const paused = profile.state === "paused";
   const status = paused ? (
     <StatusDot tone="idle">Paused</StatusDot>
   ) : needs.length ? (
     <><StatusDot tone="needs">Needs you</StatusDot><span className="agp-ctx">{needs.length === 1 ? "1 task is waiting on you" : `${needs.length} tasks are waiting on you`}</span></>
-  ) : profile.status === "running" || working ? (
+  ) : profile.state === "working" || working ? (
     <><StatusDot tone="hue">Working</StatusDot>{working && <a className="agp-ctx" href={`#/t/${working.identifier}`} title={working.title}>on {working.title}</a>}</>
+  ) : profile.state === "failing" ? (
+    <><StatusDot tone="failed">Failing</StatusDot>{profile.stateNote && <span className="agp-ctx">{profile.stateNote}</span>}</>
   ) : (
     <>
       <StatusDot tone="idle">Idle</StatusDot>

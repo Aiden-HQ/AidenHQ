@@ -1,5 +1,6 @@
 // The agent page's reads (web/src/AgentPage.tsx): one agent's profile and its tasks, open and past.
-import { roster, type RosterAgent } from "./activity.js";
+import { roster, type AgentState, type RosterAgent } from "./activity.js";
+import type { KernelActivity } from "./runs.js";
 import type { ChatState } from "./chats.js";
 import type { Agent, Issue, Routine } from "./paperclip.js";
 
@@ -9,7 +10,8 @@ export interface AgentProfile {
   name: string;
   avatar?: string;
   title: string | null;
-  status: string;
+  state: AgentState;
+  stateNote?: string;
   trial: boolean;
   model: string | null;
   effort: string | null;
@@ -63,12 +65,13 @@ export interface ProfileInputs {
   agent: Agent;
   agents: Agent[];
   routines: Routine[];
+  activity: KernelActivity;
   effort: string | null;
   catalog: { name: string; marketplace?: string; tier?: string; revision?: string }[];
 }
 
-export function agentProfile({ agent, agents, routines, effort, catalog }: ProfileInputs): AgentProfile {
-  const r = roster([agent], routines, new Map())[0]!;
+export function agentProfile({ agent, agents, routines, activity, effort, catalog }: ProfileInputs): AgentProfile {
+  const r = roster([agent], routines, new Map(), activity)[0]!;
   const module = typeof agent.metadata?.module === "string" ? agent.metadata.module : "";
   const entry = catalog.find((m) => m.name === module);
   return {
@@ -77,7 +80,8 @@ export function agentProfile({ agent, agents, routines, effort, catalog }: Profi
     name: agent.name,
     ...(r.avatar ? { avatar: r.avatar } : {}),
     title: r.title,
-    status: agent.status,
+    state: r.state,
+    ...(r.stateNote ? { stateNote: r.stateNote } : {}),
     trial: r.trial,
     model: r.model,
     effort: effort || null,

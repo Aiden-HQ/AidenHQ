@@ -1,6 +1,7 @@
 // What the agents are doing: Paperclip's agent runs.
 import { z } from "zod";
 import type { Step } from "./codex-activity.js";
+import type { KernelActivity } from "./runs.js";
 import { type Agent, type Issue, type LiveRun, type PastRun, type Routine } from "./paperclip.js";
 
 const UUID = /^[0-9a-f-]{36}$/;
@@ -82,8 +83,14 @@ export interface RosterAgent {
   memberOf?: string;
   /** Its parallel jobs (an Engineer's `max_parallel`), the team's capacity. */
   maxParallel?: number;
-  /** Paperclip's status: active, idle, running, paused, error… */
-  status: string;
+  /** What the kernel's jobs say (agentState); paused is the owner's setting on the agent. A team record rolls up its members. */
+  state: AgentState;
+  /** Failing: the latest failure's first error line. */
+  stateNote?: string;
+  /** Running and waiting jobs now, and when the oldest running one started. */
+  running: number;
+  queued: number;
+  workingSince: string | null;
   trial: boolean;
   schedules: { title: string; paused: boolean; nextRunAt: string | null }[];
   lastRunAt: string | null;
@@ -135,11 +142,31 @@ function teamOf(a: Pick<Agent, "metadata">): Pick<RosterAgent, "team" | "memberO
   };
 }
 
-/** The live agents (terminated ones never show) with their schedules and newest run. */
-export function roster(agents: Agent[], routines: Routine[], last: Map<string, { at: string; status: string }>): RosterAgent[] {
-  return agents
+export type AgentState = "working" | "queued" | "idle" | "failing" | "paused";
+
+/** Working: a running kernel job. Failing: the agent's last 3 jobs all failed or were lost. Queued: waiting work. Paused: the owner's setting. */
+function agentState(a: Agent, act: KernelActivity): Pick<RosterAgent, "state" | "stateNote" | "running" | "queued" | "workingSince"> {
+  const running = act.running.filter((r) => r.agent === a.id);
+  const queued = act.queued.find((q) => q.agent === a.id)?.n ?? 0;
+  const failing = act.failing.find((f) => f.agent === a.id);
+  const workingSince = running.map((r) => r.started_at).filter((t): t is string => Boolean(t)).sort()[0] ?? null;
+  const state = a.status === "paused" ? "paused" : running.length ? "working" : failing ? "failing" : queued ? "queued" : "idle";
+  return { state, ...(failing && state === "failing" ? { stateNote: failing.error } : {}), running: running.length, queued, workingSince };
+}
+
+/** A team record never runs: it is working if any member is, failing if every member is, queued if any is waiting. */
+function rolledUp(team: RosterAgent, members: RosterAgent[]): Partial<RosterAgent> {
+  const any = (s: AgentState) => members.some((m) => m.state === s);
+  const state: AgentState = team.state === "paused" ? "paused" : any("working") ? "working" : members.length && members.every((m) => m.state === "failing") ? "failing" : members.some((m) => m.queued) ? "queued" : "idle";
+  const since = members.map((m) => m.workingSince).filter((t): t is string => Boolean(t)).sort()[0] ?? null;
+  return { state, ...(state === "failing" ? { stateNote: members[0]!.stateNote } : {}), running: members.reduce((n, m) => n + m.running, 0), queued: members.reduce((n, m) => n + m.queued, 0), workingSince: since };
+}
+
+/** The live agents (terminated ones never show) with their schedules, state and newest run. */
+export function roster(agents: Agent[], routines: Routine[], last: Map<string, { at: string; status: string }>, act: KernelActivity): RosterAgent[] {
+  const rows = agents
     .filter((a) => a.status !== "terminated")
-    .map((a) => ({
+    .map((a): RosterAgent => ({
       id: a.id,
       name: a.name,
       ...identity(a),
@@ -149,7 +176,7 @@ export function roster(agents: Agent[], routines: Routine[], last: Map<string, {
       model: shortModel(a),
       reportsTo: a.reportsTo ?? null,
       ...teamOf(a),
-      status: a.status,
+      ...agentState(a, act),
       trial: a.metadata?.trial === true,
       schedules: routines
         .filter((r) => r.assigneeAgentId === a.id && r.status !== "archived" && (r.triggers ?? []).some((t) => t.kind === "schedule" || t.nextRunAt))
@@ -157,6 +184,7 @@ export function roster(agents: Agent[], routines: Routine[], last: Map<string, {
       lastRunAt: last.get(a.id)?.at ?? null,
       lastRunStatus: last.get(a.id)?.status ?? null,
     }));
+  return rows.map((r) => (r.team && r.key ? { ...r, ...rolledUp(r, rows.filter((m) => m.memberOf === r.key)) } : r));
 }
 
 /** The user's tasks a run works on: a routine run names them in its description, any other run is on one. */

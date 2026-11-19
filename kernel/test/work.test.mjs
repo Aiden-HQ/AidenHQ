@@ -54,6 +54,18 @@ test("the board reads GET /v1/work with its key, one job included, and nothing e
   assert.equal((await get("/v1/work", "wrong")).status, 401);
 });
 
+test("activity: what waits, and the agents whose last 3 ended jobs all failed or were lost", () => {
+  const { work, records } = setup();
+  records.db.exec("CREATE TABLE wakes (key TEXT PRIMARY KEY, agent TEXT, state TEXT)");
+  records.db.prepare("INSERT INTO wakes VALUES ('w1', 'a2', 'open'), ('w2', 'a2', 'done')").run();
+  const add = (id, agent, state, ended, final) => records.db.prepare("INSERT INTO jobs (id, module, agent, task, engine, pid, log, dir, at, jobcaps, observing, live_input, state, ended, final) VALUES (?, 'dispatch', ?, 't', 'codex', 1, '', '', 1, '[]', 0, 0, ?, ?, ?)").run(id, agent, state, ended, final ?? "");
+  for (const [i, state] of ["failed", "lost", "failed"].entries()) add(`f${i}`, "bad", state, 10 + i, state === "failed" ? `The job failed: boom ${i}\nmore` : null);
+  for (const [i, state] of ["failed", "done", "failed", "failed"].entries()) add(`m${i}`, "mixed", state, 10 + i);
+  const a = work.activity();
+  assert.deepEqual(a.queued, [{ agent: "a2", n: 1 }]);
+  assert.deepEqual(a.failing, [{ agent: "bad", error: "The job failed: boom 2" }]);
+});
+
 test("the host's apply generations: the pin skips a refused apply, and a missing file is an error", async () => {
   const { fleetGenerations } = await import("../src/generations.ts");
   const dir = mkdtempSync(join(tmpdir(), "gens-"));

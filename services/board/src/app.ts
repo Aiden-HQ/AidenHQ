@@ -243,7 +243,7 @@ export function createApp(opts: AppOptions): Server {
   const cardsOf = async (state: Parameters<Records["list"]>[0], opt?: Parameters<Records["list"]>[1]) => Promise.all((await records.list(state, opt)).map(named));
 
   const sessionOf = liveActivity(opts.sessions);
-  const work = opts.work ?? { job: async () => null, task: async () => [] };
+  const work = opts.work ?? { job: async () => null, task: async () => [], activity: async () => ({ running: [], queued: [], failing: [] }) };
   const runOf = makeRuns({ work, store, grantsFile: process.env.AIDENHQ_GRANTS_FILE });
   /** The newest runs (kernel jobs) on a task, for the links to their run pages. */
   const runLinks = async (issueId: string, agents: Agent[]) =>
@@ -380,7 +380,7 @@ export function createApp(opts: AppOptions): Server {
     if (!rosterParts) return view;
     await titled([...view.sessions, ...view.finished].flatMap((x) => x.tasks));
     const [routines, last] = await rosterParts;
-    return { ...view, roster: roster(ctx.agents, routines, last) };
+    return { ...view, roster: roster(ctx.agents, routines, last, await work.activity()) };
   }
 
   /** Who is working on which task. Never fails the board: without it, cards just show no activity. */
@@ -1165,8 +1165,8 @@ export function createApp(opts: AppOptions): Server {
     // The Agents page's first paint: who is in the fleet, where each sits and its schedules (no run history; /api/agents
     // brings that, with each agent's last run, after).
     { method: "GET", path: /^\/api\/agents\/roster$/, handle: async () => {
-        const [agents, routines] = await Promise.all([pc.agents(), pc.routines().catch(() => [])]);
-        return { roster: roster(agents, routines, new Map()) };
+        const [agents, routines, act] = await Promise.all([pc.agents(), pc.routines().catch(() => []), work.activity()]);
+        return { roster: roster(agents, routines, new Map(), act) };
       },
     },
     // One agent's page (web/src/AgentPage.tsx): its profile, then its tasks. Registered before the uuid routes; a key is never a uuid.
@@ -1174,11 +1174,11 @@ export function createApp(opts: AppOptions): Server {
       method: "GET",
       path: /^\/api\/agents\/by-key\/([a-z0-9-]+)$/,
       handle: async (m) => {
-        const [agents, routines] = await Promise.all([pc.agents(), pc.routines().catch(() => [])]);
+        const [agents, routines, activity] = await Promise.all([pc.agents(), pc.routines().catch(() => []), work.activity()]);
         const agent = agentByKey(agents, m[1]!);
         if (!agent) throw new HttpError(404, "no such agent");
         const { compiled, catalog } = readSources(settingsFiles());
-        return { profile: agentProfile({ agent, agents, routines, effort: compiled?.agents?.[m[1]!]?.reasoning_effort ?? null, catalog }) };
+        return { profile: agentProfile({ agent, agents, routines, activity, effort: compiled?.agents?.[m[1]!]?.reasoning_effort ?? null, catalog }) };
       },
     },
     // The Handbook tab (agent-handbook.ts): main handbook, the owner's rules, the compiled text, the fork's state; and its history.
@@ -1434,7 +1434,7 @@ export function createApp(opts: AppOptions): Server {
         const module = moduleStates(text).find((r) => r.name === m[1]);
         if (!module) throw new HttpError(404, "no such module");
         const ctx = await context();
-        const [routines, open, live, runs, awaiting] = await Promise.all([pc.routines().catch(() => []), pc.openIssues(), pc.liveRuns(), pc.recentRuns(100), records.awaiting().catch(() => new Set<string>())]);
+        const [routines, open, live, runs, awaiting, activity] = await Promise.all([pc.routines().catch(() => []), pc.openIssues(), pc.liveRuns(), pc.recentRuns(100), records.awaiting().catch(() => new Set<string>()), work.activity()]);
         const { compiled, catalog } = readSources(settingsFiles());
         const chat = ctx.labels.find((l) => l.name === "chat");
         const lastRun = (i: Issue) => runs.find((r) => r.issueId === i.id && r.finishedAt);
@@ -1443,7 +1443,7 @@ export function createApp(opts: AppOptions): Server {
         const ongoing = tasks.flatMap((t) => [...t.needs, ...t.ongoing]).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
         return {
           module,
-          agents: mine.map(({ key, a }) => agentProfile({ agent: a, agents: ctx.agents, routines, effort: compiled?.agents?.[key]?.reasoning_effort ?? null, catalog })),
+          agents: mine.map(({ key, a }) => agentProfile({ agent: a, agents: ctx.agents, routines, activity, effort: compiled?.agents?.[key]?.reasoning_effort ?? null, catalog })),
           ongoing,
           // Its routines as compiled: on or off (quiet start pauses a schedule until the owner turns it on), and whose.
           routines: module.routines.flatMap((key) => { const r = compiled?.routines?.[key]; return r ? [{ key, title: r.title ?? key, agent: r.agent ?? "", on: r.status !== "paused", scheduled: Boolean(r.schedules?.length) }] : []; }),
