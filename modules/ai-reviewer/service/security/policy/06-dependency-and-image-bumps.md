@@ -23,7 +23,7 @@ the base of the change, in `.github/supply-chain-source-exceptions.yaml`: one fl
 `source_exceptions:`, naming the `package`, the `to` source it moves to (and `from` when it has one), the `version` when
 it is a version bump too, `approved_by: owner`, and a `reference` to where the owner said so. Code reads that file from
 the base branch, never from the change under review, and a change to the file is the owner's own tap in every repo
-(`owner-approval-record`, never the reviewer's): so an agent's PR can neither record its own approval nor edit one, and
+(`owner-path`, never the reviewer's; changed together with any other file, code refuses it): so an agent's PR can neither record its own approval nor edit one, and
 what you are shown as `APPROVED_SOURCE_EXCEPTIONS` is the owner's. Each record is labelled with the repository and base
 branch it was read from, and each part of the diff names the repository and base it is for (`### <repo> <branch> … base
 <branch>`): a record covers only the change for that same repository whose base is that same branch. A record from one
