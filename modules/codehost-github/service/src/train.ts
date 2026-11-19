@@ -9,6 +9,9 @@
 // record), and a filed bump is followed by its record until it ends; the executor launches each record once. A bump whose
 // written-down state is lost is recovered through the kernel's idempotent task filing (release:instance:<sha>) and the card
 // on that task, so a replaced process still settles the task it opened: a failed or unknown card closes it "Not landed".
+// A bump filed by a process that is gone (the runner's own ms stamp, or a train that restarted onto a newer tip) is settled by
+// a sweep on every poll: it lists the open tasks of the train's source family and acts on each one's newest card, with no
+// memory of it at all. The family is the only one it can list or close this way (kernel/src/modtasks.ts).
 //
 // Only the instance's product pin: the official modules are the product's modules/ (owner, 2026-11-18). The task is filed
 // when the bump files (no description updates as merges land), and its assignment wakes the Platform Engineer once.
@@ -21,7 +24,7 @@ type Gate = undefined | { wait: string } | { stop: string };
 export type Commit = { repo: string; sha: string; subject: string };
 export type TrainOptions = {
   dir: string; productRepo: string; instanceRepo: string; windowMinutes: number;
-  /** The kernel with this module's token: POST /v1/tasks, /v1/tasks/:id/close, /v1/writes; GET /v1/work?task=. */
+  /** The kernel with this module's token: POST /v1/tasks, /v1/tasks/:id/close, /v1/writes; GET /v1/work?task=, /v1/tasks?source=. */
   kernel(method: "GET" | "POST", path: string, body?: unknown): Promise<any>;
   github: {
     /** A repo's default branch head and whether every check on it passed. */
@@ -54,8 +57,8 @@ export function createReleaseTrain(o: TrainOptions) {
   const load = (): State => (existsSync(file) ? JSON.parse(readFileSync(file, "utf8")) : {});
   const save = (s: State) => { writeFileSync(`${file}.tmp`, JSON.stringify(s)); renameSync(`${file}.tmp`, file); };
   /** A close the kernel refuses answers false, never throws: the bump stays on record and the next poll retries it. */
-  const close = async (task: string, status: "done" | "cancelled", body: string) => {
-    try { await o.kernel("POST", `/v1/tasks/${task}/close`, { status, body }); return true; }
+  const close = async (task: string, status: "done" | "cancelled", body: string, uncarded = false) => {
+    try { await o.kernel("POST", `/v1/tasks/${task}/close`, { status, body, ...(uncarded ? { uncarded: true } : {}) }); return true; }
     catch (e) { log("release task not closed", { task, err: (e as Error).message }); return false; }
   };
 
@@ -77,13 +80,55 @@ export function createReleaseTrain(o: TrainOptions) {
     const r = await cardOn(f.task, f.record);
     if (!r || MOVING.includes(r.state)) return;
     const retry = r.state === "failed" && REFILE.test(r.text);
-    const why = r.state === "rejected" ? "the card was rejected" : r.state === "failed" || r.state === "unknown" ? `it was approved but failed: ${r.text}` : `the card was ${r.state}`;
-    const body = r.state === "done" ? "Applied: this instance runs the bump." : `**Not landed:** ${why}. ${retry ? "The same commits are filed again as the next bump." : "The next merge to the product files the next bump."}`;
+    const body = settleBody(r.state, r.text, retry);
     // A close the kernel refused leaves the flight entry where it is, so the next poll settles the task rather than abandoning it.
     if (!(await close(f.task, "done", body))) return;
     log("release bump over", { task: f.identifier, state: r.state, retry });
     if (!retry) s.lastTried = f.to;
     delete s.flight;
+  }
+
+  /**
+   * A settled bump's note: the one follow() has always written. `retry` (a land refused on a moved base or a running eval) says
+   * the same commits are filed again; no card ever filed has its own line.
+   */
+  function settleBody(state: string, text: string, retry = false, carded = true) {
+    if (state === "done") return "Applied: this instance runs the bump.";
+    if (!carded) return "**Not landed:** no apply card was ever filed. The next merge to the product files the next bump.";
+    const why = state === "rejected" ? "the card was rejected" : state === "failed" || state === "unknown" ? `it was approved but failed: ${text}` : `the card was ${state}`;
+    return `**Not landed:** ${why}. ${retry ? "The same commits are filed again as the next bump." : "The next merge to the product files the next bump."}`;
+  }
+
+  /**
+   * Every poll, whether or not this process has a bump in flight: the open tasks stamped `release:instance:` by any process (this
+   * train's 40-hex sha or the runner's old ms stamp), settled by the newest kernel.apply on each. A card still moving is left
+   * alone; a task filed by a process that is gone is closed with the note follow() writes, so it never strands. The task in
+   * flight is skipped: follow() owns it, and the two must not race to close it.
+   */
+  async function sweep(skip?: string) {
+    const open = await o.kernel("GET", "/v1/tasks?source=release:instance:");
+    for (const task of ((open?.tasks ?? []) as { id: string; identifier?: string; createdAt?: string; status?: string }[])) {
+      if (!task.id || task.id === skip) continue;
+      // One task's refused read is logged and retried next poll; it never stops the train's own follow and filing.
+      try {
+        const r = await cardOn(task.id);
+        let body: string;
+        if (!r) {
+          // Nothing filed for it: only a task past the batch window is settled, so a filing in progress is never cut off. This is
+          // the separate `uncarded` close path (only the runner's ms-stamp family, no card, no module marker): the sweep never
+          // relies on the kernel's ownership guard admitting a record-less task.
+          if (!(Date.parse(String(task.createdAt ?? "")) < now().getTime() - o.windowMinutes * 60_000)) continue;
+          body = settleBody("", "", false, false);
+        } else {
+          if (MOVING.includes(r.state) || !["done", "failed", "unknown", "rejected"].includes(r.state)) continue;
+          body = settleBody(r.state, r.text);
+        }
+        // A close the kernel refuses is logged by close() and retried on the next poll: it never throws the sweep.
+        if (await close(task.id, "done", body, !r)) log("release bump swept", { task: task.identifier ?? task.id, state: r?.state ?? "no card" });
+      } catch (e) {
+        log("release bump sweep read failed", { task: task.identifier ?? task.id, err: (e as Error).message.slice(0, 300) });
+      }
+    }
   }
 
   /** The bump's task, its commit and its kernel.apply: written down before filing, so a restart files the same one. */
@@ -143,7 +188,11 @@ export function createReleaseTrain(o: TrainOptions) {
   async function step() {
     const s = load();
     try {
+      // The task follow() is about to settle is skipped by the sweep below, even once follow() has cleared the flight.
+      const flown = s.flight?.task;
       if (s.flight) await follow(s);
+      // A bump whose task this process never had in hand is still settled: before the train decides whether it has work at all.
+      await sweep(flown);
       const instance = await o.github.text(o.instanceRepo, "instance.yaml");
       // An instance that installs releases (a `release:` key) is the kernel's updater's: the train stays idle.
       if (pinOwner(instance ?? "") !== "train") return;

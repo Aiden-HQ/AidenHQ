@@ -5,7 +5,8 @@
 // marked as the module's (`<!-- aidenhq-module:<module> -->`, which the dispatch module reads as a module's request, not the
 // owner's) and keyed by the module's `source` (`<!-- source:<source> -->`, Paperclip idempotency key pw-<sha256>): filing the
 // same source twice is one task. Its assignment wakes the agent (wakes.ts): no comment is needed to start it. The module
-// closes its own tasks (POST /v1/tasks/:task/close) when their work is moot.
+// closes its own tasks (POST /v1/tasks/:task/close) when their work is moot, and lists them by source (GET /v1/tasks?source=)
+// so a sweep with no id in hand finds the ones it filed.
 import { createHash } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
 import { neutral, type Api } from "./channels.ts";
@@ -15,6 +16,13 @@ import { agentPaused } from "../sdk/src/agent-paused.ts";
 export const MODULE_TASK = (module: string) => `<!-- aidenhq-module:${module} -->`;
 const SOURCE = /^[\w.:/@#-]{1,200}$/;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+/** The only source family a module lists, and the one the release train's sweep owns (a runner-era bump too: an ms stamp). */
+export const RELEASE_SOURCE = "release:instance:";
+const RELEASE_MARK = /<!--\s*source:(release:instance:(?:[0-9a-f]{40}|\d+))\s*-->/;
+/** The runner-era stamp alone (a millisecond count, never the train's 40-hex sha): the only card-less bump a close may settle. */
+const RUNNER_MARK = /<!--\s*source:release:instance:\d+\s*-->/;
+/** The code host files these; the family is never opened up to another module. */
+const RELEASE_MODULE = "codehost-github";
 
 export class TaskError extends Error {
   name = "TaskError";
@@ -22,12 +30,14 @@ export class TaskError extends Error {
   constructor(status: number, message: string) { super(message); this.status = status; }
 }
 
-export function createModuleTasks({ db, owner, agents, rubric, log = () => {} }: {
+export function createModuleTasks({ db, owner, agents, rubric, applies = () => [], log = () => {} }: {
   /** The kernel's database: which tasks were filed graded, by which module (the finish check holds one with no grade row). */
   db: DatabaseSync;
   owner: Api;
   /** The grants table's agents, by Paperclip id. */
   agents: () => Record<string, { roles?: string[] } | undefined>;
+  /** The kernel.apply records filed on a task (newest first), with the module that filed each. */
+  applies?: (task: string) => { module: string }[];
   /** Files the grading rubric of a task the module filed (checks.ts rubric), as that module. */
   rubric?: (task: { id: string; identifier?: string }, module: string, b: { rubric: string[]; deliverable: unknown }) => Promise<void>;
   log?: (msg: string, f?: Record<string, unknown>) => void;
@@ -37,17 +47,68 @@ export function createModuleTasks({ db, owner, agents, rubric, log = () => {} }:
    * Close a task this module filed (its marker, and no agent made it): done or cancelled, with one line why. The line carries
    * the kernel's tag (wakes.ts SELF_TAG), so it wakes nobody and is never read as the owner's words.
    */
-  async function close(module: string, id: string, b: { status?: unknown; body?: unknown }) {
+  async function close(module: string, id: string, b: { status?: unknown; body?: unknown; uncarded?: unknown }) {
     const body = typeof b.body === "string" ? neutral(b.body).trim().slice(0, 2000) : "";
     if (!UUID.test(id) || !["done", "cancelled"].includes(String(b.status)) || !body) throw new TaskError(400, "send {status: done|cancelled, body}");
     const r = await owner("GET", `/api/issues/${encodeURIComponent(id)}`);
     if (r.status !== 200) throw new TaskError(404, `no task ${id}`);
-    if (r.json.createdByAgentId || !String(r.json.description ?? "").includes(MODULE_TASK(module))) throw new TaskError(403, `${r.json.identifier ?? id} isn't a task ${module} filed`);
+    // `uncarded` is its own, narrower path for the one card-less task the sweep settles (the runner's ms stamp); the ownership
+    // guard itself never admits a task with no kernel.apply, so a record-less bump can never pass it by vacuous truth.
+    const own = String(r.json.description ?? "").includes(MODULE_TASK(module));
+    const ok = !r.json.createdByAgentId && (own || releaseBump(module, r.json) || (b.uncarded === true && runnerBumpUncarded(module, r.json)));
+    if (!ok) throw new TaskError(403, `${r.json.identifier ?? id} isn't a task ${module} filed`);
     if (["done", "cancelled"].includes(r.json.status)) return { status: String(r.json.status), already: true };
     const u = await owner("PATCH", `/api/issues/${encodeURIComponent(id)}`, { status: b.status, comment: `${body}\n\n<!-- aidenhq:job=${module.replace(/[^\w-]/g, "")} kind=status -->` });
     if (u.status >= 300) throw new TaskError(502, `the control plane answered ${u.status}`);
     log("module task closed", { module, task: r.json.identifier, status: b.status });
     return { status: String(b.status), already: false };
+  }
+
+  /**
+   * A stranded release-train bump: the sweep-era and runner-era tasks carry the train's source marker, never its module marker.
+   * It is the code host's only when no other module's marker is on it and at least one kernel.apply exists on it, every one
+   * filed by the code host: a bare id or another module's record refuses, and an empty list never passes by default.
+   */
+  function releaseBump(module: string, task: { id: string; description?: unknown }) {
+    const description = String(task.description ?? "");
+    if (module !== RELEASE_MODULE || !RELEASE_MARK.test(description) || /<!--\s*aidenhq-module:/.test(description)) return false;
+    const records = applies(task.id);
+    return records.length > 0 && records.every((c) => c.module === RELEASE_MODULE);
+  }
+
+  /**
+   * The one bump that legitimately has no card: the runner filed it straight through the control plane with its millisecond
+   * stamp (`release:instance:<ms>`) and never carded it. The candidate sweep settles exactly that task, once it is past the
+   * batch window, with "no apply card was ever filed". A separate predicate, never an empty `every()`: a 40-hex bump with no
+   * card is the current train's (it carries the module marker, closed above) and a 40-hex task without that marker is refused.
+   */
+  function runnerBumpUncarded(module: string, task: { id: string; description?: unknown }) {
+    const description = String(task.description ?? "");
+    if (module !== RELEASE_MODULE || !RUNNER_MARK.test(description) || /<!--\s*aidenhq-module:/.test(description)) return false;
+    return applies(task.id).length === 0;
+  }
+
+  /**
+   * The open tasks of this module's own source family, for a sweep that has no id in hand (the release train's stranded bumps).
+   * The control plane's listing matches the source text; each row's marker is read again here, so a task that merely mentions
+   * the family in prose is never returned. Only `release:instance:` is listable: no module reads another's tasks this way.
+   */
+  async function list(module: string, source: string) {
+    if (module !== RELEASE_MODULE || source !== RELEASE_SOURCE) throw new TaskError(400, `source: ${RELEASE_SOURCE}`);
+    const companies = await owner("GET", "/api/companies");
+    if (companies.status !== 200 || !Array.isArray(companies.json)) throw new TaskError(502, `the control plane answered ${companies.status} for its companies`);
+    const tasks: { id: string; identifier: string; status: string; createdAt: string; source: string }[] = [];
+    for (const c of companies.json as { id?: unknown }[]) {
+      const q = new URLSearchParams({ q: source, status: "backlog,todo,in_progress,in_review,blocked", limit: "200", excludeRoutineExecutions: "true" });
+      const r = await owner("GET", `/api/companies/${encodeURIComponent(String(c.id ?? ""))}/issues?${q}`);
+      if (r.status !== 200 || !Array.isArray(r.json)) throw new TaskError(502, `the control plane answered ${r.status} for a company's issues`);
+      for (const i of r.json as { id?: unknown; identifier?: unknown; status?: unknown; createdAt?: unknown; description?: unknown }[]) {
+        const found = RELEASE_MARK.exec(String(i.description ?? ""))?.[1];
+        if (!found) continue;
+        tasks.push({ id: String(i.id ?? ""), identifier: String(i.identifier ?? ""), status: String(i.status ?? ""), createdAt: String(i.createdAt ?? ""), source: found });
+      }
+    }
+    return { tasks: tasks.filter((t) => t.id) };
   }
 
   async function file(module: string, b: { title?: unknown; description?: unknown; role?: unknown; agent?: unknown; source?: unknown; parent?: unknown; deliverable?: unknown; rubric?: unknown }) {
@@ -85,6 +146,6 @@ export function createModuleTasks({ db, owner, agents, rubric, log = () => {} }:
     log("module task filed", { module, task: r.json.identifier, agent, source: b.source, deduplicated: Boolean(r.json.deduplicated) });
     return { id: String(r.json.id), identifier: String(r.json.identifier ?? ""), agent, deduplicated: Boolean(r.json.deduplicated) };
   }
-  return { file, close };
+  return { file, close, list };
 }
 export type ModuleTasks = ReturnType<typeof createModuleTasks>;

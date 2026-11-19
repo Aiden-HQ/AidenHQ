@@ -105,6 +105,7 @@ Your configuration lives in a separate private **instance repo**: `instance.yaml
 | [docs/USAGE.md](docs/USAGE.md) | How to use it day to day |
 | [docs/setup.md](docs/setup.md) | Manual setup, step by step, and reference: connections, shared access |
 | [docs/configuration.md](docs/configuration.md) | Modules, the instance repo, settings, grants, the compile pipeline |
+| [docs/modules.md](docs/modules.md) | The kernel contract a module author builds against: file, list and close tasks |
 | [docs/architecture.md](docs/architecture.md) | Components, data flow and trust boundaries |
 | [docs/core-components.md](docs/core-components.md) | Our core components and what each adds over Paperclip |
 | [docs/operations.md](docs/operations.md) | Apply, upgrade, rollback, health, backups, pruning, debugging |
