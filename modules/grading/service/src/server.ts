@@ -35,11 +35,12 @@ export function createGrading({ db, kernel, keys, kernelUrl = "", jwks = kernelJ
   };
 
   /** The finish check (spec §3.5): the board's completion gate as it was, answered as a verdict the kernel acts on. */
-  async function finish(b: { task?: Issue; agent?: string | null; via?: string }) {
+  async function finish(b: { task?: Issue & { graded?: boolean }; agent?: string | null; via?: string }) {
     const issue = b.task!;
     if (!issue?.id || typeof b.via !== "string") throw new HttpError(400, "send {task, agent, via}");
     // Ungraded (no row): pass before anything else, so the gate never blocks other closes.
-    if (!grades.get(issue.id)) return { verdict: "ok" };
+    // A task filed with a rubric whose row isn't there (the filing failed after the task was made) never passes ungraded.
+    if (!grades.get(issue.id)) return b.task!.graded ? { verdict: "deny", status: 409, reason: "this task is graded and its rubric isn't filed yet: its filer files it again" } : { verdict: "ok" };
     const runner = b.via === "finish_turn" || b.via === "finish_merges";
     if (!runner && !b.agent) return { verdict: "deny", status: 403, reason: "only an agent's own close or the runner's moves a graded task" };
     // A cancelled task is never graded or moved by a late close: its row ends, and the close is refused before the hold
@@ -102,6 +103,8 @@ export function createGrading({ db, kernel, keys, kernelUrl = "", jwks = kernelJ
     const f = parseFiling({ issue: b.task.id, rubric: b.rubric, deliverable: b.deliverable });
     await refAllowed(f.deliverable);
     const r = grades.file(b.task.id, f.rubric, f.deliverable);
+    // A row already there stays as its filer made it: the same filing again is a retry, any other is refused.
+    if (!r.created && (JSON.stringify(r.grade.rubric) !== JSON.stringify(f.rubric) || JSON.stringify(r.grade.deliverable) !== JSON.stringify(f.deliverable))) throw new HttpError(409, "this task already has another rubric");
     if (r.created) log("rubric filed for a module's task", { task: b.task.id, module: b.module, kind: f.deliverable.kind, criteria: f.rubric.length });
     return { verdict: "ok", created: r.created };
   }

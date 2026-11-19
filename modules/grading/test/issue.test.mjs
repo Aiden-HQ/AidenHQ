@@ -36,7 +36,7 @@ test("a module-filed task with a rubric is graded: an open issue reopens it, a c
   };
   let gh = { state: "OPEN", stateReason: null, closedAt: null, closedEvents: { nodes: [] }, comments: { nodes: [] }, labels: { nodes: [{ name: "fix" }] } };
   const pr = { number: 9, state: "MERGED", mergedAt: "2026-11-19T10:00:00Z", mergeCommit: { oid: "b".repeat(40) }, headRefOid: "a".repeat(40) };
-  const github = { issue: async () => ({ repository: { issue: gh } }), pr: async () => ({ repository: { pullRequest: pr } }), diff: async () => "" };
+  const github = { issue: async () => ({ repository: { issue: gh }, appSlug: "aidenhq-app" }), pr: async () => ({ repository: { pullRequest: pr } }), diff: async () => "" };
   const db = new DatabaseSync(":memory:");
   const { server, runner, grades } = createGrading({ db, kernel: { issue: async () => issue, settings: async () => ({}), release: async () => {} }, keys: { check: KEY, board: "b" } });
   await new Promise((r) => server.listen(0, "127.0.0.1", r));
@@ -49,6 +49,11 @@ test("a module-filed task with a rubric is graded: an open issue reopens it, a c
   assert.equal((await file(KEY, { ...body, deliverable: { kind: "issue", ref: "acme/app" } })).status, 400, "an issue deliverable names owner/name#number");
   assert.equal((await file(KEY, body)).status, 200);
   assert.equal(grades.get("t1").state, "open");
+  assert.equal((await file(KEY, body)).status, 200, "the same filing again is a retry");
+  assert.equal((await file(KEY, { ...body, rubric: [...DONE].reverse() })).status, 409, "a row stays as its filer made it");
+  const finish = (graded, id = "t2") => fetch(`http://127.0.0.1:${server.address().port}/check/finish`, { method: "POST", headers: { authorization: `Bearer ${KEY}`, "content-type": "application/json" }, body: JSON.stringify({ task: { ...issue, id, ...(graded ? { graded } : {}) }, agent: "mnt", tool: "task_finish", via: "task_finish" }) }).then((r) => r.json());
+  assert.equal((await finish(true)).verdict, "deny", "a task marked graded with no row never passes ungraded");
+  assert.equal((await finish(false)).verdict, "ok");
 
   const loop = createKernelGradeLoop({ db, runner, due: () => ({ grades: grades.due(), resubmitted: [] }), kernel, kernelBytes: async () => { throw new Error("no bytes"); }, apps: async () => { throw new Error("no apps"); }, gatewayUrl: `http://127.0.0.1:${gateway.address().port}`, github, log: () => {} });
   completionGate(grades, "t1", "finish_turn"); // the Maintainer finishes with the issue still open
@@ -73,4 +78,21 @@ test("a module-filed task with a rubric is graded: an open issue reopens it, a c
   assert.match(prompts.at(-1), /closed as completed at 2026-11-19T10:05:00Z by aidenhq-app/);
   assert.match(prompts.at(-1), /acme\/app\/pull\/9: merged at 2026-11-19T10:00:00Z/, "the cited PR's merge is read by code");
   assert.equal(grades.get("t1").state, "satisfied");
+});
+
+test("issue evidence counts a close only by the App or an owner, member or collaborator, and a fix PR only in the issue's repo", async () => {
+  const { issueEvidence } = await import("../service/src/grader/evidence.ts");
+  const issue = (closer, association, body) => ({ repository: { issue: { state: "CLOSED", stateReason: "COMPLETED", closedAt: "2026-11-19T10:05:00Z", labels: { nodes: [] }, closedEvents: { nodes: [{ actor: { login: closer } }] },
+    comments: { nodes: [{ author: { login: closer }, authorAssociation: association, createdAt: "2026-11-19T10:04:50Z", body }] } } }, appSlug: "aidenhq-app" });
+  const read = [];
+  const pr = async (repo, n) => (read.push(`${repo}#${n}`), { repository: { pullRequest: { state: "MERGED", mergeCommit: { oid: "b".repeat(40) } } } });
+  const ev = async (closer, assoc, body) => issueEvidence("acme/app#7", { issue: async () => issue(closer, assoc, body), pr });
+  const fake = await ev("stranger", "NONE", "Fixed by acme/app#9");
+  assert.match(fake.facts.join("\n"), /the close does not count/);
+  assert.deepEqual(read, [], "an untrusted close's PR is never read");
+  assert.match((await ev("aidenhq-app[bot]", "NONE", "Fixed by acme/app#9")).facts.join("\n"), /pull\/9: merged/);
+  assert.match((await ev("maintainer", "MEMBER", "Fixed by acme/app#9")).facts.join("\n"), /pull\/9: merged/);
+  const other = await ev("aidenhq-app", "NONE", "Fixed by evil/repo#1");
+  assert.match(other.facts.join("\n"), /not in acme\/app/);
+  assert.deepEqual(read, ["acme/app#9", "acme/app#9"]);
 });

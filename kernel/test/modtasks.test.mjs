@@ -62,6 +62,13 @@ test("a module's task goes to the agent holding the role, once per source, marke
   assert.equal((await file("codehost", { ...graded, rubric: undefined })).status, 400, "a deliverable without its rubric is refused");
   assert.equal((await file("codehost", graded)).status, 200);
   assert.deepEqual(rubrics.map((r) => [r.module, r.deliverable.kind, r.rubric.length]), [["codehost-github", "issue", 3]]);
+  // The graded task carries its marker from creation (the finish check holds it until its row exists); a dedup hit on a task
+  // that isn't this module's own graded one takes no rubric.
+  const gradedTask = [...made.values()].find((i) => i.description.includes("source:graded:1"));
+  assert.match(gradedTask.description, /<!-- aidenhq-graded -->$/);
+  gradedTask.description = gradedTask.description.replace("<!-- aidenhq-graded -->", "");
+  assert.equal((await file("codehost", graded)).status, 409, "a rubric is never attached to a task that wasn't filed graded");
+  assert.equal(rubrics.length, 1);
   // It closes its own task, tagged so the line wakes nobody; another module can't.
   const close = (key, b) => fetch(`${url}/v1/tasks/${issue.id}/close`, { method: "POST", headers: { authorization: `Bearer ${key}` }, body: JSON.stringify(b) });
   const otherTasks = { ...who.other, roles: ["kernel.tasks"], module: "github" };

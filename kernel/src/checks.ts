@@ -18,11 +18,12 @@ import type { Api } from "./channels.ts";
 import type { Resolver } from "./net.ts";
 import { gateMode } from "./gates.ts";
 import { fail } from "./proxy.ts";
+import { GRADED_TASK } from "./modtasks.ts";
 
 export type Check = { module: string; at: string; url: string; rubric?: string; auth_secret: string; agents?: string[]; label?: string; mode?: "observe" };
 type Verdict = { verdict: "ok" | "hold" | "pending" | "reopen" | "deny"; reason?: string; until?: string; state?: string; status?: number; unlabel?: boolean; accepts?: boolean };
 export type Finish = { pass: true } | { pass: false; held: true; state: string; reason: string } | { pass: false; reopened: true; reason: string };
-type Issue = { id: string; identifier?: string; companyId?: string; status?: string; assigneeAgentId?: string | null; assigneeUserId?: string | null; createdByAgentId?: string | null; parentId?: string | null; labelIds?: string[]; labels?: { id: string }[]; executionPolicy?: Record<string, unknown> | null };
+type Issue = { id: string; identifier?: string; companyId?: string; status?: string; assigneeAgentId?: string | null; assigneeUserId?: string | null; createdByAgentId?: string | null; parentId?: string | null; description?: string; labelIds?: string[]; labels?: { id: string }[]; executionPolicy?: Record<string, unknown> | null };
 /** A hold's resolving verdicts and the status each moves the task to. */
 const RESOLVES = new Map([["ok", "done"], ["reopen", "todo"], ["block", "blocked"]]);
 const VERDICTS = ["ok", "hold", "pending", "reopen", "deny"];
@@ -129,7 +130,7 @@ export function createChecks({ db, registry, owner, secret, resolver, agentKey =
     const scoped = all.filter(([, c]) => !c.agents?.length || (key !== undefined && c.agents.includes(key)));
     const mine = scoped.filter(([, c]) => c.mode !== "observe");
     const observing = scoped.filter(([, c]) => c.mode === "observe");
-    const task = { id: i.id, identifier: i.identifier, status: i.status, assigneeAgentId: i.assigneeAgentId ?? null, assigneeUserId: i.assigneeUserId ?? null, createdByAgentId: i.createdByAgentId ?? null, parentId: i.parentId ?? null };
+    const task = { id: i.id, identifier: i.identifier, status: i.status, assigneeAgentId: i.assigneeAgentId ?? null, assigneeUserId: i.assigneeUserId ?? null, createdByAgentId: i.createdByAgentId ?? null, parentId: i.parentId ?? null, ...(i.description?.includes(GRADED_TASK) ? { graded: true } : {}) };
     const body = { task, agent: caller.agent ?? null, tool: caller.tool ?? null, via: caller.via };
     // Observing checks run beside the gate and never change its outcome.
     const watched = Promise.all(observing.map(async ([id, c]) => {

@@ -11,6 +11,8 @@ import { neutral, type Api } from "./channels.ts";
 
 /** The marker of a task a module filed (dispatch thread.ts reads it). */
 export const MODULE_TASK = (module: string) => `<!-- aidenhq-module:${module} -->`;
+/** Set at creation on a task filed with a rubric: the finish check holds it until its grade row exists (checks.ts). */
+export const GRADED_TASK = "<!-- aidenhq-graded -->";
 const SOURCE = /^[\w.:/@#-]{1,200}$/;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -67,11 +69,14 @@ export function createModuleTasks({ owner, agents, rubric, log = () => {} }: {
     if (a.status !== 200 || !a.json?.companyId) throw new TaskError(502, `the control plane answered ${a.status} for the agent`);
     if (agentPaused(a.json)) throw new TaskError(409, `${role || "the"} agent ${agent} is paused`);
     const r = await owner("POST", `/api/companies/${encodeURIComponent(String(a.json.companyId))}/issues`, {
-      title, description: `${description}\n\n<!-- source:${b.source} -->\n${MODULE_TASK(module)}`, status: "todo", priority: "medium",
+      title, description: `${description}\n\n<!-- source:${b.source} -->\n${MODULE_TASK(module)}${graded ? `\n${GRADED_TASK}` : ""}`, status: "todo", priority: "medium",
       assigneeAgentId: agent, assigneeUserId: null, allowDuplicate: true, ...(b.parent ? { parentId: b.parent } : {}),
-      idempotencyKey: `pw-${createHash("sha256").update(b.source).digest("hex").slice(0, 32)}`,
+      // A graded task's key names its module, so another module's source can never hit it (and its rubric is never attached to it).
+      idempotencyKey: `pw-${createHash("sha256").update(graded ? `${module}\0${b.source}` : b.source).digest("hex").slice(0, 32)}`,
     });
     if (r.status >= 300 || !r.json?.id) throw new TaskError(502, `the control plane answered ${r.status}`);
+    // A task this filing didn't create (a dedup hit) takes a rubric only when it is this module's own, graded from its creation.
+    if (graded && r.json.deduplicated && (r.json.createdByAgentId || !String(r.json.description ?? "").includes(MODULE_TASK(module)) || !String(r.json.description ?? "").includes(GRADED_TASK))) throw new TaskError(409, `${r.json.identifier ?? "that task"} isn't a graded task ${module} filed`);
     if (graded) await rubric!({ id: String(r.json.id), identifier: String(r.json.identifier ?? "") }, module, { rubric: b.rubric as string[], deliverable: b.deliverable }).catch((e: { name?: string; status?: number; message: string }) => { throw new TaskError(e.status ?? 502, `the task is filed but not graded (${e.message}): file it again`); });
     log("module task filed", { module, task: r.json.identifier, agent, source: b.source, deduplicated: Boolean(r.json.deduplicated) });
     return { id: String(r.json.id), identifier: String(r.json.identifier ?? ""), agent, deduplicated: Boolean(r.json.deduplicated) };

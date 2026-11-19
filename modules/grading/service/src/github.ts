@@ -31,15 +31,16 @@ const ISSUE_QUERY = `query($owner: String!, $repo: String!, $number: Int!) {
 }`;
 
 export function createGithub({ kernel, fetchFn = fetch, api = "https://api.github.com" }: { kernel: KernelCall; fetchFn?: typeof fetch; api?: string }) {
-  const tokens = new Map<string, { token: string; until: number }>();
+  const tokens = new Map<string, { token: string; until: number; app: string }>();
   const token = async (repo: string) => {
     if (!SLUG.test(repo)) throw new Error(`${repo} is not owner/name`);
     const hit = tokens.get(repo.toLowerCase());
     if (hit && hit.until > Date.now()) return hit.token;
     const t = await kernel("POST", "/v1/codehost/token", { repo, perms: PERMS });
-    tokens.set(repo.toLowerCase(), { token: t.token, until: Date.parse(t.expires_at) - 5 * 60_000 });
+    tokens.set(repo.toLowerCase(), { token: t.token, until: Date.parse(t.expires_at) - 5 * 60_000, app: String(t.app?.slug ?? "") });
     return t.token as string;
   };
+  const appOf = (repo: string) => tokens.get(repo.toLowerCase())?.app ?? "";
   const call = async (repo: string, path: string, init: RequestInit, accept = "application/vnd.github+json") => {
     const r = await fetchFn(`${api}${path}`, { ...init, headers: { authorization: `Bearer ${await token(repo)}`, accept, "content-type": "application/json", "user-agent": "aidenhq-grading" }, signal: AbortSignal.timeout(60_000) });
     if (!r.ok) throw new Error(`GitHub ${path} → ${r.status}`);
@@ -58,7 +59,7 @@ export function createGithub({ kernel, fetchFn = fetch, api = "https://api.githu
       const [owner, name] = repo.split("/");
       const r = await (await call(repo, "/graphql", { method: "POST", body: JSON.stringify({ query: ISSUE_QUERY, variables: { owner, repo: name, number } }) })).json();
       if (r.errors?.length || !r.data?.repository?.issue) throw new Error(`GitHub has no readable ${repo}#${number}: ${JSON.stringify(r.errors ?? []).slice(0, 200)}`);
-      return r.data;
+      return { ...r.data, appSlug: appOf(repo) };
     },
     diff: async (repo: string, number: number): Promise<string> => (await call(repo, `/repos/${repo}/pulls/${number}`, {}, "application/vnd.github.diff")).text(),
   };
