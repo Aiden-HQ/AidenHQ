@@ -317,6 +317,16 @@ test("flow_report gives a waterfall's stages and idle periods, never its raw fac
   assert.deepEqual(r, { task: "t1", stages: [], idle: [] });
 });
 
+test("flow_report's summary carries the insights and the journey's slowest and most reworked items as phase blocks", async () => {
+  const asked = [];
+  const item = (n) => ({ subject: `pr:acme/app#${n}`, url: null, title: "t", author_kind: "agent", identifier: null, state: "open", total_s: 60, facts: [{}], blocks: [{ phase: "ci", start: "2026-11-19T00:00:00Z", end: "2026-11-19T00:01:00Z", rounds: 2, idle_s: 0, idle: {} }] });
+  const flow = async (q) => { asked.push(q); return q.journeys ? { journeys: [{ name: "pr", label: "Pull requests", phases: [{ name: "ci", label: "CI" }] }] } : q.journey ? { items: [item(q.sort === "slowest" ? 1 : 2)] } : { stages: [], insights: { bottlenecks: [] } }; };
+  const r = await fleetTools({ flow }).find((t) => t.name === "flow_report").run({ since: "2026-11-12" });
+  assert.deepEqual(r.insights, { bottlenecks: [] });
+  assert.deepEqual([r.journey.slowest[0].subject, r.journey.most_rounds[0].subject, r.journey.slowest[0].blocks], ["pr:acme/app#1", "pr:acme/app#2", [{ phase: "ci", seconds: 60, rounds: 2, idle_s: 0 }]]);
+  assert.deepEqual(asked.at(-1), { journey: "pr", sort: "rounds", limit: "5", since: "2026-11-12" });
+});
+
 test("dispatch stalled: queued wakes with no job started for 15 minutes tell the owner once; a recent start is not a stall", async () => {
   const run = async (oldest, started) => {
     const sent = [];
