@@ -5,7 +5,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import pino from "pino";
 import { z } from "zod";
-import { MultiWorkspace } from "./accounts.js";
+import { healthBody, MultiWorkspace } from "./accounts.js";
 import { FixtureWorkspace } from "./fixtures.js";
 import { GoogleAuthError } from "./google.js";
 import { Reconnect, ReconnectError } from "./reconnect.js";
@@ -40,7 +40,8 @@ type WorkspaceLike = Pick<MultiWorkspace, "listEvents" | "getEvent" | "recentFil
   Partial<Pick<MultiWorkspace, "readDoc" | "gmailSearch" | "gmailThread" | "accounts">> & { primary?: string };
 let workspace: WorkspaceLike | undefined;
 let multi: MultiWorkspace | undefined;
-let authError: string | undefined;
+let authError: unknown;
+const authMessage = () => (authError instanceof Error ? authError.message : undefined);
 const fixturesDir = process.env.GOOGLE_FIXTURES_DIR;
 
 /** (Re)loads the accounts: at start, after a reconnect from the board, and when google-auth.sh rewrites the file. */
@@ -53,7 +54,7 @@ function loadWorkspace() {
     void checkAuth();
   } catch (err) {
     // A file caught mid-write keeps the accounts already loaded; the next change reloads.
-    if (!workspace) authError = (err as Error).message;
+    if (!workspace) authError = err;
     log.warn({ err: (err as Error).message }, "Google credentials not available; tools will report an auth error");
   }
 }
@@ -99,7 +100,7 @@ function buildServer(): McpServer {
   const run =
     <A,>(name: string, fn: (ws: WorkspaceLike, a: A) => Promise<unknown>) =>
     async (a: A) => {
-      if (!workspace) return { isError: true, content: [{ type: "text" as const, text: JSON.stringify({ error: "google_auth_unavailable", detail: authError }) }] };
+      if (!workspace) return { isError: true, content: [{ type: "text" as const, text: JSON.stringify({ error: "google_auth_unavailable", detail: authMessage() }) }] };
       try {
         return { content: [{ type: "text" as const, text: JSON.stringify(await fn(workspace, a), null, 2) }] };
       } catch (err) {
@@ -226,7 +227,7 @@ const FinishSchema = z.object({ state: z.string().min(16).max(100), code: z.stri
 async function handleAuth(req: IncomingMessage, path: string): Promise<[number, unknown]> {
   if (path === "/auth/status" && req.method === "GET") {
     if (fixturesDir) return [200, { accounts: [] }];
-    return [200, { accounts: multi?.authStatus() ?? [], ...(authError ? { error: authError } : {}) }];
+    return [200, { accounts: multi?.authStatus() ?? [], ...(authError ? { error: authMessage() } : {}) }];
   }
   if (req.method !== "POST") return [405, { error: "method not allowed" }];
   try {
@@ -252,7 +253,7 @@ async function handleAuth(req: IncomingMessage, path: string): Promise<[number, 
 const http = createServer(async (req, res) => {
   const url = new URL(req.url ?? "/", "http://localhost");
   if (url.pathname === "/healthz") {
-    res.writeHead(workspace ? 200 : 503, { "content-type": "application/json" }).end(JSON.stringify({ ok: !!workspace, detail: authError }));
+    res.writeHead(workspace ? 200 : 503, { "content-type": "application/json" }).end(JSON.stringify(healthBody(!!workspace, authError)));
     return;
   }
   if (url.pathname.startsWith("/auth/")) {

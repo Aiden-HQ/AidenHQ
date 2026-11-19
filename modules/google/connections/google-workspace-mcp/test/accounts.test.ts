@@ -2,7 +2,7 @@ import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { loadAccounts, readCredentials } from "../src/accounts.js";
+import { healthBody, loadAccounts, readCredentials } from "../src/accounts.js";
 
 const file = (content: unknown) => {
   const p = join(mkdtempSync(join(tmpdir(), "gacc-")), "creds.json");
@@ -65,5 +65,18 @@ describe("the guided flow", () => {
     expect(steps).toContain("`{board_url}/google/callback`");
     expect(steps.length).toBeLessThan(1500);
     expect(steps).toContain("https://console.cloud.google.com/projectcreate");
+  });
+});
+
+describe("healthBody", () => {
+  it("answers state missing when no Google account is connected, and a plain failure for a file that won't load", () => {
+    const dir = mkdtempSync(join(tmpdir(), "gh-"));
+    const caught = (path: string) => { try { loadAccounts(path); } catch (e) { return e; } };
+    const empty = caught(join(dir, "absent.json"));
+    expect(healthBody(false, empty)).toMatchObject({ ok: false, state: "missing" });
+    const bad = join(dir, "bad.json");
+    writeFileSync(bad, "{not json");
+    expect(healthBody(false, caught(bad))).not.toHaveProperty("state");
+    expect(healthBody(true)).toEqual({ ok: true });
   });
 });
