@@ -37,8 +37,8 @@ agent, never to the owner.
   runner's daily cache sweep, the same schedule as its other cache work; a host lost takes them with it.
 - **Authority-expanding goes to the panel.** A change is authority-expanding when it weakens an approval,
   authentication, sandbox or secret control, changes who can approve, widens credentials, grants, public access, data
-  destinations or spending, or edits the gate's own core. Code decides most of it (`GATE_CORE` in the platform check,
-  `modules/platform/src/check.mjs`, the git rules in `modules/github/src/plan.mjs`, the module and apply rules in
+  destinations or spending, or edits the gate's own core. Code decides most of it (the path inventory `paths.yaml`, which the kernel reads for every
+  push, PR and merge, the platform check `modules/platform/src/check.mjs`, the git rules in `modules/github/service/src/plan.mjs`, the module and apply rules in
   `tiers.mjs`, `panel: true`): the runner's `tiers`, `review-request`, `siblings`, `apply`, `netjail`, `state`, `config`,
   `main`, the code host module (`modules/github/`: the GitHub App, git, workspaces, the merge gate and the git
   rules), the platform check, the merge queue, and what a job can reach: `engines` (its sandbox, mounts and env),
@@ -114,7 +114,7 @@ Typical assignments in `tiers.mjs` (read the file for the full rules):
 | Merge outside the agents org (no red or missing checks, head unmoved) | 1 + panel |
 | Push to an agents-org repo's default or deploy branch | 1 + panel |
 | Merge with no named checks, red checks or a moved head; the instance repo | refused (back to the agent) |
-| Product repo, Platform Engineer's line: push of a non-default branch, PR, or merge (any head, no red named check) | 1 (a role holder's handbook included); + panel for the gate's core, grants, tools, models, roles, images, settings, credentials or `codex_args` in a `module.yaml`, compose beyond image versions |
+| Product repo, Platform Engineer's line: push of a non-default branch, PR, or merge (any head, no red named check) | 1; + panel for the gate's core and any compose file (`paths.yaml`); a `module.yaml`'s new authority is judged at the apply that brings it; the owner-approval records (`.github/supply-chain-source-exceptions.yaml`) the owner's, alone |
 | Product repo, any other Engineer job: PR, or merge of a head its own task pushed (no `.github/` change, no red named check) | 1 |
 | Product repo: push to the default branch; from outside the line, a bare push, a `.github/` change, or a merge of another requester's head | refused |
 | `apply`: new trial agent on a task the owner started | 0 |
