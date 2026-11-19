@@ -1154,7 +1154,7 @@ const CODEHOST_SCHEMA = JSON.parse(readFileSync(new URL("../kernel/schemas/codeh
 /** The fact types the kernel itself records (docs/design/flow.md): a module may name them in a stage, never declare them. */
 export const KERNEL_FACT_TYPES = ["record.filed", "record.decided", "record.held", "record.claimed", "record.landed", "record.failed", "gate.would_block",
   "job.queued", "job.held", "job.started", "job.ended", "task.created", "task.status_changed", "task.assignee_changed", "task.blocked_changed", "task.commented",
-  "wake.opened", "wake.bound", "wake.dropped", "check.ended", "deploy.applied", "pr.deployed"];
+  "wake.opened", "wake.bound", "wake.dropped", "check.ended", "deploy.applied", "pr.deployed", "finish.verdict"];
 const FACT_TYPE = /^[a-z][a-z0-9_]*\.[a-z][a-z0-9_]*$/;
 /**
  * A module's flow declarations: `facts:` (type -> {subject?, reasons?}) the module may POST to /v1/facts (role kernel.facts), and

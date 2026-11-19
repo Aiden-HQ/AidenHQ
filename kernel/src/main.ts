@@ -104,6 +104,8 @@ const cpJson = async (p: string) => { const r = await cpApi(p); if (!r.ok) throw
 const records = openRecords(path.join(dataDir, "kernel", "kernel.db"));
 // Flow's fact log (facts.ts) on the same file, so a kernel change and its fact commit together.
 const facts = openFacts(records.db);
+// Facts are kept 400 days (docs/design/flow.md §8).
+setInterval(() => { try { facts.prune(); } catch (e) { log("facts prune failed", { error: String((e as Error).message) }); } }, 864e5).unref();
 // Flow's stages: the kernel's plus every module's declared ones (module.yaml `stages:`), read from the watched modules file.
 const stages = (): Stage[] => [...KERNEL_STAGES, ...Object.entries(modulesFile().modules ?? {}).flatMap(([module, m]) => (m.stages ?? []).map((s) => ({ ...s, module })))];
 // Tasks kernel jobs create (provenance.ts): the routine trace reads them first.
