@@ -9,6 +9,7 @@
 import { ownSecrets } from "./services.ts";
 import { forksOf, marketplacesOf, OFFICIAL, OFFICIAL_URL } from "./sources.ts";
 import { SENSITIVITIES } from "../../kernel/src/paths.ts";
+import { heir } from "../../kernel/src/successor.ts";
 
 type Dict = Record<string, unknown>;
 export type ModuleDef = Dict;
@@ -20,7 +21,7 @@ export type ModuleDiff = { module: string; changes: Change[]; code: boolean };
  * it is read from the product's own modules/ at the pinned commit (sources.ts officialSides), so CI, the AI reviewer and
  * its eval passed it at merge; absent is not official.
  */
-export type ModuleInput = { base?: ModuleDef; head?: ModuleDef; codeChanged: boolean; textChanged?: boolean; replacing?: { name: string; def: ModuleDef }; origin?: { base?: string; head?: string }; conns?: Dict; official?: boolean };
+export type ModuleInput = { base?: ModuleDef; head?: ModuleDef; codeChanged: boolean; textChanged?: boolean; replacing?: { name: string; def?: ModuleDef }[]; origin?: { base?: string; head?: string }; conns?: Dict; official?: boolean };
 
 const isMap = (v: unknown): v is Dict => !!v && typeof v === "object" && !Array.isArray(v);
 const map = (v: unknown): Dict => (isMap(v) ? v : {});
@@ -136,18 +137,54 @@ export function renamed(def: ModuleDef, from: string, to: string): ModuleDef {
   return out;
 }
 
+/** Sections joined entry by entry (an entry is compared whole), and sections joined key by key, when B takes A's place. */
+const KEYED = new Set(["connections", "writes", "settings", "agents", "providers", "facts", "services.run", "services.grants"]);
+const NESTED = new Set(["secrets", "roles", "services"]);
+
+/**
+ * B's base joined with A's def (renamed into B's namespace), for a replace: what either had is not new in `head`. Lists are
+ * joined as sets. An entry (a connection, write kind, setting, agent, provider, service, grant) or a value both define and
+ * that differs counts as had only when B's head equals one of the two whole; otherwise `conflict` names it, the owner's,
+ * and B's own is kept. Keys that hand out nothing (PLAIN) stay B's.
+ */
+function join(b: Dict, a: Dict, h: Dict, conflict: (where: string) => void, path = ""): Dict {
+  const out: Dict = { ...b };
+  const pick = (bv: unknown, av: unknown, hv: unknown, where: string) => (eq(hv, bv) ? bv : eq(hv, av) ? av : (conflict(where), bv));
+  for (const k of Object.keys(a)) {
+    const p = path ? `${path}.${k}` : k;
+    if (!(k in b)) out[k] = a[k];
+    else if (eq(b[k], a[k])) continue;
+    else if (Array.isArray(b[k]) && Array.isArray(a[k])) out[k] = [...(b[k] as unknown[]), ...(a[k] as unknown[]).filter((x) => !(b[k] as unknown[]).some((y) => eq(x, y)))];
+    else if (!path && PLAIN.has(k)) continue;
+    else if (NESTED.has(p) && isMap(b[k]) && isMap(a[k])) out[k] = join(b[k], a[k], map(h[k]), conflict, p);
+    else if (KEYED.has(p) && isMap(b[k]) && isMap(a[k])) {
+      const [be, ae, he] = [b[k] as Dict, a[k] as Dict, map(h[k])];
+      out[k] = { ...be, ...Object.fromEntries(Object.keys(ae).map((e) => [e, e in be ? pick(be[e], ae[e], he[e], `${p} ${e}`) : ae[e]])) };
+    } else out[k] = pick(b[k], a[k], h[k], p);
+  }
+  return out;
+}
+
 /**
  * What `head` hands out that `base` did not. `base` undefined: an install (diffed against nothing); `head` undefined: a
- * remove. `replacing`: B replaces A in this change, so B is diffed against A's def renamed into B's namespace.
+ * remove. `replacing`: B takes each A's place in this change. With A's def (moduleInputs: its successor), B is diffed against
+ * its own base joined with A's def renamed into B's namespace (join), so authority moved from A is not new; without it, the
+ * claim alone is the owner's.
  */
-export function authorityDiff(name: string, base: ModuleDef | undefined, head: ModuleDef | undefined, codeChanged: boolean, replacing?: { name: string; def: ModuleDef }, origin: { base?: string; head?: string } = {}, conns: Dict = {}, official = false): ModuleDiff {
+export function authorityDiff(name: string, base: ModuleDef | undefined, head: ModuleDef | undefined, codeChanged: boolean, replacing: { name: string; def?: ModuleDef }[] = [], origin: { base?: string; head?: string } = {}, conns: Dict = {}, official = false): ModuleDiff {
   const changes: Change[] = [];
   const owner = (what: string) => changes.push({ what, owner: true, ...(official ? {} : { ownerOnly: true as const }) });
   const spend = (what: string) => changes.push({ what, owner: true, ownerOnly: true });
   const review = (what: string) => changes.push({ what, owner: false });
-  if (replacing && head) {
-    base = renamed(replacing.def, replacing.name, name);
-    review(`replaces ${id(replacing.name)}`);
+  if (head) {
+    for (const r of replacing) {
+      if (!r.def) {
+        owner(`replaces ${id(r.name)}, but is not its one official successor: nothing it had carries over`);
+        continue;
+      }
+      base = join(base ?? {}, renamed(r.def, r.name, name), head, (w) => owner(`${w}: ${id(name)} and ${id(r.name)} both had it, and it is neither one now`));
+      review(`replaces ${id(r.name)}`);
+    }
   }
   if (!head) {
     const enforces = [list(base?.checks).length && "a check", map(map(base?.providers)).reviewer && "a reviewer", map(map(base?.providers)).executor && "an executor"].filter(Boolean);
@@ -158,7 +195,7 @@ export function authorityDiff(name: string, base: ModuleDef | undefined, head: M
   const b = base ?? {};
   // Code from off the official repository's main (sources.ts onOfficialMain: "unreviewed") is the owner's, as a fork is.
   const from = origin.head && /, unreviewed:/.test(origin.head) ? owner : review;
-  if (!base && !replacing) from(`installed${origin.head ? ` from ${origin.head}` : ""}`);
+  if (!base) from(`installed${origin.head ? ` from ${origin.head}` : ""}`);
   else if (origin.head && origin.head !== origin.base) from(`now from ${origin.head}`);
   // Enforcement it drops (a check, its reviewer or executor provider) is authority too: the owner's, as on a remove. A check
   // moved to observe mode (gates.ts) no longer enforces, so it counts as dropped.
@@ -403,8 +440,9 @@ export function enabledModules(instance: Dict, defs: Record<string, ModuleDef>, 
 
 /**
  * The module side of an apply: for each module enabled before or after, or whose folder changed, its def on each side it is
- * enabled on and whether code (anything but module.yaml and Markdown) changed. `replacing` is set only when this very change
- * removes A from the instance's list and adds B, and B `replaces` A (spec §5.7.1); otherwise B is diffed against nothing.
+ * enabled on and whether code (anything but module.yaml and Markdown) changed. `replacing` lists each A that B `replaces` and
+ * this very change stops running (spec §5.7.1); its def only when B is A's one enabled successor (successor.ts heir) and both
+ * are official (A at the old commit, B at the new): then B is diffed against A's authority too, else the claim is the owner's.
  */
 export function moduleInputs(a: { baseInstance: Dict; headInstance: Dict; baseDefs: Record<string, ModuleDef>; headDefs: Record<string, ModuleDef>; changed: string[]; always?: string[]; origins?: { base: Record<string, string>; head: Record<string, string> }; official?: { base: string[]; head: string[] } }): Record<string, ModuleInput> {
   const before = new Set(enabledModules(a.baseInstance, a.baseDefs, a.always));
@@ -414,27 +452,25 @@ export function moduleInputs(a: { baseInstance: Dict; headInstance: Dict; baseDe
   const tagsOf = (defs: Record<string, ModuleDef>) => Object.fromEntries(Object.values(defs).flatMap((d) => Object.entries(map(d?.connections))));
   const [bt, ht] = [tagsOf(a.baseDefs), tagsOf(a.headDefs)];
   const conns = Object.fromEntries(keys(bt, ht).map((c) => [c, { base: bt[c], head: ht[c] }]));
-  const listedBefore = new Set(list(a.baseInstance.modules).map(moduleName));
-  const listedAfter = new Set(list(a.headInstance.modules).map(moduleName));
+  const staged = [...after].map((n) => ({ name: n, enabled: true, replaces: list(a.headDefs[n]?.replaces).map(String) }));
   const out: Record<string, ModuleInput> = {};
   for (const m of [...new Set([...before, ...after])].sort()) {
     const fs = files(m);
     const base = before.has(m) ? a.baseDefs[m] : undefined;
     const head = after.has(m) ? a.headDefs[m] : undefined;
-    if (!fs.length && before.has(m) === after.has(m) && eq(base, head) && a.origins?.base[m] === a.origins?.head[m]) continue;
+    const from = head ? list(head.replaces).map(String).filter((r) => before.has(r) && !after.has(r) && a.baseDefs[r]) : [];
+    if (!from.length && !fs.length && before.has(m) === after.has(m) && eq(base, head) && a.origins?.base[m] === a.origins?.head[m]) continue;
     const input: ModuleInput = { base, head, codeChanged: Boolean(head) && fs.some((f) => f !== `modules/${m}/module.yaml` && !f.endsWith(".md")), textChanged: fs.length > 0, conns };
     // Official on the side it comes from now (base for a removal).
     if ((head ? a.official?.head : a.official?.base)?.includes(m)) input.official = true;
     const origin = { base: base && a.origins?.base[m], head: head && a.origins?.head[m] };
     if (origin.base || origin.head) input.origin = origin;
-    if (!base && head) {
-      const from = list(head.replaces).map(String).filter((r) => listedBefore.has(r) && !listedAfter.has(r) && before.has(r) && !after.has(r) && a.baseDefs[r]);
-      if (from.length === 1) input.replacing = { name: from[0]!, def: a.baseDefs[from[0]!]! };
-    }
+    const heirOf = (r: string) => heir(staged, r) === m && a.official?.base.includes(r) && a.official.head.includes(m);
+    if (from.length) input.replacing = from.map((r) => (heirOf(r) ? { name: r, def: a.baseDefs[r]! } : { name: r }));
     out[m] = input;
   }
   // A replaced module is not also removed on its own: its authority is B's diff.
-  for (const i of Object.values(out)) if (i.replacing && out[i.replacing.name]) delete out[i.replacing.name];
+  for (const i of Object.values(out)) for (const r of i.replacing ?? []) if (r.def) delete out[r.name];
   return out;
 }
 
