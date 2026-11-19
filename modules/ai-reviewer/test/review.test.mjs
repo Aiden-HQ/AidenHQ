@@ -641,3 +641,12 @@ test("a record whose source the diff adds only under another base is marked as n
   assert.match(user, /\[the diff adds this source only in a part for another repository or base/);
   assert.doesNotMatch(user, /\[the diff adds this source\]/);
 });
+
+test("an approved UI change whose Evidence names no screenshot ends with code's Nit; one with a screenshot doesn't", async () => {
+  const ui = "diff --git a/src/App.css b/src/App.css\n+a { color: red }\n";
+  const nit = async (evidence, diff = ui) => /\nNit:.*screenshots/.test((await review({ card, diff, policy: "p", evidence, ask: async () => ok })).reason);
+  assert.equal(await nit("none given"), true);
+  assert.equal(await nit("- after: app-390.png"), false);
+  assert.equal(await nit("none given", "diff --git a/src/db.ts b/src/db.ts\n+x\n"), false);
+  assert.equal(await nit(undefined), false, "not a pr or merge card");
+});
