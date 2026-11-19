@@ -15,10 +15,12 @@ export interface PlanRequest { kind: string; args: any; requester: Requester; ta
 export interface PlanResult {
   args: unknown; targets?: Record<string, unknown>; facts?: Record<string, unknown>;
   raise?: { tier: 1 | 2; panel?: boolean; reason: string; rule: string }; card?: Record<string, string>; satisfied?: { evidence: string };
-  /** What the AI reviewer reads beside the card (reviewer@1): the changed files at the reviewed head (review-files.mjs fileContext), a PR's Evidence section. */
+  /** What the AI reviewer reads beside the card (reviewer@1): the changed files at the reviewed head (review-files.mjs fileContext), a PR's Evidence section, the owner's source exceptions, the task's merged sibling PRs. */
   review?: ReviewContext;
 }
-export type ReviewContext = { files?: { text: string; leftOut: string[]; oversized: string[] }; evidence?: string; sources?: { where: string; records: Record<string, unknown>[] } };
+export type ReviewContext = { files?: { text: string; leftOut: string[]; oversized: string[] }; evidence?: string; sources?: { where: string; records: Record<string, unknown>[] };
+  /** The task's other PRs merged into the change's base: `files` its own, `changed` those the base changed again since (undefined: not read). */
+  siblings?: { repo: string; number: number; base: string; mergeCommit: string; files?: string[]; changed?: string[] }[] };
 export interface ExecuteRequest { id: string; kind: string; args: any; digest: string; idempotency_key: string }
 export interface Executor {
   plan(req: PlanRequest): Promise<PlanResult>;

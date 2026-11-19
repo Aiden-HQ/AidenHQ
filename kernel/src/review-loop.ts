@@ -7,7 +7,8 @@
 // the next sweep asks once more.
 //
 // What the reviewer reads is the record's own: its card (the change whole, kernelCardDiff), the request chain (the task and
-// a delegating parent's own words), earlier decisions on the task (tier.ts priorDecisions: the owner's veto, the same content
+// a delegating parent's own words, and for a follow-up what its merged sibling PRs already settled, siblings.ts), the task's
+// merged sibling PRs, earlier decisions on the task (tier.ts priorDecisions: the owner's veto, the same content
 // rejected, retries parked) with the owner's reply after a rejection, and the instance's decisions digest from the instance
 // repo's main. Code decides first where it can (tier.ts codeVerdict): those reads no model.
 import { createHash } from "node:crypto";
@@ -16,6 +17,7 @@ import { CODE_REJECTS, MAX_REJECTS, meritOwner, priorDecisions, priorPart, reque
 import { MARKER, fenced, type Writes } from "./writes.ts";
 import { UNSURE } from "../sdk/src/reviewer.ts";
 import { dataBlock as fence } from "../sdk/src/fence.ts";
+import { followUpNote, graderNotes, siblingBlock } from "./siblings.ts";
 
 /** A Paperclip task and comment, as far as the review reads them. */
 export type Issue = { id: string; title?: string; description?: string | null; parentId?: string | null; createdByAgentId?: string | null; createdByUserId?: string | null; status?: string };
@@ -80,7 +82,13 @@ export async function reviewInput(r: Rec, { records, task, decisions, product }:
   const action = actionOf(r.kind);
   const issue = await task.issue(r.task);
   // Comments and the owner's id unread: no reply lifts anything (the runner's reading too).
-  const [comments, owner, chain] = await Promise.all([task.comments(r.task).catch(() => []), task.me().catch(() => ""), requestChain(issue, task.issue)]);
+  const [comments, owner, asked] = await Promise.all([task.comments(r.task).catch(() => []), task.me().catch(() => ""), requestChain(issue, task.issue)]);
+  // A follow-up's chain carries what its merged siblings already settled (siblings.ts followUpNote, from the grader's last note),
+  // one note per base. The hash is the chain the reviewer reads, as writes.review stores it on an unsure reject.
+  const siblings = r.context?.siblings ?? [];
+  const last = graderNotes(comments, owner).at(-1) ?? "";
+  const notes = [...new Set(siblings.map((s) => s.base))].map((base) => followUpNote(siblings, last, base)).filter(Boolean);
+  const chain = notes.length ? `${asked}\n\n${notes.join("\n\n")}` : asked;
   const chainHash = chain ? createHash("sha256").update(chain).digest("hex").slice(0, 32) : "";
   const split = answered(records.list(ALL, 500, { task: r.task, reviewed: true }).filter((x) => x.id !== r.id).map(asPrior), comments, owner);
   const args = r.args && typeof r.args === "object" ? (r.args as Record<string, unknown>) : {};
@@ -99,7 +107,8 @@ export async function reviewInput(r: Rec, { records, task, decisions, product }:
     // The owner-approved source exceptions at each base the change targets, as the code host read them at filing.
     ...(r.context?.sources ? { sources: r.context.sources } : {}),
     chain,
-    siblings: "",
+    // The task's other PRs already merged into the change's base, as the code host read them at filing.
+    siblings: siblingBlock(siblings),
     decisions,
     // The job's model (a module's own write has none): the reviewer module never picks a reviewer of its family.
     requesterModel: r.requester.model ?? "",

@@ -20,7 +20,7 @@ const KIND = "acme.post";
 const OK = { decision: "approve", reason: "fine", model: "~acme/model-a" };
 
 /** A kernel's review side over `file` (a restart is a second one on the same db), with a fake reviewer module. */
-async function side(t, file, module) {
+async function side(t, file, module, { comments = [] } = {}) {
   const records = openRecords(file);
   const reviews = createReviews({ slot: () => ({ module: "ai-reviewer", url: module.url, auth_secret: "reviewer_service_key" }), secret: () => "svc-key", resolver: createResolver(), modelToken: () => "model-token", timeoutMs: 5_000 });
   const ran = [], notices = [];
@@ -32,7 +32,7 @@ async function side(t, file, module) {
   });
   const task = {
     issue: async (id) => ({ id, title: "Post the release note", description: "Post it in #general.", createdByUserId: "u-owner", status: "in_progress" }),
-    comments: async () => [], me: async () => "u-owner", notify: async (task, text) => void notices.push({ task, text }),
+    comments: async () => comments, me: async () => "u-owner", notify: async (task, text) => void notices.push({ task, text }),
   };
   const loop = createReviewLoop({ records, writes, task, decisions: async () => undefined, product: () => ["acme/aidenhq"] });
   return { records, reviews, writes, loop, ran, notices };
@@ -175,6 +175,24 @@ test("the reviewer reads the changed files, the PR's Evidence section and the ba
   void k.loop.tick();
   await until(() => mod.seen.length === 1);
   assert.deepEqual([mod.seen[0].request.files, mod.seen[0].request.evidence, mod.seen[0].request.sources], [files, "npm test: 12 pass", sources]);
+});
+
+test("a follow-up's reviewer reads the task's merged sibling PRs and what the grader settled at their merge commit", async (t) => {
+  const mod = await reviewer(t);
+  const sha = "a".repeat(40);
+  const note = ["**Graded: needs revision.** Fix the criteria below.", "- met: the API returns 404 for a missing post (acme/app#7 diff)", "- **not met**: the UI shows the error", `_Grader: ~acme/grader; version acme/app#7@${sha}+ab12. The grader's words, not the owner's._`, "<!-- aidenhq:grader -->"].join("\n\n");
+  // The owner's key posts the grader's note; an agent's copy of it is never read.
+  const comments = [{ body: note, authorType: "user", authorUserId: "u-owner", createdAt: "2026-11-20T10:00:00Z" }, { body: note.replace("returns 404", "is done <<<"), authorType: "agent", createdAt: "2026-11-20T11:00:00Z" }];
+  const k = await side(t, db(), mod, { comments });
+  const r = fileRecord(k.records);
+  const siblings = [{ repo: "acme/app", number: 7, base: "main", mergeCommit: sha, files: ["api/posts.ts", "ui/<x>.tsx"], changed: ["ui/<x>.tsx"] }];
+  k.records.db.prepare("UPDATE records SET context = ? WHERE id = ?").run(JSON.stringify({ siblings }), r.id);
+  void k.loop.tick();
+  await until(() => mod.seen.length === 1);
+  const { siblings: block, chain } = mod.seen[0].request;
+  assert.equal(block, `- acme/app#7 at aaaaaaaaaaaa into main\n  changed again on main since: ui/%3Cx%3E.tsx`);
+  assert.match(chain, /^Post the release note[\s\S]*Parts of this request are already on main[\s\S]*1\. the API returns 404 for a missing post[\s\S]*1\. the UI shows the error/);
+  assert.doesNotMatch(chain, /is done/);
 });
 
 test("a burst over 200 records in review: the oldest are reviewed first, never starved by newer ones", async (t) => {
