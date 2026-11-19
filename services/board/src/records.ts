@@ -83,6 +83,8 @@ export type Records = {
   advisories(): Promise<Advisory[]>;
   /** Every connection's /healthz as the kernel reaches it (the one place connection health is probed). {} when the kernel can't be asked. */
   connectionHealth(): Promise<Record<string, Probe>>;
+  /** The owner's typed settings change on their settings task: the kernel writes it and files its apply (kernel/src/settings-change.ts). Throws the kernel's reason. */
+  settingsChange(task: string, changes: unknown[]): Promise<{ record: string; tier: number; state: string }>;
 };
 export type Advisory = { id: string; module: string; severity: string; fixed: string; summary: string; url: string };
 
@@ -112,5 +114,12 @@ export function kernelRecords(k: { url: string; token: string } | undefined, log
     const res = await fetch(`${k.url}/v1/connections/health`, { headers: { authorization: `Bearer ${k.token}` }, signal: AbortSignal.timeout(15_000) }).catch(() => undefined);
     return res?.ok ? (((await res.json()) as { probes: Record<string, Probe> }).probes ?? {}) : {};
   };
-  return { list, connectionHealth, awaiting: async () => new Set((await list("owner")).map((a) => a.issueId)), advisories };
+  const settingsChange: Records["settingsChange"] = async (task, changes) => {
+    if (!k) throw new Error("the board has no kernel to write the change");
+    const res = await fetch(`${k.url}/v1/settings/change`, { method: "POST", headers: { authorization: `Bearer ${k.token}`, "content-type": "application/json" }, body: JSON.stringify({ task, changes }), signal: AbortSignal.timeout(180_000) });
+    const j = (await res.json().catch(() => ({}))) as { record?: string; tier?: number; state?: string; message?: string; error?: string };
+    if (!res.ok) throw new Error(String(j.message ?? j.error ?? `the kernel answered ${res.status}`));
+    return { record: String(j.record), tier: Number(j.tier), state: String(j.state) };
+  };
+  return { list, connectionHealth, awaiting: async () => new Set((await list("owner")).map((a) => a.issueId)), advisories, settingsChange };
 }

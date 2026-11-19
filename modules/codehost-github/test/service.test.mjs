@@ -254,6 +254,17 @@ test("kernel.apply's land: the instance commit is read and landed on main once, 
   const r = await call("/aidenhq/v1/apply/land", { ...old, ...NONE });
   assert.deepEqual([r.status, /moved on/.test(r.json.error)], [409, true]);
   assert.equal(sh(origin, "rev-parse", "main"), sha);
+  // A settings change (kernel/src/settings-change.ts): the kernel's texts written on main's head, only while main is still the
+  // base it read, only instance config paths; then read and landed like any apply.
+  const w = { repo: src.repo, branch: "settings/wor-5", message: "settings: setting (WOR-5)", files: { "instance.yaml": "product: y\nsettings:\n  timezone: UTC\n", "agents/chaser/agent.yaml": null } };
+  assert.equal((await call("/aidenhq/v1/apply/write", { ...w, base: "0".repeat(40) })).status, 409, "main moved: nothing written");
+  assert.equal((await call("/aidenhq/v1/apply/write", { ...w, base: sha, files: { "compose.yaml": "x" } })).status, 400, "instance config only");
+  const wrote = await call("/aidenhq/v1/apply/write", { ...w, base: sha });
+  assert.equal(wrote.status, 200, JSON.stringify(wrote.json));
+  const set = { repo: src.repo, branch: w.branch, sha: wrote.json.sha };
+  const back = await call("/aidenhq/v1/apply/read", set);
+  assert.deepEqual([back.json.files.sort(), back.json.texts.head], [["agents/chaser/agent.yaml", "instance.yaml"], { "instance.yaml": w.files["instance.yaml"] }]);
+  assert.deepEqual((await call("/aidenhq/v1/apply/land", { ...set, ...NONE })).json, { landed: wrote.json.sha });
 });
 
 test("the apply read refuses what it can't read whole, and names no committer-written path on the card", async (t) => {

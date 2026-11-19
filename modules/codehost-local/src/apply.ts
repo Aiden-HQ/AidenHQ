@@ -4,8 +4,13 @@
 //            on both sides (each changed file, the agent.yaml of each agent it touches, instance.yaml; absent where the file
 //            isn't), the diff, and the graduation card's trial edits. From git only, never from the requester.
 //   land(s)  the commit on main, as a compare-and-swap on main's ref (a commit main already has is a no-op), once.
+//   write(w) the owner's typed settings change (kernel/src/settings-change.ts) as a commit on main's head `base`, on `branch`:
+//            the texts the kernel computed, nothing else; it lands only through a kernel.apply, like any other.
 // The commit is in the bare repo (the release updater's branch), or comes in from the asking job's workspace (`ingest`, git.ts). Repo code never runs: every command carries SAFE_GIT_ARGS, literal pathspecs and no global config.
-import { execFile } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { promisify } from "node:util";
 import { ENV, SAFE_GIT_ARGS, fail } from "./git.ts";
 
@@ -13,6 +18,9 @@ const run = promisify(execFile);
 const MAX_TEXT = 1 << 20, MAX_TOTAL = 8 << 20, MAX_FILES = 200;
 const SHA = /^[0-9a-f]{40}$/;
 const AGENT = /^agents\/([a-z0-9][a-z0-9-]*)\/(agent\.yaml|AGENTS\.md|memory\.md)$/;
+/** The instance config files a settings write may touch (kernel/src/apply.ts APPLY_PATHS). */
+const INSTANCE_PATH = /^(instance\.yaml|apps\.yaml|agents\/[\w-][\w.-]*\.md|agents\/[a-z0-9][a-z0-9-]*\/(agent\.yaml|AGENTS\.md|memory\.md)|owner\/profile\.md)$/;
+const BRANCH = /^settings\/[a-z0-9][a-z0-9-]{0,80}$/;
 
 type Source = { repo: string; branch: string; sha: string; workspace?: string };
 type Pin = { repo: string; sha: string } | null;
@@ -99,6 +107,37 @@ export function localApply({ bare, instanceRepo, ingest }: { bare: string; insta
       // The compare-and-swap: main moves to the commit only from the main read above.
       await g(["update-ref", "-m", "aidenhq apply", "refs/heads/main", c.sha, c.main]);
       return { landed: c.sha };
+    },
+    async write(w: { repo: string; base: string; branch: string; files: Record<string, string | null>; message: string }) {
+      if (String(w.repo).toLowerCase() !== instanceRepo.toLowerCase()) throw fail(403, `a settings change writes only the instance repo (${instanceRepo}), not ${w.repo}`);
+      if (!BRANCH.test(String(w.branch))) throw fail(400, "branch is settings/<task>");
+      const paths = Object.keys(w.files ?? {});
+      if (!paths.length || paths.some((p) => !INSTANCE_PATH.test(p) || (w.files[p] !== null && typeof w.files[p] !== "string"))) throw fail(400, "files: instance config paths, each a text or null");
+      const head = await g(["rev-parse", "--verify", "refs/heads/main^{commit}"]);
+      if (head !== w.base) throw fail(409, "the instance's main moved on since the change was read; try again");
+      const date = await g(["log", "-1", "--format=%cI", head]);
+      const tmp = mkdtempSync(join(tmpdir(), "aidenhq-settings-"));
+      const env = { ...ENV, GIT_INDEX_FILE: join(tmp, "index"), GIT_AUTHOR_NAME: "AidenHQ settings", GIT_AUTHOR_EMAIL: "settings@aidenhq.invalid", GIT_COMMITTER_NAME: "AidenHQ settings", GIT_COMMITTER_EMAIL: "settings@aidenhq.invalid", GIT_AUTHOR_DATE: date, GIT_COMMITTER_DATE: date };
+      const ix = (args: string[], input = "") => new Promise<string>((ok, no) => {
+        const p = spawn("git", [...SAFE_GIT_ARGS, "--git-dir", bare, ...args], { env });
+        let out = "", err = "";
+        p.stdout.on("data", (d) => (out += d)); p.stderr.on("data", (d) => (err += d));
+        p.on("close", (code) => (code === 0 ? ok(out.trim()) : no(new Error(`git ${args[0]}: ${err.trim().slice(0, 300)}`))));
+        p.stdin.end(input);
+      });
+      try {
+        await ix(["read-tree", head]);
+        for (const p of paths) {
+          const text = w.files[p];
+          if (text === null) await ix(["update-index", "--index-info"], `0 0000000000000000000000000000000000000000\t${p}\n`);
+          else await ix(["update-index", "--add", "--cacheinfo", `100644,${await ix(["hash-object", "-w", "--stdin"], text)},${p}`]);
+        }
+        const sha = await ix(["commit-tree", await ix(["write-tree"]), "-p", head], String(w.message ?? "settings").slice(0, 2000));
+        await g(["update-ref", `refs/heads/${w.branch}`, sha]);
+        return { sha };
+      } finally {
+        rmSync(tmp, { recursive: true, force: true });
+      }
     },
   };
 }

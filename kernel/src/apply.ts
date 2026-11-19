@@ -139,9 +139,11 @@ export type Unit = { loaded: boolean; active: string; sub: string; result: strin
 /** One line of generations.jsonl (ops/lib/generations.sh). */
 export type Generation = { n: number; instance?: string; health?: string; reason?: string; log?: string; revert_of?: number };
 type Outcome = { ok: boolean; text: string };
+/** A settings change's commit (settings-change.ts): `files` (path → text, or null to delete) on main while main is still `base`. */
+export type Write = { repo: string; base: string; branch: string; files: Record<string, string | null>; message: string };
 export type ApplyHost = {
   /** land: `official`, the official modules' pin on both sides, for the code host's reviewer-eval gate. */
-  codehost: { read(s: Source): Promise<Read>; land(s: Source & { official: { from: OfficialPin; to: OfficialPin } }): Promise<{ landed: string }> };
+  codehost: { read(s: Source): Promise<Read>; land(s: Source & { official: { from: OfficialPin; to: OfficialPin } }): Promise<{ landed: string }>; write(w: Write): Promise<{ sha: string }> };
   launch(unit: string, sha: string): Promise<void>;
   unit(unit: string): Promise<Unit>;
   generations(): Generation[];
@@ -244,13 +246,13 @@ export function hostApply({ repo, stateDir, resolver, codehost, local }: {
   /** codehost-local, when enabled: the instance repo's bare git dir on this host, its slug, and a job's branch fetched in from its workspace. */
   local: () => { bare: string; repo: string; ingest: (s: Source & { workspace: string }) => Promise<unknown> } | undefined;
 }): ApplyHost {
-  const provider = (s: Source): ApplyHost["codehost"] => {
-    if (String(s.repo).split("/")[0]!.toLowerCase() !== LOCAL_ORG) return { read: (x) => call<Read>("read", x), land: (x) => call<{ landed: string }>("land", x as Source) };
+  const provider = (s: { repo: string }): ApplyHost["codehost"] => {
+    if (String(s.repo).split("/")[0]!.toLowerCase() !== LOCAL_ORG) return { read: (x) => call<Read>("read", x), land: (x) => call<{ landed: string }>("land", x), write: (x) => call<{ sha: string }>("write", x) };
     const l = local();
     if (!l) throw new Error(`${s.repo} is on this server, but codehost-local isn't enabled here`);
     return localApply({ bare: l.bare, instanceRepo: l.repo, ingest: l.ingest });
   };
-  async function call<T>(op: "read" | "land", body: Source): Promise<T> {
+  async function call<T>(op: "read" | "land" | "write", body: Source | Write): Promise<T> {
     const c = codehost();
     if (!c?.key) throw new Error("the code host (codehost-github) isn't installed here, so nothing can land on the instance repo");
     const url = `${new URL(c.url).origin}/aidenhq/v1/apply/${op}`;
@@ -273,7 +275,7 @@ export function hostApply({ repo, stateDir, resolver, codehost, local }: {
   }
   const genFile = join(stateDir, "generations.jsonl");
   return {
-    codehost: { read: (s) => provider(s).read(s), land: (s) => provider(s).land(s) },
+    codehost: { read: (s) => provider(s).read(s), land: (s) => provider(s).land(s), write: (w) => provider(w).write(w) },
     // RemainAfterExit: the finished unit stays loaded, so its result can be read and its name can't start a second apply.
     launch: async (u, sha) => void (await run("systemd-run", ["--user", `--unit=${u}`, "-p", "RemainAfterExit=yes", `--working-directory=${repo}`, `--setenv=PATH=${process.env.PATH ?? "/usr/bin:/bin"}`, `--setenv=HOME=${process.env.HOME ?? ""}`, "--", "bash", join(repo, "ops/apply-config.sh"), sha])),
     async unit(u) {

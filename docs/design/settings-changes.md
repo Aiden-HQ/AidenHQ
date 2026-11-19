@@ -30,31 +30,37 @@ compiler's is the last gate.
 1. The owner (a signed-in admin) presses Save or Change on a Settings page. `POST /api/settings/change` (`requireAdmin`)
    takes a typed change: `{ setting, value }` for a declared, non-secret setting, `{ agent, field, value }` for the
    override fields tiers already treat as safe (`model`, `reasoning_effort`, `heartbeat`), `{ caps, agent, value }` for
-   an agent's spend caps, or `{ module, name, on }` (the last two are Tier 2 like settings). The board checks it against
+   an agent's spend caps, or `{ module, name, on }` (each tiered by the apply planner, step 5). The board checks it against
    the compiled config and the module catalog (the setting exists, the value is one of its `values`, a URL passes the
    check, the agent exists, the effort is a known level, the heartbeat is one of the compiler's hours and the agent is
    not runner-dispatched).
-2. The board files it as the owner's own task (label `settings-change`, no assignee, so no agent wakes) and keeps the
-   typed change in its own store by task id. The task's text is only a description; the runner never reads the change from it.
-3. The runner (`services/runner/src/typed-change.mjs`) picks the task up: made by the owner's Paperclip user, by no agent,
-   held by no agent; it reads the typed change back from the board with its own key (`GET /internal/settings-changes/:id`),
-   checks it again against the compiled config and catalog, and writes exactly the files its kind allows (`PATHS`:
-   `instance.yaml` edited through the yaml Document API, so comments stay; handbook texts verbatim) as one commit built
-   from the instance repo's main with git plumbing, on a `fleet/` branch of the task. The commit's files are checked
-   against the kind's list again, and the card is filed as for any fleet change, tiered by `services/runner/src/tiers.mjs`
-   unchanged: a `settings` change is Tier 2 (the owner taps), an agent's `model` / `reasoning_effort` / `heartbeat`
-   override is Tier 1, a grants override is judged by the module authority diff (a new write tool is the owner's), a fork
-   like the agent's handbook additions. Writes are serialised in the runner.
-4. On approval the runner lands exactly that commit and runs `ops/apply-config.sh`: compile (the URL check again), then
-   `docker compose up -d`, which recreates only the services whose environment changed (the one connection).
-5. The board shows the change's progress from the task and its card (filed, waiting for approval, applying, applied or
-   failed), then the connection's live status; for a sign-in connection, Connect becomes the next step.
+2. The board files it as the owner's own task (label `settings-change`, no assignee, so no agent wakes), keeps the typed
+   change in its own store by task id (for the page) and hands it to the kernel: `POST /v1/settings/change` with the
+   board's key, `{ task, changes }`. Nothing reads the change from the task's text. If the kernel refuses it, the board
+   cancels the task with the reason and the page shows it.
+3. The kernel (`kernel/src/settings-change.ts`) checks the task (the owner's, made and held by no agent, open) and each
+   change again against the compiled config and catalog: known kinds only, no unknown fields, schema-checked values, what
+   it names exists, no free-form YAML. It computes exactly the files its kind allows (`PATHS`: `instance.yaml` edited
+   through the yaml Document API, so comments stay; handbook texts verbatim) from the instance repo's main, read from its
+   instance checkout. Turning off a module of the default bundle also lists it in `modules_removed` (so an upgrade never
+   adds it back); turning it on takes it off that list.
+4. The instance repo's code host writes those files as one commit on main's head, on `settings/<task>` (`apply.ts`
+   `hostApply` routes by the repo: codehost-local's `write` for a `local/…` instance, codehost-github's
+   `/aidenhq/v1/apply/write` otherwise), only while main is still the commit the kernel read.
+5. The kernel files that commit as a `kernel.apply` on the task (requester `SETTINGS`, kind `kernel`, with no exemption in
+   any rule: the autonomy caps hold it as they hold an agent, only the release updater is exempt), and its planner tiers it
+   on its merits like any instance change (`kernel/src/apply-tier.ts`): a setting is the panel's, spend caps, quiet start
+   and any loosening of `autonomy` are the owner's, an agent's `model` / `reasoning_effort` / `heartbeat`
+   override is Tier 1, a module turned on or off or a grants override is judged by the module authority diff. On approval
+   the code host lands exactly that commit and the apply runs `ops/apply-config.sh`.
+6. The board shows the change's progress from the task and its apply record (filed, waiting for approval, applying,
+   applied or failed), then the connection's live status; for a sign-in connection, Connect becomes the next step.
 
-## Why the runner writes the commit
+## Why code writes the commit
 
-The Platform Engineer used to write these commits from the task text. A model added nothing to a typed edit and could drift
-from it; the runner now writes it deterministically from the change the board kept, and the card shows the exact diff
-before anything lands. The board's check is the owner's feedback; the runner's is the gate, and the compiler's the last.
+A model adds nothing to a typed edit and could drift from it; the kernel writes it deterministically from the change the
+board handed it, and the card shows the exact diff before anything lands. The board's check is the owner's feedback; the
+kernel's is the gate, and the compiler's the last.
 
 ## Open points (from the architecture cross-check)
 
@@ -63,7 +69,7 @@ before anything lands. The board's check is the owner's feedback; the runner's i
   bound that to the same vendor; Primer has none. Binding each stored token to the URL it was issued for (reconnect on
   a change) is the fix, in the proxies.
 - **The compiler's check runs after the commit lands.** A bad value the owner approved anyway lands on main and fails
-  the apply (revert to undo). A compile of the change before landing (in the runner's apply path) would stop it first.
+  the apply (revert to undo). A compile of the change before landing would stop it first.
 - DNS rebinding to private addresses is not checked (the URL is the owner's own input, approved on a card).
 
 ## The move from .env

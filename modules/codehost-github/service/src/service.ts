@@ -13,7 +13,8 @@
 // The instance's land for kernel.apply (the kernel's executor, with this service's executor key): POST /aidenhq/v1/apply/read
 // {repo, sha, branch, workspace?} → what the kernel plans and tiers the commit on (its files, texts, diff and trial edits against
 // the instance's main); /apply/land → the commit on main, never forced, once (a commit main already has is a no-op), and never
-// one that moves an `aidenhq` marketplace pin (the official modules come with the product pin).
+// one that moves an `aidenhq` marketplace pin (the official modules come with the product pin); /apply/write → the owner's
+// typed settings change as a commit on main's head (kernel/src/settings-change.ts), which only a kernel.apply then lands.
 // The commit comes from this service's own copy when it made it, else from the task's workspace. The instance repo only.
 import { execFile, spawn } from "node:child_process";
 import { timingSafeEqual } from "node:crypto";
@@ -60,6 +61,8 @@ const PUSH = { contents: "write", pull_requests: "write", metadata: "read" };
 const MERGE = { contents: "write", pull_requests: "write", checks: "read", statuses: "read", metadata: "read" };
 const LEVEL: Record<string, number> = { read: 1, write: 2, admin: 3 };
 const SLUG = /^([\w.-]+)\/([\w.-]+)$/;
+/** The instance config files a settings write may touch (kernel/src/apply.ts APPLY_PATHS). */
+const INSTANCE_PATH = /^(instance\.yaml|apps\.yaml|agents\/[\w-][\w.-]*\.md|agents\/[a-z0-9][a-z0-9-]*\/(agent\.yaml|AGENTS\.md|memory\.md)|owner\/profile\.md)$/;
 const IDENT = /^[A-Za-z][A-Za-z0-9]*-\d+$/;
 const BRANCH = /^(?!-)(?!.*\.\.)[\w./-]{1,200}$/;
 const same = (a?: string, b?: string) => Boolean(a && b) && a!.toLowerCase() === b!.toLowerCase();
@@ -434,9 +437,9 @@ export function createService(o: Options) {
     return { landed: c.sha };
   }
 
-  async function body(req: IncomingMessage): Promise<any> {
+  async function body(req: IncomingMessage, max = 100_000): Promise<any> {
     let raw = "";
-    for await (const c of req) { raw += c; if (raw.length > 100_000) throw fail(413, "too large"); }
+    for await (const c of req) { raw += c; if (raw.length > max) throw fail(413, "too large"); }
     try { return JSON.parse(raw || "{}"); } catch { throw fail(400, "not JSON"); }
   }
   const send = (res: ServerResponse, status: number, b: unknown) => void res.writeHead(status, { "content-type": "application/json" }).end(JSON.stringify(b));
@@ -504,35 +507,62 @@ export function createService(o: Options) {
   }
 
   /**
-   * A commit on top of the repo's default branch head with one file edited, in the ws cache (refs/train/<sha>, never checked
-   * out): the edit reads the file at that same head, and its author, committer and dates are fixed by the head, so the same
-   * head gives the same commit.
+   * A commit on top of the repo's default branch head, in the ws cache (refs/train/<sha>, never checked out): `files` (path →
+   * new text, or null to delete) are made from that same head, and the author, committer and dates are fixed by the head, so
+   * the same head and files give the same commit.
    */
-  async function trainCommit(repo: string, path: string, edit: (text: string) => string, message: string) {
+  async function commitOnHead(repo: string, who: string, message: string, files: (dir: string, head: string, def: string) => Promise<Record<string, string | null>>) {
     const s = slugOf(repo);
     const def = String((await api("GET", `/repos/${s.slug}`, await tokenFor(s, READ))).default_branch ?? "main");
     const { dir, sha: head } = await fetchRemote(s, def, "ws");
-    const text = await fileAt(dir, head, path);
-    if (text === undefined) throw fail(404, `${path} isn't on ${s.slug}'s ${def}`);
-    const files = { [path]: edit(text) };
+    const edits = await files(dir, head, def);
     const date = await git(dir, ["log", "-1", "--format=%cI", head]);
+    const email = `${who.toLowerCase().replace(/[^a-z]+/g, "-")}@aidenhq.invalid`;
     const index = join(mkdtempSync(join(o.cacheDir, "scratch-")), "index");
     try {
       const g = (args: string[], input?: string) => new Promise<string>((ok, no) => {
-        const p = spawn("git", [...SAFE_GIT_ARGS, "--git-dir", dir, ...args], { env: { ...ENV, GIT_INDEX_FILE: index, GIT_AUTHOR_NAME: "AidenHQ release train", GIT_AUTHOR_EMAIL: "release-train@aidenhq.invalid", GIT_COMMITTER_NAME: "AidenHQ release train", GIT_COMMITTER_EMAIL: "release-train@aidenhq.invalid", GIT_AUTHOR_DATE: date, GIT_COMMITTER_DATE: date } });
+        const p = spawn("git", [...SAFE_GIT_ARGS, "--git-dir", dir, ...args], { env: { ...ENV, GIT_INDEX_FILE: index, GIT_AUTHOR_NAME: `AidenHQ ${who}`, GIT_AUTHOR_EMAIL: email, GIT_COMMITTER_NAME: `AidenHQ ${who}`, GIT_COMMITTER_EMAIL: email, GIT_AUTHOR_DATE: date, GIT_COMMITTER_DATE: date } });
         let out = "", err = "";
         p.stdout.on("data", (d) => (out += d)); p.stderr.on("data", (d) => (err += d));
         p.on("close", (code) => (code === 0 ? ok(out.trim()) : no(new Error(`git ${args[0]}: ${err.trim().slice(0, 300)}`))));
         p.stdin.end(input ?? "");
       });
       await g(["read-tree", head]);
-      for (const [path, text] of Object.entries(files)) await g(["update-index", "--add", "--cacheinfo", `100644,${await g(["hash-object", "-w", "--stdin"], text)},${path}`]);
+      for (const [path, text] of Object.entries(edits)) {
+        if (text === null) await g(["update-index", "--index-info"], `0 0000000000000000000000000000000000000000\t${path}\n`);
+        else await g(["update-index", "--add", "--cacheinfo", `100644,${await g(["hash-object", "-w", "--stdin"], text)},${path}`]);
+      }
       const sha = await g(["commit-tree", await g(["write-tree"]), "-p", head], message);
       await git(dir, ["update-ref", `refs/train/${sha}`, sha]);
       return sha;
     } finally {
       rmSync(join(index, ".."), { recursive: true, force: true });
     }
+  }
+  /** The release train's pin bump: one file edited as it is at the head. */
+  const trainCommit = (repo: string, path: string, edit: (text: string) => string, message: string) =>
+    commitOnHead(repo, "release train", message, async (dir, head, def) => {
+      const text = await fileAt(dir, head, path);
+      if (text === undefined) throw fail(404, `${path} isn't on ${repo}'s ${def}`);
+      return { [path]: edit(text) };
+    });
+  /**
+   * POST /aidenhq/v1/apply/write (the kernel's executor key): the owner's typed settings change (kernel/src/settings-change.ts)
+   * as a commit on the instance's main, built from the texts the kernel computed at `base`. Only when main is still `base`;
+   * only instance config paths. The commit lands only through a kernel.apply, like any other.
+   */
+  async function applyWrite(b: any) {
+    const s = slugOf(b.repo);
+    if (!same(s.slug, o.instanceRepo)) throw fail(403, `a settings change writes only the instance repo (${o.instanceRepo ?? "not set"}), not ${s.slug}`);
+    const files: Record<string, string | null> = b.files && typeof b.files === "object" && !Array.isArray(b.files) ? b.files : {};
+    const paths = Object.keys(files);
+    if (!paths.length || paths.some((p) => !INSTANCE_PATH.test(p) || (files[p] !== null && typeof files[p] !== "string"))) throw fail(400, "files: instance config paths, each a text or null");
+    const message = String(b.message ?? "").slice(0, 2000);
+    const sha = await commitOnHead(s.slug, "settings", message || "settings", async (_dir, head, def) => {
+      if (head !== String(b.base ?? "")) throw fail(409, `the instance's ${def} moved on since the change was read; try again`);
+      return files;
+    });
+    return { sha };
   }
   // The train lands the bump through GitHub: an instance repo on this server (local/…, codehost-local's) is not its to move.
   const train = o.productRepo && o.instanceRepo && slugOf(o.instanceRepo).org.toLowerCase() !== LOCAL_ORG ? createReleaseTrain({
@@ -568,11 +598,11 @@ export function createService(o: Options) {
       if (req.url === "/healthz") return send(res, 200, { ok: true });
       if (req.url === "/aidenhq/v1/executor/status" && req.method === "POST") return await status(req, res);
       if (await exec(req, res)) return;
-      const ap = /^\/aidenhq\/v1\/apply\/(read|land)$/.exec(String(req.url ?? ""));
+      const ap = /^\/aidenhq\/v1\/apply\/(read|land|write)$/.exec(String(req.url ?? ""));
       if (ap && req.method === "POST") {
         if (!keyed(req)) return send(res, 401, { error: "the kernel's executor key only" });
-        const b = await body(req);
-        return send(res, 200, ap[1] === "read" ? await applyRead(b) : await applyLand(b));
+        const b = await body(req, ap[1] === "write" ? 1_000_000 : 100_000);
+        return send(res, 200, ap[1] === "read" ? await applyRead(b) : ap[1] === "land" ? await applyLand(b) : await applyWrite(b));
       }
       const m = /^\/ops\/(token|snapshot|clone)$/.exec(String(req.url ?? ""));
       if (m && req.method === "POST") return await ops(m[1]!, req, res);

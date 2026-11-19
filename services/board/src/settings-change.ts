@@ -1,7 +1,7 @@
 // A settings change from the board's pages (docs/design/settings-changes.md): a typed change, checked against the compiled
-// config and the module catalog, and filed as the owner's own task with no assignee. The runner writes exactly the files the
-// change names (the runner's typed-change.mjs checked it again; nothing reads it since the runner was deleted) and files the fleet apply
-// card, tiered by its code; nothing here writes or applies anything.
+// config and the module catalog, and filed as the owner's own task with no assignee. The kernel (kernel/src/settings-change.ts)
+// checks it again, has the instance repo's code host write exactly the files the change names and files the kernel.apply,
+// tiered by its planner; nothing here writes or applies anything.
 import { z } from "zod";
 import type { Approval } from "./records.js";
 import { HEARTBEAT_HOURS, HEARTBEAT_TOOLS, type Compiled } from "./settings.js";
@@ -172,13 +172,13 @@ export function describe(ch: Change, compiled: Compiled | null): string {
 const MARK = "aidenhq-settings-change";
 /**
  * The owner's settings task: its title, and a description built here from the typed change only (no free text). No agent
- * runs on it: the runner writes the change from the hidden marker, which it checks again (typed-change.mjs).
+ * runs on it: the kernel writes the change the board hands it (kernel/src/settings-change.ts); the hidden marker is for the page.
  */
 export function taskFor(changes: Change[], compiled: Compiled | null): { title: string; description: string } {
   const lines = changes.map((c) => describe(c, compiled));
   const title = `Settings: ${lines.join("; ")}`.slice(0, 160);
   const description = [
-    "Changed from the board. The runner writes exactly this change to the instance repo and files the apply card here; no agent works on this task.",
+    "Changed from the board. The kernel writes exactly this change to the instance repo and files the apply here; no agent works on this task.",
     "",
     ...lines.map((l) => `- ${l}`),
     "",
