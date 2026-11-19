@@ -152,7 +152,10 @@ test("legacy lists stay closed: links, root secrets and host variables may only 
     host: { "owner-channel": ["OWNER_SLACK_USER_ID", "SLACK_LIVE_IGNORE_CHANNELS", "TELEGRAM_OWNER_CHAT_ID", "TELEGRAM_TASK_URL", "OWNER_COMMAND_CHANNEL", "AIDENHQ_GATEWAY_URL"], google: ["BOARD_LAN_URL", "GOOGLE_CALENDAR_ID", "AIDENHQ_GATEWAY_URL"], jira: ["AIDENHQ_GATEWAY_URL"], tasks: ["AIDENHQ_GATEWAY_URL"], github: ["GITHUB_COMMENT_ORGS"], slack: ["SLACK_CLIENT_ID"] },
   };
   // 2f split owner-channel into channel-telegram, channel-slack and chat-lane: each may keep only a part of what it had.
-  const split = { "channel-telegram": "owner-channel", "channel-slack": "owner-channel", "chat-lane": "owner-channel", grading: "board-grades" };
+  const split = { "channel-telegram": "owner-channel", "chat-lane": "owner-channel", grading: "board-grades" };
+  // The connections build merged channel-slack into slack: slack keeps what both had (the sign-in's board link, the writer's warehouse and Paperclip links, the owner's host variables).
+  was.links.slack = ["board", "sources", "paperclip"];
+  was.host.slack = ["SLACK_CLIENT_ID", "OWNER_SLACK_USER_ID", "SLACK_LIVE_IGNORE_CHANNELS", "OWNER_COMMAND_CHANNEL"];
   // 3h moved the grade rows out of the board into the grading module: its one link is the pair network to the board, for the
   // board's reads of those rows, until the board is a module (4a). No root secret, no host variable.
   // One-way phase 2: and a pair link to apps-mcp for the grader's app reads (role apps.read), until 4c.
@@ -307,10 +310,10 @@ test("enumeration (spec §9): every shipped write or destructive tool maps to a 
   const kindOf = Object.fromEntries(writes.map(([ct, floor]) => [ct, routed[ct] ?? `conn.tool@${floor}`]));
   assert.deepEqual(["apps.app_deploy", "apps.app_run_request", "apps.app_restart", "apps.app_rollback", "apps.app_api", "apps.app_remove", "apps.app_create"].map((ct) => kindOf[ct]),
     ["apps-platform.deploy", "apps-platform.run", "apps-platform.restart", "apps-platform.rollback", "apps-platform.api_write", "conn.tool@1", "conn.tool@0"]);
-  assert.deepEqual(Object.fromEntries(Object.entries(kinds).map(([id, k]) => [id, k.floor])), { "apps-platform.deploy": 0, "apps-platform.run": 1, "apps-platform.restart": 0, "apps-platform.rollback": 0, "apps-platform.api_write": 0, "hubspot.crm_write": 1, "primer.publish": 1, "primer.reply": 1, "channel-slack.post": 1, "channel-slack.memory": 1, "channel-slack.bind": 0, "github.push": 0, "github.pr": 0, "github.merge": 0, "github.close": 0, "github.create_repo": 0 });
+  assert.deepEqual(Object.fromEntries(Object.entries(kinds).map(([id, k]) => [id, k.floor])), { "apps-platform.deploy": 0, "apps-platform.run": 1, "apps-platform.restart": 0, "apps-platform.rollback": 0, "apps-platform.api_write": 0, "hubspot.crm_write": 1, "primer.publish": 1, "primer.reply": 1, "slack.post": 1, "slack.memory": 1, "slack.bind": 0, "github.push": 0, "github.pr": 0, "github.merge": 0, "github.close": 0, "github.create_repo": 0 });
   assert.deepEqual(["primer.primer_create_document", "primer.primer_add_version", "primer.primer_reply_to_thread", "primer.primer_resolve_thread"].map((ct) => kindOf[ct]), ["primer.publish", "primer.publish", "primer.reply", "primer.reply"]);
-  assert.equal(kindOf["slack_live.slack_post"], "channel-slack.post");
-  assert.equal(kindOf["slack_live.channel_memory"], "channel-slack.memory");
+  assert.equal(kindOf["slack_live.slack_post"], "slack.post");
+  assert.equal(kindOf["slack_live.channel_memory"], "slack.memory");
   // A kind naming a tool that isn't one of its module's writes, or one another kind took, fails compile.
   assert.throws(() => writeKinds("m", { providers: { executor: { url: "http://m:1/x", auth: "m_service_key" } }, generated_secrets: ["m_service_key"], connections: { c: { tools: { read: ["r"], write: ["w"] } } }, writes: { k: { floor: 0, tools: ["r"] } } }, product), /r is no write or destructive tool/);
   assert.throws(() => writeKinds("m", { providers: { executor: { url: "http://m:1/x", auth: "m_service_key" } }, generated_secrets: ["m_service_key"], connections: { c: { tools: { read: [], write: ["w"] } } }, writes: { k: { floor: 0, tools: ["w"] }, j: { floor: 1, tools: ["w"] } } }, product), /c\.w is already routed/);

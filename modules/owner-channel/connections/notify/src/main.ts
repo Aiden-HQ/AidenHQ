@@ -1,6 +1,6 @@
 // owner-channel: the one way a message reaches the owner. Agents call notify (MCP, behind the kernel's proxy); the kernel,
 // the board and the runner queue theirs at the kernel, which this service takes and routes the same way. Channels
-// (channel-telegram, channel-slack) are transports the kernel sends one message to at a time. No channel token, no
+// (channel-telegram, slack) are transports the kernel sends one message to at a time. No channel token, no
 // control-plane key: everything goes through the kernel with this service's own token.
 import { readFileSync } from "node:fs";
 import { createServer, type IncomingMessage } from "node:http";

@@ -287,31 +287,33 @@ model). Any other message goes to Aiden; forward messages to the bot to give Aid
 
 ### Slack
 
-Slack has two parts, both served by one Slack app.
+Slack is one module (`slack`) with two parts, both served by one Slack app made from one manifest
+([modules/slack/slack-app-manifest.yml](../modules/slack/slack-app-manifest.yml); the board's Slack setup page links it).
 
-**a. Owner channel** (Aiden DMs you, agents post to channels you list, live events):
+**a. Slack reads for agents** (basic, through Slack's own MCP server):
 
-1. [org admin] At api.slack.com/apps: *Create New App*, *From an app manifest*, and paste
-   [modules/channel-slack/slack-app-manifest.yml](../modules/channel-slack/slack-app-manifest.yml). Install it in the
-   workspace. A workspace that requires admin approval queues the install for an admin.
+1. [org admin] At api.slack.com/apps: *Create New App*, *From an app manifest*, and paste the manifest's basic part (the
+   board's setup page opens it pre-filled). A workspace that requires admin approval queues the install for an admin.
+2. [org admin] In the app's settings, open **Agents** in the sidebar and turn **Slack Model Context Protocol (MCP)
+   Server** on. The manifest can't do this, and without it every call fails with "App is not enabled for Slack MCP
+   server access".
+3. Add `slack` to `modules:` in `instance.yaml` and apply.
+4. Open the board's Slack setup (`#/setup/slack`) [human]: paste the app's Client ID (Basic Information) and press Connect.
+
+**b. Owner channel, advanced** (Aiden DMs you, agents post to channels you list, live events; your own app, never shared):
+
+1. [org admin] In your app, replace its manifest with the advanced one the setup page shows, and install it in the workspace.
 2. Save three tokens in the vault: the app-level token (`xapp-`, scope `connections:write`, under Basic Information,
    App-Level Tokens) as `slack_live_app_token`, the bot token (`xoxb-`) as `slack_live_bot_token`, and your user token
-   (`xoxp-`) as `slack_live_user_token`.
+   (`xoxp-`) as `slack_live_user_token`. Or paste the first two on the board's Slack setup page.
 3. Set your Slack member id (Slack profile, *Copy member ID*) in `.env`: uncomment the `# OWNER_SLACK_USER_ID=U00000000`
    line and put your id in it, or pair on the board instead. It decides whose words count and who gets paged.
-4. Add `channel-slack` to `modules:` in `instance.yaml`, apply, then
-   `docker compose up -d --force-recreate channel-slack-slack`.
+4. Apply, then `docker compose up -d --force-recreate slack-live`.
 
-**b. Slack reads for agents** (the `slack` module, through Slack's own MCP server):
+An instance that ran the old `channel-slack` module needs nothing: `replaces` keeps its `instance.yaml` working, and the
+apply moves its listener's data and restarts it under the `slack` module.
 
-1. [org admin] In the same app's settings, open **Agents** in the sidebar and turn **Slack Model Context Protocol
-   (MCP) Server** on. The manifest can't do this, and without it every call fails with "App is not enabled for Slack
-   MCP server access".
-2. Add `slack` to `modules:` in `instance.yaml` and apply.
-3. Open the board's Slack setup (`#/setup/slack`) [human]: add the board's `/slack/callback` address to the app's Redirect
-   URLs, paste the app's Client ID (Basic Information) and press Connect.
-
-**Check:** `docker compose logs --tail 20 channel-slack-slack` shows no token errors, and
+**Check:** `docker compose logs --tail 20 slack-live` shows no token errors, and
 `scripts/healthcheck.sh | grep slack` shows `ok  slack read (own profile)`.
 
 ### Others (optional)

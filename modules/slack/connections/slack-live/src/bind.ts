@@ -1,7 +1,7 @@
 // Channel binding: the owner binds a Slack channel to an agent (`/aiden assign-channel <agent>`), and from then on an
 // @mention of the bot in that channel becomes a task for that agent, one Slack thread per task. Only mentions wake the agent;
 // it reads the channel's history and the thread through slack_channel_context, which answers only for the channel bound to
-// the calling agent. A binding is changed only by the owner's own command: the listener files `channel-slack.bind` (Tier 0,
+// the calling agent. A binding is changed only by the owner's own command: the listener files `slack.bind` (Tier 0,
 // a kernel record, so every change is on the record) after checking the Slack user id against OWNER_SLACK_USER_ID, and the
 // executor checks it again. The table lives in this module's store; the kernel never reads it.
 import { randomBytes } from "node:crypto";
@@ -34,12 +34,12 @@ const pending = (store: Store, a: { op: string; channel: string; agent?: string;
 };
 
 /**
- * channel-slack.bind, the executor side. Tier 0, but only a record this module filed for a command the owner typed: the slash
+ * slack.bind, the executor side. Tier 0, but only a record this module filed for a command the owner typed: the slash
  * handler (which checked the Slack-asserted user id) left a single-use token that matches the record's channel, op and agent;
  * a record without one (a forged `by`) is refused. The kernel names the requester, not the args.
  */
 export function binder(store: Store, opts: { ownerId: string; agents: Agents; module?: string }): Executor {
-  const { agents, module = process.env.AIDENHQ_MODULE ?? "channel-slack" } = opts; // ownerId is read per check: pairing changes it after start
+  const { agents, module = process.env.AIDENHQ_MODULE ?? "slack" } = opts; // ownerId is read per check: pairing changes it after start
   const check = async (a: any, requester: { kind?: string; module?: string } | undefined, spend: boolean) => {
     const ownerId = opts.ownerId;
     if (requester?.kind !== "module" || requester.module !== module) throw new Error("only this module files a binding");

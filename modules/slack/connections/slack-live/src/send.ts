@@ -1,4 +1,4 @@
-// channel-slack as a transport of the owner's router (owner-channel): POST /transport/send is one message as a DM to the owner
+// slack as a transport of the owner's router (owner-channel): POST /transport/send is one message as a DM to the owner
 // from the instance's bot (the owner is the paired Slack user). Agent text is rendered through a small mrkdwn subset with
 // everything else escaped, so it can't form links, mentions or broadcasts.
 import { escape, toSlackMrkdwn } from "./mrkdwn.js";

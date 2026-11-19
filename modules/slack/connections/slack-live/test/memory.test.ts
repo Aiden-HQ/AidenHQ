@@ -26,8 +26,8 @@ async function setup() {
   return { store, ex: memoryWriter(store) };
 }
 const write = async (ex: ReturnType<typeof memoryWriter>, args: any, req: any) => {
-  const p = await ex.plan({ kind: "channel-slack.memory", args, requester: req, task: req.task });
-  return ex.execute({ id: "k-0", kind: "channel-slack.memory", args: p.args, digest: "", idempotency_key: "" });
+  const p = await ex.plan({ kind: "slack.memory", args, requester: req, task: req.task });
+  return ex.execute({ id: "k-0", kind: "slack.memory", args: p.args, digest: "", idempotency_key: "" });
 };
 
 describe("channel memory", () => {
@@ -63,7 +63,7 @@ describe("channel memory", () => {
     const run = async (args: Record<string, string>) => {
       const a = { ...args, by: OWNER, token: "t".padEnd(31, "t") };
       store.setKv(`bindtok:${a.token}`, JSON.stringify({ ...args, by: OWNER, exp: Date.now() + 60_000 }));
-      await b.execute({ id: "k-0", kind: "channel-slack.bind", args: a, digest: "", idempotency_key: "" });
+      await b.execute({ id: "k-0", kind: "slack.bind", args: a, digest: "", idempotency_key: "" });
     };
     await run({ op: "unassign", channel: "C0BOUND01" });
     expect(store.getKv("mem:C0BOUND01")).toBeUndefined();

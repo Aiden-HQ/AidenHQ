@@ -11,9 +11,9 @@ import { authApiServer } from "./auth-helpers.mjs";
 
 const FIELDS = [
   { module: "channel-telegram", secret: "telegram_bot_token", label: "Bot token", pattern: "^[0-9]{6,12}:[A-Za-z0-9_-]{30,50}$" },
-  { module: "channel-slack", secret: "slack_bot_token", label: "Slack bot token", pattern: "^xoxb-[A-Za-z0-9-]{20,200}$" },
+  { module: "slack", secret: "slack_bot_token", label: "Slack bot token", pattern: "^xoxb-[A-Za-z0-9-]{20,200}$" },
 ];
-const SERVICES = { "channel-telegram": ["telegram"], "channel-slack": ["slack-live"], google: [] };
+const SERVICES = { "channel-telegram": ["telegram"], "slack": ["slack-live"], google: [] };
 // Who mounts each secret, any module's (compile: `mounts`): another module's service reads the Slack token too.
 const MOUNTS = { telegram_bot_token: ["telegram"], slack_bot_token: ["apps-mcp", "slack-live"] };
 const TOKEN = "123456789:" + "A".repeat(35);
