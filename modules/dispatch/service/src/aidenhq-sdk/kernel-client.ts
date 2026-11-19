@@ -32,3 +32,37 @@ export function kernelClient(url: string, token: string, { timeoutMs = 30_000, f
   };
 }
 export type KernelClient = ReturnType<typeof kernelClient>;
+
+/** A fact a module sends the kernel (POST /v1/facts, docs/design/flow.md §2). The kernel sets the actor; never send one. */
+export type FactIn = { type: string; subject: string; version: string; at: string; task?: string | null; source?: "live" | "backfill"; data?: Record<string, unknown> };
+
+/**
+ * A module's fact emitter: `emit` queues and returns at once; the queue is sent every `everyMs` (≤ 500 per call) and kept on a
+ * failure for the next flush, so emitting never fails or slows the module's own work. Deterministic ids make resends harmless.
+ * `flush` sends now (tests, shutdown); `stop` clears the timer.
+ */
+export function factEmitter(client: KernelClient, log: (msg: string, f?: Record<string, unknown>) => void, { everyMs = 5_000, max = 10_000 } = {}) {
+  let queue: FactIn[] = [];
+  let busy = false;
+  async function flush() {
+    if (busy || !queue.length) return;
+    busy = true;
+    try {
+      while (queue.length) {
+        const batch = queue.slice(0, 500);
+        await client.call("POST", "/v1/facts", { facts: batch });
+        queue = queue.slice(batch.length);
+      }
+    } catch (e) {
+      log("facts: send failed, kept for the next flush", { queued: queue.length, error: String((e as Error).message).slice(0, 200) });
+    } finally { busy = false; }
+  }
+  const timer = setInterval(() => void flush(), everyMs);
+  timer.unref?.();
+  return {
+    emit(f: FactIn) { queue.push(f); if (queue.length > max) queue = queue.slice(-max); },
+    flush,
+    stop: () => clearInterval(timer),
+  };
+}
+export type FactEmitter = ReturnType<typeof factEmitter>;
