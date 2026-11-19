@@ -42,7 +42,7 @@ export function useConnectNeeded(can: Can): Map<string, { c: Connectable; word: 
 }
 
 /** "Connect", "Reconnect" or (connected, with scopes on offer) "Change access". */
-export const connectWord = (s: Connectable["signIn"]) => (s?.state === "ok" || s?.state === "none" ? (s.offer ? "Change access" : "Reconnect") : s?.state === "expired" ? "Reconnect" : "Connect");
+export const connectWord = (s: Connectable["signIn"]) => (s?.state === "ok" || s?.state === "none" ? (s.offer ? "Change access" : "Reconnect") : s?.state === "expired" || s?.state === "unknown" ? "Reconnect" : "Connect");
 
 /** A new tab for the vendor's sign-in, opened in the click itself (so no popup blocker stops it), cut off from this one. */
 function newTab(): Window | null {
