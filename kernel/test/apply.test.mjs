@@ -9,7 +9,7 @@ import { join } from "node:path";
 import { bumpTitle, createApply, isTrial, officialMove, readDigest, strayFiles } from "../src/apply.ts";
 import { openRecords } from "../src/records.ts";
 import { openFacts } from "../src/facts.ts";
-import { recordDeploys } from "../src/generations.ts";
+import { createDeploys } from "../src/generations.ts";
 import { createWrites } from "../src/writes.ts";
 
 test("only instance config can be applied", () => {
@@ -191,10 +191,11 @@ test("a generation writes deploy.applied and pr.deployed for the merges it conta
   const file = join(dir, "generations.jsonl");
   const gen = (n, product, health) => ({ n, at: new Date(Date.now() + n * 1000).toISOString(), product, instance: "f".repeat(40), health });
   writeFileSync(file, [gen(1, c1, "good"), gen(2, c2, "pending")].map((g) => JSON.stringify(g) + "\n").join(""));
-  assert.equal(recordDeploys({ db: records.db, file, repo }), 2);
+  const recordDeploys = createDeploys({ db: records.db, file, repo });
+  assert.equal(recordDeploys(), 2);
   writeFileSync(file, [gen(1, c1, "good"), gen(2, c2, "good")].map((g) => JSON.stringify(g) + "\n").join(""));
-  assert.equal(recordDeploys({ db: records.db, file, repo }), 2);
-  assert.equal(recordDeploys({ db: records.db, file, repo }), 0);
+  assert.equal(recordDeploys(), 2);
+  assert.equal(recordDeploys(), 0);
   const rows = records.db.prepare("SELECT type, subject, data FROM facts WHERE type IN ('deploy.applied', 'pr.deployed') ORDER BY seq").all().map((f) => [f.type, f.subject, JSON.parse(f.data).generation]);
   assert.deepEqual(rows, [["deploy.applied", "deploy:1", 1], ["pr.deployed", "pr:acme/product#1", 1], ["deploy.applied", "deploy:2", 2], ["pr.deployed", "pr:acme/product#2", 2]]);
 });

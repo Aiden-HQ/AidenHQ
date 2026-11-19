@@ -117,7 +117,7 @@ export function createChecks({ db, registry, owner, secret, resolver, agentKey =
    * before anything moves unless a check answers `accepts`, so no other cross-task close passes.
    */
   /** A finish check's verdict on a task (a grader's reopen, say): an outcome the routing learning loop trusts (routing-tune.ts), never its words. */
-  const verdictEvent = (task: string, check: string, verdict: string) => noteFact(facts, { type: "finish.verdict", subject: `task:${task}`, version: `e-${randomBytes(8).toString("hex")}`, task, at: new Date().toISOString(), actor: `module:${check.split(".")[0]}`, data: { check, verdict } });
+  const verdictEvent = (task: string, check: string, verdict: string) => noteFact(facts, { type: "finish.verdict", subject: `task:${task}`, version: `e-${randomBytes(8).toString("hex")}`, task, at: new Date().toISOString(), actor: "kernel", data: { check, verdict } });
 
   async function finish(ref: string, caller: { agent?: string; tool?: string; via: string; cross?: boolean }): Promise<Finish> {
     const refuseCross = () => fail(403, "forbidden", `only this job's own task is finished here; ${ref} is finished by its assignee, or accepted by its delegator once grading has escalated it`);

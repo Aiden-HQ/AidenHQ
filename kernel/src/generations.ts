@@ -54,18 +54,25 @@ const contains = (repo: string, a: string, b: string) => {
 /**
  * Flow's deploy facts from the host's generations (Task 5): `deploy.applied` for each generation that switched something
  * (good or failed; pending is unsettled, refused switched nothing), and `pr.deployed` for each merged product PR, once, at the
- * first good generation whose product commit contains its merge commit. The file is the shell's, so this runs at start and
- * then on a timer; every fact's id is deterministic, so a re-run records nothing new. Returns how many facts it recorded.
+ * first good generation whose product commit contains its merge commit. The file is the shell's, so the kernel calls this at
+ * start and then on a timer; every fact's id is deterministic, so a re-run records nothing new. The PRs are looked at only
+ * when a good generation newer than the last look exists (git runs on the kernel's thread). Each call returns how many facts
+ * it recorded.
  */
-export function recordDeploys({ db, file, repo, days = 30 }: { db: DatabaseSync; file: string; repo: string; days?: number }): number {
-  if (!existsSync(file)) return 0;
+export function createDeploys({ db, file, repo, days = 30 }: { db: DatabaseSync; file: string; repo: string; days?: number }): () => number {
   const facts = openFacts(db);
+  let looked = -1;
+  return () => {
+  if (!existsSync(file)) return 0;
   const gens = readFileSync(file, "utf8").split("\n").filter((l) => l.trim()).flatMap((l) => { try { return [one(JSON.parse(l))]; } catch { return []; } }).filter((g) => g.n !== null && g.at);
   let n = 0;
   for (const g of gens) {
     if (g.health !== "good" && g.health !== "failed") continue;
     if (facts.record({ type: "deploy.applied", subject: `deploy:${g.n}`, version: g.health, at: g.at!, actor: "kernel", source: "poll", data: { generation: g.n, product: g.product, health: g.health, revert_of: g.revert_of } })) n++;
   }
+  const newest = Math.max(-1, ...gens.filter((g) => g.health === "good").map((g) => g.n!));
+  if (newest <= looked) return n;
+  looked = newest;
   const slug = productRepo(repo);
   if (!slug) return n;
   const since = new Date(Date.now() - days * 864e5).toISOString();
@@ -92,5 +99,6 @@ export function recordDeploys({ db, file, repo, days = 30 }: { db: DatabaseSync;
     if (g && facts.record({ type: "pr.deployed", subject: m.subject, version: "deployed", at: g.at!, actor: "kernel", source: "poll", data: { pr: m.subject.slice(3), generation: g.n } })) n++;
   }
   return n;
+  };
 }
 const tables = (db: DatabaseSync) => new Set((db.prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all() as { name: string }[]).map((t) => t.name));

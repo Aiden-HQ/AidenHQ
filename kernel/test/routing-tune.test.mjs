@@ -22,7 +22,7 @@ import { kernel, moduleServer } from "./helpers.mjs";
 
 /** A grader's reopen of a task, as the finish gate records it (checks.ts). */
 let verdicts = 0;
-const verdict = (db, task) => openFacts(db).record({ type: "finish.verdict", subject: `task:${task}`, version: `e-${++verdicts}`, task, at: new Date().toISOString(), actor: "module:grading", data: { check: "grading.grade", verdict: "reopen" } });
+const verdict = (db, task) => openFacts(db).record({ type: "finish.verdict", subject: `task:${task}`, version: `e-${++verdicts}`, task, at: new Date().toISOString(), actor: "kernel", data: { check: "grading.grade", verdict: "reopen" } });
 
 process.env.GIT_CONFIG_GLOBAL = "/dev/null";
 process.env.GIT_CONFIG_NOSYSTEM = "1";

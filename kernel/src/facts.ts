@@ -88,7 +88,7 @@ function migrateEvents(db: DatabaseSync) {
       let d: Record<string, any>;
       try { d = JSON.parse(e.data); } catch { continue; }
       if (e.type === "gate.would_block") { put("gate.would_block", `task:${d.task}`, e.id, null, e.at, "kernel", d); continue; }
-      if (e.type === "finish.verdict") { put("finish.verdict", `task:${d.task}`, e.id, String(d.task), e.at, `module:${String(d.check).split(".")[0]}`, { check: d.check, verdict: d.verdict }); continue; }
+      if (e.type === "finish.verdict") { put("finish.verdict", `task:${d.task}`, e.id, String(d.task), e.at, "kernel", { check: d.check, verdict: d.verdict }); continue; }
       const rec = tierOf?.get(String(d.record)) as { tier: number; task: string } | undefined;
       if (!rec || rec.tier < 1) continue;
       const subject = `record:${d.record}`;
@@ -111,7 +111,7 @@ function migrateEvents(db: DatabaseSync) {
 
 /**
  * Facts from what the kernel kept before Flow (Task 15): records (tier ≥ 1), jobs (started and ended; queue time was never
- * kept), wakes (opened and bound). Each is recorded only where no fact of that
+ * kept) and wakes (opened; when one was bound was never kept). Each is recorded only where no fact of that
  * type and subject exists yet, so a re-run, or history the live writers or the migration already covered, records nothing.
  * Times nothing kept (a claim, a drop) are left out, never guessed. Returns how many facts it recorded.
  */
@@ -153,12 +153,9 @@ export function backfillLocal(db: DatabaseSync, facts: Facts, { agentKey = () =>
     }
   }
   if (have.has("wakes")) {
-    const jobAt = have.has("jobs") ? db.prepare("SELECT at FROM jobs WHERE id = ?") : undefined;
-    for (const w of db.prepare("SELECT key, task, cause, at, job FROM wakes").all() as any[]) {
+    for (const w of db.prepare("SELECT key, task, cause, at FROM wakes").all() as any[]) {
       const subject = `wake:${w.key}`;
       fill({ type: "wake.opened", subject, version: "opened", task: w.task, at: iso(w.at), actor: "unknown", data: { cause: w.cause, author: null } });
-      const bound = w.job ? (jobAt?.get(w.job) as { at: number } | undefined) : undefined;
-      if (bound) fill({ type: "wake.bound", subject, version: w.job, task: w.task, at: iso(bound.at), actor: "kernel", data: { job: w.job } });
     }
   }
   return n;
