@@ -201,7 +201,7 @@ every(() => {
 once(() => void certWatch.tick(), 10 * 60_000);
 // Release updates (updates.ts, docs/design/release-updates.md): the check (a child process) prepares a release; the kernel files
 // it as a kernel.apply on a task of its own (the platform engineer's, as the release train's), follows it and tells the owner.
-const moduleTasks = createModuleTasks({ db: records.db, owner: ownerApi, agents: () => grantsTable().agents ?? {}, rubric: (task, module, b) => checks.rubric(task, module, b), log });
+const moduleTasks = createModuleTasks({ db: records.db, owner: ownerApi, agents: () => grantsTable().agents ?? {}, rubric: (task, module, b) => checks.rubric(task, module, b), applies: (task) => records.list(["review", "owner", "approved", "claimed", "done", "failed", "rejected", "stale", "cancelled", "unknown"], null, { task, kinds: ["kernel.apply"] }), ownerUser: async () => (ownerUser ||= String(((await cpJson("/api/cli-auth/me")) as { userId?: string }).userId ?? "")), log });
 const updates = createUpdates({
   db: records.db, dir: path.join(dataDir, "updates"), inst: env("AIDENHQ_INSTANCE_DIR", path.join(process.env.HOME ?? "", "aidenhq-instance")), board: path.join(env("AIDENHQ_STATE_DIR", path.join(process.env.HOME ?? "", ".local/state/aidenhq")), "board/updates.json"),
   ownerLine: toOwner("done"), check: runCheck(repo), log,

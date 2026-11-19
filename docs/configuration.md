@@ -355,14 +355,15 @@ Copy `.env.example` to `.env`. It holds host paths and endpoints, never agent-ed
 optional `repo_sources` (repos cloned from a local path), work and state directories, concurrency, the default OpenRouter
 model (`engines.openrouter.model`).
 
-The release train (`release.batch_minutes`, default 15; 0 turns it off; `services/runner/src/release.mjs`) writes pin bumps
-in code. A green merge to the product opens one task, "Pin bump: this instance's product and modules", that lists the
-merges it carries; once the window from the first of them has passed, the runner files one apply card moving `product:` to
-the product's green tip (the official modules are its own `modules/`; an obsolete `aidenhq` marketplace entry is dropped in
-the same commit). The card is the AI reviewer's (Tier 1, raised as usual for new authority). Each target has one
-bump in flight at a time; merges after it collect in the next task, which files once it is over. A bump that is rejected,
-expires or fails is cancelled with the reason, and only a newer merge files the next one (a reverted pin is never re-bumped
-on its own). An agent waiting for a merge to go live blocks on the task that lists its merge commit.
+The release train (`release.batch_minutes`, default 15; 0 turns it off; `modules/codehost-github/service/src/train.ts`) writes
+pin bumps in code. A green merge to the product opens one task, "Pin bump: this instance's product", that lists the merges
+it carries; once the window from the first of them has passed, the train files one apply card moving `product:` to the
+product's green tip (the official modules are its own `modules/`). The card is the AI reviewer's (Tier 1, raised as usual for
+new authority). Each target has one bump in flight at a time; merges after it collect in the next task, which files once it
+is over. A bump that is rejected, expires or fails is closed with the reason, and only a newer merge files the next one (a
+reverted pin is never re-bumped on its own). Every poll also sweeps the open tasks of the train's own `release:instance:`
+source family, so a bump filed by a process that is gone (or by the retired runner, under its old stamp) is settled from its
+card instead of staying open forever. An agent waiting for a merge to go live blocks on the task that lists its merge commit.
 
 Every Engineer runs `codex-openrouter` (Codex on OpenRouter models through the model gateway) in its agent computer; the
 model is the agent's `model:` (or the task's override), the effort its `reasoning_effort:` (low, medium, high, xhigh, max;

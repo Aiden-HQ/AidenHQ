@@ -14,9 +14,16 @@ const INSTANCE = `product: ${OLD}\nmodules: [core]\n`;
 
 function fakes() {
   // `tasks`: every filing call; `made`: the tasks the control plane actually created (one per source, as the kernel's
-  // idempotency key makes it); `closeFails`: close calls to fail before answering 502.
-  const k = { tasks: [], made: [], writes: [], closed: [], records: {}, closeFails: 0 };
+  // idempotency key makes it); `closeFails`: close calls to fail before answering 502; `stranded`: the open tasks the kernel's
+  // source listing answers with (a task a process filed and this one never had in hand).
+  const k = { tasks: [], made: [], writes: [], closed: [], records: {}, closeFails: 0, stranded: [], lists: [] };
   const kernel = async (method, path, body) => {
+    const l = /^\/v1\/tasks\?source=(.+)$/.exec(path);
+    if (l) {
+      k.lists.push(decodeURIComponent(l[1]));
+      // The control plane's listing is open tasks: one the fake kernel has just closed is no longer in it.
+      return { tasks: k.stranded.filter((t) => decodeURIComponent(l[1]) === "release:instance:" && t.source.startsWith("release:instance:") && !k.closed.some((c) => c.task === t.id)) };
+    }
     if (path === "/v1/tasks") {
       k.tasks.push(body);
       const same = k.made.find((t) => t.source === body.source);
@@ -61,6 +68,17 @@ const train = (dir, f, clock, extra = {}) => createReleaseTrain({
   kernel: f.kernel, github: f.github, evalBump: async () => undefined, now: () => clock.t,
   commit: async (repo, path, edit) => { const t = edit(f.head ?? INSTANCE); f.committed = t; return t.includes(NEW) ? "e".repeat(40) : "0".repeat(40); }, ...extra,
 });
+
+/**
+ * A task a process filed and this train never had in hand: `state` is its newest kernel.apply's state (`null`: none was ever
+ * filed), `createdAt` its filing time. Written to the fake kernel's listing and work log, never to `s.flight`.
+ */
+function stranded(f, { source = "release:instance:1795022489866", state = "failed", text = "the service codehost-github isn't running", createdAt = "2026-11-18T09:00:00Z" } = {}) {
+  const id = `t-${source}`;
+  f.k.stranded.push({ id, identifier: "WOR-8308", source, createdAt, status: "in_review" });
+  if (state) f.k.records[`k-${source}`] = { id: `k-${source}`, kind: "kernel.apply", task: id, state, created_at: createdAt, outcome: { ok: state === "done", text } };
+  return id;
+}
 
 test("a green tip past the window files one kernel.apply; a restart adopts that same card, and an ended bump is never retried", async () => {
   const dir = mkdtempSync(join(tmpdir(), "train-"));
@@ -191,4 +209,68 @@ test("an instance that installs releases (a release: key) is the kernel updater'
   clock.t = new Date("2026-11-18T10:20:00Z");
   await t.step();
   assert.deepEqual([f.k.tasks.length, f.k.writes.length], [0, 0]);
+});
+
+/**
+ * The sweep: the tip is the live pin, so trainStep is idle and nothing is filed or followed here; only the tasks the kernel's
+ * source listing returns are settled, from their cards, with no memory of them in this process at all.
+ */
+function idle(f) {
+  f.github.tip = async () => ({ tip: OLD, green: true });
+  return f;
+}
+
+test("a stranded bump whose apply failed is swept and settled, with no flight state and nothing to file", async () => {
+  const f = idle(fakes());
+  const clock = { t: new Date("2026-11-18T10:20:00Z") };
+  const task = stranded(f);
+  await train(mkdtempSync(join(tmpdir(), "train-")), f, clock).step();
+  assert.deepEqual(f.k.lists, ["release:instance:"], "the listing is the train's own source family");
+  assert.deepEqual(f.k.closed.map((c) => [c.task, c.status]), [[task, "done"]]);
+  assert.match(f.k.closed[0].body, /\*\*Not landed:\*\* it was approved but failed: the service codehost-github isn't running\. The next merge to the product files the next bump\.$/);
+  assert.equal(f.k.closed[0].uncarded, undefined, "a carded bump closes through the normal guard, never the no-card path");
+  assert.deepEqual([f.k.tasks.length, f.k.writes.length], [0, 0], "idle: the sweep files nothing");
+});
+
+test("a stranded bump with no apply card at all is settled once it is past the batch window, not before", async () => {
+  const f = idle(fakes());
+  // The runner's stamp is 18:06:29.923Z; the control plane's createdAt a moment after it, as its Date.now()-then-POST produces.
+  const clock = { t: new Date("2026-11-18T18:10:00Z") };
+  stranded(f, { source: "release:instance:1795025189923", state: null, createdAt: "2026-11-18T18:06:30.500Z" });
+  const t = train(mkdtempSync(join(tmpdir(), "train-")), f, clock);
+  await t.step();
+  assert.deepEqual(f.k.closed, [], "inside the window a filing may still be on its way");
+  clock.t = new Date("2026-11-18T18:30:00Z");
+  await t.step();
+  assert.deepEqual(f.k.closed.map((c) => [c.task, c.status]), [["t-release:instance:1795025189923", "done"]]);
+  assert.match(f.k.closed[0].body, /\*\*Not landed:\*\* no apply card was ever filed\. The next merge to the product files the next bump\.$/);
+  assert.equal(f.k.closed[0].uncarded, true, "the record-less bump is settled by the sweep's own path, not the ownership guard");
+});
+
+test("a bump whose card is still moving is left alone", async () => {
+  const f = idle(fakes());
+  const clock = { t: new Date("2026-11-18T10:20:00Z") };
+  stranded(f, { state: "review" });
+  await train(mkdtempSync(join(tmpdir(), "train-")), f, clock).step();
+  assert.deepEqual(f.k.closed, []);
+});
+
+test("a task that isn't the train's is never closed by the sweep", async () => {
+  const f = idle(fakes());
+  const clock = { t: new Date("2026-11-18T10:20:00Z") };
+  stranded(f, { source: "dependabot:acme/app/7" });
+  await train(mkdtempSync(join(tmpdir(), "train-")), f, clock).step();
+  assert.deepEqual(f.k.closed, []);
+});
+
+test("the bump in flight is follow()'s: the sweep skips it even when its card has settled", async () => {
+  const f = fakes();
+  const clock = { t: new Date("2026-11-18T10:00:00Z") };
+  const { t, record } = await inFlight(f, clock, "failed", "the apply host was replaced mid-run");
+  // The same task is also listed: the sweep must not close it before follow(), nor close it twice.
+  f.k.stranded.push({ id: record.task, identifier: "ACME-7", source: `release:instance:${NEW}`, createdAt: "2026-11-18T09:00:00Z", status: "in_review" });
+  f.k.lists.length = 0;
+  await t().step();
+  assert.deepEqual(f.k.closed.map((c) => c.task), [record.task], "closed once, by follow()");
+  assert.match(f.k.closed[0].body, /\*\*Not landed:\*\* it was approved but failed: the apply host was replaced mid-run/);
 });

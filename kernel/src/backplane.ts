@@ -30,7 +30,8 @@
 //                              agent it dispatches, cancelled as that agent (wakes.ts)
 //   POST /v1/wakes/:key/note   (the module that claimed it) {body}: a note on its task as its agent, once (no job answers it)
 //   POST /v1/tasks             (a module with role kernel.tasks) {title, description, role | agent, source, parent?}: a task of the module's
-//                              fixed text for the agent holding `role` (or `agent`, by id), once per source (modtasks.ts); POST /v1/tasks/:task/close
+//                              fixed text for the agent holding `role` (or `agent`, by id), once per source (modtasks.ts); GET /v1/tasks?source=
+//                              the open tasks of the module's own `release:instance:` family (the release train's sweep); POST /v1/tasks/:task/close
 //                              {status: done|cancelled, body}: one it filed
 //   POST /v1/reviews           (the runner's reviewer key) a check before filing: one review by the bound reviewer module → its verdict
 //   POST /v1/reviews/:review   (that review's token, once) the reviewer module's verdict
@@ -135,6 +136,7 @@ export const ROUTES = [
   { method: "POST", path: "/v1/routines/cancel", auth: "module" },
   { method: "POST", path: "/v1/tasks", auth: "module" },
   { method: "POST", path: "/v1/tasks/:task/close", auth: "module" },
+  { method: "GET", path: "/v1/tasks", auth: "module" },
   { method: "POST", path: "/v1/reviews", auth: "reviewer-key" },
   { method: "POST", path: "/v1/reviews/:review", auth: "review-token" },
   { method: "POST", path: "/v1/jobs", auth: "module" },
@@ -462,6 +464,12 @@ export function createBackplane({ facts, whoami, asserter, proxy, cp, boardCp, g
         const w = await moduleOf(req);
         if (!w.roles.includes("kernel.tasks")) throw fail(403, "forbidden", `${w.module} may not file tasks (role kernel.tasks)`);
         if (!tasks) throw fail(503, "unavailable", "module tasks are off");
+        if (hit.method === "GET") {
+          const r = await tasks.list(w.module!, String(new URLSearchParams(q ?? "").get("source") ?? "")).catch((e: { name?: string; status?: number; message: string }) => {
+            throw e.name === "TaskError" ? fail(e.status!, "bad_request", e.message) : e;
+          });
+          return send(res, 200, r);
+        }
         const b = await json(req);
         const r = await (hit.path === "/v1/tasks" ? tasks.file(w.module!, b) : tasks.close(w.module!, decodeURIComponent(m[0]!), b)).catch((e: { name?: string; status?: number; message: string }) => { throw e.name === "TaskError" ? fail(e.status!, "bad_request", e.message) : e; });
         return send(res, 200, r);
