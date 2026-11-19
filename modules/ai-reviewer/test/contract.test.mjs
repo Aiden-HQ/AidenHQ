@@ -65,6 +65,13 @@ test("a review reaches the module and its verdict comes back, with the panel the
   assert.match(calls[0].messages[1].content, /<<<REQUEST_CHAIN\nOwner: add x\.\nREQUEST_CHAIN>>>/);
 });
 
+test("the grader note reaches the model, fenced as data after the request chain", async () => {
+  answers.push({ decision: "approve", reason_code: "in_scope", reason: "as asked", second_review: false });
+  const note = "Graded version abc123 (rejected versions so far: 1):\n- criterion 2: not met: the page lists posts";
+  assert.equal((await ask({ card, diff: "+x", chain: "Owner: add x.", grader_note: note })).status, 200);
+  assert.match(calls.at(-1).messages[1].content, /REQUEST_CHAIN>>>\n\nThe task's grader's latest verdict[^\n]*\n<<<GRADER_NOTE\nGraded version abc123 [^\n]*\n- criterion 2: not met: the page lists posts\nGRADER_NOTE>>>/);
+});
+
 test("a review token decides once; any other bearer opens nothing", async () => {
   answers.push({ decision: "reject", reason_code: "out_of_scope", reason: "no", second_review: false });
   assert.equal((await ask({ card, diff: "+x" })).status, 200);
