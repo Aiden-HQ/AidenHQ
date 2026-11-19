@@ -191,7 +191,7 @@ const keyOf = (list: unknown[]) => (list.length && list.every((x) => typeof x ==
  * doesn't make a rejected change new.
  */
 export function requestKey(action: string, s: any): string | undefined {
-  if (action === "push" || action === "pr") return keyOf((s.branches ?? []).map((b: any) => b.sha));
+  if (action === "push" || action === "pr") return keyOf((s.branches ?? s.only ?? []).map((b: any) => b.sha));
   if (action === "merge") return keyOf((s.prs ?? []).map((p: any) => p.head));
   if (action === "apply") return s.sha ? `apply:${s.sha}` : undefined;
   if (action === "create_repo") return s.repo ? `create_repo:${String(s.repo).toLowerCase()}` : undefined;
@@ -203,7 +203,7 @@ export function requestKey(action: string, s: any): string | undefined {
  * actions keyed otherwise.
  */
 export function requestPatches(action: string, s: any): string | null | undefined {
-  const list = action === "push" || action === "pr" ? s.branches : action === "merge" ? s.prs : undefined;
+  const list = action === "push" || action === "pr" ? (s.branches ?? s.only) : action === "merge" ? s.prs : undefined;
   if (!list) return undefined;
   return list.length && list.every((x: any) => typeof x.patch === "string") ? list.map((x: any) => x.patch).sort().join(",") : null;
 }
