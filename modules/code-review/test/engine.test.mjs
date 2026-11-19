@@ -16,6 +16,7 @@ function world(settings = {}) {
   const perms = { alice: "write", mallory: "read" };
   const started = [], posted = [], acks = [], facts = [];
   const results = new Map();
+  const outcomes = new Map();
   const cfg = readConfig(JSON.stringify({ repos: [{ repo: REPO }], ...settings }));
   const engine = createEngine({
     db: new DatabaseSync(":memory:"),
@@ -25,13 +26,13 @@ function world(settings = {}) {
       open: async () => [...prs.values()],
       get: async (_r, n) => prs.get(n),
       comments: async (_r, since) => ({ comments: comments.filter((c) => c.created_at > since), cursor: new Date(t).toISOString() }),
-      permission: async (_r, login) => perms[login] ?? "none",
+      permission: async (_r, login) => { if (perms.down) { perms.down = false; throw new Error("GitHub 502"); } return perms[login] ?? "none"; },
     },
     runner: {
       start: async (s) => { started.push(s); return { check: `c-${started.length}` }; },
       result: async (c) => results.get(c) ?? { state: "running" },
     },
-    poster: { post: async (p) => (posted.push(p), { state: "pending" }), ack: async (a) => void acks.push(a) },
+    poster: { post: async (p) => (posted.push(p), { state: "pending", write: `k-${posted.length}` }), ack: async (a) => void acks.push(a), outcome: async (id) => outcomes.get(id) ?? { state: "pending" } },
     emit: (f) => facts.push(f),
   });
   const review = (s, o = {}) => ({ version: 1, repo: REPO, pr: s.number, base: s.base, head: s.head, reviewer: s.reviewer, incremental_from: s.incremental_from, full: s.full,
@@ -40,7 +41,7 @@ function world(settings = {}) {
   const finish = (i, o, billed) => results.set(`c-${i + 1}`, { state: "done", review: review(started[i], o), ...(billed !== undefined ? { billed_usd: billed } : {}) });
   const pr = (n, head, o = {}) => prs.set(n, { repo: REPO, number: n, head, base: sha("b"), base_ref: "main", draft: false, fork: false, author: "bob", open: true, url: `https://github.com/${REPO}/pull/${n}`, ...o });
   const say = (n, author, body) => comments.push({ id: String(comments.length + 1), number: n, author, body, created_at: new Date(t).toISOString() });
-  return { engine, prs, pr, say, started, posted, acks, facts, finish, results, later: (ms) => (t += ms), tick: () => engine.tick() };
+  return { engine, outcomes, perms, prs, pr, say, started, posted, acks, facts, finish, results, later: (ms) => (t += ms), tick: () => engine.tick() };
 }
 
 test("a new PR is triaged, reviewed and posted; a push debounces into one incremental review; a stale run never posts", async () => {
@@ -63,7 +64,9 @@ test("a new PR is triaged, reviewed and posted; a push debounces into one increm
   assert.equal(w.posted[0].review.triage.risk, "normal");
   assert.deepEqual(w.facts.filter((f) => f.type === "review.ended" && f.data.status === "done").map((f) => [f.subject, f.data.reviewer, f.data.important]), [["pr:acme/payments#2", "triage", 0], ["pr:acme/payments#2", "standard", 1]]);
 
-  // Two pushes inside the debounce: one quick review of the last head, from the last reviewed head.
+  // The post is only filed: the baseline moves once it lands.
+  w.outcomes.set("k-1", { state: "posted" });
+  // Two pushes inside the debounce: one quick review of the last head, from the last reviewed (and posted) head.
   w.pr(2, sha("3")); await w.tick();
   w.later(60_000); w.pr(2, sha("4")); await w.tick();
   assert.equal(w.started.length, 2);
@@ -161,4 +164,17 @@ test("a run is charged what the kernel billed (never what the box says), and a r
     assert.equal(p.review.head, sha("1"));
   }
   assert.equal(w.posted.find((p) => p.review.reviewer === "standard").review.cost_usd, 0.7);
+});
+
+test("a command whose permission read fails is asked about again, not lost", async () => {
+  const w = world();
+  w.pr(1, sha("1"));
+  await w.tick();
+  w.later(1000);
+  w.say(1, "alice", "@aiden review quick");
+  w.perms.down = true;
+  await w.tick();
+  assert.equal(w.started.length, 0);
+  await w.tick();
+  assert.deepEqual(w.started.map((s) => s.reviewer), ["quick"]);
 });

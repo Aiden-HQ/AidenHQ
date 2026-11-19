@@ -13,7 +13,7 @@ import type { DatabaseSync } from "node:sqlite";
 import { randomBytes } from "node:crypto";
 import { HELP, parseCommand, type Command } from "./commands.ts";
 import { OFF, TRIAGE, type Config, type Profile, type Repo } from "./config.ts";
-import type { Ack, Poster, PrSource, PullRequest, Review, ReviewRunner } from "./seams.ts";
+import type { Ack, Posted, Poster, PrSource, PullRequest, Review, ReviewRunner } from "./seams.ts";
 import type { FactIn } from "./aidenhq-sdk/kernel-client.ts";
 
 export const DEBOUNCE = 3 * 60_000;
@@ -31,6 +31,8 @@ export type RunRow = {
   post: number; posted: string | null; author: string; attempts: number; then_reviewer: string | null;
   /** What earlier attempts of this run were billed (the kernel's figure): the retry gets only what's left. */
   billed_prior: number;
+  /** The kernel write record of its post, while its outcome is pending. */
+  write_id: string | null;
 };
 
 const DDL = `
@@ -43,7 +45,7 @@ CREATE TABLE IF NOT EXISTS runs (id TEXT PRIMARY KEY, repo TEXT NOT NULL, number
   nit INTEGER NOT NULL DEFAULT 0, pre_existing INTEGER NOT NULL DEFAULT 0, started TEXT, ended TEXT, check_job TEXT,
   base TEXT NOT NULL, profile TEXT NOT NULL, focus TEXT, full INTEGER NOT NULL DEFAULT 0, incremental_from TEXT,
   reserved_usd REAL NOT NULL DEFAULT 0, due INTEGER NOT NULL, created INTEGER NOT NULL, post INTEGER NOT NULL DEFAULT 1, posted TEXT,
-  author TEXT NOT NULL DEFAULT '', attempts INTEGER NOT NULL DEFAULT 0, then_reviewer TEXT, billed_prior REAL NOT NULL DEFAULT 0);
+  author TEXT NOT NULL DEFAULT '', attempts INTEGER NOT NULL DEFAULT 0, then_reviewer TEXT, billed_prior REAL NOT NULL DEFAULT 0, write_id TEXT);
 CREATE INDEX IF NOT EXISTS runs_pr ON runs (repo, number, created);
 CREATE INDEX IF NOT EXISTS runs_status ON runs (status, due);
 CREATE TABLE IF NOT EXISTS reviews (run TEXT PRIMARY KEY, json TEXT NOT NULL);
@@ -242,22 +244,35 @@ export function createEngine(d: EngineDeps) {
     if (!r.post) return done("done", null);
     // A run whose PR moved on (a push, a close) while it ran is superseded: it never posts over the newer head.
     if (pr && (pr.head !== r.head || !pr.open)) return done("skipped", pr.open ? "superseded: a newer head is being reviewed" : "closed");
-    const previous = one<{ json: string }>("SELECT v.json FROM runs r JOIN reviews v ON v.run = r.id WHERE r.repo = ? AND r.number = ? AND r.posted IN ('posted', 'pending') AND r.id != ? ORDER BY r.ended DESC LIMIT 1", r.repo, r.number, r.id);
+    const previous = one<{ json: string }>("SELECT v.json FROM runs r JOIN reviews v ON v.run = r.id WHERE r.repo = ? AND r.number = ? AND r.posted = 'posted' AND r.id != ? ORDER BY r.ended DESC LIMIT 1", r.repo, r.number, r.id);
     const triage = pr?.triage ? (JSON.parse(pr.triage) as Review["triage"]) : undefined;
-    let posted: { state: string; why?: string };
+    let posted: Posted;
     try {
       posted = await d.poster.post({ run: r.id, target: { repo: r.repo, number: r.number, head: r.head }, review: { ...review, ...(triage && !review.triage ? { triage } : {}) }, previous: previous ? JSON.parse(previous.json) : null });
     } catch (e) {
       posted = { state: "refused", why: String((e as Error).message).slice(0, 200) };
     }
-    if (posted.state !== "refused") run("UPDATE prs SET last_reviewed_head = ?, last_reviewed_base = ? WHERE repo = ? AND number = ?", r.head, r.base, r.repo, r.number);
+    if (posted.write) run("UPDATE runs SET write_id = ? WHERE id = ?", posted.write, r.id);
     done(posted.state === "refused" ? "failed" : "done", posted.state === "refused" ? `not posted: ${posted.why ?? "refused"}` : null, posted.state);
+    if (posted.state === "posted") landed(runRow(r.id)!);
+  }
+
+  /** A posted review is the PR's baseline for the next incremental run; one only filed (or refused) never is. */
+  function landed(r: RunRow) {
+    run("UPDATE prs SET last_reviewed_head = ?, last_reviewed_base = ? WHERE repo = ? AND number = ?", r.head, r.base, r.repo, r.number);
+  }
+  /** A filed post's outcome, once the AI reviewer and the executor are done with it. */
+  async function settle(r: RunRow) {
+    const o = await d.poster.outcome(r.write_id!).catch(() => ({ state: "pending" as const }));
+    if (o.state === "pending") return;
+    run("UPDATE runs SET posted = ?, status = ?, why = ? WHERE id = ?", o.state, o.state === "posted" ? "done" : "failed", o.state === "posted" ? r.why : `not posted: ${o.why ?? "refused"}`, r.id);
+    if (o.state === "posted") landed(r);
   }
 
   // ---- triggers and commands ------------------------------------------------------------------------------------------------
 
   const authoredToday = (repo: string, author?: string) =>
-    one<{ n: number }>(`SELECT COUNT(*) n FROM runs WHERE repo = ? AND kind IN ('auto', 'escalation') AND status IN ('running', 'done', 'failed') AND created > ?${author ? " AND author = ?" : ""}`, repo, now() - DAY, ...(author ? [author] : []))!.n;
+    one<{ n: number }>(`SELECT COUNT(*) n FROM runs WHERE repo = ? AND kind IN ('auto', 'escalation') AND reviewer != '${TRIAGE}' AND status IN ('running', 'done', 'failed') AND created > ?${author ? " AND author = ?" : ""}`, repo, now() - DAY, ...(author ? [author] : []))!.n;
 
   /** The repo's trigger for a new PR (`open`) or a push (`push`). */
   function trigger(cfg: Repo, p: PullRequest, which: "open" | "push") {
@@ -277,7 +292,8 @@ export function createEngine(d: EngineDeps) {
   async function command(cfg: Repo, c: { id: string; number: number; author: string; body: string }) {
     const cmd: Command | undefined = parseCommand(c.body, Object.keys(d.config().reviewers));
     if (!cmd) return;
-    const perm = await d.source.permission(cfg.repo, c.author).catch(() => "none" as const);
+    // A failed read throws: the comment stays unhandled and is asked about again next tick.
+    const perm = await d.source.permission(cfg.repo, c.author);
     if (!WRITERS.has(perm)) return log("a review command from someone without write access: ignored", { repo: cfg.repo, pr: c.number, author: c.author.slice(0, 40), permission: perm });
     let row = prRow(cfg.repo, c.number);
     if (!row || !row.open) {
@@ -301,14 +317,17 @@ export function createEngine(d: EngineDeps) {
           run("UPDATE runs SET status = 'skipped', why = 'stopped: @aiden review stop', ended = ? WHERE id = ?", iso(), q.id);
           end(runRow(q.id)!);
         }
-        return void a("status", { lines: [cmd.cmd === "always" ? "Every push to this PR will be reviewed." : "No automatic reviews on this PR; `@aiden review` still asks for one."] });
+        if (cmd.cmd === "stop") return void a("skipped", { why: "stopped: @aiden review stop" });
+        return void a("status", { lines: ["Every push to this PR will be reviewed."] });
       case "focus":
         run("UPDATE prs SET focus = ? WHERE repo = ? AND number = ?", cmd.text || null, p.repo, p.number);
         return void a("status", { lines: [cmd.text ? "The next reviews on this PR will look hardest at the focus given." : "The focus on this PR is cleared."] });
       case "status": {
+        // The acknowledgement shows where the PR's last run is: its phase, reviewer, findings and cost.
         const last = one<RunRow>("SELECT * FROM runs WHERE repo = ? AND number = ? ORDER BY created DESC LIMIT 1", p.repo, p.number);
-        const lines = [`Mode: ${row.mode}${row.focus ? ", with a focus" : ""}.`, last ? `Last review: ${last.reviewer}, ${last.status}${last.why ? ` (${last.why})` : ""}, at ${last.head.slice(0, 7)}.` : "No review yet."];
-        return void a("status", { lines });
+        if (!last) return void a("status", { lines: ["No review yet."] });
+        return void ack({ repo: last.repo, number: last.number, head: last.head, state: last.status, run: last.id, reviewer: last.reviewer, why: last.why ?? undefined,
+          counts: { important: last.important, nit: last.nit, pre_existing: last.pre_existing, cost_usd: round(last.cost_usd) } });
       }
       default:
         return void a("help", { lines: HELP });
@@ -339,9 +358,16 @@ export function createEngine(d: EngineDeps) {
     if (!cursor) return void run("INSERT INTO cursors (repo, comments) VALUES (?, ?)", cfg.repo, iso());
     const got = await d.source.comments(cfg.repo, cursor.comments);
     for (const c of got.comments) {
-      // Each comment is handled once (its id), even across a restart mid-tick.
-      if (run("INSERT OR IGNORE INTO seen (repo, comment) VALUES (?, ?)", cfg.repo, c.id).changes === 0) continue;
-      try { await command(cfg, c); } catch (e) { log("review command not handled", { repo: cfg.repo, pr: c.number, err: String((e as Error).message).slice(0, 200) }); }
+      // Each comment is handled once (its id, recorded once handled). One that fails (a read GitHub didn't answer) stops here:
+      // the cursor stays, and the next tick asks again from it (what was handled before it is skipped by id).
+      if (one("SELECT 1 FROM seen WHERE repo = ? AND comment = ?", cfg.repo, c.id)) continue;
+      try {
+        await command(cfg, c);
+      } catch (e) {
+        log("review command not handled; the next tick tries again", { repo: cfg.repo, pr: c.number, err: String((e as Error).message).slice(0, 200) });
+        return;
+      }
+      run("INSERT OR IGNORE INTO seen (repo, comment) VALUES (?, ?)", cfg.repo, c.id);
     }
     run("UPDATE cursors SET comments = ? WHERE repo = ?", got.cursor, cfg.repo);
   }
@@ -359,6 +385,7 @@ export function createEngine(d: EngineDeps) {
         errors.set(cfg.repo, msg);
       }
     }
+    for (const r of all<RunRow>("SELECT * FROM runs WHERE posted = 'pending' AND write_id IS NOT NULL")) await settle(r);
     for (const r of all<RunRow>("SELECT * FROM runs WHERE status = 'running' AND check_job IS NOT NULL")) {
       const res = await d.runner.result(r.check_job!).catch((e) => ({ state: "running" as const, err: e }));
       if (res.state !== "running") await finish(r, res);

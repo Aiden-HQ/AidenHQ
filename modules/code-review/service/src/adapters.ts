@@ -8,7 +8,7 @@
 //   code-review.notice (Tier 0), which this service executes (executor@1) through github-mcp's /internal/review routes.
 import type { KernelClient } from "./aidenhq-sdk/kernel-client.ts";
 import type { Executor } from "./aidenhq-sdk/executor.ts";
-import type { Ack, Permission, Poster, PrComment, PrSource, PullRequest, Review, ReviewRunner, ReviewSpec, RunResult } from "./seams.ts";
+import type { Ack, Permission, Posted, Poster, PrComment, PrSource, PullRequest, Review, ReviewRunner, ReviewSpec, RunResult } from "./seams.ts";
 
 export const RECIPE = "code-review";
 /** This module's write kinds (module.yaml writes), executed by this service through github-mcp's review routes. */
@@ -72,6 +72,13 @@ export function reasonOf(why: string | undefined): string | undefined {
  * decides, so it is filed on the PR's task, one per PR for the Reviewer Manager) and `code-review.notice` (Tier 0, fixed words).
  * The target (repo, pr, head) is always the run's, never the review body's.
  */
+/** A write record's state as a post's: done with an ok outcome is posted; failed, rejected, stale or cancelled is refused. */
+function settled(r: { id: string; state: string; outcome?: { ok: boolean; text: string } | null }): Posted {
+  if (r.state === "done") return r.outcome && !r.outcome.ok ? { state: "refused", why: `write ${r.id}: ${r.outcome.text.slice(0, 200)}` } : { state: "posted" };
+  if (["failed", "rejected", "stale", "cancelled", "unknown"].includes(r.state)) return { state: "refused", why: `write ${r.id} ${r.state}${r.outcome?.text ? `: ${r.outcome.text.slice(0, 200)}` : ""}` };
+  return { state: "pending" };
+}
+
 export function kernelPoster(kernel: KernelClient, log: (m: string, f?: Record<string, unknown>) => void = () => {}): Poster {
   const tasks = new Map<string, string>();
   const taskOf = async (repo: string, n: number) => {
@@ -88,15 +95,18 @@ export function kernelPoster(kernel: KernelClient, log: (m: string, f?: Record<s
       const t = p.target;
       const args = { repo: t.repo, pr: t.number, head: t.head, run: p.run, review: { ...p.review, repo: t.repo, pr: t.number, head: t.head }, resolve: [] as string[] };
       const r = (await kernel.call("POST", "/v1/writes", { kind: POST_KIND, args, task: await taskOf(t.repo, t.number) })) as { id: string; state: string };
-      return ["rejected", "refused", "failed", "expired"].includes(r.state) ? { state: "refused", why: `write ${r.id} ${r.state}` } : { state: r.state === "done" ? "posted" : "pending" };
+      return { ...settled(r), write: r.id };
+    },
+    async outcome(write) {
+      return settled((await kernel.call("GET", `/v1/writes/${write}`)) as { id: string; state: string; outcome?: { ok: boolean; text: string } | null });
     },
     async ack(a: Ack) {
-      // The notice speaks only in its fixed phases: status and help answer with where the PR's last run is; always and focus
-      // need no notice.
-      if (a.state === "status" || a.state === "help") return void log("review status asked", { repo: a.repo, pr: a.number });
+      // The notice speaks only in its fixed phases: `status` arrives as the last run's phase. help, always and focus have no
+      // notice of their own (the summary carries the command list).
+      if (a.state === "status" || a.state === "help") return void log("review command answered without a notice", { repo: a.repo, pr: a.number, lines: a.lines?.length ?? 0 });
       const reason = reasonOf(a.why);
       if (a.state === "skipped" && !reason) return;
-      await kernel.call("POST", "/v1/writes", { kind: ACK_KIND, args: { repo: a.repo, pr: a.number, head: a.head, phase: a.state, ...(reason ? { reason } : {}), ...(a.reviewer && a.reviewer !== "try" ? { reviewer: a.reviewer } : {}), ...(a.run ? { run: a.run } : {}) } });
+      await kernel.call("POST", "/v1/writes", { kind: ACK_KIND, args: { repo: a.repo, pr: a.number, head: a.head, phase: a.state, ...(reason ? { reason } : {}), ...(a.reviewer && a.reviewer !== "try" ? { reviewer: a.reviewer } : {}), ...(a.run ? { run: a.run } : {}), ...(a.counts ?? {}) } });
     },
   };
 }

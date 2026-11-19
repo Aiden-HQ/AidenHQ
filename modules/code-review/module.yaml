@@ -16,6 +16,20 @@ roles:
 # A review run's snapshot of repo@head (and its base), read under this grant: any repo the GitHub App covers.
 codehost:
   snapshot: { repos: [ "*/*" ] }
+# The review run: a credential-free check job per PR head (kernel/src/checkjobs.ts), lane E's recipe in recipe/. The state service
+# asks POST /v1/checks {repo, head, run: code-review, spec} with exactly these spec fields, each a string (service/src/adapters.ts
+# checkSpec): base (sha), pr, reviewer, profile (JSON), focus, incremental_from (sha or ""), full ("true"|"false"), budget_usd (the
+# run's reservation: the cap on its model token), ignore (JSON globs), max_nits. It reads back GET /v1/checks/:id with `result` (the
+# Review JSON, bound into the receipt) and `billed_usd` (the kernel's billing of the run's model token). The block below is
+# switched on when lane E's spec kinds (JSON, text, number, optional sha) and `model: true` land in the kernel's compiler:
+# check_jobs:
+#   code-review:
+#     dir: recipe
+#     argv: [ node, /aidenhq-out/recipe/review.mjs ]
+#     timeout_min: 30
+#     title: Code review
+#     model: true
+#     spec: { base: sha, pr: text, reviewer: text, profile: json, focus: text, incremental_from: text, full: text, budget_usd: text, ignore: json, max_nits: text }
 # Flow (docs/design/flow.md): one started and one ended fact per review run (version: the run id) on its PR.
 facts:
   review.started: { subject: pr }

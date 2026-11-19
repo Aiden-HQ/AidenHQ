@@ -64,15 +64,19 @@ export type Ack = {
   repo: string; number: number; head: string;
   state: "queued" | "running" | "done" | "skipped" | "failed" | "status" | "help";
   run?: string; reviewer?: string; why?: string;
-  /** Lines the service wrote itself (the command list, a status): code's text, never a comment's. */
+  /** Lines the service wrote itself (a status): code's text, never a comment's. */
   lines?: string[];
+  /** The run's findings and cost (a done run's notice, a status). */
+  counts?: { important: number; nit: number; pre_existing: number; cost_usd: number };
 };
 /** A posted review's outcome: posted, waiting on the AI reviewer's decision (a Tier 1 write), or refused. */
-export type Posted = { state: "posted" | "pending" | "refused"; why?: string; url?: string };
+export type Posted = { state: "posted" | "pending" | "refused"; why?: string; url?: string; /** its kernel write record */ write?: string };
 export interface Poster {
   /** One GitHub review for the run's head: inline findings, the summary with the severity line and commands, the commit status;
    * `target`: where it goes, from the run itself (the poster never takes its target from the review body); `previous`: the last
    * review posted on this PR (its threads are the ones Aiden may resolve). */
   post(p: { run: string; target: { repo: string; number: number; head: string }; review: Review; previous: Review | null }): Promise<Posted>;
   ack(a: Ack): Promise<void>;
+  /** A filed post's outcome now (pending until the AI reviewer and the executor are done). */
+  outcome(write: string): Promise<Posted>;
 }

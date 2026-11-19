@@ -45,8 +45,12 @@ setTimeout(tick, 5_000);
 const github = env.CODE_REVIEW_GITHUB_URL ?? "http://github-mcp:8086";
 const executor = reviewExecutor(githubReview(github, token), (id) => engine.binding(id));
 const api = handler(engine, () => file(env.CODE_REVIEW_API_TOKEN_FILE));
+// One executor handler (its once-per-id map must live across requests), made anew only when the service key changes.
+let serving: { key: string; handle: ReturnType<typeof serveExecutor> } | undefined;
 createServer(async (req, res) => {
-  if (await serveExecutor(executor, { key: file(env.CODE_REVIEW_SERVICE_KEY_FILE), kernelUrl, log })(req, res)) return;
+  const key = file(env.CODE_REVIEW_SERVICE_KEY_FILE);
+  if (serving?.key !== key) serving = { key, handle: serveExecutor(executor, { key, kernelUrl, log }) };
+  if (await serving.handle(req, res)) return;
   await api(req, res);
 }).listen(8098, "0.0.0.0", () => log("code-review listening", { port: 8098, repos: config.repos.length }));
 for (const sig of ["SIGTERM", "SIGINT"] as const) process.on(sig, () => void facts.flush().finally(() => process.exit(0)));
