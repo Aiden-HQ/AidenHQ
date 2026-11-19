@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { SignInRequired, api, type ReviewsSetup } from "./api";
-import type { CodeReview, Finding, Profile, RepoConfig, RepoRow, Review, ReviewInsights, ReviewerRow, Run, Severity } from "../../src/reviews";
+import { reviewersOf, type CodeReview, type Finding, type Profile, type RepoConfig, type ReposView, type Review, type ReviewInsights, type ReviewerRow, type Run, type Severity } from "../../src/reviews";
 import { Banner, Button, Card, Dialog, EmptyState, Facts, Field, Input, LinkButton, Meter, Page, PageHeader, Section, Segmented, Select, StatBlock, StatusDot, Switch, Tabs, Tag, Tags, Tile, TileGrid, hueClass, type StatusTone } from "./ui";
 import { agoLabel, elapsed } from "./util";
 import "./reviews.css";
@@ -22,13 +22,24 @@ const routeOf = (): Route => {
 };
 
 /** The defaults a newly watched repo starts from (the module's REPO_DEFAULTS). */
-const REPO_DEFAULTS: Required<Omit<RepoConfig, "repo" | "ignore">> & { ignore: string[] } = { on_open: "standard", on_push: "quick", on_risk: "deep", drafts: false, forks: "manual", month_usd: 50, max_nits: 5, ignore: [] };
+const REPO_DEFAULTS: Required<Omit<RepoConfig, "repo">> = { on_open: "standard", on_push: "quick", on_risk: "deep", drafts: false, forks: "manual", month_usd: 50, max_nits: 5, per_author_day: 10, per_repo_day: 60, ignore: [] };
+const OFF = "off";
+/** A repo's owner (a GitHub org or user). */
+const ownerOf = (repo: string) => repo.split("/")[0]!.toLowerCase();
 const ENGINES = [["codex", "Codex"], ["claude-code", "Claude Code (not built yet)"], ["codegenie", "CodeGenie (not built yet)"]] as const;
-const EFFORTS = [["low", "Low"], ["medium", "Medium"], ["high", "High"], ["max", "Max"]] as const;
+const EFFORTS = [["low", "Low"], ["medium", "Medium"], ["high", "High"], ["xhigh", "X-high"], ["max", "Max"]] as const;
 const MODELS = ["~deepseek/deepseek-flash-latest", "~openai/gpt-sol-latest", "~openai/gpt-luna-latest", "~anthropic/claude-latest"];
 const SEVERITIES: [Severity, string][] = [["important", "Important"], ["nit", "Nit"], ["pre_existing", "Pre-existing"]];
-const SKIPS: Record<string, string> = { draft: "Draft PR", fork: "Fork PR, waiting for someone with write access to ask", budget: "Over the repo's monthly cap", instance_budget: "Over the monthly cap across repos", unchanged: "Nothing changed since the last review", superseded: "A newer push replaced it", stopped: "Reviews stopped on this PR", ignored: "Only ignored files changed" };
-const skipWords = (why: string | null) => (why ? (SKIPS[why] ?? why.replace(/_/g, " ").replace(/^./, (c) => c.toUpperCase())) : "Skipped");
+/** A skip's reason ("draft: …", the service's words after the colon) in the page's words. */
+const SKIPS: Record<string, string> = { draft: "Draft PR", fork: "Fork PR, waiting for someone with write access to ask", "daily limit": "Daily limit reached, waiting for someone to ask", budget: "Over the repo's monthly cap", "month cap": "Over the monthly cap", closed: "PR closed", stopped: "Reviews stopped on this PR", superseded: "A newer push replaced it" };
+const skipWords = (why: string | null) => {
+  if (!why) return "Skipped";
+  const key = why.split(":")[0]!.trim().toLowerCase();
+  return SKIPS[key] ?? why.replace(/^./, (c) => c.toUpperCase());
+};
+/** When a run happened: its start, or for a skip (which never starts) its end. */
+const when = (r: Run) => r.started ?? r.ended ?? new Date().toISOString();
+const trigger = (v: string | undefined, d: string) => (v === OFF ? "off" : (v ?? d));
 const usd = (n: number | null | undefined, digits = 2) => (n == null ? "—" : `$${n.toFixed(digits)}`);
 const short = (sha: string) => sha.slice(0, 7);
 const prUrl = (repo: string, n: number) => `https://github.com/${repo}/pull/${n}`;
@@ -69,6 +80,9 @@ function Check() {
   );
 }
 
+/** Saves settings.code_review (and a GitHub org reviews may post in as the owner) as one settings change. */
+type Save = (value: CodeReview | null, what: string, org?: string) => Promise<void>;
+
 /* ----------------------------------------------------------------------------- the page */
 let mounted = 0;
 
@@ -76,10 +90,11 @@ export function ReviewsView({ onSignIn }: { onSignIn: () => void }) {
   const [route, setRoute] = useState<Route>(routeOf);
   const [setup, setSetup] = useState<ReviewsSetup | null>(null);
   const [runs, setRuns] = useState<Run[] | null>(null);
-  const [repos, setRepos] = useState<RepoRow[] | null>(null);
+  const [repos, setRepos] = useState<ReposView | null>(null);
   const [reviewers, setReviewers] = useState<ReviewerRow[] | null>(null);
   const [error, setError] = useState("");
   const [saved, setSaved] = useState<{ identifier: string; what: string } | null>(null);
+  const [orgs, setOrgs] = useState<string[]>([]);
   const [dialog, setDialog] = useState<null | { kind: "oneoff"; url?: string; reviewer?: string } | { kind: "repo"; repo?: RepoConfig } | { kind: "reviewer"; name?: string } | { kind: "cap" }>(null);
 
   useEffect(() => {
@@ -97,9 +112,10 @@ export function ReviewsView({ onSignIn }: { onSignIn: () => void }) {
   const fail = useCallback((e: unknown) => (e instanceof SignInRequired ? onSignIn() : setError((e as Error).message)), [onSignIn]);
   const loadSetup = useCallback(() => api.reviewsSetup().then(setSetup, fail), [fail]);
   const loadRuns = useCallback(() => api.reviews({ limit: 200 }).then((r) => setRuns(r.runs), fail), [fail]);
-  const loadRepos = useCallback(() => api.reviewRepos().then((r) => setRepos(r.repos), fail), [fail]);
+  const loadRepos = useCallback(() => api.reviewRepos().then(setRepos, fail), [fail]);
   const loadReviewers = useCallback(() => api.reviewers().then((r) => setReviewers(r.reviewers), fail), [fail]);
   useEffect(() => void loadSetup(), [loadSetup]);
+  useEffect(() => setOrgs(setup?.comment_orgs ?? []), [setup]);
   const ready = Boolean(setup?.module && setup.github.connected);
   useEffect(() => {
     if (!ready) return;
@@ -117,18 +133,22 @@ export function ReviewsView({ onSignIn }: { onSignIn: () => void }) {
 
   const config = setup?.config ?? null;
   /** The owner's edit of settings.code_review, filed as a settings change; the page shows it until it applies. */
-  const save = useCallback(
-    async (value: CodeReview, what: string) => {
-      const r = await api.reviewConfig(value);
-      setSaved({ identifier: r.identifier, what });
+  const save: Save = useCallback(
+    async (value, what, org) => {
+      // A repo whose owner isn't one of the GitHub orgs reviews may post in as the owner: added in the same change.
+      const add = org && !orgs.includes(org.toLowerCase()) ? org.toLowerCase() : undefined;
+      const r = await api.reviewConfig({ ...(value ? { value } : {}), ...(add ? { org: add } : {}) });
+      if (add) setOrgs((o) => [...o, add]);
+      setSaved({ identifier: r.identifier, what: add ? `${what}; reviews post as you in ${add}` : what });
       setDialog(null);
     },
-    [],
+    [orgs],
   );
-  const spent = (repos ?? []).reduce((s, r) => s + r.spent_usd, 0);
+  const spent = repos?.month_spent_usd ?? 0;
   const tab = "tab" in route ? route.tab : "reviews";
 
-  if ("run" in route) return <RunPage id={route.run} reviewers={Object.keys(config?.reviewers ?? {})} onSignIn={onSignIn} />;
+  const names = Object.keys(config ? reviewersOf(config) : { standard: 1 });
+  if ("run" in route) return <RunPage id={route.run} reviewers={names} orgs={orgs} onSignIn={onSignIn} />;
 
   const header = (
     <PageHeader
@@ -172,7 +192,9 @@ export function ReviewsView({ onSignIn }: { onSignIn: () => void }) {
         <Start setup={setup} onWatch={() => setDialog({ kind: "repo" })} onOneOff={(url) => setDialog({ kind: "oneoff", url })} />
       ) : (
         <>
-          <Tabs label="Reviews views" tabs={TABS} value={tab} href={(t) => `#/reviews/${t}`} />
+          <div>
+            <Tabs label="Reviews views" tabs={TABS} value={tab} href={(t) => `#/reviews/${t}`} />
+          </div>
           {tab === "reviews" && <RunsTab runs={runs} onOneOff={() => setDialog({ kind: "oneoff" })} />}
           {tab === "repos" && config && <ReposTab config={config} repos={repos} onEdit={(repo) => setDialog({ kind: "repo", repo })} onWatch={() => setDialog({ kind: "repo" })} />}
           {tab === "reviewers" && config && <ReviewersTab config={config} rows={reviewers} onEdit={(name) => setDialog({ kind: "reviewer", name })} onNew={() => setDialog({ kind: "reviewer" })} />}
@@ -180,8 +202,8 @@ export function ReviewsView({ onSignIn }: { onSignIn: () => void }) {
         </>
       )}
 
-      {dialog?.kind === "oneoff" && <OneOffDialog reviewers={Object.keys(config?.reviewers ?? { standard: 1 })} url={dialog.url} reviewer={dialog.reviewer} onClose={() => setDialog(null)} />}
-      {dialog?.kind === "repo" && config && <RepoDialog config={config} edit={dialog.repo} onClose={() => setDialog(null)} onSave={save} />}
+      {dialog?.kind === "oneoff" && <OneOffDialog reviewers={names} orgs={orgs} url={dialog.url} reviewer={dialog.reviewer} onClose={() => setDialog(null)} />}
+      {dialog?.kind === "repo" && config && <RepoDialog config={config} orgs={orgs} edit={dialog.repo} onClose={() => setDialog(null)} onSave={save} />}
       {dialog?.kind === "reviewer" && config && <ReviewerDialog config={config} name={dialog.name} onClose={() => setDialog(null)} onSave={save} />}
       {dialog?.kind === "cap" && config && <CapDialog config={config} spent={spent} onClose={() => setDialog(null)} onSave={save} />}
     </Page>
@@ -205,17 +227,17 @@ function Start({ setup, onWatch, onOneOff }: { setup: ReviewsSetup; onWatch: () 
             </span>
           ))}
         </span>
-        <figure className="rv-sample" aria-label="An example finding">
-          <article className="rv-finding rv-important">
-            <header className="rv-finding-head">
-              <h3>A retried charge can post twice to the ledger</h3>
-              <span className="rv-where rv-mono">src/billing/charge.ts:88</span>
-            </header>
-            <p className="rv-prose">The idempotency key is written after the provider call returns, so a crash in between charges again on retry.</p>
-          </article>
-          <figcaption>An example of what lands on the PR, next to the line it is about.</figcaption>
-        </figure>
       </div>
+      <figure className="rv-sample" aria-label="An example finding">
+        <article className="rv-finding rv-important">
+          <header className="rv-finding-head">
+            <h3>A retried charge can post twice to the ledger</h3>
+            <span className="rv-where rv-mono">src/billing/charge.ts:88</span>
+          </header>
+          <p className="rv-prose">The idempotency key is written after the provider call returns, so a crash in between charges again on retry.</p>
+        </article>
+        <figcaption>An example of what lands on the PR, next to the line it is about.</figcaption>
+      </figure>
       <ol className="rv-steps">
         <li className={connected ? "done" : "now"}>
           <span className="rv-step-mark">{connected ? <Check /> : "1"}</span>
@@ -259,8 +281,8 @@ function RunsTab({ runs, onOneOff }: { runs: Run[] | null; onOneOff: () => void 
   const [repo, setRepo] = useState("");
   const repoNames = useMemo(() => [...new Set((runs ?? []).map((r) => r.repo))].sort(), [runs]);
   if (!runs) return <div className="rv-loading" aria-busy="true" />;
-  const shown = runs.filter((r) => r.kind !== "try" && (!repo || r.repo === repo) && (filter === "all" || (filter === "important" ? r.important > 0 : r.status === "skipped" || r.status === "failed")));
-  const counts = { important: runs.filter((r) => r.kind !== "try" && r.important > 0).length, skipped: runs.filter((r) => r.kind !== "try" && (r.status === "skipped" || r.status === "failed")).length };
+  const shown = runs.filter((r) => r.post !== false && (!repo || r.repo === repo) && (filter === "all" || (filter === "important" ? r.important > 0 : r.status === "skipped" || r.status === "failed")));
+  const counts = { important: runs.filter((r) => r.post !== false && r.important > 0).length, skipped: runs.filter((r) => r.post !== false && (r.status === "skipped" || r.status === "failed")).length };
   return (
     <Section
       title="Recent reviews"
@@ -302,13 +324,13 @@ function RunRow({ r }: { r: Run }) {
       </span>
       <span className="rv-run-sev">{r.status === "done" ? <Severities v={r} compact /> : null}</span>
       <span className="rv-run-cost">{r.cost_usd ? usd(r.cost_usd) : ""}</span>
-      <time className="rv-run-time" dateTime={r.started} title={new Date(r.started).toLocaleString()}>{live(r) ? elapsed(r.started) : agoLabel(r.ended ?? r.started)}</time>
+      <time className="rv-run-time" dateTime={when(r)} title={new Date(when(r)).toLocaleString()}>{r.status === "queued" ? "queued" : live(r) ? elapsed(when(r)) : agoLabel(r.ended ?? when(r))}</time>
     </a>
   );
 }
 
 /* ----------------------------------------------------------------------------- one review */
-function RunPage({ id, reviewers, onSignIn }: { id: string; reviewers: string[]; onSignIn: () => void }) {
+function RunPage({ id, reviewers, orgs, onSignIn }: { id: string; reviewers: string[]; orgs: string[]; onSignIn: () => void }) {
   const [data, setData] = useState<{ run: Run; review: Review | null } | null>(null);
   const [error, setError] = useState("");
   const [again, setAgain] = useState(false);
@@ -325,7 +347,7 @@ function RunPage({ id, reviewers, onSignIn }: { id: string; reviewers: string[];
   if (!data) return <Page className="rv-page"><PageHeader crumb={crumb} title="Review" />{error ? <Banner tone="danger">Couldn't load this review: {error}</Banner> : <div className="rv-loading" aria-busy="true" />}</Page>;
   const { run, review } = data;
   const [tone, word] = STATUS[run.status];
-  const trial = run.kind === "try";
+  const trial = run.post === false;
   return (
     <Page className={`rv-page ${hueClass(run.reviewer)}`} label="Review">
       <PageHeader
@@ -356,7 +378,7 @@ function RunPage({ id, reviewers, onSignIn }: { id: string; reviewers: string[];
           {running ? (
             <Card className="rv-running">
               <StatusDot tone="busy">{run.status === "queued" ? "Waiting for a free slot" : "Reading the diff and checking each finding"}</StatusDot>
-              <span className="rv-muted">Started {elapsed(run.started)} ago. This page updates when it's done.</span>
+              <span className="rv-muted">{run.started ? `Started ${elapsed(run.started)} ago.` : "Waiting to start."} This page updates when it's done.</span>
             </Card>
           ) : review ? (
             <Findings review={review} />
@@ -383,8 +405,8 @@ function RunPage({ id, reviewers, onSignIn }: { id: string; reviewers: string[];
                 review ? ["Scope", review.full || !review.incremental_from ? "Whole PR" : <span key="s">Changes since <span className="rv-mono">{short(review.incremental_from)}</span></span>] : null,
                 review ? ["Files", `${review.coverage.reviewed.length} reviewed${review.coverage.excluded.length ? `, ${review.coverage.excluded.length} excluded` : ""}`] : null,
                 ["Cost", usd(run.cost_usd)],
-                ["Started", new Date(run.started).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" })],
-                run.ended ? ["Took", elapsed(run.started, Date.parse(run.ended))] : null,
+                ["When", new Date(when(run)).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" })],
+                run.started && run.ended ? ["Took", elapsed(run.started, Date.parse(run.ended))] : null,
               ]}
             />
           </Card>
@@ -409,7 +431,7 @@ function RunPage({ id, reviewers, onSignIn }: { id: string; reviewers: string[];
           )}
         </div>
       </div>
-      {again && <OneOffDialog reviewers={reviewers.length ? reviewers : [run.reviewer]} url={prUrl(run.repo, run.number)} reviewer={run.reviewer} onClose={() => setAgain(false)} />}
+      {again && <OneOffDialog reviewers={reviewers.length ? reviewers : [run.reviewer]} orgs={orgs} url={prUrl(run.repo, run.number)} reviewer={run.reviewer} onClose={() => setAgain(false)} />}
     </Page>
   );
 }
@@ -477,7 +499,7 @@ function FindingCard({ f, review }: { f: Finding; review: Review }) {
 }
 
 /* ----------------------------------------------------------------------------- one-off */
-function OneOffDialog({ reviewers, url: url0 = "", reviewer: r0, onClose }: { reviewers: string[]; url?: string; reviewer?: string; onClose: () => void }) {
+function OneOffDialog({ reviewers, orgs, url: url0 = "", reviewer: r0, onClose }: { reviewers: string[]; orgs: string[]; url?: string; reviewer?: string; onClose: () => void }) {
   const [url, setUrl] = useState(url0);
   const [reviewer, setReviewer] = useState(r0 ?? (reviewers.includes("standard") ? "standard" : (reviewers[0] ?? "standard")));
   const [focus, setFocus] = useState("");
@@ -485,6 +507,20 @@ function OneOffDialog({ reviewers, url: url0 = "", reviewer: r0, onClose }: { re
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
   const valid = /^https:\/\/github\.com\/[\w.-]+\/[\w.-]+\/pull\/\d+\/?$/.test(url.trim());
+  // Reviews post as the owner only in the orgs the owner allowed: one outside them is added first (a settings change).
+  const org = valid ? ownerOf(url.trim().split("/")[3]!) : "";
+  const [added, setAdded] = useState<{ org: string; identifier: string } | null>(null);
+  const outside = Boolean(org) && !orgs.includes(org);
+  const addOrg = async () => {
+    setBusy(true);
+    setErr("");
+    try {
+      setAdded({ org, identifier: (await api.reviewConfig({ org })).identifier });
+    } catch (e) {
+      setErr((e as Error).message);
+    }
+    setBusy(false);
+  };
   const run = async () => {
     setBusy(true);
     setErr("");
@@ -505,11 +541,20 @@ function OneOffDialog({ reviewers, url: url0 = "", reviewer: r0, onClose }: { re
       actions={
         <>
           <Button variant="quiet" onClick={onClose}>Cancel</Button>
-          <Button variant="primary" disabled={!valid || busy} onClick={() => void run()}>{busy ? "Starting…" : "Run review"}</Button>
+          {outside && added?.org !== org ? (
+            <Button variant="primary" disabled={busy} onClick={() => void addOrg()}>{busy ? "Adding…" : `Add ${org}`}</Button>
+          ) : (
+            <Button variant="primary" disabled={!valid || busy || outside} onClick={() => void run()}>{busy ? "Starting…" : "Run review"}</Button>
+          )}
         </>
       }
     >
       <p>Any PR your GitHub sign-in can read. The review posts to the PR like a watched repo's would.</p>
+      {outside && (added?.org === org ? (
+        <Banner action={<a className="btn sm" href={`#/t/${added.identifier}`}>Open {added.identifier}</a>}>Adding {org}: run the review once the change is applied, usually within a few minutes.</Banner>
+      ) : (
+        <Banner tone="warn">{org} isn't one of your GitHub orgs yet, so a review can't post there as you. Add it, then run the review.</Banner>
+      ))}
       <Field label="Pull request" error={url && !valid ? "A PR link, like https://github.com/acme/payments/pull/42" : err || null}>
         {(id, d) => <Input id={id} aria-describedby={d} autoFocus placeholder="https://github.com/acme/payments/pull/42" value={url} onChange={(e) => setUrl(e.target.value)} inputMode="url" />}
       </Field>
@@ -527,8 +572,8 @@ function OneOffDialog({ reviewers, url: url0 = "", reviewer: r0, onClose }: { re
 }
 
 /* ----------------------------------------------------------------------------- Repos tab */
-function ReposTab({ config, repos, onEdit, onWatch }: { config: CodeReview; repos: RepoRow[] | null; onEdit: (r: RepoConfig) => void; onWatch: () => void }) {
-  const row = (name: string) => repos?.find((r) => r.repo.toLowerCase() === name.toLowerCase());
+function ReposTab({ config, repos, onEdit, onWatch }: { config: CodeReview; repos: ReposView | null; onEdit: (r: RepoConfig) => void; onWatch: () => void }) {
+  const row = (name: string) => repos?.repos.find((r) => r.repo.toLowerCase() === name.toLowerCase());
   return (
     <Section title="Watched repos" count={config.repos.length} aside={<Button variant="primary" onClick={onWatch}>Watch a repo</Button>}>
       {!config.repos.length ? (
@@ -538,7 +583,7 @@ function ReposTab({ config, repos, onEdit, onWatch }: { config: CodeReview; repo
           {config.repos.map((r) => {
             const live = row(r.repo);
             const cap = r.month_usd ?? REPO_DEFAULTS.month_usd;
-            const spent = live?.spent_usd ?? 0;
+            const spent = live?.month_spent_usd ?? 0;
             const id = live?.identity;
             return (
               <Tile
@@ -546,12 +591,12 @@ function ReposTab({ config, repos, onEdit, onWatch }: { config: CodeReview; repo
                 name={r.repo}
                 title={r.repo}
                 onOpen={() => onEdit(r)}
-                status={id === undefined ? undefined : id === "app" ? <StatusDot tone="ok">Posts as the App</StatusDot> : id === "owner" ? <StatusDot tone="info">Posts as you</StatusDot> : <StatusDot tone="failed">Can't post</StatusDot>}
+                status={live?.error ? <StatusDot tone="failed" title={live.error}>Can't watch</StatusDot> : !id ? undefined : id === "app" ? <StatusDot tone="ok">Posts as the App</StatusDot> : <StatusDot tone="info">Posts as you</StatusDot>}
                 facts={
                   <Tags>
-                    <Tag title="When a PR opens">Open: {r.on_open === null ? "off" : (r.on_open ?? REPO_DEFAULTS.on_open)}</Tag>
-                    <Tag title="On each push">Push: {r.on_push === null ? "off" : (r.on_push ?? REPO_DEFAULTS.on_push)}</Tag>
-                    <Tag title="A high-risk PR escalates to">Risk: {r.on_risk === null ? "off" : (r.on_risk ?? REPO_DEFAULTS.on_risk)}</Tag>
+                    <Tag title="When a PR opens">Open: {trigger(r.on_open, REPO_DEFAULTS.on_open)}</Tag>
+                    <Tag title="On each push">Push: {trigger(r.on_push, REPO_DEFAULTS.on_push)}</Tag>
+                    <Tag title="A high-risk PR escalates to">Risk: {trigger(r.on_risk, REPO_DEFAULTS.on_risk)}</Tag>
                     {(r.drafts ?? false) && <Tag>Drafts</Tag>}
                     {(r.forks ?? "manual") === "auto" && <Tag tone="needs">Forks automatic</Tag>}
                     {r.ignore?.length ? <Tag title={r.ignore.join("\n")}>{r.ignore.length} ignored</Tag> : null}
@@ -560,7 +605,7 @@ function ReposTab({ config, repos, onEdit, onWatch }: { config: CodeReview; repo
                 foot={
                   <span className="rv-tile-spend">
                     <Meter value={spent / cap} tone={spent >= cap ? "failed" : spent >= cap * 0.8 ? "needs" : undefined} label={`${r.repo} spend this month`} />
-                    <span>{usd(spent)} of {usd(cap, 0)} this month{live?.open_prs ? ` · ${live.open_prs} open PR${live.open_prs === 1 ? "" : "s"}` : ""}</span>
+                    <span>{usd(spent)} of {usd(cap, 0)} this month</span>
                   </span>
                 }
                 action={<Button size="sm" onClick={() => onEdit(r)}>Edit</Button>}
@@ -574,7 +619,7 @@ function ReposTab({ config, repos, onEdit, onWatch }: { config: CodeReview; repo
 }
 
 /** Watch a repo (no `edit`), or edit or stop watching one. */
-function RepoDialog({ config, edit, onClose, onSave }: { config: CodeReview; edit?: RepoConfig; onClose: () => void; onSave: (v: CodeReview, what: string) => Promise<void> }) {
+function RepoDialog({ config, orgs, edit, onClose, onSave }: { config: CodeReview; orgs: string[]; edit?: RepoConfig; onClose: () => void; onSave: Save }) {
   const [repo, setRepo] = useState(edit?.repo ?? "");
   const [f, setF] = useState({ ...REPO_DEFAULTS, ...edit, ignore: edit?.ignore ?? [] });
   const [ignoreText, setIgnoreText] = useState((edit?.ignore ?? []).join("\n"));
@@ -589,20 +634,22 @@ function RepoDialog({ config, edit, onClose, onSave }: { config: CodeReview; edi
     timer.current = setTimeout(() => void api.reviewAvailable(q.trim()).then((r) => setFound(r.repos), () => setFound([])), q ? 250 : 0);
     return () => clearTimeout(timer.current);
   }, [q, edit]);
-  const names = Object.keys(config.reviewers);
-  const opts = [...names.map((n) => [n, n] as const), ["", "Don't review"] as const];
+  const names = Object.keys(reviewersOf(config));
+  const opts = [...names.map((n) => [n, n] as const), [OFF, "Don't review"] as const];
   const watched = new Set(config.repos.map((r) => r.repo.toLowerCase()));
   const typed = /^[\w.-]+\/[\w.-]+$/.test(q.trim()) ? q.trim() : "";
   const validRepo = /^[\w.-]+\/[\w.-]+$/.test(repo) && (edit || !watched.has(repo.toLowerCase()));
   const entry = (): RepoConfig => {
     const ignore = ignoreText.split("\n").map((s) => s.trim()).filter(Boolean);
-    return { repo, on_open: f.on_open || null, on_push: f.on_push || null, on_risk: f.on_risk || null, drafts: f.drafts, forks: f.forks, month_usd: f.month_usd, max_nits: f.max_nits, ...(ignore.length ? { ignore } : {}) };
+    return { repo, on_open: f.on_open, on_push: f.on_push, on_risk: f.on_risk, drafts: f.drafts, forks: f.forks, month_usd: f.month_usd, max_nits: f.max_nits, ...(ignore.length ? { ignore } : {}), ...(edit?.per_author_day !== undefined ? { per_author_day: edit.per_author_day } : {}), ...(edit?.per_repo_day !== undefined ? { per_repo_day: edit.per_repo_day } : {}) };
   };
-  const submit = async (value: CodeReview, what: string) => {
+  // Watching a repo outside the orgs reviews may post in as the owner adds its owner in the same change.
+  const newOrg = !edit && validRepo && !orgs.includes(ownerOf(repo)) ? ownerOf(repo) : undefined;
+  const submit = async (value: CodeReview, what: string, org?: string) => {
     setBusy(true);
     setErr("");
     try {
-      await onSave(value, what);
+      await onSave(value, what, org);
     } catch (e) {
       setErr((e as Error).message);
       setBusy(false);
@@ -619,7 +666,7 @@ function RepoDialog({ config, edit, onClose, onSave }: { config: CodeReview; edi
         <>
           {edit && <Button variant="danger" className="rv-left" disabled={busy} onClick={() => void submit({ ...config, repos: others }, `stop watching ${edit.repo}`)}>Stop watching</Button>}
           <Button variant="quiet" onClick={onClose}>Cancel</Button>
-          <Button variant="primary" disabled={!validRepo || busy || !(f.month_usd > 0)} onClick={() => void submit({ ...config, repos: edit ? config.repos.map((r) => (r.repo === edit.repo ? entry() : r)) : [...config.repos, entry()] }, edit ? `${repo} updated` : `watch ${repo}`)}>
+          <Button variant="primary" disabled={!validRepo || busy || !(f.month_usd > 0)} onClick={() => void submit({ ...config, repos: edit ? config.repos.map((r) => (r.repo === edit.repo ? entry() : r)) : [...config.repos, entry()] }, edit ? `${repo} updated` : `watch ${repo}`, newOrg)}>
             {busy ? "Saving…" : edit ? "Save" : "Watch repo"}
           </Button>
         </>
@@ -656,10 +703,11 @@ function RepoDialog({ config, edit, onClose, onSave }: { config: CodeReview; edi
           </div>
         </div>
       )}
+      {newOrg && <Banner>Reviews will post as you in {newOrg}: saving also adds {newOrg} to your GitHub orgs (Settings).</Banner>}
       <div className="rv-grid3">
-        <Field label="When a PR opens">{(id) => <Select id={id} value={f.on_open ?? ""} options={opts} onChange={(v) => setF({ ...f, on_open: v })} />}</Field>
-        <Field label="On each push" help="Only the new changes">{(id, d) => <Select id={id} aria-describedby={d} value={f.on_push ?? ""} options={opts} onChange={(v) => setF({ ...f, on_push: v })} />}</Field>
-        <Field label="High-risk PRs get" help="After triage flags it">{(id, d) => <Select id={id} aria-describedby={d} value={f.on_risk ?? ""} options={opts} onChange={(v) => setF({ ...f, on_risk: v })} />}</Field>
+        <Field label="When a PR opens">{(id) => <Select id={id} value={f.on_open} options={opts} onChange={(v) => setF({ ...f, on_open: v })} />}</Field>
+        <Field label="On each push" help="Only the new changes">{(id, d) => <Select id={id} aria-describedby={d} value={f.on_push} options={opts} onChange={(v) => setF({ ...f, on_push: v })} />}</Field>
+        <Field label="High-risk PRs get" help="After triage flags it">{(id, d) => <Select id={id} aria-describedby={d} value={f.on_risk} options={opts} onChange={(v) => setF({ ...f, on_risk: v })} />}</Field>
       </div>
       <div className="rv-grid3">
         <Field label="Monthly cap" help="Reviews past it are skipped, with a comment saying why">
@@ -690,7 +738,7 @@ function RepoDialog({ config, edit, onClose, onSave }: { config: CodeReview; edi
   );
 }
 
-function CapDialog({ config, spent, onClose, onSave }: { config: CodeReview; spent: number; onClose: () => void; onSave: (v: CodeReview, what: string) => Promise<void> }) {
+function CapDialog({ config, spent, onClose, onSave }: { config: CodeReview; spent: number; onClose: () => void; onSave: Save }) {
   const [cap, setCap] = useState(config.month_usd);
   const [err, setErr] = useState("");
   const [busy, setBusy] = useState(false);
@@ -724,9 +772,9 @@ function ReviewersTab({ config, rows, onEdit, onNew }: { config: CodeReview; row
   const stat = (n: string) => rows?.find((r) => r.name === n);
   const usedBy = (n: string) => config.repos.filter((r) => [r.on_open ?? REPO_DEFAULTS.on_open, r.on_push ?? REPO_DEFAULTS.on_push, r.on_risk ?? REPO_DEFAULTS.on_risk].includes(n)).length;
   return (
-    <Section title="Reviewers" count={Object.keys(config.reviewers).length} hint="Each is a whole recipe: engine, model, effort, how many finders, and whether a verifier re-checks each finding." aside={<Button variant="primary" onClick={onNew}>New reviewer</Button>}>
+    <Section title="Reviewers" count={Object.keys(reviewersOf(config)).length} hint="Each is a whole recipe: engine, model, effort, how many finders, and whether a verifier re-checks each finding." aside={<Button variant="primary" onClick={onNew}>New reviewer</Button>}>
       <TileGrid>
-        {Object.entries(config.reviewers).map(([name, p]) => {
+        {Object.entries(reviewersOf(config)).map(([name, p]) => {
           const s = stat(name);
           const used = usedBy(name);
           return (
@@ -748,8 +796,8 @@ function ReviewersTab({ config, rows, onEdit, onNew }: { config: CodeReview; row
               }
               foot={
                 <span className="rv-tile-cost">
-                  <b>{s?.avg_usd != null ? `~${usd(s.avg_usd)}` : "No runs yet"}</b>
-                  {s?.avg_usd != null && <span> a review, from {s.runs} run{s.runs === 1 ? "" : "s"}</span>}
+                  <b>{s?.avg_cost_usd != null ? `~${usd(s.avg_cost_usd)}` : "No runs yet"}</b>
+                  {s?.avg_cost_usd != null && <span> a review, from {s.runs} run{s.runs === 1 ? "" : "s"}</span>}
                 </span>
               }
               action={<Button size="sm" onClick={() => onEdit(name)}>Edit</Button>}
@@ -763,11 +811,14 @@ function ReviewersTab({ config, rows, onEdit, onNew }: { config: CodeReview; row
   );
 }
 
+/** The reviewers the module ships (its defaults; removing one switches it off). */
+const DEFAULT_NAMES = ["quick", "standard", "deep", "triage"];
 const BLANK: Profile = { engine: "codex", model: "~deepseek/deepseek-flash-latest", effort: "high", finders: 2, verify: true };
 
-function ReviewerDialog({ config, name: name0, onClose, onSave }: { config: CodeReview; name?: string; onClose: () => void; onSave: (v: CodeReview, what: string) => Promise<void> }) {
+function ReviewerDialog({ config, name: name0, onClose, onSave }: { config: CodeReview; name?: string; onClose: () => void; onSave: Save }) {
   const [name, setName] = useState(name0 ?? "");
-  const [p, setP] = useState<Profile>(name0 ? config.reviewers[name0]! : BLANK);
+  const all = reviewersOf(config);
+  const [p, setP] = useState<Profile>(name0 ? all[name0]! : BLANK);
   const [contextText, setContextText] = useState((p.context ?? []).join("\n"));
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
@@ -779,8 +830,9 @@ function ReviewerDialog({ config, name: name0, onClose, onSave }: { config: Code
     const { context: _c, verifier, focus, label, ...rest } = p;
     return { ...rest, ...(rest.verify && verifier ? { verifier } : {}), ...(context.length ? { context } : {}), ...(focus?.trim() ? { focus: focus.trim() } : {}), ...(label?.trim() ? { label: label.trim() } : {}) };
   };
-  const nameOk = /^[a-z][a-z0-9_-]{0,39}$/.test(name) && (name === name0 || !config.reviewers[name]);
+  const nameOk = /^[a-z][a-z0-9_-]{0,30}$/.test(name) && name !== OFF && (name === name0 || !all[name]);
   const used = config.repos.filter((r) => [r.on_open ?? REPO_DEFAULTS.on_open, r.on_push ?? REPO_DEFAULTS.on_push, r.on_risk ?? REPO_DEFAULTS.on_risk].includes(name0 ?? ""));
+  const triageUsed = name0 === "triage";
   const submit = async (value: CodeReview, what: string) => {
     setBusy(true);
     setErr("");
@@ -791,15 +843,21 @@ function ReviewerDialog({ config, name: name0, onClose, onSave }: { config: Code
       setBusy(false);
     }
   };
+  // The setting holds only what differs from the module's defaults: a default renamed or removed is switched off with null.
   const save = () => {
-    const reviewers = Object.fromEntries(Object.entries(config.reviewers).flatMap(([k, v]) => (k === name0 ? [[name, profile()]] : [[k, v]])));
-    if (!name0) reviewers[name] = profile();
+    const reviewers: CodeReview["reviewers"] = { ...config.reviewers, [name]: profile() };
+    if (name0 && name0 !== name) {
+      if (DEFAULT_NAMES.includes(name0)) reviewers[name0] = null;
+      else delete reviewers[name0];
+    }
     // A rename follows into each repo that named it.
     const repos = name0 && name0 !== name ? config.repos.map((r) => ({ ...r, ...Object.fromEntries((["on_open", "on_push", "on_risk"] as const).flatMap((k) => (r[k] === name0 ? [[k, name]] : []))) })) : config.repos;
     void submit({ ...config, reviewers, repos }, name0 ? `reviewer ${name} updated` : `new reviewer ${name}`);
   };
   const remove = () => {
-    const reviewers = Object.fromEntries(Object.entries(config.reviewers).filter(([k]) => k !== name0));
+    const reviewers: CodeReview["reviewers"] = { ...config.reviewers };
+    if (DEFAULT_NAMES.includes(name0!)) reviewers[name0!] = null;
+    else delete reviewers[name0!];
     void submit({ ...config, reviewers }, `reviewer ${name0} removed`);
   };
   // "Try on a recent PR": one run that never posts, followed until it ends.
@@ -829,7 +887,7 @@ function ReviewerDialog({ config, name: name0, onClose, onSave }: { config: Code
       actions={
         <>
           {name0 && (
-            <Button variant="danger" className="rv-left" disabled={busy || used.length > 0} title={used.length ? `Used by ${used.map((r) => r.repo).join(", ")}` : undefined} onClick={remove}>
+            <Button variant="danger" className="rv-left" disabled={busy || used.length > 0 || triageUsed} title={triageUsed ? "Triage labels each PR's risk: escalation needs it" : used.length ? `Used by ${used.map((r) => r.repo).join(", ")}` : undefined} onClick={remove}>
               Remove
             </Button>
           )}
@@ -840,7 +898,7 @@ function ReviewerDialog({ config, name: name0, onClose, onSave }: { config: Code
     >
       {err && <Banner tone="danger">{err}</Banner>}
       <div className="rv-grid2">
-        <Field label="Name" help="Used in @aiden review <name>" error={name && !nameOk ? (config.reviewers[name] && name !== name0 ? "That name is taken" : "Lowercase letters, digits, - or _") : null}>
+        <Field label="Name" help="Used in @aiden review <name>" error={name && !nameOk ? (all[name] && name !== name0 ? "That name is taken" : "Lowercase letters, digits, - or _") : null}>
           {(id, d) => <Input id={id} aria-describedby={d} autoFocus={!name0} placeholder="prod-security" value={name} onChange={(e) => setName(e.target.value.toLowerCase())} />}
         </Field>
         <Field label="Engine" help={p.engine !== "codex" ? "Saved now, but runs are refused until this engine is built" : undefined}>
@@ -891,12 +949,12 @@ function ReviewerDialog({ config, name: name0, onClose, onSave }: { config: Code
           <Button disabled={!trialUrlOk || trial.busy || !p.model} onClick={() => void tryIt()}>{trial.busy ? "Running…" : "Try it"}</Button>
         </div>
         {trial.err && <Banner tone="danger">{trial.err}</Banner>}
-        {trial.run && trial.busy && <StatusDot tone="busy">{trial.run.status === "queued" ? "Queued" : `Reviewing, ${elapsed(trial.run.started)}`}</StatusDot>}
+        {trial.run && trial.busy && <StatusDot tone="busy">{trial.run.status === "queued" || !trial.run.started ? "Queued" : `Reviewing, ${elapsed(trial.run.started)}`}</StatusDot>}
         {trial.run && !trial.busy && (
           <div className="rv-try-result">
             <span className="rv-try-line">
               {trial.run.status === "done" ? <Severities v={trial.run} /> : <StatusDot tone="failed">{trial.run.status === "skipped" ? skipWords(trial.run.why) : (trial.run.why ?? "Failed")}</StatusDot>}
-              <span className="rv-muted">{usd(trial.run.cost_usd)} · {trial.run.ended ? elapsed(trial.run.started, Date.parse(trial.run.ended)) : ""}</span>
+              <span className="rv-muted">{usd(trial.run.cost_usd)} · {trial.run.started && trial.run.ended ? elapsed(trial.run.started, Date.parse(trial.run.ended)) : ""}</span>
               <a className="btn quiet sm" href={`#/reviews/r/${encodeURIComponent(trial.run.id)}`} onClick={onClose}>Open</a>
             </span>
             {trial.review?.findings.slice(0, 5).map((f) => (

@@ -31,8 +31,8 @@ import { CommitUnreadable, agentGrants, browseModules, createResolver, marketpla
 import { connectionsView, readSources, readUpdates, settingsView, type Probe } from "./settings.js";
 import { ChangeRefused, ChangesSchema, SETTINGS_LABEL, changesOf, checkChange, stageOf, taskFor, type Change } from "./settings-change.js";
 import { createGrading, gradePassed, type Grading } from "./grading.js";
-import { CodeReviewSchema, ProfileSchema, configProblems, insightsOf } from "./reviews.js";
-import { ReviewsRefused, ReviewsUnavailable, createReviews, type Reviews } from "./reviews-client.js";
+import { COMMENT_ORGS, CodeReviewSchema, ProfileSchema, configProblems, insightsOf } from "./reviews.js";
+import { ReviewsRefused, ReviewsUnavailable, type Reviews } from "./reviews-client.js";
 import { UsageSchema, keyUsage, prices, spendSummary } from "./costs.js";
 import { ledgerRange, ledgerSummary, ledgerTop } from "./cost-ledger.js";
 import { descendants, featureCost, recentFeatures } from "./feature-cost.js";
@@ -100,8 +100,8 @@ export interface AppOptions {
   welcomeMarker?: string;
   /** The grading module's client (grading.ts); default: built from GRADING_URL and GRADING_BOARD_KEY_FILE. */
   grading?: Grading;
-  /** The code-review module's state service (reviews.ts); default: built from its board_env. Without it, the Reviews page says the module is off. */
-  reviews?: Reviews | null;
+  /** The code-review module's state service, through the kernel (reviews-client.ts). Without it, the Reviews page says the module is off. */
+  reviews?: Reviews;
   /**
    * "internal" mode: the kernel's key (secret gateway_board_key, x-gateway-key; held only by the kernel and the board): the model
    * gateway files raise_cap, and channels reach the owner's cards, decisions and notices only through the kernel (lean-core 2f).
@@ -193,7 +193,7 @@ export function createApp(opts: AppOptions): Server {
   const mode = opts.mode ?? "lan";
   if (mode !== "internal" && !opts.accounts && !opts.session) throw new Error(`the ${mode} listener needs board accounts`);
   const grading = opts.grading ?? createGrading();
-  const reviews = opts.reviews === undefined ? createReviews() : (opts.reviews ?? undefined);
+  const reviews = opts.reviews ?? undefined;
   const resolveCommit = createResolver(opts.fetch ?? fetch);
   /** The grades of these tasks; the grading module unreachable: undefined, so the caller leaves its graded closes undone. */
   const gradesOf = (ids: string[]) => grading.grades(ids).catch((err) => (log.warn({ err: String(err) }, "grading module unreachable; not closing graded parts as done"), undefined));
@@ -348,6 +348,12 @@ export function createApp(opts: AppOptions): Server {
     return ctx.labels.find((l) => l.name === name) ?? (await pc.createLabel(name, color));
   }
 
+  /** The GitHub orgs owner-identity writes may reach (settings.github_orgs), lowercased. */
+  const commentOrgs = () => {
+    const { compiled } = readSources(settingsFiles());
+    const v = compiled?.settings?.[COMMENT_ORGS]?.value;
+    return Array.isArray(v) ? v.map((x) => String(x).toLowerCase()) : [];
+  };
   /** A call to the code-review service: off answers 404, its refusals 400 in its words, unreachable 502. */
   async function reviewsCall<T>(f: (r: Reviews) => Promise<T>): Promise<T> {
     if (!reviews) throw new HttpError(404, "the code-review module is off");
@@ -1585,6 +1591,7 @@ export function createApp(opts: AppOptions): Server {
           github: { configured: Boolean(gh?.configured), connected: gh?.state === "ok", state: gh?.state ?? null },
           config: parsed.success ? parsed.data : null,
           problems: parsed.success ? [] : configProblems(current),
+          comment_orgs: commentOrgs(),
         };
       },
     },
@@ -1610,10 +1617,18 @@ export function createApp(opts: AppOptions): Server {
       path: /^\/api\/reviews\/config$/,
       maxBody: 200_000,
       handle: async (_m, body) => {
-        const value = (body as { value?: unknown })?.value;
-        const problems = configProblems(value);
-        if (problems.length) throw new HttpError(400, problems.slice(0, 3).join("; "));
-        return fileSettingsChange([{ kind: "setting", key: "code_review", value: value as never }]);
+        const { value, org } = parse(ReviewConfigSchema, body);
+        const changes: Change[] = [];
+        if (value !== undefined) {
+          const problems = configProblems(value);
+          if (problems.length) throw new HttpError(400, problems.slice(0, 3).join("; "));
+          changes.push({ kind: "setting", key: "code_review", value: value as never });
+        }
+        // A repo reviewed as the owner needs its owner among the orgs owner-identity writes may reach (github-mcp GITHUB_COMMENT_ORGS).
+        const orgs = commentOrgs();
+        if (org && !orgs.includes(org.toLowerCase())) changes.push({ kind: "setting", key: COMMENT_ORGS, value: [...orgs, org.toLowerCase()] });
+        if (!changes.length) throw new HttpError(400, "nothing to change");
+        return fileSettingsChange(changes);
       },
     },
     // Settings (web/src/Settings.tsx): the compiled config, read-only, with what the board can see live. Edits go through git.
@@ -2314,3 +2329,4 @@ const staticCompressed = new Map<string, Promise<Buffer>>();
 const PR_URL = z.string().max(300).regex(/^https:\/\/github\.com\/[\w.-]+\/[\w.-]+\/pull\/\d{1,9}\/?$/, "a pull request link, like https://github.com/acme/payments/pull/42");
 const OneOffSchema = z.object({ pr_url: PR_URL, reviewer: z.string().regex(/^[a-z][a-z0-9_-]{0,39}$/).optional(), focus: z.string().max(500).regex(/^[^\x00-\x1f\x7f]*$/).optional(), full: z.boolean().optional() }).strict();
 const TrialSchema = z.object({ reviewer: ProfileSchema, pr_url: PR_URL }).strict();
+const ReviewConfigSchema = z.object({ value: z.unknown().optional(), org: z.string().regex(/^[A-Za-z0-9][\w.-]{0,38}$/).optional() }).strict();
