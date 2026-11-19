@@ -422,7 +422,18 @@ const codehostGrants = (): OpsGrant[] => Object.entries(modulesFile().modules ??
 const codehostRepos = () => ({ instance: baseRepos.instance, product: baseRepos.product, agentsOrgs: repos().agentsOrgs, ...modulesFile().repos });
 boxes = createBoxes({
   db: records.db, cfg: sandbox, jobs, call: launcherClient(launcherUrl, () => secret("launcher_kernel_key")), secret, whoami,
-  connections: () => computers().connections ?? {}, handbook: handbookFrom(configDir), cleanup: jobTools.cleanup, log,
+  connections: () => computers().connections ?? {}, handbook: handbookFrom(configDir), cleanup: jobTools.cleanup, log, once: outcomes.once,
+  attachments: {
+    list: async (task) => (await cpJson(`/api/issues/${encodeURIComponent(task)}/attachments`)) as { originalFilename?: string; byteSize?: number }[],
+    add: async (task, name, type, data) => {
+      const company = String(((await cpJson(`/api/issues/${encodeURIComponent(task)}`)) as { companyId?: string }).companyId ?? "");
+      const form = new FormData();
+      form.append("file", new Blob([new Uint8Array(data)], { type }), name);
+      // The owner key, multipart: no JSON content-type.
+      const r = await ownerFetch(new URL(`/api/companies/${company}/issues/${encodeURIComponent(task)}/attachments`, controlUrl), { method: "POST", headers: { authorization: `Bearer ${secret("paperclip_board_key")}` }, body: form, signal: AbortSignal.timeout(60_000) });
+      if (!r.ok) throw new Error(`the control plane answered ${r.status} attaching ${name}`);
+    },
+  },
   // Every agent commits as itself: its name and <key>@<commit_domain> (compile's: <instance name>.aidenhq.ai), never the owner.
   identity: (id) => { const g = (grantsTable().agents ?? {})[id] as { key?: string; name?: string } | undefined; const key = String(g?.key ?? id); return { name: String(g?.name ?? key), email: `${key}@${modulesFile().commit_domain ?? "aidenhq.ai"}` }; },
   clones: {
