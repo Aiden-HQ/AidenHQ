@@ -184,3 +184,22 @@ test("an admitted job is queued from its wake's time and binds the wake; a refus
   assert.equal(await adm.admit("acme-dispatch", req(w2)).catch((e) => e.code), "over-cap");
   assert.deepEqual(facts.forTask("task-3").filter((f) => f.type === "job.held").map((f) => f.data.reason), ["capacity", "spend_cap"]);
 });
+
+test("recover() never takes a launch still in flight in this process, and gives back what the previous kernel left admitted", async () => {
+  let go;
+  const { adm, wake, db, wakes } = setup({ launch: () => new Promise((r) => (go = r)) });
+  // The previous kernel's admission that never started.
+  db.prepare("INSERT INTO jobs (id, module, agent, task, engine, pid, log, dir, at, jobcaps, observing, live_input, state, wake, authority) VALUES ('j-old', 'acme-dispatch', 'agent-1', 'task-2', '', 0, '', '', 1, '[]', 0, 0, 'admitted', 'w-old', '{}')").run();
+  wake("w-old", "task-2", "agent-1");
+  db.prepare("UPDATE wakes SET job = 'j-old' WHERE key = 'w-old'").run();
+  const p = adm.admit("acme-dispatch", req(wake("w1", "task-3", "agent-2")));
+  await new Promise((r) => setImmediate(r));
+  assert.equal(adm.inflight(), 1);
+  adm.recover();
+  assert.equal(db.prepare("SELECT COUNT(*) AS n FROM jobs WHERE id = 'j-old'").get().n, 0);
+  assert.equal(wakes.get("w-old").job, null);
+  go();
+  const job = await p;
+  assert.equal(job.state, "admitted"); // still its own row (the fake launch starts nothing)
+  assert.equal(adm.inflight(), 0);
+});
