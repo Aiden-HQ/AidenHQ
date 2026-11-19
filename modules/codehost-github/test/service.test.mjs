@@ -95,6 +95,14 @@ test("a job's branch lands from its workspace; no hook, filter or fsmonitor of t
   assert.equal(existsSync(marker), false, "a workspace hook, filter or fsmonitor ran");
   assert.match(readFileSync(join(root, "cache", ".reviewed-refs.jsonl"), "utf8"), /"repo":"acme-agents\/widget","ref":"refs\/ws\/TASK-1\/feature"/, "the kept head is noted for pruning");
   assert.ok(minted.every((m) => m.repositories?.length === 1 && m.repositories[0] === "widget"), "every token is narrowed to the one repo");
+  // The head is the task that planned it first; another task re-publishing it, noted or pushed without a note, never takes it.
+  const by = () => JSON.parse(readFileSync(join(root, "cache", "pushed-by.json"), "utf8"));
+  assert.deepEqual(by(), { [sha]: { task: "t1", platform: false } });
+  await call("/aidenhq/v1/executor/plan", { kind: "codehost-github.push", args, requester: { kind: "job", roles: [] }, task: "t2" });
+  assert.equal(by()[sha].task, "t1");
+  writeFileSync(join(root, "cache", "pushed-by.json"), "{}");
+  await call("/aidenhq/v1/executor/plan", { kind: "codehost-github.push", args, requester: { kind: "job", roles: [] }, task: "t2" });
+  assert.deepEqual(by(), {});
 });
 
 test("ops answer the kernel only (it checks each module's grant); a token is narrowed to its repo, or org-wide for owner/*", async (t) => {

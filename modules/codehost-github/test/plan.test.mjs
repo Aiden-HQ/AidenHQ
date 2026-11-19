@@ -52,12 +52,14 @@ describe("plan: the product repo", () => {
     assert.deepEqual(rules("pr", { ...s, requester: { platform: true } }, branch(["kernel/src/a.ts"], "fix/x")), [[1, "product-pr"]]);
   });
 
-  it("a merge: only the platform line asks; a head an Engineer job pushed is never the platform line's own", () => {
-    const merge = (requester, extra) => planParts("merge", { ...s, requester, prs: [{ repo: s.productRepo, number: 7, head: "a".repeat(40), headMatches: true, files: ["kernel/src/a.ts"], checks: [{ name: "tests", ok: true }], ...extra }] })[0][0];
-    assert.equal(merge({ platform: false }, { ownHead: true, platformHead: true }).rule, "product-merge-requester");
-    assert.equal(merge({ platform: true }, { ownHead: true, platformHead: true }).rule, "product-merge");
-    const engineerHead = merge({ platform: true }, { ownHead: true, platformHead: false });
-    assert.deepEqual([engineerHead.tier, engineerHead.rule], [1, "product-merge-engineer-head"]);
-    assert.match(engineerHead.reason, /NOT the Platform Engineer's line/);
+  it("a merge: an Engineer job asks only for its own task's head, never a .github change; the platform line asks for any", () => {
+    const merge = (st, extra) => planParts("merge", { ...s, ...st, prs: [{ repo: s.productRepo, number: 7, head: "a".repeat(40), headMatches: true, files: ["kernel/src/a.ts"], checks: [{ name: "tests", ok: true }], ownHead: true, ...extra }] })[0][0];
+    const own = merge({ requester: { platform: false }, task: "t-7" }, { pushedBy: "t-7" });
+    assert.deepEqual([own.tier, own.rule], [1, "product-merge-engineer-head"]);
+    assert.match(own.reason, /NOT the Platform Engineer's line/);
+    assert.equal(merge({ requester: { platform: false }, task: "t-7" }, { pushedBy: "t-8" }).rule, "product-merge-requester", "another requester's head");
+    assert.equal(merge({ requester: { platform: false }, task: "t-7" }, { pushedBy: "t-7", files: [".github/workflows/ci.yml"] }).rule, "product-merge-workflow");
+    assert.equal(merge({ requester: { platform: true } }, { platformHead: true }).rule, "product-merge");
+    assert.equal(merge({ requester: { platform: true } }, { pushedBy: "t-7" }).rule, "product-merge-engineer-head");
   });
 });

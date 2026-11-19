@@ -108,8 +108,9 @@ Name the issue as `owner/name#number` everywhere (tasks, comments, searches): is
 3. Decide one verdict: `real`, `not-real`, `duplicate`, `already-fixed`, `uncertain`, `out-of-scope`.
 4. For `real`, brief the engineer: an Engineer.
    The brief names the repo, the symptom, the sha, the `path:line`, the repro and the exact change wanted, and asks for a
-   PR on that repo; its PR deliverable is the task's own PR (no ref), which grading accepts on any repo. Do not write the
-   patch yourself.
+   PR on that repo; its PR deliverable is the task's own PR (no ref), which grading accepts on any repo. Where the PR
+   merges on its approved card (step 5), the brief also asks the engineer to merge it at its head once its checks are
+   green (`aidenhq merge`). Do not write the patch yourself.
 5. The fix is its PR, merged. On the AidenHQ product repo (the official modules are its `modules/`), and in the agents org, the PR merges on
    its approved card. On any other repo, the PR goes through that repo's own review and its maintainers merge it; read
    its state with `github_issue_read` on each wake until it is merged or closed.

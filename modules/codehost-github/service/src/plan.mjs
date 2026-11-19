@@ -45,8 +45,8 @@ function publishParts(action, b, s) {
   const namespace = () => REJECT("branch-namespace", `\`${b.branch}\` isn't this task's branch: name it \`agent/${s.workspace}/<topic>\` and publish again`);
   if (same(b.repo, s.productRepo)) {
     if (b.empty || b.branch === b.defaultBranch) return [REJECT("product-default-branch", `\`${b.branch}\` is the product repo's default branch: publish a branch and open a PR`)];
-    // A PR is a proposal: any job that may file one (an Engineer's) opens it, on any task; merging it stays the platform
-    // line's and the gates'. A bare branch push, or a PR that changes `.github/`, stays the platform line's.
+    // A PR is a proposal: any job that may file one (an Engineer's) opens it, on any task, and may ask to merge it
+    // (productMergePart). A bare branch push, or a PR that changes `.github/`, stays the platform line's.
     const workflow = b.files.find((f) => GITHUB.test(f));
     if (!s.requester?.platform && (action !== "pr" || workflow)) return [REJECT(action === "pr" ? "product-pr-workflow" : "product-push", `only a job holding the platform-engineer role (a task the owner, the Agent Architect or the Fleet Steward filed) ${action === "pr" ? `opens a product PR that changes ${workflow}` : "pushes a branch to the product repo without a PR"}`)];
     if (foreign) return [namespace()];
@@ -155,14 +155,20 @@ function mergeParts(p, s) {
 }
 
 /**
- * A product PR's merge (owner, 2026-11-13): the reviewer's when the Platform Engineer's line asks, the PR's head is one the
- * runner pushed (no fork, no one else's push), it is the card's head and its named checks aren't red. Still running is not
- * red: a reviewer-approved merge runs the strict queue, which merges only once every named check is green on that exact
- * head. Never Tier 0: the product reaches every instance through the pin. Its files are the platform check's.
+ * A product PR's merge (owner, 2026-11-13): the reviewer's when its head is one the runner pushed (no fork, no one else's
+ * push), it is the card's head and its named checks aren't red. The Platform Engineer's line asks for any such PR; any other
+ * Engineer job only for a PR whose head its own task pushed (the task the code host recorded with that head, `pushedBy`)
+ * and that changes nothing under `.github/`. Still running is not red: a reviewer-approved merge runs the strict queue, which
+ * merges only once every named check is green on that exact head. Never Tier 0: the product reaches every instance through
+ * the pin. Its files are the platform check's.
  */
 function productMergePart(p, ref, s) {
-  if (!s.requester?.platform) return REJECT("product-merge-requester", `${ref}: only the Platform Engineer's line merges product PRs`);
   if (!Array.isArray(p.files)) return REJECT("unknown-files", `couldn't list every file ${ref} changes; try again`);
+  if (!s.requester?.platform) {
+    const workflow = p.files.find((f) => GITHUB.test(f));
+    if (workflow) return REJECT("product-merge-workflow", `${ref} changes ${workflow}: only the Platform Engineer's line merges a product PR that changes \`.github/\``);
+    if (!p.ownHead || !s.task || p.pushedBy !== s.task) return REJECT("product-merge-requester", `${ref}: its head wasn't pushed by this task; only the Platform Engineer's line merges another requester's product PR`);
+  }
   const friction = mergeFriction(p, ref);
   if (friction) return friction;
   const gates = `On its head: ${checkCounts(p.checks)}. Code merges it only at that head, once every named check has passed (skipped counts as passed) and main is green`;
