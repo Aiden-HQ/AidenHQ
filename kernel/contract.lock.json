@@ -219,6 +219,7 @@
     "schema writes.json.*.card.details": {"state":"experimental","fp":"{\"req\":false,\"type\":\"string\"}"},
     "schema writes.json.*.card.reads": {"state":"experimental","fp":"{\"req\":false,\"type\":\"string\"}"},
     "schema writes.json.*.card.sentence": {"state":"experimental","fp":"{\"req\":false,\"type\":\"string\"}"},
+    "schema writes.json.*.card.target": {"state":"experimental","fp":"{\"req\":false,\"type\":\"string\"}"},
     "schema writes.json.*.floor": {"state":"experimental","fp":"{\"req\":true,\"enum\":[0,1,2]}"},
     "schema writes.json.*.panel": {"state":"experimental","fp":"{\"req\":false,\"type\":\"boolean\"}"},
     "schema writes.json.*.paths": {"state":"experimental","fp":"{\"req\":false,\"const\":true}"},

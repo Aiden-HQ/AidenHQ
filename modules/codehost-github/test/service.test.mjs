@@ -9,6 +9,7 @@ import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createService } from "../service/src/service.ts";
+import { render } from "../../../kernel/src/writes.ts";
 
 const sh = (cwd, ...args) => execFileSync("git", args, { cwd, encoding: "utf8", env: { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null", GIT_AUTHOR_NAME: "a", GIT_AUTHOR_EMAIL: "a@example.com", GIT_COMMITTER_NAME: "a", GIT_COMMITTER_EMAIL: "a@example.com" } }).trim();
 const listen = (handler) => new Promise((ok) => { const s = createServer(handler); s.listen(0, "127.0.0.1", () => ok({ s, url: `http://127.0.0.1:${s.address().port}` })); });
@@ -116,6 +117,29 @@ test("connected: a new app's repository is created through the App in the agents
   for (let i = 0; i < 300 && outcomes.length < 2; i++) await new Promise((r) => setTimeout(r, 10));
   assert.equal(outcomes[1]?.ok, true, JSON.stringify(outcomes));
   assert.equal(sh(origin, "rev-parse", "refs/heads/first"), sha);
+});
+
+test("a PR's card carries the branch's diff for the reviewer (#744): every kind renders its plan's facts", async (t) => {
+  let pulls = {};
+  const { sha, ws, origin, call } = await setup(t, { routes: (method, path) => (path in pulls ? { status: 200, body: pulls[path] } : /\/commits\/\w+\/(check-runs|status)/.test(path) ? { status: 200, body: { total_count: 1, check_runs: [{ status: "completed", conclusion: "success" }], statuses: [] } } : undefined) });
+  const args = { workspace: "TASK-1", only: [{ repo: "acme-agents/widget", branch: "feature", sha }] };
+  const plan = await call("/aidenhq/v1/executor/plan", { kind: "codehost-github.pr", args, requester: { kind: "job", roles: [] }, task: "t1" });
+  assert.equal(plan.status, 200, JSON.stringify(plan.json));
+  // The manifest's card (one template for every kind), rendered as the kernel files it.
+  const manifest = readFileSync(new URL("../module.yaml", import.meta.url), "utf8");
+  for (const k of ["push", "pr", "merge", "close", "create_repo"]) assert.match(manifest, new RegExp(`^  ${k}: \\{.*card: [&*]card`, "m"));
+  const template = Object.fromEntries([.../(\w+): "(\{\{\w+\}\})"/g[Symbol.matchAll](/card: &card \{([^}]*\}\}[^}]*)*\}/.exec(manifest)[0])].map((m) => [m[1], m[2]]));
+  const card = render(template, { ...args, ...plan.json.facts });
+  assert.equal(card.target, "acme-agents/widget `feature`");
+  assert.match(card.details, /^\+export const x = 1;$/m);
+
+  // Its merge's card carries the PR's diff at its head, read from GitHub.
+  sh(origin, "fetch", "--quiet", ws, `${sha}:refs/heads/feature`);
+  const main = sh(origin, "rev-parse", "main");
+  pulls = { "/repos/acme-agents/widget/pulls/1": { number: 1, head: { sha }, base: { sha: main }, changed_files: 2, user: { login: "acme-app[bot]" } }, "/repos/acme-agents/widget/pulls/1/files?per_page=100": [{ filename: "app.js" }, { filename: ".gitattributes" }] };
+  const merge = await call("/aidenhq/v1/executor/plan", { kind: "codehost-github.merge", args: { prs: [{ repo: "acme-agents/widget", number: 1, head: sha }] }, requester: { kind: "job", roles: [] }, task: "t1" });
+  assert.equal(merge.status, 200, JSON.stringify(merge.json));
+  assert.match(merge.json.facts.diff, /^\+export const x = 1;$/m);
 });
 
 test("a job's branch lands from its workspace; no hook, filter or fsmonitor of the workspace runs", async (t) => {

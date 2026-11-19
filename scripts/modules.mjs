@@ -1271,7 +1271,7 @@ export function checkJobs(name, def, root) {
   return out;
 }
 
-const CARD_FIELDS = ["sentence", "changes", "reads", "cost", "details"];
+const CARD_FIELDS = ["target", "sentence", "changes", "reads", "cost", "details"];
 /**
  * The module's code revision: a hash of every file under its folder (tests, docs and installed packages aside). A record
  * keeps its executor's revision, so an executor updated between approval and execution makes it stale (lean-core A9).

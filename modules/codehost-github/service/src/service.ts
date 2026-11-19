@@ -212,13 +212,23 @@ export function createService(o: Options) {
   };
   const isPlatform = (requester?: { roles?: string[] }) => (requester?.roles ?? []).includes("platform-engineer");
 
-  /** The verified state plan.mjs tiers a request on (its `s`): read from the workspace, the cache and GitHub, never the args. */
+  const EMPTY_TREE = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
+  const diffOf = (dir: string, from: string, to: string) => git(dir, ["-c", "core.attributesFile=/dev/null", "diff", "--no-ext-diff", "--no-textconv", "--text", "--no-renames", from, to]);
+  /**
+   * The verified state plan.mjs tiers a request on (its `s`) and the card's facts (target, sentence, the diff the reviewer
+   * reads): read from the workspace, the cache and GitHub, never the args.
+   */
   async function stateFor(kind: string, a: any, requester?: { roles?: string[] }, task = "") {
     // The Platform Engineer's line: a requester holding the platform-engineer role (the kernel's record of who asked, never the args).
     const base = { agentsOrg: o.agentsOrg, allowedOrgs: o.allowedOrgs, instanceRepo: o.instanceRepo, productRepo: o.productRepo, requester: { platform: isPlatform(requester) }, task, workspace: String(a.workspace ?? ""), also: [] as string[] };
-    if (kind.endsWith(".create_repo")) return { ...base, repo: slugOf(a.repo).slug };
+    if (kind.endsWith(".create_repo")) {
+      const repo = slugOf(a.repo).slug;
+      return { state: { ...base, repo }, facts: { target: repo, sentence: `Create the repository ${repo} on GitHub.`, diff: "" } };
+    }
     if (kind.endsWith(".merge") || kind.endsWith(".close")) {
+      const merge = kind.endsWith(".merge");
       const prs = [];
+      let diff = "";
       for (const p of a.prs ?? []) {
         const s = slugOf(p.repo);
         const token = await tokenFor(s, MERGE);
@@ -226,30 +236,42 @@ export function createService(o: Options) {
         // A rename counts at both paths: a file moved out of `.github/` still changes `.github/`.
         const listed = await api("GET", `/repos/${s.slug}/pulls/${Number(p.number)}/files?per_page=100`, token);
         const files = listed.flatMap((f: any) => [f.filename, f.previous_filename].filter(Boolean));
+        // A merge's card carries the PR's diff at its head (the one the record binds), against its merge base with the base branch.
+        if (merge) {
+          const head = await fetchRemote(s, String(pr.head?.sha));
+          const into = await fetchRemote(s, String(pr.base?.sha));
+          const mb = await git(head.dir, ["merge-base", into.sha, head.sha]).catch(() => "");
+          diff += `${await diffOf(head.dir, mb || EMPTY_TREE, head.sha)}\n`;
+        }
         prs.push({
           repo: s.slug, number: Number(p.number), head: pr.head?.sha, base: pr.base?.sha, headMatches: !p.head || p.head === pr.head?.sha,
           files: pr.changed_files > listed.length ? undefined : files, checks: await checksAt(s, pr.head?.sha, token),
           ownHead: pushedHeads().includes(pr.head?.sha), pushedBy: pushedBy()[pr.head?.sha]?.task, platformHead: pushedBy()[pr.head?.sha]?.platform === true, dependabot: pr.user?.login === "dependabot[bot]",
         });
       }
-      return { ...base, prs };
+      const urls = prs.map((p) => `https://github.com/${p.repo}/pull/${p.number}`).join(", ");
+      return { state: { ...base, prs }, facts: { target: urls, sentence: `${merge ? "Merge" : "Close"} ${urls}${merge ? " at its approved head, once its checks are green" : ""}.`, diff: diff.trim() } };
     }
     const branches = [];
+    let diff = "";
     for (const b of a.only ?? []) {
       const { s, dir } = await fromWorkspace(a.workspace, b);
       const info = await api("GET", `/repos/${s.slug}`, await tokenFor(s, READ));
       const def = String(info.default_branch ?? "main");
       const empty = !(await fetchRemote(s, def, "ws").then(() => true, () => false));
       const mb = empty ? "" : await git(dir, ["merge-base", b.sha, `refs/remote/${def}`]).catch(() => "");
-      const files = (await git(dir, ["diff", "--no-ext-diff", "--no-textconv", "--name-only", "-z", mb || "4b825dc642cb6eb9a060e54bf8d69288fbee4904", b.sha])).split("\0").filter(Boolean);
+      const files = (await git(dir, ["diff", "--no-ext-diff", "--no-textconv", "--name-only", "-z", mb || EMPTY_TREE, b.sha])).split("\0").filter(Boolean);
+      diff += `${await diffOf(dir, mb || EMPTY_TREE, b.sha)}\n`;
       branches.push({ repo: s.slug, branch: b.branch, sha: b.sha, base: mb || undefined, files, defaultBranch: def, empty });
     }
-    return { ...base, branches };
+    const names = branches.map((b) => `${b.repo} \`${b.branch}\``).join(", ");
+    return { state: { ...base, branches }, facts: { target: names, sentence: `${kind.endsWith(".pr") ? "Push and open a PR for" : "Push"} ${names}.`, diff: diff.trim() } };
   }
 
   const executor: Executor = {
     async plan(req: PlanRequest) {
-      const out = planRules({ kind: req.kind, args: req.args }, await stateFor(req.kind, req.args ?? {}, req.requester, req.task));
+      const { state, facts } = await stateFor(req.kind, req.args ?? {}, req.requester, req.task);
+      const out = planRules({ kind: req.kind, args: req.args }, state, facts);
       // Its commits were read from this task's workspace (stateFor), so the task is who asked to publish them.
       if (/\.(push|pr)$/.test(req.kind) && req.task) notePushedBy((req.args?.only ?? []).map((b: any) => String(b.sha)), { task: req.task, platform: isPlatform(req.requester) });
       return out;

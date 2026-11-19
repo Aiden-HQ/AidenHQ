@@ -17,7 +17,7 @@
         "type": "object",
         "additionalProperties": false,
         "description": "{{name}} templates over the plan's args, facts and card values; rendered by the kernel",
-        "properties": { "sentence": { "type": "string" }, "changes": { "type": "string" }, "reads": { "type": "string" }, "cost": { "type": "string" }, "details": { "type": "string" } }
+        "properties": { "target": { "type": "string" }, "sentence": { "type": "string" }, "changes": { "type": "string" }, "reads": { "type": "string" }, "cost": { "type": "string" }, "details": { "type": "string" } }
       },
       "tools": { "type": "array", "items": { "type": "string" }, "description": "write or destructive tools of the module's own connections routed into this kind by the proxy" }
     }

@@ -91,12 +91,13 @@ providers:
   executor:
     url: http://codehost-github:8100/aidenhq/v1/executor
     auth: codehost_github_token
+# Each card is plan.mjs's facts, read from git by the service: what it acts on, one sentence, and the diff the reviewer reads.
 writes:
-  push: { args: schemas/push.json, floor: 0 }
-  pr: { args: schemas/pr.json, floor: 0 }
-  merge: { args: schemas/merge.json, floor: 0 }
-  close: { args: schemas/close.json, floor: 0 }
-  create_repo: { args: schemas/create_repo.json, floor: 0 }
+  push: { args: schemas/push.json, floor: 0, card: &card { target: "{{target}}", sentence: "{{sentence}}", details: "{{diff}}" } }
+  pr: { args: schemas/pr.json, floor: 0, card: *card }
+  merge: { args: schemas/merge.json, floor: 0, card: *card }
+  close: { args: schemas/close.json, floor: 0, card: *card }
+  create_repo: { args: schemas/create_repo.json, floor: 0, card: *card }
 # Other modules' GitHub access without the key: a module declares `codehost: { token: { repos, perms }, snapshot: { repos },
 # clone: { repos } }` in its own module.yaml (owner authority) and asks the kernel's POST /v1/codehost/:op with its own token.
 # The kernel checks that grant and calls /ops/token, /ops/snapshot or /ops/clone here with this module's key: only the kernel
