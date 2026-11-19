@@ -5,7 +5,7 @@
 // the tool proxy as the job, and a job's requests for its next turn go to /v1/jobtools. Nothing here holds a credential
 // beyond the job token, and nothing is decided here.
 //
-//   aidenhq publish <org/repo> <branch>... [--title <title> --body-file <file>]
+//   aidenhq publish <org/repo> <branch>... [--title <title>] [--body-file <file>]
 //                                                    push each branch at its commit in this workspace's clone and open (or
 //                                                    update) its PR (a change request on this server): one codehost.pr write each
 //   aidenhq merge <PR link> <head sha>...            merge each PR only at that head: one codehost.merge write each
@@ -37,7 +37,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-const usage = `usage: aidenhq publish <org/repo> <branch>... [--title <title> --body-file <file>] | merge <PR link> <head sha>... | close <PR link>... | create-repo [<org>/]<name> | clone local/<name> | apply <org/repo> <branch> | task <PEN-N> | tasks <words> | advise "<question>" [--file <brief>] | reset | engine <kind> [model] | cleanup`;
+const usage = `usage: aidenhq publish <org/repo> <branch>... [--title <title>] [--body-file <file>] | merge <PR link> <head sha>... | close <PR link>... | create-repo [<org>/]<name> | clone local/<name> | apply <org/repo> <branch> | task <PEN-N> | tasks <words> | advise "<question>" [--file <brief>] | reset | engine <kind> [model] | cleanup`;
 const COMMANDS = ["publish", "merge", "close", "create-repo", "clone", "apply", "task", "tasks", "advise", "reset", "engine", "cleanup"];
 const [command, ...rest] = process.argv.slice(2);
 const fail = (msg, code = 1) => {
@@ -125,6 +125,13 @@ const commitOf = (repo, branch) => {
   execFileSync("git", ["-C", dir, "bundle", "create", "--quiet", join(workspace, ".aidenhq", "bundles", `${sha}.bundle`), `refs/heads/${branch}`], { stdio: ["ignore", "ignore", "inherit"] });
   return sha;
 };
+const CONVENTIONAL = /^(feat|fix|docs|chore|test|refactor|perf|ci|build|style|revert)(\([a-z0-9][a-z0-9._\/-]*\))?!?: \S/;
+/** The subject of the branch's first commit (the oldest one no remote branch has), the one a squash merge would carry. */
+const firstSubject = (repo, branch) => {
+  const [org, name] = repo.split("/");
+  const dir = [name, `${org}--${name}`].map((d) => join(workspace, d)).find((d) => existsSync(join(d, ".git")));
+  return execFileSync("git", ["-C", dir, "log", "--reverse", "--format=%s", `refs/heads/${branch}`, "--not", "--remotes"], { encoding: "utf8" }).split("\n")[0];
+};
 /** One tool of tasks-mcp, through the kernel's tool proxy as this job (its frozen tools), as the box's own MCP config calls it. */
 async function tool(name, args) {
   const path = "/c/paperclip_tasks/mcp";
@@ -150,11 +157,14 @@ async function tool(name, args) {
 const lines = [];
 if (command === "publish") {
   if (!words.length || words.length % 2) fail("name branches as <org/repo> <branch> pairs", 2);
-  if (Boolean(flags.title) !== Boolean(flags["body-file"])) fail("give the PR's text as both --title and --body-file, or neither", 2);
-  const text = flags.title ? { title: flags.title, body: readFileSync(flags["body-file"], "utf8") } : undefined;
+  const body = flags["body-file"] ? readFileSync(flags["body-file"], "utf8") : "";
   for (let i = 0; i < words.length; i += 2) {
     const [repo, branch] = [words[i], words[i + 1]];
-    lines.push(`${repo} ${branch}: ${(await write("codehost.pr", { only: [{ repo, branch, sha: commitOf(repo, branch) }], ...(text ? { text } : {}) }))}`);
+    const sha = commitOf(repo, branch);
+    // The PR title is a Conventional Commit (CI's pr-title check): --title, else the branch's first commit's subject.
+    const title = flags.title ?? firstSubject(repo, branch);
+    if (!CONVENTIONAL.test(title)) fail(`PR title ${JSON.stringify(title)} must be a Conventional Commit; set it with \`aidenhq publish --title 'fix(x): …'\` or reword the commit`, 2);
+    lines.push(`${repo} ${branch}: ${(await write("codehost.pr", { only: [{ repo, branch, sha }], text: { title, body } }))}`);
   }
 } else if (command === "merge") {
   if (!words.length || words.length % 2) fail("name the pull requests to merge as <PR link> <head sha> pairs, in order", 2);

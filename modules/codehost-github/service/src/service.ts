@@ -290,7 +290,7 @@ export function createService(o: Options) {
           if (action === "pr") {
             const token = await tokenFor(s, PUSH);
             const open = await api("GET", `/repos/${s.slug}/pulls?state=open&head=${encodeURIComponent(`${s.org}:${b.branch}`)}`, token);
-            const text = { title: a.text?.title ?? b.branch, body: a.text?.body ?? "" };
+            const text = a.text;
             const pr = open[0] ? await api("PATCH", `/repos/${s.slug}/pulls/${open[0].number}`, token, text) : await api("POST", `/repos/${s.slug}/pulls`, token, { ...text, head: b.branch, base: (await api("GET", `/repos/${s.slug}`, token)).default_branch });
             done.push(pr.html_url ?? `${s.slug}#${pr.number}`);
             if (pr.html_url) notePrTask(o.cacheDir, pr.html_url, { task: a.workspace, branch: b.branch }); // the PR watch wakes the task that opened it

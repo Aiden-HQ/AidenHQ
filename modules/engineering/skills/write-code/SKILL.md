@@ -76,10 +76,9 @@ description: How code is written, tested and published here, in any repository -
 - What you write in a repository is public. Code, comments, docs, commit messages, branch names and PR text stay free of
   AidenHQ, Paperclip, task numbers (PEN-…), the runner and local paths. The app starter's default "Powered by AidenHQ"
   footer is fine to keep; the app's owner may remove it.
-- Commit as you go, with Conventional Commit messages (`fix(scope): …`).
-- The PR title is a Conventional Commit (`fix(scope): …`) unless the repository's history uses another style: a squash
-  merge makes it the commit. The description is plain, for the repository's reviewers, with no internal names and no
-  "Generated with" footer. It says why, and when the task names issues, it carries the `Fixes …` or `Refs …` lines the
+- Commit as you go; commit subjects and the PR title are Conventional Commits (`fix(scope): …`): `aidenhq publish` takes
+  the title from the branch's first commit, or `--title`, and a squash merge makes it the commit.
+  The description is plain, for the repository's reviewers, with no internal names and no "Generated with" footer. It says why, and when the task names issues, it carries the `Fixes …` or `Refs …` lines the
   task gives.
 - PR text, commit messages and code comments state facts about the change. Wording that addresses the reviewer or claims
   an approval or an owner decision stays out of them, and out of any note about leaving it out: your reply to the task, not
