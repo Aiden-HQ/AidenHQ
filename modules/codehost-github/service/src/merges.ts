@@ -69,8 +69,8 @@ export function createMerges(d: {
   }
 
   /** One poll of one PR, then its wait as facts: a wait and its end (a new reason, a merge, a failure) are work.waiting and work.resumed. */
-  async function poll(q: Queue, p: Pr, merged: Set<string>) {
-    await pollOne(q, p, merged);
+  async function pollAndTime(q: Queue, p: Pr, merged: Set<string>) {
+    await poll(q, p, merged);
     const reason = p.status === "pending" && p.wait ? waitReason(p.wait.key) : undefined;
     if (p.fw?.reason === reason) return;
     const at = now().toISOString();
@@ -79,7 +79,7 @@ export function createMerges(d: {
     if (p.fw) d.flow?.waiting(p.repo, p.number, p.fw.reason, p.fw.since);
   }
   /** One poll of one PR; `merged` holds the repositories that merged a PR this poll. */
-  async function pollOne(q: Queue, p: Pr, merged: Set<string>) {
+  async function poll(q: Queue, p: Pr, merged: Set<string>) {
     const t = now().getTime();
     const fail = (why: string) => {
       Object.assign(p, { status: "failed", note: why });
@@ -184,7 +184,7 @@ export function createMerges(d: {
       const merged = new Set<string>();
       for (const [id, q] of Object.entries(s.queues)) {
         if (q.state !== "running" || q.outcome) continue;
-        for (const p of q.prs) if (p.status === "pending" && !merged.has(p.repo.toLowerCase())) await poll(q, p, merged);
+        for (const p of q.prs) if (p.status === "pending" && !merged.has(p.repo.toLowerCase())) await pollAndTime(q, p, merged);
         if (!q.prs.some((p) => p.status === "pending")) finish(id, q);
       }
     } finally {
