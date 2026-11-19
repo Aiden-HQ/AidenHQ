@@ -169,7 +169,7 @@ runs, its live database is left out and its hourly dumps carry it; for a complet
 first. A Postgres volume in use (the warehouse's `pgdata`) is skipped; its nightly dump volume is copied. The secret
 vault and the notes vault are not included. The backup holds `auth.secret`, so it is mode 0700. It refuses to start
 unless the output filesystem has 1.2 times the sources' size plus 20 GB free (a full root disk crashed Paperclip's
-Postgres on 2026-11-16). Each successful apply prunes unused images older than 48 hours and caps the build cache at 40 GB (least recently used
+Postgres on 2026-11-16). Each successful apply prunes unused images older than 48 hours and caps the build cache at 20 GB (least recently used
 first); `prune-docker.timer` does the same daily on a host that hasn't applied. Apply installs changed prune units.
 
 `scripts/restore.sh <backup>` refuses to run while containers or the kernel are up, and moves existing state aside

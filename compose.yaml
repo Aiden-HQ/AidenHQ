@@ -49,6 +49,9 @@ services:
       USER_UID: "${PUID:-1000}"
       USER_GID: "${PGID:-100}"
       # No usage telemetry to Paperclip's servers.
+      # One database dump every 6 hours (the default is hourly: 73 dumps of 780 MB filled 50 GB); how many are kept is the
+      # instance setting scripts/modules.mjs ensureBackupRetention writes.
+      PAPERCLIP_DB_BACKUP_INTERVAL_MINUTES: "360"
       PAPERCLIP_TELEMETRY_DISABLED: "1"
       DO_NOT_TRACK: "1"
       # Agents use the ChatGPT login in /paperclip/.codex, never an API key from here.
