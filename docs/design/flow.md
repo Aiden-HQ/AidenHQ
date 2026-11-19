@@ -1,6 +1,7 @@
 # Flow: where the fleet's time goes
 
-Status: design, 2026-11-19. Owner decisions are marked (owner); everything else is the designer's call.
+Status: built, 2026-11-19 (branch `feat/flow`); where the build differs from the first design, this text says what was built.
+Owner decisions are marked (owner); everything else is the designer's call.
 
 ## Why
 
@@ -69,9 +70,10 @@ warehouse copy, and central actor verification.
 
 ### 1. The fact log (kernel)
 
-A new `facts` table in `kernel.db` is the log. It replaces the `events` table: its two writers (`records.ts` approval
-events, `checks.ts` `gate.would_block`) write facts instead (`record.filed`, `record.decided`, `record.held`,
-`record.landed`/`record.failed`, `gate.would_block`), the backfill copies the old rows across, and `events` is dropped.
+A new `facts` table in `kernel.db` is the log. It replaces the `events` table: its writers (`records.ts` approval
+events, `checks.ts` `gate.would_block` and `finish.verdict`) write facts instead (`record.filed`, `record.decided`,
+`record.held`, `record.landed`/`record.failed`, `gate.would_block`, `finish.verdict`), the migration copies the old rows
+across, and `events` is dropped. `finish.verdict` is the kernel's own fact: no module may declare it.
 Nothing reads `events` today. The table lives in `kernel.db` so kernel writers can insert a fact in the same transaction
 as the state change; `/v1/flow` reads through its own read-only connection (WAL: reads never block the approval path),
 with bounded windows.
@@ -99,8 +101,11 @@ failure; the id makes retries safe.
 **Actors, verified centrally.** The kernel sets `actor` itself; callers never pass it:
 
 - a job's facts: the job's agent (`jobs.agent` → agent key);
-- a module call: the verified caller assertion (`kernel/sdk/src/caller.ts`) gives `module:<name>`, or the agent when the
-  module acts for an agent's job (the assertion's job);
+- a module's fact (`POST /v1/facts`): `module:<name>`, or an agent only for the module's own work: the agent of `data.job`
+  when that job is the calling module's, or, for a `pr:` subject, the requester of the module's own code-host PR record on
+  the fact's task. Another module's job or PR never credits its agent. The module's name is part of the fact's version
+  (`<module>/<version>`, so of its id): two modules declaring one type never pre-empt each other's facts, and a reader can
+  tell who wrote a fact. codehost-local writes its facts straight into the store with the same `codehost-local/` prefix;
 - the owner or another person: the authenticated board or channel account (`account:<id>`, as records already use);
 - GitHub-side facts: the GitHub login, mapped to an agent when the commit or PR came from a known job (the App's bot
   identity alone never names an agent).
@@ -143,8 +148,14 @@ case the kernel resolves the agent from that job. Every module fact names its `t
   with the `task` it filed.
 - `ai-reviewer` needs nothing: the kernel's `record.decided` covers it.
 
-A module may emit only the types it declares (§3); the kernel rejects others with a loud error. Emitting never fails the
-module's own work: an emit error is logged and retried.
+A module may emit only the types it declares (§3), with the declared subject kind (`subject: pr` → `pr:…`) and, for a
+`data.reason`, one of the declared reasons; `data` is at most 4 KB and `at` at most a day ahead. The kernel checks a whole
+batch before recording any of it (one transaction) and refuses it with a 4xx naming the bad fact; facts older than the
+400 days the log keeps are skipped. Emitting never fails the module's own work: the SDK emitter retries a batch the kernel
+couldn't take (5xx, network) and drops, with one log line, a batch it refused.
+
+The deploy check (`generations.ts`) reads `pr.merged` only from the code host that owns the product repo (`hostOf`, by the
+module name in the version), so a module that declares `pr.merged` can't claim a deploy.
 
 ### 3. Declaring facts and stages (the generic part)
 
@@ -193,18 +204,25 @@ readable like `/v1/work`):
   and of wait per stage, wait split by reason), DORA, churn, and the fleet metrics listed in Goals.
 - `?idle=1`: items idle now, oldest first, with reason and holder.
 
-**Idle and its reason.** A task is idle when it is open, no job of its own is running and no stage interval is open.
+**Idle and its reason.** A task is idle when it is open, no job of its own is running and no stage interval is open. A stage
+opened by a module's fact counts as work for a day at most; after that the task is idle with reason `stage_open:<name>`,
+so a module that never closes a stage can't hold an item busy.
 The reason is, in order: the latest unexpired `work.waiting` on it; an open record for the owner (`owner`) or the
 reviewer (`reviewer`); a `blocked_by` task not done (from `task.blocked_changed`; `blocked_on: WOR-n`); an open child task (from
 `task.created.parent`; `delegated`); a future
 scheduled wake (`scheduled`); none of these and no wake pending (`orphaned`). Otherwise `unknown`. These come from facts
 only, so a view change never needs re-instrumenting.
 
-**DORA.** Deploy frequency: distinct `deploy.applied` with healthy status per day. Lead time for changes: first commit
-of a PR (from GitHub) to its `pr.deployed`. Change failure rate: deploys followed by a revert PR of something they
-shipped, a rollback generation (`revert_of`) or failed health, or an incident (a Fleet Steward detector incident task) linked to it by the existing revert and incident linker
-(`quality.ts`, moved to the SDK); over all deploys. Time to restore: incident task created to
+**DORA.** Deploy frequency: distinct `deploy.applied` with healthy status per day. Lead time for changes: the PR's
+`pr.opened` to its `pr.deployed`. Change failure rate: deploys followed by a revert PR of something they
+shipped, a rollback generation (`revert_of`) or failed health, or an incident linked to it by the existing revert and
+incident linker (`quality.ts`, moved to the SDK); over all deploys. An incident is the Fleet Steward detector's check
+task: `task.created` carries a module-filed task's module (`origin: module:fleet-steward`) and source (`fleet-check:…`),
+read from the kernel's own task markers only when no agent made the task. Time to restore: incident task created to
 the deploy that fixes it, or failed generation to the next healthy one.
+
+**Bounds.** The views run on the kernel's thread: a waterfall reads at most 5,000 facts and a summary or idle read at
+most 50,000 (newest first, `truncated: true` when cut); a summary is reused for 60 s per minute-rounded window.
 
 **Churn.** A code-host pass over each repo's default branch (incremental from a stored cursor) walks merged PRs in
 order and tracks each added line by identity across later diffs, following renames. For each merged PR: lines added,
@@ -250,8 +268,10 @@ git author. It is named "rewritten", not "defect": rewrites include planned refa
 
 ### 7. Backfill (owner)
 
-Two parts write `source: backfill` facts: the kernel backfills its own history once at start (`facts.backfillLocal()`),
-and the code host backfills GitHub when the owner presses the Flow page's backfill button. Sources:
+Two parts write `source: backfill` facts, both automatically: the kernel backfills its own history at every start
+(`facts.backfillLocal()`, idempotent, never blocking boot), and the code host backfills GitHub once, on its first pass
+(no button, no route; it stops before the App's hourly budget runs low and resumes on a later pass). codehost-local's
+first churn pass reads the last 500 commits (it runs on the kernel's thread). Sources:
 
 - GitHub, per repo the instance manages: issue created, labelled, PR opened, check runs, reviews, merged (timelines via
   the code host's App token), and churn over the full history.
@@ -271,8 +291,8 @@ existing sweep. `job.ended` carries the job's cost, so cost per outcome survives
 Flow is on in every install, because it uses no model and costs nothing to run. What a new owner sees:
 
 - **Day one.** The log starts empty, and the Flow page explains that it fills in as work happens. It shows the first
-  item's waterfall as soon as one task has run. Backfill is not run automatically. Its command is offered on the empty
-  page only when the install has a code host with history, and it runs only when the owner starts it.
+  item's waterfall as soon as one task has run. The kernel's and the code host's backfills run on their own (§7), so an
+  install with history sees it after the code host's first pass.
 - **Only the modules they run.** Stages, wait reasons and tiles come from the installed modules' declarations. Without
   `codehost-github` there are no PR, CI or merge-queue stages. `codehost-local` emits the same `pr.*` and churn facts for
   the repos it hosts, so a GitHub-free install still gets them. Without any deploys, the DORA tiles are hidden instead of
@@ -320,7 +340,7 @@ Each phase proves itself on the live instance before the next.
 - Retention 400 days.
 - `facts` replaces `events` in `kernel.db`; reads use a read-only connection.
 - Task fact ids come from Paperclip's own versions; changes a poll missed show as `unknown`.
-- Module facts: actor `module:<name>` unless linked to a job; PR facts get their task from the PR record.
+- Module facts: actor `module:<name>` unless linked to the module's own job or PR record; the module's name is in the version.
 - Incidents are the detector's incident tasks, linked by the existing `quality.ts` linker; no new label.
 - Only tier ≥ 1 records become facts (tier 0 ran at once): keeps approval waits on outbound sends, drops ~7,400 instant tool calls.
 - Wakes are facts too (opened, bound, dropped), so queue time starts at the wake and no-action wakes are countable.
