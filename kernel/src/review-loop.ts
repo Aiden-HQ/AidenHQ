@@ -132,9 +132,8 @@ export function createReviewLoop({ records, writes, task, decisions, product, lo
     if (out.posted.decision === "reject") await rejected(out.record, out.posted).catch((e: Error) => log("reject note failed", { record: r.id, err: e.message.slice(0, 200) }));
   }
 
-  /** A reviewer's or code's no, on the task once (a comment on a closed task would reopen it): the note fenced, as data. */
+  /** A reviewer's or code's no, on the task once (its notice skips a closed task: a comment would reopen it): the note fenced, as data. */
   async function rejected(r: Rec, v: { code?: string; reason: string; model: string }) {
-    if (["done", "cancelled"].includes(String((await task.issue(r.task)).status))) return;
     const action = actionOf(r.kind);
     const byCode = CODE_REJECTS.includes(v.code ?? "");
     const head = v.code === UNSURE
@@ -145,10 +144,13 @@ export function createReviewLoop({ records, writes, task, decisions, product, lo
   }
 
   return {
-    /** One sweep: every record in review not already being reviewed nor waiting out a failed review's backoff. Resolves when they are done. */
+    /**
+     * One sweep: the oldest 200 records in review not already being reviewed nor waiting out a failed review's backoff, so a
+     * burst never starves its first records. Resolves when they are done.
+     */
     tick(): Promise<void> {
       const now = Date.now();
-      const due = records.list(["review"], 200).filter((r) => !inFlight.has(r.id) && !((writes.retryAt(r.id) ?? 0) > now));
+      const due = records.list(["review"], null).filter((r) => !inFlight.has(r.id) && !((writes.retryAt(r.id) ?? 0) > now)).reverse().slice(0, 200);
       if (!due.length) return Promise.resolve();
       for (const r of due) inFlight.add(r.id);
       const digest = decisions().catch((e: Error) => void log("decisions unread", { err: String(e.message ?? e).slice(0, 200) }));

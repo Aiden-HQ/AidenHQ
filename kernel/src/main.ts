@@ -112,7 +112,7 @@ const asserter = createAsserter(loadKey(path.join(dataDir, "kernel", "caller-key
 const resolver = createResolver({ project: env("COMPOSE_PROJECT_NAME", "aidenhq") });
 // A record's task: still open, and the notices on it (written with the board key, as the board's approval notices are).
 const issueOf = async (task: string) => { const r = await cpApi(`/api/issues/${encodeURIComponent(task)}`); return r.ok ? ((await r.json()) as { id: string; identifier?: string; status?: string; assigneeAgentId?: string | null; createdByAgentId?: string | null; parentId?: string | null }) : undefined; };
-const cpJson = async (p: string) => { const r = await cpApi(p); if (!r.ok) throw new Error(`control plane GET ${p} → ${r.status}`); return r.json(); };
+const cpJson = async (p: string) => { const r = await cpApi(p); if (!r.ok) throw Object.assign(new Error(`control plane GET ${p} → ${r.status}`), { status: r.status }); return r.json(); };
 const records = openRecords(path.join(dataDir, "kernel", "kernel.db"));
 // Flow's fact log (facts.ts) on the same file, so a kernel change and its fact commit together.
 const facts = openFacts(records.db);
@@ -132,7 +132,6 @@ const notices = createNotices({ db: records.db, api: (m, p, b) => ownerApi(m, p,
 const sendNotices = () => void notices.send().catch((e: Error) => log("task notices failed", { err: String(e.message ?? e).slice(0, 300) }));
 const onTask = {
   open: async (task: string) => { const i = await issueOf(task); return Boolean(i) && !["done", "cancelled"].includes(String(i!.status)); },
-  parent: async (task: string) => (await issueOf(task))?.parentId ?? undefined,
   // A task a conn.tool call names: read whole, and why its agent may write there (the same rule cp.ts applies to a write).
   scope: async (task: string, agent: string) => {
     const i = await issueOf(task);
@@ -141,7 +140,7 @@ const onTask = {
   },
   // Queued in kernel.db and sent from there (notices.ts): the notice is what wakes the agent waiting on the write.
   notify: async (task: string, body: string, o?: NoticeOpts) => { notices.queue(task, body, o); setImmediate(sendNotices); },
-  // The cap of a routine whose run started the task's chain, traced as the runner traces it; a read that fails is "off".
+  // The cap of a routine whose run started the task's chain; a task gone on the trace is "off", a read that fails now throws (503).
   routineCap: (task: string) => taskRoutineCap(cpTrace, task, grantsTable().routines as Record<string, string> | undefined),
 };
 // The modules' kinds (compile) and the kernel's own and the runner's (kinds.ts).
@@ -577,7 +576,11 @@ const admin = accounts && createAdmin({ accounts, firstRun, model, githubApp, ui
 
 // Claimed records a restart left without an outcome: their executors say how they went (never replayed). Executors may
 // still be starting at boot, so once, a minute in.
-once(() => void writes.reconcile().then((u) => u.length && log("records left unknown", { records: u }), (e: Error) => log("reconcile failed", { err: e.message })), 60_000);
+// Run once the previous kernel has exited (afterPrevious: it finishes what it was executing), and only on records it claimed.
+afterPrevious(() => void writes.reconcile(undefined, new Date(started).toISOString()).then((u) => u.length && log("records left unknown", { records: u }), (e: Error) => log("reconcile failed", { err: e.message })));
+// Approved records not yet run (a restart between the decision and the claim, a check that failed transiently): every minute.
+every(() => writes.retryApproved(), 60_000);
+once(() => writes.retryApproved(), 60_000);
 
 const gw = createGateway({
   dbFile: path.join(dataDir, "kernel", "kernel.db"),
@@ -693,8 +696,8 @@ drain = () => {
   const done = () => {
     for (const s of servers) s.closeIdleConnections();
     const t = Date.now() - t0;
-    if ((gw.inflight() > 0 || admission.inflight() > 0) && t < DRAIN_MS) return;
-    log("drained: exiting", { inflight: gw.inflight(), launches: admission.inflight(), ms: t });
+    if ((gw.inflight() > 0 || admission.inflight() > 0 || writes.inflight() > 0) && t < DRAIN_MS) return;
+    log("drained: exiting", { inflight: gw.inflight(), launches: admission.inflight(), writes: writes.inflight(), ms: t });
     process.exit(0);
   };
   done();

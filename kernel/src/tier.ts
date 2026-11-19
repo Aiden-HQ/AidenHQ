@@ -147,9 +147,16 @@ export async function origins(pc: Trace, full: any): Promise<{ issues: any[]; co
 }
 /** What the routine trace reads: the control plane's issues, and kernel provenance for an issue (provenance.ts trace: its row's cap, "off" for a plugin-made task with no row). */
 export type Trace = { issue(id: string): Promise<any>; provenance(issue: any): RoutineCap | undefined };
-/** A task's routine cap: kernel provenance first, then the control plane; a trace that fails (a read that throws) is incomplete: "off". Never throws. */
+/**
+ * A task's routine cap: kernel provenance first, then the control plane. An issue on the trace that is gone (a 404) leaves it
+ * incomplete: "off". A read that fails otherwise (a 5xx, a timeout, unreachable) throws (503): a blip is never a stricter cap
+ * frozen or tiered on, the caller tries again.
+ */
 export const taskRoutineCap = (pc: Trace, task: string, routines: Record<string, string> | null = {}): Promise<RoutineCap | undefined> =>
-  pc.issue(task).then((full) => (full?.id ? origins(pc, full) : { issues: [], complete: false, recorded: [] })).then(({ issues, complete, recorded }) => routineCap(issues, complete, routines, recorded), () => routineCap([], false, routines));
+  pc.issue(task).then((full) => (full?.id ? origins(pc, full) : { issues: [], complete: false, recorded: [] })).then(({ issues, complete, recorded }) => routineCap(issues, complete, routines, recorded), (e: { status?: number; message?: string }) => {
+    if (e?.status === 404) return routineCap([], false, routines);
+    throw Object.assign(new Error(`the routine trace couldn't be read now (${String(e?.message ?? e).slice(0, 200)})`), { status: 503, type: "trace_unavailable" });
+  });
 
 // ------------------------------------------------------------------ earlier decisions on a task
 

@@ -95,13 +95,13 @@ export async function kernel(t, { agents = {}, grants = {}, settings = {}, conne
   const reviewed = [];
   const reviews = { request: async (request) => { reviewed.push(request); if (!reviewer) throw new Error("no reviewer module is installed"); return reviewer(request); } };
   // The control plane as main.ts reads it for a task's routine cap (a fetch that isn't ok throws).
-  const cpJson = async (p) => { const r = await fetch(new URL(p, cpServer.url), { headers: { authorization: "Bearer board-key" } }); if (!r.ok) throw new Error(`${p} → ${r.status}`); return r.json(); };
+  const cpJson = async (p) => { const r = await fetch(new URL(p, cpServer.url), { headers: { authorization: "Bearer board-key" } }); if (!r.ok) throw Object.assign(new Error(`${p} → ${r.status}`), { status: r.status }); return r.json(); };
   const provenance = createProvenance({ db: records.db, cap: (task) => taskRoutineCap(cpTrace, task, grantsTable().routines) });
   const cpTrace = { issue: (id) => cpJson(`/api/issues/${encodeURIComponent(id)}`), provenance: provenance.trace };
   // `checks` is the finish gate's table and the write.filed checks' too; the platform check's code runs in process, as main.ts wires it.
   const writes = createWrites({ records, registry: () => ({ ...moduleKinds(), ...KERNEL_KINDS }), connections: connectionsTable, secret, resolver: createResolver(), log: logf, replay: (r) => replay(r), reviews, native, repos: () => repos, paths: () => paths,
     checks: typeof checkTable === "function" ? checkTable : () => checkTable ?? {}, filedChecks: { "platform.product-gate": productGate },
-    autonomy: () => grantsTable().autonomy ?? "full", onTask: { open: async (task) => !closed.includes(task), notify: async (task, text) => void notices.push({ task, text }), parent: async (task) => parents[task],
+    autonomy: () => grantsTable().autonomy ?? "full", onTask: { open: async (task) => !closed.includes(task), notify: async (task, text, o) => { const to = o?.parent ? parents[task] : task; if (to && !closed.includes(to)) notices.push({ task: to, text }); },
       scope: async (task, agent) => { const i = issues[task]; if (!i) return undefined; const read = async (ref) => issues[ref]; return { id: i.id ?? task, identifier: i.identifier, scope: await scopeOf(i, agent, read) }; },
       routineCap: (task) => taskRoutineCap(cpTrace, task, grantsTable().routines) } });
   const proxy = createProxy({ whoami, connections: connectionsTable, asserter, resolver: createResolver(), secret, writes, log: logf });

@@ -175,3 +175,16 @@ test("the reviewer reads the changed files and the PR's Evidence section the cod
   await until(() => mod.seen.length === 1);
   assert.deepEqual([mod.seen[0].request.files, mod.seen[0].request.evidence], [files, "npm test: 12 pass"]);
 });
+
+test("a burst over 200 records in review: the oldest are reviewed first, never starved by newer ones", async (t) => {
+  const module = await reviewer(t);
+  const k = await side(t, join(mkdtempSync(join(tmpdir(), "rl-burst-")), "kernel.db"), module);
+  for (let i = 0; i < 250; i++) {
+    const r = fileRecord(k.records, { args: { note: `n${i}` } });
+    k.records.db.prepare("UPDATE records SET task = ?, card = json_set(card, '$.details', ?), created_at = ? WHERE id = ?").run(`TASK-${i}`, `note: n${i}`, new Date(Date.now() - 3600_000 + i * 1000).toISOString(), r.id);
+  }
+  void k.loop.tick();
+  await until(() => module.seen.length === 200);
+  const asked = new Set(module.seen.map((x) => x.request.diff));
+  assert.ok(Array.from({ length: 200 }, (_, i) => `note: n${i}`).every((d) => asked.has(d)));
+});

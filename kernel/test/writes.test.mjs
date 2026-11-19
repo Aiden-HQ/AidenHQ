@@ -31,7 +31,7 @@ const text = async (r) => (await r.json()).result.content[0].text;
 async function twin(t, { satisfied, settings, onControl, issues, agents: who = agents } = {}) {
   const fx = { plans: [], executes: [], target: "c1", satisfied: false, ...(satisfied ? { satisfied } : {}) };
   let handler = () => false;
-  const ex = await serve(async (req, res) => { if (!(await handler(req, res))) res.writeHead(404).end(); });
+  const ex = await serve(async (req, res) => { if (fx.down && req.url.endsWith("/plan")) return void res.writeHead(503, { "content-type": "application/json" }).end('{"error":"starting"}'); if (!(await handler(req, res))) res.writeHead(404).end(); });
   t.after(() => ex.s.close());
   const mod = await moduleServer(t, { key: "twin-key", tools: TOOLS, answer: (msg) => ({ content: [{ type: "text", text: `${msg.params.name} done` }] }) });
   const executor = { url: `${ex.url}/aidenhq/v1/executor`, auth_secret: "twin_service_key" };
@@ -183,12 +183,14 @@ test("a module write on a task under a routine's run task gets that routine's au
   const capped = await twin(t, { settings: { routines: { r1: "tier0" } }, onControl });
   const p = await capped.pending(await capped.tool("post_note", { note: "a" }));
   assert.deepEqual(((r) => [r.tier, r.merit, r.review_first, r.cap])(capped.k.records.get(p.approval)), [2, 1, "final", { by: "routine", value: "tier0", routine: "r1" }]);
-  // A destructive tool (conn.tool, Tier 1) is capped the same way; a trace the control plane can't finish is "off".
+  // A trace the control plane can't answer now files nothing (never a stricter cap from a blip); once it answers, a
+  // destructive tool (conn.tool, Tier 1) is capped the same way.
   down = true;
-  const d = await capped.pending(await capped.tool("note_drop", { id: "1" }));
-  assert.deepEqual([d.tier, capped.k.records.get(d.approval).review_first, capped.k.records.get(d.approval).cap], [2, "final", { by: "routine", value: "off" }]);
-  // A routine with full autonomy leaves it the reviewer's.
+  assert.match(JSON.stringify(await (await capped.tool("note_drop", { id: "1" })).json()), /routine trace couldn't be read now/);
   down = false;
+  const d = await capped.pending(await capped.tool("note_drop", { id: "1" }));
+  assert.deepEqual([d.tier, capped.k.records.get(d.approval).review_first, capped.k.records.get(d.approval).cap], [2, "final", { by: "routine", value: "tier0", routine: "r1" }]);
+  // A routine with full autonomy leaves it the reviewer's.
   const full = await twin(t, { settings: { routines: { r1: "full" } }, onControl });
   assert.equal((await full.pending(await full.tool("post_note", { note: "a" }))).tier, 1);
 });
@@ -400,6 +402,26 @@ test("revalidate at execution: a reviewer's yes doesn't run once autonomy is off
   const held = k.records.get(r.id);
   assert.deepEqual([held.state, held.tier, held.cap], ["owner", 2, { by: "autonomy", value: "off" }]);
   assert.match(held.review, /Held for the owner before it ran: since the AI reviewer approved it, autonomy is off/);
+});
+
+test("a revalidation plan the executor can't answer now leaves the record approved for a later try, never stale; reconcile leaves this kernel's claims", async (t) => {
+  const { k, fx, tool, pending, review } = await twin(t);
+  const p = await pending(await tool("post_note", { note: "a" }));
+  fx.down = true; // the module is restarting: its executor answers 503
+  assert.equal((await review(p.approval, { decision: "approve", reason: "fine", model: "~acme/model-a" })).json.record.state, "approved");
+  await new Promise((r) => setTimeout(r, 100));
+  assert.equal(k.records.get(p.approval).state, "approved");
+  assert.equal(k.notices.length, 0);
+  fx.down = false;
+  await k.writes.run(p.approval);
+  await until(() => k.records.get(p.approval).state === "done");
+  assert.equal(fx.executes.length, 1);
+  // A restart's reconcile takes only the previous kernel's claims (before this one started), never one of this kernel's.
+  const q = await pending(await tool("post_note", { note: "b" }));
+  k.records.review(q.approval, k.records.get(q.approval).digest, { decision: "approve", by: "reviewer:~acme/model-a", note: "fine" });
+  k.records.claim(q.approval);
+  assert.deepEqual(await k.writes.reconcile(undefined, "2000-01-01T00:00:00.000Z"), []);
+  assert.equal(k.records.get(q.approval).state, "claimed");
 });
 
 test("a kernel job's write names its own workspace, whatever its args say", async (t) => {
