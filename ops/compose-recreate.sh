@@ -8,8 +8,8 @@
 #      keeps running;
 #   5. compose's leftovers for services this config dropped are removed, and never a CI job's runner;
 #   6. a service still left `created` (never started) is started;
-#   7. a container still running a service this config dropped (a removed module's, or Caddy once exposure is no longer
-#      public) is stopped and removed: compose's own service container only (com.docker.compose.oneoff=False), so a CI
+#   7. a container, running or already stopped, of a service this config dropped (a removed or replaced module's, or Caddy
+#      once exposure is no longer public) is removed: compose's own service container only (com.docker.compose.oneoff=False), so a CI
 #      job's runner (a one-off) is never one.
 #
 # Not `docker compose up --remove-orphans`: a CI job's runner is a one-off of this same compose project under the
@@ -235,10 +235,12 @@ step() {
   done <<< "$(leftovers "$desired")"
 }
 
-# A service container (never a one-off) of this project, running a service this config no longer defines: "<id> <service>".
+# A service container (never a one-off) of this project, running or stopped, of a service this config no longer defines:
+# "<id> <service>". Stopped ones count: a module's data move stops the old container before this step, and a stopped
+# container is still one monitoring sees as a core service that is down.
 dropped() {
   local desired="$1" id oneoff service
-  for id in $(docker ps -q --filter "label=com.docker.compose.project=$project" --filter label=com.docker.compose.oneoff=False); do
+  for id in $(docker ps -aq --filter "label=com.docker.compose.project=$project" --filter label=com.docker.compose.oneoff=False); do
     read -r oneoff service <<< "$(docker inspect -f '{{index .Config.Labels "com.docker.compose.oneoff"}} {{index .Config.Labels "com.docker.compose.service"}}' "$id" 2>/dev/null)" || continue
     [ "$oneoff" = False ] && [ -n "$service" ] || continue
     grep -qxF -- "$service" <<< "$desired" && continue
