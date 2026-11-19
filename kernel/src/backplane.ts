@@ -297,9 +297,16 @@ export function createBackplane({ facts, whoami, asserter, proxy, cp, boardCp, g
           const b = await json(req, 5_000_000);
           if (!Array.isArray(b.facts) || b.facts.length > 500) throw fail(400, "bad_request", "send {facts: [...]} of at most 500");
           const declared = modules().modules?.[w.module!]?.facts ?? {};
+          // All are checked before any is recorded: a bad fact refuses the batch, and the rest are recorded in one transaction.
+          const t = Date.now();
           for (const f of b.facts) {
             if (!f || !text(f.type, 80) || !text(f.subject, 300) || !text(f.version, 300) || typeof f.at !== "string" || !FACT_AT.test(f.at) || Number.isNaN(Date.parse(f.at))) throw fail(400, "bad_request", "each fact is {type, subject, version, at (ISO), task?, data?}");
             if (!Object.hasOwn(declared, f.type)) throw fail(403, "forbidden", `${w.module} did not declare fact ${f.type} (module.yaml facts:)`);
+            if (Date.parse(f.at) > t + 864e5) throw fail(400, "bad_request", `fact ${f.type} is dated more than a day ahead`);
+            if (f.data !== undefined && (!f.data || typeof f.data !== "object" || Array.isArray(f.data) || Buffer.byteLength(JSON.stringify(f.data)) > 4096)) throw fail(400, "bad_request", `fact ${f.type}: data is an object of at most 4096 bytes`);
+            const d = declared[f.type]!;
+            if (d.subject && !f.subject.startsWith(`${d.subject}:`)) throw fail(400, "bad_request", `fact ${f.type}'s subject is a ${d.subject}: (module.yaml facts:)`);
+            if (f.data?.reason !== undefined && !(d.reasons ?? []).includes(String(f.data.reason))) throw fail(400, "bad_request", `fact ${f.type}: reason ${String(f.data.reason).slice(0, 40)} isn't declared (module.yaml facts:)`);
           }
           // The actor is the kernel's call, never the body's: the agent whose job (data.job) or PR (its code host record's requester) it
           // is, only when that job or record is the calling module's own; else the module itself.
@@ -311,11 +318,21 @@ export function createBackplane({ facts, whoami, asserter, proxy, cp, boardCp, g
             return r?.requester.key ? `agent:${r.requester.key}` : undefined;
           };
           let recorded = 0;
-          for (const f of b.facts) {
-            const data = f.data && typeof f.data === "object" && !Array.isArray(f.data) ? f.data : {};
-            const actor = (data.job != null ? agentOf(data.job) : undefined) ?? (f.subject.startsWith("pr:") ? prAgent(f.subject, f.task) : undefined) ?? `module:${w.module}`;
-            // The module's name is part of the version (so of the id): two modules declaring one type can never pre-empt each other's facts.
-            if (facts.record({ type: f.type, subject: f.subject, version: `${w.module}/${f.version}`, at: f.at, actor, ...(typeof f.task === "string" && f.task ? { task: f.task.slice(0, 100) } : {}), source: f.source === "backfill" ? "backfill" : "live", data })) recorded++;
+          // Facts older than the log keeps (facts.ts prune, 400 days) would be pruned at once: skipped, not refused (a history backfill).
+          const kept = t - 400 * 864e5;
+          records.db.exec("BEGIN IMMEDIATE");
+          try {
+            for (const f of b.facts) {
+              if (Date.parse(f.at) < kept) continue;
+              const data = f.data ?? {};
+              const actor = (data.job != null ? agentOf(data.job) : undefined) ?? (f.subject.startsWith("pr:") ? prAgent(f.subject, f.task) : undefined) ?? `module:${w.module}`;
+              // The module's name is part of the version (so of the id): two modules declaring one type can never pre-empt each other's facts.
+              if (facts.record({ type: f.type, subject: f.subject, version: `${w.module}/${f.version}`, at: f.at, actor, ...(typeof f.task === "string" && f.task ? { task: f.task.slice(0, 100) } : {}), source: f.source === "backfill" ? "backfill" : "live", data })) recorded++;
+            }
+            records.db.exec("COMMIT");
+          } catch (e) {
+            records.db.exec("ROLLBACK");
+            throw e;
           }
           return send(res, 200, { recorded });
         }
