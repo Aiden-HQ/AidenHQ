@@ -172,7 +172,7 @@ function Tiles({ s }: { s: FlowSummary }) {
       )}
       {churn && <StatBlock label="Churn, 30 days" value={pct(churn.rewritten_30d)} sub={`${churn.hot_lines} lines rewritten 3+ times`} />}
       <StatBlock label="First pass" value={pct(first)} sub="done without a retry" />
-      <StatBlock label="$ per merged PR" value={usd(fleet.cost_per_outcome)} />
+      <StatBlock label="$ per finished task" value={usd(fleet.cost_per_outcome)} />
     </div>
   );
 }
@@ -183,7 +183,7 @@ function IdleList({ items, onOpen }: { items: IdleItem[]; onOpen: (id: string) =
       {items.map((i) => (
         <li key={i.task}>
           <button type="button" onClick={() => onOpen(i.task)}>
-            <span className="flow-idle-id">{i.identifier}</span>
+            <span className="flow-idle-id">{i.identifier ?? i.task}</span>
             <span className="flow-idle-since">{agoLabel(i.since).replace(" ago", "")}</span>
             <span className="flow-idle-why">{words(i.reason)}</span>
             <span className="flow-dim">{i.holder ?? ""}</span>

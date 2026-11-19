@@ -14,13 +14,13 @@ export interface FlowStage {
   waits: Record<string, number>;
   samples?: number[];
   /** The items behind the p75: the slowest occurrences, slowest first (when the kernel lists them). */
-  slow?: { task: string; identifier?: string; seconds: number }[];
+  slow?: { task: string; identifier: string | null; seconds: number }[];
 }
 
 export interface FlowSummary {
   stages: FlowStage[];
   dora: { deploys_per_day: number; lead_p50: number | null; failure_rate: number | null; restore_p50: number | null } | null;
-  churn: { rewritten_30d: number; hot_lines: number } | null;
+  churn: { rewritten_30d: number | null; hot_lines: number } | null;
   fleet: {
     first_pass_grade?: number | null;
     first_pass_review?: number | null;
@@ -31,7 +31,7 @@ export interface FlowSummary {
 
 export interface IdleItem {
   task: string;
-  identifier: string;
+  identifier: string | null;
   since: string;
   reason: string;
   holder: string | null;
