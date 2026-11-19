@@ -1302,6 +1302,14 @@ export function kernelModuleTable(defs, settings = {}) {
       if (JSON.stringify(codehost).includes("${")) fail(`module ${name}: codehost: names no settings (use @instance, @product or @agents/…)`);
       try { validate(CODEHOST_SCHEMA, codehost, "codehost"); } catch (err) { fail(`module ${name}: ${err.message}`); }
     }
+    // providers.board: { url: http://<service>:<port>, auth: one of its own secrets }: the module's HTTP API the board reads
+    // through the kernel (GET|POST /v1/board-api/<module>/<path>, kernel/src/board-api.ts), instead of a network to the board.
+    const bd = def.providers?.board;
+    if (bd != null) {
+      if (typeof bd !== "object" || Array.isArray(bd) || Object.keys(bd).some((k) => !["url", "auth"].includes(k))) fail(`module ${name}: providers.board is { url, auth }`);
+      if (!/^http:\/\/[a-z][a-z0-9-]*:\d+$/.test(String(bd.url)) || /^http:\/\/localhost:/.test(String(bd.url))) fail(`module ${name}: providers.board.url must be http://<service>:<port>, a compose service`);
+      if (!ownSecrets(def).includes(bd.auth)) fail(`module ${name}: providers.board.auth must name one of its own secrets`);
+    }
     const { facts, stages, journeys } = flowDecls(name, def, declared);
     // Two modules may declare one journey (github and codehost-local both draw `pr`): only the same declaration.
     for (const j of journeys ?? []) {
@@ -1312,6 +1320,7 @@ export function kernelModuleTable(defs, settings = {}) {
       ...(roles.length ? { roles } : {}), ...(facts ? { facts } : {}), ...(stages ? { stages } : {}), ...(journeys ? { journeys } : {}), ...(privileged.length ? { privileged } : {}), ...(codehost != null ? { codehost } : {}),
       // A module that generates its own `<module>_token` is known to the kernel by it (whoami): its roles are the kernel.* ones it requests, none otherwise.
       ...((def.generated_secrets ?? []).includes(token) ? { token } : {}),
+      ...(bd != null ? { board: { url: String(bd.url), auth_secret: String(bd.auth) } } : {}),
       ...(ch != null ? { channel: { ...(ch.stamp ? { stamp: String(ch.stamp) } : {}), ...(ch.stale === true ? { stale: true } : {}), ...(ch.transport ? { transport: String(ch.transport) } : {}), ...(ch.credentials === true ? { credentials: true } : {}) }, settings: Object.fromEntries(Object.keys(def.settings ?? {}).map((k) => [k, settings[k]])) } : {}),
     };
     if (Object.keys(e).length) out[name] = e;

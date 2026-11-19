@@ -12,6 +12,7 @@ import { join } from "node:path";
 import YAML from "yaml";
 import { urlSettingProblem } from "../../services/shared/url-setting.ts";
 import type { Write } from "./apply.ts";
+import type { Requester } from "./records.ts";
 
 export class Refused extends Error { status = 422; }
 /** The label the board files a settings task with (services/board/src/settings-change.ts SETTINGS_LABEL). */
@@ -342,16 +343,22 @@ export type SettingsDeps = {
   filed: (task: string) => boolean;
   /** The code host's write (apply.ts hostApply): the commit, on `branch`. */
   write: (w: Write) => Promise<{ sha: string }>;
-  /** Files the kernel.apply on the task (writes.fileKernel with SETTINGS). */
-  file: (args: { repo: string; branch: string; sha: string }, task: string) => Promise<{ id: string; tier: number; state: string }>;
+  /** Files the kernel.apply on the task (writes.fileKernel with SETTINGS, or the agent that asked). */
+  file: (args: { repo: string; branch: string; sha: string }, task: string, requester?: Requester) => Promise<{ id: string; tier: number; state: string }>;
   log?: (msg: string, f?: Record<string, unknown>) => void;
 };
 
-/** POST /v1/settings/change: the owner's typed change on their settings task, written and filed as one kernel.apply. */
+/**
+ * POST /v1/settings/change: the owner's typed change on their settings task, written and filed as one kernel.apply. `asAgent`
+ * (POST /v1/settings/agent): an agent's typed `setting` change on its own task, for a setting whose module lets one of the
+ * agent's roles write it (module.yaml settings.<key>.writers), filed with the agent as requester and tiered on its merits.
+ */
 export function createSettingsChanges(d: SettingsDeps) {
-  return async function apply(taskId: unknown, changes: unknown): Promise<{ record: string; tier: number; state: string; sha: string }> {
+  const sources = (): Sources => ({ compiled: YAML.parse(readFileSync(join(d.configDir, "paperclip.yaml"), "utf8")) ?? {}, catalog: JSON.parse(readFileSync(join(d.configDir, "modules.json"), "utf8")) });
+  const count = (changes: unknown) => ((Array.isArray(changes) && changes.length && changes.length <= 10) || refuse("changes: one to ten typed changes"));
+  async function apply(taskId: unknown, changes: unknown): Promise<{ record: string; tier: number; state: string; sha: string }> {
     if (typeof taskId !== "string" || !/^[0-9a-f-]{36}$/.test(taskId)) refuse("task is the settings task's id");
-    if (!Array.isArray(changes) || !changes.length || changes.length > 10) refuse("changes: one to ten typed changes");
+    count(changes);
     // The owner's own task, held by no agent: the board filed it a moment ago with the owner's key.
     const issue = (await d.task(taskId as string)) ?? refuse("no such task");
     const owner = await d.owner();
@@ -359,9 +366,22 @@ export function createSettingsChanges(d: SettingsDeps) {
     if (!(issue.labels ?? []).some((l: Dict) => l?.name === SETTINGS_LABEL)) refuse(`that task isn't a settings change (no ${SETTINGS_LABEL} label)`);
     if (["done", "cancelled"].includes(String(issue.status))) refuse("that task is closed");
     if (d.filed(taskId as string)) refuse("a settings change was already written on that task: file a new one");
+    return write(taskId as string, issue, changes as unknown[], sources());
+  }
+  async function asAgent(requester: Requester, taskId: string, changes: unknown): Promise<{ record: string; tier: number; state: string; sha: string }> {
+    count(changes);
+    const src = sources();
+    for (const ch of changes as Dict[]) {
+      if (!isMap(ch) || ch.kind !== "setting") refuse("an agent changes settings only: { kind: setting, key, value }");
+      const writers: unknown = src.catalog.find((m) => m.enabled && has(m.settings, ch.key))?.settings?.[ch.key]?.writers;
+      if (!Array.isArray(writers) || !writers.some((r) => requester.roles.includes(r))) refuse(`${requester.key || requester.name} may not change ${ch.key} (its module names the roles that may: settings.${ch.key}.writers)`);
+    }
+    const issue = (await d.task(taskId)) ?? refuse("no such task");
+    return write(taskId, issue, changes as unknown[], src, requester);
+  }
+  async function write(taskId: string, issue: Dict, changes: unknown[], src: Sources, requester?: Requester) {
     const repo = d.instanceRepo() ?? refuse("this kernel has no instance repo (AIDENHQ_INSTANCE_REPO)");
-    const src: Sources = { compiled: YAML.parse(readFileSync(join(d.configDir, "paperclip.yaml"), "utf8")) ?? {}, catalog: JSON.parse(readFileSync(join(d.configDir, "modules.json"), "utf8")) };
-    for (const ch of changes as unknown[]) checkTyped(ch, src);
+    for (const ch of changes) checkTyped(ch, src);
     const typed = changes as Change[];
     const isInstance = (key: string) => has(src.compiled.agents, key) && src.compiled.agents[key].module === "instance";
     const allowed = allowedPaths(typed, isInstance);
@@ -380,12 +400,15 @@ export function createSettingsChanges(d: SettingsDeps) {
     if (stray.length) refuse(`it would change ${stray.join(", ")}, which these changes may not touch`);
     if (!files.size) refuse("it changes nothing: the instance is already like this");
     const ident = String(issue.identifier ?? taskId).toLowerCase();
-    const branch = `settings/${ident}`;
-    const { sha } = await d.write({ repo, base, branch, files: Object.fromEntries(files), message: `settings: ${typed.map((c) => c.kind).join(", ")} (${issue.identifier ?? taskId})\n\nWritten by the kernel from the owner's typed change on ${issue.identifier ?? taskId}; no agent wrote it.` });
-    const r = await d.file({ repo, branch, sha }, taskId as string);
-    d.log?.("settings change filed", { task: issue.identifier, kinds: typed.map((c) => c.kind), record: r.id, tier: r.tier });
+    // An agent may change settings more than once on its task: each change its own branch.
+    const branch = requester ? `settings/${ident}-${Date.now().toString(36)}` : `settings/${ident}`;
+    const by = requester ? `${requester.key || requester.name}'s` : "the owner's";
+    const { sha } = await d.write({ repo, base, branch, files: Object.fromEntries(files), message: `settings: ${typed.map((c) => c.kind).join(", ")} (${issue.identifier ?? taskId})\n\nWritten by the kernel from ${by} typed change on ${issue.identifier ?? taskId}; no agent wrote it.` });
+    const r = await d.file({ repo, branch, sha }, taskId, requester);
+    d.log?.("settings change filed", { task: issue.identifier, kinds: typed.map((c) => c.kind), record: r.id, tier: r.tier, ...(requester ? { agent: requester.key } : {}) });
     return { record: r.id, tier: r.tier, state: r.state, sha };
-  };
+  }
+  return Object.assign(apply, { asAgent });
 }
 
 /** The instance repo's main, read from the kernel's instance checkout (fetched first): its commit and the regular files asked for. */
