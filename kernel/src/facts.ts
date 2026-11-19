@@ -30,6 +30,7 @@ export function openFacts(db: DatabaseSync, now = () => new Date()) {
     CREATE INDEX IF NOT EXISTS facts_type ON facts (type, at);
     CREATE INDEX IF NOT EXISTS facts_subject ON facts (subject);`);
   migrateEvents(db);
+  normaliseFacts(db);
   const insert = db.prepare("INSERT OR IGNORE INTO facts (id, type, subject, version, task, at, seen_at, actor, source, data) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
   const row = (r: any): FactRow => ({ ...r, data: JSON.parse(r.data) });
   return {
@@ -69,6 +70,40 @@ export function decider(by: string): { decider: "reviewer" | "owner" | "code"; a
   if (by.startsWith("reviewer:")) return { decider: "reviewer", actor: "module:ai-reviewer" };
   if (by.startsWith("stale:") || by.startsWith("kernel")) return { decider: "code", actor: "kernel" };
   return { decider: "owner", actor: by.startsWith("account:") ? by : "unknown" };
+}
+
+/**
+ * One idempotent pass at open: every `at` as UTC (`Z`), PR and issue subjects (and the id that embeds one) and `data.pr` / `data.repo`
+ * in lowercase, since a repo's case differed between the backfill and the live writers and split one PR into two. Where the
+ * lowercased id already exists the earliest fact stays. A log already in that shape costs one query that finds nothing.
+ */
+function normaliseFacts(db: DatabaseSync) {
+  const low = (f: string) => `(json_extract(data, '${f}') IS NOT NULL AND typeof(json_extract(data, '${f}')) = 'text' AND json_extract(data, '${f}') != lower(json_extract(data, '${f}')))`;
+  const rows = db.prepare(`SELECT seq, type, subject, version, at, data FROM facts WHERE at NOT LIKE '%Z' OR ((subject GLOB 'pr:*' OR subject GLOB 'issue:*') AND subject != lower(subject)) OR ${low("$.pr")} OR ${low("$.repo")} ORDER BY seq`).all() as
+    { seq: number; type: string; subject: string; version: string; at: string; data: string }[];
+  if (!rows.length) return;
+  const byId = db.prepare("SELECT seq, at FROM facts WHERE id = ?");
+  db.exec("SAVEPOINT facts_normalise");
+  try {
+    for (const r of rows) {
+      const subject = /^(pr|issue):/.test(r.subject) ? r.subject.toLowerCase() : r.subject;
+      const at = r.at.endsWith("Z") || Number.isNaN(Date.parse(r.at)) ? r.at : new Date(r.at).toISOString();
+      const d = JSON.parse(r.data) as Record<string, unknown>;
+      for (const k of ["pr", "repo"]) if (typeof d[k] === "string") d[k] = (d[k] as string).toLowerCase();
+      const id = `${r.type}:${subject}:${r.version}`;
+      const other = byId.get(id) as { seq: number; at: string } | undefined;
+      if (other && other.seq !== r.seq) {
+        if (Date.parse(other.at) <= Date.parse(at)) { db.prepare("DELETE FROM facts WHERE seq = ?").run(r.seq); continue; }
+        db.prepare("DELETE FROM facts WHERE seq = ?").run(other.seq);
+      }
+      db.prepare("UPDATE facts SET id = ?, subject = ?, at = ?, data = ? WHERE seq = ?").run(id, subject, at, JSON.stringify(d), r.seq);
+    }
+    db.exec("RELEASE facts_normalise");
+  } catch (e) {
+    db.exec("ROLLBACK TO facts_normalise");
+    db.exec("RELEASE facts_normalise");
+    throw e;
+  }
 }
 
 /**
