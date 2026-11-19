@@ -28,6 +28,8 @@ case "$codename" in
   *) die "'${codename:-unknown}' is not supported; AidenHQ's host setup supports $supported (a new release: an entry in ops/vm/pins.json and this case)" ;;
 esac
 
+# A mirror's transient error (a 503) retries instead of failing the install; one setting, written before the first apt call.
+echo 'Acquire::Retries "5";' > /etc/apt/apt.conf.d/80-aidenhq-retries
 # A fresh cloud VM's first boot runs cloud-init's own apt for a few minutes: wait for its lock instead of failing.
 apt-get() { command apt-get -o DPkg::Lock::Timeout=600 "$@"; }
 apt-get update
