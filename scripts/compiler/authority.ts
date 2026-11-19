@@ -343,6 +343,16 @@ export const authorityLines = (diffs: ModuleDiff[]) => diffs.flatMap((d) => d.ch
 export const moduleName = (m: unknown) => String(isMap(m) ? m.id : m).split("@")[0]!;
 
 /**
+ * The listed modules' names as these manifests know them. A module folded into another says so in its module.yaml
+ * (`replaces`): a listed name no manifest has becomes its replacement, so an instance written for an older product runs on a
+ * newer one with no rewrite of instance.yaml (no updater and no apply writes it).
+ */
+export function current(listed: unknown[], defs: Record<string, ModuleDef>): string[] {
+  const replacement = (n: string) => Object.keys(defs).find((d) => list(defs[d]!.replaces).map(String).includes(n)) ?? n;
+  return [...new Set(listed.map(moduleName).map((n) => (n in defs ? n : replacement(n))))];
+}
+
+/**
  * Enabled modules: `always` (the default module), the instance's `modules:` and every `requires` they name, closed over. A
  * virtual name (one some module `provides`) never enables a module: the provider is listed itself (spec §5.7.1).
  */
@@ -354,7 +364,7 @@ export function enabledModules(instance: Dict, defs: Record<string, ModuleDef>, 
     out.add(n);
     for (const r of list(defs[n]!.requires).map(String)) if (!virtual.has(r)) visit(r);
   };
-  for (const n of [...always, ...list(instance.modules).map(moduleName)]) visit(n);
+  for (const n of [...always, ...current(list(instance.modules), defs)]) visit(n);
   return [...out].sort();
 }
 

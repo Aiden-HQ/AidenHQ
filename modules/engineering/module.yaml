@@ -5,6 +5,8 @@ requires:
   - engine
   # Any code host (codehost-github, codehost-local): each repo is hosted by the provider that owns its org.
   - codehost
+  # The one job dispatcher (kernel.jobs): the Engineer's jobs start through it.
+  - dispatch
 isolation: code-exec
 roles:
   declares:

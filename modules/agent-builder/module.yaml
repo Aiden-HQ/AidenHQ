@@ -1,5 +1,6 @@
 name: agent-builder
 description: "The Agent Architect (designs, builds and improves agents; reviews agents in trial) and the agent templates it starts from."
+requires: [ owner-channel ] # the Architect tells the owner through its notify tool
 roles:
   declares:
     - { id: architect, description: "Its Engineer tasks may use the trial exception (the runner reads it from the grants table)." }
