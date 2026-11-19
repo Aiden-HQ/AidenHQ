@@ -28,6 +28,7 @@ import { fileURLToPath } from "node:url";
 import { isDeepStrictEqual } from "node:util";
 import type { DatabaseSync } from "node:sqlite";
 import YAML, { Scalar } from "yaml";
+import { pinOwner } from "../sdk/src/pin-owner.ts";
 import { resolveRelease } from "../../scripts/compiler/release.ts";
 import { OFFICIAL, repoAt, type Fetch, type Where } from "../../scripts/compiler/sources.ts";
 
@@ -51,9 +52,10 @@ export function compareRelease(a: string, b: string): number {
   return 0;
 }
 
-/** The release an instance follows, when it follows one from the official distro repo; null otherwise (a hand-pinned instance). */
-export function followed(instance: Dict): { name: string; sha: string } | null {
-  const r = instance.release;
+/** The release an instance follows, when it follows one from the official distro repo; null otherwise (an instance that pins product itself: the release train's). */
+export function followed(text: string): { name: string; sha: string } | null {
+  if (pinOwner(text) !== "updater") return null;
+  const r = (YAML.parse(text) as Dict | null)?.release;
   if (!isMap(r) || !isMap(r.source) || r.source.source !== "github" || r.source.repo !== DISTRO) return null;
   return typeof r.name === "string" && NAME.test(r.name) && typeof r.sha === "string" && SHA.test(r.sha) ? { name: r.name, sha: r.sha } : null;
 }
@@ -177,7 +179,7 @@ function dropOfficial(doc: YAML.Document): string {
  */
 export async function verify(d: Pick<Deps, "base" | "fetch" | "download">, text: string, name: string, sha: string): Promise<Candidate & { text: string }> {
   const instance = (YAML.parse(text) ?? {}) as Dict;
-  const cur = followed(instance);
+  const cur = followed(text);
   if (!cur) throw new Refused("this instance doesn't follow a release from the official distro repo");
   if (!NAME.test(name) || !SHA.test(sha)) throw new Refused(`${plain(name, 40)} isn't a release name with a commit`);
   if (compareRelease(name, cur.name) <= 0) throw new Refused(`${name} isn't newer than ${cur.name}: downgrades are refused`);
@@ -244,7 +246,7 @@ export async function check(d: Deps, asked: Asked = null): Promise<State> {
   const s = readState(d.dir);
   const text = instanceText(d.inst);
   const instance = (YAML.parse(text) ?? {}) as Dict;
-  const cur = followed(instance);
+  const cur = followed(text);
   s.checkedAt = now.toISOString();
   s.current = cur ? { name: cur.name, product: String(instance.product ?? "") } : null;
   s.auto = autoOn(instance);
@@ -332,7 +334,7 @@ function prepare(d: Deps, c: Candidate, text: string, next: string, by: string):
 export function pinTo(d: Pick<Deps, "base" | "fetch" | "inst">, name: string, sha: string, product: string): string {
   const text = instanceText(d.inst);
   const instance = (YAML.parse(text) ?? {}) as Dict;
-  const cur = followed(instance);
+  const cur = followed(text);
   if (!cur) return "this instance pins its product by hand: left as it is";
   if (compareRelease(name, cur.name) < 0) throw new Refused(`this server runs ${cur.name}, newer than ${name}: downgrades are refused`);
   if (compareRelease(name, cur.name) === 0) {
@@ -448,8 +450,9 @@ export function createUpdates({ db, dir, board, inst, ownerLine, check, file, re
       const s = readState(dir);
       if (s.current || !inst) return s;
       try {
-        const instance = (YAML.parse(readFileSync(join(inst, "instance.yaml"), "utf8")) ?? {}) as Dict;
-        const cur = followed(instance);
+        const text = readFileSync(join(inst, "instance.yaml"), "utf8");
+        const instance = (YAML.parse(text) ?? {}) as Dict;
+        const cur = followed(text);
         return cur ? { ...s, current: { name: cur.name, product: String(instance.product ?? "") }, auto: autoOn(instance) } : s;
       } catch { return s; }
     },

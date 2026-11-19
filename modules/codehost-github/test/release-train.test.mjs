@@ -101,3 +101,14 @@ test("the bump is written on instance.yaml as it is at the head its commit build
   assert.match(f.committed, /quiet_start: on/, "the commit keeps what landed on main meanwhile");
   assert.match(f.committed, new RegExp(`product: ${NEW}`));
 });
+
+test("an instance that installs releases (a release: key) is the kernel updater's: the train stays idle", async () => {
+  const f = fakes();
+  f.github.text = async () => `${INSTANCE}release: { name: "2026.11.2" }\n`;
+  const clock = { t: new Date("2026-11-18T10:00:00Z") };
+  const t = train(mkdtempSync(join(tmpdir(), "train-")), f, clock);
+  await t.step();
+  clock.t = new Date("2026-11-18T10:20:00Z");
+  await t.step();
+  assert.deepEqual([f.k.tasks.length, f.k.writes.length], [0, 0]);
+});

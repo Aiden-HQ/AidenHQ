@@ -256,6 +256,15 @@ test("a failed record: the owner is told why, the night doesn't file it again, U
   assert.deepEqual([filed.length, filed[1].by], [2, "account:a1"], "Update now files it");
 });
 
+test("an instance that pins product itself (no release:) is the release train's: the updater never acts, auto-updates on, at night", async () => {
+  const w = world();
+  writeFileSync(join(w.d.inst, "instance.yaml"), readFileSync(join(w.d.inst, "instance.yaml"), "utf8").replace(/^release:.*\n/m, ""));
+  git(w.d.inst, "commit", "-qam", "pins product itself");
+  git(w.d.inst, "push", "-q", "origin", "main");
+  const s = await check({ ...w.d, now: () => NIGHT });
+  assert.deepEqual([s.current, s.available ?? null, s.ready ?? null], [null, null, null]);
+});
+
 test("the installer run again moves the pin to its release; the same release is a repair, an older one is refused", () => {
   const w = world();
   assert.throws(() => pinTo(w.d, "2026.11.1", w.D1, w.K1), (e) => e instanceof Refused && /runs 2026\.11\.2, newer than 2026\.11\.1: downgrades are refused/.test(e.message));
