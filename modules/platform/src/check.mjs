@@ -69,10 +69,9 @@ export const GATE_CORE = [
   // The code host (privileged git-credential, lean-core 3d): the GitHub App's tokens and their narrowing, host git with the
   // hardened arguments on agent clones, task workspaces and reviewed refs, the merge gate (its only GitHub writes) and the
   // git rules that tier every push, PR, merge and create_repo. The platform check (this file: the gate's core, the
-  // owner-approval records, Dependabot pin-only and supply chain). The github module's code host part only: its connections
-  // (github-mcp, the official MCP) hold no App key and no git credential.
-  /^modules\/github\/(service|checks|schemas|test)\//,
-  /^modules\/github\/(module\.yaml|package\.json|README\.md)$/,
+  // owner-approval records, Dependabot pin-only and supply chain). The whole github module: its connections hold the owner's
+  // GitHub sign-in and the official server's refused git writes (github-mcp official.ts DENY).
+  /^modules\/github\//,
   // The on-server code host: bare repos, change-request refs, the checks receipt and the compare-and-swap merge.
   /^modules\/codehost-local\//,
   /^modules\/platform\//,
@@ -106,13 +105,7 @@ export const GATE_CORE = [
 export const GATE_DIRS = [
   "modules/grading/",
   "modules/ai-reviewer/",
-  "modules/github/service/",
-  "modules/github/checks/",
-  "modules/github/schemas/",
-  "modules/github/test/",
-  "modules/github/module.yaml",
-  "modules/github/package.json",
-  "modules/github/README.md",
+  "modules/github/",
   "modules/codehost-local/",
   "modules/platform/",
   "modules/engineering/module.yaml",
