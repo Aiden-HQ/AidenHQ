@@ -206,7 +206,7 @@ export interface Board {
   /** Today's model spend against the install-wide daily cap (settings.spend_day_usd); null without one. */
   spend?: { spent: number; cap: number } | null;
   /** Google sign-in per account; null when the board can't ask. */
-  google: { accounts: GoogleAccount[]; error?: string } | null;
+  google: { accounts: GoogleAccount[]; error?: string; client_type?: "desktop" | "web" } | null;
   /** The modules' sign-ins (board.signins): each one's banner text and state (null when the board can't ask). */
   signIns: { id: string; label: string; missing: string; stopped: string; status: SignInStatus | null; offer?: boolean; mode?: "device" }[];
 }
