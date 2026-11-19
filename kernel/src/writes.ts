@@ -21,7 +21,7 @@ import { REFUSALS_DDL } from "./jobs.ts";
 import { routeKind } from "./codehost.ts";
 import type { Executor } from "../sdk/src/executor.ts";
 import { writeRaise, type Inventory } from "./paths.ts";
-import { REVIEW_TRIES, afterReview, capText, codeVerdict, computeTier, failedVerdict, heldInput, shadowed, type Autonomy, type Raise, type ReviewFirst, type ReviewInput, type Cap, type RoutineCap, type Tier, type Verdict } from "./tier.ts";
+import { REVIEW_TRIES, afterReview, capText, codeVerdict, computeTier, failedVerdict, heldInput, requestTargets, shadowed, type Autonomy, type Raise, type ReviewFirst, type ReviewInput, type Cap, type RoutineCap, type Tier, type Verdict } from "./tier.ts";
 
 export type Schema = { type?: string; properties?: { [k: string]: Schema }; required?: string[]; additionalProperties?: boolean; enum?: unknown[]; pattern?: string; minLength?: number; maxLength?: number; items?: Schema; minItems?: number; maxItems?: number; minimum?: number; maximum?: number; exclusiveMinimum?: number };
 /** One kind (config/kernel/writes.json and kinds.ts, keyed `<module>.<kind>`); `tools` are `connection.tool`. */
@@ -34,6 +34,12 @@ type Plan = { args: unknown; targets?: { [k: string]: unknown }; facts?: { [k: s
 /** The kernel's own planner for one of its kinds (kernel.apply: apply-tier.ts), in place of an executor's plan. */
 export type Planner = (b: { kind: string; args: unknown; requester: Requester; task: string; workspace?: string }) => Promise<Plan>;
 export const CONN_TOOL = "conn.tool";
+/**
+ * The largest serialised conn.tool payload a card may carry, measured with the JSON.stringify the card builds. Sized to
+ * stay well inside the reviewer's own MAX_DIFF (modules/ai-reviewer/service/src/aidenhq-sdk/judge.ts, 150,000), so a
+ * carded payload is always reviewable whole.
+ */
+export const CONN_TOOL_ARGS_MAX = 100_000;
 const fail = (status: number, type: string, message: string) => Object.assign(new Error(message), { status, type });
 
 /** The kind's strict args schema: a small subset of JSON Schema, enough for tool arguments and the kernel's kinds. Throws with the first problem. */
@@ -356,8 +362,11 @@ export function createWrites({ records, registry, connections, secret, resolver,
       // The owner's no on a destructive tool holds for that tool on the task, never for the task's other writes.
       const t = computeTier({ floor, priorVeto: floor > 0 && task ? records.vetoed(task, CONN_TOOL, { tool: `${connection}.${tool}` }) : false, autonomy: autonomy(), routine: await routineOf(task) });
       if (t.tier > 0 && !task) throw fail(400, "no_task", `${connection}.${tool} needs approval: pass your current task`);
-      const shown = JSON.stringify(args ?? {}).slice(0, 4000);
-      const card = { sentence: `Call ${connection}.${tool}.`, changes: `Whatever ${connection}.${tool} changes, with these arguments.`, reads: "Nothing new.", cost: "No model cost.", details: `tool: ${connection}.${tool}\narguments (written by the requesting agent): ${shown}` };
+      const shown = JSON.stringify(args ?? {});
+      if (t.tier > 0 && shown.length > CONN_TOOL_ARGS_MAX) throw fail(400, "args_too_large", `${connection}.${tool}: the arguments are ${shown.length.toLocaleString("en-US")} characters, over the ${CONN_TOOL_ARGS_MAX.toLocaleString("en-US")}-character limit for a call that needs a card; shorten the arguments`);
+      const target = requestTargets(CONN_TOOL, { connection, tool, arguments: args ?? {} })?.label;
+      const details = `tool: ${connection}.${tool}\narguments (written by the requesting agent): ${t.tier > 0 ? shown : shown.slice(0, 4000)}`;
+      const card = { sentence: `Call ${connection}.${tool}.`, changes: `Whatever ${connection}.${tool} changes, with these arguments.`, reads: "Nothing new.", cost: "No model cost.", details, ...(target ? { target } : {}) };
       const requester = requesterOf(who, task);
       const call = { kind: CONN_TOOL, module: c.module, args: { connection, tool, arguments: args ?? {} }, targets: {}, executor: { module: c.module }, policy: "" };
       // A repeat of one carded call (same task, arguments and requester), while it waits, runs, or ran in the last 10 minutes, is
