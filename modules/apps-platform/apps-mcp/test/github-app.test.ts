@@ -54,12 +54,12 @@ describe("registry pull/push args", () => {
   const appToken = async (slug: string, perm = "read") => (asked.push(`${slug}:${perm}`), `ghs_${perm}`);
   const withApp = { appsData: "/a", gitDir: "/g", agentsOrg: "example-org", appToken, sshCommand: "ssh -i k" };
 
-  it("pulls from the https URL with a read token and pushes with a write token, behind a cleared credential helper", async () => {
+  it("fetches from the https URL with a read token and pushes with a write token, behind a cleared credential helper", async () => {
     const { registryCmd } = await import("../src/git.js");
-    const pull = await registryCmd(withApp, "pull", url);
+    const pull = await registryCmd(withApp, "fetch", url);
     expect(pull.args.slice(pull.args.indexOf("credential.helper=") - 1, pull.args.indexOf("credential.helper=") + 1)).toEqual(["-c", "credential.helper="]);
     expect(pull.args.indexOf("credential.helper=")).toBeLessThan(pull.args.findIndex((a) => a.startsWith("credential.helper=!")));
-    expect(pull.args.slice(-5)).toEqual(["pull", "--rebase", "--autostash", url, "main"]);
+    expect(pull.args.slice(-3)).toEqual(["fetch", url, "main"]);
     expect(pull.env.AIDENHQ_GIT_TOKEN).toBe("ghs_read");
     expect(pull.env.GIT_SSH_COMMAND).toBeUndefined();
     const push = await registryCmd(withApp, "push", url);
@@ -67,5 +67,31 @@ describe("registry pull/push args", () => {
     expect(push.env.AIDENHQ_GIT_TOKEN).toBe("ghs_write");
     expect([...pull.args, ...push.args].join(" ")).not.toContain("ghs_");
     expect(asked).toEqual(["example-org/aidenhq-instance:read", "example-org/aidenhq-instance:write"]);
+  });
+});
+
+describe("registry clone", () => {
+  it("pushes only the registration to main while the apply's checkout sits on a local revert commit", async () => {
+    const { execFileSync } = await import("node:child_process");
+    const { mkdtempSync, writeFileSync, readFileSync } = await import("node:fs");
+    const { tmpdir } = await import("node:os");
+    const { syncRegistry, commitPush } = await import("../src/git.js");
+    const { appendApp } = await import("../src/registry.js");
+    const root = mkdtempSync(`${tmpdir()}/reg-`);
+    const sh = (cwd: string, ...a: string[]) => execFileSync("git", ["-c", "user.name=t", "-c", "user.email=t@example.com", ...a], { cwd, encoding: "utf8" }).trim();
+    sh(root, "init", "-q", "--bare", "-b", "main", "remote.git");
+    sh(root, "clone", "-q", "remote.git", "checkout");
+    writeFileSync(`${root}/checkout/apps.yaml`, "apps: []\n");
+    sh(`${root}/checkout`, "add", "."); sh(`${root}/checkout`, "commit", "-qm", "init"); sh(`${root}/checkout`, "push", "-q", "origin", "HEAD:main");
+    sh(`${root}/checkout`, "checkout", "-q", "--detach");
+    writeFileSync(`${root}/checkout/revert.txt`, "local revert\n");
+    sh(`${root}/checkout`, "add", "."); sh(`${root}/checkout`, "commit", "-qm", "local revert");
+    const env = { appsData: "/a", gitDir: "/g" }, url = `${root}/remote.git`;
+    await syncRegistry(env, `${root}/registry`, url);
+    appendApp(`${root}/registry/apps.yaml`, { name: "demo" });
+    await commitPush(env, `${root}/registry`, "apps.yaml", "apps: add demo", url);
+    expect(sh(root, "-C", "remote.git", "log", "--format=%s", "main")).toBe("apps: add demo\ninit");
+    expect(sh(root, "-C", "remote.git", "show", "main:apps.yaml")).toContain("demo");
+    expect(readFileSync(`${root}/checkout/revert.txt`, "utf8")).toBe("local revert\n"); // the checkout is untouched
   });
 });
