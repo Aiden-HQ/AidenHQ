@@ -337,4 +337,3 @@ export function createRouting(d: RoutingDeps) {
   };
 }
 export type Routing = ReturnType<typeof createRouting>;
-export const ROUTING_OPS = ["evidence", "replay", "tune", "judge"] as const;

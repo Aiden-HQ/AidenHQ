@@ -79,7 +79,7 @@ import type { Admission } from "./admission.ts";
 import { JOB_KINDS, type Outcomes } from "./outcomes.ts";
 import { notice, type Notify } from "./notify.ts";
 import type { JobTools } from "./jobtools.ts";
-import { ROUTING_OPS, type Routing } from "./routing-tune.ts";
+import type { Routing } from "./routing-tune.ts";
 import { hostOf } from "./codehost.ts";
 import { fail } from "./proxy.ts";
 import type { Records, State } from "./records.ts";
@@ -380,7 +380,7 @@ export function createBackplane({ whoami, asserter, proxy, cp, boardCp, grantsFi
         if (!live || job?.kind !== "run" || !job.task || !job.job || job.agent !== live.caller.agent) throw fail(401, "unauthorized", "only a kernel job's tool call in flight tunes routing");
         if (!job.roles.includes("routing-tuner")) throw fail(403, "forbidden", "routing changes are for an agent with the routing-tuner role");
         const op = m[0]!;
-        if (!(ROUTING_OPS as readonly string[]).includes(op)) throw fail(404, "not_found", `no routing op ${op}`);
+        if (!["evidence", "replay", "tune", "judge"].includes(op)) throw fail(404, "not_found", `no routing op ${op}`);
         const requester = { agent: job.agent ?? "", key: job.key ?? "", name: job.name ?? "", roles: job.roles, kind: job.kind, task: job.task, ...(job.run ? { run: job.run } : {}), ...(job.model ? { model: job.model } : {}) };
         const b = await json(req);
         try {
