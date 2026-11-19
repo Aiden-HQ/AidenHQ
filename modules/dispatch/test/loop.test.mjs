@@ -266,6 +266,19 @@ test("a routine run's task starts as a scheduled run, whichever routine it names
   assert.match(k.started[0].prompt, /## A scheduled run \(not Dana's words\)/);
 });
 
+test("a task with a history handed back to its agent (the owner reassigning it) starts a job, not a drop", async () => {
+  const k = fake({ task: { id: "t1", identifier: "WOR-9", title: "Chase the vendor", description: "Get the quote.", status: "todo", assigneeAgentId: "eng", createdByAgentId: "cos" } });
+  k.inbox.push(wake("issue:t1:1", "assigned"));
+  await k.dispatch.tick();
+  k.end("j1", "Asked them.");
+  await k.dispatch.tick();
+  k.inbox.push(wake("issue:t1:2", "assigned"));
+  await k.dispatch.tick();
+  assert.equal(k.started.length, 2);
+  assert.match(k.started[1].prompt, /## Handed to you \(not Dana's words\)/);
+  assert.deepEqual(k.dropped, []);
+});
+
 test("a start whose answer was lost (a crash after admission) is followed from the kernel's open list: one job, one reply", async () => {
   const k = fake({ task: { id: "t1", identifier: "WOR-1", title: "Fix the login", description: "It 500s.", status: "todo", assigneeAgentId: "eng", createdByUserId: "u1" } });
   const start = k.kernel.start;

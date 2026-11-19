@@ -59,7 +59,7 @@ type Comment = { id: string; body?: string; authorAgentId?: string | null; autho
 type Log = (msg: string, f?: Record<string, unknown>) => void;
 const ms = (t?: string) => (t ? Date.parse(t) || 0 : 0);
 
-export function createWakes({ db, owner, post, dispatches, routineKey = () => undefined, grants = () => ({}), knownRepo = () => false, teamDayUsedUp = () => false, tellBlocked = async () => {}, facts, log = () => {}, now = Date.now }: {
+export function createWakes({ db, owner, post, dispatches, containers = () => new Set(), routineKey = () => undefined, grants = () => ({}), knownRepo = () => false, teamDayUsedUp = () => false, tellBlocked = async () => {}, facts, log = () => {}, now = Date.now }: {
   /** Flow's fact log (facts.ts): task changes the scan sees, and each wake's opening, binding and dropping. */
   facts?: Facts;
   db: DatabaseSync;
@@ -69,6 +69,11 @@ export function createWakes({ db, owner, post, dispatches, routineKey = () => un
   post: Outcomes["post"];
   /** Whether a module dispatches an agent (jobs.ts dispatchesFrom), and the agents it dispatches (ids). */
   dispatches: { may: (module: string, agent: string) => boolean; agents: (module: string) => string[] };
+  /**
+   * The log tasks setup makes and an agent holds (grants memory_inbox, review_log, chat_task, fleet_issues), by id or
+   * identifier: written to by many, they wake nobody (the chat lane answers a chat task's words itself).
+   */
+  containers?: () => Set<string>;
   /** A Paperclip routine's compiled key (grants `routine_keys`, setup): none for a routine setup didn't make. */
   routineKey?: (routine: string) => string | undefined;
   /** The grants table's agents by id: teams and members (team routing). */
@@ -155,7 +160,8 @@ export function createWakes({ db, owner, post, dispatches, routineKey = () => un
     // lack the description its first fact reads (a module's markers): read the task once then.
     if (!seen && issue.description === undefined) { const r = await owner("GET", `/api/issues/${encodeURIComponent(issue.id)}`); if (r.status === 200) issue = r.json as Issue; }
     taskFacts(issue, seen, source, actor);
-    const agent = issue.assigneeAgentId;
+    const box = containers();
+    const agent = box.has(issue.id) || (issue.identifier && box.has(issue.identifier)) ? null : issue.assigneeAgentId;
     const joined = agent ? polled().get(agent) : undefined;
     if (!agent || joined === undefined || grants()[agent]?.team) {
       q("INSERT INTO wake_tasks (task, agent, status, blocked, polled) VALUES (?, ?, ?, ?, 0) ON CONFLICT(task) DO UPDATE SET agent = excluded.agent, status = excluded.status, blocked = COALESCE(excluded.blocked, blocked)").run(issue.id, agent ?? null, String(issue.status ?? ""), blockedKey(issue));
@@ -175,8 +181,11 @@ export function createWakes({ db, owner, post, dispatches, routineKey = () => un
       insert(`comment:${c.id}`, issue.id, agent, "comment", ms(c.createdAt) || now(), null, c.authorAgentId ? `agent:${keyOf(c.authorAgentId)}` : c.authorUserId ? `account:${c.authorUserId}` : "unknown");
     }
     const status = String(issue.status ?? "");
-    const moved = prev ? prev.status !== status || prev.agent !== agent : !lastJob(issue.id);
-    if (status === "todo" && (reopened || moved) && !liveJob(issue.id)) {
+    // Handed to this agent since the scan last saw the task (from the owner, say, while nobody polled it): a wake, even if an
+    // earlier job ran on it, and also on a task already in progress.
+    const handed = seen !== undefined && (seen.agent ?? null) !== agent;
+    const moved = prev ? prev.status !== status || prev.agent !== agent : handed || !lastJob(issue.id);
+    if ((status === "todo" || (handed && status === "in_progress")) && (reopened || moved) && !liveJob(issue.id)) {
       const at = ms(issue.updatedAt) || now();
       if (reopened) insert(`reopen:${issue.id}:${issue.statusVersion ?? issue.updatedAt}`, issue.id, agent, "reopen", at, null, actor);
       else if (!prev && issue.originKind === "routine_execution") {

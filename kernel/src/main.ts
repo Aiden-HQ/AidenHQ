@@ -329,6 +329,11 @@ const KNOWN_REPOS = ["@agents/*", "@product", "@instance", "@orgs", "@maintained
 const localRepoExists = (repo: string) => { try { return existsSync(path.join(localCode.bare(repo), "HEAD")); } catch { return false; } };
 const wakes = createWakes({
   db: records.db, facts, owner: ownerApi, post: outcomes.post, log,
+  // Setup's log tasks (memory inboxes, review logs, chat tasks, Fleet issues): held by an agent, they wake nobody.
+  containers: () => {
+    const g = grantsTable() as { agents?: Record<string, { memory_inbox?: string; review_log?: string; chat_task?: string }>; fleet_issues?: string };
+    return new Set([...Object.values(g.agents ?? {}).flatMap((a) => [a.memory_inbox, a.review_log, a.chat_task]), g.fleet_issues].filter((x): x is string => typeof x === "string" && x !== ""));
+  },
   routineKey: (id) => (grantsTable().routine_keys as Record<string, string> | undefined)?.[id],
   dispatches: { may: mayDispatch, agents: (module) => Object.keys(grantsTable().agents ?? {}).filter((id) => mayDispatch(module, id)) },
   // Teams (team-routing.ts): a task on a team record goes to a member; the team's day cap is the gateway's own day scope.
@@ -537,7 +542,7 @@ const gw = createGateway({
   upstream,
   paperclipUrl: controlUrl,
   // The numbers are the gateway's ledger; the task's identifier and the agent's name are looked up here.
-  // The install cap's card (agent INSTALL_CAP, no task) goes on an unassigned task of the owner's own, so no agent wakes.
+  // The install cap's card (agent INSTALL_CAP, no task) goes on a task of the owner's own, so no agent wakes.
   fileRaiseCap: async ({ task, ...r }) => {
     const install = r.agentId === INSTALL_CAP;
     const [issue, agent] = await Promise.all([task ? issueOf(task) : installCapTask(r.subject), install ? { name: "AidenHQ" } : cpApi(`/api/agents/${encodeURIComponent(r.agentId)}`).then((x) => (x.ok ? (x.json() as Promise<{ name?: string }>) : {}))]);
@@ -549,13 +554,17 @@ const gw = createGateway({
   log,
 });
 
-/** A new unassigned task for the install cap's raise card, in the company of the instance's agents. */
+/** A new task of the owner's for the install cap's raise card, in the company of the instance's agents. */
 async function installCapTask(day: string) {
   const someAgent = Object.keys(grantsTable().agents ?? {})[0];
   const a = someAgent ? await cpApi(`/api/agents/${encodeURIComponent(someAgent)}`) : undefined;
   const company = a?.ok ? String(((await a.json()) as { companyId?: string }).companyId ?? "") : "";
   if (!company) throw new Error("no company to file the install cap's card in");
-  const r = await cpApi(`/api/companies/${company}/issues`, { method: "POST", body: JSON.stringify({ title: `Daily spend cap reached (${day})`, description: "AidenHQ reached its daily spend cap (settings.spend_day_usd), so model calls are paused until tomorrow (UTC). Approve the card to double today's cap, or change the setting in Settings.", status: "todo" }) });
+  // Held by the owner (every open task has a holder: cp.ts leavesNoHolder), so no agent wakes.
+  const co = await cpApi(`/api/companies/${company}`);
+  const ownerUser = co.ok ? String(((await co.json()) as { defaultResponsibleUserId?: string }).defaultResponsibleUserId ?? "") : "";
+  if (!ownerUser) throw new Error("no owner to hold the install cap's task");
+  const r = await cpApi(`/api/companies/${company}/issues`, { method: "POST", body: JSON.stringify({ assigneeUserId: ownerUser, title: `Daily spend cap reached (${day})`, description: "AidenHQ reached its daily spend cap (settings.spend_day_usd), so model calls are paused until tomorrow (UTC). Approve the card to double today's cap, or change the setting in Settings.", status: "todo" }) });
   if (!r.ok) throw new Error(`Paperclip answered ${r.status} creating the install cap's task`);
   return (await r.json()) as { id: string; identifier?: string };
 }

@@ -135,6 +135,8 @@ const approvalView = (approval: Approval) => {
 
 const REF = /^(?:[0-9a-f-]{36}|[A-Z][A-Z0-9]{1,9}-\d{1,7})$/;
 const RECENT_MS = 48 * 3_600_000;
+/** The marker of setup's log tasks an agent holds (scripts/modules.mjs ensureLogTasks): logs, never board work. */
+const LOG_TASK = /<!-- source:(memory-inbox|review-log|chat-task):[\w-]+ -->/;
 const WORKWEEK: Weekday[] = ["monday", "tuesday", "wednesday", "thursday", "friday"];
 
 // The page and its assets only. Remote images are blocked too (tracking pixels in email/Slack text).
@@ -285,9 +287,9 @@ export function createApp(opts: AppOptions): Server {
     return { me, agents, labels, assignees: assignees(agents), prefix: company.issuePrefix ?? "" };
   }
 
-  /** The tasks the board shows: assigned to the user, the Researcher or an Engineer. */
+  /** The tasks the board shows: assigned to the user, the Researcher or an Engineer; never setup's log tasks an agent holds (scripts/modules.mjs ensureLogTasks). */
   const mine = (issues: Issue[], ctx: { me: string; assignees: Assignee[] }) =>
-    issues.filter((i) => (i.assigneeAgentId ? ctx.assignees.some((a) => a.key === i.assigneeAgentId) : i.assigneeUserId === ctx.me));
+    issues.filter((i) => (i.assigneeAgentId ? ctx.assignees.some((a) => a.key === i.assigneeAgentId) && !LOG_TASK.test(i.description ?? "") : i.assigneeUserId === ctx.me));
 
   /** A task the board may change: assigned to the user, the Researcher or an Engineer. */
   async function ownIssue(ref: string) {
@@ -378,7 +380,7 @@ export function createApp(opts: AppOptions): Server {
     const ctx = await context();
     const label = await labelNamed(ctx, SETTINGS_LABEL, "#7048e8");
     const { title, description } = taskFor(changes, compiled);
-    const issue = await pc.createIssue({ title, description, status: "todo", priority: "medium", labelIds: [label.id] });
+    const issue = await pc.createIssue({ title, description, status: "todo", priority: "medium", assigneeUserId: ctx.me, labelIds: [label.id] });
     store.setMeta(`settings-change:${issue.id}`, JSON.stringify(changes));
     // The kernel checks it again, has the instance repo's code host write exactly its files and files the apply on the task.
     try {

@@ -256,3 +256,15 @@ test("a new wake is claimed ahead of re-leased ones that keep failing", async ()
   await w.wakes.poll();
   assert.equal(w.wakes.claim("dispatch", 1)[0].task, "fresh", "never-claimed rows first");
 });
+
+test("a task the owner held, worked on before, is handed to an agent: one assigned wake, in progress too", async () => {
+  const w = world();
+  w.issue("t9", { status: "in_progress", assigneeAgentId: null, assigneeUserId: "owner" });
+  w.db.prepare("INSERT INTO jobs (id, task, agent, state, at) VALUES ('j-old', 't9', ?, 'done', 1)").run(AGENT);
+  await w.wakes.event({ issueId: "t9" });
+  w.tick();
+  w.issue("t9", { assigneeAgentId: AGENT, assigneeUserId: null, updatedAt: new Date(w.tick()).toISOString() });
+  await w.wakes.event({ issueId: "t9" });
+  assert.equal(w.rows("t9").length, 1);
+  assert.match(w.rows("t9")[0], /^issue:t9:\S+ open$/);
+});

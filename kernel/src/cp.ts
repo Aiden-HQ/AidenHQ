@@ -17,7 +17,9 @@
 // - A status change to `done` is for the job's own task, or a delegated task whose escalated grade its delegator accepts, and
 //   passes the finish gate first (checks.ts): held or reopened, nothing is written and the answer says so (202).
 // - A task a job creates gets the kernel's provenance row (provenance.ts) from the plugin's answer.
-// A user assignee is only ever the owner; a PATCH hands a task back (assigneeAgentId null), never to another agent.
+// A user assignee is only ever the owner; a PATCH hands a task back (assigneeAgentId null, to the owner), never to another agent.
+// Every open task has a holder, an agent or the owner (leavesNoHolder): a create or a change that would leave one with neither
+// is refused, here and on the board's owner writes.
 // Answers look like Paperclip's: the task as it is now (a PATCH 200, a create 201 with `deduplicated`), a comment's {id} (201).
 import { createHash } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
@@ -51,7 +53,17 @@ const MAX = 32 * 1024 * 1024;
 /** What a PATCH may change besides its status and comment (post.js PATCH_KEYS), and what a create may carry. */
 const PATCH = ["title", "description", "priority", "assigneeAgentId", "assigneeUserId", "labelIds", "blockedByIssueIds"];
 const CREATE = ["title", "description", "priority", "status", "assigneeAgentId", "assigneeUserId", "labelIds", "parentId", "idempotencyKey", "allowDuplicate"];
-type Issue = { id: string; identifier?: string; assigneeAgentId?: string | null; createdByAgentId?: string | null; parentId?: string | null; status?: string };
+type Issue = { id: string; identifier?: string; assigneeAgentId?: string | null; assigneeUserId?: string | null; createdByAgentId?: string | null; parentId?: string | null; status?: string };
+
+/** Every open task has a holder: an agent, or the owner's user. Whether a create (`cur` undefined) or a change to who holds a task would leave it open with neither. */
+export function leavesNoHolder(cur: { status?: string | null; assigneeAgentId?: string | null; assigneeUserId?: string | null } | undefined, b: Record<string, unknown>): boolean {
+  if (cur && b.assigneeAgentId === undefined && b.assigneeUserId === undefined) return false;
+  if (["done", "cancelled"].includes(String(b.status ?? cur?.status ?? ""))) return false;
+  const agent = b.assigneeAgentId !== undefined ? b.assigneeAgentId : cur?.assigneeAgentId;
+  const user = b.assigneeUserId !== undefined ? b.assigneeUserId : cur?.assigneeUserId;
+  return !agent && !user;
+}
+export const NO_HOLDER = "every open task has a holder: an agent (assigneeAgentId, yourself included) or the owner (assigneeUserId)";
 
 export function createCp({ whoami, asserter, plugin, once, agentKey, grants, fleetIssues = () => "", controlUrl, checks, provenance, appOwners, facts, log = () => {} }: {
   /** Flow's fact log (facts.ts): task.commented for each comment a job writes through here. */
@@ -178,6 +190,7 @@ export function createCp({ whoami, asserter, plugin, once, agentKey, grants, fle
       if (extra.length) throw fail(400, "bad_request", `a new task takes ${CREATE.join(", ")}; not ${extra.join(", ")}`);
       if (decodeURIComponent(company) !== (await viaPlugin(() => plugin.company(agent)))) throw fail(403, "forbidden", "a job creates tasks in its own company only");
       await ownerOnly(b.assigneeUserId);
+      if (leavesNoHolder(undefined, b)) throw fail(400, "bad_request", NO_HOLDER);
       const parent = typeof b.parentId === "string" && b.parentId ? await issue(b.parentId) : undefined;
       const scope = parent ? (await scopeOf(parent)) ?? (b.assigneeAgentId === agent ? "part" : refuse(parent)) : "own";
       const child = Object.fromEntries(CREATE.slice(0, 7).filter((k) => b[k] !== undefined).map((k) => [k, b[k]]));
@@ -201,6 +214,9 @@ export function createCp({ whoami, asserter, plugin, once, agentKey, grants, fle
     if (extra.length) throw fail(400, "bad_request", `a task's change takes status, comment, ${PATCH.join(", ")}; not ${extra.join(", ")}`);
     if (patch.assigneeAgentId !== undefined && patch.assigneeAgentId !== null) throw fail(403, "forbidden", "a task is handed to another agent by its delegator, not reassigned here (assigneeAgentId: null hands it back)");
     await ownerOnly(patch.assigneeUserId);
+    if (leavesNoHolder(t, { ...patch, ...(status !== undefined ? { status } : {}) })) throw fail(400, "bad_request", `${NO_HOLDER}: handing a task back names the owner (assigneeUserId)`);
+    // Setup's log tasks (the ones commentScope lists) take comments only, even from the agent that holds them.
+    if ((status !== undefined || Object.keys(patch).length) && commentScope(t) === "listed") throw fail(403, "forbidden", `${t.identifier ?? t.id} is a log task: it takes comments only`);
     const scope = (await scopeOf(t)) ?? (status === undefined && !Object.keys(patch).length ? commentScope(t) : undefined) ?? refuse(t);
     let gated = false;
     if (status === "done") {
@@ -290,6 +306,19 @@ export function createBoardCp({ controlUrl, key, fetch = globalThis.fetch, log =
     for await (const c of req) { n += c.length; if (n > BOARD_MAX_BODY) throw fail(413, "too_large", "too large"); chunks.push(c); }
     const body = method === "GET" ? undefined : Buffer.concat(chunks);
     const type = req.headers["content-type"];
+    // An owner write that would leave an open task with no holder (leavesNoHolder) is refused before it reaches the control plane.
+    const created = method === "POST" && /^\/api\/companies\/[^/]+\/issues$/.test(path), changed = method === "PATCH" && /^\/api\/issues\/[^/]+$/.test(path);
+    if (created || changed) {
+      let b: Record<string, unknown>;
+      try { b = JSON.parse(body!.toString("utf8") || "{}"); } catch { throw fail(400, "bad_request", "the body must be JSON"); }
+      let cur: { status?: string; assigneeAgentId?: string | null; assigneeUserId?: string | null } | undefined;
+      if (changed && (b.assigneeAgentId !== undefined || b.assigneeUserId !== undefined)) {
+        const r = await fetch(new URL(path, controlUrl), { signal: AbortSignal.timeout(60_000), headers: { authorization: `Bearer ${key()}`, accept: "application/json" } });
+        if (!r.ok) throw fail(r.status === 404 ? 404 : 502, "upstream", `the control plane answered ${r.status} for ${path}`);
+        cur = (await r.json()) as typeof cur;
+      }
+      if (leavesNoHolder(changed ? cur ?? {} : undefined, b)) throw fail(400, "bad_request", NO_HOLDER);
+    }
     const r = await fetch(new URL(`${path}${query}`, controlUrl), {
       method, signal: AbortSignal.timeout(60_000),
       headers: { authorization: `Bearer ${key()}`, accept: String(req.headers.accept ?? "application/json"), ...(body?.length && type ? { "content-type": String(type) } : {}) },

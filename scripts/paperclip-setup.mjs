@@ -17,7 +17,7 @@ import { createRequire } from "node:module";
 import { dirname, join, resolve } from "node:path";
 import { createInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
-import { ensureBackupRetention, ensureChatTasks, ensureFleetIssues, ensureMemoryInboxes, ensureReviewLogs, grantEntry, mapLimit, routineAutonomyDefault } from "./modules.mjs";
+import { ensureBackupRetention, ensureChatTasks, ensureFleetIssues, ensureMemoryInboxes, ensureReviewLogs, holdFleetIssues, grantEntry, mapLimit, routineAutonomyDefault } from "./modules.mjs";
 import { busyRemovedMembers, retireUnconfigured } from "./retire-agents.mjs";
 import { writeRecord } from "./record-agent.mjs";
 import { ensureAgentKeys, ensureEventsPlugin } from "./paperclip-events.mjs";
@@ -585,13 +585,17 @@ lap("login");
 const fleetIssues = Object.values(cfg.agents ?? {}).some((a) => a.heartbeat != null && a.heartbeat !== false) ? await ensureFleetIssues({ api, companyId: company.id, step }) : "";
 const agents = await ensureAgents(company.id, fleetIssues);
 lap("agents");
-const memoryInboxes = await ensureMemoryInboxes({ api, companyId: company.id, step, keys: Object.entries(cfg.agents ?? {}).filter(([, x]) => x.enabled_tools?.paperclip_tasks?.includes("memory_note")).map(([k]) => k) });
+// Setup's log tasks are held by their agents (every open task has a holder); Fleet issues by the fleet-audit agent.
+const holders = Object.fromEntries(Object.entries(agents).map(([k, a]) => [k, a.id]));
+const auditor = Object.keys(cfg.agents ?? {}).find((k) => !cfg.agents[k].member_of && cfg.agents[k].roles?.includes("fleet-audit") && agents[k]);
+await holdFleetIssues({ api, identifier: fleetIssues, holder: auditor ? agents[auditor].id : "", step });
+const memoryInboxes = await ensureMemoryInboxes({ api, companyId: company.id, step, holders, keys: Object.entries(cfg.agents ?? {}).filter(([k, x]) => x.enabled_tools?.paperclip_tasks?.includes("memory_note") && agents[k]).map(([k]) => k) });
 await dropOldSecrets(company.id);
 await ensureReportingLines(agents);
 // The Agent Coach's review log (one task per fleet-audit agent), found again by its setup marker, never by search at run time.
-const reviewLogs = await ensureReviewLogs({ api, companyId: company.id, step, keys: Object.entries(cfg.agents ?? {}).filter(([, x]) => !x.member_of && x.roles?.includes("fleet-audit")).map(([k]) => k) });
+const reviewLogs = await ensureReviewLogs({ api, companyId: company.id, step, holders, keys: Object.entries(cfg.agents ?? {}).filter(([k, x]) => !x.member_of && x.roles?.includes("fleet-audit") && agents[k]).map(([k]) => k) });
 // The fast chat lane's conversation: one chat task per agent with a `chat:` block (kernel/src/lane.ts writes each turn there).
-const chatTasks = isWork ? await ensureChatTasks({ api, companyId: company.id, step, ownerName: cfg.owner_name, agents: Object.fromEntries(Object.entries(cfg.agents ?? {}).filter(([k, x]) => x.chat && agents[k]).map(([k, x]) => [k, x.name])) }) : {};
+const chatTasks = isWork ? await ensureChatTasks({ api, companyId: company.id, step, holders, ownerName: cfg.owner_name, agents: Object.fromEntries(Object.entries(cfg.agents ?? {}).filter(([k, x]) => x.chat && agents[k]).map(([k, x]) => [k, x.name])) }) : {};
 writeGrants(agents, memoryInboxes, reviewLogs, chatTasks);
 lap("tasks");
 await ensureEventsPlugin({ api, step, version: JSON.parse(readFileSync(join(repo, "services/paperclip-events/package.json"), "utf8")).version }).catch((e) => fail(e.message));
