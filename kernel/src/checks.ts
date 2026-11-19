@@ -203,10 +203,15 @@ export function createChecks({ db, registry, owner, secret, resolver, agentKey =
     // A module's ok moves the task to done as the owner: the same hold as an agent's finish, so a change still open on this
     // server stops it too, before the hold is released.
     if (b.verdict === "ok") await noOpenChange(i, "the grader or the module that held it can move it on once the merge lands");
-    await unlabel(i, c);
-    db.prepare("DELETE FROM check_holds WHERE task = ? AND check_id = ?").run(i.id, id);
+    // The move first, in one PATCH with the label's removal: the hold goes only once the task has moved, so a failed call leaves
+    // it for the module's retry (and a retry never posts its comment twice).
     const comment = typeof b.comment === "string" && b.comment ? { comment: b.comment.slice(0, 60_000) } : {};
-    if (to) await patch(await issue(i.id), { status: to, ...comment });
+    if (to) {
+      const l = c.label ? await label(i, c.label) : undefined;
+      const ids = labelIds(i);
+      await patch(i, { status: to, ...(l && ids.includes(l.id) ? { labelIds: ids.filter((x) => x !== l.id) } : {}), ...comment });
+    } else await unlabel(i, c);
+    db.prepare("DELETE FROM check_holds WHERE task = ? AND check_id = ?").run(i.id, id);
     if (to) verdictEvent(i.id, id, String(b.verdict));
     log("finish check resolved", { task: i.identifier, check: id, verdict: b.verdict });
     return { ok: true };

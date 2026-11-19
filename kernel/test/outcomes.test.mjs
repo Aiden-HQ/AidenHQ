@@ -253,6 +253,27 @@ test("one reply to the owner: posted once on the task; relayed once to Telegram 
   assert.equal(pc.comments.filter((c) => c.body.startsWith("The budget is approved.")).length, 2); // one per run, each once
 });
 
+test("a relay whose read fails is relayed on the retry, never posted twice; a refused post is final with its status", async (t) => {
+  const pc = await paperclip(t);
+  const queued = [];
+  let down = true;
+  const owner = async (_m, path) => path.includes("/comments")
+    ? (down ? { status: 502, json: {} } : { status: 200, json: [{ body: "[telegram] status?", authorUserId: "u-1" }] })
+    : path.startsWith("/api/agents/") ? { status: 200, json: { name: "Aiden" } } : { status: 200, json: { id: TASK, identifier: "WOR-1" } };
+  const o = kernelOf(pc.url, { relay: createReplyRelay({ owner, queue: (n) => queued.push(n) }) });
+  await assert.rejects(o.post(JOB, { kind: "reply", body: "All green." }), (e) => e.status === 502);
+  down = false;
+  assert.equal((await o.post(JOB, { kind: "reply", body: "All green." })).again, true);
+  assert.equal(pc.comments.length, 1);
+  assert.equal(queued.length, 1);
+  assert.equal((await o.post(JOB, { kind: "reply", body: "All green." })).again, true);
+  assert.equal(queued.length, 1);
+  // A post the control plane refuses (a key it no longer takes): the dispatcher reads its 4xx as final.
+  const refusing = await serve(async (req, res) => res.writeHead(req.url === "/api/agents/me" ? 200 : 403, { "content-type": "application/json" }).end(JSON.stringify(req.url === "/api/agents/me" ? { id: AGENT, companyId: "c-1" } : {})));
+  t.after(() => refusing.s.close());
+  await assert.rejects(kernelOf(refusing.url).post({ ...JOB, id: "j-00000000000000ff" }, { kind: "reply", body: "x" }), (e) => e.status === 403);
+});
+
 test("delegate_to naming a team's key covers its record and each member; a member alone is reached through its team", async () => {
   const agents = { cos: { key: "cos", delegate_to: ["engineer"] }, t: { key: "engineer", team: { name: "engineering", members: ["kai"] } }, k: { key: "kai", member_of: "engineer" }, o: { key: "other" } };
   assert.deepEqual(await delegateIds(agents, "cos"), ["t", "k"]);

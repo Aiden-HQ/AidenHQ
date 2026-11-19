@@ -123,6 +123,7 @@
     "route POST /v1/jobs/workspace": {"state":"experimental","fp":"auth=module"},
     "route POST /v1/jobtools/:cmd": {"state":"experimental","fp":"auth=job"},
     "route POST /v1/notify": {"state":"experimental","fp":"auth=board"},
+    "route POST /v1/notify/ack": {"state":"experimental","fp":"auth=module"},
     "route POST /v1/notify/send": {"state":"experimental","fp":"auth=module"},
     "route POST /v1/operator/:op": {"state":"experimental","fp":"auth=operator-key"},
     "route POST /v1/receipts/verify": {"state":"experimental","fp":"auth=module"},
