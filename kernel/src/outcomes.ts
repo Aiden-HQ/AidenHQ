@@ -76,7 +76,7 @@ export function createPluginPost({ controlUrl, agentKey, postKey, timeoutMs = 30
 }
 export type PluginPost = ReturnType<typeof createPluginPost>;
 
-export function createOutcomes({ db, plugin, delegates, finish, provenance, relay, facts, agentKey = (id) => id, log = () => {} }: {
+export function createOutcomes({ db, plugin, delegates, finish, provenance, relay, facts, agentKey = (id) => id, chatTask, log = () => {} }: {
   db: DatabaseSync; plugin: PluginPost;
   /** Flow's fact log (facts.ts): task.commented for each comment an agent's outcome posts, and an agent's key for its actor. */
   facts?: Facts; agentKey?: (agent: string) => string;
@@ -88,6 +88,8 @@ export function createOutcomes({ db, plugin, delegates, finish, provenance, rela
   provenance: Pick<Provenance, "carried" | "intend" | "record">;
   /** A reply, once posted, also goes to the channel the owner wrote from (relay.ts). */
   relay?: (job: { agent: string; task: string }, body: string) => Promise<void>;
+  /** The grants table's `chat_task` for an agent: the only task a `listed` post may name (the lane's reply). */
+  chatTask?: (agent: string) => string | undefined;
   log?: (msg: string, f?: Record<string, unknown>) => void;
 }) {
   const once = createOnce(db);
@@ -99,6 +101,8 @@ export function createOutcomes({ db, plugin, delegates, finish, provenance, rela
   async function post(job: { id: string; agent: string; task: string }, req: PostRequest): Promise<Outcome> {
     if (!UUID.test(job.agent)) throw new OutcomeError(400, "bad-agent", "an agent is its Paperclip id");
     if (typeof req.body !== "string" || !req.body.trim()) throw new OutcomeError(400, "bad-request", "send {kind, body}");
+    // `listed` is the kernel's word: the grants table naming this task for the agent (its chat task), never the caller's.
+    if (req.scope === "listed" && chatTask?.(job.agent) !== job.task) throw new OutcomeError(403, "not-listed", `a listed post is only for a task the grants table names for agent ${job.agent}`);
     await plugin.company(job.agent);
     const { value, again } = await once(tag(job.id, req.kind), async (retry): Promise<Outcome> => {
       let status = req.status;
@@ -130,13 +134,13 @@ export type Outcomes = ReturnType<typeof createOutcomes>;
 
 /**
  * The fast lane's post (main.ts): a reply on the agent's own chat task as a `lane` outcome. That task is created by the board,
- * unassigned and in backlog, so `own` can never pass for it; the post says `listed` (a task the grants table names for the
- * agent) only when the table names this task as the agent's `chat_task`. The module names no task and no scope: the kernel
- * resolves both.
+ * unassigned and in backlog, so `own` can never pass for it, and the post says `listed`. That word is not the lane's to claim:
+ * `post` refuses it unless the grants table names the task as the agent's `chat_task`. The module names no task and no scope:
+ * the kernel resolves both.
  */
-export function lanePoster(outcomes: Outcomes, grants: () => { agents?: Record<string, Record<string, unknown>> }) {
+export function lanePoster(outcomes: Outcomes) {
   return async (agent: string, task: string, job: string, body: string): Promise<{ id: string }> => ({
-    id: String((await outcomes.post({ id: job, agent, task }, { kind: "lane", body, ...(grants().agents?.[agent]?.chat_task === task ? { scope: "listed" as const } : {}) })).comment),
+    id: String((await outcomes.post({ id: job, agent, task }, { kind: "lane", body, scope: "listed" })).comment),
   });
 }
 
