@@ -3,7 +3,7 @@ import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { checkOrg } from "../src/git.js";
-import { readAgentsOrg, readOrgs, withGitToken } from "../src/github-app.js";
+import { appTokens, readAgentsOrg, readOrgs, withGitToken } from "../src/github-app.js";
 import type { App } from "../src/registry.js";
 
 const inst = (yaml: string) => {
@@ -93,5 +93,14 @@ describe("registry clone", () => {
     expect(sh(root, "-C", "remote.git", "log", "--format=%s", "main")).toBe("apps: add demo\ninit");
     expect(sh(root, "-C", "remote.git", "show", "main:apps.yaml")).toContain("demo");
     expect(readFileSync(`${root}/checkout/revert.txt`, "utf8")).toBe("local revert\n"); // the checkout is untouched
+  });
+});
+
+describe("the App's bot login", () => {
+  it("is the slug the kernel reports with a token, as <slug>[bot]", async () => {
+    const tokens = appTokens("http://kernel", "k", (async () => Response.json({ token: "t", expires_at: new Date(Date.now() + 3_600_000).toISOString(), app: { slug: "acme-agents" } })) as typeof fetch);
+    expect(tokens.botLogin).toBeUndefined();
+    await tokens("acme-agents/aidenhq-instance");
+    expect(tokens.botLogin).toBe("acme-agents[bot]");
   });
 });

@@ -41,6 +41,7 @@ if (!serviceKey) throw new Error("APPS_SERVICE_KEY(_FILE) is required");
 const tokenFile = process.env.GITHUB_TOKEN_FILE;
 // The agents org is always allowed; its private repos are read with the instance's GitHub App when codehost-github runs.
 const agentsOrg = readAgentsOrg(instanceDir);
+let botWarned = false;
 const orgs = readOrgs(instanceDir);
 const appToken = githubHost(repoDir) ? appTokens((process.env.AIDENHQ_KERNEL_URL ?? "http://10.231.0.1:3130").replace(/\/$/, ""), serviceKey) : undefined;
 // This server's repos (codehost-local), read-only at /codehost when the instance enables it: `local/*` apps build from them.
@@ -149,8 +150,8 @@ const http = createServer(async (req, res) => {
       if ((await reader(req)) !== 0) return send(res, 401, { error: "unauthorized" });
       return send(res, 200, { apps: p.qualityOf() });
     }
-    // Open pull requests in the agents org's repos, from the warehouse (src_github syncs every 15 minutes), and the open change
-    // requests of this server's repos (codehost-local), each with its preview's URL when one runs: the board's Fleet Ops
+    // Open pull requests in the agents org's repos or authored by this instance's GitHub App (the fleet's own, in any repo), from
+    // the warehouse (src_github syncs every 15 minutes), and the open change requests of this server's repos (codehost-local), each with its preview's URL when one runs: the board's Fleet Ops
     // detector raises the ones nobody has merged. Empty when there is neither.
     if (url.pathname === "/internal/open-prs" && req.method === "GET") {
       if ((await reader(req)) !== 0) return send(res, 401, { error: "unauthorized" });
@@ -162,7 +163,9 @@ const http = createServer(async (req, res) => {
         return send(res, 200, codehost ? { prs: local } : {});
       }
       if (!agentsOrg) return send(res, 200, codehost ? { prs: local } : {});
-      const r = await d.pool.query("SELECT repo, number, created_at_src AS opened_at, draft FROM src_github.issues WHERE kind = 'pr' AND state = 'open' AND lower(repo) LIKE $1", [`${agentsOrg.toLowerCase()}/%`]);
+      // The bot's login comes with the App's tokens; without it the agents org's rows still answer.
+      if (appToken && !appToken.botLogin) await appToken(`${agentsOrg}/aidenhq-instance`).catch((e) => botWarned || ((botWarned = true), log.warn({ err: String(e) }, "open-prs: the App's bot login is unknown, listing the agents org only")));
+      const r = await d.pool.query("SELECT repo, number, created_at_src AS opened_at, draft FROM src_github.issues WHERE kind = 'pr' AND state = 'open' AND (lower(repo) LIKE $1 OR lower(author) = $2)", [`${agentsOrg.toLowerCase()}/%`, appToken?.botLogin?.toLowerCase() ?? ""]);
       return send(res, 200, { prs: [...r.rows.map((x: { repo: string; number: number }) => ({ ...x, ...previewOf(x.repo, x.number) })), ...local] });
     }
     // Named pull requests' state from the warehouse (`?pr=owner/repo#12`, up to 100): the board's event wake-ups (wake.ts) wake

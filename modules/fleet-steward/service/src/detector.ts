@@ -22,10 +22,10 @@ export function staleSources(rows: SourceRow[], t: number): { key: string; reaso
     .filter((x) => age(x.last_ok, t) > (STALE_FOR[x.source] ?? STALE_MS) || (x.failing && age(x.last_ok, t) > DOWN_MS))
     .map((x) => ({ key: x.source, reason: `source src_${x.source}: last good pass ${x.last_ok ? `${mins(age(x.last_ok, t))} ago` : "never"}${x.failing ? "; its latest pass failed" : ""}` }));
 }
-const PR_OPEN_MS = 60 * MIN; // an agents-org pull request open this long without merging (the warehouse lags GitHub by up to 15 minutes)
+const PR_OPEN_MS = 60 * MIN; // a pull request of the agents org or the fleet's own open this long without merging (the warehouse lags GitHub by up to 15 minutes)
 
 type PrRow = { repo: string; number: number; opened_at: string; draft: boolean; preview_url?: string };
-/** The open agents-org PRs nobody has merged within the allowance; merged or closed ones are no longer in the rows. A draft
+/** The open agents-org and fleet-authored PRs nobody has merged within the allowance; merged or closed ones are no longer in the rows. A draft
  * cannot merge until someone marks it ready, so it is not overdue; only its age once ready counts. */
 export function stalePrs(rows: PrRow[], t: number): { key: string; reason: string }[] {
   return rows
