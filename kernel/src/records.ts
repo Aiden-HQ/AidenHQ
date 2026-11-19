@@ -127,11 +127,15 @@ export function openRecords(file: string, now = () => new Date()) {
       event("approval.filed", { record: id, kind: r.kind, tier: r.tier, panel: r.panel, requester: r.requester.key || r.requester.module || "", task: r.task });
       return get(id)!;
     },
-    /** Newest first; `reviewed`: only records that went to the reviewer or the owner (Tier 1 and 2), `task`: only that task's. */
-    list(states: State[], limit = 100, { reviewed = false, task, kinds }: { reviewed?: boolean; task?: string; kinds?: string[] } = {}): Rec[] {
+    /**
+     * Newest first; `reviewed`: only records that went to the reviewer or the owner (Tier 1 and 2), `task`: only that task's.
+     * `limit: null` reads every record that matches: a guard that must see all of a task's records (the release train's close)
+     * never reads a capped page, where an older foreign record could be cut off.
+     */
+    list(states: State[], limit: number | null = 100, { reviewed = false, task, kinds }: { reviewed?: boolean; task?: string; kinds?: string[] } = {}): Rec[] {
       expire();
-      return rows(db.prepare(`SELECT * FROM records WHERE state IN (${states.map(() => "?").join(",")})${reviewed ? " AND tier > 0" : ""}${task ? " AND (task = ? OR identifier = ?)" : ""}${kinds ? ` AND kind IN (${kinds.map(() => "?").join(",")})` : ""} ORDER BY created_at DESC, rowid DESC LIMIT ?`)
-        .all(...states, ...(task ? [task, task] : []), ...(kinds ?? []), limit));
+      return rows(db.prepare(`SELECT * FROM records WHERE state IN (${states.map(() => "?").join(",")})${reviewed ? " AND tier > 0" : ""}${task ? " AND (task = ? OR identifier = ?)" : ""}${kinds ? ` AND kind IN (${kinds.map(() => "?").join(",")})` : ""} ORDER BY created_at DESC, rowid DESC${limit === null ? "" : " LIMIT ?"}`)
+        .all(...states, ...(task ? [task, task] : []), ...(kinds ?? []), ...(limit === null ? [] : [limit])));
     },
     /** Records filed or decided since then, oldest first (the daily digest). */
     since: (at: string): Rec[] => rows(db.prepare("SELECT * FROM records WHERE (created_at > ? OR decided_at > ?) AND tier > 0 ORDER BY created_at").all(at, at)),

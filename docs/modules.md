@@ -53,7 +53,8 @@ closed by `codehost-github` with no module marker, only when:
 
 - it has at least one `kernel.apply` record on it — a task with no record never qualifies;
 - **every** record on it was filed by `module === "codehost-github"` (a record is matched by its module name, never
-  by a bare id, and one foreign or mixed record refuses the close);
+  by a bare id, and one foreign or mixed record refuses the close). The kernel reads all of them, never a capped
+  page, so an older foreign record can't be hidden behind newer ones;
 - no other module's marker is in its description, and it has no `createdByAgentId`.
 
 The family is the whole widening: a task outside `release:instance:` keeps the marker rule above.
