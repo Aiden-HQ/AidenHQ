@@ -78,8 +78,8 @@ export function sharedCopies(root = repo) {
   "kernel/sdk/src/churn.ts": ["modules/github/service/src/aidenhq-sdk/churn.ts"],
   // Who moves the product pin: the kernel's updater and the code host's release train ask this one function.
   "kernel/sdk/src/pin-owner.ts": ["modules/github/service/src/aidenhq-sdk/pin-owner.ts"],
-  // The changed files' shaping (the eval and the reviewer's verdicts use this copy).
-  "services/shared/review-files.mjs": ["modules/ai-reviewer/service/src/review-files.mjs"],
+  // The changed files' shaping: the code host's plan shapes them for the reviewer, which (and its eval) reads this copy.
+  "services/shared/review-files.mjs": ["modules/ai-reviewer/service/src/review-files.mjs", "modules/github/service/src/review-files.mjs"],
   // The reliability checklist's matcher: the CI template's (MIT), used by its code review and by the AI reviewer.
   "modules/ci/template/.github/review-checklist.mjs": ["modules/ai-reviewer/service/src/review-checklist.mjs", "modules/code-review/recipe/review-checklist.mjs"],
   // The review core (the CI reviewer's codex runner, its brief and parse, and its read-only repo tools): CI's code-review job

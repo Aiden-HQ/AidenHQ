@@ -15,7 +15,10 @@ export interface PlanRequest { kind: string; args: any; requester: Requester; ta
 export interface PlanResult {
   args: unknown; targets?: Record<string, unknown>; facts?: Record<string, unknown>;
   raise?: { tier: 1 | 2; panel?: boolean; reason: string; rule: string }; card?: Record<string, string>; satisfied?: { evidence: string };
+  /** What the AI reviewer reads beside the card (reviewer@1): the changed files at the reviewed head (review-files.mjs fileContext), a PR's Evidence section. */
+  review?: ReviewContext;
 }
+export type ReviewContext = { files?: { text: string; leftOut: string[]; oversized: string[] }; evidence?: string };
 export interface ExecuteRequest { id: string; kind: string; args: any; digest: string; idempotency_key: string }
 export interface Executor {
   plan(req: PlanRequest): Promise<PlanResult>;

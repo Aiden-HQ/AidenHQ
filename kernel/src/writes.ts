@@ -20,7 +20,7 @@ import type { Reviews } from "./reviews.ts";
 import { LOCAL_ORG, repoKey, type Repos } from "./kinds.ts";
 import { REFUSALS_DDL } from "./jobs.ts";
 import { routeKind } from "./codehost.ts";
-import type { Executor } from "../sdk/src/executor.ts";
+import type { Executor, ReviewContext } from "../sdk/src/executor.ts";
 import { writeRaise, type Inventory } from "./paths.ts";
 import { gateMode } from "./gates.ts";
 import { REVIEW_TRIES, afterReview, capText, codeVerdict, computeTier, failedVerdict, heldInput, requestTargets, shadowed, type Autonomy, type Raise, type ReviewFirst, type ReviewInput, type Cap, type RoutineCap, type Tier, type Verdict } from "./tier.ts";
@@ -32,7 +32,7 @@ export type Kind = { module: string; floor: Tier; panel?: boolean; paths?: boole
  * A plan (executor@1's, or the kernel's own planner's). `review_first` with a Tier 2 raise: how the reviewer's verdict on it
  * stands ("final": its reject is final, its approve goes on to the owner; "owner", the default: both go on to the owner).
  */
-type Plan = { args: unknown; targets?: { [k: string]: unknown }; facts?: { [k: string]: unknown }; raise?: Raise; review_first?: ReviewFirst; paths?: unknown; card?: { [k: string]: string }; satisfied?: { evidence: string } };
+type Plan = { args: unknown; targets?: { [k: string]: unknown }; facts?: { [k: string]: unknown }; raise?: Raise; review_first?: ReviewFirst; paths?: unknown; card?: { [k: string]: string }; satisfied?: { evidence: string }; review?: ReviewContext };
 /** A write.filed check as config/kernel/checks.json holds it (`<module>.<id>`): the kinds it runs on. */
 export type FiledCheck = { module: string; at: string; kinds?: string[]; mode?: unknown };
 /** A write.filed check's code, run in process on a filing: its verdict (`ok`, `raise` tier 1 or 2 with `panel`, or `deny`) raises or refuses, never lowers. */
@@ -247,7 +247,7 @@ export function createWrites({ records, registry, connections, secret, resolver,
     // The reason and rule shown: the strictest raise, the plan's on a tie.
     const weight = (r: Raise | undefined) => (r ? r.tier * 4 + (r.ownerOnly ? 2 : 0) + (r.panel ? 1 : 0) : 0);
     const top = checkRaises.reduce<Raise | undefined>((a, b) => (weight(b) > weight(a) ? b : a), raise);
-    return records.file({ ...base, card: { ...card, reason: (t.rule ? capText(t.cap!) : top?.reason)?.slice(0, 300) ?? "" }, tier: t.tier, merit: t.merit, panel: t.panel, review_first: t.reviewFirst, rule: t.rule ?? top?.rule ?? null, cap: t.cap ?? null, state: t.state });
+    return records.file({ ...base, card: { ...card, reason: (t.rule ? capText(t.cap!) : top?.reason)?.slice(0, 300) ?? "" }, tier: t.tier, merit: t.merit, panel: t.panel, review_first: t.reviewFirst, rule: t.rule ?? top?.rule ?? null, cap: t.cap ?? null, state: t.state, ...(t.tier > 0 && plan.review ? { context: plan.review } : {}) });
   }
 
   async function execute(r: Rec, k: Kind | undefined): Promise<void> {
