@@ -321,3 +321,10 @@ test("an unblock whose move to todo fails after its relations were cleared is fi
   assert.equal(w.issues.t23.status, "todo");
   assert.match(w.rows("t23").join("\n"), /^unblocked:t23:b9:cancelled open$/m);
 });
+
+test("a failing close of ended wakes is logged and the poll still scans every agent", async () => {
+  const w = world();
+  w.issue("t1", { status: "in_progress" });
+  w.db.exec("DROP TABLE jobs");
+  await assert.doesNotReject(w.wakes.poll());
+});
