@@ -47,6 +47,10 @@ settings:
     default: ""
   primer_host_aud:
     default: ""
+  # paused (default): no digest. active: the primer-digest routine posts the owner's Primer digest to their channel each morning.
+  primer_digest:
+    default: paused
+    values: [paused, active]
   # Superseded by the primer_mcp_url secret Connect asks for; a value here is read only while that secret is empty.
   primer_mcp_url:
     default: ""
@@ -61,11 +65,24 @@ connections:
     # naming them reaches them. primer_send_events sends structured events to other people's open pages, as the owner:
     # `destructive`, so only a grant naming it reaches it and every call is a record the AI reviewer decides first.
     tools:
-      read: [ primer_whoami, primer_resolve_url, primer_get_document, primer_get_version_content, primer_list_versions, primer_get_comments, primer_get_document_comments, primer_list_documents, primer_find_document, primer_get_all_comments, primer_get_events ]
-      named: [ primer_get_all_comments, primer_get_events ]
+      read: [ primer_whoami, primer_resolve_url, primer_get_document, primer_get_version_content, primer_list_versions, primer_get_comments, primer_get_document_comments, primer_list_documents, primer_find_document, primer_get_all_comments, primer_get_events, primer_get_digest ]
+      named: [ primer_get_all_comments, primer_get_events, primer_get_digest ]
       # primer_reply_to_thread and primer_resolve_thread are on Primer's server once it has them (self-hosted build).
       write: [ primer_create_document, primer_add_version, primer_reply_to_thread, primer_resolve_thread ]
       destructive: [ primer_send_events ]
+# The owner's Primer digest (skills/primer-digest): one notify a day of what others did on their documents. Quiet by
+# default: the routine is paused until the owner sets primer_digest to active (quiet start does not pause it again).
+routines:
+  primer-digest:
+    title: Primer digest
+    agent: assistant
+    status: "${settings.primer_digest}"
+    description: |
+      Today is {{date}}. Follow your primer-digest skill: read Primer's digest of the last day and, when there is
+      something in it, send the owner one notify (kind digest). Then close this task with one line.
+    concurrency: skip_if_active
+    schedules:
+      - { cron: "0 8 * * *", timezone: "${settings.timezone}", label: "every morning" }
 # Runner jobs read Primer through the model gateway with their own token (scripts/modules.mjs jobcapEntries); read_url and
 # read_secret are today's loopback read endpoint and its token, which only the gateway holds.
 jobcaps:
@@ -144,7 +161,7 @@ services:
         MCP_TOKEN_FILE: ${secrets.primer_service_key}
         MCP_READ_TOKEN_FILE: ${secrets.primer_mcp_read_token}
         # The read endpoint serves only these: the connection's read tags (CI checks they match).
-        READ_TOOLS: "primer_whoami,primer_resolve_url,primer_get_document,primer_get_version_content,primer_list_versions,primer_get_comments,primer_get_document_comments,primer_list_documents,primer_find_document,primer_get_all_comments,primer_get_events"
+        READ_TOOLS: "primer_whoami,primer_resolve_url,primer_get_document,primer_get_version_content,primer_list_versions,primer_get_comments,primer_get_document_comments,primer_list_documents,primer_find_document,primer_get_all_comments,primer_get_events,primer_get_digest"
 # The kernel calls primer.publish's plan, execute and status on primer-mcp, with the connection's key (executor@1).
 providers:
   executor:

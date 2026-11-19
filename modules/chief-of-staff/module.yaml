@@ -69,7 +69,7 @@ agents:
       # (Not commit_status_set: that is the CI gate's.)
       github?: [ github_whoami, github_project_read, github_issue_read, github_search_issues, github_issue_comment, github_issue_create, github_issue_update, github_pr_review, github_rerun_failed ]
       google_workspace?: [ docs_read, drive_search_files, drive_read_file, drive_list_recent_files, drive_list_meeting_documents, calendar_list_events, calendar_search_events, calendar_get_event, gmail_search, gmail_read_thread ]
-      primer?: [ primer_whoami, primer_resolve_url, primer_get_document, primer_get_version_content, primer_list_versions, primer_get_comments, primer_list_documents, primer_find_document, primer_create_document, primer_add_version ]
+      primer?: [ primer_whoami, primer_resolve_url, primer_get_document, primer_get_version_content, primer_list_versions, primer_get_comments, primer_list_documents, primer_find_document, primer_get_digest, primer_create_document, primer_add_version ]
       # task_team, task_delegate: code work goes to an Engineer the way everyone hands it on (skill tasks.delegate-work).
       # task_schedule, task_recurring: board moves on a date and recurring tasks. task_merge: merging tasks.
       paperclip_tasks: [ task_current, task_get, task_comments, task_files, task_file_read, task_search, task_list, task_create, task_update, task_comment, task_handoff, task_set_status, task_team, task_delegate, task_schedule, task_recurring, task_pass_on, task_merge, task_finish, fanout_map ]
