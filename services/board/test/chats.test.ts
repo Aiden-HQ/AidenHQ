@@ -66,10 +66,10 @@ describe("needsYou", () => {
 });
 
 describe("openAsk", () => {
-  it("a question stays open through the agent's later notes until the owner answers; the runner's notices aren't answers", () => {
+  it("a question stays open through the agent's later notes until the owner answers; the board's notices aren't answers", () => {
     const c = (id: string, o: Record<string, unknown>) => ({ id, body: "", authorType: "agent", authorAgentId: "a1", authorUserId: null, createdAt: id, ...o });
     const ask = c("1", { body: `Which exception? ${REPLY_MARKER} <!-- aidenhq-questions:[{"question":"Which?","options":["Source build","Wait upstream"]}] -->` });
-    const later = [ask, c("2", { body: `Still waiting on your call. ${REPLY_MARKER}` }), c("3", { authorType: "user", authorAgentId: null, authorUserId: "me", body: "Graded. <!-- aidenhq-runner -->" })];
+    const later = [ask, c("2", { body: `Still waiting on your call. ${REPLY_MARKER}` }), c("3", { authorType: "user", authorAgentId: null, authorUserId: "me", body: "Graded. <!-- aidenhq-notice -->" })];
     expect(openAsk(later, "a1", "me")?.id).toBe("1");
     expect(openAsk([...later, c("4", { authorType: "user", authorAgentId: null, authorUserId: "me", body: "Source build." })], "a1", "me")).toBeUndefined();
   });

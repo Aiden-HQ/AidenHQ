@@ -2,10 +2,12 @@
 // Pure functions (unit-tested); I/O is in app.ts.
 import { z } from "zod";
 import { crewOf, foldedChildren, type CrewInput, type CrewMember } from "./crew.js";
+import { forOthers } from "./aidenhq-sdk/for-others.js";
 import { type Agent, type Comment, type Issue, type Label } from "./paperclip.js";
 import { BUCKETS, type Bucket, type Placement } from "./store.js";
 
-export const RUNNER_MARKER = "<!-- aidenhq-runner -->";
+/** A board-written comment (a merge, an unreadable file): the board speaks, never the owner. */
+export const NOTICE_MARKER = "<!-- aidenhq-notice -->";
 
 /** Whether a comment carries one of our markers. */
 export const hasMarker = (body: string, marker: string) => body.includes(marker);
@@ -232,7 +234,7 @@ export function keepMarkers(original: string | null | undefined, edited: string)
 export interface CommentView {
   id: string;
   body: string;
-  author: { kind: "me" | "runner" | "agent" | "user"; name: string };
+  author: { kind: "me" | "board" | "agent" | "user"; name: string };
   createdAt: string;
 }
 
@@ -240,9 +242,9 @@ export function commentView(c: Comment, me: string, agents: Agent[]): CommentVie
   const author: CommentView["author"] =
     c.authorType === "agent"
       ? { kind: "agent", name: agents.find((a) => a.id === c.authorAgentId)?.name ?? "Agent" }
-      : hasMarker(c.body, RUNNER_MARKER)
-        ? { kind: "runner", name: "Runner" }
-        : c.authorUserId && c.authorUserId !== me
+      : hasMarker(c.body, NOTICE_MARKER)
+        ? { kind: "board", name: "Board" }
+        : forOthers(c.body) || (c.authorUserId && c.authorUserId !== me)
           ? { kind: "user", name: "Someone else" }
           : { kind: "me", name: "You" };
   return { id: c.id, body: displayText(c.body), author, createdAt: c.createdAt };

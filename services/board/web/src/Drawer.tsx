@@ -652,9 +652,8 @@ function Thread({ issue, board, agent, prefix, title = "Activity" }: { issue: Is
   const older = comments.slice(0, Math.max(0, comments.length - OPEN_COMMENTS));
   const allOpen = older.every((c) => open.has(c.id));
   const toggle = (id: string) => setOpen((s) => (s.has(id) ? new Set([...s].filter((x) => x !== id)) : new Set([...s, id])));
-  // Agents by their crew name; the runner speaks for the Engineer on the task.
+  // Agents by their crew name.
   const who = (c: CommentView) => {
-    if (c.author.kind === "runner") return agent?.kind === "engineer" ? shortName(agent) : "Runner";
     if (c.author.kind === "agent") return shortName(board.assignees.find((a) => a.name === c.author.name)) || c.author.name;
     return c.author.name;
   };

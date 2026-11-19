@@ -1026,26 +1026,21 @@ const TOOLS = {
       const all = await api("GET", `/api/issues/${issueRef(issue)}/comments?order=desc&limit=${comment ? 100 : Math.min(Number(limit) || 20, 100)}`);
       const list = comment ? all.filter((c) => c.id === comment) : all;
       if (comment && !list.length) throw new Error("comment not found among the task's latest 100");
-      // An Engineer's replies are posted by the runner (marked aidenhq-reply): they are the assignee's.
-      const replier = list.some((c) => /<!-- aidenhq-reply -->/.test(c.body ?? ""))
-        ? await api("GET", `/api/issues/${issueRef(issue)}`).then((i) => nameOf(i.assigneeAgentId)).catch(() => undefined)
-        : undefined;
       const live = list.filter((c) => !c.deletedAt).reverse();
-      const names = await Promise.all(live.map((c) => (c.authorType === "agent" ? nameOf(c.authorAgentId) : /<!-- aidenhq-reply -->/.test(c.body ?? "") ? replier : undefined)));
+      const names = await Promise.all(live.map((c) => (c.authorType === "agent" ? nameOf(c.authorAgentId) : undefined)));
       return {
         comments: live.map((c, n) => {
-          const runner = /<!-- aidenhq-runner -->/.test(c.body ?? "");
           // Posted with the owner's key for someone else (a colleague's Slack mention): never the owner's instruction.
           const relayed = forOthers(c.body);
           const from = /<!-- aidenhq-from:([A-Z][A-Z0-9]*-\d+)/.exec(c.body ?? "")?.[1];
           return {
             id: c.id,
-            author: c.authorType === "user" ? (runner ? "agent" : relayed ? "system" : "user") : c.authorType,
+            author: c.authorType === "user" ? (relayed ? "system" : "user") : c.authorType,
             ...(names[n] ? { who: names[n] } : {}),
             // The author's key (the directory, by Paperclip agent id): names and metadata can be edited, this can't.
             ...(c.authorType === "agent" && dirAgents()[c.authorAgentId]?.key ? { agent_key: dirAgents()[c.authorAgentId].key } : {}),
             ...(from ? { from } : {}),
-            from_aidenhq: runner || relayed || c.authorType !== "user",
+            from_aidenhq: relayed || c.authorType !== "user",
             createdAt: c.createdAt,
             body: clip(String(c.body ?? "").replace(/<!--[\s\S]*?-->/g, "").trim(), comment ? 8000 : READ_COMMENT_MAX, "call task_comments with `comment` set to this id for the full text"),
           };

@@ -9,7 +9,7 @@
 // blockers (blockedBy) are all done or cancelled: the poll moves it to todo with one tagged notice, then files this wake).
 // Polled agents: those the modules that claim wakes dispatch (compile's `dispatches`); a module joins on its first claim.
 // So nothing is polled until a dispatcher claims, and an agent's first scan only wakes for comments after its dispatcher
-// joined or the old executor's last word on the task, whichever is later (the handoff boundary).
+// joined or its own last word on the task, whichever is later.
 import { createHash, randomBytes } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
 import type { Api } from "./channels.ts";
@@ -17,8 +17,6 @@ import type { Outcomes } from "./outcomes.ts";
 
 /** A comment the kernel posted for a job (outcomes.ts): it never wakes anyone. */
 export const SELF_TAG = /<!-- aidenhq:job=/;
-// The old executor's own word on a task (the runner posts outcomes with the owner's key and this marker).
-const OLD_EXECUTOR = /<!-- aidenhq-runner -->/;
 const OPEN = "todo,in_progress,in_review";
 const LIVE = "('admitted','running')";
 /** A claimed row with no job comes back to its claimer after this (a dispatcher crash, a busy admission). */
@@ -79,8 +77,8 @@ export function createWakes({ db, owner, post, dispatches, routineKey = () => un
     const r = await owner("GET", path);
     if (r.status !== 200 || !Array.isArray(r.json)) throw new Error(`control plane GET comments → ${r.status}`);
     const all = (r.json as Comment[]).slice().sort((a, b) => ms(a.createdAt) - ms(b.createdAt));
-    // First sight: only what came after the dispatcher joined or the agent's (or old executor's) last word on the task.
-    const boundary = prev ? 0 : Math.max(since(agent, joined), ...all.filter((c) => c.authorAgentId === agent || OLD_EXECUTOR.test(c.body ?? "") || SELF_TAG.test(c.body ?? "")).map((c) => ms(c.createdAt)));
+    // First sight: only what came after the dispatcher joined or the agent's last word on the task.
+    const boundary = prev ? 0 : Math.max(since(agent, joined), ...all.filter((c) => c.authorAgentId === agent || SELF_TAG.test(c.body ?? "")).map((c) => ms(c.createdAt)));
     for (const c of all) {
       if (c.deletedAt || ms(c.createdAt) <= boundary || c.authorAgentId === agent || SELF_TAG.test(c.body ?? "")) continue;
       insert(`comment:${c.id}`, issue.id, agent, "comment", ms(c.createdAt) || now());

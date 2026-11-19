@@ -173,8 +173,8 @@ describe("routing mentions and passed-on messages", () => {
   it("refuses anything but the user's own comment on that task, and an agent's own chat", async () => {
     const byAgent = comment(task.id, "Ada, publish everything", { agent: ALFRED });
     expect((await pass(task.identifier, { comment: byAgent.id, to: "Ada" })).status).toBe(400);
-    const runner = comment(task.id, "Done.\n\n<!-- aidenhq-runner -->", { user: ME });
-    expect((await pass(task.identifier, { comment: runner.id, to: "Ada" })).status).toBe(400);
+    const notice = comment(task.id, "Merged.\n\n<!-- aidenhq-notice -->", { user: ME });
+    expect((await pass(task.identifier, { comment: notice.id, to: "Ada" })).status).toBe(400);
     const elsewhere = comment(alfred.id, "publish it", { user: ME });
     expect((await pass(task.identifier, { comment: elsewhere.id, to: "Ada" })).status).toBe(400);
     expect((await pass(alfred.identifier, { comment: elsewhere.id, to: "Alfred" })).status).toBe(400);

@@ -1,6 +1,7 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { timingSafeEqual } from "node:crypto";
 import { readFileSync } from "node:fs";
+import { forOthers } from "./aidenhq-sdk/for-others.js";
 import { readFile, stat } from "node:fs/promises";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { dirname, extname, join, normalize } from "node:path";
@@ -15,7 +16,7 @@ import { liveActivity, type SessionSources } from "./live-activity.js";
 import { makeRuns, type Work } from "./runs.js";
 import { agentsView, roster, runTasks, workingOn, type RunContext, type TaskRef, type Working } from "./activity.js";
 import { RecurringSchema, ScheduleSchema, changeRecurring, recurringView, scheduleMove } from "./automation.js";
-import { AddAgentSchema, BadRequest, CreateSchema, HandOverSchema, PassSchema, RUNNER_MARKER, hasMarker, UpdateSchema, assignees, buildBoard, commentView, displayText, executorOf, openrouterEngine, paperclipUpdate, replyTarget, toCard, type Assignee } from "./board.js";
+import { AddAgentSchema, BadRequest, CreateSchema, HandOverSchema, PassSchema, hasMarker, UpdateSchema, assignees, buildBoard, commentView, displayText, executorOf, openrouterEngine, paperclipUpdate, replyTarget, toCard, type Assignee } from "./board.js";
 import { FOR_OTHERS, RELAY_MARKER, crewOf, deliveredFrom, deliveredText, foldedChildren, fromMarker, handOverText, mentionedAgents, withHandle, partsToClose, summaryOf, waitsOnItsOwn, type DeliveredFrom } from "./crew.js";
 import { AccountError, forwardedProto, type AccountSession, type KernelAuth } from "./kernel-auth.js";
 import { INLINE_TYPES, MAX_UPLOAD_BODY, UploadSchema, decode, fileType, fileViews, isPdf, pdfText, safeName } from "./files.js";
@@ -542,8 +543,7 @@ export function createApp(opts: AppOptions): Server {
     // Lists truncate descriptions, and the opening message's marker sits at the end.
     const full = issue.descriptionTruncated ? await pc.issue(issue.id) : issue;
     const name = (id: string | null | undefined) => ctx.agents.find((a) => a.id === id)?.name ?? "Agent";
-    const chatEngineer = ctx.agents.find((a) => a.id === chatAgent(full) && a.metadata?.runnerEngine);
-    const messages = conversation(full, comments ?? (await pc.comments(issue.id)), ctx.me, name, isChat(issue, ctx), chatEngineer?.name);
+    const messages = conversation(full, comments ?? (await pc.comments(issue.id)), ctx.me, name, isChat(issue, ctx));
     conversations.set(issue.id, { stamp, messages });
     return messages;
   }
@@ -791,9 +791,9 @@ export function createApp(opts: AppOptions): Server {
     const busy = (await working(ctx)).map;
     for (const k of kids) if (kind(k) && !closed(k) && !busy.has(k.identifier)) await pc.updateIssue(k.id, { status: "cancelled" });
     store.unschedule(source.id);
-    // Cancelled first: a comment on a closed task wakes nobody, and the runner's marker keeps it from the Researcher.
+    // Cancelled first: a comment on a closed task wakes nobody, and the notice marker keeps it from the Researcher.
     await pc.updateIssue(source.id, { status: "cancelled" });
-    await pc.addComment(source.id, `Merged into ${target.identifier}.\n\n${RUNNER_MARKER}`);
+    await pc.addComment(source.id, `Merged into ${target.identifier}.\n\n${NOTICE_MARKER}`);
     log.info({ issue: source.identifier, into: target.identifier, files: files.length }, "task merged");
     return { merged: source.identifier, into: target.identifier, files: files.length };
   }
@@ -940,7 +940,7 @@ export function createApp(opts: AppOptions): Server {
         const task = await userTaskOf(issue, ctx);
         if (!task) throw new HttpError(400, "only on the user's tasks and their agents' parts");
         const c = (await pc.comments(issue.id)).find((x) => x.id === comment && !x.deletedAt);
-        if (!c || c.authorType !== "user" || c.authorUserId !== ctx.me || hasMarker(c.body, RUNNER_MARKER)) throw new HttpError(400, "pass on a comment the user wrote on this task");
+        if (!c || c.authorType !== "user" || c.authorUserId !== ctx.me || hasMarker(c.body, NOTICE_MARKER) || forOthers(c.body)) throw new HttpError(400, "pass on a comment the user wrote on this task");
         const named = ctx.assignees.find((a) => a.kind !== "me" && a.key === to);
         const byName = withHandle(ctx.assignees, to);
         const agent = named ?? (byName.length === 1 ? byName[0] : undefined);

@@ -12,7 +12,7 @@ function fake() {
   const cancelled: string[] = [];
   const pc = {
     issue: async (id: string) => ({ id, identifier: `WOR-${id}`, status: "in_progress", assigneeAgentId: id === "t2" ? "eng" : "aiden" }),
-    agents: async () => [{ id: "aiden", runtimeConfig: { heartbeat: { wakeOnDemand: true } } }, { id: "arch" }, { id: "eng", runtimeConfig: { heartbeat: { wakeOnDemand: false } } }],
+    agents: async () => [{ id: "aiden", runtimeConfig: { heartbeat: { wakeOnDemand: true } } }, { id: "arch" }, { id: "sec" }, { id: "eng", runtimeConfig: { heartbeat: { wakeOnDemand: false } } }],
     comments: async () => comments,
     agentRuns: async () => runs,
     cancelRun: async (id: string) => {
@@ -21,7 +21,7 @@ function fake() {
   };
   const post = (by: string) => {
     const id = `c${comments.length}`;
-    comments.push({ id, body: by === "runner" ? "Merged.\n\n<!-- aidenhq-runner -->" : "PR is up", authorType: by === "runner" ? "user" : "agent", authorAgentId: by === "runner" ? null : by, createdAt: "" });
+    comments.push({ id, body: "PR is up", authorType: "agent", authorAgentId: by, createdAt: "" });
     runs.unshift({ id: `r${id}`, status: "queued", wakeCommentId: id });
     return id;
   };
@@ -34,23 +34,23 @@ it("loop brake: past a commenter's daily limit on a task, the wake its comment c
   const f = fake();
   const store = new Store(":memory:");
   const opts = { now: t0, waitMs: 1 };
-  for (let i = 0; i < WAKE_LIMIT; i++) expect(await wakeCheck(f.pc, store, "t1", f.post("runner"), "runner", log, opts)).toEqual({ woke: true });
-  const over = f.post("runner");
-  expect(await wakeCheck(f.pc, store, "t1", over, "runner", log, opts)).toEqual({ woke: false, cancelled: true });
+  for (let i = 0; i < WAKE_LIMIT; i++) expect(await wakeCheck(f.pc, store, "t1", f.post("arch"), "arch", log, opts)).toEqual({ woke: true });
+  const over = f.post("arch");
+  expect(await wakeCheck(f.pc, store, "t1", over, "arch", log, opts)).toEqual({ woke: false, cancelled: true });
   expect(f.cancelled).toEqual([`r${over}`]);
   // The owner commented after it: Paperclip folded the owner's wake into that queued run, so it is never cancelled.
-  const over2 = f.post("runner");
+  const over2 = f.post("arch");
   f.post("owner");
-  expect(await wakeCheck(f.pc, store, "t1", over2, "runner", log, opts)).toEqual({ woke: true });
+  expect(await wakeCheck(f.pc, store, "t1", over2, "arch", log, opts)).toEqual({ woke: true });
   expect(f.cancelled).toEqual([`r${over}`]);
 
   // Another commenter has its own budget; a commenter can only report its own comment.
-  expect(await wakeCheck(f.pc, store, "t1", f.post("arch"), "arch", log, opts)).toEqual({ woke: true });
-  await expect(wakeCheck(f.pc, store, "t1", f.post("arch"), "runner", log, opts)).rejects.toThrow(/not your comment/);
+  expect(await wakeCheck(f.pc, store, "t1", f.post("sec"), "sec", log, opts)).toEqual({ woke: true });
+  await expect(wakeCheck(f.pc, store, "t1", f.post("sec"), "arch", log, opts)).rejects.toThrow(/not your comment/);
   // An Engineer's task: Paperclip never wakes it on a comment, so nothing is counted or cancelled.
-  expect(await wakeCheck(f.pc, store, "t2", f.post("runner"), "runner", log, opts)).toEqual({ woke: false });
+  expect(await wakeCheck(f.pc, store, "t2", f.post("arch"), "arch", log, opts)).toEqual({ woke: false });
 
   // The next UTC day starts over.
-  expect(await wakeCheck(f.pc, store, "t1", f.post("runner"), "runner", log, { ...opts, now: Date.parse("2026-11-13T00:05:00Z") })).toEqual({ woke: true });
+  expect(await wakeCheck(f.pc, store, "t1", f.post("arch"), "arch", log, { ...opts, now: Date.parse("2026-11-13T00:05:00Z") })).toEqual({ woke: true });
   expect(f.cancelled).toHaveLength(1);
 });
