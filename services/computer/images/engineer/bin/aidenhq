@@ -8,6 +8,9 @@
 //   aidenhq publish <org/repo> <branch>... [--title <title>] [--body-file <file>]
 //                                                    push each branch at its commit in this workspace's clone and open (or
 //                                                    update) its PR (a change request on this server): one codehost.pr write each
+//   aidenhq review <org/repo> <branch>... [--title <title>] [--body-file <file>]
+//                                                    what the AI reviewer would say of publishing these branches, before
+//                                                    publishing: nothing is filed; up to 3 a job (each is a reviewer call)
 //   aidenhq merge <PR link> <head sha>...            merge each PR only at that head: one codehost.merge write each
 //   aidenhq close <PR link>...                       close superseded or duplicate PRs: one codehost.close write each
 //   aidenhq create-repo [<org>/]<name>               a new app's repository (no org: the instance's default agents org):
@@ -37,8 +40,8 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-const usage = `usage: aidenhq publish <org/repo> <branch>... [--title <title>] [--body-file <file>] | merge <PR link> <head sha>... | close <PR link>... | create-repo [<org>/]<name> | clone local/<name> | apply <org/repo> <branch> | task <PEN-N> | tasks <words> | advise "<question>" [--file <brief>] | reset | engine <kind> [model] | cleanup`;
-const COMMANDS = ["publish", "merge", "close", "create-repo", "clone", "apply", "task", "tasks", "advise", "reset", "engine", "cleanup"];
+const usage = `usage: aidenhq publish <org/repo> <branch>... [--title <title>] [--body-file <file>] | review <org/repo> <branch>... [--title <title>] [--body-file <file>] | merge <PR link> <head sha>... | close <PR link>... | create-repo [<org>/]<name> | clone local/<name> | apply <org/repo> <branch> | task <PEN-N> | tasks <words> | advise "<question>" [--file <brief>] | reset | engine <kind> [model] | cleanup`;
+const COMMANDS = ["publish", "review", "merge", "close", "create-repo", "clone", "apply", "task", "tasks", "advise", "reset", "engine", "cleanup"];
 const [command, ...rest] = process.argv.slice(2);
 const fail = (msg, code = 1) => {
   console.error(`aidenhq: ${msg}`);
@@ -155,7 +158,7 @@ async function tool(name, args) {
 }
 
 const lines = [];
-if (command === "publish") {
+if (command === "publish" || command === "review") {
   if (!words.length || words.length % 2) fail("name branches as <org/repo> <branch> pairs", 2);
   const body = flags["body-file"] ? readFileSync(flags["body-file"], "utf8") : "";
   for (let i = 0; i < words.length; i += 2) {
@@ -163,8 +166,15 @@ if (command === "publish") {
     const sha = commitOf(repo, branch);
     // The PR title is a Conventional Commit (CI's pr-title check): --title, else the branch's first commit's subject.
     const title = flags.title ?? firstSubject(repo, branch);
-    if (!CONVENTIONAL.test(title)) fail(`PR title ${JSON.stringify(title)} must be a Conventional Commit; set it with \`aidenhq publish --title 'fix(x): …'\` or reword the commit`, 2);
-    lines.push(`${repo} ${branch}: ${(await write("codehost.pr", { only: [{ repo, branch, sha }], text: { title, body } }))}`);
+    if (!CONVENTIONAL.test(title)) fail(`PR title ${JSON.stringify(title)} must be a Conventional Commit; set it with \`aidenhq ${command} --title 'fix(x): …'\` or reword the commit`, 2);
+    const args = { only: [{ repo, branch, sha }], text: { title, body } };
+    if (command === "publish") lines.push(`${repo} ${branch}: ${(await write("codehost.pr", args))}`);
+    else {
+      // The reviewer's verdict on the PR this would publish, filed by nothing; its reason is a model's words, shown as data.
+      const v = JSON.parse((await call("/v1/jobtools/review", { kind: "codehost.pr", args })).text);
+      if (v.decision === "reject") bad.push(`${repo} ${branch}`);
+      lines.push(`${repo} ${branch}: ${v.text}${said((v.reason ?? "").trim())}`);
+    }
   }
 } else if (command === "merge") {
   if (!words.length || words.length % 2) fail("name the pull requests to merge as <PR link> <head sha> pairs, in order", 2);

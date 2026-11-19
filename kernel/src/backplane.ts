@@ -64,7 +64,8 @@
 //   POST /v1/checkout          (a kernel job's own token) {repo, sha?}: a code host snapshot (tar.gz) for a job holding the
 //                              repo-checkout role, an agents-org repo only: GitHub's, or local/… from codehost-local (jobtools.ts checkout)
 //   POST /v1/jobtools/:cmd     (a kernel job's own token) reset | engine {engine, model?} | cleanup: what the running job asks of its
-//                              task's next turn (jobtools.ts)
+//                              task's next turn (jobtools.ts); review {kind, args}: what the AI reviewer would say of that write,
+//                              filed by nothing (writes.preview, review-loop precheck), at most PRECHECKS reviewer calls a job
 //                              | clone {repo}: a repository on this server as a git bundle, which the box clones itself
 //   GET  /v1/advisories        (the board's key) the marketplace advisories open against installed modules (advisories.ts)
 //   GET  /v1/connections/health (the board's key) every connection's /healthz as the kernel reaches it -> {probes: {name: {ok, status?, state?, detail?, channels?, checkedAt}}} (health.ts)
@@ -84,7 +85,7 @@ import type { Checks } from "./checks.ts";
 import type { Lane } from "./lane.ts";
 import type { Checks as CheckJobs } from "./checkjobs.ts";
 import { CP_READ_PATHS, isChannel, neutral, type Api, type Channels, type ModulesFile } from "./channels.ts";
-import type { Grant, Whoami } from "./identity.ts";
+import type { Grant, Identity, Whoami } from "./identity.ts";
 import type { Jobs } from "./jobs.ts";
 import type { Admission } from "./admission.ts";
 import { JOB_KINDS, type Outcomes } from "./outcomes.ts";
@@ -243,7 +244,7 @@ function flowRead(flow: Flow, p: URLSearchParams) {
   return flow.summary({ since, to, by: by as By, scope: p.get("scope")?.slice(0, 100) || undefined });
 }
 
-export function createBackplane({ idle, facts, whoami, asserter, proxy, cp, boardCp, grantsFile, writes, records, channels, brake, notify, owner, modules = () => ({}), boardKey = () => "", reviews, reviewerKey = () => "", jobs, codehost, admission, outcomes, wakes, tasks, eventsKey = () => "", work, flow, repos = () => ({}), graderToken = () => "", dropGraderToken = () => {}, advisories = () => [], accounts, checks, checkJobs, jobTools, localBundle, ownerRaw, lane, healthProbe, healthKey = () => "", connectionHealth, settingsChange, routing, boardApi: moduleBoardApi, log = () => {} }: {
+export function createBackplane({ idle, facts, whoami, asserter, proxy, cp, boardCp, grantsFile, writes, records, channels, brake, notify, owner, modules = () => ({}), boardKey = () => "", reviews, reviewerKey = () => "", jobs, codehost, admission, outcomes, wakes, tasks, eventsKey = () => "", work, flow, repos = () => ({}), graderToken = () => "", dropGraderToken = () => {}, advisories = () => [], accounts, checks, checkJobs, jobTools, precheck, localBundle, ownerRaw, lane, healthProbe, healthKey = () => "", connectionHealth, settingsChange, routing, boardApi: moduleBoardApi, log = () => {} }: {
   /** Flow's fact log (facts.ts): POST /v1/facts. */
   facts?: Facts;
   /** An agent's own wait on its job's task (idle.ts): POST /v1/wait. */
@@ -292,6 +293,8 @@ export function createBackplane({ idle, facts, whoami, asserter, proxy, cp, boar
   checkJobs?: CheckJobs;
   /** A running job's requests for its task's next turn (jobtools.ts). */
   jobTools?: JobTools;
+  /** A job's precheck (`aidenhq review`): what the AI reviewer would say of this write, filing nothing; `slot` counts the reviewer call. */
+  precheck?: (who: Identity, b: { kind: string; args: unknown }, slot: () => void) => Promise<{ text: string; reason?: string; decision?: string }>;
   /** codehost-local's bundle of a repo on this server, while it is enabled (`aidenhq clone`): the file, and `done` once sent. */
   localBundle?: (repo: string) => Promise<{ file: string; done: () => void }>;
   /** The host's health probes (health.ts), and the key the host's healthcheck asks with (health_probe_key, held by no container). */
@@ -449,6 +452,16 @@ export function createBackplane({ idle, facts, whoami, asserter, proxy, cp, boar
         case "POST /v1/jobtools/:cmd": {
           if (!jobTools) throw fail(503, "unavailable", "job tools are off");
           const b = await json(req);
+          if (m[0] === "review") {
+            if (!precheck) throw fail(503, "unavailable", "the precheck is off");
+            const token = bearer(req);
+            const w = await whoami(token).catch((e: Error) => { throw fail(401, "unauthorized", e.message); });
+            const slot = () => { try { jobTools.review(token); } catch (e) {
+              const j = e as { name?: string; status?: number; code?: string; message: string };
+              throw j.name === "JobToolError" ? fail(j.status!, j.code!, j.message) : e;
+            } };
+            return send(res, 200, await precheck(w, { kind: String(b.kind ?? ""), args: b.args }, slot));
+          }
           if (m[0] === "clone") {
             // The repo's branches as a git bundle; the box clones from it itself.
             if (!localBundle) throw fail(404, "unavailable", "there are no repositories on this server (codehost-local isn't enabled)");

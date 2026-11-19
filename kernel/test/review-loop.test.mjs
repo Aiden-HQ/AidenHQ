@@ -27,6 +27,7 @@ async function side(t, file, module) {
   const writes = createWrites({
     records, reviews, secret: () => "", resolver: createResolver(), connections: () => ({}), replay: async () => ({ ok: false, text: "" }),
     registry: () => ({ [KIND]: { module: "acme", floor: 1, tools: [] } }),
+    planners: { [KIND]: async (b) => ({ args: b.args, card: { sentence: "Post a note.", changes: "c", reads: "r", cost: "none", details: `note: ${b.args.note}` } }) },
     native: { [KIND]: async (r) => (ran.push(r.id), { ok: true, text: "posted" }) },
     onTask: { open: async () => true, notify: async (task, text) => void notices.push({ task, text }) },
   });
@@ -199,4 +200,19 @@ test("a burst over 200 records in review: the oldest are reviewed first, never s
   await until(() => module.seen.length === 200);
   const asked = new Set(module.seen.map((x) => x.request.diff));
   assert.ok(Array.from({ length: 200 }, (_, i) => `note: n${i}`).every((d) => asked.has(d)));
+});
+
+test("a job's precheck gets the reviewer's verdict on the write it would file, and files nothing", async (t) => {
+  const mod = await reviewer(t);
+  const k = await side(t, db(), mod);
+  const who = { kind: "run", agent: "ag-ada", key: "ada", name: "Ada", roles: [], tools: {}, writes: [KIND], task: "TASK-1", job: "j-1" };
+  const { rec } = await k.writes.preview(who, { kind: KIND, args: { note: "hello" } });
+  let asked = 0;
+  const verdict = k.loop.precheck(rec, (request) => (asked++, k.reviews.request(request)));
+  await until(() => mod.seen.length === 1);
+  assert.deepEqual([mod.seen[0].request.diff, mod.seen[0].request.chain], ["note: hello", "Post the release note\n\nPost it in #general."]);
+  k.reviews.verdict(mod.seen[0].id, mod.seen[0].token, { decision: "reject", reason: "say which release", model: "~acme/model-a" });
+  assert.deepEqual([(await verdict).decision, (await verdict).reason, asked], ["reject", "say which release", 1]);
+  assert.equal(k.records.list(["review", "owner", "approved", "claimed", "done", "rejected"], 100).length, 0, "nothing was filed");
+  await assert.rejects(k.writes.preview({ ...who, job: undefined, kind: "module" }, { kind: KIND, args: { note: "x" } }), /kernel job's own/);
 });
