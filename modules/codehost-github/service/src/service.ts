@@ -92,6 +92,8 @@ export function createService(o: Options) {
     return (await run("git", full, { env, maxBuffer: 64 * 1024 * 1024 })).stdout.trim();
   }
   const app = () => o.app ?? (() => { throw fail(503, "the GitHub App key isn't mounted: codehost-github can't reach GitHub"); })();
+  /** The App's bot login, or undefined: a Flow fact never fails the write it describes. */
+  const botName = () => o.app?.identity().then((i) => i.name, () => undefined);
   const tokenFor = (s: { org: string; name: string }, permissions: Record<string, string>) => app().token(s.org, { repositories: [s.name], permissions });
   async function api(method: string, path: string, token: string, body?: unknown) {
     const r = await o.gh(method, path, token, body);
@@ -298,9 +300,15 @@ export function createService(o: Options) {
             done.push(pr.html_url ?? `${s.slug}#${pr.number}`);
             if (pr.html_url) notePrTask(o.cacheDir, pr.html_url, { task: a.workspace, branch: b.branch }); // the PR watch wakes the task that opened it
             if (pr.number) {
-              // Flow: the PR opened when this write created it, and CI starts on every head it publishes.
-              if (!open[0]) flow.opened(s.slug, Number(pr.number), b.sha, b.branch, pr.created_at, a.workspace);
-              flow.checksStarted(s.slug, Number(pr.number), b.sha, undefined, a.workspace);
+              // Flow: the PR opened when this write created it, a head it moves is a push, and CI starts on every head it publishes.
+              const n = Number(pr.number);
+              if (!open[0]) flow.opened(s.slug, n, b.sha, b.branch, pr.created_at, a.workspace, undefined, { title: String(pr.title ?? text?.title ?? ""), ...(await flow.authored(pr.user?.login ?? await botName(), pr.author_association)) });
+              else if (open[0].head?.sha && open[0].head.sha !== b.sha) {
+                // Forced: the old head is no ancestor of the new one.
+                const cmp = await api("GET", `/repos/${s.slug}/compare/${open[0].head.sha}...${b.sha}`, token).catch(() => undefined);
+                flow.pushed(s.slug, n, b.sha, String(open[0].head.sha), cmp ? !["ahead", "identical"].includes(String(cmp.status)) : false, String((await botName()) ?? "ghost"), undefined, a.workspace);
+              }
+              flow.checksStarted(s.slug, n, b.sha, undefined, a.workspace);
             }
             // An agents-org PR that changes UI files gets its design review at this head (one that changes none files nothing).
             if (same(s.org, o.agentsOrg) && pr.number) void designReviews?.fileDesignReview({ repo: s.slug, number: Number(pr.number), head: b.sha }).catch((e: Error) => log("design review task failed", { pr: pr.html_url, err: String(e.message ?? e).slice(0, 300) }));
@@ -313,7 +321,8 @@ export function createService(o: Options) {
       if (action === "close") {
         for (const p of a.prs) {
           const s = slugOf(p.repo);
-          await api("PATCH", `/repos/${s.slug}/pulls/${Number(p.number)}`, await tokenFor(s, MERGE), { state: "closed" });
+          const closed = await api("PATCH", `/repos/${s.slug}/pulls/${Number(p.number)}`, await tokenFor(s, MERGE), { state: "closed" });
+          if (closed?.head?.sha) flow.closed(s.slug, Number(p.number), String(closed.head.sha));
           done.push(`${s.slug}#${p.number}`);
         }
         return { ok: true, text: `Closed: ${done.join(", ")}` };
@@ -362,6 +371,7 @@ export function createService(o: Options) {
     repos: o.app ? managedRepos : undefined,
     token: (repo, perms) => tokenFor(slugOf(repo), perms),
     gh: o.gh,
+    appLogin: o.app ? async () => (await o.app!.identity()).name : undefined,
     fetchDefault: async (repo) => {
       const s = slugOf(repo);
       const def = String((await api("GET", `/repos/${s.slug}`, await tokenFor(s, READ))).default_branch ?? "main");

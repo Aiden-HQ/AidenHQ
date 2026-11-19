@@ -32,8 +32,9 @@ test("local-only: create a repo, publish a change request, merge it at its head 
     box: { run: async (o) => (ran.push(o.argv), { exit: 0, out: "ok", timedOut: false }) }, snapshot: () => async () => {}, modelToken: () => "", gatewayUrl: "", workDir: join(dir, "checks"), log: () => {},
   });
   const localChecks = new Map();
+  const flowFacts = [];
   const host = localHost({
-    root: join(dir, "codehost"), tasksDir: tasks, scratchDir: join(dir, "scratch"), waitMs: 10_000, instanceRepo: "local/aidenhq-instance",
+    root: join(dir, "codehost"), tasksDir: tasks, scratchDir: join(dir, "scratch"), waitMs: 10_000, instanceRepo: "local/aidenhq-instance", fact: (f) => flowFacts.push(f),
     // As main.ts: a new request may run a check again; a waiting merge reads the one it asked for.
     checks: async (repo, head, base, retry) => {
       const key = `${repo} ${head} ${base}`, had = localChecks.get(key);
@@ -122,6 +123,17 @@ test("local-only: create a repo, publish a change request, merge it at its head 
   bundle(two, "greet");
   await assert.rejects(writes.request(job, { kind: "codehost.push", args: { only: [{ repo: "local/aidenhq-instance", branch: "greet", sha: two }] } }), /instance repo/);
   assert.deepEqual([git(dir, "--git-dir", inst, "for-each-ref"), git(dir, "--git-dir", inst, "count-objects", "-v")], before);
+
+  // Flow facts: a change opens with its title and author, a second publish of its branch is a push, and a close is a close without a merge.
+  git(ws, "switch", "--quiet", "-c", "other");
+  const publish = async (file) => { writeFileSync(join(ws, file), "x\n"); git(ws, "add", "."); git(ws, "commit", "--quiet", "-m", file); const sha = git(ws, "rev-parse", "HEAD"); bundle(sha, "other"); await file_pr(sha); return sha; };
+  const file_pr = (sha) => file({ kind: "codehost.pr", args: { only: [{ repo: "local/hello", branch: "other", sha }], text: { title: "Other", body: "Why." } } });
+  const first = await publish("a.txt"), second = await publish("b.txt");
+  await file({ kind: "codehost.close", args: { prs: [{ repo: "local/hello", number: 2 }] } });
+  const of = (type) => flowFacts.filter((f) => f.type === type && f.subject === "pr:local/hello#2");
+  assert.deepEqual([of("pr.opened")[0].data.title, of("pr.opened")[0].data.author_kind, of("pr.opened")[0].data.head], ["Other", "agent", first]);
+  assert.deepEqual(of("pr.pushed").map((f) => [f.version, f.data.before, f.data.forced]), [[second, first, false]]);
+  assert.deepEqual(of("pr.closed").map((f) => [f.version, f.data.merged]), [[second, false]]);
 
   // Repos on two code hosts in one write are refused before anything is filed.
   await assert.rejects(writes.request(job, { kind: "codehost.close", args: { prs: [{ repo: "local/hello", number: 1 }, { repo: "acme/app", number: 2 }] } }), /more than one code host/);

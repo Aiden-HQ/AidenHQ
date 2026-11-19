@@ -29,7 +29,7 @@ const OPEN_PRS_QUERY = `query($owner: String!, $repo: String!) {
   repository(owner: $owner, name: $repo) {
     defaultBranchRef { name target { oid ... on Commit { ${ROLLUP} } } }
     pullRequests(states: OPEN, first: 50, orderBy: { field: CREATED_AT, direction: DESC }) {
-      nodes { number url isDraft mergeable isCrossRepository headRefName headRefOid author { __typename login } commits(last: 1) { nodes { commit { ${ROLLUP} } } } }
+      nodes { number url title createdAt isDraft mergeable isCrossRepository headRefName headRefOid authorAssociation author { __typename login } commits(last: 1) { nodes { commit { ${ROLLUP} } } } }
     }
   }
 }`;
@@ -101,6 +101,31 @@ export function startPrWatch(o: PrWatchOptions) {
         if (![403, 404].includes((e as { status?: number }).status ?? 0)) throw e; // not ours to close (the runner filed it) or gone: forget it
       }
       delete state.dependabot[url];
+      save();
+    }
+
+    // Flow: what this watch sees of every open PR, whoever opened it: its opening, a head that moved (a push), and one that left
+    // the list unmerged (closed). Facts are idempotent by head, so the service's own facts for an agent's PR don't repeat.
+    if (o.flow) {
+      const flow = o.flow;
+      state.open ??= {}; // PR url -> { n, head }
+      for (const pr of open) {
+        const url = pr.url.toLowerCase(), seen = state.open[url];
+        if (!seen) flow.opened(o.repo, pr.number, pr.headRefOid, pr.headRefName, new Date(pr.createdAt).toISOString(), undefined, undefined, { title: String(pr.title ?? ""), ...(await flow.authored(pr.author?.login, pr.authorAssociation)) });
+        else if (seen.head !== pr.headRefOid) {
+          const c = await o.gh("GET", `/repos/${o.repo}/compare/${seen.head}...${pr.headRefOid}`, token).catch(() => undefined);
+          flow.pushed(o.repo, pr.number, pr.headRefOid, seen.head, c ? !["ahead", "identical"].includes(String(c.body?.status)) : false, String(pr.author?.login ?? "ghost"));
+        }
+        state.open[url] = { n: pr.number, head: pr.headRefOid };
+      }
+      // A PR missing from a full page may only be beyond it; one missing from a short list is gone.
+      if (open.length < 50) for (const [url, seen] of Object.entries<{ n: number; head: string }>(state.open)) {
+        if (open.some((p) => p.url.toLowerCase() === url)) continue;
+        const r = await o.gh("GET", `/repos/${o.repo}/pulls/${seen.n}`, token);
+        if (r.status >= 300) continue;
+        if (r.body?.state === "closed" && !r.body?.merged_at) flow.closed(o.repo, seen.n, String(r.body.head?.sha ?? seen.head), new Date(r.body.closed_at ?? Date.now()).toISOString());
+        if (r.body?.state === "closed") delete state.open[url];
+      }
       save();
     }
 
