@@ -18,7 +18,7 @@ const state = readiness({ get: (n) => vault.get(n) ?? "", exists: (n) => vault.h
 let accounts, adminSrv, verdict = "ok", exchanged = [];
 const madeApps = [], savedApps = [];
 const githubApp = {
-  defaultOrg: () => "acme-agents", name: () => "AidenHQ acme", ready: () => savedApps.length > 0,
+  defaultOrg: () => "acme-agents", agentsOrg: () => undefined, name: () => "AidenHQ acme", ready: () => savedApps.length > 0,
   convert: async (code, org) => { madeApps.push([code, org]); if (code !== "app-code") throw new Error("GitHub said 404"); return { id: 7, slug: "aidenhq-acme", pem: "-----BEGIN RSA PRIVATE KEY-----", owner: org }; },
   save: (app) => savedApps.push(app),
 };
@@ -33,7 +33,7 @@ before(async () => {
     ...state,
   };
   const cards = { ownerCards: async () => ({ live: [], finished: [] }), decideCard: async () => { throw new Error("no"); } };
-  adminSrv = await serve(createAdmin({ accounts, firstRun, model, githubApp, boardUrl: () => BOARD, cards, ownerMessage: async () => ({ task: { identifier: "WOR-1" } }), owner: async () => ({ status: 200, json: {} }), hosts: () => [HOST], origins: () => [`http://${HOST}`], frameOrigins: () => [] }));
+  adminSrv = await serve(createAdmin({ accounts, firstRun, model, githubApp, boardUrl: () => BOARD, cards, ownerMessage: async () => ({ task: { identifier: "WOR-1" } }), owner: async () => ({ status: 200, json: {} }), hosts: () => [HOST], origins: () => [`http://${HOST}`], frameOrigins: () => [], log: (m, f) => (m === "admin error" ? console.error(m, f) : 0) }));
 });
 after(() => { adminSrv.s.close(); accounts.close(); });
 
@@ -92,25 +92,44 @@ test("model step needs the admin session", async () => {
   assert.equal(r.location, "/auth/sign-in?next=%2Fsetup%2Fmodel");
 });
 
-test("the GitHub App: an admin names the org, GitHub's return (no session) saves it once; nobody else starts one", async () => {
+test("the GitHub App: the owner names the org; GitHub's code is spent on the owner's own session, once; an App is replaced only on request", async () => {
   assert.notEqual((await page("GET", "/setup/github-app", undefined, new Map())).status, 200, "admins only");
   const ask = await page("GET", "/setup/github-app");
   assert.match(ask.body, /value="acme-agents"/);
   assert.equal((await page("POST", "/setup/github-app", { csrf: csrfOf(ask.body), org: "-bad-" })).status, 400);
-  const go = await page("POST", "/setup/github-app", { csrf: csrfOf(ask.body), org: "acme-agents" });
-  assert.match(go.headers["content-security-policy"], /form-action 'self' https:\/\/github\.com;/);
-  const state = /settings\/apps\/new\?state=([\w-]{22})"/.exec(go.body)[1];
+  const start = async () => {
+    const go = await page("POST", "/setup/github-app", { csrf: csrfOf(ask.body), org: "acme-agents", replace: "1" });
+    assert.match(go.headers["content-security-policy"], /form-action 'self' https:\/\/github\.com;/);
+    return { go, state: /settings\/apps\/new\?state=([\w-]{22})"/.exec(go.body)[1] };
+  };
+  const { go, state } = await start();
   const manifest = JSON.parse(/name="manifest" value="([^"]+)"/.exec(go.body)[1].replace(/&#34;/g, '"').replace(/&#38;/g, "&"));
   assert.equal(manifest.redirect_url, `http://${HOST}/setup/github-app/${state}`);
-  // GitHub's return is cross-site: no session cookie. The state must match, once.
-  assert.equal((await page("GET", `/setup/github-app/${state}?code=app-code&state=other`, undefined, new Map())).status, 400);
-  const go2 = await page("POST", "/setup/github-app", { csrf: csrfOf(ask.body), org: "acme-agents" });
-  const state2 = /state=([\w-]{22})"/.exec(go2.body)[1];
-  const back = await page("GET", `/setup/github-app/${state2}?code=app-code&state=${state2}`, undefined, new Map());
-  assert.equal(back.status, 200);
-  assert.match(back.body, /https:\/\/github\.com\/apps\/aidenhq-acme\/installations\/new/);
-  assert.ok(!back.body.includes("PRIVATE KEY"), "the key is never shown");
+  // GitHub's return is cross-site (no session): it keeps the code and moves on same-site. A wrong state spends the entry.
+  await page("GET", `/setup/github-app/${state}?code=app-code&state=other`, undefined, new Map());
+  assert.equal((await page("GET", `/setup/github-app?finish=${state}`)).status, 400);
+  assert.equal(savedApps.length, 0);
+  const { state: s2 } = await start();
+  const back = await page("GET", `/setup/github-app/${s2}?code=app-code&state=${s2}`, undefined, new Map());
+  assert.match(back.body, new RegExp(`url=/setup/github-app\\?finish=${s2}`));
+  assert.equal(savedApps.length, 0, "nothing saved without the owner's session");
+  const done = await page("GET", `/setup/github-app?finish=${s2}`);
+  assert.match(done.body, /https:\/\/github\.com\/apps\/aidenhq-acme\/installations\/new/);
+  assert.ok(!done.body.includes("PRIVATE KEY"), "the key is never shown");
   assert.deepEqual(savedApps.map((a) => [a.id, a.owner]), [[7, "acme-agents"]]);
-  assert.equal((await page("GET", `/setup/github-app/${state2}?code=app-code&state=${state2}`, undefined, new Map())).status, 400, "spent");
+  assert.equal((await page("GET", `/setup/github-app?finish=${s2}`)).status, 400, "spent");
+  // An App exists: a new one only when the owner ticks Replace.
+  const again = await page("GET", "/setup/github-app");
+  assert.match(again.body, /name="replace"/);
+  assert.match((await page("POST", "/setup/github-app", { csrf: csrfOf(again.body), org: "acme-agents" })).body, /already set up/);
   assert.equal(savedApps.length, 1);
+});
+
+test("the GitHub App is the owner's: another admin can't start one", async () => {
+  const notOwner = { ...accounts, sessionOf: async (req) => { const s = await accounts.sessionOf(req); return s && { ...s, account: { ...s.account, owner: false } }; } };
+  const srv = await serve(createAdmin({ accounts: notOwner, githubApp, cards: { ownerCards: async () => ({ live: [], finished: [] }), decideCard: async () => { throw new Error("no"); } }, ownerMessage: async () => ({}), owner: async () => ({ status: 200, json: {} }), hosts: () => [HOST], origins: () => [`http://${HOST}`], frameOrigins: () => [] }));
+  try {
+    const r = await new Promise((ok, no) => { const q = request(`${srv.url}/setup/github-app`, { headers: { host: HOST, cookie: [...jar].map(([k, v]) => `${k}=${v}`).join("; ") } }, (res) => { res.resume(); ok(res.statusCode); }); q.on("error", no); q.end(); });
+    assert.equal(r, 403);
+  } finally { srv.s.close(); }
 });

@@ -22,7 +22,7 @@ import { INSTALL_CAP, createGateway, watched } from "./gateway/lib.ts";
 import { createAdmin, type SetupField } from "./admin.ts";
 import { createAuthApi } from "./auth-api.ts";
 import { checkModel, exchange, readiness, startPkce } from "./openrouter-pkce.ts";
-import { convert as convertGithubApp, saveApp as saveGithubApp } from "./github-app.ts";
+import { convert as convertGithubApp, saveApp as saveGithubApp, seedAppId } from "./github-app.ts";
 import { composeRecreate, createModuleSecrets, vaultWriter } from "./module-secrets.ts";
 import { doorSource, readGate } from "./accounts.ts";
 import { routineWake, webhookWake, type Manifest } from "./app-access.ts";
@@ -501,8 +501,10 @@ const model = {
 };
 // The github module's App (github-app.ts), made from the admin pages: its key goes into the vault, the agents org into .env.
 const instanceName = () => /^([a-z0-9-]+)\.aidenhq\.ai$/.exec(String(modulesFile().commit_domain ?? ""))?.[1];
+seedAppId(secretsDir);
 const githubApp = Object.hasOwn(modulesFile().modules ?? {}, "github") ? {
   defaultOrg: () => agentsOrg ?? (instanceName() ? `aidenhq-${instanceName()}` : ""),
+  agentsOrg: () => agentsOrg,
   name: () => `AidenHQ ${instanceName() ?? "fleet"}`,
   ready: () => existsSync(path.join(secretsDir, "github-app", "key.pem")),
   convert: (code: string, org: string) => convertGithubApp(code, org),

@@ -1,7 +1,7 @@
 // The github module's advanced part: this instance's GitHub App ("AidenHQ <instance_name>", owned by the agents org, public so
 // other orgs install it on selected repos), made through GitHub's manifest flow from the kernel's admin pages (admin.ts
 // /setup/github-app): a signed-in admin names the org, GitHub hands back a one-time code, and the kernel converts it and
-// writes the App's id and key into the vault (github-app/{app_id,key.pem}, 0600) and the agents org into the host's .env
+// writes the App's id and key into the vault (github-app/{app_id,key.pem} and github_app_id, 0600) and the agents org into the host's .env
 // (AIDENHQ_GITHUB_AGENTS_ORG). The key goes from GitHub to the vault and nowhere else: never the board, never github-mcp.
 import { appendFileSync, chmodSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -38,16 +38,26 @@ export async function convert(code: string, org: string, fetchImpl: typeof fetch
   return { id: app.id, slug: app.slug, pem: app.pem, owner };
 }
 
+const writeSecret = (dir: string, name: string, value: string) => {
+  const tmp = join(dir, `.${name}.${process.pid}.tmp`);
+  writeFileSync(tmp, value, { mode: 0o600 });
+  chmodSync(tmp, 0o600);
+  renameSync(tmp, join(dir, name));
+};
+
+/** An App made before github_app_id existed (by the old script): its id marks the advanced setup done, once. */
+export function seedAppId(secretsDir: string) {
+  const id = join(secretsDir, "github-app", "app_id");
+  if (secretsDir && existsSync(id) && !existsSync(join(secretsDir, "github_app_id"))) writeSecret(secretsDir, "github_app_id", readFileSync(id, "utf8"));
+}
+
 /** Writes the App into the vault and records the agents org on the host, once (a later App never moves the org). */
 export function saveApp(app: MadeApp, { secretsDir, envFile }: { secretsDir: string; envFile: string }) {
   const dir = join(secretsDir, "github-app");
   mkdirSync(dir, { recursive: true, mode: 0o700 });
-  for (const [name, value] of [["key.pem", app.pem], ["app_id", `${app.id}\n`]] as const) {
-    const tmp = join(dir, `.${name}.${process.pid}.tmp`);
-    writeFileSync(tmp, value, { mode: 0o600 });
-    chmodSync(tmp, 0o600);
-    renameSync(tmp, join(dir, name));
-  }
+  for (const [name, value] of [["key.pem", app.pem], ["app_id", `${app.id}\n`]] as const) writeSecret(dir, name, value);
+  // github_app_id: the github module's advanced setup is done once it exists (its setup flow's secret).
+  writeSecret(secretsDir, "github_app_id", `${app.id}\n`);
   const env = existsSync(envFile) ? readFileSync(envFile, "utf8") : "";
   if (!/^AIDENHQ_GITHUB_AGENTS_ORG=/m.test(env)) appendFileSync(envFile, `${env && !env.endsWith("\n") ? "\n" : ""}AIDENHQ_GITHUB_AGENTS_ORG=${app.owner}\n`);
 }
