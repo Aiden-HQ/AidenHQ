@@ -64,6 +64,9 @@ export const GATE_CORE = [
   // The channels (privileged speaks-as-owner, lean-core 2f): they hold decision tokens and post the owner's words, so their
   // whole process is in the trusted base (slack's executor posts as the bot).
   /^modules\/channel-[^/]+\//,
+  // Slack's channel part (its advanced part, was channel-slack): the manifest that declares it a channel, and its listener.
+  /^modules\/slack\/module\.yaml$/,
+  /^modules\/slack\/connections\/slack-live\//,
   // The AI reviewer (privileged reviewer, lean-core 3c): its service, its policy, its planted cases and its eval.
   /^modules\/ai-reviewer\//,
   // The code host (privileged git-credential, lean-core 3d): the GitHub App's tokens and their narrowing, host git with the
