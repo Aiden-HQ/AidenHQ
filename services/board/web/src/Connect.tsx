@@ -5,7 +5,7 @@
 // needed: the sign-in's per-install values (its `secrets`: saved to the vault, then the proxy restarts with them) and the
 // choice of scopes the vendor offers. One click (back to the board's https address) stays as a link where it exists.
 import { useEffect, useMemo, useState } from "react";
-import { SignInRequired, api, type SignInView } from "./api";
+import { SignInRequired, api, type DeviceCode, type SignInView } from "./api";
 import { connectionStatus, displayName, type SignIn } from "./connections";
 import { useEvents } from "./events";
 import { changes, groupScopes } from "./scopes";
@@ -15,7 +15,7 @@ import "./setup-flow.css";
 export interface Connectable {
   id: string;
   label: string;
-  signIn: Pick<SignIn, "state" | "offer" | "fields"> | null;
+  signIn: Pick<SignIn, "state" | "offer" | "fields" | "mode"> | null;
 }
 
 export type Can = { signIn: boolean; google: boolean };
@@ -62,7 +62,7 @@ export function ConnectButton({ c, variant, size, word, open: startOpen, error, 
   const [open, setOpen] = useState(Boolean(startOpen));
   const [started, setStarted] = useState<Started | undefined>();
   // Nothing to ask: straight to the vendor, and the dialog waits for the address the sign-in ends on.
-  const direct = !c.signIn?.fields?.length && !c.signIn?.offer && !error;
+  const direct = !c.signIn?.fields?.length && !c.signIn?.offer && !error && c.signIn?.mode !== "device";
   const close = () => (setOpen(false), setStarted(undefined), onClose?.());
   const press = () => {
     if (direct) {
@@ -195,6 +195,8 @@ export function ConnectDialog({ c, error, started, onClose }: { c: Connectable; 
   };
 
   const label = view?.label ?? c.label;
+  // A device sign-in: a code to type on the vendor's page, followed here until it lands (nothing opens, nothing to paste).
+  if (view?.mode === "device" && !(view.asks && fields.length)) return <DeviceSignIn c={c} label={label} onClose={onClose} />;
   return (
     <Dialog
       open
@@ -212,7 +214,7 @@ export function ConnectDialog({ c, error, started, onClose }: { c: Connectable; 
         ) : (
           <>
             <Button onClick={onClose}>Cancel</Button>
-            <Button variant="primary" disabled={!view || Boolean(busy) || (on !== null && !on.size)} onClick={() => void connect()}>
+            <Button variant="primary" disabled={!view || Boolean(busy) || Boolean(view.preflight) || (on !== null && !on.size)} onClick={() => void connect()}>
               {busy || (error ? "Try again" : "Connect")}
             </Button>
           </>
@@ -220,6 +222,7 @@ export function ConnectDialog({ c, error, started, onClose }: { c: Connectable; 
       }
     >
       {problem && <Banner tone="danger">{problem}</Banner>}
+      {view?.preflight && <Banner tone="warn">{view.preflight}</Banner>}
       {phase === "paste" && view?.redirect && (
         <>
           <ol className="connect-steps">
@@ -326,3 +329,138 @@ function Picker({ offer, on, setOn }: { offer: NonNullable<SignInView["scopes"]>
 
 /** "Read, Search and Write". */
 const describe = (labels: string[]) => (labels.length < 2 ? labels.join("") : `${labels.slice(0, -1).join(", ")} and ${labels.at(-1)}`);
+
+const host = (u: string) => (URL.canParse(u) ? new URL(u).host : u);
+const minutes = (ms: number) => (ms < 60_000 ? "under a minute" : `${Math.ceil(ms / 60_000)} minutes`);
+
+/**
+ * A device sign-in (board.signins `mode: device`, GitHub's model): the board asks for a code, the person types it on the vendor's
+ * page, and the board follows it until the token lands. The code belongs to this session; closing cancels it.
+ */
+export function DeviceSignIn({ c, label, onClose }: { c: Connectable; label: string; onClose: () => void }) {
+  const [code, setCode] = useState<(DeviceCode & { until: number }) | null>(null);
+  const [problem, setProblem] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [copied, setCopied] = useState(false);
+  const [now, setNow] = useState(Date.now());
+  const say = (e: unknown) => setProblem(e instanceof SignInRequired ? "Your session ended. Sign in again, then press Connect." : (e as Error).message);
+  const start = () => {
+    setBusy(true);
+    setProblem("");
+    api.deviceStart(c.id).then((r) => setCode({ ...r, until: Date.now() + r.expires_in * 1000 }), say).finally(() => setBusy(false));
+  };
+  useEffect(start, [c.id]);
+  // Follow it: the board asks the connection, which polls the vendor itself.
+  useEffect(() => {
+    if (!code) return;
+    const t = setInterval(() => {
+      setNow(Date.now());
+      void api.deviceProgress(c.id).then((p) => {
+        if (p.state === "ok") return onClose();
+        if (p.state === "pending") return;
+        setCode(null);
+        setProblem(p.state === "expired" ? "The code expired before it was entered. Get a new one." : `${p.detail ?? "The sign-in stopped."} Get a new code to try again.`);
+      }, () => {});
+    }, Math.max(2, code.interval) * 1000);
+    return () => clearInterval(t);
+  }, [code, c.id]);
+  const close = () => {
+    if (code) void api.deviceCancel(c.id).catch(() => {});
+    onClose();
+  };
+  const copy = () => void navigator.clipboard?.writeText(code!.user_code).then(() => (setCopied(true), setTimeout(() => setCopied(false), 1500)), () => {});
+  return (
+    <Dialog
+      open
+      onClose={close}
+      title={`Connect ${label}`}
+      actions={
+        <>
+          <Button onClick={close}>Cancel</Button>
+          {code ? (
+            <a className="btn primary" href={code.verification_uri_complete ?? code.verification_uri} target="_blank" rel="noopener noreferrer">
+              Open {host(code.verification_uri)}
+            </a>
+          ) : (
+            <Button variant="primary" disabled={busy} onClick={start}>{busy ? "Getting a code…" : "Get a new code"}</Button>
+          )}
+        </>
+      }
+    >
+      {problem && <Banner tone="danger">{problem}</Banner>}
+      {code && (
+        <div className="devsign">
+          <p className="devsign-lead">Enter this code on {host(code.verification_uri)} and allow access.</p>
+          <div className="devsign-code">
+            <output aria-label="Your code">{code.user_code}</output>
+            <Button size="sm" variant="quiet" onClick={copy}>{copied ? "Copied" : "Copy"}</Button>
+          </div>
+          <p className="devsign-wait">
+            <span className="devsign-pulse" aria-hidden />
+            Waiting for {label}. The code works for {minutes(code.until - now)}.
+          </p>
+        </div>
+      )}
+      {!code && !problem && <p className="devsign-lead">Getting a code from {label}…</p>}
+    </Dialog>
+  );
+}
+
+/**
+ * Google with a Desktop client: its sign-in ends on a loopback address that doesn't load (Google sends a Desktop client back
+ * only there). The tab opens Google's consent; the person pastes the address it ended on.
+ */
+export function GoogleConnect({ account, error, onClose }: { account?: string | null; error?: string | null; onClose: () => void }) {
+  const [opened, setOpened] = useState(false);
+  const [pasted, setPasted] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [problem, setProblem] = useState(error ? error.replace(/^Couldn't connect Google: /, "") : "");
+  const path = `/google/connect?go=1${account ? `&account=${encodeURIComponent(account)}` : ""}`;
+  const open = () => {
+    const w = newTab();
+    go(w, path);
+    setOpened(true);
+  };
+  const finish = async () => {
+    setBusy(true);
+    setProblem("");
+    try {
+      await api.googleFinish(pasted.trim());
+      onClose();
+    } catch (e) {
+      setProblem(e instanceof SignInRequired ? "Your session ended. Sign in again, then press Connect." : (e as Error).message.replace(/^Couldn't connect Google: (.)/, (_m, x: string) => x.toUpperCase()));
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <Dialog
+      open
+      onClose={onClose}
+      title={account ? `Reconnect ${account}` : "Connect Google"}
+      actions={
+        <>
+          <Button onClick={onClose}>Cancel</Button>
+          {opened ? (
+            <Button variant="primary" disabled={busy || !pasted.trim()} onClick={() => void finish()}>{busy ? "Finishing…" : "Finish"}</Button>
+          ) : (
+            <Button variant="primary" onClick={open}>Open Google</Button>
+          )}
+        </>
+      }
+    >
+      {problem && <Banner tone="danger">{problem}</Banner>}
+      <ol className="connect-steps">
+        <li>Sign in to Google in the tab that opens and allow access.</li>
+        <li>Google then sends you to a page that can't load. Copy its full address and paste it here.</li>
+      </ol>
+      {opened && (
+        <label className="ui-field">
+          <span className="ui-field-label">Address of that page</span>
+          <input className="ui-input" type="url" inputMode="url" spellCheck={false} autoComplete="off" autoFocus placeholder="http://localhost:3121/google/callback?…" value={pasted} onChange={(e) => setPasted(e.target.value)} onKeyDown={(e) => e.key === "Enter" && void finish()} />
+          <span className="ui-field-help">It starts with http://localhost:3121/google/callback and holds a one-time code for this sign-in.</span>
+        </label>
+      )}
+    </Dialog>
+  );
+}

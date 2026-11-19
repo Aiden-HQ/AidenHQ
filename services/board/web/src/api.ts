@@ -52,6 +52,36 @@ export interface SignInView {
   redirect: string | null;
   /** The board's https name a one-click sign-in returns to (a company may have to allow it first); null: none. */
   oneClick: string | null;
+  /** redirect: the vendor sends the browser back; device: a code typed on the vendor's page (DeviceSignIn in Connect.tsx). */
+  mode?: "redirect" | "device";
+  /** What stops this sign-in before it starts, in words. */
+  preflight?: string | null;
+}
+
+/** A device sign-in's code, for the person to type on the vendor's page; the board then follows it. */
+export interface DeviceCode { user_code: string; verification_uri: string; verification_uri_complete?: string; expires_in: number; interval: number }
+export interface DeviceProgress { state: "idle" | "pending" | "ok" | "expired" | "denied" | "cancelled" | "failed"; detail?: string }
+
+/** Organisations that run internal apps (GET /api/organisations): the connections each fills, and the one the email suggests. */
+export interface Organisations {
+  organisations: { id: string; name: string; domains: string[]; connections: string[] }[];
+  suggested: string | null;
+  chosen: string | null;
+}
+
+/** A module's advanced flow: the person's own app, for what the basic sign-in can't do. */
+export interface AdvancedFlowView {
+  title: string;
+  why: string;
+  effort: string;
+  admin?: string;
+  steps: string;
+  capabilities: string[];
+  secrets?: string[];
+  fields?: { secret: string; label: string; pattern: string; help?: string }[];
+  console_url?: string;
+  pair_url?: string;
+  done: boolean;
 }
 
 /** One module's setup flow as GET /api/setup-flows returns it (services/board/src/setup-flows.ts). */
@@ -89,6 +119,9 @@ export interface SetupFlowView {
   dismissed: boolean;
   /** A module with modes (board.setup_flows `choose`): what is live, what the owner picked, and the options. */
   choose?: SetupChoice;
+  /** Who else may need to approve. */
+  admin?: string;
+  advanced?: AdvancedFlowView;
 }
 
 export interface SetupChoice {
@@ -183,6 +216,12 @@ export const api = {
   scorecard: (id: string) => call<Scorecard>("GET", `/api/agents/${encodeURIComponent(id)}/scorecard`),
   signIn: (id: string) => call<SignInView>("GET", `/api/sign-ins/${encodeURIComponent(id)}`),
   signInFinish: (id: string, url: string) => call<{ ok: boolean }>("POST", `/api/sign-ins/${encodeURIComponent(id)}/finish`, { url }),
+  deviceStart: (id: string) => call<DeviceCode>("POST", `/api/sign-ins/${encodeURIComponent(id)}/device`, {}),
+  deviceProgress: (id: string) => call<DeviceProgress>("GET", `/api/sign-ins/${encodeURIComponent(id)}/device`),
+  deviceCancel: (id: string) => call<{ ok: boolean }>("POST", `/api/sign-ins/${encodeURIComponent(id)}/device/cancel`, {}),
+  googleFinish: (url: string) => call<{ ok: boolean }>("POST", "/api/google/finish", { url }),
+  organisations: () => call<Organisations>("GET", "/api/organisations"),
+  organisationApply: (id: string) => call<{ ok: boolean; results: { module: string; secret: string; ok: boolean; error?: string }[] }>("POST", `/api/organisations/${encodeURIComponent(id)}/apply`, {}),
   signInSecret: (id: string, secret: string, value: string) => call<{ ok: boolean }>("POST", `/api/sign-ins/${encodeURIComponent(id)}/secret`, { secret, value }),
   setupFlows: () => call<{ flows: SetupFlowView[]; board_url: string; named: boolean }>("GET", "/api/setup-flows"),
   setupSecret: (module: string, secret: string, value: string) => call<{ ok: boolean }>("POST", `/api/setup-flows/${module}/secret`, { secret, value }),

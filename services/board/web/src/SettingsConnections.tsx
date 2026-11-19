@@ -1,7 +1,8 @@
 // Settings > Connections: tiles, what needs you first (with Connect, Reconnect or Set up on the tile), then what is connected,
 // then what is built in; a tile opens its dialog (state, grants, health, Google accounts). Connect is one click (Connect.tsx).
 import { useEffect, useState } from "react";
-import { ConnectButton, ConnectDialog } from "./Connect";
+import { ConnectButton, ConnectDialog, GoogleConnect } from "./Connect";
+import { OrganisationPicker } from "./Organisation";
 import { STATUS_LABEL, connectionStatus, displayName, sourceStatus, type ConnectionRow, type ConnectionsData, type Status, type Verdict } from "./connections";
 import { Group, Page, Row } from "./settings-ui";
 import { SetupButton } from "./SetupButton";
@@ -32,7 +33,7 @@ export function ConnectionsPage({ conns, can, refresh, onRefresh }: { conns: Con
   const tiles = (list: typeof rows) => (
     <TileGrid>
       {list.map(({ r, v }) => (
-        <ConnectionTile key={r.name} r={r} v={v} can={can} connect={q.get("connect") === r.name ? { error: q.get("error") } : undefined} onAsked={clear} />
+        <ConnectionTile key={r.name} r={r} v={v} can={can} connect={q.get("connect") === r.name ? { error: q.get("error"), account: q.get("account") } : undefined} onAsked={clear} />
       ))}
     </TileGrid>
   );
@@ -53,6 +54,7 @@ export function ConnectionsPage({ conns, can, refresh, onRefresh }: { conns: Con
           {q.get("error")} Nothing changed; press Connect to try again.
         </Banner>
       )}
+      <OrganisationPicker compact onApplied={onRefresh} />
       {needs.length > 0 && <Section title="Needs you" count={needs.length}>{tiles(needs)}</Section>}
       {idle.length > 0 && <Section title="Not connected yet" count={idle.length} hint="Optional: connect one when you want agents to use it.">{tiles(idle)}</Section>}
       {ok.length > 0 && <Section title="Connected" count={ok.length}>{tiles(ok)}</Section>}
@@ -74,7 +76,7 @@ export function ConnectionsPage({ conns, can, refresh, onRefresh }: { conns: Con
 }
 
 /** One connection: a tile with its state and its one action (Connect, Reconnect, Set up); everything else in its dialog. */
-function ConnectionTile({ r, v, can, connect: asked, onAsked }: { r: ConnectionRow; v: Verdict; can: Can; connect?: { error: string | null }; onAsked: () => void }) {
+function ConnectionTile({ r, v, can, connect: asked, onAsked }: { r: ConnectionRow; v: Verdict; can: Can; connect?: { error: string | null; account?: string | null }; onAsked: () => void }) {
   const [open, setOpen] = useState(false);
   const c = { id: r.name, label: displayName(r.name), signIn: r.signIn };
   // A module sign-in connects in one click (Connect.tsx); Google's own Connect is a link; one that needs its client made first
@@ -114,7 +116,7 @@ function ConnectionTile({ r, v, can, connect: asked, onAsked }: { r: ConnectionR
       >
         {v.reason}
       </Tile>
-      {asked && <ConnectDialog c={c} error={asked.error} onClose={onAsked} />}
+      {asked && (r.google ? <GoogleConnect account={asked.account} error={asked.error} onClose={onAsked} /> : <ConnectDialog c={c} error={asked.error} onClose={onAsked} />)}
       <Dialog open={open} onClose={() => setOpen(false)} title={displayName(r.name)} wide actions={connect ?? again}>
         <div className="st-conn">
           <p className="st-conn-state">
