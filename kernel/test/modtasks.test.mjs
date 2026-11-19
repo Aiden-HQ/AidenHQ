@@ -117,10 +117,14 @@ test("the code host closes its own stranded release bump, and no other module's 
   const close = (key, id, extra) => fetch(`${url}/v1/tasks/${id}/close`, { method: "POST", headers: { authorization: `Bearer ${key}` }, body: JSON.stringify({ status: "done", body: "**Not landed:** it was approved but failed: the service codehost-github isn't running.", ...extra }) });
   const list = (key, source) => fetch(`${url}/v1/tasks?source=${encodeURIComponent(source)}`, { headers: { authorization: `Bearer ${key}` } });
   const card = (id, ...modules) => cards.set(id, modules.map((module) => ({ module })));
-  /** A stranded bump as the runner filed it, straight into the control plane: the source marker, no module marker, no agent creator. */
-  const seed = (source, n) => {
+  /**
+   * A stranded bump as the runner filed it, straight into the control plane: the source marker, no module marker, no agent
+   * creator, and the createdAt the control plane assigns (just after the ms stamp the runner's marker carries).
+   */
+  const seed = (source, n, createdAt) => {
     const id = `${String(n).padStart(8, "0")}-1111-4111-8111-111111111111`;
-    const issue = { id, identifier: `ACME-${n}`, title: "Pin bump: this instance's product", status: "in_review", description: `Moves the pin.\n\n<!-- source:${source} -->`, assigneeAgentId: PE };
+    const stamp = /release:instance:(\d+)/.exec(source)?.[1];
+    const issue = { id, identifier: `ACME-${n}`, title: "Pin bump: this instance's product", status: "in_review", createdAt: createdAt ?? (stamp ? new Date(Number(stamp) + 900).toISOString() : "2026-11-17T09:00:00Z"), description: `Moves the pin.\n\n<!-- source:${source} -->`, assigneeAgentId: PE };
     made.set(id, issue);
     return issue;
   };
@@ -138,6 +142,16 @@ test("the code host closes its own stranded release bump, and no other module's 
   assert.equal(bump.status, "done");
   const otherUncarded = seed("release:instance:1795022489867", 8);
   assert.equal((await close("github", otherUncarded.id, { uncarded: true })).status, 403, "never another module");
+
+  // A forged marker on a task the control plane created after the runner retired is refused: the stamp is not the proof.
+  const forged = seed("release:instance:1795022489866", 11, "2026-11-19T10:00:00.000Z");
+  assert.equal((await close("codehost", forged.id, { uncarded: true })).status, 403, "a task created after the switch is never the runner's");
+  const skew = seed("release:instance:1795022489866", 12, "2026-11-18T12:00:00.000Z");
+  assert.equal((await close("codehost", skew.id, { uncarded: true })).status, 403, "a createdAt hours from its stamp is not the runner's order");
+  const noCreated = seed("release:instance:1795022489866", 13, null);
+  noCreated.createdAt = undefined;
+  assert.equal((await close("codehost", noCreated.id, { uncarded: true })).status, 403, "no createdAt from the control plane: refused");
+  assert.deepEqual([forged.status, skew.status], ["in_review", "in_review"], "a forged marker changes nothing");
 
   const other = seed("dependabot:acme/app/7", 2);
 
@@ -168,7 +182,7 @@ test("the code host closes its own stranded release bump, and no other module's 
   const prose = seed("dependabot:acme/app/8", 7);
   prose.description = "mentions release:instance: in prose only";
   const found = await (await list("codehost", "release:instance:")).json();
-  assert.deepEqual(found.tasks.map((i) => i.identifier).sort(), [foreign.identifier, mixed.identifier, agentMade.identifier, shaNoCard.identifier, otherUncarded.identifier].sort(), "the carded bumps were closed above, so they are no longer open");
+  assert.deepEqual(found.tasks.map((i) => i.identifier).sort(), [foreign.identifier, mixed.identifier, agentMade.identifier, shaNoCard.identifier, otherUncarded.identifier, forged.identifier, skew.identifier, noCreated.identifier].sort(), "the carded bumps were closed above, so they are no longer open");
   assert.ok(!found.tasks.some((i) => i.id === other.id || i.id === prose.id || i.id === bump.id || i.id === carded.id || i.id === sha.id), "another family, prose, or a closed task is never listed");
   assert.equal((await list("codehost", "dependabot:")).status, 400, "no other family is listable");
   assert.equal((await list("github", "release:instance:")).status, 400, "nor by another module");

@@ -20,7 +20,13 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 export const RELEASE_SOURCE = "release:instance:";
 const RELEASE_MARK = /<!--\s*source:(release:instance:(?:[0-9a-f]{40}|\d+))\s*-->/;
 /** The runner-era stamp alone (a millisecond count, never the train's 40-hex sha): the only card-less bump a close may settle. */
-const RUNNER_MARK = /<!--\s*source:release:instance:\d+\s*-->/;
+const RUNNER_MARK = /<!--\s*source:release:instance:(\d+)\s*-->/;
+/** The runner stopped filing pin bumps when the big switch landed (#646, 03ecfcda at 2026-11-18T22:23:32+04:00). A task the
+ * control plane says was created after it cannot be a runner-era bump, whatever its description claims: that boundary is what
+ * keeps this card-less path to the legacy family instead of trusting a marker anyone can type. */
+const RUNNER_RETIRED = Date.parse("2026-11-18T18:23:32Z");
+/** A runner bump's marker is `Date.now()` taken just before its POST: the control plane's own createdAt lands a moment after it. */
+const RUNNER_WINDOW_MS = 60_000;
 /** The code host files these; the family is never opened up to another module. */
 const RELEASE_MODULE = "codehost-github";
 
@@ -78,14 +84,22 @@ export function createModuleTasks({ db, owner, agents, rubric, applies = () => [
 
   /**
    * The one bump that legitimately has no card: the runner filed it straight through the control plane with its millisecond
-   * stamp (`release:instance:<ms>`) and never carded it. The candidate sweep settles exactly that task, once it is past the
-   * batch window, with "no apply card was ever filed". A separate predicate, never an empty `every()`: a 40-hex bump with no
-   * card is the current train's (it carries the module marker, closed above) and a 40-hex task without that marker is refused.
+   * stamp (`release:instance:<ms>`) and never carded it. The sweep settles exactly that task, once it is past the batch window,
+   * with "no apply card was ever filed".
+   *
+   * The marker alone proves nothing (anyone can type it), so this rests on the control plane's own record of the task: it was
+   * created before the runner retired, and its createdAt follows its marker's stamp by under a minute — the order the runner's
+   * own `Date.now()` then POST produces, which a description edited after the fact cannot hold. A task created since the switch
+   * is never the runner's, and a 40-hex (train-era) task is closed by the rule above. Never an empty `every()`.
    */
-  function runnerBumpUncarded(module: string, task: { id: string; description?: unknown }) {
+  function runnerBumpUncarded(module: string, task: { id: string; description?: unknown; createdAt?: unknown }) {
     const description = String(task.description ?? "");
     if (module !== RELEASE_MODULE || !RUNNER_MARK.test(description) || /<!--\s*aidenhq-module:/.test(description)) return false;
-    return applies(task.id).length === 0;
+    if (applies(task.id).length > 0) return false;
+    const stamp = Number(RUNNER_MARK.exec(description)![1]);
+    const created = Date.parse(String(task.createdAt ?? ""));
+    if (!Number.isFinite(stamp) || !Number.isFinite(created)) return false;
+    return created < RUNNER_RETIRED && created >= stamp && created - stamp <= RUNNER_WINDOW_MS;
   }
 
   /**

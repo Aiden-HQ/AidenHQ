@@ -60,6 +60,11 @@ The family is the whole widening: a task outside `release:instance:` keeps the m
 
 **The one card-less bump.** The runner that preceded the release train filed its bump with its millisecond stamp and
 never carded it. The sweep settles that task with the same close route and `"uncarded": true` in the body. The flag
-admits only a `release:instance:<ms stamp>` task with no module marker and no `kernel.apply` record at all; a 40-hex
-train-era task with no card, or any task with a record, is refused. It is a separate body field on purpose: the
-ownership rule above never admits a record-less task by way of an empty match.
+admits only a `release:instance:<ms stamp>` task with no module marker and no `kernel.apply` record at all.
+
+Because a description can say anything, the marker is not the proof: the kernel also requires the control plane's own
+`createdAt` for the task — before the runner retired with the big switch (2026-11-18T18:23:32Z) and no more than a
+minute after the stamp its marker names, the order the runner's `Date.now()`-then-POST produces. A task created after
+the switch, or one whose stamp and creation are out of step, is refused however its text reads; a 40-hex train-era task
+with no card, or any task with a record, is refused too. It is a separate body field on purpose: the ownership rule
+above never admits a record-less task by way of an empty match.
