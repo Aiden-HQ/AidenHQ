@@ -521,6 +521,18 @@ async function fileGrade(issueId, grade) {
     return { graded: false, grade_error: String(err.message ?? err).slice(0, 200) };
   }
 }
+/** A graded delegation of this caller's still parked (its rubric failed to file): a retry of the delegation starts it. */
+const parked = (i, me, grade) => Boolean(grade) && i.status === "backlog" && i.createdByAgentId === me.id;
+/**
+ * Files a graded task's rubric, then starts the task (backlog to todo). A filing that fails leaves the task parked and is an
+ * error: the same delegation again (its marker, or its open sibling) files the rubric (idempotent) and starts it.
+ */
+async function startGraded(i, grade) {
+  const graded = await fileGrade(i.id, grade);
+  if (grade && !graded.graded) throw new Error(`${i.identifier} is filed but not started: its rubric couldn't be filed (${graded.grade_error}). Call the same delegation again in a minute to start it.`);
+  if (i.status === "backlog") await api("PATCH", `/api/issues/${issueRef(i.id)}`, { status: "todo" });
+  return graded;
+}
 /** A close the finish gate held or reopened (202): its last comment part goes on as a comment (it is evidence), the status is the check's. */
 async function heldClose(issue, f, comment) {
   if (!f.held && !f.reopened) return undefined;
@@ -559,6 +571,7 @@ async function assignTask(me, target, { title, description, parent, marker, prio
     if (!key) throw new Error("invalid marker");
     src = `delegate:${p?.identifier ?? "root"}:${key}`;
     const existing = await findByMarker(src, `${OPEN_STATUSES},done,cancelled`);
+    if (existing && parked(existing, me, grade)) return { identifier: existing.identifier, created: false, ...(await startGraded(existing, grade)) };
     if (existing) return { identifier: existing.identifier, created: false };
   }
   const body = {
@@ -573,12 +586,14 @@ async function assignTask(me, target, { title, description, parent, marker, prio
   };
   const open = p ? await openSiblings(p.id, target) : [];
   const same = open.find((o) => similar(o.title, body.title) >= SAME_TITLE || similar(o.description, body.description) >= SAME_BRIEF);
+  if (same && parked(same, me, grade)) return { identifier: same.identifier, created: false, assignee: target.name, ...(await startGraded(same, grade)) };
   if (same)
     throw new Error(
       `Refused: ${same.identifier} ("${String(same.title).slice(0, 120)}", ${same.status}) is already ${(await nameOf(same.assigneeAgentId)) ?? target.name}'s open task for this brief under ${p.identifier}. To change it, comment on ${same.identifier} with what changed (task_comment wakes them). To replace it, cancel ${same.identifier} first (task_set_status cancelled, with why), then delegate again.`,
     );
-  const i = await api("POST", `/api/companies/${encodeURIComponent(COMPANY())}/issues`, body);
-  const graded = await fileGrade(i.id, grade);
+  // A graded task is filed parked and starts only once its rubric is on file, so it never runs (and closes) ungraded.
+  const i = await api("POST", `/api/companies/${encodeURIComponent(COMPANY())}/issues`, { ...body, ...(grade ? { status: "backlog" } : {}) });
+  const graded = await startGraded(i, grade);
   const also = open.length ? { open_tasks: `${target.name} still has ${open.map((o) => `${o.identifier} ("${String(o.title).slice(0, 80)}", ${o.status})`).join(", ")} open under ${p.identifier}: if this task replaces one, cancel it.` } : {};
   return { identifier: i.identifier, created: true, assignee: target.name, ...graded, ...also };
 }
@@ -779,16 +794,20 @@ const TOOLS = {
       // Idempotency keys expire after 7 days in Paperclip, so also look for an open task
       // (or, with dedupe_closed, a closed one) that already carries one of these markers.
       const statuses = dedupe_closed ? `${OPEN_STATUSES},done,cancelled` : OPEN_STATUSES;
-      for (const k of new Set(markers)) {
-        const existing = await findByMarker(k, statuses);
-        if (existing) return { ...brief(existing), deduplicated: true };
-      }
       // Work handed to a graded agent is graded as a delegation is (refused here, before it is created, without a deliverable).
       const grade = target ? gradeFor(target, rubric, deliverable, description) : undefined;
+      const start = status !== "backlog";
+      for (const k of new Set(markers)) {
+        const existing = await findByMarker(k, statuses);
+        // A graded task left parked by a failed rubric filing: this retry files it and starts it.
+        if (existing && start && parked(existing, { id: g.id }, grade)) return { ...brief(existing), deduplicated: true, ...(await startGraded(existing, grade)) };
+        if (existing) return { ...brief(existing), deduplicated: true };
+      }
       const body = {
         title: String(title).slice(0, 200),
         description: `${origin}${String(description).replace(/<!--|-->/g, "").slice(0, 60_000)}${gradedText(grade)}\n\n<!-- source:${m} -->`,
-        status: status === "backlog" && assigneeAgent ? "backlog" : "todo",
+        // A graded task is filed parked and starts only once its rubric is on file (startGraded), so it never runs ungraded.
+        status: (status === "backlog" || grade) && assigneeAgent ? "backlog" : "todo",
         priority: PRIORITIES.includes(priority) ? priority : "medium",
         labelIds: await labelIds(labels ?? []),
         idempotencyKey: idempotencyKey(m),
@@ -803,7 +822,9 @@ const TOOLS = {
         body.assigneeUserId = owner;
       }
       const i = await api("POST", `/api/companies/${encodeURIComponent(COMPANY())}/issues`, body);
-      return { ...brief(i), deduplicated: Boolean(i.deduplicated), ...(i.deduplicated ? {} : await fileGrade(i.id, grade)), ...(warning ? { warning } : {}) };
+      if (i.deduplicated) return { ...brief(i), deduplicated: true, ...(warning ? { warning } : {}) };
+      const graded = start ? await startGraded(i, grade) : await fileGrade(i.id, grade);
+      return { ...brief(start && grade ? { ...i, status: "todo" } : i), deduplicated: false, ...graded, ...(warning ? { warning } : {}) };
     },
   },
   task_team: {

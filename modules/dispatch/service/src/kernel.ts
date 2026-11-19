@@ -13,7 +13,8 @@ export interface Kernel {
   claim(limit: number): Promise<Wake[]>;
   drop(key: string, why: string): Promise<void>;
   task(id: string): Promise<Issue>;
-  comments(task: string): Promise<Comment[]>;
+  /** A task's comments, oldest first: the newest 200, or with `after` (a comment id; "" for the first) up to 500 from there on. */
+  comments(task: string, after?: string): Promise<Comment[]>;
   agent(id: string): Promise<Agent | undefined>;
   directory(): Promise<Directory>;
   /** Admission (F3): one job for the claimed wake (`full_prompt`: what runs when no session is resumed), or busy (429: the wake stays claimed and comes back). */
@@ -40,6 +41,8 @@ export interface Kernel {
   children(parent: string, company: string): Promise<Issue[]>;
   /** A labelled wake notice on a task (role kernel.wake): it wakes the task's agent, as a module's words. */
   wake(task: string, text: string): Promise<void>;
+  /** A scheduled wake for the task's assignee at `at` (role kernel.wake; once per `id`): a job that couldn't start is tried again. */
+  schedule(b: { task: string; at: number; cause: string; id: string }): Promise<void>;
   /** A task of this module's fixed text for an agent (role kernel.tasks), once per source; 409 when it is paused or gone. */
   fileTask(b: { agent: string; title: string; description: string; source: string }): Promise<void>;
   /** A message for the owner through the one notify (role kernel.owner-notice). */
@@ -57,7 +60,9 @@ export function createKernel(url: string, token: string, fetcher: typeof fetch =
     claim: async (limit) => (await call("POST", "/v1/wakes/claim", { limit })).wakes ?? [],
     drop: async (key, why) => void (await call("POST", `/v1/wakes/${e(key)}/drop`, { why })),
     task: (id) => call("GET", `/v1/cp/read/api/issues/${e(id)}`),
-    comments: async (task) => ((await call("GET", `/v1/cp/read/api/issues/${e(task)}/comments?order=desc&limit=200`)) as Comment[]).reverse(),
+    comments: async (task, after) => (after === undefined
+      ? ((await call("GET", `/v1/cp/read/api/issues/${e(task)}/comments?order=desc&limit=200`)) as Comment[]).reverse()
+      : call("GET", `/v1/cp/read/api/issues/${e(task)}/comments?order=asc&limit=500${after ? `&after=${e(after)}` : ""}`)),
     agent: (id) => call("GET", `/v1/cp/read/api/agents/${e(id)}`).catch((err: KernelError) => (err.status === 404 ? undefined : Promise.reject(err))),
     directory: async () => (await call("GET", "/v1/agents")).agents ?? {},
     start: (req) => call("POST", "/v1/jobs", req).then((job) => ({ job }), (err: KernelError) => (err.status === 429 ? { busy: true as const } : Promise.reject(err))),
@@ -72,6 +77,7 @@ export function createKernel(url: string, token: string, fetcher: typeof fetch =
     cancelRoutineRun: async (task, why, body) => void (await call("POST", "/v1/routines/cancel", { task, why, body })),
     children: (parent, company) => call("GET", `/v1/cp/read/api/companies/${e(company)}/issues?parentId=${e(parent)}&status=todo,in_progress,in_review,blocked,done,cancelled&limit=200`).then((l: Issue[]) => l.filter((i) => i.parentId === parent)),
     wake: async (task, text) => void (await call("POST", "/v1/wakes", { task, text })),
+    schedule: async (b) => void (await call("POST", "/v1/wakes", b)),
     fileTask: async (b) => void (await call("POST", "/v1/tasks", b)),
     notify: async (b) => void (await call("POST", "/v1/notify", b)),
     note: async (wake, body) => void (await call("POST", `/v1/wakes/${e(wake)}/note`, { body })),

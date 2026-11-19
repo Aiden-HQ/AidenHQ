@@ -7,7 +7,7 @@ import { createDispatch } from "../service/src/loop.ts";
 import { KernelError } from "../service/src/kernel.ts";
 
 function fake({ task, comments = [], directory = {}, tasks = {}, paused = [] }) {
-  const k = { inbox: [], jobs: new Map(), started: [], inputs: [], posts: [], notes: [], dropped: [], wakes: [], filed: [], notified: [], stopped: [], busy: 0, n: 0, takes: true };
+  const k = { inbox: [], jobs: new Map(), started: [], inputs: [], posts: [], notes: [], dropped: [], wakes: [], filed: [], notified: [], stopped: [], scheduled: [], busy: 0, defer: 0, failPost: 0, n: 0, takes: true };
   const all = { [task.id]: task, ...tasks };
   k.kernel = {
     claim: async () => k.inbox.splice(0),
@@ -18,11 +18,13 @@ function fake({ task, comments = [], directory = {}, tasks = {}, paused = [] }) 
     wake: async (t, text) => void k.wakes.push({ task: t, text }),
     fileTask: async (b) => { if (paused.includes(b.agent)) throw new KernelError(409, "paused"); k.filed.push(b); },
     notify: async (b) => void k.notified.push(b),
-    comments: async () => comments,
+    comments: async (_t, after) => (after === undefined ? comments.slice(-200) : comments.slice(after ? comments.findIndex((c) => c.id === after) + 1 : 0)),
+    schedule: async (b) => void k.scheduled.push(b),
     agent: async (id) => ({ id, name: { cos: "Aiden", asker: "Researcher", coach: "Coach", eng: "Kai" }[id] ?? id }),
     directory: async () => directory,
     start: async (req) => {
       if (k.busy) return (k.busy--, { busy: true });
+      if (k.defer) return (k.defer--, { job: { id: "deferred", task: task.id, state: "deferred" } });
       const job = { id: `j${++k.n}`, task: task.id, agent: task.assigneeAgentId, state: "running", exit: null, final: "", session: null, timedOut: false, at: k.n, ended: null, acked: false };
       k.jobs.set(job.id, job);
       k.started.push({ ...req, job: job.id });
@@ -32,11 +34,12 @@ function fake({ task, comments = [], directory = {}, tasks = {}, paused = [] }) 
     jobsOf: async (t) => [...k.jobs.values()].filter((j) => j.task === t).sort((a, b) => b.at - a.at),
     ack: async (id) => void (k.jobs.get(id).acked = true),
     input: async (job, b) => (k.inputs.push({ job, ...b }), { sent: k.takes }),
-    post: async (job, b) => void k.posts.push({ job, ...b }),
+    post: async (job, b) => { if (k.failPost) { k.failPost--; throw new KernelError(502, "upstream"); } k.posts.push({ job, ...b }); },
     note: async (wake, body) => void k.notes.push({ wake, body }),
   };
   k.db = new DatabaseSync(":memory:");
   k.dispatch = createDispatch({ kernel: k.kernel, db: k.db, owner: "Dana" });
+  k.restart = () => (k.dispatch = createDispatch({ kernel: k.kernel, db: k.db, owner: "Dana" }));
   k.end = (id, final, session = "s-1") => Object.assign(k.jobs.get(id), { state: "done", exit: 0, final, session, ended: Date.now() });
   return k;
 }
@@ -370,7 +373,7 @@ test("a run that ended on a refused write blocks its task on the parent and wake
   const k = fake({ task: { id: "t1", identifier: "WOR-3", title: "Create hello", description: "Create local/hello.", status: "todo", assigneeAgentId: "eng", createdByAgentId: "cos", parentId: "p1" }, tasks: { p1: parent } });
   k.jobs.set("j1", { id: "j1", task: "t1", agent: "eng", state: "done", exit: 0, final: "Could not publish.", refused: "publish: the repo local/hello does not exist", session: null, timedOut: false, at: 1, ended: 1, acked: false });
   await k.dispatch.tick();
-  assert.deepEqual(k.posts.filter((p) => p.kind === "status"), [{ job: "j1", kind: "status", body: "**Blocked:** publish: the repo local/hello does not exist", status: "blocked", blocked_by: ["p1"] }]);
+  assert.deepEqual(k.posts.filter((p) => p.kind === "status"), [{ job: "j1", kind: "status", body: "**Blocked:** publish: the repo local/hello does not exist", status: "blocked" }]);
   assert.match(k.wakes[0].text, /WOR-3 is blocked\.\*\* Its reason[^]*<<<AGENT\npublish: the repo local\/hello does not exist/);
 });
 
@@ -394,4 +397,77 @@ test("a wake the kernel refuses is dropped; a transient failure keeps it; a job 
   k.kernel.ack = async (job) => void acked.push(job);
   await k.dispatch.tick();
   assert.deepEqual(acked, ["j1"], "the unpostable outcome is acknowledged once");
+});
+
+// Nothing dropped, lost or left idle (the 2026-11-20 review): each case below once lost a request.
+test("a task that already ran is picked back up when its blocker closes", async () => {
+  const k = fake({ task: { id: "t1", identifier: "WOR-1", title: "Ship it", description: "Ship the page.", status: "todo", assigneeAgentId: "eng", createdByUserId: "u1" } });
+  k.inbox.push(wake("issue:t1:1", "assigned"));
+  await k.dispatch.tick();
+  k.end("j1", "Blocked on WOR-9.");
+  await k.dispatch.tick();
+  k.inbox.push(wake("unblocked:t1:w9:done", "unblocked"));
+  await k.dispatch.tick();
+  assert.equal(k.started.length, 2, "the unblocked wake starts a job");
+  assert.match(k.started[1].prompt, /## Pick this task back up \(not Dana's words\)\n\nWhat this task was blocked on has closed\./);
+  assert.deepEqual(k.dropped, []);
+});
+
+test("a deferred admission is no start: the comment stays unseen and starts the job when the wake comes back", async () => {
+  const comments = [];
+  const k = fake({ task: { id: "t1", identifier: "WOR-1", title: "Fix", description: "Fix it.", status: "todo", assigneeAgentId: "eng", createdByUserId: "u1" }, comments });
+  k.inbox.push(wake("issue:t1:1", "assigned"));
+  await k.dispatch.tick();
+  k.end("j1", "Fixed.");
+  await k.dispatch.tick();
+  comments.push({ id: "c1", authorType: "user", body: "Now the logout too.", createdAt: "2026-11-18T10:00:00Z" });
+  k.defer = 1;
+  k.inbox.push(wake("comment:c1", "comment"));
+  await k.dispatch.tick();
+  k.inbox.push(wake("comment:c1", "comment")); // the kernel handed it back
+  await k.dispatch.tick();
+  assert.equal(k.started.length, 2);
+  assert.match(k.started[1].prompt, /Now the logout too\./);
+});
+
+test("a job stopped for no progress says so even when the first post fails and the module restarts", async () => {
+  const k = fake({ task: { id: "t1", identifier: "WOR-1", title: "Fix", description: "Do it", status: "in_progress", assigneeAgentId: "eng", createdByUserId: "u1" } });
+  k.inbox.push(wake("issue:t1:1", "assigned"));
+  await k.dispatch.tick();
+  k.jobs.get("j1").progress = { steps: Array.from({ length: 20 }, (_, i) => ({ at: new Date(Date.now() + i).toISOString(), text: "Running /bin/bash -c 'sed -n 1,80p src/a.ts'" })) };
+  await k.dispatch.tick();
+  Object.assign(k.jobs.get("j1"), { state: "cancelled", cancelled: true, final: "" });
+  k.failPost = 1;
+  await k.dispatch.tick();
+  k.restart();
+  await k.dispatch.tick();
+  assert.match(k.posts[0].body, /^\*\*Stopped:\*\* src\/a\.ts read 20 times/);
+});
+
+test("a job that couldn't start is retried later, and after three tries a notice (never a reply) says why", async () => {
+  const k = fake({ task: { id: "t1", identifier: "WOR-1", title: "Fix", description: "Do it", status: "todo", assigneeAgentId: "eng", createdByUserId: "u1" } });
+  for (let n = 1; n <= 3; n++) {
+    k.inbox.push(wake(`issue:t1:${n}`, "assigned"));
+    await k.dispatch.tick();
+    Object.assign(k.jobs.get(`j${n}`), { state: "failed", exit: null, final: "couldn't start: the computer launcher answered 500", ended: Date.now() });
+    await k.dispatch.tick();
+  }
+  assert.deepEqual(k.scheduled.map((s) => [s.id, s.cause]), [["retry.j1", "retry"], ["retry.j2", "retry"]]);
+  assert.deepEqual(k.posts, [{ job: "j3", kind: "notice", body: "**Couldn't start:** couldn't start: the computer launcher answered 500. Say **continue** to try again." }]);
+});
+
+test("an owner comment older than the newest 200 is read forward from the last seen one, never dropped", async () => {
+  const comments = [];
+  const k = fake({ task: { id: "t1", identifier: "WOR-1", title: "Chat", description: "Talk.", status: "todo", assigneeAgentId: "eng", createdByUserId: "u1" }, comments });
+  k.inbox.push(wake("issue:t1:1", "assigned"));
+  await k.dispatch.tick();
+  k.end("j1", "Hi.");
+  await k.dispatch.tick();
+  comments.push({ id: "c0", authorType: "user", body: "Book the flight.", createdAt: "2026-11-18T10:00:00.000Z" });
+  for (let i = 1; i <= 250; i++) comments.push({ id: `n${i}`, authorType: "agent", authorAgentId: "eng", body: `note ${i}\n\n<!-- aidenhq:job=jx kind=reply -->`, createdAt: `2026-11-18T11:00:00.${String(i).padStart(3, "0")}Z` });
+  k.inbox.push(wake("comment:c0", "comment"));
+  await k.dispatch.tick();
+  assert.deepEqual(k.dropped, []);
+  assert.equal(k.started.length, 2);
+  assert.match(k.started[1].prompt, /Book the flight\./);
 });
