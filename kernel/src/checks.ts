@@ -18,6 +18,7 @@ import type { Api } from "./channels.ts";
 import type { Resolver } from "./net.ts";
 import { gateMode } from "./gates.ts";
 import { fail } from "./proxy.ts";
+import { noteFact, openFacts } from "./facts.ts";
 
 export type Check = { module: string; at: string; url: string; rubric?: string; auth_secret: string; agents?: string[]; label?: string; mode?: "observe" };
 type Verdict = { verdict: "ok" | "hold" | "pending" | "reopen" | "deny"; reason?: string; until?: string; state?: string; status?: number; unlabel?: boolean; accepts?: boolean };
@@ -53,7 +54,7 @@ export function createChecks({ db, registry, owner, secret, resolver, agentKey =
 }) {
   db.exec("CREATE TABLE IF NOT EXISTS check_holds (task TEXT NOT NULL, check_id TEXT NOT NULL, at TEXT NOT NULL, PRIMARY KEY (task, check_id))");
   db.exec("CREATE TABLE IF NOT EXISTS graded_tasks (task TEXT PRIMARY KEY, module TEXT NOT NULL)"); // written by modtasks.ts
-  db.exec("CREATE TABLE IF NOT EXISTS events (id TEXT PRIMARY KEY, type TEXT NOT NULL, at TEXT NOT NULL, data TEXT NOT NULL)");
+  const facts = openFacts(db);
   const finishing = () => {
     try {
       const all = Object.entries(registry()).filter(([, c]) => c.at === "task.finish" && c.url);
@@ -116,7 +117,7 @@ export function createChecks({ db, registry, owner, secret, resolver, agentKey =
    * before anything moves unless a check answers `accepts`, so no other cross-task close passes.
    */
   /** A finish check's verdict on a task (a grader's reopen, say): an outcome the routing learning loop trusts (routing-tune.ts), never its words. */
-  const verdictEvent = (task: string, check: string, verdict: string) => db.prepare("INSERT INTO events (id, type, at, data) VALUES (?, ?, ?, ?)").run(`e-${randomBytes(8).toString("hex")}`, "finish.verdict", new Date().toISOString(), JSON.stringify({ task, check, verdict }));
+  const verdictEvent = (task: string, check: string, verdict: string) => noteFact(facts, { type: "finish.verdict", subject: `task:${task}`, version: `e-${randomBytes(8).toString("hex")}`, task, at: new Date().toISOString(), actor: `module:${check.split(".")[0]}`, data: { check, verdict } });
 
   async function finish(ref: string, caller: { agent?: string; tool?: string; via: string; cross?: boolean }): Promise<Finish> {
     const refuseCross = () => fail(403, "forbidden", `only this job's own task is finished here; ${ref} is finished by its assignee, or accepted by its delegator once grading has escalated it`);
@@ -141,7 +142,7 @@ export function createChecks({ db, registry, owner, secret, resolver, agentKey =
       try { v = await ask(id, c, body); } catch (e) { v = { verdict: "deny", reason: String((e as Error).message) }; }
       if (v.verdict === "ok") return;
       const entry = { gate: id, task: i.identifier ?? i.id, verdict: v.verdict, reason: String(v.reason ?? "").slice(0, 500), via: caller.via };
-      db.prepare("INSERT INTO events (id, type, at, data) VALUES (?, ?, ?, ?)").run(`e-${randomBytes(8).toString("hex")}`, "gate.would_block", new Date().toISOString(), JSON.stringify(entry));
+      noteFact(facts, { type: "gate.would_block", subject: `task:${entry.task}`, version: `e-${randomBytes(8).toString("hex")}`, task: i.id, at: new Date().toISOString(), actor: "kernel", data: entry });
       log("gate would block", entry);
     }));
     if (!mine.length) {

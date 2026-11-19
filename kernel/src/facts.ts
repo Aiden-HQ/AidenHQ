@@ -29,6 +29,7 @@ export function openFacts(db: DatabaseSync, now = () => new Date()) {
     CREATE INDEX IF NOT EXISTS facts_task ON facts (task, at);
     CREATE INDEX IF NOT EXISTS facts_type ON facts (type, at);
     CREATE INDEX IF NOT EXISTS facts_subject ON facts (subject);`);
+  migrateEvents(db);
   const insert = db.prepare("INSERT OR IGNORE INTO facts (id, type, subject, version, task, at, seen_at, actor, source, data) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
   const row = (r: any): FactRow => ({ ...r, data: JSON.parse(r.data) });
   return {
@@ -51,3 +52,60 @@ export function openFacts(db: DatabaseSync, now = () => new Date()) {
   };
 }
 export type Facts = ReturnType<typeof openFacts>;
+
+const tables = (db: DatabaseSync) => new Set((db.prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all() as { name: string }[]).map((t) => t.name));
+
+/** One fact inside the caller's transaction that can never fail it: a fact error is logged, the change goes on. */
+export function noteFact(facts: Facts, f: Fact) {
+  try {
+    facts.record(f);
+  } catch (e) {
+    console.error(new Date().toISOString(), "WARNING: a flow fact wasn't recorded", JSON.stringify({ type: f.type, subject: f.subject, err: String((e as Error).message) }));
+  }
+}
+
+/** Who decided a record, from its decided_by: the reviewer, the code (a stale close, the kernel) or the owner. */
+export function decider(by: string): { decider: "reviewer" | "owner" | "code"; actor: string } {
+  if (by.startsWith("reviewer:")) return { decider: "reviewer", actor: "module:ai-reviewer" };
+  if (by.startsWith("stale:") || by.startsWith("kernel")) return { decider: "code", actor: "kernel" };
+  return { decider: "owner", actor: by.startsWith("account:") ? by : "unknown" };
+}
+
+/**
+ * The old `events` table (approval events, gate would-blocks, finish verdicts) becomes facts once, then is dropped: records
+ * with tier ≥ 1 only (tier 0 ran at once and carries no wait), every would-block and verdict; the old id is the version.
+ */
+function migrateEvents(db: DatabaseSync) {
+  const have = tables(db);
+  if (!have.has("events")) return;
+  const tierOf = have.has("records") ? db.prepare("SELECT tier, task FROM records WHERE id = ?") : undefined;
+  const insert = db.prepare("INSERT OR IGNORE INTO facts (id, type, subject, version, task, at, seen_at, actor, source, data) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'backfill', ?)");
+  const put = (type: string, subject: string, version: string, task: string | null, at: string, actor: string, data: unknown) =>
+    insert.run(`${type}:${subject}:${version}`, type, subject, version, task, at, new Date().toISOString(), actor, JSON.stringify(data));
+  db.exec("SAVEPOINT facts_migrate");
+  try {
+    for (const e of db.prepare("SELECT id, type, at, data FROM events ORDER BY at").all() as { id: string; type: string; at: string; data: string }[]) {
+      let d: Record<string, any>;
+      try { d = JSON.parse(e.data); } catch { continue; }
+      if (e.type === "gate.would_block") { put("gate.would_block", `task:${d.task}`, e.id, null, e.at, "kernel", d); continue; }
+      if (e.type === "finish.verdict") { put("finish.verdict", `task:${d.task}`, e.id, String(d.task), e.at, `module:${String(d.check).split(".")[0]}`, { check: d.check, verdict: d.verdict }); continue; }
+      const rec = tierOf?.get(String(d.record)) as { tier: number; task: string } | undefined;
+      if (!rec || rec.tier < 1) continue;
+      const subject = `record:${d.record}`;
+      if (e.type === "approval.filed") put("record.filed", subject, e.id, rec.task, e.at, "unknown", { kind: d.kind, tier: d.tier, panel: d.panel, requester: d.requester });
+      else if (e.type === "approval.decided") {
+        const who = decider(String(d.by ?? ""));
+        const decision = d.decision === "approve" ? "approved" : d.decision === "reject" ? "rejected" : d.decision;
+        put("record.decided", subject, e.id, rec.task, e.at, who.actor, { decision, decider: who.decider, via: d.via });
+      } else if (e.type === "approval.held") put("record.held", subject, e.id, rec.task, e.at, "kernel", { why: d.why });
+      else if (e.type === "write.outcome") put(d.ok ? "record.landed" : "record.failed", subject, e.id, rec.task, e.at, "kernel", d.ok ? { kind: d.kind } : { kind: d.kind, text: d.text });
+    }
+    db.exec("DROP TABLE events");
+    db.exec("RELEASE facts_migrate");
+  } catch (e) {
+    db.exec("ROLLBACK TO facts_migrate");
+    db.exec("RELEASE facts_migrate");
+    throw e;
+  }
+}
+

@@ -5,12 +5,14 @@
 //   approved → claimed (once) → done | failed | unknown        anything open → cancelled (replaced, expired, its module removed)
 // A record headed for the reviewer carries how the owner follows it (`review_first`, tier.ts): the reviewer's verdict is
 // held to that here, whatever the verdict says. Open records expire after 7 days: decided within a week or not at all.
-// The events table is the outbox: approval.filed, approval.decided, write.outcome.
+// Each move of a record with tier ≥ 1 writes its flow fact (facts.ts: record.filed, record.decided, record.held, record.claimed,
+// record.landed, record.failed) in the move's own transaction, only when the move won; a fact error never fails the move.
 import { createHash, randomBytes } from "node:crypto";
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { FINAL_CODES, type Cap, type ReviewFirst } from "./tier.ts";
+import { decider, openFacts, type Fact } from "./facts.ts";
 
 export type State = "review" | "owner" | "approved" | "claimed" | "done" | "failed" | "rejected" | "stale" | "cancelled" | "unknown";
 /** `model`: a kernel job's model (its frozen authority), so the AI reviewer is never of the requester's family. */
@@ -79,11 +81,11 @@ export function openRecords(file: string, now = () => new Date()) {
       requester TEXT NOT NULL, task TEXT NOT NULL, state TEXT NOT NULL, review TEXT, decided_by TEXT, via TEXT, outcome TEXT,
       created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
     CREATE INDEX IF NOT EXISTS records_state ON records (state);
-    CREATE INDEX IF NOT EXISTS records_task ON records (task, kind);
-    CREATE TABLE IF NOT EXISTS events (id TEXT PRIMARY KEY, type TEXT NOT NULL, at TEXT NOT NULL, data TEXT NOT NULL);`);
+    CREATE INDEX IF NOT EXISTS records_task ON records (task, kind);`);
   // Columns added since 2d, each additive (older code ignores them, so a rollback keeps working).
   const have = new Set((db.prepare("PRAGMA table_info(records)").all() as { name: string }[]).map((c) => c.name));
   for (const [c, t] of [["merit", "INTEGER"], ["review_first", "TEXT"], ["rule", "TEXT"], ["review_code", "TEXT"], ["decided_at", "TEXT"], ["owner_reason", "TEXT"], ["identifier", "TEXT"], ["replaced", "INTEGER NOT NULL DEFAULT 0"], ["chain", "TEXT"], ["target", "TEXT"], ["content", "TEXT"], ["cap", "TEXT"]] as const) if (!have.has(c)) db.exec(`ALTER TABLE records ADD COLUMN ${c} ${t}`);
+  const facts = openFacts(db, now);
   const iso = () => now().toISOString();
   const cutoff = () => new Date(now().getTime() - TTL_MS).toISOString();
   const row = (r: any): Rec | undefined => {
@@ -92,8 +94,28 @@ export function openRecords(file: string, now = () => new Date()) {
     return { ...r, panel: r.panel === 1, replaced: r.replaced === 1 };
   };
   const rows = (rs: unknown[]) => rs.map((r) => row(r)!);
-  const event = (type: string, data: unknown) => db.prepare("INSERT INTO events (id, type, at, data) VALUES (?, ?, ?, ?)").run(`e-${randomBytes(8).toString("hex")}`, type, iso(), JSON.stringify(data));
   const get = (id: string) => row(db.prepare("SELECT * FROM records WHERE id = ?").get(id));
+  /** The record's flow fact as it is now (inside the move's transaction), when its tier is 1 or 2. */
+  const fact = (id: string, type: string, version: string, actor: string, data: (r: Rec) => Record<string, unknown>) => {
+    try {
+      const r = get(id)!;
+      if (r.tier >= 1) facts.record({ type, subject: `record:${id}`, version, task: r.task, at: r.updated_at, actor, data: data(r) } satisfies Fact);
+    } catch (e) { console.error(new Date().toISOString(), "WARNING: a record's flow fact wasn't recorded", JSON.stringify({ id, type, err: String((e as Error).message) })); }
+  };
+  /** A move and its fact in one transaction: the fact only when the move won. */
+  const moved = (won: () => boolean, then: () => void): boolean => {
+    db.exec("SAVEPOINT record_move");
+    try {
+      const ok = won();
+      if (ok) then();
+      db.exec("RELEASE record_move");
+      return ok;
+    } catch (e) {
+      db.exec("ROLLBACK TO record_move");
+      db.exec("RELEASE record_move");
+      throw e;
+    }
+  };
   /** One state move, only from `from` (and, from an open state, only within its 7 days); false when someone moved it first. */
   const move = (id: string, from: State[], to: State, set: { review?: string; review_code?: string | null; decided_by?: string; via?: string; owner_reason?: string; tier?: number; outcome?: unknown; decided_at?: string; chain?: string | null; cap?: string; review_first?: string } = {}, fresh = false): boolean => {
     const cols = Object.keys(set);
@@ -119,12 +141,13 @@ export function openRecords(file: string, now = () => new Date()) {
         db.prepare("INSERT INTO records (id, kind, module, args, targets, executor, policy, digest, tier, merit, panel, card, requester, task, state, created_at, updated_at, review_first, rule, identifier, replaced, target, content, chain, cap) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
           .run(id, r.kind, r.module, JSON.stringify(r.args ?? null), JSON.stringify(r.targets), JSON.stringify(r.executor), r.policy, digest, r.tier, r.merit ?? r.tier, r.panel ? 1 : 0, JSON.stringify(r.card), JSON.stringify(r.requester), r.task, r.state, at, at,
             r.review_first ?? null, r.rule ?? null, r.identifier ?? null, replaced ? 1 : 0, r.target ?? null, r.content ?? null, r.chain ?? null, r.cap ? JSON.stringify(r.cap) : null);
+        const requester = r.requester.key || r.requester.module || "";
+        fact(id, "record.filed", "filed", r.requester.key ? `agent:${r.requester.key}` : r.requester.module ? `module:${r.requester.module}` : "kernel", () => ({ kind: r.kind, tier: r.tier, panel: r.panel, requester }));
         db.exec("COMMIT");
       } catch (e) {
         db.exec("ROLLBACK");
         throw e;
       }
-      event("approval.filed", { record: id, kind: r.kind, tier: r.tier, panel: r.panel, requester: r.requester.key || r.requester.module || "", task: r.task });
       return get(id)!;
     },
     /** Newest first; `reviewed`: only records that went to the reviewer or the owner (Tier 1 and 2), `task`: only that task's. */
@@ -186,9 +209,9 @@ export function openRecords(file: string, now = () => new Date()) {
       if (v.decision === "reject" && r.review_first === "owner" && !FINAL_CODES.includes(v.code ?? "")) return "this record is the owner's on its merits: escalate the reject to them";
       const note = v.note.slice(0, 2000);
       const to: State = v.decision === "approve" ? "approved" : v.decision === "escalate" ? "owner" : v.code === "stale_head" ? "stale" : "rejected";
-      const ok = move(id, ["review"], to, { review: note, review_code: v.code ?? null, ...(to === "owner" ? { tier: 2 } : { decided_by: v.by, via: "review", decided_at: iso() }), ...(v.chain ? { chain: v.chain } : {}) }, true);
+      const ok = moved(() => move(id, ["review"], to, { review: note, review_code: v.code ?? null, ...(to === "owner" ? { tier: 2 } : { decided_by: v.by, via: "review", decided_at: iso() }), ...(v.chain ? { chain: v.chain } : {}) }, true),
+        () => fact(id, "record.decided", `reviewer:${to}`, "module:ai-reviewer", () => ({ decision: to, decider: "reviewer", via: "review" })));
       if (!ok) return "it changed meanwhile";
-      if (to !== "owner") event("approval.decided", { record: id, decision: to, by: v.by, via: "review" });
       return get(id)!;
     },
     /** The first reviewer found it authority-expanding: from now on it needs a second reviewer's approval too. Never cleared. */
@@ -201,8 +224,10 @@ export function openRecords(file: string, now = () => new Date()) {
       if (!r) return "no such record";
       if (shownState(r) !== "owner") return `this record is ${r.state === "review" ? "with the AI reviewer" : shownState(r)}`;
       if (r.digest !== digest) return "the digest doesn't match this record";
-      if (!move(id, ["owner"], decision === "approve" ? "approved" : by.startsWith("stale:") ? "stale" : "rejected", { decided_by: by, via, decided_at: iso(), ...(decision === "reject" && reason ? { owner_reason: reason } : {}) }, true)) return "it changed meanwhile";
-      event("approval.decided", { record: id, decision, by, via });
+      const to: State = decision === "approve" ? "approved" : by.startsWith("stale:") ? "stale" : "rejected";
+      const who = decider(by);
+      if (!moved(() => move(id, ["owner"], to, { decided_by: by, via, decided_at: iso(), ...(decision === "reject" && reason ? { owner_reason: reason } : {}) }, true),
+        () => fact(id, "record.decided", `${who.decider}:${to}`, who.actor, () => ({ decision: to, decider: who.decider, via })))) return "it changed meanwhile";
       return get(id)!;
     },
     /**
@@ -211,17 +236,14 @@ export function openRecords(file: string, now = () => new Date()) {
      */
     hold(id: string, cap: Cap, why: string): boolean {
       const r = get(id);
-      if (!r || !move(id, ["approved"], "owner", { tier: 2, review_first: "final", cap: JSON.stringify(cap), review: `${r.review ?? ""}\n\nHeld for the owner before it ran: ${why}`.trim() }, true)) return false;
-      event("approval.held", { record: id, why });
-      return true;
+      return Boolean(r) && moved(() => move(id, ["approved"], "owner", { tier: 2, review_first: "final", cap: JSON.stringify(cap), review: `${r!.review ?? ""}\n\nHeld for the owner before it ran: ${why}`.trim() }, true),
+        () => fact(id, "record.held", "held", "kernel", () => ({ why })));
     },
     /** approved → claimed, once, within its 7 days. */
-    claim: (id: string) => move(id, ["approved"], "claimed", {}, true),
+    claim: (id: string) => moved(() => move(id, ["approved"], "claimed", {}, true), () => fact(id, "record.claimed", "claimed", "kernel", (r) => ({ kind: r.kind }))),
     finish(id: string, ok: boolean, text: string): boolean {
-      if (!move(id, ["claimed"], ok ? "done" : "failed", { outcome: { ok, text: text.slice(0, 4000) } })) return false;
-      const r = get(id)!;
-      event("write.outcome", { record: id, kind: r.kind, ok, text: text.slice(0, 500) });
-      return true;
+      return moved(() => move(id, ["claimed"], ok ? "done" : "failed", { outcome: { ok, text: text.slice(0, 4000) } }),
+        () => fact(id, ok ? "record.landed" : "record.failed", ok ? "done" : "failed", "kernel", (r) => (ok ? { kind: r.kind } : { kind: r.kind, text: text.slice(0, 500) })));
     },
     /** cancelled from an open state; stale (revalidate) and unknown (no outcome came back) from claimed. */
     close: (id: string, to: "stale" | "cancelled" | "unknown", text: string) => move(id, to === "cancelled" ? OPEN : ["claimed"], to, { outcome: { ok: false, text: text.slice(0, 4000) } }),
