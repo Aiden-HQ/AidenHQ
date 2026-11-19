@@ -2,6 +2,10 @@
 // Engineer close it with `aidenhq close`, but that command reaches only the agents org and the product repo's Dependabot
 // PRs, so the close was refused and the same stale PR filed another close task the next pass. The lint keeps the caveat:
 // a fleet skill section that names `aidenhq close` must also state its scope and the owner path, in that same section.
+// The stale-PR nudge had the same shape: "nudge its agent" had no reachable form, a comment does not dispatch an Engineer,
+// and the Steward's status write on another agent's task is refused, so the nudge turned into a second task for the same
+// PR — whose branch exists only in the workspace of the task that pushed it. Two runs died on that (a default-branch
+// clone cannot fetch the branch). The second lint keeps the reachable path in the section that nudge lives in.
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync, readdirSync } from "node:fs";
@@ -37,6 +41,26 @@ function closeScopeProblems(text) {
     });
 }
 
+/**
+ * Every stale-PR section that tells the Steward to nudge an open task's agent without saying how the nudge reaches that
+ * agent: a status write on its own task (handed to the chief of staff or the assignee when the board refuses) and never a
+ * second task for the same PR (whose branch only that task's workspace has).
+ */
+function stalePrNudgeProblems(text) {
+  return sections(text)
+    .filter((section) => section.includes("A stale PR"))
+    .flatMap((section) => {
+      const flat = section.replace(/\s+/g, " ");
+      if (!(/still open/i.test(flat) && /nudge/i.test(flat))) return [];
+      const missing = [];
+      if (!(/status write/i.test(flat) && /board refuses the status write/i.test(flat))) missing.push("the status-write sentence");
+      if (!/never file a second task for the same PR/i.test(flat)) missing.push("the \"never file a second task for the same PR\" sentence");
+      return missing.length ? [{ section: flat.slice(0, 60), missing }] : [];
+    });
+}
+
+const nudgeMessage = (file, p) => `${file}: the section "${p.section}" nudges an open task's agent without ${p.missing.join(" and ")}: state that work reaches an Engineer only through a status write on its own task (handed to the chief of staff or its assignee when the board refuses), and that a second task is never filed for the same PR because the branch exists only in the task that pushed it`;
+
 const message = (file, p) => `${file}: the section "${p.section}" names \`aidenhq close\` without ${p.missing.join(" and ")}: state that aidenhq close reaches only the agents org (aidenhq-alpha) and the product repo's Dependabot PRs, and that an outside-scope PR is the owner's (no close task; the digest and one \`outside-close-scope\` log line)`;
 
 test("a fleet skill section naming `aidenhq close` must state its scope and the owner path", () => {
@@ -60,7 +84,7 @@ test("the merged bullet keeps the actions it had and the outside-scope line", ()
   const found = sections(fleetCheck).find((s) => s.includes("A stale PR"));
   assert.ok(found, "the stale-PR bullet is present");
   const bullet = found.replace(/\s+/g, " ");
-  for (const kept of ["merge it if the checks are green", "fix it if red", "close it as superseded", "Never the same nudge twice"]) {
+  for (const kept of ["one line with what to do (merge, fix the named check, or close)", "Never the same nudge twice"]) {
     assert.ok(bullet.includes(kept), `still says "${kept}"`);
   }
   for (const added of ["reaches only the agents org", "Dependabot PRs", "outside that scope", "is the owner's", "file no close task", "outside-close-scope"]) {
@@ -73,4 +97,24 @@ test("the lint runs over every fleet skill, not only this one", () => {
     .filter((d) => d.isDirectory())
     .flatMap((d) => closeScopeProblems(readFileSync(new URL(`${d.name}/SKILL.md`, skills), "utf8")).map((p) => message(`${d.name}/SKILL.md`, p)));
   assert.deepEqual(problems, []);
+});
+
+test("a fleet skill section that nudges an open stale-PR task must state the reachable path", () => {
+  const problems = stalePrNudgeProblems(fleetCheck).map((p) => nudgeMessage("fleet-check/SKILL.md", p));
+  assert.deepEqual(problems, []);
+});
+
+test("the lint bites: the old nudge, with no reachable path, fails with the fix; the replacement passes", () => {
+  const old = "- **A stale PR** (`pr:<repo>#<n>`): find the task that opened it (`task_search`). If that task is still open, nudge its\n  agent once: merge it if the checks are green, fix it if red, or close it as superseded (its Engineer closes it with\n  `aidenhq close <PR link> --reason \"<one line>\"`). If the task is done, `task_create` to the app's owner (else the\n  Engineer): \"merge, fix or close <PR> with one line why\". `aidenhq close` reaches only the agents org (`aidenhq-alpha`) and\n  the product repo's Dependabot PRs: a PR outside that scope is the owner's. Log `pr · <repo>#<n>`; never the same nudge twice.\n";
+  const problems = stalePrNudgeProblems(old);
+  assert.equal(problems.length, 1);
+  assert.match(problems[0].missing.join(), /status-write sentence/);
+  assert.match(problems[0].missing.join(), /never file a second task for the same PR/);
+  assert.match(nudgeMessage("old", problems[0]), /a second task is never filed for the same PR/);
+  const withStatusWriteOnly = old.replace("If that task is still open", "Work reaches an Engineer only through a status write on its own task; when the board refuses the status write, hand it on. If that task is still open");
+  assert.equal(stalePrNudgeProblems(withStatusWriteOnly).length, 1, "the status-write sentence alone is not enough");
+  const replacement = "- **A stale PR** (`pr:<repo>#<n>`): find the task that opened it (`task_search`). Work reaches an Engineer only through a\n  status write on its own task, so never file a second task for the same PR. If that task is still open, nudge its own\n  agent once, and when the board refuses the status write, hand *that* task to the chief of staff.\n";
+  assert.deepEqual(stalePrNudgeProblems(replacement), []);
+  // A section that does not nudge an open task is out of scope.
+  assert.deepEqual(stalePrNudgeProblems("- **A stale PR**: if the task is done, `task_create` to the app's owner.\n"), []);
 });

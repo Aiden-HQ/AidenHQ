@@ -74,13 +74,17 @@ request open over an hour without merging) or something recovered.
 - **A source down:** the DevOps Engineer watches sources. Check `src_meta.ingest_run` for the error. "Not connected", "sign
   in" or "install the GitHub App" is the owner's to fix: alert them (below). Otherwise make sure there is one comment on
   Fleet issues with key `ingest · src_<source> · stale`.
-- **A stale PR** (`pr:<repo>#<n>`): find the task that opened it (`task_search`). If that task is still open, nudge its
-  agent once: merge it if the checks are green, fix it if red, or close it as superseded (its Engineer closes it with
-  `aidenhq close <PR link> --reason "<one line>"`). If the task is done, `task_create` to the app's owner (else the
-  Engineer): "merge, fix or close <PR> with one line why". `aidenhq close` reaches only the agents org (`aidenhq-alpha`) and
-  the product repo's Dependabot PRs: a PR outside that scope (e.g. in `Aiden-HQ/aidenhq-modules`) is the owner's, so file no
-  close task — state it once in the owner digest with the PR link, why it is superseded and the one-line close reason to
-  use, and log `pr · <repo>#<n> · outside-close-scope · owner`. Never the same nudge twice.
+- **A stale PR** (`pr:<repo>#<n>`): find the task that opened it (`task_search`). Work reaches an Engineer only through a
+  status write on its own task, and the PR's branch exists only in that task's workspace, so never file a second task for
+  the same PR: a task that did not push the branch cannot clone it. If that task is still open, nudge its own agent once —
+  one line with what to do (merge, fix the named check, or close) — and when the board refuses the status write, hand
+  *that* task to the chief of staff, or to its own assignee, as "set WOR-<n> to `todo` with this comment: …", never as a
+  new build task. If the task is done, `task_create` to the app's owner (else the Engineer): "merge, fix or close <PR> with
+  one line why". A task that names a PR branch it did not push stops at run start and reports it, rather than working from
+  a default-branch clone. `aidenhq close` reaches only the agents org (`aidenhq-alpha`) and the product repo's
+  Dependabot PRs: a PR outside that scope (e.g. in `Aiden-HQ/aidenhq-modules`) is the owner's, so file no close task —
+  state it once in the owner digest with the PR link, why it is superseded and the one-line close reason to use, and log
+  `pr · <repo>#<n> · outside-close-scope · owner`. Never the same nudge twice.
 - **Health flags** (`run:<agent>:stuck|failing|silent|repeat:<task>`, `grade:<task>`, `grade:<task>:unclosed`; a flag open a day is the owner's too):
   - `run:<agent>:stuck` or `:failing`: the kernel's job ledger shows a job running far past its timeout, or the agent's last
     three jobs all failed. Read the failed jobs' tasks and comments, route the fix like a failing agent, log it.
