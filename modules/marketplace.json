@@ -46,6 +46,10 @@
       "source": "./clickhouse"
     },
     {
+      "name": "code-review",
+      "source": "./code-review"
+    },
+    {
       "name": "codehost-local",
       "source": "./codehost-local"
     },
@@ -166,6 +170,7 @@
     "channel-telegram",
     "chat-lane",
     "chief-of-staff",
+    "code-review",
     "codehost-local",
     "design",
     "dispatch",

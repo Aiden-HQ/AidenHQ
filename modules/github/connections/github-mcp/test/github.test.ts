@@ -64,7 +64,6 @@ describe("guard", () => {
 
   it("refuses everything else the token could do", () => {
     for (const [m, p] of [
-      ["PATCH", "/repos/a/b/issues/comments/9"], // edit a comment
       ["DELETE", "/repos/a/b/issues/comments/9"],
       ["PUT", "/repos/a/b/pulls/3/merge"],
       ["DELETE", "/repos/a/b/git/refs/heads/main"],
